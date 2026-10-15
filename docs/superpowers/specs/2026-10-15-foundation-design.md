@@ -301,7 +301,7 @@ client of that user is visible; tapping opens the project.
 - CopperChat offers no claude.ai login of its own; every user brings their own
   credentials (`claude setup-token` or API key). README states that
   Anthropic's terms apply to the user's credentials.
-- License: to be decided before the first public push.
+- License: GPL-3.0-only (strict copyleft, same family as KiCad).
 
 ## 13. Outlook (later sub-projects, not specified here)
 
