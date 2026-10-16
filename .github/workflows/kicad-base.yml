@@ -25,7 +25,7 @@ on:
 
 permissions:
   contents: read
-  packages: write
+  packages: read
 
 concurrency:
   group: kicad-base-${{ github.ref }}
@@ -45,7 +45,7 @@ jobs:
       build: ${{ steps.decide.outputs.build }}
       push: ${{ steps.decide.outputs.push }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: pins
         run: |
           commit="$(tr -d '[:space:]' < docker/kicad-base/KICAD_COMMIT)"
@@ -64,7 +64,7 @@ jobs:
             echo "recipe=$recipe"
           } >> "$GITHUB_OUTPUT"
           echo "KiCad $commit, kipy $kipy, recipe $recipe"
-      - uses: docker/login-action@v4
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -99,20 +99,23 @@ jobs:
     needs: meta
     if: needs.meta.outputs.build == 'true'
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
     # GitHub-hosted jobs are capped at 6 h. ccache lives in a BuildKit cache
     # mount that is round-tripped through the Actions cache, so rebuilds of the
     # same or a nearby commit are much faster than the cold build. If a cold
     # build ever exceeds the cap, run this job on a self-hosted runner.
     timeout-minutes: 350
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL \
             /usr/local/share/boost /usr/local/.ghcup
           df -h /
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/login-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         if: needs.meta.outputs.push == 'true'
         with:
           registry: ghcr.io
@@ -121,7 +124,7 @@ jobs:
       # Declared before the cache dance so its post step (save) runs after the
       # dance's post step (extract from BuildKit).
       - name: ccache (Actions cache)
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ccache-mount
           key: kicad-ccache-${{ needs.meta.outputs.commit }}-${{ github.run_id }}
@@ -129,13 +132,13 @@ jobs:
             kicad-ccache-${{ needs.meta.outputs.commit }}-
             kicad-ccache-
       - name: Inject ccache into BuildKit
-        uses: reproducible-containers/buildkit-cache-dance@v3
+        uses: reproducible-containers/buildkit-cache-dance@5422eac04292c961a382e0f584ea0f03ad9da723 # v3.4.0
         with:
           dockerfile: docker/kicad-base/Dockerfile
           cache-map: '{"ccache-mount": "/ccache"}'
       - name: Build
         id: build
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: docker/kicad-base
           file: docker/kicad-base/Dockerfile
@@ -169,8 +172,8 @@ jobs:
       (needs.build.result == 'skipped' || (needs.build.result == 'success' && needs.meta.outputs.push == 'true'))
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: docker/login-action@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
