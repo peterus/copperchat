@@ -156,6 +156,35 @@ Optional arguments:
   required at this commit, but it remains available (`cli_sch_svg`/`cli_pcb_svg`
   PASS).
 
+### ERC/DRC JSON (Q6)
+- Commands (with `LANG=C`): `kicad-cli sch erc --format json --units mm -o erc.json <root.kicad_sch>`
+  and `kicad-cli pcb drc --format json --units mm --schematic-parity -o drc.json <board.kicad_pcb>`.
+  `--units mm` is accepted.
+- ERC/DRC JSON units: `coordinate_units: "mm"`; positions are `{"x": mm, "y": mm}`.
+- ERC key paths: top `$schema, coordinate_units, date, ignored_checks,
+  included_severities, kicad_version, sheets, source`; `sheets[] = {path, uuid_path,
+  violations[]}`; `violations[] = {type, severity, description, items[]}`;
+  `items[] = {description, pos{x,y}, uuid}` (full 36-char UUID). Sample:
+  `{"type": "footprint_link_issues", "severity": "warning", "description": "The current configuration does not include the footprint library 'Capacitor_THT'", "items": [{"description": "Symbol C1 [CP]", "pos": {"x": 86.36, "y": 57.15}, "uuid": "00000000-0000-0000-0000-00004549f4be"}]}`
+- DRC key paths: top adds `violations[]`, `unconnected_items[]`,
+  `schematic_parity[]` (same entry shape as ERC violations). Sample:
+  `{"type": "silk_edge_clearance", "severity": "warning", "description": "Silkscreen clipped by board edge", "items": [{"description": "Segment on Edge.Cuts", "pos": {"x": 121.285, "y": 136.525}, "uuid": "9b19456e-3ad1-4dde-92c4-23451559e1ba"}, …]}`
+  ecc83-pp: 2 violations, 0 unconnected, 10 parity entries.
+- Descriptions are English/ASCII with `LANG=C`.
+- Exit codes: `0` by default even with violations; with `--exit-code-violations`
+  both return `5` when violations exist. Phase 4 should parse the JSON and treat
+  only a missing/unparseable report as a tool failure.
+- Library tables matter: with an empty KiCad config (no global
+  `fp-lib-table`/`sym-lib-table`) ERC reports `footprint_link_issues` for every
+  footprint from the stock libraries (`Capacitor_THT`, `Resistor_THT`) and DRC
+  parity reports `footprint_symbol_mismatch`. Phase 2's image must install the
+  stock symbol/footprint libraries **and** global library tables in the runtime
+  user's KiCad config, or these findings will be noise in every report.
+- Config isolation: kicad-cli writes `~/.config/kicad/10.99/*.json` on first
+  run. The harness sets `KICAD_CONFIG_HOME=.kicad/config` (spike-local) so runs
+  do not touch the user's config; Phase 3's launcher should set
+  `KICAD_CONFIG_HOME` under `/data` explicitly.
+
 ## Decision
 
 ## Follow-ups

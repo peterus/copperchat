@@ -36,6 +36,8 @@ def cli_env() -> dict[str, str]:
     env = dict(os.environ)
     env["LANG"] = "C"
     env["LC_ALL"] = "C"
+    # Keep KiCad's settings out of the user's ~/.config/kicad (spike-local, gitignored).
+    env.setdefault("KICAD_CONFIG_HOME", str(HERE / ".kicad/config"))
     appdir = HERE / ".kicad/squashfs-root"
     if appdir.exists():
         libdirs = [str(appdir / "usr/lib"), str(appdir / "usr/lib/x86_64-linux-gnu")]
