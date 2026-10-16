@@ -10,7 +10,11 @@
       if (prefsTheme) localStorage.setItem("kc:prefs:theme", JSON.stringify({ val: prefsTheme }));
       else localStorage.removeItem("kc:prefs:theme");
     </script>
-    <script type="module" src="/vendor/kicanvas.js"></script>
+    <script type="module">
+      // ?vendor=vendor-patched selects the supplementary patched build (default: vendor).
+      const vendor = new URLSearchParams(location.search).get("vendor") || "vendor";
+      await import(`/${vendor}/kicanvas.js`);
+    </script>
     <style>
       html, body { margin: 0; height: 100%; }
       kicanvas-embed { display: block; width: 100vw; height: 100vh; }

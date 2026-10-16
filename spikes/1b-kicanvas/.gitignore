@@ -5,3 +5,5 @@ files/
 results/
 test-results/
 playwright-report/
+vendor-patched/
+results-patched/

@@ -2,7 +2,12 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { PNG } from "pngjs";
 import type { Page } from "@playwright/test";
 
-export const RESULTS = new URL("../results/", import.meta.url).pathname;
+// KICANVAS_VENDOR=vendor-patched runs the supplementary experiment into results-patched/.
+export const VENDOR = process.env.KICANVAS_VENDOR ?? "vendor";
+export const RESULTS = new URL(
+  VENDOR === "vendor" ? "../results/" : `../results-${VENDOR.replace(/^vendor-/, "")}/`,
+  import.meta.url,
+).pathname;
 mkdirSync(RESULTS, { recursive: true });
 
 export function record(question: string, check: string, ok: boolean, evidence: unknown): void {
@@ -35,6 +40,7 @@ export async function openViewer(
   if (opts.theme) q.set("theme", opts.theme);
   if (opts.prefsTheme) q.set("prefstheme", opts.prefsTheme);
   if (opts.controlslist) q.set("controlslist", opts.controlslist);
+  if (VENDOR !== "vendor") q.set("vendor", VENDOR);
   await page.goto(`/www/index.html?${q}`);
   await page.waitForFunction(() => (window as any).__embed?.hasAttribute("loaded"), null, {
     timeout: 60_000,

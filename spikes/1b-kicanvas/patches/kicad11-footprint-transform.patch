@@ -1,0 +1,66 @@
+diff --git a/src/kicad/board.ts b/src/kicad/board.ts
+index 2d2d2c6..64a6fdb 100644
+--- a/src/kicad/board.ts
++++ b/src/kicad/board.ts
+@@ -822,6 +822,7 @@ type FootprintDrawings =
+ 
+ export class Footprint implements HasUniqueID {
+     at: At;
++    transform?: FootprintTransform;
+     reference: string;
+     value: string;
+     library_link: string;
+@@ -898,6 +899,7 @@ export class Footprint implements HasUniqueID {
+                 P.pair("sheetname", T.string),
+                 P.pair("sheetfile", T.string),
+                 P.item("at", At),
++                P.item("transform", FootprintTransform),
+                 P.pair("descr", T.string),
+                 P.pair("tags", T.string),
+                 P.pair("path", T.string),
+@@ -938,6 +940,11 @@ export class Footprint implements HasUniqueID {
+             ),
+         );
+ 
++        // KiCad 11 (format 20260901) replaces (at x y r) with (transform ...).
++        if (!this.at && this.transform) {
++            this.at = this.transform.to_at();
++        }
++
+         for (const pad of this.pads) {
+             this.#pads_by_number.set(pad.number, pad);
+         }
+@@ -1813,3 +1820,33 @@ export class Group implements HasUniqueID {
+         return this.uuid ?? this.id;
+     }
+ }
++
++/** KiCad 11 footprint placement: (transform (translate x y) (rotate r) (scale sx sy)). */
++export class FootprintTransform {
++    translate?: { x: number; y: number };
++    rotate?: number;
++
++    constructor(expr: Parseable) {
++        Object.assign(
++            this,
++            parse_expr(
++                expr,
++                P.start("transform"),
++                P.object(
++                    "translate",
++                    {},
++                    P.positional("x", T.number),
++                    P.positional("y", T.number),
++                ),
++                P.pair("rotate", T.number),
++            ),
++        );
++    }
++
++    to_at(): At {
++        const at = new At();
++        at.position.set(this.translate?.x ?? 0, this.translate?.y ?? 0);
++        at.rotation = this.rotate ?? 0;
++        return at;
++    }
++}
