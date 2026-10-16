@@ -1,5 +1,7 @@
 # Phase 2: KiCad base image
 
+> **Cross-phase corrections apply:** see index § "Cross-phase corrections" (X11, X12); they supersede conflicting code in this file.
+
 **Goal:** Build the pinned KiCad 11 (master) commit from source in CI and
 publish `ghcr.io/peterus/copperchat-kicad-base:<commit>` (+ `:<short>`): a
 Debian trixie runtime image with `kicad-cli` (incl. `api-server`), pinned

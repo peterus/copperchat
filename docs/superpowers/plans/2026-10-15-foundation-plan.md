@@ -664,6 +664,25 @@ with an item below, the item wins; the executor adapts the code and its tests.
   `apiPost` / `apiPut` / `apiDelete` pass paths **without** the `/api` prefix
   (`apiUrl` adds it); raw `fetch`, `href` and `src` use the full `/api/...` URL.
 
+- **X11 — app image user (Phases 2, 9).** The base image's runtime user is
+  `copperchat` uid 1000 and it ends with `USER copperchat`. Phase 9's
+  `docker/app/Dockerfile` starts with `USER root` right after `FROM`, does
+  **not** `useradd` again, runs `uv sync` as root, `chown`s `/app`, `/data`,
+  `/projects` to `copperchat`, and ends with `USER copperchat`. Docs/README
+  say uid **1000** (not 10001).
+- **X12 — `git` in the base runtime image (Phases 2, 4, 9).** The runtime
+  stage keeps `git` installed (do not purge it): uv needs it to fetch the
+  pinned kicad-python git source, and Phase 7's `git_tools` call `git`.
+- **X13 — CI job containers run as root (Phases 4, 9).** Every
+  `container:` block that uses the base image sets `options: --user root`
+  (the `/__w` workspace belongs to the runner uid; `actions/checkout` and
+  `setup-uv` fail otherwise).
+- **X14 — kicad CI env (Phases 4, 9).** Every kicad job (including Phase 9's
+  matrix over `SUPPORTED_COMMITS`) sets `COPPERCHAT_REQUIRE_KICAD: "1"` (the
+  harness then fails instead of skipping when `kicad-cli api-server` is
+  missing) and `LANG: C`. Phase 9 removes Phase 4's then-unused
+  `kicad-commit` job when it introduces the matrix.
+
 ### Owner review requested
 
 Provisional decisions taken while planning (2026-10-16); the owner may

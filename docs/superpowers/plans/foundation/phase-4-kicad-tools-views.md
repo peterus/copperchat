@@ -1,6 +1,6 @@
 # Phase 4: KiCad tools and views
 
-> **Cross-phase corrections apply:** see index § "Cross-phase corrections" (X1, X2, X3, X9); they supersede conflicting code in this file.
+> **Cross-phase corrections apply:** see index § "Cross-phase corrections" (X1, X2, X3, X9, X12, X13, X14); they supersede conflicting code in this file.
 
 **Goal:** Read-only agent tools over the running `kicad-cli api-server`
 (`project_info`, `sch_*`, `pcb_*`, `run_erc`, `run_drc`), the `render_view`

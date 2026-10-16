@@ -1,6 +1,6 @@
 # Phase 9: PWA, Web Push, release
 
-> **Cross-phase corrections apply:** see index § "Cross-phase corrections" (X6, X8); they supersede conflicting code in this file.
+> **Cross-phase corrections apply:** see index § "Cross-phase corrections" (X6, X8, X11, X12, X13, X14); they supersede conflicting code in this file.
 
 **Goal:** Make CopperChat installable and shippable: PWA manifest + service
 worker, Web Push (VAPID) for "run finished", "needs attention" and
