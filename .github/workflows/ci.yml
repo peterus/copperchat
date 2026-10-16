@@ -26,3 +26,35 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run mypy src
       - run: uv run pytest -m "not kicad"
+
+  kicad-commit:
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.read.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: read
+        run: echo "commit=$(tr -d '[:space:]' < docker/kicad-base/KICAD_COMMIT)" >> "$GITHUB_OUTPUT"
+
+  kicad:
+    needs: kicad-commit
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/peterus/copperchat-kicad-base:${{ needs.kicad-commit.outputs.commit }}
+      # The /__w workspace belongs to the runner uid; checkout and setup-uv need root (X13).
+      options: --user root
+    env:
+      COPPERCHAT_REQUIRE_KICAD: "1"
+      LANG: C
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - run: uv python install 3.13
+      - run: uv sync --locked
+      - run: uv run pytest -m kicad
