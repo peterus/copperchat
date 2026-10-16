@@ -40,7 +40,9 @@ plus license, vendoring/pinning, bundle size.
 
 ## Results
 
-Gate run (unpatched KiCanvas, `results/summary.md`):
+Gate run (unpatched KiCanvas, `results/summary.md`) next to the supplementary
+patched run (`results-patched/summary.md`). Both directories are gitignored; the
+full tables are in the PR body and can be regenerated with the README commands.
 
 | Question | Check | Unpatched | Patched |
 |---|---|---|---|

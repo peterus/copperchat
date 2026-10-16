@@ -79,7 +79,8 @@ for (const [q, file, known] of [
       await tpage.waitForTimeout(300);
       taps.push((await events(tpage)).filter((e) => e.type === "kicanvas:select"));
     }
-    record(q, "touch_tap_reports_reference", taps.some((t) => t.some((e) => e.ref === target.ref)), {
+    // taps[] is cumulative; taps[0] alone shows whether the *first* tap selects.
+    record(q, "touch_tap_reports_reference", taps[0].some((e) => e.ref === target.ref), {
       target,
       afterFirstTap: taps[0],
       afterSecondTap: taps[1],

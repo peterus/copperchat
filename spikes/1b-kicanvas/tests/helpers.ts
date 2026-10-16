@@ -30,7 +30,12 @@ export async function openViewer(
   } = {},
 ): Promise<Errors> {
   const errors: Errors = { console: [], page: [], requests: [] };
-  page.on("console", (m) => m.type() === "error" && errors.console.push(m.text()));
+  // The bundle's Google Fonts stylesheet is optional (Q7); its failure is not a render error.
+  page.on("console", (m) => {
+    if (m.type() !== "error") return;
+    if (/fonts\.(googleapis|gstatic)\.com/.test(m.location().url ?? "")) return;
+    errors.console.push(m.text());
+  });
   page.on("pageerror", (e) => errors.page.push(String(e)));
   page.on("request", (r) => errors.requests.push(r.url()));
   if (opts.offline) {

@@ -7,8 +7,7 @@ fail() { echo "FAIL: $*"; exit 1; }
 [ -s "$V/kicanvas.js" ] || fail "vendor/kicanvas.js missing"
 [ -s "$V/LICENSE.md" ] || fail "vendor/LICENSE.md missing"
 grep -q "available under the MIT License" "$V/LICENSE.md" || fail "LICENSE.md is not MIT"
-grep -q "customElements.define(\"kicanvas-embed\"" "$V/kicanvas.js" \
-  || grep -q 'kicanvas-embed' "$V/kicanvas.js" || fail "bundle does not define kicanvas-embed"
+grep -q 'customElements.define("kicanvas-embed"' "$V/kicanvas.js" || fail "bundle does not define kicanvas-embed"
 for ev in kicanvas:select kicanvas:load; do
   grep -q "$ev" "$V/kicanvas.js" || fail "event name $ev not in bundle"
 done
