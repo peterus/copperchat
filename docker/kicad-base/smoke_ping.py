@@ -28,18 +28,22 @@ def main() -> int:
     pro = work / f"{STEM}.kicad_pro"
     sock = tmp / "api.sock"
     url = f"ipc://{sock}"
+    # Server output goes to a file (a pipe nobody drains could fill up and stall
+    # the server) and is printed whenever the smoke fails.
+    log_path = tmp / "api-server.log"
+    log = log_path.open("w")
     proc = subprocess.Popen(
         ["kicad-cli", "api-server", "--socket", str(sock), str(pro)],
         cwd=work,
-        stdout=subprocess.PIPE,
+        stdout=log,
         stderr=subprocess.STDOUT,
-        text=True,
     )
     t0 = time.monotonic()
+    ok = False
     try:
         while time.monotonic() - t0 < READY_TIMEOUT_S:
             if proc.poll() is not None:
-                print(f"api-server exited {proc.returncode}: {proc.stdout.read()}")
+                print(f"api-server exited {proc.returncode}")
                 return 1
             if sock.exists():
                 try:
@@ -61,13 +65,18 @@ def main() -> int:
         n_sym = len(k.get_schematic().get_symbols())
         n_fp = len(k.get_board().get_footprints())
         print(f"symbols={n_sym} footprints={n_fp}")
-        return 0 if n_sym > 0 and n_fp > 0 else 1
+        ok = n_sym > 0 and n_fp > 0
+        return 0 if ok else 1
     finally:
         proc.terminate()
         try:
             proc.wait(10)
         except subprocess.TimeoutExpired:
             proc.kill()
+        log.close()
+        if not ok:
+            print("--- api-server log ---")
+            print(log_path.read_text(errors="replace"))
         shutil.rmtree(tmp, ignore_errors=True)
 
 

@@ -77,12 +77,16 @@ jobs:
           EVENT: ${{ github.event_name }}
           SAME_REPO: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
-          if json="$(docker buildx imagetools inspect "$IMAGE:$COMMIT" --format '{{json .Image}}' 2>/dev/null)"; then
+          if json="$(docker buildx imagetools inspect "$IMAGE:$COMMIT" --format '{{json .Image}}' 2>inspect.err)"; then
             exists=true
-            published="$(echo "$json" | jq -r 'if has("config") then .config.Labels["io.copperchat.recipe"]
-              else .["linux/amd64"].config.Labels["io.copperchat.recipe"] end // ""')"
-          else
+            published="$(jq -r 'if has("config") then .config.Labels["io.copperchat.recipe"]
+              else .["linux/amd64"].config.Labels["io.copperchat.recipe"] end // ""' <<<"$json")"
+          elif grep -qiE 'not found|manifest unknown' inspect.err; then
             exists=false; published=""
+          else
+            # Registry outage, auth or rate limit: never treat as "tag missing",
+            # or a PR run would push over a published tag.
+            cat inspect.err; echo "imagetools inspect failed"; exit 1
           fi
           echo "tag exists: $exists, published recipe: '${published}', current recipe: $RECIPE"
           build=false; push=false
@@ -105,7 +109,9 @@ jobs:
     # GitHub-hosted jobs are capped at 6 h. ccache lives in a BuildKit cache
     # mount that is round-tripped through the Actions cache, so rebuilds of the
     # same or a nearby commit are much faster than the cold build. If a cold
-    # build ever exceeds the cap, run this job on a self-hosted runner.
+    # build ever exceeds the cap, run this job on a self-hosted runner. There is
+    # deliberately no BuildKit layer cache (type=gha): it would compete with the
+    # ccache entry for the repo's 10 GB Actions cache and could evict it.
     timeout-minutes: 350
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -152,8 +158,6 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:${{ needs.meta.outputs.commit }}
             ${{ env.IMAGE }}:${{ needs.meta.outputs.short }}
-          cache-from: type=gha,scope=kicad-base
-          cache-to: type=gha,scope=kicad-base,mode=max
       - name: Image size
         run: docker image inspect "$IMAGE:${{ needs.meta.outputs.commit }}" --format '{{.Size}}' | numfmt --to=iec
       - name: Smoke (built image, before push)

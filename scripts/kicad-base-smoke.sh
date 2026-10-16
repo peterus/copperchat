@@ -18,16 +18,20 @@ uid="$(run id -u)" || fail "image does not start"
 
 ver="$(run kicad-cli version --format about)" || fail "kicad-cli version failed"
 echo "$ver" | head -n 5
-echo "$ver" | grep -q "$SHORT" || fail "kicad-cli version does not mention commit $SHORT"
+grep -q "$SHORT" <<<"$ver" || fail "kicad-cli version does not mention commit $SHORT"
 
 help="$(run kicad-cli api-server --help 2>&1)" || fail "kicad-cli api-server --help failed"
-echo "$help" | grep -q -- "--socket" || fail "api-server --help lacks --socket"
+grep -q -- "--socket" <<<"$help" || fail "api-server --help lacks --socket"
 
 run sh -c 'test -z "${DISPLAY:-}" && ! command -v Xvfb' \
   || fail "DISPLAY set or Xvfb installed (must run headless without X)"
 
 run sh -c '! command -v gcc && ! command -v cc && ! command -v cmake' >/dev/null \
   || fail "toolchain found in runtime image"
+
+pkgs="$(run dpkg-query -W -f '${binary:Package}\n')" || fail "dpkg-query failed"
+dev="$(grep -E -- '-dev(:[a-z0-9]+)?$' <<<"$pkgs" || true)"
+[ -z "$dev" ] || fail "-dev packages in runtime image: $(tr '\n' ' ' <<<"$dev")"
 
 run git --version >/dev/null || fail "git missing (X12: runtime keeps git)"
 
@@ -45,8 +49,8 @@ run sh -c 'test -n "${KICAD_CONFIG_HOME:-}" && ls "$KICAD_CONFIG_HOME"/*/sym-lib
 erc="$(run sh -c 'set -e; d="$(mktemp -d)"; cp -r /usr/share/kicad/demos/ecc83 "$d/";
   kicad-cli sch erc --format json --units mm -o "$d/erc.json" "$d/ecc83/ecc83-pp.kicad_sch" >/dev/null;
   cat "$d/erc.json"')" || fail "kicad-cli sch erc failed"
-echo "$erc" | grep -q '"violations"' || fail "ERC report has no violations array"
-if echo "$erc" | grep -q 'configuration does not include the footprint library'; then
+grep -q '"violations"' <<<"$erc" || fail "ERC report has no violations array"
+if grep -q 'configuration does not include the footprint library' <<<"$erc"; then
   fail "ERC: stock footprint libraries not in the global fp-lib-table"
 fi
 
