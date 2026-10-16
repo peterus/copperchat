@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from copperchat.config import Settings, check_model_credentials
 from copperchat.db import Database
 from copperchat.errors import CopperChatError, StructuredToolError
+from copperchat.kicad_session import ClientFactory, KicadSessionManager, ServerLauncher
 from copperchat.web import auth, health, routes_projects
 from copperchat.web.static import mount_frontend
 
@@ -22,16 +23,23 @@ def _install_error_handlers(app: FastAPI) -> None:
         return JSONResponse(status_code=exc.http_status, content={"error": body})
 
 
-def create_app(settings: Settings) -> FastAPI:
+def create_app(
+    settings: Settings,
+    *,
+    launcher: ServerLauncher | None = None,
+    client_factory: ClientFactory | None = None,
+) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         check_model_credentials(settings)
         settings.data_dir.mkdir(parents=True, exist_ok=True)
         db = await Database.open(settings.data_dir / "copperchat.db")
+        sessions = KicadSessionManager(settings, launcher, client_factory=client_factory)
         try:
             await auth.ensure_admin(db, settings)
             app.state.settings = settings
             app.state.db = db
+            app.state.sessions = sessions
             app.state.serializer = auth.make_serializer(
                 auth.load_or_create_session_secret(settings)
             )
@@ -40,6 +48,7 @@ def create_app(settings: Settings) -> FastAPI:
             )
             yield
         finally:
+            await sessions.close_all()
             await db.close()
 
     app = FastAPI(title="CopperChat", lifespan=lifespan)

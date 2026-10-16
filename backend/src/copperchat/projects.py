@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -78,10 +80,35 @@ def get_project(root: Path, project_id: str) -> Project:
     raise ProjectNotFound(f"no project with id {project_id}")
 
 
-def lock_status(project: Project) -> LockStatus:
+def lock_file_for(path: Path) -> Path:
+    """KiCad's lock file for `path`: `~<name>.lck` in the same directory."""
+    return path.with_name(f"~{path.name}.lck")
+
+
+def read_lock_token(lock: Path) -> str | None:
+    """The `token` of a KiCad lock file (JSON `{hostname, token, username}`), if readable."""
+    try:
+        data = json.loads(lock.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    token = data.get("token") if isinstance(data, dict) else None
+    return token if isinstance(token, str) and token else None
+
+
+def lock_status(project: Project, ignore_tokens: Collection[str] = ()) -> LockStatus:
+    """Lock files held by another KiCad instance.
+
+    KiCad 11 writes `~STEM.kicad_pro.lck` (spike 1C); `~FILE.lck` next to the
+    schematic and board are checked too. Locks whose token is in `ignore_tokens`
+    (written by CopperChat's own api-server, possibly left behind by a crash) do
+    not count.
+    """
     candidates = [f for f in (project.pro_file, project.sch_file, project.pcb_file) if f]
     locks = tuple(
-        lock.resolve() for f in candidates if (lock := project.dir / f"~{f.name}.lck").exists()
+        lock.resolve()
+        for f in candidates
+        if (lock := lock_file_for(f)).exists()
+        and (not ignore_tokens or read_lock_token(lock) not in ignore_tokens)
     )
     return LockStatus(locked=bool(locks), lock_files=locks)
 
