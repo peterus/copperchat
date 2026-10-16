@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import difflib
+import re
 from collections.abc import Iterable
 from fnmatch import fnmatchcase
 
@@ -27,4 +28,14 @@ def not_found(kind: str, name: str, candidates: Iterable[str]) -> StructuredTool
         f"{kind} {name} not found",
         f"No {kind.lower()} with that name exists in the open document",
         suggestion,
+    )
+
+
+_DIGITS = re.compile(r"(\d+)")
+
+
+def natural_key(text: str) -> tuple[tuple[int, int | str], ...]:
+    """Sort key that orders `R2` before `R10`."""
+    return tuple(
+        (0, int(part)) if part.isdigit() else (1, part) for part in _DIGITS.split(text) if part
     )
