@@ -222,14 +222,23 @@ Evidence:
 - **h4 (`can_use_tool` only):** the callback saw only the sub-agent's
   `mcp__spike__get_magic` calls (`agent_id` set, e.g. `"abce23b1aa546be98"`)
   and **never an `Agent` call** — so it cannot see `subagent_type` and cannot
-  deny `general-purpose`. In run 2 the unguarded `general-purpose` delegation
-  actually ran (it reported having no fetch tool). Confirmed separately with
-  `tools=["Agent","Skill"]` and `["Task","Skill"]`, `allowed_tools=[]`.
+  deny `general-purpose`. In runs 2 and 4 the unguarded `general-purpose`
+  delegation actually ran (run 2: it reported having no fetch tool; run 4: two
+  distinct `agent_id`s call `mcp__spike__get_magic`, i.e. the built-in
+  `general-purpose` agent inherited the session's MCP tool). Confirmed
+  separately with `tools=["Agent","Skill"]` and `["Task","Skill"]`,
+  `allowed_tools=[]`. Consequence: with built-ins in the session, any
+  sub-agent that gets past the delegation guard also gets the session's
+  built-ins and MCP tools, and a `can_use_tool` guard keyed only on
+  `agent_id is not None` allows them — the delegation hook is the **sole**
+  `subagent_type` barrier unless the per-call guard also checks the
+  sub-agent's type (hook input carries `agent_type` inside sub-agents per the
+  SDK's `_SubagentContextMixin`; not measured here).
 - **h4 (`_hook`: PreToolUse hook on `Agent` + `can_use_tool` for the rest):**
   calls `[{"name": "Agent", "subagent_type": "general-purpose", "agent_id":
   null} → deny, {"name": "Agent", "subagent_type": "helper", "agent_id":
   null} → allow, {"name": "mcp__spike__get_magic", "agent_id":
-  "ade29593…"} → allow]`; answer contains the magic value. The hook input
+  "aa488f60285311a98"} → allow]` (run 4); answer contains the magic value. The hook input
   carries `tool_name`, `tool_input` and `agent_id` (absent for the main
   agent). A hook that returns `{}` defers to `can_use_tool`; **without** a
   `can_use_tool` callback (run 2's hook-only variant) the sub-agent's MCP call
@@ -247,21 +256,42 @@ Evidence:
 - **h5 usage** (hook run, run 4): `ResultMessage.usage` = `{input 6, output
   499, cache_read 19101, cache_creation 680}`; sum of main-agent
   AssistantMessage usage (per `message_id`) = `{6, 21, 19101, 680}`; sum of
-  sub-agent usage = `{4, 32, 2413, 1048}`. So `usage` input/cache figures are
-  **main agent only** (output differs because per-block AssistantMessage
-  usage holds the streaming snapshot). `model_usage["claude-haiku-5-5"]` =
-  `{inputTokens 1239, outputTokens 563, cacheReadInputTokens 21514 (= 19101 +
-  2413), cacheCreationInputTokens 1728 (= 680 + 1048), costUSD 0.00088754}` —
-  **`model_usage` and `total_cost_usd` include the sub-agent**.
+  sub-agent usage = `{4, 32, 2413, 1048}`. The script's flags
+  `result_equals_main_only` and `result_equals_main_plus_sub` are both
+  `false`: `usage`'s input/cache figures equal the main-agent sum, but its
+  output (499) matches neither sum (21 main, 32 sub; per-block
+  AssistantMessage usage seems to hold a streaming snapshot — unverified).
+  `model_usage["claude-haiku-5-5"]` = `{inputTokens 1239, outputTokens 563,
+  cacheReadInputTokens 21514 (= 19101 + 2413), cacheCreationInputTokens 1728
+  (= 680 + 1048), costUSD 0.00088754}`: its cache figures equal main + sub
+  exactly, but `inputTokens` 1239 ≫ 10 (main + sub) — `model_usage` is a
+  **superset** that includes the sub-agent plus calls not visible as
+  messages (unattributed). Safe reading: `usage` ≈ main agent only;
+  `model_usage` / `total_cost_usd` include the sub-agent (and more); exact
+  token attribution is not established.
 - **Foreground probe** (ad-hoc, `results/h_foreground_probe.log`, 2 runs per
   config, hook on `Agent` + `can_use_tool`): baseline, `AgentDefinition
   (background=False)`, hook `updatedInput {"run_in_background": false}`, and
   env `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` all stayed in the foreground in
-  these 8 runs (the async launch is intermittent). Only with the env switch
-  does the model stop passing `run_in_background` at all (the parameter
-  disappears), which is why every final h run uses it.
+  these 8 runs, including the baseline — the async launch is intermittent
+  and the probe could not reproduce it, so it **does not prove** any switch
+  works. The model passed `run_in_background: false` in baseline and
+  `background=False` runs and omitted it in the env-switch and `hook_update`
+  runs (the hook records the input before its own update). The async launches
+  of runs 1–2 happened when the model omitted the parameter without the env
+  switch. `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` is therefore a
+  **mitigation, not a proven fix**; run 3 and 4 (with it) stayed foreground.
+  The probe was an ad-hoc script, not committed.
 - **Skill `allowed-tools` bypass:** not measured (informational; Phase 8
   strips the key anyway).
+- **Known check weaknesses (review round 1, not re-run):** h5's interrupt
+  rows do not assert the first result's `subtype` or that it arrived after
+  the interrupt (the run-4 evidence shows `error_during_execution` with
+  `is_error=True`, quoted above); h3b's `helper_used_webfetch` accepts any
+  sub-agent with a helper parent, but `h3b_guard_calls` attribute the calls
+  to one `agent_id`; `work/` is not cleaned inside the script (each final run
+  was preceded by `rm -rf work`); h2's tool-list row also passes when the
+  delegation tool is absent (the init list shows `"Task"`, so it was present).
 
 ## Decision
 
@@ -273,17 +303,22 @@ observed the previous `ResultMessage` (turn gate, `PushStream.release_next()`).
 Queue semantics for the client are unchanged. Never push into the generator
 mid-turn (a2: the item is absorbed into the running turn).
 
-Sub-agent gate: **sub-agent go (built-ins in session)** — with the guard for
-`Agent` delegations implemented as a **`PreToolUse` hook** (matcher `"Agent"`),
-the alternative the plan names when `can_use_tool` does not receive a call.
-Rows: h4a/h4b/h4c `_hook` all PASS, h5 interrupt rows PASS, h3
-`helper_used_webfetch` FAIL (sub-agents only get built-ins that are in the
-session `tools`), h3b all PASS (the session guard denies those built-ins for
-the main agent and path-guards the researcher). Read strictly as written
-(`can_use_tool` as the only guard), h4a and h4b fail and the gate would be
-no-go: `can_use_tool` alone cannot restrict `subagent_type`. This
-reinterpretation is flagged to the coordinator; it is a guard-mechanism
-change, not a change of the owner's design.
+Sub-agent gate, applied mechanically: **sub-agent no-go** — h4a (both rows)
+and h4b `agent_id_distinguishes_main_and_sub` FAIL, because `can_use_tool` is
+never invoked for `Agent`; owner decision item 3(a) requires exactly that.
+Under this rule Phase 8 uses fallback Task 8.6b.
+
+**Proposed alternative — pending owner confirmation:** "go (built-ins in
+session)" with the `Agent` delegation guard implemented as a **`PreToolUse`
+hook** (matcher `"Agent"`) and `can_use_tool` for every other call. With
+that mechanism every gate row passes: h4a/h4b/h4c `_hook` PASS, h5 interrupt
+rows PASS, h3b PASS (session guard denies the researcher's built-ins for the
+main agent and path-guards the researcher); h3 `helper_used_webfetch` FAIL
+selects the "built-ins in session" variant. The plan's own hook clause
+(Task 1A.7 Step 4) is worded for the helper's `Write`, not for `Agent`, so
+extending it to the delegation guard is a decision for the owner, not for this
+spike. Until the owner confirms, X20 items (1)–(2) are marked pending; Phase 5
+is unaffected (it only needs the 1A decision above and X20 (3)–(8)).
 
 Consequences per question for Phases 5/8:
 - (b) map `ResultMessage.subtype == "error_during_execution"` with
@@ -316,8 +351,8 @@ Consequences per question for Phases 5/8:
   `resets_at: int` Unix seconds, `rate_limit_type` (`"five_hour"`),
   `utilization` may be `None` (use `raw["unifiedWindows"][…]["utilization"]`),
   `overage_*`. Events arrive in normal operation (several per run).
-- **Usage (Phase 5):** `ResultMessage.usage` is per turn and covers the
-  **main agent only**; `ResultMessage.model_usage[<model>]`
+- **Usage (Phase 5):** `ResultMessage.usage` is per turn and covers
+  (approximately) the **main agent only**; `ResultMessage.model_usage[<model>]`
   (`inputTokens, outputTokens, cacheReadInputTokens,
   cacheCreationInputTokens, costUSD`) and `total_cost_usd` include
   sub-agents; `total_cost_usd` is cumulative per client → per-run delta.
@@ -325,7 +360,8 @@ Consequences per question for Phases 5/8:
   (main and sub-agent) with full input; **not called for `Agent`**; entries
   in `allowed_tools` bypass it. Sub-agent calls: `ToolPermissionContext.agent_id`
   is set (e.g. `"a9107a28545a8ad33"`), main-agent calls: `None`.
-- **Delegation guard (Phase 8 Task 8.6, replaces "Agent via can_use_tool"):**
+- **Delegation guard (Phase 8 Task 8.6, replaces "Agent via can_use_tool";
+  pending owner confirmation, see Decision):**
   `hooks={"PreToolUse": [HookMatcher(matcher="Agent", hooks=[guard])]}`; the
   hook gets `input["tool_name"] == "Agent"`, `input["tool_input"]
   ["subagent_type"]`, `input.get("agent_id")`; deny with
@@ -342,9 +378,16 @@ Consequences per question for Phases 5/8:
   the researcher's writes (h3b). The main agent sees those tools' schemas but
   cannot execute one.
 - **Foreground sub-agents (Phases 5/8):** set
-  `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` in `ClaudeAgentOptions.env`;
-  without it the model may background the sub-agent, ending the turn before
-  the research is done (runs 1–2).
+  `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` in `ClaudeAgentOptions.env` as a
+  mitigation (not proven, see foreground probe); without it the model
+  sometimes backgrounded the sub-agent, ending the turn before the research
+  was done (runs 1–2). Phase 5 must also handle a backgrounded delegation
+  defensively (tool result "Async agent launched", `task_started` system
+  messages).
+- **Per-call guard must check the sub-agent type (Phase 8):** built-in agents
+  that slip past the delegation guard inherit the session's built-ins and MCP
+  tools (runs 2, 4); `can_use_tool` allowing any `agent_id is not None` is not
+  enough on its own.
 - **Sub-agent stream (Phases 5/6A):** sub-agent `AssistantMessage` /
   `UserMessage` carry `parent_tool_use_id` = the `Agent` call's
   `ToolUseBlock.id`; no sub-agent `StreamEvent`s arrive (complete messages

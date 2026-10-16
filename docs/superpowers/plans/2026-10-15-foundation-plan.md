@@ -784,8 +784,10 @@ with an item below, the item wins; the executor adapts the code and its tests.
   `Agent(subagent_type="part-researcher", description=<MPN>, prompt=<question>)`.
 - **X20 — spike 1A results (Phases 5, 8; `docs/spikes/1a-sdk-streaming.md`).**
   Gate: **1A partial: gated generator** (Phase 5 default design, never push
-  mid-turn) and **sub-agent go (built-ins in session)** with the delegation
-  guard as a hook. Binding changes:
+  mid-turn). Sub-agent gate: mechanically **no-go** (`can_use_tool` is never
+  called for `Agent`); proposed **go (built-ins in session)** with the
+  delegation guard as a hook — **(1)–(2) are pending owner confirmation**;
+  without it Phase 8 uses Task 8.6b. Binding for Phase 5: (3)–(8).
   (1) `can_use_tool` is **never called for `Agent`**: Phase 8's delegation
   guard (the `Agent` part of `make_session_guard`, incl. the X19 input
   limit) is a `PreToolUse` hook, `hooks={"PreToolUse":
@@ -796,13 +798,17 @@ with an item below, the item wins; the executor adapts the code and its tests.
   `claude`, `statusline-setup` are always offered and must be denied.
   (2) `BUILTINS_IN_SESSION = True`: a sub-agent whose `tools` include a
   built-in missing from the session `tools` refuses to start; the session
-  guard denies those built-ins when `ToolPermissionContext.agent_id is None`.
+  guard denies those built-ins when `ToolPermissionContext.agent_id is None`
+  and must also check the sub-agent's type (built-in agents that get past the
+  delegation guard inherit the session's tools).
   (3) `ClaudeAgentOptions.env` sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`
-  (Phases 5 and 8), otherwise the model may background the sub-agent and the
-  turn ends early. (4) Init tool list reports the delegation tool as
+  (Phases 5 and 8) as a mitigation (not proven): the model sometimes
+  backgrounded the sub-agent and the turn ended early; Phase 5 handles an
+  "Async agent launched" delegation defensively. (4) Init tool list reports the delegation tool as
   `"Task"`; calls/hooks use `"Agent"`. (5) Usage: `ResultMessage.usage` is
-  per turn, main agent only; `model_usage` and `total_cost_usd` include
-  sub-agents; `total_cost_usd` is cumulative per client (per-run delta).
+  per turn, ≈ main agent only; `model_usage` and `total_cost_usd` include
+  sub-agents (`model_usage` is a superset, exact attribution unproven);
+  `total_cost_usd` is cumulative per client (per-run delta).
   (6) Interrupt → `subtype="error_during_execution"`, `terminal_reason`
   `"aborted_streaming"`/`"aborted_tools"` → `run-finished{reason:"interrupted"}`.
   (7) No sub-agent `StreamEvent`s arrive: sub-agent rows come as complete
