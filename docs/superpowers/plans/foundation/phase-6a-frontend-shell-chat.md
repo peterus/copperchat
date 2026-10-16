@@ -823,6 +823,8 @@ export const ServerFrame = z.discriminatedUnion('type', [
     clientMessageId: z.string().nullish(),
   }),
   z.object({ type: z.literal('pong'), projectId: z.null() }),
+  // Server heartbeat (Phase 5); the client ignores it — liveness is tracked via its own ping/pong.
+  z.object({ type: z.literal('ping'), projectId: z.null() }),
 ]);
 export type ServerFrame = z.infer<typeof ServerFrame>;
 export type MessageDeltaFrame = Extract<ServerFrame, { type: 'message-delta' }>;
@@ -3001,12 +3003,12 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   ```
 - Produces (`@/components/chat/composerSlots`, Phase 8 registers the upload button):
   ```ts
-  interface ComposerAttachmentSlotProps { disabled: boolean }
+  interface ComposerAttachmentSlotProps { disabled: boolean; projectId: string; attachments: AttachmentRef[]; setAttachments(next: AttachmentRef[]): void }
   const composerAttachmentSlot: { register(component: ComponentType<ComposerAttachmentSlotProps> | null): void };
   function useComposerAttachmentSlot(): ComponentType<ComposerAttachmentSlotProps> | null;
   ```
 - Produces: `useMediaQuery(query: string): boolean`, `useKeyboardInset(): number`, `computeKeyboardInset(innerHeight: number, vv: {height: number; offsetTop: number} | null): number`.
-- Produces: `Composer(props: { runActive: boolean; queued: MessageDTO[]; disabled?: boolean; onSend(text: string, attachments: AttachmentRef[]): void; onStop(): void; onCancelQueued(id: number): void })`.
+- Produces: `Composer(props: { projectId?: string; runActive: boolean; queued: MessageDTO[]; disabled?: boolean; onSend(text: string, attachments: AttachmentRef[]): void; onStop(): void; onCancelQueued(id: number): void })`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3195,9 +3197,13 @@ export const useComposer = create<ComposerState>()((set, get) => ({
 `frontend/src/components/chat/composerSlots.ts`:
 ```ts
 import { type ComponentType, useSyncExternalStore } from 'react';
+import type { AttachmentRef } from '@/protocol/frames';
 
 export interface ComposerAttachmentSlotProps {
   disabled: boolean;
+  projectId: string;
+  attachments: AttachmentRef[];
+  setAttachments(next: AttachmentRef[]): void;
 }
 
 type Slot = ComponentType<ComposerAttachmentSlotProps> | null;
@@ -3279,6 +3285,7 @@ import { useComposerAttachmentSlot } from './composerSlots';
 import { RunControls } from './RunControls';
 
 export interface ComposerProps {
+  projectId?: string;
   runActive: boolean;
   queued: MessageDTO[];
   disabled?: boolean;
@@ -3287,7 +3294,7 @@ export interface ComposerProps {
   onCancelQueued: (id: number) => void;
 }
 
-export function Composer({ runActive, queued, disabled = false, onSend, onStop, onCancelQueued }: ComposerProps) {
+export function Composer({ projectId = '', runActive, queued, disabled = false, onSend, onStop, onCancelQueued }: ComposerProps) {
   const text = useComposer((s) => s.text);
   const attachments = useComposer((s) => s.attachments);
   const focusToken = useComposer((s) => s.focusToken);
@@ -3349,7 +3356,10 @@ export function Composer({ runActive, queued, disabled = false, onSend, onStop, 
         </ul>
       )}
       <form className="flex items-end gap-2" onSubmit={(e: FormEvent) => { e.preventDefault(); submit(); }}>
-        {Slot && <Slot disabled={disabled} />}
+        {Slot && (
+          <Slot disabled={disabled} projectId={projectId} attachments={attachments}
+            setAttachments={(next) => useComposer.setState({ attachments: next })} />
+        )}
         <textarea ref={ref} aria-label="Message" rows={1} value={text} disabled={disabled}
           placeholder="Ask about this design…"
           onChange={(e) => setText(e.target.value)}
@@ -3581,7 +3591,7 @@ export function ChatPanel({ projectId, readOnly = false }: { projectId: string; 
       <MessageList messages={visible} hasMoreOlder={chat.hasMoreOlder} loadingOlder={chat.loadingOlder}
         onLoadOlder={onLoadOlder} renderItem={renderItem} />
       <UsageIndicator usage={chat.usage} />
-      <Composer runActive={chat.runActive} queued={chat.queued} disabled={!chat.loaded}
+      <Composer projectId={projectId} runActive={chat.runActive} queued={chat.queued} disabled={!chat.loaded}
         onSend={chat.send} onStop={chat.stop} onCancelQueued={chat.cancelQueued} />
     </section>
   );
