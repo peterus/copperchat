@@ -81,8 +81,9 @@ async def main() -> None:
         for file, fixture, stem, doc in REPORTS:
 
             async def record(ctx: ToolContext, file: str = file, doc: DocKind = doc) -> None:
-                raw = await checks.run_kicad_check(ctx.session, doc, ctx.settings)
-                dump(recorded / file, json.loads(raw))
+                raw = json.loads(await checks.run_kicad_check(ctx.session, doc, ctx.settings))
+                raw.pop("date", None)  # keeps re-recording diff-free
+                dump(recorded / file, raw)
 
             await with_session(tmp / file, fixture, stem, record)
 

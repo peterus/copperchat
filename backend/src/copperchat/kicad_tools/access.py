@@ -198,11 +198,15 @@ def footprint_dict(fp: Any) -> dict[str, Any]:
 
 
 def pad_dict(pad: Any) -> dict[str, Any]:
+    layers = pad.padstack.copper_layers
+    size = pos_mm(layers[0].size) if layers else {"x": 0.0, "y": 0.0}
     return {
         "uuid": kiid(pad),
         "number": str(pad.number),
         "net": str(pad.net.name),
         "position_mm": pos_mm(pad.position),
+        # Copper size in the pad's own orientation (before footprint rotation).
+        "size_mm": size,
     }
 
 

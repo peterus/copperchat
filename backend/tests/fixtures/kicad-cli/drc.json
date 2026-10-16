@@ -1,7 +1,6 @@
 {
   "$schema": "https://schemas.kicad.org/drc.v1.json",
   "coordinate_units": "mm",
-  "date": "2026-10-16T21:56:16",
   "ignored_checks": [
     {
       "description": "Track endpoint not centered on via",
@@ -191,10 +190,10 @@
         {
           "description": "Segment of P4 on F.Silkscreen",
           "pos": {
-            "x": 153.162,
+            "x": 142.922,
             "y": 125.071
           },
-          "uuid": "fa4e4619-2310-496a-9c63-4fb385cf27a0"
+          "uuid": "a4d1deb0-9296-4d9f-8b45-b343befbe2e3"
         }
       ],
       "severity": "warning",
@@ -214,10 +213,10 @@
         {
           "description": "Segment of P4 on F.Silkscreen",
           "pos": {
-            "x": 142.922,
+            "x": 153.162,
             "y": 125.071
           },
-          "uuid": "a4d1deb0-9296-4d9f-8b45-b343befbe2e3"
+          "uuid": "fa4e4619-2310-496a-9c63-4fb385cf27a0"
         }
       ],
       "severity": "warning",
