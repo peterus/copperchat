@@ -660,6 +660,10 @@ with an item below, the item wins; the executor adapts the code and its tests.
   `agent`) and passes it to `render_view`; C8 reads
   `agent-view?doc=&mode=&theme=&layers=`.
 
+- **X10 — `@/api/http` paths (all frontend phases).** Callers of `apiGet` /
+  `apiPost` / `apiPut` / `apiDelete` pass paths **without** the `/api` prefix
+  (`apiUrl` adds it); raw `fetch`, `href` and `src` use the full `/api/...` URL.
+
 ### Owner review requested
 
 Provisional decisions taken while planning (2026-10-16); the owner may

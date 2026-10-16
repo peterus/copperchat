@@ -2790,7 +2790,7 @@ describe("SkillsPanel", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     http.apiGet.mockImplementation(async (path: string) =>
-      path.startsWith("/api/skills?")
+      path.startsWith("/skills?")
         ? [summary]
         : { ...summary, content: "---\nname: copperchat-tools\n---\nbody", originDiff: "+New rule", editable: true },
     );
@@ -2807,7 +2807,7 @@ describe("SkillsPanel", () => {
     expect(screen.getByText(/\+New rule/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("checkbox", { name: /enabled in this project/i }));
     await waitFor(() =>
-      expect(http.apiPut).toHaveBeenCalledWith("/api/projects/p1/skills/copperchat-tools", { enabled: false }),
+      expect(http.apiPut).toHaveBeenCalledWith("/projects/p1/skills/copperchat-tools", { enabled: false }),
     );
   });
 
@@ -2818,7 +2818,7 @@ describe("SkillsPanel", () => {
     await userEvent.type(editor, "!");
     await userEvent.click(screen.getByRole("button", { name: /save/i }));
     await waitFor(() =>
-      expect(http.apiPut).toHaveBeenCalledWith("/api/skills/user/copperchat-tools", {
+      expect(http.apiPut).toHaveBeenCalledWith("/skills/user/copperchat-tools", {
         content: "---\nname: copperchat-tools\n---\nbody!",
       }),
     );
@@ -2859,17 +2859,17 @@ const q = (projectId: string) => `projectId=${encodeURIComponent(projectId)}`;
 const n = encodeURIComponent;
 
 export async function listSkills(projectId: string): Promise<SkillSummary[]> {
-  return z.array(SkillSummary).parse(await apiGet(`/api/skills?${q(projectId)}`));
+  return z.array(SkillSummary).parse(await apiGet(`/skills?${q(projectId)}`));
 }
 export async function getSkill(name: string, projectId: string): Promise<SkillDetail> {
-  return SkillDetail.parse(await apiGet(`/api/skills/${n(name)}?${q(projectId)}`));
+  return SkillDetail.parse(await apiGet(`/skills/${n(name)}?${q(projectId)}`));
 }
-export const customiseSkill = (name: string) => apiPost(`/api/skills/${n(name)}/customise`, {});
-export const saveUserSkill = (name: string, content: string) => apiPut(`/api/skills/user/${n(name)}`, { content });
-export const resetSkill = (name: string) => apiPost(`/api/skills/${n(name)}/reset`, {});
-export const acknowledgeSkillUpdate = (name: string) => apiPost(`/api/skills/${n(name)}/acknowledge-update`, {});
+export const customiseSkill = (name: string) => apiPost(`/skills/${n(name)}/customise`, {});
+export const saveUserSkill = (name: string, content: string) => apiPut(`/skills/user/${n(name)}`, { content });
+export const resetSkill = (name: string) => apiPost(`/skills/${n(name)}/reset`, {});
+export const acknowledgeSkillUpdate = (name: string) => apiPost(`/skills/${n(name)}/acknowledge-update`, {});
 export const setSkillEnabled = (projectId: string, name: string, enabled: boolean) =>
-  apiPut(`/api/projects/${n(projectId)}/skills/${n(name)}`, { enabled });
+  apiPut(`/projects/${n(projectId)}/skills/${n(name)}`, { enabled });
 ```
 
 ```tsx
@@ -3064,7 +3064,7 @@ it("renders notes, links the datasheet and saves edits", async () => {
   await userEvent.type(box, "mine");
   await userEvent.click(screen.getByRole("button", { name: /save/i }));
   await waitFor(() =>
-    expect(http.apiPut).toHaveBeenCalledWith("/api/projects/p1/parts/TPS62133/notes", { content: "mine" }),
+    expect(http.apiPut).toHaveBeenCalledWith("/projects/p1/parts/TPS62133/notes", { content: "mine" }),
   );
 });
 ```
@@ -3091,13 +3091,13 @@ export type PartNotes = z.infer<typeof PartNotes>;
 
 const e = encodeURIComponent;
 export async function listParts(projectId: string): Promise<PartInfo[]> {
-  return z.array(PartInfo).parse(await apiGet(`/api/projects/${e(projectId)}/parts`));
+  return z.array(PartInfo).parse(await apiGet(`/projects/${e(projectId)}/parts`));
 }
 export async function getNotes(projectId: string, mpn: string): Promise<PartNotes> {
-  return PartNotes.parse(await apiGet(`/api/projects/${e(projectId)}/parts/${e(mpn)}/notes`));
+  return PartNotes.parse(await apiGet(`/projects/${e(projectId)}/parts/${e(mpn)}/notes`));
 }
 export const saveNotes = (projectId: string, mpn: string, content: string) =>
-  apiPut(`/api/projects/${e(projectId)}/parts/${e(mpn)}/notes`, { content });
+  apiPut(`/projects/${e(projectId)}/parts/${e(mpn)}/notes`, { content });
 export const datasheetUrl = (projectId: string, mpn: string) =>
   `/api/projects/${e(projectId)}/parts/${e(mpn)}/datasheet`;
 
