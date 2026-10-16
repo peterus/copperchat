@@ -10,7 +10,10 @@ _NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 # Fixed provider list. Each phase that adds tools appends one module name here.
 # A provider that fails to import is an error - never skipped.
-_PROVIDERS: tuple[str, ...] = ()
+_PROVIDERS: tuple[str, ...] = (
+    "copperchat.kicad_tools.specs",
+    "copperchat.views.specs",
+)
 
 
 class ToolRegistryError(CopperChatError):
