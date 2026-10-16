@@ -3,6 +3,13 @@
   <head>
     <meta charset="utf-8" />
     <title>KiCanvas spike 1B</title>
+    <script>
+      // KiCanvas reads its theme preference from localStorage at module load
+      // (kicanvas-embed ignores its own theme attribute at the pinned commit).
+      const prefsTheme = new URLSearchParams(location.search).get("prefstheme");
+      if (prefsTheme) localStorage.setItem("kc:prefs:theme", JSON.stringify({ val: prefsTheme }));
+      else localStorage.removeItem("kc:prefs:theme");
+    </script>
     <script type="module" src="/vendor/kicanvas.js"></script>
     <style>
       html, body { margin: 0; height: 100%; }
@@ -15,6 +22,7 @@
       const files = (params.get("files") || "").split(",").filter(Boolean);
       const el = document.createElement("kicanvas-embed");
       el.setAttribute("controls", params.get("controls") || "none");
+      if (params.get("controlslist")) el.setAttribute("controlslist", params.get("controlslist"));
       if (params.get("theme")) el.setAttribute("theme", params.get("theme"));
       for (const f of files) {
         const s = document.createElement("kicanvas-source");

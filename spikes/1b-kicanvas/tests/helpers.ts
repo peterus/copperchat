@@ -16,7 +16,13 @@ export type Errors = { console: string[]; page: string[]; requests: string[] };
 export async function openViewer(
   page: Page,
   files: string[],
-  opts: { theme?: string; offline?: boolean } = {},
+  opts: {
+    theme?: string;
+    prefsTheme?: string;
+    controls?: string;
+    controlslist?: string;
+    offline?: boolean;
+  } = {},
 ): Promise<Errors> {
   const errors: Errors = { console: [], page: [], requests: [] };
   page.on("console", (m) => m.type() === "error" && errors.console.push(m.text()));
@@ -25,8 +31,10 @@ export async function openViewer(
   if (opts.offline) {
     await page.route(/^https?:\/\/(?!127\.0\.0\.1)/, (route) => route.abort());
   }
-  const q = new URLSearchParams({ files: files.join(","), controls: "none" });
+  const q = new URLSearchParams({ files: files.join(","), controls: opts.controls ?? "none" });
   if (opts.theme) q.set("theme", opts.theme);
+  if (opts.prefsTheme) q.set("prefstheme", opts.prefsTheme);
+  if (opts.controlslist) q.set("controlslist", opts.controlslist);
   await page.goto(`/www/index.html?${q}`);
   await page.waitForFunction(() => (window as any).__embed?.hasAttribute("loaded"), null, {
     timeout: 60_000,
@@ -62,6 +70,10 @@ export const HIER = [
   "/files/complex_hierarchy/complex_hierarchy.kicad_sch",
   "/files/complex_hierarchy/ampli_ht.kicad_sch",
 ];
+/** Interactive embed: "none" disables interaction; "basic" adds a click-to-focus overlay
+ * that swallows the first click unless controlslist contains "nooverlay". */
+export const INTERACTIVE = { controls: "basic", controlslist: "nooverlay" } as const;
+
 export const SCH_REFS = ["U1", "R1", "R2", "R3", "R4", "C1", "C2"];
 export const PCB_REFS = ["U1", "R1", "R2", "R3", "R4", "C1", "C2",
   "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8"];

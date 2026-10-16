@@ -37,12 +37,24 @@ test("Q8 themes", async ({ page }) => {
     for (const [name, file] of [["sch", ECC83_SCH], ["pcb", ECC83_PCB]] as const) {
       await openViewer(page, [file], { theme });
       out[`${name}-${theme}`] = await canvasStats(page, `${name}-${theme}.png`);
+      // Same theme via KiCanvas' Preferences (localStorage) instead of the embed attribute.
+      await openViewer(page, [file], { prefsTheme: theme });
+      out[`${name}-${theme}-prefs`] = await canvasStats(page, `${name}-${theme}-prefs.png`);
     }
   }
+  const attr = (n: string) => (out[n] as any).luminance;
+  record("Q8", "embed_theme_attribute_applied", attr("sch-kicad") !== attr("sch-witchhazel"), {
+    "sch-witchhazel": attr("sch-witchhazel"),
+    "sch-kicad": attr("sch-kicad"),
+  });
+  record("Q8", "preferences_theme_applied", attr("sch-kicad-prefs") !== attr("sch-witchhazel-prefs"), {
+    "sch-witchhazel-prefs": attr("sch-witchhazel-prefs"),
+    "sch-kicad-prefs": attr("sch-kicad-prefs"),
+  });
   // Only rendered captures count: a blank (failed) canvas says nothing about the theme.
   const lums = Object.values(out).filter((s: any) => rendered(s)).map((s: any) => s.luminance);
   record("Q8", "theme_backgrounds", true, out);
   record("Q8", "light_theme_available", lums.some((l) => l > 0.5), { renderedLuminances: lums });
   record("Q8", "themes_differ", new Set(lums).size > 1, lums);
-  expect(Object.keys(out)).toHaveLength(4);
+  expect(Object.keys(out)).toHaveLength(8);
 });
