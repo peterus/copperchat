@@ -73,13 +73,13 @@ Optional arguments:
 | q01_cli | 4 pass / 0 fail |  |
 | q02_connect | 12 pass / 0 fail |  |
 | q03_get_items | 17 pass / 0 fail |  |
-| q04_save | 10 pass / 1 fail | copy_subsheets_written |
+| q04_save | 11 pass / 1 fail | copy_subsheets_written |
 | q05_export | 16 pass / 0 fail |  |
 | q06_erc_drc | 8 pass / 0 fail |  |
 | q07_lifecycle | 13 pass / 0 fail |  |
 
-The one FAIL (`q04_save.copy_subsheets_written`) is a finding with a verified
-workarounds (`workaround_copy_saved_subsheets` and `nosave_*` PASS), see Q4. With
+The one FAIL (`q04_save.copy_subsheets_written`) is a finding with
+verified workarounds (`workaround_copy_saved_subsheets` and `nosave_*` PASS), see Q4. With
 `KICAD_CLI=/nonexistent` every script prints the single SKIP line and
 `run_all.py` exits 0.
 
@@ -147,8 +147,13 @@ workarounds (`workaround_copy_saved_subsheets` and `nosave_*` PASS), see Q4. Wit
     snapshot (see SaveDocument above: git noise, hash churn), so it is only
     needed once a later sub-project can hold **unsaved** in-memory edits; that
     variant (`save()` + `save_as()` + byte copy) is verified too
-    (`workaround_copy_saved_subsheets`). The same procedure works for read-only
-    (locked) projects since it never writes into the project. Untested: sub-sheet
+    (`workaround_copy_saved_subsheets`). The procedure itself writes nothing into
+    the project, which also holds after the server shut down
+    (`nosave_originals_untouched_after_shutdown`), so it suits projects opened
+    read-only because the KiCad GUI holds the lock. Note that the api-server
+    itself still writes `~STEM.kicad_pro.lck` into the project directory (Q7);
+    a project directory that is not writable at all is untested (Phase 3).
+    Untested: sub-sheet
     files in sub-directories (`filename` is then a relative path; create parent
     dirs in the destination) — Phase 3 should cover that with a fixture. Board:
     `board.save_as(dest/x.kicad_pcb, overwrite=True, include_project=False)` is

@@ -113,6 +113,13 @@ def main() -> int:
             r.returncode == 0 and len(sizes3) >= 3 and min(sizes3.values()) > 200_000,
             f"rc={r.returncode} sizes={sizes3}",
         )
+    # Again after shutdown: SIGTERM must not write project files (.kicad_prl/.kicad_pro) either.
+    after = {p.name: sha(p) for p in proj.iterdir() if p.is_file() and not p.name.endswith(".lck")}
+    rec.check(
+        "nosave_originals_untouched_after_shutdown",
+        after == orig,
+        sorted(n for n in set(orig) | set(after) if orig.get(n) != after.get(n)),
+    )
     return rec.finish()
 
 
