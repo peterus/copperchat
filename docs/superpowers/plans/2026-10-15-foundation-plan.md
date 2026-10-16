@@ -746,8 +746,10 @@ with an item below, the item wins; the executor adapts the code and its tests.
   "sub-agent gate"); Phase 5 persists sub-agent messages as
   `parentToolUseId` rows (Task 5.11b) and interrupt/usage cover them; Phase
   6A nests them in a "Part research: <MPN>" card (Task 6A.7b); Phase 8 wires
-  `agents=`, `tools=["Agent", "Skill"]`, the session guard and the
-  `part-notes` template skill (Tasks 8.4, 8.4b, 8.6). There is no
+  `agents=`, `tools=["Agent", "Skill"]`, `forward_subagent_text=True`, the
+  session guard (`Agent` input limited to `subagent_type`/`description`/`prompt`)
+  and the `part-notes` template skill (Tasks 8.4, 8.4b, 8.6); skill
+  `allowed-tools` grants are stripped so no skill bypasses the guard. There is no
   `research_part` MCP tool unless the spike says no-go (Task 8.6b fallback).
   Spec §6's `research_part(query)` is realised as
   `Agent(subagent_type="part-researcher", description=<MPN>, prompt=<question>)`.

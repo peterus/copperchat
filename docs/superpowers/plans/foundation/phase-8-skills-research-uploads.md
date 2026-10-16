@@ -1534,7 +1534,8 @@ Owner decision 2026-10-16: the researcher gets a high-quality built-in skill
 whose goal is a `notes.md` complete enough that the main agent can draw the
 schematic and lay out the PCB **without re-reading the datasheet**. The skill
 fixes one template; a validator checks the structure; a fixture eval scores
-notes; an opt-in live eval runs the real researcher.
+notes; an opt-in live eval (written in Task 8.6, which provides the wiring)
+runs the real researcher.
 
 **Design.** `part-notes` is a normal built-in skill (it shows on the Skills
 page with origin badge and can be customised per user/project like any other)
@@ -1553,7 +1554,7 @@ falls back to the short section list in `RESEARCHER_PROMPT`.
 - Create: `backend/src/copperchat/research/notes.py`
 - Modify: `backend/src/copperchat/skills/assembly.py` (agent-scoped skills, `SkillBundle.researcher_skill`)
 - Create: `backend/tests/fixtures/parts/CC1234/notes.md` (complete notes for a **fictional** part; plain Markdown, not a KiCad file)
-- Test: `backend/tests/unit/test_part_notes.py`, `backend/tests/live/test_part_notes_live.py`
+- Test: `backend/tests/unit/test_part_notes.py` (live eval: Task 8.6)
 
 **Interfaces:**
 - Produces (`copperchat.research.notes`):
@@ -1666,67 +1667,9 @@ async def test_agent_scoped_skill_goes_to_researcher_not_main(settings, project,
     assert (await assemble_skills(settings, project, db)).researcher_skill is None
 ```
 
-```python
-# backend/tests/live/test_part_notes_live.py
-"""Opt-in eval: the real researcher (as sub-agent of the main session) writes notes that pass."""
-
-import os
-from pathlib import Path
-
-import pytest
-from claude_agent_sdk import ResultMessage, query
-from pydantic import SecretStr
-
-from copperchat.agent.sdk_backend import build_options
-from copperchat.agent.sdk_tools import build_sdk_tools
-from copperchat.config import Settings
-from copperchat.projects import Project
-from copperchat.research.notes import check_notes
-from copperchat.research.wiring import researcher_wiring
-from copperchat.skills.store import BUILTIN_ROOT, parse_front_matter
-
-pytestmark = [
-    pytest.mark.live_sdk,
-    pytest.mark.skipif(
-        not (os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY")),
-        reason="needs model credentials and web access",
-    ),
-]
-
-
-async def test_researcher_writes_template_complete_notes(tmp_path: Path) -> None:
-    d = tmp_path / "proj"
-    d.mkdir()
-    project = Project(id="0123456789ab", name="proj", rel_path="proj/proj.kicad_pro", dir=d,
-                      pro_file=d / "proj.kicad_pro", sch_file=None, pcb_file=None)
-    token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
-    key = os.environ.get("ANTHROPIC_API_KEY")
-    settings = Settings(_env_file=None, projects_root=tmp_path, data_dir=tmp_path / "data",
-                        claude_code_oauth_token=SecretStr(token) if token else None,
-                        anthropic_api_key=SecretStr(key) if key and not token else None)
-    _, notes_skill = parse_front_matter((BUILTIN_ROOT / "part-notes" / "SKILL.md").read_text())
-    opts = build_options(settings=settings, project=project,
-                         mcp_server=build_sdk_tools([], lambda: None),  # type: ignore[arg-type,return-value]
-                         tool_names=[], resume_session_id=None, fork_session=False,
-                         researcher=researcher_wiring(project, notes_skill))
-    prompt = "Research the TI TPS62133 (pinout, application circuit, layout) and write its notes."
-    final = None
-    async for msg in query(prompt=prompt, options=opts):
-        if isinstance(msg, ResultMessage):
-            final = msg
-    assert final is not None and not final.is_error
-    notes = (d / "docs/parts/TPS62133/notes.md").read_text()
-    report = check_notes(notes)
-    assert report.score >= 0.9, report.issues
-    pinout = notes.split("## Packages and pinout", 1)[1].split("\n## ", 1)[0]
-    for pin in ("SW", "EN", "PG", "FB"):
-        assert f"| {pin}" in pinout, pin
-    app = notes.split("## Typical application circuit", 1)[1].split("\n## ", 1)[0]
-    assert "µH" in app or "uH" in app
-```
-
-(The live eval is the "does the real researcher meet the template" check; CI
-skips it. Record its score in the done report when it was run.)
+The opt-in live eval of the real researcher (`tests/live/test_part_notes_live.py`)
+needs the sub-agent wiring and is therefore written in Task 8.6 (fallback: a
+`run_research`-based variant in Task 8.6b).
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -2042,6 +1985,27 @@ class SkillBundle:
 
 (`researcher_skill` starts as `None` before the loop.)
 
+Also strip tool grants from every copied skill: after `_copy_regular_files`,
+rewrite the copied `SKILL.md` without the front-matter keys `allowed-tools`
+and `allowed_tools` (a skill's `allowed-tools` acts as allow rules while it is
+active, and allow rules bypass `can_use_tool` — with `BUILTINS_IN_SESSION =
+True` a project skill could otherwise hand the main agent Read/Write/WebFetch).
+Use a small `_strip_tool_grants(text) -> str` that re-emits the front matter
+line by line minus those keys (and any indented continuation lines of a YAML
+list under them). Test (append to `test_skills_assembly.py`):
+
+```python
+async def test_skill_tool_grants_are_stripped(settings, project, db) -> None:
+    skill = project.dir / ".kicad-agent" / "skills" / "grabby"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: grabby\ndescription: tries to grant itself file and web tools\n"
+                                    "allowed-tools: Read, Write, WebFetch\nallowed_tools:\n  - Bash\n---\nBody\n")
+    bundle = await assemble_skills(settings, project, db)
+    copied = (bundle.plugin_dir / "skills" / "grabby" / "SKILL.md").read_text()
+    assert "allowed-tools" not in copied and "allowed_tools" not in copied and "Bash" not in copied
+    assert "name: grabby" in copied and copied.rstrip().endswith("Body")
+```
+
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd backend && uv run pytest tests/unit/test_part_notes.py tests/unit/test_skills_assembly.py tests/unit/test_builtin_skills.py -v`
@@ -2050,7 +2014,7 @@ Expected: all passed (11 parametrised missing-section cases, 6 degraded cases, t
 - [ ] **Step 5: Commit**
 
 ```bash
-git add backend/src/copperchat/skills/builtin/part-notes backend/src/copperchat/research/notes.py backend/src/copperchat/skills/assembly.py backend/tests/fixtures/parts backend/tests/unit/test_part_notes.py backend/tests/unit/test_skills_assembly.py backend/tests/live/test_part_notes_live.py
+git add backend/src/copperchat/skills/builtin/part-notes backend/src/copperchat/research/notes.py backend/src/copperchat/skills/assembly.py backend/tests/fixtures/parts backend/tests/unit/test_part_notes.py backend/tests/unit/test_skills_assembly.py
 git commit -m "feat: part-notes skill with fixed notes.md template, validator and eval
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
@@ -2502,8 +2466,10 @@ this task and do Task 8.6b instead.
   with `BUILTINS_IN_SESSION = True` the researcher's built-ins are inserted
   after `"Agent"`), `agents={"part-researcher": researcher_definition(bundle.researcher_skill)}`,
   `mcp_servers={"copperchat": …, "parts": parts_mcp_server(project)}`,
-  `can_use_tool=make_session_guard(project, main_allowed)`, system prompt +
-  a short delegation paragraph. `allowed_tools` stays the CopperChat MCP
+  `can_use_tool=make_session_guard(project, main_allowed)`,
+  `forward_subagent_text=True` (the SDK forwards sub-agent text blocks only
+  then; tool calls/results are always forwarded), system prompt + a short
+  delegation paragraph. `allowed_tools` stays the CopperChat MCP
   tools (+ `Skill(...)` entries from `skills=`); `Agent`, the researcher's
   built-ins and `mcp__parts__download_datasheet` must **never** be listed
   there (spike 1A g4: `allowed_tools` entries bypass `can_use_tool`) —
@@ -2514,8 +2480,13 @@ this task and do Task 8.6b instead.
   - `Agent` (`DELEGATION_TOOL`, name from spike 1A h2): main agent only;
     `subagent_type` must be `"part-researcher"`; `description` must be a bare
     MPN (non-empty, ≤ 64 chars, no whitespace, accepted by `mpn_dirname`) so
-    the GUI card title "Part research: <MPN>" is reliable. Everything else
-    (general-purpose, missing type, sub-agent delegating) is denied.
+    the GUI card title "Part research: <MPN>" is reliable; the input may only
+    contain `subagent_type`, `description`, `prompt` — any other key
+    (`run_in_background`, `isolation`, `model`, `mode`, `name`, `team_name`, …)
+    is denied, because a background or worktree-isolated researcher would
+    escape the turn (interrupt, usage, row order) or write outside
+    `docs/parts/`. Everything else (general-purpose, missing type, sub-agent
+    delegating) is denied.
   - researcher tools (`RESEARCHER_TOOLS` + `DOWNLOAD_TOOL`): sub-agent calls
     only, then Task 8.4's `make_researcher_guard` path rules; main-agent calls
     are denied (the `parts` MCP server is visible to the main agent, so this
@@ -2534,7 +2505,7 @@ this task and do Task 8.6b instead.
 - Modify: `backend/src/copperchat/agent/guards.py` (`make_session_guard`, `is_subagent_call`, `DELEGATION_TOOL`, `SUBAGENT_ID_FIELD`)
 - Modify: `backend/src/copperchat/agent/sdk_backend.py` (`build_options(..., researcher=None)`, backend `start()`)
 - Modify: `backend/pyproject.toml` (`httpx>=0.28` in `[project].dependencies` if not present)
-- Test: `backend/tests/unit/test_datasheets.py`, `backend/tests/unit/test_session_guard.py`, `backend/tests/unit/test_researcher_wiring.py`, `backend/tests/live/test_subagent_live.py`
+- Test: `backend/tests/unit/test_datasheets.py`, `backend/tests/unit/test_session_guard.py`, `backend/tests/unit/test_researcher_wiring.py`, `backend/tests/live/test_subagent_live.py`, `backend/tests/live/test_part_notes_live.py`
 
 **Interfaces:**
 - Consumes: `researcher_definition`, `RESEARCHER_NAME`, `RESEARCHER_TOOLS`, `DOWNLOAD_TOOL`, `make_researcher_guard` (8.4), `SkillBundle.researcher_skill`, `apply_skills` (8.3/8.4b), `mpn_dirname`, `InvalidMpn` (8.5), Phase 5 `build_options`, `SYSTEM_PROMPT`.
@@ -2589,6 +2560,12 @@ CASES = [
     ("main", "Agent", agent(subagent_type="part-researcher", description="TPS62133 layout"), False),
     ("main", "Agent", agent(subagent_type="part-researcher", description="../etc"), False),
     ("main", "Agent", agent(subagent_type="part-researcher", description=""), False),
+    ("main", "Agent", agent(subagent_type="part-researcher", description="TPS62133",
+                            run_in_background=True), False),
+    ("main", "Agent", agent(subagent_type="part-researcher", description="TPS62133",
+                            isolation="worktree"), False),
+    ("main", "Agent", agent(subagent_type="part-researcher", description="TPS62133",
+                            model="opus"), False),
     ("sub", "Agent", agent(subagent_type="part-researcher", description="TPS62133"), False),
     ("main", "mcp__copperchat__run_erc", {}, True),
     ("main", "Skill", {"skill": "copperchat:copperchat-tools"}, True),
@@ -2667,6 +2644,7 @@ async def test_main_session_surface(settings, project, tmp_path) -> None:
     assert not guarded & set(opts.allowed_tools)
     assert "mcp__copperchat__run_erc" in opts.allowed_tools
     assert "part-researcher" in opts.system_prompt and "Claude Code" not in opts.system_prompt
+    assert opts.forward_subagent_text is True             # live text steps in the card
     res = await opts.can_use_tool("Read", {"file_path": "x"}, ToolPermissionContext(tool_use_id="t"))
     assert isinstance(res, PermissionResultDeny)          # the session guard is installed
 
@@ -2749,6 +2727,71 @@ async def test_init_lists_agent_and_researcher(tmp_path: Path) -> None:
     pytest.fail("no init message")
 ```
 
+Live eval of the `part-notes` template (moved here from Task 8.4b because it
+needs `researcher_wiring`):
+
+```python
+# backend/tests/live/test_part_notes_live.py
+"""Opt-in eval: the real researcher (as sub-agent of the main session) writes notes that pass."""
+
+import os
+from pathlib import Path
+
+import pytest
+from claude_agent_sdk import ResultMessage, query
+from pydantic import SecretStr
+
+from copperchat.agent.sdk_backend import build_options
+from copperchat.agent.sdk_tools import build_sdk_tools
+from copperchat.config import Settings
+from copperchat.projects import Project
+from copperchat.research.notes import check_notes
+from copperchat.research.wiring import researcher_wiring
+from copperchat.skills.store import BUILTIN_ROOT, parse_front_matter
+
+pytestmark = [
+    pytest.mark.live_sdk,
+    pytest.mark.skipif(
+        not (os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY")),
+        reason="needs model credentials and web access",
+    ),
+]
+
+
+async def test_researcher_writes_template_complete_notes(tmp_path: Path) -> None:
+    d = tmp_path / "proj"
+    d.mkdir()
+    project = Project(id="0123456789ab", name="proj", rel_path="proj/proj.kicad_pro", dir=d,
+                      pro_file=d / "proj.kicad_pro", sch_file=None, pcb_file=None)
+    token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    settings = Settings(_env_file=None, projects_root=tmp_path, data_dir=tmp_path / "data",
+                        claude_code_oauth_token=SecretStr(token) if token else None,
+                        anthropic_api_key=SecretStr(key) if key and not token else None)
+    _, notes_skill = parse_front_matter((BUILTIN_ROOT / "part-notes" / "SKILL.md").read_text())
+    opts = build_options(settings=settings, project=project,
+                         mcp_server=build_sdk_tools([], lambda: None),  # type: ignore[arg-type,return-value]
+                         tool_names=[], resume_session_id=None, fork_session=False,
+                         researcher=researcher_wiring(project, notes_skill))
+    prompt = "Research the TI TPS62133 (pinout, application circuit, layout) and write its notes."
+    final = None
+    async for msg in query(prompt=prompt, options=opts):
+        if isinstance(msg, ResultMessage):
+            final = msg
+    assert final is not None and not final.is_error
+    notes = (d / "docs/parts/TPS62133/notes.md").read_text()
+    report = check_notes(notes)
+    assert report.score >= 0.9, report.issues
+    pinout = notes.split("## Packages and pinout", 1)[1].split("\n## ", 1)[0]
+    for pin in ("SW", "EN", "PG", "FB"):
+        assert f"| {pin}" in pinout, pin
+    app = notes.split("## Typical application circuit", 1)[1].split("\n## ", 1)[0]
+    assert "µH" in app or "uH" in app
+```
+
+(The live eval is the "does the real researcher meet the template" check; CI
+skips it. Record its score in the done report when it was run.)
+
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `cd backend && uv run pytest tests/unit/test_session_guard.py tests/unit/test_researcher_wiring.py tests/unit/test_datasheets.py -v`
@@ -2772,6 +2815,7 @@ from copperchat.research.agent import RESEARCHER_NAME, RESEARCHER_TOOLS
 DELEGATION_TOOL = "Agent"        # spike 1A h2: exact delegation tool name ("Task" on older CLIs)
 SUBAGENT_ID_FIELD = "agent_id"   # spike 1A h4b: ToolPermissionContext field set only for sub-agent calls
 _RESEARCHER_ALL = frozenset([*RESEARCHER_TOOLS, DOWNLOAD_TOOL])
+_DELEGATION_KEYS = frozenset({"subagent_type", "description", "prompt"})
 
 
 def is_subagent_call(ctx: ToolPermissionContext) -> bool:
@@ -2806,6 +2850,10 @@ def make_session_guard(project: Project, main_allowed: frozenset[str]) -> CanUse
                             f'use subagent_type="{RESEARCHER_NAME}".')
             if not _valid_mpn_description(inp.get("description")):
                 return deny("Set description to the bare manufacturer part number, e.g. TPS62133.")
+            extra = set(inp) - _DELEGATION_KEYS
+            if extra:
+                return deny(f"Only subagent_type, description and prompt are allowed for "
+                            f"{RESEARCHER_NAME}; remove {sorted(extra)}.")
             return PermissionResultAllow(updated_input=inp)
         if tool in _RESEARCHER_ALL:
             if not sub:
@@ -2877,6 +2925,7 @@ def wire_researcher(
         mcp_servers={**dict(options.mcp_servers), "parts": wiring.parts_server},  # type: ignore[arg-type]
         can_use_tool=make_session_guard(project, frozenset(options.allowed_tools)),
         system_prompt=f"{options.system_prompt}{RESEARCH_PROMPT_ADDENDUM}",
+        forward_subagent_text=True,   # SDK default False: sub-agent text would never reach the card
     )
 ```
 
@@ -2918,7 +2967,7 @@ still passes: without `researcher`/`skills` the options are unchanged); mypy cle
 - [ ] **Step 5: Commit**
 
 ```bash
-git add backend/src/copperchat/research backend/src/copperchat/agent/guards.py backend/src/copperchat/agent/sdk_backend.py backend/pyproject.toml backend/uv.lock backend/tests/unit/test_session_guard.py backend/tests/unit/test_researcher_wiring.py backend/tests/unit/test_datasheets.py backend/tests/live/test_subagent_live.py
+git add backend/src/copperchat/research backend/src/copperchat/agent/guards.py backend/src/copperchat/agent/sdk_backend.py backend/pyproject.toml backend/uv.lock backend/tests/unit/test_session_guard.py backend/tests/unit/test_researcher_wiring.py backend/tests/unit/test_datasheets.py backend/tests/live/test_subagent_live.py backend/tests/live/test_part_notes_live.py
 git commit -m "feat: part-researcher as guarded SDK sub-agent of the main session
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
@@ -2946,6 +2995,9 @@ and additionally apply these fallback adjustments:
   `assemble_skills(...).researcher_skill` (pass it through `run_research`).
 - GUI: the `research_part` call renders as a normal tool row with its result;
   live sub-agent steps are not available on this path (known limitation).
+- Live eval: write `tests/live/test_part_notes_live.py` (Task 8.6's version)
+  calling `runner.run_research(project, settings, <question>, [], notes_skill=…)`
+  instead of building main-session options; same `check_notes` assertions.
 
 
 **Files:**
@@ -4476,8 +4528,9 @@ Deviations / decisions:
   (8.6b) for spike 1A **sub-agent no-go**.
 - **Decided by the owner (2026-10-16):** the `part-notes` skill (agent-scoped,
   appended to the researcher's prompt) fixes the `notes.md` template;
-  `check_notes` validates it; a fixture eval and an opt-in live eval score it
-  (8.4b).
+  `check_notes` validates it; a fixture eval (8.4b) and an opt-in live eval
+  (8.6) score it. Skill `allowed-tools` grants are stripped on assembly so no
+  skill can bypass the session guard (8.4b).
 - Datasheet download needs binary-safe storage, so the researcher additionally
   gets an in-process MCP tool `download_datasheet(mpn, url)`.
 - User-edit precedence is front-matter based (`user_edited: true`, set

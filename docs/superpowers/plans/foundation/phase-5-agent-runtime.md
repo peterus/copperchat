@@ -4063,7 +4063,10 @@ Rules:
 - Sub-agent `StreamEvent`s are ignored (no partial deltas for sub-agents;
   their text arrives as whole `AssistantMessage` blocks).
 - Sub-agent `AssistantMessage`: `ToolUseBlock` → `ToolUse(..., parent_tool_use_id=p)`,
-  `TextBlock` → `SubagentText(p, text)`, `ThinkingBlock` ignored.
+  `TextBlock` → `SubagentText(p, text)`, `ThinkingBlock` ignored. (The SDK
+  forwards sub-agent text blocks only with `forward_subagent_text=True`;
+  Phase 8 sets it in `wire_researcher`. Without it only tool calls/results
+  arrive, which this mapping handles the same way.)
 - Sub-agent `UserMessage`: `ToolResultBlock` → `ToolResultEvt(..., parent_tool_use_id=p)`;
   string content (the delegation prompt echoed to the sub-agent) ignored.
 - Engine: sub-agent events become **complete** rows (`status="done"`) with
@@ -4119,6 +4122,7 @@ def test_mapper_maps_subagent_messages_with_parent_id():
     assert out == [
         ToolUse(id="a1", name="Agent", input={"subagent_type": "part-researcher",
                                                "description": "TPS62133", "prompt": "q"}),
+        SessionId("s1"),                       # first message carrying a session id
         SubagentText(parent_tool_use_id="a1", text="Searching"),
         ToolUse(id="w1", name="WebSearch", input={"query": "TPS62133"}, parent_tool_use_id="a1"),
         ToolResultEvt(id="w1", content="hits", parent_tool_use_id="a1"),

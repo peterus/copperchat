@@ -1344,7 +1344,8 @@ async def main() -> int:
 
     opts4 = base_options(tools=[delegate, "Skill"], mcp_servers={"spike": server},
                          agents={"helper": helper}, allowed_tools=[],  # nothing shadows the guard
-                         can_use_tool=gate_guard, include_partial_messages=True)
+                         can_use_tool=gate_guard, include_partial_messages=True,
+                         forward_subagent_text=True)
     client4 = ClaudeSDKClient(opts4)
     await client4.connect(gen4())
     got4 = await collect(client4, until_results=1, hard_s=300)
@@ -1370,39 +1371,65 @@ async def main() -> int:
               [(type(m).__name__, m.parent_tool_use_id) for m in sub_msgs][:20])
     rec.note("h4c_stream_events_with_parent",
              sum(1 for m in sub_msgs if type(m).__name__ == "StreamEvent"))
+    # Unparented text deltas while an Agent call is open would leak sub-agent text into the
+    # main agent's streaming segment (Phase 5); record how many arrive in that window.
+    open_calls: set[str] = set()
+    leaked = 0
+    for _, m in got4.messages:
+        if isinstance(m, AssistantMessage) and not m.parent_tool_use_id:
+            open_calls |= {b.id for b in m.content if isinstance(b, ToolUseBlock) and b.name == delegate}
+        if type(m).__name__ == "UserMessage" and not getattr(m, "parent_tool_use_id", None) \
+                and not isinstance(m.content, str):
+            open_calls -= {getattr(b, "tool_use_id", None) for b in m.content}
+        if type(m).__name__ == "StreamEvent" and open_calls and not m.parent_tool_use_id \
+                and m.event.get("type") == "content_block_delta":
+            leaked += 1
+    rec.check("h4c_no_unparented_deltas_during_subagent", leaked == 0, leaked)
 
-    # h5: interrupt during the sub-agent, then a second turn; usage incl. sub-agent tokens
-    slow_helper = AgentDefinition(description="Slow fetcher. Use it for web lookups.",
-                                  prompt="Fetch every URL you are given, one by one, then summarise.",
-                                  tools=["WebFetch"], model="haiku")
+    # h5: interrupt during the sub-agent, then a second turn; usage incl. sub-agent tokens.
+    # The sub-agent uses a slow in-session MCP tool (not a built-in), so h5 does not depend on
+    # whether built-ins are inherited (h3).
+    @tool("slow_lookup", "Looks up a value slowly (20 s).", {"key": str})
+    async def slow_lookup(args: dict[str, Any]) -> dict[str, Any]:
+        await asyncio.sleep(20)
+        return {"content": [{"type": "text", "text": f"value-of-{args.get('key')}"}]}
+
+    slow_server = create_sdk_mcp_server("spike", tools=[slow_lookup])
+    slow_helper = AgentDefinition(description="Slow lookup helper. Use it for every lookup.",
+                                  prompt="Look up each key with slow_lookup, one by one, then summarise.",
+                                  tools=["mcp__spike__slow_lookup"], model="haiku")
     second = asyncio.Event()
 
     async def allow_all(name: str, inp: dict[str, Any], ctx: ToolPermissionContext):
         return PermissionResultAllow()
 
     async def gen5():
-        yield user_msg("Use the fetcher sub-agent to fetch https://example.com, https://example.org "
-                       "and https://example.net and summarise each.")
+        yield user_msg("Use the lookup sub-agent to look up the keys alpha, beta and gamma.")
         await second.wait()
         yield user_msg("Reply with exactly: AFTER")
 
-    opts5 = base_options(tools=[delegate], agents={"fetcher": slow_helper},
-                         allowed_tools=[], can_use_tool=allow_all)
+    opts5 = base_options(tools=[delegate], mcp_servers={"spike": slow_server},
+                         agents={"lookup": slow_helper}, allowed_tools=[], can_use_tool=allow_all,
+                         forward_subagent_text=True)
     client5 = ClaudeSDKClient(opts5)
     await client5.connect(gen5())
     interrupted_at: float | None = None
     got5_msgs: list[tuple[float, Any]] = []
-    async for msg in client5.receive_messages():
-        now = asyncio.get_running_loop().time()
-        got5_msgs.append((now, msg))
-        if interrupted_at is None and getattr(msg, "parent_tool_use_id", None):
-            interrupted_at = now
-            await client5.interrupt()
-        if type(msg).__name__ == "ResultMessage":
-            if not second.is_set():
-                second.set()
-            else:
-                break
+    try:
+        async with asyncio.timeout(300):
+            async for msg in client5.receive_messages():
+                now = asyncio.get_running_loop().time()
+                got5_msgs.append((now, msg))
+                if interrupted_at is None and getattr(msg, "parent_tool_use_id", None):
+                    interrupted_at = now
+                    await client5.interrupt()
+                if type(msg).__name__ == "ResultMessage":
+                    if not second.is_set():
+                        second.set()
+                    else:
+                        break
+    except TimeoutError:
+        rec.note("h5_timeout", len(got5_msgs))
     await client5.disconnect()
     results = [(t, m) for t, m in got5_msgs if type(m).__name__ == "ResultMessage"]
     first_result_t = results[0][0] if results else float("inf")
@@ -1444,14 +1471,17 @@ whether `can_use_tool` receives the helper's `Write` (if not, Phase 8 must use
 a `PreToolUse` hook instead — record which one works); the exact name of the
 field that identifies sub-agent calls in `ToolPermissionContext` (`agent_id`
 or other); whether sub-agent `StreamEvent`s carry `parent_tool_use_id`; and
-whether the turn's `ResultMessage.usage` / `total_cost_usd` already include
+whether sub-agent text arrives with `forward_subagent_text=True` (it is off
+by default in the SDK; Phase 8 sets it); whether a skill's `allowed-tools`
+front matter would bypass `can_use_tool` (informational — Phase 8 strips that
+key anyway); whether the turn's `ResultMessage.usage` / `total_cost_usd` already include
 the sub-agent's tokens (h5 note — if not, Phase 5's mapper sums the sub-agent
 `AssistantMessage.usage` values into the turn's `Usage`).
 
 **Sub-agent gate (owner decision 2026-10-16, binding for Phase 8):** the
 decision section of the spike doc states one of:
 
-- **sub-agent go** — h4a (both rows), h4b (both rows), h4c and the h5
+- **sub-agent go** — h4a (both rows), h4b (both rows), h4c (all rows) and the h5
   interrupt rows PASS **and** h3 `helper_used_webfetch` PASS: Phase 8 Task 8.6
   as written (main `tools=["Agent", "Skill"]`, researcher built-ins not in the
   session `tools`, `BUILTINS_IN_SESSION = False`).
