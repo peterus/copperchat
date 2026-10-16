@@ -317,3 +317,17 @@ async def test_reopen_re_evaluates_foreign_lock(
     third = await manager.open(project)
     assert third.read_only is False
     assert first.process is None and second.process is None
+
+
+async def test_client_factory_error_reports_unavailable(
+    make_settings: Callable[..., Settings], server: FakeServer
+) -> None:
+    def broken(socket_uri: str, timeout_ms: int) -> FakeKiCad:
+        raise RuntimeError("no socket yet")
+
+    m = KicadSessionManager(
+        make_settings(kicad_start_timeout_s=0.5), FakeLauncher(server), client_factory=broken
+    )
+    with pytest.raises(KicadUnavailable, match="no socket yet"):
+        await m.open(make_project(make_settings().projects_root))
+    assert all(p.returncode is not None for p in server.processes)

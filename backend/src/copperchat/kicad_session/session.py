@@ -155,44 +155,51 @@ class KicadSession:
         deadline = loop.time() + self._settings.kicad_start_timeout_s
         timeout_ms = int(self._settings.kicad_api_timeout_s * 1000)
         last_error: BaseException | None = None
+        candidate: Any = None
         client: Any = None
-        while client is None:
-            if self.process.returncode is not None:
-                code = self.process.returncode
-                self.process = None
-                raise KicadUnavailable(
-                    f"kicad-cli api-server exited with code {code} during startup "
-                    f"(log: {self._settings.data_dir / 'logs'})"
-                )
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                raise KicadUnavailable(
-                    f"kicad-cli api-server not ready after "
-                    f"{self._settings.kicad_start_timeout_s:.0f}s: {last_error}"
-                )
-            try:
-                candidate = self._client_factory(f"ipc://{self.socket_path}", timeout_ms)
-                await asyncio.wait_for(
-                    asyncio.to_thread(candidate.ping), timeout=min(2.0, remaining)
-                )
-                client = candidate
-            except Exception as exc:  # not ready yet: socket missing, refused, slow
-                last_error = exc
-                _close_client(candidate)
-                await asyncio.sleep(0.2)
         opened: set[DocKind] = set()
-        for doc, path in self._documents():
-            try:
-                await asyncio.wait_for(
-                    asyncio.to_thread(client.open_document, str(path), _document_type(doc)),
-                    timeout=max(0.1, deadline - loop.time()),
-                )
-            except Exception as exc:
-                _close_client(client)
-                raise KicadUnavailable(
-                    f"kicad-cli api-server could not open {path.name}: {exc or type(exc).__name__}"
-                ) from exc
-            opened.add(doc)
+        try:
+            while client is None:
+                if self.process.returncode is not None:
+                    code = self.process.returncode
+                    self.process = None
+                    raise KicadUnavailable(
+                        f"kicad-cli api-server exited with code {code} during startup "
+                        f"(log: {self._settings.data_dir / 'logs'})"
+                    )
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    raise KicadUnavailable(
+                        f"kicad-cli api-server not ready after "
+                        f"{self._settings.kicad_start_timeout_s:.0f}s: {last_error}"
+                    )
+                try:
+                    candidate = self._client_factory(f"ipc://{self.socket_path}", timeout_ms)
+                    await asyncio.wait_for(
+                        asyncio.to_thread(candidate.ping), timeout=min(2.0, remaining)
+                    )
+                    client, candidate = candidate, None
+                except Exception as exc:  # not ready yet: socket missing, refused, slow
+                    last_error = exc
+                    _close_client(candidate)
+                    candidate = None
+                    await asyncio.sleep(0.2)
+            for doc, path in self._documents():
+                try:
+                    await asyncio.wait_for(
+                        asyncio.to_thread(client.open_document, str(path), _document_type(doc)),
+                        timeout=max(0.1, deadline - loop.time()),
+                    )
+                except Exception as exc:
+                    raise KicadUnavailable(
+                        f"kicad-cli api-server could not open {path.name}: "
+                        f"{exc or type(exc).__name__}"
+                    ) from exc
+                opened.add(doc)
+        except BaseException:  # incl. cancellation: no client outlives a failed start
+            _close_client(candidate)
+            _close_client(client)
+            raise
         self._kicad = client
         self._open_docs = frozenset(opened)
         self.server_token = read_lock_token(lock_file_for(self.project.pro_file))
@@ -256,6 +263,14 @@ class KicadSession:
             try:
                 waiting = {work} if died is None else {work, died}
                 await asyncio.wait(waiting, timeout=limit, return_when=asyncio.FIRST_COMPLETED)
+            except asyncio.CancelledError:
+                # The caller gave up (e.g. an interrupted turn). The worker thread
+                # cannot be stopped and must not share the client with later calls,
+                # so stop the server; the next call starts a fresh one.
+                if not work.done():
+                    work.add_done_callback(_consume_result)
+                    await asyncio.shield(self._kill())
+                raise
             finally:
                 if died is not None:
                     died.cancel()

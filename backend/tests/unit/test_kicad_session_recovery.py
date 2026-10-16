@@ -140,3 +140,21 @@ async def test_dead_process_before_call_restarts_and_raises(
         await session.call(lambda h: h.kicad.ping())
     assert session.restart_count == 1
     await session.call(lambda h: h.kicad.ping())
+
+
+async def test_cancelled_call_stops_the_server_and_next_call_restarts(
+    session: KicadSession, server: FakeServer
+) -> None:
+    # An interrupted turn cancels its tool call; the abandoned worker thread must not
+    # keep using the shared client, so the server is stopped and restarted lazily.
+    old_process = session.process
+    task = asyncio.create_task(session.call(lambda h: h.kicad.hang(), timeout=10))
+    await asyncio.sleep(0.2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    server.release.set()
+    assert old_process is not None and old_process.returncode is not None
+    assert session.process is None
+    assert await session.call(lambda h: h.kicad.get_version().full_version) == "11.0.0-fake"
+    assert server.starts == 2
