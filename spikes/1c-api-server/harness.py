@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import Self
 
 HERE = Path(__file__).parent
 RESULTS = HERE / "results"
@@ -88,7 +89,10 @@ class Server:
     """Starts `kicad-cli api-server` for one project; waits until kipy can ping it."""
 
     def __init__(
-        self, project_dir: Path, socket: Path | None = None, wait_s: float = 60.0,
+        self,
+        project_dir: Path,
+        socket: Path | None = None,
+        wait_s: float = 60.0,
         open_docs: bool = True,
     ):
         self.project_dir = project_dir
@@ -101,12 +105,15 @@ class Server:
         self.startup_s = -1.0
         self.log = self.socket.with_suffix(".log")
 
-    def __enter__(self) -> Server:
+    def __enter__(self) -> Self:
         args = API_SERVER_ARGS.format(project=project_file(self.project_dir), socket=self.socket)
         cmd = [kicad_cli(), *shlex.split(args)]
         t0 = time.monotonic()
         self.proc = subprocess.Popen(
-            cmd, cwd=self.project_dir, env=cli_env(), stdout=self.log.open("w"),
+            cmd,
+            cwd=self.project_dir,
+            env=cli_env(),
+            stdout=self.log.open("w"),
             stderr=subprocess.STDOUT,
         )
         while time.monotonic() - t0 < self.wait_s:
@@ -119,7 +126,7 @@ class Server:
                     self.client(timeout_ms=1000).ping()
                     self.startup_s = time.monotonic() - t0
                     break
-                except Exception:  # noqa: BLE001 - polling until ready
+                except Exception:  # noqa: BLE001, S110 - polling until ready
                     pass
             time.sleep(0.1)
         else:
@@ -135,8 +142,10 @@ class Server:
 
         k = self.client(timeout_ms=60000)
         stem = project_file(self.project_dir).stem
-        for ext, doctype in (("kicad_sch", DocumentType.DOCTYPE_SCHEMATIC),
-                             ("kicad_pcb", DocumentType.DOCTYPE_PCB)):
+        for ext, doctype in (
+            ("kicad_sch", DocumentType.DOCTYPE_SCHEMATIC),
+            ("kicad_pcb", DocumentType.DOCTYPE_PCB),
+        ):
             f = self.project_dir / f"{stem}.{ext}"
             if f.exists():
                 t0 = time.monotonic()
@@ -147,7 +156,8 @@ class Server:
         from kipy import KiCad
 
         return KiCad(
-            socket_path=self.url, client_name=f"spike1c-{time.monotonic_ns()}",
+            socket_path=self.url,
+            client_name=f"spike1c-{time.monotonic_ns()}",
             timeout_ms=timeout_ms,
         )
 
@@ -164,9 +174,16 @@ class Server:
         self.stop()
 
 
-def run_cli(*args: str, cwd: Path | None = None, timeout: float = 300) -> subprocess.CompletedProcess:
+def run_cli(
+    *args: str, cwd: Path | None = None, timeout: float = 300
+) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [kicad_cli(), *args], cwd=cwd, env=cli_env(), capture_output=True, text=True,
+        [kicad_cli(), *args],
+        check=False,
+        cwd=cwd,
+        env=cli_env(),
+        capture_output=True,
+        text=True,
         timeout=timeout,
     )
 
@@ -176,6 +193,6 @@ def main_guard(fn) -> None:  # used by every q*.py
         raise SystemExit(fn())
     except SystemExit:
         raise
-    except Exception as e:  # noqa: BLE001 - a crash is a finding; print and fail
+    except Exception as e:  # a crash is a finding; print and fail
         print(f"FAIL crashed: {type(e).__name__}: {e}", file=sys.stderr)
         raise SystemExit(1) from e

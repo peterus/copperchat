@@ -72,8 +72,9 @@ def main() -> int:
         except Exception as e:  # noqa: BLE001
             rec.check("sch_hierarchy", False, f"{type(e).__name__}: {e}")
         _, hsyms = probe(rec, "sch_symbols_all_sheets", sch.get_symbols)
-        refs = sorted({s.reference for s in hsyms} if hsyms and hasattr(hsyms[0], "reference")
-                      else [])
+        refs = sorted(
+            {s.reference for s in hsyms} if hsyms and hasattr(hsyms[0], "reference") else []
+        )
         rec.note("symbols_scope", f"returned {len(hsyms)} symbols; refs={refs[:80]}")
         real = [s for s in hsyms if not str(getattr(s, "reference", "#")).startswith("#")]
         rec.note("non_power_symbol_instances", len(real))
@@ -82,16 +83,27 @@ def main() -> int:
         # Ground truth for the symbol count across all sheet instances: kicad-cli BOM-less
         # netlist export of the same file.
         sch_file = next(srv.project_dir.glob("complex_hierarchy.kicad_sch"))
-        r = run_cli("sch", "export", "netlist", "--format", "kicadxml", "-o",
-                    str(srv.project_dir / "net.xml"), str(sch_file))
+        r = run_cli(
+            "sch",
+            "export",
+            "netlist",
+            "--format",
+            "kicadxml",
+            "-o",
+            str(srv.project_dir / "net.xml"),
+            str(sch_file),
+        )
         if r.returncode == 0:
             xml = (srv.project_dir / "net.xml").read_text()
             n = xml.count("<comp ref=")
             rec.note("cli_netlist_component_count", n)
             # One SchematicSymbolInstance per placed unit: multi-unit parts appear per unit.
             uniq = {s.reference for s in real}
-            rec.check("unique_refs_match_cli_netlist", len(uniq) == n,
-                      f"api {len(real)} unit instances / {len(uniq)} refs vs cli {n}")
+            rec.check(
+                "unique_refs_match_cli_netlist",
+                len(uniq) == n,
+                f"api {len(real)} unit instances / {len(uniq)} refs vs cli {n}",
+            )
     return rec.finish()
 
 

@@ -185,6 +185,49 @@ Optional arguments:
   do not touch the user's config; Phase 3's launcher should set
   `KICAD_CONFIG_HOME` under `/data` explicitly.
 
+### Lifecycle (Q7)
+- Startup: 0.21 s, 0.21 s, 0.21 s (process start → socket answers `ping`), plus
+  `open_document` 0.32–0.33 s (sch) and 0.35–0.36 s (pcb) for ecc83-pp. The
+  `startup_under_15s` check passes with a wide margin; C4's
+  `kicad_start_timeout_s = 60` is generous.
+- Lock files: the headless server creates **only** `~<project>.kicad_pro.lck`
+  (e.g. `~ecc83-pp.kicad_pro.lck`), no per-sheet/board lock; content is JSON
+  `{"hostname": …, "token": …, "username": …}`. It is removed on SIGTERM and
+  **left behind** after kill -9. A second api-server on the same project (lock
+  present) **opens it anyway** — the lock is advisory and not enforced by the
+  headless server. Consequences for Phase 3: `lock_status` must look at
+  `~<stem>.kicad_pro.lck` (as well as `~<file>.lck` for sch/pcb in case the GUI
+  writes those), must be evaluated **before** CopperChat starts its own server
+  (afterwards CopperChat's own lock is present), and should treat a lock whose
+  `token`/host is CopperChat's own (or stale after a crash) as not-locked; on
+  restart after kill -9 the stale lock is simply overwritten.
+- Socket permissions: socket file `0o755` (owner-writable only), inside a
+  `0o700` directory created by the harness → not world-writable. C4's
+  `/tmp/copperchat/` directory at `0700` is what actually protects it.
+- External change: no auto reload (`get_symbols()` still returns the old
+  content 2 s after the file was replaced on disk). `sch.revert()` reloads from
+  disk in 0.06 s (26 → 27 symbols after replacing the file); `board.revert()`
+  works too. Phase 7's hash check should call `revert()` on the changed document.
+- kill -9: detected immediately on the next call as
+  `kipy.errors.ConnectionError: Failed to connect to KiCad: Connection refused`;
+  stale socket file left behind (yes) and stale lock (yes). Restart on the
+  **same socket path** works (the server replaces the stale socket): 0.96 s
+  including both `open_document` calls.
+- SIGSTOP (hang): with a client that is already connected, the call fails after
+  exactly `timeout_ms` (2.00 s, `ConnectionError: Error receiving reply from KiCad:
+  Timed out`) and the same client works again after SIGCONT. A **fresh** client's
+  first call dials with `block_on_dial=True`, which `timeout_ms` does not bound:
+  it failed only after 10.00 s, and after SIGCONT a new client still timed out.
+  → C4 must enforce its own deadline (worker thread + `asyncio.wait_for`), keep
+  one long-lived connected client per session, and **restart** the server on any
+  timeout instead of retrying (matches C4's "restart, then raise
+  `KicadUnavailable`").
+- Parallel servers: two servers on different projects/sockets work side by side
+  (26 vs 119 symbols).
+- kipy also ships `KiCad(headless=True, kicad_cli_path=…, file_path=…)`
+  (`kipy.server.KiCadServer`), which starts `kicad-cli api-server` itself; C4's
+  own `ServerLauncher` remains preferable (explicit socket path, restart control).
+
 ## Decision
 
 ## Follow-ups

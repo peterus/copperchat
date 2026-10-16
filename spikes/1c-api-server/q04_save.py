@@ -30,10 +30,13 @@ def main() -> int:
         k.get_board().save()
         rec.check("pcb_save_ok", True, "no exception")
         after = {p.name: (p.stat().st_mtime_ns, sha(p)) for p in proj.iterdir() if p.is_file()}
-        rec.note("save_touched_mtime", sorted(n for n in after if before.get(n, (0,))[0]
-                                              != after[n][0]))
-        rec.note("save_changed_content", sorted(n for n in after if before.get(n, (0, ""))[1]
-                                                != after[n][1]))
+        rec.note(
+            "save_touched_mtime", sorted(n for n in after if before.get(n, (0,))[0] != after[n][0])
+        )
+        rec.note(
+            "save_changed_content",
+            sorted(n for n in after if before.get(n, (0, ""))[1] != after[n][1]),
+        )
         saved_hashes = {p.name: sha(p) for p in sch_files}
 
         dest = Path(tempfile.mkdtemp(prefix="c1-copy-"))
@@ -41,19 +44,25 @@ def main() -> int:
         copied = sorted(p.name for p in dest.iterdir())
         rec.note("copy_dir_listing", copied)
         rec.check("copy_root_written", (dest / root.name).exists(), copied)
-        rec.check("copy_subsheets_written", all((dest / s).exists() for s in subs),
-                  f"expected {subs}, got {copied}")
-        k.get_board().save_as(str(dest / f"{root.stem}.kicad_pcb"), overwrite=True,
-                              include_project=False)
+        rec.check(
+            "copy_subsheets_written",
+            all((dest / s).exists() for s in subs),
+            f"expected {subs}, got {copied}",
+        )
+        k.get_board().save_as(
+            str(dest / f"{root.stem}.kicad_pcb"), overwrite=True, include_project=False
+        )
         copied = sorted(p.name for p in dest.iterdir())
         rec.check("pcb_copy_written", (dest / f"{root.stem}.kicad_pcb").exists(), copied)
         # copy must not change the open document's path or the originals
-        rec.check("originals_unchanged", {p.name: sha(p) for p in sch_files} == saved_hashes,
-                  "hash compare vs. right after save()")
+        rec.check(
+            "originals_unchanged",
+            {p.name: sha(p) for p in sch_files} == saved_hashes,
+            "hash compare vs. right after save()",
+        )
         docs = k.get_open_documents(DocumentType.DOCTYPE_SCHEMATIC)
         rec.check("open_doc_still_original", str(dest) not in str(docs[0]), str(docs[0])[:300])
-        rec.note("copy_root_equals_saved_root",
-                 sha(dest / root.name) == saved_hashes[root.name])
+        rec.note("copy_root_equals_saved_root", sha(dest / root.name) == saved_hashes[root.name])
         # the copy is a valid KiCad file (kicad-cli does not fail on a missing sub-sheet
         # file: it plots that sheet empty, so record the SVG sizes as well)
         r = run_cli("sch", "export", "svg", "-o", str(dest / "svg"), str(dest / root.name))
@@ -66,10 +75,14 @@ def main() -> int:
                 shutil.copy2(proj / s, dest / s)
             r = run_cli("sch", "export", "svg", "-o", str(dest / "svg2"), str(dest / root.name))
             sizes2 = {p.name: p.stat().st_size for p in (dest / "svg2").glob("*.svg")}
-            grew = [n for n in sizes2 if n != f"{root.stem}.svg" and sizes2[n] > 2 * sizes.get(n, 0)]
-            rec.check("workaround_copy_saved_subsheets",
-                      r.returncode == 0 and len(grew) == len(sizes2) - 1 >= 1,
-                      f"rc={r.returncode} sizes={sizes2} (copy-only: {sizes})")
+            grew = [
+                n for n in sizes2 if n != f"{root.stem}.svg" and sizes2[n] > 2 * sizes.get(n, 0)
+            ]
+            rec.check(
+                "workaround_copy_saved_subsheets",
+                r.returncode == 0 and len(grew) == len(sizes2) - 1 >= 1,
+                f"rc={r.returncode} sizes={sizes2} (copy-only: {sizes})",
+            )
     return rec.finish()
 
 
