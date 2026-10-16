@@ -22,8 +22,8 @@
 - Invocation: the extracted AppImage's `squashfs-root/usr/bin/kicad-cli` runs
   directly when `LD_LIBRARY_PATH` includes `squashfs-root/usr/lib` (the harness
   does this); `LANG=C`/`LC_ALL=C` are set for every call.
-- api-server syntax: `kicad-cli api-server --socket <socket path> <project.kicad_pro>` (full `--help` below)
-- Socket URL: `ipc://<absolute socket path>` (e.g. `ipc:///tmp/c1-sock-5n2ycbwh/api.sock`);
+- api-server syntax: `kicad-cli api-server --socket SOCKET_PATH PROJECT.kicad_pro` (full `--help` below)
+- Socket URL: `ipc://` + absolute socket path (e.g. `ipc:///tmp/c1-sock-5n2ycbwh/api.sock`);
   kipy: `KiCad(socket_path="ipc:///abs/path.sock", client_name=..., timeout_ms=...)`
 - kipy revision: `87b945a0d56b26a78bf547db9771ff9bf3a057ea` (kicad-python `main` HEAD on
   2026-10-16, version `0.9.0.dev0`; source `https://gitlab.com/kicad/code/kicad-python.git`;
@@ -47,7 +47,7 @@
   accepted). `ecc83-pp_v2.*` is deliberately not copied: two `.kicad_pro` files
   in one directory would make the project ambiguous.
 
-<details><summary>kicad-cli api-server --help</summary>
+`kicad-cli api-server --help`:
 
 ```
 Usage: kicad-cli api-server [--help] [--socket SOCKET_PATH] PROJECT_OR_FILE
@@ -61,17 +61,33 @@ Optional arguments:
   -h, --help       Shows help message and exits 
   --socket         Override API socket path [nargs=0..1] [default: ""]
 ```
-</details>
 
 ## Results
+
+`uv run python run_all.py` on 2026-10-16 (`results/summary.md`):
+
+| Question | Result | Failed checks |
+|---|---|---|
+| q01_cli | 4 pass / 0 fail |  |
+| q02_connect | 12 pass / 0 fail |  |
+| q03_get_items | 17 pass / 0 fail |  |
+| q04_save | 8 pass / 1 fail | copy_subsheets_written |
+| q05_export | 14 pass / 0 fail |  |
+| q06_erc_drc | 8 pass / 0 fail |  |
+| q07_lifecycle | 12 pass / 0 fail |  |
+
+The one FAIL (`q04_save.copy_subsheets_written`) is a finding with a verified
+workaround (`workaround_copy_saved_subsheets` PASS), see Q4. With
+`KICAD_CLI=/nonexistent` every script prints the single SKIP line and
+`run_all.py` exits 0.
 
 ### Connecting (Q2)
 - The headless server **only preloads the project** when given a `.kicad_pro`;
   `GetOpenDocuments` then fails with `no handler available for request of type
   kiapi.common.commands.GetOpenDocuments` (the schematic/board handlers are only
   registered once the editor face has a document). The client must call
-  `kicad.open_document("<abs>.kicad_sch", DOCTYPE_SCHEMATIC)` and
-  `kicad.open_document("<abs>.kicad_pcb", DOCTYPE_PCB)` right after connect
+  `kicad.open_document("/abs/x.kicad_sch", DOCTYPE_SCHEMATIC)` and
+  `kicad.open_document("/abs/x.kicad_pcb", DOCTYPE_PCB)` right after connect
   (0.32 s and 0.39 s for ecc83-pp). The harness's `Server` does this.
 - After that, `get_open_documents(DOCTYPE_SCHEMATIC|DOCTYPE_PCB)` each return one
   specifier; `DOCTYPE_PROJECT` still has no handler.
@@ -97,7 +113,7 @@ Optional arguments:
 - UUID format: 36-char lowercase hyphenated (`str(item.id.value)`). Items from
   pre-v6 files keep their legacy timestamp ids in that form, e.g.
   `00000000-0000-0000-0000-00004549f4be` — still full UUIDs, just mostly zeros.
-- Symbol instance `path` is the sheet instance path (`/<root uuid>/<sheet uuid>`),
+- Symbol instance `path` is the sheet instance path (`/ROOT_UUID/SHEET_UUID`),
   so the same symbol in two sheet instances is two entries with different paths.
 - No GetItems call was missing, so no `kicad-cli` workaround is needed.
 
@@ -190,13 +206,13 @@ Optional arguments:
   `open_document` 0.32–0.33 s (sch) and 0.35–0.36 s (pcb) for ecc83-pp. The
   `startup_under_15s` check passes with a wide margin; C4's
   `kicad_start_timeout_s = 60` is generous.
-- Lock files: the headless server creates **only** `~<project>.kicad_pro.lck`
+- Lock files: the headless server creates **only** `~PROJECT.kicad_pro.lck`
   (e.g. `~ecc83-pp.kicad_pro.lck`), no per-sheet/board lock; content is JSON
   `{"hostname": …, "token": …, "username": …}`. It is removed on SIGTERM and
   **left behind** after kill -9. A second api-server on the same project (lock
   present) **opens it anyway** — the lock is advisory and not enforced by the
   headless server. Consequences for Phase 3: `lock_status` must look at
-  `~<stem>.kicad_pro.lck` (as well as `~<file>.lck` for sch/pcb in case the GUI
+  `~STEM.kicad_pro.lck` (as well as `~FILE.lck` for sch/pcb in case the GUI
   writes those), must be evaluated **before** CopperChat starts its own server
   (afterwards CopperChat's own lock is present), and should treat a lock whose
   `token`/host is CopperChat's own (or stale after a crash) as not-locked; on
@@ -230,4 +246,60 @@ Optional arguments:
 
 ## Decision
 
+- Gate: **1C partial: SaveCopyOfDocument writes only the root sheet of a
+  hierarchical schematic → workaround: `SaveDocument` (`sch.save()`) on the open
+  schematic, then `SaveCopyOfDocument` for the root (`sch.save_as(dest, overwrite=True,
+  include_project=False)`) plus a byte copy of the sub-sheet files KiCad has just
+  saved (names from `sch.get_hierarchy()`); read-only projects copy the on-disk
+  files.** Every other core operation passes on the API itself: GetItems on
+  schematic (all sheets) and board, SaveDocument, SaveCopyOfDocument (root sheet,
+  board), PNG export via API jobs for both document types, plus SVG, ERC/DRC JSON,
+  revert, crash/hang detection and restart. No `kicad-cli` workaround is needed.
+- Recommended KICAD_COMMIT: `0616634034fa1a8c92c141c293342cbef2f68dff`
+  (the tested nightly `10.99.0-5265-g0616634034`).
+- kipy revision for backend `[tool.uv.sources]` and the base image:
+  `87b945a0d56b26a78bf547db9771ff9bf3a057ea`
+  (`kicad-python = { git = "https://gitlab.com/kicad/code/kicad-python.git", rev = "87b945a0d56b26a78bf547db9771ff9bf3a057ea" }`).
+
 ## Follow-ups
+
+- **Phase 2:** `docker/kicad-base/KICAD_COMMIT` =
+  `0616634034fa1a8c92c141c293342cbef2f68dff`; install kipy at
+  `87b945a0d56b26a78bf547db9771ff9bf3a057ea`. Building kipy from the uv git
+  source clones the whole KiCad repo as a submodule (4.5 min, 3.5 GB cache);
+  cheaper: clone kicad-python at the revision, `git submodule update --init
+  --depth 1` (38 s), then build/install it, or point its `kicad` submodule at the
+  KiCad tree the image already builds from. Install the stock symbol/footprint
+  libraries **and** global `sym-lib-table`/`fp-lib-table` for the runtime user,
+  else ERC/DRC report `footprint_link_issues`/`footprint_symbol_mismatch` for every
+  stock footprint. Smoke test: `kicad-cli api-server --socket S PROJECT.kicad_pro`
+  then `ping`, `open_document` (sch + pcb), `get_schematic().get_symbols()`.
+- **Phase 3 (C4):**
+  - Launch: `kicad-cli api-server --socket /tmp/copperchat/ID.sock PROJECT.kicad_pro`
+    with `LANG=C`, `LC_ALL=C` and `KICAD_CONFIG_HOME` under `/data`; ready when the
+    socket answers `ping` (~0.2 s); **then `open_document` for the `.kicad_sch` and
+    `.kicad_pcb`** (preloading the project does not open them).
+  - Accessors: `KicadHandle.schematic()` = `kicad.get_schematic()`;
+    `KicadHandle.board()` = `kicad.get_board()`.
+  - Health check: `ping()` on a long-lived, already-connected client;
+    `timeout_ms` bounds calls only after the first successful dial, so `call()`
+    keeps its own deadline (worker thread + `asyncio.wait_for`) and restarts on
+    timeout (a SIGSTOP'd server is not reliably usable afterwards).
+    kill -9 → immediate `kipy.errors.ConnectionError` (connection refused);
+    restart on the same socket path ~1 s incl. opening both documents.
+  - `lock_status`: KiCad's lock is `~STEM.kicad_pro.lck` (JSON with hostname,
+    token, username); check it **before** starting CopperChat's own server (which
+    creates the same file), ignore CopperChat's own/stale locks; the headless
+    server does not enforce locks.
+  - `save_copy(doc, dest)`: procedure from Q4 (root via API + byte copy of KiCad-saved
+    sub-sheets; board via API).
+- **Phase 4:** no GetItems gaps. `get_symbols()` returns one entry per placed unit
+  per sheet instance (dedupe by reference for part counts); positions in nm →
+  mm = nm / 1e6; ERC/DRC JSON paths and exit codes from Q6 (parse the JSON;
+  exit code 0 by default). `API_PNG_EXPORT = True`; `PIXEL_MAPPING_KNOWN = True`
+  with board `PlotSettings.scale = 1.0` (`x_mm = px * 25.4 / dpi`).
+- **Phase 7:** `mode=kicad` uses the API PNG jobs (Q5); hash documents after
+  CopperChat's own save (save normalises files); external change → `revert()`.
+- **Phase 6B:** KiCanvas snapshots of hierarchical schematics need the Q4
+  procedure (root copy + sub-sheet files); a missing sub-sheet is not detected by
+  `kicad-cli` (it plots it empty).
