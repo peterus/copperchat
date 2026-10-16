@@ -17,7 +17,6 @@ from copperchat.tools.spec import ImageBlock
 from copperchat.views.agent_render import THEMES, overlay_grid, render_board
 from copperchat.views.kicad_render import (
     board_layers,
-    crop_mm,
     dpi_for,
     export_kicad_png,
     px_per_mm,
@@ -102,9 +101,9 @@ async def _kicad_board(
         box = (o["x"] - m, o["y"] - m, o["w"] + 2 * m, o["h"] + 2 * m)
     dpi = dpi_for(box[2]) if box else PAGE_DPI
     background = THEMES["light" if theme == "light" else "dark"]["bg"]
-    page = await export_kicad_png(session, "pcb", dpi=dpi, layers=layers, background=background)
-    if box is not None:
-        page, _ = crop_mm(page, dpi, box)
+    page, _ = await export_kicad_png(
+        session, "pcb", dpi=dpi, layers=layers, background=background, box=box
+    )
     return await asyncio.to_thread(to_png, page)
 
 
@@ -127,20 +126,19 @@ async def _schematic(
     session: KicadSession, mode: Mode, region: Region | None, sheet: str | None
 ) -> bytes:
     box: Box | None = None
+    path = await session.call(_sheet_path(sheet)) if sheet else None
     if region is not None:
         symbols = await session.call(symbol_boxes)
-        if region.around_ref:
+        if region.around_ref and path is None:
             hits = [s for s in symbols if s["ref"] == region.around_ref]
-            if hits and not sheet:
-                sheet = hits[0]["sheet"]  # the first sheet instance that has the part
-            symbols = [s for s in symbols if not sheet or s["sheet"] == sheet] or symbols
+            path = hits[0]["sheet"] if hits else None  # first sheet instance with the part
+        if path is not None:
+            symbols = [s for s in symbols if s["sheet"] == path]
         box = resolve_region(region, {"symbols": symbols})
-    path = await session.call(_sheet_path(sheet))
+    if path is None:
+        path = await session.call(_sheet_path(None))
     dpi = dpi_for(box[2]) if box else PAGE_DPI
-    page = await export_kicad_png(session, "sch", dpi=dpi, sheet=path)
-    origin = (0.0, 0.0)
-    if box is not None:
-        page, origin = crop_mm(page, dpi, box)
+    page, origin = await export_kicad_png(session, "sch", dpi=dpi, sheet=path, box=box)
     if mode == "kicad":
         return await asyncio.to_thread(to_png, page)
     markers = [v for v in await check_violations(session, "sch") if v.get("sheet") == path]

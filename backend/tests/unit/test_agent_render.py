@@ -43,7 +43,9 @@ def test_deterministic_and_bounded() -> None:
 
 
 def test_grid_step() -> None:
-    assert grid_step(15) == 1 and grid_step(60) == 5 and grid_step(5000) == 100
+    assert grid_step(15) == 1 and grid_step(60) == 5 and grid_step(5000) == 500
+    for width in (7.0, 333.0, 1e9):  # bounded line count for any region size
+        assert width / grid_step(width) <= 20
 
 
 def test_overlay_grid_keeps_size() -> None:

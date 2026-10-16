@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Request
 
 from copperchat.db.repos.projects import touch_opened, upsert_projects
-from copperchat.kicad_session import KicadSessionManager
+from copperchat.errors import CopperChatError
+from copperchat.kicad_session import KicadSessionManager, KicadUnavailable
 from copperchat.projects import discover_projects, get_project
 from copperchat.views.snapshot import write_view_snapshots
 from copperchat.web.auth import CurrentUser
 
+log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
 
@@ -39,8 +42,16 @@ async def open_project(project_id: str, request: Request, _: CurrentUser) -> dic
     session = await sessions.open(project)
     await touch_opened(state.db, project.id)
     version: str = await session.call(lambda h: str(h.kicad.get_version().full_version))
-    # X1/X3: the viewer has content right after open, before any agent turn.
-    view_files = await write_view_snapshots(session)
+    # X1/X3: the viewer has content right after open, before any agent turn. A
+    # snapshot that cannot be written leaves that viewer empty; it must not make
+    # the (already open) project unusable for the agent.
+    try:
+        view_files = await write_view_snapshots(session)
+    except KicadUnavailable:
+        raise
+    except (CopperChatError, OSError) as exc:
+        log.warning("view snapshots for %s failed: %s", project.rel_path, exc)
+        view_files = {"sch": [], "pcb": []}
     return {
         "id": project.id,
         "readOnly": session.read_only,

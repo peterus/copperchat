@@ -134,6 +134,9 @@ async def run_kicad_check(session: KicadSession, doc: DocKind, settings: Setting
         except asyncio.CancelledError:
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
+            # Reap it before the temp dir goes away; the cancellation still wins.
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.shield(proc.wait())
             raise
         if not report.is_file():
             detail = (err or out).decode(errors="replace").strip()[-500:]

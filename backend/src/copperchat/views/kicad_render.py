@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import tempfile
 from pathlib import Path
@@ -24,7 +25,8 @@ from copperchat.kicad_tools.filtering import not_found
 API_PNG_EXPORT = True
 PIXEL_MAPPING_KNOWN = True
 DEFAULT_BOARD_LAYERS = ("F.Cu", "B.Cu", "F.SilkS", "B.SilkS", "Edge.Cuts")
-MIN_DPI, MAX_DPI = 72, 600
+# 300 dpi keeps an A4 page at ~9 Mpx; Pillow's decompression-bomb limit guards the rest.
+MIN_DPI, MAX_DPI = 72, 300
 BOARD_LAYER_NAMES = tuple(
     name for layer, name in CANONICAL_LAYER_NAMES.items() if layer != BoardLayer.BL_UNKNOWN
 )
@@ -82,8 +84,10 @@ async def export_kicad_png(
     layers: list[str] | None = None,
     sheet: str | None = None,
     background: tuple[int, int, int] = (255, 255, 255),
-) -> Image.Image:
-    """The whole page as KiCad plots it, flattened onto `background` (RGB)."""
+    box: tuple[float, float, float, float] | None = None,
+) -> tuple[Image.Image, tuple[float, float]]:
+    """KiCad's plot of the page (cropped to the mm `box`, if given), flattened onto
+    `background` (RGB); returns the image and the page position of its top-left (mm)."""
     chosen = board_layers(layers) if doc == "pcb" else []
     with tempfile.TemporaryDirectory(prefix="cc-render-") as tmp:
         out = Path(tmp) / "page.png"
@@ -95,11 +99,29 @@ async def export_kicad_png(
                 "the api-server's PNG export job did not produce an image",
                 "Use render_view with mode=agent",
             )
-        with Image.open(written[0]) as raw:
-            page = raw.convert("RGBA")
+        # Decoding a page plot is CPU- and memory-heavy: off the event loop.
+        return await asyncio.to_thread(_flatten, written[0], dpi, box, background)
+
+
+def _flatten(
+    path: Path,
+    dpi: int,
+    box: tuple[float, float, float, float] | None,
+    background: tuple[int, int, int],
+) -> tuple[Image.Image, tuple[float, float]]:
+    try:
+        with Image.open(path) as raw:
+            page, origin = crop_mm(raw, dpi, box) if box else (raw.copy(), (0.0, 0.0))
+    except Image.DecompressionBombError:
+        raise StructuredToolError(
+            "Page too large to render",
+            "the plotted page exceeds the image size limit at this zoom",
+            "Use a larger region (lower zoom) or mode=agent",
+        ) from None
+    page = page.convert("RGBA")
     flat = Image.new("RGBA", page.size, (*background, 255))
     flat.alpha_composite(page)
-    return flat.convert("RGB")
+    return flat.convert("RGB"), origin
 
 
 def crop_mm(

@@ -13,11 +13,13 @@ GOOD = {"username": "admin", "password": "test-password"}
 
 
 @contextmanager
-def app_client(make_settings: Callable[..., Settings]) -> Iterator[tuple[TestClient, str]]:
+def app_client(
+    make_settings: Callable[..., Settings], server: FakeServer | None = None
+) -> Iterator[tuple[TestClient, str]]:
     settings = make_settings()
     copy_fixture("ecc83", settings.projects_root)  # KiCad-generated files, served opaque
     project = discover_projects(settings.projects_root)[0]
-    server = FakeServer()
+    server = server or FakeServer()
     app = create_app(
         settings, launcher=FakeLauncher(server), client_factory=FakeClientFactory(server)
     )
@@ -91,3 +93,13 @@ def test_requires_login(make_settings: Callable[..., Settings]) -> None:
     with app_client(make_settings) as (client, pid):
         for path in ("view/pcb", "view/files/ecc83-pp.kicad_pcb", "agent-view", "renders/x.png"):
             assert client.get(f"/api/projects/{pid}/{path}").status_code == 401
+
+
+def test_open_survives_a_failing_snapshot(make_settings: Callable[..., Settings]) -> None:
+    # A sub-sheet outside the project directory cannot be copied into the view dir.
+    server = FakeServer(hierarchy=["ecc83-pp.kicad_sch", "../elsewhere.kicad_sch"])
+    with app_client(make_settings, server) as (client, pid):
+        client.post("/api/auth/login", json=GOOD)
+        r = client.post(f"/api/projects/{pid}/open")
+        assert r.status_code == 200
+        assert r.json()["viewFiles"] == {"sch": [], "pcb": []}

@@ -76,11 +76,14 @@ def _bounds(snap: dict[str, Any]) -> tuple[float, float, float, float]:
 
 
 def grid_step(w_mm: float) -> float:
-    """Round grid pitch giving at most ~20 lines across."""
-    for step in (1, 2, 5, 10, 20, 50):
-        if w_mm / step <= 20:
-            return float(step)
-    return 100.0
+    """Round grid pitch (1-2-5 series, >= 1 mm) giving at most 20 lines across."""
+    step = 1.0
+    while w_mm / step > 20:
+        for factor in (2.0, 2.5, 2.0):  # 1 -> 2 -> 5 -> 10
+            step *= factor
+            if w_mm / step <= 20:
+                break
+    return step
 
 
 def _font(size: float) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:

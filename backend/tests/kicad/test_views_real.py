@@ -74,6 +74,15 @@ async def test_schematic_modes(hier_session: KicadSession) -> None:
     assert sub.data != agent.data
     around = await render_view(hier_session, "sch", "agent", region=Region(around_ref="U301"))
     assert size(around.data) != size(agent.data)
+    # A sheet given by name scopes around_ref to that sheet; U201 is not on it.
+    with pytest.raises(StructuredToolError):
+        await render_view(
+            hier_session,
+            "sch",
+            "kicad",
+            region=Region(around_ref="U201"),
+            sheet="ampli_ht_horizontal",
+        )
 
 
 async def test_render_errors(ecc83_session: KicadSession) -> None:
