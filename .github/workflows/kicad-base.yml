@@ -5,9 +5,9 @@ name: kicad-base
 #
 # The build runs only when needed: the tag is missing, the published image was
 # built from a different recipe (label io.copperchat.recipe = hash of
-# docker/kicad-base/*), or `force` is set on a manual run. Pull requests push
-# only the first publication of a tag; they never overwrite an existing tag
-# (main does, after the recipe change is merged). Every built image is smoke-
+# docker/kicad-base/*), or `force` is set on a manual run. Only runs on main
+# overwrite an existing tag; pull requests and manual runs on other branches
+# push only the first publication of a tag. Every built image is smoke-
 # tested before it is pushed, and the published image is smoke-tested again.
 
 on:
@@ -74,7 +74,7 @@ jobs:
           COMMIT: ${{ steps.pins.outputs.commit }}
           RECIPE: ${{ steps.pins.outputs.recipe }}
           FORCE: ${{ inputs.force || 'false' }}
-          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
           SAME_REPO: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
           if json="$(docker buildx imagetools inspect "$IMAGE:$COMMIT" --format '{{json .Image}}' 2>inspect.err)"; then
@@ -92,7 +92,7 @@ jobs:
           build=false; push=false
           if [ "$FORCE" = "true" ] || [ "$exists" = "false" ] || [ "$published" != "$RECIPE" ]; then
             build=true
-            if [ "$SAME_REPO" = "true" ] && { [ "$EVENT" != "pull_request" ] || [ "$exists" = "false" ]; }; then
+            if [ "$SAME_REPO" = "true" ] && { [ "$REF" = "refs/heads/main" ] || [ "$exists" = "false" ]; }; then
               push=true
             fi
           fi
