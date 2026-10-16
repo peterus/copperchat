@@ -1,0 +1,5 @@
+.kicad/
+fixtures/
+results/
+.venv/
+__pycache__/

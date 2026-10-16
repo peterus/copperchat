@@ -1,0 +1,19 @@
+[project]
+name = "spike-1c-api-server"
+version = "0.0.0"
+description = "Throwaway spike: KiCad 11 kicad-cli api-server + kipy (CopperChat phase 1C)"
+requires-python = ">=3.13"
+license = "GPL-3.0-only"
+dependencies = ["kicad-python", "pillow>=11"]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+kicad-python = { path = ".kicad/kicad-python" }
+
+[dependency-groups]
+dev = ["ruff>=0.7"]
+
+[tool.ruff]
+line-length = 100
