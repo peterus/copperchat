@@ -6,8 +6,8 @@ reachable through the `research_part` tool, with a path guard and a Parts
 page; image/PDF attachments uploaded from the composer and passed to the
 agent.
 
-**Depends on:** Phase 5 (agent runtime, `RunEngine`, `sdk_backend.py`,
-`guards.py`), Phase 6A (frontend shell, panels, composer slot).
+**Depends on:** Phase 5 (agent runtime, `RunEngine`, `sdk_backend.py`),
+Phase 6A (frontend shell, panels, composer slot).
 
 **Parallel with:** 6B, 7.
 
@@ -54,7 +54,7 @@ note it in the done report):
   `research/runner.py`, `research/tools.py`
 - Create: `backend/src/copperchat/parts.py`, `backend/src/copperchat/uploads.py`
 - Create: `backend/src/copperchat/web/routes_skills.py`, `web/routes_parts.py`, `web/routes_uploads.py`
-- Modify: `backend/src/copperchat/agent/guards.py` (add `make_researcher_guard`)
+- Create: `backend/src/copperchat/agent/guards.py` (`make_researcher_guard`; Phase 5 keeps `make_tool_guard` in `sdk_backend.py`)
 - Modify: `backend/src/copperchat/agent/sdk_backend.py` (skills + attachments)
 - Modify: `backend/src/copperchat/agent/run_engine.py` wiring in `web/app.py` (attachment resolver)
 - Modify: `backend/src/copperchat/tools/registry.py` (add `research` provider)
@@ -1172,7 +1172,7 @@ work while exactly one sub-agent type exists.)
 
 **Files:**
 - Create: `backend/src/copperchat/research/__init__.py` (empty), `research/paths.py`, `research/agent.py`
-- Modify: `backend/src/copperchat/agent/guards.py`
+- Create: `backend/src/copperchat/agent/guards.py`
 - Test: `backend/tests/unit/test_researcher_guard.py`
 
 **Interfaces:**
@@ -1394,8 +1394,8 @@ PART_RESEARCHER = AgentDefinition(
 
 The prompt contains the literal `docs/parts/<MPN>/notes.md` (test assertion).
 
-Add to `backend/src/copperchat/agent/guards.py` (keep Phase 5's
-`make_tool_guard` unchanged):
+Create `backend/src/copperchat/agent/guards.py` (Phase 5 keeps its
+`make_tool_guard` in `sdk_backend.py`, unchanged):
 
 ```python
 from typing import Any
