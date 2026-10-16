@@ -128,6 +128,34 @@ Optional arguments:
     of the root + sub-sheets is the snapshot. Board: `board.save_as(dest/x.kicad_pcb,
     overwrite=True, include_project=False)` is complete (one file).
 
+### Export (Q5)
+- PNG export: **API jobs work for both document types** with the pinned kipy:
+  `RunSchematicJobExportPng` (`kipy.proto.schematic.schematic_jobs_pb2`) via
+  `kicad.get_schematic().export_png(out_dir, dpi=300, sheet_mode=SJSM_ALL_SHEETS)`
+  (one PNG per sheet in `out_dir`), and `RunBoardJobExportPng`
+  (`kipy.proto.board.board_jobs_pb2`) via
+  `kicad.get_board().export_png(out_file, plot_settings=ps, dpi=300)` with
+  `ps = kipy.board_jobs.PlotSettings(); ps.layers = [...]; ps.scale = 1.0`.
+  Both return `JobResult(succeeded=True, output_paths=[...])`; PNGs are RGBA with a
+  transparent background (set `plot_background_color` for an opaque one),
+  sized to the page (A4 at 300 dpi = 3508 × 2480 px). DPI range 72–2400.
+- SVG export: API `export_svg` works for both (board also with
+  `fit_page_to_board=True`); `kicad-cli sch export svg` and
+  `kicad-cli pcb export svg --layers F.Cu,B.Cu,Edge.Cuts --mode-single` work too
+  (SVG carries mm `width`/`height` + `viewBox`).
+- Pixel to mm: `x_mm = px * 25.4 / dpi`, `y_mm = py * 25.4 / dpi` — the PNG is
+  the full page and both editors use page coordinates (origin = page top-left).
+  Board: holds **only with `PlotSettings.scale = 1.0`**; the proto default `0`
+  auto-scales the board to fill the page (ecc83-pp: 52 mm board plotted 177 mm
+  wide). With scale 1 the Edge.Cuts content box is (121.16, 90.09)–(173.48, …) mm
+  vs. the API bounding box (121.22, 90.11)–(173.42, 136.59) mm — off by half the
+  edge line width (0.06 mm). Schematic: page-sized PNG; C1 at (86.36, 57.15) mm
+  ↦ px (1020, 675). Boards larger than or placed outside the page are clipped by
+  this formula's page; Phase 4 must crop to the board bbox, not assume it fits.
+- Not needed: no rasterisation fallback (`kicad-cli … svg` + cairosvg) is
+  required at this commit, but it remains available (`cli_sch_svg`/`cli_pcb_svg`
+  PASS).
+
 ## Decision
 
 ## Follow-ups
