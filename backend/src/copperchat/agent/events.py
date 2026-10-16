@@ -70,8 +70,13 @@ class RateLimited:
 
 @dataclass(frozen=True)
 class TurnFinished:
+    """End of a turn. ``unsolicited`` marks the end of a turn the CLI started on its own
+    (e.g. a background task notification, X20 (3)): it answers no gated input item, so
+    the engine must neither finish the current turn nor release the next item on it."""
+
     reason: Literal["completed", "interrupted", "error"]
     error: str | None = field(default=None)
+    unsolicited: bool = False
 
 
 @dataclass(frozen=True)

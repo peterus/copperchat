@@ -542,3 +542,38 @@ async def test_streaming_backend_interrupt_delegates_to_client(settings, project
     rest = [await first] + [ev async for ev in gen]
     assert rest[-1] == TurnFinished(reason="interrupted")
     assert client_box[0].disconnected is True
+
+
+def test_mapper_task_notification_result_is_unsolicited_and_keeps_state():
+    # X20 (3): a backgrounded delegation can make the CLI run an injected turn whose
+    # ResultMessage is not the answer to any gated input item.
+    m = SdkEventMapper()
+    m.map(_result(total_cost_usd=1.0, model_usage={"m": _mu(100, 10, 0, 0, 1.0)}))
+    m.note_interrupt_requested()
+    stray = m.map(
+        _result(
+            total_cost_usd=1.5,
+            model_usage={"m": _mu(150, 15, 0, 0, 1.5)},
+            origin={"kind": "task-notification"},
+        )
+    )
+    assert stray == [TurnFinished(reason="completed", unsolicited=True)]
+    # Baseline untouched: the next real result's delta includes the stray turn's usage,
+    # and the pending interrupt request was not consumed by the stray result.
+    usage, fin = m.map(
+        _result(
+            subtype="error_during_execution",
+            is_error=True,
+            total_cost_usd=2.0,
+            model_usage={"m": _mu(200, 20, 0, 0, 2.0)},
+        )
+    )
+    assert isinstance(usage, Usage)
+    assert (usage.input_tokens, usage.output_tokens) == (100, 10)
+    assert usage.cost_usd == pytest.approx(1.0)
+    assert fin == TurnFinished(reason="interrupted")
+
+
+def test_mapper_human_origin_result_is_a_normal_turn_end():
+    m = SdkEventMapper()
+    assert m.map(_result(origin={"kind": "human"}))[-1] == TurnFinished(reason="completed")

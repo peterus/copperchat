@@ -199,6 +199,16 @@ def _rate_limit_resets(info: RateLimitInfo | None) -> datetime | None:
     return datetime.fromtimestamp(info.resets_at, UTC)
 
 
+def _is_unsolicited(msg: ResultMessage) -> bool:
+    """A result whose turn was not triggered by our own prompt (spike 1A (h), X20 (3)).
+
+    Our prompts carry no origin (or ``{"kind": "human"}``); anything else, notably
+    ``task-notification`` from a backgrounded delegation, is an injected turn.
+    """
+    origin = msg.origin
+    return origin is not None and origin.get("kind") != "human"
+
+
 class SdkEventMapper:
     """Stateful mapping of SDK messages to AgentEvents (one mapper per SDK client).
 
@@ -248,8 +258,15 @@ class SdkEventMapper:
             # The CLI zeroes its running totals; the next result is absolute again.
             self._prev_totals = None
         elif isinstance(msg, ResultMessage):
-            out.append(self._usage(msg))
-            out.append(self._finished(msg))
+            if _is_unsolicited(msg):
+                # Leave the usage baseline and a pending interrupt request untouched: the
+                # next solicited result's delta then includes this turn's usage.
+                out.append(
+                    TurnFinished(reason="error" if msg.is_error else "completed", unsolicited=True)
+                )
+            else:
+                out.append(self._usage(msg))
+                out.append(self._finished(msg))
         # Other SystemMessages (task_started, ...) carry nothing for the chat.
         return out
 
