@@ -45,9 +45,9 @@ Playwright (smoke); KiCanvas; Docker / docker compose; GitHub Actions; GHCR.
 | 3 | `foundation/phase-3-backend-skeleton.md` | FastAPI app, config, SQLite + migrations, login, project discovery + lock detection, `kicad_session`, tool spec/registry, CI | 1C | 2 |
 | 4 | `foundation/phase-4-kicad-tools-views.md` | Read-only `kicad_tools`, ERC/DRC, `render_view`, agent-view renderer, KiCanvas snapshots, fixture projects | 2, 3 | 5 |
 | 5 | `foundation/phase-5-agent-runtime.md` | Agent runtime: push stream, run engine, queue/interrupt/resume/rate limit, message persistence, WebSocket protocol, usage, tool adapter + guards | 1A, 3 | 2, 4 |
-| 6A | `foundation/phase-6a-frontend-shell-chat.md` | Frontend shell: login, project picker, responsive layout, themes, WS client, chat store + history with all Kontor lessons, composer, queue, Stop, usage | 5 | 4, 7 |
+| 6A | `foundation/phase-6a-frontend-shell-chat.md` | Frontend shell: login, project picker, responsive layout, themes, WS client, chat store + history with all Kontor lessons, composer, queue, Stop, usage | 5 | 4 |
 | 6B | `foundation/phase-6b-frontend-viewer.md` | Viewer: KiCanvas tabs, agent-view toggle, layer toggles, tap → `@REF`, `view-updated` refresh, fullscreen pinch-zoom | 1B, 4, 6A | 7, 8 |
-| 7 | `foundation/phase-7-history-git-recovery.md` | Per-turn snapshots + undo, autosave/view refresh at turn end, external-change hash check, crash recovery, git tools + UI | 4, 5 | 6A, 6B, 8 |
+| 7 | `foundation/phase-7-history-git-recovery.md` | Per-turn snapshots + undo, autosave/view refresh at turn end, external-change hash check, crash recovery, git tools + UI | 4, 5, 6A | 6B, 8 |
 | 8 | `foundation/phase-8-skills-research-uploads.md` | Three-layer skills + Skills page, `part-researcher` sub-agent + Parts page, image/PDF attachments | 5, 6A | 6B, 7 |
 | 9 | `foundation/phase-9-pwa-push-release.md` | PWA, Web Push, app Dockerfile, compose (+ optional cloudflared), Cloudflare docs, README, release workflow, CI matrix | 6B, 7, 8 | — |
 
@@ -59,8 +59,8 @@ waves it depends on are merged):
 | 1 | 1A, 1B, 1C |
 | 2 | 2, 3 |
 | 3 | 4, 5 |
-| 4 | 6A, 7 |
-| 5 | 6B, 8 |
+| 4 | 6A |
+| 5 | 6B, 7, 8 |
 | 6 | 9 |
 
 **Go/no-go gates.** The three spikes can change later phases. Each spike doc
@@ -554,7 +554,7 @@ These extend C1–C8 and are equally binding.
   `build_options(*, settings, project, mcp_server, tool_names, resume_session_id, fork_session)`
   and `user_prompt(item)`, `make_tool_guard(allowed: frozenset[str])`,
   `SdkStreamingBackend` / `SdkPerTurnBackend`, alias `SdkAgentBackend`;
-  `default_backend_factory(settings, specs)` (Phase 8 adds `db`);
+  `default_backend_factory(settings, specs)` (Phase 8 adds `db`, see X5);
   `PushStream.release_next()` (gated generator); `Broadcaster(max_queue=1000)`;
   WS close codes 4401/4403/4408, `HEARTBEAT_S = 25.0`; error codes
   `invalid_frame`, `unknown_attachment`, `not_cancellable`;
@@ -603,6 +603,42 @@ These extend C1–C8 and are equally binding.
   `POST /skills/{name}/acknowledge-update`, `GET /projects/{id}/uploads/{uploadId}` (8);
   `GET /projects/{id}/hit-test` (6B fallback only); `agent-view` takes
   `layers` comma-separated.
+
+### Cross-phase corrections (supersede the phase files)
+
+Found in the plan review on 2026-10-16. Where a phase file's code disagrees
+with an item below, the item wins; the executor adapts the code and its tests.
+
+- **X1 — initial view snapshots (Phases 4, 6B).** `POST /projects/{id}/open`
+  writes KiCanvas snapshots for every existing document right after the
+  session opens (Phase 4 adds this to the open route via
+  `write_kicanvas_snapshot`), so the viewer has content without any agent
+  turn. Phase 4's route test expects `200` for `GET /view/{doc}` after open
+  (not `404`); `404` remains only for a document kind the project lacks.
+- **X2 — one source of truth for `view-updated.version` (Phases 4, 5, 7, 6B).**
+  The version is always `KicadSession.view_version` (small integer, starts at
+  0 per session). `write_kicanvas_snapshot` does **not** bump it; only Phase
+  7's `publish_view` bumps it, **once** per publish, after all docs are
+  written. Phase 5 does **not** publish `view-updated` itself (it only records
+  `changed_docs` in `TurnOutcome`); its protocol fixture keeps a small
+  integer. 6B keeps `Math.max` per doc; since a session restart resets the
+  counter, 6B also accepts a lower version after a reconnect/`resumed` state
+  (reset the stored version on `ConnectionState === 'resumed'` and on
+  project open).
+- **X3 — hierarchical schematics in KiCanvas (Phases 4, 6B).** The open
+  response gains `viewFiles: {sch: string[], pcb: string[]}` (file names, root
+  sheet first). Snapshot files are served under their real names at
+  `GET /projects/{id}/view/files/{name}` (traversal-safe, name must end in
+  `.kicad_sch` or `.kicad_pcb`), replacing `GET /view/{doc}` and
+  `/view/sheets/{file}` as the KiCanvas source. `ETag`/`?v=` use X2's version.
+  6B renders one `kicanvas-source` per file in `viewFiles.sch` (pcb: one).
+- **X4 — Phase 7 depends on 6A** (its History/Git panels use
+  `registerPanel`, `useChat`, `@/api/http`); it runs in wave 5.
+- **X5 — `db` for the SDK backend (Phases 5, 8).** Phase 8 passes the
+  database through `AgentRuntime.__init__` (Phase 5's `runtime.py`, the only
+  caller of `default_backend_factory`): `default_backend_factory(settings,
+  specs, db)` → `SdkStreamingBackend(settings, specs, ctx_factory, db)` (and
+  `SdkPerTurnBackend` likewise); `web/app.py` is unchanged.
 
 ### Owner review requested
 

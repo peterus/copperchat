@@ -1,5 +1,7 @@
 # Phase 4: KiCad tools and views
 
+> **Cross-phase corrections apply:** see index § "Cross-phase corrections" (X1, X2, X3); they supersede conflicting code in this file.
+
 **Goal:** Read-only agent tools over the running `kicad-cli api-server`
 (`project_info`, `sch_*`, `pcb_*`, `run_erc`, `run_drc`), the `render_view`
 tool (agent renderer + KiCad export), KiCanvas snapshots, the view HTTP routes,

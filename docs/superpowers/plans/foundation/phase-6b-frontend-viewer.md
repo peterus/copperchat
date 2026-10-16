@@ -1,5 +1,7 @@
 # Phase 6B: Frontend viewer
 
+> **Cross-phase corrections apply:** see index § "Cross-phase corrections" (X1, X2, X3); they supersede conflicting code in this file.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the 6A `ViewerSlot` stub with the real viewer: Schematic/PCB tabs, a "KiCad view" (KiCanvas, or the own-viewer fallback) vs. "Agent view" (server PNG) toggle, eight PCB layer toggles for the agent view, reload on `view-updated`, tap on a component → `@REF` in the composer, and a fullscreen mode with pinch zoom on iPhone.

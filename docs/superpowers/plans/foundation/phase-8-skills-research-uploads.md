@@ -1,5 +1,7 @@
 # Phase 8: Skills, part researcher, uploads
 
+> **Cross-phase corrections apply:** see index § "Cross-phase corrections" (X5); they supersede conflicting code in this file.
+
 **Goal:** Three-layer skills (built-in / user / project) assembled per session
 and passed to the SDK, with a Skills page; the `part-researcher` sub-agent
 reachable through the `research_part` tool, with a path guard and a Parts

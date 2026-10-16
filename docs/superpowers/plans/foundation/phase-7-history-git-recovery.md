@@ -1,5 +1,7 @@
 # Phase 7: History, Git and Recovery
 
+> **Cross-phase corrections apply:** see index § "Cross-phase corrections" (X2, X4); they supersede conflicting code in this file.
+
 **Goal:** Per-turn snapshots with undo, autosave + view refresh at turn end, external-change detection before every turn, crash recovery with a restore offer, read-only git tools for the agent, and the History/Git panels in the frontend.
 
 **Depends on:** Phase 4 (`write_kicanvas_snapshot`, `render_view`, fixture projects), Phase 5 (`RunHooks`, `TurnInfo`, `TurnOutcome`, `AgentRuntime.hooks_factory`, `RunEngine.post_notice/post_error/add_agent_note`, `Broadcaster`, `ViewUpdatedFrame`, `ToolContext.user_message`). Frontend tasks also need Phase 6A merged (`registerPanel`, `useChat`, `@/api/http`).

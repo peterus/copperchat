@@ -1,5 +1,7 @@
 # Phase 5: Agent runtime
 
+> **Cross-phase corrections apply:** see index § "Cross-phase corrections" (X2, X5); they supersede conflicting code in this file.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this phase task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A per-project agent runtime modelled on Kontor: messages are persisted
