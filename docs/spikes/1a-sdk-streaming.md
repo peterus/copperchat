@@ -151,6 +151,13 @@ inference_geo, iterations[], speed, fallback_credit`.
   turn 1: input 2 / cache_creation 710 / output 5).
 - `total_cost_usd` is **cumulative across turns of one client session**:
   turn 0 `0.0002619`, turn 1 `0.0004066`.
+- `model_usage` is **cumulative per client** as well: turn 0
+  `{inputTokens 1176, cacheCreationInputTokens 669, costUSD 0.0002619}`,
+  turn 1 `{inputTokens 1178, cacheCreationInputTokens 1379 (= 669 + 710),
+  costUSD 0.0004066}` — each turn adds its own `usage` (input +2, cache
+  creation +710); its `costUSD` equals the cumulative `total_cost_usd`. About
+  1174 `inputTokens` appear once per client, outside any turn's `usage`
+  (fixed per-client overhead), which also accounts for h5's 1239.
 - `StreamEvent` `message_start` / `message_delta` carry the same usage dicts
   per API message.
 
@@ -266,9 +273,12 @@ Evidence:
   (= 680 + 1048), costUSD 0.00088754}`: its cache figures equal main + sub
   exactly, but `inputTokens` 1239 ≫ 10 (main + sub) — `model_usage` is a
   **superset** that includes the sub-agent plus calls not visible as
-  messages (unattributed). Safe reading: `usage` ≈ main agent only;
-  `model_usage` / `total_cost_usd` include the sub-agent (and more); exact
-  token attribution is not established.
+  messages — consistent with the ~1174-token per-client overhead seen in
+  (f), since `model_usage` is cumulative per client. Reading: `usage` ≈ main
+  agent only for the turn; `model_usage` / `total_cost_usd` are cumulative
+  per client and include the sub-agent and that overhead. Summing sub-agent
+  `AssistantMessage.usage` is unreliable (output tokens are streaming
+  snapshots).
 - **Foreground probe** (ad-hoc, `results/h_foreground_probe.log`, 2 runs per
   config, hook on `Agent` + `can_use_tool`): baseline, `AgentDefinition
   (background=False)`, hook `updatedInput {"run_in_background": false}`, and
@@ -351,8 +361,15 @@ Consequences per question for Phases 5/8:
   `resets_at: int` Unix seconds, `rate_limit_type` (`"five_hour"`),
   `utilization` may be `None` (use `raw["unifiedWindows"][…]["utilization"]`),
   `overage_*`. Events arrive in normal operation (several per run).
-- **Usage (Phase 5):** `ResultMessage.usage` is per turn and covers
-  (approximately) the **main agent only**; `ResultMessage.model_usage[<model>]`
+- **Usage (Phase 5, resolves Task 5.11b's usage branch):** `ResultMessage.usage`
+  is per turn and covers (approximately) the **main agent only** — the
+  "does not include sub-agent tokens" case. Do **not** sum sub-agent
+  `AssistantMessage.usage` (unreliable, see h5); keep `_add_subagent_usage` a
+  no-op. Instead compute the turn's `Usage` (tokens and cost, incl.
+  sub-agent) as the delta of `model_usage` summed over models, and of
+  `total_cost_usd`, against the previous `ResultMessage` of the same client
+  (first turn of a client: the absolute values, which include the
+  per-client overhead); `ResultMessage.model_usage[<model>]`
   (`inputTokens, outputTokens, cacheReadInputTokens,
   cacheCreationInputTokens, costUSD`) and `total_cost_usd` include
   sub-agents; `total_cost_usd` is cumulative per client → per-run delta.

@@ -806,9 +806,12 @@ with an item below, the item wins; the executor adapts the code and its tests.
   backgrounded the sub-agent and the turn ended early; Phase 5 handles an
   "Async agent launched" delegation defensively. (4) Init tool list reports the delegation tool as
   `"Task"`; calls/hooks use `"Agent"`. (5) Usage: `ResultMessage.usage` is
-  per turn, ≈ main agent only; `model_usage` and `total_cost_usd` include
-  sub-agents (`model_usage` is a superset, exact attribution unproven);
-  `total_cost_usd` is cumulative per client (per-run delta).
+  per turn, ≈ main agent only (excludes sub-agents); `model_usage` and
+  `total_cost_usd` are **cumulative per client** and include sub-agents.
+  Phase 5 Task 5.11b: per-turn `Usage` = delta of `model_usage` (summed over
+  models) and of `total_cost_usd` vs. the client's previous `ResultMessage`;
+  `_add_subagent_usage` stays a no-op (summing sub-agent
+  `AssistantMessage.usage` is unreliable).
   (6) Interrupt → `subtype="error_during_execution"`, `terminal_reason`
   `"aborted_streaming"`/`"aborted_tools"` → `run-finished{reason:"interrupted"}`.
   (7) No sub-agent `StreamEvent`s arrive: sub-agent rows come as complete
