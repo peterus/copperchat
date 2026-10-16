@@ -1348,14 +1348,14 @@ def _text(field: Any) -> str:
     return value if isinstance(value, str) else str(getattr(field, "value", ""))
 
 
-def _boxes(kicad: Any, document: Any, items: Sequence[Any]) -> dict[str, Any]:
+def _boxes(client: Any, document: Any, items: Sequence[Any]) -> dict[str, Any]:
     """GetBoundingBox for many items; returns item-id → Box2 proto (keeps ids aligned,
     unlike Board.get_item_bounding_box(list), which drops missing boxes)."""
     cmd = editor_commands_pb2.GetBoundingBox()
     cmd.header.document.CopyFrom(document)
     cmd.mode = editor_commands_pb2.BoundingBoxMode.BBM_ITEM_ONLY
     cmd.items.extend([i.id for i in items])
-    resp = kicad.send(cmd, editor_commands_pb2.GetBoundingBoxResponse)
+    resp = client.send(cmd, editor_commands_pb2.GetBoundingBoxResponse)
     return {kiid.value: box for kiid, box in zip(resp.items, resp.boxes, strict=False)}
 
 
@@ -1363,12 +1363,13 @@ def _collect(h: KicadHandle, doc: DocKind) -> list[RefBox]:
     if doc == "pcb":
         board = h.board()
         items = list(board.get_footprints())
-        document = board._doc  # noqa: SLF001 — kipy keeps the DocumentSpecifier private
+        # kipy keeps the KiCadClient and DocumentSpecifier private on Board/Schematic.
+        client, document = board._kicad, board._doc  # noqa: SLF001
     else:
         sch = h.schematic()
         items = list(sch.get_symbols())
-        document = sch._doc  # noqa: SLF001
-    by_id = _boxes(h.kicad, document, items)
+        client, document = sch._kicad, sch._doc  # noqa: SLF001
+    by_id = _boxes(client, document, items)
     out: list[RefBox] = []
     for item in items:
         box = by_id.get(item.id.value)
@@ -1437,17 +1438,42 @@ def test_svg_viewbox_requires_mm_size() -> None:
         svg_viewbox_mm('<svg width="100" height="50" viewBox="0 0 100 50">')
 ```
 
-`backend/tests/kicad/test_hit_test_kicad.py` (uses Phase 4's `tests/kicad/conftest.py` fixtures; the fixture that yields an authenticated `httpx.AsyncClient` with the `ecc83-pp` fixture project opened is named `opened_client` there and yields `(client, project_id)` — if Phase 4 named it differently, use that name):
+`backend/tests/kicad/test_hit_test_kicad.py` (Phase 4 provides session-level fixtures `ecc83_session` / `hier_session` and the helper `copy_fixture` in `tests/support/kicad_project.py`, but no app-level client fixture; this file defines `opened_client`, which yields an authenticated `httpx.AsyncClient` against a real app with the `ecc83-pp` fixture project opened, as `(client, project_id)`):
 ```python
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
+import httpx
 import pytest
 
+from copperchat.config import Settings
+from copperchat.projects import discover_projects
 from copperchat.views.hit_test import collect_ref_boxes
+from copperchat.web.app import create_app
+from tests.support.kicad_project import copy_fixture
 
 pytestmark = pytest.mark.kicad
+
+GOOD = {"username": "admin", "password": "test-password"}
+
+
+@pytest.fixture
+async def opened_client(
+    make_settings: Callable[..., Settings],
+) -> AsyncIterator[tuple[httpx.AsyncClient, str]]:
+    settings = make_settings(kicad_cli="kicad-cli", kicad_api_timeout_s=30.0, kicad_start_timeout_s=60.0)
+    copy_fixture("ecc83", settings.projects_root)
+    project = next(p for p in discover_projects(settings.projects_root) if p.name == "ecc83-pp")
+    app = create_app(settings)   # real KicadCliLauncher
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            assert (await client.post("/api/auth/login", json=GOOD)).status_code == 204
+            assert (await client.post(f"/api/projects/{project.id}/open")).status_code == 200
+            yield client, project.id
+        await app.state.sessions.close_all()
 
 
 async def test_hit_test_finds_a_real_footprint(opened_client: Any) -> None:
@@ -1764,5 +1790,5 @@ Task order on the no-go path: 6B.1, 6B.2, 6B.F1, 6B.F2, 6B.F3, 6B.4, 6B.5 (6B.5 
   - Vendored KiCanvas lives in `frontend/public/vendor/kicanvas/` (as spike 1B's follow-up names it, loaded by `<script type="module">`), not in `frontend/vendor/kicanvas/`, so the bundle is served as-is and not linted/bundled by Vite.
   - Frontend: `@/stores/view` (`createViewStore`, `viewStore`, `ViewStoreContext`, `useView`), `@/lib/viewUrls` (`snapshotUrl`, `agentViewUrl`, `PCB_LAYERS`, `DEFAULT_LAYERS`), `@/lib/panZoom`, `@/hooks/usePanZoom`, `@/components/viewer/types` (`KicadPaneProps`, `insertMention`), `@/components/viewer/KicadPane`.
   - Phase 4 contract assumptions: `GET /view/{doc}` and `GET /agent-view` send `Cache-Control: no-cache` (URLs without `v` before the first `view-updated`); `agent-view` accepts `mode=agent|kicad` and ignores the `v` cache-buster.
-  - No-go only: `GET /api/projects/{id}/hit-test` → `{ref}`; header `X-CopperChat-Viewbox`; `ImageBlock.viewbox_mm` optional field; `copperchat.views.hit_test.{RefBox, pick_ref, union_region, collect_ref_boxes, svg_viewbox_mm}`; Phase 4 kicad-test fixture `opened_client` → `(client, project_id)` assumed.
+  - No-go only: `GET /api/projects/{id}/hit-test` → `{ref}`; header `X-CopperChat-Viewbox`; `ImageBlock.viewbox_mm` optional field; `copperchat.views.hit_test.{RefBox, pick_ref, union_region, collect_ref_boxes, svg_viewbox_mm}`; kicad-test fixture `opened_client` → `(client, project_id)` defined locally in `test_hit_test_kicad.py`.
 - **Open points:** KiCanvas theme mapping (`kicad` is itself a dark theme; if 1B finds no light theme, light mode keeps `kicad`); schematic `GetBoundingBox` support at the pinned KiCad commit is confirmed by the 6B.F2 kicad test only.

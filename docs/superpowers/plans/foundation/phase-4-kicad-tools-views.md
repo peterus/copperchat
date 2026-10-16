@@ -197,13 +197,13 @@ async def _open(settings: Settings, name: str, stem: str) -> AsyncIterator[Kicad
 
 @pytest.fixture
 async def ecc83_session(make_settings: Callable[..., Settings]) -> AsyncIterator[KicadSession]:
-    async for s in _open(make_settings(kicad_api_timeout_s=30.0), "ecc83", "ecc83-pp"):
+    async for s in _open(make_settings(kicad_cli="kicad-cli", kicad_api_timeout_s=30.0, kicad_start_timeout_s=60.0), "ecc83", "ecc83-pp"):
         yield s
 
 
 @pytest.fixture
 async def hier_session(make_settings: Callable[..., Settings]) -> AsyncIterator[KicadSession]:
-    async for s in _open(make_settings(kicad_api_timeout_s=30.0), "complex_hierarchy",
+    async for s in _open(make_settings(kicad_cli="kicad-cli", kicad_api_timeout_s=30.0, kicad_start_timeout_s=60.0), "complex_hierarchy",
                          "complex_hierarchy"):
         yield s
 ```
@@ -1269,7 +1269,7 @@ from copperchat.views.snapshot import snapshot_path
 from copperchat.web.app import create_app
 from tests.support.fake_kicad import FakeClientFactory, FakeLauncher, FakeServer
 
-GOOD = {"username": "admin", "password": "pw-123456"}
+GOOD = {"username": "admin", "password": "test-password"}
 
 
 def setup(make_settings: Callable[..., Settings]) -> tuple[TestClient, str, Path]:

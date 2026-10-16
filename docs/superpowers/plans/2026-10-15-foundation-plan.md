@@ -582,6 +582,13 @@ These extend C1–C8 and are equally binding.
   notice `action` values `restore`, `restored`, `external-change`.
 - **Phase 8:** table `uploads`; `copperchat.agent.attachments.{attachment_exists, build_user_content}`;
   `copperchat.skills.assembly.{SkillBundle, assemble_skills, apply_skills}`.
+- **Phase 6B:** `@/stores/view`, `@/lib/viewUrls`, `KicadPane(KicadPaneProps)`
+  (same interface on both spike paths); KiCanvas vendored under
+  `frontend/public/vendor/kicanvas/`; fallback only: `ImageBlock.viewbox_mm`,
+  `copperchat.views.hit_test`, header `X-CopperChat-Viewbox`.
+- **Phase 9:** `Settings.vapid_subject`; `Broadcaster.add_listener(listener)`;
+  `app.state.push` (`PushServices`); push payload `{title, body, url, tag}`;
+  any visible connection suppresses push.
 - **HTTP additions:** `GET /auth/me` → `{username}`; `GET /skills/{name}`,
   `POST /skills/{name}/acknowledge-update`, `GET /projects/{id}/uploads/{uploadId}` (8);
   `GET /projects/{id}/hit-test` (6B fallback only); `agent-view` takes

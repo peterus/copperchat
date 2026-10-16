@@ -887,21 +887,21 @@ describe('sw.js', () => {
   it('shows a notification from the push payload', async () => {
     const { handlers, self } = loadSw();
     let p: Promise<unknown> = Promise.resolve();
-    handlers.push({ data: { json: () => ({ title: 'T', body: 'B', url: '/p/abc', tag: 'run-abc' }) },
+    handlers.push({ data: { json: () => ({ title: 'T', body: 'B', url: '/p/a1b2c3d4e5f6', tag: 'run-a1b2c3d4e5f6' }) },
                     waitUntil: (x: Promise<unknown>) => { p = x; } });
     await p;
     expect(self.registration.showNotification).toHaveBeenCalledWith('T', expect.objectContaining({
-      body: 'B', tag: 'run-abc', data: { url: '/p/abc' } }));
+      body: 'B', tag: 'run-a1b2c3d4e5f6', data: { url: '/p/a1b2c3d4e5f6' } }));
   });
 
   it('click focuses an open window and navigates to the project', async () => {
     const { handlers, client } = loadSw();
     let p: Promise<unknown> = Promise.resolve();
-    handlers.notificationclick({ notification: { close: vi.fn(), data: { url: '/p/abc' } },
+    handlers.notificationclick({ notification: { close: vi.fn(), data: { url: '/p/a1b2c3d4e5f6' } },
                                  waitUntil: (x: Promise<unknown>) => { p = x; } });
     await p;
     expect(client.focus).toHaveBeenCalled();
-    expect(client.navigate).toHaveBeenCalledWith('/p/abc');
+    expect(client.navigate).toHaveBeenCalledWith('/p/a1b2c3d4e5f6');
   });
 
   it('rejects foreign click targets', async () => {
@@ -965,9 +965,8 @@ self.addEventListener('notificationclick', (event) => {
 });
 ```
 
-(Test URLs use 12-hex project ids; adjust the test's `/p/abc` to
-`/p/a1b2c3d4e5f6` — the regex only accepts real ids.) Concretely, in the test
-file replace every `'/p/abc'` with `'/p/a1b2c3d4e5f6'` before running Step 4.
+(`safeUrl` only accepts `/p/<12-hex id>`, so a push payload cannot redirect
+the click to a foreign origin.)
 
 ```json
 // frontend/public/manifest.webmanifest
@@ -1630,12 +1629,14 @@ and skip the dev `webServer` when it is set:
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
+      - id: kc
+        run: echo "commit=$(tr -d '[:space:]' < docker/kicad-base/KICAD_COMMIT)" >> "$GITHUB_OUTPUT"
       - name: Build app image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/app/Dockerfile
-          build-args: KICAD_COMMIT=${{ hashFiles('docker/kicad-base/KICAD_COMMIT') != '' && '' || '' }}
+          build-args: KICAD_COMMIT=${{ steps.kc.outputs.commit }}
           load: true
           tags: copperchat:ci
           cache-from: type=gha
@@ -1666,19 +1667,6 @@ and skip the dev `webServer` when it is set:
       - if: failure()
         run: docker logs cc
 ```
-
-The `build-args` line above must read the commit file; use a preceding step
-instead of `hashFiles`:
-
-```yaml
-      - id: kc
-        run: echo "commit=$(tr -d '[:space:]' < docker/kicad-base/KICAD_COMMIT)" >> "$GITHUB_OUTPUT"
-      # and in "Build app image":
-          build-args: KICAD_COMMIT=${{ steps.kc.outputs.commit }}
-```
-
-(Place the `kc` step before "Build app image" and use exactly this
-`build-args` line; do not keep the `hashFiles` variant.)
 
 ```yaml
 # .github/workflows/release.yml
