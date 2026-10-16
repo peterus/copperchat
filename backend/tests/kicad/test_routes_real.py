@@ -27,5 +27,8 @@ def test_open_and_agent_view_over_http(make_settings: Callable[..., Settings]) -
         r = client.get(f"/api/projects/{pid}/agent-view?doc=pcb&mode=agent&layers=F.Cu,B.Cu")
         assert r.status_code == 200 and r.headers["content-type"] == "image/png"
         assert Image.open(io.BytesIO(r.content)).format == "PNG"
+        # Viewer renders are served, never persisted.
+        project = discover_projects(settings.projects_root)[0]
+        assert not list((project.dir / ".kicad-agent").glob("renders/*.png"))
         bad = client.get(f"/api/projects/{pid}/agent-view?doc=pcb&layers=Nope.Cu")
         assert bad.status_code == 422 and bad.json()["error"]["details"]["what"]

@@ -5,6 +5,7 @@ import contextlib
 import json
 import shutil
 import tempfile
+import weakref
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -146,6 +147,28 @@ async def run_kicad_check(session: KicadSession, doc: DocKind, settings: Setting
                 "Check that the document loads in KiCad",
             )
         return report.read_text(encoding="utf-8")
+
+
+# Markers for renders: one check per document state, one kicad-cli run at a time.
+# Keyed by the session (a restart or reopen is a new state) and its view version,
+# which the turn-end publish bumps whenever a document changed (X2).
+_MARKER_CACHE: weakref.WeakKeyDictionary[
+    KicadSession, dict[tuple[DocKind, int, int], list[dict[str, Any]]]
+] = weakref.WeakKeyDictionary()
+_MARKER_LOCKS: weakref.WeakKeyDictionary[KicadSession, asyncio.Lock] = weakref.WeakKeyDictionary()
+
+
+async def cached_violations(session: KicadSession, doc: DocKind) -> list[dict[str, Any]]:
+    """`check_violations`, reused while the documents are unchanged (render markers)."""
+    lock = _MARKER_LOCKS.setdefault(session, asyncio.Lock())
+    key = (doc, session.view_version, session.restart_count)
+    async with lock:
+        cache = _MARKER_CACHE.setdefault(session, {})
+        if key not in cache:
+            for stale in [k for k in cache if k[1:] != key[1:]]:
+                del cache[stale]
+            cache[key] = await check_violations(session, doc)
+        return cache[key]
 
 
 async def check_violations(session: KicadSession, doc: DocKind) -> list[dict[str, Any]]:

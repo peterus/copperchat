@@ -8,9 +8,9 @@ from typing import Literal
 from copperchat.errors import StructuredToolError
 from copperchat.kicad_session import DocKind, KicadHandle, KicadSession
 from copperchat.kicad_tools.access import hierarchy
-from copperchat.kicad_tools.checks import check_violations
+from copperchat.kicad_tools.checks import cached_violations
 from copperchat.kicad_tools.filtering import not_found
-from copperchat.kicad_tools.pcb import board_boxes, board_snapshot
+from copperchat.kicad_tools.pcb import board_boxes, snapshot_with_connectivity
 from copperchat.kicad_tools.schematic import symbol_boxes
 from copperchat.projects import agent_dir
 from copperchat.tools.spec import ImageBlock
@@ -39,8 +39,10 @@ async def render_view(
     theme: Theme = "agent",
     *,
     sheet: str | None = None,
+    persist: bool = True,
 ) -> ImageBlock:
-    """PNG of the schematic or board; also written to `.kicad-agent/renders/<uuid>.png`.
+    """PNG of the schematic or board; also written to `.kicad-agent/renders/<uuid>.png`
+    unless `persist=False`. Check markers are cached per document state.
 
     agent + pcb: our renderer (grid, labels, net colours, airwires, DRC markers).
     kicad + pcb: KiCad's plot of `layers`, cropped to the board (or region).
@@ -67,6 +69,8 @@ async def render_view(
                 "Invalid argument", "layers apply to the board only", "Omit layers for doc=sch"
             )
         data = await _schematic(session, mode, region, sheet)
+    if not persist:  # e.g. the viewer's /agent-view: served once, never referenced again
+        return ImageBlock(mime="image/png", data=data, path=None)
     out_dir = agent_dir(session.project) / "renders"
     path = out_dir / f"{uuid.uuid4().hex}.png"
 
@@ -83,9 +87,9 @@ async def _agent_board(
 ) -> bytes:
     if layers:
         board_layers(layers)  # validates the names
-    snap = await session.call(board_snapshot)
+    snap = await snapshot_with_connectivity(session)
     box = resolve_region(region, snap)
-    markers = await check_violations(session, "pcb")
+    markers = await cached_violations(session, "pcb")
     return await asyncio.to_thread(
         render_board, snap, region_box=box, layers=layers, theme=theme, markers=markers
     )
@@ -141,5 +145,5 @@ async def _schematic(
     page, origin = await export_kicad_png(session, "sch", dpi=dpi, sheet=path, box=box)
     if mode == "kicad":
         return await asyncio.to_thread(to_png, page)
-    markers = [v for v in await check_violations(session, "sch") if v.get("sheet") == path]
+    markers = [v for v in await cached_violations(session, "sch") if v.get("sheet") == path]
     return await asyncio.to_thread(overlay_grid, page, origin, px_per_mm(dpi), markers, "light")

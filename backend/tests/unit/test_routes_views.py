@@ -1,12 +1,14 @@
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 
+import pytest
 from fastapi.testclient import TestClient
+from kipy.errors import ApiError
 
 from copperchat.config import Settings
 from copperchat.projects import agent_dir, discover_projects
 from copperchat.web.app import create_app
-from tests.support.fake_kicad import FakeClientFactory, FakeLauncher, FakeServer
+from tests.support.fake_kicad import FakeClientFactory, FakeDocument, FakeLauncher, FakeServer
 from tests.support.kicad_project import copy_fixture
 
 GOOD = {"username": "admin", "password": "test-password"}
@@ -103,3 +105,16 @@ def test_open_survives_a_failing_snapshot(make_settings: Callable[..., Settings]
         r = client.post(f"/api/projects/{pid}/open")
         assert r.status_code == 200
         assert r.json()["viewFiles"] == {"sch": [], "pcb": []}
+
+
+def test_open_survives_a_kicad_save_error(
+    make_settings: Callable[..., Settings], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(self: FakeDocument, filename: str, **_: object) -> None:
+        raise ApiError("KiCad returned error: cannot save")
+
+    monkeypatch.setattr(FakeDocument, "save_as", refuse)
+    with app_client(make_settings) as (client, pid):
+        client.post("/api/auth/login", json=GOOD)
+        r = client.post(f"/api/projects/{pid}/open")
+        assert r.status_code == 200 and r.json()["viewFiles"] == {"sch": [], "pcb": []}

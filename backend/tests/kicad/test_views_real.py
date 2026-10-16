@@ -95,3 +95,24 @@ async def test_render_errors(ecc83_session: KicadSession) -> None:
         await render_view(ecc83_session, "sch", "kicad", sheet="/nope/")
     with pytest.raises(StructuredToolError):
         await render_view(ecc83_session, "pcb", "kicad", region=Region(around_ref="U99"))
+
+
+async def test_render_markers_reuse_one_check_per_state(
+    ecc83_session: KicadSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from copperchat.kicad_tools import checks
+
+    calls: list[str] = []
+    real = checks.run_kicad_check
+
+    async def counting(session: KicadSession, doc: str, settings: object) -> str:
+        calls.append(doc)
+        return await real(session, doc, settings)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(checks, "run_kicad_check", counting)
+    await render_view(ecc83_session, "pcb", "agent")
+    await render_view(ecc83_session, "pcb", "agent", layers=["F.Cu"])
+    assert calls == ["pcb"]
+    ecc83_session.view_version += 1  # what the turn-end publish does after a change
+    img = await render_view(ecc83_session, "pcb", "agent", persist=False)
+    assert calls == ["pcb", "pcb"] and img.path is None

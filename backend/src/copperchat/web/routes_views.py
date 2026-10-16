@@ -112,5 +112,6 @@ async def get_agent_view(
         cast(Literal["agent", "kicad"], mode),
         layers=layer_list,
         theme=cast(Literal["agent", "light", "dark"], theme),
+        persist=False,
     )
     return Response(content=img.data, media_type="image/png", headers={"Cache-Control": "no-store"})

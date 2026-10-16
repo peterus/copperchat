@@ -65,7 +65,27 @@ def _unconnected(board: Any, pads: list[Any]) -> list[dict[str, Any]]:
 
 
 def board_snapshot(h: KicadHandle) -> dict[str, Any]:
-    """Everything the PCB tools and the agent renderer need, in mm, in one worker call."""
+    """Everything the PCB tools and the agent renderer need, in mm, in one worker call.
+
+    Includes `unconnected` (one GetConnectedItems call per copper island), so
+    callers pass `CONNECTIVITY_TIMEOUT_FACTOR` x the API timeout; use
+    `board_layout` when connectivity is not needed.
+    """
+    return board_layout(h) | {"unconnected": _unconnected(h.board(), list(h.board().get_pads()))}
+
+
+# board_snapshot makes one API call per copper island; an unrouted board has many.
+CONNECTIVITY_TIMEOUT_FACTOR = 4.0
+
+
+async def snapshot_with_connectivity(ctx_session: Any) -> dict[str, Any]:
+    timeout = ctx_session.settings.kicad_api_timeout_s * CONNECTIVITY_TIMEOUT_FACTOR
+    snap: dict[str, Any] = await ctx_session.call(board_snapshot, timeout=timeout)
+    return snap
+
+
+def board_layout(h: KicadHandle) -> dict[str, Any]:
+    """Footprints (pads, boxes), tracks, vias, outline and nets - no connectivity."""
     board = h.board()
     footprints = list(board.get_footprints())
     boxes = access.bounding_boxes(board, footprints)
@@ -84,13 +104,12 @@ def board_snapshot(h: KicadHandle) -> dict[str, Any]:
         "tracks": [access.track_dict(t) for t in board.get_tracks()],
         "vias": [access.via_dict(v) for v in board.get_vias()],
         "outline": outline,
-        "unconnected": _unconnected(board, list(board.get_pads())),
         "nets": sorted((str(n.name) for n in board.get_nets() if n.name), key=natural_key),
     }
 
 
 async def pcb_list_footprints(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
-    snap = await ctx.session.call(board_snapshot)
+    snap = await ctx.session.call(board_layout)
     fps = [
         {k: v for k, v in f.items() if k not in ("pads", "bbox_mm")}
         for f in snap["footprints"]
@@ -101,7 +120,7 @@ async def pcb_list_footprints(ctx: ToolContext, args: dict[str, Any]) -> ToolRes
 
 async def pcb_get_footprint(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     ref = str(args["ref"])
-    snap = await ctx.session.call(board_snapshot)
+    snap = await ctx.session.call(board_layout)
     hit = next((f for f in snap["footprints"] if f["ref"] == ref), None)
     if hit is None:
         raise not_found("Footprint", ref, (f["ref"] for f in snap["footprints"]))
@@ -110,7 +129,7 @@ async def pcb_get_footprint(ctx: ToolContext, args: dict[str, Any]) -> ToolResul
 
 async def pcb_get_net(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     name = str(args["name"])
-    snap = await ctx.session.call(board_snapshot)
+    snap = await snapshot_with_connectivity(ctx.session)
     if name not in snap["nets"]:
         raise not_found("Net", name, snap["nets"])
     pads = [

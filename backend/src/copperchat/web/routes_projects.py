@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Request
+from kipy.errors import ApiError
 
 from copperchat.db.repos.projects import touch_opened, upsert_projects
 from copperchat.errors import CopperChatError
@@ -49,7 +50,7 @@ async def open_project(project_id: str, request: Request, _: CurrentUser) -> dic
         view_files = await write_view_snapshots(session)
     except KicadUnavailable:
         raise
-    except (CopperChatError, OSError) as exc:
+    except (CopperChatError, OSError, ApiError) as exc:
         log.warning("view snapshots for %s failed: %s", project.rel_path, exc)
         view_files = {"sch": [], "pcb": []}
     return {
