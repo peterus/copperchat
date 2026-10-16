@@ -80,6 +80,27 @@ Optional arguments:
   `kipy.schematic.Schematic(kicad._client, kicad.get_open_documents(DOCTYPE_SCHEMATIC)[0])`.
   Board accessor: `kicad.get_board()`.
 
+### GetItems coverage (Q3)
+
+| Call | Works | Count (ecc83-pp / complex_hierarchy) | Notes |
+|---|---|---|---|
+| sch.get_symbols | y | 26 / 119 | `SchematicSymbolInstance(reference, value, unit, position, path)`; **all sheet instances** (root + both `ampli_ht` instances), power symbols (`#PWR…`) included, **one entry per placed unit** (U201/U301 units 1 and 2) — 70 non-power unit instances = 68 unique refs = `kicad-cli sch export netlist` component count |
+| sch.get_labels | y | 0 / 9 | `LocalLabel(text, position)`; ecc83-pp simply has none |
+| sch.get_lines (wires) | y | 37 / – | `SchematicLine(start, end, type=SLT_WIRE)` |
+| sch.get_hierarchy | y | – / 3 sheet instances | `SheetInstance([1] complex_hierarchy (complex_hierarchy.kicad_sch))`, `[2] ampli_ht_vertical (ampli_ht.kicad_sch)`, `[3] ampli_ht_horizontal (ampli_ht.kicad_sch)` |
+| sch.get_netlist | y | 13 nets (ecc83-pp) | `SchematicNet(name)` with member count per sheet path |
+| board.get_footprints / pads / tracks / vias / nets | y | 15 / 33 / 59 / 0 / 14 | ecc83-pp has no vias; net 0 is the unnamed net |
+| board.get_stackup / get_enabled_layers | y | stackup with silk/paste/mask/Cu layers / 20 layers | enabled layers are `BoardLayer` enum ints |
+
+- Coordinates: kipy returns `Vector2` in **nm** (e.g. C1 at `Vector2(86360000, 57150000)` =
+  86.36 mm / 57.15 mm on a 1.27 mm grid); mm = nm / 1e6 (confirmed).
+- UUID format: 36-char lowercase hyphenated (`str(item.id.value)`). Items from
+  pre-v6 files keep their legacy timestamp ids in that form, e.g.
+  `00000000-0000-0000-0000-00004549f4be` — still full UUIDs, just mostly zeros.
+- Symbol instance `path` is the sheet instance path (`/<root uuid>/<sheet uuid>`),
+  so the same symbol in two sheet instances is two entries with different paths.
+- No GetItems call was missing, so no `kicad-cli` workaround is needed.
+
 ## Decision
 
 ## Follow-ups
