@@ -23,6 +23,23 @@
   directly when `LD_LIBRARY_PATH` includes `squashfs-root/usr/lib` (the harness
   does this); `LANG=C`/`LC_ALL=C` are set for every call.
 - api-server syntax: `kicad-cli api-server --socket <socket path> <project.kicad_pro>` (full `--help` below)
+- Socket URL: `ipc://<absolute socket path>` (e.g. `ipc:///tmp/c1-sock-5n2ycbwh/api.sock`);
+  kipy: `KiCad(socket_path="ipc:///abs/path.sock", client_name=..., timeout_ms=...)`
+- kipy revision: `87b945a0d56b26a78bf547db9771ff9bf3a057ea` (kicad-python `main` HEAD on
+  2026-10-16, version `0.9.0.dev0`; source `https://gitlab.com/kicad/code/kicad-python.git`;
+  its `kicad` submodule pins KiCad `dcadf9baa30d43d7d1b3d0342345f05ec0da26e1` for the protos).
+  The first candidate (`main` HEAD) passed every check, so no bisecting was needed.
+  - As a uv git source (`kicad-python = { git = "...", rev = "87b945a0..." }`) a cold
+    `uv sync` works but takes 4 min 28 s and leaves a 3.5 GB uv cache, because uv
+    clones the whole KiCad submodule. The spike itself uses a local checkout
+    (`.kicad/kicad-python`, gitignored, `git submodule update --init --depth 1`: 38 s)
+    as a path source — same revision, same protos.
+  - `kipy.kicad_api_version.KICAD_API_VERSION` is `"unknown"` in both builds
+    (shallow submodule, no tags), so kipy's runtime version check is skipped. Harmless.
+  - The protos at `dcadf9ba` are older than the nightly's `api/proto`
+    (`0616634034` adds 109 lines to `board/board_jobs.proto` and touches
+    `board_types.proto`, `editor_commands.proto`, `project_commands.proto`).
+    Everything this spike needs works with them; see Q5 for the export jobs.
 - Fixtures: `ecc83/ecc83-pp.*` (+ `fp-lib-table`, `sym-lib-table`,
   `footprints.pretty`) and `complex_hierarchy/` copied from `~/build/kicad/demos`
   (KiCad tree at `69cafb907ebc09e7722a2a464b1d466fc2e3608d`), upgraded with
@@ -47,6 +64,21 @@ Optional arguments:
 </details>
 
 ## Results
+
+### Connecting (Q2)
+- The headless server **only preloads the project** when given a `.kicad_pro`;
+  `GetOpenDocuments` then fails with `no handler available for request of type
+  kiapi.common.commands.GetOpenDocuments` (the schematic/board handlers are only
+  registered once the editor face has a document). The client must call
+  `kicad.open_document("<abs>.kicad_sch", DOCTYPE_SCHEMATIC)` and
+  `kicad.open_document("<abs>.kicad_pcb", DOCTYPE_PCB)` right after connect
+  (0.32 s and 0.39 s for ecc83-pp). The harness's `Server` does this.
+- After that, `get_open_documents(DOCTYPE_SCHEMATIC|DOCTYPE_PCB)` each return one
+  specifier; `DOCTYPE_PROJECT` still has no handler.
+- Schematic accessor: `kicad.get_schematic()` (public in this revision; it clears
+  `sheet_path` so queries cover all sheets). Equivalent:
+  `kipy.schematic.Schematic(kicad._client, kicad.get_open_documents(DOCTYPE_SCHEMATIC)[0])`.
+  Board accessor: `kicad.get_board()`.
 
 ## Decision
 

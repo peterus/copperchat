@@ -85,8 +85,13 @@ class Recorder:
 class Server:
     """Starts `kicad-cli api-server` for one project; waits until kipy can ping it."""
 
-    def __init__(self, project_dir: Path, socket: Path | None = None, wait_s: float = 60.0):
+    def __init__(
+        self, project_dir: Path, socket: Path | None = None, wait_s: float = 60.0,
+        open_docs: bool = True,
+    ):
         self.project_dir = project_dir
+        self.open_docs = open_docs
+        self.open_s: dict[str, float] = {}
         self.socket = socket or Path(tempfile.mkdtemp(prefix="c1-sock-")) / "api.sock"
         self.url = f"ipc://{self.socket}"
         self.wait_s = wait_s
@@ -111,12 +116,30 @@ class Server:
                 try:
                     self.client(timeout_ms=1000).ping()
                     self.startup_s = time.monotonic() - t0
-                    return self
+                    break
                 except Exception:  # noqa: BLE001 - polling until ready
                     pass
             time.sleep(0.1)
-        self.stop()
-        raise TimeoutError(f"api-server not ready after {self.wait_s}s: {self.log.read_text()}")
+        else:
+            self.stop()
+            raise TimeoutError(f"api-server not ready after {self.wait_s}s: {self.log.read_text()}")
+        if self.open_docs:
+            self.open_documents()
+        return self
+
+    def open_documents(self) -> None:
+        """Headless api-server preloads only the project; sch/pcb need OpenDocument."""
+        from kipy.proto.common.types import DocumentType
+
+        k = self.client(timeout_ms=60000)
+        stem = project_file(self.project_dir).stem
+        for ext, doctype in (("kicad_sch", DocumentType.DOCTYPE_SCHEMATIC),
+                             ("kicad_pcb", DocumentType.DOCTYPE_PCB)):
+            f = self.project_dir / f"{stem}.{ext}"
+            if f.exists():
+                t0 = time.monotonic()
+                k.open_document(str(f), doctype)
+                self.open_s[ext] = time.monotonic() - t0
 
     def client(self, timeout_ms: int = 5000):
         from kipy import KiCad
