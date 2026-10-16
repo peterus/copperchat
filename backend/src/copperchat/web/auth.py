@@ -8,11 +8,11 @@ from collections import defaultdict, deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 from pydantic import BaseModel
 
@@ -124,6 +124,10 @@ async def require_user(request: Request) -> User:
     if user is None:
         raise HTTPException(status_code=401, detail="not logged in")
     return user
+
+
+CurrentUser = Annotated[User, Depends(require_user)]
+"""FastAPI dependency alias: `_: CurrentUser` in a route signature requires a login."""
 
 
 def _client_key(request: Request) -> str:

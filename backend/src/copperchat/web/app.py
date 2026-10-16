@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from copperchat.config import Settings, check_model_credentials
 from copperchat.db import Database
 from copperchat.errors import CopperChatError, StructuredToolError
-from copperchat.web import auth, health
+from copperchat.web import auth, health, routes_projects
 from copperchat.web.static import mount_frontend
 
 
@@ -46,5 +46,6 @@ def create_app(settings: Settings) -> FastAPI:
     _install_error_handlers(app)
     app.include_router(auth.router)
     app.include_router(health.router)
+    app.include_router(routes_projects.router)
     mount_frontend(app, settings.frontend_dist)  # must stay last: it mounts "/"
     return app
