@@ -1,0 +1,17 @@
+[project]
+name = "spike-1a-sdk-streaming"
+version = "0.0.0"
+description = "Throwaway spike: Python claude-agent-sdk streaming input (CopperChat phase 1A)"
+requires-python = ">=3.13"
+license = "GPL-3.0-only"
+dependencies = ["claude-agent-sdk==0.2.168"]
+
+[dependency-groups]
+dev = ["ruff>=0.7"]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"

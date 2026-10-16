@@ -782,6 +782,40 @@ with an item below, the item wins; the executor adapts the code and its tests.
   `research_part` MCP tool unless the spike says no-go (Task 8.6b fallback).
   Spec §6's `research_part(query)` is realised as
   `Agent(subagent_type="part-researcher", description=<MPN>, prompt=<question>)`.
+- **X20 — spike 1A results (Phases 5, 8; `docs/spikes/1a-sdk-streaming.md`).**
+  Gate: **1A partial: gated generator** (Phase 5 default design, never push
+  mid-turn). Sub-agent gate: mechanically **no-go** (`can_use_tool` is never
+  called for `Agent`); proposed **go (built-ins in session)** with the
+  delegation guard as a hook — **(1)–(2) are pending owner confirmation**;
+  without it Phase 8 uses Task 8.6b. Binding for Phase 5: (3)–(8).
+  (1) `can_use_tool` is **never called for `Agent`**: Phase 8's delegation
+  guard (the `Agent` part of `make_session_guard`, incl. the X19 input
+  limit) is a `PreToolUse` hook, `hooks={"PreToolUse":
+  [HookMatcher(matcher="Agent", hooks=[…])]}`, reading
+  `input["tool_input"]["subagent_type"]`; `can_use_tool` stays set for every
+  other call (a hook returning `{}` defers to it; without it sub-agent calls
+  are refused). Built-in agents `general-purpose`, `Explore`, `Plan`,
+  `claude`, `statusline-setup` are always offered and must be denied.
+  (2) `BUILTINS_IN_SESSION = True`: a sub-agent whose `tools` include a
+  built-in missing from the session `tools` refuses to start; the session
+  guard denies those built-ins when `ToolPermissionContext.agent_id is None`
+  and must also check the sub-agent's type (built-in agents that get past the
+  delegation guard inherit the session's tools).
+  (3) `ClaudeAgentOptions.env` sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`
+  (Phases 5 and 8) as a mitigation (not proven): the model sometimes
+  backgrounded the sub-agent and the turn ended early; Phase 5 handles an
+  "Async agent launched" delegation defensively. (4) Init tool list reports the delegation tool as
+  `"Task"`; calls/hooks use `"Agent"`. (5) Usage: `ResultMessage.usage` is
+  per turn, ≈ main agent only (excludes sub-agents); `model_usage` and
+  `total_cost_usd` are **cumulative per client** and include sub-agents.
+  Phase 5 Task 5.11b: per-turn `Usage` = delta of `model_usage` (summed over
+  models) and of `total_cost_usd` vs. the client's previous `ResultMessage`;
+  `_add_subagent_usage` stays a no-op (summing sub-agent
+  `AssistantMessage.usage` is unreliable).
+  (6) Interrupt → `subtype="error_during_execution"`, `terminal_reason`
+  `"aborted_streaming"`/`"aborted_tools"` → `run-finished{reason:"interrupted"}`.
+  (7) No sub-agent `StreamEvent`s arrive: sub-agent rows come as complete
+  messages with `parent_tool_use_id`. (8) X15 pin: `claude-agent-sdk==0.2.168`.
 
 ### Decided by owner (2026-10-16)
 
