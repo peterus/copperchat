@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -7,6 +8,7 @@ from typing import Any
 import pytest
 
 from copperchat.config import Settings
+from tests.support.kicad_env import api_server_available
 
 # Every Settings field can be set from the environment; a host that exports e.g.
 # PORT or DATA_DIR must not change what the tests see.
@@ -40,3 +42,16 @@ def make_settings(tmp_path: Path) -> Callable[..., Settings]:
         return Settings(_env_file=None, **values)  # type: ignore[call-arg]
 
     return _make
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    if not any(item.get_closest_marker("kicad") for item in items):
+        return
+    if api_server_available():
+        return
+    if os.environ.get("COPPERCHAT_REQUIRE_KICAD") == "1":
+        raise pytest.UsageError("COPPERCHAT_REQUIRE_KICAD=1 but `kicad-cli api-server` is missing")
+    skip = pytest.mark.skip(reason="`kicad-cli api-server` (KiCad 11 master) not available")
+    for item in items:
+        if item.get_closest_marker("kicad"):
+            item.add_marker(skip)
