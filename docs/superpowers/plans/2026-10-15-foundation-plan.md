@@ -66,13 +66,26 @@ waves it depends on are merged):
 **Go/no-go gates.** The three spikes can change later phases. Each spike doc
 has a "Decision" section; the coordinator reads it before spawning dependants:
 
-- **1A no-go** (SDK reads the whole input iterable eagerly): Phase 5 switches
-  to the "one `query()` per turn + `resume`" fallback described in Phase 5,
-  Task 5.4b. Queue semantics stay identical from the client's view.
+- **1A partial — expected** (source reading on 2026-10-15: the Python SDK
+  writes each streaming-input item to the CLI's stdin as soon as the input
+  iterator yields it): Phase 5 uses a *gated generator* — `RunEngine` releases
+  the next queued message only after it has seen the previous turn's
+  `ResultMessage`. This is the default design in Phase 5 regardless of 1A.
+- **1A no-go** (gated generator does not keep turns separate, or interrupt
+  breaks the long-lived stream): Phase 5 switches to the "one `query()` per
+  turn + `resume`" fallback described in Phase 5, Task 5.4b. Queue semantics
+  stay identical from the client's view.
 - **1B no-go** (KiCanvas cannot parse KiCad 11 files or exposes no click
   events): Phase 6B implements the fallback "own viewer" path described in its
   file (render server-side PNG/SVG from the API + hit-test via
   `/api/projects/{id}/hit-test`) instead of KiCanvas.
+- **1C kipy revision:** the PyPI `kicad-python` 0.8.0 wheel is broken
+  (`import kipy.schematic` and `import kipy.board_jobs` fail). 1C records a
+  working git revision ("kipy revision" in `docs/spikes/1c-api-server.md`);
+  Phase 2 installs it in the base image and Phase 3 pins it via
+  `[tool.uv.sources]`. 1C also records whether `RunSchematicJobExportPng` /
+  `RunBoardJobExportPng` exist at the pinned commit; if not, Phase 4 renders
+  via `kicad-cli sch|pcb export svg` + rasterisation.
 - **1C no-go** on any core operation (GetItems on schematic, SaveDocument,
   SaveCopyOfDocument, PNG export): stop and escalate to the owner (status
   `blocked`) — the architecture depends on it. Partial gaps (e.g. one export
@@ -500,6 +513,82 @@ def build_sdk_tools(specs: list[ToolSpec], ctx_factory: Callable[[], ToolContext
 `TurnStarted, TextDelta(text), ThinkingDelta(text), ToolUse(id,name,input),
 ToolResultEvt(id, content, images, is_error), Usage(...), RateLimited(resets_at),
 TurnFinished(reason), SessionId(id)`.
+
+### C7a. Contract additions introduced by the phase files
+
+These extend C1–C8 and are equally binding.
+
+- **C1 Settings (Phase 3):** `cookie_secure: bool = True`,
+  `login_max_failures: int = 5`, `login_window_s: float = 60.0`,
+  `frontend_dist: Path = Path("/app/frontend/dist")`.
+- **App factory (Phase 3):** `create_app(settings, *, launcher=None, client_factory=None)`;
+  `app.state.settings`, `app.state.db`, `app.state.sessions`
+  (`KicadSessionManager`), `app.state.serializer`, `app.state.login_limiter`;
+  `app.state.agent_runtime` (`AgentRuntime`, Phase 5, with `hooks_factory`
+  and `backend_factory`).
+- **C2 (Phase 3):** a `schema_migrations` table records applied migration
+  names in addition to `PRAGMA user_version`, so a migration merged out of
+  numeric order (e.g. Phase 8's 0004 before Phase 7's 0003) is still applied.
+- **C4 (Phase 3):** `KicadSessionManager(settings, launcher=None, *, client_factory=None)`,
+  `ClientFactory = Callable[[str, int], Any]`, `KicadSession.view_version: int`,
+  `.socket_path`, `.process`, `socket_path_for(project)`. Schematic access uses
+  `Schematic(client, doc)` from `get_open_documents(DOCTYPE_SCHEMATIC)` (kipy
+  has no `get_schematic()`); kipy errors are `kipy.errors.ConnectionError` /
+  `ApiError`.
+- **Errors (Phase 3):** `DocumentNotOpen`, `ReadOnlyProject`,
+  `InvalidProjectId`, `ToolRegistryError`; `web.auth.user_from_cookie(state, cookie)`,
+  `web.auth.authenticate_connection(conn) -> str | None` (Phase 5).
+- **C5 (Phase 5):** `ToolContext.user_message: str | None`,
+  `ToolContext.on_documents_changed`, `ToolContext.on_kicad_unavailable`;
+  `ToolResult.changed_docs: set[DocKind]`. `registry._PROVIDERS` is a tuple
+  of module names (`copperchat.kicad_tools.specs`, `copperchat.views.specs`,
+  `copperchat.git_tools.specs`, `copperchat.research.specs`).
+- **C7 (Phase 5):** server heartbeat frame `ping` (S→C, `projectId: null`);
+  `error.projectId` may be `null` (unparseable client frame);
+  `RunHooks.on_engine_start / on_turn_start / on_first_mutation / on_turn_end(turn, outcome)`
+  with `TurnInfo`, `TurnOutcome`; `RunEngine.submit_ex`, `post_notice`,
+  `post_error`, `add_agent_note`, `replay_and_subscribe`, `to_dto`.
+  Protocol fixture file format: `{"type", "directions", "valid": [...], "invalid": [...]}`.
+- **C7 (Phase 9):** C→S frame `visibility{projectId, visible: bool}` (push is
+  sent only when no client is visible).
+- **Message metadata keys:** `tool_use` → `{name, input}`; `tool_result` →
+  `{isError, images: [{url}]}`; `image` → `{url}`; notices may carry
+  `{action: "restore", snapshotId}` (Phase 7).
+- **Frontend (Phase 6A):** `@/api/http` (`apiGet`, `apiPost`, `apiPut`,
+  `apiDelete`, `apiUrl`, `setUnauthorizedHandler`, `ApiError`); `@/api/ws`
+  (`createWsClient`, `wsClient`, `ConnectionState`); `@/stores/chat`
+  (`createChatStore`); `@/hooks/useChat` (`useChat(projectId)`,
+  `ChatStoreContext`); `@/stores/composer` (`useComposer` with `insertText`,
+  `addAttachment`, `removeAttachment`, `clear`);
+  `@/components/chat/composerSlots` (`composerAttachmentSlot.register(Component)`,
+  slot props `{projectId, attachments, setAttachments}`); `@/layouts/panels`
+  (`registerPanel({id, title, icon, component, order?})`, `usePanels()`;
+  panel components get `{projectId}`; icons are lucide-react components;
+  panel modules are imported from `frontend/src/panels/index.ts`; reserved
+  ids `history`, `git`, `skills`, `parts`); `@/stores/ui`
+  (`useUi().resolvedTheme`); `@/stores/projects` (`useProjects().current`).
+  Stubs owned by later phases: `ViewerSlot` (6B), `NotificationsSection` (9).
+- **Phase 8:** table `uploads`; `copperchat.agent.attachments.{attachment_exists, build_user_content}`;
+  `copperchat.skills.assembly.{SkillBundle, assemble_skills, apply_skills}`.
+- **HTTP additions:** `GET /auth/me` → `{username}`; `GET /skills/{name}`,
+  `POST /skills/{name}/acknowledge-update`, `GET /projects/{id}/uploads/{uploadId}` (8);
+  `GET /projects/{id}/hit-test` (6B fallback only); `agent-view` takes
+  `layers` comma-separated.
+
+### Owner review requested
+
+Provisional decisions taken while planning (2026-10-16); the owner may
+override them in the plan PR review:
+
+1. **`research_part`** runs a separate one-shot SDK query with the
+   `part-researcher` configuration. The main agent keeps `tools=[]` (no
+   built-in `Agent` tool, no `agents=`), because SDK sub-agents are only
+   reachable through the built-in `Agent` tool.
+2. **Skills** may require the main agent to have the built-in `Skill` tool
+   (`tools=["Skill"]`); it is neither a file, shell nor web tool.
+3. **Discovery unit tests** may create empty `*.kicad_pro` marker files in
+   `tmp_path`; every test that reads KiCad content uses only KiCad- or
+   `kicad-cli`-generated fixtures.
 
 ### C8. HTTP API (owning phase in brackets; all under `/api`, all except
 login require the session cookie)
