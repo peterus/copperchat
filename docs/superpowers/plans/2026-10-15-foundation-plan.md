@@ -782,6 +782,31 @@ with an item below, the item wins; the executor adapts the code and its tests.
   `research_part` MCP tool unless the spike says no-go (Task 8.6b fallback).
   Spec §6's `research_part(query)` is realised as
   `Agent(subagent_type="part-researcher", description=<MPN>, prompt=<question>)`.
+- **X20 — spike 1A results (Phases 5, 8; `docs/spikes/1a-sdk-streaming.md`).**
+  Gate: **1A partial: gated generator** (Phase 5 default design, never push
+  mid-turn) and **sub-agent go (built-ins in session)** with the delegation
+  guard as a hook. Binding changes:
+  (1) `can_use_tool` is **never called for `Agent`**: Phase 8's delegation
+  guard (the `Agent` part of `make_session_guard`, incl. the X19 input
+  limit) is a `PreToolUse` hook, `hooks={"PreToolUse":
+  [HookMatcher(matcher="Agent", hooks=[…])]}`, reading
+  `input["tool_input"]["subagent_type"]`; `can_use_tool` stays set for every
+  other call (a hook returning `{}` defers to it; without it sub-agent calls
+  are refused). Built-in agents `general-purpose`, `Explore`, `Plan`,
+  `claude`, `statusline-setup` are always offered and must be denied.
+  (2) `BUILTINS_IN_SESSION = True`: a sub-agent whose `tools` include a
+  built-in missing from the session `tools` refuses to start; the session
+  guard denies those built-ins when `ToolPermissionContext.agent_id is None`.
+  (3) `ClaudeAgentOptions.env` sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`
+  (Phases 5 and 8), otherwise the model may background the sub-agent and the
+  turn ends early. (4) Init tool list reports the delegation tool as
+  `"Task"`; calls/hooks use `"Agent"`. (5) Usage: `ResultMessage.usage` is
+  per turn, main agent only; `model_usage` and `total_cost_usd` include
+  sub-agents; `total_cost_usd` is cumulative per client (per-run delta).
+  (6) Interrupt → `subtype="error_during_execution"`, `terminal_reason`
+  `"aborted_streaming"`/`"aborted_tools"` → `run-finished{reason:"interrupted"}`.
+  (7) No sub-agent `StreamEvent`s arrive: sub-agent rows come as complete
+  messages with `parent_tool_use_id`. (8) X15 pin: `claude-agent-sdk==0.2.168`.
 
 ### Decided by owner (2026-10-16)
 
