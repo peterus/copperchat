@@ -1,0 +1,5 @@
+.venv/
+.claude-config/
+results/
+work/
+__pycache__/

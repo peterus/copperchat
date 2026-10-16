@@ -551,10 +551,39 @@ These extend C1–C8 and are equally binding.
   numeric order (e.g. Phase 8's 0004 before Phase 7's 0003) is still applied.
 - **C4 (Phase 3):** `KicadSessionManager(settings, launcher=None, *, client_factory=None)`,
   `ClientFactory = Callable[[str, int], Any]`, `KicadSession.view_version: int`,
-  `.socket_path`, `.process`, `socket_path_for(project)`. Schematic access uses
-  `Schematic(client, doc)` from `get_open_documents(DOCTYPE_SCHEMATIC)` (kipy
-  has no `get_schematic()`); kipy errors are `kipy.errors.ConnectionError` /
-  `ApiError`.
+  `.socket_path`, `.process`, `socket_path_for(project)`; kipy errors are
+  `kipy.errors.ConnectionError` / `ApiError`. As built after spike 1C:
+  `KicadHandle.schematic()` = `kicad.get_schematic()` (all sheets),
+  `KicadHandle.board()` = `kicad.get_board()`, both raise `DocumentNotOpen` when
+  the project lacks that file; `start()` opens `.kicad_sch` and `.kicad_pcb` with
+  `open_document` after the socket answers `ping`; `call()` races the worker
+  against `process.wait()` under its own deadline (dead process → restart +
+  `KicadUnavailable`, hang → restart + `KicadCallTimeout`).
+  `KicadCliLauncher(kicad_cli, log_dir, config_home=None)` runs
+  `kicad-cli api-server --socket SOCKET PROJECT.kicad_pro` with `LANG=C`,
+  `LC_ALL=C`, `KICAD_CONFIG_HOME=<data_dir>/kicad-config`.
+  `save_copy("sch", dest)` = `save_as` of the root **plus a byte copy of every
+  sub-sheet** named by `get_hierarchy()` into `dest.parent` (same relative paths;
+  never `save()`). `KicadSession.settings` (property), `.lock_files` (foreign
+  locks seen at open), `.on_started`; `KicadSessionManager.lock_status(project)`
+  ignores locks whose token CopperChat's own api-server wrote (remembered in
+  `<data_dir>/kicad-locks/<id>`, survives a kill -9 stale lock). The socket
+  directory must be a real `0700` directory owned by the current user.
+- **C3 (Phase 3):** `lock_status(project, ignore_tokens=())`, `lock_file_for(path)`,
+  `read_lock_token(lock)`; KiCad 11's project lock is `~STEM.kicad_pro.lck` (JSON
+  `{hostname, token, username}`), also checked: `~FILE.lck` for sch/pcb. Use
+  `app.state.sessions.lock_status(p)` (not the bare function) for anything shown
+  to the user, so CopperChat's own lock is not reported as "open in KiCad".
+- **Auth (Phase 3):** `web.auth.CurrentUser = Annotated[User, Depends(require_user)]`
+  (route signature `_: CurrentUser`; ruff B008 forbids `Depends()` defaults);
+  cookies carry a signed server-side session id (table `auth_sessions(id, user_id,
+  created_at)` in `0001_core.sql`), logout deletes it; `Settings.forwarded_allow_ips:
+  str = "127.0.0.1"` (env `FORWARDED_ALLOW_IPS`) feeds uvicorn's proxy trust.
+- **Test support (Phase 3):** `tests.support.kicad_env.KICAD_CLI` (env `KICAD_CLI`
+  read at import, default `kicad-cli`) — real-KiCad tests pass it to
+  `make_settings(kicad_cli=KICAD_CLI)`; the autouse env cleaner removes every
+  `Settings` env var during tests. `tests.support.fake_kicad.FakeServer` emulates
+  the api-server's lock file (`write_lock`), `opened`, `saved`, `hierarchy`.
 - **Errors (Phase 3):** `DocumentNotOpen`, `ReadOnlyProject`,
   `InvalidProjectId`, `ToolRegistryError`; `web.auth.user_from_cookie(state, cookie)`,
   `async web.auth.authenticate_connection(conn) -> str | None` (Phase 5).
@@ -753,6 +782,40 @@ with an item below, the item wins; the executor adapts the code and its tests.
   `research_part` MCP tool unless the spike says no-go (Task 8.6b fallback).
   Spec §6's `research_part(query)` is realised as
   `Agent(subagent_type="part-researcher", description=<MPN>, prompt=<question>)`.
+- **X20 — spike 1A results (Phases 5, 8; `docs/spikes/1a-sdk-streaming.md`).**
+  Gate: **1A partial: gated generator** (Phase 5 default design, never push
+  mid-turn). Sub-agent gate: mechanically **no-go** (`can_use_tool` is never
+  called for `Agent`); proposed **go (built-ins in session)** with the
+  delegation guard as a hook — **(1)–(2) are pending owner confirmation**;
+  without it Phase 8 uses Task 8.6b. Binding for Phase 5: (3)–(8).
+  (1) `can_use_tool` is **never called for `Agent`**: Phase 8's delegation
+  guard (the `Agent` part of `make_session_guard`, incl. the X19 input
+  limit) is a `PreToolUse` hook, `hooks={"PreToolUse":
+  [HookMatcher(matcher="Agent", hooks=[…])]}`, reading
+  `input["tool_input"]["subagent_type"]`; `can_use_tool` stays set for every
+  other call (a hook returning `{}` defers to it; without it sub-agent calls
+  are refused). Built-in agents `general-purpose`, `Explore`, `Plan`,
+  `claude`, `statusline-setup` are always offered and must be denied.
+  (2) `BUILTINS_IN_SESSION = True`: a sub-agent whose `tools` include a
+  built-in missing from the session `tools` refuses to start; the session
+  guard denies those built-ins when `ToolPermissionContext.agent_id is None`
+  and must also check the sub-agent's type (built-in agents that get past the
+  delegation guard inherit the session's tools).
+  (3) `ClaudeAgentOptions.env` sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`
+  (Phases 5 and 8) as a mitigation (not proven): the model sometimes
+  backgrounded the sub-agent and the turn ended early; Phase 5 handles an
+  "Async agent launched" delegation defensively. (4) Init tool list reports the delegation tool as
+  `"Task"`; calls/hooks use `"Agent"`. (5) Usage: `ResultMessage.usage` is
+  per turn, ≈ main agent only (excludes sub-agents); `model_usage` and
+  `total_cost_usd` are **cumulative per client** and include sub-agents.
+  Phase 5 Task 5.11b: per-turn `Usage` = delta of `model_usage` (summed over
+  models) and of `total_cost_usd` vs. the client's previous `ResultMessage`;
+  `_add_subagent_usage` stays a no-op (summing sub-agent
+  `AssistantMessage.usage` is unreliable).
+  (6) Interrupt → `subtype="error_during_execution"`, `terminal_reason`
+  `"aborted_streaming"`/`"aborted_tools"` → `run-finished{reason:"interrupted"}`.
+  (7) No sub-agent `StreamEvent`s arrive: sub-agent rows come as complete
+  messages with `parent_tool_use_id`. (8) X15 pin: `claude-agent-sdk==0.2.168`.
 
 ### Decided by owner (2026-10-16)
 
