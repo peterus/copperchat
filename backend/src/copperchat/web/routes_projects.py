@@ -7,6 +7,7 @@ from fastapi import APIRouter, Request
 from copperchat.db.repos.projects import touch_opened, upsert_projects
 from copperchat.kicad_session import KicadSessionManager
 from copperchat.projects import discover_projects, get_project
+from copperchat.views.snapshot import write_view_snapshots
 from copperchat.web.auth import CurrentUser
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -38,9 +39,12 @@ async def open_project(project_id: str, request: Request, _: CurrentUser) -> dic
     session = await sessions.open(project)
     await touch_opened(state.db, project.id)
     version: str = await session.call(lambda h: str(h.kicad.get_version().full_version))
+    # X1/X3: the viewer has content right after open, before any agent turn.
+    view_files = await write_view_snapshots(session)
     return {
         "id": project.id,
         "readOnly": session.read_only,
         "lockFiles": sorted(p.name for p in session.lock_files),
         "kicadVersion": version,
+        "viewFiles": view_files,
     }

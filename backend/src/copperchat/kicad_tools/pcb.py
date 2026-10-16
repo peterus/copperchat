@@ -125,3 +125,29 @@ async def pcb_get_net(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
             "unconnected": [u for u in snap["unconnected"] if u["net"] == name],
         }
     )
+
+
+def board_boxes(h: KicadHandle) -> dict[str, Any]:
+    """Board outline box and footprint boxes (mm) - cheaper than `board_snapshot`."""
+    board = h.board()
+    shapes, _ = access.outline_segments(board)
+    outline = [b for b in access.bounding_boxes(board, shapes) if b is not None]
+    footprints = list(board.get_footprints())
+    boxes = access.bounding_boxes(board, footprints)
+    box: dict[str, float] | None = None
+    if outline:
+        x0 = min(b["x"] for b in outline)
+        y0 = min(b["y"] for b in outline)
+        box = {
+            "x": x0,
+            "y": y0,
+            "w": max(b["x"] + b["w"] for b in outline) - x0,
+            "h": max(b["y"] + b["h"] for b in outline) - y0,
+        }
+    return {
+        "outline": box,
+        "footprints": [
+            {"ref": access.field_text(fp.reference_field), "bbox_mm": b}
+            for fp, b in zip(footprints, boxes, strict=True)
+        ],
+    }

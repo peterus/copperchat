@@ -110,3 +110,26 @@ async def sch_get_net(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     if pins is None:
         raise not_found("Net", name, names)
     return ToolResult(data={"name": name, "pins": pins})
+
+
+def symbol_boxes(h: KicadHandle) -> list[dict[str, Any]]:
+    """Per placed unit: ref, sheet and the mm box spanned by its anchor and pins."""
+    out: list[dict[str, Any]] = []
+    for s in h.schematic().get_symbols():
+        sym = access.symbol_dict(s)
+        points = [sym["position_mm"], *(p["position_mm"] for p in access.symbol_pins(s))]
+        xs = [p["x"] for p in points]
+        ys = [p["y"] for p in points]
+        out.append(
+            {
+                "ref": sym["ref"],
+                "sheet": sym["sheet"],
+                "bbox_mm": {
+                    "x": min(xs),
+                    "y": min(ys),
+                    "w": round(max(xs) - min(xs), 4),
+                    "h": round(max(ys) - min(ys), 4),
+                },
+            }
+        )
+    return sorted(out, key=lambda s: (natural_key(s["ref"]), s["sheet"]))

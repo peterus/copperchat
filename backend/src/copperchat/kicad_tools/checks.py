@@ -49,9 +49,13 @@ def _entry(e: dict[str, Any], default_type: str) -> dict[str, Any]:
 
 
 def parse_violations(raw: dict[str, Any], doc: DocKind) -> list[dict[str, Any]]:
-    """kicad-cli ERC/DRC JSON -> flat violation list (ERC nests per sheet)."""
+    """kicad-cli ERC/DRC JSON -> flat violation list (ERC entries carry their sheet path)."""
     if doc == "sch":
-        return [_entry(v, "erc") for s in raw.get("sheets", []) for v in s.get("violations", [])]
+        return [
+            _entry(v, "erc") | {"sheet": str(s.get("path", "/"))}
+            for s in raw.get("sheets", [])
+            for v in s.get("violations", [])
+        ]
     out = [_entry(v, "drc") for v in raw.get("violations", [])]
     out += [_entry(v, "unconnected_items") for v in raw.get("unconnected_items", [])]
     out += [_entry(v, "schematic_parity") for v in raw.get("schematic_parity", [])]
@@ -70,10 +74,11 @@ async def _save_copies(session: KicadSession, dest: Path) -> dict[DocKind, Path]
         copies["sch"] = await session.save_copy("sch", dest / project.sch_file.name)
     if project.pcb_file is not None:
         copies["pcb"] = await session.save_copy("pcb", dest / project.pcb_file.name)
-    shutil.copyfile(project.pro_file, dest / project.pro_file.name)
-    for name in _PROJECT_SUPPORT_FILES:
-        if (project.dir / name).is_file():
-            shutil.copyfile(project.dir / name, dest / name)
+    root = project.dir.resolve()
+    for source in (project.pro_file, *(project.dir / n for n in _PROJECT_SUPPORT_FILES)):
+        # Only files that really live in the project (no symlinks out of it).
+        if source.is_file() and source.resolve().is_relative_to(root):
+            shutil.copyfile(source, dest / source.name)
     return copies
 
 
