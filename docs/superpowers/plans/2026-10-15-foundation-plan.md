@@ -537,9 +537,10 @@ These extend C1–C8 and are equally binding.
   `ApiError`.
 - **Errors (Phase 3):** `DocumentNotOpen`, `ReadOnlyProject`,
   `InvalidProjectId`, `ToolRegistryError`; `web.auth.user_from_cookie(state, cookie)`,
-  `web.auth.authenticate_connection(conn) -> str | None` (Phase 5).
+  `async web.auth.authenticate_connection(conn) -> str | None` (Phase 5).
 - **C5 (Phase 5):** `ToolContext.user_message: str | None`,
-  `ToolContext.on_documents_changed`, `ToolContext.on_kicad_unavailable`;
+  `ToolContext.on_documents_changed: Callable[[set[DocKind]], None] | None`,
+  `ToolContext.on_kicad_unavailable: Callable[[Exception], None] | None` (both sync);
   `ToolResult.changed_docs: set[DocKind]`. `registry._PROVIDERS` is a tuple
   of module names (`copperchat.kicad_tools.specs`, `copperchat.views.specs`,
   `copperchat.git_tools.specs`, `copperchat.research.specs`).
@@ -549,6 +550,15 @@ These extend C1–C8 and are equally binding.
   with `TurnInfo`, `TurnOutcome`; `RunEngine.submit_ex`, `post_notice`,
   `post_error`, `add_agent_note`, `replay_and_subscribe`, `to_dto`.
   Protocol fixture file format: `{"type", "directions", "valid": [...], "invalid": [...]}`.
+- **Phase 5 runtime:** `copperchat.agent.sdk_backend` module functions
+  `build_options(*, settings, project, mcp_server, tool_names, resume_session_id, fork_session)`
+  and `user_prompt(item)`, `make_tool_guard(allowed: frozenset[str])`,
+  `SdkStreamingBackend` / `SdkPerTurnBackend`, alias `SdkAgentBackend`;
+  `default_backend_factory(settings, specs)` (Phase 8 adds `db`);
+  `PushStream.release_next()` (gated generator); `Broadcaster(max_queue=1000)`;
+  WS close codes 4401/4403/4408, `HEARTBEAT_S = 25.0`; error codes
+  `invalid_frame`, `unknown_attachment`, `not_cancellable`;
+  `GET /projects/{id}/images/{name}` (tool images under `.kicad-agent/images/`).
 - **C7 (Phase 9):** C→S frame `visibility{projectId, visible: bool}` (push is
   sent only when no client is visible).
 - **Message metadata keys:** `tool_use` → `{name, input}`; `tool_result` →

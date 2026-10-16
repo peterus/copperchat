@@ -30,8 +30,8 @@ note it in the done report):
   `copperchat.errors.CopperChatError`; `POST /api/auth/login` seeds from
   `admin_password`.
 - Phase 4: at least one fixture project under `backend/tests/fixtures/projects/`.
-- Phase 5: `copperchat.agent.sdk_backend.SdkAgentBackend._build_options(project, resume_session_id) -> ClaudeAgentOptions`
-  and `_user_message(item: QueuedItem) -> dict`; `QueuedItem.text`,
+- Phase 5: module functions in `copperchat.agent.sdk_backend`: `build_options(*, settings, project, mcp_server, tool_names, resume_session_id, fork_session) -> ClaudeAgentOptions`
+  (sync) and `user_prompt(item: QueuedItem) -> dict` (sync), both called by `SdkStreamingBackend` (or `SdkPerTurnBackend`), aliased as `SdkAgentBackend`; `make_tool_guard(allowed: frozenset[str])`; `default_backend_factory(settings, specs)`; `QueuedItem.text`,
   `QueuedItem.attachments: list[AttachmentRef]`; `copperchat.agent.protocol.AttachmentRef`;
   `RunEngine` validates attachment ids through an injectable
   `attachment_exists: Callable[[str, str], Awaitable[bool]]`.
@@ -1101,24 +1101,33 @@ def apply_skills(options: ClaudeAgentOptions, bundle: SkillBundle) -> ClaudeAgen
 `tools=["Skill"]` for the main agent (only when a skill is enabled) is an
 **owner review requested** decision: `Skill` is not a file/shell/web tool.
 
-Modify `sdk_backend.py` — at the end of `SdkAgentBackend._build_options`
-(after Phase 5 constructed `options` with `tools=[]`, its MCP server,
-`allowed_tools` and `can_use_tool`):
+Modify `sdk_backend.py`: add a keyword parameter `skills: SkillBundle | None = None`
+to Phase 5's (synchronous) `build_options(...)`; at its end, after `options`
+was constructed with `tools=[]`, the MCP server, `allowed_tools` and
+`can_use_tool`:
 
 ```python
-from copperchat.skills.assembly import apply_skills, assemble_skills
+from copperchat.skills.assembly import SkillBundle, apply_skills, assemble_skills
 
-        bundle = await assemble_skills(self.settings, project, self.db)
-        options = apply_skills(options, bundle)
-        return options
+    if skills is not None:
+        options = apply_skills(options, skills)
+    return options
 ```
 
-If Phase 5's `_build_options` is synchronous, make it `async` and `await` it at
-its single call site in `start()` (an async generator). Phase 5's
-`make_can_use_tool(allowed)` set must additionally contain `"Skill"` so a
-`Skill` call that is not covered by the auto-allow `Skill(<name>)` rules is
-still evaluated by the allowlist rather than denied as unknown — add `"Skill"`
-to the set passed in `_build_options`.
+The backend's `start()` is an async generator, so it assembles the bundle
+before each `build_options(...)` call site (`SdkStreamingBackend`, and
+`SdkPerTurnBackend` if 1A chose it) and passes it in:
+
+```python
+        skills = await assemble_skills(self._settings, project, self._db)
+        options = build_options(..., skills=skills)   # other arguments unchanged
+```
+
+The backend gets the `Database` through `default_backend_factory(settings, specs, db)`
+(add the `db` parameter; `web/app.py` passes `app.state.db`). The guard built by
+`make_tool_guard(frozenset(allowed))` inside `build_options` must additionally
+contain `"Skill"` when `skills` enables any skill, so a `Skill` call is
+evaluated by the allowlist rather than denied as unknown.
 
 `backend/pyproject.toml`: add to `[tool.pytest.ini_options].markers`:
 `"live_sdk: needs real model credentials, opt-in"` (registration only; do not
@@ -1386,7 +1395,7 @@ PART_RESEARCHER = AgentDefinition(
 The prompt contains the literal `docs/parts/<MPN>/notes.md` (test assertion).
 
 Add to `backend/src/copperchat/agent/guards.py` (keep Phase 5's
-`make_can_use_tool` unchanged):
+`make_tool_guard` unchanged):
 
 ```python
 from typing import Any
@@ -2599,7 +2608,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 **Files:**
 - Create: `backend/src/copperchat/agent/attachments.py`
-- Modify: `backend/src/copperchat/agent/sdk_backend.py` (`_user_message`)
+- Modify: `backend/src/copperchat/agent/sdk_backend.py` (`user_prompt` call sites)
 - Modify: `backend/src/copperchat/web/app.py` (inject resolver into `RunEngine`)
 - Test: `backend/tests/unit/test_attachment_content.py`
 
@@ -2715,9 +2724,17 @@ async def build_user_content(
     return blocks
 ```
 
-Modify `sdk_backend.py` `_user_message(item)` so the `message.content` field
-is `await build_user_content(self.db, project, item.text, item.attachments)`
-(make `_user_message` `async` if it is not). Modify `web/app.py` where the
+Modify `sdk_backend.py`: add
+
+```python
+async def user_prompt_with_attachments(item: QueuedItem, db: Database, project: Project) -> dict[str, Any]:
+    prompt = user_prompt(item)
+    prompt["message"]["content"] = await build_user_content(db, project, item.text, item.attachments)
+    return prompt
+```
+
+and replace each `yield user_prompt(item)` in the backend's input generator
+with `yield await user_prompt_with_attachments(item, self._db, project)`. Modify `web/app.py` where the
 `RunEngine` is constructed: pass
 `attachment_exists=lambda pid, aid: attachment_exists(db, pid, aid)` replacing
 Phase 5's always-false default, so `send` with an uploaded id is accepted and
