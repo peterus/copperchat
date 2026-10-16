@@ -237,3 +237,35 @@ async def test_save_copy_rejects_sheet_outside_project(
     session = await manager.open(project)
     with pytest.raises(CopperChatError, match="outside"):
         await session.save_copy("sch", tmp_path / "view" / "demo.kicad_sch")
+
+
+async def test_socket_dir_must_not_be_a_symlink(
+    manager: KicadSessionManager,
+    make_settings: Callable[..., Settings],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from copperchat.kicad_session import session as session_module
+
+    target = tmp_path / "attacker"
+    target.mkdir()
+    link = tmp_path / "sockets"
+    link.symlink_to(target, target_is_directory=True)
+    monkeypatch.setattr(session_module, "SOCKET_DIR", link)
+    with pytest.raises(KicadUnavailable, match="private directory"):
+        await manager.open(make_project(make_settings().projects_root))
+
+
+async def test_socket_dir_is_created_private(
+    manager: KicadSessionManager,
+    make_settings: Callable[..., Settings],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from copperchat.kicad_session import session as session_module
+
+    sockets = tmp_path / "fresh-sockets"
+    monkeypatch.setattr(session_module, "SOCKET_DIR", sockets)
+    session = await manager.open(make_project(make_settings().projects_root))
+    assert session.socket_path.parent == sockets
+    assert sockets.stat().st_mode & 0o777 == 0o700

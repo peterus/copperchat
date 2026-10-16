@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import math
 import os
 import secrets
@@ -7,6 +8,7 @@ import time
 from collections import defaultdict, deque
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -85,6 +87,11 @@ def load_or_create_session_secret(settings: Settings) -> str:
     return secret
 
 
+def _iso_seconds_ago(seconds: float) -> str:
+    then = datetime.now(UTC) - timedelta(seconds=seconds)
+    return then.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 def make_serializer(secret: str) -> URLSafeTimedSerializer:
     return URLSafeTimedSerializer(secret, salt=_SALT)
 
@@ -106,17 +113,26 @@ async def ensure_admin(db: Database, settings: Settings) -> None:
 
 
 async def user_from_cookie(state: Any, cookie: str | None) -> User | None:
+    sid = _session_id(state, cookie)
+    if sid is None:
+        return None
+    row = await state.db.fetchone(
+        "SELECT u.id, u.username FROM auth_sessions s JOIN users u ON u.id = s.user_id "
+        "WHERE s.id = ?",
+        (sid,),
+    )
+    return User(id=row["id"], username=row["username"]) if row else None
+
+
+def _session_id(state: Any, cookie: str | None) -> str | None:
     if not cookie:
         return None
     try:
         payload = state.serializer.loads(cookie, max_age=SESSION_MAX_AGE_S)
     except BadSignature:
         return None
-    uid = payload.get("uid") if isinstance(payload, dict) else None
-    if not isinstance(uid, int):
-        return None
-    row = await state.db.fetchone("SELECT id, username FROM users WHERE id = ?", (uid,))
-    return User(id=row["id"], username=row["username"]) if row else None
+    sid = payload.get("sid") if isinstance(payload, dict) else None
+    return sid if isinstance(sid, str) and sid else None
 
 
 async def require_user(request: Request) -> User:
@@ -145,22 +161,36 @@ async def login(body: LoginBody, request: Request, response: Response) -> None:
             detail="too many failed logins",
             headers={"Retry-After": str(math.ceil(wait))},
         )
+    # Count the attempt before the first await: parallel guesses must not all pass
+    # the limiter before any failure is recorded. A success clears the count.
+    state.login_limiter.record_failure(key)
     row = await state.db.fetchone(
         "SELECT id, password_hash FROM users WHERE username = ?", (body.username,)
     )
     try:
-        _hasher.verify(row["password_hash"] if row else _DUMMY_HASH, body.password)
+        await asyncio.to_thread(
+            _hasher.verify, row["password_hash"] if row else _DUMMY_HASH, body.password
+        )
         ok = row is not None
     except (VerificationError, InvalidHashError):
         ok = False
     if not ok or row is None:
-        state.login_limiter.record_failure(key)
         raise HTTPException(status_code=401, detail="invalid username or password")
     state.login_limiter.reset(key)
+    sid = secrets.token_urlsafe(32)
+    db: Database = state.db
+    await db.execute(
+        "DELETE FROM auth_sessions WHERE created_at < ?",
+        (_iso_seconds_ago(SESSION_MAX_AGE_S),),
+    )
+    await db.execute(
+        "INSERT INTO auth_sessions(id, user_id, created_at) VALUES (?,?,?)",
+        (sid, row["id"], utcnow_iso()),
+    )
     settings: Settings = state.settings
     response.set_cookie(
         COOKIE_NAME,
-        state.serializer.dumps({"uid": row["id"]}),
+        state.serializer.dumps({"sid": sid}),
         max_age=SESSION_MAX_AGE_S,
         httponly=True,
         samesite="lax",
@@ -170,7 +200,10 @@ async def login(body: LoginBody, request: Request, response: Response) -> None:
 
 
 @router.post("/logout", status_code=204)
-async def logout(response: Response) -> None:
+async def logout(request: Request, response: Response) -> None:
+    sid = _session_id(request.app.state, request.cookies.get(COOKIE_NAME))
+    if sid is not None:
+        await request.app.state.db.execute("DELETE FROM auth_sessions WHERE id = ?", (sid,))
     response.delete_cookie(COOKIE_NAME, path="/")
 
 

@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import os
 import shutil
+import stat
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
@@ -39,6 +40,22 @@ _CONNECTION_ERRORS: tuple[type[BaseException], ...] = (
 
 def socket_path_for(project: Project) -> Path:
     return SOCKET_DIR / f"{project.id}.sock"
+
+
+def _ensure_private_dir(path: Path) -> None:
+    """Create `path` 0700, or accept it only if it is a real directory we own.
+
+    The socket lives in a fixed directory under /tmp; on a shared host another user
+    could pre-create it (or a symlink) to intercept the API socket.
+    """
+    with contextlib.suppress(FileExistsError):
+        os.mkdir(path, 0o700)
+    info = os.lstat(path)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        raise KicadUnavailable(
+            f"{path} is not a private directory owned by this user; remove it and retry"
+        )
+    os.chmod(path, 0o700)
 
 
 def default_client_factory(socket_uri: str, timeout_ms: int) -> Any:
@@ -120,8 +137,7 @@ class KicadSession:
         Spike 1C: the server only preloads the project; schematic and board
         handlers exist only after `open_document`.
         """
-        SOCKET_DIR.mkdir(parents=True, exist_ok=True)
-        os.chmod(SOCKET_DIR, 0o700)
+        _ensure_private_dir(SOCKET_DIR)
         with contextlib.suppress(FileNotFoundError):
             self.socket_path.unlink()
         self.process = await self._launcher.start(self.project, self.socket_path)

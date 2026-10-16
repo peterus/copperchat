@@ -25,7 +25,8 @@ All settings are environment variables (or `.env`): `PROJECTS_ROOT`, `DATA_DIR`,
 (generated into `$DATA_DIR/session_secret` if unset), `CLAUDE_CODE_OAUTH_TOKEN`
 (from `claude setup-token`) or `ANTHROPIC_API_KEY`, `KICAD_CLI`,
 `KICAD_API_TIMEOUT_S`, `KICAD_START_TIMEOUT_S`, `HOST`, `PORT`,
-`PUBLIC_BASE_URL`, `DEV_FAKE_AGENT`, `COOKIE_SECURE`, `FRONTEND_DIST`.
+`PUBLIC_BASE_URL`, `DEV_FAKE_AGENT`, `COOKIE_SECURE`, `FRONTEND_DIST`,
+`FORWARDED_ALLOW_IPS` (proxies trusted for `X-Forwarded-For`, default `127.0.0.1`).
 
 ## Dependencies
 

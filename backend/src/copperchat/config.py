@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     login_max_failures: int = 5
     login_window_s: float = 60.0
     frontend_dist: Path = Path("/app/frontend/dist")
+    # Proxies whose X-Forwarded-For uvicorn trusts (the login rate limit keys on the
+    # client IP); comma-separated IPs/CIDRs, e.g. the compose network of cloudflared.
+    forwarded_allow_ips: str = "127.0.0.1"
 
 
 @lru_cache(maxsize=1)
