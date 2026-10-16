@@ -69,9 +69,8 @@ for real in CI (fake client / `FakeAgent`).
   `sqlite3.IntegrityError` propagate unchanged; rows are `aiosqlite.Row`
   (mapping access by column name).
 - `create_app` stores `Settings` in `app.state.settings`, `Database` in
-  `app.state.db`, `KicadSessionManager` in `app.state.kicad_sessions`, created
-  in the FastAPI lifespan. If Phase 3 chose other attribute names, use those in
-  Task 5.13 — nothing else in this phase reads `app.state` directly.
+  `app.state.db`, `KicadSessionManager` in `app.state.sessions`, created in
+  the FastAPI lifespan (Phase 3, binding). Only Task 5.12/5.13 read `app.state`.
 - pytest-asyncio runs in `asyncio_mode = "auto"`; async fixtures use
   `pytest_asyncio.fixture`.
 - `CopperChatError(message: str)` behaves like `Exception(message)`.
@@ -796,7 +795,7 @@ def test_delta_omits_absent_patches_and_pong_keeps_null_project() -> None:
     delta = MessageDeltaFrame(project_id="a1b2c3d4e5f6", message_id=3, content_delta="x")
     assert json.loads(dump_frame(delta)) == {
         "type": "message-delta", "projectId": "a1b2c3d4e5f6", "messageId": 3, "contentDelta": "x"}
-    assert json.loads(dump_frame(PongFrame())) == {"type": "pong", "projectId": None}
+    assert json.loads(dump_frame(PongFrame(project_id=None))) == {"type": "pong", "projectId": None}
 
 
 def test_delta_requires_a_patch() -> None:
@@ -836,6 +835,13 @@ Role = Literal["user", "assistant", "system"]
 Kind = Literal["text", "thinking", "tool_use", "tool_result", "image", "error", "notice"]
 Status = Literal["queued", "streaming", "done", "cancelled", "error"]
 FinishReason = Literal["completed", "interrupted", "error", "rate_limited"]
+
+
+def _require_project_key(data: Any) -> Any:
+    """ping/pong frames carry an explicit `"projectId": null`; the key must be present."""
+    if isinstance(data, dict) and "projectId" not in data and "project_id" not in data:
+        raise ValueError("projectId must be present (null)")
+    return data
 
 
 class Wire(BaseModel):
@@ -904,6 +910,11 @@ class CancelQueuedFrame(Wire):
 class PingFrame(Wire):
     type: Literal["ping"] = "ping"
     project_id: None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _require_project_key(cls, data: Any) -> Any:
+        return _require_project_key(data)
 
 
 ClientFrame = Annotated[
@@ -998,10 +1009,20 @@ class ServerPingFrame(Wire):
     type: Literal["ping"] = "ping"
     project_id: None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _require_project_key(cls, data: Any) -> Any:
+        return _require_project_key(data)
+
 
 class PongFrame(Wire):
     type: Literal["pong"] = "pong"
     project_id: None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _require_project_key(cls, data: Any) -> Any:
+        return _require_project_key(data)
 
 
 ServerFrame = Annotated[
@@ -1137,25 +1158,13 @@ Fixtures (each file exactly as below):
  "invalid": [{"type": "pong"}, {"type": "pong", "projectId": null, "timestamp": 1}]}
 ```
 
-(The `// path` lines above are labels only — the files contain just the JSON
-object. Note `{"type":"pong"}` is invalid because `projectId` is required to
-be present: give `PongFrame.project_id` no default in validation by adding
-`model_config` override is unnecessary — instead the test fixture relies on
-`extra="forbid"` for the second case and on the following validator for the
-first.) Add to `PongFrame` and `ServerPingFrame` and `PingFrame`:
-
-```python
-    @model_validator(mode="before")
-    @classmethod
-    def _require_project_key(cls, data: Any) -> Any:
-        if isinstance(data, dict) and "projectId" not in data and "project_id" not in data:
-            raise ValueError("projectId must be present (null)")
-        return data
-```
-
-and construct them in code as `PongFrame(project_id=None)` /
-`ServerPingFrame(project_id=None)`. Update the test line
-`dump_frame(PongFrame())` to `dump_frame(PongFrame(project_id=None))`.
+The `// path` lines above are labels only; each file contains just the JSON
+object. `{"type":"pong"}` is invalid because the `mode="before"` validator
+`_require_project_key` on `PingFrame`, `ServerPingFrame` and `PongFrame`
+requires the `projectId` key to be present (its value may only be `null`);
+`{"type":"pong","projectId":null,"timestamp":1}` is invalid via
+`extra="forbid"`. In code, always construct these frames as
+`PongFrame(project_id=None)` / `ServerPingFrame(project_id=None)`.
 
 - [ ] **Step 4: Run tests to verify they pass**
 

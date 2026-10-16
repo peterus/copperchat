@@ -158,14 +158,14 @@ names the owning task where its test lives.
    out, the server is restarted, the turn ends with a clear chat error, and
    the next turn works against the last autosaved state. Tests: Phase 3 Task
    3.7 (fake server process), Phase 4 Task 4.2 (real server kill), Phase 7
-   Task 7.4.
+   Task 7.5.
 3. **Project opened in KiCad GUI at the same time** (lock file present) —
    expected: project opens read-only with the "open in KiCad — close it
    there" banner; no autosave, no snapshot restore. Tests: Phase 3 Task 3.5,
    Phase 7 Task 7.2.
 4. **Files changed outside CopperChat between turns** (`git pull`, KiCad GUI
    save) — expected: hash check before the turn reloads the documents and
-   posts a chat notice; the agent never sees stale data. Test: Phase 7 Task 7.3.
+   posts a chat notice; the agent never sees stale data. Test: Phase 7 Task 7.4.
 5. **Path traversal / escape in user-controlled paths** — project ids,
    upload filenames, part MPN folder names, skill names, `part-researcher`
    write paths, history snapshot ids — expected: rejected with 400 / tool
@@ -568,6 +568,14 @@ These extend C1–C8 and are equally binding.
   ids `history`, `git`, `skills`, `parts`); `@/stores/ui`
   (`useUi().resolvedTheme`); `@/stores/projects` (`useProjects().current`).
   Stubs owned by later phases: `ViewerSlot` (6B), `NotificationsSection` (9).
+- **Phase 2:** `scripts/kicad-base-smoke.sh <image>`; `docker/kicad-base/{KICAD_COMMIT,LIBS_COMMITS,SUPPORTED_COMMITS,smoke_ping.py}`;
+  base image has kipy in `/opt/venv`, KiCad demos in `/usr/share/kicad/demos`,
+  user `copperchat` (uid 1000); tags `:<commit>` and `:<first 10 chars>`.
+  Spike 1C records a "Schematic accessor" field used by `KicadHandle.schematic()`.
+- **Phase 7:** `app.state.history` (`HistoryService`), `install_history(app)`;
+  `GET /projects/{id}/history/{snapshotId}/preview` → PNG; errors
+  `InvalidSnapshotId` (400), `SnapshotNotFound` (404), `AgentBusy` (409);
+  notice `action` values `restore`, `restored`, `external-change`.
 - **Phase 8:** table `uploads`; `copperchat.agent.attachments.{attachment_exists, build_user_content}`;
   `copperchat.skills.assembly.{SkillBundle, assemble_skills, apply_skills}`.
 - **HTTP additions:** `GET /auth/me` → `{username}`; `GET /skills/{name}`,

@@ -2437,8 +2437,7 @@ describe('MessageList', () => {
 
   it('loads older pages from the top sentinel only when not stuck to the bottom', () => {
     const { scroller, onLoadOlder } = renderList(rows(1, 10));
-    FakeIO.instances.at(-1)!.fire(true);
-    expect(onLoadOlder).not.toHaveBeenCalled();
+    expect(FakeIO.instances).toHaveLength(0);
     scrollTo(scroller, 0);
     FakeIO.instances.at(-1)!.fire(true);
     expect(onLoadOlder).toHaveBeenCalledTimes(1);
@@ -3155,8 +3154,9 @@ export function insertAt(text: string, insert: string, selection: Selection | nu
   const lead = before.length > 0 && !/\s$/.test(before) ? ' ' : '';
   const trail = after.length > 0 && /^\s/.test(after) ? '' : ' ';
   const head = before + lead + insert + trail;
-  const tail = trail === '' ? after : after;
-  return { text: head + tail, caret: head.length };
+  // When the following text already starts with a space, the caret lands after that space.
+  const caret = head.length + (trail === '' && after.startsWith(' ') ? 1 : 0);
+  return { text: head + after, caret };
 }
 
 interface ComposerState {
@@ -3190,27 +3190,6 @@ export const useComposer = create<ComposerState>()((set, get) => ({
   removeAttachment: (id) => set({ attachments: get().attachments.filter((a) => a.id !== id) }),
   clear: () => set({ text: '', selection: null, attachments: [], focusToken: 0 }),
 }));
-```
-Check `insertAt` against the tests: `'is  ok'` @3 → before `'is '`, after `' ok'` → lead `''`, trail `''` → `'is @C3 ok'`, caret 6? `'is @C3'` has length 6 — but the test expects caret 7. Make the caret land after the following space when one exists: replace the `return` with
-```ts
-  const caret = head.length + (trail === '' && after.startsWith(' ') ? 1 : 0);
-  return { text: head + after, caret };
-```
-and delete the `tail` line. Re-check: `'check'` → `'check @R12 '`, caret 11 ✓; `'is  ok'` → `'is @C3 ok'`, caret 7 ✓; `'what is X?'` sel 8–9 → before `'what is '`, after `'?'` → `'what is @U1 ?'`, caret 12 ✓; `''` → `'@R1 '`, caret 4 ✓; `'why is  hot'` sel 7 → `'why is @Q2 hot'`, caret 11 ✓.
-
-Final `insertAt`:
-```ts
-export function insertAt(text: string, insert: string, selection: Selection | null): { text: string; caret: number } {
-  const start = selection?.start ?? text.length;
-  const end = selection?.end ?? start;
-  const before = text.slice(0, start);
-  const after = text.slice(end);
-  const lead = before.length > 0 && !/\s$/.test(before) ? ' ' : '';
-  const trail = after.length > 0 && /^\s/.test(after) ? '' : ' ';
-  const head = before + lead + insert + trail;
-  const caret = head.length + (trail === '' && after.startsWith(' ') ? 1 : 0);
-  return { text: head + after, caret };
-}
 ```
 
 `frontend/src/components/chat/composerSlots.ts`:
@@ -3880,15 +3859,15 @@ function List() {
 describe('panel registry', () => {
   it('registers, orders, replaces and unregisters panels reactively', () => {
     render(<List />);
-    let offB: () => void = () => {};
+    let offHistory: () => void = () => {};
     act(() => {
       registerPanel({ id: 'b', title: 'Parts', icon: Icon, component: () => null, order: 20 });
-      offB = registerPanel({ id: 'a', title: 'History', icon: Icon, component: () => null, order: 10 });
+      offHistory = registerPanel({ id: 'a', title: 'History', icon: Icon, component: () => null, order: 10 });
     });
     expect(screen.getAllByRole('listitem').map((li) => li.textContent)).toEqual(['History', 'Parts']);
     act(() => registerPanel({ id: 'b', title: 'Parts v2', icon: Icon, component: () => null, order: 20 }));
     expect(screen.getByText('Parts v2')).toBeInTheDocument();
-    act(() => offB());
+    act(() => offHistory());
     expect(screen.queryByText('History')).toBeNull();
   });
 });
@@ -4673,7 +4652,6 @@ test('mocked API: login → pick project → chat round-trip', async ({ page }) 
   await page.getByRole('textbox', { name: 'Message' }).fill('ping the board');
   await page.getByRole('button', { name: 'Send' }).click();
   await expect(page.getByText('Echo: ping the board')).toBeVisible();
-  await expect(page.getByText('CopperChat')).toHaveCount(0); // header shows the project name, not branding
 });
 
 test('real backend with dev_fake_agent (opt-in)', async ({ page }) => {

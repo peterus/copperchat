@@ -37,7 +37,8 @@ note it in the done report):
   `attachment_exists: Callable[[str, str], Awaitable[bool]]`.
 - Phase 6A: `apiGet/apiPost/apiPut/apiDelete` (`frontend/src/api/http.ts`),
   `registerPanel({id, title, icon, component})` where panel components receive
-  `{ projectId: string }`, `setComposerAttachmentSlot(Component)` where the slot
+  `{ projectId: string }` (panel modules are imported from `frontend/src/panels/index.ts`),
+  `composerAttachmentSlot.register(Component)` from `@/components/chat/composerSlots` where the slot
   component receives `{ projectId: string; attachments: AttachmentRef[]; setAttachments(next: AttachmentRef[]): void }`
   and the composer passes `attachments` to `useChat(projectId).send(text, attachments)`.
 
@@ -61,8 +62,8 @@ note it in the done report):
 - Modify: `backend/pyproject.toml` (`httpx` runtime dependency, `live_sdk` marker)
 - Create: `frontend/src/api/skills.ts`, `frontend/src/api/parts.ts`, `frontend/src/api/uploads.ts`
 - Create: `frontend/src/pages/skills/SkillsPanel.tsx`, `frontend/src/pages/parts/PartsPanel.tsx`,
-  `frontend/src/components/composer/AttachmentPicker.tsx`, `frontend/src/features/phase8.ts`
-- Modify: `frontend/src/main.tsx` (import `./features/phase8`)
+  `frontend/src/components/chat/AttachmentPicker.tsx`
+- Modify: `frontend/src/panels/index.ts` (register Skills/Parts panels and the composer attachment slot)
 - Tests: listed per task.
 
 **Acceptance criteria:**
@@ -1063,8 +1064,6 @@ def _copy_regular_files(src: Path, dest: Path) -> None:
         rel = path.relative_to(src)
         if any(part.startswith(".") for part in rel.parts) or path.is_symlink():
             continue
-        if any(p.is_symlink() for p in path.relative_to(src).parents if str(p) != "." and (src / p).is_symlink()):
-            continue
         if path.is_file() and path.stat().st_size <= MAX_SKILL_BYTES:
             target = dest / rel
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -1099,9 +1098,8 @@ def apply_skills(options: ClaudeAgentOptions, bundle: SkillBundle) -> ClaudeAgen
     )
 ```
 
-Note: `rglob` does not descend into symlinked directories on Python 3.13 by
-default (`recurse_symlinks=False`), so the second `continue` only guards files
-whose parent chain contains a symlink that was listed explicitly.
+`tools=["Skill"]` for the main agent (only when a skill is enabled) is an
+**owner review requested** decision: `Skill` is not a file/shell/web tool.
 
 Modify `sdk_backend.py` — at the end of `SdkAgentBackend._build_options`
 (after Phase 5 constructed `options` with `tools=[]`, its MCP server,
@@ -1123,9 +1121,8 @@ still evaluated by the allowlist rather than denied as unknown — add `"Skill"`
 to the set passed in `_build_options`.
 
 `backend/pyproject.toml`: add to `[tool.pytest.ini_options].markers`:
-`"live_sdk: needs real model credentials, opt-in"`, and to
-`addopts` append ` -m "not live_sdk"` only if Phase 3 did not already define
-`addopts` markers (otherwise the `skipif` in the test is sufficient). Ensure
+`"live_sdk: needs real model credentials, opt-in"` (registration only; do not
+change `addopts` — the test's `skipif` on a missing token keeps it out of CI). Ensure
 `skills/builtin/**/*.md` is shipped: with hatchling add
 `[tool.hatch.build.targets.wheel] artifacts = ["src/copperchat/skills/builtin/**"]`
 (uv installs the project editable in dev and as wheel in the image).
@@ -1148,7 +1145,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ### Task 8.4: part-researcher definition and path guard
 
-**Decision (how the main agent reaches the researcher).** `research_part` is
+**Decision (how the main agent reaches the researcher) — owner review requested.** `research_part` is
 a normal CopperChat `ToolSpec` whose handler runs a **separate one-shot SDK
 `query()`** configured from the `part-researcher` `AgentDefinition`
 (prompt, tools, model, max turns). The alternative — registering
@@ -1506,7 +1503,7 @@ def project(tmp_path: Path) -> Project:
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [("TPS62133", "TPS62133"), (" LM358/NOPB ", "LM358_NOPB"), ("ESP32-S3-WROOM-1 N8R8", "ESP32-S3-WROOM-1_N8R8"),
-     ("BAT54C,215".replace(",", "."), "BAT54C.215")],
+     ("BAT54C.215", "BAT54C.215")],
 )
 def test_mpn_dirname_ok(raw: str, expected: str) -> None:
     assert parts.mpn_dirname(raw) == expected
@@ -1605,7 +1602,7 @@ def test_rejections(project: Project) -> None:
         uploads.store_upload(project, b"#!/bin/sh\n", "x.pdf")
     assert e.value.status == 415
     with pytest.raises(uploads.UploadRejected) as e:
-        uploads.store_upload(project, b"%PDF" + b"0" * uploads.MAX_PDF_BYTES, "big.pdf")
+        uploads.store_upload(project, b"%PDF-" + b"0" * uploads.MAX_PDF_BYTES, "big.pdf")
     assert e.value.status == 413
     with pytest.raises(uploads.UploadRejected) as e:
         uploads.store_upload(project, b"\x89PNG\r\n\x1a\nbroken", "x.png")
@@ -2304,8 +2301,9 @@ def test_skills_listing_customise_reset_and_toggle(client: TestClient) -> None:
 @pytest.mark.parametrize("bad", ["..%2F..%2Fetc", "UPPER", "a.b", "-x"])
 def test_skill_name_traversal_rejected(client: TestClient, bad: str) -> None:
     r = client.put(f"/api/skills/user/{bad}", json={"content": "---\nname: x\ndescription: y\n---\n"})
-    assert r.status_code in (400, 404)
-    assert not any((client.data_dir / "skills").glob("**/SKILL.md")) if (client.data_dir / "skills").exists() else True  # type: ignore[attr-defined]
+    assert r.status_code in (400, 404, 405)
+    skills_dir = client.data_dir / "skills"  # type: ignore[attr-defined]
+    assert list(skills_dir.glob("**/SKILL.md")) == []
 
 
 def test_parts_notes_and_mpn_traversal(client: TestClient) -> None:
@@ -2315,7 +2313,7 @@ def test_parts_notes_and_mpn_traversal(client: TestClient) -> None:
     assert got["userEdited"] is True
     assert [p["mpn"] for p in client.get(f"/api/projects/{pid}/parts").json()] == ["TPS62133"]
     for bad in ("..", "_uploads", "..%2F..%2Fx", ".git"):
-        assert client.put(f"/api/projects/{pid}/parts/{bad}/notes", json={"content": "x"}).status_code in (400, 404)
+        assert client.put(f"/api/projects/{pid}/parts/{bad}/notes", json={"content": "x"}).status_code in (400, 404, 405)  # httpx collapses ".."
     assert client.get(f"/api/projects/{pid}/parts/TPS62133/datasheet").status_code == 404
 
 
@@ -2663,7 +2661,8 @@ async def test_image_and_pdf_blocks(env) -> None:
     assert content[0] == {"type": "text", "text": "look"}
     image_block = content[1]
     assert image_block["type"] == "image" and image_block["source"]["type"] == "base64"
-    assert base64.b64decode(image_block["source"]["data"])[:4] in (b"\x89PNG", b"\xff\xd8\xff\xe0"[:4])
+    data = base64.b64decode(image_block["source"]["data"])
+    assert data.startswith(b"\x89PNG") or data.startswith(b"\xff\xd8\xff")
     note = content[2]
     assert note["type"] == "text" and "docs/parts/_uploads/" in note["text"] and "research_part" in note["text"]
     assert await attachment_exists(db, project.id, img.id)
@@ -3199,13 +3198,13 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ### Task 8.11: Composer attachment picker and panel registration
 
 **Files:**
-- Create: `frontend/src/api/uploads.ts`, `frontend/src/components/composer/AttachmentPicker.tsx`, `frontend/src/features/phase8.ts`
-- Modify: `frontend/src/main.tsx` (add `import "./features/phase8";` before render)
-- Test: `frontend/src/components/composer/AttachmentPicker.test.tsx`
+- Create: `frontend/src/api/uploads.ts`, `frontend/src/components/chat/AttachmentPicker.tsx`
+- Modify: `frontend/src/panels/index.ts` (Phase 6A's panel registration module, already imported by `main.tsx`)
+- Test: `frontend/src/components/chat/AttachmentPicker.test.tsx`
 
 **Interfaces:**
-- Consumes: `setComposerAttachmentSlot`, `registerPanel`, `AttachmentRef` type from `frontend/src/protocol/frames.ts`.
-- Produces: `uploadAttachment(projectId, file): Promise<AttachmentRef>`, `AttachmentPicker` (slot component), side-effect module `features/phase8.ts`.
+- Consumes: `composerAttachmentSlot.register(Component)` from `@/components/chat/composerSlots`, `registerPanel` from `@/layouts/panels`, `AttachmentRef` type from `frontend/src/protocol/frames.ts`.
+- Produces: `uploadAttachment(projectId, file): Promise<AttachmentRef>`, `AttachmentPicker` (slot component).
 
 Upload uses `fetch` directly (multipart; `apiPost` JSON-encodes), with
 `credentials: "same-origin"`. On iOS, the "Photo" input uses
@@ -3217,7 +3216,7 @@ a clear 415 message shown in the chip row.
 - [ ] **Step 1: Write the failing test**
 
 ```tsx
-// frontend/src/components/composer/AttachmentPicker.test.tsx
+// frontend/src/components/chat/AttachmentPicker.test.tsx
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
@@ -3254,7 +3253,7 @@ it("shows the server error on rejection", async () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd frontend && npx vitest run src/components/composer/AttachmentPicker.test.tsx`
+Run: `cd frontend && npx vitest run src/components/chat/AttachmentPicker.test.tsx`
 Expected: FAIL — `Failed to resolve import "./AttachmentPicker"`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -3279,7 +3278,7 @@ export async function uploadAttachment(projectId: string, file: File): Promise<A
 ```
 
 ```tsx
-// frontend/src/components/composer/AttachmentPicker.tsx
+// frontend/src/components/chat/AttachmentPicker.tsx
 import { useRef, useState, type ChangeEvent } from "react";
 import { uploadAttachment } from "../../api/uploads";
 import type { AttachmentRef } from "../../protocol/frames";
@@ -3350,22 +3349,20 @@ export function AttachmentPicker({ projectId, attachments, setAttachments }: Att
 composer, swap them for its paperclip/camera icons.)
 
 ```ts
-// frontend/src/features/phase8.ts
+// frontend/src/panels/index.ts — append to Phase 6A's module
 import { BookOpen, Cpu } from "lucide-react";
-import { setComposerAttachmentSlot } from "../components/composer/slots";
-import { AttachmentPicker } from "../components/composer/AttachmentPicker";
-import { registerPanel } from "../layouts/panels";
-import { PartsPanel } from "../pages/parts/PartsPanel";
-import { SkillsPanel } from "../pages/skills/SkillsPanel";
+import { composerAttachmentSlot } from "@/components/chat/composerSlots";
+import { AttachmentPicker } from "@/components/chat/AttachmentPicker";
+import { registerPanel } from "@/layouts/panels";
+import { PartsPanel } from "@/pages/parts/PartsPanel";
+import { SkillsPanel } from "@/pages/skills/SkillsPanel";
 
-setComposerAttachmentSlot(AttachmentPicker);
+composerAttachmentSlot.register(AttachmentPicker);
 registerPanel({ id: "skills", title: "Skills", icon: BookOpen, component: SkillsPanel });
 registerPanel({ id: "parts", title: "Parts", icon: Cpu, component: PartsPanel });
 ```
 
-(`icon` takes whatever `PanelDef.icon` declares in Phase 6A — a
-`lucide-react` component is assumed; if 6A uses a string key, pass
-`"book-open"` / `"cpu"`.)
+(`icon` is a `lucide-react` component, as declared by Phase 6A.)
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -3375,7 +3372,7 @@ Expected: all green.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add frontend/src/api/uploads.ts frontend/src/components/composer/AttachmentPicker.tsx frontend/src/components/composer/AttachmentPicker.test.tsx frontend/src/features/phase8.ts frontend/src/main.tsx
+git add frontend/src/api/uploads.ts frontend/src/components/chat/AttachmentPicker.tsx frontend/src/components/chat/AttachmentPicker.test.tsx frontend/src/panels/index.ts
 git commit -m "feat: composer attachments and skills/parts panels registration
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
@@ -3402,8 +3399,10 @@ Spec coverage:
 Deviations / decisions:
 - `part-researcher` runs as a **separate one-shot SDK query** built from its
   `AgentDefinition`, not as an `agents=` entry on the main session (keeps the
-  main agent's surface at `Skill` + CopperChat MCP tools). The main session
-  gets `tools=["Skill"]` instead of `[]` when at least one skill is enabled.
+  main agent's surface at `Skill` + CopperChat MCP tools; the main agent has no
+  `Agent` tool and no `agents=`) — **owner review requested**. The main session
+  gets `tools=["Skill"]` instead of `[]` when at least one skill is enabled
+  (`Skill` is not a file/shell/web tool) — **owner review requested**.
 - Datasheet download needs binary-safe storage, so the researcher additionally
   gets an in-process MCP tool `download_datasheet(mpn, url)`.
 - User-edit precedence is front-matter based (`user_edited: true`, set

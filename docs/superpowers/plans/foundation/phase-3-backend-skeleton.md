@@ -8,7 +8,7 @@ a static-frontend stub, and a CI workflow running lint, format check, mypy and
 the non-KiCad test suite.
 
 **Depends on:** 1C (spike result `docs/spikes/1c-api-server.md`: api-server
-command line, kipy accessors, kicad-python revision).
+command line, kipy accessors, kipy revision).
 
 **Parallel with:** 2.
 
@@ -17,7 +17,7 @@ command line, kipy accessors, kicad-python revision).
   Review Focus (lines 2, 3, 5), Interface Contracts C1–C5 and C8, Phase Conventions.
 - `docs/superpowers/specs/2026-10-15-foundation-design.md` §3, §4, §4.1, §10, §11, §12.
 - `docs/spikes/1c-api-server.md` (Decision section; recorded api-server command
-  line; recorded kicad-python revision).
+  line; recorded kipy revision).
 
 **PR title:** `foundation phase 3: backend skeleton`
 
@@ -34,6 +34,7 @@ command line, kipy accessors, kicad-python revision).
 - Create: `backend/src/copperchat/tools/__init__.py`, `tools/spec.py`, `tools/registry.py`
 - Create: `backend/tests/__init__.py`, `backend/tests/conftest.py`,
   `backend/tests/support/__init__.py`, `backend/tests/support/fake_kicad.py`,
+  `backend/tests/support/kicad_env.py`,
   `backend/tests/unit/__init__.py`, `backend/tests/unit/test_*.py` (listed per task),
   `backend/tests/kicad/__init__.py`, `backend/tests/kicad/test_session_real.py`
 - Create: `.github/workflows/ci.yml`
@@ -271,7 +272,7 @@ build-backend = "hatchling.build"
 packages = ["src/copperchat"]
 
 # kicad-python 0.8.0 on PyPI is broken for KiCad 11 (see tests/unit/test_kipy_imports.py).
-# Use the revision recorded in docs/spikes/1c-api-server.md ("kicad-python revision").
+# Use the revision recorded in docs/spikes/1c-api-server.md ("kipy revision").
 [tool.uv.sources]
 kicad-python = { git = "https://gitlab.com/kicad/code/kicad-python.git", rev = "<rev from docs/spikes/1c-api-server.md>" }
 
@@ -298,7 +299,7 @@ strict = true
 mypy_path = "src"
 ```
 
-The `rev` value is copied literally from the spike doc's "kicad-python revision"
+The `rev` value is copied literally from the spike doc's "kipy revision"
 line. If the spike doc does not record one, use the newest commit of
 `https://gitlab.com/kicad/code/kicad-python` `main` for which
 `tests/unit/test_kipy_imports.py` passes, and write that SHA into
@@ -644,7 +645,9 @@ async def test_out_of_order_migration_is_still_applied(tmp_path: Path) -> None:
         (mig / "0003_c.sql").write_text("CREATE TABLE c (x INTEGER);")
         await migrate(db, mig)
         names = {r["name"] for r in await db.fetchall("SELECT name FROM sqlite_master")}
-        assert {"a", "c", "d"} <= names
+        # 0001 is already applied by Database.open (real 0001_core.sql), so the
+        # test's 0001_a.sql is skipped as "version 1 already applied".
+        assert {"c", "d"} <= names and "a" not in names
         uv = await db.fetchone("PRAGMA user_version")
         assert uv is not None and uv[0] == 4
     finally:
@@ -656,16 +659,6 @@ def test_list_migrations_rejects_duplicates(tmp_path: Path) -> None:
     (tmp_path / "0002_y.sql").write_text("")
     with pytest.raises(RuntimeError, match="duplicate"):
         list_migrations(tmp_path)
-```
-
-Note: `test_out_of_order_migration_is_still_applied` opens the DB (applying the
-real `0001_core.sql`) and then migrates a second directory — versions are
-global, so `0001_a.sql` is skipped as already applied (version 1). Adjust the
-assertion accordingly: replace `{"a", "c", "d"}` with `{"c", "d"}` and assert
-`"a" not in names`. Write the test in that final form:
-
-```python
-        assert {"c", "d"} <= names and "a" not in names
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1292,7 +1285,7 @@ import sys
 
 import uvicorn
 
-from copperchat.config import get_settings
+from copperchat.config import check_model_credentials, get_settings
 from copperchat.errors import ConfigError
 from copperchat.web.app import create_app
 
@@ -1300,8 +1293,6 @@ from copperchat.web.app import create_app
 def main() -> None:
     settings = get_settings()
     try:
-        from copperchat.config import check_model_credentials
-
         check_model_credentials(settings)
     except ConfigError as exc:
         print(f"CopperChat cannot start: {exc.message}", file=sys.stderr)
@@ -1348,7 +1339,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 Test note: discovery tests create **zero-byte marker files** named `*.kicad_pro`
 etc. They are never opened by KiCad or parsed by anything — only their names
 matter to discovery. This is not editing KiCad content; real KiCad files enter
-the repo only in Phase 4 via `kicad-cli`.
+the repo only in Phase 4 via `kicad-cli`. **Owner-provisional decision — owner
+review requested:** empty `*.kicad_pro` (and `.kicad_sch`/`.kicad_pcb`/`.lck`)
+markers in `tmp_path` are allowed in unit tests (Tasks 3.4, 3.5, 3.7); any test
+that reads KiCad content uses only KiCad/kicad-cli-generated fixtures.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1472,7 +1466,9 @@ def test_open_rejects_traversal_ids(make_settings: Callable[..., Settings], bad_
         client.post("/api/auth/login", json=GOOD)
         r = client.post(f"/api/projects/{bad_id}/open")
         assert r.status_code in (400, 404)
-        if "%2F" not in bad_id:
+        # Ids with percent-encoding may be decoded/normalised by the router before
+        # reaching our validator (404 is acceptable there); plain ids must be 400.
+        if "%" not in bad_id:
             assert r.status_code == 400
             assert r.json()["error"]["code"] == "invalid_project_id"
 
@@ -1666,10 +1662,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ## Task 3.5: KiCad session lifecycle and the open endpoint (read-only on lock)
 
 **Files:**
-- Create: `backend/src/copperchat/kicad_session/__init__.py`, `kicad_session/errors.py`, `kicad_session/launcher.py` (protocol only in this task), `kicad_session/session.py`
+- Create: `backend/src/copperchat/kicad_session/__init__.py`, `kicad_session/errors.py`, `kicad_session/launcher.py` (`ServerLauncher` protocol + real `KicadCliLauncher`), `kicad_session/session.py`
 - Create: `backend/tests/support/fake_kicad.py`
 - Modify: `backend/src/copperchat/web/app.py`, `backend/src/copperchat/web/routes_projects.py`
-- Test: `backend/tests/unit/test_kicad_session.py`, `backend/tests/unit/test_open_project.py`
+- Test: `backend/tests/unit/test_kicad_session.py`, `backend/tests/unit/test_open_project.py`, `backend/tests/unit/test_launcher.py`
 
 **Interfaces:**
 - Consumes: C1, C3.
@@ -1681,6 +1677,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   - `KicadSession.socket_path: Path`, `KicadSession.process: asyncio.subprocess.Process | None`.
   - `socket_path_for(project: Project) -> Path` → `/tmp/copperchat/<id>.sock`.
   - `create_app(settings, *, launcher=None, client_factory=None)`; `app.state.sessions`.
+  - `KicadCliLauncher(kicad_cli: str, log_dir: Path)` implementing `ServerLauncher`
+    (the default launcher of `KicadSessionManager`, so it lives in this task).
   - C8 `POST /api/projects/{id}/open` → `{id, readOnly, lockFiles, kicadVersion}`
     where `lockFiles` are file names relative to the project directory.
 
@@ -1732,6 +1730,11 @@ class FakeLauncher:
         script = f"import sys; sys.exit({code})" if code is not None else "import time; time.sleep(3600)"
         proc = await asyncio.create_subprocess_exec(sys.executable, "-c", script)
         self.server.processes.append(proc)
+        if code is not None:
+            # Simulated start failure: let the process exit before the session
+            # polls it, and never mark the server alive.
+            await proc.wait()
+            return proc
         self.server.dead = False
         return proc
 
@@ -1784,7 +1787,7 @@ def make_project(root: Path, locked: bool = False) -> Project:
     d = root / "demo"
     d.mkdir(parents=True, exist_ok=True)
     for suffix in ("kicad_pro", "kicad_sch", "kicad_pcb"):
-        (d / f"demo.{suffix}").touch()   # filename markers only, never opened
+        (d / f"demo.{suffix}").touch()   # filename markers only, never opened (owner review requested)
     if locked:
         (d / "~demo.kicad_pcb.lck").touch()
     return discover_projects(root)[0]
@@ -1894,7 +1897,7 @@ def markers(root: Path, locked: bool) -> None:
     d = root / "demo"
     d.mkdir(parents=True, exist_ok=True)
     for suffix in ("kicad_pro", "kicad_sch", "kicad_pcb"):
-        (d / f"demo.{suffix}").touch()
+        (d / f"demo.{suffix}").touch()   # empty markers (owner review requested)
     if locked:
         (d / "~demo.kicad_sch.lck").touch()
         (d / "~demo.kicad_pcb.lck").touch()
@@ -1934,6 +1937,30 @@ def test_open_locked_returns_read_only_banner_data(make_settings: Callable[..., 
     assert body["lockFiles"] == ["~demo.kicad_pcb.lck", "~demo.kicad_sch.lck"]
 ```
 
+`backend/tests/unit/test_launcher.py` (Owner-provisional, owner review requested: the empty `*.kicad_pro` is a filename marker for discovery only; no KiCad content is read):
+```python
+import sys
+from pathlib import Path
+
+from copperchat.kicad_session.launcher import KicadCliLauncher
+from copperchat.projects import discover_projects
+
+
+async def test_launcher_builds_command_line_and_logs(tmp_path: Path) -> None:
+    fake = tmp_path / "kicad-cli"
+    fake.write_text(f"#!{sys.executable}\nimport sys\nprint(' '.join(sys.argv[1:]), file=sys.stderr)\n")
+    fake.chmod(0o755)
+    proj_dir = tmp_path / "projects" / "demo"
+    proj_dir.mkdir(parents=True)
+    (proj_dir / "demo.kicad_pro").touch()   # filename marker only
+    project = discover_projects(tmp_path / "projects")[0]
+    launcher = KicadCliLauncher(str(fake), tmp_path / "logs")
+    proc = await launcher.start(project, Path("/tmp/copperchat/x.sock"))
+    assert await proc.wait() == 0
+    log = (tmp_path / "logs" / f"api-server-{project.id}.log").read_text()
+    assert f"api-server {project.pro_file} --socket /tmp/copperchat/x.sock" in log
+```
+
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cd backend && uv run pytest tests/unit/test_kicad_session.py tests/unit/test_open_project.py -q`
@@ -1962,6 +1989,7 @@ class KicadCallTimeout(KicadUnavailable):
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import Protocol
 
@@ -1970,7 +1998,30 @@ from copperchat.projects import Project
 
 class ServerLauncher(Protocol):
     async def start(self, project: Project, socket_path: Path) -> asyncio.subprocess.Process: ...
+
+
+class KicadCliLauncher:
+    """Starts `kicad-cli api-server <project.kicad_pro> --socket <path>`.
+
+    If docs/spikes/1c-api-server.md records a different command line, use that.
+    """
+
+    def __init__(self, kicad_cli: str, log_dir: Path) -> None:
+        self._kicad_cli = kicad_cli
+        self._log_dir = log_dir
+
+    async def start(self, project: Project, socket_path: Path) -> asyncio.subprocess.Process:
+        self._log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = self._log_dir / f"api-server-{project.id}.log"
+        env = {**os.environ, "LANG": "C", "LC_ALL": "C"}
+        with log_path.open("ab") as log:
+            return await asyncio.create_subprocess_exec(
+                self._kicad_cli, "api-server", str(project.pro_file), "--socket", str(socket_path),
+                cwd=project.dir, env=env, stdin=asyncio.subprocess.DEVNULL,
+                stdout=log, stderr=log)
 ```
+(`asyncio.create_subprocess_exec` dups the file descriptor, so closing `log`
+after spawning is safe.)
 
 `backend/src/copperchat/kicad_session/session.py`:
 ```python
@@ -2206,9 +2257,8 @@ class KicadSessionManager:
                 self._current = None
 ```
 
-(`KicadCliLauncher` is referenced lazily; Task 3.6 adds it. Until then, append to
-`launcher.py` the real class from Task 3.6 Step 3 — it is part of this task's
-import surface, so write it now and test it in 3.6.)
+(`KicadCliLauncher` is imported lazily so unit tests that inject a fake
+launcher never touch it.)
 
 `backend/src/copperchat/kicad_session/__init__.py`:
 ```python
@@ -2280,7 +2330,7 @@ Expected: all PASS.
 ```bash
 git add backend/src/copperchat/kicad_session backend/src/copperchat/web \
   backend/tests/support/fake_kicad.py backend/tests/unit/test_kicad_session.py \
-  backend/tests/unit/test_open_project.py
+  backend/tests/unit/test_open_project.py backend/tests/unit/test_launcher.py
 git commit -m "feat: kicad session manager and project open endpoint with read-only lock handling
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
@@ -2288,81 +2338,21 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
-## Task 3.6: Real `kicad-cli api-server` launcher + integration test
+## Task 3.6: KiCad test environment helpers, marker gating, real api-server test
 
 **Files:**
-- Modify: `backend/src/copperchat/kicad_session/launcher.py`
+- Create: `backend/tests/support/kicad_env.py`
 - Modify: `backend/tests/conftest.py` (kicad marker gating)
-- Test: `backend/tests/unit/test_launcher.py`, `backend/tests/kicad/test_session_real.py`
+- Test: `backend/tests/kicad/test_session_real.py`
 
 **Interfaces:**
-- Consumes: C3, C4.
-- Produces: `KicadCliLauncher(kicad_cli: str, log_dir: Path)` implementing
-  `ServerLauncher`; `api_server_available(kicad_cli: str) -> bool`;
-  `kicad_demo_dir(kicad_cli: str) -> Path | None` (test helper in conftest).
+- Consumes: C3, C4, `KicadCliLauncher` (Task 3.5).
+- Produces (test support, reused by Phase 4): `tests.support.kicad_env.api_server_available(kicad_cli: str = "kicad-cli") -> bool`;
+  `tests.support.kicad_env.kicad_demo_dir(kicad_cli: str = "kicad-cli") -> Path | None`.
   Env var `COPPERCHAT_REQUIRE_KICAD=1` turns "skip" into "fail" for `-m kicad` runs
   (used by the Phase 4 CI job).
 
 - [ ] **Step 1: Write the failing test**
-
-`backend/tests/unit/test_launcher.py`:
-```python
-import sys
-from pathlib import Path
-
-from copperchat.kicad_session.launcher import KicadCliLauncher
-from copperchat.projects import discover_projects
-
-
-async def test_launcher_builds_command_line_and_logs(tmp_path: Path) -> None:
-    fake = tmp_path / "kicad-cli"
-    fake.write_text(f"#!{sys.executable}\nimport sys\nprint(' '.join(sys.argv[1:]), file=sys.stderr)\n")
-    fake.chmod(0o755)
-    proj_dir = tmp_path / "projects" / "demo"
-    proj_dir.mkdir(parents=True)
-    (proj_dir / "demo.kicad_pro").touch()   # filename marker only
-    project = discover_projects(tmp_path / "projects")[0]
-    launcher = KicadCliLauncher(str(fake), tmp_path / "logs")
-    proc = await launcher.start(project, Path("/tmp/copperchat/x.sock"))
-    assert await proc.wait() == 0
-    log = (tmp_path / "logs" / f"api-server-{project.id}.log").read_text()
-    assert f"api-server {project.pro_file} --socket /tmp/copperchat/x.sock" in log
-```
-
-`backend/tests/conftest.py` — append:
-```python
-import os
-import shutil
-import subprocess
-
-
-def api_server_available(kicad_cli: str = "kicad-cli") -> bool:
-    if shutil.which(kicad_cli) is None:
-        return False
-    result = subprocess.run([kicad_cli, "api-server", "--help"], capture_output=True, timeout=30)
-    return result.returncode == 0
-
-
-def kicad_demo_dir(kicad_cli: str = "kicad-cli") -> Path | None:
-    exe = shutil.which(kicad_cli)
-    if exe is None:
-        return None
-    candidate = Path(exe).resolve().parent.parent / "share" / "kicad" / "demos"
-    return candidate if candidate.is_dir() else None
-
-
-def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    if not any(item.get_closest_marker("kicad") for item in items):
-        return
-    if api_server_available():
-        return
-    if os.environ.get("COPPERCHAT_REQUIRE_KICAD") == "1":
-        raise pytest.UsageError("COPPERCHAT_REQUIRE_KICAD=1 but `kicad-cli api-server` is missing")
-    skip = pytest.mark.skip(reason="`kicad-cli api-server` (KiCad 11 master) not available")
-    for item in items:
-        if item.get_closest_marker("kicad"):
-            item.add_marker(skip)
-```
 
 `backend/tests/kicad/test_session_real.py`:
 ```python
@@ -2375,7 +2365,7 @@ import pytest
 from copperchat.config import Settings
 from copperchat.kicad_session import KicadSessionManager
 from copperchat.projects import discover_projects
-from tests.conftest import kicad_demo_dir
+from tests.support.kicad_env import kicad_demo_dir
 
 pytestmark = pytest.mark.kicad
 
@@ -2402,38 +2392,56 @@ async def test_start_ping_close(make_settings: Callable[..., Settings], tmp_path
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd backend && uv run pytest tests/unit/test_launcher.py -q`
-Expected: FAIL — `ImportError: cannot import name 'KicadCliLauncher'`.
+Run: `cd backend && uv run pytest tests/kicad/test_session_real.py -q`
+Expected: FAIL at collection — `ModuleNotFoundError: No module named 'tests.support.kicad_env'`
+(on every machine, with or without KiCad).
 
 - [ ] **Step 3: Write minimal implementation**
 
-Append to `backend/src/copperchat/kicad_session/launcher.py`:
+`backend/tests/support/kicad_env.py`:
+```python
+"""Detects a usable KiCad 11 `kicad-cli api-server` for @pytest.mark.kicad tests."""
+from __future__ import annotations
+
+import shutil
+import subprocess
+from pathlib import Path
+
+
+def api_server_available(kicad_cli: str = "kicad-cli") -> bool:
+    if shutil.which(kicad_cli) is None:
+        return False
+    result = subprocess.run([kicad_cli, "api-server", "--help"], capture_output=True, timeout=30)
+    return result.returncode == 0
+
+
+def kicad_demo_dir(kicad_cli: str = "kicad-cli") -> Path | None:
+    exe = shutil.which(kicad_cli)
+    if exe is None:
+        return None
+    candidate = Path(exe).resolve().parent.parent / "share" / "kicad" / "demos"
+    return candidate if candidate.is_dir() else None
+```
+
+`backend/tests/conftest.py` — append:
 ```python
 import os
 
+from tests.support.kicad_env import api_server_available
 
-class KicadCliLauncher:
-    """Starts `kicad-cli api-server <project.kicad_pro> --socket <path>`.
 
-    If docs/spikes/1c-api-server.md records a different command line, use that.
-    """
-
-    def __init__(self, kicad_cli: str, log_dir: Path) -> None:
-        self._kicad_cli = kicad_cli
-        self._log_dir = log_dir
-
-    async def start(self, project: Project, socket_path: Path) -> asyncio.subprocess.Process:
-        self._log_dir.mkdir(parents=True, exist_ok=True)
-        log_path = self._log_dir / f"api-server-{project.id}.log"
-        env = {**os.environ, "LANG": "C", "LC_ALL": "C"}
-        with log_path.open("ab") as log:
-            return await asyncio.create_subprocess_exec(
-                self._kicad_cli, "api-server", str(project.pro_file), "--socket", str(socket_path),
-                cwd=project.dir, env=env, stdin=asyncio.subprocess.DEVNULL,
-                stdout=log, stderr=log)
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    if not any(item.get_closest_marker("kicad") for item in items):
+        return
+    if api_server_available():
+        return
+    if os.environ.get("COPPERCHAT_REQUIRE_KICAD") == "1":
+        raise pytest.UsageError("COPPERCHAT_REQUIRE_KICAD=1 but `kicad-cli api-server` is missing")
+    skip = pytest.mark.skip(reason="`kicad-cli api-server` (KiCad 11 master) not available")
+    for item in items:
+        if item.get_closest_marker("kicad"):
+            item.add_marker(skip)
 ```
-(`asyncio.create_subprocess_exec` dups the file descriptor, so closing `log`
-after spawning is safe.)
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -2444,9 +2452,9 @@ the installed demos exist, otherwise it is reported as SKIPPED.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add backend/src/copperchat/kicad_session/launcher.py backend/tests/conftest.py \
-  backend/tests/unit/test_launcher.py backend/tests/kicad/test_session_real.py
-git commit -m "feat: kicad-cli api-server launcher with real integration test
+git add backend/tests/support/kicad_env.py backend/tests/conftest.py \
+  backend/tests/kicad/test_session_real.py
+git commit -m "test: kicad environment helpers, marker gating and real api-server session test
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
@@ -2508,6 +2516,9 @@ async def test_hang_times_out_restarts_and_next_call_works(session: KicadSession
     old_process = session.process
     with pytest.raises(KicadCallTimeout, match="restarted"):
         await session.call(lambda h: h.kicad.hang())
+    # Unblock the abandoned worker thread now so the default executor does not
+    # block loop teardown (the fixture's release.set() would come too late).
+    server.release.set()
     assert session.restart_count == 1
     assert server.starts == 2
     assert old_process is not None and old_process.returncode is not None
@@ -2530,7 +2541,9 @@ async def test_call_is_never_retried_silently(session: KicadSession, server: Fak
     def flaky(h: object) -> None:
         nonlocal calls
         calls += 1
-        server.crash()
+        # Runs in the worker thread: only flip the flag; never kill asyncio
+        # subprocesses (crash()) from outside the event loop thread.
+        server.dead = True
         h.kicad.ping()  # type: ignore[attr-defined]
 
     with pytest.raises(KicadUnavailable):
@@ -2538,11 +2551,13 @@ async def test_call_is_never_retried_silently(session: KicadSession, server: Fak
     assert calls == 1
 
 
-async def test_custom_timeout_overrides_default(session: KicadSession) -> None:
+async def test_custom_timeout_overrides_default(session: KicadSession,
+                                                server: FakeServer) -> None:
     loop = asyncio.get_running_loop()
     started = loop.time()
     with pytest.raises(KicadCallTimeout):
         await session.call(lambda h: h.kicad.hang(), timeout=0.1)
+    server.release.set()   # free the worker thread before teardown
     assert loop.time() - started < 5
 
 
@@ -2846,4 +2861,4 @@ argon2-cffi MIT, itsdangerous BSD, kicad-python MIT).
 - `kicad-python` pinned to a git revision because the 0.8.0 wheel cannot import
   `kipy.schematic` / `kipy.board_jobs` (verified 2026-10-15).
 - Unit tests use zero-byte `*.kicad_pro` marker files for discovery only (never
-  opened by KiCad); the real api-server test copies the installed KiCad demos verbatim.
+  opened by KiCad) — owner-provisional, owner review requested; the real api-server test copies the installed KiCad demos verbatim.
