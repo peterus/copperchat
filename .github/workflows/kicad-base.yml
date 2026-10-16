@@ -1,0 +1,179 @@
+name: kicad-base
+
+# Builds KiCad from source at docker/kicad-base/KICAD_COMMIT and publishes
+# ghcr.io/peterus/copperchat-kicad-base:<commit> (+ :<first 10 chars>).
+#
+# The build runs only when needed: the tag is missing, the published image was
+# built from a different recipe (label io.copperchat.recipe = hash of
+# docker/kicad-base/*), or `force` is set on a manual run. Pull requests push
+# only the first publication of a tag; they never overwrite an existing tag
+# (main does, after the recipe change is merged). Every built image is smoke-
+# tested before it is pushed, and the published image is smoke-tested again.
+
+on:
+  push:
+    branches: [main]
+    paths: ["docker/kicad-base/**", "scripts/kicad-base-smoke.sh", ".github/workflows/kicad-base.yml"]
+  pull_request:
+    paths: ["docker/kicad-base/**", "scripts/kicad-base-smoke.sh", ".github/workflows/kicad-base.yml"]
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Rebuild and push even if the tag exists with the same recipe"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: kicad-base-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/peterus/copperchat-kicad-base
+
+jobs:
+  meta:
+    runs-on: ubuntu-24.04
+    outputs:
+      commit: ${{ steps.pins.outputs.commit }}
+      short: ${{ steps.pins.outputs.short }}
+      kipy: ${{ steps.pins.outputs.kipy }}
+      recipe: ${{ steps.pins.outputs.recipe }}
+      build: ${{ steps.decide.outputs.build }}
+      push: ${{ steps.decide.outputs.push }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: pins
+        run: |
+          commit="$(tr -d '[:space:]' < docker/kicad-base/KICAD_COMMIT)"
+          kipy="$(tr -d '[:space:]' < docker/kicad-base/KIPY_COMMIT)"
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "bad KICAD_COMMIT: $commit"; exit 1; }
+          [[ "$kipy" =~ ^[0-9a-f]{40}$ ]] || { echo "bad KIPY_COMMIT: $kipy"; exit 1; }
+          grep -qx "$commit" docker/kicad-base/SUPPORTED_COMMITS \
+            || { echo "KICAD_COMMIT is not listed in SUPPORTED_COMMITS"; exit 1; }
+          # Everything that shapes the image; SUPPORTED_COMMITS only feeds CI matrices.
+          recipe="$(git ls-files docker/kicad-base | grep -v '/SUPPORTED_COMMITS$' | LC_ALL=C sort \
+            | xargs sha256sum | sha256sum | cut -c1-16)"
+          {
+            echo "commit=$commit"
+            echo "short=${commit:0:10}"
+            echo "kipy=$kipy"
+            echo "recipe=$recipe"
+          } >> "$GITHUB_OUTPUT"
+          echo "KiCad $commit, kipy $kipy, recipe $recipe"
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: decide
+        env:
+          COMMIT: ${{ steps.pins.outputs.commit }}
+          RECIPE: ${{ steps.pins.outputs.recipe }}
+          FORCE: ${{ inputs.force || 'false' }}
+          EVENT: ${{ github.event_name }}
+          SAME_REPO: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          if json="$(docker buildx imagetools inspect "$IMAGE:$COMMIT" --format '{{json .Image}}' 2>/dev/null)"; then
+            exists=true
+            published="$(echo "$json" | jq -r 'if has("config") then .config.Labels["io.copperchat.recipe"]
+              else .["linux/amd64"].config.Labels["io.copperchat.recipe"] end // ""')"
+          else
+            exists=false; published=""
+          fi
+          echo "tag exists: $exists, published recipe: '${published}', current recipe: $RECIPE"
+          build=false; push=false
+          if [ "$FORCE" = "true" ] || [ "$exists" = "false" ] || [ "$published" != "$RECIPE" ]; then
+            build=true
+            if [ "$SAME_REPO" = "true" ] && { [ "$EVENT" != "pull_request" ] || [ "$exists" = "false" ]; }; then
+              push=true
+            fi
+          fi
+          echo "build=$build push=$push"
+          { echo "build=$build"; echo "push=$push"; } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: meta
+    if: needs.meta.outputs.build == 'true'
+    runs-on: ubuntu-24.04
+    # GitHub-hosted jobs are capped at 6 h. ccache lives in a BuildKit cache
+    # mount that is round-tripped through the Actions cache, so rebuilds of the
+    # same or a nearby commit are much faster than the cold build. If a cold
+    # build ever exceeds the cap, run this job on a self-hosted runner.
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v7
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/boost /usr/local/.ghcup
+          df -h /
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        if: needs.meta.outputs.push == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # Declared before the cache dance so its post step (save) runs after the
+      # dance's post step (extract from BuildKit).
+      - name: ccache (Actions cache)
+        uses: actions/cache@v6
+        with:
+          path: ccache-mount
+          key: kicad-ccache-${{ needs.meta.outputs.commit }}-${{ github.run_id }}
+          restore-keys: |
+            kicad-ccache-${{ needs.meta.outputs.commit }}-
+            kicad-ccache-
+      - name: Inject ccache into BuildKit
+        uses: reproducible-containers/buildkit-cache-dance@v3
+        with:
+          dockerfile: docker/kicad-base/Dockerfile
+          cache-map: '{"ccache-mount": "/ccache"}'
+      - name: Build
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: docker/kicad-base
+          file: docker/kicad-base/Dockerfile
+          build-args: |
+            KICAD_COMMIT=${{ needs.meta.outputs.commit }}
+            KIPY_REV=${{ needs.meta.outputs.kipy }}
+            RECIPE=${{ needs.meta.outputs.recipe }}
+          load: true
+          push: false
+          provenance: false
+          tags: |
+            ${{ env.IMAGE }}:${{ needs.meta.outputs.commit }}
+            ${{ env.IMAGE }}:${{ needs.meta.outputs.short }}
+          cache-from: type=gha,scope=kicad-base
+          cache-to: type=gha,scope=kicad-base,mode=max
+      - name: Image size
+        run: docker image inspect "$IMAGE:${{ needs.meta.outputs.commit }}" --format '{{.Size}}' | numfmt --to=iec
+      - name: Smoke (built image, before push)
+        run: scripts/kicad-base-smoke.sh "$IMAGE:${{ needs.meta.outputs.commit }}"
+      - name: Push
+        if: needs.meta.outputs.push == 'true'
+        run: |
+          docker push "$IMAGE:${{ needs.meta.outputs.commit }}"
+          docker push "$IMAGE:${{ needs.meta.outputs.short }}"
+
+  smoke:
+    needs: [meta, build]
+    # The published image: after a push, or when no build was needed.
+    if: >-
+      always() && needs.meta.result == 'success' &&
+      (needs.build.result == 'skipped' || (needs.build.result == 'success' && needs.meta.outputs.push == 'true'))
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - run: docker pull "$IMAGE:${{ needs.meta.outputs.commit }}"
+      - run: scripts/kicad-base-smoke.sh "$IMAGE:${{ needs.meta.outputs.commit }}"
