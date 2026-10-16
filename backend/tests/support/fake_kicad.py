@@ -48,6 +48,7 @@ class FakeServer:
     opened: list[tuple[str, int]] = field(default_factory=list)
     saved: list[str] = field(default_factory=list)
     hierarchy: list[str] = field(default_factory=list)
+    closed: int = 0
 
     def crash(self) -> None:
         self.dead = True
@@ -133,6 +134,9 @@ class FakeKiCad:
     def get_board(self) -> FakeDocument:
         self._check()
         return FakeDocument(self._server, self._docs[DocumentType.DOCTYPE_PCB])
+
+    def close(self) -> None:
+        self._server.closed += 1
 
     def hang(self) -> None:
         """Simulates an api-server that never answers."""

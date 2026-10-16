@@ -117,6 +117,8 @@ class KicadSession:
         self._closed = False
         # Called after every successful (re)start; the manager records its lock token.
         self.on_started: Callable[[], None] | None = None
+        # Token in `~STEM.kicad_pro.lck` after our server started (spike 1C, Q7).
+        self.server_token: str | None = None
 
     @property
     def settings(self) -> Settings:
@@ -135,8 +137,16 @@ class KicadSession:
         """Launch the api-server, wait until it answers, then open sch + pcb.
 
         Spike 1C: the server only preloads the project; schematic and board
-        handlers exist only after `open_document`.
+        handlers exist only after `open_document`. Any failure or cancellation
+        kills the process again, so no api-server outlives a failed start.
         """
+        try:
+            await self._start()
+        except BaseException:
+            await asyncio.shield(self._kill())
+            raise
+
+    async def _start(self) -> None:
         _ensure_private_dir(SOCKET_DIR)
         with contextlib.suppress(FileNotFoundError):
             self.socket_path.unlink()
@@ -156,7 +166,6 @@ class KicadSession:
                 )
             remaining = deadline - loop.time()
             if remaining <= 0:
-                await self._kill()
                 raise KicadUnavailable(
                     f"kicad-cli api-server not ready after "
                     f"{self._settings.kicad_start_timeout_s:.0f}s: {last_error}"
@@ -169,6 +178,7 @@ class KicadSession:
                 client = candidate
             except Exception as exc:  # not ready yet: socket missing, refused, slow
                 last_error = exc
+                _close_client(candidate)
                 await asyncio.sleep(0.2)
         opened: set[DocKind] = set()
         for doc, path in self._documents():
@@ -178,19 +188,22 @@ class KicadSession:
                     timeout=max(0.1, deadline - loop.time()),
                 )
             except Exception as exc:
-                await self._kill()
+                _close_client(client)
                 raise KicadUnavailable(
                     f"kicad-cli api-server could not open {path.name}: {exc or type(exc).__name__}"
                 ) from exc
             opened.add(doc)
         self._kicad = client
         self._open_docs = frozenset(opened)
+        self.server_token = read_lock_token(lock_file_for(self.project.pro_file))
         if self.on_started is not None:
             self.on_started()
 
     async def _kill(self) -> None:
-        proc, self.process, self._kicad = self.process, None, None
+        proc, self.process = self.process, None
+        client, self._kicad = self._kicad, None
         self._open_docs = frozenset()
+        _close_client(client)
         if proc is None or proc.returncode is not None:
             return
         proc.terminate()
@@ -228,6 +241,7 @@ class KicadSession:
             if self._closed:
                 raise KicadUnavailable("the KiCad session for this project is closed")
             if self._kicad is None:  # an earlier restart failed: try once more now
+                await self._kill()
                 await self.start()
             proc = self.process
             if proc is not None and proc.returncode is not None:
@@ -334,6 +348,14 @@ class KicadSession:
             shutil.copyfile(source, target)
 
 
+def _close_client(client: Any) -> None:
+    """Close a kipy client's socket; an abandoned worker blocked on it is released."""
+    close = getattr(client, "close", None)
+    if close is not None:
+        with contextlib.suppress(Exception):
+            close()
+
+
 def _consume_result(future: asyncio.Future[Any]) -> None:
     if not future.cancelled():
         future.exception()  # mark as retrieved: an abandoned call's error is moot
@@ -382,18 +404,34 @@ class KicadSessionManager:
 
     def lock_status(self, project: Project) -> LockStatus:
         """`projects.lock_status` minus locks written by CopperChat's own api-server."""
-        return lock_status(project, ignore_tokens=self._own_tokens(project))
+        ignore = set(self._own_tokens(project))
+        current = self._current
+        if (
+            current is not None
+            and current.project.id == project.id
+            and current.server_token is not None
+            and lock_file_for(project.pro_file).resolve() not in current.lock_files
+        ):
+            # The running (possibly read-only) session's own lock. Not trusted when
+            # a foreign project lock existed at open: the server may have replaced it.
+            ignore.add(current.server_token)
+        return lock_status(project, ignore_tokens=ignore)
 
     # -- sessions ------------------------------------------------------------------
     async def open(self, project: Project) -> KicadSession:
         async with self._lock:
-            if self._current is not None and self._current.project.id == project.id:
-                return self._current
-            if self._current is not None:
-                await self._current.close()
-                self._current = None
             # Evaluated before our own server starts: it creates the same lock file.
             locks = self.lock_status(project)
+            current = self._current
+            if (
+                current is not None
+                and current.project.id == project.id
+                and current.read_only == locks.locked
+            ):
+                return current
+            if current is not None:  # other project, or KiCad GUI opened/closed it
+                await current.close()
+                self._current = None
             session = KicadSession(
                 project,
                 self._settings,

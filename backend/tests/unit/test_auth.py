@@ -109,3 +109,13 @@ def test_tampered_cookie_rejected(make_settings: Callable[..., Settings]) -> Non
     with TestClient(create_app(make_settings())) as client:
         client.cookies.set(COOKIE_NAME, "eyJ1aWQiOjF9.forged.sig")
         assert client.get("/api/auth/me").status_code == 401
+
+
+def test_rate_limiter_forgets_expired_clients() -> None:
+    now = [0.0]
+    limiter = LoginRateLimiter(max_failures=2, window_s=60, clock=lambda: now[0])
+    limiter.record_failure("1.2.3.4")
+    assert limiter.retry_after("5.6.7.8") is None
+    now[0] = 61.0
+    assert limiter.retry_after("1.2.3.4") is None
+    assert limiter.tracked_clients() == 0

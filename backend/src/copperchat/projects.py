@@ -35,6 +35,12 @@ def project_id_for(rel_path: str) -> str:
     return hashlib.sha1(rel_path.encode("utf-8")).hexdigest()[:12]
 
 
+def _real_file(path: Path) -> bool:
+    # A symlinked document could point outside the projects root (and a save would
+    # write there), so it is treated as absent - like symlinked dirs and .kicad_pro.
+    return path.is_file() and not path.is_symlink()
+
+
 def _make_project(root: Path, pro: Path) -> Project:
     rel = pro.relative_to(root).as_posix()
     stem = pro.stem
@@ -46,8 +52,8 @@ def _make_project(root: Path, pro: Path) -> Project:
         rel_path=rel,
         dir=pro.parent,
         pro_file=pro,
-        sch_file=sch if sch.is_file() else None,
-        pcb_file=pcb if pcb.is_file() else None,
+        sch_file=sch if _real_file(sch) else None,
+        pcb_file=pcb if _real_file(pcb) else None,
     )
 
 

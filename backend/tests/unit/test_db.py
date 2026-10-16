@@ -102,3 +102,26 @@ def test_list_migrations_rejects_duplicates(tmp_path: Path) -> None:
     (tmp_path / "0002_y.sql").write_text("")
     with pytest.raises(RuntimeError, match="duplicate"):
         list_migrations(tmp_path)
+
+
+async def test_reads_do_not_see_another_tasks_uncommitted_writes(tmp_path: Path) -> None:
+    db = await Database.open(tmp_path / "x.db")
+    try:
+        inside = asyncio.Event()
+
+        async def writer() -> None:
+            with pytest.raises(RuntimeError):
+                async with db.transaction():
+                    await db.execute(
+                        "INSERT INTO projects(id, rel_path, name) VALUES ('p','a.kicad_pro','a')"
+                    )
+                    inside.set()
+                    await asyncio.sleep(0.05)
+                    raise RuntimeError("rolled back")
+
+        task = asyncio.create_task(writer())
+        await inside.wait()
+        assert await db.fetchall("SELECT * FROM projects") == []
+        await task
+    finally:
+        await db.close()

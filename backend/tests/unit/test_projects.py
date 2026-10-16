@@ -93,3 +93,11 @@ def test_project_lock_file_counts(tmp_path: Path) -> None:
     project = discover_projects(tmp_path)[0]
     lock = marker(tmp_path, "p/~demo.kicad_pro.lck")
     assert lock_status(project).lock_files == (lock.resolve(),)
+
+
+def test_symlinked_documents_are_ignored(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    marker(root, "p/demo.kicad_pro")
+    outside = marker(tmp_path, "outside/evil.kicad_sch")
+    (root / "p" / "demo.kicad_sch").symlink_to(outside)
+    assert discover_projects(root)[0].sch_file is None

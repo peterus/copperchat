@@ -55,11 +55,26 @@ class Database:
         async with self._lock:
             await self._conn.executescript(script)
 
+    # Reads share the single connection, so outside the caller's own transaction
+    # they wait for the lock: otherwise they would see another task's uncommitted
+    # (possibly rolled back) writes.
     async def fetchone(self, sql: str, params: Params = ()) -> aiosqlite.Row | None:
+        if self._in_own_transaction():
+            return await self._fetchone(sql, params)
+        async with self._lock:
+            return await self._fetchone(sql, params)
+
+    async def fetchall(self, sql: str, params: Params = ()) -> list[aiosqlite.Row]:
+        if self._in_own_transaction():
+            return await self._fetchall(sql, params)
+        async with self._lock:
+            return await self._fetchall(sql, params)
+
+    async def _fetchone(self, sql: str, params: Params) -> aiosqlite.Row | None:
         async with self._conn.execute(sql, params) as cur:
             return await cur.fetchone()
 
-    async def fetchall(self, sql: str, params: Params = ()) -> list[aiosqlite.Row]:
+    async def _fetchall(self, sql: str, params: Params) -> list[aiosqlite.Row]:
         async with self._conn.execute(sql, params) as cur:
             return list(await cur.fetchall())
 

@@ -5,7 +5,7 @@ import math
 import os
 import secrets
 import time
-from collections import defaultdict, deque
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -51,13 +51,17 @@ class LoginRateLimiter:
         self._max = max_failures
         self._window = window_s
         self._clock = clock
-        self._failures: dict[str, deque[float]] = defaultdict(deque)
+        self._failures: dict[str, deque[float]] = {}
 
     def _prune(self, key: str) -> deque[float]:
-        q = self._failures[key]
+        q = self._failures.get(key)
+        if q is None:
+            return deque()
         cutoff = self._clock() - self._window
         while q and q[0] <= cutoff:
             q.popleft()
+        if not q:
+            del self._failures[key]  # forget clients whose failures expired
         return q
 
     def retry_after(self, key: str) -> float | None:
@@ -67,7 +71,11 @@ class LoginRateLimiter:
         return max(1.0, q[0] + self._window - self._clock())
 
     def record_failure(self, key: str) -> None:
-        self._prune(key).append(self._clock())
+        self._prune(key)
+        self._failures.setdefault(key, deque()).append(self._clock())
+
+    def tracked_clients(self) -> int:
+        return len(self._failures)
 
     def reset(self, key: str) -> None:
         self._failures.pop(key, None)

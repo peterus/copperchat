@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 
@@ -7,7 +8,7 @@ from copperchat.config import Settings
 from copperchat.errors import CopperChatError, DocumentNotOpen, ReadOnlyProject
 from copperchat.kicad_session import KicadSessionManager, KicadUnavailable, socket_path_for
 from copperchat.projects import Project, discover_projects, lock_status
-from tests.support.fake_kicad import FakeClientFactory, FakeLauncher, FakeServer
+from tests.support.fake_kicad import FakeClientFactory, FakeKiCad, FakeLauncher, FakeServer
 
 
 def make_project(root: Path, locked: bool = False, folder: str = "demo") -> Project:
@@ -269,3 +270,50 @@ async def test_socket_dir_is_created_private(
     session = await manager.open(make_project(make_settings().projects_root))
     assert session.socket_path.parent == sockets
     assert sockets.stat().st_mode & 0o777 == 0o700
+
+
+async def test_cancelled_open_leaves_no_server_running(
+    make_settings: Callable[..., Settings], server: FakeServer
+) -> None:
+    class NeverReady(FakeClientFactory):
+        def __call__(self, socket_uri: str, timeout_ms: int) -> FakeKiCad:
+            client = super().__call__(socket_uri, timeout_ms)
+            self.server.dead = True
+            return client
+
+    m = KicadSessionManager(
+        make_settings(kicad_start_timeout_s=30),
+        FakeLauncher(server),
+        client_factory=NeverReady(server),
+    )
+    task = asyncio.create_task(m.open(make_project(make_settings().projects_root)))
+    await asyncio.sleep(0.5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert server.processes and all(p.returncode is not None for p in server.processes)
+    assert m.current() is None
+
+
+async def test_restart_closes_the_old_client(
+    manager: KicadSessionManager, server: FakeServer, make_settings: Callable[..., Settings]
+) -> None:
+    session = await manager.open(make_project(make_settings().projects_root))
+    await session.restart()
+    assert server.closed >= 1
+
+
+async def test_reopen_re_evaluates_foreign_lock(
+    manager: KicadSessionManager, make_settings: Callable[..., Settings]
+) -> None:
+    project = make_project(make_settings().projects_root)
+    first = await manager.open(project)
+    assert first.read_only is False
+    gui_lock = project.dir / "~demo.kicad_sch.lck"
+    gui_lock.touch()  # KiCad GUI opened the project meanwhile
+    second = await manager.open(project)
+    assert second is not first and second.read_only is True
+    gui_lock.unlink()  # ... and closed it again
+    third = await manager.open(project)
+    assert third.read_only is False
+    assert first.process is None and second.process is None
