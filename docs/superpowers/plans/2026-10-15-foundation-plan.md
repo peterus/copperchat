@@ -640,10 +640,25 @@ These extend C1–C8 and are equally binding.
   base image has kipy in `/opt/venv`, KiCad demos in `/usr/share/kicad/demos`,
   user `copperchat` (uid 1000); tags `:<commit>` and `:<first 10 chars>`.
   Spike 1C records a "Schematic accessor" field used by `KicadHandle.schematic()`.
-- **Phase 4:** `KicadSession.settings` property; `GET /projects/{id}/view/sheets/{file}`
-  (sub-sheets of hierarchical schematics for KiCanvas); `board_snapshot(h) -> dict`;
-  test fixtures `ecc83_session` / `hier_session`, helper `assert_image_close`;
-  module flags `PIXEL_MAPPING_KNOWN`, `API_PNG_EXPORT` set from spike 1C.
+- **Phase 4 (as built):** `KicadSession.settings` property; `board_snapshot(h) -> dict`;
+  test fixtures `ecc83_session` / `hier_session` (+ `copy_fixture`, `real_settings`,
+  `FIXTURES` in `tests.support.kicad_project`), helper `assert_image_close`;
+  module flags `copperchat.views.kicad_render.{PIXEL_MAPPING_KNOWN, API_PNG_EXPORT}`
+  both `True` (spike 1C; no cairosvg). `copperchat.views.{write_view_snapshots(session)
+  -> {"sch": [...], "pcb": [...]}, view_files(session, doc)}` (X1/X3; the open response's
+  `viewFiles`); `GET /projects/{id}/view/files/{name:path}` serves them (no
+  `/view/sheets/{file}`); `ETag` of view files = `"<view_version>.<mtime_ns hex>"`
+  (a reopened session restarts the version at 0); view routes answer `409
+  project_not_open` when the project is not the open one. `render_view(...,
+  *, sheet=None)` (schematic sheet path or name; tool arg `sheet`).
+  `copperchat.kicad_session.launcher.{kicad_cli_env, kicad_config_home,
+  seed_library_tables, KICAD_SETTINGS_VERSION}`: every kicad-cli process (api-server,
+  ERC/DRC) runs with `KICAD_CONFIG_HOME=<data_dir>/kicad-config`, seeded with KiCad's
+  template `sym-lib-table`/`fp-lib-table` when missing. `checks.check_violations(session,
+  doc)`; `run_erc`/`run_drc` args `severity`, `type` (glob) and result `{count, total,
+  bySeverity, violations}`; ERC violations carry `sheet`. Schematic pin-to-net data
+  comes from the api-server's netlist export job (KiCad XML), not `GetSchematicNetlist`
+  (its pin KIIDs resolve to nothing).
 - **Phase 7:** `app.state.history` (`HistoryService`), `install_history(app)`;
   `GET /projects/{id}/history/{snapshotId}/preview` → PNG; errors
   `InvalidSnapshotId` (400), `SnapshotNotFound` (404), `AgentBusy` (409);
@@ -863,7 +878,7 @@ login require the session cookie)
 - `POST /auth/login {username,password}` → 204 + cookie; `POST /auth/logout`; `GET /auth/me` [3]
 - `GET /health` (no auth) → `{"status":"ok","kicad":"<version or null>"}` [3]
 - `GET /projects` → `[{id,name,relPath,hasSch,hasPcb,locked}]` [3]
-- `POST /projects/{id}/open` → `{id, readOnly, lockFiles, kicadVersion}` [3]
+- `POST /projects/{id}/open` → `{id, readOnly, lockFiles, kicadVersion, viewFiles}` [3; `viewFiles` 4]
 - `GET /projects/{id}/messages?limit=50&before=<id>` → `{messages, hasMore}` [5]
 - `GET /projects/{id}/view/{doc}` → KiCanvas snapshot file, `ETag` = view version [4]
 - `GET /projects/{id}/agent-view?doc=&mode=&theme=&layers=` → PNG [4]

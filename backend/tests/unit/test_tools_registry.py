@@ -27,7 +27,8 @@ def fake_module() -> Iterator[types.ModuleType]:
     del sys.modules[mod.__name__]
 
 
-def test_empty_registry() -> None:
+def test_empty_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(registry, "_PROVIDERS", ())
     assert registry.all_specs() == []
 
 

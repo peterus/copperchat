@@ -1,0 +1,61 @@
+{
+  "count": 4,
+  "symbols": [
+    {
+      "fields": {},
+      "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P7.62mm_Horizontal",
+      "libId": "ecc83-pp:R",
+      "position_mm": {
+        "x": 157.48,
+        "y": 85.09
+      },
+      "ref": "R1",
+      "sheet": "/",
+      "unit": 1,
+      "uuid": "00000000-0000-0000-0000-00004549f38a",
+      "value": "1.5K"
+    },
+    {
+      "fields": {},
+      "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P7.62mm_Horizontal",
+      "libId": "ecc83-pp:R",
+      "position_mm": {
+        "x": 154.94,
+        "y": 127.0
+      },
+      "ref": "R2",
+      "sheet": "/",
+      "unit": 1,
+      "uuid": "00000000-0000-0000-0000-00004549f39d",
+      "value": "1.5K"
+    },
+    {
+      "fields": {},
+      "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P7.62mm_Horizontal",
+      "libId": "ecc83-pp:R",
+      "position_mm": {
+        "x": 185.42,
+        "y": 85.09
+      },
+      "ref": "R3",
+      "sheet": "/",
+      "unit": 1,
+      "uuid": "00000000-0000-0000-0000-00004549f3ad",
+      "value": "100K"
+    },
+    {
+      "fields": {},
+      "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P7.62mm_Horizontal",
+      "libId": "ecc83-pp:R",
+      "position_mm": {
+        "x": 144.78,
+        "y": 127.0
+      },
+      "ref": "R4",
+      "sheet": "/",
+      "unit": 1,
+      "uuid": "00000000-0000-0000-0000-00004549f3a2",
+      "value": "47K"
+    }
+  ]
+}

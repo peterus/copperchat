@@ -10,7 +10,7 @@ from copperchat.config import Settings, check_model_credentials
 from copperchat.db import Database
 from copperchat.errors import CopperChatError, StructuredToolError
 from copperchat.kicad_session import ClientFactory, KicadSessionManager, ServerLauncher
-from copperchat.web import auth, health, routes_projects
+from copperchat.web import auth, health, routes_projects, routes_views
 from copperchat.web.static import mount_frontend
 
 
@@ -56,5 +56,6 @@ def create_app(
     app.include_router(auth.router)
     app.include_router(health.router)
     app.include_router(routes_projects.router)
+    app.include_router(routes_views.router)
     mount_frontend(app, settings.frontend_dist)  # must stay last: it mounts "/"
     return app

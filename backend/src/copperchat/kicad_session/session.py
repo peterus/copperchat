@@ -387,10 +387,10 @@ class KicadSessionManager:
         client_factory: ClientFactory | None = None,
     ) -> None:
         if launcher is None:
-            from copperchat.kicad_session.launcher import KicadCliLauncher
+            from copperchat.kicad_session.launcher import KicadCliLauncher, kicad_config_home
 
             launcher = KicadCliLauncher(
-                settings.kicad_cli, settings.data_dir / "logs", settings.data_dir / "kicad-config"
+                settings.kicad_cli, settings.data_dir / "logs", kicad_config_home(settings)
             )
         self._settings = settings
         self._launcher = launcher
