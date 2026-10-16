@@ -89,7 +89,9 @@ load state. The cause is a KiCad 11 format change. Each footprint's placement
 so KiCanvas' `Footprint` never sets `at`. Control experiment: the
 *original* (un-upgraded, KiCad 9/10 format) `ecc83-pp.kicad_pcb` and
 `complex_hierarchy.kicad_pcb` load in the same build with no error. Both upgraded
-boards fail the same way. Other format changes seen in the token diff: the
+boards fail the same way. This control run and the upgraded `complex_hierarchy` board were
+ad-hoc probes (a temporary spec, not committed); the committed suite covers only the
+ecc83 board. Other format changes seen in the token diff: the
 top-level `(net N "name")` table is gone and pads/tracks use `(net "GND")` by
 name. Pad/track `net` used to be numeric, so KiCanvas' net handling (e.g. net
 highlight) may also be wrong. That did not show up in rendering or picking here.
@@ -109,7 +111,7 @@ commit (as predicted from source). Channel `viewer`. The item constructors are
 yields the reference without the unit letter (`U1` for unit U1A);
 `Footprint.reference` is a field. The grid scan found refs C1, U1, C2, R3
 (schematic) and P5, U1, P8, P4 (board, patched). A single click on a fresh
-page reports exactly the expected ref. The board results come from the
+page includes a select event with the expected ref (the check uses `some()`, so it does not prove it is the only one). The board results come from the
 patched run.
 
 Viewer lookup path (works, `viewer_found_via_shadow_dom` PASS): breadth-first
