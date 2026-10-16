@@ -1,5 +1,7 @@
 # Phase 9: PWA, Web Push, release
 
+> **Cross-phase corrections apply:** see index § "Cross-phase corrections" (X6, X8); they supersede conflicting code in this file.
+
 **Goal:** Make CopperChat installable and shippable: PWA manifest + service
 worker, Web Push (VAPID) for "run finished", "needs attention" and
 "rate-limit window reopened" (only when no client is visible), the app Docker
@@ -1063,7 +1065,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Test: `frontend/src/push/push.test.ts`, `frontend/src/push/visibility.test.ts`, `frontend/src/pages/settings/NotificationsSection.test.tsx`
 
 **Interfaces:**
-- Consumes: `@/api/http` (`apiGet`, `apiPost`, `apiDelete`), `@/api/ws` (`wsClient.send(frame)`, `wsClient.onState(cb)` — use the 6A `createWsClient` API for sending a `ClientFrame` and observing `ConnectionState`), `@/stores/projects` (`useProjects().current`).
+- Consumes: `@/api/http` (`apiGet`, `apiPost`, `apiDelete`), `@/api/ws` (`wsClient.send(frame)`, `wsClient.onConnection(cb)` — use the 6A `createWsClient` API for sending a `ClientFrame` and observing `ConnectionConnection`), `@/stores/projects` (`useProjects().current`).
 - Produces: see "Interfaces → Produces" above.
 
 - [ ] **Step 1: Write the failing test**
@@ -1124,7 +1126,7 @@ import { startVisibilityReporter } from './visibility';
 it('sends visibility for the current project on change and on reconnect', () => {
   const sent: unknown[] = [];
   let stateCb: (s: string) => void = () => {};
-  const ws = { send: (f: unknown) => sent.push(f), onState: (cb: (s: string) => void) => { stateCb = cb; return () => {}; } };
+  const ws = { send: (f: unknown) => sent.push(f), onConnection: (cb: (s: string) => void) => { stateCb = cb; return () => {}; } };
   let hidden = false;
   vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => (hidden ? 'hidden' : 'visible'));
   const stop = startVisibilityReporter(() => 'a1b2c3d4e5f6', ws);
@@ -1141,7 +1143,7 @@ it('sends visibility for the current project on change and on reconnect', () => 
 
 it('sends nothing without a current project', () => {
   const sent: unknown[] = [];
-  startVisibilityReporter(() => null, { send: (f: unknown) => sent.push(f), onState: () => () => {} })();
+  startVisibilityReporter(() => null, { send: (f: unknown) => sent.push(f), onConnection: () => () => {} })();
   expect(sent).toEqual([]);
 });
 ```
@@ -1268,7 +1270,7 @@ import type { ClientFrame } from '@/protocol/frames';
 
 export interface VisibilityWs {
   send(frame: ClientFrame): void;
-  onState(cb: (state: string) => void): () => void;
+  onConnection(cb: (state: string) => void): () => void;
 }
 
 export function startVisibilityReporter(getProjectId: () => string | null, ws: VisibilityWs): () => void {
@@ -1278,8 +1280,8 @@ export function startVisibilityReporter(getProjectId: () => string | null, ws: V
   };
   report();
   document.addEventListener('visibilitychange', report);
-  const offState = ws.onState((s) => { if (s === 'open' || s === 'resumed') report(); });
-  return () => { document.removeEventListener('visibilitychange', report); offState(); };
+  const offConnection = ws.onConnection((s) => { if (s === 'open' || s === 'resumed') report(); });
+  return () => { document.removeEventListener('visibilitychange', report); offConnection(); };
 }
 ```
 
@@ -1353,7 +1355,7 @@ void registerServiceWorker();
 startVisibilityReporter(() => useProjects.getState().current?.id ?? null, wsClient);
 ```
 
-(`wsClient` must expose `send(frame)` and `onState(cb) → unsubscribe`; if 6A
+(`wsClient` must expose `send(frame)` and `onConnection(cb) → unsubscribe`; if 6A
 names the state subscription differently, adapt `VisibilityWs` to that name.)
 
 - [ ] **Step 4: Run tests to verify they pass**

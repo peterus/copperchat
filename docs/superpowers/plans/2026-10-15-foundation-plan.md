@@ -566,7 +566,7 @@ These extend C1–C8 and are equally binding.
   `{action: "restore", snapshotId}` (Phase 7).
 - **Frontend (Phase 6A):** `@/api/http` (`apiGet`, `apiPost`, `apiPut`,
   `apiDelete`, `apiUrl`, `setUnauthorizedHandler`, `ApiError`); `@/api/ws`
-  (`createWsClient`, `wsClient`, `ConnectionState`); `@/stores/chat`
+  (`createWsClient`, `wsClient` with `send`, `onFrame`, `onConnection`, `ensure`, `isOpen`, `close`; `ConnectionState`); `@/stores/chat`
   (`createChatStore`); `@/hooks/useChat` (`useChat(projectId)`,
   `ChatStoreContext`); `@/stores/composer` (`useComposer` with `insertText`,
   `addAttachment`, `removeAttachment`, `clear`);
@@ -640,6 +640,26 @@ with an item below, the item wins; the executor adapts the code and its tests.
   specs, db)` → `SdkStreamingBackend(settings, specs, ctx_factory, db)` (and
   `SdkPerTurnBackend` likewise); `web/app.py` is unchanged.
 
+- **X6 — SPA fallback + cache headers (Phase 9).** Phase 9 adds a task that
+  changes `web/static.py` (`mount_frontend`): any `GET` that is not under
+  `/api` and does not match a file in `frontend_dist` returns `index.html`
+  (so `/login`, `/p/<projectId>` — the push click target — and reloads of
+  client routes work); `Cache-Control: no-cache` on `index.html`, `sw.js` and
+  `manifest.webmanifest`. Test: `GET /p/abc123def456` → 200 HTML; `GET
+  /api/nope` → 404 JSON.
+- **X7 — `viewFiles` in the frontend (Phase 6B).** 6B extends 6A's zod
+  `OpenResult` in `@/stores/projects` with
+  `viewFiles: z.object({sch: z.array(z.string()), pcb: z.array(z.string())})`
+  and updates 6A's test fixtures that build an open result; the viewer reads
+  `useProjects().current.viewFiles` (X3).
+- **X8 — WS connection listener name (Phase 9).** The 6A API is
+  `wsClient.onConnection(listener: (state: ConnectionState) => void) => () => void`
+  (listed under C7a Frontend); Phase 9's visibility reporter uses it.
+- **X9 — `mode` on agent-view (Phase 4; needed by the 6B fallback).**
+  `GET /projects/{id}/agent-view` takes `mode: "agent" | "kicad"` (default
+  `agent`) and passes it to `render_view`; C8 reads
+  `agent-view?doc=&mode=&theme=&layers=`.
+
 ### Owner review requested
 
 Provisional decisions taken while planning (2026-10-16); the owner may
@@ -664,7 +684,7 @@ login require the session cookie)
 - `POST /projects/{id}/open` → `{id, readOnly, lockFiles, kicadVersion}` [3]
 - `GET /projects/{id}/messages?limit=50&before=<id>` → `{messages, hasMore}` [5]
 - `GET /projects/{id}/view/{doc}` → KiCanvas snapshot file, `ETag` = view version [4]
-- `GET /projects/{id}/agent-view?doc=&theme=&layers=` → PNG [4]
+- `GET /projects/{id}/agent-view?doc=&mode=&theme=&layers=` → PNG [4]
 - `GET /projects/{id}/renders/{file}` → PNG [4]
 - `GET /projects/{id}/history`, `POST /projects/{id}/history/{snapshotId}/restore` [7]
 - `GET /projects/{id}/git/status` [7]

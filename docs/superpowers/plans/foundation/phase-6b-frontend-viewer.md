@@ -1,6 +1,6 @@
 # Phase 6B: Frontend viewer
 
-> **Cross-phase corrections apply:** see index § "Cross-phase corrections" (X1, X2, X3); they supersede conflicting code in this file.
+> **Cross-phase corrections apply:** see index § "Cross-phase corrections" (X1, X2, X3, X7); they supersede conflicting code in this file.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
