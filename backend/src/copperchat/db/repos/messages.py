@@ -11,6 +11,8 @@ import aiosqlite
 
 from copperchat.db import Database, utcnow_iso
 
+utcnow = utcnow_iso  # contract: Phase 7 imports messages.utcnow
+
 _COLS = (
     "id, project_id, client_message_id, run_id, role, kind, content, status, "
     "metadata, created_at, updated_at"

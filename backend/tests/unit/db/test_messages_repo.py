@@ -89,3 +89,10 @@ async def test_finalize_streaming_marks_leftovers_done(repo):
     await repo.finalize_streaming(P)
     row = await repo.get(mid)
     assert row is not None and row.status == "done" and row.metadata.get("recovered") is True
+
+
+def test_utcnow_is_exported_with_z_suffix():
+    from copperchat.db.repos.messages import utcnow
+
+    assert utcnow().endswith("Z")
+    assert len(utcnow()) == len("2026-10-15T12:00:00.000Z")
