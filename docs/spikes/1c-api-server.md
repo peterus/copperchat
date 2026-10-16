@@ -101,6 +101,33 @@ Optional arguments:
   so the same symbol in two sheet instances is two entries with different paths.
 - No GetItems call was missing, so no `kicad-cli` workaround is needed.
 
+### Save (Q4)
+- SaveDocument: `sch.save()` / `board.save()` work. Even without any edit they
+  **rewrite** the files: on the freshly upgraded `complex_hierarchy` the root
+  `.kicad_sch` gains `(embedded_fonts no)`, the `.kicad_pcb` is re-ordered
+  (7686 lines moved, same line multiset, same 364 segments), the `.kicad_pro`
+  gains default settings (BOM presets etc.); the sub-sheet `ampli_ht.kicad_sch`
+  only gets a new mtime. Consequence for Phase 7: record document hashes
+  **after** CopperChat's own save, never before.
+- Sub-sheets in SaveCopyOfDocument: **no**. `sch.save_as(dest/root.kicad_sch,
+  overwrite=True, include_project=False)` writes only the root sheet
+  (`SCH_EDIT_FRAME::SaveSchematicCopy` in `eeschema/api/api_handler_sch.cpp`;
+  the schematic is one document, there is no per-sheet copy). The open document
+  keeps its original path; originals are unchanged; the copied root is
+  byte-identical to the just-saved root.
+  - Trap: `kicad-cli sch export svg` on such a copy **succeeds** and plots the
+    missing sub-sheet as an empty frame (74 KB vs 1.4 MB per sub-sheet SVG).
+    A loadability check is not enough to detect a missing sub-sheet.
+  - KicadSession.save_copy procedure: when the project is writable, `save()` the
+    schematic, then `save_as()` the root into the destination and **file-copy** the
+    sub-sheet files that KiCad just saved (byte copy, no content edits; sub-sheet
+    names from `sch.get_hierarchy()`, relative paths preserved). Verified: with
+    the copied sub-sheet, the sub-sheet SVGs are complete (1.4 MB). When the
+    project is read-only (lock file present, no save allowed), the on-disk files
+    are the state the agent sees (the foundation agent never edits), so file-copy
+    of the root + sub-sheets is the snapshot. Board: `board.save_as(dest/x.kicad_pcb,
+    overwrite=True, include_project=False)` is complete (one file).
+
 ## Decision
 
 ## Follow-ups
