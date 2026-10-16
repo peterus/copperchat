@@ -572,6 +572,10 @@ These extend C1–C8 and are equally binding.
   base image has kipy in `/opt/venv`, KiCad demos in `/usr/share/kicad/demos`,
   user `copperchat` (uid 1000); tags `:<commit>` and `:<first 10 chars>`.
   Spike 1C records a "Schematic accessor" field used by `KicadHandle.schematic()`.
+- **Phase 4:** `KicadSession.settings` property; `GET /projects/{id}/view/sheets/{file}`
+  (sub-sheets of hierarchical schematics for KiCanvas); `board_snapshot(h) -> dict`;
+  test fixtures `ecc83_session` / `hier_session`, helper `assert_image_close`;
+  module flags `PIXEL_MAPPING_KNOWN`, `API_PNG_EXPORT` set from spike 1C.
 - **Phase 7:** `app.state.history` (`HistoryService`), `install_history(app)`;
   `GET /projects/{id}/history/{snapshotId}/preview` → PNG; errors
   `InvalidSnapshotId` (400), `SnapshotNotFound` (404), `AgentBusy` (409);
