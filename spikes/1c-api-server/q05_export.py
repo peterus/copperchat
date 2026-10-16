@@ -1,6 +1,7 @@
 """Q5: PNG/SVG export via API jobs for sch + pcb; pixel->mm mapping."""
 
 import importlib
+import re
 import tempfile
 from pathlib import Path
 
@@ -104,6 +105,15 @@ def main() -> int:
                 str(out / "pcb_fit.svg"), plot_settings=ps, fit_page_to_board=True
             ),
         )
+        # Mapping check uses an Edge.Cuts-only plot so the content box is the board outline.
+        edge_ps = BoardPlot()
+        edge_ps.layers = [BoardLayer.BL_Edge_Cuts]
+        edge_ps.scale = 1.0
+        edge_png = job(
+            rec,
+            "pcb_png_edge_only",
+            lambda: board.export_png(str(out / "edge.png"), plot_settings=edge_ps, dpi=DPI),
+        )
         bbox = edge_bbox_mm(board)
         rec.note("edge_cuts_bbox_mm", bbox)
 
@@ -128,18 +138,30 @@ def main() -> int:
                 abs(w_mm - 297) < 1 and abs(h_mm - 210) < 1,
                 f"{w_mm:.1f} x {h_mm:.1f} mm",
             )
-            c1 = next(s for s in sch.get_symbols() if s.reference == "C1")
-            rec.note(
-                "sch_C1_mm_and_px",
-                (
-                    c1.position.x / 1e6,
-                    c1.position.y / 1e6,
-                    round(c1.position.x / 1e6 * DPI / 25.4),
-                    round(c1.position.y / 1e6 * DPI / 25.4),
-                ),
+
+            # Verify: every symbol anchor mapped with px = mm * dpi / 25.4 lands on ink
+            # (non-transparent pixels within +-1 mm); a 10 mm shift must mostly miss.
+            def hit_rate(im, syms, shift_mm=0.0):
+                alpha, r = im.getchannel("A"), round(DPI / 25.4)
+                hits = 0
+                for s in syms:
+                    px = round((s.position.x / 1e6 + shift_mm) * DPI / 25.4)
+                    py = round((s.position.y / 1e6 + shift_mm) * DPI / 25.4)
+                    hits += alpha.crop((px - r, py - r, px + r, py + r)).getbbox() is not None
+                return hits / len(syms)
+
+            syms = list(sch.get_symbols())
+            with Image.open(f) as im:
+                rate, rate_shift = hit_rate(im, syms), hit_rate(im, syms, 10.0)
+            c1 = next(s for s in syms if s.reference == "C1")
+            rec.note("sch_C1_mm", (c1.position.x / 1e6, c1.position.y / 1e6))
+            rec.check(
+                "sch_pixel_mm_mapping",
+                rate >= 0.9 and rate_shift < rate - 0.3,
+                f"{len(syms)} symbol anchors on ink: {rate:.0%} (10 mm shifted: {rate_shift:.0%})",
             )
-        if pcb_png and bbox:
-            with Image.open(pcb_png[0]) as im:
+        if edge_png and bbox:
+            with Image.open(edge_png[0]) as im:
                 w_px, h_px = im.size
                 content = im.getchannel("A").getbbox()
             mm_per_px = 25.4 / DPI
@@ -151,13 +173,14 @@ def main() -> int:
                 # Is the PNG page in board coordinates (origin = page top-left)?
                 dx, dy = cx0 - bbox[0], cy0 - bbox[1]
                 rec.note("content_minus_edge_mm", (round(dx, 3), round(dy, 3)))
+                err = max(abs(a - b) for a, b in zip((cx0, cy0, cx1, cy1), bbox, strict=True))
                 rec.check(
                     "pixel_mm_mapping_page_coords",
-                    abs(dx) < 0.2
-                    and abs(dy) < 0.2
-                    and abs((cx1 - cx0) - (bbox[2] - bbox[0])) < 0.2,
-                    f"x_mm = px * 25.4 / {DPI}: content {cx0:.2f},{cy0:.2f} vs edge "
-                    f"{bbox[0]:.2f},{bbox[1]:.2f}",
+                    err < 0.2,
+                    f"x_mm = px * 25.4 / {DPI}: Edge.Cuts-only content "
+                    f"({cx0:.2f}, {cy0:.2f})-({cx1:.2f}, {cy1:.2f}) vs API bbox "
+                    f"({bbox[0]:.2f}, {bbox[1]:.2f})-({bbox[2]:.2f}, {bbox[3]:.2f}), "
+                    f"max err {err:.3f} mm",
                 )
 
     # Fallback path (finding 4): kicad-cli SVG on the saved files
@@ -181,7 +204,8 @@ def main() -> int:
     if svg:
         head = svg.read_text()[:600]
         rec.note("svg_header", head)
-        rec.check("svg_units_mm", 'mm"' in head or "viewBox" in head, head[:200])
+        m = re.search(r'width="([\d.]+)mm"', head)
+        rec.check("svg_units_mm", m is not None, m.group(0) if m else head[:300])
     rec.note("outputs", sorted(str(p.relative_to(out)) for p in out.rglob("*") if p.is_file()))
     rec.note("output_dir", str(out))
     return rec.finish()

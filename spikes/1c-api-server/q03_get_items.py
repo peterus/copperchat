@@ -104,6 +104,12 @@ def main() -> int:
                 len(uniq) == n,
                 f"api {len(real)} unit instances / {len(uniq)} refs vs cli {n}",
             )
+        else:
+            rec.check(
+                "unique_refs_match_cli_netlist",
+                False,
+                f"kicad-cli netlist failed rc={r.returncode}: {r.stderr[-300:]}",
+            )
     return rec.finish()
 
 

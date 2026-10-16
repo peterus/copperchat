@@ -13,4 +13,4 @@ Throwaway. Not run in CI.
 4. Results: `results/*.json`, `results/summary.md`. Findings: `docs/spikes/1c-api-server.md`.
 
 `KICAD_CLI` overrides the binary (e.g. a local build). `KICAD_API_SERVER_ARGS`
-overrides the launch template (default `api-server {project} --socket {socket}`).
+overrides the launch template (default `api-server --socket {socket} {project}`).

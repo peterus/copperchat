@@ -20,6 +20,8 @@ QUESTIONS = [
 def main() -> int:
     rows, worst = [], 0
     for q in QUESTIONS:
+        res = HERE / "results" / f"{q}.json"
+        res.unlink(missing_ok=True)  # never report a previous run's result
         r = subprocess.run(
             [sys.executable, f"{q}.py"],
             check=False,
@@ -34,8 +36,11 @@ def main() -> int:
             rows.append(f"| {q} | SKIP | |")
             continue
         worst = max(worst, r.returncode)
-        res = HERE / "results" / f"{q}.json"
-        checks = json.loads(res.read_text())["checks"] if res.exists() else []
+        if not res.exists():
+            worst = max(worst, 1)
+            rows.append(f"| {q} | CRASH (rc={r.returncode}, no results file) | |")
+            continue
+        checks = json.loads(res.read_text())["checks"]
         fails = [c["name"] for c in checks if not c["ok"]]
         rows.append(
             f"| {q} | {len(checks) - len(fails)} pass / {len(fails)} fail | {', '.join(fails)} |"

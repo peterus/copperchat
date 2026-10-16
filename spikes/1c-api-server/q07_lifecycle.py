@@ -66,7 +66,12 @@ def main() -> int:
             sch.revert()
             dt = time.monotonic() - t0
             n2 = len(sch.get_symbols())
-            rec.check("revert_reloads_from_disk", n2 != n0, f"{n0} -> {n1} -> {n2} ({dt:.2f}s)")
+            # Only meaningful if nothing reloaded on its own before revert().
+            rec.check(
+                "revert_reloads_from_disk",
+                n1 == n0 and n2 != n0,
+                f"{n0} -> {n1} -> {n2} ({dt:.2f}s)",
+            )
         except ApiError as e:
             rec.check("revert_reloads_from_disk", False, e)
         try:
@@ -76,64 +81,71 @@ def main() -> int:
         except Exception as e:  # noqa: BLE001
             rec.note("board_revert", f"{type(e).__name__}: {e}")
 
-    # kill -9: detection time + restart time
+    # kill -9: detection time + restart time, for a connected client (the KicadSession
+    # case) and for a fresh client (kipy dials lazily on the first call).
     proj = fresh_fixture("ecc83")
-    srv = Server(proj).__enter__()
-    k = srv.client(timeout_ms=2000)
-    srv.proc.send_signal(signal.SIGKILL)
-    srv.proc.wait(10)
-    t0 = time.monotonic()
-    try:
+    with Server(proj) as srv:
+        k = srv.client(timeout_ms=2000)
         k.ping()
-        rec.check("kill9_detected", False, "ping succeeded after SIGKILL")
-    except Exception as e:  # noqa: BLE001
-        rec.check(
-            "kill9_detected", True, f"{type(e).__name__} after {time.monotonic() - t0:.2f}s: {e}"
-        )
-    rec.note("stale_socket_left", srv.socket.exists())
-    rec.note("locks_after_kill9", locks(proj))
-    t1 = time.monotonic()
-    try:
-        srv2 = Server(proj, socket=srv.socket).__enter__()
-        n = len(srv2.client().get_schematic().get_symbols())
-        rec.check("restart_same_socket", n > 0, f"{time.monotonic() - t1:.2f}s incl. open, {n} sym")
-        srv2.stop()
-    except Exception as e:  # noqa: BLE001
-        rec.check("restart_same_socket", False, f"{type(e).__name__}: {e}"[:400])
+        srv.proc.send_signal(signal.SIGKILL)
+        srv.proc.wait(10)
+        for label, client in (("connected", k), ("fresh", srv.client(timeout_ms=2000))):
+            t0 = time.monotonic()
+            try:
+                client.ping()
+                rec.check(f"kill9_detected_{label}", False, "ping succeeded after SIGKILL")
+            except Exception as e:  # noqa: BLE001
+                dt = time.monotonic() - t0
+                rec.check(
+                    f"kill9_detected_{label}", dt < 5, f"{type(e).__name__} after {dt:.2f}s: {e}"
+                )
+        rec.note("stale_socket_left", srv.socket.exists())
+        rec.note("locks_after_kill9", locks(proj))
+        t1 = time.monotonic()
+        try:
+            with Server(proj, socket=srv.socket) as srv2:
+                n = len(srv2.client().get_schematic().get_symbols())
+                rec.check(
+                    "restart_same_socket",
+                    n > 0,
+                    f"{time.monotonic() - t1:.2f}s incl. open, {n} sym",
+                )
+        except Exception as e:  # noqa: BLE001
+            rec.check("restart_same_socket", False, f"{type(e).__name__}: {e}"[:400])
 
     # SIGSTOP hang: does a call time out (not block forever)?
     # (a) client already connected (the KicadSession case): recv_timeout applies.
-    srv = Server(fresh_fixture("ecc83")).__enter__()
-    k = srv.client(timeout_ms=2000)
-    k.ping()
-    os.kill(srv.proc.pid, signal.SIGSTOP)
-    t0 = time.monotonic()
-    try:
+    with Server(fresh_fixture("ecc83")) as srv:  # stop() sends SIGCONT before SIGTERM
+        k = srv.client(timeout_ms=2000)
         k.ping()
-        rec.check("hang_detected", False, "ping returned while stopped")
-    except Exception as e:  # noqa: BLE001
-        dt = time.monotonic() - t0
-        rec.check("hang_detected", dt < 5, f"{type(e).__name__} after {dt:.2f}s: {e}")
-    # (b) fresh, not yet connected client: kipy dials lazily with block_on_dial=True,
-    # which is not bounded by timeout_ms.
-    k_new = srv.client(timeout_ms=2000)
-    t0 = time.monotonic()
-    try:
-        k_new.ping()
-        rec.note("hang_fresh_client_dial", "ping returned while stopped")
-    except Exception as e:  # noqa: BLE001
-        rec.note(
-            "hang_fresh_client_dial", f"{type(e).__name__} after {time.monotonic() - t0:.2f}s: {e}"
-        )
-    os.kill(srv.proc.pid, signal.SIGCONT)
-    time.sleep(2)
-    for label, client in (("same_client", k), ("new_client", srv.client(timeout_ms=2000))):
+        os.kill(srv.proc.pid, signal.SIGSTOP)
+        t0 = time.monotonic()
         try:
-            client.ping()
-            rec.note(f"recovers_after_sigcont_{label}", True)
+            k.ping()
+            rec.check("hang_detected", False, "ping returned while stopped")
         except Exception as e:  # noqa: BLE001
-            rec.note(f"recovers_after_sigcont_{label}", f"no: {type(e).__name__}: {e}")
-    srv.stop()
+            dt = time.monotonic() - t0
+            rec.check("hang_detected", dt < 5, f"{type(e).__name__} after {dt:.2f}s: {e}")
+        # (b) fresh, not yet connected client: kipy dials lazily with block_on_dial=True,
+        # which is not bounded by timeout_ms.
+        k_new = srv.client(timeout_ms=2000)
+        t0 = time.monotonic()
+        try:
+            k_new.ping()
+            rec.note("hang_fresh_client_dial", "ping returned while stopped")
+        except Exception as e:  # noqa: BLE001
+            rec.note(
+                "hang_fresh_client_dial",
+                f"{type(e).__name__} after {time.monotonic() - t0:.2f}s: {e}",
+            )
+        os.kill(srv.proc.pid, signal.SIGCONT)
+        time.sleep(2)
+        for label, client in (("same_client", k), ("new_client", srv.client(timeout_ms=2000))):
+            try:
+                client.ping()
+                rec.note(f"recovers_after_sigcont_{label}", True)
+            except Exception as e:  # noqa: BLE001
+                rec.note(f"recovers_after_sigcont_{label}", f"no: {type(e).__name__}: {e}")
 
     # two servers in parallel on different projects/sockets
     with Server(fresh_fixture("ecc83")) as a, Server(fresh_fixture("complex_hierarchy")) as b:

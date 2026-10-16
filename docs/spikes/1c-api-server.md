@@ -22,7 +22,9 @@
 - Invocation: the extracted AppImage's `squashfs-root/usr/bin/kicad-cli` runs
   directly when `LD_LIBRARY_PATH` includes `squashfs-root/usr/lib` (the harness
   does this); `LANG=C`/`LC_ALL=C` are set for every call.
-- api-server syntax: `kicad-cli api-server --socket SOCKET_PATH PROJECT.kicad_pro` (full `--help` below)
+- api-server syntax: `kicad-cli api-server --socket SOCKET_PATH PROJECT.kicad_pro` (full `--help` below;
+  this exact order is the harness default and is what the final run used; the
+  positional-first order `api-server PROJECT.kicad_pro --socket SOCKET_PATH` works too)
 - Socket URL: `ipc://` + absolute socket path (e.g. `ipc:///tmp/c1-sock-5n2ycbwh/api.sock`);
   kipy: `KiCad(socket_path="ipc:///abs/path.sock", client_name=..., timeout_ms=...)`
 - kipy revision: `87b945a0d56b26a78bf547db9771ff9bf3a057ea` (kicad-python `main` HEAD on
@@ -71,13 +73,13 @@ Optional arguments:
 | q01_cli | 4 pass / 0 fail |  |
 | q02_connect | 12 pass / 0 fail |  |
 | q03_get_items | 17 pass / 0 fail |  |
-| q04_save | 8 pass / 1 fail | copy_subsheets_written |
-| q05_export | 14 pass / 0 fail |  |
+| q04_save | 10 pass / 1 fail | copy_subsheets_written |
+| q05_export | 16 pass / 0 fail |  |
 | q06_erc_drc | 8 pass / 0 fail |  |
-| q07_lifecycle | 12 pass / 0 fail |  |
+| q07_lifecycle | 13 pass / 0 fail |  |
 
 The one FAIL (`q04_save.copy_subsheets_written`) is a finding with a verified
-workaround (`workaround_copy_saved_subsheets` PASS), see Q4. With
+workarounds (`workaround_copy_saved_subsheets` and `nosave_*` PASS), see Q4. With
 `KICAD_CLI=/nonexistent` every script prints the single SKIP line and
 `run_all.py` exits 0.
 
@@ -134,15 +136,23 @@ workaround (`workaround_copy_saved_subsheets` PASS), see Q4. With
   - Trap: `kicad-cli sch export svg` on such a copy **succeeds** and plots the
     missing sub-sheet as an empty frame (74 KB vs 1.4 MB per sub-sheet SVG).
     A loadability check is not enough to detect a missing sub-sheet.
-  - KicadSession.save_copy procedure: when the project is writable, `save()` the
-    schematic, then `save_as()` the root into the destination and **file-copy** the
-    sub-sheet files that KiCad just saved (byte copy, no content edits; sub-sheet
-    names from `sch.get_hierarchy()`, relative paths preserved). Verified: with
-    the copied sub-sheet, the sub-sheet SVGs are complete (1.4 MB). When the
-    project is read-only (lock file present, no save allowed), the on-disk files
-    are the state the agent sees (the foundation agent never edits), so file-copy
-    of the root + sub-sheets is the snapshot. Board: `board.save_as(dest/x.kicad_pcb,
-    overwrite=True, include_project=False)` is complete (one file).
+  - KicadSession.save_copy procedure (foundation, agent never edits — **no
+    `save()`**): `sch.save_as(dest/ROOT.kicad_sch, overwrite=True,
+    include_project=False)` for the root, then byte-copy every other file named by
+    `[s.filename for s in sch.get_hierarchy()]` (here `complex_hierarchy.kicad_sch`,
+    `ampli_ht.kicad_sch`, `ampli_ht.kicad_sch` — dedupe) from the project dir
+    (copy, no content edits). Verified (`nosave_*` checks): the user's project
+    stays byte-identical and all three sheet SVGs of the copy are complete
+    (1.4 MB each). Calling `save()` first would rewrite the user's files on every
+    snapshot (see SaveDocument above: git noise, hash churn), so it is only
+    needed once a later sub-project can hold **unsaved** in-memory edits; that
+    variant (`save()` + `save_as()` + byte copy) is verified too
+    (`workaround_copy_saved_subsheets`). The same procedure works for read-only
+    (locked) projects since it never writes into the project. Untested: sub-sheet
+    files in sub-directories (`filename` is then a relative path; create parent
+    dirs in the destination) — Phase 3 should cover that with a fixture. Board:
+    `board.save_as(dest/x.kicad_pcb, overwrite=True, include_project=False)` is
+    complete (one file).
 
 ### Export (Q5)
 - PNG export: **API jobs work for both document types** with the pinned kipy:
@@ -158,15 +168,17 @@ workaround (`workaround_copy_saved_subsheets` PASS), see Q4. With
 - SVG export: API `export_svg` works for both (board also with
   `fit_page_to_board=True`); `kicad-cli sch export svg` and
   `kicad-cli pcb export svg --layers F.Cu,B.Cu,Edge.Cuts --mode-single` work too
-  (SVG carries mm `width`/`height` + `viewBox`).
+  (SVG root carries `width="297.0022mm"` / `height` in mm + `viewBox`).
 - Pixel to mm: `x_mm = px * 25.4 / dpi`, `y_mm = py * 25.4 / dpi` — the PNG is
   the full page and both editors use page coordinates (origin = page top-left).
   Board: holds **only with `PlotSettings.scale = 1.0`**; the proto default `0`
   auto-scales the board to fill the page (ecc83-pp: 52 mm board plotted 177 mm
-  wide). With scale 1 the Edge.Cuts content box is (121.16, 90.09)–(173.48, …) mm
-  vs. the API bounding box (121.22, 90.11)–(173.42, 136.59) mm — off by half the
-  edge line width (0.06 mm). Schematic: page-sized PNG; C1 at (86.36, 57.15) mm
-  ↦ px (1020, 675). Boards larger than or placed outside the page are clipped by
+  wide). With scale 1 an **Edge.Cuts-only** plot has its content box at
+  (121.16, 90.09)–(173.48, 136.65) mm vs. the API bounding box
+  (121.22, 90.11)–(173.42, 136.59) mm — max error 0.064 mm, i.e. half the edge
+  line width. Schematic: page-sized PNG; 96 % of the 26 symbol anchors mapped with
+  the formula land on drawn pixels (±1 mm), vs. 15 % with a 10 mm shift
+  (`sch_pixel_mm_mapping`). Boards larger than or placed outside the page are clipped by
   this formula's page; Phase 4 must crop to the board bbox, not assume it fits.
 - Not needed: no rasterisation fallback (`kicad-cli … svg` + cairosvg) is
   required at this commit, but it remains available (`cli_sch_svg`/`cli_pcb_svg`
@@ -224,9 +236,12 @@ workaround (`workaround_copy_saved_subsheets` PASS), see Q4. With
   content 2 s after the file was replaced on disk). `sch.revert()` reloads from
   disk in 0.06 s (26 → 27 symbols after replacing the file); `board.revert()`
   works too. Phase 7's hash check should call `revert()` on the changed document.
-- kill -9: detected immediately on the next call as
-  `kipy.errors.ConnectionError: Failed to connect to KiCad: Connection refused`;
-  stale socket file left behind (yes) and stale lock (yes). Restart on the
+- kill -9: with an **already-connected** client (the KicadSession case) the next
+  call fails only after `timeout_ms` (2.00 s, `ConnectionError: Failed to send
+  command to KiCad: Timed out`); a **fresh** client fails immediately
+  (`Failed to connect to KiCad: Connection refused`). So C4 cannot rely on
+  instant detection — check `proc.poll()`/returncode first (instant), then the
+  call deadline. Stale socket file left behind (yes) and stale lock (yes). Restart on the
   **same socket path** works (the server replaces the stale socket): 0.96 s
   including both `open_document` calls.
 - SIGSTOP (hang): with a client that is already connected, the call fails after
@@ -247,14 +262,23 @@ workaround (`workaround_copy_saved_subsheets` PASS), see Q4. With
 ## Decision
 
 - Gate: **1C partial: SaveCopyOfDocument writes only the root sheet of a
-  hierarchical schematic → workaround: `SaveDocument` (`sch.save()`) on the open
-  schematic, then `SaveCopyOfDocument` for the root (`sch.save_as(dest, overwrite=True,
-  include_project=False)`) plus a byte copy of the sub-sheet files KiCad has just
-  saved (names from `sch.get_hierarchy()`); read-only projects copy the on-disk
-  files.** Every other core operation passes on the API itself: GetItems on
+  hierarchical schematic → workaround: `SaveCopyOfDocument` for the root
+  (`sch.save_as(dest, overwrite=True, include_project=False)`) plus a byte copy of
+  the sub-sheet files named by `sch.get_hierarchy()` from the project directory
+  (no `save()`, the user's project stays untouched; with unsaved edits in later
+  sub-projects: `save()` first).** Every other core operation passes on the API itself: GetItems on
   schematic (all sheets) and board, SaveDocument, SaveCopyOfDocument (root sheet,
   board), PNG export via API jobs for both document types, plus SVG, ERC/DRC JSON,
   revert, crash/hang detection and restart. No `kicad-cli` workaround is needed.
+- Why "partial" and not "no-go": the index's no-go rule targets a core operation
+  that does not work. SaveCopyOfDocument does work (root sheet and board are
+  copied correctly; the open document keeps its path); what is missing is the
+  sub-sheet half of the snapshot. The plan foresaw exactly this case (phase file
+  Task 1C.4 Step 3 and its self-review: byte-copying files KiCad wrote is not a
+  hand edit), and the workaround is verified without touching the user's project.
+  The workaround is a file copy, not the `kicad-cli` command the gate wording
+  names, so **the coordinator should confirm "partial" (or escalate to the owner)**
+  before Phase 3/6B rely on it.
 - Recommended KICAD_COMMIT: `0616634034fa1a8c92c141c293342cbef2f68dff`
   (the tested nightly `10.99.0-5265-g0616634034`).
 - kipy revision for backend `[tool.uv.sources]` and the base image:
@@ -285,14 +309,15 @@ workaround (`workaround_copy_saved_subsheets` PASS), see Q4. With
     `timeout_ms` bounds calls only after the first successful dial, so `call()`
     keeps its own deadline (worker thread + `asyncio.wait_for`) and restarts on
     timeout (a SIGSTOP'd server is not reliably usable afterwards).
-    kill -9 → immediate `kipy.errors.ConnectionError` (connection refused);
-    restart on the same socket path ~1 s incl. opening both documents.
+    kill -9 → a connected client only notices after `timeout_ms` (2 s), so check
+    the process (`returncode`) first; restart on the same socket path ~1 s incl.
+    opening both documents.
   - `lock_status`: KiCad's lock is `~STEM.kicad_pro.lck` (JSON with hostname,
     token, username); check it **before** starting CopperChat's own server (which
     creates the same file), ignore CopperChat's own/stale locks; the headless
     server does not enforce locks.
-  - `save_copy(doc, dest)`: procedure from Q4 (root via API + byte copy of KiCad-saved
-    sub-sheets; board via API).
+  - `save_copy(doc, dest)`: procedure from Q4 (no `save()`; root via API +
+    byte copy of the sub-sheet files from `get_hierarchy()`; board via API).
 - **Phase 4:** no GetItems gaps. `get_symbols()` returns one entry per placed unit
   per sheet instance (dedupe by reference for part counts); positions in nm →
   mm = nm / 1e6; ERC/DRC JSON paths and exit codes from Q6 (parse the JSON;

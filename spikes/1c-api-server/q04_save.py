@@ -83,6 +83,36 @@ def main() -> int:
                 r.returncode == 0 and len(grew) == len(sizes2) - 1 >= 1,
                 f"rc={r.returncode} sizes={sizes2} (copy-only: {sizes})",
             )
+
+    # Snapshot without save(): the foundation agent never edits, so the files on disk are
+    # the current state. Copy the root via the API and byte-copy the sub-sheet files named
+    # by get_hierarchy(); the user's project must stay byte-identical.
+    proj = fresh_fixture("complex_hierarchy")
+    orig = {p.name: sha(p) for p in proj.iterdir() if p.is_file() and not p.name.endswith(".lck")}
+    with Server(proj) as srv:
+        sch = srv.client(timeout_ms=60000).get_schematic()
+        files = [s.filename for s in sch.get_hierarchy()]
+        rec.note("hierarchy_filenames", files)
+        dest = Path(tempfile.mkdtemp(prefix="c1-copy-nosave-"))
+        sch.save_as(str(dest / root.name), overwrite=True, include_project=False)
+        for name in sorted(set(files) - {root.name}):
+            (dest / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(proj / name, dest / name)
+        now = {
+            p.name: sha(p) for p in proj.iterdir() if p.is_file() and not p.name.endswith(".lck")
+        }
+        rec.check(
+            "nosave_originals_untouched",
+            now == orig,
+            sorted(n for n in orig if orig[n] != now.get(n)),
+        )
+        r = run_cli("sch", "export", "svg", "-o", str(dest / "svg"), str(dest / root.name))
+        sizes3 = {p.name: p.stat().st_size for p in (dest / "svg").glob("*.svg")}
+        rec.check(
+            "nosave_copy_complete",
+            r.returncode == 0 and len(sizes3) >= 3 and min(sizes3.values()) > 200_000,
+            f"rc={r.returncode} sizes={sizes3}",
+        )
     return rec.finish()
 
 

@@ -6,6 +6,7 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -16,7 +17,7 @@ from typing import Self
 HERE = Path(__file__).parent
 RESULTS = HERE / "results"
 FIXTURES = HERE / "fixtures"
-API_SERVER_ARGS = os.environ.get("KICAD_API_SERVER_ARGS", "api-server {project} --socket {socket}")
+API_SERVER_ARGS = os.environ.get("KICAD_API_SERVER_ARGS", "api-server --socket {socket} {project}")
 
 
 def kicad_cli() -> str:
@@ -104,16 +105,26 @@ class Server:
         self.proc: subprocess.Popen | None = None
         self.startup_s = -1.0
         self.log = self.socket.with_suffix(".log")
+        self._log_fh = None
 
     def __enter__(self) -> Self:
+        try:
+            return self._start()
+        except BaseException:
+            # __exit__ is not called when __enter__ raises: never leak the process.
+            self.stop()
+            raise
+
+    def _start(self) -> Self:
         args = API_SERVER_ARGS.format(project=project_file(self.project_dir), socket=self.socket)
         cmd = [kicad_cli(), *shlex.split(args)]
         t0 = time.monotonic()
+        self._log_fh = self.log.open("w")
         self.proc = subprocess.Popen(
             cmd,
             cwd=self.project_dir,
             env=cli_env(),
-            stdout=self.log.open("w"),
+            stdout=self._log_fh,
             stderr=subprocess.STDOUT,
         )
         while time.monotonic() - t0 < self.wait_s:
@@ -130,7 +141,6 @@ class Server:
                     pass
             time.sleep(0.1)
         else:
-            self.stop()
             raise TimeoutError(f"api-server not ready after {self.wait_s}s: {self.log.read_text()}")
         if self.open_docs:
             self.open_documents()
@@ -163,12 +173,16 @@ class Server:
 
     def stop(self) -> None:
         if self.proc and self.proc.poll() is None:
+            os.kill(self.proc.pid, signal.SIGCONT)  # in case a test SIGSTOP'd it
             self.proc.terminate()
             try:
                 self.proc.wait(10)
             except subprocess.TimeoutExpired:
                 self.proc.kill()
                 self.proc.wait(10)
+        if self._log_fh is not None:
+            self._log_fh.close()
+            self._log_fh = None
 
     def __exit__(self, *exc: object) -> None:
         self.stop()
