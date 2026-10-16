@@ -683,6 +683,18 @@ with an item below, the item wins; the executor adapts the code and its tests.
   missing) and `LANG: C`. Phase 9 removes Phase 4's then-unused
   `kicad-commit` job when it introduces the matrix.
 
+- **X15 — `claude-agent-sdk` dependency (Phase 5).** Phase 5's first task
+  adds `"claude-agent-sdk==<version recorded in docs/spikes/1a-sdk-streaming.md>"`
+  to `[project].dependencies` in `backend/pyproject.toml`, runs `uv lock`, and
+  commits `pyproject.toml` + `uv.lock` with that task.
+- **X16 — `lucide-react` (Phase 6A).** Phase 6A adds `lucide-react` (ISC) to
+  `frontend/package.json` dependencies; panel icons in 6B/7/8 rely on it.
+- **X17 — app wiring order (Phases 5, 7, 8, 9).** Services that need
+  `app.state.agent_runtime` (`install_history(app)`, Phase 9's push wiring)
+  are set up **inside the lifespan**, after the `AgentRuntime(...)`
+  assignment and before `yield`. Every `include_router(...)` call stays in
+  the `create_app` body, before `mount_frontend(...)` (which must stay last).
+
 ### Owner review requested
 
 Provisional decisions taken while planning (2026-10-16); the owner may

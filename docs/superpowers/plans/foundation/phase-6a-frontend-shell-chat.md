@@ -1,5 +1,7 @@
 # Phase 6A: Frontend shell + chat
 
+> **Cross-phase corrections apply:** see index § "Cross-phase corrections" (X16); they supersede conflicting code in this file.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship the CopperChat web client shell: Vite/React/TS scaffold with a CSS-variable theme, login, project picker with lock warning, responsive layouts (desktop/iPad landscape split, iPad portrait sidebar, iPhone tab bar), a schema-validated singleton WebSocket client, and a chat (store + history + composer + queue + Stop + usage + rate-limit banner) that has every Kontor chat-history lesson (spec §5.2) built in and tested.
