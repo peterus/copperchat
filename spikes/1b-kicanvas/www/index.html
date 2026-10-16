@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>KiCanvas spike 1B</title>
+    <script type="module" src="/vendor/kicanvas.js"></script>
+    <style>
+      html, body { margin: 0; height: 100%; }
+      kicanvas-embed { display: block; width: 100vw; height: 100vh; }
+    </style>
+  </head>
+  <body>
+    <script type="module">
+      const params = new URLSearchParams(location.search);
+      const files = (params.get("files") || "").split(",").filter(Boolean);
+      const el = document.createElement("kicanvas-embed");
+      el.setAttribute("controls", params.get("controls") || "none");
+      if (params.get("theme")) el.setAttribute("theme", params.get("theme"));
+      for (const f of files) {
+        const s = document.createElement("kicanvas-source");
+        s.setAttribute("src", f);
+        el.appendChild(s);
+      }
+
+      function refOf(item, depth = 0) {
+        if (!item || depth > 4) return null;
+        for (const k of ["reference", "ref"]) {
+          if (typeof item[k] === "string" && item[k]) return item[k];
+        }
+        const props = item.properties;
+        if (props && typeof props.get === "function") {
+          const r = props.get("Reference");
+          if (r) return r.text ?? r.value ?? String(r);
+        }
+        if (Array.isArray(props)) {
+          const r = props.find((p) => p.name === "Reference");
+          if (r) return r.text ?? r.value ?? null;
+        }
+        return refOf(item.parent, depth + 1);
+      }
+
+      window.__events = [];
+      const log = (via) => (e) =>
+        window.__events.push({
+          via,
+          type: e.type,
+          ref: refOf(e.detail?.item),
+          kind: e.detail?.item?.constructor?.name ?? null,
+        });
+      for (const type of ["kicanvas:select", "kicanvas:click", "kicanvas:load"]) {
+        document.addEventListener(type, log("document"), true);
+        window.addEventListener(type, log("window"), true);
+        el.addEventListener(type, log("element"));
+      }
+
+      window.__findViewer = () => {
+        const roots = [document];
+        while (roots.length) {
+          const root = roots.shift();
+          for (const node of root.querySelectorAll("*")) {
+            if (node.viewer && typeof node.viewer.addEventListener === "function") return node.viewer;
+            if (node.shadowRoot) roots.push(node.shadowRoot);
+          }
+        }
+        return null;
+      };
+      window.__attachViewer = () => {
+        const v = window.__findViewer();
+        if (!v) return false;
+        v.addEventListener("kicanvas:select", log("viewer"));
+        return true;
+      };
+      window.__refOf = refOf;
+      window.__embed = el;
+      document.body.appendChild(el);
+    </script>
+  </body>
+</html>
