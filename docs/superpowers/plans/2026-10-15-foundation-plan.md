@@ -551,10 +551,39 @@ These extend C1–C8 and are equally binding.
   numeric order (e.g. Phase 8's 0004 before Phase 7's 0003) is still applied.
 - **C4 (Phase 3):** `KicadSessionManager(settings, launcher=None, *, client_factory=None)`,
   `ClientFactory = Callable[[str, int], Any]`, `KicadSession.view_version: int`,
-  `.socket_path`, `.process`, `socket_path_for(project)`. Schematic access uses
-  `Schematic(client, doc)` from `get_open_documents(DOCTYPE_SCHEMATIC)` (kipy
-  has no `get_schematic()`); kipy errors are `kipy.errors.ConnectionError` /
-  `ApiError`.
+  `.socket_path`, `.process`, `socket_path_for(project)`; kipy errors are
+  `kipy.errors.ConnectionError` / `ApiError`. As built after spike 1C:
+  `KicadHandle.schematic()` = `kicad.get_schematic()` (all sheets),
+  `KicadHandle.board()` = `kicad.get_board()`, both raise `DocumentNotOpen` when
+  the project lacks that file; `start()` opens `.kicad_sch` and `.kicad_pcb` with
+  `open_document` after the socket answers `ping`; `call()` races the worker
+  against `process.wait()` under its own deadline (dead process → restart +
+  `KicadUnavailable`, hang → restart + `KicadCallTimeout`).
+  `KicadCliLauncher(kicad_cli, log_dir, config_home=None)` runs
+  `kicad-cli api-server --socket SOCKET PROJECT.kicad_pro` with `LANG=C`,
+  `LC_ALL=C`, `KICAD_CONFIG_HOME=<data_dir>/kicad-config`.
+  `save_copy("sch", dest)` = `save_as` of the root **plus a byte copy of every
+  sub-sheet** named by `get_hierarchy()` into `dest.parent` (same relative paths;
+  never `save()`). `KicadSession.settings` (property), `.lock_files` (foreign
+  locks seen at open), `.on_started`; `KicadSessionManager.lock_status(project)`
+  ignores locks whose token CopperChat's own api-server wrote (remembered in
+  `<data_dir>/kicad-locks/<id>`, survives a kill -9 stale lock). The socket
+  directory must be a real `0700` directory owned by the current user.
+- **C3 (Phase 3):** `lock_status(project, ignore_tokens=())`, `lock_file_for(path)`,
+  `read_lock_token(lock)`; KiCad 11's project lock is `~STEM.kicad_pro.lck` (JSON
+  `{hostname, token, username}`), also checked: `~FILE.lck` for sch/pcb. Use
+  `app.state.sessions.lock_status(p)` (not the bare function) for anything shown
+  to the user, so CopperChat's own lock is not reported as "open in KiCad".
+- **Auth (Phase 3):** `web.auth.CurrentUser = Annotated[User, Depends(require_user)]`
+  (route signature `_: CurrentUser`; ruff B008 forbids `Depends()` defaults);
+  cookies carry a signed server-side session id (table `auth_sessions(id, user_id,
+  created_at)` in `0001_core.sql`), logout deletes it; `Settings.forwarded_allow_ips:
+  str = "127.0.0.1"` (env `FORWARDED_ALLOW_IPS`) feeds uvicorn's proxy trust.
+- **Test support (Phase 3):** `tests.support.kicad_env.KICAD_CLI` (env `KICAD_CLI`
+  read at import, default `kicad-cli`) — real-KiCad tests pass it to
+  `make_settings(kicad_cli=KICAD_CLI)`; the autouse env cleaner removes every
+  `Settings` env var during tests. `tests.support.fake_kicad.FakeServer` emulates
+  the api-server's lock file (`write_lock`), `opened`, `saved`, `hierarchy`.
 - **Errors (Phase 3):** `DocumentNotOpen`, `ReadOnlyProject`,
   `InvalidProjectId`, `ToolRegistryError`; `web.auth.user_from_cookie(state, cookie)`,
   `async web.auth.authenticate_connection(conn) -> str | None` (Phase 5).
