@@ -1,0 +1,102 @@
+{
+  "bbox_mm": {
+    "h": 21.25,
+    "w": 21.25,
+    "x": 138.6,
+    "y": 103.09
+  },
+  "footprint": "Footprints:Valve_ECC-83-1",
+  "pads": [
+    {
+      "net": "Net-(U1A-G)",
+      "number": "1",
+      "position_mm": {
+        "x": 152.675,
+        "y": 118.465
+      },
+      "uuid": "beb4c69f-bce5-4736-bb41-d9523aa79796"
+    },
+    {
+      "net": "Net-(P1-PM)",
+      "number": "2",
+      "position_mm": {
+        "x": 154.825,
+        "y": 115.535
+      },
+      "uuid": "7b5a3ca9-d484-4629-8665-1188b5e86489"
+    },
+    {
+      "net": "Net-(U1B-K)",
+      "number": "3",
+      "position_mm": {
+        "x": 154.825,
+        "y": 111.885
+      },
+      "uuid": "81d31795-db6a-4081-9936-04fde2386907"
+    },
+    {
+      "net": "Net-(P4-PM)",
+      "number": "4",
+      "position_mm": {
+        "x": 152.675,
+        "y": 108.955
+      },
+      "uuid": "136be1b9-9ca0-4c4a-839d-a587728a5bc9"
+    },
+    {
+      "net": "Net-(P4-PM)",
+      "number": "5",
+      "position_mm": {
+        "x": 149.225,
+        "y": 107.815
+      },
+      "uuid": "61e9c53c-6235-4dad-a1fc-75828cb63335"
+    },
+    {
+      "net": "Net-(P3-P1)",
+      "number": "6",
+      "position_mm": {
+        "x": 145.765,
+        "y": 108.955
+      },
+      "uuid": "e8fa3875-2076-4de2-b1d6-9c3fb76b7ace"
+    },
+    {
+      "net": "Net-(U1A-G)",
+      "number": "7",
+      "position_mm": {
+        "x": 143.615,
+        "y": 111.885
+      },
+      "uuid": "ec6f9db9-8766-4ee9-b242-67cc63ed2949"
+    },
+    {
+      "net": "Net-(U1A-K)",
+      "number": "8",
+      "position_mm": {
+        "x": 143.615,
+        "y": 115.495
+      },
+      "uuid": "93d4f75f-1985-434b-9e98-bd382358b589"
+    },
+    {
+      "net": "Net-(P4-P1)",
+      "number": "9",
+      "position_mm": {
+        "x": 145.765,
+        "y": 118.465
+      },
+      "uuid": "16b5f9b7-8f48-404c-82f4-861d94de7c41"
+    }
+  ],
+  "position_mm": {
+    "x": 149.225,
+    "y": 113.665
+  },
+  "ref": "U1",
+  "rotation_deg": 0.0,
+  "sheet": "Racine",
+  "side": "front",
+  "uuid": "00000000-0000-0000-0000-00005a334ccc",
+  "value": "ECC83"
+}

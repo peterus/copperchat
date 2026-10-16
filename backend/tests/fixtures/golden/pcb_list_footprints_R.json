@@ -1,0 +1,57 @@
+{
+  "count": 4,
+  "footprints": [
+    {
+      "footprint": "Footprints:R_Axial_DIN0207_L6.3mm_D2.5mm_P7.62mm_Horizontal",
+      "position_mm": {
+        "x": 136.271,
+        "y": 107.95
+      },
+      "ref": "R1",
+      "rotation_deg": -90.0,
+      "sheet": "Racine",
+      "side": "front",
+      "uuid": "00000000-0000-0000-0000-000054a58213",
+      "value": "1.5K"
+    },
+    {
+      "footprint": "Footprints:R_Axial_DIN0207_L6.3mm_D2.5mm_P7.62mm_Horizontal",
+      "position_mm": {
+        "x": 156.21,
+        "y": 95.885
+      },
+      "ref": "R2",
+      "rotation_deg": 180.0,
+      "sheet": "Racine",
+      "side": "front",
+      "uuid": "00000000-0000-0000-0000-000054a58218",
+      "value": "1.5K"
+    },
+    {
+      "footprint": "Footprints:R_Axial_DIN0207_L6.3mm_D2.5mm_P7.62mm_Horizontal",
+      "position_mm": {
+        "x": 133.985,
+        "y": 125.095
+      },
+      "ref": "R3",
+      "rotation_deg": 180.0,
+      "sheet": "Racine",
+      "side": "front",
+      "uuid": "00000000-0000-0000-0000-00005a33370f",
+      "value": "100K"
+    },
+    {
+      "footprint": "Footprints:R_Axial_DIN0207_L6.3mm_D2.5mm_P7.62mm_Horizontal",
+      "position_mm": {
+        "x": 164.465,
+        "y": 117.475
+      },
+      "ref": "R4",
+      "rotation_deg": -90.0,
+      "sheet": "Racine",
+      "side": "front",
+      "uuid": "00000000-0000-0000-0000-000054a58222",
+      "value": "47K"
+    }
+  ]
+}

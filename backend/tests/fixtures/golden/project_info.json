@@ -1,0 +1,70 @@
+{
+  "board": {
+    "height_mm": 46.482,
+    "origin_mm": {
+      "x": 121.2215,
+      "y": 90.1065
+    },
+    "width_mm": 52.197
+  },
+  "copperLayers": 2,
+  "designRules": {
+    "copper_edge_clearance_mm": 0.01,
+    "hole_clearance_mm": 0.0,
+    "hole_to_hole_min_mm": 0.25,
+    "min_clearance_mm": 0.0,
+    "min_connection_width_mm": 0.0,
+    "min_groove_width_mm": 0.0,
+    "min_microvia_drill_mm": 0.1,
+    "min_microvia_size_mm": 0.2,
+    "min_resolved_spokes": 2,
+    "min_silk_text_height_mm": 0.8,
+    "min_silk_text_thickness_mm": 0.12,
+    "min_through_drill_mm": 0.3,
+    "min_track_width_mm": 0.2,
+    "min_via_annular_width_mm": 0.05,
+    "min_via_size_mm": 0.4,
+    "silk_clearance_mm": 0.0
+  },
+  "files": {
+    "board": "ecc83-pp.kicad_pcb",
+    "project": "ecc83-pp.kicad_pro",
+    "schematic": "ecc83-pp.kicad_sch"
+  },
+  "footprintCount": 15,
+  "layers": [
+    "F.Cu",
+    "F.Mask",
+    "B.Cu",
+    "B.Mask",
+    "F.SilkS",
+    "B.SilkS",
+    "F.Adhes",
+    "B.Adhes",
+    "F.Paste",
+    "B.Paste",
+    "Dwgs.User",
+    "Cmts.User",
+    "Eco1.User",
+    "Eco2.User",
+    "Edge.Cuts",
+    "Margin",
+    "B.CrtYd",
+    "F.CrtYd",
+    "B.Fab",
+    "F.Fab"
+  ],
+  "name": "ecc83-pp",
+  "netCount": 13,
+  "readOnly": false,
+  "sheets": [
+    {
+      "file": "ecc83-pp.kicad_sch",
+      "name": "ecc83-pp",
+      "page": "1",
+      "path": "/"
+    }
+  ],
+  "symbolCount": 15,
+  "units": "mm"
+}

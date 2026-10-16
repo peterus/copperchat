@@ -1,0 +1,78 @@
+{
+  "name": "GND",
+  "pads": [
+    {
+      "net": "GND",
+      "number": "2",
+      "position_mm": {
+        "x": 141.605,
+        "y": 94.695
+      },
+      "ref": "C1",
+      "uuid": "ddeafcc4-fac1-48aa-a9d5-a388bf01a059"
+    },
+    {
+      "net": "GND",
+      "number": "1",
+      "position_mm": {
+        "x": 166.37,
+        "y": 105.41
+      },
+      "ref": "P1",
+      "uuid": "da86310b-0262-4c39-9590-c439cb4ea431"
+    },
+    {
+      "net": "GND",
+      "number": "2",
+      "position_mm": {
+        "x": 128.27,
+        "y": 117.776
+      },
+      "ref": "P2",
+      "uuid": "e99f56de-529e-492f-a24a-0cba9f0cc86a"
+    },
+    {
+      "net": "GND",
+      "number": "2",
+      "position_mm": {
+        "x": 128.27,
+        "y": 105.711
+      },
+      "ref": "P3",
+      "uuid": "3fdadd90-878d-4ae5-b745-a995af1fd466"
+    },
+    {
+      "net": "GND",
+      "number": "2",
+      "position_mm": {
+        "x": 148.59,
+        "y": 95.885
+      },
+      "ref": "R2",
+      "uuid": "d5df32dc-6c81-4b69-bdcb-79b78c9cb647"
+    },
+    {
+      "net": "GND",
+      "number": "2",
+      "position_mm": {
+        "x": 126.365,
+        "y": 125.095
+      },
+      "ref": "R3",
+      "uuid": "587d6891-33ea-463a-b75d-744f879246c9"
+    },
+    {
+      "net": "GND",
+      "number": "2",
+      "position_mm": {
+        "x": 164.465,
+        "y": 125.095
+      },
+      "ref": "R4",
+      "uuid": "237d5d44-fd22-4dab-93dd-3f87c398aeaf"
+    }
+  ],
+  "tracks": [],
+  "unconnected": [],
+  "vias": []
+}

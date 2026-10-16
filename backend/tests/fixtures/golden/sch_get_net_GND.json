@@ -1,0 +1,89 @@
+{
+  "name": "GND",
+  "pins": [
+    {
+      "function": "",
+      "pin": "2",
+      "position_mm": {
+        "x": 86.36,
+        "y": 60.96
+      },
+      "ref": "C1",
+      "sheet": "/",
+      "type": "passive",
+      "uuid": "00000000-0000-0000-0000-00004549f4be"
+    },
+    {
+      "function": "P1_1",
+      "pin": "1",
+      "position_mm": {
+        "x": 135.89,
+        "y": 113.03
+      },
+      "ref": "P1",
+      "sheet": "/",
+      "type": "passive",
+      "uuid": "00000000-0000-0000-0000-00004549f464"
+    },
+    {
+      "function": "PM_2",
+      "pin": "2",
+      "position_mm": {
+        "x": 198.12,
+        "y": 81.28
+      },
+      "ref": "P2",
+      "sheet": "/",
+      "type": "passive",
+      "uuid": "00000000-0000-0000-0000-00004549f46c"
+    },
+    {
+      "function": "PM_2",
+      "pin": "2",
+      "position_mm": {
+        "x": 50.8,
+        "y": 55.88
+      },
+      "ref": "P3",
+      "sheet": "/",
+      "type": "passive",
+      "uuid": "00000000-0000-0000-0000-00004549f4a5"
+    },
+    {
+      "function": "",
+      "pin": "2",
+      "position_mm": {
+        "x": 154.94,
+        "y": 130.81
+      },
+      "ref": "R2",
+      "sheet": "/",
+      "type": "passive",
+      "uuid": "00000000-0000-0000-0000-00004549f39d"
+    },
+    {
+      "function": "",
+      "pin": "2",
+      "position_mm": {
+        "x": 185.42,
+        "y": 88.9
+      },
+      "ref": "R3",
+      "sheet": "/",
+      "type": "passive",
+      "uuid": "00000000-0000-0000-0000-00004549f3ad"
+    },
+    {
+      "function": "",
+      "pin": "2",
+      "position_mm": {
+        "x": 144.78,
+        "y": 130.81
+      },
+      "ref": "R4",
+      "sheet": "/",
+      "type": "passive",
+      "uuid": "00000000-0000-0000-0000-00004549f3a2"
+    }
+  ]
+}

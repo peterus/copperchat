@@ -1,0 +1,227 @@
+{
+  "$schema": "https://schemas.kicad.org/drc.v1.json",
+  "coordinate_units": "mm",
+  "date": "2026-10-16T21:56:16",
+  "ignored_checks": [
+    {
+      "description": "Track endpoint not centered on via",
+      "key": "track_not_centered_on_via"
+    },
+    {
+      "description": "Tuning profile track geometries",
+      "key": "tuning_profile_track_geometries"
+    },
+    {
+      "description": "Footprint doesn't match symbol's footprint filters",
+      "key": "footprint_filters_mismatch"
+    }
+  ],
+  "included_severities": [
+    "error",
+    "warning",
+    "exclusion"
+  ],
+  "kicad_version": "10.99.0",
+  "schematic_parity": [
+    {
+      "description": "Footprints:CP_Radial_D10.0mm_P5.00mm doesn't match footprint given by symbol (Capacitor_THT:CP_Radial_D10.0mm_P5.00mm)",
+      "items": [
+        {
+          "description": "Footprint C1",
+          "pos": {
+            "x": 141.605,
+            "y": 99.695
+          },
+          "uuid": "00000000-0000-0000-0000-000054a581e5"
+        }
+      ],
+      "severity": "warning",
+      "type": "footprint_symbol_mismatch"
+    },
+    {
+      "description": "Footprints:C_Disc_D4.7mm_W2.5mm_P5.00mm doesn't match footprint given by symbol (Capacitor_THT:C_Disc_D4.7mm_W2.5mm_P5.00mm)",
+      "items": [
+        {
+          "description": "Footprint C2",
+          "pos": {
+            "x": 137.16,
+            "y": 125.095
+          },
+          "uuid": "00000000-0000-0000-0000-000054a581ea"
+        }
+      ],
+      "severity": "warning",
+      "type": "footprint_symbol_mismatch"
+    },
+    {
+      "description": "Footprint attributes don't match symbol: 'Exclude from simulation' settings differ",
+      "items": [
+        {
+          "description": "Footprint P5",
+          "pos": {
+            "x": 125.095,
+            "y": 93.98
+          },
+          "uuid": "00000000-0000-0000-0000-000054a58203"
+        }
+      ],
+      "severity": "warning",
+      "type": "footprint_symbol_mismatch"
+    },
+    {
+      "description": "Footprint attributes don't match symbol: 'Exclude from simulation' settings differ",
+      "items": [
+        {
+          "description": "Footprint P6",
+          "pos": {
+            "x": 169.545,
+            "y": 93.98
+          },
+          "uuid": "00000000-0000-0000-0000-000054a58207"
+        }
+      ],
+      "severity": "warning",
+      "type": "footprint_symbol_mismatch"
+    },
+    {
+      "description": "Footprint attributes don't match symbol: 'Exclude from simulation' settings differ",
+      "items": [
+        {
+          "description": "Footprint P7",
+          "pos": {
+            "x": 169.545,
+            "y": 132.715
+          },
+          "uuid": "00000000-0000-0000-0000-000054a5820b"
+        }
+      ],
+      "severity": "warning",
+      "type": "footprint_symbol_mismatch"
+    },
+    {
+      "description": "Footprint attributes don't match symbol: 'Exclude from simulation' settings differ",
+      "items": [
+        {
+          "description": "Footprint P8",
+          "pos": {
+            "x": 125.095,
+            "y": 132.715
+          },
+          "uuid": "00000000-0000-0000-0000-00005d88946b"
+        }
+      ],
+      "severity": "warning",
+      "type": "footprint_symbol_mismatch"
+    },
+    {
+      "description": "Footprints:R_Axial_DIN0207_L6.3mm_D2.5mm_P7.62mm_Horizontal doesn't match footprint given by symbol (Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P7.62mm_Horizontal)",
+      "items": [
+        {
+          "description": "Footprint R1",
+          "pos": {
+            "x": 136.271,
+            "y": 107.95
+          },
+          "uuid": "00000000-0000-0000-0000-000054a58213"
+        }
+      ],
+      "severity": "warning",
+      "type": "footprint_symbol_mismatch"
+    },
+    {
+      "description": "Footprints:R_Axial_DIN0207_L6.3mm_D2.5mm_P7.62mm_Horizontal doesn't match footprint given by symbol (Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P7.62mm_Horizontal)",
+      "items": [
+        {
+          "description": "Footprint R2",
+          "pos": {
+            "x": 156.21,
+            "y": 95.885
+          },
+          "uuid": "00000000-0000-0000-0000-000054a58218"
+        }
+      ],
+      "severity": "warning",
+      "type": "footprint_symbol_mismatch"
+    },
+    {
+      "description": "Footprints:R_Axial_DIN0207_L6.3mm_D2.5mm_P7.62mm_Horizontal doesn't match footprint given by symbol (Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P7.62mm_Horizontal)",
+      "items": [
+        {
+          "description": "Footprint R3",
+          "pos": {
+            "x": 133.985,
+            "y": 125.095
+          },
+          "uuid": "00000000-0000-0000-0000-00005a33370f"
+        }
+      ],
+      "severity": "warning",
+      "type": "footprint_symbol_mismatch"
+    },
+    {
+      "description": "Footprints:R_Axial_DIN0207_L6.3mm_D2.5mm_P7.62mm_Horizontal doesn't match footprint given by symbol (Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P7.62mm_Horizontal)",
+      "items": [
+        {
+          "description": "Footprint R4",
+          "pos": {
+            "x": 164.465,
+            "y": 117.475
+          },
+          "uuid": "00000000-0000-0000-0000-000054a58222"
+        }
+      ],
+      "severity": "warning",
+      "type": "footprint_symbol_mismatch"
+    }
+  ],
+  "source": "ecc83-pp.kicad_pcb",
+  "unconnected_items": [],
+  "violations": [
+    {
+      "description": "Silkscreen clipped by board edge",
+      "items": [
+        {
+          "description": "Segment on Edge.Cuts",
+          "pos": {
+            "x": 121.285,
+            "y": 136.525
+          },
+          "uuid": "9b19456e-3ad1-4dde-92c4-23451559e1ba"
+        },
+        {
+          "description": "Segment of P4 on F.Silkscreen",
+          "pos": {
+            "x": 153.162,
+            "y": 125.071
+          },
+          "uuid": "fa4e4619-2310-496a-9c63-4fb385cf27a0"
+        }
+      ],
+      "severity": "warning",
+      "type": "silk_edge_clearance"
+    },
+    {
+      "description": "Silkscreen clipped by board edge",
+      "items": [
+        {
+          "description": "Segment on Edge.Cuts",
+          "pos": {
+            "x": 121.285,
+            "y": 136.525
+          },
+          "uuid": "9b19456e-3ad1-4dde-92c4-23451559e1ba"
+        },
+        {
+          "description": "Segment of P4 on F.Silkscreen",
+          "pos": {
+            "x": 142.922,
+            "y": 125.071
+          },
+          "uuid": "a4d1deb0-9296-4d9f-8b45-b343befbe2e3"
+        }
+      ],
+      "severity": "warning",
+      "type": "silk_edge_clearance"
+    }
+  ]
+}
