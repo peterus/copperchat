@@ -1,0 +1,96 @@
+{
+ "type": "message",
+ "directions": [
+  "s2c"
+ ],
+ "valid": [
+  {
+   "type": "message",
+   "projectId": "a1b2c3d4e5f6",
+   "message": {
+    "id": 42,
+    "projectId": "a1b2c3d4e5f6",
+    "clientMessageId": "c1",
+    "runId": null,
+    "role": "user",
+    "kind": "text",
+    "content": "What is U3?",
+    "status": "queued",
+    "metadata": {},
+    "createdAt": "2026-10-15T12:00:00.000Z"
+   }
+  },
+  {
+   "type": "message",
+   "projectId": "a1b2c3d4e5f6",
+   "message": {
+    "id": 43,
+    "projectId": "a1b2c3d4e5f6",
+    "clientMessageId": null,
+    "runId": "r1",
+    "role": "assistant",
+    "kind": "tool_use",
+    "content": "sch_get_symbol",
+    "status": "done",
+    "metadata": {
+     "toolUseId": "t1",
+     "name": "sch_get_symbol",
+     "input": {
+      "ref": "U3"
+     }
+    },
+    "createdAt": "2026-10-15T12:00:01.000Z"
+   }
+  },
+  {
+   "type": "message",
+   "projectId": "a1b2c3d4e5f6",
+   "message": {
+    "id": 44,
+    "projectId": "a1b2c3d4e5f6",
+    "clientMessageId": null,
+    "runId": "r1",
+    "role": "assistant",
+    "kind": "text",
+    "content": "sub-agent note",
+    "status": "done",
+    "metadata": {
+     "parentToolUseId": "t1"
+    },
+    "createdAt": "2026-10-15T12:00:02.000Z"
+   }
+  }
+ ],
+ "invalid": [
+  {
+   "type": "message",
+   "projectId": "a1b2c3d4e5f6",
+   "message": {
+    "id": 44,
+    "projectId": "a1b2c3d4e5f6",
+    "role": "user",
+    "kind": "text",
+    "content": "x",
+    "status": "queued",
+    "metadata": {},
+    "createdAt": "2026-10-15T12:00:00.000Z"
+   }
+  },
+  {
+   "type": "message",
+   "projectId": "a1b2c3d4e5f6",
+   "message": {
+    "id": 45,
+    "projectId": "a1b2c3d4e5f6",
+    "clientMessageId": null,
+    "runId": null,
+    "role": "robot",
+    "kind": "text",
+    "content": "x",
+    "status": "done",
+    "metadata": {},
+    "createdAt": "2026-10-15T12:00:00.000Z"
+   }
+  }
+ ]
+}

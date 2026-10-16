@@ -1,0 +1,19 @@
+{
+ "type": "run-started",
+ "directions": [
+  "s2c"
+ ],
+ "valid": [
+  {
+   "type": "run-started",
+   "projectId": "a1b2c3d4e5f6",
+   "runId": "r1"
+  }
+ ],
+ "invalid": [
+  {
+   "type": "run-started",
+   "projectId": "a1b2c3d4e5f6"
+  }
+ ]
+}

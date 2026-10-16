@@ -1,0 +1,28 @@
+{
+ "type": "run-finished",
+ "directions": [
+  "s2c"
+ ],
+ "valid": [
+  {
+   "type": "run-finished",
+   "projectId": "a1b2c3d4e5f6",
+   "runId": "r1",
+   "reason": "completed"
+  },
+  {
+   "type": "run-finished",
+   "projectId": "a1b2c3d4e5f6",
+   "runId": "r1",
+   "reason": "rate_limited"
+  }
+ ],
+ "invalid": [
+  {
+   "type": "run-finished",
+   "projectId": "a1b2c3d4e5f6",
+   "runId": "r1",
+   "reason": "done"
+  }
+ ]
+}
