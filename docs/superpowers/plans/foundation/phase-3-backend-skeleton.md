@@ -1339,8 +1339,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 Test note: discovery tests create **zero-byte marker files** named `*.kicad_pro`
 etc. They are never opened by KiCad or parsed by anything — only their names
 matter to discovery. This is not editing KiCad content; real KiCad files enter
-the repo only in Phase 4 via `kicad-cli`. **Owner-provisional decision — owner
-review requested:** empty `*.kicad_pro` (and `.kicad_sch`/`.kicad_pcb`/`.lck`)
+the repo only in Phase 4 via `kicad-cli`. **Decided by the owner
+(2026-10-16):** empty `*.kicad_pro` (and `.kicad_sch`/`.kicad_pcb`/`.lck`)
 markers in `tmp_path` are allowed in unit tests (Tasks 3.4, 3.5, 3.7); any test
 that reads KiCad content uses only KiCad/kicad-cli-generated fixtures.
 
@@ -1787,7 +1787,7 @@ def make_project(root: Path, locked: bool = False) -> Project:
     d = root / "demo"
     d.mkdir(parents=True, exist_ok=True)
     for suffix in ("kicad_pro", "kicad_sch", "kicad_pcb"):
-        (d / f"demo.{suffix}").touch()   # filename markers only, never opened (owner review requested)
+        (d / f"demo.{suffix}").touch()   # filename markers only, never opened (approved by owner 2026-10-16)
     if locked:
         (d / "~demo.kicad_pcb.lck").touch()
     return discover_projects(root)[0]
@@ -1897,7 +1897,7 @@ def markers(root: Path, locked: bool) -> None:
     d = root / "demo"
     d.mkdir(parents=True, exist_ok=True)
     for suffix in ("kicad_pro", "kicad_sch", "kicad_pcb"):
-        (d / f"demo.{suffix}").touch()   # empty markers (owner review requested)
+        (d / f"demo.{suffix}").touch()   # empty markers (approved by owner 2026-10-16)
     if locked:
         (d / "~demo.kicad_sch.lck").touch()
         (d / "~demo.kicad_pcb.lck").touch()
@@ -1937,7 +1937,7 @@ def test_open_locked_returns_read_only_banner_data(make_settings: Callable[..., 
     assert body["lockFiles"] == ["~demo.kicad_pcb.lck", "~demo.kicad_sch.lck"]
 ```
 
-`backend/tests/unit/test_launcher.py` (Owner-provisional, owner review requested: the empty `*.kicad_pro` is a filename marker for discovery only; no KiCad content is read):
+`backend/tests/unit/test_launcher.py` (approved by owner 2026-10-16: the empty `*.kicad_pro` is a filename marker for discovery only; no KiCad content is read):
 ```python
 import sys
 from pathlib import Path
@@ -2861,4 +2861,4 @@ argon2-cffi MIT, itsdangerous BSD, kicad-python MIT).
 - `kicad-python` pinned to a git revision because the 0.8.0 wheel cannot import
   `kipy.schematic` / `kipy.board_jobs` (verified 2026-10-15).
 - Unit tests use zero-byte `*.kicad_pro` marker files for discovery only (never
-  opened by KiCad) — owner-provisional, owner review requested; the real api-server test copies the installed KiCad demos verbatim.
+  opened by KiCad) — approved by owner 2026-10-16; the real api-server test copies the installed KiCad demos verbatim.

@@ -1,6 +1,6 @@
 # Phase 9: PWA, Web Push, release
 
-> **Cross-phase corrections apply:** see index § "Cross-phase corrections" (X6, X8, X11, X12, X13, X14, X17); they supersede conflicting code in this file.
+> **Cross-phase corrections apply:** see index § "Cross-phase corrections" (X6, X8, X11, X12, X13, X14, X17, X19); they supersede conflicting code in this file.
 
 **Goal:** Make CopperChat installable and shippable: PWA manifest + service
 worker, Web Push (VAPID) for "run finished", "needs attention" and
@@ -1920,13 +1920,14 @@ CopperChat window is visible.
 | `tools`, `kicad_tools`, `views` | read-only agent tools (structured JSON, full UUIDs, mm), ERC/DRC, agent views |
 | `agent` | run engine per project: streaming input, queue, interrupt, resume, rate limit, message persistence, WebSocket protocol |
 | `history`, `git_tools` | per-turn snapshots/undo, autosave, external-change detection, git status/diff/commit |
-| `skills`, `research` | built-in + user + project skills; `part-researcher` one-shot query writing only to `docs/parts/` |
+| `skills`, `research` | built-in + user + project skills (incl. the agent-scoped `part-notes` template); `part-researcher` SDK sub-agent behind a guarded `Agent` tool, web + writes only under `docs/parts/` (on spike 1A sub-agent no-go: one-shot query behind `research_part` — describe whichever Phase 8 shipped) |
 | `push` | VAPID keys in `/data/vapid.json`, subscriptions, notifier on run-finished / rate-limit frames |
 | `web` | FastAPI app, login cookie, REST routes, `/api/ws`, static frontend |
 
 Design data is read only through the running API server (or `kicad-cli` for
 ERC/DRC/exports) — never by a CopperChat file parser. The main agent has no
-file, shell or web tools.
+file, shell or web tools (built-ins: `Agent` restricted to `part-researcher`,
+and `Skill`).
 
 ## Frontend (`frontend/src`)
 

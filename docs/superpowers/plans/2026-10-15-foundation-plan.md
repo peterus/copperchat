@@ -48,7 +48,7 @@ Playwright (smoke); KiCanvas; Docker / docker compose; GitHub Actions; GHCR.
 | 6A | `foundation/phase-6a-frontend-shell-chat.md` | Frontend shell: login, project picker, responsive layout, themes, WS client, chat store + history with all Kontor lessons, composer, queue, Stop, usage | 5 | 4 |
 | 6B | `foundation/phase-6b-frontend-viewer.md` | Viewer: KiCanvas tabs, agent-view toggle, layer toggles, tap → `@REF`, `view-updated` refresh, fullscreen pinch-zoom | 1B, 4, 6A | 7, 8 |
 | 7 | `foundation/phase-7-history-git-recovery.md` | Per-turn snapshots + undo, autosave/view refresh at turn end, external-change hash check, crash recovery, git tools + UI | 4, 5, 6A | 6B, 8 |
-| 8 | `foundation/phase-8-skills-research-uploads.md` | Three-layer skills + Skills page, `part-researcher` sub-agent + Parts page, image/PDF attachments | 5, 6A | 6B, 7 |
+| 8 | `foundation/phase-8-skills-research-uploads.md` | Three-layer skills + Skills page, `part-researcher` SDK sub-agent behind a guarded `Agent` tool + `part-notes` template skill + Parts page, image/PDF attachments | 5, 6A | 6B, 7 |
 | 9 | `foundation/phase-9-pwa-push-release.md` | PWA, Web Push, app Dockerfile, compose (+ optional cloudflared), Cloudflare docs, README, release workflow, CI matrix | 6B, 7, 8 | — |
 
 Execution waves (every phase in a wave can run in parallel once the previous
@@ -75,6 +75,15 @@ has a "Decision" section; the coordinator reads it before spawning dependants:
   breaks the long-lived stream): Phase 5 switches to the "one `query()` per
   turn + `resume`" fallback described in Phase 5, Task 5.4b. Queue semantics
   stay identical from the client's view.
+- **1A sub-agent gate** (owner decision 2026-10-16; Task 1A.7 h4/h5): the
+  spike doc states **sub-agent go**, **sub-agent go (built-ins in session)**
+  or **sub-agent no-go**. Go: Phase 8 Task 8.6 (part-researcher as real SDK
+  sub-agent; `BUILTINS_IN_SESSION` False/True respectively). No-go (the guard
+  does not see `Agent` + `subagent_type`, does not fire for or cannot tell
+  apart sub-agent calls, sub-agent messages lack `parent_tool_use_id`, or
+  interrupt fails during a sub-agent): Phase 8 Task 8.6b (one-shot query
+  behind a `research_part` MCP tool) with the fallback adjustments listed
+  there.
 - **1B no-go** (KiCanvas cannot parse KiCad 11 files or exposes no click
   events): Phase 6B implements the fallback "own viewer" path described in its
   file (render server-side PNG/SVG from the API + hit-test via
@@ -120,9 +129,14 @@ these.
 - Tool output rules: structured JSON; **full UUIDs**; **mm coordinates**;
   filters instead of pagination; errors only for real failures; success only
   after verification. Tool errors are structured `{what, why, suggestion}`.
-- The **main agent has no file, shell or web tools** (SDK built-ins disabled:
-  `tools=[]`). Only `part-researcher` has web + write access, writes restricted
-  to `<project>/docs/parts/` by a `can_use_tool` path guard.
+- The **main agent has no file, shell or web tools.** Its only SDK built-ins
+  are `Agent` (allowed by the `can_use_tool` guard solely with
+  `subagent_type == "part-researcher"`) and `Skill` — `tools=["Agent", "Skill"]`
+  from Phase 8 on (`tools=[]` in Phase 5). Only the `part-researcher` SDK
+  sub-agent has web + write access; the same guard applies a path guard to
+  its own calls, restricting writes to `<project>/docs/parts/` (owner
+  decision 2026-10-16; fallback on spike 1A sub-agent no-go: one-shot query,
+  Phase 8 Task 8.6b).
 - Foundation agent is **read-only on design data**: no schematic or PCB
   editing tool exists in this sub-project.
 - Git: never touched automatically; agent tools `git_status`,
@@ -156,9 +170,10 @@ names the owning task where its test lives.
    content. Tests: Phase 5 Task 5.2 (idempotent insert), Phase 6A Tasks 6A.4–6A.6.
 2. **`kicad-cli api-server` hangs or dies mid-turn** — expected: the call times
    out, the server is restarted, the turn ends with a clear chat error, and
-   the next turn works against the last autosaved state. Tests: Phase 3 Task
-   3.7 (fake server process), Phase 4 Task 4.2 (real server kill), Phase 7
-   Task 7.5.
+   the next turn works against the last autosaved state; exactly **one**
+   "KiCad stopped responding" error row (posted by the engine, never again by
+   Phase 7's recovery, X18). Tests: Phase 3 Task 3.7 (fake server process),
+   Phase 4 Task 4.2 (real server kill), Phase 5 Task 5.11, Phase 7 Task 7.5.
 3. **Project opened in KiCad GUI at the same time** (lock file present) —
    expected: project opens read-only with the "open in KiCad — close it
    there" banner; no autosave, no snapshot restore. Tests: Phase 3 Task 3.5,
@@ -169,8 +184,10 @@ names the owning task where its test lives.
 5. **Path traversal / escape in user-controlled paths** — project ids,
    upload filenames, part MPN folder names, skill names, `part-researcher`
    write paths, history snapshot ids — expected: rejected with 400 / tool
-   denial, nothing written outside the allowed root. Tests: Phase 3 Task 3.4
-   (project ids), Phase 7 Task 7.1 (snapshot ids), Phase 8 Tasks 8.2, 8.4, 8.5.
+   denial, nothing written outside the allowed root. Same for the tool
+   surface: main-agent calls to researcher tools and `Agent` delegations other
+   than `part-researcher` are denied. Tests: Phase 3 Task 3.4 (project ids),
+   Phase 7 Task 7.1 (snapshot ids), Phase 8 Tasks 8.2, 8.4, 8.5, 8.6.
 
 ---
 
@@ -417,8 +434,9 @@ def all_specs() -> list[ToolSpec]
 `registry.all_specs()` concatenates module-level `TOOL_SPECS: list[ToolSpec]`
 from a fixed provider list in `registry.py`. Each phase that adds tools
 appends one import line there (Phase 4: `kicad_tools`, `views`; Phase 7:
-`git_tools`; Phase 8: `research`). A provider module that fails to import is
-an error, never skipped.
+`git_tools`; Phase 8: `research` — **only on the 8.6b fallback**; the
+sub-agent design adds no CopperChat tool, X19). A provider module that fails
+to import is an error, never skipped.
 
 ### C6. Views — `copperchat.views` (Phase 4)
 
@@ -510,9 +528,11 @@ def build_sdk_tools(specs: list[ToolSpec], ctx_factory: Callable[[], ToolContext
 ```
 
 `AgentEvent` (internal, adapter → engine) is a tagged union:
-`TurnStarted, TextDelta(text), ThinkingDelta(text), ToolUse(id,name,input),
-ToolResultEvt(id, content, images, is_error), Usage(...), RateLimited(resets_at),
-TurnFinished(reason), SessionId(id)`.
+`TurnStarted, TextDelta(text), ThinkingDelta(text), ToolUse(id,name,input,parent_tool_use_id=None),
+ToolResultEvt(id, content, images, is_error, parent_tool_use_id=None),
+SubagentText(parent_tool_use_id, text), Usage(...), RateLimited(resets_at),
+TurnFinished(reason), SessionId(id)`. Events with `parent_tool_use_id` come
+from an SDK sub-agent (X19).
 
 ### C7a. Contract additions introduced by the phase files
 
@@ -543,7 +563,8 @@ These extend C1–C8 and are equally binding.
   `ToolContext.on_kicad_unavailable: Callable[[Exception], None] | None` (both sync);
   `ToolResult.changed_docs: set[DocKind]`. `registry._PROVIDERS` is a tuple
   of module names (`copperchat.kicad_tools.specs`, `copperchat.views.specs`,
-  `copperchat.git_tools.specs`, `copperchat.research.specs`).
+  `copperchat.git_tools.specs`; `copperchat.research.specs` only on the
+  Phase 8 fallback 8.6b).
 - **C7 (Phase 5):** server heartbeat frame `ping` (S→C, `projectId: null`);
   `error.projectId` may be `null` (unparseable client frame);
   `RunHooks.on_engine_start / on_turn_start / on_first_mutation / on_turn_end(turn, outcome)`
@@ -561,9 +582,17 @@ These extend C1–C8 and are equally binding.
   `GET /projects/{id}/images/{name}` (tool images under `.kicad-agent/images/`).
 - **C7 (Phase 9):** C→S frame `visibility{projectId, visible: bool}` (push is
   sent only when no client is visible).
-- **Message metadata keys:** `tool_use` → `{name, input}`; `tool_result` →
-  `{isError, images: [{url}]}`; `image` → `{url}`; notices may carry
-  `{action: "restore", snapshotId}` (Phase 7).
+- **Message metadata keys:** `tool_use` → `{toolUseId, name, input}`;
+  `tool_result` → `{toolUseId, isError, images: [{url}]}`; `image` → `{url}`;
+  notices may carry `{action: "restore", snapshotId}` (Phase 7); error rows
+  may carry `{code}` (`kicad_unavailable` from the engine, `autosave_failed`
+  from Phase 7). **Sub-agent rows** (Phase 5 Task 5.11b): `text` /
+  `tool_use` / `tool_result` rows produced by an SDK sub-agent carry
+  `parentToolUseId` = the `toolUseId` of the main agent's `Agent` call; they
+  are complete (`status: "done"`), their inputs/results are truncated (2000 /
+  4000 chars), and the `Agent` call's own `tool_result` is the sub-agent's
+  final summary. The WS frame set is unchanged; the frontend groups by
+  `parentToolUseId` (Phase 6A Task 6A.7b).
 - **Frontend (Phase 6A):** `@/api/http` (`apiGet`, `apiPost`, `apiPut`,
   `apiDelete`, `apiUrl`, `setUnauthorizedHandler`, `ApiError`); `@/api/ws`
   (`createWsClient`, `wsClient` with `send`, `onFrame`, `onConnection`, `ensure`, `isOpen`, `close`; `ConnectionState`); `@/stores/chat`
@@ -591,7 +620,17 @@ These extend C1–C8 and are equally binding.
   `InvalidSnapshotId` (400), `SnapshotNotFound` (404), `AgentBusy` (409);
   notice `action` values `restore`, `restored`, `external-change`.
 - **Phase 8:** table `uploads`; `copperchat.agent.attachments.{attachment_exists, build_user_content}`;
-  `copperchat.skills.assembly.{SkillBundle, assemble_skills, apply_skills}`.
+  `copperchat.skills.assembly.{SkillBundle(+researcher_skill), assemble_skills, apply_skills}`;
+  `copperchat.research.agent.{RESEARCHER_NAME, researcher_definition}`;
+  `copperchat.research.notes.{REQUIRED_SECTIONS, check_notes, validate_notes}`;
+  `copperchat.research.wiring.{ResearcherWiring, researcher_wiring, wire_researcher, BUILTINS_IN_SESSION}`;
+  `copperchat.research.datasheets.{download_datasheet, parts_mcp_server}`;
+  `copperchat.agent.guards.{make_researcher_guard, make_session_guard, DELEGATION_TOOL, SUBAGENT_ID_FIELD}`;
+  `build_options(..., skills=, researcher=)`; built-in skill `part-notes`
+  (front matter `agent: part-researcher`, never offered to the main agent).
+- **Phase 6A (sub-agent card):** `@/components/chat/subagent`
+  (`groupSubagentRows`, `isDelegation`, `describeStep`, `subagentTitle`),
+  `SubagentCard({toolUse, group, runActive})`.
 - **Phase 6B:** `@/stores/view`, `@/lib/viewUrls`, `KicadPane(KicadPaneProps)`
   (same interface on both spike paths); KiCanvas vendored under
   `frontend/public/vendor/kicanvas/`; fallback only: `ImageBlock.viewbox_mm`,
@@ -695,20 +734,63 @@ with an item below, the item wins; the executor adapts the code and its tests.
   assignment and before `yield`. Every `include_router(...)` call stays in
   the `create_app` body, before `mount_frontend(...)` (which must stay last).
 
-### Owner review requested
+- **X18 — one "KiCad stopped responding" row (Phases 5, 7).** For a turn
+  whose tool hit `KicadUnavailable` (`TurnOutcome.kicad_failed`), only Phase
+  5's engine posts the error row (`metadata.code = "kicad_unavailable"`).
+  Phase 7's `HistoryHooks._recover` never posts that row; it restarts KiCad
+  if needed, reports a failed restart, and offers the snapshot restore. An
+  autosave that fails in an otherwise healthy turn posts its own
+  `autosave_failed` error before recovering.
+- **X19 — part-researcher as SDK sub-agent (Phases 1A, 5, 6A, 8, 9).** Owner
+  decision 2026-10-16 (see below). Spike 1A gates it (Task 1A.7 h4/h5,
+  "sub-agent gate"); Phase 5 persists sub-agent messages as
+  `parentToolUseId` rows (Task 5.11b) and interrupt/usage cover them; Phase
+  6A nests them in a "Part research: <MPN>" card (Task 6A.7b); Phase 8 wires
+  `agents=`, `tools=["Agent", "Skill"]`, the session guard and the
+  `part-notes` template skill (Tasks 8.4, 8.4b, 8.6). There is no
+  `research_part` MCP tool unless the spike says no-go (Task 8.6b fallback).
+  Spec §6's `research_part(query)` is realised as
+  `Agent(subagent_type="part-researcher", description=<MPN>, prompt=<question>)`.
 
-Provisional decisions taken while planning (2026-10-16); the owner may
-override them in the plan PR review:
+### Decided by owner (2026-10-16)
 
-1. **`research_part`** runs a separate one-shot SDK query with the
-   `part-researcher` configuration. The main agent keeps `tools=[]` (no
-   built-in `Agent` tool, no `agents=`), because SDK sub-agents are only
-   reachable through the built-in `Agent` tool.
-2. **Skills** may require the main agent to have the built-in `Skill` tool
-   (`tools=["Skill"]`); it is neither a file, shell nor web tool.
-3. **Discovery unit tests** may create empty `*.kicad_pro` marker files in
-   `tmp_path`; every test that reads KiCad content uses only KiCad- or
-   `kicad-cli`-generated fixtures.
+The provisional decisions from planning were reviewed by the owner in the plan
+PR; these are final:
+
+1. **Part research is a real SDK sub-agent** (replaces the one-shot query).
+   The main agent gets the built-in `Agent` tool and
+   `agents={"part-researcher": …}`; a `can_use_tool` guard allows `Agent`
+   only with `subagent_type == "part-researcher"` (general-purpose and
+   everything else denied). The researcher keeps web + write tools, writes
+   restricted to `<project>/docs/parts/` by the path guard (spec §8). The
+   main agent has `tools=["Agent", "Skill"]` and still **no** file/shell/web
+   tools. Simplest consistent design: the model calls `Agent` directly — no
+   `research_part` MCP wrapper (X19; Phase 8 Tasks 8.4, 8.6).
+2. **GUI:** sub-agent messages arrive in the same stream
+   (`parent_tool_use_id`) and are rendered as a collapsible
+   "Part research: <MPN>" card nested under the tool call, with live steps
+   (searches, files saved, notes written) and the final summary; interrupt
+   and usage accounting cover sub-agent turns (Phase 5 Task 5.11b, Phase 6A
+   Task 6A.7b; contract: C7a message metadata `parentToolUseId`).
+3. **Spike 1A must prove** (a) `can_use_tool` is invoked for `Agent` with
+   `subagent_type` visible, (b) guards fire for the sub-agent's own tool
+   calls, (c) sub-agent stream messages carry `parent_tool_use_id` — a
+   go/no-go gate (Task 1A.7 h4/h5). On no-go Phase 8 falls back to the
+   one-shot query design, kept as Task 8.6b.
+4. **`Skill` tool approved** for the main agent (`tools=["Agent", "Skill"]`).
+5. **Empty `*.kicad_pro` marker files** in `tmp_path` are approved for
+   discovery tests; tests that read KiCad content use KiCad- or
+   `kicad-cli`-generated fixtures only.
+6. **`part-notes` skill** (Phase 8 Task 8.4b): a fixed `notes.md` template
+   complete enough to draw schematic and PCB without the datasheet — per-package
+   pinout with function and unused-pin handling; absolute max + recommended
+   operating conditions; typical application circuit with concrete values and
+   the formulas to recompute them; required external parts; layout guidance;
+   package + footprint with KiCad symbol/footprint mapping; errata/pitfalls;
+   sources with datasheet page references — plus a structure validator, a
+   fixture eval and an opt-in live eval.
+7. **Review hint fixed:** Phase 7's `HistoryHooks._recover` and the Phase 5
+   engine no longer both post the "KiCad stopped responding" row (X18).
 
 ### C8. HTTP API (owning phase in brackets; all under `/api`, all except
 login require the session cookie)

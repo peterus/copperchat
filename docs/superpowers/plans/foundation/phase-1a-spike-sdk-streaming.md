@@ -6,8 +6,15 @@ lazy pull of queued input at turn boundaries, `interrupt()` mid-turn with the
 session continuing, `resume` + `fork_session` at burst start, `tools=[]` with an
 in-process SDK MCP server, `RateLimitEvent` and `ResultMessage` usage shapes,
 `can_use_tool` for MCP tools, and an `agents=` sub-agent with its own tools
-while the main agent has no built-ins. Record results and a go/no-go decision in
+while the main agent has no built-ins. Since the owner decision of 2026-10-16
+(part-researcher as a real SDK sub-agent behind a guarded `Agent` tool) the
+spike also gates Phase 8 with a **sub-agent go/no-go** (Task 1A.7 h4/h5:
+`can_use_tool` sees `Agent` with `subagent_type`, fires for the sub-agent's own
+calls, sub-agent messages carry `parent_tool_use_id`, interrupt works during a
+sub-agent). Record results and both decisions in
 `docs/spikes/1a-sdk-streaming.md`.
+
+> **Cross-phase corrections apply:** see index § "Cross-phase corrections" (X19).
 
 **Depends on:** —
 
@@ -1189,6 +1196,22 @@ three configurations:
 - **h3:** helper with `tools=["WebFetch", "Write"]` while main has only
   `["Agent"]` → can the helper use built-ins the main agent does not have, and
   does `can_use_tool` see the helper's `Write` calls (Phase 8 path guard)?
+- **h4 (owner gate, 2026-10-16):** main `tools=["Agent", "Skill"]`, `Agent`
+  **not** in `allowed_tools`, a recording `can_use_tool` that allows `Agent`
+  only for `subagent_type == "helper"` → (a) the guard is invoked for the
+  `Agent` call and sees `subagent_type` in the input; a `general-purpose`
+  delegation is denied by the guard; (b) the guard also fires for the
+  sub-agent's own tool calls, and `ToolPermissionContext.agent_id` (or the
+  equivalent field) is `None` for main-agent calls and set for sub-agent calls;
+  (c) every sub-agent message (`AssistantMessage`, `UserMessage`, and
+  `StreamEvent` with `include_partial_messages=True`) carries
+  `parent_tool_use_id` equal to the id of the `Agent` `ToolUseBlock`.
+- **h5:** interrupt while the sub-agent is working → the turn ends with a
+  `ResultMessage` (interrupted), no sub-agent message arrives after it, and the
+  next turn on the same client works; plus usage: does the turn's
+  `ResultMessage.usage` / `total_cost_usd` include the sub-agent's tokens
+  (compare with the sum of the sub-agent `AssistantMessage.usage` values, if
+  exposed)?
 
 **Files:**
 - Create: `spikes/1a-sdk-streaming/q_h_subagent.py`
@@ -1298,6 +1321,104 @@ async def main() -> int:
     rec.check("h3_inside_write_ok", (WORKDIR / "docs/parts/TEST/notes.md").exists(), str(WORKDIR))
     rec.check("h3_outside_write_denied", not (WORKDIR / "outside.md").exists(), str(WORKDIR))
     rec.note("h3_answer", text3)
+
+    # h4: owner gate — Agent guarded by subagent_type, guard sees sub-agent calls, parent ids
+    calls: list[dict[str, Any]] = []
+
+    async def gate_guard(name: str, inp: dict[str, Any], ctx: ToolPermissionContext):
+        calls.append({"name": name, "subagent_type": inp.get("subagent_type"),
+                      "agent_id": getattr(ctx, "agent_id", "<no field>")})
+        if name == delegate and inp.get("subagent_type") != "helper":
+            return PermissionResultDeny(message="only the helper sub-agent may be used")
+        return PermissionResultAllow()
+
+    server = create_sdk_mcp_server("spike", tools=[get_magic])
+    helper = AgentDefinition(description="Helper that fetches data. Use it for any data lookup.",
+                             prompt="You are a helper. Use your tools to answer, reply tersely.",
+                             tools=["mcp__spike__get_magic", "WebFetch"], model="haiku")
+
+    async def gen4():
+        yield user_msg("First try the general-purpose sub-agent to fetch https://example.com. "
+                       "Then use the helper sub-agent to get the magic value via get_magic. "
+                       "Reply with the value.")
+
+    opts4 = base_options(tools=[delegate, "Skill"], mcp_servers={"spike": server},
+                         agents={"helper": helper}, allowed_tools=[],  # nothing shadows the guard
+                         can_use_tool=gate_guard, include_partial_messages=True)
+    client4 = ClaudeSDKClient(opts4)
+    await client4.connect(gen4())
+    got4 = await collect(client4, until_results=1, hard_s=300)
+    await client4.disconnect()
+    agent_ids = {b.id for _, m in got4.messages if isinstance(m, AssistantMessage)
+                 for b in m.content if isinstance(b, ToolUseBlock) and b.name == delegate}
+    sub_msgs = [m for _, m in got4.messages if getattr(m, "parent_tool_use_id", None)]
+    rec.note("h4_calls", calls)
+    rec.check("h4a_guard_sees_agent_with_subagent_type",
+              any(c["name"] == delegate and c["subagent_type"] == "helper" for c in calls), calls)
+    rec.check("h4a_general_purpose_denied_by_guard",
+              any(c["name"] == delegate and c["subagent_type"] == "general-purpose" for c in calls)
+              and not any(getattr(m, "parent_tool_use_id", None) and "example.com" in str(m)
+                          for m in sub_msgs), calls)
+    rec.check("h4b_guard_fires_for_subagent_tools",
+              any(c["name"] == "mcp__spike__get_magic" for c in calls), calls)
+    rec.check("h4b_agent_id_distinguishes_main_and_sub",
+              all(c["agent_id"] is None for c in calls if c["name"] == delegate)
+              and all(c["agent_id"] not in (None, "<no field>")
+                      for c in calls if c["name"] == "mcp__spike__get_magic"), calls)
+    rec.check("h4c_subagent_messages_carry_parent_id",
+              bool(sub_msgs) and all(m.parent_tool_use_id in agent_ids for m in sub_msgs),
+              [(type(m).__name__, m.parent_tool_use_id) for m in sub_msgs][:20])
+    rec.note("h4c_stream_events_with_parent",
+             sum(1 for m in sub_msgs if type(m).__name__ == "StreamEvent"))
+
+    # h5: interrupt during the sub-agent, then a second turn; usage incl. sub-agent tokens
+    slow_helper = AgentDefinition(description="Slow fetcher. Use it for web lookups.",
+                                  prompt="Fetch every URL you are given, one by one, then summarise.",
+                                  tools=["WebFetch"], model="haiku")
+    second = asyncio.Event()
+
+    async def allow_all(name: str, inp: dict[str, Any], ctx: ToolPermissionContext):
+        return PermissionResultAllow()
+
+    async def gen5():
+        yield user_msg("Use the fetcher sub-agent to fetch https://example.com, https://example.org "
+                       "and https://example.net and summarise each.")
+        await second.wait()
+        yield user_msg("Reply with exactly: AFTER")
+
+    opts5 = base_options(tools=[delegate], agents={"fetcher": slow_helper},
+                         allowed_tools=[], can_use_tool=allow_all)
+    client5 = ClaudeSDKClient(opts5)
+    await client5.connect(gen5())
+    interrupted_at: float | None = None
+    got5_msgs: list[tuple[float, Any]] = []
+    async for msg in client5.receive_messages():
+        now = asyncio.get_running_loop().time()
+        got5_msgs.append((now, msg))
+        if interrupted_at is None and getattr(msg, "parent_tool_use_id", None):
+            interrupted_at = now
+            await client5.interrupt()
+        if type(msg).__name__ == "ResultMessage":
+            if not second.is_set():
+                second.set()
+            else:
+                break
+    await client5.disconnect()
+    results = [(t, m) for t, m in got5_msgs if type(m).__name__ == "ResultMessage"]
+    first_result_t = results[0][0] if results else float("inf")
+    rec.check("h5_interrupt_ends_turn_during_subagent",
+              interrupted_at is not None and bool(results), [str(m)[:200] for _, m in results])
+    rec.check("h5_no_subagent_messages_after_result",
+              not any(t > first_result_t and getattr(m, "parent_tool_use_id", None)
+                      for t, m in got5_msgs if t < (results[1][0] if len(results) > 1 else 1e18)),
+              len(got5_msgs))
+    rec.check("h5_next_turn_works", len(results) > 1 and "AFTER" in str(results[1][1]), len(results))
+    sub_usage = [getattr(m, "usage", None) for _, m in got4.messages
+                 if isinstance(m, AssistantMessage) and m.parent_tool_use_id]
+    final4 = next((m for _, m in got4.messages if type(m).__name__ == "ResultMessage"), None)
+    rec.note("h5_usage_compare", {"result_usage": getattr(final4, "usage", None),
+                                  "result_cost": getattr(final4, "total_cost_usd", None),
+                                  "subagent_assistant_usage": sub_usage})
     return rec.finish()
 
 
@@ -1316,11 +1437,36 @@ Real run: `rm -rf work && uv run python q_h_subagent.py | tee results/h_subagent
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-`results/h_subagent.json` exists with `h1`–`h3` rows. Record: the delegation
+`results/h_subagent.json` exists with `h1`–`h5` rows. Record: the delegation
 tool name; that main's tool list is then exactly `{<delegate>, mcp__…}`;
 whether the helper's built-ins work although the main base set excludes them;
 whether `can_use_tool` receives the helper's `Write` (if not, Phase 8 must use
-a `PreToolUse` hook instead — record which one works).
+a `PreToolUse` hook instead — record which one works); the exact name of the
+field that identifies sub-agent calls in `ToolPermissionContext` (`agent_id`
+or other); whether sub-agent `StreamEvent`s carry `parent_tool_use_id`; and
+whether the turn's `ResultMessage.usage` / `total_cost_usd` already include
+the sub-agent's tokens (h5 note — if not, Phase 5's mapper sums the sub-agent
+`AssistantMessage.usage` values into the turn's `Usage`).
+
+**Sub-agent gate (owner decision 2026-10-16, binding for Phase 8):** the
+decision section of the spike doc states one of:
+
+- **sub-agent go** — h4a (both rows), h4b (both rows), h4c and the h5
+  interrupt rows PASS **and** h3 `helper_used_webfetch` PASS: Phase 8 Task 8.6
+  as written (main `tools=["Agent", "Skill"]`, researcher built-ins not in the
+  session `tools`, `BUILTINS_IN_SESSION = False`).
+- **sub-agent go (built-ins in session)** — as above, but h3
+  `helper_used_webfetch` FAIL (sub-agents only get built-ins that are in the
+  session `tools`): Phase 8 Task 8.6 with `BUILTINS_IN_SESSION = True` — the
+  researcher's built-ins are added to the session `tools`, and the session
+  guard denies every one of them for main-agent calls (`agent_id` is `None`).
+  The main agent then sees those tools' schemas but can never execute one; the
+  coordinator mentions this in its report to the owner.
+- **sub-agent no-go** — any of h4a, h4b (both rows: the guard must fire for
+  sub-agent calls **and** tell them apart from main-agent calls, because the
+  `download_datasheet` MCP tool is visible to the main agent too), h4c or the
+  h5 interrupt rows FAIL: Phase 8 uses the documented fallback Task 8.6b
+  (separate one-shot SDK query behind a `research_part` MCP tool).
 
 - [ ] **Step 5: Commit**
 
@@ -1420,7 +1566,9 @@ or `ANTHROPIC_API_KEY` in the environment — without it every script prints
 (a) lazy pull at turn boundaries · (b) interrupt mid-turn then continue ·
 (c) resume + fork_session at burst start · (d) tools=[] + SDK MCP tool ·
 (e) RateLimitEvent shape · (f) ResultMessage usage · (g) can_use_tool for MCP
-tools · (h) sub-agent with own tools while main has none.
+tools · (h) sub-agent with own tools while main has none, incl. the owner's
+sub-agent gate (h4: Agent guard by subagent_type, guard on sub-agent calls,
+parent_tool_use_id; h5: interrupt + usage during a sub-agent).
 
 ## Setup
 - claude-agent-sdk <version>, bundled CLI <version>, Python <version>, model alias <SPIKE_MODEL>
@@ -1444,14 +1592,18 @@ One of:
 - **1A no-go** — a3 FAIL (or b FAIL: session unusable after interrupt):
   Phase 5 uses Task 5.4b "one `query()` per turn + `resume`".
 Also state per (b)–(h) any consequence for Phases 5/8 (e.g. delegation tool
-name must be in `tools`, guard via hook instead of can_use_tool).
+name must be in `tools`, guard via hook instead of can_use_tool), and exactly
+one sub-agent gate line: **sub-agent go**, **sub-agent go (built-ins in
+session)** or **sub-agent no-go** (rules in Task 1A.7 Step 4).
 
 ## Follow-ups for later phases
 Exact names/calls: ClaudeSDKClient.connect(prompt=<async gen>), interrupt(),
 ResultMessage.subtype/terminal_reason after interrupt, session file layout under
 CLAUDE_CONFIG_DIR, init tools list for tools=[] (+ delegate), RateLimitInfo
 fields (resets_at unit), usage keys and per-turn vs cumulative cost,
-can_use_tool vs allowed_tools shadowing, delegation tool name.
+can_use_tool vs allowed_tools shadowing, delegation tool name,
+ToolPermissionContext field for sub-agent calls, parent_tool_use_id on
+sub-agent StreamEvents, whether ResultMessage usage includes sub-agent tokens.
 ```
 
 Decision rules are mechanical: apply them to the PASS/FAIL rows; do not soften.
@@ -1462,10 +1614,11 @@ Decision rules are mechanical: apply them to the PASS/FAIL rows; do not soften.
 test -f spikes/1a-sdk-streaming/results/summary.md
 grep -E '^## (Question\(s\)|Setup|Results|Decision|Follow-ups for later phases)$' docs/spikes/1a-sdk-streaming.md | wc -l   # 5
 grep -E '1A (go|partial: gated generator|no-go)' docs/spikes/1a-sdk-streaming.md
+grep -E 'sub-agent (go|go \(built-ins in session\)|no-go)' docs/spikes/1a-sdk-streaming.md
 grep -niE 'claude login|/login' -r spikes/1a-sdk-streaming docs/spikes/1a-sdk-streaming.md || echo "no login flow"
 cd spikes/1a-sdk-streaming && uv run ruff check . && uv run ruff format --check .
 ```
-Expected: 5 headings, one decision line, `no login flow`, ruff clean.
+Expected: 5 headings, one decision line, one sub-agent gate line, `no login flow`, ruff clean.
 
 - [ ] **Step 5: Commit**
 
@@ -1488,7 +1641,9 @@ the decision to the coordinator — it gates Phase 5.
   (interrupt) → 1A.3; §5 step 8 (resume + fork at burst start) → 1A.4; §5 step 9
   and C7 `usage`/`rate-limited` frames → 1A.6; §3/§4.1 "built-in tools disabled
   for the main agent" → 1A.5 (d); §8 `can_use_tool` path guard and
-  part-researcher web/write → 1A.5 (g), 1A.7 (h3); §11 "first plan steps" → whole
+  part-researcher web/write → 1A.5 (g), 1A.7 (h3); owner decision 2026-10-16
+  (part-researcher as real SDK sub-agent behind a guarded `Agent` tool) →
+  1A.7 (h4, h5) and the sub-agent gate; §11 "first plan steps" → whole
   phase; §12 no login flow → Task 1A.1 skip path + 1A.8 grep.
 - Index gate 1A is applied mechanically in Task 1A.8, with one addition: the
   "partial: gated generator" outcome. Source reading (`stream_input` iterates

@@ -1,6 +1,6 @@
 # Phase 5: Agent runtime
 
-> **Cross-phase corrections apply:** see index § "Cross-phase corrections" (X2, X5, X15, X17); they supersede conflicting code in this file.
+> **Cross-phase corrections apply:** see index § "Cross-phase corrections" (X2, X5, X15, X17, X18, X19); they supersede conflicting code in this file.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this phase task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -52,6 +52,7 @@ rows), §11; `docs/spikes/1a-sdk-streaming.md` (Decision section). Reference
 - A `KicadUnavailable` raised inside a tool ends the turn with an error row and the next queued message still runs.
 - WebSocket `/api/ws`: cookie auth, Origin check, schema validation, replay of rows with id > `sinceMessageId` (with live content), `run-started` re-sent for an active run, `rate-limited` re-sent while parked, heartbeat `ping` every 25 s.
 - Reconnect mid-run: a second socket subscribing with `sinceMessageId` receives the half-streamed row in full, and the subsequent deltas complete it without gaps or duplicates.
+- Sub-agent messages (SDK messages with `parent_tool_use_id`) are not dropped: their tool calls, tool results and text are persisted as complete rows with `metadata.parentToolUseId` (Task 5.11b); the main agent's streaming segment is never mixed with sub-agent text; interrupt and usage cover sub-agent work.
 - SDK adapter: `tools=[]`, only `mcp__copperchat__*` tools allowed, `can_use_tool` denies everything else, CopperChat system prompt (no "Claude Code" branding), token passed via `env`, `include_partial_messages=True`.
 - `dev_fake_agent=True` selects `FakeAgent`; no token needed.
 
@@ -136,6 +137,7 @@ ErrorFrame.project_id: str | None   # NEW: null when the offending frame had no 
 
 # copperchat.agent.events — QueuedItem, AgentEvent union (C7), AgentBackend (C7)
 #   Usage gains rate_limit_status / rate_limit_resets_at (NEW fields); TurnFinished gains error: str | None
+#   ToolUse / ToolResultEvt gain parent_tool_use_id: str | None = None; NEW SubagentText(parent_tool_use_id, text)  (Task 5.11b)
 
 # copperchat.agent.engine
 class TurnInfo: run_id, message_id, text, metadata                      # NEW
@@ -3510,7 +3512,8 @@ class RunEngine:
                 await self._insert(
                     role="system", kind="error",
                     content="KiCad stopped responding; the KiCad API server was restarted and "
-                            "this turn ended. Send your message again to retry.")
+                            "this turn ended. Send your message again to retry.",
+                    metadata={"code": "kicad_unavailable"})
             await self.backend.interrupt()
 
     async def _turn_finished(
@@ -3953,6 +3956,7 @@ async def test_kicad_unavailable_ends_turn_with_error_row_and_next_runs(make_eng
     rows, _ = await MessageRepo(db).page(PID, limit=50)
     errors = [r for r in rows if r.kind == "error"]
     assert len(errors) == 1 and "KiCad" in errors[0].content
+    assert errors[0].metadata == {"code": "kicad_unavailable"}   # the only "KiCad stopped responding" row (Phase 7 does not post another)
     assert not any(r.kind == "text" and r.content == "after" for r in rows)
     assert any(r.kind == "text" and r.content == "two" for r in rows)
     first = await MessageRepo(db).get(m1.id)
@@ -4041,6 +4045,238 @@ Expected: all passed.
 ```bash
 git add backend/src/copperchat/agent/engine.py backend/tests/unit/agent/test_engine_resume.py
 git commit -m "feat: session resume per burst, rate-limit parking with auto-resume, KiCad failure handling" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 5.11b: Sub-agent events (`parent_tool_use_id`) — mapper and engine
+
+Owner decision 2026-10-16: Phase 8 runs `part-researcher` as a real SDK
+sub-agent behind the built-in `Agent` tool. Its messages arrive in the same
+SDK stream, tagged with `parent_tool_use_id` (the id of the main agent's
+`Agent` tool call; verified by spike 1A h4c). Phase 5 makes the runtime carry
+them generically, so Phase 8 only wires the sub-agent and Phase 6A renders a
+nested card. Until Phase 8 the main agent has `tools=[]` and no sub-agent
+messages occur; the code path is exercised by unit tests only.
+
+Rules:
+- Sub-agent `StreamEvent`s are ignored (no partial deltas for sub-agents;
+  their text arrives as whole `AssistantMessage` blocks).
+- Sub-agent `AssistantMessage`: `ToolUseBlock` → `ToolUse(..., parent_tool_use_id=p)`,
+  `TextBlock` → `SubagentText(p, text)`, `ThinkingBlock` ignored.
+- Sub-agent `UserMessage`: `ToolResultBlock` → `ToolResultEvt(..., parent_tool_use_id=p)`;
+  string content (the delegation prompt echoed to the sub-agent) ignored.
+- Engine: sub-agent events become **complete** rows (`status="done"`) with
+  `metadata.parentToolUseId = p`; they never append to or close the main
+  agent's streaming text segment. String values in a sub-agent `tool_use`
+  input are truncated to 2000 characters, sub-agent `tool_result` content to
+  4000 characters (a `Write` of a full `notes.md` or a fetched web page must
+  not bloat the chat). Images in sub-agent tool results are dropped.
+- The main agent's `Agent` tool call and its final `tool_result` (the
+  sub-agent's summary) are ordinary main-agent rows (`parentToolUseId`
+  absent); `metadata.name` is the bare SDK tool name (`"Agent"`, or `"Task"`
+  on older CLIs per spike 1A).
+- Interrupt needs no extra code: `backend.interrupt()` interrupts the whole
+  SDK turn including a running sub-agent (spike 1A h5).
+- Usage: if spike 1A h5 records that `ResultMessage.usage` does **not**
+  include sub-agent tokens, `SdkEventMapper` sums `usage` of sub-agent
+  `AssistantMessage`s since the last `ResultMessage` and adds them to the
+  emitted `Usage` (cost stays `total_cost_usd`). If it does include them,
+  nothing changes. Record which case applied in the done report.
+
+**Files:**
+- Modify: `backend/src/copperchat/agent/events.py`, `backend/src/copperchat/agent/sdk_backend.py`, `backend/src/copperchat/agent/engine.py`
+- Modify: `protocol-fixtures/message.json` (one more valid example)
+- Test: `backend/tests/unit/agent/test_sdk_backend.py`, `backend/tests/unit/agent/test_engine_subagent.py`
+
+**Interfaces:**
+- Produces: `ToolUse.parent_tool_use_id`, `ToolResultEvt.parent_tool_use_id` (default `None`), `SubagentText(parent_tool_use_id: str, text: str)` in the `AgentEvent` union; message metadata key `parentToolUseId` (C7a).
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `backend/tests/unit/agent/test_sdk_backend.py`:
+
+```python
+from copperchat.agent.events import SubagentText
+
+
+def test_mapper_maps_subagent_messages_with_parent_id():
+    m = SdkEventMapper()
+    out = []
+    out += m.map(AssistantMessage(content=[ToolUseBlock(id="a1", name="Agent", input={
+        "subagent_type": "part-researcher", "description": "TPS62133", "prompt": "q"})],
+        model="m", message_id="msg_1"))
+    out += m.map(StreamEvent(uuid="u", session_id="s1", parent_tool_use_id="a1",
+                             event={"type": "content_block_delta",
+                                    "delta": {"type": "text_delta", "text": "partial"}}))
+    out += m.map(UserMessage(content="q", parent_tool_use_id="a1"))
+    out += m.map(AssistantMessage(content=[TextBlock(text="Searching"),
+                                           ToolUseBlock(id="w1", name="WebSearch", input={"query": "TPS62133"})],
+                                  model="m", message_id="msg_2", parent_tool_use_id="a1"))
+    out += m.map(UserMessage(content=[ToolResultBlock(tool_use_id="w1", content="hits", is_error=False)],
+                             parent_tool_use_id="a1"))
+    out += m.map(UserMessage(content=[ToolResultBlock(tool_use_id="a1", content="summary", is_error=False)]))
+    assert out == [
+        ToolUse(id="a1", name="Agent", input={"subagent_type": "part-researcher",
+                                               "description": "TPS62133", "prompt": "q"}),
+        SubagentText(parent_tool_use_id="a1", text="Searching"),
+        ToolUse(id="w1", name="WebSearch", input={"query": "TPS62133"}, parent_tool_use_id="a1"),
+        ToolResultEvt(id="w1", content="hits", parent_tool_use_id="a1"),
+        ToolResultEvt(id="a1", content="summary"),
+    ]
+```
+
+`backend/tests/unit/agent/test_engine_subagent.py`:
+
+```python
+from copperchat.agent.events import SubagentText, ToolResultEvt, ToolUse
+from copperchat.agent.fake import Emit, Text
+from copperchat.db.repos.messages import MessageRepo
+
+PID = "a1b2c3d4e5f6"
+
+
+async def test_subagent_rows_are_complete_and_tagged(make_engine, db, until):
+    agent_input = {"subagent_type": "part-researcher", "description": "TPS62133", "prompt": "q"}
+    engine, _ = await make_engine(lambda item: [
+        Text("Let me research. "),
+        Emit(ToolUse(id="a1", name="Agent", input=agent_input)),
+        Emit(SubagentText(parent_tool_use_id="a1", text="Searching the web")),
+        Emit(ToolUse(id="w1", name="Write", parent_tool_use_id="a1",
+                     input={"file_path": "docs/parts/TPS62133/notes.md", "content": "x" * 5000})),
+        Emit(ToolResultEvt(id="w1", content="y" * 9000, parent_tool_use_id="a1")),
+        Emit(ToolResultEvt(id="a1", content="TPS62133 summary")),
+        Text("Done."),
+    ])
+    await engine.submit_ex("c", "research it", [])
+    await until(lambda: not engine.is_busy and engine.current_run_id is None)
+    rows, _ = await MessageRepo(db).page(PID, limit=50)
+    assistant = [r for r in rows if r.role == "assistant"]
+    assert [(r.kind, r.metadata.get("parentToolUseId")) for r in assistant] == [
+        ("text", None), ("tool_use", None), ("text", "a1"), ("tool_use", "a1"),
+        ("tool_result", "a1"), ("tool_result", None), ("text", None)]
+    assert all(r.status == "done" for r in assistant)
+    assert assistant[1].metadata["name"] == "Agent" and assistant[1].metadata["input"] == agent_input
+    assert len(assistant[3].metadata["input"]["content"]) == 2000
+    assert len(assistant[4].content) == 4000
+    assert assistant[0].content == "Let me research. " and assistant[6].content == "Done."
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `cd backend && uv run pytest tests/unit/agent/test_sdk_backend.py tests/unit/agent/test_engine_subagent.py -v`
+Expected: FAIL with `ImportError: cannot import name 'SubagentText'`.
+
+- [ ] **Step 3: Write minimal implementation**
+
+`events.py`: add `parent_tool_use_id: str | None = None` as the **last**
+field of `ToolUse` and `ToolResultEvt`; add
+
+```python
+@dataclass(frozen=True)
+class SubagentText:
+    parent_tool_use_id: str
+    text: str
+```
+
+and add `SubagentText` to the `AgentEvent` union.
+
+`sdk_backend.py` (`SdkEventMapper.map`): replace the three
+`if msg.parent_tool_use_id: return out` / `if msg.parent_tool_use_id or …`
+early returns with:
+
+```python
+        parent = getattr(msg, "parent_tool_use_id", None)
+        if parent:
+            if isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, ToolUseBlock):
+                        out.append(ToolUse(id=block.id, name=block.name, input=dict(block.input),
+                                           parent_tool_use_id=parent))
+                    elif isinstance(block, TextBlock) and block.text.strip():
+                        out.append(SubagentText(parent_tool_use_id=parent, text=block.text))
+                self._add_subagent_usage(msg)   # no-op unless spike 1A h5 requires summing
+            elif isinstance(msg, UserMessage) and not isinstance(msg.content, str):
+                for block in msg.content:
+                    if isinstance(block, ToolResultBlock):
+                        text, _images = _tool_result_content(block.content)
+                        out.append(ToolResultEvt(id=block.tool_use_id, content=text,
+                                                 is_error=bool(block.is_error),
+                                                 parent_tool_use_id=parent))
+            return out   # sub-agent StreamEvents and anything else: ignored
+```
+
+placed right after the `SessionId` handling and before the `StreamEvent`
+branch. `_add_subagent_usage` accumulates into `self._sub_usage` (reset when a
+`ResultMessage` is mapped) only if 1A h5 showed that the result usage excludes
+sub-agent tokens; otherwise implement it as a no-op and delete the call.
+
+`engine.py` (`_on_event`, inside the lock), before the existing `ToolUse`
+branch:
+
+```python
+            if isinstance(ev, SubagentText) or (
+                isinstance(ev, ToolUse | ToolResultEvt) and ev.parent_tool_use_id
+            ):
+                await self._insert_subagent(ev)
+                return
+```
+
+(add `SubagentText` to the engine's `copperchat.agent.events` import) and the
+helpers:
+
+```python
+# module level in engine.py
+_SUB_INPUT_MAX = 2000
+_SUB_RESULT_MAX = 4000
+
+
+def _clip(value: Any) -> Any:
+    if isinstance(value, str):
+        return value[:_SUB_INPUT_MAX]
+    if isinstance(value, dict):
+        return {k: _clip(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_clip(v) for v in value]
+    return value
+
+
+# RunEngine method
+    async def _insert_subagent(self, ev: SubagentText | ToolUse | ToolResultEvt) -> None:
+        parent = ev.parent_tool_use_id
+        if isinstance(ev, SubagentText):
+            await self._insert(role="assistant", kind="text", content=ev.text,
+                               metadata={"parentToolUseId": parent})
+        elif isinstance(ev, ToolUse):
+            await self._insert(role="assistant", kind="tool_use", content=ev.name,
+                               metadata={"parentToolUseId": parent, "toolUseId": ev.id,
+                                         "name": ev.name, "input": _clip(ev.input)})
+        else:
+            await self._insert(role="assistant", kind="tool_result",
+                               content=ev.content[:_SUB_RESULT_MAX],
+                               metadata={"parentToolUseId": parent, "toolUseId": ev.id,
+                                         "isError": ev.is_error, "images": []})
+```
+
+(`_insert` defaults to `status="done"`; it does not touch the open segment.)
+
+`protocol-fixtures/message.json`: add to `valid` a sub-agent row:
+
+```json
+{"type": "message", "projectId": "a1b2c3d4e5f6", "message": {"id": 46, "projectId": "a1b2c3d4e5f6", "clientMessageId": null, "runId": "r1", "role": "assistant", "kind": "tool_use", "content": "WebSearch", "status": "done", "metadata": {"parentToolUseId": "a1", "toolUseId": "w1", "name": "WebSearch", "input": {"query": "TPS62133 datasheet"}}, "createdAt": "2026-10-15T12:00:02.000Z"}}
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `cd backend && uv run pytest tests/unit/agent -v`
+Expected: all passed (including the existing mapper tests, which never set
+`parent_tool_use_id`).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add backend/src/copperchat/agent/events.py backend/src/copperchat/agent/sdk_backend.py backend/src/copperchat/agent/engine.py protocol-fixtures/message.json backend/tests/unit/agent/test_sdk_backend.py backend/tests/unit/agent/test_engine_subagent.py
+git commit -m "feat: carry sub-agent messages (parent_tool_use_id) as tagged chat rows" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -4841,6 +5077,8 @@ git commit -m "feat: per-project agent runtime wired into the app" -m "Co-Author
 - §10 (rate limit, usage): `rate_limit_state`, parking, auto-resume after restart, `rate-limited` and `usage` frames, `runs.usage` (5.1, 5.11, 5.13).
 - §11 (errors): KiCad failure mid-turn ends the turn with an error row while the queue continues (5.5, 5.11); structured tool errors (5.5); invalid frames → `error` with `projectId: null` when unknown (5.12).
 - Review Focus 1: Task 5.2 (repo) and Task 5.9 (`test_retransmitted_client_message_id_is_one_turn`).
+- §8 (part research as SDK sub-agent, owner decision 2026-10-16): sub-agent messages with `parent_tool_use_id` become tagged complete rows; interrupt and usage cover them (5.11b). The `Agent` tool itself is enabled in Phase 8.
+- KiCad failure mid-turn: the engine posts the **only** "KiCad stopped responding" error row (`metadata.code = "kicad_unavailable"`); Phase 7's recovery hook does not post a second one for `kicad_failed` turns.
 
 **Deviations / decisions to confirm:**
 - `authenticate_connection` is `async` (it must await `user_from_cookie`); the earlier cross-phase list wrote it without `async`.

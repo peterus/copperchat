@@ -1,6 +1,6 @@
 # Phase 7: History, Git and Recovery
 
-> **Cross-phase corrections apply:** see index § "Cross-phase corrections" (X2, X4, X17); they supersede conflicting code in this file.
+> **Cross-phase corrections apply:** see index § "Cross-phase corrections" (X2, X4, X17, X18); they supersede conflicting code in this file.
 
 **Goal:** Per-turn snapshots with undo, autosave + view refresh at turn end, external-change detection before every turn, crash recovery with a restore offer, read-only git tools for the agent, and the History/Git panels in the frontend.
 
@@ -985,6 +985,8 @@ class HistoryHooks(RunHooks):
 
     async def on_turn_end(self, turn: TurnInfo, outcome: TurnOutcome) -> None:
         if outcome.kicad_failed:
+            # The engine (Phase 5) already posted the "KiCad stopped responding" error row
+            # for this turn; posting it here again would duplicate it.
             await self._recover(turn)
             return
         docs: set[DocKind] = set(outcome.changed_docs)
@@ -1000,12 +1002,15 @@ class HistoryHooks(RunHooks):
             await self.svc.publish_view(self.project, session, docs)
         except KicadUnavailable as exc:
             log.warning("autosave failed: %s", exc)
+            # Not a kicad_failed turn: the engine has posted nothing, so report the failed save.
+            await self.engine.post_error(
+                "Autosave failed because KiCad stopped responding. The KiCad API server was "
+                "restarted; the design is at its last saved state.", {"code": "autosave_failed"})
             await self._recover(turn)
 
     async def _recover(self, turn: TurnInfo) -> None:
-        await self.engine.post_error(
-            "KiCad stopped responding during this turn. The KiCad API server was restarted; "
-            "the design is at its last saved state.", {"code": "kicad_unavailable"})
+        """Restart KiCad if needed and offer the turn's snapshot. Never posts the
+        "KiCad stopped responding" row itself — the engine owns that (index X18)."""
         try:
             await self._session()
         except KicadUnavailable as exc:
@@ -1152,7 +1157,7 @@ async def test_crash_mid_turn_posts_error_and_restore_offer(env, request) -> Non
     t = turn("run-9")
     await _crash_turn(hooks, session, server, t)
 
-    assert engine.errors and engine.errors[0][1] == {"code": "kicad_unavailable"}
+    assert engine.errors == []        # the engine posts the only "KiCad stopped responding" row
     snap = (await svc.store(project).list())[0]
     assert engine.notices[-1][1] == {"action": "restore", "snapshotId": snap.id}
     assert saved == []                                       # no autosave of a broken turn
@@ -1168,7 +1173,8 @@ async def test_crash_without_snapshot_posts_only_error(env, request) -> None:  #
     server.crash()
     await hooks.on_turn_end(t, TurnOutcome(reason="error", changed_docs=frozenset(),
                                            mutated=False, kicad_failed=True))
-    assert engine.errors and not any(m and m.get("action") == "restore" for _, m in engine.notices)
+    assert engine.errors == []
+    assert not any(m and m.get("action") == "restore" for _, m in engine.notices)
 
 
 def session_server(request):  # type: ignore[no-untyped-def]
@@ -1179,11 +1185,11 @@ def session_server(request):  # type: ignore[no-untyped-def]
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cd backend && uv run pytest tests/unit/test_crash_recovery.py -q`
-Expected (Task 7.3 implemented): PASS. To confirm the test has teeth, temporarily make `_recover` return immediately; expected FAIL `assert engine.errors` (empty list). Restore it.
+Expected (Task 7.3 implemented): PASS. To confirm the test has teeth, temporarily make `_recover` return immediately; expected FAIL on the restore-notice assertion (`engine.notices` is empty). Restore it. Also temporarily add a `post_error("KiCad stopped responding…")` at the top of `_recover`; expected FAIL `assert engine.errors == []`. Remove it.
 
 - [ ] **Step 3: Write minimal implementation**
 
-No new code beyond Task 7.3's `_recover`: it posts the error row (`post_error`, code `kicad_unavailable`), ensures a session is running (`svc.session_for` reopens if the restart inside `KicadSession.call` left none), and posts the restore offer when `latest_for_run(run_id)` finds a snapshot. Autosave is skipped for `kicad_failed` turns, so the next turn starts from the last autosaved state.
+No new code beyond Task 7.3's `_recover`: it does **not** post the "KiCad stopped responding" error row (Phase 5's engine already posted it, `metadata.code = "kicad_unavailable"`; index X18), ensures a session is running (`svc.session_for` reopens if the restart inside `KicadSession.call` left none), and posts the restore offer when `latest_for_run(run_id)` finds a snapshot. Autosave is skipped for `kicad_failed` turns, so the next turn starts from the last autosaved state.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -2106,4 +2112,5 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Registry provider is `"copperchat.git_tools.specs"` (index C5 text says `git_tools`; `git_tools/__init__.py` re-exports `TOOL_SPECS`, so either name works).
 - NEW route `GET /api/projects/{id}/history/{snapshotId}/preview` and NEW `app.state.history` (`HistoryService`); thumbnails are agent-view renders of the pre-turn state taken at snapshot time.
 - Assumes Phase 5's engine calls `hooks.on_first_mutation` once per turn from `ToolContext.on_mutation`, sets `TurnOutcome.kicad_failed` from `on_kicad_unavailable`, and awaits `on_turn_start` before releasing the message so `add_agent_note` reaches the same turn.
+- For `kicad_failed` turns the engine (Phase 5) posts the only "KiCad stopped responding" error row; `HistoryHooks._recover` only restarts KiCad and offers the restore (index X18). An autosave failure in a turn that was not `kicad_failed` posts its own `autosave_failed` error before recovering.
 - Tasks 7.4 and 7.5 are test-only tasks because their logic lives in `hooks.py` (Task 7.3); each documents how to see the test fail.

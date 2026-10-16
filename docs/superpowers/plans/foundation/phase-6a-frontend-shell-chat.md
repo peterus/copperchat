@@ -1,6 +1,6 @@
 # Phase 6A: Frontend shell + chat
 
-> **Cross-phase corrections apply:** see index § "Cross-phase corrections" (X16); they supersede conflicting code in this file.
+> **Cross-phase corrections apply:** see index § "Cross-phase corrections" (X16, X19); they supersede conflicting code in this file.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -23,7 +23,7 @@
 - Create: `frontend/src/stores/auth.ts`, `frontend/src/stores/projects.ts`, `frontend/src/stores/chat.ts`, `frontend/src/stores/composer.ts`, `frontend/src/stores/ui.ts`
 - Create: `frontend/src/stores/chat.ordering.test.ts`, `frontend/src/stores/chat.reconnect.test.ts`, `frontend/src/stores/composer.test.ts`, `frontend/src/stores/ui.test.ts`, `frontend/src/stores/projects.test.tsx`
 - Create: `frontend/src/hooks/useChat.ts`, `frontend/src/hooks/useMediaQuery.ts`, `frontend/src/hooks/useKeyboardInset.ts`
-- Create: `frontend/src/components/chat/MessageList.tsx`, `MessageList.test.tsx`, `RunControls.tsx`, `RunControls.test.tsx`, `MessageItem.tsx`, `MessageItem.test.tsx`, `Markdown.tsx`, `Lightbox.tsx`, `Composer.tsx`, `Composer.test.tsx`, `composerSlots.ts`, `UsageIndicator.tsx`, `RateLimitBanner.tsx`, `ChatPanel.tsx`, `ChatPanel.test.tsx`, `usage.test.tsx` (all under `frontend/src/components/chat/`)
+- Create: `frontend/src/components/chat/MessageList.tsx`, `MessageList.test.tsx`, `RunControls.tsx`, `RunControls.test.tsx`, `MessageItem.tsx`, `MessageItem.test.tsx`, `Markdown.tsx`, `Lightbox.tsx`, `subagent.ts`, `SubagentCard.tsx`, `SubagentCard.test.tsx`, `Composer.tsx`, `Composer.test.tsx`, `composerSlots.ts`, `UsageIndicator.tsx`, `RateLimitBanner.tsx`, `ChatPanel.tsx`, `ChatPanel.test.tsx`, `usage.test.tsx` (all under `frontend/src/components/chat/`)
 - Create: `frontend/src/components/PoweredBy.tsx`, `frontend/src/components/icons.tsx`, `frontend/src/components/viewer/ViewerSlot.tsx`
 - Create: `frontend/src/layouts/panels.ts`, `frontend/src/layouts/panels.test.tsx`, `frontend/src/layouts/ProjectLayout.tsx`, `frontend/src/layouts/ProjectLayout.test.tsx`, `frontend/src/panels/index.ts`
 - Create: `frontend/src/pages/LoginPage.tsx`, `frontend/src/pages/LoginPage.test.tsx`, `frontend/src/pages/RequireAuth.tsx`, `frontend/src/pages/ProjectPickerPage.tsx`, `frontend/src/pages/ProjectPage.tsx`, `frontend/src/pages/SettingsPage.tsx`, `frontend/src/pages/SettingsPage.test.tsx`, `frontend/src/pages/settings/NotificationsSection.tsx`
@@ -37,6 +37,7 @@
 - Chat store tests cover: subscribe only after the HTTP baseline; double mount → one fetch, one subscribe; replay overlap and out-of-order frames → one row per id in id order; optimistic row replaced by server row with the same `clientMessageId` (also on retransmit); older pages via `before=oldestId`; failed older load resets `loadingOlder`; reconnect resets `runActive` and resubscribes from `lastSeenId`; half-streamed rows healed by HTTP merge; unknown-id delta triggers heal; `visibilitychange → visible` heals.
 - MessageList tests cover element-based scroll anchoring on prepend, stick-to-bottom within 80 px, "↓ newest" pill, top-sentinel load gated on not-stuck-to-bottom; RunControls test covers "stuck Stop" after a reconnect that swallowed `run-finished`.
 - UI never says "Claude Code"; Login and Settings show "Powered by Claude".
+- Sub-agent rows (`metadata.parentToolUseId`, Phase 5 Task 5.11b) are not shown as top-level chat rows: they are nested under the main agent's `Agent` tool call as a collapsible card ("Part research: <MPN>" for `part-researcher`) with live steps (searches, fetched pages, files saved, notes written, failures) and the final summary (the `Agent` call's `tool_result`); open while running, collapsed when done; "stopped" when the run ended without a result (interrupt). Usage needs no extra UI: the `usage` frame already covers sub-agent tokens (Phase 5).
 - `.github/workflows/ci.yml` has a `frontend` job (Node 20, `npm ci`, typecheck, lint, vitest, build). Playwright is not run in CI.
 
 **Verification commands:**
@@ -2986,6 +2987,221 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
+### Task 6A.7b: Sub-agent card (nested "Part research: <MPN>")
+
+Owner decision 2026-10-16: the part researcher runs as an SDK sub-agent; its
+messages arrive in the same stream and are persisted by Phase 5 (Task 5.11b)
+as complete rows with `metadata.parentToolUseId` = the `toolUseId` of the main
+agent's `Agent` tool call (`metadata.name` `"Agent"`, or `"Task"` on older
+CLIs). This task renders them nested under that call. It is generic (any
+`subagent_type`); `part-researcher` only gets its own title.
+
+**Files:**
+- Create: `frontend/src/components/chat/subagent.ts`, `frontend/src/components/chat/SubagentCard.tsx`
+- Test: `frontend/src/components/chat/SubagentCard.test.tsx`
+
+**Interfaces:**
+- Consumes: `MessageDTO`; metadata keys `toolUseId`, `parentToolUseId`, `name`, `input` (`{subagent_type, description, prompt}` for `Agent`), `isError`.
+- Produces (`@/components/chat/subagent`): `DELEGATION_TOOLS: ReadonlySet<string>` (`Agent`, `Task`), `isDelegation(m): boolean`, `interface SubagentGroup { steps: MessageDTO[]; result: MessageDTO | null }`, `groupSubagentRows(messages): { topLevel: MessageDTO[]; groups: Map<string, SubagentGroup> }`, `describeStep(m): string | null`, `subagentTitle(toolUse): string`; `SubagentCard({toolUse, group, runActive})`.
+
+- [ ] **Step 1: Write the failing test**
+
+`frontend/src/components/chat/SubagentCard.test.tsx`:
+```tsx
+import { fireEvent, render, screen } from '@testing-library/react';
+import { describe, expect, it } from 'vitest';
+import { row } from '@/test/fakeMessageServer';
+import { SubagentCard } from './SubagentCard';
+import { describeStep, groupSubagentRows, subagentTitle } from './subagent';
+
+const agentInput = { subagent_type: 'part-researcher', description: 'TPS62133', prompt: 'How is it laid out?' };
+const call = row(10, { kind: 'tool_use', content: 'Agent', metadata: { toolUseId: 'a1', name: 'Agent', input: agentInput } });
+const sub = (id: number, md: Record<string, unknown>, extra: Partial<Parameters<typeof row>[1]> = {}) =>
+  row(id, { kind: 'tool_use', metadata: { parentToolUseId: 'a1', ...md }, ...extra });
+const steps = [
+  row(11, { kind: 'text', content: 'Looking for the datasheet', metadata: { parentToolUseId: 'a1' } }),
+  sub(12, { toolUseId: 'w1', name: 'WebSearch', input: { query: 'TPS62133 datasheet' } }),
+  sub(13, { toolUseId: 'd1', name: 'mcp__parts__download_datasheet', input: { mpn: 'TPS62133', url: 'https://ti.com/x.pdf' } }),
+  sub(14, { toolUseId: 'n1', name: 'Write', input: { file_path: 'docs/parts/TPS62133/notes.md', content: '…' } }),
+  row(15, { kind: 'tool_result', content: 'ok', metadata: { parentToolUseId: 'a1', toolUseId: 'n1', isError: false } }),
+];
+const result = row(16, { kind: 'tool_result', content: '**3 MHz buck**, notes in docs/parts/TPS62133/notes.md', metadata: { toolUseId: 'a1', isError: false } });
+
+describe('groupSubagentRows', () => {
+  it('moves sub-agent rows and the delegation result under the Agent call', () => {
+    const before = row(9, { content: 'Let me check.' });
+    const after = row(17, { content: 'Done.' });
+    const { topLevel, groups } = groupSubagentRows([before, call, ...steps, result, after]);
+    expect(topLevel.map((m) => m.id)).toEqual([9, 10, 17]);
+    expect(groups.get('a1')?.steps.map((m) => m.id)).toEqual([11, 12, 13, 14, 15]);
+    expect(groups.get('a1')?.result?.id).toBe(16);
+  });
+
+  it('keeps orphans (parent call not loaded yet) at top level', () => {
+    const { topLevel, groups } = groupSubagentRows([steps[1]!]);
+    expect(topLevel.map((m) => m.id)).toEqual([12]);
+    expect(groups.size).toBe(0);
+  });
+});
+
+describe('describeStep / subagentTitle', () => {
+  it('labels researcher steps', () => {
+    expect(subagentTitle(call)).toBe('Part research: TPS62133');
+    expect(subagentTitle(row(1, { kind: 'tool_use', metadata: { name: 'Agent', input: { subagent_type: 'x' } } }))).toBe('Sub-agent: x');
+    expect(steps.map(describeStep)).toEqual([
+      'Looking for the datasheet',
+      'Searched: TPS62133 datasheet',
+      'Datasheet saved: docs/parts/TPS62133/datasheet.pdf',
+      'Notes written: docs/parts/TPS62133/notes.md',
+      null,
+    ]);
+    expect(describeStep(row(2, { kind: 'tool_result', content: 'denied: outside docs/parts', metadata: { parentToolUseId: 'a1', isError: true } })))
+      .toBe('Failed: denied: outside docs/parts');
+  });
+});
+
+describe('SubagentCard', () => {
+  it('is open with live steps while running, then collapsed with the summary', () => {
+    const { rerender } = render(<SubagentCard toolUse={call} group={{ steps: steps.slice(0, 2), result: null }} runActive />);
+    const summary = screen.getByText('Part research: TPS62133');
+    expect(summary.closest('details')).toHaveAttribute('open');
+    expect(screen.getByText('running')).toBeInTheDocument();
+    expect(screen.getByText('Searched: TPS62133 datasheet')).toBeInTheDocument();
+
+    rerender(<SubagentCard toolUse={call} group={{ steps, result }} runActive />);
+    expect(screen.getByText('done')).toBeInTheDocument();
+    expect(screen.getByText('Part research: TPS62133').closest('details')).not.toHaveAttribute('open');
+    fireEvent.click(screen.getByText('Part research: TPS62133'));
+    expect(screen.getByText('3 MHz buck').tagName).toBe('STRONG');
+    expect(screen.getByText('Notes written: docs/parts/TPS62133/notes.md')).toBeInTheDocument();
+  });
+
+  it('shows "stopped" when the run ended without a result (interrupt)', () => {
+    render(<SubagentCard toolUse={call} group={{ steps: steps.slice(0, 1), result: null }} runActive={false} />);
+    expect(screen.getByText('stopped')).toBeInTheDocument();
+  });
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `cd frontend && npx vitest run src/components/chat/SubagentCard.test.tsx`
+Expected: FAIL — `./SubagentCard` not found.
+
+- [ ] **Step 3: Write minimal implementation**
+
+`frontend/src/components/chat/subagent.ts`:
+```ts
+import type { MessageDTO } from '@/protocol/frames';
+
+export const DELEGATION_TOOLS: ReadonlySet<string> = new Set(['Agent', 'Task']);
+
+export interface SubagentGroup { steps: MessageDTO[]; result: MessageDTO | null }
+
+const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
+const input = (m: MessageDTO): Record<string, unknown> =>
+  m.metadata.input && typeof m.metadata.input === 'object' ? (m.metadata.input as Record<string, unknown>) : {};
+
+export function isDelegation(m: MessageDTO): boolean {
+  return m.kind === 'tool_use' && !str(m.metadata.parentToolUseId)
+    && DELEGATION_TOOLS.has(str(m.metadata.name) ?? '') && !!str(m.metadata.toolUseId);
+}
+
+/** Splits sub-agent rows out of the flat history; rows whose delegation call is not loaded stay top-level. */
+export function groupSubagentRows(messages: MessageDTO[]): { topLevel: MessageDTO[]; groups: Map<string, SubagentGroup> } {
+  const groups = new Map<string, SubagentGroup>();
+  for (const m of messages) if (isDelegation(m)) groups.set(str(m.metadata.toolUseId)!, { steps: [], result: null });
+  const topLevel: MessageDTO[] = [];
+  for (const m of messages) {
+    const parent = str(m.metadata.parentToolUseId);
+    const own = str(m.metadata.toolUseId);
+    if (parent && groups.has(parent)) groups.get(parent)!.steps.push(m);
+    else if (!parent && m.kind === 'tool_result' && own && groups.has(own)) groups.get(own)!.result = m;
+    else if (!parent && m.kind === 'image' && own && groups.has(own)) continue;
+    else topLevel.push(m);
+  }
+  return { topLevel, groups };
+}
+
+export function subagentTitle(toolUse: MessageDTO): string {
+  const i = input(toolUse);
+  const type = str(i.subagent_type) ?? 'task';
+  if (type === 'part-researcher') return `Part research: ${str(i.description) ?? 'part'}`;
+  return `Sub-agent: ${type}`;
+}
+
+export function describeStep(m: MessageDTO): string | null {
+  if (m.kind === 'text') return m.content.trim().slice(0, 300) || null;
+  if (m.kind === 'tool_result') return m.metadata.isError === true ? `Failed: ${m.content.slice(0, 160)}` : null;
+  if (m.kind !== 'tool_use') return null;
+  const i = input(m);
+  const path = str(i.file_path) ?? '';
+  switch (str(m.metadata.name)) {
+    case 'WebSearch': return `Searched: ${str(i.query) ?? ''}`;
+    case 'WebFetch': return `Fetched: ${str(i.url) ?? ''}`;
+    case 'Read': return `Read: ${path}`;
+    case 'Glob': return `Looked in: ${str(i.path) ?? '.'}`;
+    case 'Write':
+    case 'Edit': return path.endsWith('/notes.md') || path === 'notes.md' ? `Notes written: ${path}` : `Saved: ${path}`;
+    case 'mcp__parts__download_datasheet': return `Datasheet saved: docs/parts/${str(i.mpn) ?? '?'}/datasheet.pdf`;
+    default: return str(m.metadata.name);
+  }
+}
+```
+
+`frontend/src/components/chat/SubagentCard.tsx`:
+```tsx
+import { useState } from 'react';
+import type { MessageDTO } from '@/protocol/frames';
+import { Markdown } from './Markdown';
+import { describeStep, subagentTitle, type SubagentGroup } from './subagent';
+
+export function SubagentCard({ toolUse, group, runActive }: { toolUse: MessageDTO; group: SubagentGroup; runActive: boolean }) {
+  const status = group.result ? (group.result.metadata.isError === true ? 'failed' : 'done') : runActive ? 'running' : 'stopped';
+  const [userOpen, setUserOpen] = useState<boolean | null>(null);
+  const open = userOpen ?? status === 'running';
+  const lines = group.steps.map((m) => [m.id, describeStep(m)] as const).filter(([, t]) => t !== null);
+  return (
+    <details open={open} data-role="assistant" data-subagent={toolUse.metadata.toolUseId as string}
+      className="rounded border border-border bg-surface px-3 py-2 text-sm">
+      {/* Controlled via the summary click only (no onToggle: the async toggle event from
+          the initial auto-open would otherwise pin the card open after it finished). */}
+      <summary className="flex cursor-pointer select-none items-center gap-2"
+        onClick={(e) => { e.preventDefault(); setUserOpen(!open); }}>
+        <span className="font-medium">{subagentTitle(toolUse)}</span>
+        <span className={`rounded px-1.5 text-xs ${status === 'failed' ? 'bg-danger/15 text-danger' : 'bg-fg/10 text-muted'}`}>{status}</span>
+        {status === 'running' && <span aria-label="working" className="inline-block h-2 w-2 animate-pulse rounded-full bg-accent" />}
+        <span className="ml-auto text-xs text-muted">{lines.length} steps</span>
+      </summary>
+      <ol className="mt-2 space-y-1 border-l border-border pl-3 text-xs text-muted">
+        {lines.map(([id, text]) => <li key={id} className="break-words">{text}</li>)}
+      </ol>
+      {group.result && (
+        <div className="mt-2 border-t border-border pt-2">
+          <p className="mb-1 text-xs font-medium text-muted">Summary</p>
+          <Markdown text={group.result.content} />
+        </div>
+      )}
+    </details>
+  );
+}
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `cd frontend && npx vitest run src/components/chat/SubagentCard.test.tsx && npm run typecheck && npm run lint`
+Expected: 5 tests pass.
+
+- [ ] **Step 5: Commit**
+```bash
+git add frontend/src/components/chat/subagent.ts frontend/src/components/chat/SubagentCard.tsx frontend/src/components/chat/SubagentCard.test.tsx
+git commit -m "feat: nested sub-agent card with live steps and summary
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+```
+
+---
+
 ### Task 6A.8: Composer, composer store, attachment slot, keyboard pinning
 
 **Files:**
@@ -3563,7 +3779,11 @@ import { Composer } from './Composer';
 import { MessageItem } from './MessageItem';
 import { MessageList } from './MessageList';
 import { RateLimitBanner } from './RateLimitBanner';
+import { SubagentCard } from './SubagentCard';
+import { groupSubagentRows, isDelegation, type SubagentGroup } from './subagent';
 import { UsageIndicator } from './UsageIndicator';
+
+const NO_STEPS: SubagentGroup = { steps: [], result: null };
 
 export function ChatPanel({ projectId, readOnly = false }: { projectId: string; readOnly?: boolean }) {
   const chat = useChat(projectId);
@@ -3572,7 +3792,16 @@ export function ChatPanel({ projectId, readOnly = false }: { projectId: string; 
     () => chat.messages.filter((m) => !(m.id > 0 && m.role === 'user' && m.status === 'queued')),
     [chat.messages],
   );
-  const renderItem = useCallback((m: MessageDTO) => <MessageItem message={m} />, []);
+  // Sub-agent rows are nested under their Agent call (Task 6A.7b), not listed top-level.
+  const { topLevel, groups } = useMemo(() => groupSubagentRows(visible), [visible]);
+  const { runActive } = chat;
+  const renderItem = useCallback(
+    (m: MessageDTO) =>
+      isDelegation(m)
+        ? <SubagentCard toolUse={m} group={groups.get(m.metadata.toolUseId as string) ?? NO_STEPS} runActive={runActive} />
+        : <MessageItem message={m} />,
+    [groups, runActive],
+  );
   const { loadOlder } = chat;
   const onLoadOlder = useCallback(() => void loadOlder(), [loadOlder]);
 
@@ -3590,7 +3819,7 @@ export function ChatPanel({ projectId, readOnly = false }: { projectId: string; 
           Read-only: this project is open in KiCad — close it there to let CopperChat save.
         </p>
       )}
-      <MessageList messages={visible} hasMoreOlder={chat.hasMoreOlder} loadingOlder={chat.loadingOlder}
+      <MessageList messages={topLevel} hasMoreOlder={chat.hasMoreOlder} loadingOlder={chat.loadingOlder}
         onLoadOlder={onLoadOlder} renderItem={renderItem} />
       <UsageIndicator usage={chat.usage} />
       <Composer projectId={projectId} runActive={chat.runActive} queued={chat.queued} disabled={!chat.loaded}
@@ -4703,6 +4932,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - §5.2: every bullet has a dedicated test — baseline-then-subscribe + in-flight guard (6A.4), older pages with `before` + failed-load reset (6A.4), element anchoring + top sentinel gated on not-stuck + 80 px stick + pill (6A.6), keyed by id / negative optimistic ids / immutable updates / id-order insert (6A.4), reconnect + visibility heal + unknown-delta heal (6A.5), singleton socket with 0.5–15 s backoff, queued outgoing frames, heartbeat (6A.2).
 - §11 chat-pipeline bug classes: page/replay ordering, duplicate sends (retransmit), reconnect mid-run, stuck Stop, half-streamed heal, scroll anchoring — Review Focus 1 tests live in 6A.4–6A.6.
 - §12 branding: "Powered by Claude" on Login/Settings/picker; Settings test asserts no "Claude Code".
+- §8 part research (owner decision 2026-10-16): sub-agent rows nested as a collapsible "Part research: <MPN>" card under the `Agent` tool call, with live steps and final summary; "stopped" after an interrupt (6A.7b, wired in 6A.9).
 
 **Deviations / additions:**
 - Retransmission: pending optimistic `send` frames are not queued in the socket; they are (re)sent by the chat store on every `open`/`resumed`, relying on the server's `clientMessageId` dedupe (spec §5 step 1). Avoids a double send from queue flush + resend.

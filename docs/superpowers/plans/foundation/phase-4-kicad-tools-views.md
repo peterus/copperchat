@@ -1278,7 +1278,7 @@ def setup(make_settings: Callable[..., Settings]) -> tuple[TestClient, str, Path
     settings = make_settings()
     d = settings.projects_root / "demo"
     d.mkdir(parents=True)
-    (d / "demo.kicad_pro").touch()   # filename marker only (owner review requested)
+    (d / "demo.kicad_pro").touch()   # filename marker only (approved by owner 2026-10-16)
     project = discover_projects(settings.projects_root)[0]
     server = FakeServer()
     app = create_app(settings, launcher=FakeLauncher(server),
@@ -2245,7 +2245,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   (structured errors with suggestions; `KicadUnavailable` on server death), §11
   (real api-server tests, no KiCad mocks for tools, snapshot tests, fixtures in
   repo). Review Focus 2 → Task 4.2. C6, C8 view routes implemented.
-- **Deviations / owner review requested:**
+- **Deviations (for the coordinator):**
   - Providers registered as `copperchat.kicad_tools.specs` / `copperchat.views.specs`
     (index C5 names the packages) — coordinator to update the index.
   - New cross-phase names: `GET /api/projects/{id}/view/sheets/{file}` (sub-sheets
@@ -2255,6 +2255,6 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
     spike 1C records the pixel→mm mapping (`PIXEL_MAPPING_KNOWN`).
   - PNG export uses the `kicad-cli … export svg` + cairosvg fallback unless 1C
     sets `API_PNG_EXPORT`.
-  - Routes unit test uses an empty `*.kicad_pro` marker (owner-provisional).
+  - Routes unit test uses an empty `*.kicad_pro` marker (approved by owner 2026-10-16).
   - New public `KicadSession.settings: Settings` property (Task 4.1) — tools and
     renderers need `kicad_cli` / timeouts from the session.
