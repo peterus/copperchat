@@ -279,7 +279,6 @@ export function createChatStore(deps: ChatDeps) {
 
     async function load(projectId: string): Promise<void> {
       if (!get().chats[projectId]) set({ chats: { ...get().chats, [projectId]: emptyChat() } });
-      deps.ws.ensure();
       try {
         const page = await deps.fetchPage(projectId, { limit: PAGE_SIZE });
         patch(projectId, (c) => {
@@ -318,6 +317,8 @@ export function createChatStore(deps: ChatDeps) {
       chats: {},
 
       open: (projectId) => {
+        // Always (re)enable the socket: after a logout/4401 the client stays down until ensure().
+        deps.ws.ensure();
         if (get().chats[projectId]?.loaded) return Promise.resolve();
         const inflight = opening.get(projectId);
         if (inflight) return inflight;

@@ -46,6 +46,14 @@ describe('chat store: baseline then subscribe', () => {
     expect(ws.framesOfType('subscribe')).toHaveLength(1);
   });
 
+  it('opening an already-loaded chat still ensures the socket (it stays down after a logout until ensure)', async () => {
+    await store.getState().open(P);
+    const calls = ws.ensureCalls;
+    await store.getState().open(P);
+    expect(ws.ensureCalls).toBe(calls + 1);
+    expect(server.messageCalls()).toHaveLength(1);
+  });
+
   it('defers subscribe to the connection handler when the socket is not open yet', async () => {
     ws.open = false;
     await store.getState().open(P);
