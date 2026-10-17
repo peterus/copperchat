@@ -1,0 +1,32 @@
+diff --git a/src/kicanvas/elements/common/viewer.ts b/src/kicanvas/elements/common/viewer.ts
+index a46dd06..aecb52d 100644
+--- a/src/kicanvas/elements/common/viewer.ts
++++ b/src/kicanvas/elements/common/viewer.ts
+@@ -6,7 +6,10 @@
+ 
+ import { attribute, html } from "../../../base/web-components";
+ import { KCUIElement } from "../../../kc-ui";
+-import { KiCanvasLoadEvent } from "../../../viewers/base/events";
++import {
++    KiCanvasLoadEvent,
++    KiCanvasSelectEvent,
++} from "../../../viewers/base/events";
+ import type { Viewer } from "../../../viewers/base/viewer";
+ import { Preferences, WithPreferences } from "../../preferences";
+ import type { ProjectPage } from "../../project";
+@@ -43,6 +46,15 @@ export abstract class KCViewerElement<
+                     this.dispatchEvent(new KiCanvasLoadEvent());
+                 }),
+             );
++
++            // CopperChat: re-dispatch selection as a bubbling, composed DOM
++            // event so hosts can listen on <kicanvas-embed> (or document)
++            // without walking the shadow DOM to reach the Viewer.
++            this.addDisposable(
++                this.viewer.addEventListener(KiCanvasSelectEvent.type, (e) => {
++                    this.dispatchEvent(new KiCanvasSelectEvent(e.detail));
++                }),
++            );
+         })();
+     }
+ 

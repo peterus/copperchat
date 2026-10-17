@@ -34,8 +34,11 @@ def test_open_writes_snapshots_and_lists_view_files(make_settings: Callable[...,
         client.post("/api/auth/login", json=GOOD)
         body = client.post(f"/api/projects/{pid}/open").json()
         assert body["viewFiles"] == {"sch": ["ecc83-pp.kicad_sch"], "pcb": ["ecc83-pp.kicad_pcb"]}
+        # 6B large-board guard: byte size of every view file
+        assert set(body["viewBytes"]) == {"ecc83-pp.kicad_sch", "ecc83-pp.kicad_pcb"}
         r = client.get(f"/api/projects/{pid}/view/pcb")  # X1: 200 right after open
         assert r.status_code == 200 and r.content.startswith(b"(kicad_pcb")
+        assert body["viewBytes"]["ecc83-pp.kicad_pcb"] == len(r.content)
         etag = r.headers["etag"]
         assert etag.startswith('"0.') and r.headers["cache-control"] == "no-cache"
         again = client.get(f"/api/projects/{pid}/view/pcb", headers={"If-None-Match": etag})
@@ -105,6 +108,7 @@ def test_open_survives_a_failing_snapshot(make_settings: Callable[..., Settings]
         r = client.post(f"/api/projects/{pid}/open")
         assert r.status_code == 200
         assert r.json()["viewFiles"] == {"sch": [], "pcb": []}
+        assert r.json()["viewBytes"] == {}
 
 
 def test_open_survives_a_kicad_save_error(
