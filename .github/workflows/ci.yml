@@ -133,6 +133,8 @@ jobs:
           cache-to: type=gha,scope=app,mode=min
       - name: No token → non-zero exit with the setup-token hint
         run: bash scripts/e2e-token-missing.sh copperchat:ci
+      - name: Runtime binaries (pdftoppm for PDF reads) on PATH for the app user
+        run: bash scripts/app-image-tools.sh copperchat:ci
       - name: Start the app with the fake agent and the ecc83 fixture
         run: |
           mkdir -p "$RUNNER_TEMP/projects" "$RUNNER_TEMP/data"
