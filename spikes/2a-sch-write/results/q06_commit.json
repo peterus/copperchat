@@ -4,7 +4,7 @@
     {
       "name": "staged_create_response_has_uuid",
       "ok": true,
-      "evidence": "('bba73785', 'd8012282')"
+      "evidence": "('74ee6df0', '1a2e6377')"
     },
     {
       "name": "staged_create_invisible_by_id",
@@ -24,7 +24,7 @@
     {
       "name": "after_push_visible",
       "ok": true,
-      "evidence": "['bba73785', 'c1c96819', 'd8012282']"
+      "evidence": "['0a5f5210', '1a2e6377', '74ee6df0']"
     },
     {
       "name": "staged_delete_still_visible_before_push",
@@ -35,6 +35,11 @@
       "name": "after_push_delete_gone",
       "ok": true,
       "evidence": ""
+    },
+    {
+      "name": "update_of_missing_item_raises",
+      "ok": false,
+      "evidence": "no exception; kipy returned 1 items (per-item ISC_NONEXISTENT is dropped silently)"
     },
     {
       "name": "drop_commit_document_unchanged",
@@ -99,7 +104,7 @@
     {
       "name": "recreate_with_original_uuids",
       "ok": true,
-      "evidence": "{'missing': [], 'returned_ids': ['04248595', '20abd9a1', '4c6ee771', '79d21f50', 'c37c8e71', 'e1252d7b', 'f6b76e44', 'fd8667e9']}"
+      "evidence": "{'missing': [], 'returned_ids': ['089bbe69', '0e61d2bb', '199497fb', '25ed72e7', '40d87545', '4aa56931', '5904c1ea', '849b2b53']}"
     },
     {
       "name": "recreated_content_equal",
@@ -126,16 +131,16 @@
     "staged_update_visible_before_push": true,
     "corner_junction_dropped_on_create": true,
     "pre_images": {
-      "c37c8e71": "SchematicSymbolInstance",
-      "04248595": "SchematicSymbolInstance",
-      "e1252d7b": "SchematicLine",
-      "4c6ee771": "SchematicLine",
-      "fd8667e9": "SchematicLine",
-      "20abd9a1": "LocalLabel",
-      "f6b76e44": "NoConnectMarker",
-      "79d21f50": "GlobalLabel"
+      "089bbe69": "SchematicSymbolInstance",
+      "849b2b53": "SchematicSymbolInstance",
+      "0e61d2bb": "SchematicLine",
+      "4aa56931": "SchematicLine",
+      "25ed72e7": "SchematicLine",
+      "40d87545": "LocalLabel",
+      "5904c1ea": "NoConnectMarker",
+      "199497fb": "GlobalLabel"
     },
-    "compensate_ms": 35.3,
-    "root": "/tmp/s2a-blank-93_kkzty/blank/blank.kicad_sch"
+    "compensate_ms": 35.2,
+    "root": "/tmp/s2a-blank-711rk1vi/blank/blank.kicad_sch"
   }
 }

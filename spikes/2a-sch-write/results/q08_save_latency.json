@@ -1,0 +1,105 @@
+{
+  "question": "q08_save_latency",
+  "checks": [
+    {
+      "name": "fixture_size_100_plus_symbols",
+      "ok": true,
+      "evidence": "119 symbol unit instances, 3 sheet instances"
+    },
+    {
+      "name": "document_modified_before_save",
+      "ok": true,
+      "evidence": ""
+    },
+    {
+      "name": "new_symbol_on_shared_sheet_visible_in_other_instance",
+      "ok": false,
+      "evidence": "ampli_ht.kicad_sch has 2 instances; GetItems on the 2nd"
+    },
+    {
+      "name": "copy_without_save_finds_all_hierarchy_files",
+      "ok": false,
+      "evidence": "not on disk yet: ['extra.kicad_sch']"
+    },
+    {
+      "name": "copy_without_save_has_subsheet_edits",
+      "ok": false,
+      "evidence": "{'R299': False, 'R201': '1K', 'extra_file': False}"
+    },
+    {
+      "name": "save_plus_copy_plus_erc_under_10s",
+      "ok": true,
+      "evidence": "[2899, 2904, 2894]"
+    },
+    {
+      "name": "document_clean_after_save",
+      "ok": true,
+      "evidence": ""
+    },
+    {
+      "name": "erc_runs_on_copy",
+      "ok": true,
+      "evidence": "rc=0, 123 violations"
+    },
+    {
+      "name": "copy_has_edited_subsheet_value",
+      "ok": true,
+      "evidence": "4k7-EDITED-2"
+    },
+    {
+      "name": "copy_has_new_subsheet_symbol",
+      "ok": true,
+      "evidence": "['/ampli_ht_vertical/EDITED_NET', 'unconnected-(R299-Pad2)_1']"
+    },
+    {
+      "name": "copy_has_new_sheet_file_and_symbol",
+      "ok": true,
+      "evidence": "['ampli_ht.kicad_sch', 'complex_hierarchy.kicad_sch', 'extra.kicad_sch']"
+    },
+    {
+      "name": "shared_sheet_new_symbol_refs_after_save",
+      "ok": false,
+      "evidence": "['R299']"
+    },
+    {
+      "name": "workaround_save_revert_then_per_instance_reference",
+      "ok": true,
+      "evidence": "{'ampli_ht_vertical': ['R299'], 'ampli_ht_horizontal': ['R399']}"
+    }
+  ],
+  "notes": {
+    "timings_ms": {
+      "save": [
+        48,
+        59,
+        52
+      ],
+      "save_copy": [
+        36,
+        35,
+        35
+      ],
+      "erc": [
+        2814,
+        2810,
+        2807
+      ],
+      "total": [
+        2899,
+        2904,
+        2894
+      ]
+    },
+    "median_ms": {
+      "save": 52,
+      "save_copy": 35,
+      "erc": 2810,
+      "total": 2899
+    },
+    "files_rewritten_by_save": [
+      "ampli_ht.kicad_sch",
+      "complex_hierarchy.kicad_sch",
+      "extra.kicad_sch"
+    ]
+  }
+}

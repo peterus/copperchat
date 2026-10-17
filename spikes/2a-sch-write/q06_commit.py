@@ -80,6 +80,11 @@ def main() -> int:
         rec.check("staged_delete_still_visible_before_push", sid(w) in by_id(sch, [sid(w)]), "wire still returned")
         sch.push_commit(c, "delete")
         rec.check("after_push_delete_gone", sid(w) not in by_id(sch, [sid(w)]), "")
+        try:
+            res = sch.update_items([vis[sid(w)]])
+            rec.check("update_of_missing_item_raises", False, f"no exception; kipy returned {len(res)} item(s) and ignores the per-item status (editor.py update_items); still missing after: {sid(w) not in by_id(sch, [sid(w)])}")
+        except Exception as e:  # noqa: BLE001
+            rec.check("update_of_missing_item_raises", True, f"{type(e).__name__}: {e}")
 
         # --- drop_commit leaves the document unchanged (create + update + delete)
         before = snapshot(sch)
