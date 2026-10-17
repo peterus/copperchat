@@ -24,7 +24,15 @@ const PRIMARY = 'rounded bg-accent px-2 py-1 text-xs font-medium text-accent-fg 
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+/**
+ * Remounted per project (key): no state, pending request or post-save reload of the previous
+ * project can leak into this one (or save into it).
+ */
 export function SkillsPanel({ projectId }: PanelProps) {
+  return <SkillsPanelBody key={projectId} projectId={projectId} />;
+}
+
+function SkillsPanelBody({ projectId }: PanelProps) {
   const [skills, setSkills] = useState<SkillSummary[] | null>(null);
   const [selected, setSelected] = useState<SkillDetail | null>(null);
   const [draft, setDraft] = useState('');

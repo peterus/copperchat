@@ -51,3 +51,23 @@ async def test_unresolvable_host_refused() -> None:
     assert "does not resolve" in (
         await url_refusal("https://nope.invalid/", resolver=failing) or ""
     )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1\\x.8.8.8.8.nip.io/a",  # WHATWG: host 127.0.0.1
+        "http://ti.com\\@127.0.0.1/",
+        "http://ti.com /x",
+        "http://ti.com\t/x",
+        "http://ti.com%2f@127.0.0.1/",
+        "http://ti_com.example/",
+    ],
+)
+async def test_parser_differential_urls_refused(url: str) -> None:
+    assert await url_refusal(url, resolver=await fixed(["93.184.216.34"])) is not None
+
+
+@pytest.mark.parametrize("address", ["fec0::1", "::ffff:0:a00:1", "::ffff:0:7f00:1"])
+async def test_more_embedded_private_addresses(address: str) -> None:
+    assert await url_refusal("https://a.example/", resolver=await fixed([address])) is not None

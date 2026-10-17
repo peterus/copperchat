@@ -373,9 +373,7 @@ async def test_without_db_no_skills(settings, project) -> None:  # type: ignore[
     assert clients[0].options.tools == [] and clients[0].options.plugins == []
 
 
-async def test_research_works_without_kicad_and_interrupt_counts_usage(
-    settings, project, db
-) -> None:  # type: ignore[no-untyped-def]
+async def test_research_works_without_kicad(settings, project, db) -> None:  # type: ignore[no-untyped-def]
     from copperchat.kicad_session import KicadUnavailable
 
     def no_kicad() -> ToolContext:
@@ -415,3 +413,82 @@ async def test_kicad_tools_still_report_kicad_unavailable(settings, project) -> 
     handler = build_sdk_tool_list([spec], no_kicad, kicadless)[0].handler
     res = await handler({})
     assert res.get("is_error") and "KiCad is not available" in res["content"][0]["text"]
+
+
+async def test_unconsumed_call_ids_are_dropped_at_turn_end(settings, project, db) -> None:  # type: ignore[no-untyped-def]
+    """A research_part call whose handler never ran (e.g. failed before run) must not
+    attach the next turn's identical call to the old card."""
+    specs = registry.all_specs()
+    spec = next(s for s in specs if s.name == "research_part")
+    backend: sdk_backend.SdkStreamingBackend
+    turns = [0]
+
+    class TwoTurns(ScriptedClient):
+        async def connect(self, prompt: Any) -> None:
+            async def pump() -> None:
+                async for _p in prompt:
+                    turns[0] += 1
+                    tid = f"toolu_{turns[0]}"
+                    await self.out.put(
+                        AssistantMessage(
+                            content=[ToolUseBlock(id=tid, name=RP, input=dict(ARGS))], model="m"
+                        )
+                    )
+                    assert self.options.can_use_tool is not None
+                    await self.options.can_use_tool(
+                        RP, dict(ARGS), ToolPermissionContext(tool_use_id=tid)
+                    )
+                    if turns[0] == 1:  # handler never runs in turn 1
+                        await self.out.put(
+                            UserMessage(
+                                content=[
+                                    ToolResultBlock(
+                                        tool_use_id=tid, content="denied", is_error=True
+                                    )
+                                ]
+                            )
+                        )
+                    else:
+                        res = await self.handler(dict(ARGS))
+                        await self.out.put(
+                            UserMessage(
+                                content=[
+                                    ToolResultBlock(
+                                        tool_use_id=tid, content=res["content"][0]["text"]
+                                    )
+                                ]
+                            )
+                        )
+                    await self.out.put(result(0.1))
+                await self.out.put(None)
+
+            self.task = asyncio.create_task(pump())
+
+    def factory(options: ClaudeAgentOptions) -> ScriptedClient:
+        handler = build_sdk_tool_list([spec], backend.tool_ctx_factory)[0].handler
+        return TwoTurns(options, handler, ARGS)
+
+    backend = sdk_backend.SdkStreamingBackend(
+        settings=settings,
+        specs=specs,
+        ctx_factory=lambda: ToolContext(project=project, session=None, settings=settings),  # type: ignore[arg-type]
+        db=db,
+        client_factory=factory,
+        research_query_fn=research_ok,
+    )
+
+    first_done = asyncio.Event()
+
+    async def two_items() -> AsyncIterator[QueuedItem]:
+        # Gated like the RunEngine: the next item only after the turn's TurnFinished.
+        yield QueuedItem(message_id=1, client_message_id="c1", text="a")
+        await first_done.wait()
+        yield QueuedItem(message_id=2, client_message_id="c2", text="b")
+
+    events: list[AgentEvent] = []
+    async for ev in backend.start(project, two_items(), None):
+        events.append(ev)
+        if isinstance(ev, TurnFinished):
+            first_done.set()
+    parents = {getattr(e, "parent_tool_use_id", None) for e in events} - {None}
+    assert parents == {"toolu_2"}

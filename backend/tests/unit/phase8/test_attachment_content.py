@@ -57,3 +57,19 @@ async def test_resolve_attachment_returns_stored_fields(project: Project, db: Da
     forged = AttachmentRef(id=pdf.id, kind="image", name="other.png")
     assert await resolve_attachment(db, project.id, forged) == pdf
     assert await resolve_attachment(db, "ffffffffffff", forged) is None
+
+
+async def test_total_inlined_image_size_is_bounded(
+    project: Project, db: Database, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    from copperchat.agent import attachments
+
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8)).save(buf, "PNG")
+    refs = [await _store(db, project, buf.getvalue(), f"p{i}.png") for i in range(3)]
+    size = (project.dir / ".kicad-agent/uploads").joinpath(f"{refs[0].id}.jpg").stat().st_size
+    monkeypatch.setattr(attachments, "MAX_INLINE_IMAGE_BYTES", size * 2)
+    content = await build_user_content(db, project, "t", refs)
+    assert isinstance(content, list)
+    assert [b["type"] for b in content] == ["text", "image", "image", "text"]
+    assert "omitted" in content[3]["text"]

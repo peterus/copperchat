@@ -8,7 +8,15 @@ const PRIMARY = 'rounded bg-accent px-2 py-1 text-xs font-medium text-accent-fg 
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+/**
+ * Remounted per project (key): no state, pending request or post-save reload of the previous
+ * project can leak into this one (or save into it).
+ */
 export function PartsPanel({ projectId }: PanelProps) {
+  return <PartsPanelBody key={projectId} projectId={projectId} />;
+}
+
+function PartsPanelBody({ projectId }: PanelProps) {
   const [parts, setParts] = useState<PartInfo[] | null>(null);
   const [notes, setNotes] = useState<PartNotes | null>(null);
   const [draft, setDraft] = useState<string | null>(null);

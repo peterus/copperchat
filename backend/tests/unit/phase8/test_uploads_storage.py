@@ -111,3 +111,13 @@ def test_large_photographic_alpha_image_is_flattened_to_jpeg(project: Project) -
     noise.save(buf, "PNG")
     up = uploads.store_upload(project, buf.getvalue(), "noisy.png")
     assert up.mime == "image/jpeg" and up.size <= uploads.MAX_ENCODED_IMAGE_BYTES
+
+
+def test_16_bit_grayscale_is_scaled_not_clipped(project: Project) -> None:
+    im = Image.new("I;16", (8, 8))
+    im.putdata([32768] * 64)  # mid grey in 16 bit
+    buf = io.BytesIO()
+    im.save(buf, "PNG")
+    up = uploads.store_upload(project, buf.getvalue(), "grey.png")
+    with Image.open(project.dir / up.rel_path) as out:
+        assert 100 < out.convert("L").getpixel((0, 0)) < 160  # type: ignore[operator]

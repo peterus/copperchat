@@ -230,3 +230,13 @@ async def test_main_guard(tool: str, allowed: bool) -> None:
     res = await guard(tool, {"x": 1}, ToolPermissionContext(tool_use_id="tu1"))
     assert isinstance(res, PermissionResultAllow) is allowed
     assert seen == ([(tool, "tu1")] if allowed else [])
+
+
+async def test_write_folder_restricts_writes_to_the_researched_part(proj: Project) -> None:
+    guard = make_researcher_guard(proj, resolver=public_resolver, write_folder="TPS62133")
+    ctx = ToolPermissionContext(tool_use_id="t")
+    own = await guard("Write", {"file_path": "docs/parts/TPS62133/notes.md", "content": "x"}, ctx)
+    other = await guard("Write", {"file_path": "docs/parts/LM358/notes.md", "content": "x"}, ctx)
+    read_other = await guard("Read", {"file_path": "docs/parts/LM358/notes.md"}, ctx)
+    assert isinstance(own, PermissionResultAllow) and isinstance(other, PermissionResultDeny)
+    assert isinstance(read_other, PermissionResultAllow)

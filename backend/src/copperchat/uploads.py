@@ -102,6 +102,11 @@ def _normalise_image(data: bytes) -> tuple[bytes, str, str]:
             probe.verify()
         with Image.open(io.BytesIO(data)) as opened:
             im = ImageOps.exif_transpose(opened)
+            if im.mode in ("I;16", "I;16B", "I;16L", "I"):
+                # 16/32-bit grayscale: scale to 8 bit (convert("RGB") would clip to white).
+                im = im.convert("I").point(lambda v: v * (1 / 256)).convert("L")
+            elif im.mode == "F":
+                raise UploadRejected("floating-point images are not supported", 415)
             im.thumbnail((MAX_IMAGE_EDGE, MAX_IMAGE_EDGE))
             out = io.BytesIO()
             if im.mode in ("RGBA", "LA", "P", "PA"):

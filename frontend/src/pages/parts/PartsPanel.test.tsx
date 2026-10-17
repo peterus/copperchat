@@ -83,3 +83,19 @@ describe('stripFrontMatter', () => {
     expect(stripFrontMatter('---\r\na: 1\r\n---\r\nx')).toBe('x');
   });
 });
+
+it('a slow list of the previous project never replaces the new one', async () => {
+  let releaseA: (v: unknown) => void = () => {};
+  http.apiGet.mockImplementation(async (path: string) => {
+    if (path === '/projects/pA/parts') return new Promise((r) => (releaseA = r));
+    if (path === '/projects/pB/parts') return [{ mpn: 'B-PART', hasNotes: false, hasDatasheet: false, userEdited: false, updatedAt: null }];
+    return { mpn: 'X', content: '', userEdited: false };
+  });
+  const { rerender } = render(<PartsPanel projectId="pA" />);
+  rerender(<PartsPanel projectId="pB" />);
+  expect(await screen.findByText('B-PART')).toBeInTheDocument();
+  releaseA([{ mpn: 'A-PART', hasNotes: false, hasDatasheet: false, userEdited: false, updatedAt: null }]);
+  await new Promise((r) => setTimeout(r, 20));
+  expect(screen.queryByText('A-PART')).not.toBeInTheDocument();
+  expect(screen.getByText('B-PART')).toBeInTheDocument();
+});

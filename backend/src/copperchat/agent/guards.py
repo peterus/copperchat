@@ -66,7 +66,9 @@ def make_main_guard(
     return guard
 
 
-def make_researcher_guard(project: Project, *, resolver: Resolver | None = None) -> CanUseTool:
+def make_researcher_guard(
+    project: Project, *, resolver: Resolver | None = None, write_folder: str | None = None
+) -> CanUseTool:
     """Path and network rules for the part-researcher's tool calls (separate query).
 
     - WebSearch: allowed. WebFetch: http(s) URLs of public hosts only.
@@ -105,13 +107,17 @@ def make_researcher_guard(project: Project, *, resolver: Resolver | None = None)
             if resolve_inside(raw, base, read_roots) is None:
                 return _deny("Read access is limited to docs/parts/ and .kicad-agent/uploads/")
             return PermissionResultAllow(updated_input=inp)
-        return _check_write(project, raw, inp, write_roots)
+        return _check_write(project, raw, inp, write_roots, write_folder)
 
     return guard
 
 
 def _check_write(
-    project: Project, raw: str, inp: dict[str, Any], write_roots: list[Any]
+    project: Project,
+    raw: str,
+    inp: dict[str, Any],
+    write_roots: list[Any],
+    write_folder: str | None = None,
 ) -> PermissionResult:
     target = resolve_inside(raw, project.dir, write_roots)
     if target is None:
@@ -128,6 +134,8 @@ def _check_write(
             raise InvalidMpn(rel[0])
     except InvalidMpn:
         return _deny(f"{rel[0]!r} is not a valid part folder name")
+    if write_folder is not None and rel[0].casefold() != write_folder.casefold():
+        return _deny(f"This research may only write docs/parts/{write_folder}/")
     if target.name == "notes.md" and notes_user_edited(target):
         return _deny("notes.md is user-edited (user_edited: true); do not modify it")
     return PermissionResultAllow(updated_input=inp)

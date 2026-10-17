@@ -11,6 +11,10 @@ from copperchat.db.repos.uploads import get_upload
 from copperchat.projects import Project
 from copperchat.uploads import UPLOAD_ID_RE
 
+# Total image bytes inlined into one user message (the API request limit is 32 MB and
+# base64 adds a third).
+MAX_INLINE_IMAGE_BYTES = 16 * 1024 * 1024
+
 
 async def attachment_exists(db: Database, project_id: str, attachment_id: str) -> bool:
     if not UPLOAD_ID_RE.fullmatch(attachment_id):
@@ -47,6 +51,7 @@ async def build_user_content(
         return text
     blocks: list[dict[str, Any]] = [{"type": "text", "text": text}]
     real_base = project.dir.resolve()
+    inlined = 0
     for ref in attachments:
         row = await get_upload(db, project.id, ref.id) if UPLOAD_ID_RE.fullmatch(ref.id) else None
         path = None if row is None else project.dir / row.rel_path
@@ -61,7 +66,16 @@ async def build_user_content(
                 {"type": "text", "text": f"[Attachment {ref.name} is no longer available.]"}
             )
             continue
+        if row.kind == "image" and inlined + path.stat().st_size > MAX_INLINE_IMAGE_BYTES:
+            blocks.append(
+                {
+                    "type": "text",
+                    "text": f"[Image {row.name} omitted: too many images in one message.]",
+                }
+            )
+            continue
         if row.kind == "image":
+            inlined += path.stat().st_size
             data = base64.b64encode(path.read_bytes()).decode("ascii")
             blocks.append(
                 {

@@ -356,3 +356,44 @@ async def test_query_crash_is_a_structured_error(project: Project, settings: Set
     with pytest.raises(StructuredToolError) as e:
         await r.run(dict(ARGS))
     assert e.value.what == "Part research failed" and "buffer exceeded" in e.value.why
+
+
+async def test_usage_is_not_double_counted_with_a_result(
+    project: Project, settings: Settings
+) -> None:
+    async def fake(prompt: str, options: ClaudeAgentOptions) -> AsyncIterator[Any]:
+        yield AssistantMessage(
+            content=[TextBlock("a")],
+            model="m",
+            message_id="m1",
+            usage={"input_tokens": 999, "output_tokens": 999},
+        )
+        yield result()
+
+    r, _ = make(project, settings, fake)
+    await r.run(dict(ARGS))
+    usage = r.take_usage()
+    assert usage is not None and usage.input_tokens == 120 and usage.cost_usd == 0.25
+
+
+async def test_timeout_still_counts_partial_usage(project: Project, settings: Settings) -> None:
+    async def slow(prompt: str, options: ClaudeAgentOptions) -> AsyncIterator[Any]:
+        yield AssistantMessage(
+            content=[TextBlock("a")],
+            model="m",
+            message_id="m1",
+            usage={"input_tokens": 11, "output_tokens": 3},
+        )
+        await asyncio.sleep(10)
+        yield result()
+
+    r, _ = make(project, settings, slow, timeout_s=0.05)
+    with pytest.raises(StructuredToolError):
+        await r.run(dict(ARGS))
+    usage = r.take_usage()
+    assert usage is not None and usage.input_tokens == 11 and usage.cost_usd is None
+
+
+def test_options_restrict_writes_to_the_folder(project: Project, settings: Settings) -> None:
+    opts = runner.researcher_options(project, settings, write_folder="TPS62133")
+    assert opts.hooks and "PreToolUse" in opts.hooks

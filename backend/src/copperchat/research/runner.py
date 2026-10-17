@@ -53,6 +53,7 @@ def researcher_options(
     notes_skill: str | None = None,
     *,
     resolver: Resolver | None = None,
+    write_folder: str | None = None,
 ) -> ClaudeAgentOptions:
     """Isolated options: researcher built-ins + the ``parts`` server, every call through the
     researcher guard (nothing in ``allowed_tools``), no user/project settings loaded."""
@@ -69,7 +70,7 @@ def researcher_options(
         env["CLAUDE_CODE_OAUTH_TOKEN"] = settings.claude_code_oauth_token.get_secret_value()
     if settings.anthropic_api_key is not None:
         env["ANTHROPIC_API_KEY"] = settings.anthropic_api_key.get_secret_value()
-    guard = make_researcher_guard(project, resolver=resolver)
+    guard = make_researcher_guard(project, resolver=resolver, write_folder=write_folder)
     return ClaudeAgentOptions(
         system_prompt=researcher_prompt(notes_skill),
         tools=list(RESEARCHER_TOOLS),
@@ -222,9 +223,14 @@ class ResearchRunner:
     async def _collect(self, prompt: str, parent: str | None, folder: str) -> str:
         # One query per part folder at a time (two never write the same notes.md);
         # different parts research in parallel.
-        lock = _part_locks.setdefault((self._project.id, folder), asyncio.Lock())
+        # casefold: on a case-insensitive filesystem LM358 and lm358 are one folder.
+        lock = _part_locks.setdefault((self._project.id, folder.casefold()), asyncio.Lock())
         options = researcher_options(
-            self._project, self._settings, self._notes_skill, resolver=self._resolver
+            self._project,
+            self._settings,
+            self._notes_skill,
+            resolver=self._resolver,
+            write_folder=folder,
         )
         final: ResultMessage | None = None
         # Fallback when no ResultMessage arrives (interrupt, timeout, crash): tokens of the
