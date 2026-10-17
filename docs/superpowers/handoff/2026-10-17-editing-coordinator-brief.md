@@ -10,8 +10,8 @@ CopperChat coordinator session. Read this, then the spec.
   `docs/superpowers/plans/2026-10-15-foundation-plan.md` (C7a, X-items,
   "Decided by owner").
 - Spec for sub-project 2: `docs/superpowers/specs/2026-10-17-editing-design.md`
-  — schematic editing, plan-before-edit, visual control. **Only proceed once
-  the owner has approved the spec PR.** The owner answered the ten open
+  — schematic editing, plan-before-edit, visual control. **Approved by the
+  owner on 2026-10-18 (PR #22).** The owner answered the ten open
   design questions on 2026-10-17 (spec §15 "Decided by owner": per-sheet
   annotation blocks, passives 0805 part preferences, no edits outside an open
   plan, ERC errors fixed or justified per step, route touch-up by

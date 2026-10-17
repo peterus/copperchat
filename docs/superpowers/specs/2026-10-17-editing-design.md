@@ -1,7 +1,7 @@
 # CopperChat — Schematic editing (sub-project 2) design
 
 Date: 2026-10-17
-Status: draft, awaiting owner review (owner decisions of 2026-10-17 incorporated, §15)
+Status: approved by the owner on 2026-10-18 (owner decisions of 2026-10-17 in §15)
 
 ## 1. Purpose
 
