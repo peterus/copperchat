@@ -1,0 +1,122 @@
+{
+  "question": "q05_delete",
+  "checks": [
+    {
+      "name": "dangling_junction_kept_after_push",
+      "ok": false,
+      "evidence": "junction at (152.4,152.4) present=False"
+    },
+    {
+      "name": "collinear_segments_kept_separate_on_create",
+      "ok": true,
+      "evidence": "4/4"
+    },
+    {
+      "name": "before_delete_t_net",
+      "ok": true,
+      "evidence": "('Net-(R1-Pad2)', 'Net-(R1-Pad2)', 'Net-(R1-Pad2)')"
+    },
+    {
+      "name": "delete_wire_removed",
+      "ok": true,
+      "evidence": "branch wire gone"
+    },
+    {
+      "name": "delete_wire_keeps_junction",
+      "ok": false,
+      "evidence": "junction present=False"
+    },
+    {
+      "name": "delete_wire_keeps_neighbour_segments",
+      "ok": false,
+      "evidence": "{'4d226704': ((50.8, 54.61), (50.8, 63.5)), 'ed1c275b': ((50.8, 63.5), (101.6, 63.5)), 'c911fc8a': ((101.6, 63.5), (101.6, 54.61))}"
+    },
+    {
+      "name": "after_branch_delete_r3_disconnected",
+      "ok": true,
+      "evidence": "unconnected-(R3-Pad1)"
+    },
+    {
+      "name": "delete_symbol",
+      "ok": true,
+      "evidence": "['R1', 'R3']"
+    },
+    {
+      "name": "delete_symbol_leaves_wires",
+      "ok": true,
+      "evidence": "wire to former R2.2 present"
+    },
+    {
+      "name": "delete_symbol_leaves_its_no_connect",
+      "ok": true,
+      "evidence": "no-connect on former R2.1 present"
+    },
+    {
+      "name": "netlist_after_symbol_delete",
+      "ok": true,
+      "evidence": "['R1', 'R3']"
+    },
+    {
+      "name": "delete_label_junction_no_connect",
+      "ok": true,
+      "evidence": "['4d226704', 'c911fc8a', 'ed1c275b']"
+    },
+    {
+      "name": "netlist_after_label_delete",
+      "ok": true,
+      "evidence": "unconnected-(R1-Pad1)"
+    },
+    {
+      "name": "collinear_pair_kept_separate_on_create",
+      "ok": false,
+      "evidence": "{'e08d68c0': ((127.0, 127.0), (152.4, 127.0))}"
+    },
+    {
+      "name": "delete_unknown_id",
+      "ok": true,
+      "evidence": "ok: None"
+    },
+    {
+      "name": "document_modified_flag",
+      "ok": true,
+      "evidence": "is_document_modified after API edits"
+    }
+  ],
+  "notes": {
+    "wires_after_branch_delete": [
+      [
+        [
+          50.8,
+          54.61
+        ],
+        [
+          50.8,
+          63.5
+        ],
+        "4d226704"
+      ],
+      [
+        [
+          101.6,
+          63.5
+        ],
+        [
+          101.6,
+          54.61
+        ],
+        "c911fc8a"
+      ],
+      [
+        [
+          50.8,
+          63.5
+        ],
+        [
+          101.6,
+          63.5
+        ],
+        "ed1c275b"
+      ]
+    ]
+  }
+}

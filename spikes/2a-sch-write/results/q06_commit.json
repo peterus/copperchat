@@ -1,0 +1,141 @@
+{
+  "question": "q06_commit",
+  "checks": [
+    {
+      "name": "staged_create_response_has_uuid",
+      "ok": true,
+      "evidence": "('bba73785', 'd8012282')"
+    },
+    {
+      "name": "staged_create_invisible_by_id",
+      "ok": true,
+      "evidence": "GetItemsById before push"
+    },
+    {
+      "name": "staged_create_invisible_in_get_items",
+      "ok": true,
+      "evidence": "['R1']"
+    },
+    {
+      "name": "staged_create_invisible_in_netlist",
+      "ok": true,
+      "evidence": "GetSchematicNetlist before push"
+    },
+    {
+      "name": "after_push_visible",
+      "ok": true,
+      "evidence": "['bba73785', 'c1c96819', 'd8012282']"
+    },
+    {
+      "name": "staged_delete_still_visible_before_push",
+      "ok": true,
+      "evidence": "wire still returned"
+    },
+    {
+      "name": "after_push_delete_gone",
+      "ok": true,
+      "evidence": ""
+    },
+    {
+      "name": "drop_commit_document_unchanged",
+      "ok": true,
+      "evidence": "{'added': [], 'removed': [], 'changed': []}"
+    },
+    {
+      "name": "other_client_works_while_stale_commit",
+      "ok": true,
+      "evidence": ""
+    },
+    {
+      "name": "other_client_push_visible",
+      "ok": true,
+      "evidence": ""
+    },
+    {
+      "name": "stale_commit_items_invisible",
+      "ok": true,
+      "evidence": "GHOST label never applied"
+    },
+    {
+      "name": "same_name_begin_commit_while_stale",
+      "ok": true,
+      "evidence": "ApiError: KiCad returned error: the client copperchat-a already has a commit in progress"
+    },
+    {
+      "name": "same_name_writes_land_in_stale_commit",
+      "ok": true,
+      "evidence": "create_items after reconnect (no new commit) is visible?"
+    },
+    {
+      "name": "drop_stale_commit_by_old_id",
+      "ok": true,
+      "evidence": "ok: None"
+    },
+    {
+      "name": "after_dropping_stale_commit_writes_apply",
+      "ok": true,
+      "evidence": ""
+    },
+    {
+      "name": "dropped_stale_items_gone",
+      "ok": true,
+      "evidence": ""
+    },
+    {
+      "name": "second_begin_commit_same_client",
+      "ok": true,
+      "evidence": "ApiError: KiCad returned error: the client copperchat-a already has a commit in progress"
+    },
+    {
+      "name": "push_unknown_commit",
+      "ok": true,
+      "evidence": "ApiError: KiCad returned error: the client copperchat-a does not has a commit in progress"
+    },
+    {
+      "name": "deleted_all_targets",
+      "ok": true,
+      "evidence": ""
+    },
+    {
+      "name": "recreate_with_original_uuids",
+      "ok": true,
+      "evidence": "{'missing': [], 'returned_ids': ['04248595', '20abd9a1', '4c6ee771', '79d21f50', 'c37c8e71', 'e1252d7b', 'f6b76e44', 'fd8667e9']}"
+    },
+    {
+      "name": "recreated_content_equal",
+      "ok": true,
+      "evidence": "{}"
+    },
+    {
+      "name": "recreated_connectivity_equal",
+      "ok": true,
+      "evidence": "[]"
+    },
+    {
+      "name": "update_compensated_from_pre_image",
+      "ok": true,
+      "evidence": "('TLV9002', (101.6, 76.2))"
+    },
+    {
+      "name": "original_uuids_persist_after_save_reopen",
+      "ok": true,
+      "evidence": "8/8"
+    }
+  ],
+  "notes": {
+    "staged_update_visible_before_push": true,
+    "corner_junction_dropped_on_create": true,
+    "pre_images": {
+      "c37c8e71": "SchematicSymbolInstance",
+      "04248595": "SchematicSymbolInstance",
+      "e1252d7b": "SchematicLine",
+      "4c6ee771": "SchematicLine",
+      "fd8667e9": "SchematicLine",
+      "20abd9a1": "LocalLabel",
+      "f6b76e44": "NoConnectMarker",
+      "79d21f50": "GlobalLabel"
+    },
+    "compensate_ms": 35.3,
+    "root": "/tmp/s2a-blank-93_kkzty/blank/blank.kicad_sch"
+  }
+}
