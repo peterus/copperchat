@@ -22,4 +22,4 @@ Runs inside the pinned image `ghcr.io/peterus/copperchat-kicad-base:0616634034fa
 
 Fixtures are byte copies of stock demo projects from the image (`ecc83`, `cm5_minima`, `pic_programmer`,
 `interf_u`); nothing is hand-edited. Wall-clock numbers vary with host load (the host also ran other
-jobs): the load time was 7–23 s across runs.
+jobs): the load time was 7–14 s across runs.
