@@ -31,7 +31,16 @@ async def test_send_all_deletes_gone_subscriptions(tmp_path: Path) -> None:
                 raise RuntimeError("unexpected")
             sent.append(data)
 
-        d = PushDispatcher(store, load_or_create_vapid(tmp_path), "mailto:x@y", sender=sender)
+        async def public(url: str) -> str | None:
+            return None
+
+        d = PushDispatcher(
+            store,
+            load_or_create_vapid(tmp_path),
+            "mailto:x@y",
+            sender=sender,
+            check_endpoint=public,
+        )
         assert await d.send_all({"title": "t", "body": "b", "url": "/p/abc"}) == 1
         assert json.loads(sent[0])["url"] == "/p/abc"
         remaining = [s.endpoint.rsplit("/", 1)[1] for s in await store.all()]
@@ -77,3 +86,39 @@ def test_webpush_sender_maps_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     with pytest.raises(PushSendError) as info2:
         send({"endpoint": "https://a.example/1", "keys": {}}, "{}")
     assert info2.value.status is None
+
+
+async def test_send_all_rechecks_endpoints_before_sending(tmp_path: Path) -> None:
+    db = await Database.open(tmp_path / "c.db")
+    try:
+        store = PushStore(db)
+        await store.upsert("https://rebound.example/x", "p", "a")
+        sent: list[str] = []
+
+        async def now_private(url: str) -> str | None:
+            return "host resolves to a non-public address (127.0.0.1)"
+
+        d = PushDispatcher(
+            store,
+            load_or_create_vapid(tmp_path),
+            "mailto:x@y",
+            sender=lambda sub, data: sent.append(data),
+            check_endpoint=now_private,
+        )
+        assert await d.send_all({"title": "t"}) == 0
+        assert sent == []
+        assert len(await store.all()) == 1  # skipped, not deleted
+    finally:
+        await db.close()
+
+
+def test_webpush_sender_never_follows_redirects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sessions: list[Any] = []
+    monkeypatch.setattr(
+        dispatcher_mod, "webpush", lambda **kw: sessions.append(kw["requests_session"])
+    )
+    send = webpush_sender(load_or_create_vapid(tmp_path), "mailto:x@y")
+    send({"endpoint": "https://a.example/1", "keys": {}}, "{}")
+    assert sessions[0].max_redirects == 0 and sessions[0].trust_env is False

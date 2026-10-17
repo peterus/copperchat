@@ -6,14 +6,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
+import requests
 from py_vapid import Vapid02
 from pywebpush import WebPushException, webpush
 
 from copperchat.push.store import PushStore
 from copperchat.push.vapid import VapidKeys
+from copperchat.research.net import url_refusal
 
 log = logging.getLogger(__name__)
 
@@ -21,6 +23,8 @@ log = logging.getLogger(__name__)
 Sender = Callable[[dict[str, Any], str], None]
 PUSH_TTL_S = 3600
 PUSH_TIMEOUT_S = 10.0
+# url -> None when the server may POST to it, else the reason (public hosts only).
+EndpointCheck = Callable[[str], Awaitable[str | None]]
 
 
 class PushSendError(Exception):
@@ -31,6 +35,9 @@ class PushSendError(Exception):
 
 def webpush_sender(keys: VapidKeys, subject: str) -> Sender:
     vapid = Vapid02.from_pem(keys.private_pem.encode())
+    session = requests.Session()
+    session.max_redirects = 0  # a push service never redirects; never follow one (SSRF)
+    session.trust_env = False
 
     def send(sub: dict[str, Any], data: str) -> None:
         try:
@@ -42,11 +49,12 @@ def webpush_sender(keys: VapidKeys, subject: str) -> Sender:
                 vapid_claims={"sub": subject},
                 ttl=PUSH_TTL_S,
                 timeout=PUSH_TIMEOUT_S,
+                requests_session=session,
             )
         except WebPushException as exc:
             status = exc.response.status_code if exc.response is not None else None
             raise PushSendError(status) from exc
-        except OSError as exc:  # requests' ConnectionError/Timeout are OSErrors
+        except (OSError, requests.RequestException) as exc:
             raise PushSendError(None) from exc
 
     return send
@@ -54,16 +62,29 @@ def webpush_sender(keys: VapidKeys, subject: str) -> Sender:
 
 class PushDispatcher:
     def __init__(
-        self, store: PushStore, keys: VapidKeys, subject: str, *, sender: Sender | None = None
+        self,
+        store: PushStore,
+        keys: VapidKeys,
+        subject: str,
+        *,
+        sender: Sender | None = None,
+        check_endpoint: EndpointCheck = url_refusal,
     ) -> None:
         self.store = store
         self.sender = sender or webpush_sender(keys, subject)
+        self.check_endpoint = check_endpoint
 
     async def send_all(self, payload: dict[str, Any]) -> int:
         """Returns the number of subscriptions the payload was delivered to."""
         data = json.dumps(payload)
         ok = 0
         for sub in await self.store.all():
+            # Checked again before every send, not only at subscribe time: DNS may have
+            # changed since (rebinding). The response is never shown to anyone.
+            refusal = await self.check_endpoint(sub.endpoint)
+            if refusal is not None:
+                log.warning("push subscription %s skipped: %s", sub.id, refusal)
+                continue
             info = {"endpoint": sub.endpoint, "keys": {"p256dh": sub.p256dh, "auth": sub.auth}}
             try:
                 await asyncio.to_thread(self.sender, info, data)

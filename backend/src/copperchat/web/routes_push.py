@@ -2,22 +2,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from copperchat.push.dispatcher import PushDispatcher
+from copperchat.push.dispatcher import EndpointCheck, PushDispatcher
 from copperchat.push.notifier import PushNotifier
 from copperchat.push.store import PushStore
 from copperchat.push.vapid import VapidKeys
 from copperchat.push.visibility import VisibilityRegistry
 from copperchat.research.net import url_refusal
 from copperchat.web.auth import require_user
-
-# url -> None when the server may POST to it, else the reason (public hosts only).
-EndpointCheck = Callable[[str], Awaitable[str | None]]
 
 
 @dataclass

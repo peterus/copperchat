@@ -570,6 +570,7 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "python-multipart" },
     { name = "pywebpush" },
+    { name = "requests" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -598,6 +599,7 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.6" },
     { name = "python-multipart", specifier = ">=0.0.20" },
     { name = "pywebpush", specifier = ">=2.0" },
+    { name = "requests", specifier = ">=2.32" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
 ]
 
