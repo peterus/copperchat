@@ -51,5 +51,6 @@ TOOL_SPECS = [
             "additionalProperties": False,
         },
         handler=_research_part,
+        requires_kicad=False,
     )
 ]

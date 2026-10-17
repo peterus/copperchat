@@ -1,4 +1,4 @@
-import { apiUrl } from '@/api/http';
+import { apiUrl, reportUnauthorized } from '@/api/http';
 import { AttachmentRef } from '@/protocol/frames';
 
 /** Multipart upload (apiPost JSON-encodes, so this uses fetch directly). */
@@ -10,6 +10,7 @@ export async function uploadAttachment(projectId: string, file: File): Promise<A
     body,
     credentials: 'same-origin',
   });
+  if (res.status === 401) reportUnauthorized();
   const json: unknown = await res.json().catch(() => null);
   if (!res.ok) {
     const detail = json && typeof json === 'object' ? (json as { detail?: unknown }).detail : undefined;

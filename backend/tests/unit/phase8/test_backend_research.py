@@ -3,7 +3,7 @@
 import asyncio
 import base64
 import io
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
@@ -296,7 +296,6 @@ async def test_closing_the_stream_cancels_running_research(settings, project, db
 
 async def test_sub_rows_arriving_before_their_call_are_held_back(settings, project) -> None:  # type: ignore[no-untyped-def]
     """Forwarded rows never precede the research_part ToolUse they belong to."""
-    q: asyncio.Queue[Any] = asyncio.Queue()
 
     class Early(ScriptedClient):
         async def connect(self, prompt: Any) -> None:
@@ -345,7 +344,6 @@ async def test_sub_rows_arriving_before_their_call_are_held_back(settings, proje
         research_query_fn=research_ok,
     )
     events = [ev async for ev in backend.start(project, one_item(), None)]
-    _ = q
     first_sub = next(i for i, e in enumerate(events) if getattr(e, "parent_tool_use_id", None))
     call = next(i for i, e in enumerate(events) if isinstance(e, ToolUse) and e.id == "toolu_rp")
     assert call < first_sub
@@ -375,5 +373,45 @@ async def test_without_db_no_skills(settings, project) -> None:  # type: ignore[
     assert clients[0].options.tools == [] and clients[0].options.plugins == []
 
 
-def _unused(_: Callable[..., Any]) -> None:  # keeps imports used for type hints only
-    return None
+async def test_research_works_without_kicad_and_interrupt_counts_usage(
+    settings, project, db
+) -> None:  # type: ignore[no-untyped-def]
+    from copperchat.kicad_session import KicadUnavailable
+
+    def no_kicad() -> ToolContext:
+        raise KicadUnavailable("the project is not open in KiCad")
+
+    specs = registry.all_specs()
+    spec = next(s for s in specs if s.name == "research_part")
+    backend: sdk_backend.SdkStreamingBackend
+
+    def factory(options: ClaudeAgentOptions) -> ScriptedClient:
+        handler = build_sdk_tool_list(
+            [spec], backend.tool_ctx_factory, backend.kicadless_ctx_factory
+        )[0].handler
+        return ScriptedClient(options, handler, ARGS)
+
+    backend = sdk_backend.SdkStreamingBackend(
+        settings=settings,
+        specs=specs,
+        ctx_factory=no_kicad,
+        db=db,
+        client_factory=factory,
+        research_query_fn=research_ok,
+    )
+    events = [ev async for ev in backend.start(project, one_item(), None)]
+    final = next(e for e in events if isinstance(e, ToolResultEvt) and e.id == "toolu_rp")
+    assert not final.is_error and final.content == "Summary: 2.5 MHz."
+
+
+async def test_kicad_tools_still_report_kicad_unavailable(settings, project) -> None:  # type: ignore[no-untyped-def]
+    from copperchat.kicad_session import KicadUnavailable
+
+    def no_kicad() -> ToolContext:
+        raise KicadUnavailable("the project is not open in KiCad")
+
+    spec = next(s for s in registry.all_specs() if s.name == "run_erc")
+    kicadless = lambda: ToolContext(project=project, session=None, settings=settings)  # type: ignore[arg-type]  # noqa: E731
+    handler = build_sdk_tool_list([spec], no_kicad, kicadless)[0].handler
+    res = await handler({})
+    assert res.get("is_error") and "KiCad is not available" in res["content"][0]["text"]

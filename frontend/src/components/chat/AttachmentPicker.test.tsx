@@ -1,6 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { setUnauthorizedHandler } from '@/api/http';
 import { AttachmentPicker } from './AttachmentPicker';
 
 const ID_A = 'a'.repeat(32);
@@ -72,5 +73,15 @@ describe('AttachmentPicker', () => {
     render(<AttachmentPicker disabled projectId="p1" attachments={[]} setAttachments={vi.fn()} />);
     expect(screen.getByLabelText(/attach file/i)).toBeDisabled();
     expect(screen.getByLabelText(/take photo/i)).toBeDisabled();
+  });
+
+  it('reports a 401 to the shared unauthorized handler', async () => {
+    const onUnauthorized = vi.fn();
+    setUnauthorizedHandler(onUnauthorized);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ detail: 'not logged in' }, 401)));
+    render(<AttachmentPicker disabled={false} projectId="p1" attachments={[]} setAttachments={vi.fn()} />);
+    await userEvent.upload(screen.getByLabelText(/attach file/i), png('p.png'));
+    await waitFor(() => expect(onUnauthorized).toHaveBeenCalledTimes(1));
+    setUnauthorizedHandler(null);
   });
 });

@@ -264,21 +264,67 @@ async def test_cancelling_the_handler_cancels_the_query(
     await asyncio.wait_for(closed.wait(), 2)
 
 
-async def test_queries_of_one_project_are_serialised(project: Project, settings: Settings) -> None:
-    active = 0
-    peak = 0
+async def test_same_part_is_serialised_other_parts_run_in_parallel(
+    project: Project, settings: Settings
+) -> None:
+    active: dict[str, int] = {}
+    peak: dict[str, int] = {}
+    overall = 0
+    overall_peak = 0
 
     async def fake(prompt: str, options: ClaudeAgentOptions) -> AsyncIterator[Any]:
-        nonlocal active, peak
-        active += 1
-        peak = max(peak, active)
-        await asyncio.sleep(0.02)
-        active -= 1
+        nonlocal overall, overall_peak
+        key = "LM358" if "LM358" in prompt else "TPS62133"
+        active[key] = active.get(key, 0) + 1
+        peak[key] = max(peak.get(key, 0), active[key])
+        overall += 1
+        overall_peak = max(overall_peak, overall)
+        await asyncio.sleep(0.05)
+        active[key] -= 1
+        overall -= 1
         yield result()
 
     r, _ = make(project, settings, fake)
-    await asyncio.gather(r.run(dict(ARGS)), r.run({"mpn": "LM358", "query": "q"}))
-    assert peak == 1
+    await asyncio.gather(
+        r.run(dict(ARGS)), r.run(dict(ARGS)), r.run({"mpn": "LM358", "query": "q"})
+    )
+    assert peak == {"TPS62133": 1, "LM358": 1} and overall_peak == 2
+
+
+async def test_usage_is_counted_when_the_query_is_cancelled(
+    project: Project, settings: Settings
+) -> None:
+    started = asyncio.Event()
+
+    async def hanging(prompt: str, options: ClaudeAgentOptions) -> AsyncIterator[Any]:
+        usage = {"input_tokens": 50, "output_tokens": 7}
+        for block in (TextBlock("a"), TextBlock("b")):  # one API message, two blocks
+            yield AssistantMessage(content=[block], model="m", message_id="msg1", usage=usage)
+        started.set()
+        await asyncio.sleep(30)
+        yield result()
+
+    r, _ = make(project, settings, hanging)
+    task = asyncio.create_task(r.run(dict(ARGS)))
+    await asyncio.wait_for(started.wait(), 2)
+    r.cancel_all()
+    with pytest.raises(StructuredToolError):
+        await asyncio.wait_for(task, 2)
+    usage = r.take_usage()
+    assert usage is not None and usage.input_tokens == 50 and usage.output_tokens == 7
+
+
+async def test_end_turn_drops_unconsumed_calls(project: Project, settings: Settings) -> None:
+    async def fake(prompt: str, options: ClaudeAgentOptions) -> AsyncIterator[Any]:
+        yield AssistantMessage(content=[TextBlock("x")], model="m")
+        yield result()
+
+    r, out = make(project, settings, fake)
+    r.note_call(dict(ARGS), "stale")  # allowed, but the handler never ran
+    r.end_turn()
+    r.note_call(dict(ARGS), "fresh")
+    await r.run(dict(ARGS))
+    assert [e.parent_tool_use_id for e in out] == ["fresh"]  # type: ignore[union-attr]
 
 
 def test_tool_spec_registered() -> None:

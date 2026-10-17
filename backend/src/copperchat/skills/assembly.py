@@ -89,15 +89,19 @@ async def assemble_skills(settings: Settings, project: Project, db: Database) ->
     disabled = await disabled_skills(db, project.id)
     names: list[str] = []
     researcher_skill: str | None = None
+    # Agent-scoped skills become part of the web-enabled researcher's *system prompt*, so
+    # they come only from trusted layers (built-in, user), never from a project's
+    # repository (.kicad-agent/skills/ of a cloned project could carry injected orders).
+    trusted = {s.name: s for s in effective_skills(SkillLayers.for_project(settings, None))}
+    for name, skill in trusted.items():
+        if skill.agent == RESEARCHER_AGENT and name not in disabled:
+            text = (skill.dir / "SKILL.md").read_text(encoding="utf-8", errors="replace")
+            researcher_skill = parse_front_matter(text)[1].strip() or None
     for skill in effective_skills(SkillLayers.for_project(settings, project)):
         if skill.name in disabled:
             continue
-        if skill.agent is not None:
-            # Agent-scoped: never offered to the main agent.
-            if skill.agent == RESEARCHER_AGENT:
-                text = (skill.dir / "SKILL.md").read_text(encoding="utf-8", errors="replace")
-                researcher_skill = parse_front_matter(text)[1].strip() or None
-            continue
+        if skill.agent is not None or trusted.get(skill.name, skill).agent is not None:
+            continue  # agent-scoped (or shadowing one): never offered to the main agent
         dest = plugin_dir / "skills" / skill.name
         _copy_regular_files(skill.dir, dest)
         md = dest / "SKILL.md"

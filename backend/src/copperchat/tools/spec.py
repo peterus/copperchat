@@ -71,3 +71,6 @@ class ToolSpec:
     handler: ToolHandler
     mutating: bool = False
     changes_documents: bool = False
+    # False: the tool works without an open KiCad session (research_part); its context
+    # then has no usable ``session``.
+    requires_kicad: bool = True

@@ -94,19 +94,23 @@ def model_usage_totals(msg: ResultMessage) -> Totals | None:
     return Totals(inp, out, cache_read, cache_creation, msg.total_cost_usd)
 
 
-def result_totals(msg: ResultMessage) -> Totals:
-    """Everything one single-turn client consumed, from its (only) ResultMessage."""
-    totals = model_usage_totals(msg)
-    if totals is not None:
-        return totals
-    u = msg.usage or {}
+def usage_totals(u: dict[str, Any], cost_usd: float | None = None) -> Totals:
+    """Totals from an API ``usage`` dict (snake_case keys)."""
     return Totals(
         int(u.get("input_tokens", 0) or 0),
         int(u.get("output_tokens", 0) or 0),
         int(u.get("cache_read_input_tokens", 0) or 0),
         int(u.get("cache_creation_input_tokens", 0) or 0),
-        msg.total_cost_usd,
+        cost_usd,
     )
+
+
+def result_totals(msg: ResultMessage) -> Totals:
+    """Everything one single-turn client consumed, from its (only) ResultMessage."""
+    totals = model_usage_totals(msg)
+    if totals is not None:
+        return totals
+    return usage_totals(msg.usage or {}, msg.total_cost_usd)
 
 
 def subagent_events(msg: object, parent: str) -> list[AgentEvent]:

@@ -8,7 +8,14 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny, ToolPermissionContext
-from claude_agent_sdk.types import CanUseTool, PermissionResult
+from claude_agent_sdk.types import (
+    CanUseTool,
+    HookCallback,
+    HookContext,
+    HookInput,
+    HookJSONOutput,
+    PermissionResult,
+)
 
 from copperchat.parts import InvalidMpn, mpn_dirname, notes_user_edited
 from copperchat.projects import Project
@@ -79,6 +86,9 @@ def make_researcher_guard(project: Project, *, resolver: Resolver | None = None)
         if tool == "WebSearch" or tool in PARTS_TOOLS:
             return PermissionResultAllow(updated_input=inp)
         if tool == "WebFetch":
+            # Known residual: the CLI resolves the host again when it fetches, so DNS
+            # rebinding between this check and the fetch is not prevented (our own
+            # download_datasheet additionally checks the connected peer address).
             reason = await url_refusal(str(inp.get("url") or ""), resolver=resolver)
             if reason is not None:
                 return _deny(f"WebFetch refused: {reason}")
@@ -121,3 +131,33 @@ def _check_write(
     if target.name == "notes.md" and notes_user_edited(target):
         return _deny("notes.md is user-edited (user_edited: true); do not modify it")
     return PermissionResultAllow(updated_input=inp)
+
+
+def guard_as_pre_tool_use_hook(guard: CanUseTool) -> HookCallback:
+    """Run ``guard`` as a ``PreToolUse`` hook (deny only).
+
+    The CLI auto-approves some calls without asking ``can_use_tool`` — notably Read/Glob
+    of paths inside ``cwd`` (review of PR #11, confirmed live). A PreToolUse hook fires for
+    every tool call, so the researcher's rules are enforced here; ``can_use_tool`` stays
+    set for the calls the CLI does ask about. An allowed call returns ``{}`` (no opinion).
+    """
+
+    async def hook(
+        input_data: HookInput, tool_use_id: str | None, _context: HookContext
+    ) -> HookJSONOutput:
+        raw: dict[str, Any] = dict(input_data)
+        tool = str(raw.get("tool_name") or "")
+        tool_input = raw.get("tool_input")
+        inp = dict(tool_input) if isinstance(tool_input, dict) else {}
+        res = await guard(tool, inp, ToolPermissionContext(tool_use_id=tool_use_id))
+        if isinstance(res, PermissionResultDeny):
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": res.message,
+                }
+            }
+        return {}
+
+    return hook

@@ -18,10 +18,16 @@ from collections import defaultdict, deque
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
-from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, ResultMessage
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    ClaudeSDKClient,
+    HookMatcher,
+    ResultMessage,
+)
 
 from copperchat.agent.events import AgentEvent
-from copperchat.agent.sdk_messages import Totals, result_totals, subagent_events
+from copperchat.agent.sdk_messages import Totals, result_totals, subagent_events, usage_totals
 from copperchat.config import Settings
 from copperchat.errors import StructuredToolError
 from copperchat.parts import InvalidMpn, mpn_dirname
@@ -38,8 +44,7 @@ DEFAULT_TIMEOUT_S = 900.0
 MAX_QUERY_CHARS = 4000
 MAX_ATTACHMENTS = 10
 MAX_BUFFER_BYTES = 64 * 1024 * 1024
-# Two research queries of one project never write the same notes concurrently.
-_project_locks: dict[str, asyncio.Lock] = {}
+_part_locks: dict[tuple[str, str], asyncio.Lock] = {}
 
 
 def researcher_options(
@@ -51,7 +56,10 @@ def researcher_options(
 ) -> ClaudeAgentOptions:
     """Isolated options: researcher built-ins + the ``parts`` server, every call through the
     researcher guard (nothing in ``allowed_tools``), no user/project settings loaded."""
-    from copperchat.agent.guards import make_researcher_guard  # guards import research.*
+    from copperchat.agent.guards import (  # guards import research.*
+        guard_as_pre_tool_use_hook,
+        make_researcher_guard,
+    )
 
     env = {
         "CLAUDE_CONFIG_DIR": str(settings.data_dir / "claude"),
@@ -61,12 +69,17 @@ def researcher_options(
         env["CLAUDE_CODE_OAUTH_TOKEN"] = settings.claude_code_oauth_token.get_secret_value()
     if settings.anthropic_api_key is not None:
         env["ANTHROPIC_API_KEY"] = settings.anthropic_api_key.get_secret_value()
+    guard = make_researcher_guard(project, resolver=resolver)
     return ClaudeAgentOptions(
         system_prompt=researcher_prompt(notes_skill),
         tools=list(RESEARCHER_TOOLS),
         allowed_tools=[],
         permission_mode="default",
-        can_use_tool=make_researcher_guard(project, resolver=resolver),
+        can_use_tool=guard,
+        # Also as a hook: the CLI skips can_use_tool for Read/Glob inside cwd.
+        hooks={
+            "PreToolUse": [HookMatcher(matcher=None, hooks=[guard_as_pre_tool_use_hook(guard)])]
+        },
         mcp_servers={PARTS_SERVER: parts_mcp_server(project, resolver=resolver)},
         setting_sources=[],
         cwd=str(project.dir),
@@ -122,6 +135,10 @@ class ResearchRunner:
         """The guard allowed a research_part call with this input (FIFO per input)."""
         if tool_use_id:
             self._pending[_call_key(tool_input)].append(tool_use_id)
+
+    def end_turn(self) -> None:
+        """Forget recorded calls that never reached :meth:`run` (failed before it)."""
+        self._pending.clear()
 
     def take_usage(self) -> Totals | None:
         usage, self._usage = self._usage, None
@@ -179,8 +196,8 @@ class ResearchRunner:
         parent = queue.popleft() if queue else None
         if parent is None:
             log.warning("research_part call without a recorded tool_use_id; steps not forwarded")
-        _folder, prompt = self._prompt(args)
-        task = asyncio.create_task(self._collect(prompt, parent))
+        folder, prompt = self._prompt(args)
+        task = asyncio.create_task(self._collect(prompt, parent, folder))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         try:
@@ -199,41 +216,56 @@ class ResearchRunner:
             if not task.done():
                 task.cancel()
 
-    async def _collect(self, prompt: str, parent: str | None) -> str:
-        lock = _project_locks.setdefault(self._project.id, asyncio.Lock())
+    def _add_usage(self, totals: Totals) -> None:
+        self._usage = totals if self._usage is None else self._usage + totals
+
+    async def _collect(self, prompt: str, parent: str | None, folder: str) -> str:
+        # One query per part folder at a time (two never write the same notes.md);
+        # different parts research in parallel.
+        lock = _part_locks.setdefault((self._project.id, folder), asyncio.Lock())
         options = researcher_options(
             self._project, self._settings, self._notes_skill, resolver=self._resolver
         )
         final: ResultMessage | None = None
-        async with lock:
-            try:
-                async with asyncio.timeout(self._timeout_s):
-                    async for msg in self._query_fn(prompt, options):
-                        if isinstance(msg, ResultMessage):
-                            final = msg
-                            totals = result_totals(msg)
-                            self._usage = totals if self._usage is None else self._usage + totals
-                        elif parent is not None:
-                            for ev in subagent_events(msg, parent):
-                                self._emit(ev)
-            except TimeoutError as exc:
-                raise StructuredToolError(
-                    "Part research timed out",
-                    f"exceeded {int(self._timeout_s)} s",
-                    "Ask a narrower question",
-                ) from exc
-            except StructuredToolError:
-                raise
-            except Exception as exc:  # CLI/transport failure of the research query
-                log.exception("part research query failed")
-                raise StructuredToolError(
-                    "Part research failed",
-                    f"{type(exc).__name__}: {exc}"[:500],
-                    "Retry once; if it fails again, ask the user for the datasheet",
-                ) from exc
-        if final is None or final.is_error or not final.result:
-            why = (final.result or final.subtype) if final is not None else "no result"
+        # Fallback when no ResultMessage arrives (interrupt, timeout, crash): tokens of the
+        # assistant messages seen so far, one entry per API message (blocks repeat it).
+        partial: dict[str, Totals] = {}
+        try:
+            async with asyncio.timeout(self._timeout_s), lock:
+                async for msg in self._query_fn(prompt, options):
+                    if isinstance(msg, ResultMessage):
+                        final = msg
+                        self._add_usage(result_totals(msg))
+                        continue
+                    if isinstance(msg, AssistantMessage) and msg.usage:
+                        key = msg.message_id or f"#{len(partial)}"
+                        partial[key] = usage_totals(msg.usage)
+                    if parent is not None:
+                        for ev in subagent_events(msg, parent):
+                            self._emit(ev)
+        except TimeoutError as exc:
             raise StructuredToolError(
-                "Part research failed", str(why), "Retry later or ask the user for a datasheet"
+                "Part research timed out",
+                f"exceeded {int(self._timeout_s)} s",
+                "Ask a narrower question",
+            ) from exc
+        except StructuredToolError:
+            raise
+        except Exception as exc:  # CLI/transport failure of the research query
+            log.exception("part research query failed")
+            raise StructuredToolError(
+                "Part research failed",
+                f"{type(exc).__name__}: {exc}"[:500],
+                "Retry once; if it fails again, ask the user for the datasheet",
+            ) from exc
+        finally:
+            if final is None:
+                for totals in partial.values():
+                    self._add_usage(totals)
+        if final is None or final.is_error or not final.result:
+            raise StructuredToolError(
+                "Part research failed",
+                str(final.result or final.subtype) if final is not None else "no result",
+                "Retry later or ask the user for a datasheet",
             )
         return final.result

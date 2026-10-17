@@ -42,16 +42,21 @@ export function SkillsPanel({ projectId }: PanelProps) {
     }
   }, [projectId]);
 
+  // Unsaved editor changes survive re-opening after a toggle / "Mark as reviewed".
+  const dirty = useRef(false);
+  dirty.current = selected !== null && draft !== selected.content;
+
   const open = useCallback(
-    async (name: string) => {
+    async (name: string, keepDraft = false) => {
       const token = ++openToken.current;
       setError(null);
       setConfirmDelete(false);
       try {
         const detail = await getSkill(name, projectId);
         if (token !== openToken.current) return;
+        const keep = keepDraft && dirty.current;
         setSelected(detail);
-        setDraft(detail.content);
+        if (!keep) setDraft(detail.content);
       } catch (e) {
         if (token === openToken.current) setError(message(e));
       }
@@ -60,17 +65,18 @@ export function SkillsPanel({ projectId }: PanelProps) {
   );
 
   useEffect(() => {
+    openToken.current++; // a detail request of the previous project must not land here
     setSelected(null);
     void refresh();
   }, [refresh]);
 
-  async function run(action: () => Promise<unknown>, reopen: string | null) {
+  async function run(action: () => Promise<unknown>, reopen: string | null, keepDraft = false) {
     setError(null);
     setBusy(true);
     try {
       await action();
       await refresh();
-      if (reopen) await open(reopen);
+      if (reopen) await open(reopen, keepDraft);
     } catch (e) {
       setError(message(e));
     } finally {
@@ -137,7 +143,7 @@ export function SkillsPanel({ projectId }: PanelProps) {
               disabled={busy}
               onChange={(e) => {
                 const enabled = e.target.checked;
-                void run(() => setSkillEnabled(projectId, selected.name, enabled), selected.name);
+                void run(() => setSkillEnabled(projectId, selected.name, enabled), selected.name, true);
               }}
             />
             Enabled in this project
@@ -157,7 +163,7 @@ export function SkillsPanel({ projectId }: PanelProps) {
                   type="button"
                   className={BUTTON}
                   disabled={busy}
-                  onClick={() => void run(() => acknowledgeSkillUpdate(selected.name), selected.name)}
+                  onClick={() => void run(() => acknowledgeSkillUpdate(selected.name), selected.name, true)}
                 >
                   Mark as reviewed
                 </button>

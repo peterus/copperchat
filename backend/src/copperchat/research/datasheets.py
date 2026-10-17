@@ -16,7 +16,7 @@ from copperchat.fsutil import atomic_write_bytes
 from copperchat.parts import InvalidMpn, part_dir
 from copperchat.projects import Project
 from copperchat.research.agent import PARTS_SERVER
-from copperchat.research.net import Resolver, url_refusal
+from copperchat.research.net import Resolver, is_public_ip, url_refusal
 from copperchat.research.notes import check_notes
 
 MAX_DATASHEET_BYTES = 30 * 1024 * 1024
@@ -106,9 +106,7 @@ def _check_peer(resp: httpx.Response) -> None:
         ip = ipaddress.ip_address(str(addr[0]).split("%", 1)[0])
     except ValueError:
         return
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
-    if not ip.is_global or ip.is_multicast:
+    if not is_public_ip(ip):
         raise StructuredToolError(
             "Download refused", f"the server address {ip} is not public", "Pass a public PDF URL"
         )

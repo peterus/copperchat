@@ -25,7 +25,10 @@ from copperchat.research.paths import uploads_image_root, uploads_pdf_root
 MAX_IMAGE_BYTES = 15 * 1024 * 1024
 MAX_PDF_BYTES = 20 * 1024 * 1024
 MAX_UPLOAD_BYTES = max(MAX_IMAGE_BYTES, MAX_PDF_BYTES)
-MAX_IMAGE_EDGE = 2048
+# Long edge the model sees without server-side downscaling; well under the API's
+# 5 MB per-image limit even as PNG in most cases (see _normalise_image).
+MAX_IMAGE_EDGE = 1568
+MAX_ENCODED_IMAGE_BYTES = 3_500_000  # base64 adds a third: stays below 5 MB
 MAX_IMAGE_PIXELS = 50_000_000
 Kind = Literal["image", "pdf"]
 UPLOAD_ID_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -102,9 +105,20 @@ def _normalise_image(data: bytes) -> tuple[bytes, str, str]:
             im.thumbnail((MAX_IMAGE_EDGE, MAX_IMAGE_EDGE))
             out = io.BytesIO()
             if im.mode in ("RGBA", "LA", "P", "PA"):
-                im.convert("RGBA").save(out, "PNG", optimize=True)
-                return out.getvalue(), "image/png", "png"
-            im.convert("RGB").save(out, "JPEG", quality=90)
+                rgba = im.convert("RGBA")
+                rgba.save(out, "PNG", optimize=True)
+                if out.tell() <= MAX_ENCODED_IMAGE_BYTES:
+                    return out.getvalue(), "image/png", "png"
+                # Photographic image with alpha: flatten onto white and use JPEG.
+                flat = Image.new("RGB", rgba.size, (255, 255, 255))
+                flat.paste(rgba, mask=rgba.getchannel("A"))
+                im = flat
+                out = io.BytesIO()
+            for quality in (90, 80, 70, 60):
+                out = io.BytesIO()
+                im.convert("RGB").save(out, "JPEG", quality=quality)
+                if out.tell() <= MAX_ENCODED_IMAGE_BYTES:
+                    break
             return out.getvalue(), "image/jpeg", "jpg"
     except UploadRejected:
         raise

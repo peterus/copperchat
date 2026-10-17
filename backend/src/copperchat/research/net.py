@@ -49,8 +49,29 @@ async def url_refusal(url: str, *, resolver: Resolver | None = None) -> str | No
             ip = ipaddress.ip_address(raw.split("%", 1)[0])
         except ValueError:
             return f"host {host!r} resolves to an invalid address"
-        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-            ip = ip.ipv4_mapped
-        if not ip.is_global or ip.is_multicast:
+        if not is_public_ip(ip):
             return f"host {host!r} resolves to a non-public address ({ip})"
     return None
+
+
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+_NAT64_LOCAL = ipaddress.ip_network("64:ff9b:1::/48")
+
+
+def is_public_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Globally routable unicast, also for IPv6 forms that embed an IPv4 address
+    (mapped, IPv4-compatible, NAT64, 6to4, Teredo): the embedded address must be public."""
+    if not ip.is_global or ip.is_multicast:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address):
+        embedded: list[ipaddress.IPv4Address] = []
+        if ip.ipv4_mapped is not None:
+            embedded.append(ip.ipv4_mapped)
+        if ip.sixtofour is not None:
+            embedded.append(ip.sixtofour)
+        if ip.teredo is not None:
+            embedded.extend(ip.teredo)
+        if ip in _NAT64 or ip in _NAT64_LOCAL or int(ip) >> 32 == 0:
+            embedded.append(ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF))
+        return all(is_public_ip(v4) for v4 in embedded)
+    return True

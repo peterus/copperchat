@@ -101,3 +101,13 @@ def test_agent_dir_symlinked_outside_rejected(project: Project, tmp_path: Path) 
     with pytest.raises(uploads.UploadRejected):
         uploads.store_upload(project, png(4, 4), "a.png")
     assert list(outside.iterdir()) == []
+
+
+def test_large_photographic_alpha_image_is_flattened_to_jpeg(project: Project) -> None:
+    import os
+
+    noise = Image.frombytes("RGBA", (1600, 1200), os.urandom(1600 * 1200 * 4))
+    buf = io.BytesIO()
+    noise.save(buf, "PNG")
+    up = uploads.store_upload(project, buf.getvalue(), "noisy.png")
+    assert up.mime == "image/jpeg" and up.size <= uploads.MAX_ENCODED_IMAGE_BYTES

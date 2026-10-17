@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, HTTPException, Request, UploadFile
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
+from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from copperchat.db import utcnow_iso
 from copperchat.db.repos.uploads import UploadRow, get_upload, insert_upload
@@ -16,11 +17,38 @@ from copperchat.web.auth import CurrentUser
 router = APIRouter(prefix="/api/projects/{project_id}/uploads", tags=["uploads"])
 
 
+# Multipart overhead allowed on top of the largest accepted file.
+_FORM_OVERHEAD = 64 * 1024
+
+
+async def _single_file(request: Request) -> StarletteUploadFile:
+    """The one ``file`` part of a bounded multipart body. The size is checked from
+    Content-Length *before* Starlette spools anything to disk."""
+    raw = request.headers.get("content-length")
+    if raw is None:
+        raise HTTPException(411, "Content-Length required")
+    try:
+        length = int(raw)
+    except ValueError as exc:
+        raise HTTPException(400, "invalid Content-Length") from exc
+    if length > MAX_UPLOAD_BYTES + _FORM_OVERHEAD:
+        raise HTTPException(413, f"upload exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)} MB")
+    try:
+        form = await request.form(max_files=1, max_fields=1)
+    except HTTPException:
+        raise
+    except Exception as exc:  # malformed multipart / too many parts
+        raise HTTPException(400, "expected one multipart field 'file'") from exc
+    file = form.get("file")
+    if not isinstance(file, StarletteUploadFile):
+        raise HTTPException(400, "expected one multipart field 'file'")
+    return file
+
+
 @router.post("", status_code=201)
-async def upload(
-    request: Request, project_id: str, file: UploadFile, _: CurrentUser
-) -> dict[str, str]:
+async def upload(request: Request, project_id: str, _: CurrentUser) -> dict[str, str]:
     project = get_project(request.app.state.settings.projects_root, project_id)
+    file = await _single_file(request)
     data = await file.read(MAX_UPLOAD_BYTES + 1)
     try:
         # Decoding/re-encoding an image is CPU-bound: keep it off the event loop.

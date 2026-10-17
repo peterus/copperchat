@@ -25,6 +25,12 @@ async def fixed(addresses: list[str]):  # type: ignore[no-untyped-def]
         ("https://a.example/x", ["fe80::1%eth0"], False),
         ("https://a.example/x", ["224.0.0.1"], False),
         ("https://a.example/x", [], False),
+        ("https://a.example/x", ["64:ff9b::7f00:1"], False),  # NAT64 → 127.0.0.1
+        ("https://a.example/x", ["64:ff9b::a00:1"], False),  # NAT64 → 10.0.0.1
+        ("https://a.example/x", ["64:ff9b::5db8:d822"], True),  # NAT64 → public
+        ("https://a.example/x", ["::127.0.0.1"], False),  # IPv4-compatible
+        ("https://a.example/x", ["2002:c0a8:0101::1"], False),  # 6to4 of 192.168.1.1
+        ("http://[64:ff9b::a9fe:a9fe]/", [], False),  # literal NAT64 metadata IP
         ("ftp://a.example/x", ["93.184.216.34"], False),
         ("file:///etc/passwd", ["93.184.216.34"], False),
         ("https:///nohost", ["93.184.216.34"], False),

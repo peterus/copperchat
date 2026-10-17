@@ -97,6 +97,31 @@ describe('SkillsPanel', () => {
     await waitFor(() => expect(http.apiPost).toHaveBeenCalledWith('/skills/copperchat-tools/reset', {}));
   });
 
+  it('keeps unsaved edits when toggling enable', async () => {
+    render(<SkillsPanel projectId="p1" />);
+    await userEvent.click(await screen.findByText('copperchat-tools'));
+    const editor = await screen.findByRole('textbox', { name: /skill content/i });
+    await userEvent.type(editor, ' draft');
+    await userEvent.click(screen.getByRole('checkbox', { name: /enabled in this project/i }));
+    await waitFor(() => expect(http.apiPut).toHaveBeenCalledWith('/projects/p1/skills/copperchat-tools', { enabled: false }));
+    await waitFor(() => expect(http.apiGet).toHaveBeenCalledTimes(4)); // list, detail, list, detail
+    expect(screen.getByRole('textbox', { name: /skill content/i })).toHaveValue('---\nname: copperchat-tools\n---\nbody draft');
+  });
+
+  it('drops a detail response of the previous project', async () => {
+    let release: (v: SkillDetail) => void = () => {};
+    http.apiGet.mockImplementation(async (path: string) => {
+      if (path.startsWith('/skills?')) return all;
+      return new Promise<SkillDetail>((r) => (release = r));
+    });
+    const { rerender } = render(<SkillsPanel projectId="p1" />);
+    await userEvent.click(await screen.findByText('copperchat-tools'));
+    rerender(<SkillsPanel projectId="p2" />);
+    release(detail(userSkill));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByRole('textbox', { name: /skill content/i })).not.toBeInTheDocument();
+  });
+
   it('builtin skills are read-only and can be customised', async () => {
     render(<SkillsPanel projectId="p1" />);
     await userEvent.click(await screen.findByText('datasheet-reading'));

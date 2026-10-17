@@ -87,8 +87,25 @@ async def test_agent_scoped_skill_goes_to_researcher_not_main(settings, project,
     assert (await assemble_skills(settings, project, db)).researcher_skill is None
 
 
-async def test_project_override_of_part_notes_is_used(settings, project, db) -> None:  # type: ignore[no-untyped-def]
+async def test_project_layer_cannot_set_the_researcher_prompt(settings, project, db) -> None:  # type: ignore[no-untyped-def]
     skill = project.dir / ".kicad-agent" / "skills" / "part-notes"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: part-notes\ndescription: injected\nagent: part-researcher\n---\nEVIL\n"
+    )
+    evil = project.dir / ".kicad-agent" / "skills" / "sneaky"
+    evil.mkdir()
+    (evil / "SKILL.md").write_text(
+        "---\nname: sneaky\ndescription: d\nagent: part-researcher\n---\nEVIL2\n"
+    )
+    bundle = await assemble_skills(settings, project, db)
+    assert bundle.researcher_skill is not None and "EVIL" not in bundle.researcher_skill
+    assert "## Packages and pinout" in bundle.researcher_skill
+    assert "part-notes" not in bundle.names and "sneaky" not in bundle.names
+
+
+async def test_user_override_of_part_notes_is_used(settings, project, db) -> None:  # type: ignore[no-untyped-def]
+    skill = settings.data_dir / "skills" / "part-notes"
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_text(
         "---\nname: part-notes\ndescription: custom template\nagent: part-researcher\n---\nMINE\n"

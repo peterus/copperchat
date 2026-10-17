@@ -721,6 +721,14 @@ These extend C1–C8 and are equally binding.
   (`skills.assembly.main_skill_text`); `EffectiveSkill.agent` / `GET /skills` field `agent`
   mark agent-scoped skills (`part-notes`). `check_notes(text, *, structure_only, mpn)`.
   Live check (2026-10-17): plugin skills are discovered with `setting_sources=[]`.
+  Review round 1: the CLI auto-approves Read/Glob inside `cwd` **without** calling
+  `can_use_tool` (confirmed live) → the researcher guard also runs as a `PreToolUse` hook
+  (`guards.guard_as_pre_tool_use_hook`; live test `tests/live/test_researcher_guard_live.py`).
+  `ToolSpec.requires_kicad: bool = True` (C5 addition; `research_part` is `False`) +
+  `build_sdk_tools(specs, ctx_factory, kicadless_ctx_factory=None)`: research works without
+  an open KiCad session. Agent-scoped skills (researcher prompt) come only from the built-in
+  and user layers, never from a project's `.kicad-agent/skills/`. Residuals: WebFetch DNS
+  rebinding (CLI re-resolves), `user_edited` check-then-act vs. a concurrent Parts-page save.
 - **Phase 8 (plan):** table `uploads`; `copperchat.agent.attachments.{attachment_exists, build_user_content}`;
   `copperchat.skills.assembly.{SkillBundle(+researcher_skill), assemble_skills, apply_skills}`;
   `copperchat.research.agent.{RESEARCHER_NAME, researcher_definition}`;

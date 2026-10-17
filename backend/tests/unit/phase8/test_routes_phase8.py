@@ -193,3 +193,23 @@ def test_requires_login(make_settings: Callable[..., Settings]) -> None:
         assert c.get("/api/skills").status_code == 401
         assert c.get("/api/projects/0123456789ab/parts").status_code == 401
         assert c.post("/api/projects/0123456789ab/uploads").status_code == 401
+
+
+def test_upload_body_limits(env: Env) -> None:
+    c, pid = env.client, env.pid
+    url = f"/api/projects/{pid}/uploads"
+    huge = c.post(
+        url,
+        content=b"x",
+        headers={
+            "content-length": str(64 * 1024 * 1024),
+            "content-type": "multipart/form-data; boundary=b",
+        },
+    )
+    assert huge.status_code == 413
+    two = c.post(
+        url, files=[("file", ("a.pdf", b"%PDF-1.7\n")), ("file", ("b.pdf", b"%PDF-1.7\n"))]
+    )
+    assert two.status_code == 400
+    wrong = c.post(url, files={"other": ("a.pdf", b"%PDF-1.7\n")})
+    assert wrong.status_code == 400

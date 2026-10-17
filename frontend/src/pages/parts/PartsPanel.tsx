@@ -25,6 +25,7 @@ export function PartsPanel({ projectId }: PanelProps) {
   }, [projectId]);
 
   useEffect(() => {
+    openToken.current++; // a notes request of the previous project must not land here
     setNotes(null);
     setDraft(null);
     void refresh();

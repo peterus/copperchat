@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -60,6 +60,7 @@ from copperchat.agent.sdk_messages import (
 from copperchat.agent.sdk_tools import SERVER_NAME, build_sdk_tools, sdk_tool_name
 from copperchat.config import Settings
 from copperchat.db import Database
+from copperchat.kicad_session import KicadSession
 from copperchat.projects import Project
 from copperchat.research.runner import QueryFn, ResearchRunner
 from copperchat.skills.assembly import SkillBundle, apply_skills, assemble_skills
@@ -450,6 +451,7 @@ class SdkStreamingBackend:
         self._mapper: SdkEventMapper | None = None
         self._research: ResearchRunner | None = None
         self.tool_ctx_factory: Callable[[], ToolContext] = ctx_factory
+        self.kicadless_ctx_factory: Callable[[], ToolContext] = ctx_factory
 
     async def start(
         self,
@@ -474,12 +476,23 @@ class SdkStreamingBackend:
         def ctx_factory() -> ToolContext:
             return replace(self._ctx_factory(), research=research)
 
-        self.tool_ctx_factory = ctx_factory  # what this burst's MCP tool handlers use
+        def kicadless_ctx_factory() -> ToolContext:
+            # research_part needs no KiCad session; it never touches ``session``.
+            return ToolContext(
+                project=project,
+                session=cast(KicadSession, None),
+                settings=self._settings,
+                research=research,
+            )
+
+        # What this burst's MCP tool handlers use.
+        self.tool_ctx_factory = ctx_factory
+        self.kicadless_ctx_factory = kicadless_ctx_factory
 
         options = build_options(
             settings=self._settings,
             project=project,
-            mcp_server=build_sdk_tools(self._specs, ctx_factory),
+            mcp_server=build_sdk_tools(self._specs, ctx_factory, kicadless_ctx_factory),
             tool_names=[s.name for s in self._specs],
             resume_session_id=resume_session_id,
             # Fork only at burst start, and only from a stored session (spike 1A (c)).
@@ -516,7 +529,8 @@ class SdkStreamingBackend:
                 if parent and parent not in seen:
                     held.setdefault(parent, []).append(item)
                     continue
-                if isinstance(item, TurnFinished) and held:
+                if isinstance(item, TurnFinished):
+                    research.end_turn()  # recorded calls that never ran belong to no card
                     for evs in held.values():
                         for ev in evs:
                             yield ev
