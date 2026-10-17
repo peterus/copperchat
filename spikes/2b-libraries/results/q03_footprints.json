@@ -1,0 +1,168 @@
+{
+  "question": "q03_footprints",
+  "checks": [
+    {
+      "name": "listing_names_only",
+      "ok": true,
+      "evidence": ""
+    },
+    {
+      "name": "fetch_all_footprints_lt_30s",
+      "ok": true,
+      "evidence": "16.0s for 15478"
+    },
+    {
+      "name": "r0805_detail",
+      "ok": true,
+      "evidence": "FootprintRec(lib_id='Resistor_SMD:R_0805_2012Metric', description='Resistor SMD 0805 (2012 Metric), square (rectangular) end terminal, IPC-7351 nominal, (Body size source: IPC-SM-782 page 72, https://www.pcb-3d.com/wordpress/wp-content/uploads/ipc-sm-782a_amendment_1_and_2.pdf)', keywords='resistor', pad_count=2, smd=True, tht=False, extra={})"
+    },
+    {
+      "name": "name_vs_description_agree",
+      "ok": true,
+      "evidence": "{'agree': 113, 'disagree': 2, 'bad': ['Inductor_SMD:L_Taiyo-Yuden_BK_Array_1206_3216Metric', 'RF_Converter:Anaren_0805_2012Metric-6']}"
+    },
+    {
+      "name": "name_vs_description_agree_for_two_pad_smd",
+      "ok": true,
+      "evidence": "[]"
+    },
+    {
+      "name": "trap_01005_not_read_as_0402",
+      "ok": true,
+      "evidence": ""
+    },
+    {
+      "name": "hand_solder_variant",
+      "ok": true,
+      "evidence": ""
+    },
+    {
+      "name": "tht_not_matched",
+      "ok": true,
+      "evidence": ""
+    }
+  ],
+  "notes": {
+    "fetch_all_footprints": {
+      "count": 15478,
+      "seconds": 16.01,
+      "rss_mb": 5106
+    },
+    "coverage": {
+      "description": 15477,
+      "keywords": 15274,
+      "pads_ge1": 15143,
+      "smd": 7532,
+      "tht": 8281
+    },
+    "name_derivation_by_lib": {
+      "Capacitor_SMD": {
+        "total": 103,
+        "derived": 16,
+        "miss_sample": [
+          "CP_Elec_10x10",
+          "CP_Elec_10x10.5",
+          "CP_Elec_10x12.5",
+          "CP_Elec_10x12.6",
+          "CP_Elec_10x14.3",
+          "CP_Elec_10x7.7"
+        ]
+      },
+      "Diode_SMD": {
+        "total": 83,
+        "derived": 20,
+        "miss_sample": [
+          "D_2114_3652Metric",
+          "D_2114_3652Metric_Pad1.85x3.75mm_HandSolder",
+          "D_3220_8050Metric",
+          "D_3220_8050Metric_Pad2.65x5.15mm_HandSolder",
+          "D_MELF",
+          "D_MELF-RM10_Universal_Handsoldering"
+        ]
+      },
+      "Inductor_SMD": {
+        "total": 694,
+        "derived": 21,
+        "miss_sample": [
+          "L_10.4x10.4_H4.8",
+          "L_1008_2520Metric",
+          "L_1008_2520Metric_Pad1.43x2.20mm_HandSolder",
+          "L_12x12mm_H4.5mm",
+          "L_12x12mm_H6mm",
+          "L_12x12mm_H8mm"
+        ]
+      },
+      "LED_SMD": {
+        "total": 99,
+        "derived": 21,
+        "miss_sample": [
+          "LED-APA102-2020",
+          "LED-L1T2_LUMILEDS",
+          "LED_1W_3W_R8",
+          "LED_ASMB-KTF0-0A306",
+          "LED_Avago_PLCC4_3.2x2.8mm_CW",
+          "LED_Avago_PLCC6_3x2.8mm"
+        ]
+      },
+      "Resistor_SMD": {
+        "total": 67,
+        "derived": 20,
+        "miss_sample": [
+          "R_0508_1220Metric",
+          "R_0508_1220Metric_Pad1.12x2.15mm_HandSolder",
+          "R_0612_1632Metric",
+          "R_0612_1632Metric_Pad1.18x3.40mm_HandSolder",
+          "R_0815_2038Metric",
+          "R_0815_2038Metric_Pad1.20x4.05mm_HandSolder"
+        ]
+      }
+    },
+    "two_pad_smd_package_footprints": 113,
+    "footprints_per_package_in_passive_libs": {
+      "0402": 10,
+      "0603": 10,
+      "0805": 10,
+      "1206": 12
+    },
+    "0805_samples": [
+      "Capacitor_SMD:C_0805_2012Metric",
+      "Capacitor_SMD:C_0805_2012Metric_Pad1.18x1.45mm_HandSolder",
+      "Diode_SMD:D_0805_2012Metric",
+      "Diode_SMD:D_0805_2012Metric_Pad1.15x1.40mm_HandSolder",
+      "Inductor_SMD:L_0805_2012Metric",
+      "Inductor_SMD:L_0805_2012Metric_Pad1.05x1.20mm_HandSolder",
+      "LED_SMD:LED_0805_2012Metric",
+      "LED_SMD:LED_0805_2012Metric_Pad1.15x1.40mm_HandSolder",
+      "Resistor_SMD:R_0805_2012Metric",
+      "Resistor_SMD:R_0805_2012Metric_Pad1.20x1.40mm_HandSolder"
+    ],
+    "package_named_footprints_outside_passive_libs": {
+      "count": 17,
+      "sample": [
+        "Fuse:Fuse_0402_1005Metric",
+        "Fuse:Fuse_0402_1005Metric_Pad0.77x0.64mm_HandSolder",
+        "Fuse:Fuse_0603_1608Metric",
+        "Fuse:Fuse_0603_1608Metric_Pad1.05x0.95mm_HandSolder",
+        "Fuse:Fuse_0805_2012Metric",
+        "Fuse:Fuse_0805_2012Metric_Pad1.15x1.40mm_HandSolder",
+        "Fuse:Fuse_1206_3216Metric",
+        "Fuse:Fuse_1206_3216Metric_Pad1.42x1.75mm_HandSolder"
+      ]
+    },
+    "passive_lib_names_with_size_token_not_derived": {
+      "count": 41,
+      "sample": [
+        "Diode_SMD:Nexperia_DSN0603-2_0.6x0.3mm_P0.4mm",
+        "Inductor_SMD:L_Changjiang_FTC404020S",
+        "Inductor_SMD:L_Chilisin_BWVS00404026",
+        "Inductor_SMD:L_Coilcraft_0805HQ_2012Metric",
+        "Inductor_SMD:L_CommonModeChoke_Coilcraft_0603USB",
+        "Inductor_SMD:L_CommonModeChoke_Coilcraft_0805USB",
+        "Inductor_SMD:L_CommonMode_Wurth_WE-CNSW-1206",
+        "Inductor_SMD:L_Sunlord_MWSA0402S",
+        "Inductor_SMD:L_Sunlord_MWSA0603S",
+        "Inductor_SMD:L_Sunlord_MWSA1206S-100"
+      ]
+    }
+  }
+}

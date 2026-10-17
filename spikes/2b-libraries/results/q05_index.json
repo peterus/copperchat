@@ -1,0 +1,469 @@
+{
+  "question": "q05_index",
+  "checks": [
+    {
+      "name": "sym_name_only_query_lt_300ms",
+      "ok": true,
+      "evidence": "max 19.5 ms, p95 18.6 ms"
+    },
+    {
+      "name": "sym_name_only_nonempty:LM358",
+      "ok": true,
+      "evidence": "['Amplifier_Operational:LM358', 'Amplifier_Operational:LM358_DFN']"
+    },
+    {
+      "name": "sym_name_only_nonempty:led",
+      "ok": true,
+      "evidence": "['Device:LED', 'Device:LED_Pad', 'Device:LED_RGB']"
+    },
+    {
+      "name": "sym_name_only_nonempty:GND",
+      "ok": true,
+      "evidence": "['power:GND', 'ecc83-pp:GND', 'power:GND1']"
+    },
+    {
+      "name": "sym_name_only_nonempty:+3V3",
+      "ok": true,
+      "evidence": "['power:+3V3', 'power:-3V3']"
+    },
+    {
+      "name": "sym_name_only_nonempty:conn_01x04",
+      "ok": true,
+      "evidence": "['Connector_Generic:Conn_01x04', 'Connector:Conn_01x04_Pin', 'Connector:Conn_01x04_Socket']"
+    },
+    {
+      "name": "sym_name_only_expected_in_top5",
+      "ok": true,
+      "evidence": "[]"
+    },
+    {
+      "name": "name_only_cannot_find_generic_terms",
+      "ok": true,
+      "evidence": "'resistor'/'capacitor' find nothing by name alone (Device:R, Device:C) - details are needed"
+    },
+    {
+      "name": "sym_query_lt_300ms",
+      "ok": true,
+      "evidence": "max 7.3 ms, p95 2.2 ms"
+    },
+    {
+      "name": "sym_nonempty:resistor",
+      "ok": true,
+      "evidence": "['Device:R', 'Device:R_US', 'Potentiometer_Digital:X9250']"
+    },
+    {
+      "name": "sym_nonempty:capacitor",
+      "ok": true,
+      "evidence": "['Device:C', 'ecc83-pp:CP', 'Device:C_US']"
+    },
+    {
+      "name": "sym_nonempty:LM358",
+      "ok": true,
+      "evidence": "['Amplifier_Operational:LM358', 'Amplifier_Operational:LM358_DFN']"
+    },
+    {
+      "name": "sym_nonempty:opamp dual",
+      "ok": true,
+      "evidence": "['Amplifier_Operational:Opamp_Dual', 'Amplifier_Operational:L272', 'Amplifier_Operational:L272D']"
+    },
+    {
+      "name": "sym_nonempty:stm32f103",
+      "ok": true,
+      "evidence": "['MCU_ST_STM32F1:STM32F103C4Tx', 'MCU_ST_STM32F1:STM32F103C6Tx', 'MCU_ST_STM32F1:STM32F103C6Ux']"
+    },
+    {
+      "name": "sym_nonempty:ESP32-WROOM",
+      "ok": true,
+      "evidence": "['RF_Module:ESP32-WROOM-32', 'RF_Module:ESP32-WROOM-32D', 'RF_Module:ESP32-WROOM-32E']"
+    },
+    {
+      "name": "sym_nonempty:npn transistor",
+      "ok": true,
+      "evidence": "['Simulation_SPICE:NPN', 'Device:Q_NPN', 'Device:Q_NPN_BRT']"
+    },
+    {
+      "name": "sym_nonempty:n-channel mosfet",
+      "ok": true,
+      "evidence": "['Transistor_FET:BS107', 'Transistor_FET:BS108', 'Transistor_FET:BS170']"
+    },
+    {
+      "name": "sym_nonempty:ldo 3.3v",
+      "ok": true,
+      "evidence": "['Regulator_Linear:LT1962-3', 'Regulator_Linear:LT1962-3.3', 'Regulator_Linear:SPX3819M5-L-3-3']"
+    },
+    {
+      "name": "sym_nonempty:usb type-c receptacle",
+      "ok": true,
+      "evidence": "['Connector:USB_C_Receptacle', 'Connector:USB_C_Receptacle_USB2.0_14P', 'Connector:USB_C_Receptacle_USB2.0_16P']"
+    },
+    {
+      "name": "sym_nonempty:led",
+      "ok": true,
+      "evidence": "['Device:LED', 'Device:LED_Pad', 'Device:LED_RGB']"
+    },
+    {
+      "name": "sym_nonempty:GND",
+      "ok": true,
+      "evidence": "['power:GND', 'ecc83-pp:GND', 'power:GND1']"
+    },
+    {
+      "name": "sym_nonempty:+3V3",
+      "ok": true,
+      "evidence": "['power:+3V3', 'power:-3V3', 'Regulator_Switching:LM5165Y']"
+    },
+    {
+      "name": "sym_nonempty:conn_01x04",
+      "ok": true,
+      "evidence": "['Connector_Generic:Conn_01x04', 'Connector:Conn_01x04_Pin', 'Connector:Conn_01x04_Socket']"
+    },
+    {
+      "name": "sym_nonempty:AMS1117",
+      "ok": true,
+      "evidence": "['Regulator_Linear:AMS1117', 'Regulator_Linear:AMS1117-1.5', 'Regulator_Linear:AMS1117-1.8']"
+    },
+    {
+      "name": "sym_nonempty:ne555 timer",
+      "ok": true,
+      "evidence": "['Timer:NE555D', 'Timer:NE555P', 'Timer:8253']"
+    },
+    {
+      "name": "sym_nonempty:schottky diode",
+      "ok": true,
+      "evidence": "['Device:D_Schottky', 'Device:D_Schottky_AAK', 'Device:D_Schottky_AKA']"
+    },
+    {
+      "name": "sym_nonempty:ferrite bead",
+      "ok": true,
+      "evidence": "['Device:FerriteBead', 'Device:FerriteBead_Small', 'Regulator_Switching:TPS62912']"
+    },
+    {
+      "name": "sym_nonempty:crystal",
+      "ok": true,
+      "evidence": "['Device:Crystal', 'Device:Crystal_GND2', 'Device:Crystal_GND3']"
+    },
+    {
+      "name": "sym_nonempty:74hc595 shift register",
+      "ok": true,
+      "evidence": "['74xx:74HC595', '4xxx:4021', '74xx:74HC164']"
+    },
+    {
+      "name": "sym_expected_in_top5",
+      "ok": true,
+      "evidence": "[]"
+    },
+    {
+      "name": "fp_query_lt_300ms",
+      "ok": true,
+      "evidence": "max 7.5 ms, p95 7.3 ms"
+    },
+    {
+      "name": "fp_nonempty:0805 resistor",
+      "ok": true,
+      "evidence": "['Resistor_SMD:R_0805_2012Metric', 'Resistor_SMD:R_0805_2012Metric_Pad1.20x1.40mm_HandSolder', 'Capacitor_SMD:C_0805_2012Metric']"
+    },
+    {
+      "name": "fp_nonempty:0603 capacitor",
+      "ok": true,
+      "evidence": "['Capacitor_SMD:C_0603_1608Metric', 'Capacitor_SMD:C_0603_1608Metric_Pad1.08x0.95mm_HandSolder', 'Capacitor_SMD:C_0201_0603Metric']"
+    },
+    {
+      "name": "fp_nonempty:sot-23",
+      "ok": true,
+      "evidence": "['Package_TO_SOT_SMD:SOT-23', 'Package_TO_SOT_SMD:SOT-23-3', 'Package_TO_SOT_SMD:SOT-23-5']"
+    },
+    {
+      "name": "fp_nonempty:soic-8",
+      "ok": true,
+      "evidence": "['Package_SO:SOIC-8_3.9x4.9mm_P1.27mm', 'Package_SO:SOIC-8_5.3x5.3mm_P1.27mm', 'Package_SO:SOIC-8_5.3x6.2mm_P1.27mm']"
+    },
+    {
+      "name": "fp_nonempty:qfn-32",
+      "ok": true,
+      "evidence": "['Package_DFN_QFN:QFN-32-1EP_4x4mm_P0.4mm_EP2.9x2.9mm', 'Package_DFN_QFN:QFN-32-1EP_5x5mm_P0.5mm_EP3.1x3.1mm', 'Package_DFN_QFN:QFN-32-1EP_5x5mm_P0.5mm_EP3.3x3.3mm']"
+    },
+    {
+      "name": "fp_nonempty:pinheader 1x04 2.54",
+      "ok": true,
+      "evidence": "['Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical', 'Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Horizontal', 'Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical_SMD_Pin1Left']"
+    },
+    {
+      "name": "fp_nonempty:usb-c",
+      "ok": true,
+      "evidence": "['Connector_USB:USB_C_Plug_Molex_105444', 'Connector_USB:USB_C_Plug_JAE_DX07P024AJ1', 'Connector_USB:USB_C_Receptacle_GCT_USB4085']"
+    },
+    {
+      "name": "fp_nonempty:led 0805",
+      "ok": true,
+      "evidence": "['LED_SMD:LED_0805_2012Metric', 'LED_SMD:LED_0805_2012Metric_Pad1.15x1.40mm_HandSolder', 'LED_SMD:LED_RGB_Wuerth_150080M153000']"
+    },
+    {
+      "name": "fp_nonempty:tssop-20",
+      "ok": true,
+      "evidence": "['Package_SO:TSSOP-20_4.4x5mm_P0.4mm', 'Package_SO:TSSOP-20_4.4x5mm_P0.5mm', 'Package_SO:TSSOP-20_4.4x6.5mm_P0.65mm']"
+    },
+    {
+      "name": "fp_nonempty:lqfp-48",
+      "ok": true,
+      "evidence": "['Package_QFP:LQFP-48_7x7mm_P0.5mm', 'Package_QFP:LQFP-48-1EP_7x7mm_P0.5mm_EP3.6x3.6mm', 'Package_QFP:LQFP-48-1EP_7x7mm_P0.5mm_EP3.6x3.6mm_ThermalVias']"
+    },
+    {
+      "name": "fp_expected_in_top5",
+      "ok": true,
+      "evidence": "[]"
+    }
+  ],
+  "notes": {
+    "name_only_index": {
+      "entries": 22916,
+      "build_s": 0.58
+    },
+    "sym_name_only_latency_ms": {
+      "p50": 0.27,
+      "p95": 18.63,
+      "max": 19.5,
+      "n": 25
+    },
+    "sym_name_only_top3": {
+      "LM358": [
+        "Amplifier_Operational:LM358",
+        "Amplifier_Operational:LM358_DFN"
+      ],
+      "led": [
+        "Device:LED",
+        "Device:LED_Pad",
+        "Device:LED_RGB"
+      ],
+      "GND": [
+        "power:GND",
+        "ecc83-pp:GND",
+        "power:GND1"
+      ],
+      "+3V3": [
+        "power:+3V3",
+        "power:-3V3"
+      ],
+      "conn_01x04": [
+        "Connector_Generic:Conn_01x04",
+        "Connector:Conn_01x04_Pin",
+        "Connector:Conn_01x04_Socket"
+      ]
+    },
+    "warmup_timeline_s": {
+      "api_load": 7.2,
+      "list_names": 0.18,
+      "fetch_symbol_details": 17.9,
+      "fetch_footprint_details": 18.0,
+      "build_symbol_index": 1.09,
+      "build_footprint_index": 1.05,
+      "total": 45.4
+    },
+    "client_python_heap_mb": {
+      "index_and_records": 244,
+      "peak": 244
+    },
+    "vocab": {
+      "symbols": 24969,
+      "footprints": 16675
+    },
+    "sym_latency_ms": {
+      "p50": 0.18,
+      "p95": 2.17,
+      "max": 7.34,
+      "n": 100
+    },
+    "sym_top3": {
+      "resistor": [
+        "Device:R",
+        "Device:R_US",
+        "Potentiometer_Digital:X9250"
+      ],
+      "capacitor": [
+        "Device:C",
+        "ecc83-pp:CP",
+        "Device:C_US"
+      ],
+      "LM358": [
+        "Amplifier_Operational:LM358",
+        "Amplifier_Operational:LM358_DFN"
+      ],
+      "opamp dual": [
+        "Amplifier_Operational:Opamp_Dual",
+        "Amplifier_Operational:L272",
+        "Amplifier_Operational:L272D"
+      ],
+      "stm32f103": [
+        "MCU_ST_STM32F1:STM32F103C4Tx",
+        "MCU_ST_STM32F1:STM32F103C6Tx",
+        "MCU_ST_STM32F1:STM32F103C6Ux"
+      ],
+      "ESP32-WROOM": [
+        "RF_Module:ESP32-WROOM-32",
+        "RF_Module:ESP32-WROOM-32D",
+        "RF_Module:ESP32-WROOM-32E"
+      ],
+      "npn transistor": [
+        "Simulation_SPICE:NPN",
+        "Device:Q_NPN",
+        "Device:Q_NPN_BRT"
+      ],
+      "n-channel mosfet": [
+        "Transistor_FET:BS107",
+        "Transistor_FET:BS108",
+        "Transistor_FET:BS170"
+      ],
+      "ldo 3.3v": [
+        "Regulator_Linear:LT1962-3",
+        "Regulator_Linear:LT1962-3.3",
+        "Regulator_Linear:SPX3819M5-L-3-3"
+      ],
+      "usb type-c receptacle": [
+        "Connector:USB_C_Receptacle",
+        "Connector:USB_C_Receptacle_USB2.0_14P",
+        "Connector:USB_C_Receptacle_USB2.0_16P"
+      ],
+      "led": [
+        "Device:LED",
+        "Device:LED_Pad",
+        "Device:LED_RGB"
+      ],
+      "GND": [
+        "power:GND",
+        "ecc83-pp:GND",
+        "power:GND1"
+      ],
+      "+3V3": [
+        "power:+3V3",
+        "power:-3V3",
+        "Regulator_Switching:LM5165Y"
+      ],
+      "conn_01x04": [
+        "Connector_Generic:Conn_01x04",
+        "Connector:Conn_01x04_Pin",
+        "Connector:Conn_01x04_Socket"
+      ],
+      "AMS1117": [
+        "Regulator_Linear:AMS1117",
+        "Regulator_Linear:AMS1117-1.5",
+        "Regulator_Linear:AMS1117-1.8"
+      ],
+      "ne555 timer": [
+        "Timer:NE555D",
+        "Timer:NE555P",
+        "Timer:8253"
+      ],
+      "schottky diode": [
+        "Device:D_Schottky",
+        "Device:D_Schottky_AAK",
+        "Device:D_Schottky_AKA"
+      ],
+      "ferrite bead": [
+        "Device:FerriteBead",
+        "Device:FerriteBead_Small",
+        "Regulator_Switching:TPS62912"
+      ],
+      "crystal": [
+        "Device:Crystal",
+        "Device:Crystal_GND2",
+        "Device:Crystal_GND3"
+      ],
+      "74hc595 shift register": [
+        "74xx:74HC595",
+        "4xxx:4021",
+        "74xx:74HC164"
+      ]
+    },
+    "fp_latency_ms": {
+      "p50": 0.86,
+      "p95": 7.28,
+      "max": 7.54,
+      "n": 50
+    },
+    "fp_top3": {
+      "0805 resistor": [
+        "Resistor_SMD:R_0805_2012Metric",
+        "Resistor_SMD:R_0805_2012Metric_Pad1.20x1.40mm_HandSolder",
+        "Capacitor_SMD:C_0805_2012Metric"
+      ],
+      "0603 capacitor": [
+        "Capacitor_SMD:C_0603_1608Metric",
+        "Capacitor_SMD:C_0603_1608Metric_Pad1.08x0.95mm_HandSolder",
+        "Capacitor_SMD:C_0201_0603Metric"
+      ],
+      "sot-23": [
+        "Package_TO_SOT_SMD:SOT-23",
+        "Package_TO_SOT_SMD:SOT-23-3",
+        "Package_TO_SOT_SMD:SOT-23-5"
+      ],
+      "soic-8": [
+        "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm",
+        "Package_SO:SOIC-8_5.3x5.3mm_P1.27mm",
+        "Package_SO:SOIC-8_5.3x6.2mm_P1.27mm"
+      ],
+      "qfn-32": [
+        "Package_DFN_QFN:QFN-32-1EP_4x4mm_P0.4mm_EP2.9x2.9mm",
+        "Package_DFN_QFN:QFN-32-1EP_5x5mm_P0.5mm_EP3.1x3.1mm",
+        "Package_DFN_QFN:QFN-32-1EP_5x5mm_P0.5mm_EP3.3x3.3mm"
+      ],
+      "pinheader 1x04 2.54": [
+        "Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical",
+        "Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Horizontal",
+        "Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical_SMD_Pin1Left"
+      ],
+      "usb-c": [
+        "Connector_USB:USB_C_Plug_Molex_105444",
+        "Connector_USB:USB_C_Plug_JAE_DX07P024AJ1",
+        "Connector_USB:USB_C_Receptacle_GCT_USB4085"
+      ],
+      "led 0805": [
+        "LED_SMD:LED_0805_2012Metric",
+        "LED_SMD:LED_0805_2012Metric_Pad1.15x1.40mm_HandSolder",
+        "LED_SMD:LED_RGB_Wuerth_150080M153000"
+      ],
+      "tssop-20": [
+        "Package_SO:TSSOP-20_4.4x5mm_P0.4mm",
+        "Package_SO:TSSOP-20_4.4x5mm_P0.5mm",
+        "Package_SO:TSSOP-20_4.4x6.5mm_P0.65mm"
+      ],
+      "lqfp-48": [
+        "Package_QFP:LQFP-48_7x7mm_P0.5mm",
+        "Package_QFP:LQFP-48-1EP_7x7mm_P0.5mm_EP3.6x3.6mm",
+        "Package_QFP:LQFP-48-1EP_7x7mm_P0.5mm_EP3.6x3.6mm_ThermalVias"
+      ]
+    },
+    "pkg_of_hits": [
+      [
+        "Resistor_SMD:R_0805_2012Metric",
+        "0805"
+      ],
+      [
+        "Resistor_SMD:R_0805_2012Metric_Pad1.20x1.40mm_HandSolder",
+        "0805"
+      ],
+      [
+        "Capacitor_SMD:C_0805_2012Metric",
+        "0805"
+      ],
+      [
+        "Diode_SMD:D_0805_2012Metric",
+        "0805"
+      ],
+      [
+        "Inductor_SMD:L_0805_2012Metric",
+        "0805"
+      ],
+      [
+        "LED_SMD:LED_0805_2012Metric",
+        "0805"
+      ],
+      [
+        "Fuse:Fuse_0805_2012Metric",
+        "0805"
+      ],
+      [
+        "RF_Converter:Anaren_0805_2012Metric-6",
+        "0805"
+      ]
+    ],
+    "server_rss_mb": 5190
+  }
+}

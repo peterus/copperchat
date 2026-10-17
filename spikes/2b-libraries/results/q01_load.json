@@ -1,0 +1,246 @@
+{
+  "question": "q01_load",
+  "checks": [
+    {
+      "name": "s1_place_symbol_cold_refused_as_expected",
+      "ok": true,
+      "evidence": "ApiError: KiCad returned error: symbol 'Device:R' not found"
+    },
+    {
+      "name": "s1_get_symbol_cold_other_lib",
+      "ok": true,
+      "evidence": "works: Connector_Generic:Conn_01x02 0.14s"
+    },
+    {
+      "name": "s1_place_after_lazy_get",
+      "ok": true,
+      "evidence": "works: value: \"978fc714-e226-41c4-897f-50a0614f4eac\"\n 0.01s"
+    },
+    {
+      "name": "s1_list_names_cold_Device",
+      "ok": true,
+      "evidence": "works: 537 0.08s"
+    },
+    {
+      "name": "s1_get_footprint_cold_refused_as_expected",
+      "ok": true,
+      "evidence": "ApiError: KiCad returned error: no handler available for request of type kiapi.common.commands.GetItemsFromLibrary"
+    },
+    {
+      "name": "s2_get_footprint_with_board_open",
+      "ok": true,
+      "evidence": "works: Resistor_SMD:R_0805_2012Metric 0.03s"
+    },
+    {
+      "name": "s2_list_footprints_one_lib",
+      "ok": true,
+      "evidence": "works: 67 0.05s"
+    },
+    {
+      "name": "s3_get_footprint_after_symbol_loadall_refused_as_expected",
+      "ok": true,
+      "evidence": "ApiError: KiCad returned error: no handler available for request of type kiapi.common.commands.GetItemsFromLibrary"
+    },
+    {
+      "name": "s3_list_footprints_after_symbol_loadall_refused_as_expected",
+      "ok": true,
+      "evidence": "ApiError: KiCad returned error: no handler available for request of type kiapi.common.commands.GetLibraryItems"
+    },
+    {
+      "name": "load_all_all_libraries_loaded",
+      "ok": true,
+      "evidence": "380 libraries, not loaded: []"
+    },
+    {
+      "name": "symbol_count_ge_20k",
+      "ok": true,
+      "evidence": "22916"
+    },
+    {
+      "name": "footprint_count_ge_15k",
+      "ok": true,
+      "evidence": "15478"
+    },
+    {
+      "name": "load_symbols_only_all_libraries_loaded",
+      "ok": true,
+      "evidence": "224 libraries, not loaded: []"
+    },
+    {
+      "name": "load_footprints_only_all_libraries_loaded",
+      "ok": true,
+      "evidence": "156 libraries, not loaded: []"
+    }
+  ],
+  "notes": {
+    "s1_rss_before": 221,
+    "s1_rss_after": 272,
+    "s2_rss": 282,
+    "per_library_final_rss_mb": 4659,
+    "per_library_sym": {
+      "libs": 224,
+      "total_delta_mb": 1129,
+      "top": [
+        [
+          "sym",
+          "MCU_ST_STM32H7",
+          225,
+          68.9,
+          0.274
+        ],
+        [
+          "sym",
+          "MCU_ST_STM32MP1",
+          84,
+          48.3,
+          0.203
+        ],
+        [
+          "sym",
+          "FPGA_Xilinx_Virtex7",
+          34,
+          46.2,
+          0.349
+        ],
+        [
+          "sym",
+          "MCU_ST_STM32L4",
+          320,
+          44.2,
+          0.184
+        ],
+        [
+          "sym",
+          "MCU_ST_STM32U5",
+          162,
+          44.0,
+          0.177
+        ],
+        [
+          "sym",
+          "FPGA_Xilinx_Virtex5",
+          41,
+          40.5,
+          0.313
+        ],
+        [
+          "sym",
+          "Connector_Generic_MountingPin",
+          334,
+          34.9,
+          0.139
+        ],
+        [
+          "sym",
+          "Connector_Generic_Shielded",
+          335,
+          34.4,
+          0.136
+        ]
+      ],
+      "median_delta_mb": 1.3
+    },
+    "per_library_fp": {
+      "libs": 156,
+      "total_delta_mb": 3254,
+      "top": [
+        [
+          "fp",
+          "Package_BGA",
+          235,
+          266.1,
+          1.001
+        ],
+        [
+          "fp",
+          "Package_DFN_QFN",
+          779,
+          184.7,
+          0.832
+        ],
+        [
+          "fp",
+          "Connector_Samtec_HLE_SMD",
+          290,
+          136.0,
+          0.501
+        ],
+        [
+          "fp",
+          "Connector_Molex",
+          812,
+          127.2,
+          0.608
+        ],
+        [
+          "fp",
+          "Connector_PinHeader_2.00mm",
+          278,
+          114.8,
+          0.402
+        ],
+        [
+          "fp",
+          "Connector_PinHeader_2.54mm",
+          278,
+          114.8,
+          0.401
+        ],
+        [
+          "fp",
+          "Connector_PinHeader_1.00mm",
+          278,
+          105.4,
+          0.381
+        ],
+        [
+          "fp",
+          "Connector_PinHeader_1.27mm",
+          278,
+          102.0,
+          0.37
+        ]
+      ],
+      "median_delta_mb": 6.5
+    },
+    "load_all": {
+      "base_rss_mb": 221,
+      "rss_mb": 4967,
+      "load_call_s": 0.59,
+      "load_done_s": 14.15,
+      "libraries": 380,
+      "failed": [],
+      "symbols": 22916,
+      "list_symbols_s": 0.08,
+      "footprints": 15478,
+      "list_footprints_s": 0.12,
+      "rss_after_list_mb": 4973
+    },
+    "load_symbols_only": {
+      "base_rss_mb": 221,
+      "rss_mb": 1350,
+      "load_call_s": 0.02,
+      "load_done_s": 3.18,
+      "libraries": 224,
+      "failed": [],
+      "symbols": 22916,
+      "list_symbols_s": 0.09,
+      "footprints": -1,
+      "list_footprints_s": 0.0,
+      "rss_after_list_mb": 1355
+    },
+    "load_footprints_only": {
+      "base_rss_mb": 220,
+      "rss_mb": 3843,
+      "load_call_s": 0.52,
+      "load_done_s": 8.36,
+      "libraries": 156,
+      "failed": [],
+      "symbols": -1,
+      "list_symbols_s": 0.0,
+      "footprints": 15478,
+      "list_footprints_s": 0.11,
+      "rss_after_list_mb": 3848
+    }
+  }
+}
