@@ -29,19 +29,36 @@ jobs:
       - name: Docs and pins guard
         run: bash scripts/check-docs.sh
         working-directory: .
+      - name: kicad-base tag logic (stubbed registry)
+        run: bash scripts/test-kicad-base-image.sh
+        working-directory: .
 
   kicad-commits:
+    # Every supported KiCad commit with the base image CI tests it against. The pinned
+    # KICAD_COMMIT must use the current recipe (scripts/kicad-base-image.sh resolve):
+    # while a pull request's new recipe is still being built this job fails, and the
+    # kicad-base workflow re-runs it once the recipe-pinned tag is pushed. Fork pull
+    # requests cannot push that tag: a recipe change from a fork stays red here until a
+    # maintainer pushes the branch to this repository.
     runs-on: ubuntu-latest
     outputs:
-      commits: ${{ steps.list.outputs.commits }}
+      matrix: ${{ steps.list.outputs.matrix }}
+      base: ${{ steps.list.outputs.base }}
     steps:
       - uses: actions/checkout@v4
       - id: list
         # One full commit hash per line; `#` comments and blank lines allowed (Phase 2).
         run: |
-          commits=$(grep -Ev '^\s*(#|$)' docker/kicad-base/SUPPORTED_COMMITS | tr -d '[:blank:]' | jq -R . | jq -sc .)
-          echo "commits=$commits" >> "$GITHUB_OUTPUT"
-          echo "supported: $commits"
+          set -o pipefail
+          pinned="$(tr -d '[:space:]' < docker/kicad-base/KICAD_COMMIT)"
+          matrix="$(grep -Ev '^\s*(#|$)' docker/kicad-base/SUPPORTED_COMMITS | tr -d '[:blank:]' | while read -r c; do
+            image="$(scripts/kicad-base-image.sh resolve "$c")" || exit 1
+            jq -nc --arg commit "$c" --arg image "$image" '{commit: $commit, image: $image}'
+          done | jq -sc .)"
+          base="$(scripts/kicad-base-image.sh resolve "$pinned")"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "supported: $matrix"; echo "app base: $base"
 
   kicad:
     # Real-KiCad tests against every supported kicad-base tag.
@@ -51,9 +68,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        commit: ${{ fromJson(needs.kicad-commits.outputs.commits) }}
+        include: ${{ fromJson(needs.kicad-commits.outputs.matrix) }}
     container:
-      image: ghcr.io/peterus/copperchat-kicad-base:${{ matrix.commit }}
+      image: ${{ matrix.image }}
       # The /__w workspace belongs to the runner uid; checkout and setup-uv need root (X13).
       options: --user root
     env:
@@ -110,12 +127,12 @@ jobs:
 
   e2e:
     # The real app image: token-missing refusal, then the fake agent + ecc83 fixture end to end.
-    needs: [backend, frontend]
+    needs: [backend, frontend, kicad-commits]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - name: Free disk space (the KiCad base image is ~3 GB)
+      - name: Free disk space (the KiCad base image is ~2 GB)
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
       - uses: docker/setup-buildx-action@v3
       - id: kc
@@ -125,7 +142,9 @@ jobs:
         with:
           context: .
           file: docker/app/Dockerfile
-          build-args: KICAD_COMMIT=${{ steps.kc.outputs.commit }}
+          build-args: |
+            KICAD_COMMIT=${{ steps.kc.outputs.commit }}
+            KICAD_BASE=${{ needs.kicad-commits.outputs.base }}
           load: true
           push: false
           tags: copperchat:ci

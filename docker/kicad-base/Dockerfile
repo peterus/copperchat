@@ -60,12 +60,39 @@ RUN --mount=type=cache,target=/ccache \
     cmake --build /src/build; \
     DESTDIR=/out cmake --install /src/build; \
     ccache --show-stats; \
+    # Keep only what this build used (hits are touched), so the cache CI saves does not
+    # grow with every KiCad commit; 6 h covers the longest (cold) build.
+    ccache --evict-older-than 21600s; \
     rm -rf /src; \
     # Runtime packages = owners of every shared library the installed ELF files
     # link against (KiCad's own libraries are under /out and resolve to "not found").
     find /out/usr/bin /out/usr/lib -type f -print0 | xargs -0 ldd 2>/dev/null | awk '$2 == "=>" && $3 ~ /^\// {print $3}' \
       | sort -u | xargs -r realpath | sort -u | xargs -r dpkg -S | cut -d: -f1 | sort -u > /out/runtime-packages.txt; \
     cat /out/runtime-packages.txt
+
+# ---------------------------------------------------------------------------
+# slim: the install tree minus what a headless image never uses. Debug symbols
+# are stripped (readelf picks the ELF files), man pages dropped, and only the
+# demos the tests and the smoke test copy are kept: ecc83, complex_hierarchy and
+# the jetson-agx-thor-baseboard design rules file (plus its LICENSE/README).
+FROM deps AS slim
+COPY --from=build /out /out
+RUN set -eu; \
+    find /out/usr/bin /out/usr/lib -type f | while read -r f; do \
+      if readelf -h "$f" >/dev/null 2>&1; then strip --strip-unneeded "$f"; echo "${f#/out}"; fi; \
+    done > /out/kicad-elf-files.txt; \
+    rm -rf /out/usr/share/man; \
+    cd /out/usr/share/kicad/demos; \
+    for d in *; do \
+      case "$d" in \
+        ecc83|complex_hierarchy) ;; \
+        jetson-agx-thor-baseboard) \
+          find "$d" -mindepth 1 -maxdepth 1 ! -name '*.kicad_dru' ! -name LICENSE ! -name README.md -exec rm -rf {} + ;; \
+        *) rm -rf "$d" ;; \
+      esac; \
+    done; \
+    test -f ecc83/ecc83-pp.kicad_sch; test -d complex_hierarchy; \
+    test -f jetson-agx-thor-baseboard/jetson-agx-thor-baseboard.kicad_dru
 
 # ---------------------------------------------------------------------------
 # libs: kicad-symbols / kicad-footprints at the pins in LIBS_COMMITS (no 3D models)
@@ -110,6 +137,7 @@ RUN test -n "${KIPY_REV}" || { echo "KIPY_REV build-arg required" >&2; exit 1; }
     git -C /src/kicad-python submodule update --init --depth 1; \
     python3 -m venv /opt/venv; \
     /opt/venv/bin/pip install --no-cache-dir /src/kicad-python; \
+    /opt/venv/bin/pip uninstall -q -y pip; \
     /opt/venv/bin/python -c "import kipy.schematic, kipy.board_jobs"
 
 # ---------------------------------------------------------------------------
@@ -119,21 +147,31 @@ ARG KICAD_COMMIT
 ARG KIPY_REV
 ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 PATH=/opt/venv/bin:$PATH \
     KICAD_CONFIG_HOME=/home/copperchat/.config/kicad
-COPY --from=build /out/runtime-packages.txt /tmp/runtime-packages.txt
+COPY --from=slim /out/runtime-packages.txt /out/kicad-elf-files.txt /tmp/
+COPY dpkg-slim.cfg /etc/dpkg/dpkg.cfg.d/copperchat-slim
 # git stays installed (plan X12); libngspice0 is dlopen()ed, so ldd cannot see it.
+# docker-clean is only parked for the cached install: images built on top keep
+# Debian's default (no package cache left in their layers).
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    rm -f /etc/apt/apt.conf.d/docker-clean && apt-get update \
+    mv /etc/apt/apt.conf.d/docker-clean /tmp/docker-clean && apt-get update \
  && xargs -a /tmp/runtime-packages.txt apt-get install -y --no-install-recommends \
       ca-certificates python3 git libngspice0 shared-mime-info \
+ && mv /tmp/docker-clean /etc/apt/apt.conf.d/docker-clean \
  && rm /tmp/runtime-packages.txt
-COPY --from=build /out/usr /usr
+COPY --from=slim /out/usr /usr
 COPY --from=libs /out/usr /usr
 COPY --from=kipy /opt/venv /opt/venv
+# Every KiCad ELF file, the kipy venv, Python's extension modules and git must
+# resolve their libraries (ldd follows the whole closure, so a dpkg-slim.cfg
+# path-exclude that something links against fails here). dlopen()ed libraries are
+# outside ldd's view: libngspice0 above, the GL drivers in dpkg-slim.cfg.
 RUN ldconfig \
- && missing="$(find /usr/bin -name 'kicad*' -type f; find /usr/lib -type f \( -name '*.kiface' -o -path '*kicad*' -name '*.so*' \))" \
- && missing="$(echo "$missing" | xargs ldd 2>/dev/null | grep 'not found' || true)" \
+ && missing="$({ cat /tmp/kicad-elf-files.txt; echo /usr/bin/python3 /usr/bin/git; \
+        find /opt/venv /usr/lib/python3*/lib-dynload /usr/lib/git-core -type f \( -name '*.so*' -o -perm -u+x \); } \
+      | xargs ldd 2>/dev/null | grep 'not found' | sort -u || true)" \
  && { [ -z "$missing" ] || { echo "unresolved libraries: $missing" >&2; exit 1; }; } \
+ && test -s /tmp/kicad-elf-files.txt && rm /tmp/kicad-elf-files.txt \
  && groupadd --gid 1000 copperchat \
  && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash copperchat
 COPY smoke_ping.py /opt/copperchat/smoke_ping.py
