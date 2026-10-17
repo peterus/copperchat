@@ -118,6 +118,7 @@ describe('login', () => {
       url === '/api/auth/login' ? new Response(null, { status: 204 }) : json(401, { detail: 'not logged in' }),
     );
     vi.stubGlobal('fetch', fetchMock);
+    const handleUnauthorized = vi.spyOn(useAuth.getState(), 'handleUnauthorized');
     renderAt('/projects');
     await signIn();
     const alert = await screen.findByRole('alert');
@@ -129,5 +130,17 @@ describe('login', () => {
     // one login, one check — no retry loop
     expect(fetchMock.mock.calls.filter(([u]) => u === '/api/auth/login')).toHaveLength(1);
     expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled();
+    // the probe's 401 is not a sign-out: no global unauthorized handling (push, socket)
+    expect(handleUnauthorized).not.toHaveBeenCalled();
+  });
+
+  it('signs in when /auth/me answers with an unexpected body', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) =>
+      url === '/api/auth/login' ? new Response(null, { status: 204 }) : json(200, { user: 'admin' }),
+    ));
+    renderAt('/projects');
+    await signIn();
+    expect(await screen.findByText('projects page')).toBeInTheDocument();
+    expect(useAuth.getState()).toMatchObject({ status: 'authenticated', username: 'admin' });
   });
 });

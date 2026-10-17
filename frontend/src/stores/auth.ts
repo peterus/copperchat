@@ -41,7 +41,8 @@ export function cookieNotStoredError(secureContext: boolean): string {
   return secureContext
     ? 'Signed in, but your browser did not keep the session cookie. Allow cookies for this site and try again.'
     : 'Signed in, but your browser did not keep the session cookie: it is only sent over HTTPS. ' +
-        'Use HTTPS (see docs/deployment/cloudflare.md) or set COOKIE_SECURE=false for plain-http LAN access.';
+        'Use HTTPS (see docs/deployment/cloudflare.md) or set COOKIE_SECURE=false for plain-http LAN access. ' +
+        'If COOKIE_SECURE is already false, allow cookies for this site.';
 }
 
 class CookieNotStored extends Error {}
@@ -75,7 +76,8 @@ export const useAuth = create<AuthState>()((set, get) => ({
         wsClient.close();
         set({ status: 'anonymous', username: null });
       }
-      set({ status: 'authenticated', username: Me.parse(me).username, error: null });
+      const parsed = Me.safeParse(me);
+      set({ status: 'authenticated', username: parsed.success ? parsed.data.username : username, error: null });
       return true;
     } catch (e) {
       const error = e instanceof CookieNotStored ? cookieNotStoredError(window.isSecureContext) : loginError(e);
