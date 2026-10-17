@@ -1,8 +1,9 @@
 # CopperChat — self-hosted, one user per instance.
 #   cp .env.example .env   # model token + admin password
-#   docker compose up -d                       # http://localhost:8080
-#   docker compose --profile tunnel up -d      # + Cloudflare Tunnel (CLOUDFLARE_TUNNEL_TOKEN)
-# Without a published image (or to run your checkout): docker compose build first.
+#   docker compose pull && docker compose up -d   # http://localhost:8080
+#   docker compose --profile tunnel up -d         # + Cloudflare Tunnel (CLOUDFLARE_TUNNEL_TOKEN)
+# Image: ghcr.io/peterus/copperchat:<COPPERCHAT_VERSION, default latest>. To run your checkout
+# instead: docker compose build && docker compose up -d (tags the build with the same name).
 name: copperchat
 
 services:

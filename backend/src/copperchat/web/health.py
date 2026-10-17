@@ -4,6 +4,8 @@ import asyncio
 
 from fastapi import APIRouter, Request
 
+from copperchat import __version__
+
 router = APIRouter(prefix="/api", tags=["health"])
 
 
@@ -28,4 +30,4 @@ async def health(request: Request) -> dict[str, str | None]:
     state = request.app.state
     if not hasattr(state, "kicad_version"):
         state.kicad_version = await kicad_cli_version(state.settings.kicad_cli)
-    return {"status": "ok", "kicad": state.kicad_version}
+    return {"status": "ok", "version": __version__, "kicad": state.kicad_version}
