@@ -23,9 +23,10 @@ services:
       # are never trusted. Behind another reverse proxy set FORWARDED_ALLOW_IPS in .env.
       FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-${CLOUDFLARED_IP:-172.30.231.10}}
     ports:
-      # COPPERCHAT_BIND=127.0.0.1 keeps the plain-HTTP port off the network (e.g. when only
-      # the tunnel should reach CopperChat, so nobody can bypass Cloudflare Access).
-      - "${COPPERCHAT_BIND:-0.0.0.0}:${COPPERCHAT_PORT:-8080}:8080"
+      # Unset: all IPv4 and IPv6 addresses. COPPERCHAT_BIND=127.0.0.1 keeps the plain-HTTP
+      # port off the network (e.g. when only the tunnel should reach CopperChat, so nobody can
+      # bypass Cloudflare Access); IPv6 addresses need brackets, e.g. [::1].
+      - "${COPPERCHAT_BIND:+${COPPERCHAT_BIND}:}${COPPERCHAT_PORT:-8080}:8080"
     volumes:
       # Both must be writable by uid 1000 (the container user): autosave, history
       # snapshots, uploads and part notes live inside the projects.

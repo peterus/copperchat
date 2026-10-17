@@ -2,7 +2,8 @@
 
 Any GET that is not under ``/api`` and matches no file in ``frontend_dist`` returns
 ``index.html``, so client routes (``/login``, ``/p/<projectId>`` — the push click target)
-survive a reload or a direct navigation. Unknown ``/api`` paths stay JSON 404s.
+survive a reload or a direct navigation. Unknown ``/api`` paths stay JSON 404s, missing
+``assets/`` files (bundles of an older release) plain 404s.
 ``index.html``, ``sw.js`` and ``manifest.webmanifest`` are ``no-cache`` (a new release is
 picked up on the next load); Vite's content-hashed ``assets/`` are immutable.
 """
@@ -31,6 +32,9 @@ class SpaStaticFiles(StaticFiles):
                 raise
             response = None
         if response is None or response.status_code == 404:
+            if path.startswith("assets/"):
+                # A hashed bundle of an older release: a real 404, never HTML as JavaScript.
+                return Response("Not Found", status_code=404, media_type="text/plain")
             path = "index.html"
             response = await super().get_response(path, scope)
         name = "index.html" if path in ("", ".") else path

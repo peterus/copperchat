@@ -41,15 +41,19 @@ self.addEventListener('notificationclick', (event) => {
       const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
       for (const client of all) {
         if (new URL(client.url).origin === self.location.origin) {
+          // Navigate first, then focus the navigated client: focus() and openWindow() share
+          // one user-activation token in Chromium, so focusing first would make the fallback
+          // below fail. navigate() rejects for windows this worker does not control.
           try {
-            await client.focus();
-            // navigate() rejects for windows this worker does not control (e.g. after a
-            // hard reload); fall back to opening the project in a new window.
-            if ('navigate' in client) await client.navigate(url);
-            return;
+            const navigated = 'navigate' in client ? await client.navigate(url) : null;
+            if (navigated) {
+              await navigated.focus();
+              return;
+            }
           } catch {
-            break;
+            // fall through to a new window
           }
+          break;
         }
       }
       await self.clients.openWindow(url);

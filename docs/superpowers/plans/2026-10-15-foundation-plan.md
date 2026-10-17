@@ -816,8 +816,10 @@ These extend C1–C8 and are equally binding.
   theme script moved to `public/theme-init.js`. `web.static.SpaStaticFiles` (X6).
   Frontend: `startVisibilityReporter(getProjectId, ws)` returns `{stop, notify}` and sends
   only on an open socket (`ws.isOpen()`), reusing the last project id on the picker;
-  `forgetPushSubscription()` runs from `resetSessionState` (signed-out devices get no
-  pushes; the server drops the subscription on the next 404/410); `apiDelete(path, body?)`.
+  signed-out devices get no pushes: `useAuth.logout()` calls `unsubscribePush()` (server
+  row too) before the logout request, a confirmed 401/4401 (`handleUnauthorized`, `check()`
+  401) calls `forgetPushSubscription()` (browser only; the server drops the row on the next
+  404/410) — a network error at boot does not; `apiDelete(path, body?)`.
   Image user is uid **1000** (X11); compose: `init: true`, fixed network
   `172.30.231.0/24` with `cloudflared` at `.10` = default `FORWARDED_ALLOW_IPS`,
   `COPPERCHAT_PORT`, build section pinned to `KICAD_COMMIT` (guarded by

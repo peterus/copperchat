@@ -10,6 +10,7 @@ type Handler = (e: unknown) => void;
 function loadSw() {
   const handlers: Partial<Record<string, Handler>> = {};
   const client = { url: 'https://cc.example/projects', focus: vi.fn(), navigate: vi.fn() };
+  client.navigate.mockImplementation(async () => client);
   const self = {
     location: { origin: 'https://cc.example' },
     addEventListener: (t: string, h: Handler) => {
@@ -60,10 +61,11 @@ describe('sw.js', () => {
   });
 
   it('click focuses an open window and navigates to the project', async () => {
-    const { handlers, client } = loadSw();
+    const { handlers, client, self } = loadSw();
     await fire(handlers.notificationclick, { notification: { close: vi.fn(), data: { url: '/p/a1b2c3d4e5f6' } } });
-    expect(client.focus).toHaveBeenCalled();
     expect(client.navigate).toHaveBeenCalledWith('/p/a1b2c3d4e5f6');
+    expect(client.focus).toHaveBeenCalled();
+    expect(self.clients.openWindow).not.toHaveBeenCalled();
   });
 
   it('rejects foreign click targets and ignores windows of other origins', async () => {
@@ -80,5 +82,6 @@ describe('sw.js', () => {
     client.navigate.mockRejectedValue(new TypeError('not controlled'));
     await fire(handlers.notificationclick, { notification: { close: vi.fn(), data: { url: '/p/a1b2c3d4e5f6' } } });
     expect(self.clients.openWindow).toHaveBeenCalledWith('/p/a1b2c3d4e5f6');
+    expect(client.focus).not.toHaveBeenCalled(); // focus would consume the user activation
   });
 });

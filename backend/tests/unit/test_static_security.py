@@ -31,6 +31,8 @@ def test_spa_fallback_and_cache_headers(make_settings: Callable[..., Settings], 
         assert c.get("/manifest.webmanifest").headers["cache-control"] == "no-cache"
         asset = c.get("/assets/app-abc123.js")
         assert "immutable" in asset.headers["cache-control"]
+        stale = c.get("/assets/app-old999.js")
+        assert stale.status_code == 404 and "text/html" not in stale.headers["content-type"]
         nope = c.get("/api/nope")
         assert nope.status_code == 404 and nope.json() == {"detail": "Not Found"}
         assert c.get("/api/health").status_code == 200
