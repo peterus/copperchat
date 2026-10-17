@@ -17,6 +17,7 @@ from argon2.exceptions import InvalidHashError, VerificationError
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 from pydantic import BaseModel
+from starlette.requests import HTTPConnection
 
 from copperchat.config import Settings
 from copperchat.db import Database, utcnow_iso
@@ -148,6 +149,12 @@ async def require_user(request: Request) -> User:
     if user is None:
         raise HTTPException(status_code=401, detail="not logged in")
     return user
+
+
+async def authenticate_connection(conn: HTTPConnection) -> str | None:
+    """Cookie auth for WebSocket upgrades (no FastAPI dependency available there)."""
+    user = await user_from_cookie(conn.app.state, conn.cookies.get(COOKIE_NAME))
+    return user.username if user else None
 
 
 CurrentUser = Annotated[User, Depends(require_user)]

@@ -14,7 +14,7 @@ from copperchat.web import auth, health, routes_projects, routes_views
 from copperchat.web.static import mount_frontend
 
 
-def _install_error_handlers(app: FastAPI) -> None:
+def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(CopperChatError)
     async def _handle(_: Request, exc: CopperChatError) -> JSONResponse:
         body: dict[str, object] = {"code": exc.code, "message": exc.message}
@@ -52,7 +52,7 @@ def create_app(
             await db.close()
 
     app = FastAPI(title="CopperChat", lifespan=lifespan)
-    _install_error_handlers(app)
+    install_error_handlers(app)
     app.include_router(auth.router)
     app.include_router(health.router)
     app.include_router(routes_projects.router)
