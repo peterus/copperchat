@@ -37,9 +37,13 @@ class ThinkingDelta:
 
 @dataclass(frozen=True)
 class ToolUse:
+    """A tool call. ``parent_tool_use_id`` is set for calls made by an SDK sub-agent: the
+    id of the main agent's ``Agent`` call that started it (spike 1A (h4c))."""
+
     id: str
     name: str
     input: dict[str, Any]
+    parent_tool_use_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -48,6 +52,15 @@ class ToolResultEvt:
     content: str
     images: tuple[ImageBlock, ...] = ()
     is_error: bool = False
+    parent_tool_use_id: str | None = None
+
+
+@dataclass(frozen=True)
+class SubagentText:
+    """A complete text block of an SDK sub-agent (sub-agents never stream deltas, X20 (7))."""
+
+    parent_tool_use_id: str
+    text: str
 
 
 @dataclass(frozen=True)
@@ -90,6 +103,7 @@ AgentEvent = (
     | ThinkingDelta
     | ToolUse
     | ToolResultEvt
+    | SubagentText
     | Usage
     | RateLimited
     | TurnFinished

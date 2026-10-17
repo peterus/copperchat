@@ -19,6 +19,7 @@ from copperchat.agent.events import (
     QueuedItem,
     RateLimited,
     SessionId,
+    SubagentText,
     TextDelta,
     ThinkingDelta,
     ToolResultEvt,
@@ -53,6 +54,21 @@ from copperchat.tools import ImageBlock, ToolContext
 
 log = logging.getLogger(__name__)
 _IMAGE_EXT = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
+# Sub-agent rows are clipped (C7a): a Write of a whole notes.md or a fetched web page must
+# not bloat the chat.
+_SUB_INPUT_MAX = 2000
+_SUB_RESULT_MAX = 4000
+
+
+def _clip(value: Any) -> Any:
+    """Truncate every string inside a (JSON-like) tool input to _SUB_INPUT_MAX chars."""
+    if isinstance(value, str):
+        return value[:_SUB_INPUT_MAX]
+    if isinstance(value, dict):
+        return {k: _clip(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_clip(v) for v in value]
+    return value
 
 
 class UnknownAttachment(CopperChatError):
@@ -489,7 +505,13 @@ class RunEngine:
             await self._turn_finished(turn, ev, stream)
             return
         async with self._lock:
-            if isinstance(ev, TextDelta):
+            if isinstance(ev, SubagentText) or (
+                isinstance(ev, ToolUse | ToolResultEvt) and ev.parent_tool_use_id
+            ):
+                # Keyed purely off parent_tool_use_id: complete rows that never append to
+                # or close the main agent's streaming segment.
+                await self._insert_subagent(ev)
+            elif isinstance(ev, TextDelta):
                 await self._append(turn, "text", ev.text)
             elif isinstance(ev, ThinkingDelta):
                 await self._append(turn, "thinking", ev.text)
@@ -671,6 +693,41 @@ class RunEngine:
             raise RuntimeError(f"message {mid} vanished after insert")
         await self._publish(MessageFrame(project_id=self.pid, message=self.to_dto(row)))
         return row
+
+    async def _insert_subagent(self, ev: SubagentText | ToolUse | ToolResultEvt) -> None:
+        parent = ev.parent_tool_use_id
+        if isinstance(ev, SubagentText):
+            await self._insert(
+                role="assistant",
+                kind="text",
+                content=ev.text,
+                metadata={"parentToolUseId": parent},
+            )
+        elif isinstance(ev, ToolUse):
+            name = ev.name.removeprefix(f"mcp__{SERVER_NAME}__")
+            await self._insert(
+                role="assistant",
+                kind="tool_use",
+                content=name,
+                metadata={
+                    "parentToolUseId": parent,
+                    "toolUseId": ev.id,
+                    "name": name,
+                    "input": _clip(ev.input),
+                },
+            )
+        else:  # images of sub-agent results are dropped
+            await self._insert(
+                role="assistant",
+                kind="tool_result",
+                content=ev.content[:_SUB_RESULT_MAX],
+                metadata={
+                    "parentToolUseId": parent,
+                    "toolUseId": ev.id,
+                    "isError": ev.is_error,
+                    "images": [],
+                },
+            )
 
     async def _append(self, turn: _Turn, kind: str, text: str) -> None:
         seg = turn.seg

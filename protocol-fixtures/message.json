@@ -59,6 +59,29 @@
     },
     "createdAt": "2026-10-15T12:00:02.000Z"
    }
+  },
+  {
+   "type": "message",
+   "projectId": "a1b2c3d4e5f6",
+   "message": {
+    "id": 46,
+    "projectId": "a1b2c3d4e5f6",
+    "clientMessageId": null,
+    "runId": "r1",
+    "role": "assistant",
+    "kind": "tool_use",
+    "content": "WebSearch",
+    "status": "done",
+    "metadata": {
+     "parentToolUseId": "a1",
+     "toolUseId": "w1",
+     "name": "WebSearch",
+     "input": {
+      "query": "TPS62133 datasheet"
+     }
+    },
+    "createdAt": "2026-10-15T12:00:02.000Z"
+   }
   }
  ],
  "invalid": [

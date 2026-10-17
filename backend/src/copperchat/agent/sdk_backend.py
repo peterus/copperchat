@@ -40,6 +40,7 @@ from copperchat.agent.events import (
     QueuedItem,
     RateLimited,
     SessionId,
+    SubagentText,
     TextDelta,
     ThinkingDelta,
     ToolResultEvt,
@@ -240,6 +241,12 @@ class SdkEventMapper:
             self._session_id = sid
             out.append(SessionId(sid))
 
+        parent = getattr(msg, "parent_tool_use_id", None)
+        if parent:
+            # Sub-agent message (spike 1A (h4c)): only tagged, complete events; it never
+            # touches the main agent's streaming state.
+            self._map_subagent(msg, str(parent), out)
+            return out
         if isinstance(msg, StreamEvent):
             self._map_stream(msg, out)
         elif isinstance(msg, AssistantMessage):
@@ -270,12 +277,51 @@ class SdkEventMapper:
         # Other SystemMessages (task_started, ...) carry nothing for the chat.
         return out
 
-    # Sub-agent messages carry parent_tool_use_id (spike 1A (h4c)). Until Task 5.11b maps
-    # them to tagged events they are dropped so they never mix into the main segment.
+    def _map_subagent(self, msg: object, parent: str, out: list[AgentEvent]) -> None:
+        """Map a message of an SDK sub-agent (``parent`` = the main agent's Agent call id).
+
+        Sub-agent StreamEvents are ignored (none arrive, X20 (7)); text arrives as whole
+        TextBlocks (with ``forward_subagent_text``); thinking, the echoed delegation prompt
+        (string content) and tool-result images are dropped.
+        """
+        if isinstance(msg, AssistantMessage):
+            for block in msg.content:
+                if isinstance(block, ToolUseBlock):
+                    out.append(
+                        ToolUse(
+                            id=block.id,
+                            name=block.name,
+                            input=dict(block.input),
+                            parent_tool_use_id=parent,
+                        )
+                    )
+                elif isinstance(block, TextBlock) and block.text.strip():
+                    out.append(SubagentText(parent_tool_use_id=parent, text=block.text))
+            self._add_subagent_usage(msg)
+        elif isinstance(msg, UserMessage) and not isinstance(msg.content, str):
+            for block in msg.content:
+                if isinstance(block, ToolResultBlock):
+                    text, _images = _tool_result_content(block.content)
+                    out.append(
+                        ToolResultEvt(
+                            id=block.tool_use_id,
+                            content=text,
+                            is_error=bool(block.is_error),
+                            parent_tool_use_id=parent,
+                        )
+                    )
+
+    def _add_subagent_usage(self, msg: AssistantMessage) -> None:
+        """Deliberately a no-op (X20 (5), spike 1A h5).
+
+        ``ResultMessage.usage`` excludes sub-agent tokens, but the turn's Usage is computed
+        from the per-client cumulative ``model_usage`` / ``total_cost_usd`` delta, which
+        already includes them. Summing sub-agent ``AssistantMessage.usage`` here would
+        double-count and is unreliable anyway (its output tokens are streaming snapshots).
+        """
+        return None
 
     def _map_stream(self, msg: StreamEvent, out: list[AgentEvent]) -> None:
-        if msg.parent_tool_use_id:
-            return
         ev = msg.event
         if ev.get("type") == "message_start":
             self._current_stream_msg = ev.get("message", {}).get("id")
@@ -292,8 +338,6 @@ class SdkEventMapper:
                     out.append(ThinkingDelta(str(delta.get("thinking", ""))))
 
     def _map_assistant(self, msg: AssistantMessage, out: list[AgentEvent]) -> None:
-        if msg.parent_tool_use_id:
-            return
         if msg.message_id:
             streamed = msg.message_id in self._streamed_msgs
         else:
@@ -308,7 +352,7 @@ class SdkEventMapper:
         self._partial_since_last_assistant = False
 
     def _map_user(self, msg: UserMessage, out: list[AgentEvent]) -> None:
-        if msg.parent_tool_use_id or isinstance(msg.content, str):
+        if isinstance(msg.content, str):
             return
         for block in msg.content:
             # A backgrounded delegation ("Async agent launched ...") is an ordinary

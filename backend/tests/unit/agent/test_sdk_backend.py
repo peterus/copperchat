@@ -27,6 +27,7 @@ from copperchat.agent.events import (
     QueuedItem,
     RateLimited,
     SessionId,
+    SubagentText,
     TextDelta,
     ThinkingDelta,
     ToolResultEvt,
@@ -246,27 +247,98 @@ def test_mapper_async_agent_launched_is_an_ordinary_tool_result():
     ]
 
 
-def test_mapper_ignores_subagent_messages_until_task_5_11b():
-    # Sub-agent rows carry parent_tool_use_id; they must never reach the main segment.
+def test_mapper_maps_subagent_messages_with_parent_id():
+    # Spike 1A (h4c): sub-agent messages carry parent_tool_use_id = the Agent call's id.
     m = SdkEventMapper()
-    out = m.map(
-        _stream({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "x"}}, "a1")
-    )
-    out += m.map(UserMessage(content="delegated prompt", parent_tool_use_id="a1"))
+    agent_input = {"subagent_type": "part-researcher", "description": "TPS62133", "prompt": "q"}
+    out = []
     out += m.map(
         AssistantMessage(
-            content=[TextBlock(text="sub"), ToolUseBlock(id="w1", name="WebSearch", input={})],
+            content=[ToolUseBlock(id="a1", name="Agent", input=agent_input)],
             model="m",
-            message_id="msg_9",
+            message_id="msg_1",
+        )
+    )
+    out += m.map(
+        _stream({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "p"}}, "a1")
+    )
+    out += m.map(UserMessage(content="q", parent_tool_use_id="a1"))  # echoed delegation prompt
+    out += m.map(
+        AssistantMessage(
+            content=[
+                ThinkingBlock(thinking="hmm", signature="s"),
+                TextBlock(text="Searching"),
+                TextBlock(text="  "),
+                ToolUseBlock(id="w1", name="WebSearch", input={"query": "TPS62133"}),
+            ],
+            model="m",
+            message_id="msg_2",
+            parent_tool_use_id="a1",
+        )
+    )
+    image = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": ""}}
+    out += m.map(
+        UserMessage(
+            content=[
+                ToolResultBlock(
+                    tool_use_id="w1",
+                    content=[{"type": "text", "text": "hits"}, image],
+                    is_error=False,
+                )
+            ],
             parent_tool_use_id="a1",
         )
     )
     out += m.map(
-        UserMessage(
-            content=[ToolResultBlock(tool_use_id="w1", content="hits")], parent_tool_use_id="a1"
+        UserMessage(content=[ToolResultBlock(tool_use_id="a1", content="summary", is_error=False)])
+    )
+    assert out == [
+        ToolUse(id="a1", name="Agent", input=agent_input),
+        SessionId("s1"),  # first message carrying a session id
+        SubagentText(parent_tool_use_id="a1", text="Searching"),
+        ToolUse(id="w1", name="WebSearch", input={"query": "TPS62133"}, parent_tool_use_id="a1"),
+        ToolResultEvt(id="w1", content="hits", parent_tool_use_id="a1"),  # image dropped
+        ToolResultEvt(id="a1", content="summary"),
+    ]
+
+
+def test_mapper_subagent_text_does_not_suppress_main_agent_blocks():
+    # A sub-agent message between the main agent's partials and its AssistantMessage must
+    # not reset the main agent's "already streamed" bookkeeping (no duplicate text).
+    m = SdkEventMapper()
+    out = m.map(_stream({"type": "message_start", "message": {"id": "msg_1"}}))
+    out += m.map(
+        _stream({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Hi"}})
+    )
+    out += m.map(
+        AssistantMessage(
+            content=[TextBlock(text="sub")], model="m", message_id="sub_1", parent_tool_use_id="a1"
         )
     )
-    assert out == [SessionId("s1")]
+    out += m.map(AssistantMessage(content=[TextBlock(text="Hi")], model="m", message_id="msg_1"))
+    assert out == [
+        SessionId("s1"),
+        TextDelta("Hi"),
+        SubagentText(parent_tool_use_id="a1", text="sub"),
+    ]
+
+
+def test_mapper_interrupt_during_subagent_is_interrupted():
+    # Spike 1A (h5): interrupting while the sub-agent runs ends the whole turn.
+    m = SdkEventMapper()
+    m.map(
+        AssistantMessage(
+            content=[ToolUseBlock(id="a1", name="Agent", input={})], model="m", message_id="x"
+        )
+    )
+    m.map(
+        AssistantMessage(
+            content=[TextBlock(text="sub")], model="m", message_id="y", parent_tool_use_id="a1"
+        )
+    )
+    m.note_interrupt_requested()
+    out = m.map(_result(subtype="error_during_execution", is_error=True))
+    assert out[-1] == TurnFinished(reason="interrupted")
 
 
 def _result(**kw: Any) -> ResultMessage:
