@@ -5,3 +5,8 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
+
+# docker compose runtime state (see README)
+/.env
+/data/
+/projects/

@@ -18,6 +18,8 @@ dependencies = [
     "claude-agent-sdk==0.2.168",
     "httpx>=0.28",
     "python-multipart>=0.0.20",
+    "pywebpush>=2.0",
+    "requests>=2.32",
 ]
 
 [dependency-groups]
@@ -71,3 +73,7 @@ select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
 python_version = "3.13"
 strict = true
 mypy_path = "src"
+
+[[tool.mypy.overrides]]
+module = ["py_vapid", "pywebpush"]
+ignore_missing_imports = true

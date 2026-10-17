@@ -19,4 +19,14 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    // Plain scripts served as-is from public/: the push-only service worker and the
+    // pre-paint theme script.
+    files: ['public/sw.js'],
+    languageOptions: { sourceType: 'script', globals: { ...globals.serviceworker } },
+  },
+  {
+    files: ['public/theme-init.js'],
+    languageOptions: { sourceType: 'script', globals: { ...globals.browser } },
+  },
 );

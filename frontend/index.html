@@ -4,13 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
     <title>CopperChat</title>
-    <script>
-      try {
-        var p = localStorage.getItem('copperchat.theme') || 'system';
-        var dark = p === 'dark' || (p === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-        document.documentElement.dataset.theme = dark ? 'dark' : 'light';
-      } catch (e) {}
-    </script>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#b8641f" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="CopperChat" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <script src="/theme-init.js"></script>
   </head>
   <body>
     <div id="root"></div>

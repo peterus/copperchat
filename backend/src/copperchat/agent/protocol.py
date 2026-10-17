@@ -10,6 +10,7 @@ from pydantic import (
     ConfigDict,
     Field,
     SerializerFunctionWrapHandler,
+    StrictBool,
     StringConstraints,
     TypeAdapter,
     model_serializer,
@@ -104,8 +105,17 @@ class PingFrame(Wire):
         return _require_project_key(data)
 
 
+class VisibilityFrame(Wire):
+    """Whether this connection's page is in the foreground (push only goes out while no
+    connection is visible, Phase 9)."""
+
+    type: Literal["visibility"] = "visibility"
+    project_id: ProjectId
+    visible: StrictBool
+
+
 ClientFrame = Annotated[
-    SubscribeFrame | SendFrame | InterruptFrame | CancelQueuedFrame | PingFrame,
+    SubscribeFrame | SendFrame | InterruptFrame | CancelQueuedFrame | PingFrame | VisibilityFrame,
     Field(discriminator="type"),
 ]
 

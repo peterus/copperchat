@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     # Proxies whose X-Forwarded-For uvicorn trusts (the login rate limit keys on the
     # client IP); comma-separated IPs/CIDRs, e.g. the compose network of cloudflared.
     forwarded_allow_ips: str = "127.0.0.1"
+    # Web Push (Phase 9): VAPID "sub" claim, a contact the push services can reach.
+    vapid_subject: str = "mailto:copperchat@localhost"
 
 
 @lru_cache(maxsize=1)

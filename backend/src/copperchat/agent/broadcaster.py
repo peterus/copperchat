@@ -11,6 +11,10 @@ from copperchat.agent.protocol import Wire
 
 log = logging.getLogger(__name__)
 
+# Called synchronously for every published frame (all projects); must not block. Errors
+# are logged and never reach the publisher.
+Listener = Callable[[Wire], None]
+
 
 class Subscription:
     """Async iterator of frames. A subscriber that falls `max_queue` frames behind is
@@ -56,6 +60,10 @@ class Broadcaster:
     def __init__(self, max_queue: int = 1000) -> None:
         self._max = max_queue
         self._subs: dict[str, set[Subscription]] = {}
+        self._listeners: list[Listener] = []
+
+    def add_listener(self, listener: Listener) -> None:
+        self._listeners.append(listener)
 
     def subscribe(self, project_id: str) -> Subscription:
         sub = Subscription(self._max, lambda s: self._subs.get(project_id, set()).discard(s))
@@ -68,3 +76,8 @@ class Broadcaster:
     async def publish(self, project_id: str, frame: Wire) -> None:
         for sub in list(self._subs.get(project_id, ())):
             sub._offer(frame)
+        for listener in self._listeners:
+            try:
+                listener(frame)
+            except Exception:
+                log.exception("broadcast listener failed")

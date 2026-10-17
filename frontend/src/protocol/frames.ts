@@ -68,6 +68,8 @@ export const ClientFrame = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('interrupt'), projectId: ProjectId, runId: z.string().nullable() }),
   z.strictObject({ type: z.literal('cancel-queued'), projectId: ProjectId, messageId: z.number().int().min(1) }),
   z.strictObject({ type: z.literal('ping'), projectId: NullProject }),
+  // Page in the foreground or not (push goes out only while no client is visible, Phase 9).
+  z.strictObject({ type: z.literal('visibility'), projectId: ProjectId, visible: z.boolean() }),
 ]);
 export type ClientFrame = z.infer<typeof ClientFrame>;
 
@@ -113,7 +115,7 @@ export type MessageDeltaFrame = Extract<ServerFrame, { type: 'message-delta' }>;
 export const AnyFrame = z.union([ClientFrame, ServerFrame]);
 
 export const ALL_FRAME_TYPES = [
-  'subscribe', 'send', 'interrupt', 'cancel-queued', 'ping',
+  'subscribe', 'send', 'interrupt', 'cancel-queued', 'ping', 'visibility',
   'message', 'message-delta', 'run-started', 'run-finished', 'view-updated',
   'usage', 'rate-limited', 'error', 'pong',
 ] as const;

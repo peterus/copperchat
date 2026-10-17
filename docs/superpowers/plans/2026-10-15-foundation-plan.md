@@ -797,6 +797,35 @@ These extend C1–C8 and are equally binding.
 - **Phase 9:** `Settings.vapid_subject`; `Broadcaster.add_listener(listener)`;
   `app.state.push` (`PushServices`); push payload `{title, body, url, tag}`;
   any visible connection suppresses push.
+- **Phase 9 (as built):** `Broadcaster.add_listener(listener)` takes a **sync**
+  `Listener = Callable[[Wire], None]` (called for every published frame, errors logged);
+  `PushNotifier.on_frame` only enqueues and a worker task handles frames, so publishing under
+  the engine lock never waits for the DB or a push service (`notifier.handle(frame)` /
+  `drain()` for tests). `web.app.install_push(app)` runs in the lifespan after
+  `install_history` and before `resume_pending()`; projects still parked after a restart
+  re-arm the "rate limit window reopened" timer (`notifier.schedule_reopen`). Push endpoints
+  are restricted to the browser push services (`push.endpoints.push_endpoint_refusal`:
+  FCM, Mozilla autopush, Apple, WNS + public-IP check) at subscribe time and again before
+  every send; the sender never follows redirects. `PushServices.check_endpoint` (injectable).
+  "Needs attention" also when the run's last top-level row is an error row; sub-agent
+  (`parentToolUseId`) rows are never the final text. `VisibilityFrame.visible` is
+  `StrictBool`. `web.security.SecurityHeadersMiddleware` adds CSP
+  (`script-src 'self'`, `style-src 'self' 'unsafe-inline'`, `img-src 'self' data: blob:`,
+  `connect-src 'self'`, `frame-ancestors 'none'`), `nosniff`, `Referrer-Policy`,
+  `X-Frame-Options` — PDF responses get no CSP/XFO (Chrome's PDF viewer); the index.html
+  theme script moved to `public/theme-init.js`. `web.static.SpaStaticFiles` (X6).
+  Frontend: `startVisibilityReporter(getProjectId, ws)` returns `{stop, notify}` and sends
+  only on an open socket (`ws.isOpen()`), reusing the last project id on the picker;
+  signed-out devices get no pushes: `useAuth.logout()` calls `unsubscribePush()` (server
+  row too) before the logout request, a confirmed 401/4401 (`handleUnauthorized`, `check()`
+  401) calls `forgetPushSubscription()` (browser only; the server drops the row on the next
+  404/410) — a network error at boot does not; `apiDelete(path, body?)`.
+  Image user is uid **1000** (X11); compose: `init: true`, fixed network
+  `172.30.231.0/24` with `cloudflared` at `.10` = default `FORWARDED_ALLOW_IPS`,
+  `COPPERCHAT_PORT`, build section pinned to `KICAD_COMMIT` (guarded by
+  `scripts/check-docs.sh`); `CLOUDFLARE_TUNNEL_TOKEN` is not `:?`-guarded (compose
+  interpolates inactive profiles). `release.yml` pushes `:<version>` and `:latest`
+  (not for prereleases) on tags `v<semver>` only.
 - **HTTP additions:** `GET /auth/me` → `{username}`; `GET /skills/{name}`,
   `POST /skills/{name}/acknowledge-update`, `GET /projects/{id}/uploads/{uploadId}` (8);
   `GET /projects/{id}/hit-test` (6B fallback only); `agent-view` takes

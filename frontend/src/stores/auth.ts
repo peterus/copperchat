@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { create } from 'zustand';
 import { ApiError, apiGet, apiPost, setUnauthorizedHandler } from '@/api/http';
 import { wsClient } from '@/api/ws';
+import { forgetPushSubscription, unsubscribePush } from '@/push/push';
 
 const Me = z.object({ username: z.string() });
 
@@ -38,7 +39,10 @@ export const useAuth = create<AuthState>()((set, get) => ({
       const me = Me.parse(await apiGet<unknown>('/auth/me'));
       set({ status: 'authenticated', username: me.username, error: null });
     } catch (e) {
-      set({ status: 'anonymous', username: null, error: e instanceof ApiError && e.status === 401 ? null : messageOf(e) });
+      const signedOut = e instanceof ApiError && e.status === 401;
+      // Only a confirmed sign-out turns push off; a network error at boot must not.
+      if (signedOut) void forgetPushSubscription();
+      set({ status: 'anonymous', username: null, error: signedOut ? null : messageOf(e) });
     }
   },
   login: async (username, password) => {
@@ -58,6 +62,9 @@ export const useAuth = create<AuthState>()((set, get) => ({
     }
   },
   logout: async () => {
+    // A signed-out device gets no notifications (they name projects and quote the agent).
+    // While the cookie is still valid the server row goes too; otherwise only the browser's.
+    await unsubscribePush().catch(() => forgetPushSubscription());
     try {
       await apiPost<void>('/auth/logout', {});
     } catch {
@@ -67,6 +74,7 @@ export const useAuth = create<AuthState>()((set, get) => ({
     set({ status: 'anonymous', username: null, error: null });
   },
   handleUnauthorized: () => {
+    void forgetPushSubscription(); // the server said: signed out (HTTP 401 / WebSocket 4401)
     wsClient.close();
     set({ status: 'anonymous', username: null });
   },
