@@ -303,11 +303,13 @@ dependencies = [
     { name = "argon2-cffi" },
     { name = "claude-agent-sdk" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "itsdangerous" },
     { name = "kicad-python" },
     { name = "pillow" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
+    { name = "python-multipart" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -328,11 +330,13 @@ requires-dist = [
     { name = "argon2-cffi", specifier = ">=23.1" },
     { name = "claude-agent-sdk", specifier = "==0.2.168" },
     { name = "fastapi", specifier = ">=0.115" },
+    { name = "httpx", specifier = ">=0.28" },
     { name = "itsdangerous", specifier = ">=2.2" },
     { name = "kicad-python", git = "https://gitlab.com/kicad/code/kicad-python.git?rev=87b945a0d56b26a78bf547db9771ff9bf3a057ea" },
     { name = "pillow", specifier = ">=11" },
     { name = "pydantic", specifier = ">=2.9" },
     { name = "pydantic-settings", specifier = ">=2.6" },
+    { name = "python-multipart", specifier = ">=0.0.20" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
 ]
 

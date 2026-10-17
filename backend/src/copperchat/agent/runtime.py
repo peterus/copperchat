@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 from collections.abc import Callable, Sequence
 
+from copperchat.agent.attachments import resolve_attachment
 from copperchat.agent.broadcaster import Broadcaster
 from copperchat.agent.engine import BackendFactory, RunEngine, RunHooks
 from copperchat.agent.events import AgentBackend
@@ -24,13 +26,16 @@ log = logging.getLogger(__name__)
 HooksFactory = Callable[[Project, RunEngine], RunHooks]
 
 
-def default_backend_factory(settings: Settings, specs: Sequence[ToolSpec]) -> BackendFactory:
-    """FakeAgent when ``dev_fake_agent`` (no model credential needed), else the SDK backend."""
+def default_backend_factory(
+    settings: Settings, specs: Sequence[ToolSpec], db: Database | None = None
+) -> BackendFactory:
+    """FakeAgent when ``dev_fake_agent`` (no model credential needed), else the SDK backend
+    (``db``: skills + attachments, X5)."""
 
     def make(ctx_factory: Callable[[], ToolContext]) -> AgentBackend:
         if settings.dev_fake_agent:
             return FakeAgent(specs=specs, ctx_factory=ctx_factory)
-        return SdkAgentBackend(settings=settings, specs=specs, ctx_factory=ctx_factory)
+        return SdkAgentBackend(settings=settings, specs=specs, ctx_factory=ctx_factory, db=db)
 
     return make
 
@@ -59,7 +64,7 @@ class AgentRuntime:
         self.broadcaster = broadcaster
         self.sessions = sessions
         self.backend_factory: BackendFactory = backend_factory or default_backend_factory(
-            settings, registry.all_specs()
+            settings, registry.all_specs(), db
         )
         self.hooks_factory: HooksFactory = hooks_factory or _no_hooks
         self._engines: dict[str, RunEngine] = {}
@@ -85,6 +90,7 @@ class AgentRuntime:
                 backend_factory=self.backend_factory,
             )
             engine.hooks = self.hooks_factory(project, engine)
+            engine.attachment_resolver = functools.partial(resolve_attachment, self.db, project.id)
             await engine.start()
             self._engines[project.id] = engine
             return engine
