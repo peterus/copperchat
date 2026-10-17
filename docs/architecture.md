@@ -42,8 +42,8 @@ tools: its only SDK built-in is `Skill`; everything else is CopperChat's own MCP
 
 React 19 + Vite + zustand + zod + Tailwind 4. `protocol/frames.ts` mirrors the backend
 protocol; `protocol-fixtures/*.json` are validated by both test suites. The chat store merges
-the REST baseline and the WebSocket replay by server id. The viewer embeds a vendored,
-patched KiCanvas (`frontend/vendor-patches/kicanvas/`). `public/sw.js` handles push only and
+the REST baseline and the WebSocket replay by server id. The viewer embeds a vendored
+KiCanvas built from the fork `peterus/kicanvas` (`frontend/vendor-patches/kicanvas/README.md`). `public/sw.js` handles push only and
 never caches; `push/visibility.ts` reports page visibility so pushes go out only while no
 window is visible.
 

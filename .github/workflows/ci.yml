@@ -95,7 +95,7 @@ jobs:
       - run: npx playwright test --reporter=line
 
   kicanvas-reproducible:
-    # The committed bundle must be exactly what the pinned commit + patch series builds to.
+    # The committed bundle must be exactly what the pinned peterus/kicanvas commit builds to.
     runs-on: ubuntu-latest
     defaults:
       run:

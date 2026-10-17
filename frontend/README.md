@@ -63,8 +63,9 @@ double tap, large-board guard). CI runs the mocked suites in the `frontend` job.
 
 ## KiCanvas (viewer)
 
-`public/vendor/kicanvas/` holds the committed bundle; `vendor-patches/kicanvas/README.md`
-explains each patch. Rebuild after changing a patch or the pin:
+`public/vendor/kicanvas/` holds the committed bundle, built from a pinned commit of the fork
+`peterus/kicanvas` (branch `copperchat`); `vendor-patches/kicanvas/README.md` explains each
+change. Rebuild after moving the pin:
 
 ```bash
 ./scripts/vendor-kicanvas.sh && ./scripts/check-kicanvas.sh
