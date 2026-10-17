@@ -64,9 +64,13 @@ Phases 2 and 3 can start after 1; 7 after 6's contracts are fixed.
   `69cafb907e`).
 - Schematic write API at the pin: see spec §13 "Facts already checked"
   (create/update/delete for wires, labels, junctions, no-connects, symbols,
-  sheets; `PlaceSymbolFromLibrary`; no library search, no annotate, no
-  schematic `GetBoundingBox`; headless has no editor frame → no auto-annotate,
+  sheets; `PlaceSymbolFromLibrary`; library listing via `GetLibraryItems` /
+  `GetItemsFromLibrary` / `LoadAllLibraries`; no annotate, no schematic
+  `GetBoundingBox`, no undo of a pushed commit; staged creates/deletes are
+  invisible until push; headless has no editor frame → no auto-annotate,
   no field autoplace, no connectivity recalc after updates).
+- Existing `save_copy`/`run_erc` byte-copy sub-sheets from disk — phase 1
+  must make them save first once documents can be modified (spec §4, §5.1).
 - `kicad-cli sch diff` exists (JSON/text/PNG/SVG) — spike 2C.
 - Kontor lessons from the foundation (coordinator memory `coordinator/brief`):
   a child whose follow-up depends on a later signal must not have its PR

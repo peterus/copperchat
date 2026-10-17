@@ -96,15 +96,16 @@ CopperChat does not repeat that.
 | Topic | Decision |
 |---|---|
 | Write path | KiCad IPC API only (`kicad-cli api-server` + kipy), `BeginCommit`/`EndCommit` per tool call; `kicad-cli` only for checks/exports/diff. Unchanged rule from the foundation |
-| Atomicity | One tool call = one KiCad commit. On any failure inside the call the commit is dropped; the document is unchanged |
-| Verification | Every mutating tool reads its result back from the API (items + netlist) and only then reports success; mismatch = structured error after dropping/reverting the commit |
+| Atomicity | One tool call = one KiCad commit. Everything that can be checked **before** writing (targets, geometry, collisions, intended connectivity) is checked before `BeginCommit`; a failure while staging drops the commit. A mismatch found **after** the push is undone by a compensating commit built from the pre-images the tool read before writing (§5.1) |
+| Verification | Every mutating tool reads its result back from the API (items + netlist) **after** the commit is pushed (staged creates/deletes are not visible before, see §13) and only then reports success; mismatch = compensating commit + structured error |
 | Tool level | High-level, intent-shaped tools (`sch_connect`, `sch_place_symbol` …) plus one low-level escape hatch (`sch_add_wire`). Coordinates in mm on the 1.27 mm (50 mil) grid, snapped by the tool |
 | Connection geometry | Computed by CopperChat (pin positions from the API, orthogonal routing around symbol bounding boxes, collision check against foreign pin ends); the model never has to hit a pin by hand |
 | Annotation | CopperChat assigns references itself (next free number per prefix, all sheets) and writes them through the API; it does not depend on headless auto-annotation (spike 2A) |
 | Plan before edit | Server-enforced **change budget** per turn; beyond it mutating tools refuse until an approved plan exists (§7) |
-| Checkpoints | Turn snapshot (Phase 7, unchanged) + one checkpoint per executed plan step (save + snapshot) |
+| Checkpoints | Turn snapshot (Phase 7, unchanged) + one checkpoint per executed plan step (save + snapshot), stored with `kind = step` so crash recovery and pruning keep treating the turn snapshot as the turn's undo point (§5.4) |
+| Saving mid-turn | Allowed and explicit: before every ERC/diff run and every step checkpoint the schematic is saved through the API (`save()`), hashes are recorded right after, so on-disk sub-sheets are never stale (§5.1) |
 | Diff | Semantic change list from API data recorded by the tools themselves (no file parser); `kicad-cli sch diff` for the visual before/after if spike 2C confirms it |
-| Libraries | Search index built read-only from the library tables and library files (library data, not design data); pins/units always taken from KiCad via the API (spike 2B decides the exact source) |
+| Libraries | KiCad's library API (`GetLibraryItems`, `GetItemsFromLibrary`, `LoadAllLibraries`; kipy `get_library_symbols`, `get_library_symbol`, `get_library_footprints`, `load_all_libraries`) is the source for listing and pin data; CopperChat keeps an in-memory search index built from those results — no library file parsing (spike 2B measures cost) |
 | Part knowledge | New read-only tool `parts_get_notes(mpn)` exposes `docs/parts/<MPN>/notes.md` to the main agent without a research run |
 | Scope of agent tools | Main agent still has **no** file/shell/web tools; all new tools are CopperChat MCP tools behind the existing guard + `PreToolUse` hook |
 
@@ -115,12 +116,13 @@ foundation, spec §4.1 and plan C7a):
 
 | Module | Change |
 |---|---|
-| `kicad_session` | `KicadSession.commit(label)` async context manager around kipy `begin_commit` / `push_commit` / `drop_commit`; mid-turn `save(doc)` for plan-step checkpoints (spike 1C: `save()` rewrites files — hashes recorded after our own save, as today) |
+| `kicad_session` | `KicadSession.commit(label)` async context manager around kipy `begin_commit` / `push_commit` / `drop_commit` whose cleanup is shielded from cancellation (§5.3); `load_all_libraries` after open; mid-turn `save(doc)`; `save_copy("sch")` saves first when the document is modified (`GetDocumentModifiedState`), because the foundation procedure byte-copies sub-sheets from disk (spike 1C) — this also fixes the existing `run_erc`/views for edited documents. Every CopperChat save records hashes right after (spike 1C: `save()` rewrites files) |
+| `agent` (`sdk_tools` adapter) | Before `on_mutation`: refuse mutating tools on a read-only session and run the budget pre-check, so no snapshot is taken for a call that will be refused |
 | `kicad_tools` | New `edit/` package: `library.py` (search/inspect), `place.py`, `connect.py` (router), `fields.py`, `transform.py`, `delete.py`, `annotate.py`, `sheets.py`, `verify.py` (read-back + ERC delta), `geometry.py` (grid, bounding boxes, pin ends, collision). Plain functions, no Claude dependency, like the foundation tools |
 | `tools` | New providers `copperchat.kicad_tools.edit.specs`, `copperchat.plans.specs`, `copperchat.parts.specs`; mutating specs set `mutating=True`, `changes_documents=True` (existing `ToolSpec` fields) |
 | `plans` (new) | Plan model, storage, state machine, change budget, step execution bookkeeping (§7) |
 | `changes` (new) | Per-turn change log (what each tool changed, with UUIDs and refs), change list for the UI, link to snapshots/checkpoints (§8) |
-| `history` | Checkpoint snapshots for plan steps (same store, `kind = turn | step`), restore to a checkpoint |
+| `history` | Checkpoint snapshots for plan steps: same store, new columns `kind` (`turn` default / `step`) and `plan_step_id` in `0006_editing.sql`; `latest_for_run` and `_recover` select `kind = turn` only; `HISTORY_KEEP` applies to turn snapshots, step checkpoints are pruned with their turn; restore to a checkpoint |
 | `views` | Before/after image for a turn or step; highlight set for the viewer; optional `kicad-cli sch diff` render |
 | `skills` | Built-in `kicad-schematic-editing` skill; `kicad-schematic-style` extended (§9) |
 | `web` | REST for plans and changes; WS frames `plan-updated`, `changes-updated` (§6.3) |
@@ -144,29 +146,51 @@ Frontend:
 ### 5.1 One mutating tool call
 
 1. Guard + hook allow the call (unchanged mechanism).
-2. Budget check (§7.1). If refused → structured error, nothing changed.
-3. First mutating call of the turn → Phase 7 `on_first_mutation` snapshot
+2. Adapter pre-checks (before `on_mutation`): read-only session → refuse;
+   plan policy `always` without an active step → refuse (§7.1). Nothing is
+   snapshotted for a refused call.
+3. **Plan the change without writing**: resolve targets (refs → UUIDs +
+   sheet path; pins → absolute positions), compute geometry (snap, route,
+   collision check), compute the intended connectivity, and **read
+   pre-images** of every item that will be updated or deleted.
+4. Budget check (§7.1) on the now-known change count. Refused → structured
+   error, nothing changed.
+5. First mutating call of the turn → Phase 7 `on_first_mutation` snapshot
    (unchanged; a failed snapshot fails the call).
-4. `async with session.commit(label)`:
-   - resolve targets (refs → UUIDs + sheet path; pins → absolute positions),
-   - compute geometry (snap, route, collision check),
-   - `create_items` / `update_items` / `remove_items` /
-     `place_symbol_from_library`,
-   - **read back**: affected items by id, plus the netlist for any
-     connectivity change (netlist export job, as `sch_get_net` does today),
-   - compare with intent (e.g. "pin U1.3 and R5.1 are on the same net and
-     no other net merged into it"); mismatch → raise → commit dropped.
-5. Record a change entry (§8.1), report `changed_docs={"sch"}`.
-6. Run **ERC on an in-memory copy** (save-copy procedure from spike 1C to a
-   temp dir + `kicad-cli sch erc`) and return the **delta** against the
-   turn-start ERC (new / resolved violations near the edited items). If ERC
-   after every call proves too slow (spike 2A measures it), the delta is
-   computed once per plan step / at turn end instead and the per-call result
-   says so.
-7. Tool result: structured JSON (what was created/changed with full UUIDs and
-   refs, final positions in mm, nets touched, ERC delta), no image by default.
+6. `async with session.commit(label)`: `create_items` / `update_items` /
+   `remove_items` / `place_symbol_from_library`. A staging error drops the
+   commit (document unchanged); otherwise the commit is pushed.
+7. **Read back after the push** (at the pinned commit created/deleted items
+   are only applied to the screen when the commit is pushed — staged changes
+   are invisible to `GetItems` and the netlist): affected items by id, plus the
+   netlist for any connectivity change (netlist export job, as `sch_get_net`
+   does today). Compare with intent (e.g. "U1.3 and R5.1 are on the same net
+   and no other net merged into it").
+8. Mismatch → **compensating commit** from the pre-images (remove what was
+   created, restore updated items, re-create deleted items with their
+   original UUIDs), read back again to confirm the document equals the
+   pre-images, then a structured error. If compensation itself fails, the
+   tool reports `document_inconsistent`, the turn ends, and the user is
+   offered the restore of the last checkpoint or turn snapshot (foundation
+   restore flow). Spike 2A verifies re-creation with original UUIDs; if that
+   is impossible, a failed delete is compensated by restoring the last
+   checkpoint/turn snapshot instead.
+9. Record a change entry (§8.1), report `changed_docs={"sch"}`.
+10. Tool result: structured JSON (what was created/changed with full UUIDs and
+    refs, final positions in mm, nets touched, connectivity verified), no
+    image and **no ERC** by default.
 
-Turn end is unchanged: autosave, hash record, `publish_view`.
+**ERC and diff need saved files.** `kicad-cli` runs on a saved copy, and the
+foundation's `save_copy` byte-copies sub-sheets from disk, so ERC after
+unsaved edits would check stale sub-sheets and miss new sheets. Therefore the
+ERC delta is computed at **plan step end** and at **turn end of an editing
+turn**, and whenever the agent calls `run_erc`: in each case the schematic is
+saved through the API first (then hashes recorded, then `save_copy`, then
+`kicad-cli sch erc`). The delta is against the ERC of the turn's (or step's)
+starting state. Per-call ERC is not offered.
+
+Turn end: autosave, hash record, `publish_view` (unchanged), plus the
+turn-end ERC delta for editing turns (§8.3).
 
 ### 5.2 Grid, positions and collisions
 
@@ -190,11 +214,34 @@ Turn end is unchanged: autosave, hash record, `publish_view`.
 ### 5.3 Concurrency and failure
 
 - One project, one agent run at a time (foundation); tool calls are serial.
+- **Cancellation between `BeginCommit` and `EndCommit`** (Stop, interrupt
+  backstop, `CancelledError` in the tool handler): the context manager's
+  cleanup is shielded (`asyncio.shield`) and always sends `drop_commit`
+  (or completes the push if it was already sent), so the server never keeps
+  the client in its active-commit set. If the cleanup itself fails or times
+  out, the session is restarted (foundation restart path) rather than reused,
+  because later writes would be staged into the stale commit.
 - KiCad crash mid-call: the commit is lost with the process; foundation
   recovery (restart + offer snapshot restore) applies; the plan (if any) goes
   to `paused` with the step marked `failed`.
 - External file change between turns: foundation hash check + `revert()`;
   an active plan is paused and the user is told the plan's base changed.
+
+### 5.4 Step checkpoints and the turn snapshot
+
+- The turn snapshot (`kind = turn`, taken by `on_first_mutation`) stays the
+  turn's undo point: crash recovery (`_recover`, `latest_for_run`) and the
+  History panel's "undo turn" use it, never a step checkpoint.
+- A step checkpoint (`kind = step`, `plan_step_id`) is taken at
+  `plan_step_done`: save through the API → record hashes → snapshot. It is
+  listed nested under its turn and can be restored like any snapshot.
+- Retention: `HISTORY_KEEP` counts turn snapshots only; a turn's step
+  checkpoints are pruned together with it.
+- Because hashes are recorded after every CopperChat save, a turn that later
+  fails with `kicad_failed` (no autosave) is not mistaken for an external
+  change at the next turn start: the on-disk state is the last step
+  checkpoint, which matches the recorded hashes. The recovery notice offers
+  both the last step checkpoint (keep finished steps) and the turn snapshot.
 
 ## 6. Agent tools (sub-project 2)
 
@@ -246,7 +293,7 @@ Multi-unit parts address the unit implicitly through the pin.
 WS frames (server → client, carry `projectId` like all frames):
 `plan-updated{plan}` and `changes-updated{runId, stepId?, count}`.
 Client → server: none new; approval goes through REST
-(`POST /projects/{id}/plans/{planId}/approve|reject|resume|abort`), which
+(§7.2), which
 enqueues a normal user message ("Plan approved …") so execution happens in a
 regular, interruptible agent turn.
 
@@ -257,35 +304,58 @@ regular, interruptible agent turn.
 The server enforces it; the model is told the rule in the editing skill but
 does not have to judge it alone.
 
-- **Change budget per turn** (setting, default **12 item changes** and
-  **no deletion of more than 3 symbols**). Each mutating call counts the
-  items it creates/changes/deletes. A call that would exceed the budget is
-  refused with `plan_required` and the suggestion to call `plan_propose`.
-- Plan policy `always`: every mutating call needs an active approved plan
-  step. `never`: no budget (power users; still undoable).
-- Calls made while an approved plan's step is active are counted against
-  that step's `expected_changes` (+50 % tolerance) instead of the budget;
-  exceeding it pauses the step with a structured error so the agent revises
-  instead of improvising.
+- **Unit: one item change** = one schematic item created, modified or
+  deleted, as listed in the tool's pre-computed change set (§5.1 step 3).
+  Items: symbol (all field edits on one symbol in one call count once), wire
+  segment, junction, no-connect, label, power symbol, sheet, sheet pin.
+  Example: moving a symbol that drags three wire segments = 4 changes;
+  `sch_connect` via labels on two pins = 2 stubs + 2 labels = 4.
+- **Change budget per turn** (setting, default **12 item changes**, and at
+  most **3 deleted symbols**), cumulative over the turn's calls outside a
+  plan. The check runs after the change set is known and before anything is
+  written (§5.1 step 4). A call that would exceed the budget is refused with
+  `plan_required` and the suggestion to call `plan_propose`.
+- Plan policy `always`: every mutating call needs an active plan step (the
+  adapter refuses before the snapshot, §5.1 step 2). `never`: no budget
+  (power users; still undoable).
+- Calls made while a plan step is active are counted against that step's
+  `expected_changes` (+50 % tolerance) instead of the turn budget; exceeding
+  it pauses the plan with a structured error so the agent revises instead of
+  improvising.
+- While a plan is `running`, a mutating call **outside** an active step
+  (between `plan_step_done` and the next `plan_step_begin`) is refused with
+  `plan_step_required`.
+- At most **one open plan** (`proposed`, `approved`, `running`, `paused`) per
+  project. `plan_propose` while one is open is refused; the agent uses
+  `plan_revise` or the user aborts/rejects the open one first.
+- User messages that are not about the plan start normal turns; the turn
+  budget applies to them and their edits are recorded as unplanned changes.
 
 ### 7.2 Plan life cycle
 
-`proposed → approved → running → (paused ↔ running) → done | aborted`
+| From | Event | To | Notes |
+|---|---|---|---|
+| — | `plan_propose` | `proposed` | card shown; revision 1 |
+| `proposed` | user Reject (REST) | `rejected` | terminal; a notice row tells the agent |
+| `proposed` | user answers in chat → agent `plan_revise` | `proposed` | new revision; card updates |
+| `proposed` | user Approve (REST) | `approved` | enqueues a user message "Plan *title* approved" — execution runs in that ordinary turn |
+| `approved` | `plan_step_begin(1)` | `running` | |
+| `running` | `plan_step_done(k)` with steps left | `running` | step checkpoint (§5.4), ERC delta, region render |
+| `running` | `plan_step_done(last)` | `done` | terminal |
+| `running` | Stop / interrupt | `paused` | step `interrupted`; tool commit dropped or completed atomically (§5.3) |
+| `running` | step exceeds `expected_changes`, verification fails twice, unexplained ERC regression | `paused` | step `failed` with reason; push "needs attention" |
+| `running` | turn ends with steps left (no error) | `paused` | reason `turn_ended` |
+| `running` | KiCad crash / external change / server restart | `paused` | step `failed` / plan flagged |
+| `paused` | user Resume (REST) | `approved` | enqueues "Resume plan *title* at step k"; next `plan_step_begin` → `running` |
+| `paused` | agent `plan_revise` | `proposed` | user must approve again |
+| `paused` | user Roll back to step k / to start (REST) | `paused` | restores step k's checkpoint (or the pre-plan turn snapshot); steps after k → `pending`; refused with `agent_busy` (409) while a run is active, like history restore |
+| `proposed`, `approved`, `paused` | user Abort (REST) | `aborted` | terminal; the design is kept as it is |
 
-- `proposed`: shown as a card; the user approves, rejects, or answers in the
-  chat (the agent then calls `plan_revise`).
-- `running`: steps execute in order. After each step: save, checkpoint
-  snapshot, ERC delta, agent-view render of the affected region (the agent
-  must look at it — skill rule), `plan_step_done`.
-- **Stop** (foundation interrupt) during a step: the current tool call's
-  commit is dropped or completes atomically; the plan goes to `paused` with
-  the step `interrupted`. The user can **resume** (agent continues at that
-  step), **roll back** to any finished step's checkpoint or to the pre-plan
-  snapshot, or **abort** (keeps what is done, closes the plan).
-- Errors the agent cannot fix within the step (verification failure twice,
-  ERC regressions it cannot explain) → `paused` with the reason; push
-  notification "needs attention" (foundation §9).
-- Plans live in SQLite; a restart leaves a running plan `paused`.
+REST: `POST /projects/{id}/plans/{planId}/approve|reject|resume|abort` and
+`POST /projects/{id}/plans/{planId}/rollback {toStep: k | 0}`.
+After each step the agent renders the affected region and must look at it
+(skill rule, §8.3) before `plan_step_done`.
+Plans live in SQLite; a server restart leaves a `running` plan `paused`.
 
 ### 7.3 Plan card (UI)
 
@@ -314,7 +384,9 @@ parser. Shown per turn and per step; tapping selects the item in the viewer.
 
 ### 8.3 Agent self-check
 
-- Every mutating result carries the ERC delta (§5.1).
+- Every mutating result states the verified connectivity (§5.1 step 7); the
+  ERC delta is computed at each plan step end and at the end of an editing
+  turn, on freshly saved files (§5.1).
 - At each plan step end and at the end of an unplanned editing turn the
   agent renders `render_view(doc="sch", region="around <refs>")` and checks
   it against the skill's checklist (labels readable, no overlaps, signal flow
@@ -355,16 +427,21 @@ parser. Shown per turn and per step; tapping selects the item in the viewer.
   suffix, no overwrite of an existing file that is not already this sheet).
 - `parts_get_notes`: MPN validated with the Phase 8 MPN rule; reads only
   `docs/parts/<MPN>/notes.md`.
-- Library indexing reads library files only via the configured tables; paths
-  resolved through KiCad's variables; no write access.
-- Read-only projects (KiCad GUI lock) refuse every mutating tool before the
-  snapshot (as Phase 7 does).
+- Library data comes only from KiCad's library API (no library file access by
+  CopperChat), so no new path handling is introduced.
+- Read-only projects (KiCad GUI lock) refuse every mutating tool in the
+  `sdk_tools` adapter **before** `on_mutation` with a structured
+  `read_only` error. This is new: Phase 7's hooks only skip the snapshot and
+  the autosave for read-only sessions, which would otherwise let an edit
+  "succeed" in KiCad's memory and then be silently lost.
 
 ## 11. Error handling
 
 | Situation | Behaviour |
 |---|---|
-| Verification mismatch after a write | commit dropped; structured error with what was expected vs. found; nothing changed |
+| Verification mismatch after a write | compensating commit from pre-images, re-verified; structured error with expected vs. found; nothing changed |
+| Compensation fails | `document_inconsistent`; turn ends; restore offer for the last checkpoint / turn snapshot |
+| Mutating tool on a read-only project | `read_only` error before any snapshot |
 | Budget exceeded | `plan_required` error, nothing changed |
 | Symbol / footprint not in libraries | error with closest matches; skill: ask the user, never invent |
 | No clean wire route | `via=auto` → labels; `via=wire` → error with suggestion (move part / use labels) |
@@ -387,7 +464,14 @@ parser. Shown per turn and per step; tapping selects the item in the viewer.
   has no errors, and every item lies on the grid.
 - **Verification negative tests**: wire ending 0.01 mm off a pin, wire over a
   foreign pin end, label not on a wire → the tool must fail and leave the
-  document unchanged (UUID set and netlist identical).
+  document unchanged (UUID set and netlist identical). Includes forced
+  post-push mismatches (injected) to exercise the compensating commit for
+  create, update and delete, and cancellation between `BeginCommit` and the
+  push (next write must not land in a stale commit).
+- **Read-only and budget tests**: a mutating call on a read-only session or
+  over budget fails before any snapshot is taken.
+- **ERC freshness test**: edit a sub-sheet and create a new sheet, then
+  `run_erc` → the report covers the edits (no stale on-disk sub-sheet).
 - **Undo tests**: after every scenario step, restoring the step checkpoint
   and the turn snapshot yields byte-identical documents to the recorded ones;
   rollback of a half-executed plan.
@@ -418,14 +502,22 @@ exposes `place_symbol_from_library`, `create_items`, `update_items`,
 **headless** server there is no editor frame, so (a) automatic annotation on
 placement only happens for symbols that always annotate, (b) field
 auto-placement is skipped, (c) `RecalculateConnections` after updates is
-skipped. There is **no** library listing/search command and **no** annotate
-command or `kicad-cli sch annotate`, and `GetBoundingBox` is only
-registered for boards. `kicad-cli sch diff` exists (JSON, text, PNG, SVG).
+skipped. (d) While a client has an open commit (`BeginCommit` … `EndCommit`),
+created and deleted items are only staged in the commit and applied to the
+screen at push time, so `GetItems` and the netlist cannot see them before the
+push; and there is no API command to undo a pushed commit. Libraries: the
+common `API_HANDLER_LIBRARIES` registers `GetLibraryItems`,
+`GetItemsFromLibrary` and `LoadAllLibraries` (kipy `get_library_symbols`,
+`get_library_footprints`, `get_library_symbol`, `load_all_libraries`); in the
+headless server libraries must be loaded (`load_all_libraries`) before
+`PlaceSymbolFromLibrary` finds a symbol. There is **no** annotate command or
+`kicad-cli sch annotate`, and `GetBoundingBox` is only registered for
+boards. `kicad-cli sch diff` exists (JSON, text, PNG, SVG).
 
 | Spike | Questions | Gate |
 |---|---|---|
-| **2A — headless write round-trip** | place from stock + project library (refs, units, rotation, mirror); field update (value, footprint, custom field, DNP) incl. field positions; move/rotate with attached wires; delete; wire + label + junction + no-connect creation; does the netlist export job (and `GetSchematicNetlist`) reflect new connectivity without a frame (or is a save/reload/`revert` needed)? do wires that end on a pin connect, do T-joints need explicit junctions, are wires split? commit/drop semantics (does `drop_commit` really undo?); new sheet → file written on save, sheet pins ↔ hierarchical labels; saved files load in `kicad-cli` and KiCanvas; ERC-on-copy latency per call on a 100-symbol schematic; symbol bounding boxes from API data (body graphics + pins + transform) vs. KiCad's own plot | **go**: all core operations work via API (workarounds allowed if they stay API-only); **no-go** for any core operation needing a text edit → stop and escalate to the owner |
-| **2B — library access** | how to search ~20 k stock symbols and footprints: read-only index of `.kicad_sym` / `.pretty` names, keywords, descriptions vs. any API route (e.g. scratch placement to read pins); index build time and memory; project-specific libraries; KiCad variables in table paths | **go**: search < 300 ms, pin data from KiCad itself |
+| **2A — headless write round-trip** | place from stock + project library (refs, units, rotation, mirror); field update (value, footprint, custom field, DNP) incl. field positions; move/rotate with attached wires; delete; wire + label + junction + no-connect creation; does the netlist export job (and `GetSchematicNetlist`) reflect new connectivity without a frame (or is a save/reload/`revert` needed)? do wires that end on a pin connect, do T-joints need explicit junctions, are wires split? commit semantics: confirm staged creates/deletes are invisible until push, `drop_commit` leaves the document unchanged, and a compensating commit can re-create a deleted symbol/wire/label **with its original UUID** (§5.1 step 8); cancellation between begin and push (server state afterwards, §5.3); new sheet → file written on save, sheet pins ↔ hierarchical labels; saved files load in `kicad-cli` and KiCanvas; mid-turn `save()` + `save_copy` + ERC latency on a 100-symbol hierarchical schematic, and that the copy contains just-edited sub-sheets and newly created sheets; symbol bounding boxes from API data (body graphics + pins + transform) vs. KiCad's own plot | **go**: all core operations work via API (workarounds allowed if they stay API-only); **no-go** for any core operation needing a text edit → stop and escalate to the owner |
+| **2B — library access** | `load_all_libraries` time and memory with the full stock libraries (~20 k symbols, ~15 k footprints); what `GetLibraryItems` returns per entry (description, keywords, footprint filters?) and whether `GetItemsFromLibrary` gives pins with positions/electrical types and units; project-specific libraries and `${KIPRJMOD}` tables; index build time and query latency | **go**: search < 300 ms after warm-up, all data from the API; **partial**: fields missing from the listing are fetched lazily per symbol |
 | **2C — diff and highlight** | `kicad-cli sch diff` on snapshot copy vs. current (hierarchical incl.); JSON shape, PNG usefulness, runtime; KiCanvas multi-select / highlight of a set of refs (patched build, fork `peterus/kicanvas`) | **go / partial** (partial = change log + before/after previews only, no diff layer) |
 | **2D — agent tool-shape eval** | with throwaway prototypes of `sch_place_symbol`, `sch_connect`, `sch_add_label` and the editing skill: can the current model build the three scenario circuits from §12 reliably? tool calls, tokens, failure modes, visual quality; is `sch_connect` with computed geometry enough or does the model need more geometry tools? | informs final tool list and default budget; no hard gate |
 
@@ -459,9 +551,9 @@ were made by the spec author and are the points to check in review:
    is an ordinary interruptible turn.
 5. Checkpoint after every plan step (mid-turn save + snapshot).
 6. CopperChat does its own annotation (headless KiCad does not).
-7. Library search from a read-only index of library files (library data, not
-   design data); pins always from KiCad.
-8. ERC delta in every mutating tool result (falls back to per step if spike
-   2A shows it is too slow).
+7. Library search via KiCad's library API with an in-memory index in
+   CopperChat; no library file parsing.
+8. ERC delta at plan step end and editing-turn end on freshly saved files
+   (no per-call ERC); mid-turn API saves are allowed.
 9. New read-only `parts_get_notes` tool for the main agent.
 10. `ParseAndCreateItemsFromString` banned as text generation.
