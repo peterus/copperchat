@@ -1,0 +1,378 @@
+import { z } from 'zod';
+import { create } from 'zustand';
+import { apiGet } from '@/api/http';
+import { wsClient, type ConnectionState, type WsClient } from '@/api/ws';
+import {
+  AttachmentRef,
+  MessagesPage,
+  type MessageDeltaFrame,
+  type MessageDTO,
+  type ServerFrame,
+  type Usage,
+} from '@/protocol/frames';
+
+export const PAGE_SIZE = 50;
+const TERMINAL_STATUSES: ReadonlySet<string> = new Set(['done', 'cancelled', 'error']);
+
+export interface ProjectChat {
+  messages: MessageDTO[];
+  lastSeenId: number;
+  oldestId: number | null;
+  hasMoreOlder: boolean;
+  loadingOlder: boolean;
+  loaded: boolean;
+  runActive: boolean;
+  currentRunId: string | null;
+  usage: Usage | null;
+  rateLimitedUntil: string | null;
+  lastError: string | null;
+  /** Rows that may have missed deltas (reconnect / unknown-id delta); re-healed when they settle. */
+  suspectIds: number[];
+}
+
+export function emptyChat(): ProjectChat {
+  return {
+    messages: [],
+    lastSeenId: 0,
+    oldestId: null,
+    hasMoreOlder: false,
+    loadingOlder: false,
+    loaded: false,
+    runActive: false,
+    currentRunId: null,
+    usage: null,
+    rateLimitedUntil: null,
+    lastError: null,
+    suspectIds: [],
+  };
+}
+
+export interface ChatDeps {
+  ws: WsClient;
+  fetchPage: (projectId: string, opts: { limit: number; before?: number }) => Promise<MessagesPage>;
+  newClientMessageId?: () => string;
+}
+
+export interface ChatState {
+  chats: Readonly<Record<string, ProjectChat>>;
+  open: (projectId: string) => Promise<void>;
+  loadOlder: (projectId: string) => Promise<void>;
+  send: (projectId: string, text: string, attachments?: AttachmentRef[]) => void;
+  cancelQueued: (projectId: string, messageId: number) => void;
+  stop: (projectId: string) => void;
+  heal: (projectId: string) => Promise<void>;
+  dismissError: (projectId: string) => void;
+}
+
+/** GET /api/projects/{id}/messages: the newest `limit` rows below `before`, ascending by id. */
+export async function fetchMessagesPage(
+  projectId: string,
+  opts: { limit: number; before?: number },
+): Promise<MessagesPage> {
+  const q = new URLSearchParams({ limit: String(opts.limit) });
+  if (opts.before !== undefined) q.set('before', String(opts.before));
+  const raw = await apiGet<unknown>(`/projects/${encodeURIComponent(projectId)}/messages?${q.toString()}`);
+  return MessagesPage.parse(raw);
+}
+
+/** crypto.randomUUID only exists in secure contexts; the app may be served over plain http on a LAN. */
+export function randomClientMessageId(): string {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** Server rows ascending by id, then optimistic rows (negative ids) in creation order. */
+export function compareMessages(a: MessageDTO, b: MessageDTO): number {
+  const aOpt = a.id < 0;
+  const bOpt = b.id < 0;
+  if (aOpt !== bOpt) return aOpt ? 1 : -1;
+  return aOpt ? b.id - a.id : a.id - b.id;
+}
+
+/** Server snapshot vs local copy of the same row (DB content lags the live stream). */
+export function mergeRow(existing: MessageDTO | undefined, incoming: MessageDTO): MessageDTO {
+  if (!existing) return incoming;
+  if (incoming.status === 'streaming' && existing.content.startsWith(incoming.content)) {
+    if (TERMINAL_STATUSES.has(existing.status)) return existing; // stale snapshot of a finished row
+    if (existing.content.length > incoming.content.length) return { ...incoming, content: existing.content };
+  }
+  return incoming;
+}
+
+/** Merge by id (one row per id); a server row replaces the optimistic row with its clientMessageId. */
+export function mergeRows(list: MessageDTO[], rows: MessageDTO[]): MessageDTO[] {
+  const byId = new Map(list.map((m) => [m.id, m] as const));
+  for (const r of rows) {
+    if (r.clientMessageId !== null) {
+      for (const [id, m] of byId) {
+        if (id < 0 && m.clientMessageId === r.clientMessageId) byId.delete(id);
+      }
+    }
+    byId.set(r.id, mergeRow(byId.get(r.id), r));
+  }
+  return [...byId.values()].sort(compareMessages);
+}
+
+function maxServerId(rows: MessageDTO[]): number {
+  return rows.reduce((max, r) => (r.id > max ? r.id : max), 0);
+}
+
+function minServerId(rows: MessageDTO[]): number | null {
+  let min: number | null = null;
+  for (const r of rows) if (r.id > 0 && (min === null || r.id < min)) min = r.id;
+  return min;
+}
+
+function applyDelta(m: MessageDTO, f: MessageDeltaFrame): MessageDTO {
+  return {
+    ...m,
+    content: f.contentDelta !== undefined ? m.content + f.contentDelta : m.content,
+    status: f.statusPatch ?? m.status,
+    metadata: f.metadataPatch ? { ...m.metadata, ...f.metadataPatch } : m.metadata,
+  };
+}
+
+function attachmentsOf(m: MessageDTO): AttachmentRef[] {
+  const parsed = z.array(AttachmentRef).safeParse(m.metadata.attachments);
+  return parsed.success ? parsed.data : [];
+}
+
+const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+export function createChatStore(deps: ChatDeps) {
+  const opening = new Map<string, Promise<void>>();
+  const healing = new Map<string, { running: Promise<void>; again: boolean }>();
+  let optimisticSeq = 0;
+  const newClientMessageId = deps.newClientMessageId ?? randomClientMessageId;
+
+  return create<ChatState>()((set, get) => {
+    function patch(projectId: string, fn: (c: ProjectChat) => ProjectChat): void {
+      const current = get().chats[projectId];
+      if (!current) return;
+      const next = fn(current);
+      if (next !== current) set({ chats: { ...get().chats, [projectId]: next } });
+    }
+
+    function withRows(c: ProjectChat, rows: MessageDTO[]): ProjectChat {
+      return { ...c, messages: mergeRows(c.messages, rows), lastSeenId: Math.max(c.lastSeenId, maxServerId(rows)) };
+    }
+
+    /** Only with an open socket; otherwise the connection handler subscribes on open. */
+    function subscribe(projectId: string): void {
+      const c = get().chats[projectId];
+      if (!c?.loaded || !deps.ws.isOpen()) return;
+      // Re-subscribing replaces the server-side subscription (R4); there is no unsubscribe.
+      deps.ws.send({ type: 'subscribe', projectId, sinceMessageId: c.lastSeenId });
+    }
+
+    /** Server dedupes on clientMessageId, so retransmitting is always safe. */
+    function resendPending(projectId: string): void {
+      const c = get().chats[projectId];
+      if (!c) return;
+      for (const m of c.messages) {
+        if (m.id >= 0 || m.status === 'error' || m.clientMessageId === null) continue;
+        deps.ws.send({ type: 'send', projectId, clientMessageId: m.clientMessageId, text: m.content, attachments: attachmentsOf(m) });
+      }
+    }
+
+    function onDelta(projectId: string, f: MessageDeltaFrame): void {
+      const c = get().chats[projectId];
+      if (!c) return;
+      const existing = c.messages.find((m) => m.id === f.messageId);
+      if (!existing) return; // Task 6A.5 turns this into a heal
+      const updated = applyDelta(existing, f);
+      patch(projectId, (cur) => ({ ...cur, messages: cur.messages.map((m) => (m.id === updated.id ? updated : m)) }));
+    }
+
+    function onConnection(state: ConnectionState): void {
+      if (state !== 'open' && state !== 'resumed') return;
+      for (const [projectId, chat] of Object.entries(get().chats)) {
+        if (!chat.loaded) continue; // an in-flight initial load subscribes itself with the right lastSeenId
+        subscribe(projectId);
+        resendPending(projectId);
+      }
+    }
+
+    function onFrame(f: ServerFrame): void {
+      if (f.type === 'error' && f.projectId === null) {
+        for (const projectId of Object.keys(get().chats)) patch(projectId, (c) => ({ ...c, lastError: f.message }));
+        return;
+      }
+      if (f.projectId === null || !get().chats[f.projectId]) return;
+      const projectId = f.projectId;
+      switch (f.type) {
+        case 'message':
+          patch(projectId, (c) => withRows(c, [f.message]));
+          return;
+        case 'message-delta':
+          onDelta(projectId, f);
+          return;
+        case 'run-started':
+          patch(projectId, (c) => ({ ...c, runActive: true, currentRunId: f.runId, rateLimitedUntil: null, lastError: null }));
+          return;
+        case 'run-finished':
+          patch(projectId, (c) => {
+            if (c.currentRunId !== null && c.currentRunId !== f.runId) return c; // late finish of an older run
+            return {
+              ...c,
+              runActive: false,
+              currentRunId: null,
+              lastError: f.reason === 'error' ? (c.lastError ?? 'The agent run ended with an error.') : c.lastError,
+            };
+          });
+          return;
+        case 'usage':
+          patch(projectId, (c) => ({ ...c, usage: f.usage }));
+          return;
+        case 'rate-limited':
+          patch(projectId, (c) => ({ ...c, rateLimitedUntil: f.resetsAt }));
+          return;
+        case 'error':
+          patch(projectId, (c) => ({
+            ...c,
+            lastError: f.message,
+            messages: f.clientMessageId
+              ? c.messages.map((m) =>
+                  m.id < 0 && m.clientMessageId === f.clientMessageId
+                    ? { ...m, status: 'error' as const, metadata: { ...m.metadata, error: f.message } }
+                    : m,
+                )
+              : c.messages,
+          }));
+          return;
+        case 'view-updated': // consumed by the viewer (Phase 7); ping/pong never reach here (projectId null)
+          return;
+      }
+    }
+
+    async function load(projectId: string): Promise<void> {
+      if (!get().chats[projectId]) set({ chats: { ...get().chats, [projectId]: emptyChat() } });
+      deps.ws.ensure();
+      try {
+        const page = await deps.fetchPage(projectId, { limit: PAGE_SIZE });
+        patch(projectId, (c) => {
+          const next = withRows(c, page.messages);
+          return { ...next, loaded: true, hasMoreOlder: page.hasMore, oldestId: minServerId(next.messages), lastError: null };
+        });
+      } catch (e) {
+        patch(projectId, (c) => ({ ...c, lastError: `Could not load messages: ${errorText(e)}` }));
+        return;
+      }
+      subscribe(projectId);
+    }
+
+    async function healOnce(projectId: string): Promise<void> {
+      try {
+        const page = await deps.fetchPage(projectId, { limit: PAGE_SIZE });
+        patch(projectId, (c) => {
+          const next = withRows(c, page.messages);
+          const settled = new Set(next.messages.filter((m) => TERMINAL_STATUSES.has(m.status)).map((m) => m.id));
+          return {
+            ...next,
+            oldestId: minServerId(next.messages),
+            hasMoreOlder: c.oldestId === null ? page.hasMore : c.hasMoreOlder,
+            suspectIds: next.suspectIds.filter((id) => !settled.has(id)),
+          };
+        });
+      } catch (e) {
+        console.warn('[chat] heal failed', e);
+      }
+    }
+
+    deps.ws.onFrame(onFrame);
+    deps.ws.onConnection(onConnection);
+
+    return {
+      chats: {},
+
+      open: (projectId) => {
+        if (get().chats[projectId]?.loaded) return Promise.resolve();
+        const inflight = opening.get(projectId);
+        if (inflight) return inflight;
+        const p = load(projectId).finally(() => opening.delete(projectId));
+        opening.set(projectId, p);
+        return p;
+      },
+
+      loadOlder: async (projectId) => {
+        const c = get().chats[projectId];
+        if (!c?.loaded || c.loadingOlder || !c.hasMoreOlder || c.oldestId === null) return;
+        const before = c.oldestId;
+        patch(projectId, (cur) => ({ ...cur, loadingOlder: true }));
+        try {
+          const page = await deps.fetchPage(projectId, { limit: PAGE_SIZE, before });
+          patch(projectId, (cur) => {
+            const messages = mergeRows(cur.messages, page.messages);
+            return { ...cur, messages, oldestId: minServerId(messages), hasMoreOlder: page.hasMore, loadingOlder: false };
+          });
+        } catch (e) {
+          patch(projectId, (cur) => ({ ...cur, loadingOlder: false, lastError: `Could not load older messages: ${errorText(e)}` }));
+        }
+      },
+
+      send: (projectId, text, attachments = []) => {
+        if (!get().chats[projectId] || (text.trim() === '' && attachments.length === 0)) return;
+        const clientMessageId = newClientMessageId();
+        optimisticSeq += 1;
+        const optimistic: MessageDTO = {
+          id: -optimisticSeq,
+          projectId,
+          clientMessageId,
+          runId: null,
+          role: 'user',
+          kind: 'text',
+          content: text,
+          status: 'queued',
+          metadata: { pending: true, attachments },
+          createdAt: new Date().toISOString(),
+        };
+        patch(projectId, (c) => ({ ...c, messages: [...c.messages, optimistic].sort(compareMessages) }));
+        // Not open: resendPending() sends it on 'open' (sending now would queue a duplicate).
+        if (deps.ws.isOpen()) deps.ws.send({ type: 'send', projectId, clientMessageId, text, attachments });
+      },
+
+      cancelQueued: (projectId, messageId) => {
+        if (messageId <= 0) return;
+        deps.ws.send({ type: 'cancel-queued', projectId, messageId });
+        patch(projectId, (c) => ({
+          ...c,
+          messages: c.messages.map((m) => (m.id === messageId ? { ...m, status: 'cancelled' as const } : m)),
+        }));
+      },
+
+      stop: (projectId) => {
+        const c = get().chats[projectId];
+        if (!c) return;
+        deps.ws.send({ type: 'interrupt', projectId, runId: c.currentRunId });
+      },
+
+      heal: (projectId) => {
+        const state = healing.get(projectId);
+        if (state) {
+          state.again = true; // a newer request arrived mid-fetch: fetch once more afterwards
+          return state.running;
+        }
+        const entry = { running: Promise.resolve(), again: false };
+        entry.running = (async () => {
+          try {
+            do {
+              entry.again = false;
+              await healOnce(projectId);
+            } while (entry.again);
+          } finally {
+            healing.delete(projectId);
+          }
+        })();
+        healing.set(projectId, entry);
+        return entry.running;
+      },
+
+      dismissError: (projectId) => patch(projectId, (c) => ({ ...c, lastError: null })),
+    };
+  });
+}
+
+export type ChatStore = ReturnType<typeof createChatStore>;
+
+export const useChatStore: ChatStore = createChatStore({ ws: wsClient, fetchPage: fetchMessagesPage });
