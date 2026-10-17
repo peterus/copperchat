@@ -207,6 +207,13 @@ class MessageRepo:
         )
         return [_row(r) for r in rows]
 
+    async def projects_with_queued(self) -> list[str]:
+        rows = await self._db.fetchall(
+            "SELECT DISTINCT project_id FROM messages WHERE role = 'user' AND status = 'queued' "
+            "ORDER BY project_id"
+        )
+        return [str(r["project_id"]) for r in rows]
+
     async def finalize_streaming(self, project_id: str) -> None:
         """Rows left 'streaming' by a crashed process keep their persisted content."""
         for r in await self._db.fetchall(

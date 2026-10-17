@@ -90,6 +90,22 @@ def test_cookie_authenticated_chat_round_trip(make_settings: Callable[..., Setti
         assert after_logout.value.code == 4401
 
 
+def test_logout_closes_an_open_socket(make_settings: Callable[..., Settings]) -> None:
+    settings = make_settings(dev_fake_agent=True)
+    _demo(settings)
+    with TestClient(create_app(settings)) as client:
+        assert client.post("/api/auth/login", json=GOOD).status_code == 204
+        cookie = {"cookie": f"{COOKIE_NAME}={client.cookies.get(COOKIE_NAME)}"}
+        with client.websocket_connect("/api/ws", headers=cookie) as sock:
+            sock.send_text(json.dumps({"type": "ping", "projectId": None}))
+            assert json.loads(sock.receive_text())["type"] == "pong"
+            assert client.post("/api/auth/logout").status_code == 204
+            sock.send_text(json.dumps({"type": "ping", "projectId": None}))
+            with pytest.raises(WebSocketDisconnect) as exc:
+                sock.receive_text()
+            assert exc.value.code == 4401
+
+
 def test_chat_routes_take_precedence_over_frontend(
     make_settings: Callable[..., Settings], tmp_path: Path
 ) -> None:
@@ -104,3 +120,35 @@ def test_chat_routes_take_precedence_over_frontend(
         assert client.get(f"/api/projects/{pid}/messages").json()["hasMore"] is False
         cookie = {"cookie": f"{COOKIE_NAME}={client.cookies.get(COOKIE_NAME)}"}
         assert _round_trip(client, pid, cookie)[-1]["reason"] == "completed"
+
+
+def test_queued_message_runs_after_restart_without_any_client(
+    make_settings: Callable[..., Settings],
+) -> None:
+    import asyncio
+    import time
+
+    from copperchat.db import Database
+    from copperchat.db.repos.messages import MessageRepo
+
+    settings = make_settings(dev_fake_agent=True)
+    pid = _demo(settings)
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+
+    async def seed() -> int:
+        db = await Database.open(settings.data_dir / "copperchat.db")
+        row, _ = await MessageRepo(db).insert_user(pid, "c1", "left over")
+        await db.close()
+        return row.id
+
+    mid = asyncio.run(seed())
+    with TestClient(create_app(settings)) as client:
+        client.post("/api/auth/login", json=GOOD)
+        deadline = time.monotonic() + 3
+        while True:
+            rows = client.get(f"/api/projects/{pid}/messages").json()["messages"]
+            if [r["status"] for r in rows] == ["done", "done"]:
+                break
+            assert time.monotonic() < deadline, rows
+            time.sleep(0.02)
+        assert rows[0]["id"] == mid and rows[1]["content"] == "You said: left over"

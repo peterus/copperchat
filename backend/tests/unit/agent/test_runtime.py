@@ -124,3 +124,58 @@ async def test_usage_frame_from_sdk_result_message(
     assert (usage.usage.input_tokens, usage.usage.output_tokens) == (10, 3)
     assert usage.usage.cache_read_tokens == 7 and usage.usage.cost_usd == 0.25
     await rt.close_all()
+
+
+async def test_resume_pending_starts_engines_for_parked_and_queued_projects(
+    tmp_path: Any, db: Any, until: Any
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from pydantic import SecretStr
+
+    from copperchat.db.repos.agent_state import RateLimitRepo
+    from copperchat.db.repos.messages import MessageRepo
+    from copperchat.projects import project_id_for
+
+    root = tmp_path / "projects"
+    for name in ("queued", "parked", "idle"):
+        (root / name).mkdir(parents=True)
+        (root / name / f"{name}.kicad_pro").write_text("")
+    settings = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        projects_root=root,
+        data_dir=tmp_path / "data",
+        claude_code_oauth_token=SecretStr("t"),
+    )
+    queued = project_id_for("queued/queued.kicad_pro")
+    parked = project_id_for("parked/parked.kicad_pro")
+    idle = project_id_for("idle/idle.kicad_pro")
+    gone = "0123456789ab"  # rows for a project that no longer exists are skipped
+    messages = MessageRepo(db)
+    row, _ = await messages.insert_user(queued, "c1", "waiting")
+    await messages.insert_user(gone, "c2", "orphan")
+    await RateLimitRepo(db).set(parked, datetime.now(UTC) + timedelta(hours=1))
+    await RateLimitRepo(db).set(idle, None)  # cleared limit: nothing to resume
+    agents: list[FakeAgent] = []
+
+    def factory(ctx: Any) -> FakeAgent:
+        agents.append(FakeAgent(ctx_factory=ctx))
+        return agents[-1]
+
+    rt = AgentRuntime(
+        settings=settings,
+        db=db,
+        broadcaster=Broadcaster(),
+        sessions=_Sessions(),  # type: ignore[arg-type]
+        backend_factory=factory,
+    )
+    resumed = await rt.resume_pending()
+    assert sorted(resumed) == sorted([queued, parked])
+    assert rt.get(idle) is None and rt.get(gone) is None
+    engine = rt.get(queued)
+    assert engine is not None
+    await until(lambda: any(a.prompts for a in agents) and not engine.is_busy)
+    assert [p.message_id for a in agents for p in a.prompts] == [row.id]
+    parked_engine = rt.get(parked)
+    assert parked_engine is not None and parked_engine.rate_limited_until is not None
+    await rt.close_all()

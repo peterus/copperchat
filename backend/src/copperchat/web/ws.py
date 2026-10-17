@@ -59,12 +59,46 @@ authenticate_connection = auth.authenticate_connection
 _GONE = (WebSocketDisconnect, WebSocketDisconnected, OSError)
 
 
-def _origin_ok(ws: WebSocket) -> bool:
-    """Browsers always send Origin on a WebSocket upgrade; it must be this host (CSWSH)."""
+_DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
+
+
+def _host_port(netloc: str, scheme: str | None) -> str:
+    """Lower-case ``host[:port]``, with the scheme's default port dropped."""
+    parts = urlsplit(f"//{netloc.strip()}")
+    host = (parts.hostname or "").lower()
+    if ":" in host:
+        host = f"[{host}]"  # IPv6 literal
+    try:
+        port = parts.port
+    except ValueError:
+        return ""
+    if port is None or (scheme is not None and _DEFAULT_PORTS.get(scheme) == port):
+        return host
+    return f"{host}:{port}"
+
+
+def _origin_ok(ws: WebSocket, public_base_url: str | None) -> bool:
+    """CSWSH guard. Browsers always send Origin on a WebSocket upgrade (and page script
+    cannot forge it or the Host/X-Forwarded-Host headers); it must name this server as
+    seen by the browser: the Host header, a proxy's X-Forwarded-Host, or the configured
+    ``public_base_url``."""
     origin = ws.headers.get("origin")
     if origin is None:
         return True  # not a browser; the session cookie is still required
-    return urlsplit(origin).netloc.lower() == ws.headers.get("host", "").lower()
+    parts = urlsplit(origin)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        return False  # e.g. "null" from sandboxed frames or file:// pages
+    want = _host_port(parts.netloc, parts.scheme)
+    candidates = [ws.headers.get("host", "")]
+    forwarded = ws.headers.get("x-forwarded-host")
+    if forwarded:
+        candidates.append(forwarded.split(",")[0])
+    allowed = {_host_port(c, parts.scheme) for c in candidates if c}
+    if public_base_url:
+        base = urlsplit(public_base_url)
+        if base.netloc:
+            allowed.add(_host_port(base.netloc, base.scheme or None))
+    return bool(want) and want in allowed
 
 
 def _str_field(data: Any, key: str) -> str | None:
@@ -83,6 +117,10 @@ class _Connection:
     async def send(self, frame: Wire) -> None:
         async with self._send_lock:
             await self.ws.send_text(dump_frame(frame))
+
+    async def close_socket(self, code: int) -> None:
+        async with self._send_lock:
+            await self.ws.close(code=code)
 
     async def engine(self, project_id: str) -> RunEngine:
         engine: RunEngine | None = self.runtime.get(project_id)
@@ -115,13 +153,18 @@ class _Connection:
         # `sub` while the replay is sent and are forwarded afterwards (no gap/duplicate).
         dtos, sub, run_id = await engine.replay_and_subscribe(frame.since_message_id)
         self._subs[pid] = (sub, None)  # registered first: close() also covers a failed replay
-        for dto in dtos:
-            await self.send(MessageFrame(project_id=pid, message=dto))
-        if run_id is not None:  # a reconnecting client keeps its Stop button
-            await self.send(RunStartedFrame(project_id=pid, run_id=run_id))
-        resets_at = engine.rate_limited_until
-        if resets_at is not None:  # parked: the client shows the countdown again
-            await self.send(RateLimitedFrame(project_id=pid, resets_at=resets_at.isoformat()))
+        try:
+            for dto in dtos:
+                await self.send(MessageFrame(project_id=pid, message=dto))
+            if run_id is not None:  # a reconnecting client keeps its Stop button
+                await self.send(RunStartedFrame(project_id=pid, run_id=run_id))
+            resets_at = engine.rate_limited_until
+            if resets_at is not None:  # parked: the client shows the countdown again
+                await self.send(RateLimitedFrame(project_id=pid, resets_at=resets_at.isoformat()))
+        except BaseException:
+            if self._subs.get(pid, (None,))[0] is sub:
+                self._drop(pid)  # never leave a subscription without a forwarder
+            raise
         if self._subs.get(pid, (None,))[0] is sub:
             self._subs[pid] = (sub, asyncio.create_task(self._forward(sub)))
 
@@ -130,7 +173,7 @@ class _Connection:
             async for frame in sub:
                 await self.send(frame)
             if sub.dropped:
-                await self.ws.close(code=CLOSE_SLOW_SUBSCRIBER)
+                await self.close_socket(CLOSE_SLOW_SUBSCRIBER)
         except _GONE:
             sub.close()  # the receive loop notices the disconnect and cleans up
 
@@ -212,16 +255,24 @@ class _Connection:
             )
 
 
+async def _session_alive(ws: WebSocket) -> bool:
+    """Re-check the upgrade request's session cookie against auth_sessions (logout)."""
+    return await authenticate_connection(ws) is not None
+
+
 async def _heartbeat(conn: _Connection) -> None:
     with contextlib.suppress(*_GONE):
         while True:
             await asyncio.sleep(HEARTBEAT_S)
+            if not await _session_alive(conn.ws):
+                await conn.close_socket(CLOSE_UNAUTHENTICATED)
+                return
             await conn.send(ServerPingFrame(project_id=None))
 
 
 @router.websocket("/ws")
 async def chat_ws(ws: WebSocket) -> None:
-    if not _origin_ok(ws):
+    if not _origin_ok(ws, ws.app.state.settings.public_base_url):
         await ws.close(code=CLOSE_FORBIDDEN_ORIGIN)
         return
     if await authenticate_connection(ws) is None:
@@ -234,6 +285,9 @@ async def chat_ws(ws: WebSocket) -> None:
         while True:
             msg = await ws.receive()
             if msg["type"] == "websocket.disconnect":
+                break
+            if not await _session_alive(ws):  # logged out since the upgrade
+                await conn.close_socket(CLOSE_UNAUTHENTICATED)
                 break
             text = msg.get("text")
             if text is None:

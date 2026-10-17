@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable, Sequence
 
 from copperchat.agent.broadcaster import Broadcaster
@@ -12,10 +13,14 @@ from copperchat.agent.fake import FakeAgent
 from copperchat.agent.sdk_backend import SdkAgentBackend
 from copperchat.config import Settings
 from copperchat.db import Database
+from copperchat.db.repos.agent_state import RateLimitRepo
+from copperchat.db.repos.messages import MessageRepo
+from copperchat.errors import CopperChatError
 from copperchat.kicad_session import KicadSessionManager
-from copperchat.projects import Project
+from copperchat.projects import Project, get_project
 from copperchat.tools import ToolContext, ToolSpec
 
+log = logging.getLogger(__name__)
 HooksFactory = Callable[[Project, RunEngine], RunHooks]
 
 
@@ -83,6 +88,28 @@ class AgentRuntime:
             await engine.start()
             self._engines[project.id] = engine
             return engine
+
+    async def resume_pending(self) -> list[str]:
+        """Start engines for projects with work left over from a previous process: a
+        stored rate limit (the engine re-arms its resume timer) or queued user messages
+        (the engine runs them). No client and no KiCad session are needed. Returns the
+        project ids whose engine was started; unknown projects are skipped."""
+        pending = set(await RateLimitRepo(self.db).parked_projects())
+        pending.update(await MessageRepo(self.db).projects_with_queued())
+        started: list[str] = []
+        for project_id in sorted(pending):
+            try:
+                project = get_project(self.settings.projects_root, project_id)
+            except CopperChatError as exc:
+                log.warning("not resuming %s: %s", project_id, exc)
+                continue
+            try:
+                await self.ensure(project)
+            except Exception:
+                log.exception("resuming %s failed", project_id)  # never block startup
+                continue
+            started.append(project_id)
+        return started
 
     async def close_all(self) -> None:
         engines, self._engines = list(self._engines.values()), {}

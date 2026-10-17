@@ -53,6 +53,7 @@ def create_app(
                 settings=settings, db=db, broadcaster=Broadcaster(), sessions=sessions
             )
             app.state.agent_runtime = runtime
+            await runtime.resume_pending()  # parked / queued work survives a restart
             # X17: services that need app.state.agent_runtime are set up here (Phase 7
             # install_history, Phase 9 push), after the runtime and before yield.
             yield

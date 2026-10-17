@@ -53,6 +53,7 @@ def _build_chat_app(
     *,
     auth: bool = False,
     max_queue: int = 1000,
+    settings_kw: dict[str, Any] | None = None,
 ) -> tuple[FastAPI, str]:
     root = tmp_path / "projects"
     for name in ("demo", "other"):
@@ -63,6 +64,7 @@ def _build_chat_app(
         projects_root=root,
         data_dir=tmp_path / "data",
         claude_code_oauth_token=SecretStr("t"),
+        **(settings_kw or {}),
     )
 
     @asynccontextmanager

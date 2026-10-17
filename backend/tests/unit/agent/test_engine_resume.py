@@ -161,3 +161,32 @@ async def test_kicad_unavailable_ends_turn_with_error_row_and_next_runs(make_eng
     assert first is not None and first.run_id is not None
     run = await RunRepo(db).get(first.run_id)
     assert run is not None and run["reason"] == "error"
+
+
+async def test_user_stop_wins_over_rate_limit_seen_earlier_in_the_turn(
+    make_engine, db, until, drain
+):
+    gate = asyncio.Event()
+    resets = datetime.now(UTC) + timedelta(seconds=0.2)
+
+    def script(item: Any) -> list[Any]:
+        if item.text == "m1":
+            return [Text("partial"), Emit(RateLimited(resets_at=resets)), Wait(gate)]
+        return [Text("ok")]
+
+    engine, agent = await make_engine(script)
+    sub = engine.broadcaster.subscribe(PID)
+    m1, _ = await engine.submit_ex("a", "m1", [])
+    await until(lambda: engine.current_run_id is not None and len(agent.prompts) == 1)
+    await engine.interrupt(engine.current_run_id)
+    await until(lambda: not engine.is_busy)
+    frames = await drain(sub)
+    assert [f.reason for f in frames if f.type == "run-finished"] == ["interrupted"]
+    assert not any(f.type == "rate-limited" for f in frames)
+    assert engine.rate_limited_until is None and await RateLimitRepo(db).get(PID) is None
+    row = await MessageRepo(db).get(m1.id)
+    assert row is not None and row.status != "queued"
+    await asyncio.sleep(0.4)  # past resets_at: nothing is auto-rerun
+    assert [p.text for p in agent.prompts] == ["m1"]
+    await engine.submit_ex("b", "m2", [])
+    await until(lambda: len(agent.prompts) == 2 and not engine.is_busy)

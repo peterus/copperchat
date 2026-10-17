@@ -65,6 +65,13 @@ class RateLimitRepo:
             return None
         return datetime.fromisoformat(str(row["resets_at"]))
 
+    async def parked_projects(self) -> list[str]:
+        rows = await self._db.fetchall(
+            "SELECT project_id FROM rate_limit_state WHERE resets_at IS NOT NULL "
+            "ORDER BY project_id"
+        )
+        return [str(r["project_id"]) for r in rows]
+
     async def set(self, project_id: str, resets_at: datetime | None) -> None:
         await self._db.execute(
             "INSERT INTO rate_limit_state (project_id, resets_at) VALUES (?, ?) "

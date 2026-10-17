@@ -399,9 +399,9 @@ class RunEngine:
         except Exception as exc:
             log.exception("agent backend failed for %s", self.pid)
             turn = self._turn
-            if turn is not None and turn.rate_limited is not None:
+            if turn is not None and (resets_at := self._park_until(turn)) is not None:
                 # The backend failed after reporting a rejected rate limit: park, not error.
-                await self._park(turn, stream, turn.rate_limited)
+                await self._park(turn, stream, resets_at)
             elif turn is not None:
                 async with self._lock:
                     await self._insert(
@@ -414,8 +414,9 @@ class RunEngine:
             if flusher is not None:
                 flusher.cancel()
             turn = self._turn
-            if turn is not None and turn.rate_limited is not None and not self._closed:
-                await self._park(turn, stream, turn.rate_limited)
+            resets_at = self._park_until(turn) if turn is not None else None
+            if turn is not None and resets_at is not None and not self._closed:
+                await self._park(turn, stream, resets_at)
             elif turn is not None:
                 await self._finish_turn(
                     "interrupted" if (self._interrupting or self._closed) else "error"
@@ -579,8 +580,8 @@ class RunEngine:
     async def _turn_finished(
         self, turn: _Turn, ev: TurnFinished, stream: PushStream[QueuedItem]
     ) -> None:
-        if turn.rate_limited is not None:
-            await self._park(turn, stream, turn.rate_limited)
+        if (resets_at := self._park_until(turn)) is not None:
+            await self._park(turn, stream, resets_at)
             return
         if ev.reason == "error" and ev.error:
             async with self._lock:
@@ -591,6 +592,11 @@ class RunEngine:
             stream.request_close()
 
     # ---- rate-limit parking
+    def _park_until(self, turn: _Turn) -> datetime | None:
+        """A turn that saw a rejected rate limit is parked and re-run later, unless the
+        user stopped it: then it ends as interrupted like any other stopped turn."""
+        return None if self._interrupting else turn.rate_limited
+
     async def _park(self, turn: _Turn, stream: PushStream[QueuedItem], resets_at: datetime) -> None:
         """End the turn as rate limited: its message and every waiting one stay 'queued'
         (outside the stream) until the limit resets; then they run again in order."""

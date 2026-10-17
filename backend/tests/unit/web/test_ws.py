@@ -255,3 +255,109 @@ async def test_dropped_slow_subscriber_closes_with_4408() -> None:
     conn = ws_module._Connection(sock)  # type: ignore[arg-type]
     await conn._forward(sub)
     assert sock.closed == 4408
+
+
+def _origin_close_code(client: TestClient, headers: dict[str, str]) -> int | None:
+    """None when the socket was accepted (ping answered), else the close code."""
+    try:
+        with client.websocket_connect("/api/ws", headers=headers) as sock:
+            send(sock, type="ping", projectId=None)
+            assert json.loads(sock.receive_text())["type"] == "pong"
+            return None
+    except WebSocketDisconnect as exc:
+        return exc.code
+
+
+def test_origin_matches_host_forwarded_host_or_public_base_url(build_chat_app: Any) -> None:
+    app, _ = build_chat_app(settings_kw={"public_base_url": "https://chat.example.com/"})
+    with TestClient(app) as client:
+        # Host header (TestClient sends Host: testserver); case-insensitive.
+        assert _origin_close_code(client, {"origin": "http://TestServer"}) is None
+        # A proxy that rewrites Host but sets X-Forwarded-Host (Vite `xfwd: true`).
+        vite = {"origin": "http://localhost:5173", "x-forwarded-host": "localhost:5173"}
+        assert _origin_close_code(client, vite) is None
+        # Settings.public_base_url (a reverse proxy that rewrites Host).
+        assert _origin_close_code(client, {"origin": "https://chat.example.com"}) is None
+        assert _origin_close_code(client, {"origin": "https://chat.example.com:443"}) is None
+        # Mismatches.
+        assert _origin_close_code(client, {"origin": "http://localhost:5173"}) == 4403
+        bad_fwd = {"origin": "https://evil.example", "x-forwarded-host": "localhost:5173"}
+        assert _origin_close_code(client, bad_fwd) == 4403
+        assert _origin_close_code(client, {"origin": "https://chat.example.com:8443"}) == 4403
+        assert _origin_close_code(client, {"origin": "null"}) == 4403
+
+
+def test_session_is_revalidated_on_every_frame(
+    build_chat_app: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app, _ = build_chat_app()
+    alive = {"ok": True}
+
+    async def maybe(conn: Any) -> str | None:
+        return "admin" if alive["ok"] else None
+
+    monkeypatch.setattr(ws_module, "authenticate_connection", maybe)
+    with TestClient(app) as client, client.websocket_connect("/api/ws") as sock:
+        send(sock, type="ping", projectId=None)
+        assert json.loads(sock.receive_text())["type"] == "pong"
+        alive["ok"] = False  # session row deleted (logout)
+        send(sock, type="ping", projectId=None)
+        with pytest.raises(WebSocketDisconnect) as exc:
+            sock.receive_text()
+        assert exc.value.code == 4401
+
+
+def test_session_is_revalidated_on_heartbeat(
+    build_chat_app: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ws_module, "HEARTBEAT_S", 0.05)
+    app, _ = build_chat_app()
+    alive = {"ok": True}
+
+    async def maybe(conn: Any) -> str | None:
+        return "admin" if alive["ok"] else None
+
+    monkeypatch.setattr(ws_module, "authenticate_connection", maybe)
+    with TestClient(app) as client, client.websocket_connect("/api/ws") as sock:
+        assert json.loads(sock.receive_text())["type"] == "ping"
+        alive["ok"] = False
+        with pytest.raises(WebSocketDisconnect) as exc:
+            for _ in range(10):
+                sock.receive_text()
+        assert exc.value.code == 4401
+
+
+async def test_failed_replay_drops_the_subscription() -> None:
+    from copperchat.agent.protocol import MessageDTO, SubscribeFrame
+
+    broadcaster = Broadcaster()
+    pid = "a1b2c3d4e5f6"
+    dto = MessageDTO(
+        id=1,
+        project_id=pid,
+        client_message_id=None,
+        run_id=None,
+        role="user",
+        kind="text",
+        content="x",
+        status="done",
+        metadata={},
+        created_at="2026-01-01T00:00:00Z",
+    )
+
+    class Engine:
+        rate_limited_until = None
+
+        async def replay_and_subscribe(self, since: int) -> Any:
+            return [dto], broadcaster.subscribe(pid), None
+
+    class Broken(_FakeSocket):
+        async def send_text(self, text: str) -> None:
+            raise ValueError("boom")
+
+    sock = Broken()
+    sock.app.state.agent_runtime = SimpleNamespace(get=lambda _pid: Engine())
+    conn = ws_module._Connection(sock)  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        await conn.subscribe(SubscribeFrame(project_id=pid, since_message_id=0))
+    assert conn._subs == {} and broadcaster.subscriber_count(pid) == 0
