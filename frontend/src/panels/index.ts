@@ -3,4 +3,8 @@
  * Imported once by main.tsx. Phase 7 adds `import './history';` and `import './git';`,
  * Phase 8 adds `import './skills';` and `import './parts';`.
  */
+import './attachments';
+import './parts';
+import './skills';
+
 export {};
