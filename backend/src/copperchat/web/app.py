@@ -13,6 +13,12 @@ from copperchat.db import Database
 from copperchat.errors import CopperChatError, StructuredToolError
 from copperchat.history.service import install_history
 from copperchat.kicad_session import ClientFactory, KicadSessionManager, ServerLauncher
+from copperchat.projects import get_project
+from copperchat.push.dispatcher import PushDispatcher
+from copperchat.push.notifier import PushNotifier
+from copperchat.push.store import PushStore
+from copperchat.push.vapid import load_or_create_vapid
+from copperchat.push.visibility import VisibilityRegistry
 from copperchat.web import (
     auth,
     health,
@@ -21,11 +27,14 @@ from copperchat.web import (
     routes_messages,
     routes_parts,
     routes_projects,
+    routes_push,
     routes_skills,
     routes_uploads,
     routes_views,
     ws,
 )
+from copperchat.web.routes_push import PushServices
+from copperchat.web.security import SecurityHeadersMiddleware
 from copperchat.web.static import mount_frontend
 
 
@@ -36,6 +45,29 @@ def install_error_handlers(app: FastAPI) -> None:
         if isinstance(exc, StructuredToolError):
             body["details"] = exc.to_dict()
         return JSONResponse(status_code=exc.http_status, content={"error": body})
+
+
+def install_push(app: FastAPI) -> PushServices:
+    """Web Push (Phase 9): VAPID keys, subscriptions, visibility registry and the notifier,
+    which listens to every frame the agent runtime broadcasts (X17: needs the runtime)."""
+    settings: Settings = app.state.settings
+    runtime: AgentRuntime = app.state.agent_runtime
+    keys = load_or_create_vapid(settings.data_dir)
+    store = PushStore(app.state.db)
+    visibility = VisibilityRegistry()
+    dispatcher = PushDispatcher(store, keys, settings.vapid_subject)
+
+    def project_name(project_id: str) -> str:
+        try:
+            return get_project(settings.projects_root, project_id).name
+        except CopperChatError:
+            return "CopperChat"
+
+    notifier = PushNotifier(app.state.db, dispatcher, visibility, project_name)
+    services = PushServices(keys, store, visibility, dispatcher, notifier)
+    app.state.push = services
+    runtime.broadcaster.add_listener(notifier.on_frame)
+    return services
 
 
 def create_app(
@@ -51,6 +83,7 @@ def create_app(
         db = await Database.open(settings.data_dir / "copperchat.db")
         sessions = KicadSessionManager(settings, launcher, client_factory=client_factory)
         runtime: AgentRuntime | None = None
+        push: PushServices | None = None
         try:
             await auth.ensure_admin(db, settings)
             app.state.settings = settings
@@ -66,14 +99,21 @@ def create_app(
                 settings=settings, db=db, broadcaster=Broadcaster(), sessions=sessions
             )
             app.state.agent_runtime = runtime
-            # X17: services that need app.state.agent_runtime are set up here (Phase 9
-            # push too), after the runtime and before yield. install_history sets
+            # X17: services that need app.state.agent_runtime are set up here (history,
+            # push), after the runtime and before yield. install_history sets
             # runtime.hooks_factory, so it must run before resume_pending() creates
             # engines: an engine keeps the hooks it was created with.
             install_history(app)
-            await runtime.resume_pending()  # parked / queued work survives a restart
+            push = install_push(app)
+            # parked / queued work survives a restart
+            for project_id in await runtime.resume_pending():
+                engine = runtime.get(project_id)
+                if engine is not None and engine.rate_limited_until is not None:
+                    push.notifier.schedule_reopen(project_id, engine.rate_limited_until)
             yield
         finally:
+            if push is not None:
+                await push.notifier.close()
             if runtime is not None:
                 await runtime.close_all()
             await sessions.close_all()
@@ -81,6 +121,7 @@ def create_app(
 
     app = FastAPI(title="CopperChat", lifespan=lifespan)
     install_error_handlers(app)
+    app.add_middleware(SecurityHeadersMiddleware)
     app.include_router(auth.router)
     app.include_router(health.router)
     app.include_router(routes_projects.router)
@@ -91,6 +132,7 @@ def create_app(
     app.include_router(routes_skills.router)
     app.include_router(routes_parts.router)
     app.include_router(routes_uploads.router)
+    app.include_router(routes_push.router)
     app.include_router(ws.router)
     mount_frontend(app, settings.frontend_dist)  # must stay last: it mounts "/"
     return app

@@ -1,0 +1,39 @@
+{
+ "type": "visibility",
+ "directions": [
+  "c2s"
+ ],
+ "valid": [
+  {
+   "type": "visibility",
+   "projectId": "a1b2c3d4e5f6",
+   "visible": true
+  },
+  {
+   "type": "visibility",
+   "projectId": "a1b2c3d4e5f6",
+   "visible": false
+  }
+ ],
+ "invalid": [
+  {
+   "type": "visibility",
+   "projectId": "a1b2c3d4e5f6"
+  },
+  {
+   "type": "visibility",
+   "projectId": null,
+   "visible": true
+  },
+  {
+   "type": "visibility",
+   "projectId": "a1b2c3d4e5f6",
+   "visible": "yes"
+  },
+  {
+   "type": "visibility",
+   "projectId": "a1b2c3d4e5f6",
+   "visible": 1
+  }
+ ]
+}

@@ -36,6 +36,7 @@ from copperchat.agent.protocol import (
     SendFrame,
     ServerPingFrame,
     SubscribeFrame,
+    VisibilityFrame,
     Wire,
     client_frame_adapter,
     dump_frame,
@@ -113,6 +114,20 @@ class _Connection:
         self.settings: Any = ws.app.state.settings
         self._send_lock = asyncio.Lock()
         self._subs: dict[str, tuple[Subscription, asyncio.Task[None] | None]] = {}
+
+    def _visibility(self) -> Any:
+        push = getattr(self.ws.app.state, "push", None)  # absent in chat-only test apps
+        return None if push is None else push.visibility
+
+    def set_visible(self, project_id: str, visible: bool) -> None:
+        registry = self._visibility()
+        if registry is not None:
+            registry.set(id(self), project_id, visible)
+
+    def forget_visibility(self) -> None:
+        registry = self._visibility()
+        if registry is not None:
+            registry.drop(id(self))
 
     async def send(self, frame: Wire) -> None:
         async with self._send_lock:
@@ -200,6 +215,9 @@ class _Connection:
             return
         if isinstance(frame, PingFrame):
             await self.send(PongFrame(project_id=None))
+            return
+        if isinstance(frame, VisibilityFrame):
+            self.set_visible(frame.project_id, frame.visible)
             return
         cmid = frame.client_message_id if isinstance(frame, SendFrame) else None
         try:
@@ -303,6 +321,7 @@ async def chat_ws(ws: WebSocket) -> None:
     except _GONE:
         pass
     finally:
+        conn.forget_visibility()  # a closed socket is never "visible"
         heartbeat.cancel()
         await conn.close()
         with contextlib.suppress(asyncio.CancelledError):
