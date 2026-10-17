@@ -5,7 +5,7 @@ import { expect, test } from '@playwright/test';
 
 test.skip(!process.env.E2E_BASE_URL, 'set E2E_BASE_URL (CI e2e job)');
 
-test('login → open project → send → fake reply → viewer loads; PWA + CSP intact', async ({ page }) => {
+test('login → open project → send → fake reply → viewer loads; PWA + CSP intact', async ({ page }, testInfo) => {
   const cspViolations: string[] = [];
   page.on('console', (m) => {
     if (/Content Security Policy|Refused to/i.test(m.text())) cspViolations.push(m.text());
@@ -26,10 +26,13 @@ test('login → open project → send → fake reply → viewer loads; PWA + CSP
   // attached, not visible: on phones the viewer stays mounted behind the Chat tab
   await expect(page.getByTestId('viewer-slot').first()).toBeAttached();
 
-  const text = `hello ${Date.now()}`; // unique: reruns against the same instance keep history
+  // unique: reruns against the same instance keep history, and the desktop and phone projects
+  // run in parallel against the same chat (same millisecond seen in CI)
+  const text = `hello ${testInfo.project.name} ${Date.now()}`;
   await page.getByRole('textbox', { name: 'Message' }).fill(text);
   await page.getByRole('button', { name: 'Send', exact: true }).click();
-  await expect(page.getByText(text, { exact: true })).toBeVisible();
+  // in the transcript: while the other project's turn runs, the message is also shown queued in the composer
+  await expect(page.getByTestId('chat-scroller').getByText(text, { exact: true })).toBeVisible();
   await expect(page.getByText(`You said: ${text}`)).toBeVisible({ timeout: 30_000 });
   await viewerReq;
 
