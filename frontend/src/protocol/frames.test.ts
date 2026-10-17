@@ -68,3 +68,9 @@ describe('frame schemas', () => {
     expect(ClientFrame.safeParse({ type: 'subscribe', projectId: 'p1', sinceMessageId: 0 }).success).toBe(false);
   });
 });
+
+it('knows the visibility frame', () => {
+  expect(ALL_FRAME_TYPES).toContain('visibility');
+  expect(ClientFrame.safeParse({ type: 'visibility', projectId: 'a1b2c3d4e5f6', visible: true }).success).toBe(true);
+  expect(ClientFrame.safeParse({ type: 'visibility', projectId: 'a1b2c3d4e5f6', visible: 1 }).success).toBe(false);
+});

@@ -1,3 +1,4 @@
+import { forgetPushSubscription } from '@/push/push';
 import { useAuth } from './auth';
 import { useChatStore } from './chat';
 import { useComposer } from './composer';
@@ -8,6 +9,8 @@ export function resetSessionState(): void {
   useChatStore.getState().reset();
   useComposer.getState().clear();
   useProjects.getState().reset();
+  // A signed-out device gets no notifications (they name projects and quote the agent).
+  void forgetPushSubscription();
 }
 
 /**
