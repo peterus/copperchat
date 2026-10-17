@@ -1,4 +1,6 @@
 import io
+import shutil
+from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -24,6 +26,27 @@ async def test_snapshot_written_without_version_bump(ecc83_session: KicadSession
     assert path.is_file() and path.stat().st_size > 1000
     assert ".kicad-agent/view" in path.as_posix()
     assert ecc83_session.view_version == before  # X2: only the turn-end publish bumps
+
+
+# A KiCad-authored design rules file shipped with the base image's demos.
+DEMO_RULES = Path(
+    "/usr/share/kicad/demos/jetson-agx-thor-baseboard/jetson-agx-thor-baseboard.kicad_dru"
+)
+
+
+async def test_board_snapshot_with_design_rules_repeats(ecc83_session: KicadSession) -> None:
+    # KiCad copies the rules next to a board copy and refuses the next copy while that
+    # file exists, so every snapshot after the first failed for boards with rules.
+    if not DEMO_RULES.is_file():
+        pytest.skip("KiCad demo projects not installed")
+    project = ecc83_session.project
+    assert project.pcb_file is not None
+    shutil.copyfile(DEMO_RULES, project.pcb_file.with_suffix(".kicad_dru"))
+    first = await write_kicanvas_snapshot(ecc83_session, "pcb")
+    first.unlink()
+    second = await write_kicanvas_snapshot(ecc83_session, "pcb")
+    assert second.is_file() and second.stat().st_size > 1000
+    assert second.with_suffix(".kicad_dru").read_bytes() == DEMO_RULES.read_bytes()
 
 
 async def test_hierarchy_view_files(hier_session: KicadSession) -> None:

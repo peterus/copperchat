@@ -3,6 +3,7 @@ from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 
 import pytest
+from kipy.errors import ApiError
 
 from copperchat.config import Settings
 from copperchat.errors import CopperChatError, DocumentNotOpen, ReadOnlyProject
@@ -206,6 +207,35 @@ async def test_save_copy_board(
     dest = tmp_path / "copy" / "demo.kicad_pcb"
     assert await session.save_copy("pcb", dest) == dest
     assert dest.exists()
+
+
+async def test_save_copy_board_with_design_rules_repeats(
+    manager: KicadSessionManager, make_settings: Callable[..., Settings], tmp_path: Path
+) -> None:
+    # KiCad's SavePcbCopy refuses when <dest>.kicad_dru exists - which its own previous
+    # copy left there, so every view snapshot after the first failed (jetson demo).
+    project = make_project(make_settings().projects_root)
+    rules = project.dir / "demo.kicad_dru"
+    rules.write_bytes(b"")  # empty marker
+    session = await manager.open(project)
+    dest = tmp_path / "copy" / "demo.kicad_pcb"
+    await session.save_copy("pcb", dest)
+    await session.save_copy("pcb", dest)
+    assert dest.exists() and dest.with_suffix(".kicad_dru").exists()
+    assert rules.exists()
+
+
+async def test_save_copy_never_removes_rules_in_the_project_dir(
+    manager: KicadSessionManager, make_settings: Callable[..., Settings]
+) -> None:
+    project = make_project(make_settings().projects_root)
+    (project.dir / "demo.kicad_dru").write_bytes(b"")  # empty markers
+    user_rules = project.dir / "other.kicad_dru"
+    user_rules.write_bytes(b"")
+    session = await manager.open(project)
+    with pytest.raises(ApiError):
+        await session.save_copy("pcb", project.dir / "other.kicad_pcb")
+    assert user_rules.exists()
 
 
 async def test_save_copy_schematic_copies_sub_sheets(

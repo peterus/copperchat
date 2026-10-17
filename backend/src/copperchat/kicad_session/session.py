@@ -336,11 +336,19 @@ class KicadSession:
         Spike 1C (Q4): for a schematic the API writes only the root sheet, so the
         sub-sheet files named by the hierarchy are byte-copied from the project
         directory next to it (same relative paths). Never calls `save()`.
+
+        For a board, KiCad copies the project's `.kicad_dru` next to the copy and
+        refuses ("board could not be saved to ...") when `<dest>.kicad_dru` already
+        exists - its own previous copy - so that stale copy is removed first. A rules
+        file in the project directory itself is never touched.
         """
         dest.parent.mkdir(parents=True, exist_ok=True)
+        stale_rules = dest.parent.resolve() != self.project.dir.resolve()
 
         def _copy(h: KicadHandle) -> list[str]:
             if doc == "pcb":
+                if stale_rules:  # under the session lock, right before the save
+                    dest.with_suffix(".kicad_dru").unlink(missing_ok=True)
                 h.board().save_as(str(dest), overwrite=True, include_project=False)
                 return []
             schematic = h.schematic()
