@@ -1,0 +1,137 @@
+{
+  "fields": {},
+  "footprint": "Footprints:Valve_ECC-83-1",
+  "libId": "ecc83-pp:ECC83",
+  "pins": [
+    {
+      "name": "A",
+      "net": "Net-(U1A-G)",
+      "pin": "1",
+      "position_mm": {
+        "x": 157.48,
+        "y": 97.79
+      },
+      "type": "passive",
+      "unit": 2
+    },
+    {
+      "name": "G",
+      "net": "Net-(P1-PM)",
+      "pin": "2",
+      "position_mm": {
+        "x": 149.86,
+        "y": 107.95
+      },
+      "type": "input",
+      "unit": 2
+    },
+    {
+      "name": "K",
+      "net": "Net-(U1B-K)",
+      "pin": "3",
+      "position_mm": {
+        "x": 154.94,
+        "y": 118.11
+      },
+      "type": "passive",
+      "unit": 2
+    },
+    {
+      "name": "F1",
+      "net": "Net-(P4-PM)",
+      "pin": "4",
+      "position_mm": {
+        "x": 60.96,
+        "y": 86.36
+      },
+      "type": "input",
+      "unit": 3
+    },
+    {
+      "name": "F1",
+      "net": "Net-(P4-PM)",
+      "pin": "5",
+      "position_mm": {
+        "x": 66.04,
+        "y": 86.36
+      },
+      "type": "input",
+      "unit": 3
+    },
+    {
+      "name": "A",
+      "net": "Net-(P3-P1)",
+      "pin": "6",
+      "position_mm": {
+        "x": 160.02,
+        "y": 54.61
+      },
+      "type": "passive",
+      "unit": 1
+    },
+    {
+      "name": "G",
+      "net": "Net-(U1A-G)",
+      "pin": "7",
+      "position_mm": {
+        "x": 152.4,
+        "y": 64.77
+      },
+      "type": "input",
+      "unit": 1
+    },
+    {
+      "name": "K",
+      "net": "Net-(U1A-K)",
+      "pin": "8",
+      "position_mm": {
+        "x": 157.48,
+        "y": 74.93
+      },
+      "type": "passive",
+      "unit": 1
+    },
+    {
+      "name": "F2",
+      "net": "Net-(P4-P1)",
+      "pin": "9",
+      "position_mm": {
+        "x": 63.5,
+        "y": 86.36
+      },
+      "type": "input",
+      "unit": 3
+    }
+  ],
+  "ref": "U1",
+  "units": [
+    {
+      "position_mm": {
+        "x": 160.02,
+        "y": 64.77
+      },
+      "sheet": "/",
+      "unit": 1,
+      "uuid": "00000000-0000-0000-0000-000048b4f256"
+    },
+    {
+      "position_mm": {
+        "x": 157.48,
+        "y": 107.95
+      },
+      "sheet": "/",
+      "unit": 2,
+      "uuid": "00000000-0000-0000-0000-000048b4f263"
+    },
+    {
+      "position_mm": {
+        "x": 63.5,
+        "y": 74.93
+      },
+      "sheet": "/",
+      "unit": 3,
+      "uuid": "00000000-0000-0000-0000-000048b4f266"
+    }
+  ],
+  "value": "ECC83"
+}
