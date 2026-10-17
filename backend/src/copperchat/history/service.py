@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 
 async def _default_preview(session: KicadSession, doc: DocKind) -> bytes | None:
     try:
-        return (await render_view(session, doc, "agent")).data
+        return (await render_view(session, doc, "agent", persist=False)).data
     except Exception:  # a missing thumbnail must never block a snapshot
         log.warning("history preview render failed", exc_info=True)
         return None

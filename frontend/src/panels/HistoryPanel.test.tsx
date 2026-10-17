@@ -97,4 +97,14 @@ describe('HistoryPanel', () => {
     await waitFor(() => expect(apiGet).toHaveBeenCalledTimes(2));
     expect(screen.getAllByRole('button', { name: /undo/i })[0]).toBeEnabled();
   });
+  it('clears a load error once a later reload succeeds', async () => {
+    apiGet.mockRejectedValueOnce(new Error('HTTP 503'));
+    chat.runActive = true;
+    const view = render(<HistoryPanel projectId="p1" />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('HTTP 503');
+    chat.runActive = false;
+    view.rerender(<HistoryPanel projectId="p1" />);
+    expect(await screen.findByText('route USB')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
 });

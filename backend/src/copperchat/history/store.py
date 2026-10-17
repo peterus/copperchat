@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import re
 import shutil
 import uuid
@@ -61,23 +62,21 @@ def validate_snapshot_id(raw: str) -> str:
     return raw
 
 
-def _in_hidden_dir(rel: Path) -> bool:
-    return any(part.startswith(".") for part in rel.parts[:-1])
-
-
 def document_files(project: Project) -> list[Path]:
     """The project file, every schematic sheet below the project dir, and the board.
 
-    Hidden directories (incl. `.kicad-agent`, so snapshots and view copies) are skipped.
+    Hidden directories (`.git`, `.kicad-agent` with its snapshots and view copies) are
+    pruned from the walk, never descended into.
     """
     files: list[Path] = [project.pro_file]
-    for sch in sorted(project.dir.rglob("*.kicad_sch")):
-        if (
-            sch.is_file()
-            and not sch.is_symlink()
-            and not _in_hidden_dir(sch.relative_to(project.dir))
-        ):
-            files.append(sch)
+    sheets: list[Path] = []
+    for here, dirs, names in os.walk(project.dir):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        for name in names:
+            path = Path(here) / name
+            if name.endswith(".kicad_sch") and path.is_file() and not path.is_symlink():
+                sheets.append(path)
+    files.extend(sorted(sheets))
     if project.pcb_file is not None and project.pcb_file.is_file():
         files.append(project.pcb_file)
     return files

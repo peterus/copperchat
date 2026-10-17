@@ -98,20 +98,31 @@ class HistoryHooks(RunHooks):
         session = self.svc.open_session(self.project)
         if session is None or session.read_only:
             return
+        saved: set[DocKind] = set()
+        failure: Exception | None = None
         async with self.svc.lock(self.project):
             try:
                 for doc in sorted(docs):
                     await session.save(doc)
-                # save() rewrites files even without edits: hash only after our own save.
-                await self._record_hashes()
-                await self.svc.publish_view(self.project, session, docs)
-                return
+                    saved.add(doc)
             except Exception as exc:
                 log.warning("autosave failed for %s: %s", self.project.rel_path, exc)
                 failure = exc
+            if saved:
+                # save() rewrites files even without edits: hash only after our own save,
+                # and after a partial one too, so it is never taken for an external change.
+                await self._record_hashes()
+        if saved:
+            try:
+                await self.svc.publish_view(self.project, session, saved)
+            except Exception:  # the design is saved; only the viewer refresh failed
+                log.warning("view refresh after autosave failed", exc_info=True)
+        if failure is None:
+            return
         # Not a kicad_failed turn: the engine has posted nothing, so report the save.
+        unsaved = ", ".join(sorted(docs - saved))
         await self.engine.post_error(
-            f"Autosave failed ({failure}). The design on disk is at its last saved state.",
+            f"Autosave of {unsaved} failed ({failure}). On disk it is at its last saved state.",
             {"code": "autosave_failed"},
         )
         await self._recover(turn)

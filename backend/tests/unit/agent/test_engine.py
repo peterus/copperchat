@@ -492,3 +492,36 @@ async def test_failing_backend_does_not_loop_on_queued_rows_at_startup(make_engi
     rows = await _rows(db)
     assert [r.status for r in rows if r.role == "user"] == ["error"]
     assert len([r for r in rows if r.kind == "error"]) == 1
+
+
+async def test_failed_first_mutation_hook_is_retried_by_the_next_mutating_call(make_engine, until):
+    """The undo snapshot (Phase 7) runs before the first mutation; if it fails, that call
+    fails and the next mutating call must try again instead of mutating unprotected."""
+    calls: list[str] = []
+    outcomes: list[TurnOutcome] = []
+    ran: list[bool] = []
+
+    class Rec(RunHooks):
+        async def on_first_mutation(self, turn: TurnInfo) -> None:
+            calls.append(turn.run_id)
+            if len(calls) == 1:
+                raise OSError("snapshot failed")
+
+        async def on_turn_end(self, turn: TurnInfo, outcome: TurnOutcome) -> None:
+            outcomes.append(outcome)
+
+    async def edit(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
+        ran.append(True)
+        return ToolResult(data={}, changed_docs={"pcb"})
+
+    spec = ToolSpec("edit", "d", {"type": "object"}, edit, mutating=True)
+    engine, _ = await make_engine(
+        lambda item: [Tool("edit"), Tool("edit"), Tool("edit")],
+        specs=[spec],
+        with_session=True,
+        hooks=Rec(),
+    )
+    await engine.submit_ex("c", "go", [])
+    await until(lambda: len(outcomes) == 1)
+    assert len(calls) == 2 and len(set(calls)) == 1  # retried once, then marked
+    assert ran == [True, True] and outcomes[0].mutated is True

@@ -850,8 +850,10 @@ class RunEngine:
     async def _on_mutation(self) -> None:
         turn = self._turn
         if turn is not None and not turn.mutated:
-            turn.mutated = True
+            # Marked only once the hook succeeded: if the undo snapshot failed, that call
+            # fails and the next mutating call of the turn tries the snapshot again.
             await self.hooks.on_first_mutation(turn.info)
+            turn.mutated = True
 
     def _on_documents_changed(self, docs: set[DocKind]) -> None:
         # X2: Phase 5 never publishes view-updated; Phase 7 does it from TurnOutcome.

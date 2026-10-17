@@ -28,6 +28,7 @@ export function HistoryPanel({ projectId }: { projectId: string }) {
   const load = useCallback(async () => {
     try {
       setEntries(await apiGet<HistoryEntry[]>(`/projects/${projectId}/history`));
+      setError(null);
     } catch (e) {
       setError(errorText(e));
     }

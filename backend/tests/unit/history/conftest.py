@@ -30,6 +30,7 @@ class Env:
     written: list[str] = field(default_factory=list)
     saved: list[str] = field(default_factory=list)
     save_error: Exception | None = None
+    save_error_doc: str | None = None  # None: every save fails
 
     def project(self, src: Path = ECC83) -> Project:
         return copy_project(src, self.settings.projects_root)
@@ -62,7 +63,7 @@ async def env(
     real_save = KicadSession.save
 
     async def recording_save(self: KicadSession, doc: Any) -> None:
-        if e.save_error is not None:
+        if e.save_error is not None and e.save_error_doc in (None, doc):
             raise e.save_error
         await real_save(self, doc)  # read-only check + FakeDocument.save()
         e.saved.append(doc)

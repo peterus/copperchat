@@ -141,3 +141,28 @@ async def test_failed_autosave_posts_one_error_and_offers_restore(opened: Opened
     assert env.engine.notices[-1][1] == {"action": "restore", "snapshotId": snap.id}
     assert env.broadcaster.frames == []
     assert await env.svc.hashes.get(opened.project.id) == hashes
+
+
+async def test_partial_autosave_records_hashes_and_publishes_saved_docs(opened: Opened) -> None:
+    env = opened.env
+    env.save_error, env.save_error_doc = KicadUnavailable("save timed out"), "sch"
+    await opened.hooks.on_turn_end(turn(), done("pcb", "sch"))
+    assert env.saved == ["pcb"]
+    [(text, meta)] = env.engine.errors
+    assert meta == {"code": "autosave_failed"} and "sch" in text and "pcb" not in text
+    assert await env.svc.hashes.get(opened.project.id) == compute_hashes(opened.project)
+    assert [f.docs for f in env.broadcaster.frames] == [["pcb"]]
+    await opened.hooks.on_turn_start(turn("next"))
+    assert not any(m and m.get("action") == "external-change" for _, m in env.engine.notices)
+
+
+async def test_view_refresh_failure_is_not_an_autosave_failure(opened: Opened) -> None:
+    env = opened.env
+
+    async def broken(session: Any, doc: str) -> Any:
+        raise OSError("view dir not writable")
+
+    env.svc.write_view = broken  # type: ignore[assignment]
+    await opened.hooks.on_turn_end(turn(), done("pcb"))
+    assert env.saved == ["pcb"] and env.engine.errors == [] and env.engine.notices == []
+    assert await env.svc.hashes.get(opened.project.id) == compute_hashes(opened.project)

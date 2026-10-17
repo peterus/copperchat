@@ -199,3 +199,14 @@ def test_git_status_route(make_settings: Callable[..., Settings], repo: Path) ->
         "clean": False,
         "files": [{"path": "boards/demo/notes.txt", "status": "??"}],
     }
+
+
+async def test_git_timeout_is_a_structured_error(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from copperchat.git_tools import specs
+
+    monkeypatch.setattr(specs, "_TIMEOUT_S", 1e-9)
+    with pytest.raises(StructuredToolError) as err:
+        await git_status_data(repo / "boards" / "demo")
+    assert "timed out" in err.value.what

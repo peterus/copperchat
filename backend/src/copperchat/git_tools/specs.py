@@ -60,11 +60,17 @@ async def _git(project_dir: Path, *args: str) -> tuple[int, str, str]:
         ) from exc
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=_TIMEOUT_S)
-    except (TimeoutError, asyncio.CancelledError):
+    except (TimeoutError, asyncio.CancelledError) as exc:
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
         await proc.wait()
-        raise
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+        raise StructuredToolError(
+            f"git {args[0] if args else ''} timed out".strip(),
+            f"git did not finish within {_TIMEOUT_S:g}s",
+            "The repository may be very large or locked; try again later.",
+        ) from exc
     return proc.returncode or 0, out.decode(errors="replace"), err.decode(errors="replace")
 
 
