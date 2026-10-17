@@ -105,6 +105,14 @@ describe('projects', () => {
     expect(useProjects.getState().current?.id).toBe('ffffffffffff');
   });
 
+  it('concurrent open() calls for the same project share one request', async () => {
+    const fetchMock = vi.mocked(fetch);
+    await useProjects.getState().load();
+    const [a, b] = await Promise.all([useProjects.getState().open('ffffffffffff'), useProjects.getState().open('ffffffffffff')]);
+    expect(a).toBe(b);
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/api/projects/ffffffffffff/open')).toHaveLength(1);
+  });
+
   it('reset() drops the list and the current project', async () => {
     await useProjects.getState().open('ffffffffffff');
     useProjects.getState().reset();

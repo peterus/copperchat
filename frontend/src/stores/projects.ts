@@ -57,6 +57,24 @@ export const useProjects = create<ProjectsState>()((set, get) => {
   // Bumped by every open() and reset(): only the latest request may write its result.
   let openSeq = 0;
   let loadSeq = 0;
+  // StrictMode / re-renders may call open(id) twice: share the in-flight request.
+  let inflight: { id: string; promise: Promise<OpenProject | null> } | null = null;
+
+  async function doOpen(id: string, seq: number): Promise<OpenProject | null> {
+    try {
+      if (!get().projects.some((p) => p.id === id)) await get().load();
+      const result = OpenResult.parse(await apiPost<unknown>(`/projects/${encodeURIComponent(id)}/open`, {}));
+      if (seq !== openSeq) return null;
+      const summary = get().projects.find((p) => p.id === id);
+      if (!summary) throw new Error(get().error ?? 'Project not found');
+      const current: OpenProject = { ...summary, ...result };
+      set({ current, opening: null, openError: null });
+      return current;
+    } catch (e) {
+      if (seq === openSeq) set({ current: null, opening: null, openError: messageOf(e) });
+      return null;
+    }
+  }
 
   return {
     ...initial,
@@ -72,25 +90,17 @@ export const useProjects = create<ProjectsState>()((set, get) => {
       }
     },
 
-    open: async (id) => {
+    open: (id) => {
+      if (inflight?.id === id && get().opening === id) return inflight.promise;
       const seq = ++openSeq;
       set({ opening: id, openError: null, current: get().current?.id === id ? get().current : null });
-      try {
-        if (!get().projects.some((p) => p.id === id)) await get().load();
-        const result = OpenResult.parse(await apiPost<unknown>(`/projects/${encodeURIComponent(id)}/open`, {}));
-        if (seq !== openSeq) return null;
-        const summary = get().projects.find((p) => p.id === id);
-        if (!summary) throw new Error('Project not found');
-        const current: OpenProject = { ...summary, ...result };
-        set({ current, opening: null, openError: null });
-        return current;
-      } catch (e) {
-        if (seq === openSeq) set({ current: null, opening: null, openError: messageOf(e) });
-        return null;
-      }
+      const promise = doOpen(id, seq);
+      inflight = { id, promise };
+      return promise;
     },
 
     reset: () => {
+      inflight = null;
       openSeq += 1;
       loadSeq += 1;
       set({ ...initial });
