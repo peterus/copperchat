@@ -180,17 +180,46 @@ export function createChatStore(deps: ChatDeps) {
       const c = get().chats[projectId];
       if (!c) return;
       const existing = c.messages.find((m) => m.id === f.messageId);
-      if (!existing) return; // Task 6A.5 turns this into a heal
+      if (!existing) {
+        // Its `message` frame was lost (e.g. mid-reconnect): heal instead of dropping.
+        patch(projectId, (cur) => ({
+          ...cur,
+          suspectIds: cur.suspectIds.includes(f.messageId) ? cur.suspectIds : [...cur.suspectIds, f.messageId],
+        }));
+        void get().heal(projectId);
+        return;
+      }
       const updated = applyDelta(existing, f);
-      patch(projectId, (cur) => ({ ...cur, messages: cur.messages.map((m) => (m.id === updated.id ? updated : m)) }));
+      const settledSuspect =
+        c.suspectIds.includes(f.messageId) && f.statusPatch !== undefined && TERMINAL_STATUSES.has(f.statusPatch);
+      patch(projectId, (cur) => ({
+        ...cur,
+        messages: cur.messages.map((m) => (m.id === updated.id ? updated : m)),
+        suspectIds: settledSuspect ? cur.suspectIds.filter((id) => id !== f.messageId) : cur.suspectIds,
+      }));
+      // A suspect may have lost deltas; once final, the DB row is authoritative.
+      if (settledSuspect) void get().heal(projectId);
+    }
+
+    /** Frames may have been lost with the socket: a run-finished (stuck Stop) or deltas. */
+    function markDisconnected(c: ProjectChat): ProjectChat {
+      const streaming = c.messages.filter((m) => m.id > 0 && m.status === 'streaming').map((m) => m.id);
+      const suspectIds = [...new Set([...c.suspectIds, ...streaming])];
+      if (!c.runActive && c.currentRunId === null && suspectIds.length === c.suspectIds.length) return c;
+      return { ...c, runActive: false, currentRunId: null, suspectIds };
     }
 
     function onConnection(state: ConnectionState): void {
-      if (state !== 'open' && state !== 'resumed') return;
       for (const [projectId, chat] of Object.entries(get().chats)) {
         if (!chat.loaded) continue; // an in-flight initial load subscribes itself with the right lastSeenId
+        // The server re-sends run-started on subscribe while the run is still active, so
+        // resetting here never hides a live run for longer than the replay.
+        patch(projectId, markDisconnected);
+        // closed / unauthorized / forbidden: nothing to talk to; 'open' follows on reconnect.
+        if (state !== 'open' && state !== 'resumed') continue;
         subscribe(projectId);
         resendPending(projectId);
+        void get().heal(projectId); // half-streamed rows: subscribe(since) never re-sends rows <= lastSeenId
       }
     }
 
@@ -229,6 +258,8 @@ export function createChatStore(deps: ChatDeps) {
           patch(projectId, (c) => ({ ...c, rateLimitedUntil: f.resetsAt }));
           return;
         case 'error':
+          // cancelQueued marked the row cancelled optimistically; the server row is authoritative.
+          if (f.code === 'not_cancellable') void get().heal(projectId);
           patch(projectId, (c) => ({
             ...c,
             lastError: f.message,
