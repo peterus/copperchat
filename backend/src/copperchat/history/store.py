@@ -19,7 +19,7 @@ from typing import Any
 
 from copperchat.db import Database, utcnow_iso
 from copperchat.errors import CopperChatError
-from copperchat.projects import Project, agent_dir
+from copperchat.projects import SKIP_DIRS, Project, agent_dir
 
 HISTORY_KEEP = 50
 # CopperChat's caches inside `.kicad-agent/`; kept out of the user's git repository.
@@ -62,19 +62,33 @@ def validate_snapshot_id(raw: str) -> str:
     return raw
 
 
+def _is_document_name(name: str) -> bool:
+    # KiCad GUI autosaves (`_autosave-x.kicad_sch`) and lock/backup names are not documents.
+    return name.endswith(".kicad_sch") and not name.startswith(("_autosave-", "~", "."))
+
+
 def document_files(project: Project) -> list[Path]:
     """The project file, every schematic sheet below the project dir, and the board.
 
-    Hidden directories (`.git`, `.kicad-agent` with its snapshots and view copies) are
-    pruned from the walk, never descended into.
+    Pruned from the walk, never descended into: hidden directories (`.git`,
+    `.kicad-agent` with its snapshots and view copies), the discovery skip list, and
+    sub-directories that hold their own `.kicad_pro` (a separate project).
     """
     files: list[Path] = [project.pro_file]
     sheets: list[Path] = []
     for here, dirs, names in os.walk(project.dir):
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        root = Path(here)
+        dirs[:] = [
+            d
+            for d in dirs
+            if not d.startswith(".")
+            and d not in SKIP_DIRS
+            and not (root / d).is_symlink()
+            and not any((root / d).glob("*.kicad_pro"))
+        ]
         for name in names:
-            path = Path(here) / name
-            if name.endswith(".kicad_sch") and path.is_file() and not path.is_symlink():
+            path = root / name
+            if _is_document_name(name) and path.is_file() and not path.is_symlink():
                 sheets.append(path)
     files.extend(sorted(sheets))
     if project.pcb_file is not None and project.pcb_file.is_file():
@@ -137,6 +151,14 @@ class HistoryStore:
             )
         return entries
 
+    def _sweep_orphans(self, known: set[str]) -> None:
+        """Snapshot dirs without a DB row (killed mid-snapshot) and stale temp dirs."""
+        if not self.root.is_dir():
+            return
+        for child in self.root.iterdir():
+            if child.is_dir() and not child.is_symlink() and child.name not in known:
+                shutil.rmtree(child, ignore_errors=True)
+
     async def snapshot(self, run_id: str, label: str, preview_png: bytes | None = None) -> Snapshot:
         ensure_gitignore(self.project)
         sid = uuid.uuid4().hex
@@ -162,11 +184,15 @@ class HistoryStore:
             shutil.rmtree(tmp, ignore_errors=True)
             raise
         files = [e["relPath"] for e in entries]
-        await self._db.execute(
-            "INSERT INTO history_snapshots(id, project_id, run_id, created_at, label, files)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (sid, self.project.id, run_id, created, label, json.dumps(files)),
-        )
+        try:
+            await self._db.execute(
+                "INSERT INTO history_snapshots(id, project_id, run_id, created_at, label, files)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (sid, self.project.id, run_id, created, label, json.dumps(files)),
+            )
+        except BaseException:
+            await asyncio.to_thread(shutil.rmtree, dest, True)
+            raise
         await self._prune()
         return Snapshot(
             sid, self.project.id, run_id, created, label, files, preview_png is not None
@@ -220,6 +246,10 @@ class HistoryStore:
         for row in rows:
             await self._db.execute("DELETE FROM history_snapshots WHERE id = ?", (row["id"],))
             await asyncio.to_thread(shutil.rmtree, self.snapshot_dir(row["id"]), True)
+        kept = await self._db.fetchall(
+            "SELECT id FROM history_snapshots WHERE project_id = ?", (self.project.id,)
+        )
+        await asyncio.to_thread(self._sweep_orphans, {str(r["id"]) for r in kept})
 
 
 class DocumentHashRepo:

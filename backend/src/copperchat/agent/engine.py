@@ -833,7 +833,7 @@ class RunEngine:
     # ---- tool context
     def _make_ctx(self) -> ToolContext:
         session = self._sessions.current()
-        if session is None or session.project.id != self.pid:
+        if session is None or session.closed or session.project.id != self.pid:
             raise KicadUnavailable("the project is not open in KiCad")
         turn = self._turn
         return ToolContext(

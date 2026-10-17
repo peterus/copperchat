@@ -109,3 +109,37 @@ async def test_restore_rejects_modified_snapshot_file(env: Env) -> None:
     replace_with_kicad_file(store.snapshot_dir(snap.id) / "ecc83-pp.kicad_pcb", other_board())
     with pytest.raises(CorruptSnapshot):
         await restore_snapshot(env.svc, project, snap.id)
+
+
+async def test_failed_copy_back_leaves_a_live_session(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from copperchat.history import restore as restore_mod
+
+    project = env.project()
+    session = await env.sessions.open(project)
+    snap = await env.svc.store(project).snapshot("run-1", "turn")
+
+    def broken(plan: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(restore_mod, "_copy_back", broken)
+    with pytest.raises(OSError):
+        await restore_snapshot(env.svc, project, snap.id)
+    current = env.sessions.current()
+    assert current is not None and current is not session and not current.closed
+    assert env.svc.open_session(project) is current
+
+
+async def test_failed_reload_after_restore_still_succeeds(env: Env) -> None:
+    project = env.project()
+    assert project.pcb_file is not None
+    before = compute_hashes(project)
+    await env.sessions.open(project)
+    snap = await env.svc.store(project).snapshot("run-1", "turn")
+    replace_with_kicad_file(project.pcb_file, other_board())
+    env.server.fail_start_with_exit_code = 2
+    restored = await restore_snapshot(env.svc, project, snap.id)
+    assert restored.id == snap.id and compute_hashes(project) == before
+    assert env.engine.notices[-1][1] == {"action": "restored", "snapshotId": snap.id}
+    assert [m for _, m in env.engine.errors] == [{"code": "kicad_restart_failed"}]

@@ -132,3 +132,13 @@ async def test_gitignore_and_hash_repo(db: Database, tmp_path: Path) -> None:
     assert await repo.get(project.id) == hashes
     await repo.replace(project.id, {"a": "b"})
     assert await repo.get(project.id) == {"a": "b"}
+
+
+async def test_orphaned_snapshot_dirs_are_swept(db: Database, tmp_path: Path) -> None:
+    project = copy_project(ECC83, tmp_path / "projects")
+    store = HistoryStore(db, project)
+    store.root.mkdir(parents=True)
+    (store.root / ("f" * 32)).mkdir()  # no DB row: killed between rename and INSERT
+    (store.root / ".tmp-abc").mkdir()
+    snap = await store.snapshot("r", "x")
+    assert sorted(p.name for p in store.root.iterdir()) == [snap.id]

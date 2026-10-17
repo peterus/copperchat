@@ -11,7 +11,7 @@ from pathlib import Path
 from copperchat.errors import InvalidProjectId, ProjectNotFound
 
 PROJECT_ID_RE = re.compile(r"^[0-9a-f]{12}$")
-_SKIP_DIRS = frozenset({".kicad-agent", "node_modules", "__pycache__"})
+SKIP_DIRS = frozenset({".kicad-agent", "node_modules", "__pycache__"})
 
 
 @dataclass(frozen=True)
@@ -65,7 +65,7 @@ def discover_projects(root: Path) -> list[Project]:
         dirnames[:] = sorted(
             d
             for d in dirnames
-            if not d.startswith(".") and d not in _SKIP_DIRS and not (here / d).is_symlink()
+            if not d.startswith(".") and d not in SKIP_DIRS and not (here / d).is_symlink()
         )
         for name in sorted(filenames):
             path = here / name

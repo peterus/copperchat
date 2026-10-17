@@ -10,6 +10,7 @@ from copperchat.agent.engine import RunHooks, TurnInfo, TurnOutcome
 from copperchat.history.store import compute_hashes_async, ensure_gitignore
 from copperchat.kicad_session import DocKind, KicadUnavailable
 from copperchat.projects import Project
+from copperchat.tools import StructuredToolError
 
 if TYPE_CHECKING:
     from copperchat.agent.engine import RunEngine
@@ -46,32 +47,39 @@ class HistoryHooks(RunHooks):
             changed = sorted(k for k in stored.keys() | now.keys() if stored.get(k) != now.get(k))
             if not changed:
                 return
-            reloaded = True
+            state = "not-open"  # nothing to reload: opening the project reads the files
             if self.svc.open_session(self.project) is not None:
                 try:
                     session = await self.svc.sessions.reopen(self.project)
-                    await self.svc.publish_view(
-                        self.project, session, self.svc.docs_of(self.project)
-                    )
+                    state = "reloaded"
                 except KicadUnavailable as exc:
                     # The turn's tools then fail and the engine reports KiCad (X18).
                     log.warning("reload after external change failed: %s", exc)
-                    reloaded = False
+                    state = "failed"
+                if state == "reloaded":
+                    try:
+                        await self.svc.publish_view(
+                            self.project, session, self.svc.docs_of(self.project)
+                        )
+                    except Exception:  # KiCad has the new files; only the viewer lags
+                        log.warning("view refresh after external change failed", exc_info=True)
             await self.svc.hashes.replace(self.project.id, now)
         files = ", ".join(changed)
-        await self.engine.post_notice(
-            f"Files changed outside CopperChat since the last turn ({files}). "
-            + (
-                "CopperChat reloaded them; the agent works on the new state."
-                if reloaded
-                else "Reloading them in KiCad failed."
+        outcome = {
+            "reloaded": (
+                "CopperChat reloaded them; the agent works on the new state.",
+                " and reloaded. ",
             ),
+            "not-open": ("KiCad loads them when the project is opened.", ". "),
+            "failed": ("Reloading them in KiCad failed.", "; KiCad could not reload them. "),
+        }[state]
+        await self.engine.post_notice(
+            f"Files changed outside CopperChat since the last turn ({files}). {outcome[0]}",
             {"action": "external-change", "files": changed},
         )
         self.engine.add_agent_note(
-            f"The design files {files} were changed outside CopperChat"
-            + (" and reloaded. " if reloaded else "; KiCad could not reload them. ")
-            + "Re-read any design data you rely on."
+            f"The design files {files} were changed outside CopperChat{outcome[1]}"
+            "Re-read any design data you rely on."
         )
 
     async def on_first_mutation(self, turn: TurnInfo) -> None:
@@ -83,7 +91,15 @@ class HistoryHooks(RunHooks):
         docs = self.svc.docs_of(self.project)
         preview = await self.svc.render_preview(session, "pcb" if "pcb" in docs else "sch")
         label = " ".join(turn.text.split())[:LABEL_CHARS]
-        await self.svc.store(self.project).snapshot(turn.run_id, label, preview)
+        try:
+            await self.svc.store(self.project).snapshot(turn.run_id, label, preview)
+        except OSError as exc:
+            raise StructuredToolError(
+                "Could not take the undo snapshot before changing the design",
+                str(exc),
+                "Nothing was changed. Retry once; if it fails again, tell the user "
+                "(the project directory may be full or not writable).",
+            ) from exc
 
     async def on_turn_end(self, turn: TurnInfo, outcome: TurnOutcome) -> None:
         if outcome.kicad_failed:

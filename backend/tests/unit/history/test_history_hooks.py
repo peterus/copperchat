@@ -1,10 +1,12 @@
 from typing import Any, cast
 
+import pytest
+
 from copperchat.agent.engine import TurnInfo, TurnOutcome
 from copperchat.agent.sdk_tools import build_sdk_tool_list
 from copperchat.history.store import compute_hashes
 from copperchat.kicad_session import KicadUnavailable
-from copperchat.tools import ToolContext, ToolResult, ToolSpec
+from copperchat.tools import StructuredToolError, ToolContext, ToolResult, ToolSpec
 from tests.unit.history.conftest import Opened
 
 
@@ -92,6 +94,20 @@ async def test_failed_snapshot_fails_the_mutating_call(opened: Opened) -> None:
     )
     result = await tool.handler({})
     assert result["is_error"] is True and ran == []
+
+
+async def test_snapshot_write_failure_is_a_structured_tool_error(
+    opened: Opened, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from copperchat.history.store import HistoryStore
+
+    async def broken(self: Any, *a: Any, **k: Any) -> Any:
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(HistoryStore, "snapshot", broken)
+    with pytest.raises(StructuredToolError) as err:
+        await opened.hooks.on_first_mutation(turn())
+    assert "undo snapshot" in err.value.what and "Nothing was changed" in err.value.suggestion
 
 
 async def test_turn_end_autosaves_changed_docs_and_publishes_view(opened: Opened) -> None:

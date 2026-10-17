@@ -37,8 +37,21 @@ _TIMEOUT_S = 30.0
 MESSAGE_MAX = 2000
 
 
+FILES_MAX = 200  # changed files listed per call (tool result and Git panel)
+_DUBIOUS = "dubious ownership"
+
+
 def _env() -> dict[str, str]:
-    return {**os.environ, "GIT_TERMINAL_PROMPT": "0", "LANG": "C", "LC_ALL": "C"}
+    # No stray GIT_DIR/GIT_WORK_TREE/... from the server environment; no optional locks,
+    # so a status never takes index.lock away from the user's own git.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    return {
+        **env,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "LANG": "C",
+        "LC_ALL": "C",
+    }
 
 
 async def _git(project_dir: Path, *args: str) -> tuple[int, str, str]:
@@ -83,7 +96,7 @@ async def _require_repo(project_dir: Path) -> None:
     ok, err = await _repo_state(project_dir)
     if ok:
         return
-    if "dubious ownership" in err:
+    if _DUBIOUS in err:
         raise StructuredToolError(
             "git refuses to work in the project's repository",
             "the repository belongs to another user (git 'dubious ownership')",
@@ -124,14 +137,23 @@ async def _status_files(project_dir: Path) -> list[dict[str, str]]:
 
 async def git_status_data(project_dir: Path) -> dict[str, Any]:
     """Status for the Git panel and the git_status tool; paths relative to the repo root."""
-    if not (await _repo_state(project_dir))[0]:
-        return {"isRepo": False, "branch": None, "clean": True, "files": []}
+    ok, err = await _repo_state(project_dir)
+    if not ok:
+        data: dict[str, Any] = {"isRepo": False, "branch": None, "clean": True, "files": []}
+        if _DUBIOUS in err:
+            data["error"] = (
+                "git refuses the repository: it belongs to another user (dubious ownership). "
+                "Make the projects mount owned by the CopperChat user (uid 1000)."
+            )
+        return data
     files = await _status_files(project_dir)
     return {
         "isRepo": True,
         "branch": await _branch(project_dir),
         "clean": not files,
-        "files": files,
+        "files": files[:FILES_MAX],
+        "total": len(files),
+        "truncated": len(files) > FILES_MAX,
     }
 
 
@@ -169,11 +191,14 @@ async def git_diff_summary(ctx: ToolContext, args: dict[str, Any]) -> ToolResult
     if code == 0:
         _, out, _ = await _git(d, "diff", "HEAD", "--no-ext-diff", "--numstat", "-z", *PATHSPEC)
         numstat = _parse_numstat(out)
+    status = await _status_files(d)
     files = []
-    for f in await _status_files(d):
+    for f in status[:FILES_MAX]:
         added, deleted = numstat.get(f["path"], (None, None))
         files.append({"path": f["path"], "status": f["status"], "added": added, "deleted": deleted})
-    return ToolResult(data={"files": files, "count": len(files)})
+    return ToolResult(
+        data={"files": files, "count": len(status), "truncated": len(status) > FILES_MAX}
+    )
 
 
 async def git_commit(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
@@ -208,7 +233,10 @@ async def git_commit(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         raise StructuredToolError(
             "git commit failed",
             err.strip(),
-            "Ask the user to configure git user.name/user.email.",
+            "Ask the user to configure git user.name/user.email."
+            if "user.email" in err or "identity" in err.lower()
+            else "Tell the user what git reported; they may need to finish a merge or "
+            "remove a stale index.lock in their repository.",
         )
     _, sha, _ = await _git(d, "rev-parse", "HEAD")
     _, names, _ = await _git(d, "show", "--name-only", "-z", "--format=", "HEAD")

@@ -73,4 +73,18 @@ describe('GitPanel', () => {
     render(<GitPanel projectId="p1" />);
     expect(await screen.findByRole('alert')).toHaveTextContent('HTTP 500');
   });
+  it('shows how many files were cut off and a git refusal', async () => {
+    apiGet.mockResolvedValueOnce({
+      isRepo: true, branch: 'main', clean: false, total: 250, truncated: true,
+      files: [{ path: 'a.txt', status: '??' }],
+    });
+    const first = render(<GitPanel projectId="p1" />);
+    expect(await screen.findByText('… and 249 more')).toBeInTheDocument();
+    first.unmount();
+    apiGet.mockResolvedValueOnce({
+      isRepo: false, branch: null, clean: true, files: [], error: 'git refuses the repository',
+    });
+    render(<GitPanel projectId="p1" />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('git refuses the repository');
+  });
 });

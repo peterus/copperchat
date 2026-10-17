@@ -11,13 +11,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import shutil
 from pathlib import Path
+from typing import Any
 
 from copperchat.errors import CopperChatError, ReadOnlyProject
 from copperchat.history.service import HistoryService
 from copperchat.history.store import CorruptSnapshot, Snapshot, compute_hashes_async, sha256_file
 from copperchat.projects import Project
+
+log = logging.getLogger(__name__)
 
 
 class AgentBusy(CopperChatError):
@@ -71,6 +75,25 @@ def _check_writable(svc: HistoryService, project: Project) -> None:
         raise ReadOnlyProject("project is open in KiCad; close it there before restoring")
 
 
+async def _reload(svc: HistoryService, project: Project, engine: Any) -> None:
+    """Reopen the project on the files now on disk. A failure is reported, not raised:
+    the restore itself already happened (or failed with its own error)."""
+    try:
+        fresh = await svc.sessions.reopen(project)
+    except Exception as exc:
+        log.warning("reopen after restore failed: %s", exc)
+        if engine is not None:
+            await engine.post_error(
+                f"KiCad could not load the restored files ({exc}). Reopen the project.",
+                {"code": "kicad_restart_failed"},
+            )
+        return
+    try:
+        await svc.publish_view(project, fresh, svc.docs_of(project))
+    except Exception:  # the viewer catches up with the next publish
+        log.warning("view refresh after restore failed", exc_info=True)
+
+
 async def restore_snapshot(svc: HistoryService, project: Project, snapshot_id: str) -> Snapshot:
     store = svc.store(project)
     snap = await store.get(snapshot_id)
@@ -83,8 +106,13 @@ async def restore_snapshot(svc: HistoryService, project: Project, snapshot_id: s
         session = svc.open_session(project)
         if session is not None:
             await session.close()  # KiCad must not keep the replaced documents in memory
-        await asyncio.to_thread(_copy_back, plan)
-        await svc.hashes.replace(project.id, await compute_hashes_async(project))
+        try:
+            await asyncio.to_thread(_copy_back, plan)
+            await svc.hashes.replace(project.id, await compute_hashes_async(project))
+        except BaseException:
+            if session is not None:  # never leave the closed session as the current one
+                await _reload(svc, project, engine)
+            raise
         # The files are restored from here on, even if KiCad fails to start below.
         if engine is not None:
             await engine.post_notice(
@@ -98,6 +126,5 @@ async def restore_snapshot(svc: HistoryService, project: Project, snapshot_id: s
             )
         if session is not None:
             # A project that is not open needs no reload: opening it reads the files.
-            fresh = await svc.sessions.reopen(project)
-            await svc.publish_view(project, fresh, svc.docs_of(project))
+            await _reload(svc, project, engine)
     return snap

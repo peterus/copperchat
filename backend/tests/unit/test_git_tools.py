@@ -198,6 +198,8 @@ def test_git_status_route(make_settings: Callable[..., Settings], repo: Path) ->
         "branch": "main",
         "clean": False,
         "files": [{"path": "boards/demo/notes.txt", "status": "??"}],
+        "total": 1,
+        "truncated": False,
     }
 
 
@@ -210,3 +212,38 @@ async def test_git_timeout_is_a_structured_error(
     with pytest.raises(StructuredToolError) as err:
         await git_status_data(repo / "boards" / "demo")
     assert "timed out" in err.value.what
+
+
+async def test_file_list_is_capped(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from copperchat.git_tools import specs
+
+    monkeypatch.setattr(specs, "FILES_MAX", 2)
+    proj = repo / "boards" / "demo"
+    for i in range(5):
+        (proj / f"n{i}.txt").write_text("x\n")
+    data = await git_status_data(proj)
+    assert len(data["files"]) == 2 and data["total"] == 5 and data["truncated"] is True
+    diff = (await SPECS["git_diff_summary"].handler(ctx(proj, None), {})).data
+    assert diff is not None and len(diff["files"]) == 2 and diff["count"] == 5
+
+
+async def test_git_env_ignores_stray_git_variables(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "elsewhere"))
+    data = await git_status_data(repo / "boards" / "demo")
+    assert data["isRepo"] is True and data["branch"] == "main"
+
+
+async def test_dubious_ownership_is_explained(monkeypatch: pytest.MonkeyPatch, repo: Path) -> None:
+    from copperchat.git_tools import specs
+
+    async def fake_state(project_dir: Path) -> tuple[bool, str]:
+        return False, "fatal: detected dubious ownership in repository at '/projects'"
+
+    monkeypatch.setattr(specs, "_repo_state", fake_state)
+    data = await git_status_data(repo)
+    assert data["isRepo"] is False and "uid 1000" in data["error"]
+    with pytest.raises(StructuredToolError) as err:
+        await SPECS["git_status"].handler(ctx(repo / "boards" / "demo", None), {})
+    assert "dubious" in err.value.why

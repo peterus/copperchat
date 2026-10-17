@@ -12,6 +12,11 @@ export interface GitStatus {
   branch: string | null;
   clean: boolean;
   files: { path: string; status: string }[];
+  /** All changed files; `files` is capped by the backend (`truncated`). */
+  total?: number;
+  truncated?: boolean;
+  /** Set when git refuses the repository (e.g. dubious ownership). */
+  error?: string;
 }
 
 /** The chat message the Commit button sends. It always contains the word "commit": the
@@ -45,7 +50,14 @@ export function GitPanel({ projectId }: { projectId: string }) {
       </p>
     );
   if (!status) return <p className="p-3 text-muted">Loading…</p>;
-  if (!status.isRepo) return <p className="p-3 text-sm text-muted">This project is not in a git repository.</p>;
+  if (!status.isRepo)
+    return status.error ? (
+      <p role="alert" className="p-3 text-sm text-danger">
+        {status.error}
+      </p>
+    ) : (
+      <p className="p-3 text-sm text-muted">This project is not in a git repository.</p>
+    );
 
   return (
     <div className="flex h-full flex-col gap-3 overflow-y-auto p-3 text-fg">
@@ -64,6 +76,9 @@ export function GitPanel({ projectId }: { projectId: string }) {
               </span>
             </li>
           ))}
+          {status.truncated && (
+            <li className="text-muted">… and {(status.total ?? status.files.length) - status.files.length} more</li>
+          )}
         </ul>
       )}
       <label className="flex flex-col gap-1 text-sm">
