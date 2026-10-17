@@ -18,7 +18,8 @@ export interface KicadPaneProps {
   theme: ResolvedTheme;
   onPick: (ref: string) => void;
   find?: FindRequest | null;
-  onFindResult?: (ref: string, found: boolean) => void;
+  /** `reason` explains a miss that is not "not in the document" (e.g. interactive view not loaded). */
+  onFindResult?: (ref: string, found: boolean, reason?: string) => void;
 }
 
 /** Tap on a part → `@REF ` in the composer. */

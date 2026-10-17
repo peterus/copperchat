@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { KcPage, KcViewer } from '@/lib/kicanvas';
 import { useComposer } from '@/stores/composer';
 import { KicadPane } from './KicadPane';
-import { LOAD_GRACE_MS } from './KicanvasPane';
+import { KICANVAS_SCRIPT, LOAD_GRACE_MS } from './KicanvasPane';
 import { insertMention, type KicadPaneProps } from './types';
 
 vi.mock('@/lib/kicanvas', async (orig) => ({
@@ -141,7 +141,9 @@ describe('KicanvasPane', () => {
     const kc = new FakeKicanvas(embedEl());
     act(() => kc.load());
     act(() => {
-      window.dispatchEvent(new ErrorEvent('error', { message: "Cannot read properties of undefined (reading 'position')" }));
+      window.dispatchEvent(
+        new ErrorEvent('error', { message: "Cannot read properties of undefined (reading 'position')", filename: `http://x/${KICANVAS_SCRIPT}` }),
+      );
     });
     await act(async () => {
       vi.advanceTimersByTime(LOAD_GRACE_MS + 10);
@@ -154,11 +156,47 @@ describe('KicanvasPane', () => {
     expect(embedEl()).not.toBeNull();
   });
 
+  it('ignores errors from other app code while loading and after', async () => {
+    await renderPane({ doc: 'pcb', files: ['top.kicad_pcb'] });
+    const kc = new FakeKicanvas(embedEl());
+    act(() => kc.load());
+    act(() => {
+      window.dispatchEvent(new ErrorEvent('error', { message: 'chat broke', filename: 'http://x/src/stores/chat.ts' }));
+      const reason = new Error('fetch failed');
+      reason.stack = 'Error: fetch failed\n    at http://x/src/api/http.ts:10:5';
+      window.dispatchEvent(Object.assign(new Event('unhandledrejection'), { reason }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(LOAD_GRACE_MS + 10);
+    });
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Fit to view' })).toBeInTheDocument();
+    act(() => {
+      window.dispatchEvent(new ErrorEvent('error', { message: 'chat broke again' }));
+    });
+    expect(screen.queryByText(/Viewer error/)).toBeNull();
+  });
+
+  it('a double tap on a part inserts a single mention', async () => {
+    const now = vi.spyOn(performance, 'now').mockReturnValue(1000);
+    await renderPane();
+    const kc = await loadReady();
+    act(() => kc.pick({ reference: 'U1' }));
+    now.mockReturnValue(1250);
+    act(() => kc.pick({ reference: 'U1' }));
+    expect(useComposer.getState().text).toBe('@U1 ');
+    now.mockReturnValue(3000);
+    act(() => kc.pick({ reference: 'U1' }));
+    expect(useComposer.getState().text).toBe('@U1 @U1 ');
+  });
+
   it('shows errors after the load as a dismissable notice without failing', async () => {
     await renderPane({ doc: 'pcb', files: ['top.kicad_pcb'] });
     await loadReady();
     act(() => {
-      window.dispatchEvent(new ErrorEvent('error', { message: "Cannot read properties of undefined (reading 'number')" }));
+      window.dispatchEvent(
+        new ErrorEvent('error', { message: "Cannot read properties of undefined (reading 'number')", filename: `http://x/${KICANVAS_SCRIPT}` }),
+      );
     });
     expect(screen.getByText(/Viewer error: Cannot read properties/)).toBeInTheDocument();
     expect(embedEl()).not.toBeNull();

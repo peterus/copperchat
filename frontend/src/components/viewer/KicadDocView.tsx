@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import type { PcbLayer } from '@/lib/viewUrls';
 import { formatBytes, guardFor, useViewerPrefs } from '@/stores/viewerPrefs';
@@ -20,6 +20,14 @@ export function KicadDocView(
   const mobile = useMediaQuery('(pointer: coarse)');
   const limits = useViewerPrefs((s) => s.limits);
   const [override, setOverride] = useState(false);
+  const guard = guardFor(bytes, mobile, limits);
+  const interactive = pane.files.length > 0 && (!guard || override);
+  const { find, onFindResult } = pane;
+  useEffect(() => {
+    if (find && !interactive) onFindResult?.(find.ref, false, 'Find needs the interactive view, which is not loaded.');
+    // only for a new find request
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [find]);
 
   if (pane.files.length === 0) {
     return (
@@ -30,7 +38,6 @@ export function KicadDocView(
       </div>
     );
   }
-  const guard = guardFor(bytes, mobile, limits);
   if (guard && !override) {
     return (
       <AgentViewPane

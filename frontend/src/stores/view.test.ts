@@ -43,6 +43,14 @@ describe('view store', () => {
     updated(['sch'], 0); // sch still had its pending reset
     expect(store.getState().versions.sch).toBe(0);
   });
+  it('accepts a restarted counter after a plain reconnect too (backend restart reports open)', () => {
+    updated(['pcb'], 5);
+    ws.drop();
+    ws.connect();
+    updated(['pcb'], 0);
+    expect(store.getState().versions.pcb).toBe(0);
+    expect(store.getState().revs.pcb).toBe(2);
+  });
   it('ignores other projects', () => {
     updated(['pcb'], 9, P2);
     expect(store.getState().versions.pcb).toBeNull();

@@ -186,6 +186,15 @@ describe('Viewer', () => {
       expect(pane('sch')).toBeInTheDocument(); // the small schematic is not guarded
     });
 
+    it('explains that Find needs the interactive view while the guard is shown', () => {
+      openProject(big);
+      renderViewer();
+      fireEvent.click(screen.getByRole('tab', { name: 'PCB' }));
+      fireEvent.change(screen.getByRole('textbox', { name: 'Find reference' }), { target: { value: 'U1' } });
+      fireEvent.submit(screen.getByRole('search'));
+      expect(screen.getByText('Find needs the interactive view, which is not loaded.')).toBeInTheDocument();
+    });
+
     it('follows the per-device limit from the settings', () => {
       openProject(big);
       useViewerPrefs.setState({ limits: { mobileMb: 15, desktopMb: 100 } });

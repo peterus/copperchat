@@ -35,6 +35,12 @@ type Status = { kind: 'loading' } | { kind: 'ready' } | { kind: 'failed'; error:
 
 const messageOf = (v: unknown) => (v instanceof Error ? v.message : String(v ?? 'unknown error'));
 
+/** Only errors raised inside the KiCanvas bundle concern the viewer (not chat or other app code). */
+export const KICANVAS_SCRIPT = 'vendor/kicanvas/kicanvas.js';
+const fromKicanvas = (where: unknown) => typeof where === 'string' && where.includes(KICANVAS_SCRIPT);
+/** A double tap clicks twice on the same part; it must insert one mention. */
+const SAME_PICK_MS = 500;
+
 export function KicanvasPane({ projectId, doc, files, rev, theme, onPick, find, onFindResult }: KicadPaneProps) {
   const host = useRef<HTMLDivElement>(null);
   const embedRef = useRef<KcEmbed | null>(null);
@@ -117,8 +123,14 @@ export function KicanvasPane({ projectId, doc, files, rev, theme, onPick, find, 
         noticeTimer = setTimeout(() => setNotice(null), NOTICE_MS);
       }
     };
-    const onWinError = (e: ErrorEvent) => onError(e.message || messageOf(e.error));
-    const onRejection = (e: PromiseRejectionEvent) => onError(messageOf(e.reason));
+    const onWinError = (e: ErrorEvent) => {
+      if (fromKicanvas(e.filename) || fromKicanvas((e.error as Error | undefined)?.stack)) {
+        onError(e.message || messageOf(e.error));
+      }
+    };
+    const onRejection = (e: PromiseRejectionEvent) => {
+      if (fromKicanvas((e.reason as Error | undefined)?.stack)) onError(messageOf(e.reason));
+    };
     window.addEventListener('error', onWinError);
     window.addEventListener('unhandledrejection', onRejection);
     offs.push(() => {
@@ -142,10 +154,15 @@ export function KicanvasPane({ projectId, doc, files, rev, theme, onPick, find, 
           embed.appendChild(source);
         }
         // embed-select-event.patch: selection bubbles out of the shadow DOM.
+        let lastPick: { ref: string; at: number } | null = null;
         embed.addEventListener('kicanvas:select', (e) => {
           if (programmatic.current) return;
           const ref = refOf((e as CustomEvent<{ item?: unknown }>).detail?.item);
-          if (ref) handlers.current.onPick(ref);
+          if (!ref) return;
+          const at = performance.now();
+          if (lastPick?.ref === ref && at - lastPick.at < SAME_PICK_MS) return;
+          lastPick = { ref, at };
+          handlers.current.onPick(ref);
         });
         const syncActive = () => {
           const id = embed.project?.active_page?.project_path ?? null;

@@ -49,8 +49,8 @@ export function Viewer({ projectId }: { projectId: string }) {
     setFindResult(null);
     setFind((f) => ({ ref, seq: (f?.seq ?? 0) + 1 }));
   };
-  const onFindResult = (ref: string, found: boolean) =>
-    setFindResult(found ? null : `${ref} not found in the ${v.doc === 'sch' ? 'schematic' : 'board'}.`);
+  const onFindResult = (ref: string, found: boolean, reason?: string) =>
+    setFindResult(found ? null : (reason ?? `${ref} not found in the ${v.doc === 'sch' ? 'schematic' : 'board'}.`));
 
   return (
     <section

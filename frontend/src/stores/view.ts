@@ -76,7 +76,9 @@ export function createViewStore(ws: Pick<WsClient, 'onFrame' | 'onConnection'>):
     if (changed) store.setState({ versions, revs });
   });
   const offConn = ws.onConnection((state) => {
-    if (state === 'resumed') acceptAny = { sch: true, pcb: true };
+    // A reconnect after a backend restart reports 'open' (not 'resumed'); either way the
+    // server may run a new KiCad session whose counter restarted at 0.
+    if (state === 'open' || state === 'resumed') acceptAny = { sch: true, pcb: true };
   });
   return store;
 }
