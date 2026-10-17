@@ -15,8 +15,8 @@ the phase plans are in `docs/superpowers/plans/`.
   (`docker/kicad-base/dpkg-slim.cfg`), and only the demos the tests use (`ecc83`,
   `complex_hierarchy`, the `jetson-agx-thor-baseboard` design rules). Every build is also
   tagged `<commit>-r<recipe>` (`scripts/kicad-base-image.sh`): a pull request that changes
-  the recipe publishes and tests under that tag, CI resolves the tag for the current
-  recipe, and main promotes it to `<commit>` without rebuilding.
+  the recipe publishes its build under that tag and CI tests against it; main rebuilds and
+  publishes `<commit>` itself (releases only take `<commit>`).
 - `ghcr.io/peterus/copperchat:<version>` — `docker/app/Dockerfile`: base image + Python
   backend (`/app/backend/.venv`, synced with uv at build time; uv itself is not shipped) + built frontend (`/app/frontend/dist`). Built and
   pushed by `.github/workflows/release.yml` on tags `v<semver>` (`:latest` for

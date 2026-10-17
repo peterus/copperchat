@@ -4,15 +4,15 @@
 #   recipe            16-hex hash of everything that shapes the image: docker/kicad-base/*
 #                     (except SUPPORTED_COMMITS, which only feeds CI matrices) and the
 #                     workflow that builds it.
-#   tag <commit>      the recipe-pinned tag <commit>-r<recipe>. kicad-base.yml pushes it from
-#                     every same-repo run that builds; it is never overwritten (same recipe,
-#                     same image), so a pull request can publish and test a new recipe
-#                     without touching the published <commit> tag.
-#   resolve <commit>  the image CI should use for <commit>. For the pinned KICAD_COMMIT it
-#                     must match the current recipe: the recipe-pinned tag if it exists, else
-#                     <commit> if its io.copperchat.recipe label matches; otherwise it fails
-#                     (the kicad-base workflow has not published this recipe yet). Other
-#                     SUPPORTED_COMMITS resolve to their published <commit> tag as is.
+#   tag <commit>      the recipe-pinned tag <commit>-r<recipe>, the image a pull request
+#                     built for its recipe (kicad-base.yml). Only CI test jobs use it.
+#   resolve <commit>  the image CI tests <commit> against. For the pinned KICAD_COMMIT it must
+#                     have the current recipe: <commit> if its io.copperchat.recipe label
+#                     matches, else the recipe-pinned tag; otherwise it fails (kicad-base has
+#                     not published this recipe yet). Other SUPPORTED_COMMITS resolve to their
+#                     published <commit> tag as is.
+#   published <commit> <commit> if its label matches the current recipe, else fail. For
+#                     releases: never a pull request's recipe-pinned build.
 set -euo pipefail
 IMAGE="${KICAD_BASE_REPO:-ghcr.io/peterus/copperchat-kicad-base}"
 
@@ -43,19 +43,23 @@ case "${1:-}" in
     commit="${2:?usage: $0 tag <commit>}"
     echo "$IMAGE:$commit-r$(recipe)" ;;
   label) label "${2:?usage: $0 label <image>}" ;;
-  resolve)
-    commit="${2:?usage: $0 resolve <commit>}"
+  resolve|published)
+    commit="${2:?usage: $0 $1 <commit>}"
     pinned="$(tr -d '[:space:]' < docker/kicad-base/KICAD_COMMIT)"
-    if [ "$commit" != "$pinned" ]; then echo "$IMAGE:$commit"; exit 0; fi
+    if [ "$1" = resolve ] && [ "$commit" != "$pinned" ]; then echo "$IMAGE:$commit"; exit 0; fi
     r="$(recipe)"
-    rc=0; label "$IMAGE:$commit-r$r" >/dev/null || rc=$?
-    if [ "$rc" = 0 ]; then echo "$IMAGE:$commit-r$r"; exit 0; fi
-    [ "$rc" = 1 ] || exit "$rc"
     rc=0; published="$(label "$IMAGE:$commit")" || rc=$?
     [ "$rc" = 0 ] || [ "$rc" = 1 ] || exit "$rc"
     if [ "$rc" = 0 ] && [ "$published" = "$r" ]; then echo "$IMAGE:$commit"; exit 0; fi
-    echo "kicad-base for KiCad $commit with recipe $r is not published yet: wait for the" \
-      "kicad-base workflow (it re-runs this workflow's failed jobs when it has pushed)" >&2
+    if [ "$1" = resolve ]; then
+      rc=0; label "$IMAGE:$commit-r$r" >/dev/null || rc=$?
+      if [ "$rc" = 0 ]; then echo "$IMAGE:$commit-r$r"; exit 0; fi
+      [ "$rc" = 1 ] || exit "$rc"
+      echo "kicad-base for KiCad $commit with recipe $r is not published yet: wait for the" \
+        "kicad-base workflow (it re-runs this commit's failed CI jobs when it has pushed)" >&2
+    else
+      echo "$IMAGE:$commit has recipe '$published', not $r: wait for kicad-base on main" >&2
+    fi
     exit 1 ;;
-  *) echo "usage: $0 recipe | tag <commit> | label <image> | resolve <commit>" >&2; exit 64 ;;
+  *) echo "usage: $0 recipe | tag <commit> | label <image> | resolve <commit> | published <commit>" >&2; exit 64 ;;
 esac
