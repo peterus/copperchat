@@ -124,6 +124,10 @@ class KicadSession:
     def settings(self) -> Settings:
         return self._settings
 
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
     def _documents(self) -> list[tuple[DocKind, Path]]:
         docs: list[tuple[DocKind, Path]] = []
         if self.project.sch_file is not None:
@@ -440,6 +444,7 @@ class KicadSessionManager:
             current = self._current
             if (
                 current is not None
+                and not current.closed
                 and current.project.id == project.id
                 and current.read_only == locks.locked
             ):
@@ -462,6 +467,21 @@ class KicadSessionManager:
             await session.start()
             self._current = session
             return session
+
+    async def reopen(self, project: Project) -> KicadSession:
+        """Close the project's session (if open) and start a fresh one, so KiCad loads
+        the files on disk again (external change, snapshot restore). The new session
+        keeps the old view version: clients take the maximum per document (X2)."""
+        version = 0
+        async with self._lock:
+            current = self._current
+            if current is not None and current.project.id == project.id:
+                version = current.view_version
+                await current.close()
+                self._current = None
+        session = await self.open(project)
+        session.view_version = max(session.view_version, version)
+        return session
 
     def current(self) -> KicadSession | None:
         return self._current

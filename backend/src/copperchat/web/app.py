@@ -11,8 +11,18 @@ from copperchat.agent.runtime import AgentRuntime
 from copperchat.config import Settings, check_model_credentials
 from copperchat.db import Database
 from copperchat.errors import CopperChatError, StructuredToolError
+from copperchat.history.service import install_history
 from copperchat.kicad_session import ClientFactory, KicadSessionManager, ServerLauncher
-from copperchat.web import auth, health, routes_messages, routes_projects, routes_views, ws
+from copperchat.web import (
+    auth,
+    health,
+    routes_git,
+    routes_history,
+    routes_messages,
+    routes_projects,
+    routes_views,
+    ws,
+)
 from copperchat.web.static import mount_frontend
 
 
@@ -53,9 +63,12 @@ def create_app(
                 settings=settings, db=db, broadcaster=Broadcaster(), sessions=sessions
             )
             app.state.agent_runtime = runtime
+            # X17: services that need app.state.agent_runtime are set up here (Phase 9
+            # push too), after the runtime and before yield. install_history sets
+            # runtime.hooks_factory, so it must run before resume_pending() creates
+            # engines: an engine keeps the hooks it was created with.
+            install_history(app)
             await runtime.resume_pending()  # parked / queued work survives a restart
-            # X17: services that need app.state.agent_runtime are set up here (Phase 7
-            # install_history, Phase 9 push), after the runtime and before yield.
             yield
         finally:
             if runtime is not None:
@@ -70,6 +83,8 @@ def create_app(
     app.include_router(routes_projects.router)
     app.include_router(routes_views.router)
     app.include_router(routes_messages.router)
+    app.include_router(routes_history.router)
+    app.include_router(routes_git.router)
     app.include_router(ws.router)
     mount_frontend(app, settings.frontend_dist)  # must stay last: it mounts "/"
     return app
