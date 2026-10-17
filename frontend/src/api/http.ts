@@ -73,7 +73,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     init.body = JSON.stringify(body);
   }
   const res = await fetch(apiUrl(path), init);
-  if (res.status === 401 && !path.startsWith('/auth/login')) unauthorizedHandler?.();
+  // The auth store handles 401s of its own login/session-check requests itself.
+  if (res.status === 401 && !path.startsWith('/auth/login') && !path.startsWith('/auth/me')) unauthorizedHandler?.();
   if (!res.ok) {
     const parsed = await readBody(res);
     throw new ApiError(res.status, parsed, errorMessage(res.status, parsed), retryAfter(res));

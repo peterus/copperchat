@@ -27,8 +27,25 @@ function loginError(e: unknown): string {
       ? `Too many failed sign-ins. Try again in ${e.retryAfterS} s.`
       : 'Too many failed sign-ins. Try again later.';
   }
+  if (e instanceof ApiError && e.status >= 500) {
+    return `The server could not sign you in (HTTP ${e.status}). Try again in a moment.`;
+  }
+  // fetch() rejects with a TypeError when the server is unreachable.
+  if (e instanceof TypeError) return 'Cannot reach the server. Check your connection and try again.';
   return messageOf(e);
 }
+
+/** The login succeeded (204) but the next request carried no session cookie. */
+export function cookieNotStoredError(secureContext: boolean): string {
+  // Browsers drop Secure cookies outside a secure context (plain http, except localhost).
+  return secureContext
+    ? 'Signed in, but your browser did not keep the session cookie. Allow cookies for this site and try again.'
+    : 'Signed in, but your browser did not keep the session cookie: it is only sent over HTTPS. ' +
+        'Use HTTPS (see docs/deployment/cloudflare.md) or set COOKIE_SECURE=false for plain-http LAN access. ' +
+        'If COOKIE_SECURE is already false, allow cookies for this site.';
+}
+
+class CookieNotStored extends Error {}
 
 export const useAuth = create<AuthState>()((set, get) => ({
   status: 'unknown',
@@ -48,16 +65,23 @@ export const useAuth = create<AuthState>()((set, get) => ({
   login: async (username, password) => {
     try {
       await apiPost<void>('/auth/login', { username, password });
+      // Confirm the browser kept the cookie: a dropped Secure cookie over plain http would
+      // otherwise bounce the user back to /login without a word (first 401 after the redirect).
+      const me = await apiGet<unknown>('/auth/me').catch((e: unknown) => {
+        throw e instanceof ApiError && e.status === 401 ? new CookieNotStored() : e;
+      });
       if (get().status === 'authenticated') {
         // Re-login over a live session (possibly another user): drop the old socket and pass
         // through 'anonymous' so installSessionReset() clears the previous session's state.
         wsClient.close();
         set({ status: 'anonymous', username: null });
       }
-      set({ status: 'authenticated', username, error: null });
+      const parsed = Me.safeParse(me);
+      set({ status: 'authenticated', username: parsed.success ? parsed.data.username : username, error: null });
       return true;
     } catch (e) {
-      set({ status: 'anonymous', error: loginError(e) });
+      const error = e instanceof CookieNotStored ? cookieNotStoredError(window.isSecureContext) : loginError(e);
+      set({ status: 'anonymous', username: null, error });
       return false;
     }
   },
