@@ -37,6 +37,7 @@ QueryFn = Callable[[str, ClaudeAgentOptions], AsyncIterator[Any]]
 DEFAULT_TIMEOUT_S = 900.0
 MAX_QUERY_CHARS = 4000
 MAX_ATTACHMENTS = 10
+MAX_BUFFER_BYTES = 64 * 1024 * 1024
 # Two research queries of one project never write the same notes concurrently.
 _project_locks: dict[str, asyncio.Lock] = {}
 
@@ -71,6 +72,9 @@ def researcher_options(
         cwd=str(project.dir),
         env=env,
         max_turns=MAX_TURNS,
+        # Reading a datasheet PDF returns it as one base64 document block; the SDK's
+        # 1 MiB default line buffer is far too small (live eval, 2026-10-17).
+        max_buffer_size=MAX_BUFFER_BYTES,
     )
 
 
@@ -217,6 +221,15 @@ class ResearchRunner:
                     "Part research timed out",
                     f"exceeded {int(self._timeout_s)} s",
                     "Ask a narrower question",
+                ) from exc
+            except StructuredToolError:
+                raise
+            except Exception as exc:  # CLI/transport failure of the research query
+                log.exception("part research query failed")
+                raise StructuredToolError(
+                    "Part research failed",
+                    f"{type(exc).__name__}: {exc}"[:500],
+                    "Retry once; if it fails again, ask the user for the datasheet",
                 ) from exc
         if final is None or final.is_error or not final.result:
             why = (final.result or final.subtype) if final is not None else "no result"

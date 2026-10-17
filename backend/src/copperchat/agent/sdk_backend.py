@@ -449,6 +449,7 @@ class SdkStreamingBackend:
         self._client: Any = None
         self._mapper: SdkEventMapper | None = None
         self._research: ResearchRunner | None = None
+        self.tool_ctx_factory: Callable[[], ToolContext] = ctx_factory
 
     async def start(
         self,
@@ -472,6 +473,8 @@ class SdkStreamingBackend:
 
         def ctx_factory() -> ToolContext:
             return replace(self._ctx_factory(), research=research)
+
+        self.tool_ctx_factory = ctx_factory  # what this burst's MCP tool handlers use
 
         options = build_options(
             settings=self._settings,

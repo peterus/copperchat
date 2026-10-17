@@ -32,9 +32,8 @@ from copperchat.skills.store import (
 
 PLUGIN_NAME = "copperchat"
 RESEARCHER_AGENT = "part-researcher"
-# Front-matter keys that grant tools while a skill is active; allow rules bypass
-# can_use_tool, so they are never passed on.
-_TOOL_GRANT_KEYS = frozenset({"allowed-tools", "allowed_tools"})
+# The only front-matter keys passed to the CLI (see main_skill_text).
+_ALLOWED_KEYS = ("name", "description")
 
 
 def sdk_skill_name(name: str) -> str:
@@ -50,26 +49,15 @@ class SkillBundle:
     researcher_skill: str | None = None
 
 
-def strip_tool_grants(text: str) -> str:
-    """Re-emit ``text`` without ``allowed-tools``/``allowed_tools`` front-matter keys
-    (including indented continuation lines of a YAML list under them)."""
-    lines = text.splitlines(keepends=True)
-    if not lines or lines[0].strip() != "---":
-        return text
-    out = [lines[0]]
-    skipping = False
-    for i, line in enumerate(lines[1:], start=1):
-        if line.strip() == "---":
-            return "".join(out + lines[i:])
-        if line[:1].isspace() or line.lstrip().startswith("- "):
-            if not skipping:
-                out.append(line)
-            continue
-        key = line.partition(":")[0].strip()
-        skipping = key in _TOOL_GRANT_KEYS
-        if not skipping:
-            out.append(line)
-    return text  # unterminated front matter: not a valid skill anyway
+def main_skill_text(text: str) -> str:
+    """SKILL.md as handed to the CLI: the front matter is rebuilt from an allowlist
+    (``name``, ``description``; JSON-quoted, which YAML reads verbatim). Everything else —
+    notably ``allowed-tools`` (allow rules bypass can_use_tool), ``model`` or hooks — is
+    dropped, so a parser difference between ours and the CLI's YAML cannot smuggle a key
+    through."""
+    meta, body = parse_front_matter(text)
+    header = "".join(f"{key}: {json.dumps(meta[key])}\n" for key in _ALLOWED_KEYS if key in meta)
+    return f"---\n{header}---\n{body}"
 
 
 def _copy_regular_files(src: Path, dest: Path) -> None:
@@ -113,7 +101,7 @@ async def assemble_skills(settings: Settings, project: Project, db: Database) ->
         dest = plugin_dir / "skills" / skill.name
         _copy_regular_files(skill.dir, dest)
         md = dest / "SKILL.md"
-        md.write_text(strip_tool_grants(md.read_text(encoding="utf-8")), encoding="utf-8")
+        md.write_text(main_skill_text(md.read_text(encoding="utf-8")), encoding="utf-8")
         names.append(skill.name)
     return SkillBundle(
         plugin_dir=plugin_dir,

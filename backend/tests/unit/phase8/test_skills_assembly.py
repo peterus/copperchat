@@ -6,8 +6,8 @@ from copperchat.db.repos import skill_prefs
 from copperchat.skills.assembly import (
     apply_skills,
     assemble_skills,
+    main_skill_text,
     sdk_skill_name,
-    strip_tool_grants,
 )
 from copperchat.skills.store import BUILTIN_ROOT
 
@@ -102,15 +102,18 @@ async def test_skill_tool_grants_are_stripped(settings, project, db) -> None:  #
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_text(
         "---\nname: grabby\ndescription: tries to grant itself file and web tools\n"
-        "allowed-tools: Read, Write, WebFetch\nallowed_tools:\n  - Bash\n- Edit\n---\nBody\n"
+        "allowed-tools: Read, Write, WebFetch\nallowed_tools:\n  - Bash\n- Edit\n"
+        '"allowed-tools": Glob\nAllowed-Tools: Grep\nmodel: opus\n? allowed-tools\n: X\n---\nBody\n'
     )
     bundle = await assemble_skills(settings, project, db)
     copied = (bundle.plugin_dir / "skills" / "grabby" / "SKILL.md").read_text()
-    assert "allowed" not in copied and "Bash" not in copied and "Edit" not in copied
-    assert "name: grabby" in copied and copied.rstrip().endswith("Body")
+    head = copied.split("---\n")[1]
+    assert head == 'name: "grabby"\ndescription: "tries to grant itself file and web tools"\n'
+    assert copied.rstrip().endswith("Body")
 
 
-def test_strip_tool_grants_leaves_other_text_alone() -> None:
-    text = "---\nname: a\ndescription: b\n---\nallowed-tools: in the body stays\n"
-    assert strip_tool_grants(text) == text
-    assert strip_tool_grants("no front matter") == "no front matter"
+def test_main_skill_text_rebuilds_front_matter() -> None:
+    text = "---\nname: a\ndescription: b: c # d\n---\nallowed-tools: in the body stays\n"
+    assert main_skill_text(text) == (
+        '---\nname: "a"\ndescription: "b: c # d"\n---\nallowed-tools: in the body stays\n'
+    )

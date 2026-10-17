@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from copperchat.errors import CopperChatError
+from copperchat.fsutil import atomic_write_text
 from copperchat.projects import Project
 from copperchat.research.paths import parts_root
 from copperchat.skills.store import parse_front_matter
@@ -116,9 +116,7 @@ def write_user_notes(project: Project, mpn: str, text: str) -> None:
     target = d / "notes.md"
     if target.is_symlink():
         raise InvalidMpn(f"notes.md of {mpn!r} is a symlink")
-    tmp = d / ".notes.md.tmp"
-    tmp.write_text(content, encoding="utf-8")
-    os.replace(tmp, target)
+    atomic_write_text(target, content)
 
 
 def datasheet_path(project: Project, mpn: str) -> Path | None:

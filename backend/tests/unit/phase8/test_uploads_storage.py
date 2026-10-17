@@ -77,6 +77,7 @@ def test_rejections(project: Project) -> None:
     assert e.value.status == 415
 
 
+@pytest.mark.filterwarnings("ignore::PIL.Image.DecompressionBombWarning")
 def test_pixel_bomb_rejected(project: Project) -> None:
     buf = io.BytesIO()
     Image.new("1", (10000, 10000)).save(buf, "PNG")  # tiny file, 100 MP

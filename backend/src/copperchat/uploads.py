@@ -8,7 +8,6 @@ MAX_IMAGE_EDGE px), so only pixels CopperChat produced itself reach the model.
 from __future__ import annotations
 
 import io
-import os
 import re
 import unicodedata
 import uuid
@@ -19,6 +18,7 @@ from typing import Literal
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from copperchat.errors import CopperChatError
+from copperchat.fsutil import atomic_write_bytes
 from copperchat.projects import Project
 from copperchat.research.paths import uploads_image_root, uploads_pdf_root
 
@@ -91,12 +91,6 @@ def _checked_dir(project: Project, d: Path) -> Path:
     return d
 
 
-def _write(path: Path, data: bytes) -> None:
-    tmp = path.with_name(f".{path.name}.tmp")
-    tmp.write_bytes(data)
-    os.replace(tmp, path)
-
-
 def _normalise_image(data: bytes) -> tuple[bytes, str, str]:
     try:
         with Image.open(io.BytesIO(data)) as probe:
@@ -141,7 +135,7 @@ def store_upload(project: Project, data: bytes, filename: str | None) -> StoredU
         name = safe_filename(filename, f"image.{ext}")  # display name only
         d = _checked_dir(project, uploads_image_root(project))
         path = d / f"{upload_id}.{ext}"
-    _write(path, payload)
+    atomic_write_bytes(path, payload)
     return StoredUpload(
         id=upload_id,
         kind=kind,

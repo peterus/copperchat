@@ -20,6 +20,7 @@ from typing import Literal
 
 from copperchat.config import Settings
 from copperchat.errors import CopperChatError
+from copperchat.fsutil import atomic_write_text
 from copperchat.projects import Project, agent_dir
 
 Origin = Literal["builtin", "user", "project"]
@@ -204,9 +205,7 @@ def _user_dir(layers: SkillLayers, name: str) -> Path:
 
 
 def _atomic_write(path: Path, text: str) -> None:
-    tmp = path.with_name(f".{path.name}.tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    atomic_write_text(path, text)
 
 
 def _sidecar_text(content: str) -> str:

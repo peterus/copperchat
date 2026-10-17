@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
-import os
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
@@ -12,6 +12,7 @@ import httpx
 from claude_agent_sdk import McpSdkServerConfig, SdkMcpTool, create_sdk_mcp_server
 
 from copperchat.errors import StructuredToolError
+from copperchat.fsutil import atomic_write_bytes
 from copperchat.parts import InvalidMpn, part_dir
 from copperchat.projects import Project
 from copperchat.research.agent import PARTS_SERVER
@@ -62,6 +63,7 @@ async def download_datasheet(
                         )
                     current = urljoin(current, location)
                     continue
+                _check_peer(resp)
                 resp.raise_for_status()
                 chunks: list[bytes] = []
                 size = 0
@@ -89,10 +91,27 @@ async def download_datasheet(
     target = dest_dir / "datasheet.pdf"
     if target.is_symlink():
         raise StructuredToolError("Download refused", "datasheet.pdf is a symlink", "Ask the user")
-    tmp = dest_dir / ".datasheet.pdf.tmp"
-    tmp.write_bytes(data)
-    os.replace(tmp, target)
+    atomic_write_bytes(target, data)
     return target
+
+
+def _check_peer(resp: httpx.Response) -> None:
+    """Refuse a response from a non-public peer: the host may have been re-resolved to a
+    private address after :func:`url_refusal` checked it (DNS rebinding)."""
+    stream = resp.extensions.get("network_stream")
+    addr = stream.get_extra_info("server_addr") if stream is not None else None
+    if not addr:
+        return  # no socket (test transports); url_refusal already checked the host
+    try:
+        ip = ipaddress.ip_address(str(addr[0]).split("%", 1)[0])
+    except ValueError:
+        return
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    if not ip.is_global or ip.is_multicast:
+        raise StructuredToolError(
+            "Download refused", f"the server address {ip} is not public", "Pass a public PDF URL"
+        )
 
 
 def _text(payload: Any, *, is_error: bool = False) -> dict[str, Any]:
