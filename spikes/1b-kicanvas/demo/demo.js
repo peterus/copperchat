@@ -17,12 +17,12 @@ window.__demo = state;
 // KiCanvas sets `loaded` / fires kicanvas:load even when painting throws
 // (spike 1B, Q2), so errors on window while a tab is loading mark it failed.
 // Errors after a successful load (e.g. clicking copper) are shown separately.
-let loadingTab = null;
+// Errors cannot be tied to an embed, so they go to every tab still loading.
 function recordError(msg) {
-  const t = state.tabs[loadingTab ?? state.tab];
-  if (!t) return;
-  if (t.status === "loading") t.errors.push(msg);
-  else {
+  const loading = Object.values(state.tabs).filter((t) => t.status === "loading");
+  for (const t of loading) t.errors.push(msg);
+  const t = state.tabs[state.tab];
+  if (!loading.length && t) {
     t.runtimeErrors.push(msg);
     showStatus();
   }
@@ -97,7 +97,6 @@ function makeEmbed(tab) {
   embed.addEventListener("kicanvas:select", (e) => onSelect(tab, e));
   t.embed = embed;
   const started = performance.now();
-  loadingTab = tab;
   showStatus();
   host.appendChild(embed);
 
@@ -112,7 +111,6 @@ function makeEmbed(tab) {
       setTimeout(() => {
         if (state.tabs[tab] !== t) return;
         t.status = t.errors.length ? "failed" : "ok";
-        if (loadingTab === tab) loadingTab = null;
         if (tab === "sch") wireSheets(embed);
         // The embed's zoom="objects" attribute is not forwarded at this commit;
         // boards otherwise open fitted to the whole drawing sheet.
@@ -125,15 +123,11 @@ function makeEmbed(tab) {
     } else if (t.errors.length) {
       clearInterval(poll);
       t.status = "failed";
-      if (loadingTab === tab) loadingTab = null;
-      showStatus();
-    } else if (elapsed > 180000) {
-      clearInterval(poll);
-      t.status = "failed";
-      t.errors.push("timeout: not loaded after 180 s");
       showStatus();
     } else if (state.tab === tab) {
-      $("#status").textContent = `Loading ${fmtFiles(t)} … ${(elapsed / 1000).toFixed(1)} s`;
+      // No timeout: the 85 MB board needs ~130 s on a desktop CPU, more on a phone.
+      const slow = elapsed > 60000 ? " (slow, still parsing/painting)" : "";
+      $("#status").textContent = `Loading ${fmtFiles(t)} … ${(elapsed / 1000).toFixed(1)} s${slow}`;
     }
   }, 100);
 }

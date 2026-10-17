@@ -13,7 +13,10 @@ MIN_VERSION = {".kicad_sch": 20260830, ".kicad_pcb": 20260901}
 
 def check_header(path: Path) -> None:
     head = path.read_text(encoding="utf-8", errors="replace")[:400]
-    version = int(re.search(r"\(version (\d+)\)", head).group(1))
+    m = re.search(r"\(version (\d+)\)", head)
+    if not m:
+        sys.exit(f"FAIL: {path} has no (version …) header")
+    version = int(m.group(1))
     gen = re.search(r'\(generator_version "([^"]+)"\)', head)
     if version < MIN_VERSION[path.suffix] or not gen or not gen.group(1).startswith(("10.99", "11")):
         sys.exit(f"FAIL: {path} not upgraded (version {version}, generator {gen and gen.group(1)})")

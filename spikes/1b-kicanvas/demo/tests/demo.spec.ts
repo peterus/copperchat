@@ -123,12 +123,13 @@ test.describe("mobile", () => {
   }
 });
 
-test("offline: no external requests, fonts self-hosted", async ({ page }) => {
+test("offline: no external requests, fonts self-hosted", async ({ page, baseURL }) => {
+  const origin = new URL(baseURL!).origin;
   const external: string[] = [];
   page.on("request", (q) => {
-    if (!q.url().startsWith("http://127.0.0.1:8765/")) external.push(q.url());
+    if (new URL(q.url()).origin !== origin) external.push(q.url());
   });
-  await page.route(/^https?:\/\/(?!127\.0\.0\.1:8765)/, (route) => route.abort());
+  await page.route((url) => url.origin !== origin, (route) => route.abort());
   const r = await open(page, "ecc83/ecc83-pp", "pcb");
   const fonts = await page.evaluate(async () => {
     await document.fonts.ready;
