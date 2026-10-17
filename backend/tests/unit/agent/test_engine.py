@@ -421,3 +421,74 @@ async def test_size_trigger_flushes_without_waiting_for_the_timer(make_engine, d
         await asyncio.sleep(0.01)
     gate.set()
     await until(lambda: not engine.is_busy)
+
+
+# ---- fix round 2
+
+
+class _FailingBackend:
+    """A backend whose start() raises before any turn (e.g. broken credentials)."""
+
+    def __init__(self) -> None:
+        self.starts = 0
+        self.fail = True
+
+    async def interrupt(self) -> None:
+        return None
+
+    async def start(
+        self, project: Project, input_stream: AsyncIterator[QueuedItem], resume: str | None
+    ) -> AsyncIterator[AgentEvent]:
+        self.starts += 1
+        if self.fail:
+            raise RuntimeError("could not authenticate")
+        async for item in input_stream:
+            yield TextDelta(f"ok {item.text}")
+            yield TurnFinished(reason="completed")
+            break
+
+
+async def test_backend_failing_before_a_turn_posts_one_error_and_does_not_loop(
+    make_engine, db, until, drain
+):
+    backend = _FailingBackend()
+    engine, _ = await make_engine(backend=backend)
+    sub = engine.broadcaster.subscribe(PID)
+    m1, _ = await engine.submit_ex("a", "m1", [])
+    await until(lambda: backend.starts >= 1 and not engine.is_busy)
+    await asyncio.sleep(0.2)  # a restart loop would rack up hundreds of starts here
+    assert backend.starts == 1
+    rows = await _rows(db)
+    user = next(r for r in rows if r.id == m1.id)
+    assert user.status == "error"
+    errors = [r for r in rows if r.kind == "error"]
+    assert len(errors) == 1
+    assert errors[0].metadata.get("code") == "agent_unavailable"
+    assert "could not start" in errors[0].content
+    frames = await drain(sub)
+    assert any(
+        f.type == "message-delta" and f.message_id == m1.id and f.status_patch == "error"
+        for f in frames
+    )
+    # A fixed backend works again on the next explicit submit, without a restart.
+    backend.fail = False
+    m2, _ = await engine.submit_ex("b", "m2", [])
+    await until(lambda: not engine.is_busy and backend.starts == 2)
+    await asyncio.sleep(0.1)
+    assert backend.starts == 2
+    rows = await _rows(db)
+    assert next(r for r in rows if r.id == m2.id).status == "done"
+    assert next(r for r in rows if r.id == m1.id).status == "error"
+    assert [r.content for r in rows if r.role == "assistant"] == ["ok m2"]
+
+
+async def test_failing_backend_does_not_loop_on_queued_rows_at_startup(make_engine, db, until):
+    await MessageRepo(db).insert_user(PID, "old", "from before the restart")
+    backend = _FailingBackend()
+    engine, _ = await make_engine(backend=backend)
+    await until(lambda: backend.starts >= 1 and not engine.is_busy)
+    await asyncio.sleep(0.2)
+    assert backend.starts == 1
+    rows = await _rows(db)
+    assert [r.status for r in rows if r.role == "user"] == ["error"]
+    assert len([r for r in rows if r.kind == "error"]) == 1

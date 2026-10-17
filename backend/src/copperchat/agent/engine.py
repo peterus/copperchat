@@ -411,6 +411,8 @@ class RunEngine:
                         content=f"The agent stopped unexpectedly: {exc}",
                     )
                 await self._finish_turn("error")
+            else:
+                await self._fail_burst(stream, exc)
         finally:
             if flusher is not None:
                 flusher.cancel()
@@ -427,6 +429,44 @@ class RunEngine:
             if self._burst is asyncio.current_task():
                 self._burst = None
             await self._drive_queued()
+
+    async def _fail_burst(self, stream: PushStream[QueuedItem], exc: Exception) -> None:
+        """The backend failed with no turn in flight (typically before the first one, e.g.
+        broken credentials): post ONE error row and mark every message waiting in this
+        burst's stream as 'error' so the wind-down re-drive does not restart the backend
+        straight away (hot loop). A later submit starts a fresh burst."""
+        async with self._lock:
+            stream.request_close()
+            if self._stream is stream:
+                self._stream = None  # a submit from here on starts a fresh burst
+            ids = stream.pending_ids()
+            for mid in ids:
+                stream.drop(mid)
+                await self._messages.set_status(mid, "error")
+                await self._publish(
+                    MessageDeltaFrame(project_id=self.pid, message_id=mid, status_patch="error")
+                )
+            await self._insert(
+                role="system",
+                kind="error",
+                content=f"The agent could not start: {self._safe_reason(exc)}",
+                metadata={"code": "agent_unavailable"},
+            )
+
+    def _safe_reason(self, exc: Exception) -> str:
+        """A short, single-line reason with every configured secret redacted."""
+        text = (str(exc).strip().splitlines() or [""])[0] or type(exc).__name__
+        s = self._settings
+        for secret in (
+            s.claude_code_oauth_token,
+            s.anthropic_api_key,
+            s.admin_password,
+            s.session_secret,
+        ):
+            value = secret.get_secret_value() if secret is not None else ""
+            if len(value) >= 4:
+                text = text.replace(value, "***")
+        return text[:200]
 
     async def _await_wind_down(self, prev: asyncio.Task[None]) -> None:
         """Wait (bounded by the grace period) for the previous burst's backend to return;
