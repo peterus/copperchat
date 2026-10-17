@@ -2456,6 +2456,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ### Task 8.6: part-researcher as SDK sub-agent — session guard, datasheet tool, option wiring
 
+> **Superseded (owner decision 2026-10-17, index "Decided by owner" item 8):** implement Task 8.6b with the adjustments listed there instead of this task.
+
 Implements the owner decision (2026-10-16) for spike 1A outcomes **sub-agent
 go** and **sub-agent go (built-ins in session)**. On **sub-agent no-go** skip
 this task and do Task 8.6b instead.

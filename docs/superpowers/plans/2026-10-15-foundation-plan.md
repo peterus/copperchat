@@ -700,8 +700,23 @@ These extend C1–C8 and are equally binding.
   `build_options(..., skills=, researcher=)`; built-in skill `part-notes`
   (front matter `agent: part-researcher`, never offered to the main agent).
 - **Phase 6A (sub-agent card):** `@/components/chat/subagent`
-  (`groupSubagentRows`, `isDelegation`, `describeStep`, `subagentTitle`),
-  `SubagentCard({toolUse, group, runActive})`.
+  (`DELEGATION_TOOLS = {"research_part"}` (owner decision 8), `groupSubagentRows`,
+  `isDelegation`, `describeStep`, `subagentTitle`),
+  `SubagentCard({toolUse, group, runActive})`. Rows whose `parentToolUseId`
+  matches no loaded delegation stay top-level rows (never dropped).
+- **Phase 6A (as built):** `ConnectionState = 'open' | 'closed' | 'resumed' |
+  'unauthorized' | 'forbidden'` — WS close 4401 / 4403 are terminal (no
+  reconnect until `wsClient.ensure()`; a terminal close of an open socket emits
+  `closed` first); the auth store goes anonymous on `unauthorized`.
+  `@/stores/session.installSessionReset()` resets chat, composer and projects
+  stores when auth goes anonymous. `@/stores/projects`: `OpenResult` already
+  includes `viewFiles` (X7 done), plus `opening`, `openError`, `reset()`.
+  `@/stores/chat` adds `reset()`. `ApiError.retryAfterS`. `isSafeImageUrl`
+  (`@/components/chat/Markdown`): only `/api/` and `blob:` images render (no
+  external images from agent markdown). `ViewerSlot({projectId})` stays
+  mounted across phone tab switches. Panels without a registered `history`
+  panel show a "not available yet" History tab. frames.ts is strict (12-hex
+  project ids, unknown keys rejected) like `agent/protocol.py`.
 - **Phase 6B:** `@/stores/view`, `@/lib/viewUrls`, `KicadPane(KicadPaneProps)`
   (same interface on both spike paths); KiCanvas vendored under
   `frontend/public/vendor/kicanvas/`; fallback only: `ImageBlock.viewbox_mm`,
@@ -898,6 +913,27 @@ PR; these are final:
    fixture eval and an opt-in live eval.
 7. **Review hint fixed:** Phase 7's `HistoryHooks._recover` and the Phase 5
    engine no longer both post the "KiCad stopped responding" row (X18).
+
+### Decided by owner (2026-10-17) — supersedes item 1 above, X19 and X20(1)–(2)
+
+8. **Sub-agent design = OPTION B (Phase 8 Task 8.6b, extended).** The main
+   agent gets `tools=["Skill"]` only — **no** built-in `Agent` tool, no
+   `agents=`. `research_part` is a CopperChat MCP tool (provider
+   `copperchat.research.specs`) whose handler runs a **separate SDK query**
+   with the part-researcher configuration (WebFetch/WebSearch/Write, writes
+   guarded to `<project>/docs/parts/`, `part-notes` skill appended to its
+   prompt). Unlike plain 8.6b, the backend **forwards that query's stream** as
+   `AgentEvent`s with `parent_tool_use_id` = the `research_part` `tool_use`
+   id, so Phase 5's sub-agent rows (`metadata.parentToolUseId`, Task 5.11b)
+   and Phase 6A's "Part research: <MPN>" card work unchanged; the
+   `research_part` call's own `tool_result` is the final summary. Interrupt
+   cancels both queries; usage of both is summed into the turn's `usage`
+   frame. The `research_part` input schema should carry `mpn` (string,
+   required — the card title reads `input.mpn`, falling back to
+   `description`, then a 40-char cut of `query`) next to `query` and
+   `attachment_paths`. **Task 8.6 (hook/`Agent` variant) is superseded**;
+   Phase 8 implements 8.6b with these adjustments (the "live sub-agent steps
+   are not available" limitation in 8.6b no longer applies).
 
 ### C8. HTTP API (owning phase in brackets; all under `/api`, all except
 login require the session cookie)
