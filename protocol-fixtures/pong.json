@@ -1,0 +1,22 @@
+{
+ "type": "pong",
+ "directions": [
+  "s2c"
+ ],
+ "valid": [
+  {
+   "type": "pong",
+   "projectId": null
+  }
+ ],
+ "invalid": [
+  {
+   "type": "pong"
+  },
+  {
+   "type": "pong",
+   "projectId": null,
+   "timestamp": 1
+  }
+ ]
+}

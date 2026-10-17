@@ -1,0 +1,56 @@
+{
+ "type": "send",
+ "directions": [
+  "c2s"
+ ],
+ "valid": [
+  {
+   "type": "send",
+   "projectId": "a1b2c3d4e5f6",
+   "clientMessageId": "6f1c0c5e-2f39-4b8e-9a51-0d7f0e0f4a11",
+   "text": "What is U3?",
+   "attachments": []
+  },
+  {
+   "type": "send",
+   "projectId": "a1b2c3d4e5f6",
+   "clientMessageId": "c2",
+   "text": "see image",
+   "attachments": [
+    {
+     "id": "up-1",
+     "kind": "image",
+     "name": "photo.png"
+    }
+   ]
+  }
+ ],
+ "invalid": [
+  {
+   "type": "send",
+   "projectId": "a1b2c3d4e5f6",
+   "clientMessageId": "c3",
+   "text": "",
+   "attachments": []
+  },
+  {
+   "type": "send",
+   "projectId": "a1b2c3d4e5f6",
+   "text": "no id",
+   "attachments": []
+  },
+  {
+   "type": "send",
+   "projectId": "a1b2c3d4e5f6",
+   "clientMessageId": "c4",
+   "text": "x",
+   "attachments": [
+    {
+     "id": "u",
+     "kind": "zip",
+     "name": "a.zip"
+    }
+   ]
+  }
+ ]
+}
