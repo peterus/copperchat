@@ -49,8 +49,9 @@ You need Docker with the compose plugin and a Claude subscription (or an API key
 3. Put KiCad projects into `./projects`, open <http://localhost:8080> and sign in with
    `ADMIN_USERNAME` / `ADMIN_PASSWORD`.
 
-The container refuses to start without a token and tells you to run `claude setup-token`.
-A different host port: `COPPERCHAT_PORT=8090` in `.env`.
+If `docker compose pull` reports `denied`, the image is not published (or not public) yet —
+use the from-source path below. The container refuses to start without a token and tells
+you to run `claude setup-token`. A different host port: `COPPERCHAT_PORT=8090` in `.env`.
 
 Images are published as `ghcr.io/peterus/copperchat:<version>` (e.g. `0.1.0`), `:<major>.<minor>`
 (e.g. `0.1`) and `:latest`; release notes are in [CHANGELOG.md](CHANGELOG.md). To pin a

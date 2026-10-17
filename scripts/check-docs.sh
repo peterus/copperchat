@@ -29,5 +29,9 @@ grep -q "^__version__ = \"${version}\"\$" backend/src/copperchat/__init__.py \
   || fail "frontend/package.json: version must be ${version}"
 [ "$(jq -r .version frontend/package-lock.json)" = "$version" ] \
   || fail "frontend/package-lock.json: version must be ${version}"
+for f in docker-compose.yml .env.example; do
+  grep -qF "raw.githubusercontent.com/peterus/copperchat/v${version}/${f}" README.md \
+    || fail "README: quick start must download ${f} of v${version}"
+done
 grep -q "^## \[${version}\]" CHANGELOG.md || fail "CHANGELOG.md: no section for ${version}"
 echo OK

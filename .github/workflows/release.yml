@@ -5,6 +5,8 @@ name: Release
 # the GitHub Release with the version's CHANGELOG.md section as notes. Never runs for pull
 # requests or branches.
 #   git tag -a v0.1.0 -m "CopperChat v0.1.0" && git push origin v0.1.0
+# After the first release the owner sets the GHCR package to public once (github.com/peterus →
+# Packages → copperchat → Package settings → Change visibility); new packages start private.
 on:
   push:
     tags: ["v*"]
@@ -48,7 +50,11 @@ jobs:
             prerelease=false
             grep -q "^## \[$version\]" CHANGELOG.md \
               || { echo "CHANGELOG.md has no section for $version"; exit 1; }
-            tags="$tags"$'\n'"$IMAGE:$minor"$'\n'"$IMAGE:latest"
+            tags="$tags"$'\n'"$IMAGE:$minor"
+            # :latest only for the highest release, so a patch on an older line never moves it back.
+            highest="$(git ls-remote --tags --refs origin 'v*' | sed 's|.*refs/tags/v||' \
+              | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)"
+            if [[ "$highest" == "$version" ]]; then tags="$tags"$'\n'"$IMAGE:latest"; fi
           fi
           {
             echo "version=$version"
