@@ -289,3 +289,130 @@ async def test_result_outside_a_turn_is_ignored_and_bursts_do_not_overlap(make_e
     await until(lambda: engine.current_run_id is None)
     await backend.events.put(None)
     await until(lambda: not engine.is_busy)
+
+
+# ---- fix round 1
+
+
+async def test_burst_end_racing_a_submit_does_not_double_queue(make_engine, until):
+    """A burst's wind-down re-drive (`_drive_queued`) landing while a submit's insert has
+    just committed must not enqueue the same message a second time."""
+    engine, agent = await make_engine()
+    repo = engine._messages
+    original = repo.insert
+
+    async def insert_then_redrive(*args: Any, **kw: Any) -> int:
+        mid = await original(*args, **kw)
+        task = asyncio.ensure_future(engine._drive_queued())
+        await asyncio.sleep(0.01)  # let the re-drive scan the committed 'queued' row
+        await task
+        return mid
+
+    repo.insert = insert_then_redrive  # type: ignore[method-assign]
+    await engine.submit_ex("c1", "hi", [])
+    repo.insert = original  # type: ignore[method-assign]
+    await until(lambda: not engine.is_busy)
+    await asyncio.sleep(0.05)
+    assert [p.client_message_id for p in agent.prompts] == ["c1"]
+
+
+class _TrackingBackend(_EagerBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = 0
+        self.ended = 0
+
+    async def start(
+        self, project: Project, input_stream: AsyncIterator[QueuedItem], resume: str | None
+    ) -> AsyncIterator[AgentEvent]:
+        self.started += 1
+        try:
+            async for ev in super().start(project, input_stream, resume):
+                yield ev
+        finally:
+            self.ended += 1
+
+
+async def test_close_during_wind_down_stops_every_burst(make_engine, until):
+    backend = _TrackingBackend()
+    engine, _ = await make_engine(backend=backend)
+    m1, _ = await engine.submit_ex("a", "m1", [])
+    await until(lambda: backend.pulled == [m1.id])
+    old = engine._burst
+    await backend.events.put(TurnFinished(reason="completed"))
+    await until(lambda: engine.current_run_id is None)
+    await engine.submit_ex("b", "m2", [])  # new burst waits for the winding-down one
+    new = engine._burst
+    assert old is not None and new is not None and old is not new
+    await engine.close()
+    assert old.done() and new.done()
+    assert backend.started == backend.ended == 1
+
+
+async def test_wind_down_wait_is_bounded(make_engine, until):
+    """A previous burst whose backend never returns is cancelled after the grace period
+    so later messages are not stuck in the queue."""
+    backend = _TrackingBackend()
+    engine, _ = await make_engine(backend=backend, interrupt_grace_s=0.1)
+    m1, _ = await engine.submit_ex("a", "m1", [])
+    await until(lambda: backend.pulled == [m1.id])
+    await backend.events.put(TurnFinished(reason="completed"))
+    await until(lambda: engine.current_run_id is None)
+    m2, _ = await engine.submit_ex("b", "m2", [])
+    await until(lambda: backend.pulled == [m1.id, m2.id])
+    assert backend.started == 2 and backend.ended == 1
+    await backend.events.put(TurnFinished(reason="completed"))
+    await until(lambda: engine.current_run_id is None)
+    await backend.events.put(None)
+    await until(lambda: not engine.is_busy)
+
+
+async def test_failing_hooks_do_not_block_the_queue(make_engine, db, until):
+    class Boom(RunHooks):
+        async def on_engine_start(self) -> None:
+            raise RuntimeError("engine hook")
+
+        async def on_turn_start(self, turn: TurnInfo) -> None:
+            raise RuntimeError("start hook")
+
+        async def on_turn_end(self, turn: TurnInfo, outcome: TurnOutcome) -> None:
+            raise RuntimeError("end hook")
+
+    engine, agent = await make_engine(hooks=Boom())
+    await engine.submit_ex("a", "m1", [])
+    await engine.submit_ex("b", "m2", [])
+    await until(lambda: len(agent.prompts) == 2 and not engine.is_busy)
+    users = [r for r in await _rows(db) if r.role == "user"]
+    for u in users:
+        run = await RunRepo(db).get(u.run_id)
+        assert run is not None and run["reason"] == "completed"
+
+
+async def test_queued_rows_are_redriven_even_if_engine_start_hook_fails(make_engine, db, until):
+    class Boom(RunHooks):
+        async def on_engine_start(self) -> None:
+            raise RuntimeError("engine hook")
+
+    await MessageRepo(db).insert_user(PID, "old", "from before the restart")
+    engine, agent = await make_engine(hooks=Boom())
+    await until(lambda: len(agent.prompts) == 1 and not engine.is_busy)
+
+
+async def test_size_trigger_flushes_without_waiting_for_the_timer(make_engine, db, until):
+    gate = asyncio.Event()
+    engine, _ = await make_engine(
+        lambda item: [Text("a" * 3000), Wait(gate)], flush_interval_s=60.0
+    )
+    await engine.submit_ex("c", "go", [])
+
+    async def persisted() -> str:
+        rows = [r for r in await _rows(db) if r.role == "assistant"]
+        return rows[0].content if rows else ""
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 2.0
+    while await persisted() != "a" * 3000:
+        assert loop.time() < deadline, "2048-char rule did not flush"
+        await asyncio.sleep(0.01)
+    gate.set()
+    await until(lambda: not engine.is_busy)

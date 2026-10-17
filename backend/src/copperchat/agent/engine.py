@@ -145,7 +145,8 @@ class RunEngine:
         self._grace = interrupt_grace_s
         self._lock = asyncio.Lock()  # serialises persist+publish against replay snapshots
         self._stream: PushStream[QueuedItem] | None = None
-        self._burst: asyncio.Task[None] | None = None
+        self._burst: asyncio.Task[None] | None = None  # newest burst
+        self._bursts: set[asyncio.Task[None]] = set()  # incl. ones still winding down
         self._turn: _Turn | None = None
         self._inflight: int | None = None  # pulled from the stream, turn not finished
         self._live: dict[int, str] = {}  # streaming row id -> full content incl. unflushed
@@ -171,16 +172,20 @@ class RunEngine:
 
     async def start(self) -> None:
         await self._messages.finalize_streaming(self.pid)
-        await self.hooks.on_engine_start()
+        try:
+            await self.hooks.on_engine_start()
+        except Exception:
+            log.exception("on_engine_start hook failed")
         await self._restore()
 
     async def close(self) -> None:
         self._closed = True
         if self._resume_timer is not None:
             self._resume_timer.cancel()
-        task = self._burst
-        if task is not None and not task.done():
+        bursts = [t for t in self._bursts if not t.done()]
+        for task in bursts:
             task.cancel()
+        for task in bursts:
             with suppress(asyncio.CancelledError, Exception):
                 await task
         for t in list(self._bg):
@@ -209,8 +214,10 @@ class RunEngine:
             row, created = await self._messages.insert_user(self.pid, client_message_id, text, meta)
             dto = self.to_dto(row)
             await self._publish(MessageFrame(project_id=self.pid, message=dto))
-        if created and self.rate_limited_until is None:
-            self._enqueue(self._item(row))
+            # Enqueue under the lock: _drive_queued scans under it too, so a 'queued' row
+            # is always either in the stream, in flight, or not yet visible to the scan.
+            if created and self.rate_limited_until is None:
+                self._enqueue(self._item(row))
         return dto, created
 
     async def post_notice(self, text: str, metadata: dict[str, Any] | None = None) -> MessageDTO:
@@ -261,7 +268,10 @@ class RunEngine:
         # not returned yet); the new burst waits for it so two backend clients never overlap
         # and the new one resumes from the session id the old one stored.
         prev = self._burst if self.is_busy else None
-        self._burst = asyncio.create_task(self._run_burst(stream, prev), name=f"burst-{self.pid}")
+        task = asyncio.create_task(self._run_burst(stream, prev), name=f"burst-{self.pid}")
+        self._burst = task
+        self._bursts.add(task)
+        task.add_done_callback(self._bursts.discard)
 
     async def _restore(self) -> None:
         await self._drive_queued()
@@ -269,19 +279,23 @@ class RunEngine:
     async def _drive_queued(self) -> None:
         if self._closed or self.rate_limited_until is not None:
             return
-        known = set(self._stream.pending_ids()) if self._stream else set()
-        for row in await self._messages.queued_user_rows(self.pid):
-            if row.id not in known and row.id != self._inflight:
-                self._enqueue(self._item(row))
+        async with self._lock:  # see submit_ex: scan and enqueue atomically
+            rows = await self._messages.queued_user_rows(self.pid)
+            known = set(self._stream.pending_ids()) if self._stream else set()
+            for row in rows:
+                if row.id not in known and row.id != self._inflight:
+                    self._enqueue(self._item(row))
 
     async def _run_burst(
         self, stream: PushStream[QueuedItem], prev: asyncio.Task[None] | None = None
     ) -> None:
-        if prev is not None:
-            await asyncio.wait({prev})
-        resume = await self._agent_sessions.get(self.pid)  # read once per burst, never mid-burst
-        flusher = asyncio.create_task(self._flush_loop())
+        flusher: asyncio.Task[None] | None = None
         try:
+            if prev is not None:
+                await self._await_wind_down(prev)
+            # Read once per burst, never mid-burst.
+            resume = await self._agent_sessions.get(self.pid)
+            flusher = asyncio.create_task(self._flush_loop())
             async for ev in self.backend.start(self.project, self._gated(stream), resume):
                 await self._on_event(ev, stream)
         except asyncio.CancelledError:
@@ -299,7 +313,8 @@ class RunEngine:
                     )
                 await self._finish_turn("error")
         finally:
-            flusher.cancel()
+            if flusher is not None:
+                flusher.cancel()
             if self._turn is not None:
                 await self._finish_turn(
                     "interrupted" if (self._interrupting or self._closed) else "error"
@@ -310,6 +325,23 @@ class RunEngine:
                 self._burst = None
             self._interrupting = False
             await self._drive_queued()
+
+    async def _await_wind_down(self, prev: asyncio.Task[None]) -> None:
+        """Wait (bounded by the grace period) for the previous burst's backend to return;
+        cancel it if it does not, so later messages never stay queued indefinitely."""
+        try:
+            done, _ = await asyncio.wait({prev}, timeout=self._grace)
+            if not done:
+                log.warning(
+                    "previous burst for %s did not end in %.1fs; cancelling it",
+                    self.pid,
+                    self._grace,
+                )
+                prev.cancel()
+                await asyncio.wait({prev}, timeout=self._grace)
+        except asyncio.CancelledError:
+            prev.cancel()
+            raise
 
     async def _gated(self, stream: PushStream[QueuedItem]) -> AsyncIterator[QueuedItem]:
         async for item in stream:
