@@ -1,0 +1,7 @@
+vendor/
+files/
+fonts/*.woff2
+fonts/LICENSE-*
+projects.json
+results/
+test-results/
