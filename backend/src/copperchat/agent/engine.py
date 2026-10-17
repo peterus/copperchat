@@ -9,7 +9,7 @@ import uuid
 from collections.abc import AsyncIterator, Callable, Coroutine
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from copperchat.agent.broadcaster import Broadcaster, Subscription
@@ -32,6 +32,7 @@ from copperchat.agent.protocol import (
     MessageDeltaFrame,
     MessageDTO,
     MessageFrame,
+    RateLimitedFrame,
     RateLimitPayload,
     RunFinishedFrame,
     RunStartedFrame,
@@ -342,6 +343,15 @@ class RunEngine:
         task.add_done_callback(self._bursts.discard)
 
     async def _restore(self) -> None:
+        resets = await self._rate_limits.get(self.pid)
+        if resets is not None and resets.tzinfo is None:
+            resets = resets.replace(tzinfo=UTC)  # stored by an older writer without offset
+        if resets is not None and resets > datetime.now(UTC):
+            self.rate_limited_until = resets  # still parked across the restart
+            self._arm_resume(resets)
+            return
+        if resets is not None:
+            await self._rate_limits.set(self.pid, None)
         await self._drive_queued()
 
     async def _drive_queued(self) -> None:
@@ -372,7 +382,11 @@ class RunEngine:
             log.warning("burst for %s cancelled by the interrupt backstop", self.pid)
         except Exception as exc:
             log.exception("agent backend failed for %s", self.pid)
-            if self._turn is not None:
+            turn = self._turn
+            if turn is not None and turn.rate_limited is not None:
+                # The backend failed after reporting a rejected rate limit: park, not error.
+                await self._park(turn, stream, turn.rate_limited)
+            elif turn is not None:
                 async with self._lock:
                     await self._insert(
                         role="system",
@@ -383,7 +397,10 @@ class RunEngine:
         finally:
             if flusher is not None:
                 flusher.cancel()
-            if self._turn is not None:
+            turn = self._turn
+            if turn is not None and turn.rate_limited is not None and not self._closed:
+                await self._park(turn, stream, turn.rate_limited)
+            elif turn is not None:
                 await self._finish_turn(
                     "interrupted" if (self._interrupting or self._closed) else "error"
                 )
@@ -428,12 +445,17 @@ class RunEngine:
             self._turn = _Turn(info)
             await self._runs.start(run_id, self.pid)
             await self._messages.assign_run(item.message_id, run_id, "done")
+            patch: dict[str, Any] = {"runId": run_id}
+            if info.metadata.get("rateLimited"):
+                # The parked message runs again: it no longer waits for the limit.
+                await self._messages.merge_metadata(item.message_id, {"rateLimited": False})
+                patch["rateLimited"] = False
             await self._publish(
                 MessageDeltaFrame(
                     project_id=self.pid,
                     message_id=item.message_id,
                     status_patch="done",
-                    metadata_patch={"runId": run_id},
+                    metadata_patch=patch,
                 )
             )
             await self._publish(RunStartedFrame(project_id=self.pid, run_id=run_id))
@@ -535,6 +557,9 @@ class RunEngine:
     async def _turn_finished(
         self, turn: _Turn, ev: TurnFinished, stream: PushStream[QueuedItem]
     ) -> None:
+        if turn.rate_limited is not None:
+            await self._park(turn, stream, turn.rate_limited)
+            return
         if ev.reason == "error" and ev.error:
             async with self._lock:
                 await self._insert(role="system", kind="error", content=ev.error)
@@ -542,6 +567,52 @@ class RunEngine:
         stream.release_next()
         if stream.pending_count() == 0:
             stream.request_close()
+
+    # ---- rate-limit parking
+    async def _park(self, turn: _Turn, stream: PushStream[QueuedItem], resets_at: datetime) -> None:
+        """End the turn as rate limited: its message and every waiting one stay 'queued'
+        (outside the stream) until the limit resets; then they run again in order."""
+        # Set first: from here on neither submit_ex nor the burst's re-drive enqueues.
+        self.rate_limited_until = resets_at
+        async with self._lock:
+            for mid in stream.pending_ids():
+                stream.drop(mid)  # they stay 'queued' in the DB
+            mid = turn.info.message_id
+            await self._messages.set_status(mid, "queued")
+            await self._messages.merge_metadata(mid, {"rateLimited": True})
+            await self._publish(
+                MessageDeltaFrame(
+                    project_id=self.pid,
+                    message_id=mid,
+                    status_patch="queued",
+                    metadata_patch={"rateLimited": True},
+                )
+            )
+        stream.request_close()
+        stream.release_next()
+        await self._finish_turn("rate_limited")
+        await self._rate_limits.set(self.pid, resets_at)
+        async with self._lock:
+            await self._publish(
+                RateLimitedFrame(project_id=self.pid, resets_at=resets_at.isoformat())
+            )
+        self._arm_resume(resets_at)
+
+    def _arm_resume(self, resets_at: datetime) -> None:
+        if self._resume_timer is not None:
+            self._resume_timer.cancel()
+        delay = max(0.0, (resets_at - datetime.now(UTC)).total_seconds())
+        self._resume_timer = asyncio.get_running_loop().call_later(
+            delay, lambda: self._spawn(self._resume_after_limit())
+        )
+
+    async def _resume_after_limit(self) -> None:
+        self._resume_timer = None
+        if self._closed:
+            return
+        self.rate_limited_until = None
+        await self._rate_limits.set(self.pid, None)
+        await self._drive_queued()
 
     async def _finish_turn(self, reason: FinishReason) -> None:
         turn = self._turn
