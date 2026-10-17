@@ -66,9 +66,12 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
           echo "version $version (prerelease $prerelease), KiCad $commit, tags: ${tags//$'\n'/ }"
-      - name: Free disk space (the KiCad base image is ~3 GB)
+      - name: Free disk space (the KiCad base image is ~2 GB)
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - id: base
+        # The base image with the current recipe (fails if kicad-base has not published it).
+        run: echo "image=$(scripts/kicad-base-image.sh resolve "${{ steps.meta.outputs.commit }}")" >> "$GITHUB_OUTPUT"
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
@@ -79,7 +82,9 @@ jobs:
         with:
           context: .
           file: docker/app/Dockerfile
-          build-args: KICAD_COMMIT=${{ steps.meta.outputs.commit }}
+          build-args: |
+            KICAD_COMMIT=${{ steps.meta.outputs.commit }}
+            KICAD_BASE=${{ steps.base.outputs.image }}
           load: true
           push: false
           provenance: false
@@ -101,7 +106,9 @@ jobs:
         with:
           context: .
           file: docker/app/Dockerfile
-          build-args: KICAD_COMMIT=${{ steps.meta.outputs.commit }}
+          build-args: |
+            KICAD_COMMIT=${{ steps.meta.outputs.commit }}
+            KICAD_BASE=${{ steps.base.outputs.image }}
           push: true
           provenance: mode=max
           sbom: true

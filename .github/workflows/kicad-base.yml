@@ -1,25 +1,35 @@
 name: kicad-base
 
 # Builds KiCad from source at docker/kicad-base/KICAD_COMMIT and publishes
-# ghcr.io/peterus/copperchat-kicad-base:<commit> (+ :<first 10 chars>).
+# ghcr.io/peterus/copperchat-kicad-base. Tags:
 #
-# The build runs only when needed: the tag is missing, the published image was
-# built from a different recipe (label io.copperchat.recipe = hash of
-# docker/kicad-base/*), or `force` is set on a manual run. Only runs on main
-# overwrite an existing tag; pull requests and manual runs on other branches
-# push only the first publication of a tag. Every built image is smoke-
-# tested before it is pushed, and the published image is smoke-tested again.
+#   <commit>-r<recipe>   recipe-pinned (scripts/kicad-base-image.sh: <recipe> hashes
+#                        docker/kicad-base/* and this workflow). Pushed by every same-repo
+#                        run that builds it, never overwritten (except `force` on main).
+#                        A pull request that changes the recipe publishes and tests its
+#                        image under this tag without touching the published one; CI
+#                        (ci.yml) resolves the tag per recipe.
+#   <commit>, <first 10> the published image (docker-compose.yml, releases). Only runs on
+#                        main move it -- by promoting the recipe-pinned tag a pull request
+#                        already built and tested (no rebuild), or by building -- plus the
+#                        first publication of a new commit from any same-repo run.
+#   ccache               the compiler cache of the last same-repo build (scratch image),
+#                        injected into the next build so a recipe change or a nearby KiCad
+#                        commit does not recompile from scratch. Same-repo branches are
+#                        trusted to write it, as they are trusted to push recipe tags.
+#
+# Every built image is smoke-tested before it is pushed, and the published image again.
 
 on:
   push:
     branches: [main]
-    paths: ["docker/kicad-base/**", "scripts/kicad-base-smoke.sh", ".github/workflows/kicad-base.yml"]
+    paths: ["docker/kicad-base/**", "scripts/kicad-base-smoke.sh", "scripts/kicad-base-image.sh", ".github/workflows/kicad-base.yml"]
   pull_request:
-    paths: ["docker/kicad-base/**", "scripts/kicad-base-smoke.sh", ".github/workflows/kicad-base.yml"]
+    paths: ["docker/kicad-base/**", "scripts/kicad-base-smoke.sh", "scripts/kicad-base-image.sh", ".github/workflows/kicad-base.yml"]
   workflow_dispatch:
     inputs:
       force:
-        description: "Rebuild and push even if the tag exists with the same recipe"
+        description: "Rebuild even if the recipe is published (only main overwrites tags)"
         type: boolean
         default: false
 
@@ -42,8 +52,11 @@ jobs:
       short: ${{ steps.pins.outputs.short }}
       kipy: ${{ steps.pins.outputs.kipy }}
       recipe: ${{ steps.pins.outputs.recipe }}
+      rtag: ${{ steps.pins.outputs.rtag }}
       build: ${{ steps.decide.outputs.build }}
-      push: ${{ steps.decide.outputs.push }}
+      push_rtag: ${{ steps.decide.outputs.push_rtag }}
+      push_commit: ${{ steps.decide.outputs.push_commit }}
+      promote: ${{ steps.decide.outputs.promote }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: pins
@@ -54,14 +67,13 @@ jobs:
           [[ "$kipy" =~ ^[0-9a-f]{40}$ ]] || { echo "bad KIPY_COMMIT: $kipy"; exit 1; }
           grep -qx "$commit" docker/kicad-base/SUPPORTED_COMMITS \
             || { echo "KICAD_COMMIT is not listed in SUPPORTED_COMMITS"; exit 1; }
-          # Everything that shapes the image; SUPPORTED_COMMITS only feeds CI matrices.
-          recipe="$(git ls-files docker/kicad-base | grep -v '/SUPPORTED_COMMITS$' | LC_ALL=C sort \
-            | xargs sha256sum | sha256sum | cut -c1-16)"
+          recipe="$(scripts/kicad-base-image.sh recipe)"
           {
             echo "commit=$commit"
             echo "short=${commit:0:10}"
             echo "kipy=$kipy"
             echo "recipe=$recipe"
+            echo "rtag=$commit-r$recipe"
           } >> "$GITHUB_OUTPUT"
           echo "KiCad $commit, kipy $kipy, recipe $recipe"
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -73,31 +85,34 @@ jobs:
         env:
           COMMIT: ${{ steps.pins.outputs.commit }}
           RECIPE: ${{ steps.pins.outputs.recipe }}
+          RTAG: ${{ steps.pins.outputs.rtag }}
           FORCE: ${{ inputs.force || 'false' }}
           REF: ${{ github.ref }}
           SAME_REPO: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
-          if json="$(docker buildx imagetools inspect "$IMAGE:$COMMIT" --format '{{json .Image}}' 2>inspect.err)"; then
-            exists=true
-            published="$(jq -r 'if has("config") then .config.Labels["io.copperchat.recipe"]
-              else .["linux/amd64"].config.Labels["io.copperchat.recipe"] end // ""' <<<"$json")"
-          elif grep -qiE 'not found|manifest unknown' inspect.err; then
-            exists=false; published=""
-          else
-            # Registry outage, auth or rate limit: never treat as "tag missing",
-            # or a PR run would push over a published tag.
-            cat inspect.err; echo "imagetools inspect failed"; exit 1
-          fi
-          echo "tag exists: $exists, published recipe: '${published}', current recipe: $RECIPE"
-          build=false; push=false
-          if [ "$FORCE" = "true" ] || [ "$exists" = "false" ] || [ "$published" != "$RECIPE" ]; then
+          # label: exit 1 = tag missing; any other failure (outage, auth, rate limit) aborts,
+          # so a registry error is never mistaken for "missing" and pushed over.
+          rc=0; scripts/kicad-base-image.sh label "$IMAGE:$RTAG" >/dev/null || rc=$?
+          case "$rc" in 0) rexists=true ;; 1) rexists=false ;; *) exit 1 ;; esac
+          rc=0; published="$(scripts/kicad-base-image.sh label "$IMAGE:$COMMIT")" || rc=$?
+          case "$rc" in 0) exists=true ;; 1) exists=false; published="" ;; *) exit 1 ;; esac
+          main=false; [ "$REF" = "refs/heads/main" ] && main=true
+          echo "recipe tag exists: $rexists; <commit> tag exists: $exists, published recipe: '$published', current: $RECIPE"
+          build=false; push_rtag=false; push_commit=false; promote=false
+          if [ "$FORCE" = "true" ] || { [ "$rexists" = "false" ] && [ "$published" != "$RECIPE" ]; }; then
             build=true
-            if [ "$SAME_REPO" = "true" ] && { [ "$REF" = "refs/heads/main" ] || [ "$exists" = "false" ]; }; then
-              push=true
+            if [ "$SAME_REPO" = "true" ]; then
+              { [ "$rexists" = "false" ] || [ "$main" = "true" ]; } && push_rtag=true
+              { [ "$main" = "true" ] || [ "$exists" = "false" ]; } && push_commit=true
             fi
+          elif [ "$main" = "true" ] && [ "$published" != "$RECIPE" ]; then
+            promote=true   # a pull request built and tested this recipe: retag, no rebuild
           fi
-          echo "build=$build push=$push"
-          { echo "build=$build"; echo "push=$push"; } >> "$GITHUB_OUTPUT"
+          echo "build=$build push_rtag=$push_rtag push_commit=$push_commit promote=$promote"
+          {
+            echo "build=$build"; echo "push_rtag=$push_rtag"
+            echo "push_commit=$push_commit"; echo "promote=$promote"
+          } >> "$GITHUB_OUTPUT"
 
   build:
     needs: meta
@@ -106,12 +121,9 @@ jobs:
     permissions:
       contents: read
       packages: write
-    # GitHub-hosted jobs are capped at 6 h. ccache lives in a BuildKit cache
-    # mount that is round-tripped through the Actions cache, so rebuilds of the
-    # same or a nearby commit are much faster than the cold build. If a cold
-    # build ever exceeds the cap, run this job on a self-hosted runner. There is
-    # deliberately no BuildKit layer cache (type=gha): it would compete with the
-    # ccache entry for the repo's 10 GB Actions cache and could evict it.
+    # GitHub-hosted jobs are capped at 6 h; a cold build takes ~2 h 15 min. ccache
+    # lives in a BuildKit cache mount, seeded from and saved to the `ccache` image
+    # (the registry is shared by all branches, unlike the Actions cache).
     timeout-minutes: 350
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -122,28 +134,23 @@ jobs:
           df -h /
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        if: needs.meta.outputs.push == 'true'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # Declared before the cache dance so its post step (save) runs after the
-      # dance's post step (extract from BuildKit).
-      - name: ccache (Actions cache)
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ccache-mount
-          key: kicad-ccache-${{ needs.meta.outputs.commit }}-${{ github.run_id }}
-          restore-keys: |
-            kicad-ccache-${{ needs.meta.outputs.commit }}-
-            kicad-ccache-
-      - name: Inject ccache into BuildKit
-        uses: reproducible-containers/buildkit-cache-dance@5422eac04292c961a382e0f584ea0f03ad9da723 # v3.4.0
-        with:
-          dockerfile: docker/kicad-base/Dockerfile
-          cache-map: '{"ccache-mount": "/ccache"}'
+      - name: Seed ccache from the registry
+        run: |
+          rc=0; scripts/kicad-base-image.sh label "$IMAGE:ccache" >/dev/null || rc=$?
+          if [ "$rc" = 1 ]; then echo "no ccache image yet: cold build"; exit 0; fi
+          [ "$rc" = 0 ] || { echo "::warning::ccache image not readable: cold build"; exit 0; }
+          # Same cache id (/ccache) as the build stage's mount; the result stays in the builder.
+          docker buildx build --progress=plain - <<EOF
+          FROM debian:trixie
+          RUN --mount=type=bind,from=$IMAGE:ccache,source=/ccache,target=/seed \
+              --mount=type=cache,target=/ccache \
+              cp -a /seed/. /ccache/ && du -sh /ccache
+          EOF
       - name: Build
-        id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: docker/kicad-base
@@ -156,25 +163,68 @@ jobs:
           push: false
           provenance: false
           tags: |
+            ${{ env.IMAGE }}:${{ needs.meta.outputs.rtag }}
             ${{ env.IMAGE }}:${{ needs.meta.outputs.commit }}
             ${{ env.IMAGE }}:${{ needs.meta.outputs.short }}
       - name: Image size
-        run: docker image inspect "$IMAGE:${{ needs.meta.outputs.commit }}" --format '{{.Size}}' | numfmt --to=iec
+        run: |
+          docker image inspect "$IMAGE:${{ needs.meta.outputs.rtag }}" --format '{{.Size}}' | numfmt --to=iec
+          docker history "$IMAGE:${{ needs.meta.outputs.rtag }}" --format '{{.Size}}\t{{.CreatedBy}}' | cut -c1-100
       - name: Smoke (built image, before push)
-        run: scripts/kicad-base-smoke.sh "$IMAGE:${{ needs.meta.outputs.commit }}"
-      - name: Push
-        if: needs.meta.outputs.push == 'true'
+        run: scripts/kicad-base-smoke.sh "$IMAGE:${{ needs.meta.outputs.rtag }}"
+      - name: Push the recipe-pinned tag
+        if: needs.meta.outputs.push_rtag == 'true'
+        run: docker push "$IMAGE:${{ needs.meta.outputs.rtag }}"
+      - name: Push <commit> and <short>
+        if: needs.meta.outputs.push_commit == 'true'
         run: |
           docker push "$IMAGE:${{ needs.meta.outputs.commit }}"
           docker push "$IMAGE:${{ needs.meta.outputs.short }}"
+      - name: Save ccache to the registry
+        if: needs.meta.outputs.push_rtag == 'true' || needs.meta.outputs.push_commit == 'true'
+        run: |
+          # BUST: never reuse a cached export of an older cache state.
+          docker buildx build --progress=plain --build-arg BUST="${{ github.run_id }}-${{ github.run_attempt }}" \
+            --output "type=image,name=$IMAGE:ccache,push=true" - <<EOF
+          FROM debian:trixie AS export
+          ARG BUST
+          RUN --mount=type=cache,target=/ccache echo "\$BUST" && cp -a /ccache /export && du -sh /export
+          FROM scratch
+          LABEL org.opencontainers.image.source="https://github.com/peterus/copperchat" \
+                org.opencontainers.image.description="ccache of the kicad-base build (CI only)"
+          COPY --from=export /export /ccache
+          EOF
+
+  promote:
+    needs: meta
+    if: needs.meta.outputs.promote == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Point <commit> and <short> at the recipe-pinned image
+        run: |
+          docker buildx imagetools create \
+            -t "$IMAGE:${{ needs.meta.outputs.commit }}" -t "$IMAGE:${{ needs.meta.outputs.short }}" \
+            "$IMAGE:${{ needs.meta.outputs.rtag }}"
 
   smoke:
-    needs: [meta, build]
-    # The published image: after a push, or when no build was needed.
+    needs: [meta, build, promote]
+    # The published image: after a push or a promotion, or when nothing had to be built.
     if: >-
-      always() && needs.meta.result == 'success' &&
-      (needs.build.result == 'skipped' || (needs.build.result == 'success' && needs.meta.outputs.push == 'true'))
+      always() && needs.meta.result == 'success' && needs.promote.result != 'failure' &&
+      (needs.build.result == 'skipped' || (needs.build.result == 'success' && needs.meta.outputs.push_rtag == 'true'))
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+      actions: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -182,5 +232,26 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - run: docker pull "$IMAGE:${{ needs.meta.outputs.commit }}"
-      - run: scripts/kicad-base-smoke.sh "$IMAGE:${{ needs.meta.outputs.commit }}"
+      - name: Smoke the image CI resolves for this recipe
+        run: |
+          ref="$(scripts/kicad-base-image.sh resolve "${{ needs.meta.outputs.commit }}")"
+          echo "resolved: $ref"
+          docker pull "$ref"
+          scripts/kicad-base-smoke.sh "$ref"
+      - name: On main, <commit> must carry this recipe
+        if: github.ref == 'refs/heads/main'
+        run: |
+          published="$(scripts/kicad-base-image.sh label "$IMAGE:${{ needs.meta.outputs.commit }}")"
+          [ "$published" = "${{ needs.meta.outputs.recipe }}" ] \
+            || { echo "<commit> tag has recipe '$published', expected ${{ needs.meta.outputs.recipe }}"; exit 1; }
+      # ci.yml's base-dependent jobs fail while a new recipe is still being built.
+      - name: Re-run this commit's failed CI jobs
+        if: needs.meta.outputs.push_rtag == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          gh run list -R "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$SHA" --json databaseId,status,conclusion \
+            -q '.[] | select(.status == "completed" and .conclusion == "failure") | .databaseId' \
+          | while read -r id; do echo "re-running CI run $id"; gh run rerun "$id" --failed -R "$GITHUB_REPOSITORY"; done

@@ -2,8 +2,11 @@
 #   docker build -f docker/app/Dockerfile \
 #     --build-arg KICAD_COMMIT=$(cat docker/kicad-base/KICAD_COMMIT) -t copperchat:dev .
 # Layers: KiCad base image (KiCad 11 from source, user copperchat uid 1000)
-#         + Python backend (uv, /app/backend/.venv) + built frontend (/app/frontend/dist).
+#         + Python backend (/app/backend/.venv, uv only at build time) + built frontend (/app/frontend/dist).
 ARG KICAD_COMMIT
+# The base image; CI overrides it with the recipe-pinned tag a pull request built
+# (ghcr.io/peterus/copperchat-kicad-base:<commit>-r<recipe>, see kicad-base.yml).
+ARG KICAD_BASE=ghcr.io/peterus/copperchat-kicad-base:${KICAD_COMMIT}
 
 FROM node:22-bookworm-slim AS frontend
 WORKDIR /src/frontend
@@ -15,7 +18,7 @@ RUN npm run build
 
 FROM ghcr.io/astral-sh/uv:0.11 AS uv
 
-FROM ghcr.io/peterus/copperchat-kicad-base:${KICAD_COMMIT}
+FROM ${KICAD_BASE}
 ARG KICAD_COMMIT
 LABEL org.opencontainers.image.source="https://github.com/peterus/copperchat" \
       org.opencontainers.image.licenses="GPL-3.0-only" \
@@ -28,7 +31,6 @@ USER root
 RUN apt-get update \
  && apt-get install -y --no-install-recommends poppler-utils \
  && rm -rf /var/lib/apt/lists/*
-COPY --from=uv /uv /usr/local/bin/uv
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON=/usr/bin/python3 \
@@ -44,9 +46,12 @@ ENV UV_COMPILE_BYTECODE=1 \
 WORKDIR /app/backend
 # Dependencies first (cached unless the lock changes); kicad-python comes from its pinned git revision.
 COPY backend/pyproject.toml backend/uv.lock backend/.python-version backend/README.md ./
-RUN uv sync --locked --no-dev --no-install-project
+# uv is only mounted for the two sync steps; it is not needed at runtime (53 MB).
+RUN --mount=from=uv,source=/uv,target=/usr/local/bin/uv \
+    uv sync --locked --no-dev --no-install-project
 COPY backend/src ./src
-RUN uv sync --locked --no-dev --no-editable \
+RUN --mount=from=uv,source=/uv,target=/usr/local/bin/uv \
+    uv sync --locked --no-dev --no-editable \
  && python -c "import copperchat.web.app, kipy.schematic, claude_agent_sdk, pywebpush"
 COPY --from=frontend /src/frontend/dist /app/frontend/dist
 # /app stays root-owned (the runtime user cannot alter code, venv or the service worker);

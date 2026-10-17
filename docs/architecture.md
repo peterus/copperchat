@@ -11,8 +11,14 @@ the phase plans are in `docs/superpowers/plans/`.
   commit in `docker/kicad-base/KICAD_COMMIT`, plus `kicad-python` (kipy) in `/opt/venv`,
   runtime user `copperchat` (uid 1000). Built by `.github/workflows/kicad-base.yml`.
   `docker/kicad-base/SUPPORTED_COMMITS` lists every base tag CI tests against.
+  Headless and slim: stripped binaries, no docs/man pages/translations, no Mesa GL drivers
+  (`docker/kicad-base/dpkg-slim.cfg`), and only the demos the tests use (`ecc83`,
+  `complex_hierarchy`, the `jetson-agx-thor-baseboard` design rules). Every build is also
+  tagged `<commit>-r<recipe>` (`scripts/kicad-base-image.sh`): a pull request that changes
+  the recipe publishes and tests under that tag, CI resolves the tag for the current
+  recipe, and main promotes it to `<commit>` without rebuilding.
 - `ghcr.io/peterus/copperchat:<version>` — `docker/app/Dockerfile`: base image + Python
-  backend (uv, `/app/backend/.venv`) + built frontend (`/app/frontend/dist`). Built and
+  backend (`/app/backend/.venv`, synced with uv at build time; uv itself is not shipped) + built frontend (`/app/frontend/dist`). Built and
   pushed by `.github/workflows/release.yml` on tags `v<semver>` (`:latest` for
   non-prerelease versions). Runs `python -m copperchat` as `copperchat` (uid 1000).
 - `docker-compose.yml` — the app plus an optional `cloudflared` service (profile `tunnel`),
