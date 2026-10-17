@@ -34,3 +34,32 @@ def test_visibility_frames_reach_the_registry(make_settings: Callable[..., Setti
             assert registry.any_visible() is True
         # the socket closed while visible: it no longer suppresses pushes
         assert registry.any_visible() is False
+
+
+def test_parked_rate_limit_rearms_reopen_push_after_restart(
+    make_settings: Callable[..., Settings],
+) -> None:
+    import asyncio
+    from datetime import UTC, datetime, timedelta
+
+    from copperchat.db import Database
+    from copperchat.db.repos.agent_state import RateLimitRepo
+
+    settings = make_settings(dev_fake_agent=True)
+    (settings.projects_root / "demo").mkdir()
+    (settings.projects_root / "demo" / "demo.kicad_pro").write_text("")
+    pid = project_id_for("demo/demo.kicad_pro")
+    resets_at = datetime.now(UTC) + timedelta(hours=1)
+
+    async def park() -> None:  # state left behind by a previous process
+        db = await Database.open(settings.data_dir / "copperchat.db")
+        try:
+            await RateLimitRepo(db).set(pid, resets_at)
+        finally:
+            await db.close()
+
+    asyncio.run(park())
+    with TestClient(create_app(settings)) as c:
+        notifier: Any = c.app.state.push.notifier  # type: ignore[attr-defined]
+        assert set(notifier._timers) == {pid}
+        assert not notifier._timers[pid].done()

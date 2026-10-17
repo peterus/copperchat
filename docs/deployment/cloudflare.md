@@ -26,8 +26,9 @@ trusts only that address for `X-Forwarded-For`, so the login rate limit sees the
 address. If the range clashes with a network on your host, set `COPPERCHAT_SUBNET` and
 `CLOUDFLARED_IP` in `.env`.
 
-You can drop the published port (`ports:` in `docker-compose.yml`) when you only use the
-tunnel.
+When you only use the tunnel, set `COPPERCHAT_BIND=127.0.0.1` in `.env`: the plain-HTTP
+port is then reachable from this machine only, so nobody on your network can bypass
+Cloudflare Access (Docker's published ports bypass host firewalls such as ufw).
 
 ## 2. Protect it with Cloudflare Access
 

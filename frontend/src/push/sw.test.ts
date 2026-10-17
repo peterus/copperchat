@@ -74,4 +74,11 @@ describe('sw.js', () => {
     await fire(handlers.notificationclick, { notification: { close: vi.fn(), data: { url: 'https://evil.example/' } } });
     expect(self.clients.openWindow).toHaveBeenCalledWith('/');
   });
+
+  it('opens a new window when navigating an uncontrolled window fails', async () => {
+    const { handlers, self, client } = loadSw();
+    client.navigate.mockRejectedValue(new TypeError('not controlled'));
+    await fire(handlers.notificationclick, { notification: { close: vi.fn(), data: { url: '/p/a1b2c3d4e5f6' } } });
+    expect(self.clients.openWindow).toHaveBeenCalledWith('/p/a1b2c3d4e5f6');
+  });
 });

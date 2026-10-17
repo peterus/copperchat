@@ -76,8 +76,9 @@ export async function subscribePush(): Promise<void> {
 export async function unsubscribePush(): Promise<void> {
   const sub = await currentSubscription();
   if (!sub) return;
-  await sub.unsubscribe();
+  // Server first: if the DELETE fails, the device stays subscribed and the UI stays truthful.
   await apiDelete('/push/subscribe', { endpoint: sub.endpoint });
+  await sub.unsubscribe();
 }
 
 /**

@@ -45,8 +45,10 @@ COPY backend/src ./src
 RUN uv sync --locked --no-dev --no-editable \
  && python -c "import copperchat.web.app, kipy.schematic, claude_agent_sdk, pywebpush"
 COPY --from=frontend /src/frontend/dist /app/frontend/dist
+# /app stays root-owned (the runtime user cannot alter code, venv or the service worker);
+# only the two mounts are the app's to write.
 RUN mkdir -p /data /projects \
- && chown -R copperchat:copperchat /app /data /projects
+ && chown copperchat:copperchat /data /projects
 USER copperchat
 WORKDIR /app
 EXPOSE 8080

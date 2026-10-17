@@ -94,4 +94,12 @@ describe('push helpers', () => {
     vi.stubGlobal('navigator', { userAgent: 'test' });
     await expect(forgetPushSubscription()).resolves.toBeUndefined();
   });
+
+  it('keeps the browser subscription when the server DELETE fails', async () => {
+    const sub = fakeSub();
+    stubBrowser(sub);
+    vi.spyOn(http, 'apiDelete').mockRejectedValue(new Error('network down'));
+    await expect(unsubscribePush()).rejects.toThrow(/network down/);
+    expect(sub.unsubscribe).not.toHaveBeenCalled();
+  });
 });

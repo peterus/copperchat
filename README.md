@@ -88,7 +88,7 @@ notifications in Settings › Notifications.
 |---|---|
 | `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` | model credentials (one required) |
 | `ADMIN_USERNAME`, `ADMIN_PASSWORD` | app login (always on; the password seeds the hash on first start) |
-| `COPPERCHAT_PORT` | host port (default 8080) |
+| `COPPERCHAT_PORT`, `COPPERCHAT_BIND` | host port (default 8080) and bind address (default `0.0.0.0`; `127.0.0.1` = this machine only) |
 | `PUBLIC_BASE_URL` | public HTTPS URL (WebSocket origin check behind a proxy) |
 | `VAPID_SUBJECT` | push contact, e.g. `mailto:you@example.com` |
 | `CLOUDFLARE_TUNNEL_TOKEN` | optional `cloudflared` service (`--profile tunnel`) |
