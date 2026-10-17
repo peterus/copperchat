@@ -1,0 +1,67 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+:root[data-theme="light"] {
+  --cc-bg: #ffffff;
+  --cc-surface: #f6f7f9;
+  --cc-surface-2: #eceef2;
+  --cc-fg: #16181d;
+  --cc-muted: #5b6270;
+  --cc-border: #d9dde4;
+  --cc-accent: #b8641f;
+  --cc-accent-fg: #ffffff;
+  --cc-danger: #c0392b;
+  --cc-warning: #9a6412;
+  --cc-success: #2f855a;
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --cc-bg: #0f1115;
+  --cc-surface: #171a21;
+  --cc-surface-2: #20242d;
+  --cc-fg: #e6e8ee;
+  --cc-muted: #9aa2b1;
+  --cc-border: #2c313c;
+  --cc-accent: #e08a3c;
+  --cc-accent-fg: #14161a;
+  --cc-danger: #ef6b5b;
+  --cc-warning: #e2b053;
+  --cc-success: #5fbf8a;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-bg: var(--cc-bg);
+  --color-surface: var(--cc-surface);
+  --color-surface-2: var(--cc-surface-2);
+  --color-fg: var(--cc-fg);
+  --color-muted: var(--cc-muted);
+  --color-border: var(--cc-border);
+  --color-accent: var(--cc-accent);
+  --color-accent-fg: var(--cc-accent-fg);
+  --color-danger: var(--cc-danger);
+  --color-warning: var(--cc-warning);
+  --color-success: var(--cc-success);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-bg text-fg antialiased;
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+.cc-markdown p { margin: 0.25rem 0; }
+.cc-markdown pre { @apply bg-surface-2 rounded p-2 overflow-x-auto text-sm; }
+.cc-markdown code { @apply font-mono text-[0.9em]; }
+.cc-markdown ul { @apply list-disc pl-5; }
+.cc-markdown ol { @apply list-decimal pl-5; }
+.cc-markdown a { @apply text-accent underline; }
+.cc-markdown table { @apply border-collapse text-sm; }
+.cc-markdown th, .cc-markdown td { @apply border border-border px-2 py-1; }
