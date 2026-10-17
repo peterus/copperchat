@@ -1,4 +1,5 @@
 import { memo, useCallback, useState } from 'react';
+import { RestoreOffer } from '@/components/history/RestoreOffer';
 import type { MessageDTO } from '@/protocol/frames';
 import { Lightbox } from './Lightbox';
 import { Markdown } from './Markdown';
@@ -154,6 +155,13 @@ export const MessageItem = memo(function MessageItem({ message: m }: { message: 
         </div>
       );
     case 'notice':
-      return <p className="text-center text-xs text-muted">{m.content}</p>;
+      return (
+        <div className="text-center text-xs text-muted">
+          {m.content}
+          {m.metadata.action === 'restore' && typeof m.metadata.snapshotId === 'string' && (
+            <RestoreOffer projectId={m.projectId} snapshotId={m.metadata.snapshotId} />
+          )}
+        </div>
+      );
   }
 });

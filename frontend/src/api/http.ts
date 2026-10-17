@@ -42,6 +42,13 @@ function errorMessage(status: number, body: unknown): string {
     const detail = (body as { detail: unknown }).detail;
     if (typeof detail === 'string') return detail;
   }
+  // CopperChatError responses (backend install_error_handlers): {error: {code, message}}.
+  if (body && typeof body === 'object' && 'error' in body) {
+    const error = (body as { error: unknown }).error;
+    if (error && typeof error === 'object' && typeof (error as { message?: unknown }).message === 'string') {
+      return (error as { message: string }).message;
+    }
+  }
   if (typeof body === 'string' && body.length > 0) return body;
   return `HTTP ${status}`;
 }

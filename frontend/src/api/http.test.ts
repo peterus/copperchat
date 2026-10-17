@@ -30,6 +30,15 @@ describe('http client', () => {
     await expect(apiDelete('/x')).resolves.toBeUndefined();
   });
 
+  it('throws ApiError with the message of a CopperChat error body', async () => {
+    const body = { error: { code: 'read_only', message: 'project is open in KiCad' } };
+    vi.stubGlobal('fetch', vi.fn(async () => respond(409, body)));
+    const err = await apiPost('/projects/p/history/x/restore', {}).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).message).toBe('project is open in KiCad');
+    expect((err as ApiError).detail).toEqual(body);
+  });
+
   it('throws ApiError with FastAPI detail text', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => respond(400, { detail: 'invalid project id' })));
     const err = await apiGet('/projects/..').catch((e: unknown) => e);
