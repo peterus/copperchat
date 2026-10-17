@@ -50,11 +50,24 @@ and behind another reverse proxy pass `Host`/`X-Forwarded-Host` through.
 Production: `npm run build` and point the backend's `FRONTEND_DIST` at `frontend/dist`; the
 backend then serves the app itself on port 8080.
 
-## End-to-end smoke (local only, not in CI)
+## End-to-end tests (Playwright)
 
 ```bash
 npx playwright install chromium   # once
 npm run e2e                       # starts its own Vite on E2E_PORT (default 5199), API mocked
+```
+
+`e2e/viewer.spec.ts` drives the real vendored KiCanvas bundle on the backend's KiCad 11
+fixtures (desktop and phone emulation: render, Find, tap → `@REF`, sheet tree, pinch,
+double tap, large-board guard). CI runs the mocked suites in the `frontend` job.
+
+## KiCanvas (viewer)
+
+`public/vendor/kicanvas/` holds the committed bundle; `vendor-patches/kicanvas/README.md`
+explains each patch. Rebuild after changing a patch or the pin:
+
+```bash
+./scripts/vendor-kicanvas.sh && ./scripts/check-kicanvas.sh
 ```
 
 Against a running backend + dev server (the opt-in test needs an openable project):

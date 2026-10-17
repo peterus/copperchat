@@ -125,6 +125,7 @@ export function Viewer({ projectId }: { projectId: string }) {
               projectId={projectId}
               doc={t.doc}
               files={files[t.doc]}
+              exists={t.doc === 'sch' ? (current?.hasSch ?? false) : (current?.hasPcb ?? false)}
               bytes={files[t.doc].reduce((sum, f) => sum + (bytes[f] ?? 0), 0)}
               layers={v.layers}
               rev={v.revs[t.doc]}

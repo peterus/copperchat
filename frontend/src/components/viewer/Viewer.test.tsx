@@ -155,6 +155,13 @@ describe('Viewer', () => {
     expect(screen.getByText('This project has no board.')).toBeInTheDocument();
   });
 
+  it('says the view could not be prepared when the board exists but has no snapshot', () => {
+    openProject({ viewFiles: { sch: ['demo.kicad_sch'], pcb: [] } });
+    renderViewer();
+    fireEvent.click(screen.getByRole('tab', { name: 'PCB' }));
+    expect(screen.getByText(/interactive board view could not be prepared/)).toBeInTheDocument();
+  });
+
   describe('large-board guard', () => {
     const big = { viewBytes: { 'demo.kicad_sch': 50_000, 'power.kicad_sch': 20_000, 'demo.kicad_pcb': 85_500_000 } };
 

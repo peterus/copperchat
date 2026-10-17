@@ -13,8 +13,10 @@ const DOC_LABEL = { sch: 'schematic', pcb: 'board' } as const;
  * the agent-view PNG is shown with an explicit "load interactive view anyway" (an 85 MB board
  * crashed an iPhone Safari tab).
  */
-export function KicadDocView(props: KicadPaneProps & { bytes: number; layers: readonly PcbLayer[] }) {
-  const { bytes, layers, ...pane } = props;
+export function KicadDocView(
+  props: KicadPaneProps & { bytes: number; layers: readonly PcbLayer[]; /** The project has this document. */ exists: boolean },
+) {
+  const { bytes, layers, exists, ...pane } = props;
   const mobile = useMediaQuery('(pointer: coarse)');
   const limits = useViewerPrefs((s) => s.limits);
   const [override, setOverride] = useState(false);
@@ -22,7 +24,9 @@ export function KicadDocView(props: KicadPaneProps & { bytes: number; layers: re
   if (pane.files.length === 0) {
     return (
       <div className="flex h-full items-center justify-center bg-surface p-4 text-center text-sm text-muted">
-        This project has no {DOC_LABEL[pane.doc]}.
+        {exists
+          ? `The interactive ${DOC_LABEL[pane.doc]} view could not be prepared when the project was opened. The agent view still works; reopening the project retries.`
+          : `This project has no ${DOC_LABEL[pane.doc]}.`}
       </div>
     );
   }
