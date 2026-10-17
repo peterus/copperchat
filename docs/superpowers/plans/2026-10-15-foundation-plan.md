@@ -329,6 +329,7 @@ Tables and owning phase:
 | `history_snapshots` | 7 | `id TEXT PK, project_id TEXT, run_id TEXT, created_at TEXT, label TEXT, files TEXT (JSON)` |
 | `document_hashes` | 7 | `project_id TEXT, rel_path TEXT, sha256 TEXT, PRIMARY KEY(project_id, rel_path)` |
 | `skill_prefs` | 8 | `project_id TEXT, skill_name TEXT, enabled INTEGER, PRIMARY KEY(project_id, skill_name)` |
+| `uploads` | 8 | `id TEXT PK, project_id TEXT, kind TEXT ('image'\|'pdf'), name TEXT, rel_path TEXT, mime TEXT, size INTEGER, created_at TEXT` |
 | `push_subscriptions` | 9 | `id INTEGER PK, endpoint TEXT UNIQUE, p256dh TEXT, auth TEXT, created_at TEXT` |
 
 ### C3. Projects — `copperchat.projects` (Phase 3)
@@ -690,7 +691,37 @@ These extend C1–C8 and are equally binding.
   `GET /projects/{id}/history/{snapshotId}/preview` → PNG; errors
   `InvalidSnapshotId` (400), `SnapshotNotFound` (404), `AgentBusy` (409);
   notice `action` values `restore`, `restored`, `external-change`.
-- **Phase 8:** table `uploads`; `copperchat.agent.attachments.{attachment_exists, build_user_content}`;
+- **Phase 8 (as built, owner decision 8 — supersedes the next bullet where they differ):**
+  main agent `tools=["Skill"]` (`[]` without enabled skills), no `agents=`, guard
+  `copperchat.agent.guards.make_main_guard(allowed, *, on_allowed=None)` (registered MCP
+  tools + `Skill`; replaces `make_tool_guard` in `build_options`, which stays for tests);
+  `build_options(..., skills: SkillBundle | None = None, on_tool_allowed=None)`.
+  `research_part` = registry provider `copperchat.research.specs` (input `mpn`, `query`
+  required, `attachment_paths`); it calls `ToolContext.research` (**C5 addition**:
+  `ToolContext.research: ResearchService | None`, `ToolResult.text: str | None` = plain-text
+  result instead of JSON `data`). `copperchat.research.runner.ResearchRunner` (one per
+  burst, created by `SdkStreamingBackend.start`): the main guard's `on_allowed` records the
+  `research_part` `tool_use_id`; the runner runs a separate `ClaudeSDKClient` query
+  (`researcher_options`: built-ins WebSearch/WebFetch/Read/Write/Edit/Glob, MCP server
+  `parts` with `download_datasheet` + `check_notes`, `allowed_tools=[]`,
+  `setting_sources=[]`, `max_buffer_size` 64 MiB, guard `make_researcher_guard`) and
+  forwards its messages as `parent_tool_use_id`-tagged events (`agent.sdk_messages.subagent_events`)
+  through the backend's merged event queue (rows are held back until their `research_part`
+  ToolUse was yielded); its `ResultMessage` totals are added to the turn's `Usage`;
+  `backend.interrupt()` cancels running research queries. Researcher guard: Write/Edit only
+  `docs/parts/<valid MPN>/<name>.md|.txt` (never `_uploads/`, never a `user_edited: true`
+  notes.md), Read/Glob only `docs/parts/` + `.kicad-agent/uploads/`, WebFetch and downloads
+  only to public hosts (`research.net.url_refusal`; downloads also check the peer address
+  and every redirect). `copperchat.research.agent.researcher_prompt(notes_skill)` replaces
+  `researcher_definition` (no `AgentDefinition`); no `research.wiring`, no
+  `make_session_guard`/`SUBAGENT_ID_FIELD`. `RunEngine.attachment_resolver` is async
+  `(AttachmentRef) -> AttachmentRef | None` (stored kind/name win), wired by `AgentRuntime`
+  to `agent.attachments.resolve_attachment`; `default_backend_factory(settings, specs, db)`
+  (X5). Skills passed to the CLI keep only `name`/`description` front matter
+  (`skills.assembly.main_skill_text`); `EffectiveSkill.agent` / `GET /skills` field `agent`
+  mark agent-scoped skills (`part-notes`). `check_notes(text, *, structure_only, mpn)`.
+  Live check (2026-10-17): plugin skills are discovered with `setting_sources=[]`.
+- **Phase 8 (plan):** table `uploads`; `copperchat.agent.attachments.{attachment_exists, build_user_content}`;
   `copperchat.skills.assembly.{SkillBundle(+researcher_skill), assemble_skills, apply_skills}`;
   `copperchat.research.agent.{RESEARCHER_NAME, researcher_definition}`;
   `copperchat.research.notes.{REQUIRED_SECTIONS, check_notes, validate_notes}`;
