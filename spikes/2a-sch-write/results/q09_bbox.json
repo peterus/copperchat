@@ -1,0 +1,229 @@
+{
+  "question": "q09_bbox",
+  "checks": [
+    {
+      "name": "page_size_set_a3",
+      "ok": true,
+      "evidence": "page_size: PS_A3\norientation: PO_LANDSCAPE\n"
+    },
+    {
+      "name": "body_style_set_via_update",
+      "ok": true,
+      "evidence": "{'63c99733-16a6-489d-8492-fa5c083460dd': 2}"
+    },
+    {
+      "name": "cli_png_export",
+      "ok": true,
+      "evidence": "(0, ['blank.png'], '')"
+    },
+    {
+      "name": "api_bbox_matches_plot_within_0_6mm",
+      "ok": false,
+      "evidence": "{'worst_mm': 1.933, 'over_tolerance': {'Amplifier_Operational:LM358 u3 0': {'api': (27.46, 92.38, 27.46, 107.62), 'plot': (25.527, 92.287, 28.152, 107.696), 'max_dev_mm': 1.933}, 'Connector_Generic:Conn_01x04 u1 180': {'api': (148.73, 93.65, 155.08, 103.81), 'plot': (148.59, 92.964, 155.152, 103.971), 'max_dev_mm': 0.686}, '74xx:74LS00 u1 0 bs2': {'api': (262.38, 96.19, 277.62, 103.81), 'plot': (262.297, 95.589, 277.707, 103.971), 'max_dev_mm': 0.601}}}"
+    },
+    {
+      "name": "api_bbox_plus_2mm_margin_contains_plot",
+      "ok": true,
+      "evidence": "13 symbols"
+    }
+  ],
+  "notes": {
+    "bbox_api_vs_plot": {
+      "Device:R u1 0": {
+        "api": [
+          28.984,
+          26.19,
+          31.016,
+          33.81
+        ],
+        "plot": [
+          28.829,
+          26.12,
+          31.157,
+          33.909
+        ],
+        "max_dev_mm": 0.155
+      },
+      "Device:C_Polarized u1 90": {
+        "api": [
+          86.19,
+          27.714,
+          93.81,
+          32.286
+        ],
+        "plot": [
+          86.106,
+          27.644,
+          93.895,
+          32.385
+        ],
+        "max_dev_mm": 0.099
+      },
+      "Device:D u1 0x": {
+        "api": [
+          146.19,
+          28.73,
+          153.81,
+          31.27
+        ],
+        "plot": [
+          146.092,
+          28.575,
+          153.882,
+          31.411
+        ],
+        "max_dev_mm": 0.155
+      },
+      "Transistor_BJT:BC547 u1 0y": {
+        "api": [
+          205.911,
+          24.92,
+          215.08,
+          35.08
+        ],
+        "plot": [
+          205.571,
+          24.85,
+          215.18,
+          35.179
+        ],
+        "max_dev_mm": 0.34
+      },
+      "Amplifier_Operational:LM358 u1 0": {
+        "api": [
+          262.38,
+          24.92,
+          277.62,
+          35.08
+        ],
+        "plot": [
+          262.297,
+          24.765,
+          277.707,
+          35.221
+        ],
+        "max_dev_mm": 0.155
+      },
+      "Amplifier_Operational:LM358 u2 270x": {
+        "api": [
+          324.92,
+          22.38,
+          335.08,
+          37.62
+        ],
+        "plot": [
+          324.781,
+          22.31,
+          335.238,
+          37.719
+        ],
+        "max_dev_mm": 0.158
+      },
+      "Amplifier_Operational:LM358 u3 0": {
+        "api": [
+          27.46,
+          92.38,
+          27.46,
+          107.62
+        ],
+        "plot": [
+          25.527,
+          92.287,
+          28.152,
+          107.696
+        ],
+        "max_dev_mm": 1.933
+      },
+      "Regulator_Linear:AMS1117-3.3 u1 0": {
+        "api": [
+          82.38,
+          98.095,
+          97.62,
+          107.62
+        ],
+        "plot": [
+          82.296,
+          97.959,
+          97.705,
+          107.696
+        ],
+        "max_dev_mm": 0.136
+      },
+      "Connector_Generic:Conn_01x04 u1 180": {
+        "api": [
+          148.73,
+          93.65,
+          155.08,
+          103.81
+        ],
+        "plot": [
+          148.59,
+          92.964,
+          155.152,
+          103.971
+        ],
+        "max_dev_mm": 0.686
+      },
+      "MCU_Microchip_ATmega:ATmega328-P u1 0": {
+        "api": [
+          194.76,
+          61.9,
+          225.24,
+          138.1
+        ],
+        "plot": [
+          194.691,
+          61.807,
+          225.34,
+          138.176
+        ],
+        "max_dev_mm": 0.1
+      },
+      "74xx:74LS00 u1 0 bs2": {
+        "api": [
+          262.38,
+          96.19,
+          277.62,
+          103.81
+        ],
+        "plot": [
+          262.297,
+          95.589,
+          277.707,
+          103.971
+        ],
+        "max_dev_mm": 0.601
+      },
+      "power:GND u1 0": {
+        "api": [
+          328.73,
+          100.0,
+          331.27,
+          102.54
+        ],
+        "plot": [
+          328.634,
+          99.907,
+          331.343,
+          102.616
+        ],
+        "max_dev_mm": 0.096
+      },
+      "ecc83-pp:ECC83 u1 90": {
+        "api": [
+          19.84,
+          164.92,
+          40.16,
+          177.62
+        ],
+        "plot": [
+          19.77,
+          164.846,
+          40.259,
+          177.715
+        ],
+        "max_dev_mm": 0.099
+      }
+    }
+  }
+}
