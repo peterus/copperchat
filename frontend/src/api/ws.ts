@@ -66,8 +66,17 @@ export function createWsClient(opts: WsClientOptions = {}): WsClient {
   let pongTimer: ReturnType<typeof setTimeout> | null = null;
   let visibilityInstalled = false;
 
+  /** One throwing listener must not starve the others (or abort the open flush / reconnect). */
+  function safeCall<T>(listener: (arg: T) => void, arg: T, what: string): void {
+    try {
+      listener(arg);
+    } catch (e) {
+      console.error(`[ws] ${what} listener failed`, e);
+    }
+  }
+
   const emitConnection = (state: ConnectionState) => {
-    for (const l of [...connListeners]) l(state);
+    for (const l of [...connListeners]) safeCall(l, state, 'connection');
   };
 
   function clearHeartbeat() {
@@ -164,7 +173,7 @@ export function createWsClient(opts: WsClientOptions = {}): WsClient {
         return;
       }
       if (parsed.data.type === 'pong' || parsed.data.type === 'ping') return;
-      for (const l of [...frameListeners]) l(parsed.data);
+      for (const l of [...frameListeners]) safeCall(l, parsed.data, 'frame');
     };
     ws.onclose = (event: CloseEvent) => handleClose(ws, event.code);
     ws.onerror = () => {

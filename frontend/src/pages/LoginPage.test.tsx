@@ -62,4 +62,18 @@ describe('login', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Too many failed sign-ins. Try again in 30 s.');
   });
+
+  it('redirects an already signed-in user away from /login', () => {
+    useAuth.setState({ status: 'authenticated', username: 'admin', error: null });
+    render(
+      <MemoryRouter initialEntries={['/login']}>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/" element={<p>home</p>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(screen.getByText('home')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Username')).toBeNull();
+  });
 });

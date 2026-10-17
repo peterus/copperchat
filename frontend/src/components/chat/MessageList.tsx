@@ -19,21 +19,33 @@ export function MessageList({ messages, hasMoreOlder, loadingOlder, onLoadOlder,
   const anchorRef = useRef<{ id: number; offset: number } | null>(null);
   const prevFirstIdRef = useRef<number | null>(null);
   const [stuck, setStuck] = useState(true);
+  const stuckRef = useRef(stuck);
+  stuckRef.current = stuck;
   const firstId = messages[0]?.id ?? null;
 
-  // Anchor = topmost (partially) visible message and its offset from the scroller top.
+  // Anchor = topmost (partially) visible message and its offset from the scroller top. Runs on
+  // every scroll event (a prepend may commit before the next frame, so it cannot be deferred):
+  // rows are stacked in id order, so a binary search needs only O(log n) layout reads.
   const captureAnchor = useCallback(() => {
     const el = scrollerRef.current;
     if (!el) return;
     const top = el.getBoundingClientRect().top;
-    for (const node of el.querySelectorAll<HTMLElement>('[data-msg-id]')) {
+    const nodes = el.querySelectorAll<HTMLElement>('[data-msg-id]');
+    let lo = 0;
+    let hi = nodes.length;
+    let hit: { node: HTMLElement; top: number } | null = null;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      const node = nodes[mid]!;
       const r = node.getBoundingClientRect();
       if (r.bottom > top) {
-        anchorRef.current = { id: Number(node.dataset.msgId), offset: r.top - top };
-        return;
+        hit = { node, top: r.top };
+        hi = mid;
+      } else {
+        lo = mid + 1;
       }
     }
-    anchorRef.current = null;
+    anchorRef.current = hit ? { id: Number(hit.node.dataset.msgId), offset: hit.top - top } : null;
   }, []);
 
   useEffect(() => {
@@ -92,6 +104,18 @@ export function MessageList({ messages, hasMoreOlder, loadingOlder, onLoadOlder,
     const id = requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ block: 'end' }));
     return () => cancelAnimationFrame(id);
   }, [messages, stuck]);
+
+  // A hidden list (phone tab, collapsed sidebar: display none) cannot scroll; when it is shown
+  // again (or resized) while stuck, re-stick so rows that arrived meanwhile are in view.
+  useEffect(() => {
+    const el = scrollerRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => {
+      if (stuckRef.current && el.clientHeight > 0) bottomRef.current?.scrollIntoView({ block: 'end' });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   return (
     <div className="relative min-h-0 flex-1">

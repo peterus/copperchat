@@ -98,4 +98,21 @@ describe('Markdown images', () => {
     const { container } = render(<MessageItem message={m} />);
     expect(container.querySelector('img')?.getAttribute('src')).toBe(`/api/projects/${PID}/images/a.png`);
   });
+
+  it.each([
+    ['another API GET (uncached agent-view render)', `/api/projects/${PID}/agent-view?doc=pcb`],
+    ['an API path outside the image endpoints', '/api/auth/me'],
+    ['a dot segment', `/api/projects/${PID}/images/..`],
+    ['a blob url', 'blob:http://localhost/abc'],
+  ])('shows a placeholder for %s', (_label, url) => {
+    const m = row(92, { role: 'assistant', kind: 'text', content: `![v](${url})` });
+    const { container } = render(<MessageItem message={m} />);
+    expect(container.querySelector('img')).toBeNull();
+  });
+
+  it('renders stored agent renders', () => {
+    const m = row(93, { role: 'assistant', kind: 'text', content: `![r](/api/projects/${PID}/renders/pcb-top.png)` });
+    const { container } = render(<MessageItem message={m} />);
+    expect(container.querySelector('img')?.getAttribute('src')).toBe(`/api/projects/${PID}/renders/pcb-top.png`);
+  });
 });

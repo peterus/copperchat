@@ -10,8 +10,10 @@ import { ChatPanel } from './ChatPanel';
 let ws: FakeWsClient;
 let store: ChatStore;
 
+let server: FakeMessageServer;
+
 function setup(rows = [row(1, { content: 'Welcome to the board' }), row(2, { role: 'user', status: 'queued', content: 'later' })]) {
-  new FakeMessageServer(rows).install();
+  server = new FakeMessageServer(rows).install();
   store = createChatStore({ ws, fetchPage: fetchMessagesPage, newClientMessageId: () => 'c1' });
 }
 
@@ -97,5 +99,41 @@ describe('ChatPanel', () => {
     setup([]);
     renderPanel({ readOnly: true });
     expect(screen.getByText(/Read-only/)).toBeInTheDocument();
+  });
+
+  it('a failed initial load shows a Retry button that loads the history', async () => {
+    setup();
+    server.failNext = 1;
+    renderPanel();
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Could not load messages');
+    expect(screen.getByRole('textbox', { name: 'Message' })).toBeDisabled();
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Welcome to the board')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled();
+  });
+
+  it('a failed initial load is retried when the socket (re)opens', async () => {
+    setup();
+    server.failNext = 1;
+    renderPanel();
+    await screen.findByRole('alert');
+    act(() => ws.connect());
+    expect(await screen.findByText('Welcome to the board')).toBeInTheDocument();
+  });
+
+  it('an over-length message is refused locally: error shown, draft kept, nothing sent', async () => {
+    setup();
+    renderPanel();
+    await screen.findByText('Welcome to the board');
+    const box = screen.getByRole('textbox', { name: 'Message' });
+    const long = 'x'.repeat(100_001);
+    fireEvent.change(box, { target: { value: long } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    expect(ws.framesOfType('send')).toEqual([]);
+    expect(screen.getByRole('alert')).toHaveTextContent('Message not sent');
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+    expect(box).toHaveValue(long);
   });
 });

@@ -1,9 +1,13 @@
-import { useCallback, useState } from 'react';
+import { memo, useCallback, useState } from 'react';
 import type { MessageDTO } from '@/protocol/frames';
 import { Lightbox } from './Lightbox';
-import { isSafeImageUrl, Markdown } from './Markdown';
+import { Markdown } from './Markdown';
 
-/** Only same-origin API paths (backend gives `/api/projects/{id}/images/{name}`) or local blobs. */
+/**
+ * Metadata image urls come from the backend (`/api/projects/{id}/images/{name}`, engine._store_image),
+ * not from agent text: same-origin API paths or local blobs. Markdown images have a stricter rule.
+ */
+export const isSafeImageUrl = (u: string) => u.startsWith('/api/') || u.startsWith('blob:');
 
 /** Image urls of a row: `metadata.url` plus `metadata.images` (strings or `{url}`), foreign origins removed. */
 export function imageUrls(m: MessageDTO): string[] {
@@ -75,7 +79,8 @@ function oneLine(input: unknown): string {
   return s.length > 80 ? `${s.slice(0, 77)}…` : s;
 }
 
-export function MessageItem({ message: m }: { message: MessageDTO }) {
+/** Memoized: rows keep their identity in the store unless they change (see chat.ts patch()). */
+export const MessageItem = memo(function MessageItem({ message: m }: { message: MessageDTO }) {
   const streaming = m.status === 'streaming';
   switch (m.kind) {
     case 'text':
@@ -151,4 +156,4 @@ export function MessageItem({ message: m }: { message: MessageDTO }) {
     case 'notice':
       return <p className="text-center text-xs text-muted">{m.content}</p>;
   }
-}
+});

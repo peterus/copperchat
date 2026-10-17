@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { setMedia } from '@/test/media';
 import { registerPanel } from './panels';
 import { CHAT_WIDTH_KEY, PHONE_QUERY, PORTRAIT_TABLET_QUERY, ProjectLayout } from './ProjectLayout';
@@ -34,6 +34,22 @@ describe('ProjectLayout', () => {
     expect(localStorage.getItem(CHAT_WIDTH_KEY)).toBe('432');
     fireEvent.keyDown(divider, { key: 'ArrowRight' });
     expect(localStorage.getItem(CHAT_WIDTH_KEY)).toBe('400');
+  });
+
+  it('desktop: unavailable localStorage falls back to the default width and does not throw', () => {
+    const get = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new DOMException('denied', 'SecurityError');
+    });
+    const set = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('denied', 'SecurityError');
+    });
+    renderLayout();
+    const divider = screen.getByRole('separator', { name: 'Resize chat' });
+    expect(divider).toHaveAttribute('aria-valuenow', '420');
+    fireEvent.keyDown(divider, { key: 'ArrowLeft' });
+    expect(divider).toHaveAttribute('aria-valuenow', '452');
+    get.mockRestore();
+    set.mockRestore();
   });
 
   it('desktop: registered panels open as a sheet with {projectId}', () => {

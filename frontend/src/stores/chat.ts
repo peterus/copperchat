@@ -4,6 +4,7 @@ import { apiGet } from '@/api/http';
 import { wsClient, type ConnectionState, type WsClient } from '@/api/ws';
 import {
   AttachmentRef,
+  ClientFrame,
   MessagesPage,
   type MessageDeltaFrame,
   type MessageDTO,
@@ -57,7 +58,8 @@ export interface ChatState {
   chats: Readonly<Record<string, ProjectChat>>;
   open: (projectId: string) => Promise<void>;
   loadOlder: (projectId: string) => Promise<void>;
-  send: (projectId: string, text: string, attachments?: AttachmentRef[]) => void;
+  /** False (and lastError set) when the frame would be refused by the protocol; nothing is queued then. */
+  send: (projectId: string, text: string, attachments?: AttachmentRef[]) => boolean;
   cancelQueued: (projectId: string, messageId: number) => void;
   stop: (projectId: string) => void;
   heal: (projectId: string) => Promise<void>;
@@ -135,6 +137,22 @@ function applyDelta(m: MessageDTO, f: MessageDeltaFrame): MessageDTO {
   };
 }
 
+/**
+ * Rows of a baseline/heal page that are still streaming: the GET overlays the live content, but the
+ * deltas between the GET and the (re)subscribe are never replayed (replay only sends id > since).
+ * They become suspects and are re-healed once they reach a terminal status.
+ */
+function withStreamingSuspects(c: ProjectChat, page: MessageDTO[]): ProjectChat {
+  const streaming = page.filter((r) => r.id > 0 && r.status === 'streaming' && !c.suspectIds.includes(r.id));
+  if (streaming.length === 0) return c;
+  return { ...c, suspectIds: [...c.suspectIds, ...streaming.map((r) => r.id)] };
+}
+
+function frameIssue(frame: ClientFrame): string | null {
+  const parsed = ClientFrame.safeParse(frame);
+  return parsed.success ? null : parsed.error.issues.map((i) => i.message).join('; ');
+}
+
 function attachmentsOf(m: MessageDTO): AttachmentRef[] {
   const parsed = z.array(AttachmentRef).safeParse(m.metadata.attachments);
   return parsed.success ? parsed.data : [];
@@ -176,7 +194,18 @@ export function createChatStore(deps: ChatDeps) {
       if (!c) return;
       for (const m of c.messages) {
         if (m.id >= 0 || m.status === 'error' || m.clientMessageId === null) continue;
-        deps.ws.send({ type: 'send', projectId, clientMessageId: m.clientMessageId, text: m.content, attachments: attachmentsOf(m) });
+        try {
+          deps.ws.send({ type: 'send', projectId, clientMessageId: m.clientMessageId, text: m.content, attachments: attachmentsOf(m) });
+        } catch (e) {
+          // An unsendable row must not break every reconnect: mark it failed instead.
+          const error = `not sendable: ${errorText(e)}`;
+          patch(projectId, (cur) => ({
+            ...cur,
+            messages: cur.messages.map((x) =>
+              x.id === m.id ? { ...x, status: 'error' as const, metadata: { ...x.metadata, error } } : x,
+            ),
+          }));
+        }
       }
     }
 
@@ -215,7 +244,11 @@ export function createChatStore(deps: ChatDeps) {
 
     function onConnection(state: ConnectionState): void {
       for (const [projectId, chat] of Object.entries(get().chats)) {
-        if (!chat.loaded) continue; // an in-flight initial load subscribes itself with the right lastSeenId
+        if (!chat.loaded) {
+          // An in-flight initial load subscribes itself with the right lastSeenId; a failed one is retried.
+          if ((state === 'open' || state === 'resumed') && !opening.has(projectId)) void get().open(projectId);
+          continue;
+        }
         // The server re-sends run-started on subscribe while the run is still active, so
         // resetting here never hides a live run for longer than the replay.
         patch(projectId, markDisconnected);
@@ -288,7 +321,7 @@ export function createChatStore(deps: ChatDeps) {
         const page = await deps.fetchPage(projectId, { limit: PAGE_SIZE });
         if (gen !== generation) return;
         patch(projectId, (c) => {
-          const next = withRows(c, page.messages);
+          const next = withStreamingSuspects(withRows(c, page.messages), page.messages);
           return { ...next, loaded: true, hasMoreOlder: page.hasMore, oldestId: minServerId(next.messages), lastError: null };
         });
       } catch (e) {
@@ -304,7 +337,8 @@ export function createChatStore(deps: ChatDeps) {
         const page = await deps.fetchPage(projectId, { limit: PAGE_SIZE });
         if (gen !== generation) return;
         patch(projectId, (c) => {
-          const next = withRows(c, page.messages);
+          // Rows still streaming after the merge may have adopted DB text that in-flight deltas repeat.
+          const next = withStreamingSuspects(withRows(c, page.messages), page.messages);
           const settled = new Set(next.messages.filter((m) => TERMINAL_STATUSES.has(m.status)).map((m) => m.id));
           return {
             ...next,
@@ -357,8 +391,15 @@ export function createChatStore(deps: ChatDeps) {
       },
 
       send: (projectId, text, attachments = []) => {
-        if (!get().chats[projectId] || (text.trim() === '' && attachments.length === 0)) return;
+        if (!get().chats[projectId] || (text.trim() === '' && attachments.length === 0)) return false;
         const clientMessageId = newClientMessageId();
+        const frame: ClientFrame = { type: 'send', projectId, clientMessageId, text, attachments };
+        // Validate before the optimistic insert: a row the protocol refuses would be stuck forever.
+        const issue = frameIssue(frame);
+        if (issue !== null) {
+          patch(projectId, (c) => ({ ...c, lastError: `Message not sent: ${issue}` }));
+          return false;
+        }
         optimisticSeq += 1;
         const optimistic: MessageDTO = {
           id: -optimisticSeq,
@@ -374,7 +415,8 @@ export function createChatStore(deps: ChatDeps) {
         };
         patch(projectId, (c) => ({ ...c, messages: [...c.messages, optimistic].sort(compareMessages) }));
         // Not open: resendPending() sends it on 'open' (sending now would queue a duplicate).
-        if (deps.ws.isOpen()) deps.ws.send({ type: 'send', projectId, clientMessageId, text, attachments });
+        if (deps.ws.isOpen()) deps.ws.send(frame);
+        return true;
       },
 
       cancelQueued: (projectId, messageId) => {

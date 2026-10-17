@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import type { MessageDTO } from '@/protocol/frames';
 import { Markdown } from './Markdown';
 import { describeStep, subagentTitle, type SubagentGroup } from './subagent';
@@ -11,7 +11,7 @@ export interface SubagentCardProps {
   runActive: boolean;
 }
 
-export function SubagentCard({ toolUse, group, runActive }: SubagentCardProps) {
+export const SubagentCard = memo(function SubagentCard({ toolUse, group, runActive }: SubagentCardProps) {
   const status: SubagentStatus = group.result
     ? group.result.metadata.isError === true
       ? 'failed'
@@ -68,4 +68,4 @@ export function SubagentCard({ toolUse, group, runActive }: SubagentCardProps) {
       )}
     </details>
   );
-}
+});

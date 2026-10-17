@@ -24,9 +24,23 @@ function clampWidth(px: number): number {
   return Math.min(max, Math.max(MIN_CHAT, Math.round(px)));
 }
 
+/** Storage may be unavailable (private mode, blocked cookies): fall back like stores/ui.ts. */
 function readWidth(): number {
-  const stored = Number(localStorage.getItem(CHAT_WIDTH_KEY));
+  let stored = NaN;
+  try {
+    stored = Number(localStorage.getItem(CHAT_WIDTH_KEY));
+  } catch {
+    // keep the default
+  }
   return Number.isFinite(stored) && stored > 0 ? clampWidth(stored) : DEFAULT_CHAT;
+}
+
+function storeWidth(px: number): void {
+  try {
+    localStorage.setItem(CHAT_WIDTH_KEY, String(px));
+  } catch {
+    // the width still applies for this session
+  }
 }
 
 export interface ProjectLayoutProps {
@@ -102,7 +116,7 @@ function SplitView({ viewer, chat }: { viewer: ReactNode; chat: ReactNode }) {
   const commit = (px: number) => {
     const w = clampWidth(px);
     setWidth(w);
-    localStorage.setItem(CHAT_WIDTH_KEY, String(w));
+    storeWidth(w);
   };
   const onKeyDown = (e: KeyboardEvent) => {
     // The chat is on the right: ArrowLeft moves the divider left = wider chat.

@@ -1,11 +1,12 @@
 import { type FormEvent, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { PoweredBy } from '@/components/PoweredBy';
 import { useAuth } from '@/stores/auth';
 
 export function LoginPage() {
   const login = useAuth((s) => s.login);
   const error = useAuth((s) => s.error);
+  const status = useAuth((s) => s.status);
   const navigate = useNavigate();
   const location = useLocation();
   const [username, setUsername] = useState('');
@@ -16,10 +17,17 @@ export function LoginPage() {
     e.preventDefault();
     setBusy(true);
     const ok = await login(username, password);
-    setBusy(false);
     const from = (location.state as { from?: string } | null)?.from;
-    if (ok) navigate(from && from !== '/login' ? from : '/projects', { replace: true });
+    if (ok) {
+      // busy stays set: the redirect below must not race this navigation.
+      navigate(from && from !== '/login' ? from : '/projects', { replace: true });
+      return;
+    }
+    setBusy(false);
   }
+
+  // Already signed in: logging in again would keep the old session's socket and state.
+  if (status === 'authenticated' && !busy) return <Navigate to="/" replace />;
 
   return (
     <main className="flex min-h-full items-center justify-center p-6">

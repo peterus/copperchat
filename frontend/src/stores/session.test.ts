@@ -67,6 +67,19 @@ describe('session reset when the auth store goes anonymous', () => {
     expectReset();
   });
 
+  it('on a login while already signed in (old socket closed too)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 204 })));
+    signedInWithState();
+    wsClient.ensure();
+    const old = FakeWebSocket.latest();
+    old.serverOpen();
+    expect(await useAuth.getState().login('other', 'pw')).toBe(true);
+    expectReset();
+    expect(old.readyState).toBe(FakeWebSocket.CLOSED);
+    expect(wsClient.isOpen()).toBe(false);
+    expect(useAuth.getState()).toMatchObject({ status: 'authenticated', username: 'other' });
+  });
+
   it('not while staying signed in', () => {
     signedInWithState();
     useAuth.setState({ username: 'admin2' });

@@ -13,7 +13,8 @@ export interface UseChatResult {
   currentRunId: string | null;
   /** Server-acknowledged user rows still waiting for the agent (cancellable). */
   queued: MessageDTO[];
-  send: (text: string, attachments?: AttachmentRef[]) => void;
+  /** False when the message was refused locally (see lastError); the caller keeps the draft. */
+  send: (text: string, attachments?: AttachmentRef[]) => boolean;
   cancelQueued: (id: number) => void;
   stop: () => void;
   loadOlder: () => Promise<void>;
@@ -24,6 +25,8 @@ export interface UseChatResult {
   rateLimitedUntil: string | null;
   lastError: string | null;
   dismissError: () => void;
+  /** Re-run a failed initial load. */
+  retry: () => void;
 }
 
 export function useChat(projectId: string): UseChatResult {
@@ -47,6 +50,7 @@ export function useChat(projectId: string): UseChatResult {
   const stop = useCallback(() => useStore.getState().stop(projectId), [useStore, projectId]);
   const loadOlder = useCallback(() => useStore.getState().loadOlder(projectId), [useStore, projectId]);
   const dismissError = useCallback(() => useStore.getState().dismissError(projectId), [useStore, projectId]);
+  const retry = useCallback(() => void useStore.getState().open(projectId), [useStore, projectId]);
 
   return {
     messages: chat.messages,
@@ -64,5 +68,6 @@ export function useChat(projectId: string): UseChatResult {
     rateLimitedUntil: chat.rateLimitedUntil,
     lastError: chat.lastError,
     dismissError,
+    retry,
   };
 }

@@ -1,13 +1,14 @@
-import { useCallback, useSyncExternalStore } from 'react';
+import { useCallback, useMemo, useSyncExternalStore } from 'react';
 
 export function useMediaQuery(query: string): boolean {
+  // One MediaQueryList per query: getSnapshot runs on every render and store check.
+  const mql = useMemo(() => window.matchMedia(query), [query]);
   const subscribe = useCallback(
     (onChange: () => void) => {
-      const mql = window.matchMedia(query);
       mql.addEventListener('change', onChange);
       return () => mql.removeEventListener('change', onChange);
     },
-    [query],
+    [mql],
   );
-  return useSyncExternalStore(subscribe, () => window.matchMedia(query).matches, () => false);
+  return useSyncExternalStore(subscribe, () => mql.matches, () => false);
 }

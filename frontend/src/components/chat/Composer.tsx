@@ -12,7 +12,8 @@ export interface ComposerProps {
   /** Server-acknowledged user rows waiting for the agent (cancellable). */
   queued: MessageDTO[];
   disabled?: boolean;
-  onSend: (text: string, attachments: AttachmentRef[]) => void;
+  /** Returning false keeps the draft (the message was refused locally). */
+  onSend: (text: string, attachments: AttachmentRef[]) => boolean | void;
   onStop: () => void;
   onCancelQueued: (id: number) => void;
 }
@@ -44,7 +45,7 @@ export function Composer({ projectId = '', runActive, queued, disabled = false, 
 
   function submit() {
     if (!canSend) return;
-    onSend(text.trim(), attachments);
+    if (onSend(text.trim(), attachments) === false) return;
     clear();
   }
 

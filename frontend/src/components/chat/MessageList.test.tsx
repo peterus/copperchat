@@ -156,4 +156,36 @@ describe('MessageList', () => {
     render(<MessageList messages={rows(1, 2)} hasMoreOlder loadingOlder onLoadOlder={vi.fn()} renderItem={renderItem} />);
     expect(screen.getByText('Loading older messages…')).toBeInTheDocument();
   });
+
+  it('captures the anchor on scroll with O(log n) layout reads, not one per row', () => {
+    const { scroller, rerender } = renderList(rows(101, 300));
+    const spy = vi.mocked(HTMLElement.prototype.getBoundingClientRect);
+    spy.mockClear();
+    scrollTo(scroller, 12_345); // index 123 (id 224) topmost, offset -45
+    expect(spy.mock.calls.length).toBeLessThan(12);
+    rerender(<MessageList messages={rows(1, 300)} hasMoreOlder loadingOlder={false} onLoadOlder={vi.fn()} renderItem={renderItem} />);
+    expect(scrollTop).toBe(22_345); // id 224 moved from index 123 to 223
+  });
+
+  it('re-sticks to the bottom when a hidden list becomes visible again', () => {
+    const observers: Array<() => void> = [];
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(cb: () => void) {
+        observers.push(cb);
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    const spy = vi.spyOn(Element.prototype, 'scrollIntoView');
+    const { scroller } = renderList(rows(1, 10));
+    expect(observers).toHaveLength(1);
+    spy.mockClear();
+    observers[0]!(); // shown again while stuck
+    expect(spy).toHaveBeenCalledWith({ block: 'end' });
+    scrollTo(scroller, 100); // user reads older history
+    spy.mockClear();
+    observers[0]!();
+    expect(spy).not.toHaveBeenCalled();
+  });
 });

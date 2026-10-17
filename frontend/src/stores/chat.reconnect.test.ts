@@ -136,4 +136,76 @@ describe('reconnect', () => {
     ws.emit({ type: 'error', projectId: P, code: 'not_cancellable', message: 'message already started or finished' });
     await vi.waitFor(() => expect(msg(12)?.status).toBe('done'));
   });
+
+  it('a baseline taken mid-stream marks the streaming row suspect and heals it when it settles', async () => {
+    // The GET overlays live content; deltas between the GET and the subscribe are never replayed.
+    expect(chat().suspectIds).toEqual([11]);
+    server.rows = [row(10, { role: 'user' }), row(11, { status: 'done', content: 'Hello world' })];
+    ws.emit({ type: 'message-delta', projectId: P, messageId: 11, contentDelta: 'd', statusPatch: 'done' });
+    await vi.waitFor(() => expect(msg(11)).toMatchObject({ content: 'Hello world', status: 'done' }));
+    expect(chat().suspectIds).toEqual([]);
+  });
+
+  it('a heal that merges a still-streaming row makes it suspect (no duplicated text after it settles)', async () => {
+    ws.emit({ type: 'message', projectId: P, message: row(12, { status: 'streaming', content: 'Hi' }) });
+    expect(chat().suspectIds).not.toContain(12);
+    // The DB is ahead of the client: the heal adopts it, then an in-flight delta duplicates text.
+    server.rows = [...server.rows, row(12, { status: 'streaming', content: 'Hi there' })];
+    await store.getState().heal(P);
+    expect(chat().suspectIds).toContain(12);
+    ws.emit({ type: 'message-delta', projectId: P, messageId: 12, contentDelta: ' there' });
+    expect(msg(12)?.content).toBe('Hi there there');
+    server.rows = [...server.rows.filter((r) => r.id !== 12), row(12, { status: 'done', content: 'Hi there' })];
+    ws.emit({ type: 'message-delta', projectId: P, messageId: 12, statusPatch: 'done' });
+    await vi.waitFor(() => expect(msg(12)).toMatchObject({ content: 'Hi there', status: 'done' }));
+    expect(chat().suspectIds).not.toContain(12);
+  });
+});
+
+describe('failed initial load', () => {
+  it('is retried when the connection opens or resumes', async () => {
+    const other = createChatStore({ ws, fetchPage: fetchMessagesPage });
+    server.failNext = 1;
+    await other.getState().open(Q);
+    expect(other.getState().chats[Q]).toMatchObject({ loaded: false, lastError: expect.stringContaining('Could not load') });
+    ws.drop();
+    ws.connect();
+    await vi.waitFor(() => expect(other.getState().chats[Q]?.loaded).toBe(true));
+    expect(other.getState().chats[Q]?.lastError).toBeNull();
+    server.failNext = 1;
+    other.getState().reset();
+    await other.getState().open(Q);
+    ws.resume();
+    await vi.waitFor(() => expect(other.getState().chats[Q]?.loaded).toBe(true));
+  });
+});
+
+describe('over-length / invalid sends', () => {
+  it('rejects a send the protocol would refuse without inserting an optimistic row', () => {
+    const before = chat().messages.length;
+    expect(store.getState().send(P, 'x'.repeat(100_001))).toBe(false);
+    expect(chat().messages).toHaveLength(before);
+    expect(chat().lastError).toMatch(/not sent/i);
+    expect(ws.framesOfType('send')).toEqual([]);
+    const tooMany = Array.from({ length: 21 }, (_, i) => ({ id: `att${i}`, kind: 'image' as const, name: `a${i}.png` }));
+    expect(store.getState().send(P, 'hi', tooMany)).toBe(false);
+    expect(chat().messages).toHaveLength(before);
+    expect(store.getState().send(P, 'fine')).toBe(true);
+    expect(chat().messages).toHaveLength(before + 1);
+  });
+
+  it('a pending row that fails validation on retransmit is marked failed and does not break reconnect', () => {
+    ws.open = false;
+    expect(store.getState().send(P, 'ok')).toBe(true);
+    // Corrupt the pending row (e.g. persisted by an older client) so its frame no longer validates.
+    store.setState({
+      chats: {
+        ...store.getState().chats,
+        [P]: { ...chat(), messages: chat().messages.map((m) => (m.id < 0 ? { ...m, content: 'x'.repeat(100_001) } : m)) },
+      },
+    });
+    expect(() => ws.connect()).not.toThrow();
+    expect(ws.framesOfType('subscribe').at(-1)).toMatchObject({ projectId: P });
+    expect(chat().messages.find((m) => m.id < 0)).toMatchObject({ status: 'error' });
+  });
 });

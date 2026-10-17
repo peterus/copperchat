@@ -29,7 +29,7 @@ function loginError(e: unknown): string {
   return messageOf(e);
 }
 
-export const useAuth = create<AuthState>()((set) => ({
+export const useAuth = create<AuthState>()((set, get) => ({
   status: 'unknown',
   username: null,
   error: null,
@@ -44,6 +44,12 @@ export const useAuth = create<AuthState>()((set) => ({
   login: async (username, password) => {
     try {
       await apiPost<void>('/auth/login', { username, password });
+      if (get().status === 'authenticated') {
+        // Re-login over a live session (possibly another user): drop the old socket and pass
+        // through 'anonymous' so installSessionReset() clears the previous session's state.
+        wsClient.close();
+        set({ status: 'anonymous', username: null });
+      }
       set({ status: 'authenticated', username, error: null });
       return true;
     } catch (e) {

@@ -67,6 +67,30 @@ describe('ws client', () => {
     client.close();
   });
 
+  it('a throwing listener neither breaks the other listeners nor the open flush', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const client = createWsClient({ url: () => 'ws://test/api/ws' });
+    const states: ConnectionState[] = [];
+    const frames: unknown[] = [];
+    client.onConnection(() => {
+      throw new Error('bad connection listener');
+    });
+    client.onConnection((s) => states.push(s));
+    client.onFrame(() => {
+      throw new Error('bad frame listener');
+    });
+    client.onFrame((f) => frames.push(f));
+    client.send({ type: 'interrupt', projectId: P1, runId: null });
+    const ws = FakeWebSocket.latest();
+    expect(() => ws.serverOpen()).not.toThrow();
+    expect(states).toEqual(['open']);
+    expect(ws.sentFrames().map((f) => f.type)).toEqual(['interrupt']);
+    expect(() => ws.serverSend(runStarted)).not.toThrow();
+    expect(frames).toEqual([runStarted]);
+    expect(error).toHaveBeenCalledTimes(2);
+    client.close();
+  });
+
   it('validates incoming frames: invalid ones are dropped with console.warn', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const client = createWsClient({ url: () => 'ws://test/api/ws' });

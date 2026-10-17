@@ -88,3 +88,24 @@ export function describeStep(m: MessageDTO): string | null {
       return name;
   }
 }
+
+const sameGroup = (a: SubagentGroup, b: SubagentGroup): boolean =>
+  a.result === b.result && a.steps.length === b.steps.length && a.steps.every((s, i) => s === b.steps[i]);
+
+/**
+ * Keeps the identity of groups whose rows did not change (and of the whole map if none did), so a
+ * memoized SubagentCard / renderItem is not invalidated by a delta to an unrelated row.
+ */
+export function reuseGroups(prev: Map<string, SubagentGroup>, next: Map<string, SubagentGroup>): Map<string, SubagentGroup> {
+  let changed = prev.size !== next.size;
+  const out = new Map<string, SubagentGroup>();
+  for (const [id, g] of next) {
+    const old = prev.get(id);
+    if (old && sameGroup(old, g)) out.set(id, old);
+    else {
+      out.set(id, g);
+      changed = true;
+    }
+  }
+  return changed ? out : prev;
+}

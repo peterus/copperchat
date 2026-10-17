@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import { useChat } from '@/hooks/useChat';
 import type { MessageDTO } from '@/protocol/frames';
 import { Composer } from './Composer';
@@ -6,7 +6,7 @@ import { MessageItem, withoutDuplicateToolImages } from './MessageItem';
 import { MessageList } from './MessageList';
 import { RateLimitBanner } from './RateLimitBanner';
 import { SubagentCard } from './SubagentCard';
-import { groupSubagentRows, isDelegation, type SubagentGroup } from './subagent';
+import { groupSubagentRows, isDelegation, reuseGroups, type SubagentGroup } from './subagent';
 import { UsageIndicator } from './UsageIndicator';
 
 const NO_STEPS: SubagentGroup = { steps: [], result: null };
@@ -25,9 +25,12 @@ export function ChatPanel({ projectId, readOnly = false }: ChatPanelProps) {
     [chat.messages],
   );
   // Sub-agent rows are nested under their research_part call (6A.7b); duplicate tool images dropped.
+  // Unchanged groups keep their identity, so renderItem (and memoized cards/rows) stay stable.
+  const prevGroups = useRef(new Map<string, SubagentGroup>());
   const { topLevel, groups } = useMemo(() => {
     const g = groupSubagentRows(visible);
-    return { topLevel: withoutDuplicateToolImages(g.topLevel), groups: g.groups };
+    prevGroups.current = reuseGroups(prevGroups.current, g.groups);
+    return { topLevel: withoutDuplicateToolImages(g.topLevel), groups: prevGroups.current };
   }, [visible]);
   const renderItem = useCallback(
     (m: MessageDTO) =>
@@ -46,6 +49,11 @@ export function ChatPanel({ projectId, readOnly = false }: ChatPanelProps) {
       {chat.lastError && (
         <div role="alert" className="flex items-start gap-2 border-b border-danger bg-danger/10 px-3 py-2 text-sm text-danger">
           <span className="flex-1">{chat.lastError}</span>
+          {!chat.loaded && (
+            <button type="button" className="font-medium underline" onClick={chat.retry}>
+              Retry
+            </button>
+          )}
           <button type="button" aria-label="Dismiss error" onClick={chat.dismissError}>
             ✕
           </button>

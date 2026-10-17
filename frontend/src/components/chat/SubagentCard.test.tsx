@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { row } from '@/test/fakeMessageServer';
 import { SubagentCard } from './SubagentCard';
-import { DELEGATION_TOOLS, describeStep, groupSubagentRows, isDelegation, subagentTitle } from './subagent';
+import { DELEGATION_TOOLS, describeStep, groupSubagentRows, isDelegation, reuseGroups, subagentTitle } from './subagent';
 
 const researchInput = { mpn: 'TPS62133', query: 'How is it laid out?' };
 const call = row(10, { kind: 'tool_use', content: 'research_part', metadata: { toolUseId: 'a1', name: 'research_part', input: researchInput } });
@@ -105,5 +105,20 @@ describe('SubagentCard', () => {
   it('shows "stopped" when the run ended without a result (interrupt)', () => {
     render(<SubagentCard toolUse={call} group={{ steps: steps.slice(0, 1), result: null }} runActive={false} />);
     expect(screen.getByText('stopped')).toBeInTheDocument();
+  });
+});
+
+describe('reuseGroups', () => {
+  it('keeps the identity of unchanged groups and of the whole map when nothing changed', () => {
+    const call2 = row(20, { kind: 'tool_use', content: 'research_part', metadata: { toolUseId: 'b1', name: 'research_part', input: {} } });
+    const step2 = row(21, { kind: 'text', content: 'b step', metadata: { parentToolUseId: 'b1' } });
+    const rows = [call, ...steps, call2, step2];
+    const first = groupSubagentRows(rows).groups;
+    expect(reuseGroups(first, groupSubagentRows([...rows]).groups)).toBe(first);
+    const changed = groupSubagentRows([call, ...steps, call2, { ...step2, content: 'b step!' }]).groups;
+    const next = reuseGroups(first, changed);
+    expect(next).not.toBe(first);
+    expect(next.get('a1')).toBe(first.get('a1'));
+    expect(next.get('b1')).toBe(changed.get('b1'));
   });
 });
