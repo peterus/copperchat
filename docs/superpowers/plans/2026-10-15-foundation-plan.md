@@ -609,6 +609,33 @@ These extend C1–C8 and are equally binding.
   WS close codes 4401/4403/4408, `HEARTBEAT_S = 25.0`; error codes
   `invalid_frame`, `unknown_attachment`, `not_cancellable`;
   `GET /projects/{id}/images/{name}` (tool images under `.kicad-agent/images/`).
+- **Phase 5 (as built):** Task 5.4b not implemented (spike 1A gate "partial":
+  `SdkAgentBackend = SdkStreamingBackend`; no `SdkPerTurnBackend`). Phase 5
+  publishes no `view-updated` (X2). `messages.utcnow` re-exports
+  `copperchat.db.utcnow_iso`. `TurnFinished.unsolicited: bool = False` (a
+  `ResultMessage` whose `origin.kind != "human"`, e.g. a backgrounded
+  delegation's task-notification; the engine ignores it). Bursts are serialised
+  (a new burst waits ≤ `interrupt_grace_s` for the previous one to wind down).
+  SDK options: `allowed_tools=[]`, `env` incl. `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`;
+  per-turn `Usage` = delta of cumulative `model_usage`/`total_cost_usd` per client
+  (X20(5)); sub-agent rows keyed only on `parent_tool_use_id` (works for both
+  Phase 8 guard options). Interrupt backstop cancels only when the interrupted
+  turn is still in flight; a user Stop wins over a rate limit seen in the same
+  turn (`run-finished{interrupted}`); `cancel_queued` also cancels parked rows;
+  `on_turn_end` may see reason `rate_limited`. `AgentRuntime.resume_pending()`
+  runs in the lifespan right after `app.state.agent_runtime = …` and creates
+  engines for parked/queued projects at startup — **Phase 7 must set
+  `runtime.hooks_factory` before that call** (engines keep the hooks they were
+  created with). Repo helpers `RateLimitRepo.parked_projects()`,
+  `MessageRepo.projects_with_queued()`. WS: one socket may subscribe to several
+  projects (re-subscribe replaces; no unsubscribe frame); Origin must match
+  `Host`, `X-Forwarded-Host` or `public_base_url` (Phase 6A's Vite proxy:
+  `changeOrigin: false` or `xfwd: true`); the auth session is re-checked on every
+  client frame and heartbeat → close `4401` after logout (6A: treat as logged out,
+  no reconnect loop); extra error code `internal_error`; replay order `message`* →
+  `run-started` → `rate-limited` → live. `web.app.install_error_handlers` (renamed
+  from `_install_error_handlers`). `FakeAgent` has a `Delegate` step for sub-agent
+  scripts.
 - **C7 (Phase 9):** C→S frame `visibility{projectId, visible: bool}` (push is
   sent only when no client is visible).
 - **Message metadata keys:** `tool_use` → `{toolUseId, name, input}`;
