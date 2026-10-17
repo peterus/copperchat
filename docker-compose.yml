@@ -1,0 +1,56 @@
+# CopperChat — self-hosted, one user per instance.
+#   cp .env.example .env   # model token + admin password
+#   docker compose up -d                       # http://localhost:8080
+#   docker compose --profile tunnel up -d      # + Cloudflare Tunnel (CLOUDFLARE_TUNNEL_TOKEN)
+# Without a published image (or to run your checkout): docker compose build first.
+name: copperchat
+
+services:
+  copperchat:
+    image: ghcr.io/peterus/copperchat:${COPPERCHAT_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: docker/app/Dockerfile
+      args:
+        # Must equal docker/kicad-base/KICAD_COMMIT (checked by scripts/check-docs.sh).
+        KICAD_COMMIT: 0616634034fa1a8c92c141c293342cbef2f68dff
+    restart: unless-stopped
+    init: true  # reaps the kicad-cli api-server processes
+    env_file: .env
+    environment:
+      # Only the cloudflared container below is a trusted proxy (X-Forwarded-For feeds the
+      # login rate limit). Requests on the published port come from the bridge gateway and
+      # are never trusted. Behind another reverse proxy set FORWARDED_ALLOW_IPS in .env.
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-${CLOUDFLARED_IP:-172.30.231.10}}
+    ports:
+      - "${COPPERCHAT_PORT:-8080}:8080"
+    volumes:
+      # Both must be writable by uid 1000 (the container user): autosave, history
+      # snapshots, uploads and part notes live inside the projects.
+      - ./projects:/projects
+      - ./data:/data
+    networks:
+      default: {}
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      # Not `:?`-guarded: compose interpolates inactive profiles too, which would break a
+      # plain `docker compose up`. cloudflared itself refuses to start without a token.
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      - copperchat
+    networks:
+      default:
+        ipv4_address: ${CLOUDFLARED_IP:-172.30.231.10}
+
+networks:
+  default:
+    ipam:
+      config:
+        # Fixed so the trusted proxy address above is stable. Change both (COPPERCHAT_SUBNET,
+        # CLOUDFLARED_IP) in .env if this range clashes with a network on your host.
+        - subnet: ${COPPERCHAT_SUBNET:-172.30.231.0/24}
