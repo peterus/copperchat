@@ -343,11 +343,12 @@ class KicadSession:
         file in the project directory itself is never touched.
         """
         dest.parent.mkdir(parents=True, exist_ok=True)
-        if doc == "pcb" and dest.parent.resolve() != self.project.dir.resolve():
-            dest.with_suffix(".kicad_dru").unlink(missing_ok=True)
+        stale_rules = dest.parent.resolve() != self.project.dir.resolve()
 
         def _copy(h: KicadHandle) -> list[str]:
             if doc == "pcb":
+                if stale_rules:  # under the session lock, right before the save
+                    dest.with_suffix(".kicad_dru").unlink(missing_ok=True)
                 h.board().save_as(str(dest), overwrite=True, include_project=False)
                 return []
             schematic = h.schematic()
