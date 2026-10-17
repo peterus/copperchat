@@ -18,6 +18,11 @@ export interface KicadPaneProps {
   theme: ResolvedTheme;
   onPick: (ref: string) => void;
   find?: FindRequest | null;
+  /**
+   * Whether the pane is on screen (default true). A hidden pane defers reloads until it is shown
+   * again, so only one KiCanvas instance loads at a time and load errors can be attributed.
+   */
+  visible?: boolean;
   /** `reason` explains a miss that is not "not in the document" (e.g. interactive view not loaded). */
   onFindResult?: (ref: string, found: boolean, reason?: string) => void;
 }

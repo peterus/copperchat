@@ -132,6 +132,7 @@ export function Viewer({ projectId }: { projectId: string }) {
               theme={theme}
               onPick={insertMention}
               find={t.doc === v.doc ? find : null}
+              visible={t.doc === v.doc && v.mode === 'kicad'}
               onFindResult={onFindResult}
             />
           </div>

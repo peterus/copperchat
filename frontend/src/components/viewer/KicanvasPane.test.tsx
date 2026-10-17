@@ -177,6 +177,36 @@ describe('KicanvasPane', () => {
     expect(screen.queryByText(/Viewer error/)).toBeNull();
   });
 
+  it('a hidden pane defers its reload until shown and shows no notices', async () => {
+    const { rerenderWith } = await renderPane();
+    await loadReady();
+    const first = embedEl();
+    await rerenderWith({ rev: 4, visible: false });
+    expect(embedEl()).toBe(first); // no second KiCanvas instance loading in the background
+    act(() => {
+      window.dispatchEvent(new ErrorEvent('error', { message: 'boom', filename: `http://x/${KICANVAS_SCRIPT}` }));
+    });
+    expect(screen.queryByText(/Viewer error/)).toBeNull();
+    await rerenderWith({ rev: 4, visible: true });
+    expect(embedEl()).not.toBe(first);
+    expect(embedEl().querySelector('kicanvas-source')!.getAttribute('src')).toContain('?v=4');
+  });
+
+  it('a pane mounted hidden does not load until shown', async () => {
+    const { rerenderWith } = await renderPane({ visible: false });
+    expect(embedEl()).toBeNull();
+    await rerenderWith({ visible: true });
+    expect(embedEl()).not.toBeNull();
+  });
+
+  it('a network failure while loading fails the pane even without a bundle stack frame', async () => {
+    await renderPane({ doc: 'pcb', files: ['top.kicad_pcb'] });
+    act(() => {
+      window.dispatchEvent(Object.assign(new Event('unhandledrejection'), { reason: new TypeError('Load failed') }));
+    });
+    expect(screen.getByRole('alert')).toHaveTextContent('Load failed');
+  });
+
   it('a double tap on a part inserts a single mention', async () => {
     const now = vi.spyOn(performance, 'now').mockReturnValue(1000);
     await renderPane();

@@ -155,6 +155,15 @@ describe('Viewer', () => {
     expect(screen.getByText('This project has no board.')).toBeInTheDocument();
   });
 
+  it('Find on a missing document says so', () => {
+    openProject({ hasPcb: false, viewFiles: { sch: ['demo.kicad_sch'], pcb: [] } });
+    renderViewer();
+    fireEvent.click(screen.getByRole('tab', { name: 'PCB' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Find reference' }), { target: { value: 'U1' } });
+    fireEvent.submit(screen.getByRole('search'));
+    expect(screen.getByRole('status')).toHaveTextContent('This project has no board.');
+  });
+
   it('says the view could not be prepared when the board exists but has no snapshot', () => {
     openProject({ viewFiles: { sch: ['demo.kicad_sch'], pcb: [] } });
     renderViewer();

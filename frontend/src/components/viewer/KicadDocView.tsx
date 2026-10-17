@@ -24,7 +24,13 @@ export function KicadDocView(
   const interactive = pane.files.length > 0 && (!guard || override);
   const { find, onFindResult } = pane;
   useEffect(() => {
-    if (find && !interactive) onFindResult?.(find.ref, false, 'Find needs the interactive view, which is not loaded.');
+    if (!find || interactive) return;
+    const reason = !exists
+      ? `This project has no ${DOC_LABEL[pane.doc]}.`
+      : pane.files.length === 0
+        ? `The interactive ${DOC_LABEL[pane.doc]} view could not be prepared.`
+        : 'Find needs the interactive view, which is not loaded.';
+    onFindResult?.(find.ref, false, reason);
     // only for a new find request
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [find]);

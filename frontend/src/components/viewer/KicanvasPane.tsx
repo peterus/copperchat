@@ -41,7 +41,10 @@ const fromKicanvas = (where: unknown) => typeof where === 'string' && where.incl
 /** A double tap clicks twice on the same part; it must insert one mention. */
 const SAME_PICK_MS = 500;
 
-export function KicanvasPane({ projectId, doc, files, rev, theme, onPick, find, onFindResult }: KicadPaneProps) {
+/** Network failures of KiCanvas' own fetches may carry no stack frame from the bundle. */
+const isNetworkError = (v: unknown) => v instanceof TypeError && /fetch|load failed|network/i.test(v.message);
+
+export function KicanvasPane({ projectId, doc, files, rev, theme, onPick, find, onFindResult, visible = true }: KicadPaneProps) {
   const host = useRef<HTMLDivElement>(null);
   const embedRef = useRef<KcEmbed | null>(null);
   const viewerRef = useRef<KcViewer | null>(null);
@@ -64,6 +67,16 @@ export function KicanvasPane({ projectId, doc, files, rev, theme, onPick, find, 
   const urls = files.map((f) => viewFileUrl(projectId, f, rev));
   const srcKey = urls.join('\n');
   const kTheme = kicanvasTheme(theme);
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
+  const source = useRef({ urls, kTheme });
+  source.current = { urls, kTheme };
+  // What should be loaded; applied (loadKey) only while the pane is visible.
+  const wantKey = `${srcKey}\n${kTheme}\n${attempt}`;
+  const [loadKey, setLoadKey] = useState<string | null>(visible ? wantKey : null);
+  useEffect(() => {
+    if (visible) setLoadKey(wantKey);
+  }, [visible, wantKey]);
 
   /** Select `req.ref`, switching to the sheet that contains it first (KiCanvas searches only the current sheet). */
   const runFind = useCallback(() => {
@@ -99,7 +112,8 @@ export function KicanvasPane({ projectId, doc, files, rev, theme, onPick, find, 
 
   useEffect(() => {
     const el = host.current;
-    if (!el) return;
+    if (!el || loadKey === null) return;
+    const { urls, kTheme } = source.current;
     let cancelled = false;
     let failed = false;
     let graceTimer: ReturnType<typeof setTimeout> | undefined;
@@ -117,7 +131,7 @@ export function KicanvasPane({ projectId, doc, files, rev, theme, onPick, find, 
       if (!readyRef.current) {
         failed = true;
         setStatus({ kind: 'failed', error: msg });
-      } else {
+      } else if (visibleRef.current) {
         setNotice(msg);
         clearTimeout(noticeTimer);
         noticeTimer = setTimeout(() => setNotice(null), NOTICE_MS);
@@ -129,7 +143,10 @@ export function KicanvasPane({ projectId, doc, files, rev, theme, onPick, find, 
       }
     };
     const onRejection = (e: PromiseRejectionEvent) => {
-      if (fromKicanvas((e.reason as Error | undefined)?.stack)) onError(messageOf(e.reason));
+      const reason: unknown = e.reason;
+      if (fromKicanvas((reason as Error | undefined)?.stack) || (!readyRef.current && isNetworkError(reason))) {
+        onError(messageOf(reason));
+      }
     };
     window.addEventListener('error', onWinError);
     window.addEventListener('unhandledrejection', onRejection);
@@ -213,9 +230,7 @@ export function KicanvasPane({ projectId, doc, files, rev, theme, onPick, find, 
       readyRef.current = false;
       el.replaceChildren();
     };
-    // urls is derived from srcKey
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [srcKey, kTheme, attempt, runFind]);
+  }, [loadKey, runFind]);
 
   useEffect(() => {
     if (!find) return;
