@@ -71,6 +71,16 @@ async def write_view_snapshots(session: KicadSession) -> dict[DocKind, list[str]
     return out
 
 
+def view_bytes(project: Project, files: dict[DocKind, list[str]]) -> dict[str, int]:
+    """Size of every listed view file (the open response's `viewBytes`, 6B large-board guard)."""
+    out: dict[str, int] = {}
+    for name in (n for names in files.values() for n in names):
+        path = resolve_view_file(project, name)
+        if path is not None:
+            out[name] = path.stat().st_size
+    return out
+
+
 def _remove_stale_sheets(project: Project, current: list[str]) -> None:
     """Sub-sheets that left the hierarchy must not linger in the view directory."""
     root = view_dir(project)

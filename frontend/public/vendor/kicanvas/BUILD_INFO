@@ -1,0 +1,4 @@
+commit=b031159eb74aaa7eef2b026fd85d35bc05ff2095
+patches=kicad11-footprint-transform.patch embed-select-event.patch embed-project-getter.patch no-external-fonts.patch embed-host-integration.patch touch-pan-zoom.patch kicad11-nets-by-name.patch quiet-parser-warnings.patch schematic-sheet-instances.patch board-pick-footprint.patch
+size=479820
+sha256=be9e175f0e2cac223bed19de8359aa9673cf6d3c2f9188896de2ff2f5e515901

@@ -3,6 +3,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import { useAuth } from '@/stores/auth';
 import { useUi } from '@/stores/ui';
+import { useViewerPrefs } from '@/stores/viewerPrefs';
 import { SettingsPage } from './SettingsPage';
 
 describe('SettingsPage', () => {
@@ -23,6 +24,8 @@ describe('SettingsPage', () => {
     expect(screen.getByRole('radio', { name: 'Dark' })).toBeChecked();
     expect(screen.getByText('Signed in as admin')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Notifications' })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Touch devices (MB)' }), { target: { value: '25' } });
+    expect(useViewerPrefs.getState().limits.mobileMb).toBe(25);
     expect(screen.getByText(/Powered by Claude/)).toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/Claude Code/);
     fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));

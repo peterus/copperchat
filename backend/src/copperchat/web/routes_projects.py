@@ -10,7 +10,7 @@ from copperchat.db.repos.projects import touch_opened, upsert_projects
 from copperchat.errors import CopperChatError
 from copperchat.kicad_session import KicadSessionManager, KicadUnavailable
 from copperchat.projects import discover_projects, get_project
-from copperchat.views.snapshot import write_view_snapshots
+from copperchat.views.snapshot import view_bytes, write_view_snapshots
 from copperchat.web.auth import CurrentUser
 
 log = logging.getLogger(__name__)
@@ -60,4 +60,5 @@ async def open_project(project_id: str, request: Request, _: CurrentUser) -> dic
         "lockFiles": sorted(p.name for p in session.lock_files),
         "kicadVersion": version,
         "viewFiles": view_files,
+        "viewBytes": view_bytes(project, view_files),
     }
