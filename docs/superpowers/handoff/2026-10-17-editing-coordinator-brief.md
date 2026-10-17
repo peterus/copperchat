@@ -11,9 +11,12 @@ CopperChat coordinator session. Read this, then the spec.
   "Decided by owner").
 - Spec for sub-project 2: `docs/superpowers/specs/2026-10-17-editing-design.md`
   — schematic editing, plan-before-edit, visual control. **Only proceed once
-  the owner has approved the spec PR.** The owner skipped the brainstorming
-  questions; the author's calls are listed in spec §15 — check the owner's
-  review comments on exactly those.
+  the owner has approved the spec PR.** The owner answered the ten open
+  design questions on 2026-10-17 (spec §15 "Decided by owner": per-sheet
+  annotation blocks, passives 0805 part preferences, no edits outside an open
+  plan, ERC errors fixed or justified per step, route touch-up by
+  coordinates, block duplication). The remaining author calls are listed
+  under §15 for review.
 - The owner's first real test of the foundation went well (no blocking
   findings, 2026-10-17).
 
@@ -33,9 +36,11 @@ CopperChat coordinator session. Read this, then the spec.
 
 1. `KicadSession.commit()`, mid-turn save, geometry (grid, bounding boxes,
    pin ends), verification helpers, change log + migration `0006_editing.sql`.
-2. Library index + `lib_*` tools, `parts_get_notes`.
-3. Place / fields / move / delete / annotate tools.
-4. Connect / labels / power / no-connect / rename net (router + verification).
+2. Library index + `lib_*` tools, `parts_get_notes`, `part-preferences`.
+3. Two-phase adapter (`prepare`/`apply`), place / fields / move / delete /
+   per-sheet annotate / duplicate tools.
+4. Connect / reroute / labels / power / no-connect / rename net (router +
+   verification).
 5. Sheets + sheet pins.
 6. Plans: model, budget enforcement, plan tools, REST/WS, step checkpoints.
 7. Frontend: plan card, changes view, viewer highlight, history nesting,
