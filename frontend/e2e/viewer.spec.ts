@@ -1,5 +1,5 @@
 /**
- * The real, vendored KiCanvas bundle (public/vendor/kicanvas, our patch series) on the KiCad 11
+ * The real, vendored KiCanvas bundle (public/vendor/kicanvas, peterus/kicanvas fork) on the KiCad 11
  * fixture projects of the backend (backend/tests/fixtures/projects). The API is mocked: view
  * files are served from the fixtures, the agent view is a tiny PNG.
  */

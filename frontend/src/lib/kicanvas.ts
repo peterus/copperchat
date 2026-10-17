@@ -69,7 +69,7 @@ export interface KcViewer {
   zoom_to_board?: () => void;
   viewport?: { zoom_about?: (factor: number) => void };
 }
-/** The <kicanvas-embed> element with the embed-project-getter patch. */
+/** The <kicanvas-embed> element with `embed.project` (fork commit "expose the loaded project"). */
 export interface KcEmbed extends HTMLElement {
   project?: KcProject;
 }
