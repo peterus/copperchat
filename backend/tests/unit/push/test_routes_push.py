@@ -37,7 +37,7 @@ def test_push_routes(make_settings: Callable[..., Settings]) -> None:
 def test_real_endpoint_check_refuses_private_hosts(make_settings: Callable[..., Settings]) -> None:
     with TestClient(create_app(make_settings())) as c:
         c.post("/api/auth/login", json=GOOD)
-        for host in ("127.0.0.1", "10.0.0.5", "[::1]"):
+        for host in ("127.0.0.1", "10.0.0.5", "[::1]", "push.example"):
             body = {"endpoint": f"https://{host}/push", "keys": BODY["keys"]}
             assert c.post("/api/push/subscribe", json=body).status_code == 422, host
 

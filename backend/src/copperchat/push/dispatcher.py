@@ -13,9 +13,9 @@ import requests
 from py_vapid import Vapid02
 from pywebpush import WebPushException, webpush
 
+from copperchat.push.endpoints import push_endpoint_refusal
 from copperchat.push.store import PushStore
 from copperchat.push.vapid import VapidKeys
-from copperchat.research.net import url_refusal
 
 log = logging.getLogger(__name__)
 
@@ -68,7 +68,7 @@ class PushDispatcher:
         subject: str,
         *,
         sender: Sender | None = None,
-        check_endpoint: EndpointCheck = url_refusal,
+        check_endpoint: EndpointCheck = push_endpoint_refusal,
     ) -> None:
         self.store = store
         self.sender = sender or webpush_sender(keys, subject)

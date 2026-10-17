@@ -8,11 +8,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from copperchat.push.dispatcher import EndpointCheck, PushDispatcher
+from copperchat.push.endpoints import push_endpoint_refusal
 from copperchat.push.notifier import PushNotifier
 from copperchat.push.store import PushStore
 from copperchat.push.vapid import VapidKeys
 from copperchat.push.visibility import VisibilityRegistry
-from copperchat.research.net import url_refusal
 from copperchat.web.auth import require_user
 
 
@@ -23,7 +23,7 @@ class PushServices:
     visibility: VisibilityRegistry
     dispatcher: PushDispatcher
     notifier: PushNotifier
-    check_endpoint: EndpointCheck = url_refusal
+    check_endpoint: EndpointCheck = push_endpoint_refusal
 
 
 class SubKeys(BaseModel):
@@ -56,7 +56,7 @@ async def vapid_public_key(request: Request) -> dict[str, str]:
 @router.post("/subscribe", status_code=204)
 async def subscribe(body: SubscribeBody, request: Request) -> Response:
     push = _push(request)
-    # The server later POSTs to this URL: never to loopback/private networks (SSRF).
+    # The server later POSTs to this URL: browser push services on public hosts only (SSRF).
     refusal = await push.check_endpoint(body.endpoint)
     if refusal is not None:
         raise HTTPException(status_code=422, detail=f"push endpoint refused: {refusal}")
