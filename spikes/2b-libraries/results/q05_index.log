@@ -1,0 +1,55 @@
+NOTE q05_index.name_only_index: {'entries': 22916, 'build_s': 0.58}
+NOTE q05_index.sym_name_only_latency_ms: {'p50': 0.27, 'p95': 18.37, 'max': 18.69, 'n': 25}
+PASS q05_index.sym_name_only_query_lt_300ms: max 18.7 ms, p95 18.4 ms
+PASS q05_index.sym_name_only_nonempty:LM358: ['Amplifier_Operational:LM358', 'Amplifier_Operational:LM358_DFN']
+PASS q05_index.sym_name_only_nonempty:led: ['Device:LED', 'Device:LED_Pad', 'Device:LED_RGB']
+PASS q05_index.sym_name_only_nonempty:GND: ['power:GND', 'ecc83-pp:GND', 'power:GND1']
+PASS q05_index.sym_name_only_nonempty:+3V3: ['power:+3V3', 'power:-3V3']
+PASS q05_index.sym_name_only_nonempty:conn_01x04: ['Connector_Generic:Conn_01x04', 'Connector:Conn_01x04_Pin', 'Connector:Conn_01x04_Socket']
+PASS q05_index.sym_name_only_expected_in_top5: []
+NOTE q05_index.sym_name_only_top3: {'LM358': ['Amplifier_Operational:LM358', 'Amplifier_Operational:LM358_DFN'], 'led': ['Device:LED', 'Device:LED_Pad', 'Device:LED_RGB'], 'GND': ['power:GND', 'ecc83-pp:GND', 'power:GND1'], '+3V3': ['power:+3V3', 'power:-3V3'], 'conn_01x04': ['Connector_Generic:Conn_01x04', 'Connector:Conn_01x04_Pin', 'Connector:Conn_01x04_Socket']}
+PASS q05_index.name_only_cannot_find_generic_terms: 'resistor'/'capacitor' find nothing by name alone (Device:R, Device:C) - details are needed
+NOTE q05_index.warmup_timeline_s: {'api_load': 7.3, 'list_names': 0.17, 'fetch_symbol_details': 17.9, 'fetch_footprint_details': 18.2, 'build_symbol_index': 1.16, 'build_footprint_index': 1.13, 'total': 45.9}
+NOTE q05_index.client_python_heap_mb: {'index_and_records': 244, 'peak': 244}
+NOTE q05_index.vocab: {'symbols': 24969, 'footprints': 16675}
+NOTE q05_index.sym_latency_ms: {'p50': 0.2, 'p95': 2.54, 'max': 8.73, 'n': 100}
+PASS q05_index.sym_query_lt_300ms: max 8.7 ms, p95 2.5 ms
+PASS q05_index.sym_nonempty:resistor: ['Device:R', 'Device:R_US', 'Potentiometer_Digital:X9250']
+PASS q05_index.sym_nonempty:capacitor: ['Device:C', 'ecc83-pp:CP', 'Device:C_US']
+PASS q05_index.sym_nonempty:LM358: ['Amplifier_Operational:LM358', 'Amplifier_Operational:LM358_DFN']
+PASS q05_index.sym_nonempty:opamp dual: ['Amplifier_Operational:Opamp_Dual', 'Amplifier_Operational:L272', 'Amplifier_Operational:L272D']
+PASS q05_index.sym_nonempty:stm32f103: ['MCU_ST_STM32F1:STM32F103C4Tx', 'MCU_ST_STM32F1:STM32F103C6Tx', 'MCU_ST_STM32F1:STM32F103C6Ux']
+PASS q05_index.sym_nonempty:ESP32-WROOM: ['RF_Module:ESP32-WROOM-32', 'RF_Module:ESP32-WROOM-32D', 'RF_Module:ESP32-WROOM-32E']
+PASS q05_index.sym_nonempty:npn transistor: ['Simulation_SPICE:NPN', 'Device:Q_NPN', 'Device:Q_NPN_BRT']
+PASS q05_index.sym_nonempty:n-channel mosfet: ['Transistor_FET:BS107', 'Transistor_FET:BS108', 'Transistor_FET:BS170']
+PASS q05_index.sym_nonempty:ldo 3.3v: ['Regulator_Linear:LT1962-3', 'Regulator_Linear:LT1962-3.3', 'Regulator_Linear:SPX3819M5-L-3-3']
+PASS q05_index.sym_nonempty:usb type-c receptacle: ['Connector:USB_C_Receptacle', 'Connector:USB_C_Receptacle_USB2.0_14P', 'Connector:USB_C_Receptacle_USB2.0_16P']
+PASS q05_index.sym_nonempty:led: ['Device:LED', 'Device:LED_Pad', 'Device:LED_RGB']
+PASS q05_index.sym_nonempty:GND: ['power:GND', 'ecc83-pp:GND', 'power:GND1']
+PASS q05_index.sym_nonempty:+3V3: ['power:+3V3', 'power:-3V3', 'Regulator_Switching:LM5165Y']
+PASS q05_index.sym_nonempty:conn_01x04: ['Connector_Generic:Conn_01x04', 'Connector:Conn_01x04_Pin', 'Connector:Conn_01x04_Socket']
+PASS q05_index.sym_nonempty:AMS1117: ['Regulator_Linear:AMS1117', 'Regulator_Linear:AMS1117-1.5', 'Regulator_Linear:AMS1117-1.8']
+PASS q05_index.sym_nonempty:ne555 timer: ['Timer:NE555D', 'Timer:NE555P', 'Timer:8253']
+PASS q05_index.sym_nonempty:schottky diode: ['Device:D_Schottky', 'Device:D_Schottky_AAK', 'Device:D_Schottky_AKA']
+PASS q05_index.sym_nonempty:ferrite bead: ['Device:FerriteBead', 'Device:FerriteBead_Small', 'Regulator_Switching:TPS62912']
+PASS q05_index.sym_nonempty:crystal: ['Device:Crystal', 'Device:Crystal_GND2', 'Device:Crystal_GND3']
+PASS q05_index.sym_nonempty:74hc595 shift register: ['74xx:74HC595', '4xxx:4021', '74xx:74HC164']
+PASS q05_index.sym_expected_in_top5: []
+NOTE q05_index.sym_top3: {'resistor': ['Device:R', 'Device:R_US', 'Potentiometer_Digital:X9250'], 'capacitor': ['Device:C', 'ecc83-pp:CP', 'Device:C_US'], 'LM358': ['Amplifier_Operational:LM358', 'Amplifier_Operational:LM358_DFN'], 'opamp dual': ['Amplifier_Operational:Opamp_Dual', 'Amplifier_Operational:L272', 'Amplifier_Operational:L272D'], 'stm32f103': ['MCU_ST_STM32F1:STM32F103C4Tx', 'MCU_ST_STM32F1:STM32F103C6Tx', 'M
+NOTE q05_index.fp_latency_ms: {'p50': 1.02, 'p95': 9.25, 'max': 10.26, 'n': 50}
+PASS q05_index.fp_query_lt_300ms: max 10.3 ms, p95 9.3 ms
+PASS q05_index.fp_nonempty:0805 resistor: ['Resistor_SMD:R_0805_2012Metric', 'Resistor_SMD:R_0805_2012Metric_Pad1.20x1.40mm_HandSolder', 'Capacitor_SMD:C_0805_2012Metric']
+PASS q05_index.fp_nonempty:0603 capacitor: ['Capacitor_SMD:C_0603_1608Metric', 'Capacitor_SMD:C_0603_1608Metric_Pad1.08x0.95mm_HandSolder', 'Capacitor_SMD:C_0201_0603Metric']
+PASS q05_index.fp_nonempty:sot-23: ['Package_TO_SOT_SMD:SOT-23', 'Package_TO_SOT_SMD:SOT-23-3', 'Package_TO_SOT_SMD:SOT-23-5']
+PASS q05_index.fp_nonempty:soic-8: ['Package_SO:SOIC-8_3.9x4.9mm_P1.27mm', 'Package_SO:SOIC-8_5.3x5.3mm_P1.27mm', 'Package_SO:SOIC-8_5.3x6.2mm_P1.27mm']
+PASS q05_index.fp_nonempty:qfn-32: ['Package_DFN_QFN:QFN-32-1EP_4x4mm_P0.4mm_EP2.9x2.9mm', 'Package_DFN_QFN:QFN-32-1EP_5x5mm_P0.5mm_EP3.1x3.1mm', 'Package_DFN_QFN:QFN-32-1EP_5x5mm_P0.5mm_EP3.3x3.3mm']
+PASS q05_index.fp_nonempty:pinheader 1x04 2.54: ['Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical', 'Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Horizontal', 'Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical_SMD_Pin1Left']
+PASS q05_index.fp_nonempty:usb-c: ['Connector_USB:USB_C_Plug_Molex_105444', 'Connector_USB:USB_C_Plug_JAE_DX07P024AJ1', 'Connector_USB:USB_C_Receptacle_GCT_USB4085']
+PASS q05_index.fp_nonempty:led 0805: ['LED_SMD:LED_0805_2012Metric', 'LED_SMD:LED_0805_2012Metric_Pad1.15x1.40mm_HandSolder', 'LED_SMD:LED_RGB_Wuerth_150080M153000']
+PASS q05_index.fp_nonempty:tssop-20: ['Package_SO:TSSOP-20_4.4x5mm_P0.4mm', 'Package_SO:TSSOP-20_4.4x5mm_P0.5mm', 'Package_SO:TSSOP-20_4.4x6.5mm_P0.65mm']
+PASS q05_index.fp_nonempty:lqfp-48: ['Package_QFP:LQFP-48_7x7mm_P0.5mm', 'Package_QFP:LQFP-48-1EP_7x7mm_P0.5mm_EP3.6x3.6mm', 'Package_QFP:LQFP-48-1EP_7x7mm_P0.5mm_EP3.6x3.6mm_ThermalVias']
+PASS q05_index.fp_expected_in_top5: []
+NOTE q05_index.fp_top3: {'0805 resistor': ['Resistor_SMD:R_0805_2012Metric', 'Resistor_SMD:R_0805_2012Metric_Pad1.20x1.40mm_HandSolder', 'Capacitor_SMD:C_0805_2012Metric'], '0603 capacitor': ['Capacitor_SMD:C_0603_1608Metric', 'Capacitor_SMD:C_0603_1608Metric_Pad1.08x0.95mm_HandSolder', 'Capacitor_SMD:C_0201_0603Metric'], 'sot-23': ['Package_TO_SOT_SMD:SOT-23', 'Package_TO_SOT_SMD:SOT-23-3', 'Package_TO_SOT_SMD:SOT-23-5'
+NOTE q05_index.pkg_of_hits: [('Resistor_SMD:R_0805_2012Metric', '0805'), ('Resistor_SMD:R_0805_2012Metric_Pad1.20x1.40mm_HandSolder', '0805'), ('Capacitor_SMD:C_0805_2012Metric', '0805'), ('Diode_SMD:D_0805_2012Metric', '0805'), ('Inductor_SMD:L_0805_2012Metric', '0805'), ('LED_SMD:LED_0805_2012Metric', '0805'), ('Fuse:Fuse_0805_2012Metric', '0805'), ('RF_Converter:Anaren_0805_2012Metric-6', '0805')]
+NOTE q05_index.server_rss_mb: 5180
+DONE q05_index: 42 pass, 0 fail

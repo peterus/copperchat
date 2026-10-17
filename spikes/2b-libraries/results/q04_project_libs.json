@@ -1,0 +1,347 @@
+{
+  "question": "q04_project_libs",
+  "checks": [
+    {
+      "name": "ecc83_project_scope_rows_listed",
+      "ok": true,
+      "evidence": "['Footprints', 'ecc83-pp']"
+    },
+    {
+      "name": "ecc83_project_rows_loaded",
+      "ok": true,
+      "evidence": "{'ecc83-pp': (3, None), 'Footprints': (3, None)}"
+    },
+    {
+      "name": "ecc83_project_symbols_listed",
+      "ok": true,
+      "evidence": "8 symbols, first ecc83-pp:C"
+    },
+    {
+      "name": "ecc83_project_footprints_listed",
+      "ok": true,
+      "evidence": "10 footprints, first Footprints:Altech_AK300_1x02_P5.00mm_45-Degree"
+    },
+    {
+      "name": "ecc83_place_from_project_lib",
+      "ok": true,
+      "evidence": "ecc83-pp:C -> pins 2"
+    },
+    {
+      "name": "ecc83_stock_still_loaded",
+      "ok": true,
+      "evidence": "Device lib"
+    },
+    {
+      "name": "cm5_minima_project_scope_rows_listed",
+      "ok": true,
+      "evidence": "['CM5IO']"
+    },
+    {
+      "name": "cm5_minima_project_rows_loaded",
+      "ok": true,
+      "evidence": "{'CM5IO': (3, None)}"
+    },
+    {
+      "name": "cm5_minima_project_symbols_listed",
+      "ok": true,
+      "evidence": "36 symbols, first CM5IO:74LVC1G07_copy_1"
+    },
+    {
+      "name": "cm5_minima_project_footprints_listed",
+      "ok": true,
+      "evidence": "69 footprints, first CM5IO:BatteryHolder_Keystone_3034_1x20mm"
+    },
+    {
+      "name": "cm5_minima_place_from_project_lib",
+      "ok": true,
+      "evidence": "CM5IO:74LVC1G07_copy_1 -> pins 5"
+    },
+    {
+      "name": "cm5_minima_stock_still_loaded",
+      "ok": true,
+      "evidence": "Device lib"
+    },
+    {
+      "name": "pic_programmer_project_scope_rows_listed",
+      "ok": true,
+      "evidence": "['Connector_Dsub', 'Diode_THT', 'Inductor_THT', 'Jumper', 'LED_THT', 'Package_TO_SOT_THT']"
+    },
+    {
+      "name": "pic_programmer_project_rows_loaded",
+      "ok": true,
+      "evidence": "{'pic_programmer': (3, None), 'footprints': (3, None)}"
+    },
+    {
+      "name": "pic_programmer_project_symbols_listed",
+      "ok": true,
+      "evidence": "26 symbols, first pic_programmer:24C16"
+    },
+    {
+      "name": "pic_programmer_project_footprints_listed",
+      "ok": true,
+      "evidence": "4 footprints, first footprints:40tex-Ell600"
+    },
+    {
+      "name": "pic_programmer_place_from_project_lib",
+      "ok": true,
+      "evidence": "pic_programmer:24C16 -> pins 8"
+    },
+    {
+      "name": "pic_programmer_stock_still_loaded",
+      "ok": true,
+      "evidence": "Device lib"
+    },
+    {
+      "name": "interf_u_project_scope_rows_listed",
+      "ok": true,
+      "evidence": "['interf_u', 'tux']"
+    },
+    {
+      "name": "interf_u_project_rows_loaded",
+      "ok": true,
+      "evidence": "{'interf_u': (3, None)}"
+    },
+    {
+      "name": "interf_u_project_symbols_listed",
+      "ok": true,
+      "evidence": "18 symbols, first interf_u:4003APG120"
+    },
+    {
+      "name": "interf_u_project_footprints_listed",
+      "ok": true,
+      "evidence": "14 footprints, first interf_u:BUS_PC"
+    },
+    {
+      "name": "interf_u_place_from_project_lib",
+      "ok": true,
+      "evidence": "interf_u:4003APG120 -> pins 117"
+    },
+    {
+      "name": "interf_u_stock_still_loaded",
+      "ok": true,
+      "evidence": "Device lib"
+    }
+  ],
+  "notes": {
+    "ecc83_project_rows": {
+      "ecc83-pp": [
+        3,
+        null
+      ],
+      "Footprints": [
+        3,
+        null
+      ]
+    },
+    "ecc83_project_symbol_detail": [
+      [
+        "ecc83-pp:C",
+        "",
+        2,
+        ""
+      ],
+      [
+        "ecc83-pp:CONN_1",
+        "",
+        1,
+        "MountingHole:MountingHole_3.2mm_M3_DIN965_Pad"
+      ],
+      [
+        "ecc83-pp:CONN_2",
+        "",
+        2,
+        ""
+      ]
+    ],
+    "ecc83_project_footprint_detail": [
+      [
+        "Footprints:Altech_AK300_1x02_P5.00mm_45-Degree",
+        "Altech AK300 serie terminal block (Scrip",
+        2
+      ],
+      [
+        "Footprints:CP_Radial_D10.0mm_P5.00mm",
+        "CP, Radial series, Radial, pin pitch=5.0",
+        2
+      ],
+      [
+        "Footprints:CP_Radial_D12.5mm_P7.50mm",
+        "CP, Radial series, Radial, pin pitch=7.5",
+        2
+      ]
+    ],
+    "ecc83_symbol_lib_order_head": [
+      "4xxx",
+      "4xxx_IEEE",
+      "74xGxx",
+      "74xx",
+      "74xx_IEEE",
+      "...",
+      "ecc83-pp@223/224"
+    ],
+    "ecc83_quirk": "${KIPRJMOD}",
+    "cm5_minima_project_rows": {
+      "CM5IO": [
+        3,
+        null
+      ]
+    },
+    "cm5_minima_project_symbol_detail": [
+      [
+        "CM5IO:74LVC1G07_copy_1",
+        "Single Buffer Gate w/ Open Drain, Low-Vo",
+        5,
+        "Package_TO_SOT_SMD:SOT-353_SC-70-5"
+      ],
+      [
+        "CM5IO:AP2553W6",
+        "",
+        6,
+        "Package_TO_SOT_SMD:SOT-23-6"
+      ],
+      [
+        "CM5IO:AP3441SHE-7B",
+        "",
+        9,
+        "Package_DFN_QFN:DFN-8-1EP_2x2mm_P0.5mm_EP1.05x1.75mm"
+      ]
+    ],
+    "cm5_minima_project_footprint_detail": [
+      [
+        "CM5IO:BatteryHolder_Keystone_3034_1x20mm",
+        "Keystone 3034 SMD battery holder for 202",
+        2
+      ],
+      [
+        "CM5IO:CONN-SMD_2P-P1.00_SM02B-SRSS-TB-LF-SN",
+        "",
+        4
+      ],
+      [
+        "CM5IO:CP_EIA-3528-21_Kemet-B",
+        "Tantalum Capacitor SMD Kemet-B (3528-21 ",
+        2
+      ]
+    ],
+    "cm5_minima_symbol_lib_order_head": [
+      "4xxx",
+      "4xxx_IEEE",
+      "74xGxx",
+      "74xx",
+      "74xx_IEEE",
+      "...",
+      "CM5IO@223/224"
+    ],
+    "cm5_minima_quirk": "${KIPRJMOD}",
+    "pic_programmer_project_rows": {
+      "pic_programmer": [
+        3,
+        null
+      ],
+      "footprints": [
+        3,
+        null
+      ]
+    },
+    "pic_programmer_project_symbol_detail": [
+      [
+        "pic_programmer:24C16",
+        "",
+        8,
+        ""
+      ],
+      [
+        "pic_programmer:74LS125",
+        "",
+        14,
+        ""
+      ],
+      [
+        "pic_programmer:7805",
+        "",
+        3,
+        ""
+      ]
+    ],
+    "pic_programmer_project_footprint_detail": [
+      [
+        "footprints:40tex-Ell600",
+        "Support TEXTOOL Dil 40 pins, pads ellipt",
+        40
+      ],
+      [
+        "footprints:RV2X4",
+        "Resistance variable / Potentiometre",
+        3
+      ],
+      [
+        "footprints:SolderJumper-2_P1.3mm_Open_TrianglePad1.0x1.5mm",
+        "SMD Solder Jumper, 1x1.5mm Triangular Pa",
+        2
+      ]
+    ],
+    "pic_programmer_symbol_lib_order_head": [
+      "4xxx",
+      "4xxx_IEEE",
+      "74xGxx",
+      "74xx",
+      "74xx_IEEE",
+      "...",
+      "pic_programmer@223/224"
+    ],
+    "pic_programmer_quirk": "${KIPRJMOD}/libs/ + ${KICAD10_FOOTPRINT_DIR} rows",
+    "interf_u_project_rows": {
+      "interf_u": [
+        3,
+        null
+      ]
+    },
+    "interf_u_project_symbol_detail": [
+      [
+        "interf_u:4003APG120",
+        "",
+        117,
+        "PGA120"
+      ],
+      [
+        "interf_u:628128",
+        "",
+        31,
+        ""
+      ],
+      [
+        "interf_u:74LS245",
+        "",
+        20,
+        ""
+      ]
+    ],
+    "interf_u_project_footprint_detail": [
+      [
+        "interf_u:BUS_PC",
+        "Connecteur Bus PC 8 bits",
+        62
+      ],
+      [
+        "interf_u:CP_Axial_L10.0mm_D4.5mm_P15.00mm_Horizontal",
+        "CP, Axial series, Axial, Horizontal, pin",
+        2
+      ],
+      [
+        "interf_u:C_Disc_D3.0mm_W2.0mm_P2.50mm",
+        "C, Disc series, Radial, pin pitch=2.50mm",
+        2
+      ]
+    ],
+    "interf_u_symbol_lib_order_head": [
+      "4xxx",
+      "4xxx_IEEE",
+      "74xGxx",
+      "74xx",
+      "74xx_IEEE",
+      "...",
+      "interf_u@224/225"
+    ],
+    "interf_u_quirk": "legacy $(KIPRJMOD) in fp table, (options \"Legacy\") sym row"
+  }
+}

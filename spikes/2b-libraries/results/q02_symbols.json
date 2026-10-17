@@ -1,0 +1,248 @@
+{
+  "question": "q02_symbols",
+  "checks": [
+    {
+      "name": "listing_names_only",
+      "ok": true,
+      "evidence": "GetLibraryItems returns only (library_nickname, entry_name)"
+    },
+    {
+      "name": "fetch_all_details_lt_10s",
+      "ok": true,
+      "evidence": "6.52s for 22916 symbols"
+    },
+    {
+      "name": "derived_symbols_have_no_items_known_limit",
+      "ok": true,
+      "evidence": "12313 of 22916 symbols come back without pins/graphics (extends symbols); see probe checks"
+    },
+    {
+      "name": "pin_number_name_type_position_unit",
+      "ok": true,
+      "evidence": "Device:R"
+    },
+    {
+      "name": "probe_place_in_dropped_commit_leaves_doc",
+      "ok": true,
+      "evidence": "symbols 26->26, modified=False"
+    },
+    {
+      "name": "probe_place_returns_pins_for_derived",
+      "ok": true,
+      "evidence": "[('4xxx:14528', 16, 21), ('4xxx:14538', 16, 23), ('4xxx:4066', 14, 23), ('4xxx:4528', 16, 22), ('4xxx_IEEE:40160', 16, 23)]"
+    }
+  ],
+  "notes": {
+    "list_entry_fields": [
+      "library_nickname",
+      "entry_name"
+    ],
+    "fetch_all_details": {
+      "symbols": 22916,
+      "seconds": 6.52,
+      "batch": 500,
+      "rss_mb": 5133
+    },
+    "field_coverage_of_22916": {
+      "description": 22577,
+      "keywords": 22527,
+      "footprint_filters": 21743,
+      "default_footprint": 18160,
+      "datasheet": 20051,
+      "pins_present": 10603,
+      "multi_unit": 1344,
+      "multi_body_style": 43,
+      "power": 105
+    },
+    "derived_symbols_without_items": {
+      "count": 12313,
+      "share": 0.537,
+      "sample": [
+        "4xxx:14528",
+        "4xxx:14538",
+        "4xxx:4066",
+        "4xxx:4528",
+        "4xxx_IEEE:40160"
+      ]
+    },
+    "pins_Device:R": [
+      [
+        "1",
+        "",
+        "passive",
+        0.0,
+        -3.81,
+        1,
+        1
+      ],
+      [
+        "2",
+        "",
+        "passive",
+        0.0,
+        3.81,
+        1,
+        1
+      ]
+    ],
+    "pins_Connector_Generic:Conn_01x04": [
+      [
+        "1",
+        "Pin_1",
+        "passive",
+        -5.08,
+        -2.54,
+        1,
+        1
+      ],
+      [
+        "2",
+        "Pin_2",
+        "passive",
+        -5.08,
+        0.0,
+        1,
+        1
+      ],
+      [
+        "3",
+        "Pin_3",
+        "passive",
+        -5.08,
+        2.54,
+        1,
+        1
+      ],
+      [
+        "4",
+        "Pin_4",
+        "passive",
+        -5.08,
+        5.08,
+        1,
+        1
+      ]
+    ],
+    "pins_Device:Q_NPN": [
+      [
+        "B",
+        "B",
+        "input",
+        -5.08,
+        0.0,
+        1,
+        1
+      ],
+      [
+        "C",
+        "C",
+        "passive",
+        2.54,
+        -5.08,
+        1,
+        1
+      ],
+      [
+        "E",
+        "E",
+        "passive",
+        2.54,
+        5.08,
+        1,
+        1
+      ]
+    ],
+    "multi_unit_sample": {
+      "lib_id": "4xxx:4001",
+      "units": 5,
+      "pins": [
+        [
+          "1",
+          "",
+          "input",
+          1
+        ],
+        [
+          "2",
+          "",
+          "input",
+          1
+        ],
+        [
+          "3",
+          "",
+          "output",
+          1
+        ],
+        [
+          "1",
+          "",
+          "input",
+          1
+        ],
+        [
+          "2",
+          "",
+          "input",
+          1
+        ],
+        [
+          "3",
+          "",
+          "output",
+          1
+        ],
+        [
+          "4",
+          "",
+          "output",
+          2
+        ],
+        [
+          "5",
+          "",
+          "input",
+          2
+        ],
+        [
+          "6",
+          "",
+          "input",
+          2
+        ],
+        [
+          "4",
+          "",
+          "output",
+          2
+        ]
+      ]
+    },
+    "body_style_sample": {
+      "lib_id": "4xxx:4001",
+      "styles": [
+        "Standard",
+        "Alternate"
+      ],
+      "pin_body_styles": [
+        0,
+        1,
+        2
+      ]
+    },
+    "kipy_wrapper_pins_Device:R": [
+      [
+        "1",
+        "",
+        "Vector2(0, -3810000)"
+      ],
+      [
+        "2",
+        "",
+        "Vector2(0, 3810000)"
+      ]
+    ],
+    "probe_ms_median": 22,
+    "LM358_listing_pins": null
+  }
+}

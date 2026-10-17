@@ -1,0 +1,17 @@
+PASS q03_footprints.listing_names_only: 
+NOTE q03_footprints.fetch_all_footprints: {'count': 15478, 'seconds': 14.35, 'rss_mb': 5080}
+PASS q03_footprints.fetch_all_footprints_lt_30s: 14.3s for 15478
+NOTE q03_footprints.coverage: {'description': 15477, 'keywords': 15274, 'pads_ge1': 15143, 'smd': 7532, 'tht': 8281}
+PASS q03_footprints.r0805_detail: FootprintRec(lib_id='Resistor_SMD:R_0805_2012Metric', description='Resistor SMD 0805 (2012 Metric), square (rectangular) end terminal, IPC-7351 nominal, (Body size source: IPC-SM-782 page 72, https://www.pcb-3d.com/wordpress/wp-content/uploads/ipc-sm-782a_amendment_1_and_2.pdf)', keywords='resistor', pad_count=2, smd=True, tht=False, extra={})
+NOTE q03_footprints.name_derivation_by_lib: {'Capacitor_SMD': {'total': 103, 'derived': 16, 'miss_sample': ['CP_Elec_10x10', 'CP_Elec_10x10.5', 'CP_Elec_10x12.5', 'CP_Elec_10x12.6', 'CP_Elec_10x14.3', 'CP_Elec_10x7.7']}, 'Diode_SMD': {'total': 83, 'derived': 20, 'miss_sample': ['D_2114_3652Metric', 'D_2114_3652Metric_Pad1.85x3.75mm_HandSolder', 'D_3220_8050Metric', 'D_3220_8050Metric_Pad2.65x5.15mm_HandSolder', 'D_MELF', 'D_MELF-RM10_Univer
+PASS q03_footprints.name_vs_description_agree: {'agree': 113, 'disagree': 2, 'bad': ['Inductor_SMD:L_Taiyo-Yuden_BK_Array_1206_3216Metric', 'RF_Converter:Anaren_0805_2012Metric-6']}
+PASS q03_footprints.name_vs_description_agree_for_two_pad_smd: []
+NOTE q03_footprints.two_pad_smd_package_footprints: 113
+NOTE q03_footprints.footprints_per_package_in_passive_libs: {'0402': 10, '0603': 10, '0805': 10, '1206': 12}
+NOTE q03_footprints.0805_samples: ['Capacitor_SMD:C_0805_2012Metric', 'Capacitor_SMD:C_0805_2012Metric_Pad1.18x1.45mm_HandSolder', 'Diode_SMD:D_0805_2012Metric', 'Diode_SMD:D_0805_2012Metric_Pad1.15x1.40mm_HandSolder', 'Inductor_SMD:L_0805_2012Metric', 'Inductor_SMD:L_0805_2012Metric_Pad1.05x1.20mm_HandSolder', 'LED_SMD:LED_0805_2012Metric', 'LED_SMD:LED_0805_2012Metric_Pad1.15x1.40mm_HandSolder', 'Resistor_SMD:R_0805_2012Metric',
+PASS q03_footprints.trap_01005_not_read_as_0402: 
+PASS q03_footprints.hand_solder_variant: 
+PASS q03_footprints.tht_not_matched: 
+NOTE q03_footprints.package_named_footprints_outside_passive_libs: {'count': 17, 'sample': ['Fuse:Fuse_0402_1005Metric', 'Fuse:Fuse_0402_1005Metric_Pad0.77x0.64mm_HandSolder', 'Fuse:Fuse_0603_1608Metric', 'Fuse:Fuse_0603_1608Metric_Pad1.05x0.95mm_HandSolder', 'Fuse:Fuse_0805_2012Metric', 'Fuse:Fuse_0805_2012Metric_Pad1.15x1.40mm_HandSolder', 'Fuse:Fuse_1206_3216Metric', 'Fuse:Fuse_1206_3216Metric_Pad1.42x1.75mm_HandSolder']}
+NOTE q03_footprints.passive_lib_names_with_size_token_not_derived: {'count': 41, 'sample': ['Diode_SMD:Nexperia_DSN0603-2_0.6x0.3mm_P0.4mm', 'Inductor_SMD:L_Changjiang_FTC404020S', 'Inductor_SMD:L_Chilisin_BWVS00404026', 'Inductor_SMD:L_Coilcraft_0805HQ_2012Metric', 'Inductor_SMD:L_CommonModeChoke_Coilcraft_0603USB', 'Inductor_SMD:L_CommonModeChoke_Coilcraft_0805USB', 'Inductor_SMD:L_CommonMode_Wurth_WE-CNSW-1206', 'Inductor_SMD:L_Sunlord_MWSA0402S', 'Inductor_SM
+DONE q03_footprints: 8 pass, 0 fail
