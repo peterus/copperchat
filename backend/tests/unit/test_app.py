@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from copperchat import __version__
 from copperchat.config import Settings
 from copperchat.errors import MissingCredentialsError
 from copperchat.web.app import create_app
@@ -21,7 +22,7 @@ def test_health_without_kicad(make_settings: Callable[..., Settings]) -> None:
     with TestClient(create_app(make_settings())) as client:
         r = client.get("/api/health")
         assert r.status_code == 200
-        assert r.json() == {"status": "ok", "kicad": None}
+        assert r.json() == {"status": "ok", "version": __version__, "kicad": None}
 
 
 def test_health_reports_kicad_version(

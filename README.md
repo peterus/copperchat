@@ -35,19 +35,32 @@ You need Docker with the compose plugin and a Claude subscription (or an API key
    ```
    (Or use an `ANTHROPIC_API_KEY`.) CopperChat offers no login flow of its own;
    Anthropic's terms apply to the credentials you use with it.
-2. Get `docker-compose.yml` and `.env.example` from this repository (or clone it), then:
+2. Get `docker-compose.yml` and `.env.example` of the release you want to run (or clone the
+   repository), then:
    ```bash
+   curl -fsSLO https://raw.githubusercontent.com/peterus/copperchat/v0.1.0/docker-compose.yml
+   curl -fsSLO https://raw.githubusercontent.com/peterus/copperchat/v0.1.0/.env.example
    cp .env.example .env          # paste the token, set ADMIN_PASSWORD
    mkdir -p projects data
    sudo chown -R 1000:1000 projects data   # the container runs as uid 1000
+   docker compose pull           # ghcr.io/peterus/copperchat:latest
    docker compose up -d
    ```
 3. Put KiCad projects into `./projects`, open <http://localhost:8080> and sign in with
    `ADMIN_USERNAME` / `ADMIN_PASSWORD`.
 
-The container refuses to start without a token and tells you to run `claude setup-token`.
-A different host port: `COPPERCHAT_PORT=8090` in `.env`. Running a checkout instead of the
-published image: `docker compose build && docker compose up -d`.
+If `docker compose pull` reports `denied`, the image is not published (or not public) yet —
+use the from-source path below. The container refuses to start without a token and tells
+you to run `claude setup-token`. A different host port: `COPPERCHAT_PORT=8090` in `.env`.
+
+Images are published as `ghcr.io/peterus/copperchat:<version>` (e.g. `0.1.0`), `:<major>.<minor>`
+(e.g. `0.1`) and `:latest`; release notes are in [CHANGELOG.md](CHANGELOG.md). To pin a
+version set `COPPERCHAT_VERSION=0.1.0` in `.env`. Updating: `docker compose pull && docker
+compose up -d` (your projects and `/data` stay).
+
+**From source** instead of the published image: in a clone of the repository run
+`docker compose build && docker compose up -d`. The local build is tagged with the same image
+name; `docker compose pull` switches back to the published image.
 
 On plain `http://` from another machine in your LAN (not `localhost`), set
 `COOKIE_SECURE=false`, otherwise the browser drops the login cookie. For anything beyond
@@ -88,6 +101,7 @@ notifications in Settings › Notifications.
 |---|---|
 | `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` | model credentials (one required) |
 | `ADMIN_USERNAME`, `ADMIN_PASSWORD` | app login (always on; the password seeds the hash on first start) |
+| `COPPERCHAT_VERSION` | image tag (default `latest`; e.g. `0.1` or `0.1.0` to pin) |
 | `COPPERCHAT_PORT`, `COPPERCHAT_BIND` | host port (default 8080) and bind address (default: all addresses; `127.0.0.1` = this machine only) |
 | `PUBLIC_BASE_URL` | public HTTPS URL (WebSocket origin check behind a proxy) |
 | `VAPID_SUBJECT` | push contact, e.g. `mailto:you@example.com` |

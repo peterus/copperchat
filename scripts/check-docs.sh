@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # scripts/check-docs.sh — guards compliance statements in the user-facing docs (spec §12)
-# and that docker-compose.yml builds against the pinned KiCad commit. Run from the repo root.
+# that docker-compose.yml builds against the pinned KiCad commit and that the version is the
+# same everywhere (release.yml checks the tag against it). Run from the repo root.
 set -euo pipefail
 fail() { echo "FAIL: $*"; exit 1; }
-for f in README.md docs/deployment/cloudflare.md docs/architecture.md docker-compose.yml .env.example; do
+for f in README.md CHANGELOG.md docs/deployment/cloudflare.md docs/architecture.md docker-compose.yml .env.example; do
   [ -f "$f" ] || fail "$f missing"
 done
 grep -q "claude setup-token" README.md || fail "README: setup-token quickstart"
@@ -20,4 +21,17 @@ grep -q "claude setup-token" .env.example || fail ".env.example: setup-token hin
 commit="$(tr -d '[:space:]' < docker/kicad-base/KICAD_COMMIT)"
 grep -q "KICAD_COMMIT: ${commit}\$" docker-compose.yml \
   || fail "docker-compose.yml: build arg KICAD_COMMIT must be ${commit} (docker/kicad-base/KICAD_COMMIT)"
+version="$(sed -nE 's/^version = "(.*)"$/\1/p' backend/pyproject.toml | head -n1)"
+[ -n "$version" ] || fail "backend/pyproject.toml: version"
+grep -q "^__version__ = \"${version}\"\$" backend/src/copperchat/__init__.py \
+  || fail "backend/src/copperchat/__init__.py: __version__ must be ${version}"
+[ "$(jq -r .version frontend/package.json)" = "$version" ] \
+  || fail "frontend/package.json: version must be ${version}"
+[ "$(jq -r .version frontend/package-lock.json)" = "$version" ] \
+  || fail "frontend/package-lock.json: version must be ${version}"
+for f in docker-compose.yml .env.example; do
+  grep -qF "raw.githubusercontent.com/peterus/copperchat/v${version}/${f}" README.md \
+    || fail "README: quick start must download ${f} of v${version}"
+done
+grep -q "^## \[${version}\]" CHANGELOG.md || fail "CHANGELOG.md: no section for ${version}"
 echo OK
