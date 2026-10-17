@@ -28,8 +28,21 @@ def layers(tmp_path: Path) -> SkillLayers:
 
 @pytest.mark.parametrize(
     "bad",
-    ["", "../x", "a/b", "a\\b", ".hidden", "Upper", "x" * 65, "-lead", "trail-", "a b", "a:b",
-     "..", "a\x00b"],
+    [
+        "",
+        "../x",
+        "a/b",
+        "a\\b",
+        ".hidden",
+        "Upper",
+        "x" * 65,
+        "-lead",
+        "trail-",
+        "a b",
+        "a:b",
+        "..",
+        "a\x00b",
+    ],
 )
 def test_invalid_names_rejected(bad: str) -> None:
     with pytest.raises(store.InvalidSkillName):
@@ -62,7 +75,11 @@ def test_symlinked_and_mismatched_entries_skipped(layers: SkillLayers, tmp_path:
 
 
 def test_agent_front_matter_is_exposed(layers: SkillLayers) -> None:
-    put(layers.user_root, "notes", "---\nname: notes\ndescription: d\nagent: part-researcher\n---\nB")
+    put(
+        layers.user_root,
+        "notes",
+        "---\nname: notes\ndescription: d\nagent: part-researcher\n---\nB",
+    )
     by_name = {s.name: s for s in store.effective_skills(layers)}
     assert by_name["notes"].agent == "part-researcher"
     assert by_name["alpha"].agent is None

@@ -32,10 +32,12 @@ def _error(err: StructuredToolError) -> dict[str, Any]:
 
 
 def _success(result: ToolResult) -> dict[str, Any]:
-    payload = result.data if result.data is not None else {"ok": True}
-    content: list[dict[str, Any]] = [
-        {"type": "text", "text": json.dumps(payload, ensure_ascii=False)}
-    ]
+    if result.text is not None:
+        text = result.text
+    else:
+        payload = result.data if result.data is not None else {"ok": True}
+        text = json.dumps(payload, ensure_ascii=False)
+    content: list[dict[str, Any]] = [{"type": "text", "text": text}]
     for img in result.images:
         content.append(
             {
