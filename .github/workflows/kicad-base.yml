@@ -4,9 +4,8 @@ name: kicad-base
 # ghcr.io/peterus/copperchat-kicad-base. Tags:
 #
 #   <commit>, <first 10> the published image (docker-compose.yml, releases). Built and
-#                        pushed by runs on main whenever its io.copperchat.recipe label
-#                        differs from the current recipe; a pull request pushes it only as
-#                        the first publication of a new commit.
+#                        pushed only by runs on main, whenever its io.copperchat.recipe
+#                        label differs from the current recipe (also for a new commit).
 #   <commit>-r<recipe>   recipe-pinned (scripts/kicad-base-image.sh: <recipe> hashes
 #                        docker/kicad-base/* and this workflow). A pull request that changes
 #                        the recipe pushes its build here, so CI (ci.yml) can test it without
@@ -104,10 +103,8 @@ jobs:
             fi
           elif [ "$FORCE" = "true" ] || { [ "$rexists" = "false" ] && [ "$published" != "$RECIPE" ]; }; then
             build=true
-            if [ "$SAME_REPO" = "true" ]; then
-              [ "$rexists" = "false" ] && push_rtag=true
-              [ "$exists" = "false" ] && push_commit=true
-            fi
+            # Branches only ever publish the recipe-pinned tag; <commit> is main's alone.
+            if [ "$SAME_REPO" = "true" ] && [ "$rexists" = "false" ]; then push_rtag=true; fi
           fi
           echo "build=$build push_rtag=$push_rtag push_commit=$push_commit"
           {
