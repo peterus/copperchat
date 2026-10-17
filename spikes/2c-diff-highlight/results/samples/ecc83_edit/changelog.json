@@ -1,0 +1,42 @@
+[
+ {
+  "op": "modify",
+  "kind": "symbol",
+  "ref": "C1",
+  "uuid": "00000000-0000-0000-0000-00004549f4be",
+  "field": "Value"
+ },
+ {
+  "op": "modify",
+  "kind": "symbol",
+  "ref": "R3",
+  "uuid": "00000000-0000-0000-0000-00004549f3ad",
+  "field": "position"
+ },
+ {
+  "op": "add",
+  "kind": "wire",
+  "uuid": "ecaf1631-4221-49c7-8356-9fcf3a41b932"
+ },
+ {
+  "op": "add",
+  "kind": "label",
+  "uuid": "c6a8e6b0-8bea-4c78-9b78-a9bfa0dc4df5"
+ },
+ {
+  "op": "add",
+  "kind": "junction",
+  "uuid": "04b63277-96af-4ca3-a0fc-785a453b66cb"
+ },
+ {
+  "op": "delete",
+  "kind": "wire",
+  "uuid": "84963a83-b6da-4751-9910-f093c3a03bee"
+ },
+ {
+  "op": "add",
+  "kind": "symbol",
+  "ref": "R99",
+  "uuid": "3c8ff4d4-abef-4cfe-a781-27c56cde3632"
+ }
+]

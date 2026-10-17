@@ -1,0 +1,105 @@
+diff --git a/src/viewers/schematic/viewer.ts b/src/viewers/schematic/viewer.ts
+index 4a37eb6..3235bd0 100644
+--- a/src/viewers/schematic/viewer.ts
++++ b/src/viewers/schematic/viewer.ts
+@@ -7,7 +7,7 @@
+ import { first } from "../../base/iterator";
+ import { BBox } from "../../base/math";
+ import { is_string } from "../../base/types";
+-import { Renderer } from "../../graphics";
++import { Color, Polygon, Polyline, Renderer } from "../../graphics";
+ import { Canvas2DRenderer } from "../../graphics/canvas2d";
+ import type { SchematicTheme } from "../../kicad";
+ import {
+@@ -40,10 +40,12 @@ export class SchematicViewer extends DocumentViewer<
+ 
+     override async load(src: KicadSch | ProjectPage) {
+         if (src instanceof KicadSch) {
++            this.#highlights = [];
+             return await super.load(src);
+         }
+ 
+         this.document = null!;
++        this.#highlights = []; // boxes belong to the previous page's coordinates
+ 
+         const doc = src.document as KicadSch;
+         doc.update_hierarchical_data(src.sheet_path);
+@@ -77,4 +79,78 @@ export class SchematicViewer extends DocumentViewer<
+ 
+         super.select(item);
+     }
++
++    // --- spike 2C: highlight a SET of items (refs / uuids) -------------------------------
++    #highlights: BBox[] = [];
++
++    /**
++     * Outline several symbols/sheets at once (independent of the single selection).
++     * Items not on the active sheet are reported in `missing` (the host owns the sheet switch).
++     */
++    public highlight(items: string[], css = "#ff8c00") {
++        const found: string[] = [];
++        const missing: string[] = [];
++        this.#highlights = [];
++        for (const name of items) {
++            const item =
++                this.schematic.find_symbol(name) ??
++                this.schematic.find_sheet(name);
++            const bb = item ? first(this.layers.query_item_bboxes(item)) : null;
++            if (bb) {
++                this.#highlights.push(bb.copy());
++                found.push(name);
++            } else {
++                missing.push(name);
++            }
++        }
++        this.#highlight_color = Color.from_css(css);
++        this.paint_selected();
++        return { found, missing };
++    }
++
++    /**
++     * Outline raw boxes (mm, schematic coordinates): items that have no symbol object
++     * (wires, labels, junctions, deleted items) — e.g. the bbox of a `kicad-cli sch diff` change.
++     */
++    public highlight_boxes(boxes: { x: number; y: number; w: number; h: number }[], css = "#ff8c00") {
++        this.#highlights = boxes.map((b) => new BBox(b.x, b.y, b.w, b.h));
++        this.#highlight_color = Color.from_css(css);
++        this.paint_selected();
++        return this.#highlights.length;
++    }
++
++    public clear_highlight() {
++        this.#highlights = [];
++        this.paint_selected();
++    }
++
++    public get highlighted_count() {
++        return this.#highlights.length;
++    }
++
++    #highlight_color = Color.from_css("#ff8c00");
++
++    protected override paint_selected() {
++        if (!this.#highlights.length) {
++            super.paint_selected();
++            return;
++        }
++        const layer = this.layers.overlay;
++        layer.clear();
++        this.renderer.start_layer(layer.name);
++        for (const hb of this.#highlights) {
++            const bb = hb.copy().grow(0.6);
++            this.renderer.line(Polyline.from_BBox(bb, 0.3, this.#highlight_color));
++            const fill = this.#highlight_color.copy();
++            fill.a = 0.25;
++            this.renderer.polygon(Polygon.from_BBox(bb, fill));
++        }
++        if (this.selected) {
++            const bb = this.selected.copy().grow(this.selected.w * 0.1);
++            this.renderer.line(Polyline.from_BBox(bb, 0.254, this.selection_color));
++        }
++        layer.graphics = this.renderer.end_layer();
++        layer.graphics.composite_operation = "source-over";
++        this.draw();
++    }
+ }

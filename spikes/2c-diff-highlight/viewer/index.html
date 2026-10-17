@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>spike 2C viewer</title>
+<style>html,body{margin:0;height:100%}kicanvas-embed{display:block;width:100vw;height:100vh}</style>
+<script type="module">
+  // ?bundle=baseline|patched  ?files=a.kicad_sch,b.kicad_sch
+  const q = new URLSearchParams(location.search);
+  await import(`/.work/bundles/${q.get("bundle") || "baseline"}.js`);
+  const el = document.createElement("kicanvas-embed");
+  el.setAttribute("controls", "none");
+  el.setAttribute("theme", q.get("theme") || "kicad");
+  for (const f of (q.get("files") || "").split(",").filter(Boolean)) {
+    const s = document.createElement("kicanvas-source"); s.setAttribute("src", f); el.appendChild(s);
+  }
+  window.__embed = el;
+  window.__viewer = () => {
+    const roots = [document];
+    while (roots.length) {
+      const root = roots.shift();
+      for (const node of root.querySelectorAll("*")) {
+        if (node.viewer && typeof node.viewer.addEventListener === "function") return node.viewer;
+        if (node.shadowRoot) roots.push(node.shadowRoot);
+      }
+    }
+    return null;
+  };
+  document.body.appendChild(el);
+</script></head><body></body></html>

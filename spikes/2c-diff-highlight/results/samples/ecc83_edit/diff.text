@@ -1,0 +1,91 @@
+diff before/ecc83-pp.kicad_sch after/ecc83-pp.kicad_sch
+9 change(s)
+  modified SCH_SYMBOL /28f865a0-4433-4a53-bbd7-b62f276848e4/00000000-0000-0000-0000-00004549f3ad [R3]
+    Position X: 185.42 mm -> 190.5 mm
+  modified SCH_SYMBOL /28f865a0-4433-4a53-bbd7-b62f276848e4/00000000-0000-0000-0000-00004549f4be [C1]
+    Value: 10uF -> 22uF
+  removed SCH_JUNCTION /28f865a0-4433-4a53-bbd7-b62f276848e4/10ef5c17-5272-4e7f-89a5-ecf737e33e26
+    Color: rgba(0, 0, 0, 0.000) -> <none>
+    Diameter: 1.016 mm -> <none>
+    Locked: false -> <none>
+    Private: false -> <none>
+  added SCH_SYMBOL /28f865a0-4433-4a53-bbd7-b62f276848e4/3c8ff4d4-abef-4cfe-a781-27c56cde3632 [R99]
+    Description: <none> -> Resistor
+    Do not Populate: <none> -> false
+    Exclude From Bill of Materials: <none> -> false
+    Exclude From Board: <none> -> false
+    Exclude From Position Files: <none> -> false
+    Exclude From Simulation: <none> -> false
+    Keywords: <none> -> R res resistor
+    Library Description: <none> -> Resistor
+    Library Link: <none> -> Device:R
+    Locked: <none> -> false
+    Mirror X: <none> -> false
+    Mirror Y: <none> -> false
+    Orientation: <none> -> 0
+    Pin Name Position Offset: <none> -> 0 mm
+    Pin names: <none> -> true
+    Pin numbers: <none> -> false
+    Position X: <none> -> 220 mm
+    Position Y: <none> -> 120 mm
+    Private: <none> -> false
+    Reference: <none> -> R99
+    Show Pin Name: <none> -> true
+    Show Pin Number: <none> -> false
+    Value: <none> -> R
+  modified SCH_LINE /28f865a0-4433-4a53-bbd7-b62f276848e4/67a136ce-9a43-4815-bf37-5a48e3c5ba88
+    End X: 76.2 mm -> 86.36 mm
+    Length: 25.4 mm -> 35.56 mm
+  removed SCH_LINE /28f865a0-4433-4a53-bbd7-b62f276848e4/84963a83-b6da-4751-9910-f093c3a03bee
+    Color: rgba(0, 0, 0, 0.000) -> <none>
+    End X: 76.2 mm -> <none>
+    End Y: 50.8 mm -> <none>
+    Length: 1.27 mm -> <none>
+    Line Width: 0 mm -> <none>
+    Locked: false -> <none>
+    Private: false -> <none>
+    Start X: 76.2 mm -> <none>
+    Start Y: 49.53 mm -> <none>
+    Wire Style: Solid -> <none>
+  added SCH_LABEL /28f865a0-4433-4a53-bbd7-b62f276848e4/c6a8e6b0-8bea-4c78-9b78-a9bfa0dc4df5
+    Auto Thickness: <none> -> true
+    Bold: <none> -> false
+    Color: <none> -> rgba(0, 0, 0, 0.000)
+    Font: <none> -> Default Font
+    Horizontal Justification: <none> -> Right
+    Italic: <none> -> false
+    Locked: <none> -> false
+    Private: <none> -> false
+    Text: <none> -> SPIKE_NET
+    Text Size: <none> -> 1.27 mm
+    Vertical Justification: <none> -> Bottom
+  removed SCH_LINE /28f865a0-4433-4a53-bbd7-b62f276848e4/dd8fad86-da9c-4a52-b908-cd4a2e7bd87e
+    Color: rgba(0, 0, 0, 0.000) -> <none>
+    End X: 86.36 mm -> <none>
+    End Y: 50.8 mm -> <none>
+    Length: 10.16 mm -> <none>
+    Line Width: 0 mm -> <none>
+    Locked: false -> <none>
+    Private: false -> <none>
+    Start X: 76.2 mm -> <none>
+    Start Y: 50.8 mm -> <none>
+    Wire Style: Solid -> <none>
+  added SCH_LINE /28f865a0-4433-4a53-bbd7-b62f276848e4/ecaf1631-4221-49c7-8356-9fcf3a41b932
+    Color: <none> -> rgba(0, 0, 0, 0.000)
+    End Length: <none> -> 0 mm
+    End Shape: <none> -> None
+    End Stroke Width: <none> -> 0 mm
+    End Width: <none> -> 0 mm
+    End X: <none> -> 210 mm
+    End Y: <none> -> 100 mm
+    Length: <none> -> 10 mm
+    Line Style: <none> -> Solid
+    Line Width: <none> -> 0 mm
+    Locked: <none> -> false
+    Private: <none> -> false
+    Start Length: <none> -> 0 mm
+    Start Shape: <none> -> None
+    Start Stroke Width: <none> -> 0 mm
+    Start Width: <none> -> 0 mm
+    Start X: <none> -> 200 mm
+    Start Y: <none> -> 100 mm

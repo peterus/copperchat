@@ -1,0 +1,972 @@
+{
+  "changes": [
+    {
+      "bbox": [
+        1815291,
+        784758,
+        101139,
+        132283
+      ],
+      "children": [],
+      "id": "/28f865a0-4433-4a53-bbd7-b62f276848e4/00000000-0000-0000-0000-00004549f3ad",
+      "kind": "modified",
+      "properties": [
+        {
+          "after": {
+            "type": "int",
+            "v": 1905000
+          },
+          "before": {
+            "type": "int",
+            "v": 1854200
+          },
+          "name": "Position X"
+        }
+      ],
+      "refdes": "R3",
+      "typeName": "SCH_SYMBOL"
+    },
+    {
+      "bbox": [
+        840740,
+        529589,
+        117002,
+        83822
+      ],
+      "children": [],
+      "id": "/28f865a0-4433-4a53-bbd7-b62f276848e4/00000000-0000-0000-0000-00004549f4be",
+      "kind": "modified",
+      "properties": [
+        {
+          "after": {
+            "type": "string",
+            "v": "22uF"
+          },
+          "before": {
+            "type": "string",
+            "v": "10uF"
+          },
+          "name": "Value"
+        }
+      ],
+      "refdes": "C1",
+      "typeName": "SCH_SYMBOL"
+    },
+    {
+      "bbox": [
+        756920,
+        502920,
+        10160,
+        10160
+      ],
+      "children": [],
+      "id": "/28f865a0-4433-4a53-bbd7-b62f276848e4/10ef5c17-5272-4e7f-89a5-ecf737e33e26",
+      "kind": "removed",
+      "properties": [
+        {
+          "after": {
+            "type": "none"
+          },
+          "before": {
+            "type": "color",
+            "v": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "name": "Color"
+        },
+        {
+          "after": {
+            "type": "none"
+          },
+          "before": {
+            "type": "int",
+            "v": 10160
+          },
+          "name": "Diameter"
+        },
+        {
+          "after": {
+            "type": "none"
+          },
+          "before": {
+            "type": "bool",
+            "v": false
+          },
+          "name": "Locked"
+        },
+        {
+          "after": {
+            "type": "none"
+          },
+          "before": {
+            "type": "bool",
+            "v": false
+          },
+          "name": "Private"
+        }
+      ],
+      "typeName": "SCH_JUNCTION"
+    },
+    {
+      "bbox": [
+        2188570,
+        1158089,
+        41967,
+        83822
+      ],
+      "children": [],
+      "id": "/28f865a0-4433-4a53-bbd7-b62f276848e4/3c8ff4d4-abef-4cfe-a781-27c56cde3632",
+      "kind": "added",
+      "properties": [
+        {
+          "after": {
+            "type": "string",
+            "v": "Resistor"
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Description"
+        },
+        {
+          "after": {
+            "type": "bool",
+            "v": false
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Do not Populate"
+        },
+        {
+          "after": {
+            "type": "bool",
+            "v": false
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Exclude From Bill of Materials"
+        },
+        {
+          "after": {
+            "type": "bool",
+            "v": false
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Exclude From Board"
+        },
+        {
+          "after": {
+            "type": "bool",
+            "v": false
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Exclude From Position Files"
+        },
+        {
+          "after": {
+            "type": "bool",
+            "v": false
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Exclude From Simulation"
+        },
+        {
+          "after": {
+            "type": "string",
+            "v": "R res resistor"
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Keywords"
+        },
+        {
+          "after": {
+            "type": "string",
+            "v": "Resistor"
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Library Description"
+        },
+        {
+          "after": {
+            "type": "string",
+            "v": "Device:R"
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Library Link"
+        },
+        {
+          "after": {
+            "type": "bool",
+            "v": false
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Locked"
+        },
+        {
+          "after": {
+            "type": "bool",
+            "v": false
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Mirror X"
+        },
+        {
+          "after": {
+            "type": "bool",
+            "v": false
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Mirror Y"
+        },
+        {
+          "after": {
+            "label": "0",
+            "type": "enum",
+            "v": 3
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Orientation"
+        },
+        {
+          "after": {
+            "type": "int",
+            "v": 0
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Pin Name Position Offset"
+        },
+        {
+          "after": {
+            "type": "bool",
+            "v": true
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Pin names"
+        },
+        {
+          "after": {
+            "type": "bool",
+            "v": false
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Pin numbers"
+        },
+        {
+          "after": {
+            "type": "int",
+            "v": 2200000
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Position X"
+        },
+        {
+          "after": {
+            "type": "int",
+            "v": 1200000
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Position Y"
+        },
+        {
+          "after": {
+            "type": "bool",
+            "v": false
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Private"
+        },
+        {
+          "after": {
+            "type": "string",
+            "v": "R99"
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Reference"
+        },
+        {
+          "after": {
+            "type": "bool",
+            "v": true
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Show Pin Name"
+        },
+        {
+          "after": {
+            "type": "bool",
+            "v": false
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Show Pin Number"
+        },
+        {
+          "after": {
+            "type": "string",
+            "v": "R"
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Value"
+        }
+      ],
+      "refdes": "R99",
+      "typeName": "SCH_SYMBOL"
+    },
+    {
+      "bbox": [
+        507238,
+        507238,
+        357125,
+        1525
+      ],
+      "children": [],
+      "id": "/28f865a0-4433-4a53-bbd7-b62f276848e4/67a136ce-9a43-4815-bf37-5a48e3c5ba88",
+      "kind": "modified",
+      "properties": [
+        {
+          "after": {
+            "type": "int",
+            "v": 863600
+          },
+          "before": {
+            "type": "int",
+            "v": 762000
+          },
+          "name": "End X"
+        },
+        {
+          "after": {
+            "type": "double",
+            "v": 355600.0
+          },
+          "before": {
+            "type": "double",
+            "v": 254000.0
+          },
+          "name": "Length"
+        }
+      ],
+      "typeName": "SCH_LINE"
+    },
+    {
+      "bbox": [
+        761238,
+        494538,
+        1525,
+        14225
+      ],
+      "children": [],
+      "id": "/28f865a0-4433-4a53-bbd7-b62f276848e4/84963a83-b6da-4751-9910-f093c3a03bee",
+      "kind": "removed",
+      "properties": [
+        {
+          "after": {
+            "type": "none"
+          },
+          "before": {
+            "type": "color",
+            "v": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "name": "Color"
+        },
+        {
+          "after": {
+            "type": "none"
+          },
+          "before": {
+            "type": "int",
+            "v": 762000
+          },
+          "name": "End X"
+        },
+        {
+          "after": {
+            "type": "none"
+          },
+          "before": {
+            "type": "int",
+            "v": 508000
+          },
+          "name": "End Y"
+        },
+        {
+          "after": {
+            "type": "none"
+          },
+          "before": {
+            "type": "double",
+            "v": 12700.0
+          },
+          "name": "Length"
+        },
+        {
+          "after": {
+            "type": "none"
+          },
+          "before": {
+            "type": "int",
+            "v": 0
+          },
+          "name": "Line Width"
+        },
+        {
+          "after": {
+            "type": "none"
+          },
+          "before": {
+            "type": "bool",
+            "v": false
+          },
+          "name": "Locked"
+        },
+        {
+          "after": {
+            "type": "none"
+          },
+          "before": {
+            "type": "bool",
+            "v": false
+          },
+          "name": "Private"
+        },
+        {
+          "after": {
+            "type": "none"
+          },
+          "before": {
+            "type": "int",
+            "v": 762000
+          },
+          "name": "Start X"
+        },
+        {
+          "after": {
+            "type": "none"
+          },
+          "before": {
+            "type": "int",
+            "v": 495300
+          },
+          "name": "Start Y"
+        },
+        {
+          "after": {
+            "type": "none"
+          },
+          "before": {
+            "label": "Solid",
+            "type": "enum",
+            "v": 0
+          },
+          "name": "Wire Style"
+        }
+      ],
+      "typeName": "SCH_LINE"
+    },
+    {
+      "bbox": [
+        1897008,
+        977138,
+        104580,
+        23609
+      ],
+      "children": [],
+      "id": "/28f865a0-4433-4a53-bbd7-b62f276848e4/c6a8e6b0-8bea-4c78-9b78-a9bfa0dc4df5",
+      "kind": "added",
+      "properties": [
+        {
+          "after": {
+            "type": "bool",
+            "v": true
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Auto Thickness"
+        },
+        {
+          "after": {
+            "type": "bool",
+            "v": false
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Bold"
+        },
+        {
+          "after": {
+            "type": "color",
+            "v": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Color"
+        },
+        {
+          "after": {
+            "type": "string",
+            "v": "Default Font"
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Font"
+        },
+        {
+          "after": {
+            "label": "Right",
+            "type": "enum",
+            "v": 1
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Horizontal Justification"
+        },
+        {
+          "after": {
+            "type": "bool",
+            "v": false
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Italic"
+        },
+        {
+          "after": {
+            "type": "bool",
+            "v": false
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Locked"
+        },
+        {
+          "after": {
+            "type": "bool",
+            "v": false
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Private"
+        },
+        {
+          "after": {
+            "type": "string",
+            "v": "SPIKE_NET"
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Text"
+        },
+        {
+          "after": {
+            "type": "int",
+            "v": 12700
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Text Size"
+        },
+        {
+          "after": {
+            "label": "Bottom",
+            "type": "enum",
+            "v": 1
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Vertical Justification"
+        }
+      ],
+      "typeName": "SCH_LABEL"
+    },
+    {
+      "bbox": [
+        761238,
+        507238,
+        103125,
+        1525
+      ],
+      "children": [],
+      "id": "/28f865a0-4433-4a53-bbd7-b62f276848e4/dd8fad86-da9c-4a52-b908-cd4a2e7bd87e",
+      "kind": "removed",
+      "properties": [
+        {
+          "after": {
+            "type": "none"
+          },
+          "before": {
+            "type": "color",
+            "v": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "name": "Color"
+        },
+        {
+          "after": {
+            "type": "none"
+          },
+          "before": {
+            "type": "int",
+            "v": 863600
+          },
+          "name": "End X"
+        },
+        {
+          "after": {
+            "type": "none"
+          },
+          "before": {
+            "type": "int",
+            "v": 508000
+          },
+          "name": "End Y"
+        },
+        {
+          "after": {
+            "type": "none"
+          },
+          "before": {
+            "type": "double",
+            "v": 101600.0
+          },
+          "name": "Length"
+        },
+        {
+          "after": {
+            "type": "none"
+          },
+          "before": {
+            "type": "int",
+            "v": 0
+          },
+          "name": "Line Width"
+        },
+        {
+          "after": {
+            "type": "none"
+          },
+          "before": {
+            "type": "bool",
+            "v": false
+          },
+          "name": "Locked"
+        },
+        {
+          "after": {
+            "type": "none"
+          },
+          "before": {
+            "type": "bool",
+            "v": false
+          },
+          "name": "Private"
+        },
+        {
+          "after": {
+            "type": "none"
+          },
+          "before": {
+            "type": "int",
+            "v": 762000
+          },
+          "name": "Start X"
+        },
+        {
+          "after": {
+            "type": "none"
+          },
+          "before": {
+            "type": "int",
+            "v": 508000
+          },
+          "name": "Start Y"
+        },
+        {
+          "after": {
+            "type": "none"
+          },
+          "before": {
+            "label": "Solid",
+            "type": "enum",
+            "v": 0
+          },
+          "name": "Wire Style"
+        }
+      ],
+      "typeName": "SCH_LINE"
+    },
+    {
+      "bbox": [
+        1999238,
+        999238,
+        101525,
+        1525
+      ],
+      "children": [],
+      "id": "/28f865a0-4433-4a53-bbd7-b62f276848e4/ecaf1631-4221-49c7-8356-9fcf3a41b932",
+      "kind": "added",
+      "properties": [
+        {
+          "after": {
+            "type": "color",
+            "v": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Color"
+        },
+        {
+          "after": {
+            "type": "int",
+            "v": 0
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "End Length"
+        },
+        {
+          "after": {
+            "label": "None",
+            "type": "enum",
+            "v": 0
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "End Shape"
+        },
+        {
+          "after": {
+            "type": "int",
+            "v": 0
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "End Stroke Width"
+        },
+        {
+          "after": {
+            "type": "int",
+            "v": 0
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "End Width"
+        },
+        {
+          "after": {
+            "type": "int",
+            "v": 2100000
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "End X"
+        },
+        {
+          "after": {
+            "type": "int",
+            "v": 1000000
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "End Y"
+        },
+        {
+          "after": {
+            "type": "double",
+            "v": 100000.0
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Length"
+        },
+        {
+          "after": {
+            "label": "Solid",
+            "type": "enum",
+            "v": 0
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Line Style"
+        },
+        {
+          "after": {
+            "type": "int",
+            "v": 0
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Line Width"
+        },
+        {
+          "after": {
+            "type": "bool",
+            "v": false
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Locked"
+        },
+        {
+          "after": {
+            "type": "bool",
+            "v": false
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Private"
+        },
+        {
+          "after": {
+            "type": "int",
+            "v": 0
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Start Length"
+        },
+        {
+          "after": {
+            "label": "None",
+            "type": "enum",
+            "v": 0
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Start Shape"
+        },
+        {
+          "after": {
+            "type": "int",
+            "v": 0
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Start Stroke Width"
+        },
+        {
+          "after": {
+            "type": "int",
+            "v": 0
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Start Width"
+        },
+        {
+          "after": {
+            "type": "int",
+            "v": 2000000
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Start X"
+        },
+        {
+          "after": {
+            "type": "int",
+            "v": 1000000
+          },
+          "before": {
+            "type": "none"
+          },
+          "name": "Start Y"
+        }
+      ],
+      "typeName": "SCH_LINE"
+    }
+  ],
+  "docType": "kicad_sch",
+  "path": "after/ecc83-pp.kicad_sch"
+}

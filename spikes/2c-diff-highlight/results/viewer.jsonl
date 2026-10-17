@@ -1,0 +1,23 @@
+{"q":"2C-viewer","check":"baseline_has_no_highlight_api","status":"PASS","evidence":{"highlight":"undefined","highlight_boxes":"undefined","selectLen":1}}
+{"q":"2C-viewer","check":"baseline_single_select_by_ref","status":"PASS","evidence":"C105"}
+{"q":"2C-viewer","check":"baseline_select_array_is_not_multi_select","status":"PASS","evidence":{"threw":true,"msg":"Error: Unable to select item C105,C101, could not find an object that matched."}}
+{"q":"2C-viewer","check":"baseline_symbol_uuid_available","status":"PASS","evidence":"00000000-0000-0000-0000-00004b4b15e7"}
+{"q":"2C-viewer","check":"baseline_no_page_errors","status":"PASS","evidence":[]}
+{"q":"2C-viewer","check":"root_sheet_refs_available","status":"PASS","evidence":{"n":10,"sample":["P102","D101","C104","C102","P101","C101"]}}
+{"q":"2C-viewer","check":"highlight_set_found_and_missing","status":"PASS","evidence":{"res":{"found":["C105","P102","D101","C104","C102"],"missing":["NOPE99"]},"ms":4}}
+{"q":"2C-viewer","check":"highlight_set_visible","status":"PASS","evidence":{"none":0,"on":1049}}
+{"q":"2C-viewer","check":"highlighted_count","status":"PASS","evidence":5}
+{"q":"2C-viewer","check":"highlight_survives_select","status":"PASS","evidence":{"stillN":5,"both":1049}}
+{"q":"2C-viewer","check":"clear_restores_pixels","status":"PASS","evidence":{"none":"dbb2b8cf8e69","off":"dbb2b8cf8e69"}}
+{"q":"2C-viewer","check":"highlight_all_refs_perf","status":"PASS","evidence":{"n":10,"ms":10}}
+{"q":"2C-viewer","check":"no_page_errors","status":"PASS","evidence":[]}
+{"q":"2C-viewer","check":"project_pages","status":"PASS","evidence":[{"file":"complex_hierarchy.kicad_sch","sheet_path":"/5b9623a5-6d01-41fc-9865-e1bc779418c8","name":"Root","project_path":"complex_hierarchy.kicad_sch:/5b9623a5-6d01-41fc-9865-e1bc779418c8"},{"file":"ampli_ht.kicad_sch","sheet_path":"/5b9623a5-6d01-41fc-9865-e1bc779418c8/00000000-0000-0000-0000-00004b3a1333","name":"ampli_ht_vertical","project_path":"ampli_ht.kicad_sch:/5b9623a5-6d01-41fc-9865-e1bc779418c8/00000000-0000-0000-0000-00004b3a1333"},{"file":"ampli_ht.kicad_sch","sheet_path":"/5b9623a5-6d01-41fc-9865-e1bc779418c8/00000000-0000-0000-0000-00004b3a13a4","name":"ampli_ht_horizontal","project_path":"ampli_ht.kicad_sch:/5b9623a5-6d01-41fc-9865-e1bc779418c8/00000000-0000-0000-0000-00004b3a13a4"}]}
+{"q":"2C-viewer","check":"other_sheet_refs_reported_missing","status":"PASS","evidence":{"found":["C105"],"missing":["R201","R301"]}}
+{"q":"2C-viewer","check":"per_instance_highlight","status":"PASS","evidence":[{"sheet":"779418c8","res":{"found":["C105"],"missing":[]},"orange":214},{"sheet":"4b3a1333","res":{"found":["R201"],"missing":[]},"orange":249},{"sheet":"4b3a13a4","res":{"found":["R301"],"missing":[]},"orange":249}]}
+{"q":"2C-viewer","check":"highlight_cleared_on_page_switch","status":"PASS","evidence":{"before":1,"afterSwitch":0,"note":"unpatched-load state was stale (1 after switch) in the first run; patch resets in load()","viewer":"SchematicViewer"}}
+{"q":"2C-viewer","check":"no_page_errors","status":"PASS","evidence":[]}
+{"q":"2C-viewer","check":"diff_bbox_matches_viewer_symbol_bbox","status":"PASS","evidence":{"diff_mm":{"x":166.499,"y":65.6589,"w":16.8453,"h":8.3822},"viewer_mm":{"x":166.36727079468292,"y":65.88759999999999,"w":16.99762457565629,"h":7.924800000000005}}}
+{"q":"2C-viewer","check":"highlight_500_boxes_perf","status":"PASS","evidence":{"n":500,"set_ms":6,"clear_ms":0}}
+{"q":"2C-viewer","check":"highlight_boxes_visible","status":"PASS","evidence":{"n":1,"orange":285}}
+{"q":"2C-viewer","check":"no_page_errors","status":"PASS","evidence":[]}
+{"q":"2C-viewer","check":"moved_symbol_diff_bbox_is_after_box","status":"PASS","evidence":{"diff_mm":{"x":181.5291,"y":78.4758,"w":10.1139,"h":13.2283},"before":{"x":181.46874541318758,"y":78.34417301833346,"w":6.26422484680478,"h":13.491649664224681},"after":{"x":181.46874541318758,"y":78.34417301833346,"w":10.301254586812433,"h":13.491649664224681},"which":"after"}}
