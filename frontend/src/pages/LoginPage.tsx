@@ -43,7 +43,10 @@ export function LoginPage() {
           <input type="password" className="mt-1 w-full rounded border border-border bg-bg px-3 py-2"
             autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required />
         </label>
-        {error && <p role="alert" className="text-sm text-danger">{error}</p>}
+        {/* Always mounted so screen readers announce a message that appears in it. */}
+        <div aria-live="assertive" aria-atomic="true">
+          {error && <p role="alert" className="text-sm text-danger">{error}</p>}
+        </div>
         <button type="submit" disabled={busy} className="w-full rounded bg-accent px-3 py-2 font-medium text-accent-fg disabled:opacity-60">
           Sign in
         </button>

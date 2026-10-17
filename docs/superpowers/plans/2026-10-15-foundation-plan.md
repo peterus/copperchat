@@ -828,6 +828,12 @@ These extend C1–C8 and are equally binding.
   (not for prereleases) on tags `v<semver>` only.
   Follow-up: the app image adds `poppler-utils` (the Claude CLI's Read tool renders PDF
   pages with `pdftoppm`); `scripts/app-image-tools.sh` checks it as uid 1000 in the e2e job.
+  Follow-up (login UX): `useAuth.login()` confirms the session with `GET /auth/me` after
+  the 204; a 401 there means the browser dropped the cookie → `cookieNotStoredError(
+  window.isSecureContext)` on the login page (no redirect, no loop). Login errors also cover
+  5xx and network failures; the alert sits in an always-mounted `aria-live` region.
+  Backend: `auth.drops_secure_cookie()` → WARNING on a login over plain http (scheme after
+  `FORWARDED_ALLOW_IPS`, loopback exempt) and at startup for an `http://` `PUBLIC_BASE_URL`.
 - **HTTP additions:** `GET /auth/me` → `{username}`; `GET /skills/{name}`,
   `POST /skills/{name}/acknowledge-update`, `GET /projects/{id}/uploads/{uploadId}` (8);
   `GET /projects/{id}/hit-test` (6B fallback only); `agent-view` takes
