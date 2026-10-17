@@ -76,3 +76,21 @@ jobs:
       - run: npm run lint
       - run: npm test -- --run
       - run: npm run build
+      - run: ./scripts/check-kicanvas.sh
+      # Real KiCanvas bundle on the KiCad 11 fixtures (API mocked), desktop + phone emulation.
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test --reporter=line
+
+  kicanvas-reproducible:
+    # The committed bundle must be exactly what the pinned commit + patch series builds to.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: ./scripts/vendor-kicanvas.sh
+      - run: git diff --exit-code -- public/vendor/kicanvas

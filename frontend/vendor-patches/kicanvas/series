@@ -7,3 +7,5 @@ embed-host-integration.patch
 touch-pan-zoom.patch
 kicad11-nets-by-name.patch
 quiet-parser-warnings.patch
+schematic-sheet-instances.patch
+board-pick-footprint.patch

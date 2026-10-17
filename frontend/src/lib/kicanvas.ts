@@ -77,12 +77,13 @@ type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null;
 
 /**
- * The reference of a picked item, or null for things that cannot be @mentioned: hierarchical
- * sheets (they have a `sheetfile`), unannotated parts (`R?`) and power symbols (`#PWR01`).
- * Class names are not used: the bundle may be minified.
+ * The reference of a picked item (schematic symbol or footprint), or null for things that cannot
+ * be @mentioned: hierarchical sheets (no `reference`), unannotated parts (`R?`) and power
+ * symbols (`#PWR01`). Class names are not used: the bundle may be minified. (Footprints also
+ * carry a `sheetfile`, so that is no sheet marker.)
  */
 export function refOf(item: unknown): string | null {
-  if (!isObj(item) || 'sheetfile' in item) return null;
+  if (!isObj(item)) return null;
   const ref = item.reference;
   if (typeof ref !== 'string' || !ref || ref.endsWith('?') || ref.startsWith('#')) return null;
   return ref;

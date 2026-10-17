@@ -1,0 +1,31 @@
+diff --git a/src/viewers/board/viewer.ts b/src/viewers/board/viewer.ts
+index ba88b71..6933551 100644
+--- a/src/viewers/board/viewer.ts
++++ b/src/viewers/board/viewer.ts
+@@ -59,17 +59,21 @@ export class BoardViewer extends DocumentViewer<
+         mouse: Vec2,
+         items: Generator<{ layer: ViewLayer; bbox: BBox }, void, unknown>,
+     ): void {
+-        const selectableItems = new Map<string, unknown>();
++        // CopperChat: a tap on a part selects the part. Upstream offered a
++        // context menu as soon as a footprint overlapped a pad/track/zone net,
++        // which made picking parts (for @mentions) on phones awkward. Nets
++        // are offered only where no footprint is hit.
++        const footprints = new Map<string, unknown>();
++        const nets = new Map<string, unknown>();
+         for (const { bbox } of items) {
+             const item = bbox.context;
+             if (item instanceof board_items.Footprint) {
+-                selectableItems.set(`Footprint: ${item.reference}`, item);
++                footprints.set(`Footprint: ${item.reference}`, item);
+             } else if (kicad_common.isNetInfo(item)) {
+-                selectableItems.set(`Net: ${item.netname}`, item);
+-            } else {
+-                console.log(item);
++                nets.set(`Net: ${item.netname}`, item);
+             }
+         }
++        const selectableItems = footprints.size > 0 ? footprints : nets;
+ 
+         if (selectableItems.size === 0) {
+             this.select(null);

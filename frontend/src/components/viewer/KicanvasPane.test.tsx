@@ -118,7 +118,7 @@ describe('KicanvasPane', () => {
     const kc = await loadReady();
     act(() => kc.pick({ reference: 'R12' }));
     expect(useComposer.getState().text).toBe('@R12 ');
-    act(() => kc.pick({ reference: 'Power', sheetfile: 'power.kicad_sch' }));
+    act(() => kc.pick({ sheetname: 'Power', sheetfile: 'power.kicad_sch' }));
     act(() => kc.pick({ reference: '#PWR01' }));
     act(() => kc.pick(null));
     expect(useComposer.getState().text).toBe('@R12 ');

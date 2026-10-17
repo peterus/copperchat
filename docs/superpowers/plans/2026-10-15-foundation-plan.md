@@ -721,6 +721,23 @@ These extend C1–C8 and are equally binding.
   (same interface on both spike paths); KiCanvas vendored under
   `frontend/public/vendor/kicanvas/`; fallback only: `ImageBlock.viewbox_mm`,
   `copperchat.views.hit_test`, header `X-CopperChat-Viewbox`.
+- **Phase 6B (as built, owner decision 2026-10-17: KiCanvas + patches, no fork):**
+  KiCanvas `b031159` + the patch series in `frontend/vendor-patches/kicanvas/` (`series`,
+  README lists why each patch exists), built by `frontend/scripts/vendor-kicanvas.sh`, bundle
+  committed, CI job `kicanvas-reproducible` rebuilds and diffs, `check-kicanvas.sh` checks
+  pin/license/sha/offline. The open response adds `viewBytes: {<view file>: bytes}`
+  (`copperchat.views.view_bytes`) for the large-board guard; per-device limits live in
+  `@/stores/viewerPrefs` (localStorage `copperchat.viewer.limits`, Settings › Viewer; defaults
+  touch 15 MB / desktop 60 MB). `viewFileUrl(projectId, name, rev)` replaces the planned
+  `snapshotUrl` (`GET /view/{doc}` is not used by the viewer, X3); URL builders take `rev`.
+  `ViewState` adds `revs` (local reload counter per doc, used as `?v=` and reload key; the
+  server `versions` only order frames) and accepts one lower version per doc after
+  `ConnectionState === 'resumed'` (X2); `createViewStore` takes `Pick<WsClient, 'onFrame' |
+  'onConnection'>`. `KicadPaneProps` adds `files`, `find?: {ref, seq}`, `onFindResult?`
+  and uses `rev` instead of `version`. `@/lib/kicanvas`: `loadKicanvas`, `kicanvasTheme`,
+  `refOf`, `buildSheetTree`, `breadcrumb`, `findRefPage`, `zoomViewer`, `fitViewer`. Playwright
+  `frontend/e2e/viewer.spec.ts` runs the real bundle on the backend's KiCad 11 fixtures (CI
+  `frontend` job). `ViewerSlot` keeps `data-testid="viewer-slot"`.
 - **Phase 9:** `Settings.vapid_subject`; `Broadcaster.add_listener(listener)`;
   `app.state.push` (`PushServices`); push payload `{title, body, url, tag}`;
   any visible connection suppresses push.
@@ -941,7 +958,7 @@ login require the session cookie)
 - `POST /auth/login {username,password}` → 204 + cookie; `POST /auth/logout`; `GET /auth/me` [3]
 - `GET /health` (no auth) → `{"status":"ok","kicad":"<version or null>"}` [3]
 - `GET /projects` → `[{id,name,relPath,hasSch,hasPcb,locked}]` [3]
-- `POST /projects/{id}/open` → `{id, readOnly, lockFiles, kicadVersion, viewFiles}` [3; `viewFiles` 4]
+- `POST /projects/{id}/open` → `{id, readOnly, lockFiles, kicadVersion, viewFiles, viewBytes}` [3; `viewFiles` 4; `viewBytes` 6B]
 - `GET /projects/{id}/messages?limit=50&before=<id>` → `{messages, hasMore}` [5]
 - `GET /projects/{id}/view/{doc}` → KiCanvas snapshot file, `ETag` = view version [4]
 - `GET /projects/{id}/agent-view?doc=&mode=&theme=&layers=` → PNG [4]

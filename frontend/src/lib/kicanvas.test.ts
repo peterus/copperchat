@@ -41,10 +41,12 @@ const PAGES = [root, amp1, reg, board, power, amp2];
 
 describe('refOf', () => {
   it('reads the reference of symbols and footprints', () => {
-    expect(refOf({ reference: 'R12' })).toBe('R12');
+    expect(refOf({ reference: 'R12', lib_id: 'Device:R' })).toBe('R12');
+    // KiCad footprints also record the sheet they came from
+    expect(refOf({ reference: 'U1', sheetfile: 'amp.kicad_sch', sheetname: 'Amp', pads: [] })).toBe('U1');
   });
   it('ignores sheets, unannotated parts, power symbols and non-objects', () => {
-    expect(refOf({ reference: 'X', sheetfile: 'a.kicad_sch' })).toBeNull();
+    expect(refOf({ sheetname: 'Power', sheetfile: 'power.kicad_sch', pins: [] })).toBeNull();
     expect(refOf({ reference: 'R?' })).toBeNull();
     expect(refOf({ reference: '#PWR01' })).toBeNull();
     expect(refOf({ reference: '' })).toBeNull();
