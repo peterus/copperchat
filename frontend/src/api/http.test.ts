@@ -55,13 +55,14 @@ describe('http client', () => {
     expect((err as ApiError).retryAfterS).toBe(42);
   });
 
-  it('calls the unauthorized handler on 401, except for the login call itself', async () => {
+  it('calls the unauthorized handler on 401, except for the auth store\'s own login and session check', async () => {
     const handler = vi.fn();
     setUnauthorizedHandler(handler);
     vi.stubGlobal('fetch', vi.fn(async () => respond(401, { detail: 'not authenticated' })));
     await expect(apiGet('/projects')).rejects.toBeInstanceOf(ApiError);
     expect(handler).toHaveBeenCalledTimes(1);
     await expect(apiPost('/auth/login', { username: 'a', password: 'b' })).rejects.toBeInstanceOf(ApiError);
+    await expect(apiGet('/auth/me')).rejects.toBeInstanceOf(ApiError);
     expect(handler).toHaveBeenCalledTimes(1);
     setUnauthorizedHandler(null);
   });

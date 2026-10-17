@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
+import logging
 import math
 import os
 import secrets
@@ -11,6 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import urlsplit
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
@@ -30,6 +33,14 @@ _hasher = PasswordHasher()
 _DUMMY_HASH = _hasher.hash("copperchat-timing-equaliser")
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+log = logging.getLogger(__name__)
+
+_COOKIE_ADVICE = (
+    "browsers drop the Secure session cookie over plain http (except on localhost), so "
+    "users stay signed out. Use HTTPS (docs/deployment/cloudflare.md; behind an HTTPS proxy "
+    "check FORWARDED_ALLOW_IPS) or set COOKIE_SECURE=false for plain-http LAN access."
+)
+INSECURE_COOKIE_WARNING = f"COOKIE_SECURE=true but a login came over plain http: {_COOKIE_ADVICE}"
 
 
 @dataclass(frozen=True)
@@ -161,6 +172,33 @@ CurrentUser = Annotated[User, Depends(require_user)]
 """FastAPI dependency alias: `_: CurrentUser` in a route signature requires a login."""
 
 
+def _is_loopback(host: str | None) -> bool:
+    if not host:
+        return False
+    if host.lower() == "localhost" or host.lower().endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
+def drops_secure_cookie(cookie_secure: bool, scheme: str, host: str | None) -> bool:
+    """True when browsers will discard the session cookie: Secure, sent over http, and
+    not to localhost (a secure context even over http)."""
+    return cookie_secure and scheme == "http" and not _is_loopback(host)
+
+
+def startup_cookie_warning(settings: Settings) -> str | None:
+    """A warning for the startup log when PUBLIC_BASE_URL is plain http but cookies are Secure."""
+    if not settings.public_base_url:
+        return None
+    url = urlsplit(settings.public_base_url)
+    if drops_secure_cookie(settings.cookie_secure, url.scheme.lower(), url.hostname):
+        return f"PUBLIC_BASE_URL is plain http while COOKIE_SECURE=true: {_COOKIE_ADVICE}"
+    return None
+
+
 def _client_key(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
@@ -203,6 +241,9 @@ async def login(body: LoginBody, request: Request, response: Response) -> None:
         (sid, row["id"], utcnow_iso()),
     )
     settings: Settings = state.settings
+    # request.url.scheme honours X-Forwarded-Proto from FORWARDED_ALLOW_IPS (uvicorn).
+    if drops_secure_cookie(settings.cookie_secure, request.url.scheme, request.url.hostname):
+        log.warning(INSECURE_COOKIE_WARNING)
     response.set_cookie(
         COOKIE_NAME,
         state.serializer.dumps({"sid": sid}),

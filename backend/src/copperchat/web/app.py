@@ -79,6 +79,8 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         check_model_credentials(settings)
+        if (warning := auth.startup_cookie_warning(settings)) is not None:
+            auth.log.warning(warning)
         settings.data_dir.mkdir(parents=True, exist_ok=True)
         db = await Database.open(settings.data_dir / "copperchat.db")
         sessions = KicadSessionManager(settings, launcher, client_factory=client_factory)

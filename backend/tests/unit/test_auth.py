@@ -119,3 +119,67 @@ def test_rate_limiter_forgets_expired_clients() -> None:
     now[0] = 61.0
     assert limiter.retry_after("1.2.3.4") is None
     assert limiter.tracked_clients() == 0
+
+
+def test_login_over_plain_http_with_secure_cookie_warns(
+    make_settings: Callable[..., Settings], caplog: pytest.LogCaptureFixture
+) -> None:
+    with TestClient(
+        create_app(make_settings(cookie_secure=True)), base_url="http://192.168.1.5"
+    ) as client:
+        assert client.post("/api/auth/login", json=GOOD).status_code == 204
+    assert any(
+        r.levelname == "WARNING" and "COOKIE_SECURE=false" in r.getMessage() for r in caplog.records
+    )
+
+
+@pytest.mark.parametrize(
+    ("cookie_secure", "base_url", "headers"),
+    [
+        (False, "http://192.168.1.5", {}),
+        (True, "https://192.168.1.5", {}),
+        (True, "http://localhost:8080", {}),
+        (True, "http://127.0.0.1", {}),
+        # cloudflared in front: TestClient's peer is "testclient", so trust any proxy
+        (True, "http://copperchat.example.com", {"x-forwarded-proto": "https"}),
+    ],
+)
+def test_login_without_cookie_problem_does_not_warn(
+    make_settings: Callable[..., Settings],
+    caplog: pytest.LogCaptureFixture,
+    cookie_secure: bool,
+    base_url: str,
+    headers: dict[str, str],
+) -> None:
+    app = create_app(make_settings(cookie_secure=cookie_secure))
+    if headers:
+        from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+        app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
+    with TestClient(app, base_url=base_url) as client:
+        assert client.post("/api/auth/login", json=GOOD, headers=headers).status_code == 204
+    assert not [r for r in caplog.records if "COOKIE_SECURE" in r.getMessage()]
+
+
+@pytest.mark.parametrize(
+    ("cookie_secure", "public_base_url", "warns"),
+    [
+        (True, "http://192.168.1.5:8090", True),
+        (True, "https://copperchat.example.com", False),
+        (True, "http://localhost:8090", False),
+        (True, None, False),
+        (False, "http://192.168.1.5:8090", False),
+    ],
+)
+def test_startup_warns_about_plain_http_public_base_url(
+    make_settings: Callable[..., Settings],
+    caplog: pytest.LogCaptureFixture,
+    cookie_secure: bool,
+    public_base_url: str | None,
+    warns: bool,
+) -> None:
+    settings = make_settings(cookie_secure=cookie_secure, public_base_url=public_base_url)
+    with TestClient(create_app(settings)):
+        pass
+    warned = [r for r in caplog.records if "PUBLIC_BASE_URL is plain http" in r.getMessage()]
+    assert bool(warned) is warns

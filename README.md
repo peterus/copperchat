@@ -63,8 +63,9 @@ compose up -d` (your projects and `/data` stay).
 name; `docker compose pull` switches back to the published image.
 
 On plain `http://` from another machine in your LAN (not `localhost`), set
-`COOKIE_SECURE=false`, otherwise the browser drops the login cookie. For anything beyond
-your LAN use HTTPS (next section).
+`COOKIE_SECURE=false`, otherwise the browser drops the login cookie: the login page then
+reports "your browser did not keep the session cookie" and the server log warns about it.
+For anything beyond your LAN use HTTPS (next section).
 
 ## Remote access and notifications
 

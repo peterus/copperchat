@@ -93,3 +93,20 @@ test('real backend with dev_fake_agent (opt-in)', async ({ page }) => {
   await page.getByRole('button', { name: 'Send' }).click();
   await expect(page.locator('[data-role="assistant"]').last()).toBeVisible({ timeout: 30_000 });
 });
+
+test('mocked API: a session cookie the browser dropped is explained, not looped', async ({ page }) => {
+  let logins = 0;
+  await page.route('**/api/auth/me', (r) => r.fulfill({ status: 401, json: { detail: 'not logged in' } }));
+  await page.route('**/api/auth/login', async (r) => {
+    logins += 1;
+    await r.fulfill({ status: 204 });
+  });
+  await page.goto('/projects');
+  await page.getByLabel('Username').fill('admin');
+  await page.getByLabel('Password').fill('secret');
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page.getByRole('alert')).toContainText('did not keep the session cookie');
+  await expect(page).toHaveURL(/\/login$/);
+  await expect(page.getByLabel('Username')).toHaveValue('admin');
+  expect(logins).toBe(1);
+});
