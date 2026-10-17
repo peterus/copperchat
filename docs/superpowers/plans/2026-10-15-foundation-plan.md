@@ -177,10 +177,11 @@ names the owning task where its test lives.
 3. **Project opened in KiCad GUI at the same time** (lock file present) —
    expected: project opens read-only with the "open in KiCad — close it
    there" banner; no autosave, no snapshot restore. Tests: Phase 3 Task 3.5,
-   Phase 7 Task 7.2.
+   Phase 7 Tasks 7.2, 7.3.
 4. **Files changed outside CopperChat between turns** (`git pull`, KiCad GUI
    save) — expected: hash check before the turn reloads the documents and
-   posts a chat notice; the agent never sees stale data. Test: Phase 7 Task 7.4.
+   posts a chat notice; the agent never sees stale data. Test: Phase 7 Task 7.4
+   (+ `tests/kicad/test_history_real.py` against a real api-server).
 5. **Path traversal / escape in user-controlled paths** — project ids,
    upload filenames, part MPN folder names, skill names, `part-researcher`
    write paths, history snapshot ids — expected: rejected with 400 / tool
@@ -642,7 +643,7 @@ These extend C1–C8 and are equally binding.
   `tool_result` → `{toolUseId, isError, images: [{url}]}`; `image` → `{url}`;
   notices may carry `{action: "restore", snapshotId}` (Phase 7); error rows
   may carry `{code}` (`kicad_unavailable` from the engine, `autosave_failed`
-  from Phase 7). **Sub-agent rows** (Phase 5 Task 5.11b): `text` /
+  and `kicad_restart_failed` from Phase 7). **Sub-agent rows** (Phase 5 Task 5.11b): `text` /
   `tool_use` / `tool_result` rows produced by an SDK sub-agent carry
   `parentToolUseId` = the `toolUseId` of the main agent's `Agent` call; they
   are complete (`status: "done"`), their inputs/results are truncated (2000 /
@@ -690,6 +691,22 @@ These extend C1–C8 and are equally binding.
   `GET /projects/{id}/history/{snapshotId}/preview` → PNG; errors
   `InvalidSnapshotId` (400), `SnapshotNotFound` (404), `AgentBusy` (409);
   notice `action` values `restore`, `restored`, `external-change`.
+  As built: `install_history(app)` runs in the lifespan **before**
+  `runtime.resume_pending()` (sets `runtime.hooks_factory`); errors are
+  `CopperChatError`s with codes `invalid_snapshot_id`, `snapshot_not_found`,
+  `agent_busy`, `corrupt_snapshot` (422, tampered manifest/file), `read_only` (409);
+  `KicadSessionManager.reopen(project)` (close + fresh open, keeps `view_version`)
+  and `KicadSession.closed` (a closed current session is never returned by `open`);
+  `HistoryService.open_session(project)` / `.lock(project)` (restore, turn-start
+  hash check and autosave are serialised per project); restore of a project that
+  is not open only copies files (no KiCad start); failed restart in `_recover` posts
+  an error row with `code: "kicad_restart_failed"` (never `kicad_unavailable`, X18);
+  `.kicad-agent/.gitignore` and git `EXCLUDED_DIRS` also cover `images/` (Phase 5
+  tool images) and git pathspecs exclude `~*.lck`; git runs with
+  `core.fsmonitor=false`, `core.hooksPath=/dev/null`. Frontend:
+  `@/components/history/{ConfirmRestore, RestoreOffer, restore}` (crash notices with
+  `action: "restore"` render a confirmed "Restore snapshot" button);
+  `@/api/http` error messages also read CopperChat's `{error: {message}}` body.
 - **Phase 8:** table `uploads`; `copperchat.agent.attachments.{attachment_exists, build_user_content}`;
   `copperchat.skills.assembly.{SkillBundle(+researcher_skill), assemble_skills, apply_skills}`;
   `copperchat.research.agent.{RESEARCHER_NAME, researcher_definition}`;
