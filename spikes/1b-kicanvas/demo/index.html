@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+    <title>KiCanvas evaluation demo — CopperChat</title>
+    <script>
+      // KiCanvas reads its theme from localStorage when the module loads (the
+      // embed's theme attribute is ignored at the pinned commit), so this must
+      // run before kicanvas.js is imported. Dark = witchhazel, light = kicad.
+      const t = localStorage.getItem("kc:prefs:theme");
+      if (!t) localStorage.setItem("kc:prefs:theme", JSON.stringify({ val: "witchhazel" }));
+      const light = (JSON.parse(localStorage.getItem("kc:prefs:theme")).val === "kicad");
+      document.documentElement.dataset.theme = light ? "light" : "dark";
+    </script>
+    <link rel="stylesheet" href="fonts/fonts.css" />
+    <link rel="stylesheet" href="demo.css" />
+    <script type="module" src="vendor/kicanvas.js"></script>
+    <script type="module" src="demo.js"></script>
+  </head>
+  <body>
+    <header class="bar">
+      <span class="brand">KiCanvas <small>eval</small></span>
+      <select id="project" aria-label="Project"></select>
+      <nav class="tabs" role="tablist">
+        <button role="tab" data-tab="sch" aria-selected="true">Schematic</button>
+        <button role="tab" data-tab="pcb" aria-selected="false">PCB</button>
+      </nav>
+      <button id="theme" class="ghost" title="Toggle dark/light (reloads the page)">Light</button>
+    </header>
+
+    <main class="layout">
+      <section class="stage">
+        <div id="banner" class="banner" hidden></div>
+        <div id="viewer-sch" class="viewer" data-tab="sch"></div>
+        <div id="viewer-pcb" class="viewer" data-tab="pcb" hidden></div>
+      </section>
+
+      <aside class="panel">
+        <div class="card">
+          <div class="label">Selected</div>
+          <div id="sel-ref" class="ref">—</div>
+          <div id="sel-meta" class="meta">Tap or click a symbol / footprint.</div>
+          <div class="chip-row"><code id="sel-chip" class="chip" hidden></code></div>
+        </div>
+
+        <div class="card">
+          <div class="label">Status</div>
+          <div id="status" class="meta">—</div>
+          <label id="sheet-row" class="row" hidden>
+            Sheet <select id="sheet"></select>
+          </label>
+          <form id="find" class="row">
+            <input id="find-ref" placeholder="Highlight REF, e.g. U1" autocomplete="off" />
+            <button>Go</button>
+          </form>
+        </div>
+
+        <details class="card" open>
+          <summary class="label">What to try</summary>
+          <ol class="todo">
+            <li>Pick each project; check the schematic and the PCB tab render.</li>
+            <li>Click / tap a symbol or footprint → its reference appears above (this becomes <code>@REF</code> in chat).</li>
+            <li>Pan (drag / one finger) and zoom (wheel / pinch). Is it smooth?</li>
+            <li>PCB: click a track or zone. Known issue: net highlight throws on KiCad 11 files (nets by name; not patched) — the demo shows an amber notice.</li>
+            <li><b>complex_hierarchy</b> / <b>video</b>: double-click / double-tap a sheet box to enter it; use the Sheet list to go back.</li>
+            <li>Type a reference (e.g. <code>U1</code>) into “Highlight REF”.</li>
+            <li>Toggle Light/Dark (top right). Note: boards stay dark (KiCanvas has no light board theme).</li>
+            <li><b>jetson-agx-thor</b> PCB (85&nbsp;MB) is the stress test — watch load time and pan/zoom.</li>
+            <li>On the phone: rotate, tap small parts, try pinch zoom.</li>
+          </ol>
+        </details>
+      </aside>
+    </main>
+  </body>
+</html>

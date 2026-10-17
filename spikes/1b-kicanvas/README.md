@@ -16,3 +16,5 @@ Supplementary (not the gate): KiCanvas with the KiCad 11 footprint patch.
     python3 summarize.py results-patched
 
 KiCad files under `files/` are produced only by `kicad-cli … upgrade`; never edit them.
+
+Evaluation demo (patched KiCanvas + KiCad 11 demo projects, served on :8765): `demo/README.md`.

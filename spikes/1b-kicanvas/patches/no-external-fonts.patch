@@ -1,0 +1,19 @@
+diff --git a/src/kicanvas/elements/kicanvas-embed.ts b/src/kicanvas/elements/kicanvas-embed.ts
+index c21bc7c..5bb4b3f 100644
+--- a/src/kicanvas/elements/kicanvas-embed.ts
++++ b/src/kicanvas/elements/kicanvas-embed.ts
+@@ -323,12 +323,6 @@ class KiCanvasSourceElement extends CustomElement {
+ 
+ window.customElements.define("kicanvas-source", KiCanvasSourceElement);
+ 
+-/* Import required fonts.
+- * TODO: Package these up as part of KiCanvas
++/* CopperChat: no runtime font import from fonts.googleapis.com. The host page
++ * provides "Nunito" and "Material Symbols Outlined" (self-hosted) or falls back.
+  */
+-document.body.appendChild(
+-    html`<link
+-        rel="stylesheet"
+-        href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@48,400,0,0&family=Nunito:wght@300;400;500;600;700&display=swap"
+-        crossorigin="anonymous" />`,
+-);
