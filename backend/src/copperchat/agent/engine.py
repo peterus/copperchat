@@ -230,6 +230,74 @@ class RunEngine:
             row = await self._insert(role="system", kind="error", content=text, metadata=metadata)
         return self.to_dto(row)
 
+    async def cancel_queued(self, message_id: int) -> bool:
+        """True if the message was still waiting; False once the engine pulled it."""
+        async with self._lock:
+            row = await self._messages.get(message_id)
+            if (
+                row is None
+                or row.project_id != self.pid
+                or row.role != "user"
+                or row.status != "queued"
+                or message_id == self._inflight
+            ):
+                return False
+            # A pulled item is in flight from the moment the gate yields it (no await in
+            # between), so a queued row that is not in flight is either still in the
+            # stream or waiting outside it (parked by a rate limit): both are cancellable.
+            if self._stream is not None:
+                self._stream.drop(message_id)
+            await self._cancel_row(message_id)
+            return True
+
+    async def interrupt(self, run_id: str | None) -> None:
+        """Stop: cancel every waiting message and end the running turn (C7).
+
+        A Stop for an older run (``run_id`` no longer current) is ignored. If the backend
+        does not end the interrupted turn within the grace period, the burst is cancelled
+        (backstop); a message sent after the Stop is never hit by that backstop.
+        """
+        current = self.current_run_id
+        if run_id is not None and current is not None and run_id != current:
+            return  # stale Stop for an older run
+        async with self._lock:
+            stream = self._stream
+            if stream is not None:
+                ids = stream.pending_ids()
+                for mid in ids:
+                    stream.drop(mid)
+            else:
+                ids = [
+                    r.id
+                    for r in await self._messages.queued_user_rows(self.pid)
+                    if r.id != self._inflight
+                ]
+            for mid in ids:
+                await self._cancel_row(mid)
+            target = self._inflight
+            if target is not None:
+                self._interrupting = True
+        task = self._burst
+        if task is None or task.done():
+            return
+        if stream is not None:
+            stream.request_close()
+        if target is None:
+            return  # between turns: closing the input ends the burst
+        try:
+            await self.backend.interrupt()
+        except Exception:
+            log.exception("backend.interrupt() failed for %s", self.pid)
+        self._spawn(self._backstop(task, target))
+
+    async def _backstop(self, task: asyncio.Task[None], message_id: int) -> None:
+        await asyncio.wait({task}, timeout=self._grace)
+        if not task.done() and self._inflight == message_id:
+            log.warning(
+                "agent ignored interrupt for %.1fs; cancelling burst of %s", self._grace, self.pid
+            )
+            task.cancel()
+
     def add_agent_note(self, text: str) -> None:
         self._notes.append(text)
 
@@ -323,7 +391,6 @@ class RunEngine:
                 self._stream = None
             if self._burst is asyncio.current_task():
                 self._burst = None
-            self._interrupting = False
             await self._drive_queued()
 
     async def _await_wind_down(self, prev: asyncio.Task[None]) -> None:
@@ -488,6 +555,7 @@ class RunEngine:
             )
             self._turn = None
             self._inflight = None
+            self._interrupting = False  # an interrupt targets exactly one turn
         outcome = TurnOutcome(
             reason=reason,
             changed_docs=frozenset(turn.changed),
@@ -500,6 +568,12 @@ class RunEngine:
             log.exception("on_turn_end hook failed")
 
     # ---- persistence helpers (caller holds self._lock)
+    async def _cancel_row(self, message_id: int) -> None:
+        await self._messages.set_status(message_id, "cancelled")
+        await self._publish(
+            MessageDeltaFrame(project_id=self.pid, message_id=message_id, status_patch="cancelled")
+        )
+
     async def _publish(self, frame: Wire) -> None:
         await self.broadcaster.publish(self.pid, frame)
 
