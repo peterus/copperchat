@@ -845,7 +845,7 @@ class RunEngine:
     # ---- tool context
     def _make_ctx(self) -> ToolContext:
         session = self._sessions.current()
-        if session is None or session.project.id != self.pid:
+        if session is None or session.closed or session.project.id != self.pid:
             raise KicadUnavailable("the project is not open in KiCad")
         turn = self._turn
         return ToolContext(
@@ -862,8 +862,10 @@ class RunEngine:
     async def _on_mutation(self) -> None:
         turn = self._turn
         if turn is not None and not turn.mutated:
-            turn.mutated = True
+            # Marked only once the hook succeeded: if the undo snapshot failed, that call
+            # fails and the next mutating call of the turn tries the snapshot again.
             await self.hooks.on_first_mutation(turn.info)
+            turn.mutated = True
 
     def _on_documents_changed(self, docs: set[DocKind]) -> None:
         # X2: Phase 5 never publishes view-updated; Phase 7 does it from TurnOutcome.
