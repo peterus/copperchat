@@ -1,0 +1,70 @@
+diff before/complex_hierarchy.kicad_sch after/complex_hierarchy.kicad_sch
+7 change(s)
+  modified SCH_SYMBOL /5b9623a5-6d01-41fc-9865-e1bc779418c8/00000000-0000-0000-0000-00004b4b15e7 [C105]
+    Value: 10uF -> ROOTSPIKE
+  modified SCH_SYMBOL /5b9623a5-6d01-41fc-9865-e1bc779418c8/00000000-0000-0000-0000-00004b3a1333/00000000-0000-0000-0000-00004b4f363e [R201]
+    Value: 1K -> SPIKE
+  added SCH_LINE /5b9623a5-6d01-41fc-9865-e1bc779418c8/00000000-0000-0000-0000-00004b3a1333/77b3cc87-3ffb-4f0b-89eb-c28e0fc9f8ce
+    Color: <none> -> rgba(0, 0, 0, 0.000)
+    End Length: <none> -> 0 mm
+    End Shape: <none> -> None
+    End Stroke Width: <none> -> 0 mm
+    End Width: <none> -> 0 mm
+    End X: <none> -> 110 mm
+    End Y: <none> -> 100 mm
+    Length: <none> -> 10 mm
+    Line Style: <none> -> Solid
+    Line Width: <none> -> 0 mm
+    Locked: <none> -> false
+    Private: <none> -> false
+    Start Length: <none> -> 0 mm
+    Start Shape: <none> -> None
+    Start Stroke Width: <none> -> 0 mm
+    Start Width: <none> -> 0 mm
+    Start X: <none> -> 100 mm
+    Start Y: <none> -> 100 mm
+  added SCH_LABEL /5b9623a5-6d01-41fc-9865-e1bc779418c8/00000000-0000-0000-0000-00004b3a1333/90344ace-6bb6-4024-8874-1975f85e39ac
+    Auto Thickness: <none> -> true
+    Bold: <none> -> false
+    Color: <none> -> rgba(0, 0, 0, 0.000)
+    Font: <none> -> Default Font
+    Horizontal Justification: <none> -> Right
+    Italic: <none> -> false
+    Locked: <none> -> false
+    Private: <none> -> false
+    Text: <none> -> SUBNET
+    Text Size: <none> -> 1.27 mm
+    Vertical Justification: <none> -> Bottom
+  modified SCH_SYMBOL /5b9623a5-6d01-41fc-9865-e1bc779418c8/00000000-0000-0000-0000-00004b3a13a4/00000000-0000-0000-0000-00004b4f363e [R301]
+    Value: 1K -> SPIKE
+  added SCH_LINE /5b9623a5-6d01-41fc-9865-e1bc779418c8/00000000-0000-0000-0000-00004b3a13a4/77b3cc87-3ffb-4f0b-89eb-c28e0fc9f8ce
+    Color: <none> -> rgba(0, 0, 0, 0.000)
+    End Length: <none> -> 0 mm
+    End Shape: <none> -> None
+    End Stroke Width: <none> -> 0 mm
+    End Width: <none> -> 0 mm
+    End X: <none> -> 110 mm
+    End Y: <none> -> 100 mm
+    Length: <none> -> 10 mm
+    Line Style: <none> -> Solid
+    Line Width: <none> -> 0 mm
+    Locked: <none> -> false
+    Private: <none> -> false
+    Start Length: <none> -> 0 mm
+    Start Shape: <none> -> None
+    Start Stroke Width: <none> -> 0 mm
+    Start Width: <none> -> 0 mm
+    Start X: <none> -> 100 mm
+    Start Y: <none> -> 100 mm
+  added SCH_LABEL /5b9623a5-6d01-41fc-9865-e1bc779418c8/00000000-0000-0000-0000-00004b3a13a4/90344ace-6bb6-4024-8874-1975f85e39ac
+    Auto Thickness: <none> -> true
+    Bold: <none> -> false
+    Color: <none> -> rgba(0, 0, 0, 0.000)
+    Font: <none> -> Default Font
+    Horizontal Justification: <none> -> Right
+    Italic: <none> -> false
+    Locked: <none> -> false
+    Private: <none> -> false
+    Text: <none> -> SUBNET
+    Text Size: <none> -> 1.27 mm
+    Vertical Justification: <none> -> Bottom

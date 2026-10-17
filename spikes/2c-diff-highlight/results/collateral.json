@@ -1,0 +1,69 @@
+[
+ [
+  "create dangling junction (205,100)",
+  {
+   "wires": {
+    "added": [],
+    "removed": [],
+    "changed": []
+   },
+   "junctions": {
+    "added": [],
+    "removed": [],
+    "changed": []
+   }
+  }
+ ],
+ [
+  "remove wire 84963a83-b6da-4751-9910-f093c3a03bee",
+  {
+   "wires": {
+    "added": [],
+    "removed": [
+     "84963a83-b6da-4751-9910-f093c3a03bee",
+     "dd8fad86-da9c-4a52-b908-cd4a2e7bd87e"
+    ],
+    "changed": [
+     "67a136ce-9a43-4815-bf37-5a48e3c5ba88"
+    ]
+   },
+   "junctions": {
+    "added": [],
+    "removed": [
+     "10ef5c17-5272-4e7f-89a5-ecf737e33e26"
+    ],
+    "changed": []
+   }
+  }
+ ],
+ [
+  "save()",
+  {
+   "wires": {
+    "added": [],
+    "removed": [],
+    "changed": []
+   },
+   "junctions": {
+    "added": [],
+    "removed": [],
+    "changed": []
+   }
+  }
+ ],
+ [
+  "revert() (reload from disk)",
+  {
+   "wires": {
+    "added": [],
+    "removed": [],
+    "changed": []
+   },
+   "junctions": {
+    "added": [],
+    "removed": [],
+    "changed": []
+   }
+  }
+ ]
+]

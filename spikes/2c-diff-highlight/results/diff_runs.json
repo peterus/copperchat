@@ -1,0 +1,98 @@
+[
+ {
+  "pair": "ecc83_edit",
+  "fmt": "json",
+  "exit": 5,
+  "secs": 0.46,
+  "bytes": 19476,
+  "stderr": ""
+ },
+ {
+  "pair": "ecc83_edit",
+  "fmt": "text",
+  "exit": 5,
+  "secs": 0.42,
+  "bytes": 3589,
+  "stderr": ""
+ },
+ {
+  "pair": "ecc83_edit",
+  "fmt": "png",
+  "exit": 5,
+  "secs": 0.46,
+  "bytes": 5330,
+  "stderr": ""
+ },
+ {
+  "pair": "ecc83_edit",
+  "fmt": "svg",
+  "exit": 5,
+  "secs": 0.43,
+  "bytes": 21720,
+  "stderr": ""
+ },
+ {
+  "pair": "hier_edit",
+  "fmt": "json",
+  "exit": 5,
+  "secs": 0.45,
+  "bytes": 15213,
+  "stderr": ""
+ },
+ {
+  "pair": "hier_edit",
+  "fmt": "text",
+  "exit": 5,
+  "secs": 0.48,
+  "bytes": 2949,
+  "stderr": ""
+ },
+ {
+  "pair": "hier_edit",
+  "fmt": "png",
+  "exit": 5,
+  "secs": 0.52,
+  "bytes": 4413,
+  "stderr": ""
+ },
+ {
+  "pair": "hier_edit",
+  "fmt": "svg",
+  "exit": 5,
+  "secs": 0.48,
+  "bytes": 56959,
+  "stderr": ""
+ },
+ {
+  "pair": "noedit",
+  "fmt": "json",
+  "exit": 0,
+  "secs": 0.45,
+  "bytes": 83,
+  "stderr": ""
+ },
+ {
+  "pair": "noedit",
+  "fmt": "text",
+  "exit": 0,
+  "secs": 0.46,
+  "bytes": 68,
+  "stderr": ""
+ },
+ {
+  "pair": "noedit",
+  "fmt": "png",
+  "exit": 0,
+  "secs": 0.48,
+  "bytes": 5119,
+  "stderr": ""
+ },
+ {
+  "pair": "noedit",
+  "fmt": "svg",
+  "exit": 0,
+  "secs": 0.46,
+  "bytes": 20351,
+  "stderr": ""
+ }
+]

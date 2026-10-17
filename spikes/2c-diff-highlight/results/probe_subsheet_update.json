@@ -1,0 +1,20 @@
+{
+ "unbound": {
+  "update_items_returned": [
+   "SPIKE"
+  ],
+  "reread_value": [
+   "1K"
+  ],
+  "spike_lines_in_ampli_ht_on_disk": "0"
+ },
+ "for_sheet": {
+  "update_items_returned": [
+   "SPIKE"
+  ],
+  "reread_value": [
+   "SPIKE"
+  ],
+  "spike_lines_in_ampli_ht_on_disk": "1"
+ }
+}

@@ -1,0 +1,123 @@
+{
+ "ecc83_edit": {
+  "logged": 7,
+  "diff_changes": 9,
+  "matched": [
+   {
+    "uuid": "00000000-0000-0000-0000-00004549f4be",
+    "op": "modify",
+    "kind": "symbol",
+    "ref": "C1",
+    "instances": 1
+   },
+   {
+    "uuid": "00000000-0000-0000-0000-00004549f3ad",
+    "op": "modify",
+    "kind": "symbol",
+    "ref": "R3",
+    "instances": 1
+   },
+   {
+    "uuid": "ecaf1631-4221-49c7-8356-9fcf3a41b932",
+    "op": "add",
+    "kind": "wire",
+    "ref": null,
+    "instances": 1
+   },
+   {
+    "uuid": "c6a8e6b0-8bea-4c78-9b78-a9bfa0dc4df5",
+    "op": "add",
+    "kind": "label",
+    "ref": null,
+    "instances": 1
+   },
+   {
+    "uuid": "84963a83-b6da-4751-9910-f093c3a03bee",
+    "op": "delete",
+    "kind": "wire",
+    "ref": null,
+    "instances": 1
+   },
+   {
+    "uuid": "3c8ff4d4-abef-4cfe-a781-27c56cde3632",
+    "op": "add",
+    "kind": "symbol",
+    "ref": "R99",
+    "instances": 1
+   }
+  ],
+  "logged_absent_from_diff": [
+   {
+    "op": "add",
+    "kind": "junction",
+    "uuid": "04b63277-96af-4ca3-a0fc-785a453b66cb"
+   }
+  ],
+  "wrong_op": [],
+  "unlogged_in_diff": [
+   {
+    "uuid": "10ef5c17-5272-4e7f-89a5-ecf737e33e26",
+    "kind": "removed",
+    "type": "SCH_JUNCTION",
+    "ref": null
+   },
+   {
+    "uuid": "67a136ce-9a43-4815-bf37-5a48e3c5ba88",
+    "kind": "modified",
+    "type": "SCH_LINE",
+    "ref": null
+   },
+   {
+    "uuid": "dd8fad86-da9c-4a52-b908-cd4a2e7bd87e",
+    "kind": "removed",
+    "type": "SCH_LINE",
+    "ref": null
+   }
+  ]
+ },
+ "hier_edit": {
+  "logged": 4,
+  "diff_changes": 7,
+  "matched": [
+   {
+    "uuid": "00000000-0000-0000-0000-00004b4f363e",
+    "op": "modify",
+    "kind": "symbol",
+    "ref": "R201",
+    "instances": 2
+   },
+   {
+    "uuid": "77b3cc87-3ffb-4f0b-89eb-c28e0fc9f8ce",
+    "op": "add",
+    "kind": "wire",
+    "ref": null,
+    "instances": 2
+   },
+   {
+    "uuid": "90344ace-6bb6-4024-8874-1975f85e39ac",
+    "op": "add",
+    "kind": "label",
+    "ref": null,
+    "instances": 2
+   },
+   {
+    "uuid": "00000000-0000-0000-0000-00004b4b15e7",
+    "op": "modify",
+    "kind": "symbol",
+    "ref": "C105",
+    "instances": 1
+   }
+  ],
+  "logged_absent_from_diff": [],
+  "wrong_op": [],
+  "unlogged_in_diff": []
+ },
+ "noedit": {
+  "logged": 0,
+  "diff_changes": 0,
+  "matched": [],
+  "logged_absent_from_diff": [],
+  "wrong_op": [],
+  "unlogged_in_diff": []
+ }
+}
