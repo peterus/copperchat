@@ -81,18 +81,19 @@ async def test_out_of_order_migration_is_still_applied(tmp_path: Path) -> None:
     mig = tmp_path / "migs"
     mig.mkdir()
     (mig / "0001_a.sql").write_text("CREATE TABLE a (x INTEGER);")
-    (mig / "0004_d.sql").write_text("CREATE TABLE d (x INTEGER);")
+    (mig / "0098_d.sql").write_text("CREATE TABLE d (x INTEGER);")
     db = await Database.open(tmp_path / "x.db")
     try:
         await migrate(db, mig)
-        (mig / "0003_c.sql").write_text("CREATE TABLE c (x INTEGER);")
+        (mig / "0097_c.sql").write_text("CREATE TABLE c (x INTEGER);")
         await migrate(db, mig)
         names = {r["name"] for r in await db.fetchall("SELECT name FROM sqlite_master")}
         # 0001 is already applied by Database.open (real 0001_core.sql), so the
-        # test's 0001_a.sql is skipped as "version 1 already applied".
+        # test's 0001_a.sql is skipped as "version 1 already applied". 0097/0098 stay
+        # clear of the real migrations later phases add.
         assert {"c", "d"} <= names and "a" not in names
         uv = await db.fetchone("PRAGMA user_version")
-        assert uv is not None and uv[0] == 4
+        assert uv is not None and uv[0] == 98
     finally:
         await db.close()
 
