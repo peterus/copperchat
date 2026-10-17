@@ -157,7 +157,11 @@ verified workarounds (`workaround_copy_saved_subsheets` and `nosave_*` PASS), se
     files in sub-directories (`filename` is then a relative path; create parent
     dirs in the destination) — Phase 3 should cover that with a fixture. Board:
     `board.save_as(dest/x.kicad_pcb, overwrite=True, include_project=False)` is
-    complete (one file).
+    complete (one file) — unless the project has a `.kicad_dru`: KiCad then copies it
+    to `dest/x.kicad_dru` and (`HEADLESS_PCB_CONTEXT::SavePcbCopy`) refuses any later
+    copy while that file exists ("board could not be saved to …", found with the
+    jetson demo after Phase 6B). `KicadSession.save_copy` removes that stale copy
+    first, never inside the project directory.
 
 ### Export (Q5)
 - PNG export: **API jobs work for both document types** with the pinned kipy:

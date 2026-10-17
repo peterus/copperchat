@@ -12,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KipyConnectionError
 from kipy.proto.common.types.base_types_pb2 import DocumentType
 
@@ -98,7 +99,15 @@ class FakeDocument:
 
     def save_as(self, filename: str, overwrite: bool = False, include_project: bool = True) -> None:
         # The real api-server writes the document; the fake copies the source file.
-        shutil.copyfile(self._path, filename)
+        dest = Path(filename)
+        rules, dest_rules = self._path.with_suffix(".kicad_dru"), dest.with_suffix(".kicad_dru")
+        if self._path.suffix == ".kicad_pcb" and rules.exists():
+            # Like HEADLESS_PCB_CONTEXT::SavePcbCopy: it copies the board's design rules
+            # next to the copy, and refuses when a rules file is already there.
+            if dest_rules.exists():
+                raise ApiError(f"KiCad returned error: board could not be saved to '{dest}'")
+            shutil.copyfile(rules, dest_rules)
+        shutil.copyfile(self._path, dest)
 
     def get_hierarchy(self) -> list[SimpleNamespace]:
         names = self._server.hierarchy or [self._path.name]
