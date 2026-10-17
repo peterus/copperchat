@@ -123,6 +123,7 @@ GPL-3.0-only. See [LICENSE](LICENSE).
 - **KiCad** (GPL-3.0-or-later) — built from source in the base image
   (`docker/kicad-base/`).
 - **KiCanvas** (MIT) — vendored in `frontend/public/vendor/kicanvas/` (see `LICENSE.md` and
-  `BUILD_INFO` there), built from the pinned upstream commit with CopperChat's patches from
-  `frontend/vendor-patches/kicanvas/` (KiCad 11 format support, touch gestures, host
-  integration, no external font requests). Rebuild with `frontend/scripts/vendor-kicanvas.sh`.
+  `BUILD_INFO` there), built from a pinned commit of branch `copperchat` of the fork
+  [peterus/kicanvas](https://github.com/peterus/kicanvas) (upstream plus KiCad 11 format
+  support, touch gestures, host integration, no external font requests; see
+  `frontend/vendor-patches/kicanvas/README.md`). Rebuild with `frontend/scripts/vendor-kicanvas.sh`.

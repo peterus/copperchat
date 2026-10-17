@@ -1,7 +1,8 @@
 /**
- * Glue between React and the vendored, patched KiCanvas bundle (public/vendor/kicanvas,
- * patches in vendor-patches/kicanvas). Only the small surface below is used; the shapes are the
- * KiCanvas internals at the pinned commit (spike 1B, docs/spikes/1b-kicanvas.md).
+ * Glue between React and the vendored KiCanvas bundle (public/vendor/kicanvas, built from the
+ * peterus/kicanvas fork, see vendor-patches/kicanvas/README.md). Only the small surface below
+ * is used; the shapes are the KiCanvas internals at the pinned commit (spike 1B,
+ * docs/spikes/1b-kicanvas.md).
  */
 import type { ResolvedTheme } from '@/stores/ui';
 

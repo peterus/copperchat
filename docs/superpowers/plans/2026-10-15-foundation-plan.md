@@ -781,7 +781,11 @@ These extend C1–C8 and are equally binding.
   KiCanvas `b031159` + the patch series in `frontend/vendor-patches/kicanvas/` (`series`,
   README lists why each patch exists), built by `frontend/scripts/vendor-kicanvas.sh`, bundle
   committed, CI job `kicanvas-reproducible` rebuilds and diffs, `check-kicanvas.sh` checks
-  pin/license/sha/offline. The open response adds `viewBytes: {<view file>: bytes}`
+  pin/license/sha/offline. **Superseded 2026-10-17 (owner approved a fork):** the patches are
+  now commits on branch `copperchat` of `peterus/kicanvas`; `KICANVAS_COMMIT` pins a full SHA
+  of that branch, the script builds it without applying patches (`BUILD_INFO` has `repo=`
+  instead of `patches=`; bundle byte-identical), and `vendor-patches/kicanvas/README.md` is a
+  pointer listing each change as upstream candidate or CopperChat-specific. The open response adds `viewBytes: {<view file>: bytes}`
   (`copperchat.views.view_bytes`) for the large-board guard; per-device limits live in
   `@/stores/viewerPrefs` (localStorage `copperchat.viewer.limits`, Settings › Viewer; defaults
   touch 15 MB / desktop 60 MB). `viewFileUrl(projectId, name, rev)` replaces the planned
