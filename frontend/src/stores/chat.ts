@@ -62,6 +62,8 @@ export interface ChatState {
   stop: (projectId: string) => void;
   heal: (projectId: string) => Promise<void>;
   dismissError: (projectId: string) => void;
+  /** Drops every project's chat (logout / 4401); results of in-flight requests are discarded. */
+  reset: () => void;
 }
 
 /** GET /api/projects/{id}/messages: the newest `limit` rows below `before`, ascending by id. */
@@ -143,6 +145,8 @@ const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 export function createChatStore(deps: ChatDeps) {
   const opening = new Map<string, Promise<void>>();
   const healing = new Map<string, { running: Promise<void>; again: boolean }>();
+  // Bumped by reset(): an HTTP response that started in an older generation is ignored.
+  let generation = 0;
   let optimisticSeq = 0;
   const newClientMessageId = deps.newClientMessageId ?? randomClientMessageId;
 
@@ -279,22 +283,26 @@ export function createChatStore(deps: ChatDeps) {
 
     async function load(projectId: string): Promise<void> {
       if (!get().chats[projectId]) set({ chats: { ...get().chats, [projectId]: emptyChat() } });
+      const gen = generation;
       try {
         const page = await deps.fetchPage(projectId, { limit: PAGE_SIZE });
+        if (gen !== generation) return;
         patch(projectId, (c) => {
           const next = withRows(c, page.messages);
           return { ...next, loaded: true, hasMoreOlder: page.hasMore, oldestId: minServerId(next.messages), lastError: null };
         });
       } catch (e) {
-        patch(projectId, (c) => ({ ...c, lastError: `Could not load messages: ${errorText(e)}` }));
+        if (gen === generation) patch(projectId, (c) => ({ ...c, lastError: `Could not load messages: ${errorText(e)}` }));
         return;
       }
       subscribe(projectId);
     }
 
     async function healOnce(projectId: string): Promise<void> {
+      const gen = generation;
       try {
         const page = await deps.fetchPage(projectId, { limit: PAGE_SIZE });
+        if (gen !== generation) return;
         patch(projectId, (c) => {
           const next = withRows(c, page.messages);
           const settled = new Set(next.messages.filter((m) => TERMINAL_STATUSES.has(m.status)).map((m) => m.id));
@@ -322,7 +330,9 @@ export function createChatStore(deps: ChatDeps) {
         if (get().chats[projectId]?.loaded) return Promise.resolve();
         const inflight = opening.get(projectId);
         if (inflight) return inflight;
-        const p = load(projectId).finally(() => opening.delete(projectId));
+        const p = load(projectId).finally(() => {
+          if (opening.get(projectId) === p) opening.delete(projectId);
+        });
         opening.set(projectId, p);
         return p;
       },
@@ -332,13 +342,16 @@ export function createChatStore(deps: ChatDeps) {
         if (!c?.loaded || c.loadingOlder || !c.hasMoreOlder || c.oldestId === null) return;
         const before = c.oldestId;
         patch(projectId, (cur) => ({ ...cur, loadingOlder: true }));
+        const gen = generation;
         try {
           const page = await deps.fetchPage(projectId, { limit: PAGE_SIZE, before });
+          if (gen !== generation) return;
           patch(projectId, (cur) => {
             const messages = mergeRows(cur.messages, page.messages);
             return { ...cur, messages, oldestId: minServerId(messages), hasMoreOlder: page.hasMore, loadingOlder: false };
           });
         } catch (e) {
+          if (gen !== generation) return;
           patch(projectId, (cur) => ({ ...cur, loadingOlder: false, lastError: `Could not load older messages: ${errorText(e)}` }));
         }
       },
@@ -393,7 +406,7 @@ export function createChatStore(deps: ChatDeps) {
               await healOnce(projectId);
             } while (entry.again);
           } finally {
-            healing.delete(projectId);
+            if (healing.get(projectId) === entry) healing.delete(projectId);
           }
         })();
         healing.set(projectId, entry);
@@ -401,6 +414,13 @@ export function createChatStore(deps: ChatDeps) {
       },
 
       dismissError: (projectId) => patch(projectId, (c) => ({ ...c, lastError: null })),
+
+      reset: () => {
+        generation += 1;
+        opening.clear();
+        healing.clear();
+        set({ chats: {} });
+      },
     };
   });
 }
