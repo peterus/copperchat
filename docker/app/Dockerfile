@@ -24,6 +24,10 @@ LABEL org.opencontainers.image.source="https://github.com/peterus/copperchat" \
       io.copperchat.kicad-commit="${KICAD_COMMIT}"
 # X11: the base image ends with USER copperchat (uid 1000); install as root, run as copperchat.
 USER root
+# poppler-utils: the Claude CLI's Read tool renders PDF pages (datasheets) with pdftoppm.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends poppler-utils \
+ && rm -rf /var/lib/apt/lists/*
 COPY --from=uv /uv /usr/local/bin/uv
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \

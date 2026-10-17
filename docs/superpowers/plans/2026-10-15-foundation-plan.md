@@ -826,6 +826,8 @@ These extend C1–C8 and are equally binding.
   `scripts/check-docs.sh`); `CLOUDFLARE_TUNNEL_TOKEN` is not `:?`-guarded (compose
   interpolates inactive profiles). `release.yml` pushes `:<version>` and `:latest`
   (not for prereleases) on tags `v<semver>` only.
+  Follow-up: the app image adds `poppler-utils` (the Claude CLI's Read tool renders PDF
+  pages with `pdftoppm`); `scripts/app-image-tools.sh` checks it as uid 1000 in the e2e job.
 - **HTTP additions:** `GET /auth/me` → `{username}`; `GET /skills/{name}`,
   `POST /skills/{name}/acknowledge-update`, `GET /projects/{id}/uploads/{uploadId}` (8);
   `GET /projects/{id}/hit-test` (6B fallback only); `agent-view` takes
