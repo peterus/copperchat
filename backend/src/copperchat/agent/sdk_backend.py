@@ -496,3 +496,8 @@ class SdkStreamingBackend:
         if mapper is not None:
             mapper.note_interrupt_requested()
         await client.interrupt()
+
+
+# The backend chosen by spike 1A ("partial: gated generator", X20). On a no-go this
+# would be SdkPerTurnBackend (Task 5.4b, not implemented).
+SdkAgentBackend = SdkStreamingBackend

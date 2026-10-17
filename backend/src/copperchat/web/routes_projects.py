@@ -41,6 +41,7 @@ async def open_project(project_id: str, request: Request, _: CurrentUser) -> dic
     project = get_project(state.settings.projects_root, project_id)
     sessions: KicadSessionManager = state.sessions
     session = await sessions.open(project)
+    await state.agent_runtime.ensure(project)  # history/queue work even if a snapshot fails
     await touch_opened(state.db, project.id)
     version: str = await session.call(lambda h: str(h.kicad.get_version().full_version))
     # X1/X3: the viewer has content right after open, before any agent turn. A

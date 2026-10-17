@@ -33,6 +33,7 @@ def _open(settings: Settings) -> dict[str, object]:
             assert r.status_code == 200
             body: dict[str, object] = r.json()
             assert body["id"] == project_id
+            assert client.app.state.agent_runtime.get(project_id) is not None  # type: ignore[attr-defined]
             return body
     finally:
         server.release.set()
