@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef } from 'react';
 import type { AttachmentRef, MessageDTO, Usage } from '@/protocol/frames';
 import { emptyChat, useChatStore, type ChatStore } from '@/stores/chat';
 
@@ -21,6 +21,8 @@ export interface UseChatResult {
   hasMoreOlder: boolean;
   loadingOlder: boolean;
   loaded: boolean;
+  /** The initial load failed and none is in flight: offer retry(). */
+  loadFailed: boolean;
   usage: Usage | null;
   rateLimitedUntil: string | null;
   lastError: string | null;
@@ -38,10 +40,15 @@ export function useChat(projectId: string): UseChatResult {
     void useStore.getState().open(projectId);
   }, [useStore, projectId]);
 
-  const queued = useMemo(
-    () => chat.messages.filter((m) => m.id > 0 && m.role === 'user' && m.status === 'queued'),
-    [chat.messages],
-  );
+  // Same rows (by identity) → same array, so the Composer does not re-render on every delta.
+  const prevQueued = useRef<MessageDTO[]>([]);
+  const queued = useMemo(() => {
+    const next = chat.messages.filter((m) => m.id > 0 && m.role === 'user' && m.status === 'queued');
+    const prev = prevQueued.current;
+    if (next.length === prev.length && next.every((m, i) => m === prev[i])) return prev;
+    prevQueued.current = next;
+    return next;
+  }, [chat.messages]);
   const send = useCallback(
     (text: string, attachments?: AttachmentRef[]) => useStore.getState().send(projectId, text, attachments),
     [useStore, projectId],
@@ -64,6 +71,7 @@ export function useChat(projectId: string): UseChatResult {
     hasMoreOlder: chat.hasMoreOlder,
     loadingOlder: chat.loadingOlder,
     loaded: chat.loaded,
+    loadFailed: chat.loadFailed,
     usage: chat.usage,
     rateLimitedUntil: chat.rateLimitedUntil,
     lastError: chat.lastError,

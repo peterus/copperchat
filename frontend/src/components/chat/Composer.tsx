@@ -1,4 +1,4 @@
-import { type FormEvent, type KeyboardEvent, useEffect, useRef } from 'react';
+import { type FormEvent, type KeyboardEvent, memo, useEffect, useRef } from 'react';
 import { useKeyboardInset } from '@/hooks/useKeyboardInset';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import type { AttachmentRef, MessageDTO } from '@/protocol/frames';
@@ -18,7 +18,16 @@ export interface ComposerProps {
   onCancelQueued: (id: number) => void;
 }
 
-export function Composer({ projectId = '', runActive, queued, disabled = false, onSend, onStop, onCancelQueued }: ComposerProps) {
+/** Memoized: its props are stable across streaming deltas (useChat reuses the queued array). */
+export const Composer = memo(function Composer({
+  projectId = '',
+  runActive,
+  queued,
+  disabled = false,
+  onSend,
+  onStop,
+  onCancelQueued,
+}: ComposerProps) {
   const text = useComposer((s) => s.text);
   const attachments = useComposer((s) => s.attachments);
   const focusToken = useComposer((s) => s.focusToken);
@@ -129,4 +138,4 @@ export function Composer({ projectId = '', runActive, queued, disabled = false, 
       </form>
     </div>
   );
-}
+});

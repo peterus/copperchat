@@ -38,6 +38,17 @@ describe('useChat', () => {
     expect(result.current.queued).toEqual([]);
   });
 
+  it('keeps the queued array identity while unrelated rows stream', async () => {
+    const { result } = renderHook(() => useChat(PID), { wrapper });
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+    const before = result.current.queued;
+    act(() => ws.emit({ type: 'message-delta', projectId: PID, messageId: 3, contentDelta: ' more', statusPatch: 'streaming' }));
+    expect(result.current.messages.find((m) => m.id === 3)?.content).toBe('m3 more');
+    expect(result.current.queued).toBe(before);
+    act(() => ws.emit({ type: 'message-delta', projectId: PID, messageId: 2, statusPatch: 'streaming' }));
+    expect(result.current.queued).toEqual([]);
+  });
+
   it('two components on the same project share one baseline load', async () => {
     renderHook(() => [useChat(PID), useChat(PID)], { wrapper });
     await waitFor(() => expect(store.getState().chats[PID]?.loaded).toBe(true));

@@ -42,6 +42,13 @@ export function ChatPanel({ projectId, readOnly = false }: ChatPanelProps) {
     [groups, runActive],
   );
   const onLoadOlder = useCallback(() => void loadOlder(), [loadOlder]);
+  // Independent of lastError: dismissing the error must not remove the only way to retry.
+  const canRetry = !chat.loaded && chat.loadFailed;
+  const retryButton = (
+    <button type="button" className="font-medium underline" onClick={chat.retry}>
+      Retry
+    </button>
+  );
 
   return (
     <section aria-label="Chat" className="flex h-full min-h-0 flex-col bg-bg">
@@ -49,14 +56,16 @@ export function ChatPanel({ projectId, readOnly = false }: ChatPanelProps) {
       {chat.lastError && (
         <div role="alert" className="flex items-start gap-2 border-b border-danger bg-danger/10 px-3 py-2 text-sm text-danger">
           <span className="flex-1">{chat.lastError}</span>
-          {!chat.loaded && (
-            <button type="button" className="font-medium underline" onClick={chat.retry}>
-              Retry
-            </button>
-          )}
+          {canRetry && retryButton}
           <button type="button" aria-label="Dismiss error" onClick={chat.dismissError}>
             ✕
           </button>
+        </div>
+      )}
+      {!chat.lastError && canRetry && (
+        <div className="flex items-start gap-2 border-b border-border bg-surface px-3 py-2 text-sm text-muted">
+          <span className="flex-1">Messages are not loaded.</span>
+          {retryButton}
         </div>
       )}
       {readOnly && (

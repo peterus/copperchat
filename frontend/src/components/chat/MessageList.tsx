@@ -15,6 +15,7 @@ export interface MessageListProps {
 export function MessageList({ messages, hasMoreOlder, loadingOlder, onLoadOlder, renderItem }: MessageListProps) {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
   const topSentinelRef = useRef<HTMLDivElement>(null);
   const anchorRef = useRef<{ id: number; offset: number } | null>(null);
   const prevFirstIdRef = useRef<number | null>(null);
@@ -25,18 +26,20 @@ export function MessageList({ messages, hasMoreOlder, loadingOlder, onLoadOlder,
 
   // Anchor = topmost (partially) visible message and its offset from the scroller top. Runs on
   // every scroll event (a prepend may commit before the next frame, so it cannot be deferred):
-  // rows are stacked in id order, so a binary search needs only O(log n) layout reads.
+  // the <li> rows are stacked in id order, so a binary search over the list's live `children`
+  // collection (no NodeList built per scroll) needs only O(log n) layout reads.
   const captureAnchor = useCallback(() => {
     const el = scrollerRef.current;
-    if (!el) return;
+    const list = listRef.current;
+    if (!el || !list) return;
     const top = el.getBoundingClientRect().top;
-    const nodes = el.querySelectorAll<HTMLElement>('[data-msg-id]');
+    const nodes = list.children;
     let lo = 0;
     let hi = nodes.length;
     let hit: { node: HTMLElement; top: number } | null = null;
     while (lo < hi) {
       const mid = (lo + hi) >> 1;
-      const node = nodes[mid]!;
+      const node = nodes[mid] as HTMLElement;
       const r = node.getBoundingClientRect();
       if (r.bottom > top) {
         hit = { node, top: r.top };
@@ -134,7 +137,7 @@ export function MessageList({ messages, hasMoreOlder, loadingOlder, onLoadOlder,
           messages.length > 0 && <p className="py-2 text-center text-xs text-muted">Start of conversation</p>
         )}
         {loadingOlder && <p className="py-2 text-center text-xs text-muted">Loading older messages…</p>}
-        <ul className="space-y-3">
+        <ul ref={listRef} className="space-y-3">
           {messages.map((m) => (
             <li key={m.id} data-msg-id={m.id}>
               {renderItem(m)}

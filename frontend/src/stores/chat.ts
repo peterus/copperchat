@@ -22,6 +22,8 @@ export interface ProjectChat {
   hasMoreOlder: boolean;
   loadingOlder: boolean;
   loaded: boolean;
+  /** The last initial load failed and none is in flight (Retry stays offered after a dismiss). */
+  loadFailed: boolean;
   runActive: boolean;
   currentRunId: string | null;
   usage: Usage | null;
@@ -39,6 +41,7 @@ export function emptyChat(): ProjectChat {
     hasMoreOlder: false,
     loadingOlder: false,
     loaded: false,
+    loadFailed: false,
     runActive: false,
     currentRunId: null,
     usage: null,
@@ -94,14 +97,31 @@ export function compareMessages(a: MessageDTO, b: MessageDTO): number {
   return aOpt ? b.id - a.id : a.id - b.id;
 }
 
-/** Server snapshot vs local copy of the same row (DB content lags the live stream). */
+function sameRow(a: MessageDTO, b: MessageDTO): boolean {
+  return (
+    a.content === b.content &&
+    a.status === b.status &&
+    a.runId === b.runId &&
+    a.createdAt === b.createdAt &&
+    a.role === b.role &&
+    a.kind === b.kind &&
+    a.clientMessageId === b.clientMessageId &&
+    (a.metadata === b.metadata || JSON.stringify(a.metadata) === JSON.stringify(b.metadata))
+  );
+}
+
+/**
+ * Server snapshot vs local copy of the same row (DB content lags the live stream). An unchanged
+ * row keeps its identity so memoized rows do not re-render on every heal.
+ */
 export function mergeRow(existing: MessageDTO | undefined, incoming: MessageDTO): MessageDTO {
   if (!existing) return incoming;
+  let merged = incoming;
   if (incoming.status === 'streaming' && existing.content.startsWith(incoming.content)) {
     if (TERMINAL_STATUSES.has(existing.status)) return existing; // stale snapshot of a finished row
-    if (existing.content.length > incoming.content.length) return { ...incoming, content: existing.content };
+    if (existing.content.length > incoming.content.length) merged = { ...incoming, content: existing.content };
   }
-  return incoming;
+  return sameRow(existing, merged) ? existing : merged;
 }
 
 /** Merge by id (one row per id); a server row replaces the optimistic row with its clientMessageId. */
@@ -180,12 +200,13 @@ export function createChatStore(deps: ChatDeps) {
       return { ...c, messages: mergeRows(c.messages, rows), lastSeenId: Math.max(c.lastSeenId, maxServerId(rows)) };
     }
 
-    /** Only with an open socket; otherwise the connection handler subscribes on open. */
-    function subscribe(projectId: string): void {
+    /** Only with an open socket (returns false otherwise); the connection handler subscribes on open. */
+    function subscribe(projectId: string): boolean {
       const c = get().chats[projectId];
-      if (!c?.loaded || !deps.ws.isOpen()) return;
+      if (!c?.loaded || !deps.ws.isOpen()) return false;
       // Re-subscribing replaces the server-side subscription (R4); there is no unsubscribe.
       deps.ws.send({ type: 'subscribe', projectId, sinceMessageId: c.lastSeenId });
+      return true;
     }
 
     /** Server dedupes on clientMessageId, so retransmitting is always safe. */
@@ -278,6 +299,8 @@ export function createChatStore(deps: ChatDeps) {
           patch(projectId, (c) => ({ ...c, runActive: true, currentRunId: f.runId, rateLimitedUntil: null, lastError: null }));
           return;
         case 'run-finished':
+          // A suspect's terminal delta may have been lost (it is sent once, never replayed): heal.
+          if (get().chats[projectId]!.suspectIds.length > 0) void get().heal(projectId);
           patch(projectId, (c) => {
             if (c.currentRunId !== null && c.currentRunId !== f.runId) return c; // late finish of an older run
             return {
@@ -316,19 +339,24 @@ export function createChatStore(deps: ChatDeps) {
 
     async function load(projectId: string): Promise<void> {
       if (!get().chats[projectId]) set({ chats: { ...get().chats, [projectId]: emptyChat() } });
+      else patch(projectId, (c) => (c.loadFailed ? { ...c, loadFailed: false } : c));
       const gen = generation;
+      let streaming = false;
       try {
         const page = await deps.fetchPage(projectId, { limit: PAGE_SIZE });
         if (gen !== generation) return;
+        streaming = page.messages.some((r) => r.id > 0 && r.status === 'streaming');
         patch(projectId, (c) => {
           const next = withStreamingSuspects(withRows(c, page.messages), page.messages);
           return { ...next, loaded: true, hasMoreOlder: page.hasMore, oldestId: minServerId(next.messages), lastError: null };
         });
       } catch (e) {
-        if (gen === generation) patch(projectId, (c) => ({ ...c, lastError: `Could not load messages: ${errorText(e)}` }));
+        if (gen === generation) patch(projectId, (c) => ({ ...c, loadFailed: true, lastError: `Could not load messages: ${errorText(e)}` }));
         return;
       }
-      subscribe(projectId);
+      // A suspect's terminal delta sent between the GET and the subscribe is lost (replay only sends
+      // id > since): re-read the DB once subscribed. Without an open socket, 'open' heals anyway.
+      if (subscribe(projectId) && streaming) await get().heal(projectId);
     }
 
     async function healOnce(projectId: string): Promise<void> {

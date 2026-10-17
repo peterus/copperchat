@@ -50,7 +50,7 @@ describe('reconnect', () => {
     ws.emit({ type: 'message-delta', projectId: P, messageId: 11, contentDelta: 'lo wor' });
     server.rows = [row(10, { role: 'user' }), row(11, { status: 'streaming', content: 'Hello' })];
     ws.resume();
-    await vi.waitFor(() => expect(server.messageCalls()).toHaveLength(2));
+    await vi.waitFor(() => expect(server.messageCalls()).toHaveLength(3)); // baseline + its heal + this heal
     await vi.waitFor(() => expect(msg(11)?.content).toBe('Hello wor'));
     expect(chat().suspectIds).toEqual([11]);
   });
@@ -58,7 +58,7 @@ describe('reconnect', () => {
   it('re-heals a suspect row once it reaches a terminal status', async () => {
     ws.drop();
     ws.connect();
-    await vi.waitFor(() => expect(server.messageCalls()).toHaveLength(2));
+    await vi.waitFor(() => expect(server.messageCalls()).toHaveLength(3)); // baseline + its heal + this heal
     expect(chat().suspectIds).toEqual([11]);
     server.rows = [row(10, { role: 'user' }), row(11, { status: 'done', content: 'Hello, complete' })];
     ws.emit({ type: 'message-delta', projectId: P, messageId: 11, contentDelta: 'p', statusPatch: 'done' });
@@ -77,7 +77,7 @@ describe('reconnect', () => {
     ws.resume();
     expect(chat().runActive).toBe(false);
     expect(ws.framesOfType('subscribe')).toHaveLength(2);
-    await vi.waitFor(() => expect(server.messageCalls()).toHaveLength(2));
+    await vi.waitFor(() => expect(server.messageCalls()).toHaveLength(3)); // baseline + its heal + this heal
   });
 
   it('a failing heal keeps state and logs a warning', async () => {
@@ -96,8 +96,8 @@ describe('reconnect', () => {
     server.release();
     await Promise.all([a, b, c]);
     server.release();
-    await vi.waitFor(() => expect(server.messageCalls().length).toBeLessThanOrEqual(3));
-    expect(server.messageCalls()).toHaveLength(3); // baseline + one heal + one coalesced re-run
+    await vi.waitFor(() => expect(server.messageCalls().length).toBeLessThanOrEqual(4));
+    expect(server.messageCalls()).toHaveLength(4); // baseline + its heal + one heal + one coalesced re-run
   });
 
   it('a terminal refusal (unauthorized/forbidden) clears the run but neither resubscribes nor heals until open', async () => {
@@ -159,6 +159,45 @@ describe('reconnect', () => {
     ws.emit({ type: 'message-delta', projectId: P, messageId: 12, statusPatch: 'done' });
     await vi.waitFor(() => expect(msg(12)).toMatchObject({ content: 'Hi there', status: 'done' }));
     expect(chat().suspectIds).not.toContain(12);
+  });
+});
+
+describe('terminal delta lost between the baseline GET and the subscribe', () => {
+  it('heals the baseline streaming row after subscribing (socket already open)', async () => {
+    const other = createChatStore({
+      ws,
+      fetchPage: async (projectId, opts) => {
+        const page = await fetchMessagesPage(projectId, opts);
+        // The row finishes before we subscribe: its one terminal delta reaches nobody.
+        server.rows = [row(10, { role: 'user' }), row(11, { status: 'done', content: 'Hello world' })];
+        return page;
+      },
+    });
+    await other.getState().open(P);
+    expect(other.getState().chats[P]!.messages.find((m) => m.id === 11)).toMatchObject({ content: 'Hello world', status: 'done' });
+    expect(other.getState().chats[P]!.suspectIds).toEqual([]);
+  });
+
+  it('a run-finished while rows are suspect heals them', async () => {
+    expect(chat().suspectIds).toEqual([11]);
+    server.rows = [row(10, { role: 'user' }), row(11, { status: 'done', content: 'Hello world' })];
+    ws.emit({ type: 'run-finished', projectId: P, runId: 'r1', reason: 'completed' });
+    await vi.waitFor(() => expect(msg(11)).toMatchObject({ content: 'Hello world', status: 'done' }));
+    expect(chat().suspectIds).toEqual([]);
+  });
+});
+
+describe('heal keeps row identity', () => {
+  it('an unchanged row keeps its object identity across a heal; a changed one is replaced', async () => {
+    server.rows = [row(10, { role: 'user', metadata: { a: 1 } }), row(11, { status: 'streaming', content: 'Hel' })];
+    await store.getState().heal(P);
+    const before10 = msg(10);
+    const before11 = msg(11);
+    server.rows = [row(10, { role: 'user', metadata: { a: 1 } }), row(11, { status: 'done', content: 'Hello' })];
+    await store.getState().heal(P);
+    expect(msg(10)).toBe(before10);
+    expect(msg(11)).not.toBe(before11);
+    expect(msg(11)).toMatchObject({ status: 'done', content: 'Hello' });
   });
 });
 

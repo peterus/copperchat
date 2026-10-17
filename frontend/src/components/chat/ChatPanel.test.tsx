@@ -114,6 +114,18 @@ describe('ChatPanel', () => {
     expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled();
   });
 
+  it('dismissing the load error keeps a Retry affordance', async () => {
+    setup();
+    server.failNext = 1;
+    renderPanel();
+    await screen.findByRole('alert');
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss error' }));
+    expect(screen.queryByRole('alert')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Welcome to the board')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+  });
+
   it('a failed initial load is retried when the socket (re)opens', async () => {
     setup();
     server.failNext = 1;
