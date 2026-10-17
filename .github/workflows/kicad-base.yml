@@ -7,7 +7,7 @@ name: kicad-base
 #                        pushed only by runs on main, whenever its io.copperchat.recipe
 #                        label differs from the current recipe (also for a new commit).
 #   <commit>-r<recipe>   recipe-pinned (scripts/kicad-base-image.sh: <recipe> hashes
-#                        docker/kicad-base/* and this workflow). A pull request that changes
+#                        docker/kicad-base/*). A pull request that changes
 #                        the recipe pushes its build here, so CI (ci.yml) can test it without
 #                        touching <commit>. Only CI test jobs use it; main rebuilds rather
 #                        than promote a pull request's image, and overwrites this tag.
@@ -81,35 +81,13 @@ jobs:
       - id: decide
         env:
           COMMIT: ${{ steps.pins.outputs.commit }}
-          RECIPE: ${{ steps.pins.outputs.recipe }}
-          RTAG: ${{ steps.pins.outputs.rtag }}
           FORCE: ${{ inputs.force || 'false' }}
           REF: ${{ github.ref }}
           SAME_REPO: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
-          # label: exit 1 = tag missing; any other failure (outage, auth, rate limit) aborts,
-          # so a registry error is never mistaken for "missing" and pushed over.
-          rc=0; scripts/kicad-base-image.sh label "$IMAGE:$RTAG" >/dev/null || rc=$?
-          case "$rc" in 0) rexists=true ;; 1) rexists=false ;; *) exit 1 ;; esac
-          rc=0; published="$(scripts/kicad-base-image.sh label "$IMAGE:$COMMIT")" || rc=$?
-          case "$rc" in 0) exists=true ;; 1) exists=false; published="" ;; *) exit 1 ;; esac
-          main=false; [ "$REF" = "refs/heads/main" ] && main=true
-          echo "recipe tag exists: $rexists; <commit> exists: $exists, published recipe: '$published', current: $RECIPE"
-          build=false; push_rtag=false; push_commit=false
-          if [ "$main" = "true" ]; then
-            # main never reuses a pull request's build: it rebuilds and overwrites both tags.
-            if [ "$FORCE" = "true" ] || [ "$published" != "$RECIPE" ]; then
-              build=true; push_rtag=true; push_commit=true
-            fi
-          elif [ "$FORCE" = "true" ] || { [ "$rexists" = "false" ] && [ "$published" != "$RECIPE" ]; }; then
-            build=true
-            # Branches only ever publish the recipe-pinned tag; <commit> is main's alone.
-            if [ "$SAME_REPO" = "true" ] && [ "$rexists" = "false" ]; then push_rtag=true; fi
-          fi
-          echo "build=$build push_rtag=$push_rtag push_commit=$push_commit"
-          {
-            echo "build=$build"; echo "push_rtag=$push_rtag"; echo "push_commit=$push_commit"
-          } >> "$GITHUB_OUTPUT"
+          decision="$(scripts/kicad-base-image.sh decide)"
+          echo "$decision"
+          echo "$decision" >> "$GITHUB_OUTPUT"
 
   build:
     needs: meta
@@ -255,14 +233,17 @@ jobs:
       - name: On main, <commit> must carry this recipe
         if: github.ref == 'refs/heads/main'
         run: scripts/kicad-base-image.sh published "${{ needs.meta.outputs.commit }}"
-      # ci.yml's base-dependent jobs fail while a new recipe is still being built.
-      - name: Re-run this commit's failed CI jobs
-        if: needs.meta.outputs.push_rtag == 'true'
+      # ci.yml's base-dependent jobs fail while a new recipe is still being built; re-run
+      # the latest CI run of this branch (any head pushed meanwhile, too) if it failed.
+      - name: Re-run this branch's failed CI jobs
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
-          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
         run: |
-          gh run list -R "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$SHA" --json databaseId,status,conclusion \
+          set -o pipefail
+          gh run list -R "$GITHUB_REPOSITORY" --workflow ci.yml --branch "$BRANCH" --limit 1 \
+            --json databaseId,status,conclusion \
             -q '.[] | select(.status == "completed" and .conclusion == "failure") | .databaseId' \
           | while read -r id; do echo "re-running CI run $id"; gh run rerun "$id" --failed -R "$GITHUB_REPOSITORY"; done

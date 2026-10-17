@@ -2,8 +2,9 @@
 # scripts/kicad-base-image.sh — names of the KiCad base image (run from the repo root).
 #
 #   recipe            16-hex hash of everything that shapes the image: docker/kicad-base/*
-#                     (except SUPPORTED_COMMITS, which only feeds CI matrices) and the
-#                     workflow that builds it.
+#                     except SUPPORTED_COMMITS, which only feeds CI matrices. (The workflow
+#                     is not hashed: a branch's recipe-pinned build only feeds CI tests,
+#                     main builds what it publishes itself.)
 #   tag <commit>      the recipe-pinned tag <commit>-r<recipe>, the image a pull request
 #                     built for its recipe (kicad-base.yml). Only CI test jobs use it.
 #   resolve <commit>  the image CI tests <commit> against. For the pinned KICAD_COMMIT it must
@@ -13,11 +14,13 @@
 #                     published <commit> tag as is.
 #   published <commit> <commit> if its label matches the current recipe, else fail. For
 #                     releases: never a pull request's recipe-pinned build.
+#   decide            kicad-base.yml's build/push decision from env COMMIT, FORCE, REF,
+#                     SAME_REPO; prints build=, push_rtag=, push_commit= lines.
 set -euo pipefail
 IMAGE="${KICAD_BASE_REPO:-ghcr.io/peterus/copperchat-kicad-base}"
 
 recipe() {
-  { git ls-files docker/kicad-base | grep -v '/SUPPORTED_COMMITS$'; echo .github/workflows/kicad-base.yml; } \
+  git ls-files docker/kicad-base | grep -v '/SUPPORTED_COMMITS$' \
     | LC_ALL=C sort | xargs sha256sum | sha256sum | cut -c1-16
 }
 
@@ -61,5 +64,27 @@ case "${1:-}" in
       echo "$IMAGE:$commit has recipe '$published', not $r: wait for kicad-base on main" >&2
     fi
     exit 1 ;;
-  *) echo "usage: $0 recipe | tag <commit> | label <image> | resolve <commit> | published <commit>" >&2; exit 64 ;;
+  decide)
+    : "${COMMIT:?}" "${FORCE:?}" "${REF:?}" "${SAME_REPO:?}"
+    r="$(recipe)"
+    # label: exit 1 = tag missing; any other failure (outage, auth, rate limit) aborts,
+    # so a registry error is never mistaken for "missing" and pushed over.
+    rc=0; label "$IMAGE:$COMMIT-r$r" >/dev/null || rc=$?
+    case "$rc" in 0) rexists=true ;; 1) rexists=false ;; *) exit 1 ;; esac
+    rc=0; published="$(label "$IMAGE:$COMMIT")" || rc=$?
+    case "$rc" in 0) ;; 1) published="" ;; *) exit 1 ;; esac
+    echo "recipe tag exists: $rexists; published recipe: '$published', current: $r" >&2
+    build=false; push_rtag=false; push_commit=false
+    if [ "$REF" = "refs/heads/main" ]; then
+      # main never reuses a branch's build: it rebuilds and overwrites both tags.
+      if [ "$FORCE" = "true" ] || [ "$published" != "$r" ]; then
+        build=true; push_rtag=true; push_commit=true
+      fi
+    elif [ "$FORCE" = "true" ] || { [ "$rexists" = "false" ] && [ "$published" != "$r" ]; }; then
+      build=true
+      # Branches only ever publish the recipe-pinned tag; <commit> is main's alone.
+      if [ "$SAME_REPO" = "true" ] && [ "$rexists" = "false" ]; then push_rtag=true; fi
+    fi
+    printf 'build=%s\npush_rtag=%s\npush_commit=%s\n' "$build" "$push_rtag" "$push_commit" ;;
+  *) echo "usage: $0 recipe | tag <commit> | label <image> | resolve <commit> | published <commit> | decide" >&2; exit 64 ;;
 esac

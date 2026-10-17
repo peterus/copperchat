@@ -29,12 +29,17 @@ jobs:
       - name: Docs and pins guard
         run: bash scripts/check-docs.sh
         working-directory: .
+      - name: kicad-base tag logic (stubbed registry)
+        run: bash scripts/test-kicad-base-image.sh
+        working-directory: .
 
   kicad-commits:
     # Every supported KiCad commit with the base image CI tests it against. The pinned
     # KICAD_COMMIT must use the current recipe (scripts/kicad-base-image.sh resolve):
     # while a pull request's new recipe is still being built this job fails, and the
-    # kicad-base workflow re-runs it once the recipe-pinned tag is pushed.
+    # kicad-base workflow re-runs it once the recipe-pinned tag is pushed. Fork pull
+    # requests cannot push that tag: a recipe change from a fork stays red here until a
+    # maintainer pushes the branch to this repository.
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.list.outputs.matrix }}
@@ -44,6 +49,7 @@ jobs:
       - id: list
         # One full commit hash per line; `#` comments and blank lines allowed (Phase 2).
         run: |
+          set -o pipefail
           pinned="$(tr -d '[:space:]' < docker/kicad-base/KICAD_COMMIT)"
           matrix="$(grep -Ev '^\s*(#|$)' docker/kicad-base/SUPPORTED_COMMITS | tr -d '[:blank:]' | while read -r c; do
             image="$(scripts/kicad-base-image.sh resolve "$c")" || exit 1
