@@ -1,10 +1,9 @@
 import { useCallback, useState } from 'react';
 import type { MessageDTO } from '@/protocol/frames';
 import { Lightbox } from './Lightbox';
-import { Markdown } from './Markdown';
+import { isSafeImageUrl, Markdown } from './Markdown';
 
 /** Only same-origin API paths (backend gives `/api/projects/{id}/images/{name}`) or local blobs. */
-const isSafeImageUrl = (u: string) => u.startsWith('/api/') || u.startsWith('blob:');
 
 /** Image urls of a row: `metadata.url` plus `metadata.images` (strings or `{url}`), foreign origins removed. */
 export function imageUrls(m: MessageDTO): string[] {

