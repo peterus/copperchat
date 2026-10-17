@@ -4,7 +4,7 @@ name: Release
 # and :latest for non-prerelease versions) with provenance and SBOM attestations, then creates
 # the GitHub Release with the version's CHANGELOG.md section as notes. Never runs for pull
 # requests or branches.
-#   git tag -a v0.1.0 -m "CopperChat v0.1.0" && git push origin v0.1.0
+#   git tag -a v0.1.1 -m "CopperChat v0.1.1" && git push origin v0.1.1
 # After the first release the owner sets the GHCR package to public once (github.com/peterus →
 # Packages → copperchat → Package settings → Change visibility); new packages start private.
 on:
