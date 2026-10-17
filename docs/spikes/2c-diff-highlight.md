@@ -29,7 +29,7 @@ a tool log would have missed.
   junction added, wire deleted, `Device:R` placed as R99. `hier_edit`: value change of R201 on a
   sub-sheet instance, wire + label added there, value change on the root. `noedit`: open + save only.
 - KiCanvas: the vendored bundle (fork `peterus/kicanvas` @ `2fbd2af`, 479 820 B) as **baseline**,
-  and the same commit + `patches/schematic-highlight-set.patch` (+64/−1 lines in
+  and the same commit + `patches/schematic-highlight-set.patch` (+70/−1 lines in
   `viewers/schematic/viewer.ts`, bundle 480 927 B) as **patched**. Chromium headless (Playwright
   1.64.1, SwiftShader), page `viewer/index.html`, files served from the pairs.
 
@@ -43,7 +43,7 @@ a tool log would have missed.
 | Noise (`noedit`: open + `save()` vs. the original) | PASS — 0 changes, exit 0 (saving rewrites nothing the differ sees) |
 | JSON shape | PASS — `{docType, path, changes[]}`; each change `{id, kind: added/removed/modified, typeName (SCH_SYMBOL, SCH_LINE, SCH_LABEL, SCH_JUNCTION, …), refdes (symbols only), bbox [x,y,w,h], properties[{name, before:{type,v}, after:{type,v}}], children[]}` |
 | Identity | PASS — `id` = `/<root UUID>/<sheet instance UUID…>/<item UUID>`; the item UUID equals the API's `item.id.value` (also the legacy `00000000-…-00004549f3ad` ids). Sheet path prefix equals KiCanvas' page `sheet_path` |
-| Modified items | PASS — only the changed properties are listed (`Value: 10uF → 22uF`, `Position X`). Added/removed items list all properties (11–23 entries; noise for the UI) |
+| Modified items | PASS — only the changed properties are listed (`Value: 10uF → 22uF`, `Position X`). Added items list all properties (11–23 entries) and removed items 4–10 (noise for the UI) |
 | bbox | PASS — units are 100 nm (`/1e4` = mm). For a modified item it is the **after** box (moved R3: diff 181.53/78.48/10.11/13.23 mm vs. KiCanvas box of the after file 181.47/78.34/10.30/13.49, before file w = 6.26); removed → the before box |
 | Hierarchy (`hier_edit`) | PASS — a change in the shared `ampli_ht` file appears **once per sheet instance** (same item UUID, different sheet path, instance-specific `refdes`: R201 under `…1333`, R301 under `…13a4`): 4 edits → 7 changes. The diff of the root file loads sub-sheets from the same directory, so both copies must be full project directories with all sheets saved |
 | Runtime | PASS — 0.41–0.48 s per call (median of 7; process start dominated; ecc83 0.42 s, complex_hierarchy 0.475 s JSON, `--exit-code-only` 0.44 s) |
@@ -80,9 +80,9 @@ The mismatches are real behaviour of the headless server (`harness/collateral.py
 | API for a set | none: `viewer.select(item)` is single; `select(["C105","C101"])` throws "Unable to select item C105,C101" | `viewer.highlight(refs\|uuids, css)` → `{found, missing}`, `viewer.highlight_boxes([{x,y,w,h}] mm)`, `viewer.clear_highlight()`, `viewer.highlighted_count` |
 | Set of 5 refs on a sheet | – | all 5 found, `NOPE99` reported missing, 1049 highlight pixels vs. 0 (screenshot `results/p1-highlight-set.png`) |
 | Clear | – | screenshot is **byte-identical** to the one before highlighting |
-| With a selection | – | highlight survives `select(ref)`; clearing the selection keeps it |
+| With a selection | – | highlight survives `select(ref)` |
 | Across sheets | `select(ref)` finds refs on the active page only | on the root page `["C105","R201","R301"]` → found `C105`, missing `R201,R301`; after `project.set_active_page(page)` + `kicanvas:viewerload` the instance's refs are found (R201 on `ampli_ht_vertical`, R301 on `ampli_ht_horizontal` — same symbol, different ref per instance). The highlight is viewer state: the first patch version kept stale boxes after a page switch (coordinates of the other page); the patch resets it in `load()`, so the host re-applies after each `kicanvas:viewerload` |
-| Items without a symbol object | `find_symbol` knows symbols/sheets only (by ref or UUID); wires, labels, junctions, deleted items cannot be found | `highlight_boxes` takes the diff's `bbox / 1e4` (mm): the box of C105 from the diff matches KiCanvas' own symbol box within 0.3 mm |
+| Items without a symbol object | `find_symbol` knows symbols/sheets only (by ref or UUID); wires, labels, junctions, deleted items cannot be found | `highlight_boxes` takes the diff's `bbox / 1e4` (mm): the box of C105 from the diff matches KiCanvas' own symbol box within 0.5 mm |
 | Scale / speed | – | 10 refs: 3–10 ms; 500 boxes: 6 ms to set, 0 ms to clear |
 
 Not covered: real touch / iOS Safari; the dark theme (`witchhazel`) — the highlight colour `#ff8c00`

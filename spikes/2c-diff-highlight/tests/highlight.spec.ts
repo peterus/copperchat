@@ -155,7 +155,7 @@ test("patched: highlight_boxes from kicad-cli diff bboxes (wires/labels, deleted
   const mm = (b: number[]) => ({ x: b[0] / 1e4, y: b[1] / 1e4, w: b[2] / 1e4, h: b[3] / 1e4 });
   const vb = await page.evaluate(() => { const v = (window as any).__viewer(); v.select("C105"); const b = v.selected; return { x: b.x, y: b.y, w: b.w, h: b.h }; });
   const db = mm(c105.bbox);
-  const close = (a: number, b: number) => Math.abs(a - b) < 3;
+  const close = (a: number, b: number) => Math.abs(a - b) < 0.6;
   record("2C-viewer", "diff_bbox_matches_viewer_symbol_bbox", close(db.x, vb.x) && close(db.y, vb.y) && close(db.w, vb.w) && close(db.h, vb.h), { diff_mm: db, viewer_mm: vb });
   // the root-sheet changes of the diff as boxes
   const rootChanges = diff.changes.filter((c: any) => c.id.split("/").length === 3);
@@ -183,7 +183,7 @@ test("diff bbox of a MOVED symbol: before-box, after-box or union?", async ({ pa
     await open(page, "patched", [`/.work/pairs/ecc83_edit/${side}/ecc83-pp.kicad_sch`]);
     boxes[side] = await page.evaluate(() => { const v = (window as any).__viewer(); v.select("R3"); const b = v.selected; return { x: b.x, y: b.y, w: b.w, h: b.h }; });
   }
-  const close = (a: any, b: any) => ["x", "y", "w", "h"].every((k) => Math.abs(a[k] - b[k]) < 3);
+  const close = (a: any, b: any) => ["x", "y", "w", "h"].every((k) => Math.abs(a[k] - b[k]) < 0.6);
   const which = close(db, boxes.after) ? "after" : close(db, boxes.before) ? "before" : "other";
   record("2C-viewer", "moved_symbol_diff_bbox_is_after_box", which === "after", { diff_mm: db, ...boxes, which });
 });
