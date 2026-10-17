@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable, Coroutine
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -69,6 +69,13 @@ def _clip(value: Any) -> Any:
     if isinstance(value, list):
         return [_clip(v) for v in value]
     return value
+
+
+AttachmentResolver = Callable[[AttachmentRef], Awaitable[AttachmentRef | None]]
+
+
+async def _no_attachments(_ref: AttachmentRef) -> AttachmentRef | None:
+    return None
 
 
 class UnknownAttachment(CopperChatError):
@@ -149,7 +156,8 @@ class RunEngine:
         self.project = project
         self.broadcaster = broadcaster
         self.hooks = hooks or RunHooks()
-        self.attachment_resolver: Callable[[str], AttachmentRef | None] = lambda _id: None
+        # Phase 8 wires the uploads table (AgentRuntime); unknown ids are rejected.
+        self.attachment_resolver: AttachmentResolver = _no_attachments
         self.rate_limited_until: datetime | None = None
         self._settings = settings
         self._sessions = sessions
@@ -222,9 +230,13 @@ class RunEngine:
         attachments: list[AttachmentRef],
         metadata: dict[str, Any] | None = None,
     ) -> tuple[MessageDTO, bool]:
+        resolved: list[AttachmentRef] = []
         for att in attachments:
-            if self.attachment_resolver(att.id) is None:
+            found = await self.attachment_resolver(att)
+            if found is None:
                 raise UnknownAttachment(f"unknown attachment: {att.id}")
+            resolved.append(found)
+        attachments = resolved
         meta = dict(metadata or {})
         if attachments:
             meta["attachments"] = [a.model_dump(mode="json", by_alias=True) for a in attachments]

@@ -16,6 +16,8 @@ dependencies = [
     "kicad-python>=0.8.0",
     "pillow>=11",
     "claude-agent-sdk==0.2.168",
+    "httpx>=0.28",
+    "python-multipart>=0.0.20",
 ]
 
 [dependency-groups]
@@ -38,6 +40,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/copperchat"]
+artifacts = ["src/copperchat/skills/builtin/**"]
 
 # kicad-python 0.8.0 on PyPI is broken for KiCad 11 (see tests/unit/test_kipy_imports.py).
 # Revision recorded in docs/spikes/1c-api-server.md ("kipy revision").
@@ -54,6 +57,7 @@ addopts = "-ra --strict-markers"
 timeout = 180
 markers = [
     "kicad: needs a real `kicad-cli api-server` (KiCad 11 master); run with -m kicad",
+    "live_sdk: needs real model credentials (and web access); opt-in, run with -m live_sdk",
 ]
 
 [tool.ruff]

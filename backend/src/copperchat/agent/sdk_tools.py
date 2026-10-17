@@ -32,10 +32,12 @@ def _error(err: StructuredToolError) -> dict[str, Any]:
 
 
 def _success(result: ToolResult) -> dict[str, Any]:
-    payload = result.data if result.data is not None else {"ok": True}
-    content: list[dict[str, Any]] = [
-        {"type": "text", "text": json.dumps(payload, ensure_ascii=False)}
-    ]
+    if result.text is not None:
+        text = result.text
+    else:
+        payload = result.data if result.data is not None else {"ok": True}
+        text = json.dumps(payload, ensure_ascii=False)
+    content: list[dict[str, Any]] = [{"type": "text", "text": text}]
     for img in result.images:
         content.append(
             {
@@ -47,20 +49,27 @@ def _success(result: ToolResult) -> dict[str, Any]:
     return {"content": content}
 
 
-def _make_handler(spec: ToolSpec, ctx_factory: Callable[[], ToolContext]) -> McpHandler:
+def _make_handler(
+    spec: ToolSpec,
+    ctx_factory: Callable[[], ToolContext],
+    kicadless_ctx_factory: Callable[[], ToolContext] | None = None,
+) -> McpHandler:
     # asyncio.CancelledError (an interrupt cancels the running tool, spike 1A b2) is a
     # BaseException: it is deliberately not caught here and propagates to the SDK.
     async def handler(args: dict[str, Any]) -> dict[str, Any]:
         try:
             ctx = ctx_factory()
         except KicadUnavailable as exc:
-            return _error(
-                StructuredToolError(
-                    "KiCad is not available",
-                    str(exc),
-                    "Ask the user to reopen the project in CopperChat, then try again.",
+            if not spec.requires_kicad and kicadless_ctx_factory is not None:
+                ctx = kicadless_ctx_factory()
+            else:
+                return _error(
+                    StructuredToolError(
+                        "KiCad is not available",
+                        str(exc),
+                        "Ask the user to reopen the project in CopperChat, then try again.",
+                    )
                 )
-            )
         try:
             if spec.mutating and ctx.on_mutation is not None:
                 await ctx.on_mutation()
@@ -94,24 +103,32 @@ def _make_handler(spec: ToolSpec, ctx_factory: Callable[[], ToolContext]) -> Mcp
 
 
 def build_sdk_tool_list(
-    specs: Sequence[ToolSpec], ctx_factory: Callable[[], ToolContext]
+    specs: Sequence[ToolSpec],
+    ctx_factory: Callable[[], ToolContext],
+    kicadless_ctx_factory: Callable[[], ToolContext] | None = None,
 ) -> list[SdkMcpTool[Any]]:
     return [
         SdkMcpTool(
             name=s.name,
             description=s.description,
             input_schema=s.input_schema,
-            handler=_make_handler(s, ctx_factory),
+            handler=_make_handler(s, ctx_factory, kicadless_ctx_factory),
         )
         for s in specs
     ]
 
 
 def build_sdk_tools(
-    specs: Sequence[ToolSpec], ctx_factory: Callable[[], ToolContext]
+    specs: Sequence[ToolSpec],
+    ctx_factory: Callable[[], ToolContext],
+    kicadless_ctx_factory: Callable[[], ToolContext] | None = None,
 ) -> McpSdkServerConfig:
+    """``kicadless_ctx_factory`` builds the context of ``requires_kicad=False`` tools when
+    ``ctx_factory`` raises KicadUnavailable (no project open in KiCad)."""
     return create_sdk_mcp_server(
-        name=SERVER_NAME, version="1.0.0", tools=build_sdk_tool_list(specs, ctx_factory)
+        name=SERVER_NAME,
+        version="1.0.0",
+        tools=build_sdk_tool_list(specs, ctx_factory, kicadless_ctx_factory),
     )
 
 

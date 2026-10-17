@@ -6,13 +6,13 @@ Measured SDK behaviour (claude-agent-sdk 0.2.168) is recorded in
 
 from __future__ import annotations
 
-import base64
-import binascii
+import asyncio
 import logging
 from collections.abc import AsyncIterator, Callable, Sequence
-from dataclasses import dataclass
+from contextlib import suppress
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -37,12 +37,12 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk.types import CanUseTool
 
+from copperchat.agent.attachments import build_user_content
 from copperchat.agent.events import (
     AgentEvent,
     QueuedItem,
     RateLimited,
     SessionId,
-    SubagentText,
     TextDelta,
     ThinkingDelta,
     ToolResultEvt,
@@ -50,10 +50,21 @@ from copperchat.agent.events import (
     TurnFinished,
     Usage,
 )
+from copperchat.agent.guards import DELEGATION_TOOL, ToolCallObserver, make_main_guard
+from copperchat.agent.sdk_messages import (
+    Totals,
+    model_usage_totals,
+    subagent_events,
+    tool_result_content,
+)
 from copperchat.agent.sdk_tools import SERVER_NAME, build_sdk_tools, sdk_tool_name
 from copperchat.config import Settings
+from copperchat.db import Database
+from copperchat.kicad_session import KicadSession
 from copperchat.projects import Project
-from copperchat.tools import ImageBlock, ToolContext, ToolSpec
+from copperchat.research.runner import QueryFn, ResearchRunner
+from copperchat.skills.assembly import SkillBundle, apply_skills, assemble_skills
+from copperchat.tools import ToolContext, ToolSpec
 
 log = logging.getLogger(__name__)
 
@@ -108,7 +119,12 @@ def build_options(
     tool_names: Sequence[str],
     resume_session_id: str | None,
     fork_session: bool,
+    skills: SkillBundle | None = None,
+    on_tool_allowed: ToolCallObserver | None = None,
 ) -> ClaudeAgentOptions:
+    """Main-agent options. Built-in tools: none, or exactly ``["Skill"]`` with enabled
+    skills (Phase 8); the part-researcher is our ``research_part`` MCP tool, never a
+    built-in. ``on_tool_allowed`` observes every call the guard allows."""
     guarded = frozenset(sdk_tool_name(n) for n in tool_names)
     env = {
         "CLAUDE_CONFIG_DIR": str(settings.data_dir / "claude"),
@@ -119,13 +135,13 @@ def build_options(
         env["CLAUDE_CODE_OAUTH_TOKEN"] = settings.claude_code_oauth_token.get_secret_value()
     if settings.anthropic_api_key is not None:
         env["ANTHROPIC_API_KEY"] = settings.anthropic_api_key.get_secret_value()
-    return ClaudeAgentOptions(
+    options = ClaudeAgentOptions(
         tools=[],  # no built-in file/shell/web tools; init list = mcp__copperchat__* only
         allowed_tools=[],
         mcp_servers={SERVER_NAME: mcp_server},
         system_prompt=SYSTEM_PROMPT.format(project_name=project.name),
         permission_mode="default",
-        can_use_tool=make_tool_guard(guarded),
+        can_use_tool=make_main_guard(guarded, on_allowed=on_tool_allowed),
         resume=resume_session_id,
         fork_session=fork_session,
         # The session store path is derived from cwd; it must stay stable per project
@@ -135,67 +151,9 @@ def build_options(
         include_partial_messages=True,
         setting_sources=[],
     )
-
-
-def _tool_result_content(
-    content: str | list[dict[str, Any]] | None,
-) -> tuple[str, tuple[ImageBlock, ...]]:
-    if content is None:
-        return "", ()
-    if isinstance(content, str):
-        return content, ()
-    texts: list[str] = []
-    images: list[ImageBlock] = []
-    for item in content:
-        if item.get("type") == "text":
-            texts.append(str(item.get("text", "")))
-        elif item.get("type") == "image":
-            src = item.get("source", {})
-            if src.get("type") == "base64":
-                try:
-                    data = base64.b64decode(src.get("data", ""))
-                except (binascii.Error, ValueError):
-                    log.warning("skipping tool-result image with invalid base64 data")
-                    continue
-                images.append(ImageBlock(mime=str(src.get("media_type", "image/png")), data=data))
-    return "\n".join(texts), tuple(images)
-
-
-@dataclass(frozen=True)
-class _Totals:
-    """Cumulative per-client totals reported on a ResultMessage."""
-
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_read_tokens: int = 0
-    cache_creation_tokens: int = 0
-    cost_usd: float | None = None
-
-    def is_below(self, other: _Totals) -> bool:
-        return (
-            self.input_tokens < other.input_tokens
-            or self.output_tokens < other.output_tokens
-            or self.cache_read_tokens < other.cache_read_tokens
-            or self.cache_creation_tokens < other.cache_creation_tokens
-            or (
-                self.cost_usd is not None
-                and other.cost_usd is not None
-                and self.cost_usd < other.cost_usd
-            )
-        )
-
-
-def _model_usage_totals(msg: ResultMessage) -> _Totals | None:
-    if not msg.model_usage:
-        return None
-    totals = [0, 0, 0, 0]
-    keys = ("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens")
-    for per_model in msg.model_usage.values():
-        raw: dict[str, Any] = dict(per_model)
-        for i, key in enumerate(keys):
-            totals[i] += int(raw.get(key, 0) or 0)
-    inp, out, cache_read, cache_creation = totals
-    return _Totals(inp, out, cache_read, cache_creation, msg.total_cost_usd)
+    if skills is not None:
+        options = apply_skills(options, skills)
+    return options
 
 
 def _rate_limit_resets(info: RateLimitInfo | None) -> datetime | None:
@@ -229,7 +187,7 @@ class SdkEventMapper:
         self._streamed_msgs: set[str] = set()
         self._partial_since_last_assistant = False
         self._rate: RateLimitInfo | None = None
-        self._prev_totals: _Totals | None = None
+        self._prev_totals: Totals | None = None
         # False while the token baseline in _prev_totals is unknown: after a result
         # without model_usage, the cumulative token totals were never seen.
         self._token_baseline_known = False
@@ -296,32 +254,9 @@ class SdkEventMapper:
         TextBlocks (with ``forward_subagent_text``); thinking, the echoed delegation prompt
         (string content) and tool-result images are dropped.
         """
+        out.extend(subagent_events(msg, parent))
         if isinstance(msg, AssistantMessage):
-            for block in msg.content:
-                if isinstance(block, ToolUseBlock):
-                    out.append(
-                        ToolUse(
-                            id=block.id,
-                            name=block.name,
-                            input=dict(block.input),
-                            parent_tool_use_id=parent,
-                        )
-                    )
-                elif isinstance(block, TextBlock) and block.text.strip():
-                    out.append(SubagentText(parent_tool_use_id=parent, text=block.text))
             self._add_subagent_usage(msg)
-        elif isinstance(msg, UserMessage) and not isinstance(msg.content, str):
-            for block in msg.content:
-                if isinstance(block, ToolResultBlock):
-                    text, _images = _tool_result_content(block.content)
-                    out.append(
-                        ToolResultEvt(
-                            id=block.tool_use_id,
-                            content=text,
-                            is_error=bool(block.is_error),
-                            parent_tool_use_id=parent,
-                        )
-                    )
 
     def _add_subagent_usage(self, msg: AssistantMessage) -> None:
         """Deliberately a no-op (X20 (5), spike 1A h5).
@@ -370,7 +305,7 @@ class SdkEventMapper:
             # A backgrounded delegation ("Async agent launched ...") is an ordinary
             # tool_result here (X20 (3)).
             if isinstance(block, ToolResultBlock):
-                text, images = _tool_result_content(block.content)
+                text, images = tool_result_content(block.content)
                 out.append(
                     ToolResultEvt(
                         id=block.tool_use_id,
@@ -382,9 +317,9 @@ class SdkEventMapper:
 
     def _usage(self, msg: ResultMessage) -> Usage:
         prev = self._prev_totals
-        cum = _model_usage_totals(msg)
+        cum = model_usage_totals(msg)
         u = msg.usage or {}
-        per_turn = _Totals(
+        per_turn = Totals(
             int(u.get("input_tokens", 0) or 0),
             int(u.get("output_tokens", 0) or 0),
             int(u.get("cache_read_input_tokens", 0) or 0),
@@ -400,8 +335,8 @@ class SdkEventMapper:
             # No model_usage: tokens from the per-turn (main-agent only) usage; the
             # token baseline is carried over unchanged, cost is still a delta.
             turn = per_turn
-            base = prev or _Totals()
-            cum = _Totals(
+            base = prev or Totals()
+            cum = Totals(
                 base.input_tokens,
                 base.output_tokens,
                 base.cache_read_tokens,
@@ -413,9 +348,9 @@ class SdkEventMapper:
         else:
             if prev is not None and cum.is_below(prev):
                 prev = None  # totals restarted (new conversation): this result is absolute
-            base = prev or _Totals()
+            base = prev or Totals()
             self._token_baseline_known = True
-            turn = _Totals(
+            turn = Totals(
                 cum.input_tokens - base.input_tokens,
                 cum.output_tokens - base.output_tokens,
                 cum.cache_read_tokens - base.cache_read_tokens,
@@ -457,15 +392,44 @@ def user_prompt(item: QueuedItem) -> dict[str, Any]:
     }
 
 
-async def _prompts(items: AsyncIterator[QueuedItem]) -> AsyncIterator[dict[str, Any]]:
+async def user_prompt_with_attachments(
+    item: QueuedItem, db: Database | None, project: Project
+) -> dict[str, Any]:
+    """``user_prompt`` with uploaded attachments as content blocks (Phase 8)."""
+    prompt = user_prompt(item)
+    if item.attachments and db is not None:
+        prompt["message"]["content"] = await build_user_content(
+            db, project, item.text, list(item.attachments)
+        )
+    return prompt
+
+
+async def _prompts(
+    items: AsyncIterator[QueuedItem], db: Database | None = None, project: Project | None = None
+) -> AsyncIterator[dict[str, Any]]:
     # No buffering: the engine gates `items` (next item only after the previous
     # ResultMessage, spike 1A (a3)); we pull exactly when the SDK asks.
     async for item in items:
-        yield user_prompt(item)
+        if project is None:
+            yield user_prompt(item)
+        else:
+            yield await user_prompt_with_attachments(item, db, project)
+
+
+@dataclass(frozen=True)
+class _StreamEnd:
+    error: BaseException | None = None
 
 
 class SdkStreamingBackend:
-    """One long-lived ClaudeSDKClient per burst, fed by the engine's gated input."""
+    """One long-lived ClaudeSDKClient per burst, fed by the engine's gated input.
+
+    Phase 8: each burst assembles the project's skills (with ``db``), and runs
+    ``research_part`` calls through a :class:`ResearchRunner` whose forwarded events are
+    merged into this backend's event stream (a sub-agent row is never yielded before the
+    ``research_part`` ToolUse it belongs to); the research usage is added to the turn's
+    Usage; ``interrupt()`` also cancels running research queries.
+    """
 
     def __init__(
         self,
@@ -473,14 +437,21 @@ class SdkStreamingBackend:
         settings: Settings,
         specs: Sequence[ToolSpec],
         ctx_factory: Callable[[], ToolContext],
+        db: Database | None = None,
         client_factory: ClientFactory = ClaudeSDKClient,
+        research_query_fn: QueryFn | None = None,
     ) -> None:
         self._settings = settings
         self._specs = list(specs)
         self._ctx_factory = ctx_factory
+        self._db = db
         self._client_factory = client_factory
+        self._research_query_fn = research_query_fn
         self._client: Any = None
         self._mapper: SdkEventMapper | None = None
+        self._research: ResearchRunner | None = None
+        self.tool_ctx_factory: Callable[[], ToolContext] = ctx_factory
+        self.kicadless_ctx_factory: Callable[[], ToolContext] = ctx_factory
 
     async def start(
         self,
@@ -488,29 +459,103 @@ class SdkStreamingBackend:
         input_stream: AsyncIterator[QueuedItem],
         resume_session_id: str | None,
     ) -> AsyncIterator[AgentEvent]:
+        skills = await assemble_skills(self._settings, project, self._db) if self._db else None
+        queue: asyncio.Queue[AgentEvent | _StreamEnd] = asyncio.Queue()
+        research = ResearchRunner(
+            project,
+            self._settings,
+            emit=queue.put_nowait,
+            notes_skill=skills.researcher_skill if skills else None,
+            query_fn=self._research_query_fn,
+        )
+
+        def on_allowed(tool: str, inp: dict[str, Any], ctx: ToolPermissionContext) -> None:
+            if tool == DELEGATION_TOOL:
+                research.note_call(inp, ctx.tool_use_id)
+
+        def ctx_factory() -> ToolContext:
+            return replace(self._ctx_factory(), research=research)
+
+        def kicadless_ctx_factory() -> ToolContext:
+            # research_part needs no KiCad session; it never touches ``session``.
+            return ToolContext(
+                project=project,
+                session=cast(KicadSession, None),
+                settings=self._settings,
+                research=research,
+            )
+
+        # What this burst's MCP tool handlers use.
+        self.tool_ctx_factory = ctx_factory
+        self.kicadless_ctx_factory = kicadless_ctx_factory
+
         options = build_options(
             settings=self._settings,
             project=project,
-            mcp_server=build_sdk_tools(self._specs, self._ctx_factory),
+            mcp_server=build_sdk_tools(self._specs, ctx_factory, kicadless_ctx_factory),
             tool_names=[s.name for s in self._specs],
             resume_session_id=resume_session_id,
             # Fork only at burst start, and only from a stored session (spike 1A (c)).
             fork_session=resume_session_id is not None,
+            skills=skills,
+            on_tool_allowed=on_allowed,
         )
         client = self._client_factory(options)
         mapper = SdkEventMapper()
-        await client.connect(prompt=_prompts(input_stream))
-        self._client, self._mapper = client, mapper
+        await client.connect(prompt=_prompts(input_stream, self._db, project))
+        self._client, self._mapper, self._research = client, mapper, research
+
+        async def pump() -> None:
+            try:
+                async for msg in client.receive_messages():
+                    for ev in mapper.map(msg):
+                        queue.put_nowait(ev)
+            except Exception as exc:
+                queue.put_nowait(_StreamEnd(exc))
+            else:
+                queue.put_nowait(_StreamEnd())
+
+        pump_task = asyncio.create_task(pump())
+        seen: set[str] = set()
+        held: dict[str, list[AgentEvent]] = {}
         try:
-            async for msg in client.receive_messages():
-                for ev in mapper.map(msg):
-                    yield ev
+            while True:
+                item = await queue.get()
+                if isinstance(item, _StreamEnd):
+                    if item.error is not None:
+                        raise item.error
+                    return
+                parent = getattr(item, "parent_tool_use_id", None)
+                if parent and parent not in seen:
+                    held.setdefault(parent, []).append(item)
+                    continue
+                if isinstance(item, TurnFinished):
+                    research.end_turn()  # recorded calls that never ran belong to no card
+                    for evs in held.values():
+                        for ev in evs:
+                            yield ev
+                    held.clear()
+                if isinstance(item, Usage):
+                    extra = research.take_usage()
+                    if extra is not None:
+                        item = _add_usage(item, extra)
+                yield item
+                if isinstance(item, ToolUse) and item.parent_tool_use_id is None:
+                    seen.add(item.id)
+                    for ev in held.pop(item.id, []):
+                        yield ev
         finally:
-            self._client, self._mapper = None, None
+            research.cancel_all()
+            pump_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await pump_task
+            self._client, self._mapper, self._research = None, None, None
             await client.disconnect()
 
     async def interrupt(self) -> None:
-        client, mapper = self._client, self._mapper
+        client, mapper, research = self._client, self._mapper, self._research
+        if research is not None:
+            research.cancel_all()
         if client is None:
             return
         if mapper is not None:
@@ -522,6 +567,19 @@ class SdkStreamingBackend:
             if mapper is not None:
                 mapper.clear_interrupt_requested()
             raise
+
+
+def _add_usage(usage: Usage, extra: Totals) -> Usage:
+    """The turn's Usage plus the research queries it ran (owner decision 8)."""
+    costs = [c for c in (usage.cost_usd, extra.cost_usd) if c is not None]
+    return replace(
+        usage,
+        input_tokens=usage.input_tokens + extra.input_tokens,
+        output_tokens=usage.output_tokens + extra.output_tokens,
+        cache_read_tokens=usage.cache_read_tokens + extra.cache_read_tokens,
+        cache_creation_tokens=usage.cache_creation_tokens + extra.cache_creation_tokens,
+        cost_usd=sum(costs) if costs else None,
+    )
 
 
 # The backend chosen by spike 1A ("partial: gated generator", X20). On a no-go this

@@ -116,3 +116,31 @@ describe('Markdown images', () => {
     expect(container.querySelector('img')?.getAttribute('src')).toBe(`/api/projects/${PID}/renders/pcb-top.png`);
   });
 });
+
+describe('MessageItem sent attachments', () => {
+  it('shows image thumbnails and PDF chips on user rows, dropping invalid ids', () => {
+    const id = 'f'.repeat(32);
+    const { container } = render(
+      <MessageItem
+        message={row(10, {
+          role: 'user',
+          content: 'look',
+          metadata: {
+            attachments: [
+              { id, kind: 'image', name: 'board.jpg' },
+              { id: '0'.repeat(32), kind: 'pdf', name: 'ds.pdf' },
+              { id: '../../x', kind: 'image', name: 'evil.png' },
+            ],
+          },
+        })}
+      />,
+    );
+    expect(screen.getByText('board.jpg')).toBeInTheDocument();
+    expect(screen.getByText('ds.pdf')).toBeInTheDocument();
+    expect(screen.getByText('PDF')).toBeInTheDocument();
+    expect(screen.queryByText('evil.png')).toBeNull();
+    const imgs = container.querySelectorAll('img');
+    expect(imgs).toHaveLength(1);
+    expect(imgs[0]).toHaveAttribute('src', `/api/projects/${PID}/uploads/${id}`);
+  });
+});

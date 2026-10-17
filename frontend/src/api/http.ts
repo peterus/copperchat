@@ -19,6 +19,11 @@ export function setUnauthorizedHandler(handler: (() => void) | null): void {
   unauthorizedHandler = handler;
 }
 
+/** For requests that cannot use `request()` (multipart uploads): report a 401. */
+export function reportUnauthorized(): void {
+  unauthorizedHandler?.();
+}
+
 /** Callers pass paths without the /api prefix (index X10): '/projects' → '/api/projects'. */
 export function apiUrl(path: string): string {
   return `/api${path.startsWith('/') ? path : `/${path}`}`;

@@ -19,7 +19,10 @@ from copperchat.web import (
     routes_git,
     routes_history,
     routes_messages,
+    routes_parts,
     routes_projects,
+    routes_skills,
+    routes_uploads,
     routes_views,
     ws,
 )
@@ -85,6 +88,9 @@ def create_app(
     app.include_router(routes_messages.router)
     app.include_router(routes_history.router)
     app.include_router(routes_git.router)
+    app.include_router(routes_skills.router)
+    app.include_router(routes_parts.router)
+    app.include_router(routes_uploads.router)
     app.include_router(ws.router)
     mount_frontend(app, settings.frontend_dist)  # must stay last: it mounts "/"
     return app

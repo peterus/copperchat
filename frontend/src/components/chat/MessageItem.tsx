@@ -1,4 +1,5 @@
 import { memo, useCallback, useState } from 'react';
+import { isUploadId, uploadUrl } from '@/api/uploads';
 import { RestoreOffer } from '@/components/history/RestoreOffer';
 import type { MessageDTO } from '@/protocol/frames';
 import { Lightbox } from './Lightbox';
@@ -70,6 +71,41 @@ function Thumbnails({ urls }: { urls: string[] }) {
   );
 }
 
+interface SentAttachment {
+  id: string;
+  kind: 'image' | 'pdf';
+  name: string;
+}
+
+/** `metadata.attachments` of a user row; entries with an unexpected shape or id are dropped. */
+export function sentAttachments(m: MessageDTO): SentAttachment[] {
+  const raw = m.metadata.attachments;
+  if (!Array.isArray(raw)) return [];
+  return (raw as unknown[]).filter((a): a is SentAttachment => {
+    if (!a || typeof a !== 'object') return false;
+    const { id, kind, name } = a as Record<string, unknown>;
+    return typeof id === 'string' && isUploadId(id) && (kind === 'image' || kind === 'pdf') && typeof name === 'string';
+  });
+}
+
+function AttachmentChips({ projectId, items }: { projectId: string; items: SentAttachment[] }) {
+  if (items.length === 0) return null;
+  return (
+    <ul aria-label="Sent attachments" className="mt-1 flex flex-wrap justify-end gap-1">
+      {items.map((a) => (
+        <li key={a.id} className="flex items-center gap-1 rounded bg-black/15 px-1.5 py-0.5 text-xs">
+          {a.kind === 'image' ? (
+            <img src={uploadUrl(projectId, a.id)} alt="" loading="lazy" className="h-8 w-8 rounded object-cover" />
+          ) : (
+            <span className="font-semibold">PDF</span>
+          )}
+          <span className="max-w-40 truncate">{a.name}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function toolName(m: MessageDTO): string {
   const n = m.metadata.name ?? m.metadata.toolName;
   return typeof n === 'string' ? n : m.content || 'tool';
@@ -92,6 +128,7 @@ export const MessageItem = memo(function MessageItem({ message: m }: { message: 
               className={`max-w-[85%] rounded-2xl bg-accent px-3 py-2 text-accent-fg ${m.status === 'cancelled' ? 'opacity-50 line-through' : ''}`}
             >
               <p className="whitespace-pre-wrap break-words">{m.content}</p>
+              <AttachmentChips projectId={m.projectId} items={sentAttachments(m)} />
               {m.metadata.pending === true && m.status !== 'error' && <p className="mt-1 text-xs opacity-75">sending…</p>}
               {m.status === 'error' && <p className="mt-1 text-xs">not sent: {String(m.metadata.error ?? 'error')}</p>}
             </div>
