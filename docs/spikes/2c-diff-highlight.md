@@ -83,7 +83,7 @@ The mismatches are real behaviour of the headless server (`harness/collateral.py
 | With a selection | – | highlight survives `select(ref)` |
 | Across sheets | `select(ref)` finds refs on the active page only | on the root page `["C105","R201","R301"]` → found `C105`, missing `R201,R301`; after `project.set_active_page(page)` + `kicanvas:viewerload` the instance's refs are found (R201 on `ampli_ht_vertical`, R301 on `ampli_ht_horizontal` — same symbol, different ref per instance). The highlight is viewer state: the first patch version kept stale boxes after a page switch (coordinates of the other page); the patch resets it in `load()`, so the host re-applies after each `kicanvas:viewerload` |
 | Items without a symbol object | `find_symbol` knows symbols/sheets only (by ref or UUID); wires, labels, junctions, deleted items cannot be found | `highlight_boxes` takes the diff's `bbox / 1e4` (mm): the box of C105 from the diff matches KiCanvas' own symbol box within 0.5 mm |
-| Scale / speed | – | 10 refs: 3–10 ms; 500 boxes: 6 ms to set, 0 ms to clear |
+| Scale / speed | – | 10 refs: 3 ms; 500 boxes: 7 ms to set, 0 ms to clear (committed run; reruns varied 3–10 ms) |
 
 Not covered: real touch / iOS Safari; the dark theme (`witchhazel`) — the highlight colour `#ff8c00`
 was only seen on the `kicad` theme; box schematics larger than complex_hierarchy; PCB.
