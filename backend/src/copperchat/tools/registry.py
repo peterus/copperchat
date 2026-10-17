@@ -13,6 +13,7 @@ _NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 _PROVIDERS: tuple[str, ...] = (
     "copperchat.kicad_tools.specs",
     "copperchat.views.specs",
+    "copperchat.git_tools.specs",
     "copperchat.research.specs",
 )
 

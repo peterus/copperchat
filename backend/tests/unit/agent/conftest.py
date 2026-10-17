@@ -67,7 +67,7 @@ async def make_engine(
         **kw: Any,
     ) -> tuple[RunEngine, Any]:
         box: dict[str, Any] = {}
-        session = SimpleNamespace(project=project) if with_session else None
+        session = SimpleNamespace(project=project, closed=False) if with_session else None
 
         def factory(ctx_factory: Callable[[], Any]) -> Any:
             box["agent"] = backend or FakeAgent(
