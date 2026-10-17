@@ -1,6 +1,6 @@
 NOTE q05_index.name_only_index: {'entries': 22916, 'build_s': 0.58}
-NOTE q05_index.sym_name_only_latency_ms: {'p50': 0.27, 'p95': 18.37, 'max': 18.69, 'n': 25}
-PASS q05_index.sym_name_only_query_lt_300ms: max 18.7 ms, p95 18.4 ms
+NOTE q05_index.sym_name_only_latency_ms: {'p50': 0.27, 'p95': 18.63, 'max': 19.5, 'n': 25}
+PASS q05_index.sym_name_only_query_lt_300ms: max 19.5 ms, p95 18.6 ms
 PASS q05_index.sym_name_only_nonempty:LM358: ['Amplifier_Operational:LM358', 'Amplifier_Operational:LM358_DFN']
 PASS q05_index.sym_name_only_nonempty:led: ['Device:LED', 'Device:LED_Pad', 'Device:LED_RGB']
 PASS q05_index.sym_name_only_nonempty:GND: ['power:GND', 'ecc83-pp:GND', 'power:GND1']
@@ -9,11 +9,11 @@ PASS q05_index.sym_name_only_nonempty:conn_01x04: ['Connector_Generic:Conn_01x04
 PASS q05_index.sym_name_only_expected_in_top5: []
 NOTE q05_index.sym_name_only_top3: {'LM358': ['Amplifier_Operational:LM358', 'Amplifier_Operational:LM358_DFN'], 'led': ['Device:LED', 'Device:LED_Pad', 'Device:LED_RGB'], 'GND': ['power:GND', 'ecc83-pp:GND', 'power:GND1'], '+3V3': ['power:+3V3', 'power:-3V3'], 'conn_01x04': ['Connector_Generic:Conn_01x04', 'Connector:Conn_01x04_Pin', 'Connector:Conn_01x04_Socket']}
 PASS q05_index.name_only_cannot_find_generic_terms: 'resistor'/'capacitor' find nothing by name alone (Device:R, Device:C) - details are needed
-NOTE q05_index.warmup_timeline_s: {'api_load': 7.3, 'list_names': 0.17, 'fetch_symbol_details': 17.9, 'fetch_footprint_details': 18.2, 'build_symbol_index': 1.16, 'build_footprint_index': 1.13, 'total': 45.9}
+NOTE q05_index.warmup_timeline_s: {'api_load': 7.2, 'list_names': 0.18, 'fetch_symbol_details': 17.9, 'fetch_footprint_details': 18.0, 'build_symbol_index': 1.09, 'build_footprint_index': 1.05, 'total': 45.4}
 NOTE q05_index.client_python_heap_mb: {'index_and_records': 244, 'peak': 244}
 NOTE q05_index.vocab: {'symbols': 24969, 'footprints': 16675}
-NOTE q05_index.sym_latency_ms: {'p50': 0.2, 'p95': 2.54, 'max': 8.73, 'n': 100}
-PASS q05_index.sym_query_lt_300ms: max 8.7 ms, p95 2.5 ms
+NOTE q05_index.sym_latency_ms: {'p50': 0.18, 'p95': 2.17, 'max': 7.34, 'n': 100}
+PASS q05_index.sym_query_lt_300ms: max 7.3 ms, p95 2.2 ms
 PASS q05_index.sym_nonempty:resistor: ['Device:R', 'Device:R_US', 'Potentiometer_Digital:X9250']
 PASS q05_index.sym_nonempty:capacitor: ['Device:C', 'ecc83-pp:CP', 'Device:C_US']
 PASS q05_index.sym_nonempty:LM358: ['Amplifier_Operational:LM358', 'Amplifier_Operational:LM358_DFN']
@@ -36,8 +36,8 @@ PASS q05_index.sym_nonempty:crystal: ['Device:Crystal', 'Device:Crystal_GND2', '
 PASS q05_index.sym_nonempty:74hc595 shift register: ['74xx:74HC595', '4xxx:4021', '74xx:74HC164']
 PASS q05_index.sym_expected_in_top5: []
 NOTE q05_index.sym_top3: {'resistor': ['Device:R', 'Device:R_US', 'Potentiometer_Digital:X9250'], 'capacitor': ['Device:C', 'ecc83-pp:CP', 'Device:C_US'], 'LM358': ['Amplifier_Operational:LM358', 'Amplifier_Operational:LM358_DFN'], 'opamp dual': ['Amplifier_Operational:Opamp_Dual', 'Amplifier_Operational:L272', 'Amplifier_Operational:L272D'], 'stm32f103': ['MCU_ST_STM32F1:STM32F103C4Tx', 'MCU_ST_STM32F1:STM32F103C6Tx', 'M
-NOTE q05_index.fp_latency_ms: {'p50': 1.02, 'p95': 9.25, 'max': 10.26, 'n': 50}
-PASS q05_index.fp_query_lt_300ms: max 10.3 ms, p95 9.3 ms
+NOTE q05_index.fp_latency_ms: {'p50': 0.86, 'p95': 7.28, 'max': 7.54, 'n': 50}
+PASS q05_index.fp_query_lt_300ms: max 7.5 ms, p95 7.3 ms
 PASS q05_index.fp_nonempty:0805 resistor: ['Resistor_SMD:R_0805_2012Metric', 'Resistor_SMD:R_0805_2012Metric_Pad1.20x1.40mm_HandSolder', 'Capacitor_SMD:C_0805_2012Metric']
 PASS q05_index.fp_nonempty:0603 capacitor: ['Capacitor_SMD:C_0603_1608Metric', 'Capacitor_SMD:C_0603_1608Metric_Pad1.08x0.95mm_HandSolder', 'Capacitor_SMD:C_0201_0603Metric']
 PASS q05_index.fp_nonempty:sot-23: ['Package_TO_SOT_SMD:SOT-23', 'Package_TO_SOT_SMD:SOT-23-3', 'Package_TO_SOT_SMD:SOT-23-5']
@@ -51,5 +51,5 @@ PASS q05_index.fp_nonempty:lqfp-48: ['Package_QFP:LQFP-48_7x7mm_P0.5mm', 'Packag
 PASS q05_index.fp_expected_in_top5: []
 NOTE q05_index.fp_top3: {'0805 resistor': ['Resistor_SMD:R_0805_2012Metric', 'Resistor_SMD:R_0805_2012Metric_Pad1.20x1.40mm_HandSolder', 'Capacitor_SMD:C_0805_2012Metric'], '0603 capacitor': ['Capacitor_SMD:C_0603_1608Metric', 'Capacitor_SMD:C_0603_1608Metric_Pad1.08x0.95mm_HandSolder', 'Capacitor_SMD:C_0201_0603Metric'], 'sot-23': ['Package_TO_SOT_SMD:SOT-23', 'Package_TO_SOT_SMD:SOT-23-3', 'Package_TO_SOT_SMD:SOT-23-5'
 NOTE q05_index.pkg_of_hits: [('Resistor_SMD:R_0805_2012Metric', '0805'), ('Resistor_SMD:R_0805_2012Metric_Pad1.20x1.40mm_HandSolder', '0805'), ('Capacitor_SMD:C_0805_2012Metric', '0805'), ('Diode_SMD:D_0805_2012Metric', '0805'), ('Inductor_SMD:L_0805_2012Metric', '0805'), ('LED_SMD:LED_0805_2012Metric', '0805'), ('Fuse:Fuse_0805_2012Metric', '0805'), ('RF_Converter:Anaren_0805_2012Metric-6', '0805')]
-NOTE q05_index.server_rss_mb: 5180
+NOTE q05_index.server_rss_mb: 5190
 DONE q05_index: 42 pass, 0 fail

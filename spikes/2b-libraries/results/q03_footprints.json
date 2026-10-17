@@ -9,7 +9,7 @@
     {
       "name": "fetch_all_footprints_lt_30s",
       "ok": true,
-      "evidence": "14.3s for 15478"
+      "evidence": "16.0s for 15478"
     },
     {
       "name": "r0805_detail",
@@ -45,8 +45,8 @@
   "notes": {
     "fetch_all_footprints": {
       "count": 15478,
-      "seconds": 14.35,
-      "rss_mb": 5080
+      "seconds": 16.01,
+      "rss_mb": 5106
     },
     "coverage": {
       "description": 15477,

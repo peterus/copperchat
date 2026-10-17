@@ -1,6 +1,6 @@
 PASS q03_footprints.listing_names_only: 
-NOTE q03_footprints.fetch_all_footprints: {'count': 15478, 'seconds': 14.35, 'rss_mb': 5080}
-PASS q03_footprints.fetch_all_footprints_lt_30s: 14.3s for 15478
+NOTE q03_footprints.fetch_all_footprints: {'count': 15478, 'seconds': 16.01, 'rss_mb': 5106}
+PASS q03_footprints.fetch_all_footprints_lt_30s: 16.0s for 15478
 NOTE q03_footprints.coverage: {'description': 15477, 'keywords': 15274, 'pads_ge1': 15143, 'smd': 7532, 'tht': 8281}
 PASS q03_footprints.r0805_detail: FootprintRec(lib_id='Resistor_SMD:R_0805_2012Metric', description='Resistor SMD 0805 (2012 Metric), square (rectangular) end terminal, IPC-7351 nominal, (Body size source: IPC-SM-782 page 72, https://www.pcb-3d.com/wordpress/wp-content/uploads/ipc-sm-782a_amendment_1_and_2.pdf)', keywords='resistor', pad_count=2, smd=True, tht=False, extra={})
 NOTE q03_footprints.name_derivation_by_lib: {'Capacitor_SMD': {'total': 103, 'derived': 16, 'miss_sample': ['CP_Elec_10x10', 'CP_Elec_10x10.5', 'CP_Elec_10x12.5', 'CP_Elec_10x12.6', 'CP_Elec_10x14.3', 'CP_Elec_10x7.7']}, 'Diode_SMD': {'total': 83, 'derived': 20, 'miss_sample': ['D_2114_3652Metric', 'D_2114_3652Metric_Pad1.85x3.75mm_HandSolder', 'D_3220_8050Metric', 'D_3220_8050Metric_Pad2.65x5.15mm_HandSolder', 'D_MELF', 'D_MELF-RM10_Univer

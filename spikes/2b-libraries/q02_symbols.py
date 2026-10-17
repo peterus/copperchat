@@ -71,7 +71,9 @@ def main() -> int:
         n0 = len(list(sch.get_symbols()))
         probes = []
         ok = True
-        for lid in derived[:40]:
+        # sample across libraries (every ~300th derived symbol) + known big MCUs, not just the first 4xxx rows
+        sample = derived[::300] + [d for d in ("MCU_ST_STM32F1:STM32F103C8Tx", "Amplifier_Operational:LM358") if d in defs and defs[d].pins is None]
+        for lid in sample:
             tt = time.monotonic()
             commit = sch.begin_commit()
             try:
@@ -83,7 +85,9 @@ def main() -> int:
         n1 = len(list(sch.get_symbols()))
         rec.check("probe_place_in_dropped_commit_leaves_doc", n0 == n1 and not sch.is_document_modified(),
                   f"symbols {n0}->{n1}, modified={sch.is_document_modified()}")
-        rec.check("probe_place_returns_pins_for_derived", all(p[1] > 0 for p in probes), probes[:5])
+        rec.check("probe_place_returns_pins_for_derived", bool(probes) and all(p[1] > 0 for p in probes), f"{len(probes)} probes across {len({p[0].split(':')[0] for p in probes})} libs, min pins {min(p[1] for p in probes)}")
+        rec.check("probe_stm32f103_48_pins", ("MCU_ST_STM32F1:STM32F103C8Tx", 48) in [(p[0], p[1]) for p in probes], [p for p in probes if "STM32F103" in p[0]])
+        rec.check("probe_lm358_8_pins", ("Amplifier_Operational:LM358", 8) in [(p[0], p[1]) for p in probes], [p for p in probes if "LM358" in p[0]])
         rec.note("probe_ms_median", sorted(p[2] for p in probes)[len(probes) // 2])
         # a derived symbol and its base agree on pin count?
         lm = defs["Amplifier_Operational:LM358"]

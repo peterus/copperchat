@@ -1,7 +1,7 @@
 NOTE q02_symbols.list_entry_fields: ['library_nickname', 'entry_name']
 PASS q02_symbols.listing_names_only: GetLibraryItems returns only (library_nickname, entry_name)
-NOTE q02_symbols.fetch_all_details: {'symbols': 22916, 'seconds': 6.52, 'batch': 500, 'rss_mb': 5133}
-PASS q02_symbols.fetch_all_details_lt_10s: 6.52s for 22916 symbols
+NOTE q02_symbols.fetch_all_details: {'symbols': 22916, 'seconds': 6.47, 'batch': 500, 'rss_mb': 5094}
+PASS q02_symbols.fetch_all_details_lt_10s: 6.47s for 22916 symbols
 NOTE q02_symbols.field_coverage_of_22916: {'description': 22577, 'keywords': 22527, 'footprint_filters': 21743, 'default_footprint': 18160, 'datasheet': 20051, 'pins_present': 10603, 'multi_unit': 1344, 'multi_body_style': 43, 'power': 105}
 NOTE q02_symbols.derived_symbols_without_items: {'count': 12313, 'share': 0.537, 'sample': ['4xxx:14528', '4xxx:14538', '4xxx:4066', '4xxx:4528', '4xxx_IEEE:40160']}
 PASS q02_symbols.derived_symbols_have_no_items_known_limit: 12313 of 22916 symbols come back without pins/graphics (extends symbols); see probe checks
@@ -13,7 +13,9 @@ NOTE q02_symbols.body_style_sample: {'lib_id': '4xxx:4001', 'styles': ['Standard
 PASS q02_symbols.pin_number_name_type_position_unit: Device:R
 NOTE q02_symbols.kipy_wrapper_pins_Device:R: [('1', '', Vector2(0, -3810000)), ('2', '', Vector2(0, 3810000))]
 PASS q02_symbols.probe_place_in_dropped_commit_leaves_doc: symbols 26->26, modified=False
-PASS q02_symbols.probe_place_returns_pins_for_derived: [('4xxx:14528', 16, 21), ('4xxx:14538', 16, 23), ('4xxx:4066', 14, 23), ('4xxx:4528', 16, 22), ('4xxx_IEEE:40160', 16, 23)]
+PASS q02_symbols.probe_place_returns_pins_for_derived: 44 probes across 34 libs, min pins 2
+PASS q02_symbols.probe_stm32f103_48_pins: [('MCU_ST_STM32F1:STM32F103C8Tx', 48, 24)]
+PASS q02_symbols.probe_lm358_8_pins: [('Amplifier_Operational:LM358', 8, 22)]
 NOTE q02_symbols.probe_ms_median: 22
 NOTE q02_symbols.LM358_listing_pins: None
-DONE q02_symbols: 6 pass, 0 fail
+DONE q02_symbols: 8 pass, 0 fail

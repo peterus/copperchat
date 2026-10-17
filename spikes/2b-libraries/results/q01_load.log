@@ -1,22 +1,25 @@
 NOTE q01_load.s1_rss_before: 221
 PASS q01_load.s1_place_symbol_cold_refused_as_expected: ApiError: KiCad returned error: symbol 'Device:R' not found
-PASS q01_load.s1_get_symbol_cold_other_lib: works: Connector_Generic:Conn_01x02 0.13s
-PASS q01_load.s1_place_after_lazy_get: works: value: "98b0088a-840f-42b6-bb5b-dd666bf0fac7"
- 0.02s
-PASS q01_load.s1_list_names_cold_Device: works: 537 0.07s
+PASS q01_load.s1_get_symbol_cold_other_lib: works: Connector_Generic:Conn_01x02 0.14s
+PASS q01_load.s1_place_after_lazy_get: works: value: "978fc714-e226-41c4-897f-50a0614f4eac"
+ 0.01s
+PASS q01_load.s1_list_names_cold_Device: works: 537 0.08s
 PASS q01_load.s1_get_footprint_cold_refused_as_expected: ApiError: KiCad returned error: no handler available for request of type kiapi.common.commands.GetItemsFromLibrary
 NOTE q01_load.s1_rss_after: 272
 PASS q01_load.s2_get_footprint_with_board_open: works: Resistor_SMD:R_0805_2012Metric 0.03s
-PASS q01_load.s2_list_footprints_one_lib: works: 67 0.04s
+PASS q01_load.s2_list_footprints_one_lib: works: 67 0.05s
 NOTE q01_load.s2_rss: 282
 PASS q01_load.s3_get_footprint_after_symbol_loadall_refused_as_expected: ApiError: KiCad returned error: no handler available for request of type kiapi.common.commands.GetItemsFromLibrary
 PASS q01_load.s3_list_footprints_after_symbol_loadall_refused_as_expected: ApiError: KiCad returned error: no handler available for request of type kiapi.common.commands.GetLibraryItems
-NOTE q01_load.per_library_final_rss_mb: 4658
-NOTE q01_load.per_library_sym: {'libs': 224, 'total_delta_mb': 1129, 'top': [('sym', 'MCU_ST_STM32H7', 225, 68.9, 0.283), ('sym', 'MCU_ST_STM32MP1', 84, 48.3, 0.205), ('sym', 'FPGA_Xilinx_Virtex7', 34, 46.2, 0.374), ('sym', 'MCU_ST_STM32L4', 320, 44.2, 0.181), ('sym', 'MCU_ST_STM32U5', 162, 44.0, 0.179), ('sym', 'FPGA_Xilinx_Virtex5', 41, 40.5, 0.314), ('sym', 'Connector_Generic_MountingPin', 334, 34.9, 0.155), ('sym', 'Connect
-NOTE q01_load.per_library_fp: {'libs': 156, 'total_delta_mb': 3254, 'top': [('fp', 'Package_BGA', 235, 266.1, 1.088), ('fp', 'Package_DFN_QFN', 779, 184.7, 0.893), ('fp', 'Connector_Samtec_HLE_SMD', 290, 136.0, 0.515), ('fp', 'Connector_Molex', 812, 127.2, 0.655), ('fp', 'Connector_PinHeader_2.00mm', 278, 114.8, 0.416), ('fp', 'Connector_PinHeader_2.54mm', 278, 114.8, 0.422), ('fp', 'Connector_PinHeader_1.00mm', 278, 105.3, 0.
-NOTE q01_load.load_all: {'base_rss_mb': 221, 'rss_mb': 4904, 'load_call_s': 0.5, 'load_done_s': 8.54, 'libraries': 380, 'failed': [], 'symbols': 22916, 'list_symbols_s': 0.07, 'footprints': 15478, 'list_footprints_s': 0.11, 'rss_after_list_mb': 4910}
+NOTE q01_load.per_library_final_rss_mb: 4659
+NOTE q01_load.per_library_sym: {'libs': 224, 'total_delta_mb': 1129, 'top': [('sym', 'MCU_ST_STM32H7', 225, 68.9, 0.274), ('sym', 'MCU_ST_STM32MP1', 84, 48.3, 0.203), ('sym', 'FPGA_Xilinx_Virtex7', 34, 46.2, 0.349), ('sym', 'MCU_ST_STM32L4', 320, 44.2, 0.184), ('sym', 'MCU_ST_STM32U5', 162, 44.0, 0.177), ('sym', 'FPGA_Xilinx_Virtex5', 41, 40.5, 0.313), ('sym', 'Connector_Generic_MountingPin', 334, 34.9, 0.139), ('sym', 'Connect
+NOTE q01_load.per_library_fp: {'libs': 156, 'total_delta_mb': 3254, 'top': [('fp', 'Package_BGA', 235, 266.1, 1.001), ('fp', 'Package_DFN_QFN', 779, 184.7, 0.832), ('fp', 'Connector_Samtec_HLE_SMD', 290, 136.0, 0.501), ('fp', 'Connector_Molex', 812, 127.2, 0.608), ('fp', 'Connector_PinHeader_2.00mm', 278, 114.8, 0.402), ('fp', 'Connector_PinHeader_2.54mm', 278, 114.8, 0.401), ('fp', 'Connector_PinHeader_1.00mm', 278, 105.4, 0.
+PASS q01_load.load_all_all_libraries_loaded: 380 libraries, not loaded: []
+NOTE q01_load.load_all: {'base_rss_mb': 221, 'rss_mb': 4967, 'load_call_s': 0.59, 'load_done_s': 14.15, 'libraries': 380, 'failed': [], 'symbols': 22916, 'list_symbols_s': 0.08, 'footprints': 15478, 'list_footprints_s': 0.12, 'rss_after_list_mb': 4973}
 PASS q01_load.symbol_count_ge_20k: 22916
 PASS q01_load.footprint_count_ge_15k: 15478
-NOTE q01_load.load_symbols_only: {'base_rss_mb': 221, 'rss_mb': 1350, 'load_call_s': 0.01, 'load_done_s': 1.54, 'libraries': 224, 'failed': [], 'symbols': 22916, 'list_symbols_s': 0.07, 'footprints': -1, 'list_footprints_s': 0.0, 'rss_after_list_mb': 1355}
-NOTE q01_load.load_footprints_only: {'base_rss_mb': 221, 'rss_mb': 3783, 'load_call_s': 0.46, 'load_done_s': 7.26, 'libraries': 156, 'failed': [], 'symbols': -1, 'list_symbols_s': 0.0, 'footprints': 15478, 'list_footprints_s': 0.12, 'rss_after_list_mb': 3789}
-DONE q01_load: 11 pass, 0 fail
+PASS q01_load.load_symbols_only_all_libraries_loaded: 224 libraries, not loaded: []
+NOTE q01_load.load_symbols_only: {'base_rss_mb': 221, 'rss_mb': 1350, 'load_call_s': 0.02, 'load_done_s': 3.18, 'libraries': 224, 'failed': [], 'symbols': 22916, 'list_symbols_s': 0.09, 'footprints': -1, 'list_footprints_s': 0.0, 'rss_after_list_mb': 1355}
+PASS q01_load.load_footprints_only_all_libraries_loaded: 156 libraries, not loaded: []
+NOTE q01_load.load_footprints_only: {'base_rss_mb': 220, 'rss_mb': 3843, 'load_call_s': 0.52, 'load_done_s': 8.36, 'libraries': 156, 'failed': [], 'symbols': -1, 'list_symbols_s': 0.0, 'footprints': 15478, 'list_footprints_s': 0.11, 'rss_after_list_mb': 3848}
+DONE q01_load: 14 pass, 0 fail

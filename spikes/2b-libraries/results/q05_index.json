@@ -4,7 +4,7 @@
     {
       "name": "sym_name_only_query_lt_300ms",
       "ok": true,
-      "evidence": "max 18.7 ms, p95 18.4 ms"
+      "evidence": "max 19.5 ms, p95 18.6 ms"
     },
     {
       "name": "sym_name_only_nonempty:LM358",
@@ -44,7 +44,7 @@
     {
       "name": "sym_query_lt_300ms",
       "ok": true,
-      "evidence": "max 8.7 ms, p95 2.5 ms"
+      "evidence": "max 7.3 ms, p95 2.2 ms"
     },
     {
       "name": "sym_nonempty:resistor",
@@ -154,7 +154,7 @@
     {
       "name": "fp_query_lt_300ms",
       "ok": true,
-      "evidence": "max 10.3 ms, p95 9.3 ms"
+      "evidence": "max 7.5 ms, p95 7.3 ms"
     },
     {
       "name": "fp_nonempty:0805 resistor",
@@ -219,8 +219,8 @@
     },
     "sym_name_only_latency_ms": {
       "p50": 0.27,
-      "p95": 18.37,
-      "max": 18.69,
+      "p95": 18.63,
+      "max": 19.5,
       "n": 25
     },
     "sym_name_only_top3": {
@@ -249,13 +249,13 @@
       ]
     },
     "warmup_timeline_s": {
-      "api_load": 7.3,
-      "list_names": 0.17,
+      "api_load": 7.2,
+      "list_names": 0.18,
       "fetch_symbol_details": 17.9,
-      "fetch_footprint_details": 18.2,
-      "build_symbol_index": 1.16,
-      "build_footprint_index": 1.13,
-      "total": 45.9
+      "fetch_footprint_details": 18.0,
+      "build_symbol_index": 1.09,
+      "build_footprint_index": 1.05,
+      "total": 45.4
     },
     "client_python_heap_mb": {
       "index_and_records": 244,
@@ -266,9 +266,9 @@
       "footprints": 16675
     },
     "sym_latency_ms": {
-      "p50": 0.2,
-      "p95": 2.54,
-      "max": 8.73,
+      "p50": 0.18,
+      "p95": 2.17,
+      "max": 7.34,
       "n": 100
     },
     "sym_top3": {
@@ -373,9 +373,9 @@
       ]
     },
     "fp_latency_ms": {
-      "p50": 1.02,
-      "p95": 9.25,
-      "max": 10.26,
+      "p50": 0.86,
+      "p95": 7.28,
+      "max": 7.54,
       "n": 50
     },
     "fp_top3": {
@@ -464,6 +464,6 @@
         "0805"
       ]
     ],
-    "server_rss_mb": 5180
+    "server_rss_mb": 5190
   }
 }

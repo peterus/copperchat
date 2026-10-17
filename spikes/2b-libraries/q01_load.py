@@ -20,7 +20,8 @@ def load(rec, label, types):
         call_s = time.monotonic() - t0
         sts = k.wait_for_libraries(types, interval_ms=100, timeout_s=300)
         done_s = time.monotonic() - t0
-        bad = [(x.nickname, x.error_message) for x in sts if x.status != 3 and x.error_message]
+        bad = [(x.nickname, x.status, x.error_message) for x in sts if x.status != 3]
+        rec.check(f"{label}_all_libraries_loaded", not bad, f"{len(sts)} libraries, not loaded: {bad[:5]}")
         rss = rss_mb(s.proc.pid)
         t1 = time.monotonic()
         n_sym = len(k.get_library_symbols()) if types is None or SYM in (types if isinstance(types, list) else [types]) else -1

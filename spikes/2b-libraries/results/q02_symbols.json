@@ -9,7 +9,7 @@
     {
       "name": "fetch_all_details_lt_10s",
       "ok": true,
-      "evidence": "6.52s for 22916 symbols"
+      "evidence": "6.47s for 22916 symbols"
     },
     {
       "name": "derived_symbols_have_no_items_known_limit",
@@ -29,7 +29,17 @@
     {
       "name": "probe_place_returns_pins_for_derived",
       "ok": true,
-      "evidence": "[('4xxx:14528', 16, 21), ('4xxx:14538', 16, 23), ('4xxx:4066', 14, 23), ('4xxx:4528', 16, 22), ('4xxx_IEEE:40160', 16, 23)]"
+      "evidence": "44 probes across 34 libs, min pins 2"
+    },
+    {
+      "name": "probe_stm32f103_48_pins",
+      "ok": true,
+      "evidence": "[('MCU_ST_STM32F1:STM32F103C8Tx', 48, 24)]"
+    },
+    {
+      "name": "probe_lm358_8_pins",
+      "ok": true,
+      "evidence": "[('Amplifier_Operational:LM358', 8, 22)]"
     }
   ],
   "notes": {
@@ -39,9 +49,9 @@
     ],
     "fetch_all_details": {
       "symbols": 22916,
-      "seconds": 6.52,
+      "seconds": 6.47,
       "batch": 500,
-      "rss_mb": 5133
+      "rss_mb": 5094
     },
     "field_coverage_of_22916": {
       "description": 22577,
