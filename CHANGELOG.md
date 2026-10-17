@@ -7,6 +7,29 @@ All notable changes to CopperChat are documented in this file. The format follow
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-17
+
+Smaller container images and a faster, branch-safe kicad-base CI build. No feature changes.
+
+### Changed
+
+- **Smaller images.** The `kicad-base` image shrinks from 2.97 GB to 1.95 GB and the app image
+  from 3.76 GB to 2.54 GB (compressed `kicad-base`: 663 MB to 425 MB). Removed: debug symbols,
+  docs and locales, Mesa/LLVM drivers (KiCad renders on the CPU headless), OpenCASCADE sample
+  data and all KiCad demos except the test fixtures; `uv` is no longer shipped in the app image.
+  STEP/GLB export, 3D render, DRC/ERC, exports, the api-server, kipy and `pdftoppm` are unchanged.
+- **Recipe-pinned `kicad-base` tags.** Branches publish `<commit>-r<recipe>`; only `main`
+  publishes `<commit>`, and it always builds what it publishes.
+- **Shared registry ccache.** `main` keeps a `:ccache` image that branches seed from, so a
+  warm `kicad-base` build takes minutes instead of about 2 hours.
+
+### Fixed
+
+- The `ldd` closure check covers `*.kiface` files, the kipy venv, Python extension modules and
+  git, and fails if a path-exclude removes a linked library.
+- Release image pushes pass the `kicad-base` build argument.
+- The end-to-end smoke test no longer collides between concurrent runs.
+
 ## [0.1.0] - 2026-10-17
 
 First public release: the **foundation** — chat with a read-only AI agent about your KiCad
@@ -50,5 +73,6 @@ projects, in the browser on desktop, iPad and iPhone.
 - The KiCanvas patches live in this repository (`frontend/vendor-patches/kicanvas/`), not in
   an upstream fork; the main JavaScript chunk is large (~590 kB).
 
-[Unreleased]: https://github.com/peterus/copperchat/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/peterus/copperchat/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/peterus/copperchat/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/peterus/copperchat/releases/tag/v0.1.0
