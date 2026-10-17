@@ -21,6 +21,7 @@ const project = {
   lockFiles: [],
   kicadVersion: '10.99.0',
   viewFiles: { sch: [], pcb: [] },
+    viewBytes: {},
 };
 
 function signedInWithState() {

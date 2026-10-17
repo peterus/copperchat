@@ -3,6 +3,7 @@ import { PoweredBy } from '@/components/PoweredBy';
 import { useAuth } from '@/stores/auth';
 import { type ThemePref, useUi } from '@/stores/ui';
 import { NotificationsSection } from './settings/NotificationsSection';
+import { ViewerSection } from './settings/ViewerSection';
 
 const THEMES: Array<{ value: ThemePref; label: string }> = [
   { value: 'light', label: 'Light' },
@@ -42,6 +43,7 @@ export function SettingsPage() {
           ))}
         </div>
       </section>
+      <ViewerSection />
       <NotificationsSection />
       <section className="space-y-2">
         <h2 className="font-medium">Account</h2>

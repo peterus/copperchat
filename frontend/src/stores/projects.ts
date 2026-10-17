@@ -20,6 +20,8 @@ export const OpenResult = z.object({
   lockFiles: z.array(z.string()),
   kicadVersion: z.string().nullable(),
   viewFiles: z.object({ sch: z.array(z.string()), pcb: z.array(z.string()) }),
+  /** Byte size per view file (6B large-board guard). */
+  viewBytes: z.record(z.string(), z.number()).default({}),
 });
 export type OpenResult = z.infer<typeof OpenResult>;
 
