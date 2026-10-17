@@ -301,16 +301,21 @@ async def test_burst_end_racing_a_submit_does_not_double_queue(make_engine, unti
     repo = engine._messages
     original = repo.insert
 
+    redrives: list[asyncio.Future[None]] = []
+
     async def insert_then_redrive(*args: Any, **kw: Any) -> int:
         mid = await original(*args, **kw)
-        task = asyncio.ensure_future(engine._drive_queued())
-        await asyncio.sleep(0.01)  # let the re-drive scan the committed 'queued' row
-        await task
+        # Start the re-drive concurrently and give it the chance to scan the committed
+        # 'queued' row before submit enqueues it; never await it here (submit may hold
+        # the engine lock).
+        redrives.append(asyncio.ensure_future(engine._drive_queued()))
+        await asyncio.sleep(0.01)
         return mid
 
     repo.insert = insert_then_redrive  # type: ignore[method-assign]
     await engine.submit_ex("c1", "hi", [])
     repo.insert = original  # type: ignore[method-assign]
+    await asyncio.gather(*redrives)
     await until(lambda: not engine.is_busy)
     await asyncio.sleep(0.05)
     assert [p.client_message_id for p in agent.prompts] == ["c1"]
