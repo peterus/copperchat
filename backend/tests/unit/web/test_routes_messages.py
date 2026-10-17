@@ -100,6 +100,7 @@ def test_image_download(build_chat_app: Any, tmp_path: Path) -> None:
         r = client.get(f"/api/projects/{pid}/images/{IMAGE}")
         assert r.status_code == 200 and r.content == b"\x89PNG fake"
         assert r.headers["content-type"] == "image/png"
+        assert r.headers["x-content-type-options"] == "nosniff"
         missing = "f" * 32 + ".png"
         assert client.get(f"/api/projects/{pid}/images/{missing}").status_code == 404
 

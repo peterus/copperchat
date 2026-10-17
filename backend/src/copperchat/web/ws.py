@@ -272,13 +272,15 @@ async def _heartbeat(conn: _Connection) -> None:
 
 @router.websocket("/ws")
 async def chat_ws(ws: WebSocket) -> None:
+    # Always accept before rejecting: uvicorn turns a pre-accept close into an HTTP 403,
+    # so the browser would only see 1006 instead of our 4401/4403 close code.
+    await ws.accept()
     if not _origin_ok(ws, ws.app.state.settings.public_base_url):
         await ws.close(code=CLOSE_FORBIDDEN_ORIGIN)
         return
     if await authenticate_connection(ws) is None:
         await ws.close(code=CLOSE_UNAUTHENTICATED)
         return
-    await ws.accept()
     conn = _Connection(ws)
     heartbeat = asyncio.create_task(_heartbeat(conn))
     try:

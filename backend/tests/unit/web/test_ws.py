@@ -210,9 +210,12 @@ def test_rejects_unauthenticated_and_foreign_origin(
 ) -> None:
     app, _ = build_chat_app()
     with TestClient(app) as client:
+        # Accepted first, then closed: a pre-accept close becomes an HTTP 403 under uvicorn
+        # and the browser only sees 1006 (TestClient would mask that).
+        # The connect must succeed: the rejection comes as a close code afterwards.
         with (
-            pytest.raises(WebSocketDisconnect) as bad_origin,
             client.websocket_connect("/api/ws", headers={"origin": "https://evil.example"}) as sock,
+            pytest.raises(WebSocketDisconnect) as bad_origin,
         ):
             sock.receive_text()
         assert bad_origin.value.code == 4403
@@ -225,8 +228,8 @@ def test_rejects_unauthenticated_and_foreign_origin(
 
         monkeypatch.setattr(ws_module, "authenticate_connection", nobody)
         with (
-            pytest.raises(WebSocketDisconnect) as unauth,
             client.websocket_connect("/api/ws") as sock,
+            pytest.raises(WebSocketDisconnect) as unauth,
         ):
             sock.receive_text()
         assert unauth.value.code == 4401

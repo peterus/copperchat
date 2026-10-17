@@ -14,6 +14,13 @@ from copperchat.tools import ToolContext, ToolResult, ToolSpec
 PID = "a1b2c3d4e5f6"
 
 
+async def test_start_finalizes_runs_left_open_by_a_crash(make_engine, db):
+    await RunRepo(db).start("crashed", PID)
+    await make_engine(lambda item: [Text("x")])
+    run = await RunRepo(db).get("crashed")
+    assert run is not None and run["finished_at"] is not None and run["reason"] == "interrupted"
+
+
 async def test_session_id_stored_and_resume_only_at_burst_start(make_engine, db, until):
     gate = asyncio.Event()
     engine, agent = await make_engine(
@@ -161,6 +168,32 @@ async def test_kicad_unavailable_ends_turn_with_error_row_and_next_runs(make_eng
     assert first is not None and first.run_id is not None
     run = await RunRepo(db).get(first.run_id)
     assert run is not None and run["reason"] == "error"
+
+
+async def test_kicad_unavailable_with_failing_backend_interrupt_posts_one_error(
+    make_engine, db, until
+):
+    async def boom(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
+        raise KicadUnavailable("api-server timed out")
+
+    spec = ToolSpec(name="boom", description="d", input_schema={"type": "object"}, handler=boom)
+    engine, agent = await make_engine(
+        lambda item: [Tool("boom"), Text("after")] if item.text == "m1" else [Text("two")],
+        specs=[spec],
+        with_session=True,
+    )
+
+    async def broken_interrupt() -> None:
+        raise RuntimeError("transport gone")
+
+    agent.interrupt = broken_interrupt
+    await engine.submit_ex("a", "m1", [])
+    await engine.submit_ex("b", "m2", [])
+    await until(lambda: len(agent.prompts) == 2 and not engine.is_busy)
+    rows, _ = await MessageRepo(db).page(PID, limit=50)
+    errors = [r for r in rows if r.kind == "error"]
+    assert len(errors) == 1 and errors[0].metadata == {"code": "kicad_unavailable"}
+    assert any(r.kind == "text" and r.content == "two" for r in rows)
 
 
 async def test_user_stop_wins_over_rate_limit_seen_earlier_in_the_turn(

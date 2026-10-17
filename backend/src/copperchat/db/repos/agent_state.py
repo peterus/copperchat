@@ -25,6 +25,14 @@ class RunRepo:
             (utcnow_iso(), reason, json.dumps(usage) if usage is not None else None, run_id),
         )
 
+    async def finalize_open(self, project_id: str) -> None:
+        """Runs left unfinished by a crashed process end as 'interrupted'."""
+        await self._db.execute(
+            "UPDATE runs SET finished_at = ?, reason = 'interrupted' "
+            "WHERE project_id = ? AND finished_at IS NULL",
+            (utcnow_iso(), project_id),
+        )
+
     async def get(self, run_id: str) -> dict[str, Any] | None:
         row = await self._db.fetchone("SELECT * FROM runs WHERE id = ?", (run_id,))
         if row is None:

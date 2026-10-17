@@ -30,6 +30,19 @@ async def test_run_start_and_finish(db):
     assert run["finished_at"] is not None
 
 
+async def test_finalize_open_marks_crashed_runs_interrupted(db):
+    runs = RunRepo(db)
+    await runs.start("r1", "a1b2c3d4e5f6")
+    await runs.start("r2", "a1b2c3d4e5f6")
+    await runs.finish("r2", "completed", None)
+    await runs.start("r3", "ffffffffffff")
+    await runs.finalize_open("a1b2c3d4e5f6")
+    r1, r2, r3 = await runs.get("r1"), await runs.get("r2"), await runs.get("r3")
+    assert r1 is not None and r1["finished_at"] is not None and r1["reason"] == "interrupted"
+    assert r2 is not None and r2["reason"] == "completed"
+    assert r3 is not None and r3["finished_at"] is None  # other project untouched
+
+
 async def test_agent_session_upsert(db):
     repo = AgentSessionRepo(db)
     assert await repo.get("p") is None

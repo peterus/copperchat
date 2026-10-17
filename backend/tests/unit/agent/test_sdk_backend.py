@@ -616,6 +616,83 @@ async def test_streaming_backend_interrupt_delegates_to_client(settings, project
     assert client_box[0].disconnected is True
 
 
+async def test_streaming_backend_failed_interrupt_does_not_mislabel_next_error(settings, project):
+    gate = asyncio.Event()
+    client_box: list[FakeSdkClient] = []
+
+    class BrokenInterruptClient(FakeSdkClient):
+        async def interrupt(self) -> None:
+            raise RuntimeError("control request failed")
+
+    def factory(options: Any) -> FakeSdkClient:
+        failed = _result(subtype="error_during_execution", is_error=True, errors=["real failure"])
+        c = BrokenInterruptClient(options, [[failed]])
+        client_box.append(c)
+        return c
+
+    backend = SdkStreamingBackend(
+        settings=settings,
+        specs=[],
+        ctx_factory=lambda: None,  # type: ignore[arg-type,return-value]
+        client_factory=factory,
+    )
+
+    async def items():  # type: ignore[no-untyped-def]
+        await gate.wait()
+        yield QueuedItem(message_id=1, client_message_id="c1", text="x")
+
+    gen = backend.start(project, items(), None)
+    first = asyncio.ensure_future(gen.__anext__())
+    for _ in range(50):
+        if client_box:
+            break
+        await asyncio.sleep(0)
+    with pytest.raises(RuntimeError):
+        await backend.interrupt()
+    gate.set()
+    rest = [await first] + [ev async for ev in gen]
+    assert rest[-1] == TurnFinished(reason="error", error="real failure")
+
+
+def test_mapper_tool_result_with_invalid_base64_image_skips_the_image():
+    m = SdkEventMapper()
+    block = ToolResultBlock(
+        tool_use_id="t1",
+        is_error=False,
+        content=[
+            {"type": "text", "text": "ok"},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "A"}},
+        ],
+    )
+    [ev] = m.map(UserMessage(content=[block]))
+    assert isinstance(ev, ToolResultEvt)
+    assert ev.content == "ok" and ev.images == ()
+
+
+def test_mapper_first_model_usage_after_fallback_is_baseline_not_full_cumulative():
+    m = SdkEventMapper()
+    # first result of the client has no model_usage: per-turn usage fallback
+    first = m.map(_result(total_cost_usd=0.5))[-2]
+    assert isinstance(first, Usage) and first.input_tokens == 10
+    # the next result carries cumulative model_usage for the whole client (incl. turn 1)
+    second = m.map(_result(total_cost_usd=0.8, model_usage={"m": _mu(500, 50, 70, 10, 0.8)}))[-2]
+    assert second == Usage(
+        input_tokens=10,
+        output_tokens=3,
+        cache_read_tokens=7,
+        cache_creation_tokens=1,
+        cost_usd=pytest.approx(0.3),
+    )
+    third = m.map(_result(total_cost_usd=1.0, model_usage={"m": _mu(520, 55, 70, 12, 1.0)}))[-2]
+    assert third == Usage(
+        input_tokens=20,
+        output_tokens=5,
+        cache_read_tokens=0,
+        cache_creation_tokens=2,
+        cost_usd=pytest.approx(0.2),
+    )
+
+
 def test_mapper_task_notification_result_is_unsolicited_and_keeps_state():
     # X20 (3): a backgrounded delegation can make the CLI run an injected turn whose
     # ResultMessage is not the answer to any gated input item.

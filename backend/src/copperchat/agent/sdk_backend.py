@@ -7,6 +7,8 @@ Measured SDK behaviour (claude-agent-sdk 0.2.168) is recorded in
 from __future__ import annotations
 
 import base64
+import binascii
+import logging
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -52,6 +54,8 @@ from copperchat.agent.sdk_tools import SERVER_NAME, build_sdk_tools, sdk_tool_na
 from copperchat.config import Settings
 from copperchat.projects import Project
 from copperchat.tools import ImageBlock, ToolContext, ToolSpec
+
+log = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """You are CopperChat, an assistant for KiCad schematic and PCB design, running \
 inside the self-hosted CopperChat web app (Powered by Claude).
@@ -148,12 +152,12 @@ def _tool_result_content(
         elif item.get("type") == "image":
             src = item.get("source", {})
             if src.get("type") == "base64":
-                images.append(
-                    ImageBlock(
-                        mime=str(src.get("media_type", "image/png")),
-                        data=base64.b64decode(src.get("data", "")),
-                    )
-                )
+                try:
+                    data = base64.b64decode(src.get("data", ""))
+                except (binascii.Error, ValueError):
+                    log.warning("skipping tool-result image with invalid base64 data")
+                    continue
+                images.append(ImageBlock(mime=str(src.get("media_type", "image/png")), data=data))
     return "\n".join(texts), tuple(images)
 
 
@@ -226,11 +230,18 @@ class SdkEventMapper:
         self._partial_since_last_assistant = False
         self._rate: RateLimitInfo | None = None
         self._prev_totals: _Totals | None = None
+        # False while the token baseline in _prev_totals is unknown: after a result
+        # without model_usage, the cumulative token totals were never seen.
+        self._token_baseline_known = False
         self._interrupt_requested = False
 
     def note_interrupt_requested(self) -> None:
         """Our own interrupt() was sent; the next aborted result is an interrupt."""
         self._interrupt_requested = True
+
+    def clear_interrupt_requested(self) -> None:
+        """The interrupt request failed: an aborted result is a real error again."""
+        self._interrupt_requested = False
 
     def map(self, msg: object) -> list[AgentEvent]:
         out: list[AgentEvent] = []
@@ -264,6 +275,7 @@ class SdkEventMapper:
         elif isinstance(msg, ConversationResetMessage):
             # The CLI zeroes its running totals; the next result is absolute again.
             self._prev_totals = None
+            self._token_baseline_known = False
         elif isinstance(msg, ResultMessage):
             if _is_unsolicited(msg):
                 # Leave the usage baseline and a pending interrupt request untouched: the
@@ -371,16 +383,23 @@ class SdkEventMapper:
     def _usage(self, msg: ResultMessage) -> Usage:
         prev = self._prev_totals
         cum = _model_usage_totals(msg)
-        if cum is None:
+        u = msg.usage or {}
+        per_turn = _Totals(
+            int(u.get("input_tokens", 0) or 0),
+            int(u.get("output_tokens", 0) or 0),
+            int(u.get("cache_read_input_tokens", 0) or 0),
+            int(u.get("cache_creation_input_tokens", 0) or 0),
+        )
+        if cum is not None and prev is not None and not self._token_baseline_known:
+            # First model_usage after a fallback: its cumulative tokens include turns
+            # never measured that way, so it only becomes the baseline; this turn's
+            # tokens come from the per-turn usage.
+            turn = per_turn
+            self._token_baseline_known = True
+        elif cum is None:
             # No model_usage: tokens from the per-turn (main-agent only) usage; the
             # token baseline is carried over unchanged, cost is still a delta.
-            u = msg.usage or {}
-            turn = _Totals(
-                int(u.get("input_tokens", 0) or 0),
-                int(u.get("output_tokens", 0) or 0),
-                int(u.get("cache_read_input_tokens", 0) or 0),
-                int(u.get("cache_creation_input_tokens", 0) or 0),
-            )
+            turn = per_turn
             base = prev or _Totals()
             cum = _Totals(
                 base.input_tokens,
@@ -395,6 +414,7 @@ class SdkEventMapper:
             if prev is not None and cum.is_below(prev):
                 prev = None  # totals restarted (new conversation): this result is absolute
             base = prev or _Totals()
+            self._token_baseline_known = True
             turn = _Totals(
                 cum.input_tokens - base.input_tokens,
                 cum.output_tokens - base.output_tokens,
@@ -495,7 +515,13 @@ class SdkStreamingBackend:
             return
         if mapper is not None:
             mapper.note_interrupt_requested()
-        await client.interrupt()
+        try:
+            await client.interrupt()
+        except Exception:
+            # Not interrupted: the next error_during_execution is a real error.
+            if mapper is not None:
+                mapper.clear_interrupt_requested()
+            raise
 
 
 # The backend chosen by spike 1A ("partial: gated generator", X20). On a no-go this

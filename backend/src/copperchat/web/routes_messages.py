@@ -54,4 +54,7 @@ async def get_image(project_id: str, name: str, request: Request, _: CurrentUser
     path = (root / name).resolve()  # a symlink pointing elsewhere resolves outside root
     if path.parent != root or not path.is_file():
         raise ImageNotFound("no such image")
-    return FileResponse(path, headers={"Cache-Control": "private, max-age=86400"})
+    return FileResponse(
+        path,
+        headers={"Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff"},
+    )

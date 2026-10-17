@@ -189,6 +189,7 @@ class RunEngine:
 
     async def start(self) -> None:
         await self._messages.finalize_streaming(self.pid)
+        await self._runs.finalize_open(self.pid)
         try:
             await self.hooks.on_engine_start()
         except Exception:
@@ -575,7 +576,10 @@ class RunEngine:
                     "this turn ended. Send your message again to retry.",
                     metadata={"code": "kicad_unavailable"},
                 )
-            await self.backend.interrupt()
+            try:
+                await self.backend.interrupt()
+            except Exception:  # the error row is posted; never add a second one (X18)
+                log.exception("backend.interrupt() after KiCad failure failed for %s", self.pid)
 
     async def _turn_finished(
         self, turn: _Turn, ev: TurnFinished, stream: PushStream[QueuedItem]
