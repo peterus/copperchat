@@ -50,6 +50,10 @@ class FakeServer:
     saved: list[str] = field(default_factory=list)
     hierarchy: list[str] = field(default_factory=list)
     closed: int = 0
+    modified: bool = False  # what is_document_modified() answers
+    library_loads: list[int] = field(default_factory=list)  # load_all_libraries(types)
+    libraries_loading_polls: int = 0  # get_library_statuses answers "loading" this often
+    closed_docs: list[str] = field(default_factory=list)
 
     def crash(self) -> None:
         self.dead = True
@@ -96,6 +100,10 @@ class FakeDocument:
 
     def save(self) -> None:
         self._server.saved.append(self._path.name)
+        self._server.modified = False
+
+    def is_document_modified(self) -> bool:
+        return self._server.modified
 
     def save_as(self, filename: str, overwrite: bool = False, include_project: bool = True) -> None:
         # The real api-server writes the document; the fake copies the source file.
@@ -135,6 +143,27 @@ class FakeKiCad:
         self._docs[type] = path
         self._server.opened.append((Path(path).name, type))
         return SimpleNamespace(path=path)
+
+    def get_open_documents(self, type: int) -> list[Any]:
+        self._check()
+        return [SimpleNamespace(path=self._docs[type])] if type in self._docs else []
+
+    def close_document(self, document: Any) -> None:
+        self._check()
+        self._server.closed_docs.append(Path(document.path).name)
+
+    def load_all_libraries(self, types: int) -> None:
+        self._check()
+        self._server.library_loads.append(types)
+
+    def get_library_statuses(self, types: int) -> list[Any]:
+        from kipy.proto.common.types import LibraryLoadStatus
+
+        self._check()
+        loading = self._server.libraries_loading_polls > 0
+        self._server.libraries_loading_polls -= 1
+        status = LibraryLoadStatus.LLS_LOADING if loading else LibraryLoadStatus.LLS_LOADED
+        return [SimpleNamespace(status=status)]
 
     def get_schematic(self) -> FakeDocument:
         self._check()

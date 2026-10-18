@@ -361,3 +361,122 @@ async def test_client_factory_error_reports_unavailable(
     with pytest.raises(KicadUnavailable, match="no socket yet"):
         await m.open(make_project(make_settings().projects_root))
     assert all(p.returncode is not None for p in server.processes)
+
+
+# -- editing core (SP2 phase E1) ---------------------------------------------------
+
+
+async def test_save_calls_listeners_after_save(
+    manager: KicadSessionManager, server: FakeServer, make_settings: Callable[..., Settings]
+) -> None:
+    seen: list[tuple[str, list[str]]] = []
+
+    async def listener(project: Project) -> None:
+        seen.append((project.id, list(server.saved)))  # runs after the save itself
+
+    manager.add_save_listener(listener)
+    project = make_project(make_settings().projects_root)
+    session = await manager.open(project)
+    session.modified = True
+    assert session.last_saved_at is None
+    await session.save("sch")
+    assert seen == [(project.id, ["demo.kicad_sch"])]
+    assert session.last_saved_at is not None and session.modified is False
+
+
+async def test_save_listener_error_is_logged_not_raised(
+    manager: KicadSessionManager,
+    server: FakeServer,
+    make_settings: Callable[..., Settings],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    calls: list[str] = []
+
+    async def broken(project: Project) -> None:
+        raise RuntimeError("hash store down")
+
+    async def second(project: Project) -> None:
+        calls.append(project.id)
+
+    manager.add_save_listener(broken)
+    manager.add_save_listener(second)
+    session = await manager.open(make_project(make_settings().projects_root))
+    await session.save("pcb")
+    assert server.saved == ["demo.kicad_pcb"]
+    assert calls == [session.project.id]
+    assert "save listener failed" in caplog.text
+
+
+async def test_save_copy_schematic_saves_first_when_modified(
+    manager: KicadSessionManager,
+    server: FakeServer,
+    make_settings: Callable[..., Settings],
+    tmp_path: Path,
+) -> None:
+    session = await manager.open(make_project(make_settings().projects_root))
+    server.modified = True
+    await session.save_copy("sch", tmp_path / "view" / "demo.kicad_sch")
+    assert server.saved == ["demo.kicad_sch"]
+    await session.save_copy("sch", tmp_path / "view" / "demo.kicad_sch")
+    assert server.saved == ["demo.kicad_sch"]  # unmodified: no second save
+
+
+async def test_refresh_jobs_saves_and_reopens_only_when_stale(
+    manager: KicadSessionManager, server: FakeServer, make_settings: Callable[..., Settings]
+) -> None:
+    session = await manager.open(make_project(make_settings().projects_root))
+    await session.refresh_jobs()
+    assert server.saved == [] and server.closed_docs == []
+    session.jobs_stale = True
+    opened_before = len(server.opened)
+    await session.refresh_jobs()
+    assert server.saved == ["demo.kicad_sch"]
+    assert server.closed_docs == ["demo.kicad_sch"]
+    assert server.opened[opened_before:] == [("demo.kicad_sch", 1)]  # DOCTYPE_SCHEMATIC
+    assert session.jobs_stale is False
+
+
+async def test_restart_resets_editing_flags(
+    manager: KicadSessionManager, make_settings: Callable[..., Settings]
+) -> None:
+    session = await manager.open(make_project(make_settings().projects_root))
+    session.jobs_stale = session.modified = True
+    await session.restart()
+    assert session.jobs_stale is False and session.modified is False
+
+
+async def test_commit_refused_on_read_only_project(
+    manager: KicadSessionManager, make_settings: Callable[..., Settings]
+) -> None:
+    session = await manager.open(make_project(make_settings().projects_root, locked=True))
+    with pytest.raises(ReadOnlyProject):
+        async with session.commit("t"):
+            pass
+
+
+async def test_symbol_libraries_kicked_off_after_start(
+    manager: KicadSessionManager, server: FakeServer, make_settings: Callable[..., Settings]
+) -> None:
+    from kipy.proto.common.types import LibraryType
+
+    session = await manager.open(make_project(make_settings().projects_root))
+    assert server.library_loads == [LibraryType.LT_SYMBOL]  # never footprints
+    server.libraries_loading_polls = 2
+    await session.ensure_symbol_libraries(timeout=5)
+    assert server.libraries_loading_polls < 0  # polled until loaded
+    polls = server.libraries_loading_polls
+    await session.ensure_symbol_libraries(timeout=5)
+    assert server.libraries_loading_polls == polls  # idempotent: no further poll
+    await session.restart()
+    assert server.library_loads == [LibraryType.LT_SYMBOL] * 2
+
+
+async def test_ensure_symbol_libraries_times_out(
+    manager: KicadSessionManager, server: FakeServer, make_settings: Callable[..., Settings]
+) -> None:
+    from copperchat.kicad_session import LibrariesLoading
+
+    session = await manager.open(make_project(make_settings().projects_root))
+    server.libraries_loading_polls = 10_000
+    with pytest.raises(LibrariesLoading):
+        await session.ensure_symbol_libraries(timeout=0.3)
