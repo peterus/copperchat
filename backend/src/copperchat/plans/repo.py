@@ -200,14 +200,24 @@ class PlanRepo:
             await self._write_steps(plan)
         return plan
 
+    async def step_change_count(self, project_id: str, run_id: str, step_id: str) -> int:
+        row = await self._db.fetchone(
+            "SELECT COUNT(*) AS n FROM changes WHERE project_id = ? AND run_id = ?"
+            " AND plan_step_id = ?",
+            (project_id, run_id, step_id),
+        )
+        return 0 if row is None else int(row["n"])
+
     async def erc_rows(self, plan: Plan) -> dict[str, dict[str, Any]]:
-        """step id -> its `erc_results` row (new_errors, new_warnings, justifications)."""
+        """step id -> its `erc_results` summary (error/warning counts, justifications);
+        the violation lists are counted in SQL, never decoded."""
         ids = [s.erc_result_id for s in plan.steps if s.erc_result_id]
         if not ids:
             return {}
         marks = ", ".join("?" for _ in ids)
         rows = await self._db.fetchall(
-            "SELECT id, plan_step_id, new_errors, new_warnings, justifications"
+            "SELECT id, json_array_length(new_errors) AS errors,"
+            " json_array_length(new_warnings) AS warnings, justifications"
             f" FROM erc_results WHERE project_id = ? AND id IN ({marks})",
             (plan.project_id, *ids),
         )
@@ -218,8 +228,8 @@ class PlanRepo:
             if r is not None:
                 out[s.id] = {
                     "id": str(r["id"]),
-                    "new_errors": json.loads(r["new_errors"]),
-                    "new_warnings": json.loads(r["new_warnings"]),
+                    "errors": int(r["errors"]),
+                    "warnings": int(r["warnings"]),
                     "justifications": json.loads(r["justifications"]),
                 }
         return out

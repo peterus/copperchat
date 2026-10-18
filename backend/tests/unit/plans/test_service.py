@@ -383,6 +383,27 @@ async def test_interrupted_turn_marks_step_interrupted(rig: Rig) -> None:
     assert plan.pause_reason == "interrupted" and plan.steps[0].status == "interrupted"
 
 
+@pytest.mark.parametrize(
+    ("outcome", "reason", "step_status"),
+    [
+        (
+            TurnOutcome(reason="error", document_inconsistent=True),
+            "document_inconsistent",
+            "failed",
+        ),
+        (TurnOutcome(reason="rate_limited"), "rate_limited", "interrupted"),
+    ],
+)
+async def test_turn_end_mapping_of_other_outcomes(
+    rig: Rig, outcome: TurnOutcome, reason: str, step_status: str
+) -> None:
+    await rig.begun()
+    await rig.plans.on_turn_end(rig.opened.project, RUN, outcome, rig.env.engine)
+    plan = await rig.last_plan()
+    assert plan.status == "paused" and plan.pause_reason == reason
+    assert plan.steps[0].status == step_status
+
+
 async def test_kicad_failed_marks_step_failed(rig: Rig) -> None:
     await rig.begun()
     await rig.hooks.on_turn_end(turn(RUN), done("sch", reason="error", failed=True))

@@ -148,7 +148,7 @@ async def test_step_exceeded_posts_needs_attention_row(h: Harness) -> None:
     assert (await h.call(h.spec(changes=4)))["error"]["code"] == "plan_step_exceeded"
     [(text, meta)] = h.engine.errors
     assert meta == {"code": "plan_needs_attention", "planId": plan.id, "reason": "step_exceeded"}
-    assert "step 1" in text
+    assert "step 1" in text and "needed 4 logical changes" in text
 
 
 async def test_step_placements_never_refund_the_turn_budget(h: Harness) -> None:

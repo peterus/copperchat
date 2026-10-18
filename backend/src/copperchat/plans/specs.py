@@ -12,6 +12,8 @@ from copperchat.plans.service import (
     SUMMARY_MAX,
     TEXT_MAX,
     TITLE_MAX,
+    TOUCH_ITEM_MAX,
+    TOUCH_MAX,
     PlanService,
     step_limit,
 )
@@ -32,8 +34,16 @@ _STEP_SCHEMA: dict[str, Any] = {
         "touches": {
             "type": "object",
             "properties": {
-                "refs": {"type": "array", "items": {"type": "string"}},
-                "nets": {"type": "array", "items": {"type": "string"}},
+                "refs": {
+                    "type": "array",
+                    "maxItems": TOUCH_MAX,
+                    "items": {"type": "string", "maxLength": TOUCH_ITEM_MAX},
+                },
+                "nets": {
+                    "type": "array",
+                    "maxItems": TOUCH_MAX,
+                    "items": {"type": "string", "maxLength": TOUCH_ITEM_MAX},
+                },
             },
             "additionalProperties": False,
         },

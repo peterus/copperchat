@@ -752,7 +752,7 @@ verification, status, changeCount, checkpointId, summary, failure, erc:
   refuses a step not active in this turn). **`plan_revise` keeps the finished steps** (their
   checkpoints are the plan's history; also on a later revision of the re-proposed plan) and
   `steps` replaces the remaining ones, numbered after them. Limits: ≤ 30 steps, `expected_changes` 1–200, title 120, summary 2000,
-  intent/verification 1000, ≤ 100 refs/nets, justifications ≤ 100 × 500 chars. Step tolerance
+  intent/verification 1000, ≤ 50 refs/nets of ≤ 64 chars, justifications ≤ 100 × 500 chars. Step tolerance
   = `max(expected + 1, expected × 3 // 2)` (10 → 15, 1 → 2); inside a step the ≤ 3 deletions
   rule does not apply (the user approved the plan), a refund needs a symbol placed **in that
   step**, and a step state whose plan is no longer running is dropped (never exempts a call
@@ -811,7 +811,9 @@ verification, status, changeCount, checkpointId, summary, failure, erc:
   run). `changes-updated.runId` is non-empty; the chat store ignores the frame (E9a's
   Changes panel consumes it).
 
-- **E8b (as built):** plan routes live in `web/routes_plans.py`; every event returns the
+- **E8b (as built):** `POST /history/{id}/restore` is refused (409 `plan_open`) while a
+  plan is approved, running or paused (use the plan's Roll back or abort it first).
+  Plan routes live in `web/routes_plans.py`; every event returns the
   PlanDTO; `rollback` body `{toStep}` validated by the service (400 for a non-integer or out of
   range, 409 `plan_state` for an unfinished step or for 0 when finished steps exist but no
   base snapshot, 409 `agent_busy` while a run is active).

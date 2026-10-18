@@ -46,8 +46,8 @@ TITLE_MAX = 120
 SUMMARY_MAX = 2000
 TEXT_MAX = 1000  # step intent / verification
 EXPECTED_MAX = 200
-TOUCH_MAX = 100
-TOUCH_ITEM_MAX = 100
+TOUCH_MAX = 50  # refs / nets per step (the DTO is re-sent on every plan change)
+TOUCH_ITEM_MAX = 64
 REASON_MAX = 500
 JUSTIFICATIONS_MAX = 100
 ERRORS_LISTED = 20  # new ERC errors named in a refusal
@@ -169,8 +169,8 @@ class PlanService:
         rows = await self.repo.erc_rows(plan)
         summaries = {
             sid: StepErc(
-                errors=len(r["new_errors"]),
-                warnings=len(r["new_warnings"]),
+                errors=r["errors"],
+                warnings=r["warnings"],
                 justifications=r["justifications"],
                 result_id=r["id"],
             )
@@ -438,14 +438,14 @@ class PlanService:
             snap = await take_step_checkpoint(
                 self.history, ctx.project, str(ctx.run_id), step.id, f"Plan step {idx}"
             )
-            rows = await self.editing.changes.for_run(pid, str(ctx.run_id), step.id)
+            count = await self.repo.step_change_count(pid, str(ctx.run_id), step.id)
             new = machine.transition(
                 plan,
                 "step_done",
                 now=utcnow_iso(),
                 idx=idx,
                 checkpoint_id=snap.id,
-                change_count=len(rows),
+                change_count=count,
                 summary=summary,
                 erc_result_id=rid,
             )
@@ -458,7 +458,7 @@ class PlanService:
             "status": "done",
             "plan_status": new.status,
             "checkpoint_id": snap.id,
-            "change_count": len(rows),
+            "change_count": count,
             "erc": {
                 "new_errors": len(delta.new_errors),
                 "justified": sorted(justified),
@@ -568,8 +568,8 @@ class PlanService:
         if engine is not None:  # spec §7.2: a failed step pushes "needs attention"
             idx = plan.running_step.idx if plan.running_step is not None else "?"
             await engine.post_error(
-                f"Plan paused at step {idx}: the step needed more changes than planned. "
-                "Review it and resume, roll back or abort the plan.",
+                f"Plan paused at step {idx}: {failure}. Review it and resume, roll back or "
+                "abort the plan.",
                 {"code": "plan_needs_attention", "planId": plan.id, "reason": reason},
             )
         return new
@@ -740,7 +740,7 @@ class PlanService:
                 raise PlanStateError(
                     "Cannot roll back to the start",
                     "The plan has no snapshot from before its first step",
-                    "Restore a snapshot from the History panel, or abort the plan.",
+                    "Abort the plan, then restore a snapshot from the History panel.",
                 )
             if target is not None:
                 if self.history is None:

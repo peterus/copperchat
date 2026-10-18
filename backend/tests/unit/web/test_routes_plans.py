@@ -280,6 +280,20 @@ def test_failed_enqueue_restores_state_and_retry_gets_a_new_id(
     assert len(ctx.user_messages()) == 1
 
 
+def test_history_restore_refused_while_plan_open(ctx: Ctx) -> None:
+    plan, _o, _s, base_id = _checkpointed(ctx)  # paused with a finished step
+    assert ctx.project.pcb_file is not None
+    before = sha256_file(ctx.project.pcb_file)
+    r = ctx.client.post(f"/api/projects/{ctx.pid}/history/{base_id}/restore")
+    assert r.status_code == 409 and r.json()["error"]["code"] == "plan_open"
+    assert sha256_file(ctx.project.pcb_file) == before
+    # A merely proposed plan (nothing begun) does not block the History panel.
+    ctx.save(machine.transition(ctx.plan(plan.id), "abort", now=NOW))
+    proposed = ctx.store_plan(replace(new_plan(ctx), id="e" * 32))
+    assert proposed.status == "proposed"
+    assert ctx.client.post(f"/api/projects/{ctx.pid}/history/{base_id}/restore").status_code == 200
+
+
 def test_errors_401_404_400(ctx: Ctx) -> None:
     c = ctx.client
     good = "a" * 32
