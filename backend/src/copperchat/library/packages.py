@@ -9,6 +9,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from copperchat.library.index import clip
+
 # imperial code -> metric code (IPC / KiCad naming: "<imperial>_<metric>Metric")
 IMPERIAL_TO_METRIC = {
     "01005": "0402",
@@ -78,9 +80,9 @@ def footprint_from_proto(fp: Any) -> FootprintDetail:
     name = fp.id.entry_name
     return FootprintDetail(
         lib_id=f"{fp.id.library_nickname}:{name}",
-        description=fp.attributes.description,
+        description=clip(fp.attributes.description),
         pad_count=len(numbers),
         smd_pads=smd,
         package=package_of(name),
-        keywords=fp.attributes.keywords,
+        keywords=clip(fp.attributes.keywords),
     )

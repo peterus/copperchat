@@ -22,6 +22,14 @@ _MAX_SHORT_EXPANSIONS = 300  # 2-character prefixes only; longer prefixes expand
 MAX_TERMS = 16
 
 
+MAX_TEXT_CHARS = 500  # free-text library fields (project libraries come from the repo)
+
+
+def clip(text: str, limit: int = MAX_TEXT_CHARS) -> str:
+    """Library text as shown to the agent: at most `limit` characters."""
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 def tokenize(text: str) -> list[str]:
     return _TOKEN.findall(text.lower())
 

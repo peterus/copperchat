@@ -112,8 +112,8 @@ def seed_user_part_preferences(settings: Settings) -> bool:
         )
         if replaced != 1 or not parse_preferences(seeded).get("passives_package"):
             raise RuntimeError("the built-in part-preferences template has no passives_package")
-        customise(layers, PREFERENCES_SKILL)  # keeps the origin sidecar for update diffs
         try:
+            customise(layers, PREFERENCES_SKILL)  # keeps the origin sidecar for update diffs
             write_user_skill(layers, PREFERENCES_SKILL, seeded)
         except BaseException:
             shutil.rmtree(target, ignore_errors=True)  # retried at the next start

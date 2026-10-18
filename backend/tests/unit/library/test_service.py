@@ -103,3 +103,54 @@ async def test_kicad_errors_are_structured() -> None:
     with pytest.raises(StructuredToolError) as err, service_mod._kicad_errors("Could not read X"):
         raise LibrariesLoading("slow")
     assert err.value.code == "libraries_loading"
+
+
+class FootprintSession(FakeSession):
+    """Two footprint libraries; `Bad` fails to load."""
+
+    def __init__(self, failing: Exception) -> None:
+        super().__init__()
+        self.project = type("P", (), {"pcb_file": "x.kicad_pcb"})()
+        self.failing = failing
+        self.loads: list[str] = []
+
+    async def call(self, fn: Any) -> Any:
+        func = getattr(fn, "func", None)
+        if func is service_mod._footprint_names:
+            nickname = fn.args[0]
+            self.loads.append(nickname)
+            if nickname == "Bad_SMD":
+                raise self.failing
+            return ["R_0805_2012Metric"]
+        if func is service_mod._fetch_footprints:
+            from copperchat.library.packages import FootprintDetail
+
+            nickname, names = fn.args
+            return [
+                FootprintDetail(f"{nickname}:{n}", "Resistor SMD 0805", 2, 2, "0805") for n in names
+            ]
+        return await super().call(fn)
+
+
+@pytest.mark.parametrize("failing", ["api", "doc"])
+async def test_failing_footprint_library_is_skipped(failing: str) -> None:
+    from kipy.errors import ApiError
+
+    from copperchat.errors import DocumentNotOpen
+
+    error = ApiError("bad table row") if failing == "api" else DocumentNotOpen("no board")
+    session = FootprintSession(error)
+    svc = _svc(session)
+    svc._fp_scopes = {"Bad_SMD": "global", "Good_SMD": "global"}
+    rows, failed = await svc.search_footprints_detailed("smd 0805")
+    assert [r["lib_id"] for r in rows] == ["Good_SMD:R_0805_2012Metric"]
+    assert set(failed) == {"Bad_SMD"}
+    # remembered: an unscoped search does not retry the broken library
+    rows2, failed2 = await svc.search_footprints_detailed("smd 0805")
+    assert rows2 == rows and set(failed2) == {"Bad_SMD"}
+    assert session.loads.count("Bad_SMD") == 1
+    # an explicit library request retries and raises
+    with pytest.raises(StructuredToolError) as err:
+        await svc.search_footprints("0805", library="Bad_SMD")
+    assert err.value.code == "library_error"
+    assert session.loads.count("Bad_SMD") == 2

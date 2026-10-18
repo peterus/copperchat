@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from copperchat.kicad_tools.access import pin_type_name
-from copperchat.library.index import Scope, SymbolRow
+from copperchat.library.index import Scope, SymbolRow, clip
 
 Direction = Literal["left", "right", "up", "down"]
 NM_PER_MM = 1_000_000
@@ -115,12 +115,12 @@ def row_from_proto(sy: Any, scope: Scope) -> SymbolRow:
     pins = pins_from_proto(sy) if has_drawing(sy) else None
     return SymbolRow(
         lib_id=f"{sy.id.library_nickname}:{sy.id.entry_name}",
-        description=sy.description_field.text.text,
-        keywords=sy.keywords,
+        description=clip(sy.description_field.text.text),
+        keywords=clip(sy.keywords),
         unit_count=int(sy.unit_count) or 1,
         pin_count=None if pins is None else len({p.number for p in pins}),
-        footprint=sy.footprint_field.text.text,
-        footprint_filters=list(sy.footprint_filters),
+        footprint=clip(sy.footprint_field.text.text, 256),
+        footprint_filters=[clip(f, 100) for f in list(sy.footprint_filters)[:20]],
         scope=scope,
     )
 
@@ -154,7 +154,7 @@ def pins_from_proto(sy: Any) -> list[LibPin]:
         out = _outward(int(pin.orientation))
         lp = LibPin(
             number=str(pin.number),
-            name=str(pin.name),
+            name=clip(str(pin.name), 100),
             type=pin_type_name(int(pin.electrical_type)),
             unit=unit,
             body_style=style,
@@ -253,18 +253,18 @@ def detail_from_proto(sy: Any, drawing: Any | None = None, pins_known: bool = Tr
     pins = pins_from_proto(drawing) if pins_known else []
     return SymbolDetail(
         lib_id=f"{sy.id.library_nickname}:{sy.id.entry_name}",
-        description=sy.description_field.text.text,
-        keywords=sy.keywords,
-        footprint=sy.footprint_field.text.text,
-        footprint_filters=list(sy.footprint_filters),
-        datasheet=sy.datasheet_field.text.text,
+        description=clip(sy.description_field.text.text),
+        keywords=clip(sy.keywords),
+        footprint=clip(sy.footprint_field.text.text, 256),
+        footprint_filters=[clip(f, 100) for f in list(sy.footprint_filters)[:20]],
+        datasheet=clip(sy.datasheet_field.text.text),
         unit_count=int(sy.unit_count) or 1,
         body_styles=max(1, len(sy.body_style)),
         is_power=_is_power(sy),
         pins=pins,
         body_size_mm=body_size_mm(drawing) if pins_known else (0.0, 0.0),
         pin_directions_by_rotation=pin_directions_by_rotation(pins) if pins_known else None,
-        reference_prefix=sy.reference_field.text.text.rstrip("?"),
-        value=sy.value_field.text.text,
+        reference_prefix=clip(sy.reference_field.text.text.rstrip("?"), 32),
+        value=clip(sy.value_field.text.text, 256),
         pins_known=pins_known,
     )

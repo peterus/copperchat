@@ -75,11 +75,34 @@ def test_registered_and_flags() -> None:
 
 
 async def test_large_notes_truncated(project: Project, make_settings: Any) -> None:
-    from copperchat.parts import MAX_NOTES_BYTES
+    from copperchat.library.specs import MAX_NOTES_RESULT_BYTES
 
     notes = project.dir / "docs" / "parts" / "BIG" / "notes.md"
     notes.parent.mkdir(parents=True)
-    notes.write_text("x" * (MAX_NOTES_BYTES + 100))
+    notes.write_text("x" * (MAX_NOTES_RESULT_BYTES + 100))
     result = await TOOL.handler(_ctx(project, make_settings), {"mpn": "BIG"})
     assert result.data is not None and result.data["truncated"] is True
-    assert len(result.data["notes"]) == MAX_NOTES_BYTES
+    assert len(result.data["notes"]) == MAX_NOTES_RESULT_BYTES
+
+
+@pytest.mark.parametrize("lib_id", [None, 5, "ab", "x" * 257])
+async def test_get_symbol_rejects_invalid_lib_id(
+    project: Project, make_settings: Any, lib_id: Any
+) -> None:
+    tool = next(s for s in TOOL_SPECS if s.name == "lib_get_symbol")
+    ctx = _ctx(project, make_settings)
+    ctx.session = cast(KicadSession, object())  # never reached: the argument is checked first
+    from copperchat.library import specs as specs_mod
+
+    class Ready:
+        async def wait_ready(self, timeout: float) -> bool:
+            return True
+
+    orig = specs_mod.library_for
+    specs_mod.library_for = lambda session: Ready()  # type: ignore[assignment,return-value]
+    try:
+        with pytest.raises(StructuredToolError) as err:
+            await tool.handler(ctx, {"lib_id": lib_id})
+    finally:
+        specs_mod.library_for = orig
+    assert err.value.code == "invalid_argument"

@@ -217,8 +217,8 @@ class LibraryService:
         self._fp_scopes: dict[str, Scope] | None = None
         self._fp_libs: dict[str, _FootprintLibrary] = {}
         self._fp_locks: dict[str, asyncio.Lock] = {}
-        # Libraries the last search without `library` skipped because they failed to load.
-        self.failed_footprint_libraries: dict[str, str] = {}
+        # Footprint libraries that failed to load (nickname -> reason).
+        self._fp_failed: dict[str, str] = {}
 
     @property
     def _session(self) -> KicadSession:
@@ -317,7 +317,8 @@ class LibraryService:
         index = self._ready_index()
         q = _query(query, "e.g. 'LDO 3.3V' or 'LM358'")
         self._check_library(library, self._libraries, "Symbol")
-        hits = index.search(q, _limit(limit), library)
+        # A broad query over ~23k symbols can take ~100 ms: keep it off the event loop.
+        hits = await asyncio.to_thread(index.search, q, _limit(limit), library)
         return [self._rows[lib_id].to_dict() for lib_id, _ in hits]
 
     async def get_symbol(self, lib_id: str) -> SymbolDetail:
@@ -467,6 +468,14 @@ class LibraryService:
         """Search one library (loaded on demand) or, without `library`, the top 3
         libraries whose nickname matches the query words plus every loaded library.
         Never loads all footprint libraries (owner decision 1)."""
+        rows, _ = await self.search_footprints_detailed(query, library, limit)
+        return rows
+
+    async def search_footprints_detailed(
+        self, query: str, library: str | None = None, limit: int = 20
+    ) -> tuple[list[dict[str, Any]], dict[str, str]]:
+        """`search_footprints` plus the libraries skipped because they failed to load
+        (nickname -> reason; only without `library` - with it the error is raised)."""
         scopes = await self.footprint_libraries()
         q = _query(query, "e.g. '0805' or 'SOT-23-5'")
         self._check_library(library, scopes, "Footprint")
@@ -477,17 +486,24 @@ class LibraryService:
             suggested = await self.suggest_footprint_libraries(q, FOOTPRINT_SEARCH_LIBRARIES)
             nicknames = list(dict.fromkeys([*suggested, *self._fp_libs]))
         hits: list[tuple[float, str, FootprintDetail]] = []
-        self.failed_footprint_libraries = {}
+        failed: dict[str, str] = {}
         for nickname in nicknames:
+            if library is None and nickname in self._fp_failed:
+                # Known broken: not retried by unscoped searches (an explicit
+                # `library` request retries it).
+                failed[nickname] = self._fp_failed[nickname]
+                continue
             try:
                 lib = await self._footprint_library(nickname)
             except StructuredToolError as exc:
+                self._fp_failed[nickname] = exc.why
                 if library is not None:
                     raise
                 # One broken table row must not abort a search over several libraries.
-                self.failed_footprint_libraries[nickname] = exc.why
+                failed[nickname] = exc.why
                 continue
-            for lib_id, score in lib.index.search(q, limit):
+            self._fp_failed.pop(nickname, None)
+            for lib_id, score in await asyncio.to_thread(lib.index.search, q, limit):
                 hits.append((score, lib_id, lib.details[lib_id]))
         hits.sort(key=lambda h: (-h[0], h[1]))
-        return [d.to_dict() for _, _, d in hits[:limit]]
+        return [d.to_dict() for _, _, d in hits[:limit]], failed

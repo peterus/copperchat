@@ -175,13 +175,20 @@ def test_suggestion_drops_size_specific_suffix() -> None:
     assert note["suggested_footprint"] == "Capacitor_SMD:C_0805_2012Metric"
 
 
-def test_seed_rolls_back_on_failure(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("step", ["customise", "write_user_skill"])
+def test_seed_rolls_back_on_failure(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, step: str
+) -> None:
     import copperchat.library.prefs as prefs_mod
 
-    def boom(*_: object) -> None:
+    real = prefs_mod.customise
+
+    def boom(*args: object) -> None:
+        if step == "customise":
+            real(*args)  # type: ignore[arg-type]  # copied, then the sidecar write fails
         raise OSError("disk full")
 
-    monkeypatch.setattr(prefs_mod, "write_user_skill", boom)
+    monkeypatch.setattr(prefs_mod, step, boom)
     with pytest.raises(OSError):
         seed_user_part_preferences(settings)
     layers = SkillLayers.for_project(settings, None)
