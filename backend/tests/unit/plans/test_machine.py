@@ -10,7 +10,7 @@ import pytest
 
 from copperchat.db import Database
 from copperchat.plans import machine
-from copperchat.plans.model import Plan, PlanStateError, to_dto
+from copperchat.plans.model import InvalidPlanArgument, Plan, PlanStateError, to_dto
 from copperchat.plans.repo import InvalidPlanId, PlanNotFound, PlanRepo
 
 NOW = "2026-10-18T10:00:00Z"
@@ -178,9 +178,9 @@ def test_rollback_to_unfinished_step_refused() -> None:
     plan = go(running(), "interrupt")
     with pytest.raises(PlanStateError, match="roll back"):
         go(plan, "rollback", to_step=1)
-    with pytest.raises(PlanStateError) as err:
+    with pytest.raises(InvalidPlanArgument) as bad:
         go(plan, "rollback", to_step=7)
-    assert err.value.code == "invalid_argument"
+    assert bad.value.code == "invalid_argument" and bad.value.http_status == 400
 
 
 def test_abort_terminal() -> None:

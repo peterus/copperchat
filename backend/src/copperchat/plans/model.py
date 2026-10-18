@@ -23,6 +23,15 @@ class PlanStateError(StructuredToolError):
         super().__init__(what, why, suggestion, code=code)
 
 
+class InvalidPlanArgument(StructuredToolError):
+    """A plan argument out of range (unknown step, bad rollback target): HTTP 400."""
+
+    http_status = 400
+
+    def __init__(self, what: str, why: str, suggestion: str) -> None:
+        super().__init__(what, why, suggestion, code="invalid_argument")
+
+
 @dataclass(frozen=True)
 class PlanStep:
     id: str
@@ -66,11 +75,10 @@ class Plan:
         for s in self.steps:
             if s.idx == idx:
                 return s
-        raise PlanStateError(
+        raise InvalidPlanArgument(
             f"Plan step {idx} does not exist",
             f"The plan has steps 1-{len(self.steps)}",
             "Use a step number of the plan.",
-            code="invalid_argument",
         )
 
     @property

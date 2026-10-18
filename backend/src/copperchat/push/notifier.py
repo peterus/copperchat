@@ -4,6 +4,7 @@
 |-----------------------------------------|---------------------------------|
 | run-finished completed                  | "run finished" + final text     |
 | run-finished error / final text ends "?"| "needs your attention"          |
+| run that posted a `plan_needs_attention` row (E8b, mid-run) | "needs your attention" |
 | rate-limited{resetsAt}                  | at resetsAt: "rate limit window reopened" |
 | run-finished interrupted / rate_limited | none                            |
 
@@ -104,6 +105,16 @@ class PushNotifier:
         )
         return None if row is None else (str(row["kind"]), str(row["content"]).strip())
 
+    async def _plan_needs_attention(self, project_id: str, run_id: str) -> bool:
+        """A plan was paused mid-run and needs the user (spec §11), even when agent text
+        followed the error row."""
+        row = await self.db.fetchone(
+            "SELECT 1 FROM messages WHERE project_id = ? AND run_id = ? AND kind = 'error' "
+            "AND json_extract(metadata, '$.code') = 'plan_needs_attention' LIMIT 1",
+            (project_id, run_id),
+        )
+        return row is not None
+
     async def _run_finished(self, f: RunFinishedFrame) -> None:
         if f.reason not in ("completed", "error"):
             return  # Stop pressed by the user, or parked (the reopen push covers that)
@@ -111,7 +122,12 @@ class PushNotifier:
             return
         final = await self._final_row(f.project_id, f.run_id)
         kind, text = final if final is not None else ("", "")
-        attention = f.reason == "error" or kind == "error" or text.endswith("?")
+        attention = (
+            f.reason == "error"
+            or kind == "error"
+            or text.endswith("?")
+            or await self._plan_needs_attention(f.project_id, f.run_id)
+        )
         title = "needs your attention" if attention else "run finished"
         if text:
             body = _clip(text)

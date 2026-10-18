@@ -25,6 +25,7 @@ class EditTurnState:
     step_expected: int = 0
     step_used: int = 0
     step_begin_seq: int | None = None  # call_seq of plan_step_begin (render reminder)
+    step_placed: set[str] = field(default_factory=set)  # symbols placed inside the step
     # (step id, violation ids) of the last `erc_errors_open` refusal of plan_step_done.
     erc_refusal: tuple[str, frozenset[str]] | None = None
     # A failed edit could not be undone exactly: every further edit of the turn is refused

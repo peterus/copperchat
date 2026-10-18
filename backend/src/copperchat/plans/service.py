@@ -21,7 +21,14 @@ from copperchat.errors import CopperChatError, StructuredToolError
 from copperchat.history.store import SnapshotNotFound
 from copperchat.kicad_session import KicadUnavailable
 from copperchat.plans import machine
-from copperchat.plans.model import Plan, PlanStateError, PlanStep, StepErc, to_dto
+from copperchat.plans.model import (
+    InvalidPlanArgument,
+    Plan,
+    PlanStateError,
+    PlanStep,
+    StepErc,
+    to_dto,
+)
 from copperchat.plans.repo import PlanRepo
 from copperchat.projects import Project
 
@@ -174,10 +181,12 @@ class PlanService:
     async def _publish(self, plan: Plan) -> None:
         if self.broadcaster is None:
             return
-        from copperchat.agent.protocol import PlanUpdatedFrame
+        from copperchat.agent.protocol import PlanDTO, PlanUpdatedFrame
 
         try:
-            frame = PlanUpdatedFrame(project_id=plan.project_id, plan=await self.dto(plan))
+            frame = PlanUpdatedFrame(
+                project_id=plan.project_id, plan=PlanDTO.model_validate(await self.dto(plan))
+            )
             await self.broadcaster.publish(plan.project_id, frame)
         except Exception:  # the plan is saved; the card catches up on the next load
             log.exception("plan-updated for %s failed", plan.id)
@@ -201,12 +210,13 @@ class PlanService:
             engine.add_agent_note(text)
 
     @staticmethod
-    def _clear_step(state: EditTurnState) -> None:
+    def clear_step(state: EditTurnState) -> None:
         state.active_step_id = None
         state.step_idx = None
         state.step_expected = 0
         state.step_used = 0
         state.step_begin_seq = None
+        state.step_placed = set()
         state.erc_refusal = None
 
     # ---- agent tools
@@ -316,6 +326,7 @@ class PlanService:
         state.step_expected = step.expected_changes
         state.step_used = 0
         state.step_begin_seq = state.call_seq
+        state.step_placed = set()
         state.erc_refusal = None
         return step
 
@@ -434,7 +445,7 @@ class PlanService:
             )
             await self._save(new)
         notes = await self._step_notes(ctx, state, given, new_ids)
-        self._clear_step(state)
+        self.clear_step(state)
         nxt = new.next_step
         result: dict[str, Any] = {
             "step": idx,
@@ -517,7 +528,7 @@ class PlanService:
         )
         new = machine.with_step(new, step.idx, erc_result_id=rid)
         await self._save(new)
-        self._clear_step(state)
+        self.clear_step(state)
         engine = self._engine(pid)
         if engine is not None:
             await engine.post_error(
@@ -546,7 +557,7 @@ class PlanService:
             new = machine.transition(plan, "fail", now=utcnow_iso(), reason=reason, failure=failure)
             await self._save(new)
         if ctx.run_id is not None:
-            self._clear_step(self.editing.turn(pid, ctx.run_id))
+            self.clear_step(self.editing.turn(pid, ctx.run_id))
         return new
 
     # ---- pauses (turn end, startup, external change)
@@ -687,7 +698,7 @@ class PlanService:
     async def abort(self, project: Project, plan_id: str) -> Plan:
         return await self._close(project, plan_id, "abort")
 
-    async def rollback(self, project: Project, plan_id: str, to_step: int) -> Plan:
+    async def rollback(self, project: Project, plan_id: str, to_step: Any) -> Plan:
         """Restore step `to_step`'s checkpoint (0: the pre-plan snapshot); later steps
         become pending. Refused with `agent_busy` (409) while a run is active."""
         from copperchat.history.restore import AgentBusy, restore_snapshot
@@ -699,11 +710,10 @@ class PlanService:
                 or isinstance(to_step, bool)
                 or not (0 <= to_step <= len(plan.steps))
             ):
-                raise PlanStateError(
+                raise InvalidPlanArgument(
                     "Invalid rollback target",
-                    f"toStep must be 0-{len(plan.steps)}",
+                    f"toStep must be an integer 0-{len(plan.steps)}",
                     "Pick a finished step or 0.",
-                    code="invalid_argument",
                 )
             engine = self._engine(project.id)
             if engine is not None and engine.is_busy:

@@ -73,6 +73,45 @@ export const ClientFrame = z.discriminatedUnion('type', [
 ]);
 export type ClientFrame = z.infer<typeof ClientFrame>;
 
+/** E-C11 PlanDTO (backend `PlanDTO` in agent/protocol.py). */
+export const PlanStatus = z.enum(['proposed', 'approved', 'running', 'paused', 'done', 'rejected', 'aborted']);
+export const PlanStepStatus = z.enum(['pending', 'running', 'done', 'failed', 'interrupted']);
+export const PlanStepDTO = z.strictObject({
+  idx: z.number().int().min(1),
+  title: z.string(),
+  intent: z.string(),
+  expectedChanges: z.number().int().min(1),
+  touches: z.strictObject({ refs: z.array(z.string()), nets: z.array(z.string()) }),
+  verification: z.string(),
+  status: PlanStepStatus,
+  changeCount: z.number().int().nonnegative(),
+  checkpointId: z.string().nullable(),
+  summary: z.string().nullable(),
+  failure: z.string().nullable(),
+  erc: z
+    .strictObject({
+      errors: z.number().int().nonnegative(),
+      warnings: z.number().int().nonnegative(),
+      justifications: z.record(z.string(), z.string()),
+      resultId: z.string().nullable(),
+    })
+    .nullable(),
+});
+export type PlanStepDTO = z.infer<typeof PlanStepDTO>;
+export const PlanDTO = z.strictObject({
+  id: z.string().min(1),
+  projectId: ProjectId,
+  title: z.string(),
+  summary: z.string(),
+  status: PlanStatus,
+  revision: z.number().int().min(1),
+  pauseReason: z.string().nullable(),
+  steps: z.array(PlanStepDTO),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type PlanDTO = z.infer<typeof PlanDTO>;
+
 export const ServerFrame = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('message'), projectId: ProjectId, message: MessageDTO }),
   z
@@ -103,6 +142,8 @@ export const ServerFrame = z.discriminatedUnion('type', [
     stepId: z.string().nullable(),
     count: z.number().int().nonnegative(),
   }),
+  // A plan changed state (E-C12, E8b).
+  z.strictObject({ type: z.literal('plan-updated'), projectId: ProjectId, plan: PlanDTO }),
   z.strictObject({ type: z.literal('usage'), projectId: ProjectId, usage: Usage }),
   z.strictObject({ type: z.literal('rate-limited'), projectId: ProjectId, resetsAt: z.string() }),
   z.strictObject({
@@ -125,7 +166,7 @@ export const AnyFrame = z.union([ClientFrame, ServerFrame]);
 export const ALL_FRAME_TYPES = [
   'subscribe', 'send', 'interrupt', 'cancel-queued', 'ping', 'visibility',
   'message', 'message-delta', 'run-started', 'run-finished', 'view-updated',
-  'changes-updated', 'usage', 'rate-limited', 'error', 'pong',
+  'changes-updated', 'plan-updated', 'usage', 'rate-limited', 'error', 'pong',
 ] as const;
 
 export const MessagesPage = z.object({ messages: z.array(MessageDTO), hasMore: z.boolean() });

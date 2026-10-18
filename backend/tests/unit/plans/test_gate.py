@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from copperchat.plans import machine
@@ -98,7 +100,44 @@ async def test_policy_always_without_step_refused(h: Harness) -> None:
 async def test_step_ends_turn_budget_resumes_after_done(h: Harness) -> None:
     await h.running(expected=(10,))
     await h.call(h.spec(changes=8))
-    h.plans._clear_step(h.state)  # as plan_step_done does
+    h.plans.clear_step(h.state)  # as plan_step_done does
     await h.set_status(await h.plan(), "done")
     assert "ok" in await h.call(h.spec(changes=20))  # turn budget untouched by the step
     assert h.state.logical_used == 20
+
+
+async def test_stale_step_state_never_bypasses_the_turn_budget(h: Harness) -> None:
+    plan = await h.running(expected=(30,))
+    # The plan was paused meanwhile (e.g. by another path) but the turn kept its step.
+    await h.plans.repo.save(machine.transition(plan, "interrupt", now=NOW))
+    await h.set_status(await h.plan(), "aborted")
+    assert h.state.active_step_id is not None
+    out = await h.call(h.spec(changes=21))
+    assert out["error"]["code"] == "plan_required"
+    assert h.state.active_step_id is None
+
+
+async def test_refund_only_for_symbols_placed_in_the_step(h: Harness) -> None:
+    from copperchat.kicad_tools.edit.changeset import ChangeSet, Logical, NetIntent
+    from copperchat.tools import ToolContext, ToolResult, edit_spec
+    from tests.unit.plans.conftest import SCHEMA, SHEET
+
+    h.state.placed_this_turn.add("pre-step-sym")  # placed earlier in the turn
+    await h.running(expected=(4,))
+
+    def spec(changes: int, deleted: list[str], placed: list[str]) -> Any:
+        async def prepare(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
+            return ChangeSet("t", SHEET, [], {}, NetIntent(), Logical(changes, list(deleted)))
+
+        async def apply(ctx: ToolContext, cs: ChangeSet) -> ToolResult:
+            cs.logical.placed_symbols = list(placed)
+            return ToolResult(data={"ok": True})
+
+        return edit_spec("t", "d", SCHEMA, prepare, apply)
+
+    await h.call(spec(1, [], ["own"]))
+    assert h.state.step_used == 1
+    await h.call(spec(1, ["own"], []))  # own placement deleted: refund
+    assert h.state.step_used == 0
+    await h.call(spec(1, ["pre-step-sym"], []))  # not placed in this step: costs 1
+    assert h.state.step_used == 1

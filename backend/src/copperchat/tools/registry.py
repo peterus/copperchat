@@ -19,6 +19,7 @@ _PROVIDERS: tuple[str, ...] = (
     "copperchat.library.specs",
     "copperchat.changes.specs",
     "copperchat.kicad_tools.edit.specs_sheets",
+    "copperchat.plans.specs",
 )
 
 

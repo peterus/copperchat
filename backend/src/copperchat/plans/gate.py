@@ -14,13 +14,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from copperchat.editing.gate import BudgetGate, _split_deletes
+from copperchat.editing.gate import BudgetGate
 from copperchat.errors import StructuredToolError
 from copperchat.plans.model import EDIT_BLOCKING
 from copperchat.plans.service import step_limit
 
 if TYPE_CHECKING:
     from copperchat.editing.service import EditingService
+    from copperchat.editing.state import EditTurnState
     from copperchat.kicad_tools.edit.changeset import ChangeSet
     from copperchat.plans.service import PlanService
     from copperchat.tools.spec import ToolContext
@@ -33,6 +34,11 @@ class PlanGate(BudgetGate):
 
     async def before_prepare(self, ctx: ToolContext, tool: str) -> None:
         open_ = await self.plans.repo.open_status(ctx.project.id)
+        state = self.service.turn(ctx.project.id, ctx.run_id)
+        if state.active_step_id is not None and (open_ is None or open_[1] != "running"):
+            # The step's plan is no longer running (paused/closed meanwhile): the step
+            # state is stale and must never exempt a call from the turn budget.
+            self.plans.clear_step(state)
         if open_ is None:
             await super().before_prepare(ctx, tool)
             return
@@ -46,7 +52,6 @@ class PlanGate(BudgetGate):
                 code="plan_open",
                 details={"plan_id": plan_id, "status": status},
             )
-        state = self.service.turn(ctx.project.id, ctx.run_id)
         if state.active_step_id is None:
             raise StructuredToolError(
                 f"{tool} refused: no plan step is active",
@@ -61,8 +66,7 @@ class PlanGate(BudgetGate):
         if state.active_step_id is None:
             await super().check_budget(ctx, cs)
             return
-        own, _ = _split_deletes(state.placed_this_turn, cs)
-        used_after = state.step_used + cs.logical.changes - 2 * own
+        used_after = state.step_used + self._step_cost(state, cs)
         limit = step_limit(state.step_expected)
         if used_after <= limit:
             return
@@ -89,10 +93,21 @@ class PlanGate(BudgetGate):
         # Inside a step: own placements and refunds are booked as usual, but the
         # logical changes go to the step, not the turn budget (and the <= 3 deletions
         # rule is the turn budget's: the user approved the plan's deletions).
+        cost = self._step_cost(state, cs)
         used, deleted = state.logical_used, state.deleted_preexisting
         await super().record(ctx, cs)
-        state.step_used += state.logical_used - used
         state.logical_used, state.deleted_preexisting = used, deleted
+        state.step_used = max(0, state.step_used + cost)
+        state.step_placed -= set(cs.logical.deleted_symbols)
+        state.step_placed |= set(cs.logical.placed_symbols)
+
+    @staticmethod
+    def _step_cost(state: EditTurnState, cs: ChangeSet) -> int:
+        """Logical changes of a call inside a step: deleting a symbol placed in this very
+        step refunds its placement and costs nothing (E-C6); every other deletion costs
+        as usual."""
+        own = len(set(cs.logical.deleted_symbols) & state.step_placed)
+        return cs.logical.changes - 2 * own
 
     async def budget_info(self, ctx: ToolContext) -> dict[str, Any] | None:
         state = self.service.turn(ctx.project.id, ctx.run_id)
