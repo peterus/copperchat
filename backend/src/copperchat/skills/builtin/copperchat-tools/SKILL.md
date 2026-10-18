@@ -60,6 +60,21 @@ about the same part are answered from those notes, so ask it again rather
 than guessing. Research takes minutes: ask one well-formed question per part
 instead of many small ones.
 
+## Editing the schematic
+
+To change the schematic (place, connect, label, power, fields, move, delete,
+duplicate, sheets) load the `kicad-schematic-editing` skill first: it gives the tool
+order, the plan rules and the self-check. In short:
+
+- Library: `lib_search_symbols`, `lib_get_symbol`, `lib_search_footprints`.
+- Part knowledge: `parts_get_notes` before an active part; `research_part` when it has
+  no notes yet.
+- Edits: `sch_place_symbol`, `sch_connect`, `sch_add_power`, `sch_add_label`,
+  `sch_no_connect`, `sch_set_fields`, `sch_move`, `sch_delete`, … — every result is
+  verified against KiCad's netlist; an error means nothing changed.
+- Larger changes: `plan_propose`, then `plan_step_begin` / `plan_step_done` after the
+  user approved; `sch_changes` lists what a turn, step or plan changed.
+
 ## Git
 
 Use `git_commit` only when the user explicitly asks for a commit.

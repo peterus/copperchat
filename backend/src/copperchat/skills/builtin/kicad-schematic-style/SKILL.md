@@ -41,6 +41,28 @@ you expect and the concrete deviation (reference, sheet, position in mm).
 - Each regulator shows its input and output capacitors next to it.
 - Power flags (`PWR_FLAG`) sit at the source of each externally supplied net.
 
+## Placement recipes (when you draw)
+
+Positions are mm on the 1.27 mm grid; get pin-related positions from `sch_find_space`.
+
+- **Decoupling**: one capacitor per supply pin, placed right next to the supply pin
+  it decouples (`sch_find_space(near="U1.VCC")`), its other pin to GND below; never
+  collected in a corner of the sheet.
+- **LDO / buck regulator**: input on the left, output on the right, GND below.
+  Input capacitor left of the regulator between input and GND, output capacitor right
+  of it between output and GND; the inductor and diode of a buck sit on the output side.
+- **MCU**: the MCU in the centre of its sheet or block; peripherals around it, joined
+  by labelled buses (`I2C_SDA`, `SPI1_MOSI`); the decoupling caps at its supply pins;
+  crystal and reset parts next to their pins.
+- **Connectors**: at the sheet edge, pins facing into the sheet (left edge:
+  `mirror="y"`), each pin with a power symbol or a label right at the pin.
+- **Pull-ups / pull-downs**: pull-ups above the signal they pull (supply symbol on top),
+  pull-downs below it; next to the label or the pin, not far away on the rail.
+- **Power flags**: one `PWR_FLAG` at the source of every externally supplied net
+  (connector input, battery), GND included; never on a regulator output.
+- **Series parts** (LED resistor, series termination): in line with the signal,
+  left → right, so the loop reads in the order the current flows.
+
 ## General
 
 - Decoupling capacitors are drawn next to the pin they decouple, one per
