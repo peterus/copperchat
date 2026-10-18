@@ -21,7 +21,8 @@ from copperchat.db import Database, utcnow_iso
 from copperchat.errors import CopperChatError
 from copperchat.projects import SKIP_DIRS, Project, agent_dir
 
-HISTORY_KEEP = 50
+HISTORY_KEEP = 50  # turn snapshots; step checkpoints are pruned with their turn (§5.4)
+SNAPSHOT_KINDS = ("turn", "step")
 # CopperChat's caches inside `.kicad-agent/`; kept out of the user's git repository.
 GITIGNORE_LINES = ("history/", "view/", "renders/", "uploads/", "images/")
 LABEL_MAX = 200
@@ -54,6 +55,8 @@ class Snapshot:
     label: str
     files: list[str]
     has_preview: bool
+    kind: str = "turn"  # turn | step (plan-step checkpoint, E-C10)
+    plan_step_id: str | None = None
 
 
 def validate_snapshot_id(raw: str) -> str:
@@ -159,7 +162,17 @@ class HistoryStore:
             if child.is_dir() and not child.is_symlink() and child.name not in known:
                 shutil.rmtree(child, ignore_errors=True)
 
-    async def snapshot(self, run_id: str, label: str, preview_png: bytes | None = None) -> Snapshot:
+    async def snapshot(
+        self,
+        run_id: str,
+        label: str,
+        preview_png: bytes | None = None,
+        *,
+        kind: str = "turn",
+        plan_step_id: str | None = None,
+    ) -> Snapshot:
+        if kind not in SNAPSHOT_KINDS:
+            raise ValueError(f"unknown snapshot kind {kind!r}")
         ensure_gitignore(self.project)
         sid = uuid.uuid4().hex
         dest = self.snapshot_dir(sid)
@@ -176,6 +189,8 @@ class HistoryStore:
                 "runId": run_id,
                 "createdAt": created,
                 "label": label,
+                "kind": kind,
+                "planStepId": plan_step_id,
                 "files": entries,
             }
             (tmp / "manifest.json").write_text(json.dumps(manifest, indent=2))
@@ -186,16 +201,33 @@ class HistoryStore:
         files = [e["relPath"] for e in entries]
         try:
             await self._db.execute(
-                "INSERT INTO history_snapshots(id, project_id, run_id, created_at, label, files)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                (sid, self.project.id, run_id, created, label, json.dumps(files)),
+                "INSERT INTO history_snapshots(id, project_id, run_id, created_at, label, files,"
+                " kind, plan_step_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    sid,
+                    self.project.id,
+                    run_id,
+                    created,
+                    label,
+                    json.dumps(files),
+                    kind,
+                    plan_step_id,
+                ),
             )
         except BaseException:
             await asyncio.to_thread(shutil.rmtree, dest, True)
             raise
         await self._prune()
         return Snapshot(
-            sid, self.project.id, run_id, created, label, files, preview_png is not None
+            sid,
+            self.project.id,
+            run_id,
+            created,
+            label,
+            files,
+            preview_png is not None,
+            kind,
+            plan_step_id,
         )
 
     def _row(self, row: Any) -> Snapshot:
@@ -208,6 +240,8 @@ class HistoryStore:
             row["label"],
             json.loads(row["files"]),
             (self.root / sid / "preview.png").is_file(),
+            str(row["kind"]),
+            row["plan_step_id"],
         )
 
     async def list(self) -> list[Snapshot]:
@@ -229,20 +263,52 @@ class HistoryStore:
             raise SnapshotNotFound(f"snapshot {sid} not found")
         return self._row(row)
 
-    async def latest_for_run(self, run_id: str) -> Snapshot | None:
+    async def _latest(self, run_id: str, kind: str) -> Snapshot | None:
         row = await self._db.fetchone(
-            "SELECT * FROM history_snapshots WHERE project_id = ? AND run_id = ?"
+            "SELECT * FROM history_snapshots WHERE project_id = ? AND run_id = ? AND kind = ?"
             " ORDER BY created_at DESC, rowid DESC LIMIT 1",
-            (self.project.id, run_id),
+            (self.project.id, run_id, kind),
         )
         return None if row is None else self._row(row)
 
+    async def latest_for_run(self, run_id: str) -> Snapshot | None:
+        """The run's turn snapshot (its undo point); step checkpoints never count."""
+        return await self._latest(run_id, "turn")
+
+    async def latest_step_checkpoint(self, run_id: str) -> Snapshot | None:
+        return await self._latest(run_id, "step")
+
     async def _prune(self) -> None:
-        rows = await self._db.fetchall(
-            "SELECT id FROM history_snapshots WHERE project_id = ?"
+        """HISTORY_KEEP turn snapshots; step checkpoints go with their turn (same run),
+        and so do those of other runs older than the oldest kept turn snapshot (a run
+        whose steps changed nothing has no turn snapshot of its own)."""
+        turns = await self._db.fetchall(
+            "SELECT id, run_id, created_at, rowid AS rid FROM history_snapshots"
+            " WHERE project_id = ? AND kind = 'turn'"
             " ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?",
-            (self.project.id, HISTORY_KEEP),
+            (self.project.id, HISTORY_KEEP - 1),
         )
+        if len(turns) > 1:
+            oldest_kept, pruned = turns[0], turns[1:]
+            runs = sorted({str(r["run_id"]) for r in pruned})
+            marks = ", ".join("?" for _ in runs)
+            rows = list(pruned) + list(
+                await self._db.fetchall(
+                    "SELECT id FROM history_snapshots WHERE project_id = ? AND kind = 'step'"
+                    f" AND (run_id IN ({marks}) OR (run_id != ? AND (created_at < ?"
+                    " OR (created_at = ? AND rowid < ?))))",
+                    (
+                        self.project.id,
+                        *runs,
+                        oldest_kept["run_id"],
+                        oldest_kept["created_at"],
+                        oldest_kept["created_at"],
+                        oldest_kept["rid"],
+                    ),
+                )
+            )
+        else:
+            rows = []
         for row in rows:
             await self._db.execute("DELETE FROM history_snapshots WHERE id = ?", (row["id"],))
             await asyncio.to_thread(shutil.rmtree, self.snapshot_dir(row["id"]), True)
