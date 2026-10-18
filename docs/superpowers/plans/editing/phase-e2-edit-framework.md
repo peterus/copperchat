@@ -32,7 +32,7 @@ read-back and compensates. Two tools prove it end to end: `sch_get_pin`,
 **Interfaces:** Produces E-C7 (`snap`, `Box`, `canonical_transform`, `PinEnd`, `pin_ends`,
 `body_box`, `field_boxes`, `Scene`, `read_scene`, `resolve_sheet`, `resolve_pin`, `all_symbols`).
 
-- [ ] **Step 1: Failing tests.** Unit: `test_snap` (`snap(10.16) == 10.16`, `snap(10.2) == 10.16`);
+- [x] **Step 1: Failing tests.** Unit: `test_snap` (`snap(10.16) == 10.16`, `snap(10.2) == 10.16`);
   `test_canonical_transform_8_forms` (`(180, "x") -> (0, False, True)`; all 8 distinct, 12
   requests map onto them, cf. 2A Q1). Kicad (`blank_session`, place via dry-run-free commits):
   `test_pin_ends_match_kicad_for_all_transforms` — place `Device:D`, `Device:Q_NPN_BCE`
@@ -44,13 +44,13 @@ read-back and compensates. Two tools prove it end to end: `sch_get_pin`,
   name; unknown pin → `code="not_found"` with candidate list; duplicated name →
   `ambiguous_pin`); `test_read_scene_subsheet` (`hier_session`: scene of the `ampli_ht`
   instance lists R201… with that instance's refs).
-- [ ] **Step 2:** FAIL. **Step 3: Implement** by porting `geom.py` (incremental
+- [x] **Step 2:** FAIL. **Step 3: Implement** by porting `geom.py` (incremental
   `SetOrientation` composition; pins filtered to the instance's unit and body style,
   deduplicated by number) and `geo.py` (scene, one obstacle box per symbol body plus one
   per visible field — never a union box, 2D failure mode 2). All sub-sheet reads use
   `sch.for_sheet(instance)`. Field text boxes via `get_text_extents` when available,
   else 0.6 × size × chars.
-- [ ] **Step 4:** PASS. **Step 5:** commit `feat: schematic geometry and scene`.
+- [x] **Step 4:** PASS. **Step 5:** commit `feat: schematic geometry and scene`.
 
 ### Task 2: Two-phase adapter, editing state, budget gate
 
@@ -59,7 +59,7 @@ read-back and compensates. Two tools prove it end to end: `sch_get_pin`,
 `EditGate`, `BudgetGate`, `EditingService`, `install_editing`, `ChainedHooks`, and the
 E-C6 budget rule (in `BudgetGate.check_budget` / `record(ctx, cs)`, reading `cs.applied`).
 
-- [ ] **Step 1: Failing unit tests** (`test_two_phase_adapter.py`, fake specs whose
+- [x] **Step 1: Failing unit tests** (`test_two_phase_adapter.py`, fake specs whose
   `prepare`/`apply` record calls, fake `on_mutation`):
   - `test_read_only_refused_before_prepare_and_snapshot` → error `code="read_only"`,
     `prepare`/`on_mutation`/`apply` never called.
@@ -75,11 +75,11 @@ E-C6 budget rule (in `BudgetGate.check_budget` / `record(ctx, cs)`, reading `cs.
     `render_view` with `doc="sch"` sets `last_render_seq`).
   - `test_chained_hooks_call_in_order_and_propagate_first_error`.
   - registry: `test_two_phase_spec_requires_apply_and_flags`.
-- [ ] **Step 2:** FAIL. **Step 3: Implement** per E-C4/E-C5. Turn state lives in
+- [x] **Step 2:** FAIL. **Step 3: Implement** per E-C4/E-C5. Turn state lives in
   `EditingService._turns[(project_id, run_id)]`, dropped at turn end by `EditingHooks`.
   `install_editing(app)` sets `runtime.editing = svc` (the engine passes it into every
   `ToolContext`) and wraps `runtime.hooks_factory` → `ChainedHooks([history, EditingHooks])`.
-- [ ] **Step 4:** PASS. **Step 5:** commit `feat: two-phase mutating tool adapter and budget gate`.
+- [x] **Step 4:** PASS. **Step 5:** commit `feat: two-phase mutating tool adapter and budget gate`.
 
 ### Task 3: Apply / verify / compensate engine and change recording
 
@@ -87,7 +87,7 @@ E-C6 budget rule (in `BudgetGate.check_budget` / `record(ctx, cs)`, reading `cs.
 `verify.check(before: Netlist, after: Netlist, intent: NetIntent) -> list[str]`,
 `ChangeEntry` rows via `EditingService.changes` (+ `on_changes_recorded` callbacks).
 
-- [ ] **Step 1: Failing kicad tests** (`test_engine_real.py`, `ecc83_session` unless noted):
+- [x] **Step 1: Failing kicad tests** (`test_engine_real.py`, `ecc83_session` unless noted):
   - `test_create_verified_and_logged`: a `ChangeSet` creating one wire between two free pin
     ends with `merge=[{a, b}]` → `Applied.created` has the wire; one `changes` row
     `op=add kind=wire` with the sheet path.
@@ -119,7 +119,7 @@ E-C6 budget rule (in `BudgetGate.check_budget` / `record(ctx, cs)`, reading `cs.
     `ampli_ht` instance → re-read shows it (the unbound schematic would lose it, 2A Q4).
   - `test_compensation_failure_raises_document_inconsistent` (injected compensation error)
     → `DocumentInconsistent`.
-- [ ] **Step 2:** FAIL. **Step 3: Implement** `engine.py`: each `Stage` = one
+- [x] **Step 2:** FAIL. **Step 3: Implement** `engine.py`: each `Stage` = one
   `session.commit(f"{cs.tool}: {stage.label}")`, ops executed with `for_sheet(op.sheet or cs.sheet)`; read-back, cleanup detection and
   compensation run per touched sheet
   (`Update` always with `definition` cleared — 2A Q2 server hang); after the last push read
@@ -133,7 +133,7 @@ E-C6 budget rule (in `BudgetGate.check_budget` / `record(ctx, cs)`, reading `cs.
   fields/unit/transform/body style copied (2A Q10 method A, new UUID); with a board →
   remaining compensation done, then `DocumentInconsistent(auto_restore=True)` (owner decision 4). `apply_change_set` stores the result in
   `cs.applied`.
-- [ ] **Step 4:** PASS. **Step 5:** commit `feat: verified apply engine with compensation and change log`.
+- [x] **Step 4:** PASS. **Step 5:** commit `feat: verified apply engine with compensation and change log`.
 
 ### Task 4: `sch_get_pin` and `sch_add_wire`
 
@@ -145,7 +145,7 @@ stages) used by E5/E7/E8a tests that must not depend on E4, and provider
 connected: [{kind, uuid}]}`) and `sch_add_wire(points: [[x,y],…], sheet?)` (two-phase;
 logical 1).
 
-- [ ] **Step 1: Failing kicad tests** (`test_add_wire.py`, `ecc83_session`; Review Focus 1):
+- [x] **Step 1: Failing kicad tests** (`test_add_wire.py`, `ecc83_session`; Review Focus 1):
   - `test_add_wire_connects_two_pins` (points from `sch_get_pin` of two free pins) → result
     `connectivity_verified`, nets merged, `logical_changes == 1`, all points on grid.
   - `test_points_are_snapped` (input 0.3 mm off grid → stored on grid, note in result).
@@ -156,10 +156,10 @@ logical 1).
   - `test_diagonal_segment_refused` (`invalid_argument`).
   - `test_get_pin_reports_net_and_free` (free pin → `free: true`, `net: null`-or-unconnected
     name; wired pin → connected wire UUID).
-- [ ] **Step 2:** FAIL. **Step 3: Implement** prepare: snap, orthogonality, foreign pin ends
+- [x] **Step 2:** FAIL. **Step 3: Implement** prepare: snap, orthogonality, foreign pin ends
   on segment interiors (`scene.foreign_pin_ends`), segments crossing symbol bodies refused;
   intent = merge of the pins at the two ends (if any) else `may_change` empty.
-- [ ] **Step 4:** PASS. **Step 5:** commit `feat: sch_get_pin and sch_add_wire`.
+- [x] **Step 4:** PASS. **Step 5:** commit `feat: sch_get_pin and sch_add_wire`.
 
 ### Task 5: `DocumentInconsistent` turn handling
 
@@ -167,7 +167,7 @@ logical 1).
 `_on_document_inconsistent`, HistoryHooks behaviour; error row
 `metadata.code = "document_inconsistent"`.
 
-- [ ] **Step 1: Failing unit tests** (FakeAgent + fake session):
+- [x] **Step 1: Failing unit tests** (FakeAgent + fake session):
   `test_document_inconsistent_ends_turn_with_one_error_row`;
   `test_no_autosave_and_session_reopened` (`sessions.reopen` called once, `save` never);
   `test_recovery_notice_names_last_save_time` (notice text contains
@@ -176,16 +176,16 @@ logical 1).
   `test_auto_restore_restores_turn_snapshot` (`auto_restore=True` → at turn end the turn
   snapshot is restored without the busy check of the REST path — the turn is ending — and a
   notice says so; E8a prefers the run's last step checkpoint).
-- [ ] **Step 2:** FAIL. **Step 3: Implement** like `kicad_failed` (X18: the engine posts the
+- [x] **Step 2:** FAIL. **Step 3: Implement** like `kicad_failed` (X18: the engine posts the
   error row, history never does); `_recover` text for mutated turns: "The design is at the
   state of <last save>; changes after that are lost." (spec §5.4).
-- [ ] **Step 4:** PASS. **Step 5:** commit `feat: document_inconsistent recovery`.
+- [x] **Step 4:** PASS. **Step 5:** commit `feat: document_inconsistent recovery`.
 
 ### Task 6: Annotation allocator
 
 **Interfaces:** Produces E-C8 `Allocator`.
 
-- [ ] **Step 1: Failing tests**: kicad `test_per_sheet_blocks_on_hierarchy` (`hier_session`:
+- [x] **Step 1: Failing tests**: kicad `test_per_sheet_blocks_on_hierarchy` (`hier_session`:
   scheme `per_sheet`; `next_ref("R", page of ampli_ht instance 2)` = first free `R2xx`;
   two calls give two different refs); `test_single_sheet_numbers_from_1` (`blank_session` → `R1`,
   then `R2`); unit (fake symbol lists) `test_flat_scheme_detected` (refs `R1..R40` across 3
@@ -193,9 +193,27 @@ logical 1).
   suggesting block 1000 + renumber), `test_block_1000`, `test_power_refs_unique`
   (`#PWR01`, `#PWR02` even when KiCad placed duplicates `#PWR01`), `test_multi_unit_shares_ref`
   (a ref already used by unit A is not "free" for a new part).
-- [ ] **Step 2:** FAIL. **Step 3: Implement** with page numbers from `get_hierarchy()` /
+- [x] **Step 2:** FAIL. **Step 3: Implement** with page numbers from `get_hierarchy()` /
   sheet instance paths (2A Q7). **Step 4:** PASS. **Step 5:** commit `feat: per-sheet annotation allocator`.
 
 ---
 
 **Done when:** one PR, CI green (`backend`, `kicad`), review-loop done, E-C4–E-C8 as built.
+
+**As built (E2):**
+- `sch_add_wire`: an end that snaps onto a pin end without being on it (e.g. 0.01 mm off)
+  is refused before writing (`invalid_argument`, `why` names the pin) instead of being
+  silently snapped onto the pin; other points are snapped with a note. Ends on an
+  existing wire's interior get a junction (T-joint); a segment over a foreign wire end,
+  label or junction, or running along a foreign wire, is refused (`overlap`), like a
+  foreign pin end or a symbol body. Intent: the terminal pins plus one pin of every
+  net touched at an end must end up on one net.
+- `sch_get_pin` also returns `unit`, `symbol_uuid`, `page`; `net` is `null` for
+  KiCad's `unconnected-…` nets.
+- Test helpers live in `tests/support/edit.py`: `edit_ctx(session, db=None, **kw)` (with
+  `db`: an `EditingService` and run id), `place_raw`, `place_direct` (plain commits),
+  `call_tool` (through the real adapter), `two_resistors`, `free_area`, `get_item`,
+  `kiids`; fixtures `blank_nopcb_session` (blank without `.kicad_pcb`) and `edit_db`
+  (`tests/kicad/edit/conftest.py`). `tests.kicad.edit.helpers.edit_ctx` delegates.
+- The engine-level `document_inconsistent` test is
+  `tests/unit/agent/test_engine_document_inconsistent.py` (needs the agent fixtures).

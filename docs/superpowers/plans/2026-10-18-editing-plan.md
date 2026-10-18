@@ -390,6 +390,31 @@ Error codes (`StructuredToolError.code`): `read_only`, `plan_required`,
 `verification_failed`, `not_found`, `ambiguous_pin`, `overlap`, `no_route`,
 `libraries_loading`, `footprints_unavailable`, `invalid_argument`.
 
+- **E2 (as built):** `StructuredToolError.code` set per instance (also the HTTP body's
+  `code`); `to_dict()` adds `code`/`details` only when set. `edit_spec` builds a
+  `ToolSpec` whose `handler` raises (two-phase tools only run through the adapter); the
+  registry rejects a spec with only one of `prepare`/`apply` or without
+  `mutating`+`changes_documents`. The adapter fills the result's `budget` key after
+  `gate.record` from the new `EditGate.budget_info(ctx)`; `note_call(ctx, tool, args)`
+  takes the args (`render_view` `doc`). `DocumentInconsistent` reaches the agent as an
+  error with `code="document_inconsistent"`. `SheetRef` adds `human_path` (`/amp/`) and
+  `as_dict()`; `ChangeSet` adds `notes`; `StageInput(created, placed, modified)` holds the
+  read-back items of earlier stages; `static_stage(label, *ops)` helper. `Applied` adds
+  `sheet_of`, `deleted_items`, `placed`, `nets_touched`, `item_net`, `notes`, `changes`
+  (all rows written, side effects included). `apply_change_set(ctx, cs, *, _verify=None,
+  _before_compensate=None)` (test seams); the engine reads missing pre-images itself
+  (an unknown UUID in `Update`/`Delete` → `not_found` before any write), a KiCad
+  `ApiError` while staging → `invalid_argument` (commit dropped, earlier stages
+  compensated), a cancellation after a pushed stage compensates shielded, a
+  `KicadUnavailable` is not compensated (the restarted server holds the last save).
+  The neighbourhood = wires through and junctions at every created/moved/removed point
+  of the stage; a created segment that KiCad merges at push is a result note (not a
+  row). `verification_failed` details: `{expected: {merge, may_change, names,
+  keep_partition}, found: [...], replaced?: {old_uuid: new_uuid}}`.
+  `verify.check(before, after, intent, label=None)`, `verify.remap(netlist, {new: old})`.
+  Change rows and the change log are only written when `ctx.editing` and `ctx.run_id`
+  are set; `EditingService.record_changes` never fails an applied call.
+
 ### E-C5. Editing state and gate — `copperchat.editing` (E2; E8b supplies `PlanGate`)
 
 ```python
@@ -423,6 +448,20 @@ def install_editing(app) -> EditingService   # lifespan, after install_history, 
 order (history first). `copperchat.editing.hooks.EditingHooks(RunHooks)` is the
 editing hook (E8a: turn-end ERC delta; E8b: plan pause/turn bookkeeping).
 `TurnOutcome.document_inconsistent: bool = False` (E2).
+
+- **E2 (as built):** `TurnOutcome.auto_restore`; `RunEngine.editing` / `AgentRuntime.editing`
+  (set by `install_editing`, passed into each `ToolContext` with
+  `on_document_inconsistent`). `ChainedHooks`: start/turn-start/first-mutation hooks stop
+  at the first error (a failed snapshot fails the call); every turn-end hook runs, then
+  the first error propagates. `EditingService.drop_turn`, `.record_changes(ctx, entries)`;
+  `EditGate.budget_info(ctx) -> {used, limit} | None` (`None` under policy `never`).
+  `document_inconsistent` turns: the engine posts one error row (code
+  `document_inconsistent`); `HistoryHooks` never autosaves, reopens the session once
+  (or, with `auto_restore`, restores the turn snapshot via
+  `restore_snapshot(..., check_busy=False, notice=...)`, notice action `restored`) and
+  posts "The design is at the state of the last save (<time>); changes after that are
+  lost." (`restore` action; `recovered` when no snapshot exists) — the same wording for
+  `kicad_failed` turns that mutated. `KicadSessionManager.reopen` keeps `last_saved_at`.
 
 ### E-C6. Logical change unit (E2 counts, E8b budgets)
 
@@ -473,6 +512,20 @@ def resolve_pin(h, spec: str) -> PinEnd     # "U1.3" / "U1.VIN" over all sheets;
 def all_symbols(h) -> list[SymbolInfo]      # every sheet instance (ref, uuid, sheet path, page, unit, lib_id)
 ```
 
+- **E2 (as built):** `canonical_transform` returns degrees (`DEG_SSO`/`SSO_DEG` map to
+  kiapi); extras `EPS_MM`, `snap_point`, `same_point`, `mm_point`, `transform_matrix`,
+  `CANONICAL`, `symbol_transform`, `symbol_fields`, `on_segment`,
+  `in_segment_interior`, `orthogonal`; `Box.around/grow/contains/overlaps/
+  hit_by_segment/as_dict`. `body_box(sym, margin=2.0)`; `SymbolInfo.body` has no margin,
+  `Scene.obstacles` adds 2 mm. `field_boxes(sym, extents=None)` estimates 0.6 × size per
+  character (one IPC call per field for `get_text_extents` was too slow for a scene;
+  `extents` plugs it in). `Scene` adds `sheets` (sheet-symbol boxes), `all_pins`,
+  `items_at`, `wires_through`; module helpers `sheet_refs`, `sheet_ref`, `sheet_api`
+  (`for_sheet` by `SheetRef`), `symbol_info`, `item_nets(h)` (the live netlist's members
+  include wires, junctions and labels, so items map to nets), `resolve_pin(h, spec,
+  symbols=None)` (number, then exact, then case-insensitive name). The stock library has
+  no `Device:Q_NPN_BCE` at the pinned commit; tests use `Device:Q_NPN`.
+
 ### E-C8. Annotation — `kicad_tools.edit.annotate` (E2)
 
 ```python
@@ -485,6 +538,14 @@ class Allocator:
         # R{n}001..; single-sheet projects R1, R2..; raises StructuredToolError("block full")
     def next_power(self, prefix: Literal["#PWR", "#FLG"]) -> str   # "#PWR01" style, unique
 ```
+
+- **E2 (as built):** plain-data core `Allocator(symbols: Iterable[(ref, page)], pages,
+  block)`; `from_design` reads `sheet_refs` + `get_symbols`. A single-sheet project is
+  `flat` (max + 1 from 1); per-sheet fills the lowest free number of the block; a ref
+  counts as "in its page block" for either block size (switching 100 → 1000 keeps a
+  per-sheet design per-sheet); non-numeric pages number flat; block full →
+  `invalid_argument` naming the 1000 block and `sch_annotate mode=renumber`;
+  `next_power` takes the lowest unused number (≥ 2 digits).
 
 ### E-C9. Library — `copperchat.library` (E3)
 
