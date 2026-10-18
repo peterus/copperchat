@@ -1,0 +1,580 @@
+{
+ "scenario": "s2",
+ "run": 1,
+ "tools_version": 2,
+ "model": "claude-opus-5-5",
+ "model_usage": {
+  "claude-haiku-5-5": {
+   "inputTokens": 1328,
+   "outputTokens": 23,
+   "cacheReadInputTokens": 0,
+   "cacheCreationInputTokens": 0,
+   "webSearchRequests": 0,
+   "costUSD": 0.0001443,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 128000,
+   "thinkingTokens": 0,
+   "canonicalModel": "claude-haiku-5-5",
+   "provider": "firstParty",
+   "costBasis": "list"
+  },
+  "claude-opus-5-5": {
+   "inputTokens": 42,
+   "outputTokens": 5984,
+   "cacheReadInputTokens": 295714,
+   "cacheCreationInputTokens": 17400,
+   "webSearchRequests": 0,
+   "costUSD": 0.31819080000000005,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 128000,
+   "thinkingTokens": 1639,
+   "canonicalModel": "claude-opus-5-5",
+   "provider": "firstParty",
+   "costBasis": "list"
+  }
+ },
+ "stop": "success",
+ "num_turns": 35,
+ "cost_usd": 0.31833510000000004,
+ "usage": {
+  "input_tokens": 42,
+  "cache_creation_input_tokens": 17400,
+  "cache_read_input_tokens": 295714,
+  "output_tokens": 5984,
+  "output_tokens_details": {
+   "thinking_tokens": 1639
+  },
+  "server_tool_use": {
+   "web_search_requests": 0,
+   "web_fetch_requests": 0
+  },
+  "service_tier": "standard",
+  "cache_creation": {
+   "ephemeral_1h_input_tokens": 17400,
+   "ephemeral_5m_input_tokens": 0
+  },
+  "inference_geo": "global",
+  "iterations": [
+   {
+    "input_tokens": 2,
+    "output_tokens": 821,
+    "cache_read_input_tokens": 21449,
+    "cache_creation_input_tokens": 477,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 477
+    },
+    "type": "message"
+   }
+  ],
+  "speed": "standard",
+  "fallback_credit": null
+ },
+ "wall_s": 79.1,
+ "tool_calls": 32,
+ "tool_errors": 3,
+ "skill_calls": 1,
+ "renders": 3,
+ "erc_calls": 2,
+ "by_tool": {
+  "lib_get_symbol": 2,
+  "lib_search_footprints": 1,
+  "render_view": 3,
+  "run_erc": 2,
+  "sch_add_power": 7,
+  "sch_connect": 4,
+  "sch_delete": 3,
+  "sch_get_net": 2,
+  "sch_place_symbol": 8
+ },
+ "errors": [
+  "sch_connect: no clean wire route C1.1 -> U1.3; a label fallback needs a net name",
+  "sch_connect: no clean wire route C1.1 -> J1.1",
+  "sch_place_symbol: Device:C at [110.49, 104.14] would overlap [\"1@[110.49, 100.33]: ['wire interior']\"]"
+ ],
+ "item_changes_total": 50,
+ "item_changes_per_call": [
+  1,
+  1,
+  1,
+  1,
+  1,
+  2,
+  0,
+  5,
+  4,
+  9,
+  8,
+  0,
+  1,
+  0,
+  0,
+  0,
+  0,
+  1,
+  1,
+  5,
+  5,
+  4
+ ],
+ "score": {
+  "golden": {
+   "parts_present": true,
+   "input_from_connector_pin1": true,
+   "gnd_from_connector_pin2": true,
+   "input_cap": true,
+   "output_cap": true,
+   "three_distinct_nets": true,
+   "output_named_3V3": true
+  },
+  "golden_ok": true,
+  "erc_errors": 0,
+  "erc_warnings": 0,
+  "erc_violations": [],
+  "layout": {
+   "symbols": 4,
+   "power_symbols": 10,
+   "wires": 17,
+   "labels": 0,
+   "junctions": 1,
+   "no_connects": 0,
+   "symbol_overlaps": [],
+   "off_grid": [],
+   "wire_over_pin": []
+  },
+  "components": {
+   "C1": {
+    "lib": "Device:C",
+    "value": "10uF",
+    "footprint": "Capacitor_SMD:C_0805_2012Metric"
+   },
+   "C2": {
+    "lib": "Device:C",
+    "value": "22uF",
+    "footprint": "Capacitor_SMD:C_0805_2012Metric"
+   },
+   "J1": {
+    "lib": "Connector_Generic:Conn_01x02",
+    "value": "5V_IN",
+    "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical"
+   },
+   "U1": {
+    "lib": "Regulator_Linear:AMS1117-3.3",
+    "value": "AMS1117-3.3",
+    "footprint": "Package_TO_SOT_SMD:SOT-223-3_TabPin2"
+   }
+  },
+  "passives_not_0805": [],
+  "item_changes": 50
+ },
+ "success": true,
+ "calls": [
+  {
+   "tool": "lib_get_symbol",
+   "args": {
+    "lib_id": "Regulator_Linear:AMS1117-3.3"
+   },
+   "ok": true,
+   "ms": 160,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "lib_get_symbol",
+   "args": {
+    "lib_id": "Connector_Generic:Conn_01x02"
+   },
+   "ok": true,
+   "ms": 159,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "lib_search_footprints",
+   "args": {
+    "query": "PinHeader_1x02 P2.54mm Vertical",
+    "limit": 3
+   },
+   "ok": true,
+   "ms": 12,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "sch_place_symbol",
+   "args": {
+    "lib_id": "Connector_Generic:Conn_01x02",
+    "at": [
+     80,
+     100
+    ],
+    "mirror": "y",
+    "reference": "J1",
+    "value": "5V_IN",
+    "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical"
+   },
+   "ok": true,
+   "ms": 197,
+   "item_changes": 1,
+   "error": null
+  },
+  {
+   "tool": "sch_place_symbol",
+   "args": {
+    "lib_id": "Regulator_Linear:AMS1117-3.3",
+    "at": [
+     130,
+     100
+    ],
+    "reference": "U1",
+    "value": "AMS1117-3.3"
+   },
+   "ok": true,
+   "ms": 195,
+   "item_changes": 1,
+   "error": null
+  },
+  {
+   "tool": "sch_place_symbol",
+   "args": {
+    "lib_id": "Device:C",
+    "at": [
+     110,
+     106
+    ],
+    "reference": "C1",
+    "value": "10uF",
+    "footprint": "Capacitor_SMD:C_0805_2012Metric"
+   },
+   "ok": true,
+   "ms": 203,
+   "item_changes": 1,
+   "error": null
+  },
+  {
+   "tool": "sch_place_symbol",
+   "args": {
+    "lib_id": "Device:C",
+    "at": [
+     150,
+     106
+    ],
+    "reference": "C2",
+    "value": "22uF",
+    "footprint": "Capacitor_SMD:C_0805_2012Metric"
+   },
+   "ok": true,
+   "ms": 208,
+   "item_changes": 1,
+   "error": null
+  },
+  {
+   "tool": "sch_connect",
+   "args": {
+    "from": "J1.1",
+    "to": "U1.3"
+   },
+   "ok": true,
+   "ms": 224,
+   "item_changes": 1,
+   "error": null
+  },
+  {
+   "tool": "sch_connect",
+   "args": {
+    "from": "U1.2",
+    "to": "C2.1"
+   },
+   "ok": true,
+   "ms": 228,
+   "item_changes": 2,
+   "error": null
+  },
+  {
+   "tool": "sch_connect",
+   "args": {
+    "from": "C1.1",
+    "to": "U1.3"
+   },
+   "ok": false,
+   "ms": 67,
+   "item_changes": 0,
+   "error": "no clean wire route C1.1 -> U1.3; a label fallback needs a net name"
+  },
+  {
+   "tool": "sch_add_power",
+   "args": {
+    "net": "+5V",
+    "at": [
+     "C1.1",
+     "J1.1"
+    ]
+   },
+   "ok": true,
+   "ms": 504,
+   "item_changes": 5,
+   "error": null
+  },
+  {
+   "tool": "sch_add_power",
+   "args": {
+    "net": "+3V3",
+    "at": [
+     "C2.1"
+    ]
+   },
+   "ok": true,
+   "ms": 297,
+   "item_changes": 4,
+   "error": null
+  },
+  {
+   "tool": "sch_add_power",
+   "args": {
+    "net": "GND",
+    "at": [
+     "J1.2",
+     "C1.2",
+     "U1.1",
+     "C2.2"
+    ]
+   },
+   "ok": true,
+   "ms": 772,
+   "item_changes": 9,
+   "error": null
+  },
+  {
+   "tool": "sch_add_power",
+   "args": {
+    "net": "PWR_FLAG",
+    "at": [
+     "J1.1",
+     "J1.2"
+    ]
+   },
+   "ok": true,
+   "ms": 673,
+   "item_changes": 8,
+   "error": null
+  },
+  {
+   "tool": "run_erc",
+   "args": {},
+   "ok": true,
+   "ms": 2677,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "render_view",
+   "args": {},
+   "ok": true,
+   "ms": 927,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "sch_delete",
+   "args": {
+    "refs": [
+     "C1"
+    ]
+   },
+   "ok": true,
+   "ms": 156,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "sch_place_symbol",
+   "args": {
+    "lib_id": "Device:C",
+    "at": [
+     110.49,
+     106.68
+    ],
+    "reference": "C1",
+    "value": "10uF",
+    "footprint": "Capacitor_SMD:C_0805_2012Metric"
+   },
+   "ok": true,
+   "ms": 216,
+   "item_changes": 1,
+   "error": null
+  },
+  {
+   "tool": "sch_connect",
+   "args": {
+    "from": "C1.1",
+    "to": "J1.1",
+    "via": "wire"
+   },
+   "ok": false,
+   "ms": 67,
+   "item_changes": 0,
+   "error": "no clean wire route C1.1 -> J1.1"
+  },
+  {
+   "tool": "sch_delete",
+   "args": {
+    "refs": [
+     "C1"
+    ]
+   },
+   "ok": true,
+   "ms": 152,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "sch_place_symbol",
+   "args": {
+    "lib_id": "Device:C",
+    "at": [
+     110.49,
+     104.14
+    ],
+    "reference": "C1",
+    "value": "10uF",
+    "footprint": "Capacitor_SMD:C_0805_2012Metric"
+   },
+   "ok": false,
+   "ms": 94,
+   "item_changes": 0,
+   "error": "Device:C at [110.49, 104.14] would overlap [\"1@[110.49, 100.33]: ['wire interior']\"]"
+  },
+  {
+   "tool": "sch_delete",
+   "args": {
+    "refs": [
+     "J1"
+    ]
+   },
+   "ok": true,
+   "ms": 148,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "render_view",
+   "args": {},
+   "ok": true,
+   "ms": 816,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "sch_place_symbol",
+   "args": {
+    "lib_id": "Connector_Generic:Conn_01x02",
+    "at": [
+     90.17,
+     100.33
+    ],
+    "mirror": "y",
+    "reference": "J1",
+    "value": "5V_IN",
+    "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical"
+   },
+   "ok": true,
+   "ms": 212,
+   "item_changes": 1,
+   "error": null
+  },
+  {
+   "tool": "sch_place_symbol",
+   "args": {
+    "lib_id": "Device:C",
+    "at": [
+     110.49,
+     105.41
+    ],
+    "reference": "C1",
+    "value": "10uF",
+    "footprint": "Capacitor_SMD:C_0805_2012Metric"
+   },
+   "ok": true,
+   "ms": 220,
+   "item_changes": 1,
+   "error": null
+  },
+  {
+   "tool": "sch_add_power",
+   "args": {
+    "net": "+5V",
+    "at": [
+     "J1.1",
+     "C1.1"
+    ]
+   },
+   "ok": true,
+   "ms": 478,
+   "item_changes": 5,
+   "error": null
+  },
+  {
+   "tool": "sch_add_power",
+   "args": {
+    "net": "GND",
+    "at": [
+     "J1.2",
+     "C1.2"
+    ]
+   },
+   "ok": true,
+   "ms": 491,
+   "item_changes": 5,
+   "error": null
+  },
+  {
+   "tool": "sch_add_power",
+   "args": {
+    "net": "PWR_FLAG",
+    "at": [
+     "J1.2"
+    ]
+   },
+   "ok": true,
+   "ms": 515,
+   "item_changes": 4,
+   "error": null
+  },
+  {
+   "tool": "run_erc",
+   "args": {},
+   "ok": true,
+   "ms": 2645,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "render_view",
+   "args": {},
+   "ok": true,
+   "ms": 786,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "sch_get_net",
+   "args": {
+    "net": "+5V"
+   },
+   "ok": true,
+   "ms": 69,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "sch_get_net",
+   "args": {
+    "net": "GND"
+   },
+   "ok": true,
+   "ms": 68,
+   "item_changes": 0,
+   "error": null
+  }
+ ]
+}

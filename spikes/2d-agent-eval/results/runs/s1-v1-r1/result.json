@@ -1,0 +1,358 @@
+{
+ "scenario": "s1",
+ "run": 1,
+ "model": "claude-sonnet-5-5",
+ "model_usage": {
+  "claude-haiku-5-5": {
+   "inputTokens": 1295,
+   "outputTokens": 20,
+   "cacheReadInputTokens": 0,
+   "cacheCreationInputTokens": 0,
+   "webSearchRequests": 0,
+   "costUSD": 0.0001395,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 128000,
+   "thinkingTokens": 0,
+   "canonicalModel": "claude-haiku-5-5",
+   "provider": "firstParty",
+   "costBasis": "list"
+  },
+  "claude-sonnet-5-5": {
+   "inputTokens": 16,
+   "outputTokens": 2951,
+   "cacheReadInputTokens": 63727,
+   "cacheCreationInputTokens": 13750,
+   "webSearchRequests": 0,
+   "costUSD": 0.0909147,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 128000,
+   "thinkingTokens": 548,
+   "canonicalModel": "claude-sonnet-5-5",
+   "provider": "firstParty",
+   "costBasis": "list"
+  }
+ },
+ "stop": "success",
+ "num_turns": 19,
+ "cost_usd": 0.09105419999999999,
+ "usage": {
+  "input_tokens": 16,
+  "cache_creation_input_tokens": 13750,
+  "cache_read_input_tokens": 63727,
+  "output_tokens": 2951,
+  "output_tokens_details": {
+   "thinking_tokens": 548
+  },
+  "server_tool_use": {
+   "web_search_requests": 0,
+   "web_fetch_requests": 0
+  },
+  "service_tier": "standard",
+  "cache_creation": {
+   "ephemeral_1h_input_tokens": 13750,
+   "ephemeral_5m_input_tokens": 0
+  },
+  "inference_geo": "global",
+  "iterations": [
+   {
+    "input_tokens": 2,
+    "output_tokens": 463,
+    "cache_read_input_tokens": 12687,
+    "cache_creation_input_tokens": 1063,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 1063
+    },
+    "type": "message"
+   }
+  ],
+  "speed": "standard",
+  "fallback_credit": null
+ },
+ "wall_s": 33.9,
+ "tool_calls": 16,
+ "tool_errors": 1,
+ "skill_calls": 1,
+ "renders": 1,
+ "erc_calls": 1,
+ "by_tool": {
+  "lib_search_footprints": 2,
+  "lib_search_symbols": 2,
+  "render_view": 1,
+  "run_erc": 1,
+  "sch_add_power": 4,
+  "sch_connect": 2,
+  "sch_place_symbol": 4
+ },
+ "errors": [
+  "sch_place_symbol: Device:LED at [106.68, 66.04] would overlap ['D1']"
+ ],
+ "item_changes_total": 28,
+ "item_changes_per_call": [
+  1,
+  1,
+  1,
+  0,
+  3,
+  5,
+  5,
+  4,
+  4,
+  4
+ ],
+ "score": {
+  "golden": {
+   "one_connector_resistor_led": true,
+   "series_loop_led_polarity": true,
+   "no_shorts": true
+  },
+  "golden_ok": true,
+  "erc_errors": 0,
+  "erc_warnings": 1,
+  "erc_violations": [
+   "warning:same_local_global_label:Symbol #PWR01 Pin 1 [Power input, Line]; Label '+5V'"
+  ],
+  "layout": {
+   "symbols": 3,
+   "power_symbols": 5,
+   "wires": 14,
+   "labels": 2,
+   "junctions": 2,
+   "no_connects": 0,
+   "symbol_overlaps": [],
+   "off_grid": [],
+   "wire_over_pin": []
+  },
+  "components": {
+   "D1": {
+    "lib": "Device:LED",
+    "value": "Red",
+    "footprint": "LED_SMD:LED_0805_2012Metric"
+   },
+   "J1": {
+    "lib": "Connector_Generic:Conn_01x02",
+    "value": "Power_In",
+    "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical"
+   },
+   "R1": {
+    "lib": "Device:R",
+    "value": "1k",
+    "footprint": "Resistor_SMD:R_0805_2012Metric"
+   }
+  },
+  "passives_not_0805": [],
+  "item_changes": 28
+ },
+ "success": true,
+ "calls": [
+  {
+   "tool": "lib_search_symbols",
+   "args": {
+    "query": "Conn_01x02",
+    "limit": 3
+   },
+   "ok": true,
+   "ms": 2,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "lib_search_symbols",
+   "args": {
+    "query": "LED",
+    "library": "Device",
+    "limit": 5
+   },
+   "ok": true,
+   "ms": 1,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "lib_search_footprints",
+   "args": {
+    "query": "LED 0805",
+    "limit": 5
+   },
+   "ok": true,
+   "ms": 6,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "lib_search_footprints",
+   "args": {
+    "query": "PinHeader_1x02 P2.54 Vertical",
+    "limit": 3
+   },
+   "ok": true,
+   "ms": 9,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "sch_place_symbol",
+   "args": {
+    "lib_id": "Connector_Generic:Conn_01x02",
+    "at": [
+     50.8,
+     63.5
+    ],
+    "mirror": "y",
+    "value": "Power_In",
+    "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical"
+   },
+   "ok": true,
+   "ms": 204,
+   "item_changes": 1,
+   "error": null
+  },
+  {
+   "tool": "sch_place_symbol",
+   "args": {
+    "lib_id": "Device:R",
+    "at": [
+     88.9,
+     58.42
+    ],
+    "rotation": 90,
+    "value": "1k",
+    "footprint": "Resistor_SMD:R_0805_2012Metric"
+   },
+   "ok": true,
+   "ms": 203,
+   "item_changes": 1,
+   "error": null
+  },
+  {
+   "tool": "sch_place_symbol",
+   "args": {
+    "lib_id": "Device:LED",
+    "at": [
+     106.68,
+     66.04
+    ],
+    "rotation": 270,
+    "value": "Red",
+    "footprint": "LED_SMD:LED_0805_2012Metric"
+   },
+   "ok": true,
+   "ms": 204,
+   "item_changes": 1,
+   "error": null
+  },
+  {
+   "tool": "sch_place_symbol",
+   "args": {
+    "lib_id": "Device:LED",
+    "at": [
+     106.68,
+     66.04
+    ],
+    "rotation": 90,
+    "reference": "D1",
+    "value": "Red",
+    "footprint": "LED_SMD:LED_0805_2012Metric"
+   },
+   "ok": false,
+   "ms": 89,
+   "item_changes": 0,
+   "error": "Device:LED at [106.68, 66.04] would overlap ['D1']"
+  },
+  {
+   "tool": "sch_add_power",
+   "args": {
+    "net": "+5V",
+    "at": [
+     "J1.1"
+    ]
+   },
+   "ok": true,
+   "ms": 365,
+   "item_changes": 3,
+   "error": null
+  },
+  {
+   "tool": "sch_add_power",
+   "args": {
+    "net": "GND",
+    "at": [
+     "J1.2",
+     "D1.K"
+    ]
+   },
+   "ok": true,
+   "ms": 438,
+   "item_changes": 5,
+   "error": null
+  },
+  {
+   "tool": "sch_connect",
+   "args": {
+    "from": "J1.1",
+    "to": "R1.1",
+    "via": "label",
+    "net_name": "+5V"
+   },
+   "ok": true,
+   "ms": 352,
+   "item_changes": 5,
+   "error": null
+  },
+  {
+   "tool": "sch_connect",
+   "args": {
+    "from": "R1.2",
+    "to": "D1.A",
+    "via": "auto",
+    "net_name": "LED_A"
+   },
+   "ok": true,
+   "ms": 230,
+   "item_changes": 4,
+   "error": null
+  },
+  {
+   "tool": "sch_add_power",
+   "args": {
+    "net": "PWR_FLAG",
+    "at": [
+     "J1.2"
+    ]
+   },
+   "ok": true,
+   "ms": 398,
+   "item_changes": 4,
+   "error": null
+  },
+  {
+   "tool": "sch_add_power",
+   "args": {
+    "net": "PWR_FLAG",
+    "at": [
+     "J1.1"
+    ]
+   },
+   "ok": true,
+   "ms": 351,
+   "item_changes": 4,
+   "error": null
+  },
+  {
+   "tool": "run_erc",
+   "args": {},
+   "ok": true,
+   "ms": 2698,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "render_view",
+   "args": {},
+   "ok": true,
+   "ms": 867,
+   "item_changes": 0,
+   "error": null
+  }
+ ]
+}

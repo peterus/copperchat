@@ -1,0 +1,407 @@
+{
+ "scenario": "s2",
+ "run": 1,
+ "tools_version": 2,
+ "model": "claude-sonnet-5-5",
+ "model_usage": {
+  "claude-haiku-5-5": {
+   "inputTokens": 1328,
+   "outputTokens": 23,
+   "cacheReadInputTokens": 0,
+   "cacheCreationInputTokens": 0,
+   "webSearchRequests": 0,
+   "costUSD": 0.0001443,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 128000,
+   "thinkingTokens": 0,
+   "canonicalModel": "claude-haiku-5-5",
+   "provider": "firstParty",
+   "costBasis": "list"
+  },
+  "claude-sonnet-5-5": {
+   "inputTokens": 22,
+   "outputTokens": 2896,
+   "cacheReadInputTokens": 122382,
+   "cacheCreationInputTokens": 12507,
+   "webSearchRequests": 0,
+   "costUSD": 0.0912702,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 128000,
+   "thinkingTokens": 291,
+   "canonicalModel": "claude-sonnet-5-5",
+   "provider": "firstParty",
+   "costBasis": "list"
+  }
+ },
+ "stop": "success",
+ "num_turns": 22,
+ "cost_usd": 0.09141449999999998,
+ "usage": {
+  "input_tokens": 22,
+  "cache_creation_input_tokens": 12507,
+  "cache_read_input_tokens": 122382,
+  "output_tokens": 2896,
+  "output_tokens_details": {
+   "thinking_tokens": 291
+  },
+  "server_tool_use": {
+   "web_search_requests": 0,
+   "web_fetch_requests": 0
+  },
+  "service_tier": "standard",
+  "cache_creation": {
+   "ephemeral_1h_input_tokens": 12507,
+   "ephemeral_5m_input_tokens": 0
+  },
+  "inference_geo": "global",
+  "iterations": [
+   {
+    "input_tokens": 2,
+    "output_tokens": 443,
+    "cache_read_input_tokens": 16137,
+    "cache_creation_input_tokens": 896,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 896
+    },
+    "type": "message"
+   }
+  ],
+  "speed": "standard",
+  "fallback_credit": null
+ },
+ "wall_s": 34.0,
+ "tool_calls": 19,
+ "tool_errors": 1,
+ "skill_calls": 1,
+ "renders": 1,
+ "erc_calls": 1,
+ "by_tool": {
+  "lib_search_symbols": 2,
+  "render_view": 1,
+  "run_erc": 1,
+  "sch_add_power": 4,
+  "sch_connect": 4,
+  "sch_find_space": 2,
+  "sch_move": 1,
+  "sch_place_symbol": 4
+ },
+ "errors": [
+  "sch_connect: no clean wire route C1.1 -> U1.3"
+ ],
+ "item_changes_total": 38,
+ "item_changes_per_call": [
+  1,
+  1,
+  1,
+  1,
+  1,
+  1,
+  0,
+  2,
+  5,
+  4,
+  4,
+  9,
+  8
+ ],
+ "score": {
+  "golden": {
+   "parts_present": true,
+   "input_from_connector_pin1": true,
+   "gnd_from_connector_pin2": true,
+   "input_cap": true,
+   "output_cap": true,
+   "three_distinct_nets": true,
+   "output_named_3V3": true
+  },
+  "golden_ok": true,
+  "erc_errors": 0,
+  "erc_warnings": 1,
+  "erc_violations": [
+   "warning:multiple_net_names:Symbol #PWR01 Pin 1 [Power input, Line]; Label 'VIN_5V'"
+  ],
+  "layout": {
+   "symbols": 4,
+   "power_symbols": 8,
+   "wires": 18,
+   "labels": 2,
+   "junctions": 2,
+   "no_connects": 0,
+   "symbol_overlaps": [],
+   "off_grid": [],
+   "wire_over_pin": []
+  },
+  "components": {
+   "C1": {
+    "lib": "Device:C",
+    "value": "10uF",
+    "footprint": "Capacitor_SMD:C_0805_2012Metric"
+   },
+   "C2": {
+    "lib": "Device:C",
+    "value": "22uF",
+    "footprint": "Capacitor_SMD:C_0805_2012Metric"
+   },
+   "J1": {
+    "lib": "Connector_Generic:Conn_01x02",
+    "value": "Conn_01x02",
+    "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical"
+   },
+   "U1": {
+    "lib": "Regulator_Linear:AMS1117-3.3",
+    "value": "AMS1117-3.3",
+    "footprint": "Package_TO_SOT_SMD:SOT-223-3_TabPin2"
+   }
+  },
+  "passives_not_0805": [],
+  "item_changes": 38
+ },
+ "success": true,
+ "calls": [
+  {
+   "tool": "lib_search_symbols",
+   "args": {
+    "query": "AMS1117-3.3"
+   },
+   "ok": true,
+   "ms": 8,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "lib_search_symbols",
+   "args": {
+    "query": "Conn_01x02",
+    "limit": 5
+   },
+   "ok": true,
+   "ms": 2,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "sch_place_symbol",
+   "args": {
+    "lib_id": "Regulator_Linear:AMS1117-3.3",
+    "at": [
+     101.6,
+     63.5
+    ],
+    "reference": "U1"
+   },
+   "ok": true,
+   "ms": 202,
+   "item_changes": 1,
+   "error": null
+  },
+  {
+   "tool": "sch_place_symbol",
+   "args": {
+    "lib_id": "Connector_Generic:Conn_01x02",
+    "at": [
+     50.8,
+     63.5
+    ],
+    "reference": "J1",
+    "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical"
+   },
+   "ok": true,
+   "ms": 206,
+   "item_changes": 1,
+   "error": null
+  },
+  {
+   "tool": "sch_move",
+   "args": {
+    "ref": "J1",
+    "mirror": "y",
+    "to": [
+     63.5,
+     63.5
+    ]
+   },
+   "ok": true,
+   "ms": 195,
+   "item_changes": 1,
+   "error": null
+  },
+  {
+   "tool": "sch_find_space",
+   "args": {
+    "lib_id": "Device:C",
+    "near": "U1.VI"
+   },
+   "ok": true,
+   "ms": 78,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "sch_find_space",
+   "args": {
+    "lib_id": "Device:C",
+    "near": "U1.VO"
+   },
+   "ok": true,
+   "ms": 78,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "sch_place_symbol",
+   "args": {
+    "lib_id": "Device:C",
+    "at": [
+     83.82,
+     71.12
+    ],
+    "reference": "C1",
+    "value": "10uF",
+    "footprint": "Capacitor_SMD:C_0805_2012Metric"
+   },
+   "ok": true,
+   "ms": 204,
+   "item_changes": 1,
+   "error": null
+  },
+  {
+   "tool": "sch_place_symbol",
+   "args": {
+    "lib_id": "Device:C",
+    "at": [
+     119.38,
+     71.12
+    ],
+    "reference": "C2",
+    "value": "22uF",
+    "footprint": "Capacitor_SMD:C_0805_2012Metric"
+   },
+   "ok": true,
+   "ms": 207,
+   "item_changes": 1,
+   "error": null
+  },
+  {
+   "tool": "sch_connect",
+   "args": {
+    "from": "J1.1",
+    "to": "U1.VI",
+    "via": "wire"
+   },
+   "ok": true,
+   "ms": 224,
+   "item_changes": 1,
+   "error": null
+  },
+  {
+   "tool": "sch_connect",
+   "args": {
+    "from": "C1.1",
+    "to": "U1.VI",
+    "via": "wire"
+   },
+   "ok": false,
+   "ms": 60,
+   "item_changes": 0,
+   "error": "no clean wire route C1.1 -> U1.3"
+  },
+  {
+   "tool": "sch_connect",
+   "args": {
+    "from": "C2.1",
+    "to": "U1.VO",
+    "via": "wire"
+   },
+   "ok": true,
+   "ms": 223,
+   "item_changes": 2,
+   "error": null
+  },
+  {
+   "tool": "sch_connect",
+   "args": {
+    "from": "C1.1",
+    "to": "J1.1",
+    "via": "auto",
+    "net_name": "VIN_5V"
+   },
+   "ok": true,
+   "ms": 346,
+   "item_changes": 5,
+   "error": null
+  },
+  {
+   "tool": "sch_add_power",
+   "args": {
+    "net": "+5V",
+    "at": [
+     "J1.1"
+    ]
+   },
+   "ok": true,
+   "ms": 429,
+   "item_changes": 4,
+   "error": null
+  },
+  {
+   "tool": "sch_add_power",
+   "args": {
+    "net": "+3V3",
+    "at": [
+     "U1.VO"
+    ]
+   },
+   "ok": true,
+   "ms": 301,
+   "item_changes": 4,
+   "error": null
+  },
+  {
+   "tool": "sch_add_power",
+   "args": {
+    "net": "GND",
+    "at": [
+     "J1.2",
+     "U1.GND",
+     "C1.2",
+     "C2.2"
+    ]
+   },
+   "ok": true,
+   "ms": 766,
+   "item_changes": 9,
+   "error": null
+  },
+  {
+   "tool": "sch_add_power",
+   "args": {
+    "net": "PWR_FLAG",
+    "at": [
+     "C1.2",
+     "C1.1"
+    ]
+   },
+   "ok": true,
+   "ms": 955,
+   "item_changes": 8,
+   "error": null
+  },
+  {
+   "tool": "run_erc",
+   "args": {},
+   "ok": true,
+   "ms": 2693,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "render_view",
+   "args": {},
+   "ok": true,
+   "ms": 887,
+   "item_changes": 0,
+   "error": null
+  }
+ ]
+}

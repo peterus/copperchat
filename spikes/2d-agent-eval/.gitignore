@@ -1,0 +1,4 @@
+.deps/
+.kicad/
+work/
+__pycache__/

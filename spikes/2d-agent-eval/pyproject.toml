@@ -1,0 +1,15 @@
+[project]
+name = "spike-2d-agent-eval"
+version = "0.0.0"
+description = "Throwaway spike: agent tool-shape eval for schematic editing (CopperChat sub-project 2, 2D)"
+requires-python = ">=3.13"
+license = "GPL-3.0-only"
+
+[tool.ruff]
+line-length = 140
+target-version = "py313"
+extend-exclude = [".deps", "work"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["E501"]  # long JSON-schema / evidence lines in throwaway code
