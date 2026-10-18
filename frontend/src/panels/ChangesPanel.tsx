@@ -1,5 +1,5 @@
 import { GitCompareArrows } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { type ChangeEntry, type ChangeRun, type ChangesDiff, fetchChangesDiff } from '@/api/changes';
 import { BeforeAfter } from '@/components/changes/BeforeAfter';
 import { ChangeList } from '@/components/changes/ChangeList';
@@ -92,11 +92,23 @@ function DiffList({ diff, restoredAfter, onPick }: { diff: ChangesDiff; restored
 }
 
 function RunCard({ projectId, run, undone, restoredAfter }: { projectId: string; run: ChangeRun; undone: boolean; restoredAfter: boolean }) {
-  const [open, setOpen] = useState(false);
-  const [diffOn, setDiffOn] = useState(false);
+  const open = useChanges((s) => s.expanded[run.runId] ?? false);
+  const setExpanded = useChanges((s) => s.setExpanded);
+  const diffLayer = useChanges((s) => s.diffLayer);
+  const setDiffLayer = useChanges((s) => s.setDiffLayer);
+  const highlightSeq = useView((s) => s.highlight?.seq ?? null);
+  // the diff layer is on while the highlight it set is still shown
+  const diffOn = diffLayer?.runId === run.runId && diffLayer.seq === highlightSeq;
   const [diff, setDiff] = useState<ChangesDiff | null>(null);
   const [diffError, setDiffError] = useState<string | null>(null);
   const [compare, setCompare] = useState(false);
+  /** Diff requested, not loaded yet. */
+  const [pending, setPendingState] = useState(false);
+  const pendingRef = useRef(false);
+  const setPending = (p: boolean) => {
+    pendingRef.current = p;
+    setPendingState(p);
+  };
   const entries = useChanges((s) => s.entries[entriesKey(run.runId)]);
   const loadEntries = useChanges((s) => s.loadEntries);
   const setHighlight = useView((s) => s.setHighlight);
@@ -106,22 +118,37 @@ function RunCard({ projectId, run, undone, restoredAfter }: { projectId: string;
     if (open && !entries) void loadEntries(run.runId);
   }, [open, entries, loadEntries, run.runId]);
 
-  const pick = (e: ChangeEntry) => setHighlight(entriesHighlight([e], diffOn ? diff : null));
+  // remounted with the layer on (phone tab switch): fetch the list again, keep the highlight
+  const snapshotId = run.snapshotId;
+  useEffect(() => {
+    if (!diffOn || diff || !snapshotId) return;
+    fetchChangesDiff(projectId, snapshotId).then(setDiff, (e: unknown) => setDiffError(`Could not compute the diff: ${errorText(e)}`));
+    // only on (re)mount with the layer on
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const pick = (e: ChangeEntry) => setHighlight(entriesHighlight([e], diff));
   const toggleDiff = () => {
-    if (diffOn) {
-      setDiffOn(false);
-      clearHighlight();
+    if (diffOn || pending) {
+      setPending(false);
+      setDiffLayer(null);
+      if (diffOn) clearHighlight();
       return;
     }
-    if (!run.snapshotId) return;
-    setDiffOn(true);
+    if (!snapshotId) return;
+    setPending(true);
     setDiffError(null);
-    fetchChangesDiff(projectId, run.snapshotId).then(
+    fetchChangesDiff(projectId, snapshotId).then(
       (d) => {
         setDiff(d);
-        setHighlight(diffHighlight(d));
+        if (!pendingRef.current) return; // switched off meanwhile
+        setPending(false);
+        setDiffLayer({ runId: run.runId, seq: setHighlight(diffHighlight(d)) });
       },
-      (e: unknown) => setDiffError(`Could not compute the diff: ${errorText(e)}`),
+      (e: unknown) => {
+        setPending(false);
+        setDiffError(`Could not compute the diff: ${errorText(e)}`);
+      },
     );
   };
   const btn = (on: boolean) =>
@@ -140,7 +167,7 @@ function RunCard({ projectId, run, undone, restoredAfter }: { projectId: string;
           </p>
         </div>
         <ErcBadge projectId={projectId} erc={run.erc} />
-        <button type="button" aria-expanded={open} onClick={() => setOpen((o) => !o)} className="rounded border border-border px-2 py-0.5 text-xs">
+        <button type="button" aria-expanded={open} onClick={() => setExpanded(run.runId, !open)} className="rounded border border-border px-2 py-0.5 text-xs">
           {open ? 'Hide changes' : 'Show changes'}
         </button>
       </div>
@@ -151,14 +178,14 @@ function RunCard({ projectId, run, undone, restoredAfter }: { projectId: string;
               type="button"
               className={btn(false)}
               disabled={!entries?.length}
-              onClick={() => entries && setHighlight(entriesHighlight(entries, diffOn ? diff : null))}
+              onClick={() => entries && setHighlight(entriesHighlight(entries, diff))}
             >
               Show all changes
             </button>
             <button
               type="button"
-              aria-pressed={diffOn}
-              className={btn(diffOn)}
+              aria-pressed={diffOn || pending}
+              className={btn(diffOn || pending)}
               disabled={!run.snapshotId}
               title={run.snapshotId ? undefined : 'No snapshot of this turn is kept'}
               onClick={toggleDiff}
@@ -177,13 +204,13 @@ function RunCard({ projectId, run, undone, restoredAfter }: { projectId: string;
           </div>
           {compare && run.snapshotId && <BeforeAfter projectId={projectId} snapshotId={run.snapshotId} />}
           {entries ? <ChangeList entries={entries} stepIds={run.stepIds} onPick={pick} /> : <p className="text-xs text-muted">Loading…</p>}
-          {diffOn && diffError && (
+          {diffError && (
             <p role="alert" className="text-xs text-danger">
               {diffError}
             </p>
           )}
-          {diffOn && !diff && !diffError && <p className="text-xs text-muted">Computing the diff…</p>}
-          {diffOn && diff && (
+          {pending && <p className="text-xs text-muted">Computing the diff…</p>}
+          {(diffOn || pending) && diff && (
             <DiffList
               diff={diff}
               restoredAfter={restoredAfter}

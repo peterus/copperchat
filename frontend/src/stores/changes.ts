@@ -22,6 +22,12 @@ export interface ChangesState {
   /** Loaded change entries per `entriesKey(runId, stepId)`. */
   entries: Record<string, ChangeEntry[]>;
   error: string | null;
+  /** Panel UI state that outlives the panel (phones unmount it on a tab switch). */
+  expanded: Record<string, boolean>;
+  /** The run whose diff layer was last highlighted, with the view highlight seq it set. */
+  diffLayer: { runId: string; seq: number } | null;
+  setExpanded: (runId: string, open: boolean) => void;
+  setDiffLayer: (layer: { runId: string; seq: number } | null) => void;
   load: (projectId: string) => Promise<void>;
   loadEntries: (runId: string, stepId?: string | null) => Promise<void>;
   dispose: () => void;
@@ -90,12 +96,16 @@ export function createChangesStore(
     runs: null,
     entries: {},
     error: null,
+    expanded: {},
+    diffLayer: null,
+    setExpanded: (runId, open) => store.setState((s) => ({ expanded: { ...s.expanded, [runId]: open } })),
+    setDiffLayer: (diffLayer) => store.setState({ diffLayer }),
     load: async (projectId) => {
       if (projectId !== store.getState().projectId) {
         generation += 1;
         clearTimeout(timer);
         dirtyRuns.clear();
-        store.setState({ projectId, runs: null, entries: {}, error: null });
+        store.setState({ projectId, runs: null, entries: {}, error: null, expanded: {}, diffLayer: null });
       }
       await fetchRuns();
     },

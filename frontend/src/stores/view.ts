@@ -61,8 +61,8 @@ export interface ViewState {
   setMode: (m: ViewMode) => void;
   toggleLayer: (l: PcbLayer) => void;
   setFullscreen: (on: boolean) => void;
-  /** Shows the KiCad schematic view with these items highlighted. */
-  setHighlight: (h: Omit<HighlightRequest, 'seq'>) => void;
+  /** Shows the KiCad schematic view with these items highlighted; returns the request's seq. */
+  setHighlight: (h: Omit<HighlightRequest, 'seq'>) => number;
   clearHighlight: () => void;
   /** Find `ref` in the current document (switches to the KiCad view); null cancels. */
   setFind: (ref: string | null) => void;
@@ -97,7 +97,10 @@ export function createViewStore(ws: Pick<WsClient, 'onFrame' | 'onConnection'>):
       set({ layers: canonicalLayers(cur.includes(l) ? cur.filter((x) => x !== l) : [...cur, l]) });
     },
     setFullscreen: (fullscreen) => set({ fullscreen }),
-    setHighlight: (h) => set({ highlight: { ...h, seq: ++seq }, doc: 'sch', mode: 'kicad' }),
+    setHighlight: (h) => {
+      set({ highlight: { ...h, seq: ++seq }, doc: 'sch', mode: 'kicad' });
+      return seq;
+    },
     clearHighlight: () => set({ highlight: null }),
     setFind: (ref) => set(ref === null ? { find: null } : { find: { ref, seq: ++seq }, mode: 'kicad' }),
     dispose: () => {

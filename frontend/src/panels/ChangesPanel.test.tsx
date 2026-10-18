@@ -177,11 +177,37 @@ describe('ChangesPanel', () => {
     ]);
     expect(diffBtn).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByText(/Value: 10uF → 22uF/)).toBeInTheDocument();
-    // with the diff loaded, a deleted wire is highlighted by its box
-    fireEvent.click(screen.getByRole('button', { name: /Deleted wire/ }));
-    expect(view.getState().highlight).toMatchObject({ refs: [], boxes: [{ kind: 'removed', sheetPath: SUB }] });
     fireEvent.click(diffBtn);
     expect(view.getState().highlight).toBeNull();
+    expect(diffBtn).toHaveAttribute('aria-pressed', 'false');
+    // with the diff loaded, a deleted wire is highlighted by its box (replacing the diff layer)
+    fireEvent.click(screen.getByRole('button', { name: /Deleted wire/ }));
+    expect(view.getState().highlight).toMatchObject({ refs: [], boxes: [{ kind: 'removed', sheetPath: SUB }] });
+  });
+
+  it('expanded runs and the diff layer survive a remount (phone tab switch); Clear highlight turns Diff off', async () => {
+    const ws = new FakeWsClient();
+    const changes = createChangesStore(ws);
+    const view = createViewStore(ws);
+    view.getState().setProject(PID);
+    const tree = () => (
+      <ViewStoreContext.Provider value={view}>
+        <ChangesStoreContext.Provider value={changes}>
+          <ChangesPanel projectId={PID} />
+        </ChangesStoreContext.Provider>
+      </ViewStoreContext.Provider>
+    );
+    const first = render(tree());
+    await screen.findAllByRole('listitem', { name: /^Turn/ });
+    fireEvent.click(within(runItem('r2')).getByRole('button', { name: /Show changes/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Diff' }));
+    await waitFor(() => expect(view.getState().highlight?.boxes).toHaveLength(2));
+    first.unmount();
+    render(tree());
+    expect(await screen.findByRole('button', { name: 'Diff' })).toHaveAttribute('aria-pressed', 'true');
+    expect(await screen.findByText(/Value: 10uF → 22uF/)).toBeInTheDocument();
+    act(() => view.getState().clearHighlight());
+    expect(screen.getByRole('button', { name: 'Diff' })).toHaveAttribute('aria-pressed', 'false');
   });
 
   it('Before / after shows the snapshot preview against the current agent view', async () => {

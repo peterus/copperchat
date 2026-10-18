@@ -425,3 +425,96 @@ test.describe('highlight overlay', () => {
     });
   }
 });
+
+// ---- Changes panel → viewer highlight (E9a), real bundle on complex_hierarchy ------------------
+
+const ROOT_SHEET = '/5b9623a5-6d01-41fc-9865-e1bc779418c8';
+const VERT_SHEET = `${ROOT_SHEET}/00000000-0000-0000-0000-00004b3a1333`;
+const SNAP = 'c'.repeat(32);
+
+/** Spike 2C `hier_edit` as the change log and compacted diff would report it (diff boxes from kicad-cli). */
+async function mockChanges(page: Page) {
+  const entry = (id: number, op: string, kind: string, uuid: string, sheetPath: string, ref: string | null) => ({
+    id, runId: 'run-1', planStepId: null, callSeq: id, tool: op === 'add' ? 'sch_add_wire' : 'sch_set_fields', op, kind, uuid,
+    sheetPath, ref, net: null, before: null, after: null, sideEffect: false, createdAt: '2026-10-18T11:00:00Z',
+  });
+  const box = (b: number[]) => ({ x: b[0]! / 1e4, y: b[1]! / 1e4, w: b[2]! / 1e4, h: b[3]! / 1e4 });
+  await page.route(`**/api/projects/${PID}/changes/runs**`, (r) =>
+    r.fulfill({ json: [{ runId: 'run-1', stepIds: [], count: 3, sideEffects: 0, erc: null, snapshotId: SNAP, createdAt: '2026-10-18T11:00:00Z' }] }),
+  );
+  await page.route(`**/api/projects/${PID}/changes?runId=run-1`, (r) =>
+    r.fulfill({
+      json: [
+        entry(1, 'modify', 'symbol', '00000000-0000-0000-0000-00004b4b15e7', ROOT_SHEET, 'C105'),
+        entry(2, 'modify', 'symbol', '00000000-0000-0000-0000-00004b4f363e', VERT_SHEET, 'R201'),
+        entry(3, 'add', 'wire', '77b3cc87-3ffb-4f0b-89eb-c28e0fc9f8ce', VERT_SHEET, null),
+      ],
+    }),
+  );
+  const diffEntry = (sheet: string, uuid: string, kind: string, type: string, ref: string | null, b: number[]) => ({
+    id: `${sheet}/${uuid}`, kind, type, uuid, ref, boxMm: box(b), properties: [], sideEffect: false,
+  });
+  await page.route(`**/api/projects/${PID}/changes/diff**`, (r) =>
+    r.fulfill({
+      json: {
+        snapshotId: SNAP,
+        count: 3,
+        sheets: {
+          [ROOT_SHEET]: [diffEntry(ROOT_SHEET, '00000000-0000-0000-0000-00004b4b15e7', 'modified', 'SCH_SYMBOL', 'C105', [1664990, 656589, 168453, 83822])],
+          [VERT_SHEET]: [
+            diffEntry(VERT_SHEET, '00000000-0000-0000-0000-00004b4f363e', 'modified', 'SCH_SYMBOL', 'R201', [556159, 467856, 132283, 51574]),
+            diffEntry(VERT_SHEET, '77b3cc87-3ffb-4f0b-89eb-c28e0fc9f8ce', 'added', 'SCH_LINE', null, [999238, 999238, 101525, 1525]),
+          ],
+        },
+      },
+    }),
+  );
+  await page.route(`**/api/projects/${PID}/history/${SNAP}/preview`, (r) => r.fulfill({ body: PNG, contentType: 'image/png' }));
+}
+
+const highlighted = (page: Page) => onViewer(page, (v) => v.highlighted_count, null);
+
+test.describe('changes panel', () => {
+  test('desktop: an entry on a sub-sheet opens that sheet and highlights it; diff boxes; clear', async ({ page, isMobile }) => {
+    test.skip(isMobile, 'desktop only');
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    await mockApi(page, HIER);
+    await mockChanges(page);
+    await openViewer(page, false);
+    await ready(page);
+    await page.getByRole('button', { name: 'Changes' }).click();
+    const panel = page.getByRole('dialog', { name: 'Changes' });
+    await panel.getByRole('button', { name: 'Show changes' }).click();
+    await panel.getByRole('button', { name: /Modified symbol R201/ }).click();
+    const crumbs = page.getByRole('navigation', { name: 'Sheet path' });
+    await expect(crumbs).toHaveText(/Root.*ampli_ht_vertical/);
+    await expect.poll(() => highlighted(page)).toBe(1);
+    await expect(page.getByRole('button', { name: 'Clear highlight' })).toBeVisible();
+    // the diff layer: both boxes of this sheet; on the root page its own box
+    await panel.getByRole('button', { name: 'Diff' }).click();
+    await expect.poll(() => highlighted(page)).toBe(1); // opens the first sheet with changes: root (C105)
+    await expect(crumbs).toHaveText('Root');
+    await page.getByRole('button', { name: 'Sheets (3)' }).click();
+    await page.getByRole('tree').getByRole('button', { name: 'ampli_ht_vertical' }).click();
+    await expect.poll(() => highlighted(page)).toBe(2);
+    await page.getByRole('button', { name: 'Clear highlight' }).click();
+    await expect.poll(() => highlighted(page)).toBe(0);
+    expect(errors).toEqual([]);
+  });
+
+  test('phone: tapping an entry in More › Changes switches to the View tab with the highlight', async ({ page, isMobile }) => {
+    test.skip(!isMobile, 'phone only');
+    await mockApi(page, HIER);
+    await mockChanges(page);
+    await openViewer(page, true);
+    await ready(page);
+    await page.getByRole('tab', { name: 'More' }).click();
+    await page.getByRole('button', { name: 'Changes' }).click();
+    await page.getByRole('button', { name: 'Show changes' }).click();
+    await page.getByRole('button', { name: /Modified symbol C105/ }).click();
+    await expect(page.getByRole('tab', { name: 'View' })).toHaveAttribute('aria-selected', 'true');
+    await expect.poll(() => highlighted(page)).toBe(1);
+    await expect(page.getByRole('button', { name: 'Clear highlight' })).toBeVisible();
+  });
+});
