@@ -138,3 +138,15 @@ def test_hooks_are_installed_before_resume_pending(
             assert engine.editing is app.state.editing is app.state.agent_runtime.editing
     finally:
         server.release.set()
+
+
+def test_history_route_lists_kind(ctx: Ctx) -> None:
+    c, pid = ctx.client, ctx.project.id
+    turn_snap = ctx.snapshot()
+    store = ctx.app.state.history.store(ctx.project)
+    step = ctx.client.portal.call(  # type: ignore[union-attr]
+        lambda: store.snapshot("run-1", "Step 1", None, kind="step", plan_step_id="st-1")
+    )
+    listed = {e["id"]: e for e in c.get(f"/api/projects/{pid}/history").json()}
+    assert (listed[turn_snap.id]["kind"], listed[turn_snap.id]["planStepId"]) == ("turn", None)
+    assert (listed[step.id]["kind"], listed[step.id]["planStepId"]) == ("step", "st-1")

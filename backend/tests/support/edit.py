@@ -156,7 +156,7 @@ async def place_raw(
     return applied.placed[0]
 
 
-async def call_tool(ctx: ToolContext, name: str, **args: Any) -> tuple[dict[str, Any], bool]:
+async def call_tool(ctx: ToolContext, name: str, /, **args: Any) -> tuple[dict[str, Any], bool]:
     """Run a registered tool through the real adapter (agent.sdk_tools); returns the JSON
     payload and whether it is an error."""
     import json

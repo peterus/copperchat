@@ -1,0 +1,52 @@
+{
+ "type": "changes-updated",
+ "directions": [
+  "s2c"
+ ],
+ "valid": [
+  {
+   "type": "changes-updated",
+   "projectId": "a1b2c3d4e5f6",
+   "runId": "run-1",
+   "stepId": null,
+   "count": 3
+  },
+  {
+   "type": "changes-updated",
+   "projectId": "a1b2c3d4e5f6",
+   "runId": "run-1",
+   "stepId": "step-1",
+   "count": 0
+  }
+ ],
+ "invalid": [
+  {
+   "type": "changes-updated",
+   "projectId": "a1b2c3d4e5f6",
+   "runId": "run-1",
+   "count": 3
+  },
+  {
+   "type": "changes-updated",
+   "projectId": "a1b2c3d4e5f6",
+   "runId": "run-1",
+   "stepId": null,
+   "count": -1
+  },
+  {
+   "type": "changes-updated",
+   "projectId": "a1b2c3d4e5f6",
+   "runId": "",
+   "stepId": null,
+   "count": 1
+  },
+  {
+   "type": "changes-updated",
+   "projectId": "a1b2c3d4e5f6",
+   "runId": "run-1",
+   "stepId": null,
+   "count": 1,
+   "extra": true
+  }
+ ]
+}
