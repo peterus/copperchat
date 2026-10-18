@@ -11,6 +11,7 @@ from typing import Any
 from claude_agent_sdk import McpSdkServerConfig, SdkMcpTool, create_sdk_mcp_server
 
 from copperchat.agent.events import ToolResultEvt
+from copperchat.errors import DocumentInconsistent
 from copperchat.kicad_session import KicadUnavailable
 from copperchat.tools import ImageBlock, StructuredToolError, ToolContext, ToolResult, ToolSpec
 
@@ -49,6 +50,34 @@ def _success(result: ToolResult) -> dict[str, Any]:
     return {"content": content}
 
 
+async def _run_two_phase(spec: ToolSpec, ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
+    """E-C4 adapter order: read-only -> gate.before_prepare -> prepare -> check_budget ->
+    on_mutation (turn snapshot) -> apply -> gate.record. Every refusal happens before
+    the snapshot and before any write (owner rule "refusals never snapshot")."""
+    assert spec.prepare is not None and spec.apply is not None
+    if getattr(ctx.session, "read_only", False):
+        raise StructuredToolError(
+            f"{spec.name} cannot change a read-only project",
+            "The project is open in KiCad on another machine or process (lock file present)",
+            "Ask the user to close it there and reopen the project in CopperChat.",
+            code="read_only",
+        )
+    gate = ctx.editing.gate if ctx.editing is not None else None
+    if gate is not None:
+        await gate.before_prepare(ctx, spec.name)
+    cs = await spec.prepare(ctx, args)
+    if gate is not None:
+        await gate.check_budget(ctx, cs)
+    if ctx.on_mutation is not None:
+        await ctx.on_mutation()
+    result = await spec.apply(ctx, cs)
+    if gate is not None:
+        await gate.record(ctx, cs)
+        if result.data is not None and "budget" in result.data:
+            result.data["budget"] = await gate.budget_info(ctx)
+    return result
+
+
 def _make_handler(
     spec: ToolSpec,
     ctx_factory: Callable[[], ToolContext],
@@ -70,12 +99,31 @@ def _make_handler(
                         "Ask the user to reopen the project in CopperChat, then try again.",
                     )
                 )
+        editing = getattr(ctx, "editing", None)  # test doubles may omit SP2 fields
+        if editing is not None:
+            editing.note_call(ctx, spec.name, args)
         try:
-            if spec.mutating and ctx.on_mutation is not None:
-                await ctx.on_mutation()
-            result = await spec.handler(ctx, args)
+            if spec.prepare is not None:
+                result = await _run_two_phase(spec, ctx, args)
+            else:
+                if spec.mutating and ctx.on_mutation is not None:
+                    await ctx.on_mutation()
+                result = await spec.handler(ctx, args)
         except StructuredToolError as err:
             return _error(err)
+        except DocumentInconsistent as exc:
+            on_inconsistent = getattr(ctx, "on_document_inconsistent", None)
+            if on_inconsistent is not None:
+                on_inconsistent(exc)
+            return _error(
+                StructuredToolError(
+                    f"{spec.name} failed and its partial change could not be undone exactly",
+                    str(exc),
+                    "This turn ends; the design is reloaded from its last save. Tell the "
+                    "user what you tried and do not retry in this turn.",
+                    code="document_inconsistent",
+                )
+            )
         except KicadUnavailable as exc:
             if ctx.on_kicad_unavailable is not None:
                 ctx.on_kicad_unavailable(exc)

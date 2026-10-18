@@ -10,6 +10,7 @@ from copperchat.agent.broadcaster import Broadcaster
 from copperchat.agent.runtime import AgentRuntime
 from copperchat.config import Settings, check_model_credentials
 from copperchat.db import Database
+from copperchat.editing import install_editing
 from copperchat.errors import CopperChatError, StructuredToolError
 from copperchat.history.service import install_history
 from copperchat.kicad_session import ClientFactory, KicadSessionManager, ServerLauncher
@@ -107,6 +108,7 @@ def create_app(
             # runtime.hooks_factory, so it must run before resume_pending() creates
             # engines: an engine keeps the hooks it was created with.
             install_history(app)
+            install_editing(app)  # after history: chains its hooks after HistoryHooks
             push = install_push(app)
             # parked / queued work survives a restart
             for project_id in await runtime.resume_pending():

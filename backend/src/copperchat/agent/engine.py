@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from copperchat.agent.broadcaster import Broadcaster, Subscription
 from copperchat.agent.events import (
@@ -51,6 +51,9 @@ from copperchat.errors import CopperChatError
 from copperchat.kicad_session import DocKind, KicadSessionManager, KicadUnavailable
 from copperchat.projects import Project, agent_dir
 from copperchat.tools import ImageBlock, ToolContext
+
+if TYPE_CHECKING:
+    from copperchat.editing.service import EditingService
 
 log = logging.getLogger(__name__)
 _IMAGE_EXT = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
@@ -96,6 +99,11 @@ class TurnOutcome:
     changed_docs: frozenset[DocKind] = frozenset()
     mutated: bool = False
     kicad_failed: bool = False
+    # A failed edit could not be undone exactly (E-C4): like kicad_failed, no autosave;
+    # the session is reopened from disk. auto_restore: restore the last step checkpoint /
+    # turn snapshot (owner decision 4).
+    document_inconsistent: bool = False
+    auto_restore: bool = False
 
 
 class RunHooks:
@@ -112,6 +120,37 @@ class RunHooks:
 
     async def on_turn_end(self, turn: TurnInfo, outcome: TurnOutcome) -> None:
         return None
+
+
+class ChainedHooks(RunHooks):
+    """Several hooks in order (history first, E-C5). A failing start/mutation hook stops
+    the chain and propagates (a failed snapshot must fail the tool call); turn-end hooks
+    all run, then the first error propagates."""
+
+    def __init__(self, hooks: list[RunHooks]) -> None:
+        self.hooks = hooks
+
+    async def on_engine_start(self) -> None:
+        for h in self.hooks:
+            await h.on_engine_start()
+
+    async def on_turn_start(self, turn: TurnInfo) -> None:
+        for h in self.hooks:
+            await h.on_turn_start(turn)
+
+    async def on_first_mutation(self, turn: TurnInfo) -> None:
+        for h in self.hooks:
+            await h.on_first_mutation(turn)
+
+    async def on_turn_end(self, turn: TurnInfo, outcome: TurnOutcome) -> None:
+        first: Exception | None = None
+        for h in self.hooks:
+            try:
+                await h.on_turn_end(turn, outcome)
+            except Exception as exc:
+                first = first or exc
+        if first is not None:
+            raise first
 
 
 BackendFactory = Callable[[Callable[[], ToolContext]], AgentBackend]
@@ -136,6 +175,8 @@ class _Turn:
     mutated: bool = False
     kicad_failed: bool = False
     kicad_reported: bool = False
+    document_inconsistent: bool = False
+    auto_restore: bool = False
 
 
 class RunEngine:
@@ -156,6 +197,8 @@ class RunEngine:
         self.project = project
         self.broadcaster = broadcaster
         self.hooks = hooks or RunHooks()
+        # SP2 (E-C5): set by AgentRuntime.ensure; passed into every ToolContext.
+        self.editing: EditingService | None = None
         # Phase 8 wires the uploads table (AgentRuntime); unknown ids are rejected.
         self.attachment_resolver: AttachmentResolver = _no_attachments
         self.rate_limited_until: datetime | None = None
@@ -618,15 +661,23 @@ class RunEngine:
                 await self._publish(UsageFrame(project_id=self.pid, usage=payload))
             elif isinstance(ev, RateLimited):
                 turn.rate_limited = ev.resets_at
-        if turn.kicad_failed and not turn.kicad_reported:
+        if (turn.kicad_failed or turn.document_inconsistent) and not turn.kicad_reported:
             turn.kicad_reported = True
+            if turn.kicad_failed:
+                content = (
+                    "KiCad stopped responding; the KiCad API server was restarted and "
+                    "this turn ended. Send your message again to retry."
+                )
+                code = "kicad_unavailable"
+            else:
+                content = (
+                    "A failed edit could not be undone exactly, so this turn ended. The "
+                    "design is reloaded from its last save."
+                )
+                code = "document_inconsistent"
             async with self._lock:
                 await self._insert(
-                    role="system",
-                    kind="error",
-                    content="KiCad stopped responding; the KiCad API server was restarted and "
-                    "this turn ended. Send your message again to retry.",
-                    metadata={"code": "kicad_unavailable"},
+                    role="system", kind="error", content=content, metadata={"code": code}
                 )
             try:
                 await self.backend.interrupt()
@@ -642,7 +693,8 @@ class RunEngine:
         if ev.reason == "error" and ev.error:
             async with self._lock:
                 await self._insert(role="system", kind="error", content=ev.error)
-        await self._finish_turn("error" if turn.kicad_failed else ev.reason)
+        failed = turn.kicad_failed or turn.document_inconsistent
+        await self._finish_turn("error" if failed else ev.reason)
         stream.release_next()
         if stream.pending_count() == 0:
             stream.request_close()
@@ -716,6 +768,8 @@ class RunEngine:
             changed_docs=frozenset(turn.changed),
             mutated=turn.mutated,
             kicad_failed=turn.kicad_failed,
+            document_inconsistent=turn.document_inconsistent,
+            auto_restore=turn.auto_restore,
         )
         try:
             await self.hooks.on_turn_end(turn.info, outcome)
@@ -857,6 +911,8 @@ class RunEngine:
             user_message=turn.info.text if turn else None,
             on_documents_changed=self._on_documents_changed,
             on_kicad_unavailable=self._on_kicad_unavailable,
+            editing=self.editing,
+            on_document_inconsistent=self._on_document_inconsistent,
         )
 
     async def _on_mutation(self) -> None:
@@ -876,6 +932,12 @@ class RunEngine:
         log.warning("KiCad unavailable during turn: %s", exc)
         if self._turn is not None:
             self._turn.kicad_failed = True  # reported + interrupted after the tool result
+
+    def _on_document_inconsistent(self, exc: Exception) -> None:
+        log.warning("document inconsistent during turn: %s", exc)
+        if self._turn is not None:
+            self._turn.document_inconsistent = True  # reported + interrupted like kicad_failed
+            self._turn.auto_restore |= bool(getattr(exc, "auto_restore", False))
 
     def _spawn(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
         task = asyncio.create_task(coro)

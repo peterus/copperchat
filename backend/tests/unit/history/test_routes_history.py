@@ -9,9 +9,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from copperchat.agent.engine import ChainedHooks
 from copperchat.config import Settings
 from copperchat.db import Database
 from copperchat.db.repos.agent_state import RateLimitRepo
+from copperchat.editing.hooks import EditingHooks
 from copperchat.history.hooks import HistoryHooks
 from copperchat.projects import Project
 from copperchat.web.app import create_app
@@ -112,7 +114,8 @@ def test_requires_login(ctx: Ctx) -> None:
 def test_hooks_are_installed_before_resume_pending(
     make_settings: Callable[..., Settings],
 ) -> None:
-    """Engines created by resume_pending() at startup must get the history hooks."""
+    """Engines created by resume_pending() at startup must get the history hooks, chained
+    with the editing hooks (E-C5), and the editing service."""
     server = FakeServer()
     settings = make_settings(dev_fake_agent=True)
     project = copy_project(ECC83, settings.projects_root)
@@ -129,7 +132,9 @@ def test_hooks_are_installed_before_resume_pending(
     try:
         with TestClient(app):
             engine = app.state.agent_runtime.get(project.id)
-            assert engine is not None and isinstance(engine.hooks, HistoryHooks)
-            assert app.state.agent_runtime.hooks_factory == app.state.history.hooks_factory
+            assert engine is not None and isinstance(engine.hooks, ChainedHooks)
+            history, editing = engine.hooks.hooks
+            assert isinstance(history, HistoryHooks) and isinstance(editing, EditingHooks)
+            assert engine.editing is app.state.editing is app.state.agent_runtime.editing
     finally:
         server.release.set()

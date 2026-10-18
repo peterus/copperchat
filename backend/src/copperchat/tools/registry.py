@@ -40,5 +40,12 @@ def all_specs() -> list[ToolSpec]:
             raise ToolRegistryError(
                 f"tool {spec.name!r}: input_schema must be a JSON object schema"
             )
+        if (spec.prepare is None) != (spec.apply is None) or (
+            spec.prepare is not None and not (spec.mutating and spec.changes_documents)
+        ):
+            raise ToolRegistryError(
+                f"tool {spec.name!r}: a two-phase tool needs prepare and apply and must be "
+                "mutating and changes_documents"
+            )
         seen.add(spec.name)
     return specs
