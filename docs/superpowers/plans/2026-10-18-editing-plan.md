@@ -541,7 +541,10 @@ def active_part_note(project, ref: str, fields: dict) -> dict | None
   unscoped searches; an explicit `library` retries): `search_footprints_detailed()` returns
   `(rows, failed)`, tool key `failed_libraries`. Index searches run in a worker thread; library
   free text is clipped (500 chars). `started` tells whether a warm-up ran. `parts_get_notes`
-  reads at most 64 KiB of notes (`truncated: true`); `lib_get_symbol` validates `lib_id`.
+  reads at most 64 KiB of notes (`truncated: true`); `lib_get_symbol` validates `lib_id`, takes an
+  optional `unit` (pins of that unit + common pins) and returns at most 256 pins
+  (`pins_truncated: true`, `pin_count` stays the full count). A failed footprint library is
+  skipped by unscoped searches for 5 min (`FAILED_RETRY_S`) and does not take a top-3 slot.
   `FootprintDetail` adds `keywords`, `to_dict()`. `PartPreferences` adds
   `preferred_manufacturers`, `assembly`; helpers `parse_preferences(text)`,
   `preferences_from_raw(raw)`, `is_passive(lib_id)` (Device:R/C/L incl. `_Small`/`_US`,

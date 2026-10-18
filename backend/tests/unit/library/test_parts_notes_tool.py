@@ -106,3 +106,50 @@ async def test_get_symbol_rejects_invalid_lib_id(
     finally:
         specs_mod.library_for = orig
     assert err.value.code == "invalid_argument"
+
+
+async def test_symlinked_notes_file_not_read(
+    project: Project, make_settings: Any, tmp_path: Path
+) -> None:
+    secret = tmp_path / "secret.md"
+    secret.write_text("secret")
+    d = project.dir / "docs" / "parts" / "LNK"
+    d.mkdir(parents=True)
+    (d / "notes.md").symlink_to(secret)
+    result = await TOOL.handler(_ctx(project, make_settings), {"mpn": "LNK"})
+    assert result.data is not None and result.data["researched"] is False
+
+
+async def test_multibyte_cut_and_pin_cap(
+    project: Project, make_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from copperchat.library import specs as specs_mod
+    from copperchat.library.symbols import LibPin, SymbolDetail
+
+    notes = project.dir / "docs" / "parts" / "UTF" / "notes.md"
+    notes.parent.mkdir(parents=True)
+    notes.write_text("ä" * specs_mod.MAX_NOTES_RESULT_BYTES)  # 2 bytes per char
+    result = await TOOL.handler(_ctx(project, make_settings), {"mpn": "UTF"})
+    assert result.data is not None and result.data["truncated"] is True
+    assert set(result.data["notes"]) == {"ä"}
+
+    pins = [
+        LibPin(str(i), f"P{i}", "passive", 1 + i % 2, 1, (0.0, 0.0), "left") for i in range(300)
+    ]
+    detail = SymbolDetail("FPGA:Big", "", "", "", [], "", 2, 1, False, pins, (10.0, 10.0), None)
+
+    class Svc:
+        async def wait_ready(self, timeout: float) -> bool:
+            return True
+
+        async def get_symbol(self, lib_id: str) -> SymbolDetail:
+            return detail
+
+    monkeypatch.setattr(specs_mod, "library_for", lambda session: Svc())
+    tool = next(s for s in TOOL_SPECS if s.name == "lib_get_symbol")
+    out = (await tool.handler(_ctx(project, make_settings), {"lib_id": "FPGA:Big"})).data
+    assert out is not None and len(out["pins"]) == 256 and out["pins_truncated"] is True
+    assert out["pin_count"] == 300
+    out = (await tool.handler(_ctx(project, make_settings), {"lib_id": "FPGA:Big", "unit": 2})).data
+    assert out is not None and len(out["pins"]) == 150 and "pins_truncated" not in out
+    assert {p["unit"] for p in out["pins"]} == {2}

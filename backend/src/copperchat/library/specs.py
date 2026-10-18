@@ -14,6 +14,7 @@ from copperchat.tools import StructuredToolError, ToolContext, ToolResult, ToolS
 # `libraries_loading` (the warm-up takes ~10-15 s after the project opened).
 READY_WAIT_S = 30.0
 MAX_LIB_ID_CHARS = 256
+MAX_PINS = 256  # pins per lib_get_symbol result
 # notes.md returned to the agent: at most this much (a cloned project may ship any file).
 MAX_NOTES_RESULT_BYTES = 64 * 1024
 
@@ -68,8 +69,6 @@ async def _search_symbols(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
 
 
 async def _get_symbol(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
-    svc = library_for(ctx.session)
-    await svc.wait_ready(READY_WAIT_S)
     lib_id = args.get("lib_id")
     if not isinstance(lib_id, str) or not 3 <= len(lib_id) <= MAX_LIB_ID_CHARS:
         raise StructuredToolError(
@@ -78,13 +77,28 @@ async def _get_symbol(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
             "e.g. 'Device:R'; find ids with lib_search_symbols",
             code="invalid_argument",
         )
+    unit = args.get("unit")
+    if unit is not None and (isinstance(unit, bool) or not isinstance(unit, int) or unit < 1):
+        raise StructuredToolError(
+            "Invalid unit", "unit must be a positive integer", "e.g. 1", code="invalid_argument"
+        )
+    svc = library_for(ctx.session)
+    await svc.wait_ready(READY_WAIT_S)
     detail = await svc.get_symbol(lib_id)
     data = detail.to_dict()
+    if unit is not None:  # pins of that unit plus the ones common to all units
+        data["pins"] = [p for p in data["pins"] if p["unit"] in (0, unit)]
+        data["unit"] = unit
+    if len(data["pins"]) > MAX_PINS:  # e.g. FPGAs with ~2000 pins
+        data["pins"] = data["pins"][:MAX_PINS]
+        data["pins_truncated"] = True
     data["note"] = (
         "offset_mm = pin connection point relative to the symbol origin (mm, y down) at "
         "rotation 0; direction = where the pin points away from the body; body_size_mm = "
         "unit 1 at rotation 0"
     )
+    if data.get("pins_truncated"):
+        data["note"] += f"; only the first {MAX_PINS} pins: pass `unit` to list one unit"
     if not detail.pins_known:
         data["note"] += (
             "; pins unknown: this derived symbol needs a probe placement, which a "
@@ -102,14 +116,15 @@ async def _search_footprints(ctx: ToolContext, args: dict[str, Any]) -> ToolResu
     if library is None:
         suggested = await svc.suggest_footprint_libraries(query)
         data["searched_libraries"] = svc.loaded_footprint_libraries()
-        if failed:
-            data["failed_libraries"] = failed
         data["libraries"] = suggested or sorted(await svc.footprint_libraries())
         data["note"] = (
             "Without `library` only the libraries whose name matches the query words (and "
             "libraries searched before) are searched; pass `library` (see `libraries`) to "
             "search one library completely."
         )
+        if failed:
+            data["failed_libraries"] = failed
+            data["note"] += " Libraries in `failed_libraries` are retried when passed as `library`."
     return ToolResult(data=data)
 
 
@@ -179,7 +194,14 @@ TOOL_SPECS: list[ToolSpec] = [
         "with at most 4 pins `pin_directions_by_rotation` (read it before rotating "
         "polarised parts such as LEDs and diodes).",
         _obj(
-            {"lib_id": {"type": "string", "minLength": 3, "maxLength": MAX_LIB_ID_CHARS}},
+            {
+                "lib_id": {"type": "string", "minLength": 3, "maxLength": MAX_LIB_ID_CHARS},
+                "unit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Only the pins of this unit (and the common ones).",
+                },
+            },
             ["lib_id"],
         ),
         _get_symbol,

@@ -17,7 +17,7 @@ from typing import Any
 from copperchat.config import Settings
 from copperchat.fsutil import atomic_write_text
 from copperchat.library.packages import IMPERIAL_TO_METRIC, FootprintDetail, package_of
-from copperchat.parts import InvalidMpn, read_notes
+from copperchat.parts import InvalidMpn, part_dir
 from copperchat.projects import Project
 from copperchat.skills.store import SkillLayers, customise, layer_contents, write_user_skill
 
@@ -173,6 +173,15 @@ def _mpn(fields: dict[str, Any]) -> str:
     return ""
 
 
+def _has_notes(project: Project, mpn: str) -> bool:
+    """notes.md exists and is not blank (reads at most 4 KiB; same checks as read_notes)."""
+    path = part_dir(project, mpn) / "notes.md"
+    if path.is_symlink() or not path.is_file():
+        return False
+    with path.open("rb") as f:
+        return bool(f.read(4096).strip())
+
+
 def active_part_note(project: Project, ref: str, fields: dict[str, Any]) -> dict[str, Any] | None:
     """`active_part_without_notes` for U/Q/IC references that have no MPN field or whose
     MPN has no `docs/parts/<MPN>/notes.md` (spec §9: research before placing)."""
@@ -190,7 +199,7 @@ def active_part_note(project: Project, ref: str, fields: dict[str, Any]) -> dict
         return note
     note["mpn"] = mpn
     try:
-        researched = bool(read_notes(project, mpn).strip())
+        researched = _has_notes(project, mpn)
     except InvalidMpn:
         note["reason"] = "invalid_mpn"
         note["message"] = f"{ref}: the MPN {mpn!r} is not a valid part number."

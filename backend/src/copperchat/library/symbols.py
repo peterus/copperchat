@@ -153,7 +153,7 @@ def pins_from_proto(sy: Any) -> list[LibPin]:
         unit, style = _tags(child)
         out = _outward(int(pin.orientation))
         lp = LibPin(
-            number=str(pin.number),
+            number=clip(str(pin.number), 32),
             name=clip(str(pin.name), 100),
             type=pin_type_name(int(pin.electrical_type)),
             unit=unit,

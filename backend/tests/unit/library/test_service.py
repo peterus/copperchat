@@ -108,7 +108,7 @@ async def test_kicad_errors_are_structured() -> None:
 class FootprintSession(FakeSession):
     """Two footprint libraries; `Bad` fails to load."""
 
-    def __init__(self, failing: Exception) -> None:
+    def __init__(self, failing: Exception | None) -> None:
         super().__init__()
         self.project = type("P", (), {"pcb_file": "x.kicad_pcb"})()
         self.failing = failing
@@ -119,7 +119,7 @@ class FootprintSession(FakeSession):
         if func is service_mod._footprint_names:
             nickname = fn.args[0]
             self.loads.append(nickname)
-            if nickname == "Bad_SMD":
+            if nickname == "Bad_SMD" and self.failing is not None:
                 raise self.failing
             return ["R_0805_2012Metric"]
         if func is service_mod._fetch_footprints:
@@ -154,3 +154,22 @@ async def test_failing_footprint_library_is_skipped(failing: str) -> None:
         await svc.search_footprints("0805", library="Bad_SMD")
     assert err.value.code == "library_error"
     assert session.loads.count("Bad_SMD") == 2
+
+
+async def test_failed_library_recovers_and_expires(monkeypatch: pytest.MonkeyPatch) -> None:
+    from kipy.errors import ApiError
+
+    session = FootprintSession(ApiError("busy"))
+    svc = _svc(session)
+    svc._fp_scopes = {"Bad_SMD": "global", "Good_SMD": "global"}
+    _, failed = await svc.search_footprints_detailed("smd 0805")
+    assert set(failed) == {"Bad_SMD"}
+    monkeypatch.setattr(service_mod, "FAILED_RETRY_S", -1.0)  # entry expired
+    _, failed = await svc.search_footprints_detailed("smd 0805")
+    assert set(failed) == {"Bad_SMD"} and session.loads.count("Bad_SMD") == 2
+    session.failing = None  # type: ignore[assignment]
+    monkeypatch.setattr(service_mod, "FAILED_RETRY_S", 300.0)
+    rows = await svc.search_footprints("0805", library="Bad_SMD")  # explicit retry succeeds
+    assert [r["lib_id"] for r in rows] == ["Bad_SMD:R_0805_2012Metric"]
+    _, failed = await svc.search_footprints_detailed("smd 0805")
+    assert failed == {}

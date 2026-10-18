@@ -89,7 +89,7 @@ def create_app(
         settings.data_dir.mkdir(parents=True, exist_ok=True)
         try:
             seed_user_part_preferences(settings)  # owner default: passives in 0805 (E3)
-        except (CopperChatError, OSError) as exc:
+        except Exception as exc:  # a seed problem must never stop the app
             log.warning("could not seed the user part preferences: %s", exc)
         db = await Database.open(settings.data_dir / "copperchat.db")
         sessions = KicadSessionManager(settings, launcher, client_factory=client_factory)

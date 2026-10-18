@@ -30,6 +30,7 @@ log = logging.getLogger(__name__)
 BATCH = 500  # ids per GetItemsFromLibrary request (spike 2B: 6.5 s for all symbols)
 MAX_LIMIT = 50
 MAX_QUERY_CHARS = 200
+FAILED_RETRY_S = 300.0  # a footprint library that failed to load is retried after this
 DETAIL_CACHE_SIZE = 512
 FOOTPRINT_SEARCH_LIBRARIES = 3  # libraries loaded for a search without `library`
 State = Literal["loading", "ready", "failed"]
@@ -218,7 +219,9 @@ class LibraryService:
         self._fp_libs: dict[str, _FootprintLibrary] = {}
         self._fp_locks: dict[str, asyncio.Lock] = {}
         # Footprint libraries that failed to load (nickname -> reason).
-        self._fp_failed: dict[str, str] = {}
+        # nickname -> (reason, loop time); forgotten after FAILED_RETRY_S (KiCad may have
+        # been busy or restarted).
+        self._fp_failed: dict[str, tuple[str, float]] = {}
 
     @property
     def _session(self) -> KicadSession:
@@ -333,7 +336,7 @@ class LibraryService:
             return cached
         row = self._rows.get(lib_id)
         if row is None:
-            close = self._closest(index, lib_id)
+            close = await asyncio.to_thread(self._closest, index, lib_id)
             raise StructuredToolError(
                 f"Symbol {lib_id!r} is not in the libraries",
                 "unknown lib_id (format <library nickname>:<symbol name>, case-sensitive)",
@@ -480,23 +483,27 @@ class LibraryService:
         q = _query(query, "e.g. '0805' or 'SOT-23-5'")
         self._check_library(library, scopes, "Footprint")
         limit = _limit(limit)
+        hits: list[tuple[float, str, FootprintDetail]] = []
+        # Known-broken libraries are skipped (and reported) by unscoped searches; an
+        # explicit `library` request retries them.
+        failed: dict[str, str] = {}
         if library is not None:
             nicknames = [library]
         else:
-            suggested = await self.suggest_footprint_libraries(q, FOOTPRINT_SEARCH_LIBRARIES)
-            nicknames = list(dict.fromkeys([*suggested, *self._fp_libs]))
-        hits: list[tuple[float, str, FootprintDetail]] = []
-        failed: dict[str, str] = {}
+            now = asyncio.get_running_loop().time()
+            for nickname, (_, at) in list(self._fp_failed.items()):
+                if now - at > FAILED_RETRY_S:
+                    del self._fp_failed[nickname]
+            candidates = await self.suggest_footprint_libraries(q, 50)
+            broken = [n for n in candidates if n in self._fp_failed]
+            usable = [n for n in candidates if n not in self._fp_failed]
+            nicknames = list(dict.fromkeys([*usable[:FOOTPRINT_SEARCH_LIBRARIES], *self._fp_libs]))
+            failed.update({n: self._fp_failed[n][0] for n in broken[:FOOTPRINT_SEARCH_LIBRARIES]})
         for nickname in nicknames:
-            if library is None and nickname in self._fp_failed:
-                # Known broken: not retried by unscoped searches (an explicit
-                # `library` request retries it).
-                failed[nickname] = self._fp_failed[nickname]
-                continue
             try:
                 lib = await self._footprint_library(nickname)
             except StructuredToolError as exc:
-                self._fp_failed[nickname] = exc.why
+                self._fp_failed[nickname] = (exc.why, asyncio.get_running_loop().time())
                 if library is not None:
                     raise
                 # One broken table row must not abort a search over several libraries.
