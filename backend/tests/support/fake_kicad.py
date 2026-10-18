@@ -63,6 +63,9 @@ class FakeServer:
     fail_push: bool = False
     fail_drop: bool = False
     drop_gate: threading.Event | None = None  # drop_commit waits for it when set
+    commit_gate: threading.Event | None = None  # begin/push_commit wait for it when set
+    library_load_hangs: bool = False  # load_all_libraries never answers
+    library_load_refusals: int = 0  # load_all_libraries raises this often
 
     def crash(self) -> None:
         self.dead = True
@@ -116,6 +119,8 @@ class FakeDocument:
         return self._server.modified
 
     def begin_commit(self) -> SimpleNamespace:
+        if self._server.commit_gate is not None:
+            self._server.commit_gate.wait(10)
         if self._server.open_commits:
             raise ApiError("KiCad returned error: client already has a commit in progress")
         self._server.next_commit += 1
@@ -123,6 +128,8 @@ class FakeDocument:
         return SimpleNamespace(id=self._server.next_commit)
 
     def push_commit(self, commit: SimpleNamespace, message: str = "") -> None:
+        if self._server.commit_gate is not None:
+            self._server.commit_gate.wait(10)
         if self._server.fail_push or commit.id not in self._server.open_commits:
             raise ApiError("KiCad returned error: no such commit")
         self._server.open_commits.discard(commit.id)
@@ -190,6 +197,11 @@ class FakeKiCad:
 
     def load_all_libraries(self, types: int) -> None:
         self._check()
+        if self._server.library_load_hangs:
+            self._server.release.wait(10)
+        if self._server.library_load_refusals > 0:
+            self._server.library_load_refusals -= 1
+            raise ApiError("KiCad returned error: library load not possible")
         self._server.library_loads.append(types)
 
     def get_library_statuses(self, types: int) -> list[Any]:

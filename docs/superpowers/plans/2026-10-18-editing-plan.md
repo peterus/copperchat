@@ -225,7 +225,11 @@ class KicadSessionManager:
   `ensure_symbol_libraries` polls `get_library_statuses(LT_SYMBOL)` in short
   `session.call`s (no `wait_for_libraries` holding the session lock for up to 120 s)
   and raises `copperchat.kicad_session.LibrariesLoading` (`code="libraries_loading"`,
-  HTTP 503) on timeout; the kick-off failing only logs. `HistoryHooks.on_turn_end` no
+  HTTP 503) on timeout; a refused kick-off only logs at start, `ensure_symbol_libraries`
+  repeats the request and raises `LibrariesLoading` if KiCad refuses again.
+  `begin_commit` / `push_commit` run to completion even when the caller is cancelled
+  meanwhile (an opened commit is then dropped, a pushed one kept), and a cancellation
+  is never swallowed by a failing drop. `HistoryHooks.on_turn_end` no
   longer records hashes itself (the listener does, after each successful save).
 
 ### E-C2. Live netlist — `copperchat.kicad_tools.access` (E1)
@@ -245,7 +249,8 @@ def live_netlist(h: KicadHandle) -> Netlist     # sch.get_netlist(); pin KIIDs r
 the same string `kicad-cli sch diff` and KiCanvas use (2C). Read tools
 (`sch_get_net`, `sch_get_symbol`) switch to it in E1 (output unchanged).
 
-- **E1 (as built):** `access.sheet_path_key(path) -> str` builds that string from a
+- **E1 (as built):** `live_netlist(h, symbols=None)` optionally reuses the caller's
+  `get_symbols()` result. `access.sheet_path_key(path) -> str` builds that string from a
   kipy `SheetPath` (or its proto). `live_netlist` includes power-symbol pins
   (`#PWR`/`#FLG`); `sch_get_net` leaves them out, as kicad-cli's netlist does.
   `sch_get_net`'s `function` follows kicad-cli at the pinned commit (`NAME_number`,

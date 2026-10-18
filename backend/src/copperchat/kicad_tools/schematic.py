@@ -32,12 +32,12 @@ def _symbol_with_pins(ref: str) -> Any:
 
 def _pin_nets(h: KicadHandle) -> dict[tuple[str, str], str]:
     """(ref, pin) -> net name from the live netlist (sees unsaved edits)."""
-    sch = h.schematic()
+    symbols = h.schematic().get_symbols()
     refs = {(access.sheet_path_key(s.path), access.kiid(s)): str(s.reference)
-            for s in sch.get_symbols()}  # fmt: skip
+            for s in symbols}  # fmt: skip
     return {
         (refs[(path, uuid)], number): name
-        for name, keys in access.live_netlist(h).nets.items()
+        for name, keys in access.live_netlist(h, symbols).nets.items()
         for path, uuid, number in keys
         if (path, uuid) in refs
     }
@@ -86,13 +86,13 @@ def _pin_function(name: str, number: str) -> str:
 
 def _net_members(name: str) -> Any:
     def run(h: KicadHandle) -> tuple[list[dict[str, Any]] | None, list[str]]:
-        sch = h.schematic()
-        nets = access.live_netlist(h).nets
+        symbols = h.schematic().get_symbols()
+        nets = access.live_netlist(h, symbols).nets
         if name not in nets:
             return None, list(nets)
         wanted = {(path, uuid) for path, uuid, _ in nets[name]}
         pins: dict[tuple[str, str], dict[str, Any]] = {}
-        for s in sch.get_symbols():
+        for s in symbols:
             path, uuid, ref = access.sheet_path_key(s.path), access.kiid(s), str(s.reference)
             # Power symbols are no netlist components (as in kicad-cli's netlist).
             if (path, uuid) not in wanted or ref.startswith("#"):

@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from copperchat.agent.protocol import ViewUpdatedFrame
 from copperchat.db import Database
-from copperchat.history.store import DocumentHashRepo, HistoryStore, compute_hashes_async
+from copperchat.history.store import DocumentHashRepo, HistoryStore, document_files, sha256_file
 from copperchat.kicad_session import DocKind, KicadSession, KicadSessionManager
 from copperchat.projects import Project
 from copperchat.views import render_view, write_kicanvas_snapshot
@@ -62,10 +62,14 @@ class HistoryService:
         def owned(rel: str) -> bool:
             return rel == pro or rel.endswith(suffix)
 
-        now = await compute_hashes_async(project)
+        def owned_hashes() -> dict[str, str]:
+            rels = {p.relative_to(project.dir).as_posix(): p for p in document_files(project)}
+            return {rel: sha256_file(path) for rel, path in rels.items() if owned(rel)}
+
+        now = await asyncio.to_thread(owned_hashes)
         stored = await self.hashes.get(project.id)
         merged = {k: v for k, v in stored.items() if not owned(k)}
-        merged |= {k: v for k, v in now.items() if owned(k)}
+        merged |= now
         await self.hashes.replace(project.id, merged)
 
     def store(self, project: Project) -> HistoryStore:

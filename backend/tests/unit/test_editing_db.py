@@ -275,3 +275,14 @@ async def test_change_repo_runs(db: Database) -> None:
         },
     ]
     assert [r["run_id"] for r in await repo.runs("p1", limit=1)] == ["r2"]
+
+
+async def test_editing_settings_concurrent_puts_keep_both_fields(db: Database) -> None:
+    import asyncio
+
+    repo = EditingSettingsRepo(db)
+    await asyncio.gather(
+        repo.put("p1", change_budget=50), repo.put("p1", plan_policy="never")
+    )  # fmt: skip
+    s = await repo.get("p1")
+    assert (s.change_budget, s.plan_policy) == (50, "never")

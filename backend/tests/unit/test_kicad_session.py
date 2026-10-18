@@ -2,6 +2,7 @@ import asyncio
 import threading
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 from kipy.errors import ApiError
@@ -637,3 +638,118 @@ async def test_nested_commit_or_save_inside_commit_fails_fast(
     with pytest.raises(RuntimeError, match="inside an open commit"):
         async with session.commit("outer"), session.commit("inner"):
             pass
+
+
+async def _cancel_while_gated(session: Any, server: FakeServer, body_reached: bool) -> None:
+    """Cancel a commit task while begin_commit (body_reached=False) or push_commit
+    (True) is blocked inside KiCad, then let KiCad finish the call."""
+    gate = threading.Event()
+    inside = asyncio.Event()
+    if not body_reached:
+        server.commit_gate = gate
+
+    async def edit() -> None:
+        async with session.commit("t"):
+            inside.set()
+            server.commit_gate = gate  # gates the push
+
+    task = asyncio.create_task(edit())
+    if body_reached:
+        await inside.wait()
+    await asyncio.sleep(0.2)  # the gated call is in flight
+    task.cancel()
+    await asyncio.sleep(0.1)
+    gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    server.commit_gate = None
+
+
+async def test_cancel_right_after_begin_commit_drops_the_opened_commit(
+    manager: KicadSessionManager, server: FakeServer, make_settings: Callable[..., Settings]
+) -> None:
+    session = await manager.open(make_project(make_settings().projects_root))
+    await _cancel_while_gated(session, server, body_reached=False)
+    assert server.dropped == [1] and server.open_commits == set()
+    async with session.commit("next"):  # no stale commit blocks the next one
+        pass
+    assert server.pushed == [(2, "next")]
+
+
+async def test_cancel_right_after_push_keeps_the_pushed_commit(
+    manager: KicadSessionManager, server: FakeServer, make_settings: Callable[..., Settings]
+) -> None:
+    session = await manager.open(make_project(make_settings().projects_root))
+    starts = server.starts
+    await _cancel_while_gated(session, server, body_reached=True)
+    assert server.pushed == [(1, "t")] and server.dropped == []
+    assert server.starts == starts  # no restart wiped the applied edits
+    assert session.jobs_stale is True and session.modified is True
+
+
+async def test_cancel_during_a_failing_drop_is_not_swallowed(
+    manager: KicadSessionManager, server: FakeServer, make_settings: Callable[..., Settings]
+) -> None:
+    session = await manager.open(make_project(make_settings().projects_root))
+    gate = threading.Event()
+    server.drop_gate, server.fail_drop = gate, True
+    task = asyncio.create_task(_failing_commit(session))
+    await asyncio.sleep(0.2)  # inside the gated (failing) drop
+    task.cancel()
+    await asyncio.sleep(0.1)
+    gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def _failing_commit(session: Any) -> None:
+    async with session.commit("t"):
+        raise RuntimeError("boom")
+
+
+async def test_library_kick_off_hang_fails_the_start(
+    make_settings: Callable[..., Settings], server: FakeServer
+) -> None:
+    server.library_load_hangs = True
+    manager = KicadSessionManager(
+        make_settings(kicad_start_timeout_s=1.0),
+        FakeLauncher(server),
+        client_factory=FakeClientFactory(server),
+    )
+    with pytest.raises(KicadUnavailable, match="symbol library load request"):
+        await manager.open(make_project(make_settings().projects_root))
+    server.release.set()
+    assert all(p.returncode is not None for p in server.processes)  # no server left
+
+
+async def test_refused_library_kick_off_is_retried_by_ensure(
+    manager: KicadSessionManager, server: FakeServer, make_settings: Callable[..., Settings]
+) -> None:
+    from copperchat.kicad_session import LibrariesLoading
+
+    server.library_load_refusals = 1
+    session = await manager.open(make_project(make_settings().projects_root))  # still opens
+    await session.ensure_symbol_libraries(timeout=5)  # asked again, now accepted
+    server.library_load_refusals = 1
+    await session.restart()
+    server.library_load_refusals = 1
+    with pytest.raises(LibrariesLoading, match="refused"):
+        await session.ensure_symbol_libraries(timeout=5)
+
+
+async def test_save_listener_cannot_reenter_the_session(
+    manager: KicadSessionManager, server: FakeServer, make_settings: Callable[..., Settings]
+) -> None:
+    errors: list[BaseException] = []
+
+    async def reentrant(project: Project, doc: str) -> None:
+        try:
+            await session.save("pcb")
+        except RuntimeError as exc:
+            errors.append(exc)
+
+    manager.add_save_listener(reentrant)
+    session = await manager.open(make_project(make_settings().projects_root))
+    await asyncio.wait_for(session.save("sch"), 5)  # no deadlock
+    assert len(errors) == 1 and "save listener" in str(errors[0])
+    assert server.saved == ["demo.kicad_sch"]

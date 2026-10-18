@@ -99,20 +99,30 @@ class CommitScope:
     generation: int  # server start the commit belongs to; a restart discards it
 
 
-async def _uncancellable[R](coro: Coroutine[Any, Any, R]) -> R:
-    """Run `coro` to completion even if the caller is cancelled meanwhile; the
-    cancellation is re-raised afterwards (a plain `shield` would return early and
-    release the commit lock while the drop still runs)."""
+async def _finish[R](coro: Coroutine[Any, Any, R]) -> tuple[R, bool]:
+    """Run `coro` to completion even if the caller is cancelled meanwhile (a plain
+    `shield` would return early - e.g. release the commit lock while a drop still runs,
+    or lose the handle of a commit KiCad has just opened). Returns the result and
+    whether a cancellation arrived; if `coro` raises after one, the cancellation wins
+    (chained), so a Stop is never swallowed."""
     task = asyncio.ensure_future(coro)
     cancelled = False
     while True:
         try:
-            result = await asyncio.shield(task)
-            break
+            return await asyncio.shield(task), cancelled
         except asyncio.CancelledError:
             if task.done():
                 raise
             cancelled = True
+        except BaseException as exc:
+            if cancelled:
+                raise asyncio.CancelledError from exc
+            raise
+
+
+async def _uncancellable[R](coro: Coroutine[Any, Any, R]) -> R:
+    """`_finish`, re-raising a cancellation that arrived meanwhile afterwards."""
+    result, cancelled = await _finish(coro)
     if cancelled:
         raise asyncio.CancelledError
     return result
@@ -181,6 +191,7 @@ class KicadSession:
         self._generation = 0  # counts successful server starts
         self._libraries_lock = asyncio.Lock()
         self._libraries_ready_generation: int | None = None
+        self._libraries_kicked_generation: int | None = None
 
     @property
     def settings(self) -> Settings:
@@ -279,20 +290,31 @@ class KicadSession:
 
     async def _kick_off_symbol_libraries(self, client: Any, remaining: float) -> None:
         """Start the background load of every symbol library (owner decision 1: symbols
-        eagerly, footprints never load-all'ed). A refused request only logs: placing parts
-        then fails with `libraries_loading` instead of the whole session. A hang fails the
-        start - the worker thread would keep using the client concurrently otherwise."""
+        eagerly, footprints never load-all'ed). A refused request only logs - the session
+        still works; `ensure_symbol_libraries` asks again. A hang fails the start: the
+        worker thread would keep using the client concurrently otherwise."""
         try:
             await asyncio.wait_for(
                 asyncio.to_thread(client.load_all_libraries, _symbol_library_type()),
                 timeout=max(1.0, remaining),
             )
+            self._libraries_kicked_generation = self._generation
         except TimeoutError as exc:
             raise KicadUnavailable(
                 "kicad-cli api-server did not answer the symbol library load request"
             ) from exc
         except Exception as exc:
             log.warning("could not start loading the symbol libraries: %s", exc)
+
+    async def _retry_library_kick_off(self, generation: int) -> None:
+        try:
+            await self.call(lambda h: h.kicad.load_all_libraries(_symbol_library_type()))
+        except KicadUnavailable:
+            raise
+        except Exception as exc:
+            raise LibrariesLoading(f"KiCad refused to load the symbol libraries: {exc}") from exc
+        if generation == self._generation:
+            self._libraries_kicked_generation = generation
 
     async def ensure_symbol_libraries(self, timeout: float = 120.0) -> None:
         """Wait until the symbol libraries started in `start()` have loaded; returns at
@@ -307,6 +329,9 @@ class KicadSession:
                 generation = self._generation
                 if self._libraries_ready_generation == generation:
                     return
+                if self._libraries_kicked_generation != generation:
+                    await self._retry_library_kick_off(generation)
+                    continue
                 if not await self.call(_symbol_libraries_loading):
                     if generation == self._generation:  # no restart in between
                         self._libraries_ready_generation = generation
@@ -458,10 +483,16 @@ class KicadSession:
         async with self._commit_lock:
             self._commit_owner = asyncio.current_task()
             try:
-                handle = await self.call(lambda h: h.schematic().begin_commit())
+                # begin/push run to completion even on a cancel: a cancel landing right
+                # after KiCad opened the commit would otherwise lose its handle (the
+                # commit stays open), one after the push would drop an applied commit.
+                handle, cancelled = await _finish(self.call(lambda h: h.schematic().begin_commit()))
                 # Read after the call: a lazy (re)start inside call() bumps it first.
                 scope = CommitScope(label, handle, self._generation)
                 self._active_scope = scope
+                if cancelled:
+                    await _uncancellable(self._drop(scope, asyncio.CancelledError()))
+                    raise asyncio.CancelledError
                 try:
                     yield scope
                 except BaseException as exc:
@@ -469,15 +500,21 @@ class KicadSession:
                     raise
                 try:
                     if dry_run:
-                        await self.call(lambda h: h.schematic().drop_commit(handle))
+                        _, cancelled = await _finish(
+                            self.call(lambda h: h.schematic().drop_commit(handle))
+                        )
                     else:
-                        await self.call(lambda h: h.schematic().push_commit(handle, label))
+                        _, cancelled = await _finish(
+                            self.call(lambda h: h.schematic().push_commit(handle, label))
+                        )
                 except BaseException as exc:
                     await _uncancellable(self._drop(scope, exc))
                     raise
                 if not dry_run:
                     self.jobs_stale = True
                     self.modified = True
+                if cancelled:
+                    raise asyncio.CancelledError
             finally:
                 self._commit_owner = None
                 self._active_scope = None

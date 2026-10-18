@@ -68,7 +68,11 @@ def make_blank(dest_root: Path) -> Path:
             client.get_board().save()
         finally:
             proc.terminate()
-            proc.wait(10)
+            try:
+                proc.wait(10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
         shutil.copyfile(TEMPLATE, work / "blank.kicad_pro")
         for name in ("ecc83-pp.kicad_sym", "sym-lib-table"):
             shutil.copyfile(ecc83 / name, work / name)

@@ -169,17 +169,18 @@ class Netlist:
         return frozenset(self.nets.values())
 
 
-def live_netlist(h: KicadHandle) -> Netlist:
+def live_netlist(h: KicadHandle, symbols: Sequence[Any] | None = None) -> Netlist:
     """KiCad's live connectivity (`GetSchematicNetlist`), resolved to symbol pins.
 
     The netlist lists members as pin KIIDs per sheet path; a pin KIID repeats in every
     instance of a shared sub-sheet, so each is resolved per (sheet path, pin KIID)
     through the placed symbols' definition pins (spike 2A, Q8: identical to
-    kicad-cli's netlist on a saved copy, without saving).
+    kicad-cli's netlist on a saved copy, without saving). `symbols`: the caller's
+    `get_symbols()` result of this same call, to avoid fetching them twice.
     """
     sch = h.schematic()
     owner: dict[tuple[str, str], PinKey] = {}
-    for sym in sch.get_symbols():
+    for sym in sch.get_symbols() if symbols is None else symbols:
         path = sheet_path_key(sym.path)
         uuid = kiid(sym)
         for pin in sym.definition.pins:
