@@ -153,3 +153,25 @@ async def test_multibyte_cut_and_pin_cap(
     out = (await tool.handler(_ctx(project, make_settings), {"lib_id": "FPGA:Big", "unit": 2})).data
     assert out is not None and len(out["pins"]) == 150 and "pins_truncated" not in out
     assert {p["unit"] for p in out["pins"]} == {2}
+
+
+async def test_failed_libraries_reach_the_tool_result(
+    project: Project, make_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from copperchat.library import specs as specs_mod
+
+    class Svc:
+        async def search_footprints_detailed(self, *_: Any) -> Any:
+            return [], {"Bad_SMD": "KiCad refused"}
+
+        async def suggest_footprint_libraries(self, query: str) -> list[str]:
+            return ["Bad_SMD"]
+
+        def loaded_footprint_libraries(self) -> list[str]:
+            return []
+
+    monkeypatch.setattr(specs_mod, "library_for", lambda session: Svc())
+    tool = next(s for s in TOOL_SPECS if s.name == "lib_search_footprints")
+    out = (await tool.handler(_ctx(project, make_settings), {"query": "0805"})).data
+    assert out is not None and out["failed_libraries"] == {"Bad_SMD": "KiCad refused"}
+    assert "retried" in out["note"]
