@@ -9,6 +9,7 @@ from typing import Any
 from copperchat.kicad_session import KicadHandle
 from copperchat.kicad_tools.edit.changeset import ChangeSet
 from copperchat.kicad_tools.edit.delete import DeletePlan, nets_changed, plan_delete
+from copperchat.kicad_tools.edit.duplicate import DUPLICATE_SPECS
 from copperchat.kicad_tools.edit.engine import _pin_labeler, apply_change_set, edit_result
 from copperchat.kicad_tools.edit.geometry import Point, same_point, snap_point
 from copperchat.kicad_tools.edit.labels import World
@@ -216,4 +217,5 @@ TOOL_SPECS: list[ToolSpec] = [
         prepare_delete,
         apply_delete,
     ),
+    *DUPLICATE_SPECS,
 ]
