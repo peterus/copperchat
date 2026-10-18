@@ -68,13 +68,15 @@ def _check_name(doc: DocKind) -> str:
     return "ERC" if doc == "sch" else "DRC"
 
 
-async def _save_copies(session: KicadSession, dest: Path) -> dict[DocKind, Path]:
-    """The open documents as KiCad holds them, plus the project files they need."""
+async def _save_copies(session: KicadSession, dest: Path, doc: DocKind) -> dict[DocKind, Path]:
+    """The documents the check of `doc` needs, as KiCad holds them, plus the project
+    files: ERC needs the schematic only, DRC the board and (schematic parity) the
+    schematic."""
     project = session.project
     copies: dict[DocKind, Path] = {}
     if project.sch_file is not None:
         copies["sch"] = await session.save_copy("sch", dest / project.sch_file.name)
-    if project.pcb_file is not None:
+    if doc == "pcb" and project.pcb_file is not None:
         copies["pcb"] = await session.save_copy("pcb", dest / project.pcb_file.name)
     root = project.dir.resolve()
     for source in (project.pro_file, *(project.dir / n for n in PROJECT_SUPPORT_FILES)):
@@ -94,7 +96,7 @@ async def run_kicad_check(session: KicadSession, doc: DocKind, settings: Setting
             "Run the check for the document the project has",
         )
     with tempfile.TemporaryDirectory(prefix="cc-check-") as tmp:
-        copies = await _save_copies(session, Path(tmp))
+        copies = await _save_copies(session, Path(tmp), doc)
         return await run_kicad_check_on_dir(
             settings, session.project, copies[doc], doc, parity="sch" in copies
         )
@@ -184,6 +186,20 @@ async def cached_violations(session: KicadSession, doc: DocKind) -> list[dict[st
                 del cache[stale]
             cache[key] = await check_violations(session, doc)
         return cache[key]
+
+
+def seed_marker_cache(
+    session: KicadSession, doc: DocKind, violations: list[dict[str, Any]]
+) -> None:
+    """Store a check of the current document state (e.g. the turn-end ERC, run after
+    the turn's view publish) for the render markers, so the next render does not run
+    the same check again. Only call it for a report of the state at the current
+    view version."""
+    key = (doc, session.view_version, session.restart_count)
+    cache = _MARKER_CACHE.setdefault(session, {})
+    for stale in [k for k in cache if k[1:] != key[1:]]:
+        del cache[stale]
+    cache[key] = violations
 
 
 async def check_violations(session: KicadSession, doc: DocKind) -> list[dict[str, Any]]:

@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, ConfigDict
 
-from copperchat.changes.diff import diff_against_snapshot
+from copperchat.changes.diff import cached_diff
 from copperchat.changes.repo import ChangeEntry
 from copperchat.db.repos.editing_settings import EditingSettings, EditingSettingsRepo
 from copperchat.editing.service import EditingService
@@ -183,7 +183,7 @@ async def changes_diff(
     # 400 invalid id / 404 unknown snapshot / 503 project not open in KiCad.
     snap = await history.store(project).get(snapshotId)
     log = await editing.changes.since(project.id, snap.created_at)
-    diff = await diff_against_snapshot(history, project, snap, log)
+    diff = await cached_diff(history, project, snap, log)
     return {
         "snapshotId": snap.id,
         "count": diff["count"],

@@ -194,3 +194,38 @@ async def diff_against_snapshot(
     """Compact diff of `snapshot` -> current design; `log`: the change rows written
     since the snapshot (entries without one are marked `side_effect`)."""
     return compact_diff(await run_sch_diff(svc, project, snapshot), log)
+
+
+# One diff per project at a time (each spawns kicad-cli on two project copies) and the
+# last result per project, reused while nothing changed: same snapshot, same session
+# state (view version / restarts: reloads, restores, turn-end publishes) and no new
+# change row (every edit tool writes rows).
+_DIFF_LOCKS: dict[str, asyncio.Lock] = {}
+_DIFF_CACHE: dict[str, tuple[tuple[Any, ...], dict[str, Any]]] = {}
+
+
+async def cached_diff(
+    svc: HistoryService,
+    project: Project,
+    snapshot: Snapshot,
+    log: list[ChangeEntry],
+) -> dict[str, Any]:
+    session = svc.open_session(project)
+    if session is None:
+        raise KicadUnavailable("the project is not open in KiCad")
+    lock = _DIFF_LOCKS.setdefault(project.id, asyncio.Lock())
+    async with lock:
+        key = (
+            snapshot.id,
+            id(session),
+            session.view_version,
+            session.restart_count,
+            max((e.id or 0 for e in log), default=0),
+            len(log),
+        )
+        hit = _DIFF_CACHE.get(project.id)
+        if hit is not None and hit[0] == key:
+            return hit[1]
+        result = await diff_against_snapshot(svc, project, snapshot, log)
+        _DIFF_CACHE[project.id] = (key, result)
+        return result

@@ -3,12 +3,14 @@ turn (E8a, spec §5.1 / §8.3). E8b adds the plan pause/turn handling."""
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import TYPE_CHECKING, Any
 
 from copperchat.agent.engine import RunHooks, TurnInfo, TurnOutcome
 from copperchat.changes import erc
 from copperchat.editing.state import EditTurnState
+from copperchat.kicad_tools import checks
 from copperchat.projects import Project
 
 if TYPE_CHECKING:
@@ -17,6 +19,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 _NOTE_LIMIT = 5  # new errors named in the agent note
+_DESC_CHARS = 120  # the description quotes design text (labels, nets): data, capped
 
 
 def _plural(n: int, word: str) -> str:
@@ -24,7 +27,8 @@ def _plural(n: int, word: str) -> str:
 
 
 def _brief(v: dict[str, Any]) -> str:
-    return f"{v.get('type')} ({v.get('description', '')}, id {v.get('id')})"
+    desc = " ".join(str(v.get("description", "")).split())[:_DESC_CHARS]
+    return f"{v.get('type')} (id {v.get('id')}, kicad-cli says: {json.dumps(desc)})"
 
 
 class EditingHooks(RunHooks):
@@ -67,7 +71,12 @@ class EditingHooks(RunHooks):
             return
         try:
             baseline = await erc.erc_baseline(history, self.project, snap)
+            fresh = erc.erc_is_fresh(state)
             current = await erc.current_erc(session, state)
+            if not fresh:
+                # Run after HistoryHooks published this turn's view: the render
+                # markers of the same state reuse it instead of a second ERC run.
+                checks.seed_marker_cache(session, "sch", current)
             delta = erc.erc_delta(baseline, current)
             rid = await self.svc.erc_results.add(
                 self.project.id, turn.run_id, state.active_step_id, snap.id, delta

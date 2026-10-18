@@ -223,6 +223,11 @@ async def test_diff_cross_checks_change_log(ecc83_session: KicadSession, edit_db
     out, is_error = await call_tool(ctx, "sch_add_wire", points=_l_route(pa["at_mm"], pb["at_mm"]))
     assert not is_error, out
     value_uuid = await _value_update(s, ctx)
+    # A change no tool logged (like KiCad's own cleanup): must come out as a side effect.
+    from tests.support.edit import free_area
+
+    fx, fy = await s.call(lambda h: free_area(h, 7.62, 12.7))
+    unlogged = await place_raw(s, "Device:R", (fx + 2.54, fy + 5.08), "R903")
     log = await ctx.editing.changes.since(s.project.id, snap.created_at)  # type: ignore[union-attr]
     own = [e for e in log if not e.side_effect]
     assert {e.uuid for e in own} >= {value_uuid, *(c["uuid"] for c in out["created"])}
@@ -241,6 +246,8 @@ async def test_diff_cross_checks_change_log(ecc83_session: KicadSession, edit_db
         )
         if e["uuid"] not in logged:
             assert e["side_effect"] is True
+    assert unlogged not in logged
+    assert [e["side_effect"] for e in entries if e["uuid"] == unlogged] == [True]
     value = next(e for e in entries if e["uuid"] == value_uuid)
     assert value["kind"] == "modified" and value["box_mm"] is not None
     assert any(p["name"] == "Value" for p in value["properties"])

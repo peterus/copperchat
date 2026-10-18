@@ -84,13 +84,16 @@ async def test_turn_scope_lists_this_run_only(editing: EditingService) -> None:
 
 
 async def test_step_scope_needs_active_step(editing: EditingService) -> None:
-    await editing.changes.add_many([entry("run-1", "a", "s1"), entry("run-1", "b")])
+    await editing.changes.add_many(
+        [entry("run-0", "early", "s1"), entry("run-1", "a", "s1"), entry("run-1", "b")]
+    )
     with pytest.raises(StructuredToolError) as err:
         await call(Ctx(editing), scope="step")
     assert err.value.code == "not_found"
     editing.turn("p1", "run-1").active_step_id = "s1"
     data = await call(Ctx(editing), scope="step")
-    assert [c["uuid"] for c in data["changes"]] == ["a"]
+    # A paused step resumed in a new run: its earlier run's rows belong to it too.
+    assert [c["uuid"] for c in data["changes"]] == ["early", "a"]
 
 
 async def test_plan_scope_lists_every_step_of_the_open_plan(editing: EditingService) -> None:

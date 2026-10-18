@@ -101,6 +101,8 @@ async def test_take_step_checkpoint_saves_first(
 
     monkeypatch.setattr(HistoryStore, "snapshot", recording_snapshot)
     # The fake session's save never fires the manager's listeners: hook them in here.
+    # Out of scope here: the listener itself (E1, tests/kicad/test_history_real.py); this
+    # test checks that the checkpoint saves through the session before the snapshot.
     real_save = type(opened.session).save
 
     async def save_and_record(self: Any, doc: Any) -> None:
@@ -172,3 +174,40 @@ async def test_auto_restore_prefers_last_step_checkpoint(opened: Opened) -> None
     text, meta = env.engine.notices[-1]
     assert meta == {"action": "restored", "snapshotId": cp.id}
     assert "plan step" in text
+
+
+async def test_prune_drops_step_only_runs_older_than_kept_turns(
+    db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(store_mod, "HISTORY_KEEP", 2)
+    store = HistoryStore(db, copy_project(ECC83, tmp_path / "projects"))
+    old_step = (await store.snapshot("run-s", "s", kind="step", plan_step_id="a")).id
+    await store.snapshot("run-0", "t0")
+    kept_turn = (await store.snapshot("run-1", "t1")).id
+    # A step-only run newer than the oldest kept turn snapshot stays.
+    newer_step = (await store.snapshot("run-n", "s", kind="step", plan_step_id="b")).id
+    last = (await store.snapshot("run-2", "t2")).id
+    listed = {s.id for s in await store.list()}
+    assert listed == {kept_turn, newer_step, last}
+    assert old_step not in listed
+
+
+async def test_failed_checkpoint_restore_falls_back_to_turn_snapshot(
+    opened: Opened, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env, project = opened.env, opened.project
+    assert project.pcb_file is not None
+    before = compute_hashes(project)
+    t = turn("run-fb")
+    await opened.hooks.on_turn_start(t)
+    await opened.hooks.on_first_mutation(t)
+    cp = await take_step_checkpoint(env.svc, project, "run-fb", "step-1", "Step 1")
+    (env.svc.store(project).snapshot_dir(cp.id) / "manifest.json").write_text("{}")  # corrupt
+    replace_with_kicad_file(project.pcb_file, other_board())
+    await opened.hooks.on_turn_end(t, inconsistent("pcb", auto_restore=True))
+    snap = await env.svc.store(project).latest_for_run("run-fb")
+    assert snap is not None
+    assert compute_hashes(project) == before
+    [(text, meta)] = env.engine.errors
+    assert "end of the last finished plan step" in text and meta == {"code": "restore_failed"}
+    assert env.engine.notices[-1][1] == {"action": "restored", "snapshotId": snap.id}

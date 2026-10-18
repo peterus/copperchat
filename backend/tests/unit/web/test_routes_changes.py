@@ -120,6 +120,7 @@ def test_runs_entries_and_erc_result(ctx: Ctx) -> None:
 
 def test_diff_route_shape_and_side_effects(ctx: Ctx, monkeypatch: pytest.MonkeyPatch) -> None:
     c, editing = ctx.client, ctx.app.state.editing
+    assert c.post(f"/api/projects/{ctx.pid}/open").status_code == 200
     store = ctx.app.state.history.store(ctx.project)
     snap = ctx.call(store.snapshot, "run-1", "turn one")
     ctx.call(editing.changes.add_many, [ctx.entry("run-1", U_WIRE)])
@@ -166,6 +167,22 @@ def test_diff_route_shape_and_side_effects(ctx: Ctx, monkeypatch: pytest.MonkeyP
     }
     assert modified["sideEffect"] is True  # no tool logged it: KiCad's cleanup
     assert modified["properties"] == [{"name": "End X", "before": {"v": 1}, "after": {"v": 2}}]
+    # Unchanged design: the cached diff is reused (no second kicad-cli run) ...
+    url = f"/api/projects/{ctx.pid}/changes/diff"
+    assert c.get(url, params={"snapshotId": snap.id}).json() == body
+    assert seen == [snap.id]
+    # ... until an edit writes a change row.
+    ctx.call(editing.changes.add_many, [ctx.entry("run-1", U_MERGED, op="modify")])
+    again = c.get(url, params={"snapshotId": snap.id}).json()
+    assert seen == [snap.id, snap.id]
+    assert again["sheets"][ROOT][1]["sideEffect"] is False  # now logged
+
+
+def test_diff_needs_the_open_project(ctx: Ctx) -> None:
+    store = ctx.app.state.history.store(ctx.project)
+    snap = ctx.call(store.snapshot, "run-1", "turn one")
+    r = ctx.client.get(f"/api/projects/{ctx.pid}/changes/diff", params={"snapshotId": snap.id})
+    assert r.status_code == 503
 
 
 def test_unknown_snapshot_and_result_are_404(ctx: Ctx) -> None:

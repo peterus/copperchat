@@ -158,9 +158,10 @@ class HistoryHooks(RunHooks):
         if outcome.auto_restore:
             # Owner decision 4: the run's last step checkpoint (keeps finished plan
             # steps), else the turn snapshot.
-            target = await store.latest_step_checkpoint(turn.run_id) or snap
-            if target is not None and await self._auto_restore(target):
-                return
+            checkpoint = await store.latest_step_checkpoint(turn.run_id)
+            for target in (checkpoint, snap):  # a failed checkpoint falls back to the turn
+                if target is not None and await self._auto_restore(target):
+                    return
         if session is not None and self.svc.open_session(self.project) is session:
             try:
                 await self.svc.sessions.reopen(self.project)
@@ -193,7 +194,7 @@ class HistoryHooks(RunHooks):
         except Exception as exc:
             log.warning("auto-restore of snapshot %s failed: %s", snap.id, exc)
             await self.engine.post_error(
-                "Restoring the design to its state before this turn failed; restore the "
+                f"Restoring the design to its state {state} failed; restore the "
                 "snapshot from the History panel.",
                 {"code": "restore_failed"},
             )

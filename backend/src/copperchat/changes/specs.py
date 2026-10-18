@@ -65,7 +65,8 @@ async def _sch_changes(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         step = ctx.editing.turn(ctx.project.id, ctx.run_id).active_step_id
         if step is None:
             raise _unavailable("no plan step is active", "Use scope='turn' outside a plan step")
-        entries = await repo.for_run(ctx.project.id, ctx.run_id, step)
+        # Every run of the step: a paused step resumes in a new run (spec §6).
+        entries = await repo.for_steps(ctx.project.id, [step])
     else:
         steps = await _open_plan_steps(ctx)
         if not steps:
@@ -89,7 +90,8 @@ TOOL_SPECS = [
         "List what the editing tools changed in the schematic (the change log): per item "
         "op (add/modify/delete), kind, uuid, ref, net, sheet and before/after values, "
         "incl. KiCad's own cleanup (side_effect: true). scope: 'turn' (this turn, "
-        "default), 'step' (the active plan step) or 'plan' (every step of the open plan).",
+        "default), 'step' (the active plan step, all its runs) or 'plan' (every step of "
+        "the open plan).",
         {
             "type": "object",
             "properties": {"scope": {"type": "string", "enum": list(SCOPES)}},
