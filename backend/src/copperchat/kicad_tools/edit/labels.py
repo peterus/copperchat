@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import itertools
 import re
+import time
 import uuid as uuidlib
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
@@ -43,7 +44,7 @@ from copperchat.kicad_tools.edit.geometry import (
     same_point,
     snap_point,
 )
-from copperchat.kicad_tools.edit.router import needed_junctions, route_problems
+from copperchat.kicad_tools.edit.router import Obstacles, needed_junctions
 from copperchat.kicad_tools.edit.scene import (
     LabelInfo,
     Scene,
@@ -62,6 +63,8 @@ Dir = tuple[int, int]
 DIRS: dict[str, Dir] = {"left": (-1, 0), "right": (1, 0), "up": (0, -1), "down": (0, 1)}
 ALL_DIRS: tuple[Dir, ...] = ((1, 0), (-1, 0), (0, -1), (0, 1))
 STUB_LENGTHS = (2.54, 5.08, 7.62)
+MAX_ANCHORS = 16  # wire-chain points tried per pin
+PLAN_BUDGET_S = 12.0  # wall time for planning one call (well below the session timeout)
 NET_NAME_RE = re.compile(r"^[A-Za-z0-9_+\-.~#()]{1,64}$")
 # Supply-like names that are rails even when no power symbol of that name is known.
 RAIL_RE = re.compile(
@@ -198,8 +201,62 @@ class World:
         for (path, uid), net in nets.items():
             self.item_nets.setdefault(path, {})[uid] = net
         self.sheets: dict[str, SheetRef] = {r.path: r for r in sheet_refs(h)}
+        self.known: set[PinKey] = {k for keys in self.netlist.nets.values() for k in keys}
         self._scenes: dict[str, Scene] = {}
         self._fake = itertools.count()
+        # Planning runs inside one session.call (kicad_api_timeout_s): it stops early.
+        self.deadline = time.monotonic() + PLAN_BUDGET_S
+
+    def instances(self, sheet: SheetRef) -> list[SheetRef]:
+        """Every instance of `sheet`'s file: an edit in a shared sheet file shows in all
+        of them, so connectivity changes in each."""
+        return [r for r in self.sheets.values() if r.file == sheet.file] or [sheet]
+
+    def replicate(self, keys: Iterable[PinKey], sheet: SheetRef) -> list[frozenset[PinKey]]:
+        """One group per instance of `sheet`'s file: keys on `sheet` moved to each
+        instance; keys on other sheets stay."""
+        keys = list(keys)
+        out = []
+        for inst in self.instances(sheet):
+            group = {(inst.path, u, n) if p == sheet.path else (p, u, n) for p, u, n in keys}
+            if inst.path != sheet.path:  # a symbol placed through one instance has no
+                group &= self.known  # pins in the others (pinned KiCad): only real ones
+            out.append(frozenset(group))
+        return out
+
+    def sheet_pin_nets(self, sheet: SheetRef, text: str) -> set[str]:
+        """Nets on the parent sheet at the sheet pin named `text` of this sheet instance
+        (a hierarchical label of that name joins them)."""
+        from copperchat.kicad_tools import access
+        from copperchat.kicad_tools.edit.geometry import mm_point
+        from copperchat.kicad_tools.edit.scene import sheet_api
+
+        parent_path, _, symbol_uuid = sheet.path.rpartition("/")
+        parent = self.sheets.get(parent_path)
+        if parent is None:
+            return set()
+        out: set[str] = set()
+        for symbol in sheet_api(self.h, parent).get_sheet_symbols():
+            if access.kiid(symbol) != symbol_uuid:
+                continue
+            for pin in symbol.pins:
+                if str(pin.text.value) != text:
+                    continue
+                net = self.nets(parent).get(access.kiid(pin))
+                if net is not None:
+                    out.add(net)
+                else:
+                    out |= touched_at(self, parent, mm_point(pin.position))[0]
+        return out
+
+    def check_time(self, tool: str) -> None:
+        if time.monotonic() > self.deadline:
+            raise StructuredToolError(
+                f"{tool}: planning took too long",
+                f"no clean position was found within {PLAN_BUDGET_S:g} s on this sheet",
+                "Call it for fewer pins at a time, or give the parts more free room.",
+                code="overlap",
+            )
 
     def scene(self, sheet: SheetRef) -> Scene:
         if sheet.path not in self._scenes:
@@ -297,7 +354,7 @@ def anchors(scene: Scene, pin: PinEnd) -> list[tuple[Point, list[Dir]]]:
     the directions no wire leaves it in."""
     pts: list[Point] = [pin.at]
     frontier = [pin.at]
-    while frontier and len(pts) < 64:
+    while frontier and len(pts) < 4 * MAX_ANCHORS:
         q = frontier.pop()
         for w in scene.wires.values():
             for x, y in ((w.start, w.end), (w.end, w.start)):
@@ -308,7 +365,7 @@ def anchors(scene: Scene, pin: PinEnd) -> list[tuple[Point, list[Dir]]]:
         key=lambda z: (not same_point(z, pin.at), abs(z[0] - pin.at[0]) + abs(z[1] - pin.at[1]))
     )
     out: list[tuple[Point, list[Dir]]] = []
-    for q in pts:
+    for q in pts[:MAX_ANCHORS]:
         used: set[Dir] = set()
         for w in scene.wires.values():
             for x, y in ((w.start, w.end), (w.end, w.start)):
@@ -329,30 +386,32 @@ def anchors(scene: Scene, pin: PinEnd) -> list[tuple[Point, list[Dir]]]:
     return out
 
 
-def _obstacles(scene: Scene) -> list[Box]:
-    """What new text and power symbols must not cover: symbol bodies (no margin), field
-    boxes, sheet symbols and existing label texts."""
-    out: list[Box] = []
-    for s in scene.symbols.values():
-        out.append(s.body)
-        out.extend(s.fields)
-    out.extend(scene.sheets.values())
-    for lb in scene.labels.values():
-        out.append(label_box(lb.at, lb.text, _SPIN_DIR.get(lb.spin, (1, 0)), lb.kind))
-    return out
+class Clearance:
+    """What new text and power symbols must not cover, read once per planned target:
+    symbol bodies (no margin), field boxes, sheet symbols, label texts, connection
+    points and wires."""
 
+    def __init__(self, scene: Scene) -> None:
+        self.boxes: list[Box] = []
+        for s in scene.symbols.values():
+            self.boxes.append(s.body)
+            self.boxes.extend(s.fields)
+        self.boxes.extend(scene.sheets.values())
+        for lb in scene.labels.values():
+            self.boxes.append(label_box(lb.at, lb.text, _SPIN_DIR.get(lb.spin, (1, 0)), lb.kind))
+        self.points = [p.at for p in scene.all_pins()] + [lb.at for lb in scene.labels.values()]
+        self.points += list(scene.junctions.values()) + list(scene.no_connects.values())
+        self.wires = [(w.start, w.end) for w in scene.wires.values()]
 
-def _box_clear(scene: Scene, box: Box, ignore: Iterable[Point] = ()) -> bool:
-    """`box` overlaps no obstacle, holds no connection point and no wire enters it."""
-    if any(box.overlaps(b) for b in _obstacles(scene)):
-        return False
-    skip = list(ignore)
-    pts = [p.at for p in scene.all_pins()] + [lb.at for lb in scene.labels.values()]
-    pts += list(scene.junctions.values()) + list(scene.no_connects.values())
-    for p in pts:
-        if box.contains(p) and not any(same_point(p, s) for s in skip):
+    def clear(self, box: Box, ignore: Iterable[Point] = ()) -> bool:
+        """`box` overlaps no obstacle, holds no connection point and no wire enters it."""
+        if any(box.overlaps(b) for b in self.boxes):
             return False
-    return not any(box.hit_by_segment(w.start, w.end) for w in scene.wires.values())
+        skip = list(ignore)
+        for p in self.points:
+            if box.contains(p) and not any(same_point(p, s) for s in skip):
+                return False
+        return not any(box.hit_by_segment(a, b) for a, b in self.wires)
 
 
 # -- labels -----------------------------------------------------------------------------
@@ -379,31 +438,28 @@ def plan_label(
     net = world.net(pin)
     owner = world.owner(pin)
     item_kind = _KIND_ITEM[kind]
+    room = Clearance(scene)
     if not on_grid(pin.at):  # an off-grid pin end: the label sits on it, no stub
         d = DIRS[pin.direction]
-        if scene.items_at(pin.at) and len(scene.items_at(pin.at)) > 1:
+        if len(scene.items_at(pin.at)) > 1:
             return None
-        if not _box_clear(scene, label_box(pin.at, text, d, item_kind), ignore=[pin.at]):
+        if not room.clear(label_box(pin.at, text, d, item_kind), ignore=[pin.at]):
             return None
         world.add_label(sheet, text, pin.at, item_kind, d, net)
         return LabelPlan(pin, sheet, [make_label(text, pin.at, d, kind)], pin.at, [pin.at])
+    obstacles = Obstacles(scene, world.netlist, allowed, nets)
     for q, dirs in anchors(scene, pin):
+        world.check_time("sch_add_label")
         at_pin = same_point(q, pin.at)
         for d in dirs:
             for length in STUB_LENGTHS:
                 end = snap_point((q[0] + d[0] * length, q[1] + d[1] * length))
-                if route_problems(
-                    [q, end],
-                    scene,
-                    world.netlist,
-                    allowed,
-                    item_nets=nets,
-                    own_symbols=(owner.uuid if at_pin else None, None),
-                ):
+                own = (owner.uuid if at_pin else None, None)
+                if obstacles.problems([q, end], own, first_only=True):
                     continue
                 if scene.items_at(end):
                     continue
-                if not _box_clear(scene, label_box(end, text, d, item_kind), ignore=[end]):
+                if not room.clear(label_box(end, text, d, item_kind), ignore=[end]):
                     continue
                 junctions = needed_junctions([q, end], scene)
                 items = [make_wire(q, end), make_label(text, end, d, kind)]
@@ -447,6 +503,8 @@ def same_name_nets(world: World, text: str, kind: LabelKind, sheet: SheetRef) ->
     local = f"{sheet.human_path}{text}" if sheet.human_path.endswith("/") else text
     if local in world.netlist.nets:
         out.add(local)
+    if kind == "hierarchical":
+        out |= world.sheet_pin_nets(sheet, text)
     return out
 
 
@@ -457,14 +515,9 @@ async def is_rail(ctx: Any, world_values: set[str], net: str) -> bool:
         return True
     from copperchat.library.service import library_for
 
-    svc = library_for(ctx.session)
-    if svc.state != "ready":
-        return False
-    try:
-        detail = await svc.get_symbol(f"power:{net}")
-    except StructuredToolError:
-        return False
-    return bool(detail.is_power)
+    # every symbol of KiCad's 'power' library is a power symbol (an index lookup, no
+    # library read per call)
+    return library_for(ctx.session).has_symbol(f"power:{net}")
 
 
 def refuse_rail_label(net: str, tool: str) -> StructuredToolError:
@@ -497,15 +550,15 @@ def label_merges(
     design for global ones, each with the existing nets of the same name."""
     groups: dict[str, set[PinKey]] = {}
     for plan in plans:
-        scope = "*" if kind == "global" else plan.sheet.path
-        group = groups.setdefault(scope, set())
-        group.add(plan.pin.key)
-        for net in same_name_nets(world, text, kind, plan.sheet):
-            members = sorted(world.members(net))
-            if members:
-                group.add(members[0])
-        for key in sorted(world.members(world.net(plan.pin)))[:1]:
-            group.add(key)
+        insts = world.instances(plan.sheet)  # a shared sheet file: every instance
+        for inst, keys in zip(insts, world.replicate([plan.pin.key], plan.sheet), strict=True):
+            if not keys:
+                continue
+            scope = "*" if kind == "global" else inst.path
+            group = groups.setdefault(scope, set())
+            group |= keys
+            for net in same_name_nets(world, text, kind, inst):
+                group |= set(sorted(world.members(net))[:1])
     return [frozenset(g) for g in groups.values() if len(g) > 1]
 
 
@@ -590,21 +643,18 @@ def plan_power(
     nets = world.nets(sheet)
     owner = world.owner(pin)
     net = world.net(pin)
-    for pts, pin_at, rot in _power_candidates(scene, pin, sym.body_dir):
+    obstacles = Obstacles(scene, world.netlist, allowed, nets)
+    room = Clearance(scene)
+    for n, (pts, pin_at, rot) in enumerate(_power_candidates(scene, pin, sym.body_dir)):
+        if n % 16 == 0:
+            world.check_time("sch_add_power")
         at_pin = same_point(pts[0], pin.at)
-        if route_problems(
-            pts,
-            scene,
-            world.netlist,
-            allowed,
-            item_nets=nets,
-            own_symbols=(owner.uuid if at_pin else None, None),
-        ):
+        if obstacles.problems(pts, (owner.uuid if at_pin else None, None), first_only=True):
             continue
         if scene.items_at(pin_at):
             continue
         box = power_box(sym, pin_at, rot)
-        if not _box_clear(scene, box.grow(0.3), ignore=[pin_at]):
+        if not room.clear(box.grow(0.3), ignore=[pin_at]):
             continue
         if any(box.grow(0.3).hit_by_segment(a, b) for a, b in itertools.pairwise(pts[:-1])):
             continue
@@ -758,11 +808,12 @@ def labels_change_set(
     notes: list[str] = []
     for p in pins:
         net = world.net(p)
-        if is_named(net) and base_name(net) == text:  # type: ignore[arg-type]
+        sheet = world.sheet_of(p)
+        joined = same_name_nets(world, text, kind, sheet)
+        if net is not None and net in joined:  # the net a new label would join anyway
             notes.append(f"{p.label} is already on net {net}; nothing added there")
             continue
-        sheet = world.sheet_of(p)
-        allowed = {n for n in (net,) if n is not None} | same_name_nets(world, text, kind, sheet)
+        allowed = {n for n in (net,) if n is not None} | joined
         plan = plan_label(world, p, text, kind, allowed)
         if plan is None:
             raise no_room(tool, p, "a label", len(plans))
@@ -907,13 +958,22 @@ def power_change_set(
         Place(sym.lib_id, pl.at, pl.rotation, 1, pl.reference, sheet=pl.sheet) for pl in plans
     ]
     intent = NetIntent()
+    # (plan index, instance path) -> merge group index; a rail is one global group
+    slot: dict[tuple[int, str], int] = {}
     if not sym.flag:
-        group: set[PinKey] = {pl.pin.key for pl in plans}
-        group |= set(sorted(world.members(net))[:1])
+        group: set[PinKey] = set(sorted(world.members(net))[:1])
+        for pl in plans:
+            for keys in world.replicate([pl.pin.key], pl.sheet):
+                group |= keys
+                intent.names.update({k: net for k in keys})
         intent.merge = [frozenset(group)]
-        intent.names = {pl.pin.key: net for pl in plans}
     else:
-        intent.merge = [frozenset({pl.pin.key}) for pl in plans]
+        for i, pl in enumerate(plans):
+            for inst, keys in zip(
+                world.instances(pl.sheet), world.replicate([pl.pin.key], pl.sheet), strict=True
+            ):
+                slot[(i, inst.path)] = len(intent.merge)
+                intent.merge.append(keys)  # empty for an instance without the pin
     cs = ChangeSet(
         tool=tool,
         sheet=first,
@@ -944,13 +1004,14 @@ def power_change_set(
             if placed_sym.value != sym.value or (not sym.flag and placed_sym.value != net):
                 placed_sym.value = net if not sym.flag else sym.value
             ops.append(Update([placed_sym], sheet=pl.sheet))
-            keys = {
-                (sheet_path_key(placed_sym.path), kiid(placed_sym), pe.number)
-                for pe in pin_ends(placed_sym)
-            }
-            idx = 0 if not sym.flag else i
-            groups[idx] = groups[idx] | keys
-        intent.merge = groups  # verification runs after the last stage
+            placed_path = sheet_path_key(placed_sym.path)
+            own = [(placed_path, kiid(placed_sym), pe.number) for pe in pin_ends(placed_sym)]
+            for inst, keys in zip(
+                world.instances(pl.sheet), world.replicate(own, pl.sheet), strict=True
+            ):
+                idx = 0 if not sym.flag else slot[(i, inst.path)]
+                groups[idx] = groups[idx] | keys
+        intent.merge = [g for g in groups if g]  # verification runs after the last stage
         return ops
 
     cs.stages = [

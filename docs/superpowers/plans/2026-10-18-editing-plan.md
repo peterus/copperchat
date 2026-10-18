@@ -442,7 +442,14 @@ Error codes (`StructuredToolError.code`): `read_only`, `plan_required`,
   label (the sheet pin must be renamed with it) and any name already in use; `sch_reroute`
   refuses a route with a T-join or pin on its interior and keeps both ends. Code:
   `edit/{router,labels,connect,specs_connect}.py`; test helper
-  `tests/kicad/edit/connect_support.py`.
+  `tests/kicad/edit/connect_support.py`. Review round 1: route checks use an indexed
+  `router.Obstacles` (first-problem exit) and every prepare stops after
+  `labels.PLAN_BUDGET_S` = 12 s (it runs inside one `session.call`); an edit in a sheet
+  file shared by several instances is verified in each instance (`World.replicate`; a
+  symbol placed through one instance has no pins in the others at the pinned commit);
+  hierarchical labels join the net at the parent's sheet pin of that name; a pin-shaped
+  `to` (`R9.1`) is always a pin; `LibraryService.has_symbol(lib_id)` (index lookup) backs
+  the rail check.
 
 ### E-C5. Editing state and gate — `copperchat.editing` (E2; E8b supplies `PlanGate`)
 

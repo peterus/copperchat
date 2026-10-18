@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+import time
 
 from copperchat.kicad_tools.access import Netlist, PinKey
 from copperchat.kicad_tools.edit.changeset import SheetRef
@@ -12,8 +13,9 @@ from copperchat.kicad_tools.edit.router import (
     needed_junctions,
     route,
     route_problems,
+    simplify,
 )
-from copperchat.kicad_tools.edit.scene import Scene, SymbolInfo, WireInfo
+from copperchat.kicad_tools.edit.scene import LabelInfo, Scene, SymbolInfo, WireInfo
 
 SHEET = SheetRef(path="/root", page="1", file="t.kicad_sch", name="", human_path="/")
 
@@ -242,3 +244,71 @@ def test_off_grid_pin_is_not_routed() -> None:
     a = w.part("ua", "R1", Box(0, 9, 10.2, 11.3), [("1", (10.2, 10.16), "right")])[0]
     b = _resistor_h(w, "ub", "R2", 30.48, 10.16)[0]
     assert route(a, b, w.scene, w.netlist, allowed_nets=w.allowed(a, b)) is None
+
+
+def test_needed_junctions() -> None:
+    w = World()
+    a = _resistor_h(w, "ua", "R1", 2.54, 10.16)[1]  # (10.16, 10.16)
+    w.wire("w1", a.at, (10.16, 20.32), "N")  # a wire already leaves the pin
+    # pin + existing wire + new wire meet at the pin end
+    assert needed_junctions([a.at, (20.32, 10.16)], w.scene) == [a.at]
+    # a route ending on a wire interior (T)
+    assert needed_junctions([(5.08, 15.24), (10.16, 15.24)], w.scene) == [(10.16, 15.24)]
+    # a plain corner of the new route is no junction
+    assert needed_junctions([(30.48, 30.48), (35.56, 30.48), (35.56, 35.56)], w.scene) == []
+    w.scene.junctions["j1"] = a.at  # an existing junction is not added twice
+    assert needed_junctions([a.at, (20.32, 10.16)], w.scene) == []
+
+
+def test_simplify() -> None:
+    assert simplify([(0, 0), (0, 0), (5.08, 0), (10.16, 0)]) == [(0, 0), (10.16, 0)]
+    assert simplify([(0, 0), (10.16, 0), (5.08, 0)]) == []  # reverses on itself
+
+
+def test_route_problems_foreign_points_and_own_body() -> None:
+    w = World()
+    a = _resistor_h(w, "ua", "R1", 2.54, 10.16)[1]
+    b = _resistor_h(w, "ub", "R2", 40.64, 10.16)[0]
+    allowed = w.allowed(a, b)
+    path = [a.at, b.at]
+    scene = w.scene
+    scene.labels["l1"] = LabelInfo("l1", "OTHER", (15.24, 10.16), "label")
+    w.item_nets["l1"] = "OTHER"
+    scene.junctions["j1"] = (20.32, 10.16)
+    w.item_nets["j1"] = "OTHER"
+    scene.no_connects["n1"] = (25.4, 10.16)
+    problems = route_problems(path, scene, w.netlist, allowed, item_nets=w.item_nets)
+    assert any("label OTHER" in p for p in problems)
+    assert any("junction" in p for p in problems)
+    assert any("no-connect" in p for p in problems)
+    w.item_nets["l1"] = w.netlist.net_of(a.key) or ""  # a label of our own net: a contact
+    problems = route_problems(path, scene, w.netlist, allowed, item_nets=w.item_nets)
+    assert not any("label" in p for p in problems)
+    # a segment running into the pin's own body is exempt only for that symbol
+    inward = [(10.16, 10.16), (5.08, 10.16)]
+    assert route_problems(inward, scene, w.netlist, allowed, item_nets=w.item_nets)
+    assert not route_problems(
+        inward, scene, w.netlist, allowed, item_nets=w.item_nets, own_symbols=("ua", None)
+    )
+
+
+def test_route_search_stays_fast_on_a_large_blocked_sheet() -> None:
+    w = World()
+    a = _resistor_h(w, "ua", "R1", 2.54, 10.16)[1]
+    for i in range(400):
+        x, y = 20 + (i % 20) * 12.7, 20 + (i // 20) * 12.7
+        w.part(f"p{i}", f"J{i}", Box(x, y, x + 2.54, y + 2.54), [("1", (x, y), "up")])
+    for i in range(500):
+        w.wire(f"w{i}", (15.24, 30 + i * 1.27), (300.0, 30 + i * 1.27), f"N{i}")
+    w.part("cage", "U0", Box(10.8, 0, 13.0, 20.32), [])  # a's corridor is walled in
+    started = time.monotonic()
+    for k in range(12):
+        x = 200 + k * 2.54
+        w.wire(f"t{k}", (x, 0), (x, 300.0), "T")
+        target = WireTarget(f"t{k}", (x, 0), (x, 300.0), "T")
+        allowed = w.allowed(a, extra=("T",))
+        route(a, target, w.scene, w.netlist, allowed_nets=allowed, item_nets=w.item_nets)
+    assert time.monotonic() - started < 5.0
+    # a deadline in the past stops the search at once
+    t = WireTarget("t0", (200.0, 0), (200.0, 300.0), "T")
+    assert route(a, t, w.scene, w.netlist, allowed_nets={"T"}, deadline=0.0) is None

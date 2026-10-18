@@ -13,13 +13,17 @@ of them within a window around both ends.
 from __future__ import annotations
 
 import itertools
-from collections.abc import Iterable, Mapping, Sequence
+import math
+import time
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from copperchat.kicad_tools.access import Netlist
 from copperchat.kicad_tools.edit.geometry import (
     EPS_MM,
     GRID_MM,
+    Box,
     PinEnd,
     Point,
     in_segment_interior,
@@ -28,7 +32,7 @@ from copperchat.kicad_tools.edit.geometry import (
     same_point,
     snap,
 )
-from copperchat.kicad_tools.edit.scene import Scene
+from copperchat.kicad_tools.edit.scene import Scene, WireInfo
 
 WINDOW_MM = 25.4  # how far a Z route may swing beyond the box spanned by both ends
 MAX_TARGET_POINTS = 24  # T-join candidates per target wire (nearest first)
@@ -114,6 +118,155 @@ def simplify(points: Sequence[Point]) -> list[Point]:
     return pts
 
 
+_CELL_MM = 12.7  # bucket size of the obstacle index
+_KEY = 100  # coordinates are keyed in 0.01 mm (EPS_MM) steps
+
+
+def _key(v: float) -> int:
+    return round(v * _KEY)
+
+
+def _near(index: Mapping[int, list[Any]], v: float) -> Iterator[Any]:
+    """Entries keyed within one key step of `v` (rounding at EPS_MM boundaries)."""
+    k = _key(v)
+    for kk in (k - 1, k, k + 1):
+        yield from index.get(kk, ())
+
+
+def _cells(box: Box) -> Iterator[tuple[int, int]]:
+    for cx in range(math.floor(box.x0 / _CELL_MM), math.floor(box.x1 / _CELL_MM) + 1):
+        for cy in range(math.floor(box.y0 / _CELL_MM), math.floor(box.y1 / _CELL_MM) + 1):
+            yield cx, cy
+
+
+class Obstacles:
+    """One scene indexed for route checks against a set of allowed (joined) nets.
+
+    Points are indexed by row (y -> x) and column (x -> y), wires by the line they lie
+    on, bodies by 12.7 mm cells: a check looks only at items on a segment's line or
+    in its cells, so routing stays fast on large sheets (review: route search inside
+    the 30 s session call)."""
+
+    def __init__(
+        self,
+        scene: Scene,
+        netlist: Netlist,
+        allowed_nets: set[str],
+        item_nets: Mapping[str, str] | None = None,
+    ) -> None:
+        nets = item_nets or {}
+        self.rows: dict[int, list[tuple[float, str]]] = {}  # foreign points by y
+        self.cols: dict[int, list[tuple[float, str]]] = {}  # foreign points by x
+        self.no_connects = list(scene.no_connects.values())
+        self.h_wires: dict[int, list[tuple[float, float, bool, WireInfo]]] = {}
+        self.v_wires: dict[int, list[tuple[float, float, bool, WireInfo]]] = {}
+        self.bodies: dict[tuple[int, int], list[tuple[Box, str, str]]] = {}
+
+        def point(p: Point, what: str) -> None:
+            self.rows.setdefault(_key(p[1]), []).append((p[0], what))
+            self.cols.setdefault(_key(p[0]), []).append((p[1], what))
+
+        for pin in scene.all_pins():
+            if netlist.net_of(pin.key) not in allowed_nets:
+                point(pin.at, f"pin {pin.label} at {_fmt(pin.at)} (another net)")
+        for w in scene.wires.values():
+            foreign = nets.get(w.uuid) not in allowed_nets
+            if foreign:
+                for p in (w.start, w.end):
+                    point(p, f"a wire end at {_fmt(p)} (another net)")
+            if abs(w.start[1] - w.end[1]) < EPS_MM:
+                lo, hi = sorted((w.start[0], w.end[0]))
+                self.h_wires.setdefault(_key(w.start[1]), []).append((lo, hi, foreign, w))
+            elif abs(w.start[0] - w.end[0]) < EPS_MM:
+                lo, hi = sorted((w.start[1], w.end[1]))
+                self.v_wires.setdefault(_key(w.start[0]), []).append((lo, hi, foreign, w))
+        for lb in scene.labels.values():
+            if nets.get(lb.uuid) not in allowed_nets:
+                point(lb.at, f"label {lb.text} at {_fmt(lb.at)} (another net)")
+        for uid, j in scene.junctions.items():
+            if nets.get(uid) not in allowed_nets:
+                point(j, f"a junction at {_fmt(j)} (another net)")
+        for nc in self.no_connects:
+            point(nc, f"a no-connect marker at {_fmt(nc)}")
+        for sym in scene.symbols.values():
+            for cell in _cells(sym.body):
+                self.bodies.setdefault(cell, []).append(
+                    (sym.body, sym.uuid, f"the body of {sym.ref}")
+                )
+        for uid, box in scene.sheets.items():
+            grown = box.grow(0.2)  # sheet pins sit on the sheet edge
+            for cell in _cells(grown):
+                self.bodies.setdefault(cell, []).append((grown, uid, "a sheet symbol"))
+
+    def _wires_through(self, p: Point) -> Iterator[tuple[bool, WireInfo, bool]]:
+        """(foreign, wire, interior) for every wire `p` lies on."""
+        for lo, hi, foreign, w in _near(self.h_wires, p[1]):
+            if lo - EPS_MM <= p[0] <= hi + EPS_MM:
+                yield foreign, w, lo + EPS_MM < p[0] < hi - EPS_MM
+        for lo, hi, foreign, w in _near(self.v_wires, p[0]):
+            if lo - EPS_MM <= p[1] <= hi + EPS_MM:
+                yield foreign, w, lo + EPS_MM < p[1] < hi - EPS_MM
+
+    def problems(
+        self,
+        points: Sequence[Point],
+        own_symbols: tuple[str | None, str | None] = (None, None),
+        first_only: bool = False,
+    ) -> list[str]:
+        pts = list(points)
+        segs = list(itertools.pairwise(pts))
+        if not segs:
+            return ["the route has no length"]
+        out: list[str] = []
+
+        def add(msg: str) -> bool:
+            out.append(msg)
+            return first_only
+
+        last = len(segs) - 1
+        for i, (a, b) in enumerate(segs):
+            horizontal = abs(a[1] - b[1]) < EPS_MM
+            if not horizontal and abs(a[0] - b[0]) > EPS_MM:
+                if add(f"segment {_fmt(a)}-{_fmt(b)} is diagonal"):
+                    return out
+                continue
+            fixed, lo, hi = (
+                (a[1], *sorted((a[0], b[0]))) if horizontal else (a[0], *sorted((a[1], b[1])))
+            )
+            for v, what in _near(self.rows if horizontal else self.cols, fixed):
+                if lo - EPS_MM <= v <= hi + EPS_MM and add(f"touches {what}"):
+                    return out
+            for wlo, whi, _foreign, w in _near(self.h_wires if horizontal else self.v_wires, fixed):
+                if min(hi, whi) - max(lo, wlo) > EPS_MM and add(
+                    f"runs along the wire {_fmt(w.start)}-{_fmt(w.end)}"
+                ):
+                    return out
+            seg_box = Box(min(a[0], b[0]), min(a[1], b[1]), max(a[0], b[0]), max(a[1], b[1]))
+            seen: set[str] = set()
+            for cell in _cells(seg_box):
+                for box, uid, what in self.bodies.get(cell, ()):
+                    if uid in seen:
+                        continue
+                    seen.add(uid)
+                    own = (i == 0 and uid == own_symbols[0]) or (
+                        i == last and uid == own_symbols[1]
+                    )
+                    if not own and box.hit_by_segment(a, b) and add(f"crosses {what}"):
+                        return out
+        for j, p in enumerate(pts):
+            corner = 0 < j < len(pts) - 1
+            for foreign, w, interior in self._wires_through(p):
+                if foreign and interior:
+                    msg = f"ends or turns on the wire {_fmt(w.start)}-{_fmt(w.end)} (another net)"
+                elif not foreign and corner:  # a corner on a wire of our own nets: 4-way joint
+                    msg = f"corner {_fmt(p)} on a wire"
+                else:
+                    continue
+                if add(msg):
+                    return out
+        return sorted(set(out))
+
+
 def route_problems(
     points: Sequence[Point],
     scene: Scene,
@@ -130,69 +283,7 @@ def route_problems(
     be touched anywhere. Corners never sit on a wire. `own_symbols`: the symbols whose
     pin the first / last point is: an outward first/last segment may touch their body
     box (it contains the pin)."""
-    nets = item_nets or {}
-    pts = list(points)
-    segs = list(itertools.pairwise(pts))
-    if not segs:
-        return ["the route has no length"]
-    ends = (pts[0], pts[-1])
-    problems: list[str] = []
-
-    def touches(p: Point) -> bool:
-        return any(on_segment(p, a, b) for a, b in segs)
-
-    for a, b in segs:
-        if abs(a[0] - b[0]) > EPS_MM and abs(a[1] - b[1]) > EPS_MM:
-            problems.append(f"segment {_fmt(a)}-{_fmt(b)} is diagonal")
-    for pin in scene.all_pins():
-        if netlist.net_of(pin.key) in allowed_nets:
-            continue
-        if touches(pin.at):
-            problems.append(f"touches pin {pin.label} at {_fmt(pin.at)} (another net)")
-    for w in scene.wires.values():
-        foreign = nets.get(w.uuid) not in allowed_nets
-        for a, b in segs:
-            if _collinear_overlap(a, b, w.start, w.end):
-                problems.append(f"runs along the wire {_fmt(w.start)}-{_fmt(w.end)}")
-                break
-        if foreign:
-            for p in (w.start, w.end):
-                if touches(p):
-                    problems.append(f"touches a wire end at {_fmt(p)} (another net)")
-            for p in pts:
-                if in_segment_interior(p, w.start, w.end):
-                    problems.append(
-                        f"ends or turns on the wire {_fmt(w.start)}-{_fmt(w.end)} (another net)"
-                    )
-        else:
-            for p in pts[1:-1]:  # a corner on a wire of our own nets: ugly 4-way joint
-                if on_segment(p, w.start, w.end):
-                    problems.append(f"corner {_fmt(p)} on a wire")
-    for lb in scene.labels.values():
-        if nets.get(lb.uuid) not in allowed_nets and touches(lb.at):
-            problems.append(f"touches label {lb.text} at {_fmt(lb.at)} (another net)")
-    for uid, j in scene.junctions.items():
-        if nets.get(uid) not in allowed_nets and touches(j):
-            problems.append(f"touches a junction at {_fmt(j)} (another net)")
-    for nc in scene.no_connects.values():
-        if touches(nc):
-            problems.append(f"touches a no-connect marker at {_fmt(nc)}")
-    last = len(segs) - 1
-    for i, (a, b) in enumerate(segs):
-        for sym in scene.symbols.values():
-            own = (i == 0 and sym.uuid == own_symbols[0]) or (
-                i == last and sym.uuid == own_symbols[1]
-            )
-            if not own and sym.body.hit_by_segment(a, b):
-                problems.append(f"crosses the body of {sym.ref}")
-        for box in scene.sheets.values():
-            if box.grow(0.2).hit_by_segment(a, b):  # sheet pins sit on the sheet edge
-                problems.append("crosses a sheet symbol")
-    for p in ends:
-        for nc in scene.no_connects.values():
-            if same_point(p, nc):
-                problems.append(f"ends on a no-connect marker at {_fmt(p)}")
-    return sorted(set(problems))
+    return Obstacles(scene, netlist, allowed_nets, item_nets).problems(points, own_symbols)
 
 
 def needed_junctions(points: Sequence[Point], scene: Scene) -> list[Point]:
@@ -225,11 +316,20 @@ def needed_junctions(points: Sequence[Point], scene: Scene) -> list[Point]:
 
 
 def _grid_range(lo: float, hi: float) -> list[float]:
-    """Grid values from `lo - WINDOW_MM` to `hi + WINDOW_MM`, at most MAX_GRID_STEPS of
-    them (ends farther apart than a sheet is wide do not get every detour)."""
+    """Grid values from `lo - WINDOW_MM` to `hi + WINDOW_MM`. Ends farther apart than
+    MAX_GRID_STEPS steps keep the full window around both ends and sample the span
+    between them evenly (detours on both sides stay possible)."""
     start, stop = snap(lo - WINDOW_MM), snap(hi + WINDOW_MM)
-    n = min(round((stop - start) / GRID_MM), MAX_GRID_STEPS)
-    return [round(start + i * GRID_MM, 4) for i in range(n + 1)]
+    n = round((stop - start) / GRID_MM)
+    if n <= MAX_GRID_STEPS:
+        return [round(start + i * GRID_MM, 4) for i in range(n + 1)]
+    side = round(2 * WINDOW_MM / GRID_MM)
+    low = [round(start + i * GRID_MM, 4) for i in range(side + 1)]
+    high = [round(stop - i * GRID_MM, 4) for i in range(side + 1)]
+    inner = max(MAX_GRID_STEPS - 2 * side, 2)
+    step = max(1, (n - 2 * side) // inner)
+    middle = [round(start + i * GRID_MM, 4) for i in range(side, n - side, step)]
+    return sorted(set(low + middle + high))
 
 
 def _candidates(a: Point, b: Point) -> Iterable[list[Point]]:
@@ -250,7 +350,11 @@ def _target_points(a: Point, t: WireTarget) -> list[Point]:
     if not on_grid((fixed, fixed)):
         return []
     lo, hi = sorted((t.a[1], t.b[1]) if vertical else (t.a[0], t.b[0]))
-    centre = min(max(snap(a[1] if vertical else a[0]), lo), hi)
+    g_lo = math.ceil(lo / GRID_MM - 1e-6) * GRID_MM  # the on-grid part of the wire
+    g_hi = math.floor(hi / GRID_MM + 1e-6) * GRID_MM
+    if g_hi < g_lo - EPS_MM:
+        return []
+    centre = round(min(max(snap(a[1] if vertical else a[0]), g_lo), g_hi), 4)
     values: list[float] = []
     for i in range(4 * MAX_TARGET_POINTS):
         if len(values) >= MAX_TARGET_POINTS:
@@ -276,6 +380,7 @@ def route(
     allowed_nets: set[str],
     max_segments: int = 3,
     item_nets: Mapping[str, str] | None = None,
+    deadline: float | None = None,
 ) -> Route | None:
     """Cheapest clean orthogonal route from pin end `a` to pin end `b` or onto wire `b`
     (T-join); None when no route of at most `max_segments` segments is clean.
@@ -327,11 +432,14 @@ def route(
                     continue  # arriving along the target wire would overlap it
             queue.append((cost, pts))
     queue.sort(key=lambda c: c[0])
+    obstacles = Obstacles(scene, netlist, allowed_nets, item_nets)
     best: Route | None = None
-    for cost, pts in queue:
+    for n, (cost, pts) in enumerate(queue):
         if best is not None and cost >= best.cost:
             break  # crossings and junctions only add cost
-        if route_problems(pts, scene, netlist, allowed_nets, item_nets=item_nets, own_symbols=own):
+        if deadline is not None and n % 64 == 0 and time.monotonic() > deadline:
+            break  # planning budget spent: the best route so far (or none)
+        if obstacles.problems(pts, own, first_only=True):
             continue
         segs = list(itertools.pairwise(pts))
         cost += 4.0 * sum(

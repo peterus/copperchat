@@ -53,3 +53,22 @@ async def pin_nets(session: KicadSession) -> dict[str, str]:
 
 async def scene(session: KicadSession, sheet: str | None = None) -> Any:
     return await session.call(lambda h: read_scene(h, resolve_sheet(h, sheet), boxes=False))
+
+
+async def sheet_pin_nets(session: KicadSession) -> dict[tuple[str, str], str]:
+    """(sheet human path, 'REF.PIN') -> net: one entry per instance of a shared sheet."""
+    from copperchat.kicad_tools.edit.scene import sheet_refs
+
+    def run(h: KicadHandle) -> dict[tuple[str, str], str]:
+        human = {r.path: r.human_path for r in sheet_refs(h)}
+        refs = {
+            (access.sheet_path_key(s.path), access.kiid(s)): str(s.reference)
+            for s in h.schematic().get_symbols()
+        }
+        out: dict[tuple[str, str], str] = {}
+        for net, keys in access.live_netlist(h).nets.items():
+            for path, uid, number in keys:
+                out[(human.get(path, path), f"{refs.get((path, uid), uid)}.{number}")] = net
+        return out
+
+    return await session.call(run)

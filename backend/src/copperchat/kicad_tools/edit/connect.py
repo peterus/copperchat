@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import itertools
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -31,6 +32,7 @@ from copperchat.kicad_tools.edit.geometry import (
     same_point,
 )
 from copperchat.kicad_tools.edit.labels import (
+    NET_NAME_RE,
     RAIL_RE,
     World,
     bad,
@@ -119,6 +121,7 @@ def _route_from(
         world.netlist,
         allowed_nets=allowed,
         item_nets=world.nets(sheet),
+        deadline=world.deadline,
     )
     return None if r is None else (r, start)
 
@@ -150,7 +153,7 @@ def _wire_change_set(
         sheet=sheet,
         stages=[Stage("connect", lambda _inp: [Create(items, sheet=sheet)])],
         pre_images={},
-        intent=NetIntent(merge=[frozenset(group)] if len(group) > 1 else []),
+        intent=NetIntent(merge=world.replicate(group, sheet) if len(group) > 1 else []),
         logical=Logical(1),
         summary=summary,
         net_pin=net_pin,
@@ -176,6 +179,23 @@ def _as_labels(
     summary: dict[str, Any],
 ) -> ConnectChangeSet:
     cs = labels_change_set(world, tool, pins, name, kind)
+    keys = frozenset(p.key for p in pins)
+    if not cs.stages and len({world.net(p) for p in pins}) > 1:
+        raise bad(
+            f"{tool}: labels cannot connect {', '.join(p.label for p in pins)}",
+            f"every pin already carries a label {name}, yet they are on different nets",
+            "Check the sheets: local labels connect only within one sheet.",
+        )
+    if len(keys) > 1:  # verification proves the labels really join the pins
+        sheets = {world.sheet_of(p).path: world.sheet_of(p) for p in pins}
+        if len(sheets) == 1:
+            cs.intent.merge = [*cs.intent.merge, *world.replicate(keys, cs.sheet)]
+        else:  # global labels: every instance of both sheets on one net
+            union: set[PinKey] = set()
+            for p in pins:
+                for group in world.replicate([p.key], world.sheet_of(p)):
+                    union |= group
+            cs.intent.merge = [*cs.intent.merge, frozenset(union)]
     return ConnectChangeSet(
         tool=cs.tool,
         sheet=cs.sheet,
@@ -246,11 +266,27 @@ def plan_connect_pins(
     if rail is not None and not net_name:
         other = pb if world.net(pa) == rail else pa
         return PowerNeeded(other.label, base_name(rail), "the other pin is on a power net")
-    name = net_name or (base_name(named[0]) if named else f"N_{pa.ref}_{pa.number}")  # type: ignore[arg-type]
-    name = name.replace("#", "")[:64]
     kind: Literal["local", "global"] = "local" if sa.path == sb.path else "global"
+    local_named = [n for n in named if n and n.startswith("/")]
+    if kind == "global" and local_named and not net_name:
+        raise bad(
+            f"{tool}: {pa.label} and {pb.label} are on different sheets",
+            f"{local_named[0]} is a net local to its sheet; a global label of the same name "
+            "would be a second, different net",
+            "Connect the sheets through a sheet pin (hierarchical label), or pass net_name "
+            "for a new global net.",
+        )
+    name = net_name or (base_name(named[0]) if named else f"N_{pa.ref}_{pa.number}")  # type: ignore[arg-type]
+    name = safe_net_name(name)
     summary = {**base, "route_blocked_by": reasons[:6]}
     return _as_labels(world, tool, [pa, pb], name, kind, summary)
+
+
+def safe_net_name(name: str) -> str:
+    """A generated label name restricted to plain net-name characters (no bus or
+    hierarchy syntax from refs, pin numbers or existing names)."""
+    clean = re.sub(r"[^A-Za-z0-9_+\-.~]", "_", name)[:64]
+    return clean if NET_NAME_RE.fullmatch(clean) else "N_NET"
 
 
 _CS_FIELDS = ("tool", "sheet", "stages", "pre_images", "intent", "logical", "summary", "notes")
@@ -273,6 +309,17 @@ def plan_connect_net(world: World, tool: str, pa: PinEnd, name: str, via: Via) -
     targets = _net_candidates(world, sheet, name)
     target = targets[0] if targets else None
     base = {"from": pa.label, "to": name}
+    elsewhere = sorted(
+        n for n in world.netlist.nets if n.startswith("/") and base_name(n) == name and is_named(n)
+    )
+    if target is None and elsewhere:
+        raise bad(
+            f"{tool}: {name} is a local net of another sheet",
+            f"{', '.join(elsewhere[:4])} exists, but local nets connect only within their "
+            f"sheet; a label {name} on {sheet.human_path} would be a different net",
+            "Connect the sheets through a sheet pin (hierarchical label), or use a global "
+            "label on both sides.",
+        )
     if target is not None and na == target:
         cs = no_change(tool, sheet, {**base, "already_connected": True, "via_used": None}, [])
         return ConnectChangeSet(**{f: getattr(cs, f) for f in _CS_FIELDS}, net_pin=pa.key)
@@ -291,12 +338,15 @@ def plan_connect_net(world: World, tool: str, pa: PinEnd, name: str, via: Via) -
             for t in _wire_targets(world, sheet, target, pa.at, NEAR_MM)
         ]
         scene = world.scene(sheet)
-        for p in scene.all_pins():
-            if (
-                world.netlist.net_of(p.key) == target
-                and abs(p.at[0] - pa.at[0]) + abs(p.at[1] - pa.at[1]) <= NEAR_MM
-            ):
-                cands.append(_route_from(world, pa, p, allowed))
+        near = sorted(
+            (
+                (abs(p.at[0] - pa.at[0]) + abs(p.at[1] - pa.at[1]), p)
+                for p in scene.all_pins()
+                if world.netlist.net_of(p.key) == target
+            ),
+            key=lambda dp: dp[0],
+        )
+        cands += [_route_from(world, pa, p, allowed) for d, p in near[:12] if d <= NEAR_MM]
         found = _best(cands)
         if found is not None:
             group = {pa.key} | set(sorted(world.members(target))[:1])
@@ -369,19 +419,6 @@ def plan_rename(world: World, tool: str, old: str, new: str) -> ChangeSet:
         )
     if base_name(net) == new:
         return no_change(tool, next(iter(world.sheets.values())), {"old": net, "new": new}, [])
-    clash = sorted(n for n in world.netlist.nets if base_name(n) == new and n != net)
-    clash += sorted(
-        lb.text
-        for _s, scene in _scenes(world)
-        for lb in scene.labels.values()
-        if lb.text == new and world.nets(_s).get(lb.uuid) != net
-    )
-    if clash:
-        raise bad(
-            f"{tool}: the name {new} is already used",
-            f"net(s) {', '.join(sorted(set(clash))[:6])} carry it; renaming would merge them",
-            "Pick an unused name, or connect the nets deliberately with sch_connect.",
-        )
     if looks_like_rail(world, new):
         raise bad(
             f"{tool}: {new} is a power net name",
@@ -395,12 +432,8 @@ def plan_rename(world: World, tool: str, old: str, new: str) -> ChangeSet:
             "only label-named nets can be renamed (automatic names follow a pin)",
             f"Name the net with sch_add_label(net='{new}', at=[...]) instead.",
         )
-    hier = [
-        (sheet, uid)
-        for sheet, uid in found
-        if world.scene(sheet).labels[uid].kind == "hierarchical_label"
-    ]
-    if hier:
+    kinds = {world.scene(sheet).labels[uid].kind for sheet, uid in found}
+    if "hierarchical_label" in kinds:
         raise bad(
             f"{tool}: net {net} is named by a hierarchical label",
             "a hierarchical label must keep the name of its sheet pin; renaming only the "
@@ -408,54 +441,94 @@ def plan_rename(world: World, tool: str, old: str, new: str) -> ChangeSet:
             "Rename the sheet pin and its hierarchical label together, or rename the net "
             "on the parent sheet.",
         )
-    by_file: dict[tuple[str, str], SheetRef] = {}
-    for sheet, uid in found:
-        by_file.setdefault((sheet.file, uid), sheet)
-    updates: dict[str, tuple[SheetRef, list[Any]]] = {}
-    for (_file, uid), sheet in by_file.items():
-        for lb in sheet_api(world.h, sheet).get_labels():
-            if str(lb.id.value) == uid:
-                lb.text.value = new
-                updates.setdefault(sheet.path, (sheet, []))[1].append(lb)
-    ops = [Update(items, sheet=sheet) for sheet, items in updates.values()]
-    rep = sorted(members)[:1]
     expected = net[: len(net) - len(base_name(net))] + new
+    # The renamed labels would join every label of the new name in their scope: on
+    # their own sheets, and anywhere for a global label.
+    label_sheets = {sheet.path for sheet, _uid in found}
+    clash = {n for n in world.netlist.nets if n == expected and n != net}
+    for sheet, scene in _scenes(world):
+        for lb in scene.labels.values():
+            if lb.text != new or world.nets(sheet).get(lb.uuid) == net:
+                continue
+            if sheet.path in label_sheets or (
+                "global_label" in kinds and lb.kind == "global_label"
+            ):
+                clash.add(world.nets(sheet).get(lb.uuid) or f"label {new} on {sheet.human_path}")
+    if "global_label" in kinds and new in world.netlist.nets:
+        clash.add(new)
+    if clash:
+        raise bad(
+            f"{tool}: the name {new} is already used",
+            f"net(s) {', '.join(sorted(clash)[:6])} carry it; renaming would merge them",
+            "Pick an unused name, or connect the nets deliberately with sch_connect.",
+        )
+    by_file: dict[str, tuple[SheetRef, set[str]]] = {}
+    for sheet, uid in found:  # a shared sheet file holds one label for all its instances
+        by_file.setdefault(sheet.file, (sheet, set()))[1].add(uid)
+    updates: list[Update] = []
+    for sheet, uids in by_file.values():
+        items = [lb for lb in sheet_api(world.h, sheet).get_labels() if str(lb.id.value) in uids]
+        for lb in items:
+            lb.text.value = new
+        if items:
+            updates.append(Update(items, sheet=sheet))
+    notes = []
+    shared = sorted(
+        r.human_path
+        for r in world.sheets.values()
+        if r.file in by_file and r.path not in {s.path for s, _ in by_file.values()}
+    )
+    if shared:
+        notes.append(
+            "the label lives in a sheet file used by several instances; the nets of "
+            f"{', '.join(shared[:6])} are renamed too"
+        )
+    rep = sorted(members)[:1]
+    labels = sum(len(u) for _s, u in by_file.values())
     return ChangeSet(
         tool=tool,
-        sheet=next(iter(updates.values()))[0],
-        stages=[Stage(f"rename {net}", lambda _inp: list(ops))],
+        sheet=updates[0].sheet or next(iter(world.sheets.values())),
+        stages=[Stage(f"rename {net}", lambda _inp: list(updates))],
         pre_images={},
         intent=NetIntent(keep_partition=True, names={k: expected for k in rep}),
         logical=Logical(1),
-        summary={"old": net, "new": expected, "labels": len(by_file)},
+        summary={"old": net, "new": expected, "labels": labels},
+        notes=notes,
     )
 
 
 # -- sch_reroute ------------------------------------------------------------------------
 
 
+def _pkey(p: Point) -> tuple[int, int]:
+    return (round(p[0] * 100), round(p[1] * 100))
+
+
 def _chain_between(scene: Scene, a: Point, b: Point) -> list[str]:
-    """Wire uuids of the path from `a` to `b` through wire end points (BFS)."""
-    prev: dict[Point, tuple[Point, str] | None] = {a: None}
+    """Wire uuids of the path from `a` to `b` through wire end points (BFS over an
+    end-point adjacency map)."""
+    adj: dict[tuple[int, int], list[tuple[Point, str]]] = {}
+    for w in scene.wires.values():
+        adj.setdefault(_pkey(w.start), []).append((w.end, w.uuid))
+        adj.setdefault(_pkey(w.end), []).append((w.start, w.uuid))
+    prev: dict[tuple[int, int], tuple[tuple[int, int], str] | None] = {_pkey(a): None}
     frontier = [a]
-    while frontier:
+    goal = _pkey(b)
+    while frontier and goal not in prev:
         nxt: list[Point] = []
         for q in frontier:
-            for w in scene.wires.values():
-                for x, y in ((w.start, w.end), (w.end, w.start)):
-                    if same_point(x, q) and not any(same_point(y, z) for z in prev):
-                        prev[y] = (q, w.uuid)
-                        nxt.append(y)
+            for y, uid in adj.get(_pkey(q), ()):
+                if _pkey(y) not in prev:
+                    prev[_pkey(y)] = (_pkey(q), uid)
+                    nxt.append(y)
         frontier = nxt
-    end = next((z for z in prev if same_point(z, b)), None)
-    if end is None:
+    if goal not in prev:
         return []
     out: list[str] = []
-    node: Point = end
-    while prev[node] is not None:
-        q, uid = prev[node]  # type: ignore[misc]
+    node = goal
+    while (step := prev[node]) is not None:
+        node, uid = step
         out.append(uid)
-        node = q
     return out[::-1]
 
 
@@ -531,6 +604,12 @@ def plan_reroute(world: World, tool: str, wires: Any, points: list[Point]) -> Ch
         )
     snapped = [snap_point(p) for p in points]
     pts = simplify(snapped)
+    if not pts:
+        raise bad(
+            f"{tool}: the new route reverses on itself",
+            "a segment runs back over the previous one",
+            "Pass the corner points in order from one end to the other.",
+        )
     if len(pts) < 2:
         raise bad(
             f"{tool}: the new route has no length",
@@ -577,12 +656,18 @@ def plan_reroute(world: World, tool: str, wires: Any, points: list[Point]) -> Ch
         if not any(same_point(p.at, e) for e in ends)
         and any(on_segment(p.at, c.start, c.end) for c in chain)
     ]
+    joins += [
+        lb.at
+        for lb in scene.labels.values()
+        if not any(same_point(lb.at, e) for e in ends)
+        and any(on_segment(lb.at, c.start, c.end) for c in chain)
+    ]
     if joins:
         raise bad(
             f"{tool}: other items join this route",
-            f"something else connects to the route at {fmt(joins[0])}; moving the route "
-            "would disconnect it",
-            "Reroute only a simple route between two ends (no T-joins on it).",
+            f"something else connects to the route at {fmt(joins[0])} (a wire, pin or "
+            "label); moving the route would disconnect it",
+            "Reroute only a simple route between two ends (no T-joins or labels on it).",
         )
     trimmed = Scene(
         sheet=scene.sheet,

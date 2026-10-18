@@ -64,6 +64,7 @@ async def test_multi_pin_is_all_or_nothing(blank_session: KicadSession) -> None:
     out, err = await call_tool(ctx, "sch_add_power", net="GND", at=["R1.1", "R3.1"])
     assert err and "R3.1" in out["error"]["what"]
     assert await state(s) == before
+    assert snapshots.calls == 0
 
 
 async def test_rail_name_label_refused(blank_session: KicadSession) -> None:

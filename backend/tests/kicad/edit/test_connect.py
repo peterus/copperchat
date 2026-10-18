@@ -10,6 +10,7 @@ import pytest
 from copperchat.db import Database
 from copperchat.kicad_session import KicadSession
 from copperchat.kicad_tools.edit.geometry import on_grid, same_point
+from copperchat.library.service import library_for
 from tests.kicad.edit.connect_support import Counter, pin_nets, place, scene, state
 from tests.support.edit import call_tool, edit_ctx
 from tests.support.kicad_cli import cli_netlist, cli_pin_nets
@@ -196,3 +197,58 @@ async def test_off_grid_or_near_miss_impossible(blank_session: KicadSession) -> 
         assert route[0] == a["at_mm"] and route[-1] == b["at_mm"]  # exactly on both pins
         after_a, after_b = await _pin(ctx, frm), await _pin(ctx, to)
         assert after_a["net"] == after_b["net"] is not None
+
+
+async def test_t_join_from_the_target_pin_onto_the_from_net(blank_session: KicadSession) -> None:
+    s = blank_session
+    await place(
+        s,
+        (CONN, "J1", (76.2, 101.6), 0),
+        (LDO, "U1", (106.68, 101.6), 0),
+        (R, "R1", (91.44, 114.3), 0),
+    )
+    ctx = edit_ctx(s)
+    _, err = await call_tool(ctx, "sch_connect", **{"from": "J1.1", "to": "U1.VI"})
+    assert not err
+    out, err = await call_tool(ctx, "sch_connect", **{"from": "U1.VI", "to": "R1.1"})
+    assert not err, out
+    assert out["route"]["junction"] == [91.44, 101.6]
+    nets = await pin_nets(s)
+    assert nets["J1.1"] == nets["U1.3"] == nets["R1.1"]
+
+
+async def test_label_fallback_joins_an_already_named_net(blank_session: KicadSession) -> None:
+    s = blank_session
+    await _caged(s)
+    ctx = edit_ctx(s)
+    _, err = await call_tool(ctx, "sch_add_label", net="SDA", at=["R1.1"])
+    assert not err
+    out, err = await call_tool(ctx, "sch_connect", **{"from": "R1.1", "to": "R2.2"})
+    assert not err, out
+    assert out["via_used"] == "label" and out["net"] == "/SDA"
+    assert out["logical_changes"] == 1
+    nets = await pin_nets(s)
+    assert nets["R1.1"] == nets["R2.2"] == "/SDA"
+
+
+async def test_unknown_pin_in_to_is_not_a_net_name(blank_session: KicadSession) -> None:
+    s = blank_session
+    await place(s, (R, "R1", (101.6, 101.6), 0))
+    ctx = edit_ctx(s)
+    before = await state(s)
+    out, err = await call_tool(ctx, "sch_connect", **{"from": "R1.1", "to": "R9.1"})
+    assert err and out["error"]["code"] == "not_found"
+    assert await state(s) == before
+
+
+async def test_dotted_library_rail_gets_a_power_symbol(blank_session: KicadSession) -> None:
+    s = blank_session
+    await place(s, (R, "R1", (101.6, 101.6), 0))
+    assert await library_for(s).wait_ready(120)
+    assert library_for(s).has_symbol("power:+3.3VA")
+    ctx = edit_ctx(s)
+    out, err = await call_tool(ctx, "sch_connect", **{"from": "R1.1", "to": "+3.3VA"})
+    assert not err, out
+    assert out["via_used"] == "power"
+    nets = await pin_nets(s)
+    assert nets["R1.1"] == "+3.3VA"

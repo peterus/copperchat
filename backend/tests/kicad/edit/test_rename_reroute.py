@@ -6,7 +6,7 @@ import pytest
 
 from copperchat.kicad_session import KicadSession
 from copperchat.kicad_tools.edit.geometry import on_grid
-from tests.kicad.edit.connect_support import pin_nets, place, scene, state
+from tests.kicad.edit.connect_support import Counter, pin_nets, place, scene, state
 from tests.support.edit import call_tool, edit_ctx
 
 pytestmark = pytest.mark.kicad
@@ -103,3 +103,47 @@ async def test_reroute_touching_foreign_pin_refused(blank_session: KicadSession)
     assert out["error"]["code"] == "overlap"
     assert "R3.1" in out["error"]["why"]
     assert await state(s) == before
+
+
+async def _refused(s: KicadSession, wires: object, points: list[list[float]]) -> dict[str, str]:
+    snapshots = Counter()
+    ctx = edit_ctx(s, on_mutation=snapshots)
+    before = await state(s)
+    out, err = await call_tool(ctx, "sch_reroute", wires=wires, points=points)
+    assert err, out
+    assert await state(s) == before and snapshots.calls == 0
+    return dict(out["error"])
+
+
+Z = [[101.6, 105.41], [101.6, 113.03], [116.84, 113.03], [116.84, 105.41]]
+
+
+async def test_reroute_refuses_a_label_on_the_route(blank_session: KicadSession) -> None:
+    s = blank_session
+    old = await _l_connected(s)
+    _, err = await call_tool(edit_ctx(s), "sch_add_label", net="MID", at=[109.22, 110.49])
+    assert not err
+    error = await _refused(s, old, Z)
+    assert error["code"] == "invalid_argument" and "join" in error["what"]
+
+
+async def test_reroute_refuses_a_t_join_on_the_route(blank_session: KicadSession) -> None:
+    s = blank_session
+    await _l_connected(s)
+    await place(s, (R, "R3", (109.22, 120.65), 0))  # R3.1 at (109.22, 116.84)
+    _, err = await call_tool(
+        edit_ctx(s), "sch_add_wire", points=[[109.22, 116.84], [109.22, 110.49]]
+    )
+    assert not err
+    error = await _refused(s, {"from": "R1.2", "to": "R2.2"}, Z)
+    assert "join" in error["what"]
+
+
+async def test_reroute_must_keep_both_ends(blank_session: KicadSession) -> None:
+    s = blank_session
+    old = await _l_connected(s)
+    shifted = [[101.6, 105.41], [101.6, 113.03], [119.38, 113.03], [119.38, 105.41]]
+    error = await _refused(s, old, shifted)
+    assert "keep both ends" in error["what"]
+    error = await _refused(s, old, [[101.6, 105.41], [101.6, 113.03], [101.6, 110.49]])
+    assert "reverses" in error["what"]

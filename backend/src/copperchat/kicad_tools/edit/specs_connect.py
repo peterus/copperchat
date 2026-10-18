@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import contextlib
+import re
+import time
 from typing import Any
 
 from copperchat.errors import StructuredToolError
@@ -21,6 +23,7 @@ from copperchat.kicad_tools.edit.connect import (
 from copperchat.kicad_tools.edit.engine import apply_change_set, edit_result
 from copperchat.kicad_tools.edit.geometry import Point
 from copperchat.kicad_tools.edit.labels import (
+    PLAN_BUDGET_S,
     LabelKind,
     PowerSymbol,
     World,
@@ -40,6 +43,9 @@ from copperchat.kicad_tools.edit.specs_core import MAX_POINTS, _coord
 from copperchat.tools.spec import ToolContext, ToolResult, ToolSpec, edit_spec
 
 _KINDS = ("local", "global", "hierarchical")
+# 'U1.3', 'R9.VIN', '#PWR01.1': a pin, never a net name (net names like '+3.3V' start
+# with a sign or digit).
+PIN_RE = re.compile(r"^[A-Za-z_#][A-Za-z0-9_#]*\.[A-Za-z0-9_+\-~]+$")
 _VIA = ("auto", "wire", "label")
 
 
@@ -152,13 +158,13 @@ async def prepare_add_label(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet
             raise refuse_rail_label(net, tool)
         if isinstance(at, list) and _is_point(at):
             sheet = resolve_sheet(h, str(sheet_arg)[:256] if sheet_arg else None)
-            point = (float(at[0]), float(at[1]))
             if not all(_coord(c) for c in at):
                 raise bad(
                     f"{tool}: position out of range",
                     f"at was {short(at)}",
                     "Pass a point on the sheet in mm.",
                 )
+            point = (float(at[0]), float(at[1]))
             return label_at_point_change_set(world, tool, sheet, point, net, kind)
         return labels_change_set(world, tool, pins_arg(world, at, tool), net, kind)
 
@@ -211,19 +217,27 @@ async def prepare_connect(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
         raise bad(
             f"{tool}: to is missing", "to is 'REF.PIN' or a net name", "e.g. to='U1.3' or to='VIN'."
         )
-    to = to.strip()[:64]
+    to = to.strip()
+    if len(to) > 64:
+        raise bad(
+            f"{tool}: to is too long",
+            "pins and net names have at most 64 characters",
+            "Pass 'REF.PIN' or a net name.",
+        )
+    pin_shaped = bool(PIN_RE.fullmatch(to))
     net_name = args.get("net_name")
     if net_name is not None:
         net_name = check_net_name(net_name, tool)
         if await is_rail(ctx, set(), net_name):
             raise refuse_rail_label(net_name, tool)
-    to_rail = "." not in to and await is_rail(ctx, set(), to)
+    to_rail = not pin_shaped and await is_rail(ctx, set(), to)
+    worlds: list[World] = []
 
     def run(h: KicadHandle) -> ConnectChangeSet | PowerNeeded:
         world = World(h)
+        worlds.append(world)
         pa = world.pin(frm)
-        ref = to.partition(".")[0]
-        if "." in to and any(s.ref == ref for s in world.symbols):
+        if pin_shaped:  # 'R9.1' is a pin, also when R9 does not exist (not_found)
             return plan_connect_pins(world, tool, pa, world.pin(to), via, net_name)
         name = check_net_name(to, tool)
         if to_rail or looks_like_rail(world, name):
@@ -243,7 +257,9 @@ async def prepare_connect(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
     sym = await _power_symbol(ctx, planned.net, None, tool)
 
     def run_power(h: KicadHandle) -> ConnectChangeSet:
-        world = World(h)
+        world = worlds[0]  # nothing was written since (the adapter holds the edit lock)
+        world.h = h
+        world.deadline = time.monotonic() + PLAN_BUDGET_S
         pin = world.pin(planned.pin)
         cs = power_change_set(world, tool, [pin], sym, "PWR_FLAG" if sym.flag else planned.net)
         return ConnectChangeSet(
