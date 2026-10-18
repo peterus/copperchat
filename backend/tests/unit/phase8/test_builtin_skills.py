@@ -52,9 +52,7 @@ def test_main_agent_skills_never_mention_the_agent_tool() -> None:
 
 
 EDITING_SKILLS = ("kicad-schematic-editing", "kicad-schematic-style", "copperchat-tools")
-TOOL_NAME = re.compile(
-    r"`((?:sch|lib|plan|parts|pcb|run|render|research|project|git)_[a-z0-9_]+)"
-)
+TOOL_NAME = re.compile(r"`((?:sch|lib|plan|parts|pcb|run|render|research|project|git)_[a-z0-9_]+)")
 
 # backticked identifiers in the skills that look like tool names but are not
 NOT_TOOLS = {"lib_id", "plan_open", "plan_required", "plan_step_required"}
@@ -96,5 +94,10 @@ def test_style_skill_has_placement_recipes() -> None:
 
 def test_tools_skill_lists_editing_tools() -> None:
     body = (BUILTIN_ROOT / "copperchat-tools" / "SKILL.md").read_text()
-    for phrase in ("kicad-schematic-editing", "`parts_get_notes`", "`plan_propose`", "`sch_changes`"):
+    for phrase in (
+        "kicad-schematic-editing",
+        "`parts_get_notes`",
+        "`plan_propose`",
+        "`sch_changes`",
+    ):
         assert phrase in body, phrase

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import difflib
 import math
+import re
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -488,6 +489,12 @@ def _pin_error(
     return StructuredToolError(what, why, suggestion, code=code, details=details)
 
 
+def _pin_functions(name: str) -> set[str]:
+    """The lower-case functions of a pin name: '~{RESET}/PB5' -> {'reset', 'pb5'}."""
+    plain = re.sub(r"[~{}]", "", name).lower()
+    return {part for part in plain.split("/") if part}
+
+
 def resolve_pin(
     h: KicadHandle,
     spec: str,
@@ -528,6 +535,8 @@ def resolve_pin(
         hits = [p for p in pins if p.name == pin]
     if not hits:
         hits = [p for p in pins if p.name.lower() == pin.lower()]
+    if not hits:  # one function of a multi-function pin: 'PB3' -> 'XTAL1/PB3'
+        hits = [p for p in pins if pin.lower() in _pin_functions(p.name)]
     candidates = sorted({f"{p.number} ({p.name})" if p.name else p.number for p in pins},
                         key=natural_key)  # fmt: skip
     if not hits:

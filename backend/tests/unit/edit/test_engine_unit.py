@@ -91,3 +91,25 @@ def test_pin_candidates_are_capped() -> None:
         resolve_pin(Any, "R7X.1", symbols=others)  # type: ignore[arg-type]
     assert err.value.details["total"] == 30  # type: ignore[index]
     assert len(err.value.details["candidates"]) == MAX_CANDIDATES  # type: ignore[index]
+
+
+def test_pin_name_matches_one_function_of_a_multi_function_pin() -> None:
+    """'U1.PB3' finds 'XTAL1/PB3', 'U1.RESET' finds '~{RESET}/PB5' (spike 2D skill rule);
+    an exact name still wins and a part shared by two pins stays ambiguous."""
+    from types import SimpleNamespace as NS
+
+    from copperchat.kicad_tools.edit.geometry import Box, PinEnd
+    from copperchat.kicad_tools.edit.scene import SymbolInfo, resolve_pin
+
+    sheet = NS(path="/r")
+    names = {"1": "~{RESET}/PB5", "2": "XTAL1/PB3", "5": "AREF/PB0", "6": "PB1", "7": "PB1/X",
+             "8": "SDA/A", "9": "SDA/B"}  # fmt: skip
+    pins = [PinEnd(("/r", "u", n), "U1", n, name, "bidirectional", (0, int(n)), "left")
+            for n, name in names.items()]  # fmt: skip
+    u1 = SymbolInfo("u", "U1", "X:Y", "v", 1, sheet, (0, 0), 0, "", pins, Box(0, 0, 1, 1), [],
+                    False)  # fmt: skip
+    for spec, number in (("U1.PB3", "2"), ("U1.pb0", "5"), ("U1.RESET", "1"), ("U1.PB1", "6")):
+        assert resolve_pin(Any, spec, symbols=[u1]).number == number, spec  # type: ignore[arg-type]
+    with pytest.raises(StructuredToolError) as err:
+        resolve_pin(Any, "U1.SDA", symbols=[u1])  # type: ignore[arg-type]
+    assert err.value.code == "ambiguous_pin"

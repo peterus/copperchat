@@ -87,3 +87,27 @@ async def test_unknown_near_ref(ecc83_session: KicadSession, edit_db: Database) 
     assert err and out["error"]["code"] == "not_found", out
     out, err = await call_tool(ctx, "sch_find_space", lib_id="Device:R", near="U1.99")
     assert err and out["error"]["code"] == "not_found", out
+
+
+async def test_decap_found_at_a_supply_pin_leaves_room_for_both_power_symbols(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    """E10 (golden scenario s3): the cap found next to U1.VCC must not block its own GND
+    symbol with the +3V3 symbol of the supply pin (the corridor in front of a pin is the
+    room of a stub + power symbol with its value, 7.62 x 5.08 mm)."""
+    s = blank_session
+    await s.ensure_symbol_libraries()
+    ctx = edit_ctx(s, edit_db)
+    mcu = "MCU_Microchip_ATtiny:ATtiny85-20S"
+    out, err = await call_tool(ctx, "sch_place_symbol", lib_id=mcu, at=[88.9, 101.6])
+    assert not err, out
+    found, err = await call_tool(ctx, "sch_find_space", lib_id="Device:C", near="U1.VCC")
+    assert not err, found
+    at = found["candidates"][0]["at_mm"]
+    cap, err = await call_tool(ctx, "sch_place_symbol", lib_id="Device:C", at=at, value="100nF")
+    assert not err, cap
+    c = cap["placed"]["ref"]
+    out, err = await call_tool(ctx, "sch_add_power", net="+3V3", at=["U1.VCC", f"{c}.1"])
+    assert not err, out
+    out, err = await call_tool(ctx, "sch_add_power", net="GND", at=[f"{c}.2", "U1.GND"])
+    assert not err, out

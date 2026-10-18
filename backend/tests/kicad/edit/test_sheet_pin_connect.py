@@ -280,3 +280,37 @@ async def test_label_connection_to_a_sheet_pin_whose_net_has_no_symbol_pin(
     assert not err, out
     assert out["via_used"] == "label" and out["net"] is not None
     assert await _item_net(s, g["pin_uuid"]) == await _net(s, "/", g["r1"])
+
+
+async def test_connect_wires_a_pin_to_the_hierarchical_label_of_a_sheet_pin(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    """E10 (golden scenario s3): inside the sub-sheet, sch_connect(pin, '<pin name>') draws
+    a wire onto the still unwired hierarchical label sch_add_sheet_pin made, instead of a
+    second label that leaves the hierarchical label dangling (ERC error)."""
+    s = blank_session
+    await s.ensure_symbol_libraries()
+    ctx = edit_ctx(s, edit_db)
+    out, err = await call_tool(
+        ctx, "sch_add_sheet", name="Sensor", file="sensor.kicad_sch", at=[177.8, 88.9]
+    )
+    assert not err, out
+    pin, err = await call_tool(
+        ctx, "sch_add_sheet_pin", sheet="Sensor", name="SDA", direction="bidirectional"
+    )
+    assert not err, pin
+    lx, ly = pin["label"]["at_mm"]
+    r, err = await call_tool(
+        ctx, "sch_place_symbol", lib_id="Device:R", at=[lx + 15.24, ly], rotation=90,
+        sheet="/Sensor/",
+    )  # fmt: skip
+    assert not err, r
+    ref = r["placed"]["ref"]
+    near = min(r["placed"]["pins"], key=lambda p: abs(p["at_mm"][0] - lx))["pin"]
+    out, err = await call_tool(ctx, "sch_connect", **{"from": f"{ref}.{near}", "to": "SDA"})
+    assert not err, out
+    assert out["via_used"] == "wire", out
+    assert [c["kind"] for c in out["created"]] == ["wire"]
+    erc, err = await call_tool(ctx, "run_erc")
+    assert not err, erc
+    assert not [v for v in erc["violations"] if v["type"] == "label_dangling"], erc
