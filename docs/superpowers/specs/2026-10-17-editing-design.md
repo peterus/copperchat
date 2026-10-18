@@ -1,7 +1,8 @@
 # CopperChat — Schematic editing (sub-project 2) design
 
 Date: 2026-10-17
-Status: approved by the owner on 2026-10-18 (owner decisions of 2026-10-17 in §15)
+Status: approved by the owner on 2026-10-18 (owner decisions of 2026-10-17 in §15);
+amended after the spikes on 2026-10-18 (marked "Amended after spikes")
 
 ## 1. Purpose
 
@@ -101,17 +102,17 @@ CopperChat does not repeat that.
 | Topic | Decision |
 |---|---|
 | Write path | KiCad IPC API only (`kicad-cli api-server` + kipy), `BeginCommit`/`EndCommit` per tool call; `kicad-cli` only for checks/exports/diff. Unchanged rule from the foundation |
-| Atomicity | One tool call = one KiCad commit. Everything that can be checked **before** writing (targets, geometry, collisions, intended connectivity) is checked before `BeginCommit`; a failure while staging drops the commit. A mismatch found **after** the push is undone by a compensating commit built from the pre-images the tool read before writing (§5.1) |
-| Verification | Every mutating tool reads its result back from the API (items + netlist) **after** the commit is pushed (staged creates/deletes are not visible before, see §13) and only then reports success; mismatch = compensating commit + structured error |
+| Atomicity | One tool call = one KiCad commit (amended after spikes: at most two when KiCad cannot update items staged in the same commit — placement then field/transform update, new sheet then `Sheetfile` reset; a failure in the second commit or in verification compensates the first). Everything that can be checked **before** writing (targets, geometry, collisions, intended connectivity) is checked before `BeginCommit`; a failure while staging drops the commit. A mismatch found **after** the push is undone by a compensating commit built from the pre-images the tool read before writing (§5.1) |
+| Verification | Every mutating tool reads its result back from the API (items, their neighbourhood, and the live `GetSchematicNetlist`) **after** the commit is pushed (staged creates/deletes are not visible before, see §13) and only then reports success; mismatch = compensating commit + structured error |
 | Tool level | High-level, intent-shaped tools (`sch_connect`, `sch_place_symbol` …) plus coordinate-level tools for touch-up (`sch_reroute`, `sch_add_wire`). Coordinates in mm on the 1.27 mm (50 mil) grid, snapped by the tool |
 | Connection geometry | Computed by CopperChat (pin positions from the API, orthogonal routing around symbol bounding boxes, collision check against foreign pin ends); the model never has to hit a pin by hand. The agent may then correct a route by coordinates (`sch_reroute`); the tool guarantees the net set is unchanged (owner decision) |
 | Annotation | CopperChat assigns references itself in **per-sheet blocks** (sheet *n* → `R{n}01`…`R{n}99`; owner decision) and writes them through the API; existing references are never renumbered unless the user asks; it does not depend on headless auto-annotation (§5.5) |
-| Plan before edit | Server-enforced **change budget** per turn (12 item changes, ≤ 3 deleted symbols; owner decision); beyond it mutating tools refuse until an approved plan exists. While a plan is open, no edits outside it (§7) |
+| Plan before edit | Server-enforced **change budget** per turn (**20 logical changes**, ≤ 3 deleted symbols that existed before the turn; owner decisions 2026-10-17 and 2026-10-18, §7.1); beyond it mutating tools refuse until an approved plan exists. While a plan is open, no edits outside it (§7) |
 | ERC discipline | New ERC **errors** must be fixed or individually justified before a plan step (or an editing turn) is finished; new warnings are reported only (owner decision, §8.3) |
 | Checkpoints | Turn snapshot (Phase 7, unchanged) + one checkpoint per executed plan step (save + snapshot), stored with `kind = step` so crash recovery and pruning keep treating the turn snapshot as the turn's undo point (§5.4) |
 | Saving mid-turn | Allowed and explicit: before every ERC/diff run and every step checkpoint the schematic is saved through the API (`save()`), hashes are recorded right after, so on-disk sub-sheets are never stale (§5.1) |
-| Diff | Semantic change list from API data recorded by the tools themselves (no file parser); `kicad-cli sch diff` for the visual before/after if spike 2C confirms it |
-| Libraries | KiCad's library API (`GetLibraryItems`, `GetItemsFromLibrary`, `LoadAllLibraries`; kipy `get_library_symbols`, `get_library_symbol`, `get_library_footprints`, `load_all_libraries`) is the source for listing and pin data; CopperChat keeps an in-memory search index built from those results — no library file parsing (spike 2B measures cost) |
+| Diff | Semantic change list from API data recorded by the tools themselves (no file parser); `kicad-cli sch diff` JSON (spike 2C go) cross-checks it and feeds the viewer's diff layer (boxes drawn by KiCanvas; its PNG/SVG output is not used) |
+| Libraries | KiCad's library API (`GetLibraryItems`, `GetItemsFromLibrary`, `LoadAllLibraries`; kipy `get_library_symbols`, `get_library_symbol`, `get_library_footprints`, `load_all_libraries`) is the source for listing and pin data; CopperChat keeps an in-memory search index built from those results — no library file parsing. Amended after spikes (owner, 2026-10-18): all **symbol** libraries are loaded eagerly (~1.5 GB), **footprint** libraries lazily per library on demand (all libraries: 4.9 GB, spike 2B); pins of derived (`extends`) symbols come from a placement inside a dropped commit |
 | Part preferences | Layered `part-preferences` document (built-in template → user → project, same layering and GUI as skills); owner's user-level default: **passives in 0805**. Deviations are allowed but flagged in the tool result and must be justified by the agent (§9.1) |
 | Part knowledge | New read-only tool `parts_get_notes(mpn)` exposes `docs/parts/<MPN>/notes.md` to the main agent without a research run; ICs and other active parts without notes are researched (`research_part`) before they are placed (owner decision, §9) |
 | Scope of agent tools | Main agent still has **no** file/shell/web tools; all new tools are CopperChat MCP tools behind the existing guard + `PreToolUse` hook |
@@ -173,8 +174,10 @@ Frontend:
 7. **Read back after the push** (at the pinned commit created/deleted items
    are only applied to the screen when the commit is pushed — staged changes
    are invisible to `GetItems` and the netlist): affected items by id, plus the
-   netlist for any connectivity change (netlist export job, as `sch_get_net`
-   does today). Compare with intent (e.g. "U1.3 and R5.1 are on the same net
+   netlist for any connectivity change (amended after spikes: the live
+   `GetSchematicNetlist`, whose pin KIIDs resolve per sheet path — the export
+   jobs keep a stale copy of the schematic until `close_document` +
+   `open_document`, spike 2A Q3). Compare with intent (e.g. "U1.3 and R5.1 are on the same net
    and no other net merged into it").
 8. Mismatch → **compensating commit** from the pre-images (remove what was
    created, restore updated items, re-create deleted items with their
@@ -300,9 +303,9 @@ errors only for real failures, success only after verification). New rule:
 | Tool | Returns |
 |---|---|
 | `lib_search_symbols(query, library?, limit?)` | `lib_id`, description, keywords, unit count, pin count, default footprint, footprint filters |
-| `lib_get_symbol(lib_id)` | pins (number, name, electrical type, unit, position relative to origin), units, body styles, default fields |
+| `lib_get_symbol(lib_id)` | pins (number, name, electrical type, unit, position relative to origin), units, body styles, default fields, body size, `pin_directions_by_rotation` for ≤ 4-pin parts (amended after spike 2D) |
 | `lib_search_footprints(query, library?, limit?)` | `lib_id`, description, pad count |
-| `sch_find_space(sheet?, size_mm, near?)` | free rectangles near a point or ref |
+| `sch_find_space(lib_id, near=REF.PIN|REF|[x,y], rotation?, sheet?)` | free positions for that symbol near the anchor, keeping the anchor pin's and the new part's pin corridors free (amended after spike 2D) |
 | `sch_get_pin(ref, pin)` | absolute position, net, connected items, whether it is free |
 | `parts_get_notes(mpn)` | `notes.md` of a researched part (read-only); "not researched" otherwise |
 | `sch_changes(scope=turn|step|plan)` | the change list recorded so far |
@@ -313,9 +316,9 @@ errors only for real failures, success only after verification). New rule:
 |---|---|
 | `sch_place_symbol(lib_id, at, sheet?, rotation?, mirror?, unit?, reference?, value?, footprint?, fields?)` | places from the library; reference auto-assigned if omitted (§5.5); checks the footprint exists; result flags a footprint that deviates from the part preferences and an IC/active part without `notes.md` (§9) |
 | `sch_set_fields(ref, fields)` | value, footprint, MPN, manufacturer, datasheet, DNP, exclude flags; field visibility/position kept or auto-placed; same preference flag as above |
-| `sch_move(items, to|by, rotation?, mirror?)` | moves symbols/labels; keeps attached wires connected (wire ends dragged) or fails |
-| `sch_delete(items, with_dangling_wires=true)` | deletes; reports nets that changed |
-| `sch_connect(from, to, via=auto|wire|label, net_name?)` | `from`/`to` = `REF.PIN` or a net name; wire route or stub+label; verified by netlist |
+| `sch_move(items, to|by, rotation?, mirror?)` | moves symbols/labels; keeps attached wires connected (wire ends and fields dragged by CopperChat in the same commit — KiCad's API drags neither, spike 2A Q4) or fails |
+| `sch_delete(items, with_attached=true)` | deletes symbols (incl. `#PWR…` refs), labels, wires, junctions, no-connects, sheet symbols (file kept) with their attached stubs, labels and power symbols; reports nets that changed |
+| `sch_connect(from, to, via=auto|wire|label, net_name?)` | `from`/`to` = `REF.PIN` or a net name; wire route (may end on a wire of the target net as a T-join with junction — amended after spike 2D), power symbol for a power net, or stub+label; verified by netlist |
 | `sch_add_label(net, at=REF.PIN|position, kind=local|global|hierarchical)` | label (+ stub at a pin) |
 | `sch_add_power(net, at=REF.PIN|position, symbol?)` | power symbol from `power:` library |
 | `sch_no_connect(REF.PIN…)` | no-connect markers |
@@ -326,6 +329,10 @@ errors only for real failures, success only after verification). New rule:
 | `sch_reroute(wires|from–to, points)` | replaces the course of an existing wire route with agent-given points (touch-up after `sch_connect`); snapped and collision-checked; **refused and compensated unless the net set after the change is identical** to before (no new or lost connection) |
 | `sch_duplicate(items|refs, offset|at, sheet?, count=1, net_suffix?)` | copies symbols, wires, labels, junctions and no-connects as API item objects (read via `GetItems`, new UUIDs, positions offset, created via `create_items`; symbols placed from their `lib_id` and fields copied); new references per §5.5; local label names get `net_suffix` (e.g. `_CH2`) so copies do not merge with the original, global/power nets stay shared; counted against the budget like any change |
 | `sch_add_wire(points, sheet?)` | low-level escape hatch; still snapped, collision-checked and verified |
+
+`sch_add_label`, `sch_add_power` and `sch_no_connect` take several pins and are
+atomic (all targets checked before the commit; spike 2D failure mode 3);
+labels named like a power rail are refused in favour of `sch_add_power`.
 
 `REF.PIN` uses the pin number (`U1.3`) or a unique pin name (`U1.VIN`).
 Multi-unit parts address the unit implicitly through the pin.
@@ -352,14 +359,17 @@ regular, interruptible agent turn.
 The server enforces it; the model is told the rule in the editing skill but
 does not have to judge it alone.
 
-- **Unit: one item change** = one schematic item created, modified or
-  deleted, as listed in the tool's pre-computed change set (§5.1 step 3).
-  Items: symbol (all field edits on one symbol in one call count once), wire
-  segment, junction, no-connect, label, power symbol, sheet, sheet pin.
-  Example: moving a symbol that drags three wire segments = 4 changes;
-  `sch_connect` via labels on two pins = 2 stubs + 2 labels = 4.
-- **Change budget per turn** (setting, default **12 item changes**, and at
-  most **3 deleted symbols**), cumulative over the turn's calls outside a
+- **Unit: one logical change** (amended after spikes, owner decision
+  2026-10-18; spike 2D measured 22–28 KiCad items for a 3-part LED circuit):
+  a placed symbol, a field edit on one reference, a moved/rotated/mirrored
+  item (incl. dragged wires), a deleted symbol/label/sheet (incl. attached
+  stubs and power symbols), a connection (all its segments and junctions),
+  each pin given a label / power symbol / no-connect, a renamed net, a new
+  sheet or sheet pin, a changed reference; a duplicate counts its copied items.
+  A part the agent placed and deletes again in the same turn counts for
+  neither.
+- **Change budget per turn** (setting, default **20 logical changes**, and at
+  most **3 deleted symbols that existed before the turn**), cumulative over the turn's calls outside a
   plan. The check runs after the change set is known and before anything is
   written (§5.1 step 4). A call that would exceed the budget is refused with
   `plan_required` and the suggestion to call `plan_propose`.
@@ -430,9 +440,13 @@ parser. Shown per turn and per step; tapping selects the item in the viewer.
 
 - Default: the history preview of the turn/step snapshot (already rendered by
   Phase 7) next to the current agent view; toggle or slider in the viewer.
-- If spike 2C confirms it: `kicad-cli sch diff` (PNG/SVG with added/removed
-  marked, JSON) between the snapshot copy and the current saved copy, shown as
-  a "diff" layer and used to cross-check the change log in tests.
+- Amended after spikes (2C go): `kicad-cli sch diff --format json` between the
+  snapshot copy and a fresh saved copy (both full project directories) gives
+  per-sheet-instance boxes; a patched KiCanvas (fork `peterus/kicanvas`) draws
+  them as a "diff" layer (added green / modified orange / removed red) and
+  highlights sets of refs. The JSON also cross-checks the change log in tests;
+  diff entries without a logged counterpart (KiCad's push-time cleanup: merged
+  segments, dropped junctions) are listed as side effects.
 
 ### 8.3 Agent self-check
 
@@ -619,6 +633,26 @@ boards. Selection-based commands (`GetSelection`, `AddToSelection`,
 2A and 2B are independent and can run in parallel; 2D needs 2A's findings;
 2C is independent.
 
+**Amended after spikes (2026-10-18) — results** (`docs/spikes/2a…2d-*.md`):
+2A partial (every core operation works API-only, with workarounds:
+definition-less symbol updates — a full-definition update of a multi-unit
+symbol hangs the server; canonical orientation/mirror forms; fields and wire
+ends dragged by the client on move/rotate/mirror; `for_sheet(instance)` for
+every sub-sheet write — the unbound schematic silently drops them; read-back
+of the neighbourhood after each push, because the push runs KiCad's local
+cleanup; live `GetSchematicNetlist` for verification and export jobs only
+after save + `close_document`/`open_document`; new sheets created with an
+absolute file path, `Sheetfile` reset to relative in a second commit; save +
+revert before per-instance references on shared sheets; symbols duplicated by
+`place_symbol_from_library` + field copy; non-symbol items re-created with
+their original UUIDs; multi-unit fields set on every unit; the fixed client
+name means a stale commit must be dropped by id or the server restarted).
+2B partial (listing is names only; details batched; derived symbols' pins via
+a dropped-commit placement; search < 10 ms; 4.9 GB with all libraries →
+owner decision in §15). 2C go (diff JSON + KiCanvas highlight patch). 2D tool
+shape OK with changes (`sch_move`, `sch_delete`, `sch_find_space`, T-joins,
+pin directions, atomic multi-pin calls, budget in logical changes).
+
 ## 14. Outlook
 
 - **Sub-project 3** (Schematic → PCB): update PCB from schematic, footprint
@@ -659,6 +693,22 @@ author's open calls one by one:
 10. **Duplicating existing blocks** is wanted. Realised through API item
     objects (the headless server refuses the clipboard/selection commands);
     `ParseAndCreateItemsFromString` stays unused.
+
+### Decided by owner (2026-10-18, amended after spikes)
+
+11. **Library memory**: all symbol libraries are loaded eagerly (~1.5 GB);
+    footprint libraries lazily, one library per request (§3).
+12. **Change budget** counts logical changes (§7.1); limit **20 per turn**;
+    ≤ 3 deletions of symbols that existed before the turn (supersedes the
+    "12 item changes" of decision 3).
+13. **Projects without a board**: footprint existence is not checked (no load
+    of all footprint libraries); the footprint is marked "unverified" in the
+    tool result and the agent tells the user; the package/preference check
+    (e.g. 0805) still runs from the footprint name.
+14. **Failed-verification compensation after a symbol delete**: without a
+    `.kicad_pcb` the symbol is re-placed from the library (new UUID, lossless);
+    with a board the last step checkpoint / turn snapshot is restored instead,
+    so the board link is never silently broken (refines §5.1 step 8).
 
 ### Calls made by the author (for review)
 
