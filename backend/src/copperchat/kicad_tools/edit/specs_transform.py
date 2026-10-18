@@ -10,8 +10,12 @@ from copperchat.kicad_session import KicadHandle
 from copperchat.kicad_tools.edit.changeset import ChangeSet
 from copperchat.kicad_tools.edit.delete import DeletePlan, nets_changed, plan_delete
 from copperchat.kicad_tools.edit.engine import _pin_labeler, apply_change_set, edit_result
+from copperchat.kicad_tools.edit.geometry import Point, same_point, snap_point
 from copperchat.kicad_tools.edit.labels import World
+from copperchat.kicad_tools.edit.scene import short
+from copperchat.kicad_tools.edit.specs_core import _coord, apply_change
 from copperchat.kicad_tools.edit.targets import bad, resolve
+from copperchat.kicad_tools.edit.transform import MOVE_KINDS, plan_move
 from copperchat.tools.spec import ToolContext, ToolResult, ToolSpec, edit_spec
 
 
@@ -26,6 +30,54 @@ def _placed_this_turn(ctx: ToolContext) -> set[str]:
     if ctx.editing is None:
         return set()
     return set(ctx.editing.turn(ctx.project.id, ctx.run_id).placed_this_turn)
+
+
+# -- sch_move -----------------------------------------------------------------------------
+
+
+def _xy(args: dict[str, Any], key: str, notes: list[str]) -> Point | None:
+    raw = args.get(key)
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or len(raw) != 2 or not all(_coord(c) for c in raw):
+        raise bad(
+            f"sch_move: invalid {key}",
+            f"{key} was {short(raw)}",
+            f"Pass {key}=[x, y] in mm.",
+        )
+    point = (float(raw[0]), float(raw[1]))
+    snapped = snap_point(point)
+    if not same_point(point, snapped, 1e-4):
+        notes.append(f"{key} snapped to the 1.27 mm grid: {list(point)} -> {list(snapped)}")
+    return snapped
+
+
+async def prepare_move(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
+    tool = "sch_move"
+    notes: list[str] = []
+    to, by = _xy(args, "to", notes), _xy(args, "by", notes)
+    rotation, mirror = args.get("rotation"), args.get("mirror")
+    if rotation is not None and rotation not in (0, 90, 180, 270):
+        raise bad(f"{tool}: invalid rotation", f"rotation was {short(rotation)}",
+                  "Use 0, 90, 180 or 270 (degrees counter-clockwise).")  # fmt: skip
+    if mirror is not None and mirror not in ("", "x", "y"):
+        raise bad(f"{tool}: invalid mirror", f"mirror was {short(mirror)}",
+                  "Use '' (none), 'x' (upside down) or 'y' (left-right).")  # fmt: skip
+    if to is not None and by is not None:
+        raise bad(f"{tool}: pass either to or by", "both were given",
+                  "to=[x, y] places one item there; by=[dx, dy] shifts all items.")  # fmt: skip
+    if to is None and by is None and rotation is None and mirror is None:
+        raise bad(f"{tool} has nothing to do", "no to, by, rotation or mirror was given",
+                  "Pass to=[x, y], by=[dx, dy] and/or rotation / mirror.")  # fmt: skip
+
+    def run(h: KicadHandle) -> ChangeSet:
+        world = World(h)
+        targets = resolve(world, args.get("items"), tool, allow=MOVE_KINDS)
+        cs, _plan = plan_move(world, tool, targets, to, by, rotation, mirror)
+        cs.notes = [*notes, *cs.notes]
+        return cs
+
+    return await ctx.session.call(run)
 
 
 # -- sch_delete ---------------------------------------------------------------------------
@@ -119,7 +171,32 @@ _ITEMS = {
     ]
 }
 
+_XY = {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}
+
 TOOL_SPECS: list[ToolSpec] = [
+    edit_spec(
+        "sch_move",
+        "Move, rotate or mirror symbols (every unit of a reference, or one unit by UUID), "
+        "and move labels and sheet symbols, keeping every connection: attached wires are "
+        "dragged (a diagonal becomes an L), power symbols, labels and no-connects on a "
+        "moved pin travel with it, fields move with the part. to=[x, y] (one item) or "
+        "by=[dx, dy] (mm, snapped to 1.27 mm); rotation (absolute, degrees CCW) / mirror "
+        "alone rotate in place. Refused before writing when a part would overlap (the "
+        "nearest free position is suggested) or a dragged wire would touch another net; "
+        "verified: the netlist stays identical. One logical change per moved item.",
+        _obj(
+            {
+                "items": {**_ITEMS, "description": "['R5', '<label uuid>', 'sheet:power']"},
+                "to": {**_XY, "description": "New position [x, y] in mm (one item)."},
+                "by": {**_XY, "description": "Shift [dx, dy] in mm."},
+                "rotation": {"type": "integer", "enum": [0, 90, 180, 270]},
+                "mirror": {"type": "string", "enum": ["", "x", "y"]},
+            },
+            ["items"],
+        ),
+        prepare_move,
+        apply_change,
+    ),
     edit_spec(
         "sch_delete",
         "Delete items: references (every unit; '#PWR03' for a power symbol), item UUIDs "
