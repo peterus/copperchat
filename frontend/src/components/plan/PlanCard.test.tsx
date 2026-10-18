@@ -7,7 +7,7 @@ import type { PlanDTO, PlanStepDTO } from '@/protocol/frames';
 import { createChatStore } from '@/stores/chat';
 import { createPlansStore, type PlansDeps, PlansStoreContext } from '@/stores/plans';
 import { FakeWsClient } from '@/test/fakeWsClient';
-import { ABORT_ARM_MS, PlanCard } from './PlanCard';
+import { ARM_MS, PlanCard } from './PlanCard';
 
 const PID = 'a1b2c3d4e5f6';
 const PLAN = 'p'.repeat(32);
@@ -155,6 +155,14 @@ describe('PlanCard', () => {
     expect(screen.queryByRole('button', { name: 'Resume' })).toBeNull();
   });
 
+  it('reject needs a second tap', async () => {
+    const { deps } = setup(plan());
+    fireEvent.click(await screen.findByRole('button', { name: 'Reject' }));
+    expect(deps.event).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Really reject?' }));
+    await waitFor(() => expect(deps.event).toHaveBeenCalledWith(PID, PLAN, 'reject'));
+  });
+
   it('abort needs a second tap', async () => {
     const { deps } = setup(plan({ status: 'paused', pauseReason: 'interrupted' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Abort' }));
@@ -171,7 +179,7 @@ describe('PlanCard', () => {
         await vi.runOnlyPendingTimersAsync();
       });
       fireEvent.click(screen.getByRole('button', { name: 'Abort' }));
-      act(() => vi.advanceTimersByTime(ABORT_ARM_MS + 1));
+      act(() => vi.advanceTimersByTime(ARM_MS + 1));
       fireEvent.click(screen.getByRole('button', { name: 'Abort' }));
       expect(deps.event).not.toHaveBeenCalled();
     } finally {

@@ -45,13 +45,23 @@ const PRIMARY = `${BTN} bg-accent text-accent-fg`;
 const SECONDARY = `${BTN} border border-border`;
 const DANGER = `${BTN} border border-danger text-danger`;
 
-/** Aborting is final: the first tap arms the button ("Really abort?"), the second aborts. */
-export const ABORT_ARM_MS = 4000;
-function AbortButton({ disabled, onAbort }: { disabled: boolean; onAbort: () => void }) {
+/** Final actions (Abort, Reject): the first tap arms the button ("Really …?"), the second acts. */
+export const ARM_MS = 4000;
+function ArmedButton({
+  label,
+  disabled,
+  className,
+  onConfirm,
+}: {
+  label: string;
+  disabled: boolean;
+  className: string;
+  onConfirm: () => void;
+}) {
   const [armed, setArmed] = useState(false);
   useEffect(() => {
     if (!armed) return;
-    const t = setTimeout(() => setArmed(false), ABORT_ARM_MS);
+    const t = setTimeout(() => setArmed(false), ARM_MS);
     return () => clearTimeout(t);
   }, [armed]);
   return (
@@ -61,11 +71,11 @@ function AbortButton({ disabled, onAbort }: { disabled: boolean; onAbort: () => 
       onClick={() => {
         if (!armed) return setArmed(true);
         setArmed(false);
-        onAbort();
+        onConfirm();
       }}
-      className={armed ? `${BTN} bg-danger text-white` : DANGER}
+      className={armed ? `${BTN} bg-danger text-white` : className}
     >
-      {armed ? 'Really abort?' : 'Abort'}
+      {armed ? `Really ${label.toLowerCase()}?` : label}
     </button>
   );
 }
@@ -138,14 +148,12 @@ export function PlanCard({ projectId, planId }: { projectId: string; planId: str
           <button type="button" disabled={busy} onClick={() => void s.approve(plan.id)} className={PRIMARY}>
             {pending === 'approve' ? 'Approving…' : 'Approve'}
           </button>
-          <button type="button" disabled={busy} onClick={() => void s.reject(plan.id)} className={SECONDARY}>
-            Reject
-          </button>
+          <ArmedButton label="Reject" disabled={busy} className={SECONDARY} onConfirm={() => void s.reject(plan.id)} />
         </div>
       )}
       {plan.status === 'approved' && (
         <div className="mt-2 flex flex-col gap-2 sm:flex-row">
-          <AbortButton disabled={busy} onAbort={() => void s.abort(plan.id)} />
+          <ArmedButton label="Abort" disabled={busy} className={DANGER} onConfirm={() => void s.abort(plan.id)} />
         </div>
       )}
       {plan.status === 'running' && (
@@ -168,7 +176,7 @@ export function PlanCard({ projectId, planId }: { projectId: string; planId: str
           <button type="button" disabled={busy} onClick={() => setConfirm(true)} className={SECONDARY}>
             {pending === 'rollback' ? 'Rolling back…' : 'Roll back to…'}
           </button>
-          <AbortButton disabled={busy} onAbort={() => void s.abort(plan.id)} />
+          <ArmedButton label="Abort" disabled={busy} className={DANGER} onConfirm={() => void s.abort(plan.id)} />
         </div>
       )}
       {confirm && (

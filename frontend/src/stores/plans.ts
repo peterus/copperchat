@@ -73,7 +73,7 @@ export function createPlansStore(
   // Bumped per project switch: responses of an older project are dropped.
   let generation = 0;
   const inflight = new Map<string, Promise<void>>();
-  let openLoad: { projectId: string; promise: Promise<void> } | null = null;
+  let openLoad: { projectId: string; promise: Promise<boolean> } | null = null;
 
   const upsert = (plan: PlanDTO) =>
     store.setState((s) => {
@@ -93,7 +93,8 @@ export function createPlansStore(
     });
 
   /** One `GET /plans/open` at a time per project (cards mounting together share it). */
-  const loadOpen = (projectId: string): Promise<void> => {
+  /** Resolves true when the open plan (or none) was loaded. */
+  const loadOpen = (projectId: string): Promise<boolean> => {
     if (openLoad?.projectId === projectId) return openLoad.promise;
     const promise = fetchOpen(projectId).finally(() => {
       if (openLoad?.promise === promise) openLoad = null;
@@ -101,15 +102,17 @@ export function createPlansStore(
     openLoad = { projectId, promise };
     return promise;
   };
-  const fetchOpen = async (projectId: string) => {
+  const fetchOpen = async (projectId: string): Promise<boolean> => {
     const gen = generation;
     try {
       const plan = await deps.fetchOpen(projectId);
-      if (gen !== generation) return;
+      if (gen !== generation) return false;
       if (plan) upsert(plan);
       else store.setState((s) => (s.open ? { open: null } : s));
+      return true;
     } catch {
       // The cards of loaded plans still work; the next load or reconnect retries.
+      return false;
     }
   };
 
@@ -203,12 +206,12 @@ export function createPlansStore(
     if (state !== 'open' && state !== 'resumed') return;
     const { projectId, byId } = store.getState();
     if (!projectId) return;
-    void loadOpen(projectId).then(() => {
-      // The open plan came with loadOpen; the other unfinished ones (closed meanwhile?) are refetched.
+    void loadOpen(projectId).then((loaded) => {
+      // The open plan came with a successful loadOpen; the other unfinished ones are refetched.
       const { open, projectId: now } = store.getState();
       if (now !== projectId) return;
       for (const plan of Object.values(byId)) {
-        if (OPEN_STATUSES.has(plan.status) && plan.id !== open?.id) void fetchOne(projectId, plan.id);
+        if (OPEN_STATUSES.has(plan.status) && !(loaded && plan.id === open?.id)) void fetchOne(projectId, plan.id);
       }
     });
   });

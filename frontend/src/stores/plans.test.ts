@@ -71,4 +71,14 @@ describe('plans store', () => {
     expect(d.fetchOpen).toHaveBeenCalledTimes(2);
     expect(d.fetchPlan).not.toHaveBeenCalled();
   });
+
+  it('a failed open-plan request on reconnect still refreshes the loaded open plan', async () => {
+    const ws = new FakeWsClient();
+    const d = deps();
+    const s = createPlansStore(ws, d);
+    await s.getState().load(PID);
+    vi.mocked(d.fetchOpen).mockRejectedValueOnce(new Error('HTTP 503'));
+    ws.resume();
+    await vi.waitFor(() => expect(d.fetchPlan).toHaveBeenCalledWith(PID, 'p'.repeat(32)));
+  });
 });

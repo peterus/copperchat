@@ -30,19 +30,26 @@ export function EditingSection() {
   const [budget, setBudget] = useState('');
   const [error, setError] = useState<string | null>(null);
   const seq = useRef(0);
-  /** The last settings the server confirmed (load or PUT response): what a failed save falls back to. */
-  const confirmed = useRef<EditingSettings | null>(null);
+  /**
+   * The newest settings the server confirmed (by request order: load or PUT response) and the
+   * saves still in flight. Optimistic values show until the last save settles; then the
+   * confirmed copy is shown, whatever order the responses (or failures) arrived in.
+   */
+  const confirmed = useRef<{ seq: number; settings: EditingSettings } | null>(null);
+  const inflight = useRef(0);
   const budgetId = useId();
 
   useEffect(() => {
     setSettings(null);
     setError(null);
+    confirmed.current = null;
+    inflight.current = 0;
     if (!projectId) return;
     const mine = ++seq.current;
     fetchEditingSettings(projectId).then(
       (s) => {
         if (mine !== seq.current) return;
-        confirmed.current = s;
+        confirmed.current = { seq: mine, settings: s };
         setSettings(s);
         setBudget(String(s.changeBudget));
       },
@@ -63,23 +70,23 @@ export function EditingSection() {
     if (!settings) return;
     const mine = ++seq.current;
     const pid = projectId;
+    inflight.current += 1;
     setError(null);
-    setSettings({ ...settings, ...patch }); // optimistic; the newest response (or the confirmed copy) wins
+    setSettings({ ...settings, ...patch }); // optimistic until every save has settled
+    let failure: string | null = null;
     try {
       const next = await putEditingSettings(pid, patch);
       if (useProjects.getState().current?.id !== pid) return;
-      confirmed.current = next;
-      if (mine !== seq.current) return; // a newer save is in flight: its response shows the state
-      setSettings(next);
-      setBudget(String(next.changeBudget));
+      if (!confirmed.current || mine > confirmed.current.seq) confirmed.current = { seq: mine, settings: next };
     } catch (e) {
-      if (useProjects.getState().current?.id !== pid) return;
-      // Never dropped, also when a newer save superseded this one.
-      setError(errorText(e));
-      if (mine !== seq.current || !confirmed.current) return;
-      setSettings(confirmed.current);
-      setBudget(String(confirmed.current.changeBudget));
+      failure = errorText(e);
     }
+    if (useProjects.getState().current?.id !== pid) return;
+    if (failure) setError(failure); // never dropped, also when a newer save superseded this one
+    inflight.current -= 1;
+    if (inflight.current > 0 || !confirmed.current) return;
+    setSettings(confirmed.current.settings);
+    setBudget(String(confirmed.current.settings.changeBudget));
   };
 
   const commitBudget = () => {

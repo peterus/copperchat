@@ -1,5 +1,5 @@
 import { History } from 'lucide-react';
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { apiGet } from '@/api/http';
 import { ConfirmRestore } from '@/components/history/ConfirmRestore';
 import { errorText } from '@/components/history/restore';
@@ -111,6 +111,7 @@ export function HistoryPanel({ projectId }: { projectId: string }) {
   }, [projectId]);
 
   useReloadAfterRun(load, runActive);
+  const nodes = useMemo(() => (entries ? nestHistory(entries) : null), [entries]);
   const restore = useCallback((e: HistoryEntry) => {
     setError(null);
     setConfirm(e);
@@ -128,8 +129,7 @@ export function HistoryPanel({ projectId }: { projectId: string }) {
         <p className="text-sm text-muted">No snapshots yet. One is taken before each agent turn that changes the design.</p>
       )}
       <ul aria-label="Snapshots" className="flex flex-col gap-2">
-        {entries &&
-          nestHistory(entries).map(({ entry, steps }) => (
+        {nodes?.map(({ entry, steps }) => (
             <li key={entry.id} className="rounded border border-border bg-surface p-2">
               <EntryRow entry={entry} runActive={runActive} onRestore={restore} />
               {steps.length > 0 && (

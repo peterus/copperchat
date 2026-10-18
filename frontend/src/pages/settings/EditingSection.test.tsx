@@ -115,4 +115,20 @@ describe('EditingSection', () => {
     expect(screen.getByRole('radio', { name: '×1000' })).toBeChecked();
     expect(screen.getByRole('alert')).toHaveTextContent('database is locked');
   });
+
+  it('the newest save failing before an older one succeeds still ends on the server state', async () => {
+    let finishFirst: (v: object) => void = () => {};
+    let failSecond: (e: Error) => void = () => {};
+    apiPut
+      .mockImplementationOnce(() => new Promise((r) => (finishFirst = r)))
+      .mockImplementationOnce(() => new Promise((_r, rej) => (failSecond = rej)));
+    render(<EditingSection />);
+    fireEvent.click(await screen.findByRole('radio', { name: 'Always' }));
+    fireEvent.click(screen.getByRole('radio', { name: '×1000' }));
+    failSecond(new Error('database is locked'));
+    expect(await screen.findByRole('alert')).toHaveTextContent('database is locked');
+    finishFirst({ ...DEFAULTS, planPolicy: 'always' });
+    await waitFor(() => expect(screen.getByRole('radio', { name: '×100' })).toBeChecked());
+    expect(screen.getByRole('radio', { name: 'Always' })).toBeChecked();
+  });
 });

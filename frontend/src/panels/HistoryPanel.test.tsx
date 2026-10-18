@@ -144,12 +144,17 @@ describe('HistoryPanel', () => {
 
     it('a restore refused because a plan is open shows the reason', async () => {
       apiGet.mockResolvedValue(withSteps);
-      apiPost.mockRejectedValue(new Error('The design cannot be restored while a plan is open'));
+      apiPost.mockRejectedValue(
+        Object.assign(new Error('The design cannot be restored while a plan is open'), {
+          status: 409,
+          detail: { error: { code: 'plan_open', message: 'The design cannot be restored while a plan is open' } },
+        }),
+      );
       render(<HistoryPanel projectId="p1" />);
       const nested = await screen.findByRole('list', { name: 'Plan steps of route USB' });
       fireEvent.click(within(nested).getAllByRole('button', { name: 'Restore' })[1]!);
       fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /^restore$/i }));
-      expect(await screen.findByRole('alert')).toHaveTextContent('while a plan is open');
+      expect(await screen.findByRole('alert')).toHaveTextContent('Roll back to…');
     });
   });
 });
