@@ -10,9 +10,9 @@ import pytest
 from copperchat.db import Database
 from copperchat.kicad_session import KicadHandle, KicadSession
 from copperchat.kicad_tools import access
-from copperchat.kicad_tools.edit.geometry import on_grid
-from tests.kicad.edit.helpers import item_ids
-from tests.support.edit import call_tool, edit_ctx, two_resistors
+from copperchat.kicad_tools.edit.geometry import on_grid, pin_ends
+from tests.kicad.edit.helpers import item_ids, local_label, wire
+from tests.support.edit import call_tool, edit_ctx, free_area, get_item, place_direct, two_resistors
 from tests.support.kicad_cli import cli_netlist, cli_pin_nets
 
 pytestmark = pytest.mark.kicad
@@ -167,3 +167,66 @@ async def test_wire_end_on_existing_wire_gets_junction(ecc83_session: KicadSessi
     kinds = sorted(c["kind"] for c in out["created"])
     assert kinds == ["junction", "wire"]
     assert out["side_effects"] == []
+
+
+async def _create(s: KicadSession, *items: Any) -> None:
+    async with s.commit("setup"):
+        await s.call(lambda h: h.schematic().create_items(list(items)))
+
+
+async def _refused(s: KicadSession, points: list[list[float]]) -> dict[str, Any]:
+    before = await _state(s)
+    snapshots = Counter()
+    out, is_error = await call_tool(edit_ctx(s, on_mutation=snapshots), "sch_add_wire",
+                                    points=points)  # fmt: skip
+    assert is_error, out
+    assert await _state(s) == before and snapshots.calls == 0
+    error: dict[str, Any] = out["error"]
+    return error
+
+
+async def test_end_on_unjoined_crossing_refused(ecc83_session: KicadSession) -> None:
+    s = ecc83_session
+    x, y = await s.call(lambda h: free_area(h, 15.24, 15.24))
+    p = (x + 7.62, y + 7.62)
+    await _create(s, wire((x, p[1]), (x + 15.24, p[1])), wire((p[0], y), (p[0], y + 15.24)))
+    error = await _refused(s, [[p[0] + 2.54, p[1] + 2.54], [p[0] + 2.54, p[1] + 1.27],
+                               [p[0], p[1] + 1.27], list(p)])  # fmt: skip
+    assert error["code"] == "overlap" and "cross" in error["why"]
+
+
+async def test_segment_over_foreign_label_refused(ecc83_session: KicadSession) -> None:
+    s = ecc83_session
+    x, y = await s.call(lambda h: free_area(h, 10.16, 5.08))
+    at = (x + 5.08, y + 2.54)
+    await _create(s, local_label("FOREIGN", at))
+    error = await _refused(s, [[at[0] - 2.54, at[1]], [at[0] + 2.54, at[1]]])
+    assert error["code"] == "overlap" and "FOREIGN" in error["why"]
+
+
+async def test_segment_along_foreign_wire_refused(ecc83_session: KicadSession) -> None:
+    s = ecc83_session
+    x, y = await s.call(lambda h: free_area(h, 20.32, 5.08))
+    await _create(s, wire((x + 5.08, y + 2.54), (x + 12.7, y + 2.54)))
+    error = await _refused(s, [[x, y + 2.54], [x + 17.78, y + 2.54]])
+    assert error["code"] == "overlap" and "along" in error["why"]
+
+
+async def test_segment_through_symbol_body_refused(ecc83_session: KicadSession) -> None:
+    s = ecc83_session
+    r = await two_resistors(s)
+    a1, a2 = r["a1"].at, r["a2"].at
+    cy = round((a1[1] + a2[1]) / 2, 4)
+    error = await _refused(s, [[a1[0] - 5.08, cy], [a1[0] + 5.08, cy]])
+    assert error["code"] == "overlap" and "body of R901" in error["why"]
+
+
+async def test_off_grid_pin_refused(ecc83_session: KicadSession) -> None:
+    s = ecc83_session
+    await s.ensure_symbol_libraries()
+    x, y = await s.call(lambda h: free_area(h, 10.16, 15.24))
+    uid = await place_direct(s, "Device:R", (x + 2.54 + 0.635, y + 5.08), "R903")
+    pins = await s.call(lambda h: {p.number: p for p in pin_ends(get_item(h, uid))})
+    p2 = list(pins["2"].at)
+    error = await _refused(s, [p2, [p2[0], p2[1] + 2.54]])
+    assert error["code"] == "invalid_argument" and "off the 1.27 mm grid" in error["why"]

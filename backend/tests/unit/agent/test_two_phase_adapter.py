@@ -272,3 +272,58 @@ def test_two_phase_spec_requires_apply_and_flags(
         monkeypatch.setattr(registry, "_PROVIDERS", ("fake_two_phase",))
         with pytest.raises(ToolRegistryError, match="two-phase"):
             registry.all_specs()
+
+
+async def test_own_placement_delete_allowed_at_the_limit(h: Harness) -> None:
+    await h.call(h.spec("place", placed=["u"]))
+    await h.call(h.spec(changes=19))
+    assert h.state.logical_used == 20
+    assert "error" not in await h.call(h.spec("delete", deleted=["u"]))
+    assert h.state.logical_used == 19
+
+
+async def test_document_inconsistent_halts_further_edits(h: Harness) -> None:
+    from copperchat.errors import DocumentInconsistent
+
+    seen: list[Exception] = []
+
+    async def prepare(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
+        return ChangeSet("sch_bad", SHEET, [], {}, NetIntent(), Logical(1))
+
+    async def apply(ctx: ToolContext, cs: ChangeSet) -> ToolResult:
+        raise DocumentInconsistent("boom")
+
+    bad = edit_spec("sch_bad", "d", SCHEMA, prepare, apply)
+
+    def ctx() -> ToolContext:
+        c = Harness.ctx(h)
+        c.on_document_inconsistent = seen.append
+        return c
+
+    tool = build_sdk_tool_list([bad], ctx)[0]
+    raw = await tool.handler({})
+    assert raw["is_error"] and len(seen) == 1
+    assert json.loads(raw["content"][0]["text"])["error"]["code"] == "document_inconsistent"
+    h.log.clear()
+    out = await h.call(h.spec())
+    assert out["error"]["code"] == "document_inconsistent"
+    assert h.log == []  # refused before the gate, prepare and the snapshot
+
+
+async def test_failing_budget_record_does_not_fail_an_applied_call(
+    h: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def broken(ctx: ToolContext) -> None:
+        raise RuntimeError("db gone")
+
+    monkeypatch.setattr(h.svc.gate, "budget_info", broken)
+    out = await h.call(h.spec())
+    assert out["ok"] is True and out["budget"] is None
+
+
+async def test_calls_without_run_share_no_state(h: Harness) -> None:
+    ctx = h.ctx()
+    ctx.run_id = None
+    h.svc.note_call(ctx, "sch_list_symbols")
+    assert h.svc.turn(PID, None).call_seq == 0
+    assert h.svc.turn(PID, None) is not h.svc.turn(PID, None)

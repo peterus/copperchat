@@ -9,7 +9,6 @@ from typing import Any
 
 from copperchat.errors import StructuredToolError
 from copperchat.kicad_session import KicadHandle
-from copperchat.kicad_tools import access
 from copperchat.kicad_tools.access import Netlist, PinKey
 from copperchat.kicad_tools.edit.changeset import (
     ChangeSet,
@@ -32,7 +31,7 @@ from copperchat.kicad_tools.edit.geometry import (
 from copperchat.kicad_tools.edit.scene import (
     Scene,
     all_symbols,
-    item_nets,
+    netlists,
     read_scene,
     resolve_pin,
     resolve_sheet,
@@ -62,11 +61,15 @@ def _fmt(p: Point) -> str:
 
 def _get_pin(spec: str) -> Any:
     def run(h: KicadHandle) -> dict[str, Any]:
-        symbols = all_symbols(h)
-        pin = resolve_pin(h, spec, symbols)
-        owner = next(s for s in symbols if s.uuid == pin.key[1] and s.sheet.path == pin.key[0])
+        raw = h.schematic().get_symbols()
+        pin = resolve_pin(h, spec, raw=raw)
+        owner = next(
+            s
+            for s in all_symbols(h, raw, ref=pin.ref)
+            if s.uuid == pin.key[1] and s.sheet.path == pin.key[0]
+        )
         scene = read_scene(h, owner.sheet)
-        net = access.live_netlist(h).net_of(pin.key)
+        net = netlists(h, raw)[0].net_of(pin.key)
         connected = [
             i
             for i in scene.items_at(pin.at)
@@ -98,24 +101,36 @@ async def sch_get_pin(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
 # -- sch_add_wire -----------------------------------------------------------------------
 
 
+MAX_POINTS = 64
+
+
+def _short(value: Any) -> str:
+    text = repr(value)
+    return text if len(text) <= 80 else text[:77] + "..."
+
+
+def _coord(c: Any) -> bool:
+    if not isinstance(c, (int, float)) or isinstance(c, bool):
+        return False
+    try:
+        return abs(c) < 10_000 and math.isfinite(c)
+    except OverflowError:  # an int too large for a float
+        return False
+
+
 def _parse_points(raw: Any) -> list[Point]:
-    if not isinstance(raw, list) or len(raw) < 2:
+    if not isinstance(raw, list) or not 2 <= len(raw) <= MAX_POINTS:
         raise _bad(
-            "sch_add_wire needs at least two points",
-            f"points was {raw!r}",
-            "Pass points as [[x, y], [x, y], ...] in mm.",
+            f"sch_add_wire needs 2 to {MAX_POINTS} points",
+            f"points was {_short(raw)}",
+            "Pass points as [[x, y], [x, y], ...] in mm; split long runs into several wires.",
         )
     out: list[Point] = []
     for p in raw:
-        if (
-            not isinstance(p, (list, tuple))
-            or len(p) != 2
-            or not all(isinstance(c, (int, float)) and not isinstance(c, bool) for c in p)
-            or not all(math.isfinite(c) and abs(c) < 10_000 for c in p)
-        ):
+        if not isinstance(p, (list, tuple)) or len(p) != 2 or not all(_coord(c) for c in p):
             raise _bad(
                 "Invalid point in sch_add_wire",
-                f"{p!r} is not an [x, y] pair of mm numbers",
+                f"{_short(p)} is not an [x, y] pair of mm numbers",
                 "Pass points as [[x, y], [x, y], ...] in mm.",
             )
         out.append((float(p[0]), float(p[1])))
@@ -146,24 +161,48 @@ def _junction(at: Point) -> Any:
 
 
 def _end_nets(
-    scene: Scene, sheet: SheetRef, end: Point, nets: dict[tuple[str, str], str]
+    scene: Scene,
+    sheet: SheetRef,
+    end: Point,
+    netlist: Netlist,
+    nets: dict[tuple[str, str], str],
 ) -> tuple[list[PinKey], set[str], bool]:
     """Terminal pins at an end, nets of the other items there, and whether the end lands
     on a wire interior (a T-joint that gets a junction)."""
     pins = [p.key for p in scene.all_pins() if same_point(p.at, end)]
     end_nets: set[str] = set()
-    t_joint = False
+    interiors = 0
     for w in scene.wires.values():
         if on_segment(end, w.start, w.end):
-            t_joint |= in_segment_interior(end, w.start, w.end)
+            interiors += in_segment_interior(end, w.start, w.end)
             if (net := nets.get((sheet.path, w.uuid))) is not None:
                 end_nets.add(net)
+    has_junction = any(same_point(j, end) for j in scene.junctions.values())
+    if interiors > 1 and not has_junction:
+        # A crossing without a junction joins nothing yet; our junction would short it.
+        raise StructuredToolError(
+            "sch_add_wire refused: the end is on a wire crossing",
+            f"the end {_fmt(end)} lies where two wires cross without a junction; "
+            "connecting there would join both wires",
+            "End the wire on one of the wires away from the crossing.",
+            code="overlap",
+        )
+    t_joint = interiors > 0 and not has_junction
     for uid, item_at in [
         *((lb.uuid, lb.at) for lb in scene.labels.values()),
         *scene.junctions.items(),
     ]:
         if same_point(item_at, end) and (net := nets.get((sheet.path, uid))) is not None:
             end_nets.add(net)
+    pin_nets = {n for k in pins if (n := netlist.net_of(k)) is not None}
+    if len(end_nets | pin_nets) > 1:
+        raise StructuredToolError(
+            "sch_add_wire refused: one end touches several nets",
+            f"the end {_fmt(end)} touches the nets {', '.join(sorted(end_nets | pin_nets))}; "
+            "the wire would short them",
+            "End the wire on exactly one net.",
+            code="overlap",
+        )
     return pins, end_nets, t_joint
 
 
@@ -249,8 +288,7 @@ def _plan_wire(raw_points: list[Point], sheet_arg: str | None) -> Any:
     def run(h: KicadHandle) -> ChangeSet:
         sheet = resolve_sheet(h, sheet_arg)
         scene = read_scene(h, sheet)
-        netlist = access.live_netlist(h)
-        nets = item_nets(h)
+        netlist, nets = netlists(h)
         notes: list[str] = []
         snapped = [snap_point(p) for p in raw_points]
         moved = [(r, s) for r, s in zip(raw_points, snapped, strict=True)
@@ -259,6 +297,13 @@ def _plan_wire(raw_points: list[Point], sheet_arg: str | None) -> Any:
         for idx in (0, len(raw_points) - 1):
             raw, end = raw_points[idx], snapped[idx]
             for pin in pin_ends:
+                if same_point(pin.at, raw, EXACT_MM) and not same_point(pin.at, end, EXACT_MM):
+                    raise _bad(
+                        "sch_add_wire cannot connect an off-grid pin",
+                        f"pin {pin.label} at {_fmt(pin.at)} is off the 1.27 mm grid; the "
+                        f"snapped end {_fmt(end)} would miss it",
+                        "Connect this pin with a label placed on the pin end instead.",
+                    )
                 if same_point(pin.at, end, EXACT_MM) and not same_point(pin.at, raw, EXACT_MM):
                     off = math.dist(pin.at, raw)
                     raise _bad(
@@ -289,8 +334,8 @@ def _plan_wire(raw_points: list[Point], sheet_arg: str | None) -> Any:
                     f"segment {_fmt(a)}-{_fmt(b)} is neither horizontal nor vertical",
                     "Add a corner point so every segment is horizontal or vertical.",
                 )
-        start_pins, start_nets, start_t = _end_nets(scene, sheet, points[0], nets)
-        end_pins, end_nets, end_t = _end_nets(scene, sheet, points[-1], nets)
+        start_pins, start_nets, start_t = _end_nets(scene, sheet, points[0], netlist, nets)
+        end_pins, end_nets, end_t = _end_nets(scene, sheet, points[-1], netlist, nets)
         terminals = [*start_pins, *end_pins]
         allowed = {n for k in terminals if (n := netlist.net_of(k)) is not None}
         allowed |= start_nets | end_nets
@@ -373,6 +418,7 @@ TOOL_SPECS: list[ToolSpec] = [
                 "points": {
                     "type": "array",
                     "minItems": 2,
+                    "maxItems": MAX_POINTS,
                     "items": {
                         "type": "array",
                         "items": {"type": "number"},

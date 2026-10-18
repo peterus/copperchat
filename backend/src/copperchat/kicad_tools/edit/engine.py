@@ -45,7 +45,7 @@ from copperchat.kicad_tools.edit.geometry import (
     on_segment,
     same_point,
 )
-from copperchat.kicad_tools.edit.scene import item_nets, sheet_ref, sheet_refs
+from copperchat.kicad_tools.edit.scene import netlists, sheet_ref, sheet_refs
 from copperchat.tools.spec import ToolContext, ToolResult
 
 log = logging.getLogger(__name__)
@@ -130,21 +130,25 @@ def _kiid(value: str) -> Any:
 
 
 def by_id(sch: Any, ids: Iterable[str]) -> dict[str, Any]:
-    """GetItemsById tolerant of missing ids (one missing id fails the whole call)."""
+    """GetItemsById tolerant of missing ids: one missing id fails the whole call, so a
+    failing batch is bisected (O(missing * log n) calls, not one per id)."""
     wanted = list(dict.fromkeys(ids))
-    if not wanted:
-        return {}
-    try:
-        return {access.kiid(i): i for i in sch.get_items_by_id([_kiid(u) for u in wanted])}
-    except Exception:
-        out: dict[str, Any] = {}
-        for u in wanted:
-            try:
-                for i in sch.get_items_by_id([_kiid(u)]):
-                    out[access.kiid(i)] = i
-            except Exception:  # a missing id is what this checks for
-                continue
-        return out
+    out: dict[str, Any] = {}
+
+    def fetch(chunk: list[str]) -> None:
+        if not chunk:
+            return
+        try:
+            for i in sch.get_items_by_id([_kiid(u) for u in chunk]):
+                out[access.kiid(i)] = i
+        except Exception:  # a missing id is what this checks for
+            if len(chunk) > 1:
+                mid = len(chunk) // 2
+                fetch(chunk[:mid])
+                fetch(chunk[mid:])
+
+    fetch(wanted)
+    return out
 
 
 @dataclass
@@ -190,6 +194,19 @@ class _Run:
     problems: list[str] = field(default_factory=list)
     pushed: int = 0
     replaced: dict[str, str] = field(default_factory=dict)  # compensation: old -> new symbol
+
+    def checkpoint(self) -> tuple[Any, ...]:
+        return (dict(self.created), list(self.placed), dict(self.modified), dict(self.deleted),
+                dict(self.neighbours))  # fmt: skip
+
+    def restore(self, saved: tuple[Any, ...]) -> None:
+        self.created, self.placed, self.modified, self.deleted, self.neighbours = (
+            dict(saved[0]),
+            list(saved[1]),
+            dict(saved[2]),
+            dict(saved[3]),
+            dict(saved[4]),
+        )
 
     def sheet(self, op: EditOp) -> SheetRef:
         return op.sheet or self.cs.sheet
@@ -490,7 +507,8 @@ async def _compensate(
     except (asyncio.CancelledError, KicadUnavailable):
         raise
     except Exception as exc:
-        raise DocumentInconsistent(f"compensating {run.cs.tool} failed: {exc}") from exc
+        log.warning("compensating %s failed: %s", run.cs.tool, exc)
+        raise DocumentInconsistent(f"undoing the partial {run.cs.tool} change failed") from exc
     if has_board and symbols_deleted:
         raise DocumentInconsistent(
             f"{run.cs.tool}: deleted symbols cannot be restored losslessly in a project with "
@@ -504,7 +522,7 @@ async def _compensate(
 
     def recheck(h: KicadHandle) -> tuple[set[str], Netlist]:
         found = by_id(h.schematic(), [*expect_present, *run.created])
-        return set(found), access.live_netlist(h)
+        return set(found), netlists(h)[0]
 
     present, after = await session.call(recheck)
     missing = [u for u in expect_present if u not in present]
@@ -532,7 +550,7 @@ def _pin_labeler(symbols: dict[tuple[str, str], str]) -> verify.PinLabel:
 def _before(h: KicadHandle) -> tuple[Netlist, dict[tuple[str, str], str]]:
     symbols = h.schematic().get_symbols()
     refs = {(access.sheet_path_key(s.path), access.kiid(s)): str(s.reference) for s in symbols}
-    return access.live_netlist(h, symbols), refs
+    return netlists(h, symbols)[0], refs
 
 
 def _change(
@@ -603,22 +621,53 @@ async def apply_change_set(
     before, refs = await session.call(_before)
     label = _pin_labeler(refs)
     has_board = _has_board(ctx)
+    restarts = session.restart_count
     inp = StageInput()
 
-    async def undo_after(error: BaseException) -> None:
+    async def undo() -> None:
         if run.pushed == 0:
             return
+        if session.restart_count != restarts:
+            # The server restarted from the last save: the pushed stages are gone, and
+            # compensating against the reloaded document would corrupt it.
+            raise KicadUnavailable(
+                "the KiCad api-server restarted during the edit; it holds the last saved state"
+            )
         if _before_compensate is not None:
             try:
                 _before_compensate()
             except Exception as exc:
-                raise DocumentInconsistent(f"compensating {cs.tool} failed: {exc}") from exc
+                log.warning("compensating %s failed: %s", cs.tool, exc)
+                raise DocumentInconsistent(f"undoing the partial {cs.tool} change failed") from exc
         run.replaced = await _compensate(ctx, run, before, has_board=has_board)
+
+    async def undo_shielded() -> None:
+        """Compensation survives a cancellation (Stop): it runs to completion, then a
+        pending cancellation is re-raised."""
+        task = asyncio.ensure_future(undo())
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            with contextlib.suppress(BaseException):
+                await task
+            if not task.cancelled() and task.exception() is not None:
+                _report(task.exception())
+            raise
+
+    def _report(exc: BaseException | None) -> None:
+        if isinstance(exc, DocumentInconsistent) and ctx.on_document_inconsistent is not None:
+            ctx.on_document_inconsistent(exc)
+        elif isinstance(exc, KicadUnavailable) and ctx.on_kicad_unavailable is not None:
+            ctx.on_kicad_unavailable(exc)
+        elif exc is not None:
+            log.error("undo of %s after a cancellation failed: %s", cs.tool, exc)
 
     try:
         for stage in cs.stages:
             ops = stage.build(inp)
             created_before = set(run.created)
+            saved = run.checkpoint()
+            body_done = False
 
             def write(h: KicadHandle, ops: list[EditOp] = ops) -> None:
                 _stage(h, run, ops)
@@ -626,10 +675,15 @@ async def apply_change_set(
             try:
                 async with session.commit(f"{cs.tool}: {stage.label}"):
                     await session.call(write)
-            except (StructuredToolError, KicadUnavailable):
+                    body_done = True
+            except asyncio.CancelledError:
+                if body_done:  # cancelled at the push, which commit() ran to completion
+                    run.pushed += 1
+                else:
+                    run.restore(saved)
                 raise
-            except Exception as exc:
-                # The commit was dropped; KiCad refused an op (ApiError) or a build bug.
+            except BaseException as exc:
+                run.restore(saved)  # the commit was dropped: forget its bookkeeping
                 from kipy.errors import ApiError
 
                 if not isinstance(exc, ApiError):
@@ -637,7 +691,7 @@ async def apply_change_set(
                 raise StructuredToolError(
                     f"KiCad refused {cs.tool} ({stage.label})",
                     str(exc),
-                    "Nothing of this step was applied; check the arguments and retry.",
+                    "Nothing was applied; check the arguments and retry.",
                     code="invalid_argument",
                 ) from exc
             run.pushed += 1
@@ -648,36 +702,32 @@ async def apply_change_set(
 
             inp = await session.call(read)
     except asyncio.CancelledError:
-        if run.pushed:
-            # The turn is being stopped: undo the pushed stages, then keep cancelling.
-            task = asyncio.ensure_future(undo_after(asyncio.CancelledError()))
-            try:
-                await asyncio.shield(task)
-            except asyncio.CancelledError:
-                with contextlib.suppress(BaseException):
-                    await task
-            except DocumentInconsistent as exc:
-                if ctx.on_document_inconsistent is not None:
-                    ctx.on_document_inconsistent(exc)
+        # The turn is being stopped: undo the pushed stages, then keep cancelling.
+        try:
+            await undo_shielded()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _report(exc)
         raise
     except KicadUnavailable:
         raise  # the server restarted from the last save: pushed stages are gone with it
-    except BaseException as exc:
-        await undo_after(exc)
+    except BaseException:
+        await undo_shielded()
         raise
 
     def final_read(h: KicadHandle) -> tuple[Netlist, dict[str, Any], dict[str, str]]:
         found = by_id(h.schematic(), [*run.created, *run.modified])
-        nets = item_nets(h)
+        netlist, nets = netlists(h)
         paths = {u: s.path for u, s in [*run.created.items(), *run.modified.items()]}
         item_net = {u: nets[(p, u)] for u, p in paths.items() if (p, u) in nets}
-        return access.live_netlist(h), found, item_net
+        return netlist, found, item_net
 
     after, final, item_net = await session.call(final_read)
     problems = list(run.problems)
     problems += (_verify or verify.check)(before, after, cs.intent, label)
     if problems:
-        await undo_after(RuntimeError("verification failed"))
+        await undo_shielded()
         details: dict[str, Any] = {"expected": _expected(cs, label), "found": problems}
         if run.replaced:  # deleted symbols re-placed from the library (new UUIDs)
             details["replaced"] = dict(run.replaced)

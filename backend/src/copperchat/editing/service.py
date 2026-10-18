@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
@@ -36,20 +37,36 @@ class EditingService:
         self.gate: EditGate = gate if gate is not None else BudgetGate(self)
         self.changes = ChangeRepo(db)
         self.on_changes_recorded: list[ChangesRecorded] = []
-        self._turns: dict[tuple[str, str | None], EditTurnState] = {}
+        self._turns: dict[tuple[str, str], EditTurnState] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
 
     def turn(self, project_id: str, run_id: str | None) -> EditTurnState:
+        """The turn's state; without a run (no agent turn) a throwaway state, so calls
+        outside turns never share budget counters."""
+        if run_id is None:
+            return EditTurnState()
         key = (project_id, run_id)
         state = self._turns.get(key)
         if state is None:
             state = self._turns[key] = EditTurnState()
         return state
 
+    def edit_lock(self, project_id: str) -> asyncio.Lock:
+        """Held by the tool adapter from the gate check to the budget record: budget
+        checks and the engine's before/after netlists never interleave."""
+        lock = self._locks.get(project_id)
+        if lock is None:
+            lock = self._locks[project_id] = asyncio.Lock()
+        return lock
+
     def drop_turn(self, project_id: str, run_id: str | None) -> None:
-        self._turns.pop((project_id, run_id), None)
+        if run_id is not None:
+            self._turns.pop((project_id, run_id), None)
 
     def note_call(self, ctx: ToolContext, tool: str, args: dict[str, Any] | None = None) -> None:
         """Every tool call (any spec) counts in the turn's call order."""
+        if ctx.run_id is None:
+            return
         state = self.turn(ctx.project.id, ctx.run_id)
         state.call_seq += 1
         if tool == "render_view" and (args or {}).get("doc") == "sch":

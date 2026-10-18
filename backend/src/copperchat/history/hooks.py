@@ -183,7 +183,8 @@ class HistoryHooks(RunHooks):
         except Exception as exc:
             log.warning("auto-restore of snapshot %s failed: %s", snap.id, exc)
             await self.engine.post_error(
-                f"Restoring the design to its state before this turn failed ({exc}).",
+                "Restoring the design to its state before this turn failed; restore the "
+                "snapshot from the History panel.",
                 {"code": "restore_failed"},
             )
             return False

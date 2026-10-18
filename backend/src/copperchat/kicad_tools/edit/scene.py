@@ -8,7 +8,7 @@ junctions, no-connects and sheet symbols. Every sub-sheet read goes through
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -235,11 +235,17 @@ def symbol_info(sym: Any, sheet: SheetRef) -> SymbolInfo:
     )
 
 
-def all_symbols(h: KicadHandle) -> list[SymbolInfo]:
-    """Every placed unit on every sheet instance (ref, uuid, sheet path, page, unit ...)."""
-    by_path = {ref.path: ref for ref in sheet_refs(h)}
+def all_symbols(
+    h: KicadHandle, raw: Sequence[Any] | None = None, *, ref: str | None = None
+) -> list[SymbolInfo]:
+    """Every placed unit on every sheet instance (ref, uuid, sheet path, page, unit ...).
+    `raw`: the caller's `get_symbols()` result; `ref`: only units with that reference
+    (geometry is computed only for those)."""
+    by_path = {r.path: r for r in sheet_refs(h)}
     out: list[SymbolInfo] = []
-    for sym in h.schematic().get_symbols():
+    for sym in h.schematic().get_symbols() if raw is None else raw:
+        if ref is not None and str(sym.reference) != ref:
+            continue
         sheet = by_path.get(access.sheet_path_key(sym.path))
         if sheet is not None:
             out.append(symbol_info(sym, sheet))
@@ -277,17 +283,38 @@ def read_scene(h: KicadHandle, sheet: SheetRef) -> Scene:
     return scene
 
 
-def item_nets(h: KicadHandle) -> dict[tuple[str, str], str]:
-    """(sheet_path, item uuid) -> net name for every connectable member of the live
-    netlist (pins, wires, junctions, labels)."""
-    out: dict[tuple[str, str], str] = {}
-    for net in h.schematic().get_netlist():
+def netlists(
+    h: KicadHandle, symbols: Sequence[Any] | None = None
+) -> tuple[Netlist, dict[tuple[str, str], str]]:
+    """One `GetSchematicNetlist`: the pin netlist (as `access.live_netlist`) and
+    (sheet_path, item uuid) -> net for every member (pins, wires, junctions, labels)."""
+    sch = h.schematic()
+    owner: dict[tuple[str, str], PinKey] = {}
+    for sym in sch.get_symbols() if symbols is None else symbols:
+        path = access.sheet_path_key(sym.path)
+        uuid = access.kiid(sym)
+        for pin in sym.definition.pins:
+            owner[(path, access.kiid(pin))] = (path, uuid, str(pin.number))
+    members: dict[str, set[PinKey]] = {}
+    items: dict[tuple[str, str], str] = {}
+    for net in sch.get_netlist():
         name = str(net.name)
+        keys = members.setdefault(name, set())
         for sheet in net.sheets:
             path = access.sheet_path_key(sheet.path)
             for item in sheet.items:
-                out[(path, str(item.value))] = name
-    return out
+                uid = str(item.value)
+                items[(path, uid)] = name
+                key = owner.get((path, uid))
+                if key is not None:
+                    keys.add(key)
+    pins = Netlist({name: frozenset(keys) for name, keys in members.items() if keys})
+    return pins, items
+
+
+def item_nets(h: KicadHandle) -> dict[tuple[str, str], str]:
+    """(sheet_path, item uuid) -> net name for every member of the live netlist."""
+    return netlists(h)[1]
 
 
 # -- pins -------------------------------------------------------------------------------
@@ -299,8 +326,14 @@ def _pin_error(
     return StructuredToolError(what, why, suggestion, code=code, details={"candidates": candidates})
 
 
-def resolve_pin(h: KicadHandle, spec: str, symbols: list[SymbolInfo] | None = None) -> PinEnd:
-    """`"U1.3"` (number) or `"U1.VIN"` (unique pin name) over all sheet instances."""
+def resolve_pin(
+    h: KicadHandle,
+    spec: str,
+    symbols: list[SymbolInfo] | None = None,
+    raw: Sequence[Any] | None = None,
+) -> PinEnd:
+    """`"U1.3"` (number) or `"U1.VIN"` (unique pin name) over all sheet instances.
+    `symbols`: precomputed SymbolInfos; else `raw` (`get_symbols()`) is filtered by ref."""
     ref, sep, pin = spec.strip().partition(".")
     if not sep or not ref or not pin:
         raise StructuredToolError(
@@ -309,10 +342,15 @@ def resolve_pin(h: KicadHandle, spec: str, symbols: list[SymbolInfo] | None = No
             "Pass the reference and the pin number or name separated by a dot.",
             code="invalid_argument",
         )
-    syms = all_symbols(h) if symbols is None else symbols
-    units = [s for s in syms if s.ref == ref]
+    if symbols is None:
+        raw = h.schematic().get_symbols() if raw is None else raw
+        units = all_symbols(h, raw, ref=ref)
+        all_refs = {str(s.reference) for s in raw}
+    else:
+        units = [s for s in symbols if s.ref == ref]
+        all_refs = {s.ref for s in symbols}
     if not units:
-        refs = sorted({s.ref for s in syms if not s.power}, key=natural_key)
+        refs = sorted((r for r in all_refs if not r.startswith("#")), key=natural_key)
         raise _pin_error(
             f"Symbol {ref} not found",
             "No placed symbol has that reference",

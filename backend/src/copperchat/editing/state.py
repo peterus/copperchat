@@ -19,3 +19,6 @@ class EditTurnState:
     last_erc: list[dict[str, Any]] | None = None
     last_render_seq: int | None = None  # render_view(doc="sch")
     active_step_id: str | None = None  # E8b
+    # A failed edit could not be undone exactly: every further edit of the turn is refused
+    # (the turn ends and the session is reloaded).
+    halted: bool = False

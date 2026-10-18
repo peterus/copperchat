@@ -343,3 +343,37 @@ async def test_resolve_sheet_for_page(hier_session: KicadSession) -> None:
     sheets = await hier_session.call(sheet_refs)
     page = sheets[1].page
     assert (await hier_session.call(lambda h: resolve_sheet(h, page))) == sheets[1]
+
+
+async def test_failure_in_stage_two_undoes_stage_one(ecc83_session: KicadSession) -> None:
+    s = ecc83_session
+    await s.ensure_symbol_libraries()
+    x, y = await s.call(lambda h: free_area(h, 10.16, 5.08))
+    w = wire((x, y), (x + 10.16, y))
+    before = await _state(s)
+
+    def bad(inp: StageInput) -> list[Any]:
+        return [Delete([access.kiid(w)]), Place("NoSuchLib:Nothing", (x, y + 5.08), 0, 1, "X1")]
+
+    cs = _cs(await _root(s), static_stage("wire", Create([w])), Stage("bad", bad))
+    with pytest.raises(StructuredToolError) as err:
+        await apply_change_set(edit_ctx(s), cs)
+    assert err.value.code == "invalid_argument"
+    assert await _state(s) == before
+
+
+async def test_cancel_after_a_pushed_stage_undoes_it(ecc83_session: KicadSession) -> None:
+    import asyncio
+
+    s = ecc83_session
+    x, y = await s.call(lambda h: free_area(h, 10.16, 5.08))
+    before = await _state(s)
+
+    def cancelled(inp: StageInput) -> list[Any]:
+        raise asyncio.CancelledError
+
+    cs = _cs(await _root(s), static_stage("wire", Create([wire((x, y), (x + 10.16, y))])),
+             Stage("stop", cancelled))  # fmt: skip
+    with pytest.raises(asyncio.CancelledError):
+        await apply_change_set(edit_ctx(s), cs)
+    assert await _state(s) == before

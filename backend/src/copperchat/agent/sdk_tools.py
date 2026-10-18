@@ -62,6 +62,22 @@ async def _run_two_phase(spec: ToolSpec, ctx: ToolContext, args: dict[str, Any])
             "Ask the user to close it there and reopen the project in CopperChat.",
             code="read_only",
         )
+    editing = ctx.editing
+    if editing is None:
+        return await _two_phase_steps(spec, ctx, args)
+    async with editing.edit_lock(ctx.project.id):
+        if editing.turn(ctx.project.id, ctx.run_id).halted:
+            raise StructuredToolError(
+                f"{spec.name} refused: an earlier edit of this turn could not be undone",
+                "The design is reloaded from its last save when this turn ends",
+                "Stop editing; tell the user what happened.",
+                code="document_inconsistent",
+            )
+        return await _two_phase_steps(spec, ctx, args)
+
+
+async def _two_phase_steps(spec: ToolSpec, ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
+    assert spec.prepare is not None and spec.apply is not None
     gate = ctx.editing.gate if ctx.editing is not None else None
     if gate is not None:
         await gate.before_prepare(ctx, spec.name)
@@ -72,9 +88,12 @@ async def _run_two_phase(spec: ToolSpec, ctx: ToolContext, args: dict[str, Any])
         await ctx.on_mutation()
     result = await spec.apply(ctx, cs)
     if gate is not None:
-        await gate.record(ctx, cs)
-        if result.data is not None and "budget" in result.data:
-            result.data["budget"] = await gate.budget_info(ctx)
+        try:  # the change is applied and verified: bookkeeping never fails the call
+            await gate.record(ctx, cs)
+            if result.data is not None and "budget" in result.data:
+                result.data["budget"] = await gate.budget_info(ctx)
+        except Exception:
+            log.exception("recording the budget of %s failed", spec.name)
     return result
 
 
@@ -112,6 +131,8 @@ def _make_handler(
         except StructuredToolError as err:
             return _error(err)
         except DocumentInconsistent as exc:
+            if editing is not None:
+                editing.turn(ctx.project.id, ctx.run_id).halted = True
             on_inconsistent = getattr(ctx, "on_document_inconsistent", None)
             if on_inconsistent is not None:
                 on_inconsistent(exc)
