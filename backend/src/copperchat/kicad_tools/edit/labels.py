@@ -14,12 +14,14 @@ import itertools
 import re
 import time
 import uuid as uuidlib
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Literal
 
 from copperchat.errors import StructuredToolError
 from copperchat.kicad_session import KicadHandle
+from copperchat.kicad_tools import access
 from copperchat.kicad_tools.access import Netlist, PinKey
 from copperchat.kicad_tools.edit.changeset import (
     ChangeSet,
@@ -46,11 +48,14 @@ from copperchat.kicad_tools.edit.geometry import (
 )
 from copperchat.kicad_tools.edit.router import Obstacles, needed_junctions
 from copperchat.kicad_tools.edit.scene import (
+    MAX_CANDIDATES,
     LabelInfo,
     Scene,
+    SheetPinInfo,
     SymbolInfo,
     WireInfo,
     all_symbols,
+    net_representative,
     netlists,
     read_scene,
     resolve_pin,
@@ -191,6 +196,9 @@ class Planned:
 class World:
     """One consistent read of the design for `prepare` (inside one session.call)."""
 
+    # sheet pins resolved by `sheet_pin` (pseudo key -> pin), replaced on each addition
+    _sheet_pin_ends: Mapping[PinKey, SheetPinInfo] = MappingProxyType({})
+
     def __init__(self, h: KicadHandle) -> None:
         self.h = h
         raw = h.schematic().get_symbols()
@@ -221,7 +229,7 @@ class World:
         instance. Keys on other sheets (a representative of a net reaching the sheet
         through a sheet pin) stay in `sheet`'s own group only: another instance joins
         its own copy of that net."""
-        keys = list(keys)
+        keys = list(dict.fromkeys(k for k in map(self.real_key, keys) if k is not None))
         out = []
         for inst in self.instances(sheet):
             if inst.path == sheet.path:
@@ -291,13 +299,122 @@ class World:
             )
         return resolve_pin(self.h, spec[:64], symbols=self.symbols)
 
+    def endpoint(self, spec: Any) -> PinEnd:
+        """A symbol pin 'REF.PIN' or a sheet pin '<sheet name>.<pin name>' (a symbol
+        reference wins over a sheet name of the same text)."""
+        if isinstance(spec, str) and not any(
+            s.ref == spec.strip().partition(".")[0] for s in self.symbols
+        ):
+            pin = self.sheet_pin(spec.strip()[:64])
+            if pin is not None:
+                return pin
+        return self.pin(spec)
+
+    def sheet_pin(self, spec: str) -> PinEnd | None:
+        """'<sheet name>.<pin name>' as a pseudo pin end (see `SheetPinInfo`); None when
+        no sheet instance has a name `spec` starts with (the longest name wins: sheet
+        names may contain dots)."""
+        named = [r for r in self.sheets.values() if spec.startswith(f"{r.name}.") and r.name]
+        named = [r for r in named if r.path.rpartition("/")[0] in self.sheets]  # not the root
+        if not named:
+            return None
+        longest = max(len(r.name) for r in named)
+        named = [r for r in named if len(r.name) == longest]
+        name, wanted = named[0].name, spec[longest + 1 :]
+        if len(named) > 1:
+            places = sorted(self.sheets[r.path.rpartition("/")[0]].human_path for r in named)
+            raise StructuredToolError(
+                f"Sheet pin {short(spec)} is ambiguous",
+                f"{len(named)} sheet symbols are named {name} (on {', '.join(places[:6])})",
+                "Rename one of the sheets, or connect inside the sheet with labels.",
+                code="ambiguous_pin",
+                details={"candidates": places[:MAX_CANDIDATES], "total": len(places)},
+            )
+        child = named[0]
+        parent_path, _, sheet_uuid = child.path.rpartition("/")
+        pins = [
+            i
+            for i in self.scene(self.sheets[parent_path]).sheet_pins.values()
+            if i.sheet_uuid == sheet_uuid
+        ]
+        hits = [i for i in pins if i.pin.name == wanted]
+        if not hits:
+            names = sorted(i.pin.name for i in pins)
+            raise StructuredToolError(
+                f"Sheet pin {short(spec)} not found",
+                f"the sheet {name} has "
+                + (f"the pins {', '.join(names[:MAX_CANDIDATES])}" if names else "no pins"),
+                "Use one of the listed pin names, or add the pin with sch_add_sheet_pin.",
+                code="not_found",
+                details={"candidates": names[:MAX_CANDIDATES], "total": len(names)},
+            )
+        if len(hits) > 1:
+            raise StructuredToolError(
+                f"Sheet pin {short(spec)} is ambiguous",
+                f"the sheet {name} has {len(hits)} pins named {wanted}",
+                "Rename the duplicate sheet pins first.",
+                code="ambiguous_pin",
+                details={"candidates": [wanted]},
+            )
+        self._sheet_pin_ends = {**self._sheet_pin_ends, hits[0].pin.key: hits[0]}
+        return hits[0].pin
+
+    def sheet_pin_info(self, key: PinKey) -> SheetPinInfo | None:
+        return self._sheet_pin_ends.get(key)
+
+    def is_sheet_pin(self, pin: PinEnd) -> bool:
+        return pin.key in self._sheet_pin_ends
+
+    def real_key(self, key: PinKey) -> PinKey | None:
+        """`key` itself for a symbol pin; for a sheet pin a representative symbol pin of
+        the net it joins (None: that net has no symbol pin). Intents hold real keys only."""
+        info = self._sheet_pin_ends.get(key)
+        if info is None:
+            return key
+        return net_representative(self.netlist, self.sheet_pin_net(info))
+
+    def sheet_pin_net(self, info: SheetPinInfo) -> str | None:
+        parent, child = info.pin.key[0], info.child
+        net = self.nets(self.sheets[parent]).get(info.uuid)
+        if net is not None or child not in self.sheets:
+            return net
+        child_ref = self.sheets[child]
+        nets = self.nets(child_ref)
+        for lb in self.scene(child_ref).labels.values():
+            if lb.kind == "hierarchical_label" and lb.text == info.pin.name and lb.uuid in nets:
+                return nets[lb.uuid]
+        return None
+
     def sheet_of(self, pin: PinEnd) -> SheetRef:
         return self.sheets[pin.key[0]]
 
     def owner(self, pin: PinEnd) -> SymbolInfo:
+        """The symbol a pin belongs to; for a sheet pin a stand-in for the sheet symbol
+        (its uuid lets a stub leave the pin across the sheet box edge)."""
+        info = self._sheet_pin_ends.get(pin.key)
+        if info is not None:
+            sheet = self.sheet_of(pin)
+            return SymbolInfo(
+                uuid=info.sheet_uuid,
+                ref=pin.ref,
+                lib_id="",
+                value="",
+                unit=1,
+                sheet=sheet,
+                at=pin.at,
+                rotation=0,
+                mirror="",
+                pins=[pin],
+                body=self.scene(sheet).sheets.get(info.sheet_uuid, Box(*pin.at, *pin.at)),
+                fields=[],
+                power=False,
+            )
         return next(s for s in self.symbols if s.uuid == pin.key[1] and s.sheet.path == pin.key[0])
 
     def net(self, pin: PinEnd) -> str | None:
+        info = self._sheet_pin_ends.get(pin.key)
+        if info is not None:
+            return self.sheet_pin_net(info)
         return self.netlist.net_of(pin.key)
 
     def members(self, net: str | None) -> frozenset[PinKey]:
@@ -761,6 +878,12 @@ def touched_at(world: World, sheet: SheetRef, p: Point) -> tuple[set[str], list[
                 if (n := world.netlist.net_of(pin.key)) is not None:
                     found.add(n)
                 d = DIRS[pin.direction]
+    for info in scene.sheet_pins.values():
+        if same_point(info.pin.at, p):
+            what.append(f"sheet pin {info.pin.label}")
+            if (n := world.sheet_pin_net(info)) is not None:
+                found.add(n)
+            d = DIRS[info.pin.direction]
     for w in scene.wires.values():
         if on_segment(p, w.start, w.end):
             what.append("wire")
@@ -818,6 +941,35 @@ def no_room(tool: str, pin: PinEnd, what: str, done: int) -> StructuredToolError
     )
 
 
+def sheet_pin_joined(
+    world: World,
+    pins: list[PinEnd],
+    items: list[tuple[SheetRef, Any]],
+    *,
+    one_net: bool,
+) -> list[frozenset[tuple[str, ...]]]:
+    """`NetIntent.joined` groups for sheet pins among `pins`: the sheet pin's own netlist
+    item, the new `items` (labels, stub wires) and the call's symbol pins end on one net
+    — the pin partition cannot say so when the sub-sheet net has no symbol pin.
+    `one_net`: everything joins across sheets (global label, power symbol); else only
+    what is on the sheet pin's sheet."""
+    out: list[frozenset[tuple[str, ...]]] = []
+    for p in pins:
+        info = world.sheet_pin_info(p.key)
+        if info is None:
+            continue
+        here = info.pin.key[0]
+        group: set[tuple[str, ...]] = {(here, info.uuid)}
+        group |= {(s.path, access.kiid(i)) for s, i in items if one_net or s.path == here}
+        for q in pins:
+            k = world.real_key(q.key)
+            if k is not None and (one_net or k[0] == here):
+                group.add(k)
+        if len(group) > 1:
+            out.append(frozenset(group))
+    return out
+
+
 def labels_change_set(
     world: World, tool: str, pins: list[PinEnd], text: str, kind: LabelKind
 ) -> ChangeSet:
@@ -869,7 +1021,20 @@ def labels_change_set(
         sheet=first,
         stages=[Stage(f"label {text}", lambda _inp: list(ops))],
         pre_images={},
-        intent=NetIntent(merge=label_merges(world, plans, text, kind)),
+        intent=NetIntent(
+            merge=label_merges(world, plans, text, kind),
+            joined=sheet_pin_joined(
+                world,
+                pins,
+                [
+                    (pl.sheet, i)
+                    for pl in plans
+                    for i in pl.items
+                    if type(i).__name__.endswith("Label")
+                ],
+                one_net=kind == "global",
+            ),
+        ),
         logical=Logical(len(plans)),
         summary=summary,
         notes=notes,
@@ -987,6 +1152,12 @@ def power_change_set(
         Place(sym.lib_id, pl.at, pl.rotation, 1, pl.reference, sheet=pl.sheet) for pl in plans
     ]
     intent = NetIntent()
+    joined_at: dict[int, int] = {}  # plan index -> its joined group (the power pin joins it)
+    for i, pl in enumerate(plans):  # a sheet pin's stub: the pin joins the rail through it
+        stub = [(pl.sheet, w) for w in pl.wires if type(w).__name__ == "SchematicLine"]
+        for pin_group in sheet_pin_joined(world, [pl.pin], stub, one_net=False):
+            joined_at[i] = len(intent.joined)
+            intent.joined.append(pin_group)
     # (plan index, instance path) -> merge group index; a rail is one global group
     slot: dict[tuple[int, str], int] = {}
     if not sym.flag:
@@ -1035,6 +1206,8 @@ def power_change_set(
             ops.append(Update([placed_sym], sheet=pl.sheet))
             placed_path = sheet_path_key(placed_sym.path)
             own = [(placed_path, kiid(placed_sym), pe.number) for pe in pin_ends(placed_sym)]
+            if i in joined_at:  # the stub must reach the placed power pin, too
+                intent.joined[joined_at[i]] = intent.joined[joined_at[i]] | frozenset(own)
             for inst, keys in zip(
                 world.instances(pl.sheet), world.replicate(own, pl.sheet), strict=True
             ):

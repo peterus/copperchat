@@ -9,6 +9,7 @@ from typing import Any
 
 from copperchat.errors import StructuredToolError
 from copperchat.kicad_session import KicadHandle
+from copperchat.kicad_tools import access
 from copperchat.kicad_tools.access import Netlist, PinKey
 from copperchat.kicad_tools.edit.changeset import (
     ChangeSet,
@@ -31,10 +32,12 @@ from copperchat.kicad_tools.edit.geometry import (
 from copperchat.kicad_tools.edit.scene import (
     Scene,
     all_symbols,
+    net_representative,
     netlists,
     read_scene,
     resolve_pin,
     resolve_sheet,
+    sheet_pin_net,
 )
 from copperchat.tools.spec import ToolContext, ToolResult, ToolSpec, edit_spec
 
@@ -163,11 +166,16 @@ def _end_nets(
     end: Point,
     netlist: Netlist,
     nets: dict[tuple[str, str], str],
+    sheet_nets: dict[str, str | None],
 ) -> tuple[list[PinKey], set[str], bool]:
-    """Terminal pins at an end, nets of the other items there, and whether the end lands
-    on a wire interior (a T-joint that gets a junction)."""
+    """Terminal pins at an end, nets of the other items there (a sheet pin there: the net
+    it joins in the sub-sheet), and whether the end lands on a wire interior (a T-joint
+    that gets a junction)."""
     pins = [p.key for p in scene.all_pins() if same_point(p.at, end)]
     end_nets: set[str] = set()
+    for uid, info in scene.sheet_pins.items():
+        if same_point(info.pin.at, end) and (net := sheet_nets.get(uid)) is not None:
+            end_nets.add(net)
     interiors = 0
     for w in scene.wires.values():
         if on_segment(end, w.start, w.end):
@@ -211,6 +219,7 @@ def _check_path(
     nets: dict[tuple[str, str], str],
     allowed: set[str],
     terminal_syms: tuple[set[str], set[str]],
+    sheet_nets: dict[str, str | None],
 ) -> None:
     """Refuse before writing what would connect a foreign net or cross a symbol body."""
     segments = list(itertools.pairwise(points))
@@ -228,6 +237,15 @@ def _check_path(
                 f"the wire would run over pin {pin.label} at {_fmt(pin.at)} and connect it "
                 "(a wire interior over a pin end makes a connection)",
                 "Route around the pin (another corner position) or connect with labels.",
+            )
+    for uid, info in scene.sheet_pins.items():  # KiCad: a wire over a sheet pin joins it
+        if sheet_nets.get(uid) in allowed or any(same_point(info.pin.at, e) for e in ends):
+            continue
+        if any(on_segment(info.pin.at, a, b) for a, b in segments):
+            raise overlap(
+                f"the wire would run over sheet pin {info.pin.label} at {_fmt(info.pin.at)} "
+                "and connect it (a wire interior over a sheet pin makes a connection)",
+                "Route around the sheet pin, or end the wire exactly on it.",
             )
     foreign_points: list[tuple[Point, str]] = []
     for w in scene.wires.values():
@@ -290,7 +308,7 @@ def _plan_wire(raw_points: list[Point], sheet_arg: str | None) -> Any:
         snapped = [snap_point(p) for p in raw_points]
         moved = [(r, s) for r, s in zip(raw_points, snapped, strict=True)
                  if not same_point(r, s, EXACT_MM)]  # fmt: skip
-        pin_ends = scene.all_pins()
+        pin_ends = [*scene.all_pins(), *scene.sheet_pin_ends()]
         for idx in (0, len(raw_points) - 1):
             raw, end = raw_points[idx], snapped[idx]
             for pin in pin_ends:
@@ -331,8 +349,16 @@ def _plan_wire(raw_points: list[Point], sheet_arg: str | None) -> Any:
                     f"segment {_fmt(a)}-{_fmt(b)} is neither horizontal nor vertical",
                     "Add a corner point so every segment is horizontal or vertical.",
                 )
-        start_pins, start_nets, start_t = _end_nets(scene, sheet, points[0], netlist, nets)
-        end_pins, end_nets, end_t = _end_nets(scene, sheet, points[-1], netlist, nets)
+        # only sheet pins the path touches: each net lookup may read the sub-sheet
+        sheet_nets = {
+            u: sheet_pin_net(h, i, nets)
+            for u, i in scene.sheet_pins.items()
+            if any(on_segment(i.pin.at, a, b) for a, b in itertools.pairwise(points))
+        }
+        start_pins, start_nets, start_t = _end_nets(
+            scene, sheet, points[0], netlist, nets, sheet_nets
+        )
+        end_pins, end_nets, end_t = _end_nets(scene, sheet, points[-1], netlist, nets, sheet_nets)
         terminals = [*start_pins, *end_pins]
         allowed = {n for k in terminals if (n := netlist.net_of(k)) is not None}
         allowed |= start_nets | end_nets
@@ -344,13 +370,19 @@ def _plan_wire(raw_points: list[Point], sheet_arg: str | None) -> Any:
             nets,
             allowed,
             ({k[1] for k in start_pins}, {k[1] for k in end_pins}),
+            sheet_nets,
         )
         group: set[PinKey] = set(terminals)
         for net in start_nets | end_nets:  # one pin represents an existing net, if any
-            members = sorted(netlist.nets.get(net, ()))
-            if members:
-                group.add(members[0])
+            if (rep := net_representative(netlist, net)) is not None:
+                group.add(rep)
         items: list[Any] = [_wire(a, b) for a, b in itertools.pairwise(points)]
+        joined: list[frozenset[tuple[str, ...]]] = []
+        wire_items = {(sheet.path, access.kiid(w)) for w in items}  # any may merge at push
+        for end in (points[0], points[-1]):  # a sheet pin at an end: the wire joins its net
+            for info in scene.sheet_pins.values():  # (also when its net has no symbol pin)
+                if same_point(info.pin.at, end):
+                    joined.append(frozenset({(sheet.path, info.uuid), *wire_items, *group}))
         for at, t_joint in ((points[0], start_t), (points[-1], end_t)):
             if t_joint:
                 items.append(_junction(at))
@@ -365,7 +397,7 @@ def _plan_wire(raw_points: list[Point], sheet_arg: str | None) -> Any:
             sheet=sheet,
             stages=[static_stage("add wire", Create(items))],
             pre_images={},
-            intent=NetIntent(merge=[frozenset(group)] if len(group) > 1 else []),
+            intent=NetIntent(merge=[frozenset(group)] if len(group) > 1 else [], joined=joined),
             logical=Logical(1),
             summary={"points_mm": [list(p) for p in points], "sheet": sheet.human_path},
             notes=notes,

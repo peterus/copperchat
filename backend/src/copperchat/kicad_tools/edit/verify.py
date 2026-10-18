@@ -75,6 +75,32 @@ def _describe(keys: Iterable[PinKey], label: PinLabel) -> str:
     return ", ".join(names[:6]) + more if names else "nothing"
 
 
+def check_joined(
+    after: Netlist,
+    items: Mapping[tuple[str, str], str],
+    intent: NetIntent,
+    label: PinLabel | None = None,
+    vanished: Iterable[str] = (),
+) -> list[str]:
+    """`intent.joined`: every group (pin keys and (sheet_path, item uuid) netlist items)
+    on one net after the write. Created segments KiCad merged into another wire at push
+    (`vanished`) are left out of their group (the wire they merged into carries on)."""
+    name = label or _default_label
+    gone = set(vanished)
+    problems = []
+    for raw in intent.joined:
+        group = {k for k in raw if len(k) == 3 or k[1] not in gone}
+        if len(group) < 2:
+            continue
+        nets = {after.net_of(k) if len(k) == 3 else items.get((k[0], k[1])) for k in group}
+        if len(nets) != 1 or None in nets:
+            what = sorted(name(k) if len(k) == 3 else f"item {k[1][:8]}" for k in group)
+            problems.append(
+                f"expected {', '.join(what)} on one net, found {sorted(map(str, nets))}"
+            )
+    return problems
+
+
 def check(
     before: Netlist, after: Netlist, intent: NetIntent, label: PinLabel | None = None
 ) -> list[str]:

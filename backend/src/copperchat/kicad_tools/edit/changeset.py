@@ -91,6 +91,10 @@ class NetIntent:
     may_change: frozenset[PinKey] = frozenset()  # pins allowed to change net
     names: dict[PinKey, str] = field(default_factory=dict)  # expected net name per pin
     keep_partition: bool = False  # reroute/move: partition must be identical
+    # E6: groups that must end on one net, of pin keys (3-tuples) and netlist items
+    # (sheet_path, item uuid) — e.g. a sheet pin and the wire drawn onto it, which the
+    # pin partition cannot express when the sub-sheet net has no symbol pin
+    joined: list[frozenset[tuple[str, ...]]] = field(default_factory=list)
 
 
 @dataclass

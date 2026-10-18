@@ -82,3 +82,17 @@ def test_deleted_symbol_pins_are_ignored_and_keep_partition() -> None:
 def test_remap_renames_symbol_uuids() -> None:
     moved = Netlist({"A": frozenset({k("new", "1"), k("r2", "1")})})
     assert remap(moved, {"new": "r1"}).nets["A"] == frozenset({k("r1", "1"), k("r2", "1")})
+
+
+def test_check_joined_items_and_pins() -> None:
+    from copperchat.kicad_tools.edit.verify import check_joined
+
+    items = {(R, "pin-a"): "A", (R, "wire-b"): "B", (R, "wire-a"): "A"}
+    ok = NetIntent(joined=[frozenset({(R, "pin-a"), (R, "wire-a"), k("r1", "1")})])
+    assert check_joined(BEFORE, items, ok) == []
+    split = NetIntent(joined=[frozenset({(R, "pin-a"), (R, "wire-b")})])
+    assert check_joined(BEFORE, items, split)  # two nets
+    missing = NetIntent(joined=[frozenset({(R, "pin-a"), (R, "gone")})])
+    assert check_joined(BEFORE, items, missing)  # an item on no net
+    # a created segment KiCad merged away is left out of its group
+    assert check_joined(BEFORE, items, missing, vanished={"gone"}) == []

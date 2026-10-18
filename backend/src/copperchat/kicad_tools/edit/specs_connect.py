@@ -233,12 +233,21 @@ async def prepare_connect(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
     to_rail = not pin_shaped and await is_rail(ctx, set(), to)
     worlds: list[World] = []
 
-    def run(h: KicadHandle) -> ConnectChangeSet | PowerNeeded:
-        world = World(h)
-        worlds.append(world)
-        pa = world.pin(frm)
+    def plan(world: World) -> ConnectChangeSet | PowerNeeded:
+        pa = world.endpoint(frm)
         ref = to.partition(".")[0]
         known_ref = any(x.ref == ref for x in world.symbols)
+        # '<sheet name>.<pin name>': a sheet pin (sheet names may hold any character);
+        # a dotted net name that is no pin of that sheet stays a net ('I2C.SDA')
+        sheet_pin = None
+        if not known_ref:
+            try:
+                sheet_pin = world.sheet_pin(to)
+            except StructuredToolError as exc:
+                if exc.code != "not_found" or not _net_exists(world, world.sheet_of(pa), to):
+                    raise
+        if sheet_pin is not None:
+            return plan_connect_pins(world, tool, pa, sheet_pin, via, net_name)
         if pin_shaped and (known_ref or not _net_exists(world, world.sheet_of(pa), to)):
             # 'R9.1' is a pin, also when R9 does not exist (not_found); a dotted name is
             # a net only when no part has that ref and the net exists ('I2C.SDA')
@@ -247,6 +256,14 @@ async def prepare_connect(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
         if to_rail or looks_like_rail(world, name):
             return PowerNeeded(pa.label, name, "to is a power net")
         return plan_connect_net(world, tool, pa, name, via)
+
+    def run(h: KicadHandle) -> ConnectChangeSet | PowerNeeded:
+        world = World(h)
+        worlds.append(world)
+        out = plan(world)
+        if isinstance(out, ConnectChangeSet):
+            _report_real_pin(world, out)
+        return out
 
     planned = await ctx.session.call(run)
     if isinstance(planned, ConnectChangeSet):
@@ -264,9 +281,9 @@ async def prepare_connect(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
         world = worlds[0]  # nothing was written since (the adapter holds the edit lock)
         world.h = h
         world.deadline = time.monotonic() + PLAN_BUDGET_S
-        pin = world.pin(planned.pin)
+        pin = world.endpoint(planned.pin)
         cs = power_change_set(world, tool, [pin], sym, "PWR_FLAG" if sym.flag else planned.net)
-        return ConnectChangeSet(
+        out = ConnectChangeSet(
             tool=cs.tool,
             sheet=cs.sheet,
             stages=cs.stages,
@@ -283,8 +300,23 @@ async def prepare_connect(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
             notes=cs.notes,
             net_pin=pin.key,
         )
+        _report_real_pin(world, out)
+        return out
 
     return await ctx.session.call(run_power)
+
+
+def _report_real_pin(world: World, cs: ConnectChangeSet) -> None:
+    """The result's net is read at `net_pin`: a sheet pin is no netlist key, so a symbol
+    pin of the net it joins stands in (else the other end of the connection)."""
+    if cs.net_pin is None:
+        return
+    real = world.real_key(cs.net_pin)
+    if real is None:
+        merged = [k for g in cs.intent.merge for k in sorted(g)]
+        merged += [k for g in cs.intent.joined for k in sorted(g) if len(k) == 3]
+        real = merged[0] if merged else None
+    cs.net_pin = real
 
 
 def _net_exists(world: World, sheet: Any, name: str) -> bool:
@@ -351,7 +383,9 @@ _PINS = {"type": "array", "items": _PIN, "minItems": 1, "maxItems": 64}
 TOOL_SPECS: list[ToolSpec] = [
     edit_spec(
         "sch_connect",
-        "Connect a pin to another pin or to a net. to='REF.PIN': a computed orthogonal wire "
+        "Connect a pin to another pin or to a net. A pin is 'REF.PIN' or a sheet pin "
+        "'<sheet name>.<pin name>' on the parent sheet (joins the sub-sheet's net; a "
+        "symbol reference wins over a sheet name). to=pin: a computed orthogonal wire "
         "(<= 3 segments, may T-join onto a wire of the target net with a junction); if no "
         "clean route exists, via='auto' falls back to labels (net_name, an existing net "
         "name, or N_<ref>_<pin>). to=<net name>: power nets get a power symbol, other nets a "
@@ -359,8 +393,15 @@ TOOL_SPECS: list[ToolSpec] = [
         "two named nets. Verified against KiCad's netlist. One logical change.",
         _obj(
             {
-                "from": {**_PIN, "description": "Pin 'REF.PIN', e.g. 'C1.1'."},
-                "to": {**_PIN, "description": "Pin 'REF.PIN' or a net name like 'VIN'/'GND'."},
+                "from": {
+                    **_PIN,
+                    "description": "Pin 'REF.PIN', e.g. 'C1.1', or sheet pin 'SHEET.PIN'.",
+                },
+                "to": {
+                    **_PIN,
+                    "description": "Pin 'REF.PIN', sheet pin 'SHEET.PIN' (sheet name and "
+                    "pin name) or a net name like 'VIN'/'GND'.",
+                },
                 "via": {"type": "string", "enum": list(_VIA), "default": "auto"},
                 "net_name": {
                     "type": "string",
