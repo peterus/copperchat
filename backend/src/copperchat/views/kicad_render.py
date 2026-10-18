@@ -89,6 +89,9 @@ async def export_kicad_png(
     """KiCad's plot of the page (cropped to the mm `box`, if given), flattened onto
     `background` (RGB); returns the image and the page position of its top-left (mm)."""
     chosen = board_layers(layers) if doc == "pcb" else []
+    if doc == "sch":
+        # The export job renders its own cached copy of the schematic (spike 2A, Q3).
+        await session.refresh_jobs()
     with tempfile.TemporaryDirectory(prefix="cc-render-") as tmp:
         out = Path(tmp) / "page.png"
         result = await session.call(_export(doc, out, dpi, chosen, sheet))

@@ -2,18 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 import shutil
 import stat
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from kipy.errors import ConnectionError as KipyConnectionError
 
 from copperchat.config import Settings
+from copperchat.db import utcnow_iso
 from copperchat.errors import CopperChatError, DocumentNotOpen, ReadOnlyProject
-from copperchat.kicad_session.errors import KicadCallTimeout, KicadUnavailable
+from copperchat.kicad_session.errors import KicadCallTimeout, KicadUnavailable, LibrariesLoading
 from copperchat.kicad_session.launcher import ServerLauncher
 from copperchat.projects import (
     LockStatus,
@@ -30,6 +33,9 @@ if TYPE_CHECKING:
 DocKind = Literal["sch", "pcb"]
 T = TypeVar("T")
 ClientFactory = Callable[[str, int], Any]
+SaveListener = Callable[[Project, DocKind], Awaitable[None]]
+log = logging.getLogger(__name__)
+_LIBRARY_POLL_S = 0.25
 SOCKET_DIR = Path("/tmp/copperchat")
 _CONNECTION_ERRORS: tuple[type[BaseException], ...] = (
     KipyConnectionError,
@@ -70,6 +76,65 @@ def _document_type(doc: DocKind) -> int:
     return int(DocumentType.DOCTYPE_SCHEMATIC if doc == "sch" else DocumentType.DOCTYPE_PCB)
 
 
+def _symbol_library_type() -> int:
+    from kipy.proto.common.types import LibraryType
+
+    return int(LibraryType.LT_SYMBOL)
+
+
+def _symbol_libraries_loading(h: KicadHandle) -> bool:
+    from kipy.proto.common.types import LibraryLoadStatus
+
+    statuses = h.kicad.get_library_statuses(_symbol_library_type())
+    return any(s.status == LibraryLoadStatus.LLS_LOADING for s in statuses)
+
+
+@dataclass
+class CommitScope:
+    """One open KiCad commit (`KicadSession.commit`). The kipy `Commit` is kept: its id
+    is what `drop_commit` needs (spike 2A, Q6)."""
+
+    label: str
+    commit: Any
+    generation: int  # server start the commit belongs to; a restart discards it
+
+
+async def _finish[R](coro: Coroutine[Any, Any, R]) -> tuple[R, bool]:
+    """Run `coro` to completion even if the caller is cancelled meanwhile (a plain
+    `shield` would return early - e.g. release the commit lock while a drop still runs,
+    or lose the handle of a commit KiCad has just opened). Returns the result and
+    whether a cancellation arrived; if `coro` raises after one, the cancellation wins
+    (chained), so a Stop is never swallowed."""
+    task = asyncio.ensure_future(coro)
+    cancelled = False
+    while True:
+        try:
+            return await asyncio.shield(task), cancelled
+        except asyncio.CancelledError:
+            if task.done():
+                # The cancel can land after `coro` finished but before this frame
+                # resumed: keep its outcome (e.g. the handle of a commit KiCad opened).
+                if task.cancelled():
+                    raise
+                error = task.exception()
+                if error is not None:
+                    raise asyncio.CancelledError from error
+                return task.result(), True
+            cancelled = True
+        except BaseException as exc:
+            if cancelled:
+                raise asyncio.CancelledError from exc
+            raise
+
+
+async def _uncancellable[R](coro: Coroutine[Any, Any, R]) -> R:
+    """`_finish`, re-raising a cancellation that arrived meanwhile afterwards."""
+    result, cancelled = await _finish(coro)
+    if cancelled:
+        raise asyncio.CancelledError
+    return result
+
+
 class KicadHandle:
     """What callables passed to KicadSession.call receive. Runs in a worker thread."""
 
@@ -100,6 +165,7 @@ class KicadSession:
         client_factory: ClientFactory,
         read_only: bool,
         lock_files: tuple[Path, ...] = (),
+        save_listeners: list[SaveListener] | None = None,
     ) -> None:
         self.project = project
         self.read_only = read_only
@@ -119,6 +185,20 @@ class KicadSession:
         self.on_started: Callable[[], None] | None = None
         # Token in `~STEM.kicad_pro.lck` after our server started (spike 1C, Q7).
         self.server_token: str | None = None
+        # Editing (SP2, E-C1). A pushed commit makes the export jobs (PNG, netlist)
+        # stale - they keep their own copy of the schematic until close + reopen
+        # (spike 2A, Q3) - and the documents unsaved.
+        self.jobs_stale = False
+        self.modified = False
+        self.last_saved_at: str | None = None
+        self._save_listeners = save_listeners if save_listeners is not None else []
+        self._commit_lock = asyncio.Lock()
+        self._commit_owner: asyncio.Task[Any] | None = None
+        self._active_scope: CommitScope | None = None
+        self._generation = 0  # counts successful server starts
+        self._libraries_lock = asyncio.Lock()
+        self._libraries_ready_generation: int | None = None
+        self._libraries_kicked_generation: int | None = None
 
     @property
     def settings(self) -> Settings:
@@ -206,9 +286,69 @@ class KicadSession:
             raise
         self._kicad = client
         self._open_docs = frozenset(opened)
+        self._generation += 1
+        # A fresh server loaded the files on disk: nothing unsaved, jobs current.
+        self.jobs_stale = False
+        self.modified = False
+        await self._kick_off_symbol_libraries(client, deadline - loop.time())
         self.server_token = read_lock_token(lock_file_for(self.project.pro_file))
         if self.on_started is not None:
             self.on_started()
+
+    async def _kick_off_symbol_libraries(self, client: Any, remaining: float) -> None:
+        """Start the background load of every symbol library (owner decision 1: symbols
+        eagerly, footprints never load-all'ed). A refused request only logs - the session
+        still works; `ensure_symbol_libraries` asks again. A hang fails the start: the
+        worker thread would keep using the client concurrently otherwise."""
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(client.load_all_libraries, _symbol_library_type()),
+                timeout=max(1.0, remaining),
+            )
+            self._libraries_kicked_generation = self._generation
+        except TimeoutError as exc:
+            raise KicadUnavailable(
+                "kicad-cli api-server did not answer the symbol library load request"
+            ) from exc
+        except Exception as exc:
+            log.warning("could not start loading the symbol libraries: %s", exc)
+
+    async def _retry_library_kick_off(self, generation: int) -> None:
+        try:
+            await self.call(lambda h: h.kicad.load_all_libraries(_symbol_library_type()))
+        except KicadUnavailable:
+            raise
+        except Exception as exc:
+            raise LibrariesLoading(f"KiCad refused to load the symbol libraries: {exc}") from exc
+        if generation == self._generation:
+            self._libraries_kicked_generation = generation
+
+    async def ensure_symbol_libraries(self, timeout: float = 120.0) -> None:
+        """Wait until the symbol libraries started in `start()` have loaded; returns at
+        once on later calls for the same server start. Polls the load status in short
+        calls, so other KiCad calls are not blocked meanwhile."""
+        if self._libraries_ready_generation == self._generation:
+            return
+        async with self._libraries_lock:
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + timeout
+            while True:
+                generation = self._generation
+                if self._libraries_ready_generation == generation:
+                    return
+                if self._libraries_kicked_generation != generation:
+                    await self._retry_library_kick_off(generation)
+                    continue
+                if not await self.call(_symbol_libraries_loading):
+                    if generation == self._generation:  # no restart in between
+                        self._libraries_ready_generation = generation
+                        return
+                    continue
+                if loop.time() >= deadline:
+                    raise LibrariesLoading(
+                        f"the symbol libraries are still loading after {timeout:g}s"
+                    )
+                await asyncio.sleep(_LIBRARY_POLL_S)
 
     async def _kill(self) -> None:
         proc, self.process = self.process, None
@@ -254,6 +394,18 @@ class KicadSession:
             if self._kicad is None:  # an earlier restart failed: try once more now
                 await self._kill()
                 await self.start()
+            scope = self._active_scope
+            if (
+                scope is not None
+                and scope.generation != self._generation
+                and self._commit_owner is asyncio.current_task()
+            ):
+                # The server holding this commit restarted: its staged writes are gone,
+                # and a write now would land outside any commit (Review Focus 2).
+                raise KicadUnavailable(
+                    "the KiCad api-server restarted during an open commit; its changes "
+                    "were discarded"
+                )
             proc = self.process
             if proc is not None and proc.returncode is not None:
                 await self._restart_after_failure(f"exited with code {proc.returncode}")
@@ -319,29 +471,161 @@ class KicadSession:
                 f"KiCad api-server failed ({reason}) and could not be restarted: {exc.message}"
             ) from exc
 
-    async def save(self, doc: DocKind) -> None:
+    # -- editing -------------------------------------------------------------------
+    @contextlib.asynccontextmanager
+    async def commit(self, label: str, *, dry_run: bool = False) -> AsyncIterator[CommitScope]:
+        """Group the schematic writes made inside the scope into one KiCad commit.
+
+        Normal exit pushes it (`dry_run`: drops it); any exception, cancellation
+        included, drops it, shielded - a commit left open on the server silently
+        captures every later write of the same client (spike 2A, Q6). A failing drop
+        restarts the server. `save`, `save_copy` and `refresh_jobs` wait for the scope.
+        The lock is not re-entrant: never call them from inside a scope.
+        """
         if self.read_only:
             raise ReadOnlyProject(
                 "project is open in KiCad (lock file present) - close it there first"
             )
+        self._check_not_in_commit()
+        async with self._commit_lock:
+            self._commit_owner = asyncio.current_task()
+            try:
+                # begin/push run to completion even on a cancel: a cancel landing right
+                # after KiCad opened the commit would otherwise lose its handle (the
+                # commit stays open), one after the push would drop an applied commit.
+                handle, cancelled = await _finish(self.call(lambda h: h.schematic().begin_commit()))
+                # Read after the call: a lazy (re)start inside call() bumps it first.
+                scope = CommitScope(label, handle, self._generation)
+                self._active_scope = scope
+                if cancelled:
+                    await _uncancellable(self._drop(scope, asyncio.CancelledError()))
+                    raise asyncio.CancelledError
+                try:
+                    yield scope
+                except BaseException as exc:
+                    await _uncancellable(self._drop(scope, exc))
+                    raise
+                try:
+                    if dry_run:
+                        _, cancelled = await _finish(
+                            self.call(lambda h: h.schematic().drop_commit(handle))
+                        )
+                    else:
+                        _, cancelled = await _finish(
+                            self.call(lambda h: h.schematic().push_commit(handle, label))
+                        )
+                except BaseException as exc:
+                    await _uncancellable(self._drop(scope, exc))
+                    raise
+                if not dry_run:
+                    self.jobs_stale = True
+                    self.modified = True
+                if cancelled:
+                    raise asyncio.CancelledError
+            finally:
+                self._commit_owner = None
+                self._active_scope = None
 
+    async def _drop(self, scope: CommitScope, cause: BaseException) -> None:
+        if self._kicad is None or scope.generation != self._generation:
+            return  # the server that held the commit is gone, and its staged items with it
+        try:
+            await self.call(lambda h: h.schematic().drop_commit(scope.commit))
+        except Exception as exc:
+            if self._kicad is None or scope.generation != self._generation:
+                return  # the failed drop already restarted the server
+            with contextlib.suppress(KicadUnavailable):
+                await self.restart()
+            if isinstance(cause, asyncio.CancelledError):
+                log.warning("dropping a cancelled commit failed (%s); server restarted", exc)
+                return  # the caller re-raises the cancellation
+            raise KicadUnavailable(
+                "could not drop an open KiCad commit; the server was restarted"
+            ) from (cause if isinstance(cause, Exception) else exc)
+
+    def _check_not_in_commit(self) -> None:
+        if self._commit_owner is not None and self._commit_owner is asyncio.current_task():
+            raise RuntimeError(
+                "save/save_copy/refresh_jobs/commit called inside an open commit or save listener"
+            )
+
+    async def save(self, doc: DocKind) -> None:
+        """Save `doc`, then await every save listener (history records the hashes)."""
+        if self.read_only:
+            raise ReadOnlyProject(
+                "project is open in KiCad (lock file present) - close it there first"
+            )
+        self._check_not_in_commit()
+        async with self._commit_lock:
+            await self._save_locked(doc)
+
+    async def _save_locked(self, doc: DocKind) -> None:
         def _save(h: KicadHandle) -> None:
             (h.schematic() if doc == "sch" else h.board()).save()  # type: ignore[no-untyped-call]
 
         await self.call(_save)
+        if doc == "sch":
+            self.modified = False
+        self.last_saved_at = utcnow_iso()
+        # Listeners run under the commit lock: mark the task, so a listener calling
+        # save/save_copy/refresh_jobs/commit fails instead of deadlocking.
+        owner, self._commit_owner = self._commit_owner, asyncio.current_task()
+        try:
+            for listener in list(self._save_listeners):
+                try:
+                    await listener(self.project, doc)
+                except Exception:
+                    log.exception("save listener failed for %s", self.project.rel_path)
+        finally:
+            self._commit_owner = owner
+
+    async def refresh_jobs(self) -> None:
+        """Make the api-server's export jobs (PNG, netlist) see the edits: they keep
+        their own copy of the schematic, refreshed only by save + close_document +
+        open_document (spike 2A, Q3)."""
+        self._check_not_in_commit()
+        async with self._commit_lock:
+            if not self.jobs_stale or self.read_only or "sch" not in self._open_docs:
+                return
+            # Reopening loads the files: unsaved edits are saved first. An unmodified
+            # document is never saved here - that could overwrite an external change.
+            if await self.call(lambda h: h.schematic().is_document_modified()):
+                await self._save_locked("sch")
+            sch_file = str(self.project.sch_file)
+            doc_type = _document_type("sch")
+
+            def _reopen(h: KicadHandle) -> None:
+                for spec in h.kicad.get_open_documents(doc_type):
+                    h.kicad.close_document(spec)
+                h.kicad.open_document(sch_file, doc_type)
+
+            try:
+                await self.call(_reopen)
+            except KicadUnavailable:
+                raise  # call() already restarted the server
+            except Exception as exc:
+                # The schematic may be closed now; a restart opens it again from disk.
+                await self.restart()
+                raise KicadUnavailable(
+                    f"reopening the schematic failed ({exc}); the api-server was restarted"
+                ) from exc
+            self.jobs_stale = False
 
     async def save_copy(self, doc: DocKind, dest: Path) -> Path:
-        """SaveCopyOfDocument to `dest` without touching the project's own files.
+        """SaveCopyOfDocument to `dest`.
 
         Spike 1C (Q4): for a schematic the API writes only the root sheet, so the
         sub-sheet files named by the hierarchy are byte-copied from the project
-        directory next to it (same relative paths). Never calls `save()`.
+        directory next to it (same relative paths). Those files are only current
+        after a save, so a modified schematic is saved first (spike 2A, Q8: else
+        stale sub-sheets, and a crash on a new sheet).
 
         For a board, KiCad copies the project's `.kicad_dru` next to the copy and
         refuses ("board could not be saved to ...") when `<dest>.kicad_dru` already
         exists - its own previous copy - so that stale copy is removed first. A rules
         file in the project directory itself is never touched.
         """
+        self._check_not_in_commit()
         dest.parent.mkdir(parents=True, exist_ok=True)
         stale_rules = dest.parent.resolve() != self.project.dir.resolve()
 
@@ -355,7 +639,14 @@ class KicadSession:
             schematic.save_as(str(dest), overwrite=True, include_project=False)
             return [str(sheet.filename) for sheet in schematic.get_hierarchy()]
 
-        sheet_files = await self.call(_copy)
+        async with self._commit_lock:
+            if (
+                doc == "sch"
+                and not self.read_only
+                and await self.call(lambda h: h.schematic().is_document_modified())
+            ):
+                await self._save_locked("sch")
+            sheet_files = await self.call(_copy)
         if sheet_files:
             await asyncio.to_thread(self._copy_sub_sheets, sheet_files, dest.parent)
         return dest
@@ -410,6 +701,12 @@ class KicadSessionManager:
         self._current: KicadSession | None = None
         self._lock = asyncio.Lock()
         self._tokens_dir = settings.data_dir / "kicad-locks"
+        self._save_listeners: list[SaveListener] = []
+
+    def add_save_listener(self, fn: SaveListener) -> None:
+        """`fn(project, doc)` runs after every successful `KicadSession.save` of any
+        session, under the session's commit lock: it must not save, copy or commit."""
+        self._save_listeners.append(fn)
 
     # -- own lock tokens -----------------------------------------------------------
     # The api-server writes the same `~STEM.kicad_pro.lck` the KiCad GUI uses and
@@ -467,6 +764,7 @@ class KicadSessionManager:
                 self._client_factory,
                 read_only=locks.locked,
                 lock_files=locks.lock_files,
+                save_listeners=self._save_listeners,
             )
             if not session.read_only:
                 # No foreign lock existed, so the lock our server writes is ours. A

@@ -9,9 +9,13 @@ import pytest
 
 from copperchat.config import Settings
 from tests.support.kicad_env import api_server_available
-from tests.support.kicad_project import ecc83_session, hier_session
+from tests.support.kicad_project import blank_session, ecc83_session, hier_session
 
-__all__ = ["ecc83_session", "hier_session"]  # real api-server fixtures (tests.support)
+__all__ = [
+    "blank_session",
+    "ecc83_session",
+    "hier_session",
+]  # real api-server fixtures (tests.support)
 
 # Every Settings field can be set from the environment; a host that exports e.g.
 # PORT or DATA_DIR must not change what the tests see.

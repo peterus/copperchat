@@ -50,6 +50,23 @@ class FakeServer:
     saved: list[str] = field(default_factory=list)
     hierarchy: list[str] = field(default_factory=list)
     closed: int = 0
+    modified: bool = False  # what is_document_modified() answers
+    library_loads: list[int] = field(default_factory=list)  # load_all_libraries(types)
+    libraries_loading_polls: int = 0  # get_library_statuses answers "loading" this often
+    closed_docs: list[str] = field(default_factory=list)
+    fail_open_after: int | None = None  # open_document raises once len(opened) reaches it
+    # Commits: ids open on the current server process, and what happened to them.
+    open_commits: set[int] = field(default_factory=set)
+    pushed: list[tuple[int, str]] = field(default_factory=list)
+    dropped: list[int] = field(default_factory=list)
+    next_commit: int = 0
+    fail_push: bool = False
+    fail_drop: bool = False
+    drop_gate: threading.Event | None = None  # drop_commit waits for it when set
+    commit_gate: threading.Event | None = None  # begin/push_commit wait for it when set
+    gate_reached: threading.Event = field(default_factory=threading.Event)  # a call waits
+    library_load_hangs: bool = False  # load_all_libraries never answers
+    library_load_refusals: int = 0  # load_all_libraries raises this often
 
     def crash(self) -> None:
         self.dead = True
@@ -84,6 +101,7 @@ class FakeLauncher:
                     break
                 await asyncio.sleep(0.01)
         self.server.dead = False
+        self.server.open_commits.clear()  # a fresh process holds no commits
         return proc
 
 
@@ -96,6 +114,39 @@ class FakeDocument:
 
     def save(self) -> None:
         self._server.saved.append(self._path.name)
+        self._server.modified = False
+
+    def is_document_modified(self) -> bool:
+        return self._server.modified
+
+    def begin_commit(self) -> SimpleNamespace:
+        if self._server.commit_gate is not None:
+            self._server.gate_reached.set()
+            self._server.commit_gate.wait(10)
+        if self._server.open_commits:
+            raise ApiError("KiCad returned error: client already has a commit in progress")
+        self._server.next_commit += 1
+        self._server.open_commits.add(self._server.next_commit)
+        return SimpleNamespace(id=self._server.next_commit)
+
+    def push_commit(self, commit: SimpleNamespace, message: str = "") -> None:
+        if self._server.commit_gate is not None:
+            self._server.gate_reached.set()
+            self._server.commit_gate.wait(10)
+        if self._server.fail_push or commit.id not in self._server.open_commits:
+            raise ApiError("KiCad returned error: no such commit")
+        self._server.open_commits.discard(commit.id)
+        self._server.pushed.append((commit.id, message))
+        self._server.modified = True
+
+    def drop_commit(self, commit: SimpleNamespace) -> None:
+        if self._server.drop_gate is not None:
+            self._server.gate_reached.set()
+            self._server.drop_gate.wait(10)
+        if self._server.fail_drop or commit.id not in self._server.open_commits:
+            raise ApiError("KiCad returned error: no such commit")
+        self._server.open_commits.discard(commit.id)
+        self._server.dropped.append(commit.id)
 
     def save_as(self, filename: str, overwrite: bool = False, include_project: bool = True) -> None:
         # The real api-server writes the document; the fake copies the source file.
@@ -132,9 +183,39 @@ class FakeKiCad:
 
     def open_document(self, path: str, type: int) -> Any:
         self._check()
+        limit = self._server.fail_open_after
+        if limit is not None and len(self._server.opened) >= limit:
+            self._server.fail_open_after = None
+            raise ApiError("KiCad returned error: could not open the document")
         self._docs[type] = path
         self._server.opened.append((Path(path).name, type))
         return SimpleNamespace(path=path)
+
+    def get_open_documents(self, type: int) -> list[Any]:
+        self._check()
+        return [SimpleNamespace(path=self._docs[type])] if type in self._docs else []
+
+    def close_document(self, document: Any) -> None:
+        self._check()
+        self._server.closed_docs.append(Path(document.path).name)
+
+    def load_all_libraries(self, types: int) -> None:
+        self._check()
+        if self._server.library_load_hangs:
+            self._server.release.wait(10)
+        if self._server.library_load_refusals > 0:
+            self._server.library_load_refusals -= 1
+            raise ApiError("KiCad returned error: library load not possible")
+        self._server.library_loads.append(types)
+
+    def get_library_statuses(self, types: int) -> list[Any]:
+        from kipy.proto.common.types import LibraryLoadStatus
+
+        self._check()
+        loading = self._server.libraries_loading_polls > 0
+        self._server.libraries_loading_polls -= 1
+        status = LibraryLoadStatus.LLS_LOADING if loading else LibraryLoadStatus.LLS_LOADED
+        return [SimpleNamespace(status=status)]
 
     def get_schematic(self) -> FakeDocument:
         self._check()

@@ -48,3 +48,9 @@ async def hier_session(make_settings: Callable[..., Settings]) -> AsyncIterator[
         real_settings(make_settings), "complex_hierarchy", "complex_hierarchy"
     ):
         yield session
+
+
+@pytest.fixture
+async def blank_session(make_settings: Callable[..., Settings]) -> AsyncIterator[KicadSession]:
+    async for session in _open(real_settings(make_settings), "blank", "blank"):
+        yield session

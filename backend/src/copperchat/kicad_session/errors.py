@@ -10,3 +10,10 @@ class KicadUnavailable(CopperChatError):
 
 class KicadCallTimeout(KicadUnavailable):
     code = "kicad_timeout"
+
+
+class LibrariesLoading(CopperChatError):
+    """The api-server's symbol libraries did not finish loading in time."""
+
+    code = "libraries_loading"
+    http_status = 503

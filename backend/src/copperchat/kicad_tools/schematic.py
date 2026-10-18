@@ -30,8 +30,17 @@ def _symbol_with_pins(ref: str) -> Any:
     return run
 
 
-def _netlist(h: KicadHandle) -> dict[str, list[dict[str, str]]]:
-    return access.netlist_nodes(h.schematic())
+def _pin_nets(h: KicadHandle) -> dict[tuple[str, str], str]:
+    """(ref, pin) -> net name from the live netlist (sees unsaved edits)."""
+    symbols = h.schematic().get_symbols()
+    refs = {(access.sheet_path_key(s.path), access.kiid(s)): str(s.reference)
+            for s in symbols}  # fmt: skip
+    return {
+        (refs[(path, uuid)], number): name
+        for name, keys in access.live_netlist(h, symbols).nets.items()
+        for path, uuid, number in keys
+        if (path, uuid) in refs
+    }
 
 
 async def sch_list_symbols(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
@@ -49,8 +58,7 @@ async def sch_get_symbol(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     units, refs = await ctx.session.call(_symbol_with_pins(ref))
     if not units:
         raise not_found("Symbol", ref, refs)
-    nets = await ctx.session.call(_netlist)
-    net_of = {(n["ref"], n["pin"]): name for name, nodes in nets.items() for n in nodes}
+    net_of = await ctx.session.call(_pin_nets)
     first = units[0]
     pins = [
         p | {"unit": u["unit"], "net": net_of.get((ref, p["pin"]))}
@@ -70,36 +78,44 @@ async def sch_get_symbol(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     )
 
 
+def _pin_function(name: str, number: str) -> str:
+    """The pin's function as kicad-cli's netlist names it at the pinned commit:
+    `NAME_number`, `""` for an unnamed (`~`) pin."""
+    return "" if name in ("", "~") else f"{name}_{number}"
+
+
 def _net_members(name: str) -> Any:
     def run(h: KicadHandle) -> tuple[list[dict[str, Any]] | None, list[str]]:
-        sch = h.schematic()
-        nets = access.netlist_nodes(sch)
+        symbols = h.schematic().get_symbols()
+        nets = access.live_netlist(h, symbols).nets
         if name not in nets:
             return None, list(nets)
-        wanted = {n["ref"] for n in nets[name]}
-        placed: dict[tuple[str, str], dict[str, Any]] = {}
-        for s in sch.get_symbols():
-            if str(s.reference) not in wanted:
+        wanted = {(path, uuid) for path, uuid, _ in nets[name]}
+        pins: dict[tuple[str, str], dict[str, Any]] = {}
+        for s in symbols:
+            path, uuid, ref = access.sheet_path_key(s.path), access.kiid(s), str(s.reference)
+            # Power symbols are no netlist components (as in kicad-cli's netlist).
+            if (path, uuid) not in wanted or ref.startswith("#"):
                 continue
             sym = access.symbol_dict(s)
             for p in access.symbol_pins(s):
-                placed.setdefault(
-                    (sym["ref"], p["pin"]),
-                    {"uuid": sym["uuid"], "sheet": sym["sheet"], "position_mm": p["position_mm"]},
+                if (path, uuid, p["pin"]) not in nets[name]:
+                    continue
+                pins.setdefault(
+                    (ref, p["pin"]),
+                    {
+                        "ref": ref,
+                        "pin": p["pin"],
+                        "function": _pin_function(p["name"], p["pin"]),
+                        "type": p["type"],
+                        "uuid": sym["uuid"],
+                        "sheet": sym["sheet"],
+                        "position_mm": p["position_mm"],
+                    },
                 )
-        pins = [
-            {
-                "ref": n["ref"],
-                "pin": n["pin"],
-                "function": n["function"],
-                "type": n["type"],
-                **placed.get(
-                    (n["ref"], n["pin"]), {"uuid": None, "sheet": None, "position_mm": None}
-                ),
-            }
-            for n in nets[name]
-        ]
-        return sorted(pins, key=lambda p: (natural_key(p["ref"]), natural_key(p["pin"]))), []
+        return sorted(
+            pins.values(), key=lambda p: (natural_key(p["ref"]), natural_key(p["pin"]))
+        ), []
 
     return run
 

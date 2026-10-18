@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from copperchat.agent.protocol import ViewUpdatedFrame
 from copperchat.db import Database
-from copperchat.history.store import DocumentHashRepo, HistoryStore
+from copperchat.history.store import DocumentHashRepo, HistoryStore, document_files, sha256_file
 from copperchat.kicad_session import DocKind, KicadSession, KicadSessionManager
 from copperchat.projects import Project
 from copperchat.views import render_view, write_kicanvas_snapshot
@@ -48,6 +48,29 @@ class HistoryService:
             _default_preview
         )
         self._locks: dict[str, asyncio.Lock] = {}
+        # Every CopperChat save rewrites the files: record their hashes right after it,
+        # so the turn-start check never takes our own save for an external change.
+        sessions.add_save_listener(self._on_saved)
+
+    async def _on_saved(self, project: Project, doc: DocKind) -> None:
+        """Re-record the saved document's files (+ the project file KiCad may rewrite);
+        the other document's stored hashes stay, so an external change to it is still
+        reported at the next turn start."""
+        suffix = ".kicad_sch" if doc == "sch" else ".kicad_pcb"
+        pro = project.pro_file.relative_to(project.dir).as_posix()
+
+        def owned(rel: str) -> bool:
+            return rel == pro or rel.endswith(suffix)
+
+        def owned_hashes() -> dict[str, str]:
+            rels = {p.relative_to(project.dir).as_posix(): p for p in document_files(project)}
+            return {rel: sha256_file(path) for rel, path in rels.items() if owned(rel)}
+
+        now = await asyncio.to_thread(owned_hashes)
+        stored = await self.hashes.get(project.id)
+        merged = {k: v for k, v in stored.items() if not owned(k)}
+        merged |= now
+        await self.hashes.replace(project.id, merged)
 
     def store(self, project: Project) -> HistoryStore:
         return HistoryStore(self.db, project)

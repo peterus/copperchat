@@ -10,6 +10,7 @@ records that commit in `projects/KICAD_COMMIT`.
 |---|---|
 | `projects/ecc83/` | `ecc83/ecc83-pp.*`, `sym-lib-table`, `fp-lib-table`, `footprints.pretty/` (not `ecc83-pp_v2.*`: a second `.kicad_pro` in one directory makes the project ambiguous; not `3d_shapes/`) |
 | `projects/complex_hierarchy/` | `complex_hierarchy/` (hierarchical sheets: one root, `ampli_ht.kicad_sch` instantiated twice) |
+| `projects/blank/` | not a demo: `scripts/make-blank-fixture.py` (called by `refresh-fixtures.sh`) copies KiCad's `template/kicad.kicad_pro`, has a headless api-server create and save an empty `blank.kicad_sch` + `blank.kicad_pcb`, and copies the ecc83 project library (`ecc83-pp.kicad_sym`, `sym-lib-table`) verbatim |
 
 Files are copied verbatim and upgraded only with `kicad-cli sch upgrade --force` /
 `kicad-cli pcb upgrade --force`; the `.kicad_prl` files kicad-cli writes while

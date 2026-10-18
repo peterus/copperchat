@@ -35,5 +35,7 @@ done
 # kicad-cli writes .kicad_prl (local view state) while upgrading; not part of a fixture.
 find "$DEST" \( -name '*-backups' -o -name '*.lck' -o -name '*.kicad_prl' \) -prune \
   -exec rm -rf {} +
+# `blank`: created by KiCad itself through the API (the rm -rf above removed it).
+"${PYTHON:-/opt/venv/bin/python}" "$ROOT/scripts/make-blank-fixture.py" "$DEST"
 echo "$COMMIT" > "$DEST/KICAD_COMMIT"
 echo "fixtures refreshed from KiCad $COMMIT"

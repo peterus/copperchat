@@ -22,6 +22,7 @@ from copperchat.push.visibility import VisibilityRegistry
 from copperchat.web import (
     auth,
     health,
+    routes_editing,
     routes_git,
     routes_history,
     routes_messages,
@@ -135,6 +136,7 @@ def create_app(
     app.include_router(routes_parts.router)
     app.include_router(routes_uploads.router)
     app.include_router(routes_push.router)
+    app.include_router(routes_editing.router)
     app.include_router(ws.router)
     mount_frontend(app, settings.frontend_dist)  # must stay last: it mounts "/"
     return app

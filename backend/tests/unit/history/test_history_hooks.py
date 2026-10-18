@@ -182,3 +182,19 @@ async def test_view_refresh_failure_is_not_an_autosave_failure(opened: Opened) -
     await opened.hooks.on_turn_end(turn(), done("pcb"))
     assert env.saved == ["pcb"] and env.engine.errors == [] and env.engine.notices == []
     assert await env.svc.hashes.get(opened.project.id) == compute_hashes(opened.project)
+
+
+async def test_history_registers_hash_listener(opened: Opened) -> None:
+    """Every CopperChat save records the hashes (E1): also a save outside turn end."""
+    from copperchat.history.store import compute_hashes_async
+
+    svc, project = opened.env.svc, opened.project
+    now = await compute_hashes_async(project)
+    stale = {k: "0" * 64 for k in now} | {"gone.kicad_sch": "1" * 64}
+    await svc.hashes.replace(project.id, stale)
+    await opened.session.save("sch")
+    recorded = await svc.hashes.get(project.id)
+    board = next(k for k in now if k.endswith(".kicad_pcb"))
+    # The saved schematic and the project file are re-recorded; the board's stored hash
+    # stays, so an external board change is still reported at the next turn start.
+    assert recorded == now | {board: "0" * 64}
