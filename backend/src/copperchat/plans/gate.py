@@ -27,6 +27,16 @@ if TYPE_CHECKING:
     from copperchat.tools.spec import ToolContext
 
 
+# What the agent can do about an open plan that blocks an edit, per status.
+_BLOCKED_HINT = {
+    "proposed": "Wait for the user to approve or reject the plan, or revise it with plan_revise.",
+    "approved": "The plan is approved: call plan_step_begin for its next step and make "
+    "the change inside it (or ask the user to abort the plan).",
+    "paused": "Wait for the user to resume or roll back the plan, revise it with "
+    "plan_revise, or ask the user to abort it.",
+}
+
+
 class PlanGate(BudgetGate):
     def __init__(self, service: EditingService, plans: PlanService) -> None:
         super().__init__(service)
@@ -47,8 +57,7 @@ class PlanGate(BudgetGate):
             raise StructuredToolError(
                 f"{tool} refused: a plan is {status}",
                 "No edits happen outside the steps of an open plan",
-                "Wait for the user to approve or resume the plan, revise it with "
-                "plan_revise, or ask the user to abort it.",
+                _BLOCKED_HINT.get(status, "Ask the user to finish or abort the plan."),
                 code="plan_open",
                 details={"plan_id": plan_id, "status": status},
             )

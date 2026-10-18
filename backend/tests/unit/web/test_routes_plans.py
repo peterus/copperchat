@@ -286,6 +286,10 @@ def test_history_restore_refused_while_plan_open(ctx: Ctx) -> None:
     before = sha256_file(ctx.project.pcb_file)
     r = ctx.client.post(f"/api/projects/{ctx.pid}/history/{base_id}/restore")
     assert r.status_code == 409 and r.json()["error"]["code"] == "plan_open"
+    err = r.json()["error"]["details"]  # the StructuredToolError body
+    assert err["why"] == f"Plan {plan.id} is paused"  # the frontend parses this format
+    assert err["details"] == {"planId": plan.id, "status": "paused"}
+    assert "Roll back" in err["suggestion"]
     assert sha256_file(ctx.project.pcb_file) == before
     # A merely proposed plan (nothing begun) does not block the History panel.
     ctx.save(machine.transition(ctx.plan(plan.id), "abort", now=NOW))
@@ -314,3 +318,25 @@ def test_approve_publishes_plan_updated(ctx: Ctx) -> None:
     assert ctx.client.post(ctx.url(plan.id, "approve")).status_code == 200
     updates = [f for f in frames if f.type == "plan-updated"]
     assert updates and updates[-1].plan.status == "approved"
+
+
+@pytest.mark.parametrize("status", ["approved", "running"])
+def test_history_restore_hint_fits_the_plan_status(ctx: Ctx, status: str) -> None:
+    store = ctx.app.state.history.store(ctx.project)
+    base = ctx.call(store.snapshot, "run1", "turn")
+    plan = machine.transition(new_plan(ctx), "approve", now=NOW)
+    if status == "running":
+        plan = machine.transition(plan, "step_begin", now=NOW, idx=1, run_id="run1")
+    plan = ctx.store_plan(plan)
+    r = ctx.client.post(f"/api/projects/{ctx.pid}/history/{base.id}/restore")
+    err = r.json()["error"]["details"]  # the StructuredToolError body
+    assert r.status_code == 409 and err["code"] == "plan_open"
+    assert err["why"] == f"Plan {plan.id} is {status}"
+    assert err["details"] == {"planId": plan.id, "status": status}
+    # Roll back exists only for a paused plan; an approved one is aborted or left to run,
+    # a running one must be stopped first.
+    if status == "approved":
+        assert "Roll back" not in err["suggestion"]
+        assert "abort" in err["suggestion"] and "wait for it to run" in err["suggestion"]
+    else:
+        assert err["suggestion"].startswith("Stop the plan first")

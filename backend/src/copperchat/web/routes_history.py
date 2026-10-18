@@ -55,6 +55,16 @@ async def preview(
     return FileResponse(path, media_type="image/png", headers=headers)
 
 
+# Plans that block a restore, with what the user can do about each (Roll back exists
+# only for a paused plan; a running one cannot be aborted until the agent stops).
+_RESTORE_HINT = {
+    "approved": "The approved plan is waiting to run: abort it on its plan card, or wait "
+    "for it to run.",
+    "running": "Stop the plan first; then use Roll back to... on its plan card, or abort it.",
+    "paused": "Use Roll back to... on the plan card, or abort the plan first.",
+}
+
+
 @router.post("/{project_id}/history/{snapshot_id}/restore")
 async def restore(
     project_id: str, snapshot_id: str, request: Request, _: CurrentUser
@@ -65,12 +75,14 @@ async def restore(
         # E8b: a plan that has begun owns the design's history; a plain restore would let
         # Resume run later steps on a design without the earlier ones (spec §7.1).
         open_ = await plans.repo.open_status(project.id)
-        if open_ is not None and open_[1] in ("approved", "running", "paused"):
+        if open_ is not None and open_[1] in _RESTORE_HINT:
+            plan_id, status = open_
             raise PlanStateError(
                 "The design cannot be restored while a plan is open",
-                f"Plan {open_[0]} is {open_[1]}",
-                "Use the plan's Roll back, or abort the plan first.",
+                f"Plan {plan_id} is {status}",  # format parsed by the frontend (fallback)
+                _RESTORE_HINT[status],
                 code="plan_open",
+                details={"planId": plan_id, "status": status},
             )
     # Errors map via install_error_handlers: 400 invalid id, 404 unknown, 409 read-only,
     # agent busy or open plan, 422 corrupt snapshot, 503 KiCad unavailable.

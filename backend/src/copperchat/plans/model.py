@@ -19,8 +19,16 @@ class PlanStateError(StructuredToolError):
 
     http_status = 409
 
-    def __init__(self, what: str, why: str, suggestion: str, *, code: str = "plan_state") -> None:
-        super().__init__(what, why, suggestion, code=code)
+    def __init__(
+        self,
+        what: str,
+        why: str,
+        suggestion: str,
+        *,
+        code: str = "plan_state",
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(what, why, suggestion, code=code, details=details)
 
 
 class InvalidPlanArgument(StructuredToolError):
