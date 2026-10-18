@@ -12,7 +12,7 @@ from itertools import combinations
 
 import geo
 import tools
-from checks import value_checks
+from checks import norm_value, value_checks
 
 COMMON = (
     " The schematic is empty; nothing has to be preserved. When you are done, the ERC must have no "
@@ -167,7 +167,10 @@ def layout_checks(ctx) -> dict:
 
 
 def rail_checks(name: str, comps: dict) -> dict:
-    """s1: connector pin 1 must be on +5V and pin 2 on GND (the prompt names the rails)."""
+    """s1: connector pin 1 must be on +5V and pin 2 on GND (the prompt names the rails).
+    s2: the 10 µF cap must be the input cap and the 22 µF cap the output cap."""
+    if name == "s2":
+        return _s2_cap_roles(comps)
     if name != "s1":
         return {}
     j = _find(comps, r"^Connector")
@@ -175,6 +178,19 @@ def rail_checks(name: str, comps: dict) -> dict:
         return {"connector_rails": False}
     n1, n2 = _net(comps, (j[0], "1")), _net(comps, (j[0], "2"))
     return {"connector_rails": bool(n1 and n2) and geo.net_key(n1) == "+5V" and geo.net_key(n2) == "GND"}
+
+
+def _s2_cap_roles(comps: dict) -> dict:
+    U, C = _find(comps, r"^Regulator"), _find(comps, r"^Device:C")
+    if len(U) != 1:
+        return {"input_cap_10u": False, "output_cap_22u": False}
+    vin = _net(comps, _pin(comps, U[0], ["VI", "VIN", "IN"]))
+    vout = _net(comps, _pin(comps, U[0], ["VO", "VOUT", "OUT"]))
+
+    def caps_on(n):
+        return [norm_value(comps[x]["value"]) for x in C if n in (_net(comps, (x, "1")), _net(comps, (x, "2")))]
+
+    return {"input_cap_10u": "10u" in caps_on(vin), "output_cap_22u": "22u" in caps_on(vout)}
 
 
 def score(name: str, ctx) -> dict:

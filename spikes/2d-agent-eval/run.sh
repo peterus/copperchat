@@ -15,10 +15,16 @@ if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}${ANTHROPIC_API_KEY:-}" ] && [ -f "$ENV_FIL
   CLAUDE_CODE_OAUTH_TOKEN="$(env_value CLAUDE_CODE_OAUTH_TOKEN)"
   ANTHROPIC_API_KEY="$(env_value ANTHROPIC_API_KEY)"
 fi
-creds=()  # forward only non-empty credentials, by name (never their values on the command line)
-for v in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; do
-  if [ -n "${!v:-}" ]; then export "${v?}"; creds+=(-e "$v"); fi
-done
+# Forward one credential by name (never its value on the command line): the OAuth token
+# (subscription, what the eval reports) if set, the API key only as a fallback.
+creds=()
+if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+  export CLAUDE_CODE_OAUTH_TOKEN
+  creds=(-e CLAUDE_CODE_OAUTH_TOKEN)
+elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+  export ANTHROPIC_API_KEY
+  creds=(-e ANTHROPIC_API_KEY)
+fi
 cmd=("$@")
 [ "${cmd[0]:-}" = python ] && cmd[0]=/opt/venv/bin/python
 exec docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/../..:/repo" -w /repo/spikes/2d-agent-eval \

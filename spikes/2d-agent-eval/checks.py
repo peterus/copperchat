@@ -16,7 +16,7 @@ WANTED_VALUES = {
 }
 
 
-def _norm_value(v: str) -> str:
+def norm_value(v: str) -> str:
     v = v.lower().replace("ω", "").replace("ohm", "").replace(" ", "").replace("µ", "u").replace("f", "")
     return v.replace("4k7", "4.7k")
 
@@ -25,7 +25,7 @@ def value_checks(name: str, components: dict) -> dict:
     """Prompt values + 0805 passives, from the recorded `components` of a score."""
     out = {}
     for pat, want in WANTED_VALUES[name].items():
-        got = sorted(_norm_value(c["value"]) for c in components.values() if re.search(pat, c["lib"]))
+        got = sorted(norm_value(c["value"]) for c in components.values() if re.search(pat, c["lib"]))
         out[f"values {pat.strip('^')}"] = sorted(want) == got
     out["passives_0805"] = all("0805" in c["footprint"] for c in components.values() if PASSIVE_SYMBOLS.match(c["lib"]))
     return out
