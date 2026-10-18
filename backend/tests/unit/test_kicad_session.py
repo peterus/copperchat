@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 
@@ -371,7 +372,8 @@ async def test_save_calls_listeners_after_save(
 ) -> None:
     seen: list[tuple[str, list[str]]] = []
 
-    async def listener(project: Project) -> None:
+    async def listener(project: Project, doc: str) -> None:
+        assert doc == "sch"
         seen.append((project.id, list(server.saved)))  # runs after the save itself
 
     manager.add_save_listener(listener)
@@ -392,10 +394,10 @@ async def test_save_listener_error_is_logged_not_raised(
 ) -> None:
     calls: list[str] = []
 
-    async def broken(project: Project) -> None:
+    async def broken(project: Project, doc: str) -> None:
         raise RuntimeError("hash store down")
 
-    async def second(project: Project) -> None:
+    async def second(project: Project, doc: str) -> None:
         calls.append(project.id)
 
     manager.add_save_listener(broken)
@@ -427,13 +429,38 @@ async def test_refresh_jobs_saves_and_reopens_only_when_stale(
     session = await manager.open(make_project(make_settings().projects_root))
     await session.refresh_jobs()
     assert server.saved == [] and server.closed_docs == []
-    session.jobs_stale = True
+    session.jobs_stale, server.modified = True, True
     opened_before = len(server.opened)
     await session.refresh_jobs()
     assert server.saved == ["demo.kicad_sch"]
     assert server.closed_docs == ["demo.kicad_sch"]
     assert server.opened[opened_before:] == [("demo.kicad_sch", 1)]  # DOCTYPE_SCHEMATIC
     assert session.jobs_stale is False
+
+
+async def test_refresh_jobs_never_saves_an_unmodified_schematic(
+    manager: KicadSessionManager, server: FakeServer, make_settings: Callable[..., Settings]
+) -> None:
+    # After an autosave the jobs are still stale, but saving again could overwrite a
+    # change made on disk meanwhile: only reopen.
+    session = await manager.open(make_project(make_settings().projects_root))
+    session.jobs_stale = True
+    await session.refresh_jobs()
+    assert server.saved == []
+    assert server.closed_docs == ["demo.kicad_sch"]
+    assert session.jobs_stale is False
+
+
+async def test_refresh_jobs_restarts_when_reopen_fails(
+    manager: KicadSessionManager, server: FakeServer, make_settings: Callable[..., Settings]
+) -> None:
+    session = await manager.open(make_project(make_settings().projects_root))
+    session.jobs_stale = True
+    server.fail_open_after = len(server.opened)
+    starts = server.starts
+    with pytest.raises(KicadUnavailable, match="reopening the schematic failed"):
+        await session.refresh_jobs()
+    assert server.starts == starts + 1  # restarted: the schematic is open again
 
 
 async def test_restart_resets_editing_flags(
@@ -480,3 +507,133 @@ async def test_ensure_symbol_libraries_times_out(
     server.libraries_loading_polls = 10_000
     with pytest.raises(LibrariesLoading):
         await session.ensure_symbol_libraries(timeout=0.3)
+
+
+# -- commit(): failure and cancellation branches (Review Focus 2) ------------------
+
+
+async def test_commit_push_failure_drops_the_commit(
+    manager: KicadSessionManager, server: FakeServer, make_settings: Callable[..., Settings]
+) -> None:
+    session = await manager.open(make_project(make_settings().projects_root))
+    server.fail_push = True
+    with pytest.raises(ApiError):
+        async with session.commit("t"):
+            pass
+    assert server.dropped == [1] and server.open_commits == set()
+    assert session.jobs_stale is False
+
+
+async def test_commit_drop_failure_restarts_and_raises(
+    manager: KicadSessionManager, server: FakeServer, make_settings: Callable[..., Settings]
+) -> None:
+    session = await manager.open(make_project(make_settings().projects_root))
+    server.fail_drop = True
+    starts = server.starts
+    with pytest.raises(KicadUnavailable, match="could not drop"):
+        async with session.commit("t"):
+            raise RuntimeError("boom")
+    assert server.starts == starts + 1  # the stale commit died with the old server
+    server.fail_drop = False
+    async with session.commit("next"):
+        pass
+    assert server.pushed[-1][1] == "next"
+
+
+async def test_cancel_with_failing_drop_stays_a_cancellation(
+    manager: KicadSessionManager, server: FakeServer, make_settings: Callable[..., Settings]
+) -> None:
+    session = await manager.open(make_project(make_settings().projects_root))
+    server.fail_drop = True
+    inside = asyncio.Event()
+
+    async def edit() -> None:
+        async with session.commit("t"):
+            inside.set()
+            await asyncio.Event().wait()
+
+    task = asyncio.create_task(edit())
+    await inside.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert server.open_commits == set()  # restarted: no commit left open
+
+
+async def test_cancel_during_in_flight_call_inside_commit(
+    manager: KicadSessionManager, server: FakeServer, make_settings: Callable[..., Settings]
+) -> None:
+    session = await manager.open(make_project(make_settings().projects_root))
+    inside = asyncio.Event()
+
+    async def edit() -> None:
+        async with session.commit("t"):
+            inside.set()
+            await session.call(lambda h: h.kicad.hang())
+
+    task = asyncio.create_task(edit())
+    await inside.wait()
+    await asyncio.sleep(0.1)  # the hang is in flight
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    server.release.set()
+    # The cancelled call killed the server (and the commit with it); the next one is clean.
+    async with session.commit("next"):
+        pass
+    assert server.pushed[-1][1] == "next" and server.open_commits == set()
+
+
+async def test_second_cancel_during_drop_waits_for_the_drop(
+    manager: KicadSessionManager, server: FakeServer, make_settings: Callable[..., Settings]
+) -> None:
+    session = await manager.open(make_project(make_settings().projects_root))
+    gate = threading.Event()
+    server.drop_gate = gate
+    inside = asyncio.Event()
+
+    async def edit() -> None:
+        async with session.commit("t"):
+            inside.set()
+            await asyncio.Event().wait()
+
+    task = asyncio.create_task(edit())
+    await inside.wait()
+    task.cancel()
+    await asyncio.sleep(0.1)  # now inside the (blocked) drop
+    task.cancel()
+    await asyncio.sleep(0.1)
+    assert not task.done()  # the drop still runs; the commit lock is still held
+    saving = asyncio.create_task(session.save("sch"))
+    await asyncio.sleep(0.1)
+    assert not saving.done()
+    gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await saving
+    assert server.dropped == [1] and server.open_commits == set()
+
+
+async def test_write_after_restart_inside_commit_is_refused(
+    manager: KicadSessionManager, server: FakeServer, make_settings: Callable[..., Settings]
+) -> None:
+    session = await manager.open(make_project(make_settings().projects_root))
+    with pytest.raises(KicadUnavailable, match="restarted during an open commit"):
+        async with session.commit("t"):
+            with pytest.raises(KicadUnavailable):
+                await session.call(lambda h: h.kicad.hang(), timeout=0.2)  # restarts
+            await session.call(lambda h: h.kicad.ping())  # would escape the commit
+    server.release.set()
+    assert server.pushed == [] and server.open_commits == set()
+
+
+async def test_nested_commit_or_save_inside_commit_fails_fast(
+    manager: KicadSessionManager, make_settings: Callable[..., Settings]
+) -> None:
+    session = await manager.open(make_project(make_settings().projects_root))
+    with pytest.raises(RuntimeError, match="inside an open commit"):
+        async with session.commit("outer"):
+            await session.save("sch")
+    with pytest.raises(RuntimeError, match="inside an open commit"):
+        async with session.commit("outer"), session.commit("inner"):
+            pass

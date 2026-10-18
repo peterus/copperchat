@@ -189,6 +189,12 @@ async def test_history_registers_hash_listener(opened: Opened) -> None:
     from copperchat.history.store import compute_hashes_async
 
     svc, project = opened.env.svc, opened.project
-    await svc.hashes.replace(project.id, {"stale.kicad_sch": "0" * 64})
+    now = await compute_hashes_async(project)
+    stale = {k: "0" * 64 for k in now} | {"gone.kicad_sch": "1" * 64}
+    await svc.hashes.replace(project.id, stale)
     await opened.session.save("sch")
-    assert await svc.hashes.get(project.id) == await compute_hashes_async(project)
+    recorded = await svc.hashes.get(project.id)
+    board = next(k for k in now if k.endswith(".kicad_pcb"))
+    # The saved schematic and the project file are re-recorded; the board's stored hash
+    # stays, so an external board change is still reported at the next turn start.
+    assert recorded == now | {board: "0" * 64}

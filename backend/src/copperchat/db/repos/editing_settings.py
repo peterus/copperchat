@@ -33,7 +33,8 @@ def _validate(values: dict[str, Any]) -> None:
     unknown = set(values) - _FIELDS
     if unknown:
         raise InvalidEditingSettings(f"unknown editing settings: {', '.join(sorted(unknown))}")
-    if "plan_policy" in values and values["plan_policy"] not in PLAN_POLICIES:
+    policy = values.get("plan_policy", "large")
+    if not isinstance(policy, str) or policy not in PLAN_POLICIES:
         raise InvalidEditingSettings("plan_policy must be one of always, large, never")
     if "change_budget" in values:
         budget = values["change_budget"]
@@ -75,21 +76,22 @@ class EditingSettingsRepo:
     async def put(self, project_id: str, **values: Any) -> EditingSettings:
         """Partial update merged with the current settings; validates before writing."""
         _validate(values)
-        merged = replace(await self.get(project_id), **values)
-        row = asdict(merged)
-        await self._db.execute(
-            "INSERT INTO editing_settings"
-            "(project_id, plan_policy, change_budget, annotation_block, show_agent_view) "
-            "VALUES (?, ?, ?, ?, ?) ON CONFLICT(project_id) DO UPDATE SET "
-            "plan_policy = excluded.plan_policy, change_budget = excluded.change_budget, "
-            "annotation_block = excluded.annotation_block, "
-            "show_agent_view = excluded.show_agent_view",
-            (
-                project_id,
-                row["plan_policy"],
-                row["change_budget"],
-                row["annotation_block"],
-                1 if row["show_agent_view"] else 0,
-            ),
-        )
+        async with self._db.transaction():  # read-modify-write: concurrent PUTs keep both
+            merged = replace(await self.get(project_id), **values)
+            row = asdict(merged)
+            await self._db.execute(
+                "INSERT INTO editing_settings"
+                "(project_id, plan_policy, change_budget, annotation_block, show_agent_view) "
+                "VALUES (?, ?, ?, ?, ?) ON CONFLICT(project_id) DO UPDATE SET "
+                "plan_policy = excluded.plan_policy, change_budget = excluded.change_budget, "
+                "annotation_block = excluded.annotation_block, "
+                "show_agent_view = excluded.show_agent_view",
+                (
+                    project_id,
+                    row["plan_policy"],
+                    row["change_budget"],
+                    row["annotation_block"],
+                    1 if row["show_agent_view"] else 0,
+                ),
+            )
         return merged

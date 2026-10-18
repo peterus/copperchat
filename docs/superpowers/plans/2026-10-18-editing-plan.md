@@ -196,7 +196,7 @@ class CommitScope:
     commit: Any            # kipy Commit (kept: its id is needed to drop it)
 
 class KicadSessionManager:
-    def add_save_listener(self, fn: Callable[[Project], Awaitable[None]]) -> None
+    def add_save_listener(self, fn: Callable[[Project, DocKind], Awaitable[None]]) -> None
 ```
 
 `HistoryService` registers its hash recording as a save listener (E1), so
@@ -206,13 +206,22 @@ class KicadSessionManager:
   belongs to): a restart since `begin_commit` discarded the staged items, so the drop
   is skipped. `commit()` refuses a read-only session (`ReadOnlyProject`) and also drops
   when `push_commit` itself fails; the drop runs to completion even when the caller is
-  cancelled again meanwhile (the commit lock is released only afterwards). `save`,
-  `save_copy`, `refresh_jobs` raise `RuntimeError` when called from inside the
-  caller's own open commit (instead of deadlocking). `SaveListener =
-  Callable[[Project], Awaitable[None]]`; listener errors are logged. `modified` is the
+  cancelled again meanwhile (the commit lock is released only afterwards); a failing
+  drop of a *cancelled* scope restarts and stays a cancellation. Any `session.call`
+  of the scope's task after a server restart inside the scope raises
+  `KicadUnavailable` (it would write outside the commit). `save`, `save_copy`,
+  `refresh_jobs` and a nested `commit` raise `RuntimeError` when called from inside
+  the caller's own open commit or from a save listener (instead of deadlocking).
+  `SaveListener = Callable[[Project, DocKind], Awaitable[None]]` (the saved doc: the
+  history listener re-records only that document's files + the `.kicad_pro`, so an
+  external change to the other document is still reported); listener errors are
+  logged. `modified` is the
   session's own flag (pushed commit → True, `save("sch")` / restart → False);
-  `save_copy("sch")` asks KiCad (`is_document_modified()`). `refresh_jobs` closes every
-  open schematic document (`get_open_documents`) and reopens the root.
+  `save_copy("sch")` and `refresh_jobs` ask KiCad (`is_document_modified()`):
+  `refresh_jobs` saves only a modified schematic (never overwrites an unmodified one,
+  e.g. stale jobs after the turn-end autosave), closes every open schematic document
+  (`get_open_documents`) and reopens the root; a failing reopen restarts the server and
+  raises `KicadUnavailable`. A hanging `load_all_libraries` kick-off fails the start.
   `ensure_symbol_libraries` polls `get_library_statuses(LT_SYMBOL)` in short
   `session.call`s (no `wait_for_libraries` holding the session lock for up to 120 s)
   and raises `copperchat.kicad_session.LibrariesLoading` (`code="libraries_loading"`,
@@ -242,7 +251,8 @@ the same string `kicad-cli sch diff` and KiCanvas use (2C). Read tools
   `sch_get_net`'s `function` follows kicad-cli at the pinned commit (`NAME_number`,
   `""` for unnamed pins) and `type` uses KiCad's canonical pin type names
   (`power_in`, `power_out`, `tri_state` — `access.pin_type_name`, so `sch_get_symbol`
-  now says `power_in` where it said `power_input`). Verified against kicad-cli on the
+  now says `power_in` where it said `power_input`) without kicad-cli's `+no_connect`
+  suffix (no-connect markers are E5's `sch_no_connect` business, read from the scene). Verified against kicad-cli on the
   hierarchy fixture for every net (`tests/kicad/edit/test_live_netlist.py`). The
   export-job netlist (`netlist_nodes`, `parse_netlist_xml`) is gone; tests read
   kicad-cli netlists with `tests.support.kicad_cli`.

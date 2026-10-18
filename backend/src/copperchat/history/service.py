@@ -52,8 +52,21 @@ class HistoryService:
         # so the turn-start check never takes our own save for an external change.
         sessions.add_save_listener(self._on_saved)
 
-    async def _on_saved(self, project: Project) -> None:
-        await self.hashes.replace(project.id, await compute_hashes_async(project))
+    async def _on_saved(self, project: Project, doc: DocKind) -> None:
+        """Re-record the saved document's files (+ the project file KiCad may rewrite);
+        the other document's stored hashes stay, so an external change to it is still
+        reported at the next turn start."""
+        suffix = ".kicad_sch" if doc == "sch" else ".kicad_pcb"
+        pro = project.pro_file.relative_to(project.dir).as_posix()
+
+        def owned(rel: str) -> bool:
+            return rel == pro or rel.endswith(suffix)
+
+        now = await compute_hashes_async(project)
+        stored = await self.hashes.get(project.id)
+        merged = {k: v for k, v in stored.items() if not owned(k)}
+        merged |= {k: v for k, v in now.items() if owned(k)}
+        await self.hashes.replace(project.id, merged)
 
     def store(self, project: Project) -> HistoryStore:
         return HistoryStore(self.db, project)

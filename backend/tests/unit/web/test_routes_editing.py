@@ -60,6 +60,8 @@ def test_put_partial_update_persists(make_settings: Callable[..., Settings]) -> 
     "body",
     [
         {"planPolicy": "sometimes"},
+        {"planPolicy": []},
+        {"planPolicy": {"x": 1}},
         {"changeBudget": 0},
         {"changeBudget": 501},
         {"annotationBlock": 10},
