@@ -16,7 +16,7 @@ import json
 import shutil
 import tempfile
 import weakref
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -207,27 +207,32 @@ _DIFF_LOCKS: dict[str, asyncio.Lock] = {}
 _DIFF_CACHE: dict[str, tuple[weakref.ref[Any], tuple[Any, ...], dict[str, Any]]] = {}
 
 
+def log_key(log: list[ChangeEntry]) -> tuple[int, int]:
+    """`(max id, count)` of a change log: what `ChangeLogRepo.since_stats` returns."""
+    return max((e.id or 0 for e in log), default=0), len(log)
+
+
 async def cached_diff(
     svc: HistoryService,
     project: Project,
     snapshot: Snapshot,
-    log: list[ChangeEntry],
+    log_stats: tuple[int, int],
+    load_log: Callable[[], Awaitable[list[ChangeEntry]]],
 ) -> dict[str, Any]:
+    """`log_stats`: `(max id, count)` of the change rows since the snapshot - the cache
+    key; `load_log` loads those rows, called only on a cache miss."""
     session = svc.open_session(project)
     if session is None:
         raise KicadUnavailable("the project is not open in KiCad")
     lock = _DIFF_LOCKS.setdefault(project.id, asyncio.Lock())
     async with lock:
-        key = (
-            snapshot.id,
-            session.view_version,
-            session.restart_count,
-            max((e.id or 0 for e in log), default=0),
-            len(log),
-        )
+        base = (snapshot.id, session.view_version, session.restart_count)
         hit = _DIFF_CACHE.get(project.id)
-        if hit is not None and hit[0]() is session and hit[1] == key:
+        if hit is not None and hit[0]() is session and hit[1] == (*base, *log_stats):
             return hit[2]
+        log = await load_log()
         result = await diff_against_snapshot(svc, project, snapshot, log)
-        _DIFF_CACHE[project.id] = (weakref.ref(session), key, result)
+        # Keyed by the rows actually used (a row written since log_stats was read
+        # simply makes the next request miss once more).
+        _DIFF_CACHE[project.id] = (weakref.ref(session), (*base, *log_key(log)), result)
         return result

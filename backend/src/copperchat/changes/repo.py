@@ -124,6 +124,15 @@ class ChangeRepo:
         )
         return [_entry(r) for r in rows]
 
+    async def since_stats(self, project_id: str, created_at: str) -> tuple[int, int]:
+        """`(max id, count)` of the rows `since` would return, without loading them."""
+        row = await self._db.fetchone(
+            "SELECT MAX(id) AS last_id, COUNT(*) AS n FROM changes"
+            " WHERE project_id = ? AND created_at >= ?",
+            (project_id, created_at),
+        )
+        return (int(row["last_id"] or 0), int(row["n"])) if row else (0, 0)
+
     async def for_steps(self, project_id: str, step_ids: list[str]) -> list[ChangeEntry]:
         """Rows of any of the plan steps (one plan), in write order."""
         if not step_ids:
@@ -139,29 +148,33 @@ class ChangeRepo:
     async def runs(self, project_id: str, limit: int = 20) -> list[dict[str, Any]]:
         """Per run, newest first: step ids (first-seen order), counts and first timestamp."""
         summaries = await self._db.fetchall(
+            "SELECT s.run_id, s.count, s.side_effects, f.created_at FROM ("
             "SELECT run_id, COUNT(*) AS count, SUM(side_effect) AS side_effects, "
             "MIN(id) AS first_id, MAX(id) AS last_id FROM changes WHERE project_id = ? "
-            "GROUP BY run_id ORDER BY last_id DESC LIMIT ?",
+            "GROUP BY run_id ORDER BY last_id DESC LIMIT ?) AS s "
+            "JOIN changes AS f ON f.id = s.first_id ORDER BY s.last_id DESC",
             (project_id, limit),
         )
-        result: list[dict[str, Any]] = []
-        for s in summaries:
-            first = await self._db.fetchone(
-                "SELECT created_at FROM changes WHERE id = ?", (s["first_id"],)
-            )
-            steps = await self._db.fetchall(
-                "SELECT plan_step_id, MIN(id) AS first_id FROM changes "
-                "WHERE project_id = ? AND run_id = ? AND plan_step_id IS NOT NULL "
-                "GROUP BY plan_step_id ORDER BY first_id",
-                (project_id, s["run_id"]),
-            )
-            result.append(
-                {
-                    "run_id": str(s["run_id"]),
-                    "step_ids": [str(r["plan_step_id"]) for r in steps],
-                    "count": int(s["count"]),
-                    "side_effects": int(s["side_effects"] or 0),
-                    "created_at": str(first["created_at"]) if first else None,
-                }
-            )
-        return result
+        if not summaries:
+            return []
+        run_ids = [str(s["run_id"]) for s in summaries]
+        marks = ", ".join("?" for _ in run_ids)
+        step_rows = await self._db.fetchall(
+            "SELECT run_id, plan_step_id, MIN(id) AS first_id FROM changes "
+            f"WHERE project_id = ? AND run_id IN ({marks}) AND plan_step_id IS NOT NULL "
+            "GROUP BY run_id, plan_step_id ORDER BY first_id",
+            (project_id, *run_ids),
+        )
+        steps: dict[str, list[str]] = {}
+        for r in step_rows:
+            steps.setdefault(str(r["run_id"]), []).append(str(r["plan_step_id"]))
+        return [
+            {
+                "run_id": str(s["run_id"]),
+                "step_ids": steps.get(str(s["run_id"]), []),
+                "count": int(s["count"]),
+                "side_effects": int(s["side_effects"] or 0),
+                "created_at": str(s["created_at"]) if s["created_at"] else None,
+            }
+            for s in summaries
+        ]

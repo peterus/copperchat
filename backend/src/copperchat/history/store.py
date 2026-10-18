@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -279,6 +280,20 @@ class HistoryStore:
     async def latest_for_run(self, run_id: str) -> Snapshot | None:
         """The run's turn snapshot (its undo point); step checkpoints never count."""
         return await self._latest(run_id, "turn")
+
+    async def latest_for_runs(self, run_ids: Iterable[str]) -> dict[str, Snapshot]:
+        """`latest_for_run` for many runs in one query; runs without one are absent."""
+        runs = sorted(set(run_ids))
+        if not runs:
+            return {}
+        marks = ", ".join("?" for _ in runs)
+        rows = await self._db.fetchall(
+            "SELECT * FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY run_id"
+            " ORDER BY created_at DESC, rowid DESC) AS rn FROM history_snapshots"
+            f" WHERE project_id = ? AND kind = 'turn' AND run_id IN ({marks})) WHERE rn = 1",
+            (self.project.id, *runs),
+        )
+        return {str(r["run_id"]): self._row(r) for r in rows}
 
     async def latest_step_checkpoint(self, run_id: str) -> Snapshot | None:
         return await self._latest(run_id, "step")
