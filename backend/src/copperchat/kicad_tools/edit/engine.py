@@ -616,6 +616,7 @@ async def apply_change_set(
     *,
     _verify: Verifier | None = None,
     _before_compensate: Callable[[], None] | None = None,
+    record: bool = True,
 ) -> Applied:
     """Write `cs` stage by stage, verify by read-back, compensate on mismatch.
 
@@ -782,7 +783,7 @@ async def apply_change_set(
     applied.side_effects = [e for e in applied.changes if e.side_effect]
     cs.applied = applied
     cs.logical.placed_symbols = list(run.placed)
-    if ctx.editing is not None:
+    if record and ctx.editing is not None:
         try:
             await ctx.editing.record_changes(ctx, applied.changes)
         except Exception:  # the edit is applied and verified; never fail it afterwards

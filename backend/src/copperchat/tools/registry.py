@@ -18,6 +18,7 @@ _PROVIDERS: tuple[str, ...] = (
     "copperchat.kicad_tools.edit.specs_core",
     "copperchat.library.specs",
     "copperchat.changes.specs",
+    "copperchat.kicad_tools.edit.specs_sheets",
 )
 
 
