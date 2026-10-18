@@ -124,9 +124,12 @@ def _fill(value: Any, refs: dict[str, str]) -> Any:
     return value
 
 
-async def run_script(ctx: ToolContext, steps: list[Step]) -> dict[str, str]:
-    """Run the steps through the real tool adapter; returns alias -> reference."""
-    refs: dict[str, str] = {}
+async def run_script(
+    ctx: ToolContext, steps: list[Step], refs: dict[str, str] | None = None
+) -> dict[str, str]:
+    """Run the steps through the real tool adapter; returns alias -> reference (`refs`:
+    the aliases of earlier scripts, extended in place)."""
+    refs = {} if refs is None else refs
     found: list[float] | None = None
     for step in steps:
         tool, args = step[0], _fill(step[1], refs)
