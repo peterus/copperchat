@@ -1,0 +1,107 @@
+{
+  "question": "q04_transform",
+  "checks": [
+    {
+      "name": "move_position_read_back",
+      "ok": true,
+      "evidence": "(63.5, 38.1)"
+    },
+    {
+      "name": "move_symbol_moves_fields",
+      "ok": false,
+      "evidence": "{'before': {'Reference': (2.032, 0.0), 'Value': (0.0, 0.0), 'Footprint': (-1.778, 0.0)}, 'after': {'Reference': (-10.668, 0.0), 'Value': (-12.7, 0.0), 'Footprint': (-14.478, 0.0)}}"
+    },
+    {
+      "name": "move_symbol_drags_attached_wires",
+      "ok": false,
+      "evidence": "{'wire_start': (50.8, 41.91), 'pin2_now': (63.5, 41.91)}"
+    },
+    {
+      "name": "move_without_wire_update_breaks_connection",
+      "ok": true,
+      "evidence": "('unconnected-(R1-Pad2)', 'unconnected-(R2-Pad1)')"
+    },
+    {
+      "name": "workaround_move_with_wires_one_commit",
+      "ok": true,
+      "evidence": "('Net-(R3-Pad2)', 'Net-(R3-Pad2)', '/TOP_R3')"
+    },
+    {
+      "name": "workaround_fields_moved_with_symbol",
+      "ok": true,
+      "evidence": "{'Reference': (2.032, 0.0), 'Value': (0.0, 0.0), 'Footprint': (-1.778, 0.0)}"
+    },
+    {
+      "name": "rotate_read_back",
+      "ok": true,
+      "evidence": "orientation: SSO_90\n"
+    },
+    {
+      "name": "rotate_with_wires_reattached_connected",
+      "ok": true,
+      "evidence": "('Net-(R5-Pad2)', 'Net-(R5-Pad2)')"
+    },
+    {
+      "name": "mirror_read_back",
+      "ok": true,
+      "evidence": "orientation: SSO_0\nmirror_x: true\n"
+    },
+    {
+      "name": "mirror_with_wires_reattached_connected",
+      "ok": true,
+      "evidence": "('Net-(R7-Pad2)', 'Net-(R7-Pad2)')"
+    },
+    {
+      "name": "subsheet_update_via_unbound_schematic_applies",
+      "ok": false,
+      "evidence": "{'ref': 'R201', 'start': (62.23, 50.8), 'now': (62.23, 50.8), 'error': None}"
+    },
+    {
+      "name": "subsheet_update_via_for_sheet_applies",
+      "ok": true,
+      "evidence": "(67.31, 50.8)"
+    },
+    {
+      "name": "shared_subsheet_edit_visible_in_both_instances",
+      "ok": true,
+      "evidence": "{'other_instance_ref': 'R301', 'pos': (67.31, 50.8), 'note': 'ampli_ht.kicad_sch: two sheet instances, one screen'}"
+    }
+  ],
+  "notes": {
+    "rotate_field_offsets_after": {
+      "Reference": [
+        2.032,
+        0.0
+      ],
+      "Value": [
+        0.0,
+        0.0
+      ],
+      "Footprint": [
+        -1.778,
+        0.0
+      ]
+    },
+    "mirror_field_offsets_after": {
+      "Reference": [
+        2.032,
+        0.0
+      ],
+      "Value": [
+        0.0,
+        0.0
+      ],
+      "Footprint": [
+        -1.778,
+        0.0
+      ]
+    },
+    "subsheet_symbol": {
+      "ref": "R201",
+      "path_instances": [
+        "/ampli_ht_vertical/",
+        "/ampli_ht_horizontal/"
+      ]
+    }
+  }
+}

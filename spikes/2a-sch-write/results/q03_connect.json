@@ -1,0 +1,249 @@
+{
+  "question": "q03_connect",
+  "checks": [
+    {
+      "name": "create_all_items",
+      "ok": true,
+      "evidence": "21/21"
+    },
+    {
+      "name": "created_read_back_by_id",
+      "ok": true,
+      "evidence": "21/21"
+    },
+    {
+      "name": "junction_read_back",
+      "ok": true,
+      "evidence": "((63.5, 114.3), 0)"
+    },
+    {
+      "name": "no_connect_read_back",
+      "ok": true,
+      "evidence": "(177.8, 46.99)"
+    },
+    {
+      "name": "wires_not_split_or_merged_on_push",
+      "ok": true,
+      "evidence": "13 wires on sheet"
+    },
+    {
+      "name": "netlist_job_reflects_unsaved_edits",
+      "ok": false,
+      "evidence": "0 pins in job netlist before save()"
+    },
+    {
+      "name": "netlist_job_reflects_edits_after_save",
+      "ok": false,
+      "evidence": "0 pins after save() (job cache from first job)"
+    },
+    {
+      "name": "png_job_reflects_edits_after_save",
+      "ok": false,
+      "evidence": "PNG export job after save() vs before"
+    },
+    {
+      "name": "revert_refreshes_export_jobs",
+      "ok": false,
+      "evidence": "0 pins after save() + revert()"
+    },
+    {
+      "name": "workaround_save_close_open_refreshes_jobs",
+      "ok": true,
+      "evidence": "22 pins"
+    },
+    {
+      "name": "place_after_reopen_libraries_still_loaded",
+      "ok": true,
+      "evidence": "ok: R99"
+    },
+    {
+      "name": "api_wire_pin_to_pin",
+      "ok": true,
+      "evidence": "('Net-(R1-Pad2)', 'Net-(R1-Pad2)')"
+    },
+    {
+      "name": "api_t_joint_without_junction_connects",
+      "ok": true,
+      "evidence": "('Net-(R1-Pad2)', 'Net-(R1-Pad2)')"
+    },
+    {
+      "name": "api_t_joint_with_junction_connects",
+      "ok": true,
+      "evidence": "('Net-(R11-Pad2)', 'Net-(R11-Pad2)')"
+    },
+    {
+      "name": "api_wire_over_foreign_pin_end_connects",
+      "ok": true,
+      "evidence": "/OVER"
+    },
+    {
+      "name": "api_label_on_wire_interior_names_net",
+      "ok": true,
+      "evidence": "/MIDWIRE"
+    },
+    {
+      "name": "api_near_miss_not_connected",
+      "ok": true,
+      "evidence": "unconnected-(R7-Pad2)"
+    },
+    {
+      "name": "api_global_label_at_pin_end",
+      "ok": true,
+      "evidence": "VBUS_G"
+    },
+    {
+      "name": "api_power_symbol_at_pin_end",
+      "ok": true,
+      "evidence": "GND"
+    },
+    {
+      "name": "job_after_reopen_wire_pin_to_pin",
+      "ok": true,
+      "evidence": "('Net-(R1-Pad2)', 'Net-(R1-Pad2)')"
+    },
+    {
+      "name": "job_after_reopen_t_joint_without_junction_connects",
+      "ok": true,
+      "evidence": "('Net-(R1-Pad2)', 'Net-(R1-Pad2)')"
+    },
+    {
+      "name": "job_after_reopen_t_joint_with_junction_connects",
+      "ok": true,
+      "evidence": "('Net-(R11-Pad2)', 'Net-(R11-Pad2)')"
+    },
+    {
+      "name": "job_after_reopen_wire_over_foreign_pin_end_connects",
+      "ok": true,
+      "evidence": "/OVER"
+    },
+    {
+      "name": "job_after_reopen_label_on_wire_interior_names_net",
+      "ok": true,
+      "evidence": "/MIDWIRE"
+    },
+    {
+      "name": "job_after_reopen_near_miss_not_connected",
+      "ok": true,
+      "evidence": "unconnected-(R7-Pad2)"
+    },
+    {
+      "name": "job_after_reopen_global_label_at_pin_end",
+      "ok": true,
+      "evidence": "VBUS_G"
+    },
+    {
+      "name": "job_after_reopen_power_symbol_at_pin_end",
+      "ok": true,
+      "evidence": "GND"
+    },
+    {
+      "name": "cli_saved_wire_pin_to_pin",
+      "ok": true,
+      "evidence": "('Net-(R1-Pad2)', 'Net-(R1-Pad2)')"
+    },
+    {
+      "name": "cli_saved_t_joint_without_junction_connects",
+      "ok": true,
+      "evidence": "('Net-(R1-Pad2)', 'Net-(R1-Pad2)')"
+    },
+    {
+      "name": "cli_saved_t_joint_with_junction_connects",
+      "ok": true,
+      "evidence": "('Net-(R11-Pad2)', 'Net-(R11-Pad2)')"
+    },
+    {
+      "name": "cli_saved_wire_over_foreign_pin_end_connects",
+      "ok": true,
+      "evidence": "/OVER"
+    },
+    {
+      "name": "cli_saved_label_on_wire_interior_names_net",
+      "ok": true,
+      "evidence": "/MIDWIRE"
+    },
+    {
+      "name": "cli_saved_near_miss_not_connected",
+      "ok": true,
+      "evidence": "unconnected-(R7-Pad2)"
+    },
+    {
+      "name": "cli_saved_global_label_at_pin_end",
+      "ok": true,
+      "evidence": "VBUS_G"
+    },
+    {
+      "name": "cli_saved_power_symbol_at_pin_end",
+      "ok": true,
+      "evidence": "GND"
+    },
+    {
+      "name": "three_netlists_agree",
+      "ok": true,
+      "evidence": "{'api_vs_cli': [], 'job_vs_cli': []}"
+    },
+    {
+      "name": "crossing_wires_without_junction_stay_separate",
+      "ok": true,
+      "evidence": "['/XH', '/XV']"
+    },
+    {
+      "name": "erc_runs_on_saved_file",
+      "ok": true,
+      "evidence": "rc=0 types=['endpoint_off_grid', 'isolated_pin_label', 'label_dangling', 'pin_not_connected', 'power_pin_not_driven', 'unconnected_wire_endpoint']"
+    },
+    {
+      "name": "erc_no_connect_marker_suppresses_pin_not_connected",
+      "ok": true,
+      "evidence": "['endpoint_off_grid', 'isolated_pin_label', 'label_dangling', 'pin_not_connected', 'power_pin_not_driven', 'unconnected_wire_endpoint']"
+    },
+    {
+      "name": "erc_flags_near_miss_at_its_position",
+      "ok": true,
+      "evidence": "{'at': (177.85000000000002, 54.61), 'violations_there': ['pin_not_connected', 'endpoint_off_grid', 'unconnected_wire_endpoint']}"
+    }
+  ],
+  "notes": {
+    "pin_ends_R1": {
+      "2": [
+        50.8,
+        54.61
+      ],
+      "1": [
+        50.8,
+        46.99
+      ]
+    },
+    "t_joint_host_wire_after": {
+      "bc3d98fc-7177-46ac-8eab-f3ac67818df8": [
+        [
+          50.8,
+          63.5
+        ],
+        [
+          76.2,
+          63.5
+        ]
+      ],
+      "9e364bc5-cf76-483a-accb-9f8af1047fb4": [
+        [
+          50.8,
+          114.3
+        ],
+        [
+          76.2,
+          114.3
+        ]
+      ]
+    },
+    "close_open_document_ms": 55.2,
+    "gnd_ref": "#PWR01",
+    "erc_violation_types": {
+      "endpoint_off_grid": 1,
+      "isolated_pin_label": 3,
+      "label_dangling": 3,
+      "pin_not_connected": 11,
+      "power_pin_not_driven": 1,
+      "unconnected_wire_endpoint": 5
+    }
+  }
+}

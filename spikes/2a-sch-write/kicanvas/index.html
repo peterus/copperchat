@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Spike 2A - KiCanvas load check</title>
+    <script type="module" src="/vendor/kicanvas.js"></script>
+    <style>
+      html, body { margin: 0; height: 100%; }
+      kicanvas-embed { display: block; width: 100vw; height: 100vh; }
+    </style>
+  </head>
+  <body>
+    <script type="module">
+      // ?files=a.kicad_sch,b.kicad_sch (paths relative to the served www/ directory)
+      const files = (new URLSearchParams(location.search).get("files") || "").split(",").filter(Boolean);
+      const el = document.createElement("kicanvas-embed");
+      el.setAttribute("controls", "none");
+      for (const f of files) {
+        const s = document.createElement("kicanvas-source");
+        s.setAttribute("src", f);
+        el.appendChild(s);
+      }
+      window.__embed = el;
+      document.body.appendChild(el);
+    </script>
+  </body>
+</html>

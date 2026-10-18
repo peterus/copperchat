@@ -1,0 +1,51 @@
+{
+  "question": "q11_files_load",
+  "checks": [
+    {
+      "name": "artifacts_present",
+      "ok": true,
+      "evidence": "['q01_place', 'q02_fields', 'q03_connect', 'q07_sheets', 'q08_hierarchy', 'q09_bbox', 'q10_duplicate_A', 'q10_duplicate_B']"
+    },
+    {
+      "name": "cli_loads_q01_place",
+      "ok": true,
+      "evidence": "{'netlist_rc': 0, 'svg': ['blank.svg'], 'erc_rc': 0, 'erc_sheets': 1, 'stderr': ''}"
+    },
+    {
+      "name": "cli_loads_q02_fields",
+      "ok": true,
+      "evidence": "{'netlist_rc': 0, 'svg': ['blank.svg'], 'erc_rc': 0, 'erc_sheets': 1, 'stderr': ''}"
+    },
+    {
+      "name": "cli_loads_q03_connect",
+      "ok": true,
+      "evidence": "{'netlist_rc': 0, 'svg': ['blank.svg'], 'erc_rc': 0, 'erc_sheets': 1, 'stderr': ''}"
+    },
+    {
+      "name": "cli_loads_q07_sheets",
+      "ok": true,
+      "evidence": "{'netlist_rc': 0, 'svg': ['blank-Power.svg', 'blank.svg'], 'erc_rc': 0, 'erc_sheets': 2, 'stderr': ''}"
+    },
+    {
+      "name": "cli_loads_q08_hierarchy",
+      "ok": true,
+      "evidence": "{'netlist_rc': 0, 'svg': ['complex_hierarchy-Extra.svg', 'complex_hierarchy-ampli_ht_horizontal.svg', 'complex_hierarchy-ampli_ht_vertical.svg', 'complex_hierarchy.svg'], 'erc_rc': 0, 'erc_sheets': 4, 'stderr': ''}"
+    },
+    {
+      "name": "cli_loads_q09_bbox",
+      "ok": true,
+      "evidence": "{'netlist_rc': 0, 'svg': ['blank.svg'], 'erc_rc': 0, 'erc_sheets': 1, 'stderr': ''}"
+    },
+    {
+      "name": "cli_loads_q10_duplicate_A",
+      "ok": true,
+      "evidence": "{'netlist_rc': 0, 'svg': ['blank.svg'], 'erc_rc': 0, 'erc_sheets': 1, 'stderr': ''}"
+    },
+    {
+      "name": "cli_loads_q10_duplicate_B",
+      "ok": true,
+      "evidence": "{'netlist_rc': 0, 'svg': ['blank.svg'], 'erc_rc': 0, 'erc_sheets': 1, 'stderr': ''}"
+    }
+  ],
+  "notes": {}
+}
