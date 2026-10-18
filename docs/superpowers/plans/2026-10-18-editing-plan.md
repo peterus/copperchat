@@ -1059,10 +1059,10 @@ verification, status, changeCount, checkpointId, summary, failure, erc:
   `manifest.json` (`sch` root first, `refs`) to `frontend/e2e/fixtures/edited/<scenario>/`;
   `viewer.spec.ts` "edited fixtures" loads each, no page/console error, `highlight(refs)` finds ≥ 1.
 - **Live eval** (`tests/live/test_editing_eval.py`, `editing_scenarios.py`; marker `live_sdk`, needs
-  KiCad too): the real `SdkStreamingBackend` with `registry.all_specs()` and the built-in skills on
+  KiCad too and the explicit opt-in `COPPERCHAT_LIVE_EVAL=1`, it costs money): the real `SdkStreamingBackend` with `registry.all_specs()` and the built-in skills on
   the blank project; one chat per scenario, a new run id per turn, a proposed plan is approved and a
   paused plan resumed through `PlanService` (as the user would), ≤ 6 turns, `LIVE_EVAL_MAX_USD`
-  (default 3) per scenario. s4 "change all 0603 resistors to 0402" starts from a tool-built, ERC-clean
+  (default 3) per scenario, checked between turns (usage arrives per turn). s4 "change all 0603 resistors to 0402" starts from a tool-built, ERC-clean
   sheet and is scored by `check_resize` (resistors 0402, other parts/values and the pin partition
   unchanged). Results `backend/tests/live/results/<date>.json`. Run 2026-10-18 (model: CLI default;
   cost = SDK list-price estimate, OAuth subscription):

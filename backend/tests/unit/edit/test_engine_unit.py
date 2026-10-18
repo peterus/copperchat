@@ -108,7 +108,9 @@ def test_pin_name_matches_one_function_of_a_multi_function_pin() -> None:
             for n, name in names.items()]  # fmt: skip
     u1 = SymbolInfo("u", "U1", "X:Y", "v", 1, sheet, (0, 0), 0, "", pins, Box(0, 0, 1, 1), [],
                     False)  # fmt: skip
-    for spec, number in (("U1.PB3", "2"), ("U1.pb0", "5"), ("U1.RESET", "1"), ("U1.PB1", "6")):
+    cases = (("U1.PB3", "2"), ("U1.pb0", "5"), ("U1.RESET", "1"), ("U1.~{RESET}", "1"),
+             ("U1.~{RESET}/PB5", "1"), ("U1.PB1", "6"))  # fmt: skip
+    for spec, number in cases:
         assert resolve_pin(Any, spec, symbols=[u1]).number == number, spec  # type: ignore[arg-type]
     with pytest.raises(StructuredToolError) as err:
         resolve_pin(Any, "U1.SDA", symbols=[u1])  # type: ignore[arg-type]

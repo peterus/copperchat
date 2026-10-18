@@ -167,7 +167,18 @@ async def start_snapshot(s: KicadSession, db: Database) -> tuple[HistoryService,
 EXPORT_ENV = "COPPERCHAT_EDITED_FIXTURES"
 
 
-def export_fixture(name: str, root: Path, live: golden.Components, out: Path) -> None:
+def refs_by_sheet_file(h: KicadHandle) -> dict[str, list[str]]:
+    """Sheet file name -> the non-power references drawn on it."""
+    out: dict[str, set[str]] = {}
+    for ref in sheet_refs(h):
+        names = {x.ref for x in read_scene(h, ref, boxes=False).symbols.values() if not x.power}
+        out.setdefault(Path(ref.file).name, set()).update(names)
+    return {f: sorted(r) for f, r in out.items()}
+
+
+def export_fixture(
+    name: str, root: Path, live: golden.Components, by_sheet: dict[str, list[str]], out: Path
+) -> None:
     dest = out / name
     shutil.rmtree(dest, ignore_errors=True)
     dest.mkdir(parents=True)
@@ -175,7 +186,7 @@ def export_fixture(name: str, root: Path, live: golden.Components, out: Path) ->
     files = [root.name, *others]  # the root sheet first
     for f in files:
         shutil.copy2(root.parent / f, dest / f)  # verbatim: written by KiCad's save
-    manifest = {"sch": files, "refs": sorted(live)}
+    manifest = {"sch": files, "refs": sorted(live), "sheets": by_sheet}
     (dest / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n")
 
 
@@ -257,7 +268,7 @@ async def assert_scenario(
     assert set(cli) == set(live)
 
     if out := os.environ.get(EXPORT_ENV):  # scripts/make-edited-fixtures.py
-        export_fixture(name, dest, live, Path(out))
+        export_fixture(name, dest, live, await s.call(refs_by_sheet_file), Path(out))
 
     erc, err = await call_tool(ctx, "run_erc")
     assert not err, erc

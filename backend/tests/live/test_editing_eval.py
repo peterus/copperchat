@@ -6,9 +6,11 @@ blank project, as one chat: a proposed plan is approved and a paused plan resume
 user would (at most `MAX_TURNS` turns). Scores golden connectivity by role, ERC errors,
 layout, tool calls, tokens and cost, and writes `tests/live/results/<date>.json`.
 
-Needs model credentials **and** KiCad (run inside the kicad-base image):
-    uv run pytest -m live_sdk tests/live/test_editing_eval.py [-k s2_ldo]
-`LIVE_EVAL_MAX_USD` (default 3) aborts a scenario whose list-price cost passes it.
+Needs model credentials, KiCad (run inside the kicad-base image) and an explicit opt-in,
+because every run costs real money (US$0.05-1 per scenario):
+    COPPERCHAT_LIVE_EVAL=1 uv run pytest -m live_sdk tests/live/test_editing_eval.py [-k s2_ldo]
+`LIVE_EVAL_MAX_USD` (default 3): checked between turns (the SDK reports usage per turn), no
+further turn starts once a scenario's list-price cost passes it.
 """
 
 from __future__ import annotations
@@ -39,7 +41,13 @@ from tests.support.edit import call_tool
 from .conftest import API_KEY, TOKEN, live
 from .editing_scenarios import PROMPTS, SCENARIOS, SETUP, check_resize
 
-pytestmark = live
+pytestmark = [
+    *live,
+    pytest.mark.skipif(
+        os.environ.get("COPPERCHAT_LIVE_EVAL") != "1",
+        reason="paid live eval: set COPPERCHAT_LIVE_EVAL=1 to run it",
+    ),
+]
 
 MAX_TURNS = 6
 MAX_USD = float(os.environ.get("LIVE_EVAL_MAX_USD", "3"))

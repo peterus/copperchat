@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import random
-import time
 
 from copperchat.kicad_tools.edit.changeset import SheetRef
 from copperchat.kicad_tools.edit.geometry import Box, PinEnd, Point
@@ -90,14 +89,16 @@ def test_clashes_on_a_500_pin_part_is_indexed() -> None:
     spots = [(rng.randint(0, 120) * GRID, rng.randint(0, 120) * GRID) for _ in range(500)]
     pins = [_pin("new", str(i), at) for i, at in enumerate(spots)]
     lay = Layout(None, (0.0, 0.0), 0, "", pins, Box(-500, -500, -499, -499), None, [])  # type: ignore[arg-type]
-    t0 = time.perf_counter()
-    got = clashes(scene, lay)
-    elapsed = time.perf_counter() - t0
     want = []
     for pin in pins:  # the unindexed reference
         items = scene.items_at(pin.at)
         if items:
             kinds = ", ".join(sorted({i["kind"] for i in items}))
             want.append(f"pin {pin.number} at {_fmt(pin.at)} would land on a {kinds}")
+
+    def scan(_pt: object) -> list[dict[str, str]]:
+        raise AssertionError("a 500-pin part must use the connection index, not a scan per pin")
+
+    scene.items_at = scan  # type: ignore[method-assign]
+    got = clashes(scene, lay)
     assert got == want and got
-    assert elapsed < 0.5, elapsed

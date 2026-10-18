@@ -530,7 +530,12 @@ test.describe('edited fixtures', () => {
 
   for (const scenario of ['s1_led', 's2_ldo', 's3_mcu_i2c_subsheet']) {
     test(`${scenario} renders without errors`, async ({ page }) => {
-      const manifest = JSON.parse(readFileSync(`${EDITED}${scenario}/manifest.json`, 'utf8')) as { sch: string[]; refs: string[] };
+      const manifest = JSON.parse(readFileSync(`${EDITED}${scenario}/manifest.json`, 'utf8')) as {
+        sch: string[];
+        refs: string[];
+        sheets: Record<string, string[]>;
+      };
+      const shown = manifest.sheets[manifest.sch[0]!] ?? []; // the viewer opens the root sheet
       const errors: string[] = [];
       page.on('pageerror', (e) => errors.push(e.message));
       page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
@@ -538,8 +543,8 @@ test.describe('edited fixtures', () => {
       await openViewer(page, false);
       await ready(page);
       const res = await onViewer(page, (v, refs) => v.highlight(refs, 'focus'), manifest.refs);
-      expect(res.found.length).toBeGreaterThanOrEqual(1);
-      expect(manifest.refs).toEqual(expect.arrayContaining(res.found));
+      expect(shown.length).toBeGreaterThanOrEqual(1);
+      expect([...res.found].sort()).toEqual([...shown].sort()); // every part of the shown sheet
       expect(errors).toEqual([]);
     });
   }

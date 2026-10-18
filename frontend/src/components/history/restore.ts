@@ -21,10 +21,19 @@ const PLAN_OPEN_HINT: Record<OpenStatus | 'unknown', string> = {
     'A plan is open. If it is approved, abort it or wait for it to run; if it is running, stop it. Once it is paused, use “Roll back to…” on its plan card, or abort the plan and restore.',
 };
 
-/** The open plan's state from the 409 body (`details.why` = "Plan <id> is <status>", routes_history.py). */
+const OPEN_STATUSES: readonly string[] = ['approved', 'running', 'paused'];
+
+/**
+ * The open plan's state from the 409 body (routes_history.py): the structured
+ * `error.details.details.status`, else parsed from `error.details.why` ("Plan <id> is <status>").
+ */
 function openStatus(e: unknown): OpenStatus | null {
   const detail = e && typeof e === 'object' && 'detail' in e ? (e as { detail: unknown }).detail : null;
-  const why = (detail as { error?: { details?: { why?: unknown } } } | null)?.error?.details?.why;
+  const body = (detail as { error?: { details?: { why?: unknown; details?: { status?: unknown } } } } | null)
+    ?.error?.details;
+  const status = body?.details?.status;
+  if (typeof status === 'string' && OPEN_STATUSES.includes(status)) return status as OpenStatus;
+  const why = body?.why;
   const m = typeof why === 'string' ? /\bis (approved|running|paused)\b/.exec(why) : null;
   return m ? (m[1] as OpenStatus) : null;
 }

@@ -536,7 +536,8 @@ def resolve_pin(
     if not hits:
         hits = [p for p in pins if p.name.lower() == pin.lower()]
     if not hits:  # one function of a multi-function pin: 'PB3' -> 'XTAL1/PB3'
-        hits = [p for p in pins if pin.lower() in _pin_functions(p.name)]
+        wanted = _pin_functions(pin)  # 'RESET' or '~{RESET}' as copied from lib_get_symbol
+        hits = [p for p in pins if wanted and wanted <= _pin_functions(p.name)]
     candidates = sorted({f"{p.number} ({p.name})" if p.name else p.number for p in pins},
                         key=natural_key)  # fmt: skip
     if not hits:

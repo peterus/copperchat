@@ -126,3 +126,16 @@ async def test_reads_do_not_see_another_tasks_uncommitted_writes(tmp_path: Path)
         await task
     finally:
         await db.close()
+
+
+async def test_changes_have_a_project_time_index(tmp_path: Path) -> None:
+    db = await Database.open(tmp_path / "idx.db")
+    try:
+        plan = await db.fetchall(
+            "EXPLAIN QUERY PLAN SELECT count(*) FROM changes "
+            "WHERE project_id = ? AND created_at >= ?",
+            ("p", "2026-01-01"),
+        )
+        assert any("ix_changes_created" in str(dict(r)) for r in plan), [dict(r) for r in plan]
+    finally:
+        await db.close()

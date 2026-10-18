@@ -30,7 +30,7 @@ are in `docs/superpowers/plans/`.
 | Module | Role |
 |---|---|
 | `config` | `Settings` from env/.env; startup fails without model credentials (`claude setup-token` hint) unless `DEV_FAKE_AGENT` |
-| `db` | SQLite (WAL) + numbered migrations `0001`–`0006` (`schema_migrations`) |
+| `db` | SQLite (WAL) + numbered migrations `0001`–`0007` (`schema_migrations`) |
 | `projects` | discovery of `*.kicad_pro`, ids, KiCad lock detection |
 | `kicad_session` | one `kicad-cli api-server` per open project, restart on hang/crash |
 | `tools`, `kicad_tools`, `views` | agent tools (structured JSON, full UUIDs, mm), ERC/DRC, agent views and KiCanvas snapshots; `kicad_tools/edit` holds the schematic editing tools (see "Schematic editing") |

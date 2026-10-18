@@ -99,8 +99,9 @@ export function EditingSection() {
     Object.assign(pending.current, patch);
     setSettings(view());
     let failure: string | null = null;
+    let next: EditingSettings | null = null;
     try {
-      const next = await putEditingSettings(pid, patch);
+      next = await putEditingSettings(pid, patch);
       if (useProjects.getState().current?.id !== pid) return;
       if (mine > confirmed.current.seq) confirmed.current = { seq: mine, settings: next };
     } catch (e) {
@@ -110,6 +111,12 @@ export function EditingSection() {
     // Only the newest save of a field settles it: an older one (A→B→A) neither changes the shown
     // value nor reports an error for a choice the user has already replaced.
     const settled = fields.filter((f) => latest.current[f] === mine);
+    if (next && confirmed.current && confirmed.current.seq > mine) {
+      // A newer response (of another field) was handled by the server before this save: it
+      // still carries this field's old value; this response is the field's newest state.
+      const overlay = Object.fromEntries(settled.map((f) => [f, next[f]]));
+      confirmed.current = { ...confirmed.current, settings: { ...confirmed.current.settings, ...overlay } };
+    }
     for (const f of settled) {
       delete pending.current[f];
       setFieldError(f, failure);

@@ -10,5 +10,17 @@
   "R2",
   "U1",
   "U2"
- ]
+ ],
+ "sheets": {
+  "blank.kicad_sch": [
+   "C1",
+   "R1",
+   "R2",
+   "U1"
+  ],
+  "sensor.kicad_sch": [
+   "C2",
+   "U2"
+  ]
+ }
 }

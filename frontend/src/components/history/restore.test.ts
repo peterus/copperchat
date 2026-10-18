@@ -6,7 +6,7 @@ vi.mock('@/api/http', () => ({ apiPost: (...a: unknown[]) => apiPost(...a) }));
 import { planOpenRestoreHint, restoreSnapshot } from './restore';
 
 /** The 409 body `POST /history/{id}/restore` sends while a plan is open (routes_history.py). */
-const planOpen = (status: string) =>
+const planOpen = (status: string, why = `Plan ${'p'.repeat(32)} is ${status}`, structured = true) =>
   Object.assign(new Error('The design cannot be restored while a plan is open'), {
     status: 409,
     detail: {
@@ -15,8 +15,9 @@ const planOpen = (status: string) =>
         message: 'The design cannot be restored while a plan is open',
         details: {
           what: 'The design cannot be restored while a plan is open',
-          why: `Plan ${'p'.repeat(32)} is ${status}`,
-          suggestion: "Use the plan's Roll back, or abort the plan first.",
+          why,
+          suggestion: 'Use Roll back to... on the plan card, or abort the plan first.',
+          ...(structured ? { code: 'plan_open', details: { planId: 'p'.repeat(32), status } } : {}),
         },
       },
     },
@@ -32,6 +33,11 @@ describe('restoreSnapshot', () => {
 });
 
 describe('planOpenRestoreHint', () => {
+  it('reads the structured status first, the why text only as a fallback', () => {
+    expect(planOpenRestoreHint(planOpen('paused', 'reworded text'))).toContain('Roll back to');
+    expect(planOpenRestoreHint(planOpen('approved', `Plan x is approved`, false))).toContain('wait for it to run');
+  });
+
   it('an approved plan: abort it or wait for it to run (no roll back, which needs a paused plan)', () => {
     const hint = planOpenRestoreHint(planOpen('approved'));
     expect(hint).toMatch(/approved/);

@@ -35,12 +35,14 @@ only; boards stay read-only.
 - **Tests.** Golden scenario tests build three reference circuits (LED, LDO, MCU with an I2C
   sensor on a sub-sheet) from an empty project through the tools against real KiCad; undo and
   rollback tests; edited KiCad-saved fixtures load in KiCanvas; an opt-in live eval
-  (`pytest -m live_sdk tests/live/test_editing_eval.py`, results in `backend/tests/live/results/`).
+  (`COPPERCHAT_LIVE_EVAL=1 pytest -m live_sdk tests/live/test_editing_eval.py`, results in
+  `backend/tests/live/results/`).
 
 ### Changed
 
 - The agent's system prompt allows schematic edits (boards stay read-only).
-- Database migration `0006_editing` (editing settings, change log, ERC results, plans).
+- Database migrations `0006_editing` (editing settings, change log, ERC results, plans) and
+  `0007_changes_created_index`.
 
 ## [0.1.1] - 2026-10-17
 

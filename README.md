@@ -94,7 +94,8 @@ notifications in Settings › Notifications.
   tools (KiCad API reads, schematic edits, ERC/DRC, views, git status/diff/commit-on-request),
   the `Skill` tool and `research_part`. Design data is read and written only through the
   running KiCad API server — never by a CopperChat file parser or writer. Edits are refused
-  for a project open read-only, over the change budget or outside an approved plan.
+  for a project open read-only, over the change budget, and while a plan is open outside
+  its begun step.
 - **The part researcher is guarded.** It runs as a separate agent query with web access
   (public hosts only, no private/loopback addresses, redirects re-checked) and may write only
   `.md`/`.txt` files under `<project>/docs/parts/<MPN>/` and read only `docs/parts/` and the

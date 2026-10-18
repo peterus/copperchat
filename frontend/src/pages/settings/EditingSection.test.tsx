@@ -165,6 +165,20 @@ describe('EditingSection', () => {
     await waitFor(() => expect(screen.getByRole('radio', { name: 'Never' })).toBeChecked());
   });
 
+  it('two fields: a newer response carrying the old value of the other field does not hide its own save', async () => {
+    const puts = deferredPuts();
+    render(<EditingSection />);
+    fireEvent.click(await screen.findByRole('radio', { name: 'Always' }));
+    fireEvent.click(screen.getByRole('radio', { name: '×1000' }));
+    // the server handled the second PUT first: its response still has the old plan policy
+    puts[1]!.resolve({ ...DEFAULTS, annotationBlock: 1000 });
+    await act(async () => {});
+    puts[0]!.resolve({ ...DEFAULTS, planPolicy: 'always', annotationBlock: 1000 });
+    await act(async () => {});
+    expect(screen.getByRole('radio', { name: 'Always' })).toBeChecked();
+    expect(screen.getByRole('radio', { name: '×1000' })).toBeChecked();
+  });
+
   it('A→B→A: a failing older save of a field is not reported once a newer save of it succeeded', async () => {
     const puts = deferredPuts();
     render(<EditingSection />);
