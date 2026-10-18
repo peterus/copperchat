@@ -79,6 +79,14 @@ UUIDs; pass full UUIDs between tool calls only for wires and labels.
   names (`I2C_SDA`, `SPI1_SCK`) via `sch_add_label(net, at=[pins])` or
   `sch_connect(..., via="label", net_name=...)`. Pins on different sheets get global
   labels.
+- **Hierarchical sheets**: `sch_add_sheet` (its own new file), then one
+  `sch_add_sheet_pin` per signal; it also puts a hierarchical label of that name at the
+  left edge inside the sub-sheet. On the parent connect the sheet pin
+  (`sch_connect(from="<sheet name>.<pin name>", to=…)`). Inside the sub-sheet (pass its
+  path, e.g. `sheet="/Sensor/"`) place the parts near those labels and connect with
+  `sch_connect(from="U2.SDA", to="<pin name>")`: within 25.4 mm it wires onto the label;
+  farther away first `sch_move` the label (its UUID is in the `sch_add_sheet_pin` result)
+  next to the pin. An unwired hierarchical label is an ERC error.
 - Leave ≥ 7.62 mm free in front of every pin that still needs a power symbol or label;
   a pin boxed in by another part cannot be connected cleanly.
 - Inputs must not float: enable/address pins go to a rail or GND as the notes or the
