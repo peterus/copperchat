@@ -208,6 +208,20 @@ async def test_failed_checkpoint_restore_falls_back_to_turn_snapshot(
     snap = await env.svc.store(project).latest_for_run("run-fb")
     assert snap is not None
     assert compute_hashes(project) == before
-    [(text, meta)] = env.engine.errors
-    assert "end of the last finished plan step" in text and meta == {"code": "restore_failed"}
+    assert env.engine.errors == []  # the fallback succeeded: no manual-restore advice
     assert env.engine.notices[-1][1] == {"action": "restored", "snapshotId": snap.id}
+
+
+async def test_both_restores_failing_reports_the_turn_snapshot(opened: Opened) -> None:
+    env, project = opened.env, opened.project
+    t = turn("run-fb2")
+    await opened.hooks.on_turn_start(t)
+    await opened.hooks.on_first_mutation(t)
+    cp = await take_step_checkpoint(env.svc, project, "run-fb2", "step-1", "Step 1")
+    snap = await env.svc.store(project).latest_for_run("run-fb2")
+    assert snap is not None
+    for sid in (cp.id, snap.id):
+        (env.svc.store(project).snapshot_dir(sid) / "manifest.json").write_text("{}")
+    await opened.hooks.on_turn_end(t, inconsistent("pcb", auto_restore=True))
+    [(text, meta)] = env.engine.errors
+    assert "before this turn" in text and meta == {"code": "restore_failed"}

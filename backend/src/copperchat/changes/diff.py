@@ -15,6 +15,7 @@ import contextlib
 import json
 import shutil
 import tempfile
+import weakref
 from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -201,7 +202,9 @@ async def diff_against_snapshot(
 # state (view version / restarts: reloads, restores, turn-end publishes) and no new
 # change row (every edit tool writes rows).
 _DIFF_LOCKS: dict[str, asyncio.Lock] = {}
-_DIFF_CACHE: dict[str, tuple[tuple[Any, ...], dict[str, Any]]] = {}
+# (session weakref, key, result): the session is compared by identity (a freed
+# session's id() can be reused by a later one).
+_DIFF_CACHE: dict[str, tuple[weakref.ref[Any], tuple[Any, ...], dict[str, Any]]] = {}
 
 
 async def cached_diff(
@@ -217,15 +220,14 @@ async def cached_diff(
     async with lock:
         key = (
             snapshot.id,
-            id(session),
             session.view_version,
             session.restart_count,
             max((e.id or 0 for e in log), default=0),
             len(log),
         )
         hit = _DIFF_CACHE.get(project.id)
-        if hit is not None and hit[0] == key:
-            return hit[1]
+        if hit is not None and hit[0]() is session and hit[1] == key:
+            return hit[2]
         result = await diff_against_snapshot(svc, project, snapshot, log)
-        _DIFF_CACHE[project.id] = (key, result)
+        _DIFF_CACHE[project.id] = (weakref.ref(session), key, result)
         return result

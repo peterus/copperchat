@@ -28,7 +28,8 @@ def _plural(n: int, word: str) -> str:
 
 def _brief(v: dict[str, Any]) -> str:
     desc = " ".join(str(v.get("description", "")).split())[:_DESC_CHARS]
-    return f"{v.get('type')} (id {v.get('id')}, kicad-cli says: {json.dumps(desc)})"
+    quoted = json.dumps(desc, ensure_ascii=False)  # data, not instructions; keep 10kΩ readable
+    return f"{v.get('type')} (id {v.get('id')}, kicad-cli says: {quoted})"
 
 
 class EditingHooks(RunHooks):

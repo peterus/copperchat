@@ -159,8 +159,9 @@ class HistoryHooks(RunHooks):
             # Owner decision 4: the run's last step checkpoint (keeps finished plan
             # steps), else the turn snapshot.
             checkpoint = await store.latest_step_checkpoint(turn.run_id)
-            for target in (checkpoint, snap):  # a failed checkpoint falls back to the turn
-                if target is not None and await self._auto_restore(target):
+            targets = [t for t in (checkpoint, snap) if t is not None]
+            for i, target in enumerate(targets):  # a failed checkpoint falls back to the turn
+                if await self._auto_restore(target, last=i == len(targets) - 1):
                     return
         if session is not None and self.svc.open_session(self.project) is session:
             try:
@@ -173,10 +174,10 @@ class HistoryHooks(RunHooks):
                 )
         await self._recovery_notice(outcome, snap, last_saved)
 
-    async def _auto_restore(self, snap: Snapshot) -> bool:
+    async def _auto_restore(self, snap: Snapshot, *, last: bool = True) -> bool:
         """Restore the step checkpoint / turn snapshot at turn end, without the REST
-        path's agent-busy check (the turn is ending). False: the restore failed and
-        was reported."""
+        path's agent-busy check (the turn is ending). False: the restore failed (and
+        was reported when `last`; otherwise the caller tries an older snapshot)."""
         state = (
             "at the end of the last finished plan step"
             if snap.kind == "step"
@@ -193,6 +194,8 @@ class HistoryHooks(RunHooks):
             )
         except Exception as exc:
             log.warning("auto-restore of snapshot %s failed: %s", snap.id, exc)
+            if not last:  # the next (older) snapshot is tried; report only the outcome
+                return False
             await self.engine.post_error(
                 f"Restoring the design to its state {state} failed; restore the "
                 "snapshot from the History panel.",

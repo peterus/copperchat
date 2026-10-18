@@ -239,3 +239,32 @@ async def test_publisher_frame() -> None:
         '{"type":"changes-updated","projectId":"a1b2c3d4e5f6","runId":"run-1",'
         '"stepId":null,"count":3}'
     )
+
+
+async def test_diff_cache_is_tied_to_the_session_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A later session with equal counters (possibly at a reused address) misses."""
+    from types import SimpleNamespace
+
+    runs: list[int] = []
+
+    async def fake(svc: Any, project: Any, snapshot: Any, log: Any) -> dict[str, Any]:
+        runs.append(1)
+        return {"sheets": {}, "count": len(runs)}
+
+    monkeypatch.setattr(diff_mod, "diff_against_snapshot", fake)
+
+    class Session:  # weak-referenceable, like KicadSession
+        def __init__(self) -> None:
+            self.view_version, self.restart_count = 1, 0
+
+    first = Session()
+    svc = SimpleNamespace(open_session=lambda p: current)
+    project = SimpleNamespace(id="p-cache")
+    snap = SimpleNamespace(id="s1")
+    current = first
+    assert (await diff_mod.cached_diff(svc, project, snap, []))["count"] == 1  # type: ignore[arg-type]
+    assert (await diff_mod.cached_diff(svc, project, snap, []))["count"] == 1  # type: ignore[arg-type]
+    current = Session()
+    assert (await diff_mod.cached_diff(svc, project, snap, []))["count"] == 2  # type: ignore[arg-type]
