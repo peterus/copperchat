@@ -4,7 +4,8 @@ cd kicanvas && npm ci --include=dev && npx playwright test --reporter=list; then
 python3 run_all.py --summary-only adds it to the summary.
 
 Exit code: 0 when every failed check is one of the documented findings (EXPECTED_FAIL,
-explained in docs/spikes/2a-sch-write.md), 1 on any other failure, crash or timeout."""
+explained in docs/spikes/2a-sch-write.md), 1 on any other failure, crash or timeout.
+Q12 counts towards the exit code only with --summary-only (run after the host check)."""
 
 import json
 import os
@@ -121,7 +122,10 @@ def main() -> int:
     kc = HERE / "results" / "q12_kicanvas.json"
     if kc.exists():
         # written by the separate host run; it may predate this run's results/files
-        rows.append(row("q12_kicanvas", kc, label="q12_kicanvas (host, separate run)")[0])
+        line, rc = row("q12_kicanvas", kc, label="q12_kicanvas (host, separate run)")
+        rows.append(line)
+        if summary_only:  # the host run just wrote it; a docker run may only see a stale copy
+            worst = max(worst, rc)
     (HERE / "results").mkdir(exist_ok=True)
     (HERE / "results" / "summary.md").write_text("| Question | Result | Failed checks |\n|---|---|---|\n" + "\n".join(rows) + "\n")
     return 0 if all("SKIP" in r for r in rows) else worst
