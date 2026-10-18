@@ -94,13 +94,23 @@ async def _reload(svc: HistoryService, project: Project, engine: Any) -> None:
         log.warning("view refresh after restore failed", exc_info=True)
 
 
-async def restore_snapshot(svc: HistoryService, project: Project, snapshot_id: str) -> Snapshot:
+async def restore_snapshot(
+    svc: HistoryService,
+    project: Project,
+    snapshot_id: str,
+    *,
+    check_busy: bool = True,
+    notice: str | None = None,
+) -> Snapshot:
+    """`check_busy=False`/`notice`: the automatic restore at the end of a turn whose
+    edit could not be undone exactly (HistoryHooks); the turn is ending, so the agent
+    being busy is expected there."""
     store = svc.store(project)
     snap = await store.get(snapshot_id)
     engine = svc.runtime.get(project.id)
     async with svc.lock(project):
         _check_writable(svc, project)
-        if engine is not None and engine.is_busy:
+        if check_busy and engine is not None and engine.is_busy:
             raise AgentBusy("the agent is working; stop it or wait before restoring")
         plan = await asyncio.to_thread(_plan, store.snapshot_dir(snap.id), project.dir)
         session = svc.open_session(project)
@@ -116,11 +126,13 @@ async def restore_snapshot(svc: HistoryService, project: Project, snapshot_id: s
         # The files are restored from here on, even if KiCad fails to start below.
         if engine is not None:
             await engine.post_notice(
-                f"Restored the design to the snapshot from {snap.created_at} ({snap.label}).",
+                notice
+                or f"Restored the design to the snapshot from {snap.created_at} ({snap.label}).",
                 {"action": "restored", "snapshotId": snap.id},
             )
+            who = "CopperChat" if notice else "The user"
             engine.add_agent_note(
-                f"The user restored snapshot {snap.id} ({snap.label}). Design data from "
+                f"{who} restored snapshot {snap.id} ({snap.label}). Design data from "
                 "earlier tool results in this conversation may be stale; read it again "
                 "before relying on it."
             )

@@ -671,8 +671,8 @@ class RunEngine:
                 code = "kicad_unavailable"
             else:
                 content = (
-                    "A failed edit could not be undone exactly, so this turn ended. The "
-                    "design is reloaded from its last save."
+                    "A failed edit could not be undone exactly, so this turn ended. "
+                    "CopperChat reloads the design (see the notice below)."
                 )
                 code = "document_inconsistent"
             async with self._lock:

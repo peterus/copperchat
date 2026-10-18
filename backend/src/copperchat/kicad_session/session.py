@@ -777,16 +777,20 @@ class KicadSessionManager:
     async def reopen(self, project: Project) -> KicadSession:
         """Close the project's session (if open) and start a fresh one, so KiCad loads
         the files on disk again (external change, snapshot restore). The new session
-        keeps the old view version: clients take the maximum per document (X2)."""
+        keeps the old view version: clients take the maximum per document (X2), and the
+        time of the last CopperChat save (recovery notices name it, spec 5.4)."""
         version = 0
+        last_saved_at: str | None = None
         async with self._lock:
             current = self._current
             if current is not None and current.project.id == project.id:
                 version = current.view_version
+                last_saved_at = current.last_saved_at
                 await current.close()
                 self._current = None
         session = await self.open(project)
         session.view_version = max(session.view_version, version)
+        session.last_saved_at = session.last_saved_at or last_saved_at
         return session
 
     def current(self) -> KicadSession | None:
