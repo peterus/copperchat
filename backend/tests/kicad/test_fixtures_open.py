@@ -36,3 +36,20 @@ async def test_ecc83_opens_both_documents(ecc83_session: KicadSession) -> None:
 async def test_server_uses_seeded_library_tables(ecc83_session: KicadSession) -> None:
     config = ecc83_session.settings.data_dir / "kicad-config" / "10.99"
     assert (config / "sym-lib-table").is_file() and (config / "fp-lib-table").is_file()
+
+
+async def test_blank_opens(blank_session: KicadSession) -> None:
+    from kipy.proto.common.types import LibraryTableScope, LibraryType
+
+    s = blank_session
+    assert await s.call(lambda h: len(h.schematic().get_symbols())) == 0
+    assert await s.call(lambda h: len(h.board().get_footprints())) == 0
+    project_libs = await s.call(
+        lambda h: [
+            str(st.nickname)
+            for st in h.kicad.get_library_statuses(
+                LibraryType.LT_SYMBOL, LibraryTableScope.LTS_PROJECT
+            )
+        ]
+    )
+    assert project_libs == ["ecc83-pp"]
