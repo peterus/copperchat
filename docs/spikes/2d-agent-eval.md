@@ -64,7 +64,12 @@ which skill rules matter most.
   `parts_get_notes` / `research_part` would supply these. Research is out of scope here.
 - Scoring (`scenarios.py`): golden connectivity **by role** (connector / R / LED / regulator /
   caps / MCU / sensor found by `lib_id`, nets compared by pin), so any reference assignment and
-  layout passes. **Success = golden + 0 ERC errors.** Layout checks: symbol box overlaps,
+  layout passes. **Success = golden + 0 ERC errors.** `golden` is connectivity only (plus the
+  rail/label names `+3V3`, `I2C_SDA`/`I2C_SCL` in s2/s3); the requested **values and 0805
+  footprints** are checked separately from the recorded components (`checks.py`,
+  `values_0805` in `results/summary.md`: all 13 runs match), and the s1 connector rails
+  (pin 1 `+5V`, pin 2 `GND`) were checked in the four s1 renders (all correct; `scenarios.py`
+  now scores this as `connector_rails` for future runs). Layout checks: symbol box overlaps,
   off-grid items, wire interiors over pin ends.
 - Before any model run, `scripted.py` built all three circuits with fixed tool calls
   (golden + ERC 0), so the prototype was validated before the eval.
@@ -117,8 +122,8 @@ had a wrong pin address (0 "no such pin" / "ambiguous" errors in 13 runs).
    rotate tool" and left the upside-down LED. In s3 v1 the agent worked around it with
    misuse: loose `power:GND` symbols placed with `sch_place_symbol` and wired, a local
    label named `GND`, a duplicate GND symbol left on a pin. v2 runs used `sch_delete` (up to 5
-   symbols per run, Opus deleted and re-placed 4 parts to re-layout s3), `sch_move` and
-   `sch_find_space`.
+   symbols per run; Opus deleted and re-placed U1, U2, C1, C2 in s3 to get rid of a duplicate
+   GND symbol left by a partly failed `sch_add_power`, see 3), `sch_move` and `sch_find_space`.
 2. **Boxed-in pins → retry loops** (s3 v1: 14 errors per run; s3 v2: 7). The agent placed a
    decoupling cap close to the IC, so the cap's GND pin had no room for a power symbol, then
    tried labels, wires and loose symbols. Root cause was half the agent's placement and half the
@@ -133,8 +138,9 @@ had a wrong pin address (0 "no such pin" / "ambiguous" errors in 13 runs).
 4. **No T-join onto an existing wire.** `sch_connect(C1.1, U1.VI)` after `J1.1–U1.VI` was wired
    failed with "no clean wire route": the router refuses to touch any existing wire, also of the
    target net. The agent fell back to power symbols, or to a second label name on the same net
-   (`VIN_5V` on `+5V` → ERC warning `multiple_net_names`). This occurred in s1-v2, s2-v2 and
-   s2-opus.
+   (`VIN_5V` on `+5V` → ERC warning `multiple_net_names`). "No clean wire route" occurred in
+   6 of 13 runs (s1-v2, s2-v2, s2-opus, s3-v1-r1, s3-v1-r2, s3-v2); only s2-v2 ended with the
+   `multiple_net_names` warning.
 5. **Rail names as labels.** A local label `+5V` next to a `+5V` power symbol triggered
    `same_local_global_label` (s1-v1-r1); a `GND` label as a workaround appeared in s3-v1-r2. The
    v2 guard refuses this and points to `sch_add_power`.
@@ -145,6 +151,10 @@ had a wrong pin address (0 "no such pin" / "ambiguous" errors in 13 runs).
 
 ### Budget data (§7.1)
 
+- Both counts below are **lower bounds**: the prototype logs a change only after a call's
+  verification succeeds, so items left by a partly failed multi-pin call (v1/v2) are not
+  counted, and items the agent created and deleted again in the same turn net out. The most
+  affected are s3-v1/s3-v2. This only strengthens the conclusion below.
 - **KiCad item changes per scenario: s1 22–28, s2 34–50, s3 54–92.** One `sch_add_power` call
   on 6 pins alone is 12 items (symbol + 1–2 stub segments each). With the 12-item budget the
   turn would have been refused at call 7–12, i.e. **already in the 3-part LED circuit**.
@@ -226,7 +236,7 @@ destruction. Per-step `expected_changes` must use the same unit.
 - **Live agent eval (§12)**: reuse `eval.py` + `scenarios.py` (role-based golden checkers,
   ERC, layout checks, cost) as the opt-in live suite. A run costs US$0.06–0.40 and 25–100 s.
 - **Model choice**: Sonnet 5.5 (default) succeeded everywhere at roughly half the cost of
-  Opus 5.5. Opus produced the tidier s3 layout (decaps wired to `VCC`, a deliberate
-  re-layout after looking at the render). The model setting can stay at the default.
+  Opus 5.5. Opus produced the tidier s3 layout (decaps wired to `VCC`); its rebuild of
+  four parts was a recovery from a partly failed call, not a layout choice. The model setting can stay at the default.
 - **Part research**: the scenario prompts gave the USI pin mapping. In the product that
   comes from `parts_get_notes` / `research_part` (§9), which this spike did not exercise.

@@ -6,6 +6,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from checks import value_checks
+
 HERE = Path(__file__).parent
 RUNS = HERE / "results" / "runs"
 
@@ -46,6 +48,7 @@ def main() -> None:
                 "tools": "v2.1" if "v2.1" in f.parent.name else f"v{r.get('tools_version', 1)}",
                 "success": r["success"],
                 "golden": f"{sum(sc['golden'].values())}/{len(sc['golden'])}",
+                "values_0805": all(value_checks(r["scenario"], sc["components"]).values()),
                 "erc_e": sc["erc_errors"],
                 "erc_w": sc["erc_warnings"],
                 "calls": r["tool_calls"],

@@ -12,6 +12,7 @@ from itertools import combinations
 
 import geo
 import tools
+from checks import value_checks
 
 COMMON = (
     " The schematic is empty; nothing has to be preserved. When you are done, the ERC must have no "
@@ -165,6 +166,17 @@ def layout_checks(ctx) -> dict:
     }
 
 
+def rail_checks(name: str, comps: dict) -> dict:
+    """s1: connector pin 1 must be on +5V and pin 2 on GND (the prompt names the rails)."""
+    if name != "s1":
+        return {}
+    j = _find(comps, r"^Connector")
+    if len(j) != 1:
+        return {"connector_rails": False}
+    n1, n2 = _net(comps, (j[0], "1")), _net(comps, (j[0], "2"))
+    return {"connector_rails": bool(n1 and n2) and geo.net_key(n1) == "+5V" and geo.net_key(n2) == "GND"}
+
+
 def score(name: str, ctx) -> dict:
     comps, nets = netlist(ctx)
     golden = CHECKS[name](comps, nets)
@@ -179,5 +191,9 @@ def score(name: str, ctx) -> dict:
         "layout": layout_checks(ctx),
         "components": {r: {"lib": c["lib"], "value": c["value"], "footprint": c["footprint"]} for r, c in sorted(comps.items())},
         "passives_not_0805": [r for r, f in passives.items() if "0805" not in f],
+        "spec_checks": value_checks(
+            name, {r: {"lib": c["lib"], "value": c["value"], "footprint": c["footprint"]} for r, c in comps.items()}
+        )
+        | rail_checks(name, comps),
         "item_changes": ctx.item_changes,
     }

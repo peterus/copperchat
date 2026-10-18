@@ -24,9 +24,9 @@ from pathlib import Path
 from harness import by_id, cli_env, kicad_cli, new_kiid, sid, update_symbols, v2
 
 import geo
+from checks import PASSIVE_SYMBOLS
 from geo import Pin, Scene, Sym, groups, net_key, read_scene, snap, snap_pt
 
-PASSIVE_SYMBOLS = re.compile(r"^Device:(R|C|L|C_Polarized|R_Small|C_Small|L_Small|FerriteBead\w*)$")
 POWER_LIB = "power"
 
 
@@ -855,7 +855,7 @@ def erc(ctx: Ctx) -> dict:
     copy = _saved_copy(ctx)
     sch_file = next(copy.glob("*.kicad_sch"))
     out = copy / "erc.json"
-    subprocess.run(
+    r = subprocess.run(
         [kicad_cli(), "sch", "erc", "--format", "json", "--severity-all", "-o", str(out), str(sch_file)],
         env=cli_env(),
         capture_output=True,
@@ -863,6 +863,8 @@ def erc(ctx: Ctx) -> dict:
         timeout=120,
         check=False,
     )
+    if not out.exists():  # a CLI failure must not abort scoring after the model cost is spent
+        return {"errors": -1, "warnings": -1, "violations": [], "erc_failed": f"exit {r.returncode}: {(r.stderr or r.stdout)[-300:]}"}
     data = json.loads(out.read_text())
     vs = []
     for sheet in data.get("sheets", []):

@@ -32,7 +32,8 @@ the spike reuses `spikes/2a-sch-write` (`harness.py`, `geom.py`), `spikes/2b-lib
 | `tools_v2.py` | v2 additions: `sch_find_space`, `sch_delete`, `sch_move` (unconnected symbols only), pin directions per rotation |
 | `geo.py` | scene model from API data, obstacle boxes, orthogonal router, collision checks |
 | `kit.py` | blank project made by KiCad (`CreateDocument` + save), library loading, symbol index (2B prototype) |
-| `scenarios.py` | the three prompts, golden connectivity checkers (by role, not by reference), layout checks, scoring |
+| `scenarios.py` | the three prompts, golden connectivity checkers (by role, not by reference), s1 rail check, layout checks, scoring |
+| `checks.py` | requested values + 0805 check from recorded components (no KiCad imports; used by `summarize.py`) |
 | `eval.py` | Agent SDK harness (MCP server, guard, plugin, transcript, metrics) |
 | `skill/v1`, `skill/v2` | draft `kicad-schematic-editing` skill as used by the v1 / v2 runs |
 
