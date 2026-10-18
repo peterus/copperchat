@@ -7,6 +7,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from copperchat.changes.erc import ErcResultRepo
 from copperchat.changes.repo import ChangeEntry, ChangeRepo
 from copperchat.db import Database
 from copperchat.db.repos.editing_settings import EditingSettingsRepo
@@ -15,6 +16,7 @@ from copperchat.editing.state import EditTurnState
 
 if TYPE_CHECKING:
     from copperchat.agent.broadcaster import Broadcaster
+    from copperchat.history.service import HistoryService
     from copperchat.tools.spec import ToolContext
 
 log = logging.getLogger(__name__)
@@ -30,12 +32,17 @@ class EditingService:
         broadcaster: Broadcaster | None,
         settings_repo: EditingSettingsRepo,
         gate: EditGate | None = None,
+        history: HistoryService | None = None,
     ) -> None:
         self.db = db
         self.broadcaster = broadcaster
         self.settings_repo = settings_repo
         self.gate: EditGate = gate if gate is not None else BudgetGate(self)
         self.changes = ChangeRepo(db)
+        self.erc_results = ErcResultRepo(db)
+        # Snapshots / open session for the ERC baseline and diff (E8a); set by
+        # install_editing.
+        self.history = history
         self.on_changes_recorded: list[ChangesRecorded] = []
         self._turns: dict[tuple[str, str], EditTurnState] = {}
         self._locks: dict[str, asyncio.Lock] = {}
@@ -58,6 +65,10 @@ class EditingService:
         if lock is None:
             lock = self._locks[project_id] = asyncio.Lock()
         return lock
+
+    def peek_turn(self, project_id: str, run_id: str | None) -> EditTurnState | None:
+        """The turn's state if one exists (never creates one)."""
+        return None if run_id is None else self._turns.get((project_id, run_id))
 
     def drop_turn(self, project_id: str, run_id: str | None) -> None:
         if run_id is not None:

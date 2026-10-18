@@ -39,7 +39,9 @@ def _inside(base: Path, rel: object) -> Path:
     return target
 
 
-def _plan(sdir: Path, project_dir: Path) -> list[tuple[Path, Path]]:
+def snapshot_plan(sdir: Path, project_dir: Path) -> list[tuple[Path, Path]]:
+    """(snapshot file, target below `project_dir`) per manifest entry, each checked
+    against its hash and kept inside both roots; CorruptSnapshot otherwise."""
     try:
         manifest = json.loads((sdir / "manifest.json").read_text())
         entries = manifest["files"]
@@ -112,7 +114,7 @@ async def restore_snapshot(
         _check_writable(svc, project)
         if check_busy and engine is not None and engine.is_busy:
             raise AgentBusy("the agent is working; stop it or wait before restoring")
-        plan = await asyncio.to_thread(_plan, store.snapshot_dir(snap.id), project.dir)
+        plan = await asyncio.to_thread(snapshot_plan, store.snapshot_dir(snap.id), project.dir)
         session = svc.open_session(project)
         if session is not None:
             await session.close()  # KiCad must not keep the replaced documents in memory

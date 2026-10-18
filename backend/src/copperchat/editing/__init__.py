@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from copperchat.editing.service import EditingService
+from copperchat.editing.service import ChangesRecorded, EditingService
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -13,6 +13,19 @@ if TYPE_CHECKING:
     from copperchat.projects import Project
 
 __all__ = ["EditingService", "install_editing"]
+
+
+def _publisher(broadcaster: Any) -> ChangesRecorded:
+    """WS `changes-updated` after change rows were written (E-C12)."""
+    from copperchat.agent.protocol import ChangesUpdatedFrame
+
+    async def publish(project_id: str, run_id: str, step_id: str | None, count: int) -> None:
+        await broadcaster.publish(
+            project_id,
+            ChangesUpdatedFrame(project_id=project_id, run_id=run_id, step_id=step_id, count=count),
+        )
+
+    return publish
 
 
 def install_editing(app: FastAPI) -> EditingService:
@@ -28,7 +41,9 @@ def install_editing(app: FastAPI) -> EditingService:
         db=app.state.db,
         broadcaster=runtime.broadcaster,
         settings_repo=EditingSettingsRepo(app.state.db),
+        history=getattr(app.state, "history", None),
     )
+    svc.on_changes_recorded.append(_publisher(runtime.broadcaster))
     previous = runtime.hooks_factory
 
     def hooks_factory(project: Project, engine: RunEngine) -> RunHooks:
