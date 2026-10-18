@@ -248,10 +248,6 @@ def hierarchy_files(h: KicadHandle) -> tuple[set[str], list[SheetRef]]:
     return {r.file for r in refs if r.file}, refs
 
 
-def ancestors_and_self(refs: list[SheetRef], sheet: SheetRef) -> list[SheetRef]:
-    return [r for r in refs if sheet.path == r.path or sheet.path.startswith(r.path + "/")]
-
-
 # -- sch_add_sheet ------------------------------------------------------------------------
 
 
@@ -298,8 +294,9 @@ def plan_add_sheet(project: Any, args: dict[str, Any]) -> Any:
     def run(h: KicadHandle) -> ChangeSet:
         parent = resolve_sheet(h, str(parent_arg)[:256] if parent_arg else None)
         used, refs = hierarchy_files(h)
-        chain = ancestors_and_self(refs, parent)
-        if file_arg in used:  # 2A Q7 follow-up: the API makes a blank screen and save() replaces it
+        if (
+            isinstance(file_arg, str) and file_arg in used
+        ):  # 2A Q7 follow-up: the API makes a blank screen and save() replaces it
             raise _bad(
                 "Sheet file is already a sheet of this design",
                 f"{file_arg} is used by an existing sheet; creating another sheet symbol for it "
@@ -308,13 +305,6 @@ def plan_add_sheet(project: Any, args: dict[str, Any]) -> Any:
                 "made in KiCad itself.",
             )
         file = validate_sheet_file(project, file_arg, existing=set())  # type: ignore[arg-type]
-        root = Path(project.sch_file).name if project.sch_file else ""
-        if file in {r.file for r in chain} or file == root:
-            raise _bad(
-                "Sheet would contain itself",
-                f"{file} is the file of {parent.human_path} or one of its parents",
-                "Choose another file name.",
-            )
         if parent.path != refs[0].path and "/" in parent.file:
             raise _bad(
                 "Unsupported parent sheet",

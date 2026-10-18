@@ -562,3 +562,28 @@ async def test_change_rows_carry_the_call_state(
     assert rows and all(
         r.plan_step_id == "step-1" and r.call_seq == state.call_seq > 7 for r in rows
     )
+
+
+async def test_unhashable_file_argument_is_a_structured_error(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    s = blank_session
+    for bad in (["a.kicad_sch"], {"f": 1}, 5):
+        res, is_error = await call_tool(
+            edit_ctx(s, edit_db), "sch_add_sheet", name="X", file=bad, at=[10, 10]
+        )
+        assert is_error and res["error"]["code"] == "invalid_argument", bad
+
+
+async def test_parent_in_a_subdirectory_is_refused(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    s = blank_session
+    ctx = edit_ctx(s, edit_db)
+    await _add_sheet(ctx, s, name="Sub", file="sub/power.kicad_sch")
+    res, is_error = await call_tool(
+        ctx, "sch_add_sheet", name="Deep", file="deep.kicad_sch", at=[10, 10], parent="/Sub/"
+    )
+    assert is_error and res["error"]["code"] == "invalid_argument"
+    assert "sub-directory" in res["error"]["why"]
+    assert not (s.project.dir / "deep.kicad_sch").exists()
