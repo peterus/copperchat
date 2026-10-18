@@ -64,6 +64,7 @@ class FakeServer:
     fail_drop: bool = False
     drop_gate: threading.Event | None = None  # drop_commit waits for it when set
     commit_gate: threading.Event | None = None  # begin/push_commit wait for it when set
+    gate_reached: threading.Event = field(default_factory=threading.Event)  # a call waits
     library_load_hangs: bool = False  # load_all_libraries never answers
     library_load_refusals: int = 0  # load_all_libraries raises this often
 
@@ -120,6 +121,7 @@ class FakeDocument:
 
     def begin_commit(self) -> SimpleNamespace:
         if self._server.commit_gate is not None:
+            self._server.gate_reached.set()
             self._server.commit_gate.wait(10)
         if self._server.open_commits:
             raise ApiError("KiCad returned error: client already has a commit in progress")
@@ -129,6 +131,7 @@ class FakeDocument:
 
     def push_commit(self, commit: SimpleNamespace, message: str = "") -> None:
         if self._server.commit_gate is not None:
+            self._server.gate_reached.set()
             self._server.commit_gate.wait(10)
         if self._server.fail_push or commit.id not in self._server.open_commits:
             raise ApiError("KiCad returned error: no such commit")
@@ -138,6 +141,7 @@ class FakeDocument:
 
     def drop_commit(self, commit: SimpleNamespace) -> None:
         if self._server.drop_gate is not None:
+            self._server.gate_reached.set()
             self._server.drop_gate.wait(10)
         if self._server.fail_drop or commit.id not in self._server.open_commits:
             raise ApiError("KiCad returned error: no such commit")

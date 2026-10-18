@@ -112,7 +112,14 @@ async def _finish[R](coro: Coroutine[Any, Any, R]) -> tuple[R, bool]:
             return await asyncio.shield(task), cancelled
         except asyncio.CancelledError:
             if task.done():
-                raise
+                # The cancel can land after `coro` finished but before this frame
+                # resumed: keep its outcome (e.g. the handle of a commit KiCad opened).
+                if task.cancelled():
+                    raise
+                error = task.exception()
+                if error is not None:
+                    raise asyncio.CancelledError from error
+                return task.result(), True
             cancelled = True
         except BaseException as exc:
             if cancelled:

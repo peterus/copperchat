@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS editing_settings (
     project_id        TEXT PRIMARY KEY,
     plan_policy       TEXT NOT NULL DEFAULT 'large'
                       CHECK (plan_policy IN ('always', 'large', 'never')),
-    change_budget     INTEGER NOT NULL DEFAULT 20,
+    change_budget     INTEGER NOT NULL DEFAULT 20 CHECK (change_budget BETWEEN 1 AND 500),
     annotation_block  INTEGER NOT NULL DEFAULT 100 CHECK (annotation_block IN (100, 1000)),
     show_agent_view   INTEGER NOT NULL DEFAULT 1 CHECK (show_agent_view IN (0, 1))
 );

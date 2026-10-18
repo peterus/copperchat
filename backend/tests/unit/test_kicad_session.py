@@ -601,7 +601,7 @@ async def test_second_cancel_during_drop_waits_for_the_drop(
     task = asyncio.create_task(edit())
     await inside.wait()
     task.cancel()
-    await asyncio.sleep(0.1)  # now inside the (blocked) drop
+    assert await asyncio.to_thread(server.gate_reached.wait, 5)  # inside the blocked drop
     task.cancel()
     await asyncio.sleep(0.1)
     assert not task.done()  # the drop still runs; the commit lock is still held
@@ -656,7 +656,7 @@ async def _cancel_while_gated(session: Any, server: FakeServer, body_reached: bo
     task = asyncio.create_task(edit())
     if body_reached:
         await inside.wait()
-    await asyncio.sleep(0.2)  # the gated call is in flight
+    assert await asyncio.to_thread(server.gate_reached.wait, 5)  # the gated call is in flight
     task.cancel()
     await asyncio.sleep(0.1)
     gate.set()
@@ -694,7 +694,7 @@ async def test_cancel_during_a_failing_drop_is_not_swallowed(
     gate = threading.Event()
     server.drop_gate, server.fail_drop = gate, True
     task = asyncio.create_task(_failing_commit(session))
-    await asyncio.sleep(0.2)  # inside the gated (failing) drop
+    assert await asyncio.to_thread(server.gate_reached.wait, 5)  # inside the gated drop
     task.cancel()
     await asyncio.sleep(0.1)
     gate.set()
@@ -753,3 +753,39 @@ async def test_save_listener_cannot_reenter_the_session(
     await asyncio.wait_for(session.save("sch"), 5)  # no deadlock
     assert len(errors) == 1 and "save listener" in str(errors[0])
     assert server.saved == ["demo.kicad_sch"]
+
+
+async def test_finish_keeps_a_result_when_the_cancel_lands_after_completion() -> None:
+    from copperchat.kicad_session.session import _finish
+
+    caller: asyncio.Task[Any] | None = None
+
+    async def work() -> int:
+        assert caller is not None
+        caller.cancel()  # delivered after `work` is already done
+        return 42
+
+    async def run() -> tuple[int, bool]:
+        return await _finish(work())
+
+    caller = asyncio.create_task(run())
+    assert await caller == (42, True)
+
+
+async def test_finish_turns_a_late_failure_into_the_cancellation() -> None:
+    from copperchat.kicad_session.session import _finish
+
+    caller: asyncio.Task[Any] | None = None
+
+    async def work() -> int:
+        assert caller is not None
+        caller.cancel()
+        raise RuntimeError("drop failed")
+
+    async def run() -> tuple[int, bool]:
+        return await _finish(work())
+
+    caller = asyncio.create_task(run())
+    with pytest.raises(asyncio.CancelledError) as info:
+        await caller
+    assert isinstance(info.value.__cause__, RuntimeError)
