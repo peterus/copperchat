@@ -2,6 +2,7 @@ import { type KeyboardEvent, type PointerEvent, type ReactNode, useEffect, useRe
 import { Link } from 'react-router-dom';
 import { ChatIcon, CloseIcon, HistoryIcon, MoreIcon, ViewIcon } from '@/components/icons';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
+import { useView } from '@/stores/view';
 import { type PanelDefinition, usePanels } from './panels';
 
 export type LayoutMode = 'split' | 'sidebar' | 'phone';
@@ -206,6 +207,11 @@ function PhoneView({
 }) {
   const [tab, setTab] = useState<PhoneTab>('chat');
   const [panelId, setPanelId] = useState<string | null>(null);
+  // A highlight request (Changes panel) shows the viewer.
+  const highlightSeq = useView((s) => s.highlight?.seq ?? null);
+  useEffect(() => {
+    if (highlightSeq !== null) setTab('view');
+  }, [highlightSeq]);
   const history = panels.find((p) => p.id === 'history');
   const others = panels.filter((p) => p.id !== 'history');
   const active = others.find((p) => p.id === panelId);
