@@ -904,6 +904,31 @@ verification, status, changeCount, checkpointId, summary, failure, erc:
   every later run before it "Undone by a restore"; the diff of a run with a later restore carries
   a note and labels unlogged entries "restore or side effect". Only loaded chat messages are seen.
 
+- **E9b (as built):** `@/stores/plans`: `createPlansStore(ws, deps?)` with `projectId`, `byId`,
+  `open`, `pending[planId]` (one action per plan in flight; buttons disabled), `errors[planId]`
+  (`{action, code, message}`, shown inline in the card; `agent_busy` worded "wait or stop"),
+  `load(projectId)` (`GET /plans/open`), `ensure(projectId, planId)` (`GET /plans/{id}` once, for
+  cards of older plans), `approve|reject|resume|abort(planId)`, `rollback(planId, toStep)`. REST
+  responses and `plan-updated` both upsert; a copy with an older `updatedAt` never replaces a newer
+  one; a `plan_state` refusal refetches the plan; a WS reconnect refetches the open plan and the
+  loaded unfinished ones. REST client `@/api/plans` (zod `PlanDTO`, `apiErrorCode(e)`).
+  `PlanCard({projectId, planId})` (the notice row's project). Buttons: proposed Approve / Reject;
+  approved Abort; running Stop (chat store `stop` → `interrupt`, disabled without an active run);
+  paused Resume / Roll back to… / Abort; terminal none; full width below `sm`. The **checkpoint
+  link** opens the checkpoint's preview (`/history/{checkpointId}/preview`) in the lightbox (the
+  DTO has no run/step id to link the Changes panel). Step ERC: counts plus a digest of the
+  justifications (first 5, 200 chars each, "+N more"). `ConfirmRollback` offers "Start" (0) and
+  every finished step (default: the last); a 409 (`agent_busy`, `plan_state` for 0 without a base)
+  lands inline in the card. `MessageItem`: `plan` notices without a string `planId` stay plain
+  notices; `erc-delta` notices show `ErcBadge` (only with non-negative integer counts); `restore`
+  with `checkpoint: true` → "Restore step checkpoint" (`RestoreOffer`/`ConfirmRestore` gained
+  `checkpoint`: "state at the end of …"). History: `nestHistory(entries)` nests `kind === 'step'`
+  entries under the turn entry of the same `runId` in plan order (oldest first); steps without
+  their turn stay top-level; a step's button is "Restore" (same `ConfirmRestore`, a 409 `plan_open`
+  shows its reason). `EditingSection` (`@/api/editingSettings`): radios plan policy / annotation
+  block and the agent-view checkbox PUT on change; the budget PUTs on blur/Enter after a local
+  1–500 check; a failed PUT restores the saved value and shows the server message.
+
 ---
 
 ## Decided by owner (2026-10-18)
