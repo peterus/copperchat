@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from copperchat.db import Database
+from copperchat.errors import StructuredToolError
 from copperchat.history.store import compute_hashes, sha256_file
 from copperchat.kicad_session import KicadHandle, KicadSession
 from copperchat.kicad_tools import access
@@ -414,3 +415,150 @@ async def test_shared_sheet_label_once(hier_session: KicadSession, edit_db: Data
     syms_with_pin, labels = await s.call(count)
     assert syms_with_pin == 2  # one pin on each chosen sheet symbol
     assert labels == [1] * len(labels)  # one label in the file
+
+
+async def test_bad_geometry_refused(blank_session: KicadSession, edit_db: Database) -> None:
+    s = blank_session
+    ctx = edit_ctx(s, edit_db)
+    for args in ({"at": [10, 10], "size": [-5, 0]}, {"at": [-5, 10]}):
+        res, is_error = await call_tool(ctx, "sch_add_sheet", name="G", file="g.kicad_sch", **args)
+        assert is_error and res["error"]["code"] == "invalid_argument", args
+    assert not (s.project.dir / "g.kicad_sch").exists()
+
+
+async def test_small_size_is_raised_with_a_note(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    s = blank_session
+    x, y = await s.call(lambda h: free_area(h, 50.8, 38.1))
+    res, is_error = await call_tool(
+        edit_ctx(s, edit_db), "sch_add_sheet", name="T", file="t.kicad_sch", at=[x, y], size=[2, 2]
+    )
+    assert not is_error, res
+    assert any("minimum" in n for n in res["notes"])
+
+
+async def test_file_appearing_after_prepare_is_never_overwritten_or_deleted(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    from copperchat.kicad_tools.edit.specs_sheets import apply_add_sheet, prepare_add_sheet
+
+    s = blank_session
+    ctx = edit_ctx(s, edit_db)
+    x, y = await s.call(lambda h: free_area(h, 50.8, 38.1))
+    cs = await prepare_add_sheet(ctx, {"name": "Late", "file": "late.kicad_sch", "at": [x, y]})
+    late = s.project.dir / "late.kicad_sch"
+    late.write_text("someone else's file")
+    before = await s.call(item_ids)
+    with pytest.raises(StructuredToolError) as err:
+        await apply_add_sheet(ctx, cs)
+    assert err.value.code == "invalid_argument"
+    assert late.read_text() == "someone else's file"
+    assert await s.call(item_ids) == before
+
+
+async def test_failed_save_removes_a_directory_made_by_the_call(
+    blank_session: KicadSession, edit_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    s = blank_session
+    real_save = s.save
+    calls = {"n": 0}
+
+    async def flaky(doc: str) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # the new file and its directory exist by the time a real save fails midway
+            (s.project.dir / "newdir").mkdir()
+            (s.project.dir / "newdir" / "x.kicad_sch").write_text("partial")
+            raise RuntimeError("injected save failure")
+        await real_save(doc)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(s, "save", flaky)
+    x, y = await s.call(lambda h: free_area(h, 50.8, 38.1))
+    res, is_error = await call_tool(
+        edit_ctx(s, edit_db), "sch_add_sheet", name="D", file="newdir/x.kicad_sch", at=[x, y]
+    )
+    assert is_error and "appeared" not in str(res), res
+    assert not (s.project.dir / "newdir").exists()
+    assert len(await _hierarchy(s)) == 1
+    assert "refused to save" in res["error"]["why"]  # a fixed message, no host paths
+    assert str(s.project.dir) not in str(res)
+
+
+async def test_undo_failure_after_failed_save_is_document_inconsistent(
+    blank_session: KicadSession, edit_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    s = blank_session
+    inconsistent: list[Exception] = []
+    ctx = edit_ctx(s, edit_db, on_document_inconsistent=inconsistent.append)
+
+    async def always_fail(doc: str) -> None:
+        raise RuntimeError("injected save failure")
+
+    monkeypatch.setattr(s, "save", always_fail)  # the undo's own re-save fails too
+    x, y = await s.call(lambda h: free_area(h, 50.8, 38.1))
+    res, is_error = await call_tool(ctx, "sch_add_sheet", name="U", file="u.kicad_sch", at=[x, y])
+    assert is_error and res["error"]["code"] == "document_inconsistent", res
+    assert inconsistent
+
+
+async def test_sheet_on_a_sub_sheet_parent(hier_session: KicadSession, edit_db: Database) -> None:
+    s = hier_session
+    ctx = edit_ctx(s, edit_db)
+    parent = next(p for n, f, p in await _hierarchy(s) if n == "ampli_ht_vertical")
+    x, y = await s.call(lambda h: free_area(h, 50.8, 38.1, sheet=parent))
+    res, is_error = await call_tool(
+        ctx, "sch_add_sheet", name="Nested", file="nested.kicad_sch", at=[x, y], parent=parent
+    )
+    assert not is_error, res
+    assert res["sheet"]["path"].endswith("/Nested/") and res["sheet"]["path"] != "/Nested/"
+    assert (s.project.dir / "nested.kicad_sch").is_file()
+
+
+async def test_pin_with_no_room_refused(blank_session: KicadSession, edit_db: Database) -> None:
+    s = blank_session
+    ctx = edit_ctx(s, edit_db)
+    x, y = await s.call(lambda h: free_area(h, 50.8, 12.7))
+    await call_tool(
+        ctx, "sch_add_sheet", name="Tiny", file="tiny.kicad_sch", at=[x, y], size=[25.4, 12.7]
+    )
+    outcomes = []
+    for i in range(6):
+        res, err = await call_tool(
+            ctx, "sch_add_sheet_pin", sheet="Tiny", name=f"P{i}", direction="input"
+        )
+        outcomes.append((err, res.get("error", {}).get("code")))
+    assert outcomes[0][0] is False
+    assert outcomes[-1] == (True, "overlap")
+
+
+async def test_bad_pin_arguments_refused(blank_session: KicadSession, edit_db: Database) -> None:
+    s = blank_session
+    ctx = edit_ctx(s, edit_db)
+    await _add_sheet(ctx, s)
+    before = await s.call(item_ids)
+    for args in (
+        {"name": "", "direction": "input"},
+        {"name": "A{B}", "direction": "input"},
+        {"name": "OK", "direction": "sideways"},
+        {"name": "OK", "direction": "input", "side": "top"},
+    ):
+        res, is_error = await call_tool(ctx, "sch_add_sheet_pin", sheet="Power", **args)
+        assert is_error and res["error"]["code"] == "invalid_argument", args
+    assert await s.call(item_ids) == before
+
+
+async def test_change_rows_carry_the_call_state(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    s = blank_session
+    ctx = edit_ctx(s, edit_db)
+    assert ctx.editing is not None
+    state = ctx.editing.turn(s.project.id, ctx.run_id)
+    state.active_step_id = "step-1"
+    state.call_seq = 7
+    await _add_sheet(ctx, s)
+    rows = await ctx.editing.changes.for_run(s.project.id, ctx.run_id or "")
+    assert rows and all(
+        r.plan_step_id == "step-1" and r.call_seq == state.call_seq > 7 for r in rows
+    )

@@ -95,6 +95,12 @@ def validate_sheet_file(project: Any, file: str, *, existing: Iterable[str]) -> 
     base = Path(project.dir)
     if len(parts) == 2:
         sub = base / parts[0]
+        if sub.exists() and not sub.is_dir():
+            raise _bad(
+                "Invalid sheet file name",
+                f"{parts[0]!r} exists in the project and is not a directory",
+                "Choose another directory name or no directory.",
+            )
         if sub.is_symlink():
             raise _bad(
                 "Invalid sheet file name",
@@ -269,8 +275,21 @@ def plan_add_sheet(project: Any, args: dict[str, Any]) -> Any:
     name = validate_sheet_name(args.get("name"))  # type: ignore[arg-type]
     raw_at = _pair(args.get("at"), "at", None)
     raw_size = _pair(args.get("size"), "size", DEFAULT_SIZE)
+    if min(raw_size) <= 0 or min(raw_at) < 0:
+        raise _bad(
+            "Invalid sheet geometry",
+            f"at {raw_at} / size {raw_size}: the size must be positive and the corner on the page",
+            "Pass at as non-negative [x, y] and size as positive [w, h] in mm.",
+        )
     at = snap_point(raw_at)
     size = (max(snap(raw_size[0]), MIN_SIZE), max(snap(raw_size[1]), MIN_SIZE))
+    notes: list[str] = []
+    if tuple(size) != tuple(snap(c) for c in raw_size):
+        notes.append(
+            f"size raised to the minimum {MIN_SIZE:g} mm per side: {size[0]:g} x {size[1]:g}"
+        )
+    if at != raw_at:
+        notes.append(f"corner snapped to the grid: {at[0]:g}, {at[1]:g}")
     if size[0] > MAX_SIZE or size[1] > MAX_SIZE:
         raise _bad("Sheet too large", f"size {size} mm", f"Use at most {MAX_SIZE:g} mm per side.")
     parent_arg = args.get("parent")
@@ -296,7 +315,7 @@ def plan_add_sheet(project: Any, args: dict[str, Any]) -> Any:
                 f"{file} is the file of {parent.human_path} or one of its parents",
                 "Choose another file name.",
             )
-        if parent is not refs[0] and "/" in parent.file:
+        if parent.path != refs[0].path and "/" in parent.file:
             raise _bad(
                 "Unsupported parent sheet",
                 f"{parent.human_path} lives in a sub-directory ({parent.file}); sheet files "
@@ -341,6 +360,7 @@ def plan_add_sheet(project: Any, args: dict[str, Any]) -> Any:
             intent=NetIntent(keep_partition=True),
             logical=Logical(1),
             summary={"file": file, "name": name, "parent": parent.human_path},
+            notes=list(notes),
         )
 
     return run

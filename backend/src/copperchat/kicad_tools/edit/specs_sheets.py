@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import dataclasses
 import logging
 from pathlib import Path
 from typing import Any
@@ -90,10 +89,19 @@ async def _remove_failed_sheet(ctx: ToolContext, cs: ChangeSet, uuid: str, new_f
 async def apply_add_sheet(ctx: ToolContext, cs: ChangeSet) -> ToolResult:
     session = ctx.session
     path = Path(ctx.project.dir) / str(cs.summary["file"])
+    if path.exists() or path.is_symlink() or path.parent.is_symlink():
+        # Appeared since prepare: never write over it, and the rollback must only ever
+        # remove a file this call created.
+        raise StructuredToolError(
+            "Sheet file already exists",
+            f"{cs.summary['file']} appeared after the check; it would not be overwritten",
+            "Choose a new file name.",
+            code="invalid_argument",
+        )
     made_dir = not path.parent.exists()
     # Record the change rows only after the file is on disk: a failed save is rolled back
     # and must not leave an "added sheet" row.
-    applied = await apply_change_set(dataclasses.replace(ctx, editing=None), cs)
+    applied = await apply_change_set(ctx, cs, record=False)
     sheet_symbol = applied.created[0]
     uuid = access.kiid(sheet_symbol)
     try:
@@ -101,9 +109,10 @@ async def apply_add_sheet(ctx: ToolContext, cs: ChangeSet) -> ToolResult:
     except BaseException as exc:
         await _shielded(_remove_failed_sheet(ctx, cs, uuid, path, made_dir))
         if isinstance(exc, Exception):
+            log.warning("sch_add_sheet: saving the new sheet failed: %s", exc)
             raise StructuredToolError(
                 "sch_add_sheet failed: KiCad could not save the new sheet",
-                str(exc)[:200] or type(exc).__name__,
+                "KiCad refused to save the schematic with the new sheet",
                 "Nothing was changed; check the file name and retry.",
                 code="invalid_argument",
             ) from exc

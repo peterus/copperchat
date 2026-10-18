@@ -435,7 +435,9 @@ Error codes (`StructuredToolError.code`): `read_only`, `plan_required`,
   (`overlap`: symbols, sheets, wires, labels, junctions, no-connects +2.54 mm). Stages: Create
   with the absolute path, Update to the relative `Sheetfile`; the tool then calls
   `session.save("sch")` itself (the file exists, hash listener runs) and records its change
-  rows only **after** that save (the engine runs with `editing=None`). A failing/cancelled
+  rows only **after** that save (`apply_change_set(..., record=False)`, new keyword; the
+  rows still carry the call's plan step and `call_seq`; apply re-checks that the file still does
+  not exist). A failing/cancelled
   save: sheet symbol removed in a commit, the new file (and a directory this call made)
   deleted, root saved again (`DocumentInconsistent` if that undo fails); the agent gets
   `invalid_argument`. Result `sheet: {name, file, path, page, uuid}`. `sch_add_sheet_pin(sheet,

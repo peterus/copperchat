@@ -107,3 +107,29 @@ def test_sheet_name_rules() -> None:
     for bad in ["", "  ", "a/b", "x" * 100, "tab\tname", " lead"]:
         with pytest.raises(StructuredToolError):
             validate_sheet_name(bad)
+
+
+def test_non_directory_parent_rejected(project: Project) -> None:
+    (project.dir / "sub").write_text("a file")
+    with pytest.raises(StructuredToolError) as err:
+        validate_sheet_file(project, "sub/x.kicad_sch", existing=set())
+    assert "not a directory" in err.value.why
+
+
+def test_pin_name_rules() -> None:
+    from copperchat.kicad_tools.edit.sheets import validate_pin_name
+
+    assert validate_pin_name("VIN_5V") == "VIN_5V"
+    for bad in ["", " x", "a{b}", 'q"', "x" * 100, "a\nb", 5]:
+        with pytest.raises(StructuredToolError):
+            validate_pin_name(bad)  # type: ignore[arg-type]
+
+
+def test_pair_rules() -> None:
+    from copperchat.kicad_tools.edit.sheets import _pair
+
+    assert _pair([1, 2.5], "at", None) == (1.0, 2.5)
+    assert _pair(None, "size", (3.0, 4.0)) == (3.0, 4.0)
+    for bad in [None, [1], [1, 2, 3], ["a", 1], [True, 1], [float("nan"), 1], [1e9, 1], "xy"]:
+        with pytest.raises(StructuredToolError):
+            _pair(bad, "at", None)
