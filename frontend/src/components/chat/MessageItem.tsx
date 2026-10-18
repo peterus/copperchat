@@ -1,6 +1,8 @@
 import { memo, useCallback, useState } from 'react';
 import { isUploadId, uploadUrl } from '@/api/uploads';
+import { ErcBadge } from '@/components/changes/ErcBadge';
 import { RestoreOffer } from '@/components/history/RestoreOffer';
+import { PlanCard } from '@/components/plan/PlanCard';
 import type { MessageDTO } from '@/protocol/frames';
 import { Lightbox } from './Lightbox';
 import { Markdown } from './Markdown';
@@ -116,6 +118,15 @@ function oneLine(input: unknown): string {
   return s.length > 80 ? `${s.slice(0, 77)}…` : s;
 }
 
+const count = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0;
+
+/** `erc-delta` notice metadata `{ercResultId, errors, warnings}` (E-C12) as an ErcBadge input, else null. */
+function ercOf(md: MessageDTO['metadata']) {
+  if (md.action !== 'erc-delta' || typeof md.ercResultId !== 'string' || !md.ercResultId) return null;
+  if (!count(md.errors) || !count(md.warnings)) return null;
+  return { errors: md.errors, warnings: md.warnings, resultId: md.ercResultId };
+}
+
 /** Memoized: rows keep their identity in the store unless they change (see chat.ts patch()). */
 export const MessageItem = memo(function MessageItem({ message: m }: { message: MessageDTO }) {
   const streaming = m.status === 'streaming';
@@ -191,14 +202,25 @@ export const MessageItem = memo(function MessageItem({ message: m }: { message: 
           {m.content}
         </div>
       );
-    case 'notice':
+    case 'notice': {
+      const md = m.metadata;
+      if (md.action === 'plan' && typeof md.planId === 'string' && md.planId) {
+        return <PlanCard projectId={m.projectId} planId={md.planId} />;
+      }
+      const erc = ercOf(md);
       return (
         <div className="text-center text-xs text-muted">
           {m.content}
-          {m.metadata.action === 'restore' && typeof m.metadata.snapshotId === 'string' && (
-            <RestoreOffer projectId={m.projectId} snapshotId={m.metadata.snapshotId} />
+          {md.action === 'restore' && typeof md.snapshotId === 'string' && (
+            <RestoreOffer projectId={m.projectId} snapshotId={md.snapshotId} checkpoint={md.checkpoint === true} />
+          )}
+          {erc && (
+            <div className="mt-1 flex justify-center">
+              <ErcBadge projectId={m.projectId} erc={erc} />
+            </div>
           )}
         </div>
       );
+    }
   }
 });

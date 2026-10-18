@@ -110,3 +110,82 @@ test('mocked API: a session cookie the browser dropped is explained, not looped'
   await expect(page.getByLabel('Username')).toHaveValue('admin');
   expect(logins).toBe(1);
 });
+
+test('mocked API: plan card propose → approve → done in the chat', async ({ page }, info) => {
+  const PLAN = 'f'.repeat(32);
+  const step = (idx: number, status: string, over: Record<string, unknown> = {}) => ({
+    idx, title: `Step ${idx}`, intent: '', expectedChanges: 2, touches: { refs: [], nets: [] }, verification: '',
+    status, changeCount: 0, checkpointId: null, summary: null, failure: null, erc: null, ...over,
+  });
+  const plan = (status: string, steps: unknown[], updatedAt: string) => ({
+    id: PLAN, projectId: PID, title: 'Add a status LED', summary: 'R and LED on GPIO2.', status, revision: 1,
+    pauseReason: null, steps, createdAt: '2026-10-18T10:00:00.000Z', updatedAt,
+  });
+  let current = plan('proposed', [step(1, 'pending'), step(2, 'pending')], '2026-10-18T10:00:00.000Z');
+  let approves = 0;
+  await page.route('**/api/auth/me', (r) => r.fulfill({ json: { username: 'admin' } }));
+  await page.route('**/api/projects', (r) =>
+    r.fulfill({ json: [{ id: PID, name: 'demo', relPath: 'demo/demo.kicad_pro', hasSch: true, hasPcb: false, locked: false }] }),
+  );
+  await page.route(`**/api/projects/${PID}/open`, (r) =>
+    r.fulfill({ json: { id: PID, readOnly: false, lockFiles: [], kicadVersion: '10.99.0', viewFiles: { sch: ['demo.kicad_sch'], pcb: [] } } }),
+  );
+  await page.route(`**/api/projects/${PID}/messages**`, (r) =>
+    r.fulfill({
+      json: {
+        messages: [
+          msg(1, 'user', 'add a status LED'),
+          msg(2, 'system', 'The agent proposed a plan.', { kind: 'notice', metadata: { action: 'plan', planId: PLAN } }),
+        ],
+        hasMore: false,
+      },
+    }),
+  );
+  await page.route(`**/api/projects/${PID}/plans/**`, (r) => r.fulfill({ json: current }));
+  let socket: { send: (s: string) => void } | null = null;
+  await page.route(`**/api/projects/${PID}/plans/${PLAN}/approve`, async (r) => {
+    approves += 1;
+    current = plan('approved', [step(1, 'pending'), step(2, 'pending')], '2026-10-18T10:01:00.000Z');
+    await r.fulfill({ json: current });
+  });
+  await page.routeWebSocket('**/api/ws', (ws) => {
+    socket = ws;
+    ws.onMessage((raw) => {
+      const f = JSON.parse(String(raw)) as { type: string };
+      if (f.type === 'ping') ws.send(JSON.stringify({ type: 'pong', projectId: null }));
+    });
+  });
+
+  await page.goto('/projects');
+  await page.getByRole('link', { name: /demo/ }).click();
+  const card = page.getByRole('region', { name: 'Add a status LED' });
+  await expect(card).toBeVisible();
+  const approve = card.getByRole('button', { name: 'Approve' });
+  await expect(approve).toBeVisible();
+  if (info.project.name === 'phone') {
+    // full-width buttons in the phone chat stream
+    const [b, c] = await Promise.all([approve.boundingBox(), card.boundingBox()]);
+    expect(b!.width).toBeGreaterThan(c!.width * 0.8);
+  }
+  await approve.click();
+  await expect(card.getByText('Waiting for the agent to start.')).toBeVisible();
+  expect(approves).toBe(1);
+
+  const frame = (p: unknown) => socket!.send(JSON.stringify({ type: 'plan-updated', projectId: PID, plan: p }));
+  frame(plan('running', [step(1, 'running'), step(2, 'pending')], '2026-10-18T10:02:00.000Z'));
+  await expect(card.getByText('Running').first()).toBeVisible();
+  frame(
+    plan(
+      'done',
+      [
+        step(1, 'done', { changeCount: 2, checkpointId: 'a'.repeat(32), erc: { errors: 0, warnings: 0, justifications: {}, resultId: null } }),
+        step(2, 'done', { changeCount: 3, checkpointId: 'b'.repeat(32) }),
+      ],
+      '2026-10-18T10:03:00.000Z',
+    ),
+  );
+  await expect(card.getByText('3 changes')).toBeVisible();
+  await expect(card.getByRole('button', { name: 'Approve' })).toHaveCount(0);
+  await expect(card.getByRole('button', { name: 'Stop' })).toHaveCount(0);
+  await expect(card.getByRole('button', { name: 'Checkpoint' })).toHaveCount(2);
+});
