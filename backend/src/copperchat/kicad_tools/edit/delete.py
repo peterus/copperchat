@@ -450,6 +450,7 @@ def _logical(
     changes = 0
     deleted: list[str] = []
     units: dict[str, set[int]] = {}  # part key -> units counted
+    booked: set[str] = set()  # entries of `deleted` (a set: large sheets stay linear)
     wire_nets: set[str] = set()
 
     def part_key(path: str, ref: str, uid: str) -> str:
@@ -469,13 +470,16 @@ def _logical(
             if key in units:
                 return False
         units[key] = {unit}
-        deleted.append(uid if uid not in deleted else f"{uid}@{path}")
+        entry = uid if uid not in booked else f"{uid}@{path}"
+        booked.add(entry)
+        deleted.append(entry)
         return True
 
     for t in targets:
         if t.kind == "symbol":
             assert t.symbol is not None
             if t.uuid in placed_this_turn:
+                booked.add(t.uuid)
                 deleted.append(t.uuid)
                 changes += 1
                 continue
@@ -508,7 +512,8 @@ def _logical(
                 if sym.power or sym.sheet.path not in gone:
                     continue
                 if sym.uuid in placed_this_turn:
-                    if sym.uuid not in deleted:
+                    if sym.uuid not in booked:
+                        booked.add(sym.uuid)
                         deleted.append(sym.uuid)
                         changes += 1  # refunded by the gate with the placement
                 else:

@@ -72,6 +72,7 @@ from copperchat.kicad_tools.edit.geometry import (
     Point,
     canonical_transform,
     mm_point,
+    orthogonal,
     same_point,
     snap_point,
     symbol_transform,
@@ -239,6 +240,19 @@ def collect_block(world: World, targets: list[Target]) -> DupBlock:
     sheet_pin_points = [i.pin.at for i in scene.sheet_pins.values()]
     world.check_time(TOOL)
     graph = WireGraph(scene, sheet_pin_points, starts, lambda: world.check_time(TOOL))
+    # The wire graph is orthogonal-only: a diagonal wire at the block cannot be copied
+    # faithfully, so the call is refused instead of producing a differently wired copy.
+    block_nodes = set(graph.at) | {node_key(p) for p in starts}
+    for w in scene.wires.values():
+        if orthogonal(w.start, w.end):
+            continue
+        if w.uuid in explicit or node_key(w.start) in block_nodes or node_key(w.end) in block_nodes:
+            raise StructuredToolError(
+                f"{TOOL}: the block has a diagonal wire {_fmt(w.start)}-{_fmt(w.end)}",
+                "only horizontal and vertical wires can be copied",
+                "Redraw it orthogonally first (sch_reroute), then duplicate.",
+                code="invalid_argument",
+            )
     listed_nodes = {node_key(p) for p in pin_points}
     power = [s for s in scene.symbols.values() if s.power and s.uuid not in listed_ids]
     foreign = {

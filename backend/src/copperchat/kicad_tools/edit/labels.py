@@ -1152,9 +1152,12 @@ def power_change_set(
         Place(sym.lib_id, pl.at, pl.rotation, 1, pl.reference, sheet=pl.sheet) for pl in plans
     ]
     intent = NetIntent()
-    for pl in plans:  # a sheet pin's stub: the pin joins the rail through it
+    joined_at: dict[int, int] = {}  # plan index -> its joined group (the power pin joins it)
+    for i, pl in enumerate(plans):  # a sheet pin's stub: the pin joins the rail through it
         stub = [(pl.sheet, w) for w in pl.wires if type(w).__name__ == "SchematicLine"]
-        intent.joined += sheet_pin_joined(world, [pl.pin], stub, one_net=False)
+        for pin_group in sheet_pin_joined(world, [pl.pin], stub, one_net=False):
+            joined_at[i] = len(intent.joined)
+            intent.joined.append(pin_group)
     # (plan index, instance path) -> merge group index; a rail is one global group
     slot: dict[tuple[int, str], int] = {}
     if not sym.flag:
@@ -1203,6 +1206,8 @@ def power_change_set(
             ops.append(Update([placed_sym], sheet=pl.sheet))
             placed_path = sheet_path_key(placed_sym.path)
             own = [(placed_path, kiid(placed_sym), pe.number) for pe in pin_ends(placed_sym)]
+            if i in joined_at:  # the stub must reach the placed power pin, too
+                intent.joined[joined_at[i]] = intent.joined[joined_at[i]] | frozenset(own)
             for inst, keys in zip(
                 world.instances(pl.sheet), world.replicate(own, pl.sheet), strict=True
             ):

@@ -129,6 +129,39 @@ def _symbol_target(world: World, spec: str, units: list[SymbolInfo]) -> list[Tar
     return out
 
 
+def _lookup(world: World, uuids: list[str]) -> dict[str, Any]:
+    """One GetItemsById for every UUID; when it fails (an unknown id refuses the whole
+    batch) the ids are looked up one by one, in order, up to the first unknown one —
+    which `resolve` then reports (never a bisection over a list of stale ids)."""
+    from kipy.errors import ApiError
+    from kipy.proto.common import ApiStatusCode
+
+    from copperchat.kicad_tools.edit.engine import _kiid
+
+    if not uuids:
+        return {}
+    sch = world.h.schematic()
+
+    def get(chunk: list[str]) -> dict[str, Any] | None:
+        try:
+            return {access.kiid(i): i for i in sch.get_items_by_id([_kiid(u) for u in chunk])}
+        except ApiError as exc:
+            if exc.code != ApiStatusCode.AS_BAD_REQUEST:
+                raise
+            return None
+
+    found = get(list(dict.fromkeys(uuids)))
+    if found is not None:
+        return found
+    out: dict[str, Any] = {}
+    for u in dict.fromkeys(uuids):
+        one = get([u])
+        if one is None:
+            break
+        out.update(one)
+    return out
+
+
 _SUPPORTED = {
     "SchematicSymbolInstance",
     "SchematicLine",
@@ -223,10 +256,9 @@ def resolve(world: World, raw: Any, tool: str, *, allow: tuple[str, ...] = ()) -
         )
     out: list[Target] = []
     seen: set[tuple[str, str]] = set()
-    from copperchat.kicad_tools.edit.engine import by_id
 
     uuids = [s.strip().lower() for s in raw if isinstance(s, str) and UUID_RE.fullmatch(s.strip())]
-    by_uuid = by_id(world.h.schematic(), uuids) if uuids else {}
+    by_uuid = _lookup(world, uuids)
     for spec in raw:
         if not isinstance(spec, str) or not spec.strip() or len(spec) > 128:
             raise bad(

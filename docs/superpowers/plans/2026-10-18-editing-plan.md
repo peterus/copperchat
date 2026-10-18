@@ -533,7 +533,7 @@ Error codes (`StructuredToolError.code`): `read_only`, `plan_required`,
   labels suffixed (no sheet pin is made for a suffixed hierarchical label: note); merges follow
   the block's own connectivity (pins of one source net joined only outside the block stay
   separate in the copy: note); overlap error carries `suggested_offset_mm` / `suggested_at_mm`;
-  result `copies: [{n, offset_mm, refs, nets}]`. Known limits (not fixed, E4 residuals):
+  result `copies: [{n, offset_mm, refs, nets}]`. A diagonal wire at the block is refused (`invalid_argument`; the block walk is orthogonal-only). Known limits (not fixed, E4 residuals):
   `sch_duplicate` refuses a target sheet file used by several instances (per-instance
   references after save + reload are E4's `fix_shared_instances` business); the change-log `add`
   row of an undone shared-sheet placement and "one UUID on two instances compensated for the

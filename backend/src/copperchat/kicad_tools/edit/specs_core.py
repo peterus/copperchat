@@ -382,7 +382,7 @@ def _plan_wire(raw_points: list[Point], sheet_arg: str | None) -> Any:
         for end in (points[0], points[-1]):  # a sheet pin at an end: the wire joins its net
             for info in scene.sheet_pins.values():  # (also when its net has no symbol pin)
                 if same_point(info.pin.at, end):
-                    joined.append(frozenset({(sheet.path, info.uuid), *wire_items, *terminals}))
+                    joined.append(frozenset({(sheet.path, info.uuid), *wire_items, *group}))
         for at, t_joint in ((points[0], start_t), (points[-1], end_t)):
             if t_joint:
                 items.append(_junction(at))

@@ -356,3 +356,25 @@ async def test_block_leaves_out_wires_to_unlisted_parts(
         or (abs(w.start[0] - where[0]) < 0.01 and abs(w.start[1] - where[1]) < 0.01)
         for w in sc.wires.values()
     )
+
+
+async def test_block_with_a_diagonal_wire_refused(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    """The block walk sees orthogonal wires only: a diagonal between listed parts would
+    be dropped from the copy, so the call is refused (verification pass finding)."""
+    from tests.kicad.edit.helpers import wire
+
+    s = blank_session
+    await s.ensure_symbol_libraries()
+    ctx = edit_ctx(s, edit_db)
+    r1 = await _place(ctx, "Device:R", [50.8, 50.8])
+    r2 = await _place(ctx, "Device:R", [76.2, 63.5])
+    a, b = await _pin_at(ctx, f"{r1}.2"), await _pin_at(ctx, f"{r2}.1")
+    async with s.commit("diagonal"):  # through the API: the tools never draw diagonals
+        await s.call(lambda h: h.schematic().create_items([wire(tuple(a), tuple(b))]))
+    before = await state(s)
+    out, err = await call_tool(ctx, "sch_duplicate", items=[r1, r2], offset=[0, 50.8])
+    assert err and out["error"]["code"] == "invalid_argument", out
+    assert "diagonal" in out["error"]["what"]
+    assert await state(s) == before
