@@ -147,3 +147,33 @@ async def test_reroute_must_keep_both_ends(blank_session: KicadSession) -> None:
     assert "keep both ends" in error["what"]
     error = await _refused(s, old, [[101.6, 105.41], [101.6, 113.03], [101.6, 110.49]])
     assert "reverses" in error["what"]
+
+
+async def _create(s: KicadSession, *items: object) -> None:
+    """Plain API items in one commit (test setup only)."""
+    async with s.commit("test setup"):
+        await s.call(lambda h: h.schematic().create_items(list(items)))
+
+
+async def test_reroute_refuses_a_junction_joining_another_wire(blank_session: KicadSession) -> None:
+    from copperchat.kicad_tools.edit.labels import make_junction, make_wire
+
+    s = blank_session
+    await _l_connected(s)
+    # a wire of the same net crossing the route's horizontal run, joined by a junction
+    await _create(s, make_wire((109.22, 107.95), (109.22, 113.03)), make_junction((109.22, 110.49)))
+    error = await _refused(s, {"from": "R1.2", "to": "R2.2"}, Z)
+    assert "join" in error["what"]
+
+
+async def test_reroute_ignores_a_junction_on_its_own_corner(blank_session: KicadSession) -> None:
+    from copperchat.kicad_tools.edit.labels import make_junction
+
+    s = blank_session
+    old = await _l_connected(s)
+    await _create(s, make_junction((101.6, 110.49)))  # redundant: only the route meets there
+    out, err = await call_tool(edit_ctx(s), "sch_reroute", wires={"from": "R1.2", "to": "R2.2"},
+                               points=Z)  # fmt: skip
+    assert not err, out
+    _ids, part = await state(s)
+    assert old and part

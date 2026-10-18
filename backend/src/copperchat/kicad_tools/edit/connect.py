@@ -214,10 +214,12 @@ def _as_labels(
 def plan_connect_pins(
     world: World, tool: str, pa: PinEnd, pb: PinEnd, via: Via, net_name: str | None
 ) -> ConnectChangeSet | PowerNeeded:
-    if pa.key == pb.key:
+    same_file = world.sheet_of(pa).file == world.sheet_of(pb).file
+    if pa.key == pb.key or (same_file and pa.key[1:] == pb.key[1:]):
         raise bad(
             f"{tool}: from and to are the same pin",
-            f"both are {pa.label}",
+            f"both are {pa.label}"
+            + ("" if pa.key == pb.key else f" ({pb.label} is that pin in another sheet instance)"),
             "Pass two different pins.",
         )
     na, nb = world.net(pa), world.net(pb)
@@ -374,12 +376,9 @@ def plan_connect_net(world: World, tool: str, pa: PinEnd, name: str, via: Via) -
 
 
 def _is_global(world: World, name: str) -> bool:
-    """A net of that exact name carried by a global label somewhere."""
-    for sheet in world.sheets.values():
-        scene = world.scene(sheet)
-        if any(lb.kind == "global_label" and lb.text == name for lb in scene.labels.values()):
-            return True
-    return False
+    """A net named exactly `name` (no sheet path): global labels (power nets are
+    handled before this point)."""
+    return name in world.netlist.nets and not name.startswith("/")
 
 
 def looks_like_rail(world: World, name: str) -> bool:
@@ -595,7 +594,14 @@ def plan_reroute(world: World, tool: str, wires: Any, points: list[Point]) -> Ch
                 "Pass wires=[uuid, ...] or wires={'from': 'R1.1', 'to': 'R2.2'}.",
             )
         uuids = [str(u)[:64] for u in wires]
-        holder = [s for s, sc in _scenes(world) if uuids[0] in sc.wires]
+        # sheets whose netlist items name the wire first, then the rest (lazily)
+        order = sorted(world.sheets.values(), key=lambda r: uuids[0] not in world.nets(r))
+        holder = []
+        for candidate in order:
+            world.check_time(tool)
+            if uuids[0] in world.scene(candidate).wires:
+                holder = [candidate]
+                break
         if not holder:
             raise StructuredToolError(
                 f"{tool}: wire {uuids[0]} not found",

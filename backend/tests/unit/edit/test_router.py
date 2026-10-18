@@ -5,6 +5,8 @@ from __future__ import annotations
 import itertools
 import time
 
+import pytest
+
 from copperchat.kicad_tools.access import Netlist, PinKey
 from copperchat.kicad_tools.edit.changeset import SheetRef
 from copperchat.kicad_tools.edit.geometry import Box, PinEnd, Point, on_grid, on_segment
@@ -349,3 +351,22 @@ def test_crossings_counts_perpendicular_interiors_only() -> None:
     obstacles = Obstacles(w.scene, w.netlist, set(), w.item_nets)
     assert obstacles.crossings((2.54, 10.16), (25.4, 10.16)) == 1
     assert obstacles.crossings((15.24, 2.54), (15.24, 25.4)) == 0
+
+
+def test_deadline_stops_after_the_first_clean_candidate(monkeypatch: pytest.MonkeyPatch) -> None:
+    import copperchat.kicad_tools.edit.router as router_mod
+
+    w = World()
+    a = _resistor_h(w, "ua", "R1", 2.54, 10.16)[1]
+    b = _resistor_h(w, "ub", "R2", 30.48, 10.16)[0]
+    for i in range(13):  # foreign wires crossing the straight route: a detour is cheaper
+        x = round(12.7 + i * 1.27, 4)
+        w.wire(f"x{i}", (x, 7.62), (x, 12.7), f"X{i}")
+    allowed = w.allowed(a, b)
+    best = route(a, b, w.scene, w.netlist, allowed_nets=allowed, item_nets=w.item_nets)
+    assert best is not None and best.points != [a.at, b.at]
+    clock = iter([0.0, 0.0] + [10.0] * 1000)  # start check, first scan check, then late
+    monkeypatch.setattr(router_mod.time, "monotonic", lambda: next(clock))
+    r = route(a, b, w.scene, w.netlist, allowed_nets=allowed, item_nets=w.item_nets, deadline=5.0)
+    # the straight route is the first clean candidate; the deadline keeps it and stops
+    assert r is not None and r.points == [a.at, b.at]

@@ -295,6 +295,7 @@ def _net_exists(world: World, sheet: Any, name: str) -> bool:
         name in nets
         or f"{sheet.human_path}{name}" in nets
         or bool(same_name_nets(world, name, "local", sheet))
+        or any(n.startswith("/") and n.rsplit("/", 1)[-1] == name for n in nets)
     )
 
 

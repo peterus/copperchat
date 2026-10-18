@@ -405,6 +405,8 @@ def route(
     Each route leaves a pin outward or sideways (never into the body; sideways costs
     more) and enters a target pin the same way. Cost: segments, length, crossings of
     other wires, sideways starts and contacts with items of the joined nets."""
+    if deadline is not None and time.monotonic() > deadline:
+        return None  # the planning budget is spent: no more searching
     if not on_grid(a.at) or (isinstance(b, PinEnd) and not on_grid(b.at)):
         return None
     da = _DIRS[a.direction]
