@@ -22,7 +22,7 @@ export function KicadDocView(
   const [override, setOverride] = useState(false);
   const guard = guardFor(bytes, mobile, limits);
   const interactive = pane.files.length > 0 && (!guard || override);
-  const { find, onFindResult } = pane;
+  const { find, onFindResult, highlight, onHighlightResult } = pane;
   useEffect(() => {
     if (!find || interactive) return;
     const reason = !exists
@@ -34,6 +34,18 @@ export function KicadDocView(
     // only for a new find request
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [find]);
+
+  useEffect(() => {
+    if (!highlight || interactive) return;
+    onHighlightResult?.(
+      { found: [], missing: [] },
+      pane.files.length === 0
+        ? `The interactive ${DOC_LABEL[pane.doc]} view could not be prepared, so changes cannot be highlighted.`
+        : 'Highlighting needs the interactive view, which is not loaded.',
+    );
+    // only for a new highlight request
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlight]);
 
   if (pane.files.length === 0) {
     return (

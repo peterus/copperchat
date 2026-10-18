@@ -7,7 +7,9 @@ import {
   EMBED_CONTROLSLIST,
   findRefPage,
   fitViewer,
+  type HighlightKind,
   type KcEmbed,
+  type KcPage,
   type KcViewer,
   kicanvasTheme,
   loadKicanvas,
@@ -18,7 +20,7 @@ import {
 import { DEFAULT_LAYERS, viewFileUrl } from '@/lib/viewUrls';
 import { AgentViewPane } from './AgentViewPane';
 import { SheetNavigator } from './SheetNavigator';
-import type { FindRequest, KicadPaneProps } from './types';
+import type { FindRequest, HighlightRequest, HighlightResult, KicadPaneProps } from './types';
 import { ZoomControls } from './ZoomControls';
 
 /**
@@ -44,7 +46,50 @@ const SAME_PICK_MS = 500;
 /** Network failures of KiCanvas' own fetches may carry no stack frame from the bundle. */
 const isNetworkError = (v: unknown) => v instanceof TypeError && /fetch|load failed|network/i.test(v.message);
 
-export function KicanvasPane({ projectId, doc, files, rev, theme, onPick, find, onFindResult, visible = true }: KicadPaneProps) {
+const refName = (r: HighlightRequest['refs'][number]) => (typeof r === 'string' ? r : r.ref);
+
+/**
+ * The page a highlight opens: its `sheetPath`, else the page holding its first ref; null = stay.
+ * `undefined` = the requested sheet instance does not exist.
+ */
+function highlightPage(pages: KcPage[], h: HighlightRequest): KcPage | null | undefined {
+  if (h.sheetPath !== null) return pages.find((p) => p.type === 'schematic' && p.sheet_path === h.sheetPath);
+  const first = h.refs[0];
+  return first === undefined ? null : findRefPage(pages, refName(first));
+}
+
+/** The items of `h` that belong on the page `sheetPath`, refs grouped by kind. */
+function highlightItems(h: HighlightRequest, sheetPath: string | null) {
+  const on = (p: string | null | undefined) => {
+    const sp = p === undefined ? h.sheetPath : p;
+    return sp === null || sp === sheetPath;
+  };
+  const refs = new Map<HighlightKind, string[]>();
+  for (const r of h.refs) {
+    const item = typeof r === 'string' ? { ref: r } : r;
+    if (!on(item.sheetPath)) continue;
+    const kind = item.kind ?? 'focus';
+    const list = refs.get(kind);
+    if (list) list.push(item.ref);
+    else refs.set(kind, [item.ref]);
+  }
+  const boxes = h.boxes.filter((b) => on(b.sheetPath)).map(({ x, y, w, h: bh, kind }) => ({ x, y, w, h: bh, kind }));
+  return { refs, boxes };
+}
+
+export function KicanvasPane({
+  projectId,
+  doc,
+  files,
+  rev,
+  theme,
+  onPick,
+  find,
+  onFindResult,
+  highlight,
+  onHighlightResult,
+  visible = true,
+}: KicadPaneProps) {
   const host = useRef<HTMLDivElement>(null);
   const embedRef = useRef<KcEmbed | null>(null);
   const viewerRef = useRef<KcViewer | null>(null);
@@ -54,8 +99,12 @@ export function KicanvasPane({ projectId, doc, files, rev, theme, onPick, find, 
   /** A select() we issue ourselves must not insert a mention. */
   const programmatic = useRef(false);
   const pendingFind = useRef<FindRequest | null>(null);
-  const handlers = useRef({ onPick, onFindResult });
-  handlers.current = { onPick, onFindResult };
+  /** The highlight shown; re-applied after every viewer load (KiCanvas resets it in load()). */
+  const highlightReq = useRef<HighlightRequest | null>(null);
+  /** Per request: its page was opened (`navigated`) and its result reported (`reported`). */
+  const highlightProgress = useRef({ seq: -1, navigated: false, reported: false });
+  const handlers = useRef({ onPick, onFindResult, onHighlightResult });
+  handlers.current = { onPick, onFindResult, onHighlightResult };
 
   const [status, setStatus] = useState<Status>({ kind: 'loading' });
   const [notice, setNotice] = useState<string | null>(null);
@@ -74,6 +123,11 @@ export function KicanvasPane({ projectId, doc, files, rev, theme, onPick, find, 
   // What should be loaded; applied (loadKey) only while the pane is visible.
   const wantKey = `${srcKey}\n${kTheme}\n${attempt}`;
   const [loadKey, setLoadKey] = useState<string | null>(visible ? wantKey : null);
+  /** The embed shown is about to be replaced (new files/theme): do not apply anything to it. */
+  const staleRef = useRef(false);
+  staleRef.current = loadKey !== wantKey;
+  /** A sheet switch is in flight: the viewer still shows the previous page until viewerload. */
+  const pageLoading = useRef(false);
   useEffect(() => {
     if (visible) setLoadKey(wantKey);
   }, [visible, wantKey]);
@@ -110,6 +164,52 @@ export function KicanvasPane({ projectId, doc, files, rev, theme, onPick, find, 
     handlers.current.onFindResult?.(req.ref, found);
   }, [doc]);
 
+  /**
+   * Applies the highlight to the shown page: opens its page first (like runFind), then outlines
+   * the items of the page shown — again after each viewer load, so it follows sheet switches.
+   */
+  const runHighlight = useCallback(() => {
+    const viewer = viewerRef.current;
+    const project = embedRef.current?.project;
+    if (doc !== 'sch' || !viewer?.clear_highlight || !readyRef.current || staleRef.current || pageLoading.current) return;
+    viewer.clear_highlight();
+    const h = highlightReq.current;
+    if (!h) return;
+    const progress = highlightProgress.current;
+    const report = (r: HighlightResult) => {
+      progress.reported = true;
+      handlers.current.onHighlightResult?.(r);
+    };
+    if (!progress.navigated) {
+      progress.navigated = true;
+      if (project) {
+        const page = highlightPage([...project.pages()], h);
+        if (page === undefined) {
+          report({ found: [], missing: h.refs.map(refName), sheetMissing: true });
+          return;
+        }
+        if (page && page !== project.active_page) {
+          pageLoading.current = true;
+          project.set_active_page(page); // the next viewer load applies it
+          return;
+        }
+      }
+    }
+    const { refs, boxes } = highlightItems(h, project?.active_page?.sheet_path ?? null);
+    const found: string[] = [];
+    const missing: string[] = [];
+    for (const [kind, targets] of refs) {
+      const r = viewer.highlight?.(targets, kind) ?? { found: [], missing: targets };
+      found.push(...r.found);
+      missing.push(...r.missing);
+    }
+    const drawn = boxes.length ? (viewer.highlight_boxes?.(boxes) ?? 0) : 0;
+    if (!progress.reported) {
+      if (found.length || drawn) viewer.zoom_to_highlight?.();
+      report({ found, missing });
+    }
+  }, [doc]);
+
   useEffect(() => {
     const el = host.current;
     if (!el || loadKey === null) return;
@@ -120,6 +220,7 @@ export function KicanvasPane({ projectId, doc, files, rev, theme, onPick, find, 
     let noticeTimer: ReturnType<typeof setTimeout> | undefined;
     const offs: Array<() => void> = [];
     readyRef.current = false;
+    pageLoading.current = false;
     viewerRef.current = null;
     setStatus({ kind: 'loading' });
     setNotice(null);
@@ -131,7 +232,20 @@ export function KicanvasPane({ projectId, doc, files, rev, theme, onPick, find, 
       if (!readyRef.current) {
         failed = true;
         setStatus({ kind: 'failed', error: msg });
-      } else if (visibleRef.current) {
+      } else if (pageLoading.current) {
+        pageLoading.current = false; // a failed sheet load fires no viewerload
+        // a highlight that opened that sheet would otherwise wait silently
+        const h = highlightReq.current;
+        const progress = highlightProgress.current;
+        if (h && progress.navigated && !progress.reported) {
+          progress.reported = true;
+          handlers.current.onHighlightResult?.(
+            { found: [], missing: h.refs.map(refName) },
+            `The sheet could not be loaded (${msg}).`,
+          );
+        }
+      }
+      if (readyRef.current && visibleRef.current) {
         setNotice(msg);
         clearTimeout(noticeTimer);
         noticeTimer = setTimeout(() => setNotice(null), NOTICE_MS);
@@ -181,6 +295,10 @@ export function KicanvasPane({ projectId, doc, files, rev, theme, onPick, find, 
           lastPick = { ref, at };
           handlers.current.onPick(ref);
         });
+        const onPageChange = () => {
+          pageLoading.current = true; // until the new page's viewerload
+          syncActive();
+        };
         const syncActive = () => {
           const id = embed.project?.active_page?.project_path ?? null;
           activeRef.current = id;
@@ -190,9 +308,14 @@ export function KicanvasPane({ projectId, doc, files, rev, theme, onPick, find, 
         embed.addEventListener('kicanvas:viewerload', (e) => {
           const target = e.composedPath()[0] as { viewer?: KcViewer } | undefined;
           viewerRef.current = target?.viewer ?? viewerRef.current;
+          pageLoading.current = false;
           if (readyRef.current) {
             // after a sheet switch; KiCanvas clears the selection right after this event
-            setTimeout(() => !cancelled && runFind(), 0);
+            setTimeout(() => {
+              if (cancelled) return;
+              runFind();
+              runHighlight();
+            }, 0);
             return;
           }
           clearTimeout(graceTimer);
@@ -203,15 +326,18 @@ export function KicanvasPane({ projectId, doc, files, rev, theme, onPick, find, 
             if (project) {
               const pages = [...project.pages()];
               setTree(buildSheetTree(pages));
-              project.addEventListener('change', syncActive);
-              offs.push(() => project.removeEventListener('change', syncActive));
+              project.addEventListener('change', onPageChange);
+              offs.push(() => project.removeEventListener('change', onPageChange));
               const remembered = pages.find((p) => p.project_path === activeRef.current);
               if (remembered && remembered !== project.active_page) project.set_active_page(remembered);
               syncActive();
             }
             if (viewerRef.current) fitViewer(viewerRef.current);
             setStatus({ kind: 'ready' });
+            // after restoring the remembered sheet, its viewerload runs them on the right page
+            if (pageLoading.current) return;
             runFind();
+            runHighlight();
           }, LOAD_GRACE_MS);
         });
         embedRef.current = embed;
@@ -230,13 +356,20 @@ export function KicanvasPane({ projectId, doc, files, rev, theme, onPick, find, 
       readyRef.current = false;
       el.replaceChildren();
     };
-  }, [loadKey, runFind]);
+  }, [loadKey, runFind, runHighlight]);
 
   useEffect(() => {
     if (!find) return;
     pendingFind.current = find;
     runFind();
   }, [find, runFind]);
+
+  useEffect(() => {
+    const h = highlight ?? null;
+    highlightReq.current = h;
+    if (h && h.seq !== highlightProgress.current.seq) highlightProgress.current = { seq: h.seq, navigated: false, reported: false };
+    runHighlight();
+  }, [highlight, runHighlight]);
 
   const openSheet = (id: string) => embedRef.current?.project?.set_active_page(id);
   const withViewer = (fn: (v: KcViewer) => void) => () => viewerRef.current && fn(viewerRef.current);

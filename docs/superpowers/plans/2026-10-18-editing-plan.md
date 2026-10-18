@@ -874,6 +874,36 @@ verification, status, changeCount, checkpointId, summary, failure, erc:
   `PlanCard({planId})` rendered for notice rows with `metadata.action === 'plan'`.
 - `HistoryEntry` gains `kind`, `planStepId`; `EditingSection` in Settings (current project).
 
+- **E9a (as built):** fork `peterus/kicanvas` `copperchat` @ `9c5c95a` (commits "schematic
+  highlight overlay", "zoom_to_highlight", "coalesce redraws", "rebuild the highlight layer once
+  per frame": the schematic viewer's `draw()` schedules at most one animation frame and rebuilds
+  a dirty highlight layer there). The view store also gained `openSeq` (bumped per project open;
+  the Changes panel reuses a loaded diff only while `openSeq` + `revs.sch` are unchanged). `highlight(targets, kind="focus")` and
+  `highlight_boxes(boxes) -> number added` (non-finite/negative boxes skipped) **accumulate**
+  until `clear_highlight()` or the next `load()`; extra `zoom_to_highlight()`,
+  `highlighted_count`, `highlight_color(kind)`. Kinds added green / modified orange / removed
+  red (lighter fill) / focus blue, palette chosen by the theme background's luminance; own
+  layer `:CopperChat:Highlight` just below the selection overlay, re-painted on `paint()`.
+  `check-kicanvas.sh` asserts the bundle has `clear_highlight`. View store: types
+  `FindRequest`, `HighlightRequest {refs: Array<string | {ref, kind?, sheetPath?}>, boxes:
+  {x,y,w,h,kind,sheetPath?}[], sheetPath, seq}` live in `@/stores/view` (`components/viewer/types`
+  re-exports); items carry their own `sheetPath` (undefined = the request's, null = any page),
+  so one request spans sheet instances: the pane opens `sheetPath` (null: the page of the first
+  ref; unknown path → `onHighlightResult({sheetMissing: true})`), applies the items of the shown
+  page after **every** viewer load (the highlight follows the user's sheet switches) and zooms
+  once per request. `setHighlight` switches to the KiCad schematic view, returns the new `seq`;
+  `setFind(ref | null)`; `setProject` clears both. On phones a highlight request switches to the
+  View tab (`ProjectLayout`). `@/stores/changes`: `createChangesStore(ws, deps?)` with `runs`,
+  `entries[entriesKey(runId, stepId)]`, `loadEntries`, 300 ms debounced refetch of runs (and of
+  loaded entry lists of the frame's run) on `changes-updated` / `run-finished`, plus panel UI state
+  (`expanded`, `diffLayer`) that survives the phone unmounting the panel. REST client
+  `@/api/changes` (zod, `z.object`: unknown extra fields are tolerated). Deleted items are
+  highlighted by their diff box once the run's diff is loaded (else by UUID → reported missing).
+  **Restore boundaries** (E8a residual): restore notices (`metadata.action === 'restored'`) from
+  the chat store appear as dividers between runs; a restore to run R's turn snapshot marks R and
+  every later run before it "Undone by a restore"; the diff of a run with a later restore carries
+  a note and labels unlogged entries "restore or side effect". Only loaded chat messages are seen.
+
 ---
 
 ## Decided by owner (2026-10-18)
