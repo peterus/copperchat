@@ -147,6 +147,15 @@ const RunCard = memo(function RunCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // the schematic changed while the diff layer is shown: its boxes are outdated, so it goes off
+  const [diffOutdated, setDiffOutdated] = useState(false);
+  useEffect(() => {
+    if (!diffOn || !diff || diffRev === schRev) return;
+    setDiffLayer(null);
+    clearHighlight();
+    setDiffOutdated(true);
+  }, [diffOn, diff, diffRev, schRev, setDiffLayer, clearHighlight]);
+
   const pick = (e: ChangeEntry) => setHighlight(entriesHighlight([e], diff));
   const toggleDiff = () => {
     if (diffOn || pending) {
@@ -157,6 +166,7 @@ const RunCard = memo(function RunCard({
     }
     if (!snapshotId) return;
     setDiffError(null);
+    setDiffOutdated(false);
     if (diff && diffRev === schRev) {
       setDiffLayer({ runId: run.runId, seq: setHighlight(diffHighlight(diff)) });
       return;
@@ -230,6 +240,11 @@ const RunCard = memo(function RunCard({
           </div>
           {compare && run.snapshotId && <BeforeAfter projectId={projectId} snapshotId={run.snapshotId} />}
           {entries ? <ChangeList entries={entries} stepIds={run.stepIds} onPick={pick} /> : <p className="text-xs text-muted">Loading…</p>}
+          {diffOutdated && (
+            <p role="status" className="text-xs text-muted">
+              The schematic changed: turn Diff on again for the current state.
+            </p>
+          )}
           {diffError && (
             <p role="alert" className="text-xs text-danger">
               {diffError}
@@ -262,6 +277,8 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
   const runs = useChanges((s) => (s.projectId === projectId ? s.runs : null));
   const error = useChanges((s) => s.error);
   const load = useChanges((s) => s.load);
+  const attach = useChanges((s) => s.attach);
+  useEffect(() => attach(), [attach]);
   const { messages } = useChat(projectId);
 
   useEffect(() => {

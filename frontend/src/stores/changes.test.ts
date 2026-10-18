@@ -29,6 +29,7 @@ beforeEach(() => {
   fetchRuns = vi.fn<ChangesDeps['fetchRuns']>().mockResolvedValue([run('r1')]);
   fetchEntries = vi.fn<ChangesDeps['fetchEntries']>().mockResolvedValue([entry(1, 'r1')]);
   store = createChangesStore(ws, { fetchRuns, fetchEntries });
+  store.getState().attach();
 });
 afterEach(() => {
   store.getState().dispose();
@@ -112,5 +113,22 @@ describe('changes store', () => {
     resolvers[0]!([run('r1')]); // older response, late
     await first;
     expect(store.getState().runs).toEqual([run('r1'), run('r2')]);
+  });
+
+  it('without an attached view, frames only mark runs dirty; the next load refetches them', async () => {
+    const detached = createChangesStore(ws, { fetchRuns, fetchEntries });
+    await detached.getState().load(P1);
+    await detached.getState().loadEntries('r1');
+    fetchRuns.mockClear();
+    fetchEntries.mockClear();
+    ws.emit({ type: 'changes-updated', projectId: P1, runId: 'r1', stepId: null, count: 2 });
+    await flush();
+    expect(fetchRuns).not.toHaveBeenCalled();
+    const detach = detached.getState().attach();
+    await detached.getState().load(P1);
+    expect(fetchRuns).toHaveBeenCalledTimes(1);
+    expect(fetchEntries).toHaveBeenCalledWith(P1, 'r1', null);
+    detach();
+    detached.getState().dispose();
   });
 });

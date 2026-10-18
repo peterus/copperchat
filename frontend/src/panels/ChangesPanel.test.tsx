@@ -240,6 +240,19 @@ describe('ChangesPanel', () => {
     await waitFor(() => expect(apiGet.mock.calls.filter(([p]) => String(p).includes('/changes/diff'))).toHaveLength(2));
   });
 
+  it('a schematic change while the diff layer is on turns it off as outdated', async () => {
+    const { view, ws } = setup();
+    await screen.findAllByRole('listitem', { name: /^Turn/ });
+    fireEvent.click(within(runItem('r2')).getByRole('button', { name: /Show changes/ }));
+    const diffBtn = await screen.findByRole('button', { name: 'Diff' });
+    fireEvent.click(diffBtn);
+    await waitFor(() => expect(view.getState().highlight?.boxes).toHaveLength(2));
+    act(() => ws.emit({ type: 'view-updated', projectId: PID, docs: ['sch'], version: 7 }));
+    expect(view.getState().highlight).toBeNull();
+    expect(diffBtn).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByText(/The schematic changed/)).toBeInTheDocument();
+  });
+
   it('ERC details follow a newer result of the run', async () => {
     const ws = new FakeWsClient();
     const changes = createChangesStore(ws);

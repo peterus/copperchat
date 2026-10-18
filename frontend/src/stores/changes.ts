@@ -30,6 +30,11 @@ export interface ChangesState {
   setDiffLayer: (layer: { runId: string; seq: number } | null) => void;
   load: (projectId: string) => Promise<void>;
   loadEntries: (runId: string, stepId?: string | null) => Promise<void>;
+  /**
+   * A mounted view of the store (the panel): refetches on frames only while one is attached;
+   * otherwise changed runs are remembered and refetched by the next `load()`.
+   */
+  attach: () => () => void;
   dispose: () => void;
 }
 
@@ -83,23 +88,24 @@ export function createChangesStore(
     }
   };
 
+  let attached = 0;
+  /** Refetches the runs and the loaded entry lists (run and steps) of the changed runs. */
+  const flush = (): Promise<void> => {
+    const runs = [...dirtyRuns];
+    dirtyRuns.clear();
+    const keys = Object.keys(store.getState().entries);
+    for (const runId of runs) {
+      for (const key of keys) {
+        if (key.startsWith(`${runId}|`)) void fetchEntries(runId, key.slice(runId.length + 1) || null);
+      }
+    }
+    return fetchRuns();
+  };
   const schedule = (runId: string | null) => {
     if (runId) dirtyRuns.add(runId);
+    if (attached === 0) return; // the next load() refetches
     clearTimeout(timer);
-    timer = setTimeout(() => {
-      const runs = [...dirtyRuns];
-      dirtyRuns.clear();
-      void fetchRuns();
-      // refetch the loaded entry lists of the changed runs (the run itself and its steps)
-      const keys = Object.keys(store.getState().entries);
-      for (const runId of runs) {
-        for (const key of keys) {
-          if (!key.startsWith(`${runId}|`)) continue;
-          const stepId = key.slice(runId.length + 1);
-          void fetchEntries(runId, stepId || null);
-        }
-      }
-    }, CHANGES_DEBOUNCE_MS);
+    timer = setTimeout(() => void flush(), CHANGES_DEBOUNCE_MS);
   };
 
   const store = createStore<ChangesState>()(() => ({
@@ -118,7 +124,14 @@ export function createChangesStore(
         dirtyRuns.clear();
         store.setState({ projectId, runs: null, entries: {}, error: null, expanded: {}, diffLayer: null });
       }
-      await fetchRuns();
+      clearTimeout(timer);
+      await flush();
+    },
+    attach: () => {
+      attached += 1;
+      return () => {
+        attached -= 1;
+      };
     },
     loadEntries: (runId, stepId = null) => fetchEntries(runId, stepId),
     dispose: () => {

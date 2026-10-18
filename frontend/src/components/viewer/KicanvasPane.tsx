@@ -232,8 +232,18 @@ export function KicanvasPane({
       if (!readyRef.current) {
         failed = true;
         setStatus({ kind: 'failed', error: msg });
-      } else {
+      } else if (pageLoading.current) {
         pageLoading.current = false; // a failed sheet load fires no viewerload
+        // a highlight that opened that sheet would otherwise wait silently
+        const h = highlightReq.current;
+        const progress = highlightProgress.current;
+        if (h && progress.navigated && !progress.reported) {
+          progress.reported = true;
+          handlers.current.onHighlightResult?.(
+            { found: [], missing: h.refs.map(refName) },
+            `The sheet could not be loaded (${msg}).`,
+          );
+        }
       }
       if (readyRef.current && visibleRef.current) {
         setNotice(msg);

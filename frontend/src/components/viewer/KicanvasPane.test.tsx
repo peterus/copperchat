@@ -430,6 +430,22 @@ describe('KicanvasPane', () => {
       expect(kc.viewer.highlight).toHaveBeenCalledWith(['U3'], 'focus');
     });
 
+    it('reports a highlight whose sheet fails to load', async () => {
+      const onHighlightResult = vi.fn();
+      const { rerenderWith } = await renderPane({ onHighlightResult });
+      const kc = await loadReady();
+      vi.mocked(kc.project.set_active_page).mockImplementationOnce((p: KcPage | string) => {
+        kc.project.active_page = typeof p === 'string' ? reg : p;
+        kc.project.dispatchEvent(new Event('change')); // the load throws: no viewerload
+      });
+      await rerenderWith({ onHighlightResult, highlight: { refs: ['U3'], boxes: [], sheetPath: '/r/p/g', seq: 1 } });
+      expect(onHighlightResult).not.toHaveBeenCalled();
+      act(() => {
+        window.dispatchEvent(new ErrorEvent('error', { message: 'boom', filename: `http://x/${KICANVAS_SCRIPT}` }));
+      });
+      expect(onHighlightResult).toHaveBeenCalledWith({ found: [], missing: ['U3'] }, 'The sheet could not be loaded (boom).');
+    });
+
     it('a null highlight clears the overlay', async () => {
       const { rerenderWith } = await renderPane();
       const kc = await loadReady();
