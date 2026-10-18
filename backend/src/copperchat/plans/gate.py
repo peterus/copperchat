@@ -95,8 +95,12 @@ class PlanGate(BudgetGate):
         # rule is the turn budget's: the user approved the plan's deletions).
         cost = self._step_cost(state, cs)
         used, deleted = state.logical_used, state.deleted_preexisting
+        placed = set(state.placed_this_turn)
         await super().record(ctx, cs)
+        # Step placements stay out of the turn's own-placement ledger: deleting them
+        # after the plan finished must not refund turn budget that was never charged.
         state.logical_used, state.deleted_preexisting = used, deleted
+        state.placed_this_turn = placed - set(cs.logical.deleted_symbols)
         state.step_used = max(0, state.step_used + cost)
         state.step_placed -= set(cs.logical.deleted_symbols)
         state.step_placed |= set(cs.logical.placed_symbols)

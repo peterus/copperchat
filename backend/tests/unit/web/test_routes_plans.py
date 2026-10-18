@@ -249,6 +249,37 @@ def test_rollback_to_unfinished_step_is_409(ctx: Ctx) -> None:
     assert r.status_code == 409
 
 
+def test_rollback_to_zero_without_base_snapshot_refused(ctx: Ctx) -> None:
+    plan, *_ = _checkpointed(ctx)
+    ctx.save(replace(plan, base_snapshot_id=None))
+    r = ctx.client.post(ctx.url(plan.id, "rollback"), json={"toStep": 0})
+    assert r.status_code == 409 and r.json()["error"]["code"] == "plan_state"
+    assert ctx.plan(plan.id).steps[0].status == "done"
+
+
+def test_failed_enqueue_restores_state_and_retry_gets_a_new_id(
+    ctx: Ctx, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = ctx.store_plan(new_plan(ctx))
+    calls: list[str] = []
+    real = RunEngine.submit_ex
+
+    async def failing(self: RunEngine, cid: str, *a: Any, **kw: Any) -> Any:
+        calls.append(cid)
+        if len(calls) == 1:
+            raise RuntimeError("db down")
+        return await real(self, cid, *a, **kw)
+
+    monkeypatch.setattr(RunEngine, "submit_ex", failing)
+    with pytest.raises(RuntimeError):
+        ctx.client.post(ctx.url(plan.id, "approve"))
+    after = ctx.plan(plan.id)
+    assert after.status == "proposed" and after.event_seq == 1
+    assert ctx.client.post(ctx.url(plan.id, "approve")).status_code == 200
+    assert calls == [f"plan-{plan.id}-approve-1-1", f"plan-{plan.id}-approve-1-2"]
+    assert len(ctx.user_messages()) == 1
+
+
 def test_errors_401_404_400(ctx: Ctx) -> None:
     c = ctx.client
     good = "a" * 32

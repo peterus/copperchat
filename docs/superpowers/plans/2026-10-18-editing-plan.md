@@ -749,9 +749,9 @@ verification, status, changeCount, checkpointId, summary, failure, erc:
   from `ux_plans_open`), `InvalidPlanArgument` (`invalid_argument`, 400), `repo.InvalidPlanId`
   (400) / `PlanNotFound` (404). Steps run **in order** (only the first not-done step can
   begin, one at a time); a step begins and finishes in the **same turn** (`plan_step_done`
-  refuses a step not active in this turn). **`plan_revise` on a paused plan keeps the finished
-  steps** (their checkpoints are the plan's history) and `steps` replaces the remaining ones,
-  numbered after them. Limits: ≤ 30 steps, `expected_changes` 1–200, title 120, summary 2000,
+  refuses a step not active in this turn). **`plan_revise` keeps the finished steps** (their
+  checkpoints are the plan's history; also on a later revision of the re-proposed plan) and
+  `steps` replaces the remaining ones, numbered after them. Limits: ≤ 30 steps, `expected_changes` 1–200, title 120, summary 2000,
   intent/verification 1000, ≤ 100 refs/nets, justifications ≤ 100 × 500 chars. Step tolerance
   = `max(expected + 1, expected × 3 // 2)` (10 → 15, 1 → 2); inside a step the ≤ 3 deletions
   rule does not apply (the user approved the plan), a refund needs a symbol placed **in that
@@ -765,13 +765,15 @@ verification, status, changeCount, checkpointId, summary, failure, erc:
   rows of the step **in this run**; render reminder when no `render_view(doc="sch")` since
   `plan_step_begin` and `show_agent_view` is on. The second identical `erc_errors_open`
   (same step, same open ids) pauses the plan (`erc_regression`, step `failed`, the ERC row
-  attached) and posts an error row `{code: "plan_needs_attention", planId, ercResultId}`; the
+  attached) and posts an error row `{code: "plan_needs_attention", planId, ercResultId}` (a
+  `step_exceeded` pause posts the same code with `reason`); the
   tool error stays `erc_errors_open` with `details.plan_paused = true`. Pause reasons:
   `turn_ended`, `interrupted`, `rate_limited` (step interrupted), `kicad_failed`,
   `document_inconsistent`, `step_exceeded`, `erc_regression`, `external_change` (step failed),
   `server_restart` (step **interrupted**: the process ended, like a Stop), `rolled_back`.
   An external change also pauses an **approved** plan (its base changed before step 1).
-  Notices: `plan` (propose), `plan-revised`, `plan-paused {reason}`, `plan-rejected`,
+  Notices: `plan` (propose), `plan-revised` (the agent's reason only in metadata
+  `agentReason`, never in the system-voice text), `plan-paused {reason}`, `plan-rejected`,
   `plan-aborted`; reject/abort add an agent note naming the plan id only. `PlanDTO` step
   `erc` = `{errors, warnings, justifications, resultId}` (counts). Step checkpoints are capped
   (E8a residual): `history.store.STEP_KEEP = 100` per project; an open plan's base snapshot
@@ -811,9 +813,11 @@ verification, status, changeCount, checkpointId, summary, failure, erc:
 
 - **E8b (as built):** plan routes live in `web/routes_plans.py`; every event returns the
   PlanDTO; `rollback` body `{toStep}` validated by the service (400 for a non-integer or out of
-  range, 409 `plan_state` for an unfinished step, 409 `agent_busy` while a run is active).
+  range, 409 `plan_state` for an unfinished step or for 0 when finished steps exist but no
+  base snapshot, 409 `agent_busy` while a run is active).
   Approve/resume enqueue `client_message_id = plan-<id>-<event>-<revision>-<event_seq>`; a
-  failing enqueue restores the plan state. `PlanUpdatedFrame.plan` is the typed `PlanDTO`
+  failing enqueue restores the plan state but keeps the `event_seq` bump (a retry gets a new
+  message id). `PlanUpdatedFrame.plan` is the typed `PlanDTO`
   (pydantic + zod `PlanDTO` in `frames.ts`); the chat store ignores `plan-updated` (E9b's plan
   store consumes it).
 

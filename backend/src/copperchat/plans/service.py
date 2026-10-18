@@ -277,7 +277,7 @@ class PlanService:
         pid = ctx.project.id
         async with self.lock(pid):
             plan = await self._open(pid)
-            kept = plan.done_count if plan.status == "paused" else 0
+            kept = plan.done_count  # finished steps always stay (machine "revise")
             specs = validate_steps(steps, offset=kept)
             new = machine.transition(
                 plan,
@@ -288,8 +288,14 @@ class PlanService:
             await self._save(new)
         await self._notice(
             pid,
-            f"The agent revised the plan (revision {new.revision}): {reason}",
-            {"action": "plan-revised", "planId": new.id, "revision": new.revision},
+            f"The agent revised the plan (revision {new.revision}). Approve or reject it.",
+            # The reason is agent-authored text: data for the plan card, not system voice.
+            {
+                "action": "plan-revised",
+                "planId": new.id,
+                "revision": new.revision,
+                "agentReason": reason,
+            },
         )
         return new
 
@@ -558,6 +564,14 @@ class PlanService:
             await self._save(new)
         if ctx.run_id is not None:
             self.clear_step(self.editing.turn(pid, ctx.run_id))
+        engine = self._engine(pid)
+        if engine is not None:  # spec §7.2: a failed step pushes "needs attention"
+            idx = plan.running_step.idx if plan.running_step is not None else "?"
+            await engine.post_error(
+                f"Plan paused at step {idx}: the step needed more changes than planned. "
+                "Review it and resume, roll back or abort the plan.",
+                {"code": "plan_needs_attention", "planId": plan.id, "reason": reason},
+            )
         return new
 
     # ---- pauses (turn end, startup, external change)
@@ -664,7 +678,9 @@ class PlanService:
             try:
                 await self._submit(project, new, event, text)
             except BaseException:
-                await self.repo.save(plan)  # no message, no state change
+                # No state change; keep the event_seq bump so a retry never reuses the
+                # client_message_id of a message that may have been stored.
+                await self.repo.save(replace(plan, event_seq=new.event_seq))
                 raise
         await self._publish(new)
         return new
@@ -720,6 +736,12 @@ class PlanService:
                 raise AgentBusy("the agent is working; stop it or wait before rolling back")
             new = machine.transition(plan, "rollback", now=utcnow_iso(), to_step=to_step)
             target = plan.base_snapshot_id if to_step == 0 else plan.step(to_step).checkpoint_id
+            if target is None and plan.done_count > to_step:
+                raise PlanStateError(
+                    "Cannot roll back to the start",
+                    "The plan has no snapshot from before its first step",
+                    "Restore a snapshot from the History panel, or abort the plan.",
+                )
             if target is not None:
                 if self.history is None:
                     raise CopperChatError("history is not available")

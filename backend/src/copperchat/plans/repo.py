@@ -12,7 +12,10 @@ from copperchat.errors import CopperChatError
 from copperchat.plans.model import OPEN, Plan, PlanStateError, PlanStep
 
 _ID_RE = re.compile(r"[0-9a-f]{32}")
-_OPEN_MARKS = ", ".join("?" for _ in OPEN)
+# Inlined literals (not bound parameters) so SQLite can use the ux_plans_open partial
+# index, whose predicate is exactly this list.
+_OPEN_SQL = "('proposed', 'approved', 'running', 'paused')"
+assert set(_OPEN_SQL.strip("()").replace("'", "").split(", ")) == OPEN
 
 
 class InvalidPlanId(CopperChatError):
@@ -86,16 +89,16 @@ class PlanRepo:
 
     async def open_for(self, project_id: str) -> Plan | None:
         row = await self._db.fetchone(
-            f"SELECT * FROM plans WHERE project_id = ? AND status IN ({_OPEN_MARKS})",
-            (project_id, *sorted(OPEN)),
+            f"SELECT * FROM plans WHERE project_id = ? AND status IN {_OPEN_SQL}",
+            (project_id,),
         )
         return None if row is None else await self._load(row)
 
     async def open_status(self, project_id: str) -> tuple[str, str] | None:
         """(plan id, status) of the open plan without loading its steps (gate fast path)."""
         row = await self._db.fetchone(
-            f"SELECT id, status FROM plans WHERE project_id = ? AND status IN ({_OPEN_MARKS})",
-            (project_id, *sorted(OPEN)),
+            f"SELECT id, status FROM plans WHERE project_id = ? AND status IN {_OPEN_SQL}",
+            (project_id,),
         )
         return None if row is None else (str(row["id"]), str(row["status"]))
 
@@ -107,10 +110,10 @@ class PlanRepo:
         """Snapshots an open plan may still roll back to (base + step checkpoints)."""
         rows = await self._db.fetchall(
             "SELECT p.base_snapshot_id AS sid FROM plans p"
-            f" WHERE p.project_id = ? AND p.status IN ({_OPEN_MARKS})"
+            f" WHERE p.project_id = ? AND p.status IN {_OPEN_SQL}"
             " UNION SELECT s.checkpoint_id FROM plan_steps s JOIN plans p ON p.id = s.plan_id"
-            f" WHERE p.project_id = ? AND p.status IN ({_OPEN_MARKS})",
-            (project_id, *sorted(OPEN), project_id, *sorted(OPEN)),
+            f" WHERE p.project_id = ? AND p.status IN {_OPEN_SQL}",
+            (project_id, project_id),
         )
         return {str(r["sid"]) for r in rows if r["sid"] is not None}
 

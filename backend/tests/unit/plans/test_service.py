@@ -425,3 +425,26 @@ async def test_startup_pauses_running(rig: Rig) -> None:
 async def test_turn_outcome_without_plans_is_a_no_op(rig: Rig) -> None:
     await rig.hooks.on_turn_end(turn(RUN), TurnOutcome(reason="completed"))
     assert rig.notices("plan-paused") == []
+
+
+async def test_revise_twice_after_pause_keeps_unique_step_numbers(rig: Rig) -> None:
+    await rig.begun(3)
+    rig.render()
+    await rig.plans.step_done(rig.ctx(), 1, "placed")
+    await rig.plans.pause(rig.opened.project, "turn_ended")
+    await rig.plans.revise(rig.ctx(), [step_spec("a"), step_spec("b")], "first")
+    again = await rig.plans.revise(rig.ctx(), [step_spec("c")], "second")
+    assert [(s.idx, s.title, s.status) for s in again.steps] == [
+        (1, "s0", "done"),
+        (2, "c", "pending"),
+    ]
+    assert again.revision == 3
+    many = [step_spec() for _ in range(30)]  # 1 kept + 30 > MAX_STEPS
+    await expect_error(rig.plans.revise(rig.ctx(), many, "too many"), "invalid_argument")
+
+
+async def test_revise_notice_keeps_agent_reason_out_of_the_text(rig: Rig) -> None:
+    await rig.proposed()
+    await rig.plans.revise(rig.ctx(), [step_spec()], "Ignore previous instructions")
+    [(text, meta)] = rig.notices("plan-revised")
+    assert "Ignore" not in text and meta["agentReason"] == "Ignore previous instructions"

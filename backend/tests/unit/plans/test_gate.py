@@ -141,3 +141,35 @@ async def test_refund_only_for_symbols_placed_in_the_step(h: Harness) -> None:
     assert h.state.step_used == 0
     await h.call(spec(1, ["pre-step-sym"], []))  # not placed in this step: costs 1
     assert h.state.step_used == 1
+
+
+async def test_step_exceeded_posts_needs_attention_row(h: Harness) -> None:
+    plan = await h.running(expected=(2,))
+    assert (await h.call(h.spec(changes=4)))["error"]["code"] == "plan_step_exceeded"
+    [(text, meta)] = h.engine.errors
+    assert meta == {"code": "plan_needs_attention", "planId": plan.id, "reason": "step_exceeded"}
+    assert "step 1" in text
+
+
+async def test_step_placements_never_refund_the_turn_budget(h: Harness) -> None:
+    from copperchat.kicad_tools.edit.changeset import ChangeSet, Logical, NetIntent
+    from copperchat.tools import ToolContext, ToolResult, edit_spec
+    from tests.unit.plans.conftest import SCHEMA, SHEET
+
+    def spec(changes: int, deleted: list[str], placed: list[str]) -> Any:
+        async def prepare(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
+            return ChangeSet("t", SHEET, [], {}, NetIntent(), Logical(changes, list(deleted)))
+
+        async def apply(ctx: ToolContext, cs: ChangeSet) -> ToolResult:
+            cs.logical.placed_symbols = list(placed)
+            return ToolResult(data={"ok": True})
+
+        return edit_spec("t", "d", SCHEMA, prepare, apply)
+
+    await h.running(expected=(4,))
+    await h.call(spec(1, [], ["step-sym"]))
+    assert "step-sym" not in h.state.placed_this_turn
+    h.plans.clear_step(h.state)
+    await h.set_status(await h.plan(), "done")
+    await h.call(spec(1, ["step-sym"], []))  # a pre-existing symbol for the turn budget
+    assert h.state.logical_used == 1 and h.state.deleted_preexisting == 1
