@@ -190,12 +190,13 @@ def find_space(
     `shape`). `direction`: only positions on the side a pin points to. Candidates are at
     least two search steps apart, so they are real alternatives.
     """
-    if not shape:
+    if not shape or limit <= 0:
         return []
     index = _Index(search_obstacles(scene, keep_free))
     outline = list(outline or shape)
     vec = _DIR[direction] if direction else None
     ox, oy = snap(near[0]), snap(near[1])
+    off = math.dist(near, (ox, oy))  # the rings are centred on the snapped anchor
     min_x = min(b.x0 for b in shape)
     min_y = min(b.y0 for b in shape)
     hull = Box(min_x, min_y, max(b.x1 for b in shape), max(b.y1 for b in shape))
@@ -216,7 +217,7 @@ def find_space(
         if grown:
             picks = _spaced(found, limit)
             grown = False
-        if len(picks) >= limit and r * STEP_MM > picks[-1].distance + 1e-6:
+        if picks and len(picks) >= limit and r * STEP_MM - off > picks[-1].distance + 1e-6:
             break
         for dx, dy in _ring(r):
             if vec and dx * vec[0] + dy * vec[1] <= 0:

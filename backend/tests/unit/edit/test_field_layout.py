@@ -273,3 +273,9 @@ def test_find_space_empty_scene_is_fast_and_nearest_first() -> None:
     assert time.perf_counter() - t0 < 0.2
     assert len(found) == 3 and found[0].distance == 0.0
     assert all(c.distance <= 2 * 2 * 2.54 + 1e-6 for c in found)
+
+
+def test_field_name_must_be_utf8_and_limit_zero_is_empty() -> None:
+    with pytest.raises(StructuredToolError):
+        normalize_fields({"\ud800x": "a"})
+    assert find_space(Scene(ROOT), SHAPE, (50.8, 50.8), limit=0) == []

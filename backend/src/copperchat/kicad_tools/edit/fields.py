@@ -129,6 +129,14 @@ def _bad(what: str, why: str, suggestion: str) -> StructuredToolError:
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 
+def _utf8(text: str) -> bool:
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def check_text(value: Any, name: str, limit: int) -> str:
     """One line of printable text (no control characters), encodable as UTF-8."""
     ok = isinstance(value, str) and len(value) <= limit and not _CONTROL.search(value)
@@ -166,7 +174,7 @@ def normalize_fields(raw: Any, *, arg: str = "fields") -> dict[str, str]:
     out: dict[str, str] = {}
     for name, value in raw.items():
         key = str(name).strip()
-        if not key or len(key) > MAX_FIELD_NAME or not _NAME_RE.match(key):
+        if not key or len(key) > MAX_FIELD_NAME or not _NAME_RE.match(key) or not _utf8(key):
             raise _bad(
                 f"Invalid field name {key[:40]!r}",
                 f"field names are 1..{MAX_FIELD_NAME} printable characters",

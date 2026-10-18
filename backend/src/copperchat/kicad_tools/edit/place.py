@@ -72,6 +72,7 @@ from copperchat.tools.spec import ToolContext
 
 PROBE_AT = (25.4, 25.4)
 PROBE_CACHE_SIZE = 64
+MAX_PINS = 200  # pins echoed in a placement result (sch_get_pin reads any pin)
 # Probed parts per session and server generation: find_space -> place probes once.
 _PROBES: weakref.WeakKeyDictionary[Any, tuple[int, OrderedDict[tuple[str, int], Any]]] = (
     weakref.WeakKeyDictionary()
@@ -304,7 +305,9 @@ def placed_json(sym: Any, sheet: SheetRef, lib_id: str) -> dict[str, Any]:
         "sheet": sheet.human_path,
         "page": sheet.page,
         "box_mm": body.as_dict(),
-        "pins": [pin_json(p) for p in pins],
+        "pins": [pin_json(p) for p in pins[:MAX_PINS]],
+        "pin_count": len(pins),
+        "pins_truncated": len(pins) > MAX_PINS,
     }
 
 
