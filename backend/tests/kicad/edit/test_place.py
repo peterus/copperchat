@@ -320,3 +320,13 @@ async def test_new_pins_do_not_change_existing_nets(
     assert restricted == set(before)
     new = {k for g in after for k in g} - old
     assert {k[1] for k in new} <= {out["placed"]["uuid"]}
+
+
+async def test_unused_reference_refused(blank_session: KicadSession, edit_db: Database) -> None:
+    s = blank_session
+    await s.ensure_symbol_libraries()
+    out, err = await call_tool(
+        edit_ctx(s, edit_db), "sch_place_symbol", lib_id="Device:R", at=[50.8, 50.8], reference="C5"
+    )
+    assert err and out["error"]["code"] == "invalid_argument", out
+    assert "R1" in out["error"]["suggestion"]

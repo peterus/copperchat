@@ -28,15 +28,18 @@ async def test_candidates_do_not_overlap(ecc83_session: KicadSession, edit_db: D
     s = ecc83_session
     await s.ensure_symbol_libraries()
     ctx = edit_ctx(s, edit_db)
-    out, err = await call_tool(ctx, "sch_find_space", lib_id="Device:R", near="U1.1")
+    value = "4k7 0.1% 25ppm 0.25W"  # a long value widens the Value field
+    out, err = await call_tool(ctx, "sch_find_space", lib_id="Device:R", near="U1.1", value=value)
     assert not err, out
     cands = out["candidates"]
     assert 1 <= len(cands) <= 3
     assert [c["distance_mm"] for c in cands] == sorted(c["distance_mm"] for c in cands)
     assert out["size_mm"][0] > 0 and out["size_mm"][1] > 0
     for c in cands:  # every candidate passes sch_place_symbol's checks on this scene
-        await prepare_place(ctx, {"lib_id": "Device:R", "at": c["at_mm"]})
-    placed, err = await call_tool(ctx, "sch_place_symbol", lib_id="Device:R", at=cands[0]["at_mm"])
+        await prepare_place(ctx, {"lib_id": "Device:R", "at": c["at_mm"], "value": value})
+    placed, err = await call_tool(
+        ctx, "sch_place_symbol", lib_id="Device:R", at=cands[0]["at_mm"], value=value
+    )
     assert not err, placed
     assert placed["placed"]["at_mm"] == cands[0]["at_mm"]
 

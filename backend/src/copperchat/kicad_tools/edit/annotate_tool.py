@@ -29,7 +29,7 @@ from copperchat.kicad_tools.edit.engine import copy_item
 from copperchat.kicad_tools.edit.scene import (
     SymbolInfo,
     resolve_sheet,
-    sheet_api,
+    sheet_ref,
     sheet_refs,
     symbol_info,
 )
@@ -67,10 +67,12 @@ class Component:
 
 def read_units(h: KicadHandle) -> list[SymbolInfo]:
     """Every placed unit per sheet instance, read through `for_sheet` (each instance of
-    a shared sheet has its own references, spike 2A Q7)."""
+    a shared sheet has its own references, spike 2A Q7); one hierarchy walk."""
     out: list[SymbolInfo] = []
-    for sheet in sheet_refs(h):
-        for sym in sheet_api(h, sheet).get_symbols():
+    sch = h.schematic()
+    for inst in sch.get_hierarchy():
+        sheet = sheet_ref(inst)
+        for sym in sch.for_sheet(inst).get_symbols():
             out.append(symbol_info(sym, sheet, boxes=False))
     return out
 
@@ -101,6 +103,26 @@ def components(units: list[SymbolInfo]) -> tuple[list[Component], set[int]]:
             dupes.add(i)
         seen.add(c.ref)
     return comps, dupes
+
+
+def detect_scheme(units: list[SymbolInfo], pages: list[str]) -> Literal["per_sheet", "flat"]:
+    """Per-sheet when most annotated non-power references sit in their page's block (100
+    or 1000) - a few strays (swapped or hand-set references) are what renumbering fixes;
+    flat when most do not. Single-sheet designs are flat."""
+    if len(pages) < 2:
+        return "flat"
+    fits = misfits = 0
+    for u in units:
+        m = _NUM.match(u.ref)
+        page = u.sheet.page.strip()
+        if u.ref.startswith("#") or m is None or not page.isdigit() or int(page) < 1:
+            continue
+        num, p = int(m.group(2)), int(page)
+        if any(num // b == p and num % b for b in (100, 1000)):
+            fits += 1
+        else:
+            misfits += 1
+    return "per_sheet" if fits >= misfits else "flat"
 
 
 @dataclass
@@ -137,6 +159,9 @@ def plan_renames(
     moving = set(todo)
     fixed = [(u.ref, u.sheet.page) for i, c in enumerate(comps) if i not in moving for u in c.units]
     alloc = Allocator(fixed, pages, block)
+    # The design's numbering scheme comes from all its references, not just the ones that
+    # stay (renumbering everything must not turn a flat design into per-sheet blocks).
+    alloc.scheme = detect_scheme(units, pages)
     out: list[Renamed] = []
     for i in todo:
         c = comps[i]
@@ -163,14 +188,14 @@ def plan_annotation(
     tool: str = "sch_annotate",
 ) -> ChangeSet:
     refs = sheet_refs(h)
-    sheet = resolve_sheet(h, sheet_arg) if scope == "sheet" or sheet_arg else None
-    if scope == "sheet" and sheet is None:
+    if scope == "sheet" and not sheet_arg:
         raise StructuredToolError(
             "sch_annotate scope=sheet needs a sheet",
             "no sheet was given",
             "Pass sheet='/amp/' (or a page number), or use scope='all'.",
             code="invalid_argument",
         )
+    sheet = resolve_sheet(h, sheet_arg) if sheet_arg else None
     units = read_units(h)
     renames = plan_renames(
         units,

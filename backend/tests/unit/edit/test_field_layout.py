@@ -161,8 +161,8 @@ def test_keep_numbers_unannotated_and_duplicates_only() -> None:
 def test_multi_unit_component_keeps_one_ref() -> None:
     lm = "Amplifier_Operational:LM358"
     units = [
-        _unit("u1", "U7", SUB2, (10, 10), 1, lm),
-        _unit("u2", "U7", SUB2, (30, 10), 2, lm),
+        _unit("u1", "U299", SUB2, (10, 10), 1, lm),
+        _unit("u2", "U299", SUB2, (30, 10), 2, lm),
         _unit("r", "R205", SUB2, (5, 5)),
     ]
     comps, dupes = components(units)
@@ -179,6 +179,8 @@ def test_renumber_per_sheet_by_position() -> None:
         _unit("x", "R301", SUB2, (50, 10)),
         _unit("y", "R201", SUB3, (10, 10)),
         _unit("z", "R202", SUB2, (10, 10)),
+        _unit("w", "R203", SUB2, (90, 10)),
+        _unit("v", "R302", SUB3, (90, 10)),
     ]
     out = plan_renames(
         units, ["1", "2", "3"], scope="all", mode="renumber", sheet=None, placed=set(), block=100
@@ -195,3 +197,22 @@ def test_power_duplicates_get_unique_numbers() -> None:
     ]
     out = plan_renames(units, ["1"], scope="all", mode="keep", sheet=None, placed=set(), block=100)
     assert [(r.component.units[0].uuid, r.new) for r in out] == [("p2", "#PWR03")]
+
+
+def test_renumber_keeps_a_flat_scheme() -> None:
+    units = [
+        _unit("a", "R2", SUB2, (10, 10)),
+        _unit("b", "R1", SUB3, (10, 10)),
+        _unit("c", "R3", ROOT, (10, 10)),
+    ]
+    out = plan_renames(
+        units, ["1", "2", "3"], scope="all", mode="renumber", sheet=None, placed=set(), block=100
+    )
+    news = {r.component.units[0].uuid: r.new for r in out}
+    assert news == {"c": "R1", "b": "R3"}  # flat stays flat (R2 already in place)
+
+
+def test_text_validation_rejects_control_characters() -> None:
+    for bad in ("10k\r", "a\tb", "x\x00", "\ud800"):
+        with pytest.raises(StructuredToolError):
+            normalize_fields({"value": bad})

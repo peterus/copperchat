@@ -126,6 +126,26 @@ def _bad(what: str, why: str, suggestion: str) -> StructuredToolError:
     return StructuredToolError(what, why, suggestion, code="invalid_argument")
 
 
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def check_text(value: Any, name: str, limit: int) -> str:
+    """One line of printable text (no control characters), encodable as UTF-8."""
+    ok = isinstance(value, str) and len(value) <= limit and not _CONTROL.search(value)
+    if ok:
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            ok = False
+    if not ok:
+        raise _bad(
+            f"Invalid {name}",
+            f"{name} must be one line of at most {limit} printable characters",
+            "Pass plain text without line breaks or control characters.",
+        )
+    return str(value)
+
+
 def normalize_fields(raw: Any, *, arg: str = "fields") -> dict[str, str]:
     """`{name: value}` from the agent -> KiCad field names (`value` -> Value, `mpn` ->
     MPN, ...); custom names kept as given. Reference cannot be set here."""
@@ -158,19 +178,13 @@ def normalize_fields(raw: Any, *, arg: str = "fields") -> dict[str, str]:
                 "references are assigned by the annotation",
                 "Use sch_annotate to renumber references.",
             )
-        if value is None or isinstance(value, (dict, list)):
+        if not isinstance(value, str):
             raise _bad(
                 f"Invalid value for field {key}",
                 "field values are text",
                 "Pass a string (an empty string clears the field's text).",
             )
-        text = str(value)
-        if len(text) > MAX_FIELD_VALUE or "\n" in text or "\r" in text:
-            raise _bad(
-                f"Invalid value for field {key}",
-                f"field values are one line of at most {MAX_FIELD_VALUE} characters",
-                "Shorten the text.",
-            )
+        text = check_text(value, f"field {key}", MAX_FIELD_VALUE)
         canon = STANDARD.get(key.lower()) or ALIASES.get(key.lower()) or key
         if canon in out:
             raise _bad(

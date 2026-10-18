@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 from dataclasses import dataclass
 from functools import partial
@@ -17,6 +18,7 @@ from copperchat.kicad_tools.edit.changeset import (
     ChangeSet,
     Logical,
     NetIntent,
+    SheetRef,
     Update,
     static_stage,
 )
@@ -26,6 +28,7 @@ from copperchat.kicad_tools.edit.fields import (
     STANDARD,
     apply_fields,
     apply_flags,
+    check_text,
     field_values,
     flag_values,
     normalize_fields,
@@ -46,6 +49,7 @@ from copperchat.kicad_tools.edit.place import (
     ref_prefix,
 )
 from copperchat.kicad_tools.edit.scene import (
+    Scene,
     SymbolInfo,
     all_symbols,
     read_scene,
@@ -53,6 +57,7 @@ from copperchat.kicad_tools.edit.scene import (
     resolve_sheet,
     sheet_refs,
     short,
+    symbol_info,
 )
 from copperchat.kicad_tools.edit.space import find_space, pin_corridor
 from copperchat.kicad_tools.edit.specs_core import apply_change
@@ -160,13 +165,7 @@ def _text(args: dict[str, Any], key: str, limit: int = 256) -> str | None:
     v = args.get(key)
     if v is None:
         return None
-    if not isinstance(v, str) or len(v) > limit or "\n" in v:
-        raise _bad(
-            f"Invalid {key}",
-            f"{key} must be one line of at most {limit} characters",
-            f"Pass {key} as a plain string.",
-        )
-    return v
+    return check_text(v, key, limit)
 
 
 # -- shared helpers -----------------------------------------------------------------------
@@ -260,6 +259,54 @@ def _structured(cs: ChangeSet) -> list[dict[str, Any]]:
     return list(cs.extra_notes) if isinstance(cs, ToolChangeSet) else []
 
 
+# -- design reads -------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _Unit:
+    """A placed unit, without geometry (references and pages for the allocator)."""
+
+    ref: str
+    page: str
+    uuid: str
+    lib_id: str
+    unit: int
+    sheet: SheetRef
+
+
+@dataclass
+class _Design:
+    """Everything a placement plan reads from KiCad; the geometry runs on it afterwards,
+    outside the session lock (a slow search must not look like a KiCad hang)."""
+
+    sheet: SheetRef
+    scene: Scene
+    refs: list[SheetRef]
+    units: list[_Unit]
+    siblings: list[SymbolInfo]  # units with the requested reference (with geometry)
+
+    def allocator(self, block: Block) -> Allocator:
+        return Allocator([(u.ref, u.page) for u in self.units], [r.page for r in self.refs], block)
+
+
+def _read_design(h: KicadHandle, sheet: SheetRef, reference: str | None = None) -> _Design:
+    refs = sheet_refs(h)
+    by_path = {r.path: r for r in refs}
+    units: list[_Unit] = []
+    siblings: list[SymbolInfo] = []
+    for sym in h.schematic().get_symbols():
+        where = by_path.get(access.sheet_path_key(sym.path))
+        if where is None:
+            continue
+        ref = str(sym.reference)
+        units.append(
+            _Unit(ref, where.page, access.kiid(sym), str(sym.definition.id), int(sym.unit), where)
+        )
+        if reference and ref == reference:
+            siblings.append(symbol_info(sym, where))
+    return _Design(sheet, read_scene(h, sheet), refs, units, siblings)
+
+
 # -- sch_find_space -----------------------------------------------------------------------
 
 
@@ -297,6 +344,7 @@ def _anchor(h: KicadHandle, near: Any, sheet_arg: str | None) -> _Anchor:
 async def sch_find_space(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     lib_id = _lib_id(args)
     rotation, mirror, unit = _rotation(args), _mirror(args), _unit(args)
+    value = _text(args, "value")
     near = args.get("near")
     if near is None:
         raise _bad(
@@ -312,14 +360,18 @@ async def sch_find_space(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     prefix = ref_prefix(detail.reference_prefix, str(template.reference))
     block = await _annotation_block(ctx)
 
-    def run(h: KicadHandle) -> dict[str, Any]:
+    def read(h: KicadHandle) -> tuple[_Anchor, _Design]:
         anchor = _anchor(h, near, sheet_arg)
-        scene = read_scene(h, anchor.sheet)
-        # Lay out with the reference a placement would get: the field boxes match.
-        ref = Allocator.from_design(h, block).next_ref(prefix, anchor.sheet.page)
-        lay = layout(template, (0.0, 0.0), rotation, mirror, reference=ref)
+        return anchor, _read_design(h, anchor.sheet)
+
+    anchor, design = await ctx.session.call(read)
+
+    def search() -> dict[str, Any]:
+        # Lay out with the reference and value a placement would get: same field boxes.
+        ref = design.allocator(block).next_ref(prefix, anchor.sheet.page)
+        lay = layout(template, (0.0, 0.0), rotation, mirror, reference=ref, value=value)
         found = find_space(
-            scene,
+            design.scene,
             lay.shape(),
             anchor.point,
             direction=anchor.direction,
@@ -345,7 +397,7 @@ async def sch_find_space(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
             ],
         }
 
-    return ToolResult(data=await ctx.session.call(run))
+    return ToolResult(data=await asyncio.to_thread(search))
 
 
 def _check_unit(detail: SymbolDetail, unit: int) -> None:
@@ -361,7 +413,7 @@ def _check_unit(detail: SymbolDetail, unit: int) -> None:
 # -- sch_place_symbol ---------------------------------------------------------------------
 
 
-def _ref_in_use(ref: str, users: list[SymbolInfo], suggestion: str) -> StructuredToolError:
+def _ref_in_use(ref: str, users: list[_Unit], suggestion: str) -> StructuredToolError:
     where = ", ".join(sorted({f"{u.lib_id} unit {u.unit} on {u.sheet.human_path}" for u in users}))
     return _bad(
         f"Reference {ref} is already used",
@@ -372,70 +424,71 @@ def _ref_in_use(ref: str, users: list[SymbolInfo], suggestion: str) -> Structure
 
 
 def _plan_place(
+    d: _Design,
     lib_id: str,
     detail: SymbolDetail,
     template: Any,
-    raw_at: Point,
+    at: Point,
     rotation: int,
     mirror: Mirror,
     unit: int,
     reference: str | None,
     fields: dict[str, str],
-    sheet_arg: str | None,
     block: Block,
-    h: KicadHandle,
-) -> tuple[PlacePlan, list[str], dict[str, str]]:
-    sheet = resolve_sheet(h, sheet_arg)
-    notes: list[str] = []
-    at = snap_point(raw_at)
-    if not same_point(at, raw_at, 1e-4):
-        notes.append(f"position snapped to the 1.27 mm grid: {list(raw_at)} -> {list(at)}")
-    syms = all_symbols(h)
-    refs = sheet_refs(h)
-    alloc = Allocator([(s.ref, s.sheet.page) for s in syms], [r.page for r in refs], block)
+) -> tuple[PlacePlan, dict[str, str]]:
+    """Reference, overlap check and plan; pure computation on the read design."""
+    sheet = d.sheet
+    alloc = d.allocator(block)
     prefix = ref_prefix(detail.reference_prefix, str(template.reference))
     siblings: list[SymbolInfo] = []
     if reference:
         ref = check_reference(reference)
-        users = [s for s in syms if s.ref == ref]
-        if users:
-            same = [s for s in users if s.lib_id == lib_id and s.sheet.path == sheet.path]
-            if (
-                len(same) != len(users)
-                or detail.unit_count < 2
-                or any(s.unit == unit for s in same)
-            ):
-                raise _ref_in_use(ref, users, alloc.next_ref(prefix, sheet.page))
-            siblings = same
+        users = [u for u in d.units if u.ref == ref]
+        if not users:
+            raise _bad(
+                f"Reference {ref} is not in use",
+                "reference is only for another unit of an existing multi-unit part; a new "
+                "part gets the next free reference of its sheet",
+                f"Omit reference (the next free one is {alloc.next_ref(prefix, sheet.page)}).",
+            )
+        same = [s for s in d.siblings if s.lib_id == lib_id and s.sheet.path == sheet.path]
+        if len(same) != len(users) or detail.unit_count < 2 or any(s.unit == unit for s in same):
+            raise _ref_in_use(ref, users, alloc.next_ref(prefix, sheet.page))
+        siblings = same
     else:
         ref = alloc.next_ref(prefix, sheet.page)
-    other_sheets = [r for r in refs if r.file == sheet.file and r.path != sheet.path]
+    other_sheets = [r for r in d.refs if r.file == sheet.file and r.path != sheet.path]
     others: dict[str, str] = {}
     for o in other_sheets:
         sib = next(
-            (s for s in syms if siblings and s.uuid == siblings[0].uuid and s.sheet.path == o.path),
+            (
+                u
+                for u in d.units
+                if siblings and u.uuid == siblings[0].uuid and u.sheet.path == o.path
+            ),
             None,
         )
         others[o.path] = sib.ref if sib is not None else alloc.next_ref(prefix, o.page)
     inherited = field_values(siblings[0].item) if siblings else {}
     value = fields.get("Value") or inherited.get("Value")
     lay = layout(template, at, rotation, mirror, reference=ref, value=value)
-    scene = read_scene(h, sheet)
-    problems = clashes(scene, lay)
+    problems = clashes(d.scene, lay)
     if problems:
-        raise overlap_error(scene, lay, problems, f"{lib_id}")
+        raise overlap_error(d.scene, lay, problems, f"{lib_id}")
     plan = PlacePlan(
         lib_id, sheet, at, rotation, mirror, unit, ref, fields, siblings, others, other_sheets
     )
-    return plan, notes, {**inherited, **fields}
+    return plan, {**inherited, **fields}
 
 
 async def prepare_place(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
     lib_id = _lib_id(args)
-    at = _point(args.get("at"), "at")
+    raw_at = _point(args.get("at"), "at")
     rotation, mirror, unit = _rotation(args), _mirror(args), _unit(args)
     sheet_arg = _sheet_arg(args)
     reference = _text(args, "reference", 16)
+    if reference is not None:
+        reference = check_reference(reference)
     fields = normalize_fields(args.get("fields"))
     for key, name in (("value", "Value"), ("footprint", "Footprint")):
         text = _text(args, key)
@@ -451,25 +504,42 @@ async def prepare_place(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
             f"Use sch_add_power(net='{net}', pins=['REF.PIN', ...]).",
         )
     _check_unit(detail, unit)
-    footprint = fields.get("Footprint", detail.footprint)
+
+    def read(h: KicadHandle) -> _Design:
+        return _read_design(h, resolve_sheet(h, sheet_arg), reference)
+
+    design = await ctx.session.call(read)
+    sibling = next(
+        (s for s in design.siblings if s.lib_id == lib_id and s.sheet.path == design.sheet.path),
+        None,
+    )
+    # The footprint the part really gets: given, else the sibling unit's, else the library's.
+    if "Footprint" in fields:
+        footprint = fields["Footprint"]
+    elif sibling is not None:
+        footprint = field_values(sibling.item)["Footprint"]
+    else:
+        footprint = detail.footprint
     extra = await footprint_notes(ctx, svc, lib_id, footprint, explicit="Footprint" in fields)
     template = await probe_symbol(ctx, lib_id, unit)
     block = await _annotation_block(ctx)
-    plan, notes, final_fields = await ctx.session.call(
-        partial(
-            _plan_place,
-            lib_id,
-            detail,
-            template,
-            at,
-            rotation,
-            mirror,
-            unit,
-            reference,
-            fields,
-            sheet_arg,
-            block,
-        )
+    at = snap_point(raw_at)
+    notes: list[str] = []
+    if not same_point(at, raw_at, 1e-4):
+        notes.append(f"position snapped to the 1.27 mm grid: {list(raw_at)} -> {list(at)}")
+    plan, final_fields = await asyncio.to_thread(
+        _plan_place,
+        design,
+        lib_id,
+        detail,
+        template,
+        at,
+        rotation,
+        mirror,
+        unit,
+        reference,
+        fields,
+        block,
     )
     active = active_part_note(ctx.project, plan.reference, final_fields)
     if active is not None:
@@ -489,13 +559,14 @@ async def apply_place(ctx: ToolContext, cs: ChangeSet) -> ToolResult:
     placed = placed_json(sym, plan.sheet, plan.lib_id)
     extra: dict[str, Any] = {}
     if plan.other_sheets:
-        shared, renamed = await fix_shared_instances(ctx, plan, uid, cs.tool)
+        # The other instances' references are reported in placed.instances only (their
+        # rows would carry this sheet: the engine maps one UUID to one sheet).
+        _shared, renamed = await fix_shared_instances(ctx, plan, uid, cs.tool)
         placed["instances"] = [{"sheet": plan.sheet.human_path, "ref": plan.reference}, *renamed]
         extra["shared_sheet"] = (
             f"{plan.sheet.file} is used by {len(plan.other_sheets) + 1} sheet instances: the "
             "part appears in each, with its own reference (the document was saved and reloaded)"
         )
-        applied.modified += shared.modified
     notes = [*cs.notes, *applied.notes, *_structured(cs)]
     return edit_result(cs, applied, placed=placed, notes=notes, **extra)
 
@@ -570,22 +641,20 @@ async def prepare_set_fields(ctx: ToolContext, args: dict[str, Any]) -> ChangeSe
     if "Footprint" in fields:
         svc = await _library(ctx)
         extra += await footprint_notes(ctx, svc, lib_id, fields["Footprint"], explicit=True)
-    first = units[0].item
-    before = {**field_values(first), **flag_values(first)}
     items: dict[str, tuple[Any, list[Any]]] = {}
-    for u in units:
+    changed: dict[str, dict[str, Any]] = {}
+    for u in units:  # units may be out of sync (2A Q2): compare each one
+        before = {**field_values(u.item), **flag_values(u.item)}
         sym = copy_item(u.item)
         apply_fields(sym, fields, remove)
         if flags:
             apply_flags(sym, flags)
+        after = {**field_values(sym), **flag_values(sym)}
+        for k in sorted(set(before) | set(after)):
+            if before.get(k) != after.get(k):
+                changed.setdefault(k, {"before": before.get(k), "after": after.get(k)})
         items.setdefault(u.sheet.path, (u.sheet, []))[1].append(sym)
     sample = next(iter(items.values()))[1][0]
-    after = {**field_values(sample), **flag_values(sample)}
-    changed = {
-        k: {"before": before.get(k), "after": after.get(k)}
-        for k in sorted(set(before) | set(after))
-        if before.get(k) != after.get(k)
-    }
     if not changed:
         raise _bad(
             f"sch_set_fields changes nothing on {ref}",
@@ -680,6 +749,11 @@ TOOL_SPECS: list[ToolSpec] = [
                     "anyOf": [{"type": "string", "maxLength": 64}, _POINT],
                     "description": "'U1.3', 'U1' or [x, y] in mm.",
                 },
+                "value": {
+                    "type": "string",
+                    "maxLength": 256,
+                    "description": "The value it will get (sizes the Value field).",
+                },
                 **_ROT,
                 **_MIRROR,
                 **_UNIT,
@@ -749,7 +823,9 @@ TOOL_SPECS: list[ToolSpec] = [
         "page, then position (top-left first), per-sheet blocks (R1xx on page 1, R2xx on "
         "page 2, ...) unless the design numbers flat. scope: 'new' (unannotated and parts "
         "placed this turn), 'sheet' (needs sheet), 'all'. Multi-unit parts keep one "
-        "reference. One logical change per renamed reference.",
+        "reference (units sharing a reference, lib_id and sheet; unannotated units are "
+        "numbered one by one, so give the units of a new multi-unit part its reference "
+        "when placing them). One logical change per renamed reference.",
         _obj(
             {
                 "scope": {"type": "string", "enum": ["new", "sheet", "all"]},

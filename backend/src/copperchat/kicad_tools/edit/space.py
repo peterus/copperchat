@@ -14,7 +14,15 @@ import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
-from copperchat.kicad_tools.edit.geometry import GRID_MM, Box, Direction, PinEnd, Point, snap
+from copperchat.kicad_tools.edit.geometry import (
+    EPS_MM,
+    GRID_MM,
+    Box,
+    Direction,
+    PinEnd,
+    Point,
+    snap,
+)
 from copperchat.kicad_tools.edit.scene import LabelInfo, Scene
 
 STEP_MM = 2 * GRID_MM  # search grid (pins of stock symbols sit on 2.54 mm)
@@ -80,18 +88,38 @@ def placement_obstacles(scene: Scene) -> list[Box]:
     return [b for _, b in named_obstacles(scene)]
 
 
+def _key(p: Point) -> tuple[int, int]:
+    return (round(p[0] * 100), round(p[1] * 100))  # 0.01 mm cells (EPS_MM)
+
+
 def unconnected_pins(scene: Scene) -> list[PinEnd]:
-    """Pin ends with nothing else at them (no wire, label, pin, junction, no-connect)."""
+    """Pin ends with nothing else at them (no wire, label, pin, junction, no-connect).
+    Indexed by point and wire line, not a scan per pin (a full sheet has thousands)."""
+    count: dict[tuple[int, int], int] = {}
+    pins = scene.all_pins()
+    points = [p.at for p in pins]
+    points += [q for w in scene.wires.values() for q in (w.start, w.end)]
+    points += [lb.at for lb in scene.labels.values()]
+    points += [*scene.junctions.values(), *scene.no_connects.values()]
+    for q in points:
+        count[_key(q)] = count.get(_key(q), 0) + 1
+    rows: dict[int, list[tuple[float, float]]] = {}  # y key -> x spans of horizontal wires
+    cols: dict[int, list[tuple[float, float]]] = {}  # x key -> y spans of vertical wires
+    for w in scene.wires.values():
+        (x0, y0), (x1, y1) = w.start, w.end
+        if abs(y0 - y1) < EPS_MM:
+            rows.setdefault(round(y0 * 100), []).append((min(x0, x1), max(x0, x1)))
+        elif abs(x0 - x1) < EPS_MM:
+            cols.setdefault(round(x0 * 100), []).append((min(y0, y1), max(y0, y1)))
     out: list[PinEnd] = []
-    for sym in scene.symbols.values():
-        for pin in sym.pins:
-            others = [
-                i
-                for i in scene.items_at(pin.at)
-                if not (i["kind"] == "pin" and i["uuid"] == sym.uuid and i.get("pin") == pin.number)
-            ]
-            if not others:
-                out.append(pin)
+    for pin in pins:
+        x, y = pin.at
+        if count.get(_key(pin.at), 0) > 1:
+            continue
+        inside = any(a + EPS_MM < x < b - EPS_MM for a, b in rows.get(round(y * 100), ()))
+        inside = inside or any(a + EPS_MM < y < b - EPS_MM for a, b in cols.get(round(x * 100), ()))
+        if not inside:
+            out.append(pin)
     return out
 
 
@@ -168,41 +196,36 @@ def find_space(
     outline = list(outline or shape)
     vec = _DIR[direction] if direction else None
     ox, oy = snap(near[0]), snap(near[1])
+    min_x = min(b.x0 for b in shape)
+    min_y = min(b.y0 for b in shape)
+    hull = Box(min_x, min_y, max(b.x1 for b in shape), max(b.y1 for b in shape))
+    out_hull = Box(
+        min(b.x0 for b in outline),
+        min(b.y0 for b in outline),
+        max(b.x1 for b in outline),
+        max(b.y1 for b in outline),
+    )
+    # The union box first: a free hull means every box is free (most positions on an
+    # empty area); otherwise the boxes one by one.
     found: list[Candidate] = []
+    spaced = 0
     first_ring: int | None = None
     for r in range(0, max_ring + 1):
-        if first_ring is not None and r > first_ring + 3 and len(found) >= limit:
+        if first_ring is not None and r > first_ring + 3 and spaced >= limit:
             break
-        for dx in range(-r, r + 1):
-            for dy in range(-r, r + 1):
-                if max(abs(dx), abs(dy)) != r:
-                    continue
-                if vec and dx * vec[0] + dy * vec[1] <= 0:
-                    continue  # stay on the side the pin points to
-                at = (round(ox + dx * STEP_MM, 4), round(oy + dy * STEP_MM, 4))
-                boxes = [shift(b, *at) for b in shape]
-                if (
-                    min(b.x0 for b in boxes) < PAGE_MARGIN_MM
-                    or min(b.y0 for b in boxes) < PAGE_MARGIN_MM
-                ):
-                    continue
-                if any(index.hits(b) for b in boxes):
-                    continue
-                if first_ring is None:
-                    first_ring = r
-                placed = [shift(b, *at) for b in outline]
-                found.append(
-                    Candidate(
-                        at=at,
-                        box=Box(
-                            min(b.x0 for b in placed),
-                            min(b.y0 for b in placed),
-                            max(b.x1 for b in placed),
-                            max(b.y1 for b in placed),
-                        ),
-                        distance=round(math.dist(at, near), 3),
-                    )
-                )
+        for dx, dy in _ring(r):
+            if vec and dx * vec[0] + dy * vec[1] <= 0:
+                continue  # stay on the side the pin points to
+            at = (round(ox + dx * STEP_MM, 4), round(oy + dy * STEP_MM, 4))
+            if at[0] + min_x < PAGE_MARGIN_MM or at[1] + min_y < PAGE_MARGIN_MM:
+                continue
+            if index.hits(shift(hull, *at)) and any(index.hits(shift(b, *at)) for b in shape):
+                continue
+            if first_ring is None:
+                first_ring = r
+            if all(math.dist(at, c.at) >= 2 * STEP_MM - 1e-6 for c in found):
+                spaced += 1
+            found.append(Candidate(at, shift(out_hull, *at), round(math.dist(at, near), 3)))
     found.sort(key=lambda c: (c.distance, c.at[1], c.at[0]))
     out: list[Candidate] = []
     for c in found:
@@ -211,3 +234,16 @@ def find_space(
         if len(out) >= limit:
             break
     return out
+
+
+def _ring(r: int) -> Iterable[tuple[int, int]]:
+    """The grid offsets at Chebyshev distance `r` (the spiral's r-th ring)."""
+    if r == 0:
+        yield (0, 0)
+        return
+    for d in range(-r, r + 1):
+        yield (d, -r)
+        yield (d, r)
+    for d in range(-r + 1, r):
+        yield (-r, d)
+        yield (r, d)

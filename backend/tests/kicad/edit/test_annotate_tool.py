@@ -119,17 +119,38 @@ async def test_renumber_counts_against_budget(
     await EditingSettingsRepo(edit_db).put(s.project.id, change_budget=5)
     await _raw_place(s, "Device:R", [(25.4 * i, 50.8) for i in range(1, 7)])
     before = await _refs(s)
-    out, err = await call_tool(edit_ctx(s, edit_db), "sch_annotate", scope="all", mode="keep")
+    out, err = await call_tool(edit_ctx(s, edit_db), "sch_annotate", scope="all", mode="renumber")
     assert err and out["error"]["code"] == "plan_required", out
+    assert out["error"]["details"]["needed"] == 6
     assert await _refs(s) == before
 
 
 async def test_power_symbols_numbered(blank_session: KicadSession, edit_db: Database) -> None:
     s = blank_session
     await s.ensure_symbol_libraries()
-    await _raw_place(s, "power:GND", [(50.8, 50.8), (76.2, 50.8), (101.6, 50.8)])
+    uids = await _raw_place(s, "power:GND", [(50.8, 50.8), (76.2, 50.8), (101.6, 50.8)])
+
+    def duplicate(h: KicadHandle) -> None:  # the duplicates headless placement can leave
+        sch = h.schematic()
+        syms = sch.get_items_by_id(kiids(*uids))
+        for sym in syms:
+            sym.reference = "#PWR01"
+            sym.proto.ClearField("definition")
+        sch.update_items(syms)
+
+    async with s.commit("duplicate power refs"):
+        await s.call(duplicate)
     refs = list((await _refs(s)).values())
+    assert refs == ["#PWR01"] * 3
     out, err = await call_tool(edit_ctx(s, edit_db), "sch_annotate", scope="all", mode="keep")
     assert not err, out
     after = list((await _refs(s)).values())
     assert len(set(after)) == 3 and all(re.match(r"^#PWR\d{2,}$", r) for r in after), (refs, after)
+
+
+async def test_scope_sheet_needs_sheet(hier_session: KicadSession) -> None:
+    s = hier_session
+    out, err = await call_tool(edit_ctx(s), "sch_annotate", scope="sheet", mode="renumber")
+    assert err and out["error"]["code"] == "invalid_argument", out
+    out, err = await call_tool(edit_ctx(s), "sch_annotate", scope="sheet", sheet="2", mode="keep")
+    assert not err, out

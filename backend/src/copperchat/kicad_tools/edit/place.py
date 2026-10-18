@@ -15,6 +15,8 @@ separate change set after a save + reload (spike 2A Q7).
 from __future__ import annotations
 
 import re
+import weakref
+from collections import OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from functools import partial
@@ -69,6 +71,11 @@ from copperchat.kicad_tools.edit.space import (
 from copperchat.tools.spec import ToolContext
 
 PROBE_AT = (25.4, 25.4)
+PROBE_CACHE_SIZE = 64
+# Probed parts per session and server generation: find_space -> place probes once.
+_PROBES: weakref.WeakKeyDictionary[Any, tuple[int, OrderedDict[tuple[str, int], Any]]] = (
+    weakref.WeakKeyDictionary()
+)
 Mirror = Literal["", "x", "y"]
 REF_RE = re.compile(r"^[A-Za-z][A-Za-z_]{0,7}[0-9]{1,6}$")
 
@@ -104,10 +111,17 @@ async def probe_symbol(ctx: ToolContext, lib_id: str, unit: int) -> Any:
             "Ask the user to open the project for editing.",
             code="read_only",
         )
+    cache = _PROBES.setdefault(session, (session.generation, OrderedDict()))
+    if cache[0] != session.generation:  # a restarted server may load other libraries
+        cache = _PROBES[session] = (session.generation, OrderedDict())
+    hit = cache[1].get((lib_id, unit))
+    if hit is not None:
+        cache[1].move_to_end((lib_id, unit))
+        return copy_item(hit)
     await session.ensure_symbol_libraries()
     try:
         async with session.commit(f"probe {lib_id}", dry_run=True):
-            return await session.call(partial(_probe, lib_id, unit))
+            probed = await session.call(partial(_probe, lib_id, unit))
     except ApiError as exc:
         raise StructuredToolError(
             f"KiCad cannot place {lib_id} (unit {unit})",
@@ -115,6 +129,10 @@ async def probe_symbol(ctx: ToolContext, lib_id: str, unit: int) -> Any:
             "Check lib_id and unit with lib_get_symbol.",
             code="invalid_argument",
         ) from exc
+    cache[1][(lib_id, unit)] = probed
+    while len(cache[1]) > PROBE_CACHE_SIZE:
+        cache[1].popitem(last=False)
+    return copy_item(probed)
 
 
 @dataclass
@@ -391,27 +409,33 @@ async def fix_shared_instances(
 ) -> tuple[Applied, list[dict[str, str]]]:
     """Give the new symbol its own reference on the other instances of a shared sheet:
     save + reload (it is invisible there before), then set each instance's reference via
-    `for_sheet(other)` (spike 2A Q7). On failure the placement is removed again."""
+    `for_sheet(other)` (spike 2A Q7). On failure the placement is undone (symbol removed,
+    sibling units restored); if that is impossible (the save already holds the placement
+    and the server was replaced, or the undo fails) -> `DocumentInconsistent` with
+    `auto_restore` (the turn snapshot predates the placement)."""
+    from copperchat.kicad_tools.edit.engine import by_id
+
     session = ctx.session
-    await session.refresh_jobs()  # save + close/reopen: the other instances now show it
+    generation = session.generation
 
     def read(h: KicadHandle) -> list[tuple[SheetRef, Any]]:
         out = []
         for other in plan.other_sheets:
-            items = sheet_api(h, other).get_items_by_id([_kiid(uid)])
-            if not items:
+            found = by_id(sheet_api(h, other), [uid])
+            if uid not in found:
                 raise StructuredToolError(
                     f"{tool}: the new symbol is missing on {other.human_path}",
                     "after the reload the shared sheet instance does not show it",
                     "Re-read the sheet; the placement was undone.",
                     code="verification_failed",
                 )
-            sym = copy_item(items[0])
+            sym = copy_item(found[uid])
             sym.reference = plan.others[other.path]
             out.append((other, sym))
         return out
 
     try:
+        await session.refresh_jobs()  # save + close/reopen: the other instances now show it
         items = await session.call(read)
         keys = frozenset(
             (other.path, uid, p.key[2]) for other, sym in items for p in pin_ends(sym, False)
@@ -430,11 +454,40 @@ async def fix_shared_instances(
             logical=Logical(0),
         )
         applied = await apply_change_set(ctx, cs)
-    except BaseException:
-        await _remove_placed(ctx, plan.sheet, uid, tool)
+    except BaseException as exc:
+        if session.generation != generation or not session.server_alive:
+            raise DocumentInconsistent(
+                f"the {tool} placement on a shared sheet could not be completed (KiCad "
+                "restarted after saving it)",
+                auto_restore=True,
+            ) from exc
+        await _undo_placement(ctx, plan, uid, tool)
         raise
     renamed = [{"sheet": other.human_path, "ref": str(sym.reference)} for other, sym in items]
     return applied, renamed
+
+
+async def _undo_placement(ctx: ToolContext, plan: PlacePlan, uid: str, tool: str) -> None:
+    """Remove the new symbol and restore the sibling units' fields (stage 2 may have
+    changed them), in one plain commit."""
+    session = ctx.session
+    restore = [copy_item(s.item) for s in plan.siblings]
+
+    def undo(h: KicadHandle) -> None:
+        sch = sheet_api(h, plan.sheet)
+        sch.remove_items_by_id([_kiid(uid)])
+        if restore:
+            for sym in restore:
+                sym.proto.ClearField("definition")  # spike 2A Q2
+            sch.update_items(restore)
+
+    try:
+        async with session.commit(f"{tool}: undo placement"):
+            await session.call(undo)
+    except Exception as exc:
+        raise DocumentInconsistent(
+            f"undoing the partial {tool} placement failed", auto_restore=True
+        ) from exc
 
 
 def _kiid(value: str) -> Any:
@@ -443,16 +496,3 @@ def _kiid(value: str) -> Any:
     k = KIID()
     k.value = value
     return k
-
-
-async def _remove_placed(ctx: ToolContext, sheet: SheetRef, uid: str, tool: str) -> None:
-    session = ctx.session
-
-    def remove(h: KicadHandle) -> None:
-        sheet_api(h, sheet).remove_items_by_id([_kiid(uid)])
-
-    try:
-        async with session.commit(f"{tool}: undo placement"):
-            await session.call(remove)
-    except Exception as exc:
-        raise DocumentInconsistent(f"undoing the partial {tool} placement failed") from exc
