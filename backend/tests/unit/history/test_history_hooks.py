@@ -182,3 +182,13 @@ async def test_view_refresh_failure_is_not_an_autosave_failure(opened: Opened) -
     await opened.hooks.on_turn_end(turn(), done("pcb"))
     assert env.saved == ["pcb"] and env.engine.errors == [] and env.engine.notices == []
     assert await env.svc.hashes.get(opened.project.id) == compute_hashes(opened.project)
+
+
+async def test_history_registers_hash_listener(opened: Opened) -> None:
+    """Every CopperChat save records the hashes (E1): also a save outside turn end."""
+    from copperchat.history.store import compute_hashes_async
+
+    svc, project = opened.env.svc, opened.project
+    await svc.hashes.replace(project.id, {"stale.kicad_sch": "0" * 64})
+    await opened.session.save("sch")
+    assert await svc.hashes.get(project.id) == await compute_hashes_async(project)

@@ -124,10 +124,8 @@ class HistoryHooks(RunHooks):
             except Exception as exc:
                 log.warning("autosave failed for %s: %s", self.project.rel_path, exc)
                 failure = exc
-            if saved:
-                # save() rewrites files even without edits: hash only after our own save,
-                # and after a partial one too, so it is never taken for an external change.
-                await self._record_hashes()
+            # Each successful save() recorded the hashes itself (HistoryService save
+            # listener), so a partial autosave is never taken for an external change.
         if saved:
             try:
                 await self.svc.publish_view(self.project, session, saved)

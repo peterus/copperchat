@@ -143,3 +143,79 @@ async def test_save_copy_and_refresh_jobs_on_modified_doc_do_not_deadlock(
     assert dest.is_file()
     await asyncio.wait_for(s.refresh_jobs(), 30)
     assert s.jobs_stale is False
+
+
+# -- Task 2: export jobs and save_copy see unsaved edits (Review Focus 3) ----------
+
+
+def _cli_components(settings_cli: str, root_sch: Path, out_dir: Path) -> dict[str, str]:
+    """ref -> value from `kicad-cli sch export netlist` (KiCad XML) of a saved copy."""
+    import subprocess
+    import xml.etree.ElementTree as ET
+
+    out = out_dir / "copy.xml"
+    subprocess.run(
+        [settings_cli, "sch", "export", "netlist", "--format", "kicadxml", "-o", str(out),
+         str(root_sch)],
+        check=True, capture_output=True, timeout=120,
+    )  # fmt: skip
+    root = ET.fromstring(out.read_text(encoding="utf-8"))
+    return {c.get("ref", ""): c.findtext("value", "") for c in root.iterfind("./components/comp")}
+
+
+async def test_save_copy_contains_unsaved_subsheet_edit(
+    hier_session: KicadSession, tmp_path: Path
+) -> None:
+    s = hier_session
+
+    def set_value(h: KicadHandle) -> None:
+        for inst in h.schematic().get_hierarchy():
+            if str(inst.filename) != "ampli_ht.kicad_sch":
+                continue
+            sub = h.schematic().for_sheet(inst)
+            for sym in sub.get_symbols():
+                if str(sym.reference) == "R201":
+                    sym.value = "E1-47k"
+                    sym.proto.ClearField("definition")  # definition-less update (2A Q2)
+                    sub.update_items([sym])
+                    return
+        raise AssertionError("R201 not found")
+
+    async with s.commit("value"):
+        await s.call(set_value)
+    root = s.project.sch_file
+    assert root is not None
+    dest = tmp_path / "copy" / root.name
+    await s.save_copy("sch", dest)
+    assert (dest.parent / "ampli_ht.kicad_sch").is_file()
+    values = _cli_components(s.settings.kicad_cli, dest, tmp_path)
+    assert values["R201"] == "E1-47k"
+
+
+async def test_render_after_edit_shows_edit(ecc83_session: KicadSession) -> None:
+    from copperchat.views import render_view
+
+    s = ecc83_session
+    before = (await render_view(s, "sch", "kicad", persist=False)).data
+    async with s.commit("wire"):
+        await s.call(
+            _create(wire((25.4, 25.4), (101.6, 25.4)), wire((25.4, 30.48), (101.6, 30.48)))
+        )
+    assert s.jobs_stale is True
+    after = (await render_view(s, "sch", "kicad", persist=False)).data
+    assert after != before
+    assert s.jobs_stale is False
+
+
+async def test_run_erc_sees_unsaved_edit(ecc83_session: KicadSession) -> None:
+    from copperchat.kicad_tools.checks import check_violations
+
+    s = ecc83_session
+
+    def dangling(vs: list[dict[str, Any]]) -> int:
+        return sum(1 for v in vs if v["type"] == "unconnected_wire_endpoint")
+
+    before = dangling(await check_violations(s, "sch"))
+    async with s.commit("dangling wire"):
+        await s.call(_create(wire((25.4, 25.4), (38.1, 25.4))))
+    assert dangling(await check_violations(s, "sch")) > before

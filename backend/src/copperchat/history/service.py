@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from copperchat.agent.protocol import ViewUpdatedFrame
 from copperchat.db import Database
-from copperchat.history.store import DocumentHashRepo, HistoryStore
+from copperchat.history.store import DocumentHashRepo, HistoryStore, compute_hashes_async
 from copperchat.kicad_session import DocKind, KicadSession, KicadSessionManager
 from copperchat.projects import Project
 from copperchat.views import render_view, write_kicanvas_snapshot
@@ -48,6 +48,12 @@ class HistoryService:
             _default_preview
         )
         self._locks: dict[str, asyncio.Lock] = {}
+        # Every CopperChat save rewrites the files: record their hashes right after it,
+        # so the turn-start check never takes our own save for an external change.
+        sessions.add_save_listener(self._on_saved)
+
+    async def _on_saved(self, project: Project) -> None:
+        await self.hashes.replace(project.id, await compute_hashes_async(project))
 
     def store(self, project: Project) -> HistoryStore:
         return HistoryStore(self.db, project)
