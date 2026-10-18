@@ -139,6 +139,13 @@ def test_system_prompt_has_no_claude_code_branding():
     assert "Claude Code" not in SYSTEM_PROMPT
 
 
+def test_system_prompt_enables_schematic_editing():
+    # Sub-project 2: the schematic is editable (board still read-only).
+    assert "cannot edit schematics" not in SYSTEM_PROMPT
+    assert "kicad-schematic-editing" in SYSTEM_PROMPT
+    assert "board" in SYSTEM_PROMPT.lower()
+
+
 async def test_tool_guard_denies_everything_not_registered():
     guard = make_tool_guard(frozenset({"mcp__copperchat__run_erc"}))
     ctx = ToolPermissionContext(tool_use_id="t1")

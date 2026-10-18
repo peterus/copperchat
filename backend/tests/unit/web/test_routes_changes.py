@@ -17,6 +17,7 @@ from copperchat.changes.erc import ErcDelta
 from copperchat.changes.repo import ChangeEntry
 from copperchat.config import Settings
 from copperchat.editing import _publisher
+from copperchat.history.store import HistoryStore
 from copperchat.projects import Project
 from copperchat.web.app import create_app
 from tests.support.fake_kicad import FakeClientFactory, FakeLauncher, FakeServer
@@ -72,8 +73,13 @@ def ctx(make_settings: Callable[..., Settings], tmp_path: Path) -> Iterator[Ctx]
         server.release.set()
 
 
-def test_runs_entries_and_erc_result(ctx: Ctx) -> None:
+def test_runs_entries_and_erc_result(ctx: Ctx, monkeypatch: pytest.MonkeyPatch) -> None:
     c, editing = ctx.client, ctx.app.state.editing
+
+    async def no_per_run_lookup(*_: Any) -> None:
+        raise AssertionError("the runs route must batch its snapshot lookups")
+
+    monkeypatch.setattr(HistoryStore, "latest_for_run", no_per_run_lookup)
     store = ctx.app.state.history.store(ctx.project)
     snap = ctx.call(store.snapshot, "run-1", "turn one")
     ctx.call(
@@ -167,14 +173,23 @@ def test_diff_route_shape_and_side_effects(ctx: Ctx, monkeypatch: pytest.MonkeyP
     }
     assert modified["sideEffect"] is True  # no tool logged it: KiCad's cleanup
     assert modified["properties"] == [{"name": "End X", "before": {"v": 1}, "after": {"v": 2}}]
-    # Unchanged design: the cached diff is reused (no second kicad-cli run) ...
+    # Unchanged design: the cached diff is reused (no second kicad-cli run, and the
+    # change rows are not even loaded) ...
     url = f"/api/projects/{ctx.pid}/changes/diff"
+    loads: list[str] = []
+    since = editing.changes.since
+
+    async def counting_since(*args: Any) -> Any:
+        loads.append("since")
+        return await since(*args)
+
+    monkeypatch.setattr(editing.changes, "since", counting_since)
     assert c.get(url, params={"snapshotId": snap.id}).json() == body
-    assert seen == [snap.id]
+    assert seen == [snap.id] and loads == []
     # ... until an edit writes a change row.
     ctx.call(editing.changes.add_many, [ctx.entry("run-1", U_MERGED, op="modify")])
     again = c.get(url, params={"snapshotId": snap.id}).json()
-    assert seen == [snap.id, snap.id]
+    assert seen == [snap.id, snap.id] and loads == ["since"]
     assert again["sheets"][ROOT][1]["sideEffect"] is False  # now logged
 
 
@@ -259,12 +274,15 @@ async def test_diff_cache_is_tied_to_the_session_object(
         def __init__(self) -> None:
             self.view_version, self.restart_count = 1, 0
 
+    async def no_log() -> list[Any]:
+        return []
+
     first = Session()
     svc = SimpleNamespace(open_session=lambda p: current)
     project = SimpleNamespace(id="p-cache")
     snap = SimpleNamespace(id="s1")
     current = first
-    assert (await diff_mod.cached_diff(svc, project, snap, []))["count"] == 1  # type: ignore[arg-type]
-    assert (await diff_mod.cached_diff(svc, project, snap, []))["count"] == 1  # type: ignore[arg-type]
+    assert (await diff_mod.cached_diff(svc, project, snap, (0, 0), no_log))["count"] == 1  # type: ignore[arg-type]
+    assert (await diff_mod.cached_diff(svc, project, snap, (0, 0), no_log))["count"] == 1  # type: ignore[arg-type]
     current = Session()
-    assert (await diff_mod.cached_diff(svc, project, snap, []))["count"] == 2  # type: ignore[arg-type]
+    assert (await diff_mod.cached_diff(svc, project, snap, (0, 0), no_log))["count"] == 2  # type: ignore[arg-type]

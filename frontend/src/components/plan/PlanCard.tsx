@@ -114,6 +114,8 @@ export function PlanCard({ projectId, planId }: { projectId: string; planId: str
 
   const s = store.getState();
   const busy = pending !== undefined;
+  // A new revision (or another plan) disarms a pending "Really …?", also when the status stays.
+  const armKey = `${plan.id}:${plan.revision}`;
   const reason = plan.pauseReason ? (PAUSE_REASON[plan.pauseReason] ?? plan.pauseReason.replaceAll('_', ' ')) : null;
   return (
     <section
@@ -148,12 +150,12 @@ export function PlanCard({ projectId, planId }: { projectId: string; planId: str
           <button type="button" disabled={busy} onClick={() => void s.approve(plan.id)} className={PRIMARY}>
             {pending === 'approve' ? 'Approving…' : 'Approve'}
           </button>
-          <ArmedButton label="Reject" disabled={busy} className={SECONDARY} onConfirm={() => void s.reject(plan.id)} />
+          <ArmedButton key={armKey} label="Reject" disabled={busy} className={SECONDARY} onConfirm={() => void s.reject(plan.id)} />
         </div>
       )}
       {plan.status === 'approved' && (
         <div className="mt-2 flex flex-col gap-2 sm:flex-row">
-          <ArmedButton label="Abort" disabled={busy} className={DANGER} onConfirm={() => void s.abort(plan.id)} />
+          <ArmedButton key={armKey} label="Abort" disabled={busy} className={DANGER} onConfirm={() => void s.abort(plan.id)} />
         </div>
       )}
       {plan.status === 'running' && (
@@ -176,7 +178,7 @@ export function PlanCard({ projectId, planId }: { projectId: string; planId: str
           <button type="button" disabled={busy} onClick={() => setConfirm(true)} className={SECONDARY}>
             {pending === 'rollback' ? 'Rolling back…' : 'Roll back to…'}
           </button>
-          <ArmedButton label="Abort" disabled={busy} className={DANGER} onConfirm={() => void s.abort(plan.id)} />
+          <ArmedButton key={armKey} label="Abort" disabled={busy} className={DANGER} onConfirm={() => void s.abort(plan.id)} />
         </div>
       )}
       {confirm && (

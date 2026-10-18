@@ -253,6 +253,24 @@ describe('PlanCard', () => {
     expect(screen.getByText('Revised step')).toBeInTheDocument();
   });
 
+  it('an armed reject disarms when the plan gets a new revision with the same status', async () => {
+    const { ws, deps } = setup(plan());
+    fireEvent.click(await screen.findByRole('button', { name: 'Reject' }));
+    expect(screen.getByRole('button', { name: 'Really reject?' })).toBeInTheDocument();
+    act(() => ws.emit({ type: 'plan-updated', projectId: PID, plan: plan({ revision: 2, updatedAt: '2026-10-18T10:04:00.000Z' }) }));
+    expect(screen.queryByRole('button', { name: 'Really reject?' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Reject' }));
+    expect(deps.event).not.toHaveBeenCalled();
+  });
+
+  it('an armed abort disarms when the plan gets a new revision with the same status', async () => {
+    const { ws } = setup(plan({ status: 'approved' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Abort' }));
+    expect(screen.getByRole('button', { name: 'Really abort?' })).toBeInTheDocument();
+    act(() => ws.emit({ type: 'plan-updated', projectId: PID, plan: plan({ status: 'approved', revision: 2, updatedAt: '2026-10-18T10:04:00.000Z' }) }));
+    expect(screen.queryByRole('button', { name: 'Really abort?' })).toBeNull();
+  });
+
   it.each(['done', 'rejected', 'aborted'] as const)('terminal state %s shows no buttons', async (status) => {
     setup(plan({ status }));
     await screen.findByRole('heading', { name: 'Add a status LED' });

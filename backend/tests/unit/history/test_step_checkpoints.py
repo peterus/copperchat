@@ -287,3 +287,18 @@ async def test_open_plan_snapshots_are_never_pruned(
     await store.snapshot("run-9", "t9")
     ids = {s.id for s in await store.list()}
     assert base.id not in ids and first.id not in ids
+
+
+async def test_latest_for_runs_batches_turn_snapshots(db: Database, tmp_path: Path) -> None:
+    store = HistoryStore(db, copy_project(ECC83, tmp_path / "projects"))
+    await store.snapshot("run-1", "turn a")
+    newer = await store.snapshot("run-1", "turn b")
+    await store.snapshot("run-1", "step", kind="step", plan_step_id="s1")
+    other = await store.snapshot("run-2", "turn c")
+    await store.snapshot("run-3", "step only", kind="step", plan_step_id="s2")
+    got = await store.latest_for_runs(["run-1", "run-2", "run-3", "nope"])
+    assert {k: v.id for k, v in got.items()} == {"run-1": newer.id, "run-2": other.id}
+    for run in ("run-1", "run-2", "run-3"):
+        one = await store.latest_for_run(run)
+        assert (one.id if one else None) == (got[run].id if run in got else None)
+    assert await store.latest_for_runs([]) == {}

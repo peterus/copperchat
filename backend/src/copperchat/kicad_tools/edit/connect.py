@@ -108,6 +108,13 @@ def _wire_targets(
         for w in scene.wires.values()
         if nets.get(w.uuid) == net and not w.uuid.startswith("planned-")
     ]
+    # A label of the net is a target too (a wire ending on its anchor joins it): e.g. the
+    # still unwired hierarchical label sch_add_sheet_pin made in the sub-sheet (E10).
+    out += [
+        WireTarget(lb.uuid, lb.at, lb.at, net)
+        for lb in scene.labels.values()
+        if nets.get(lb.uuid) == net and not lb.uuid.startswith("planned-")
+    ]
     if near is not None and limit is not None:
         out = [t for t in out if _distance(near, t.a, t.b) <= limit]
     if near is not None:

@@ -1,6 +1,6 @@
 import { useEffect, useId, useState } from 'react';
 import { apiErrorCode } from '@/api/plans';
-import { errorText, PLAN_OPEN_RESTORE, restoreSnapshot } from './restore';
+import { errorText, planOpenRestoreHint, restoreSnapshot } from './restore';
 
 export interface ConfirmRestoreProps {
   projectId: string;
@@ -44,7 +44,7 @@ export function ConfirmRestore({
       await restoreSnapshot(projectId, snapshotId);
       onDone();
     } catch (e) {
-      onError(apiErrorCode(e) === 'plan_open' ? PLAN_OPEN_RESTORE : errorText(e));
+      onError(apiErrorCode(e) === 'plan_open' ? planOpenRestoreHint(e) : errorText(e));
     } finally {
       setBusy(false);
     }

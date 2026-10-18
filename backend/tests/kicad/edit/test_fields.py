@@ -13,7 +13,7 @@ from copperchat.kicad_tools import access
 from copperchat.kicad_tools.edit.geometry import mm_point
 from copperchat.library.prefs import seed_user_part_preferences
 from tests.kicad.edit.helpers import item_ids
-from tests.support.edit import call_tool, edit_ctx, get_item
+from tests.support.edit import call_tool, edit_ctx, free_area, get_item
 from tests.support.kicad_cli import cli_components, cli_netlist
 
 pytestmark = pytest.mark.kicad
@@ -164,3 +164,28 @@ async def test_netlist_unchanged(ecc83_session: KicadSession, edit_db: Database)
         edit_ctx(s, edit_db), "sch_set_fields", ref="#PWR01", fields={"value": "VCC"}
     )
     assert err and out["error"]["code"] == "invalid_argument"
+
+
+async def test_shared_sheet_note(
+    hier_session: KicadSession, edit_db: Database, tmp_path: Path
+) -> None:
+    """A part on a sheet used by several instances: every instance gets the fields, and
+    the result says so."""
+    s = hier_session
+    await s.ensure_symbol_libraries()
+    ctx = edit_ctx(s, edit_db)
+    x, y = await s.call(lambda h: free_area(h, 25.4, 20.32, "2"))
+    placed = await _ok(
+        ctx, "sch_place_symbol", lib_id="Device:R", at=[x + 12.7, y + 10.16], sheet="2"
+    )
+    refs = [i["ref"] for i in placed["placed"]["instances"]]
+    assert len(refs) == 2
+    out = await _ok(ctx, "sch_set_fields", ref=refs[0], fields={"value": "33k"})
+    shared = [n for n in out["notes"] if "used by several instances" in str(n)]
+    assert len(shared) == 1, out["notes"]
+    root = s.project.sch_file
+    assert root is not None
+    dest = tmp_path / "copy" / root.name
+    await s.save_copy("sch", dest)
+    comps = cli_components(cli_netlist(s.settings.kicad_cli, dest, tmp_path))
+    assert comps[refs[0]]["value"] == comps[refs[1]]["value"] == "33k"

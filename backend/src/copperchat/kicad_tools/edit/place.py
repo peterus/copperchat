@@ -59,7 +59,7 @@ from copperchat.kicad_tools.edit.geometry import (
     canonical_transform,
     pin_ends,
 )
-from copperchat.kicad_tools.edit.scene import Scene, SymbolInfo, sheet_api
+from copperchat.kicad_tools.edit.scene import ConnectionIndex, Scene, SymbolInfo, sheet_api
 from copperchat.kicad_tools.edit.space import (
     BODY_CLEARANCE_MM,
     Candidate,
@@ -213,6 +213,9 @@ def layout(
 # -- checks -------------------------------------------------------------------------------
 
 
+INDEX_MIN_PINS = 16  # above this pin count clashes() indexes the scene's connection points
+
+
 def clashes(scene: Scene, lay: Layout, exclude: frozenset[str] = frozenset()) -> list[str]:
     """Why `lay` cannot go where it is: overlaps of its body/fields with the scene, and
     pins landing on an existing connection point (that would connect them)."""
@@ -223,8 +226,11 @@ def clashes(scene: Scene, lay: Layout, exclude: frozenset[str] = frozenset()) ->
         if name not in seen and any(b.overlaps(box) for b in mine):
             seen.add(name)
             out.append(f"overlaps {name}")
+    # A part may have hundreds of pins: index the scene's connection points once for it;
+    # a small part (and sch_move's per-symbol check) scans directly (identical results).
+    items_at = ConnectionIndex(scene).items_at if len(lay.pins) > INDEX_MIN_PINS else scene.items_at
     for pin in lay.pins:
-        items = scene.items_at(pin.at)
+        items = items_at(pin.at)
         if items:
             kinds = ", ".join(sorted({i["kind"] for i in items}))
             out.append(f"pin {pin.number} at {_fmt(pin.at)} would land on a {kinds}")
@@ -456,7 +462,7 @@ async def fix_shared_instances(
             intent=NetIntent(may_change=keys),
             logical=Logical(0),
         )
-        applied = await apply_change_set(ctx, cs)
+        applied = await apply_change_set(ctx, cs, record=False)  # the caller records
     except BaseException as exc:
         if session.generation != generation or not session.server_alive:
             raise DocumentInconsistent(

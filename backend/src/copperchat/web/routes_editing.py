@@ -132,11 +132,11 @@ async def list_change_runs(
     editing, history, project = _services(request, project_id)
     runs = await editing.changes.runs(project.id, limit)
     ercs = await editing.erc_results.latest_for_runs(project.id, [r["run_id"] for r in runs])
-    store = history.store(project)
+    snaps = await history.store(project).latest_for_runs(r["run_id"] for r in runs)
     out: list[dict[str, Any]] = []
     for r in runs:
         erc = ercs.get(r["run_id"])
-        snap = await store.latest_for_run(r["run_id"])
+        snap = snaps.get(r["run_id"])
         out.append(
             {
                 "runId": r["run_id"],
@@ -182,8 +182,10 @@ async def changes_diff(
     editing, history, project = _services(request, project_id)
     # 400 invalid id / 404 unknown snapshot / 503 project not open in KiCad.
     snap = await history.store(project).get(snapshotId)
-    log = await editing.changes.since(project.id, snap.created_at)
-    diff = await cached_diff(history, project, snap, log)
+    stats = await editing.changes.since_stats(project.id, snap.created_at)
+    diff = await cached_diff(
+        history, project, snap, stats, lambda: editing.changes.since(project.id, snap.created_at)
+    )
     return {
         "snapshotId": snap.id,
         "count": diff["count"],

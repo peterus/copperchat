@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '@/api/http';
 
@@ -130,5 +130,92 @@ describe('EditingSection', () => {
     finishFirst({ ...DEFAULTS, planPolicy: 'always' });
     await waitFor(() => expect(screen.getByRole('radio', { name: '×100' })).toBeChecked());
     expect(screen.getByRole('radio', { name: 'Always' })).toBeChecked();
+  });
+
+  /** apiPut calls that stay open until the test settles them. */
+  function deferredPuts() {
+    const calls: Array<{ resolve: (v: object) => void; reject: (e: Error) => void }> = [];
+    apiPut.mockImplementation(() => new Promise((resolve, reject) => calls.push({ resolve, reject })));
+    return calls;
+  }
+
+  it('A→B→A: the older response arriving last does not overwrite the newest value', async () => {
+    const puts = deferredPuts();
+    render(<EditingSection />);
+    fireEvent.click(await screen.findByRole('radio', { name: 'Always' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'For large changes' }));
+    expect(puts).toHaveLength(2);
+    puts[1]!.resolve({ ...DEFAULTS, planPolicy: 'large' });
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'For large changes' })).toBeChecked());
+    puts[0]!.resolve({ ...DEFAULTS, planPolicy: 'always' });
+    await act(async () => {});
+    expect(screen.getByRole('radio', { name: 'For large changes' })).toBeChecked();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('out-of-order confirmations: only the newest request of a field decides its value', async () => {
+    const puts = deferredPuts();
+    render(<EditingSection />);
+    fireEvent.click(await screen.findByRole('radio', { name: 'Always' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'Never' }));
+    puts[0]!.resolve({ ...DEFAULTS, planPolicy: 'always' });
+    await act(async () => {});
+    expect(screen.getByRole('radio', { name: 'Never' })).toBeChecked(); // still the newest choice
+    puts[1]!.resolve({ ...DEFAULTS, planPolicy: 'never' });
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'Never' })).toBeChecked());
+  });
+
+  it('two fields: a newer response carrying the old value of the other field does not hide its own save', async () => {
+    const puts = deferredPuts();
+    render(<EditingSection />);
+    fireEvent.click(await screen.findByRole('radio', { name: 'Always' }));
+    fireEvent.click(screen.getByRole('radio', { name: '×1000' }));
+    // the server handled the second PUT first: its response still has the old plan policy
+    puts[1]!.resolve({ ...DEFAULTS, annotationBlock: 1000 });
+    await act(async () => {});
+    puts[0]!.resolve({ ...DEFAULTS, planPolicy: 'always', annotationBlock: 1000 });
+    await act(async () => {});
+    expect(screen.getByRole('radio', { name: 'Always' })).toBeChecked();
+    expect(screen.getByRole('radio', { name: '×1000' })).toBeChecked();
+  });
+
+  it('A→B→A: a failing older save of a field is not reported once a newer save of it succeeded', async () => {
+    const puts = deferredPuts();
+    render(<EditingSection />);
+    fireEvent.click(await screen.findByRole('radio', { name: 'Always' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'For large changes' }));
+    puts[0]!.reject(new Error('database is locked'));
+    puts[1]!.resolve({ ...DEFAULTS, planPolicy: 'large' });
+    await act(async () => {});
+    expect(screen.getByRole('radio', { name: 'For large changes' })).toBeChecked();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('a failed save keeps its error while a save of another field is pending', async () => {
+    const puts = deferredPuts();
+    render(<EditingSection />);
+    fireEvent.click(await screen.findByRole('radio', { name: 'Always' }));
+    puts[0]!.reject(new Error('database is locked'));
+    expect(await screen.findByRole('alert')).toHaveTextContent('database is locked');
+    fireEvent.click(screen.getByRole('radio', { name: '×1000' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('database is locked');
+    puts[1]!.resolve({ ...DEFAULTS, annotationBlock: 1000 });
+    await act(async () => {});
+    expect(screen.getByRole('alert')).toHaveTextContent('database is locked');
+    // a new save of the failed field itself replaces its error
+    fireEvent.click(screen.getByRole('radio', { name: 'Always' }));
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('a save of another field settling does not reset a budget being typed', async () => {
+    const puts = deferredPuts();
+    render(<EditingSection />);
+    fireEvent.click(await screen.findByRole('radio', { name: 'Always' }));
+    const budget = screen.getByRole('spinbutton', { name: /Change budget/ });
+    fireEvent.change(budget, { target: { value: '42' } });
+    puts[0]!.resolve({ ...DEFAULTS, planPolicy: 'always' });
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'Always' })).toBeChecked());
+    await act(async () => {});
+    expect(budget).toHaveValue(42);
   });
 });

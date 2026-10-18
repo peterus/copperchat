@@ -813,12 +813,20 @@ async def apply_change_set(
     applied.side_effects = [e for e in applied.changes if e.side_effect]
     cs.applied = applied
     cs.logical.placed_symbols = list(run.placed)
-    if record and ctx.editing is not None:
-        try:
-            await ctx.editing.record_changes(ctx, applied.changes)
-        except Exception:  # the edit is applied and verified; never fail it afterwards
-            log.exception("recording changes of %s failed", cs.tool)
+    if record:
+        await record_applied(ctx, cs.tool, applied.changes)
     return applied
+
+
+async def record_applied(ctx: ToolContext, tool: str, changes: list[ChangeEntry]) -> None:
+    """Write the change rows of an applied change set (`apply_change_set(record=False)`
+    defers this, e.g. until a multi-part edit is complete)."""
+    if ctx.editing is None:
+        return
+    try:
+        await ctx.editing.record_changes(ctx, changes)
+    except Exception:  # the edit is applied and verified; never fail it afterwards
+        log.exception("recording changes of %s failed", tool)
 
 
 def _intent_keys(cs: ChangeSet) -> set[PinKey]:

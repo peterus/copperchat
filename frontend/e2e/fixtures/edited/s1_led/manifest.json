@@ -1,0 +1,17 @@
+{
+ "sch": [
+  "blank.kicad_sch"
+ ],
+ "refs": [
+  "D1",
+  "J1",
+  "R1"
+ ],
+ "sheets": {
+  "blank.kicad_sch": [
+   "D1",
+   "J1",
+   "R1"
+  ]
+ }
+}

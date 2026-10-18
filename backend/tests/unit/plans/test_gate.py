@@ -17,6 +17,13 @@ async def test_plan_open_refuses_mutation(h: Harness, status: str) -> None:
     out = await h.call(h.spec())
     assert out["error"]["code"] == "plan_open"
     assert out["error"]["details"]["status"] == status
+    hint = out["error"]["suggestion"]
+    if status == "approved":  # nothing left to approve: begin the next step
+        assert "approve or" not in hint and "plan_step_begin" in hint
+    elif status == "proposed":
+        assert "approve or reject" in hint
+    else:
+        assert "resume" in hint
     assert h.log == []  # no prepare, no snapshot
     # Read-only tools still work.
     assert await h.call(h.read_spec()) == {"ok": True}

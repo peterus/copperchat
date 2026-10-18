@@ -3,9 +3,11 @@
 A candidate position is free when the part's boxes (body + 1.27 mm, one box per field,
 the room in front of its own pins) touch no obstacle of the scene: symbol bodies
 (+ 2 mm) and fields, sheet symbols, labels, wires, junctions, no-connects, and the
-corridor in front of every unconnected pin (5.08 x 2.54 mm, room for a stub, label or
-power symbol, spike 2D v2.1). `sch_place_symbol`'s own overlap check is a subset of
-this, so every candidate found here is accepted by a following placement.
+corridor in front of every unconnected pin (7.62 x 5.08 mm: room for a stub plus a
+power symbol with its value, or a label, spike 2D v2.1; E10: the 5.08 x 2.54 mm corridor
+let a decoupling cap found next to a supply pin block its own GND symbol).
+`sch_place_symbol`'s own overlap check is a subset of this, so every candidate found here
+is accepted by a following placement.
 """
 
 from __future__ import annotations
@@ -28,8 +30,8 @@ from copperchat.kicad_tools.edit.scene import LabelInfo, Scene
 STEP_MM = 2 * GRID_MM  # search grid (pins of stock symbols sit on 2.54 mm)
 MAX_RING = 60  # rings of the spiral (60 x 2.54 mm ~ 15 cm around the anchor)
 PAGE_MARGIN_MM = 10.0  # inside the drawing sheet frame
-CORRIDOR_LEN_MM = 5.08
-CORRIDOR_HALF_MM = 1.27
+CORRIDOR_LEN_MM = 7.62
+CORRIDOR_HALF_MM = 2.54
 BODY_CLEARANCE_MM = 1.27
 LABEL_CHAR_MM = 0.8  # label text at 1.27 mm: ~0.6 em per character + shape
 _DIR: dict[str, tuple[int, int]] = {"right": (1, 0), "left": (-1, 0), "up": (0, -1), "down": (0, 1)}

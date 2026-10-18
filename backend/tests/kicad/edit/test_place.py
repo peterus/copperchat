@@ -7,14 +7,17 @@ from typing import Any
 
 import pytest
 
+from copperchat.changes.repo import ChangeRepo
 from copperchat.db import Database
+from copperchat.errors import StructuredToolError
 from copperchat.kicad_session import KicadHandle, KicadSession
 from copperchat.kicad_tools import access
+from copperchat.kicad_tools.edit import place as place_mod
 from copperchat.kicad_tools.edit.fields import FieldSpot, spot_box
 from copperchat.kicad_tools.edit.geometry import Box, mm_point, on_grid
 from copperchat.library.prefs import seed_user_part_preferences
 from tests.kicad.edit.helpers import item_ids
-from tests.support.edit import call_tool, edit_ctx, free_area, get_item
+from tests.support.edit import RUN_ID, call_tool, edit_ctx, free_area, get_item
 from tests.support.kicad_cli import cli_components, cli_netlist
 
 pytestmark = pytest.mark.kicad
@@ -300,6 +303,43 @@ async def test_shared_sheet_gets_unique_refs(
     assert refs[0].startswith("R2") and refs[1].startswith("R3"), refs
     comps = await _cli(s, tmp_path)
     assert comps[refs[0]]["value"] == comps[refs[1]]["value"] == "4k7"
+    rows = await ChangeRepo(edit_db).for_run(s.project.id, RUN_ID)
+    # The placement first, then the other instance's reference (written in that order).
+    assert [(r.op, r.uuid) for r in rows] == [
+        ("add", out["placed"]["uuid"]),
+        ("modify", out["placed"]["uuid"]),
+    ]
+
+
+async def test_shared_sheet_failure_removes_placement_and_its_rows(
+    hier_session: KicadSession, edit_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other instances' references fail after the save + reload: the placement is
+    undone and the change log keeps no 'add' row for the removed symbol."""
+    s = hier_session
+    await s.ensure_symbol_libraries()
+    ctx = edit_ctx(s, edit_db)
+    at = await _spot(s, sheet="2")
+    before = await s.call(item_ids)
+    reloads = Counter()
+    real_refresh = s.refresh_jobs
+
+    async def refresh() -> None:
+        await reloads()
+        await real_refresh()
+
+    async def failing(*_: Any, **__: Any) -> Any:
+        raise StructuredToolError(
+            "references failed", "injected", "retry", code="verification_failed"
+        )
+
+    monkeypatch.setattr(s, "refresh_jobs", refresh)
+    monkeypatch.setattr(place_mod, "apply_change_set", failing)  # the third change set
+    out, err = await call_tool(ctx, "sch_place_symbol", lib_id="Device:R", at=at, sheet="2")
+    assert err and out_code(out) == "verification_failed", out
+    assert reloads.calls == 1  # it failed after refresh_jobs
+    assert await s.call(item_ids) == before  # the placement is removed
+    assert await ChangeRepo(edit_db).for_run(s.project.id, RUN_ID) == []
 
 
 async def test_new_pins_do_not_change_existing_nets(

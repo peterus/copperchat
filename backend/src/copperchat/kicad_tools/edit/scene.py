@@ -9,6 +9,8 @@ junctions, no-connects and sheet symbols. Every sub-sheet read goes through
 from __future__ import annotations
 
 import difflib
+import math
+import re
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -19,6 +21,7 @@ from copperchat.kicad_tools import access
 from copperchat.kicad_tools.access import Netlist, PinKey
 from copperchat.kicad_tools.edit.changeset import SheetRef
 from copperchat.kicad_tools.edit.geometry import (
+    EPS_MM,
     Box,
     Direction,
     PinEnd,
@@ -177,6 +180,77 @@ class Scene:
 
     def wires_through(self, pt: Point) -> list[WireInfo]:
         return [w for w in self.wires.values() if on_segment(pt, w.start, w.end)]
+
+
+_INDEX_CELL_MM = 5.08
+
+
+def _index_cells(x0: float, y0: float, x1: float, y1: float) -> Iterator[tuple[int, int]]:
+    """Cells of the box grown by the connection tolerance."""
+    c = _INDEX_CELL_MM
+    for cx in range(math.floor((x0 - EPS_MM) / c), math.floor((x1 + EPS_MM) / c) + 1):
+        for cy in range(math.floor((y0 - EPS_MM) / c), math.floor((y1 + EPS_MM) / c) + 1):
+            yield cx, cy
+
+
+class ConnectionIndex:
+    """`Scene.items_at` for many points: the scene's connection items bucketed by
+    5.08 mm cells (each item in every cell its tolerance box touches), so a lookup tests
+    only the items of one cell. Same results in the same order as `Scene.items_at`
+    (the same predicates on a candidate superset, in scene order). Build it for a
+    scene that does not change while it is used."""
+
+    def __init__(self, scene: Scene) -> None:
+        self._cells: dict[tuple[int, int], list[tuple[int, int, Any, Any]]] = {}
+        seq = 0
+
+        def add(kind: int, a: Any, b: Any, box: tuple[float, float, float, float]) -> None:
+            nonlocal seq
+            for cell in _index_cells(*box):
+                self._cells.setdefault(cell, []).append((seq, kind, a, b))
+            seq += 1
+
+        def at(p: Point) -> tuple[float, float, float, float]:
+            return (p[0], p[1], p[0], p[1])
+
+        for sym in scene.symbols.values():
+            for pin in sym.pins:
+                add(0, sym, pin, at(pin.at))
+        for w in scene.wires.values():
+            axis = abs(w.start[0] - w.end[0]) < EPS_MM or abs(w.start[1] - w.end[1]) < EPS_MM
+            if axis:  # interior hits are possible only on axis-aligned wires
+                lo_x, hi_x = sorted((w.start[0], w.end[0]))
+                lo_y, hi_y = sorted((w.start[1], w.end[1]))
+                add(1, w, None, (lo_x, lo_y, hi_x, hi_y))
+            else:
+                for cell in {*_index_cells(*at(w.start)), *_index_cells(*at(w.end))}:
+                    self._cells.setdefault(cell, []).append((seq, 1, w, None))
+                seq += 1
+        for lb in scene.labels.values():
+            add(2, lb, None, at(lb.at))
+        for uid, j in scene.junctions.items():
+            add(3, uid, j, at(j))
+        for uid, n in scene.no_connects.items():
+            add(4, uid, n, at(n))
+
+    def items_at(self, pt: Point) -> list[dict[str, str]]:
+        cell = (math.floor(pt[0] / _INDEX_CELL_MM), math.floor(pt[1] / _INDEX_CELL_MM))
+        out: list[dict[str, str]] = []
+        for _, kind, a, b in sorted(self._cells.get(cell, ()), key=lambda e: e[0]):
+            if kind == 0:
+                if same_point(b.at, pt):
+                    out.append({"kind": "pin", "uuid": a.uuid, "ref": a.ref, "pin": b.number})
+            elif kind == 1:
+                if same_point(a.start, pt) or same_point(a.end, pt):
+                    out.append({"kind": "wire", "uuid": a.uuid})
+                elif in_segment_interior(pt, a.start, a.end):
+                    out.append({"kind": "wire", "uuid": a.uuid, "where": "interior"})
+            elif kind == 2:
+                if same_point(a.at, pt):
+                    out.append({"kind": a.kind, "uuid": a.uuid})
+            elif same_point(b, pt):
+                out.append({"kind": "junction" if kind == 3 else "no_connect", "uuid": a})
+        return out
 
 
 # -- sheets ---------------------------------------------------------------------------
@@ -415,6 +489,12 @@ def _pin_error(
     return StructuredToolError(what, why, suggestion, code=code, details=details)
 
 
+def _pin_functions(name: str) -> set[str]:
+    """The lower-case functions of a pin name: '~{RESET}/PB5' -> {'reset', 'pb5'}."""
+    plain = re.sub(r"[~{}]", "", name).lower()
+    return {part for part in plain.split("/") if part}
+
+
 def resolve_pin(
     h: KicadHandle,
     spec: str,
@@ -455,6 +535,9 @@ def resolve_pin(
         hits = [p for p in pins if p.name == pin]
     if not hits:
         hits = [p for p in pins if p.name.lower() == pin.lower()]
+    if not hits:  # one function of a multi-function pin: 'PB3' -> 'XTAL1/PB3'
+        wanted = _pin_functions(pin)  # 'RESET' or '~{RESET}' as copied from lib_get_symbol
+        hits = [p for p in pins if wanted and wanted <= _pin_functions(p.name)]
     candidates = sorted({f"{p.number} ({p.name})" if p.name else p.number for p in pins},
                         key=natural_key)  # fmt: skip
     if not hits:

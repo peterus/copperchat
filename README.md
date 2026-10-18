@@ -2,8 +2,9 @@
 
 Chat with an AI agent about your KiCad projects — in the browser on desktop, iPad and
 iPhone. CopperChat runs KiCad 11 headless next to your projects, shows schematic and board
-in an interactive viewer, and lets a read-only agent inspect the design through KiCad's own
-API, run ERC/DRC and look at rendered views. **Powered by Claude.**
+in an interactive viewer, and lets an agent inspect the design through KiCad's own API, run
+ERC/DRC, look at rendered views and — on `main`, not yet in a release — edit the schematic.
+**Powered by Claude.**
 
 CopperChat is an independent open-source project. It is **not Claude Code** and is not
 affiliated with or endorsed by Anthropic.
@@ -21,8 +22,17 @@ affiliated with or endorsed by Anthropic.
 - Git status, diff summary and commit — only when you ask.
 - Installable app (PWA) with push notifications when a run finishes, the agent needs you,
   or a rate-limit window reopens.
+- **Schematic editing** (unreleased, on `main`; v0.1.x is read-only): the agent places parts
+  from the KiCad libraries, wires and labels them, adds power symbols, edits fields, moves,
+  deletes and duplicates parts, annotates and works with hierarchical sheets — only through
+  KiCad's API, every change verified against KiCad's netlist before it is reported.
+  - Larger changes come as a **plan** you approve or reject in the chat; every plan step
+    ends with an ERC check and a checkpoint you can roll back to.
+  - A per-turn change budget (Settings › Editing), a **Changes** panel with the change log,
+    before/after highlights in the viewer, and undo per turn or plan step.
+  - Part preferences (e.g. passives in 0805) and part research before active parts.
 
-The agent never edits schematics or boards in this release.
+Boards (PCB) stay read-only.
 
 ## Quick start
 
@@ -80,10 +90,12 @@ notifications in Settings › Notifications.
 
 - **One user per instance.** The app login (username + password, argon2 hash, rate-limited)
   is always on, also behind Cloudflare Access.
-- **The main agent has no file, shell or web tools.** It only gets CopperChat's own
-  read-only design tools (KiCad API, ERC/DRC, views, git status/diff/commit-on-request), the
-  `Skill` tool and `research_part`. Design data is read through the running KiCad API
-  server — never by a CopperChat file parser.
+- **The main agent has no file, shell or web tools.** It only gets CopperChat's own design
+  tools (KiCad API reads, schematic edits, ERC/DRC, views, git status/diff/commit-on-request),
+  the `Skill` tool and `research_part`. Design data is read and written only through the
+  running KiCad API server — never by a CopperChat file parser or writer. Edits are refused
+  for a project open read-only, over the change budget, and while a plan is open outside
+  its begun step.
 - **The part researcher is guarded.** It runs as a separate agent query with web access
   (public hosts only, no private/loopback addresses, redirects re-checked) and may write only
   `.md`/`.txt` files under `<project>/docs/parts/<MPN>/` and read only `docs/parts/` and the

@@ -51,7 +51,7 @@ not import it.
 | E8b | `editing/phase-e8b-plans.md` | plans: model, state machine, plan gate + budget, plan tools, REST, `plan-updated` | E8a (E4, E5 for its end-to-end test) |
 | E9a | `editing/phase-e9a-viewer-changes.md` | KiCanvas fork highlight overlay, Changes panel, diff layer, before/after | E8a |
 | E9b | `editing/phase-e9b-plan-ui.md` | plan card, history nesting, Settings › Editing | E8b, E9a |
-| E10 | `editing/phase-e10-skills-scenarios.md` | `kicad-schematic-editing` skill, style recipes, golden scenario tests, undo/round-trip tests, live eval, docs | E6, E7, E8b |
+| E10 | `editing/phase-e10-skills-scenarios.md` | `kicad-schematic-editing` skill, style recipes, golden scenario tests, undo/round-trip tests, live eval, docs (as built + residuals: end of E-C13) | E6, E7, E8b |
 
 Execution waves (a phase starts once every phase it depends on is merged):
 
@@ -1016,6 +1016,105 @@ verification, status, changeCount, checkpointId, summary, failure, erc:
   shows its reason). `EditingSection` (`@/api/editingSettings`): radios plan policy / annotation
   block and the agent-view checkbox PUT on change; the budget PUTs on blur/Enter after a local
   1–500 check; a failed PUT restores the saved value and shows the server message.
+
+### E10 (as built): skill, golden scenarios, undo, live eval
+
+- **Skill** `skills/builtin/kicad-schematic-editing/SKILL.md` (sections Tool order, Addressing
+  pins, Rails and labels incl. hierarchical sheets, Plans, ERC policy, Results and errors,
+  Missing parts, Self-check, Reporting) from 2D's v2 draft and its seven rules;
+  `kicad-schematic-style` gained "Placement recipes"; `copperchat-tools` an "Editing the
+  schematic" section. `test_skill_tool_names_exist` checks every backticked tool-like name of
+  the three skills against `registry.all_specs()` (error codes and `lib_id` allow-listed); every
+  `sch_*`/`lib_*`/`plan_*` tool is named in the editing skill. **The main agent's
+  `SYSTEM_PROMPT` still said "This release is read-only"** (foundation wording, never changed by
+  E1–E9b): it now allows schematic edits, names the skill and keeps the board read-only.
+- **Golden scenarios** (`tests/kicad/edit/test_scenarios.py`, `golden.py`): `golden.check(scenario,
+  nets, components)` takes `nets = {net: {(ref, pin)}}` (`golden.nets_of`) and `components` from
+  `golden.live_components(h)` (live netlist; power symbols left out; a pin on no net or a
+  single-pin net is `unconnected-REF.PIN`) or `golden.cli_components_full(xml)` (kicad-cli;
+  `pinfunction` `NAME_number` stripped to `NAME`); result `{golden, missing, checks}` incl.
+  `passives_0805`, s1 `connector_rails`, s2 cap values. Scripts are tool calls with aliases
+  (`"{R}.1"` → the reference the placement got; `"@find"` = first `sch_find_space` candidate),
+  budget raised to 500 (plans: `test_undo`). Checks per scenario: golden on live **and** kicad-cli
+  netlists, `run_erc` 0 errors, `layout_problems` (grid, body overlaps, any pin end on a wire
+  interior — none occur), change log vs `kicad-cli sch diff` against the start snapshot (add →
+  `added`, delete → `removed`, add+delete → absent, modify → `modified` or no net difference,
+  every other diff entry `side_effect`). s3: the sensor sits on a sheet made by `sch_add_sheet`,
+  joined by sheet pins `I2C_SDA`/`I2C_SCL`; its parts are placed next to the hierarchical labels.
+- **Tool gaps found by the scenarios (fixed, with regression tests):** (1) `resolve_pin` matches
+  one function of a multi-function pin (`U1.PB3` → `XTAL1/PB3`, `U1.RESET` → `~{RESET}/PB5`;
+  number, exact, case-insensitive name first; `scene._pin_functions`); the 2D skill rule
+  promised it. (2) `space.CORRIDOR_LEN_MM`/`CORRIDOR_HALF_MM` 5.08/1.27 → **7.62/2.54**: a cap
+  found next to `U1.VCC` left no room for its own GND symbol beside the `+3V3` symbol of the
+  supply pin (spike 2D failure mode 2 again). (3) `sch_connect(pin, "<net>")` also routes onto a
+  **label** of the net (`connect._wire_targets` adds label anchors as zero-length targets): before,
+  the unwired hierarchical label of `sch_add_sheet_pin` was never a target, the call fell back to a
+  second label and the hierarchical label stayed dangling (ERC `label_dangling` error).
+- **Undo** (`test_undo.py`, rig of `test_plan_flow.py`): s2 as a two-step plan; restoring step 1,
+  the plan base (turn snapshot) and step 2 gives byte-identical `compute_hashes`, the restored step
+  2 is golden again (a restore reopens the session: use `history.sessions.current()`);
+  `test_rollback_half_executed_plan` (pause after step 1 → rollback 0 → base files, blank sheet).
+- **Edited fixtures**: `scripts/make-edited-fixtures.py` (kicad image) runs the scenario tests with
+  `COPPERCHAT_EDITED_FIXTURES`; each scenario copies the KiCad-saved `*.kicad_sch` verbatim plus a
+  `manifest.json` (`sch` root first, `refs`) to `frontend/e2e/fixtures/edited/<scenario>/`;
+  `viewer.spec.ts` "edited fixtures" loads each, no page/console error, `highlight(refs)` finds ≥ 1.
+- **Live eval** (`tests/live/test_editing_eval.py`, `editing_scenarios.py`; marker `live_sdk`, needs
+  KiCad too and the explicit opt-in `COPPERCHAT_LIVE_EVAL=1`, it costs money): the real `SdkStreamingBackend` with `registry.all_specs()` and the built-in skills on
+  the blank project; one chat per scenario, a new run id per turn, a proposed plan is approved and a
+  paused plan resumed through `PlanService` (as the user would), ≤ 6 turns, `LIVE_EVAL_MAX_USD`
+  (default 3) per scenario, checked between turns (usage arrives per turn). s4 "change all 0603 resistors to 0402" starts from a tool-built, ERC-clean
+  sheet and is scored by `check_resize` (resistors 0402, other parts/values and the pin partition
+  unchanged). Results `backend/tests/live/results/<date>.json`. Run 2026-10-18 (model: CLI default;
+  cost = SDK list-price estimate, OAuth subscription):
+
+  | Scenario | Golden | ERC err/warn | Turns | Tool calls | Tool errors | Plan | Tokens | US$ | s |
+  |---|---|---|---|---|---|---|---|---|---|
+  | s1_led | ✅ | 0/0 | 1 | 15 | 0 | – | 218 k | 0.16 | 43 |
+  | s2_ldo | ✅ | 0/0 | 1 | 22 | 1 | – | 582 k | 0.42 | 127 |
+  | s3_mcu_i2c_subsheet | ✅ | 0/0 | 3 | 68 | 8 | yes (revised once) | 2341 k | 0.77 | 312 |
+  | s4_resize_0402 | ✅ | 0/0 | 1 | 5 | 0 | – | 58 k | 0.04 | 9 |
+
+  Total incl. one s4 re-run (its first start state lacked PWR_FLAGs): ~US$1.43. The agent loaded
+  the skills first, ran `parts_get_notes` → `research_part` before the regulator/MCU/sensor, proposed
+  a 3-step plan for s3, hit `step_exceeded` in step 2 and revised the plan (approved again).
+  s3's tool errors: a GND symbol without room at a decap it placed, a sheet name used as a
+  symbol reference, the step limit, one `erc_errors_open`, a step begun while the previous ran, an
+  overlap, a `sheet` argument on a tool without one; s2/s3 each tried a non-existent
+  `research_part_placeholder` tool once (model, not CopperChat).
+- **Residual fixes in this PR** (from earlier phases): flaky `test_rate_limit_parks_publishes_and_
+  auto_resumes` (the test polled `rate_limited_until`, which `_park` sets before the message
+  metadata; it now waits for the `rate-limited` frame, published last); E8a: `/changes/runs` reads
+  snapshots in one query (`HistoryStore.latest_for_runs`) and `ChangeRepo.runs` has no N+1;
+  `/changes/diff` builds its cache key from `ChangeRepo.since_stats` and loads rows only on a miss
+  (`cached_diff(..., log_stats, load_log)`); E4: `clashes()` uses `scene.ConnectionIndex` (5.08 mm
+  buckets, identical results; 500-pin part ~0.07 s), a shared-sheet placement records its change rows
+  only after `fix_shared_instances` succeeded (`engine.record_applied`: no `add` row survives an
+  undone placement), tests for the shared-sheet failure path and the `set_fields` shared note;
+  `plan_open` hints by plan status (history restore 409: approved → abort or wait, running → stop,
+  paused → Roll back or abort; `details: {planId, status}`; the agent's `plan_open` for an approved
+  plan says `plan_step_begin`); E9b: `EditingSection` per-field save sequence (an older response or
+  failure never overrides a newer save, errors per field, a typed budget survives other saves),
+  PlanCard's armed Reject/Abort keyed on plan id + revision, status-aware `plan_open` restore hint,
+  `restoreSnapshot` / history list URLs encode their ids.
+
+## Residuals (remaining after E10)
+
+- **E6 lows** (PR #38, not cheap): the sheet-pin `joined` check is skipped when the only new
+  segment is merged away by KiCad (`specs_core.py`); sheet pins are ignored by the pre-write
+  checks of `sch_duplicate`/`sch_move`; `suggest()` re-clones the scene per trial; an unknown
+  UUID still reads every scene before `not_found`.
+- **E4**: one UUID on two instances of a shared sheet is compensated for its first instance only;
+  `sch_duplicate` refuses a target sheet file used by several instances.
+- **`sch_connect` to a label** only within `NEAR_MM` (25.4 mm); farther away it still falls back
+  to a second label and leaves an unwired hierarchical label dangling (the skill tells the agent
+  to `sch_move` the label first). `sch_find_space` near a pin pointing at the page edge finds
+  nothing (it keeps to the pin's side); `near=<REF>` works.
+- **Live eval**: s3 still shows the "no room for a GND symbol at a decap" retry with
+  agent-chosen coordinates (recovered); one run per scenario only (no variance); not CI-gating.
+- `plan_open` 409 details of the history restore arrive nested as `error.details.details`
+  (envelope of the HTTP error mapper); the frontend reads the status from `why` as a fallback.
+- From sub-project 1 (unchanged): no light board theme, no real-iPhone test, push untested in
+  CI, `cloudflared:latest` unpinned, not all actions SHA-pinned, git tools without push.
 
 ---
 
