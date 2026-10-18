@@ -456,7 +456,17 @@ async def _compensate(
         for u, s in run.deleted.items()
         if type(run.pre.get(u)).__name__ == "SchematicSymbolInstance"
     }
-    replace = {} if has_board else symbols_deleted
+    # A sheet symbol re-created through the API gets a blank screen and its next save
+    # replaces the sheet file (E7): never re-created, the turn end restores instead.
+    sheets_deleted = {u for u in run.deleted if type(run.pre.get(u)).__name__ == "SheetSymbol"}
+    shared: set[str] = set()
+    if symbols_deleted and not has_board:
+        # A symbol re-placed through one instance of a shared sheet file is invisible in
+        # the others until a reload (2A Q7): no lossless re-place there either.
+        files = [r.file for r in await session.call(sheet_refs)]
+        shared = {u for u, s in symbols_deleted.items() if files.count(s.file) > 1}
+    replace = {} if has_board or shared else symbols_deleted
+    restore_at_turn_end = (has_board and bool(symbols_deleted)) or bool(shared or sheets_deleted)
     placed_new: dict[str, str] = {}
 
     def undo(h: KicadHandle) -> None:
@@ -471,7 +481,7 @@ async def _compensate(
             restore.setdefault(s.path, (s, []))[1].append(copy_item(run.pre[u]))
         recreate: dict[str, tuple[SheetRef, list[Any]]] = {}
         for u, s in run.deleted.items():
-            if u not in symbols_deleted:
+            if u not in symbols_deleted and u not in sheets_deleted:
                 recreate.setdefault(s.path, (s, []))[1].append(copy_item(run.pre[u]))
         for u, (op, _b, _a) in run.side.items():
             nb = run.neighbours[u]
@@ -514,10 +524,16 @@ async def _compensate(
     except Exception as exc:
         log.warning("compensating %s failed: %s", run.cs.tool, exc)
         raise DocumentInconsistent(f"undoing the partial {run.cs.tool} change failed") from exc
-    if has_board and symbols_deleted:
+    if restore_at_turn_end:
+        what = (
+            "a deleted sheet symbol cannot be re-created"
+            if sheets_deleted
+            else "deleted symbols cannot be restored losslessly in a project with a board"
+            if has_board
+            else "deleted symbols of a sheet file used by several instances cannot be re-placed"
+        )
         raise DocumentInconsistent(
-            f"{run.cs.tool}: deleted symbols cannot be restored losslessly in a project with "
-            "a board; the last checkpoint is restored at turn end",
+            f"{run.cs.tool}: {what}; the last checkpoint is restored at turn end",
             auto_restore=True,
         )
     # Re-verify: original UUIDs back, created ones gone, netlist identical.
