@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import AsyncIterator, Callable
+from typing import Any
 
 import pytest
 
 from copperchat.config import Settings
 from copperchat.errors import StructuredToolError
 from copperchat.kicad_session import KicadHandle, KicadSession, KicadSessionManager
+from copperchat.library.prefs import preference_notes, preferences_from_raw
 from copperchat.library.service import LibraryService, library_for
+from copperchat.library.specs import TOOL_SPECS
 from copperchat.projects import discover_projects
-from tests.kicad.edit.helpers import item_ids
+from copperchat.tools import ToolContext, ToolSpec
+from tests.kicad.edit.helpers import edit_ctx, item_ids
 from tests.support.kicad_project import copy_fixture, real_settings
 
 pytestmark = pytest.mark.kicad
@@ -211,3 +216,58 @@ async def test_no_board_footprints_unavailable(boardless_session: KicadSession) 
     # symbol search still works without a board
     svc2 = await _ready(boardless_session)
     assert await svc2.search_symbols("resistor")
+
+
+async def test_no_board_package_check_from_name(boardless_session: KicadSession) -> None:
+    """Owner decision 3: without a board the package check still runs from the name."""
+    svc = library_for(boardless_session)
+    prefs = preferences_from_raw({"passives_package": "0805"})
+    footprint = None if not svc.footprints_available() else await svc.footprint("x:y")
+    notes = preference_notes(prefs, "Device:R", "Resistor_SMD:R_0603_1608Metric", footprint)
+    assert [n["kind"] for n in notes] == ["preference_deviation"]
+    assert notes[0]["expected"] == "0805" and notes[0]["actual"] == "0603"
+
+
+# -- Task 4: tool shapes ------------------------------------------------------------------
+
+
+def _tool(name: str) -> ToolSpec:
+    return next(s for s in TOOL_SPECS if s.name == name)
+
+
+async def _call(ctx: ToolContext, name: str, args: dict[str, Any]) -> dict[str, Any]:
+    result = await _tool(name).handler(ctx, args)
+    assert result.data is not None
+    return json.loads(json.dumps(result.data))  # what the agent sees
+
+
+async def test_lib_tools_shapes(ecc83_session: KicadSession) -> None:
+    ctx = edit_ctx(ecc83_session)
+    out = await _call(ctx, "lib_search_symbols", {"query": "resistor", "limit": 5})
+    assert set(out) == {"query", "library", "results", "note"}
+    assert set(out["results"][0]) == {
+        "lib_id", "description", "keywords", "unit_count", "pin_count", "footprint",
+        "footprint_filters", "scope",
+    }  # fmt: skip
+    assert len(out["results"]) <= 5
+    out = await _call(ctx, "lib_get_symbol", {"lib_id": "Device:LED"})
+    assert {
+        "lib_id", "description", "keywords", "reference_prefix", "value", "footprint",
+        "footprint_filters", "datasheet", "unit_count", "body_styles", "is_power", "pin_count",
+        "pins", "body_size_mm", "pin_directions_by_rotation", "note",
+    } == set(out)  # fmt: skip
+    assert set(out["pins"][0]) == {"number", "name", "type", "unit", "offset_mm", "direction"}
+    assert out["pin_directions_by_rotation"]["0"] == {"1": "left", "2": "right"}
+    out = await _call(ctx, "lib_search_footprints", {"query": "0805 resistor", "limit": 3})
+    assert set(out) == {"query", "library", "results", "searched_libraries", "libraries", "note"}
+    assert set(out["results"][0]) == {"lib_id", "description", "pad_count", "smd_pads", "package"}
+    assert "Resistor_SMD" in out["libraries"] and "Resistor_SMD" in out["searched_libraries"]
+    out = await _call(ctx, "lib_search_footprints", {"query": "0805", "library": "Capacitor_SMD"})
+    assert set(out) == {"query", "library", "results"}
+    assert out["results"][0]["package"] == "0805"
+    out = await _call(ctx, "parts_get_notes", {"mpn": "ECC83"})
+    assert out == {
+        "mpn": "ECC83",
+        "researched": False,
+        "note": "No notes yet: call research_part before relying on this part.",
+    }

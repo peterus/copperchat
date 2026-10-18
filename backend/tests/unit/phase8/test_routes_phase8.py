@@ -89,7 +89,8 @@ def test_skill_name_traversal_rejected(env: Env, bad: str) -> None:
         404,
         405,
     )
-    assert list(env.settings.data_dir.glob("**/SKILL.md")) == []
+    written = env.settings.data_dir.glob("**/SKILL.md")
+    assert [p for p in written if p.parent.name != "part-preferences"] == []  # E3 startup seed
     assert not (env.settings.data_dir.parent / "etc").exists()
 
 

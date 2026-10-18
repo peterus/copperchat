@@ -278,3 +278,15 @@ def acknowledge_update(layers: SkillLayers, name: str) -> None:
     if builtin is None or _read_sidecar(d) is None:
         raise SkillNotFound(f"{name} is not a customised built-in")
     _atomic_write(d / SIDECAR, _sidecar_text(builtin.content))
+
+
+def layer_contents(layers: SkillLayers, name: str) -> dict[Origin, str]:
+    """The valid SKILL.md text of `name` per layer that has one (most specific first:
+    project, user, builtin) - for documents read per layer, e.g. part preferences."""
+    validate_skill_name(name)
+    order: list[tuple[Origin, Path | None]] = [
+        ("project", layers.project_root),
+        ("user", layers.user_root),
+        ("builtin", layers.builtin_root),
+    ]
+    return {origin: entry.content for origin, root in order if (entry := _load(root, name))}

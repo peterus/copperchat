@@ -5,6 +5,12 @@ EXPECTED = {
     "kicad-review-discipline": ["decoupling", "pull-up", "run_erc", "render_view", "research_part"],
     "copperchat-tools": ["mm", "full UUID", "region", "research_part", "attachment_paths", "mpn"],
     "part-notes": ["If unused", "[D1 p.", "Example:", "check_notes", "KiCad"],
+    "part-preferences": [
+        "```preferences",
+        "passives_package:",
+        "preferred_libraries:",
+        "deviation",
+    ],
 }
 
 
