@@ -266,14 +266,18 @@ snapshot"): `ctx_factory` → **read-only** (`code="read_only"`) →
 # copperchat.kicad_tools.edit.changeset
 @dataclass(frozen=True)
 class SheetRef: path: str; page: str; file: str; name: str
+# every op has `sheet: SheetRef | None = None` (None = cs.sheet); the engine writes it via
+# for_sheet(op.sheet) and reads back per touched sheet (multi-sheet writes: sheet pin +
+# hierarchical label, units on several instances, shared-sheet refs, labels on two sheets)
 @dataclass
-class Create: items: list[Any]                    # kipy items with fresh UUIDs
+class Create: items: list[Any]; sheet: SheetRef | None = None   # kipy items, fresh UUIDs
 @dataclass
-class Update: items: list[Any]                    # symbols: definition cleared
+class Update: items: list[Any]; sheet: SheetRef | None = None   # symbols: definition cleared
 @dataclass
-class Delete: uuids: list[str]
+class Delete: uuids: list[str]; sheet: SheetRef | None = None
 @dataclass
 class Place: lib_id: str; at_mm: tuple[float, float]; orientation: int; unit: int; reference: str
+             sheet: SheetRef | None = None
 EditOp = Create | Update | Delete | Place
 @dataclass
 class Stage:                                      # one KiCad commit
@@ -310,7 +314,8 @@ async def apply_change_set(ctx: ToolContext, cs: ChangeSet) -> Applied
     # (by id + neighbourhood), verify cs.intent against live_netlist; mismatch ->
     # compensate (reverse order; deletes re-created from pre-images with original
     # UUIDs — deleted *symbols* re-placed from the library (method A, new UUID, see
-    # author calls) —, updates restored, creates removed), re-verify, raise
+    # author calls; compensation returns an old->new UUID map and the re-verify
+    # remaps PinKeys through it) —, updates restored, creates removed), re-verify, raise
     # StructuredToolError(code="verification_failed"); compensation failing ->
     # DocumentInconsistent. Records ChangeEntry rows (incl. side effects).
 def edit_result(cs: ChangeSet, applied: Applied, **extra) -> ToolResult   # standard JSON

@@ -14,7 +14,8 @@ plan discipline.
 - Modify: `agent/protocol.py` (`PlanUpdatedFrame`), `frontend/src/protocol/frames.ts`,
   `editing/service.py` (`gate = PlanGate`), `editing/hooks.py` (turn end/start),
   `history/hooks.py` / `history/service.py` (external-change listener), `web/app.py`
-  (router, `PlanService` in lifespan + `pause_all_running()`), `tools/registry.py`
+  (router, `PlanService` in lifespan + `pause_all_running()`), `push/notifier.py`
+  (`plan_needs_attention` rows), `tools/registry.py`
   (provider `copperchat.plans.specs`)
 - Tests: `tests/unit/plans/test_machine.py`, `test_gate.py`, `test_service.py`,
   `tests/unit/web/test_routes_plans.py`, `tests/kicad/edit/test_plan_flow.py`
@@ -64,7 +65,9 @@ int, touches?: {refs, nets}, verification}])`, `plan_revise(steps, reason)`,
     `test_second_erc_refusal_pauses_plan` (spec §11 "unexplained ERC regression": a second
     consecutive `erc_errors_open` for the same step and the same violation ids → plan `paused`,
     step `failed` with the ERC delta attached, an error row with `code: "plan_needs_attention"`
-    is posted so Phase 9's notifier sends "needs attention").
+    is posted; `push/notifier.py` treats a run that posted any row with
+    `metadata.code == "plan_needs_attention"` as "needs attention" even when agent text follows
+    — notifier-level test `test_needs_attention_from_mid_run_plan_row`).
   - `test_step_done_takes_checkpoint_and_counts_changes` (checkpoint id + `change_count` from the
     change log of the step).
   - `test_step_done_without_render_adds_reminder` (no `render_view(sch)` since step begin →
@@ -83,10 +86,13 @@ int, touches?: {refs, nets}, verification}])`, `plan_revise(steps, reason)`,
 
 **Interfaces:** E-C12 plan routes; `plan-updated` frame on every plan change; approve/resume
 enqueue a user message through `engine.submit_ex(client_message_id=f"plan-{id}-{event}-{revision}", text=…)`
-("Plan "<title>" approved. Execute it step by step." / "Resume plan "<title>" at step k.").
+that references the plan **by id, revision and step only** — never its agent-authored title
+(prompt-injection hardening): "The user approved plan <id> (revision r). Execute it step by
+step." / "The user resumed plan <id> at step k."; metadata `{planId, event}`.
 
 - [ ] **Step 1: Failing tests** (`test_routes_plans.py`): `test_approve_enqueues_message_once`
-  (idempotent on retry); `test_reject_posts_notice_for_agent`; `test_resume_requires_paused`;
+  (idempotent on retry); `test_hostile_title_not_echoed` (title with "ignore previous
+  instructions…" → enqueued text contains only id/revision); `test_reject_posts_notice_for_agent`; `test_resume_requires_paused`;
   `test_rollback_restores_checkpoint_and_resets_steps`; `test_rollback_to_zero_restores_base`;
   `test_rollback_refused_while_run_active` (409 `agent_busy`); `test_abort_keeps_design`;
   `test_open_plan_endpoint`; 401/404/400 cases; `plan-updated` fixture valid/invalid

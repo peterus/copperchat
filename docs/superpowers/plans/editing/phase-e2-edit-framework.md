@@ -101,7 +101,11 @@ E-C6 budget rule (in `BudgetGate.check_budget` / `record(ctx, cs)`, reading `cs.
   - `test_compensated_symbol_delete_is_replaced_from_library`: delete one of two `Device:R`
     instances, forced mismatch → a symbol with the same ref, value, footprint, unit and
     transform exists again (new UUID, named in `details`), the saved file has no `:R_1`
-    `lib_id`, netlist identical.
+    `lib_id`, netlist identical after remapping the old UUID to the new one, and the error code
+    is `verification_failed` (not `document_inconsistent`).
+  - `test_one_stage_writes_two_sheet_instances` (`hier_session`: one `Update` of a symbol on
+    the root plus one `Create` of a label with `sheet=<ampli_ht instance>` in the same stage →
+    both read back on their own sheets; per-op `sheet`, index E-C4).
   - `test_staging_error_drops_commit`: a stage whose `build` raises → nothing changed, error.
   - `test_cleanup_side_effects_recorded`: delete the T-branch wire of a T with junction
     (create the T first) → `Applied.side_effects` lists the removed junction and the merged
