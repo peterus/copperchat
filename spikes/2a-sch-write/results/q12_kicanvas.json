@@ -1,0 +1,48 @@
+{
+  "question": "q12_kicanvas",
+  "checks": [
+    {
+      "name": "kicanvas_loads_q01_place",
+      "ok": true,
+      "evidence": "{\"files\":[\"blank.kicad_sch\"],\"loaded\":true,\"errors\":[],\"distinctColours\":138,\"nonBackgroundFraction\":0.0435}"
+    },
+    {
+      "name": "kicanvas_loads_q02_fields",
+      "ok": true,
+      "evidence": "{\"files\":[\"blank.kicad_sch\"],\"loaded\":true,\"errors\":[],\"distinctColours\":76,\"nonBackgroundFraction\":0.023}"
+    },
+    {
+      "name": "kicanvas_loads_q03_connect",
+      "ok": true,
+      "evidence": "{\"files\":[\"blank.kicad_sch\"],\"loaded\":true,\"errors\":[],\"distinctColours\":69,\"nonBackgroundFraction\":0.0234}"
+    },
+    {
+      "name": "kicanvas_loads_q07_sheets",
+      "ok": true,
+      "evidence": "{\"files\":[\"blank.kicad_sch\",\"power.kicad_sch\"],\"loaded\":true,\"errors\":[],\"distinctColours\":41,\"nonBackgroundFraction\":0.0216}"
+    },
+    {
+      "name": "kicanvas_loads_q08_hierarchy",
+      "ok": true,
+      "evidence": "{\"files\":[\"ampli_ht.kicad_sch\",\"complex_hierarchy.kicad_sch\",\"extra.kicad_sch\"],\"loaded\":true,\"errors\":[],\"distinctColours\":117,\"nonBackgroundFraction\":0.0293}"
+    },
+    {
+      "name": "kicanvas_loads_q09_bbox",
+      "ok": true,
+      "evidence": "{\"files\":[\"blank.kicad_sch\"],\"loaded\":true,\"errors\":[],\"distinctColours\":85,\"nonBackgroundFraction\":0.0288}"
+    },
+    {
+      "name": "kicanvas_loads_q10_duplicate_A",
+      "ok": true,
+      "evidence": "{\"files\":[\"blank.kicad_sch\"],\"loaded\":true,\"errors\":[],\"distinctColours\":175,\"nonBackgroundFraction\":0.0262}"
+    },
+    {
+      "name": "kicanvas_loads_q10_duplicate_B",
+      "ok": false,
+      "evidence": "{\"files\":[\"blank.kicad_sch\"],\"loaded\":true,\"errors\":[\"Error: No pin numbered 1 on library symbol 74LS00_1\"],\"distinctColours\":1,\"nonBackgroundFraction\":0}"
+    }
+  ],
+  "notes": {
+    "bundle": "frontend/public/vendor/kicanvas/kicanvas.js"
+  }
+}

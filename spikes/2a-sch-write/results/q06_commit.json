@@ -4,7 +4,7 @@
     {
       "name": "staged_create_response_has_uuid",
       "ok": true,
-      "evidence": "('9983837c', '0a1f5faa')"
+      "evidence": "('637a813f', '91448739')"
     },
     {
       "name": "staged_create_invisible_by_id",
@@ -24,7 +24,7 @@
     {
       "name": "after_push_visible",
       "ok": true,
-      "evidence": "['0a1f5faa', '9983837c', 'd9a9c294']"
+      "evidence": "['57ddb087', '637a813f', '91448739']"
     },
     {
       "name": "staged_delete_still_visible_before_push",
@@ -104,7 +104,7 @@
     {
       "name": "recreate_with_original_uuids",
       "ok": true,
-      "evidence": "{'missing': [], 'returned_ids': ['1f9992b5', '46e11003', '5c14e116', '747ebead', 'ab4afe0e', 'af2c69e5', 'b47baf97', 'c179342a']}"
+      "evidence": "{'missing': [], 'returned_ids': ['0cf3e164', '2fe4630d', '436961eb', '61c7ae08', '7fe4fab0', 'ca8a178b', 'ee55381a', 'f4106fb4']}"
     },
     {
       "name": "recreated_content_equal",
@@ -136,16 +136,16 @@
     "staged_update_visible_before_push": true,
     "corner_junction_dropped_on_create": true,
     "pre_images": {
-      "1f9992b5": "SchematicSymbolInstance",
-      "b47baf97": "SchematicSymbolInstance",
-      "af2c69e5": "SchematicLine",
-      "747ebead": "SchematicLine",
-      "5c14e116": "SchematicLine",
-      "ab4afe0e": "LocalLabel",
-      "c179342a": "NoConnectMarker",
-      "46e11003": "GlobalLabel"
+      "ca8a178b": "SchematicSymbolInstance",
+      "7fe4fab0": "SchematicSymbolInstance",
+      "61c7ae08": "SchematicLine",
+      "436961eb": "SchematicLine",
+      "f4106fb4": "SchematicLine",
+      "0cf3e164": "LocalLabel",
+      "ee55381a": "NoConnectMarker",
+      "2fe4630d": "GlobalLabel"
     },
-    "compensate_ms": 35.4,
-    "root": "/tmp/s2a-blank-6_bcc_cp/blank/blank.kicad_sch"
+    "compensate_ms": 35.3,
+    "root": "/tmp/s2a-blank-wbi34em6/blank/blank.kicad_sch"
   }
 }

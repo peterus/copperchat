@@ -29,7 +29,7 @@
     {
       "name": "project_lib_place",
       "ok": true,
-      "evidence": "[<kipy.common_types.LibraryIdentifier object at 0x7fa2160b5c70>, <kipy.common_types.LibraryIdentifier object at 0x7fa2160a19d0>, <kipy.common_types.LibraryIdentifier object at 0x7fa2160a1150>]"
+      "evidence": "[<kipy.common_types.LibraryIdentifier object at 0x7fedc5dd9b50>, <kipy.common_types.LibraryIdentifier object at 0x7fedc5dc59d0>, <kipy.common_types.LibraryIdentifier object at 0x7fedc5dc5150>]"
     },
     {
       "name": "multi_unit_units",
@@ -78,7 +78,7 @@
     }
   ],
   "notes": {
-    "load_all_libraries_s": 8.36,
+    "load_all_libraries_s": 8.22,
     "multi_unit_reference_read_back": [
       "U1",
       "U1",
@@ -148,10 +148,6 @@
     },
     "pin_ends_example": {
       "U11": {
-        "2": [
-          48.26,
-          99.06
-        ],
         "1": [
           63.5,
           101.6
@@ -159,6 +155,10 @@
         "3": [
           48.26,
           104.14
+        ],
+        "2": [
+          48.26,
+          99.06
         ]
       }
     }

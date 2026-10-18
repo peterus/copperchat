@@ -17,9 +17,11 @@ from harness import (
     by_id,
     cli_netlist,
     fresh_fixture,
+    keep_artifact,
     load_libraries,
     local_label,
     main_guard,
+    nets_by_pin,
     netlist_components,
     require_kicad,
     root_sch,
@@ -67,6 +69,11 @@ def main() -> int:
         sch = k.get_schematic()
         n_sym = len(sch.get_symbols())
         rec.check("fixture_size_100_plus_symbols", n_sym >= 100, f"{n_sym} symbol unit instances, {len(list(sch.get_hierarchy()))} sheet instances")
+        tmp0 = Path(tempfile.mkdtemp(prefix="s2a-q08-nl-"))
+        api = {kk: v for kk, v in nets_by_pin(sch).items() if not kk[0].startswith("#")}
+        cli0 = cli_netlist(root_sch(proj), tmp0)
+        diff = sorted(kk for kk in set(api) | set(cli0) if api.get(kk) != cli0.get(kk))
+        rec.check("live_netlist_matches_cli_on_hierarchical_demo", not diff and len(api) > 100, {"pins": len(api), "diff": diff[:8]})
         load_libraries(k)
         inst = {s.name: s for s in sch.get_hierarchy()}
         sub = sch.for_sheet(inst["ampli_ht_vertical"])
@@ -137,6 +144,8 @@ def main() -> int:
             update_symbols(other, [g])
         refs = {n: [s.reference for s in sch.for_sheet(inst[n]).get_symbols() if sid(s) == sid(new_sub)] for n in ("ampli_ht_vertical", "ampli_ht_horizontal")}
         rec.check("workaround_save_revert_then_per_instance_reference", refs == {"ampli_ht_vertical": ["R299"], "ampli_ht_horizontal": ["R399"]}, refs)
+        sch.save()
+        keep_artifact(proj, "q08_hierarchy")
     return rec.finish()
 
 

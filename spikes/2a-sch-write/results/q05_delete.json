@@ -29,7 +29,7 @@
     {
       "name": "delete_wire_keeps_neighbour_segments",
       "ok": false,
-      "evidence": "{'4d226704': ((50.8, 54.61), (50.8, 63.5)), 'ed1c275b': ((50.8, 63.5), (101.6, 63.5)), 'c911fc8a': ((101.6, 63.5), (101.6, 54.61))}"
+      "evidence": "{'bd2afcb2': ((50.8, 54.61), (50.8, 63.5)), 'cb9cdb2c': ((50.8, 63.5), (101.6, 63.5)), 'ee01e6bf': ((101.6, 63.5), (101.6, 54.61))}"
     },
     {
       "name": "after_branch_delete_r3_disconnected",
@@ -59,7 +59,7 @@
     {
       "name": "delete_label_junction_no_connect",
       "ok": true,
-      "evidence": "['4d226704', 'c911fc8a', 'ed1c275b']"
+      "evidence": "['bd2afcb2', 'cb9cdb2c', 'ee01e6bf']"
     },
     {
       "name": "netlist_after_label_delete",
@@ -69,7 +69,7 @@
     {
       "name": "collinear_pair_kept_separate_on_create",
       "ok": false,
-      "evidence": "{'e08d68c0': ((127.0, 127.0), (152.4, 127.0))}"
+      "evidence": "{'b5fd3c29': ((127.0, 127.0), (152.4, 127.0))}"
     },
     {
       "name": "delete_unknown_id",
@@ -93,7 +93,7 @@
           50.8,
           63.5
         ],
-        "4d226704"
+        "bd2afcb2"
       ],
       [
         [
@@ -104,7 +104,7 @@
           101.6,
           54.61
         ],
-        "c911fc8a"
+        "ee01e6bf"
       ],
       [
         [
@@ -115,7 +115,7 @@
           101.6,
           63.5
         ],
-        "ed1c275b"
+        "cb9cdb2c"
       ]
     ]
   }

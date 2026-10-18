@@ -7,6 +7,11 @@
       "evidence": "119 symbol unit instances, 3 sheet instances"
     },
     {
+      "name": "live_netlist_matches_cli_on_hierarchical_demo",
+      "ok": true,
+      "evidence": "{'pins': 164, 'diff': []}"
+    },
+    {
       "name": "document_modified_before_save",
       "ok": true,
       "evidence": ""
@@ -29,7 +34,7 @@
     {
       "name": "save_plus_copy_plus_erc_under_10s",
       "ok": true,
-      "evidence": "[2899, 2904, 2894]"
+      "evidence": "[2922, 2890, 2932]"
     },
     {
       "name": "document_clean_after_save",
@@ -57,7 +62,7 @@
       "evidence": "['ampli_ht.kicad_sch', 'complex_hierarchy.kicad_sch', 'extra.kicad_sch']"
     },
     {
-      "name": "shared_sheet_new_symbol_refs_after_save",
+      "name": "shared_sheet_second_instance_unique_ref_after_save",
       "ok": false,
       "evidence": "['R299']"
     },
@@ -70,31 +75,31 @@
   "notes": {
     "timings_ms": {
       "save": [
-        48,
-        59,
-        52
+        42,
+        57,
+        51
       ],
       "save_copy": [
-        36,
-        35,
-        35
+        33,
+        37,
+        36
       ],
       "erc": [
-        2814,
-        2810,
-        2807
+        2846,
+        2797,
+        2845
       ],
       "total": [
-        2899,
-        2904,
-        2894
+        2922,
+        2890,
+        2932
       ]
     },
     "median_ms": {
-      "save": 52,
-      "save_copy": 35,
-      "erc": 2810,
-      "total": 2899
+      "save": 51,
+      "save_copy": 36,
+      "erc": 2845,
+      "total": 2922
     },
     "files_rewritten_by_save": [
       "ampli_ht.kicad_sch",

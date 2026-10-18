@@ -178,6 +178,18 @@ def main() -> int:
             results_a[src.reference] = {kk: (a[kk], b[kk]) for kk in a if a[kk] != b[kk]}
         rec.check("dup_symbols_place_and_copy_identical", not any(results_a.values()), results_a)
 
+        # --- connectivity of the copy (method A at +DY)
+        nets = nets_by_pin(sch)
+        rec.check("dup_connectivity_mirrors_source", nets.get(("R201", "2")) is not None and nets.get(("R201", "2")) == nets.get(("C201", "1")) and nets.get(("R101", "2")) != nets.get(("R201", "2")), (nets.get(("R201", "2")), nets.get(("C201", "1")), nets.get(("R101", "2"))))
+        rec.check("dup_local_label_suffixed", (nets.get(("C201", "2")) or "").endswith("SIG_CH2") and (nets_src.get(("C101", "2")) or "").endswith("SIG"), (nets.get(("C201", "2")), nets_src.get(("C101", "2"))))
+        rec.check("dup_global_label_shared", nets.get(("R201", "1")) == nets.get(("R101", "1")) == "VCC_G", (nets.get(("R201", "1")), nets.get(("R101", "1"))))
+        sch.save()
+        keep_artifact(proj, "q10_duplicate_A")
+        # the definition reported for a De Morgan symbol after a body style change
+        g = by_id(sch, [sid(g1)])[sid(g1)]
+        lib_pins = len(k.get_library_symbol("74xx:74LS00").pins)
+        rec.check("definition_keeps_all_body_style_pins", len(g.definition.pins) == lib_pins, f"{len(g.definition.pins)} pins reported for body_style={g.body_style} vs {lib_pins} in the library")
+
         # --- symbols, method B: create_items with the read object, new UUID + reference
         results_b, made_b = {}, []
         for s_id, new_ref in ((sid(r1), "R301"), (sid(c1), "C301"), (sid(u1), "U301"), (sid(g1), "U302")):
@@ -203,13 +215,9 @@ def main() -> int:
         rec.check("dup_symbols_create_items_props_identical_except_lib", all(isinstance(v, dict) and set(v) <= {"lib"} for v in diffs.values()), diffs)
         rec.check("dup_symbols_create_items_keep_library_link", all(isinstance(v, dict) and "lib" not in v for v in diffs.values()), {kk: v.get("lib") if isinstance(v, dict) else v for kk, v in diffs.items()})
 
-        # --- connectivity of the copy (method A at +DY)
-        nets = nets_by_pin(sch)
-        rec.check("dup_connectivity_mirrors_source", nets.get(("R201", "2")) is not None and nets.get(("R201", "2")) == nets.get(("C201", "1")) and nets.get(("R101", "2")) != nets.get(("R201", "2")), (nets.get(("R201", "2")), nets.get(("C201", "1")), nets.get(("R101", "2"))))
-        rec.check("dup_local_label_suffixed", (nets.get(("C201", "2")) or "").endswith("SIG_CH2") and (nets_src.get(("C101", "2")) or "").endswith("SIG"), (nets.get(("C201", "2")), nets_src.get(("C101", "2"))))
-        rec.check("dup_global_label_shared", nets.get(("R201", "1")) == nets.get(("R101", "1")) == "VCC_G", (nets.get(("R201", "1")), nets.get(("R101", "1"))))
         sch.save()
-        keep_artifact(proj, "q10_duplicate")
+        keep_artifact(proj, "q10_duplicate_B")
+
     return rec.finish()
 
 

@@ -341,21 +341,27 @@ def pin_ends(sym) -> dict[str, tuple[float, float]]:
     return {p.number: mm(p.position) for p in sym.definition.pins}
 
 
-def nets_by_pin(sch) -> dict[tuple[str, str], str]:
-    """(ref, pin) -> net name from the GetSchematicNetlist + GetItems of symbols.
+def _path_key(path_proto) -> str:
+    return "/".join(p.value for p in path_proto.path)
 
-    The netlist lists item KIIDs per sheet; pins are mapped back through the symbols'
-    definition pins (pin KIIDs).
+
+def nets_by_pin(sch) -> dict[tuple[str, str], str]:
+    """(ref, pin) -> net name from GetSchematicNetlist + GetItems of symbols (live, no save).
+
+    The netlist lists member KIIDs per sheet path; a pin KIID is the same in every sheet
+    instance of a shared sub-sheet, so pins are resolved per (sheet path, pin KIID) through
+    the symbol instances (their `path`) and their definition pins.
     """
-    pin_owner: dict[str, tuple[str, str]] = {}
+    pin_owner: dict[tuple[str, str], tuple[str, str]] = {}
     for s in sch.get_symbols():
         for p in s.definition.pins:
-            pin_owner[sid(p)] = (s.reference, p.number)
+            pin_owner[(_path_key(s.path.proto), sid(p))] = (s.reference, p.number)
     out = {}
     for net in sch.get_netlist():
         for sheet in net.sheets:
+            pk = _path_key(sheet.path.proto)
             for item in sheet.items:
-                key = pin_owner.get(str(item.value))
+                key = pin_owner.get((pk, str(item.value)))
                 if key:
                     out[key] = net.name
     return out

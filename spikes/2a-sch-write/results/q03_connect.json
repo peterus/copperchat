@@ -209,7 +209,7 @@
       ]
     },
     "t_joint_host_wire_after": {
-      "14f29c6c-32a2-4892-b48d-d78b38bcbdae": [
+      "07ee14ac-b797-4620-b010-b00a6acbce5c": [
         [
           50.8,
           63.5
@@ -219,7 +219,7 @@
           63.5
         ]
       ],
-      "a32754c3-294e-484f-8211-bd2de7ff0833": [
+      "9d9bb4c3-52bb-4c52-8af8-7ab4013c0dd2": [
         [
           50.8,
           114.3
@@ -230,7 +230,7 @@
         ]
       ]
     },
-    "close_open_document_ms": 51.0,
+    "close_open_document_ms": 46.0,
     "gnd_ref": "#PWR01",
     "erc_violation_types": {
       "endpoint_off_grid": 1,

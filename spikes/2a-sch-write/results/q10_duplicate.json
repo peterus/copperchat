@@ -22,21 +22,6 @@
       "evidence": "{'R101': {}, 'C101': {}, 'U101': {}, 'U102': {}}"
     },
     {
-      "name": "dup_symbols_create_items_refs",
-      "ok": true,
-      "evidence": "{'R101_ref': 'R301', 'C101_ref': 'C301', 'U101_ref': 'U301', 'U102_ref': 'U302'}"
-    },
-    {
-      "name": "dup_symbols_create_items_props_identical_except_lib",
-      "ok": true,
-      "evidence": "{'R101': {'lib': ('Device:R', ':R_1')}, 'C101': {'lib': ('Device:C', ':C_1')}, 'U101': {'lib': ('Amplifier_Operational:LM358', ':LM358_1')}, 'U102': {'lib': ('74xx:74LS00', ':74LS00_1')}}"
-    },
-    {
-      "name": "dup_symbols_create_items_keep_library_link",
-      "ok": false,
-      "evidence": "{'R101': ('Device:R', ':R_1'), 'C101': ('Device:C', ':C_1'), 'U101': ('Amplifier_Operational:LM358', ':LM358_1'), 'U102': ('74xx:74LS00', ':74LS00_1')}"
-    },
-    {
       "name": "dup_connectivity_mirrors_source",
       "ok": true,
       "evidence": "('/SIG_CH2', '/SIG_CH2', '/SIG')"
@@ -50,6 +35,26 @@
       "name": "dup_global_label_shared",
       "ok": true,
       "evidence": "('VCC_G', 'VCC_G')"
+    },
+    {
+      "name": "definition_keeps_all_body_style_pins",
+      "ok": false,
+      "evidence": "14 pins reported for body_style=2 vs 26 in the library"
+    },
+    {
+      "name": "dup_symbols_create_items_refs",
+      "ok": true,
+      "evidence": "{'R101_ref': 'R301', 'C101_ref': 'C301', 'U101_ref': 'U301', 'U102_ref': 'U302'}"
+    },
+    {
+      "name": "dup_symbols_create_items_props_identical_except_lib",
+      "ok": true,
+      "evidence": "{'R101': {'lib': ('Device:R', ':R_1')}, 'C101': {'lib': ('Device:C', ':C_1')}, 'U101': {'lib': ('Amplifier_Operational:LM358', ':LM358_1')}, 'U102': {'lib': ('74xx:74LS00', ':74LS00_1')}}"
+    },
+    {
+      "name": "dup_symbols_create_items_keep_library_link",
+      "ok": false,
+      "evidence": "{'R101': ('Device:R', ':R_1'), 'C101': ('Device:C', ':C_1'), 'U101': ('Amplifier_Operational:LM358', ':LM358_1'), 'U102': ('74xx:74LS00', ':74LS00_1')}"
     }
   ],
   "notes": {}
