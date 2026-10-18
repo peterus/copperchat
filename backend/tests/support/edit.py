@@ -110,3 +110,82 @@ def free_area(
             if not any(cand.overlaps(b, 2.54) for b in blocked):
                 return (cand.x0, cand.y0)
     raise AssertionError("no free area on the sheet")
+
+
+async def place_raw(
+    session: KicadSession,
+    lib_id: str,
+    at: tuple[float, float],
+    ref: str,
+    *,
+    sheet: str | None = None,
+    rotation: int = 0,
+) -> str:
+    """Place a symbol through the engine (one apply_change_set: a Place stage, then an
+    Update stage re-sending the placed symbol, as E4's placement does); returns its UUID.
+    For E5/E7/E8a tests that must not depend on E4's sch_place_symbol."""
+    from copperchat.kicad_tools.edit.changeset import (
+        ChangeSet,
+        Logical,
+        NetIntent,
+        Place,
+        Stage,
+        StageInput,
+        Update,
+        static_stage,
+    )
+    from copperchat.kicad_tools.edit.engine import apply_change_set
+
+    target = await session.call(lambda h: resolve_sheet(h, sheet))
+
+    def resend(inp: StageInput) -> list[Any]:
+        return [Update(list(inp.placed), sheet=target)]
+
+    cs = ChangeSet(
+        tool="place_raw",
+        sheet=target,
+        stages=[
+            static_stage("place", Place(lib_id, at, rotation, 1, ref, sheet=target)),
+            Stage("fields", resend),
+        ],
+        pre_images={},
+        intent=NetIntent(),
+        logical=Logical(1),
+    )
+    applied = await apply_change_set(edit_ctx(session), cs)
+    return applied.placed[0]
+
+
+async def call_tool(ctx: ToolContext, name: str, **args: Any) -> tuple[dict[str, Any], bool]:
+    """Run a registered tool through the real adapter (agent.sdk_tools); returns the JSON
+    payload and whether it is an error."""
+    import json
+
+    from copperchat.agent.sdk_tools import build_sdk_tool_list
+    from copperchat.tools import registry
+
+    spec = next(s for s in registry.all_specs() if s.name == name)
+    tool = build_sdk_tool_list([spec], lambda: ctx)[0]
+    raw = await tool.handler(args)
+    payload: dict[str, Any] = json.loads(raw["content"][0]["text"])
+    return payload, bool(raw.get("is_error"))
+
+
+async def two_resistors(session: KicadSession) -> dict[str, Any]:
+    """R901 and R902 side by side in a free area of the root sheet; returns their UUIDs
+    and pin ends ("a1", "a2", "b1", "b2")."""
+    from copperchat.kicad_tools.edit.geometry import pin_ends
+
+    await session.ensure_symbol_libraries()
+    x, y = await session.call(lambda h: free_area(h, 20.32, 15.24))
+    a = await place_raw(session, "Device:R", (x + 2.54, y + 5.08), "R901")
+    b = await place_raw(session, "Device:R", (x + 12.7, y + 5.08), "R902")
+
+    def pins(h: KicadHandle) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for name, uid in (("a", a), ("b", b)):
+            for p in pin_ends(get_item(h, uid)):
+                out[f"{name}{p.number}"] = p
+        return out
+
+    return {"uuids": (a, b), **(await session.call(pins))}

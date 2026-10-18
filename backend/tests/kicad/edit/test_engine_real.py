@@ -28,7 +28,15 @@ from copperchat.kicad_tools.edit.engine import apply_change_set, edit_result, ro
 from copperchat.kicad_tools.edit.geometry import pin_ends
 from copperchat.kicad_tools.edit.scene import resolve_sheet, sheet_api, sheet_refs
 from tests.kicad.edit.helpers import item_ids, local_label, v2, wire
-from tests.support.edit import RUN_ID, edit_ctx, free_area, get_item, kiids, place_direct
+from tests.support.edit import (
+    RUN_ID,
+    edit_ctx,
+    free_area,
+    get_item,
+    kiids,
+    place_direct,
+    two_resistors,
+)
 
 pytestmark = pytest.mark.kicad
 
@@ -60,26 +68,9 @@ def _cs(sheet: SheetRef, *stages: Stage, intent: NetIntent | None = None, change
     )
 
 
-async def _two_resistors(s: KicadSession) -> dict[str, Any]:
-    """R901 and R902 side by side in a free area; returns their pin-2 ends and keys."""
-    await s.ensure_symbol_libraries()
-    x, y = await s.call(lambda h: free_area(h, 20.32, 15.24))
-    a = await place_direct(s, "Device:R", (x + 2.54, y + 5.08), "R901")
-    b = await place_direct(s, "Device:R", (x + 12.7, y + 5.08), "R902")
-
-    def pins(h: KicadHandle) -> dict[str, Any]:
-        out: dict[str, Any] = {}
-        for name, uid in (("a", a), ("b", b)):
-            for p in pin_ends(get_item(h, uid)):
-                out[f"{name}{p.number}"] = p
-        return out
-
-    return {"uuids": (a, b), **(await s.call(pins))}
-
-
 async def test_create_verified_and_logged(ecc83_session: KicadSession, edit_db: Database) -> None:
     s = ecc83_session
-    r = await _two_resistors(s)
+    r = await two_resistors(s)
     a2, b2 = r["a2"].at, r["b2"].at
     mid_y = a2[1] + 2.54
     wires = [wire(a2, (a2[0], mid_y)), wire((a2[0], mid_y), (b2[0], mid_y)),
@@ -99,7 +90,7 @@ async def test_create_verified_and_logged(ecc83_session: KicadSession, edit_db: 
 
 async def test_mismatch_compensates_create(ecc83_session: KicadSession, edit_db: Database) -> None:
     s = ecc83_session
-    r = await _two_resistors(s)
+    r = await two_resistors(s)
     a2 = r["a2"].at
     before = await _state(s)
     dangling = [
@@ -210,7 +201,7 @@ async def test_compensated_symbol_delete_with_board_requests_restore(
     ecc83_session: KicadSession,
 ) -> None:
     s = ecc83_session
-    r = await _two_resistors(s)
+    r = await two_resistors(s)
     a, _b = r["uuids"]
     cs = _cs(await _root(s), static_stage("delete", Delete([a])), deleted=[a])
     with pytest.raises(DocumentInconsistent) as err:
