@@ -110,9 +110,9 @@ const RunCard = memo(function RunCard({
   // the diff layer is on while the highlight it set is still shown
   const diffOn = diffLayer?.runId === run.runId && diffLayer.seq === highlightSeq;
   const [diff, setDiff] = useState<ChangesDiff | null>(null);
-  /** `revs.sch` the diff was computed at: reused until the schematic changes. */
-  const [diffRev, setDiffRev] = useState<number | null | undefined>(undefined);
-  const schRev = useView((s) => s.revs.sch);
+  /** Open + `revs.sch` the diff was computed at: reused until the schematic changes. */
+  const [diffRev, setDiffRev] = useState<string | null>(null);
+  const schRev = useView((s) => `${s.openSeq}:${s.revs.sch}`);
   const [diffError, setDiffError] = useState<string | null>(null);
   const [compare, setCompare] = useState(false);
   /** Diff requested, not loaded yet. */

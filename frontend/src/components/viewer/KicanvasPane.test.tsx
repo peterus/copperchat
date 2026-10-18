@@ -400,6 +400,36 @@ describe('KicanvasPane', () => {
       void kc;
     });
 
+    it('a highlight arriving while the user switches sheets is applied after that sheet loads', async () => {
+      const onHighlightResult = vi.fn();
+      const { rerenderWith } = await renderPane({ onHighlightResult });
+      const kc = await loadReady();
+      fireEvent.click(screen.getByRole('button', { name: 'Sheets (3)' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Regulator' })); // the fake loads it on the next tick
+      await rerenderWith({ onHighlightResult, highlight: { refs: [{ ref: 'U3', sheetPath: null }], boxes: [], sheetPath: '/r/p/g', seq: 1 } });
+      expect(kc.viewer.highlight).not.toHaveBeenCalled(); // the viewer still shows the root page
+      await act(async () => {
+        vi.advanceTimersByTime(10);
+      });
+      expect(kc.viewer.highlight).toHaveBeenCalledWith(['U3'], 'focus');
+      expect(onHighlightResult).toHaveBeenCalledWith({ found: ['U3'], missing: [] });
+    });
+
+    it('a failed sheet load does not block later highlights', async () => {
+      const { rerenderWith } = await renderPane();
+      const kc = await loadReady();
+      vi.mocked(kc.project.set_active_page).mockImplementationOnce((p: KcPage | string) => {
+        kc.project.active_page = typeof p === 'string' ? reg : p;
+        kc.project.dispatchEvent(new Event('change')); // ... and the load throws: no viewerload
+      });
+      act(() => kc.project.set_active_page(reg.project_path));
+      act(() => {
+        window.dispatchEvent(new ErrorEvent('error', { message: 'boom', filename: `http://x/${KICANVAS_SCRIPT}` }));
+      });
+      await rerenderWith({ highlight: { refs: ['U3'], boxes: [], sheetPath: null, seq: 1 } });
+      expect(kc.viewer.highlight).toHaveBeenCalledWith(['U3'], 'focus');
+    });
+
     it('a null highlight clears the overlay', async () => {
       const { rerenderWith } = await renderPane();
       const kc = await loadReady();

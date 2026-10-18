@@ -232,7 +232,10 @@ export function KicanvasPane({
       if (!readyRef.current) {
         failed = true;
         setStatus({ kind: 'failed', error: msg });
-      } else if (visibleRef.current) {
+      } else {
+        pageLoading.current = false; // a failed sheet load fires no viewerload
+      }
+      if (readyRef.current && visibleRef.current) {
         setNotice(msg);
         clearTimeout(noticeTimer);
         noticeTimer = setTimeout(() => setNotice(null), NOTICE_MS);

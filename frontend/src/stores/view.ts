@@ -53,6 +53,8 @@ export interface ViewState {
   mode: ViewMode;
   layers: PcbLayer[];
   fullscreen: boolean;
+  /** Bumped on every project open (revs restart at null then). */
+  openSeq: number;
   highlight: HighlightRequest | null;
   find: FindRequest | null;
   /** Called on every project open: resets versions, fullscreen, highlight and find. */
@@ -86,9 +88,10 @@ export function createViewStore(ws: Pick<WsClient, 'onFrame' | 'onConnection'>):
     fullscreen: false,
     highlight: null,
     find: null,
+    openSeq: 0,
     setProject: (id) => {
       acceptAny = { sch: false, pcb: false };
-      set({ projectId: id, versions: { ...NONE }, revs: { ...NONE }, fullscreen: false, highlight: null, find: null });
+      set({ openSeq: get().openSeq + 1, projectId: id, versions: { ...NONE }, revs: { ...NONE }, fullscreen: false, highlight: null, find: null });
     },
     setDoc: (doc) => set({ doc }),
     setMode: (mode) => set({ mode }),

@@ -227,6 +227,48 @@ describe('ChangesPanel', () => {
     expect(view.getState().highlight?.boxes).toHaveLength(2);
   });
 
+  it('Diff refetches once the schematic changed (view-updated)', async () => {
+    const { view, ws } = setup();
+    await screen.findAllByRole('listitem', { name: /^Turn/ });
+    fireEvent.click(within(runItem('r2')).getByRole('button', { name: /Show changes/ }));
+    const diffBtn = await screen.findByRole('button', { name: 'Diff' });
+    fireEvent.click(diffBtn);
+    await waitFor(() => expect(view.getState().highlight?.boxes).toHaveLength(2));
+    fireEvent.click(diffBtn);
+    act(() => ws.emit({ type: 'view-updated', projectId: PID, docs: ['sch'], version: 7 }));
+    fireEvent.click(diffBtn);
+    await waitFor(() => expect(apiGet.mock.calls.filter(([p]) => String(p).includes('/changes/diff'))).toHaveLength(2));
+  });
+
+  it('ERC details follow a newer result of the run', async () => {
+    const ws = new FakeWsClient();
+    const changes = createChangesStore(ws);
+    const view = createViewStore(ws);
+    view.getState().setProject(PID);
+    let runs = RUNS;
+    apiGet.mockImplementation(async (p: string) => {
+      if (p.includes('/changes/runs')) return runs;
+      if (p.includes(`/erc-results/${'f'.repeat(32)}`)) return { ...ERC, id: 'f'.repeat(32), newErrors: [{ id: 'v9', type: 't', severity: 'error', description: 'Step two error' }] };
+      return routes(p);
+    });
+    render(
+      <ViewStoreContext.Provider value={view}>
+        <ChangesStoreContext.Provider value={changes}>
+          <ChangesPanel projectId={PID} />
+        </ChangesStoreContext.Provider>
+      </ViewStoreContext.Provider>,
+    );
+    await screen.findAllByRole('listitem', { name: /^Turn/ });
+    fireEvent.click(within(runItem('r2')).getByRole('button', { name: /2 new ERC errors/ }));
+    expect(await screen.findByText('Pin not connected')).toBeInTheDocument();
+    runs = [{ ...RUNS[0]!, erc: { errors: 1, warnings: 0, resultId: 'f'.repeat(32) } }, RUNS[1]!];
+    await act(async () => {
+      await changes.getState().load(PID);
+    });
+    expect(await screen.findByText('Step two error')).toBeInTheDocument();
+    expect(screen.queryByText('Pin not connected')).toBeNull();
+  });
+
   it('Before / after shows the snapshot preview against the current agent view', async () => {
     setup();
     await screen.findAllByRole('listitem', { name: /^Turn/ });

@@ -94,6 +94,11 @@ describe('view store', () => {
     store.getState().setFind(null);
     expect(store.getState().find).toBeNull();
   });
+  it('every project open bumps openSeq (revs restart then)', () => {
+    const before = store.getState().openSeq;
+    store.getState().setProject(P1);
+    expect(store.getState().openSeq).toBe(before + 1);
+  });
   it('a project switch clears highlight and find', () => {
     store.getState().setHighlight({ refs: ['R1'], boxes: [], sheetPath: null });
     store.getState().setFind('U1');

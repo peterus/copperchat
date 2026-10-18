@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { type ChangeRun, type ErcResult, fetchErcResult } from '@/api/changes';
 import { errorText } from '@/components/history/restore';
 
@@ -10,17 +10,27 @@ const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`;
  */
 export function ErcBadge({ projectId, erc }: { projectId: string; erc: ChangeRun['erc'] }) {
   const [open, setOpen] = useState(false);
-  const [result, setResult] = useState<ErcResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState<ErcResult | null>(null);
+  const [error, setError] = useState<{ id: string; text: string } | null>(null);
+  const resultId = erc?.resultId ?? null;
+  // A later plan step gives the run a newer ERC result: the details follow it.
+  const result = loaded && loaded.id === resultId ? loaded : null;
+  const failure = error && error.id === resultId ? error.text : null;
+  useEffect(() => {
+    if (!open || !resultId || result) return;
+    let gone = false;
+    fetchErcResult(projectId, resultId).then(
+      (r) => !gone && setLoaded(r),
+      (e: unknown) => !gone && setError({ id: resultId, text: `Could not load the ERC result: ${errorText(e)}` }),
+    );
+    return () => {
+      gone = true;
+    };
+  }, [open, resultId, result, projectId]);
   if (!erc) return null;
   const toggle = () => {
+    if (!open) setError(null);
     setOpen((o) => !o);
-    if (result || open) return;
-    setError(null);
-    fetchErcResult(projectId, erc.resultId).then(
-      (r) => setResult(r),
-      (e: unknown) => setError(`Could not load the ERC result: ${errorText(e)}`),
-    );
   };
   const clean = erc.errors === 0 && erc.warnings === 0;
   return (
@@ -45,8 +55,8 @@ export function ErcBadge({ projectId, erc }: { projectId: string; erc: ChangeRun
       </button>
       {open && (
         <div className="mt-1 rounded border border-border p-2">
-          {error && <p role="alert" className="text-danger">{error}</p>}
-          {!result && !error && <p className="text-muted">Loading…</p>}
+          {failure && <p role="alert" className="text-danger">{failure}</p>}
+          {!result && !failure && <p className="text-muted">Loading…</p>}
           {result && (
             <ul className="flex flex-col gap-1">
               {[...result.newErrors.map((v) => ({ v, sev: 'error' as const })), ...result.newWarnings.map((v) => ({ v, sev: 'warning' as const }))].map(
