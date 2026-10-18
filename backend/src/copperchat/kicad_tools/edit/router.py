@@ -32,6 +32,7 @@ from copperchat.kicad_tools.edit.scene import Scene
 
 WINDOW_MM = 25.4  # how far a Z route may swing beyond the box spanned by both ends
 MAX_TARGET_POINTS = 24  # T-join candidates per target wire (nearest first)
+MAX_GRID_STEPS = 200  # Z-route corner positions per axis
 _DIRS: dict[str, tuple[int, int]] = {
     "left": (-1, 0),
     "right": (1, 0),
@@ -62,8 +63,10 @@ def _fmt(p: Point) -> str:
 
 
 def _unit(a: Point, b: Point) -> tuple[int, int]:
-    return (int((b[0] > a[0] + EPS_MM) - (b[0] < a[0] - EPS_MM)),
-            int((b[1] > a[1] + EPS_MM) - (b[1] < a[1] - EPS_MM)))  # fmt: skip
+    return (
+        int((b[0] > a[0] + EPS_MM) - (b[0] < a[0] - EPS_MM)),
+        int((b[1] > a[1] + EPS_MM) - (b[1] < a[1] - EPS_MM)),
+    )
 
 
 def _collinear_overlap(a: Point, b: Point, c: Point, d: Point) -> bool:
@@ -83,8 +86,10 @@ def _crosses(a: Point, b: Point, c: Point, d: Point) -> bool:
     """Perpendicular crossing of both interiors (no connection without a junction)."""
     if abs(a[0] - b[0]) < EPS_MM and abs(c[1] - d[1]) < EPS_MM:
         x, y = a[0], c[1]
-        return (min(c[0], d[0]) + EPS_MM < x < max(c[0], d[0]) - EPS_MM
-                and min(a[1], b[1]) + EPS_MM < y < max(a[1], b[1]) - EPS_MM)  # fmt: skip
+        return (
+            min(c[0], d[0]) + EPS_MM < x < max(c[0], d[0]) - EPS_MM
+            and min(a[1], b[1]) + EPS_MM < y < max(a[1], b[1]) - EPS_MM
+        )
     if abs(a[1] - b[1]) < EPS_MM and abs(c[0] - d[0]) < EPS_MM:
         return _crosses(c, d, a, b)
     return False
@@ -156,8 +161,9 @@ def route_problems(
                     problems.append(f"touches a wire end at {_fmt(p)} (another net)")
             for p in pts:
                 if in_segment_interior(p, w.start, w.end):
-                    problems.append(f"ends or turns on the wire {_fmt(w.start)}-{_fmt(w.end)} "
-                                    "(another net)")  # fmt: skip
+                    problems.append(
+                        f"ends or turns on the wire {_fmt(w.start)}-{_fmt(w.end)} (another net)"
+                    )
         else:
             for p in pts[1:-1]:  # a corner on a wire of our own nets: ugly 4-way joint
                 if on_segment(p, w.start, w.end):
@@ -219,8 +225,10 @@ def needed_junctions(points: Sequence[Point], scene: Scene) -> list[Point]:
 
 
 def _grid_range(lo: float, hi: float) -> list[float]:
+    """Grid values from `lo - WINDOW_MM` to `hi + WINDOW_MM`, at most MAX_GRID_STEPS of
+    them (ends farther apart than a sheet is wide do not get every detour)."""
     start, stop = snap(lo - WINDOW_MM), snap(hi + WINDOW_MM)
-    n = round((stop - start) / GRID_MM)
+    n = min(round((stop - start) / GRID_MM), MAX_GRID_STEPS)
     return [round(start + i * GRID_MM, 4) for i in range(n + 1)]
 
 
@@ -235,22 +243,24 @@ def _candidates(a: Point, b: Point) -> Iterable[list[Point]]:
 
 
 def _target_points(a: Point, t: WireTarget) -> list[Point]:
-    """Grid points on the target wire, nearest to `a` first."""
-    if abs(t.a[0] - t.b[0]) < EPS_MM:
-        lo, hi = sorted((t.a[1], t.b[1]))
-        pts = [(t.a[0], v) for v in _span(lo, hi)]
-    else:
-        lo, hi = sorted((t.a[0], t.b[0]))
-        pts = [(v, t.a[1]) for v in _span(lo, hi)]
-    pts = [p for p in pts if on_grid(p)]
-    pts.sort(key=lambda p: abs(p[0] - a[0]) + abs(p[1] - a[1]))
-    return pts[:MAX_TARGET_POINTS]
-
-
-def _span(lo: float, hi: float) -> list[float]:
-    first = snap(lo) if snap(lo) >= lo - EPS_MM else snap(lo) + GRID_MM
-    n = int((hi - first) / GRID_MM + 1e-6)
-    return [round(first + i * GRID_MM, 4) for i in range(n + 1)]
+    """Up to MAX_TARGET_POINTS grid points on the target wire, nearest to `a` first
+    (stepping outward from `a`'s projection onto the wire)."""
+    vertical = abs(t.a[0] - t.b[0]) < EPS_MM
+    fixed = t.a[0] if vertical else t.a[1]
+    if not on_grid((fixed, fixed)):
+        return []
+    lo, hi = sorted((t.a[1], t.b[1]) if vertical else (t.a[0], t.b[0]))
+    centre = min(max(snap(a[1] if vertical else a[0]), lo), hi)
+    values: list[float] = []
+    for i in range(4 * MAX_TARGET_POINTS):
+        if len(values) >= MAX_TARGET_POINTS:
+            break
+        for v in (centre,) if i == 0 else (centre - i * GRID_MM, centre + i * GRID_MM):
+            v = round(v, 4)
+            if lo - EPS_MM <= v <= hi + EPS_MM and on_grid((v, v)):
+                values.append(v)
+    pts = [(fixed, v) if vertical else (v, fixed) for v in values[:MAX_TARGET_POINTS]]
+    return sorted(pts, key=lambda p: abs(p[0] - a[0]) + abs(p[1] - a[1]))
 
 
 def _length(pts: Sequence[Point]) -> float:
@@ -321,8 +331,7 @@ def route(
     for cost, pts in queue:
         if best is not None and cost >= best.cost:
             break  # crossings and junctions only add cost
-        if route_problems(pts, scene, netlist, allowed_nets, item_nets=item_nets,
-                          own_symbols=own):  # fmt: skip
+        if route_problems(pts, scene, netlist, allowed_nets, item_nets=item_nets, own_symbols=own):
             continue
         segs = list(itertools.pairwise(pts))
         cost += 4.0 * sum(
@@ -354,6 +363,12 @@ def blocked_reasons(
     for cand in ([a.at, b.at], [a.at, (b.at[0], a.at[1]), b.at], [a.at, (a.at[0], b.at[1]), b.at]):
         pts = simplify(cand)
         if len(pts) >= 2:
-            out += route_problems(pts, scene, netlist, allowed_nets, item_nets=item_nets,
-                                  own_symbols=(a.key[1], b.key[1]))  # fmt: skip
+            out += route_problems(
+                pts,
+                scene,
+                netlist,
+                allowed_nets,
+                item_nets=item_nets,
+                own_symbols=(a.key[1], b.key[1]),
+            )
     return sorted(set(out))[:6]
