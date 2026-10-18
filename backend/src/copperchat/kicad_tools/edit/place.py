@@ -59,7 +59,7 @@ from copperchat.kicad_tools.edit.geometry import (
     canonical_transform,
     pin_ends,
 )
-from copperchat.kicad_tools.edit.scene import Scene, SymbolInfo, sheet_api
+from copperchat.kicad_tools.edit.scene import ConnectionIndex, Scene, SymbolInfo, sheet_api
 from copperchat.kicad_tools.edit.space import (
     BODY_CLEARANCE_MM,
     Candidate,
@@ -223,8 +223,9 @@ def clashes(scene: Scene, lay: Layout, exclude: frozenset[str] = frozenset()) ->
         if name not in seen and any(b.overlaps(box) for b in mine):
             seen.add(name)
             out.append(f"overlaps {name}")
+    index = ConnectionIndex(scene)  # a part may have hundreds of pins
     for pin in lay.pins:
-        items = scene.items_at(pin.at)
+        items = index.items_at(pin.at)
         if items:
             kinds = ", ".join(sorted({i["kind"] for i in items}))
             out.append(f"pin {pin.number} at {_fmt(pin.at)} would land on a {kinds}")
