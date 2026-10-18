@@ -1,6 +1,8 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createViewStore, ViewStoreContext } from '@/stores/view';
+import { FakeWsClient } from '@/test/fakeWsClient';
 import { setMedia } from '@/test/media';
 import { registerPanel } from './panels';
 import { CHAT_WIDTH_KEY, PHONE_QUERY, PORTRAIT_TABLET_QUERY, ProjectLayout } from './ProjectLayout';
@@ -111,5 +113,34 @@ describe('ProjectLayout', () => {
     renderLayout();
     fireEvent.click(screen.getByRole('tab', { name: 'History' }));
     expect(screen.getByText('History is not available yet.')).toBeInTheDocument();
+  });
+
+  it('iPhone: a highlight request (e.g. from the Changes panel) switches to the View tab', () => {
+    setMedia((q) => q === PHONE_QUERY);
+    const view = createViewStore(new FakeWsClient());
+    render(
+      <MemoryRouter>
+        <ViewStoreContext.Provider value={view}>
+          <ProjectLayout projectId="a1b2c3d4e5f6" title="demo" viewer={<div>VIEWER</div>} chat={<div>CHAT</div>} />
+        </ViewStoreContext.Provider>
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole('tab', { name: 'Chat' })).toHaveAttribute('aria-selected', 'true');
+    act(() => view.getState().setHighlight({ refs: ['R1'], boxes: [], sheetPath: null }));
+    expect(screen.getByRole('tab', { name: 'View' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('iPhone: a highlight that existed before the phone view mounted does not switch tabs', () => {
+    setMedia((q) => q === PHONE_QUERY);
+    const view = createViewStore(new FakeWsClient());
+    view.getState().setHighlight({ refs: ['R1'], boxes: [], sheetPath: null });
+    render(
+      <MemoryRouter>
+        <ViewStoreContext.Provider value={view}>
+          <ProjectLayout projectId="a1b2c3d4e5f6" title="demo" viewer={<div>VIEWER</div>} chat={<div>CHAT</div>} />
+        </ViewStoreContext.Provider>
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole('tab', { name: 'Chat' })).toHaveAttribute('aria-selected', 'true');
   });
 });

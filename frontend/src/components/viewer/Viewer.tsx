@@ -1,4 +1,4 @@
-import { Maximize2, Minimize2, Search } from 'lucide-react';
+import { Maximize2, Minimize2, Search, X } from 'lucide-react';
 import { type FormEvent, useEffect, useState } from 'react';
 import type { DocKind } from '@/lib/viewUrls';
 import { useProjects } from '@/stores/projects';
@@ -7,7 +7,7 @@ import { useView } from '@/stores/view';
 import { AgentViewPane } from './AgentViewPane';
 import { KicadDocView } from './KicadDocView';
 import { LayerToggles } from './LayerToggles';
-import { type FindRequest, insertMention } from './types';
+import { type HighlightResult, insertMention } from './types';
 
 const TABS: Array<{ doc: DocKind; label: string }> = [
   { doc: 'sch', label: 'Schematic' },
@@ -20,7 +20,7 @@ const seg = (on: boolean) => `rounded px-2 py-1 text-sm ${on ? 'bg-accent text-a
 export function Viewer({ projectId }: { projectId: string }) {
   const theme = useUi((s) => s.resolvedTheme);
   const v = useView((s) => s);
-  const { setProject, setFullscreen, fullscreen } = v;
+  const { setProject, setFullscreen, fullscreen, find, setFind, highlight, clearHighlight } = v;
   const current = useProjects((s) => (s.current?.id === projectId ? s.current : null));
   const files = current?.viewFiles ?? NO_FILES;
   const bytes = current?.viewBytes ?? {};
@@ -39,15 +39,30 @@ export function Viewer({ projectId }: { projectId: string }) {
   useEffect(() => setVisited((s) => (s.has(v.doc) ? s : new Set(s).add(v.doc))), [v.doc]);
 
   const [query, setQuery] = useState('');
-  const [find, setFind] = useState<FindRequest | null>(null);
   const [findResult, setFindResult] = useState<string | null>(null);
+  /** Note of the highlight request `seq` (reported by the pane, possibly in the same commit). */
+  const [highlightNote, setHighlightNote] = useState<{ seq: number; text: string | null } | null>(null);
+  const highlightSeq = highlight?.seq ?? null;
+  const note = highlightNote && highlightNote.seq === highlightSeq ? highlightNote.text : null;
   const submitFind = (e: FormEvent) => {
     e.preventDefault();
     const ref = query.trim();
     if (!ref) return;
-    v.setMode('kicad');
     setFindResult(null);
-    setFind((f) => ({ ref, seq: (f?.seq ?? 0) + 1 }));
+    setFind(ref);
+  };
+  const onHighlightResult = (r: HighlightResult, reason?: string) => {
+    if (highlightSeq === null) return;
+    setHighlightNote({
+      seq: highlightSeq,
+      text:
+        reason ??
+        (r.sheetMissing
+          ? 'That sheet is not in the schematic shown (it may have changed since).'
+          : r.missing.length
+            ? `Not on this sheet: ${r.missing.join(', ')}.`
+            : null),
+    });
   };
   const onFindResult = (ref: string, found: boolean, reason?: string) =>
     setFindResult(found ? null : (reason ?? `${ref} not found in the ${v.doc === 'sch' ? 'schematic' : 'board'}.`));
@@ -112,6 +127,17 @@ export function Viewer({ projectId }: { projectId: string }) {
             {findResult}
           </p>
         )}
+        {highlight && (
+          <div className="flex w-full items-center gap-2 text-xs">
+            <span className="min-w-0 flex-1 text-muted">
+              Highlighting changes{note ? <span className="text-warning"> — {note}</span> : null}
+            </span>
+            <button type="button" className="flex items-center gap-1 rounded border border-border px-2 py-0.5" onClick={clearHighlight}>
+              <X size={12} aria-hidden />
+              Clear highlight
+            </button>
+          </div>
+        )}
         {v.mode === 'agent' && v.doc === 'pcb' && (
           <div className="w-full">
             <LayerToggles layers={v.layers} onToggle={v.toggleLayer} />
@@ -134,6 +160,8 @@ export function Viewer({ projectId }: { projectId: string }) {
               find={t.doc === v.doc ? find : null}
               visible={t.doc === v.doc && v.mode === 'kicad'}
               onFindResult={onFindResult}
+              highlight={t.doc === 'sch' ? highlight : null}
+              onHighlightResult={onHighlightResult}
             />
           </div>
         ))}

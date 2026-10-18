@@ -17,11 +17,21 @@ vi.mock('./KicadPane', () => ({
   KicadPane: function FakeKicadPane(p: KicadPaneProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     useEffect(() => void mounts.push(p.doc), []);
+    // like KicanvasPane: an already loaded pane reports in the commit that brings the request
+    useEffect(() => {
+      if (p.highlight?.refs.includes('SYNC')) p.onHighlightResult?.({ found: [], missing: ['SYNC'] });
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [p.highlight]);
     return (
       <div data-testid={`kicad-pane-${p.doc}`} data-rev={String(p.rev)} data-theme={p.theme} data-files={p.files.join(',')}>
         <button type="button" onClick={() => p.onPick('R12')}>
           pick R12 on {p.doc}
         </button>
+        {p.highlight && (
+          <button type="button" onClick={() => p.onHighlightResult?.({ found: [], missing: ['R9'] })}>
+            highlight {p.highlight.refs.length} on {p.doc}
+          </button>
+        )}
         {p.find && (
           <button type="button" onClick={() => p.onFindResult?.(p.find!.ref, false)}>
             find {p.find.ref}
@@ -216,5 +226,33 @@ describe('Viewer', () => {
   it('never says "Claude Code"', () => {
     renderViewer();
     expect(document.body.textContent).not.toMatch(/Claude Code/);
+  });
+
+  it('passes a store highlight to the schematic pane, reports misses and clears', () => {
+    const store = renderViewer();
+    fireEvent.click(screen.getByRole('tab', { name: 'PCB' }));
+    act(() => store.getState().setHighlight({ refs: ['R9'], boxes: [], sheetPath: null }));
+    expect(screen.getByRole('tab', { name: 'Schematic' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('button', { name: 'highlight 1 on sch' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /highlight 1 on pcb/ })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'highlight 1 on sch' }));
+    expect(screen.getByText(/Not on this sheet: R9\./)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear highlight' }));
+    expect(store.getState().highlight).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Clear highlight' })).toBeNull();
+  });
+
+  it('shows a miss the pane reports in the same commit as the highlight request', () => {
+    const store = renderViewer();
+    act(() => store.getState().setHighlight({ refs: ['SYNC'], boxes: [], sheetPath: null }));
+    expect(screen.getByText(/Not on this sheet: SYNC\./)).toBeInTheDocument();
+    act(() => store.getState().setHighlight({ refs: ['R1'], boxes: [], sheetPath: null }));
+    expect(screen.queryByText(/Not on this sheet/)).toBeNull();
+  });
+
+  it('keeps Find in the view store, so other components can request it', () => {
+    const store = renderViewer();
+    act(() => store.getState().setFind('U7'));
+    expect(screen.getByRole('button', { name: 'find U7' })).toBeInTheDocument();
   });
 });
