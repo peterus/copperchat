@@ -8,6 +8,7 @@ junctions, no-connects and sheet symbols. Every sub-sheet read goes through
 
 from __future__ import annotations
 
+import difflib
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -31,6 +32,14 @@ from copperchat.kicad_tools.edit.geometry import (
     symbol_transform,
 )
 from copperchat.kicad_tools.filtering import natural_key
+
+MAX_CANDIDATES = 20  # names echoed in an error (closest first where it matters)
+
+
+def short(value: Any, limit: int = 80) -> str:
+    text = repr(value)
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
 
 _LABEL_KINDS = {
     "LocalLabel": "label",
@@ -192,29 +201,31 @@ def resolve_sheet(h: KicadHandle, sheet: str | None) -> SheetRef:
     ]
     if len(hits) == 1:
         return hits[0]
-    listing = ", ".join(f"{r.human_path} (page {r.page})" for r in refs)
+    listing = ", ".join(f"{r.human_path} (page {r.page})" for r in refs[:MAX_CANDIDATES])
+    if len(refs) > MAX_CANDIDATES:
+        listing += f" ... ({len(refs)} in total)"
     if not hits:
         raise StructuredToolError(
-            f"Sheet {sheet!r} not found",
+            f"Sheet {short(sheet)} not found",
             f"Known sheet instances: {listing}",
             "Pass a sheet path like '/amp/' or a page number.",
             code="not_found",
-            details={"candidates": [r.human_path for r in refs]},
+            details={"candidates": [r.human_path for r in refs][:MAX_CANDIDATES]},
         )
     raise StructuredToolError(
-        f"Sheet {sheet!r} is ambiguous",
+        f"Sheet {short(sheet)} is ambiguous",
         f"It matches {len(hits)} sheet instances: "
         + ", ".join(f"{r.human_path} (page {r.page})" for r in hits),
         "Pass the full sheet path or the page number instead.",
         code="invalid_argument",
-        details={"candidates": [r.human_path for r in hits]},
+        details={"candidates": [r.human_path for r in hits][:MAX_CANDIDATES]},
     )
 
 
 # -- symbols and scene ------------------------------------------------------------------
 
 
-def symbol_info(sym: Any, sheet: SheetRef) -> SymbolInfo:
+def symbol_info(sym: Any, sheet: SheetRef, *, boxes: bool = True) -> SymbolInfo:
     rotation, mirror = symbol_transform(sym)
     ref = str(sym.reference)
     return SymbolInfo(
@@ -228,8 +239,8 @@ def symbol_info(sym: Any, sheet: SheetRef) -> SymbolInfo:
         rotation=rotation,
         mirror=mirror,
         pins=pin_ends(sym),
-        body=body_box(sym, margin=0.0),
-        fields=field_boxes(sym),
+        body=body_box(sym, margin=0.0) if boxes else Box(0, 0, 0, 0),
+        fields=field_boxes(sym) if boxes else [],
         power=ref.startswith("#"),
         item=sym,
     )
@@ -252,13 +263,14 @@ def all_symbols(
     return out
 
 
-def read_scene(h: KicadHandle, sheet: SheetRef) -> Scene:
+def read_scene(h: KicadHandle, sheet: SheetRef, *, boxes: bool = True) -> Scene:
+    """`boxes=False`: no body/field boxes (connection points only; cheaper)."""
     from kipy.proto.schematic.schematic_types_pb2 import SchematicLineType
 
     sch = sheet_api(h, sheet)
     scene = Scene(sheet=sheet)
     for sym in sch.get_symbols():
-        info = symbol_info(sym, sheet)
+        info = symbol_info(sym, sheet, boxes=boxes)
         scene.symbols[info.uuid] = info
     for line in sch.get_lines():
         if int(line.type) == SchematicLineType.SLT_WIRE:
@@ -323,7 +335,8 @@ def item_nets(h: KicadHandle) -> dict[tuple[str, str], str]:
 def _pin_error(
     what: str, why: str, suggestion: str, code: str, candidates: list[str]
 ) -> StructuredToolError:
-    return StructuredToolError(what, why, suggestion, code=code, details={"candidates": candidates})
+    details = {"candidates": candidates[:MAX_CANDIDATES], "total": len(candidates)}
+    return StructuredToolError(what, why, suggestion, code=code, details=details)
 
 
 def resolve_pin(
@@ -337,7 +350,7 @@ def resolve_pin(
     ref, sep, pin = spec.strip().partition(".")
     if not sep or not ref or not pin:
         raise StructuredToolError(
-            f"Invalid pin {spec!r}",
+            f"Invalid pin {short(spec)}",
             "A pin is written as REF.PIN, e.g. 'U1.3' or 'U1.VIN'",
             "Pass the reference and the pin number or name separated by a dot.",
             code="invalid_argument",
@@ -351,8 +364,10 @@ def resolve_pin(
         all_refs = {s.ref for s in symbols}
     if not units:
         refs = sorted((r for r in all_refs if not r.startswith("#")), key=natural_key)
+        close = difflib.get_close_matches(ref, refs, n=MAX_CANDIDATES, cutoff=0.0)
+        refs = close + [r for r in refs if r not in close]
         raise _pin_error(
-            f"Symbol {ref} not found",
+            f"Symbol {short(ref, 40)} not found",
             "No placed symbol has that reference",
             "List the symbols with sch_list_symbols and use an existing reference.",
             "not_found",
@@ -369,7 +384,8 @@ def resolve_pin(
     if not hits:
         raise _pin_error(
             f"Pin {spec} not found",
-            f"{ref} has the pins {', '.join(candidates)}",
+            f"{ref} has the pins {', '.join(candidates[:MAX_CANDIDATES])}"
+            + (f" ... ({len(candidates)} in total)" if len(candidates) > MAX_CANDIDATES else ""),
             "Use one of the listed pin numbers.",
             "not_found",
             candidates,

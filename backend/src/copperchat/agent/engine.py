@@ -937,6 +937,8 @@ class RunEngine:
         log.warning("document inconsistent during turn: %s", exc)
         if self._turn is not None:
             self._turn.document_inconsistent = True  # reported + interrupted like kicad_failed
+            if self.editing is not None:  # every report halts further edits of the turn
+                self.editing.turn(self.pid, self._turn.info.run_id).halted = True
             self._turn.auto_restore |= bool(getattr(exc, "auto_restore", False))
 
     def _spawn(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:

@@ -377,3 +377,21 @@ async def test_cancel_after_a_pushed_stage_undoes_it(ecc83_session: KicadSession
     with pytest.raises(asyncio.CancelledError):
         await apply_change_set(edit_ctx(s), cs)
     assert await _state(s) == before
+
+
+async def test_no_compensation_after_a_server_restart(ecc83_session: KicadSession) -> None:
+    """A changed server generation (e.g. a kill on cancellation and a lazy restart) means
+    the pushed stages are gone: compensating against the reloaded document is skipped."""
+    from copperchat.kicad_session import KicadUnavailable
+
+    s = ecc83_session
+    x, y = await s.call(lambda h: free_area(h, 10.16, 5.08))
+
+    def restarted(inp: StageInput) -> list[Any]:
+        s._generation += 1  # as KicadSession.start() does
+        raise ValueError("stage 2 failed")
+
+    cs = _cs(await _root(s), static_stage("wire", Create([wire((x, y), (x + 10.16, y))])),
+             Stage("fail", restarted))  # fmt: skip
+    with pytest.raises(KicadUnavailable):
+        await apply_change_set(edit_ctx(s), cs)

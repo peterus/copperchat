@@ -327,3 +327,30 @@ async def test_calls_without_run_share_no_state(h: Harness) -> None:
     h.svc.note_call(ctx, "sch_list_symbols")
     assert h.svc.turn(PID, None).call_seq == 0
     assert h.svc.turn(PID, None) is not h.svc.turn(PID, None)
+
+
+async def test_edit_lock_serialises_two_phase_calls(h: Harness) -> None:
+    import asyncio
+
+    inside: list[str] = []
+    release = asyncio.Event()
+
+    async def prepare(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
+        inside.append(f"prepare {args['n']}")
+        if args["n"] == 1:
+            await release.wait()
+        return ChangeSet("sch_slow", SHEET, [], {}, NetIntent(), Logical(1))
+
+    async def apply(ctx: ToolContext, cs: ChangeSet) -> ToolResult:
+        inside.append("apply")
+        return ToolResult(data={})
+
+    slow = edit_spec("sch_slow", "d", SCHEMA, prepare, apply)
+    first = asyncio.create_task(h.call(slow, n=1))
+    await asyncio.sleep(0.05)
+    second = asyncio.create_task(h.call(slow, n=2))
+    await asyncio.sleep(0.05)
+    assert inside == ["prepare 1"]  # the second call waits for the first one's record
+    release.set()
+    await asyncio.gather(first, second)
+    assert inside == ["prepare 1", "apply", "prepare 2", "apply"]

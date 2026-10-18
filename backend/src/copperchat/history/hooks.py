@@ -163,7 +163,7 @@ class HistoryHooks(RunHooks):
             except KicadUnavailable as exc:
                 log.warning("reopen after inconsistent edit failed: %s", exc)
                 await self.engine.post_error(
-                    f"KiCad could not reload the design: {exc}. Reopen the project to retry.",
+                    "KiCad could not reload the design. Reopen the project to retry.",
                     {"code": "kicad_restart_failed"},
                 )
         await self._recovery_notice(outcome, snap, last_saved)

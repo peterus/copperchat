@@ -205,6 +205,12 @@ class KicadSession:
         return self._settings
 
     @property
+    def generation(self) -> int:
+        """Counts server starts (also the lazy start after a kill on cancellation): an
+        edit that sees it change knows its staged/pushed state is gone (E2 engine)."""
+        return self._generation
+
+    @property
     def closed(self) -> bool:
         return self._closed
 

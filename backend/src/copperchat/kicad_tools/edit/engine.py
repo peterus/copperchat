@@ -14,7 +14,7 @@ with one — owner decision 4), re-verified and reported as `verification_failed
 from __future__ import annotations
 
 import asyncio
-import contextlib
+import copy
 import logging
 import uuid as uuidlib
 from collections.abc import Callable, Iterable
@@ -138,10 +138,12 @@ def by_id(sch: Any, ids: Iterable[str]) -> dict[str, Any]:
     def fetch(chunk: list[str]) -> None:
         if not chunk:
             return
+        from kipy.errors import ApiError
+
         try:
             for i in sch.get_items_by_id([_kiid(u) for u in chunk]):
                 out[access.kiid(i)] = i
-        except Exception:  # a missing id is what this checks for
+        except ApiError:  # KiCad refuses the batch for a missing id; anything else raises
             if len(chunk) > 1:
                 mid = len(chunk) // 2
                 fetch(chunk[:mid])
@@ -195,18 +197,16 @@ class _Run:
     pushed: int = 0
     replaced: dict[str, str] = field(default_factory=dict)  # compensation: old -> new symbol
 
-    def checkpoint(self) -> tuple[Any, ...]:
-        return (dict(self.created), list(self.placed), dict(self.modified), dict(self.deleted),
-                dict(self.neighbours))  # fmt: skip
+    _SAVED = ("created", "placed", "modified", "deleted", "neighbours", "side", "side_sheet",
+              "pre")  # fmt: skip
 
-    def restore(self, saved: tuple[Any, ...]) -> None:
-        self.created, self.placed, self.modified, self.deleted, self.neighbours = (
-            dict(saved[0]),
-            list(saved[1]),
-            dict(saved[2]),
-            dict(saved[3]),
-            dict(saved[4]),
-        )
+    def checkpoint(self) -> dict[str, Any]:
+        """Bookkeeping before a stage; restored when its commit is dropped."""
+        return {name: copy.copy(getattr(self, name)) for name in self._SAVED}
+
+    def restore(self, saved: dict[str, Any]) -> None:
+        for name, value in saved.items():
+            setattr(self, name, copy.copy(value))
 
     def sheet(self, op: EditOp) -> SheetRef:
         return op.sheet or self.cs.sheet
@@ -621,13 +621,13 @@ async def apply_change_set(
     before, refs = await session.call(_before)
     label = _pin_labeler(refs)
     has_board = _has_board(ctx)
-    restarts = session.restart_count
+    generation = session.generation
     inp = StageInput()
 
     async def undo() -> None:
         if run.pushed == 0:
             return
-        if session.restart_count != restarts:
+        if session.generation != generation:
             # The server restarted from the last save: the pushed stages are gone, and
             # compensating against the reloaded document would corrupt it.
             raise KicadUnavailable(
@@ -645,14 +645,20 @@ async def apply_change_set(
         """Compensation survives a cancellation (Stop): it runs to completion, then a
         pending cancellation is re-raised."""
         task = asyncio.ensure_future(undo())
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            with contextlib.suppress(BaseException):
-                await task
-            if not task.cancelled() and task.exception() is not None:
-                _report(task.exception())
-            raise
+        cancelled = False
+        while not task.done():  # every further cancel only waits again (as commit() does)
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+            except BaseException:
+                break
+        if not cancelled:
+            await task  # re-raises the undo's own error
+            return
+        if not task.cancelled() and task.exception() is not None:
+            _report(task.exception())
+        raise asyncio.CancelledError
 
     def _report(exc: BaseException | None) -> None:
         if isinstance(exc, DocumentInconsistent) and ctx.on_document_inconsistent is not None:
@@ -676,8 +682,10 @@ async def apply_change_set(
                 async with session.commit(f"{cs.tool}: {stage.label}"):
                     await session.call(write)
                     body_done = True
-            except asyncio.CancelledError:
-                if body_done:  # cancelled at the push, which commit() ran to completion
+            except asyncio.CancelledError as exc:
+                if body_done and exc.__cause__ is None:
+                    # Cancelled at the push, which commit() ran to completion; a push that
+                    # failed meanwhile is chained as the cause (the commit was dropped).
                     run.pushed += 1
                 else:
                     run.restore(saved)
@@ -688,9 +696,11 @@ async def apply_change_set(
 
                 if not isinstance(exc, ApiError):
                     raise
+                log.warning("KiCad refused %s (%s): %s", cs.tool, stage.label, exc)
+                reason = str(exc)
                 raise StructuredToolError(
                     f"KiCad refused {cs.tool} ({stage.label})",
-                    str(exc),
+                    reason if len(reason) <= 200 else reason[:197] + "...",
                     "Nothing was applied; check the arguments and retry.",
                     code="invalid_argument",
                 ) from exc

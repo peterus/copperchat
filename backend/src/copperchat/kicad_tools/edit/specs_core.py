@@ -62,13 +62,10 @@ def _fmt(p: Point) -> str:
 def _get_pin(spec: str) -> Any:
     def run(h: KicadHandle) -> dict[str, Any]:
         raw = h.schematic().get_symbols()
-        pin = resolve_pin(h, spec, raw=raw)
-        owner = next(
-            s
-            for s in all_symbols(h, raw, ref=pin.ref)
-            if s.uuid == pin.key[1] and s.sheet.path == pin.key[0]
-        )
-        scene = read_scene(h, owner.sheet)
+        units = all_symbols(h, raw, ref=spec.strip().partition(".")[0])
+        pin = resolve_pin(h, spec, symbols=units) if units else resolve_pin(h, spec, raw=raw)
+        owner = next(s for s in units if s.uuid == pin.key[1] and s.sheet.path == pin.key[0])
+        scene = read_scene(h, owner.sheet, boxes=False)
         net = netlists(h, raw)[0].net_of(pin.key)
         connected = [
             i
@@ -95,7 +92,7 @@ def _get_pin(spec: str) -> Any:
 
 
 async def sch_get_pin(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
-    return ToolResult(data=await ctx.session.call(_get_pin(str(args["pin"]))))
+    return ToolResult(data=await ctx.session.call(_get_pin(str(args["pin"])[:64])))
 
 
 # -- sch_add_wire -----------------------------------------------------------------------
@@ -380,7 +377,7 @@ def _plan_wire(raw_points: list[Point], sheet_arg: str | None) -> Any:
 async def prepare_add_wire(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
     points = _parse_points(args.get("points"))
     sheet = args.get("sheet")
-    return await ctx.session.call(_plan_wire(points, str(sheet) if sheet else None))
+    return await ctx.session.call(_plan_wire(points, str(sheet)[:256] if sheet else None))
 
 
 async def apply_change(ctx: ToolContext, cs: ChangeSet) -> ToolResult:
@@ -392,6 +389,7 @@ async def apply_change(ctx: ToolContext, cs: ChangeSet) -> ToolResult:
 _SHEET = {
     "sheet": {
         "type": "string",
+        "maxLength": 256,
         "description": "Sheet instance path like '/amp/' or page number; default root.",
     }
 }
@@ -403,7 +401,10 @@ TOOL_SPECS: list[ToolSpec] = [
         "name, electrical type, exact connection point in mm, outward direction, sheet, "
         "net, whether it is free, and the items connected at its end (wires, labels, "
         "pins, no-connects with full UUIDs). Use its at_mm for wire end points.",
-        _obj({"pin": {"type": "string", "description": "e.g. 'R5.2' or 'U1.VIN'."}}, ["pin"]),
+        _obj(
+            {"pin": {"type": "string", "maxLength": 64, "description": "e.g. 'R5.2' or 'U1.VIN'."}},
+            ["pin"],
+        ),
         sch_get_pin,
     ),
     edit_spec(
