@@ -1,0 +1,772 @@
+{
+ "scenario": "s3",
+ "run": 1,
+ "tools_version": 2,
+ "model": "claude-opus-5-5",
+ "model_usage": {
+  "claude-haiku-5-5": {
+   "inputTokens": 1420,
+   "outputTokens": 28,
+   "cacheReadInputTokens": 0,
+   "cacheCreationInputTokens": 0,
+   "webSearchRequests": 0,
+   "costUSD": 0.000156,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 128000,
+   "thinkingTokens": 0,
+   "canonicalModel": "claude-haiku-5-5",
+   "provider": "firstParty",
+   "costBasis": "list"
+  },
+  "claude-opus-5-5": {
+   "inputTokens": 38,
+   "outputTokens": 6975,
+   "cacheReadInputTokens": 316266,
+   "cacheCreationInputTokens": 24183,
+   "webSearchRequests": 0,
+   "costUSD": 0.3963692000000001,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 128000,
+   "thinkingTokens": 1388,
+   "canonicalModel": "claude-opus-5-5",
+   "provider": "firstParty",
+   "costBasis": "list"
+  }
+ },
+ "stop": "success",
+ "num_turns": 46,
+ "cost_usd": 0.3965252000000001,
+ "usage": {
+  "input_tokens": 38,
+  "cache_creation_input_tokens": 24183,
+  "cache_read_input_tokens": 316266,
+  "output_tokens": 6975,
+  "output_tokens_details": {
+   "thinking_tokens": 1388
+  },
+  "server_tool_use": {
+   "web_search_requests": 0,
+   "web_fetch_requests": 0
+  },
+  "service_tier": "standard",
+  "cache_creation": {
+   "ephemeral_1h_input_tokens": 24183,
+   "ephemeral_5m_input_tokens": 0
+  },
+  "inference_geo": "global",
+  "iterations": [
+   {
+    "input_tokens": 2,
+    "output_tokens": 966,
+    "cache_read_input_tokens": 27189,
+    "cache_creation_input_tokens": 1520,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 1520
+    },
+    "type": "message"
+   }
+  ],
+  "speed": "standard",
+  "fallback_credit": null
+ },
+ "wall_s": 98.8,
+ "tool_calls": 43,
+ "tool_errors": 3,
+ "skill_calls": 1,
+ "renders": 3,
+ "erc_calls": 1,
+ "by_tool": {
+  "lib_get_symbol": 2,
+  "lib_search_symbols": 2,
+  "render_view": 3,
+  "run_erc": 1,
+  "sch_add_label": 4,
+  "sch_add_power": 12,
+  "sch_connect": 2,
+  "sch_delete": 1,
+  "sch_find_space": 2,
+  "sch_get_pin": 1,
+  "sch_no_connect": 2,
+  "sch_place_symbol": 11
+ },
+ "errors": [
+  "sch_add_power: no room for power:GND at C1.2",
+  "sch_add_power: no room for power:GND at C2.2",
+  "sch_place_symbol: Device:C at [33.02, 83.82] would overlap ['U1']"
+ ],
+ "item_changes_total": 92,
+ "item_changes_per_call": [
+  1,
+  1,
+  1,
+  1,
+  1,
+  1,
+  12,
+  0,
+  6,
+  6,
+  5,
+  0,
+  7,
+  1,
+  1,
+  0,
+  1,
+  1,
+  2,
+  2,
+  3,
+  3,
+  4,
+  4,
+  2,
+  2,
+  4,
+  4,
+  5,
+  3,
+  4,
+  4
+ ],
+ "score": {
+  "golden": {
+   "parts_present": true,
+   "mcu_powered": true,
+   "supply_named_3V3": true,
+   "sensor_powered": true,
+   "two_decoupling_caps": true,
+   "sda_to_PB0": true,
+   "scl_to_PB2": true,
+   "i2c_nets_distinct": true,
+   "i2c_labels_named": true,
+   "pullups": true,
+   "address_to_gnd": true
+  },
+  "golden_ok": true,
+  "erc_errors": 0,
+  "erc_warnings": 0,
+  "erc_violations": [],
+  "layout": {
+   "symbols": 6,
+   "power_symbols": 11,
+   "wires": 28,
+   "labels": 6,
+   "junctions": 2,
+   "no_connects": 5,
+   "symbol_overlaps": [],
+   "off_grid": [],
+   "wire_over_pin": []
+  },
+  "components": {
+   "C1": {
+    "lib": "Device:C",
+    "value": "100nF",
+    "footprint": "Capacitor_SMD:C_0805_2012Metric"
+   },
+   "C2": {
+    "lib": "Device:C",
+    "value": "100nF",
+    "footprint": "Capacitor_SMD:C_0805_2012Metric"
+   },
+   "R1": {
+    "lib": "Device:R",
+    "value": "4.7k",
+    "footprint": "Resistor_SMD:R_0805_2012Metric"
+   },
+   "R2": {
+    "lib": "Device:R",
+    "value": "4.7k",
+    "footprint": "Resistor_SMD:R_0805_2012Metric"
+   },
+   "U1": {
+    "lib": "MCU_Microchip_ATtiny:ATtiny85-20S",
+    "value": "ATtiny85-20S",
+    "footprint": "Package_SO:SOIC-8_5.3x5.3mm_P1.27mm"
+   },
+   "U2": {
+    "lib": "Sensor_Temperature:TMP102xxDRL",
+    "value": "TMP102",
+    "footprint": "Package_TO_SOT_SMD:SOT-563"
+   }
+  },
+  "passives_not_0805": [],
+  "item_changes": 92
+ },
+ "success": true,
+ "calls": [
+  {
+   "tool": "lib_search_symbols",
+   "args": {
+    "query": "ATtiny85"
+   },
+   "ok": true,
+   "ms": 0,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "lib_search_symbols",
+   "args": {
+    "query": "TMP102"
+   },
+   "ok": true,
+   "ms": 0,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "lib_get_symbol",
+   "args": {
+    "lib_id": "MCU_Microchip_ATtiny:ATtiny85-20S"
+   },
+   "ok": true,
+   "ms": 31,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "lib_get_symbol",
+   "args": {
+    "lib_id": "Sensor_Temperature:TMP102xxDRL"
+   },
+   "ok": true,
+   "ms": 25,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "sch_place_symbol",
+   "args": {
+    "lib_id": "MCU_Microchip_ATtiny:ATtiny85-20S",
+    "at": [
+     60.96,
+     88.9
+    ],
+    "value": "ATtiny85-20S"
+   },
+   "ok": true,
+   "ms": 200,
+   "item_changes": 1,
+   "error": null
+  },
+  {
+   "tool": "sch_place_symbol",
+   "args": {
+    "lib_id": "Sensor_Temperature:TMP102xxDRL",
+    "at": [
+     139.7,
+     88.9
+    ],
+    "value": "TMP102"
+   },
+   "ok": true,
+   "ms": 199,
+   "item_changes": 1,
+   "error": null
+  },
+  {
+   "tool": "sch_find_space",
+   "args": {
+    "lib_id": "Device:C",
+    "near": "U1.VCC"
+   },
+   "ok": true,
+   "ms": 76,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "sch_find_space",
+   "args": {
+    "lib_id": "Device:C",
+    "near": "U2.V+"
+   },
+   "ok": true,
+   "ms": 84,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "sch_place_symbol",
+   "args": {
+    "lib_id": "Device:C",
+    "at": [
+     43.18,
+     63.5
+    ],
+    "value": "100nF",
+    "footprint": "Capacitor_SMD:C_0805_2012Metric"
+   },
+   "ok": true,
+   "ms": 203,
+   "item_changes": 1,
+   "error": null
+  },
+  {
+   "tool": "sch_place_symbol",
+   "args": {
+    "lib_id": "Device:C",
+    "at": [
+     157.48,
+     66.04
+    ],
+    "value": "100nF",
+    "footprint": "Capacitor_SMD:C_0805_2012Metric"
+   },
+   "ok": true,
+   "ms": 214,
+   "item_changes": 1,
+   "error": null
+  },
+  {
+   "tool": "sch_place_symbol",
+   "args": {
+    "lib_id": "Device:R",
+    "at": [
+     99.06,
+     68.58
+    ],
+    "value": "4.7k",
+    "footprint": "Resistor_SMD:R_0805_2012Metric"
+   },
+   "ok": true,
+   "ms": 223,
+   "item_changes": 1,
+   "error": null
+  },
+  {
+   "tool": "sch_place_symbol",
+   "args": {
+    "lib_id": "Device:R",
+    "at": [
+     109.22,
+     68.58
+    ],
+    "value": "4.7k",
+    "footprint": "Resistor_SMD:R_0805_2012Metric"
+   },
+   "ok": true,
+   "ms": 215,
+   "item_changes": 1,
+   "error": null
+  },
+  {
+   "tool": "sch_add_power",
+   "args": {
+    "net": "+3V3",
+    "at": [
+     "U1.8",
+     "C1.1",
+     "U2.5",
+     "C2.1",
+     "R1.1",
+     "R2.1"
+    ]
+   },
+   "ok": true,
+   "ms": 1116,
+   "item_changes": 12,
+   "error": null
+  },
+  {
+   "tool": "sch_add_power",
+   "args": {
+    "net": "GND",
+    "at": [
+     "U1.4",
+     "C1.2",
+     "U2.2",
+     "C2.2",
+     "U2.4"
+    ]
+   },
+   "ok": false,
+   "ms": 334,
+   "item_changes": 0,
+   "error": "no room for power:GND at C1.2"
+  },
+  {
+   "tool": "sch_add_label",
+   "args": {
+    "net": "I2C_SDA",
+    "at": [
+     "U1.5",
+     "U2.6",
+     "R1.2"
+    ]
+   },
+   "ok": true,
+   "ms": 364,
+   "item_changes": 6,
+   "error": null
+  },
+  {
+   "tool": "sch_add_label",
+   "args": {
+    "net": "I2C_SCL",
+    "at": [
+     "U1.7",
+     "U2.1",
+     "R2.2"
+    ]
+   },
+   "ok": true,
+   "ms": 321,
+   "item_changes": 6,
+   "error": null
+  },
+  {
+   "tool": "sch_no_connect",
+   "args": {
+    "pins": [
+     "U1.1",
+     "U1.2",
+     "U1.3",
+     "U1.6",
+     "U2.3"
+    ]
+   },
+   "ok": true,
+   "ms": 204,
+   "item_changes": 5,
+   "error": null
+  },
+  {
+   "tool": "sch_add_power",
+   "args": {
+    "net": "GND",
+    "at": [
+     "U1.4",
+     "U2.2",
+     "C2.2",
+     "U2.4"
+    ]
+   },
+   "ok": false,
+   "ms": 585,
+   "item_changes": 0,
+   "error": "no room for power:GND at C2.2"
+  },
+  {
+   "tool": "render_view",
+   "args": {
+    "around": [
+     "U1",
+     "C1"
+    ],
+    "margin": 10
+   },
+   "ok": true,
+   "ms": 993,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "sch_get_pin",
+   "args": {
+    "pins": [
+     "U1.4",
+     "U2.2",
+     "U2.4",
+     "C1.2",
+     "C2.2"
+    ]
+   },
+   "ok": true,
+   "ms": 68,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "sch_delete",
+   "args": {
+    "refs": [
+     "U1",
+     "U2",
+     "C1",
+     "C2"
+    ]
+   },
+   "ok": true,
+   "ms": 140,
+   "item_changes": 7,
+   "error": null
+  },
+  {
+   "tool": "render_view",
+   "args": {},
+   "ok": true,
+   "ms": 767,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "sch_place_symbol",
+   "args": {
+    "lib_id": "MCU_Microchip_ATtiny:ATtiny85-20S",
+    "at": [
+     60.96,
+     88.9
+    ],
+    "value": "ATtiny85-20S",
+    "reference": "U1"
+   },
+   "ok": true,
+   "ms": 201,
+   "item_changes": 1,
+   "error": null
+  },
+  {
+   "tool": "sch_place_symbol",
+   "args": {
+    "lib_id": "Sensor_Temperature:TMP102xxDRL",
+    "at": [
+     139.7,
+     88.9
+    ],
+    "value": "TMP102",
+    "reference": "U2"
+   },
+   "ok": true,
+   "ms": 205,
+   "item_changes": 1,
+   "error": null
+  },
+  {
+   "tool": "sch_place_symbol",
+   "args": {
+    "lib_id": "Device:C",
+    "at": [
+     33.02,
+     83.82
+    ],
+    "value": "100nF",
+    "footprint": "Capacitor_SMD:C_0805_2012Metric",
+    "reference": "C1"
+   },
+   "ok": false,
+   "ms": 98,
+   "item_changes": 0,
+   "error": "Device:C at [33.02, 83.82] would overlap ['U1']"
+  },
+  {
+   "tool": "sch_place_symbol",
+   "args": {
+    "lib_id": "Device:C",
+    "at": [
+     162.56,
+     83.82
+    ],
+    "value": "100nF",
+    "footprint": "Capacitor_SMD:C_0805_2012Metric",
+    "reference": "C2"
+   },
+   "ok": true,
+   "ms": 215,
+   "item_changes": 1,
+   "error": null
+  },
+  {
+   "tool": "sch_place_symbol",
+   "args": {
+    "lib_id": "Device:C",
+    "at": [
+     25.4,
+     83.82
+    ],
+    "value": "100nF",
+    "footprint": "Capacitor_SMD:C_0805_2012Metric",
+    "reference": "C1"
+   },
+   "ok": true,
+   "ms": 217,
+   "item_changes": 1,
+   "error": null
+  },
+  {
+   "tool": "sch_add_power",
+   "args": {
+    "net": "GND",
+    "at": "C1.2"
+   },
+   "ok": true,
+   "ms": 325,
+   "item_changes": 2,
+   "error": null
+  },
+  {
+   "tool": "sch_add_power",
+   "args": {
+    "net": "GND",
+    "at": "C2.2"
+   },
+   "ok": true,
+   "ms": 340,
+   "item_changes": 2,
+   "error": null
+  },
+  {
+   "tool": "sch_connect",
+   "args": {
+    "from": "C1.1",
+    "to": "U1.8",
+    "via": "wire"
+   },
+   "ok": true,
+   "ms": 246,
+   "item_changes": 3,
+   "error": null
+  },
+  {
+   "tool": "sch_connect",
+   "args": {
+    "from": "C2.1",
+    "to": "U2.5",
+    "via": "wire"
+   },
+   "ok": true,
+   "ms": 264,
+   "item_changes": 3,
+   "error": null
+  },
+  {
+   "tool": "sch_add_power",
+   "args": {
+    "net": "+3V3",
+    "at": "C1.1"
+   },
+   "ok": true,
+   "ms": 312,
+   "item_changes": 4,
+   "error": null
+  },
+  {
+   "tool": "sch_add_power",
+   "args": {
+    "net": "+3V3",
+    "at": "C2.1"
+   },
+   "ok": true,
+   "ms": 329,
+   "item_changes": 4,
+   "error": null
+  },
+  {
+   "tool": "sch_add_power",
+   "args": {
+    "net": "GND",
+    "at": "U1.4"
+   },
+   "ok": true,
+   "ms": 338,
+   "item_changes": 2,
+   "error": null
+  },
+  {
+   "tool": "sch_add_power",
+   "args": {
+    "net": "GND",
+    "at": "U2.2"
+   },
+   "ok": true,
+   "ms": 346,
+   "item_changes": 2,
+   "error": null
+  },
+  {
+   "tool": "sch_add_label",
+   "args": {
+    "net": "I2C_SDA",
+    "at": [
+     "U1.5",
+     "U2.6"
+    ]
+   },
+   "ok": true,
+   "ms": 304,
+   "item_changes": 4,
+   "error": null
+  },
+  {
+   "tool": "sch_add_label",
+   "args": {
+    "net": "I2C_SCL",
+    "at": [
+     "U1.7",
+     "U2.1"
+    ]
+   },
+   "ok": true,
+   "ms": 268,
+   "item_changes": 4,
+   "error": null
+  },
+  {
+   "tool": "sch_no_connect",
+   "args": {
+    "pins": [
+     "U1.1",
+     "U1.2",
+     "U1.3",
+     "U1.6",
+     "U2.3"
+    ]
+   },
+   "ok": true,
+   "ms": 157,
+   "item_changes": 5,
+   "error": null
+  },
+  {
+   "tool": "sch_add_power",
+   "args": {
+    "net": "GND",
+    "at": "U2.4"
+   },
+   "ok": true,
+   "ms": 293,
+   "item_changes": 3,
+   "error": null
+  },
+  {
+   "tool": "sch_add_power",
+   "args": {
+    "net": "PWR_FLAG",
+    "at": "R1.1"
+   },
+   "ok": true,
+   "ms": 611,
+   "item_changes": 4,
+   "error": null
+  },
+  {
+   "tool": "sch_add_power",
+   "args": {
+    "net": "PWR_FLAG",
+    "at": "U1.4"
+   },
+   "ok": true,
+   "ms": 447,
+   "item_changes": 4,
+   "error": null
+  },
+  {
+   "tool": "run_erc",
+   "args": {},
+   "ok": true,
+   "ms": 2788,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "render_view",
+   "args": {},
+   "ok": true,
+   "ms": 871,
+   "item_changes": 0,
+   "error": null
+  }
+ ]
+}

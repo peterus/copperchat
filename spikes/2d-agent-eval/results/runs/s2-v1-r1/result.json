@@ -1,0 +1,337 @@
+{
+ "scenario": "s2",
+ "run": 1,
+ "model": "claude-sonnet-5-5",
+ "model_usage": {
+  "claude-haiku-5-5": {
+   "inputTokens": 1328,
+   "outputTokens": 23,
+   "cacheReadInputTokens": 0,
+   "cacheCreationInputTokens": 0,
+   "webSearchRequests": 0,
+   "costUSD": 0.0001443,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 128000,
+   "thinkingTokens": 0,
+   "canonicalModel": "claude-haiku-5-5",
+   "provider": "firstParty",
+   "costBasis": "list"
+  },
+  "claude-sonnet-5-5": {
+   "inputTokens": 12,
+   "outputTokens": 2050,
+   "cacheReadInputTokens": 51609,
+   "cacheCreationInputTokens": 10448,
+   "webSearchRequests": 0,
+   "costUSD": 0.0674769,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 128000,
+   "thinkingTokens": 0,
+   "canonicalModel": "claude-sonnet-5-5",
+   "provider": "firstParty",
+   "costBasis": "list"
+  }
+ },
+ "stop": "success",
+ "num_turns": 17,
+ "cost_usd": 0.0676212,
+ "usage": {
+  "input_tokens": 12,
+  "cache_creation_input_tokens": 10448,
+  "cache_read_input_tokens": 51609,
+  "output_tokens": 2050,
+  "output_tokens_details": {
+   "thinking_tokens": 0
+  },
+  "server_tool_use": {
+   "web_search_requests": 0,
+   "web_fetch_requests": 0
+  },
+  "service_tier": "standard",
+  "cache_creation": {
+   "ephemeral_1h_input_tokens": 10448,
+   "ephemeral_5m_input_tokens": 0
+  },
+  "inference_geo": "global",
+  "iterations": [
+   {
+    "input_tokens": 2,
+    "output_tokens": 405,
+    "cache_read_input_tokens": 13114,
+    "cache_creation_input_tokens": 1181,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 1181
+    },
+    "type": "message"
+   }
+  ],
+  "speed": "standard",
+  "fallback_credit": null
+ },
+ "wall_s": 22.8,
+ "tool_calls": 14,
+ "tool_errors": 0,
+ "skill_calls": 1,
+ "renders": 1,
+ "erc_calls": 1,
+ "by_tool": {
+  "lib_get_symbol": 1,
+  "lib_search_footprints": 1,
+  "lib_search_symbols": 2,
+  "render_view": 1,
+  "run_erc": 1,
+  "sch_add_power": 4,
+  "sch_place_symbol": 4
+ },
+ "errors": [],
+ "item_changes_total": 34,
+ "item_changes_per_call": [
+  1,
+  1,
+  1,
+  1,
+  8,
+  5,
+  9,
+  8
+ ],
+ "score": {
+  "golden": {
+   "parts_present": true,
+   "input_from_connector_pin1": true,
+   "gnd_from_connector_pin2": true,
+   "input_cap": true,
+   "output_cap": true,
+   "three_distinct_nets": true,
+   "output_named_3V3": true
+  },
+  "golden_ok": true,
+  "erc_errors": 0,
+  "erc_warnings": 0,
+  "erc_violations": [],
+  "layout": {
+   "symbols": 4,
+   "power_symbols": 11,
+   "wires": 17,
+   "labels": 0,
+   "junctions": 2,
+   "no_connects": 0,
+   "symbol_overlaps": [],
+   "off_grid": [],
+   "wire_over_pin": []
+  },
+  "components": {
+   "C1": {
+    "lib": "Device:C",
+    "value": "10uF",
+    "footprint": "Capacitor_SMD:C_0805_2012Metric"
+   },
+   "C2": {
+    "lib": "Device:C",
+    "value": "22uF",
+    "footprint": "Capacitor_SMD:C_0805_2012Metric"
+   },
+   "J1": {
+    "lib": "Connector_Generic:Conn_01x02",
+    "value": "5V_IN",
+    "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical"
+   },
+   "U1": {
+    "lib": "Regulator_Linear:AMS1117-3.3",
+    "value": "AMS1117-3.3",
+    "footprint": "Package_TO_SOT_SMD:SOT-223-3_TabPin2"
+   }
+  },
+  "passives_not_0805": [],
+  "item_changes": 34
+ },
+ "success": true,
+ "calls": [
+  {
+   "tool": "lib_search_symbols",
+   "args": {
+    "query": "AMS1117-3.3"
+   },
+   "ok": true,
+   "ms": 8,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "lib_search_symbols",
+   "args": {
+    "query": "Conn_01x02",
+    "limit": 5
+   },
+   "ok": true,
+   "ms": 2,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "lib_get_symbol",
+   "args": {
+    "lib_id": "Regulator_Linear:AMS1117-3.3"
+   },
+   "ok": true,
+   "ms": 35,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "lib_search_footprints",
+   "args": {
+    "query": "PinHeader_1x02 P2.54 Vertical",
+    "limit": 3
+   },
+   "ok": true,
+   "ms": 10,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "sch_place_symbol",
+   "args": {
+    "lib_id": "Connector_Generic:Conn_01x02",
+    "at": [
+     50.8,
+     50.8
+    ],
+    "mirror": "y",
+    "reference": "J1",
+    "value": "5V_IN",
+    "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical"
+   },
+   "ok": true,
+   "ms": 204,
+   "item_changes": 1,
+   "error": null
+  },
+  {
+   "tool": "sch_place_symbol",
+   "args": {
+    "lib_id": "Regulator_Linear:AMS1117-3.3",
+    "at": [
+     101.6,
+     50.8
+    ],
+    "reference": "U1",
+    "value": "AMS1117-3.3"
+   },
+   "ok": true,
+   "ms": 204,
+   "item_changes": 1,
+   "error": null
+  },
+  {
+   "tool": "sch_place_symbol",
+   "args": {
+    "lib_id": "Device:C",
+    "at": [
+     76.2,
+     58.42
+    ],
+    "reference": "C1",
+    "value": "10uF",
+    "footprint": "Capacitor_SMD:C_0805_2012Metric"
+   },
+   "ok": true,
+   "ms": 206,
+   "item_changes": 1,
+   "error": null
+  },
+  {
+   "tool": "sch_place_symbol",
+   "args": {
+    "lib_id": "Device:C",
+    "at": [
+     127,
+     58.42
+    ],
+    "reference": "C2",
+    "value": "22uF",
+    "footprint": "Capacitor_SMD:C_0805_2012Metric"
+   },
+   "ok": true,
+   "ms": 203,
+   "item_changes": 1,
+   "error": null
+  },
+  {
+   "tool": "sch_add_power",
+   "args": {
+    "net": "+5V",
+    "at": [
+     "J1.1",
+     "U1.3",
+     "C1.1"
+    ]
+   },
+   "ok": true,
+   "ms": 586,
+   "item_changes": 8,
+   "error": null
+  },
+  {
+   "tool": "sch_add_power",
+   "args": {
+    "net": "+3V3",
+    "at": [
+     "U1.2",
+     "C2.1"
+    ]
+   },
+   "ok": true,
+   "ms": 482,
+   "item_changes": 5,
+   "error": null
+  },
+  {
+   "tool": "sch_add_power",
+   "args": {
+    "net": "GND",
+    "at": [
+     "J1.2",
+     "U1.1",
+     "C1.2",
+     "C2.2"
+    ]
+   },
+   "ok": true,
+   "ms": 783,
+   "item_changes": 9,
+   "error": null
+  },
+  {
+   "tool": "sch_add_power",
+   "args": {
+    "net": "PWR_FLAG",
+    "at": [
+     "J1.1",
+     "J1.2"
+    ]
+   },
+   "ok": true,
+   "ms": 675,
+   "item_changes": 8,
+   "error": null
+  },
+  {
+   "tool": "run_erc",
+   "args": {},
+   "ok": true,
+   "ms": 2738,
+   "item_changes": 0,
+   "error": null
+  },
+  {
+   "tool": "render_view",
+   "args": {},
+   "ok": true,
+   "ms": 914,
+   "item_changes": 0,
+   "error": null
+  }
+ ]
+}
