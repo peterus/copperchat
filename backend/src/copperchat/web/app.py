@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -14,6 +15,7 @@ from copperchat.editing import install_editing
 from copperchat.errors import CopperChatError, StructuredToolError
 from copperchat.history.service import install_history
 from copperchat.kicad_session import ClientFactory, KicadSessionManager, ServerLauncher
+from copperchat.library.prefs import seed_user_part_preferences
 from copperchat.projects import get_project
 from copperchat.push.dispatcher import PushDispatcher
 from copperchat.push.notifier import PushNotifier
@@ -38,6 +40,8 @@ from copperchat.web import (
 from copperchat.web.routes_push import PushServices
 from copperchat.web.security import SecurityHeadersMiddleware
 from copperchat.web.static import mount_frontend
+
+log = logging.getLogger(__name__)
 
 
 def install_error_handlers(app: FastAPI) -> None:
@@ -84,6 +88,10 @@ def create_app(
         if (warning := auth.startup_cookie_warning(settings)) is not None:
             auth.log.warning(warning)
         settings.data_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            seed_user_part_preferences(settings)  # owner default: passives in 0805 (E3)
+        except Exception as exc:  # a seed problem must never stop the app
+            log.warning("could not seed the user part preferences: %s", exc)
         db = await Database.open(settings.data_dir / "copperchat.db")
         sessions = KicadSessionManager(settings, launcher, client_factory=client_factory)
         runtime: AgentRuntime | None = None

@@ -64,7 +64,7 @@ class StructuredToolError(CopperChatError):
         self.what = what
         self.why = why
         self.suggestion = suggestion
-        self.error_code = code
+        self._explicit_code = code
         if code is not None:
             self.code = code
         self.details = details
@@ -72,8 +72,8 @@ class StructuredToolError(CopperChatError):
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {"what": self.what, "why": self.why, "suggestion": self.suggestion}
-        if self.error_code is not None:
-            out["code"] = self.error_code
+        if self._explicit_code is not None:
+            out["code"] = self._explicit_code
         if self.details is not None:
             out["details"] = self.details
         return out

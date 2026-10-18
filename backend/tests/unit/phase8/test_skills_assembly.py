@@ -11,7 +11,7 @@ from copperchat.skills.assembly import (
 )
 from copperchat.skills.store import BUILTIN_ROOT
 
-MAIN = {"kicad-schematic-style", "kicad-review-discipline", "copperchat-tools"}
+MAIN = {"kicad-schematic-style", "kicad-review-discipline", "copperchat-tools", "part-preferences"}
 
 
 async def test_bundle_contains_builtins_and_project_override(settings, project, db) -> None:  # type: ignore[no-untyped-def]
