@@ -57,6 +57,7 @@ SETUP: dict[str, list[Step]] = {
                               "footprint": C0603}, "C"),
         ("sch_add_power", {"net": "+3V3", "at": ["{RA}.1", "{RB}.1", "{RC}.1", "{C}.1"]}),
         ("sch_add_power", {"net": "GND", "at": ["{RA}.2", "{RB}.2", "{RC}.2", "{C}.2"]}),
+        ("sch_add_power", {"net": "PWR_FLAG", "at": ["{RA}.1", "{RA}.2"]}),  # ERC-clean start
     ],
 }  # fmt: skip
 
