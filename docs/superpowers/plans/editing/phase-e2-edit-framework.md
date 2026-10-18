@@ -117,7 +117,8 @@ E-C6 budget rule (in `BudgetGate.check_budget` / `record(ctx, cs)`, reading `cs.
   - `test_compensation_failure_raises_document_inconsistent` (injected compensation error)
     → `DocumentInconsistent`.
 - [ ] **Step 2:** FAIL. **Step 3: Implement** `engine.py`: each `Stage` = one
-  `session.commit(f"{cs.tool}: {stage.label}")`, ops executed with `for_sheet(cs.sheet)`
+  `session.commit(f"{cs.tool}: {stage.label}")`, ops executed with `for_sheet(op.sheet or cs.sheet)`; read-back, cleanup detection and
+  compensation run per touched sheet
   (`Update` always with `definition` cleared — 2A Q2 server hang); after the last push read
   back created/modified ids **and** the neighbourhood (wires/junctions within 0.01 mm of any
   touched end) and compare with the pre-images to detect KiCad's cleanup; never trust kipy's

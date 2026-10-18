@@ -85,13 +85,16 @@ int, touches?: {refs, nets}, verification}])`, `plan_revise(steps, reason)`,
 ### Task 4: REST, WS and rollback
 
 **Interfaces:** E-C12 plan routes; `plan-updated` frame on every plan change; approve/resume
-enqueue a user message through `engine.submit_ex(client_message_id=f"plan-{id}-{event}-{revision}", text=…)`
+enqueue a user message through `engine.submit_ex(client_message_id=f"plan-{id}-{event}-{revision}-{event_seq}", text=…)`
+(`event_seq` = `plans.event_seq`, incremented atomically by every approve/resume, so a second
+resume of the same revision is a new message; a retried click is refused by the state check
+because the plan is no longer `paused`/`proposed`)
 that references the plan **by id, revision and step only** — never its agent-authored title
 (prompt-injection hardening): "The user approved plan <id> (revision r). Execute it step by
 step." / "The user resumed plan <id> at step k."; metadata `{planId, event}`.
 
 - [ ] **Step 1: Failing tests** (`test_routes_plans.py`): `test_approve_enqueues_message_once`
-  (idempotent on retry); `test_hostile_title_not_echoed` (title with "ignore previous
+  (idempotent on retry); `test_second_resume_same_revision_enqueues_again`; `test_hostile_title_not_echoed` (title with "ignore previous
   instructions…" → enqueued text contains only id/revision); `test_reject_posts_notice_for_agent`; `test_resume_requires_paused`;
   `test_rollback_restores_checkpoint_and_resets_steps`; `test_rollback_to_zero_restores_base`;
   `test_rollback_refused_while_run_active` (409 `agent_busy`); `test_abort_keeps_design`;
