@@ -1,0 +1,105 @@
+import { useState } from 'react';
+import { Lightbox } from '@/components/chat/Lightbox';
+import type { PlanStepDTO } from '@/protocol/frames';
+
+const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`;
+
+/** Agent-authored ERC reasons can be up to 100 × 500 chars (E8b limits): the card shows a digest. */
+export const JUSTIFICATIONS_SHOWN = 5;
+export const JUSTIFICATION_CHARS = 200;
+const clip = (s: string) => (s.length > JUSTIFICATION_CHARS ? `${s.slice(0, JUSTIFICATION_CHARS - 1)}…` : s);
+
+export const STEP_STATUS_LABEL: Record<PlanStepDTO['status'], string> = {
+  pending: 'Pending',
+  running: 'Running',
+  done: 'Done',
+  failed: 'Failed',
+  interrupted: 'Interrupted',
+};
+const STEP_STATUS_CLASS: Record<PlanStepDTO['status'], string> = {
+  pending: 'text-muted',
+  running: 'bg-accent/15 text-accent',
+  done: 'bg-success/15 text-success',
+  failed: 'bg-danger/15 text-danger',
+  interrupted: 'bg-warning/15 text-warning',
+};
+
+export const checkpointPreviewUrl = (projectId: string, snapshotId: string) =>
+  `/api/projects/${encodeURIComponent(projectId)}/history/${encodeURIComponent(snapshotId)}/preview`;
+
+function Justifications({ items }: { items: Array<[string, string]> }) {
+  const [open, setOpen] = useState(false);
+  if (items.length === 0) return null;
+  const shown = items.slice(0, JUSTIFICATIONS_SHOWN);
+  return (
+    <div>
+      <button type="button" aria-expanded={open} onClick={() => setOpen((o) => !o)} className="text-muted underline">
+        {items.length} justified
+      </button>
+      {open && (
+        <ul className="mt-1 flex flex-col gap-0.5 break-words text-muted">
+          {shown.map(([id, reason]) => (
+            <li key={id}>{clip(reason)}</li>
+          ))}
+          {items.length > shown.length && <li>+{items.length - shown.length} more</li>}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** One numbered step of the plan card (spec §7.3). */
+export function PlanStepRow({ projectId, step }: { projectId: string; step: PlanStepDTO }) {
+  const [preview, setPreview] = useState(false);
+  const finished = step.status === 'done';
+  const erc = step.erc;
+  return (
+    <li className="flex gap-2 py-1.5">
+      <span className="w-5 flex-none text-right font-mono text-muted">{step.idx}.</span>
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-baseline gap-x-2">
+          <span className="min-w-0 break-words font-medium">{step.title}</span>
+          <span className={`rounded px-1.5 text-xs font-medium ${STEP_STATUS_CLASS[step.status]}`}>
+            {STEP_STATUS_LABEL[step.status]}
+          </span>
+        </div>
+        {step.intent && <p className="break-words text-xs text-muted">{step.intent}</p>}
+        <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+          {finished ? (
+            <span>{plural(step.changeCount, 'change')}</span>
+          ) : (
+            <span className="text-muted">{plural(step.expectedChanges, 'change')} expected</span>
+          )}
+          {finished && step.checkpointId && (
+            <button type="button" onClick={() => setPreview(true)} className="text-accent underline">
+              Checkpoint
+            </button>
+          )}
+          {erc && (
+            <span className={erc.errors ? 'text-danger' : erc.warnings ? 'text-warning' : 'text-muted'}>
+              {erc.errors === 0 && erc.warnings === 0
+                ? 'ERC clean'
+                : [erc.errors ? plural(erc.errors, 'ERC error') : '', erc.warnings ? plural(erc.warnings, 'ERC warning') : '']
+                    .filter(Boolean)
+                    .join(' · ')}
+            </span>
+          )}
+        </div>
+        {step.summary && <p className="mt-0.5 break-words text-xs">{step.summary}</p>}
+        {step.failure && <p className="mt-0.5 break-words text-xs text-danger">{step.failure}</p>}
+        {erc && (
+          <div className="mt-0.5 text-xs">
+            <Justifications items={Object.entries(erc.justifications)} />
+          </div>
+        )}
+      </div>
+      {preview && step.checkpointId && (
+        <Lightbox
+          src={checkpointPreviewUrl(projectId, step.checkpointId)}
+          alt={`Checkpoint after step ${step.idx}`}
+          onClose={() => setPreview(false)}
+        />
+      )}
+    </li>
+  );
+}

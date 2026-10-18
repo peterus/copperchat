@@ -1,4 +1,4 @@
-import { fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const apiGet = vi.fn();
@@ -106,5 +106,55 @@ describe('HistoryPanel', () => {
     view.rerender(<HistoryPanel projectId="p1" />);
     expect(await screen.findByText('route USB')).toBeInTheDocument();
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  describe('plan step checkpoints', () => {
+    const S1 = '1'.repeat(32);
+    const S2 = '2'.repeat(32);
+    const S9 = '9'.repeat(32);
+    const turn = { ...entries[0]!, kind: 'turn', planStepId: null };
+    const stepEntry = (id: string, n: number, runId = 'r2') => ({
+      id, runId, createdAt: `2026-10-16T08:0${n}:00Z`, label: `Plan step ${n}`, files: ['demo.kicad_sch'],
+      previewUrl: null, kind: 'step', planStepId: `ps${n}`,
+    });
+    const withSteps = [stepEntry(S2, 2), stepEntry(S1, 1), turn, stepEntry(S9, 9, 'gone'), { ...entries[1]!, kind: 'turn', planStepId: null }];
+
+    it('nests steps indented under their turn, in plan order; an orphan step stays top-level', async () => {
+      apiGet.mockResolvedValue(withSteps);
+      render(<HistoryPanel projectId="p1" />);
+      const nested = await screen.findByRole('list', { name: 'Plan steps of route USB' });
+      const steps = within(nested).getAllByRole('listitem');
+      expect(steps.map((li) => li.textContent)).toEqual([expect.stringContaining('Plan step 1'), expect.stringContaining('Plan step 2')]);
+      const top = screen.getByRole('list', { name: 'Snapshots' });
+      const topItems = within(top).getAllByRole('listitem').filter((li) => li.parentElement === top);
+      expect(topItems.map((li) => li.querySelector('p')?.textContent)).toEqual(['route USB', 'Plan step 9', 'place R1']);
+    });
+
+    it('each step has its own restore with the same confirmation', async () => {
+      apiGet.mockResolvedValue(withSteps);
+      render(<HistoryPanel projectId="p1" />);
+      const nested = await screen.findByRole('list', { name: 'Plan steps of route USB' });
+      const [first] = within(nested).getAllByRole('button', { name: 'Restore' });
+      fireEvent.click(first!);
+      const dialog = screen.getByRole('dialog');
+      expect(dialog).toHaveTextContent('at the end of “Plan step 1”');
+      fireEvent.click(within(dialog).getByRole('button', { name: /^restore$/i }));
+      await waitFor(() => expect(apiPost).toHaveBeenCalledWith(`/projects/p1/history/${S1}/restore`, {}));
+    });
+
+    it('a restore refused because a plan is open shows the reason', async () => {
+      apiGet.mockResolvedValue(withSteps);
+      apiPost.mockRejectedValue(
+        Object.assign(new Error('The design cannot be restored while a plan is open'), {
+          status: 409,
+          detail: { error: { code: 'plan_open', message: 'The design cannot be restored while a plan is open' } },
+        }),
+      );
+      render(<HistoryPanel projectId="p1" />);
+      const nested = await screen.findByRole('list', { name: 'Plan steps of route USB' });
+      fireEvent.click(within(nested).getAllByRole('button', { name: 'Restore' })[1]!);
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /^restore$/i }));
+      expect(await screen.findByRole('alert')).toHaveTextContent('Roll back to…');
+    });
   });
 });

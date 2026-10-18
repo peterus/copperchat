@@ -2,6 +2,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { PoweredBy } from '@/components/PoweredBy';
 import { useAuth } from '@/stores/auth';
 import { type ThemePref, useUi } from '@/stores/ui';
+import { EditingSection } from './settings/EditingSection';
 import { NotificationsSection } from './settings/NotificationsSection';
 import { ViewerSection } from './settings/ViewerSection';
 
@@ -44,6 +45,7 @@ export function SettingsPage() {
         </div>
       </section>
       <ViewerSection />
+      <EditingSection />
       <NotificationsSection />
       <section className="space-y-2">
         <h2 className="font-medium">Account</h2>
