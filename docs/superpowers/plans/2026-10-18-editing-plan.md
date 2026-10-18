@@ -473,12 +473,61 @@ Error codes (`StructuredToolError.code`): `read_only`, `plan_required`,
   edge, 2.54 mm stack on the 1.27 grid, label at a free spot on the left of the sub-sheet;
   on a shared sheet file an existing hierarchical label of that name is reused (`label:
   null` + note, verified with `hier_session`). Result `pin: {sheet, name, at_mm, side,
-  direction, uuid}`, `label: {sheet, at_mm, text, uuid} | null`. **Gap for E5/E6:**
+  direction, uuid}`, `label: {sheet, at_mm, text, uuid} | null`. **Gap for E5/E6 (closed in
+  E6, see below):**
   `sch_add_wire`'s `NetIntent` does not know that a sheet pin joins the nets of the
   sub-sheet; a wire onto a pin whose sub-sheet net already holds symbol pins fails with
   `verification_failed` (R1.1 "now also connected" to R201.1). `sch_connect` must treat sheet
   pins as endpoints and put the cross-sheet pins into `intent.merge`.
   `tests.support.edit.call_tool` takes `name` positional-only (tools have a `name` argument).
+- **E6 (as built):** modules `edit/{targets,delete,transform,duplicate,specs_transform}.py`
+  (`targets.resolve(world, items, tool, allow=...)`: a reference = every unit, `#PWR03`, any item
+  UUID, `sheet:<name>`; an item of a shared sheet file is one target written through its first
+  instance). **Sheet pins (E7 gap):** `Scene.sheet_pins` (`scene.SheetPinInfo`; KiCad lists a
+  sheet pin's own KIID as a net member on the *parent* path, also when unwired; a wire interior
+  over a sheet pin joins it). `sch_add_wire` merges a representative pin of the sheet pin's net
+  and refuses a wire over a foreign sheet pin; `sch_connect` takes `'<sheet name>.<pin name>'`
+  as `from`/`to` (`World.endpoint`/`sheet_pin`: a pseudo `PinEnd` keyed (parent path, sheet
+  symbol uuid, pin name); a symbol reference wins over a sheet name; `World.real_key` replaces
+  it by a real pin of the net in every intent, nothing is merged for a pin-less net).
+  **`sch_delete(items, with_attached=true)`**: attached items are found by leaf pruning of the
+  sheet's wire graph from the deleted pins (wires split at every interior attachment point): a
+  point dies when at most one live piece reaches it and no anchor (another part's pin, a kept
+  sheet pin, a hierarchical label) sits there; a label or power symbol still reached by a live
+  wire stops it (another part's label stub stays). A stub ending in a T is cut back (wire
+  `Update`, `shortened`), shared wires stay; labels/junctions/no-connects/power symbols at dead
+  points go; hierarchical labels always stay. Result adds `deleted_summary`, `nets_changed:
+  [{net, before: [pins], after: [{net, pins}]}]`. Logical: 1 per reference (all units), label,
+  sheet, junction, no-connect, directly deleted wires 1 per net; `deleted_symbols` = own
+  placements (refunded) + one UUID per pre-existing non-power reference, **also for the parts of
+  a deleted sheet instance** (security review: a sheet deletion must not bypass the <= 3 rule).
+  Engine compensation (E-C4 change): a deleted **sheet symbol is never re-created** (blank screen
+  + file overwrite, E7) and a deleted symbol of a **shared sheet file is never re-placed**
+  (invisible in the other instances until a reload): both -> `DocumentInconsistent(auto_restore=
+  True)` after undoing the rest. **`sch_move(items, to|by, rotation?, mirror?)`**: symbols (also
+  rotate/mirror, absolute values), labels and sheet symbols (sheet pins moved with the symbol);
+  fields shift (rotate about the origin on a transform change, Reference/Value laid out again);
+  power symbols/labels/no-connects directly on a moved pin travel along; a wire ending on a moved
+  point is dragged — straight -> `Update`, diagonal -> replaced by an L (**`Delete` + `Create`**,
+  not an update of the fixed leg: KiCad merges a leg collinear with a wire at the fixed end at
+  push and the updated UUID vanishes); connections that cannot be dragged (wire interior through
+  the point, a wire with interior attachments, another part's pin, a sheet pin) get a bridge
+  wire new -> old (`bridges`). Body overlap is checked before the wire routes (nearest free
+  position suggested); every new segment is checked with `router.route_problems` against the
+  scene after the move. **`sch_duplicate`**: block = listed parts + the wire pieces between them
+  (pieces leading to unlisted parts or sheet pins left out, stubs cut back as in delete) + labels,
+  junctions (only where the copy keeps 3+ arms), no-connects, power symbols on them; `offset`
+  (copy k at k*offset) or `at` (top-left of the block's bodies; with count > 1 also `offset` =
+  step), `count` 1-8, `net_suffix` must contain `{n}` when count > 1; local *and hierarchical*
+  labels suffixed (no sheet pin is made for a suffixed hierarchical label: note); merges follow
+  the block's own connectivity (pins of one source net joined only outside the block stay
+  separate in the copy: note); overlap error carries `suggested_offset_mm` / `suggested_at_mm`;
+  result `copies: [{n, offset_mm, refs, nets}]`. Known limits (not fixed, E4 residuals):
+  `sch_duplicate` refuses a target sheet file used by several instances (per-instance
+  references after save + reload are E4's `fix_shared_instances` business); the change-log `add`
+  row of an undone shared-sheet placement and "one UUID on two instances compensated for the
+  first instance only" are untouched by E6 (`sch_delete` on a shared sheet restores at turn end
+  instead of compensating per instance).
 
 ### E-C5. Editing state and gate — `copperchat.editing` (E2; E8b supplies `PlanGate`)
 
@@ -544,7 +593,8 @@ editing hook (E8a: turn-end ERC delta; E8b: plan pause/turn bookkeeping).
 | duplicate | sum of the copied items by the rules above |
 
 Budget refusal: `used + cs.logical.changes > limit` or `deleted_preexisting +
-|deleted_symbols ∖ placed_this_turn| > 3`. Power symbols (`#PWR`/`#FLG`, also
+|deleted_symbols ∖ placed_this_turn| > 3`. (E6: a deleted sheet instance lists one UUID per
+pre-existing non-power reference inside it.) Power symbols (`#PWR`/`#FLG`, also
 when deleted as attached items) never count toward the ≤ 3 limit. Deleting a symbol from
 `placed_this_turn` refunds its placement (`logical_used -= 1`) and costs 0.
 `plan_policy = never` → no budget; `always` → `plan_step_required` outside a step.
