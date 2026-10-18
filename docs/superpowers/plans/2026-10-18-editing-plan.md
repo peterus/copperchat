@@ -684,6 +684,41 @@ def active_part_note(project, ref: str, fields: dict) -> dict | None
   The `part-preferences` skill reaches the main agent like any skill. `StructuredToolError`
   already gained E-C4's `code`/`details` keywords in E3 (identical signature to E2's).
 
+- **E4 (as built, place/fields/space/annotate):** `space.find_space(scene, shape, near, *,
+  direction=None, keep_free=(), outline=None, limit=3) -> list[Candidate(at, box, distance)]`
+  takes the part's boxes already transformed and relative to its origin (the caller lays the
+  part out), not `(size_box, rotation)`. `sch_place_symbol`'s overlap check (bodies + 2 mm,
+  fields, sheet symbols, a conservative cross per label, wires, junctions, no-connects, new
+  pins on any connection point) is a subset of `find_space`'s (adds 1.27 mm body clearance,
+  the part's own pin corridors and the corridor of every unconnected pin), so every candidate
+  is placeable; no upper page bound (only 10 mm from the top-left corner). Both probe the part
+  in a dry-run commit (`place.probe_symbol`), so `sch_find_space` refuses a read-only session
+  (`read_only`) and lays out with the reference a placement would get. Placement stage 2 sets
+  `cs.intent.may_change` from the placed pins inside its `build` (the UUID is only known
+  then). Shared sheet: the other instances' references are a separate change set (`Logical(0)`)
+  after `session.refresh_jobs()` (save + close/reopen = 2A's "save + revert"); if it fails the
+  placement is removed in a plain commit (`DocumentInconsistent` if that fails too); result
+  `placed.instances`. `reference` is only accepted for another unit of an existing multi-unit
+  part (same lib_id and sheet instance, unit free): the unit inherits the sibling's fields and
+  flags, given fields are written to the siblings too (`modified`). `place.ToolChangeSet`
+  (ChangeSet + `plan`, `extra_notes`) carries structured notes: result `notes` mixes strings
+  and `{kind: footprint_unverified | footprint_not_found | no_footprint |
+  preference_deviation | active_part_without_notes, ...}`; an explicit unknown footprint is
+  `not_found` with `details.closest`. Fields are always centred (H and V) so KiCad's
+  justification transform cannot move them; angle 90 on 90/270 parts. `sch_set_fields`
+  refuses a power symbol's Value (`sch_rename_net`), removing standard fields and no-ops;
+  result `changed: {field: {before, after}}`, `units`. `sch_annotate` (planning in
+  `edit/annotate_tool.py`) defaults to `scope="new"` (unannotated + placed this turn),
+  `mode="keep"` (unannotated and duplicates); reads units per sheet instance via `for_sheet`;
+  a call with nothing to rename is a no-op (`logical_changes: 0`); `renamed` lists at most 200
+  entries (`renamed_count`, `truncated`); `mode="renumber"` keeps the design's scheme by majority
+  (`annotate_tool.detect_scheme`: per-sheet when most refs sit in their page block), `keep` uses
+  the allocator's rule like `sch_place_symbol`. `sch_find_space` takes an optional `value`; an
+  explicit `reference` no unit uses is refused; layout/search run in `asyncio.to_thread` after a
+  read-only `session.call`; probed parts are cached per session generation. Known limit: one UUID on
+  two instances of a shared sheet is compensated for its first instance only (the engine keys
+  pre-images by UUID). Test helper `tests.support.kicad_cli.cli_components`.
+
 ### E-C10. Checks, checkpoints, changes — `copperchat.changes`, `history` (E8a)
 
 ```python
