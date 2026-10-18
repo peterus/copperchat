@@ -1,5 +1,5 @@
 import { GitCompareArrows } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { type ChangeEntry, type ChangeRun, type ChangesDiff, fetchChangesDiff } from '@/api/changes';
 import { BeforeAfter } from '@/components/changes/BeforeAfter';
 import { ChangeList } from '@/components/changes/ChangeList';
@@ -91,7 +91,17 @@ function DiffList({ diff, restoredAfter, onPick }: { diff: ChangesDiff; restored
   );
 }
 
-function RunCard({ projectId, run, undone, restoredAfter }: { projectId: string; run: ChangeRun; undone: boolean; restoredAfter: boolean }) {
+const RunCard = memo(function RunCard({
+  projectId,
+  run,
+  undone,
+  restoredAfter,
+}: {
+  projectId: string;
+  run: ChangeRun;
+  undone: boolean;
+  restoredAfter: boolean;
+}) {
   const open = useChanges((s) => s.expanded[run.runId] ?? false);
   const setExpanded = useChanges((s) => s.setExpanded);
   const diffLayer = useChanges((s) => s.diffLayer);
@@ -100,6 +110,9 @@ function RunCard({ projectId, run, undone, restoredAfter }: { projectId: string;
   // the diff layer is on while the highlight it set is still shown
   const diffOn = diffLayer?.runId === run.runId && diffLayer.seq === highlightSeq;
   const [diff, setDiff] = useState<ChangesDiff | null>(null);
+  /** `revs.sch` the diff was computed at: reused until the schematic changes. */
+  const [diffRev, setDiffRev] = useState<number | null | undefined>(undefined);
+  const schRev = useView((s) => s.revs.sch);
   const [diffError, setDiffError] = useState<string | null>(null);
   const [compare, setCompare] = useState(false);
   /** Diff requested, not loaded yet. */
@@ -122,7 +135,14 @@ function RunCard({ projectId, run, undone, restoredAfter }: { projectId: string;
   const snapshotId = run.snapshotId;
   useEffect(() => {
     if (!diffOn || diff || !snapshotId) return;
-    fetchChangesDiff(projectId, snapshotId).then(setDiff, (e: unknown) => setDiffError(`Could not compute the diff: ${errorText(e)}`));
+    const rev = schRev;
+    fetchChangesDiff(projectId, snapshotId).then(
+      (d) => {
+        setDiff(d);
+        setDiffRev(rev);
+      },
+      (e: unknown) => setDiffError(`Could not compute the diff: ${errorText(e)}`),
+    );
     // only on (re)mount with the layer on
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -136,11 +156,17 @@ function RunCard({ projectId, run, undone, restoredAfter }: { projectId: string;
       return;
     }
     if (!snapshotId) return;
-    setPending(true);
     setDiffError(null);
+    if (diff && diffRev === schRev) {
+      setDiffLayer({ runId: run.runId, seq: setHighlight(diffHighlight(diff)) });
+      return;
+    }
+    setPending(true);
+    const rev = schRev;
     fetchChangesDiff(projectId, snapshotId).then(
       (d) => {
         setDiff(d);
+        setDiffRev(rev);
         if (!pendingRef.current) return; // switched off meanwhile
         setPending(false);
         setDiffLayer({ runId: run.runId, seq: setHighlight(diffHighlight(d)) });
@@ -216,11 +242,13 @@ function RunCard({ projectId, run, undone, restoredAfter }: { projectId: string;
               restoredAfter={restoredAfter}
               onPick={(sheet, i) => {
                 const d = diff.sheets[sheet]![i]!;
-                setHighlight({
+                // still the diff layer's list: picking a row keeps it open
+                const seq = setHighlight({
                   refs: d.boxMm || !d.ref ? [] : [{ ref: d.ref, kind: d.kind }],
                   boxes: d.boxMm ? [{ ...d.boxMm, kind: d.kind }] : [],
                   sheetPath: sheet,
                 });
+                setDiffLayer({ runId: run.runId, seq });
               }}
             />
           )}
@@ -228,7 +256,7 @@ function RunCard({ projectId, run, undone, restoredAfter }: { projectId: string;
       )}
     </li>
   );
-}
+});
 
 export function ChangesPanel({ projectId }: { projectId: string }) {
   const runs = useChanges((s) => (s.projectId === projectId ? s.runs : null));
@@ -240,16 +268,21 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
     void load(projectId);
   }, [load, projectId]);
 
-  const restores: Restore[] = messages
-    .filter((m) => m.kind === 'notice' && m.metadata.action === 'restored' && typeof m.metadata.snapshotId === 'string')
-    .map((m) => ({ id: m.id, at: m.createdAt, snapshotId: m.metadata.snapshotId as string }));
-  const { undone, restoredAfter } = restoreInfo(runs ?? [], restores);
-  // newest first; a restore sits between the runs before and after it
-  const timeline = [
-    ...(runs ?? []).map((run) => ({ at: time(run.createdAt), run })),
-    ...restores.map((restore) => ({ at: time(restore.at), restore })),
-  ].sort((a, b) => b.at - a.at);
-
+  // messages change with every streamed token: derive a stable key of the restore notices first
+  const restoresKey = JSON.stringify(
+    messages
+      .filter((m) => m.kind === 'notice' && m.metadata.action === 'restored' && typeof m.metadata.snapshotId === 'string')
+      .map((m): Restore => ({ id: m.id, at: m.createdAt, snapshotId: m.metadata.snapshotId as string })),
+  );
+  const { undone, restoredAfter, timeline } = useMemo(() => {
+    const restores = JSON.parse(restoresKey) as Restore[];
+    // newest first; a restore sits between the runs before and after it
+    const timeline = [
+      ...(runs ?? []).map((run) => ({ at: time(run.createdAt), run })),
+      ...restores.map((restore) => ({ at: time(restore.at), restore })),
+    ].sort((a, b) => b.at - a.at);
+    return { timeline, ...restoreInfo(runs ?? [], restores) };
+  }, [runs, restoresKey]);
   return (
     <div className="flex h-full flex-col gap-2 overflow-y-auto p-3 text-fg">
       {error && (

@@ -47,16 +47,25 @@ export function createChangesStore(
   let generation = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const dirtyRuns = new Set<string>();
+  // Latest request wins per key: an older response landing after a newer one is dropped.
+  const latest = new Map<string, number>();
+  let requestSeq = 0;
+  const begin = (key: string) => {
+    const id = ++requestSeq;
+    latest.set(key, id);
+    return () => latest.get(key) === id;
+  };
 
   const fetchRuns = async () => {
     const { projectId } = store.getState();
     if (!projectId) return;
     const gen = generation;
+    const current = begin('runs');
     try {
       const runs = await deps.fetchRuns(projectId);
-      if (gen === generation) store.setState({ runs, error: null });
+      if (gen === generation && current()) store.setState({ runs, error: null });
     } catch (e) {
-      if (gen === generation) store.setState({ error: `Could not load the changes: ${errorText(e)}` });
+      if (gen === generation && current()) store.setState({ error: `Could not load the changes: ${errorText(e)}` });
     }
   };
 
@@ -64,11 +73,13 @@ export function createChangesStore(
     const { projectId } = store.getState();
     if (!projectId) return;
     const gen = generation;
+    const key = entriesKey(runId, stepId);
+    const current = begin(key);
     try {
       const list = await deps.fetchEntries(projectId, runId, stepId);
-      if (gen === generation) store.setState((s) => ({ entries: { ...s.entries, [entriesKey(runId, stepId)]: list }, error: null }));
+      if (gen === generation && current()) store.setState((s) => ({ entries: { ...s.entries, [key]: list }, error: null }));
     } catch (e) {
-      if (gen === generation) store.setState({ error: `Could not load the changes: ${errorText(e)}` });
+      if (gen === generation && current()) store.setState({ error: `Could not load the changes: ${errorText(e)}` });
     }
   };
 

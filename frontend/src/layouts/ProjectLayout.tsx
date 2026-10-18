@@ -209,7 +209,10 @@ function PhoneView({
   const [panelId, setPanelId] = useState<string | null>(null);
   // A highlight request (Changes panel) shows the viewer.
   const highlightSeq = useView((s) => s.highlight?.seq ?? null);
+  const seenSeq = useRef(highlightSeq); // one that existed before this view mounted does not count
   useEffect(() => {
+    if (highlightSeq === seenSeq.current) return;
+    seenSeq.current = highlightSeq;
     if (highlightSeq !== null) setTab('view');
   }, [highlightSeq]);
   const history = panels.find((p) => p.id === 'history');

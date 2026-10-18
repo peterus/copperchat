@@ -17,6 +17,11 @@ vi.mock('./KicadPane', () => ({
   KicadPane: function FakeKicadPane(p: KicadPaneProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     useEffect(() => void mounts.push(p.doc), []);
+    // like KicanvasPane: an already loaded pane reports in the commit that brings the request
+    useEffect(() => {
+      if (p.highlight?.refs.includes('SYNC')) p.onHighlightResult?.({ found: [], missing: ['SYNC'] });
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [p.highlight]);
     return (
       <div data-testid={`kicad-pane-${p.doc}`} data-rev={String(p.rev)} data-theme={p.theme} data-files={p.files.join(',')}>
         <button type="button" onClick={() => p.onPick('R12')}>
@@ -235,6 +240,14 @@ describe('Viewer', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Clear highlight' }));
     expect(store.getState().highlight).toBeNull();
     expect(screen.queryByRole('button', { name: 'Clear highlight' })).toBeNull();
+  });
+
+  it('shows a miss the pane reports in the same commit as the highlight request', () => {
+    const store = renderViewer();
+    act(() => store.getState().setHighlight({ refs: ['SYNC'], boxes: [], sheetPath: null }));
+    expect(screen.getByText(/Not on this sheet: SYNC\./)).toBeInTheDocument();
+    act(() => store.getState().setHighlight({ refs: ['R1'], boxes: [], sheetPath: null }));
+    expect(screen.queryByText(/Not on this sheet/)).toBeNull();
   });
 
   it('keeps Find in the view store, so other components can request it', () => {

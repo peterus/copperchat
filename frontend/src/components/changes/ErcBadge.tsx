@@ -16,6 +16,7 @@ export function ErcBadge({ projectId, erc }: { projectId: string; erc: ChangeRun
   const toggle = () => {
     setOpen((o) => !o);
     if (result || open) return;
+    setError(null);
     fetchErcResult(projectId, erc.resultId).then(
       (r) => setResult(r),
       (e: unknown) => setError(`Could not load the ERC result: ${errorText(e)}`),
@@ -50,7 +51,7 @@ export function ErcBadge({ projectId, erc }: { projectId: string; erc: ChangeRun
             <ul className="flex flex-col gap-1">
               {[...result.newErrors.map((v) => ({ v, sev: 'error' as const })), ...result.newWarnings.map((v) => ({ v, sev: 'warning' as const }))].map(
                 ({ v, sev }, i) => {
-                  const reason = v.id ? result.justifications[v.id] : undefined;
+                  const reason = v.id && Object.hasOwn(result.justifications, v.id) ? result.justifications[v.id] : undefined;
                   return (
                     <li key={v.id ?? i}>
                       <span className={sev === 'error' ? 'text-danger' : 'text-warning'}>{sev === 'error' ? 'Error' : 'Warning'}: </span>

@@ -69,7 +69,9 @@ function highlightItems(h: HighlightRequest, sheetPath: string | null) {
     const item = typeof r === 'string' ? { ref: r } : r;
     if (!on(item.sheetPath)) continue;
     const kind = item.kind ?? 'focus';
-    refs.set(kind, [...(refs.get(kind) ?? []), item.ref]);
+    const list = refs.get(kind);
+    if (list) list.push(item.ref);
+    else refs.set(kind, [item.ref]);
   }
   const boxes = h.boxes.filter((b) => on(b.sheetPath)).map(({ x, y, w, h: bh, kind }) => ({ x, y, w, h: bh, kind }));
   return { refs, boxes };
@@ -121,6 +123,11 @@ export function KicanvasPane({
   // What should be loaded; applied (loadKey) only while the pane is visible.
   const wantKey = `${srcKey}\n${kTheme}\n${attempt}`;
   const [loadKey, setLoadKey] = useState<string | null>(visible ? wantKey : null);
+  /** The embed shown is about to be replaced (new files/theme): do not apply anything to it. */
+  const staleRef = useRef(false);
+  staleRef.current = loadKey !== wantKey;
+  /** A sheet switch is in flight: the viewer still shows the previous page until viewerload. */
+  const pageLoading = useRef(false);
   useEffect(() => {
     if (visible) setLoadKey(wantKey);
   }, [visible, wantKey]);
@@ -164,7 +171,7 @@ export function KicanvasPane({
   const runHighlight = useCallback(() => {
     const viewer = viewerRef.current;
     const project = embedRef.current?.project;
-    if (doc !== 'sch' || !viewer?.clear_highlight || !readyRef.current) return;
+    if (doc !== 'sch' || !viewer?.clear_highlight || !readyRef.current || staleRef.current || pageLoading.current) return;
     viewer.clear_highlight();
     const h = highlightReq.current;
     if (!h) return;
@@ -182,6 +189,7 @@ export function KicanvasPane({
           return;
         }
         if (page && page !== project.active_page) {
+          pageLoading.current = true;
           project.set_active_page(page); // the next viewer load applies it
           return;
         }
@@ -212,6 +220,7 @@ export function KicanvasPane({
     let noticeTimer: ReturnType<typeof setTimeout> | undefined;
     const offs: Array<() => void> = [];
     readyRef.current = false;
+    pageLoading.current = false;
     viewerRef.current = null;
     setStatus({ kind: 'loading' });
     setNotice(null);
@@ -273,6 +282,10 @@ export function KicanvasPane({
           lastPick = { ref, at };
           handlers.current.onPick(ref);
         });
+        const onPageChange = () => {
+          pageLoading.current = true; // until the new page's viewerload
+          syncActive();
+        };
         const syncActive = () => {
           const id = embed.project?.active_page?.project_path ?? null;
           activeRef.current = id;
@@ -282,6 +295,7 @@ export function KicanvasPane({
         embed.addEventListener('kicanvas:viewerload', (e) => {
           const target = e.composedPath()[0] as { viewer?: KcViewer } | undefined;
           viewerRef.current = target?.viewer ?? viewerRef.current;
+          pageLoading.current = false;
           if (readyRef.current) {
             // after a sheet switch; KiCanvas clears the selection right after this event
             setTimeout(() => {
@@ -299,14 +313,16 @@ export function KicanvasPane({
             if (project) {
               const pages = [...project.pages()];
               setTree(buildSheetTree(pages));
-              project.addEventListener('change', syncActive);
-              offs.push(() => project.removeEventListener('change', syncActive));
+              project.addEventListener('change', onPageChange);
+              offs.push(() => project.removeEventListener('change', onPageChange));
               const remembered = pages.find((p) => p.project_path === activeRef.current);
               if (remembered && remembered !== project.active_page) project.set_active_page(remembered);
               syncActive();
             }
             if (viewerRef.current) fitViewer(viewerRef.current);
             setStatus({ kind: 'ready' });
+            // after restoring the remembered sheet, its viewerload runs them on the right page
+            if (pageLoading.current) return;
             runFind();
             runHighlight();
           }, LOAD_GRACE_MS);

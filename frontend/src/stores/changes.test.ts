@@ -98,4 +98,19 @@ describe('changes store', () => {
     expect(store.getState().runs).toEqual([run('r9')]);
     expect(store.getState().entries).toEqual({});
   });
+
+  it('the latest request wins when two fetches of the runs resolve in reverse order', async () => {
+    await store.getState().load(P1);
+    const resolvers: Array<(v: ChangeRun[]) => void> = [];
+    fetchRuns.mockImplementation(() => new Promise((r) => resolvers.push(r)));
+    const first = store.getState().load(P1);
+    ws.emit({ type: 'run-finished', projectId: P1, runId: 'r1', reason: 'completed' });
+    await flush();
+    expect(resolvers).toHaveLength(2);
+    resolvers[1]!([run('r1'), run('r2')]);
+    await vi.advanceTimersByTimeAsync(0);
+    resolvers[0]!([run('r1')]); // older response, late
+    await first;
+    expect(store.getState().runs).toEqual([run('r1'), run('r2')]);
+  });
 });

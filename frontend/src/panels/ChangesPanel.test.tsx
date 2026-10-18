@@ -210,6 +210,23 @@ describe('ChangesPanel', () => {
     expect(screen.getByRole('button', { name: 'Diff' })).toHaveAttribute('aria-pressed', 'false');
   });
 
+  it('picking a diff row keeps the diff list open; toggling again reuses the diff while the schematic is unchanged', async () => {
+    const { view } = setup();
+    await screen.findAllByRole('listitem', { name: /^Turn/ });
+    fireEvent.click(within(runItem('r2')).getByRole('button', { name: /Show changes/ }));
+    const diffBtn = await screen.findByRole('button', { name: 'Diff' });
+    fireEvent.click(diffBtn);
+    await screen.findByText(/Value: 10uF → 22uF/);
+    fireEvent.click(screen.getByRole('button', { name: /Removed SCH_LINE/ }));
+    expect(view.getState().highlight).toMatchObject({ boxes: [{ kind: 'removed' }], sheetPath: SUB });
+    expect(diffBtn).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByText(/Value: 10uF → 22uF/)).toBeInTheDocument();
+    fireEvent.click(diffBtn); // off
+    fireEvent.click(diffBtn); // on again: no refetch
+    expect(apiGet.mock.calls.filter(([p]) => String(p).includes('/changes/diff'))).toHaveLength(1);
+    expect(view.getState().highlight?.boxes).toHaveLength(2);
+  });
+
   it('Before / after shows the snapshot preview against the current agent view', async () => {
     setup();
     await screen.findAllByRole('listitem', { name: /^Turn/ });
@@ -245,6 +262,19 @@ describe('ChangesPanel', () => {
       await new Promise((r) => setTimeout(r, 350));
     });
     expect(apiGet).toHaveBeenCalledWith(`/projects/${PID}/changes/runs?limit=20`);
+  });
+
+  it('ERC justifications only use own keys', async () => {
+    apiGet.mockImplementation(async (p: string) =>
+      p.includes('/erc-results/')
+        ? { ...ERC, newErrors: [{ id: 'constructor', type: 't', severity: 'error', description: 'Proto' }] }
+        : routes(p),
+    );
+    setup();
+    await screen.findAllByRole('listitem', { name: /^Turn/ });
+    fireEvent.click(within(runItem('r2')).getByRole('button', { name: /2 new ERC errors/ }));
+    expect(await screen.findByText('Proto')).toBeInTheDocument();
+    expect(screen.queryByText(/Justified/)).toBeNull();
   });
 
   it('explains an empty change log', async () => {

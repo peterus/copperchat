@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import type { ChangeEntry } from '@/api/changes';
 
 const OP_LABEL: Record<string, string> = { add: 'Added', modify: 'Modified', delete: 'Deleted' };
@@ -21,10 +22,15 @@ export function ChangeList({
   stepIds: string[];
   onPick: (e: ChangeEntry) => void;
 }) {
-  const groups = new Map<string | null, ChangeEntry[]>();
-  for (const e of [...entries].sort((a, b) => a.callSeq - b.callSeq || a.id - b.id)) {
-    groups.set(e.planStepId, [...(groups.get(e.planStepId) ?? []), e]);
-  }
+  const groups = useMemo(() => {
+    const out = new Map<string | null, ChangeEntry[]>();
+    for (const e of [...entries].sort((a, b) => a.callSeq - b.callSeq || a.id - b.id)) {
+      const list = out.get(e.planStepId);
+      if (list) list.push(e);
+      else out.set(e.planStepId, [e]);
+    }
+    return out;
+  }, [entries]);
   const order = [null, ...stepIds, ...[...groups.keys()].filter((k) => k !== null && !stepIds.includes(k))];
   const title = (step: string | null) =>
     step === null ? 'Outside a plan step' : `Plan step ${stepIds.includes(step) ? stepIds.indexOf(step) + 1 : '?'}`;

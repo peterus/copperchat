@@ -40,8 +40,10 @@ export function Viewer({ projectId }: { projectId: string }) {
 
   const [query, setQuery] = useState('');
   const [findResult, setFindResult] = useState<string | null>(null);
-  const [highlightNote, setHighlightNote] = useState<string | null>(null);
-  useEffect(() => setHighlightNote(null), [highlight]);
+  /** Note of the highlight request `seq` (reported by the pane, possibly in the same commit). */
+  const [highlightNote, setHighlightNote] = useState<{ seq: number; text: string | null } | null>(null);
+  const highlightSeq = highlight?.seq ?? null;
+  const note = highlightNote && highlightNote.seq === highlightSeq ? highlightNote.text : null;
   const submitFind = (e: FormEvent) => {
     e.preventDefault();
     const ref = query.trim();
@@ -49,15 +51,19 @@ export function Viewer({ projectId }: { projectId: string }) {
     setFindResult(null);
     setFind(ref);
   };
-  const onHighlightResult = (r: HighlightResult, reason?: string) =>
-    setHighlightNote(
-      reason ??
+  const onHighlightResult = (r: HighlightResult, reason?: string) => {
+    if (highlightSeq === null) return;
+    setHighlightNote({
+      seq: highlightSeq,
+      text:
+        reason ??
         (r.sheetMissing
           ? 'That sheet is not in the schematic shown (it may have changed since).'
           : r.missing.length
             ? `Not on this sheet: ${r.missing.join(', ')}.`
             : null),
-    );
+    });
+  };
   const onFindResult = (ref: string, found: boolean, reason?: string) =>
     setFindResult(found ? null : (reason ?? `${ref} not found in the ${v.doc === 'sch' ? 'schematic' : 'board'}.`));
 
@@ -124,7 +130,7 @@ export function Viewer({ projectId }: { projectId: string }) {
         {highlight && (
           <div className="flex w-full items-center gap-2 text-xs">
             <span className="min-w-0 flex-1 text-muted">
-              Highlighting changes{highlightNote ? <span className="text-warning"> — {highlightNote}</span> : null}
+              Highlighting changes{note ? <span className="text-warning"> — {note}</span> : null}
             </span>
             <button type="button" className="flex items-center gap-1 rounded border border-border px-2 py-0.5" onClick={clearHighlight}>
               <X size={12} aria-hidden />

@@ -783,8 +783,9 @@ verification, status, changeCount, checkpointId, summary, failure, erc:
   `PlanCard({planId})` rendered for notice rows with `metadata.action === 'plan'`.
 - `HistoryEntry` gains `kind`, `planStepId`; `EditingSection` in Settings (current project).
 
-- **E9a (as built):** fork `peterus/kicanvas` `copperchat` @ `e300ae0` (commits "schematic
-  highlight overlay" + "zoom_to_highlight"). `highlight(targets, kind="focus")` and
+- **E9a (as built):** fork `peterus/kicanvas` `copperchat` @ `cc917dc` (commits "schematic
+  highlight overlay", "zoom_to_highlight", "coalesce redraws": the schematic viewer's `draw()`
+  schedules at most one animation frame). `highlight(targets, kind="focus")` and
   `highlight_boxes(boxes) -> number added` (non-finite/negative boxes skipped) **accumulate**
   until `clear_highlight()` or the next `load()`; extra `zoom_to_highlight()`,
   `highlighted_count`, `highlight_color(kind)`. Kinds added green / modified orange / removed

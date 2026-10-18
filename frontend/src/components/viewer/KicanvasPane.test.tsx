@@ -357,6 +357,49 @@ describe('KicanvasPane', () => {
       expect(onHighlightResult).toHaveBeenLastCalledWith({ found: [], missing: ['U3'], sheetMissing: true });
     });
 
+    it('a highlight arriving with a stale (hidden, outdated) embed is applied to the new embed only', async () => {
+      const onHighlightResult = vi.fn();
+      const { rerenderWith } = await renderPane({ onHighlightResult });
+      const old = await loadReady();
+      await rerenderWith({ onHighlightResult, rev: 4, visible: false });
+      const highlight = { refs: ['J1'], boxes: [], sheetPath: null, seq: 1 };
+      await rerenderWith({ onHighlightResult, rev: 4, visible: true, highlight });
+      expect(old.viewer.highlight).not.toHaveBeenCalled();
+      expect(onHighlightResult).not.toHaveBeenCalled();
+      const kc = await loadReady();
+      expect(kc.viewer.highlight).toHaveBeenCalledWith(['J1'], 'focus');
+      expect(kc.viewer.zoom_to_highlight).toHaveBeenCalledTimes(1);
+      expect(onHighlightResult).toHaveBeenCalledWith({ found: ['J1'], missing: [] });
+    });
+
+    it('after a reload on a sub-sheet, applies only once that sheet is loaded again', async () => {
+      const onHighlightResult = vi.fn();
+      const highlight = { refs: ['U3'], boxes: [], sheetPath: '/r/p/g', seq: 1 };
+      const { rerenderWith } = await renderPane({ onHighlightResult, highlight });
+      const kc = await loadReady(); // switches to reg
+      await act(async () => {
+        vi.advanceTimersByTime(10);
+      });
+      expect(onHighlightResult).toHaveBeenCalledTimes(1);
+      await rerenderWith({ onHighlightResult, highlight, rev: 4 });
+      const kc2 = new FakeKicanvas(embedEl());
+      const pagesSeen: string[] = [];
+      vi.mocked(kc2.viewer.highlight!).mockImplementation((targets: string[]) => {
+        pagesSeen.push(kc2.current().name ?? '');
+        const syms = kc2.current().document?.symbols;
+        return { found: targets.filter((t) => syms?.has(t)), missing: targets.filter((t) => !syms?.has(t)) };
+      });
+      act(() => kc2.load()); // the new embed loads the root page first
+      await act(async () => {
+        vi.advanceTimersByTime(LOAD_GRACE_MS + 10);
+      });
+      expect(kc2.project.set_active_page).toHaveBeenCalledWith(reg); // remembered sheet
+      // applied once, on the restored sheet (never against the root page shown first)
+      expect(pagesSeen).toEqual(['Regulator']);
+      expect(onHighlightResult).toHaveBeenCalledTimes(1);
+      void kc;
+    });
+
     it('a null highlight clears the overlay', async () => {
       const { rerenderWith } = await renderPane();
       const kc = await loadReady();
