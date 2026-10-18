@@ -74,7 +74,8 @@ can read; notes of researched parts for the main agent.
   `test_search_without_library_suggests_libraries` (query `"0805 resistor"` → results from
   libraries whose nickname matches tokens, e.g. `Resistor_SMD`, plus `libraries` hint).
   Kicad (`blank` copy **without** its `.kicad_pcb`): `test_no_board_footprints_unavailable`
-  → `code="footprints_unavailable"`.
+  → `code="footprints_unavailable"`; `test_no_board_package_check_from_name` (`Device:R` +
+  `R_0603_1608Metric` → `preference_notes` still reports the 0805 deviation, owner decision 3).
 - [ ] **Step 2:** FAIL. **Step 3: Implement**: nicknames from `get_library_statuses(FOOTPRINT)`
   (no load); a request for one library calls `GetLibraryItems(nickname)` /
   `GetItemsFromLibrary` for that library only (2B Q4), caches names + details; search without

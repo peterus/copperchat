@@ -52,7 +52,8 @@ footprint `unverified`). Logical 1.
   - `test_overlap_refused_with_nearest_free_position` → `code="overlap"`, suggestion holds a
     position that `sch_find_space` also accepts; document unchanged, no snapshot.
   - `test_power_lib_id_refused` (`power:GND` → suggestion `sch_add_power`).
-  - `test_unknown_footprint_refused` (closest matches) and `test_footprint_unverified_without_board`.
+  - `test_unknown_footprint_refused` (closest matches) and `test_footprint_unverified_without_board` (note `unverified`, preference check from the name
+    still runs; owner decision 3).
   - `test_preference_deviation_noted` (`Device:R` + `R_0603_1608Metric` → note, still placed).
   - `test_active_part_without_notes_noted` (`Amplifier_Operational:LM358`, no MPN).
   - `test_multi_unit_sets_fields_on_all_units` (LM358 placed unit 1, then unit 2 with the same

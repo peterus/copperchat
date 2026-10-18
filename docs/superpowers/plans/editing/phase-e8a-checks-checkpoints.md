@@ -32,6 +32,8 @@ REST/WS and to the agent.
   turn's step checkpoints removed, files too); `test_recover_uses_turn_snapshot` (crash after
   a step checkpoint → the restore notice still points at the turn snapshot, plus a second
   notice `{action: "restore", snapshotId: <step>, checkpoint: true}`);
+  `test_auto_restore_prefers_last_step_checkpoint` (E2's `auto_restore` path restores
+  `latest_step_checkpoint(run_id)` when one exists, else the turn snapshot);
   `test_take_step_checkpoint_saves_first` (fake session: `save("sch")` before the copy; hashes
   updated); `test_history_route_lists_kind`.
 - [ ] **Step 2:** FAIL. **Step 3: Implement.** **Step 4:** PASS. **Step 5:** commit `feat: step checkpoints`.

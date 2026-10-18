@@ -701,6 +701,14 @@ author's open calls one by one:
 12. **Change budget** counts logical changes (§7.1); limit **20 per turn**;
     ≤ 3 deletions of symbols that existed before the turn (supersedes the
     "12 item changes" of decision 3).
+13. **Projects without a board**: footprint existence is not checked (no load
+    of all footprint libraries); the footprint is marked "unverified" in the
+    tool result and the agent tells the user; the package/preference check
+    (e.g. 0805) still runs from the footprint name.
+14. **Failed-verification compensation after a symbol delete**: without a
+    `.kicad_pcb` the symbol is re-placed from the library (new UUID, lossless);
+    with a board the last step checkpoint / turn snapshot is restored instead,
+    so the board link is never silently broken (refines §5.1 step 8).
 
 ### Calls made by the author (for review)
 

@@ -32,7 +32,8 @@ ERC, undo and loadable files; an opt-in live eval tracks the real model.
   (index of 2D Decision), plus: research before active parts (`parts_get_notes` →
   `research_part`), budget/plan etiquette (step size 5–10 logical changes, never exceed a plan),
   ERC policy (fix or justify errors one by one), render + checklist at each step end, missing
-  library part → closest matches + ask the user, never invent. **Step 4:** PASS. **Step 5:** commit.
+  library part → closest matches + ask the user, never invent; an `unverified` footprint
+  (project without a board, owner decision 3) is reported to the user. **Step 4:** PASS. **Step 5:** commit.
 
 ### Task 2: Golden scenario tests (CI, real KiCad, tools only)
 

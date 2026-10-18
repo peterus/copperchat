@@ -244,6 +244,8 @@ class StructuredToolError(CopperChatError):
     def __init__(self, what, why, suggestion, *, code: str | None = None, details: dict | None = None)
     def to_dict(self) -> dict   # {"what","why","suggestion"} + "code"/"details" when set
 class DocumentInconsistent(CopperChatError): code = "document_inconsistent"
+    auto_restore: bool = False   # True: restore the last step checkpoint / turn snapshot
+                                 # at turn end (owner decision 4)
 
 # copperchat.tools.spec
 PrepareFn = Callable[[ToolContext, dict[str, Any]], Awaitable["ChangeSet"]]
@@ -313,9 +315,11 @@ async def apply_change_set(ctx: ToolContext, cs: ChangeSet) -> Applied
     # stages in order (one session.commit each); after the last push: read back
     # (by id + neighbourhood), verify cs.intent against live_netlist; mismatch ->
     # compensate (reverse order; deletes re-created from pre-images with original
-    # UUIDs — deleted *symbols* re-placed from the library (method A, new UUID, see
-    # author calls; compensation returns an old->new UUID map and the re-verify
-    # remaps PinKeys through it) —, updates restored, creates removed), re-verify, raise
+    # UUIDs — deleted *symbols* (owner decision 4): project without .kicad_pcb ->
+    # re-placed from the library (method A, new UUID; compensation returns an
+    # old->new UUID map and the re-verify remaps PinKeys through it); project with a
+    # .kicad_pcb -> no re-place: raise DocumentInconsistent(auto_restore=True) —,
+    # updates restored, creates removed), re-verify, raise
     # StructuredToolError(code="verification_failed"); compensation failing ->
     # DocumentInconsistent. Records ChangeEntry rows (incl. side effects).
 def edit_result(cs: ChangeSet, applied: Applied, **extra) -> ToolResult   # standard JSON
@@ -451,9 +455,10 @@ def package_of(footprint_name: str) -> str | None     # port of spikes/2b libdat
 @dataclass(frozen=True)
 class PartPreferences: passives_package: str | None; preferred_libraries: list[str]; raw: dict[str, str]
 def effective_preferences(settings, project) -> PartPreferences
-def preference_notes(prefs, lib_id: str, footprint: FootprintDetail | None) -> list[dict]
+def preference_notes(prefs, lib_id: str, footprint_name: str, footprint: FootprintDetail | None) -> list[dict]
     # [{"kind": "preference_deviation", ...}] for passives (Device:R/C/L/FerriteBead*) whose
-    # package (known, 2 SMD pads) differs; unknown package -> no note
+    # package differs: package_of(footprint_name); the 2-SMD-pad cross-check only when
+    # `footprint` is known (it is None without a board, owner decision 3); unknown -> no note
 def active_part_note(project, ref: str, fields: dict) -> dict | None
     # {"kind": "active_part_without_notes"} for U/Q/IC refs without MPN or without notes.md
 ```
@@ -547,6 +552,17 @@ Binding; the spec was amended in the plan PR (§3, §7.1, §13, §15).
    and deletes again in the same turn does not count); limit **20 per turn**;
    ≤ 3 symbol deletions unchanged (counted for symbols that existed before the
    turn).
+3. **Projects without a `.kicad_pcb`:** footprint **existence** is not checked
+   (no load of all footprint libraries); `sch_place_symbol` / `sch_set_fields`
+   mark the footprint `unverified` in the result and the agent tells the user
+   (skill rule). The package/preference check (e.g. 0805) still runs from the
+   footprint name. Footprint search tools return `footprints_unavailable`.
+4. **Compensating a failed symbol delete:** project **without** a board → the
+   symbol is re-placed from the library (fields, unit, transform, body style
+   copied; new UUID, lossless); project **with** a `.kicad_pcb` → no re-place: the
+   tool raises `DocumentInconsistent(auto_restore=True)` and the turn end restores
+   the last step checkpoint of the run, else the turn snapshot, so the board link
+   is never silently broken.
 
 ## Calls made by the plan author (from the spike results)
 
@@ -556,32 +572,20 @@ Binding; the spec was amended in the plan PR (§3, §7.1, §13, §15).
   stage 2 sets fields/transform (resp. resets `Sheetfile` to relative); a failure
   in stage 2 or in verification compensates stage 1. One tool call stays one
   logical, verified, all-or-nothing change.
-- **Compensating a deleted symbol** re-places it from the library with its
-  fields, unit, transform and body style copied (2A Q10 method A — lossless and
-  KiCanvas-safe) and therefore a **new UUID**; the error result names the old
-  and new UUID. Re-creating from the pre-image is not used: it is lossy whenever
-  a sibling instance exists (`:R_1` cache entry) or the symbol has two body
-  styles (2A Q6). Non-symbol items always keep their UUIDs. This path only runs
-  when verification after a delete fails.
+- **Re-creating a deleted symbol from its pre-image is never used** (lossy
+  whenever a sibling instance exists — `:R_1` cache entry — or the symbol has two
+  body styles, 2A Q6); see owner decision 4 for what happens instead. Non-symbol
+  items always keep their UUIDs.
 - **Change log + `kicad-cli sch diff`**: the log is recorded by the tools from
   read-back; the diff (JSON only) feeds the viewer's diff layer and the tests'
   cross-check; diff entries without a log counterpart are shown as side effects.
-- **Footprint search without an open board** (project has no `.kicad_pcb`):
-  footprint tools return `footprints_unavailable`; `sch_place_symbol` then records
-  the footprint as `unverified` in its notes (never refused).
 - Settings › Editing lives in the global Settings page and edits the **current
   project** (the page has no project route).
 
 ## Provisional — needs owner confirmation
 
-1. **Projects without a board:** footprint existence/package checks are skipped
-   (`footprints_unavailable`, footprint marked `unverified`) rather than loading all
-   footprint libraries (3.8 GB). Default as written; alternative: load all
-   footprints for such projects.
-2. **A compensated symbol delete gives the symbol a new UUID** (re-placed from
-   the library, see author calls) — matters once the PCB links to symbol UUIDs
-   (sub-project 3). Default as written; alternative: compensate by restoring the
-   turn snapshot / last step checkpoint (keeps UUIDs, loses the turn's later work).
+None — both provisional items were decided by the owner on 2026-10-18 (decisions
+3 and 4 above).
 
 ---
 

@@ -98,11 +98,14 @@ E-C6 budget rule (in `BudgetGate.check_budget` / `record(ctx, cs)`, reading `cs.
     label + a no-connect in one stage, force mismatch by an injected verifier
     (`apply_change_set(..., _verify=lambda *a: ["forced"])`) → original UUIDs back, texts
     restored, netlist identical (2A Q6).
-  - `test_compensated_symbol_delete_is_replaced_from_library`: delete one of two `Device:R`
-    instances, forced mismatch → a symbol with the same ref, value, footprint, unit and
+  - `test_compensated_symbol_delete_is_replaced_from_library` (`blank_session` copy **without**
+    `.kicad_pcb`): delete one of two `Device:R` instances, forced mismatch → a symbol with the same ref, value, footprint, unit and
     transform exists again (new UUID, named in `details`), the saved file has no `:R_1`
     `lib_id`, netlist identical after remapping the old UUID to the new one, and the error code
     is `verification_failed` (not `document_inconsistent`).
+  - `test_compensated_symbol_delete_with_board_requests_restore` (`ecc83_session`, has a board):
+    same forced mismatch → no re-place; `DocumentInconsistent` with `auto_restore=True`
+    (owner decision 4).
   - `test_one_stage_writes_two_sheet_instances` (`hier_session`: one `Update` of a symbol on
     the root plus one `Create` of a label with `sheet=<ampli_ht instance>` in the same stage →
     both read back on their own sheets; per-op `sheet`, index E-C4).
@@ -125,9 +128,10 @@ E-C6 budget rule (in `BudgetGate.check_budget` / `record(ctx, cs)`, reading `cs.
   per-item return (2A Q6) — check presence by `get_items_by_id`. `verify.check`: pins outside
   `may_change` keep their partition; each `merge` group on one net; `names` match; with
   `keep_partition` the partition is identical. Compensation in reverse stage order; non-symbol pre-images are re-created with
-  `create_items` (original UUIDs); a deleted symbol is re-placed from the library with its
-  fields/unit/transform/body style copied (2A Q10 method A, new UUID — never `create_items`
-  of a symbol pre-image, which is lossy, 2A Q6). `apply_change_set` stores the result in
+  `create_items` (original UUIDs); a deleted symbol (never `create_items` of a symbol pre-image,
+  which is lossy, 2A Q6): without a `.kicad_pcb` re-placed from the library with its
+  fields/unit/transform/body style copied (2A Q10 method A, new UUID); with a board →
+  remaining compensation done, then `DocumentInconsistent(auto_restore=True)` (owner decision 4). `apply_change_set` stores the result in
   `cs.applied`.
 - [ ] **Step 4:** PASS. **Step 5:** commit `feat: verified apply engine with compensation and change log`.
 
@@ -168,7 +172,10 @@ logical 1).
   `test_no_autosave_and_session_reopened` (`sessions.reopen` called once, `save` never);
   `test_recovery_notice_names_last_save_time` (notice text contains
   `session.last_saved_at`, metadata `{action: "restore", snapshotId: <turn snapshot>}`);
-  `test_kicad_failed_editing_turn_uses_same_wording` (a turn that mutated the schematic).
+  `test_kicad_failed_editing_turn_uses_same_wording` (a turn that mutated the schematic);
+  `test_auto_restore_restores_turn_snapshot` (`auto_restore=True` → at turn end the turn
+  snapshot is restored without the busy check of the REST path — the turn is ending — and a
+  notice says so; E8a prefers the run's last step checkpoint).
 - [ ] **Step 2:** FAIL. **Step 3: Implement** like `kicad_failed` (X18: the engine posts the
   error row, history never does); `_recover` text for mutated turns: "The design is at the
   state of <last save>; changes after that are lost." (spec §5.4).

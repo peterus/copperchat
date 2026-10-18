@@ -49,9 +49,11 @@ per connection.
   `test_cleanup_side_effects_reported` (T-branch removal → merged segment and removed junction
   in `side_effects`); `test_delete_sheet_symbol_keeps_file` (`hier_session` copy: sheet gone
   from `get_hierarchy`, file still on disk, result says so);
-  `test_compensation_replaces_symbol_from_library` (forced verification mismatch on a
-  `74xx:74LS00` body-style-2 unit delete → re-placed, body style/unit/fields identical, new
-  UUID reported, netlist back; index author call);
+  `test_compensation_replaces_symbol_from_library` (project without board; forced verification
+  mismatch on a `74xx:74LS00` body-style-2 unit delete → re-placed, body style/unit/fields
+  identical, new UUID reported, netlist back; owner decision 4);
+  `test_compensation_with_board_restores_snapshot` (`ecc83_session`; forced mismatch → turn ends,
+  last checkpoint / turn snapshot restored, original UUID present again);
   `test_budget_counts_preexisting_only` (delete 4 pre-existing symbols → 4th refused;
   own placements free; deleting R1 with its attached `+5V`/`GND` power symbols counts as 1
   toward the ≤ 3 limit, E-C6).
