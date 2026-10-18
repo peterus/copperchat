@@ -7,7 +7,7 @@ import type { PlanDTO, PlanStepDTO } from '@/protocol/frames';
 import { createChatStore } from '@/stores/chat';
 import { createPlansStore, type PlansDeps, PlansStoreContext } from '@/stores/plans';
 import { FakeWsClient } from '@/test/fakeWsClient';
-import { PlanCard } from './PlanCard';
+import { ABORT_ARM_MS, PlanCard } from './PlanCard';
 
 const PID = 'a1b2c3d4e5f6';
 const PLAN = 'p'.repeat(32);
@@ -144,12 +144,39 @@ describe('PlanCard', () => {
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
   });
 
-  it('resume refused with 409 agent_busy is shown inline and the button comes back', async () => {
-    const event = vi.fn().mockRejectedValue(busy());
-    setup(plan({ status: 'paused', pauseReason: 'interrupted' }), { event });
+  it('resume refused with 409 plan_state shows the reason and refetches the plan', async () => {
+    const event = vi.fn().mockRejectedValue(new ApiError(409, { error: { code: 'plan_state', message: 'Only a paused plan can be resumed.' } }, 'Only a paused plan can be resumed.'));
+    const fetchPlan = vi.fn().mockResolvedValue(plan({ status: 'aborted', updatedAt: '2026-10-18T11:00:00.000Z' }));
+    setup(plan({ status: 'paused', pauseReason: 'interrupted' }), { event, fetchPlan });
     fireEvent.click(await screen.findByRole('button', { name: 'Resume' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent(/Wait until it has finished/);
-    expect(screen.getByRole('button', { name: 'Resume' })).toBeEnabled();
+    expect(await screen.findByRole('alert')).toHaveTextContent('Only a paused plan can be resumed.');
+    await waitFor(() => expect(fetchPlan).toHaveBeenCalledWith(PID, PLAN));
+    expect(await screen.findByText('Aborted')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Resume' })).toBeNull();
+  });
+
+  it('abort needs a second tap', async () => {
+    const { deps } = setup(plan({ status: 'paused', pauseReason: 'interrupted' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Abort' }));
+    expect(deps.event).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Really abort?' }));
+    await waitFor(() => expect(deps.event).toHaveBeenCalledWith(PID, PLAN, 'abort'));
+  });
+
+  it('an armed abort disarms after a while', async () => {
+    vi.useFakeTimers();
+    try {
+      const { deps } = setup(plan({ status: 'approved' }));
+      await act(async () => {
+        await vi.runOnlyPendingTimersAsync();
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Abort' }));
+      act(() => vi.advanceTimersByTime(ABORT_ARM_MS + 1));
+      fireEvent.click(screen.getByRole('button', { name: 'Abort' }));
+      expect(deps.event).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('a plan_state refusal refetches the plan', async () => {
@@ -184,8 +211,11 @@ describe('PlanCard', () => {
     expect(within(first).getByText(`${'x'.repeat(199)}…`)).toBeInTheDocument();
     expect(within(first).getByText('+4 more')).toBeInTheDocument();
     fireEvent.click(within(first).getByRole('button', { name: 'Checkpoint' }));
-    const img = within(screen.getByRole('dialog', { name: /Checkpoint after step 1/ })).getByRole('img');
+    const dialog = screen.getByRole('dialog', { name: /Checkpoint after step 1/ });
+    const img = within(dialog).getByRole('img');
     expect(img.getAttribute('src')).toBe(`/api/projects/${PID}/history/${CP1}/preview`);
+    fireEvent.error(img); // no preview rendered, or pruned
+    expect(within(dialog).getByText('The image is not available.')).toBeInTheDocument();
   });
 
   it('failed step shows its failure', async () => {

@@ -42,10 +42,12 @@ describe('plans store', () => {
     const s = createPlansStore(ws, d);
     await s.getState().load(PID);
     ws.emit({ type: 'plan-updated', projectId: PID, plan: plan({ id: 'q'.repeat(32), status: 'done' }) });
+    // a card's plan that was open before the drop; the open plan is now another one
+    ws.emit({ type: 'plan-updated', projectId: PID, plan: plan({ id: 'r'.repeat(32), status: 'paused' }) });
     ws.resume();
     await vi.waitFor(() => expect(d.fetchOpen).toHaveBeenCalledTimes(2));
-    expect(d.fetchPlan).toHaveBeenCalledTimes(1);
-    expect(d.fetchPlan).toHaveBeenCalledWith(PID, 'p'.repeat(32));
+    await vi.waitFor(() => expect(d.fetchPlan).toHaveBeenCalledTimes(1));
+    expect(d.fetchPlan).toHaveBeenCalledWith(PID, 'r'.repeat(32)); // not the open one: loadOpen brought it
   });
 
   it('drops responses of the previous project after a switch', async () => {
@@ -59,5 +61,14 @@ describe('plans store', () => {
     await first;
     expect(s.getState().projectId).toBe(OTHER);
     expect(s.getState().byId).toEqual({});
+  });
+
+  it('cards mounting together share one open-plan request', async () => {
+    const d = deps();
+    const s = createPlansStore(new FakeWsClient(), d);
+    await s.getState().load(PID);
+    await Promise.all([s.getState().load(PID), s.getState().ensure(PID, 'p'.repeat(32)), s.getState().ensure(PID, 'p'.repeat(32))]);
+    expect(d.fetchOpen).toHaveBeenCalledTimes(2);
+    expect(d.fetchPlan).not.toHaveBeenCalled();
   });
 });

@@ -5,6 +5,10 @@ export function restoreSnapshot(projectId: string, snapshotId: string): Promise<
   return apiPost(`/projects/${projectId}/history/${snapshotId}/restore`, {});
 }
 
+/** A restore refused because a plan has begun (409 `plan_open`, E8b): where to go instead. */
+export const PLAN_OPEN_RESTORE =
+  'A plan is open: use “Roll back to…” on its plan card, or abort the plan first, then restore.';
+
 export function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }

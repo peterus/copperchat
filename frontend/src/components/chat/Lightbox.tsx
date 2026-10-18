@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 
 export function Lightbox({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) {
   useEffect(() => {
@@ -8,6 +8,7 @@ export function Lightbox({ src, alt, onClose }: { src: string; alt: string; onCl
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
+  const [failed, setFailed] = useState(false);
   return (
     <div
       role="dialog"
@@ -16,13 +17,18 @@ export function Lightbox({ src, alt, onClose }: { src: string; alt: string; onCl
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-2"
       onClick={onClose}
     >
-      <img
-        src={src}
-        alt={alt}
-        className="max-h-full max-w-full object-contain"
-        style={{ touchAction: 'pinch-zoom' }}
-        onClick={(e) => e.stopPropagation()}
-      />
+      {failed ? (
+        <p className="rounded bg-black/60 px-3 py-2 text-sm text-white">The image is not available.</p>
+      ) : (
+        <img
+          src={src}
+          alt={alt}
+          className="max-h-full max-w-full object-contain"
+          style={{ touchAction: 'pinch-zoom' }}
+          onClick={(e) => e.stopPropagation()}
+          onError={() => setFailed(true)}
+        />
+      )}
       <button
         type="button"
         onClick={onClose}

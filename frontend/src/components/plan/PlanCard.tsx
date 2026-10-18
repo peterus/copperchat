@@ -45,6 +45,31 @@ const PRIMARY = `${BTN} bg-accent text-accent-fg`;
 const SECONDARY = `${BTN} border border-border`;
 const DANGER = `${BTN} border border-danger text-danger`;
 
+/** Aborting is final: the first tap arms the button ("Really abort?"), the second aborts. */
+export const ABORT_ARM_MS = 4000;
+function AbortButton({ disabled, onAbort }: { disabled: boolean; onAbort: () => void }) {
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    if (!armed) return;
+    const t = setTimeout(() => setArmed(false), ABORT_ARM_MS);
+    return () => clearTimeout(t);
+  }, [armed]);
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => {
+        if (!armed) return setArmed(true);
+        setArmed(false);
+        onAbort();
+      }}
+      className={armed ? `${BTN} bg-danger text-white` : DANGER}
+    >
+      {armed ? 'Really abort?' : 'Abort'}
+    </button>
+  );
+}
+
 /**
  * The plan card in the chat (spec §7.3): title, summary, numbered steps with their status and,
  * once finished, change count, checkpoint and ERC; buttons by plan state. Rendered for notice
@@ -120,9 +145,7 @@ export function PlanCard({ projectId, planId }: { projectId: string; planId: str
       )}
       {plan.status === 'approved' && (
         <div className="mt-2 flex flex-col gap-2 sm:flex-row">
-          <button type="button" disabled={busy} onClick={() => void s.abort(plan.id)} className={DANGER}>
-            Abort
-          </button>
+          <AbortButton disabled={busy} onAbort={() => void s.abort(plan.id)} />
         </div>
       )}
       {plan.status === 'running' && (
@@ -145,9 +168,7 @@ export function PlanCard({ projectId, planId }: { projectId: string; planId: str
           <button type="button" disabled={busy} onClick={() => setConfirm(true)} className={SECONDARY}>
             {pending === 'rollback' ? 'Rolling back…' : 'Roll back to…'}
           </button>
-          <button type="button" disabled={busy} onClick={() => void s.abort(plan.id)} className={DANGER}>
-            Abort
-          </button>
+          <AbortButton disabled={busy} onAbort={() => void s.abort(plan.id)} />
         </div>
       )}
       {confirm && (

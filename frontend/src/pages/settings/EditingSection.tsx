@@ -30,6 +30,8 @@ export function EditingSection() {
   const [budget, setBudget] = useState('');
   const [error, setError] = useState<string | null>(null);
   const seq = useRef(0);
+  /** The last settings the server confirmed (load or PUT response): what a failed save falls back to. */
+  const confirmed = useRef<EditingSettings | null>(null);
   const budgetId = useId();
 
   useEffect(() => {
@@ -40,6 +42,7 @@ export function EditingSection() {
     fetchEditingSettings(projectId).then(
       (s) => {
         if (mine !== seq.current) return;
+        confirmed.current = s;
         setSettings(s);
         setBudget(String(s.changeBudget));
       },
@@ -59,19 +62,23 @@ export function EditingSection() {
   const save = async (patch: Partial<EditingSettings>) => {
     if (!settings) return;
     const mine = ++seq.current;
-    const before = settings;
+    const pid = projectId;
     setError(null);
-    setSettings({ ...settings, ...patch }); // optimistic; the response (or the old value) wins
+    setSettings({ ...settings, ...patch }); // optimistic; the newest response (or the confirmed copy) wins
     try {
-      const next = await putEditingSettings(projectId, patch);
-      if (mine !== seq.current) return;
+      const next = await putEditingSettings(pid, patch);
+      if (useProjects.getState().current?.id !== pid) return;
+      confirmed.current = next;
+      if (mine !== seq.current) return; // a newer save is in flight: its response shows the state
       setSettings(next);
       setBudget(String(next.changeBudget));
     } catch (e) {
-      if (mine !== seq.current) return;
-      setSettings(before);
-      setBudget(String(before.changeBudget));
+      if (useProjects.getState().current?.id !== pid) return;
+      // Never dropped, also when a newer save superseded this one.
       setError(errorText(e));
+      if (mine !== seq.current || !confirmed.current) return;
+      setSettings(confirmed.current);
+      setBudget(String(confirmed.current.changeBudget));
     }
   };
 

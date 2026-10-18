@@ -1,5 +1,13 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+
+const apiPost = vi.fn();
+vi.mock('@/api/http', async (orig) => ({
+  ...(await orig<typeof import('@/api/http')>()),
+  apiPost: (...a: unknown[]) => apiPost(...a),
+}));
+
+import { ApiError } from '@/api/http';
 import type { PlanDTO } from '@/protocol/frames';
 import { createPlansStore, PlansStoreContext } from '@/stores/plans';
 import { FakeWsClient } from '@/test/fakeWsClient';
@@ -52,5 +60,14 @@ describe('MessageItem editing notices', () => {
   it('a restore notice for a turn snapshot keeps its label', () => {
     render(<MessageItem message={notice({ action: 'restore', snapshotId: 'c'.repeat(32) })} />);
     expect(screen.getByRole('button', { name: 'Restore snapshot' })).toBeInTheDocument();
+  });
+
+  it('a checkpoint restore refused because a plan is open points to the plan card', async () => {
+    apiPost.mockRejectedValue(new ApiError(409, { error: { code: 'plan_open', message: 'The design cannot be restored while a plan is open' } }, 'The design cannot be restored while a plan is open'));
+    render(<MessageItem message={notice({ action: 'restore', snapshotId: 'c'.repeat(32), checkpoint: true })} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Restore step checkpoint' }));
+    expect(screen.getByRole('dialog')).toHaveTextContent('at the end of “the last finished plan step”');
+    fireEvent.click(screen.getByRole('button', { name: /^restore$/i }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Roll back to…');
   });
 });

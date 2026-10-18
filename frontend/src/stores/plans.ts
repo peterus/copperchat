@@ -73,6 +73,7 @@ export function createPlansStore(
   // Bumped per project switch: responses of an older project are dropped.
   let generation = 0;
   const inflight = new Map<string, Promise<void>>();
+  let openLoad: { projectId: string; promise: Promise<void> } | null = null;
 
   const upsert = (plan: PlanDTO) =>
     store.setState((s) => {
@@ -91,7 +92,16 @@ export function createPlansStore(
       return { errors };
     });
 
-  const loadOpen = async (projectId: string) => {
+  /** One `GET /plans/open` at a time per project (cards mounting together share it). */
+  const loadOpen = (projectId: string): Promise<void> => {
+    if (openLoad?.projectId === projectId) return openLoad.promise;
+    const promise = fetchOpen(projectId).finally(() => {
+      if (openLoad?.promise === promise) openLoad = null;
+    });
+    openLoad = { projectId, promise };
+    return promise;
+  };
+  const fetchOpen = async (projectId: string) => {
     const gen = generation;
     try {
       const plan = await deps.fetchOpen(projectId);
@@ -161,6 +171,7 @@ export function createPlansStore(
       if (projectId !== store.getState().projectId) {
         generation += 1;
         inflight.clear();
+        openLoad = null;
         store.setState({ projectId, byId: {}, open: null, pending: {}, errors: {} });
       }
       await loadOpen(projectId);
@@ -168,6 +179,7 @@ export function createPlansStore(
     ensure: async (projectId, planId) => {
       const s = store.getState();
       if (s.projectId !== projectId) await s.load(projectId);
+      else if (openLoad?.projectId === projectId) await openLoad.promise;
       if (store.getState().byId[planId]) return;
       await fetchOne(projectId, planId);
     },
@@ -191,10 +203,14 @@ export function createPlansStore(
     if (state !== 'open' && state !== 'resumed') return;
     const { projectId, byId } = store.getState();
     if (!projectId) return;
-    void loadOpen(projectId);
-    for (const plan of Object.values(byId)) {
-      if (OPEN_STATUSES.has(plan.status)) void fetchOne(projectId, plan.id);
-    }
+    void loadOpen(projectId).then(() => {
+      // The open plan came with loadOpen; the other unfinished ones (closed meanwhile?) are refetched.
+      const { open, projectId: now } = store.getState();
+      if (now !== projectId) return;
+      for (const plan of Object.values(byId)) {
+        if (OPEN_STATUSES.has(plan.status) && plan.id !== open?.id) void fetchOne(projectId, plan.id);
+      }
+    });
   });
   return store;
 }

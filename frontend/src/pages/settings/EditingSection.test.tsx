@@ -97,4 +97,22 @@ describe('EditingSection', () => {
     render(<EditingSection />);
     expect(await screen.findByRole('alert')).toHaveTextContent('HTTP 503');
   });
+
+  it('a failing save superseded by a newer one still shows its error and the confirmed state', async () => {
+    let failFirst: (e: Error) => void = () => {};
+    let finishSecond: (v: object) => void = () => {};
+    apiPut
+      .mockImplementationOnce(() => new Promise((_r, rej) => (failFirst = rej)))
+      .mockImplementationOnce(() => new Promise((r) => (finishSecond = r)));
+    render(<EditingSection />);
+    fireEvent.click(await screen.findByRole('radio', { name: 'Always' }));
+    fireEvent.click(screen.getByRole('radio', { name: '×1000' }));
+    failFirst(new Error('database is locked'));
+    expect(await screen.findByRole('alert')).toHaveTextContent('database is locked');
+    // the server merged only the second field: its response is the truth
+    finishSecond({ ...DEFAULTS, annotationBlock: 1000 });
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'For large changes' })).toBeChecked());
+    expect(screen.getByRole('radio', { name: '×1000' })).toBeChecked();
+    expect(screen.getByRole('alert')).toHaveTextContent('database is locked');
+  });
 });

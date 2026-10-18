@@ -4,7 +4,7 @@
  */
 import { z } from 'zod';
 import { PlanDTO } from '@/protocol/frames';
-import { ApiError, apiGet, apiPost } from './http';
+import { apiGet, apiPost } from './http';
 
 const enc = encodeURIComponent;
 const base = (projectId: string) => `/projects/${enc(projectId)}/plans`;
@@ -31,7 +31,8 @@ const ErrorBody = z.object({ error: z.object({ code: z.string() }) });
 
 /** The backend's error code (`{error: {code, message}}`), e.g. `agent_busy`, else null. */
 export function apiErrorCode(e: unknown): string | null {
-  if (!(e instanceof ApiError)) return null;
-  const parsed = ErrorBody.safeParse(e.detail);
+  // Duck-typed (an `ApiError`'s parsed body): no runtime dependency on the http module's class.
+  if (!e || typeof e !== 'object' || !('detail' in e)) return null;
+  const parsed = ErrorBody.safeParse((e as { detail: unknown }).detail);
   return parsed.success ? parsed.data.error.code : null;
 }
