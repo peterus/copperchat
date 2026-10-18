@@ -12,6 +12,7 @@ import pytest
 from copperchat.agent.engine import TurnOutcome
 from copperchat.config import Settings
 from copperchat.db import Database
+from copperchat.db.repos.editing_settings import EditingSettingsRepo
 from copperchat.errors import DocumentInconsistent, StructuredToolError
 from copperchat.history.service import HistoryService
 from copperchat.kicad_session import KicadHandle, KicadSession, KicadSessionManager
@@ -178,6 +179,12 @@ async def test_delete_sheet_symbol_keeps_file(
     s = hier_session
     ctx = edit_ctx(s, edit_db)
     file = s.project.dir / "ampli_ht.kicad_sch"
+    before = await state(s)
+    # its parts leave the design: more than 3 pre-existing symbols need a plan
+    out, err = await call_tool(ctx, "sch_delete", items=["sheet:ampli_ht_horizontal"])
+    assert err and out["error"]["code"] == "plan_required"
+    assert await state(s) == before
+    await EditingSettingsRepo(edit_db).put(s.project.id, plan_policy="never")
     out = await _ok(ctx, "sch_delete", items=["sheet:ampli_ht_horizontal"])
     assert out["deleted_summary"]["sheets"] == [
         {"name": "ampli_ht_horizontal", "file": "ampli_ht.kicad_sch"}

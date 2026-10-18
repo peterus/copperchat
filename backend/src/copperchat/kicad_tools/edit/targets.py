@@ -17,9 +17,15 @@ from typing import Any, Literal
 from copperchat.errors import StructuredToolError
 from copperchat.kicad_tools import access
 from copperchat.kicad_tools.edit.changeset import SheetRef
-from copperchat.kicad_tools.edit.geometry import Box, Point, mm_point
+from copperchat.kicad_tools.edit.geometry import Box, Point
 from copperchat.kicad_tools.edit.labels import World
-from copperchat.kicad_tools.edit.scene import MAX_CANDIDATES, SymbolInfo, sheet_api, short
+from copperchat.kicad_tools.edit.scene import (
+    MAX_CANDIDATES,
+    SheetPinInfo,
+    SymbolInfo,
+    sheet_api,
+    short,
+)
 from copperchat.kicad_tools.filtering import natural_key
 
 UUID_RE = re.compile(
@@ -39,17 +45,6 @@ Kind = Literal[
     "sheet",
 ]
 LABEL_KINDS = ("label", "global_label", "hierarchical_label", "directive_label")
-
-
-@dataclass(frozen=True)
-class SheetPinInfo:
-    """A pin of a sheet symbol, on the sheet that holds the symbol."""
-
-    uuid: str
-    name: str
-    at: Point
-    symbol: str  # sheet symbol uuid
-    side: int  # kiapi SheetSide (1 left, 2 right, 3 top, 4 bottom)
 
 
 @dataclass
@@ -76,23 +71,8 @@ def bad(what: str, why: str, suggestion: str, **details: Any) -> StructuredToolE
 
 
 def sheet_pins(world: World, sheet: SheetRef) -> list[SheetPinInfo]:
-    """Pins of every sheet symbol on `sheet` (cached on the world)."""
-    cache: dict[str, list[SheetPinInfo]] = world.__dict__.setdefault("_e6_sheet_pins", {})
-    if sheet.path not in cache:
-        out = []
-        for sym in sheet_api(world.h, sheet).get_sheet_symbols():
-            for pin in sym.pins:
-                out.append(
-                    SheetPinInfo(
-                        access.kiid(pin),
-                        str(pin.text.value),
-                        mm_point(pin.position),
-                        access.kiid(sym),
-                        int(pin.side),
-                    )
-                )
-        cache[sheet.path] = out
-    return cache[sheet.path]
+    """Pins of every sheet symbol on `sheet`."""
+    return list(world.scene(sheet).sheet_pins.values())
 
 
 def sheet_symbols(world: World, sheet: SheetRef) -> dict[str, Any]:

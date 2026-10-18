@@ -291,12 +291,12 @@ def plan_delete(
                         nets.add(n)
                         may_change |= set(world.members(n))
             elif t.kind == "sheet":
-                starts += [p.at for p in pins if p.symbol == t.uuid]
+                starts += [p.pin.at for p in pins if p.sheet_uuid == t.uuid]
                 for p in pins:
-                    if p.symbol != t.uuid:
+                    if p.sheet_uuid != t.uuid:
                         continue
                     here = {world.nets(sheet).get(p.uuid)}
-                    here |= {world.nets(sheet).get(w.uuid) for w in scene.wires_through(p.at)}
+                    here |= {world.nets(sheet).get(w.uuid) for w in scene.wires_through(p.pin.at)}
                     for n in here - {None}:
                         nets.add(n)  # type: ignore[arg-type]
                         may_change |= set(world.members(n))
@@ -321,8 +321,8 @@ def plan_delete(
             scene,
             starts,
             dead_symbols,
-            cuts=[p.at for p in pins],
-            keep=[p.at for p in pins if p.symbol not in dead_sheets],
+            cuts=[p.pin.at for p in pins],
+            keep=[p.pin.at for p in pins if p.sheet_uuid not in dead_sheets],
             dead_items=[t.uuid for t in ts],
         )
         listed = set(ids)
@@ -386,7 +386,8 @@ def _logical(
     """E-C6: 1 per deleted symbol (all units of a reference), label, sheet, junction,
     no-connect; directly deleted wires 1 per net they were on. `deleted_symbols`: every
     own placement (refunded by the gate) plus one UUID per pre-existing non-power
-    reference (the <= 3 rule counts parts, not units)."""
+    reference (the <= 3 rule counts parts, not units), also for the parts inside a
+    deleted sheet instance."""
     changes = 0
     deleted: list[str] = []
     refs_seen: set[str] = set()
@@ -409,6 +410,22 @@ def _logical(
             if net not in wire_nets:
                 wire_nets.add(net)
                 changes += 1
+        elif t.kind == "sheet":
+            changes += 1
+            # The parts of the removed sheet instance(s) leave the design: they count
+            # toward the <= 3 rule like deleted symbols (one per reference).
+            gone = t.child.path if t.child is not None else None
+            seen: set[str] = set()
+            for sym in world.symbols:
+                path = sym.sheet.path
+                if gone is None or sym.power or not (path == gone or path.startswith(gone + "/")):
+                    continue
+                if sym.uuid in placed_this_turn and sym.uuid not in deleted:
+                    deleted.append(sym.uuid)
+                    changes += 1  # refunded by the gate with the placement
+                elif f"{path}:{sym.ref}" not in seen and sym.uuid not in placed_this_turn:
+                    seen.add(f"{path}:{sym.ref}")
+                    deleted.append(sym.uuid)
         else:
             changes += 1
     return changes, deleted
