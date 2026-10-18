@@ -423,6 +423,33 @@ Error codes (`StructuredToolError.code`): `read_only`, `plan_required`,
   (`EditTurnState.halted`, `code="document_inconsistent"`). `by_id` bisects only on
   `AS_BAD_REQUEST` (KiCad's answer for unknown ids). `sch_add_wire` takes at most 64
   points and refuses ends on unjoined wire crossings or touching several nets.
+- **E7 (as built):** `kicad_tools/edit/sheets.py` (`validate_sheet_file(project, file, *,
+  existing)`, `validate_sheet_name`, `validate_pin_name`, planners) + `specs_sheets.py`.
+  `sch_add_sheet(name, file, at, size?, parent?)` **never accepts an existing file**
+  (`invalid_argument`, tool passes `existing=set()` after refusing hierarchy files with a
+  tailored message): found against KiCad at the pinned commit that a sheet symbol created
+  through the API for an *existing* file gets a blank screen and `save()` **replaces the file**
+  (`ampli_ht.kicad_sch` became an 8-line stub), so a second instance of a sheet cannot be made
+  by the API (do it in KiCad). Also refused: the root file, a file of an ancestor, a name
+  already used by a sibling, a parent sheet living in a sub-directory, an occupied area
+  (`overlap`: symbols, sheets, wires, labels, junctions, no-connects +2.54 mm). Stages: Create
+  with the absolute path, Update to the relative `Sheetfile`; the tool then calls
+  `session.save("sch")` itself (the file exists, hash listener runs) and records its change
+  rows only **after** that save (the engine runs with `editing=None`). A failing/cancelled
+  save: sheet symbol removed in a commit, the new file (and a directory this call made)
+  deleted, root saved again (`DocumentInconsistent` if that undo fails); the agent gets
+  `invalid_argument`. Result `sheet: {name, file, path, page, uuid}`. `sch_add_sheet_pin(sheet,
+  name, direction, side?)`: `sheet` is the **sub-sheet instance**; its sheet symbol is the
+  last component of `SheetRef.path`, its parent the rest. Pin on the left (outputs: right)
+  edge, 2.54 mm stack on the 1.27 grid, label at a free spot on the left of the sub-sheet;
+  on a shared sheet file an existing hierarchical label of that name is reused (`label:
+  null` + note, verified with `hier_session`). Result `pin: {sheet, name, at_mm, side,
+  direction, uuid}`, `label: {sheet, at_mm, text, uuid} | null`. **Gap for E5/E6:**
+  `sch_add_wire`'s `NetIntent` does not know that a sheet pin joins the nets of the
+  sub-sheet; a wire onto a pin whose sub-sheet net already holds symbol pins fails with
+  `verification_failed` (R1.1 "now also connected" to R201.1). `sch_connect` must treat sheet
+  pins as endpoints and put the cross-sheet pins into `intent.merge`.
+  `tests.support.edit.call_tool` takes `name` positional-only (tools have a `name` argument).
 
 ### E-C5. Editing state and gate — `copperchat.editing` (E2; E8b supplies `PlanGate`)
 
