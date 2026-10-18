@@ -1,0 +1,13 @@
+{
+  "name": "spike-2a-kicanvas-check",
+  "private": true,
+  "type": "module",
+  "license": "GPL-3.0-only",
+  "scripts": { "test": "playwright test --reporter=list" },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@types/node": "^22.0.0",
+    "pngjs": "^7.0.0",
+    "@types/pngjs": "^6.0.5"
+  }
+}

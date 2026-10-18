@@ -1,0 +1,156 @@
+{
+  "question": "q06_commit",
+  "checks": [
+    {
+      "name": "staged_create_response_has_uuid",
+      "ok": true,
+      "evidence": "('300ca6e5', 'fac2c45c')"
+    },
+    {
+      "name": "staged_create_invisible_by_id",
+      "ok": true,
+      "evidence": "GetItemsById before push"
+    },
+    {
+      "name": "staged_create_invisible_in_get_items",
+      "ok": true,
+      "evidence": "['R1']"
+    },
+    {
+      "name": "staged_create_invisible_in_netlist",
+      "ok": true,
+      "evidence": "GetSchematicNetlist before push"
+    },
+    {
+      "name": "after_push_visible",
+      "ok": true,
+      "evidence": "['23503247', '300ca6e5', 'fac2c45c']"
+    },
+    {
+      "name": "staged_delete_still_visible_before_push",
+      "ok": true,
+      "evidence": "wire still returned"
+    },
+    {
+      "name": "after_push_delete_gone",
+      "ok": true,
+      "evidence": ""
+    },
+    {
+      "name": "update_of_missing_item_raises",
+      "ok": false,
+      "evidence": "no exception; kipy returned 1 item(s) and ignores the per-item status (editor.py update_items); still missing after: True"
+    },
+    {
+      "name": "create_with_existing_uuid_raises",
+      "ok": false,
+      "evidence": "no exception; kipy returned 1 item(s) (ISC_EXISTING dropped); symbols now: ['C1', 'R1']"
+    },
+    {
+      "name": "drop_commit_document_unchanged",
+      "ok": true,
+      "evidence": "{'added': [], 'removed': [], 'changed': []}"
+    },
+    {
+      "name": "other_client_works_while_stale_commit",
+      "ok": true,
+      "evidence": ""
+    },
+    {
+      "name": "other_client_push_visible",
+      "ok": true,
+      "evidence": ""
+    },
+    {
+      "name": "stale_commit_items_invisible",
+      "ok": true,
+      "evidence": "GHOST label never applied"
+    },
+    {
+      "name": "same_name_begin_commit_while_stale",
+      "ok": true,
+      "evidence": "ApiError: KiCad returned error: the client copperchat-a already has a commit in progress"
+    },
+    {
+      "name": "same_name_writes_land_in_stale_commit",
+      "ok": true,
+      "evidence": "create_items after reconnect (no new commit) is visible?"
+    },
+    {
+      "name": "drop_stale_commit_by_old_id",
+      "ok": true,
+      "evidence": "ok: None"
+    },
+    {
+      "name": "after_dropping_stale_commit_writes_apply",
+      "ok": true,
+      "evidence": ""
+    },
+    {
+      "name": "dropped_stale_items_gone",
+      "ok": true,
+      "evidence": ""
+    },
+    {
+      "name": "second_begin_commit_same_client",
+      "ok": true,
+      "evidence": "ApiError: KiCad returned error: the client copperchat-a already has a commit in progress"
+    },
+    {
+      "name": "push_unknown_commit",
+      "ok": true,
+      "evidence": "ApiError: KiCad returned error: the client copperchat-a does not has a commit in progress"
+    },
+    {
+      "name": "deleted_all_targets",
+      "ok": true,
+      "evidence": ""
+    },
+    {
+      "name": "recreate_with_original_uuids",
+      "ok": true,
+      "evidence": "{'missing': [], 'returned_ids': ['2ef32412', '49f973ff', '674c3e2b', '77b20d86', '8997b422', '8b4bbdfe', 'aefe0461', 'e9edbad7']}"
+    },
+    {
+      "name": "recreated_content_equal",
+      "ok": true,
+      "evidence": "{}"
+    },
+    {
+      "name": "recreated_connectivity_equal",
+      "ok": true,
+      "evidence": "[]"
+    },
+    {
+      "name": "update_compensated_from_pre_image",
+      "ok": true,
+      "evidence": "('TLV9002', (101.6, 76.2))"
+    },
+    {
+      "name": "recreate_with_sibling_keeps_library_link",
+      "ok": false,
+      "evidence": "R1: definition id Device:R (sibling R2: :R_1)"
+    },
+    {
+      "name": "original_uuids_persist_after_save_reopen",
+      "ok": true,
+      "evidence": "8/8"
+    }
+  ],
+  "notes": {
+    "staged_update_visible_before_push": true,
+    "corner_junction_dropped_on_create": true,
+    "pre_images": {
+      "e9edbad7": "SchematicSymbolInstance",
+      "aefe0461": "SchematicSymbolInstance",
+      "8997b422": "SchematicLine",
+      "674c3e2b": "SchematicLine",
+      "2ef32412": "SchematicLine",
+      "49f973ff": "LocalLabel",
+      "8b4bbdfe": "NoConnectMarker",
+      "77b20d86": "GlobalLabel"
+    },
+    "compensate_ms": 35.2,
+    "root": "/tmp/s2a-blank-ee8cxat_/blank/blank.kicad_sch"
+  }
+}

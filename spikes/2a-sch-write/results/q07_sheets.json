@@ -1,0 +1,148 @@
+{
+  "question": "q07_sheets",
+  "checks": [
+    {
+      "name": "relative_sheetfile_new_sheet_save",
+      "ok": false,
+      "evidence": "ApiError: KiCad returned error: failed to save schematic"
+    },
+    {
+      "name": "workaround_field_fix_inside_create_commit",
+      "ok": false,
+      "evidence": "/tmp/s2a-blank-np5_eezq/blank/power.kicad_sch"
+    },
+    {
+      "name": "workaround_sheetfile_relative_after_fix",
+      "ok": true,
+      "evidence": "['blank.kicad_sch', 'power.kicad_sch']"
+    },
+    {
+      "name": "new_sheet_in_hierarchy",
+      "ok": true,
+      "evidence": "[('Root', 'blank.kicad_sch', '1'), ('Power', 'power.kicad_sch', '2')]"
+    },
+    {
+      "name": "new_sheet_page_number_assigned",
+      "ok": true,
+      "evidence": "{'/': '1', '/Power/': '2'}"
+    },
+    {
+      "name": "new_sheet_symbol_page_number",
+      "ok": true,
+      "evidence": "2"
+    },
+    {
+      "name": "sheet_pin_added",
+      "ok": true,
+      "evidence": "[('VIN', (127.0, 63.5))]"
+    },
+    {
+      "name": "place_on_new_sheet_path",
+      "ok": true,
+      "evidence": "path {\n  value: \"86c7d558-2511-4c34-9d0d-2cc523a13fee\"\n}\npath {\n  value: \"a4ece589-b8c3-4f5f-953c-17f14fc77704\"\n}\npath_human_readable: \"/Power/\"\n"
+    },
+    {
+      "name": "hier_label_on_sub_sheet",
+      "ok": true,
+      "evidence": "label lives on the sub-sheet only"
+    },
+    {
+      "name": "sheet_pin_hier_label_connect_api",
+      "ok": true,
+      "evidence": "('/Power/VIN', '/Power/VIN')"
+    },
+    {
+      "name": "no_sub_file_before_save",
+      "ok": true,
+      "evidence": "['blank.kicad_prl', 'blank.kicad_pro', 'blank.kicad_sch', 'ecc83-pp.kicad_sym', 'sym-lib-table', '~blank.kicad_pro.lck']"
+    },
+    {
+      "name": "new_sheet_file_written_on_save",
+      "ok": true,
+      "evidence": "['blank.kicad_prl', 'blank.kicad_pro', 'blank.kicad_sch', 'ecc83-pp.kicad_sym', 'power.kicad_sch', 'sym-lib-table', '~blank.kicad_pro.lck']"
+    },
+    {
+      "name": "sheet_pin_hier_label_connect_cli",
+      "ok": true,
+      "evidence": "('/Power/VIN', '/Power/VIN')"
+    },
+    {
+      "name": "erc_no_hierarchy_mismatch",
+      "ok": true,
+      "evidence": "['pin_not_connected']"
+    },
+    {
+      "name": "relocated_copy_loads_sub_sheet",
+      "ok": true,
+      "evidence": "/Power/VIN"
+    },
+    {
+      "name": "reopen_hierarchy_and_pages",
+      "ok": true,
+      "evidence": "{'/': '1', '/Power/': '2'}"
+    },
+    {
+      "name": "reopen_sub_sheet_symbol",
+      "ok": true,
+      "evidence": "['R1', 'R201']"
+    },
+    {
+      "name": "existing_page_numbers",
+      "ok": true,
+      "evidence": "{'/': '1', '/ampli_ht_vertical/': '2', '/ampli_ht_horizontal/': '3'}"
+    },
+    {
+      "name": "symbol_instance_path_to_page_number",
+      "ok": true,
+      "evidence": "{'C105': '1', 'U102': '1', 'C102': '1', 'P102': '1', 'D101': '1', 'C104': '1'}"
+    },
+    {
+      "name": "sheet_symbols_expose_page_number",
+      "ok": true,
+      "evidence": "[('ampli_ht_horizontal', '3'), ('ampli_ht_vertical', '2')]"
+    },
+    {
+      "name": "new_sheet_next_page_number",
+      "ok": true,
+      "evidence": "{'/': '1', '/ampli_ht_vertical/': '2', '/ampli_ht_horizontal/': '3', '/Extra/': '4'}"
+    },
+    {
+      "name": "new_sheet_file_written_in_existing_project",
+      "ok": true,
+      "evidence": "['ampli_ht.kicad_sch', 'complex_hierarchy.kicad_sch', 'extra.kicad_sch']"
+    }
+  ],
+  "notes": {
+    "relative_sheetfile_files_after_save": [
+      "blank.kicad_prl",
+      "blank.kicad_pro",
+      "blank.kicad_sch",
+      "ecc83-pp.kicad_sym",
+      "sym-lib-table",
+      "~blank.kicad_pro.lck"
+    ],
+    "refs_per_page": {
+      "1": [
+        "C101",
+        "C102",
+        "C103",
+        "C104",
+        "C105"
+      ],
+      "2": [
+        "C201",
+        "C202",
+        "C203",
+        "C204",
+        "D201"
+      ],
+      "3": [
+        "C301",
+        "C302",
+        "C303",
+        "C304",
+        "D301"
+      ]
+    }
+  }
+}

@@ -1,0 +1,9 @@
+.kicad/
+.deps/
+fixtures/
+results/files/
+results/png/
+node_modules/
+test-results/
+__pycache__/
+.p*.py

@@ -1,0 +1,166 @@
+{
+  "question": "q01_place",
+  "checks": [
+    {
+      "name": "place_before_load_all_libraries_refused",
+      "ok": true,
+      "evidence": "ApiError: KiCad returned error: symbol 'Device:R' not found"
+    },
+    {
+      "name": "stock_place_no_ref_unannotated",
+      "ok": true,
+      "evidence": "R?"
+    },
+    {
+      "name": "stock_place_with_ref",
+      "ok": true,
+      "evidence": "R101"
+    },
+    {
+      "name": "lib_id_read_back",
+      "ok": true,
+      "evidence": "Device:R"
+    },
+    {
+      "name": "power_symbol_auto_annotated",
+      "ok": true,
+      "evidence": "#PWR01"
+    },
+    {
+      "name": "project_lib_place",
+      "ok": true,
+      "evidence": "[<kipy.common_types.LibraryIdentifier object at 0x7f90caf55d90>, <kipy.common_types.LibraryIdentifier object at 0x7f90caf41f20>, <kipy.common_types.LibraryIdentifier object at 0x7f90caf416a0>]"
+    },
+    {
+      "name": "multi_unit_units",
+      "ok": true,
+      "evidence": "[('U1', 1), ('U1', 2), ('U1', 3)]"
+    },
+    {
+      "name": "unit_out_of_range_refused",
+      "ok": true,
+      "evidence": "ApiError: KiCad returned error: unit 2 is out of range for symbol 'Device:R' (1 units)"
+    },
+    {
+      "name": "unknown_symbol_refused",
+      "ok": true,
+      "evidence": "ApiError: KiCad returned error: symbol 'Device:NoSuchPart' not found"
+    },
+    {
+      "name": "rotate_then_mirror_matrix_as_requested",
+      "ok": false,
+      "evidence": "{'U17': {'asked': (180, 'x'), 'got': (0, False, False)}}"
+    },
+    {
+      "name": "canonical_8_transforms_round_trip",
+      "ok": true,
+      "evidence": "8 distinct"
+    },
+    {
+      "name": "pin_ends_from_api_data_all_transforms_api_netlist",
+      "ok": true,
+      "evidence": "60 pins"
+    },
+    {
+      "name": "pin_ends_transform_cli_netlist_after_save",
+      "ok": true,
+      "evidence": "60 pins"
+    },
+    {
+      "name": "multi_unit_one_component_in_netlist",
+      "ok": true,
+      "evidence": "['U1', 'U10', 'U11', 'U12', 'U13']"
+    },
+    {
+      "name": "cli_netlist_lib_ids",
+      "ok": true,
+      "evidence": "('ecc83-pp:ECC83', 'Device:R')"
+    }
+  ],
+  "notes": {
+    "load_all_libraries_s": 8.3,
+    "multi_unit_reference_read_back": [
+      "U1",
+      "U1",
+      "U1"
+    ],
+    "orientation_read_back": {
+      "U10": [
+        0,
+        false,
+        false
+      ],
+      "U11": [
+        0,
+        true,
+        false
+      ],
+      "U12": [
+        0,
+        false,
+        true
+      ],
+      "U13": [
+        90,
+        false,
+        false
+      ],
+      "U14": [
+        90,
+        true,
+        false
+      ],
+      "U15": [
+        270,
+        true,
+        false
+      ],
+      "U16": [
+        180,
+        false,
+        false
+      ],
+      "U17": [
+        0,
+        false,
+        false
+      ],
+      "U18": [
+        0,
+        true,
+        false
+      ],
+      "U19": [
+        270,
+        false,
+        false
+      ],
+      "U20": [
+        270,
+        true,
+        false
+      ],
+      "U21": [
+        90,
+        true,
+        false
+      ]
+    },
+    "pin_ends_example": {
+      "U11": {
+        "1": [
+          63.5,
+          101.6
+        ],
+        "3": [
+          48.26,
+          104.14
+        ],
+        "2": [
+          48.26,
+          99.06
+        ]
+      }
+    }
+  }
+}
