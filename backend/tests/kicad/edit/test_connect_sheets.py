@@ -137,3 +137,45 @@ async def test_rename_in_a_shared_sheet_and_no_false_clash(hier_session: KicadSe
     assert out["new"] == "/PIEZO_OUT"
     sc = await scene(s)
     assert any(lb.text == "PIEZO_OUT" for lb in sc.labels.values())
+
+
+async def test_to_a_net_named_on_the_parent_through_a_sheet_pin(
+    hier_session: KicadSession,
+) -> None:
+    s = hier_session
+    await _parts(s)
+    await _add_sheet_pin(s, "HIN", (71.12, 130.81))
+    ctx = edit_ctx(s)
+    pin, at = await _right_pin(ctx, "R950")
+    _, err = await call_tool(ctx, "sch_add_wire", points=[at, [71.12, 130.81]])
+    assert not err
+    _, err = await call_tool(ctx, "sch_add_label", net="HIN", at=[66.04, 130.81])
+    assert not err  # the parent net is now '/HIN'
+    _, err = await call_tool(ctx, "sch_add_label", net="HIN", at=["R951.1"], kind="hierarchical")
+    assert not err
+    out, err = await call_tool(ctx, "sch_connect", **{"from": "R951.2", "to": "HIN"})
+    assert not err, out
+    nets = await sheet_pin_nets(s)
+    assert nets[(VERTICAL, "R951.2")] == nets[("/", pin)] == "/HIN"
+
+
+async def test_same_pin_in_two_instances_is_one_pin(hier_session: KicadSession) -> None:
+    s = hier_session
+    ctx = edit_ctx(s)
+
+    def pair(h: KicadHandle) -> tuple[str, str]:
+        from copperchat.kicad_tools.edit.scene import all_symbols
+
+        by_uuid: dict[str, dict[str, str]] = {}
+        for x in all_symbols(h):
+            if not x.power and x.pins:
+                by_uuid.setdefault(x.uuid, {})[x.sheet.human_path] = x.ref
+        refs = next(r for r in by_uuid.values() if VERTICAL in r and HORIZONTAL in r)
+        return refs[VERTICAL], refs[HORIZONTAL]
+
+    a, b = await s.call(pair)
+    assert a != b  # one symbol of the shared file, two references
+    before = await state(s)
+    out, err = await call_tool(ctx, "sch_no_connect", pins=[f"{a}.1", f"{b}.1"])
+    assert err and "listed twice" in out["error"]["what"]
+    assert await state(s) == before

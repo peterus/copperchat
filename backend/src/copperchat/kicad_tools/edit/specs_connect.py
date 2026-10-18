@@ -237,7 +237,11 @@ async def prepare_connect(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
         world = World(h)
         worlds.append(world)
         pa = world.pin(frm)
-        if pin_shaped:  # 'R9.1' is a pin, also when R9 does not exist (not_found)
+        ref = to.partition(".")[0]
+        known_ref = any(x.ref == ref for x in world.symbols)
+        if pin_shaped and (known_ref or not _net_exists(world, world.sheet_of(pa), to)):
+            # 'R9.1' is a pin, also when R9 does not exist (not_found); a dotted name is
+            # a net only when no part has that ref and the net exists ('I2C.SDA')
             return plan_connect_pins(world, tool, pa, world.pin(to), via, net_name)
         name = check_net_name(to, tool)
         if to_rail or looks_like_rail(world, name):
@@ -281,6 +285,17 @@ async def prepare_connect(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
         )
 
     return await ctx.session.call(run_power)
+
+
+def _net_exists(world: World, sheet: Any, name: str) -> bool:
+    from copperchat.kicad_tools.edit.labels import same_name_nets
+
+    nets = world.netlist.nets
+    return (
+        name in nets
+        or f"{sheet.human_path}{name}" in nets
+        or bool(same_name_nets(world, name, "local", sheet))
+    )
 
 
 # -- sch_rename_net / sch_reroute ------------------------------------------------------

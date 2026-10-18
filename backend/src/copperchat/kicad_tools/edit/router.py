@@ -12,6 +12,7 @@ of them within a window around both ends.
 
 from __future__ import annotations
 
+import bisect
 import itertools
 import math
 import time
@@ -83,19 +84,6 @@ def _collinear_overlap(a: Point, b: Point, c: Point, d: Point) -> bool:
         lo = max(min(a[0], b[0]), min(c[0], d[0]))
         hi = min(max(a[0], b[0]), max(c[0], d[0]))
         return hi - lo > EPS_MM
-    return False
-
-
-def _crosses(a: Point, b: Point, c: Point, d: Point) -> bool:
-    """Perpendicular crossing of both interiors (no connection without a junction)."""
-    if abs(a[0] - b[0]) < EPS_MM and abs(c[1] - d[1]) < EPS_MM:
-        x, y = a[0], c[1]
-        return (
-            min(c[0], d[0]) + EPS_MM < x < max(c[0], d[0]) - EPS_MM
-            and min(a[1], b[1]) + EPS_MM < y < max(a[1], b[1]) - EPS_MM
-        )
-    if abs(a[1] - b[1]) < EPS_MM and abs(c[0] - d[0]) < EPS_MM:
-        return _crosses(c, d, a, b)
     return False
 
 
@@ -193,10 +181,39 @@ class Obstacles:
                 self.bodies.setdefault(cell, []).append(
                     (sym.body, sym.uuid, f"the body of {sym.ref}")
                 )
+        # every wire by its fixed coordinate, for counting perpendicular crossings
+        self._v_all = sorted(
+            (w.start[0], *sorted((w.start[1], w.end[1])))
+            for w in scene.wires.values()
+            if abs(w.start[0] - w.end[0]) < EPS_MM
+        )
+        self._h_all = sorted(
+            (w.start[1], *sorted((w.start[0], w.end[0])))
+            for w in scene.wires.values()
+            if abs(w.start[1] - w.end[1]) < EPS_MM
+        )
+        self._v_x = [v[0] for v in self._v_all]
+        self._h_y = [h[0] for h in self._h_all]
         for uid, box in scene.sheets.items():
             grown = box.grow(0.2)  # sheet pins sit on the sheet edge
             for cell in _cells(grown):
                 self.bodies.setdefault(cell, []).append((grown, uid, "a sheet symbol"))
+
+    def crossings(self, a: Point, b: Point) -> int:
+        """Wires the segment a-b crosses perpendicularly (interiors only)."""
+        if abs(a[1] - b[1]) < EPS_MM:  # horizontal: vertical wires with x inside
+            lo, hi = sorted((a[0], b[0]))
+            i, j = (
+                bisect.bisect_right(self._v_x, lo + EPS_MM),
+                bisect.bisect_left(self._v_x, hi - EPS_MM),
+            )
+            return sum(1 for _x, y0, y1 in self._v_all[i:j] if y0 + EPS_MM < a[1] < y1 - EPS_MM)
+        lo, hi = sorted((a[1], b[1]))
+        i, j = (
+            bisect.bisect_right(self._h_y, lo + EPS_MM),
+            bisect.bisect_left(self._h_y, hi - EPS_MM),
+        )
+        return sum(1 for _y, x0, x1 in self._h_all[i:j] if x0 + EPS_MM < a[0] < x1 - EPS_MM)
 
     def _wires_through(self, p: Point) -> Iterator[tuple[bool, WireInfo, bool]]:
         """(foreign, wire, interior) for every wire `p` lies on."""
@@ -327,7 +344,7 @@ def _grid_range(lo: float, hi: float) -> list[float]:
     low = [round(start + i * GRID_MM, 4) for i in range(side + 1)]
     high = [round(stop - i * GRID_MM, 4) for i in range(side + 1)]
     inner = max(MAX_GRID_STEPS - 2 * side, 2)
-    step = max(1, (n - 2 * side) // inner)
+    step = max(1, -(-(n - 2 * side) // inner))  # ceil: at most `inner` samples
     middle = [round(start + i * GRID_MM, 4) for i in range(side, n - side, step)]
     return sorted(set(low + middle + high))
 
@@ -434,6 +451,7 @@ def route(
     queue.sort(key=lambda c: c[0])
     obstacles = Obstacles(scene, netlist, allowed_nets, item_nets)
     best: Route | None = None
+    deadline_hit = False
     for n, (cost, pts) in enumerate(queue):
         if best is not None and cost >= best.cost:
             break  # crossings and junctions only add cost
@@ -442,15 +460,19 @@ def route(
         if obstacles.problems(pts, own, first_only=True):
             continue
         segs = list(itertools.pairwise(pts))
-        cost += 4.0 * sum(
-            _crosses(p, q, w.start, w.end) for p, q in segs for w in scene.wires.values()
-        )
-        cost += 2.0 * len(needed_junctions(pts, scene))
+        cost += 4.0 * sum(obstacles.crossings(p, q) for p, q in segs)
+        if best is not None and cost >= best.cost:
+            continue
+        cost += 2.0 * len(needed_junctions(pts, scene))  # the expensive part: survivors only
+        if deadline is not None and time.monotonic() > deadline:
+            deadline_hit = True
         if best is None or cost < best.cost:
             junction = None
             if isinstance(b, WireTarget) and in_segment_interior(pts[-1], b.a, b.b):
                 junction = pts[-1]
             best = Route(points=pts, junction_at=junction, cost=cost)
+        if deadline_hit:
+            break
     return best
 
 

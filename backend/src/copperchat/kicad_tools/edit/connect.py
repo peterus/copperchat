@@ -43,6 +43,7 @@ from copperchat.kicad_tools.edit.labels import (
     make_junction,
     make_wire,
     no_change,
+    same_name_nets,
 )
 from copperchat.kicad_tools.edit.router import (
     Route,
@@ -153,7 +154,7 @@ def _wire_change_set(
         sheet=sheet,
         stages=[Stage("connect", lambda _inp: [Create(items, sheet=sheet)])],
         pre_images={},
-        intent=NetIntent(merge=world.replicate(group, sheet) if len(group) > 1 else []),
+        intent=NetIntent(merge=[g for g in world.replicate(group, sheet) if len(g) > 1]),
         logical=Logical(1),
         summary=summary,
         net_pin=net_pin,
@@ -189,7 +190,8 @@ def _as_labels(
     if len(keys) > 1:  # verification proves the labels really join the pins
         sheets = {world.sheet_of(p).path: world.sheet_of(p) for p in pins}
         if len(sheets) == 1:
-            cs.intent.merge = [*cs.intent.merge, *world.replicate(keys, cs.sheet)]
+            groups = [g for g in world.replicate(keys, cs.sheet) if len(g) > 1]
+            cs.intent.merge = [*cs.intent.merge, *groups]
         else:  # global labels: every instance of both sheets on one net
             union: set[PinKey] = set()
             for p in pins:
@@ -276,8 +278,12 @@ def plan_connect_pins(
             "Connect the sheets through a sheet pin (hierarchical label), or pass net_name "
             "for a new global net.",
         )
-    name = net_name or (base_name(named[0]) if named else f"N_{pa.ref}_{pa.number}")  # type: ignore[arg-type]
-    name = safe_net_name(name)
+    if net_name:
+        name = net_name
+    elif named:
+        name = base_name(named[0])  # type: ignore[arg-type]
+    else:
+        name = safe_net_name(f"N_{pa.ref}_{pa.number}")  # only the generated name
     summary = {**base, "route_blocked_by": reasons[:6]}
     return _as_labels(world, tool, [pa, pb], name, kind, summary)
 
@@ -307,6 +313,9 @@ def plan_connect_net(world: World, tool: str, pa: PinEnd, name: str, via: Via) -
     sheet = world.sheet_of(pa)
     na = world.net(pa)
     targets = _net_candidates(world, sheet, name)
+    # a label or hierarchical label of that name on the pin's sheet already joins a net
+    # (e.g. '/IN' named on the parent, reaching this sheet through a sheet pin)
+    targets += sorted(same_name_nets(world, name, "local", sheet) - set(targets))
     target = targets[0] if targets else None
     base = {"from": pa.label, "to": name}
     elsewhere = sorted(
@@ -349,7 +358,9 @@ def plan_connect_net(world: World, tool: str, pa: PinEnd, name: str, via: Via) -
         cands += [_route_from(world, pa, p, allowed) for d, p in near[:12] if d <= NEAR_MM]
         found = _best(cands)
         if found is not None:
-            group = {pa.key} | set(sorted(world.members(target))[:1])
+            members = sorted(world.members(target))
+            here = [k for k in members if k[0] == sheet.path]  # a rep on this sheet
+            group = {pa.key} | set((here or members)[:1])
             return _wire_change_set(world, tool, found, group, base, pa.key)
         reasons.append(f"no clean route onto net {target} within {NEAR_MM:g} mm")
     elif target is None:
@@ -547,6 +558,14 @@ def _chain_ends(scene: Scene, uuids: list[str]) -> list[Point]:
     return [p for p, n in counts if n == 1]
 
 
+def _inner_corner_only(at: Point, chain: list[Any], scene: Scene) -> bool:
+    """A junction joining only the route's own wires (it goes away with the route)."""
+    chain_ids = {w.uuid for w in chain}
+    return not any(
+        w.uuid not in chain_ids and on_segment(at, w.start, w.end) for w in scene.wires.values()
+    )
+
+
 def plan_reroute(world: World, tool: str, wires: Any, points: list[Point]) -> ChangeSet:
     from copperchat.kicad_tools.edit.geometry import snap_point
 
@@ -656,12 +675,15 @@ def plan_reroute(world: World, tool: str, wires: Any, points: list[Point]) -> Ch
         if not any(same_point(p.at, e) for e in ends)
         and any(on_segment(p.at, c.start, c.end) for c in chain)
     ]
-    joins += [
-        lb.at
-        for lb in scene.labels.values()
-        if not any(same_point(lb.at, e) for e in ends)
-        and any(on_segment(lb.at, c.start, c.end) for c in chain)
+    on_chain = [
+        (at, is_junction)
+        for at, is_junction in [(lb.at, False) for lb in scene.labels.values()]
+        + [(j, True) for j in scene.junctions.values()]
+        if not any(same_point(at, e) for e in ends)
+        and any(on_segment(at, c.start, c.end) for c in chain)
     ]
+    # labels always join; a junction only when another wire meets it
+    joins += [at for at, j in on_chain if not j or not _inner_corner_only(at, chain, scene)]
     if joins:
         raise bad(
             f"{tool}: other items join this route",

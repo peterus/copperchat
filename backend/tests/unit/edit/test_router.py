@@ -9,7 +9,11 @@ from copperchat.kicad_tools.access import Netlist, PinKey
 from copperchat.kicad_tools.edit.changeset import SheetRef
 from copperchat.kicad_tools.edit.geometry import Box, PinEnd, Point, on_grid, on_segment
 from copperchat.kicad_tools.edit.router import (
+    MAX_GRID_STEPS,
+    Obstacles,
     WireTarget,
+    _grid_range,
+    _target_points,
     needed_junctions,
     route,
     route_problems,
@@ -309,6 +313,39 @@ def test_route_search_stays_fast_on_a_large_blocked_sheet() -> None:
         allowed = w.allowed(a, extra=("T",))
         route(a, target, w.scene, w.netlist, allowed_nets=allowed, item_nets=w.item_nets)
     assert time.monotonic() - started < 5.0
-    # a deadline in the past stops the search at once
-    t = WireTarget("t0", (200.0, 0), (200.0, 300.0), "T")
-    assert route(a, t, w.scene, w.netlist, allowed_nets={"T"}, deadline=0.0) is None
+    # a deadline in the past stops a search that would succeed
+    w2 = World()
+    a2 = _resistor_h(w2, "ua", "R1", 2.54, 10.16)[1]
+    b2 = _resistor_h(w2, "ub", "R2", 30.48, 20.32)[0]
+    allowed2 = w2.allowed(a2, b2)
+    assert route(a2, b2, w2.scene, w2.netlist, allowed_nets=allowed2) is not None
+    assert route(a2, b2, w2.scene, w2.netlist, allowed_nets=allowed2, deadline=0.0) is None
+
+
+def test_grid_range_keeps_both_ends_of_a_wide_span() -> None:
+    values = _grid_range(0.0, 600.0)
+    assert len(values) <= MAX_GRID_STEPS + 2
+    assert min(values) <= -25.4 + 1e-6 and max(values) >= 600.0 + 25.4 - 1.27
+    near_lo = [v for v in values if -25.4 <= v <= 25.4]
+    near_hi = [v for v in values if 574.6 <= v <= 625.4]
+    assert len(near_lo) >= 40 and len(near_hi) >= 40  # full 1.27 mm steps at both ends
+    assert _grid_range(0.0, 10.16) == [round(-25.4 + i * 1.27, 4) for i in range(49)]
+
+
+def test_target_points_only_on_the_grid_part_of_the_wire() -> None:
+    t = WireTarget("w", (20.32, 2.5), (20.32, 30.5), "N")
+    pts = _target_points((0.0, 50.0), t)
+    assert pts and all(on_grid(p) and 2.5 <= p[1] <= 30.5 for p in pts)
+    assert pts[0] == (20.32, 30.48)  # nearest on-grid point to a, beyond the wire end
+    assert _target_points((0.0, 0.0), WireTarget("w", (20.32, 2.6), (20.32, 3.7), "N")) == []
+    assert _target_points((0.0, 0.0), WireTarget("w", (20.3, 0), (20.3, 30), "N")) == []
+
+
+def test_crossings_counts_perpendicular_interiors_only() -> None:
+    w = World()
+    w.wire("v1", (10.16, 0), (10.16, 20.32), "A")
+    w.wire("v2", (20.32, 0), (20.32, 5.08), "B")  # ends above the segment
+    w.wire("h1", (0, 10.16), (5.08, 10.16), "C")  # collinear, not a crossing
+    obstacles = Obstacles(w.scene, w.netlist, set(), w.item_nets)
+    assert obstacles.crossings((2.54, 10.16), (25.4, 10.16)) == 1
+    assert obstacles.crossings((15.24, 2.54), (15.24, 25.4)) == 0

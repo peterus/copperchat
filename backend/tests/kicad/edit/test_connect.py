@@ -252,3 +252,26 @@ async def test_dotted_library_rail_gets_a_power_symbol(blank_session: KicadSessi
     assert out["via_used"] == "power"
     nets = await pin_nets(s)
     assert nets["R1.1"] == "+3.3VA"
+
+
+async def test_label_fallback_keeps_the_given_net_name(blank_session: KicadSession) -> None:
+    s = blank_session
+    await _caged(s)
+    ctx = edit_ctx(s)
+    args = {"from": "R1.1", "to": "R2.2", "net_name": "SIG(A)"}
+    out, err = await call_tool(ctx, "sch_connect", **args)
+    assert not err, out
+    nets = await pin_nets(s)
+    assert nets["R1.1"] == nets["R2.2"] == "/SIG(A)"
+
+
+async def test_dotted_net_name_as_to(blank_session: KicadSession) -> None:
+    s = blank_session
+    await place(s, (R, "R1", (101.6, 101.6), 0), (R, "R2", (116.84, 101.6), 0))
+    ctx = edit_ctx(s)
+    _, err = await call_tool(ctx, "sch_add_label", net="I2C.SDA", at=["R2.1"])
+    assert not err
+    out, err = await call_tool(ctx, "sch_connect", **{"from": "R1.1", "to": "I2C.SDA"})
+    assert not err, out
+    nets = await pin_nets(s)
+    assert nets["R1.1"] == nets["R2.1"] == "/I2C.SDA"

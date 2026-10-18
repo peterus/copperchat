@@ -14,7 +14,7 @@ import itertools
 import re
 import time
 import uuid as uuidlib
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -60,6 +60,7 @@ from copperchat.kicad_tools.edit.scene import (
 
 LabelKind = Literal["local", "global", "hierarchical"]
 Dir = tuple[int, int]
+Planner = Callable[[Scene, SheetRef], None]
 DIRS: dict[str, Dir] = {"left": (-1, 0), "right": (1, 0), "up": (0, -1), "down": (0, 1)}
 ALL_DIRS: tuple[Dir, ...] = ((1, 0), (-1, 0), (0, -1), (0, 1))
 STUB_LENGTHS = (2.54, 5.08, 7.62)
@@ -203,6 +204,9 @@ class World:
         self.sheets: dict[str, SheetRef] = {r.path: r for r in sheet_refs(h)}
         self.known: set[PinKey] = {k for keys in self.netlist.nets.values() for k in keys}
         self._scenes: dict[str, Scene] = {}
+        self._planned: dict[str, list[tuple[str, str, str | None, Planner]]] = {}
+        self._pin_nets: dict[tuple[str, str], set[str]] = {}
+        self._sheet_symbols: dict[str, list[Any]] = {}
         self._fake = itertools.count()
         # Planning runs inside one session.call (kicad_api_timeout_s): it stops early.
         self.deadline = time.monotonic() + PLAN_BUDGET_S
@@ -214,14 +218,18 @@ class World:
 
     def replicate(self, keys: Iterable[PinKey], sheet: SheetRef) -> list[frozenset[PinKey]]:
         """One group per instance of `sheet`'s file: keys on `sheet` moved to each
-        instance; keys on other sheets stay."""
+        instance. Keys on other sheets (a representative of a net reaching the sheet
+        through a sheet pin) stay in `sheet`'s own group only: another instance joins
+        its own copy of that net."""
         keys = list(keys)
         out = []
         for inst in self.instances(sheet):
-            group = {(inst.path, u, n) if p == sheet.path else (p, u, n) for p, u, n in keys}
-            if inst.path != sheet.path:  # a symbol placed through one instance has no
-                group &= self.known  # pins in the others (pinned KiCad): only real ones
-            out.append(frozenset(group))
+            if inst.path == sheet.path:
+                out.append(frozenset(keys))
+                continue
+            group = {(inst.path, u, n) for p, u, n in keys if p == sheet.path}
+            group &= self.known  # a symbol placed through one instance has no pins in
+            out.append(frozenset(group))  # the others (pinned KiCad): only real ones
         return out
 
     def sheet_pin_nets(self, sheet: SheetRef, text: str) -> set[str]:
@@ -231,12 +239,17 @@ class World:
         from copperchat.kicad_tools.edit.geometry import mm_point
         from copperchat.kicad_tools.edit.scene import sheet_api
 
+        cached = self._pin_nets.get((sheet.path, text))
+        if cached is not None:
+            return cached
         parent_path, _, symbol_uuid = sheet.path.rpartition("/")
         parent = self.sheets.get(parent_path)
         if parent is None:
             return set()
+        if parent.path not in self._sheet_symbols:
+            self._sheet_symbols[parent.path] = list(sheet_api(self.h, parent).get_sheet_symbols())
         out: set[str] = set()
-        for symbol in sheet_api(self.h, parent).get_sheet_symbols():
+        for symbol in self._sheet_symbols[parent.path]:
             if access.kiid(symbol) != symbol_uuid:
                 continue
             for pin in symbol.pins:
@@ -247,6 +260,7 @@ class World:
                     out.add(net)
                 else:
                     out |= touched_at(self, parent, mm_point(pin.position))[0]
+        self._pin_nets[(sheet.path, text)] = out
         return out
 
     def check_time(self, tool: str) -> None:
@@ -261,6 +275,8 @@ class World:
     def scene(self, sheet: SheetRef) -> Scene:
         if sheet.path not in self._scenes:
             self._scenes[sheet.path] = read_scene(self.h, sheet)
+            for origin, uid, net, put in self._planned.get(sheet.file, []):
+                self._replay(sheet, origin, uid, net, put)
         return self._scenes[sheet.path]
 
     def nets(self, sheet: SheetRef) -> dict[str, str]:
@@ -301,48 +317,61 @@ class World:
         ]
         return bool(here) or len(self.members(self.net(pin))) > 1
 
-    # planned items become part of the scene, so later targets avoid them
+    # Planned items become part of the scene, so later targets avoid them. They are
+    # written into the sheet *file*: every instance of a shared file sees them.
     def fake_id(self) -> str:
         return f"planned-{next(self._fake)}"
 
+    def _plan(self, sheet: SheetRef, uid: str, net: str | None, put: Planner) -> None:
+        self._planned.setdefault(sheet.file, []).append((sheet.path, uid, net, put))
+        for inst in self.instances(sheet):
+            if inst.path in self._scenes:
+                self._replay(inst, sheet.path, uid, net, put)
+
+    def _replay(self, inst: SheetRef, origin: str, uid: str, net: str | None, put: Planner) -> None:
+        put(self._scenes[inst.path], inst)
+        if net is not None and inst.path == origin:  # other instances: net unknown
+            self.nets(inst)[uid] = net
+
     def add_wire(self, sheet: SheetRef, a: Point, b: Point, net: str | None) -> None:
         uid = self.fake_id()
-        self.scene(sheet).wires[uid] = WireInfo(uid, a, b)
-        if net is not None:
-            self.nets(sheet)[uid] = net
+        self._plan(sheet, uid, net, lambda sc, _i: sc.wires.__setitem__(uid, WireInfo(uid, a, b)))
 
     def add_label(
         self, sheet: SheetRef, text: str, at: Point, kind: str, d: Dir, net: str | None
     ) -> None:
         uid = self.fake_id()
         spin = next(k for k, v in _SPIN_DIR.items() if v == d)
-        self.scene(sheet).labels[uid] = LabelInfo(uid, text, at, kind, spin)
-        if net is not None:
-            self.nets(sheet)[uid] = net
+        info = LabelInfo(uid, text, at, kind, spin)
+        self._plan(sheet, uid, net, lambda sc, _i: sc.labels.__setitem__(uid, info))
 
     def add_body(self, sheet: SheetRef, box: Box, at: Point) -> None:
         """A planned power symbol: its body is an obstacle, its pin a connection point."""
         uid = self.fake_id()
-        scene = self.scene(sheet)
-        pin = PinEnd((sheet.path, uid, "1"), "#planned", "1", "", "power_in", at, "up")
-        scene.symbols[uid] = SymbolInfo(
-            uuid=uid,
-            ref="#planned",
-            lib_id="",
-            value="",
-            unit=1,
-            sheet=sheet,
-            at=at,
-            rotation=0,
-            mirror="",
-            pins=[pin],
-            body=box,
-            fields=[],
-            power=True,
-        )
+
+        def put(scene: Scene, inst: SheetRef) -> None:
+            pin = PinEnd((inst.path, uid, "1"), "#planned", "1", "", "power_in", at, "up")
+            scene.symbols[uid] = SymbolInfo(
+                uuid=uid,
+                ref="#planned",
+                lib_id="",
+                value="",
+                unit=1,
+                sheet=inst,
+                at=at,
+                rotation=0,
+                mirror="",
+                pins=[pin],
+                body=box,
+                fields=[],
+                power=True,
+            )
+
+        self._plan(sheet, uid, None, put)
 
     def add_junction(self, sheet: SheetRef, at: Point) -> None:
-        self.scene(sheet).junctions[self.fake_id()] = at
+        uid = self.fake_id()
+        self._plan(sheet, uid, None, lambda sc, _i: sc.junctions.__setitem__(uid, at))
 
 
 # -- anchors: where a stub for a pin can start ------------------------------------------
@@ -1068,13 +1097,15 @@ def pins_arg(world: World, raw: Any, tool: str, name: str = "at") -> list[PinEnd
             f"Pass {name}=['U1.3', 'R1.2', ...].",
         )
     pins = [world.pin(s) for s in specs]
-    seen: set[PinKey] = set()
+    seen: set[tuple[str, str, str]] = set()
     for p in pins:
-        if p.key in seen:
+        same = (world.sheet_of(p).file, p.key[1], p.key[2])  # one pin of the sheet file
+        if same in seen:
             raise bad(
                 f"{tool}: {p.label} is listed twice",
-                "each pin may appear once",
+                "each pin may appear once (also not once per instance of a shared sheet: "
+                "both instances show the same items)",
                 "Remove the duplicate.",
             )
-        seen.add(p.key)
+        seen.add(same)
     return pins
