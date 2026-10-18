@@ -327,3 +327,63 @@ async def test_compensation_with_board_restores_snapshot(real: Real) -> None:
     present = await s2.call(lambda h: get_item(h, target[1]))
     assert present is not None and str(present.reference) == target[0]
     assert project.sch_file is not None
+
+
+async def test_compensated_sheet_delete_restores_at_turn_end(hier_session: KicadSession) -> None:
+    """A deleted sheet symbol is never re-created (blank screen, file overwrite)."""
+    s = hier_session
+    before = await state(s)
+    ctx = edit_ctx(s)
+    cs = await prepare_delete(ctx, {"items": ["sheet:ampli_ht_horizontal"]})
+    with pytest.raises(DocumentInconsistent) as err:
+        await apply_change_set(ctx, cs, _verify=_forced)
+    assert err.value.auto_restore is True and "sheet symbol" in str(err.value)
+    names = await s.call(lambda h: [str(i.name) for i in h.schematic().get_hierarchy()])
+    assert "ampli_ht_horizontal" not in names  # left for the turn-end restore
+    assert before[0] - (await state(s))[0]  # the sheet stays deleted until then
+
+
+@pytest.fixture
+async def hier_nopcb_session(make_settings: Callable[..., Settings]) -> AsyncIterator[KicadSession]:
+    from tests.support.kicad_project import _open
+
+    async for session in _open(
+        real_settings(make_settings), "complex_hierarchy", "complex_hierarchy", drop_board=True
+    ):
+        yield session
+
+
+def _shared_part(h: KicadHandle) -> tuple[str, str]:
+    """A non-power symbol of the shared ampli_ht file: (reference in the first instance,
+    uuid)."""
+    sub = next(i for i in h.schematic().get_hierarchy() if str(i.filename) == "ampli_ht.kicad_sch")
+    sym = next(
+        x
+        for x in h.schematic().for_sheet(sub).get_symbols()
+        if not str(x.reference).startswith("#")
+    )
+    return str(sym.reference), access.kiid(sym)
+
+
+async def test_compensated_shared_file_symbol_delete_restores_at_turn_end(
+    hier_nopcb_session: KicadSession,
+) -> None:
+    """Without a board a symbol would be re-placed, but not in a sheet file used twice
+    (invisible in the other instance until a reload): auto_restore instead."""
+    s = hier_nopcb_session
+    assert s.project.pcb_file is None
+    ref, _uid = await s.call(_shared_part)
+    ctx = edit_ctx(s)
+    cs = await prepare_delete(ctx, {"items": [ref], "with_attached": False})
+    with pytest.raises(DocumentInconsistent) as err:
+        await apply_change_set(ctx, cs, _verify=_forced)
+    assert err.value.auto_restore is True and "several instances" in str(err.value)
+
+
+async def test_shared_file_symbol_counts_once_per_instance(hier_session: KicadSession) -> None:
+    s = hier_session
+    ref, uid = await s.call(_shared_part)
+    cs = await prepare_delete(edit_ctx(s), {"items": [ref]})
+    assert cs.logical.changes == 1
+    assert cs.logical.deleted_symbols[0] == uid and len(cs.logical.deleted_symbols) == 2
+    assert any("several sheet instances" in n or "sheet instances" in n for n in cs.notes)

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from copperchat.errors import StructuredToolError
+from copperchat.kicad_tools import access
 from copperchat.kicad_tools.access import PinKey
 from copperchat.kicad_tools.edit.changeset import (
     ChangeSet,
@@ -199,12 +200,22 @@ def _wire_change_set(
             "junction": list(r.junction_at) if r.junction_at else None,
         },
     }
+    # A sheet pin end: its own netlist item must end on the route's net, also when the
+    # sub-sheet net has no symbol pin to stand in for it (E6 review).
+    real = {k for k in (world.real_key(k) for k in group) if k is not None}
+    joined = [
+        frozenset({(info.pin.key[0], info.uuid), (sheet.path, access.kiid(items[0])), *real})
+        for k in group
+        if (info := world.sheet_pin_info(k)) is not None
+    ]
     return ConnectChangeSet(
         tool=tool,
         sheet=sheet,
         stages=[Stage("connect", lambda _inp: [Create(items, sheet=sheet)])],
         pre_images={},
-        intent=NetIntent(merge=[g for g in world.replicate(group, sheet) if len(g) > 1]),
+        intent=NetIntent(
+            merge=[g for g in world.replicate(group, sheet) if len(g) > 1], joined=joined
+        ),
         logical=Logical(1),
         summary=summary,
         net_pin=net_pin,

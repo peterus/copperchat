@@ -102,3 +102,11 @@ def test_kept_sheet_pin_is_an_anchor() -> None:
     sc = _scene(r1, WireInfo("w", (10, 10), (30, 10)), WireInfo("w2", (30, 10), (30, 15)))
     out = prune(sc, [(10, 10)], {"r1"}, cuts=[(30, 10)], keep=[(30, 10)])
     assert out.wires == ["w"]  # w2 hangs on the sheet pin and stays
+
+
+def test_a_listed_wire_takes_its_dangling_label_along() -> None:
+    """items=['R1', W_b]: W_b leads from R2 to a label only it reaches."""
+    r2 = _sym("r2", "R2", (30, 10), (30, 20))
+    sc = _scene(r2, WireInfo("wb", (30, 10), (40, 10)), LabelInfo("lb", "X", (40, 10), "label"))
+    out = prune(sc, [(30, 10), (40, 10)], set(), dead_wires=["wb"])
+    assert out.labels == ["lb"]

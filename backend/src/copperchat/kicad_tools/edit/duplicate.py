@@ -649,7 +649,11 @@ def _add_copy(scene: Scene, block: DupBlock, copy: Copy) -> None:
 
 
 def all_problems(world: World, target: SheetRef, block: DupBlock, copies: list[Copy]) -> list[str]:
-    scene = _clone(world.scene(target))
+    from copperchat.kicad_tools.edit.connect import _with_sheet_pins
+
+    # sheet pins as one-pin stand-ins: a copy must not land on or run over one (a copy
+    # never connects to a sheet pin, pieces leading to one are left out)
+    scene = _clone(_with_sheet_pins(world, target, lambda _i: True))
     nets = world.nets(target)
     for copy in copies:
         problems = copy_problems(world, scene, nets, block, copy)

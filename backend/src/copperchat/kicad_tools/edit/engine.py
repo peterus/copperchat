@@ -463,7 +463,14 @@ async def _compensate(
     if symbols_deleted and not has_board:
         # A symbol re-placed through one instance of a shared sheet file is invisible in
         # the others until a reload (2A Q7): no lossless re-place there either.
-        files = [r.file for r in await session.call(sheet_refs)]
+        try:
+            files = [r.file for r in await session.call(sheet_refs)]
+        except (asyncio.CancelledError, KicadUnavailable):
+            raise
+        except Exception as exc:  # nothing undone yet: restore at turn end
+            raise DocumentInconsistent(
+                f"undoing the partial {run.cs.tool} change failed", auto_restore=True
+            ) from exc
         shared = {u for u, s in symbols_deleted.items() if files.count(s.file) > 1}
     replace = {} if has_board or shared else symbols_deleted
     restore_at_turn_end = (has_board and bool(symbols_deleted)) or bool(shared or sheets_deleted)
@@ -752,17 +759,19 @@ async def apply_change_set(
         await undo_shielded()
         raise
 
-    def final_read(h: KicadHandle) -> tuple[Netlist, dict[str, Any], dict[str, str]]:
+    def final_read(h: KicadHandle) -> tuple[Netlist, dict[str, Any], dict[str, str], list[str]]:
         found = by_id(h.schematic(), [*run.created, *run.modified])
         netlist, nets = netlists(h)
         paths = {u: s.path for u, s in [*run.created.items(), *run.modified.items()]}
         item_net = {u: nets[(p, u)] for u, p in paths.items() if (p, u) in nets}
-        return netlist, found, item_net
+        return netlist, found, item_net, verify.check_joined(netlist, nets, cs.intent, label)
 
-    after, final, item_net = await session.call(final_read)
+    after, final, item_net, joined = await session.call(final_read)
     ensure_same_server()
     problems = list(run.problems)
     problems += (_verify or verify.check)(before, after, cs.intent, label)
+    if _verify is None:
+        problems += joined
     if problems:
         await undo_shielded()
         details: dict[str, Any] = {"expected": _expected(cs, label), "found": problems}
@@ -820,6 +829,10 @@ def _expected(cs: ChangeSet, label: verify.PinLabel) -> dict[str, Any]:
         "may_change": sorted(label(k) for k in cs.intent.may_change),
         "names": {label(k): v for k, v in cs.intent.names.items()},
         "keep_partition": cs.intent.keep_partition,
+        "joined": [
+            sorted(label(k) if len(k) == 3 else f"item {k[1][:8]}" for k in g)
+            for g in cs.intent.joined
+        ],
     }
 
 

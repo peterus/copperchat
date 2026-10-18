@@ -75,6 +75,26 @@ def _describe(keys: Iterable[PinKey], label: PinLabel) -> str:
     return ", ".join(names[:6]) + more if names else "nothing"
 
 
+def check_joined(
+    after: Netlist,
+    items: Mapping[tuple[str, str], str],
+    intent: NetIntent,
+    label: PinLabel | None = None,
+) -> list[str]:
+    """`intent.joined`: every group (pin keys and (sheet_path, item uuid) netlist items)
+    on one net after the write."""
+    name = label or _default_label
+    problems = []
+    for group in intent.joined:
+        nets = {after.net_of(k) if len(k) == 3 else items.get((k[0], k[1])) for k in group}
+        if len(nets) != 1 or None in nets:
+            what = sorted(name(k) if len(k) == 3 else f"item {k[1][:8]}" for k in group)
+            problems.append(
+                f"expected {', '.join(what)} on one net, found {sorted(map(str, nets))}"
+            )
+    return problems
+
+
 def check(
     before: Netlist, after: Netlist, intent: NetIntent, label: PinLabel | None = None
 ) -> list[str]:

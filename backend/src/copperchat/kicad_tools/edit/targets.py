@@ -130,6 +130,10 @@ def _symbol_target(world: World, spec: str, units: list[SymbolInfo]) -> list[Tar
 
 
 def _by_uuid(world: World, spec: str) -> Target | None:
+    from copperchat.kicad_tools.edit.engine import by_id
+
+    if spec not in by_id(world.h.schematic(), [spec]):  # one cheap lookup before the scenes
+        return None
     for sym in world.symbols:
         if sym.uuid == spec:
             units = [s for s in world.symbols if s.uuid == spec and s.sheet.file == sym.sheet.file]

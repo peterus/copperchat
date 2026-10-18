@@ -14,7 +14,7 @@ segments) is read back by the engine as side effects.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -70,21 +70,60 @@ class _Edge:
     idx: int  # order along the wire (from its start)
 
 
+class _LineIndex:
+    """Wires by the line they lie on and points by row/column (0.01 mm keys): a point or
+    segment query looks only at items on its line, not the whole sheet."""
+
+    def __init__(self, wires: Iterable[Any], points: Iterable[Point] = ()) -> None:
+        self.h: dict[int, list[Any]] = {}  # y key -> horizontal wires
+        self.v: dict[int, list[Any]] = {}  # x key -> vertical wires
+        self.rows: dict[int, list[Point]] = {}
+        self.cols: dict[int, list[Point]] = {}
+        for w in wires:
+            if abs(w.start[1] - w.end[1]) < EPS_MM:
+                self.h.setdefault(round(w.start[1] * 100), []).append(w)
+            elif abs(w.start[0] - w.end[0]) < EPS_MM:
+                self.v.setdefault(round(w.start[0] * 100), []).append(w)
+        for p in points:
+            self.rows.setdefault(round(p[1] * 100), []).append(p)
+            self.cols.setdefault(round(p[0] * 100), []).append(p)
+
+    @staticmethod
+    def _near(index: dict[int, list[Any]], v: float) -> list[Any]:
+        k = round(v * 100)
+        return [*index.get(k - 1, ()), *index.get(k, ()), *index.get(k + 1, ())]
+
+    def wires_at(self, q: Point) -> list[Any]:
+        cands = self._near(self.h, q[1]) + self._near(self.v, q[0])
+        return [w for w in cands if on_segment(q, w.start, w.end)]
+
+    def points_inside(self, w: Any) -> list[Point]:
+        if abs(w.start[1] - w.end[1]) < EPS_MM:
+            cands = self._near(self.rows, w.start[1])
+        else:
+            cands = self._near(self.cols, w.start[0])
+        return [p for p in cands if in_segment_interior(p, w.start, w.end)]
+
+
 class WireGraph:
     """The wire network of one sheet around some start points: wires split at every
     attachment point of their interior, items per connection point."""
 
-    def __init__(self, scene: Scene, extra_points: Iterable[Point], starts: Iterable[Point]):
+    def __init__(
+        self,
+        scene: Scene,
+        extra_points: Iterable[Point],
+        starts: Iterable[Point],
+        check: Callable[[], None] | None = None,
+    ):
         self.scene = scene
         self.edges: list[_Edge] = []
         self.at: dict[NodeKey, list[int]] = {}
         self.pieces: dict[str, list[int]] = {}  # wire uuid -> its edges, in order
-        starts = list(starts)
-        wires = self._component(starts)
-        points = self._points(extra_points)
-        for w in wires:
-            cuts = [w.start, w.end]
-            cuts += [p for p in points if in_segment_interior(p, w.start, w.end)]
+        self._check = check or (lambda: None)
+        index = _LineIndex(scene.wires.values(), self._points(extra_points))
+        for w in self._component(list(starts), index):
+            cuts = [w.start, w.end, *index.points_inside(w)]
             horizontal = abs(w.start[1] - w.end[1]) < EPS_MM
             axis = 0 if horizontal else 1
             sign = 1 if w.end[axis] >= w.start[axis] else -1
@@ -101,28 +140,24 @@ class WireGraph:
                 self.at.setdefault(e.b, []).append(n)
                 self.pieces.setdefault(w.uuid, []).append(n)
 
-    def _component(self, starts: list[Point]) -> list[Any]:
+    def _component(self, starts: list[Point], index: _LineIndex) -> list[Any]:
         """Wires connected (by ends or T-joins) to the start points."""
-        wires = list(self.scene.wires.values())
+        ends = _LineIndex((), [q for w in self.scene.wires.values() for q in (w.start, w.end)])
         found: dict[str, Any] = {}
         frontier = list(starts)
         seen: set[NodeKey] = {node_key(p) for p in frontier}
+        steps = 0
         while frontier:
             q = frontier.pop()
-            for w in wires:
-                if w.uuid in found or not on_segment(q, w.start, w.end):
+            steps += 1
+            if steps % 256 == 0:
+                self._check()
+            for w in index.wires_at(q):
+                if w.uuid in found:
                     continue
                 found[w.uuid] = w
                 # its ends, and the ends of other wires lying on it (T-joins)
-                pts = [w.start, w.end]
-                pts += [
-                    p
-                    for o in wires
-                    if o.uuid not in found
-                    for p in (o.start, o.end)
-                    if in_segment_interior(p, w.start, w.end)
-                ]
-                for p in pts:
+                for p in [w.start, w.end, *ends.points_inside(w)]:
                     if node_key(p) not in seen:
                         seen.add(node_key(p))
                         frontier.append(p)
@@ -145,11 +180,13 @@ def prune(
     cuts: Iterable[Point] = (),
     keep: Iterable[Point] = (),
     dead_items: Iterable[str] = (),
+    dead_wires: Iterable[str] = (),
+    check: Callable[[], None] | None = None,
 ) -> Pruned:
     """Items that only served `starts` (the deleted symbols' pins, a deleted label ...).
     `cuts`: extra connection points (sheet pins); `keep`: points that stay connected
     whatever happens (pins of sheet symbols that stay)."""
-    graph = WireGraph(scene, cuts, starts)
+    graph = WireGraph(scene, cuts, starts, check)
     anchors: set[NodeKey] = {node_key(p) for p in keep}
     power_at: dict[NodeKey, list[str]] = {}
     for sym in scene.symbols.values():
@@ -173,6 +210,10 @@ def prune(
     dead_edges: set[int] = set()
     dead_nodes: set[NodeKey] = set()
     queue = [node_key(p) for p in starts]
+    for uid in dead_wires:  # listed wires: gone, their ends may leave dangling items
+        for e in graph.pieces.get(uid, []):
+            dead_edges.add(e)
+            queue += [graph.edges[e].a, graph.edges[e].b]
     while queue:
         n = queue.pop()
         if n in dead_nodes or n in anchors:
@@ -295,22 +336,22 @@ def plan_delete(
                 for p in pins:
                     if p.sheet_uuid != t.uuid:
                         continue
-                    here = {world.nets(sheet).get(p.uuid)}
-                    here |= {world.nets(sheet).get(w.uuid) for w in scene.wires_through(p.pin.at)}
+                    here: set[str | None] = set()
+                    for inst in world.instances(sheet):  # a shared parent file: each copy
+                        here.add(world.nets(inst).get(p.uuid))
+                        here |= {
+                            world.nets(inst).get(w.uuid) for w in scene.wires_through(p.pin.at)
+                        }
                     for n in here - {None}:
                         nets.add(n)  # type: ignore[arg-type]
                         may_change |= set(world.members(n))
-                if t.child is not None:  # every pin inside the sheet goes with it
-                    gone = t.child.path
-                    inside = [
-                        r.path
-                        for r in world.sheets.values()
-                        if r.path == gone or r.path.startswith(gone + "/")
-                    ]
-                    may_change |= {k for k in world.known if k[0] in inside}
+                inside = removed_paths(world, t)  # every pin inside the sheet goes with it
+                may_change |= {k for k in world.known if k[0] in inside}
             else:
                 if t.kind in LABEL_KINDS and t.at is not None:
                     starts.append(t.at)
+                if t.kind == "wire" and t.uuid in scene.wires:
+                    starts += [scene.wires[t.uuid].start, scene.wires[t.uuid].end]
                 for inst in world.instances(sheet):
                     if (n := world.nets(inst).get(t.uuid)) is not None:
                         nets.add(n)
@@ -324,6 +365,8 @@ def plan_delete(
             cuts=[p.pin.at for p in pins],
             keep=[p.pin.at for p in pins if p.sheet_uuid not in dead_sheets],
             dead_items=[t.uuid for t in ts],
+            dead_wires=[t.uuid for t in ts if t.kind == "wire"],
+            check=lambda: world.check_time(tool),
         )
         listed = set(ids)
         pruned.wires = [u for u in pruned.wires if u not in listed]
@@ -380,31 +423,61 @@ def plan_delete(
     return cs, DeletePlan(targets, attached, nets, shared, users)
 
 
+def removed_paths(world: World, t: Target) -> set[str]:
+    """Sheet instance paths a deleted sheet symbol removes: its sub-sheet (and below) in
+    every instance of the file that holds the sheet symbol."""
+    roots = {f"{inst.path}/{t.uuid}" for inst in world.instances(t.sheet)}
+    return {
+        r.path
+        for r in world.sheets.values()
+        if any(r.path == g or r.path.startswith(g + "/") for g in roots)
+    }
+
+
 def _logical(
     world: World, targets: list[Target], placed_this_turn: set[str]
 ) -> tuple[int, list[str]]:
     """E-C6: 1 per deleted symbol (all units of a reference), label, sheet, junction,
     no-connect; directly deleted wires 1 per net they were on. `deleted_symbols`: every
-    own placement (refunded by the gate) plus one UUID per pre-existing non-power
-    reference (the <= 3 rule counts parts, not units), also for the parts inside a
-    deleted sheet instance."""
+    own placement (refunded by the gate) plus one entry per pre-existing non-power
+    reference and sheet instance (the <= 3 rule counts parts, not units): a symbol of a
+    sheet file used N times leaves N parts (`uuid@path` for the other instances), and
+    the parts inside a deleted sheet instance count too."""
     changes = 0
     deleted: list[str] = []
-    refs_seen: set[str] = set()
+    seen: set[str] = set()
     wire_nets: set[str] = set()
+
+    def count(uid: str, path: str, ref: str) -> None:
+        key = f"{path}:{ref}"
+        if key in seen:
+            return
+        seen.add(key)
+        deleted.append(uid if uid not in deleted else f"{uid}@{path}")
+
     for t in targets:
         if t.kind == "symbol":
             if t.uuid in placed_this_turn:
                 deleted.append(t.uuid)
                 changes += 1
                 continue
-            ref_key = f"{t.sheet.path}:{t.ref}"
-            if ref_key in refs_seen:
+            if f"{t.sheet.path}:{t.ref}" in seen:
                 continue
-            refs_seen.add(ref_key)
             changes += 1
             if not t.power:
-                deleted.append(t.uuid)
+                for inst in world.instances(t.sheet):
+                    sym = next(
+                        (
+                            s
+                            for s in world.symbols
+                            if s.uuid == t.uuid and s.sheet.path == inst.path
+                        ),
+                        None,
+                    )
+                    if sym is not None:
+                        count(t.uuid, inst.path, sym.ref)
+            else:
+                seen.add(f"{t.sheet.path}:{t.ref}")
         elif t.kind == "wire":
             net = world.nets(t.sheet).get(t.uuid) or t.uuid
             if net not in wire_nets:
@@ -414,18 +487,16 @@ def _logical(
             changes += 1
             # The parts of the removed sheet instance(s) leave the design: they count
             # toward the <= 3 rule like deleted symbols (one per reference).
-            gone = t.child.path if t.child is not None else None
-            seen: set[str] = set()
+            gone = removed_paths(world, t)
             for sym in world.symbols:
-                path = sym.sheet.path
-                if gone is None or sym.power or not (path == gone or path.startswith(gone + "/")):
+                if sym.power or sym.sheet.path not in gone:
                     continue
-                if sym.uuid in placed_this_turn and sym.uuid not in deleted:
-                    deleted.append(sym.uuid)
-                    changes += 1  # refunded by the gate with the placement
-                elif f"{path}:{sym.ref}" not in seen and sym.uuid not in placed_this_turn:
-                    seen.add(f"{path}:{sym.ref}")
-                    deleted.append(sym.uuid)
+                if sym.uuid in placed_this_turn:
+                    if sym.uuid not in deleted:
+                        deleted.append(sym.uuid)
+                        changes += 1  # refunded by the gate with the placement
+                else:
+                    count(sym.uuid, sym.sheet.path, sym.ref)
         else:
             changes += 1
     return changes, deleted

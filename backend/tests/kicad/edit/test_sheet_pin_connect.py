@@ -200,3 +200,53 @@ async def test_symbol_reference_wins_over_a_sheet_name(
         return [world.endpoint("R1.2").type, world.endpoint("Power.VIN").type]
 
     assert await s.call(kinds) == ["passive", "sheet_pin"]
+
+
+async def _empty_sheet(s: KicadSession, ctx: Any) -> dict[str, Any]:
+    """Sheet 'Power' with sheet pin VIN whose sub-sheet net holds no symbol pin (only the
+    hierarchical label); R1 on the root sheet, level with VIN."""
+    await s.ensure_symbol_libraries()
+    out, err = await call_tool(
+        ctx, "sch_add_sheet", name="Power", file="power.kicad_sch", at=list(SHEET_AT)
+    )
+    assert not err, out
+    pin, err = await call_tool(
+        ctx, "sch_add_sheet_pin", sheet="/Power/", name="VIN", direction="input"
+    )
+    assert not err, pin
+    px, py = pin["pin"]["at_mm"]
+    await place(s, ("Device:R", "R1", (px - 15.24, py), 90))
+    facing, at = await _right_pin(ctx, "R1")
+    return {"pin_at": [px, py], "pin_uuid": pin["pin"]["uuid"], "r1": facing, "r1_at": at}
+
+
+async def _item_net(s: KicadSession, uid: str) -> str | None:
+    from copperchat.kicad_tools.edit.scene import item_nets
+
+    nets = await s.call(item_nets)
+    return next((n for (_p, u), n in nets.items() if u == uid), None)
+
+
+async def test_connect_to_a_sheet_pin_whose_net_has_no_symbol_pin(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    """Nothing in the pin partition stands in for the sheet pin: the result is verified
+    by the sheet pin's own netlist item (intent.joined) and reports a net."""
+    s = blank_session
+    ctx = edit_ctx(s, edit_db)
+    g = await _empty_sheet(s, ctx)
+    out, err = await call_tool(ctx, "sch_connect", **{"from": "Power.VIN", "to": g["r1"]})
+    assert not err, out
+    assert out["connectivity_verified"] is True and out["net"] is not None
+    assert await _item_net(s, g["pin_uuid"]) == await _net(s, "/", g["r1"])
+
+
+async def test_add_wire_onto_a_sheet_pin_whose_net_has_no_symbol_pin(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    s = blank_session
+    ctx = edit_ctx(s, edit_db)
+    g = await _empty_sheet(s, ctx)
+    out, err = await call_tool(ctx, "sch_add_wire", points=[g["r1_at"], g["pin_at"]])
+    assert not err, out
+    assert await _item_net(s, g["pin_uuid"]) == await _net(s, "/", g["r1"])

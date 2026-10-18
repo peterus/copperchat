@@ -9,6 +9,7 @@ from typing import Any
 
 from copperchat.errors import StructuredToolError
 from copperchat.kicad_session import KicadHandle
+from copperchat.kicad_tools import access
 from copperchat.kicad_tools.access import Netlist, PinKey
 from copperchat.kicad_tools.edit.changeset import (
     ChangeSet,
@@ -307,7 +308,6 @@ def _plan_wire(raw_points: list[Point], sheet_arg: str | None) -> Any:
         snapped = [snap_point(p) for p in raw_points]
         moved = [(r, s) for r, s in zip(raw_points, snapped, strict=True)
                  if not same_point(r, s, EXACT_MM)]  # fmt: skip
-        sheet_nets = {u: sheet_pin_net(h, i, nets) for u, i in scene.sheet_pins.items()}
         pin_ends = [*scene.all_pins(), *scene.sheet_pin_ends()]
         for idx in (0, len(raw_points) - 1):
             raw, end = raw_points[idx], snapped[idx]
@@ -349,6 +349,12 @@ def _plan_wire(raw_points: list[Point], sheet_arg: str | None) -> Any:
                     f"segment {_fmt(a)}-{_fmt(b)} is neither horizontal nor vertical",
                     "Add a corner point so every segment is horizontal or vertical.",
                 )
+        # only sheet pins the path touches: each net lookup may read the sub-sheet
+        sheet_nets = {
+            u: sheet_pin_net(h, i, nets)
+            for u, i in scene.sheet_pins.items()
+            if any(on_segment(i.pin.at, a, b) for a, b in itertools.pairwise(points))
+        }
         start_pins, start_nets, start_t = _end_nets(
             scene, sheet, points[0], netlist, nets, sheet_nets
         )
@@ -371,6 +377,12 @@ def _plan_wire(raw_points: list[Point], sheet_arg: str | None) -> Any:
             if (rep := net_representative(netlist, net)) is not None:
                 group.add(rep)
         items: list[Any] = [_wire(a, b) for a, b in itertools.pairwise(points)]
+        joined: list[frozenset[tuple[str, ...]]] = []
+        for end in (points[0], points[-1]):  # a sheet pin at an end: the wire joins its net
+            for info in scene.sheet_pins.values():  # (also when its net has no symbol pin)
+                if same_point(info.pin.at, end):
+                    wire_item = (sheet.path, access.kiid(items[0]))
+                    joined.append(frozenset({(sheet.path, info.uuid), wire_item, *terminals}))
         for at, t_joint in ((points[0], start_t), (points[-1], end_t)):
             if t_joint:
                 items.append(_junction(at))
@@ -385,7 +397,7 @@ def _plan_wire(raw_points: list[Point], sheet_arg: str | None) -> Any:
             sheet=sheet,
             stages=[static_stage("add wire", Create(items))],
             pre_images={},
-            intent=NetIntent(merge=[frozenset(group)] if len(group) > 1 else []),
+            intent=NetIntent(merge=[frozenset(group)] if len(group) > 1 else [], joined=joined),
             logical=Logical(1),
             summary={"points_mm": [list(p) for p in points], "sheet": sheet.human_path},
             notes=notes,

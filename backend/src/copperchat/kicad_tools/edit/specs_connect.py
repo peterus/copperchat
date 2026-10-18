@@ -314,6 +314,7 @@ def _report_real_pin(world: World, cs: ConnectChangeSet) -> None:
     real = world.real_key(cs.net_pin)
     if real is None:
         merged = [k for g in cs.intent.merge for k in sorted(g)]
+        merged += [k for g in cs.intent.joined for k in sorted(g) if len(k) == 3]
         real = merged[0] if merged else None
     cs.net_pin = real
 

@@ -225,8 +225,21 @@ class _Check:
         self, pts: list[Point], net: str | None, own: tuple[str | None, str | None]
     ) -> list[str]:
         allowed = {net} if net is not None else set()
+        # sheet pins of other nets (not at the path's ends) are foreign connection points:
+        # one-pin stand-ins with a point body, as sch_connect's router sees them
+        symbols = dict(self.scene.symbols)
+        for info in self.scene.sheet_pins.values():
+            if any(same_point(info.pin.at, e) for e in (pts[0], pts[-1])):
+                continue
+            if self.world.sheet_pin_net(info) in allowed:
+                continue
+            uid = f"sheet-pin-{info.uuid}"
+            pin = replace(info.pin, key=(self.scene.sheet.path, uid, info.pin.number))
+            symbols[uid] = SymbolInfo(uid, info.pin.ref, "", "", 1, self.scene.sheet, pin.at,
+                                      0, "", [pin], Box(*pin.at, *pin.at), [], False)  # fmt: skip
+        scene = replace(self.scene, symbols=symbols)
         return route_problems(
-            pts, self.scene, self.world.netlist, allowed, item_nets=self.nets, own_symbols=own
+            pts, scene, self.world.netlist, allowed, item_nets=self.nets, own_symbols=own
         )
 
 
@@ -269,6 +282,14 @@ def plan_move(
     moved_ids: set[str] = set()
     new_infos: list[tuple[SymbolInfo, Any, int, Mirror, str]] = []
     sheet_pin_points = [i.pin.at for i in scene.sheet_pins.values()]
+    api = sheet_api(world.h, sheet)
+    cache: dict[str, dict[str, Any]] = {}
+
+    def item_of(kind: str, uid: str) -> Any:
+        """One read per item kind and call (`labels`, `no_connects`, `junctions` ...)."""
+        if kind not in cache:
+            cache[kind] = {access.kiid(i): i for i in getattr(api, f"get_{kind}")()}
+        return cache[kind][uid]
 
     def delta_for(at: Point) -> Point:
         if to is not None:
@@ -310,9 +331,7 @@ def plan_move(
         elif t.kind in LABEL_KINDS:
             lb = scene.labels[t.uuid]
             at = _add(lb.at, delta_for(lb.at))
-            item = next(
-                i for i in sheet_api(world.h, sheet).get_labels() if access.kiid(i) == t.uuid
-            )
+            item = item_of("labels", t.uuid)
             d = _sub(at, lb.at)
             item.position = _v2(at)
             item.text.position = _v2(_add(mm_point(item.text.position), d))
@@ -377,15 +396,13 @@ def plan_move(
 
     # -- items that travel with moved pins -----------------------------------------------
     along_ids: set[str] = set()
-    pin_points = [m for m in moving if not m.label and m.own in {o.uuid for o, *_ in new_infos}]
+    pin_points = [m for m in moving if not m.label and m.own in moved_ids]  # symbol/sheet pins
     for m in pin_points:
         d = _sub(m.new, m.old)
         for lb in scene.labels.values():
             if lb.uuid in moved_ids or lb.uuid in along_ids or not same_point(lb.at, m.old):
                 continue
-            item = next(
-                i for i in sheet_api(world.h, sheet).get_labels() if access.kiid(i) == lb.uuid
-            )
+            item = item_of("labels", lb.uuid)
             item.position = _v2(m.new)
             item.text.position = _v2(_add(mm_point(item.text.position), d))
             if m.direction is not None:
@@ -404,9 +421,7 @@ def plan_move(
                 plan.along.append(f"power symbol {s.ref}")
         for uid, nc_at in scene.no_connects.items():
             if uid not in along_ids and same_point(nc_at, m.old):
-                nc = next(
-                    i for i in sheet_api(world.h, sheet).get_no_connects() if access.kiid(i) == uid
-                )
+                nc = item_of("no_connects", uid)
                 nc.position = _v2(m.new)
                 updates.append(nc)
                 along_ids.add(uid)
@@ -543,9 +558,9 @@ def plan_move(
                 continue
             if any(same_point(p.at, m.old) for p in s.pins):
                 fixed = True
-        if (
-            any(same_point(i.pin.at, m.old) for i in scene.sheet_pins.values())
-            and m.own not in moved_ids
+        if any(  # a sheet pin that stays where it is
+            same_point(i.pin.at, m.old) and i.sheet_uuid not in moved_ids
+            for i in scene.sheet_pins.values()
         ):
             fixed = True
         if m.label:  # a moved label leaves the wire end / pin it sat on: bridged unless dragged
@@ -588,16 +603,14 @@ def plan_move(
         jm = mapping.get(_key(j_at))
         if jm is None or _key(j_at) in fixed_points or _connections(check.scene, jm.new) < 3:
             continue
-        j = next(i for i in sheet_api(world.h, sheet).get_junctions() if access.kiid(i) == uid)
+        j = item_of("junctions", uid)
         j.position = _v2(jm.new)
         updates.append(j)
         check.scene.junctions[uid] = jm.new
     creates += [make_junction(jp) for jp in junction_points]
 
     # -- the change set ------------------------------------------------------------------
-    lines = (
-        {access.kiid(i): i for i in sheet_api(world.h, sheet).get_lines()} if wire_updates else {}
-    )
+    lines = {access.kiid(i): i for i in api.get_lines()} if wire_updates else {}
     for uid, (a, b) in wire_updates.items():
         line = lines[uid]
         line.start, line.end = _v2(a), _v2(b)

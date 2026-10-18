@@ -358,6 +358,9 @@ class World:
         self._sheet_pin_ends = {**self._sheet_pin_ends, hits[0].pin.key: hits[0]}
         return hits[0].pin
 
+    def sheet_pin_info(self, key: PinKey) -> SheetPinInfo | None:
+        return self._sheet_pin_ends.get(key)
+
     def is_sheet_pin(self, pin: PinEnd) -> bool:
         return pin.key in self._sheet_pin_ends
 
@@ -874,6 +877,12 @@ def touched_at(world: World, sheet: SheetRef, p: Point) -> tuple[set[str], list[
                 if (n := world.netlist.net_of(pin.key)) is not None:
                     found.add(n)
                 d = DIRS[pin.direction]
+    for info in scene.sheet_pins.values():
+        if same_point(info.pin.at, p):
+            what.append(f"sheet pin {info.pin.label}")
+            if (n := world.sheet_pin_net(info)) is not None:
+                found.add(n)
+            d = DIRS[info.pin.direction]
     for w in scene.wires.values():
         if on_segment(p, w.start, w.end):
             what.append("wire")

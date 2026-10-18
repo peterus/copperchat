@@ -266,3 +266,40 @@ async def test_pin_to_pin_connection_is_bridged(
     assert out["bridges"] == 1
     assert (await state(s))[1] == partition
     assert _all_orthogonal(await _scene(s))
+
+
+async def _sheet_with_pin(ctx: Any) -> tuple[float, float]:
+    await _ok(ctx, "sch_add_sheet", name="Power", file="power.kicad_sch", at=[50.8, 50.8])
+    pin = await _ok(ctx, "sch_add_sheet_pin", sheet="/Power/", name="VIN", direction="input")
+    return (pin["pin"]["at_mm"][0], pin["pin"]["at_mm"][1])
+
+
+async def test_pin_on_a_stationary_sheet_pin_is_bridged(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    s = blank_session
+    await s.ensure_symbol_libraries()
+    ctx = edit_ctx(s, edit_db)
+    px, py = await _sheet_with_pin(ctx)
+    # R1 horizontal with its right pin exactly on the sheet pin (no wire)
+    await place_direct(s, "Device:R", (px - 3.81, py), "R1", transform=(90, False, False))
+    assert same_point(max([await _pin(ctx, "R1.1"), await _pin(ctx, "R1.2")]), (px, py))
+    _ids, partition = await state(s)
+    out = await _ok(ctx, "sch_move", items=["R1"], by=[-10.16, 0])
+    assert out["bridges"] == 1
+    assert (await state(s))[1] == partition
+
+
+async def test_label_on_a_moved_sheet_pin_travels_with_it(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    s = blank_session
+    await s.ensure_symbol_libraries()
+    ctx = edit_ctx(s, edit_db)
+    px, py = await _sheet_with_pin(ctx)
+    await _ok(ctx, "sch_add_label", net="VIN", at=[px, py])
+    out = await _ok(ctx, "sch_move", items=["sheet:Power"], by=[0, 5.08])
+    assert any("label VIN" in n for n in out["notes"] if isinstance(n, str))
+    sc = await _scene(s)
+    label = next(lb for lb in sc.labels.values() if lb.text == "VIN" and lb.kind == "label")
+    assert same_point(label.at, (px, py + 5.08))
