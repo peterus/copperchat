@@ -5,9 +5,10 @@
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -25,6 +26,7 @@ from copperchat.kicad_tools.edit.changeset import (
 )
 from copperchat.kicad_tools.edit.geometry import (
     EPS_MM,
+    Box,
     PinEnd,
     Point,
     on_grid,
@@ -55,7 +57,13 @@ from copperchat.kicad_tools.edit.router import (
     route_problems,
     simplify,
 )
-from copperchat.kicad_tools.edit.scene import Scene, sheet_api, short
+from copperchat.kicad_tools.edit.scene import (
+    Scene,
+    SheetPinInfo,
+    SymbolInfo,
+    sheet_api,
+    short,
+)
 
 Via = Literal["auto", "wire", "label"]
 NEAR_MM = 25.4  # a wire of a named target net this close to the pin is routed to
@@ -106,6 +114,47 @@ def _wire_targets(
     return out[:12]
 
 
+def _with_sheet_pins(world: World, sheet: SheetRef, keep: Callable[[SheetPinInfo], bool]) -> Scene:
+    """The sheet's scene with the kept sheet pins as one-pin stand-in symbols (a point
+    body, a key on no net): the router then treats them as foreign connection points
+    (KiCad joins a wire whose end or interior touches a sheet pin) and counts them for
+    junctions. The world's scene itself is left as is."""
+    scene = world.scene(sheet)
+    symbols = dict(scene.symbols)
+    for info in scene.sheet_pins.values():
+        if not keep(info):
+            continue
+        uid = f"sheet-pin-{info.uuid}"
+        pin = dataclasses.replace(info.pin, key=(sheet.path, uid, info.pin.number))
+        symbols[uid] = SymbolInfo(
+            uuid=uid,
+            ref=info.pin.ref,
+            lib_id="",
+            value="",
+            unit=1,
+            sheet=sheet,
+            at=pin.at,
+            rotation=0,
+            mirror="",
+            pins=[pin],
+            body=Box(*pin.at, *pin.at),  # a point: never entered by a segment
+            fields=[],
+            power=False,
+        )
+    return dataclasses.replace(scene, symbols=symbols)
+
+
+def _route_scene(world: World, sheet: SheetRef, allowed: set[str], ends: set[Point]) -> Scene:
+    """Routing scene: sheet pins of other nets (not at a route end) are obstacles."""
+    return _with_sheet_pins(
+        world,
+        sheet,
+        lambda i: (
+            world.sheet_pin_net(i) not in allowed and not any(same_point(i.pin.at, e) for e in ends)
+        ),
+    )
+
+
 def _best(routes: Sequence[tuple[Route, PinEnd] | None]) -> tuple[Route, PinEnd] | None:
     found = [r for r in routes if r is not None]
     return min(found, key=lambda r: r[0].cost) if found else None
@@ -115,10 +164,11 @@ def _route_from(
     world: World, start: PinEnd, target: PinEnd | WireTarget, allowed: set[str]
 ) -> tuple[Route, PinEnd] | None:
     sheet = world.sheet_of(start)
+    ends = {start.at} | ({target.at} if isinstance(target, PinEnd) else set())
     r = route(
         start,
         target,
-        world.scene(sheet),
+        _route_scene(world, sheet, allowed, ends),
         world.netlist,
         allowed_nets=allowed,
         item_nets=world.nets(sheet),
@@ -137,7 +187,7 @@ def _wire_change_set(
 ) -> ConnectChangeSet:
     r, start = found
     sheet = world.sheet_of(start)
-    scene = world.scene(sheet)
+    scene = _with_sheet_pins(world, sheet, lambda _i: True)  # a sheet pin is an arm
     junctions = needed_junctions(r.points, scene)
     items = [make_wire(a, b) for a, b in itertools.pairwise(r.points)]
     items += [make_junction(j) for j in junctions]
@@ -251,7 +301,7 @@ def plan_connect_pins(
             ]
             found = _best(cands)
             if found is None:
-                scene = world.scene(sa)
+                scene = _route_scene(world, sa, allowed, {pa.at, pb.at})
                 reasons = blocked_reasons(pa, pb, scene, world.netlist, allowed, world.nets(sa))
                 if not on_grid(pa.at) or not on_grid(pb.at):
                     reasons.insert(0, "a pin end is off the 1.27 mm grid")
@@ -705,6 +755,7 @@ def plan_reroute(world: World, tool: str, wires: Any, points: list[Point]) -> Ch
         junctions=scene.junctions,
         no_connects=scene.no_connects,
         sheets=scene.sheets,
+        sheet_pins=scene.sheet_pins,
     )
     pin_owner = {p.at: s.uuid for s in scene.symbols.values() for p in s.pins}
     own = (

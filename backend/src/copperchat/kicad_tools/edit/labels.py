@@ -14,8 +14,9 @@ import itertools
 import re
 import time
 import uuid as uuidlib
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Literal
 
 from copperchat.errors import StructuredToolError
@@ -46,11 +47,14 @@ from copperchat.kicad_tools.edit.geometry import (
 )
 from copperchat.kicad_tools.edit.router import Obstacles, needed_junctions
 from copperchat.kicad_tools.edit.scene import (
+    MAX_CANDIDATES,
     LabelInfo,
     Scene,
+    SheetPinInfo,
     SymbolInfo,
     WireInfo,
     all_symbols,
+    net_representative,
     netlists,
     read_scene,
     resolve_pin,
@@ -191,6 +195,9 @@ class Planned:
 class World:
     """One consistent read of the design for `prepare` (inside one session.call)."""
 
+    # sheet pins resolved by `sheet_pin` (pseudo key -> pin), replaced on each addition
+    _sheet_pin_ends: Mapping[PinKey, SheetPinInfo] = MappingProxyType({})
+
     def __init__(self, h: KicadHandle) -> None:
         self.h = h
         raw = h.schematic().get_symbols()
@@ -221,7 +228,7 @@ class World:
         instance. Keys on other sheets (a representative of a net reaching the sheet
         through a sheet pin) stay in `sheet`'s own group only: another instance joins
         its own copy of that net."""
-        keys = list(keys)
+        keys = list(dict.fromkeys(k for k in map(self.real_key, keys) if k is not None))
         out = []
         for inst in self.instances(sheet):
             if inst.path == sheet.path:
@@ -291,13 +298,119 @@ class World:
             )
         return resolve_pin(self.h, spec[:64], symbols=self.symbols)
 
+    def endpoint(self, spec: Any) -> PinEnd:
+        """A symbol pin 'REF.PIN' or a sheet pin '<sheet name>.<pin name>' (a symbol
+        reference wins over a sheet name of the same text)."""
+        if isinstance(spec, str) and not any(
+            s.ref == spec.strip().partition(".")[0] for s in self.symbols
+        ):
+            pin = self.sheet_pin(spec.strip()[:64])
+            if pin is not None:
+                return pin
+        return self.pin(spec)
+
+    def sheet_pin(self, spec: str) -> PinEnd | None:
+        """'<sheet name>.<pin name>' as a pseudo pin end (see `SheetPinInfo`); None when
+        no sheet instance has a name `spec` starts with (the longest name wins: sheet
+        names may contain dots)."""
+        named = [r for r in self.sheets.values() if spec.startswith(f"{r.name}.") and r.name]
+        named = [r for r in named if r.path.rpartition("/")[0] in self.sheets]  # not the root
+        if not named:
+            return None
+        longest = max(len(r.name) for r in named)
+        named = [r for r in named if len(r.name) == longest]
+        name, wanted = named[0].name, spec[longest + 1 :]
+        if len(named) > 1:
+            places = sorted(self.sheets[r.path.rpartition("/")[0]].human_path for r in named)
+            raise StructuredToolError(
+                f"Sheet pin {short(spec)} is ambiguous",
+                f"{len(named)} sheet symbols are named {name} (on {', '.join(places[:6])})",
+                "Rename one of the sheets, or connect inside the sheet with labels.",
+                code="ambiguous_pin",
+                details={"candidates": places[:MAX_CANDIDATES], "total": len(places)},
+            )
+        child = named[0]
+        parent_path, _, sheet_uuid = child.path.rpartition("/")
+        pins = [
+            i
+            for i in self.scene(self.sheets[parent_path]).sheet_pins.values()
+            if i.sheet_uuid == sheet_uuid
+        ]
+        hits = [i for i in pins if i.pin.name == wanted]
+        if not hits:
+            names = sorted(i.pin.name for i in pins)
+            raise StructuredToolError(
+                f"Sheet pin {short(spec)} not found",
+                f"the sheet {name} has "
+                + (f"the pins {', '.join(names[:MAX_CANDIDATES])}" if names else "no pins"),
+                "Use one of the listed pin names, or add the pin with sch_add_sheet_pin.",
+                code="not_found",
+                details={"candidates": names[:MAX_CANDIDATES], "total": len(names)},
+            )
+        if len(hits) > 1:
+            raise StructuredToolError(
+                f"Sheet pin {short(spec)} is ambiguous",
+                f"the sheet {name} has {len(hits)} pins named {wanted}",
+                "Rename the duplicate sheet pins first.",
+                code="ambiguous_pin",
+                details={"candidates": [wanted]},
+            )
+        self._sheet_pin_ends = {**self._sheet_pin_ends, hits[0].pin.key: hits[0]}
+        return hits[0].pin
+
+    def is_sheet_pin(self, pin: PinEnd) -> bool:
+        return pin.key in self._sheet_pin_ends
+
+    def real_key(self, key: PinKey) -> PinKey | None:
+        """`key` itself for a symbol pin; for a sheet pin a representative symbol pin of
+        the net it joins (None: that net has no symbol pin). Intents hold real keys only."""
+        info = self._sheet_pin_ends.get(key)
+        if info is None:
+            return key
+        return net_representative(self.netlist, self.sheet_pin_net(info))
+
+    def sheet_pin_net(self, info: SheetPinInfo) -> str | None:
+        parent, child = info.pin.key[0], info.child
+        net = self.nets(self.sheets[parent]).get(info.uuid)
+        if net is not None or child not in self.sheets:
+            return net
+        child_ref = self.sheets[child]
+        nets = self.nets(child_ref)
+        for lb in self.scene(child_ref).labels.values():
+            if lb.kind == "hierarchical_label" and lb.text == info.pin.name and lb.uuid in nets:
+                return nets[lb.uuid]
+        return None
+
     def sheet_of(self, pin: PinEnd) -> SheetRef:
         return self.sheets[pin.key[0]]
 
     def owner(self, pin: PinEnd) -> SymbolInfo:
+        """The symbol a pin belongs to; for a sheet pin a stand-in for the sheet symbol
+        (its uuid lets a stub leave the pin across the sheet box edge)."""
+        info = self._sheet_pin_ends.get(pin.key)
+        if info is not None:
+            sheet = self.sheet_of(pin)
+            return SymbolInfo(
+                uuid=info.sheet_uuid,
+                ref=pin.ref,
+                lib_id="",
+                value="",
+                unit=1,
+                sheet=sheet,
+                at=pin.at,
+                rotation=0,
+                mirror="",
+                pins=[pin],
+                body=self.scene(sheet).sheets.get(info.sheet_uuid, Box(*pin.at, *pin.at)),
+                fields=[],
+                power=False,
+            )
         return next(s for s in self.symbols if s.uuid == pin.key[1] and s.sheet.path == pin.key[0])
 
     def net(self, pin: PinEnd) -> str | None:
+        info = self._sheet_pin_ends.get(pin.key)
+        if info is not None:
+            return self.sheet_pin_net(info)
         return self.netlist.net_of(pin.key)
 
     def members(self, net: str | None) -> frozenset[PinKey]:

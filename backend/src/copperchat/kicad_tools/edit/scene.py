@@ -20,6 +20,7 @@ from copperchat.kicad_tools.access import Netlist, PinKey
 from copperchat.kicad_tools.edit.changeset import SheetRef
 from copperchat.kicad_tools.edit.geometry import (
     Box,
+    Direction,
     PinEnd,
     Point,
     body_box,
@@ -101,6 +102,23 @@ class LabelInfo:
 
 
 @dataclass
+class SheetPinInfo:
+    """A pin of a sheet symbol on this sheet. `pin` is a pseudo pin end: key (sheet
+    path, sheet symbol uuid, pin name), ref = sheet name, type 'sheet_pin', direction
+    outward from the sheet box. Its key is no netlist key: KiCad lists the sheet pin's
+    own KIID as a member of the net it joins (on this, the parent, sheet path)."""
+
+    uuid: str  # the sheet pin's KIID
+    sheet_uuid: str  # the sheet symbol's KIID
+    child: str  # the sub-sheet instance path (this sheet's path + '/' + sheet_uuid)
+    pin: PinEnd
+
+
+SHEET_PIN = "sheet_pin"  # PinEnd.type of a sheet pin
+_SIDE_DIR: dict[int, Direction] = {1: "left", 2: "right", 3: "up", 4: "down"}  # SheetSide
+
+
+@dataclass
 class Scene:
     sheet: SheetRef
     symbols: dict[str, SymbolInfo] = field(default_factory=dict)
@@ -109,9 +127,13 @@ class Scene:
     junctions: dict[str, Point] = field(default_factory=dict)
     no_connects: dict[str, Point] = field(default_factory=dict)
     sheets: dict[str, Box] = field(default_factory=dict)  # sheet symbols on this sheet
+    sheet_pins: dict[str, SheetPinInfo] = field(default_factory=dict)  # by sheet pin KIID
 
     def all_pins(self) -> list[PinEnd]:
         return [p for s in self.symbols.values() for p in s.pins]
+
+    def sheet_pin_ends(self) -> list[PinEnd]:
+        return [i.pin for i in self.sheet_pins.values()]
 
     def obstacles(self, exclude: set[str] | frozenset[str] = frozenset()) -> list[Box]:
         """Body box (+ 2 mm margin) and field boxes per symbol, plus sheet symbols."""
@@ -294,8 +316,59 @@ def read_scene(h: KicadHandle, sheet: SheetRef, *, boxes: bool = True) -> Scene:
     for s in sch.get_sheet_symbols():
         x, y = mm_point(s.position)
         w, hgt = mm_point(s.size)
-        scene.sheets[access.kiid(s)] = Box(x, y, x + w, y + hgt)
+        box = Box(x, y, x + w, y + hgt)
+        uid = access.kiid(s)
+        scene.sheets[uid] = box
+        name = str(s.name_field.text.value)
+        for p in s.pins:
+            spin = _sheet_pin(p, uid, name, box, sheet)
+            scene.sheet_pins[spin.uuid] = spin
     return scene
+
+
+def _sheet_pin(p: Any, sheet_uuid: str, sheet_name: str, box: Box, sheet: SheetRef) -> SheetPinInfo:
+    at = mm_point(p.position)
+    gaps: dict[Direction, float] = {
+        "left": abs(at[0] - box.x0),
+        "right": abs(at[0] - box.x1),
+        "up": abs(at[1] - box.y0),
+        "down": abs(at[1] - box.y1),
+    }  # an unknown side: the box edge the pin sits on
+    side = _SIDE_DIR.get(int(p.side))
+    direction: Direction = side if side is not None else min(gaps, key=gaps.__getitem__)
+    name = str(p.text.value)
+    key = (sheet.path, sheet_uuid, name)
+    pin = PinEnd(key, sheet_name, name, name, SHEET_PIN, at, direction)
+    return SheetPinInfo(access.kiid(p), sheet_uuid, f"{sheet.path}/{sheet_uuid}", pin)
+
+
+def sheet_pin_net(
+    h: KicadHandle, info: SheetPinInfo, nets: dict[tuple[str, str], str]
+) -> str | None:
+    """The net a sheet pin joins: its own KIID's net in the live netlist (KiCad lists it
+    on the parent sheet path), else the net of a hierarchical label of the pin's name in
+    the sub-sheet instance (`nets`: `netlists()[1]`)."""
+    parent = info.pin.key[0]
+    net = nets.get((parent, info.uuid))
+    if net is not None:
+        return net
+    child = next((r for r in sheet_refs(h) if r.path == info.child), None)
+    if child is None:
+        return None
+    for lb in sheet_api(h, child).get_labels():
+        if (
+            type(lb).__name__ == "HierarchicalLabel"
+            and str(lb.text.value) == info.pin.name
+            and (net := nets.get((child.path, access.kiid(lb)))) is not None
+        ):
+            return net
+    return None
+
+
+def net_representative(netlist: Netlist, net: str | None) -> PinKey | None:
+    """One symbol pin of `net` (sorted first), None when the net has no symbol pin."""
+    members = sorted(netlist.nets.get(net, ())) if net else []
+    return members[0] if members else None
 
 
 def netlists(
