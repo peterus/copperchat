@@ -13,7 +13,7 @@ import difflib
 import logging
 import weakref
 from collections import OrderedDict
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from functools import partial
 from typing import Any, Literal
@@ -77,7 +77,7 @@ def _footprint_type() -> int:
     return int(LibraryType.LT_FOOTPRINT)
 
 
-def _scopes(library_type: int) -> Any:
+def _scopes(library_type: int) -> Callable[[KicadHandle], dict[str, Scope]]:
     def run(h: KicadHandle) -> dict[str, Scope]:
         from kipy.proto.common.types import LibraryTableScope
 
