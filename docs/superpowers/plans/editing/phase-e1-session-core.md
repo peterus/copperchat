@@ -25,7 +25,7 @@ connectivity comes from the live netlist, and the SP2 tables exist.
 ### Task 1: `KicadSession.commit()` with shielded drop
 
 **Interfaces:** Produces `KicadSession.commit(label, *, dry_run=False)`, `CommitScope`,
-`jobs_stale`, `modified` (E-C1).
+`jobs_stale`, `modified` (E-C1); internal `_save_locked()`.
 
 - [ ] **Step 1: Failing tests** (`tests/kicad/edit/test_session_edit.py`, real api-server, `ecc83_session`):
   - `test_commit_pushes_and_marks_stale`: inside `async with s.commit("t")` create a wire
@@ -44,6 +44,8 @@ connectivity comes from the live netlist, and the SP2 tables exist.
     after push.
   - `test_save_waits_for_open_commit`: `save("sch")` started while a commit is open
     completes only after the scope exits (assert ordering with an `asyncio.Event`).
+  - `test_save_copy_and_refresh_jobs_on_modified_doc_do_not_deadlock`: after a pushed commit,
+    `save_copy("sch", …)` and `refresh_jobs()` each finish within 30 s (`asyncio.wait_for`).
 - [ ] **Step 2:** run `uv run pytest tests/kicad/edit/test_session_edit.py -m kicad` → FAIL.
 - [ ] **Step 3: Implement** in `session.py`: `@asynccontextmanager commit(...)` — `begin_commit`
   through `self.call`, keep the kipy `Commit`; on exit `push_commit(commit, label)` (or
@@ -51,7 +53,9 @@ connectivity comes from the live netlist, and the SP2 tables exist.
   and re-raise. `_drop` failing (incl. `KicadUnavailable`) → `await self.restart()` and raise
   `KicadUnavailable("could not drop an open KiCad commit; the server was restarted")`.
   `self._commit_lock = asyncio.Lock()` held for the whole scope; `save`, `save_copy`,
-  `refresh_jobs` acquire it. Restart resets `jobs_stale`/`modified` to False.
+  `refresh_jobs` acquire it — the lock is not re-entrant, so `save_copy` / `refresh_jobs`
+  call an internal `_save_locked()` (save + `modified`/`last_saved_at` + listeners, no lock)
+  instead of the public `save()`. Restart resets `jobs_stale`/`modified` to False.
 - [ ] **Step 4:** tests PASS. **Step 5:** commit `feat: KicadSession.commit with shielded drop`.
 
 ### Task 2: Saves record hashes; fresh `save_copy` and export jobs

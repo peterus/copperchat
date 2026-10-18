@@ -60,7 +60,11 @@ int, touches?: {refs, nets}, verification}])`, `plan_revise(steps, reason)`,
   - `test_step_begin_1_takes_base_snapshot` (`on_mutation` called once; `base_snapshot_id` set).
   - `test_step_done_refused_with_unjustified_error` (`erc_errors_open` with the list; step
     stays `running`); `test_step_done_accepts_justification` (stored on the step, visible in DTO);
-    `test_step_done_after_fix_accepts`.
+    `test_step_done_after_fix_accepts`;
+    `test_second_erc_refusal_pauses_plan` (spec §11 "unexplained ERC regression": a second
+    consecutive `erc_errors_open` for the same step and the same violation ids → plan `paused`,
+    step `failed` with the ERC delta attached, an error row with `code: "plan_needs_attention"`
+    is posted so Phase 9's notifier sends "needs attention").
   - `test_step_done_takes_checkpoint_and_counts_changes` (checkpoint id + `change_count` from the
     change log of the step).
   - `test_step_done_without_render_adds_reminder` (no `render_view(sch)` since step begin →

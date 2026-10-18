@@ -55,7 +55,8 @@ can read; notes of researched parts for the main agent.
 - [ ] **Step 2:** FAIL. **Step 3: Implement**: detail from the cached proto; if it has no
   pins (derived), probe with `session.commit("probe", dry_run=True)` +
   `place_symbol_from_library` at (0, 0) and read the flattened `definition` (2B finding 3);
-  cache per `lib_id`. `body_size_mm` from E2 `body_box` of the probe (without margin).
+  cache per `lib_id`. `body_size_mm` from the definition's graphics bounding boxes plus pin ends, untransformed
+  (computed here — E3 does not depend on E2's geometry).
 - [ ] **Step 4:** PASS. **Step 5:** commit `feat: lib symbol detail with derived pins`.
 
 ### Task 3: Footprints lazily per library

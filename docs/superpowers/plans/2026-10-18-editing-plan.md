@@ -42,9 +42,9 @@ not import it.
 |---|---|---|---|
 | E1 | `editing/phase-e1-session-core.md` | `KicadSession.commit()`, save listeners + fresh export jobs, `save_copy` saves first, symbol libraries eager, live netlist, `blank` fixture, migration `0006`, editing settings | — |
 | E2 | `editing/phase-e2-edit-framework.md` | geometry + scene, `ChangeSet`/two-phase adapter (read-only refusal, gate, budget hook), apply/verify/compensate engine, change recording, `DocumentInconsistent`, annotation allocator, `sch_get_pin`, `sch_add_wire` | E1 |
-| E3 | `editing/phase-e3-library.md` | library index (symbols eager, footprints lazy per library, derived-symbol pin probe), `lib_*` tools, part preferences, `parts_get_notes` | E1 |
+| E3 | `editing/phase-e3-library.md` | library index (symbols eager, footprints lazy per library, derived-symbol pin probe), `lib_*` tools, part preferences, `parts_get_notes` | E1 (independent of E2) |
 | E4 | `editing/phase-e4-place-fields.md` | `sch_place_symbol`, `sch_set_fields`, `sch_find_space`, `sch_annotate` | E2, E3 |
-| E5 | `editing/phase-e5-connect.md` | router (T-joins), `sch_connect`, `sch_add_label`, `sch_add_power`, `sch_no_connect`, `sch_rename_net`, `sch_reroute` | E2 |
+| E5 | `editing/phase-e5-connect.md` | router (T-joins), `sch_connect`, `sch_add_label`, `sch_add_power`, `sch_no_connect`, `sch_rename_net`, `sch_reroute` | E2 (test parts placed with E2's `place_raw` helper, not E4) |
 | E6 | `editing/phase-e6-move-delete-duplicate.md` | `sch_move` (drag), `sch_delete` (attached items, sheets), `sch_duplicate` | E4, E5 |
 | E7 | `editing/phase-e7-sheets.md` | `sch_add_sheet`, `sch_add_sheet_pin` | E2 |
 | E8a | `editing/phase-e8a-checks-checkpoints.md` | step checkpoints (`kind=step`), ERC baseline/delta, turn-end ERC, change REST/WS, `sch_changes`, diff service | E2 |
@@ -247,7 +247,7 @@ class DocumentInconsistent(CopperChatError): code = "document_inconsistent"
 
 # copperchat.tools.spec
 PrepareFn = Callable[[ToolContext, dict[str, Any]], Awaitable["ChangeSet"]]
-ApplyFn   = Callable[[ToolContext, "ChangeSet"], Awaitable[ToolResult]]
+ApplyFn   = Callable[[ToolContext, "ChangeSet"], Awaitable[ToolResult]]   # sets cs.applied
 ToolSpec.prepare: PrepareFn | None = None      # set => two-phase tool (mutating=True,
 ToolSpec.apply:   ApplyFn | None = None        #   changes_documents=True, handler unused)
 def edit_spec(name, description, input_schema, prepare, apply) -> ToolSpec
@@ -258,9 +258,9 @@ ToolContext.on_document_inconsistent: Callable[[Exception], None] | None = None
 Adapter order for a spec with `prepare` (spec §5.1, owner rule "refusals never
 snapshot"): `ctx_factory` → **read-only** (`code="read_only"`) →
 `gate.before_prepare(ctx, spec.name)` → `prepare` → `gate.check_budget(ctx, cs)`
-→ `on_mutation` (turn snapshot) → `apply` → `gate.record(ctx, cs, result)` →
-`changed_docs`. `DocumentInconsistent` from `apply` → `ctx.on_document_inconsistent`
-→ error result. Every tool call (any spec) also calls `editing.note_call(name)`.
+→ `on_mutation` (turn snapshot) → `apply` → `gate.record(ctx, cs)` (reads
+`cs.applied`, set by `apply_change_set`) → `changed_docs`. `DocumentInconsistent` from `apply` → `ctx.on_document_inconsistent`
+→ error result. Every tool call (any spec) also calls `editing.note_call(ctx, spec.name)`.
 
 ```python
 # copperchat.kicad_tools.edit.changeset
@@ -288,7 +288,7 @@ class NetIntent:
 @dataclass
 class Logical:
     changes: int                                  # budget unit (E-C6)
-    deleted_symbols: list[str] = []               # UUIDs of symbols deleted by this call
+    deleted_symbols: list[str] = []               # UUIDs of non-power symbols deleted by this call
     placed_symbols: list[str] = []                # filled after apply (own-placement ledger)
 @dataclass
 class ChangeSet:
@@ -299,6 +299,7 @@ class ChangeSet:
     intent: NetIntent
     logical: Logical
     summary: dict[str, Any]                       # tool-specific, echoed in the result
+    applied: "Applied | None" = None              # set by apply_change_set
 # copperchat.kicad_tools.edit.engine
 @dataclass
 class Applied:
@@ -308,7 +309,8 @@ async def apply_change_set(ctx: ToolContext, cs: ChangeSet) -> Applied
     # stages in order (one session.commit each); after the last push: read back
     # (by id + neighbourhood), verify cs.intent against live_netlist; mismatch ->
     # compensate (reverse order; deletes re-created from pre-images with original
-    # UUIDs, updates restored, creates removed), re-verify == pre-state, raise
+    # UUIDs — deleted *symbols* re-placed from the library (method A, new UUID, see
+    # author calls) —, updates restored, creates removed), re-verify, raise
     # StructuredToolError(code="verification_failed"); compensation failing ->
     # DocumentInconsistent. Records ChangeEntry rows (incl. side effects).
 def edit_result(cs: ChangeSet, applied: Applied, **extra) -> ToolResult   # standard JSON
@@ -341,7 +343,7 @@ class EditTurnState:                    # one per (project_id, run_id)
 class EditGate(Protocol):
     async def before_prepare(self, ctx: ToolContext, tool: str) -> None
     async def check_budget(self, ctx: ToolContext, cs: ChangeSet) -> None
-    async def record(self, ctx: ToolContext, cs: ChangeSet, applied: Applied) -> None
+    async def record(self, ctx: ToolContext, cs: ChangeSet) -> None   # cs.applied is set
 class BudgetGate(EditGate)              # E2: settings policy + turn budget (no plans)
 class EditingService:
     def __init__(self, *, db, broadcaster, settings_repo, gate: EditGate | None = None)
@@ -375,7 +377,8 @@ editing hook (E8a: turn-end ERC delta; E8b: plan pause/turn bookkeeping).
 | duplicate | sum of the copied items by the rules above |
 
 Budget refusal: `used + cs.logical.changes > limit` or `deleted_preexisting +
-|deleted_symbols ∖ placed_this_turn| > 3`. Deleting a symbol from
+|deleted_symbols ∖ placed_this_turn| > 3`. Power symbols (`#PWR`/`#FLG`, also
+when deleted as attached items) never count toward the ≤ 3 limit. Deleting a symbol from
 `placed_this_turn` refunds its placement (`logical_used -= 1`) and costs 0.
 `plan_policy = never` → no budget; `always` → `plan_step_required` outside a step.
 
@@ -548,10 +551,13 @@ Binding; the spec was amended in the plan PR (§3, §7.1, §13, §15).
   stage 2 sets fields/transform (resp. resets `Sheetfile` to relative); a failure
   in stage 2 or in verification compensates stage 1. One tool call stays one
   logical, verified, all-or-nothing change.
-- **Compensating a deleted symbol** re-creates it from its pre-image with the
-  **original UUID** (keeps the future PCB link); if the symbol has more than one
-  body style (lossy definition, 2A Q6) the delete tool refuses up front with a
-  suggestion instead (no compensation risk). Non-symbol items always keep UUIDs.
+- **Compensating a deleted symbol** re-places it from the library with its
+  fields, unit, transform and body style copied (2A Q10 method A — lossless and
+  KiCanvas-safe) and therefore a **new UUID**; the error result names the old
+  and new UUID. Re-creating from the pre-image is not used: it is lossy whenever
+  a sibling instance exists (`:R_1` cache entry) or the symbol has two body
+  styles (2A Q6). Non-symbol items always keep their UUIDs. This path only runs
+  when verification after a delete fails.
 - **Change log + `kicad-cli sch diff`**: the log is recorded by the tools from
   read-back; the diff (JSON only) feeds the viewer's diff layer and the tests'
   cross-check; diff entries without a log counterpart are shown as side effects.
@@ -567,9 +573,10 @@ Binding; the spec was amended in the plan PR (§3, §7.1, §13, §15).
    (`footprints_unavailable`, footprint marked `unverified`) rather than loading all
    footprint libraries (3.8 GB). Default as written; alternative: load all
    footprints for such projects.
-2. **Deleting multi-body-style (De Morgan) symbols** is refused with a suggestion
-   (they cannot be re-created losslessly by the API, 2A Q6). Default as written;
-   alternative: allow and compensate via turn-snapshot restore.
+2. **A compensated symbol delete gives the symbol a new UUID** (re-placed from
+   the library, see author calls) — matters once the PCB links to symbol UUIDs
+   (sub-project 3). Default as written; alternative: compensate by restoring the
+   turn snapshot / last step checkpoint (keeps UUIDs, loses the turn's later work).
 
 ---
 

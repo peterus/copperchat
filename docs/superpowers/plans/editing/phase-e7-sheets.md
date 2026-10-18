@@ -33,11 +33,15 @@ parent?: sheet)` → standard result + `sheet: {name, file, path, page, uuid}`. 
     and a reference from `Allocator.next_ref("R", "2")` → `R201` read back on that sheet —
     E4's tool is not a dependency of this phase; Review Focus 3).
   - `test_save_copy_contains_new_sheet` (E1 `save_copy` → file in the copy; `run_erc` works).
+  - `test_failed_save_leaves_no_orphan_file` (injected save error → sheet removed, no new file
+    on disk, a retry with the same name succeeds).
   - `test_overlap_refused`; `test_hashes_recorded_after_save` (no external-change notice at the
     next turn start).
 - [ ] **Step 2:** FAIL. **Step 3: Implement** stages: (1) `Create` `SheetSymbol` with the
   **absolute** file path, name, position, size; (2) `Update` its `Sheetfile` field to the
-  relative path (2A Q7 bug); then `session.save("sch")` so the file exists (hash listener runs).
+  relative path (2A Q7 bug); only **after** verification `session.save("sch")` so the file
+  exists (hash listener runs). If that save fails, compensate and delete the new file when
+  this call created it (it did not exist before prepare).
 - [ ] **Step 4:** PASS. **Step 5:** commit `feat: sch_add_sheet`.
 
 ### Task 2: `sch_add_sheet_pin`

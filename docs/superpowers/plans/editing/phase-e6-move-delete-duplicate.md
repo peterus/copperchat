@@ -48,15 +48,16 @@ per connection.
   with other pins stay); `test_delete_power_symbol_by_ref`; `test_nets_changed_reported`;
   `test_cleanup_side_effects_reported` (T-branch removal → merged segment and removed junction
   in `side_effects`); `test_delete_sheet_symbol_keeps_file` (`hier_session` copy: sheet gone
-  from `get_hierarchy`, file still on disk, result says so); `test_de_morgan_symbol_refused`
-  (multi-body-style symbol → refused up front, plan "Provisional 2");
-  `test_compensation_recreates_original_uuid` (forced verification mismatch on a
-  single-body-style symbol delete → same UUID, value and netlist back);
+  from `get_hierarchy`, file still on disk, result says so);
+  `test_compensation_replaces_symbol_from_library` (forced verification mismatch on a
+  `74xx:74LS00` body-style-2 unit delete → re-placed, body style/unit/fields identical, new
+  UUID reported, netlist back; index author call);
   `test_budget_counts_preexisting_only` (delete 4 pre-existing symbols → 4th refused;
-  own placements free, E-C6).
+  own placements free; deleting R1 with its attached `+5V`/`GND` power symbols counts as 1
+  toward the ≤ 3 limit, E-C6).
 - [ ] **Step 2:** FAIL. **Step 3: Implement** attached-item discovery (port `_attached`), pre-images
   of everything deleted plus neighbours, one `Delete` stage; `Logical.deleted_symbols` lists
-  symbol UUIDs. Intent: `may_change` = pins of the deleted symbols' former nets.
+  the UUIDs of deleted non-power symbols (attached power symbols excluded). Intent: `may_change` = pins of the deleted symbols' former nets.
 - [ ] **Step 4:** PASS. **Step 5:** commit `feat: sch_delete`.
 
 ### Task 3: `sch_duplicate`

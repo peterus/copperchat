@@ -41,8 +41,8 @@ netlist: Netlist, *, allowed_nets: set[str], max_segments: int = 3) -> Route | N
 **Interfaces:** tool `sch_connect(from: "REF.PIN", to: "REF.PIN" | <net name>, via: "auto"|"wire"|"label" = "auto", net_name?)`
 → standard result + `{route: {points, junction}, via_used, net}`. Logical 1.
 
-- [ ] **Step 1: Failing kicad tests** (`blank_session` with parts placed through E4 tools in the
-  test setup):
+- [ ] **Step 1: Failing kicad tests** (`blank_session` with parts placed by E2's
+  `tests.support.edit.place_raw` — E4's tools are not a dependency of this phase):
   - `test_wire_between_two_pins` (verified merge; `kicad-cli` netlist agrees).
   - `test_t_join_to_existing_net` (`J1.1–U1.VI` wired, then `sch_connect(C1.1, U1.VI)` → joins
     the existing wire, a junction exists after read-back, one net; 2D failure 4).

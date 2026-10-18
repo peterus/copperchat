@@ -57,7 +57,7 @@ read-back and compensates. Two tools prove it end to end: `sch_get_pin`,
 **Interfaces:** Consumes E1 `EditingSettingsRepo`. Produces E-C4 adapter order,
 `edit_spec`, `ToolContext.editing`, `.on_document_inconsistent`, E-C5 `EditTurnState`,
 `EditGate`, `BudgetGate`, `EditingService`, `install_editing`, `ChainedHooks`, and the
-E-C6 budget rule (in `BudgetGate.check_budget` / `record`).
+E-C6 budget rule (in `BudgetGate.check_budget` / `record(ctx, cs)`, reading `cs.applied`).
 
 - [ ] **Step 1: Failing unit tests** (`test_two_phase_adapter.py`, fake specs whose
   `prepare`/`apply` record calls, fake `on_mutation`):
@@ -69,7 +69,7 @@ E-C6 budget rule (in `BudgetGate.check_budget` / `record`).
     `["before_prepare","prepare","check_budget","on_mutation","apply","record"]`).
   - `test_budget_accumulates_over_calls` (8 + 8 ok, + 5 refused at 21 > 20).
   - `test_deleting_own_placement_is_free` (place 1 → `placed_this_turn={u}`; delete `u` →
-    `logical_used` back to 0, `deleted_preexisting` 0); `test_fourth_preexisting_delete_refused`.
+    `logical_used` back to 0, `deleted_preexisting` 0); `test_fourth_preexisting_delete_refused`; `test_power_symbol_deletes_not_limited`.
   - `test_policy_never_has_no_budget`; `test_policy_always_requires_step` (`plan_step_required`).
   - `test_note_call_counts_every_tool` (`call_seq` increments for read-only tools too;
     `render_view` with `doc="sch"` sets `last_render_seq`).
@@ -98,6 +98,10 @@ E-C6 budget rule (in `BudgetGate.check_budget` / `record`).
     label + a no-connect in one stage, force mismatch by an injected verifier
     (`apply_change_set(..., _verify=lambda *a: ["forced"])`) → original UUIDs back, texts
     restored, netlist identical (2A Q6).
+  - `test_compensated_symbol_delete_is_replaced_from_library`: delete one of two `Device:R`
+    instances, forced mismatch → a symbol with the same ref, value, footprint, unit and
+    transform exists again (new UUID, named in `details`), the saved file has no `:R_1`
+    `lib_id`, netlist identical.
   - `test_staging_error_drops_commit`: a stage whose `build` raises → nothing changed, error.
   - `test_cleanup_side_effects_recorded`: delete the T-branch wire of a T with junction
     (create the T first) → `Applied.side_effects` lists the removed junction and the merged
@@ -115,13 +119,19 @@ E-C6 budget rule (in `BudgetGate.check_budget` / `record`).
   touched end) and compare with the pre-images to detect KiCad's cleanup; never trust kipy's
   per-item return (2A Q6) — check presence by `get_items_by_id`. `verify.check`: pins outside
   `may_change` keep their partition; each `merge` group on one net; `names` match; with
-  `keep_partition` the partition is identical. Compensation in reverse stage order; a
-  symbol pre-image is re-created with `create_items` (original UUID).
+  `keep_partition` the partition is identical. Compensation in reverse stage order; non-symbol pre-images are re-created with
+  `create_items` (original UUIDs); a deleted symbol is re-placed from the library with its
+  fields/unit/transform/body style copied (2A Q10 method A, new UUID — never `create_items`
+  of a symbol pre-image, which is lossy, 2A Q6). `apply_change_set` stores the result in
+  `cs.applied`.
 - [ ] **Step 4:** PASS. **Step 5:** commit `feat: verified apply engine with compensation and change log`.
 
 ### Task 4: `sch_get_pin` and `sch_add_wire`
 
-**Interfaces:** Produces provider `copperchat.kicad_tools.edit.specs_core` with
+**Interfaces:** Produces test helper `tests.support.edit.place_raw(session, lib_id, at, ref,
+*, sheet=None, rotation=0) -> str` (UUID; one `apply_change_set` with `Place` + `Update`
+stages) used by E5/E7/E8a tests that must not depend on E4, and provider
+`copperchat.kicad_tools.edit.specs_core` with
 `sch_get_pin(pin)` (read-only: `{ref, pin, name, type, at_mm, direction, sheet, net, free,
 connected: [{kind, uuid}]}`) and `sch_add_wire(points: [[x,y],…], sheet?)` (two-phase;
 logical 1).
