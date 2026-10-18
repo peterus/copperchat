@@ -764,7 +764,12 @@ async def apply_change_set(
         netlist, nets = netlists(h)
         paths = {u: s.path for u, s in [*run.created.items(), *run.modified.items()]}
         item_net = {u: nets[(p, u)] for u, p in paths.items() if (p, u) in nets}
-        return netlist, found, item_net, verify.check_joined(netlist, nets, cs.intent, label)
+        return (
+            netlist,
+            found,
+            item_net,
+            verify.check_joined(netlist, nets, cs.intent, label, run.vanished_created),
+        )
 
     after, final, item_net, joined = await session.call(final_read)
     ensure_same_server()

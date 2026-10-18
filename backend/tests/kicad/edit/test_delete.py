@@ -387,3 +387,18 @@ async def test_shared_file_symbol_counts_once_per_instance(hier_session: KicadSe
     assert cs.logical.changes == 1
     assert cs.logical.deleted_symbols[0] == uid and len(cs.logical.deleted_symbols) == 2
     assert any("several sheet instances" in n or "sheet instances" in n for n in cs.notes)
+
+
+async def test_unannotated_parts_count_one_each(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    """Four pre-existing 'R?' are four parts for the <= 3 rule (review round 2)."""
+    s = blank_session
+    await s.ensure_symbol_libraries()
+    uids = [await place_direct(s, "Device:R", (76.2 + 25.4 * i, 76.2), "R?") for i in range(4)]
+    cs = await prepare_delete(edit_ctx(s), {"items": uids})
+    assert len(set(cs.logical.deleted_symbols)) == 4 and cs.logical.changes == 4
+    before = await state(s)
+    out, err = await call_tool(edit_ctx(s, edit_db), "sch_delete", items=uids)
+    assert err and out["error"]["code"] == "plan_required"
+    assert await state(s) == before

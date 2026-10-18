@@ -203,8 +203,9 @@ def _wire_change_set(
     # A sheet pin end: its own netlist item must end on the route's net, also when the
     # sub-sheet net has no symbol pin to stand in for it (E6 review).
     real = {k for k in (world.real_key(k) for k in group) if k is not None}
+    wires = {(sheet.path, access.kiid(w)) for w in items[: len(r.points) - 1]}
     joined = [
-        frozenset({(info.pin.key[0], info.uuid), (sheet.path, access.kiid(items[0])), *real})
+        frozenset({(info.pin.key[0], info.uuid), *wires, *real})
         for k in group
         if (info := world.sheet_pin_info(k)) is not None
     ]

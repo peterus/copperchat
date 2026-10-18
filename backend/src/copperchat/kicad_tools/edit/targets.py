@@ -129,11 +129,31 @@ def _symbol_target(world: World, spec: str, units: list[SymbolInfo]) -> list[Tar
     return out
 
 
-def _by_uuid(world: World, spec: str) -> Target | None:
-    from copperchat.kicad_tools.edit.engine import by_id
+_SUPPORTED = {
+    "SchematicSymbolInstance",
+    "SchematicLine",
+    "LocalLabel",
+    "GlobalLabel",
+    "HierarchicalLabel",
+    "DirectiveLabel",
+    "Junction",
+    "NoConnectMarker",
+    "SheetSymbol",
+}
 
-    if spec not in by_id(world.h.schematic(), [spec]):  # one cheap lookup before the scenes
+
+def _by_uuid(world: World, spec: str, found: dict[str, Any]) -> Target | None:
+    """`found`: one batched GetItemsById of every UUID the call names."""
+    item = found.get(spec)
+    if item is None:
         return None
+    if type(item).__name__ not in _SUPPORTED:
+        raise bad(
+            f"Item {spec} cannot be handled here",
+            f"it is a {type(item).__name__} (text, bus, field or sheet pin)",
+            "Pass symbols, wires, labels, junctions, no-connects or sheet symbols; a sheet "
+            "pin moves with its sheet symbol.",
+        )
     for sym in world.symbols:
         if sym.uuid == spec:
             units = [s for s in world.symbols if s.uuid == spec and s.sheet.file == sym.sheet.file]
@@ -203,6 +223,10 @@ def resolve(world: World, raw: Any, tool: str, *, allow: tuple[str, ...] = ()) -
         )
     out: list[Target] = []
     seen: set[tuple[str, str]] = set()
+    from copperchat.kicad_tools.edit.engine import by_id
+
+    uuids = [s.strip().lower() for s in raw if isinstance(s, str) and UUID_RE.fullmatch(s.strip())]
+    by_uuid = by_id(world.h.schematic(), uuids) if uuids else {}
     for spec in raw:
         if not isinstance(spec, str) or not spec.strip() or len(spec) > 128:
             raise bad(
@@ -215,7 +239,7 @@ def resolve(world: World, raw: Any, tool: str, *, allow: tuple[str, ...] = ()) -
         if spec.lower().startswith("sheet:"):
             found = [_by_sheet_name(world, spec, spec[6:].strip())]
         elif UUID_RE.fullmatch(spec):
-            hit = _by_uuid(world, spec.lower())
+            hit = _by_uuid(world, spec.lower(), by_uuid)
             if hit is None:
                 raise _not_found(spec, world)
             found = [hit]

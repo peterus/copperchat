@@ -238,7 +238,7 @@ def collect_block(world: World, targets: list[Target]) -> DupBlock:
         starts += [w.start, w.end] if w is not None else [t.at] if t.at is not None else []
     sheet_pin_points = [i.pin.at for i in scene.sheet_pins.values()]
     world.check_time(TOOL)
-    graph = WireGraph(scene, sheet_pin_points, starts)
+    graph = WireGraph(scene, sheet_pin_points, starts, lambda: world.check_time(TOOL))
     listed_nodes = {node_key(p) for p in pin_points}
     power = [s for s in scene.symbols.values() if s.power and s.uuid not in listed_ids]
     foreign = {

@@ -110,3 +110,38 @@ def test_a_listed_wire_takes_its_dangling_label_along() -> None:
     sc = _scene(r2, WireInfo("wb", (30, 10), (40, 10)), LabelInfo("lb", "X", (40, 10), "label"))
     out = prune(sc, [(30, 10), (40, 10)], set(), dead_wires=["wb"])
     assert out.labels == ["lb"]
+
+
+def test_a_listed_middle_segment_cascades_back_to_both_pins() -> None:
+    """R1.1 - a - corner - m - corner - b - R2.1: deleting m leaves two stubs that only
+    served the connection; they go, the pins stay."""
+    r1 = _sym("r1", "R1", (0, 0), (0, 50))
+    r2 = _sym("r2", "R2", (30, 0), (30, 50))
+    sc = _scene(r1, r2, WireInfo("a", (0, 0), (0, 10)), WireInfo("m", (0, 10), (30, 10)),
+                WireInfo("b", (30, 10), (30, 0)))  # fmt: skip
+    out = prune(sc, [(0, 10), (30, 10)], set(), dead_wires=["m"])
+    assert sorted(out.wires) == ["a", "b", "m"]
+
+
+def test_a_listed_wire_stops_at_a_t_join_and_takes_an_end_power_symbol() -> None:
+    r1 = _sym("r1", "R1", (0, 0), (0, 50))
+    r2 = _sym("r2", "R2", (40, 0), (40, 50))
+    pwr = _sym("p", "#PWR01", (20, 20), power=True)
+    sc = _scene(
+        r1, r2, pwr,
+        WireInfo("main", (0, 0), (40, 0)),  # R1 - R2, T at (20, 0)
+        WireInfo("t", (20, 0), (20, 20)),  # the T branch down to the power symbol
+    )  # fmt: skip
+    out = prune(sc, [(20, 0), (20, 20)], set(), dead_wires=["t"])
+    assert out.power == ["p"] and out.wires == ["t"] and not out.shortened  # main stays
+
+
+def test_a_diagonal_wire_keeps_what_it_touches() -> None:
+    """The graph sees orthogonal wires only: a diagonal's ends are anchors, so the label
+    on the stub that also feeds the diagonal stays."""
+    r3 = _sym("r3", "R3", (10, 10), (10, 30))
+    r2 = _sym("r2", "R2", (40, 40), (50, 50))
+    sc = _scene(r3, r2, WireInfo("w1", (10, 10), (10, 0)), LabelInfo("lb", "L", (10, 0), "label"),
+                WireInfo("diag", (10, 0), (40, 40)))  # fmt: skip
+    out = prune(sc, [p.at for p in r3.pins], {"r3"})
+    assert out.wires == ["w1"] and not out.labels

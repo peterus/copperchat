@@ -214,6 +214,7 @@ class _Check:
         )
         self.nets = dict(world.nets(sheet))
         self.fake = itertools.count()
+        self._pin_nets: dict[str, str | None] = {}  # sheet pin uuid -> net (read once)
 
     def add_wire(self, a: Point, b: Point, net: str | None) -> None:
         uid = f"planned-move-{next(self.fake)}"
@@ -231,7 +232,9 @@ class _Check:
         for info in self.scene.sheet_pins.values():
             if any(same_point(info.pin.at, e) for e in (pts[0], pts[-1])):
                 continue
-            if self.world.sheet_pin_net(info) in allowed:
+            if info.uuid not in self._pin_nets:
+                self._pin_nets[info.uuid] = self.world.sheet_pin_net(info)
+            if self._pin_nets[info.uuid] in allowed:
                 continue
             uid = f"sheet-pin-{info.uuid}"
             pin = replace(info.pin, key=(self.scene.sheet.path, uid, info.pin.number))
@@ -500,6 +503,7 @@ def plan_move(
     wire_updates: dict[str, tuple[Point, Point]] = {}
     fixed_points: set[tuple[int, int]] = set()
     for w in list(scene.wires.values()):
+        world.check_time(tool)
         ms, me = mapping.get(_key(w.start)), mapping.get(_key(w.end))
         if ms is None and me is None:
             continue
@@ -547,6 +551,7 @@ def plan_move(
                 check.add_wire(a, b, net)
     # points with connections that cannot be dragged: bridge new -> old
     for m in moving:
+        world.check_time(tool)
         if same_point(m.old, m.new):
             continue
         fixed = _key(m.old) in fixed_points
@@ -620,8 +625,13 @@ def plan_move(
         ops.append(Create(creates, sheet=sheet))
     if deletes:
         ops.append(Delete(deletes, sheet=sheet))
-    refs = {t.ref for t in targets if t.kind == "symbol"}
-    logical = len(refs) + sum(1 for t in targets if t.kind != "symbol")
+    # one per part: (sheet, reference) for annotated parts (all units), the UUID for 'R?'
+    parts = {
+        t.uuid if not t.ref or t.ref.endswith("?") else (t.sheet.path, t.ref)
+        for t in targets
+        if t.kind == "symbol"
+    }
+    logical = len(parts) + sum(1 for t in targets if t.kind != "symbol")
     notes: list[str] = []
     if plan.along:
         notes.append("moved along with the parts: " + ", ".join(sorted(set(plan.along))))

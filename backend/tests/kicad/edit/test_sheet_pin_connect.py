@@ -250,3 +250,33 @@ async def test_add_wire_onto_a_sheet_pin_whose_net_has_no_symbol_pin(
     out, err = await call_tool(ctx, "sch_add_wire", points=[g["r1_at"], g["pin_at"]])
     assert not err, out
     assert await _item_net(s, g["pin_uuid"]) == await _net(s, "/", g["r1"])
+
+
+async def test_wire_extending_a_wire_onto_a_sheet_pin(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    """The new segment is collinear with an existing wire and KiCad merges it at push:
+    the joined check leaves the vanished segment out instead of failing."""
+    s = blank_session
+    ctx = edit_ctx(s, edit_db)
+    g = await _empty_sheet(s, ctx)
+    mid = [g["r1_at"][0] + 5.08, g["r1_at"][1]]
+    out, err = await call_tool(ctx, "sch_add_wire", points=[g["r1_at"], mid])
+    assert not err, out
+    out, err = await call_tool(ctx, "sch_add_wire", points=[mid, g["pin_at"]])
+    assert not err, out
+    assert await _item_net(s, g["pin_uuid"]) == await _net(s, "/", g["r1"])
+
+
+async def test_label_connection_to_a_sheet_pin_whose_net_has_no_symbol_pin(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    s = blank_session
+    ctx = edit_ctx(s, edit_db)
+    g = await _empty_sheet(s, ctx)
+    out, err = await call_tool(
+        ctx, "sch_connect", **{"from": "Power.VIN", "to": g["r1"], "via": "label"}
+    )
+    assert not err, out
+    assert out["via_used"] == "label" and out["net"] is not None
+    assert await _item_net(s, g["pin_uuid"]) == await _net(s, "/", g["r1"])

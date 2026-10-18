@@ -490,17 +490,28 @@ Error codes (`StructuredToolError.code`): `read_only`, `plan_required`,
   as `from`/`to` (`World.endpoint`/`sheet_pin`: a pseudo `PinEnd` keyed (parent path, sheet
   symbol uuid, pin name); a symbol reference wins over a sheet name; `World.real_key` replaces
   it by a real pin of the net in every intent, nothing is merged for a pin-less net).
+  **`NetIntent.joined`** (new field, review): groups of pin keys and `(sheet_path, item uuid)`
+  netlist items that must end on one net, checked by the engine after apply
+  (`verify.check_joined`; created segments KiCad merged away at push are left out): sch_add_wire,
+  sch_connect (wire, label and power paths) add the sheet pin's own KIID + the new wires /
+  labels + the call's real pins, so a connection to a sheet pin whose sub-sheet net has no
+  symbol pin is still verified.
   **`sch_delete(items, with_attached=true)`**: attached items are found by leaf pruning of the
   sheet's wire graph from the deleted pins (wires split at every interior attachment point): a
   point dies when at most one live piece reaches it and no anchor (another part's pin, a kept
   sheet pin, a hierarchical label) sits there; a label or power symbol still reached by a live
   wire stops it (another part's label stub stays). A stub ending in a T is cut back (wire
   `Update`, `shortened`), shared wires stay; labels/junctions/no-connects/power symbols at dead
-  points go; hierarchical labels always stay. Result adds `deleted_summary`, `nets_changed:
+  points go; hierarchical labels always stay. Listed wires start dead and prune from both ends
+  (deleting a middle segment takes the stubs back to both pins, a T-branch stops at the T, a
+  power symbol at its end goes); the ends of diagonal wires are anchors (the graph is
+  orthogonal-only). A UUID of an unsupported kind (text, bus entry, sheet pin) is refused from
+  one batched `GetItemsById`. Result adds `deleted_summary`, `nets_changed:
   [{net, before: [pins], after: [{net, pins}]}]`. Logical: 1 per reference (all units), label,
   sheet, junction, no-connect, directly deleted wires 1 per net; `deleted_symbols` = own
-  placements (refunded) + one UUID per pre-existing non-power reference, **also for the parts of
-  a deleted sheet instance** (security review: a sheet deletion must not bypass the <= 3 rule).
+  placements (refunded) + one entry per pre-existing non-power part (units of one reference
+  count once; unannotated `R?` and duplicate references count per part; a shared sheet file
+  counts per instance as `uuid@path`), **also for the parts of a deleted sheet instance** (security review: a sheet deletion must not bypass the <= 3 rule).
   Engine compensation (E-C4 change): a deleted **sheet symbol is never re-created** (blank screen
   + file overwrite, E7) and a deleted symbol of a **shared sheet file is never re-placed**
   (invisible in the other instances until a reload): both -> `DocumentInconsistent(auto_restore=

@@ -402,3 +402,21 @@ async def test_no_compensation_after_a_server_restart(
     with pytest.raises(KicadUnavailable):
         await apply_change_set(edit_ctx(s), cs)
     assert s.generation >= 1 and await s.call(lambda h: True)  # the session recovers
+
+
+async def test_joined_mismatch_is_undone(ecc83_session: KicadSession) -> None:
+    """NetIntent.joined (E6): a created wire required on a pin's net but drawn apart
+    fails verification and is undone."""
+    s = ecc83_session
+    r = await two_resistors(s)
+    before = await _state(s)
+    a1 = r["a1"]
+    apart = wire((a1.at[0], a1.at[1] - 10.16), (a1.at[0] + 2.54, a1.at[1] - 10.16))
+    root = await _root(s)
+    joined = [frozenset({(root.path, access.kiid(apart)), a1.key})]
+    cs = _cs(root, static_stage("wire", Create([apart])), intent=NetIntent(joined=joined))
+    with pytest.raises(StructuredToolError) as err:
+        await apply_change_set(edit_ctx(s), cs)
+    assert err.value.code == "verification_failed"
+    assert err.value.details is not None and err.value.details["expected"]["joined"]
+    assert await _state(s) == before

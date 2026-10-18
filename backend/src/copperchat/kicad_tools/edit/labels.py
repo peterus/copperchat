@@ -21,6 +21,7 @@ from typing import Any, Literal
 
 from copperchat.errors import StructuredToolError
 from copperchat.kicad_session import KicadHandle
+from copperchat.kicad_tools import access
 from copperchat.kicad_tools.access import Netlist, PinKey
 from copperchat.kicad_tools.edit.changeset import (
     ChangeSet,
@@ -940,6 +941,35 @@ def no_room(tool: str, pin: PinEnd, what: str, done: int) -> StructuredToolError
     )
 
 
+def sheet_pin_joined(
+    world: World,
+    pins: list[PinEnd],
+    items: list[tuple[SheetRef, Any]],
+    *,
+    one_net: bool,
+) -> list[frozenset[tuple[str, ...]]]:
+    """`NetIntent.joined` groups for sheet pins among `pins`: the sheet pin's own netlist
+    item, the new `items` (labels, stub wires) and the call's symbol pins end on one net
+    — the pin partition cannot say so when the sub-sheet net has no symbol pin.
+    `one_net`: everything joins across sheets (global label, power symbol); else only
+    what is on the sheet pin's sheet."""
+    out: list[frozenset[tuple[str, ...]]] = []
+    for p in pins:
+        info = world.sheet_pin_info(p.key)
+        if info is None:
+            continue
+        here = info.pin.key[0]
+        group: set[tuple[str, ...]] = {(here, info.uuid)}
+        group |= {(s.path, access.kiid(i)) for s, i in items if one_net or s.path == here}
+        for q in pins:
+            k = world.real_key(q.key)
+            if k is not None and (one_net or k[0] == here):
+                group.add(k)
+        if len(group) > 1:
+            out.append(frozenset(group))
+    return out
+
+
 def labels_change_set(
     world: World, tool: str, pins: list[PinEnd], text: str, kind: LabelKind
 ) -> ChangeSet:
@@ -991,7 +1021,20 @@ def labels_change_set(
         sheet=first,
         stages=[Stage(f"label {text}", lambda _inp: list(ops))],
         pre_images={},
-        intent=NetIntent(merge=label_merges(world, plans, text, kind)),
+        intent=NetIntent(
+            merge=label_merges(world, plans, text, kind),
+            joined=sheet_pin_joined(
+                world,
+                pins,
+                [
+                    (pl.sheet, i)
+                    for pl in plans
+                    for i in pl.items
+                    if type(i).__name__.endswith("Label")
+                ],
+                one_net=kind == "global",
+            ),
+        ),
         logical=Logical(len(plans)),
         summary=summary,
         notes=notes,
@@ -1109,6 +1152,9 @@ def power_change_set(
         Place(sym.lib_id, pl.at, pl.rotation, 1, pl.reference, sheet=pl.sheet) for pl in plans
     ]
     intent = NetIntent()
+    for pl in plans:  # a sheet pin's stub: the pin joins the rail through it
+        stub = [(pl.sheet, w) for w in pl.wires if type(w).__name__ == "SchematicLine"]
+        intent.joined += sheet_pin_joined(world, [pl.pin], stub, one_net=False)
     # (plan index, instance path) -> merge group index; a rail is one global group
     slot: dict[tuple[int, str], int] = {}
     if not sym.flag:

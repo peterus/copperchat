@@ -33,6 +33,7 @@ from copperchat.kicad_tools.edit.geometry import (
     Point,
     in_segment_interior,
     on_segment,
+    orthogonal,
 )
 from copperchat.kicad_tools.edit.labels import World, _v2
 from copperchat.kicad_tools.edit.scene import Scene, sheet_api
@@ -188,6 +189,9 @@ def prune(
     whatever happens (pins of sheet symbols that stay)."""
     graph = WireGraph(scene, cuts, starts, check)
     anchors: set[NodeKey] = {node_key(p) for p in keep}
+    for w in scene.wires.values():  # the graph sees orthogonal wires only: a diagonal
+        if not orthogonal(w.start, w.end):  # wire's ends keep whatever they touch
+            anchors |= {node_key(w.start), node_key(w.end)}
     power_at: dict[NodeKey, list[str]] = {}
     for sym in scene.symbols.values():
         if sym.uuid in dead_symbols:
@@ -445,39 +449,51 @@ def _logical(
     the parts inside a deleted sheet instance count too."""
     changes = 0
     deleted: list[str] = []
-    seen: set[str] = set()
+    units: dict[str, set[int]] = {}  # part key -> units counted
     wire_nets: set[str] = set()
 
-    def count(uid: str, path: str, ref: str) -> None:
-        key = f"{path}:{ref}"
-        if key in seen:
-            return
-        seen.add(key)
+    def part_key(path: str, ref: str, uid: str) -> str:
+        # unannotated parts ('R?') are separate parts even with equal references
+        return f"{path}:{uid}" if ref.endswith("?") or not ref else f"{path}:{ref}"
+
+    def count(uid: str, path: str, ref: str, unit: int) -> bool:
+        """Book one part (all its units count once); False when already booked. A unit
+        number seen again under the same reference is a second part (duplicate ref)."""
+        key = part_key(path, ref, uid)
+        seen = units.get(key)
+        if seen is not None and unit not in seen:
+            seen.add(unit)
+            return False
+        if seen is not None:  # a duplicate reference: its own part
+            key = f"{path}:{uid}"
+            if key in units:
+                return False
+        units[key] = {unit}
         deleted.append(uid if uid not in deleted else f"{uid}@{path}")
+        return True
 
     for t in targets:
         if t.kind == "symbol":
+            assert t.symbol is not None
             if t.uuid in placed_this_turn:
                 deleted.append(t.uuid)
                 changes += 1
                 continue
-            if f"{t.sheet.path}:{t.ref}" in seen:
+            if t.power:
+                key = part_key(t.sheet.path, t.ref or "", t.uuid)
+                if key not in units:
+                    units[key] = {t.symbol.unit}
+                    changes += 1
                 continue
-            changes += 1
-            if not t.power:
-                for inst in world.instances(t.sheet):
-                    sym = next(
-                        (
-                            s
-                            for s in world.symbols
-                            if s.uuid == t.uuid and s.sheet.path == inst.path
-                        ),
-                        None,
-                    )
-                    if sym is not None:
-                        count(t.uuid, inst.path, sym.ref)
-            else:
-                seen.add(f"{t.sheet.path}:{t.ref}")
+            first = True
+            for inst in world.instances(t.sheet):
+                sym = next(
+                    (s for s in world.symbols if s.uuid == t.uuid and s.sheet.path == inst.path),
+                    None,
+                )
+                if sym is not None and count(t.uuid, inst.path, sym.ref, sym.unit) and first:
+                    changes += 1  # one logical change per part (its first instance)
+                first = False
         elif t.kind == "wire":
             net = world.nets(t.sheet).get(t.uuid) or t.uuid
             if net not in wire_nets:
@@ -486,7 +502,7 @@ def _logical(
         elif t.kind == "sheet":
             changes += 1
             # The parts of the removed sheet instance(s) leave the design: they count
-            # toward the <= 3 rule like deleted symbols (one per reference).
+            # toward the <= 3 rule like deleted symbols (one per part).
             gone = removed_paths(world, t)
             for sym in world.symbols:
                 if sym.power or sym.sheet.path not in gone:
@@ -496,7 +512,7 @@ def _logical(
                         deleted.append(sym.uuid)
                         changes += 1  # refunded by the gate with the placement
                 else:
-                    count(sym.uuid, sym.sheet.path, sym.ref)
+                    count(sym.uuid, sym.sheet.path, sym.ref, sym.unit)
         else:
             changes += 1
     return changes, deleted
