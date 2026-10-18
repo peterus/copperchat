@@ -262,10 +262,10 @@ function onViewer<A, R>(page: Page, fn: (v: HlViewer, arg: A) => R, arg: A): Pro
   return page.evaluate(
     ([src, a]) => {
       const v = (window as unknown as { __kcViewer: () => HlViewer }).__kcViewer();
-      return (new Function('v', 'a', `return (${src})(v, a);`) as (v: HlViewer, a: A) => R)(v, a);
+      return (new Function('v', 'a', `return (${src})(v, a);`) as (v: HlViewer, a: unknown) => R)(v, a);
     },
-    [fn.toString(), arg] as const,
-  );
+    [fn.toString(), arg as unknown] as const,
+  ) as Promise<R>;
 }
 
 /** Canvas pixels within ±40 per channel of `kind`'s highlight colour (the canvas is Canvas2D). */

@@ -26,6 +26,13 @@ class FakeKicanvas {
   inner = document.createElement('div');
   viewer: KcViewer & { selected: unknown } = {
     selected: null,
+    highlight: vi.fn((targets: string[]) => {
+      const syms = this.current().document?.symbols;
+      return { found: targets.filter((t) => syms?.has(t)), missing: targets.filter((t) => !syms?.has(t)) };
+    }),
+    highlight_boxes: vi.fn((boxes: unknown[]) => boxes.length),
+    clear_highlight: vi.fn(),
+    zoom_to_highlight: vi.fn(),
     select: vi.fn((ref: string | null) => {
       this.viewer.selected = ref && this.current().document?.symbols?.has(ref) ? { ref } : null;
       // KiCanvas dispatches kicanvas:select for every select()
@@ -286,5 +293,77 @@ describe('KicanvasPane', () => {
     await loadReady();
     await rerenderWith({ theme: 'light' });
     expect(embedEl().getAttribute('theme')).toBe('kicad');
+  });
+
+  describe('highlight', () => {
+    const box = (sheetPath: string | null, kind: 'added' | 'removed' = 'added') => ({ x: 1, y: 2, w: 3, h: 4, kind, sheetPath });
+
+    it('is applied after load, grouped by kind, boxes of this page only, zoomed once', async () => {
+      const onHighlightResult = vi.fn();
+      const { rerenderWith } = await renderPane({ onHighlightResult });
+      const highlight = {
+        refs: ['J1', { ref: 'X9', kind: 'removed' as const }],
+        boxes: [box('/r'), box('/r/p/g', 'removed')],
+        sheetPath: '/r',
+        seq: 1,
+      };
+      await rerenderWith({ onHighlightResult, highlight });
+      const kc = await loadReady();
+      expect(kc.viewer.clear_highlight).toHaveBeenCalled();
+      expect(kc.viewer.highlight).toHaveBeenCalledWith(['J1'], 'focus');
+      expect(kc.viewer.highlight).toHaveBeenCalledWith(['X9'], 'removed');
+      expect(kc.viewer.highlight_boxes).toHaveBeenCalledWith([{ x: 1, y: 2, w: 3, h: 4, kind: 'added' }]);
+      expect(kc.viewer.zoom_to_highlight).toHaveBeenCalledTimes(1);
+      expect(onHighlightResult).toHaveBeenCalledWith({ found: ['J1'], missing: ['X9'] });
+      expect(kc.project.set_active_page).not.toHaveBeenCalled();
+    });
+
+    it('switches to the sheetPath page first (like Find) and re-applies on every viewerload', async () => {
+      const onHighlightResult = vi.fn();
+      const { rerenderWith } = await renderPane({ onHighlightResult });
+      const kc = await loadReady();
+      await rerenderWith({ onHighlightResult, highlight: { refs: ['U3'], boxes: [box('/r/p/g')], sheetPath: '/r/p/g', seq: 1 } });
+      expect(kc.project.set_active_page).toHaveBeenCalledWith(reg);
+      expect(kc.viewer.highlight).not.toHaveBeenCalled();
+      await act(async () => {
+        vi.advanceTimersByTime(10);
+      });
+      expect(kc.viewer.highlight).toHaveBeenCalledWith(['U3'], 'focus');
+      expect(kc.viewer.highlight_boxes).toHaveBeenCalledTimes(1);
+      expect(onHighlightResult).toHaveBeenCalledWith({ found: ['U3'], missing: [] });
+      // the user opens another sheet: KiCanvas resets the overlay, the pane re-applies (nothing for /r)
+      vi.mocked(kc.viewer.clear_highlight!).mockClear();
+      act(() => kc.project.set_active_page(root.project_path));
+      await act(async () => {
+        vi.advanceTimersByTime(10);
+      });
+      expect(kc.viewer.clear_highlight).toHaveBeenCalled();
+      expect(kc.viewer.highlight_boxes).toHaveBeenCalledTimes(1);
+      expect(kc.viewer.zoom_to_highlight).toHaveBeenCalledTimes(1);
+      expect(onHighlightResult).toHaveBeenCalledTimes(1);
+    });
+
+    it('without a sheetPath, finds the page of the first ref; unknown sheet paths are reported', async () => {
+      const onHighlightResult = vi.fn();
+      const { rerenderWith } = await renderPane({ onHighlightResult });
+      const kc = await loadReady();
+      await rerenderWith({ onHighlightResult, highlight: { refs: ['U3'], boxes: [], sheetPath: null, seq: 1 } });
+      expect(kc.project.set_active_page).toHaveBeenCalledWith(reg);
+      await act(async () => {
+        vi.advanceTimersByTime(10);
+      });
+      expect(onHighlightResult).toHaveBeenLastCalledWith({ found: ['U3'], missing: [] });
+      await rerenderWith({ onHighlightResult, highlight: { refs: ['U3'], boxes: [], sheetPath: '/gone', seq: 2 } });
+      expect(onHighlightResult).toHaveBeenLastCalledWith({ found: [], missing: ['U3'], sheetMissing: true });
+    });
+
+    it('a null highlight clears the overlay', async () => {
+      const { rerenderWith } = await renderPane();
+      const kc = await loadReady();
+      await rerenderWith({ highlight: { refs: ['J1'], boxes: [], sheetPath: null, seq: 1 } });
+      vi.mocked(kc.viewer.clear_highlight!).mockClear();
+      await rerenderWith({ highlight: null });
+      expect(kc.viewer.clear_highlight).toHaveBeenCalledTimes(1);
+    });
   });
 });

@@ -73,6 +73,34 @@ describe('view store', () => {
     store.getState().toggleLayer('F.Cu');
     expect(store.getState().layers).toEqual(['F.Cu', 'B.Cu', 'F.SilkS', 'B.SilkS', 'Edge.Cuts', 'B.Fab']);
   });
+  it('setHighlight bumps seq, switches to the KiCad schematic view; clearHighlight drops it', () => {
+    store.getState().setDoc('pcb');
+    store.getState().setMode('agent');
+    store.getState().setHighlight({ refs: ['R1'], boxes: [], sheetPath: '/root' });
+    const h1 = store.getState().highlight!;
+    expect(h1).toMatchObject({ refs: ['R1'], boxes: [], sheetPath: '/root' });
+    expect(store.getState().doc).toBe('sch');
+    expect(store.getState().mode).toBe('kicad');
+    store.getState().setHighlight({ refs: ['R1'], boxes: [], sheetPath: '/root' });
+    expect(store.getState().highlight!.seq).toBeGreaterThan(h1.seq);
+    store.getState().clearHighlight();
+    expect(store.getState().highlight).toBeNull();
+  });
+  it('setFind bumps seq per request (same ref twice is distinct); null clears', () => {
+    store.getState().setFind('U1');
+    const f1 = store.getState().find!;
+    store.getState().setFind('U1');
+    expect(store.getState().find).toEqual({ ref: 'U1', seq: f1.seq + 1 });
+    store.getState().setFind(null);
+    expect(store.getState().find).toBeNull();
+  });
+  it('a project switch clears highlight and find', () => {
+    store.getState().setHighlight({ refs: ['R1'], boxes: [], sheetPath: null });
+    store.getState().setFind('U1');
+    store.getState().setProject(P2);
+    expect(store.getState().highlight).toBeNull();
+    expect(store.getState().find).toBeNull();
+  });
   it('stops listening after dispose', () => {
     store.getState().dispose();
     updated(['pcb'], 3);
