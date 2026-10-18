@@ -26,8 +26,13 @@ def real_settings(make_settings: Callable[..., Settings]) -> Settings:
     return make_settings(kicad_cli=KICAD_CLI, kicad_api_timeout_s=30.0, kicad_start_timeout_s=60.0)
 
 
-async def _open(settings: Settings, name: str, stem: str) -> AsyncIterator[KicadSession]:
-    copy_fixture(name, settings.projects_root)
+async def _open(
+    settings: Settings, name: str, stem: str, *, drop_board: bool = False
+) -> AsyncIterator[KicadSession]:
+    dest = copy_fixture(name, settings.projects_root)
+    if drop_board:  # a schematic-only project (owner decision 3/4)
+        for pcb in dest.glob("*.kicad_pcb"):
+            pcb.unlink()
     project = next(p for p in discover_projects(settings.projects_root) if p.name == stem)
     manager = KicadSessionManager(settings)
     try:
@@ -53,4 +58,13 @@ async def hier_session(make_settings: Callable[..., Settings]) -> AsyncIterator[
 @pytest.fixture
 async def blank_session(make_settings: Callable[..., Settings]) -> AsyncIterator[KicadSession]:
     async for session in _open(real_settings(make_settings), "blank", "blank"):
+        yield session
+
+
+@pytest.fixture
+async def blank_nopcb_session(
+    make_settings: Callable[..., Settings],
+) -> AsyncIterator[KicadSession]:
+    """The blank project copied without its .kicad_pcb."""
+    async for session in _open(real_settings(make_settings), "blank", "blank", drop_board=True):
         yield session

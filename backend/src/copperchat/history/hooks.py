@@ -7,7 +7,8 @@ import logging
 from typing import TYPE_CHECKING
 
 from copperchat.agent.engine import RunHooks, TurnInfo, TurnOutcome
-from copperchat.history.store import compute_hashes_async, ensure_gitignore
+from copperchat.history.restore import restore_snapshot
+from copperchat.history.store import Snapshot, compute_hashes_async, ensure_gitignore
 from copperchat.kicad_session import DocKind, KicadUnavailable
 from copperchat.projects import Project
 from copperchat.tools import StructuredToolError
@@ -102,10 +103,15 @@ class HistoryHooks(RunHooks):
             ) from exc
 
     async def on_turn_end(self, turn: TurnInfo, outcome: TurnOutcome) -> None:
+        if outcome.document_inconsistent:
+            # The engine already posted the error row (X18). KiCad's in-memory document
+            # is not trustworthy: never autosave it, reload from disk instead.
+            await self._recover_inconsistent(turn, outcome)
+            return
         if outcome.kicad_failed:
             # The engine already posted the "KiCad stopped responding" row for this
             # turn (X18). Its in-memory changes are lost: no autosave.
-            await self._recover(turn)
+            await self._recover(turn, outcome)
             return
         # Every reason incl. interrupted / rate_limited: what changed is in KiCad's memory.
         docs: set[DocKind] = set(outcome.changed_docs)
@@ -139,12 +145,78 @@ class HistoryHooks(RunHooks):
             f"Autosave of {unsaved} failed ({failure}). On disk it is at its last saved state.",
             {"code": "autosave_failed"},
         )
-        await self._recover(turn)
+        await self._recover(turn, outcome)
 
-    async def _recover(self, turn: TurnInfo) -> None:
+    async def _recover_inconsistent(self, turn: TurnInfo, outcome: TurnOutcome) -> None:
+        """Spec §5.1 step 8 / §5.4: no autosave; reopen the session from disk once (or
+        restore the turn snapshot when `auto_restore`), then the recovery notice. Never
+        raises and never posts the engine's error row."""
+        session = self.svc.open_session(self.project)
+        last_saved = session.last_saved_at if session is not None else None
+        snap = await self.svc.store(self.project).latest_for_run(turn.run_id)
+        # E8a: prefer the run's last step checkpoint over the turn snapshot.
+        if outcome.auto_restore and snap is not None and await self._auto_restore(snap):
+            return
+        if session is not None and self.svc.open_session(self.project) is session:
+            try:
+                await self.svc.sessions.reopen(self.project)
+            except KicadUnavailable as exc:
+                log.warning("reopen after inconsistent edit failed: %s", exc)
+                await self.engine.post_error(
+                    "KiCad could not reload the design. Reopen the project to retry.",
+                    {"code": "kicad_restart_failed"},
+                )
+        await self._recovery_notice(outcome, snap, last_saved)
+
+    async def _auto_restore(self, snap: Snapshot) -> bool:
+        """Restore the turn snapshot at turn end, without the REST path's agent-busy
+        check (the turn is ending). False: the restore failed and was reported."""
+        try:
+            await restore_snapshot(
+                self.svc,
+                self.project,
+                snap.id,
+                check_busy=False,
+                notice="A failed edit could not be undone exactly, so the design was "
+                "restored to its state before this turn.",
+            )
+        except Exception as exc:
+            log.warning("auto-restore of snapshot %s failed: %s", snap.id, exc)
+            await self.engine.post_error(
+                "Restoring the design to its state before this turn failed; restore the "
+                "snapshot from the History panel.",
+                {"code": "restore_failed"},
+            )
+            return False
+        return True
+
+    async def _recovery_notice(
+        self, outcome: TurnOutcome, snap: Snapshot | None, last_saved: str | None
+    ) -> None:
+        lost = outcome.kicad_failed or outcome.document_inconsistent
+        if lost and (outcome.mutated or outcome.changed_docs):
+            # The in-memory changes of this turn are gone; KiCad holds the files on disk.
+            state = f"the last save ({last_saved})" if last_saved else "the last save"
+            text = f"The design is at the state of {state}; changes after that are lost."
+            if snap is None:
+                await self.engine.post_notice(text, {"action": "recovered"})
+                return
+            await self.engine.post_notice(
+                f"{text} A snapshot from before this turn exists; restore it to go back "
+                "to that state.",
+                {"action": "restore", "snapshotId": snap.id},
+            )
+        elif snap is not None:
+            await self.engine.post_notice(
+                "A snapshot from before this turn exists. Restore it to undo this turn's changes.",
+                {"action": "restore", "snapshotId": snap.id},
+            )
+
+    async def _recover(self, turn: TurnInfo, outcome: TurnOutcome) -> None:
         """Make sure KiCad runs again and offer the turn's snapshot. Never posts the
         "KiCad stopped responding" row itself - the engine owns that (index X18)."""
         session = self.svc.open_session(self.project)
+        last_saved = session.last_saved_at if session is not None else None
         if session is not None:
             error: KicadUnavailable | None = None
             for _ in range(_RECOVER_ATTEMPTS):
@@ -160,8 +232,4 @@ class HistoryHooks(RunHooks):
                     {"code": "kicad_restart_failed"},
                 )
         snap = await self.svc.store(self.project).latest_for_run(turn.run_id)
-        if snap is not None:
-            await self.engine.post_notice(
-                "A snapshot from before this turn exists. Restore it to undo this turn's changes.",
-                {"action": "restore", "snapshotId": snap.id},
-            )
+        await self._recovery_notice(outcome, snap, last_saved)

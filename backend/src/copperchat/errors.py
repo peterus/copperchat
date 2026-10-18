@@ -45,8 +45,9 @@ class DocumentNotOpen(CopperChatError):
 class StructuredToolError(CopperChatError):
     """A tool failure the agent can act on: what failed, why, and what to do instead.
 
-    `code` (E-C4: `libraries_loading`, `not_found`, `invalid_argument`, ...) and
-    `details` are optional and only appear in `to_dict` when set."""
+    `code` (E-C4: `read_only`, `plan_required`, `verification_failed`, ...) and `details`
+    (structured extras, e.g. expected vs. found) are optional and only serialized when set.
+    """
 
     code = "tool_error"
     http_status = 422
@@ -76,3 +77,15 @@ class StructuredToolError(CopperChatError):
         if self.details is not None:
             out["details"] = self.details
         return out
+
+
+class DocumentInconsistent(CopperChatError):
+    """A failed edit could not be undone exactly (E-C4): the turn ends without autosave
+    and the session is reopened from the last save. `auto_restore`: restore the last step
+    checkpoint / turn snapshot at turn end (owner decision 4)."""
+
+    code = "document_inconsistent"
+
+    def __init__(self, message: str = "", *, auto_restore: bool = False) -> None:
+        self.auto_restore = auto_restore
+        super().__init__(message)

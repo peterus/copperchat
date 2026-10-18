@@ -6,6 +6,7 @@ from copperchat.tools.spec import (
     ToolHandler,
     ToolResult,
     ToolSpec,
+    edit_spec,
 )
 
 __all__ = [
@@ -15,5 +16,6 @@ __all__ = [
     "ToolHandler",
     "ToolResult",
     "ToolSpec",
+    "edit_spec",
     "registry",
 ]

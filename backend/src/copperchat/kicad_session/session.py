@@ -97,6 +97,7 @@ class CommitScope:
     label: str
     commit: Any
     generation: int  # server start the commit belongs to; a restart discards it
+    pushed: bool = False  # push_commit completed (also when the caller is cancelled after)
 
 
 async def _finish[R](coro: Coroutine[Any, Any, R]) -> tuple[R, bool]:
@@ -203,6 +204,19 @@ class KicadSession:
     @property
     def settings(self) -> Settings:
         return self._settings
+
+    @property
+    def server_alive(self) -> bool:
+        """A client to a running server exists (False after a kill until the next call
+        lazily starts a fresh server from the last save)."""
+        proc = self.process
+        return self._kicad is not None and (proc is None or proc.returncode is None)
+
+    @property
+    def generation(self) -> int:
+        """Counts server starts (also the lazy start after a kill on cancellation): an
+        edit that sees it change knows its staged/pushed state is gone (E2 engine)."""
+        return self._generation
 
     @property
     def closed(self) -> bool:
@@ -518,6 +532,7 @@ class KicadSession:
                     await _uncancellable(self._drop(scope, exc))
                     raise
                 if not dry_run:
+                    scope.pushed = True
                     self.jobs_stale = True
                     self.modified = True
                 if cancelled:
@@ -777,16 +792,20 @@ class KicadSessionManager:
     async def reopen(self, project: Project) -> KicadSession:
         """Close the project's session (if open) and start a fresh one, so KiCad loads
         the files on disk again (external change, snapshot restore). The new session
-        keeps the old view version: clients take the maximum per document (X2)."""
+        keeps the old view version: clients take the maximum per document (X2), and the
+        time of the last CopperChat save (recovery notices name it, spec 5.4)."""
         version = 0
+        last_saved_at: str | None = None
         async with self._lock:
             current = self._current
             if current is not None and current.project.id == project.id:
                 version = current.view_version
+                last_saved_at = current.last_saved_at
                 await current.close()
                 self._current = None
         session = await self.open(project)
         session.view_version = max(session.view_version, version)
+        session.last_saved_at = session.last_saved_at or last_saved_at
         return session
 
     def current(self) -> KicadSession | None:

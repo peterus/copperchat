@@ -6,6 +6,7 @@ import asyncio
 import functools
 import logging
 from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING
 
 from copperchat.agent.attachments import resolve_attachment
 from copperchat.agent.broadcaster import Broadcaster
@@ -21,6 +22,9 @@ from copperchat.errors import CopperChatError
 from copperchat.kicad_session import KicadSessionManager
 from copperchat.projects import Project, get_project
 from copperchat.tools import ToolContext, ToolSpec
+
+if TYPE_CHECKING:
+    from copperchat.editing.service import EditingService
 
 log = logging.getLogger(__name__)
 HooksFactory = Callable[[Project, RunEngine], RunHooks]
@@ -67,6 +71,8 @@ class AgentRuntime:
             settings, registry.all_specs(), db
         )
         self.hooks_factory: HooksFactory = hooks_factory or _no_hooks
+        # SP2 editing service (install_editing); every engine passes it into ToolContext.
+        self.editing: EditingService | None = None
         self._engines: dict[str, RunEngine] = {}
         self._lock = asyncio.Lock()
 
@@ -90,6 +96,7 @@ class AgentRuntime:
                 backend_factory=self.backend_factory,
             )
             engine.hooks = self.hooks_factory(project, engine)
+            engine.editing = self.editing
             engine.attachment_resolver = functools.partial(resolve_attachment, self.db, project.id)
             await engine.start()
             self._engines[project.id] = engine
