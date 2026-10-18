@@ -608,11 +608,17 @@ def _remove(args: dict[str, Any]) -> list[str]:
     return out
 
 
-def _units_of(h: KicadHandle, ref: str) -> list[SymbolInfo]:
+def _units_of(h: KicadHandle, ref: str) -> tuple[list[SymbolInfo], list[str]]:
+    """The units of `ref`, and the other instances of their sheets when a sheet is used
+    more than once (a shared sheet's symbols carry the same fields in every instance)."""
     units = all_symbols(h, ref=ref)
     if not units:
         resolve_pin(h, ref + ".1")  # raises not_found with the closest references
-    return sorted(units, key=lambda u: (natural_key(u.sheet.page), u.unit))
+    refs = sheet_refs(h)
+    mine = {u.sheet.path for u in units}
+    files = {u.sheet.file for u in units}
+    others = [r.human_path for r in refs if r.file in files and r.path not in mine]
+    return sorted(units, key=lambda u: (natural_key(u.sheet.page), u.unit)), others
 
 
 async def prepare_set_fields(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
@@ -635,7 +641,7 @@ async def prepare_set_fields(ctx: ToolContext, args: dict[str, Any]) -> ChangeSe
             "changing a power symbol's value renames its net",
             "Use sch_rename_net to rename the net.",
         )
-    units = await ctx.session.call(partial(_units_of, ref=ref))
+    units, shared = await ctx.session.call(partial(_units_of, ref=ref))
     lib_id = units[0].lib_id
     extra: list[dict[str, Any]] = []
     if "Footprint" in fields:
@@ -666,8 +672,11 @@ async def prepare_set_fields(ctx: ToolContext, args: dict[str, Any]) -> ChangeSe
         if note is not None and any(k in ("MPN", "Manufacturer Part Number") for k in fields):
             extra.append(note)
     notes: list[str] = []
-    if len({u.uuid for u in units}) < len(units):
-        notes.append("the reference is on a sheet used by several instances")
+    if shared:
+        notes.append(
+            f"{ref} is on a sheet used by several instances: the same part on "
+            f"{', '.join(shared[:8])} (under its own reference there) gets these fields too"
+        )
     return ToolChangeSet(
         tool="sch_set_fields",
         sheet=units[0].sheet,

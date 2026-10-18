@@ -59,6 +59,7 @@ async def test_keep_assigns_only_unannotated(
     assert [by_uuid[u] for u in uids] == ["R3", "R1", "R2"]  # left to right
     assert by_uuid[c1["placed"]["uuid"]] == "C1"
     assert sorted(r["new"] for r in out["renamed"]) == ["R1", "R2", "R3"]
+    assert out["renamed_count"] == 3 and out["truncated"] is False
     again, err = await call_tool(ctx, "sch_annotate", scope="all", mode="keep")
     assert not err and again["renamed"] == [] and again["logical_changes"] == 0
 

@@ -37,6 +37,7 @@ from copperchat.kicad_tools.edit.scene import (
 Scope = Literal["new", "sheet", "all"]
 Mode = Literal["keep", "renumber"]
 _NUM = re.compile(r"^(\D*?)(\d+)$")
+MAX_RENAMED = 200  # entries echoed to the agent (renamed_count has the total)
 
 
 def unannotated(ref: str) -> bool:
@@ -161,7 +162,9 @@ def plan_renames(
     alloc = Allocator(fixed, pages, block)
     # The design's numbering scheme comes from all its references, not just the ones that
     # stay (renumbering everything must not turn a flat design into per-sheet blocks).
-    alloc.scheme = detect_scheme(units, pages)
+    # Only for renumber: keep follows the allocator's own rule, as sch_place_symbol does.
+    if mode == "renumber":
+        alloc.scheme = detect_scheme(units, pages)
     out: list[Renamed] = []
     for i in todo:
         c = comps[i]
@@ -227,5 +230,11 @@ def plan_annotation(
         pre_images=pre,
         intent=NetIntent(keep_partition=True),
         logical=Logical(len(renames)),
-        summary={"renamed": renamed, "scope": scope, "mode": mode},
+        summary={
+            "renamed": renamed[:MAX_RENAMED],
+            "renamed_count": len(renamed),
+            "truncated": len(renamed) > MAX_RENAMED,
+            "scope": scope,
+            "mode": mode,
+        },
     )

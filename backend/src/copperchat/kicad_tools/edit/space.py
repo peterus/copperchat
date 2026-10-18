@@ -208,10 +208,15 @@ def find_space(
     # The union box first: a free hull means every box is free (most positions on an
     # empty area); otherwise the boxes one by one.
     found: list[Candidate] = []
-    spaced = 0
-    first_ring: int | None = None
+    picks: list[Candidate] = []
+    grown = False
     for r in range(0, max_ring + 1):
-        if first_ring is not None and r > first_ring + 3 and spaced >= limit:
+        # Ring r holds no position nearer than r steps: once `limit` spaced picks are all
+        # nearer than that, no later ring can improve them (nearest first, Euclidean).
+        if grown:
+            picks = _spaced(found, limit)
+            grown = False
+        if len(picks) >= limit and r * STEP_MM > picks[-1].distance + 1e-6:
             break
         for dx, dy in _ring(r):
             if vec and dx * vec[0] + dy * vec[1] <= 0:
@@ -221,18 +226,19 @@ def find_space(
                 continue
             if index.hits(shift(hull, *at)) and any(index.hits(shift(b, *at)) for b in shape):
                 continue
-            if first_ring is None:
-                first_ring = r
-            if all(math.dist(at, c.at) >= 2 * STEP_MM - 1e-6 for c in found):
-                spaced += 1
             found.append(Candidate(at, shift(out_hull, *at), round(math.dist(at, near), 3)))
-    found.sort(key=lambda c: (c.distance, c.at[1], c.at[0]))
+            grown = True
+    return _spaced(found, limit)
+
+
+def _spaced(found: list[Candidate], limit: int) -> list[Candidate]:
+    """Nearest first, each at least two search steps from the ones before."""
     out: list[Candidate] = []
-    for c in found:
+    for c in sorted(found, key=lambda c: (c.distance, c.at[1], c.at[0])):
         if all(math.dist(c.at, o.at) >= 2 * STEP_MM - 1e-6 for o in out):
             out.append(c)
-        if len(out) >= limit:
-            break
+            if len(out) >= limit:
+                break
     return out
 
 

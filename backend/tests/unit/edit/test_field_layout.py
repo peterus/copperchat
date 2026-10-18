@@ -9,8 +9,13 @@ from copperchat.kicad_tools.edit.annotate_tool import components, plan_renames
 from copperchat.kicad_tools.edit.changeset import SheetRef
 from copperchat.kicad_tools.edit.fields import field_layout, normalize_fields, spot_box
 from copperchat.kicad_tools.edit.geometry import Box, PinEnd, on_grid
-from copperchat.kicad_tools.edit.scene import Scene, SymbolInfo, WireInfo
-from copperchat.kicad_tools.edit.space import find_space, pin_corridor, search_obstacles
+from copperchat.kicad_tools.edit.scene import LabelInfo, Scene, SymbolInfo, WireInfo
+from copperchat.kicad_tools.edit.space import (
+    find_space,
+    pin_corridor,
+    search_obstacles,
+    unconnected_pins,
+)
 
 ROOT = SheetRef("/r", "1", "root.kicad_sch", "", "/")
 SUB2 = SheetRef("/r/a", "2", "sub.kicad_sch", "sub", "/sub/")
@@ -216,3 +221,55 @@ def test_text_validation_rejects_control_characters() -> None:
     for bad in ("10k\r", "a\tb", "x\x00", "\ud800"):
         with pytest.raises(StructuredToolError):
             normalize_fields({"value": bad})
+
+
+def _scene_with_pin(at: tuple[float, float] = (50.8, 50.8)) -> tuple[Scene, PinEnd]:
+    pin = _pin(at, "right", uid="u1")
+    scene = Scene(ROOT)
+    scene.symbols["u1"] = _sym("u1", "R1", Box(40, 45, 50.8, 55), [pin])
+    return scene, pin
+
+
+def test_unconnected_pin_lone() -> None:
+    scene, pin = _scene_with_pin()
+    assert unconnected_pins(scene) == [pin]
+
+
+@pytest.mark.parametrize(
+    "kind", ["wire_end", "wire_interior", "label", "junction", "no_connect", "other_pin"]
+)
+def test_connected_pin_kinds(kind: str) -> None:
+    scene, pin = _scene_with_pin()
+    x, y = pin.at
+    if kind == "wire_end":
+        scene.wires["w"] = WireInfo("w", (x, y), (x + 10, y))
+    elif kind == "wire_interior":
+        scene.wires["w"] = WireInfo("w", (x, y - 5), (x, y + 5))
+    elif kind == "label":
+        scene.labels["l"] = LabelInfo("l", "NET", (x, y), "label")
+    elif kind == "junction":
+        scene.junctions["j"] = (x, y)
+    elif kind == "no_connect":
+        scene.no_connects["n"] = (x, y)
+    else:
+        other = _pin((x, y), "left", uid="u2")
+        scene.symbols["u2"] = _sym("u2", "R2", Box(50.8, 45, 60, 55), [other])
+    assert pin not in unconnected_pins(scene)
+
+
+def test_wire_passing_beside_pin_leaves_it_free() -> None:
+    scene, pin = _scene_with_pin()
+    x, y = pin.at
+    scene.wires["w"] = WireInfo("w", (x + 1.27, y - 5), (x + 1.27, y + 5))
+    scene.wires["h"] = WireInfo("h", (x + 2.54, y), (x + 10, y))  # same line, not touching
+    assert unconnected_pins(scene) == [pin]
+
+
+def test_find_space_empty_scene_is_fast_and_nearest_first() -> None:
+    import time
+
+    t0 = time.perf_counter()
+    found = find_space(Scene(ROOT), SHAPE, (101.6, 101.6), limit=3)
+    assert time.perf_counter() - t0 < 0.2
+    assert len(found) == 3 and found[0].distance == 0.0
+    assert all(c.distance <= 2 * 2 * 2.54 + 1e-6 for c in found)

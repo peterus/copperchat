@@ -654,7 +654,12 @@ def active_part_note(project, ref: str, fields: dict) -> dict | None
   result `changed: {field: {before, after}}`, `units`. `sch_annotate` (planning in
   `edit/annotate_tool.py`) defaults to `scope="new"` (unannotated + placed this turn),
   `mode="keep"` (unannotated and duplicates); reads units per sheet instance via `for_sheet`;
-  a call with nothing to rename is a no-op (`logical_changes: 0`). Known limit: one UUID on
+  a call with nothing to rename is a no-op (`logical_changes: 0`); `renamed` lists at most 200
+  entries (`renamed_count`, `truncated`); `mode="renumber"` keeps the design's scheme by majority
+  (`annotate_tool.detect_scheme`: per-sheet when most refs sit in their page block), `keep` uses
+  the allocator's rule like `sch_place_symbol`. `sch_find_space` takes an optional `value`; an
+  explicit `reference` no unit uses is refused; layout/search run in `asyncio.to_thread` after a
+  read-only `session.call`; probed parts are cached per session generation. Known limit: one UUID on
   two instances of a shared sheet is compensated for its first instance only (the engine keys
   pre-images by UUID). Test helper `tests.support.kicad_cli.cli_components`.
 
