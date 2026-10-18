@@ -157,7 +157,7 @@ def _write_cache(path: Path, violations: list[dict[str, Any]]) -> None:
     tmp.replace(path)
 
 
-def _copy_snapshot(sdir: Path, project: Project, dest: Path) -> None:
+def copy_snapshot_files(sdir: Path, project: Project, dest: Path) -> None:
     """The snapshot's files (manifest-checked) + the project's library tables."""
     for src, dst in snapshot_plan(sdir, dest):
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -191,7 +191,7 @@ async def erc_baseline(
             raise KicadUnavailable("the project is not open in KiCad")
         rel_root = project.sch_file.relative_to(project.dir)
         with tempfile.TemporaryDirectory(prefix="cc-erc-base-") as tmp:
-            await asyncio.to_thread(_copy_snapshot, sdir, project, Path(tmp))
+            await asyncio.to_thread(copy_snapshot_files, sdir, project, Path(tmp))
             raw = await run_kicad_check_on_dir(
                 session.settings, project, Path(tmp) / rel_root, "sch"
             )

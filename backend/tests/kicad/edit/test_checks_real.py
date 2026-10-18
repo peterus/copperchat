@@ -165,3 +165,138 @@ async def test_erc_freshness_subsheet_and_new_sheet(
     assert await _pin_ids(s, new_r) <= seen, res.data  # the new sheet
     state = ctx.editing.turn(s.project.id, ctx.run_id)  # type: ignore[union-attr]
     assert state.last_erc is not None and state.last_erc_seq == state.call_seq
+
+
+# -- diff (Task 4) -----------------------------------------------------------------
+
+
+def _l_route(a: list[float], b: list[float]) -> list[list[float]]:
+    mid = a[1] + 5.08
+    return [list(a), [a[0], mid], [b[0], mid], list(b)]
+
+
+async def _value_update(s: KicadSession, ctx: Any, sheet_file: str | None = None) -> str:
+    """A raw value edit through apply_change_set (logged like any edit tool's)."""
+    from copperchat.kicad_tools.edit.changeset import (
+        ChangeSet,
+        Logical,
+        NetIntent,
+        Update,
+        static_stage,
+    )
+    from copperchat.kicad_tools.edit.engine import apply_change_set
+    from copperchat.kicad_tools.edit.scene import sheet_refs
+
+    def pick(h: KicadHandle) -> tuple[Any, Any]:
+        refs = sheet_refs(h)
+        sheet = next(r for r in refs if r.file == sheet_file) if sheet_file else refs[0]
+        sym = next(x for x in sheet_api(h, sheet).get_symbols() if str(x.reference).startswith("R"))
+        sym.value_field.text.value = "4k7-E8A"
+        sym.proto.ClearField("definition")
+        return sym, sheet
+
+    sym, sheet = await s.call(pick)
+    cs = ChangeSet(
+        tool="sch_set_fields",
+        sheet=sheet,
+        stages=[static_stage("value", Update([sym], sheet=sheet))],
+        pre_images={},
+        intent=NetIntent(keep_partition=True),
+        logical=Logical(1),
+    )
+    await apply_change_set(ctx, cs)
+    return str(sym.id.value)
+
+
+async def test_diff_cross_checks_change_log(ecc83_session: KicadSession, edit_db: Database) -> None:
+    from copperchat.changes.diff import diff_against_snapshot
+    from tests.support.edit import RUN_ID, call_tool, two_resistors
+
+    s = ecc83_session
+    await two_resistors(s)  # not logged (no editing service): part of the baseline
+    await s.save("sch")
+    svc = history(s, edit_db)
+    snap = await _snapshot(svc, s, RUN_ID)
+    ctx = edit_ctx(s, edit_db)
+    pa, _ = await call_tool(ctx, "sch_get_pin", pin="R901.2")
+    pb, _ = await call_tool(ctx, "sch_get_pin", pin="R902.2")
+    out, is_error = await call_tool(ctx, "sch_add_wire", points=_l_route(pa["at_mm"], pb["at_mm"]))
+    assert not is_error, out
+    value_uuid = await _value_update(s, ctx)
+    log = await ctx.editing.changes.since(s.project.id, snap.created_at)  # type: ignore[union-attr]
+    own = [e for e in log if not e.side_effect]
+    assert {e.uuid for e in own} >= {value_uuid, *(c["uuid"] for c in out["created"])}
+    diff = await diff_against_snapshot(svc, s.project, snap, log)
+    entries = [e for es in diff["sheets"].values() for e in es]
+    by_uuid: dict[str, set[str]] = {}
+    for e in entries:
+        by_uuid.setdefault(e["uuid"], set()).add(e["kind"])
+    kinds = {"add": "added", "modify": "modified", "delete": "removed"}
+    for e in own:
+        assert kinds[e.op] in by_uuid.get(e.uuid, set()), (e, entries)
+    logged = {e.uuid for e in own}
+    for e in entries:
+        assert e["side_effect"] is (
+            e["kind"] not in {kinds[x.op] for x in own if x.uuid == e["uuid"]}
+        )
+        if e["uuid"] not in logged:
+            assert e["side_effect"] is True
+    value = next(e for e in entries if e["uuid"] == value_uuid)
+    assert value["kind"] == "modified" and value["box_mm"] is not None
+    assert any(p["name"] == "Value" for p in value["properties"])
+    added = next(e for e in entries if e["kind"] == "added")
+    assert all(set(p) == {"name"} for p in added["properties"])
+
+
+async def test_diff_exit_code_5_is_success(ecc83_session: KicadSession, edit_db: Database) -> None:
+    from copperchat.changes.diff import diff_against_snapshot, run_sch_diff
+
+    s = ecc83_session
+    svc = history(s, edit_db)
+    snap = await _snapshot(svc, s, "run-x")
+    same = await diff_against_snapshot(svc, s.project, snap)
+    assert same["count"] == 0  # exit 0: identical (a save rewrites nothing the differ sees)
+    await _value_update(s, edit_ctx(s))
+    raw = await run_sch_diff(svc, s.project, snap)  # exit 5 = differences, not a failure
+    assert raw["changes"]
+    diff = await diff_against_snapshot(svc, s.project, snap)
+    assert diff["count"] == 1
+    [entry] = [e for es in diff["sheets"].values() for e in es]
+    assert entry["side_effect"] is False  # no log given: nothing is marked
+
+
+async def test_diff_hierarchy_per_instance(hier_session: KicadSession, edit_db: Database) -> None:
+    from copperchat.changes.diff import diff_against_snapshot
+    from copperchat.kicad_tools.edit.scene import sheet_refs
+
+    s = hier_session
+    svc = history(s, edit_db)
+    snap = await _snapshot(svc, s, "run-h")
+    uid = await _value_update(s, edit_ctx(s), "ampli_ht.kicad_sch")
+    diff = await diff_against_snapshot(svc, s.project, snap)
+    hits = [(p, e) for p, es in diff["sheets"].items() for e in es if e["uuid"] == uid]
+    instances = await s.call(
+        lambda h: {r.path for r in sheet_refs(h) if r.file == "ampli_ht.kicad_sch"}
+    )
+    assert len(instances) == 2
+    assert {p for p, _ in hits} == instances  # one entry per sheet instance path
+    assert len({e["ref"] for _, e in hits}) == 2  # instance refs (R2xx / R3xx)
+    assert all(e["id"] == f"{p}/{uid}" for p, e in hits)
+
+
+async def test_sch_changes_tool_lists_turn(ecc83_session: KicadSession, edit_db: Database) -> None:
+    from tests.support.edit import call_tool, two_resistors
+
+    s = ecc83_session
+    await two_resistors(s)
+    ctx = edit_ctx(s, edit_db)
+    pa, _ = await call_tool(ctx, "sch_get_pin", pin="R901.2")
+    pb, _ = await call_tool(ctx, "sch_get_pin", pin="R902.2")
+    out, is_error = await call_tool(ctx, "sch_add_wire", points=_l_route(pa["at_mm"], pb["at_mm"]))
+    assert not is_error, out
+    listed, is_error = await call_tool(ctx, "sch_changes")
+    assert not is_error, listed
+    own = [c for c in listed["changes"] if not c.get("side_effect")]
+    assert {c["uuid"] for c in own} == {c["uuid"] for c in out["created"]}
+    assert all(c["op"] == "add" and c["tool"] == "sch_add_wire" for c in own)
+    assert listed["count"] == len(listed["changes"])

@@ -115,6 +115,27 @@ class ChangeRepo:
         rows = await self._db.fetchall(sql + " ORDER BY id", params)
         return [_entry(r) for r in rows]
 
+    async def since(self, project_id: str, created_at: str) -> list[ChangeEntry]:
+        """Every row written at or after `created_at` (e.g. since a snapshot)."""
+        rows = await self._db.fetchall(
+            f"SELECT id, {_COLUMNS} FROM changes WHERE project_id = ? AND created_at >= ?"
+            " ORDER BY id",
+            (project_id, created_at),
+        )
+        return [_entry(r) for r in rows]
+
+    async def for_steps(self, project_id: str, step_ids: list[str]) -> list[ChangeEntry]:
+        """Rows of any of the plan steps (one plan), in write order."""
+        if not step_ids:
+            return []
+        marks = ", ".join("?" for _ in step_ids)
+        rows = await self._db.fetchall(
+            f"SELECT id, {_COLUMNS} FROM changes WHERE project_id = ?"
+            f" AND plan_step_id IN ({marks}) ORDER BY id",
+            (project_id, *step_ids),
+        )
+        return [_entry(r) for r in rows]
+
     async def runs(self, project_id: str, limit: int = 20) -> list[dict[str, Any]]:
         """Per run, newest first: step ids (first-seen order), counts and first timestamp."""
         summaries = await self._db.fetchall(

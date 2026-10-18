@@ -648,6 +648,46 @@ async def diff_against_snapshot(svc, project, snapshot) -> dict          # kicad
     # compacted: {"sheets": {sheet_path: [{"id","kind","type","uuid","ref","box_mm"}]}}
 ```
 
+- **E8a (as built):** `take_step_checkpoint` lives in `copperchat.changes.checkpoints`; it
+  holds `HistoryService.lock(project)` (callers must not), saves only when the project has a
+  schematic, renders a preview like a turn snapshot, and raises `KicadUnavailable` /
+  `ReadOnlyProject` without an open writable session. The manifest also records `kind` /
+  `planStepId`. Pruning: `HISTORY_KEEP` turn snapshots; step checkpoints of a pruned turn's
+  run go with it, and so do step checkpoints of other runs older than the oldest kept turn
+  snapshot. Recovery: after the turn-snapshot `restore` notice, a second notice
+  `{action: "restore", snapshotId: <last step checkpoint>, checkpoint: true}` when the run has
+  one; `auto_restore` restores the run's last step checkpoint, else the turn snapshot (notice
+  "…restored to its state at the end of the last finished plan step"). ERC items name **pins
+  by the pin's own KIID** (the placed symbol's `definition.pins[].id`, E-C2), not the symbol
+  UUID, so `violation_id` of a `pin_not_connected` hashes pin KIIDs (stable across moves and
+  saves). `erc_delta` counts only `error`/`warning` severities (exclusions/info never "new"),
+  entries gain `id`; ties are broken by distance (another sheet instance always farther).
+  `erc_baseline` copies the snapshot via `history.restore.snapshot_plan` (manifest + hash
+  checked, formerly `_plan`) plus the project's `sym-lib-table`/`fp-lib-table`, one run per
+  snapshot at a time, cache written atomically; it needs the project open (settings of the
+  session). `current_erc(session, state)` records its report into the state
+  (`last_erc`, `last_erc_seq = call_seq`); `erc_is_fresh(state)` is the reuse rule.
+  `checks.run_kicad_check_on_dir(settings, project, doc_path, doc, *, parity=False)`,
+  `checks.parse_report(raw, doc)`, `checks.PROJECT_SUPPORT_FILES` (was private).
+  `ErcResultRepo` (`changes.erc`: `add(...) -> id` (uuid4 hex), `get(project_id, id)`
+  (400 `invalid_argument` / 404 `not_found`), `latest_for_runs`); `EditingService` gains
+  `erc_results`, `history` (set by `install_editing` from `app.state.history`) and
+  `peek_turn`. Turn-end ERC (`EditingHooks`): only when `sch` ∈ `changed_docs`, the turn's
+  state has a `last_mutation_seq` (a two-phase tool applied) and neither `kicad_failed` nor
+  `document_inconsistent`, the session is open and writable and the run has a turn
+  snapshot; the row carries `plan_step_id = state.active_step_id`; failures post a notice
+  `{action: "erc-failed"}` (never an error row, never raises); new errors also become an
+  agent note for the next turn. Diff (`changes.diff`): `run_sch_diff` (raw JSON, exit 0/5)
+  + `compact_diff(raw, log)`; entries add `properties` (added/removed: `[{name}]`,
+  modified: `{name, before, after}`) and `side_effect` (no own, non-side-effect log row
+  of that kind for the UUID; always false without a log); result adds `count`. `ChangeRepo`
+  adds `since(project_id, created_at)` and `for_steps(project_id, step_ids)`.
+  `sch_changes` (`copperchat.changes.specs`, read-only): result `{scope, count,
+  side_effects, changes: [{op, kind, uuid, sheet_path, tool, call_seq, ref?, net?,
+  plan_step_id?, before?, after?, side_effect?}], truncated?}` (newest 200); `step` needs
+  `active_step_id`, `plan` reads the open plan's steps from `plan_steps`; no scope data →
+  `not_found`.
+
 ### E-C11. Plans — `copperchat.plans` (E8b)
 
 ```python
@@ -686,6 +726,17 @@ verification, status, changeCount, checkpointId, summary, failure, erc:
 - Notice metadata actions: `erc-delta` `{ercResultId, errors, warnings}` [E8a];
   `plan` `{planId}` (posted by `plan_propose`, renders the plan card) [E8b];
   `restore` notices may carry `checkpoint: true` [E8a].
+
+- **E8a (as built):** `/changes/runs` takes `limit` 1–100 (422 outside); `erc` is the run's
+  newest ERC result (turn or step), `snapshotId` its turn snapshot (or null). `/changes`
+  needs `runId`; `runId`/`stepId` must match `[A-Za-z0-9_-]{1,100}` (400
+  `invalid_argument`). `/changes/diff` → `{snapshotId, count, sheets: {sheetPath: [{id,
+  kind, type, uuid, ref, boxMm, properties, sideEffect}]}}` (camelCase), log = the change
+  rows since the snapshot's `created_at`; 400 invalid / 404 unknown snapshot, 503 when the
+  project is not open. `/erc-results/{id}` also returns `id, runId, planStepId,
+  baselineSnapshotId, createdAt`. Extra notice action `erc-failed` (turn-end ERC could not
+  run). `changes-updated.runId` is non-empty; the chat store ignores the frame (E9a's
+  Changes panel consumes it).
 
 ### E-C13. Frontend (E9a/E9b)
 
