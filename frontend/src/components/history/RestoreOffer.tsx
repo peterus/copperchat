@@ -1,8 +1,11 @@
 import { useState } from 'react';
 import { ConfirmRestore } from './ConfirmRestore';
 
-/** Button under a crash-recovery notice (`metadata.action === "restore"`, Phase 7). */
-export function RestoreOffer({ projectId, snapshotId }: { projectId: string; snapshotId: string }) {
+/**
+ * Button under a crash-recovery notice (`metadata.action === "restore"`, Phase 7); `checkpoint`:
+ * the snapshot is a plan step checkpoint (E8a), restored to the state at the end of that step.
+ */
+export function RestoreOffer({ projectId, snapshotId, checkpoint = false }: { projectId: string; snapshotId: string; checkpoint?: boolean }) {
   const [state, setState] = useState<'idle' | 'confirm' | 'done'>('idle');
   const [error, setError] = useState<string | null>(null);
   if (state === 'done') return <span className="text-success">Restored.</span>;
@@ -16,7 +19,7 @@ export function RestoreOffer({ projectId, snapshotId }: { projectId: string; sna
           setState('confirm');
         }}
       >
-        Restore snapshot
+        {checkpoint ? 'Restore step checkpoint' : 'Restore snapshot'}
       </button>
       {error && (
         <span role="alert" className="ml-2 text-danger">
@@ -27,7 +30,8 @@ export function RestoreOffer({ projectId, snapshotId }: { projectId: string; sna
         <ConfirmRestore
           projectId={projectId}
           snapshotId={snapshotId}
-          label="this turn"
+          label={checkpoint ? 'the last finished plan step' : 'this turn'}
+          checkpoint={checkpoint}
           onDone={() => setState('done')}
           onCancel={() => setState('idle')}
           onError={(msg) => {

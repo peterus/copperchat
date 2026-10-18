@@ -24,6 +24,7 @@ describe('SettingsPage', () => {
     expect(screen.getByRole('radio', { name: 'Dark' })).toBeChecked();
     expect(screen.getByText('Signed in as admin')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Notifications' })).toBeInTheDocument();
+    expect(screen.getByText('Open a project to change its editing settings.')).toBeInTheDocument();
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Touch devices (MB)' }), { target: { value: '25' } });
     expect(useViewerPrefs.getState().limits.mobileMb).toBe(25);
     expect(screen.getByText(/Powered by Claude/)).toBeInTheDocument();
