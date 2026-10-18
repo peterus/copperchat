@@ -9,6 +9,7 @@ from kipy.errors import ApiError
 from copperchat.db.repos.projects import touch_opened, upsert_projects
 from copperchat.errors import CopperChatError
 from copperchat.kicad_session import KicadSessionManager, KicadUnavailable
+from copperchat.library.service import library_for
 from copperchat.projects import discover_projects, get_project
 from copperchat.views.snapshot import view_bytes, write_view_snapshots
 from copperchat.web.auth import CurrentUser
@@ -44,6 +45,9 @@ async def open_project(project_id: str, request: Request, _: CurrentUser) -> dic
     await state.agent_runtime.ensure(project)  # history/queue work even if a snapshot fails
     await touch_opened(state.db, project.id)
     version: str = await session.call(lambda h: str(h.kicad.get_version().full_version))
+    # Symbol library index warm-up in the background (E3); failures are logged and
+    # the lib_* tools retry it.
+    await library_for(session).start()
     # X1/X3: the viewer has content right after open, before any agent turn. A
     # snapshot that cannot be written leaves that viewer empty; it must not make
     # the (already open) project unusable for the agent.

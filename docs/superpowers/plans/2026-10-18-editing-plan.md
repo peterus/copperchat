@@ -517,6 +517,47 @@ def active_part_note(project, ref: str, fields: dict) -> dict | None
     # {"kind": "active_part_without_notes"} for U/Q/IC refs without MPN or without notes.md
 ```
 
+- **E3 (as built):** extra module `library/symbols.py` (proto → `SymbolRow` / `LibPin` /
+  `SymbolDetail`, body size, pin directions). The warm-up keeps only the search rows
+  (`index.SymbolRow`: `lib_id, description, keywords, unit_count, pin_count, footprint,
+  footprint_filters, scope`), not the protos: `get_symbol` re-fetches one symbol
+  (`GetItemsFromLibrary`, ~11 ms) and caches the detail (LRU 512); a derived symbol is probed
+  once (`session.commit(dry_run=True)` + `place_symbol_from_library`), which also fills
+  `pin_count` in later search rows. Because the probe opens a commit, **`get_symbol` must not
+  be called inside an open commit** (E4: call it in `prepare`); a **read-only** session does not
+  probe (`pins_known=False`, `pins=[]`). `LibPin(number, name, type, unit, body_style, at_mm,
+  direction)` (direction = outward at rotation 0); `SymbolDetail` adds `reference_prefix`,
+  `value`, `pins_known` and `to_dict()`; `pin_directions_by_rotation` is computed from the
+  library pin orientations (no probe per rotation), keys = pin numbers, ≤ 4 pins, unit 1.
+  `LibraryService` adds `error`, `wait_ready(timeout) -> bool` (the `lib_*` tools wait up to
+  `specs.READY_WAIT_S` = 30 s, then `libraries_loading`), `footprint_libraries()` (nicknames →
+  scope, no load), `suggest_footprint_libraries(query)`, `loaded_footprint_libraries()`.
+  `footprint()` returns `None` for an unknown id and raises `footprints_unavailable` without a
+  board (callers check `footprints_available()` first); `search_*` raise `not_found` for an
+  unknown `library` and `invalid_argument` for an empty or > 200-character query or a
+  non-integer `limit` (≤ 50). KiCad refusals inside the service become `StructuredToolError`
+  (`library_error`, new code; `LibrariesLoading` → `libraries_loading`); a footprint search
+  without `library` skips a library that fails to load and remembers it (not retried by
+  unscoped searches; an explicit `library` retries): `search_footprints_detailed()` returns
+  `(rows, failed)`, tool key `failed_libraries`. Index searches run in a worker thread; library
+  free text is clipped (500 chars). `started` tells whether a warm-up ran. `parts_get_notes`
+  reads at most 64 KiB of notes (`truncated: true`); `lib_get_symbol` validates `lib_id`, takes an
+  optional `unit` (pins of that unit + common pins) and returns at most 256 pins
+  (`pins_truncated: true`, `pin_count` stays the full count). A failed footprint library is
+  skipped by unscoped searches for 5 min (`FAILED_RETRY_S`) and does not take a top-3 slot.
+  `FootprintDetail` adds `keywords`, `to_dict()`. `PartPreferences` adds
+  `preferred_manufacturers`, `assembly`; helpers `parse_preferences(text)`,
+  `preferences_from_raw(raw)`, `is_passive(lib_id)` (Device:R/C/L incl. `_Small`/`_US`,
+  `FerriteBead*`). A deviation note also carries `preference`, `expected`, `actual`,
+  `footprint`, `message` and `suggested_footprint`. `active_part_note` reads the MPN from a
+  field named `MPN` / `Manufacturer Part Number` (case-insensitive); notes carry `reason`
+  (`no_mpn` | `not_researched` | `invalid_mpn`). `seed_user_part_preferences(settings)` runs in
+  the app lifespan: it customises the built-in (origin sidecar kept) with `passives_package:
+  0805` once (marker `<data_dir>/skills/.part-preferences-seeded`), never touching an existing
+  user copy. `skills.store.layer_contents(layers, name)` returns the valid SKILL.md per layer.
+  The `part-preferences` skill reaches the main agent like any skill. `StructuredToolError`
+  already gained E-C4's `code`/`details` keywords in E3 (identical signature to E2's).
+
 ### E-C10. Checks, checkpoints, changes — `copperchat.changes`, `history` (E8a)
 
 ```python

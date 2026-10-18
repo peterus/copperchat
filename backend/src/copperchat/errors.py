@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 
 class CopperChatError(Exception):
     """Base class for all expected CopperChat errors (mapped to HTTP by web.app)."""
@@ -41,16 +43,36 @@ class DocumentNotOpen(CopperChatError):
 
 
 class StructuredToolError(CopperChatError):
-    """A tool failure the agent can act on: what failed, why, and what to do instead."""
+    """A tool failure the agent can act on: what failed, why, and what to do instead.
+
+    `code` (E-C4: `libraries_loading`, `not_found`, `invalid_argument`, ...) and
+    `details` are optional and only appear in `to_dict` when set."""
 
     code = "tool_error"
     http_status = 422
 
-    def __init__(self, what: str, why: str, suggestion: str) -> None:
+    def __init__(
+        self,
+        what: str,
+        why: str,
+        suggestion: str,
+        *,
+        code: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
         self.what = what
         self.why = why
         self.suggestion = suggestion
+        self._explicit_code = code
+        if code is not None:
+            self.code = code
+        self.details = details
         super().__init__(f"{what}: {why}")
 
-    def to_dict(self) -> dict[str, str]:
-        return {"what": self.what, "why": self.why, "suggestion": self.suggestion}
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"what": self.what, "why": self.why, "suggestion": self.suggestion}
+        if self._explicit_code is not None:
+            out["code"] = self._explicit_code
+        if self.details is not None:
+            out["details"] = self.details
+        return out
