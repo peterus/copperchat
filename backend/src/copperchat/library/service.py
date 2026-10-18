@@ -324,6 +324,10 @@ class LibraryService:
         hits = await asyncio.to_thread(index.search, q, _limit(limit), library)
         return [self._rows[lib_id].to_dict() for lib_id, _ in hits]
 
+    def has_symbol(self, lib_id: str) -> bool:
+        """`lib_id` is in the index (False while the warm-up has not finished)."""
+        return self.state == "ready" and lib_id in self._rows
+
     async def get_symbol(self, lib_id: str) -> SymbolDetail:
         """Detail of one library symbol; pins of derived symbols come from a probe
         placement in a dropped commit (`session.commit(dry_run=True)`). Must not be

@@ -423,6 +423,33 @@ Error codes (`StructuredToolError.code`): `read_only`, `plan_required`,
   (`EditTurnState.halted`, `code="document_inconsistent"`). `by_id` bisects only on
   `AS_BAD_REQUEST` (KiCad's answer for unknown ids). `sch_add_wire` takes at most 64
   points and refuses ends on unjoined wire crossings or touching several nets.
+- **E5 (as built):** `router.route(...)` / `route_problems(...)` take `item_nets` (wire /
+  label / junction uuid -> net on that sheet; unknown = another net) and `route_problems`
+  `own_symbols`; `Route` adds `cost`; extras `needed_junctions` (3+ wire ends / interiors /
+  pin ends meet, no junction yet), `blocked_reasons`, `simplify`. Items of the joined nets
+  are contacts (a wire end or pin end of them may lie on the route), every wire may be
+  crossed perpendicularly, corners never sit on a wire, collinear overlaps are refused; a
+  route may leave/enter a pin sideways (cost), never into the body; Z corners within
+  25.4 mm around both ends. `sch_connect` also T-joins from either pin onto wires of the
+  other pin's net; `to=<power net>` (placed power symbol value, `power:<name>` in the
+  library, or a supply-like name) places a power symbol (`via_used: "power"`), as does the
+  label fallback when one pin is on a rail; pins on different sheets get global labels
+  (no hierarchical-path option); a label fallback is 1 logical change. A call whose
+  targets already are as asked returns a no-op change set (`stages=[]`, 0 logical changes;
+  the adapter still takes the turn snapshot). A stage's `build` may extend `cs.intent`
+  (`sch_add_power` adds the placed power symbols' pins in its second stage; the engine
+  verifies after the last stage). `sch_rename_net` refuses nets named by a hierarchical
+  label (the sheet pin must be renamed with it) and any name already in use; `sch_reroute`
+  refuses a route with a T-join or pin on its interior and keeps both ends. Code:
+  `edit/{router,labels,connect,specs_connect}.py`; test helper
+  `tests/kicad/edit/connect_support.py`. Review round 1: route checks use an indexed
+  `router.Obstacles` (first-problem exit) and every prepare stops after
+  `labels.PLAN_BUDGET_S` = 12 s (it runs inside one `session.call`); an edit in a sheet
+  file shared by several instances is verified in each instance (`World.replicate`; a
+  symbol placed through one instance has no pins in the others at the pinned commit);
+  hierarchical labels join the net at the parent's sheet pin of that name; a pin-shaped
+  `to` (`R9.1`) is always a pin; `LibraryService.has_symbol(lib_id)` (index lookup) backs
+  the rail check.
 - **E7 (as built):** `kicad_tools/edit/sheets.py` (`validate_sheet_file(project, file, *,
   existing)`, `validate_sheet_name`, `validate_pin_name`, planners) + `specs_sheets.py`.
   `sch_add_sheet(name, file, at, size?, parent?)` **never accepts an existing file**
