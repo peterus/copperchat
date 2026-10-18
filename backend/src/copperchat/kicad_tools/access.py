@@ -6,18 +6,17 @@ canonical KiCad layer names.
 
 from __future__ import annotations
 
-import tempfile
-import xml.etree.ElementTree as ET
 from collections.abc import Sequence
-from pathlib import Path
-from typing import Any
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
 from kipy.proto.common.types.base_types_pb2 import ElectricalPinType
-from kipy.proto.schematic.schematic_jobs_pb2 import SNF_KICAD_XML
 from kipy.util.board_layer import canonical_name
 
-from copperchat.errors import StructuredToolError
 from copperchat.kicad_tools.units import nm_to_mm, pos_mm
+
+if TYPE_CHECKING:
+    from copperchat.kicad_session import KicadHandle
 
 # kiapi SchematicSymbolOrientation: SSO_0 = 1 ... SSO_270 = 4.
 _SSO_0 = 1
@@ -116,12 +115,16 @@ def symbol_pins(sym: Any) -> list[dict[str, Any]]:
     return pins
 
 
+# KiCad's canonical names (files, netlists, ERC) where the API enum spells them otherwise.
+_PIN_TYPE_NAMES = {"tristate": "tri_state", "power_input": "power_in", "power_output": "power_out"}
+
+
 def pin_type_name(value: Any) -> str:
     try:
-        name = str(ElectricalPinType.Name(value))
+        name = str(ElectricalPinType.Name(value)).removeprefix("EPT_").lower()
     except ValueError:
         return "unknown"
-    return name.removeprefix("EPT_").lower()
+    return _PIN_TYPE_NAMES.get(name, name)
 
 
 def hierarchy(sch: Any) -> list[dict[str, Any]]:
@@ -137,47 +140,60 @@ def hierarchy(sch: Any) -> list[dict[str, Any]]:
     ]
 
 
-def netlist_nodes(sch: Any) -> dict[str, list[dict[str, str]]]:
-    """Net name -> pins `{ref, pin, function, type}`, from KiCad's own netlist.
+PinKey = tuple[str, str, str]  # (sheet_path, symbol_uuid, pin_number)
 
-    The API's `GetSchematicNetlist` lists net members only as bare KIIDs that no
-    other call resolves to a symbol pin, so connectivity comes from KiCad's
-    netlist export job (RunSchematicJobExportNetlist, KiCad XML) run by the same
-    api-server - KiCad output, like the ERC/DRC JSON, never a design-file parse.
+
+def sheet_path_key(path: Any) -> str:
+    """`/`-joined KIID path of a sheet instance, root = `/<root uuid>` - the string
+    `kicad-cli sch diff` and KiCanvas use (spike 2C). Takes a kipy SheetPath or its proto."""
+    proto = getattr(path, "proto", path)
+    return "/" + "/".join(str(p.value) for p in proto.path)
+
+
+@dataclass(frozen=True)
+class Netlist:
+    """Net name -> the symbol pins on it, live from the api-server (unsaved edits too)."""
+
+    nets: dict[str, frozenset[PinKey]]
+    _by_pin: dict[PinKey, str] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        by_pin = {key: name for name, keys in self.nets.items() for key in keys}
+        object.__setattr__(self, "_by_pin", by_pin)
+
+    def net_of(self, key: PinKey) -> str | None:
+        return self._by_pin.get(key)
+
+    def partition(self) -> frozenset[frozenset[PinKey]]:
+        """The pin groups, without net names (compares connectivity across renames)."""
+        return frozenset(self.nets.values())
+
+
+def live_netlist(h: KicadHandle) -> Netlist:
+    """KiCad's live connectivity (`GetSchematicNetlist`), resolved to symbol pins.
+
+    The netlist lists members as pin KIIDs per sheet path; a pin KIID repeats in every
+    instance of a shared sub-sheet, so each is resolved per (sheet path, pin KIID)
+    through the placed symbols' definition pins (spike 2A, Q8: identical to
+    kicad-cli's netlist on a saved copy, without saving).
     """
-    with tempfile.TemporaryDirectory(prefix="cc-netlist-") as tmp:
-        out = Path(tmp) / "netlist.xml"
-        result = sch.export_netlist(str(out), format=SNF_KICAD_XML)
-        if not result.succeeded or not out.is_file():
-            raise StructuredToolError(
-                "Netlist export failed",
-                "KiCad could not export the schematic netlist",
-                "Run run_erc to look for schematic errors, then retry",
-            )
-        return parse_netlist_xml(out.read_text(encoding="utf-8"))
-
-
-def parse_netlist_xml(text: str) -> dict[str, list[dict[str, str]]]:
-    # KiCad's netlist never carries a DTD; refusing one rules out entity expansion.
-    if "<!DOCTYPE" in text or "<!ENTITY" in text:
-        raise StructuredToolError(
-            "Netlist export unreadable",
-            "the exported netlist contains a DTD",
-            "Report this; KiCad's netlist export changed",
-        )
-    root = ET.fromstring(text)
-    nets: dict[str, list[dict[str, str]]] = {}
-    for net in root.iterfind("./nets/net"):
-        nets[net.get("name", "")] = [
-            {
-                "ref": node.get("ref", ""),
-                "pin": node.get("pin", ""),
-                "function": node.get("pinfunction", ""),
-                "type": node.get("pintype", ""),
-            }
-            for node in net.iterfind("node")
-        ]
-    return nets
+    sch = h.schematic()
+    owner: dict[tuple[str, str], PinKey] = {}
+    for sym in sch.get_symbols():
+        path = sheet_path_key(sym.path)
+        uuid = kiid(sym)
+        for pin in sym.definition.pins:
+            owner[(path, kiid(pin))] = (path, uuid, str(pin.number))
+    members: dict[str, set[PinKey]] = {}
+    for net in sch.get_netlist():
+        keys = members.setdefault(str(net.name), set())
+        for sheet in net.sheets:
+            path = sheet_path_key(sheet.path)
+            for item in sheet.items:
+                key = owner.get((path, str(item.value)))
+                if key is not None:
+                    keys.add(key)
+    return Netlist({name: frozenset(keys) for name, keys in members.items() if keys})
 
 
 # -- board -----------------------------------------------------------------------

@@ -44,3 +44,10 @@ def item_ids(h: KicadHandle) -> set[str]:
 def sheet_instance(h: KicadHandle, filename: str, nth: int = 0) -> Any:
     hits = [s for s in h.schematic().get_hierarchy() if str(s.filename) == filename]
     return hits[nth]
+
+
+def edit_ctx(session: Any) -> Any:
+    """ToolContext for edit-tool tests (E2 adds its EditingService here)."""
+    from copperchat.tools.spec import ToolContext
+
+    return ToolContext(project=session.project, session=session, settings=session.settings)

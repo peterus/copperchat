@@ -10,6 +10,7 @@ import pytest
 
 from copperchat.kicad_session import KicadHandle, KicadSession
 from tests.kicad.edit.helpers import item_ids, local_label, sheet_instance, v2, wire
+from tests.support.kicad_cli import cli_netlist, cli_values
 
 pytestmark = pytest.mark.kicad
 
@@ -148,21 +149,6 @@ async def test_save_copy_and_refresh_jobs_on_modified_doc_do_not_deadlock(
 # -- Task 2: export jobs and save_copy see unsaved edits (Review Focus 3) ----------
 
 
-def _cli_components(settings_cli: str, root_sch: Path, out_dir: Path) -> dict[str, str]:
-    """ref -> value from `kicad-cli sch export netlist` (KiCad XML) of a saved copy."""
-    import subprocess
-    import xml.etree.ElementTree as ET
-
-    out = out_dir / "copy.xml"
-    subprocess.run(
-        [settings_cli, "sch", "export", "netlist", "--format", "kicadxml", "-o", str(out),
-         str(root_sch)],
-        check=True, capture_output=True, timeout=120,
-    )  # fmt: skip
-    root = ET.fromstring(out.read_text(encoding="utf-8"))
-    return {c.get("ref", ""): c.findtext("value", "") for c in root.iterfind("./components/comp")}
-
-
 async def test_save_copy_contains_unsaved_subsheet_edit(
     hier_session: KicadSession, tmp_path: Path
 ) -> None:
@@ -188,7 +174,7 @@ async def test_save_copy_contains_unsaved_subsheet_edit(
     dest = tmp_path / "copy" / root.name
     await s.save_copy("sch", dest)
     assert (dest.parent / "ampli_ht.kicad_sch").is_file()
-    values = _cli_components(s.settings.kicad_cli, dest, tmp_path)
+    values = cli_values(cli_netlist(s.settings.kicad_cli, dest, tmp_path))
     assert values["R201"] == "E1-47k"
 
 
