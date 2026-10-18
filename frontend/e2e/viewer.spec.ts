@@ -240,3 +240,174 @@ test.describe('phone', () => {
     await ready(page);
   });
 });
+
+// ---- highlight overlay (fork commit "schematic highlight overlay", contract E-C13) -------------
+
+type HlKind = 'added' | 'modified' | 'removed' | 'focus';
+type HlViewer = AnyViewer & {
+  highlight(targets: string[], kind?: HlKind): { found: string[]; missing: string[] };
+  highlight_boxes(boxes: Array<{ x: number; y: number; w: number; h: number; kind?: HlKind }>): number;
+  clear_highlight(): void;
+  highlighted_count: number;
+  highlight_color(kind: HlKind): { r: number; g: number; b: number };
+  theme: { background: { r: number; g: number; b: number } };
+  select(item: string | null): void;
+  schematic: { find_symbol(ref: string): unknown };
+  layers: { query_item_bboxes(item: unknown): Iterable<{ x: number; y: number; w: number; h: number }> };
+};
+
+/** Runs `fn` against the visible schematic viewer in the page. */
+function onViewer<A, R>(page: Page, fn: (v: HlViewer, arg: A) => R, arg: A): Promise<R> {
+  return page.evaluate(
+    ([src, a]) => {
+      const v = (window as unknown as { __kcViewer: () => HlViewer }).__kcViewer();
+      return (new Function('v', 'a', `return (${src})(v, a);`) as (v: HlViewer, a: A) => R)(v, a);
+    },
+    [fn.toString(), arg] as const,
+  );
+}
+
+/** Canvas pixels within ±40 per channel of `kind`'s highlight colour (the canvas is Canvas2D). */
+async function colorPixels(page: Page, kind: HlKind): Promise<number> {
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  return onViewer(
+    page,
+    (v, k) => {
+      const c = v.highlight_color(k);
+      const want = [c.r * 255, c.g * 255, c.b * 255];
+      const ctx = v.canvas.getContext('2d')!;
+      const d = ctx.getImageData(0, 0, v.canvas.width, v.canvas.height).data;
+      let n = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        if (Math.abs(d[i]! - want[0]!) < 40 && Math.abs(d[i + 1]! - want[1]!) < 40 && Math.abs(d[i + 2]! - want[2]!) < 40) n++;
+      }
+      return n;
+    },
+    kind,
+  );
+}
+
+const canvasHash = (page: Page) =>
+  page.evaluate(async () => {
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const v = (window as unknown as { __kcViewer: () => HlViewer }).__kcViewer();
+    const url = v.canvas.toDataURL('image/png');
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(url));
+    return Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0')).join('');
+  });
+
+/** WCAG contrast ratio of two 0..1 colours. */
+function contrast(a: { r: number; g: number; b: number }, b: { r: number; g: number; b: number }): number {
+  const lum = (c: { r: number; g: number; b: number }) => {
+    const ch = (x: number) => (x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4);
+    return 0.2126 * ch(c.r) + 0.7152 * ch(c.g) + 0.0722 * ch(c.b);
+  };
+  const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x) as [number, number];
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+/** C105 in the KiCad-generated `kicad-cli sch diff` of spike 2C (`hier_edit`): bbox in 100 nm. */
+const C105_DIFF_BBOX = [1664990, 656589, 168453, 83822] as const;
+
+test.describe('highlight overlay', () => {
+  test.skip(({ isMobile }) => isMobile, 'desktop only');
+
+  test('highlight set of refs: found, missing, pixels, clear restores the identical canvas', async ({ page }) => {
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    await mockApi(page, ECC83);
+    await openViewer(page, false);
+    await ready(page);
+    const before = await canvasHash(page);
+    expect(await colorPixels(page, 'modified')).toBe(0);
+    const res = await onViewer(page, (v) => v.highlight(['U1', 'R3', 'R1', 'R2', 'C1', 'NOPE99'], 'modified'), null);
+    expect(res.found).toEqual(['U1', 'R3', 'R1', 'R2', 'C1']);
+    expect(res.missing).toEqual(['NOPE99']);
+    expect(await onViewer(page, (v) => v.highlighted_count, null)).toBe(5);
+    expect(await colorPixels(page, 'modified')).toBeGreaterThan(200);
+    await onViewer(page, (v) => v.clear_highlight(), null);
+    expect(await onViewer(page, (v) => v.highlighted_count, null)).toBe(0);
+    expect(await canvasHash(page)).toBe(before);
+    expect(errors).toEqual([]);
+  });
+
+  test('highlight survives a selection and the selection a highlight', async ({ page }) => {
+    await mockApi(page, ECC83);
+    await openViewer(page, false);
+    await ready(page);
+    await onViewer(page, (v) => v.highlight(['U1', 'R1'], 'added'), null);
+    await onViewer(page, (v) => v.select('R3'), null);
+    expect(await onViewer(page, (v) => v.highlighted_count, null)).toBe(2);
+    expect(await colorPixels(page, 'added')).toBeGreaterThan(100);
+    await onViewer(page, (v) => v.highlight(['C1'], 'removed'), null);
+    expect(await onViewer(page, (v) => Boolean(v.selected), null)).toBe(true);
+    expect(await onViewer(page, (v) => v.highlighted_count, null)).toBe(3);
+  });
+
+  test('reset on page switch; refs of another sheet instance are missing until it is loaded', async ({ page }) => {
+    await mockApi(page, HIER);
+    await openViewer(page, false);
+    await ready(page);
+    const crumbs = page.getByRole('navigation', { name: 'Sheet path' });
+    const res = await onViewer(page, (v) => v.highlight(['C105', 'R201', 'R301'], 'modified'), null);
+    expect(res).toEqual({ found: ['C105'], missing: ['R201', 'R301'] });
+    await page.getByRole('button', { name: 'Sheets (3)' }).click();
+    await page.getByRole('tree').getByRole('button', { name: 'ampli_ht_vertical' }).click();
+    await expect(crumbs).toHaveText(/Root.*ampli_ht_vertical/);
+    await expect.poll(() => onViewer(page, (v) => v.highlighted_count, null)).toBe(0);
+    expect(await onViewer(page, (v) => v.highlight(['R201', 'R301'], 'modified'), null)).toEqual({ found: ['R201'], missing: ['R301'] });
+  });
+
+  test('boxes in mm: the diff box of C105 lies within 0.5 mm of the symbol box', async ({ page }) => {
+    await mockApi(page, HIER);
+    await openViewer(page, false);
+    await ready(page);
+    const [x, y, w, h] = C105_DIFF_BBOX.map((v) => v / 1e4) as [number, number, number, number];
+    expect(await onViewer(page, (v, b) => v.highlight_boxes([{ ...b, kind: 'modified' }]), { x, y, w, h })).toBe(1);
+    expect(await onViewer(page, (v) => v.highlight_boxes([{ x: Number.NaN, y: 0, w: 1, h: 1 }]), null)).toBe(0);
+    expect(await colorPixels(page, 'modified')).toBeGreaterThan(50);
+    const sym = await onViewer(page, (v) => {
+      const bb = [...v.layers.query_item_bboxes(v.schematic.find_symbol('C105'))][0]!;
+      return { x: bb.x, y: bb.y, w: bb.w, h: bb.h };
+    }, null);
+    expect(Math.abs(sym.x - x)).toBeLessThan(0.5);
+    expect(Math.abs(sym.y - y)).toBeLessThan(0.5);
+    expect(Math.abs(sym.y + sym.h - (y + h))).toBeLessThan(0.5);
+    // the diff ran on the edited copy, where C105's Value text grew: only the width differs
+    expect(w).toBeGreaterThan(sym.w - 0.5);
+  });
+
+  for (const scheme of ['light', 'dark'] as const) {
+    test.describe(`${scheme} theme`, () => {
+      test.use({ colorScheme: scheme });
+
+      test('colours per kind: green / orange / red / focus, distinct and readable', async ({ page }) => {
+        await mockApi(page, ECC83);
+        await openViewer(page, false);
+        await ready(page);
+        expect(await page.locator('kicanvas-embed').first().getAttribute('theme')).toBe(scheme === 'dark' ? 'witchhazel' : 'kicad');
+        const kinds: HlKind[] = ['added', 'modified', 'removed', 'focus'];
+        const colors = await onViewer(page, (v, ks) => ks.map((k) => v.highlight_color(k)), kinds);
+        const bg = await onViewer(page, (v) => v.theme.background, null);
+        const [added, modified, removed] = colors as [typeof bg, typeof bg, typeof bg];
+        expect(added.g).toBeGreaterThan(Math.max(added.r, added.b)); // green
+        expect(removed.r).toBeGreaterThan(Math.max(removed.g, removed.b)); // red
+        expect(modified.r).toBeGreaterThan(modified.g);
+        expect(modified.g).toBeGreaterThan(modified.b); // orange
+        expect(new Set(colors.map((c) => `${c.r},${c.g},${c.b}`)).size).toBe(4);
+        for (const c of colors) expect(contrast(c, bg)).toBeGreaterThan(2.5);
+        const base: number[] = [];
+        for (const k of ['added', 'modified', 'removed'] as const) base.push(await colorPixels(page, k));
+        await onViewer(page, (v) => {
+          v.highlight(['U1'], 'added');
+          v.highlight(['R3'], 'modified');
+          v.highlight(['R1'], 'removed');
+        }, null);
+        // R1/R3 are small at page zoom: their outlines alone are ~20 px
+        for (const [i, k] of (['added', 'modified', 'removed'] as const).entries()) {
+          expect(await colorPixels(page, k)).toBeGreaterThan(base[i]! + 10);
+        }
+      });
+    });
+  }
+});
