@@ -115,6 +115,11 @@ def _set_step(plan: Plan, idx: int, **changes: Any) -> tuple[PlanStep, ...]:
     return tuple(replace(s, **changes) if s.idx == idx else s for s in plan.steps)
 
 
+def with_step(plan: Plan, idx: int, **changes: Any) -> Plan:
+    """The plan with step `idx` changed (bookkeeping fields, not a state transition)."""
+    return replace(plan, steps=_set_step(plan, idx, **changes))
+
+
 def _pause(plan: Plan, reason: str, step_status: StepStatus, failure: str | None, now: str) -> Plan:
     steps = plan.steps
     running = plan.running_step
@@ -198,7 +203,7 @@ def transition(plan: Plan, event: str, *, now: str, **kw: Any) -> Plan:
             return replace(done, status="done")
         return done
     if event == "interrupt":
-        return _pause(plan, "interrupted", "interrupted", None, now)
+        return _pause(plan, kw.get("reason", "interrupted"), "interrupted", None, now)
     if event == "turn_end":
         return _pause(plan, "turn_ended", "interrupted", None, now)
     if event == "fail":

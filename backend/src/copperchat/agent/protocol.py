@@ -175,6 +175,60 @@ class ChangesUpdatedFrame(Wire):
     count: int = Field(ge=0)
 
 
+PlanStatusWire = Literal["proposed", "approved", "running", "paused", "done", "rejected", "aborted"]
+StepStatusWire = Literal["pending", "running", "done", "failed", "interrupted"]
+
+
+class PlanTouches(Wire):
+    refs: list[str]
+    nets: list[str]
+
+
+class PlanStepErc(Wire):
+    errors: int = Field(ge=0)
+    warnings: int = Field(ge=0)
+    justifications: dict[str, str]
+    result_id: str | None
+
+
+class PlanStepDTO(Wire):
+    idx: int = Field(ge=1)
+    title: str
+    intent: str
+    expected_changes: int = Field(ge=1)
+    touches: PlanTouches
+    verification: str
+    status: StepStatusWire
+    change_count: int = Field(ge=0)
+    checkpoint_id: str | None
+    summary: str | None
+    failure: str | None
+    erc: PlanStepErc | None
+
+
+class PlanDTO(Wire):
+    """E-C11 PlanDTO (camelCase on the wire)."""
+
+    id: str = Field(min_length=1)
+    project_id: ProjectId
+    title: str
+    summary: str
+    status: PlanStatusWire
+    revision: int = Field(ge=1)
+    pause_reason: str | None
+    steps: list[PlanStepDTO]
+    created_at: str
+    updated_at: str
+
+
+class PlanUpdatedFrame(Wire):
+    """A plan changed state (E-C12, E8b)."""
+
+    type: Literal["plan-updated"] = "plan-updated"
+    project_id: ProjectId
+    plan: PlanDTO
+
+
 class RateLimitPayload(Wire):
     OMIT_IF_NONE: ClassVar[frozenset[str]] = frozenset({"resets_at"})
     status: Literal["allowed", "allowed_warning", "rejected"]
@@ -239,6 +293,7 @@ ServerFrame = Annotated[
     | RunFinishedFrame
     | ViewUpdatedFrame
     | ChangesUpdatedFrame
+    | PlanUpdatedFrame
     | UsageFrame
     | RateLimitedFrame
     | ErrorFrame

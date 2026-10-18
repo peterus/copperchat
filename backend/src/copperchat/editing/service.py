@@ -17,6 +17,7 @@ from copperchat.editing.state import EditTurnState
 if TYPE_CHECKING:
     from copperchat.agent.broadcaster import Broadcaster
     from copperchat.history.service import HistoryService
+    from copperchat.plans.service import PlanService
     from copperchat.tools.spec import ToolContext
 
 log = logging.getLogger(__name__)
@@ -44,6 +45,8 @@ class EditingService:
         # install_editing.
         self.history = history
         self.on_changes_recorded: list[ChangesRecorded] = []
+        # E8b: plan service (install_plans); EditingHooks pauses running plans at turn end.
+        self.plans: PlanService | None = None
         self._turns: dict[tuple[str, str], EditTurnState] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
