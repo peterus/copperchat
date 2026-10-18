@@ -22,7 +22,12 @@ from copperchat.kicad_tools.edit.changeset import (
     Update,
     static_stage,
 )
-from copperchat.kicad_tools.edit.engine import apply_change_set, copy_item, edit_result
+from copperchat.kicad_tools.edit.engine import (
+    apply_change_set,
+    copy_item,
+    edit_result,
+    record_applied,
+)
 from copperchat.kicad_tools.edit.fields import (
     FLAGS,
     STANDARD,
@@ -553,7 +558,9 @@ async def prepare_place(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
 async def apply_place(ctx: ToolContext, cs: ChangeSet) -> ToolResult:
     assert isinstance(cs, ToolChangeSet) and isinstance(cs.plan, PlacePlan)
     plan = cs.plan
-    applied = await apply_change_set(ctx, cs)
+    # On a shared sheet the placement's rows are written only once the other instances
+    # have their references: a failure there removes the symbol again (no 'add' row).
+    applied = await apply_change_set(ctx, cs, record=not plan.other_sheets)
     uid = applied.placed[0]
     sym = next(i for i in applied.created if access.kiid(i) == uid)
     placed = placed_json(sym, plan.sheet, plan.lib_id)
@@ -561,7 +568,8 @@ async def apply_place(ctx: ToolContext, cs: ChangeSet) -> ToolResult:
     if plan.other_sheets:
         # The other instances' references are reported in placed.instances only (their
         # rows would carry this sheet: the engine maps one UUID to one sheet).
-        _shared, renamed = await fix_shared_instances(ctx, plan, uid, cs.tool)
+        shared, renamed = await fix_shared_instances(ctx, plan, uid, cs.tool)
+        await record_applied(ctx, cs.tool, [*applied.changes, *shared.changes])
         placed["instances"] = [{"sheet": plan.sheet.human_path, "ref": plan.reference}, *renamed]
         extra["shared_sheet"] = (
             f"{plan.sheet.file} is used by {len(plan.other_sheets) + 1} sheet instances: the "

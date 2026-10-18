@@ -457,7 +457,7 @@ async def fix_shared_instances(
             intent=NetIntent(may_change=keys),
             logical=Logical(0),
         )
-        applied = await apply_change_set(ctx, cs)
+        applied = await apply_change_set(ctx, cs, record=False)  # the caller records
     except BaseException as exc:
         if session.generation != generation or not session.server_alive:
             raise DocumentInconsistent(
