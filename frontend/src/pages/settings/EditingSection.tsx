@@ -23,27 +23,46 @@ const BLOCKS: Array<{ value: EditingSettings['annotationBlock']; label: string }
  * Settings › Editing for the current project (the settings page has no project route, index
  * "calls made by the plan author"). Every change PUTs only its own field.
  */
+type Field = keyof EditingSettings;
+/** Error slots: one per field (tied to that field's newest save), plus loading. */
+type ErrorKey = Field | 'load';
+
 export function EditingSection() {
   const project = useProjects((s) => s.current);
   const projectId = project?.id ?? null;
   const [settings, setSettings] = useState<EditingSettings | null>(null);
   const [budget, setBudget] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Partial<Record<ErrorKey, string>>>({});
   const seq = useRef(0);
   /**
-   * The newest settings the server confirmed (by request order: load or PUT response) and the
-   * saves still in flight. Optimistic values show until the last save settles; then the
-   * confirmed copy is shown, whatever order the responses (or failures) arrived in.
+   * The newest settings the server confirmed, by request order (load or PUT response): a
+   * response of an older request never replaces that of a newer one.
    */
   const confirmed = useRef<{ seq: number; settings: EditingSettings } | null>(null);
-  const inflight = useRef(0);
+  /** Per field: the sequence number of its newest save. Only that save settles the field. */
+  const latest = useRef<Partial<Record<Field, number>>>({});
+  /** Optimistic values of fields whose newest save is still in flight. */
+  const pending = useRef<Partial<EditingSettings>>({});
   const budgetId = useId();
+
+  /** What is shown: the confirmed settings with the in-flight choices on top. */
+  const view = (): EditingSettings | null =>
+    confirmed.current && { ...confirmed.current.settings, ...pending.current };
+  const setFieldError = (key: ErrorKey, message: string | null) =>
+    setErrors((prev) => {
+      if ((prev[key] ?? null) === message) return prev;
+      const next = { ...prev };
+      if (message === null) delete next[key];
+      else next[key] = message;
+      return next;
+    });
 
   useEffect(() => {
     setSettings(null);
-    setError(null);
+    setErrors({});
     confirmed.current = null;
-    inflight.current = 0;
+    latest.current = {};
+    pending.current = {};
     if (!projectId) return;
     const mine = ++seq.current;
     fetchEditingSettings(projectId).then(
@@ -53,7 +72,9 @@ export function EditingSection() {
         setSettings(s);
         setBudget(String(s.changeBudget));
       },
-      (e: unknown) => mine === seq.current && setError(`Could not load the editing settings: ${errorText(e)}`),
+      (e: unknown) => {
+        if (mine === seq.current) setErrors({ load: `Could not load the editing settings: ${errorText(e)}` });
+      },
     );
   }, [projectId]);
 
@@ -67,38 +88,52 @@ export function EditingSection() {
   }
 
   const save = async (patch: Partial<EditingSettings>) => {
-    if (!settings) return;
+    if (!confirmed.current) return;
     const mine = ++seq.current;
     const pid = projectId;
-    inflight.current += 1;
-    setError(null);
-    setSettings({ ...settings, ...patch }); // optimistic until every save has settled
+    const fields = Object.keys(patch) as Field[];
+    for (const f of fields) {
+      latest.current[f] = mine;
+      setFieldError(f, null); // a new save of the field replaces its old error
+    }
+    Object.assign(pending.current, patch);
+    setSettings(view());
     let failure: string | null = null;
     try {
       const next = await putEditingSettings(pid, patch);
       if (useProjects.getState().current?.id !== pid) return;
-      if (!confirmed.current || mine > confirmed.current.seq) confirmed.current = { seq: mine, settings: next };
+      if (mine > confirmed.current.seq) confirmed.current = { seq: mine, settings: next };
     } catch (e) {
       failure = errorText(e);
     }
     if (useProjects.getState().current?.id !== pid) return;
-    if (failure) setError(failure); // never dropped, also when a newer save superseded this one
-    inflight.current -= 1;
-    if (inflight.current > 0 || !confirmed.current) return;
-    setSettings(confirmed.current.settings);
-    setBudget(String(confirmed.current.settings.changeBudget));
+    // Only the newest save of a field settles it: an older one (A→B→A) neither changes the shown
+    // value nor reports an error for a choice the user has already replaced.
+    const settled = fields.filter((f) => latest.current[f] === mine);
+    for (const f of settled) {
+      delete pending.current[f];
+      setFieldError(f, failure);
+    }
+    const shown = view();
+    setSettings(shown);
+    if (shown && settled.includes('changeBudget')) setBudget(String(shown.changeBudget));
   };
 
   const commitBudget = () => {
     if (!settings) return;
     const n = Number(budget);
     if (!Number.isInteger(n) || n < CHANGE_BUDGET_MIN || n > CHANGE_BUDGET_MAX) {
-      setError(`The change budget must be a whole number between ${CHANGE_BUDGET_MIN} and ${CHANGE_BUDGET_MAX}.`);
+      setFieldError(
+        'changeBudget',
+        `The change budget must be a whole number between ${CHANGE_BUDGET_MIN} and ${CHANGE_BUDGET_MAX}.`,
+      );
       return;
     }
     if (n !== settings.changeBudget) void save({ changeBudget: n });
-    else setError(null);
+    else setFieldError('changeBudget', null);
   };
+
+  const error = Object.values(errors).join(' ') || null;
 
   return (
     <section className="space-y-3">
