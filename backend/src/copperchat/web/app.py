@@ -16,6 +16,7 @@ from copperchat.errors import CopperChatError, StructuredToolError
 from copperchat.history.service import install_history
 from copperchat.kicad_session import ClientFactory, KicadSessionManager, ServerLauncher
 from copperchat.library.prefs import seed_user_part_preferences
+from copperchat.plans import install_plans
 from copperchat.projects import get_project
 from copperchat.push.dispatcher import PushDispatcher
 from copperchat.push.notifier import PushNotifier
@@ -30,6 +31,7 @@ from copperchat.web import (
     routes_history,
     routes_messages,
     routes_parts,
+    routes_plans,
     routes_projects,
     routes_push,
     routes_skills,
@@ -117,6 +119,8 @@ def create_app(
             # engines: an engine keeps the hooks it was created with.
             install_history(app)
             install_editing(app)  # after history: chains its hooks after HistoryHooks
+            plans = install_plans(app)  # PlanGate replaces the editing gate (E8b)
+            await plans.pause_all_running()  # a restart leaves no plan running
             push = install_push(app)
             # parked / queued work survives a restart
             for project_id in await runtime.resume_pending():
@@ -147,6 +151,7 @@ def create_app(
     app.include_router(routes_uploads.router)
     app.include_router(routes_push.router)
     app.include_router(routes_editing.router)
+    app.include_router(routes_plans.router)
     app.include_router(ws.router)
     mount_frontend(app, settings.frontend_dist)  # must stay last: it mounts "/"
     return app

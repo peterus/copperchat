@@ -1,5 +1,5 @@
 """Editing run hook (E-C5): turn bookkeeping and the turn-end ERC delta of an editing
-turn (E8a, spec §5.1 / §8.3). E8b adds the plan pause/turn handling."""
+turn (E8a, spec §5.1 / §8.3) and the plan pause at turn end (E8b, spec §7.2)."""
 
 from __future__ import annotations
 
@@ -46,6 +46,14 @@ class EditingHooks(RunHooks):
                 assert state is not None
                 await self._erc_delta(turn, state)
         finally:
+            try:
+                if self.svc.plans is not None:
+                    # E8b: a turn never leaves a plan running (spec §7.2).
+                    await self.svc.plans.on_turn_end(
+                        self.project, turn.run_id, outcome, self.engine
+                    )
+            except Exception:
+                log.exception("pausing the plan of %s at turn end failed", self.project.rel_path)
             self.svc.drop_turn(self.project.id, turn.run_id)
 
     @staticmethod

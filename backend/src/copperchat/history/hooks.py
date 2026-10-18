@@ -65,6 +65,11 @@ class HistoryHooks(RunHooks):
                     except Exception:  # KiCad has the new files; only the viewer lags
                         log.warning("view refresh after external change failed", exc_info=True)
             await self.svc.hashes.replace(self.project.id, now)
+        for listener in list(self.svc.on_external_change):
+            try:
+                await listener(self.project, changed)
+            except Exception:  # a listener must never break the turn start
+                log.exception("external-change listener failed")
         files = ", ".join(changed)
         outcome = {
             "reloaded": (
