@@ -248,6 +248,7 @@ type HlViewer = AnyViewer & {
   highlight(targets: string[], kind?: HlKind): { found: string[]; missing: string[] };
   highlight_boxes(boxes: Array<{ x: number; y: number; w: number; h: number; kind?: HlKind }>): number;
   clear_highlight(): void;
+  zoom_to_highlight(): void;
   highlighted_count: number;
   highlight_color(kind: HlKind): { r: number; g: number; b: number };
   theme: { background: { r: number; g: number; b: number } };
@@ -342,6 +343,19 @@ test.describe('highlight overlay', () => {
     await onViewer(page, (v) => v.highlight(['C1'], 'removed'), null);
     expect(await onViewer(page, (v) => Boolean(v.selected), null)).toBe(true);
     expect(await onViewer(page, (v) => v.highlighted_count, null)).toBe(3);
+  });
+
+  test('zoom_to_highlight fits the camera to the highlights', async ({ page }) => {
+    await mockApi(page, ECC83);
+    await openViewer(page, false);
+    await ready(page);
+    const z0 = await zoomOf(page);
+    await onViewer(page, (v) => v.zoom_to_highlight(), null); // nothing highlighted: no-op
+    expect(await zoomOf(page)).toBe(z0);
+    await onViewer(page, (v) => v.highlight(['R1'], 'focus'), null);
+    await onViewer(page, (v) => v.zoom_to_highlight(), null);
+    expect(await zoomOf(page)).toBeGreaterThan(z0 * 2);
+    expect(await colorPixels(page, 'focus')).toBeGreaterThan(100);
   });
 
   test('reset on page switch; refs of another sheet instance are missing until it is loaded', async ({ page }) => {
