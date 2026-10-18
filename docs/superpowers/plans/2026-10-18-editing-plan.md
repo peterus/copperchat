@@ -202,6 +202,23 @@ class KicadSessionManager:
 `HistoryService` registers its hash recording as a save listener (E1), so
 **every** CopperChat save records hashes right after it.
 
+- **E1 (as built):** `CommitScope` also carries `generation` (the server start it
+  belongs to): a restart since `begin_commit` discarded the staged items, so the drop
+  is skipped. `commit()` refuses a read-only session (`ReadOnlyProject`) and also drops
+  when `push_commit` itself fails; the drop runs to completion even when the caller is
+  cancelled again meanwhile (the commit lock is released only afterwards). `save`,
+  `save_copy`, `refresh_jobs` raise `RuntimeError` when called from inside the
+  caller's own open commit (instead of deadlocking). `SaveListener =
+  Callable[[Project], Awaitable[None]]`; listener errors are logged. `modified` is the
+  session's own flag (pushed commit → True, `save("sch")` / restart → False);
+  `save_copy("sch")` asks KiCad (`is_document_modified()`). `refresh_jobs` closes every
+  open schematic document (`get_open_documents`) and reopens the root.
+  `ensure_symbol_libraries` polls `get_library_statuses(LT_SYMBOL)` in short
+  `session.call`s (no `wait_for_libraries` holding the session lock for up to 120 s)
+  and raises `copperchat.kicad_session.LibrariesLoading` (`code="libraries_loading"`,
+  HTTP 503) on timeout; the kick-off failing only logs. `HistoryHooks.on_turn_end` no
+  longer records hashes itself (the listener does, after each successful save).
+
 ### E-C2. Live netlist — `copperchat.kicad_tools.access` (E1)
 
 ```python
@@ -219,6 +236,17 @@ def live_netlist(h: KicadHandle) -> Netlist     # sch.get_netlist(); pin KIIDs r
 the same string `kicad-cli sch diff` and KiCanvas use (2C). Read tools
 (`sch_get_net`, `sch_get_symbol`) switch to it in E1 (output unchanged).
 
+- **E1 (as built):** `access.sheet_path_key(path) -> str` builds that string from a
+  kipy `SheetPath` (or its proto). `live_netlist` includes power-symbol pins
+  (`#PWR`/`#FLG`); `sch_get_net` leaves them out, as kicad-cli's netlist does.
+  `sch_get_net`'s `function` follows kicad-cli at the pinned commit (`NAME_number`,
+  `""` for unnamed pins) and `type` uses KiCad's canonical pin type names
+  (`power_in`, `power_out`, `tri_state` — `access.pin_type_name`, so `sch_get_symbol`
+  now says `power_in` where it said `power_input`). Verified against kicad-cli on the
+  hierarchy fixture for every net (`tests/kicad/edit/test_live_netlist.py`). The
+  export-job netlist (`netlist_nodes`, `parse_netlist_xml`) is gone; tests read
+  kicad-cli netlists with `tests.support.kicad_cli`.
+
 ### E-C3. Database — `0006_editing.sql` (E1, used by all)
 
 | Table / change | Columns |
@@ -235,6 +263,17 @@ EditingSettings` / `.put(project_id, **fields)`; `EditingSettings` frozen
 dataclass with the four fields above. `copperchat.changes.repo.ChangeRepo`
 (`add_many(entries) -> int`, `for_run(project_id, run_id, step_id=None)`,
 `runs(project_id, limit)`), `ChangeEntry` dataclass mirroring the columns.
+
+- **E1 (as built):** CHECK constraints on every enumerated column (`kind`,
+  `plan_policy`, `annotation_block`, `show_agent_view`, `op`, plan and step `status`);
+  `plan_steps.plan_id` references `plans` (`ON DELETE CASCADE`); indexes
+  `changes(project_id, run_id)`, `erc_results(project_id, run_id)`. `change_budget`
+  1–500 is validated by the repo, not the DB. `InvalidEditingSettings`
+  (`copperchat.db.repos.editing_settings`, `code="invalid_argument"`, HTTP 400).
+  `ChangeRepo.runs` returns `{run_id, step_ids, count, side_effects, created_at}`
+  (newest run first). Test helper `tests.kicad.edit.helpers.edit_ctx(session)` builds a
+  plain `ToolContext` — E2 adds its `EditingService`. The `blank` fixture has a
+  `.kicad_pcb` (owner decision 4 treats it as a project with a board).
 
 ### E-C4. Two-phase mutating tools — `copperchat.tools` + `kicad_tools.edit` (E2)
 
