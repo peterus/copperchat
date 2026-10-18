@@ -52,6 +52,12 @@ describe('HistoryPanel', () => {
     expect(items[0]).toHaveTextContent('route USB');
   });
 
+  it('encodes the project id in the list URL', async () => {
+    render(<HistoryPanel projectId="a/b" />);
+    await screen.findByText('route USB');
+    expect(apiGet).toHaveBeenCalledWith('/projects/a%2Fb/history');
+  });
+
   it('explains an empty history', async () => {
     apiGet.mockResolvedValue([]);
     render(<HistoryPanel projectId="p1" />);
