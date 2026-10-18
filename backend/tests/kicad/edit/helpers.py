@@ -47,7 +47,7 @@ def sheet_instance(h: KicadHandle, filename: str, nth: int = 0) -> Any:
 
 
 def edit_ctx(session: Any) -> Any:
-    """ToolContext for edit-tool tests (E2 adds its EditingService here)."""
-    from copperchat.tools.spec import ToolContext
+    """Plain ToolContext (no EditingService); see tests.support.edit.edit_ctx."""
+    from tests.support.edit import edit_ctx as _edit_ctx
 
-    return ToolContext(project=session.project, session=session, settings=session.settings)
+    return _edit_ctx(session)

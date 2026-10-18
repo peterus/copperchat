@@ -9,9 +9,15 @@ import pytest
 
 from copperchat.config import Settings
 from tests.support.kicad_env import api_server_available
-from tests.support.kicad_project import blank_session, ecc83_session, hier_session
+from tests.support.kicad_project import (
+    blank_nopcb_session,
+    blank_session,
+    ecc83_session,
+    hier_session,
+)
 
 __all__ = [
+    "blank_nopcb_session",
     "blank_session",
     "ecc83_session",
     "hier_session",
