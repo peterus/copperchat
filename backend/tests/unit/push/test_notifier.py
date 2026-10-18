@@ -91,6 +91,28 @@ async def test_question_and_error_need_attention(env: Env) -> None:
     ]
 
 
+async def test_needs_attention_from_mid_run_plan_row(env: Env) -> None:
+    db, d, _vis, n = env
+    await _row(
+        db,
+        "r5",
+        "Plan paused at step 2: new ERC errors were neither fixed nor justified.",
+        role="system",
+        kind="error",
+        metadata={"code": "plan_needs_attention", "planId": "f" * 32},
+    )
+    await _row(db, "r5", "I paused the plan; the open pin is intended.")
+    await n.handle(_finished("r5", "completed"))
+    await _row(db, "r6", "Done.")
+    await _row(db, "r6", "other", role="system", kind="error", metadata={"code": "x"})
+    await _row(db, "r6", "All good.")
+    await n.handle(_finished("r6", "completed"))
+    assert [(p["title"], p["body"]) for p in d.sent] == [
+        ("ecc83-pp: needs your attention", "I paused the plan; the open pin is intended."),
+        ("ecc83-pp: run finished", "All good."),
+    ]
+
+
 async def test_long_text_is_clipped(env: Env) -> None:
     db, d, _vis, n = env
     await _row(db, "r1", "word " * 100)

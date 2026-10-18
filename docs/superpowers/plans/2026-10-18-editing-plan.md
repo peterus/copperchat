@@ -800,6 +800,50 @@ revision, pauseReason, steps: [{idx, title, intent, expectedChanges, touches,
 verification, status, changeCount, checkpointId, summary, failure, erc:
 {errors, warnings, justifications} | null}], createdAt, updatedAt}`.
 
+- **E8b (as built):** modules `plans/{model,machine,repo,service,gate,specs}.py`,
+  `install_plans(app)` (lifespan after `install_editing`, then `pause_all_running()` before
+  `resume_pending`; sets `EditingService.plans`, swaps `EditingService.gate` for `PlanGate`,
+  registers `HistoryService.on_external_change` — new listener list, called by the turn-start
+  hash check after its lock is released). `machine.transition(plan, event, *, now, **kw)` with
+  events `reject, revise, approve, step_begin, step_done, interrupt, turn_end, fail,
+  external_change, resume, rollback, abort`; `machine.new_plan`, `build_steps`, `with_step`.
+  `PlanStateError` (`code="plan_state"`, HTTP 409; `plan_open` for a second open plan, mapped
+  from `ux_plans_open`), `InvalidPlanArgument` (`invalid_argument`, 400), `repo.InvalidPlanId`
+  (400) / `PlanNotFound` (404). Steps run **in order** (only the first not-done step can
+  begin, one at a time); a step begins and finishes in the **same turn** (`plan_step_done`
+  refuses a step not active in this turn). **`plan_revise` keeps the finished steps** (their
+  checkpoints are the plan's history; also on a later revision of the re-proposed plan) and
+  `steps` replaces the remaining ones, numbered after them. Limits: ≤ 30 steps, `expected_changes` 1–200, title 120, summary 2000,
+  intent/verification 1000, ≤ 50 refs/nets of ≤ 64 chars, justifications ≤ 100 × 500 chars. Step tolerance
+  = `max(expected + 1, expected × 3 // 2)` (10 → 15, 1 → 2); inside a step the ≤ 3 deletions
+  rule does not apply (the user approved the plan), a refund needs a symbol placed **in that
+  step**, and a step state whose plan is no longer running is dropped (never exempts a call
+  from the turn budget); `budget` reads `{used, limit, scope: "step", step}` inside a step.
+  The turn snapshot taken by `plan_step_begin` (via `on_mutation`) when the plan has no
+  `base_snapshot_id` is the base ("roll back to start"). `plan_step_done`: ERC baseline =
+  previous step's checkpoint, else the base, else the run's turn snapshot; erc_results row
+  with the justifications that match new error ids (others are listed as a note);
+  checkpoint label `Plan step <k>` (never the agent-authored title); `change_count` = change
+  rows of the step **in this run**; render reminder when no `render_view(doc="sch")` since
+  `plan_step_begin` and `show_agent_view` is on. The second identical `erc_errors_open`
+  (same step, same open ids) pauses the plan (`erc_regression`, step `failed`, the ERC row
+  attached) and posts an error row `{code: "plan_needs_attention", planId, ercResultId}` (a
+  `step_exceeded` pause posts the same code with `reason`); the
+  tool error stays `erc_errors_open` with `details.plan_paused = true`. Pause reasons:
+  `turn_ended`, `interrupted`, `rate_limited` (step interrupted), `kicad_failed`,
+  `document_inconsistent`, `step_exceeded`, `erc_regression`, `external_change` (step failed),
+  `server_restart` (step **interrupted**: the process ended, like a Stop), `rolled_back`.
+  An external change also pauses an **approved** plan (its base changed before step 1).
+  Notices: `plan` (propose), `plan-revised` (the agent's reason only in metadata
+  `agentReason`, never in the system-voice text), `plan-paused {reason}`, `plan-rejected`,
+  `plan-aborted`; reject/abort add an agent note naming the plan id only. `PlanDTO` step
+  `erc` = `{errors, warnings, justifications, resultId}` (counts). Step checkpoints are capped
+  (E8a residual): `history.store.STEP_KEEP = 100` per project; an open plan's base snapshot
+  and step checkpoints are never pruned (turn or step pruning). `PushNotifier` treats a run
+  with any `plan_needs_attention` error row as "needs your attention". The end-to-end test
+  (`tests/kicad/edit/test_plan_flow.py`) places R + LED through a test two-phase tool with
+  E4's two-stage placement and connects with E2's `sch_add_wire` (E4/E5 ran in parallel).
+
 ### E-C12. HTTP and WS additions
 
 - `GET|PUT /projects/{id}/settings/editing` → `{planPolicy, changeBudget, annotationBlock, showAgentView}` [E1]
@@ -829,6 +873,18 @@ verification, status, changeCount, checkpointId, summary, failure, erc:
   run). `changes-updated.runId` is non-empty; the chat store ignores the frame (E9a's
   Changes panel consumes it).
 
+- **E8b (as built):** `POST /history/{id}/restore` is refused (409 `plan_open`) while a
+  plan is approved, running or paused (use the plan's Roll back or abort it first).
+  Plan routes live in `web/routes_plans.py`; every event returns the
+  PlanDTO; `rollback` body `{toStep}` validated by the service (400 for a non-integer or out of
+  range, 409 `plan_state` for an unfinished step or for 0 when finished steps exist but no
+  base snapshot, 409 `agent_busy` while a run is active).
+  Approve/resume enqueue `client_message_id = plan-<id>-<event>-<revision>-<event_seq>`; a
+  failing enqueue restores the plan state but keeps the `event_seq` bump (a retry gets a new
+  message id). `PlanUpdatedFrame.plan` is the typed `PlanDTO`
+  (pydantic + zod `PlanDTO` in `frames.ts`); the chat store ignores `plan-updated` (E9b's plan
+  store consumes it).
+
 ### E-C13. Frontend (E9a/E9b)
 
 - KiCanvas fork (`copperchat` branch) adds to the schematic viewer:
@@ -844,6 +900,36 @@ verification, status, changeCount, checkpointId, summary, failure, erc:
 - `@/stores/plans` (`open: PlanDTO | null`, `load(projectId)`, actions → REST, `plan-updated`);
   `PlanCard({planId})` rendered for notice rows with `metadata.action === 'plan'`.
 - `HistoryEntry` gains `kind`, `planStepId`; `EditingSection` in Settings (current project).
+
+- **E9a (as built):** fork `peterus/kicanvas` `copperchat` @ `9c5c95a` (commits "schematic
+  highlight overlay", "zoom_to_highlight", "coalesce redraws", "rebuild the highlight layer once
+  per frame": the schematic viewer's `draw()` schedules at most one animation frame and rebuilds
+  a dirty highlight layer there). The view store also gained `openSeq` (bumped per project open;
+  the Changes panel reuses a loaded diff only while `openSeq` + `revs.sch` are unchanged). `highlight(targets, kind="focus")` and
+  `highlight_boxes(boxes) -> number added` (non-finite/negative boxes skipped) **accumulate**
+  until `clear_highlight()` or the next `load()`; extra `zoom_to_highlight()`,
+  `highlighted_count`, `highlight_color(kind)`. Kinds added green / modified orange / removed
+  red (lighter fill) / focus blue, palette chosen by the theme background's luminance; own
+  layer `:CopperChat:Highlight` just below the selection overlay, re-painted on `paint()`.
+  `check-kicanvas.sh` asserts the bundle has `clear_highlight`. View store: types
+  `FindRequest`, `HighlightRequest {refs: Array<string | {ref, kind?, sheetPath?}>, boxes:
+  {x,y,w,h,kind,sheetPath?}[], sheetPath, seq}` live in `@/stores/view` (`components/viewer/types`
+  re-exports); items carry their own `sheetPath` (undefined = the request's, null = any page),
+  so one request spans sheet instances: the pane opens `sheetPath` (null: the page of the first
+  ref; unknown path → `onHighlightResult({sheetMissing: true})`), applies the items of the shown
+  page after **every** viewer load (the highlight follows the user's sheet switches) and zooms
+  once per request. `setHighlight` switches to the KiCad schematic view, returns the new `seq`;
+  `setFind(ref | null)`; `setProject` clears both. On phones a highlight request switches to the
+  View tab (`ProjectLayout`). `@/stores/changes`: `createChangesStore(ws, deps?)` with `runs`,
+  `entries[entriesKey(runId, stepId)]`, `loadEntries`, 300 ms debounced refetch of runs (and of
+  loaded entry lists of the frame's run) on `changes-updated` / `run-finished`, plus panel UI state
+  (`expanded`, `diffLayer`) that survives the phone unmounting the panel. REST client
+  `@/api/changes` (zod, `z.object`: unknown extra fields are tolerated). Deleted items are
+  highlighted by their diff box once the run's diff is loaded (else by UUID → reported missing).
+  **Restore boundaries** (E8a residual): restore notices (`metadata.action === 'restored'`) from
+  the chat store appear as dividers between runs; a restore to run R's turn snapshot marks R and
+  every later run before it "Undone by a restore"; the diff of a run with a later restore carries
+  a note and labels unlogged entries "restore or side effect". Only loaded chat messages are seen.
 
 ---
 

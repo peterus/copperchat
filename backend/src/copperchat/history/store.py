@@ -19,9 +19,14 @@ from typing import Any
 
 from copperchat.db import Database, utcnow_iso
 from copperchat.errors import CopperChatError
+from copperchat.plans.repo import PlanRepo
 from copperchat.projects import SKIP_DIRS, Project, agent_dir
 
 HISTORY_KEEP = 50  # turn snapshots; step checkpoints are pruned with their turn (§5.4)
+# Newest plan-step checkpoints kept per project (E8b: a long plan, revisions and
+# rollbacks within a few turns would otherwise grow them without bound). Snapshots an
+# open plan can still roll back to are never pruned.
+STEP_KEEP = 100
 SNAPSHOT_KINDS = ("turn", "step")
 # CopperChat's caches inside `.kicad-agent/`; kept out of the user's git repository.
 GITIGNORE_LINES = ("history/", "view/", "renders/", "uploads/", "images/")
@@ -281,7 +286,8 @@ class HistoryStore:
     async def _prune(self) -> None:
         """HISTORY_KEEP turn snapshots; step checkpoints go with their turn (same run),
         and so do those of other runs older than the oldest kept turn snapshot (a run
-        whose steps changed nothing has no turn snapshot of its own)."""
+        whose steps changed nothing has no turn snapshot of its own); at most STEP_KEEP
+        step checkpoints. An open plan's base snapshot and step checkpoints are kept."""
         turns = await self._db.fetchall(
             "SELECT id, run_id, created_at, rowid AS rid FROM history_snapshots"
             " WHERE project_id = ? AND kind = 'turn'"
@@ -309,9 +315,16 @@ class HistoryStore:
             )
         else:
             rows = []
-        for row in rows:
-            await self._db.execute("DELETE FROM history_snapshots WHERE id = ?", (row["id"],))
-            await asyncio.to_thread(shutil.rmtree, self.snapshot_dir(row["id"]), True)
+        rows += await self._db.fetchall(
+            "SELECT id FROM history_snapshots WHERE project_id = ? AND kind = 'step'"
+            " ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?",
+            (self.project.id, STEP_KEEP),
+        )
+        protected = await PlanRepo(self._db).protected_snapshot_ids(self.project.id)
+        doomed = list(dict.fromkeys(str(r["id"]) for r in rows if str(r["id"]) not in protected))
+        for sid in doomed:
+            await self._db.execute("DELETE FROM history_snapshots WHERE id = ?", (sid,))
+            await asyncio.to_thread(shutil.rmtree, self.snapshot_dir(sid), True)
         kept = await self._db.fetchall(
             "SELECT id FROM history_snapshots WHERE project_id = ?", (self.project.id,)
         )

@@ -19,6 +19,15 @@ class EditTurnState:
     last_erc: list[dict[str, Any]] | None = None
     last_render_seq: int | None = None  # render_view(doc="sch")
     active_step_id: str | None = None  # E8b
+    # E8b: the active plan step of this turn (PlanGate counts its calls against the
+    # step's expected changes instead of the turn budget).
+    step_idx: int | None = None
+    step_expected: int = 0
+    step_used: int = 0
+    step_begin_seq: int | None = None  # call_seq of plan_step_begin (render reminder)
+    step_placed: set[str] = field(default_factory=set)  # symbols placed inside the step
+    # (step id, violation ids) of the last `erc_errors_open` refusal of plan_step_done.
+    erc_refusal: tuple[str, frozenset[str]] | None = None
     # A failed edit could not be undone exactly: every further edit of the turn is refused
     # (the turn ends and the session is reloaded).
     halted: bool = False

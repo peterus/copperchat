@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse
 from copperchat.history.restore import restore_snapshot
 from copperchat.history.service import HistoryService
 from copperchat.history.store import SnapshotNotFound
+from copperchat.plans.model import PlanStateError
 from copperchat.projects import Project, get_project
 from copperchat.web.auth import CurrentUser
 
@@ -59,7 +60,19 @@ async def restore(
     project_id: str, snapshot_id: str, request: Request, _: CurrentUser
 ) -> dict[str, Any]:
     svc, project = _ctx(request, project_id)
-    # Errors map via install_error_handlers: 400 invalid id, 404 unknown, 409 read-only
-    # or agent busy, 422 corrupt snapshot, 503 KiCad unavailable.
+    plans = getattr(request.app.state, "plans", None)
+    if plans is not None:
+        # E8b: a plan that has begun owns the design's history; a plain restore would let
+        # Resume run later steps on a design without the earlier ones (spec §7.1).
+        open_ = await plans.repo.open_status(project.id)
+        if open_ is not None and open_[1] in ("approved", "running", "paused"):
+            raise PlanStateError(
+                "The design cannot be restored while a plan is open",
+                f"Plan {open_[0]} is {open_[1]}",
+                "Use the plan's Roll back, or abort the plan first.",
+                code="plan_open",
+            )
+    # Errors map via install_error_handlers: 400 invalid id, 404 unknown, 409 read-only,
+    # agent busy or open plan, 422 corrupt snapshot, 503 KiCad unavailable.
     snap = await restore_snapshot(svc, project, snapshot_id)
     return {"id": snap.id, "files": snap.files}

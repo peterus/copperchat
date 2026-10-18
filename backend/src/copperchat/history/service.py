@@ -48,6 +48,9 @@ class HistoryService:
             _default_preview
         )
         self._locks: dict[str, asyncio.Lock] = {}
+        # (project, changed files) after the turn-start check found an external change
+        # (E8b: a running/approved/paused plan is paused). Errors are logged.
+        self.on_external_change: list[Callable[[Project, list[str]], Awaitable[None]]] = []
         # Every CopperChat save rewrites the files: record their hashes right after it,
         # so the turn-start check never takes our own save for an external change.
         sessions.add_save_listener(self._on_saved)

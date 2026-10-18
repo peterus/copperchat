@@ -24,6 +24,7 @@ did not change the bundle (same sha256).
 | `no-external-fonts` | CopperChat | No runtime `fonts.googleapis.com` stylesheet (self-hosted, offline). |
 | `embed-host-integration` | CopperChat | Bubbling `kicanvas:viewerload` per page load; `theme` attribute forwarded embed → app → viewer (theme change without page reload); `controlslist="nobottomtoolbar"` (the host draws its own zoom buttons). |
 | `board-pick-footprint` | CopperChat | A tap on a part selects the part; nets are offered only where no footprint is hit (upstream opened a context menu whenever a footprint overlapped a pad/track/zone). |
+| — (`schematic highlight overlay`, editing phase E9a) | CopperChat | `highlight(targets, kind)`, `highlight_boxes(boxes)`, `clear_highlight()`, `zoom_to_highlight()`, `highlighted_count`, `highlight_color(kind)` on the schematic viewer: changed items outlined per kind (added green / modified orange / removed red / focus blue, light/dark aware) on an own layer below the selection; reset on every `load()` (contract E-C13). Never a vendor patch file. |
 
 The upstream candidates also exist as topic branches on upstream `main` in the fork
 (`upstream/<name>`); no pull request against theacodes/kicanvas has been opened.

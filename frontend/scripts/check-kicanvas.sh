@@ -14,5 +14,6 @@ grep -Eqx '[0-9a-f]{40}' "$V/KICANVAS_COMMIT" || fail "KICANVAS_COMMIT is not a 
 grep -qx "sha256=$(sha256sum "$V/kicanvas.js" | cut -d' ' -f1)" "$V/BUILD_INFO" || fail "kicanvas.js does not match the sha256 in BUILD_INFO"
 grep -q 'kicanvas-embed' "$V/kicanvas.js" || fail "bundle does not define kicanvas-embed"
 grep -q 'kicanvas:viewerload' "$V/kicanvas.js" || fail "bundle lacks the embed host integration (not built from the copperchat branch?)"
+grep -q 'clear_highlight' "$V/kicanvas.js" || fail "bundle lacks the schematic highlight overlay (E-C13)"
 if grep -Eq 'fonts\.(googleapis|gstatic)\.com' "$V/kicanvas.js"; then fail "bundle still loads Google Fonts"; fi
 echo "PASS: kicanvas vendored ($(stat -c %s "$V/kicanvas.js") bytes, commit $(cat "$V/KICANVAS_COMMIT"))"

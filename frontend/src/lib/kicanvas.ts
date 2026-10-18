@@ -60,8 +60,23 @@ export interface KcProject extends EventTarget {
   active_page: KcPage | null;
   set_active_page(page: KcPage | string): void;
 }
+/** What a highlight marks; picks its colour (fork commit "schematic highlight overlay", E-C13). */
+export type HighlightKind = 'added' | 'modified' | 'removed' | 'focus';
+/** A raw highlight box in schematic coordinates (mm). */
+export interface KcHighlightBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  kind: HighlightKind;
+}
 export interface KcViewer {
   selected: unknown;
+  /** Schematic viewers of the fork only: highlights accumulate until clear_highlight() or the next load. */
+  highlight?: (targets: string[], kind: HighlightKind) => { found: string[]; missing: string[] };
+  highlight_boxes?: (boxes: KcHighlightBox[]) => number;
+  clear_highlight?: () => void;
+  zoom_to_highlight?: () => void;
   select(item: string | null): void;
   draw(): void;
   zoom_to_page(): void;
