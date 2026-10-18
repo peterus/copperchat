@@ -22,6 +22,7 @@ from harness import (
     local_label,
     main_guard,
     netlist_components,
+    netlist_ref_counts,
     nets_by_pin,
     require_kicad,
     root_sch,
@@ -140,6 +141,7 @@ def main() -> int:
 
         cli = cli_netlist(dest / root_sch(proj).name, tmp)
         comps = netlist_components((tmp / "cli.net").read_text())
+        counts = netlist_ref_counts((tmp / "cli.net").read_text())
         rec.check(
             "copy_has_edited_subsheet_value", comps.get("R201", {}).get("value") == "4k7-EDITED-2", comps.get("R201", {}).get("value")
         )
@@ -155,8 +157,8 @@ def main() -> int:
         )
         rec.check(
             "shared_sheet_second_instance_unique_ref_after_save",
-            len([c for c in comps if c.startswith(("R29", "R39")) or "?" in c]) == 2,
-            sorted(c for c in comps if c.startswith(("R29", "R39")) or "?" in c),
+            counts.get("R299") == 1 and len([c for c in counts if c.startswith(("R29", "R39")) or "?" in c]) == 2,
+            {c: n for c, n in counts.items() if c.startswith(("R29", "R39")) or "?" in c},
         )
         # workaround: save + revert (reload) makes the 2nd instance visible; then set its
         # per-instance reference through the sheet-bound Schematic

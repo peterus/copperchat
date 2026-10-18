@@ -36,35 +36,46 @@ def field(name, value, at, visible=True):
     return f
 
 
-def hang_probe(rec: Recorder) -> None:
-    """A full-definition update of a 2nd instance of a multi-unit symbol (fresh server)."""
+def full_definition_update(lib: str, one_call: bool) -> tuple[bool, str]:
+    """Update two instances of `lib` WITH their definition (as GetItems returns it) on a
+    fresh server; returns (responded, evidence)."""
     proj = fresh_fixture("blank")
     with Server(proj) as srv:
         k = srv.client(timeout_ms=120000)
         sch = k.get_schematic()
         load_libraries(k)
-        a = sch.place_symbol_from_library("Amplifier_Operational:LM358", v2(50.8, 50.8), reference="U1")
-        b = sch.place_symbol_from_library("Amplifier_Operational:LM358", v2(101.6, 50.8), reference="U2")
+        a = sch.place_symbol_from_library(lib, v2(50.8, 50.8), reference="U1")
+        b = sch.place_symbol_from_library(lib, v2(101.6, 50.8), reference="U2")
         a.value, b.value = "A", "B"
         quick = srv.client(timeout_ms=10000).get_schematic()
         t0 = time.monotonic()
-        ok = True
         try:
-            quick.update_items([a])
-            quick.update_items([b])  # with the definition, as returned by GetItems
+            if one_call:
+                quick.update_items([a, b])
+            else:
+                quick.update_items([a])
+                quick.update_items([b])
+            return True, f"ok in {time.monotonic() - t0:.2f}s"
         except Exception as e:  # noqa: BLE001
-            ok = False
             err = f"{type(e).__name__}: {e} after {time.monotonic() - t0:.1f}s"
-        alive = True
         try:
             srv.client(timeout_ms=5000).ping()
+            alive = True
         except Exception:  # noqa: BLE001
             alive = False
-        rec.check(
-            "multi_unit_full_definition_update_responds",
-            ok,
-            "ok" if ok else f"{err}; server answers ping afterwards: {alive}",
-        )
+        return False, f"{err}; server answers ping afterwards: {alive}"
+
+
+def hang_probe(rec: Recorder) -> None:
+    """A full-definition update of a 2nd instance of a multi-unit symbol (fresh servers)."""
+    for name, lib, one_call in (
+        ("multi_unit_full_definition_update_responds", "Amplifier_Operational:LM358", False),
+        ("multi_unit_full_definition_update_one_call_responds", "Amplifier_Operational:LM358", True),
+        ("multi_unit_project_lib_full_definition_update_responds", "ecc83-pp:ECC83", False),
+    ):
+        rec.check(name, *full_definition_update(lib, one_call))
+    # control: the same with single-unit parts
+    rec.check("single_unit_full_definition_update_responds", *full_definition_update("Device:R", False))
     # same edit without the definition (harness.update_symbols) on a fresh server
     proj = fresh_fixture("blank")
     with Server(proj) as srv:
@@ -105,7 +116,7 @@ def main() -> int:
             "fields_after_place",
             {f.name: (f.text.value, mm(f.text.position), f.visible) for f in (r.reference_field, r.value_field, r.footprint_field)},
         )
-        rec.check("fields_autoplaced_flag_after_headless_place", True, f"fields_autoplaced={r.fields_autoplaced}")
+        rec.note("fields_autoplaced_flag_after_headless_place", r.fields_autoplaced)
 
         r = by_id(sch, [sid(r)])[sid(r)]
         val_pos = mm(r.value_field.text.position)

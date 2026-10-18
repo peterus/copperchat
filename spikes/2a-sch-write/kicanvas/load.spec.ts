@@ -17,8 +17,8 @@ for (const p of projects) {
     page.on("console", (m) => {
       if (m.type() === "error") errors.push(m.text());
     });
-    const files = sch.map((f) => `/spikes/2a-sch-write/results/files/${p}/${f}`);
-    await page.goto(`/spikes/2a-sch-write/kicanvas/index.html?files=${files.join(",")}`);
+    const files = sch.map((f) => `/files/${p}/${f}`);
+    await page.goto(`/index.html?files=${files.join(",")}`);
     let loaded = true;
     try {
       await page.waitForFunction(() => (window as any).__embed?.hasAttribute("loaded"), null, { timeout: 60_000 });

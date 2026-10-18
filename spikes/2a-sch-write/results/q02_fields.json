@@ -7,14 +7,24 @@
       "evidence": "ConnectionError: Error receiving reply from KiCad: Timed out after 10.0s; server answers ping afterwards: False"
     },
     {
+      "name": "multi_unit_full_definition_update_one_call_responds",
+      "ok": false,
+      "evidence": "ConnectionError: Error receiving reply from KiCad: Timed out after 10.0s; server answers ping afterwards: False"
+    },
+    {
+      "name": "multi_unit_project_lib_full_definition_update_responds",
+      "ok": false,
+      "evidence": "ConnectionError: Error receiving reply from KiCad: Timed out after 10.0s; server answers ping afterwards: False"
+    },
+    {
+      "name": "single_unit_full_definition_update_responds",
+      "ok": true,
+      "evidence": "ok in 0.02s"
+    },
+    {
       "name": "multi_unit_definitionless_update_workaround",
       "ok": true,
       "evidence": "[('U1', 'A', 'Amplifier_Operational:LM358', 8), ('U2', 'B', 'Amplifier_Operational:LM358', 8)]"
-    },
-    {
-      "name": "fields_autoplaced_flag_after_headless_place",
-      "ok": true,
-      "evidence": "fields_autoplaced=False"
     },
     {
       "name": "value_footprint_datasheet_description",
@@ -109,6 +119,7 @@
         false
       ]
     },
-    "update_fields_ms": 11.7
+    "fields_autoplaced_flag_after_headless_place": false,
+    "update_fields_ms": 11.6
   }
 }

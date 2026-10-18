@@ -30,13 +30,18 @@ from harness import (
 
 
 def canon(item) -> dict:
-    """Comparable content of an item (symbol pins' own KIIDs are excluded: KiCad renews
-    pin UUIDs on every create, api_handler_sch.cpp)."""
+    """Comparable content of an item incl. the symbol definition's children (unpacked);
+    only the pins' own KIIDs are excluded: KiCad renews pin UUIDs on every create
+    (api_handler_sch.cpp)."""
     d = MessageToDict(item.proto, preserving_proto_field_name=True)
     if "definition" in d:
-        for c in d["definition"].get("items", []):
-            c.pop("item", None)  # packed Any, contains pin KIIDs
-        d["definition"].pop("items", None)
+        kids = []
+        for child in item.definition.items:
+            c = MessageToDict(child.item.proto, preserving_proto_field_name=True) if child.item is not None else {}
+            if child.kind == "SchematicPin":
+                c.pop("id", None)
+            kids.append({"kind": child.kind, "unit": child.unit, "item": c})
+        d["definition"]["items"] = sorted(kids, key=lambda x: repr(x))
     return d
 
 
@@ -133,7 +138,6 @@ def main() -> int:
         time.sleep(0.5)
         k_b = srv.client(timeout_ms=10000, name="copperchat-b")
         sch_b = k_b.get_schematic()
-        rec.check("other_client_works_while_stale_commit", True, "")
         cb = sch_b.begin_commit()
         made_b = sch_b.create_items([local_label("FROM_B", (152.4, 127.0))])[0]
         sch_b.push_commit(cb, "b")
@@ -149,10 +153,29 @@ def main() -> int:
             sid(lone) not in by_id(sch_a2, [sid(lone)]),
             "create_items after reconnect (no new commit) is visible?",
         )
-        rec.attempt("drop_stale_commit_by_old_id", lambda: sch_a2.drop_commit(stale))
-        lone2 = sch_a2.create_items([local_label("AFTER_DROP", (177.8, 152.4))])[0]
-        rec.check("after_dropping_stale_commit_writes_apply", sid(lone2) in by_id(sch_a2, [sid(lone2)]), "")
-        rec.check("dropped_stale_items_gone", not by_id(sch_a2, [sid(ghost), sid(lone)]), "")
+        # evidence that they were staged (not discarded): pushing the stale commit applies them
+        rec.attempt("push_stale_commit_by_old_id", lambda: sch_a2.push_commit(stale, "stale"))
+        applied = by_id(sch_a2, [sid(ghost), sid(lone)])
+        rec.check(
+            "pushed_stale_commit_applies_ghost_and_reconnect_writes",
+            sid(ghost) in applied and sid(lone) in applied,
+            sorted(i[:8] for i in applied),
+        )
+        lone2 = sch_a2.create_items([local_label("AFTER_PUSH", (177.8, 152.4))])[0]
+        rec.check("after_ending_stale_commit_writes_apply", sid(lone2) in by_id(sch_a2, [sid(lone2)]), "")
+        # the same scenario ended with drop_commit instead
+        k_c = srv.client(timeout_ms=10000, name="copperchat-c")
+        sch_c = k_c.get_schematic()
+        stale_c = sch_c.begin_commit()
+        ghost_c = sch_c.create_items([local_label("GHOST_C", (152.4, 177.8))])[0]
+        k_c.close()
+        time.sleep(0.5)
+        sch_c2 = srv.client(timeout_ms=10000, name="copperchat-c").get_schematic()
+        lone_c = sch_c2.create_items([local_label("AFTER_RECONNECT_C", (177.8, 177.8))])[0]
+        rec.attempt("drop_stale_commit_by_old_id", lambda: sch_c2.drop_commit(stale_c))
+        rec.check("dropped_stale_items_gone", not by_id(sch_c2, [sid(ghost_c), sid(lone_c)]), "")
+        lone_c2 = sch_c2.create_items([local_label("AFTER_DROP_C", (203.2, 177.8))])[0]
+        rec.check("after_dropping_stale_commit_writes_apply", sid(lone_c2) in by_id(sch_c2, [sid(lone_c2)]), "")
         c2 = sch_a2.begin_commit()
         rec.attempt("second_begin_commit_same_client", lambda: sch_a2.begin_commit(), expect_ok=False)
         sch_a2.drop_commit(c2)

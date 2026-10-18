@@ -18,9 +18,11 @@ from harness import (
     local_label,
     main_guard,
     netlist_components,
+    netlist_ref_counts,
     nets_by_pin,
     require_kicad,
     root_sch,
+    rss_mb,
     same_net,
     sid,
     update_symbols,
@@ -45,6 +47,7 @@ def main() -> int:
             expect_ok=False,
         )
         rec.note("load_all_libraries_s", round(load_libraries(k), 2))
+        rec.note("api_server_rss_mb_after_load", rss_mb(srv))
 
         # --- stock library, no reference: headless does not auto-annotate normal symbols
         r_auto = sch.place_symbol_from_library("Device:R", v2(25.4, 25.4))
@@ -162,8 +165,11 @@ def main() -> int:
         wrong = {kp: (cli.get(kp), n) for kp, n in expect.items() if not same_net(cli.get(kp), n)}
         rec.check("pin_ends_transform_cli_netlist_after_save", not wrong, wrong or f"{len(expect)} pins")
         comps = netlist_components((tmp / "cli.net").read_text())
+        counts = netlist_ref_counts((tmp / "cli.net").read_text())
         rec.check(
-            "multi_unit_one_component_in_netlist", "U1" in comps and "U1A" not in comps, sorted(c for c in comps if c.startswith("U1"))[:5]
+            "multi_unit_one_component_in_netlist",
+            counts.get("U1") == 1 and not any(c.startswith("U1") and c[2:3].isalpha() for c in counts),
+            {c: n for c, n in counts.items() if c.startswith("U1")},
         )
         rec.check(
             "cli_netlist_lib_ids",

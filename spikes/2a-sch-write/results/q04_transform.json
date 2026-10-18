@@ -64,7 +64,7 @@
     {
       "name": "shared_subsheet_edit_visible_in_both_instances",
       "ok": true,
-      "evidence": "ampli_ht.kicad_sch is used by two sheet instances (one screen)"
+      "evidence": "{'other_instance_ref': 'R301', 'pos': (67.31, 50.8), 'note': 'ampli_ht.kicad_sch: two sheet instances, one screen'}"
     }
   ],
   "notes": {

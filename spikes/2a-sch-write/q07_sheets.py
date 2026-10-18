@@ -190,7 +190,13 @@ def main() -> int:
 
         moved = Path(tempfile.mkdtemp(prefix="s2a-q07-moved-")) / "blank"
         shutil.copytree(proj, moved, ignore=shutil.ignore_patterns("*.lck"))
-        cli2 = cli_netlist(root_sch(moved), tmp)
+        # hide the original directory so an absolute Sheetfile leak cannot be resolved
+        hidden = proj.with_name(proj.name + "-hidden")
+        proj.rename(hidden)
+        try:
+            cli2 = cli_netlist(root_sch(moved), tmp)
+        finally:
+            hidden.rename(proj)
         rec.check("relocated_copy_loads_sub_sheet", cli2.get(("R201", "1")) == cli.get(("R201", "1")) is not None, cli2.get(("R201", "1")))
 
     # reopen: hierarchy, sub-sheet content and page numbers persist

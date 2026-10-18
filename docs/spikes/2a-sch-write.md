@@ -43,8 +43,10 @@ They are covered in Q4/Q5.
   templates, as `launcher.seed_library_tables` does).
 - Server: `kicad-cli api-server --socket S PROJECT.kicad_pro`, then
   `open_document(root.kicad_sch)` (spike 1C), then `load_all_libraries()` +
-  `wait_for_libraries()` before any placement: **8.2–9.2 s** with all stock
-  libraries, the process then holds **~5 GB RSS** (input for spike 2B).
+  `wait_for_libraries()` before any placement: **8.3 s** with all stock
+  libraries (`q01` note `load_all_libraries_s`; 8–9 s in every script run), the
+  api-server then holds **4.9 GB RSS** (`api_server_rss_mb_after_load`, VmRSS;
+  input for spike 2B).
 - Fixtures (`make_fixtures.sh`, never hand-edited): `ecc83-pp` and
   `complex_hierarchy` copied from the image's demos and upgraded with
   `kicad-cli sch upgrade --force`; `blank` = an empty project + schematic created
@@ -65,19 +67,20 @@ They are covered in Q4/Q5.
 | Question | Result | Failed checks (findings, see below) |
 |---|---|---|
 | q01_place | 14 pass / 1 fail | rotate_then_mirror_matrix_as_requested |
-| q02_fields | 14 pass / 2 fail | multi_unit_full_definition_update_responds, multi_unit_fields_synced_by_kicad |
+| q02_fields | 14 pass / 4 fail | multi_unit_full_definition_update_responds, multi_unit_full_definition_update_one_call_responds, multi_unit_project_lib_full_definition_update_responds, multi_unit_fields_synced_by_kicad |
 | q03_connect | 36 pass / 4 fail | netlist_job_reflects_unsaved_edits, netlist_job_reflects_edits_after_save, png_job_reflects_edits_after_save, revert_refreshes_export_jobs |
 | q04_transform | 10 pass / 3 fail | move_symbol_moves_fields, move_symbol_drags_attached_wires, subsheet_update_via_unbound_schematic_applies |
-| q05_delete | 12 pass / 4 fail | dangling_junction_kept_after_push, delete_wire_keeps_junction, delete_wire_keeps_neighbour_segments, collinear_pair_kept_separate_on_create |
-| q06_commit | 24 pass / 3 fail | update_of_missing_item_raises, create_with_existing_uuid_raises, recreate_with_sibling_keeps_library_link |
+| q05_delete | 15 pass / 4 fail | dangling_junction_kept_after_push, delete_wire_keeps_junction, delete_wire_keeps_neighbour_segments, collinear_pair_kept_separate_on_create |
+| q06_commit | 26 pass / 3 fail | update_of_missing_item_raises, create_with_existing_uuid_raises, recreate_with_sibling_keeps_library_link |
 | q07_sheets | 20 pass / 2 fail | relative_sheetfile_new_sheet_save, workaround_field_fix_inside_create_commit |
 | q08_save_latency | 10 pass / 4 fail | new_symbol_on_shared_sheet_visible_in_other_instance, copy_without_save_finds_all_hierarchy_files, copy_without_save_has_subsheet_edits, shared_sheet_second_instance_unique_ref_after_save |
 | q09_bbox | 4 pass / 1 fail | api_bbox_matches_plot_within_0_6mm |
 | q10_duplicate | 9 pass / 2 fail | definition_keeps_all_body_style_pins, dup_symbols_create_items_keep_library_link |
-| q11_files_load | 9 pass / 0 fail | |
-| q12_kicanvas | 7 pass / 1 fail | kicanvas_loads_q10_duplicate_B |
+| q11_files_load | 9 pass / 0 fail |  |
+| q12_kicanvas (host, separate run) | 7 pass / 1 fail | kicanvas_loads_q10_duplicate_B |
 
-Each FAIL is a documented KiCad behaviour; where it matters, a sibling check
+Each FAIL is a documented KiCad behaviour (listed in `run_all.py` `EXPECTED_FAIL`; any
+other failure makes `run_all.py` exit 1); where it matters, a sibling check
 verifies the API-only workaround (PASS). None of them needs a file edit.
 
 ### Place (Q1)
@@ -113,7 +116,7 @@ verifies the API-only workaround (PASS). None of them needs a file edit.
 
 - Value, footprint, datasheet, description, custom fields (`user_fields`: add,
   position, visibility, remove), DNP and exclude-from-BOM/board all round-trip
-  through `update_items` (~13 ms), persist after save + reopen and appear in the
+  through `update_items` (12 ms), persist after save + reopen and appear in the
   `kicad-cli` netlist (`dnp`, `exclude_from_bom` properties).
 - Field positions are absolute and kept as sent. Headless placement does **no
   field auto-placement** (`fields_autoplaced=false`, library default offsets:
@@ -123,9 +126,13 @@ verifies the API-only workaround (PASS). None of them needs a file edit.
   update all units of a reference (`multi_unit_fields_synced_by_client` PASS).
 - **KiCad bug (server hang)**: `update_items` of a multi-unit symbol **with its
   `definition`** (as `GetItems` returns it) hangs the server once a second
-  instance of the same multi-unit library symbol is updated (also two in one
-  call; LM358, ECC83; not for single-unit parts). The server stops answering
-  everything, even `ping`; main thread idles in `wxMicroSleep`, no CPU, no log.
+  instance of the same multi-unit library symbol is updated: checked for LM358
+  in two calls and in one call, and for the project-library ECC83; the same
+  sequence with `Device:R` (single unit) responds in 0.02 s
+  (`single_unit_full_definition_update_responds`). The server then stops
+  answering everything, even `ping`. Manual observation while probing (not
+  recorded by the harness): no CPU use, nothing in the server log, and `gdb`
+  shows the main thread sleeping in a `wxMicroSleep` loop.
   Workaround verified: **clear `definition` before every symbol update**
   (KiCad's "definition-less update" keeps library link and pins;
   `harness.update_symbols`). Every symbol update in this spike uses it.
@@ -137,7 +144,8 @@ verifies the API-only workaround (PASS). None of them needs a file edit.
   GUI: wire end on pin end; **T-joint connects with and without a junction**
   (KiCad does not split the host wire; `wires_not_split_or_merged_on_push`); a
   label on a wire interior names the net; crossing wires without a junction stay
-  separate; a 0.05 mm near miss does not connect (ERC flags it).
+  separate; a 0.05 mm near miss does not connect (ERC reports `pin_not_connected`,
+  `endpoint_off_grid` and `unconnected_wire_endpoint` at that point).
 - **A wire passing over a foreign pin end connects it** (`OVER` net got R5.2):
   the "silent short" of the spec's anti-goals is real — the router must keep
   foreign pin ends off wire interiors (§5.2 already says so).
@@ -145,7 +153,8 @@ verifies the API-only workaround (PASS). None of them needs a file edit.
   Its members are bare KIIDs, but they resolve: pin KIIDs = the placed symbols'
   `definition.pins[].id`, scoped by the netlist's per-sheet `path`
   (`harness.nets_by_pin`). Verified equal to `kicad-cli`'s netlist on the edited
-  blank project and on the unedited hierarchical demo (164 pins, 0 differences;
+  blank project (Q3 `three_netlists_agree`) and, in Q8, on the unedited
+  hierarchical demo (164 pins, 0 differences;
   `live_netlist_matches_cli_on_hierarchical_demo`). This contradicts the comment
   in `kicad_tools/access.py` (`netlist_nodes`) that the KIIDs cannot be resolved.
 - **All API export jobs are stale after edits** (netlist, PNG; same code path as
@@ -169,11 +178,12 @@ verifies the API-only workaround (PASS). None of them needs a file edit.
 - **Sub-sheet updates must go through `sch.for_sheet(instance)`**: an update via the
   unbound `kicad.get_schematic()` returns without error and changes nothing
   (spike 2C's finding confirmed). An edit on a shared sheet file
-  (`ampli_ht.kicad_sch`, two instances) is visible in both instances.
+  (`ampli_ht.kicad_sch`, two instances) is visible in both instances (`R201`
+  moved; the other instance lists it as `R301` at the new position).
 
 ### Delete (Q5)
 
-- `remove_items` / `remove_items_by_id` delete symbols, wires, labels, junctions,
+- `remove_items` / `remove_items_by_id` delete symbols, wires, labels, junctions (a surviving T junction, `delete_junction`),
   no-connects; the netlist updates live. Deleting a symbol leaves its wires and
   no-connects behind (dangling). Deleting an unknown id raises nothing.
 - **The push runs KiCad's local connectivity cleanup** (`SCH_COMMIT::pushSchEdit`
@@ -198,8 +208,10 @@ verifies the API-only workaround (PASS). None of them needs a file edit.
   the staged items. **The same client name** (CopperChat uses a fixed
   `"copperchat"`, `session.py`) after reconnecting: `begin_commit` fails
   (`already has a commit in progress`) and plain `create_items` are **staged
-  silently into the stale commit**; `drop_commit` with the old commit id cleans
-  up and later writes apply. So: keep the `Commit` id and always drop it on
+  silently into the stale commit** (proven: pushing the stale commit by its old
+  id applies both the lost client's and the reconnected client's items);
+  `drop_commit` with the old commit id instead discards them, and later writes
+  apply. So: keep the `Commit` id and always drop it on
   cancellation (shielded), or restart the session (§5.3 is right).
 - **kipy ignores per-item statuses**: `update_items` of a missing item returns an
   item and raises nothing; `create_items` with an existing UUID likewise returns an
@@ -209,7 +221,8 @@ verifies the API-only workaround (PASS). None of them needs a file edit.
   multi-unit symbol unit (custom field, DNP), a plain symbol, wires, a local and a
   global label and a no-connect, then `create_items` with the pre-image objects
   (incl. the symbol `definition`) restores the same UUIDs, identical content
-  (except the symbols' pin UUIDs, which KiCad renews on every create),
+  incl. every definition child (except the symbols' pin UUIDs, which KiCad
+  renews on every create),
   identical netlist, persisted after save + reopen (35 ms). Restoring an update
   = `update_items` with the pre-image.
 - **Limit for symbols**: the definition that the API returns and accepts is not
@@ -251,8 +264,8 @@ verifies the API-only workaround (PASS). None of them needs a file edit.
 ### Save, copy, ERC latency (Q8)
 
 - complex_hierarchy: 119 symbol unit instances, 3 sheet instances; edits on the
-  shared sub-sheet + a new sheet with a part. Medians of 3 rounds: `save()` 53 ms,
-  `save_copy` (root `save_as` + byte copy of the hierarchy files) 37 ms,
+  shared sub-sheet + a new sheet with a part. Medians of 3 rounds: `save()` 63 ms,
+  `save_copy` (root `save_as` + byte copy of the hierarchy files) 36 ms,
   `kicad-cli sch erc` **2.8 s** (process start + library load), total **2.9 s**.
 - After `save()` the copy holds the edited sub-sheet value, the new sub-sheet
   symbol with its label net, and the new sheet file + its part. Without `save()`
@@ -293,7 +306,7 @@ verifies the API-only workaround (PASS). None of them needs a file edit.
 
 ### Files load (Q11, Q12)
 
-- All 9 projects saved by the spike (incl. the edited hierarchical demo and both
+- All 8 projects saved by the spike (incl. the edited hierarchical demo and both
   new-sheet projects) load in `kicad-cli`: netlist, SVG of every sheet, ERC.
 - KiCanvas (vendored bundle) renders 7 of 8 without page/console errors; the one
   failure is the method-B duplicate above.
@@ -328,7 +341,7 @@ needed. Pin stays at KiCad `0616634034` / kipy `87b945a0`.
     editing turn must do this, else the agent view shows the pre-edit state.
   - `save_copy`: `save()` first (always, once modified); new sheet files only
     exist after it.
-  - `load_all_libraries` + `wait_for_libraries` after open (~8–9 s, ~5 GB RSS
+  - `load_all_libraries` + `wait_for_libraries` after open (~8.3 s, 4.9 GB RSS
     with all stock libraries; spike 2B decides how to bound that).
 - **`kicad_tools/edit` (geometry.py):** pin ends from `definition.pins` +
   `geom.transform` (filter the instance's unit / body style); bbox from library

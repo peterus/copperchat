@@ -29,7 +29,7 @@
     {
       "name": "project_lib_place",
       "ok": true,
-      "evidence": "[<kipy.common_types.LibraryIdentifier object at 0x7f90caf55d90>, <kipy.common_types.LibraryIdentifier object at 0x7f90caf41f20>, <kipy.common_types.LibraryIdentifier object at 0x7f90caf416a0>]"
+      "evidence": "[<kipy.common_types.LibraryIdentifier object at 0x7fb33e949c70>, <kipy.common_types.LibraryIdentifier object at 0x7fb33e936030>, <kipy.common_types.LibraryIdentifier object at 0x7fb33e9357b0>]"
     },
     {
       "name": "multi_unit_units",
@@ -69,7 +69,7 @@
     {
       "name": "multi_unit_one_component_in_netlist",
       "ok": true,
-      "evidence": "['U1', 'U10', 'U11', 'U12', 'U13']"
+      "evidence": "{'U1': 1, 'U10': 1, 'U11': 1, 'U12': 1, 'U13': 1, 'U14': 1, 'U15': 1, 'U16': 1, 'U17': 1, 'U18': 1, 'U19': 1}"
     },
     {
       "name": "cli_netlist_lib_ids",
@@ -78,7 +78,8 @@
     }
   ],
   "notes": {
-    "load_all_libraries_s": 8.3,
+    "load_all_libraries_s": 8.27,
+    "api_server_rss_mb_after_load": 4919.7,
     "multi_unit_reference_read_back": [
       "U1",
       "U1",
@@ -148,10 +149,6 @@
     },
     "pin_ends_example": {
       "U11": {
-        "1": [
-          63.5,
-          101.6
-        ],
         "3": [
           48.26,
           104.14
@@ -159,6 +156,10 @@
         "2": [
           48.26,
           99.06
+        ],
+        "1": [
+          63.5,
+          101.6
         ]
       }
     }

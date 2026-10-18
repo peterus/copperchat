@@ -163,10 +163,15 @@ def main() -> int:
         now = mm(by_id(sub, [sid(sym)])[sid(sym)].position)
         rec.check("subsheet_update_via_for_sheet_applies", now == (round(start[0] + 5.08, 4), start[1]), now)
         other = sch.for_sheet(inst[1])
+        twin = next((s for s in other.get_symbols() if sid(s) == sid(sym)), None)
         rec.check(
             "shared_subsheet_edit_visible_in_both_instances",
-            mm(by_id(other, [sid(sym)])[sid(sym)].position) == now,
-            "ampli_ht.kicad_sch is used by two sheet instances (one screen)",
+            twin is not None and mm(twin.position) == now,
+            {
+                "other_instance_ref": twin and twin.reference,
+                "pos": twin and mm(twin.position),
+                "note": "ampli_ht.kicad_sch: two sheet instances, one screen",
+            },
         )
         rec.note("subsheet_symbol", {"ref": sym.reference, "path_instances": [str(i.path.proto.path_human_readable) for i in inst]})
     return rec.finish()

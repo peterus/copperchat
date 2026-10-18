@@ -4,7 +4,7 @@
     {
       "name": "staged_create_response_has_uuid",
       "ok": true,
-      "evidence": "('300ca6e5', 'fac2c45c')"
+      "evidence": "('c9184610', 'b74f9ec6')"
     },
     {
       "name": "staged_create_invisible_by_id",
@@ -24,7 +24,7 @@
     {
       "name": "after_push_visible",
       "ok": true,
-      "evidence": "['23503247', '300ca6e5', 'fac2c45c']"
+      "evidence": "['b74f9ec6', 'c9184610', 'd67ed1fc']"
     },
     {
       "name": "staged_delete_still_visible_before_push",
@@ -52,11 +52,6 @@
       "evidence": "{'added': [], 'removed': [], 'changed': []}"
     },
     {
-      "name": "other_client_works_while_stale_commit",
-      "ok": true,
-      "evidence": ""
-    },
-    {
       "name": "other_client_push_visible",
       "ok": true,
       "evidence": ""
@@ -77,17 +72,32 @@
       "evidence": "create_items after reconnect (no new commit) is visible?"
     },
     {
+      "name": "push_stale_commit_by_old_id",
+      "ok": true,
+      "evidence": "ok: None"
+    },
+    {
+      "name": "pushed_stale_commit_applies_ghost_and_reconnect_writes",
+      "ok": true,
+      "evidence": "['c12e2f96', 'f6b94f0f']"
+    },
+    {
+      "name": "after_ending_stale_commit_writes_apply",
+      "ok": true,
+      "evidence": ""
+    },
+    {
       "name": "drop_stale_commit_by_old_id",
       "ok": true,
       "evidence": "ok: None"
     },
     {
-      "name": "after_dropping_stale_commit_writes_apply",
+      "name": "dropped_stale_items_gone",
       "ok": true,
       "evidence": ""
     },
     {
-      "name": "dropped_stale_items_gone",
+      "name": "after_dropping_stale_commit_writes_apply",
       "ok": true,
       "evidence": ""
     },
@@ -109,7 +119,7 @@
     {
       "name": "recreate_with_original_uuids",
       "ok": true,
-      "evidence": "{'missing': [], 'returned_ids': ['2ef32412', '49f973ff', '674c3e2b', '77b20d86', '8997b422', '8b4bbdfe', 'aefe0461', 'e9edbad7']}"
+      "evidence": "{'missing': [], 'returned_ids': ['284d29c0', '33a2b198', '43caabbe', '979c5426', 'cd3f5235', 'd30141a2', 'e4375a66', 'f51cca7e']}"
     },
     {
       "name": "recreated_content_equal",
@@ -141,16 +151,16 @@
     "staged_update_visible_before_push": true,
     "corner_junction_dropped_on_create": true,
     "pre_images": {
-      "e9edbad7": "SchematicSymbolInstance",
-      "aefe0461": "SchematicSymbolInstance",
-      "8997b422": "SchematicLine",
-      "674c3e2b": "SchematicLine",
-      "2ef32412": "SchematicLine",
-      "49f973ff": "LocalLabel",
-      "8b4bbdfe": "NoConnectMarker",
-      "77b20d86": "GlobalLabel"
+      "e4375a66": "SchematicSymbolInstance",
+      "cd3f5235": "SchematicSymbolInstance",
+      "d30141a2": "SchematicLine",
+      "f51cca7e": "SchematicLine",
+      "979c5426": "SchematicLine",
+      "33a2b198": "LocalLabel",
+      "284d29c0": "NoConnectMarker",
+      "43caabbe": "GlobalLabel"
     },
-    "compensate_ms": 35.2,
-    "root": "/tmp/s2a-blank-ee8cxat_/blank/blank.kicad_sch"
+    "compensate_ms": 35.4,
+    "root": "/tmp/s2a-blank-rs4b_sja/blank/blank.kicad_sch"
   }
 }

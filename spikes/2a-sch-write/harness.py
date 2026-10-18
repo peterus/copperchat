@@ -215,14 +215,19 @@ def load_libraries(k, timeout_s: float = 300.0) -> float:
     """LoadAllLibraries + wait; returns seconds. Required before PlaceSymbolFromLibrary."""
     t0 = time.monotonic()
     k.load_all_libraries()
-    k.wait_for_libraries(timeout=timeout_s) if _accepts_timeout(k) else k.wait_for_libraries()
+    k.wait_for_libraries(timeout_s=timeout_s)
     return time.monotonic() - t0
 
 
-def _accepts_timeout(k) -> bool:
-    import inspect
-
-    return "timeout" in inspect.signature(k.wait_for_libraries).parameters
+def rss_mb(srv: Server) -> float | None:
+    """VmRSS of the api-server process (the spike runs it as a child, same container)."""
+    try:
+        for line in Path(f"/proc/{srv.proc.pid}/status").read_text().splitlines():
+            if line.startswith("VmRSS:"):
+                return round(int(line.split()[1]) / 1024, 1)
+    except (OSError, AttributeError):
+        return None
+    return None
 
 
 def run_cli(*args: str, cwd: Path | None = None, timeout: float = 300) -> subprocess.CompletedProcess:
@@ -422,6 +427,14 @@ def netlist_components(text: str) -> dict[str, dict]:
         d["props"] = {p[1][1]: (p[2][1] if len(p) > 2 else "") for p in comp if isinstance(p, list) and p and p[0] == "property"}
         out[ref] = d
     return out
+
+
+def netlist_ref_counts(text: str) -> dict[str, int]:
+    """Component entries per reference (a duplicate reference shows up as count > 1)."""
+    from collections import Counter
+
+    root = sexpr(text)
+    return dict(Counter(_child(c, "ref")[1] for c in _child(root, "components")[1:]))
 
 
 def job_netlist(sch, out_dir: Path) -> dict[tuple[str, str], str]:

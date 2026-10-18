@@ -211,11 +211,13 @@ def main() -> int:
             for v in vios
         )
         rec.check("erc_no_connect_marker_suppresses_pin_not_connected", not nc_pin_flagged, types)
-        rec.check(
-            "erc_flags_near_miss",
-            any(v["type"] in ("pin_not_connected", "unconnected_wire_endpoint", "wire_dangling") for v in vios),
-            types,
-        )
+        miss_at = (p7["2"][0] + 0.05, p7["2"][1])
+        near = [
+            v["type"]
+            for v in vios
+            if any(abs(i["pos"]["x"] - miss_at[0]) < 0.06 and abs(i["pos"]["y"] - miss_at[1]) < 0.06 for i in v.get("items", []))
+        ]
+        rec.check("erc_flags_near_miss_at_its_position", bool(near), {"at": miss_at, "violations_there": near})
         rec.note("erc_violation_types", {t: sum(1 for v in vios if v["type"] == t) for t in types})
         keep_artifact(proj, "q03_connect")
     return rec.finish()

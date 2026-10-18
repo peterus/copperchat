@@ -88,11 +88,26 @@ def main() -> int:
         rec.check("delete_symbol_leaves_its_no_connect", ids[7] in left, "no-connect on former R2.1 present")
         nets = nets_by_pin(sch)
         rec.check("netlist_after_symbol_delete", not any(r == "R2" for r, _ in nets), sorted({r for r, _ in nets}))
-        # delete label, junction, no-connect by id
+        # delete label and no-connect by id (the T junction is already gone, see above)
         with commit(sch, "delete misc"):
-            sch.remove_items_by_id([after[ids[6]].id, after[ids[5]].id, after[ids[7]].id])
+            sch.remove_items_by_id([after[ids[6]].id, after[ids[7]].id])
         left = by_id(sch, ids)
-        rec.check("delete_label_junction_no_connect", not any(i in left for i in ids[5:8]), sorted(i[:8] for i in left))
+        rec.check("delete_label_and_no_connect", ids[6] not in left and ids[7] not in left, sorted(i[:8] for i in left))
+        # a junction that survives the cleanup (real T), then deleted explicitly
+        with commit(sch, "T"):
+            tw = sch.create_items(
+                [wire((25.4, 177.8), (50.8, 177.8)), wire((50.8, 177.8), (76.2, 177.8)), wire((50.8, 177.8), (50.8, 190.5))]
+            )
+            tj = sch.create_items([junction((50.8, 177.8))])[0]
+        rec.check("t_junction_present_before_delete", sid(tj) in by_id(sch, [sid(tj)]), "junction on a 3-wire T")
+        with commit(sch, "delete junction"):
+            sch.remove_items_by_id([tj.id])
+        rec.check("delete_junction", sid(tj) not in by_id(sch, [sid(tj)]), "junction gone")
+        rec.check(
+            "delete_junction_keeps_wires",
+            len(by_id(sch, [sid(w) for w in tw])) >= 2,
+            {i[:8]: (mm(w.start), mm(w.end)) for i, w in by_id(sch, [sid(w) for w in tw]).items()},
+        )
         nets = nets_by_pin(sch)
         rec.check("netlist_after_label_delete", not (nets.get(("R1", "1")) or "").endswith("KEEP"), nets.get(("R1", "1")))
         # two collinear segments end to end, nothing else at the joint

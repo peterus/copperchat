@@ -29,7 +29,7 @@
     {
       "name": "delete_wire_keeps_neighbour_segments",
       "ok": false,
-      "evidence": "{'c7e36163': ((50.8, 54.61), (50.8, 63.5)), 'bc935f0b': ((50.8, 63.5), (101.6, 63.5)), '5d3f5135': ((101.6, 63.5), (101.6, 54.61))}"
+      "evidence": "{'c97a2535': ((50.8, 54.61), (50.8, 63.5)), '73314b66': ((50.8, 63.5), (101.6, 63.5)), 'f277e962': ((101.6, 63.5), (101.6, 54.61))}"
     },
     {
       "name": "after_branch_delete_r3_disconnected",
@@ -57,9 +57,24 @@
       "evidence": "['R1', 'R3']"
     },
     {
-      "name": "delete_label_junction_no_connect",
+      "name": "delete_label_and_no_connect",
       "ok": true,
-      "evidence": "['5d3f5135', 'bc935f0b', 'c7e36163']"
+      "evidence": "['73314b66', 'c97a2535', 'f277e962']"
+    },
+    {
+      "name": "t_junction_present_before_delete",
+      "ok": true,
+      "evidence": "junction on a 3-wire T"
+    },
+    {
+      "name": "delete_junction",
+      "ok": true,
+      "evidence": "junction gone"
+    },
+    {
+      "name": "delete_junction_keeps_wires",
+      "ok": true,
+      "evidence": "{'b0357637': ((25.4, 177.8), (50.8, 177.8)), '2251afa2': ((50.8, 177.8), (76.2, 177.8)), 'e746db2a': ((50.8, 177.8), (50.8, 190.5))}"
     },
     {
       "name": "netlist_after_label_delete",
@@ -69,7 +84,7 @@
     {
       "name": "collinear_pair_kept_separate_on_create",
       "ok": false,
-      "evidence": "{'939b5750': ((127.0, 127.0), (152.4, 127.0))}"
+      "evidence": "{'505a9fa1': ((127.0, 127.0), (152.4, 127.0))}"
     },
     {
       "name": "delete_unknown_id",
@@ -93,7 +108,7 @@
           50.8,
           63.5
         ],
-        "c7e36163"
+        "c97a2535"
       ],
       [
         [
@@ -104,7 +119,7 @@
           101.6,
           54.61
         ],
-        "5d3f5135"
+        "f277e962"
       ],
       [
         [
@@ -115,7 +130,7 @@
           101.6,
           63.5
         ],
-        "bc935f0b"
+        "73314b66"
       ]
     ]
   }

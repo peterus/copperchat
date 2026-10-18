@@ -34,7 +34,7 @@
     {
       "name": "save_plus_copy_plus_erc_under_10s",
       "ok": true,
-      "evidence": "[2882, 2878, 2914]"
+      "evidence": "[2893, 2909, 2903]"
     },
     {
       "name": "document_clean_after_save",
@@ -64,7 +64,7 @@
     {
       "name": "shared_sheet_second_instance_unique_ref_after_save",
       "ok": false,
-      "evidence": "['R299']"
+      "evidence": "{'R299': 2}"
     },
     {
       "name": "workaround_save_revert_then_per_instance_reference",
@@ -75,31 +75,31 @@
   "notes": {
     "timings_ms": {
       "save": [
-        41,
-        64,
-        52
+        49,
+        70,
+        63
       ],
       "save_copy": [
-        35,
         38,
+        36,
         36
       ],
       "erc": [
         2806,
-        2776,
-        2825
+        2803,
+        2805
       ],
       "total": [
-        2882,
-        2878,
-        2914
+        2893,
+        2909,
+        2903
       ]
     },
     "median_ms": {
-      "save": 52,
+      "save": 63,
       "save_copy": 36,
-      "erc": 2806,
-      "total": 2882
+      "erc": 2805,
+      "total": 2903
     },
     "files_rewritten_by_save": [
       "ampli_ht.kicad_sch",
