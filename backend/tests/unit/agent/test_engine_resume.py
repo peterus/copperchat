@@ -62,7 +62,14 @@ async def test_rate_limit_parks_publishes_and_auto_resumes(make_engine, db, unti
     await until(lambda: len(agent.prompts) == 1)
     m2, _ = await engine.submit_ex("b", "m2", [])
     gate.set()
-    await until(lambda: engine.rate_limited_until is not None)
+    # Wait for the rate-limited frame, the last step of parking: rate_limited_until is
+    # set *first* (so nothing new is enqueued), before the message metadata, the
+    # status and the persisted limit are written - polling it raced those writes.
+    frames: list[Any] = []
+    async with asyncio.timeout(2.0):
+        while not any(f.type == "rate-limited" for f in frames):
+            frames.append(await sub.__anext__())
+    assert engine.rate_limited_until is not None
     repo = MessageRepo(db)
     r1, r2 = await repo.get(m1.id), await repo.get(m2.id)
     assert r1 is not None and r1.status == "queued" and r1.metadata["rateLimited"] is True
@@ -71,7 +78,7 @@ async def test_rate_limit_parks_publishes_and_auto_resumes(make_engine, db, unti
     await engine.submit_ex("c", "m3", [])  # stays queued while parked
     await asyncio.sleep(0.05)
     assert len(agent.prompts) == 1
-    frames = await drain(sub)
+    frames += await drain(sub)
     assert any(f.type == "rate-limited" for f in frames)
     assert any(f.type == "run-finished" and f.reason == "rate_limited" for f in frames)
     assert not any(f.type == "message" and f.message.kind == "error" for f in frames)
