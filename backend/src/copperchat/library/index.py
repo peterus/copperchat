@@ -18,7 +18,8 @@ Scope = Literal["project", "global"]
 _TOKEN = re.compile(r"[a-z0-9]+")
 W_NAME, W_KEYWORDS, W_DESC, W_LIB = 8.0, 4.0, 1.0, 0.5
 _PREFIX_FACTOR = 0.6
-_MAX_EXPANSIONS = 300
+_MAX_SHORT_EXPANSIONS = 300  # 2-character prefixes only; longer prefixes expand fully
+MAX_TERMS = 16
 
 
 def tokenize(text: str) -> list[str]:
@@ -91,7 +92,8 @@ class Index:
         if len(term) >= 2:
             i = bisect.bisect_left(self._vocab, term)
             n = 0
-            while i < len(self._vocab) and self._vocab[i].startswith(term) and n < _MAX_EXPANSIONS:
+            cap = _MAX_SHORT_EXPANSIONS if len(term) == 2 else len(self._vocab)
+            while i < len(self._vocab) and self._vocab[i].startswith(term) and n < cap:
                 if self._vocab[i] != term:
                     out.append((self._vocab[i], _PREFIX_FACTOR))
                 i += 1
@@ -103,7 +105,7 @@ class Index:
     ) -> list[tuple[str, float]]:
         """(lib_id, score), best first. Items matching every query term rank above
         partial matches; equal scores put project libraries first."""
-        terms = tokenize(query)
+        terms = list(dict.fromkeys(tokenize(query)))[:MAX_TERMS]
         if not terms or limit <= 0:
             return []
         scores: dict[int, float] = defaultdict(float)

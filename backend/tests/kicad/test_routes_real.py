@@ -24,7 +24,7 @@ def test_open_and_agent_view_over_http(make_settings: Callable[..., Settings]) -
         body = client.post(f"/api/projects/{pid}/open").json()
         # E3: the open route starts the symbol library warm-up in the background.
         library = library_for(client.app.state.sessions.current())  # type: ignore[attr-defined]
-        assert library.state in ("loading", "ready")
+        assert library.started and library.state in ("loading", "ready")
         assert body["viewFiles"]["sch"] == ["complex_hierarchy.kicad_sch", "ampli_ht.kicad_sch"]
         sub = client.get(f"/api/projects/{pid}/view/files/ampli_ht.kicad_sch")
         assert sub.status_code == 200 and sub.content.startswith(b"(kicad_sch")

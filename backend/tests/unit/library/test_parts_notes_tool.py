@@ -72,3 +72,14 @@ def test_registered_and_flags() -> None:
         assert specs[name].requires_kicad and not specs[name].mutating
     assert specs["parts_get_notes"].requires_kicad is False
     assert not specs["parts_get_notes"].mutating
+
+
+async def test_large_notes_truncated(project: Project, make_settings: Any) -> None:
+    from copperchat.parts import MAX_NOTES_BYTES
+
+    notes = project.dir / "docs" / "parts" / "BIG" / "notes.md"
+    notes.parent.mkdir(parents=True)
+    notes.write_text("x" * (MAX_NOTES_BYTES + 100))
+    result = await TOOL.handler(_ctx(project, make_settings), {"mpn": "BIG"})
+    assert result.data is not None and result.data["truncated"] is True
+    assert len(result.data["notes"]) == MAX_NOTES_BYTES

@@ -105,3 +105,17 @@ def test_row_dict_shape() -> None:
         "scope",
     }
     assert d["footprint"] is None and len(d["footprint_filters"]) == 6
+
+
+def test_long_prefix_expands_beyond_300_tokens() -> None:
+    idx = Index()
+    for i in range(900):
+        idx.add(f"MCU:STM32F{i:03d}xx", "MCU", "arm")
+    idx.add("MCU:STM32F999xx", "MCU", "arm cortex")
+    idx.finish()
+    assert idx.search("stm32f cortex")[0][0] == "MCU:STM32F999xx"
+
+
+def test_repeated_terms_count_once() -> None:
+    idx = _index(("Device:R", "Resistor", "res", "global"), ("Device:C", "Cap", "", "global"))
+    assert idx.search("resistor resistor resistor") == idx.search("resistor")

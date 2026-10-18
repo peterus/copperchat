@@ -161,3 +161,32 @@ def test_active_part_note(project: Project) -> None:
     assert bad is not None and bad["reason"] == "invalid_mpn"
     for ref in ("R1", "C7", "D1", "J2", "#PWR01"):
         assert active_part_note(project, ref, {}) is None
+
+
+def test_passives_package_parsing_is_validated() -> None:
+    assert preferences_from_raw({"passives_package": "0805_2012Metric"}).passives_package == "0805"
+    assert preferences_from_raw({"passives_package": "0806"}).passives_package is None
+    assert preferences_from_raw({"passives_package": "2012"}).passives_package is None
+
+
+def test_suggestion_drops_size_specific_suffix() -> None:
+    fp = "Capacitor_SMD:C_0603_1608Metric_Pad1.08x0.95mm_HandSolder"
+    (note,) = preference_notes(_PREFS, "Device:C", fp, None)
+    assert note["suggested_footprint"] == "Capacitor_SMD:C_0805_2012Metric"
+
+
+def test_seed_rolls_back_on_failure(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
+    import copperchat.library.prefs as prefs_mod
+
+    def boom(*_: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(prefs_mod, "write_user_skill", boom)
+    with pytest.raises(OSError):
+        seed_user_part_preferences(settings)
+    layers = SkillLayers.for_project(settings, None)
+    assert not (layers.user_root / PREFERENCES_SKILL).exists()
+    assert not (layers.user_root / ".part-preferences-seeded").exists()
+    monkeypatch.undo()
+    assert seed_user_part_preferences(settings) is True  # retried at the next start
+    assert effective_preferences(settings, None).passives_package == "0805"

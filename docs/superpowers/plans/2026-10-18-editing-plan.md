@@ -534,7 +534,12 @@ def active_part_note(project, ref: str, fields: dict) -> dict | None
   scope, no load), `suggest_footprint_libraries(query)`, `loaded_footprint_libraries()`.
   `footprint()` returns `None` for an unknown id and raises `footprints_unavailable` without a
   board (callers check `footprints_available()` first); `search_*` raise `not_found` for an
-  unknown `library` and `invalid_argument` for an empty query; `limit` ≤ 50.
+  unknown `library` and `invalid_argument` for an empty or > 200-character query or a
+  non-integer `limit` (≤ 50). KiCad refusals inside the service become `StructuredToolError`
+  (`library_error`, new code; `LibrariesLoading` → `libraries_loading`); a footprint search
+  without `library` skips a library that fails to load (`failed_footprint_libraries`, tool key
+  `failed_libraries`). `started` tells whether a warm-up ran. `parts_get_notes` truncates notes
+  above 512 KiB (`truncated: true`).
   `FootprintDetail` adds `keywords`, `to_dict()`. `PartPreferences` adds
   `preferred_manufacturers`, `assembly`; helpers `parse_preferences(text)`,
   `preferences_from_raw(raw)`, `is_passive(lib_id)` (Device:R/C/L incl. `_Small`/`_US`,

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from copperchat.library.service import MAX_LIMIT, library_for
-from copperchat.parts import InvalidMpn, mpn_dirname, read_notes
+from copperchat.parts import MAX_NOTES_BYTES, InvalidMpn, mpn_dirname, read_notes
 from copperchat.tools import StructuredToolError, ToolContext, ToolResult, ToolSpec
 
 # How long a lib_* call waits for the background warm-up before answering
@@ -30,12 +30,26 @@ def _obj(props: dict[str, Any], required: list[str]) -> dict[str, Any]:
     }
 
 
+def _library(args: dict[str, Any]) -> str | None:
+    library = args.get("library")
+    if library is None or library == "":
+        return None
+    if not isinstance(library, str) or len(library) > 128:
+        raise StructuredToolError(
+            "Invalid library",
+            "library must be a library nickname (string, at most 128 characters)",
+            "e.g. 'Device' or 'Resistor_SMD', or omit it",
+            code="invalid_argument",
+        )
+    return library
+
+
 async def _search_symbols(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     svc = library_for(ctx.session)
     await svc.wait_ready(READY_WAIT_S)
     query = str(args.get("query", ""))
-    library = args.get("library") or None
-    rows = await svc.search_symbols(query, library, int(args.get("limit", 20)))
+    library = _library(args)
+    rows = await svc.search_symbols(query, library, args.get("limit", 20))
     data: dict[str, Any] = {
         "query": query.strip(),
         "library": library,
@@ -69,12 +83,14 @@ async def _get_symbol(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
 async def _search_footprints(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     svc = library_for(ctx.session)
     query = str(args.get("query", ""))
-    library = args.get("library") or None
-    rows = await svc.search_footprints(query, library, int(args.get("limit", 20)))
+    library = _library(args)
+    rows = await svc.search_footprints(query, library, args.get("limit", 20))
     data: dict[str, Any] = {"query": query.strip(), "library": library, "results": rows}
     if library is None:
         suggested = await svc.suggest_footprint_libraries(query)
         data["searched_libraries"] = svc.loaded_footprint_libraries()
+        if svc.failed_footprint_libraries:
+            data["failed_libraries"] = dict(svc.failed_footprint_libraries)
         data["libraries"] = suggested or sorted(await svc.footprint_libraries())
         data["note"] = (
             "Without `library` only the libraries whose name matches the query words (and "
@@ -104,7 +120,12 @@ async def _parts_get_notes(ctx: ToolContext, args: dict[str, Any]) -> ToolResult
                 "note": "No notes yet: call research_part before relying on this part.",
             }
         )
-    return ToolResult(data={"mpn": name, "researched": True, "notes": text})
+    data: dict[str, Any] = {"mpn": name, "researched": True, "notes": text}
+    raw = text.encode("utf-8")
+    if len(raw) > MAX_NOTES_BYTES:  # a cloned project may ship any notes.md
+        data["notes"] = raw[:MAX_NOTES_BYTES].decode("utf-8", errors="ignore")
+        data["truncated"] = True
+    return ToolResult(data=data)
 
 
 TOOL_SPECS: list[ToolSpec] = [

@@ -9,17 +9,18 @@ symbols = the flattened definition of a placement inside a dropped commit.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import difflib
 import logging
 import weakref
 from collections import OrderedDict
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from functools import partial
 from typing import Any, Literal
 
-from copperchat.errors import StructuredToolError
-from copperchat.kicad_session import KicadHandle, KicadSession, KicadUnavailable
+from copperchat.errors import DocumentNotOpen, StructuredToolError
+from copperchat.kicad_session import KicadHandle, KicadSession, KicadUnavailable, LibrariesLoading
 from copperchat.library.index import Index, Scope, SymbolRow, tokenize
 from copperchat.library.packages import FootprintDetail, footprint_from_proto
 from copperchat.library.symbols import SymbolDetail, detail_from_proto, has_drawing, row_from_proto
@@ -28,6 +29,7 @@ log = logging.getLogger(__name__)
 
 BATCH = 500  # ids per GetItemsFromLibrary request (spike 2B: 6.5 s for all symbols)
 MAX_LIMIT = 50
+MAX_QUERY_CHARS = 200
 DETAIL_CACHE_SIZE = 512
 FOOTPRINT_SEARCH_LIBRARIES = 3  # libraries loaded for a search without `library`
 State = Literal["loading", "ready", "failed"]
@@ -45,8 +47,47 @@ def library_for(session: KicadSession) -> LibraryService:
     return service
 
 
+@contextlib.contextmanager
+def _kicad_errors(what: str) -> Iterator[None]:
+    """KiCad refusals inside the library service become structured tool errors (the
+    agent can act on them); KicadUnavailable passes through to the adapter."""
+    from kipy.errors import ApiError
+
+    try:
+        yield
+    except LibrariesLoading as exc:
+        raise StructuredToolError(
+            what,
+            exc.message,
+            "Wait a few seconds and call the library tool again.",
+            code="libraries_loading",
+        ) from exc
+    except (ApiError, DocumentNotOpen) as exc:
+        raise StructuredToolError(
+            what,
+            f"KiCad refused the library request: {exc}",
+            "Use another library or symbol, or ask the user to check the library tables.",
+            code="library_error",
+        ) from exc
+
+
 def _invalid(what: str, why: str, suggestion: str) -> StructuredToolError:
     return StructuredToolError(what, why, suggestion, code="invalid_argument")
+
+
+def _query(query: Any, example: str) -> str:
+    q = str(query or "").strip()
+    if not q:
+        raise _invalid("Empty query", "query is required", example)
+    if len(q) > MAX_QUERY_CHARS:
+        raise _invalid("Query too long", f"at most {MAX_QUERY_CHARS} characters", example)
+    return q
+
+
+def _limit(limit: Any) -> int:
+    if isinstance(limit, bool) or not isinstance(limit, int):
+        raise _invalid("Invalid limit", "limit must be an integer", f"1..{MAX_LIMIT}")
+    return max(1, min(limit, MAX_LIMIT))
 
 
 def _send(h: KicadHandle, command: Any, response_type: Any) -> Any:
@@ -176,6 +217,8 @@ class LibraryService:
         self._fp_scopes: dict[str, Scope] | None = None
         self._fp_libs: dict[str, _FootprintLibrary] = {}
         self._fp_locks: dict[str, asyncio.Lock] = {}
+        # Libraries the last search without `library` skipped because they failed to load.
+        self.failed_footprint_libraries: dict[str, str] = {}
 
     @property
     def _session(self) -> KicadSession:
@@ -185,6 +228,11 @@ class LibraryService:
         return session
 
     # -- warm-up -------------------------------------------------------------------
+    @property
+    def started(self) -> bool:
+        """True once a warm-up was started (by the open route or a lib_* call)."""
+        return self._task is not None
+
     async def start(self) -> None:
         """Start the background warm-up (idempotent; a failed warm-up is retried)."""
         self._spawn()
@@ -267,11 +315,9 @@ class LibraryService:
         self, query: str, library: str | None = None, limit: int = 20
     ) -> list[dict[str, Any]]:
         index = self._ready_index()
-        q = query.strip()
-        if not q:
-            raise _invalid("Empty query", "query is required", "e.g. 'LDO 3.3V' or 'LM358'")
+        q = _query(query, "e.g. 'LDO 3.3V' or 'LM358'")
         self._check_library(library, self._libraries, "Symbol")
-        hits = index.search(q, max(1, min(int(limit), MAX_LIMIT)), library)
+        hits = index.search(q, _limit(limit), library)
         return [self._rows[lib_id].to_dict() for lib_id, _ in hits]
 
     async def get_symbol(self, lib_id: str) -> SymbolDetail:
@@ -294,7 +340,8 @@ class LibraryService:
                 code="not_found",
             )
         session = self._session
-        proto = await session.call(partial(_fetch_symbol, lib_id))
+        with _kicad_errors(f"Could not read symbol {lib_id}"):
+            proto = await session.call(partial(_fetch_symbol, lib_id))
         if proto is None:
             raise StructuredToolError(
                 f"KiCad did not return symbol {lib_id!r}",
@@ -327,19 +374,10 @@ class LibraryService:
     async def _probe(self, session: KicadSession, lib_id: str) -> Any:
         """The flattened definition of a derived symbol (spike 2B, finding 3); the commit
         is always dropped, so the document stays unchanged and unmodified."""
-        from kipy.errors import ApiError
-
-        await session.ensure_symbol_libraries()  # placing needs loaded libraries
-        try:
+        with _kicad_errors(f"Could not read the pins of {lib_id}"):
+            await session.ensure_symbol_libraries()  # placing needs loaded libraries
             async with session.commit(f"probe {lib_id}", dry_run=True):
                 return await session.call(partial(_place_probe, lib_id))
-        except ApiError as exc:
-            raise StructuredToolError(
-                f"Could not read the pins of {lib_id}",
-                f"KiCad refused the probe placement: {exc}",
-                "Use another symbol or ask the user.",
-                code="not_found",
-            ) from exc
 
     # -- footprints ----------------------------------------------------------------
     def footprints_available(self) -> bool:
@@ -363,7 +401,8 @@ class LibraryService:
         self._require_footprints()
         scopes = self._fp_scopes
         if scopes is None:
-            scopes = await self._session.call(_scopes(_footprint_type()))
+            with _kicad_errors("Could not list the footprint libraries"):
+                scopes = await self._session.call(_scopes(_footprint_type()))
             self._fp_scopes = scopes
         return scopes
 
@@ -378,13 +417,14 @@ class LibraryService:
                 return loaded
             session = self._session
             scope = (await self.footprint_libraries()).get(nickname, "global")
-            # GetLibraryItems(nickname) loads just this library on demand (spike 2B, Q4).
-            names = await session.call(partial(_footprint_names, nickname))
             details: dict[str, FootprintDetail] = {}
-            for i in range(0, len(names), BATCH):
-                batch = names[i : i + BATCH]
-                for d in await session.call(partial(_fetch_footprints, nickname, batch)):
-                    details[d.lib_id] = d
+            with _kicad_errors(f"Could not load footprint library {nickname}"):
+                # GetLibraryItems(nickname) loads just this library on demand (2B, Q4).
+                names = await session.call(partial(_footprint_names, nickname))
+                for i in range(0, len(names), BATCH):
+                    batch = names[i : i + BATCH]
+                    for d in await session.call(partial(_fetch_footprints, nickname, batch)):
+                        details[d.lib_id] = d
             entries = [(d.lib_id, d.description, d.keywords, scope) for d in details.values()]
             index = await asyncio.to_thread(_build_index, entries)
             loaded = _FootprintLibrary(details, index)
@@ -428,19 +468,25 @@ class LibraryService:
         libraries whose nickname matches the query words plus every loaded library.
         Never loads all footprint libraries (owner decision 1)."""
         scopes = await self.footprint_libraries()
-        q = query.strip()
-        if not q:
-            raise _invalid("Empty query", "query is required", "e.g. '0805' or 'SOT-23-5'")
+        q = _query(query, "e.g. '0805' or 'SOT-23-5'")
         self._check_library(library, scopes, "Footprint")
-        limit = max(1, min(int(limit), MAX_LIMIT))
+        limit = _limit(limit)
         if library is not None:
             nicknames = [library]
         else:
             suggested = await self.suggest_footprint_libraries(q, FOOTPRINT_SEARCH_LIBRARIES)
             nicknames = list(dict.fromkeys([*suggested, *self._fp_libs]))
         hits: list[tuple[float, str, FootprintDetail]] = []
+        self.failed_footprint_libraries = {}
         for nickname in nicknames:
-            lib = await self._footprint_library(nickname)
+            try:
+                lib = await self._footprint_library(nickname)
+            except StructuredToolError as exc:
+                if library is not None:
+                    raise
+                # One broken table row must not abort a search over several libraries.
+                self.failed_footprint_libraries[nickname] = exc.why
+                continue
             for lib_id, score in lib.index.search(q, limit):
                 hits.append((score, lib_id, lib.details[lib_id]))
         hits.sort(key=lambda h: (-h[0], h[1]))

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -27,7 +28,7 @@ SEED_MARKER = ".part-preferences-seeded"
 DEFAULT_PASSIVES_PACKAGE = "0805"  # owner decision (spec §9.1)
 _BLOCK_RE = re.compile(r"^```preferences[ \t]*\r?\n(.*?)^```", re.MULTILINE | re.DOTALL)
 _LINE_RE = re.compile(r"^([A-Za-z][A-Za-z0-9_]*)[ \t]*:(.*)$")
-_PACKAGE_RE = re.compile(r"\b(\d{4,5})\b")
+_PACKAGE_RE = re.compile(r"(?<!\d)(\d{4,5})(?!\d)")
 _LIST_KEYS = ("preferred_libraries", "preferred_manufacturers")
 # Device:R / C / L in their plain, small and US variants, plus every ferrite bead.
 _PASSIVE_RE = re.compile(r"^Device:(?:(?:R|C|L)(?:_Small)?(?:_US)?|FerriteBead.*)$")
@@ -65,9 +66,13 @@ def _list(value: str | None) -> list[str]:
 
 
 def preferences_from_raw(raw: dict[str, str]) -> PartPreferences:
-    package = _PACKAGE_RE.search(raw.get("passives_package", ""))
+    m = _PACKAGE_RE.search(raw.get("passives_package", ""))
+    package = m.group(1) if m else None
+    if package is not None and package not in IMPERIAL_TO_METRIC:
+        log.warning("part preferences: ignoring unknown passives_package %r", package)
+        package = None
     return PartPreferences(
-        passives_package=package.group(1) if package else None,
+        passives_package=package,
         preferred_libraries=_list(raw.get("preferred_libraries")),
         raw=dict(raw),
         preferred_manufacturers=_list(raw.get("preferred_manufacturers")),
@@ -94,22 +99,27 @@ def seed_user_part_preferences(settings: Settings) -> bool:
     marker = layers.user_root / SEED_MARKER
     if marker.exists():
         return False
-    if not (layers.user_root / PREFERENCES_SKILL).exists():
-        customise(layers, PREFERENCES_SKILL)  # keeps the origin sidecar for update diffs
-        md = layers.user_root / PREFERENCES_SKILL / "SKILL.md"
-        text = md.read_text(encoding="utf-8")
-        seeded = re.sub(
+    did_seed = False
+    target = layers.user_root / PREFERENCES_SKILL
+    if not target.exists():
+        builtin = (layers.builtin_root / PREFERENCES_SKILL / "SKILL.md").read_text(encoding="utf-8")
+        seeded, replaced = re.subn(
             r"^passives_package:[ \t]*$",
             f"passives_package: {DEFAULT_PASSIVES_PACKAGE}",
-            text,
+            builtin,
             count=1,
             flags=re.MULTILINE,
         )
-        write_user_skill(layers, PREFERENCES_SKILL, seeded)
+        if replaced != 1 or not parse_preferences(seeded).get("passives_package"):
+            raise RuntimeError("the built-in part-preferences template has no passives_package")
+        customise(layers, PREFERENCES_SKILL)  # keeps the origin sidecar for update diffs
+        try:
+            write_user_skill(layers, PREFERENCES_SKILL, seeded)
+        except BaseException:
+            shutil.rmtree(target, ignore_errors=True)  # retried at the next start
+            raise
         log.info("seeded the user part preferences (passives %s)", DEFAULT_PASSIVES_PACKAGE)
         did_seed = True
-    else:
-        did_seed = False
     atomic_write_text(marker, "seeded\n")
     return did_seed
 
@@ -146,10 +156,13 @@ def preference_notes(
             "passives. Use the preferred package or tell the user why this part deviates."
         ),
     }
-    if wanted in IMPERIAL_TO_METRIC:
-        have = f"{package}_{IMPERIAL_TO_METRIC[package]}Metric"
-        want = f"{wanted}_{IMPERIAL_TO_METRIC[wanted]}Metric"
-        note["suggested_footprint"] = footprint_name.replace(have, want, 1)
+    have = f"{package}_{IMPERIAL_TO_METRIC[package]}Metric"
+    want = f"{wanted}_{IMPERIAL_TO_METRIC[wanted]}Metric"
+    # Cut after "...Metric": size-specific suffixes (e.g. _Pad1.08x0.95mm_HandSolder) differ
+    # per package, so only the plain name is a safe guess.
+    head, sep, _ = footprint_name.partition(have)
+    if sep:
+        note["suggested_footprint"] = f"{head}{want}"
     return [note]
 
 
