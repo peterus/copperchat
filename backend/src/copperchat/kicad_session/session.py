@@ -97,6 +97,7 @@ class CommitScope:
     label: str
     commit: Any
     generation: int  # server start the commit belongs to; a restart discards it
+    pushed: bool = False  # push_commit completed (also when the caller is cancelled after)
 
 
 async def _finish[R](coro: Coroutine[Any, Any, R]) -> tuple[R, bool]:
@@ -203,6 +204,13 @@ class KicadSession:
     @property
     def settings(self) -> Settings:
         return self._settings
+
+    @property
+    def server_alive(self) -> bool:
+        """A client to a running server exists (False after a kill until the next call
+        lazily starts a fresh server from the last save)."""
+        proc = self.process
+        return self._kicad is not None and (proc is None or proc.returncode is None)
 
     @property
     def generation(self) -> int:
@@ -524,6 +532,7 @@ class KicadSession:
                     await _uncancellable(self._drop(scope, exc))
                     raise
                 if not dry_run:
+                    scope.pushed = True
                     self.jobs_stale = True
                     self.modified = True
                 if cancelled:

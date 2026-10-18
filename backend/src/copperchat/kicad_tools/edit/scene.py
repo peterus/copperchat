@@ -41,6 +41,11 @@ def short(value: Any, limit: int = 80) -> str:
     return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
+def _capped(names: list[str]) -> str:
+    text = ", ".join(names[:MAX_CANDIDATES])
+    return text + (f" ... ({len(names)} in total)" if len(names) > MAX_CANDIDATES else "")
+
+
 _LABEL_KINDS = {
     "LocalLabel": "label",
     "GlobalLabel": "global_label",
@@ -201,9 +206,7 @@ def resolve_sheet(h: KicadHandle, sheet: str | None) -> SheetRef:
     ]
     if len(hits) == 1:
         return hits[0]
-    listing = ", ".join(f"{r.human_path} (page {r.page})" for r in refs[:MAX_CANDIDATES])
-    if len(refs) > MAX_CANDIDATES:
-        listing += f" ... ({len(refs)} in total)"
+    listing = _capped([f"{r.human_path} (page {r.page})" for r in refs])
     if not hits:
         raise StructuredToolError(
             f"Sheet {short(sheet)} not found",
@@ -215,7 +218,7 @@ def resolve_sheet(h: KicadHandle, sheet: str | None) -> SheetRef:
     raise StructuredToolError(
         f"Sheet {short(sheet)} is ambiguous",
         f"It matches {len(hits)} sheet instances: "
-        + ", ".join(f"{r.human_path} (page {r.page})" for r in hits),
+        + _capped([f"{r.human_path} (page {r.page})" for r in hits]),
         "Pass the full sheet path or the page number instead.",
         code="invalid_argument",
         details={"candidates": [r.human_path for r in hits][:MAX_CANDIDATES]},
@@ -384,8 +387,7 @@ def resolve_pin(
     if not hits:
         raise _pin_error(
             f"Pin {spec} not found",
-            f"{ref} has the pins {', '.join(candidates[:MAX_CANDIDATES])}"
-            + (f" ... ({len(candidates)} in total)" if len(candidates) > MAX_CANDIDATES else ""),
+            f"{ref} has the pins {_capped(candidates)}",
             "Use one of the listed pin numbers.",
             "not_found",
             candidates,
@@ -393,8 +395,8 @@ def resolve_pin(
     if len(hits) > 1:
         names = sorted({f"{p.ref}.{p.number}" for p in hits}, key=natural_key)
         raise _pin_error(
-            f"Pin {spec} is ambiguous",
-            f"{len(hits)} pins match: {', '.join(names)}"
+            f"Pin {short(spec)} is ambiguous",
+            f"{len(hits)} pins match: {_capped(names)}"
             + (" (in several units)" if len(names) == 1 else ""),
             "Use the pin number instead of the name.",
             "ambiguous_pin",

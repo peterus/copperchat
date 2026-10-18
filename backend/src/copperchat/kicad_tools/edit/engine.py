@@ -139,11 +139,16 @@ def by_id(sch: Any, ids: Iterable[str]) -> dict[str, Any]:
         if not chunk:
             return
         from kipy.errors import ApiError
+        from kipy.proto.common import ApiStatusCode
 
         try:
             for i in sch.get_items_by_id([_kiid(u) for u in chunk]):
                 out[access.kiid(i)] = i
-        except ApiError:  # KiCad refuses the batch for a missing id; anything else raises
+        except ApiError as exc:
+            # KiCad refuses the whole batch with AS_BAD_REQUEST for a missing id (probed at
+            # the pinned commit); busy / internal errors are real failures.
+            if exc.code != ApiStatusCode.AS_BAD_REQUEST:
+                raise
             if len(chunk) > 1:
                 mid = len(chunk) // 2
                 fetch(chunk[:mid])
@@ -624,15 +629,21 @@ async def apply_change_set(
     generation = session.generation
     inp = StageInput()
 
-    async def undo() -> None:
-        if run.pushed == 0:
-            return
-        if session.generation != generation:
-            # The server restarted from the last save: the pushed stages are gone, and
-            # compensating against the reloaded document would corrupt it.
+    def same_server() -> bool:
+        return session.generation == generation and session.server_alive
+
+    def ensure_same_server() -> None:
+        if not same_server():
             raise KicadUnavailable(
                 "the KiCad api-server restarted during the edit; it holds the last saved state"
             )
+
+    async def undo() -> None:
+        if run.pushed == 0:
+            return
+        # A killed (not yet restarted) or restarted server holds the last save: the pushed
+        # stages are gone, and compensating against the reloaded document would corrupt it.
+        ensure_same_server()
         if _before_compensate is not None:
             try:
                 _before_compensate()
@@ -673,20 +684,17 @@ async def apply_change_set(
             ops = stage.build(inp)
             created_before = set(run.created)
             saved = run.checkpoint()
-            body_done = False
+            scope: Any = None
 
             def write(h: KicadHandle, ops: list[EditOp] = ops) -> None:
                 _stage(h, run, ops)
 
             try:
-                async with session.commit(f"{cs.tool}: {stage.label}"):
+                async with session.commit(f"{cs.tool}: {stage.label}") as scope:
                     await session.call(write)
-                    body_done = True
-            except asyncio.CancelledError as exc:
-                if body_done and exc.__cause__ is None:
-                    # Cancelled at the push, which commit() ran to completion; a push that
-                    # failed meanwhile is chained as the cause (the commit was dropped).
-                    run.pushed += 1
+            except asyncio.CancelledError:
+                if scope is not None and scope.pushed:
+                    run.pushed += 1  # cancelled at the push, which commit() completed
                 else:
                     run.restore(saved)
                 raise
@@ -711,6 +719,7 @@ async def apply_change_set(
                 return _read_back(h, run, sc)
 
             inp = await session.call(read)
+            ensure_same_server()
     except asyncio.CancelledError:
         # The turn is being stopped: undo the pushed stages, then keep cancelling.
         try:
@@ -734,6 +743,7 @@ async def apply_change_set(
         return netlist, found, item_net
 
     after, final, item_net = await session.call(final_read)
+    ensure_same_server()
     problems = list(run.problems)
     problems += (_verify or verify.check)(before, after, cs.intent, label)
     if problems:

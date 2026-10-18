@@ -58,3 +58,25 @@ async def test_document_inconsistent_ends_turn_with_one_error_row(make_engine, d
     assert outcome.document_inconsistent and outcome.auto_restore and outcome.mutated
     assert not outcome.kicad_failed
     assert not hooks.outcomes[1].document_inconsistent  # the next turn is unaffected
+
+
+async def test_report_halts_further_edits_of_the_turn(make_engine, db):
+    """RunEngine._on_document_inconsistent (also reached from the engine's cancel path,
+    not only through the adapter) marks the turn's editing state halted."""
+    from types import SimpleNamespace
+
+    from copperchat.db.repos.editing_settings import EditingSettingsRepo
+    from copperchat.editing.service import EditingService
+
+    engine, _agent = await make_engine(lambda item: [Text("x")])
+    svc = EditingService(db=db, broadcaster=None, settings_repo=EditingSettingsRepo(db))
+    engine.editing = svc
+    engine._turn = cast(
+        Any,
+        SimpleNamespace(info=SimpleNamespace(run_id="r1"), document_inconsistent=False,
+                        auto_restore=False),
+    )  # fmt: skip
+    engine._on_document_inconsistent(DocumentInconsistent("x", auto_restore=True))
+    assert svc.turn(PID, "r1").halted
+    assert engine._turn.document_inconsistent and engine._turn.auto_restore
+    engine._turn = None

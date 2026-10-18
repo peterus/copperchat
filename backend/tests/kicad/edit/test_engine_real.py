@@ -379,19 +379,26 @@ async def test_cancel_after_a_pushed_stage_undoes_it(ecc83_session: KicadSession
     assert await _state(s) == before
 
 
-async def test_no_compensation_after_a_server_restart(ecc83_session: KicadSession) -> None:
-    """A changed server generation (e.g. a kill on cancellation and a lazy restart) means
-    the pushed stages are gone: compensating against the reloaded document is skipped."""
+@pytest.mark.parametrize("how", ["restarted", "killed"])
+async def test_no_compensation_after_a_server_restart(
+    ecc83_session: KicadSession, how: str
+) -> None:
+    """A replaced server (restarted, or killed on cancellation and not yet lazily started
+    again) holds the last save: compensating against the reloaded document is skipped."""
     from copperchat.kicad_session import KicadUnavailable
 
     s = ecc83_session
     x, y = await s.call(lambda h: free_area(h, 10.16, 5.08))
 
-    def restarted(inp: StageInput) -> list[Any]:
-        s._generation += 1  # as KicadSession.start() does
+    def gone(inp: StageInput) -> list[Any]:
+        if how == "restarted":
+            s._generation += 1  # as KicadSession.start() does
+        else:
+            s._kicad = None  # as _kill() leaves it; the next call starts a fresh server
         raise ValueError("stage 2 failed")
 
     cs = _cs(await _root(s), static_stage("wire", Create([wire((x, y), (x + 10.16, y))])),
-             Stage("fail", restarted))  # fmt: skip
+             Stage("fail", gone))  # fmt: skip
     with pytest.raises(KicadUnavailable):
         await apply_change_set(edit_ctx(s), cs)
+    assert s.generation >= 1 and await s.call(lambda h: True)  # the session recovers
