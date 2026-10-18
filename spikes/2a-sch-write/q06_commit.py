@@ -11,6 +11,7 @@ from harness import (
     Recorder,
     Server,
     by_id,
+    commit,
     fresh_fixture,
     junction,
     load_libraries,
@@ -189,6 +190,16 @@ def main() -> int:
         update_symbols(sch, [pre[sid(u)]])
         restored = by_id(sch, [sid(u)])[sid(u)]
         rec.check("update_compensated_from_pre_image", canon(restored) == pre_canon[sid(u)], (restored.value, mm(restored.position)))
+        # re-create while another instance of the same library symbol still exists
+        sib = sch.place_symbol_from_library("Device:R", v2(76.2, 127.0), reference="R2")
+        pre_r = by_id(sch, [sid(r)])[sid(r)]
+        with commit(sch):
+            sch.remove_items([pre_r])
+        with commit(sch):
+            sch.create_items([pre_r])
+        again = by_id(sch, [sid(r)])[sid(r)]
+        sib_now = by_id(sch, [sid(sib)])[sid(sib)]
+        rec.check("recreate_with_sibling_keeps_library_link", str(again.definition.id) == "Device:R" == str(sib_now.definition.id) and sid(again) == sid(pre_r), f"{again.reference}: definition id {again.definition.id} (sibling {sib.reference}: {by_id(sch, [sid(sib)])[sid(sib)].definition.id})")
         sch.save()
     with Server(proj) as srv:
         sch = srv.client(timeout_ms=60000).get_schematic()

@@ -4,7 +4,7 @@
     {
       "name": "staged_create_response_has_uuid",
       "ok": true,
-      "evidence": "('74ee6df0', '1a2e6377')"
+      "evidence": "('9983837c', '0a1f5faa')"
     },
     {
       "name": "staged_create_invisible_by_id",
@@ -24,7 +24,7 @@
     {
       "name": "after_push_visible",
       "ok": true,
-      "evidence": "['0a5f5210', '1a2e6377', '74ee6df0']"
+      "evidence": "['0a1f5faa', '9983837c', 'd9a9c294']"
     },
     {
       "name": "staged_delete_still_visible_before_push",
@@ -39,7 +39,7 @@
     {
       "name": "update_of_missing_item_raises",
       "ok": false,
-      "evidence": "no exception; kipy returned 1 items (per-item ISC_NONEXISTENT is dropped silently)"
+      "evidence": "no exception; kipy returned 1 item(s) and ignores the per-item status (editor.py update_items); still missing after: True"
     },
     {
       "name": "drop_commit_document_unchanged",
@@ -104,7 +104,7 @@
     {
       "name": "recreate_with_original_uuids",
       "ok": true,
-      "evidence": "{'missing': [], 'returned_ids': ['089bbe69', '0e61d2bb', '199497fb', '25ed72e7', '40d87545', '4aa56931', '5904c1ea', '849b2b53']}"
+      "evidence": "{'missing': [], 'returned_ids': ['1f9992b5', '46e11003', '5c14e116', '747ebead', 'ab4afe0e', 'af2c69e5', 'b47baf97', 'c179342a']}"
     },
     {
       "name": "recreated_content_equal",
@@ -122,6 +122,11 @@
       "evidence": "('TLV9002', (101.6, 76.2))"
     },
     {
+      "name": "recreate_with_sibling_keeps_library_link",
+      "ok": false,
+      "evidence": "R1: definition id Device:R (sibling R2: :R_1)"
+    },
+    {
       "name": "original_uuids_persist_after_save_reopen",
       "ok": true,
       "evidence": "8/8"
@@ -131,16 +136,16 @@
     "staged_update_visible_before_push": true,
     "corner_junction_dropped_on_create": true,
     "pre_images": {
-      "089bbe69": "SchematicSymbolInstance",
-      "849b2b53": "SchematicSymbolInstance",
-      "0e61d2bb": "SchematicLine",
-      "4aa56931": "SchematicLine",
-      "25ed72e7": "SchematicLine",
-      "40d87545": "LocalLabel",
-      "5904c1ea": "NoConnectMarker",
-      "199497fb": "GlobalLabel"
+      "1f9992b5": "SchematicSymbolInstance",
+      "b47baf97": "SchematicSymbolInstance",
+      "af2c69e5": "SchematicLine",
+      "747ebead": "SchematicLine",
+      "5c14e116": "SchematicLine",
+      "ab4afe0e": "LocalLabel",
+      "c179342a": "NoConnectMarker",
+      "46e11003": "GlobalLabel"
     },
-    "compensate_ms": 35.2,
-    "root": "/tmp/s2a-blank-711rk1vi/blank/blank.kicad_sch"
+    "compensate_ms": 35.4,
+    "root": "/tmp/s2a-blank-6_bcc_cp/blank/blank.kicad_sch"
   }
 }
