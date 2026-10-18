@@ -29,6 +29,8 @@ async def list_history(project_id: str, request: Request, _: CurrentUser) -> lis
             "createdAt": s.created_at,
             "label": s.label,
             "files": s.files,
+            "kind": s.kind,
+            "planStepId": s.plan_step_id,
             "previewUrl": f"/api/projects/{project.id}/history/{s.id}/preview"
             if s.has_preview
             else None,

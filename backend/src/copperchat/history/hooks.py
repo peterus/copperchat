@@ -153,10 +153,16 @@ class HistoryHooks(RunHooks):
         raises and never posts the engine's error row."""
         session = self.svc.open_session(self.project)
         last_saved = session.last_saved_at if session is not None else None
-        snap = await self.svc.store(self.project).latest_for_run(turn.run_id)
-        # E8a: prefer the run's last step checkpoint over the turn snapshot.
-        if outcome.auto_restore and snap is not None and await self._auto_restore(snap):
-            return
+        store = self.svc.store(self.project)
+        snap = await store.latest_for_run(turn.run_id)
+        if outcome.auto_restore:
+            # Owner decision 4: the run's last step checkpoint (keeps finished plan
+            # steps), else the turn snapshot.
+            checkpoint = await store.latest_step_checkpoint(turn.run_id)
+            targets = [t for t in (checkpoint, snap) if t is not None]
+            for i, target in enumerate(targets):  # a failed checkpoint falls back to the turn
+                if await self._auto_restore(target, last=i == len(targets) - 1):
+                    return
         if session is not None and self.svc.open_session(self.project) is session:
             try:
                 await self.svc.sessions.reopen(self.project)
@@ -168,9 +174,15 @@ class HistoryHooks(RunHooks):
                 )
         await self._recovery_notice(outcome, snap, last_saved)
 
-    async def _auto_restore(self, snap: Snapshot) -> bool:
-        """Restore the turn snapshot at turn end, without the REST path's agent-busy
-        check (the turn is ending). False: the restore failed and was reported."""
+    async def _auto_restore(self, snap: Snapshot, *, last: bool = True) -> bool:
+        """Restore the step checkpoint / turn snapshot at turn end, without the REST
+        path's agent-busy check (the turn is ending). False: the restore failed (and
+        was reported when `last`; otherwise the caller tries an older snapshot)."""
+        state = (
+            "at the end of the last finished plan step"
+            if snap.kind == "step"
+            else "before this turn"
+        )
         try:
             await restore_snapshot(
                 self.svc,
@@ -178,12 +190,14 @@ class HistoryHooks(RunHooks):
                 snap.id,
                 check_busy=False,
                 notice="A failed edit could not be undone exactly, so the design was "
-                "restored to its state before this turn.",
+                f"restored to its state {state}.",
             )
         except Exception as exc:
             log.warning("auto-restore of snapshot %s failed: %s", snap.id, exc)
+            if not last:  # the next (older) snapshot is tried; report only the outcome
+                return False
             await self.engine.post_error(
-                "Restoring the design to its state before this turn failed; restore the "
+                f"Restoring the design to its state {state} failed; restore the "
                 "snapshot from the History panel.",
                 {"code": "restore_failed"},
             )
@@ -210,6 +224,17 @@ class HistoryHooks(RunHooks):
             await self.engine.post_notice(
                 "A snapshot from before this turn exists. Restore it to undo this turn's changes.",
                 {"action": "restore", "snapshotId": snap.id},
+            )
+        else:
+            return
+        checkpoint = await self.svc.store(self.project).latest_step_checkpoint(snap.run_id)
+        if checkpoint is not None:
+            # Spec §5.4: the turn snapshot stays the undo point; the last step
+            # checkpoint is offered too, so finished plan steps can be kept.
+            await self.engine.post_notice(
+                f"The checkpoint of the last finished plan step ({checkpoint.label}) "
+                "exists; restore it to keep the finished steps.",
+                {"action": "restore", "snapshotId": checkpoint.id, "checkpoint": True},
             )
 
     async def _recover(self, turn: TurnInfo, outcome: TurnOutcome) -> None:

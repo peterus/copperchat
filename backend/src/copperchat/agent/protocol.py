@@ -165,6 +165,16 @@ class ViewUpdatedFrame(Wire):
     version: int = Field(ge=0)
 
 
+class ChangesUpdatedFrame(Wire):
+    """Change rows of a run (and plan step) were written (E-C12)."""
+
+    type: Literal["changes-updated"] = "changes-updated"
+    project_id: ProjectId
+    run_id: str = Field(min_length=1)
+    step_id: str | None
+    count: int = Field(ge=0)
+
+
 class RateLimitPayload(Wire):
     OMIT_IF_NONE: ClassVar[frozenset[str]] = frozenset({"resets_at"})
     status: Literal["allowed", "allowed_warning", "rejected"]
@@ -228,6 +238,7 @@ ServerFrame = Annotated[
     | RunStartedFrame
     | RunFinishedFrame
     | ViewUpdatedFrame
+    | ChangesUpdatedFrame
     | UsageFrame
     | RateLimitedFrame
     | ErrorFrame

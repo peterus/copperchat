@@ -333,6 +333,7 @@ export function createChatStore(deps: ChatDeps) {
           }));
           return;
         case 'view-updated': // consumed by the viewer (Phase 7); ping/pong never reach here (projectId null)
+        case 'changes-updated': // consumed by the Changes panel (E9a)
           return;
       }
     }

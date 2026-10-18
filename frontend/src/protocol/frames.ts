@@ -95,6 +95,14 @@ export const ServerFrame = z.discriminatedUnion('type', [
     docs: z.array(DocKind).min(1),
     version: z.number().int().nonnegative(),
   }),
+  // Change rows of a run (and plan step) were written (E-C12).
+  z.strictObject({
+    type: z.literal('changes-updated'),
+    projectId: ProjectId,
+    runId: z.string().min(1),
+    stepId: z.string().nullable(),
+    count: z.number().int().nonnegative(),
+  }),
   z.strictObject({ type: z.literal('usage'), projectId: ProjectId, usage: Usage }),
   z.strictObject({ type: z.literal('rate-limited'), projectId: ProjectId, resetsAt: z.string() }),
   z.strictObject({
@@ -117,7 +125,7 @@ export const AnyFrame = z.union([ClientFrame, ServerFrame]);
 export const ALL_FRAME_TYPES = [
   'subscribe', 'send', 'interrupt', 'cancel-queued', 'ping', 'visibility',
   'message', 'message-delta', 'run-started', 'run-finished', 'view-updated',
-  'usage', 'rate-limited', 'error', 'pong',
+  'changes-updated', 'usage', 'rate-limited', 'error', 'pong',
 ] as const;
 
 export const MessagesPage = z.object({ messages: z.array(MessageDTO), hasMore: z.boolean() });
