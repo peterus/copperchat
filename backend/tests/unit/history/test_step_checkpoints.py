@@ -225,3 +225,65 @@ async def test_both_restores_failing_reports_the_turn_snapshot(opened: Opened) -
     await opened.hooks.on_turn_end(t, inconsistent("pcb", auto_restore=True))
     [(text, meta)] = env.engine.errors
     assert "before this turn" in text and meta == {"code": "restore_failed"}
+
+
+async def test_step_checkpoints_are_capped_per_project(
+    db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """E8a residual (E8b): step checkpoints of one run no longer grow without bound."""
+    monkeypatch.setattr(store_mod, "STEP_KEEP", 3)
+    project = copy_project(ECC83, tmp_path / "projects")
+    store = HistoryStore(db, project)
+    turn_snap = await store.snapshot("run-1", "turn")
+    steps = [
+        (await store.snapshot("run-1", f"s{i}", kind="step", plan_step_id=f"s{i}")).id
+        for i in range(5)
+    ]
+    listed = [s.id for s in await store.list()]
+    assert listed == [*reversed(steps[2:]), turn_snap.id]
+    for gone in steps[:2]:
+        assert not (agent_dir(project) / "history" / gone).exists()
+
+
+async def test_open_plan_snapshots_are_never_pruned(
+    db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    from copperchat.plans import machine
+    from copperchat.plans.repo import PlanRepo
+
+    monkeypatch.setattr(store_mod, "STEP_KEEP", 1)
+    monkeypatch.setattr(store_mod, "HISTORY_KEEP", 2)
+    project = copy_project(ECC83, tmp_path / "projects")
+    store = HistoryStore(db, project)
+    base = await store.snapshot("run-0", "pre-plan turn")
+    first = await store.snapshot("run-1", "Plan step 1", kind="step", plan_step_id="x")
+    plan = machine.new_plan(
+        plan_id="f" * 32,
+        project_id=project.id,
+        title="t",
+        summary="s",
+        steps=machine.build_steps(
+            "f" * 32,
+            [{"title": "a", "intent": "b", "expected_changes": 1, "verification": "c"}] * 2,
+        ),
+        run_id="run-0",
+        now="2026-10-18T10:00:00Z",
+    )
+    plan = machine.transition(plan, "approve", now="t")
+    plan = machine.transition(plan, "step_begin", now="t", idx=1, run_id="run-1")
+    plan = machine.transition(plan, "step_done", now="t", idx=1, checkpoint_id=first.id)
+    await PlanRepo(db).insert(replace(plan, base_snapshot_id=base.id))
+    for i in range(3):
+        await store.snapshot(f"run-{i + 2}", f"t{i}")
+        await store.snapshot(f"run-{i + 2}", f"s{i}", kind="step", plan_step_id=f"y{i}")
+    ids = {s.id for s in await store.list()}
+    assert {base.id, first.id} <= ids  # the open plan can still roll back to them
+    # Once the plan is closed they are pruned like any other snapshot.
+    await PlanRepo(db).save(
+        machine.transition(machine.transition(plan, "interrupt", now="t"), "abort", now="t")
+    )
+    await store.snapshot("run-9", "t9")
+    ids = {s.id for s in await store.list()}
+    assert base.id not in ids and first.id not in ids
