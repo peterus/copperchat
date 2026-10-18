@@ -16,6 +16,8 @@ const PNG = Buffer.from(
 
 interface Fixture {
   dir: string;
+  /** Directory holding `dir` (default: the backend fixture projects). */
+  root?: string;
   sch: string[];
   pcb: string[];
   /** Override reported sizes (large-board guard). */
@@ -29,11 +31,11 @@ const HIER: Fixture = {
 };
 
 async function mockApi(page: Page, fx: Fixture) {
-  const file = (name: string) => readFileSync(`${FIXTURES}${fx.dir}/${name}`);
+  const file = (name: string) => readFileSync(`${fx.root ?? FIXTURES}${fx.dir}/${name}`);
   const bytes = Object.fromEntries([...fx.sch, ...fx.pcb].map((n) => [n, fx.bytes?.[n] ?? file(n).length]));
   await page.route('**/api/auth/me', (r) => r.fulfill({ json: { username: 'admin' } }));
   await page.route('**/api/projects', (r) =>
-    r.fulfill({ json: [{ id: PID, name: fx.dir, relPath: `${fx.dir}/x.kicad_pro`, hasSch: true, hasPcb: true, locked: false }] }),
+    r.fulfill({ json: [{ id: PID, name: fx.dir, relPath: `${fx.dir}/x.kicad_pro`, hasSch: true, hasPcb: fx.pcb.length > 0, locked: false }] }),
   );
   await page.route(`**/api/projects/${PID}/open`, (r) =>
     r.fulfill({
@@ -517,4 +519,28 @@ test.describe('changes panel', () => {
     await expect.poll(() => highlighted(page)).toBe(1);
     await expect(page.getByRole('button', { name: 'Clear highlight' })).toBeVisible();
   });
+});
+
+/** Schematics edited through the agent tools by the golden scenario tests and saved by KiCad
+ * (scripts/make-edited-fixtures.py): they load in KiCanvas without errors (spec §12 round trip). */
+const EDITED = fileURLToPath(new URL('./fixtures/edited/', import.meta.url));
+
+test.describe('edited fixtures', () => {
+  test.skip(({ isMobile }) => isMobile, 'desktop only');
+
+  for (const scenario of ['s1_led', 's2_ldo', 's3_mcu_i2c_subsheet']) {
+    test(`${scenario} renders without errors`, async ({ page }) => {
+      const manifest = JSON.parse(readFileSync(`${EDITED}${scenario}/manifest.json`, 'utf8')) as { sch: string[]; refs: string[] };
+      const errors: string[] = [];
+      page.on('pageerror', (e) => errors.push(e.message));
+      page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
+      await mockApi(page, { dir: scenario, root: EDITED, sch: manifest.sch, pcb: [] });
+      await openViewer(page, false);
+      await ready(page);
+      const res = await onViewer(page, (v, refs) => v.highlight(refs, 'focus'), manifest.refs);
+      expect(res.found.length).toBeGreaterThanOrEqual(1);
+      expect(manifest.refs).toEqual(expect.arrayContaining(res.found));
+      expect(errors).toEqual([]);
+    });
+  }
 });

@@ -10,7 +10,10 @@ overlap, no wire interior over a pin end, 0805 passives, and that the change log
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import shutil
 from itertools import combinations
 from pathlib import Path
 from typing import Any
@@ -159,6 +162,23 @@ async def start_snapshot(s: KicadSession, db: Database) -> tuple[HistoryService,
     return svc, await svc.store(s.project).snapshot(RUN_ID, "turn")
 
 
+# The KiCad-saved schematic files of each scenario go to `$EXPORT_ENV/<scenario>/` (the
+# Playwright viewer test's edited fixtures, frontend/e2e/fixtures/edited/).
+EXPORT_ENV = "COPPERCHAT_EDITED_FIXTURES"
+
+
+def export_fixture(name: str, root: Path, live: golden.Components, out: Path) -> None:
+    dest = out / name
+    shutil.rmtree(dest, ignore_errors=True)
+    dest.mkdir(parents=True)
+    others = sorted(p.name for p in root.parent.glob("*.kicad_sch") if p.name != root.name)
+    files = [root.name, *others]  # the root sheet first
+    for f in files:
+        shutil.copy2(root.parent / f, dest / f)  # verbatim: written by KiCad's save
+    manifest = {"sch": files, "refs": sorted(live)}
+    (dest / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n")
+
+
 # -- checks ----------------------------------------------------------------------------
 
 
@@ -235,6 +255,9 @@ async def assert_scenario(
     res_cli = golden.check(name, golden.nets_of(cli), cli)
     assert res_cli["golden"], (res_cli["missing"], cli)
     assert set(cli) == set(live)
+
+    if out := os.environ.get(EXPORT_ENV):  # scripts/make-edited-fixtures.py
+        export_fixture(name, dest, live, Path(out))
 
     erc, err = await call_tool(ctx, "run_erc")
     assert not err, erc

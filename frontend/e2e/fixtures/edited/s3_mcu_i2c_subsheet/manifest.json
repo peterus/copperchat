@@ -1,0 +1,14 @@
+{
+ "sch": [
+  "blank.kicad_sch",
+  "sensor.kicad_sch"
+ ],
+ "refs": [
+  "C1",
+  "C2",
+  "R1",
+  "R2",
+  "U1",
+  "U2"
+ ]
+}
