@@ -56,9 +56,7 @@ def main() -> int:
     if kc.exists():
         rows.append(row("q12_kicanvas (host)", kc)[0])
     (HERE / "results").mkdir(exist_ok=True)
-    (HERE / "results" / "summary.md").write_text(
-        "| Question | Result | Failed checks |\n|---|---|---|\n" + "\n".join(rows) + "\n"
-    )
+    (HERE / "results" / "summary.md").write_text("| Question | Result | Failed checks |\n|---|---|---|\n" + "\n".join(rows) + "\n")
     return 0 if all("SKIP" in r for r in rows) else worst
 
 

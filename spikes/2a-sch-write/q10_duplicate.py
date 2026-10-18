@@ -65,7 +65,12 @@ def sym_fields(sym):
     out = {}
     pos = sym.position
     for f in (sym.reference_field, sym.value_field, sym.footprint_field, sym.datasheet_field, sym.description_field, *sym.user_fields):
-        out[f.name] = (f.text.value if f.name != "Reference" else "<ref>", round((f.text.position.x - pos.x) / MM, 4), round((f.text.position.y - pos.y) / MM, 4), f.visible)
+        out[f.name] = (
+            f.text.value if f.name != "Reference" else "<ref>",
+            round((f.text.position.x - pos.x) / MM, 4),
+            round((f.text.position.y - pos.y) / MM, 4),
+            f.visible,
+        )
     return out
 
 
@@ -145,11 +150,19 @@ def main() -> int:
         gl.position = v2(*pr["1"])
         mid = (pr["2"][0], pc["1"][1])
         with commit(sch, "block wires"):
-            made = sch.create_items([
-                wire(pr["2"], mid), wire(mid, pc["1"]), wire(mid, (mid[0], mid[1] + 7.62)),
-                junction(mid), local_label("SIG", (mid[0], mid[1] + 7.62)), gl,
-                no_connect(pu["5"]), local_label("OUT", pu["7"]), local_label("SIG", pc["2"]),
-            ])
+            made = sch.create_items(
+                [
+                    wire(pr["2"], mid),
+                    wire(mid, pc["1"]),
+                    wire(mid, (mid[0], mid[1] + 7.62)),
+                    junction(mid),
+                    local_label("SIG", (mid[0], mid[1] + 7.62)),
+                    gl,
+                    no_connect(pu["5"]),
+                    local_label("OUT", pu["7"]),
+                    local_label("SIG", pc["2"]),
+                ]
+            )
         src_ids = [sid(m) for m in made]
         src_items = by_id(sch, src_ids)
         rec.check("source_block_built", len(src_items) == len(made), f"{len(src_items)}/{len(made)} non-symbol items")
@@ -159,13 +172,21 @@ def main() -> int:
         dups = [dup_item(src_items[i], "_CH2") for i in src_ids if i in src_items]
         with commit(sch, "duplicate items"):
             created = sch.create_items(dups)
-        rec.check("dup_items_new_uuids", sorted(sid(c) for c in created) == sorted(sid(d) for d in dups) and not set(map(sid, created)) & set(src_ids), f"{len(created)} created")
+        rec.check(
+            "dup_items_new_uuids",
+            sorted(sid(c) for c in created) == sorted(sid(d) for d in dups) and not set(map(sid, created)) & set(src_ids),
+            f"{len(created)} created",
+        )
         back = by_id(sch, [sid(d) for d in dups])
-        rec.check("dup_items_all_present_after_push", len(back) == len(dups), f"{len(back)}/{len(dups)} (junction kept: {any(type(b).__name__ == 'Junction' for b in back.values())})")
+        rec.check(
+            "dup_items_all_present_after_push",
+            len(back) == len(dups),
+            f"{len(back)}/{len(dups)} (junction kept: {any(type(b).__name__ == 'Junction' for b in back.values())})",
+        )
 
         # --- symbols, method A: place from library + copy
         results_a = {}
-        for n, (s_id, new_ref) in enumerate(((sid(r1), "R201"), (sid(c1), "C201"), (sid(u1), "U201"), (sid(g1), "U202"))):
+        for s_id, new_ref in ((sid(r1), "R201"), (sid(c1), "C201"), (sid(u1), "U201"), (sid(g1), "U202")):
             src = src_syms[s_id]
             at = (src.position.x / MM + DX, src.position.y / MM + DY)
             orient = src.transform.orientation
@@ -180,15 +201,33 @@ def main() -> int:
 
         # --- connectivity of the copy (method A at +DY)
         nets = nets_by_pin(sch)
-        rec.check("dup_connectivity_mirrors_source", nets.get(("R201", "2")) is not None and nets.get(("R201", "2")) == nets.get(("C201", "1")) and nets.get(("R101", "2")) != nets.get(("R201", "2")), (nets.get(("R201", "2")), nets.get(("C201", "1")), nets.get(("R101", "2"))))
-        rec.check("dup_local_label_suffixed", (nets.get(("C201", "2")) or "").endswith("SIG_CH2") and (nets_src.get(("C101", "2")) or "").endswith("SIG"), (nets.get(("C201", "2")), nets_src.get(("C101", "2"))))
-        rec.check("dup_global_label_shared", nets.get(("R201", "1")) == nets.get(("R101", "1")) == "VCC_G", (nets.get(("R201", "1")), nets.get(("R101", "1"))))
+        rec.check(
+            "dup_connectivity_mirrors_source",
+            nets.get(("R201", "2")) is not None
+            and nets.get(("R201", "2")) == nets.get(("C201", "1"))
+            and nets.get(("R101", "2")) != nets.get(("R201", "2")),
+            (nets.get(("R201", "2")), nets.get(("C201", "1")), nets.get(("R101", "2"))),
+        )
+        rec.check(
+            "dup_local_label_suffixed",
+            (nets.get(("C201", "2")) or "").endswith("SIG_CH2") and (nets_src.get(("C101", "2")) or "").endswith("SIG"),
+            (nets.get(("C201", "2")), nets_src.get(("C101", "2"))),
+        )
+        rec.check(
+            "dup_global_label_shared",
+            nets.get(("R201", "1")) == nets.get(("R101", "1")) == "VCC_G",
+            (nets.get(("R201", "1")), nets.get(("R101", "1"))),
+        )
         sch.save()
         keep_artifact(proj, "q10_duplicate_A")
         # the definition reported for a De Morgan symbol after a body style change
         g = by_id(sch, [sid(g1)])[sid(g1)]
         lib_pins = len(k.get_library_symbol("74xx:74LS00").pins)
-        rec.check("definition_keeps_all_body_style_pins", len(g.definition.pins) == lib_pins, f"{len(g.definition.pins)} pins reported for body_style={g.body_style} vs {lib_pins} in the library")
+        rec.check(
+            "definition_keeps_all_body_style_pins",
+            len(g.definition.pins) == lib_pins,
+            f"{len(g.definition.pins)} pins reported for body_style={g.body_style} vs {lib_pins} in the library",
+        )
 
         # --- symbols, method B: create_items with the read object, new UUID + reference
         results_b, made_b = {}, []
@@ -197,7 +236,14 @@ def main() -> int:
             d = type(src)(proto=src.proto)
             d.proto.id.value = str(uuid.uuid4())
             shift(d.proto.position, DX, 2 * DY)
-            for f in (d.proto.reference_field, d.proto.value_field, d.proto.footprint_field, d.proto.datasheet_field, d.proto.description_field, *d.proto.user_fields):
+            for f in (
+                d.proto.reference_field,
+                d.proto.value_field,
+                d.proto.footprint_field,
+                d.proto.datasheet_field,
+                d.proto.description_field,
+                *d.proto.user_fields,
+            ):
                 shift(f.text.position, DX, 2 * DY)
             d.reference = new_ref
             try:
@@ -211,9 +257,21 @@ def main() -> int:
             except Exception as e:  # noqa: BLE001
                 results_b[src.reference] = f"{type(e).__name__}: {e}"
         diffs = {kk: v for kk, v in results_b.items() if not kk.endswith("_ref")}
-        rec.check("dup_symbols_create_items_refs", all(results_b.get(kk) in ("R301", "C301", "U301", "U302") for kk in results_b if kk.endswith("_ref")), {kk: v for kk, v in results_b.items() if kk.endswith("_ref")})
-        rec.check("dup_symbols_create_items_props_identical_except_lib", all(isinstance(v, dict) and set(v) <= {"lib"} for v in diffs.values()), diffs)
-        rec.check("dup_symbols_create_items_keep_library_link", all(isinstance(v, dict) and "lib" not in v for v in diffs.values()), {kk: v.get("lib") if isinstance(v, dict) else v for kk, v in diffs.items()})
+        rec.check(
+            "dup_symbols_create_items_refs",
+            all(results_b.get(kk) in ("R301", "C301", "U301", "U302") for kk in results_b if kk.endswith("_ref")),
+            {kk: v for kk, v in results_b.items() if kk.endswith("_ref")},
+        )
+        rec.check(
+            "dup_symbols_create_items_props_identical_except_lib",
+            all(isinstance(v, dict) and set(v) <= {"lib"} for v in diffs.values()),
+            diffs,
+        )
+        rec.check(
+            "dup_symbols_create_items_keep_library_link",
+            all(isinstance(v, dict) and "lib" not in v for v in diffs.values()),
+            {kk: v.get("lib") if isinstance(v, dict) else v for kk, v in diffs.items()},
+        )
 
         sch.save()
         keep_artifact(proj, "q10_duplicate_B")

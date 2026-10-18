@@ -55,7 +55,11 @@ def main() -> int:
         rec.check("dangling_junction_kept_after_push", ids[-1] in after, f"junction at (152.4,152.4) present={ids[-1] in after}")
         rec.check("collinear_segments_kept_separate_on_create", all(i in after for i in ids[:4]), f"{sum(i in after for i in ids[:4])}/4")
         nets = nets_by_pin(sch)
-        rec.check("before_delete_t_net", nets.get(("R1", "2")) == nets.get(("R2", "2")) == nets.get(("R3", "1")), (nets.get(("R1", "2")), nets.get(("R2", "2")), nets.get(("R3", "1"))))
+        rec.check(
+            "before_delete_t_net",
+            nets.get(("R1", "2")) == nets.get(("R2", "2")) == nets.get(("R3", "1")),
+            (nets.get(("R1", "2")), nets.get(("R2", "2")), nets.get(("R3", "1"))),
+        )
 
         # delete the T branch: does KiCad remove the now-useless junction / merge the two
         # collinear segments it joined?
@@ -64,7 +68,11 @@ def main() -> int:
         now = by_id(sch, ids)
         rec.check("delete_wire_removed", ids[4] not in now, "branch wire gone")
         rec.check("delete_wire_keeps_junction", ids[5] in now, f"junction present={ids[5] in now}")
-        rec.check("delete_wire_keeps_neighbour_segments", ids[1] in now and ids[2] in now and mm(now[ids[1]].end) == (76.2, y), {i[:8]: (mm(w.start), mm(w.end)) for i, w in now.items() if type(w).__name__ == "SchematicLine"})
+        rec.check(
+            "delete_wire_keeps_neighbour_segments",
+            ids[1] in now and ids[2] in now and mm(now[ids[1]].end) == (76.2, y),
+            {i[:8]: (mm(w.start), mm(w.end)) for i, w in now.items() if type(w).__name__ == "SchematicLine"},
+        )
         lines = sch.get_lines()
         rec.note("wires_after_branch_delete", [(mm(w.start), mm(w.end), sid(w)[:8]) for w in lines])
 

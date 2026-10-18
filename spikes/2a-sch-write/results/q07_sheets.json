@@ -9,7 +9,7 @@
     {
       "name": "workaround_field_fix_inside_create_commit",
       "ok": false,
-      "evidence": "/tmp/s2a-blank-noog2x7j/blank/power.kicad_sch"
+      "evidence": "/tmp/s2a-blank-np5_eezq/blank/power.kicad_sch"
     },
     {
       "name": "workaround_sheetfile_relative_after_fix",
@@ -39,7 +39,7 @@
     {
       "name": "place_on_new_sheet_path",
       "ok": true,
-      "evidence": "path {\n  value: \"86c7d558-2511-4c34-9d0d-2cc523a13fee\"\n}\npath {\n  value: \"94fd66dd-0712-4605-b27f-8b10eb43c558\"\n}\npath_human_readable: \"/Power/\"\n"
+      "evidence": "path {\n  value: \"86c7d558-2511-4c34-9d0d-2cc523a13fee\"\n}\npath {\n  value: \"a4ece589-b8c3-4f5f-953c-17f14fc77704\"\n}\npath_human_readable: \"/Power/\"\n"
     },
     {
       "name": "hier_label_on_sub_sheet",

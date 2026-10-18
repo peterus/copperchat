@@ -1,0 +1,14 @@
+[project]
+name = "spike-2a-sch-write"
+version = "0.0.0"
+description = "Throwaway spike: headless schematic write round-trip (CopperChat sub-project 2, 2A)"
+requires-python = ">=3.13"
+license = "GPL-3.0-only"
+
+[tool.ruff]
+line-length = 140
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["E501"]  # long evidence f-strings in throwaway checks

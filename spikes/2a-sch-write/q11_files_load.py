@@ -25,7 +25,13 @@ def main() -> int:
         rec.check(
             f"cli_loads_{proj.name}",
             n.returncode == 0 and s.returncode == 0 and ok_erc and len(svgs) == n_sheets >= 1,
-            {"netlist_rc": n.returncode, "svg": [p.name for p in svgs], "erc_rc": e.returncode, "erc_sheets": n_sheets, "stderr": (n.stderr + s.stderr + e.stderr)[-200:]},
+            {
+                "netlist_rc": n.returncode,
+                "svg": [p.name for p in svgs],
+                "erc_rc": e.returncode,
+                "erc_sheets": n_sheets,
+                "stderr": (n.stderr + s.stderr + e.stderr)[-200:],
+            },
         )
     return rec.finish()
 

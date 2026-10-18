@@ -4,7 +4,7 @@
     {
       "name": "staged_create_response_has_uuid",
       "ok": true,
-      "evidence": "('637a813f', '91448739')"
+      "evidence": "('300ca6e5', 'fac2c45c')"
     },
     {
       "name": "staged_create_invisible_by_id",
@@ -24,7 +24,7 @@
     {
       "name": "after_push_visible",
       "ok": true,
-      "evidence": "['57ddb087', '637a813f', '91448739']"
+      "evidence": "['23503247', '300ca6e5', 'fac2c45c']"
     },
     {
       "name": "staged_delete_still_visible_before_push",
@@ -40,6 +40,11 @@
       "name": "update_of_missing_item_raises",
       "ok": false,
       "evidence": "no exception; kipy returned 1 item(s) and ignores the per-item status (editor.py update_items); still missing after: True"
+    },
+    {
+      "name": "create_with_existing_uuid_raises",
+      "ok": false,
+      "evidence": "no exception; kipy returned 1 item(s) (ISC_EXISTING dropped); symbols now: ['C1', 'R1']"
     },
     {
       "name": "drop_commit_document_unchanged",
@@ -104,7 +109,7 @@
     {
       "name": "recreate_with_original_uuids",
       "ok": true,
-      "evidence": "{'missing': [], 'returned_ids': ['0cf3e164', '2fe4630d', '436961eb', '61c7ae08', '7fe4fab0', 'ca8a178b', 'ee55381a', 'f4106fb4']}"
+      "evidence": "{'missing': [], 'returned_ids': ['2ef32412', '49f973ff', '674c3e2b', '77b20d86', '8997b422', '8b4bbdfe', 'aefe0461', 'e9edbad7']}"
     },
     {
       "name": "recreated_content_equal",
@@ -136,16 +141,16 @@
     "staged_update_visible_before_push": true,
     "corner_junction_dropped_on_create": true,
     "pre_images": {
-      "ca8a178b": "SchematicSymbolInstance",
-      "7fe4fab0": "SchematicSymbolInstance",
-      "61c7ae08": "SchematicLine",
-      "436961eb": "SchematicLine",
-      "f4106fb4": "SchematicLine",
-      "0cf3e164": "LocalLabel",
-      "ee55381a": "NoConnectMarker",
-      "2fe4630d": "GlobalLabel"
+      "e9edbad7": "SchematicSymbolInstance",
+      "aefe0461": "SchematicSymbolInstance",
+      "8997b422": "SchematicLine",
+      "674c3e2b": "SchematicLine",
+      "2ef32412": "SchematicLine",
+      "49f973ff": "LocalLabel",
+      "8b4bbdfe": "NoConnectMarker",
+      "77b20d86": "GlobalLabel"
     },
-    "compensate_ms": 35.3,
-    "root": "/tmp/s2a-blank-wbi34em6/blank/blank.kicad_sch"
+    "compensate_ms": 35.2,
+    "root": "/tmp/s2a-blank-ee8cxat_/blank/blank.kicad_sch"
   }
 }

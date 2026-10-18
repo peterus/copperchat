@@ -34,7 +34,7 @@
     {
       "name": "save_plus_copy_plus_erc_under_10s",
       "ok": true,
-      "evidence": "[2922, 2890, 2932]"
+      "evidence": "[2882, 2878, 2914]"
     },
     {
       "name": "document_clean_after_save",
@@ -75,31 +75,31 @@
   "notes": {
     "timings_ms": {
       "save": [
-        42,
-        57,
-        51
+        41,
+        64,
+        52
       ],
       "save_copy": [
-        33,
-        37,
+        35,
+        38,
         36
       ],
       "erc": [
-        2846,
-        2797,
-        2845
+        2806,
+        2776,
+        2825
       ],
       "total": [
-        2922,
-        2890,
-        2932
+        2882,
+        2878,
+        2914
       ]
     },
     "median_ms": {
-      "save": 51,
+      "save": 52,
       "save_copy": 36,
-      "erc": 2845,
-      "total": 2922
+      "erc": 2806,
+      "total": 2882
     },
     "files_rewritten_by_save": [
       "ampli_ht.kicad_sch",

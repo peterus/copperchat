@@ -45,8 +45,8 @@ def png_hash(sch, out_dir: Path) -> str:
 
 def main() -> int:
     require_kicad()
-    from kipy.proto.schematic.schematic_types_pb2 import SchematicSymbolOrientation as O
     from kipy.proto.common.types import DocumentType
+    from kipy.proto.schematic.schematic_types_pb2 import SchematicSymbolOrientation as O
     from kipy.schematic_types import GlobalLabel
 
     rec = Recorder("q03_connect")
@@ -116,7 +116,11 @@ def main() -> int:
         rec.check("no_connect_read_back", mm(ncb.position) == p7["1"], mm(ncb.position))
 
         lines = sch.get_lines()
-        rec.check("wires_not_split_or_merged_on_push", len(lines) == sum(1 for i in items if type(i).__name__ == "SchematicLine"), f"{len(lines)} wires on sheet")
+        rec.check(
+            "wires_not_split_or_merged_on_push",
+            len(lines) == sum(1 for i in items if type(i).__name__ == "SchematicLine"),
+            f"{len(lines)} wires on sheet",
+        )
         mid = by_id(sch, [ids[1], ids[items.index(route_b[1])]])
         rec.note("t_joint_host_wire_after", {i: (mm(w.start), mm(w.end)) for i, w in mid.items()})
 
@@ -124,12 +128,25 @@ def main() -> int:
         # export jobs run on EESCHEMA_JOBS_HANDLER's cached copy loaded from disk at the
         # first job (eeschema_jobs_handler.cpp getSchematic, m_cliSchematic)
         nets_job_unsaved = job_netlist(sch, tmp)
-        rec.check("netlist_job_reflects_unsaved_edits", ("R1", "2") in nets_job_unsaved, f"{len(nets_job_unsaved)} pins in job netlist before save()")
+        rec.check(
+            "netlist_job_reflects_unsaved_edits",
+            ("R1", "2") in nets_job_unsaved,
+            f"{len(nets_job_unsaved)} pins in job netlist before save()",
+        )
         png0 = png_hash(sch, tmp / "png0")
         sch.save()
         nets_job_saved = job_netlist(sch, tmp)
-        rec.check("netlist_job_reflects_edits_after_save", ("R1", "2") in nets_job_saved, f"{len(nets_job_saved)} pins after save() (job cache from first job)")
+        rec.check(
+            "netlist_job_reflects_edits_after_save",
+            ("R1", "2") in nets_job_saved,
+            f"{len(nets_job_saved)} pins after save() (job cache from first job)",
+        )
         rec.check("png_job_reflects_edits_after_save", png_hash(sch, tmp / "png1") != png0, "PNG export job after save() vs before")
+        # revert() reloads the document from disk but keeps the jobs' cached copy
+        sch.revert()
+        sch = k.get_schematic()
+        nets_job_rev = job_netlist(sch, tmp)
+        rec.check("revert_refreshes_export_jobs", ("R1", "2") in nets_job_rev, f"{len(nets_job_rev)} pins after save() + revert()")
         # workaround: save + close_document + open_document clears the job cache
         t0 = time.monotonic()
         doc = k.get_open_documents(DocumentType.DOCTYPE_SCHEMATIC)[0]
@@ -138,8 +155,15 @@ def main() -> int:
         sch = k.get_schematic()
         rec.note("close_open_document_ms", round((time.monotonic() - t0) * 1000, 1))
         nets_job = job_netlist(sch, tmp)
-        rec.check("workaround_save_close_open_refreshes_jobs", ("R1", "2") in nets_job and png_hash(sch, tmp / "png2") != png0, f"{len(nets_job)} pins")
-        rec.attempt("place_after_reopen_libraries_still_loaded", lambda: sch.place_symbol_from_library("Device:R", v2(228.6, 177.8), reference="R99").reference)
+        rec.check(
+            "workaround_save_close_open_refreshes_jobs",
+            ("R1", "2") in nets_job and png_hash(sch, tmp / "png2") != png0,
+            f"{len(nets_job)} pins",
+        )
+        rec.attempt(
+            "place_after_reopen_libraries_still_loaded",
+            lambda: sch.place_symbol_from_library("Device:R", v2(228.6, 177.8), reference="R99").reference,
+        )
         nets_cli = cli_netlist(root_sch(proj), tmp)
 
         def same(n, a, b):
@@ -147,20 +171,32 @@ def main() -> int:
 
         for label, n in (("api", nets_api), ("job_after_reopen", nets_job), ("cli_saved", nets_cli)):
             rec.check(f"{label}_wire_pin_to_pin", same(n, ("R1", "2"), ("R2", "2")), (n.get(("R1", "2")), n.get(("R2", "2"))))
-            rec.check(f"{label}_t_joint_without_junction_connects", same(n, ("R3", "1"), ("R1", "2")), (n.get(("R3", "1")), n.get(("R1", "2"))))
-            rec.check(f"{label}_t_joint_with_junction_connects", same(n, ("R13", "1"), ("R11", "2")), (n.get(("R13", "1")), n.get(("R11", "2"))))
+            rec.check(
+                f"{label}_t_joint_without_junction_connects", same(n, ("R3", "1"), ("R1", "2")), (n.get(("R3", "1")), n.get(("R1", "2")))
+            )
+            rec.check(
+                f"{label}_t_joint_with_junction_connects", same(n, ("R13", "1"), ("R11", "2")), (n.get(("R13", "1")), n.get(("R11", "2")))
+            )
             rec.check(f"{label}_wire_over_foreign_pin_end_connects", (n.get(("R5", "2")) or "").endswith("OVER"), n.get(("R5", "2")))
             rec.check(f"{label}_label_on_wire_interior_names_net", (n.get(("R6", "2")) or "").endswith("MIDWIRE"), n.get(("R6", "2")))
             rec.check(f"{label}_near_miss_not_connected", not (n.get(("R7", "2")) or "").endswith("MISS"), n.get(("R7", "2")))
             rec.check(f"{label}_global_label_at_pin_end", n.get(("R8", "1")) == "VBUS_G", n.get(("R8", "1")))
             rec.check(f"{label}_power_symbol_at_pin_end", n.get(("R9", "2")) == "GND", n.get(("R9", "2")))
         nets_api = {k: v for k, v in nets_api.items() if not k[0].startswith("#")}  # power pins
-        rec.check("three_netlists_agree", nets_api == nets_cli and nets_job == nets_cli, {
-            "api_vs_cli": sorted(k for k in set(nets_api) | set(nets_cli) if nets_api.get(k) != nets_cli.get(k))[:8],
-            "job_vs_cli": sorted(k for k in set(nets_job) | set(nets_cli) if nets_job.get(k) != nets_cli.get(k))[:8],
-        })
+        rec.check(
+            "three_netlists_agree",
+            nets_api == nets_cli and nets_job == nets_cli,
+            {
+                "api_vs_cli": sorted(k for k in set(nets_api) | set(nets_cli) if nets_api.get(k) != nets_cli.get(k))[:8],
+                "job_vs_cli": sorted(k for k in set(nets_job) | set(nets_cli) if nets_job.get(k) != nets_cli.get(k))[:8],
+            },
+        )
         api_net_names = {net.name for net in sch.get_netlist()}
-        rec.check("crossing_wires_without_junction_stay_separate", any(nm.endswith("XH") for nm in api_net_names) and any(nm.endswith("XV") for nm in api_net_names), sorted(n for n in api_net_names if n.endswith(("XH", "XV"))))
+        rec.check(
+            "crossing_wires_without_junction_stay_separate",
+            any(nm.endswith("XH") for nm in api_net_names) and any(nm.endswith("XV") for nm in api_net_names),
+            sorted(n for n in api_net_names if n.endswith(("XH", "XV"))),
+        )
         rec.note("gnd_ref", gnd.reference)
 
         erc = tmp / "erc.json"
@@ -169,9 +205,17 @@ def main() -> int:
         vios = [v for s in rep.get("sheets", []) for v in s.get("violations", [])]
         types = sorted({v["type"] for v in vios})
         rec.check("erc_runs_on_saved_file", r.returncode in (0, 5) and erc.exists(), f"rc={r.returncode} types={types}")
-        nc_pin_flagged = any(v["type"] == "pin_not_connected" and any(abs(i["pos"]["x"] - p7["1"][0]) < 0.01 and abs(i["pos"]["y"] - p7["1"][1]) < 0.01 for i in v.get("items", [])) for v in vios)
+        nc_pin_flagged = any(
+            v["type"] == "pin_not_connected"
+            and any(abs(i["pos"]["x"] - p7["1"][0]) < 0.01 and abs(i["pos"]["y"] - p7["1"][1]) < 0.01 for i in v.get("items", []))
+            for v in vios
+        )
         rec.check("erc_no_connect_marker_suppresses_pin_not_connected", not nc_pin_flagged, types)
-        rec.check("erc_flags_near_miss", any(v["type"] in ("pin_not_connected", "unconnected_wire_endpoint", "wire_dangling") for v in vios), types)
+        rec.check(
+            "erc_flags_near_miss",
+            any(v["type"] in ("pin_not_connected", "unconnected_wire_endpoint", "wire_dangling") for v in vios),
+            types,
+        )
         rec.note("erc_violation_types", {t: sum(1 for v in vios if v["type"] == t) for t in types})
         keep_artifact(proj, "q03_connect")
     return rec.finish()

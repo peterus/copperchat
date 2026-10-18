@@ -42,6 +42,11 @@
       "evidence": "PNG export job after save() vs before"
     },
     {
+      "name": "revert_refreshes_export_jobs",
+      "ok": false,
+      "evidence": "0 pins after save() + revert()"
+    },
+    {
       "name": "workaround_save_close_open_refreshes_jobs",
       "ok": true,
       "evidence": "22 pins"
@@ -199,17 +204,17 @@
   ],
   "notes": {
     "pin_ends_R1": {
-      "2": [
-        50.8,
-        54.61
-      ],
       "1": [
         50.8,
         46.99
+      ],
+      "2": [
+        50.8,
+        54.61
       ]
     },
     "t_joint_host_wire_after": {
-      "07ee14ac-b797-4620-b010-b00a6acbce5c": [
+      "85e265b6-2b9a-42f8-97c9-6802f5c0d780": [
         [
           50.8,
           63.5
@@ -219,7 +224,7 @@
           63.5
         ]
       ],
-      "9d9bb4c3-52bb-4c52-8af8-7ab4013c0dd2": [
+      "91fbd0ed-5943-4e8d-851a-ad12c508f6bf": [
         [
           50.8,
           114.3
@@ -230,7 +235,7 @@
         ]
       ]
     },
-    "close_open_document_ms": 46.0,
+    "close_open_document_ms": 55.5,
     "gnd_ref": "#PWR01",
     "erc_violation_types": {
       "endpoint_off_grid": 1,

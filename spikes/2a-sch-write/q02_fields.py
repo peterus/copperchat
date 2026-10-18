@@ -101,7 +101,10 @@ def main() -> int:
         r = sch.place_symbol_from_library("Device:R", v2(50.8, 50.8), reference="R1")
         u_a = sch.place_symbol_from_library("Amplifier_Operational:LM358", v2(101.6, 50.8), unit=1, reference="U1")
         u_b = sch.place_symbol_from_library("Amplifier_Operational:LM358", v2(101.6, 88.9), unit=2, reference="U1")
-        rec.note("fields_after_place", {f.name: (f.text.value, mm(f.text.position), f.visible) for f in (r.reference_field, r.value_field, r.footprint_field)})
+        rec.note(
+            "fields_after_place",
+            {f.name: (f.text.value, mm(f.text.position), f.visible) for f in (r.reference_field, r.value_field, r.footprint_field)},
+        )
         rec.check("fields_autoplaced_flag_after_headless_place", True, f"fields_autoplaced={r.fields_autoplaced}")
 
         r = by_id(sch, [sid(r)])[sid(r)]
@@ -123,12 +126,32 @@ def main() -> int:
         rec.note("update_fields_ms", round((time.monotonic() - t0) * 1000, 1))
         g = by_id(sch, [sid(r)])[sid(r)]
         user = {f.name: (f.text.value, mm(f.text.position), f.visible) for f in g.user_fields}
-        rec.check("value_footprint_datasheet_description", (g.value, g.footprint_field.text.value, g.datasheet_field.text.value, g.description_field.text.value) == ("10k", "Resistor_SMD:R_0805_2012Metric", "https://example.invalid/rc0805.pdf", "Resistor 10k 1% 0805"), (g.value, g.footprint_field.text.value))
-        rec.check("custom_fields_added", user.get("MPN", ("",))[0] == "RC0805FR-0710KL" and user.get("Manufacturer", ("",))[0] == "Yageo", user)
+        rec.check(
+            "value_footprint_datasheet_description",
+            (g.value, g.footprint_field.text.value, g.datasheet_field.text.value, g.description_field.text.value)
+            == ("10k", "Resistor_SMD:R_0805_2012Metric", "https://example.invalid/rc0805.pdf", "Resistor 10k 1% 0805"),
+            (g.value, g.footprint_field.text.value),
+        )
+        rec.check(
+            "custom_fields_added", user.get("MPN", ("",))[0] == "RC0805FR-0710KL" and user.get("Manufacturer", ("",))[0] == "Yageo", user
+        )
         rec.check("custom_field_position_visibility", user.get("MPN", (0, 0, True))[1:] == ((55.88, 55.88), False), user.get("MPN"))
-        rec.check("value_field_position_set", mm(g.value_field.text.position) == (round(val_pos[0] + 2.54, 4), val_pos[1]), (val_pos, mm(g.value_field.text.position)))
-        rec.check("dnp_exclude_flags", (g.attributes.do_not_populate, g.attributes.exclude_from_bill_of_materials, g.attributes.exclude_from_board) == (True, True, False), g.attributes.proto)
-        rec.check("update_response_equals_read_back", upd.value == g.value and len(upd.user_fields) == len(g.user_fields), (upd.value, len(upd.user_fields)))
+        rec.check(
+            "value_field_position_set",
+            mm(g.value_field.text.position) == (round(val_pos[0] + 2.54, 4), val_pos[1]),
+            (val_pos, mm(g.value_field.text.position)),
+        )
+        rec.check(
+            "dnp_exclude_flags",
+            (g.attributes.do_not_populate, g.attributes.exclude_from_bill_of_materials, g.attributes.exclude_from_board)
+            == (True, True, False),
+            g.attributes.proto,
+        )
+        rec.check(
+            "update_response_equals_read_back",
+            upd.value == g.value and len(upd.user_fields) == len(g.user_fields),
+            (upd.value, len(upd.user_fields)),
+        )
         # field removal: drop Manufacturer again
         g.user_fields = [f for f in g.user_fields if f.name != "Manufacturer"]
         update_symbols(sch, [g])
@@ -141,7 +164,9 @@ def main() -> int:
         a.footprint_field.text.value = "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm"
         update_symbols(sch, [a])
         b = by_id(sch, [sid(u_b)])[sid(u_b)]
-        rec.check("multi_unit_fields_synced_by_kicad", b.value == "TLV9002", f"unit2 value={b.value!r} footprint={b.footprint_field.text.value!r}")
+        rec.check(
+            "multi_unit_fields_synced_by_kicad", b.value == "TLV9002", f"unit2 value={b.value!r} footprint={b.footprint_field.text.value!r}"
+        )
         b.value = "TLV9002"
         b.footprint_field.text.value = "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm"
         update_symbols(sch, [b])
@@ -153,7 +178,13 @@ def main() -> int:
         res = run_cli("sch", "export", "netlist", "-o", str(out), str(root_sch(proj)))
         comps = netlist_components(out.read_text()) if res.returncode == 0 else {}
         c = comps.get("R1", {})
-        rec.check("cli_netlist_fields", c.get("value") == "10k" and c.get("footprint") == "Resistor_SMD:R_0805_2012Metric" and c.get("fields", {}).get("MPN") == "RC0805FR-0710KL", c)
+        rec.check(
+            "cli_netlist_fields",
+            c.get("value") == "10k"
+            and c.get("footprint") == "Resistor_SMD:R_0805_2012Metric"
+            and c.get("fields", {}).get("MPN") == "RC0805FR-0710KL",
+            c,
+        )
         rec.check("cli_netlist_dnp_exclude_props", "dnp" in c.get("props", {}) and "exclude_from_bom" in c.get("props", {}), c.get("props"))
         rec.check("cli_netlist_multi_unit_value", comps.get("U1", {}).get("value") == "TLV9002", comps.get("U1"))
         keep_artifact(proj, "q02_fields")
@@ -165,7 +196,10 @@ def main() -> int:
         mpn = next((f for f in g.user_fields if f.name == "MPN"), None)
         rec.check(
             "reopen_fields_positions_persist",
-            g.value == "10k" and mpn is not None and mm(mpn.text.position) == (55.88, 55.88) and not mpn.visible
+            g.value == "10k"
+            and mpn is not None
+            and mm(mpn.text.position) == (55.88, 55.88)
+            and not mpn.visible
             and abs(g.value_field.text.position.x - round((val_pos[0] + 2.54) * MM)) < 10,
             (g.value, mpn and (mm(mpn.text.position), mpn.visible), mm(g.value_field.text.position)),
         )

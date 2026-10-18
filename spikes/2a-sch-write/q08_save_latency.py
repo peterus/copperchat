@@ -21,8 +21,8 @@ from harness import (
     load_libraries,
     local_label,
     main_guard,
-    nets_by_pin,
     netlist_components,
+    nets_by_pin,
     require_kicad,
     root_sch,
     run_cli,
@@ -68,7 +68,11 @@ def main() -> int:
         k = srv.client(timeout_ms=120000)
         sch = k.get_schematic()
         n_sym = len(sch.get_symbols())
-        rec.check("fixture_size_100_plus_symbols", n_sym >= 100, f"{n_sym} symbol unit instances, {len(list(sch.get_hierarchy()))} sheet instances")
+        rec.check(
+            "fixture_size_100_plus_symbols",
+            n_sym >= 100,
+            f"{n_sym} symbol unit instances, {len(list(sch.get_hierarchy()))} sheet instances",
+        )
         tmp0 = Path(tempfile.mkdtemp(prefix="s2a-q08-nl-"))
         api = {kk: v for kk, v in nets_by_pin(sch).items() if not kk[0].startswith("#")}
         cli0 = cli_netlist(root_sch(proj), tmp0)
@@ -90,7 +94,11 @@ def main() -> int:
         sch.for_sheet(extra).place_symbol_from_library("Device:R", v2(50.8, 50.8), reference="R401")
         rec.check("document_modified_before_save", sch.is_document_modified(), "")
         other = sch.for_sheet(inst["ampli_ht_horizontal"])
-        rec.check("new_symbol_on_shared_sheet_visible_in_other_instance", any(sid(s) == sid(new_sub) for s in other.get_symbols()), "ampli_ht.kicad_sch has 2 instances; GetItems on the 2nd")
+        rec.check(
+            "new_symbol_on_shared_sheet_visible_in_other_instance",
+            any(sid(s) == sid(new_sub) for s in other.get_symbols()),
+            "ampli_ht.kicad_sch has 2 instances; GetItems on the 2nd",
+        )
 
         # copy WITHOUT save first: sub-sheet bytes on disk are stale
         stale = tmp / "stale"
@@ -99,7 +107,11 @@ def main() -> int:
         nl = tmp / "stale.net"
         run_cli("sch", "export", "netlist", "-o", str(nl), str(stale / root_sch(proj).name))
         comps = netlist_components(nl.read_text()) if nl.exists() else {}
-        rec.check("copy_without_save_has_subsheet_edits", "R299" in comps and comps.get("R201", {}).get("value") == "4k7-EDITED", {"R299": "R299" in comps, "R201": comps.get("R201", {}).get("value"), "extra_file": (stale / "extra.kicad_sch").exists()})
+        rec.check(
+            "copy_without_save_has_subsheet_edits",
+            "R299" in comps and comps.get("R201", {}).get("value") == "4k7-EDITED",
+            {"R299": "R299" in comps, "R201": comps.get("R201", {}).get("value"), "extra_file": (stale / "extra.kicad_sch").exists()},
+        )
 
         before = {p.name: sha(p) for p in proj.glob("*.kicad_sch")}
         timings = {"save": [], "save_copy": [], "erc": [], "total": []}
@@ -128,10 +140,24 @@ def main() -> int:
 
         cli = cli_netlist(dest / root_sch(proj).name, tmp)
         comps = netlist_components((tmp / "cli.net").read_text())
-        rec.check("copy_has_edited_subsheet_value", comps.get("R201", {}).get("value") == "4k7-EDITED-2", comps.get("R201", {}).get("value"))
-        rec.check("copy_has_new_subsheet_symbol", "R299" in comps and any(n2.endswith("EDITED_NET") for (r, _), n2 in cli.items() if r == "R299"), [n2 for (r, _), n2 in cli.items() if r == "R299"])
-        rec.check("copy_has_new_sheet_file_and_symbol", (dest / "extra.kicad_sch").exists() and "R401" in comps, sorted(p.name for p in dest.iterdir()))
-        rec.check("shared_sheet_second_instance_unique_ref_after_save", len([c for c in comps if c.startswith(("R29", "R39")) or "?" in c]) == 2, sorted(c for c in comps if c.startswith(("R29", "R39")) or "?" in c))
+        rec.check(
+            "copy_has_edited_subsheet_value", comps.get("R201", {}).get("value") == "4k7-EDITED-2", comps.get("R201", {}).get("value")
+        )
+        rec.check(
+            "copy_has_new_subsheet_symbol",
+            "R299" in comps and any(n2.endswith("EDITED_NET") for (r, _), n2 in cli.items() if r == "R299"),
+            [n2 for (r, _), n2 in cli.items() if r == "R299"],
+        )
+        rec.check(
+            "copy_has_new_sheet_file_and_symbol",
+            (dest / "extra.kicad_sch").exists() and "R401" in comps,
+            sorted(p.name for p in dest.iterdir()),
+        )
+        rec.check(
+            "shared_sheet_second_instance_unique_ref_after_save",
+            len([c for c in comps if c.startswith(("R29", "R39")) or "?" in c]) == 2,
+            sorted(c for c in comps if c.startswith(("R29", "R39")) or "?" in c),
+        )
         # workaround: save + revert (reload) makes the 2nd instance visible; then set its
         # per-instance reference through the sheet-bound Schematic
         sch.revert()
@@ -142,8 +168,15 @@ def main() -> int:
         if g is not None:
             g.reference = "R399"
             update_symbols(other, [g])
-        refs = {n: [s.reference for s in sch.for_sheet(inst[n]).get_symbols() if sid(s) == sid(new_sub)] for n in ("ampli_ht_vertical", "ampli_ht_horizontal")}
-        rec.check("workaround_save_revert_then_per_instance_reference", refs == {"ampli_ht_vertical": ["R299"], "ampli_ht_horizontal": ["R399"]}, refs)
+        refs = {
+            n: [s.reference for s in sch.for_sheet(inst[n]).get_symbols() if sid(s) == sid(new_sub)]
+            for n in ("ampli_ht_vertical", "ampli_ht_horizontal")
+        }
+        rec.check(
+            "workaround_save_revert_then_per_instance_reference",
+            refs == {"ampli_ht_vertical": ["R299"], "ampli_ht_horizontal": ["R399"]},
+            refs,
+        )
         sch.save()
         keep_artifact(proj, "q08_hierarchy")
     return rec.finish()

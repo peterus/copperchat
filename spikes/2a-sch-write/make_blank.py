@@ -6,9 +6,9 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from harness import FIXTURES, Server
-
 from kipy.proto.common.types import DocumentType
+
+from harness import FIXTURES, Server
 
 
 def main() -> None:

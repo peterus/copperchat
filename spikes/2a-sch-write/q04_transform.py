@@ -67,9 +67,17 @@ def main() -> int:
         rec.check("move_position_read_back", mm(a2.position) == (63.5, 38.1), mm(a2.position))
         rec.check("move_symbol_moves_fields", field_offsets(a2) == before, {"before": before, "after": field_offsets(a2)})
         w0 = by_id(sch, [sid(made[0])])[sid(made[0])]
-        rec.check("move_symbol_drags_attached_wires", mm(w0.start) == pin_ends_abs(a2)["2"], {"wire_start": mm(w0.start), "pin2_now": pin_ends_abs(a2)["2"]})
+        rec.check(
+            "move_symbol_drags_attached_wires",
+            mm(w0.start) == pin_ends_abs(a2)["2"],
+            {"wire_start": mm(w0.start), "pin2_now": pin_ends_abs(a2)["2"]},
+        )
         nets = nets_by_pin(sch)
-        rec.check("move_without_wire_update_breaks_connection", nets.get(("R1", "2")) != nets.get(("R2", "1")), (nets.get(("R1", "2")), nets.get(("R2", "1"))))
+        rec.check(
+            "move_without_wire_update_breaks_connection",
+            nets.get(("R1", "2")) != nets.get(("R2", "1")),
+            (nets.get(("R1", "2")), nets.get(("R2", "1"))),
+        )
 
         # --- 2: workaround: symbol + its fields + attached wire ends + label in ONE commit
         a, b, made = pair("R3", "R4", 88.9)
@@ -90,7 +98,11 @@ def main() -> int:
             sch.update_items([w_a, w_b, lbl])
         a2 = by_id(sch, [sid(a)])[sid(a)]
         nets = nets_by_pin(sch)
-        rec.check("workaround_move_with_wires_one_commit", nets.get(("R3", "2")) == nets.get(("R4", "1")) and (nets.get(("R3", "1")) or "").endswith("TOP_R3"), (nets.get(("R3", "2")), nets.get(("R4", "1")), nets.get(("R3", "1"))))
+        rec.check(
+            "workaround_move_with_wires_one_commit",
+            nets.get(("R3", "2")) == nets.get(("R4", "1")) and (nets.get(("R3", "1")) or "").endswith("TOP_R3"),
+            (nets.get(("R3", "2")), nets.get(("R4", "1")), nets.get(("R3", "1"))),
+        )
         rec.check("workaround_fields_moved_with_symbol", field_offsets(a2) == before, field_offsets(a2))
 
         # --- 3: rotate + 4: mirror in place, wires re-attached by the client
@@ -111,8 +123,16 @@ def main() -> int:
                 sch.update_items([w_a, lbl])
             got = by_id(sch, [sid(a)])[sid(a)]
             nets = nets_by_pin(sch)
-            rec.check(f"{what}_read_back", (int(got.transform.orientation), got.transform.mirror_x) == ((2, False) if what == "rotate" else (1, True)), got.transform.proto)
-            rec.check(f"{what}_with_wires_reattached_connected", nets.get((ref_a, "2")) == nets.get((ref_b, "1")) and (nets.get((ref_a, "1")) or "").endswith(f"TOP_{ref_a}"), (nets.get((ref_a, "2")), nets.get((ref_b, "1"))))
+            rec.check(
+                f"{what}_read_back",
+                (int(got.transform.orientation), got.transform.mirror_x) == ((2, False) if what == "rotate" else (1, True)),
+                got.transform.proto,
+            )
+            rec.check(
+                f"{what}_with_wires_reattached_connected",
+                nets.get((ref_a, "2")) == nets.get((ref_b, "1")) and (nets.get((ref_a, "1")) or "").endswith(f"TOP_{ref_a}"),
+                (nets.get((ref_a, "2")), nets.get((ref_b, "1"))),
+            )
             rec.note(f"{what}_field_offsets_after", field_offsets(got))
 
     # --- 5: sub-sheet item updates: unbound Schematic vs. for_sheet (spike 2C finding)
@@ -132,14 +152,22 @@ def main() -> int:
         except Exception as e:  # noqa: BLE001
             err = f"{type(e).__name__}: {e}"
         now = mm(by_id(sub, [sid(sym)])[sid(sym)].position)
-        rec.check("subsheet_update_via_unbound_schematic_applies", now == (round(start[0] + 2.54, 4), start[1]), {"ref": sym.reference, "start": start, "now": now, "error": err})
+        rec.check(
+            "subsheet_update_via_unbound_schematic_applies",
+            now == (round(start[0] + 2.54, 4), start[1]),
+            {"ref": sym.reference, "start": start, "now": now, "error": err},
+        )
         moved = by_id(sub, [sid(sym)])[sid(sym)]
         moved.position = v2(start[0] + 5.08, start[1])
         update_symbols(sub, [moved])
         now = mm(by_id(sub, [sid(sym)])[sid(sym)].position)
         rec.check("subsheet_update_via_for_sheet_applies", now == (round(start[0] + 5.08, 4), start[1]), now)
         other = sch.for_sheet(inst[1])
-        rec.check("shared_subsheet_edit_visible_in_both_instances", mm(by_id(other, [sid(sym)])[sid(sym)].position) == now, "ampli_ht.kicad_sch is used by two sheet instances (one screen)")
+        rec.check(
+            "shared_subsheet_edit_visible_in_both_instances",
+            mm(by_id(other, [sid(sym)])[sid(sym)].position) == now,
+            "ampli_ht.kicad_sch is used by two sheet instances (one screen)",
+        )
         rec.note("subsheet_symbol", {"ref": sym.reference, "path_instances": [str(i.path.proto.path_human_readable) for i in inst]})
     return rec.finish()
 

@@ -84,9 +84,7 @@ def keep_artifact(project_dir: Path, name: str) -> Path:
     """Copy a saved project into results/files/<name> (input of the KiCanvas check)."""
     dst = FILES / name
     shutil.rmtree(dst, ignore_errors=True)
-    shutil.copytree(
-        project_dir, dst, ignore=shutil.ignore_patterns("*.lck", "*.kicad_pcb", "*-backups")
-    )
+    shutil.copytree(project_dir, dst, ignore=shutil.ignore_patterns("*.lck", "*.kicad_pcb", "*-backups"))
     return dst
 
 
@@ -164,9 +162,7 @@ class Server:
         )
         while time.monotonic() - t0 < self.wait_s:
             if self.proc.poll() is not None:
-                raise RuntimeError(
-                    f"api-server exited {self.proc.returncode}: {self.log.read_text()}"
-                )
+                raise RuntimeError(f"api-server exited {self.proc.returncode}: {self.log.read_text()}")
             if self.socket.exists():
                 try:
                     self.client(timeout_ms=1000).ping()
@@ -186,9 +182,7 @@ class Server:
 
         assert self.project_dir is not None
         t0 = time.monotonic()
-        self.client(timeout_ms=60000).open_document(
-            str(root_sch(self.project_dir)), DocumentType.DOCTYPE_SCHEMATIC
-        )
+        self.client(timeout_ms=60000).open_document(str(root_sch(self.project_dir)), DocumentType.DOCTYPE_SCHEMATIC)
         self.open_s["kicad_sch"] = time.monotonic() - t0
 
     def client(self, timeout_ms: int = 20000, name: str | None = None):

@@ -17,12 +17,11 @@ from harness import (
     load_libraries,
     local_label,
     main_guard,
-    mm,
-    nets_by_pin,
     netlist_components,
-    same_net,
+    nets_by_pin,
     require_kicad,
     root_sch,
+    same_net,
     sid,
     update_symbols,
     v2,
@@ -85,9 +84,7 @@ def main() -> int:
         placed = []
         for n, ((o, deg), mir) in enumerate(itertools.product(orients, (None, "x", "y"))):
             at = (25.4 + 30.48 * (n % 6), 101.6 + 30.48 * (n // 6))
-            s = sch.place_symbol_from_library(
-                "Amplifier_Operational:LM358", v2(*at), orientation=o, unit=1, reference=f"U{10 + n}"
-            )
+            s = sch.place_symbol_from_library("Amplifier_Operational:LM358", v2(*at), orientation=o, unit=1, reference=f"U{10 + n}")
             if mir:
                 s.transform.mirror_x = mir == "x"
                 s.transform.mirror_y = mir == "y"
@@ -96,12 +93,29 @@ def main() -> int:
         fresh = by_id(sch, [sid(s) for s, _, _ in placed])
         # compare the resulting transform MATRIX with the requested one (equivalent forms ok)
         bad = {
-            s.reference: {"asked": (deg, mir), "got": (SSO_DEG[int(fresh[sid(s)].transform.orientation)], fresh[sid(s)].transform.mirror_x, fresh[sid(s)].transform.mirror_y)}
+            s.reference: {
+                "asked": (deg, mir),
+                "got": (
+                    SSO_DEG[int(fresh[sid(s)].transform.orientation)],
+                    fresh[sid(s)].transform.mirror_x,
+                    fresh[sid(s)].transform.mirror_y,
+                ),
+            }
             for s, deg, mir in placed
             if sym_transform(fresh[sid(s)]) != transform(deg, mir == "x", mir == "y")
         }
         rec.check("rotate_then_mirror_matrix_as_requested", not bad, bad or "all 12")
-        rec.note("orientation_read_back", {s.reference: (SSO_DEG[int(fresh[sid(s)].transform.orientation)], fresh[sid(s)].transform.mirror_x, fresh[sid(s)].transform.mirror_y) for s, _, _ in placed})
+        rec.note(
+            "orientation_read_back",
+            {
+                s.reference: (
+                    SSO_DEG[int(fresh[sid(s)].transform.orientation)],
+                    fresh[sid(s)].transform.mirror_x,
+                    fresh[sid(s)].transform.mirror_y,
+                )
+                for s, _, _ in placed
+            },
+        )
 
         # workaround: request every distinct transform in a form that round-trips
         # (orientation + at most mirror_x; 180+mirror_x is sent as 0+mirror_y)
@@ -109,7 +123,11 @@ def main() -> int:
         bad = {}
         for n, (deg, mir) in enumerate(canonical):
             s = sch.place_symbol_from_library(
-                "Amplifier_Operational:LM358", v2(25.4 + 30.48 * n, 190.5), orientation=orients[deg // 90][0], unit=1, reference=f"U{40 + n}"
+                "Amplifier_Operational:LM358",
+                v2(25.4 + 30.48 * n, 190.5),
+                orientation=orients[deg // 90][0],
+                unit=1,
+                reference=f"U{40 + n}",
             )
             if mir:
                 s.transform.mirror_x = mir == "x"
@@ -144,8 +162,14 @@ def main() -> int:
         wrong = {kp: (cli.get(kp), n) for kp, n in expect.items() if not same_net(cli.get(kp), n)}
         rec.check("pin_ends_transform_cli_netlist_after_save", not wrong, wrong or f"{len(expect)} pins")
         comps = netlist_components((tmp / "cli.net").read_text())
-        rec.check("multi_unit_one_component_in_netlist", "U1" in comps and "U1A" not in comps, sorted(c for c in comps if c.startswith("U1"))[:5])
-        rec.check("cli_netlist_lib_ids", comps["U1"]["lib"] == "ecc83-pp:ECC83" and comps["R101"]["lib"] == "Device:R", (comps["U1"]["lib"], comps["R101"]["lib"]))
+        rec.check(
+            "multi_unit_one_component_in_netlist", "U1" in comps and "U1A" not in comps, sorted(c for c in comps if c.startswith("U1"))[:5]
+        )
+        rec.check(
+            "cli_netlist_lib_ids",
+            comps["U1"]["lib"] == "ecc83-pp:ECC83" and comps["R101"]["lib"] == "Device:R",
+            (comps["U1"]["lib"], comps["R101"]["lib"]),
+        )
         keep_artifact(proj, "q01_place")
     return rec.finish()
 

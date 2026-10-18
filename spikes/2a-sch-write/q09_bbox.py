@@ -49,8 +49,8 @@ def hide_fields(sym):
 
 def main() -> int:
     require_kicad()
-    from PIL import Image
     from kipy.proto.schematic.schematic_types_pb2 import SchematicSymbolOrientation as O
+    from PIL import Image
 
     Image.MAX_IMAGE_PIXELS = None
     orient = {0: O.SSO_0, 90: O.SSO_90, 180: O.SSO_180, 270: O.SSO_270}
@@ -70,7 +70,9 @@ def main() -> int:
         placed = []
         for n, ((lib, deg, mir, unit, style), at) in enumerate(zip(CASES, SLOTS, strict=True)):
             try:
-                s = sch.place_symbol_from_library(lib, v2(*at), orientation=orient[deg], unit=unit, reference=f"X{n + 1}" if not lib.startswith("power:") else None)
+                s = sch.place_symbol_from_library(
+                    lib, v2(*at), orientation=orient[deg], unit=unit, reference=f"X{n + 1}" if not lib.startswith("power:") else None
+                )
             except Exception as e:  # noqa: BLE001
                 rec.note(f"skip_{lib}", str(e))
                 continue
@@ -115,13 +117,26 @@ def main() -> int:
             results[f"{lib} u{unit} {deg}{mir or ''}{' bs2' if style else ''}"] = {"api": api, "plot": plot, "max_dev_mm": round(dev, 3)}
         rec.note("bbox_api_vs_plot", results)
         over = {kk: v for kk, v in results.items() if v.get("max_dev_mm", 99) > TOL_MM}
-        rec.check("api_bbox_matches_plot_within_0_6mm", not over and len(results) == len(CASES), {"worst_mm": round(worst, 3), "over_tolerance": over})
+        rec.check(
+            "api_bbox_matches_plot_within_0_6mm",
+            not over and len(results) == len(CASES),
+            {"worst_mm": round(worst, 3), "over_tolerance": over},
+        )
         margin = 2.0
         outside = {
-            kk: v for kk, v in results.items()
-            if v["plot"] is None or not (v["plot"][0] >= v["api"][0] - margin and v["plot"][1] >= v["api"][1] - margin and v["plot"][2] <= v["api"][2] + margin and v["plot"][3] <= v["api"][3] + margin)
+            kk: v
+            for kk, v in results.items()
+            if v["plot"] is None
+            or not (
+                v["plot"][0] >= v["api"][0] - margin
+                and v["plot"][1] >= v["api"][1] - margin
+                and v["plot"][2] <= v["api"][2] + margin
+                and v["plot"][3] <= v["api"][3] + margin
+            )
         }
-        rec.check("api_bbox_plus_2mm_margin_contains_plot", not outside and len(results) == len(CASES), outside or f"{len(results)} symbols")
+        rec.check(
+            "api_bbox_plus_2mm_margin_contains_plot", not outside and len(results) == len(CASES), outside or f"{len(results)} symbols"
+        )
         keep_artifact(proj, "q09_bbox")
     return rec.finish()
 

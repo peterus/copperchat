@@ -119,11 +119,21 @@ def main() -> int:
         sch = k.get_schematic()
         load_libraries(k)
         sh = add_sheet(sch, "Power", "power.kicad_sch", (127.0, 50.8), (25.4, 25.4), proj)
-        rec.check("workaround_sheetfile_relative_after_fix", sh.filename_field.text.value == "power.kicad_sch" and [s.filename for s in sch.get_hierarchy()][1] == "power.kicad_sch", [s.filename for s in sch.get_hierarchy()])
+        rec.check(
+            "workaround_sheetfile_relative_after_fix",
+            sh.filename_field.text.value == "power.kicad_sch" and [s.filename for s in sch.get_hierarchy()][1] == "power.kicad_sch",
+            [s.filename for s in sch.get_hierarchy()],
+        )
         hier = list(sch.get_hierarchy())
-        rec.check("new_sheet_in_hierarchy", any(s.filename == "power.kicad_sch" for s in hier), [(s.name, s.filename, s.page_number) for s in hier])
+        rec.check(
+            "new_sheet_in_hierarchy",
+            any(s.filename == "power.kicad_sch" for s in hier),
+            [(s.name, s.filename, s.page_number) for s in hier],
+        )
         rec.check("new_sheet_page_number_assigned", page_map(sch).get("/Power/") == "2", page_map(sch))
-        rec.check("new_sheet_symbol_page_number", by_id(sch, [sid(sh)])[sid(sh)].page_number == "2", by_id(sch, [sid(sh)])[sid(sh)].page_number)
+        rec.check(
+            "new_sheet_symbol_page_number", by_id(sch, [sid(sh)])[sid(sh)].page_number == "2", by_id(sch, [sid(sh)])[sid(sh)].page_number
+        )
         inst = next(s for s in sch.get_hierarchy() if s.filename == "power.kicad_sch")
         sub = sch.for_sheet(inst)
 
@@ -135,27 +145,45 @@ def main() -> int:
         rec.check("sheet_pin_added", [p.text.value for p in upd.pins] == ["VIN"], [(p.text.value, mm(p.position)) for p in upd.pins])
         # part + hierarchical label on the new sheet
         rs = sub.place_symbol_from_library("Device:R", v2(76.2, 76.2), reference="R201")
-        rec.check("place_on_new_sheet_path", str(rs.path.proto.path_human_readable) == "/Power/" or len(rs.path.proto.path) == 2, rs.path.proto)
+        rec.check(
+            "place_on_new_sheet_path", str(rs.path.proto.path_human_readable) == "/Power/" or len(rs.path.proto.path) == 2, rs.path.proto
+        )
         prs = pin_ends_abs(rs)
         with commit(sub, "hier label"):
             hl = sub.create_items([hier_label("VIN", prs["1"])])[0]
-        rec.check("hier_label_on_sub_sheet", sid(hl) in by_id(sub, [sid(hl)]) and not any(lb.text.value == "VIN" for lb in sch.for_sheet(hier[0]).get_labels()), "label lives on the sub-sheet only")
+        rec.check(
+            "hier_label_on_sub_sheet",
+            sid(hl) in by_id(sub, [sid(hl)]) and not any(lb.text.value == "VIN" for lb in sch.for_sheet(hier[0]).get_labels()),
+            "label lives on the sub-sheet only",
+        )
         # root: R1 wired to the sheet pin
         r1 = sch.for_sheet(hier[0]).place_symbol_from_library("Device:R", v2(101.6, 63.5 - 3.81), reference="R1")
         p1 = pin_ends_abs(r1)
         with commit(sch, "wire"):
             sch.create_items([wire(p1["2"], (127.0, 63.5))])
         nets = nets_by_pin(sch)
-        rec.check("sheet_pin_hier_label_connect_api", nets.get(("R1", "2")) is not None and nets.get(("R1", "2")) == nets.get(("R201", "1")), (nets.get(("R1", "2")), nets.get(("R201", "1"))))
+        rec.check(
+            "sheet_pin_hier_label_connect_api",
+            nets.get(("R1", "2")) is not None and nets.get(("R1", "2")) == nets.get(("R201", "1")),
+            (nets.get(("R1", "2")), nets.get(("R201", "1"))),
+        )
         rec.check("no_sub_file_before_save", not (proj / "power.kicad_sch").exists(), sorted(p.name for p in proj.iterdir()))
         sch.save()
         rec.check("new_sheet_file_written_on_save", (proj / "power.kicad_sch").exists(), sorted(p.name for p in proj.iterdir()))
         cli = cli_netlist(root_sch(proj), tmp)
-        rec.check("sheet_pin_hier_label_connect_cli", cli.get(("R1", "2")) is not None and cli.get(("R1", "2")) == cli.get(("R201", "1")), (cli.get(("R1", "2")), cli.get(("R201", "1"))))
+        rec.check(
+            "sheet_pin_hier_label_connect_cli",
+            cli.get(("R1", "2")) is not None and cli.get(("R1", "2")) == cli.get(("R201", "1")),
+            (cli.get(("R1", "2")), cli.get(("R201", "1"))),
+        )
         erc = tmp / "erc.json"
         run_cli("sch", "erc", "--format", "json", "--units", "mm", "-o", str(erc), str(root_sch(proj)))
         vios = [v for s in json.loads(erc.read_text())["sheets"] for v in s["violations"]]
-        rec.check("erc_no_hierarchy_mismatch", not any(v["type"] in ("hier_label_mismatch", "pin_not_connected") and "VIN" in json.dumps(v) for v in vios), sorted({v["type"] for v in vios}))
+        rec.check(
+            "erc_no_hierarchy_mismatch",
+            not any(v["type"] in ("hier_label_mismatch", "pin_not_connected") and "VIN" in json.dumps(v) for v in vios),
+            sorted({v["type"] for v in vios}),
+        )
         keep_artifact(proj, "q07_sheets")
         # the saved project is relocatable: load a copy elsewhere
         import shutil
@@ -184,13 +212,21 @@ def main() -> int:
         rec.check("symbol_instance_path_to_page_number", all(mapped.values()), dict(list(mapped.items())[:6]))
         rec.note("refs_per_page", {pg: sorted(r for r, p in mapped.items() if p == pg)[:5] for pg in sorted(set(mapped.values()))})
         sheets = sch.get_sheet_symbols()
-        rec.check("sheet_symbols_expose_page_number", all(s.page_number for s in sheets), [(s.name_field.text.value, s.page_number) for s in sheets])
+        rec.check(
+            "sheet_symbols_expose_page_number",
+            all(s.page_number for s in sheets),
+            [(s.name_field.text.value, s.page_number) for s in sheets],
+        )
         # a new sheet in an existing hierarchy gets the next free page number
         load_libraries(k)
         add_sheet(sch, "Extra", "extra.kicad_sch", (25.4, 152.4), (25.4, 20.32), proj)
         rec.check("new_sheet_next_page_number", page_map(sch).get("/Extra/") == "4", page_map(sch))
         sch.save()
-        rec.check("new_sheet_file_written_in_existing_project", (proj / "extra.kicad_sch").exists(), sorted(p.name for p in proj.glob("*.kicad_sch")))
+        rec.check(
+            "new_sheet_file_written_in_existing_project",
+            (proj / "extra.kicad_sch").exists(),
+            sorted(p.name for p in proj.glob("*.kicad_sch")),
+        )
     return rec.finish()
 
 

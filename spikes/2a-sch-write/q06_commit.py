@@ -58,7 +58,6 @@ def main() -> int:
         load_libraries(k)
         r1 = sch.place_symbol_from_library("Device:R", v2(50.8, 50.8), reference="R1")
         p1 = pin_ends_abs(r1)
-        base = snapshot(sch)
 
         # --- staged create / update / delete are not visible before push
         c = sch.begin_commit()
@@ -66,7 +65,11 @@ def main() -> int:
         placed = sch.place_symbol_from_library("Device:C", v2(76.2, 50.8), reference="C1")
         rec.check("staged_create_response_has_uuid", bool(sid(w)) and bool(sid(placed)), (sid(w)[:8], sid(placed)[:8]))
         rec.check("staged_create_invisible_by_id", not by_id(sch, [sid(w), sid(placed)]), "GetItemsById before push")
-        rec.check("staged_create_invisible_in_get_items", len(sch.get_lines()) == 0 and [s.reference for s in sch.get_symbols()] == ["R1"], [s.reference for s in sch.get_symbols()])
+        rec.check(
+            "staged_create_invisible_in_get_items",
+            len(sch.get_lines()) == 0 and [s.reference for s in sch.get_symbols()] == ["R1"],
+            [s.reference for s in sch.get_symbols()],
+        )
         rec.check("staged_create_invisible_in_netlist", nets_by_pin(sch).get(("C1", "1")) is None, "GetSchematicNetlist before push")
         g = by_id(sch, [sid(r1)])[sid(r1)]
         g.value = "STAGED"
@@ -83,10 +86,23 @@ def main() -> int:
         rec.check("after_push_delete_gone", sid(w) not in by_id(sch, [sid(w)]), "")
         try:
             res = sch.update_items([vis[sid(w)]])
-            rec.check("update_of_missing_item_raises", False, f"no exception; kipy returned {len(res)} item(s) and ignores the per-item status (editor.py update_items); still missing after: {sid(w) not in by_id(sch, [sid(w)])}")
+            rec.check(
+                "update_of_missing_item_raises",
+                False,
+                f"no exception; kipy returned {len(res)} item(s) and ignores the per-item status (editor.py update_items); still missing after: {sid(w) not in by_id(sch, [sid(w)])}",
+            )
         except Exception as e:  # noqa: BLE001
             rec.check("update_of_missing_item_raises", True, f"{type(e).__name__}: {e}")
 
+        try:
+            res = sch.create_items([by_id(sch, [sid(placed)])[sid(placed)]])
+            rec.check(
+                "create_with_existing_uuid_raises",
+                False,
+                f"no exception; kipy returned {len(res)} item(s) (ISC_EXISTING dropped); symbols now: {sorted(s.reference for s in sch.get_symbols())}",
+            )
+        except Exception as e:  # noqa: BLE001
+            rec.check("create_with_existing_uuid_raises", True, f"{type(e).__name__}: {e}")
         # --- drop_commit leaves the document unchanged (create + update + delete)
         before = snapshot(sch)
         c = sch.begin_commit()
@@ -98,7 +114,15 @@ def main() -> int:
         sch.remove_items([by_id(sch, [sid(placed)])[sid(placed)]])
         sch.drop_commit(c)
         after = snapshot(sch)
-        rec.check("drop_commit_document_unchanged", after == before, {"added": sorted(set(after) - set(before)), "removed": sorted(set(before) - set(after)), "changed": [i for i in before if i in after and before[i] != after[i]]})
+        rec.check(
+            "drop_commit_document_unchanged",
+            after == before,
+            {
+                "added": sorted(set(after) - set(before)),
+                "removed": sorted(set(before) - set(after)),
+                "changed": [i for i in before if i in after and before[i] != after[i]],
+            },
+        )
 
         # --- cancellation: the client disappears between begin and push
         k_a = srv.client(timeout_ms=10000, name="copperchat-a")
@@ -120,7 +144,11 @@ def main() -> int:
         sch_a2 = k_a2.get_schematic()
         ok2, res2 = rec.attempt("same_name_begin_commit_while_stale", lambda: sch_a2.begin_commit(), expect_ok=False)
         lone = sch_a2.create_items([local_label("AFTER_RECONNECT", (152.4, 152.4))])[0]
-        rec.check("same_name_writes_land_in_stale_commit", sid(lone) not in by_id(sch_a2, [sid(lone)]), "create_items after reconnect (no new commit) is visible?")
+        rec.check(
+            "same_name_writes_land_in_stale_commit",
+            sid(lone) not in by_id(sch_a2, [sid(lone)]),
+            "create_items after reconnect (no new commit) is visible?",
+        )
         rec.attempt("drop_stale_commit_by_old_id", lambda: sch_a2.drop_commit(stale))
         lone2 = sch_a2.create_items([local_label("AFTER_DROP", (177.8, 152.4))])[0]
         rec.check("after_dropping_stale_commit_writes_apply", sid(lone2) in by_id(sch_a2, [sid(lone2)]), "")
@@ -151,15 +179,17 @@ def main() -> int:
         gl = GlobalLabel()
         gl.text.value = "SIG_G"
         gl.position = v2(*pr["1"])
-        made = sch.create_items([
-            wire(pr["2"], (50.8, 88.9)),
-            wire((50.8, 88.9), (pu["5"][0], 88.9)),
-            wire((pu["5"][0], 88.9), pu["5"]),
-            junction((50.8, 88.9)),  # kept only if it is a real junction; see Q5
-            local_label("MID", (63.5, 88.9)),
-            no_connect(pu["6"]),
-            gl,
-        ])
+        made = sch.create_items(
+            [
+                wire(pr["2"], (50.8, 88.9)),
+                wire((50.8, 88.9), (pu["5"][0], 88.9)),
+                wire((pu["5"][0], 88.9), pu["5"]),
+                junction((50.8, 88.9)),  # kept only if it is a real junction; see Q5
+                local_label("MID", (63.5, 88.9)),
+                no_connect(pu["6"]),
+                gl,
+            ]
+        )
         targets = [sid(u), sid(r), *[sid(m) for m in made]]
         pre = by_id(sch, targets)
         rec.note("corner_junction_dropped_on_create", targets[5] not in pre)
@@ -177,11 +207,23 @@ def main() -> int:
         sch.push_commit(c, "compensate")
         rec.note("compensate_ms", round((time.monotonic() - t0) * 1000, 1))
         back = by_id(sch, targets)
-        rec.check("recreate_with_original_uuids", sorted(back) == sorted(pre), {"missing": [i[:8] for i in pre if i not in back], "returned_ids": sorted(sid(x)[:8] for x in recreated)})
-        diff = {i[:8]: sorted(kk for kk in set(pre_canon[i]) | set(canon(back[i])) if pre_canon[i].get(kk) != canon(back[i]).get(kk)) for i in back if canon(back[i]) != pre_canon[i]}
+        rec.check(
+            "recreate_with_original_uuids",
+            sorted(back) == sorted(pre),
+            {"missing": [i[:8] for i in pre if i not in back], "returned_ids": sorted(sid(x)[:8] for x in recreated)},
+        )
+        diff = {
+            i[:8]: sorted(kk for kk in set(pre_canon[i]) | set(canon(back[i])) if pre_canon[i].get(kk) != canon(back[i]).get(kk))
+            for i in back
+            if canon(back[i]) != pre_canon[i]
+        }
         rec.check("recreated_content_equal", not diff, diff)
         nets_after = nets_by_pin(sch)
-        rec.check("recreated_connectivity_equal", nets_after == nets_before, sorted(kk for kk in set(nets_before) | set(nets_after) if nets_before.get(kk) != nets_after.get(kk)))
+        rec.check(
+            "recreated_connectivity_equal",
+            nets_after == nets_before,
+            sorted(kk for kk in set(nets_before) | set(nets_after) if nets_before.get(kk) != nets_after.get(kk)),
+        )
         # compensate an update: restore a pre-image through update_items
         cur = by_id(sch, [sid(u)])[sid(u)]
         cur.value = "OOPS"
@@ -199,7 +241,11 @@ def main() -> int:
             sch.create_items([pre_r])
         again = by_id(sch, [sid(r)])[sid(r)]
         sib_now = by_id(sch, [sid(sib)])[sid(sib)]
-        rec.check("recreate_with_sibling_keeps_library_link", str(again.definition.id) == "Device:R" == str(sib_now.definition.id) and sid(again) == sid(pre_r), f"{again.reference}: definition id {again.definition.id} (sibling {sib.reference}: {by_id(sch, [sid(sib)])[sid(sib)].definition.id})")
+        rec.check(
+            "recreate_with_sibling_keeps_library_link",
+            str(again.definition.id) == "Device:R" == str(sib_now.definition.id) and sid(again) == sid(pre_r),
+            f"{again.reference}: definition id {again.definition.id} (sibling {sib.reference}: {by_id(sch, [sid(sib)])[sid(sib)].definition.id})",
+        )
         sch.save()
     with Server(proj) as srv:
         sch = srv.client(timeout_ms=60000).get_schematic()
