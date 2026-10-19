@@ -98,6 +98,19 @@ def test_lone_surrogate_title_is_422_not_500(build_chat_app: Any) -> None:
             headers={"content-type": "application/json"},
         )
         assert r.status_code == 422, r.text
+        assert b"ud800" not in r.content.lower() and "\ud800" not in r.text
+        detail = r.json()["detail"]
+        assert detail and all(set(e) == {"type", "loc", "msg"} for e in detail)
+        # Every validation error goes through the same handler: no echoed input.
+        bad_json = client.post(
+            f"/api/projects/{pid}/conversations",
+            content='{"type": "free", "title": "secret',
+            headers={"content-type": "application/json"},
+        )
+        assert bad_json.status_code == 422 and "secret" not in bad_json.text
+        bad_query = client.get(f"/api/projects/{pid}/conversations", params={"archived": 5})
+        assert bad_query.status_code == 422
+        assert all(set(e) == {"type", "loc", "msg"} for e in bad_query.json()["detail"])
 
 
 def test_patch_validation(build_chat_app: Any) -> None:

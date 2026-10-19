@@ -157,6 +157,14 @@ async def test_usage_for_one_conversation(db) -> None:
     assert await repo.usage_for(a.id) == {"inputTokens": 7, "outputTokens": 2, "costUsd": 0.25}
     assert await repo.usage_for("0" * 32) == {"inputTokens": 0, "outputTokens": 0, "costUsd": 0}
     assert (await repo.create(PA, "free", "Ünïcode ✓ title")).title == "Ünïcode ✓ title"
+    # Emoji sequences (ZWJ, flag tags), private use and newer code points are titles too.
+    for ok in (
+        "Team 👩\u200d💻",
+        "Wales 🏴\U000e0067\U000e0062\U000e0077\U000e006c\U000e0073\U000e007f",
+        "\uf8ff Mac",
+        "\U0001fae9",
+    ):
+        assert (await repo.create(PA, "free", ok)).title == ok
 
 
 async def test_closing_lists_rows_across_projects(db) -> None:

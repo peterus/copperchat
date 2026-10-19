@@ -317,10 +317,11 @@ async def test_stop_for_a_during_its_own_turn_start_window(make_engine, db, unti
     hold.set()
     await until(lambda: len(hooks.outcomes) >= 1)
     assert hooks.outcomes[0].reason == "interrupted" and hooks.outcomes[0].conversation_id == a
-    assert agent.interrupts >= 1
-    await until(lambda: len(agent.prompts) == 2, timeout=3.0)
-    assert [p.text for p in agent.prompts] == ["A1", "B1"], "B still runs after the Stop"
-    assert ma1.id < mb.id
+    await until(lambda: len(agent.prompts) == 1 and not engine.is_busy)
+    # A1's prompt never reached the backend (no interrupt of an idle backend either);
+    # B still runs after the Stop.
+    assert [p.text for p in agent.prompts] == ["B1"] and agent.interrupts == 0
+    assert await _status(db, ma1.id) == "done" and await _status(db, mb.id) == "done"
 
 
 class _AwaitingFailHook(_Recorder):

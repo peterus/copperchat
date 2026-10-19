@@ -20,9 +20,11 @@ ConversationStatus = Literal["open", "closing", "closed"]
 CONVERSATION_TYPES: tuple[str, ...] = get_args(ConversationType)
 _STATUSES: tuple[str, ...] = get_args(ConversationStatus)
 TITLE_MAX = 120
-# Control, format (bidi overrides, zero-width), line and paragraph separators, lone
-# surrogates (not encodable: SQLite would raise), private-use and unassigned code points.
-_REFUSED_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Cs", "Co", "Cn"})
+# Control, format (bidi overrides, zero-width spaces), line and paragraph separators and
+# lone surrogates (not encodable: SQLite would raise). Emoji sequences stay allowed: the
+# zero-width joiner and the tag characters of flag sequences are format characters too.
+_REFUSED_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Cs"})
+_EMOJI_FORMAT = frozenset({0x200D}) | frozenset(range(0xE0020, 0xE0080))
 _SEQ_RETRIES = 20
 
 
@@ -32,7 +34,10 @@ def validate_title(title: str) -> str:
     title reaches the session list and push notification titles."""
     if not 1 <= len(title) <= TITLE_MAX:
         raise InvalidConversation(f"a session title has 1 to {TITLE_MAX} characters")
-    if any(unicodedata.category(ch) in _REFUSED_CATEGORIES for ch in title):
+    if any(
+        unicodedata.category(ch) in _REFUSED_CATEGORIES and ord(ch) not in _EMOJI_FORMAT
+        for ch in title
+    ):
         raise InvalidConversation("a session title is a single line of plain text")
     if not title.strip():
         raise InvalidConversation("a session title needs visible text")

@@ -487,13 +487,16 @@ class RunEngine:
             target = self._inflight if self._inflight_cid == target_cid else None
             if target is not None:
                 self._interrupting = True
+            # Pulled but its turn not started: the backend has not seen the prompt, and
+            # _gated ends that turn without sending it.
+            unsent = target is not None and self._turn is None
         # The interrupt goes out before the hook is awaited: a hook doing I/O must never
         # let the stopped turn end and the next conversation's turn take its place.
         task = self._burst
         if task is not None and not task.done():
             if own and stream is not None:
                 stream.request_close()  # between turns: closing the input ends the burst
-            if target is not None:
+            if target is not None and not unsent:
                 try:
                     await self.backend.interrupt()
                 except Exception:
@@ -734,7 +737,15 @@ class RunEngine:
         async for item in stream:
             self._inflight = item.message_id
             self._inflight_cid = item.conversation_id
-            yield await self._begin_turn(item, conversation)
+            prepared = await self._begin_turn(item, conversation)
+            if self._interrupting and self._inflight == item.message_id:
+                # Stopped while its turn was starting: never send the prompt.
+                await self._finish_turn("interrupted")
+                stream.release_next()
+                if stream.pending_count() == 0:
+                    stream.request_close()
+                continue
+            yield prepared
 
     async def _begin_turn(self, item: QueuedItem, conversation: ConversationRow) -> QueuedItem:
         run_id = str(uuid.uuid4())
