@@ -89,7 +89,9 @@ changes as cards in the chat.
   A perf test: two 4,000-line docs with 50 changes diff in under 200 ms in
   jsdom. A second perf test near the cap (D ≈ 1,900): the Myers trace uses
   linear-space or sliced `Int32Array` storage, never a full V array per
-  step, and stays under 32 MB. [Revert to this] → POST revert with
+  step. Assert it structurally, not on process memory: expose the total
+  allocated `Int32Array` length for D ≈ 1,900 and N+M ≈ 8,000. It must be
+  O(N+M) or the sliced bound. Also assert the time bound. [Revert to this] → POST revert with
   `baseVersion`, and a 409 goes through the conflict flow.
 - [ ] **Step 2:** FAIL. **Step 3: Implement.** **Step 4:** PASS.
   **Step 5:** commit.

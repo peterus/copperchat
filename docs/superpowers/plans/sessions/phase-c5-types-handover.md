@@ -163,8 +163,12 @@ handover.
     - **No plan in a closing session:** while the session is `closing`,
       `plan_propose` and `plan_revise` are refused (`conversation_closing`).
       At closing → closed, `on_turn_end` re-checks: if the session owns an
-      open plan, it goes back to `open` with a notice. Test: a plan
-      proposed during the close turn → the session ends `open`.
+      open plan, it goes back to `open` with a notice. Tests:
+      - A propose issued while the session is `closing` gets
+        `conversation_closing`.
+      - The race: `PlanService.propose` is paused after its status check
+        while `POST …/close` runs, then resumed so that the plan row is
+        inserted. The session ends `open` with the notice.
     - A conversation that owns an open plan (proposed, approved, running or
       paused) → 409 `plan_open`.
     - A foreign `cid` → 404.

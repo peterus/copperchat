@@ -270,6 +270,10 @@ class ConversationRepo:
   C1 extends it with a test:
   - `before_model_input` concatenates the lists of all hooks, in order.
   - `on_items_failed` runs all hooks, then raises the first error.
+  - `before_model_input` stops at the first error. `_begin_turn` catches
+    and logs it, like `on_turn_start` (`engine.py:576-579`), and the turn
+    continues without the injected notices. C1 test: a raising hook does
+    not fail the turn.
 
   C5 installs `SessionHooks` by wrapping `runtime.hooks_factory`, as
   `install_editing` does, in `install_sessions(app)` after
