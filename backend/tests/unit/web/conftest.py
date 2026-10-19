@@ -16,9 +16,14 @@ from copperchat.agent.fake import FakeAgent, ScriptFor
 from copperchat.config import Settings
 from copperchat.db import Database
 from copperchat.projects import Project, project_id_for
-from copperchat.web import routes_messages, ws
+from copperchat.web import routes_conversations, routes_messages, ws
 from copperchat.web.app import install_error_handlers
 from copperchat.web.auth import User, require_user
+
+DEMO_PID = project_id_for("demo/demo.kicad_pro")
+OTHER_PID = project_id_for("other/other.kicad_pro")
+CID = "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"  # the demo project's default conversation
+OTHER_CID = "d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0"
 
 
 class StubRuntime:
@@ -40,7 +45,9 @@ class StubRuntime:
                 db=self.db,
                 broadcaster=self.broadcaster,
                 sessions=cast(Any, SimpleNamespace(current=lambda: None)),
-                backend_factory=lambda ctx: FakeAgent(self.script_for, ctx_factory=ctx),
+                backend_factory=lambda ctx, turn: FakeAgent(
+                    self.script_for, ctx_factory=ctx, turn_context=turn
+                ),
             )
             await engine.start()
             self.engines[project.id] = engine
@@ -54,6 +61,7 @@ def _build_chat_app(
     auth: bool = False,
     max_queue: int = 1000,
     settings_kw: dict[str, Any] | None = None,
+    default_conversations: bool = True,
 ) -> tuple[FastAPI, str]:
     root = tmp_path / "projects"
     for name in ("demo", "other"):
@@ -70,6 +78,13 @@ def _build_chat_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         db = await Database.open(tmp_path / "t.db")
+        # One default conversation per project (tests that need more create them).
+        for pid, cid in ((DEMO_PID, CID), (OTHER_PID, OTHER_CID)) if default_conversations else ():
+            await db.execute(
+                "INSERT INTO conversations (id, project_id, seq, title, type, created_at, "
+                "updated_at) VALUES (?, ?, 1000, 'Default', 'free', ?, ?)",
+                (cid, pid, "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z"),
+            )
         runtime = StubRuntime(settings, db, script_for, max_queue)
         app.state.settings, app.state.db, app.state.agent_runtime = settings, db, runtime
         yield
@@ -80,13 +95,11 @@ def _build_chat_app(
     app = FastAPI(lifespan=lifespan)
     install_error_handlers(app)
     app.include_router(routes_messages.router)
+    app.include_router(routes_conversations.router)
     app.include_router(ws.router)
     if not auth:
         app.dependency_overrides[require_user] = lambda: User(id=1, username="admin")
     return app, project_id_for("demo/demo.kicad_pro")
-
-
-OTHER_PID = project_id_for("other/other.kicad_pro")
 
 
 @pytest.fixture

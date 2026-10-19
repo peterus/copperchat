@@ -6,7 +6,12 @@ from copperchat.agent.push_stream import PushStream
 
 
 def item(i: int) -> QueuedItem:
-    return QueuedItem(message_id=i, client_message_id=f"c{i}", conversation_id="c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0", text=f"m{i}")
+    return QueuedItem(
+        message_id=i,
+        client_message_id=f"c{i}",
+        conversation_id="c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+        text=f"m{i}",
+    )
 
 
 async def _next(it, timeout: float = 0.2):  # type: ignore[no-untyped-def]

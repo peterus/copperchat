@@ -26,6 +26,7 @@ from copperchat.push.visibility import VisibilityRegistry
 from copperchat.web import (
     auth,
     health,
+    routes_conversations,
     routes_editing,
     routes_git,
     routes_history,
@@ -144,6 +145,7 @@ def create_app(
     app.include_router(routes_projects.router)
     app.include_router(routes_views.router)
     app.include_router(routes_messages.router)
+    app.include_router(routes_conversations.router)
     app.include_router(routes_history.router)
     app.include_router(routes_git.router)
     app.include_router(routes_skills.router)

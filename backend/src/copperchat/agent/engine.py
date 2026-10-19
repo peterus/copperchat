@@ -463,7 +463,11 @@ class RunEngine:
         target_cid = self.current_conversation_id or conversation_id
         async with self._lock:
             stream = self._stream
-            own = stream is not None and target_cid is not None and stream.conversation_id == target_cid
+            own = (
+                stream is not None
+                and target_cid is not None
+                and stream.conversation_id == target_cid
+            )
             ids: list[int] = []
             if own and stream is not None:
                 ids = stream.pending_ids()
@@ -474,7 +478,9 @@ class RunEngine:
                 ids += [
                     r.id
                     for r in await self._messages.queued_user_rows(self.pid)
-                    if r.conversation_id == target_cid and r.id != self._inflight and r.id not in ids
+                    if r.conversation_id == target_cid
+                    and r.id != self._inflight
+                    and r.id not in ids
                 ]
                 for mid in ids:
                     await self._cancel_row(mid, target_cid)
@@ -957,6 +963,8 @@ class RunEngine:
         async with self._lock:
             await self._close_segment(turn)
             await self._runs.finish(turn.info.run_id, reason, turn.usage)
+            # The session list shows the summed usage and the last activity.
+            await self._publish_conversation(turn.info.conversation_id)
             await self._publish(
                 RunFinishedFrame(
                     project_id=self.pid,
@@ -968,8 +976,6 @@ class RunEngine:
             self._turn = None
             self._inflight = None
             self._interrupting = False  # an interrupt targets exactly one turn
-            # The session list shows the summed usage and the last activity.
-            await self._publish_conversation(turn.info.conversation_id)
         outcome = TurnOutcome(
             reason=reason,
             conversation_id=turn.info.conversation_id,

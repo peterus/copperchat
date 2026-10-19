@@ -5,9 +5,9 @@ import pytest
 from copperchat.errors import ReadOnlyProject
 from copperchat.history.restore import AgentBusy, restore_snapshot
 from copperchat.history.store import CorruptSnapshot, compute_hashes
+from tests.support.conversations import TEST_CID
 from tests.support.history import other_board, replace_with_kicad_file
 from tests.unit.history.conftest import Env
-from tests.support.conversations import TEST_CID
 
 
 async def test_restore_brings_back_kicad_saved_bytes_and_reopens(env: Env) -> None:

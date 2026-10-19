@@ -108,12 +108,16 @@ async def test_every_row_is_linked_and_ids_unchanged(legacy) -> None:
     await migrate(db)
     convs = await _convs(db)
     for table in ("messages", "runs", "plans"):
-        nulls = await db.fetchone(f"SELECT COUNT(*) AS n FROM {table} WHERE conversation_id IS NULL")
+        nulls = await db.fetchone(
+            f"SELECT COUNT(*) AS n FROM {table} WHERE conversation_id IS NULL"
+        )
         assert nulls is not None and nulls["n"] == 0, table
         rows = await db.fetchall(f"SELECT project_id, conversation_id FROM {table}")
         assert all(r["conversation_id"] == convs[r["project_id"]]["id"] for r in rows), table
     msgs = await db.fetchall("SELECT id, content FROM messages ORDER BY id")
-    assert [(r["id"], r["content"]) for r in msgs] == list(zip(ids, ["first", "second", "third"], strict=True))
+    assert [(r["id"], r["content"]) for r in msgs] == list(
+        zip(ids, ["first", "second", "third"], strict=True)
+    )
     counts = {
         t: (await db.fetchone(f"SELECT COUNT(*) AS n FROM {t}"))["n"]  # type: ignore[index]
         for t in ("messages", "runs", "plans")

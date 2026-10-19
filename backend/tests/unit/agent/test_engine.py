@@ -218,7 +218,11 @@ class _EagerBackend:
         return None
 
     async def start(
-        self, project: Project, conversation: Any, input_stream: AsyncIterator[QueuedItem], resume: str | None
+        self,
+        project: Project,
+        conversation: Any,
+        input_stream: AsyncIterator[QueuedItem],
+        resume: str | None,
     ) -> AsyncIterator[AgentEvent]:
         async def pump() -> None:
             async for item in input_stream:
@@ -329,7 +333,11 @@ class _TrackingBackend(_EagerBackend):
         self.ended = 0
 
     async def start(
-        self, project: Project, conversation: Any, input_stream: AsyncIterator[QueuedItem], resume: str | None
+        self,
+        project: Project,
+        conversation: Any,
+        input_stream: AsyncIterator[QueuedItem],
+        resume: str | None,
     ) -> AsyncIterator[AgentEvent]:
         self.started += 1
         try:
@@ -438,7 +446,11 @@ class _FailingBackend:
         return None
 
     async def start(
-        self, project: Project, conversation: Any, input_stream: AsyncIterator[QueuedItem], resume: str | None
+        self,
+        project: Project,
+        conversation: Any,
+        input_stream: AsyncIterator[QueuedItem],
+        resume: str | None,
     ) -> AsyncIterator[AgentEvent]:
         self.starts += 1
         if self.fail:

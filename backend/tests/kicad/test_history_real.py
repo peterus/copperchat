@@ -15,6 +15,7 @@ from copperchat.history.service import HistoryService
 from copperchat.history.store import compute_hashes
 from copperchat.kicad_session import KicadSessionManager
 from copperchat.projects import Project
+from tests.support.conversations import TEST_CID, ensure_test_conversation
 from tests.support.history import (
     ECC83,
     HIERARCHY,
@@ -25,8 +26,6 @@ from tests.support.history import (
     replace_with_kicad_file,
 )
 from tests.support.kicad_project import real_settings
-from tests.support.conversations import ensure_test_conversation
-from tests.support.conversations import TEST_CID
 
 pytestmark = pytest.mark.kicad
 
@@ -65,7 +64,9 @@ async def real(make_settings: Callable[..., Settings], tmp_path: Path) -> AsyncI
 
 
 def turn(run_id: str) -> TurnInfo:
-    return TurnInfo(run_id=run_id, message_id=1, text="tidy up", metadata={}, conversation_id="c" * 32)
+    return TurnInfo(
+        run_id=run_id, message_id=1, text="tidy up", metadata={}, conversation_id="c" * 32
+    )
 
 
 async def _footprint_count(real: Real) -> int:

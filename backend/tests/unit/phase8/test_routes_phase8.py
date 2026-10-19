@@ -160,12 +160,14 @@ def test_uploaded_attachment_is_accepted_by_send(env: Env) -> None:
     ref = c.post(
         f"/api/projects/{pid}/uploads", files={"file": ("p.png", png_bytes(), "image/png")}
     ).json()
+    cid = c.post(f"/api/projects/{pid}/conversations", json={"type": "free"}).json()["id"]
     with c.websocket_connect("/api/ws") as sock:
-        sub = {"type": "subscribe", "projectId": pid, "sinceMessageId": 0}
+        sub = {"type": "subscribe", "projectId": pid, "conversationId": cid, "sinceMessageId": 0}
         sock.send_text(json.dumps(sub))
         frame = {
             "type": "send",
             "projectId": pid,
+            "conversationId": cid,
             "clientMessageId": "c1",
             "text": "look",
             # A client-supplied name/kind is replaced by the stored one.

@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict
 
 from copperchat.changes.diff import cached_diff
 from copperchat.changes.repo import ChangeEntry
+from copperchat.db.repos.conversations import ConversationRepo
 from copperchat.db.repos.editing_settings import EditingSettings, EditingSettingsRepo
 from copperchat.editing.service import EditingService
 from copperchat.errors import CopperChatError
@@ -133,13 +134,19 @@ async def list_change_runs(
     runs = await editing.changes.runs(project.id, limit)
     ercs = await editing.erc_results.latest_for_runs(project.id, [r["run_id"] for r in runs])
     snaps = await history.store(project).latest_for_runs(r["run_id"] for r in runs)
+    sessions = await ConversationRepo(request.app.state.db).for_runs(
+        project.id, [r["run_id"] for r in runs]
+    )
     out: list[dict[str, Any]] = []
     for r in runs:
         erc = ercs.get(r["run_id"])
         snap = snaps.get(r["run_id"])
+        cid, title = sessions.get(r["run_id"], (None, None))
         out.append(
             {
                 "runId": r["run_id"],
+                "conversationId": cid,
+                "conversationTitle": title,
                 "stepIds": r["step_ids"],
                 "count": r["count"],
                 "sideEffects": r["side_effects"],

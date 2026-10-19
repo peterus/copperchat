@@ -175,9 +175,7 @@ class MessageRepo:
         has_more = len(rows) > limit
         return [_row(r) for r in reversed(rows[:limit])], has_more
 
-    async def since(
-        self, project_id: str, conversation_id: str, since_id: int
-    ) -> list[MessageRow]:
+    async def since(self, project_id: str, conversation_id: str, since_id: int) -> list[MessageRow]:
         rows = await self._db.fetchall(
             f"SELECT {_COLS} FROM messages WHERE conversation_id = ? AND project_id = ? "
             "AND id > ? ORDER BY id",

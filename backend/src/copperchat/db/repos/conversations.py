@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import json
 import sqlite3
 import uuid
@@ -211,7 +212,22 @@ class ConversationRepo:
             for r in rows
         }
 
-    async def closing(self) -> list[ConversationRow]:
+    async def for_runs(
+        self, project_id: str, run_ids: builtins.list[str]
+    ) -> dict[str, tuple[str, str]]:
+        """run id -> (conversation id, title) for the project's runs among ``run_ids``."""
+        if not run_ids:
+            return {}
+        marks = ", ".join("?" for _ in run_ids)
+        rows = await self._db.fetchall(
+            "SELECT r.id AS run_id, c.id AS cid, c.title FROM runs r "
+            "JOIN conversations c ON c.id = r.conversation_id "
+            f"WHERE r.project_id = ? AND r.id IN ({marks})",
+            (project_id, *run_ids),
+        )
+        return {str(r["run_id"]): (str(r["cid"]), str(r["title"])) for r in rows}
+
+    async def closing(self) -> builtins.list[ConversationRow]:
         rows = await self._db.fetchall(
             "SELECT * FROM conversations WHERE status = 'closing' ORDER BY project_id, seq"
         )

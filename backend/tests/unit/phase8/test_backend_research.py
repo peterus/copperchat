@@ -171,14 +171,22 @@ def make_backend(
 async def one_item(
     text: str = "hi", attachments: tuple[AttachmentRef, ...] = ()
 ) -> AsyncIterator[QueuedItem]:
-    yield QueuedItem(message_id=1, client_message_id="c1", conversation_id="c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0", text=text, attachments=attachments)
+    yield QueuedItem(
+        message_id=1,
+        client_message_id="c1",
+        conversation_id="c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+        text=text,
+        attachments=attachments,
+    )
 
 
 async def test_research_steps_nest_under_the_call_and_usage_is_summed(
     settings, project, db
 ) -> None:  # type: ignore[no-untyped-def]
     backend, clients = make_backend(settings, project, db, research_ok)
-    events: list[AgentEvent] = [ev async for ev in backend.start(project, conversation_row(), one_item(), None)]
+    events: list[AgentEvent] = [
+        ev async for ev in backend.start(project, conversation_row(), one_item(), None)
+    ]
     kinds = [type(e).__name__ for e in events if type(e).__name__ != "SessionId"]
     assert kinds == [
         "ToolUse",
@@ -361,7 +369,12 @@ async def test_attachments_become_content_blocks(settings, project, db) -> None:
         )
         refs.append(AttachmentRef(id=up.id, kind=up.kind, name=up.name))
     backend, clients = make_backend(settings, project, db, research_ok)
-    _ = [ev async for ev in backend.start(project, conversation_row(), one_item("look", tuple(refs)), None)]
+    _ = [
+        ev
+        async for ev in backend.start(
+            project, conversation_row(), one_item("look", tuple(refs)), None
+        )
+    ]
     content = clients[0].prompts[0]["message"]["content"]
     assert content[0] == {"type": "text", "text": "look"}
     assert content[1]["type"] == "image" and base64.b64decode(content[1]["source"]["data"])
@@ -482,9 +495,19 @@ async def test_unconsumed_call_ids_are_dropped_at_turn_end(settings, project, db
 
     async def two_items() -> AsyncIterator[QueuedItem]:
         # Gated like the RunEngine: the next item only after the turn's TurnFinished.
-        yield QueuedItem(message_id=1, client_message_id="c1", conversation_id="c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0", text="a")
+        yield QueuedItem(
+            message_id=1,
+            client_message_id="c1",
+            conversation_id="c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+            text="a",
+        )
         await first_done.wait()
-        yield QueuedItem(message_id=2, client_message_id="c2", conversation_id="c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0", text="b")
+        yield QueuedItem(
+            message_id=2,
+            client_message_id="c2",
+            conversation_id="c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+            text="b",
+        )
 
     events: list[AgentEvent] = []
     async for ev in backend.start(project, conversation_row(), two_items(), None):

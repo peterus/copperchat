@@ -106,7 +106,9 @@ class PlanRepo:
     async def run_conversation(self, run_id: str) -> str | None:
         """The conversation of run `run_id` (None for an unknown run)."""
         row = await self._db.fetchone("SELECT conversation_id FROM runs WHERE id = ?", (run_id,))
-        return None if row is None or row["conversation_id"] is None else str(row["conversation_id"])
+        return (
+            None if row is None or row["conversation_id"] is None else str(row["conversation_id"])
+        )
 
     async def running(self) -> list[Plan]:
         rows = await self._db.fetchall("SELECT * FROM plans WHERE status = 'running'")

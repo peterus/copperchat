@@ -16,6 +16,8 @@ from copperchat.changes import diff as diff_mod
 from copperchat.changes.erc import ErcDelta
 from copperchat.changes.repo import ChangeEntry
 from copperchat.config import Settings
+from copperchat.db.repos.agent_state import RunRepo
+from copperchat.db.repos.conversations import ConversationRepo
 from copperchat.editing import _publisher
 from copperchat.history.store import HistoryStore
 from copperchat.projects import Project
@@ -82,6 +84,8 @@ def test_runs_entries_and_erc_result(ctx: Ctx, monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(HistoryStore, "latest_for_run", no_per_run_lookup)
     store = ctx.app.state.history.store(ctx.project)
     snap = ctx.call(store.snapshot, "run-1", "turn one")
+    conv = ctx.call(ConversationRepo(ctx.app.state.db).create, ctx.pid, "schematic", "Wiring")
+    ctx.call(RunRepo(ctx.app.state.db).start, "run-1", ctx.pid, conv.id)
     ctx.call(
         editing.changes.add_many,
         [
@@ -98,6 +102,8 @@ def test_runs_entries_and_erc_result(ctx: Ctx, monkeypatch: pytest.MonkeyPatch) 
     run1 = runs[1]
     assert run1 == {
         "runId": "run-1",
+        "conversationId": conv.id,
+        "conversationTitle": "Wiring",
         "stepIds": [],
         "count": 2,
         "sideEffects": 1,
@@ -106,6 +112,7 @@ def test_runs_entries_and_erc_result(ctx: Ctx, monkeypatch: pytest.MonkeyPatch) 
         "createdAt": run1["createdAt"],
     }
     assert runs[0]["erc"] is None and runs[0]["snapshotId"] is None
+    assert runs[0]["conversationId"] is None and runs[0]["conversationTitle"] is None
     assert runs[0]["stepIds"] == ["st-1"]
     assert len(c.get(f"/api/projects/{ctx.pid}/changes/runs?limit=1").json()) == 1
 

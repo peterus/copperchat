@@ -23,11 +23,11 @@ from copperchat.kicad_tools.edit.scene import read_scene, resolve_sheet
 from copperchat.kicad_tools.edit.specs_transform import prepare_delete
 from tests.kicad.edit.connect_support import pin_nets, state
 from tests.kicad.test_history_real import Real, turn
+from tests.support.conversations import ensure_test_conversation
 from tests.support.edit import call_tool, edit_ctx, get_item, place_direct
 from tests.support.history import ECC83, FakeEngine, FakeRuntime, RecordingBroadcaster
 from tests.support.kicad_cli import cli_netlist, cli_pin_nets
 from tests.support.kicad_project import real_settings
-from tests.support.conversations import ensure_test_conversation
 
 pytestmark = pytest.mark.kicad
 

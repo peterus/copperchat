@@ -131,7 +131,11 @@ class _RaisingAfterRateLimit:
         return None
 
     async def start(
-        self, project: Project, conversation: Any, input_stream: AsyncIterator[QueuedItem], resume: str | None
+        self,
+        project: Project,
+        conversation: Any,
+        input_stream: AsyncIterator[QueuedItem],
+        resume: str | None,
     ) -> AsyncIterator[AgentEvent]:
         yield SessionId("s")
         async for item in input_stream:

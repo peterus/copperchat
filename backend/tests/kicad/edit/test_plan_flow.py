@@ -40,12 +40,11 @@ from copperchat.plans.service import PlanService
 from copperchat.projects import discover_projects
 from copperchat.tools import ToolContext, ToolResult, ToolSpec, edit_spec
 from tests.kicad.edit.helpers import item_ids
+from tests.support.conversations import TEST_CID, ensure_test_conversation
 from tests.support.edit import call_tool, free_area
-from tests.support.conversations import ensure_test_conversation
 from tests.support.history import FakeEngine, RecordingBroadcaster
 from tests.support.kicad_cli import cli_netlist, cli_pin_nets
 from tests.support.kicad_project import copy_fixture, real_settings
-from tests.support.conversations import TEST_CID
 
 pytestmark = pytest.mark.kicad
 RUN = "run-plan"
@@ -56,7 +55,8 @@ class Runtime:
         self.engine = FakeEngine()
         self.submitted: list[tuple[str, str]] = []
 
-        async def submit_ex(cid: str, text: str, atts: Any, meta: Any = None) -> Any:
+        async def submit_ex(conv: str, cid: str, text: str, atts: Any, meta: Any = None) -> Any:
+            assert conv == TEST_CID  # Approve/Resume go to the plan's session
             self.submitted.append((cid, text))
             return None, True
 

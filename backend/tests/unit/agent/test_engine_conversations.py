@@ -100,7 +100,9 @@ class _Recorder(RunHooks):
     async def on_turn_end(self, turn: TurnInfo, outcome: TurnOutcome) -> None:
         self.outcomes.append(outcome)
 
-    async def on_items_failed(self, conversation_id: str, message_ids: list[int], status: str) -> None:
+    async def on_items_failed(
+        self, conversation_id: str, message_ids: list[int], status: str
+    ) -> None:
         self.failed.append((conversation_id, list(message_ids), status))
 
 
@@ -520,7 +522,7 @@ async def test_turn_outcome_and_frames_carry_the_conversation(make_engine, db, u
 async def test_current_conversation_id_during_turn(make_engine, db, until):
     a = await _conv(db)
     gate = asyncio.Event()
-    engine, agent = await make_engine(_gated({"A1": gate}))
+    engine, _ = await make_engine(_gated({"A1": gate}))
     await engine.submit_ex(a, "a1", "A1", [])
     await until(lambda: engine.current_run_id is not None)
     assert engine.current_conversation_id == a
@@ -551,7 +553,9 @@ class _H(RunHooks):
             raise RuntimeError(self.name)
         return [f"from {self.name}"]
 
-    async def on_items_failed(self, conversation_id: str, message_ids: list[int], status: str) -> None:
+    async def on_items_failed(
+        self, conversation_id: str, message_ids: list[int], status: str
+    ) -> None:
         self.log.append(f"failed:{self.name}")
         if self.fail:
             raise RuntimeError(self.name)

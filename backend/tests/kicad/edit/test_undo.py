@@ -15,8 +15,8 @@ from copperchat.kicad_session import KicadSession
 from tests.kicad.edit import golden
 from tests.kicad.edit.test_plan_flow import Rig, rig  # noqa: F401  (fixture)
 from tests.kicad.edit.test_scenarios import S2, run_script
-from tests.support.edit import call_tool
 from tests.support.conversations import TEST_CID
+from tests.support.edit import call_tool
 
 pytestmark = pytest.mark.kicad
 

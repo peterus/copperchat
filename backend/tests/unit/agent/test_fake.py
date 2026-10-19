@@ -20,7 +20,12 @@ PROJECT = cast(Any, None)
 
 async def _items(*texts: str):  # type: ignore[no-untyped-def]
     for i, t in enumerate(texts, 1):
-        yield QueuedItem(message_id=i, client_message_id=f"c{i}", conversation_id="c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0", text=t)
+        yield QueuedItem(
+            message_id=i,
+            client_message_id=f"c{i}",
+            conversation_id="c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+            text=t,
+        )
 
 
 async def test_default_script_echoes_and_reports_usage():

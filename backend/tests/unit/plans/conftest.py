@@ -23,8 +23,8 @@ from copperchat.plans.model import Plan
 from copperchat.plans.service import PlanService
 from copperchat.projects import Project
 from copperchat.tools import ToolContext, ToolResult, ToolSpec, edit_spec
-from tests.support.history import FakeEngine, FakeRuntime, RecordingBroadcaster
 from tests.support.conversations import TEST_CID, ensure_test_conversation
+from tests.support.history import FakeEngine, FakeRuntime, RecordingBroadcaster
 
 PID = "a1b2c3d4e5f6"
 RUN = "run1"

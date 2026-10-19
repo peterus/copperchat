@@ -4,7 +4,10 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, ConfigDict, Field
 
+from copperchat.db.repos.conversations import ConversationRepo
+from copperchat.errors import ConversationNotFound
 from copperchat.history.restore import restore_snapshot
 from copperchat.history.service import HistoryService
 from copperchat.history.store import SnapshotNotFound
@@ -23,10 +26,17 @@ def _ctx(request: Request, project_id: str) -> tuple[HistoryService, Project]:
 @router.get("/{project_id}/history")
 async def list_history(project_id: str, request: Request, _: CurrentUser) -> list[dict[str, Any]]:
     svc, project = _ctx(request, project_id)
+    snaps = await svc.store(project).list()
+    # The session of each snapshot's turn (spec §5.4): history is project-wide.
+    sessions = await ConversationRepo(request.app.state.db).for_runs(
+        project.id, sorted({s.run_id for s in snaps})
+    )
     return [
         {
             "id": s.id,
             "runId": s.run_id,
+            "conversationId": sessions.get(s.run_id, (None, None))[0],
+            "conversationTitle": sessions.get(s.run_id, (None, None))[1],
             "createdAt": s.created_at,
             "label": s.label,
             "files": s.files,
@@ -36,7 +46,7 @@ async def list_history(project_id: str, request: Request, _: CurrentUser) -> lis
             if s.has_preview
             else None,
         }
-        for s in await svc.store(project).list()
+        for s in snaps
     ]
 
 
@@ -65,11 +75,24 @@ _RESTORE_HINT = {
 }
 
 
+class RestoreBody(BaseModel):
+    """The session the user restored from: it gets the restore notice (spec §6.1)."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    conversation_id: str = Field(alias="conversationId", min_length=1, max_length=64)
+
+
 @router.post("/{project_id}/history/{snapshot_id}/restore")
 async def restore(
-    project_id: str, snapshot_id: str, request: Request, _: CurrentUser
+    project_id: str, snapshot_id: str, body: RestoreBody, request: Request, _: CurrentUser
 ) -> dict[str, Any]:
     svc, project = _ctx(request, project_id)
+    # Ownership first: a session of another project restores nothing (404).
+    if len(body.conversation_id) != 32:
+        raise ConversationNotFound("no such session in this project")
+    conversation = await ConversationRepo(request.app.state.db).get_for_project(
+        project.id, body.conversation_id
+    )
     plans = getattr(request.app.state, "plans", None)
     if plans is not None:
         # E8b: a plan that has begun owns the design's history; a plain restore would let
@@ -86,5 +109,5 @@ async def restore(
             )
     # Errors map via install_error_handlers: 400 invalid id, 404 unknown, 409 read-only,
     # agent busy or open plan, 422 corrupt snapshot, 503 KiCad unavailable.
-    snap = await restore_snapshot(svc, project, snapshot_id)
+    snap = await restore_snapshot(svc, project, snapshot_id, conversation_id=conversation.id)
     return {"id": snap.id, "files": snap.files}
