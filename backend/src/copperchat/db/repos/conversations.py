@@ -20,8 +20,9 @@ ConversationStatus = Literal["open", "closing", "closed"]
 CONVERSATION_TYPES: tuple[str, ...] = get_args(ConversationType)
 _STATUSES: tuple[str, ...] = get_args(ConversationStatus)
 TITLE_MAX = 120
-# Control, format (bidi overrides, zero-width), line and paragraph separators.
-_REFUSED_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
+# Control, format (bidi overrides, zero-width), line and paragraph separators, lone
+# surrogates (not encodable: SQLite would raise), private-use and unassigned code points.
+_REFUSED_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Cs", "Co", "Cn"})
 _SEQ_RETRIES = 20
 
 

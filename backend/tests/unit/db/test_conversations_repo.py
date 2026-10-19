@@ -49,7 +49,17 @@ async def test_concurrent_creates_get_distinct_seq(db) -> None:
 
 @pytest.mark.parametrize(
     "title",
-    ["", "a\nb", "x" * 121, "tab\there\r", "   ", "a\u2028b", "evil\u202etxt", "zero\u200bwidth"],
+    [
+        "",
+        "a\nb",
+        "x" * 121,
+        "tab\there\r",
+        "   ",
+        "a\u2028b",
+        "evil\u202etxt",
+        "zero\u200bwidth",
+        "lone\ud800surrogate",
+    ],
 )
 async def test_title_is_validated(db, title: str) -> None:
     with pytest.raises(CopperChatError) as err:

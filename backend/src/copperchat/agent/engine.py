@@ -69,6 +69,9 @@ NOTICE_PREFIX = "[CopperChat notice]"
 # Broadcast agent notes kept for conversations that have not run a turn since (oldest
 # dropped first): they are about the shared design state, so only recent ones matter.
 _BROADCAST_KEEP = 100
+# Notes for one conversation wait for its next turn (an archived session may never have
+# one): only the newest are kept.
+_NOTES_KEEP = 20
 
 
 def _clip(value: Any) -> Any:
@@ -484,20 +487,20 @@ class RunEngine:
             target = self._inflight if self._inflight_cid == target_cid else None
             if target is not None:
                 self._interrupting = True
+        # The interrupt goes out before the hook is awaited: a hook doing I/O must never
+        # let the stopped turn end and the next conversation's turn take its place.
+        task = self._burst
+        if task is not None and not task.done():
+            if own and stream is not None:
+                stream.request_close()  # between turns: closing the input ends the burst
+            if target is not None:
+                try:
+                    await self.backend.interrupt()
+                except Exception:
+                    log.exception("backend.interrupt() failed for %s", self.pid)
+                self._spawn(self._backstop(task, target))
         if ids and target_cid is not None:
             await self._items_failed(target_cid, sorted(ids), "cancelled")
-        task = self._burst
-        if task is None or task.done():
-            return
-        if own and stream is not None:
-            stream.request_close()
-        if target is None:
-            return  # between turns: closing the input ends the burst
-        try:
-            await self.backend.interrupt()
-        except Exception:
-            log.exception("backend.interrupt() failed for %s", self.pid)
-        self._spawn(self._backstop(task, target))
 
     async def _backstop(self, task: asyncio.Task[None], message_id: int) -> None:
         await asyncio.wait({task}, timeout=self._grace)
@@ -511,7 +514,9 @@ class RunEngine:
         """A note prefixed to the next model input of ``conversation_id``; None broadcasts
         it to every open conversation, each sees it once at its next turn (spec §5.3)."""
         if conversation_id is not None:
-            self._notes.setdefault(conversation_id, []).append(text)
+            notes = self._notes.setdefault(conversation_id, [])
+            notes.append(text)
+            del notes[:-_NOTES_KEEP]
             return
         self._broadcast.append((next(self._broadcast_ids), utcnow_iso(), text))
         del self._broadcast[:-_BROADCAST_KEEP]

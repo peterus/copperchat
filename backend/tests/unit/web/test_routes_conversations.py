@@ -89,6 +89,17 @@ def test_create_validation(build_chat_app: Any, body: dict[str, Any], status: in
         assert client.get(f"/api/projects/{pid}/conversations").json() == []
 
 
+def test_lone_surrogate_title_is_422_not_500(build_chat_app: Any) -> None:
+    app, pid = build_chat_app(default_conversations=False)
+    with TestClient(app) as client:
+        r = client.post(
+            f"/api/projects/{pid}/conversations",
+            content='{"type": "free", "title": "a\\ud800b"}',
+            headers={"content-type": "application/json"},
+        )
+        assert r.status_code == 422, r.text
+
+
 def test_patch_validation(build_chat_app: Any) -> None:
     app, pid = build_chat_app(default_conversations=False)
     with TestClient(app) as client:

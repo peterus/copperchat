@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from copperchat.agent import engine as engine_mod
 from copperchat.agent.engine import ChainedHooks, RunHooks, TurnInfo, TurnOutcome
 from copperchat.agent.events import AgentEvent, QueuedItem, RateLimited
 from copperchat.agent.fake import Emit, FakeAgent, Finish, Text, Tool, Wait
@@ -284,6 +285,88 @@ async def test_stop_for_b_during_a_turn_start_window_spares_a(make_engine, db, u
     assert [p.text for p in agent.prompts] == ["B0", "A1"]
     assert hooks.outcomes[-1].reason == "completed"
     assert await _status(db, ma1.id) == "done" and await _status(db, mb.id) == "done"
+
+
+async def test_stop_for_a_during_its_own_turn_start_window(make_engine, db, until):
+    a, b = await _conv(db), await _conv(db)
+    hooks = _Recorder()
+    # A's prompt never reached the backend when Stop came: the backstop ends that turn.
+    engine, agent = await make_engine(
+        lambda item: [Wait(asyncio.Event())] if item.text == "A1" else [Text("ok")],
+        hooks=hooks,
+        interrupt_grace_s=0.2,
+    )
+    real_get = engine._messages.get
+    hold, entered = asyncio.Event(), asyncio.Event()
+
+    async def slow_get(mid: int) -> Any:
+        row = await real_get(mid)
+        if sys._getframe(1).f_code.co_name == "_begin_turn" and row and row.content == "A1":
+            entered.set()
+            await hold.wait()
+        return row
+
+    engine._messages.get = slow_get  # type: ignore[method-assign]
+    ma1, _ = await engine.submit_ex(a, "a1", "A1", [])
+    await asyncio.wait_for(entered.wait(), 2)
+    ma2, _ = await engine.submit_ex(a, "a2", "A2", [])  # in A's stream
+    mb, _ = await engine.submit_ex(b, "b1", "B1", [])  # sealed out, DB-queued
+    await engine.interrupt(None, a)  # the user stops A before its turn started
+    assert await _status(db, ma2.id) == "cancelled"
+    assert await _status(db, mb.id) == "queued"
+    hold.set()
+    await until(lambda: len(hooks.outcomes) >= 1)
+    assert hooks.outcomes[0].reason == "interrupted" and hooks.outcomes[0].conversation_id == a
+    assert agent.interrupts >= 1
+    await until(lambda: len(agent.prompts) == 2, timeout=3.0)
+    assert [p.text for p in agent.prompts] == ["A1", "B1"], "B still runs after the Stop"
+    assert ma1.id < mb.id
+
+
+class _AwaitingFailHook(_Recorder):
+    """on_items_failed that does real (awaited) work, as C5's close lifecycle will."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.release = asyncio.Event()
+
+    async def on_items_failed(
+        self, conversation_id: str, message_ids: list[int], status: str
+    ) -> None:
+        await self.release.wait()
+        await super().on_items_failed(conversation_id, message_ids, status)
+
+
+async def test_stop_interrupts_before_awaiting_on_items_failed(make_engine, db, until):
+    a, b = await _conv(db), await _conv(db)
+    hooks = _AwaitingFailHook()
+    engine, agent = await make_engine(_gated({"A1": asyncio.Event()}), hooks=hooks)
+    await engine.submit_ex(a, "a1", "A1", [])
+    await until(lambda: engine.current_run_id is not None)
+    await engine.submit_ex(a, "a2", "A2", [])
+    await engine.submit_ex(b, "b1", "B1", [])
+    stop = asyncio.create_task(engine.interrupt(engine.current_run_id, a))
+    # A1 is interrupted while the hook still waits: B's turn can never be the one hit.
+    await until(lambda: agent.interrupts == 1)
+    await until(lambda: len(agent.prompts) == 2)
+    assert agent.prompts[-1].text == "B1"
+    assert agent.interrupts == 1
+    hooks.release.set()
+    await stop
+    await until(lambda: not engine.is_busy)
+    assert [o.reason for o in hooks.outcomes] == ["interrupted", "completed"]
+
+
+async def test_conversation_notes_are_capped(make_engine, db, until):
+    a = await _conv(db)
+    engine, agent = await make_engine()
+    for i in range(engine_mod._NOTES_KEEP + 5):
+        engine.add_agent_note(f"note {i}", conversation_id=a)
+    await engine.submit_ex(a, "a1", "A1", [])
+    await until(lambda: len(agent.prompts) == 1 and not engine.is_busy)
+    text = agent.prompts[0].text
+    assert text.count(NOTICE) == engine_mod._NOTES_KEEP
+    assert "note 4\n" not in text and f"note {engine_mod._NOTES_KEEP + 4}" in text
 
 
 async def test_turn_context_in_kicadless_ctx(make_engine, db, until):
