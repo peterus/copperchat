@@ -1,8 +1,10 @@
 # CopperChat — Sessions & design docs (sub-project 3) design
 
 Date: 2026-10-19
-Status: draft for owner review. The direction (§3) was approved by the owner on
-2026-10-19. The open questions are in §17 and wait for the owner's answers.
+Status: approved by the owner on 2026-10-19. The direction (§3) was approved
+first. The owner then accepted the author's recommendation on all 14 open
+calls (§17, "Decided by owner"). References like "(Q5 B)" in the body name
+those decisions.
 
 All `file:line` references are to `main` at `e2d73b5` (release v0.2.0).
 Backend paths are relative to `backend/src/copperchat/`; frontend paths to
@@ -240,6 +242,8 @@ CREATE INDEX ix_runs_conversation ON runs(conversation_id, started_at);
 
 DROP TABLE agent_sessions;
 
+-- The doc tables below go into a separate migration, 0009_design_docs.sql
+-- (plan S-C1), so that phases C1 and C3 can be built in parallel.
 CREATE TABLE doc_revisions (                      -- §7.6
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id      TEXT NOT NULL,
@@ -335,7 +339,7 @@ bound to one conversation.
 
 - **Queue.** Each `QueuedItem` carries `conversation_id`. The queue stays one
   FIFO per project, ordered by message id. A send into conversation B while
-  conversation A runs is **queued**, not refused (Q1).
+  conversation A runs is **queued**, not refused (Q1 A).
 - **Burst binding.** `_run_burst` takes the conversation of the stream's first
   item. From that conversation it reads:
   - `resume = conversations.sdk_session_id`
@@ -597,7 +601,7 @@ An old tab after the upgrade would therefore just stop working. C1 adds a
 
 The notifier looks up the final row by `(project_id, run_id)`
 (`push/notifier.py:97-104`). The push title gains the session title. The
-deep link becomes `/projects/{pid}/sessions/{cid}`.
+deep link becomes `/p/{pid}/s/{cid}` (today `/p/:projectId`, `App.tsx:15`).
 
 ## 7. Design docs
 
@@ -615,7 +619,7 @@ directory is committed with the project, like `docs/parts/`.
 | `board.md` | Board constraints and stack-up (SP4) | reserved. The template exists, but no profile writes it in SP3 |
 
 **Additional docs** `docs/design/<name>.md` and `docs/design/<dir>/<name>.md`
-are allowed (Q12, at most 2 levels and 50 files). An example is
+are allowed (Q12 A, at most 2 levels and 50 files). An example is
 `docs/design/notes/usb-pd.md`. They have the same frontmatter and rules but no
 template.
 
@@ -687,7 +691,7 @@ server never trusts them.
   conflict check, so a size- and mtime-preserving external write cannot be
   clobbered.
 - **`user_edited: true`** is set whenever the user saves the doc in the panel
-  (PUT, revert). Recommended semantics (Q5 B):
+  (PUT, revert). Semantics (Q5 B):
   - The agent may no longer **replace the whole doc** (`doc_write` →
     `doc_user_edited`).
   - It may still `doc_patch_section` and `doc_append` with a current
@@ -972,7 +976,7 @@ repository can bring in.
 - **Commits.** Docs are committed like any project file by `git_commit`. It
   stages `.` minus the caches (`git_tools/specs.py:20-34`) and still needs an
   explicit "commit" in the user's message (`git_tools/specs.py:19,206`). The
-  doc tools themselves never commit (Q13).
+  doc tools themselves never commit (Q13 A).
 
 ## 8. Session types as tool profiles
 
@@ -1250,7 +1254,7 @@ KiCad stopped.
 
 ### 12.1 Session list and switcher
 
-- **Routing.** `/projects/:id/sessions/:cid`. `/projects/:id` redirects to the
+- **Routing.** `/p/:projectId/s/:cid`. `/p/:projectId` (`App.tsx:15`) redirects to the
   most recently active open session, or shows the empty state "Start a
   session". `ProjectPage` (`pages/ProjectPage.tsx:61-67`) passes
   `conversationId` to `ChatPanel`.
@@ -1583,14 +1587,15 @@ green CI, review-loop to zero, and no Copilot.
     - When a project has no conversation, it calls `POST /conversations
       {type: 'free'}` and uses the newest open conversation.
     - It sends `conversationId` in its frames.
-    - The deep link stays `/projects/{pid}`. The `/sessions/{cid}` push deep
+    - The deep link stays `/p/{pid}`. The `/p/{pid}/s/{cid}` push deep
       link (§6.3) moves to C2, together with the route.
   - The build-version reload banner (§6.2) works.
 
 **C2 — Session UI**
-- Scope: routing, including the `/sessions/{cid}` push deep link; the
+- Scope: routing, including the `/p/{pid}/s/{cid}` push deep link; the
   conversation-keyed chat store; the session header,
-  list, new-session dialog (types Requirements/Schematic/Free, no gate yet),
+  list, new-session dialog (types Requirements/Schematic/Free, gate warning,
+  close/reopen buttons against the C5 API),
   rename, archive and the "running elsewhere" chip; session chips in the
   History and Changes panels.
 - *Acceptance:*
@@ -1618,12 +1623,12 @@ green CI, review-loop to zero, and no Copilot.
   `sessions` skill key and per-type plugin dir; the skills
   `session-requirements` and `session-schematic` (and the `design-docs`
   rules); the Schematic doc write policy; first-turn and later-turn
-  injection; close and reopen; the gate (dialog and notice); the
-  `FakeAgent` extensions (§14.3); a live guard test.
+  injection; close and reopen (backend); the gate notice; the
+  `FakeAgent` extensions (§14.3). The live guard test moves to C6.
 - *Acceptance:*
   - The golden scenario of §14.3 passes.
   - The profile and skill tests pass.
-  - The live guard test refuses out-of-profile calls.
+  - The profile tests refuse out-of-profile calls (the live guard test is in C6).
 
 **C6 — Eval, docs, release v0.3.0**
 - Scope: the live eval of §14.4; README and user docs (sessions, docs panel,
@@ -1634,8 +1639,12 @@ green CI, review-loop to zero, and no Copilot.
   - The release workflow is green.
   - The prod upgrade is done by the coordinator after the owner's OK.
 
-Dependencies: C1 → C2. C1 → C3 (C3 can run in parallel with C2). C3 → C4.
-C2, C3 → C5. Everything → C6.
+Dependencies, as refined by the plan (`docs/superpowers/plans/2026-10-19-sessions-plan.md`):
+- Wave 1: C1 ∥ C3. They are independent, with migrations `0008` and `0009`.
+- Wave 2: C2 (after C1) ∥ C4 (after C3) ∥ C5 (after C1 and C3).
+- Wave 3: C6.
+
+The close/reopen and gate-warning UI moves from C5 to C2.
 
 ## 16. Risks and calls made by the author
 
@@ -1679,96 +1688,46 @@ C2, C3 → C5. Everything → C6.
   profiles and a shared KiCad read lock. Revisit after SP4.
 - **Board session (SP4):** the profile, `board.md` template and gate on
   `architecture.md`.
-- **A "Commit docs" button** that commits `docs/design/` only (Q13 C).
+- **A "Commit docs" button** that commits `docs/design/` only (rejected option Q13 C, maybe later).
 - **Residual: researcher `WebFetch` host allow-list.** This would close the
   exfiltration path of §13 for good.
 - **Template editing in the Skills GUI** (§7.2).
 
-## 17. Open author calls
+## 17. Decided by owner (2026-10-19)
 
-The owner answers these one by one. **Rec** marks the author's
-recommendation.
+The owner accepted the author's recommendation on every open call. The spec
+body above already follows these choices. The rejected options are kept in
+the PR history (commit 2794585).
 
-1. **Message to session B while session A runs.**
-   A) Queue it FIFO and show "waiting for Session A" (**Rec**).
-   B) Refuse with "another session is running".
-   C) Queue it, but only after A's queue is empty, so A's follow-ups go first.
-
-2. **Session type after creation.**
-   A) Fixed. To change type, start a new session (**Rec**: keeps profiles,
-   skills and the gate meaningful).
-   B) Switchable from the session header, effective at the next burst.
-
-3. **Can a Requirements session see the existing design?**
-   A) Yes, read-only: `sch_*`/`pcb_*` reads, `render_view` and ERC/DRC
-   (**Rec**: needed to derive requirements from an existing schematic).
-   B) No. Docs, library and research only.
-
-4. **What may a Schematic session write in the docs?**
-   A) Only append to `decisions.md`, as in the owner direction.
-   B) A, plus patch or append in the `Open points` sections of any doc and
-   in `parts.md` › `Key parts`, for status updates (**Rec**: the handover
-   needs the open points, and part status changes during drawing).
-   C) All doc tools on all docs, like Free.
-
-5. **What does `user_edited: true` mean for the agent?**
-   A) The doc is frozen for the agent, like `notes.md`.
-   B) No whole-doc rewrite (`doc_write`). Section patches and appends stay
-   allowed and are shown as diffs (**Rec**).
-   C) No restriction. Version hashes alone prevent clobbering.
-
-6. **Agent changes an approved doc.**
-   A) Allowed. The status resets to draft, with a "re-approve" notice
-   (**Rec**).
-   B) Refused until the user unapproves.
-   C) Allowed. It stays approved but is flagged "changed since approval".
-
-7. **"Close session".**
-   A) Agent handover turn (update docs and open points, summary), then
-   read-only and reopenable (**Rec**).
-   B) Like A, plus an automatic commit of `docs/design/`.
-   C) No agent turn. Just mark it closed.
-
-8. **Where does the handover summary go?**
-   A) A `decisions.md` entry "Session N closed", plus the open points in each
-   doc (**Rec**).
-   B) A separate `docs/design/handover.md` log.
-   C) One file per session, `docs/design/sessions/NN.md`.
-
-9. **Strength of the phase gate.**
-   A) A warning in the new-session dialog with [Start anyway], plus one
-   mention by the agent (**Rec**).
-   B) Only the agent's mention. No dialog warning.
-   C) A hard block until approved (contradicts the "soft" direction; listed
-   for completeness).
-
-10. **Inlined context at session start.**
-    A) Doc index only.
-    B) Index, plus `requirements.md` inlined when ≤ 8 KiB, in Schematic and
-    Board sessions (**Rec**).
-    C) Index, plus all approved docs inlined, up to 16 KiB in total.
-
-11. **Docs panel placement and doc undo.**
-    A) A wide overlay panel like History or Changes. Docs have their own
-    revision history and revert, independent of KiCad undo (**Rec**).
-    B) A Docs tab that replaces the viewer, and turn restore also reverts
-    docs.
-    C) Both placements, and turn restore also reverts docs.
-
-12. **Docs beyond the fixed five.**
-    A) Allowed under `docs/design/` (≤ 2 levels, ≤ 50 files), same rules
-    (**Rec**).
-    B) Only the fixed set.
-
-13. **Committing docs.**
-    A) Only via `git_commit` on an explicit user request, as today (**Rec**
-    for v1).
-    B) Also commit `docs/design/` automatically when a session closes.
-    C) A "Commit docs" button in the Docs panel that commits `docs/design/`
-    only, server-side.
-
-14. **Migrated history and the first session of a new project.**
-    A) Existing history becomes "Session 1", type Free. A new project starts
-    with the new-session dialog, defaulting to Requirements (**Rec**).
-    B) Existing history becomes type Schematic. A new project auto-creates a
-    Free session.
+1. **A message to session B while session A runs** is queued FIFO across
+   sessions and shows "waiting for Session A" (Q1 A, §5.2).
+2. **The session type is fixed at creation.** To change type, start a new
+   session (Q2 A, §8.2).
+3. **A Requirements session sees the existing design read-only:** `sch_*` and
+   `pcb_*` reads, `render_view` and ERC/DRC (Q3 A, §8.2).
+4. **A Schematic session may write in the docs:** append to `decisions.md`,
+   plus patch or append in the `Open points` sections of any doc and in
+   `parts.md` › `Key parts` (Q4 B, §8.2).
+5. **`user_edited: true`** forbids only whole-doc rewrites (`doc_write`).
+   Section patches and appends stay allowed, with a current version, and are
+   shown as diffs (Q5 B, §7.3).
+6. **An agent change to an approved doc** is allowed. The doc goes back to
+   draft, with a "re-approve" notice (Q6 A, §7.3).
+7. **"Close session"** runs an agent handover turn (docs and open points
+   updated, a summary). The session is then read-only and can be reopened
+   (Q7 A, §10).
+8. **The handover summary** goes into `decisions.md` as "Session N closed",
+   written by the server. The open points stay in each doc (Q8 A, §10).
+9. **The phase gate** is a warning in the new-session dialog with [Start
+   anyway], plus one mention by the agent. It is never a block (Q9 A, §11).
+10. **Context at session start:** the doc index, plus `requirements.md`
+    inlined when it is ≤ 8 KiB, in Schematic and Board sessions (Q10 B, §9.1).
+11. **The Docs panel** is a wide overlay panel. Docs have their own revision
+    history and revert, independent of KiCad undo (Q11 A, §7.6, §12.2).
+12. **Extra docs** are allowed under `docs/design/` (≤ 2 levels, ≤ 50 files),
+    with the same rules (Q12 A, §7.1).
+13. **Docs are committed** only via `git_commit` on an explicit user request,
+    as today (Q13 A, §7.6). A "Commit docs" button is in the outlook.
+14. **Migrated history** becomes "Session 1", type Free. A new project starts
+    with the new-session dialog, defaulting to Requirements (Q14 A, §4.2,
+    §12.1).
