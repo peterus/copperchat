@@ -70,6 +70,7 @@ class PlanRepo:
             status=row["status"],
             revision=int(row["revision"]),
             created_run_id=str(row["created_run_id"]),
+            conversation_id=str(row["conversation_id"]),
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
             steps=tuple(_step(s) for s in steps),
@@ -101,6 +102,11 @@ class PlanRepo:
             (project_id,),
         )
         return None if row is None else (str(row["id"]), str(row["status"]))
+
+    async def run_conversation(self, run_id: str) -> str | None:
+        """The conversation of run `run_id` (None for an unknown run)."""
+        row = await self._db.fetchone("SELECT conversation_id FROM runs WHERE id = ?", (run_id,))
+        return None if row is None or row["conversation_id"] is None else str(row["conversation_id"])
 
     async def running(self) -> list[Plan]:
         rows = await self._db.fetchall("SELECT * FROM plans WHERE status = 'running'")
@@ -149,8 +155,8 @@ class PlanRepo:
             async with self._db.transaction():
                 await self._db.execute(
                     "INSERT INTO plans(id, project_id, title, summary, status, revision,"
-                    " event_seq, pause_reason, base_snapshot_id, created_run_id, created_at,"
-                    " updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    " event_seq, pause_reason, base_snapshot_id, created_run_id, conversation_id,"
+                    " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         plan.id,
                         plan.project_id,
@@ -162,6 +168,7 @@ class PlanRepo:
                         plan.pause_reason,
                         plan.base_snapshot_id,
                         plan.created_run_id,
+                        plan.conversation_id,
                         plan.created_at,
                         plan.updated_at,
                     ),

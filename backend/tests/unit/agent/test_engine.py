@@ -11,10 +11,11 @@ from copperchat.projects import Project, agent_dir
 from copperchat.tools import ImageBlock, ToolContext, ToolResult, ToolSpec
 
 PID = "a1b2c3d4e5f6"
+CID = "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"
 
 
 async def _rows(db):  # type: ignore[no-untyped-def]
-    rows, _ = await MessageRepo(db).page(PID, limit=100)
+    rows, _ = await MessageRepo(db).page(PID, CID, limit=100)
     return rows
 
 
@@ -23,7 +24,7 @@ async def test_submit_persists_queued_first_then_streams_and_finishes(
 ):
     engine, agent = await make_engine()
     sub = engine.broadcaster.subscribe(PID)
-    dto, created = await engine.submit_ex("c1", "hi", [])
+    dto, created = await engine.submit_ex(CID, "c1", "hi", [])
     assert created and dto.status == "queued" and dto.client_message_id == "c1"
     await until(lambda: len(agent.prompts) == 1 and not engine.is_busy)
     rows = await _rows(db)
@@ -32,7 +33,7 @@ async def test_submit_persists_queued_first_then_streams_and_finishes(
         ("assistant", "text", "done"),
     ]
     assert rows[1].content == "You said: hi" and rows[0].run_id == rows[1].run_id
-    frames = await drain(sub)
+    frames = [f for f in await drain(sub) if f.type != "conversation-updated"]
     types = [f.type for f in frames]
     assert types[0] == "message" and frames[0].message.status == "queued"
     assert types.index("run-started") < types.index("message-delta", types.index("run-started"))
@@ -46,7 +47,7 @@ async def test_submit_persists_queued_first_then_streams_and_finishes(
 async def test_retransmitted_client_message_id_is_one_turn(make_engine, db, until):
     gate = asyncio.Event()
     engine, agent = await make_engine(lambda item: [Wait(gate), Text("ok")])
-    results = await asyncio.gather(*(engine.submit_ex("same", "hello", []) for _ in range(3)))
+    results = await asyncio.gather(*(engine.submit_ex(CID, "same", "hello", []) for _ in range(3)))
     assert sorted(created for _, created in results) == [False, False, True]
     assert len({dto.id for dto, _ in results}) == 1
     gate.set()
@@ -61,8 +62,8 @@ async def test_next_message_is_released_only_after_turn_finished(make_engine, db
     engine, agent = await make_engine(
         lambda item: [Wait(gate), Text("one")] if item.text == "m1" else [Text("two")]
     )
-    _m1, _ = await engine.submit_ex("a", "m1", [])
-    m2, _ = await engine.submit_ex("b", "m2", [])
+    _m1, _ = await engine.submit_ex(CID, "a", "m1", [])
+    m2, _ = await engine.submit_ex(CID, "b", "m2", [])
     await until(lambda: len(agent.prompts) == 1)
     await asyncio.sleep(0.05)
     assert len(agent.prompts) == 1, "m2 must not reach the backend while m1 runs"
@@ -80,7 +81,7 @@ async def test_streamed_text_is_persisted_by_size_and_by_time(make_engine, db, u
     engine, _ = await make_engine(
         lambda item: [Text("a" * 3000), Text("b"), Wait(gate)], flush_interval_s=0.05
     )
-    await engine.submit_ex("c", "go", [])
+    await engine.submit_ex(CID, "c", "go", [])
     repo = MessageRepo(db)
 
     async def assistant_content() -> str:
@@ -111,7 +112,7 @@ async def test_thinking_tool_use_result_and_image_are_separate_rows(
         specs=[spec],
         with_session=True,
     )
-    await engine.submit_ex("c", "go", [])
+    await engine.submit_ex(CID, "c", "go", [])
     await until(lambda: not engine.is_busy and engine.current_run_id is None)
     await asyncio.sleep(0.05)
     rows = await _rows(db)
@@ -148,7 +149,7 @@ async def test_hooks_and_agent_notes(make_engine, until):
 
     engine, agent = await make_engine(hooks=Rec())
     engine.add_agent_note("history restored")
-    await engine.submit_ex("c", "hi", [])
+    await engine.submit_ex(CID, "c", "hi", [])
     await until(lambda: ("end", "completed") in calls)
     assert calls == ["engine", ("start", "hi"), ("end", "completed")]
     assert agent.prompts[0].text == "[CopperChat notice] history restored\n\nhi"
@@ -173,7 +174,7 @@ async def test_changed_docs_are_recorded_in_outcome_and_not_published(make_engin
         lambda item: [Tool("edit")], specs=[spec], with_session=True, hooks=Rec()
     )
     sub = engine.broadcaster.subscribe(PID)
-    await engine.submit_ex("c", "go", [])
+    await engine.submit_ex(CID, "c", "go", [])
     await until(lambda: len(outcomes) == 1)
     assert outcomes[0].changed_docs == frozenset({"sch"})
     assert "view-updated" not in [f.type for f in await drain(sub)]
@@ -189,8 +190,8 @@ async def test_unsolicited_turn_finished_neither_finishes_nor_releases(make_engi
             [Text("a"), Emit(stray), Wait(gate), Text("b")] if item.text == "m1" else [Text("two")]
         )
     )
-    await engine.submit_ex("a", "m1", [])
-    await engine.submit_ex("b", "m2", [])
+    await engine.submit_ex(CID, "a", "m1", [])
+    await engine.submit_ex(CID, "b", "m2", [])
     await until(lambda: engine.current_run_id is not None)
     run1 = engine.current_run_id
     await asyncio.sleep(0.05)
@@ -217,7 +218,7 @@ class _EagerBackend:
         return None
 
     async def start(
-        self, project: Project, input_stream: AsyncIterator[QueuedItem], resume: str | None
+        self, project: Project, conversation: Any, input_stream: AsyncIterator[QueuedItem], resume: str | None
     ) -> AsyncIterator[AgentEvent]:
         async def pump() -> None:
             async for item in input_stream:
@@ -238,9 +239,9 @@ def _usage() -> Usage:
 async def test_stray_results_never_release_the_next_item_early(make_engine, until):
     backend = _EagerBackend()
     engine, _ = await make_engine(backend=backend)
-    m1, _ = await engine.submit_ex("a", "m1", [])
-    m2, _ = await engine.submit_ex("b", "m2", [])
-    m3, _ = await engine.submit_ex("c", "m3", [])
+    m1, _ = await engine.submit_ex(CID, "a", "m1", [])
+    m2, _ = await engine.submit_ex(CID, "b", "m2", [])
+    m3, _ = await engine.submit_ex(CID, "c", "m3", [])
     await until(lambda: backend.pulled == [m1.id])
     run1 = engine.current_run_id
     # A task-notification result mid-turn: no release, same turn.
@@ -271,14 +272,14 @@ async def test_result_outside_a_turn_is_ignored_and_bursts_do_not_overlap(make_e
     previous burst is still winding down starts its burst only after that one ended."""
     backend = _EagerBackend()
     engine, _ = await make_engine(backend=backend)
-    m1, _ = await engine.submit_ex("a", "m1", [])
+    m1, _ = await engine.submit_ex(CID, "a", "m1", [])
     await until(lambda: backend.pulled == [m1.id])
     await backend.events.put(TurnFinished(reason="completed"))
     await until(lambda: engine.current_run_id is None)
     await backend.events.put(TurnFinished(reason="completed"))  # duplicate, nothing in flight
     await asyncio.sleep(0.05)
     assert engine.current_run_id is None and engine.is_busy  # old burst still winding down
-    m2, created = await engine.submit_ex("b", "m2", [])
+    m2, created = await engine.submit_ex(CID, "b", "m2", [])
     assert created
     await asyncio.sleep(0.05)
     assert backend.pulled == [m1.id], "new burst must wait for the previous one"
@@ -313,7 +314,7 @@ async def test_burst_end_racing_a_submit_does_not_double_queue(make_engine, unti
         return mid
 
     repo.insert = insert_then_redrive  # type: ignore[method-assign]
-    await engine.submit_ex("c1", "hi", [])
+    await engine.submit_ex(CID, "c1", "hi", [])
     repo.insert = original  # type: ignore[method-assign]
     await asyncio.gather(*redrives)
     await until(lambda: not engine.is_busy)
@@ -328,11 +329,11 @@ class _TrackingBackend(_EagerBackend):
         self.ended = 0
 
     async def start(
-        self, project: Project, input_stream: AsyncIterator[QueuedItem], resume: str | None
+        self, project: Project, conversation: Any, input_stream: AsyncIterator[QueuedItem], resume: str | None
     ) -> AsyncIterator[AgentEvent]:
         self.started += 1
         try:
-            async for ev in super().start(project, input_stream, resume):
+            async for ev in super().start(project, conversation, input_stream, resume):
                 yield ev
         finally:
             self.ended += 1
@@ -341,12 +342,12 @@ class _TrackingBackend(_EagerBackend):
 async def test_close_during_wind_down_stops_every_burst(make_engine, until):
     backend = _TrackingBackend()
     engine, _ = await make_engine(backend=backend)
-    m1, _ = await engine.submit_ex("a", "m1", [])
+    m1, _ = await engine.submit_ex(CID, "a", "m1", [])
     await until(lambda: backend.pulled == [m1.id])
     old = engine._burst
     await backend.events.put(TurnFinished(reason="completed"))
     await until(lambda: engine.current_run_id is None)
-    await engine.submit_ex("b", "m2", [])  # new burst waits for the winding-down one
+    await engine.submit_ex(CID, "b", "m2", [])  # new burst waits for the winding-down one
     new = engine._burst
     assert old is not None and new is not None and old is not new
     await engine.close()
@@ -359,11 +360,11 @@ async def test_wind_down_wait_is_bounded(make_engine, until):
     so later messages are not stuck in the queue."""
     backend = _TrackingBackend()
     engine, _ = await make_engine(backend=backend, interrupt_grace_s=0.1)
-    m1, _ = await engine.submit_ex("a", "m1", [])
+    m1, _ = await engine.submit_ex(CID, "a", "m1", [])
     await until(lambda: backend.pulled == [m1.id])
     await backend.events.put(TurnFinished(reason="completed"))
     await until(lambda: engine.current_run_id is None)
-    m2, _ = await engine.submit_ex("b", "m2", [])
+    m2, _ = await engine.submit_ex(CID, "b", "m2", [])
     await until(lambda: backend.pulled == [m1.id, m2.id])
     assert backend.started == 2 and backend.ended == 1
     await backend.events.put(TurnFinished(reason="completed"))
@@ -384,8 +385,8 @@ async def test_failing_hooks_do_not_block_the_queue(make_engine, db, until):
             raise RuntimeError("end hook")
 
     engine, agent = await make_engine(hooks=Boom())
-    await engine.submit_ex("a", "m1", [])
-    await engine.submit_ex("b", "m2", [])
+    await engine.submit_ex(CID, "a", "m1", [])
+    await engine.submit_ex(CID, "b", "m2", [])
     await until(lambda: len(agent.prompts) == 2 and not engine.is_busy)
     users = [r for r in await _rows(db) if r.role == "user"]
     for u in users:
@@ -398,7 +399,7 @@ async def test_queued_rows_are_redriven_even_if_engine_start_hook_fails(make_eng
         async def on_engine_start(self) -> None:
             raise RuntimeError("engine hook")
 
-    await MessageRepo(db).insert_user(PID, "old", "from before the restart")
+    await MessageRepo(db).insert_user(PID, CID, "old", "from before the restart")
     engine, agent = await make_engine(hooks=Boom())
     await until(lambda: len(agent.prompts) == 1 and not engine.is_busy)
 
@@ -408,7 +409,7 @@ async def test_size_trigger_flushes_without_waiting_for_the_timer(make_engine, d
     engine, _ = await make_engine(
         lambda item: [Text("a" * 3000), Wait(gate)], flush_interval_s=60.0
     )
-    await engine.submit_ex("c", "go", [])
+    await engine.submit_ex(CID, "c", "go", [])
 
     async def persisted() -> str:
         rows = [r for r in await _rows(db) if r.role == "assistant"]
@@ -437,7 +438,7 @@ class _FailingBackend:
         return None
 
     async def start(
-        self, project: Project, input_stream: AsyncIterator[QueuedItem], resume: str | None
+        self, project: Project, conversation: Any, input_stream: AsyncIterator[QueuedItem], resume: str | None
     ) -> AsyncIterator[AgentEvent]:
         self.starts += 1
         if self.fail:
@@ -454,7 +455,7 @@ async def test_backend_failing_before_a_turn_posts_one_error_and_does_not_loop(
     backend = _FailingBackend()
     engine, _ = await make_engine(backend=backend)
     sub = engine.broadcaster.subscribe(PID)
-    m1, _ = await engine.submit_ex("a", "m1", [])
+    m1, _ = await engine.submit_ex(CID, "a", "m1", [])
     await until(lambda: backend.starts >= 1 and not engine.is_busy)
     await asyncio.sleep(0.2)  # a restart loop would rack up hundreds of starts here
     assert backend.starts == 1
@@ -472,7 +473,7 @@ async def test_backend_failing_before_a_turn_posts_one_error_and_does_not_loop(
     )
     # A fixed backend works again on the next explicit submit, without a restart.
     backend.fail = False
-    m2, _ = await engine.submit_ex("b", "m2", [])
+    m2, _ = await engine.submit_ex(CID, "b", "m2", [])
     await until(lambda: not engine.is_busy and backend.starts == 2)
     await asyncio.sleep(0.1)
     assert backend.starts == 2
@@ -483,7 +484,7 @@ async def test_backend_failing_before_a_turn_posts_one_error_and_does_not_loop(
 
 
 async def test_failing_backend_does_not_loop_on_queued_rows_at_startup(make_engine, db, until):
-    await MessageRepo(db).insert_user(PID, "old", "from before the restart")
+    await MessageRepo(db).insert_user(PID, CID, "old", "from before the restart")
     backend = _FailingBackend()
     engine, _ = await make_engine(backend=backend)
     await until(lambda: backend.starts >= 1 and not engine.is_busy)
@@ -521,7 +522,7 @@ async def test_failed_first_mutation_hook_is_retried_by_the_next_mutating_call(m
         with_session=True,
         hooks=Rec(),
     )
-    await engine.submit_ex("c", "go", [])
+    await engine.submit_ex(CID, "c", "go", [])
     await until(lambda: len(outcomes) == 1)
     assert len(calls) == 2 and len(set(calls)) == 1  # retried once, then marked
     assert ran == [True, True] and outcomes[0].mutated is True

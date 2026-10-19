@@ -60,6 +60,7 @@ from copperchat.agent.sdk_messages import (
 from copperchat.agent.sdk_tools import SERVER_NAME, build_sdk_tools, sdk_tool_name
 from copperchat.config import Settings
 from copperchat.db import Database
+from copperchat.db.repos.conversations import ConversationRow
 from copperchat.kicad_session import KicadSession
 from copperchat.projects import Project
 from copperchat.research.runner import QueryFn, ResearchRunner
@@ -441,8 +442,10 @@ class SdkStreamingBackend:
         db: Database | None = None,
         client_factory: ClientFactory = ClaudeSDKClient,
         research_query_fn: QueryFn | None = None,
+        turn_context: Callable[[], str | None] | None = None,
     ) -> None:
         self._settings = settings
+        self._turn_context = turn_context
         self._specs = list(specs)
         self._ctx_factory = ctx_factory
         self._db = db
@@ -457,9 +460,11 @@ class SdkStreamingBackend:
     async def start(
         self,
         project: Project,
+        conversation: ConversationRow,
         input_stream: AsyncIterator[QueuedItem],
         resume_session_id: str | None,
     ) -> AsyncIterator[AgentEvent]:
+        """One burst of ``conversation`` (its type selects the profile from C5 on)."""
         skills = await assemble_skills(self._settings, project, self._db) if self._db else None
         queue: asyncio.Queue[AgentEvent | _StreamEnd] = asyncio.Queue()
         research = ResearchRunner(
@@ -478,11 +483,13 @@ class SdkStreamingBackend:
             return replace(self._ctx_factory(), research=research)
 
         def kicadless_ctx_factory() -> ToolContext:
-            # research_part needs no KiCad session; it never touches ``session``.
+            # research_part needs no KiCad session; it never touches ``session``. The
+            # run id comes from the engine's turn context (S-C3).
             return ToolContext(
                 project=project,
                 session=cast(KicadSession, None),
                 settings=self._settings,
+                run_id=self._turn_context() if self._turn_context is not None else None,
                 research=research,
             )
 

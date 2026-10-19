@@ -1,0 +1,174 @@
+{
+ "type": "conversation-updated",
+ "directions": [
+  "s2c"
+ ],
+ "valid": [
+  {
+   "type": "conversation-updated",
+   "projectId": "a1b2c3d4e5f6",
+   "conversation": {
+    "id": "0123456789abcdef0123456789abcdef",
+    "seq": 1,
+    "title": "Session 1",
+    "type": "free",
+    "status": "open",
+    "archived": false,
+    "createdAt": "2026-10-19T10:00:00.000Z",
+    "lastMessageAt": "2026-10-19T10:05:00.000Z",
+    "closedAt": null,
+    "usage": {
+     "inputTokens": 120,
+     "outputTokens": 45,
+     "costUsd": 0.0125
+    }
+   }
+  },
+  {
+   "type": "conversation-updated",
+   "projectId": "a1b2c3d4e5f6",
+   "conversation": {
+    "id": "fedcba9876543210fedcba9876543210",
+    "seq": 2,
+    "title": "Requirements",
+    "type": "requirements",
+    "status": "closed",
+    "archived": true,
+    "createdAt": "2026-10-19T10:00:00.000Z",
+    "lastMessageAt": null,
+    "closedAt": "2026-10-19T11:00:00.000Z",
+    "usage": {
+     "inputTokens": 0,
+     "outputTokens": 0,
+     "costUsd": 0
+    }
+   }
+  }
+ ],
+ "invalid": [
+  {
+   "type": "conversation-updated",
+   "projectId": "a1b2c3d4e5f6",
+   "conversation": {
+    "id": "0123456789abcdef0123456789abcdef",
+    "seq": 1,
+    "title": "Session 1",
+    "type": "chat",
+    "status": "open",
+    "archived": false,
+    "createdAt": "2026-10-19T10:00:00.000Z",
+    "lastMessageAt": "2026-10-19T10:05:00.000Z",
+    "closedAt": null,
+    "usage": {
+     "inputTokens": 120,
+     "outputTokens": 45,
+     "costUsd": 0.0125
+    }
+   }
+  },
+  {
+   "type": "conversation-updated",
+   "projectId": "a1b2c3d4e5f6",
+   "conversation": {
+    "id": "0123456789abcdef0123456789abcdef",
+    "seq": 1,
+    "title": "Session 1",
+    "type": "free",
+    "status": "archived",
+    "archived": false,
+    "createdAt": "2026-10-19T10:00:00.000Z",
+    "lastMessageAt": "2026-10-19T10:05:00.000Z",
+    "closedAt": null,
+    "usage": {
+     "inputTokens": 120,
+     "outputTokens": 45,
+     "costUsd": 0.0125
+    }
+   }
+  },
+  {
+   "type": "conversation-updated",
+   "projectId": "a1b2c3d4e5f6",
+   "conversation": {
+    "id": "0123456789abcdef0123456789abcdef",
+    "seq": 0,
+    "title": "Session 1",
+    "type": "free",
+    "status": "open",
+    "archived": false,
+    "createdAt": "2026-10-19T10:00:00.000Z",
+    "lastMessageAt": "2026-10-19T10:05:00.000Z",
+    "closedAt": null,
+    "usage": {
+     "inputTokens": 120,
+     "outputTokens": 45,
+     "costUsd": 0.0125
+    }
+   }
+  },
+  {
+   "type": "conversation-updated",
+   "projectId": "a1b2c3d4e5f6",
+   "conversation": {
+    "id": "abc",
+    "seq": 1,
+    "title": "Session 1",
+    "type": "free",
+    "status": "open",
+    "archived": false,
+    "createdAt": "2026-10-19T10:00:00.000Z",
+    "lastMessageAt": "2026-10-19T10:05:00.000Z",
+    "closedAt": null,
+    "usage": {
+     "inputTokens": 120,
+     "outputTokens": 45,
+     "costUsd": 0.0125
+    }
+   }
+  },
+  {
+   "type": "conversation-updated",
+   "projectId": "a1b2c3d4e5f6",
+   "conversation": {
+    "id": "0123456789abcdef0123456789abcdef",
+    "seq": 1,
+    "title": "Session 1",
+    "type": "free",
+    "status": "open",
+    "archived": false,
+    "createdAt": "2026-10-19T10:00:00.000Z",
+    "lastMessageAt": "2026-10-19T10:05:00.000Z",
+    "closedAt": null,
+    "usage": {
+     "inputTokens": 1,
+     "outputTokens": 1
+    }
+   }
+  },
+  {
+   "type": "conversation-updated",
+   "projectId": "a1b2c3d4e5f6",
+   "conversation": {
+    "id": "0123456789abcdef0123456789abcdef",
+    "seq": 1,
+    "title": "Session 1",
+    "type": "free",
+    "status": "open",
+    "archived": false,
+    "createdAt": "2026-10-19T10:00:00.000Z",
+    "lastMessageAt": "2026-10-19T10:05:00.000Z",
+    "closedAt": null,
+    "usage": {
+     "inputTokens": 120,
+     "outputTokens": 45,
+     "costUsd": 0.0125
+    },
+    "extra": 1
+   }
+  },
+  {
+   "type": "conversation-updated",
+   "projectId": "a1b2c3d4e5f6"
+  }
+ ]
+}

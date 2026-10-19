@@ -13,6 +13,7 @@ from copperchat.errors import DocumentInconsistent
 from copperchat.tools import ToolContext, ToolResult, edit_spec
 
 PID = "a1b2c3d4e5f6"
+CID = "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"
 
 
 class RecordingHooks(RunHooks):
@@ -41,11 +42,11 @@ async def test_document_inconsistent_ends_turn_with_one_error_row(make_engine, d
         with_session=True,
         hooks=hooks,
     )
-    m1, _ = await engine.submit_ex("a", "m1", [])
-    await engine.submit_ex("b", "m2", [])
+    m1, _ = await engine.submit_ex(CID, "a", "m1", [])
+    await engine.submit_ex(CID, "b", "m2", [])
     await until(lambda: len(agent.prompts) == 2 and not engine.is_busy)
 
-    rows, _ = await MessageRepo(db).page(PID, limit=50)
+    rows, _ = await MessageRepo(db).page(PID, CID, limit=50)
     errors = [r for r in rows if r.kind == "error"]
     assert len(errors) == 1 and errors[0].metadata == {"code": "document_inconsistent"}
     assert not any(r.kind == "text" and r.content == "after" for r in rows)

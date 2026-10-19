@@ -17,6 +17,7 @@ from copperchat.kicad_session import KicadSession, KicadSessionManager
 from copperchat.projects import Project
 from tests.support.fake_kicad import FakeClientFactory, FakeLauncher, FakeServer
 from tests.support.history import ECC83, FakeEngine, FakeRuntime, RecordingBroadcaster, copy_project
+from tests.support.conversations import ensure_test_conversation
 
 
 @dataclass
@@ -46,6 +47,7 @@ async def env(
         settings, FakeLauncher(server), client_factory=FakeClientFactory(server)
     )
     db = await Database.open(tmp_path / "db.sqlite")
+    await ensure_test_conversation(db)
     engine = FakeEngine()
     broadcaster = RecordingBroadcaster()
     svc = HistoryService(

@@ -27,6 +27,7 @@ from tests.support.edit import call_tool, edit_ctx, get_item, place_direct
 from tests.support.history import ECC83, FakeEngine, FakeRuntime, RecordingBroadcaster
 from tests.support.kicad_cli import cli_netlist, cli_pin_nets
 from tests.support.kicad_project import real_settings
+from tests.support.conversations import ensure_test_conversation
 
 pytestmark = pytest.mark.kicad
 
@@ -282,6 +283,7 @@ async def real(make_settings: Callable[..., Settings], tmp_path: Path) -> AsyncI
     settings = real_settings(make_settings)
     sessions = KicadSessionManager(settings)
     db = await Database.open(tmp_path / "db.sqlite")
+    await ensure_test_conversation(db)
     engine, broadcaster = FakeEngine(), RecordingBroadcaster()
     svc = HistoryService(
         db=db, sessions=sessions, broadcaster=broadcaster, runtime=FakeRuntime(engine)

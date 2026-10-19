@@ -14,6 +14,7 @@ from copperchat.history import store as store_mod
 from copperchat.history.store import HistoryStore, compute_hashes
 from copperchat.kicad_session import KicadUnavailable
 from copperchat.projects import agent_dir
+from tests.support.conversations import TEST_CID, ensure_test_conversation
 from tests.support.history import (
     ECC83,
     HIERARCHY,
@@ -29,6 +30,7 @@ from tests.unit.history.test_history_hooks import done, turn
 @pytest.fixture
 async def db(tmp_path: Path) -> AsyncIterator[Database]:
     d = await Database.open(tmp_path / "db.sqlite")
+    await ensure_test_conversation(d)
     yield d
     await d.close()
 
@@ -269,6 +271,7 @@ async def test_open_plan_snapshots_are_never_pruned(
             [{"title": "a", "intent": "b", "expected_changes": 1, "verification": "c"}] * 2,
         ),
         run_id="run-0",
+        conversation_id=TEST_CID,
         now="2026-10-18T10:00:00Z",
     )
     plan = machine.transition(plan, "approve", now="t")

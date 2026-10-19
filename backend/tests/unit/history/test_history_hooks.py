@@ -7,11 +7,12 @@ from copperchat.agent.sdk_tools import build_sdk_tool_list
 from copperchat.history.store import compute_hashes
 from copperchat.kicad_session import KicadUnavailable
 from copperchat.tools import StructuredToolError, ToolContext, ToolResult, ToolSpec
+from tests.support.conversations import TEST_CID as CID
 from tests.unit.history.conftest import Opened
 
 
 def turn(run_id: str = "run-1", text: str = "move R1 next to U1") -> TurnInfo:
-    return TurnInfo(run_id=run_id, message_id=1, text=text, metadata={})
+    return TurnInfo(run_id=run_id, message_id=1, text=text, metadata={}, conversation_id=CID)
 
 
 def done(*docs: str, reason: Any = "completed", failed: bool = False) -> TurnOutcome:

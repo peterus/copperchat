@@ -8,7 +8,7 @@ P, Q = "a1b2c3d4e5f6", "ffffffffffff"
 
 
 def frame(n: int, pid: str = P) -> RunStartedFrame:
-    return RunStartedFrame(project_id=pid, run_id=f"r{n}")
+    return RunStartedFrame(project_id=pid, conversation_id="c" * 32, run_id=f"r{n}")
 
 
 async def test_fan_out_only_to_same_project():

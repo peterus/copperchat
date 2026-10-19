@@ -17,7 +17,8 @@
     "content": "What is U3?",
     "status": "queued",
     "metadata": {},
-    "createdAt": "2026-10-15T12:00:00.000Z"
+    "createdAt": "2026-10-15T12:00:00.000Z",
+    "conversationId": "0123456789abcdef0123456789abcdef"
    }
   },
   {
@@ -39,7 +40,8 @@
       "ref": "U3"
      }
     },
-    "createdAt": "2026-10-15T12:00:01.000Z"
+    "createdAt": "2026-10-15T12:00:01.000Z",
+    "conversationId": "0123456789abcdef0123456789abcdef"
    }
   },
   {
@@ -57,7 +59,8 @@
     "metadata": {
      "parentToolUseId": "t1"
     },
-    "createdAt": "2026-10-15T12:00:02.000Z"
+    "createdAt": "2026-10-15T12:00:02.000Z",
+    "conversationId": "0123456789abcdef0123456789abcdef"
    }
   },
   {
@@ -80,7 +83,8 @@
       "query": "TPS62133 datasheet"
      }
     },
-    "createdAt": "2026-10-15T12:00:02.000Z"
+    "createdAt": "2026-10-15T12:00:02.000Z",
+    "conversationId": "0123456789abcdef0123456789abcdef"
    }
   }
  ],
@@ -96,7 +100,8 @@
     "content": "x",
     "status": "queued",
     "metadata": {},
-    "createdAt": "2026-10-15T12:00:00.000Z"
+    "createdAt": "2026-10-15T12:00:00.000Z",
+    "conversationId": "0123456789abcdef0123456789abcdef"
    }
   },
   {
@@ -111,6 +116,23 @@
     "kind": "text",
     "content": "x",
     "status": "done",
+    "metadata": {},
+    "createdAt": "2026-10-15T12:00:00.000Z",
+    "conversationId": "0123456789abcdef0123456789abcdef"
+   }
+  },
+  {
+   "type": "message",
+   "projectId": "a1b2c3d4e5f6",
+   "message": {
+    "id": 42,
+    "projectId": "a1b2c3d4e5f6",
+    "clientMessageId": "c1",
+    "runId": null,
+    "role": "user",
+    "kind": "text",
+    "content": "What is U3?",
+    "status": "queued",
     "metadata": {},
     "createdAt": "2026-10-15T12:00:00.000Z"
    }

@@ -16,6 +16,7 @@ from tests.kicad.edit import golden
 from tests.kicad.edit.test_plan_flow import Rig, rig  # noqa: F401  (fixture)
 from tests.kicad.edit.test_scenarios import S2, run_script
 from tests.support.edit import call_tool
+from tests.support.conversations import TEST_CID
 
 pytestmark = pytest.mark.kicad
 
@@ -101,11 +102,11 @@ async def test_step_checkpoints_and_turn_snapshot_restore_byte_identical(
     assert [st.checkpoint_id for st in plan.steps] == [cp1, cp2]
     assert len({str(base_files), str(step1_files), str(step2_files)}) == 3
 
-    await restore_snapshot(rig.history, project, cp1)
+    await restore_snapshot(rig.history, project, cp1, conversation_id=TEST_CID)
     assert compute_hashes(project) == step1_files
-    await restore_snapshot(rig.history, project, rig.snapshots[0])
+    await restore_snapshot(rig.history, project, rig.snapshots[0], conversation_id=TEST_CID)
     assert compute_hashes(project) == base_files
-    await restore_snapshot(rig.history, project, cp2)
+    await restore_snapshot(rig.history, project, cp2, conversation_id=TEST_CID)
     assert compute_hashes(project) == step2_files
     # the restored design is the edited one again (session reloaded from the files)
     assert (await live_golden(current(rig)))["golden"]

@@ -12,7 +12,8 @@
     "outputTokens": 340,
     "cacheReadTokens": 9000,
     "cacheCreationTokens": 0
-   }
+   },
+   "conversationId": "0123456789abcdef0123456789abcdef"
   },
   {
    "type": "usage",
@@ -27,7 +28,8 @@
      "status": "allowed_warning",
      "resetsAt": "2026-10-15T17:00:00Z"
     }
-   }
+   },
+   "conversationId": "0123456789abcdef0123456789abcdef"
   }
  ],
  "invalid": [
@@ -39,7 +41,8 @@
     "outputTokens": 0,
     "cacheReadTokens": 0,
     "cacheCreationTokens": 0
-   }
+   },
+   "conversationId": "0123456789abcdef0123456789abcdef"
   }
  ]
 }

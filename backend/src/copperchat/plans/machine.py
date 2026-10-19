@@ -86,9 +86,10 @@ def new_plan(
     summary: str,
     steps: tuple[PlanStep, ...],
     run_id: str,
+    conversation_id: str,
     now: str,
 ) -> Plan:
-    """`plan_propose`: a proposed plan at revision 1."""
+    """`plan_propose`: a proposed plan at revision 1, owned by `conversation_id`."""
     return Plan(
         id=plan_id,
         project_id=project_id,
@@ -97,6 +98,7 @@ def new_plan(
         status="proposed",
         revision=1,
         created_run_id=run_id,
+        conversation_id=conversation_id,
         created_at=now,
         updated_at=now,
         steps=steps,

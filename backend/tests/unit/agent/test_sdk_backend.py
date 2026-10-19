@@ -45,6 +45,7 @@ from copperchat.agent.sdk_backend import (
 )
 from copperchat.config import Settings
 from copperchat.projects import Project
+from tests.support.conversations import conversation_row
 
 MCP = {"type": "sdk", "name": "copperchat", "instance": None}
 
@@ -156,7 +157,7 @@ async def test_tool_guard_denies_everything_not_registered():
 
 
 def test_user_prompt_shape_matches_spike():
-    p = user_prompt(QueuedItem(message_id=1, client_message_id="c", text="hi"))
+    p = user_prompt(QueuedItem(message_id=1, client_message_id="c", conversation_id="c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0", text="hi"))
     assert p == {
         "type": "user",
         "message": {"role": "user", "content": "hi"},
@@ -549,10 +550,10 @@ async def test_streaming_backend_maps_messages_and_sends_user_prompts(settings, 
     )
 
     async def items():  # type: ignore[no-untyped-def]
-        yield QueuedItem(message_id=1, client_message_id="c1", text="hello")
-        yield QueuedItem(message_id=2, client_message_id="c2", text="again")
+        yield QueuedItem(message_id=1, client_message_id="c1", conversation_id="c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0", text="hello")
+        yield QueuedItem(message_id=2, client_message_id="c2", conversation_id="c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0", text="again")
 
-    events = [ev async for ev in backend.start(project, items(), "s-old")]
+    events = [ev async for ev in backend.start(project, conversation_row(), items(), "s-old")]
     assert TextDelta("ok") in events and events[-1] == TurnFinished(reason="completed")
     costs = [e.cost_usd for e in events if isinstance(e, Usage)]
     assert costs == [0.5, pytest.approx(0.25)]
@@ -581,9 +582,9 @@ async def test_streaming_backend_no_fork_without_stored_session(settings, projec
     )
 
     async def items():  # type: ignore[no-untyped-def]
-        yield QueuedItem(message_id=1, client_message_id="c1", text="x")
+        yield QueuedItem(message_id=1, client_message_id="c1", conversation_id="c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0", text="x")
 
-    _ = [ev async for ev in backend.start(project, items(), None)]
+    _ = [ev async for ev in backend.start(project, conversation_row(), items(), None)]
     assert clients[0].options.resume is None and clients[0].options.fork_session is False
 
 
@@ -607,9 +608,9 @@ async def test_streaming_backend_interrupt_delegates_to_client(settings, project
 
     async def items():  # type: ignore[no-untyped-def]
         await gate.wait()
-        yield QueuedItem(message_id=1, client_message_id="c1", text="x")
+        yield QueuedItem(message_id=1, client_message_id="c1", conversation_id="c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0", text="x")
 
-    gen = backend.start(project, items(), None)
+    gen = backend.start(project, conversation_row(), items(), None)
     first = asyncio.ensure_future(gen.__anext__())
     for _ in range(50):
         if client_box:
@@ -646,9 +647,9 @@ async def test_streaming_backend_failed_interrupt_does_not_mislabel_next_error(s
 
     async def items():  # type: ignore[no-untyped-def]
         await gate.wait()
-        yield QueuedItem(message_id=1, client_message_id="c1", text="x")
+        yield QueuedItem(message_id=1, client_message_id="c1", conversation_id="c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0", text="x")
 
-    gen = backend.start(project, items(), None)
+    gen = backend.start(project, conversation_row(), items(), None)
     first = asyncio.ensure_future(gen.__anext__())
     for _ in range(50):
         if client_box:

@@ -136,7 +136,7 @@ class Chat:
             db=self.rig.editing.db,
         )  # fmt: skip
         queue: asyncio.Queue[QueuedItem | None] = asyncio.Queue()
-        queue.put_nowait(QueuedItem(1, "eval-1", prompt))
+        queue.put_nowait(QueuedItem(1, "eval-1", "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0", prompt))
         self.messages.append(prompt)
 
         async def inputs() -> AsyncIterator[QueuedItem]:
@@ -170,7 +170,7 @@ class Chat:
                     continue
                 self.turn += 1
                 self.messages.append(nxt)
-                queue.put_nowait(QueuedItem(self.turn + 1, f"eval-{self.turn + 1}", nxt))
+                queue.put_nowait(QueuedItem(self.turn + 1, f"eval-{self.turn + 1}", "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0", nxt))
         return stop
 
 

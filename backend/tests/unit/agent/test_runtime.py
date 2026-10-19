@@ -9,6 +9,7 @@ from copperchat.agent.fake import FakeAgent
 from copperchat.agent.runtime import AgentRuntime, default_backend_factory
 from copperchat.agent.sdk_backend import SdkAgentBackend, SdkStreamingBackend
 from copperchat.config import Settings
+from copperchat.db.repos.conversations import ConversationRepo
 from copperchat.tools import registry
 
 PID = "a1b2c3d4e5f6"
@@ -21,15 +22,15 @@ class _Sessions:
 
 def test_backend_selection(settings: Settings) -> None:
     fake = settings.model_copy(update={"dev_fake_agent": True})
-    assert isinstance(default_backend_factory(fake, [])(lambda: None), FakeAgent)  # type: ignore[arg-type,return-value]
-    real = default_backend_factory(settings, [])(lambda: None)  # type: ignore[arg-type,return-value]
+    assert isinstance(default_backend_factory(fake, [])(lambda: None, lambda: None), FakeAgent)  # type: ignore[arg-type,return-value]
+    real = default_backend_factory(settings, [])(lambda: None, lambda: None)  # type: ignore[arg-type,return-value]
     assert isinstance(real, SdkAgentBackend)
     assert SdkAgentBackend is SdkStreamingBackend  # spike 1A: gated generator (no 5.4b)
 
 
 async def test_default_backend_factory_gets_registry_specs(settings: Settings, db: Any) -> None:
     rt = AgentRuntime(settings=settings, db=db, broadcaster=Broadcaster(), sessions=_Sessions())  # type: ignore[arg-type]
-    backend = rt.backend_factory(lambda: None)  # type: ignore[arg-type,return-value]
+    backend = rt.backend_factory(lambda: None, lambda: None)  # type: ignore[arg-type,return-value]
     assert isinstance(backend, SdkStreamingBackend)
     names = {s.name for s in backend._specs}
     assert names == {s.name for s in registry.all_specs()} and names
@@ -54,7 +55,7 @@ async def test_ensure_creates_one_engine_per_project_with_hooks(
         db=db,
         broadcaster=Broadcaster(),
         sessions=_Sessions(),  # type: ignore[arg-type]
-        backend_factory=lambda ctx: FakeAgent(ctx_factory=ctx),
+        backend_factory=lambda ctx, turn: FakeAgent(ctx_factory=ctx, turn_context=turn),
         hooks_factory=hooks_factory,
     )
     a, b = await asyncio.gather(rt.ensure(project), rt.ensure(project))
@@ -111,13 +112,13 @@ async def test_usage_frame_from_sdk_result_message(
         db=db,
         broadcaster=Broadcaster(),
         sessions=_Sessions(),  # type: ignore[arg-type]
-        backend_factory=lambda ctx: SdkStreamingBackend(
+        backend_factory=lambda ctx, turn: SdkStreamingBackend(
             settings=settings, specs=[], ctx_factory=ctx, client_factory=Client
         ),
     )
     engine = await rt.ensure(project)
     sub = engine.broadcaster.subscribe(PID)
-    await engine.submit_ex("c1", "hi", [])
+    await engine.submit_ex("c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0", "c1", "hi", [])
     await until(lambda: not engine.is_busy)
     frames = await drain(sub)
     [usage] = [f for f in frames if f.type == "usage"]
@@ -152,14 +153,17 @@ async def test_resume_pending_starts_engines_for_parked_and_queued_projects(
     idle = project_id_for("idle/idle.kicad_pro")
     gone = "0123456789ab"  # rows for a project that no longer exists are skipped
     messages = MessageRepo(db)
-    row, _ = await messages.insert_user(queued, "c1", "waiting")
-    await messages.insert_user(gone, "c2", "orphan")
+    convs = ConversationRepo(db)
+    cq = (await convs.create(queued, "free", None)).id
+    cg = (await convs.create(gone, "free", None)).id
+    row, _ = await messages.insert_user(queued, cq, "c1", "waiting")
+    await messages.insert_user(gone, cg, "c2", "orphan")
     await RateLimitRepo(db).set(parked, datetime.now(UTC) + timedelta(hours=1))
     await RateLimitRepo(db).set(idle, None)  # cleared limit: nothing to resume
     agents: list[FakeAgent] = []
 
-    def factory(ctx: Any) -> FakeAgent:
-        agents.append(FakeAgent(ctx_factory=ctx))
+    def factory(ctx: Any, turn: Any) -> FakeAgent:
+        agents.append(FakeAgent(ctx_factory=ctx, turn_context=turn))
         return agents[-1]
 
     rt = AgentRuntime(

@@ -64,7 +64,8 @@
      }
     ],
     "createdAt": "2026-10-18T10:00:00Z",
-    "updatedAt": "2026-10-18T10:05:00Z"
+    "updatedAt": "2026-10-18T10:05:00Z",
+    "conversationId": "0123456789abcdef0123456789abcdef"
    }
   },
   {
@@ -80,7 +81,8 @@
     "pauseReason": "turn_ended",
     "steps": [],
     "createdAt": "2026-10-18T10:00:00Z",
-    "updatedAt": "2026-10-18T10:05:00Z"
+    "updatedAt": "2026-10-18T10:05:00Z",
+    "conversationId": "0123456789abcdef0123456789abcdef"
    }
   }
  ],
@@ -149,7 +151,8 @@
      }
     ],
     "createdAt": "2026-10-18T10:00:00Z",
-    "updatedAt": "2026-10-18T10:05:00Z"
+    "updatedAt": "2026-10-18T10:05:00Z",
+    "conversationId": "0123456789abcdef0123456789abcdef"
    }
   },
   {
@@ -212,7 +215,8 @@
      }
     ],
     "createdAt": "2026-10-18T10:00:00Z",
-    "updatedAt": "2026-10-18T10:05:00Z"
+    "updatedAt": "2026-10-18T10:05:00Z",
+    "conversationId": "0123456789abcdef0123456789abcdef"
    }
   },
   {
@@ -274,7 +278,8 @@
      }
     ],
     "createdAt": "2026-10-18T10:00:00Z",
-    "updatedAt": "2026-10-18T10:05:00Z"
+    "updatedAt": "2026-10-18T10:05:00Z",
+    "conversationId": "0123456789abcdef0123456789abcdef"
    }
   },
   {
@@ -318,7 +323,8 @@
      }
     ],
     "createdAt": "2026-10-18T10:00:00Z",
-    "updatedAt": "2026-10-18T10:05:00Z"
+    "updatedAt": "2026-10-18T10:05:00Z",
+    "conversationId": "0123456789abcdef0123456789abcdef"
    }
   },
   {
@@ -362,7 +368,8 @@
      }
     ],
     "createdAt": "2026-10-18T10:00:00Z",
-    "updatedAt": "2026-10-18T10:05:00Z"
+    "updatedAt": "2026-10-18T10:05:00Z",
+    "conversationId": "0123456789abcdef0123456789abcdef"
    }
   },
   {
@@ -407,7 +414,8 @@
      }
     ],
     "createdAt": "2026-10-18T10:00:00Z",
-    "updatedAt": "2026-10-18T10:05:00Z"
+    "updatedAt": "2026-10-18T10:05:00Z",
+    "conversationId": "0123456789abcdef0123456789abcdef"
    }
   },
   {
@@ -449,7 +457,8 @@
      }
     ],
     "createdAt": "2026-10-18T10:00:00Z",
-    "updatedAt": "2026-10-18T10:05:00Z"
+    "updatedAt": "2026-10-18T10:05:00Z",
+    "conversationId": "0123456789abcdef0123456789abcdef"
    }
   },
   {
@@ -512,9 +521,73 @@
      }
     ],
     "createdAt": "2026-10-18T10:00:00Z",
-    "updatedAt": "2026-10-18T10:05:00Z"
+    "updatedAt": "2026-10-18T10:05:00Z",
+    "conversationId": "0123456789abcdef0123456789abcdef"
    },
    "extra": true
+  },
+  {
+   "type": "plan-updated",
+   "projectId": "a1b2c3d4e5f6",
+   "plan": {
+    "id": "ffffffffffffffffffffffffffffffff",
+    "projectId": "a1b2c3d4e5f6",
+    "title": "LED circuit",
+    "summary": "R + LED",
+    "status": "running",
+    "revision": 1,
+    "pauseReason": null,
+    "steps": [
+     {
+      "idx": 1,
+      "title": "Place R1 and D1",
+      "intent": "LED with series resistor",
+      "expectedChanges": 2,
+      "touches": {
+       "refs": [
+        "R1",
+        "D1"
+       ],
+       "nets": []
+      },
+      "verification": "both parts on the sheet",
+      "status": "done",
+      "changeCount": 4,
+      "checkpointId": "0123456789abcdef0123456789abcdef",
+      "summary": "placed",
+      "failure": null,
+      "erc": {
+       "errors": 1,
+       "warnings": 0,
+       "justifications": {
+        "a1b2c3d4e5f6": "connector follows in step 2"
+       },
+       "resultId": "fedcba9876543210fedcba9876543210"
+      }
+     },
+     {
+      "idx": 2,
+      "title": "Connect",
+      "intent": "LED with series resistor",
+      "expectedChanges": 2,
+      "touches": {
+       "refs": [],
+       "nets": [
+        "LED_A"
+       ]
+      },
+      "verification": "both parts on the sheet",
+      "status": "pending",
+      "changeCount": 0,
+      "checkpointId": null,
+      "summary": null,
+      "failure": null,
+      "erc": null
+     }
+    ],
+    "createdAt": "2026-10-18T10:00:00Z",
+    "updatedAt": "2026-10-18T10:05:00Z"
+   }
   }
  ]
 }

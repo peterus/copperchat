@@ -19,6 +19,10 @@ from pydantic import (
 from pydantic.alias_generators import to_camel
 
 ProjectId = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{12}$")]
+# Conversation ids are uuid4 hex (32 lowercase hex characters, spec §4.2).
+ConversationId = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{32}$")]
+ConversationType = Literal["free", "requirements", "schematic", "board"]
+ConversationStatus = Literal["open", "closing", "closed"]
 Role = Literal["user", "assistant", "system"]
 Kind = Literal["text", "thinking", "tool_use", "tool_result", "image", "error", "notice"]
 Status = Literal["queued", "streaming", "done", "cancelled", "error"]
@@ -58,6 +62,7 @@ class AttachmentRef(Wire):
 class MessageDTO(Wire):
     id: int
     project_id: ProjectId
+    conversation_id: ConversationId
     client_message_id: str | None
     run_id: str | None
     role: Role
@@ -68,24 +73,54 @@ class MessageDTO(Wire):
     created_at: str
 
 
+class ConversationUsage(Wire):
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    cost_usd: float = Field(ge=0)
+
+
+class ConversationDTO(Wire):
+    """A session of a project (spec §6.1; plan S-C4)."""
+
+    id: ConversationId
+    seq: int = Field(ge=1)
+    title: str
+    type: ConversationType
+    status: ConversationStatus
+    archived: bool
+    created_at: str
+    last_message_at: str | None
+    closed_at: str | None
+    usage: ConversationUsage
+
+
 # ---- client → server
 class SubscribeFrame(Wire):
+    """Replays one conversation; live frames of every conversation of the project arrive
+    (spec §6.2)."""
+
     type: Literal["subscribe"] = "subscribe"
     project_id: ProjectId
+    conversation_id: ConversationId
     since_message_id: int = Field(ge=0)
 
 
 class SendFrame(Wire):
     type: Literal["send"] = "send"
     project_id: ProjectId
+    conversation_id: ConversationId
     client_message_id: str = Field(min_length=1, max_length=100)
     text: str = Field(min_length=1, max_length=100_000)
     attachments: list[AttachmentRef] = Field(default_factory=list, max_length=20)
 
 
 class InterruptFrame(Wire):
+    """``conversation_id``: the session the user pressed Stop for; it scopes the
+    cancellation of waiting messages between turns (spec §5.2)."""
+
     type: Literal["interrupt"] = "interrupt"
     project_id: ProjectId
+    conversation_id: ConversationId
     run_id: str | None
 
 
@@ -133,6 +168,7 @@ class MessageDeltaFrame(Wire):
     )
     type: Literal["message-delta"] = "message-delta"
     project_id: ProjectId
+    conversation_id: ConversationId
     message_id: int
     content_delta: str | None = None
     status_patch: Status | None = None
@@ -148,12 +184,14 @@ class MessageDeltaFrame(Wire):
 class RunStartedFrame(Wire):
     type: Literal["run-started"] = "run-started"
     project_id: ProjectId
+    conversation_id: ConversationId
     run_id: str
 
 
 class RunFinishedFrame(Wire):
     type: Literal["run-finished"] = "run-finished"
     project_id: ProjectId
+    conversation_id: ConversationId
     run_id: str
     reason: FinishReason
 
@@ -211,6 +249,7 @@ class PlanDTO(Wire):
 
     id: str = Field(min_length=1)
     project_id: ProjectId
+    conversation_id: ConversationId
     title: str
     summary: str
     status: PlanStatusWire
@@ -248,7 +287,17 @@ class UsagePayload(Wire):
 class UsageFrame(Wire):
     type: Literal["usage"] = "usage"
     project_id: ProjectId
+    conversation_id: ConversationId
     usage: UsagePayload
+
+
+class ConversationUpdatedFrame(Wire):
+    """A conversation was created, renamed, archived, changed status, or got its first or
+    a turn's last message (spec §6.2)."""
+
+    type: Literal["conversation-updated"] = "conversation-updated"
+    project_id: ProjectId
+    conversation: ConversationDTO
 
 
 class RateLimitedFrame(Wire):
@@ -298,7 +347,8 @@ ServerFrame = Annotated[
     | RateLimitedFrame
     | ErrorFrame
     | ServerPingFrame
-    | PongFrame,
+    | PongFrame
+    | ConversationUpdatedFrame,
     Field(discriminator="type"),
 ]
 

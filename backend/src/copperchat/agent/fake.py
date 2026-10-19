@@ -7,7 +7,7 @@ import asyncio
 import itertools
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from copperchat.agent.events import (
     AgentEvent,
@@ -22,8 +22,13 @@ from copperchat.agent.events import (
     Usage,
 )
 from copperchat.agent.sdk_tools import build_sdk_tool_list, mcp_result_to_event, sdk_tool_name
+from copperchat.config import Settings
 from copperchat.projects import Project
 from copperchat.tools import ToolContext, ToolSpec
+
+if TYPE_CHECKING:
+    from copperchat.db.repos.conversations import ConversationRow
+    from copperchat.kicad_session import KicadSession
 
 
 @dataclass(frozen=True)
@@ -90,16 +95,24 @@ class FakeAgent:
         specs: Sequence[ToolSpec] = (),
         ctx_factory: Callable[[], ToolContext] | None = None,
         ignore_interrupt: bool = False,
+        settings: Settings | None = None,
+        turn_context: Callable[[], str | None] | None = None,
     ) -> None:
         self._script_for = script_for or echo_script
         self._specs = list(specs)
         self._ctx_factory = ctx_factory
+        # KiCad-less tools (requires_kicad=False) get their own context, like under the
+        # SDK backend; it carries the running turn's run id (S-C3).
+        self._settings = settings
+        self._turn_context = turn_context
+        self._project: Project | None = None
         self._ignore_interrupt = ignore_interrupt
         self._interrupted = asyncio.Event()
         self._tool_ids = itertools.count(1)
         self._burst = 0
         self.prompts: list[QueuedItem] = []
         self.resume_ids: list[str | None] = []
+        self.conversations: list[str] = []  # the conversation of each burst
         self.interrupts = 0
 
     async def interrupt(self) -> None:
@@ -110,9 +123,12 @@ class FakeAgent:
     async def start(
         self,
         project: Project,
+        conversation: ConversationRow,
         input_stream: AsyncIterator[QueuedItem],
         resume_session_id: str | None,
     ) -> AsyncIterator[AgentEvent]:
+        self._project = project
+        self.conversations.append(conversation.id)
         self.resume_ids.append(resume_session_id)
         self._burst += 1
         yield SessionId(f"fake-session-{self._burst}")
@@ -121,6 +137,22 @@ class FakeAgent:
             self._interrupted.clear()
             async for ev in self._run(item):
                 yield ev
+
+    def _kicadless_ctx_factory(self) -> Callable[[], ToolContext] | None:
+        project, settings = self._project, self._settings
+        if project is None or settings is None:
+            return None
+        turn_context = self._turn_context
+
+        def make() -> ToolContext:
+            return ToolContext(
+                project=project,
+                session=cast("KicadSession", None),
+                settings=settings,
+                run_id=turn_context() if turn_context is not None else None,
+            )
+
+        return make
 
     def _expand(self, steps: list[Step]) -> list[Step]:
         """Flatten Delegate steps into Emit/Wait steps (interrupt checks stay per step)."""
@@ -193,7 +225,12 @@ class FakeAgent:
                 yield ToolUse(id=tool_id, name=sdk_tool_name(step.name), input=dict(step.args))
                 if self._ctx_factory is None:
                     raise RuntimeError("FakeAgent Tool step needs ctx_factory")
-                tools = {t.name: t for t in build_sdk_tool_list(self._specs, self._ctx_factory)}
+                tools = {
+                    t.name: t
+                    for t in build_sdk_tool_list(
+                        self._specs, self._ctx_factory, self._kicadless_ctx_factory()
+                    )
+                }
                 raw = await tools[step.name].handler(dict(step.args))
                 yield mcp_result_to_event(tool_id, raw)
         if self._interrupted.is_set():
