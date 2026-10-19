@@ -3,6 +3,8 @@ import { type ComponentType, useSyncExternalStore } from 'react';
 /** Props every registered panel component receives. */
 export interface PanelProps {
   projectId: string;
+  /** From `useUi().openPanel(id, params)` (S-C8); absent when opened from the header or a tab. */
+  params?: Record<string, string>;
 }
 
 /**

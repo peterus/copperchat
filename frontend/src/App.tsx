@@ -1,4 +1,5 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import { UpdateBanner } from '@/components/UpdateBanner';
 import { LoginPage } from '@/pages/LoginPage';
 import { ProjectPage } from '@/pages/ProjectPage';
 import { ProjectPickerPage } from '@/pages/ProjectPickerPage';
@@ -23,6 +24,7 @@ export function AppRoutes() {
 export function App() {
   return (
     <BrowserRouter>
+      <UpdateBanner />
       <AppRoutes />
     </BrowserRouter>
   );

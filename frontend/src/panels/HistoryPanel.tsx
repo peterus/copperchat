@@ -3,7 +3,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { apiGet } from '@/api/http';
 import { ConfirmRestore } from '@/components/history/ConfirmRestore';
 import { errorText } from '@/components/history/restore';
-import { useChat } from '@/hooks/useChat';
+import { useActiveRun, useCurrentConversationId } from '@/hooks/useChat';
 import { registerPanel } from '@/layouts/panels';
 import { useReloadAfterRun } from './useReloadAfterRun';
 
@@ -18,6 +18,9 @@ export interface HistoryEntry {
   /** `turn` (before an agent turn) or `step` (end of a plan step, E8a); absent = turn. */
   kind?: 'turn' | 'step';
   planStepId?: string | null;
+  /** The conversation (session) of the snapshot's run (C1); null for older snapshots. */
+  conversationId?: string | null;
+  conversationTitle?: string | null;
 }
 
 const when = (iso: string) => new Date(iso).toLocaleString();
@@ -53,12 +56,13 @@ export function nestHistory(entries: HistoryEntry[]): HistoryNode[] {
 
 function EntryRow({
   entry: e,
-  runActive,
+  blocked,
   nested,
   onRestore,
 }: {
   entry: HistoryEntry;
-  runActive: boolean;
+  /** Why restoring is not possible right now, or null. */
+  blocked: string | null;
   nested?: boolean;
   onRestore: (e: HistoryEntry) => void;
 }) {
@@ -84,8 +88,8 @@ function EntryRow({
       </div>
       <button
         type="button"
-        disabled={runActive}
-        title={runActive ? 'Wait until the agent has finished' : undefined}
+        disabled={blocked !== null}
+        title={blocked ?? undefined}
         onClick={() => onRestore(e)}
         className="rounded border border-border px-3 py-1 disabled:opacity-50"
       >
@@ -96,7 +100,14 @@ function EntryRow({
 }
 
 export function HistoryPanel({ projectId }: { projectId: string }) {
-  const { runActive } = useChat(projectId);
+  // Any run of the project blocks a restore; the restore is done from the conversation shown.
+  const runActive = useActiveRun(projectId) !== null;
+  const conversationId = useCurrentConversationId(projectId);
+  const blocked = runActive
+    ? 'Wait until the agent has finished'
+    : conversationId === null
+      ? 'Open a session first'
+      : null;
   const [entries, setEntries] = useState<HistoryEntry[] | null>(null);
   const [confirm, setConfirm] = useState<HistoryEntry | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -131,7 +142,7 @@ export function HistoryPanel({ projectId }: { projectId: string }) {
       <ul aria-label="Snapshots" className="flex flex-col gap-2">
         {nodes?.map(({ entry, steps }) => (
             <li key={entry.id} className="rounded border border-border bg-surface p-2">
-              <EntryRow entry={entry} runActive={runActive} onRestore={restore} />
+              <EntryRow entry={entry} blocked={blocked} onRestore={restore} />
               {steps.length > 0 && (
                 <ul
                   aria-label={`Plan steps of ${entry.label || 'Agent turn'}`}
@@ -139,7 +150,7 @@ export function HistoryPanel({ projectId }: { projectId: string }) {
                 >
                   {steps.map((st) => (
                     <li key={st.id}>
-                      <EntryRow entry={st} runActive={runActive} nested onRestore={restore} />
+                      <EntryRow entry={st} blocked={blocked} nested onRestore={restore} />
                     </li>
                   ))}
                 </ul>
@@ -147,9 +158,10 @@ export function HistoryPanel({ projectId }: { projectId: string }) {
             </li>
           ))}
       </ul>
-      {confirm && (
+      {confirm && conversationId !== null && (
         <ConfirmRestore
           projectId={projectId}
+          conversationId={conversationId}
           snapshotId={confirm.id}
           label={confirm.label || (isStep(confirm) ? 'Plan step' : 'Agent turn')}
           createdAt={confirm.createdAt}

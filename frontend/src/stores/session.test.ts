@@ -3,9 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { wsClient } from '@/api/ws';
 import { FakeWebSocket } from '@/test/fakeWebSocket';
 import { FakeWsClient } from '@/test/fakeWsClient';
-import { PID } from '@/test/fakeMessageServer';
+import { CID as C, PID } from '@/test/fakeMessageServer';
 import { useAuth } from './auth';
-import { createChatStore, emptyChat, useChatStore } from './chat';
+import { chatKey, createChatStore, emptyChat, useChatStore } from './chat';
 import { useComposer } from './composer';
 import { useProjects } from './projects';
 import { installSessionReset } from './session';
@@ -26,7 +26,7 @@ const project = {
 
 function signedInWithState() {
   useAuth.setState({ status: 'authenticated', username: 'admin', error: null });
-  useChatStore.setState({ chats: { [PID]: { ...emptyChat(), loaded: true, lastSeenId: 7 } } });
+  useChatStore.setState({ chats: { [chatKey(PID, C)]: { ...emptyChat(), loaded: true, lastSeenId: 7 } } });
   useComposer.getState().setText('half-written draft');
   useProjects.setState({ projects: [project], current: project });
 }
@@ -102,18 +102,18 @@ describe('chat store reset()', () => {
       ws,
       fetchPage: () => new Promise((resolve) => pages.push(resolve)),
     });
-    const first = store.getState().open(PID);
+    const first = store.getState().open(PID, C);
     store.getState().reset();
     pages[0]?.({ messages: [], hasMore: false });
     await first;
     expect(store.getState().chats).toEqual({});
     expect(ws.framesOfType('subscribe')).toEqual([]);
     // a fresh open after reset issues a new request instead of reusing the stale one
-    const second = store.getState().open(PID);
+    const second = store.getState().open(PID, C);
     expect(pages).toHaveLength(2);
     pages[1]?.({ messages: [], hasMore: false });
     await second;
-    expect(store.getState().chats[PID]?.loaded).toBe(true);
+    expect(store.getState().chats[chatKey(PID, C)]?.loaded).toBe(true);
     expect(ws.framesOfType('subscribe')).toHaveLength(1);
   });
 });

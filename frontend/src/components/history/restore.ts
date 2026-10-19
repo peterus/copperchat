@@ -2,9 +2,16 @@ import { apiPost } from '@/api/http';
 
 const enc = encodeURIComponent;
 
-/** POST /projects/{id}/history/{snapshotId}/restore (Phase 7). Rejects with ApiError on 400/404/409/422/503. */
-export function restoreSnapshot(projectId: string, snapshotId: string): Promise<{ id: string; files: string[] }> {
-  return apiPost(`/projects/${enc(projectId)}/history/${enc(snapshotId)}/restore`, {});
+/**
+ * POST /projects/{id}/history/{snapshotId}/restore (Phase 7) with the conversation the restore
+ * is done from (C1: its agent gets the restore note). Rejects with ApiError on 400/404/409/422/503.
+ */
+export function restoreSnapshot(
+  projectId: string,
+  snapshotId: string,
+  conversationId: string,
+): Promise<{ id: string; files: string[] }> {
+  return apiPost(`/projects/${enc(projectId)}/history/${enc(snapshotId)}/restore`, { conversationId });
 }
 
 type OpenStatus = 'approved' | 'running' | 'paused';

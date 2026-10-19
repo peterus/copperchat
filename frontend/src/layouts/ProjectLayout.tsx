@@ -2,6 +2,7 @@ import { type KeyboardEvent, type PointerEvent, type ReactNode, useEffect, useRe
 import { Link } from 'react-router-dom';
 import { ChatIcon, CloseIcon, HistoryIcon, MoreIcon, ViewIcon } from '@/components/icons';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
+import { useUi } from '@/stores/ui';
 import { useView } from '@/stores/view';
 import { type PanelDefinition, usePanels } from './panels';
 
@@ -51,7 +52,19 @@ export interface ProjectLayoutProps {
   chat: ReactNode;
 }
 
-function PanelSheet({ panel, projectId, onClose }: { panel: PanelDefinition; projectId: string; onClose: () => void }) {
+type Params = Record<string, string> | undefined;
+
+function PanelSheet({
+  panel,
+  projectId,
+  params,
+  onClose,
+}: {
+  panel: PanelDefinition;
+  projectId: string;
+  params: Params;
+  onClose: () => void;
+}) {
   const Body = panel.component;
   useEffect(() => {
     const onKey = (e: globalThis.KeyboardEvent) => {
@@ -73,7 +86,7 @@ function PanelSheet({ panel, projectId, onClose }: { panel: PanelDefinition; pro
         </button>
       </header>
       <div className="min-h-0 flex-1 overflow-auto">
-        <Body projectId={projectId} />
+        <Body projectId={projectId} params={params} />
       </div>
     </div>
   );
@@ -207,6 +220,24 @@ function PhoneView({
 }) {
   const [tab, setTab] = useState<PhoneTab>('chat');
   const [panelId, setPanelId] = useState<string | null>(null);
+  const [params, setParams] = useState<Params>(undefined);
+  // openPanel(): History has its own tab, every other panel opens under More.
+  const request = useUi((s) => s.panelRequest);
+  useEffect(() => {
+    if (request === null) return;
+    useUi.getState().clearPanelRequest();
+    setParams(request.params);
+    if (request.id === 'history') {
+      setTab('history');
+    } else {
+      setTab('more');
+      setPanelId(request.id);
+    }
+  }, [request]);
+  const pickTab = (id: PhoneTab) => {
+    setParams(undefined);
+    setTab(id);
+  };
   // A highlight request (Changes panel) shows the viewer.
   const highlightSeq = useView((s) => s.highlight?.seq ?? null);
   const seenSeq = useRef(highlightSeq); // one that existed before this view mounted does not count
@@ -222,18 +253,25 @@ function PhoneView({
   let extra: ReactNode = null;
   if (tab === 'history') {
     extra = history ? (
-      <history.component projectId={projectId} />
+      <history.component projectId={projectId} params={params} />
     ) : (
       <p className="p-4 text-muted">History is not available yet.</p>
     );
   } else if (tab === 'more' && active) {
     extra = (
       <div className="flex h-full flex-col">
-        <button type="button" className="px-3 py-2 text-left text-sm text-accent" onClick={() => setPanelId(null)}>
+        <button
+          type="button"
+          className="px-3 py-2 text-left text-sm text-accent"
+          onClick={() => {
+            setParams(undefined);
+            setPanelId(null);
+          }}
+        >
           ← More
         </button>
         <div className="min-h-0 flex-1 overflow-auto">
-          <active.component projectId={projectId} />
+          <active.component projectId={projectId} params={params} />
         </div>
       </div>
     );
@@ -244,7 +282,10 @@ function PhoneView({
           <li key={p.id}>
             <button
               type="button"
-              onClick={() => setPanelId(p.id)}
+              onClick={() => {
+                setParams(undefined);
+                setPanelId(p.id);
+              }}
               className="flex w-full items-center gap-2 px-4 py-3 text-left"
             >
               <p.icon className="h-5 w-5" />
@@ -282,7 +323,7 @@ function PhoneView({
             type="button"
             role="tab"
             aria-selected={tab === id}
-            onClick={() => setTab(id)}
+            onClick={() => pickTab(id)}
             className={`flex flex-1 flex-col items-center py-1.5 text-xs ${tab === id ? 'text-accent' : 'text-muted'}`}
           >
             <Icon className="h-5 w-5" aria-hidden />
@@ -297,19 +338,28 @@ function PhoneView({
 export function ProjectLayout({ projectId, title, viewer, chat }: ProjectLayoutProps) {
   const mode = useLayoutMode();
   const panels = usePanels();
-  const [sheetId, setSheetId] = useState<string | null>(null);
-  const sheet = panels.find((p) => p.id === sheetId) ?? null;
+  const [sheetReq, setSheetReq] = useState<{ id: string; params: Params } | null>(null);
+  const sheet = panels.find((p) => p.id === sheetReq?.id) ?? null;
+  // openPanel() on desktop / tablet opens the sheet; on the phone, PhoneView consumes it.
+  const request = useUi((s) => s.panelRequest);
+  useEffect(() => {
+    if (request === null || mode === 'phone') return;
+    useUi.getState().clearPanelRequest();
+    setSheetReq({ id: request.id, params: request.params });
+  }, [request, mode]);
   return (
     <div className="flex h-full flex-col">
       {mode === 'phone' ? (
         <Header title={title} panels={panels} />
       ) : (
-        <Header title={title} panels={panels} onPanel={(p) => setSheetId(p.id)} />
+        <Header title={title} panels={panels} onPanel={(p) => setSheetReq({ id: p.id, params: undefined })} />
       )}
       {mode === 'split' && <SplitView viewer={viewer} chat={chat} />}
       {mode === 'sidebar' && <SidebarView viewer={viewer} chat={chat} />}
       {mode === 'phone' && <PhoneView projectId={projectId} viewer={viewer} chat={chat} panels={panels} />}
-      {sheet && mode !== 'phone' && <PanelSheet panel={sheet} projectId={projectId} onClose={() => setSheetId(null)} />}
+      {sheet && mode !== 'phone' && (
+        <PanelSheet panel={sheet} projectId={projectId} params={sheetReq?.params} onClose={() => setSheetReq(null)} />
+      )}
     </div>
   );
 }

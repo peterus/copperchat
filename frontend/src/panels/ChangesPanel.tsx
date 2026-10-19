@@ -6,7 +6,7 @@ import { ChangeList } from '@/components/changes/ChangeList';
 import { ErcBadge } from '@/components/changes/ErcBadge';
 import { diffHighlight, entriesHighlight } from '@/components/changes/highlight';
 import { errorText } from '@/components/history/restore';
-import { useChat } from '@/hooks/useChat';
+import { useChat, useCurrentConversationId } from '@/hooks/useChat';
 import { registerPanel } from '@/layouts/panels';
 import { entriesKey, useChanges } from '@/stores/changes';
 import { useView } from '@/stores/view';
@@ -279,7 +279,8 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
   const load = useChanges((s) => s.load);
   const attach = useChanges((s) => s.attach);
   useEffect(() => attach(), [attach]);
-  const { messages } = useChat(projectId);
+  // Restore notices of the conversation shown (C1 interim: one default session).
+  const { messages } = useChat(projectId, useCurrentConversationId(projectId));
 
   useEffect(() => {
     void load(projectId);

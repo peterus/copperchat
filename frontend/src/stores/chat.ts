@@ -1,11 +1,11 @@
 import { z } from 'zod';
 import { create } from 'zustand';
-import { apiGet } from '@/api/http';
+import { fetchConversationMessages } from '@/api/conversations';
 import { wsClient, type ConnectionState, type WsClient } from '@/api/ws';
 import {
   AttachmentRef,
   ClientFrame,
-  MessagesPage,
+  type MessagesPage,
   type MessageDeltaFrame,
   type MessageDTO,
   type ServerFrame,
@@ -15,7 +15,24 @@ import {
 export const PAGE_SIZE = 50;
 const TERMINAL_STATUSES: ReadonlySet<string> = new Set(['done', 'cancelled', 'error']);
 
-export interface ProjectChat {
+/** Store key of one conversation's chat (S-C8). Both ids are hex, so the slash is unambiguous. */
+export function chatKey(projectId: string, conversationId: string): string {
+  return `${projectId}/${conversationId}`;
+}
+
+function splitKey(key: string): [projectId: string, conversationId: string] {
+  const i = key.indexOf('/');
+  return [key.slice(0, i), key.slice(i + 1)];
+}
+
+/** The project's running agent run. One burst runs at a time per project (FIFO across conversations). */
+export interface ActiveRun {
+  conversationId: string;
+  runId: string;
+}
+
+/** The chat of one conversation. `runActive` / `currentRunId`: a run of THIS conversation is active. */
+export interface ConversationChat {
   messages: MessageDTO[];
   lastSeenId: number;
   oldestId: number | null;
@@ -33,7 +50,7 @@ export interface ProjectChat {
   suspectIds: number[];
 }
 
-export function emptyChat(): ProjectChat {
+export function emptyChat(): ConversationChat {
   return {
     messages: [],
     lastSeenId: 0,
@@ -53,34 +70,37 @@ export function emptyChat(): ProjectChat {
 
 export interface ChatDeps {
   ws: WsClient;
-  fetchPage: (projectId: string, opts: { limit: number; before?: number }) => Promise<MessagesPage>;
+  fetchPage: (projectId: string, conversationId: string, opts: { limit: number; before?: number }) => Promise<MessagesPage>;
   newClientMessageId?: () => string;
 }
 
 export interface ChatState {
-  chats: Readonly<Record<string, ProjectChat>>;
-  open: (projectId: string) => Promise<void>;
-  loadOlder: (projectId: string) => Promise<void>;
+  /** Keyed by chatKey(projectId, conversationId). */
+  chats: Readonly<Record<string, ConversationChat>>;
+  /** Per project: the run in progress (run-started until run-finished), whichever conversation it belongs to. */
+  activeRuns: Readonly<Record<string, ActiveRun>>;
+  /**
+   * Per project: the conversation shown (the last one opened). The WS subscription is per project
+   * (live frames of all its conversations arrive), but the replay cursor follows this conversation.
+   */
+  current: Readonly<Record<string, string>>;
+  /** Loads the conversation once and makes it the project's current one (its replay is subscribed). */
+  open: (projectId: string, conversationId: string) => Promise<void>;
+  loadOlder: (projectId: string, conversationId: string) => Promise<void>;
   /** False (and lastError set) when the frame would be refused by the protocol; nothing is queued then. */
-  send: (projectId: string, text: string, attachments?: AttachmentRef[]) => boolean;
-  cancelQueued: (projectId: string, messageId: number) => void;
-  stop: (projectId: string) => void;
-  heal: (projectId: string) => Promise<void>;
-  dismissError: (projectId: string) => void;
-  /** Drops every project's chat (logout / 4401); results of in-flight requests are discarded. */
+  send: (projectId: string, conversationId: string, text: string, attachments?: AttachmentRef[]) => boolean;
+  cancelQueued: (projectId: string, conversationId: string, messageId: number) => void;
+  /** Interrupts the project's active run (with that run's conversation); without one, this conversation. */
+  stop: (projectId: string, conversationId: string) => void;
+  heal: (projectId: string, conversationId: string) => Promise<void>;
+  dismissError: (projectId: string, conversationId: string) => void;
+  /** Drops every chat (logout / 4401); results of in-flight requests are discarded. */
   reset: () => void;
 }
 
-/** GET /api/projects/{id}/messages: the newest `limit` rows below `before`, ascending by id. */
-export async function fetchMessagesPage(
-  projectId: string,
-  opts: { limit: number; before?: number },
-): Promise<MessagesPage> {
-  const q = new URLSearchParams({ limit: String(opts.limit) });
-  if (opts.before !== undefined) q.set('before', String(opts.before));
-  const raw = await apiGet<unknown>(`/projects/${encodeURIComponent(projectId)}/messages?${q.toString()}`);
-  return MessagesPage.parse(raw);
-}
+/** GET …/conversations/{cid}/messages: the newest `limit` rows below `before`, ascending by id. */
+export const fetchMessagesPage = fetchConversationMessages;
+
 
 /** crypto.randomUUID only exists in secure contexts; the app may be served over plain http on a LAN. */
 export function randomClientMessageId(): string {
@@ -162,7 +182,7 @@ function applyDelta(m: MessageDTO, f: MessageDeltaFrame): MessageDTO {
  * deltas between the GET and the (re)subscribe are never replayed (replay only sends id > since).
  * They become suspects and are re-healed once they reach a terminal status.
  */
-function withStreamingSuspects(c: ProjectChat, page: MessageDTO[]): ProjectChat {
+function withStreamingSuspects(c: ConversationChat, page: MessageDTO[]): ConversationChat {
   const streaming = page.filter((r) => r.id > 0 && r.status === 'streaming' && !c.suspectIds.includes(r.id));
   if (streaming.length === 0) return c;
   return { ...c, suspectIds: [...c.suspectIds, ...streaming.map((r) => r.id)] };
@@ -180,7 +200,9 @@ function attachmentsOf(m: MessageDTO): AttachmentRef[] {
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+
 export function createChatStore(deps: ChatDeps) {
+  // All maps below are keyed by chatKey(projectId, conversationId).
   const opening = new Map<string, Promise<void>>();
   const healing = new Map<string, { running: Promise<void>; again: boolean }>();
   // Bumped by reset(): an HTTP response that started in an older generation is ignored.
@@ -189,38 +211,57 @@ export function createChatStore(deps: ChatDeps) {
   const newClientMessageId = deps.newClientMessageId ?? randomClientMessageId;
 
   return create<ChatState>()((set, get) => {
-    function patch(projectId: string, fn: (c: ProjectChat) => ProjectChat): void {
-      const current = get().chats[projectId];
+    function patch(key: string, fn: (c: ConversationChat) => ConversationChat): void {
+      const current = get().chats[key];
       if (!current) return;
       const next = fn(current);
-      if (next !== current) set({ chats: { ...get().chats, [projectId]: next } });
+      if (next !== current) set({ chats: { ...get().chats, [key]: next } });
     }
 
-    function withRows(c: ProjectChat, rows: MessageDTO[]): ProjectChat {
+    /** Keys of the project's chats (loaded or loading). */
+    function keysOf(projectId: string): string[] {
+      const prefix = `${projectId}/`;
+      return Object.keys(get().chats).filter((k) => k.startsWith(prefix));
+    }
+
+    function withRows(c: ConversationChat, rows: MessageDTO[]): ConversationChat {
       return { ...c, messages: mergeRows(c.messages, rows), lastSeenId: Math.max(c.lastSeenId, maxServerId(rows)) };
     }
 
-    /** Only with an open socket (returns false otherwise); the connection handler subscribes on open. */
+    /**
+     * Subscribes the project's current conversation; only with an open socket (returns false
+     * otherwise), the connection handler subscribes on open.
+     */
     function subscribe(projectId: string): boolean {
-      const c = get().chats[projectId];
+      const conversationId = get().current[projectId];
+      if (conversationId === undefined) return false;
+      const c = get().chats[chatKey(projectId, conversationId)];
       if (!c?.loaded || !deps.ws.isOpen()) return false;
-      // Re-subscribing replaces the server-side subscription (R4); there is no unsubscribe.
-      deps.ws.send({ type: 'subscribe', projectId, sinceMessageId: c.lastSeenId });
+      // Re-subscribing replaces the server-side replay cursor (spec §6.2); there is no unsubscribe.
+      deps.ws.send({ type: 'subscribe', projectId, conversationId, sinceMessageId: c.lastSeenId });
       return true;
     }
 
     /** Server dedupes on clientMessageId, so retransmitting is always safe. */
-    function resendPending(projectId: string): void {
-      const c = get().chats[projectId];
+    function resendPending(key: string): void {
+      const c = get().chats[key];
       if (!c) return;
+      const [projectId, conversationId] = splitKey(key);
       for (const m of c.messages) {
         if (m.id >= 0 || m.status === 'error' || m.clientMessageId === null) continue;
         try {
-          deps.ws.send({ type: 'send', projectId, clientMessageId: m.clientMessageId, text: m.content, attachments: attachmentsOf(m) });
+          deps.ws.send({
+            type: 'send',
+            projectId,
+            conversationId,
+            clientMessageId: m.clientMessageId,
+            text: m.content,
+            attachments: attachmentsOf(m),
+          });
         } catch (e) {
           // An unsendable row must not break every reconnect: mark it failed instead.
           const error = `not sendable: ${errorText(e)}`;
-          patch(projectId, (cur) => ({
+          patch(key, (cur) => ({
             ...cur,
             messages: cur.messages.map((x) =>
               x.id === m.id ? { ...x, status: 'error' as const, metadata: { ...x.metadata, error } } : x,
@@ -230,33 +271,38 @@ export function createChatStore(deps: ChatDeps) {
       }
     }
 
-    function onDelta(projectId: string, f: MessageDeltaFrame): void {
-      const c = get().chats[projectId];
+    function healKey(key: string): Promise<void> {
+      const [projectId, conversationId] = splitKey(key);
+      return get().heal(projectId, conversationId);
+    }
+
+    function onDelta(key: string, f: MessageDeltaFrame): void {
+      const c = get().chats[key];
       if (!c) return;
       const existing = c.messages.find((m) => m.id === f.messageId);
       if (!existing) {
         // Its `message` frame was lost (e.g. mid-reconnect): heal instead of dropping.
-        patch(projectId, (cur) => ({
+        patch(key, (cur) => ({
           ...cur,
           suspectIds: cur.suspectIds.includes(f.messageId) ? cur.suspectIds : [...cur.suspectIds, f.messageId],
         }));
-        void get().heal(projectId);
+        void healKey(key);
         return;
       }
       const updated = applyDelta(existing, f);
       const settledSuspect =
         c.suspectIds.includes(f.messageId) && f.statusPatch !== undefined && TERMINAL_STATUSES.has(f.statusPatch);
-      patch(projectId, (cur) => ({
+      patch(key, (cur) => ({
         ...cur,
         messages: cur.messages.map((m) => (m.id === updated.id ? updated : m)),
         suspectIds: settledSuspect ? cur.suspectIds.filter((id) => id !== f.messageId) : cur.suspectIds,
       }));
       // A suspect may have lost deltas; once final, the DB row is authoritative.
-      if (settledSuspect) void get().heal(projectId);
+      if (settledSuspect) void healKey(key);
     }
 
     /** Frames may have been lost with the socket: a run-finished (stuck Stop) or deltas. */
-    function markDisconnected(c: ProjectChat): ProjectChat {
+    function markDisconnected(c: ConversationChat): ConversationChat {
       const streaming = c.messages.filter((m) => m.id > 0 && m.status === 'streaming').map((m) => m.id);
       const suspectIds = [...new Set([...c.suspectIds, ...streaming])];
       if (!c.runActive && c.currentRunId === null && suspectIds.length === c.suspectIds.length) return c;
@@ -264,109 +310,168 @@ export function createChatStore(deps: ChatDeps) {
     }
 
     function onConnection(state: ConnectionState): void {
-      for (const [projectId, chat] of Object.entries(get().chats)) {
+      // The server re-sends run-started on subscribe while the run is still active, so
+      // resetting here never hides a live run for longer than the replay.
+      if (Object.keys(get().activeRuns).length > 0) set({ activeRuns: {} });
+      const live = state === 'open' || state === 'resumed';
+      const subscribed = new Set<string>();
+      for (const [key, chat] of Object.entries(get().chats)) {
+        const [projectId, conversationId] = splitKey(key);
         if (!chat.loaded) {
           // An in-flight initial load subscribes itself with the right lastSeenId; a failed one is retried.
-          if ((state === 'open' || state === 'resumed') && !opening.has(projectId)) void get().open(projectId);
+          if (live && !opening.has(key)) void startLoad(projectId, conversationId);
           continue;
         }
-        // The server re-sends run-started on subscribe while the run is still active, so
-        // resetting here never hides a live run for longer than the replay.
-        patch(projectId, markDisconnected);
+        patch(key, markDisconnected);
         // closed / unauthorized / forbidden: nothing to talk to; 'open' follows on reconnect.
-        if (state !== 'open' && state !== 'resumed') continue;
-        subscribe(projectId);
-        resendPending(projectId);
-        void get().heal(projectId); // half-streamed rows: subscribe(since) never re-sends rows <= lastSeenId
+        if (!live) continue;
+        // One subscription per project: the current conversation's replay (others heal over HTTP).
+        if (!subscribed.has(projectId) && get().current[projectId] === conversationId) {
+          subscribed.add(projectId);
+          subscribe(projectId);
+        }
+        resendPending(key);
+        void healKey(key); // half-streamed rows: subscribe(since) never re-sends rows <= lastSeenId
       }
+    }
+
+    function onRunFinished(projectId: string, f: Extract<ServerFrame, { type: 'run-finished' }>): void {
+      const active = get().activeRuns[projectId];
+      if (active && active.runId === f.runId) {
+        const { [projectId]: _done, ...rest } = get().activeRuns;
+        set({ activeRuns: rest });
+      }
+      const key = chatKey(projectId, f.conversationId);
+      const c = get().chats[key];
+      if (!c) return;
+      // A suspect's terminal delta may have been lost (it is sent once, never replayed): heal.
+      if (c.suspectIds.length > 0) void healKey(key);
+      patch(key, (cur) => {
+        if (cur.currentRunId !== null && cur.currentRunId !== f.runId) return cur; // late finish of an older run
+        return {
+          ...cur,
+          runActive: false,
+          currentRunId: null,
+          lastError: f.reason === 'error' ? (cur.lastError ?? 'The agent run ended with an error.') : cur.lastError,
+        };
+      });
+    }
+
+    function onError(projectId: string, f: Extract<ServerFrame, { type: 'error' }>): void {
+      const keys = keysOf(projectId);
+      // cancelQueued marked the row cancelled optimistically; the server row is authoritative.
+      if (f.code === 'not_cancellable') for (const key of keys) void healKey(key);
+      // The chat that sent the refused message, else the conversation shown.
+      const owner = f.clientMessageId
+        ? keys.find((k) => get().chats[k]!.messages.some((m) => m.id < 0 && m.clientMessageId === f.clientMessageId))
+        : undefined;
+      const currentId = get().current[projectId];
+      const key = owner ?? (currentId !== undefined ? chatKey(projectId, currentId) : undefined);
+      if (key === undefined) return;
+      patch(key, (c) => ({
+        ...c,
+        lastError: f.message,
+        messages: f.clientMessageId
+          ? c.messages.map((m) =>
+              m.id < 0 && m.clientMessageId === f.clientMessageId
+                ? { ...m, status: 'error' as const, metadata: { ...m.metadata, error: f.message } }
+                : m,
+            )
+          : c.messages,
+      }));
     }
 
     function onFrame(f: ServerFrame): void {
       if (f.type === 'error' && f.projectId === null) {
-        for (const projectId of Object.keys(get().chats)) patch(projectId, (c) => ({ ...c, lastError: f.message }));
+        for (const key of Object.keys(get().chats)) patch(key, (c) => ({ ...c, lastError: f.message }));
         return;
       }
-      if (f.projectId === null || !get().chats[f.projectId]) return;
+      // Frames of projects that were never opened are ignored; within a project they are routed
+      // by conversationId (frames of conversations that are not loaded only touch activeRuns).
+      if (f.projectId === null || get().current[f.projectId] === undefined) return;
       const projectId = f.projectId;
       switch (f.type) {
         case 'message':
-          patch(projectId, (c) => withRows(c, [f.message]));
+          patch(chatKey(projectId, f.message.conversationId), (c) => withRows(c, [f.message]));
           return;
         case 'message-delta':
-          onDelta(projectId, f);
+          onDelta(chatKey(projectId, f.conversationId), f);
           return;
         case 'run-started':
-          patch(projectId, (c) => ({ ...c, runActive: true, currentRunId: f.runId, rateLimitedUntil: null, lastError: null }));
+          set({ activeRuns: { ...get().activeRuns, [projectId]: { conversationId: f.conversationId, runId: f.runId } } });
+          patch(chatKey(projectId, f.conversationId), (c) => ({
+            ...c,
+            runActive: true,
+            currentRunId: f.runId,
+            rateLimitedUntil: null,
+            lastError: null,
+          }));
           return;
         case 'run-finished':
-          // A suspect's terminal delta may have been lost (it is sent once, never replayed): heal.
-          if (get().chats[projectId]!.suspectIds.length > 0) void get().heal(projectId);
-          patch(projectId, (c) => {
-            if (c.currentRunId !== null && c.currentRunId !== f.runId) return c; // late finish of an older run
-            return {
-              ...c,
-              runActive: false,
-              currentRunId: null,
-              lastError: f.reason === 'error' ? (c.lastError ?? 'The agent run ended with an error.') : c.lastError,
-            };
-          });
+          onRunFinished(projectId, f);
           return;
         case 'usage':
-          patch(projectId, (c) => ({ ...c, usage: f.usage }));
+          patch(chatKey(projectId, f.conversationId), (c) => ({ ...c, usage: f.usage }));
           return;
         case 'rate-limited':
-          patch(projectId, (c) => ({ ...c, rateLimitedUntil: f.resetsAt }));
+          // The account limit holds for every conversation of the project.
+          for (const key of keysOf(projectId)) patch(key, (c) => ({ ...c, rateLimitedUntil: f.resetsAt }));
           return;
         case 'error':
-          // cancelQueued marked the row cancelled optimistically; the server row is authoritative.
-          if (f.code === 'not_cancellable') void get().heal(projectId);
-          patch(projectId, (c) => ({
-            ...c,
-            lastError: f.message,
-            messages: f.clientMessageId
-              ? c.messages.map((m) =>
-                  m.id < 0 && m.clientMessageId === f.clientMessageId
-                    ? { ...m, status: 'error' as const, metadata: { ...m.metadata, error: f.message } }
-                    : m,
-                )
-              : c.messages,
-          }));
+          onError(projectId, f);
           return;
         case 'view-updated': // consumed by the viewer (Phase 7); ping/pong never reach here (projectId null)
         case 'changes-updated': // consumed by the Changes panel (E9a)
         case 'plan-updated': // consumed by the plan store (E9b)
+        case 'conversation-updated': // consumed by the session list (C2)
           return;
       }
     }
 
-    async function load(projectId: string): Promise<void> {
-      if (!get().chats[projectId]) set({ chats: { ...get().chats, [projectId]: emptyChat() } });
-      else patch(projectId, (c) => (c.loadFailed ? { ...c, loadFailed: false } : c));
+    async function load(projectId: string, conversationId: string): Promise<void> {
+      const key = chatKey(projectId, conversationId);
+      if (!get().chats[key]) set({ chats: { ...get().chats, [key]: emptyChat() } });
+      else patch(key, (c) => (c.loadFailed ? { ...c, loadFailed: false } : c));
       const gen = generation;
       let streaming = false;
       try {
-        const page = await deps.fetchPage(projectId, { limit: PAGE_SIZE });
+        const page = await deps.fetchPage(projectId, conversationId, { limit: PAGE_SIZE });
         if (gen !== generation) return;
         streaming = page.messages.some((r) => r.id > 0 && r.status === 'streaming');
-        patch(projectId, (c) => {
+        patch(key, (c) => {
           const next = withStreamingSuspects(withRows(c, page.messages), page.messages);
           return { ...next, loaded: true, hasMoreOlder: page.hasMore, oldestId: minServerId(next.messages), lastError: null };
         });
       } catch (e) {
-        if (gen === generation) patch(projectId, (c) => ({ ...c, loadFailed: true, lastError: `Could not load messages: ${errorText(e)}` }));
+        if (gen === generation) patch(key, (c) => ({ ...c, loadFailed: true, lastError: `Could not load messages: ${errorText(e)}` }));
         return;
       }
       // A suspect's terminal delta sent between the GET and the subscribe is lost (replay only sends
       // id > since): re-read the DB once subscribed. Without an open socket, 'open' heals anyway.
-      if (subscribe(projectId) && streaming) await get().heal(projectId);
+      // A conversation that is no longer current gets no replay: heal it the same way.
+      const subscribed = get().current[projectId] === conversationId ? subscribe(projectId) : deps.ws.isOpen();
+      if (subscribed && streaming) await get().heal(projectId, conversationId);
     }
 
-    async function healOnce(projectId: string): Promise<void> {
+    /** One in-flight load per conversation; does not change the current conversation. */
+    function startLoad(projectId: string, conversationId: string): Promise<void> {
+      const key = chatKey(projectId, conversationId);
+      const inflight = opening.get(key);
+      if (inflight) return inflight;
+      const p = load(projectId, conversationId).finally(() => {
+        if (opening.get(key) === p) opening.delete(key);
+      });
+      opening.set(key, p);
+      return p;
+    }
+
+    async function healOnce(projectId: string, conversationId: string): Promise<void> {
+      const key = chatKey(projectId, conversationId);
       const gen = generation;
       try {
-        const page = await deps.fetchPage(projectId, { limit: PAGE_SIZE });
+        const page = await deps.fetchPage(projectId, conversationId, { limit: PAGE_SIZE });
         if (gen !== generation) return;
-        patch(projectId, (c) => {
+        patch(key, (c) => {
           // Rows still streaming after the merge may have adopted DB text that in-flight deltas repeat.
           const next = withStreamingSuspects(withRows(c, page.messages), page.messages);
           const settled = new Set(next.messages.filter((m) => TERMINAL_STATUSES.has(m.status)).map((m) => m.id));
@@ -387,53 +492,58 @@ export function createChatStore(deps: ChatDeps) {
 
     return {
       chats: {},
+      activeRuns: {},
+      current: {},
 
-      open: (projectId) => {
+      open: (projectId, conversationId) => {
         // Always (re)enable the socket: after a logout/4401 the client stays down until ensure().
         deps.ws.ensure();
-        if (get().chats[projectId]?.loaded) return Promise.resolve();
-        const inflight = opening.get(projectId);
-        if (inflight) return inflight;
-        const p = load(projectId).finally(() => {
-          if (opening.get(projectId) === p) opening.delete(projectId);
-        });
-        opening.set(projectId, p);
-        return p;
+        const switched = get().current[projectId] !== conversationId;
+        if (switched) set({ current: { ...get().current, [projectId]: conversationId } });
+        if (get().chats[chatKey(projectId, conversationId)]?.loaded) {
+          // Moving the replay cursor to an already-loaded conversation re-subscribes it.
+          if (switched) subscribe(projectId);
+          return Promise.resolve();
+        }
+        return startLoad(projectId, conversationId);
       },
 
-      loadOlder: async (projectId) => {
-        const c = get().chats[projectId];
+      loadOlder: async (projectId, conversationId) => {
+        const key = chatKey(projectId, conversationId);
+        const c = get().chats[key];
         if (!c?.loaded || c.loadingOlder || !c.hasMoreOlder || c.oldestId === null) return;
         const before = c.oldestId;
-        patch(projectId, (cur) => ({ ...cur, loadingOlder: true }));
+        patch(key, (cur) => ({ ...cur, loadingOlder: true }));
         const gen = generation;
         try {
-          const page = await deps.fetchPage(projectId, { limit: PAGE_SIZE, before });
+          const page = await deps.fetchPage(projectId, conversationId, { limit: PAGE_SIZE, before });
           if (gen !== generation) return;
-          patch(projectId, (cur) => {
+          patch(key, (cur) => {
             const messages = mergeRows(cur.messages, page.messages);
             return { ...cur, messages, oldestId: minServerId(messages), hasMoreOlder: page.hasMore, loadingOlder: false };
           });
         } catch (e) {
           if (gen !== generation) return;
-          patch(projectId, (cur) => ({ ...cur, loadingOlder: false, lastError: `Could not load older messages: ${errorText(e)}` }));
+          patch(key, (cur) => ({ ...cur, loadingOlder: false, lastError: `Could not load older messages: ${errorText(e)}` }));
         }
       },
 
-      send: (projectId, text, attachments = []) => {
-        if (!get().chats[projectId] || (text.trim() === '' && attachments.length === 0)) return false;
+      send: (projectId, conversationId, text, attachments = []) => {
+        const key = chatKey(projectId, conversationId);
+        if (!get().chats[key] || (text.trim() === '' && attachments.length === 0)) return false;
         const clientMessageId = newClientMessageId();
-        const frame: ClientFrame = { type: 'send', projectId, clientMessageId, text, attachments };
+        const frame: ClientFrame = { type: 'send', projectId, conversationId, clientMessageId, text, attachments };
         // Validate before the optimistic insert: a row the protocol refuses would be stuck forever.
         const issue = frameIssue(frame);
         if (issue !== null) {
-          patch(projectId, (c) => ({ ...c, lastError: `Message not sent: ${issue}` }));
+          patch(key, (c) => ({ ...c, lastError: `Message not sent: ${issue}` }));
           return false;
         }
         optimisticSeq += 1;
         const optimistic: MessageDTO = {
           id: -optimisticSeq,
           projectId,
+          conversationId,
           clientMessageId,
           runId: null,
           role: 'user',
@@ -443,29 +553,37 @@ export function createChatStore(deps: ChatDeps) {
           metadata: { pending: true, attachments },
           createdAt: new Date().toISOString(),
         };
-        patch(projectId, (c) => ({ ...c, messages: [...c.messages, optimistic].sort(compareMessages) }));
+        patch(key, (c) => ({ ...c, messages: [...c.messages, optimistic].sort(compareMessages) }));
         // Not open: resendPending() sends it on 'open' (sending now would queue a duplicate).
         if (deps.ws.isOpen()) deps.ws.send(frame);
         return true;
       },
 
-      cancelQueued: (projectId, messageId) => {
+      cancelQueued: (projectId, conversationId, messageId) => {
         if (messageId <= 0) return;
         deps.ws.send({ type: 'cancel-queued', projectId, messageId });
-        patch(projectId, (c) => ({
+        patch(chatKey(projectId, conversationId), (c) => ({
           ...c,
           messages: c.messages.map((m) => (m.id === messageId ? { ...m, status: 'cancelled' as const } : m)),
         }));
       },
 
-      stop: (projectId) => {
-        const c = get().chats[projectId];
-        if (!c) return;
-        deps.ws.send({ type: 'interrupt', projectId, runId: c.currentRunId });
+      stop: (projectId, conversationId) => {
+        const c = get().chats[chatKey(projectId, conversationId)];
+        // The Stop targets the running run, which may belong to another conversation of the project.
+        const active = get().activeRuns[projectId];
+        if (!c && !active) return;
+        deps.ws.send({
+          type: 'interrupt',
+          projectId,
+          conversationId: active?.conversationId ?? conversationId,
+          runId: active?.runId ?? c?.currentRunId ?? null,
+        });
       },
 
-      heal: (projectId) => {
-        const state = healing.get(projectId);
+      heal: (projectId, conversationId) => {
+        const key = chatKey(projectId, conversationId);
+        const state = healing.get(key);
         if (state) {
           state.again = true; // a newer request arrived mid-fetch: fetch once more afterwards
           return state.running;
@@ -475,23 +593,24 @@ export function createChatStore(deps: ChatDeps) {
           try {
             do {
               entry.again = false;
-              await healOnce(projectId);
+              await healOnce(projectId, conversationId);
             } while (entry.again);
           } finally {
-            if (healing.get(projectId) === entry) healing.delete(projectId);
+            if (healing.get(key) === entry) healing.delete(key);
           }
         })();
-        healing.set(projectId, entry);
+        healing.set(key, entry);
         return entry.running;
       },
 
-      dismissError: (projectId) => patch(projectId, (c) => ({ ...c, lastError: null })),
+      dismissError: (projectId, conversationId) =>
+        patch(chatKey(projectId, conversationId), (c) => ({ ...c, lastError: null })),
 
       reset: () => {
         generation += 1;
         opening.clear();
         healing.clear();
-        set({ chats: {} });
+        set({ chats: {}, activeRuns: {}, current: {} });
       },
     };
   });
