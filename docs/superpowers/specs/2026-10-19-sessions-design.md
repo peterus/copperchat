@@ -360,12 +360,19 @@ bound to one conversation.
     burst" (`engine.py:402-415`). If sealing just made `push()` return
     `False`, a later item A3 of the sealed stream's conversation would open a
     new burst immediately and overtake the waiting B, breaking FIFO order.
-    So the engine tracks it explicitly: `self._sealed` is True from `seal()`
-    until the sealed burst has finished. While it is set, `_enqueue` leaves
-    **every** new item DB-queued, whatever its conversation, and never opens
-    a stream. The burst's `finally` clears it and then calls `_drive_queued`.
-    This also covers an item that arrives after the queue drained but before
-    the burst's `finally` ran.
+    So the engine tracks it explicitly, **by identity**:
+    `self._sealed_stream` holds the sealed stream object from `seal()` until
+    the burst that owns that stream has finished. While it is set,
+    `_enqueue` leaves **every** new item DB-queued, whatever its
+    conversation, and never opens a stream.
+
+    Bursts can overlap while an old one winds down (`engine.py:402-415`, the
+    `prev` wait at `:526`, the identity checks at `:481-485`). So a burst's
+    `finally` clears the field **only if `self._sealed_stream is stream`**,
+    the stream of that burst, and then calls `_drive_queued`. An older
+    burst finishing late can therefore never unseal a newer stream. This also
+    covers an item that arrives after the queue drained but before the
+    burst's `finally` ran.
   - **The next burst picks them up.** When the burst ends, the existing
     `_drive_queued` call (`engine.py:486`) re-enqueues the DB-queued rows in
     id order. The first row opens a new stream for its conversation, and
@@ -886,11 +893,21 @@ paths and symlink escapes. On top of that:
 **Every reader goes through the guard, not only the tools and REST.** This
 covers the `doc_list` enumeration, the index and inlining (§9.1), the
 later-turn change scan (§9.2), the capture of external revisions (§7.3) and
-the gate check (§11). Each file is opened only after:
+the gate check (§11). Each file is read as follows:
 
-- `resolve_doc_path` succeeds, and
-- `lstat` shows a **regular file** that is not a symlink, and
-- its `st_size` is at most the 256 KiB cap.
+1. `resolve_doc_path` succeeds. Its symlink checks use `lstat` on the
+   **lexical** path components (`docs`, `docs/design`, …, the file). They
+   do not use the resolved path that `resolve_inside` returns
+   (`research/paths.py:44-57`), because `lstat` of a resolved path never
+   shows a symlink.
+2. The file is opened with `os.open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK
+   | O_NOCTTY)`. A symlink swapped in after the check fails the open, and a
+   FIFO cannot block.
+3. `fstat` on the open descriptor must show `S_ISREG` and `st_size` at most
+   the 256 KiB cap. At most cap + 1 bytes are read, so a file that grows
+   after `fstat` is still caught as too large.
+4. The whole scan (walk, opens, reads and hashes) runs in **one**
+   `asyncio.to_thread` call. File I/O never runs on the event loop.
 
 Without that, a cloned repository's `requirements.md` could be a symlink to
 `/proc/self/environ`, and the server would inline the CopperChat process's
@@ -1099,11 +1116,12 @@ Read what you need with doc_read before you rely on it.
   repository data. So:
   - Index fields taken from docs (headings, decision titles) are reduced to
     one line, stripped of control characters, and capped at 80 chars each.
-  - Injected doc text is split with `str.splitlines()`. That also splits on
-    `\r`, U+2028 and the other Unicode line breaks, so a split cannot hide a
-    notice line. Before matching, each line is stripped of leading
-    whitespace and Unicode format characters (category `Cf`, e.g. zero-width
-    space). Any line that then starts with `[CopperChat notice]`
+  - Injected doc text first has all control characters (category `Cc`,
+    except tab and line breaks) and format characters (`Cf`, e.g. zero-width
+    space) **removed**. It is then split with `str.splitlines()`, which also
+    splits on `\r`, U+2028 and the other Unicode line breaks, so a split
+    cannot hide a notice line. Before matching, each line is stripped of
+    leading whitespace. Any line that then starts with `[CopperChat notice]`
     (case-insensitive) is prefixed with `> `, so that it cannot pose as an
     application notice. The index fields get the same treatment.
   - **Injected text never reaches `TurnInfo.text`.** `git_commit` is gated on
@@ -1192,7 +1210,13 @@ most 256 KiB, and hashes are cached by `(mtime_ns, size)`.
    - That entry goes through the **same sanitiser and caps as `doc_append`**
      (§7.4). ATX headings of level ≤ 2 and `*Session:` lines in the summary
      are escaped (`\#`, `\*`), not refused, because the server cannot ask the
-     agent again. The text is truncated to 8 KiB.
+     agent again. The order matters:
+     1. Escape first.
+     2. Then truncate the **encoded UTF-8 bytes** to 8 KiB minus room for a
+        `… (truncated)` marker.
+     3. Cut at a character boundary, never inside a UTF-8 sequence.
+
+     Escaping after truncation could push the text past the cap again.
    - If the append would push `decisions.md` past the 256 KiB file cap, the
      entry is not written, and the chat shows a notice "decisions.md is full —
      handover entry not recorded". The session still closes.
@@ -1440,6 +1464,10 @@ and `erc-delta`):
     with `decisions.md` at the cap gives the "full" notice.
   - `send` on a closed conversation is refused.
   - Reopen.
+- **Sealed streams** (§5.2): A1, B, A3 with both timings; a seal of a new
+  stream while the previous burst is still in its wind-down wait, after
+  which the old burst's `finally` must not unseal it; Stop during a sealed
+  stream; cancel of a DB-queued B row.
 - **Scoped Stop** (§5.2): Stop on A's run leaves B's queued message
   queued, and it runs afterwards.
 - **WS ownership** (§6.2): `subscribe`, `send` and `interrupt` with a
