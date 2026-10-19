@@ -353,10 +353,19 @@ bound to one conversation.
     to the stream's conversation and the stream is not **sealed**.
   - **Foreign items seal the stream.** An item of another conversation is
     *not* pushed. It stays a `queued` row in the DB, and the engine calls the
-    new `stream.seal()`. A sealed stream accepts no further pushes.
-    `push()` returns `False`, so a later item of the same conversation also
-    stays DB-queued. The stream closes once its queue is drained: `seal`
+    new `stream.seal()`. The stream closes once its queue is drained: `seal`
     behaves like `request_close`, but a push can no longer reopen it.
+  - **A sealed stream is explicit state, not a failed push.** Today
+    `_enqueue` treats `push() == False` as "the stream is gone, start a new
+    burst" (`engine.py:402-415`). If sealing just made `push()` return
+    `False`, a later item A3 of the sealed stream's conversation would open a
+    new burst immediately and overtake the waiting B, breaking FIFO order.
+    So the engine tracks it explicitly: `self._sealed` is True from `seal()`
+    until the sealed burst has finished. While it is set, `_enqueue` leaves
+    **every** new item DB-queued, whatever its conversation, and never opens
+    a stream. The burst's `finally` clears it and then calls `_drive_queued`.
+    This also covers an item that arrives after the queue drained but before
+    the burst's `finally` ran.
   - **The next burst picks them up.** When the burst ends, the existing
     `_drive_queued` call (`engine.py:486`) re-enqueues the DB-queued rows in
     id order. The first row opens a new stream for its conversation, and
@@ -370,8 +379,11 @@ bound to one conversation.
 
   A run therefore never mixes conversations, and two SDK clients still never
   overlap, because the existing `prev` wind-down wait still applies. Tests:
-  B is sent while A is mid-turn, then A again (A, B, A → three bursts in
-  order); Stop during a sealed stream; cancel of a DB-queued B row.
+  - B is sent while A is mid-turn, then A again (A1, B, A3 → three bursts
+    in the order A1, B, A3). Two timings: A3 arrives while A1 runs, and A3
+    arrives after A1's queue drained but before its burst ended.
+  - Stop during a sealed stream.
+  - Cancel of a DB-queued B row.
 - **Storing the SDK session id.** `SessionId` events are stored into the
   burst's conversation (`ConversationRepo.set_sdk_session`), replacing
   `AgentSessionRepo.set` at `engine.py:588`.
@@ -470,7 +482,9 @@ conversation id from another project is a 404.
 
 Changed endpoints:
 
-- `POST /history/{sid}/restore` gains `{conversationId}`.
+- `POST /history/{sid}/restore` gains `{conversationId}`. It gets the same
+  ownership check as every `cid`: a conversation of another project is a
+  404, and nothing is restored.
 - Plan routes are unchanged. They find the owning conversation themselves.
 - `GET /history` and `GET /changes/runs` add `conversationId` and
   `conversationTitle` to each entry.
@@ -869,6 +883,30 @@ paths and symlink escapes. On top of that:
 - **No other file types.** Hard links: a target whose `st_nlink > 1` is
   refused for writing. Special files (FIFOs, devices) are refused.
 
+**Every reader goes through the guard, not only the tools and REST.** This
+covers the `doc_list` enumeration, the index and inlining (§9.1), the
+later-turn change scan (§9.2), the capture of external revisions (§7.3) and
+the gate check (§11). Each file is opened only after:
+
+- `resolve_doc_path` succeeds, and
+- `lstat` shows a **regular file** that is not a symlink, and
+- its `st_size` is at most the 256 KiB cap.
+
+Without that, a cloned repository's `requirements.md` could be a symlink to
+`/proc/self/environ`, and the server would inline the CopperChat process's
+tokens into the prompt. A FIFO would block the event loop.
+
+**The enumeration walk is bounded.**
+- It does not follow directory symlinks, and stops at depth 2.
+- It stops after 50 doc files.
+- Hashing runs in `asyncio.to_thread`.
+
+Files that fail a check are **not read**. `doc_list`, the index and the Docs
+panel list them as `ignored` with a reason (`symlink`, `not a regular file`,
+`too large`, `too many docs`, `bad name`). This also bounds external docs:
+the caps of §7.4 bind writes, and these checks bind what a cloned
+repository can bring in.
+
 **Defence in depth for the profile.**
 
 - The SDK MCP server of a burst contains **only the profile's tools**
@@ -1061,8 +1099,20 @@ Read what you need with doc_read before you rely on it.
   repository data. So:
   - Index fields taken from docs (headings, decision titles) are reduced to
     one line, stripped of control characters, and capped at 80 chars each.
-  - Every line of injected doc text that starts with `[CopperChat notice]`
-    is prefixed with `> ` so that it cannot pose as an application notice.
+  - Injected doc text is split with `str.splitlines()`. That also splits on
+    `\r`, U+2028 and the other Unicode line breaks, so a split cannot hide a
+    notice line. Before matching, each line is stripped of leading
+    whitespace and Unicode format characters (category `Cf`, e.g. zero-width
+    space). Any line that then starts with `[CopperChat notice]`
+    (case-insensitive) is prefixed with `> `, so that it cannot pose as an
+    application notice. The index fields get the same treatment.
+  - **Injected text never reaches `TurnInfo.text`.** `git_commit` is gated on
+    `\bcommit\b` in `ctx.user_message` (`git_tools/specs.py:19,206`), which
+    is `TurnInfo.text`, the user's own text (`engine.py:549-556`). The doc
+    index and change notices are added later, via the notes prefix in
+    `_begin_turn` (`engine.py:577-583`), to the item sent to the model only.
+    This ordering is now an explicit invariant. A test checks that a doc
+    containing "commit" does not authorise `git_commit`.
   - The inlined doc is fenced by a delimiter with a **random per-injection
     nonce**: `<<<doc requirements.md 7f3a9c…>>>` … `<<<end 7f3a9c…>>>`. Doc
     content cannot close the fence early, because it cannot know the nonce.
@@ -1117,15 +1167,35 @@ most 256 KiB, and hashes are cached by `(mtime_ns, size)`.
      and the status is settled when that re-run finishes.
    - **Cancelled before it started**, by `cancel-queued` or a Stop that
      cancels it: the status goes back to `open`.
-   - **Interrupted by a process crash**, so the message is never re-run: on
-     engine start, a `closing` conversation whose close message is no longer
-     `queued` goes back to `open`.
+   - **Failed before a turn started.** `_fail_burst` (`engine.py:488-509`),
+     for example broken credentials, marks the waiting items `error` without
+     a turn. The rule is general: whenever the close message reaches a
+     terminal status other than a completed turn (`cancelled`, `error`, or
+     `done` with a run that did not finish `completed`), the conversation
+     goes back to `open`. The engine applies this rule wherever it sets
+     those statuses.
+   - **Interrupted by a process crash**, so the message is never re-run.
+     Engines are created lazily (`runtime.py:82-103`), and `resume_pending`
+     only starts projects with queued rows or a parked limit
+     (`runtime.py:105-125`), so an engine-start check is not enough. Instead,
+     an **app-startup sweep** runs across all projects in the lifespan,
+     before `resume_pending`. Every `closing` conversation whose close
+     message is not `queued` and not parked goes back to `open`.
 
    Tests cover each of these paths.
+
+   On success:
    - The summary stays in the chat as the last assistant message.
    - It also becomes a `decisions.md` entry `Session <n> closed` with the
      summary as text (Q8 A). The **server** writes that entry from the final
      assistant text, so the handover cannot be forgotten by the agent.
+   - That entry goes through the **same sanitiser and caps as `doc_append`**
+     (§7.4). ATX headings of level ≤ 2 and `*Session:` lines in the summary
+     are escaped (`\#`, `\*`), not refused, because the server cannot ask the
+     agent again. The text is truncated to 8 KiB.
+   - If the append would push `decisions.md` past the 256 KiB file cap, the
+     entry is not written, and the chat shows a notice "decisions.md is full —
+     handover entry not recorded". The session still closes.
 
 4. **A closed session is read-only.** The composer is replaced by a "Reopen
    session" button. `send` is refused with `conversation_closed`. Reopen sets
@@ -1280,12 +1350,17 @@ and `erc-delta`):
   - **Exfiltration path.** The researcher is the only web-enabled agent. It
     never receives doc content through injection. But injected doc text can
     instruct the main agent to put design data into a `research_part`
-    `query`, which is unbounded today (`research/specs.py:39-43`). The
+    `query`. Today the server caps it at 4000 chars
+    (`research/runner.py:44,163-166`; the schema at `research/specs.py:39-43`
+    has no `maxLength`). The
     researcher may then `WebFetch` any public host (`guards.py:90-97`) with
     that data in a URL. The same path already exists for project-layer
     skills and part notes. SP3 makes it more reachable, because docs are
     injected automatically. Mitigations in SP3:
-    - `query` gains `maxLength: 2000`.
+    - `MAX_QUERY_CHARS` is lowered to 2000. The check stays server-side in
+      the runner, because the SDK does not validate the schema's
+      `maxLength`, and the schema gains `maxLength` as a hint. A test covers
+      the cap.
     - The researcher prompt states that design details from the request
       must never be put into URLs or search queries beyond the part number
       and its parameters.
@@ -1358,9 +1433,28 @@ and `erc-delta`):
   - Later-turn change lines, but not for the conversation's own writes.
 - **Close session:**
   - The happy path ends `closed` with a `decisions.md` entry.
-  - An interrupted close goes back to `open`.
+  - Every branch of §10 step 3: interrupted, error, `rate_limited` (stays
+    `closing`, then settles), cancelled before start, `_fail_burst`, and the
+    startup sweep after a simulated crash.
+  - A summary with `##` headings and `*Session:` lines is escaped. A summary
+    with `decisions.md` at the cap gives the "full" notice.
   - `send` on a closed conversation is refused.
   - Reopen.
+- **Scoped Stop** (§5.2): Stop on A's run leaves B's queued message
+  queued, and it runs afterwards.
+- **WS ownership** (§6.2): `subscribe`, `send` and `interrupt` with a
+  conversation of another project are refused. The `interrupt` fixture
+  gains a "missing `conversationId`" invalid case. Restore with a foreign
+  `conversationId` → 404.
+- **Hook and attribution:** one `research_part` call with both
+  `can_use_tool` and the PreToolUse hook active is recorded once (§7.5).
+- **KiCad-less doc tools:** every doc tool works with KiCad stopped
+  (§7.4).
+- **`commit` in a doc** does not authorise `git_commit` (§9.1).
+- **Background readers** (§7.5): a symlinked `requirements.md`, a FIFO, a
+  300 KiB doc and 60 files under `docs/design/` are skipped and listed by
+  `doc_list`, the index, the change scan and the gate. None of them is read
+  or hashed.
 - **REST:** every route, a foreign `cid` → 404, a 409 conflict body, approve
   of a stale version → 409.
 - **Protocol fixtures:** updated and new files. Both sides' tests must pass
@@ -1539,8 +1633,9 @@ C2, C3 → C5. Everything → C6.
   and a new main-agent PreToolUse hook (§7.5).
 - **Frontmatter is server-owned.** The agent reads and writes bodies only
   (§7.2).
-- **Version = sha256 of the whole file.** `doc_append` needs no base version
-  (§7.4).
+- **Version = sha256 of the body only.** Approval is DB state
+  (`doc_approvals`), and the frontmatter only mirrors it. `doc_append` needs
+  no base version (§7.3, §7.4).
 - **Full-content revisions in the DB** (`doc_revisions`). Diffs are computed
   client-side (§7.6).
 - **WS subscription stays per project, replay per conversation** (§6.2).
