@@ -56,10 +56,11 @@ describe('chat store keyed per conversation', () => {
   it('opening another conversation moves the replay cursor; reconnect subscribes only the current one', async () => {
     await store.getState().open(P, C2);
     expect(ws.framesOfType('subscribe').at(-1)).toEqual({ type: 'subscribe', projectId: P, conversationId: C2, sinceMessageId: 4 });
-    await store.getState().open(P, C1); // already loaded: re-subscribes without a new GET
+    await store.getState().open(P, C1); // already loaded: re-subscribes (the switch only heals)
     expect(ws.framesOfType('subscribe').at(-1)).toEqual({ type: 'subscribe', projectId: P, conversationId: C1, sinceMessageId: 3 });
-    expect(server.messageCalls()).toHaveLength(2);
+    await vi.waitFor(() => expect(store.getState().chats[K1]!.suspectIds).toEqual([]));
     const subscribes = ws.framesOfType('subscribe').length;
+    const before = server.messageCalls().filter((c) => c.includes(C2)).length;
     ws.drop();
     ws.connect();
     expect(ws.framesOfType('subscribe').slice(subscribes)).toEqual([
@@ -67,7 +68,7 @@ describe('chat store keyed per conversation', () => {
     ]);
     // the other loaded conversation catches up over HTTP
     await vi.waitFor(() =>
-      expect(server.messageCalls().filter((c) => c.includes(C2))).toHaveLength(2),
+      expect(server.messageCalls().filter((c) => c.includes(C2))).toHaveLength(before + 1),
     );
   });
 
@@ -121,6 +122,23 @@ describe('chat store keyed per conversation', () => {
       { type: 'interrupt', projectId: P, conversationId: C2, runId: 'r1' },
       { type: 'interrupt', projectId: P, conversationId: C1, runId: null },
     ]);
+  });
+
+  it('switching conversation is a re-subscribe: frames in the gap are healed, the run comes back', async () => {
+    await store.getState().open(P, C2);
+    ws.emit({ type: 'run-started', projectId: P, conversationId: C2, runId: 'r1' });
+    expect(store.getState().chats[K2]).toMatchObject({ runActive: true });
+    const calls = server.messageCalls().length;
+    // The server drops the old subscription before the new replay: C2's run-finished may be lost.
+    await store.getState().open(P, C1);
+    expect(store.getState().activeRuns[P]).toBeUndefined();
+    expect(store.getState().chats[K2]).toMatchObject({ runActive: false, currentRunId: null });
+    await vi.waitFor(() =>
+      expect(server.messageCalls().slice(calls).filter((c) => c.includes(C2))).toHaveLength(1),
+    );
+    // A run that is still active is re-sent on subscribe and restores the state.
+    ws.emit({ type: 'run-started', projectId: P, conversationId: C2, runId: 'r1' });
+    expect(store.getState().activeRuns[P]).toEqual({ conversationId: C2, runId: 'r1' });
   });
 
   it('a lost socket clears the active run (the server re-sends run-started on subscribe)', () => {

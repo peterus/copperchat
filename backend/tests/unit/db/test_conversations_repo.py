@@ -47,7 +47,10 @@ async def test_concurrent_creates_get_distinct_seq(db) -> None:
     assert sorted(r.seq for r in rows) == [1, 2, 3, 4, 5]
 
 
-@pytest.mark.parametrize("title", ["", "a\nb", "x" * 121, "tab\there\r"])
+@pytest.mark.parametrize(
+    "title",
+    ["", "a\nb", "x" * 121, "tab\there\r", "   ", "a\u2028b", "evil\u202etxt", "zero\u200bwidth"],
+)
 async def test_title_is_validated(db, title: str) -> None:
     with pytest.raises(CopperChatError) as err:
         await ConversationRepo(db).create(PA, "free", title)
@@ -131,6 +134,19 @@ async def test_usage_totals_sums_runs_usage(db) -> None:
         "outputTokens": 0,
         "costUsd": 0,
     }
+
+
+async def test_usage_for_one_conversation(db) -> None:
+    repo, runs = ConversationRepo(db), RunRepo(db)
+    a = await repo.create(PA, "free", None)
+    b = await repo.create(PA, "free", None)
+    await runs.start("r1", PA, a.id)
+    await runs.finish("r1", "completed", {"inputTokens": 7, "outputTokens": 2, "costUsd": 0.25})
+    await runs.start("r2", PA, b.id)
+    await runs.finish("r2", "completed", {"inputTokens": 1, "outputTokens": 1})
+    assert await repo.usage_for(a.id) == {"inputTokens": 7, "outputTokens": 2, "costUsd": 0.25}
+    assert await repo.usage_for("0" * 32) == {"inputTokens": 0, "outputTokens": 0, "costUsd": 0}
+    assert (await repo.create(PA, "free", "Ünïcode ✓ title")).title == "Ünïcode ✓ title"
 
 
 async def test_closing_lists_rows_across_projects(db) -> None:

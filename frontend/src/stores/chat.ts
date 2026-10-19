@@ -205,6 +205,8 @@ export function createChatStore(deps: ChatDeps) {
   // All maps below are keyed by chatKey(projectId, conversationId).
   const opening = new Map<string, Promise<void>>();
   const healing = new Map<string, { running: Promise<void>; again: boolean }>();
+  // Projects subscribed on the current socket (a second subscribe replaces the first).
+  const subscribedOnSocket = new Set<string>();
   // Bumped by reset(): an HTTP response that started in an older generation is ignored.
   let generation = 0;
   let optimisticSeq = 0;
@@ -239,7 +241,27 @@ export function createChatStore(deps: ChatDeps) {
       if (!c?.loaded || !deps.ws.isOpen()) return false;
       // Re-subscribing replaces the server-side replay cursor (spec §6.2); there is no unsubscribe.
       deps.ws.send({ type: 'subscribe', projectId, conversationId, sinceMessageId: c.lastSeenId });
+      if (subscribedOnSocket.has(projectId)) afterResubscribe(projectId);
+      subscribedOnSocket.add(projectId);
       return true;
+    }
+
+    /**
+     * The server drops the project's old subscription before the new replay, so live frames of
+     * the project's other conversations may be lost in between (a run-finished, deltas): like a
+     * reconnect, forget the active run (re-sent on subscribe while it is still active) and heal
+     * the project's loaded chats over HTTP.
+     */
+    function afterResubscribe(projectId: string): void {
+      if (get().activeRuns[projectId]) {
+        const { [projectId]: _gone, ...rest } = get().activeRuns;
+        set({ activeRuns: rest });
+      }
+      for (const [key, chat] of Object.entries(get().chats)) {
+        if (!chat.loaded || splitKey(key)[0] !== projectId) continue;
+        patch(key, markDisconnected);
+        void healKey(key);
+      }
     }
 
     /** Server dedupes on clientMessageId, so retransmitting is always safe. */
@@ -310,6 +332,7 @@ export function createChatStore(deps: ChatDeps) {
     }
 
     function onConnection(state: ConnectionState): void {
+      subscribedOnSocket.clear(); // a new socket has no subscriptions
       // The server re-sends run-started on subscribe while the run is still active, so
       // resetting here never hides a live run for longer than the replay.
       if (Object.keys(get().activeRuns).length > 0) set({ activeRuns: {} });
@@ -610,6 +633,7 @@ export function createChatStore(deps: ChatDeps) {
         generation += 1;
         opening.clear();
         healing.clear();
+        subscribedOnSocket.clear();
         set({ chats: {}, activeRuns: {}, current: {} });
       },
     };

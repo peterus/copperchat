@@ -75,6 +75,8 @@ def test_create_list_rename_archive(build_chat_app: Any) -> None:
         ({"type": "free", "title": "a\nb"}, 422),
         ({"type": "free", "title": ""}, 422),
         ({"type": "free", "title": "x" * 121}, 422),
+        ({"type": "free", "title": "   "}, 422),
+        ({"type": "free", "title": "a\u202eb"}, 422),
         ({"type": "free", "extra": 1}, 422),
         ({}, 422),
     ],

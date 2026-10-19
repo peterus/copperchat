@@ -9,22 +9,33 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Query, Request
-from pydantic import BaseModel, ConfigDict, StrictBool, StringConstraints
+from pydantic import AfterValidator, BaseModel, ConfigDict, StrictBool, StringConstraints
 
 from copperchat.agent.engine import RunEngine, conversation_dto, publish_conversation
 from copperchat.agent.protocol import MessageDTO
-from copperchat.db.repos.conversations import TITLE_MAX, ConversationRepo, ConversationRow
+from copperchat.db.repos.conversations import (
+    TITLE_MAX,
+    ConversationRepo,
+    ConversationRow,
+    validate_title,
+)
 from copperchat.db.repos.messages import MessageRepo
-from copperchat.errors import ConversationNotFound, CopperChatError
+from copperchat.errors import ConversationNotFound, CopperChatError, InvalidConversation
 from copperchat.projects import Project, get_project
 from copperchat.web.auth import CurrentUser
 
 router = APIRouter(prefix="/api/projects", tags=["conversations"])
 
-# 1-120 characters, a single line (no control characters).
-Title = Annotated[
-    str, StringConstraints(min_length=1, max_length=TITLE_MAX, pattern=r"^[^\x00-\x1f\x7f]+$")
-]
+
+def _title(value: str) -> str:
+    try:
+        return validate_title(value)
+    except InvalidConversation as exc:
+        raise ValueError(exc.message) from exc
+
+
+# The repo's rule (a single line of visible plain text), as a 422 validation error.
+Title = Annotated[str, StringConstraints(max_length=TITLE_MAX), AfterValidator(_title)]
 
 
 class SessionTypeUnavailable(CopperChatError):

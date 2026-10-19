@@ -5,6 +5,7 @@ from __future__ import annotations
 import builtins
 import json
 import sqlite3
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from typing import Any, Literal, cast, get_args
@@ -19,15 +20,21 @@ ConversationStatus = Literal["open", "closing", "closed"]
 CONVERSATION_TYPES: tuple[str, ...] = get_args(ConversationType)
 _STATUSES: tuple[str, ...] = get_args(ConversationStatus)
 TITLE_MAX = 120
+# Control, format (bidi overrides, zero-width), line and paragraph separators.
+_REFUSED_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
 _SEQ_RETRIES = 20
 
 
 def validate_title(title: str) -> str:
-    """1-120 characters, a single line (no control characters)."""
+    """1-120 characters, a single line with visible text: no control or format characters
+    (e.g. bidi overrides, zero-width), no line/paragraph separators, not only spaces. The
+    title reaches the session list and push notification titles."""
     if not 1 <= len(title) <= TITLE_MAX:
         raise InvalidConversation(f"a session title has 1 to {TITLE_MAX} characters")
-    if any(ord(ch) < 32 or ord(ch) == 127 for ch in title):
-        raise InvalidConversation("a session title is a single line")
+    if any(unicodedata.category(ch) in _REFUSED_CATEGORIES for ch in title):
+        raise InvalidConversation("a session title is a single line of plain text")
+    if not title.strip():
+        raise InvalidConversation("a session title needs visible text")
     return title
 
 
@@ -226,6 +233,19 @@ class ConversationRepo:
             (project_id, *run_ids),
         )
         return {str(r["run_id"]): (str(r["cid"]), str(r["title"])) for r in rows}
+
+    async def usage_for(self, conversation_id: str) -> dict[str, Any]:
+        """The summed ``runs.usage`` of one conversation (``ix_runs_conversation``)."""
+        r = await self._db.fetchone(
+            "SELECT COALESCE(SUM(json_extract(usage, '$.inputTokens')), 0) AS i, "
+            "COALESCE(SUM(json_extract(usage, '$.outputTokens')), 0) AS o, "
+            "COALESCE(SUM(json_extract(usage, '$.costUsd')), 0) AS c "
+            "FROM runs WHERE conversation_id = ?",
+            (conversation_id,),
+        )
+        if r is None:
+            return empty_usage()
+        return {"inputTokens": int(r["i"]), "outputTokens": int(r["o"]), "costUsd": float(r["c"])}
 
     async def closing(self) -> builtins.list[ConversationRow]:
         rows = await self._db.fetchall(

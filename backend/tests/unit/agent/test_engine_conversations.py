@@ -1,6 +1,7 @@
 """Engine bursts bound to conversations (spec §5.2-§5.3, plan S-C3, Review Focus 1)."""
 
 import asyncio
+import sys
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -245,6 +246,44 @@ async def test_stop_for_other_conversation_between_turns_leaves_stream(make_engi
     agent.start_gate.set()
     await until(lambda: len(agent.prompts) == 1 and not engine.is_busy)
     assert [p.text for p in agent.prompts] == ["A1"]
+
+
+async def test_stop_for_b_during_a_turn_start_window_spares_a(make_engine, db, until):
+    """A's item is pulled (in flight) but its turn is not set up yet: a Stop for B (with a
+    stale run id or none) must neither interrupt A nor cancel A's messages."""
+    a, b = await _conv(db), await _conv(db)
+    hooks = _Recorder()
+    engine, agent = await make_engine(hooks=hooks)
+    repo = engine._messages
+    real_get = repo.get
+    hold = asyncio.Event()
+    entered = asyncio.Event()
+
+    async def slow_get(mid: int) -> Any:
+        row = await real_get(mid)
+        # Only _begin_turn's read of A1 waits: the item is pulled, the turn not set up.
+        caller = sys._getframe(1).f_code.co_name
+        if caller == "_begin_turn" and row is not None and row.content == "A1":
+            entered.set()
+            await hold.wait()
+        return row
+
+    repo.get = slow_get  # type: ignore[method-assign]
+    mb, _ = await engine.submit_ex(b, "b0", "B0", [])  # first: runs, then A1 waits
+    await until(lambda: len(agent.prompts) == 1 and not engine.is_busy)
+    ma1, _ = await engine.submit_ex(a, "a1", "A1", [])
+    await asyncio.wait_for(entered.wait(), 2)  # A1 in flight, turn not started
+    assert engine.current_run_id is None
+    mb2, _ = await engine.submit_ex(b, "b2", "B2", [])  # DB-queued (seals A's stream)
+    await engine.interrupt("old-run-of-b", b)  # stale Stop: ignored entirely
+    await engine.interrupt(None, b)  # Stop for B between B's turns: B's queue only
+    assert agent.interrupts == 0
+    assert await _status(db, mb2.id) == "cancelled"
+    hold.set()
+    await until(lambda: len(agent.prompts) == 2 and not engine.is_busy)
+    assert [p.text for p in agent.prompts] == ["B0", "A1"]
+    assert hooks.outcomes[-1].reason == "completed"
+    assert await _status(db, ma1.id) == "done" and await _status(db, mb.id) == "done"
 
 
 async def test_turn_context_in_kicadless_ctx(make_engine, db, until):

@@ -202,8 +202,7 @@ BackendFactory = Callable[[Callable[[], ToolContext], Callable[[], str | None]],
 
 
 async def conversation_dto(repo: ConversationRepo, row: ConversationRow) -> ConversationDTO:
-    usage = (await repo.usage_totals(row.project_id)).get(row.id)
-    return ConversationDTO.model_validate(row.to_wire(usage))
+    return ConversationDTO.model_validate(row.to_wire(await repo.usage_for(row.id)))
 
 
 async def publish_conversation(
@@ -281,6 +280,7 @@ class RunEngine:
         self._bursts: set[asyncio.Task[None]] = set()  # incl. ones still winding down
         self._turn: _Turn | None = None
         self._inflight: int | None = None  # pulled from the stream, turn not finished
+        self._inflight_cid: str | None = None  # its conversation (set with _inflight)
         self._live: dict[int, str] = {}  # streaming row id -> full content incl. unflushed
         # Agent notes (spec §5.3): per conversation, plus broadcast notes about the shared
         # design state that each conversation sees once, at its next turn.
@@ -416,17 +416,6 @@ class RunEngine:
             )
         return self.to_dto(row)
 
-    async def notice_conversation_id(self) -> str | None:
-        """Where a notice about the shared design state goes when no request names a
-        conversation (external change, recovery): the running turn's conversation, else
-        the most recently active open one (spec §5.3)."""
-        if (cid := self.current_conversation_id) is not None:
-            return cid
-        for row in await self._conversations.list(self.pid):
-            if row.status == "open":
-                return row.id
-        return None
-
     async def cancel_queued(self, message_id: int) -> bool:
         """True if the message was still waiting; False once the engine pulled it."""
         async with self._lock:
@@ -457,11 +446,17 @@ class RunEngine:
         does not end the interrupted turn within the grace period, the burst is cancelled
         (backstop); a message sent after the Stop is never hit by that backstop.
         """
-        current = self.current_run_id
-        if run_id is not None and current is not None and run_id != current:
-            return  # stale Stop for an older run
-        target_cid = self.current_conversation_id or conversation_id
         async with self._lock:
+            # Decided under the lock: an item pulled from the stream is in flight before its
+            # turn (and run id) exists.
+            current = self.current_run_id
+            if (
+                run_id is not None
+                and run_id != current
+                and (current is not None or self._inflight is not None)
+            ):
+                return  # stale Stop for an older run
+            target_cid = self.current_conversation_id or conversation_id
             stream = self._stream
             own = (
                 stream is not None
@@ -484,7 +479,9 @@ class RunEngine:
                 ]
                 for mid in ids:
                     await self._cancel_row(mid, target_cid)
-            target = self._inflight
+            # Only the target conversation's item is interrupted: a Stop for B never hits
+            # A's item that is pulled but whose turn has not started yet.
+            target = self._inflight if self._inflight_cid == target_cid else None
             if target is not None:
                 self._interrupting = True
         if ids and target_cid is not None:
@@ -731,6 +728,7 @@ class RunEngine:
     ) -> AsyncIterator[QueuedItem]:
         async for item in stream:
             self._inflight = item.message_id
+            self._inflight_cid = item.conversation_id
             yield await self._begin_turn(item, conversation)
 
     async def _begin_turn(self, item: QueuedItem, conversation: ConversationRow) -> QueuedItem:
@@ -975,6 +973,7 @@ class RunEngine:
             )
             self._turn = None
             self._inflight = None
+            self._inflight_cid = None
             self._interrupting = False  # an interrupt targets exactly one turn
         outcome = TurnOutcome(
             reason=reason,
