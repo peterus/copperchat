@@ -37,7 +37,9 @@ each entry.
   - `backend/src/copperchat/push/notifier.py` (URL `/p/{pid}/s/{cid}`) and
     its test
 - Tests: component tests next to each component; a store test; Playwright
-  `frontend/e2e/sessions.spec.ts` (desktop and phone width)
+  `frontend/e2e/sessions.spec.ts` (desktop and phone width); existing
+  `frontend/e2e/smoke.spec.ts` and `viewer.spec.ts` (updated for the
+  `/p/:projectId/s/:cid` route)
 
 ---
 

@@ -1,6 +1,7 @@
 # Phase C5: Session types, skills, context injection, close/handover, gate
 
-> **Index contracts:** S-C3 (consumer: burst row, `before_model_input`,
+> **Index contracts:** S-C8 (producer of the `doc-changed` metadata, exact
+> keys), S-C3 (consumer: burst row, `before_model_input`,
 > `on_turn_end`, `on_items_failed`), S-C4 (close/reopen routes), S-C5
 > (wiring), S-C6 (consumer), S-C7.
 > **Spec sections:** §8, §9, §10, §11 (notice), §13 (injection,
@@ -40,7 +41,9 @@ handover.
     (the prompt rule against putting design data into URLs or queries)
   - Agent runtime and plans: `agent/runtime.py` (both ctx factories take the
     conversation fields from `turn_context`), `plans/gate.py` (the refusal
-    names the owning session's title)
+    names the owning session's title), `plans/service.py` (`plan_propose`
+    and `plan_revise` refused while the owning session is `closing`), new
+    `sessions/__init__.py` (`install_sessions(app)`, `SessionHooks`)
   - Skills DTO: `web/routes_skills.py` (adds `sessions: string[] | null` to
     the skill DTO, for C6's chips)
   - Web: `web/routes_conversations.py` (close and reopen), `web/app.py`
@@ -95,6 +98,15 @@ handover.
     `conversation_type` and `run_id`, also with KiCad stopped.
   - The schematic policy applies: patching `requirements.md` › `Power` →
     `doc_scope_refused`.
+  - **Hooks installed for real:** `install_sessions(app)` wraps
+    `runtime.hooks_factory`. A test through the app's `hooks_factory`
+    (`ChainedHooks`) shows injection and the close lifecycle actually fire.
+  - **Unsolicited turns:** a CLI-started turn's tool call in a Schematic
+    session still gets the Schematic policy (burst-scoped conversation
+    fields).
+  - **Notice keys:** the `doc-changed` metadata has exactly the keys
+    `action, path, revisionId, added, removed, sections`, with `path` in
+    the full `docs/design/...` form.
   - Two writes to the same doc in one turn give one `doc-changed` notice,
     updated by a `message-delta`.
   - The per-turn cap of 40 holds.
@@ -145,6 +157,14 @@ handover.
     - `POST …/close` → `closing`, and the server-authored message (spec §10
       text, `metadata.origin='close-session'`) is enqueued.
     - A conversation that is not `open` → 409.
+    - **Double close:** two concurrent closes enqueue exactly one handover
+      (`set_status(…, expect='open')`; the second → 409). Close racing
+      reopen gives a 409 for one of them.
+    - **No plan in a closing session:** while the session is `closing`,
+      `plan_propose` and `plan_revise` are refused (`conversation_closing`).
+      At closing → closed, `on_turn_end` re-checks: if the session owns an
+      open plan, it goes back to `open` with a notice. Test: a plan
+      proposed during the close turn → the session ends `open`.
     - A conversation that owns an open plan (proposed, approved, running or
       paused) → 409 `plan_open`.
     - A foreign `cid` → 404.

@@ -32,6 +32,17 @@ changes as cards in the chat.
 
 ---
 
+### Task 0: `openPanel` params
+
+- [ ] TDD: `DocsPanel` honours `PanelProps.params`.
+  - `{path}` opens that doc.
+  - `{path, revisionId}` opens its history diff.
+  - No params opens the index.
+
+  Relative links `../parts/<MPN>/notes.md` call `openPanel('parts',
+  {mpn})`. The Parts panel (`frontend/src/panels/parts.ts` and its page,
+  added to C4's files) opens that part when `params.mpn` is set. Commit.
+
 ### Task 1: API, store, index and view
 
 - [ ] **Step 1: Failing tests:**
@@ -76,7 +87,9 @@ changes as cards in the chat.
     diff". Never an n×m table.
 
   A perf test: two 4,000-line docs with 50 changes diff in under 200 ms in
-  jsdom. [Revert to this] → POST revert with
+  jsdom. A second perf test near the cap (D ≈ 1,900): the Myers trace uses
+  linear-space or sliced `Int32Array` storage, never a full V array per
+  step, and stays under 32 MB. [Revert to this] → POST revert with
   `baseVersion`, and a 409 goes through the conflict flow.
 - [ ] **Step 2:** FAIL. **Step 3: Implement.** **Step 4:** PASS.
   **Step 5:** commit.

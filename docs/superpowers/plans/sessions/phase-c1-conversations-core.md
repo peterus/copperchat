@@ -27,7 +27,14 @@ old tabs see a reload banner.
     `agent/runtime.py` (`BackendFactory` gets `turn_context`),
     `agent/sdk_backend.py` (`start()`: signature, turn context, `run_id` in
     the KiCad-less ctx; never `build_options`),
-    `agent/fake.py` (the `start` signature), `agent/protocol.py`
+    `agent/fake.py` (the `start` signature; the KiCad-less ctx path via
+    `build_sdk_tool_list(specs, ctx_factory, kicadless_ctx_factory)`),
+    `agent/protocol.py`
+  - Hooks: `ChainedHooks` in `agent/engine.py` forwards
+    `before_model_input` and `on_items_failed` (S-C3)
+  - Existing e2e: `frontend/e2e/smoke.spec.ts` and `frontend/e2e/viewer.spec.ts`
+    (mock `/conversations*` and the new messages route; `conversationId` in
+    frames)
   - Repos and routes: `db/repos/messages.py`, `db/repos/agent_state.py`
     (remove `AgentSessionRepo`, `RunRepo.start(run_id, project_id,
     conversation_id)`), `web/ws.py`, `web/routes_messages.py` (remove the

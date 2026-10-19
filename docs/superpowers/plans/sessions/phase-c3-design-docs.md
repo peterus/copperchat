@@ -61,9 +61,11 @@ mirrors its guard.
   - **Read race:** replace the target with a symlink between check and
     open. The read fails with `O_NOFOLLOW`.
   - **Write race:** a monkeypatched hook swaps `docs/design` for a
-    directory symlink just before the temp-file write or the `rename`. The
-    no-follow directory check refuses, and nothing lands outside the
-    project.
+    directory symlink **after** the directory fd is opened and **before**
+    the temp file is created. With the dir-fd relative writer (index Global
+    Constraints), the write lands in the original directory or fails, and
+    never lands outside the project. A second case: the swap happens before
+    the fd is opened → `O_NOFOLLOW` refuses.
   - **Walk:** it lists at most 50 docs, at depth ≤ 2, and does not follow
     directory symlinks. Rejected entries come back as `ignored` with a
     reason.
@@ -75,8 +77,9 @@ mirrors its guard.
   - `fstat` with `S_ISREG` and the size cap; read at most cap + 1 bytes
   - segment `fullmatch`
 
-  Writes: temp file plus `rename` in the same directory, with a no-follow
-  check of the directory just before. The whole scan runs in one
+  Writes use the doc-only, dir-fd relative writer (index Global
+  Constraints). Every directory component is opened with
+  `O_DIRECTORY|O_NOFOLLOW`. `fsutil.atomic_write_*` stays unchanged. The whole scan runs in one
   `asyncio.to_thread`.
 - [ ] **Step 4:** PASS. **Step 5:** commit.
 
@@ -126,6 +129,13 @@ mirrors its guard.
     - Retention: 100 per doc and 32 MiB per project, and the approved body
       version is kept.
   - **Caps:** every cap from spec §7.4.
+  - **Conflict diff bound:** the conflict diff uses the 4,000-line cutoff,
+    runs in `to_thread` **outside** the doc lock (on snapshots taken under
+    the lock), and is capped at 8 KiB of output.
+  - **Index query:** the `DocIndexDTO` fields `lastAuthor` and
+    `lastConversationTitle` come from **one** grouped latest-revision query
+    that never selects `content`. A test counts the queries: ≤ 2 for 50
+    docs.
   - **Every reader skips bad files:** `versions()` and the external-revision
     capture skip a symlinked `requirements.md`, a FIFO, a 300 KiB doc and
     a 51st file. Spy on `safe_read`/`os.open`: none of them is opened.
@@ -161,10 +171,18 @@ mirrors its guard.
     - `policy_for('schematic')` allows only `decisions.md` appends and the
       `Open points` / `Key parts` sections. Everything else gives
       `doc_scope_refused`. `requirements` cannot write `board.md`.
-      `conversation_type=None` behaves like Free.
+      `(conversation_id None, conversation_type None)` → Free.
+      `(conversation_id set, conversation_type None)` →
+      `doc_scope_refused`. A mutating call with `run_id` None →
+      `doc_scope_refused`.
   - **Templates:** resolved per file, project → user → built-in. A
     project-layer `design-docs` without `templates/` still finds the
     built-in templates. A disabled skill still serves its templates.
+    Project- and user-layer templates are read with the same safe opener:
+    lexical `lstat` of every layer component, `O_NOFOLLOW|O_NONBLOCK`,
+    `fstat` `S_ISREG`, ≤ 256 KiB. A symlinked (→ `/proc/self/environ`),
+    FIFO or oversized project template is skipped, never opened, and the
+    resolver falls back to the user or built-in template.
 - [ ] **Step 2:** FAIL. **Step 3: Implement.** **Step 4:** PASS. **Step 5:**
   commit.
 
@@ -213,8 +231,9 @@ mirrors its guard.
 - [ ] All C3 tests pass. The path table proves there is no access outside
   `docs/design/`, for every reader.
 - [ ] Under the current (single-conversation) engine, the Free agent can
-  use the doc tools end to end. Smoke test: a fake-agent script calls
-  `doc_write`, then `doc_read`.
+  use the doc tools end to end. Smoke test: build a `ToolContext(docs=…,
+  run_id='r1')` directly (the engine wiring is C5's) and call the
+  `doc_write`, then `doc_read` handlers.
 - [ ] Existing tests are green. `test_builtin_skills.py` is updated:
   `EXPECTED` includes `design-docs`, and the tool-name check covers it,
   with the `doc` prefix.

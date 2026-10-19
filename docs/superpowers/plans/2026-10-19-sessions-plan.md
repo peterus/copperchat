@@ -100,7 +100,14 @@ constraints.
 - **The main agent has no file, shell or web tools.** The doc tools are
   CopperChat MCP tools. Built-ins stay `[]` or `["Skill"]`.
 - **The doc path rules of spec §7.5 are binding for every reader and
-  writer:** tools, REST, enumeration, index, change scan, revisions and gate.
+  writer:** tools, REST, enumeration, index, change scan, revisions, gate
+  **and project- or user-layer templates**.
+  - **Writes are dir-fd relative.** `docs/design` is opened component-wise
+    with `O_DIRECTORY|O_NOFOLLOW` (`dir_fd` chain). The temp file is
+    created with `O_CREAT|O_EXCL|O_NOFOLLOW` relative to that fd, and moved
+    with `os.replace(src_dir_fd=, dst_dir_fd=)`. This is a doc-only writer
+    in `design_docs/paths.py`. The shared `fsutil.atomic_write_*` stays
+    unchanged.
   - Lexical `lstat` checks.
   - Opens use `O_NOFOLLOW | O_NONBLOCK | O_NOCTTY`, followed by `fstat`
     (`S_ISREG`, size ≤ 256 KiB).
@@ -217,7 +224,7 @@ class ConversationRepo:
     async def get_for_project(self, project_id: str, conversation_id: str) -> ConversationRow  # raises ConversationNotFound
     async def list(self, project_id: str, archived: bool = False) -> list[ConversationRow]
     async def update(self, cid: str, *, title: str | None = None, archived: bool | None = None) -> ConversationRow
-    async def set_status(self, cid: str, status: str) -> ConversationRow
+    async def set_status(self, cid: str, status: str, *, expect: str) -> ConversationRow  # UPDATE … WHERE status=expect; 0 rows → ConversationStateConflict (409)
     async def set_sdk_session(self, cid: str, sdk_session_id: str) -> None
     async def set_docs_seen(self, cid: str, docs_seen: dict[str, str]) -> None
     async def touch(self, cid: str) -> None              # last_message_at, updated_at
@@ -248,20 +255,43 @@ class ConversationRepo:
   ConversationRow, input_stream, resume_session_id)`. C1 passes the row, and
   the SDK backend ignores the type until C5.
 - **Turn hook for C5.** `RunHooks.on_turn_start(turn)`. `TurnInfo` gains
-  `conversation_id`, plus a new hook `RunHooks.before_model_input(turn) ->
-  list[str]`, which returns extra notices. **Each list entry is one notice.**
+  `conversation_id`, plus a new hook `async def
+  RunHooks.before_model_input(turn) -> list[str]`, which returns extra
+  notices. **Each list entry is one notice.**
   It may contain newlines, and it gets **exactly one** `[CopperChat notice]`
   prefix, at its start. Lines inside an entry are never prefixed. This
   matters because the index rows and the fenced doc body are repository
   data (spec §9.1). C1 adds the hook with a
   no-op default, and calls it in `_begin_turn` next to the notes prefix. C5
   implements context injection through it.
-- **Turn context for tools (C1).** The engine exposes `turn_context() ->
-  TurnContext(run_id, conversation: ConversationRow | None)`.
-  `AgentRuntime` passes it through `BackendFactory` into the SDK backend and
-  the `FakeAgent`. C1 uses it to set `run_id` in the backend's KiCad-less
-  ctx factory. In C5, both ctx factories also take the conversation fields
-  (S-C5) from it.
+- **`ChainedHooks` forwards the new methods (C1).** In production the
+  engine only ever sees `ChainedHooks` (`install_editing` wraps history,
+  `editing/__init__.py:50`; `ChainedHooks` is at `agent/engine.py:124-153`).
+  C1 extends it with a test:
+  - `before_model_input` concatenates the lists of all hooks, in order.
+  - `on_items_failed` runs all hooks, then raises the first error.
+
+  C5 installs `SessionHooks` by wrapping `runtime.hooks_factory`, as
+  `install_editing` does, in `install_sessions(app)` after
+  `install_plans`. It tests through the app's real `hooks_factory`, not by
+  passing hooks directly.
+- **Turn context for tools (C1).**
+  - **Conversation fields are burst-scoped.** `start(project,
+    conversation, …)` binds them, because the conversation is fixed per
+    burst. So a turn the CLI starts on its own (`ev.unsolicited`,
+    `engine.py:591`, where `_turn` is None) still gets its session's
+    profile and policy.
+  - **`run_id` comes from the engine.** `turn_context() -> run_id | None`.
+    `AgentRuntime` passes it through `BackendFactory` into the SDK backend
+    and the `FakeAgent`.
+  - **C1's scope.** C1 sets `run_id` in the SDK backend's KiCad-less ctx
+    factory. It also gives `FakeAgent` the KiCad-less path:
+    `build_sdk_tool_list(specs, ctx_factory, kicadless_ctx_factory)`, as
+    the SDK backend does (`agent/fake.py:196`).
+  - **C5's scope.** C5 adds the conversation fields to both factories.
+  - **Mutating doc tools refuse when `run_id` is None**
+    (`doc_scope_refused`, "no active turn"), so the per-turn cap cannot
+    collapse into one `(pid, None)` bucket.
 - **Turn-end hook for C5.** `TurnOutcome` gains `conversation_id` and the
   final message status. C5's close lifecycle uses `on_turn_end`, plus a new
   `RunHooks.on_items_failed(conversation_id, message_ids, status)` that C1
@@ -300,8 +330,21 @@ docs: DesignDocs | None = None
 - C3 uses a local `ConversationInfo(id, seq, title, type)` dataclass, built
   from these fields, for the decisions entry and attribution. It never
   imports C1's `ConversationRow`.
-- **Fail closed.** A context with `conversation_id` set but
-  `conversation_type` None is refused (`doc_scope_refused`).
+- **Fail closed (C3 implements and tests both cases).**
+  - `(conversation_id None, conversation_type None)` → the Free policy.
+    This is for plain tests only.
+  - `(conversation_id set, conversation_type None)` → `doc_scope_refused`.
+- **`DocNotice`** is a frozen dataclass:
+
+  ```
+  DocNotice(kind: 'changed' | 'approval_lost', path, revision_id, added,
+            removed, sections: tuple[str, ...], conversation_id, run_id)
+  ```
+
+  `path` is always the full `docs/design/...` form, also in DTOs, frames
+  and notice metadata. C5 maps `kind='changed'` to the S-C8 `doc-changed`
+  metadata, with exactly the keys `action, path, revisionId, added,
+  removed, sections`.
 - `run_id` in the KiCad-less ctx is C1's job (S-C3 turn context).
 - C5 wires all of them. C1 does **not** touch `ToolContext`. C5 fills it in
   `engine._make_ctx` and the SDK backend's KiCad-less factory.
@@ -428,7 +471,9 @@ written.
 - **Backend commands:** `cd backend && uv run pytest -m "not kicad" -q`,
   `uv run ruff check . && uv run ruff format --check . && uv run mypy`.
 - **Frontend commands:** `cd frontend && npm run typecheck && npm run lint &&
-  npm test -- --run && npm run build`.
+  npm test -- --run && npm run build && npx playwright test`. CI runs all
+  Playwright specs, and existing specs mock API routes that C1 and C2
+  change.
 - **KiCad:** no phase in this plan needs real KiCad tests, except where a
   phase says so. The doc tools are KiCad-less.
 - **Protocol fixtures** must round-trip canonically (backend
