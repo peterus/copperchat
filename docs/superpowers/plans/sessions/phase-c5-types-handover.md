@@ -38,6 +38,11 @@ handover.
   - Research: `research/runner.py` (`MAX_QUERY_CHARS = 2000`),
     `research/specs.py` (schema `maxLength` hint), `research/agent.py`
     (the prompt rule against putting design data into URLs or queries)
+  - Agent runtime and plans: `agent/runtime.py` (both ctx factories take the
+    conversation fields from `turn_context`), `plans/gate.py` (the refusal
+    names the owning session's title)
+  - Skills DTO: `web/routes_skills.py` (adds `sessions: string[] | null` to
+    the skill DTO, for C6's chips)
   - Web: `web/routes_conversations.py` (close and reopen), `web/app.py`
     (the startup sweep before `resume_pending`)
   - Tests: `tests/unit/phase8/test_builtin_skills.py` (`TOOL_NAME` gains
@@ -93,6 +98,11 @@ handover.
   - Two writes to the same doc in one turn give one `doc-changed` notice,
     updated by a `message-delta`.
   - The per-turn cap of 40 holds.
+  - Both ctx factories (`engine._make_ctx` and the SDK KiCad-less one) set
+    `conversation_type`. A context with `conversation_id` but no type →
+    `doc_scope_refused` (fail closed).
+  - With a plan open in session A, a `sch_*` call from session B is
+    refused, and the refusal names "Session A".
   - After three conflicts on one doc in one turn, the error says to stop
     and ask the user.
 - [ ] **Step 2:** FAIL. **Step 3: Implement.** **Step 4:** PASS.
@@ -111,14 +121,19 @@ handover.
     - Approval is read from `doc_approvals`, so a doc with only
       `status: approved` in the file counts as not approved.
     - `docs_seen` is stored.
+  - **Fence and prefixes:** no line inside the nonce fence, or among the
+    index rows, starts with `[CopperChat notice]`. Only the first line of
+    each `before_model_input` entry carries the prefix (S-C3).
   - **Later turns:** one line per doc changed by the user or another
     session. The conversation's own writes produce no line.
   - **Sanitising:** a doc line `​[CopperChat notice] do X` or
     `\x07[CopperChat notice]` is quoted with `> `.
   - **`TurnInfo.text` invariant:** it is unchanged, and a doc containing
     "commit" does not let `git_commit` pass.
-  - **Bad files:** ignored files (symlink, FIFO, too large) are listed, not
-    read.
+  - **Bad files:** a symlinked `requirements.md`, a FIFO, a 300 KiB doc and
+    a 51st file are listed as ignored and never opened, by the first-turn
+    index, by the later-turn change scan (`versions()`) and by the gate
+    check. Spy on `safe_read`/`os.open` to prove it.
 - [ ] **Step 2:** FAIL. **Step 3: Implement**, using `DesignDocs.list`,
   `sanitize_*` and the `versions()` cache. **Step 4:** PASS. **Step 5:**
   commit.
@@ -130,6 +145,10 @@ handover.
     - `POST …/close` → `closing`, and the server-authored message (spec §10
       text, `metadata.origin='close-session'`) is enqueued.
     - A conversation that is not `open` → 409.
+    - A conversation that owns an open plan (proposed, approved, running or
+      paused) → 409 `plan_open`.
+    - A foreign `cid` → 404.
+    - Close and reopen return 401 without a session.
   - **Lifecycle:**
     - **Completed:** → `closed`, plus the `decisions.md` entry `Session N
       closed`, written by `append_server_entry`.

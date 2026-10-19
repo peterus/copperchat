@@ -1,7 +1,10 @@
 # Phase C2: Session UI
 
 > **Index contracts:** S-C4 (consumer, including the C5 close/reopen
-> shapes), S-C8.
+> shapes), S-C6 (`DocIndexDTO`, consumer), S-C8.
+> **Depends on C1 and C3** (both wave 1). It uses `openPanel` (C1) and
+> `getDocIndex` (C3). It does not touch `ProjectLayout.tsx` or
+> `api/docs.ts`.
 > **Spec sections:** §11 (dialog part), §12.1, §12.4, §6.3 (deep link).
 > **Runs in parallel with C4 and C5.** Frontend only, plus a one-line change
 > to the push URL in `push/notifier.py`. Do not touch `components/docs/*`,
@@ -56,7 +59,8 @@ each entry.
 - [ ] **Step 1: Failing tests:**
   - **Header:** type icon, inline rename (1–120 chars, single line), status
     chip, a running chip with Stop for another session (it sends
-    `interrupt` with the current `conversationId`), [New session] and
+    `interrupt` with **`activeRun.conversationId`**, the running session, not
+    the viewed one), [New session] and
     [Close session].
   - **List:** sorted by activity, with running and unread dots, cost,
     archive/unarchive, "Show archived", and closed sessions dimmed. Popover
@@ -67,8 +71,13 @@ each entry.
       `requirements.md` missing, else Schematic
     - **gate warning** (spec §11): when the type is Schematic and
       requirements are missing or not approved, it shows a warning with
-      [Start anyway] and [Open requirements] (opens the `docs` panel, or
-      only navigates once C4 lands; feature-detect via `usePanels()`)
+      [Start anyway] and [Open requirements]. The latter calls
+      `openPanel('docs', {path:'docs/design/requirements.md'})`, and falls
+      back to nothing if the panel is not registered yet (feature-detect via
+      `usePanels()`).
+  - **Plan banner:** when the project's open plan belongs to another
+    session (`PlanDTO.conversationId`), the chat shows a non-interactive
+    banner "Plan open in Session N", with a link.
   - **Close:** [Close session] → `POST …/close` → the status chip shows
     `closing`. A `closed` session hides the composer and shows [Reopen]
     (`POST …/reopen`). Both are mocked at the API layer, using the S-C4
@@ -88,11 +97,16 @@ each entry.
 
 ### Task 4: e2e
 
-- [ ] `frontend/e2e/sessions.spec.ts`, using the fake agent (dev fake mode):
-  create a Requirements session, send a message, create a Free session,
-  send while the first one runs, see the queued hint, and see each reply
-  land in its own session. Phone width: open the list sheet and switch
-  sessions.
+- [ ] `frontend/e2e/sessions.spec.ts` with **mocked API and WS**, like
+  `viewer.spec.ts`. The frontend CI job runs against Vite dev with mocks.
+  The script:
+  - Create a Requirements session, then a Free session.
+  - Simulate `run-started` for the first session and send in the second:
+    the queued hint shows.
+  - Push replies for both sessions: each lands in its own session.
+  - Phone width: open the list sheet and switch sessions.
+
+  No dependency on the real fake agent or its timing.
 
 ## Acceptance
 

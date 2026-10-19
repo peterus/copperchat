@@ -24,7 +24,9 @@ old tabs see a reload banner.
 - Modify:
   - Agent: `agent/events.py` (`QueuedItem.conversation_id`),
     `agent/push_stream.py` (`conversation_id`, `seal()`), `agent/engine.py`,
-    `agent/runtime.py`, `agent/sdk_backend.py` (the `start` signature only),
+    `agent/runtime.py` (`BackendFactory` gets `turn_context`),
+    `agent/sdk_backend.py` (`start()`: signature, turn context, `run_id` in
+    the KiCad-less ctx; never `build_options`),
     `agent/fake.py` (the `start` signature), `agent/protocol.py`
   - Repos and routes: `db/repos/messages.py`, `db/repos/agent_state.py`
     (remove `AgentSessionRepo`, `RunRepo.start(run_id, project_id,
@@ -40,7 +42,11 @@ old tabs see a reload banner.
   - Frontend: `frontend/src/protocol/frames.ts`, `frontend/src/stores/chat.ts`,
     `frontend/src/hooks/useChat.ts`, `frontend/src/components/chat/ChatPanel.tsx`,
     `frontend/src/pages/ProjectPage.tsx`, `frontend/src/components/plan/PlanCard.tsx`,
-    `frontend/src/panels/ChangesPanel.tsx`
+    `frontend/src/panels/ChangesPanel.tsx`,
+    `frontend/src/components/history/{restore.ts,ConfirmRestore.tsx,RestoreOffer.tsx}`
+    (restore sends `conversationId`), `frontend/src/test/fakeMessageServer.ts`
+    (it mirrors the new messages route), `frontend/src/stores/ui.ts` and
+    `frontend/src/layouts/{ProjectLayout.tsx,panels.ts}` (`openPanel`, S-C8)
 - Tests:
   - `tests/unit/db/test_migration_0008.py`
   - `tests/unit/db/test_conversations_repo.py`
@@ -117,6 +123,12 @@ old tabs see a reload banner.
       does not clear `_sealed_stream`.
   - **Session ids and cancellation:**
     - `test_session_id_stored_on_burst_conversation`.
+    - `test_stop_during_sealed_stream`.
+    - `test_stop_from_b_view_on_a_between_turns`: the frame carries A's
+      `conversationId` (the running chip sends `activeRun.conversationId`).
+      Only A's queue is cancelled.
+    - `test_turn_context_in_kicadless_ctx`: a `requires_kicad=False` tool
+      sees `run_id` while KiCad is stopped.
     - `test_stop_scoped`: Stop on A's run. B's queued message stays
       `queued` and runs afterwards. A's other pending items are
       `cancelled`.
@@ -131,8 +143,9 @@ old tabs see a reload banner.
   - **Notices, closed sessions and hooks:**
     - `test_post_notice_into_given_conversation`.
     - `test_send_to_closed_conversation_refused` (`conversation_closed`).
-    - The `before_model_input` lines are prefixed, as `[CopperChat notice]`
-      lines, to the model item only. `TurnInfo.text` stays the user's text.
+    - Each `before_model_input` entry is prefixed exactly once, at its
+      start, with `[CopperChat notice]`. An entry with newlines yields one
+      prefix. It goes to the model item only. `TurnInfo.text` stays the user's text.
     - `on_items_failed` is called by `_fail_burst`, `cancel_queued` and the
       Stop cancellation.
 - [ ] **Step 2:** FAIL.
@@ -173,12 +186,15 @@ old tabs see a reload banner.
   - **WS:** `subscribe` replays only that conversation, and live frames of
     the project's other conversations still arrive. `send` and `interrupt`
     with another project's `cid` give `error conversation_not_found`, and
-    nothing is enqueued. `conversation-updated` is published on create,
+    nothing is enqueued. `subscribe` with project B's `cid` under project A →
+    `error conversation_not_found`, with no replay and no cursor bound.
+    `conversation-updated` is published on the first and last message and on create,
     rename, archive and status change.
   - **Protocol:** every fixture is updated, with new invalid cases (missing
     `conversationId` for `send`, `subscribe` and `interrupt`), and the new
     `conversation-updated.json`. The backend round-trip and frontend
     `frames.test.ts` pass.
+  - **Auth:** every new route returns 401 without a session.
 - [ ] **Step 2:** FAIL. **Step 3: Implement** spec §6.1 (conversations,
   messages, restore) and §6.2. Push notifications put the session title
   into the text.
@@ -192,6 +208,9 @@ old tabs see a reload banner.
     reconnect tests are adapted.
   - **ProjectPage:** it lists conversations and, if there are none, creates
     one (`type:'free'`). It opens the newest open conversation.
+  - **`openPanel`:** `openPanel('history')` opens the History sheet on
+    desktop and the panel on phone. `params` reach the panel.
+  - **Restore:** the History restore sends the current `conversationId`.
   - **`UpdateBanner.test.tsx`:** a mismatch between `/api/health` `version`
     and the build version shows the banner. A match shows nothing.
 - [ ] **Step 2:** FAIL.
@@ -199,7 +218,8 @@ old tabs see a reload banner.
   - `PlanCard.runActive` reads the project-level active run.
   - `ChangesPanel`'s restore lookup uses the current conversation.
   - The build version comes from Vite `define` (`__COPPERCHAT_VERSION__`,
-    taken from the backend `pyproject` version at build time). The banner
+    read from `frontend/package.json`; the Docker frontend stage has no
+    backend files). Test: equal versions keep the banner hidden. The banner
     is mounted in `App.tsx`.
 - [ ] **Step 4:** PASS (full frontend command set). **Step 5:** commit.
 

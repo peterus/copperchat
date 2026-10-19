@@ -52,10 +52,10 @@ below (§n) refer to the spec.
 |---|---|---|---|
 | C1 | `sessions/phase-c1-conversations-core.md` | migration `0008`, `ConversationRepo`, the engine bound to conversations (sealed streams, scoped Stop, notes and notices), REST `/conversations*` (without close), WS frame changes and fixtures, restore `conversationId`, interim frontend, build-version banner | — |
 | C3 | `sessions/phase-c3-design-docs.md` | migration `0009`, the `design_docs` package (path guard, safe readers, frontmatter, sections, versions, approvals, revisions), five doc tools, REST `/docs*`, `doc-updated` frame, new `ToolContext` fields, main-agent PreToolUse hook, templates | — (parallel to C1) |
-| C2 | `sessions/phase-c2-session-ui.md` | routing `/p/:projectId/s/:cid`, the conversation-keyed chat store, session header and list, new-session dialog (including gate warning and close/reopen buttons against the S-C4 contract), session chips in History and Changes, push deep link | C1 |
+| C2 | `sessions/phase-c2-session-ui.md` | routing `/p/:projectId/s/:cid`, the conversation-keyed chat store, session header and list, new-session dialog (including gate warning and close/reopen buttons against the S-C4 contract), the "Plan open in Session N" banner, session chips in History and Changes, push deep link | C1, C3 (both wave 1) |
 | C4 | `sessions/phase-c4-docs-panel.md` | the Docs panel (index, view, edit with conflict flow, approve, clear-user-edited, history diff, revert, live updates, phone) and the `doc-changed` notice card | C3 |
-| C5 | `sessions/phase-c5-types-handover.md` | profiles, per-type prompts, the `sessions` skill key and per-type plugin dir, new skills, wiring the doc context (write policy, `post_doc_notice`), context injection, close/reopen and its lifecycle, gate notice, `FakeAgent` extensions, golden handover scenario, researcher query cap | C1, C3 |
-| C6 | `sessions/phase-c6-eval-release.md` | live guard test and live eval, user docs and upgrade notes, as-built notes in this index, release v0.3.0 | C2, C4, C5 |
+| C5 | `sessions/phase-c5-types-handover.md` | profiles, the `PlanGate` refusal naming the owning session, closing refused while the session owns an open plan, per-type prompts, the `sessions` skill key and per-type plugin dir, new skills, wiring the doc context (write policy, `post_doc_notice`), context injection, close/reopen and its lifecycle, gate notice, `FakeAgent` extensions, golden handover scenario, researcher query cap | C1, C3 |
+| C6 | `sessions/phase-c6-eval-release.md` | Skills GUI `sessions` chips, live guard test and live eval, user docs and upgrade notes, as-built notes in this index, release v0.3.0 | C2, C4, C5 |
 
 ### Execution waves — what runs IN PARALLEL
 
@@ -64,15 +64,16 @@ wave run **concurrently in separate worktrees**.
 
 | Wave | Phases (parallel) | Why they do not conflict |
 |---|---|---|
-| **1** | **C1 ∥ C3** | C1 owns `agent/engine.py`, `agent/runtime.py`, `db/repos/messages.py` and `agent_state.py`, `web/ws.py`, `web/routes_messages.py`, `agent/protocol.py`, and the frontend chat store and interim UI. C3 owns the new package `design_docs/`, new routes `web/routes_docs.py`, `tools/spec.py` (new optional fields only), `agent/guards.py` (hook helper) and `agent/sdk_backend.py` (hook wiring only). Migration numbers are fixed upfront: C1 = `0008`, C3 = `0009`. `0009` does not depend on `0008`, because it has no foreign key to `conversations`. |
-| **2** | **C2 ∥ C4 ∥ C5** | C2 is frontend only: router, stores, chat components, layouts, History and Changes panels. C4 is frontend only: a new `panels/DocsPanel*` and `components/docs/*`, the `doc-changed` case in `MessageItem`, and a `wide` option on `PanelSheet`. C5 is backend plus skills: `agent/profiles.py`, `sdk_backend.py`, `engine.py` (injection and close hooks), `skills/`, `agent/fake.py`, `web/routes_conversations.py` (close/reopen). |
+| **1** | **C1 ∥ C3** | C1 owns `agent/engine.py`, `agent/runtime.py`, `db/repos/messages.py` and `agent_state.py`, `web/ws.py`, `web/routes_messages.py`, `agent/protocol.py`, the frontend chat store and interim UI, the `openPanel` store and its `ProjectLayout` wiring, and the history restore client. C3 owns the new package `design_docs/`, new routes `web/routes_docs.py`, `tools/spec.py` (new optional fields only), `agent/guards.py` (hook helper) and `agent/sdk_backend.py` (`build_options` hook wiring only), `tests/unit/phase8/test_builtin_skills.py` (EXPECTED plus the `doc` prefix), and the frontend `api/docs.ts` (`getDocIndex` only). Migration numbers are fixed upfront: C1 = `0008`, C3 = `0009`. `0009` does not depend on `0008`, because it has no foreign key to `conversations`. |
+| **2** | **C2 ∥ C4 ∥ C5** | C2 is frontend only (plus the one-line push URL): router, the conversations store, chat components, `components/sessions/*`, History and Changes panels, and the plan banner. It does not touch `ProjectLayout.tsx`. C4 is frontend only: a new `panels/DocsPanel*` and `components/docs/*`, the `doc-changed` case in `MessageItem`, and a `wide` option on `PanelSheet`. C5 is backend plus skills: `agent/profiles.py`, `sdk_backend.py`, `engine.py` (injection and close hooks), `agent/runtime.py` (factory wiring), `plans/gate.py` (refusal text), `skills/`, `agent/fake.py`, `web/routes_conversations.py` (close/reopen). |
 | **3** | **C6** | integration, eval and release |
 
 **Known one-line overlap points.** Each side only adds lines. Rebase on
 `main` before merging, and keep both sides:
 - `tools/registry.py` `_PROVIDERS` (C3)
-- `agent/sdk_backend.py`: C1 changes the `start` signature, and C3 adds the
-  hook in `build_options`, in different functions
+- `agent/sdk_backend.py`: C1 changes `start()` (signature, turn-context
+  provider, `run_id` in the KiCad-less ctx). C3 touches **only**
+  `build_options` (the hook), and nothing in `start()`.
 - `agent/protocol.py`: C1 changes the frame fields, and C3 appends the
   `DocUpdatedFrame` class plus one union entry
 - `web/app.py` routers and lifespan (C1, C3, C5)
@@ -81,7 +82,11 @@ wave run **concurrently in separate worktrees**.
 - `panels/index.ts` (C4)
 - the notice switch in `components/chat/MessageItem.tsx` (C2's
   `close-session` row, C4's `doc-changed` card)
-- `ProjectLayout.tsx` (C2's header changes; C4 only adds the `wide` prop)
+- `ProjectLayout.tsx`: C1 wires the `openPanel` store (S-C8). In wave 2, C4
+  only adds the `wide` prop. C2 does not touch it.
+- `frontend/src/api/docs.ts`: C3 creates `getDocIndex` with the
+  `DocIndexDTO` type. In wave 2, C4 adds the other calls, and C2 only
+  imports `getDocIndex`.
 
 Critical path: C1 → C2/C5 → C6. C3 and C4 have slack.
 
@@ -244,9 +249,19 @@ class ConversationRepo:
   the SDK backend ignores the type until C5.
 - **Turn hook for C5.** `RunHooks.on_turn_start(turn)`. `TurnInfo` gains
   `conversation_id`, plus a new hook `RunHooks.before_model_input(turn) ->
-  list[str]`, which returns extra notice lines. C1 adds the hook with a
+  list[str]`, which returns extra notices. **Each list entry is one notice.**
+  It may contain newlines, and it gets **exactly one** `[CopperChat notice]`
+  prefix, at its start. Lines inside an entry are never prefixed. This
+  matters because the index rows and the fenced doc body are repository
+  data (spec §9.1). C1 adds the hook with a
   no-op default, and calls it in `_begin_turn` next to the notes prefix. C5
   implements context injection through it.
+- **Turn context for tools (C1).** The engine exposes `turn_context() ->
+  TurnContext(run_id, conversation: ConversationRow | None)`.
+  `AgentRuntime` passes it through `BackendFactory` into the SDK backend and
+  the `FakeAgent`. C1 uses it to set `run_id` in the backend's KiCad-less
+  ctx factory. In C5, both ctx factories also take the conversation fields
+  (S-C5) from it.
 - **Turn-end hook for C5.** `TurnOutcome` gains `conversation_id` and the
   final message status. C5's close lifecycle uses `on_turn_end`, plus a new
   `RunHooks.on_items_failed(conversation_id, message_ids, status)` that C1
@@ -275,12 +290,19 @@ class ConversationRepo:
 
 ```python
 conversation_id: str | None = None
-conversation_type: str | None = None   # None = treat as "free" (tests, fake agent before C5)
+conversation_type: str | None = None   # None = treat as "free" ONLY while conversation_id is None too (plain tests)
+conversation_seq: int | None = None
+conversation_title: str | None = None
 post_doc_notice: Callable[[DocNotice], Awaitable[None]] | None = None
 docs: DesignDocs | None = None
 ```
 
-- C3 also sets `run_id` in the backend's KiCad-less context factory.
+- C3 uses a local `ConversationInfo(id, seq, title, type)` dataclass, built
+  from these fields, for the decisions entry and attribution. It never
+  imports C1's `ConversationRow`.
+- **Fail closed.** A context with `conversation_id` set but
+  `conversation_type` None is refused (`doc_scope_refused`).
+- `run_id` in the KiCad-less ctx is C1's job (S-C3 turn context).
 - C5 wires all of them. C1 does **not** touch `ToolContext`. C5 fills it in
   `engine._make_ctx` and the SDK backend's KiCad-less factory.
 
@@ -288,13 +310,13 @@ docs: DesignDocs | None = None
 
 ```python
 class DesignDocs:
-    async def list(self, project) -> DocIndex                 # incl. ignored entries
+    async def list(self, project) -> DocIndex                 # incl. ignored entries; DocIndexDTO below
     async def read(self, project, path, section=None) -> DocRead
     async def write(self, project, path, body, base_version, *, author, summary,
                     conversation_id=None, run_id=None, policy: WritePolicy) -> DocWriteResult
     async def patch_section(self, project, path, heading, body, base_version, *, mode, create, ...) -> DocWriteResult
     async def append(self, project, path, text, *, section=None, title=None, base_version=None, ...) -> DocWriteResult
-    async def append_server_entry(self, project, title, text, *, conversation) -> DocWriteResult | None  # §10, escape+truncate
+    async def append_server_entry(self, project, title, text, *, conversation: ConversationInfo) -> DocWriteResult | None  # §10, escape+truncate
     async def approve(self, project, path, version) -> str
     async def unapprove(self, project, path, version) -> str
     async def clear_user_edited(self, project, path, version) -> str
@@ -309,6 +331,22 @@ class DesignDocs:
   `policy_for(type)` in C3: Free, Requirements and Schematic are as in spec
   §8.2, and Board is read and append only. `doc-updated` is published by the
   service through the broadcaster.
+- **`DocIndexDTO`** is the REST `GET /docs` shape and the `doc_list` shape:
+
+  ```
+  {root, docs: [{path, fixed, exists, approved, changedSinceApproval,
+                 approvedVersion|null, approvedAt|null, userEdited,
+                 version|null, bytes, updatedAt|null, headings,
+                 openPoints, lastAuthor|null,
+                 lastConversationTitle|null}],
+   ignored: [{path, reason}]}
+  ```
+
+  The tool returns the same data in snake_case.
+- **Session label.** `0009`'s `doc_revisions` gains
+  `conversation_label TEXT NULL` (for example `"Session 2 — Schematic"`),
+  written at write time. The revisions REST and `lastConversationTitle` use
+  it, so no join with C1's table is needed.
 - **`design_docs/sanitize.py`** offers `sanitize_inline(text)` and
   `sanitize_field(text, limit=80)`. C5 uses them for injection and C3 for
   `doc_list` fields.
@@ -329,6 +367,13 @@ class DesignDocs:
 
 ### S-C8. Frontend contracts
 
+- **C1 `openPanel`.** `stores/ui.ts` gains `openPanel(id: string, params?:
+  Record<string,string>)` and `panelRequest`. `ProjectLayout` (desktop
+  sheet and phone tab) opens the requested panel and passes `params` as an
+  optional `PanelProps.params`. C2 uses it for [Open requirements]. C4 uses
+  it for [View diff] (`{revisionId}`) and for relative links to Parts.
+- **C3 `api/docs.ts`.** `getDocIndex(pid): Promise<DocIndexDTO>` plus the
+  zod schema. C4 extends the file.
 - **C1 (interim).** `stores/chat.ts` is keyed `` `${projectId}/${conversationId}` ``.
   `useChat(projectId, conversationId)`. `api/conversations.ts` provides
   `listConversations`, `createConversation`, `patchConversation`, and the
@@ -355,8 +400,20 @@ written.
   but only the split is normative.
 - **The close/reopen UI lives in C2**, built against the S-C4 contract. The
   backend is in C5. The UI's e2e test runs in C6.
-- **C1 adds the engine hooks** (`before_model_input`, `on_items_failed`) that
-  C5 needs, so that C5 does not reshape the engine again.
+- **C1 adds the engine hooks** (`before_model_input`, `on_items_failed`,
+  `turn_context`) that C5 needs, so that C5 does not reshape the engine
+  again.
+- **Closing a session that owns an open plan** (proposed, approved, running
+  or paused) is refused with 409 `plan_open`, "finish or abort the plan
+  first". Otherwise Approve or Resume would target a closed session while
+  the plan keeps blocking edits (C5).
+- **The build version comes from `frontend/package.json`.** The Docker
+  frontend stage has no backend files. `scripts/check-docs.sh` keeps it
+  equal to `pyproject` and `__version__`.
+- **Skills GUI `sessions` chips go to C6.** The frontend reads the field
+  that C5 adds to the skills DTO.
+- **Plan review amendments** (round 1, 22 findings) are folded into the
+  phase files.
 
 ---
 

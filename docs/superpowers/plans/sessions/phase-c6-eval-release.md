@@ -15,7 +15,12 @@ v0.3.0.
 - Modify:
   - `README.md` (features, upgrade note: back up `data/` before 0.3.0)
   - `CHANGELOG`/release notes, if present
-  - `backend/pyproject.toml` and `frontend/package.json` (version `0.3.0`)
+  - the version `0.3.0` in `backend/pyproject.toml`,
+    `backend/src/copperchat/__init__.py`, `backend/uv.lock`,
+    `frontend/package.json` and `frontend/package-lock.json` (as in v0.2.0,
+    e2d73b5). `scripts/check-docs.sh` must pass.
+  - `frontend/src/pages/skills/*` (the `sessions` type chips from the C5 DTO
+    field, editable for user and project layers; spec §8.4)
   - this plan index ("as built" notes and residuals)
 - Release: tag `v0.3.0` → `release.yml`, as for v0.2.0
 
@@ -47,6 +52,12 @@ v0.3.0.
 - [ ] If the eval fails because of agent behaviour rather than a bug, fix
   the skills (`session-schematic`, `design-docs`) and rerun at most twice.
   Record the residuals.
+
+### Task 2b: Skills GUI chips
+
+- [ ] TDD: the skills page shows `sessions` as type chips. A user-layer
+  edit writes `sessions:` into the front matter through the existing
+  customise and PUT flow. Commit.
 
 ### Task 3: Docs and release
 

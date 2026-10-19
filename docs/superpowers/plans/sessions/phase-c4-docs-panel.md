@@ -5,6 +5,8 @@
 > **Runs in parallel with C2 and C5.** Frontend only. In
 > `components/chat/MessageItem.tsx`, add only the `doc-changed` case. In
 > `layouts/ProjectLayout.tsx`, add only the `wide` option of `PanelSheet`.
+> `openPanel` (C1) and `getDocIndex` in `api/docs.ts` (C3) already exist:
+> use them and extend `api/docs.ts`.
 
 **Goal:** The user reads, edits, approves and diffs the design docs on
 desktop and phone, never loses an edit to a conflict, and sees agent
@@ -12,7 +14,7 @@ changes as cards in the chat.
 
 **Files:**
 - Create:
-  - `frontend/src/api/docs.ts`, `frontend/src/stores/docs.ts`
+  - `frontend/src/stores/docs.ts` (the `api/docs.ts` from C3 is extended)
   - `frontend/src/panels/DocsPanel.tsx`, `frontend/src/panels/docs.ts`
     (registration: id `docs`, order 12, `wide: true`)
   - `frontend/src/components/docs/{DocIndex,DocView,DocEditor,DocHistory,LineDiff,DocChangedCard}.tsx`
@@ -68,8 +70,13 @@ changes as cards in the chat.
 
 - [ ] **Step 1: Failing tests:** revisions newest first (author, session,
   summary, +/−). `LineDiff` is a unified line diff with green additions,
-  red removals and collapsed context (LCS over lines, ≤ 4,000 lines, else
-  a "too large to diff" notice). [Revert to this] → POST revert with
+  red removals and collapsed context. The algorithm:
+  - Trim the common prefix and suffix.
+  - Run Myers O(ND) on the rest. Stop at D > 2,000 with "too large to
+    diff". Never an n×m table.
+
+  A perf test: two 4,000-line docs with 50 changes diff in under 200 ms in
+  jsdom. [Revert to this] → POST revert with
   `baseVersion`, and a 409 goes through the conflict flow.
 - [ ] **Step 2:** FAIL. **Step 3: Implement.** **Step 4:** PASS.
   **Step 5:** commit.
@@ -79,7 +86,7 @@ changes as cards in the chat.
 - [ ] **Step 1: Failing tests:**
   - `MessageItem` renders `DocChangedCard` for
     `metadata.action==='doc-changed'`: path, +/−, sections, and [View diff],
-    which opens the panel on `revisionId`. A `message-delta` metadata patch
+    which calls `openPanel('docs', {path, revisionId})`. A `message-delta` metadata patch
     updates the card in place.
   - Phone width: the panel is full-screen, with index → doc → history
     navigation (back arrow), a full-viewport editor, and a single-column

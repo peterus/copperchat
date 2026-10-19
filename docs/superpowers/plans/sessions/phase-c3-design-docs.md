@@ -6,7 +6,8 @@
 > (`doc-updated`), §7, §13 (path guard, frontmatter, REST).
 > **Runs in parallel with C1.** Do not touch `agent/engine.py`,
 > `agent/runtime.py`, `db/repos/messages.py`, `web/ws.py` or the chat store.
-> In `agent/sdk_backend.py`, only the hook wiring of Task 6 is allowed.
+> In `agent/sdk_backend.py`, only `build_options` (the hook of Task 6) may
+> change. `start()` belongs to C1.
 
 **Goal:** A `DesignDocs` service with a path guard that cannot be escaped,
 safe readers, server-owned frontmatter, body-hash versions, approvals in the
@@ -27,8 +28,12 @@ mirrors its guard.
   - `tools/spec.py` (S-C5 fields), `tools/registry.py` (provider
     `copperchat.design_docs.specs`), `fsutil.py` (no-follow directory
     check in `atomic_write_text`)
-  - `agent/guards.py`, `agent/sdk_backend.py` (hook wiring; `run_id` in the
-    KiCad-less ctx)
+  - `agent/guards.py`, `agent/sdk_backend.py` (`build_options` only)
+  - `tests/unit/phase8/test_builtin_skills.py` (`EXPECTED` gains
+    `design-docs`; `TOOL_NAME` gains the `doc` prefix; the tool-name check
+    covers `design-docs`)
+  - `frontend/src/api/docs.ts` (new: `getDocIndex` plus the `DocIndexDTO`
+    zod schema, S-C8)
   - `agent/protocol.py`, `frontend/src/protocol/frames.ts` (`doc-updated`
     only)
   - `web/app.py` (router plus `install_design_docs`)
@@ -53,8 +58,12 @@ mirrors its guard.
     intermediate directory, a symlinked target (→ `/proc/self/environ`), a
     hard link (write only), a FIFO (the read does not block; 1 s timeout),
     and a file over 256 KiB.
-  - **Race:** replace the target with a symlink between check and open.
-    The read fails with `O_NOFOLLOW`.
+  - **Read race:** replace the target with a symlink between check and
+    open. The read fails with `O_NOFOLLOW`.
+  - **Write race:** a monkeypatched hook swaps `docs/design` for a
+    directory symlink just before the temp-file write or the `rename`. The
+    no-follow directory check refuses, and nothing lands outside the
+    project.
   - **Walk:** it lists at most 50 docs, at depth ≤ 2, and does not follow
     directory symlinks. Rejected entries come back as `ignored` with a
     reason.
@@ -117,6 +126,11 @@ mirrors its guard.
     - Retention: 100 per doc and 32 MiB per project, and the approved body
       version is kept.
   - **Caps:** every cap from spec §7.4.
+  - **Every reader skips bad files:** `versions()` and the external-revision
+    capture skip a symlinked `requirements.md`, a FIFO, a 300 KiB doc and
+    a 51st file. Spy on `safe_read`/`os.open`: none of them is opened.
+  - **Attribution:** revisions store `conversation_label`, built from
+    `ConversationInfo` (S-C5).
 - [ ] **Step 2:** FAIL. **Step 3: Implement** S-C6, including the per-turn
   mutation counter keyed by `(project_id, run_id)`. The write-time
   `difflib` runs in `to_thread`, with counts only above 4,000 lines.
@@ -163,7 +177,14 @@ mirrors its guard.
     the template. The tools are `requires_kicad=False` and `mutating=False`.
     The registry exposes them.
   - **REST** (`test_routes_docs.py`):
-    - every route from spec §6.1
+    - every route from spec §6.1, each returning 401 without a session
+    - the `DocIndexDTO` shape (S-C6), including `lastAuthor`,
+      `lastConversationTitle`, `changedSinceApproval` and `ignored`
+    - path guard through the router: `..%2F` traversal and a symlinked
+      target → 400, nothing read, no file-system detail in the body
+    - the 1 MiB body cap is enforced while streaming, also for a chunked
+      request without `Content-Length` (a small body-reading dependency
+      with a limit)
     - route order: each suffix route reachable, and `/docs/x.md/revisions`
       is not served as a doc
     - 409 bodies; a foreign `rid` → 404; a 1 MiB body cap; the file cap on
@@ -184,7 +205,6 @@ mirrors its guard.
   - An out-of-list tool is denied by the hook.
   - One `research_part` call, seen by both `can_use_tool` and the hook, is
     recorded once (`research.note_call` called once).
-  - The KiCad-less ctx carries `run_id`.
 - [ ] **Step 2:** FAIL. **Step 3: Implement.** **Step 4:** PASS.
   **Step 5:** commit.
 
@@ -195,5 +215,6 @@ mirrors its guard.
 - [ ] Under the current (single-conversation) engine, the Free agent can
   use the doc tools end to end. Smoke test: a fake-agent script calls
   `doc_write`, then `doc_read`.
-- [ ] Existing tests are green, and `test_skill_tool_names_exist` still
-  passes (the new `design-docs` skill names only doc tools).
+- [ ] Existing tests are green. `test_builtin_skills.py` is updated:
+  `EXPECTED` includes `design-docs`, and the tool-name check covers it,
+  with the `doc` prefix.

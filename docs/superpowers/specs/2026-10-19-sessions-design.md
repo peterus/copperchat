@@ -257,6 +257,7 @@ CREATE TABLE doc_revisions (                      -- §7.6
     conversation_id TEXT NULL,
     run_id          TEXT NULL,
     summary         TEXT NOT NULL DEFAULT '',
+    conversation_label TEXT NULL,                  -- e.g. 'Session 2 — Schematic', at write time
     content         TEXT NOT NULL,                 -- full file text incl. frontmatter
     created_at      TEXT NOT NULL
 );
@@ -1164,7 +1165,10 @@ most 256 KiB, and hashes are cached by `(mtime_ns, size)`.
 **"Close session"** is a button in the session header and the session list.
 `POST /conversations/{cid}/close` does the following:
 
-1. Sets `status = 'closing'` and enqueues a server-authored message into the
+1. Refuses with 409 `plan_open` while this conversation owns an open plan
+   (proposed, approved, running or paused), because Approve and Resume
+   would otherwise target a closed session. Otherwise it sets
+   `status = 'closing'` and enqueues a server-authored message into the
    conversation, with `metadata.origin = 'close-session'`. It works the same
    way as plan Approve, which enqueues a normal message (spec SP2 §7.3). The
    chat shows it as a compact "Closing session…" system row, not as a user
