@@ -220,8 +220,8 @@ INSERT INTO conversations (id, project_id, seq, title, type, sdk_session_id,
 SELECT lower(hex(randomblob(16))), p.project_id, 1, 'Session 1', 'free',
        (SELECT sdk_session_id FROM agent_sessions a WHERE a.project_id = p.project_id),
        COALESCE((SELECT MIN(created_at) FROM messages m WHERE m.project_id = p.project_id),
-                strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now')),
-       strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now'),
+                strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+       strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
        (SELECT MAX(created_at) FROM messages m WHERE m.project_id = p.project_id)
 FROM (SELECT project_id FROM messages UNION SELECT project_id FROM runs
       UNION SELECT project_id FROM agent_sessions) p;
@@ -244,8 +244,11 @@ CREATE TABLE doc_revisions (                      -- §7.6
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id      TEXT NOT NULL,
     path            TEXT NOT NULL,                 -- relative, e.g. docs/design/requirements.md
-    version         TEXT NOT NULL,                 -- version hash of `content`
+    version         TEXT NOT NULL,                 -- body version of `content` (§7.3)
     prev_version    TEXT NULL,
+    added           INTEGER NOT NULL DEFAULT 0,    -- line counts vs prev, computed at write
+    removed         INTEGER NOT NULL DEFAULT 0,
+    bytes           INTEGER NOT NULL,              -- for the per-project storage cap
     author          TEXT NOT NULL CHECK (author IN ('agent', 'user', 'external')),
     conversation_id TEXT NULL,
     run_id          TEXT NULL,
@@ -254,6 +257,14 @@ CREATE TABLE doc_revisions (                      -- §7.6
     created_at      TEXT NOT NULL
 );
 CREATE INDEX ix_doc_revisions ON doc_revisions(project_id, path, id);
+
+CREATE TABLE doc_approvals (                      -- §7.3: approval is DB state
+    project_id      TEXT NOT NULL,
+    path            TEXT NOT NULL,
+    body_version    TEXT NOT NULL,
+    approved_at     TEXT NOT NULL,
+    PRIMARY KEY (project_id, path)
+);
 ```
 
 Notes on the migration:
@@ -332,14 +343,35 @@ bound to one conversation.
     system prompt (§8).
 
   It then calls `backend.start(project, conversation, stream, resume)`.
-- **Switching conversations.** `_gated` (`engine.py:543`) yields items only
-  while the head item belongs to the burst's conversation. When the head
-  belongs to another conversation, the gate closes the burst's input, and the
-  burst winds down as at today's end of input. The next burst starts for the
-  other conversation and resumes from *its* SDK session.
+- **Switching conversations.** Today `PushStream._gen` pops the head before
+  `_gated` sees it (`agent/push_stream.py:61-72`). `push()` also cancels a
+  pending close (`push_stream.py:30`), and `_enqueue` pushes every item into
+  the open stream (`engine.py:402-404`). A gate check alone therefore cannot
+  split conversations. The design changes the stream itself:
+  - **Streams are bound.** A `PushStream` gets a `conversation_id`.
+    `_enqueue(item)` pushes into the open stream only when the item belongs
+    to the stream's conversation and the stream is not **sealed**.
+  - **Foreign items seal the stream.** An item of another conversation is
+    *not* pushed. It stays a `queued` row in the DB, and the engine calls the
+    new `stream.seal()`. A sealed stream accepts no further pushes.
+    `push()` returns `False`, so a later item of the same conversation also
+    stays DB-queued. The stream closes once its queue is drained: `seal`
+    behaves like `request_close`, but a push can no longer reopen it.
+  - **The next burst picks them up.** When the burst ends, the existing
+    `_drive_queued` call (`engine.py:486`) re-enqueues the DB-queued rows in
+    id order. The first row opens a new stream for its conversation, and
+    resumes from *its* SDK session. Any row of yet another conversation seals
+    that stream again. FIFO order across conversations is preserved because
+    rows are scanned by id.
+  - **Cancelling.** `cancel_queued` (`engine.py:306-324`) already handles
+    both "in the stream" and "waiting outside it". DB-queued rows of other
+    conversations are the second case, so the invariant at
+    `engine.py:318-320` still holds.
 
   A run therefore never mixes conversations, and two SDK clients still never
-  overlap, because the existing `prev` wind-down wait still applies.
+  overlap, because the existing `prev` wind-down wait still applies. Tests:
+  B is sent while A is mid-turn, then A again (A, B, A → three bursts in
+  order); Stop during a sealed stream; cancel of a DB-queued B row.
 - **Storing the SDK session id.** `SessionId` events are stored into the
   burst's conversation (`ConversationRepo.set_sdk_session`), replacing
   `AgentSessionRepo.set` at `engine.py:588`.
@@ -351,8 +383,19 @@ bound to one conversation.
   `resume_pending` is unchanged.
 - **Rate limit.** The project parks as today. Every queued message, in any
   conversation, waits. The banner shows in every session of the project.
-- **Interrupt.** `interrupt(run_id)` works from any session view. The UI of
-  conversation B shows "Session A is running" with a Stop button (§12.1).
+- **Interrupt.** Today Stop cancels *every* waiting message of the project
+  (`engine.py:326-349`). With sessions, that would let a Stop on A's run
+  cancel B's queued message, which breaks the anti-goal in §2. The
+  cancellation is therefore scoped to **one conversation**:
+  - **Which conversation.** With a running turn, it is the conversation of
+    that run. Between turns, it is the `conversationId` of the interrupt
+    frame (§6.2).
+  - **What is cancelled.** That conversation's pending items, whether in the
+    stream or DB-queued. Queued rows of other conversations are untouched,
+    and run after the stopped burst ends.
+
+  Stop works from any session view. The UI of conversation B shows
+  "Session A is running" with a Stop button (§12.1).
 - **Busy flag.** `engine.is_busy` stays project-wide. It still guards history
   restore (`history/restore.py:115-116`). `engine.current_conversation_id` is
   new.
@@ -410,7 +453,7 @@ conversation id from another project is a 404.
 | Method | Path | Body / query | Result |
 |---|---|---|---|
 | GET | `/conversations` | `?archived=0\|1` | `[ConversationDTO]` (newest activity first) |
-| POST | `/conversations` | `{type, title?}` | 201 `ConversationDTO`. `type='board'` → 400 until SP4 |
+| POST | `/conversations` | `{type, title?}` (title: 1–120 chars, single line) | 201 `ConversationDTO`. `type='board'` → 400 until SP4 |
 | PATCH | `/conversations/{cid}` | `{title?, archived?}` | `ConversationDTO` |
 | POST | `/conversations/{cid}/close` | — | 202. Enqueues the handover turn (§10). 409 if not `open` |
 | POST | `/conversations/{cid}/reopen` | — | `ConversationDTO` (`closed` → `open`) |
@@ -423,6 +466,7 @@ conversation id from another project is a 404.
 | GET | `/docs/{path:path}/revisions` | `?limit=50` | `[{id, version, prevVersion, author, conversationId, conversationTitle, runId, summary, createdAt, added, removed}]` |
 | GET | `/docs/{path:path}/revisions/{rid}` | — | `{content, prevContent}` (the client renders the diff) |
 | POST | `/docs/{path:path}/revisions/{rid}/revert` | `{baseVersion}` | `{version}`. Writes as a user edit |
+| POST | `/docs/{path:path}/clear-user-edited` | `{version}` | `{version}`. "Let the agent rewrite" (§7.3). 409 if the doc changed since `version` |
 
 Changed endpoints:
 
@@ -440,6 +484,23 @@ Changed endpoints:
 
 `usage` is the sum of `runs.usage` for that conversation, computed in SQL
 with `json_extract`. Today no query reads `runs.usage` at all.
+
+**Docs route rules.**
+
+- **Route order.** The `{path:path}` converter is greedy, so
+  `/docs/x.md/revisions` would otherwise match `GET /docs/{path:path}` with
+  `path = "x.md/revisions"`. The suffix routes (`/approve`, `/unapprove`,
+  `/clear-user-edited`, `/revisions…`) are registered **before** the bare
+  `/docs/{path:path}` routes. In addition, the bare routes reject a `path`
+  that does not end in `.md`. A route test covers each suffix.
+- **Revision scoping.** `rid` is a global autoincrement id. It is always
+  looked up with `project_id` **and** `path`. A `rid` of another doc or
+  project is a 404.
+- **Body caps.**
+  - The request body is capped at 1 MiB, so JSON escaping of a doc near the
+    limit still fits.
+  - The 256 KiB file cap is checked on the UTF-8 **bytes** of the resulting
+    file, not on character counts (`Field(max_length)` counts characters).
 
 The docs routes resolve `{path}` through the same path guard as the tools
 (§7.5). A bad path is a 400 with no file-system detail.
@@ -459,7 +520,16 @@ Client → server:
 |---|---|
 | `subscribe` | `{projectId, conversationId, sinceMessageId}`. Replays that conversation. Re-subscribing with another `conversationId` replaces the replay cursor. |
 | `send` | Adds a required `conversationId`. Refused (`error code=conversation_closed`) unless the conversation is `open`. |
-| `interrupt`, `cancel-queued` | Unchanged. `runId` and `messageId` already identify the target. |
+| `interrupt` | Adds a required `conversationId`: the session the user pressed Stop in. It scopes the cancellation of queued messages between turns (§5.2). |
+| `cancel-queued` | Unchanged. `messageId` identifies the target. |
+
+**Ownership check.** Every frame that carries a `conversationId` (`subscribe`,
+`send`, `interrupt`) is checked: the conversation must exist and
+`conversation.project_id` must equal the frame's `projectId`. Today the WS
+dispatches by the frame's `projectId` alone (`web/ws.py:256-273`). A mismatch
+gets `error code=conversation_not_found`, and nothing is bound or enqueued.
+The fixtures gain an invalid case, and a WS test sends project B's
+conversation id with project A's `projectId`.
 
 Server → client:
 
@@ -487,8 +557,20 @@ listed explicitly for `doc-updated.conversationId`, which is `None` for user
 edits.
 
 **Compatibility.** Frontend and backend ship as one image, so there is no
-compatibility shim. An old client tab gets `error code=bad_frame` and
-reloads, which is the existing behaviour for strict frames.
+compatibility shim. There is no automatic reload today either:
+
+- The server answers an invalid frame with `error code=invalid_frame`
+  (`web/ws.py:200,210`).
+- The old client's strict `safeParse` silently drops frames it does not know
+  (`protocol/frames.ts`, `api/ws.ts:170-172`).
+
+An old tab after the upgrade would therefore just stop working. C1 adds a
+**build-version check**:
+- The frontend embeds its build version.
+- On every WS (re)connect it fetches `/api/health`, which already reports
+  `version`.
+- On a mismatch it shows a "CopperChat was updated — reload" banner with a
+  Reload button.
 
 ### 6.3 Push notifications
 
@@ -519,9 +601,20 @@ template.
 ### 7.2 Templates and frontmatter
 
 Templates live in a new built-in skill `design-docs` as
-`skills/builtin/design-docs/templates/<name>.md`. They are layered like every
-skill: built-in, then user, then project (`skills/store.py:79-90`), so a user
-can customise them in the Skills GUI.
+`skills/builtin/design-docs/templates/<name>.md`.
+
+Skill layering resolves whole skill directories (`skills/store.py:161-186`),
+and the Skills GUI writes only `SKILL.md`. If templates simply rode on that,
+a project-layer `design-docs` override that only changed `SKILL.md` would
+shadow the built-in `templates/` directory, and the templates would vanish.
+So templates are resolved **per file**:
+
+- The lookup order for `templates/<name>.md` is project layer, then user
+  layer, then built-in. The first layer that actually contains that file
+  wins.
+- Disabling the `design-docs` skill does not disable the templates.
+- Editing templates in the Skills GUI is **not** part of SP3. A user can
+  place a file in `<data_dir>/skills/design-docs/templates/` by hand.
 
 A fixed doc that does not exist yet is created from the template on the first
 write. `doc_read` of a missing fixed doc returns `exists: false` and the
@@ -537,9 +630,12 @@ doc: requirements
 status: draft
 user_edited: false
 approved_at:
-approved_version:
 ---
 ```
+
+The frontmatter `status` and `approved_at` only **mirror** the DB state
+(`doc_approvals`, §7.3), so that readers of the git repository see them. The
+server never trusts them.
 
 **The frontmatter is server-owned.**
 
@@ -554,10 +650,21 @@ approved_version:
 
 ### 7.3 `user_edited` and `approved` semantics
 
-- **Version.** `version = "v" + sha256(file bytes)[:16]` covers the whole file
-  including frontmatter. Every read returns it, and every agent or user write
-  must quote it as `base_version`. A mismatch is a conflict (§7.4). This is
-  what prevents clobbering, whoever wrote last.
+- **Version.** `version = "v" + sha256(body bytes)[:16]`. It covers the
+  **body only**, without frontmatter. Every read returns it, and every agent
+  or user write must quote it as `base_version`. A mismatch is a conflict
+  (§7.4). This is what prevents clobbering, whoever wrote last.
+
+  The body only, because approve, unapprove and clear-user-edited rewrite the
+  frontmatter. With a whole-file hash they would change the version, so an
+  approval could never match the current version, and they would make the
+  agent's next patch conflict for no content reason.
+
+  On every write (tool or PUT), the version is computed from the **actual
+  file bytes, read under the per-project doc lock**. The `(mtime_ns, size)`
+  hash cache of §9.2 is used only for the change notices, never for a
+  conflict check, so a size- and mtime-preserving external write cannot be
+  clobbered.
 - **`user_edited: true`** is set whenever the user saves the doc in the panel
   (PUT, revert). Recommended semantics (Q5 B):
   - The agent may no longer **replace the whole doc** (`doc_write` →
@@ -567,12 +674,21 @@ approved_version:
   - The user can clear the flag in the panel ("Let the agent rewrite").
   - Unlike `notes.md`, the flag does not freeze the file. Design docs are
     meant to be co-written.
-- **`status: approved`** is set by the user (POST approve) for an exact
-  version, which is recorded as `approved_version`.
-  - An agent change to an approved doc is allowed. The server sets `status:
-    draft`, keeps `approved_at` and `approved_version` as history, and posts a
-    notice: "requirements.md changed after approval (Session 3) — review and
-    re-approve" (Q6 A).
+- **Approval is DB state.** The user's POST approve stores
+  `doc_approvals(project_id, path, body_version, approved_at)`. A doc is
+  **approved iff** a `doc_approvals` row exists **and** its `body_version`
+  equals the current body version.
+  - The frontmatter `status` is rewritten from that state on every server
+    write. An external writer, for example a cloned repo or a hand edit,
+    can put `status: approved` into the file, but that does not make the doc
+    approved for the gate (§11) or the index (§9).
+  - The approve route does not create a revision, because the body is
+    unchanged.
+  - An agent change to an approved doc is allowed. Its body version no longer
+    matches, so the doc is draft. The server rewrites `status: draft`, keeps
+    the `doc_approvals` row as history ("approved <date>, changed since"),
+    and posts a notice: "requirements.md changed after approval (Session 3) —
+    review and re-approve" (Q6 A).
   - A user edit to an approved doc also resets it to `draft`, and the panel
     asks "Approve again?" after the save.
   - `decisions.md` has no approval. Its `status` is always `draft` and the
@@ -601,6 +717,21 @@ All of them have `mutating=False`, `changes_documents=False` and
   for KiCad files. Docs have their own revisions (§7.6).
 - **The plan gate and change budget do not apply.** They live in the
   two-phase edit adapter for `sch_*` tools.
+- **New `ToolContext` fields.** The doc tools need more context than
+  `ToolContext` carries today (`tools/spec.py:52-71`), and the KiCad-less
+  context (`sdk_backend.py:480-487`) has not even a `run_id`. C3 adds:
+  - `conversation_id` and `conversation_type`, for the write policy (§8.2),
+    revision attribution and `docs_seen`
+  - `run_id`, also in the KiCad-less context
+  - `post_doc_notice`, a callback into the engine for the `doc-changed`
+    card (§12.3), taken under the engine lock like `post_notice`
+  - `docs`, the `DesignDocs` service. It holds the per-project doc lock and
+    the per-turn mutation counter keyed by `(project_id, run_id)`, like
+    `EditingService.turn` (`editing/service.py:53`).
+
+  The engine's `_make_ctx` (`engine.py:900-916`) and the backend's KiCad-less
+  factory both fill these fields. A test runs every doc tool with KiCad
+  stopped.
 
 All paths are project-relative, `docs/design/...`. The bare name `requirements.md`
 is also accepted and means `docs/design/requirements.md`.
@@ -632,8 +763,8 @@ doc_append(path, text, summary, section?: str, title?: str, base_version?: str)
 ```
 
 `doc_append` without `section` appends to the end of the body. For
-`decisions.md`, `title` is required, `section` must be omitted, and the
-server writes:
+`decisions.md`, `title` is required (1–120 chars, single line), `section`
+must be omitted, and the server writes:
 
 ```
 ## <YYYY-MM-DD> — <title>
@@ -678,6 +809,17 @@ server writes:
   child) disambiguates.
 - `mode: "append"` adds `body` to the end of the section. This is how open
   points are added.
+- **Headings in the new text.** In a scoped write, a heading in the `body` /
+  `text` at a level ≤ the target section's level would end the section
+  early. The rest of the text would then become a new sibling section that
+  the write policy never allowed. Rules:
+  - `doc_patch_section` / `doc_append(section=…)`: lines that are ATX
+    headings at a level ≤ the target's level, outside code fences, are
+    refused (`doc_heading_refused`). Deeper sub-headings are allowed.
+  - `decisions.md` entries: `text` must not contain any ATX heading of level
+    ≤ 2, nor a line starting with `*Session:`. Otherwise an agent could fake
+    an extra entry or another session's attribution.
+  - Whole-doc `doc_write` (Free and Requirements only) is unrestricted.
 - CRLF files are read as-is and written back with their original line
   endings.
 
@@ -688,7 +830,8 @@ server writes:
 | Doc file size after the write | 256 KiB | `doc_too_large` |
 | `body` / `text` per call | 64 KiB (`doc_append`: 8 KiB) | `doc_too_large` |
 | `doc_read` result body | 64 KiB, or the doc must be read by `section` | `doc_read_too_large` (lists headings) |
-| `summary` | 1–200 chars | `invalid_input` |
+| `summary` | 1–200 chars, single line | `invalid_input` |
+| `title` (`doc_append` on decisions) | 1–120 chars, single line | `invalid_input` |
 | Docs under `docs/design/` | 50 files, depth ≤ 2 | `doc_limit` |
 | Doc mutations per turn | 40 | `doc_limit` |
 
@@ -710,9 +853,12 @@ paths and symlink escapes. On top of that:
 - **Accepted form.** `raw` is either a bare `<name>.md` (a fixed doc) or
   starts with `docs/design/`. It contains no NUL or backslash, has no leading
   `/`, and is at most 200 chars.
-- **Segment rules.** Every segment below `docs/design` matches
-  `^[a-z0-9][a-z0-9._-]{0,63}$`. Lowercase only, which avoids case-collision
-  aliases on case-insensitive file systems.
+- **Segment rules.** Every segment below `docs/design` must
+  **`fullmatch`** `[a-z0-9][a-z0-9._-]{0,63}`, as the researcher guard does
+  (`agent/guards.py:130`). `re.match` with `$` would accept a trailing
+  newline. Any control character anywhere in `raw` is refused. Lowercase
+  only, which avoids case-collision aliases on case-insensitive file
+  systems.
   - The last segment ends in `.md`.
   - At most 2 segments below `docs/design`.
   - No segment starts with `.`.
@@ -734,6 +880,13 @@ paths and symlink escapes. On top of that:
   (`guard_as_pre_tool_use_hook`, `agent/guards.py:144-171`). Today's main
   agent has `can_use_tool` only (`sdk_backend.py:139-155`).
 
+  The hook gets a **second guard instance built without `on_allowed`**.
+  `on_allowed` records `research_part` calls in the runner's FIFO
+  (`guards.py:55-57`, `sdk_backend.py:473-475`). Firing it from both the hook
+  and `can_use_tool` would record each call twice and attribute research
+  cards to the wrong call. A test checks that a single `research_part` call
+  is recorded once.
+
   The hook matters even though `tools=[]`. Only `Skill` is a built-in
   (`skills/assembly.py:118-127`), but any future built-in or CLI auto-approval
   would otherwise bypass the profile. The same lesson motivated the
@@ -747,11 +900,15 @@ paths and symlink escapes. On top of that:
 - **What a revision is.** `doc_revisions` stores the full file text per
   version. Docs are small and capped. One row is written for every agent
   write, user write, revert, and newly observed external version.
-- **Retention.** The last 100 revisions per doc. The approved version's
-  revision is never pruned.
+- **Retention.** The last 100 revisions per doc, and at most **32 MiB of
+  revision content per project** (`SUM(bytes)`). Above that, the oldest
+  revisions are pruned first. The revision of the approved body version is
+  never pruned.
 - **Diff.** The diff is computed in the client: a line diff of `prevContent`
-  → `content`. The server returns `added` / `removed` counts, computed with
-  `difflib` at write time.
+  → `content`. `added` and `removed` are computed **once at write time** and
+  stored in the row. The revisions list never runs `difflib`. The
+  write-time `difflib` runs in `asyncio.to_thread`. Docs above 4,000 lines
+  get counts only, without the conflict diff.
 - **Docs are not part of the KiCad turn undo** (Q11 A).
   - Restoring a KiCad snapshot does not revert docs.
   - Reverting a doc revision does not touch KiCad files.
@@ -853,7 +1010,7 @@ schematic, free`. A skill without the key applies to every type.
 
 | Skill | Types |
 |---|---|
-| `copperchat-tools` | all (it gains a "Design documents" section) |
+| `copperchat-tools` | all. It gains a "Design documents" section, and its "Editing the schematic" section moves into `kicad-schematic-editing`. Today that section names `sch_*` writes and `plan_*` tools, which are not in the Requirements profile. |
 | `part-preferences` | all |
 | `kicad-review-discipline` | schematic, board, free |
 | `kicad-schematic-editing`, `kicad-schematic-style` | schematic, free |
@@ -865,9 +1022,14 @@ schematic, free`. A skill without the key applies to every type.
 The Skills GUI shows the `sessions` key as type chips, and lets a user layer
 change it.
 
-`test_skill_tool_names_exist` (editing plan E10) is extended. Every tool
-named in a skill must be in the profile of every type the skill applies to,
-so that a Requirements skill never tells the agent to call `sch_connect`.
+`test_skill_tool_names_exist` (editing plan E10) is extended:
+
+- Every tool named in a skill must be in the profile of every type the skill
+  applies to. This way a Requirements skill never tells the agent to call
+  `sch_connect`.
+- The test's `TOOL_NAME` regex (`tests/unit/phase8/test_builtin_skills.py:53`)
+  has a fixed prefix list. It gains `doc`.
+- The test then covers all built-in skills, not only `EDITING_SKILLS`.
 
 ## 9. Context injection
 
@@ -892,8 +1054,18 @@ Read what you need with doc_read before you rely on it.
   dropped first, then the extra docs are collapsed into a single "+N more
   docs" line.
 - **Inlining (Q10 B).** In Schematic and Board sessions, `requirements.md` is
-  inlined below the index when its body is ≤ 8 KiB. The inlined text is
-  fenced (`<<<doc requirements.md … >>>`) and introduced as project data.
+  inlined below the index when its body is ≤ 8 KiB. It is introduced as
+  project data.
+- **Sanitising injected text.** Notice lines are trusted as application
+  text by the system prompt (`sdk_backend.py:86`). Doc text is
+  repository data. So:
+  - Index fields taken from docs (headings, decision titles) are reduced to
+    one line, stripped of control characters, and capped at 80 chars each.
+  - Every line of injected doc text that starts with `[CopperChat notice]`
+    is prefixed with `> ` so that it cannot pose as an application notice.
+  - The inlined doc is fenced by a delimiter with a **random per-injection
+    nonce**: `<<<doc requirements.md 7f3a9c…>>>` … `<<<end 7f3a9c…>>>`. Doc
+    content cannot close the fence early, because it cannot know the nonce.
 - **The gate notice** (§11) is appended here.
 - **`docs_seen`.** The versions of the indexed docs are stored in
   `conversations.docs_seen`.
@@ -937,8 +1109,19 @@ most 256 KiB, and hashes are cached by `(mtime_ns, size)`.
    can therefore only touch the sections its policy allows (§8.2).
 
 3. **When the turn finishes** with `completed`, the conversation becomes
-   `closed`. With `interrupted`, `error` or `rate_limited`, it goes back to
-   `open`, and the chat shows "Close did not complete".
+   `closed`. Otherwise:
+   - **`interrupted` or `error`:** the status goes back to `open`, and the
+     chat shows "Close did not complete".
+   - **`rate_limited`:** the status **stays `closing`**. The engine parks the
+     close message and runs it again after the reset (`engine.py:703-735`),
+     and the status is settled when that re-run finishes.
+   - **Cancelled before it started**, by `cancel-queued` or a Stop that
+     cancels it: the status goes back to `open`.
+   - **Interrupted by a process crash**, so the message is never re-run: on
+     engine start, a `closing` conversation whose close message is no longer
+     `queued` goes back to `open`.
+
+   Tests cover each of these paths.
    - The summary stays in the chat as the last assistant message.
    - It also becomes a `decisions.md` entry `Session <n> closed` with the
      summary as text (Q8 A). The **server** writes that entry from the final
@@ -1080,8 +1263,9 @@ and `erc-delta`):
   PreToolUse. A live guard test (like `tests/live/test_researcher_guard_live.py`)
   asks a Requirements session to call `sch_connect` and to read a file
   outside `docs/design`. Both must be refused.
-- **Frontmatter ownership.** The agent cannot set `approved`, `user_edited`
-  or `approved_version` (§7.2). Tests cover a body starting with `---`, a
+- **Frontmatter ownership.** The agent cannot set `approved` or
+  `user_edited` (§7.2). Approval lives in `doc_approvals`, and a hand-written
+  `status: approved` in the file is ignored (§7.3). Tests cover a body starting with `---`, a
   body containing a `---` block later on (allowed, it is plain body text),
   and headings named `status: approved`.
 - **Prompt injection from docs.**
@@ -1093,11 +1277,27 @@ and `erc-delta`):
     data, never into the system prompt.
   - The main agent has no shell, web or file tools. The worst case is
     unwanted schematic or doc edits, which the user sees and can undo.
-  - The researcher, the only web-enabled agent, never receives doc content
-    through injection. It sees only what the main agent writes into a
-    `research_part` request, as today.
-- **REST.** Every route requires `CurrentUser`, `cid` must belong to `pid`,
-  bodies are size-capped (256 KiB), and errors never reveal absolute paths.
+  - **Exfiltration path.** The researcher is the only web-enabled agent. It
+    never receives doc content through injection. But injected doc text can
+    instruct the main agent to put design data into a `research_part`
+    `query`, which is unbounded today (`research/specs.py:39-43`). The
+    researcher may then `WebFetch` any public host (`guards.py:90-97`) with
+    that data in a URL. The same path already exists for project-layer
+    skills and part notes. SP3 makes it more reachable, because docs are
+    injected automatically. Mitigations in SP3:
+    - `query` gains `maxLength: 2000`.
+    - The researcher prompt states that design details from the request
+      must never be put into URLs or search queries beyond the part number
+      and its parameters.
+    - The live guard test (§13) includes an injected doc that asks for
+      exfiltration.
+
+    A full fix, for example an allow-list of datasheet hosts for `WebFetch`,
+    is out of scope and listed as a residual.
+- **REST and WS.** Every route requires `CurrentUser`. `cid` must belong to
+  `pid`, in REST and in WS frames (§6.2). `rid` is scoped by project and path
+  (§6.1). Request bodies are capped at 1 MiB, and the file cap is checked on
+  bytes. Errors never reveal absolute paths.
 - **Rendering.** The Docs panel uses the sanitized `Markdown` renderer. No raw
   HTML, `javascript:` links stripped by rehype-sanitize, images
   allow-listed.
@@ -1184,6 +1384,20 @@ and `erc-delta`):
 `AgentRuntime`, with the scripted fake backend and real doc tools. KiCad is
 not needed for the requirements half.
 
+**Prerequisite (C5 scope): `FakeAgent` extensions.** Today the fake backend
+has no guard, no per-burst tool list and no KiCad-less context
+(`agent/fake.py:86-103,193-198`):
+- A scripted out-of-profile tool would raise `KeyError` instead of being
+  refused.
+- A doc tool with KiCad stopped would raise `KicadUnavailable`.
+
+C5 extends `FakeAgent` with four things:
+- It builds the tool list from the burst's profile, as the SDK backend does.
+- It runs `make_main_guard` for every scripted call, so a refusal becomes a
+  normal error tool result.
+- It uses the KiCad-less context for `requires_kicad=False` tools.
+- It records per burst the conversation, tool list and prompt text.
+
 1. Create a Requirements session. The script calls `doc_read
    requirements.md` (missing → template), then `doc_write`. It patches
    `Power`, appends two decisions, and writes `parts.md` with one `candidate`.
@@ -1238,16 +1452,22 @@ green CI, review-loop to zero, and no Copilot.
   `RunRepo` changes; the engine as in §5; notices and notes routing; REST
   `/conversations*` (without close) and `/conversations/{cid}/messages`; WS
   frame changes and fixtures; restore with `conversationId`; history and
-  changes DTO fields; push deep link.
+  changes DTO fields; the session title in push notifications.
 - *Acceptance:*
   - The migration test passes, and so does the 0.2.0 → 0.3.0 upgrade of a
     copy of the owner's prod DB, done read-only on a copy.
   - The engine tests of §14.1 pass, and all existing tests are green.
-  - A minimal frontend change sends `conversationId`, using the default
-    session, so `main` stays usable.
+  - A minimal interim frontend change keeps `main` usable:
+    - When a project has no conversation, it calls `POST /conversations
+      {type: 'free'}` and uses the newest open conversation.
+    - It sends `conversationId` in its frames.
+    - The deep link stays `/projects/{pid}`. The `/sessions/{cid}` push deep
+      link (§6.3) moves to C2, together with the route.
+  - The build-version reload banner (§6.2) works.
 
 **C2 — Session UI**
-- Scope: routing; the conversation-keyed chat store; the session header,
+- Scope: routing, including the `/sessions/{cid}` push deep link; the
+  conversation-keyed chat store; the session header,
   list, new-session dialog (types Requirements/Schematic/Free, no gate yet),
   rename, archive and the "running elsewhere" chip; session chips in the
   History and Changes panels.
@@ -1276,8 +1496,8 @@ green CI, review-loop to zero, and no Copilot.
   `sessions` skill key and per-type plugin dir; the skills
   `session-requirements` and `session-schematic` (and the `design-docs`
   rules); the Schematic doc write policy; first-turn and later-turn
-  injection; close and reopen; the gate (dialog and notice); a live guard
-  test.
+  injection; close and reopen; the gate (dialog and notice); the
+  `FakeAgent` extensions (§14.3); a live guard test.
 - *Acceptance:*
   - The golden scenario of §14.3 passes.
   - The profile and skill tests pass.
@@ -1337,6 +1557,9 @@ C2, C3 → C5. Everything → C6.
 - **Board session (SP4):** the profile, `board.md` template and gate on
   `architecture.md`.
 - **A "Commit docs" button** that commits `docs/design/` only (Q13 C).
+- **Residual: researcher `WebFetch` host allow-list.** This would close the
+  exfiltration path of §13 for good.
+- **Template editing in the Skills GUI** (§7.2).
 
 ## 17. Open author calls
 
