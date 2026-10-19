@@ -89,3 +89,31 @@ class DocumentInconsistent(CopperChatError):
     def __init__(self, message: str = "", *, auto_restore: bool = False) -> None:
         self.auto_restore = auto_restore
         super().__init__(message)
+
+
+class ConversationNotFound(CopperChatError):
+    """A conversation id that does not exist or belongs to another project (spec §6.1)."""
+
+    code = "conversation_not_found"
+    http_status = 404
+
+
+class ConversationClosed(CopperChatError):
+    """A message for a conversation that is not open (spec §6.2)."""
+
+    code = "conversation_closed"
+    http_status = 409
+
+
+class ConversationStateConflict(CopperChatError):
+    """A status change whose expected current status no longer holds."""
+
+    code = "conversation_state_conflict"
+    http_status = 409
+
+
+class InvalidConversation(CopperChatError):
+    """A conversation title or type that fails validation."""
+
+    code = "invalid_conversation"
+    http_status = 422
