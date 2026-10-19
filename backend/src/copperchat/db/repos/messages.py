@@ -14,7 +14,7 @@ from copperchat.db import Database, utcnow_iso
 utcnow = utcnow_iso  # contract: Phase 7 imports messages.utcnow
 
 _COLS = (
-    "id, project_id, client_message_id, run_id, role, kind, content, status, "
+    "id, project_id, conversation_id, client_message_id, run_id, role, kind, content, status, "
     "metadata, created_at, updated_at"
 )
 
@@ -23,6 +23,7 @@ _COLS = (
 class MessageRow:
     id: int
     project_id: str
+    conversation_id: str
     client_message_id: str | None
     run_id: str | None
     role: str
@@ -37,6 +38,7 @@ class MessageRow:
         return {
             "id": self.id,
             "projectId": self.project_id,
+            "conversationId": self.conversation_id,
             "clientMessageId": self.client_message_id,
             "runId": self.run_id,
             "role": self.role,
@@ -52,6 +54,7 @@ def _row(r: aiosqlite.Row) -> MessageRow:
     return MessageRow(
         id=int(r["id"]),
         project_id=str(r["project_id"]),
+        conversation_id=str(r["conversation_id"]),
         client_message_id=r["client_message_id"],
         run_id=r["run_id"],
         role=str(r["role"]),
@@ -82,6 +85,7 @@ class MessageRepo:
     async def insert(
         self,
         project_id: str,
+        conversation_id: str,
         *,
         role: str,
         kind: str,
@@ -92,26 +96,36 @@ class MessageRepo:
         client_message_id: str | None = None,
     ) -> int:
         now = utcnow_iso()
-        return await self._db.execute(
-            "INSERT INTO messages (project_id, client_message_id, run_id, role, kind, content, "
-            "status, metadata, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                project_id,
-                client_message_id,
-                run_id,
-                role,
-                kind,
-                content,
-                status,
-                json.dumps(metadata or {}),
-                now,
-                now,
-            ),
-        )
+        async with self._db.transaction():
+            mid = await self._db.execute(
+                "INSERT INTO messages (project_id, conversation_id, client_message_id, run_id, "
+                "role, kind, content, status, metadata, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    project_id,
+                    conversation_id,
+                    client_message_id,
+                    run_id,
+                    role,
+                    kind,
+                    content,
+                    status,
+                    json.dumps(metadata or {}),
+                    now,
+                    now,
+                ),
+            )
+            # ConversationRepo.touch, inside the same transaction.
+            await self._db.execute(
+                "UPDATE conversations SET last_message_at = ?, updated_at = ? WHERE id = ?",
+                (now, now, conversation_id),
+            )
+        return mid
 
     async def insert_user(
         self,
         project_id: str,
+        conversation_id: str,
         client_message_id: str,
         text: str,
         metadata: dict[str, Any] | None = None,
@@ -124,6 +138,7 @@ class MessageRepo:
         try:
             new_id = await self.insert(
                 project_id,
+                conversation_id,
                 role="user",
                 kind="text",
                 content=text,
@@ -142,26 +157,31 @@ class MessageRepo:
         return row, True
 
     async def page(
-        self, project_id: str, *, limit: int, before: int | None = None
+        self, project_id: str, conversation_id: str, *, limit: int, before: int | None = None
     ) -> tuple[list[MessageRow], bool]:
+        # The project filter stays as defence; the conversation index serves the scan.
         if before is None:
             rows = await self._db.fetchall(
-                f"SELECT {_COLS} FROM messages WHERE project_id = ? ORDER BY id DESC LIMIT ?",
-                (project_id, limit + 1),
+                f"SELECT {_COLS} FROM messages WHERE conversation_id = ? AND project_id = ? "
+                "ORDER BY id DESC LIMIT ?",
+                (conversation_id, project_id, limit + 1),
             )
         else:
             rows = await self._db.fetchall(
-                f"SELECT {_COLS} FROM messages WHERE project_id = ? AND id < ? "
-                "ORDER BY id DESC LIMIT ?",
-                (project_id, before, limit + 1),
+                f"SELECT {_COLS} FROM messages WHERE conversation_id = ? AND project_id = ? "
+                "AND id < ? ORDER BY id DESC LIMIT ?",
+                (conversation_id, project_id, before, limit + 1),
             )
         has_more = len(rows) > limit
         return [_row(r) for r in reversed(rows[:limit])], has_more
 
-    async def since(self, project_id: str, since_id: int) -> list[MessageRow]:
+    async def since(
+        self, project_id: str, conversation_id: str, since_id: int
+    ) -> list[MessageRow]:
         rows = await self._db.fetchall(
-            f"SELECT {_COLS} FROM messages WHERE project_id = ? AND id > ? ORDER BY id",
-            (project_id, since_id),
+            f"SELECT {_COLS} FROM messages WHERE conversation_id = ? AND project_id = ? "
+            "AND id > ? ORDER BY id",
+            (conversation_id, project_id, since_id),
         )
         return [_row(r) for r in rows]
 
