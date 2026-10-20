@@ -239,22 +239,37 @@ def check_attiny85_usbc(comps: Components, nets: Nets) -> dict[str, bool]:
     vbus, gnd = _net(comps, _pin(comps, u, ["VBUS"])), _net(comps, _pin(comps, u, ["GND"]))
     vcc = _net(comps, _pin(comps, m, ["VCC"]))
     c["usb_rails"] = _real(vbus) and _real(gnd) and vbus != gnd
-    bridged = any(_two(comps, x) == {vbus, vcc} for x in comps if len(comps[x]["pins"]) == 2)
+    # VBUS may reach VCC through a fuse, ferrite, inductor or diode (not a resistor/cap)
+    series = _find(comps, r"(?i:fuse)|Ferrite|^Device:(L|D)(_|$)")
+    bridged = any(_two(comps, x) == {vbus, vcc} for x in series)
     c["mcu_powered_from_usb"] = (
         _real(vcc) and (vcc == vbus or bridged) and _net(comps, _pin(comps, m, ["GND"])) == gnd
     )
     c["mcu_decoupling"] = any(_two(comps, x) == {vcc, gnd} for x in C)
+    rails = {gnd, vcc, vbus}
     pb = {
-        _net(comps, _pin(comps, m, [f"PB{i}"]))
+        n
         for i in range(5)
-        if _real(_net(comps, _pin(comps, m, [f"PB{i}"])))
+        if _real(n := _net(comps, _pin(comps, m, [f"PB{i}"]))) and n not in rails
     }
 
     def chain(d: str, r: str) -> bool:
+        """MCU pin -> LED and resistor in series (either order) -> GND or VCC, with the
+        LED's anode towards the higher potential."""
         led, res = _two(comps, d), _two(comps, r)
         mid = led & res
         ends = (led | res) - mid
-        return len(mid) == 1 and bool(ends & pb) and bool(ends & {gnd, vcc}) and len(ends) == 2
+        if len(mid) != 1 or len(ends) != 2:
+            return False
+        start, rail = sorted(ends, key=lambda n: n in (gnd, vcc))
+        if start not in pb or rail not in (gnd, vcc):
+            return False
+        order = [start, next(iter(mid)), rail]  # current flows start -> rail to GND
+        a = _net(comps, _pin(comps, d, ["A"]))
+        k = _net(comps, _pin(comps, d, ["K"]))
+        if a not in order or k not in order:
+            return False
+        return (order.index(a) < order.index(k)) == (rail == gnd)
 
     c["led_with_resistor"] = any(chain(d, r) for d in D for r in R)
     want = {"MISO": "PB1", "SCK": "PB2", "MOSI": "PB0", "RST": "PB5"}

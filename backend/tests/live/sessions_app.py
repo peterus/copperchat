@@ -44,6 +44,24 @@ class Turn:
     def sub_tools(self) -> list[MessageRow]:
         return [r for r in self.tool_uses if r.metadata.get("parentToolUseId")]
 
+    def succeeded(self, prefix: str) -> list[str]:
+        """Main-agent calls of tools named ``prefix*`` whose result was not an error (a
+        refused or unavailable tool yields an error result)."""
+        ok = {
+            r.metadata.get("toolUseId")
+            for r in self.rows
+            if r.kind == "tool_result"
+            and not r.metadata.get("parentToolUseId")
+            and not r.metadata.get("isError")
+        }
+        return [
+            r.content
+            for r in self.tool_uses
+            if not r.metadata.get("parentToolUseId")
+            and r.content.startswith(prefix)
+            and r.metadata.get("toolUseId") in ok
+        ]
+
     def errors(self) -> list[str]:
         return [
             r.content[:300]

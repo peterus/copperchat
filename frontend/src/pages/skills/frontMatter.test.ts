@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readSessions, writeSessions } from './frontMatter';
+import { hasFrontMatter, readSessions, writeSessions } from './frontMatter';
 
 const fm = (...lines: string[]) => `---\n${lines.join('\n')}\n---\nbody`;
 
@@ -23,6 +23,12 @@ describe('skill front matter `sessions:`', () => {
     expect(writeSessions(fm('name: a'), ['requirements'])).toBe(fm('name: a', 'sessions: requirements'));
     expect(writeSessions(fm('name: a', 'sessions: free', 'description: d'), [])).toBe(fm('name: a', 'description: d'));
     expect(writeSessions('plain', [])).toBe('plain');
+  });
+
+  it('never invents a front matter (the backend would drop a skill without name/description)', () => {
+    expect(hasFrontMatter('plain body')).toBe(false);
+    expect(hasFrontMatter(fm('name: a'))).toBe(true);
+    expect(writeSessions('plain body', ['free'])).toBe('plain body');
   });
 
   it('keeps CRLF line endings', () => {

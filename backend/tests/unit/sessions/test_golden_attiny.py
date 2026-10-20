@@ -102,3 +102,33 @@ def test_unpowered_mcu_fails() -> None:
     comps = _good()
     comps["U1"]["pins"]["8"] = ("VCC", "unconnected-U1.8")
     assert "mcu_powered_from_usb" in _check(comps)["missing"]
+
+
+def test_led_tied_to_rails_or_reversed_fails() -> None:
+    comps = _good()
+    comps["U1"]["pins"]["3"] = ("XTAL2/PB4", "unconnected-U1.3")
+    comps["R1"]["pins"]["1"] = ("~", "VBUS")  # a power LED, not driven by the MCU
+    assert "led_with_resistor" in _check(comps)["missing"]
+    comps = _good()
+    comps["D1"]["pins"] = {"1": ("K", "LED_A"), "2": ("A", "GND")}  # reversed to GND
+    assert "led_with_resistor" in _check(comps)["missing"]
+
+
+def test_led_to_vcc_needs_the_cathode_towards_the_pin() -> None:
+    comps = _good()
+    comps["D1"]["pins"] = {"1": ("K", "LED_A"), "2": ("A", "VBUS")}  # sinks into the pin
+    assert _check(comps)["golden"]
+    comps["D1"]["pins"] = {"1": ("K", "VBUS"), "2": ("A", "LED_A")}
+    assert "led_with_resistor" in _check(comps)["missing"]
+
+
+def test_vcc_through_a_resistor_is_not_usb_powered() -> None:
+    comps = _good()
+    for ref in ("U1", "C1", "J2"):
+        pins = comps[ref]["pins"]
+        for n, (name, net) in pins.items():
+            if net == "VBUS":
+                pins[n] = (name, "+5V")
+    comps["R9"] = {"lib": "Device:R", "value": "10", "footprint": R0805,
+                   "pins": {"1": ("~", "VBUS"), "2": ("~", "+5V")}}  # fmt: skip
+    assert "mcu_powered_from_usb" in _check(comps)["missing"]

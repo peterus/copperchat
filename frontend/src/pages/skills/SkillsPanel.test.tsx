@@ -235,4 +235,16 @@ describe('SkillsPanel', () => {
       }),
     );
   });
+
+  it('session toggles are disabled with a hint when the content has no front matter', async () => {
+    http.apiGet.mockImplementation(async (path: string) => {
+      if (path.startsWith('/skills?')) return all;
+      return { ...detail(userSkill), content: 'just a body' };
+    });
+    render(<SkillsPanel projectId="p1" />);
+    await userEvent.click(await screen.findByText('copperchat-tools'));
+    const group = await screen.findByRole('group', { name: /session types/i });
+    expect(within(group).getByRole('button', { name: 'Schematic' })).toBeDisabled();
+    expect(within(group).getByText(/front matter/i)).toBeInTheDocument();
+  });
 });

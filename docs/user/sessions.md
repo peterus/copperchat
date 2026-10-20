@@ -60,8 +60,9 @@ chips, and you can toggle them on your own (user) skills.
 ### What a new session knows
 
 A new session does not see the chat of earlier sessions. At its first turn it gets an
-index of the design docs: status, open points and the latest decisions. A Schematic
-session also gets the text of `requirements.md`, `architecture.md` and `parts.md`. When a
+index of the design docs: status, open points, and short summaries of `parts.md` and the
+latest decisions. A Schematic session also gets the text of `requirements.md` (up to
+8 KiB); it reads the other docs with its doc tools. When a
 doc changes later (by you or another session), the next turn gets a short notice of what
 changed. Doc text is always passed as quoted project data, never as instructions.
 

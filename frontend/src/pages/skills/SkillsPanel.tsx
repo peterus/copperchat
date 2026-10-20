@@ -14,7 +14,7 @@ import {
 import { TYPE_LABEL } from '@/components/sessions/TypeIcon';
 import type { PanelProps } from '@/layouts/panels';
 import type { ConversationType } from '@/protocol/frames';
-import { readSessions, writeSessions } from './frontMatter';
+import { hasFrontMatter, readSessions, writeSessions } from './frontMatter';
 
 const BADGE: Record<SkillOrigin, string> = {
   builtin: 'bg-surface-2 text-muted',
@@ -50,6 +50,7 @@ function SessionChips({ sessions }: { sessions: readonly string[] | null }) {
  */
 function SessionToggles({ draft, disabled, onChange }: { draft: string; disabled: boolean; onChange: (d: string) => void }) {
   const current = readSessions(draft) ?? [];
+  const noFrontMatter = !hasFrontMatter(draft);
   const toggle = (t: string) =>
     onChange(writeSessions(draft, current.includes(t) ? current.filter((c) => c !== t) : [...current, t]));
   return (
@@ -61,7 +62,7 @@ function SessionToggles({ draft, disabled, onChange }: { draft: string; disabled
             key={t}
             type="button"
             aria-pressed={on}
-            disabled={disabled}
+            disabled={disabled || noFrontMatter}
             onClick={() => toggle(t)}
             className={`${CHIP} disabled:opacity-50 ${on ? 'border-accent bg-accent text-accent-fg' : 'hover:bg-surface-2'}`}
           >
@@ -77,6 +78,7 @@ function SessionToggles({ draft, disabled, onChange }: { draft: string; disabled
           </span>
         ))}
       {current.length === 0 && <span className="text-xs text-muted">All sessions</span>}
+      {noFrontMatter && <span className="text-xs text-muted">Needs a front matter (name, description) to restrict</span>}
     </>
   );
 }

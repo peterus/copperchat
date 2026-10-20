@@ -12,6 +12,11 @@ function frontMatterEnd(lines: string[]): number {
   return lines.findIndex((l, i) => i > 0 && l.trim() === '---');
 }
 
+/** Whether ``content`` starts with a front matter block (`---` … `---`). */
+export function hasFrontMatter(content: string): boolean {
+  return frontMatterEnd(content.split('\n')) > 0;
+}
+
 /** Session types listed in the front matter (as the backend reads them); null = every type. */
 export function readSessions(content: string): string[] | null {
   const lines = content.split('\n');
@@ -24,12 +29,16 @@ export function readSessions(content: string): string[] | null {
   return types.length > 0 ? types.sort() : null;
 }
 
-/** `content` with `sessions:` set to `types` (comma-separated), or removed when `types` is empty. */
+/**
+ * `content` with `sessions:` set to `types` (comma-separated), or removed when `types` is empty.
+ * Content without a front matter is returned unchanged: a front matter without `name` and
+ * `description` would make the backend skip the skill.
+ */
 export function writeSessions(content: string, types: readonly string[]): string {
   const lines = content.split('\n');
   const end = frontMatterEnd(lines);
   const entry = types.length > 0 ? `sessions: ${[...types].sort().join(', ')}` : null;
-  if (end < 0) return entry ? `---\n${entry}\n---\n${content}` : content;
+  if (end < 0) return content;
   const eol = lines[0]!.endsWith('\r') ? '\r' : '';
   // Replace the key in place (dropping duplicates), or append it to the front matter.
   const head: string[] = [];

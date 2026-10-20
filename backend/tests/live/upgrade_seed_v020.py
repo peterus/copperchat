@@ -40,10 +40,13 @@ async def seed(base: str, password: str, word: str) -> str:
                 }
             )
         )
-        while True:
-            frame = json.loads(await asyncio.wait_for(ws.recv(), 300))
-            if frame["type"] == "run-finished":
-                return str(frame["reason"])
+        async with asyncio.timeout(600):
+            while True:
+                frame = json.loads(await ws.recv())
+                if frame["type"] == "error":
+                    raise RuntimeError(f"server error frame: {frame}")
+                if frame["type"] == "run-finished":
+                    return str(frame["reason"])
 
 
 if __name__ == "__main__":

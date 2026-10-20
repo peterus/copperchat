@@ -46,8 +46,9 @@ history, and its agent session is resumed. See
 - **Close session (handover).** The agent brings the docs up to date in one last turn; the
   server records its summary as a `Session N closed` decision. Closed sessions are
   read-only until reopened. Stuck closes are recovered at startup.
-- **Context injection.** A new session starts from a doc index (and, for Schematic, the
-  fenced text of the key docs), not from older chats; later turns get notices of doc
+- **Context injection.** A new session starts from a doc index with summaries of
+  `parts.md` and the latest decisions (and, for Schematic, the fenced text of
+  `requirements.md` up to 8 KiB), not from older chats; later turns get notices of doc
   changes.
 - **Live tests** (opt-in, real model): a Requirements guard test (out-of-profile tool,
   `/etc/passwd`, an injected doc asking for exfiltration: all refused), the sessions eval

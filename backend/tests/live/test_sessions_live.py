@@ -95,7 +95,8 @@ async def _score(app: LiveApp) -> dict[str, Any]:
     return {
         "golden": score["golden"],
         "missing": score["missing"],
-        "erc_errors": sum(1 for v in violations if v["severity"] == "error"),
+        "erc_failed": erc if err else None,
+        "erc_errors": None if err else sum(1 for v in violations if v["severity"] == "error"),
         "erc_warnings": sum(1 for v in violations if v["severity"] == "warning"),
         "erc_types": sorted({f"{v['severity']}:{v['type']}" for v in violations}),
         "components": {
@@ -120,7 +121,8 @@ async def _build(app: LiveApp, cid: str, first: str) -> dict[str, Any]:
             r = await app.client.post(app.url(f"/plans/{plan['id']}/{event}"))
             assert r.status_code == 200, r.text
             await app.idle()
-        elif plan is None and not (await _score(app))["golden"]:
+        elif plan is not None or not (await _score(app))["golden"]:
+            # an approved or running plan that stopped, or no plan and not done yet
             await app.send(cid, SCH_GO_ON)
         else:
             break
@@ -159,7 +161,7 @@ async def test_sessions_eval(tmp_path: Path) -> None:
         req, parts, decisions = (
             _doc(app, n) for n in ("requirements.md", "parts.md", "decisions.md")
         )
-        sch_calls = [t for t in req_turn.main_tools() if t.startswith("sch_")]
+        sch_calls = req_turn.succeeded("sch_")
         result["requirements"] = {
             "turns": turns + 1,  # + the close turn
             "wall_s": round(time.monotonic() - started),
@@ -196,7 +198,9 @@ async def test_sessions_eval(tmp_path: Path) -> None:
 
     req_result, sch = result["requirements"], result["schematic"]
     assert all(req_result["sections"].values()), req_result["sections"]
-    assert req_result["parts_attiny85"] and req_result["decisions"] >= 1
-    assert sch_calls == [], "a Requirements session made sch_* calls"
+    assert req_result["parts_attiny85"] and req_result["parts_usb_c"]
+    assert req_result["researched"] >= 1 and req_result["decisions"] >= 1
+    assert sch_calls == [], "a Requirements session changed the schematic"
     assert sch["golden"], sch["missing"]
+    assert sch["erc_failed"] is None, sch["erc_failed"]
     assert sch["erc_errors"] == 0, sch["erc_types"]
