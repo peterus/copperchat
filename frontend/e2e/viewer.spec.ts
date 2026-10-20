@@ -10,7 +10,7 @@ import { expect, type Page, test } from '@playwright/test';
 const PID = 'a1b2c3d4e5f6';
 const CID = '0123456789abcdef0123456789abcdef';
 const VERSION = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version;
-/** The project's one conversation (C1 interim default session). */
+/** The project's one conversation (/p/:projectId redirects to it). */
 const CONVERSATION = {
   id: CID,
   seq: 1,
@@ -68,6 +68,8 @@ async function mockApi(page: Page, fx: Fixture) {
     return r.fulfill({ body: file(name), contentType: 'application/octet-stream' });
   });
   await page.route(`**/api/projects/${PID}/agent-view**`, (r) => r.fulfill({ body: PNG, contentType: 'image/png' }));
+  // The project page loads the open plan (its banner shows in the other sessions): none.
+  await page.route(`**/api/projects/${PID}/plans/open`, (r) => r.fulfill({ json: null }));
   await page.routeWebSocket('**/api/ws', (ws) => {
     ws.onMessage((raw) => {
       if (JSON.parse(String(raw)).type === 'ping') ws.send(JSON.stringify({ type: 'pong', projectId: null }));
