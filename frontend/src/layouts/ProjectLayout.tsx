@@ -77,7 +77,7 @@ function PanelSheet({
     <div
       role="dialog"
       aria-label={panel.title}
-      className="fixed inset-y-0 right-0 z-40 flex w-full max-w-md flex-col border-l border-border bg-bg shadow-xl"
+      className={`fixed inset-y-0 right-0 z-40 flex w-full ${panel.wide ? 'max-w-3xl' : 'max-w-md'} flex-col border-l border-border bg-bg shadow-xl`}
     >
       <header className="flex items-center justify-between border-b border-border px-3 py-2">
         <h2 className="font-medium">{panel.title}</h2>

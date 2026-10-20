@@ -12,11 +12,12 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
  * Remounted per project (key): no state, pending request or post-save reload of the previous
  * project can leak into this one (or save into it).
  */
-export function PartsPanel({ projectId }: PanelProps) {
-  return <PartsPanelBody key={projectId} projectId={projectId} />;
+export function PartsPanel({ projectId, params }: PanelProps) {
+  return <PartsPanelBody key={projectId} projectId={projectId} mpn={params?.mpn} />;
 }
 
-function PartsPanelBody({ projectId }: PanelProps) {
+/** `mpn` (openPanel params, e.g. a design doc link `../parts/<MPN>/notes.md`) opens that part. */
+function PartsPanelBody({ projectId, mpn }: { projectId: string; mpn?: string | undefined }) {
   const [parts, setParts] = useState<PartInfo[] | null>(null);
   const [notes, setNotes] = useState<PartNotes | null>(null);
   const [draft, setDraft] = useState<string | null>(null);
@@ -39,17 +40,24 @@ function PartsPanelBody({ projectId }: PanelProps) {
     void refresh();
   }, [refresh]);
 
-  async function open(mpn: string) {
-    const token = ++openToken.current;
-    setError(null);
-    setDraft(null);
-    try {
-      const n = await getNotes(projectId, mpn);
-      if (token === openToken.current) setNotes(n);
-    } catch (e) {
-      if (token === openToken.current) setError(message(e));
-    }
-  }
+  const open = useCallback(
+    async (mpn: string) => {
+      const token = ++openToken.current;
+      setError(null);
+      setDraft(null);
+      try {
+        const n = await getNotes(projectId, mpn);
+        if (token === openToken.current) setNotes(n);
+      } catch (e) {
+        if (token === openToken.current) setError(message(e));
+      }
+    },
+    [projectId],
+  );
+
+  useEffect(() => {
+    if (mpn) void open(mpn);
+  }, [mpn, open]);
 
   async function save() {
     if (!notes || draft === null) return;

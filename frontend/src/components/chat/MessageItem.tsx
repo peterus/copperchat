@@ -1,6 +1,7 @@
 import { memo, useCallback, useState } from 'react';
 import { isUploadId, uploadUrl } from '@/api/uploads';
 import { ErcBadge } from '@/components/changes/ErcBadge';
+import { DocChangedCard, docChangedOf } from '@/components/docs/DocChangedCard';
 import { RestoreOffer } from '@/components/history/RestoreOffer';
 import { PlanCard } from '@/components/plan/PlanCard';
 import type { MessageDTO } from '@/protocol/frames';
@@ -207,6 +208,8 @@ export const MessageItem = memo(function MessageItem({ message: m }: { message: 
       if (md.action === 'plan' && typeof md.planId === 'string' && md.planId) {
         return <PlanCard projectId={m.projectId} planId={md.planId} />;
       }
+      const docChanged = docChangedOf(md);
+      if (docChanged) return <DocChangedCard change={docChanged} />;
       const erc = ercOf(md);
       return (
         <div className="text-center text-xs text-muted">

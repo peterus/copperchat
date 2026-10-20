@@ -490,6 +490,21 @@ class DesignDocs:
   metadata is `{action:'doc-changed', path, revisionId, added, removed,
   sections: string[]}`.
 
+**As built (C4):**
+- `Markdown`'s `onRelativeLink?: (href) => (() => void) | null` receives every
+  link that is not http(s)/mailto; the returned action renders a button, `null`
+  plain text. Without it (chat), links behave as before.
+- `openPanel('docs', {path, revisionId})`: `path` is the full `docs/design/…`
+  path, `revisionId` a decimal string. `openPanel('parts', {mpn})` opens a part.
+- `PanelDefinition.wide` → the desktop/tablet sheet is `max-w-3xl`.
+- `stores/docs.ts` keeps `live[path]` (the last `doc-updated` per path); an
+  editor compares it with its base version for the "your save will conflict"
+  banner. Index and doc refreshes are coalesced (≤ 2 requests per burst).
+- A revert that hits a 409 continues in the editor's conflict flow, seeded with
+  the revision's body.
+- The diff (`components/docs/lineDiff.ts`) keeps one `Int32Array(d+1)` per step
+  (≤ (D+1)(D+2)/2 entries); revision texts are shown without front matter.
+
 ---
 
 ## Decided by owner (2026-10-19)

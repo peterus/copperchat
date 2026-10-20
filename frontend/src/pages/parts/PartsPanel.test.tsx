@@ -99,3 +99,11 @@ it('a slow list of the previous project never replaces the new one', async () =>
   expect(screen.queryByText('A-PART')).not.toBeInTheDocument();
   expect(screen.getByText('B-PART')).toBeInTheDocument();
 });
+
+describe('PartsPanel params', () => {
+  it('opens the part named by params.mpn', async () => {
+    render(<PartsPanel projectId="p1" params={{ mpn: 'LM317' }} />);
+    expect(await screen.findByRole('region', { name: 'Part LM317' })).toBeInTheDocument();
+    expect(http.apiGet).toHaveBeenCalledWith('/projects/p1/parts/LM317/notes');
+  });
+});

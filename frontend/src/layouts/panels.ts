@@ -19,6 +19,8 @@ export interface PanelDefinition {
   component: ComponentType<PanelProps>;
   /** Ascending; default 100; ties sorted by title. */
   order?: number;
+  /** The desktop / tablet sheet is wide (`max-w-3xl`) instead of `max-w-md` (e.g. Docs). */
+  wide?: boolean;
 }
 
 const DEFAULT_ORDER = 100;

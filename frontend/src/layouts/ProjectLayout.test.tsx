@@ -96,6 +96,19 @@ describe('ProjectLayout', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
+  it('desktop: a wide panel opens a wide sheet (max-w-3xl), others stay max-w-md', () => {
+    act(() => {
+      off.push(registerPanel({ id: 'wide', title: 'Wide', icon: Icon, wide: true, component: () => <p>W</p> }));
+      off.push(registerPanel({ id: 'narrow', title: 'Narrow', icon: Icon, component: () => <p>N</p> }));
+    });
+    renderLayout();
+    fireEvent.click(screen.getByRole('button', { name: 'Wide' }));
+    expect(screen.getByRole('dialog', { name: 'Wide' }).className).toMatch(/\bmax-w-3xl\b/);
+    expect(screen.getByRole('dialog', { name: 'Wide' }).className).not.toMatch(/max-w-md/);
+    fireEvent.click(screen.getByRole('button', { name: 'Narrow' }));
+    expect(screen.getByRole('dialog', { name: 'Narrow' }).className).toMatch(/\bmax-w-md\b/);
+  });
+
   it('iPad portrait: chat is a collapsible sidebar', () => {
     setMedia((q) => q === PORTRAIT_TABLET_QUERY);
     renderLayout();
