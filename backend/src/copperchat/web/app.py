@@ -12,6 +12,7 @@ from copperchat.agent.broadcaster import Broadcaster
 from copperchat.agent.runtime import AgentRuntime
 from copperchat.config import Settings, check_model_credentials
 from copperchat.db import Database
+from copperchat.design_docs import install_design_docs
 from copperchat.editing import install_editing
 from copperchat.errors import CopperChatError, StructuredToolError
 from copperchat.history.service import install_history
@@ -28,6 +29,7 @@ from copperchat.web import (
     auth,
     health,
     routes_conversations,
+    routes_docs,
     routes_editing,
     routes_git,
     routes_history,
@@ -132,6 +134,7 @@ def create_app(
             install_history(app)
             install_editing(app)  # after history: chains its hooks after HistoryHooks
             plans = install_plans(app)  # PlanGate replaces the editing gate (E8b)
+            install_design_docs(app)  # app.state.docs (sessions C3)
             await plans.pause_all_running()  # a restart leaves no plan running
             push = install_push(app)
             # parked / queued work survives a restart
@@ -165,6 +168,7 @@ def create_app(
     app.include_router(routes_push.router)
     app.include_router(routes_editing.router)
     app.include_router(routes_plans.router)
+    app.include_router(routes_docs.router)
     app.include_router(ws.router)
     mount_frontend(app, settings.frontend_dist)  # must stay last: it mounts "/"
     return app

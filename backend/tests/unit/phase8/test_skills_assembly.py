@@ -17,6 +17,7 @@ MAIN = {
     "kicad-review-discipline",
     "copperchat-tools",
     "part-preferences",
+    "design-docs",
 }
 
 

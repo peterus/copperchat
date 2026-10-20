@@ -1,0 +1,81 @@
+{
+ "type": "doc-updated",
+ "directions": [
+  "s2c"
+ ],
+ "valid": [
+  {
+   "type": "doc-updated",
+   "projectId": "a1b2c3d4e5f6",
+   "path": "docs/design/requirements.md",
+   "version": "v0123456789abcdef",
+   "status": "draft",
+   "userEdited": false,
+   "revisionId": 12,
+   "author": "agent",
+   "conversationId": "0123456789abcdef0123456789abcdef"
+  },
+  {
+   "type": "doc-updated",
+   "projectId": "a1b2c3d4e5f6",
+   "path": "docs/design/requirements.md",
+   "version": "v0123456789abcdef",
+   "status": "approved",
+   "userEdited": true,
+   "revisionId": null,
+   "author": "user"
+  }
+ ],
+ "invalid": [
+  {
+   "type": "doc-updated",
+   "projectId": "a1b2c3d4e5f6",
+   "path": "docs/design/requirements.md",
+   "version": "v0123456789abcdef",
+   "status": "final",
+   "userEdited": false,
+   "revisionId": 1,
+   "author": "user"
+  },
+  {
+   "type": "doc-updated",
+   "projectId": "a1b2c3d4e5f6",
+   "path": "docs/design/requirements.md",
+   "version": "v0123456789abcdef",
+   "status": "draft",
+   "userEdited": false,
+   "author": "user"
+  },
+  {
+   "type": "doc-updated",
+   "projectId": "a1b2c3d4e5f6",
+   "path": "",
+   "version": "v0123456789abcdef",
+   "status": "draft",
+   "userEdited": false,
+   "revisionId": 1,
+   "author": "user"
+  },
+  {
+   "type": "doc-updated",
+   "projectId": "a1b2c3d4e5f6",
+   "path": "docs/design/requirements.md",
+   "version": "v0123456789abcdef",
+   "status": "draft",
+   "userEdited": "no",
+   "revisionId": 1,
+   "author": "robot"
+  },
+  {
+   "type": "doc-updated",
+   "projectId": "a1b2c3d4e5f6",
+   "path": "docs/design/requirements.md",
+   "version": "v0123456789abcdef",
+   "status": "draft",
+   "userEdited": false,
+   "revisionId": 1,
+   "author": "user",
+   "extra": 1
+  }
+ ]
+}
