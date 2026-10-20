@@ -88,8 +88,10 @@ class DocNotice:
     sections: tuple[str, ...]
     conversation_id: str | None
     run_id: str | None
-    # The body version after the change (C5: the conversation's ``docs_seen``).
+    # The body versions after and before the change (C5: the conversation's
+    # ``docs_seen`` advances only when it had seen ``prev_version``).
     version: str | None = None
+    prev_version: str | None = None
 
 
 def scope_refused(why: str) -> DocError:
@@ -922,6 +924,7 @@ class DesignDocs:
                     conversation_id,
                     run_id,
                     new_version,
+                    state.version,
                 )
             )
             if was_approved and not approved:
@@ -936,6 +939,7 @@ class DesignDocs:
                         conversation_id,
                         run_id,
                         new_version,
+                        state.version,
                     )
                 )
         await self._publish(

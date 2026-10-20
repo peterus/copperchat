@@ -88,7 +88,13 @@ ScriptFor = Callable[[QueuedItem], list[Step]]
 
 
 def echo_script(item: QueuedItem) -> list[Step]:
-    return [Text("You said: "), Text(item.text)]
+    """Echo the user's text. Injected notices (doc index, notes) precede it, separated by
+    a blank line; the dev echo leaves them out (a user text with a blank line of its own
+    is then echoed from its last paragraph)."""
+    text = item.text
+    if text.startswith("[CopperChat notice]"):
+        text = text.rsplit("\n\n", 1)[-1]
+    return [Text("You said: "), Text(text)]
 
 
 @dataclass

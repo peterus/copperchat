@@ -99,15 +99,17 @@ class SessionService:
         engine = await self.runtime.ensure(project)
         # Only one of two concurrent closes (or a close racing a reopen) gets here.
         row = await self.conversations.set_status(cid, "closing", expect="open")
+        # Published before the message is queued: a fast close turn's 'closed' must not
+        # be overtaken by this 'closing'.
+        await self._publish(row)
         try:
             await engine.submit_ex(
                 cid, f"close-{uuid.uuid4().hex}", CLOSE_TEXT, [], {"origin": CLOSE_ORIGIN}
             )
         except BaseException:
-            row = await self.conversations.set_status(cid, "open", expect="closing")
-            await self._publish(row)
+            reverted = await self.conversations.set_status(cid, "open", expect="closing")
+            await self._publish(reverted)
             raise
-        await self._publish(row)
         return row
 
     async def reopen(self, project: Project, cid: str) -> ConversationRow:
@@ -125,13 +127,15 @@ class SessionService:
         await engine.post_notice(cid, notice, {"origin": CLOSE_ORIGIN})
         await self._publish(row)
 
-    async def _summary(self, run_id: str) -> str:
+    async def _summary(self, conversation_id: str, run_id: str) -> str:
         """The close turn's final main-agent text (its last text segment)."""
+        # conversation_id first: ix_messages_conversation serves the scan
         row = await self.db.fetchone(
-            "SELECT content FROM messages WHERE run_id = ? AND role = 'assistant' "
-            "AND kind = 'text' AND json_extract(metadata, '$.parentToolUseId') IS NULL "
+            "SELECT content FROM messages WHERE conversation_id = ? AND run_id = ? "
+            "AND role = 'assistant' AND kind = 'text' "
+            "AND json_extract(metadata, '$.parentToolUseId') IS NULL "
             "AND content != '' ORDER BY id DESC LIMIT 1",
-            (run_id,),
+            (conversation_id, run_id),
         )
         return str(row["content"]).strip() if row is not None else ""
 
@@ -147,14 +151,20 @@ class SessionService:
         if outcome.reason != "completed":
             await self.back_to_open(engine, cid, NOT_COMPLETED)
             return
-        if await self._owns_open_plan(conv):
-            # a plan_propose that raced the close (spec §10, plan index)
-            await self.back_to_open(engine, cid, PLAN_OPEN_NOTICE)
-            return
-        await self._handover_entry(project, engine, conv, await self._summary(turn.run_id))
         try:
+            if await self._owns_open_plan(conv):
+                # a plan_propose that raced the close (spec §10, plan index)
+                await self.back_to_open(engine, cid, PLAN_OPEN_NOTICE)
+                return
+            summary = await self._summary(cid, turn.run_id)
+            await self._handover_entry(project, engine, conv, summary)
             row = await self.conversations.set_status(cid, "closed", expect="closing")
         except ConversationStateConflict:
+            return
+        except Exception:
+            # never leave the session stuck in 'closing' until the next restart
+            log.exception("settling the close of %s failed", cid)
+            await self.back_to_open(engine, cid, NOT_COMPLETED)
             return
         await self._publish(row)
 
@@ -205,7 +215,8 @@ class SessionHooks(RunHooks):
         if conv is None:
             return []
         result = await inject(svc.docs, self.project, conv)
-        await svc.conversations.set_docs_seen(conv.id, result.docs_seen)
+        if result.docs_seen != conv.docs_seen:
+            await svc.conversations.set_docs_seen(conv.id, result.docs_seen)
         return result.notices
 
     async def on_turn_end(self, turn: TurnInfo, outcome: TurnOutcome) -> None:

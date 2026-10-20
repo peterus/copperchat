@@ -12,7 +12,8 @@ import httpx
 import pytest
 
 from copperchat.agent.events import QueuedItem, RateLimited
-from copperchat.agent.fake import Emit, Finish, Text, Tool, Wait
+from copperchat.agent.fake import Delegate, Emit, Finish, Text, Tool, Wait
+from copperchat.agent.protocol import AttachmentRef
 from copperchat.config import Settings
 from copperchat.db import Database
 from copperchat.db.repos.agent_state import RunRepo
@@ -252,9 +253,57 @@ async def test_completed_close_closes_and_records_the_handover(env: Env) -> None
         "*Session: Specs (#1, requirements)*"
     ) in text
     assert "- handed over" in (env.design / "requirements.md").read_text()
-    rows = await env.rows(cid)
-    assert rows[-1].role == "assistant" or rows[-1].kind == "notice"
-    assert any(r.role == "assistant" and "Next: schematic." in r.content for r in rows)
+    texts = [r for r in await env.rows(cid) if r.role == "assistant" and r.kind == "text"]
+    assert texts[-1].content == "Done: power. Open: enclosure. Next: schematic."
+
+
+async def test_summary_is_the_last_main_agent_text_segment(env: Env) -> None:
+    cid = await env.create("free")
+    env.script = lambda item: [
+        Text("Let me update the docs first."),
+        Tool("doc_append", {"path": "decisions.md", "title": "x", "text": "y", "summary": "s"}),
+        Delegate("look it up", steps=(Text("sub-agent words"),), summary="research done"),
+        Text("Final handover summary."),
+    ]
+    assert (await _close(env, cid)).status_code == 202
+    await env.idle()
+    assert (await env.conv(cid)).status == "closed"
+    text = (env.design / "decisions.md").read_text()
+    entry = text[text.index("Session 1 closed") :]
+    assert entry.split("\n")[1] == "Final handover summary."
+    assert "sub-agent words" not in entry and "Let me update" not in entry
+
+
+async def test_a_failing_settle_reopens_instead_of_sticking(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def broken(*a: Any, **kw: Any) -> None:
+        raise RuntimeError("disk on fire")
+
+    monkeypatch.setattr(env.app.state.conversation_service, "_handover_entry", broken)
+    cid = await env.create("free")
+    env.script = lambda item: [Text("summary")]
+    assert (await _close(env, cid)).status_code == 202
+    await env.idle()
+    await _closed_status(env, cid, "open")
+    assert NOT_COMPLETED in _notices(await env.rows(cid))
+
+
+async def test_send_racing_the_close_is_refused_under_the_lock(env: Env) -> None:
+    """The status is checked again under the engine lock: a send whose attachments were
+    still resolving when the close started never queues a turn behind the close."""
+    cid = await env.create("free")
+    engine = await env.engine()
+
+    async def resolve(ref: AttachmentRef) -> AttachmentRef:
+        await ConversationRepo(env.db).set_status(cid, "closing", expect="open")
+        return ref
+
+    engine.attachment_resolver = resolve
+    ref = AttachmentRef(id="u1", kind="image", name="a.png")
+    with pytest.raises(ConversationClosed):
+        await engine.submit_ex(cid, "racer", "hello", [ref])
+    assert [r for r in await env.rows(cid) if r.role == "user"] == []
 
 
 async def test_summary_is_escaped_and_truncated(env: Env) -> None:

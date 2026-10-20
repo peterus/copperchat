@@ -268,7 +268,7 @@ def test_index_cap_drops_sections_first_then_collapses_extra_docs() -> None:
     fixed = [_entry(f"docs/design/{n}", fixed=True) for n in ("requirements.md", "parts.md")]
     some = DocIndex("docs/design", [*fixed, *(_entry(f"docs/design/x{i}.md") for i in range(12))])
     text = render_index(some, {})
-    assert len(text.encode()) <= INDEX_CAP
+    assert len(f"{NOTICE} {text}".encode()) <= INDEX_CAP  # with the engine's prefix
     assert "sections:" not in text and "- x11.md — draft" in text and "more docs" not in text
     many = DocIndex(
         "docs/design",
@@ -282,7 +282,7 @@ def test_index_cap_drops_sections_first_then_collapses_extra_docs() -> None:
         [Ignored(f"docs/design/junk-{i}.md", "symlink") for i in range(50)],
     )
     text = render_index(many, {})
-    assert len(text.encode()) <= INDEX_CAP
+    assert len(f"{NOTICE} {text}".encode()) <= INDEX_CAP
     assert "- requirements.md — draft" in text and "- +48 more docs" in text
     assert "extra-doc-with" not in text and "Ignored (not read): 50 files" in text
     small = render_index(DocIndex("docs/design", fixed), {})
@@ -329,3 +329,19 @@ async def test_bad_files_are_listed_as_ignored_and_never_opened(
     assert "secret.txt" not in opened
     second = env.agents[0].bursts[-1].prompts[-1]
     assert "n00.md changed since your last turn" in second
+
+
+async def test_change_lines_are_capped_after_dropping_own_changes(env: Env) -> None:
+    for i in range(25):
+        (env.design / f"d{i:02}.md").write_text(f"# D{i}\n")
+    cid = await env.create("free")
+    env.script = lambda item: []
+    await env.send(cid, "first")
+    for i in range(23):
+        (env.design / f"d{i:02}.md").write_text(f"# D{i}\n\nby hand\n")
+    env.script = lambda item: []
+    await env.send(cid, "second")
+    text = env.agents[0].bursts[-1].prompts[-1]
+    lines = _notice_lines(text)
+    assert len(lines) == 21
+    assert lines[-1] == f"{NOTICE} 3 more docs changed since your last turn; doc_list shows them."

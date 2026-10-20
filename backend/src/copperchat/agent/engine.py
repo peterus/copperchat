@@ -408,6 +408,14 @@ class RunEngine:
         if attachments:
             meta["attachments"] = [a.model_dump(mode="json", by_alias=True) for a in attachments]
         async with self._lock:
+            # Again under the lock (the attachments were resolved in between): a send
+            # racing a close must never queue a turn behind the close message.
+            if origin != "close-session":
+                conv = await self._conversation(conversation_id)
+                if conv.status != "open":
+                    raise ConversationClosed(
+                        f"{conv.title} is {conv.status}; reopen it to continue"
+                    )
             first = await self._first_message(conversation_id)
             row, created = await self._messages.insert_user(
                 self.pid, conversation_id, client_message_id, text, meta
@@ -1241,7 +1249,7 @@ class RunEngine:
         if cid is None:
             return
         if notice.version is not None:
-            await self._mark_seen(cid, notice.path, notice.version)
+            await self._mark_seen(cid, notice.path, notice.prev_version, notice.version)
         name = notice.path.removeprefix("docs/design/")
         if notice.kind == "approval_lost":
             conv = await self._conversations.get(cid)
@@ -1296,9 +1304,14 @@ class RunEngine:
                 )
             )
 
-    async def _mark_seen(self, conversation_id: str, path: str, version: str) -> None:
+    async def _mark_seen(
+        self, conversation_id: str, path: str, prev: str | None, version: str
+    ) -> None:
+        """Advance ``docs_seen`` over the conversation's own change only if it had seen the
+        version the change was based on: a change by the user or another session in
+        between (a stale ``doc_append``) is still reported at the next turn."""
         conv = await self._conversations.get(conversation_id)
-        if conv is not None and conv.docs_seen.get(path) != version:
+        if conv is not None and conv.docs_seen.get(path) == prev:
             await self._conversations.set_docs_seen(
                 conversation_id, {**conv.docs_seen, path: version}
             )

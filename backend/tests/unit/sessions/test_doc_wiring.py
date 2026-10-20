@@ -222,3 +222,53 @@ async def test_three_conflicts_in_one_turn_say_stop_and_ask(env: Env) -> None:
     hints = [json.loads(r["content"])["error"]["suggestion"] for r in results]
     assert "stop and ask the user" not in hints[0] and "stop and ask the user" not in hints[1]
     assert "stop and ask the user" in hints[2]
+
+
+async def test_approval_lost_is_a_plain_notice(env: Env) -> None:
+    (env.design / "requirements.md").write_text(BODY)
+    version = env.version("requirements.md")
+    assert version is not None
+    await env.docs.approve(env.project, "requirements.md", version)
+    cid = await env.create("requirements", "Specs")
+    env.script = lambda item: [
+        Tool(
+            "doc_append",
+            {"path": "requirements.md", "text": "- new", "section": "Open points", "summary": "a"},
+        )
+    ]
+    await env.send(cid, "change it")
+    rows = await env.rows(cid)
+    lost = [r for r in rows if r.kind == "notice" and "after approval" in r.content]
+    assert [r.content for r in lost] == [
+        "requirements.md changed after approval (Specs) — review and re-approve"
+    ]
+    assert lost[0].metadata == {"path": REQ}
+    assert len(_doc_notices(rows)) == 1  # plus the doc-changed card
+    conv = await env.conv(cid)
+    assert conv.docs_seen[REQ] == env.version("requirements.md")
+
+
+async def test_stale_own_write_does_not_hide_a_user_edit(env: Env) -> None:
+    """docs_seen advances over an own change only if it had seen its base: a user edit
+    made during the turn, under a stale doc_append, is still reported next turn."""
+    (env.design / "requirements.md").write_text(BODY)
+    cid = await env.create("requirements")
+    env.script = lambda item: []
+    await env.send(cid, "first")  # index; docs_seen = v1
+    v1 = env.version("requirements.md")
+    gate = asyncio.Event()
+    env.script = lambda item: [
+        Wait(gate),
+        Tool("doc_append", {"path": "requirements.md", "text": "- agent", "summary": "a"}),
+    ]
+    engine = await env.engine()
+    await env.send(cid, "append without reading", wait=False)
+    await until(lambda: engine.current_run_id is not None and len(env.agent.prompts) == 2)
+    await env.docs.write(env.project, "requirements.md", BODY + "user line\n", v1, author="user")
+    gate.set()
+    await env.idle()
+    assert (await env.conv(cid)).docs_seen[REQ] == v1
+    env.script = lambda item: []
+    await env.send(cid, "next")
+    prompt = [b for b in env.agent.bursts if b.conversation_id == cid][-1].prompts[-1]
+    assert "requirements.md changed since your last turn (user edit, " in prompt

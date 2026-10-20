@@ -97,10 +97,8 @@ def test_cookie_authenticated_chat_round_trip(make_settings: Callable[..., Setti
         cid = _conversation(client, pid)
         page = client.get(f"/api/projects/{pid}/conversations/{cid}/messages").json()
         assert [m["role"] for m in page["messages"]] == ["user", "assistant"]
-        # the echo includes the first-turn doc index notice (sessions C5), then the text
-        reply = page["messages"][1]["content"]
-        assert reply.startswith("You said: [CopperChat notice] Design documents")
-        assert reply.endswith("\n\nhello")
+        # the dev echo leaves out the first-turn doc index notice (sessions C5)
+        assert page["messages"][1]["content"] == "You said: hello"
         assert client.post("/api/auth/logout").status_code == 204
         with (
             pytest.raises(WebSocketDisconnect) as after_logout,
@@ -177,4 +175,4 @@ def test_queued_message_runs_after_restart_without_any_client(
                 break
             assert time.monotonic() < deadline, rows
             time.sleep(0.02)
-        assert rows[0]["id"] == mid and rows[1]["content"].endswith("\n\nleft over")
+        assert rows[0]["id"] == mid and rows[1]["content"] == "You said: left over"
