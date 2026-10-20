@@ -132,3 +132,10 @@ def test_vcc_through_a_resistor_is_not_usb_powered() -> None:
     comps["R9"] = {"lib": "Device:R", "value": "10", "footprint": R0805,
                    "pins": {"1": ("~", "VBUS"), "2": ("~", "+5V")}}  # fmt: skip
     assert "mcu_powered_from_usb" in _check(comps)["missing"]
+
+
+def test_led_without_series_resistor_fails() -> None:
+    comps = _good()
+    comps["R1"]["pins"] = {"1": ("~", "VBUS"), "2": ("~", "GND")}  # a resistor across the rails
+    comps["D1"]["pins"] = {"1": ("K", "GND"), "2": ("A", "LED_DRV")}  # LED straight on the pin
+    assert "led_with_resistor" in _check(comps)["missing"]

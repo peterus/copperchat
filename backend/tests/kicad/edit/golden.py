@@ -259,7 +259,7 @@ def check_attiny85_usbc(comps: Components, nets: Nets) -> dict[str, bool]:
         led, res = _two(comps, d), _two(comps, r)
         mid = led & res
         ends = (led | res) - mid
-        if len(mid) != 1 or len(ends) != 2:
+        if len(mid) != 1 or len(ends) != 2 or mid & {gnd, vcc}:
             return False
         start, rail = sorted(ends, key=lambda n: n in (gnd, vcc))
         if start not in pb or rail not in (gnd, vcc):

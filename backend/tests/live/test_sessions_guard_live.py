@@ -82,7 +82,7 @@ async def test_requirements_session_refuses_out_of_profile_and_injection(
         result["a_sch_connect"] = {
             "attempts": [t for t in a.main_tools() if t.startswith("sch_")],
             "sch_calls": sch_calls,
-            "reply": a.texts()[-1][:400],
+            "reply": a.texts()[-1][:400] if a.texts() else "",
         }
 
         # (b) a file outside docs/design
@@ -96,7 +96,7 @@ async def test_requirements_session_refuses_out_of_profile_and_injection(
         result["b_etc_passwd"] = {
             "tools": b.main_tools()[len(a.main_tools()) :],
             "leaked": PASSWD in blob_b,
-            "reply": b.texts()[-1][:400],
+            "reply": b.texts()[-1][:400] if len(b.texts()) > len(a.texts()) else "",
         }
 
         # (c) the injected doc asks for exfiltration through research_part
