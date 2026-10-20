@@ -220,10 +220,62 @@ def check_s3(comps: Components, nets: Nets) -> dict[str, bool]:
     return c
 
 
+def check_attiny85_usbc(comps: Components, nets: Nets) -> dict[str, bool]:
+    """Sessions live eval (spec §14.4): USB-C 5 V, an ATtiny85 with decoupling, one LED with
+    a resistor on an MCU pin, a 6-pin ISP header (AVR-ISP-6 names or the standard pin
+    numbers 1 MISO, 2 VCC, 3 SCK, 4 MOSI, 5 RST, 6 GND)."""
+    c: dict[str, bool] = {}
+    M, U = _find(comps, r"^MCU_.*:ATtiny85"), _find(comps, r"USB_C")
+    D, R, C = _find(comps, r"LED"), _find(comps, r"^Device:R"), _find(comps, r"^Device:C")
+    isp = [
+        r
+        for r in _find(comps, r"^Connector")
+        if r not in U and (re.search(r"AVR-ISP-6", comps[r]["lib"]) or len(comps[r]["pins"]) == 6)
+    ]
+    c["parts_present"] = (len(M), len(U), len(isp)) == (1, 1, 1) and bool(D and R and C)
+    if not c["parts_present"]:
+        return c
+    m, u, h = M[0], U[0], isp[0]
+    vbus, gnd = _net(comps, _pin(comps, u, ["VBUS"])), _net(comps, _pin(comps, u, ["GND"]))
+    vcc = _net(comps, _pin(comps, m, ["VCC"]))
+    c["usb_rails"] = _real(vbus) and _real(gnd) and vbus != gnd
+    bridged = any(_two(comps, x) == {vbus, vcc} for x in comps if len(comps[x]["pins"]) == 2)
+    c["mcu_powered_from_usb"] = (
+        _real(vcc) and (vcc == vbus or bridged) and _net(comps, _pin(comps, m, ["GND"])) == gnd
+    )
+    c["mcu_decoupling"] = any(_two(comps, x) == {vcc, gnd} for x in C)
+    pb = {
+        _net(comps, _pin(comps, m, [f"PB{i}"]))
+        for i in range(5)
+        if _real(_net(comps, _pin(comps, m, [f"PB{i}"])))
+    }
+
+    def chain(d: str, r: str) -> bool:
+        led, res = _two(comps, d), _two(comps, r)
+        mid = led & res
+        ends = (led | res) - mid
+        return len(mid) == 1 and bool(ends & pb) and bool(ends & {gnd, vcc}) and len(ends) == 2
+
+    c["led_with_resistor"] = any(chain(d, r) for d in D for r in R)
+    want = {"MISO": "PB1", "SCK": "PB2", "MOSI": "PB0", "RST": "PB5"}
+    numbers = {"MISO": "1", "VCC": "2", "SCK": "3", "MOSI": "4", "RST": "5", "GND": "6"}
+
+    def hdr(sig: str) -> str | None:
+        return _net(comps, _pin(comps, h, [sig, numbers[sig]]))
+
+    c["isp_pins"] = (
+        all(_real(hdr(s)) and hdr(s) == _net(comps, _pin(comps, m, [p])) for s, p in want.items())
+        and hdr("VCC") == vcc
+        and hdr("GND") == gnd
+    )
+    return c
+
+
 CHECKS: dict[str, Callable[[Components, Nets], dict[str, bool]]] = {
     "s1_led": check_s1,
     "s2_ldo": check_s2,
     "s3_mcu_i2c_subsheet": check_s3,
+    "sessions_attiny85_usbc": check_attiny85_usbc,  # live only (tests/live/test_sessions_live.py)
 }
 
 
