@@ -197,4 +197,19 @@ describe('conversations store', () => {
     await p;
     await vi.waitFor(() => expect(api.list).toHaveBeenCalledTimes(3));
   });
+
+  it('an archived list in flight during a reconnect is read once more', async () => {
+    await store.getState().load(PID);
+    store.getState().view(PID, C1);
+    let resolve!: (v: ConversationDTO[]) => void;
+    api.list.mockImplementationOnce(() => new Promise((r) => (resolve = r)));
+    const p = store.getState().loadArchived(PID);
+    ws.drop();
+    ws.connect();
+    resolve([]);
+    expect(await p).toBe(true);
+    const archivedCalls = api.list.mock.calls.filter(([, o]) => o?.archived === true);
+    expect(archivedCalls).toHaveLength(2);
+    expect(ids()).toContain(C3);
+  });
 });

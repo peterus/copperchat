@@ -89,7 +89,8 @@ function SessionArea({ projectId, cid, readOnly }: { projectId: string; cid: str
     return <LoadError error={error} onRetry={() => void store.getState().load(projectId)} />;
   }
   if (cid === undefined) {
-    if (!loaded) return <Loading />;
+    // Only the first load shows Loading: a refresh (reconnect) keeps the empty state and its dialog.
+    if (!listed) return <Loading />;
     if (newestOpen !== null) return <Navigate to={sessionPath(projectId, newestOpen)} replace />;
     return <NoSession projectId={projectId} hasEarlier={count > 0} />;
   }

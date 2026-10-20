@@ -7,9 +7,10 @@ import { ErcBadge } from '@/components/changes/ErcBadge';
 import { diffHighlight, entriesHighlight } from '@/components/changes/highlight';
 import { errorText } from '@/components/history/restore';
 import { SessionChip } from '@/components/sessions/SessionChip';
-import { useChat, useCurrentConversationId } from '@/hooks/useChat';
+import { useChat } from '@/hooks/useChat';
 import { registerPanel } from '@/layouts/panels';
 import { entriesKey, useChanges } from '@/stores/changes';
+import { useConversations } from '@/stores/conversations';
 import { useView } from '@/stores/view';
 
 const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : 'unknown time');
@@ -284,7 +285,8 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
   const attach = useChanges((s) => s.attach);
   useEffect(() => attach(), [attach]);
   // Restore notices of the conversation shown.
-  const conversationId = useCurrentConversationId(projectId);
+  // The session shown on the project page (null: none, e.g. the empty state).
+  const conversationId = useConversations((s) => s.viewing[projectId] ?? null);
   const { messages } = useChat(projectId, conversationId);
   // All sessions by default: the design state is shared (spec §12.4).
   const [onlyThis, setOnlyThis] = useState(false);
@@ -305,7 +307,7 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
     // newest first; a restore sits between the runs before and after it
     const timeline = [
       ...(runs ?? [])
-        .filter((run) => !onlyThis || run.conversationId === conversationId)
+        .filter((run) => !onlyThis || conversationId === null || run.conversationId === conversationId)
         .map((run) => ({ at: time(run.createdAt), run })),
       ...restores.map((restore) => ({ at: time(restore.at), restore })),
     ].sort((a, b) => b.at - a.at);
@@ -318,7 +320,7 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
           {error}
         </p>
       )}
-      {runs !== null && runs.length > 0 && (
+      {runs !== null && runs.length > 0 && conversationId !== null && (
         <fieldset className="flex gap-3 text-xs text-muted">
           <legend className="sr-only">Show changes of</legend>
           <label className="flex items-center gap-1">

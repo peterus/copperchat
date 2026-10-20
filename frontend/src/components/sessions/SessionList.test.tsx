@@ -120,4 +120,15 @@ describe('SessionList', () => {
     expect(await within(list()).findByText('Old idea')).toBeInTheDocument();
     expect(screen.queryByRole('alert')).toBeNull();
   });
+
+  it('no archived error once "Show archived" is off again', async () => {
+    let reject!: (e: Error) => void;
+    f.api.list.mockImplementationOnce(() => new Promise((_, r) => (reject = r)));
+    renderList();
+    const box = screen.getByRole('checkbox', { name: 'Show archived' });
+    fireEvent.click(box);
+    fireEvent.click(box);
+    await act(async () => reject(new Error('offline')));
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
 });

@@ -145,7 +145,9 @@ export function createConversationsStore(deps: ConversationsDeps) {
       // Frames may have been lost with the socket: the lists of the shown projects are read again.
       for (const projectId of Object.keys(get().viewing)) {
         refresh(projectId);
-        if (archivedLoaded.has(projectId)) {
+        if (archivedLoading.has(projectId)) {
+          archivedStale.add(projectId); // its answer may predate the gap
+        } else if (archivedLoaded.has(projectId)) {
           archivedLoaded.delete(projectId);
           void get().loadArchived(projectId);
         }
@@ -154,6 +156,7 @@ export function createConversationsStore(deps: ConversationsDeps) {
 
     /** Projects whose list must be read again once the request in flight settles. */
     const stale = new Set<string>();
+    const archivedStale = new Set<string>();
 
     /**
      * Reads the list again after a gap in the frames: a request already in flight may have been
@@ -213,8 +216,9 @@ export function createConversationsStore(deps: ConversationsDeps) {
         if (archivedLoaded.has(projectId)) return Promise.resolve(true);
         const inflight = archivedLoading.get(projectId);
         if (inflight) return inflight;
-        const p = fetchList(projectId, true).then((ok) => {
+        const p = fetchList(projectId, true).then((ok): boolean | Promise<boolean> => {
           if (archivedLoading.get(projectId) === p) archivedLoading.delete(projectId);
+          if (archivedStale.delete(projectId)) return get().loadArchived(projectId);
           if (ok) archivedLoaded.add(projectId);
           return ok;
         });
@@ -276,6 +280,7 @@ export function createConversationsStore(deps: ConversationsDeps) {
         archivedLoaded.clear();
         archivedLoading.clear();
         stale.clear();
+        archivedStale.clear();
         frameSeqOf.clear();
         set({ byProject: {}, status: {}, errors: {}, activeRun: {}, unread: {}, viewing: {} });
       },

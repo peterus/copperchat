@@ -161,7 +161,7 @@ export function SessionList({
           {error}
         </p>
       )}
-      {archivedError && (
+      {showArchived && archivedError && (
         <p role="alert" className="flex items-center gap-2 px-3 py-1 text-xs text-danger">
           <span className="flex-1">Could not load the archived sessions: {archivedError}</span>
           <button type="button" onClick={loadArchived} className="rounded border border-border px-2 text-fg">

@@ -13,6 +13,7 @@ vi.mock('@/hooks/useChat', () => ({ useChat: () => chat, useCurrentConversationI
 
 import { usePanels } from '@/layouts/panels';
 import { ChangesStoreContext, createChangesStore } from '@/stores/changes';
+import { useConversationsStore } from '@/stores/conversations';
 import { createViewStore, ViewStoreContext } from '@/stores/view';
 import { FakeWsClient } from '@/test/fakeWsClient';
 import { ChangesPanel } from './ChangesPanel';
@@ -94,6 +95,8 @@ const notice = (id: number, createdAt: string, snapshotId: string): MessageDTO =
 const runItem = (runId: string) => screen.getByRole('listitem', { name: new RegExp(`Turn ${runId}`) });
 
 beforeEach(() => {
+  useConversationsStore.getState().reset();
+  useConversationsStore.getState().view(PID, 'c'.repeat(32));
   apiGet.mockReset().mockImplementation(async (p: string) => routes(p));
   chat.messages = [];
 });
@@ -356,6 +359,17 @@ describe('ChangesPanel', () => {
     expect(screen.queryByRole('listitem', { name: /Turn r2/ })).toBeNull();
     expect(runItem('r1')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('radio', { name: 'All sessions' }));
+    expect(runItem('r2')).toBeInTheDocument();
+  });
+
+  it('without a session shown there is no "this session" filter', async () => {
+    useConversationsStore.getState().view(PID, null);
+    apiGet.mockImplementation(async (p: string) =>
+      p.startsWith(`/projects/${PID}/changes/runs`) ? [{ ...RUNS[0], conversationId: 'd'.repeat(32), conversationTitle: 'Session 2' }] : routes(p),
+    );
+    setup();
+    await screen.findAllByRole('listitem', { name: /^Turn/ });
+    expect(screen.queryByRole('radio', { name: 'This session' })).toBeNull();
     expect(runItem('r2')).toBeInTheDocument();
   });
 });

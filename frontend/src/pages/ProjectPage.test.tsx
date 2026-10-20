@@ -46,6 +46,7 @@ function json(body: unknown, status = 200) {
 
 let store: ChatStore;
 let conversations$: ConversationsStore;
+let ws: FakeWsClient;
 let failOpen = false;
 /** Per project: GET /conversations answer (newest activity first). */
 let conversations: Record<string, ReturnType<typeof conv>[]>;
@@ -70,7 +71,7 @@ beforeEach(() => {
   useProjects.getState().reset();
   useComposer.getState().reset();
   fetchPage = vi.fn<ChatDeps['fetchPage']>(async () => ({ messages: [], hasMore: false }));
-  const ws = new FakeWsClient();
+  ws = new FakeWsClient();
   store = createChatStore({ ws, fetchPage });
   conversations$ = createConversationsStore({
     ws,
@@ -275,5 +276,15 @@ describe('ProjectPage', () => {
     await screen.findByRole('heading', { name: 'Session 1' });
     act(() => navigate(`/p/${A}/s/${C2}`));
     expect(await screen.findByRole('heading', { name: 'Session 2' })).toBeInTheDocument();
+  });
+
+  it('a reconnect keeps the empty state and its open dialog', async () => {
+    conversations[A] = [];
+    renderPage(`/p/${A}`);
+    fireEvent.click(await screen.findByRole('button', { name: 'Start a session' }));
+    expect(await screen.findByRole('dialog', { name: 'New session' })).toBeInTheDocument();
+    act(() => ws.connect());
+    expect(screen.getByRole('dialog', { name: 'New session' })).toBeInTheDocument();
+    expect(screen.queryByText('Loading the session…')).toBeNull();
   });
 });
