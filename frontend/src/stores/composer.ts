@@ -50,8 +50,24 @@ export interface ComposerState {
   clear: () => void;
   /** Parks the current draft and shows the draft of `key` (empty when it has none). */
   activate: (key: string) => void;
+  /** Parks the current draft; no conversation is shown (what is typed now is dropped). */
+  deactivate: () => void;
+  /** Sets the attachments of draft `key`, active or parked (an upload that finishes after a switch). */
+  setAttachmentsFor: (key: string, next: AttachmentRef[]) => void;
   /** Forgets every draft (logout). */
   reset: () => void;
+}
+
+const EMPTY_DRAFT: Draft = { text: '', selection: null, attachments: [] };
+
+/** The drafts with the active one parked (an empty draft is dropped). */
+function park(s: ComposerState): Record<string, Draft> {
+  const parked = { ...s.drafts };
+  if (s.activeKey !== null) {
+    if (s.text === '' && s.attachments.length === 0) delete parked[s.activeKey];
+    else parked[s.activeKey] = { text: s.text, selection: s.selection, attachments: s.attachments };
+  }
+  return parked;
 }
 
 export const useComposer = create<ComposerState>()((set, get) => ({
@@ -75,16 +91,23 @@ export const useComposer = create<ComposerState>()((set, get) => ({
   setAttachments: (next) => set({ attachments: next }),
   clear: () => set({ text: '', selection: null, attachments: [], focusToken: 0 }),
   activate: (key) => {
-    const { activeKey, drafts, text, selection, attachments } = get();
-    if (key === activeKey) return;
-    const parked = { ...drafts };
-    if (activeKey !== null) {
-      if (text === '' && attachments.length === 0) delete parked[activeKey];
-      else parked[activeKey] = { text, selection, attachments };
-    }
-    const next = parked[key] ?? { text: '', selection: null, attachments: [] };
+    if (key === get().activeKey) return;
+    const parked = park(get());
+    const next = parked[key] ?? EMPTY_DRAFT;
     delete parked[key];
     set({ activeKey: key, drafts: parked, ...next, focusToken: 0 });
+  },
+  deactivate: () => {
+    if (get().activeKey === null) return;
+    set({ activeKey: null, drafts: park(get()), ...EMPTY_DRAFT, focusToken: 0 });
+  },
+  setAttachmentsFor: (key, next) => {
+    if (key === get().activeKey) {
+      set({ attachments: next });
+      return;
+    }
+    const drafts = get().drafts;
+    set({ drafts: { ...drafts, [key]: { ...(drafts[key] ?? EMPTY_DRAFT), attachments: next } } });
   },
   reset: () => set({ activeKey: null, drafts: {}, text: '', selection: null, attachments: [], focusToken: 0 }),
 }));

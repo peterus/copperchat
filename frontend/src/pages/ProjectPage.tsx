@@ -5,6 +5,7 @@ import { NewSessionDialog } from '@/components/sessions/NewSessionDialog';
 import { SessionList, sessionPath } from '@/components/sessions/SessionList';
 import { ViewerSlot } from '@/components/viewer/ViewerSlot';
 import { ProjectLayout } from '@/layouts/ProjectLayout';
+import { useComposer } from '@/stores/composer';
 import { useConversation, useConversations, useConversationsApi } from '@/stores/conversations';
 import { usePlansStore } from '@/stores/plans';
 import { useProjects } from '@/stores/projects';
@@ -42,52 +43,59 @@ function SessionArea({ projectId, cid, readOnly }: { projectId: string; cid: str
   const store = useConversationsApi();
   const status = useConversations((s) => s.status[projectId]);
   const error = useConversations((s) => s.errors[projectId] ?? null);
-  const list = useConversations((s) => s.byProject[projectId]);
+  // Narrow selectors: a list change (another session's activity) must not re-render the chat.
+  const listed = useConversations((s) => s.byProject[projectId] !== undefined);
+  const count = useConversations((s) => s.byProject[projectId]?.length ?? 0);
+  const newestOpen = useConversations(
+    (s) => s.byProject[projectId]?.find((c) => !c.archived && c.status !== 'closed')?.id ?? null,
+  );
   const conversation = useConversation(projectId, cid ?? null);
   const valid = cid !== undefined && CONVERSATION_ID.test(cid);
-  /** The cid whose archived lookup has finished (an archived session is not in the first list). */
-  const [checked, setChecked] = useState<string | null>(null);
+  const shown = conversation?.id ?? null;
+  /** The archived lookup of a cid that is not in the first list (an archived session), once finished. */
+  const [lookup, setLookup] = useState<{ cid: string; ok: boolean } | null>(null);
 
   useEffect(() => {
     void store.getState().load(projectId);
   }, [store, projectId]);
 
   useEffect(() => {
-    store.getState().view(projectId, valid ? cid : null);
-    return () => store.getState().view(projectId, null);
+    store.getState().view(projectId, valid ? (cid ?? null) : null);
   }, [store, projectId, cid, valid]);
+  useEffect(() => () => store.getState().leave(projectId), [store, projectId]);
 
-  const loaded = list !== undefined && status !== 'loading';
+  // Without a chat shown, typed or inserted text (@REF) must not land in some session's draft.
   useEffect(() => {
-    if (!loaded || !valid || conversation || checked === cid) return;
+    if (shown === null) useComposer.getState().deactivate();
+  }, [shown]);
+
+  const loaded = listed && status !== 'loading';
+  useEffect(() => {
+    if (!loaded || !valid || conversation || lookup?.cid === cid) return;
     let live = true;
     void store
       .getState()
       .loadArchived(projectId)
-      .finally(() => live && setChecked(cid));
+      .then((ok) => live && setLookup({ cid: cid!, ok }));
     return () => {
       live = false;
     };
-  }, [store, loaded, valid, conversation, checked, cid, projectId]);
+  }, [store, loaded, valid, conversation, lookup, cid, projectId]);
 
-  if (status === 'error' && list === undefined) {
-    return (
-      <div role="alert" className="flex flex-col items-start gap-2 p-4 text-sm text-danger">
-        <p>Could not load the sessions: {error}</p>
-        <button type="button" className="rounded border border-border px-3 py-1.5 text-fg" onClick={() => void store.getState().load(projectId)}>
-          Retry
-        </button>
-      </div>
-    );
+  if (status === 'error' && !listed) {
+    return <LoadError error={error} onRetry={() => void store.getState().load(projectId)} />;
   }
   if (cid === undefined) {
     if (!loaded) return <Loading />;
-    const open = list.find((c) => !c.archived && c.status !== 'closed');
-    if (open) return <Navigate to={sessionPath(projectId, open.id)} replace />;
-    return <NoSession projectId={projectId} hasEarlier={list.length > 0} />;
+    if (newestOpen !== null) return <Navigate to={sessionPath(projectId, newestOpen)} replace />;
+    return <NoSession projectId={projectId} hasEarlier={count > 0} />;
   }
-  if (conversation) return <ChatPanel projectId={projectId} conversationId={conversation.id} readOnly={readOnly} />;
-  if (!valid || (loaded && checked === cid)) {
+  // Keyed: header state (rename editor, errors) and uploads in flight stay with their session.
+  if (conversation) return <ChatPanel key={conversation.id} projectId={projectId} conversationId={conversation.id} readOnly={readOnly} />;
+  if (valid && lookup?.cid === cid && !lookup.ok) {
+    return <LoadError error={error} onRetry={() => setLookup(null)} />;
+  }
+  if (!valid || (loaded && lookup?.cid === cid)) {
     return (
       <div className="flex flex-col items-start gap-2 p-4 text-sm">
         <p className="font-medium">Session not found</p>
@@ -99,6 +107,17 @@ function SessionArea({ projectId, cid, readOnly }: { projectId: string; cid: str
     );
   }
   return <Loading />;
+}
+
+function LoadError({ error, onRetry }: { error: string | null; onRetry: () => void }) {
+  return (
+    <div role="alert" className="flex flex-col items-start gap-2 p-4 text-sm text-danger">
+      <p>Could not load the sessions: {error}</p>
+      <button type="button" className="rounded border border-border px-3 py-1.5 text-fg" onClick={onRetry}>
+        Retry
+      </button>
+    </div>
+  );
 }
 
 function Loading() {

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { create } from 'zustand';
 import { fetchConversationMessages } from '@/api/conversations';
 import { wsClient, type ConnectionState, type WsClient } from '@/api/ws';
+import { useConversationsStore } from './conversations';
 import {
   AttachmentRef,
   ClientFrame,
@@ -72,6 +73,8 @@ export interface ChatDeps {
   ws: WsClient;
   fetchPage: (projectId: string, conversationId: string, opts: { limit: number; before?: number }) => Promise<MessagesPage>;
   newClientMessageId?: () => string;
+  /** The project's replay cursor moved to another conversation (frames may have been lost). */
+  onResubscribe?: (projectId: string) => void;
 }
 
 export interface ChatState {
@@ -253,6 +256,7 @@ export function createChatStore(deps: ChatDeps) {
      * the project's loaded chats over HTTP.
      */
     function afterResubscribe(projectId: string): void {
+      deps.onResubscribe?.(projectId);
       if (get().activeRuns[projectId]) {
         const { [projectId]: _gone, ...rest } = get().activeRuns;
         set({ activeRuns: rest });
@@ -642,4 +646,8 @@ export function createChatStore(deps: ChatDeps) {
 
 export type ChatStore = ReturnType<typeof createChatStore>;
 
-export const useChatStore: ChatStore = createChatStore({ ws: wsClient, fetchPage: fetchMessagesPage });
+export const useChatStore: ChatStore = createChatStore({
+  ws: wsClient,
+  fetchPage: fetchMessagesPage,
+  onResubscribe: (projectId) => useConversationsStore.getState().resubscribed(projectId),
+});

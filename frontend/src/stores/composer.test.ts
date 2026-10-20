@@ -77,3 +77,31 @@ describe('drafts per conversation', () => {
     expect(s().text).toBe('');
   });
 });
+
+describe('writes bound to a draft', () => {
+  beforeEach(() => useComposer.getState().reset());
+  it('setAttachmentsFor() of a parked draft does not touch the active one', () => {
+    const s = () => useComposer.getState();
+    s().activate('p/a');
+    s().activate('p/b');
+    s().setText('B');
+    s().setAttachmentsFor('p/a', [{ id: 'u1', kind: 'image', name: 'late.png' }]);
+    expect(s().attachments).toEqual([]);
+    s().setAttachmentsFor('p/b', [{ id: 'u2', kind: 'pdf', name: 'now.pdf' }]);
+    expect(s().attachments).toEqual([{ id: 'u2', kind: 'pdf', name: 'now.pdf' }]);
+    s().activate('p/a');
+    expect(s().attachments).toEqual([{ id: 'u1', kind: 'image', name: 'late.png' }]);
+  });
+  it('deactivate() parks the draft; text written without a conversation is dropped', () => {
+    const s = () => useComposer.getState();
+    s().activate('p/a');
+    s().setText('kept');
+    s().deactivate();
+    expect(s().activeKey).toBeNull();
+    s().insertText('@R1');
+    s().activate('p/b');
+    expect(s().text).toBe('');
+    s().activate('p/a');
+    expect(s().text).toBe('kept');
+  });
+});

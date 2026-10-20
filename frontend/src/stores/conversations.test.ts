@@ -78,6 +78,7 @@ describe('conversations store', () => {
 
   it('a reconnect forgets the active run (re-sent on subscribe) and reloads the lists', async () => {
     await store.getState().load(PID);
+    store.getState().view(PID, C1);
     ws.emit({ type: 'run-started', projectId: PID, conversationId: C1, runId: 'r1' });
     ws.drop();
     ws.connect();
@@ -139,5 +140,50 @@ describe('conversations store', () => {
     resolve([conv(C1, 1)]);
     await p;
     expect(store.getState().byProject[PID]).toBeUndefined();
+  });
+
+  it('a list answer older than a conversation-updated frame does not overwrite it', async () => {
+    let resolve!: (v: ConversationDTO[]) => void;
+    await store.getState().load(PID);
+    api.list.mockImplementationOnce(() => new Promise((r) => (resolve = r)));
+    const p = store.getState().load(PID);
+    ws.emit({ type: 'conversation-updated', projectId: PID, conversation: conv(C1, 1, { status: 'closed' }) });
+    resolve([conv(C2, 2, { title: 'Renamed' }), conv(C1, 1, { status: 'closing' })]);
+    await p;
+    const byId = Object.fromEntries(store.getState().byProject[PID]!.map((c) => [c.id, c]));
+    expect(byId[C1]!.status).toBe('closed');
+    expect(byId[C2]!.title).toBe('Renamed');
+  });
+
+  it('resubscribed(): forgets the active run (re-sent on subscribe) and reloads the list', async () => {
+    await store.getState().load(PID);
+    ws.emit({ type: 'run-started', projectId: PID, conversationId: C1, runId: 'r1' });
+    store.getState().resubscribed(PID);
+    expect(store.getState().activeRun[PID]).toBeNull();
+    await vi.waitFor(() => expect(api.list).toHaveBeenCalledTimes(2));
+  });
+
+  it('concurrent loadArchived calls share one request and report failure', async () => {
+    await store.getState().load(PID);
+    const [a, b] = await Promise.all([store.getState().loadArchived(PID), store.getState().loadArchived(PID)]);
+    expect([a, b]).toEqual([true, true]);
+    expect(api.list).toHaveBeenCalledTimes(2);
+    store.getState().reset();
+    api.list.mockRejectedValueOnce(new Error('offline'));
+    expect(await store.getState().loadArchived(PID)).toBe(false);
+    expect(await store.getState().loadArchived(PID)).toBe(true); // retried, not cached as done
+  });
+
+  it('a reconnect reloads only the projects that are shown', async () => {
+    await store.getState().load(PID);
+    await store.getState().load('ffffffffffff');
+    store.getState().view(PID, C1);
+    store.getState().view('ffffffffffff', null);
+    store.getState().leave('ffffffffffff');
+    api.list.mockClear();
+    ws.drop();
+    ws.connect();
+    await vi.waitFor(() => expect(api.list).toHaveBeenCalledTimes(1));
+    expect(api.list).toHaveBeenCalledWith(PID, {});
   });
 });

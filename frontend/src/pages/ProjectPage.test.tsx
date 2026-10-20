@@ -216,4 +216,45 @@ describe('ProjectPage', () => {
     await screen.findByRole('heading', { name: 'Session 1' });
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('draft for 1');
   });
+
+  it('switching sessions does not carry the header state over (no rename of the wrong session)', async () => {
+    conversations[A] = [conv(C2, 2), conv(C1, 1)];
+    renderPage(`/p/${A}/s/${C1}`);
+    await screen.findByRole('heading', { name: 'Session 1' });
+    fireEvent.click(screen.getByRole('button', { name: 'Rename session' }));
+    expect(screen.getByRole('textbox', { name: 'Session title' })).toHaveValue('Session 1');
+    act(() => navigate(`/p/${A}/s/${C2}`));
+    expect(await screen.findByRole('heading', { name: 'Session 2' })).toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: 'Session title' })).toBeNull();
+  });
+
+  it('a failed archived lookup offers Retry instead of "Session not found"', async () => {
+    const real = globalThis.fetch;
+    let fail = true;
+    conversations[A] = [conv(C1, 1), { ...conv(C2, 2), archived: true }];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) =>
+        fail && url.endsWith('archived=1') ? json({ detail: 'offline' }, 500) : real(url, init),
+      ),
+    );
+    renderPage(`/p/${A}/s/${C2}`);
+    expect(await screen.findByText(/Could not load the sessions/)).toBeInTheDocument();
+    expect(screen.queryByText('Session not found')).toBeNull();
+    fail = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByRole('heading', { name: 'Session 2' })).toBeInTheDocument();
+  });
+
+  it('no chat shown (empty state): text inserted from the viewer lands in no draft', async () => {
+    conversations[A] = [conv(C1, 1)];
+    renderPage(`/p/${A}/s/${C1}`);
+    await screen.findByRole('heading', { name: 'Session 1' });
+    act(() => navigate(`/p/${B}/s/${'f'.repeat(32)}`));
+    expect(await screen.findByText('Session not found')).toBeInTheDocument();
+    act(() => useComposer.getState().insertText('@R1'));
+    act(() => navigate(`/p/${A}/s/${C1}`));
+    await screen.findByRole('heading', { name: 'Session 1' });
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('');
+  });
 });

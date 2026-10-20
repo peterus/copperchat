@@ -45,13 +45,24 @@ export interface ConversationsState {
   activeRun: Readonly<Record<string, ActiveRun | null>>;
   /** Per project: sessions with messages that arrived while another one was shown. */
   unread: Readonly<Record<string, string[]>>;
-  /** Per project: the session shown (its messages are never unread). */
+  /**
+   * Per project whose page is shown: the session shown (its messages are never unread), or null
+   * (empty state). Projects not listed here are not reloaded on reconnect.
+   */
   viewing: Readonly<Record<string, string | null>>;
   /** Lists the project's sessions (one request at a time per project). */
   load: (projectId: string) => Promise<void>;
-  /** Adds the archived sessions (once per project). */
-  loadArchived: (projectId: string) => Promise<void>;
+  /** Adds the archived sessions (once per project; concurrent calls share the request). False on failure. */
+  loadArchived: (projectId: string) => Promise<boolean>;
   view: (projectId: string, conversationId: string | null) => void;
+  /** The project page is left: no unread suppression, no reload on reconnect. */
+  leave: (projectId: string) => void;
+  /**
+   * The chat store moved the project's replay cursor (a session switch): frames of the other
+   * sessions may have been lost meanwhile, so the run is forgotten (re-sent on subscribe while
+   * still active) and the list is read again.
+   */
+  resubscribed: (projectId: string) => void;
   create: (projectId: string, body: { type: ConversationType; title?: string }) => Promise<ConversationDTO>;
   rename: (projectId: string, conversationId: string, title: string) => Promise<void>;
   setArchived: (projectId: string, conversationId: string, archived: boolean) => Promise<void>;
@@ -84,6 +95,11 @@ const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 export function createConversationsStore(deps: ConversationsDeps) {
   const loading = new Map<string, Promise<void>>();
   const archivedLoaded = new Set<string>();
+  const archivedLoading = new Map<string, Promise<boolean>>();
+  // Per conversation id: the frame count when a conversation-updated frame last touched it. A list
+  // answer requested before that frame is older than the frame and must not overwrite the row.
+  const frameSeqOf = new Map<string, number>();
+  let frameSeq = 0;
   let generation = 0;
 
   return create<ConversationsState>()((set, get) => {
@@ -100,6 +116,7 @@ export function createConversationsStore(deps: ConversationsDeps) {
       const projectId = f.projectId;
       switch (f.type) {
         case 'conversation-updated':
+          frameSeqOf.set(f.conversation.id, ++frameSeq);
           upsert(projectId, [f.conversation]);
           return;
         case 'run-started':
@@ -125,8 +142,8 @@ export function createConversationsStore(deps: ConversationsDeps) {
       const activeRun = Object.fromEntries(Object.keys(get().activeRun).map((pid) => [pid, null]));
       set({ activeRun });
       if (state !== 'open' && state !== 'resumed') return;
-      // Frames may have been lost with the socket: the lists are read again.
-      for (const projectId of Object.keys(get().byProject)) {
+      // Frames may have been lost with the socket: the lists of the shown projects are read again.
+      for (const projectId of Object.keys(get().viewing)) {
         void get().load(projectId);
         if (archivedLoaded.has(projectId)) {
           archivedLoaded.delete(projectId);
@@ -135,23 +152,26 @@ export function createConversationsStore(deps: ConversationsDeps) {
       }
     }
 
-    async function fetchList(projectId: string, archived: boolean): Promise<void> {
+    /** True when the list was read (and merged). */
+    async function fetchList(projectId: string, archived: boolean): Promise<boolean> {
       const gen = generation;
+      const since = frameSeq;
       if (!archived) set({ status: { ...get().status, [projectId]: 'loading' } });
       try {
         const list = await deps.api.list(projectId, archived ? { archived: true } : {});
-        if (gen !== generation) return;
-        upsert(projectId, list);
+        if (gen !== generation) return false;
+        upsert(projectId, list.filter((c) => (frameSeqOf.get(c.id) ?? 0) <= since));
         if (!archived) {
           set({ status: { ...get().status, [projectId]: 'loaded' }, errors: { ...get().errors, [projectId]: null } });
         }
+        return true;
       } catch (e) {
-        if (gen !== generation) return;
-        if (archived) archivedLoaded.delete(projectId);
+        if (gen !== generation) return false;
         set({
           status: archived ? get().status : { ...get().status, [projectId]: 'error' },
           errors: { ...get().errors, [projectId]: errorText(e) },
         });
+        return false;
       }
     }
 
@@ -169,17 +189,24 @@ export function createConversationsStore(deps: ConversationsDeps) {
       load: (projectId) => {
         const inflight = loading.get(projectId);
         if (inflight) return inflight;
-        const p = fetchList(projectId, false).finally(() => {
+        const p = fetchList(projectId, false).then(() => undefined).finally(() => {
           if (loading.get(projectId) === p) loading.delete(projectId);
         });
         loading.set(projectId, p);
         return p;
       },
 
-      loadArchived: async (projectId) => {
-        if (archivedLoaded.has(projectId)) return;
-        archivedLoaded.add(projectId);
-        await fetchList(projectId, true);
+      loadArchived: (projectId) => {
+        if (archivedLoaded.has(projectId)) return Promise.resolve(true);
+        const inflight = archivedLoading.get(projectId);
+        if (inflight) return inflight;
+        const p = fetchList(projectId, true).then((ok) => {
+          if (archivedLoading.get(projectId) === p) archivedLoading.delete(projectId);
+          if (ok) archivedLoaded.add(projectId);
+          return ok;
+        });
+        archivedLoading.set(projectId, p);
+        return p;
       },
 
       view: (projectId, conversationId) => {
@@ -188,6 +215,18 @@ export function createConversationsStore(deps: ConversationsDeps) {
           viewing: { ...get().viewing, [projectId]: conversationId },
           unread: { ...get().unread, [projectId]: unread.filter((id) => id !== conversationId) },
         });
+      },
+
+      leave: (projectId) => {
+        if (!(projectId in get().viewing)) return;
+        const { [projectId]: _left, ...viewing } = get().viewing;
+        set({ viewing });
+      },
+
+      resubscribed: (projectId) => {
+        if (get().byProject[projectId] === undefined) return;
+        if (get().activeRun[projectId]) set({ activeRun: { ...get().activeRun, [projectId]: null } });
+        void get().load(projectId);
       },
 
       create: async (projectId, body) => {
@@ -222,6 +261,8 @@ export function createConversationsStore(deps: ConversationsDeps) {
         generation += 1;
         loading.clear();
         archivedLoaded.clear();
+        archivedLoading.clear();
+        frameSeqOf.clear();
         set({ byProject: {}, status: {}, errors: {}, activeRun: {}, unread: {}, viewing: {} });
       },
     };

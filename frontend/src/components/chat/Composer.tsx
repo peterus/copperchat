@@ -1,4 +1,4 @@
-import { type FormEvent, type KeyboardEvent, memo, useEffect, useRef } from 'react';
+import { type FormEvent, type KeyboardEvent, memo, useCallback, useEffect, useRef } from 'react';
 import { useKeyboardInset } from '@/hooks/useKeyboardInset';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import type { AttachmentRef, MessageDTO } from '@/protocol/frames';
@@ -37,7 +37,14 @@ export const Composer = memo(function Composer({
   const focusToken = useComposer((s) => s.focusToken);
   const setText = useComposer((s) => s.setText);
   const setSelection = useComposer((s) => s.setSelection);
-  const setAttachments = useComposer((s) => s.setAttachments);
+  // Bound to the draft shown now: an upload that finishes after a session switch lands in its own draft.
+  const draftKey = useComposer((s) => s.activeKey);
+  const setAttachmentsFor = useComposer((s) => s.setAttachmentsFor);
+  const setDraftAttachments = useComposer((s) => s.setAttachments);
+  const setAttachments = useCallback(
+    (next: AttachmentRef[]) => (draftKey === null ? setDraftAttachments(next) : setAttachmentsFor(draftKey, next)),
+    [draftKey, setAttachmentsFor, setDraftAttachments],
+  );
   const removeAttachment = useComposer((s) => s.removeAttachment);
   const clear = useComposer((s) => s.clear);
   const ref = useRef<HTMLTextAreaElement>(null);

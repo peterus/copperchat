@@ -153,4 +153,13 @@ describe('chat store keyed per conversation', () => {
     store.getState().reset();
     expect(store.getState()).toMatchObject({ chats: {}, activeRuns: {}, current: {} });
   });
+
+  it('switching the replay cursor reports the resubscribe (the session list re-reads its state)', async () => {
+    const onResubscribe = vi.fn();
+    const s2 = createChatStore({ ws, fetchPage: fetchMessagesPage, onResubscribe });
+    await s2.getState().open(P, C1);
+    expect(onResubscribe).not.toHaveBeenCalled();
+    await s2.getState().open(P, C2);
+    expect(onResubscribe).toHaveBeenCalledWith(P);
+  });
 });
