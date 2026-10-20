@@ -142,7 +142,14 @@ class PushNotifier:
             body = "The run ended with an error."
         else:
             body = "Done."
-        await self._send(f.project_id, title, body, tag=f"run-{f.project_id}", session=session)
+        await self._send(
+            f.project_id,
+            title,
+            body,
+            tag=f"run-{f.project_id}",
+            session=session,
+            conversation_id=f.conversation_id,
+        )
 
     def schedule_reopen(self, project_id: str, resets_at: datetime) -> None:
         if self._closed:
@@ -169,10 +176,17 @@ class PushNotifier:
         self._timers[project_id] = task
 
     async def _send(
-        self, project_id: str, title: str, body: str, *, tag: str, session: str | None = None
+        self,
+        project_id: str,
+        title: str,
+        body: str,
+        *,
+        tag: str,
+        session: str | None = None,
+        conversation_id: str | None = None,
     ) -> None:
-        """Title "<project>: <title>", or "<project> · <session>: <title>" for a run
-        (spec §6.3). The URL stays /p/{pid} until phase C2 adds the session route."""
+        """Title "<project>: <title>", or "<project> · <session>: <title>" for a run; the
+        URL deep-links to the run's session, /p/{pid}/s/{cid} (spec §6.3)."""
         if self.visibility.any_visible():
             return
         name = self.project_names(project_id)
@@ -182,7 +196,7 @@ class PushNotifier:
             {
                 "title": f"{name}: {title}",
                 "body": body,
-                "url": f"/p/{project_id}",
+                "url": f"/p/{project_id}" + (f"/s/{conversation_id}" if conversation_id else ""),
                 "tag": tag,
             }
         )

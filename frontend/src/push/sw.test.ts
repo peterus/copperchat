@@ -48,6 +48,16 @@ describe('sw.js', () => {
     );
   });
 
+  it('keeps a session deep link and drops other paths', async () => {
+    const { handlers, self } = loadSw();
+    const deep = '/p/a1b2c3d4e5f6/s/0123456789abcdef0123456789abcdef';
+    for (const url of [deep, '/p/a1b2c3d4e5f6/s/xyz', '/p/a1b2c3d4e5f6/s/0123456789abcdef0123456789abcdef/x', '/settings']) {
+      await fire(handlers.push, { data: { json: () => ({ title: 'T', body: 'B', url, tag: 't' }) } });
+    }
+    const urls = self.registration.showNotification.mock.calls.map((c: unknown[]) => (c[1] as { data: { url: string } }).data.url);
+    expect(urls).toEqual([deep, '/', '/', '/']);
+  });
+
   it('survives a payload that is not JSON', async () => {
     const { handlers, self } = loadSw();
     await fire(handlers.push, {

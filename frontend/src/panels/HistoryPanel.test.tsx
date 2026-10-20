@@ -176,4 +176,17 @@ describe('HistoryPanel', () => {
       expect(await screen.findByRole('alert')).toHaveTextContent('Roll back to…');
     });
   });
+
+  it('shows the session chip of each turn and names it in the restore confirm', async () => {
+    apiGet.mockResolvedValue([
+      { ...entries[0], conversationId: CID, conversationTitle: 'Power stage' },
+      { ...entries[1], conversationId: null, conversationTitle: null },
+    ]);
+    render(<HistoryPanel projectId="p1" />);
+    const [first, second] = await screen.findAllByRole('listitem');
+    expect(within(first!).getByLabelText('Session')).toHaveTextContent('Power stage');
+    expect(within(second!).queryByLabelText('Session')).toBeNull();
+    fireEvent.click(within(first!).getByRole('button', { name: /undo/i }));
+    expect(screen.getByRole('dialog')).toHaveTextContent('“route USB” in Power stage');
+  });
 });

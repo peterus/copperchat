@@ -12,7 +12,7 @@ self.addEventListener('activate', (event) => {
 // Only same-origin project pages are click targets, so a push payload can never
 // send the user to a foreign origin.
 function safeUrl(url) {
-  return typeof url === 'string' && /^\/p\/[0-9a-f]{12}$/.test(url) ? url : '/';
+  return typeof url === 'string' && /^\/p\/[0-9a-f]{12}(\/s\/[0-9a-f]{32})?$/.test(url) ? url : '/';
 }
 
 self.addEventListener('push', (event) => {

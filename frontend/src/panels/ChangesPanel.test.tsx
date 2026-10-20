@@ -337,4 +337,25 @@ describe('ChangesPanel', () => {
     setup();
     expect(await screen.findByText(/No changes yet/)).toBeInTheDocument();
   });
+
+  it('shows the session chip and filters "this session" / "all sessions" (default all)', async () => {
+    const mine = 'c'.repeat(32);
+    apiGet.mockImplementation(async (p: string) =>
+      p.startsWith(`/projects/${PID}/changes/runs`)
+        ? [
+            { ...RUNS[0], conversationId: 'd'.repeat(32), conversationTitle: 'Session 2' },
+            { ...RUNS[1], conversationId: mine, conversationTitle: 'Session 1' },
+          ]
+        : routes(p),
+    );
+    setup();
+    await screen.findAllByRole('listitem', { name: /^Turn/ });
+    expect(within(runItem('r2')).getByLabelText('Session')).toHaveTextContent('Session 2');
+    expect(screen.getByRole('radio', { name: 'All sessions' })).toBeChecked();
+    fireEvent.click(screen.getByRole('radio', { name: 'This session' }));
+    expect(screen.queryByRole('listitem', { name: /Turn r2/ })).toBeNull();
+    expect(runItem('r1')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('radio', { name: 'All sessions' }));
+    expect(runItem('r2')).toBeInTheDocument();
+  });
 });

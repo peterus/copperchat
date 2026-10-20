@@ -75,7 +75,7 @@ async def test_run_finished_sends_when_hidden(env: Env) -> None:
         {
             "title": "ecc83-pp · Session 1: run finished",
             "body": "ERC is clean.",
-            "url": f"/p/{PID}",
+            "url": f"/p/{PID}/s/{TEST_CID}",
             "tag": f"run-{PID}",
         }
     ]
@@ -151,6 +151,7 @@ async def test_rate_limit_reopened(env: Env) -> None:
     await asyncio.sleep(0.3)
     assert [p["title"] for p in d.sent] == ["ecc83-pp: rate limit window reopened"]
     assert d.sent[0]["tag"] == f"ratelimit-{PID}"
+    assert d.sent[0]["url"] == f"/p/{PID}"  # no session: the project page
 
 
 async def test_rate_limit_reopen_suppressed_when_visible_then(env: Env) -> None:
