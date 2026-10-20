@@ -190,6 +190,19 @@ export const ServerFrame = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('usage'), projectId: ProjectId, conversationId: ConversationId, usage: Usage }),
   // A conversation (session) was created, renamed, archived, changed status or got its first/last message (C1).
   z.strictObject({ type: z.literal('conversation-updated'), projectId: ProjectId, conversation: ConversationDTO }),
+  // A design doc was written, approved, unapproved or cleared (sessions S-C4, spec §6.2).
+  z.strictObject({
+    type: z.literal('doc-updated'),
+    projectId: ProjectId,
+    path: z.string().min(1).max(200),
+    version: z.string().min(1),
+    status: z.enum(['draft', 'approved']),
+    userEdited: z.boolean(),
+    revisionId: z.number().int().min(1).nullable(),
+    author: z.enum(['agent', 'user', 'external']),
+    // Omitted for user edits.
+    conversationId: ConversationId.optional(),
+  }),
   z.strictObject({ type: z.literal('rate-limited'), projectId: ProjectId, resetsAt: z.string() }),
   z.strictObject({
     type: z.literal('error'),
@@ -212,7 +225,7 @@ export const ALL_FRAME_TYPES = [
   'subscribe', 'send', 'interrupt', 'cancel-queued', 'ping', 'visibility',
   'message', 'message-delta', 'run-started', 'run-finished', 'view-updated',
   'changes-updated', 'plan-updated', 'usage', 'rate-limited', 'error', 'pong',
-  'conversation-updated',
+  'conversation-updated', 'doc-updated',
 ] as const;
 
 export const MessagesPage = z.object({ messages: z.array(MessageDTO), hasMore: z.boolean() });

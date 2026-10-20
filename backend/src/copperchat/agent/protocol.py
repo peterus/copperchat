@@ -268,6 +268,23 @@ class PlanUpdatedFrame(Wire):
     plan: PlanDTO
 
 
+class DocUpdatedFrame(Wire):
+    """A design doc was written, approved, unapproved or cleared (sessions S-C4, spec
+    §6.2). ``conversationId`` is omitted for user edits; ``revisionId`` is null when no
+    revision was recorded (front-matter-only changes)."""
+
+    OMIT_IF_NONE: ClassVar[frozenset[str]] = frozenset({"conversation_id"})
+    type: Literal["doc-updated"] = "doc-updated"
+    project_id: ProjectId
+    path: str = Field(min_length=1, max_length=200)
+    version: str = Field(min_length=1)
+    status: Literal["draft", "approved"]
+    user_edited: StrictBool
+    revision_id: int | None = Field(ge=1)
+    author: Literal["agent", "user", "external"]
+    conversation_id: ConversationId | None = None
+
+
 class RateLimitPayload(Wire):
     OMIT_IF_NONE: ClassVar[frozenset[str]] = frozenset({"resets_at"})
     status: Literal["allowed", "allowed_warning", "rejected"]
@@ -343,6 +360,7 @@ ServerFrame = Annotated[
     | ViewUpdatedFrame
     | ChangesUpdatedFrame
     | PlanUpdatedFrame
+    | DocUpdatedFrame
     | UsageFrame
     | RateLimitedFrame
     | ErrorFrame

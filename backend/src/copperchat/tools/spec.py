@@ -11,6 +11,7 @@ from copperchat.kicad_session import DocKind, KicadSession
 from copperchat.projects import Project
 
 if TYPE_CHECKING:
+    from copperchat.design_docs.service import DesignDocs, DocNotice
     from copperchat.editing.service import EditingService
     from copperchat.kicad_tools.edit.changeset import ChangeSet
 
@@ -69,6 +70,17 @@ class ToolContext:
     # A failed edit could not be undone exactly: the run engine ends the turn (like
     # on_kicad_unavailable) and the history hook reopens the session from disk.
     on_document_inconsistent: Callable[[Exception], None] | None = None
+    # Sessions (S-C5): the conversation of the burst, for the doc write policy and
+    # attribution. conversation_type None is Free only while conversation_id is None too
+    # (plain tests); with a conversation_id it is refused (fail closed).
+    conversation_id: str | None = None
+    conversation_type: str | None = None
+    conversation_seq: int | None = None
+    conversation_title: str | None = None
+    # Posts the doc-changed / changed-after-approval notice into the conversation (C5).
+    post_doc_notice: Callable[[DocNotice], Awaitable[None]] | None = None
+    # The DesignDocs service; None outside the run engine wiring (doc tools then refuse).
+    docs: DesignDocs | None = None
 
 
 ToolHandler = Callable[[ToolContext, dict[str, Any]], Awaitable[ToolResult]]

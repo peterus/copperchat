@@ -30,6 +30,7 @@ EXPECTED = {
         "preferred_libraries:",
         "deviation",
     ],
+    "design-docs": ["doc_list", "doc_read", "base_version", "decisions.md", "Open points"],
 }
 
 
@@ -51,11 +52,36 @@ def test_main_agent_skills_never_mention_the_agent_tool() -> None:
         assert "subagent_type" not in body and "Agent tool" not in body
 
 
-EDITING_SKILLS = ("kicad-schematic-editing", "kicad-schematic-style", "copperchat-tools")
-TOOL_NAME = re.compile(r"`((?:sch|lib|plan|parts|pcb|run|render|research|project|git)_[a-z0-9_]+)")
+EDITING_SKILLS = (
+    "kicad-schematic-editing",
+    "kicad-schematic-style",
+    "copperchat-tools",
+    "design-docs",
+)
+TOOL_NAME = re.compile(
+    r"`((?:sch|lib|plan|parts|pcb|run|render|research|project|git|doc)_[a-z0-9_]+)"
+)
 
 # backticked identifiers in the skills that look like tool names but are not
-NOT_TOOLS = {"lib_id", "plan_open", "plan_required", "plan_step_required"}
+NOT_TOOLS = {
+    "lib_id",
+    "plan_open",
+    "plan_required",
+    "plan_step_required",
+    # design-doc error codes (sessions S-C6)
+    "doc_path_refused",
+    "doc_conflict",
+    "doc_user_edited",
+    "doc_append_only",
+    "doc_scope_refused",
+    "doc_heading_refused",
+    "doc_frontmatter_refused",
+    "doc_too_large",
+    "doc_read_too_large",
+    "doc_section_not_found",
+    "doc_section_ambiguous",
+    "doc_limit",
+}
 
 
 def test_skill_tool_names_exist() -> None:

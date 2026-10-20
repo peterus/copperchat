@@ -19,6 +19,7 @@ from claude_agent_sdk import (
     ClaudeAgentOptions,
     ClaudeSDKClient,
     ConversationResetMessage,
+    HookMatcher,
     McpSdkServerConfig,
     PermissionResult,
     PermissionResultAllow,
@@ -50,7 +51,12 @@ from copperchat.agent.events import (
     TurnFinished,
     Usage,
 )
-from copperchat.agent.guards import DELEGATION_TOOL, ToolCallObserver, make_main_guard
+from copperchat.agent.guards import (
+    DELEGATION_TOOL,
+    ToolCallObserver,
+    guard_as_pre_tool_use_hook,
+    make_main_guard,
+)
 from copperchat.agent.sdk_messages import (
     Totals,
     model_usage_totals,
@@ -144,6 +150,16 @@ def build_options(
         system_prompt=SYSTEM_PROMPT.format(project_name=project.name),
         permission_mode="default",
         can_use_tool=make_main_guard(guarded, on_allowed=on_tool_allowed),
+        # Defence in depth (spec §7.5): the same guard as a PreToolUse hook, so a built-in
+        # or CLI auto-approval cannot bypass the tool list. A second guard instance WITHOUT
+        # on_allowed: firing the observer from both would record research calls twice.
+        hooks={
+            "PreToolUse": [
+                HookMatcher(
+                    matcher=None, hooks=[guard_as_pre_tool_use_hook(make_main_guard(guarded))]
+                )
+            ]
+        },
         resume=resume_session_id,
         fork_session=fork_session,
         # The session store path is derived from cwd; it must stay stable per project
