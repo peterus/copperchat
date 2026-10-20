@@ -57,6 +57,7 @@ from copperchat.agent.guards import (
     guard_as_pre_tool_use_hook,
     make_main_guard,
 )
+from copperchat.agent.profiles import bind_conversation, profile_specs
 from copperchat.agent.sdk_messages import (
     Totals,
     model_usage_totals,
@@ -83,14 +84,44 @@ You work on exactly one KiCad project: "{project_name}".
 CopperChat tools, which query and edit the running KiCad API server.
 - Never guess design data: call a tool, then answer from its result. Report UUIDs in full and \
 coordinates in millimetres.
-- You can edit the schematic with the sch_* tools; load the kicad-schematic-editing skill before \
-your first edit. The board (PCB) is read-only: if asked to change it, explain what you would \
-change and that board editing is not available yet.
-- Use render_view to look at the design when spatial reasoning matters, and run_erc / run_drc \
-to check it.
+{session_paragraph}
 - Git: call git_commit only when the user explicitly asked for a commit in their current \
 message. Never push.
 - Lines starting with "[CopperChat notice]" come from the application, not from the user."""
+
+_EDITING = """- You can edit the schematic with the sch_* tools; load the kicad-schematic-editing skill before \
+your first edit. The board (PCB) is read-only: if asked to change it, explain what you would \
+change and that board editing is not available yet.
+- Use render_view to look at the design when spatial reasoning matters, and run_erc / run_drc \
+to check it."""
+
+# The per-type paragraph of the system prompt (spec §8.3). The doc index and the docs are
+# never part of it: they are repository data, injected as a fenced notice (spec §9, §13).
+SESSION_PARAGRAPHS = {
+    "requirements": """- This is a requirements session. You work on the design documents under \
+docs/design/ with the doc_* tools; you cannot change the schematic or board in this session. \
+Load the session-requirements and design-docs skills first.
+- You may look at an existing design with render_view, run_erc / run_drc and the read tools \
+for context.""",
+    "schematic": _EDITING
+    + """
+- Read the design documents first (doc_list, then doc_read). Record design decisions with \
+doc_append on decisions.md.""",
+    "board": """- This is a board session. The schematic and the board are read-only here; use \
+render_view and run_erc / run_drc to look at the design. Read the design documents with \
+doc_list and doc_read, and record decisions with doc_append on decisions.md.""",
+    "free": _EDITING
+    + """
+- The design documents under docs/design/ (requirements, architecture, parts, decisions) are \
+read and changed with the doc_* tools; load the design-docs skill before changing one.""",
+}
+
+
+def system_prompt(project_name: str, conversation_type: str = "free") -> str:
+    return SYSTEM_PROMPT.format(
+        project_name=project_name, session_paragraph=SESSION_PARAGRAPHS[conversation_type]
+    )
+
 
 # terminal_reason values of a turn cancelled by ClaudeSDKClient.interrupt() (spike 1A (b)).
 _ABORTED = frozenset({"aborted_streaming", "aborted_tools"})
@@ -129,6 +160,7 @@ def build_options(
     fork_session: bool,
     skills: SkillBundle | None = None,
     on_tool_allowed: ToolCallObserver | None = None,
+    conversation_type: str = "free",
 ) -> ClaudeAgentOptions:
     """Main-agent options. Built-in tools: none, or exactly ``["Skill"]`` with enabled
     skills (Phase 8); the part-researcher is our ``research_part`` MCP tool, never a
@@ -147,7 +179,7 @@ def build_options(
         tools=[],  # no built-in file/shell/web tools; init list = mcp__copperchat__* only
         allowed_tools=[],
         mcp_servers={SERVER_NAME: mcp_server},
-        system_prompt=SYSTEM_PROMPT.format(project_name=project.name),
+        system_prompt=system_prompt(project.name, conversation_type),
         permission_mode="default",
         can_use_tool=make_main_guard(guarded, on_allowed=on_tool_allowed),
         # Defence in depth (spec §7.5): the same guard as a PreToolUse hook, so a built-in
@@ -458,7 +490,7 @@ class SdkStreamingBackend:
         db: Database | None = None,
         client_factory: ClientFactory = ClaudeSDKClient,
         research_query_fn: QueryFn | None = None,
-        turn_context: Callable[[], str | None] | None = None,
+        turn_context: Callable[[], ToolContext] | None = None,
     ) -> None:
         self._settings = settings
         self._turn_context = turn_context
@@ -480,8 +512,13 @@ class SdkStreamingBackend:
         input_stream: AsyncIterator[QueuedItem],
         resume_session_id: str | None,
     ) -> AsyncIterator[AgentEvent]:
-        """One burst of ``conversation`` (its type selects the profile from C5 on)."""
-        skills = await assemble_skills(self._settings, project, self._db) if self._db else None
+        """One burst of ``conversation``: its type selects the tool profile, the skills and
+        the system prompt (spec §8)."""
+        kind = conversation.type
+        specs = profile_specs(kind, self._specs)
+        skills = (
+            await assemble_skills(self._settings, project, self._db, kind) if self._db else None
+        )
         queue: asyncio.Queue[AgentEvent | _StreamEnd] = asyncio.Queue()
         research = ResearchRunner(
             project,
@@ -496,18 +533,20 @@ class SdkStreamingBackend:
                 research.note_call(inp, ctx.tool_use_id)
 
         def ctx_factory() -> ToolContext:
-            return replace(self._ctx_factory(), research=research)
+            ctx = bind_conversation(self._ctx_factory(), conversation)
+            return replace(ctx, research=research)
 
         def kicadless_ctx_factory() -> ToolContext:
-            # research_part needs no KiCad session; it never touches ``session``. The
-            # run id comes from the engine's turn context (S-C3).
-            return ToolContext(
-                project=project,
-                session=cast(KicadSession, None),
-                settings=self._settings,
-                run_id=self._turn_context() if self._turn_context is not None else None,
-                research=research,
-            )
+            # research_part and the doc tools need no KiCad session; they never touch
+            # ``session``. The engine's turn context carries the run id, the docs service
+            # and the doc-notice callback (S-C3, S-C5).
+            if self._turn_context is not None:
+                base = self._turn_context()
+            else:
+                base = ToolContext(
+                    project=project, session=cast(KicadSession, None), settings=self._settings
+                )
+            return replace(bind_conversation(base, conversation), research=research)
 
         # What this burst's MCP tool handlers use.
         self.tool_ctx_factory = ctx_factory
@@ -516,13 +555,14 @@ class SdkStreamingBackend:
         options = build_options(
             settings=self._settings,
             project=project,
-            mcp_server=build_sdk_tools(self._specs, ctx_factory, kicadless_ctx_factory),
-            tool_names=[s.name for s in self._specs],
+            mcp_server=build_sdk_tools(specs, ctx_factory, kicadless_ctx_factory),
+            tool_names=[s.name for s in specs],
             resume_session_id=resume_session_id,
             # Fork only at burst start, and only from a stored session (spike 1A (c)).
             fork_session=resume_session_id is not None,
             skills=skills,
             on_tool_allowed=on_allowed,
+            conversation_type=kind,
         )
         client = self._client_factory(options)
         mapper = SdkEventMapper()

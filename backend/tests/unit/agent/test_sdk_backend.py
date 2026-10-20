@@ -36,11 +36,11 @@ from copperchat.agent.events import (
     Usage,
 )
 from copperchat.agent.sdk_backend import (
-    SYSTEM_PROMPT,
     SdkEventMapper,
     SdkStreamingBackend,
     build_options,
     make_tool_guard,
+    system_prompt,
     user_prompt,
 )
 from copperchat.config import Settings
@@ -137,14 +137,16 @@ def test_options_resume_with_fork(settings, project):
 
 
 def test_system_prompt_has_no_claude_code_branding():
-    assert "Claude Code" not in SYSTEM_PROMPT
+    for kind in ("free", "requirements", "schematic", "board"):
+        assert "Claude Code" not in system_prompt("demo", kind)
 
 
 def test_system_prompt_enables_schematic_editing():
     # Sub-project 2: the schematic is editable (board still read-only).
-    assert "cannot edit schematics" not in SYSTEM_PROMPT
-    assert "kicad-schematic-editing" in SYSTEM_PROMPT
-    assert "board" in SYSTEM_PROMPT.lower()
+    prompt = system_prompt("demo", "schematic")
+    assert "cannot edit schematics" not in prompt
+    assert "kicad-schematic-editing" in prompt
+    assert "board" in prompt.lower()
 
 
 async def test_tool_guard_denies_everything_not_registered():

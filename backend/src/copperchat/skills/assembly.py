@@ -21,6 +21,7 @@ from claude_agent_sdk import ClaudeAgentOptions
 
 from copperchat.config import Settings
 from copperchat.db import Database
+from copperchat.db.repos.conversations import CONVERSATION_TYPES
 from copperchat.db.repos.skill_prefs import disabled_skills
 from copperchat.projects import Project
 from copperchat.skills.store import (
@@ -74,8 +75,13 @@ def _copy_regular_files(src: Path, dest: Path) -> None:
             shutil.copyfile(path, target)
 
 
-async def assemble_skills(settings: Settings, project: Project, db: Database) -> SkillBundle:
-    plugin_dir = settings.data_dir / "runtime" / "skills" / project.id
+async def assemble_skills(
+    settings: Settings, project: Project, db: Database, conversation_type: str = "free"
+) -> SkillBundle:
+    if conversation_type not in CONVERSATION_TYPES:  # also a path component below
+        raise ValueError(f"unknown session type: {conversation_type!r}")
+    # One plugin dir per type: a skill list never leaks between session types (spec §8.4).
+    plugin_dir = settings.data_dir / "runtime" / "skills" / project.id / conversation_type
     if plugin_dir.is_symlink():
         plugin_dir.unlink()
     elif plugin_dir.exists():
