@@ -227,7 +227,7 @@ async def test_later_turns_report_others_changes_but_not_own(env: Env) -> None:
     lines = _notice_lines(text)
     assert all("architecture.md" not in line for line in lines), lines  # own change
     assert (
-        f"{NOTICE} requirements.md changed since your last turn (user edit, +1/−0 lines); "
+        f"{NOTICE} requirements.md changed since your last turn (user edit, +1/−0 lines); "  # noqa: RUF001
         "re-read it before relying on it."
     ) in lines
     assert any(
