@@ -48,7 +48,7 @@ history, and its agent session is resumed. See
   read-only until reopened. Stuck closes are recovered at startup.
 - **Context injection.** A new session starts from a doc index with summaries of
   `parts.md` and the latest decisions (and, for Schematic, the fenced text of
-  `requirements.md` up to 8 KiB), not from older chats; later turns get notices of doc
+  `requirements.md` if it is at most 8 KiB), not from older chats; later turns get notices of doc
   changes.
 - **Live tests** (opt-in, real model): a Requirements guard test (out-of-profile tool,
   `/etc/passwd`, an injected doc asking for exfiltration: all refused), the sessions eval

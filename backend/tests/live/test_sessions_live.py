@@ -168,7 +168,7 @@ async def test_sessions_eval(tmp_path: Path) -> None:
             "sections": {s: s in req for s in REQ_SECTIONS},
             "parts_attiny85": "attiny85" in parts.lower(),
             "parts_usb_c": bool(re.search(r"usb[- _]?c", parts, re.I)),
-            "researched": req_turn.main_tools().count("research_part"),
+            "researched": len(req_turn.succeeded("research_part")),
             "decisions": decisions.count("\n## "),
             "sch_calls": sch_calls,
             "approved_version": approved.get("version"),
