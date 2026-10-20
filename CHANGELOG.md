@@ -7,6 +7,65 @@ All notable changes to CopperChat are documented in this file. The format follow
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-20
+
+Sub-project 3: **sessions and design docs**. Several chat sessions per project, typed by
+what the agent may do, working from shared design docs under `docs/design/`.
+
+**Upgrade: back up `data/` before you start 0.3.0.** Migration `0008` moves the database
+to a schema v0.2 cannot read. Each project's chat becomes "Session 1" (Free) with its full
+history, and its agent session is resumed. See
+[docs/user/sessions.md](docs/user/sessions.md#upgrading-from-v02).
+
+### Added
+
+- **Sessions.** Several conversations per project, at `/p/<project>/s/<session>`: a session
+  header (type, inline rename, status, Stop for the session that runs), a session list
+  (activity, unread and running dots, cost, archive), a new-session dialog. One run per
+  project; the messages of other sessions queue in order, and Stop is scoped to one
+  session. Push notifications open the session.
+- **Session types.** **Requirements** (doc tools, part research, library and read-only
+  design tools, no schematic writes), **Schematic** (all schematic tools; in the docs only
+  decisions, `Open points` and `Key parts`) and **Free** (everything). Each type has its
+  own tool profile, enforced in the tool list, `can_use_tool` and a PreToolUse hook, plus
+  its own system prompt and skills (`session-requirements`, `session-schematic`,
+  `design-docs`). A skill's `sessions:` front-matter key limits it to some types, shown as
+  chips on the Skills page and editable on user skills.
+- **Design docs** `requirements.md`, `architecture.md`, `parts.md`, `decisions.md` (and
+  extra docs, two levels deep) from templates, written by the agent through five doc tools
+  (`doc_list`, `doc_read`, `doc_write`, `doc_patch_section`, `doc_append`) with a
+  per-type write policy, a body-hash version on every write (conflicts never clobber), a
+  server-owned front matter and full revisions.
+- **Docs panel.** Index with status, open points and last author; rendered view with links
+  to part notes; editor with conflict flow; approve/unapprove; "Let the agent rewrite";
+  history with line diffs and revert; live updates. Chat cards "📄 doc updated — +n / −m
+  (sections)" open the diff.
+- **Approval and the soft gate.** Only the user approves, and any later change makes the doc
+  a draft again (with a notice). Creating a Schematic session from unapproved requirements
+  shows a warning; the agent mentions it once and goes on.
+- **Close session (handover).** The agent brings the docs up to date in one last turn; the
+  server records its summary as a `Session N closed` decision. Closed sessions are
+  read-only until reopened. Stuck closes are recovered at startup.
+- **Context injection.** A new session starts from a doc index (and, for Schematic, the
+  fenced text of the key docs), not from older chats; later turns get notices of doc
+  changes.
+- **Live tests** (opt-in, real model): a Requirements guard test (out-of-profile tool,
+  `/etc/passwd`, an injected doc asking for exfiltration: all refused), the sessions eval
+  (requirements session → approval → schematic session from the docs: golden netlist,
+  ERC 0/0) and a v0.2.0 → 0.3.0 upgrade check (`scripts/live-upgrade-check.sh`). Results
+  in `backend/tests/live/results/`.
+
+### Changed
+
+- Database migrations `0008_conversations` (conversations; messages, runs and plans per
+  session) and `0009_design_docs` (doc revisions and approvals).
+- `research_part` queries are capped at 2,000 characters, and the researcher must not put
+  design details into URLs or searches.
+- A plan belongs to the session that proposed it; other sessions are told which session
+  owns it. A session that owns an open plan cannot be closed.
+- History and Changes entries show their session.
+- Old browser tabs show a reload banner after an upgrade.
+
 ## [0.2.0] - 2026-10-19
 
 Sub-project 2: **schematic editing**. The agent changes schematics through KiCad's IPC API
@@ -112,7 +171,8 @@ projects, in the browser on desktop, iPad and iPhone.
 - The KiCanvas patches live in this repository (`frontend/vendor-patches/kicanvas/`), not in
   an upstream fork; the main JavaScript chunk is large (~590 kB).
 
-[Unreleased]: https://github.com/peterus/copperchat/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/peterus/copperchat/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/peterus/copperchat/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/peterus/copperchat/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/peterus/copperchat/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/peterus/copperchat/releases/tag/v0.1.0

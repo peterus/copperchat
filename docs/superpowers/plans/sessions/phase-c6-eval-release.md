@@ -28,11 +28,11 @@ v0.3.0.
 
 ### Task 1: Upgrade check and live guard test
 
-- [ ] Upgrade a **copy** of a 0.2.0 data dir (from a fixture, or a copy of
+- [x] Upgrade a **copy** of a 0.2.0 data dir (from a fixture, or a copy of
   prod made by the coordinator). Start the app, open the migrated
   "Session 1", and send one message with the real SDK if a token is
   available. The resume works: the agent remembers earlier context.
-- [ ] `test_sessions_guard_live.py`, marked live and skipped without a
+- [x] `test_sessions_guard_live.py`, marked live and skipped without a
   token. A Requirements session is asked to:
   - (a) call `sch_connect` → refused
   - (b) read `/etc/passwd` via any tool → impossible or refused
@@ -44,29 +44,29 @@ v0.3.0.
 
 ### Task 2: Live eval (spec §14.4)
 
-- [ ] `test_sessions_live.py`: the requirements session, user approval via
+- [x] `test_sessions_live.py`: the requirements session, user approval via
   REST, then the schematic session from the docs. Golden nets via
   `tests/kicad/edit/golden.py`, and ERC with 0 errors. Tokens per session
   versus a single-session baseline go to `tests/live/results/`. Run it
   once and commit the results.
-- [ ] If the eval fails because of agent behaviour rather than a bug, fix
+- [x] If the eval fails because of agent behaviour rather than a bug, fix
   the skills (`session-schematic`, `design-docs`) and rerun at most twice.
   Record the residuals.
 
 ### Task 2b: Skills GUI chips
 
-- [ ] TDD: the skills page shows `sessions` as type chips. A user-layer
+- [x] TDD: the skills page shows `sessions` as type chips. A user-layer
   edit writes `sessions:` into the front matter through the existing
   customise and PUT flow. Commit.
 
 ### Task 3: Docs and release
 
-- [ ] User docs:
+- [x] User docs:
   - sessions (types, switching, queued messages, close/reopen)
   - design docs (the panel, approval, `user_edited`, conflicts, revisions)
   - the gate
   - the upgrade note
-- [ ] As-built notes and residuals in this index (for example the
+- [x] As-built notes and residuals in this index (for example the
   researcher `WebFetch` allow-list, and template editing in the GUI).
 - [ ] Set the version to 0.3.0. Get the PR merged by the coordinator, then
   the coordinator tags `v0.3.0` and checks that `release.yml` is green.
@@ -75,7 +75,7 @@ v0.3.0.
 
 ## Acceptance
 
-- [ ] The live eval passed once, and its results are committed. The guard
+- [x] The live eval passed once, and its results are committed. The guard
   test refuses everything as expected.
 - [ ] The release workflow is green, and the image `ghcr.io/peterus/copperchat:0.3.0`
   exists. The prod upgrade is done by the coordinator after the owner's OK:

@@ -3,7 +3,8 @@
 Chat with an AI agent about your KiCad projects — in the browser on desktop, iPad and
 iPhone. CopperChat runs KiCad 11 headless next to your projects, shows schematic and board
 in an interactive viewer, and lets an agent inspect the design through KiCad's own API, run
-ERC/DRC, look at rendered views and — on `main`, not yet in a release — edit the schematic.
+ERC/DRC, look at rendered views, edit the schematic, and work through requirements and design
+docs in separate sessions.
 **Powered by Claude.**
 
 CopperChat is an independent open-source project. It is **not Claude Code** and is not
@@ -22,7 +23,7 @@ affiliated with or endorsed by Anthropic.
 - Git status, diff summary and commit — only when you ask.
 - Installable app (PWA) with push notifications when a run finishes, the agent needs you,
   or a rate-limit window reopens.
-- **Schematic editing** (unreleased, on `main`; v0.1.x is read-only): the agent places parts
+- **Schematic editing** (since v0.2.0): the agent places parts
   from the KiCad libraries, wires and labels them, adds power symbols, edits fields, moves,
   deletes and duplicates parts, annotates and works with hierarchical sheets — only through
   KiCad's API, every change verified against KiCad's netlist before it is reported.
@@ -31,6 +32,14 @@ affiliated with or endorsed by Anthropic.
   - A per-turn change budget (Settings › Editing), a **Changes** panel with the change log,
     before/after highlights in the viewer, and undo per turn or plan step.
   - Part preferences (e.g. passives in 0805) and part research before active parts.
+
+- **Sessions and design docs** (since v0.3.0): several chat sessions per project, each of a
+  type — **Requirements** (writes the design docs, cannot touch the schematic),
+  **Schematic** (draws from the docs) or **Free**. Design docs under `docs/design/`
+  (`requirements.md`, `architecture.md`, `parts.md`, `decisions.md`) in a **Docs** panel
+  with edit, approval, conflict check, history and diffs. Closing a session hands over:
+  the agent updates the docs and the summary becomes a decision. See
+  [docs/user/sessions.md](docs/user/sessions.md).
 
 Boards (PCB) stay read-only.
 
@@ -48,8 +57,8 @@ You need Docker with the compose plugin and a Claude subscription (or an API key
 2. Get `docker-compose.yml` and `.env.example` of the release you want to run (or clone the
    repository), then:
    ```bash
-   curl -fsSLO https://raw.githubusercontent.com/peterus/copperchat/v0.2.0/docker-compose.yml
-   curl -fsSLO https://raw.githubusercontent.com/peterus/copperchat/v0.2.0/.env.example
+   curl -fsSLO https://raw.githubusercontent.com/peterus/copperchat/v0.3.0/docker-compose.yml
+   curl -fsSLO https://raw.githubusercontent.com/peterus/copperchat/v0.3.0/.env.example
    cp .env.example .env          # paste the token, set ADMIN_PASSWORD
    mkdir -p projects data
    sudo chown -R 1000:1000 projects data   # the container runs as uid 1000
@@ -63,10 +72,15 @@ If `docker compose pull` reports `denied`, the image is not published (or not pu
 use the from-source path below. The container refuses to start without a token and tells
 you to run `claude setup-token`. A different host port: `COPPERCHAT_PORT=8090` in `.env`.
 
-Images are published as `ghcr.io/peterus/copperchat:<version>` (e.g. `0.2.0`), `:<major>.<minor>`
+Images are published as `ghcr.io/peterus/copperchat:<version>` (e.g. `0.3.0`), `:<major>.<minor>`
 (e.g. `0.1`) and `:latest`; release notes are in [CHANGELOG.md](CHANGELOG.md). To pin a
-version set `COPPERCHAT_VERSION=0.2.0` in `.env`. Updating: `docker compose pull && docker
+version set `COPPERCHAT_VERSION=0.3.0` in `.env`. Updating: `docker compose pull && docker
 compose up -d` (your projects and `/data` stay).
+
+**Upgrading to 0.3.0: back up `data/` first** (`docker compose down && cp -a data
+data.bak-0.2`). The database moves to a new schema that v0.2 cannot read; each project's
+chat becomes "Session 1" and keeps its history and agent memory
+([details](docs/user/sessions.md#upgrading-from-v02)).
 
 **From source** instead of the published image: in a clone of the repository run
 `docker compose build && docker compose up -d`. The local build is tagged with the same image
@@ -95,7 +109,8 @@ notifications in Settings › Notifications.
   the `Skill` tool and `research_part`. Design data is read and written only through the
   running KiCad API server — never by a CopperChat file parser or writer. Edits are refused
   for a project open read-only, over the change budget, and while a plan is open outside
-  its begun step.
+  its begun step. Design docs are read and written only under `docs/design/` (no
+  symlinks, size-capped), and each session type gets only its own tools.
 - **The part researcher is guarded.** It runs as a separate agent query with web access
   (public hosts only, no private/loopback addresses, redirects re-checked) and may write only
   `.md`/`.txt` files under `<project>/docs/parts/<MPN>/` and read only `docs/parts/` and the
@@ -114,7 +129,7 @@ notifications in Settings › Notifications.
 |---|---|
 | `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` | model credentials (one required) |
 | `ADMIN_USERNAME`, `ADMIN_PASSWORD` | app login (always on; the password seeds the hash on first start) |
-| `COPPERCHAT_VERSION` | image tag (default `latest`; e.g. `0.2` or `0.2.0` to pin) |
+| `COPPERCHAT_VERSION` | image tag (default `latest`; e.g. `0.3` or `0.3.0` to pin) |
 | `COPPERCHAT_PORT`, `COPPERCHAT_BIND` | host port (default 8080) and bind address (default: all addresses; `127.0.0.1` = this machine only) |
 | `PUBLIC_BASE_URL` | public HTTPS URL (WebSocket origin check behind a proxy) |
 | `VAPID_SUBJECT` | push contact, e.g. `mailto:you@example.com` |
@@ -124,7 +139,7 @@ notifications in Settings › Notifications.
 | `DEV_FAKE_AGENT=true` | development: scripted fake agent, no token needed |
 
 Mounts: `/projects` (your KiCad projects; CopperChat writes autosaves, `.kicad-agent/`
-history and uploads, and `docs/parts/` there) and `/data` (database, agent sessions, user
+history and uploads, `docs/parts/` and `docs/design/` there) and `/data` (database, agent sessions, user
 skills, password hash, session secret, push subscriptions, VAPID keys, logs). Both must be
 writable by uid 1000.
 
