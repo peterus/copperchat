@@ -235,6 +235,12 @@ class ConversationRepo:
 `ConversationNotFound` (`code="conversation_not_found"`, HTTP 404) lives in
 `copperchat.errors`.
 
+**As built (C1, PR #43):**
+- Extra helpers: `ConversationRepo.for_runs`, `ConversationRepo.usage_for`,
+  `ConversationRow.to_wire`.
+- Errors: `ConversationClosed` (409), `ConversationStateConflict` (409),
+  `InvalidConversation` (422).
+
 ### S-C3. Engine (C1)
 
 - `QueuedItem` gains `conversation_id: str`. It is a required field, placed
@@ -301,6 +307,17 @@ class ConversationRepo:
   `RunHooks.on_items_failed(conversation_id, message_ids, status)` that C1
   calls from `_fail_burst`, `cancel_queued` and `interrupt` cancellation.
 
+**As built (C1, PR #43):**
+- `RunEngine.interrupt(run_id, conversation_id=None)`.
+- `replay_and_subscribe(cid, since)` returns `(dtos, sub, run_id,
+  run_conversation_id)`.
+- `TurnOutcome.conversation_id` and `message_status` have defaults (`None` and
+  `"done"`).
+- Extra helpers: `engine.conversation_dto` / `publish_conversation`,
+  `PlanRepo.run_conversation`. `Plan.conversation_id` and
+  `new_plan(conversation_id=)` are required, and
+  `restore_snapshot(..., conversation_id=)` takes the conversation.
+
 ### S-C4. REST and WS (C1; close/reopen: C5; docs: C3)
 
 - **REST** follows spec §6.1. `ConversationDTO` (camelCase):
@@ -319,6 +336,22 @@ class ConversationRepo:
   - Frames gain `conversationId` where listed.
   - New frames: `conversation-updated` (C1) and `doc-updated` (C3).
   - `ALL_FRAME_TYPES` order: append-only.
+
+**As built (C1, PR #43):**
+- `POST /conversations` with `type='board'` → 400 `session_type_unavailable`.
+- `conversation-updated` at turn end is published just before `run-finished`.
+
+**As built (C3, PR #42):**
+- `GET /docs/{path}` `meta` = `{status, userEdited, approved, approvedVersion,
+  approvedAt, changedSinceApproval}`.
+- Doc error bodies: `{"error": {code, message, details}}`, with camelCase
+  details (`currentVersion`, `author`, `conversationTitle`, `diff` for
+  `doc_conflict`).
+- `doc-updated.revisionId` is `null` for approve, unapprove and
+  clear-user-edited (no revision); `conversationId` uses the 32-hex
+  `ConversationId` type.
+- Revision routes use `{rid:int}`; a `rid` outside SQLite's integer range is a
+  404.
 
 ### S-C5. `ToolContext` additions (C3)
 
@@ -352,6 +385,10 @@ docs: DesignDocs | None = None
 - `run_id` in the KiCad-less ctx is C1's job (S-C3 turn context).
 - C5 wires all of them. C1 does **not** touch `ToolContext`. C5 fills it in
   `engine._make_ctx` and the SDK backend's KiCad-less factory.
+
+**As built (C3, PR #42):**
+- The doc tools refuse ("Design docs are not available") while `ctx.docs` is
+  None; C5 wires `docs` into both context factories.
 
 ### S-C6. `DesignDocs` service (C3) — `design_docs/service.py`
 
@@ -401,6 +438,27 @@ class DesignDocs:
   `doc_append_only`, `doc_scope_refused`, `doc_heading_refused`,
   `doc_frontmatter_refused`, `doc_too_large`, `doc_read_too_large`,
   `doc_section_not_found`, `doc_section_ambiguous`, `doc_limit`.
+
+**As built (C3, PR #42):**
+- `write`, `patch_section` and `append` take `conversation: ConversationInfo |
+  None` instead of `conversation_id` (the revision label and the decisions
+  entry need seq, title and type). `ConversationInfo.label` is
+  `"<title> — <Type>"`.
+- `fsutil.py` is unchanged: the doc-only dir-fd writer lives in
+  `design_docs/paths.py` (Global Constraints).
+- Extra codes: `doc_not_found` (404, unknown or foreign `rid`) and
+  `invalid_input` (400). Non-UTF-8 docs are refused and listed as ignored
+  (`not utf-8`).
+- Policies: Schematic sessions never create a new doc (`decisions.md`
+  excepted); Board may only `doc_append` to `decisions.md` and `board.md`; Free
+  may write `board.md` (§8.2 table).
+- On a user-edited doc, replacing a level-1 section or any section that spans
+  the whole doc is refused with `doc_user_edited`.
+- Only successful changes count toward the 40 doc mutations per turn.
+- Line counts: exact `difflib` up to 200 lines, a linear multiset count above.
+  The conflict diff keeps the 4,000-line cutoff.
+- Residuals: cross-script look-alikes of `[CopperChat notice]` and
+  `*Session:` lines; revisions of deleted docs are not pruned.
 
 ### S-C7. Profiles (C5) — `agent/profiles.py`
 
