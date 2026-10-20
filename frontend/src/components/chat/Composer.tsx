@@ -4,6 +4,7 @@ import { useMediaQuery } from '@/hooks/useMediaQuery';
 import type { AttachmentRef, MessageDTO } from '@/protocol/frames';
 import { useComposer } from '@/stores/composer';
 import { useComposerAttachmentSlot } from './composerSlots';
+import { CLOSING_TEXT, isCloseSession } from './MessageItem';
 import { RunControls } from './RunControls';
 
 export interface ComposerProps {
@@ -12,6 +13,8 @@ export interface ComposerProps {
   /** Server-acknowledged user rows waiting for the agent (cancellable). */
   queued: MessageDTO[];
   disabled?: boolean;
+  /** Title of the project's running session when it is another one: queued messages wait for it. */
+  waitingFor?: string | null;
   /** Returning false keeps the draft (the message was refused locally). */
   onSend: (text: string, attachments: AttachmentRef[]) => boolean | void;
   onStop: () => void;
@@ -24,6 +27,7 @@ export const Composer = memo(function Composer({
   runActive,
   queued,
   disabled = false,
+  waitingFor = null,
   onSend,
   onStop,
   onCancelQueued,
@@ -75,15 +79,18 @@ export const Composer = memo(function Composer({
         paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom))',
       }}
     >
+      {queued.length > 0 && waitingFor !== null && (
+        <p className="mb-1 text-xs text-muted">{`Waiting for ${waitingFor}`}</p>
+      )}
       {queued.length > 0 && (
         <ul aria-label="Queued messages" className="mb-2 space-y-1">
           {queued.map((q) => (
             <li key={q.id} className="flex items-center gap-2 rounded bg-surface px-2 py-1 text-sm">
               <span className="text-xs text-muted">queued</span>
-              <span className="min-w-0 flex-1 truncate">{q.content}</span>
+              <span className="min-w-0 flex-1 truncate">{isCloseSession(q) ? CLOSING_TEXT : q.content}</span>
               <button
                 type="button"
-                aria-label={`Cancel queued message: ${q.content}`}
+                aria-label={`Cancel queued message: ${isCloseSession(q) ? CLOSING_TEXT : q.content}`}
                 onClick={() => onCancelQueued(q.id)}
                 className="text-xs text-danger"
               >

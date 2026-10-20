@@ -128,11 +128,23 @@ function ercOf(md: MessageDTO['metadata']) {
   return { errors: md.errors, warnings: md.warnings, resultId: md.ercResultId };
 }
 
+/** The server-authored handover message of "Close session" (spec §10). */
+export const isCloseSession = (m: MessageDTO) => m.metadata.origin === 'close-session';
+export const CLOSING_TEXT = 'Closing session…';
+
 /** Memoized: rows keep their identity in the store unless they change (see chat.ts patch()). */
 export const MessageItem = memo(function MessageItem({ message: m }: { message: MessageDTO }) {
   const streaming = m.status === 'streaming';
   switch (m.kind) {
     case 'text':
+      if (isCloseSession(m)) {
+        // A compact system row, not a user bubble.
+        return (
+          <div data-role="system" className="text-center text-xs text-muted">
+            {CLOSING_TEXT}
+          </div>
+        );
+      }
       if (m.role === 'user') {
         return (
           <div className="flex justify-end" data-role="user">

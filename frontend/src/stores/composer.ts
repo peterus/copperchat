@@ -20,7 +20,21 @@ export function insertAt(text: string, insert: string, selection: Selection | nu
   return { text: head + after, caret };
 }
 
+/** A conversation's unsent message. */
+export interface Draft {
+  text: string;
+  selection: Selection | null;
+  attachments: AttachmentRef[];
+}
+
+/**
+ * The composer edits the active conversation's draft (`text`, `selection`, `attachments`); the
+ * drafts of the other conversations are parked in `drafts` (spec §12.1: keyed per conversation).
+ */
 export interface ComposerState {
+  /** chatKey of the conversation the draft fields belong to, or null before one is shown. */
+  activeKey: string | null;
+  drafts: Readonly<Record<string, Draft>>;
   text: string;
   selection: Selection | null;
   attachments: AttachmentRef[];
@@ -34,9 +48,15 @@ export interface ComposerState {
   removeAttachment: (id: string) => void;
   setAttachments: (next: AttachmentRef[]) => void;
   clear: () => void;
+  /** Parks the current draft and shows the draft of `key` (empty when it has none). */
+  activate: (key: string) => void;
+  /** Forgets every draft (logout). */
+  reset: () => void;
 }
 
 export const useComposer = create<ComposerState>()((set, get) => ({
+  activeKey: null,
+  drafts: {},
   text: '',
   selection: null,
   attachments: [],
@@ -54,4 +74,17 @@ export const useComposer = create<ComposerState>()((set, get) => ({
   removeAttachment: (id) => set({ attachments: get().attachments.filter((a) => a.id !== id) }),
   setAttachments: (next) => set({ attachments: next }),
   clear: () => set({ text: '', selection: null, attachments: [], focusToken: 0 }),
+  activate: (key) => {
+    const { activeKey, drafts, text, selection, attachments } = get();
+    if (key === activeKey) return;
+    const parked = { ...drafts };
+    if (activeKey !== null) {
+      if (text === '' && attachments.length === 0) delete parked[activeKey];
+      else parked[activeKey] = { text, selection, attachments };
+    }
+    const next = parked[key] ?? { text: '', selection: null, attachments: [] };
+    delete parked[key];
+    set({ activeKey: key, drafts: parked, ...next, focusToken: 0 });
+  },
+  reset: () => set({ activeKey: null, drafts: {}, text: '', selection: null, attachments: [], focusToken: 0 }),
 }));

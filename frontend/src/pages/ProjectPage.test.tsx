@@ -1,8 +1,16 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  closeConversation,
+  createConversation,
+  listConversations,
+  patchConversation,
+  reopenConversation,
+} from '@/api/conversations';
 import { ChatStoreContext } from '@/hooks/useChat';
 import { createChatStore, type ChatDeps, type ChatStore } from '@/stores/chat';
+import { ConversationsStoreContext, createConversationsStore, type ConversationsStore } from '@/stores/conversations';
 import { useComposer } from '@/stores/composer';
 import { useProjects } from '@/stores/projects';
 import { FakeWsClient } from '@/test/fakeWsClient';
@@ -37,6 +45,7 @@ function json(body: unknown, status = 200) {
 }
 
 let store: ChatStore;
+let conversations$: ConversationsStore;
 let failOpen = false;
 /** Per project: GET /conversations answer (newest activity first). */
 let conversations: Record<string, ReturnType<typeof conv>[]>;
@@ -49,20 +58,35 @@ function Nav() {
   return null;
 }
 
+function Where() {
+  return <span data-testid="location">{useLocation().pathname}</span>;
+}
+
 beforeEach(() => {
   vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} unobserve() {} takeRecords() { return []; } });
   failOpen = false;
   conversations = { [A]: [conv(C1, 1)], [B]: [conv(C3, 1)] };
   posts = [];
   useProjects.getState().reset();
-  useComposer.getState().clear();
+  useComposer.getState().reset();
   fetchPage = vi.fn<ChatDeps['fetchPage']>(async () => ({ messages: [], hasMore: false }));
-  store = createChatStore({ ws: new FakeWsClient(), fetchPage });
+  const ws = new FakeWsClient();
+  store = createChatStore({ ws, fetchPage });
+  conversations$ = createConversationsStore({
+    ws,
+    api: {
+      list: listConversations,
+      create: createConversation,
+      patch: patchConversation,
+      close: closeConversation,
+      reopen: reopenConversation,
+    },
+  });
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, init?: RequestInit) => {
       if (url === '/api/projects') return json(list);
-      const c = /^\/api\/projects\/([0-9a-f]{12})\/conversations(\?archived=0)?$/.exec(url);
+      const c = /^\/api\/projects\/([0-9a-f]{12})\/conversations(\?archived=([01]))?$/.exec(url);
       if (c && init?.method === 'POST') {
         const body = JSON.parse(String(init.body)) as unknown;
         posts.push({ url, body });
@@ -70,7 +94,7 @@ beforeEach(() => {
         conversations[c[1] ?? ''] = [created];
         return json(created, 201);
       }
-      if (c) return json(conversations[c[1] ?? ''] ?? []);
+      if (c) return json((conversations[c[1] ?? ''] ?? []).filter((x) => x.archived === (c[3] === '1')));
       const m = /^\/api\/projects\/([0-9a-f]{12})\/open$/.exec(url);
       if (m) return failOpen ? json({ detail: 'KiCad is not available' }, 503) : json(openResult(m[1] ?? ''));
       return new Response(null, { status: 404 });
@@ -80,42 +104,76 @@ beforeEach(() => {
 
 function renderPage(path: string) {
   return render(
-    <ChatStoreContext.Provider value={store}>
-      <MemoryRouter initialEntries={[path]}>
-        <Nav />
-        <Routes>
-          <Route path="/p/:projectId" element={<ProjectPage />} />
-          <Route path="/projects" element={<p>projects page</p>} />
-        </Routes>
-      </MemoryRouter>
-    </ChatStoreContext.Provider>,
+    <ConversationsStoreContext.Provider value={conversations$}>
+      <ChatStoreContext.Provider value={store}>
+        <MemoryRouter initialEntries={[path]}>
+          <Nav />
+          <Routes>
+            <Route path="/p/:projectId" element={<ProjectPage />} />
+            <Route path="/p/:projectId/s/:cid" element={<ProjectPage />} />
+            <Route path="/projects" element={<p>projects page</p>} />
+          </Routes>
+          <Where />
+        </MemoryRouter>
+      </ChatStoreContext.Provider>
+    </ConversationsStoreContext.Provider>,
   );
 }
 
+const at = () => screen.getByTestId('location').textContent;
+
 describe('ProjectPage', () => {
-  it('opens the project, then shows the viewer slot and the chat', async () => {
-    renderPage(`/p/${A}`);
+  it('opens the project, then shows the viewer slot and the chat of the session', async () => {
+    renderPage(`/p/${A}/s/${C1}`);
     expect(screen.getByRole('status')).toHaveTextContent('Opening project…');
     expect(await screen.findByRole('heading', { name: 'demo' })).toBeInTheDocument();
     expect(screen.getByTestId('viewer-slot')).toHaveAttribute('data-project-id', A);
     expect(await screen.findByRole('region', { name: 'Chat' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Session 1' })).toBeInTheDocument();
+    await waitFor(() => expect(store.getState().current[A]).toBe(C1));
+    expect(conversations$.getState().viewing[A]).toBe(C1);
   });
 
-  it('lists the conversations and opens the newest open one (interim default session)', async () => {
+  it('/p/X redirects to the newest open session', async () => {
     conversations[A] = [conv(C3, 3, 'closed'), conv(C2, 2), conv(C1, 1)];
     renderPage(`/p/${A}`);
-    expect(await screen.findByRole('region', { name: 'Chat' })).toBeInTheDocument();
+    await waitFor(() => expect(at()).toBe(`/p/${A}/s/${C2}`));
     await waitFor(() => expect(store.getState().current[A]).toBe(C2));
     expect(fetchPage).toHaveBeenCalledWith(A, C2, expect.anything());
     expect(posts).toEqual([]);
   });
 
-  it('creates a free conversation when the project has none', async () => {
+  it('an empty project shows "Start a session" (nothing is created by itself)', async () => {
     conversations[A] = [];
     renderPage(`/p/${A}`);
-    expect(await screen.findByRole('region', { name: 'Chat' })).toBeInTheDocument();
-    expect(posts).toEqual([{ url: `/api/projects/${A}/conversations`, body: { type: 'free' } }]);
-    await waitFor(() => expect(store.getState().current[A]).toBe(C2));
+    fireEvent.click(await screen.findByRole('button', { name: 'Start a session' }));
+    expect(await screen.findByRole('dialog', { name: 'New session' })).toBeInTheDocument();
+    expect(posts).toEqual([]);
+    expect(at()).toBe(`/p/${A}`);
+  });
+
+  it('only closed sessions: the empty state offers the earlier sessions', async () => {
+    conversations[A] = [conv(C3, 3, 'closed')];
+    renderPage(`/p/${A}`);
+    fireEvent.click(await screen.findByRole('button', { name: 'Earlier sessions' }));
+    expect(screen.getByRole('list', { name: 'Sessions' })).toHaveTextContent('Session 3');
+  });
+
+  it('a session of another project (or a malformed id) is "Session not found" with a way back', async () => {
+    renderPage(`/p/${A}/s/${C3}`);
+    expect(await screen.findByText('Session not found')).toBeInTheDocument();
+    expect(fetchPage).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('link', { name: 'Back to the sessions' }));
+    await waitFor(() => expect(at()).toBe(`/p/${A}/s/${C1}`));
+
+    act(() => navigate(`/p/${A}/s/not-an-id`));
+    expect(await screen.findByText('Session not found')).toBeInTheDocument();
+  });
+
+  it('an archived session is found through the archived list', async () => {
+    conversations[A] = [conv(C1, 1), { ...conv(C2, 2), archived: true }];
+    renderPage(`/p/${A}/s/${C2}`);
+    expect(await screen.findByRole('heading', { name: 'Session 2' })).toBeInTheDocument();
   });
 
   it('a failed conversation list shows the error with Retry', async () => {
@@ -128,7 +186,7 @@ describe('ProjectPage', () => {
       ),
     );
     renderPage(`/p/${A}`);
-    expect(await screen.findByText(/Could not load the session: boom/)).toBeInTheDocument();
+    expect(await screen.findByText(/Could not load the sessions: boom/)).toBeInTheDocument();
     fail = false;
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(await screen.findByRole('region', { name: 'Chat' })).toBeInTheDocument();
@@ -143,12 +201,19 @@ describe('ProjectPage', () => {
     expect(await screen.findByRole('heading', { name: 'demo' })).toBeInTheDocument();
   });
 
-  it('switching projects clears the composer draft', async () => {
-    renderPage(`/p/${A}`);
-    await screen.findByRole('heading', { name: 'demo' });
-    act(() => useComposer.getState().setText('draft for demo'));
+  it('keeps one draft per session: switching sessions or projects swaps the draft', async () => {
+    conversations[A] = [conv(C2, 2), conv(C1, 1)];
+    renderPage(`/p/${A}/s/${C1}`);
+    const box = await screen.findByRole('textbox', { name: 'Message' });
+    fireEvent.change(box, { target: { value: 'draft for 1' } });
+    act(() => navigate(`/p/${A}/s/${C2}`));
+    await screen.findByRole('heading', { name: 'Session 2' });
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('');
     act(() => navigate(`/p/${B}`));
     expect(await screen.findByRole('heading', { name: 'other' })).toBeInTheDocument();
     await waitFor(() => expect(useComposer.getState().text).toBe(''));
+    act(() => navigate(`/p/${A}/s/${C1}`));
+    await screen.findByRole('heading', { name: 'Session 1' });
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('draft for 1');
   });
 });

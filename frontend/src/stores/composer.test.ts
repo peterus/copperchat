@@ -38,3 +38,42 @@ describe('useComposer', () => {
     expect(useComposer.getState().attachments).toEqual([]);
   });
 });
+
+describe('drafts per conversation', () => {
+  beforeEach(() => useComposer.getState().reset());
+  it('activate() keeps each conversation its own draft', () => {
+    const s = () => useComposer.getState();
+    s().activate('p/a');
+    s().setText('draft A');
+    s().addAttachment({ id: 'a1', kind: 'pdf', name: 'ds.pdf' });
+    s().activate('p/b');
+    expect(s().text).toBe('');
+    expect(s().attachments).toEqual([]);
+    s().setText('draft B');
+    s().activate('p/a');
+    expect(s().text).toBe('draft A');
+    expect(s().attachments).toEqual([{ id: 'a1', kind: 'pdf', name: 'ds.pdf' }]);
+    s().activate('p/b');
+    expect(s().text).toBe('draft B');
+  });
+  it('activating the same conversation keeps the draft; a sent (cleared) draft stays empty', () => {
+    const s = () => useComposer.getState();
+    s().activate('p/a');
+    s().setText('x');
+    s().activate('p/a');
+    expect(s().text).toBe('x');
+    s().clear();
+    s().activate('p/b');
+    s().activate('p/a');
+    expect(s().text).toBe('');
+  });
+  it('reset() forgets every draft (logout)', () => {
+    const s = () => useComposer.getState();
+    s().activate('p/a');
+    s().setText('secret');
+    s().activate('p/b');
+    s().reset();
+    s().activate('p/a');
+    expect(s().text).toBe('');
+  });
+});
