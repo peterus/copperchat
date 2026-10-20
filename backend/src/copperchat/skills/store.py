@@ -102,6 +102,9 @@ class EffectiveSkill:
     # Front matter `agent`: the skill belongs to that agent (e.g. part-researcher), not
     # to the main agent.
     agent: str | None = None
+    # Front matter `sessions` (comma-separated session types, spec §8.4): the skill is
+    # offered only in those types; None = every type.
+    sessions: frozenset[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -110,6 +113,13 @@ class _Entry:
     description: str
     content: str
     agent: str | None
+    sessions: frozenset[str] | None = None
+
+
+def parse_sessions(value: str | None) -> frozenset[str] | None:
+    """``sessions: schematic, free`` -> {"schematic", "free"}; missing or blank -> None."""
+    types = frozenset(t.strip().lower() for t in (value or "").split(",") if t.strip())
+    return types or None
 
 
 def _load(root: Path | None, name: str) -> _Entry | None:
@@ -128,7 +138,13 @@ def _load(root: Path | None, name: str) -> _Entry | None:
     meta, _ = parse_front_matter(content)
     if meta.get("name") != name or not meta.get("description"):
         return None
-    return _Entry(d, meta["description"], content, meta.get("agent") or None)
+    return _Entry(
+        d,
+        meta["description"],
+        content,
+        meta.get("agent") or None,
+        parse_sessions(meta.get("sessions")),
+    )
 
 
 def _names(root: Path | None) -> set[str]:
@@ -181,6 +197,7 @@ def effective_skills(layers: SkillLayers) -> list[EffectiveSkill]:
                 has_builtin=any(o == "builtin" for o, _ in present),
                 origin_updated=origin == "user" and _origin_updated(layers, name, entry.dir),
                 agent=entry.agent,
+                sessions=entry.sessions,
             )
         )
     return result

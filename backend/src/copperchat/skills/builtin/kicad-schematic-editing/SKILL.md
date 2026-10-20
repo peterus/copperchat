@@ -1,6 +1,7 @@
 ---
 name: kicad-schematic-editing
 description: How to change a KiCad schematic with CopperChat's editing tools (find parts, place, connect, label, power, fields, move/delete/duplicate, sheets, plans, ERC and the self-check). Use whenever you add, connect, change or remove anything in the schematic.
+sessions: schematic, free
 ---
 
 # Editing a schematic with CopperChat
@@ -11,6 +12,17 @@ KiCad's API, reads the result back and reports exactly what it changed
 error means **nothing** was changed. Coordinates are mm on the 1.27 mm grid (the
 tools snap). The user sees every change in the Changes panel and can undo a turn or a
 plan step.
+
+## At a glance
+
+- Library: `lib_search_symbols`, `lib_get_symbol`, `lib_search_footprints`.
+- Part knowledge: `parts_get_notes` before an active part; `research_part` when it has
+  no notes yet.
+- Edits: `sch_place_symbol`, `sch_connect`, `sch_add_power`, `sch_add_label`,
+  `sch_no_connect`, `sch_set_fields`, `sch_move`, `sch_delete`, … — every result is
+  verified against KiCad's netlist; an error means nothing changed.
+- Larger changes: `plan_propose`, then `plan_step_begin` / `plan_step_done` after the
+  user approved; `sch_changes` lists what a turn, step or plan changed.
 
 ## Tool order
 

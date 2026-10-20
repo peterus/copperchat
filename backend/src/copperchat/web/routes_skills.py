@@ -41,6 +41,8 @@ def _dto(s: EffectiveSkill, disabled: set[str]) -> dict[str, Any]:
         "originUpdated": s.origin_updated,
         "enabled": s.name not in disabled,
         "agent": s.agent,
+        # the session types the skill applies to (None = all), for the Skills GUI chips
+        "sessions": None if s.sessions is None else sorted(s.sessions),
     }
 
 

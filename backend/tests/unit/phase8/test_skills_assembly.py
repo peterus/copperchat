@@ -32,7 +32,7 @@ async def test_bundle_contains_builtins_and_project_override(settings, project, 
     (skill / "sub" / "ok.md").write_text("ok")
     (skill / ".hidden").write_text("h")
     bundle = await assemble_skills(settings, project, db)
-    assert bundle.plugin_dir == settings.data_dir / "runtime" / "skills" / project.id
+    assert bundle.plugin_dir == settings.data_dir / "runtime" / "skills" / project.id / "free"
     manifest = json.loads((bundle.plugin_dir / ".claude-plugin" / "plugin.json").read_text())
     assert manifest["name"] == "copperchat"
     assert set(bundle.names) == MAIN
