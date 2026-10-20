@@ -51,7 +51,10 @@ export function DocEditor({ projectId, doc, seed, onCancel, onSaved }: DocEditor
   const [conflict, setConflict] = useState<DocConflict | null>(seed?.conflict ?? saved?.conflict ?? null);
   /** The current doc as shown by [Show their change]: [Keep editing] re-bases onto exactly this. */
   const [theirs, setTheirs] = useState<DocRead | null>(null);
-  const pristine = draft === base.body || (base.version === null && draft === (doc.template ?? ''));
+  // The template counts as unchanged only for the base the editor started from (not after a
+  // re-base onto a since-deleted doc).
+  const [initialBase] = useState(base);
+  const pristine = draft === base.body || (base === initialBase && base.version === null && draft === (doc.template ?? ''));
   const dirty = !pristine || conflict !== null;
 
   // Every change is mirrored to the store, so no unmount can lose it.
@@ -187,6 +190,8 @@ export function DocEditor({ projectId, doc, seed, onCancel, onSaved }: DocEditor
           aria-label="Doc text"
           className="min-h-[50vh] w-full flex-1 rounded border border-border bg-surface p-2 font-mono text-xs"
           value={draft}
+          // Read-only while saving: the save sends the text of the click, and success closes the editor.
+          readOnly={busy}
           onChange={(e) => setDraft(e.target.value)}
         />
       )}

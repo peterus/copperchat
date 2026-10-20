@@ -102,4 +102,23 @@ describe('DocHistory', () => {
     );
     await waitFor(() => expect(http.apiGet.mock.calls.filter(([p]) => String(p).includes('/revisions?'))).toHaveLength(2));
   });
+
+  it('an error banner clears after a later successful load', async () => {
+    let fail = true;
+    http.apiGet.mockImplementation(async (path: string) => {
+      if (path.includes('/revisions?')) {
+        if (fail) throw new Error('offline');
+        return [revision(1)];
+      }
+      return CONTENT;
+    });
+    const { ws } = await setup();
+    expect(await screen.findByText('offline')).toBeInTheDocument();
+    fail = false;
+    act(() =>
+      ws.emit({ type: 'doc-updated', projectId: DOC_PID, path: REQ, version: 'v9', status: 'draft', userEdited: false, revisionId: 9, author: 'agent' }),
+    );
+    await waitFor(() => expect(screen.queryByText('offline')).toBeNull());
+    expect(screen.getAllByRole('listitem')).toHaveLength(1);
+  });
 });

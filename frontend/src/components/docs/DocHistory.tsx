@@ -46,7 +46,10 @@ export function DocHistory({ projectId, path, currentVersion, selected, onSelect
     const t = ++listToken.current;
     try {
       const list = await listRevisions(projectId, path);
-      if (t === listToken.current) setRevisions([...list].sort((a, b) => b.id - a.id));
+      if (t === listToken.current) {
+        setRevisions([...list].sort((a, b) => b.id - a.id));
+        setError(null);
+      }
     } catch (e) {
       if (t === listToken.current) setError(errorText(e));
     }
@@ -58,8 +61,8 @@ export function DocHistory({ projectId, path, currentVersion, selected, onSelect
 
   useEffect(() => {
     const t = ++token.current;
-    if (selected === null) return;
     setError(null);
+    if (selected === null) return;
     getRevision(projectId, path, selected).then(
       (data) => t === token.current && setContent({ id: selected, data }),
       (e: unknown) => t === token.current && setError(errorText(e)),

@@ -173,7 +173,7 @@ describe('docs store', () => {
     store.getState().setDraft(PID, 'docs/design/requirements.md', draft);
     await store.getState().load('ffffffffffff');
     expect(store.getState().drafts[draftKey(PID, 'docs/design/requirements.md')]).toEqual(draft);
-    const ev = new Event('beforeunload', { cancelable: true });
+    const ev = new Event('beforeunload', { cancelable: true }) as BeforeUnloadEvent;
     window.dispatchEvent(ev);
     expect(ev.defaultPrevented).toBe(true);
     store.getState().setDraft(PID, 'docs/design/requirements.md', null);

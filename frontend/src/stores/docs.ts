@@ -170,7 +170,8 @@ export function createDocsStore(
     dispose: () => {
       offFrame();
       offConn();
-      if (typeof window !== 'undefined') window.removeEventListener('beforeunload', onBeforeUnload);
+      offDrafts();
+      guard(false);
     },
   }));
 
@@ -191,11 +192,20 @@ export function createDocsStore(
     void refreshIndex();
     void refreshDoc();
   });
-  // An unsaved draft asks before the tab is closed or reloaded.
+  // An unsaved draft asks before the tab is closed or reloaded. Registered only while a draft
+  // exists: a permanent beforeunload handler would keep the page out of the bfcache.
   const onBeforeUnload = (e: BeforeUnloadEvent) => {
-    if (Object.keys(store.getState().drafts).length > 0) e.preventDefault();
+    e.preventDefault();
+    e.returnValue = ''; // older Chromium / WebKit only prompt with a returnValue
   };
-  if (typeof window !== 'undefined') window.addEventListener('beforeunload', onBeforeUnload);
+  let guarded = false;
+  const guard = (on: boolean) => {
+    if (on === guarded || typeof window === 'undefined') return;
+    guarded = on;
+    if (on) window.addEventListener('beforeunload', onBeforeUnload);
+    else window.removeEventListener('beforeunload', onBeforeUnload);
+  };
+  const offDrafts = store.subscribe((s) => guard(Object.keys(s.drafts).length > 0));
   return store;
 }
 

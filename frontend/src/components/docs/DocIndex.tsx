@@ -2,7 +2,16 @@ import type { DocIndexDTO } from '@/api/docs';
 import { BADGE_CLASS, changedBy, docBadge, docName } from './format';
 
 /** The five fixed docs, then extra docs, then files that are not read (spec §12.2). */
-export function DocIndex({ index, onOpen }: { index: DocIndexDTO; onOpen: (path: string) => void }) {
+export function DocIndex({
+  index,
+  onOpen,
+  drafts,
+}: {
+  index: DocIndexDTO;
+  onOpen: (path: string) => void;
+  /** Paths with an unsaved editor draft. */
+  drafts?: ReadonlySet<string>;
+}) {
   return (
     <div className="flex flex-col gap-3 p-3">
       <ul aria-label="Design docs" className="flex flex-col gap-1">
@@ -19,6 +28,9 @@ export function DocIndex({ index, onOpen }: { index: DocIndexDTO; onOpen: (path:
                 <span className="flex flex-wrap items-center gap-1.5">
                   <span className="font-mono font-medium">{docName(d.path)}</span>
                   <span className={`rounded border px-1.5 text-xs ${BADGE_CLASS[badge]}`}>{badge}</span>
+                  {drafts?.has(d.path) && (
+                    <span className="rounded border border-warning px-1.5 text-xs text-warning">unsaved draft</span>
+                  )}
                   {d.userEdited && <span className="rounded bg-surface-2 px-1.5 text-xs text-muted">edited by you</span>}
                   {d.openPoints > 0 && (
                     <span className="text-xs text-muted">

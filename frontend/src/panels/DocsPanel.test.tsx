@@ -9,7 +9,7 @@ vi.mock('@/api/http', async (importOriginal) => ({ ...(await importOriginal<obje
 import type { DocRead } from '@/api/docs';
 import { usePanels } from '@/layouts/panels';
 import { PHONE_QUERY, ProjectLayout } from '@/layouts/ProjectLayout';
-import { createDocsStore, DocsStoreContext } from '@/stores/docs';
+import { createDocsStore, DocsStoreContext, draftKey } from '@/stores/docs';
 import { useUi } from '@/stores/ui';
 import { conflict409, DOC_PID, docEntry, docRead, REQ, revision } from '@/test/docs';
 import { FakeWsClient } from '@/test/fakeWsClient';
@@ -190,5 +190,28 @@ describe('DocsPanel', () => {
     await screen.findByRole('button', { name: 'Edit' });
     unmount();
     expect(store.getState().openPath).toBeNull();
+  });
+
+  it('a revert 409 asks before replacing an unsaved draft', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
+    http.apiPost.mockRejectedValue(conflict409());
+    const store = createDocsStore(new FakeWsClient());
+    store.getState().setDraft(DOC_PID, REQ, { text: 'my draft', base: { version: 'v1', body: '', approved: false }, conflict: null });
+    render(withStore(<DocsPanel projectId={DOC_PID} params={{ path: REQ, revisionId: '2' }} />, store));
+    await userEvent.click(await screen.findByRole('button', { name: 'Revert to this' }));
+    await waitFor(() => expect(confirm).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('textbox', { name: 'Doc text' })).toBeNull();
+    expect(store.getState().drafts[draftKey(DOC_PID, REQ)]?.text).toBe('my draft');
+    await userEvent.click(screen.getByRole('button', { name: 'Revert to this' }));
+    expect(await screen.findByRole('textbox', { name: 'Doc text' })).toHaveValue('# R\n\nnew\n');
+  });
+
+  it('the index marks docs with an unsaved draft', async () => {
+    const store = createDocsStore(new FakeWsClient());
+    store.getState().setDraft(DOC_PID, REQ, { text: 'x', base: { version: 'v1', body: '', approved: false }, conflict: null });
+    render(withStore(<DocsPanel projectId={DOC_PID} />, store));
+    const row = (await screen.findByText('requirements.md')).closest('button')!;
+    expect(within(row).getByText('unsaved draft')).toBeInTheDocument();
+    expect(within(screen.getByText('parts.md').closest('button')!).queryByText('unsaved draft')).toBeNull();
   });
 });

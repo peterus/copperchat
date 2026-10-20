@@ -264,4 +264,38 @@ describe('DocEditor', () => {
     expect(box().value).toBe('mine');
     expect(screen.getByRole('button', { name: 'Discard mine' })).toBeInTheDocument();
   });
+
+  it('the text is read-only while a save is in flight', async () => {
+    let finish: (v: unknown) => void = () => {};
+    http.apiPut.mockImplementationOnce(() => new Promise((r) => (finish = r)));
+    const { props, box } = await setup();
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(box()).toHaveAttribute('readonly');
+    await userEvent.type(box(), 'lost?');
+    expect(box().value).toBe('# Requirements\n\nUSB-C power.\n');
+    act(() => finish({ version: 'v9' }));
+    await waitFor(() => expect(props.onSaved).toHaveBeenCalledWith('v9', false));
+  });
+
+  it('a resumed draft saves on its stored base, not on a newer loaded doc', async () => {
+    const first = await setup();
+    await userEvent.type(first.box(), '!');
+    first.view.unmount();
+    await setup({ doc: docRead({ version: 'v5', body: 'newer' }) }, first.store);
+    expect(screen.getAllByRole('textbox', { name: 'Doc text' })[0]).toHaveValue('# Requirements\n\nUSB-C power.\n!');
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(http.apiPut).toHaveBeenCalledWith(url, expect.objectContaining({ baseVersion: 'v1' }));
+  });
+
+  it('after re-basing onto a deleted doc the template text still counts as a change', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    http.apiPut.mockRejectedValueOnce(conflict409({ currentVersion: null }));
+    http.apiGet.mockResolvedValue(docRead({ exists: false, version: null, body: '', template: '# T\n' }));
+    const { store, box } = await setup({ doc: docRead({ exists: false, version: null, body: '', template: '# T\n' }) });
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Keep editing on top of current' }));
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(box().value).toBe('# T\n');
+    expect(store.getState().drafts[draftKey(DOC_PID, REQ)]).toBeDefined();
+  });
 });

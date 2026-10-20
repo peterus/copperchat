@@ -6,7 +6,7 @@ import { DocIndex } from '@/components/docs/DocIndex';
 import { DocView } from '@/components/docs/DocView';
 import { docName } from '@/components/docs/format';
 import type { PanelProps } from '@/layouts/panels';
-import { draftKey, useDocs, useDocsStore } from '@/stores/docs';
+import { useDocs, useDocsStore } from '@/stores/docs';
 
 type Nav =
   | { view: 'index' }
@@ -37,8 +37,16 @@ function DocsPanelBody({ projectId, params }: PanelProps) {
   const indexError = useDocs((s) => s.indexError);
   const doc = useDocs((s) => s.doc);
   const docError = useDocs((s) => s.docError);
-  const drafts = useDocs((s) => s.drafts);
-  const hasDraft = (path: string) => drafts[draftKey(projectId, path)] !== undefined;
+  // Paths with an unsaved draft, as one string: typing in the editor does not re-render the panel.
+  const prefix = `${projectId}/`;
+  const draftPaths = useDocs((s) =>
+    Object.keys(s.drafts)
+      .filter((k) => k.startsWith(prefix))
+      .map((k) => k.slice(prefix.length))
+      .join('\n'),
+  );
+  const drafted = new Set(draftPaths ? draftPaths.split('\n') : []);
+  const hasDraft = (path: string) => drafted.has(path);
 
   useEffect(() => {
     void store.getState().load(projectId);
@@ -75,7 +83,7 @@ function DocsPanelBody({ projectId, params }: PanelProps) {
   let body;
   if (nav.view === 'index') {
     body = index ? (
-      <DocIndex index={index} onOpen={(path) => setNav({ view: 'doc', path })} />
+      <DocIndex index={index} drafts={drafted} onOpen={(path) => setNav({ view: 'doc', path })} />
     ) : (
       !indexError && <p className="p-3 text-sm text-muted">Loading…</p>
     );
