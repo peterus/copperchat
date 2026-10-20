@@ -36,6 +36,7 @@ from copperchat.tools import ToolContext, registry
 from tests.kicad.edit import golden
 from tests.kicad.edit.test_plan_flow import Rig, rig  # noqa: F401  (fixture)
 from tests.kicad.edit.test_scenarios import layout_problems, run_script
+from tests.support.conversations import TEST_CID, conversation_row
 from tests.support.edit import call_tool
 
 from .conftest import API_KEY, TOKEN, live
@@ -136,7 +137,7 @@ class Chat:
             db=self.rig.editing.db,
         )  # fmt: skip
         queue: asyncio.Queue[QueuedItem | None] = asyncio.Queue()
-        queue.put_nowait(QueuedItem(1, "eval-1", prompt))
+        queue.put_nowait(QueuedItem(1, "eval-1", TEST_CID, prompt))
         self.messages.append(prompt)
 
         async def inputs() -> AsyncIterator[QueuedItem]:
@@ -144,7 +145,7 @@ class Chat:
                 yield item
 
         stop = "completed"
-        async for ev in backend.start(session.project, inputs(), None):
+        async for ev in backend.start(session.project, conversation_row(), inputs(), None):
             if isinstance(ev, ToolUse) and ev.parent_tool_use_id is None:
                 self.tool_calls.append(ev.name.removeprefix("mcp__copperchat__"))
             elif isinstance(ev, ToolResultEvt) and ev.is_error and ev.parent_tool_use_id is None:
@@ -170,7 +171,14 @@ class Chat:
                     continue
                 self.turn += 1
                 self.messages.append(nxt)
-                queue.put_nowait(QueuedItem(self.turn + 1, f"eval-{self.turn + 1}", nxt))
+                queue.put_nowait(
+                    QueuedItem(
+                        self.turn + 1,
+                        f"eval-{self.turn + 1}",
+                        "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+                        nxt,
+                    )
+                )
         return stop
 
 

@@ -16,6 +16,33 @@ export type DocKind = z.infer<typeof DocKind>;
 /** Backend project ids: 12 lowercase hex characters. */
 export const ProjectId = z.string().regex(/^[0-9a-f]{12}$/);
 
+/** Backend conversation (session) ids: 32 lowercase hex characters. */
+export const ConversationId = z.string().regex(/^[0-9a-f]{32}$/);
+
+export const ConversationType = z.enum(['free', 'requirements', 'schematic', 'board']);
+export type ConversationType = z.infer<typeof ConversationType>;
+export const ConversationStatus = z.enum(['open', 'closing', 'closed']);
+export type ConversationStatus = z.infer<typeof ConversationStatus>;
+
+/** S-C4 ConversationDTO (REST and the `conversation-updated` frame). */
+export const ConversationDTO = z.strictObject({
+  id: ConversationId,
+  seq: z.number().int().min(1),
+  title: z.string(),
+  type: ConversationType,
+  status: ConversationStatus,
+  archived: z.boolean(),
+  createdAt: z.string(),
+  lastMessageAt: z.string().nullable(),
+  closedAt: z.string().nullable(),
+  usage: z.strictObject({
+    inputTokens: z.number().int().nonnegative(),
+    outputTokens: z.number().int().nonnegative(),
+    costUsd: z.number(),
+  }),
+});
+export type ConversationDTO = z.infer<typeof ConversationDTO>;
+
 export const AttachmentRef = z.strictObject({
   id: z.string().min(1).max(100),
   kind: z.enum(['image', 'pdf']),
@@ -26,6 +53,7 @@ export type AttachmentRef = z.infer<typeof AttachmentRef>;
 export const MessageDTO = z.strictObject({
   id: z.number().int(),
   projectId: ProjectId,
+  conversationId: ConversationId,
   clientMessageId: z.string().nullable(),
   runId: z.string().nullable(),
   role: MessageRole,
@@ -57,15 +85,22 @@ export type Usage = z.infer<typeof Usage>;
 const NullProject = z.null();
 
 export const ClientFrame = z.discriminatedUnion('type', [
-  z.strictObject({ type: z.literal('subscribe'), projectId: ProjectId, sinceMessageId: z.number().int().nonnegative() }),
+  // Replays that conversation; the subscription itself stays per project (spec §6.2).
+  z.strictObject({
+    type: z.literal('subscribe'),
+    projectId: ProjectId,
+    conversationId: ConversationId,
+    sinceMessageId: z.number().int().nonnegative(),
+  }),
   z.strictObject({
     type: z.literal('send'),
     projectId: ProjectId,
+    conversationId: ConversationId,
     clientMessageId: z.string().min(1).max(100),
     text: z.string().min(1).max(100_000),
     attachments: z.array(AttachmentRef).max(20),
   }),
-  z.strictObject({ type: z.literal('interrupt'), projectId: ProjectId, runId: z.string().nullable() }),
+  z.strictObject({ type: z.literal('interrupt'), projectId: ProjectId, conversationId: ConversationId, runId: z.string().nullable() }),
   z.strictObject({ type: z.literal('cancel-queued'), projectId: ProjectId, messageId: z.number().int().min(1) }),
   z.strictObject({ type: z.literal('ping'), projectId: NullProject }),
   // Page in the foreground or not (push goes out only while no client is visible, Phase 9).
@@ -101,6 +136,7 @@ export type PlanStepDTO = z.infer<typeof PlanStepDTO>;
 export const PlanDTO = z.strictObject({
   id: z.string().min(1),
   projectId: ProjectId,
+  conversationId: ConversationId,
   title: z.string(),
   summary: z.string(),
   status: PlanStatus,
@@ -118,6 +154,7 @@ export const ServerFrame = z.discriminatedUnion('type', [
     .strictObject({
       type: z.literal('message-delta'),
       projectId: ProjectId,
+      conversationId: ConversationId,
       messageId: z.number().int(),
       contentDelta: z.string().optional(),
       statusPatch: MessageStatus.optional(),
@@ -126,8 +163,14 @@ export const ServerFrame = z.discriminatedUnion('type', [
     .refine((f) => f.contentDelta !== undefined || f.statusPatch !== undefined || f.metadataPatch !== undefined, {
       message: 'message-delta needs contentDelta, statusPatch or metadataPatch',
     }),
-  z.strictObject({ type: z.literal('run-started'), projectId: ProjectId, runId: z.string() }),
-  z.strictObject({ type: z.literal('run-finished'), projectId: ProjectId, runId: z.string(), reason: RunFinishReason }),
+  z.strictObject({ type: z.literal('run-started'), projectId: ProjectId, conversationId: ConversationId, runId: z.string() }),
+  z.strictObject({
+    type: z.literal('run-finished'),
+    projectId: ProjectId,
+    conversationId: ConversationId,
+    runId: z.string(),
+    reason: RunFinishReason,
+  }),
   z.strictObject({
     type: z.literal('view-updated'),
     projectId: ProjectId,
@@ -144,7 +187,9 @@ export const ServerFrame = z.discriminatedUnion('type', [
   }),
   // A plan changed state (E-C12, E8b).
   z.strictObject({ type: z.literal('plan-updated'), projectId: ProjectId, plan: PlanDTO }),
-  z.strictObject({ type: z.literal('usage'), projectId: ProjectId, usage: Usage }),
+  z.strictObject({ type: z.literal('usage'), projectId: ProjectId, conversationId: ConversationId, usage: Usage }),
+  // A conversation (session) was created, renamed, archived, changed status or got its first/last message (C1).
+  z.strictObject({ type: z.literal('conversation-updated'), projectId: ProjectId, conversation: ConversationDTO }),
   z.strictObject({ type: z.literal('rate-limited'), projectId: ProjectId, resetsAt: z.string() }),
   z.strictObject({
     type: z.literal('error'),
@@ -167,6 +212,7 @@ export const ALL_FRAME_TYPES = [
   'subscribe', 'send', 'interrupt', 'cancel-queued', 'ping', 'visibility',
   'message', 'message-delta', 'run-started', 'run-finished', 'view-updated',
   'changes-updated', 'plan-updated', 'usage', 'rate-limited', 'error', 'pong',
+  'conversation-updated',
 ] as const;
 
 export const MessagesPage = z.object({ messages: z.array(MessageDTO), hasMore: z.boolean() });

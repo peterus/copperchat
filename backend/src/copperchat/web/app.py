@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from copperchat.agent.broadcaster import Broadcaster
@@ -26,6 +27,7 @@ from copperchat.push.visibility import VisibilityRegistry
 from copperchat.web import (
     auth,
     health,
+    routes_conversations,
     routes_editing,
     routes_git,
     routes_history,
@@ -53,6 +55,16 @@ def install_error_handlers(app: FastAPI) -> None:
         if isinstance(exc, StructuredToolError):
             body["details"] = exc.to_dict()
         return JSONResponse(status_code=exc.http_status, content={"error": body})
+
+    @app.exception_handler(RequestValidationError)
+    async def _invalid(_: Request, exc: RequestValidationError) -> JSONResponse:
+        # FastAPI's default echoes the rejected input; one that is not encodable (a lone
+        # surrogate in a title) would turn the 422 into a 500. Location and reason suffice.
+        detail = [
+            {"type": e.get("type"), "loc": list(e.get("loc", ())), "msg": e.get("msg")}
+            for e in exc.errors()
+        ]
+        return JSONResponse(status_code=422, content={"detail": detail})
 
 
 def install_push(app: FastAPI) -> PushServices:
@@ -144,6 +156,7 @@ def create_app(
     app.include_router(routes_projects.router)
     app.include_router(routes_views.router)
     app.include_router(routes_messages.router)
+    app.include_router(routes_conversations.router)
     app.include_router(routes_history.router)
     app.include_router(routes_git.router)
     app.include_router(routes_skills.router)

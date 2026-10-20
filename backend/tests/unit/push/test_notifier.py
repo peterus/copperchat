@@ -12,6 +12,7 @@ from copperchat.agent.protocol import RateLimitedFrame, RunFinishedFrame, RunSta
 from copperchat.db import Database
 from copperchat.push.notifier import PushNotifier
 from copperchat.push.visibility import VisibilityRegistry
+from tests.support.conversations import TEST_CID, ensure_test_conversation
 
 PID = "a1b2c3d4e5f6"
 
@@ -31,6 +32,8 @@ Env = tuple[Database, FakeDispatcher, VisibilityRegistry, PushNotifier]
 @pytest.fixture
 async def env(tmp_path: Path) -> AsyncIterator[Env]:
     db = await Database.open(tmp_path / "c.db")
+    await ensure_test_conversation(db, PID)
+    await db.execute("UPDATE conversations SET title = 'Session 1' WHERE id = ?", (TEST_CID,))
     d = FakeDispatcher()
     vis = VisibilityRegistry()
     n = PushNotifier(db, d, vis, project_names=lambda pid: "ecc83-pp")
@@ -56,7 +59,12 @@ async def _row(
 
 
 def _finished(run_id: str, reason: str) -> RunFinishedFrame:
-    return RunFinishedFrame(project_id=PID, run_id=run_id, reason=reason)  # type: ignore[arg-type]
+    return RunFinishedFrame(
+        project_id=PID,
+        conversation_id=TEST_CID,
+        run_id=run_id,
+        reason=reason,  # type: ignore[arg-type]
+    )
 
 
 async def test_run_finished_sends_when_hidden(env: Env) -> None:
@@ -65,7 +73,7 @@ async def test_run_finished_sends_when_hidden(env: Env) -> None:
     await n.handle(_finished("r1", "completed"))
     assert d.sent == [
         {
-            "title": "ecc83-pp: run finished",
+            "title": "ecc83-pp · Session 1: run finished",
             "body": "ERC is clean.",
             "url": f"/p/{PID}",
             "tag": f"run-{PID}",
@@ -83,7 +91,7 @@ async def test_question_and_error_need_attention(env: Env) -> None:
     await _row(db, "r3", "KiCad stopped responding", role="system", kind="error")
     await n.handle(_finished("r3", "error"))
     await n.handle(_finished("r4", "error"))
-    assert [p["title"] for p in d.sent] == ["ecc83-pp: needs your attention"] * 3
+    assert [p["title"] for p in d.sent] == ["ecc83-pp · Session 1: needs your attention"] * 3
     assert [p["body"] for p in d.sent] == [
         "Should I run DRC too?",
         "KiCad stopped responding",
@@ -108,8 +116,11 @@ async def test_needs_attention_from_mid_run_plan_row(env: Env) -> None:
     await _row(db, "r6", "All good.")
     await n.handle(_finished("r6", "completed"))
     assert [(p["title"], p["body"]) for p in d.sent] == [
-        ("ecc83-pp: needs your attention", "I paused the plan; the open pin is intended."),
-        ("ecc83-pp: run finished", "All good."),
+        (
+            "ecc83-pp · Session 1: needs your attention",
+            "I paused the plan; the open pin is intended.",
+        ),
+        ("ecc83-pp · Session 1: run finished", "All good."),
     ]
 
 
@@ -169,7 +180,9 @@ async def test_broadcaster_listener_never_blocks_or_breaks_publish(env: Env) -> 
 
     b.add_listener(broken)
     b.add_listener(n.on_frame)
-    await b.publish(PID, RunStartedFrame(project_id=PID, run_id="r1"))  # ignored by notifier
+    await b.publish(
+        PID, RunStartedFrame(project_id=PID, conversation_id=TEST_CID, run_id="r1")
+    )  # ignored by notifier
     await b.publish(PID, _finished("r1", "completed"))
     await n.drain()
     assert [p["body"] for p in d.sent] == ["Done here."]

@@ -11,6 +11,8 @@ import pytest
 from copperchat.agent.engine import ChainedHooks, TurnOutcome
 from copperchat.changes import erc
 from copperchat.changes.repo import ChangeEntry
+from copperchat.db.repos.agent_state import RunRepo
+from copperchat.db.repos.conversations import ConversationRepo
 from copperchat.db.repos.editing_settings import EditingSettingsRepo
 from copperchat.editing.hooks import EditingHooks
 from copperchat.editing.service import EditingService
@@ -172,6 +174,21 @@ async def test_propose_posts_plan_notice_and_frame(rig: Rig) -> None:
     frame = rig.env.broadcaster.frames[-1]
     assert frame.type == "plan-updated" and frame.plan.id == plan.id
     assert frame.plan.steps[0].expected_changes == 5
+
+
+async def test_plan_is_owned_by_the_proposing_runs_session(rig: Rig) -> None:
+    db = rig.editing.db
+    other = (await ConversationRepo(db).create(rig.pid, "free", None)).id
+    await RunRepo(db).start(rig.run_id, rig.pid, other)
+    plan = await rig.proposed()
+    assert plan.conversation_id == other, "the run's session, not the engine's default"
+    assert rig.env.engine.notice_conversations[-1] == other
+    await rig.plans.on_external_change(rig.opened.project, ["x.kicad_sch"])  # no-op: proposed
+    approved = await rig.plans.repo.save(machine.transition(plan, "approve", now=NOW))
+    await rig.plans.on_external_change(rig.opened.project, ["x.kicad_sch"])
+    assert approved.conversation_id == other
+    assert rig.env.engine.notice_conversations[-1] == other
+    assert rig.env.engine.note_conversations[-1] == other
 
 
 async def test_propose_refused_while_open(rig: Rig) -> None:

@@ -5,7 +5,7 @@ const apiPost = vi.fn();
 vi.mock('@/api/http', () => ({ apiPost: (...a: unknown[]) => apiPost(...a) }));
 
 import { MessageItem } from '@/components/chat/MessageItem';
-import { PID, row } from '@/test/fakeMessageServer';
+import { CID, PID, row } from '@/test/fakeMessageServer';
 
 const SNAP = 'c'.repeat(32);
 const offer = row(5, {
@@ -25,7 +25,10 @@ describe('restore offer on crash notices', () => {
     fireEvent.click(screen.getByRole('button', { name: /restore snapshot/i }));
     expect(apiPost).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: /^restore$/i }));
-    await waitFor(() => expect(apiPost).toHaveBeenCalledWith(`/projects/${PID}/history/${SNAP}/restore`, {}));
+    // the restore belongs to the conversation of the notice
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith(`/projects/${PID}/history/${SNAP}/restore`, { conversationId: CID }),
+    );
     expect(await screen.findByText('Restored.')).toBeInTheDocument();
   });
 

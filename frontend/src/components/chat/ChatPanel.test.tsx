@@ -1,9 +1,9 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatStoreContext } from '@/hooks/useChat';
-import { createChatStore, fetchMessagesPage, type ChatStore } from '@/stores/chat';
+import { chatKey, createChatStore, fetchMessagesPage, type ChatStore } from '@/stores/chat';
 import { useComposer } from '@/stores/composer';
-import { FakeMessageServer, PID, row } from '@/test/fakeMessageServer';
+import { CID as C, FakeMessageServer, PID, row } from '@/test/fakeMessageServer';
 import { FakeWsClient } from '@/test/fakeWsClient';
 import { ChatPanel } from './ChatPanel';
 
@@ -25,7 +25,7 @@ beforeEach(() => {
 });
 
 function renderPanel(props: { readOnly?: boolean } = {}) {
-  return render(<ChatStoreContext.Provider value={store}><ChatPanel projectId={PID} {...props} /></ChatStoreContext.Provider>);
+  return render(<ChatStoreContext.Provider value={store}><ChatPanel projectId={PID} conversationId={C} {...props} /></ChatStoreContext.Provider>);
 }
 
 describe('ChatPanel', () => {
@@ -38,10 +38,10 @@ describe('ChatPanel', () => {
 
     fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), { target: { value: 'What is R12?' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
-    expect(ws.framesOfType('send')).toEqual([{ type: 'send', projectId: PID, clientMessageId: 'c1', text: 'What is R12?', attachments: [] }]);
+    expect(ws.framesOfType('send')).toEqual([{ type: 'send', projectId: PID, conversationId: C, clientMessageId: 'c1', text: 'What is R12?', attachments: [] }]);
     expect(screen.getByText('What is R12?')).toBeInTheDocument();
 
-    act(() => ws.emit({ type: 'usage', projectId: PID, usage: { inputTokens: 1500, outputTokens: 20, cacheReadTokens: 0, cacheCreationTokens: 0 } }));
+    act(() => ws.emit({ type: 'usage', projectId: PID, conversationId: C, usage: { inputTokens: 1500, outputTokens: 20, cacheReadTokens: 0, cacheCreationTokens: 0 } }));
     expect(screen.getByLabelText('Token usage')).toHaveTextContent('in 1.5k');
     act(() => ws.emit({ type: 'rate-limited', projectId: PID, resetsAt: new Date(Date.now() + 3_600_000).toISOString() }));
     expect(screen.getByRole('status')).toHaveTextContent('Rate limit reached');
@@ -50,7 +50,7 @@ describe('ChatPanel', () => {
   it('shows and dismisses errors', async () => {
     setup();
     renderPanel();
-    await waitFor(() => expect(store.getState().chats[PID]?.loaded).toBe(true));
+    await waitFor(() => expect(store.getState().chats[chatKey(PID, C)]?.loaded).toBe(true));
     act(() => ws.emit({ type: 'error', projectId: PID, code: 'internal_error', message: 'Something broke' }));
     expect(screen.getByRole('alert')).toHaveTextContent('Something broke');
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss error' }));
@@ -66,7 +66,7 @@ describe('ChatPanel', () => {
     ]);
     renderPanel();
     await screen.findByText('Part research: TPS62133');
-    act(() => ws.emit({ type: 'run-started', projectId: PID, runId: 'r1' }));
+    act(() => ws.emit({ type: 'run-started', projectId: PID, conversationId: C, runId: 'r1' }));
     const log = screen.getByRole('log');
     const card = screen.getByText('Part research: TPS62133').closest('details')!;
     expect(card).toHaveAttribute('open');
@@ -76,7 +76,7 @@ describe('ChatPanel', () => {
     expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument();
 
     act(() => ws.emit({ type: 'message', projectId: PID, message: row(5, { kind: 'tool_result', content: 'Buck, 3 MHz', metadata: { toolUseId: 'a1', isError: false, images: [] } }) }));
-    act(() => ws.emit({ type: 'run-finished', projectId: PID, runId: 'r1', reason: 'completed' }));
+    act(() => ws.emit({ type: 'run-finished', projectId: PID, conversationId: C, runId: 'r1', reason: 'completed' }));
     expect(within(card).getByText('done')).toBeInTheDocument();
     expect(card).not.toHaveAttribute('open');
     expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull();

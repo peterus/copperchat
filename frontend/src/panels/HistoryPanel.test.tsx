@@ -3,12 +3,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const apiGet = vi.fn();
 const apiPost = vi.fn();
-const chat = { runActive: false };
+const CID = 'c'.repeat(32);
+const chat = { runActive: false, conversationId: CID as string | null };
 vi.mock('@/api/http', () => ({
   apiGet: (...a: unknown[]) => apiGet(...a),
   apiPost: (...a: unknown[]) => apiPost(...a),
 }));
-vi.mock('@/hooks/useChat', () => ({ useChat: () => chat }));
+vi.mock('@/hooks/useChat', () => ({
+  useActiveRun: () => (chat.runActive ? { conversationId: CID, runId: 'r1' } : null),
+  useCurrentConversationId: () => chat.conversationId,
+}));
 
 import { usePanels } from '@/layouts/panels';
 import { HistoryPanel } from './HistoryPanel';
@@ -29,6 +33,7 @@ const entries = [
 describe('HistoryPanel', () => {
   beforeEach(() => {
     chat.runActive = false;
+    chat.conversationId = CID;
     apiGet.mockReset().mockResolvedValue(entries);
     apiPost.mockReset().mockResolvedValue({ id: B, files: [] });
   });
@@ -78,7 +83,8 @@ describe('HistoryPanel', () => {
 
     fireEvent.click(screen.getAllByRole('button', { name: /undo/i })[0]!);
     fireEvent.click(screen.getByRole('button', { name: /^restore$/i }));
-    await waitFor(() => expect(apiPost).toHaveBeenCalledWith(`/projects/p1/history/${B}/restore`, {}));
+    // History restore sends the current conversation (spec §6.1)
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith(`/projects/p1/history/${B}/restore`, { conversationId: CID }));
     await waitFor(() => expect(apiGet).toHaveBeenCalledTimes(2));
     expect(screen.queryByRole('dialog')).toBeNull();
   });
@@ -103,6 +109,13 @@ describe('HistoryPanel', () => {
     await waitFor(() => expect(apiGet).toHaveBeenCalledTimes(2));
     expect(screen.getAllByRole('button', { name: /undo/i })[0]).toBeEnabled();
   });
+  it('offers no undo before the current conversation is known (restore needs it)', async () => {
+    chat.conversationId = null;
+    render(<HistoryPanel projectId="p1" />);
+    const [undo] = await screen.findAllByRole('button', { name: /undo/i });
+    expect(undo).toBeDisabled();
+  });
+
   it('clears a load error once a later reload succeeds', async () => {
     apiGet.mockRejectedValueOnce(new Error('HTTP 503'));
     chat.runActive = true;
@@ -145,7 +158,7 @@ describe('HistoryPanel', () => {
       const dialog = screen.getByRole('dialog');
       expect(dialog).toHaveTextContent('at the end of “Plan step 1”');
       fireEvent.click(within(dialog).getByRole('button', { name: /^restore$/i }));
-      await waitFor(() => expect(apiPost).toHaveBeenCalledWith(`/projects/p1/history/${S1}/restore`, {}));
+      await waitFor(() => expect(apiPost).toHaveBeenCalledWith(`/projects/p1/history/${S1}/restore`, { conversationId: CID }));
     });
 
     it('a restore refused because a plan is open shows the reason', async () => {

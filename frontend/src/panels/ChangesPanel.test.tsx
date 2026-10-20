@@ -9,7 +9,7 @@ vi.mock('@/api/http', async (orig) => ({
   apiGet: (...a: unknown[]) => apiGet(...a),
 }));
 const chat: { messages: MessageDTO[]; runActive: boolean } = { messages: [], runActive: false };
-vi.mock('@/hooks/useChat', () => ({ useChat: () => chat }));
+vi.mock('@/hooks/useChat', () => ({ useChat: () => chat, useCurrentConversationId: () => 'c'.repeat(32) }));
 
 import { usePanels } from '@/layouts/panels';
 import { ChangesStoreContext, createChangesStore } from '@/stores/changes';

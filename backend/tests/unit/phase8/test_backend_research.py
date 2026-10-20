@@ -37,6 +37,7 @@ from copperchat.db.repos.uploads import UploadRow, insert_upload
 from copperchat.projects import Project
 from copperchat.tools import ToolContext, registry
 from copperchat.uploads import store_upload
+from tests.support.conversations import conversation_row
 
 RP = "mcp__copperchat__research_part"
 ARGS = {"mpn": "TPS62133", "query": "Layout?"}
@@ -170,14 +171,22 @@ def make_backend(
 async def one_item(
     text: str = "hi", attachments: tuple[AttachmentRef, ...] = ()
 ) -> AsyncIterator[QueuedItem]:
-    yield QueuedItem(message_id=1, client_message_id="c1", text=text, attachments=attachments)
+    yield QueuedItem(
+        message_id=1,
+        client_message_id="c1",
+        conversation_id="c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+        text=text,
+        attachments=attachments,
+    )
 
 
 async def test_research_steps_nest_under_the_call_and_usage_is_summed(
     settings, project, db
 ) -> None:  # type: ignore[no-untyped-def]
     backend, clients = make_backend(settings, project, db, research_ok)
-    events: list[AgentEvent] = [ev async for ev in backend.start(project, one_item(), None)]
+    events: list[AgentEvent] = [
+        ev async for ev in backend.start(project, conversation_row(), one_item(), None)
+    ]
     kinds = [type(e).__name__ for e in events if type(e).__name__ != "SessionId"]
     assert kinds == [
         "ToolUse",
@@ -217,7 +226,7 @@ async def test_research_failure_is_a_tool_error_not_a_turn_error(settings, proje
         return gen()
 
     backend, _ = make_backend(settings, project, db, failing)
-    events = [ev async for ev in backend.start(project, one_item(), None)]
+    events = [ev async for ev in backend.start(project, conversation_row(), one_item(), None)]
     final = next(e for e in events if isinstance(e, ToolResultEvt) and e.id == "toolu_rp")
     assert final.is_error and "Part research failed" in final.content
     assert events[-1] == TurnFinished(reason="completed")
@@ -233,7 +242,7 @@ async def test_invalid_mpn_is_refused_before_any_query(settings, project, db) ->
         return research_ok(prompt, options)
 
     backend, _ = make_backend(settings, project, db, spy, args={"mpn": "../etc", "query": "q"})
-    events = [ev async for ev in backend.start(project, one_item(), None)]
+    events = [ev async for ev in backend.start(project, conversation_row(), one_item(), None)]
     final = next(e for e in events if isinstance(e, ToolResultEvt) and e.id == "toolu_rp")
     assert final.is_error and "Invalid part number" in final.content and calls == []
 
@@ -257,7 +266,7 @@ async def test_interrupt_cancels_the_research_query(settings, project, db) -> No
     events: list[AgentEvent] = []
 
     async def consume() -> None:
-        async for ev in backend.start(project, one_item(), None):
+        async for ev in backend.start(project, conversation_row(), one_item(), None):
             events.append(ev)
 
     task = asyncio.create_task(consume())
@@ -286,7 +295,7 @@ async def test_closing_the_stream_cancels_running_research(settings, project, db
         return gen()
 
     backend, _ = make_backend(settings, project, db, hanging)
-    gen = backend.start(project, one_item(), None)
+    gen = backend.start(project, conversation_row(), one_item(), None)
     first = asyncio.ensure_future(gen.__anext__())
     await asyncio.wait_for(started.wait(), 2)
     await first  # the research_part ToolUse
@@ -343,7 +352,7 @@ async def test_sub_rows_arriving_before_their_call_are_held_back(settings, proje
         client_factory=factory,
         research_query_fn=research_ok,
     )
-    events = [ev async for ev in backend.start(project, one_item(), None)]
+    events = [ev async for ev in backend.start(project, conversation_row(), one_item(), None)]
     first_sub = next(i for i, e in enumerate(events) if getattr(e, "parent_tool_use_id", None))
     call = next(i for i, e in enumerate(events) if isinstance(e, ToolUse) and e.id == "toolu_rp")
     assert call < first_sub
@@ -360,7 +369,12 @@ async def test_attachments_become_content_blocks(settings, project, db) -> None:
         )
         refs.append(AttachmentRef(id=up.id, kind=up.kind, name=up.name))
     backend, clients = make_backend(settings, project, db, research_ok)
-    _ = [ev async for ev in backend.start(project, one_item("look", tuple(refs)), None)]
+    _ = [
+        ev
+        async for ev in backend.start(
+            project, conversation_row(), one_item("look", tuple(refs)), None
+        )
+    ]
     content = clients[0].prompts[0]["message"]["content"]
     assert content[0] == {"type": "text", "text": "look"}
     assert content[1]["type"] == "image" and base64.b64decode(content[1]["source"]["data"])
@@ -369,7 +383,7 @@ async def test_attachments_become_content_blocks(settings, project, db) -> None:
 
 async def test_without_db_no_skills(settings, project) -> None:  # type: ignore[no-untyped-def]
     backend, clients = make_backend(settings, project, None, research_ok)
-    _ = [ev async for ev in backend.start(project, one_item(), None)]
+    _ = [ev async for ev in backend.start(project, conversation_row(), one_item(), None)]
     assert clients[0].options.tools == [] and clients[0].options.plugins == []
 
 
@@ -397,7 +411,7 @@ async def test_research_works_without_kicad(settings, project, db) -> None:  # t
         client_factory=factory,
         research_query_fn=research_ok,
     )
-    events = [ev async for ev in backend.start(project, one_item(), None)]
+    events = [ev async for ev in backend.start(project, conversation_row(), one_item(), None)]
     final = next(e for e in events if isinstance(e, ToolResultEvt) and e.id == "toolu_rp")
     assert not final.is_error and final.content == "Summary: 2.5 MHz."
 
@@ -481,12 +495,22 @@ async def test_unconsumed_call_ids_are_dropped_at_turn_end(settings, project, db
 
     async def two_items() -> AsyncIterator[QueuedItem]:
         # Gated like the RunEngine: the next item only after the turn's TurnFinished.
-        yield QueuedItem(message_id=1, client_message_id="c1", text="a")
+        yield QueuedItem(
+            message_id=1,
+            client_message_id="c1",
+            conversation_id="c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+            text="a",
+        )
         await first_done.wait()
-        yield QueuedItem(message_id=2, client_message_id="c2", text="b")
+        yield QueuedItem(
+            message_id=2,
+            client_message_id="c2",
+            conversation_id="c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+            text="b",
+        )
 
     events: list[AgentEvent] = []
-    async for ev in backend.start(project, two_items(), None):
+    async for ev in backend.start(project, conversation_row(), two_items(), None):
         events.append(ev)
         if isinstance(ev, TurnFinished):
             first_done.set()

@@ -5,7 +5,11 @@ const apiGet = vi.fn();
 const send = vi.fn();
 const chat = { runActive: false, send };
 vi.mock('@/api/http', () => ({ apiGet: (...a: unknown[]) => apiGet(...a) }));
-vi.mock('@/hooks/useChat', () => ({ useChat: () => chat }));
+vi.mock('@/hooks/useChat', () => ({
+  useChat: () => chat,
+  useActiveRun: () => (chat.runActive ? { conversationId: 'c'.repeat(32), runId: 'r1' } : null),
+  useCurrentConversationId: () => 'c'.repeat(32),
+}));
 
 import { GitPanel, commitRequestText } from './GitPanel';
 

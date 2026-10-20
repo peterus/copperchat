@@ -59,7 +59,7 @@ describe('changes store', () => {
     ws.emit({ type: 'changes-updated', projectId: P2, runId: 'r1', stepId: null, count: 1 });
     await flush();
     expect(fetchRuns).not.toHaveBeenCalled();
-    ws.emit({ type: 'run-finished', projectId: P1, runId: 'r1', reason: 'completed' });
+    ws.emit({ type: 'run-finished', projectId: P1, conversationId: 'c'.repeat(32), runId: 'r1', reason: 'completed' });
     await flush();
     expect(fetchRuns).toHaveBeenCalledTimes(1);
   });
@@ -105,7 +105,7 @@ describe('changes store', () => {
     const resolvers: Array<(v: ChangeRun[]) => void> = [];
     fetchRuns.mockImplementation(() => new Promise((r) => resolvers.push(r)));
     const first = store.getState().load(P1);
-    ws.emit({ type: 'run-finished', projectId: P1, runId: 'r1', reason: 'completed' });
+    ws.emit({ type: 'run-finished', projectId: P1, conversationId: 'c'.repeat(32), runId: 'r1', reason: 'completed' });
     await flush();
     expect(resolvers).toHaveLength(2);
     resolvers[1]!([run('r1'), run('r2')]);

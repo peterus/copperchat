@@ -93,6 +93,7 @@ class EditingHooks(RunHooks):
         except Exception as exc:  # a failed check must not fail the (finished) turn
             log.warning("turn-end ERC for %s failed: %s", self.project.rel_path, exc)
             await self.engine.post_notice(
+                turn.conversation_id,
                 "The ERC check after this turn could not run; run run_erc to check the design.",
                 {"action": "erc-failed"},
             )
@@ -103,6 +104,7 @@ class EditingHooks(RunHooks):
             f"{_plural(warnings, 'warning')}, {len(delta.resolved)} resolved."
         )
         await self.engine.post_notice(
+            turn.conversation_id,
             text,
             {"action": "erc-delta", "ercResultId": rid, "errors": errors, "warnings": warnings},
         )
@@ -113,5 +115,6 @@ class EditingHooks(RunHooks):
             self.engine.add_agent_note(
                 f"The ERC after your last turn found {_plural(errors, 'error')}: {named}"
                 + (f" and {more} more" if more else "")
-                + ". Fix each one or justify it to the user."
+                + ". Fix each one or justify it to the user.",
+                conversation_id=turn.conversation_id,  # run-specific: only this session
             )

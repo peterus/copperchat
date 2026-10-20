@@ -8,13 +8,15 @@
    "type": "message-delta",
    "projectId": "a1b2c3d4e5f6",
    "messageId": 43,
-   "contentDelta": "Hel"
+   "contentDelta": "Hel",
+   "conversationId": "0123456789abcdef0123456789abcdef"
   },
   {
    "type": "message-delta",
    "projectId": "a1b2c3d4e5f6",
    "messageId": 43,
-   "statusPatch": "done"
+   "statusPatch": "done",
+   "conversationId": "0123456789abcdef0123456789abcdef"
   },
   {
    "type": "message-delta",
@@ -22,20 +24,23 @@
    "messageId": 43,
    "metadataPatch": {
     "rateLimited": true
-   }
+   },
+   "conversationId": "0123456789abcdef0123456789abcdef"
   }
  ],
  "invalid": [
   {
    "type": "message-delta",
    "projectId": "a1b2c3d4e5f6",
-   "messageId": 43
+   "messageId": 43,
+   "conversationId": "0123456789abcdef0123456789abcdef"
   },
   {
    "type": "message-delta",
    "projectId": "a1b2c3d4e5f6",
    "messageId": 43,
-   "statusPatch": "parked"
+   "statusPatch": "parked",
+   "conversationId": "0123456789abcdef0123456789abcdef"
   }
  ]
 }

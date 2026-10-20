@@ -15,6 +15,7 @@ from copperchat.history.service import HistoryService
 from copperchat.history.store import compute_hashes
 from copperchat.kicad_session import KicadSessionManager
 from copperchat.projects import Project
+from tests.support.conversations import TEST_CID, ensure_test_conversation
 from tests.support.history import (
     ECC83,
     HIERARCHY,
@@ -50,6 +51,7 @@ async def real(make_settings: Callable[..., Settings], tmp_path: Path) -> AsyncI
     settings = real_settings(make_settings)
     sessions = KicadSessionManager(settings)
     db = await Database.open(tmp_path / "db.sqlite")
+    await ensure_test_conversation(db)
     engine, broadcaster = FakeEngine(), RecordingBroadcaster()
     svc = HistoryService(
         db=db, sessions=sessions, broadcaster=broadcaster, runtime=FakeRuntime(engine)
@@ -62,7 +64,9 @@ async def real(make_settings: Callable[..., Settings], tmp_path: Path) -> AsyncI
 
 
 def turn(run_id: str) -> TurnInfo:
-    return TurnInfo(run_id=run_id, message_id=1, text="tidy up", metadata={})
+    return TurnInfo(
+        run_id=run_id, message_id=1, text="tidy up", metadata={}, conversation_id="c" * 32
+    )
 
 
 async def _footprint_count(real: Real) -> int:
@@ -110,7 +114,7 @@ async def test_snapshot_and_restore_hierarchical_project(real: Real) -> None:
     assert project.pcb_file is not None
     replace_with_kicad_file(project.pcb_file, next(ECC83.glob("*.kicad_pcb")))
 
-    await restore_snapshot(real.svc, project, snap.id)
+    await restore_snapshot(real.svc, project, snap.id, conversation_id=TEST_CID)
 
     assert compute_hashes(project) == original
     assert await _footprint_count(real) == count

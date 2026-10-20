@@ -15,6 +15,9 @@ export const ChangeRun = z.object({
   erc: z.object({ errors: z.number().int().nonnegative(), warnings: z.number().int().nonnegative(), resultId: z.string() }).nullable(),
   snapshotId: z.string().nullable(),
   createdAt: z.string().nullable(),
+  /** The conversation (session) of the run (C1); null for runs before sessions existed. */
+  conversationId: z.string().nullable().optional(),
+  conversationTitle: z.string().nullable().optional(),
 });
 export type ChangeRun = z.infer<typeof ChangeRun>;
 

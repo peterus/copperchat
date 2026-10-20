@@ -77,15 +77,18 @@ def _check_writable(svc: HistoryService, project: Project) -> None:
         raise ReadOnlyProject("project is open in KiCad; close it there before restoring")
 
 
-async def _reload(svc: HistoryService, project: Project, engine: Any) -> None:
+async def _reload(
+    svc: HistoryService, project: Project, engine: Any, conversation_id: str | None
+) -> None:
     """Reopen the project on the files now on disk. A failure is reported, not raised:
     the restore itself already happened (or failed with its own error)."""
     try:
         fresh = await svc.sessions.reopen(project)
     except Exception as exc:
         log.warning("reopen after restore failed: %s", exc)
-        if engine is not None:
+        if engine is not None and conversation_id is not None:
             await engine.post_error(
+                conversation_id,
                 f"KiCad could not load the restored files ({exc}). Reopen the project.",
                 {"code": "kicad_restart_failed"},
             )
@@ -101,12 +104,15 @@ async def restore_snapshot(
     project: Project,
     snapshot_id: str,
     *,
+    conversation_id: str | None,
     check_busy: bool = True,
     notice: str | None = None,
 ) -> Snapshot:
     """`check_busy=False`/`notice`: the automatic restore at the end of a turn whose
     edit could not be undone exactly (HistoryHooks); the turn is ending, so the agent
-    being busy is expected there."""
+    being busy is expected there. The restore notice goes to `conversation_id` (the
+    session the user restored from, already ownership-checked by the caller); the agent
+    note is broadcast to every open session (spec §5.3)."""
     store = svc.store(project)
     snap = await store.get(snapshot_id)
     engine = svc.runtime.get(project.id)
@@ -123,15 +129,17 @@ async def restore_snapshot(
             await svc.hashes.replace(project.id, await compute_hashes_async(project))
         except BaseException:
             if session is not None:  # never leave the closed session as the current one
-                await _reload(svc, project, engine)
+                await _reload(svc, project, engine, conversation_id)
             raise
         # The files are restored from here on, even if KiCad fails to start below.
-        if engine is not None:
+        if engine is not None and conversation_id is not None:
             await engine.post_notice(
+                conversation_id,
                 notice
                 or f"Restored the design to the snapshot from {snap.created_at} ({snap.label}).",
                 {"action": "restored", "snapshotId": snap.id},
             )
+        if engine is not None:
             who = "CopperChat" if notice else "The user"
             engine.add_agent_note(
                 f"{who} restored snapshot {snap.id} ({snap.label}). Design data from "
@@ -140,5 +148,5 @@ async def restore_snapshot(
             )
         if session is not None:
             # A project that is not open needs no reload: opening it reads the files.
-            await _reload(svc, project, engine)
+            await _reload(svc, project, engine, conversation_id)
     return snap

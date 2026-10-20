@@ -17,6 +17,7 @@ from copperchat.agent.protocol import (
 )
 
 FIXTURES = Path(__file__).resolve().parents[4] / "protocol-fixtures"
+CID = "0123456789abcdef0123456789abcdef"
 ADAPTERS = {"c2s": client_frame_adapter, "s2c": server_frame_adapter}
 
 
@@ -47,10 +48,13 @@ def test_every_frame_type_has_a_fixture() -> None:
 
 
 def test_delta_omits_absent_patches_and_pong_keeps_null_project() -> None:
-    delta = MessageDeltaFrame(project_id="a1b2c3d4e5f6", message_id=3, content_delta="x")
+    delta = MessageDeltaFrame(
+        project_id="a1b2c3d4e5f6", conversation_id=CID, message_id=3, content_delta="x"
+    )
     assert json.loads(dump_frame(delta)) == {
         "type": "message-delta",
         "projectId": "a1b2c3d4e5f6",
+        "conversationId": CID,
         "messageId": 3,
         "contentDelta": "x",
     }
@@ -59,4 +63,11 @@ def test_delta_omits_absent_patches_and_pong_keeps_null_project() -> None:
 
 def test_delta_requires_a_patch() -> None:
     with pytest.raises(ValidationError):
-        MessageDeltaFrame(project_id="a1b2c3d4e5f6", message_id=3)
+        MessageDeltaFrame(project_id="a1b2c3d4e5f6", conversation_id=CID, message_id=3)
+
+
+@pytest.mark.parametrize("ftype", ["send", "subscribe", "interrupt"])
+def test_conversation_frames_require_conversation_id(ftype: str) -> None:
+    spec = json.loads((FIXTURES / f"{ftype}.json").read_text())
+    missing = [f for f in spec["invalid"] if "conversationId" not in f]
+    assert missing, f"{ftype} needs an invalid case without conversationId"

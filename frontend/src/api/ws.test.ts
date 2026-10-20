@@ -4,7 +4,8 @@ import { backoffDelay, createWsClient, type ConnectionState } from './ws';
 
 // Project ids are 12 lowercase hex chars on the wire (backend ProjectId).
 const P1 = 'a1b2c3d4e5f6';
-const runStarted = { type: 'run-started', projectId: P1, runId: 'r1' };
+const C1 = '0123456789abcdef0123456789abcdef';
+const runStarted = { type: 'run-started', projectId: P1, conversationId: C1, runId: 'r1' };
 
 function setVisibility(state: 'visible' | 'hidden') {
   Object.defineProperty(document, 'visibilityState', { value: state, configurable: true });
@@ -51,9 +52,9 @@ describe('ws client', () => {
   it('queues outgoing frames until open and flushes after notifying open listeners', () => {
     const client = createWsClient({ url: () => 'ws://test/api/ws' });
     client.onConnection((state) => {
-      if (state === 'open') client.send({ type: 'subscribe', projectId: P1, sinceMessageId: 7 });
+      if (state === 'open') client.send({ type: 'subscribe', projectId: P1, conversationId: C1, sinceMessageId: 7 });
     });
-    client.send({ type: 'interrupt', projectId: P1, runId: null });
+    client.send({ type: 'interrupt', projectId: P1, conversationId: C1, runId: null });
     const ws = FakeWebSocket.latest();
     expect(ws.sent).toEqual([]);
     ws.serverOpen();
@@ -63,7 +64,7 @@ describe('ws client', () => {
 
   it('rejects invalid outgoing frames', () => {
     const client = createWsClient({ url: () => 'ws://test/api/ws' });
-    expect(() => client.send({ type: 'subscribe', projectId: '', sinceMessageId: 0 })).toThrow();
+    expect(() => client.send({ type: 'subscribe', projectId: '', conversationId: C1, sinceMessageId: 0 })).toThrow();
     client.close();
   });
 
@@ -80,7 +81,7 @@ describe('ws client', () => {
       throw new Error('bad frame listener');
     });
     client.onFrame((f) => frames.push(f));
-    client.send({ type: 'interrupt', projectId: P1, runId: null });
+    client.send({ type: 'interrupt', projectId: P1, conversationId: C1, runId: null });
     const ws = FakeWebSocket.latest();
     expect(() => ws.serverOpen()).not.toThrow();
     expect(states).toEqual(['open']);
@@ -199,7 +200,7 @@ describe('ws client', () => {
       expect(states).toEqual(['open', 'closed', 'unauthorized']);
       expect(client.isOpen()).toBe(false);
       // A send while logged out must neither reconnect nor be replayed after the next login.
-      client.send({ type: 'interrupt', projectId: P1, runId: null });
+      client.send({ type: 'interrupt', projectId: P1, conversationId: C1, runId: null });
       expect(warn).toHaveBeenCalled();
       vi.advanceTimersByTime(60_000);
       setVisibility('visible');

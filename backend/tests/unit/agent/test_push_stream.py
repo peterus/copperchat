@@ -6,7 +6,12 @@ from copperchat.agent.push_stream import PushStream
 
 
 def item(i: int) -> QueuedItem:
-    return QueuedItem(message_id=i, client_message_id=f"c{i}", text=f"m{i}")
+    return QueuedItem(
+        message_id=i,
+        client_message_id=f"c{i}",
+        conversation_id="c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+        text=f"m{i}",
+    )
 
 
 async def _next(it, timeout: float = 0.2):  # type: ignore[no-untyped-def]
@@ -80,3 +85,21 @@ async def test_close_request_wakes_waiting_consumer():
         raise AssertionError("expected end of stream")
     except StopAsyncIteration:
         pass
+
+
+async def test_seal_ends_after_drain_and_refuses_pushes():
+    s: PushStream[QueuedItem] = PushStream("c" * 32)
+    assert s.conversation_id == "c" * 32
+    s.push(item(1))
+    s.seal()
+    assert s.sealed and s.push(item(2)) is False, "a sealed stream never reopens"
+    it = aiter(s)
+    assert (await _next(it)).message_id == 1
+    s.release_next()
+    try:
+        await _next(it)
+    except StopAsyncIteration:
+        pass
+    else:
+        raise AssertionError("a sealed stream ends once drained")
+    assert s.closed

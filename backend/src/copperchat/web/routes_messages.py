@@ -1,16 +1,12 @@
-"""Chat history paging and tool image download."""
+"""Tool image download (message pages are per conversation: routes_conversations)."""
 
 from __future__ import annotations
 
 import re
-from typing import Any
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse
 
-from copperchat.agent.engine import RunEngine
-from copperchat.agent.protocol import MessageDTO
-from copperchat.db.repos.messages import MessageRepo
 from copperchat.errors import CopperChatError
 from copperchat.projects import agent_dir, get_project
 from copperchat.web.auth import CurrentUser
@@ -23,26 +19,6 @@ _IMAGE_NAME = re.compile(r"^[0-9a-f]{32}\.(png|jpg|webp|bin)$")
 class ImageNotFound(CopperChatError):
     code = "not_found"
     http_status = 404
-
-
-@router.get("/{project_id}/messages")
-async def list_messages(
-    project_id: str,
-    request: Request,
-    _: CurrentUser,
-    limit: int = Query(50, ge=1, le=200),
-    before: int | None = Query(None, ge=1),
-) -> dict[str, Any]:
-    state = request.app.state
-    project = get_project(state.settings.projects_root, project_id)
-    rows, has_more = await MessageRepo(state.db).page(project.id, limit=limit, before=before)
-    # The engine (if any) overlays the live content of a row that is still streaming.
-    engine: RunEngine | None = state.agent_runtime.get(project.id)
-    dtos = [engine.to_dto(r) if engine else MessageDTO.model_validate(r.to_wire()) for r in rows]
-    return {
-        "messages": [d.model_dump(mode="json", by_alias=True) for d in dtos],
-        "hasMore": has_more,
-    }
 
 
 @router.get("/{project_id}/images/{name}")

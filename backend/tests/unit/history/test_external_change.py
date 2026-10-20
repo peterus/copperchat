@@ -19,6 +19,9 @@ async def test_external_change_reloads_session_and_posts_notice(opened: Opened) 
     assert meta == {"action": "external-change", "files": [rel]}
     assert "outside CopperChat" in text and "reloaded" in text
     assert env.engine.notes and rel in env.engine.notes[-1]
+    # Notice into the turn's session; the note about the shared design is broadcast.
+    assert env.engine.notice_conversations[-1] == turn().conversation_id
+    assert env.engine.note_conversations[-1] is None
     new = env.sessions.current()
     assert new is not None and new is not session and session.closed  # stale session gone
     assert env.server.starts == 2

@@ -8,6 +8,21 @@ import { fileURLToPath } from 'node:url';
 import { expect, type Page, test } from '@playwright/test';
 
 const PID = 'a1b2c3d4e5f6';
+const CID = '0123456789abcdef0123456789abcdef';
+const VERSION = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version;
+/** The project's one conversation (C1 interim default session). */
+const CONVERSATION = {
+  id: CID,
+  seq: 1,
+  title: 'Session 1',
+  type: 'free',
+  status: 'open',
+  archived: false,
+  createdAt: '2026-10-19T10:00:00.000Z',
+  lastMessageAt: null,
+  closedAt: null,
+  usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+};
 const FIXTURES = fileURLToPath(new URL('../../backend/tests/fixtures/projects/', import.meta.url));
 const PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
@@ -34,6 +49,8 @@ async function mockApi(page: Page, fx: Fixture) {
   const file = (name: string) => readFileSync(`${fx.root ?? FIXTURES}${fx.dir}/${name}`);
   const bytes = Object.fromEntries([...fx.sch, ...fx.pcb].map((n) => [n, fx.bytes?.[n] ?? file(n).length]));
   await page.route('**/api/auth/me', (r) => r.fulfill({ json: { username: 'admin' } }));
+  // the build-version check on every WS connect (UpdateBanner): same version, no banner
+  await page.route('**/api/health', (r) => r.fulfill({ json: { status: 'ok', version: VERSION, kicad: 'ok' } }));
   await page.route('**/api/projects', (r) =>
     r.fulfill({ json: [{ id: PID, name: fx.dir, relPath: `${fx.dir}/x.kicad_pro`, hasSch: true, hasPcb: fx.pcb.length > 0, locked: false }] }),
   );
@@ -42,7 +59,10 @@ async function mockApi(page: Page, fx: Fixture) {
       json: { id: PID, readOnly: false, lockFiles: [], kicadVersion: '10.99', viewFiles: { sch: fx.sch, pcb: fx.pcb }, viewBytes: bytes },
     }),
   );
-  await page.route(`**/api/projects/${PID}/messages**`, (r) => r.fulfill({ json: { messages: [], hasMore: false } }));
+  await page.route(new RegExp(`/api/projects/${PID}/conversations(\\?.*)?$`), (r) => r.fulfill({ json: [CONVERSATION] }));
+  await page.route(`**/api/projects/${PID}/conversations/${CID}/messages**`, (r) =>
+    r.fulfill({ json: { messages: [], hasMore: false } }),
+  );
   await page.route(`**/api/projects/${PID}/view/files/**`, (r) => {
     const name = decodeURIComponent(new URL(r.request().url()).pathname.split('/view/files/')[1] ?? '');
     return r.fulfill({ body: file(name), contentType: 'application/octet-stream' });

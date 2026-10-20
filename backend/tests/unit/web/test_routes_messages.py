@@ -9,6 +9,8 @@ from fastapi.testclient import TestClient
 from copperchat.agent.fake import Text, Wait
 from copperchat.web import ws as ws_module
 
+from .conftest import CID
+
 IMAGE = "0123456789abcdef0123456789abcdef.png"
 
 
@@ -26,13 +28,18 @@ def test_messages_page_has_more_before_and_live_overlay(build_chat_app: Any) -> 
         lambda item: [Text("Hel"), Wait(gate)] if item.text == "m3" else [Text("ok")]
     )
     with TestClient(app) as client, client.websocket_connect("/api/ws") as sock:
-        sock.send_text(json.dumps({"type": "subscribe", "projectId": pid, "sinceMessageId": 0}))
+        sock.send_text(
+            json.dumps(
+                {"type": "subscribe", "projectId": pid, "conversationId": CID, "sinceMessageId": 0}
+            )
+        )
         for i in (1, 2, 3):
             sock.send_text(
                 json.dumps(
                     {
                         "type": "send",
                         "projectId": pid,
+                        "conversationId": CID,
                         "clientMessageId": f"c{i}",
                         "text": f"m{i}",
                         "attachments": [],
@@ -41,19 +48,23 @@ def test_messages_page_has_more_before_and_live_overlay(build_chat_app: Any) -> 
             )
         while json.loads(sock.receive_text()).get("contentDelta") != "Hel":
             pass
-        page = client.get(f"/api/projects/{pid}/messages", params={"limit": 2}).json()
+        page = client.get(
+            f"/api/projects/{pid}/conversations/{CID}/messages", params={"limit": 2}
+        ).json()
         assert page["hasMore"] is True
         ids = [m["id"] for m in page["messages"]]
         assert ids == sorted(ids) and len(ids) == 2
         assert page["messages"][-1]["content"] == "Hel"  # live overlay of the streaming row
         assert page["messages"][-1]["status"] == "streaming"
         older = client.get(
-            f"/api/projects/{pid}/messages", params={"limit": 50, "before": ids[0]}
+            f"/api/projects/{pid}/conversations/{CID}/messages",
+            params={"limit": 50, "before": ids[0]},
         ).json()
         assert older["hasMore"] is False and all(m["id"] < ids[0] for m in older["messages"])
         assert set(older["messages"][0]) == {
             "id",
             "projectId",
+            "conversationId",
             "clientMessageId",
             "runId",
             "role",
@@ -64,26 +75,33 @@ def test_messages_page_has_more_before_and_live_overlay(build_chat_app: Any) -> 
             "createdAt",
         }
         client.portal.call(gate.set)
-        r = client.get(f"/api/projects/{pid}/messages", params={"limit": 0})
+        r = client.get(f"/api/projects/{pid}/conversations/{CID}/messages", params={"limit": 0})
         assert r.status_code == 422
-        assert client.get(f"/api/projects/{pid}/messages", params={"limit": 201}).status_code == 422
+        assert (
+            client.get(
+                f"/api/projects/{pid}/conversations/{CID}/messages", params={"limit": 201}
+            ).status_code
+            == 422
+        )
 
 
 def test_messages_without_engine_and_bad_project(build_chat_app: Any) -> None:
     app, pid = build_chat_app()
     with TestClient(app) as client:
-        page = client.get(f"/api/projects/{pid}/messages").json()
+        page = client.get(f"/api/projects/{pid}/conversations/{CID}/messages").json()
         assert page == {"messages": [], "hasMore": False}
         assert client.app.state.agent_runtime.get(pid) is None  # type: ignore[attr-defined]
-        r = client.get("/api/projects/0123456789ab/messages")
+        r = client.get(f"/api/projects/0123456789ab/conversations/{CID}/messages")
         assert r.status_code == 404 and r.json()["error"]["code"] == "project_not_found"
-        assert client.get("/api/projects/NOT-AN-ID/messages").status_code == 400
+        assert (
+            client.get(f"/api/projects/NOT-AN-ID/conversations/{CID}/messages").status_code == 400
+        )
 
 
 def test_messages_require_login(build_chat_app: Any) -> None:
     app, pid = build_chat_app(auth=True)
     with TestClient(app) as client:
-        assert client.get(f"/api/projects/{pid}/messages").status_code == 401
+        assert client.get(f"/api/projects/{pid}/conversations/{CID}/messages").status_code == 401
         assert client.get(f"/api/projects/{pid}/images/{IMAGE}").status_code == 401
 
 

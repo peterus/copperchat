@@ -3,11 +3,14 @@ import type { MessageDTO } from '@/protocol/frames';
 
 /** Default test project id (backend ids are 12 lowercase hex characters). */
 export const PID = 'a1b2c3d4e5f6';
+/** Default test conversation id (32 lowercase hex characters). */
+export const CID = '0123456789abcdef0123456789abcdef';
 
 export function row(id: number, overrides: Partial<MessageDTO> = {}): MessageDTO {
   return {
     id,
     projectId: PID,
+    conversationId: CID,
     clientMessageId: null,
     runId: null,
     role: 'assistant',
@@ -21,8 +24,9 @@ export function row(id: number, overrides: Partial<MessageDTO> = {}): MessageDTO
 }
 
 /**
- * Fake backend for GET /api/projects/{id}/messages, installed as global fetch. Mirrors
- * backend MessageRepo.page: the newest `limit` rows below `before`, ascending by id.
+ * Fake backend for GET /api/projects/{pid}/conversations/{cid}/messages, installed as global
+ * fetch. Mirrors backend MessageRepo.page: the conversation's newest `limit` rows below
+ * `before`, ascending by id.
  */
 export class FakeMessageServer {
   rows: MessageDTO[] = [];
@@ -59,12 +63,12 @@ export class FakeMessageServer {
       this.failNext -= 1;
       return new Response(JSON.stringify({ detail: 'boom' }), { status: 500, headers: { 'content-type': 'application/json' } });
     }
-    const match = url.pathname.match(/^\/api\/projects\/([^/]+)\/messages$/);
+    const match = url.pathname.match(/^\/api\/projects\/([^/]+)\/conversations\/([^/]+)\/messages$/);
     if (!match) return new Response(null, { status: 404 });
     const limit = Number(url.searchParams.get('limit') ?? '50');
     const before = url.searchParams.get('before');
     const eligible = this.rows
-      .filter((r) => r.projectId === match[1] && (before === null || r.id < Number(before)))
+      .filter((r) => r.projectId === match[1] && r.conversationId === match[2] && (before === null || r.id < Number(before)))
       .sort((a, b) => a.id - b.id);
     const body = { messages: eligible.slice(-limit), hasMore: eligible.length > limit };
     return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });

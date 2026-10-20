@@ -35,14 +35,30 @@ def test_startup_requires_credentials_unless_fake_agent(
         assert client.app.state.agent_runtime is not None  # type: ignore[attr-defined]
 
 
+def _conversation(client: TestClient, pid: str) -> str:
+    """The project's newest open session, created if there is none (the UI's shim)."""
+    listed = client.get(f"/api/projects/{pid}/conversations").json()
+    if listed:
+        return str(listed[0]["id"])
+    r = client.post(f"/api/projects/{pid}/conversations", json={"type": "free"})
+    assert r.status_code == 201
+    return str(r.json()["id"])
+
+
 def _round_trip(client: TestClient, pid: str, headers: dict[str, str]) -> list[dict[str, Any]]:
+    cid = _conversation(client, pid)
     with client.websocket_connect("/api/ws", headers=headers) as sock:
-        sock.send_text(json.dumps({"type": "subscribe", "projectId": pid, "sinceMessageId": 0}))
+        sock.send_text(
+            json.dumps(
+                {"type": "subscribe", "projectId": pid, "conversationId": cid, "sinceMessageId": 0}
+            )
+        )
         sock.send_text(
             json.dumps(
                 {
                     "type": "send",
                     "projectId": pid,
+                    "conversationId": cid,
                     "clientMessageId": "c1",
                     "text": "hello",
                     "attachments": [],
@@ -78,7 +94,8 @@ def test_cookie_authenticated_chat_round_trip(make_settings: Callable[..., Setti
         cookie = {"cookie": f"{COOKIE_NAME}={client.cookies.get(COOKIE_NAME)}"}
         seen = _round_trip(client, pid, cookie)
         assert any(f["type"] == "usage" for f in seen)
-        page = client.get(f"/api/projects/{pid}/messages").json()
+        cid = _conversation(client, pid)
+        page = client.get(f"/api/projects/{pid}/conversations/{cid}/messages").json()
         assert [m["role"] for m in page["messages"]] == ["user", "assistant"]
         assert page["messages"][1]["content"] == "You said: hello"
         assert client.post("/api/auth/logout").status_code == 204
@@ -115,9 +132,11 @@ def test_chat_routes_take_precedence_over_frontend(
     settings = make_settings(dev_fake_agent=True, frontend_dist=dist)
     pid = _demo(settings)
     with TestClient(create_app(settings)) as client:
-        assert client.get(f"/api/projects/{pid}/messages").status_code == 401
+        assert client.get(f"/api/projects/{pid}/conversations").status_code == 401
         client.post("/api/auth/login", json=GOOD)
-        assert client.get(f"/api/projects/{pid}/messages").json()["hasMore"] is False
+        cid = _conversation(client, pid)
+        page = client.get(f"/api/projects/{pid}/conversations/{cid}/messages").json()
+        assert page["hasMore"] is False
         cookie = {"cookie": f"{COOKIE_NAME}={client.cookies.get(COOKIE_NAME)}"}
         assert _round_trip(client, pid, cookie)[-1]["reason"] == "completed"
 
@@ -129,24 +148,28 @@ def test_queued_message_runs_after_restart_without_any_client(
     import time
 
     from copperchat.db import Database
+    from copperchat.db.repos.conversations import ConversationRepo
     from copperchat.db.repos.messages import MessageRepo
 
     settings = make_settings(dev_fake_agent=True)
     pid = _demo(settings)
     settings.data_dir.mkdir(parents=True, exist_ok=True)
 
-    async def seed() -> int:
+    async def seed() -> tuple[str, int]:
         db = await Database.open(settings.data_dir / "copperchat.db")
-        row, _ = await MessageRepo(db).insert_user(pid, "c1", "left over")
+        cid = (await ConversationRepo(db).create(pid, "free", None)).id
+        row, _ = await MessageRepo(db).insert_user(pid, cid, "c1", "left over")
         await db.close()
-        return row.id
+        return cid, row.id
 
-    mid = asyncio.run(seed())
+    cid, mid = asyncio.run(seed())
     with TestClient(create_app(settings)) as client:
         client.post("/api/auth/login", json=GOOD)
         deadline = time.monotonic() + 3
         while True:
-            rows = client.get(f"/api/projects/{pid}/messages").json()["messages"]
+            rows = client.get(f"/api/projects/{pid}/conversations/{cid}/messages").json()[
+                "messages"
+            ]
             if [r["status"] for r in rows] == ["done", "done"]:
                 break
             assert time.monotonic() < deadline, rows

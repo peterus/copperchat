@@ -91,7 +91,8 @@ export function PlanCard({ projectId, planId }: { projectId: string; planId: str
   const pending = usePlans((s) => s.pending[planId]);
   const error = usePlans((s) => s.errors[planId]);
   const chat = useContext(ChatStoreContext);
-  const runActive = chat((s) => s.chats[projectId]?.runActive ?? false);
+  // Project-level: the plan's run may be shown in another conversation than the one running.
+  const runActive = chat((s) => s.activeRuns[projectId] !== undefined);
   const [confirm, setConfirm] = useState(false);
 
   useEffect(() => {
@@ -163,7 +164,7 @@ export function PlanCard({ projectId, planId }: { projectId: string; planId: str
           <button
             type="button"
             disabled={!runActive}
-            onClick={() => chat.getState().stop(projectId)}
+            onClick={() => chat.getState().stop(projectId, plan.conversationId)}
             className={DANGER}
           >
             Stop

@@ -2,7 +2,7 @@ import { GitBranch } from 'lucide-react';
 import { useCallback, useState } from 'react';
 import { apiGet } from '@/api/http';
 import { errorText } from '@/components/history/restore';
-import { useChat } from '@/hooks/useChat';
+import { useActiveRun, useChat, useCurrentConversationId } from '@/hooks/useChat';
 import { registerPanel } from '@/layouts/panels';
 import { useReloadAfterRun } from './useReloadAfterRun';
 
@@ -27,7 +27,9 @@ export function commitRequestText(message: string): string {
 }
 
 export function GitPanel({ projectId }: { projectId: string }) {
-  const { runActive, send } = useChat(projectId);
+  // The commit request goes to the conversation shown; any run of the project blocks it.
+  const { send } = useChat(projectId, useCurrentConversationId(projectId));
+  const runActive = useActiveRun(projectId) !== null;
   const [status, setStatus] = useState<GitStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState('');

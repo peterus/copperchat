@@ -10,6 +10,7 @@ import { FakeWsClient } from '@/test/fakeWsClient';
 import { ARM_MS, PlanCard } from './PlanCard';
 
 const PID = 'a1b2c3d4e5f6';
+const CID = '0123456789abcdef0123456789abcdef';
 const PLAN = 'p'.repeat(32);
 const CP1 = 'c'.repeat(32);
 
@@ -31,6 +32,7 @@ const step = (idx: number, over: Partial<PlanStepDTO> = {}): PlanStepDTO => ({
 const plan = (over: Partial<PlanDTO> = {}): PlanDTO => ({
   id: PLAN,
   projectId: PID,
+  conversationId: CID,
   title: 'Add a status LED',
   summary: 'Place R and LED, connect to GPIO2.',
   status: 'proposed',
@@ -101,14 +103,14 @@ describe('PlanCard', () => {
       plan({ status: 'running', steps: [step(1, { status: 'done', changeCount: 2, checkpointId: CP1 }), step(2, { status: 'running' })] }),
     );
     await act(async () => {
-      await chat.getState().open(PID);
-      ws.emit({ type: 'run-started', projectId: PID, runId: 'r1' });
+      await chat.getState().open(PID, CID);
+      ws.emit({ type: 'run-started', projectId: PID, conversationId: CID, runId: 'r1' });
     });
     const items = await screen.findAllByRole('listitem');
     expect(within(items[0]!).getByText('Done')).toBeInTheDocument();
     expect(within(items[1]!).getByText('Running')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
-    expect(ws.framesOfType('interrupt')).toEqual([{ type: 'interrupt', projectId: PID, runId: 'r1' }]);
+    expect(ws.framesOfType('interrupt')).toEqual([{ type: 'interrupt', projectId: PID, conversationId: CID, runId: 'r1' }]);
     expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
   });
 

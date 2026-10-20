@@ -23,6 +23,7 @@ from copperchat.plans.model import Plan
 from copperchat.plans.service import PlanService
 from copperchat.projects import Project
 from copperchat.tools import ToolContext, ToolResult, ToolSpec, edit_spec
+from tests.support.conversations import TEST_CID, ensure_test_conversation
 from tests.support.history import FakeEngine, FakeRuntime, RecordingBroadcaster
 
 PID = "a1b2c3d4e5f6"
@@ -50,6 +51,7 @@ def make_plan(expected: tuple[int, ...] = (10, 5), plan_id: str = "f" * 32) -> P
         summary="R + LED",
         steps=machine.build_steps(plan_id, [step_spec(f"s{i}", e) for i, e in enumerate(expected)]),
         run_id="run0",
+        conversation_id=TEST_CID,
         now=NOW,
     )
 
@@ -159,6 +161,7 @@ class Harness:
 @pytest.fixture
 async def db(tmp_path: Path) -> AsyncIterator[Database]:
     database = await Database.open(tmp_path / "db.sqlite")
+    await ensure_test_conversation(database)
     yield database
     await database.close()
 

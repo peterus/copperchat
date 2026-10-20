@@ -1,13 +1,18 @@
 /// <reference types="vitest/config" />
+import { readFileSync } from 'node:fs';
 import { fileURLToPath, URL } from 'node:url';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 
 const backend = process.env.COPPERCHAT_BACKEND ?? 'http://localhost:8080';
+// The build version (UpdateBanner): frontend/package.json, since the Docker frontend stage has no
+// backend files; scripts/check-docs.sh keeps it equal to the backend version.
+const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string };
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  define: { __COPPERCHAT_VERSION__: JSON.stringify(pkg.version) },
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),

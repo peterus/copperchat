@@ -236,7 +236,7 @@ async def test_chained_hooks_call_in_order_and_propagate_first_error() -> None:
             if self.fail:
                 raise RuntimeError(self.name)
 
-    turn = TurnInfo(run_id="r", message_id=1, text="t", metadata={})
+    turn = TurnInfo(run_id="r", message_id=1, text="t", metadata={}, conversation_id="c" * 32)
     chain = ChainedHooks([Hook("a"), Hook("b", fail=True), Hook("c", fail=True)])
     with pytest.raises(RuntimeError, match=r"^b$"):
         await chain.on_first_mutation(turn)

@@ -199,15 +199,33 @@ class PlanService:
     def _engine(self, project_id: str) -> Any | None:
         return self.runtime.get(project_id) if self.runtime is not None else None
 
-    async def _notice(self, project_id: str, text: str, meta: dict[str, Any]) -> None:
-        engine = self._engine(project_id)
+    async def _notice(self, plan: Plan, text: str, meta: dict[str, Any]) -> None:
+        """Plan notices go to the session that owns the plan (spec §5.3)."""
+        engine = self._engine(plan.project_id)
         if engine is not None:
-            await engine.post_notice(text, meta)
+            await engine.post_notice(plan.conversation_id, text, meta)
 
-    def _note(self, project_id: str, text: str) -> None:
-        engine = self._engine(project_id)
+    async def _error(self, plan: Plan, text: str, meta: dict[str, Any]) -> None:
+        engine = self._engine(plan.project_id)
         if engine is not None:
-            engine.add_agent_note(text)
+            await engine.post_error(plan.conversation_id, text, meta)
+
+    def _note(self, plan: Plan, text: str) -> None:
+        engine = self._engine(plan.project_id)
+        if engine is not None:
+            engine.add_agent_note(text, conversation_id=plan.conversation_id)
+
+    async def _proposing_conversation(self, ctx: ToolContext) -> str:
+        """The session of the proposing turn: its run row, else the engine's turn."""
+        cid = await self.repo.run_conversation(str(ctx.run_id))
+        if cid is None:
+            engine = self._engine(ctx.project.id)
+            cid = getattr(engine, "current_conversation_id", None)
+        if cid is None:
+            raise StructuredToolError(
+                "Plans need an agent turn", "there is no agent turn", "Call it during a turn."
+            )
+        return str(cid)
 
     @staticmethod
     def clear_step(state: EditTurnState) -> None:
@@ -243,6 +261,7 @@ class PlanService:
         summary = _text(summary, "summary", SUMMARY_MAX)
         specs = validate_steps(steps)
         pid = ctx.project.id
+        conversation_id = await self._proposing_conversation(ctx)
         async with self.lock(pid):
             if await self.repo.open_status(pid) is not None:
                 raise PlanStateError(
@@ -260,12 +279,13 @@ class PlanService:
                 summary=summary,
                 steps=machine.build_steps(plan_id, specs),
                 run_id=str(ctx.run_id),
+                conversation_id=conversation_id,
                 now=utcnow_iso(),
             )
             await self.repo.insert(plan)
         await self._publish(plan)
         await self._notice(
-            pid,
+            plan,
             f"The agent proposed a plan with {len(plan.steps)} step(s). Approve or reject it.",
             {"action": "plan", "planId": plan.id},
         )
@@ -287,7 +307,7 @@ class PlanService:
             )
             await self._save(new)
         await self._notice(
-            pid,
+            new,
             f"The agent revised the plan (revision {new.revision}). Approve or reject it.",
             # The reason is agent-authored text: data for the plan card, not system voice.
             {
@@ -535,13 +555,12 @@ class PlanService:
         new = machine.with_step(new, step.idx, erc_result_id=rid)
         await self._save(new)
         self.clear_step(state)
-        engine = self._engine(pid)
-        if engine is not None:
-            await engine.post_error(
-                f"Plan paused at step {step.idx}: new ERC errors were neither fixed nor "
-                "justified. Review the step and resume, roll back or abort the plan.",
-                {"code": "plan_needs_attention", "planId": plan.id, "ercResultId": rid},
-            )
+        await self._error(
+            plan,
+            f"Plan paused at step {step.idx}: new ERC errors were neither fixed nor "
+            "justified. Review the step and resume, roll back or abort the plan.",
+            {"code": "plan_needs_attention", "planId": plan.id, "ercResultId": rid},
+        )
         details["plan_paused"] = True
         raise StructuredToolError(
             f"Plan paused: step {step.idx} still has unexplained new ERC errors",
@@ -564,14 +583,14 @@ class PlanService:
             await self._save(new)
         if ctx.run_id is not None:
             self.clear_step(self.editing.turn(pid, ctx.run_id))
-        engine = self._engine(pid)
-        if engine is not None:  # spec §7.2: a failed step pushes "needs attention"
-            idx = plan.running_step.idx if plan.running_step is not None else "?"
-            await engine.post_error(
-                f"Plan paused at step {idx}: {failure}. Review it and resume, roll back or "
-                "abort the plan.",
-                {"code": "plan_needs_attention", "planId": plan.id, "reason": reason},
-            )
+        # Spec §7.2: a failed step pushes "needs attention".
+        idx = plan.running_step.idx if plan.running_step is not None else "?"
+        await self._error(
+            plan,
+            f"Plan paused at step {idx}: {failure}. Review it and resume, roll back or "
+            "abort the plan.",
+            {"code": "plan_needs_attention", "planId": plan.id, "reason": reason},
+        )
         return new
 
     # ---- pauses (turn end, startup, external change)
@@ -613,7 +632,9 @@ class PlanService:
             reason, step_status = "turn_ended", "interrupted"
         await self.pause(project, reason, step_status)
         if engine is not None:
+            plan = await self.repo.get(project.id, st[0])
             await engine.post_notice(
+                plan.conversation_id,
                 f"The plan is paused ({reason.replace('_', ' ')}). Resume it to continue, "
                 "roll back to a finished step or abort it.",
                 {"action": "plan-paused", "planId": st[0], "reason": reason},
@@ -640,13 +661,13 @@ class PlanService:
             new = machine.transition(plan, "external_change", now=utcnow_iso())
             await self._save(new)
         await self._notice(
-            project.id,
+            plan,
             "The plan is paused: its base changed because design files were changed outside "
             "CopperChat. Resume, roll back or abort it.",
             {"action": "plan-paused", "planId": plan.id, "reason": "external_change"},
         )
         self._note(
-            project.id,
+            plan,
             f"Plan {plan.id} is paused because the design files changed outside CopperChat; "
             "the state it was planned on is gone. Do not continue it until the user resumes it.",
         )
@@ -654,7 +675,9 @@ class PlanService:
     # ---- REST events (E-C12)
     async def _submit(self, project: Project, plan: Plan, event: str, text: str) -> None:
         engine = await self.runtime.ensure(project)
+        # Approve and Resume run in the session that owns the plan (spec §5.4).
         await engine.submit_ex(
+            plan.conversation_id,
             f"plan-{plan.id}-{event}-{plan.revision}-{plan.event_seq}",
             text,
             [],
@@ -700,11 +723,14 @@ class PlanService:
         kept = "" if event == "reject" else " The design is kept as it is."
         engine = await self.runtime.ensure(project)
         await engine.post_notice(
-            f"The user {word} the plan.{kept}", {"action": f"plan-{word}", "planId": new.id}
+            new.conversation_id,
+            f"The user {word} the plan.{kept}",
+            {"action": f"plan-{word}", "planId": new.id},
         )
         engine.add_agent_note(
             f"The user {word} plan {new.id}; it is closed.{kept} Ask the user how to "
-            "continue before proposing another plan."
+            "continue before proposing another plan.",
+            conversation_id=new.conversation_id,
         )
         return new
 
@@ -745,7 +771,9 @@ class PlanService:
             if target is not None:
                 if self.history is None:
                     raise CopperChatError("history is not available")
-                await restore_snapshot(self.history, project, target)
+                await restore_snapshot(
+                    self.history, project, target, conversation_id=plan.conversation_id
+                )
             await self._save(new)
         return new
 

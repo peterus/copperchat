@@ -14,7 +14,7 @@ from copperchat.agent.fake import Emit, Finish, Text, Wait
 from copperchat.agent.protocol import PongFrame
 from copperchat.web import ws as ws_module
 
-from .conftest import OTHER_PID
+from .conftest import CID, OTHER_CID, OTHER_PID
 
 
 @pytest.fixture(autouse=True)
@@ -49,7 +49,15 @@ def test_ping_pong_and_invalid_frames(build_chat_app: Any) -> None:
         err = json.loads(sock.receive_text())
         assert err["type"] == "error" and err["projectId"] is None
         assert err["code"] == "invalid_frame"
-        send(sock, type="send", projectId=pid, clientMessageId="c", text="", attachments=[])
+        send(
+            sock,
+            type="send",
+            projectId=pid,
+            conversationId=CID,
+            clientMessageId="c",
+            text="",
+            attachments=[],
+        )
         err2 = json.loads(sock.receive_text())
         assert err2["projectId"] == pid and err2["code"] == "invalid_frame"
         assert err2["clientMessageId"] == "c"
@@ -63,7 +71,7 @@ def test_ping_pong_and_invalid_frames(build_chat_app: Any) -> None:
 def test_unknown_project_is_an_error_frame(build_chat_app: Any) -> None:
     app, _ = build_chat_app()
     with TestClient(app) as client, client.websocket_connect("/api/ws") as sock:
-        send(sock, type="subscribe", projectId="0123456789ab", sinceMessageId=0)
+        send(sock, type="subscribe", projectId="0123456789ab", conversationId=CID, sinceMessageId=0)
         err = json.loads(sock.receive_text())
         assert err["type"] == "error" and err["code"] == "project_not_found"
         assert err["projectId"] == "0123456789ab"
@@ -74,8 +82,16 @@ def test_unknown_project_is_an_error_frame(build_chat_app: Any) -> None:
 def test_subscribe_send_streams_and_every_frame_has_project_id(build_chat_app: Any) -> None:
     app, pid = build_chat_app()
     with TestClient(app) as client, client.websocket_connect("/api/ws") as sock:
-        send(sock, type="subscribe", projectId=pid, sinceMessageId=0)
-        send(sock, type="send", projectId=pid, clientMessageId="c1", text="hi", attachments=[])
+        send(sock, type="subscribe", projectId=pid, conversationId=CID, sinceMessageId=0)
+        send(
+            sock,
+            type="send",
+            projectId=pid,
+            conversationId=CID,
+            clientMessageId="c1",
+            text="hi",
+            attachments=[],
+        )
         frames = recv_until(sock, lambda f: f["type"] == "run-finished")
         assert all(f["projectId"] == pid for f in frames)
         assert frames[0]["type"] == "message" and frames[0]["message"]["status"] == "queued"
@@ -87,20 +103,44 @@ def test_subscribe_send_streams_and_every_frame_has_project_id(build_chat_app: A
 def test_one_connection_subscribes_to_several_projects(build_chat_app: Any) -> None:
     app, pid = build_chat_app()
     with TestClient(app) as client, client.websocket_connect("/api/ws") as sock:
-        send(sock, type="subscribe", projectId=pid, sinceMessageId=0)
-        send(sock, type="subscribe", projectId=OTHER_PID, sinceMessageId=0)
-        send(sock, type="send", projectId=pid, clientMessageId="a", text="one", attachments=[])
+        send(sock, type="subscribe", projectId=pid, conversationId=CID, sinceMessageId=0)
+        send(
+            sock, type="subscribe", projectId=OTHER_PID, conversationId=OTHER_CID, sinceMessageId=0
+        )
+        send(
+            sock,
+            type="send",
+            projectId=pid,
+            conversationId=CID,
+            clientMessageId="a",
+            text="one",
+            attachments=[],
+        )
         recv_until(sock, lambda f: f["type"] == "run-finished" and f["projectId"] == pid)
         send(
-            sock, type="send", projectId=OTHER_PID, clientMessageId="b", text="two", attachments=[]
+            sock,
+            type="send",
+            projectId=OTHER_PID,
+            conversationId=OTHER_CID,
+            clientMessageId="b",
+            text="two",
+            attachments=[],
         )
         frames = recv_until(
             sock, lambda f: f["type"] == "run-finished" and f["projectId"] == OTHER_PID
         )
         assert {f["projectId"] for f in frames} == {OTHER_PID}
         # Re-subscribing the same project replaces its subscription (no duplicate frames).
-        send(sock, type="subscribe", projectId=pid, sinceMessageId=10_000)
-        send(sock, type="send", projectId=pid, clientMessageId="c", text="x", attachments=[])
+        send(sock, type="subscribe", projectId=pid, conversationId=CID, sinceMessageId=10_000)
+        send(
+            sock,
+            type="send",
+            projectId=pid,
+            conversationId=CID,
+            clientMessageId="c",
+            text="x",
+            attachments=[],
+        )
         frames = recv_until(sock, lambda f: f["type"] == "run-finished")
         user_rows = [f for f in frames if f["type"] == "message" and f["message"]["role"] == "user"]
         assert len(user_rows) == 1
@@ -113,6 +153,7 @@ def test_unknown_attachment_is_an_error_frame(build_chat_app: Any) -> None:
             sock,
             type="send",
             projectId=pid,
+            conversationId=CID,
             clientMessageId="c9",
             text="x",
             attachments=[{"id": "up-9", "kind": "image", "name": "a.png"}],
@@ -131,11 +172,27 @@ def test_cancel_queued_and_interrupt(build_chat_app: Any) -> None:
     gate = asyncio.Event()
     app, pid = build_chat_app(lambda item: [Text("a"), Wait(gate), Text("b")])
     with TestClient(app) as client, client.websocket_connect("/api/ws") as sock:
-        send(sock, type="subscribe", projectId=pid, sinceMessageId=0)
-        send(sock, type="send", projectId=pid, clientMessageId="c1", text="m1", attachments=[])
+        send(sock, type="subscribe", projectId=pid, conversationId=CID, sinceMessageId=0)
+        send(
+            sock,
+            type="send",
+            projectId=pid,
+            conversationId=CID,
+            clientMessageId="c1",
+            text="m1",
+            attachments=[],
+        )
         started = recv_until(sock, lambda f: f["type"] == "run-started")
         first_id = started[0]["message"]["id"]
-        send(sock, type="send", projectId=pid, clientMessageId="c2", text="m2", attachments=[])
+        send(
+            sock,
+            type="send",
+            projectId=pid,
+            conversationId=CID,
+            clientMessageId="c2",
+            text="m2",
+            attachments=[],
+        )
         queued = recv_until(
             sock, lambda f: f["type"] == "message" and f["message"]["clientMessageId"] == "c2"
         )
@@ -147,7 +204,7 @@ def test_cancel_queued_and_interrupt(build_chat_app: Any) -> None:
         send(sock, type="cancel-queued", projectId=pid, messageId=first_id)
         err = recv_until(sock, lambda f: f["type"] == "error")[-1]
         assert err["code"] == "not_cancellable" and err["projectId"] == pid
-        send(sock, type="interrupt", projectId=pid, runId=started[-1]["runId"])
+        send(sock, type="interrupt", projectId=pid, conversationId=CID, runId=started[-1]["runId"])
         done = recv_until(sock, lambda f: f["type"] == "run-finished")[-1]
         assert done["reason"] == "interrupted"
 
@@ -157,11 +214,19 @@ def test_reconnect_mid_run_gets_half_streamed_row_then_deltas(build_chat_app: An
     app, pid = build_chat_app(lambda item: [Text("Hel"), Wait(gate), Text("lo")])
     with TestClient(app) as client:
         with client.websocket_connect("/api/ws") as first:
-            send(first, type="subscribe", projectId=pid, sinceMessageId=0)
-            send(first, type="send", projectId=pid, clientMessageId="c1", text="hi", attachments=[])
+            send(first, type="subscribe", projectId=pid, conversationId=CID, sinceMessageId=0)
+            send(
+                first,
+                type="send",
+                projectId=pid,
+                conversationId=CID,
+                clientMessageId="c1",
+                text="hi",
+                attachments=[],
+            )
             recv_until(first, lambda f: f.get("contentDelta") == "Hel")
         with client.websocket_connect("/api/ws") as second:
-            send(second, type="subscribe", projectId=pid, sinceMessageId=0)
+            send(second, type="subscribe", projectId=pid, conversationId=CID, sinceMessageId=0)
             replay = recv_until(second, lambda f: f["type"] == "run-started")
             rows = [f["message"] for f in replay if f["type"] == "message"]
             assistant = rows[-1]
@@ -184,11 +249,19 @@ def test_subscribe_while_parked_resends_rate_limited(build_chat_app: Any) -> Non
     )
     with TestClient(app) as client:
         with client.websocket_connect("/api/ws") as first:
-            send(first, type="subscribe", projectId=pid, sinceMessageId=0)
-            send(first, type="send", projectId=pid, clientMessageId="c1", text="hi", attachments=[])
+            send(first, type="subscribe", projectId=pid, conversationId=CID, sinceMessageId=0)
+            send(
+                first,
+                type="send",
+                projectId=pid,
+                conversationId=CID,
+                clientMessageId="c1",
+                text="hi",
+                attachments=[],
+            )
             recv_until(first, lambda f: f["type"] == "rate-limited")
         with client.websocket_connect("/api/ws") as second:
-            send(second, type="subscribe", projectId=pid, sinceMessageId=0)
+            send(second, type="subscribe", projectId=pid, conversationId=CID, sinceMessageId=0)
             frames = recv_until(second, lambda f: f["type"] == "rate-limited")
             assert frames[-1]["resetsAt"] == resets.isoformat()
             assert not any(f["type"] == "run-started" for f in frames)
@@ -338,6 +411,7 @@ async def test_failed_replay_drops_the_subscription() -> None:
     dto = MessageDTO(
         id=1,
         project_id=pid,
+        conversation_id=CID,
         client_message_id=None,
         run_id=None,
         role="user",
@@ -351,8 +425,8 @@ async def test_failed_replay_drops_the_subscription() -> None:
     class Engine:
         rate_limited_until = None
 
-        async def replay_and_subscribe(self, since: int) -> Any:
-            return [dto], broadcaster.subscribe(pid), None
+        async def replay_and_subscribe(self, cid: str, since: int) -> Any:
+            return [dto], broadcaster.subscribe(pid), None, None
 
     class Broken(_FakeSocket):
         async def send_text(self, text: str) -> None:
@@ -361,6 +435,13 @@ async def test_failed_replay_drops_the_subscription() -> None:
     sock = Broken()
     sock.app.state.agent_runtime = SimpleNamespace(get=lambda _pid: Engine())
     conn = ws_module._Connection(sock)  # type: ignore[arg-type]
+
+    async def owned(project_id: str, conversation_id: str) -> None:
+        return None
+
+    conn.owned = owned  # type: ignore[method-assign]
     with pytest.raises(ValueError):
-        await conn.subscribe(SubscribeFrame(project_id=pid, since_message_id=0))
+        await conn.subscribe(
+            SubscribeFrame(project_id=pid, conversation_id=CID, since_message_id=0)
+        )
     assert conn._subs == {} and broadcaster.subscriber_count(pid) == 0

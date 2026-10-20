@@ -15,16 +15,22 @@ class _HasMessageId(Protocol):
 
 
 class PushStream[T: _HasMessageId]:
-    def __init__(self) -> None:
+    """Bound to one conversation (spec §5.2): the engine pushes only that conversation's
+    items; a foreign item seals the stream instead."""
+
+    def __init__(self, conversation_id: str = "") -> None:
+        self.conversation_id = conversation_id
         self._queue: deque[T] = deque()
         self._closing = False
+        self._sealed = False
         self.closed = False
         self._released = True  # the first item of a burst needs no release
         self._wake = asyncio.Event()
 
     def push(self, item: T) -> bool:
-        """Enqueue; False if the generator already returned (caller starts a new burst)."""
-        if self.closed:
+        """Enqueue; False if the generator already returned (caller starts a new burst) or
+        the stream is sealed."""
+        if self.closed or self._sealed:
             return False
         self._queue.append(item)
         self._closing = False  # a fresh message cancels a pending close (reopen)
@@ -35,6 +41,16 @@ class PushStream[T: _HasMessageId]:
         """End the stream once the queue is empty and no push re-opened it."""
         self._closing = True
         self._wake.set()
+
+    def seal(self) -> None:
+        """Like request_close, but no push can reopen it: the stream ends once the items
+        already queued are drained."""
+        self._sealed = True
+        self.request_close()
+
+    @property
+    def sealed(self) -> bool:
+        return self._sealed
 
     def release_next(self) -> None:
         """Called by the engine after it processed the previous turn's TurnFinished."""

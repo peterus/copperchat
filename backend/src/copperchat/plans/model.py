@@ -68,6 +68,9 @@ class Plan:
     status: PlanStatus
     revision: int
     created_run_id: str
+    # The session that proposed the plan: it shows the card and receives Approve and
+    # Resume (spec §5.4).
+    conversation_id: str
     created_at: str
     updated_at: str
     steps: tuple[PlanStep, ...] = ()
@@ -146,6 +149,7 @@ def to_dto(plan: Plan, erc: dict[str, StepErc] | None = None) -> dict[str, Any]:
 
     return {
         "id": plan.id,
+        "conversationId": plan.conversation_id,
         "projectId": plan.project_id,
         "title": plan.title,
         "summary": plan.summary,

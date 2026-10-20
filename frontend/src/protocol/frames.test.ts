@@ -64,8 +64,8 @@ describe('frame schemas', () => {
     expect(ServerFrame.safeParse({ type: 'pong' }).success).toBe(false);
   });
   it('project ids are 12 lowercase hex characters like the backend', () => {
-    expect(ClientFrame.safeParse({ type: 'subscribe', projectId: 'a1b2c3d4e5f6', sinceMessageId: 0 }).success).toBe(true);
-    expect(ClientFrame.safeParse({ type: 'subscribe', projectId: 'p1', sinceMessageId: 0 }).success).toBe(false);
+    expect(ClientFrame.safeParse({ type: 'subscribe', projectId: 'a1b2c3d4e5f6', conversationId: 'c'.repeat(32), sinceMessageId: 0 }).success).toBe(true);
+    expect(ClientFrame.safeParse({ type: 'subscribe', projectId: 'p1', conversationId: 'c'.repeat(32), sinceMessageId: 0 }).success).toBe(false);
   });
 });
 

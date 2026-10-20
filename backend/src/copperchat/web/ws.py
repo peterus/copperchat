@@ -3,8 +3,12 @@ heartbeat (index contract C7).
 
 One connection may subscribe to several projects (the chat store re-subscribes every
 loaded chat after a reconnect); subscribing to a project again replaces that project's
-subscription. Close codes: 4401 unauthenticated, 4403 foreign Origin, 4408 slow
-subscriber dropped (the client reconnects and replays with ``sinceMessageId``).
+subscription. A subscription carries the live frames of all of the project's
+conversations; the replay is per conversation (spec §6.2). Every frame naming a
+``conversationId`` is checked against its ``projectId``: a mismatch is
+``conversation_not_found`` and nothing is bound or enqueued. Close codes: 4401
+unauthenticated, 4403 foreign Origin, 4408 slow subscriber dropped (the client
+reconnects and replays with ``sinceMessageId``).
 """
 
 from __future__ import annotations
@@ -41,6 +45,7 @@ from copperchat.agent.protocol import (
     client_frame_adapter,
     dump_frame,
 )
+from copperchat.db.repos.conversations import ConversationRepo
 from copperchat.errors import CopperChatError
 from copperchat.projects import get_project
 from copperchat.web import auth
@@ -160,19 +165,28 @@ class _Connection:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
 
+    async def owned(self, project_id: str, conversation_id: str) -> None:
+        """ConversationNotFound unless the conversation belongs to the project."""
+        await ConversationRepo(self.ws.app.state.db).get_for_project(project_id, conversation_id)
+
     async def subscribe(self, frame: SubscribeFrame) -> None:
         pid = frame.project_id
-        self._drop(pid)
         engine = await self.engine(pid)
+        await self.owned(pid, frame.conversation_id)  # before the old subscription is dropped
+        self._drop(pid)
         # Snapshot and subscription are atomic w.r.t. publishes: live frames queue up in
         # `sub` while the replay is sent and are forwarded afterwards (no gap/duplicate).
-        dtos, sub, run_id = await engine.replay_and_subscribe(frame.since_message_id)
+        dtos, sub, run_id, run_cid = await engine.replay_and_subscribe(
+            frame.conversation_id, frame.since_message_id
+        )
         self._subs[pid] = (sub, None)  # registered first: close() also covers a failed replay
         try:
             for dto in dtos:
                 await self.send(MessageFrame(project_id=pid, message=dto))
-            if run_id is not None:  # a reconnecting client keeps its Stop button
-                await self.send(RunStartedFrame(project_id=pid, run_id=run_id))
+            if run_id is not None and run_cid is not None:  # the client keeps its Stop button
+                await self.send(
+                    RunStartedFrame(project_id=pid, conversation_id=run_cid, run_id=run_id)
+                )
             resets_at = engine.rate_limited_until
             if resets_at is not None:  # parked: the client shows the countdown again
                 await self.send(RateLimitedFrame(project_id=pid, resets_at=resets_at.isoformat()))
@@ -260,9 +274,14 @@ class _Connection:
             await self.subscribe(frame)
         elif isinstance(frame, SendFrame):
             engine = await self.engine(frame.project_id)
-            await engine.submit(frame.client_message_id, frame.text, list(frame.attachments))
+            await self.owned(frame.project_id, frame.conversation_id)
+            await engine.submit(
+                frame.conversation_id, frame.client_message_id, frame.text, list(frame.attachments)
+            )
         elif isinstance(frame, InterruptFrame):
-            await (await self.engine(frame.project_id)).interrupt(frame.run_id)
+            engine = await self.engine(frame.project_id)
+            await self.owned(frame.project_id, frame.conversation_id)
+            await engine.interrupt(frame.run_id, frame.conversation_id)
         elif not await (await self.engine(frame.project_id)).cancel_queued(frame.message_id):
             await self.send(
                 ErrorFrame(

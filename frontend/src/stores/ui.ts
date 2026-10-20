@@ -26,7 +26,18 @@ function apply(resolved: ResolvedTheme): void {
   document.documentElement.dataset.theme = resolved;
 }
 
+/** A request to show a side panel (S-C8); ProjectLayout consumes it (clearPanelRequest). */
+export interface PanelRequest {
+  id: string;
+  params?: Record<string, string>;
+}
+
 interface UiState {
+  /** The pending openPanel() request, or null once ProjectLayout has opened it. */
+  panelRequest: PanelRequest | null;
+  /** Opens the registered panel `id` (desktop: sheet, phone: its tab), passing `params` as `PanelProps.params`. */
+  openPanel: (id: string, params?: Record<string, string>) => void;
+  clearPanelRequest: () => void;
   theme: ThemePref;
   /** What is actually shown; 6B passes it as the agent-view `theme=` parameter. */
   resolvedTheme: ResolvedTheme;
@@ -36,6 +47,9 @@ interface UiState {
 }
 
 export const useUi = create<UiState>()((set, get) => ({
+  panelRequest: null,
+  openPanel: (id, params) => set({ panelRequest: params ? { id, params } : { id } }),
+  clearPanelRequest: () => set({ panelRequest: null }),
   theme: readPref(),
   resolvedTheme: resolveTheme(readPref(), prefersDark()),
   setTheme: (theme) => {

@@ -105,6 +105,12 @@ class PushNotifier:
         )
         return None if row is None else (str(row["kind"]), str(row["content"]).strip())
 
+    async def _session_title(self, conversation_id: str) -> str | None:
+        row = await self.db.fetchone(
+            "SELECT title FROM conversations WHERE id = ?", (conversation_id,)
+        )
+        return None if row is None else str(row["title"])
+
     async def _plan_needs_attention(self, project_id: str, run_id: str) -> bool:
         """A plan was paused mid-run and needs the user (spec §11), even when agent text
         followed the error row."""
@@ -129,13 +135,14 @@ class PushNotifier:
             or await self._plan_needs_attention(f.project_id, f.run_id)
         )
         title = "needs your attention" if attention else "run finished"
+        session = await self._session_title(f.conversation_id)
         if text:
             body = _clip(text)
         elif f.reason == "error":
             body = "The run ended with an error."
         else:
             body = "Done."
-        await self._send(f.project_id, title, body, tag=f"run-{f.project_id}")
+        await self._send(f.project_id, title, body, tag=f"run-{f.project_id}", session=session)
 
     def schedule_reopen(self, project_id: str, resets_at: datetime) -> None:
         if self._closed:
@@ -161,12 +168,19 @@ class PushNotifier:
         task = asyncio.get_running_loop().create_task(fire())
         self._timers[project_id] = task
 
-    async def _send(self, project_id: str, title: str, body: str, *, tag: str) -> None:
+    async def _send(
+        self, project_id: str, title: str, body: str, *, tag: str, session: str | None = None
+    ) -> None:
+        """Title "<project>: <title>", or "<project> · <session>: <title>" for a run
+        (spec §6.3). The URL stays /p/{pid} until phase C2 adds the session route."""
         if self.visibility.any_visible():
             return
+        name = self.project_names(project_id)
+        if session:
+            name = f"{name} · {session}"
         await self.dispatcher.send_all(
             {
-                "title": f"{self.project_names(project_id)}: {title}",
+                "title": f"{name}: {title}",
                 "body": body,
                 "url": f"/p/{project_id}",
                 "tag": tag,

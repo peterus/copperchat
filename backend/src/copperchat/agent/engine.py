@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import logging
 import time
 import uuid
@@ -29,6 +30,8 @@ from copperchat.agent.events import (
 )
 from copperchat.agent.protocol import (
     AttachmentRef,
+    ConversationDTO,
+    ConversationUpdatedFrame,
     FinishReason,
     MessageDeltaFrame,
     MessageDTO,
@@ -44,10 +47,11 @@ from copperchat.agent.protocol import (
 from copperchat.agent.push_stream import PushStream
 from copperchat.agent.sdk_tools import SERVER_NAME
 from copperchat.config import Settings
-from copperchat.db import Database
-from copperchat.db.repos.agent_state import AgentSessionRepo, RateLimitRepo, RunRepo
+from copperchat.db import Database, utcnow_iso
+from copperchat.db.repos.agent_state import RateLimitRepo, RunRepo
+from copperchat.db.repos.conversations import ConversationRepo, ConversationRow
 from copperchat.db.repos.messages import MessageRepo, MessageRow
-from copperchat.errors import CopperChatError
+from copperchat.errors import ConversationClosed, ConversationNotFound, CopperChatError
 from copperchat.kicad_session import DocKind, KicadSessionManager, KicadUnavailable
 from copperchat.projects import Project, agent_dir
 from copperchat.tools import ImageBlock, ToolContext
@@ -61,6 +65,13 @@ _IMAGE_EXT = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
 # not bloat the chat.
 _SUB_INPUT_MAX = 2000
 _SUB_RESULT_MAX = 4000
+NOTICE_PREFIX = "[CopperChat notice]"
+# Broadcast agent notes kept for conversations that have not run a turn since (oldest
+# dropped first): they are about the shared design state, so only recent ones matter.
+_BROADCAST_KEEP = 100
+# Notes for one conversation wait for its next turn (an archived session may never have
+# one): only the newest are kept.
+_NOTES_KEEP = 20
 
 
 def _clip(value: Any) -> Any:
@@ -91,11 +102,16 @@ class TurnInfo:
     message_id: int
     text: str
     metadata: dict[str, Any]
+    conversation_id: str
 
 
 @dataclass(frozen=True)
 class TurnOutcome:
     reason: FinishReason
+    # The turn's conversation and the final status of the message that started it
+    # ('queued' again when the turn was parked by a rate limit) (S-C3).
+    conversation_id: str | None = None
+    message_status: str = "done"
     changed_docs: frozenset[DocKind] = frozenset()
     mutated: bool = False
     kicad_failed: bool = False
@@ -121,11 +137,24 @@ class RunHooks:
     async def on_turn_end(self, turn: TurnInfo, outcome: TurnOutcome) -> None:
         return None
 
+    async def before_model_input(self, turn: TurnInfo) -> list[str]:
+        """Extra notices for the model input of this turn (C5 context injection). Each
+        entry is one notice: it gets exactly one ``[CopperChat notice]`` prefix at its
+        start, even if it spans several lines. Never part of ``TurnInfo.text``."""
+        return []
+
+    async def on_items_failed(
+        self, conversation_id: str, message_ids: list[int], status: str
+    ) -> None:
+        """Waiting user messages of ``conversation_id`` ended without a turn: cancelled
+        (Stop, cancel-queued) or ``error`` (the backend could not start)."""
+        return None
+
 
 class ChainedHooks(RunHooks):
-    """Several hooks in order (history first, E-C5). A failing start/mutation hook stops
-    the chain and propagates (a failed snapshot must fail the tool call); turn-end hooks
-    all run, then the first error propagates."""
+    """Several hooks in order (history first, E-C5). A failing start/mutation/input hook
+    stops the chain and propagates (a failed snapshot must fail the tool call); turn-end
+    and items-failed hooks all run, then the first error propagates."""
 
     def __init__(self, hooks: list[RunHooks]) -> None:
         self.hooks = hooks
@@ -152,8 +181,42 @@ class ChainedHooks(RunHooks):
         if first is not None:
             raise first
 
+    async def before_model_input(self, turn: TurnInfo) -> list[str]:
+        out: list[str] = []
+        for h in self.hooks:
+            out.extend(await h.before_model_input(turn))
+        return out
 
-BackendFactory = Callable[[Callable[[], ToolContext]], AgentBackend]
+    async def on_items_failed(
+        self, conversation_id: str, message_ids: list[int], status: str
+    ) -> None:
+        first: Exception | None = None
+        for h in self.hooks:
+            try:
+                await h.on_items_failed(conversation_id, message_ids, status)
+            except Exception as exc:
+                first = first or exc
+        if first is not None:
+            raise first
+
+
+# (tool context factory, turn context = the running turn's run id) -> backend (S-C3).
+BackendFactory = Callable[[Callable[[], ToolContext], Callable[[], str | None]], AgentBackend]
+
+
+async def conversation_dto(repo: ConversationRepo, row: ConversationRow) -> ConversationDTO:
+    return ConversationDTO.model_validate(row.to_wire(await repo.usage_for(row.id)))
+
+
+async def publish_conversation(
+    broadcaster: Broadcaster, repo: ConversationRepo, row: ConversationRow
+) -> ConversationDTO:
+    """``conversation-updated`` for ``row`` (create, rename, archive, status, activity)."""
+    dto = await conversation_dto(repo, row)
+    await broadcaster.publish(
+        row.project_id, ConversationUpdatedFrame(project_id=row.project_id, conversation=dto)
+    )
+    return dto
 
 
 @dataclass
@@ -206,24 +269,34 @@ class RunEngine:
         self._sessions = sessions
         self._messages = MessageRepo(db)
         self._runs = RunRepo(db)
-        self._agent_sessions = AgentSessionRepo(db)
+        self._conversations = ConversationRepo(db)
         self._rate_limits = RateLimitRepo(db)
         self._flush_interval = flush_interval_s
         self._flush_chars = flush_chars
         self._grace = interrupt_grace_s
         self._lock = asyncio.Lock()  # serialises persist+publish against replay snapshots
         self._stream: PushStream[QueuedItem] | None = None
+        # Set by seal() until the burst owning that stream has ended: while set, every new
+        # item stays DB-queued so FIFO order across conversations holds (spec §5.2).
+        self._sealed_stream: PushStream[QueuedItem] | None = None
         self._burst: asyncio.Task[None] | None = None  # newest burst
         self._bursts: set[asyncio.Task[None]] = set()  # incl. ones still winding down
         self._turn: _Turn | None = None
         self._inflight: int | None = None  # pulled from the stream, turn not finished
+        self._inflight_cid: str | None = None  # its conversation (set with _inflight)
         self._live: dict[int, str] = {}  # streaming row id -> full content incl. unflushed
-        self._notes: list[str] = []
+        # Agent notes (spec §5.3): per conversation, plus broadcast notes about the shared
+        # design state that each conversation sees once, at its next turn.
+        self._notes: dict[str, list[str]] = {}
+        self._broadcast: list[tuple[int, str, str]] = []  # (id, created at, text)
+        self._broadcast_ids = itertools.count(1)
+        self._delivered: dict[str, set[int]] = {}
+        self._active: set[str] = set()  # conversations known to have messages
         self._interrupting = False
         self._closed = False
         self._resume_timer: asyncio.TimerHandle | None = None
         self._bg: set[asyncio.Task[Any]] = set()
-        self.backend: AgentBackend = backend_factory(self._make_ctx)
+        self.backend: AgentBackend = backend_factory(self._make_ctx, self.turn_context)
 
     # ---- public surface
     @property
@@ -237,6 +310,14 @@ class RunEngine:
     @property
     def current_run_id(self) -> str | None:
         return self._turn.info.run_id if self._turn else None
+
+    @property
+    def current_conversation_id(self) -> str | None:
+        return self._turn.info.conversation_id if self._turn else None
+
+    def turn_context(self) -> str | None:
+        """The running turn's run id; KiCad-less tool contexts carry it (S-C3)."""
+        return self.current_run_id
 
     async def start(self) -> None:
         await self._messages.finalize_streaming(self.pid)
@@ -261,18 +342,30 @@ class RunEngine:
             t.cancel()
 
     async def submit(
-        self, client_message_id: str, text: str, attachments: list[AttachmentRef]
+        self,
+        conversation_id: str,
+        client_message_id: str,
+        text: str,
+        attachments: list[AttachmentRef],
     ) -> MessageDTO:
-        dto, _ = await self.submit_ex(client_message_id, text, attachments)
+        dto, _ = await self.submit_ex(conversation_id, client_message_id, text, attachments)
         return dto
 
     async def submit_ex(
         self,
+        conversation_id: str,
         client_message_id: str,
         text: str,
         attachments: list[AttachmentRef],
         metadata: dict[str, Any] | None = None,
     ) -> tuple[MessageDTO, bool]:
+        """Queue a user message into ``conversation_id``. ConversationNotFound unless it is
+        one of this project's; ConversationClosed unless it is open (the close-session
+        handover turn may be sent while it is closing)."""
+        conv = await self._conversation(conversation_id)
+        origin = (metadata or {}).get("origin")
+        if conv.status != "open" and not (conv.status == "closing" and origin == "close-session"):
+            raise ConversationClosed(f"{conv.title} is {conv.status}; reopen it to continue")
         resolved: list[AttachmentRef] = []
         for att in attachments:
             found = await self.attachment_resolver(att)
@@ -284,23 +377,46 @@ class RunEngine:
         if attachments:
             meta["attachments"] = [a.model_dump(mode="json", by_alias=True) for a in attachments]
         async with self._lock:
-            row, created = await self._messages.insert_user(self.pid, client_message_id, text, meta)
+            first = await self._first_message(conversation_id)
+            row, created = await self._messages.insert_user(
+                self.pid, conversation_id, client_message_id, text, meta
+            )
             dto = self.to_dto(row)
             await self._publish(MessageFrame(project_id=self.pid, message=dto))
+            if created and first:
+                await self._publish_conversation(conversation_id)
             # Enqueue under the lock: _drive_queued scans under it too, so a 'queued' row
             # is always either in the stream, in flight, or not yet visible to the scan.
             if created and self.rate_limited_until is None:
                 self._enqueue(self._item(row))
         return dto, created
 
-    async def post_notice(self, text: str, metadata: dict[str, Any] | None = None) -> MessageDTO:
+    async def post_notice(
+        self, conversation_id: str, text: str, metadata: dict[str, Any] | None = None
+    ) -> MessageDTO:
+        await self._conversation(conversation_id)
         async with self._lock:
-            row = await self._insert(role="system", kind="notice", content=text, metadata=metadata)
+            row = await self._insert(
+                conversation_id=conversation_id,
+                role="system",
+                kind="notice",
+                content=text,
+                metadata=metadata,
+            )
         return self.to_dto(row)
 
-    async def post_error(self, text: str, metadata: dict[str, Any] | None = None) -> MessageDTO:
+    async def post_error(
+        self, conversation_id: str, text: str, metadata: dict[str, Any] | None = None
+    ) -> MessageDTO:
+        await self._conversation(conversation_id)
         async with self._lock:
-            row = await self._insert(role="system", kind="error", content=text, metadata=metadata)
+            row = await self._insert(
+                conversation_id=conversation_id,
+                role="system",
+                kind="error",
+                content=text,
+                metadata=metadata,
+            )
         return self.to_dto(row)
 
     async def cancel_queued(self, message_id: int) -> bool:
@@ -320,48 +436,74 @@ class RunEngine:
             # stream or waiting outside it (parked by a rate limit): both are cancellable.
             if self._stream is not None:
                 self._stream.drop(message_id)
-            await self._cancel_row(message_id)
-            return True
+            await self._cancel_row(message_id, row.conversation_id)
+        await self._items_failed(row.conversation_id, [message_id], "cancelled")
+        return True
 
-    async def interrupt(self, run_id: str | None) -> None:
-        """Stop: cancel every waiting message and end the running turn (C7).
+    async def interrupt(self, run_id: str | None, conversation_id: str | None = None) -> None:
+        """Stop: end the running turn and cancel the waiting messages of ONE conversation
+        (spec §5.2): the running turn's, else (between turns) ``conversation_id``, the
+        session the user pressed Stop for. Other conversations' messages stay queued.
 
         A Stop for an older run (``run_id`` no longer current) is ignored. If the backend
         does not end the interrupted turn within the grace period, the burst is cancelled
         (backstop); a message sent after the Stop is never hit by that backstop.
         """
-        current = self.current_run_id
-        if run_id is not None and current is not None and run_id != current:
-            return  # stale Stop for an older run
         async with self._lock:
+            # Decided under the lock: an item pulled from the stream is in flight before its
+            # turn (and run id) exists.
+            current = self.current_run_id
+            if (
+                run_id is not None
+                and run_id != current
+                and (current is not None or self._inflight is not None)
+            ):
+                return  # stale Stop for an older run
+            target_cid = self.current_conversation_id or conversation_id
             stream = self._stream
-            if stream is not None:
+            own = (
+                stream is not None
+                and target_cid is not None
+                and stream.conversation_id == target_cid
+            )
+            ids: list[int] = []
+            if own and stream is not None:
                 ids = stream.pending_ids()
                 for mid in ids:
                     stream.drop(mid)
-            else:
-                ids = [
+            if target_cid is not None:
+                # DB-queued rows of the conversation (sealed out of the stream, parked).
+                ids += [
                     r.id
                     for r in await self._messages.queued_user_rows(self.pid)
-                    if r.id != self._inflight
+                    if r.conversation_id == target_cid
+                    and r.id != self._inflight
+                    and r.id not in ids
                 ]
-            for mid in ids:
-                await self._cancel_row(mid)
-            target = self._inflight
+                for mid in ids:
+                    await self._cancel_row(mid, target_cid)
+            # Only the target conversation's item is interrupted: a Stop for B never hits
+            # A's item that is pulled but whose turn has not started yet.
+            target = self._inflight if self._inflight_cid == target_cid else None
             if target is not None:
                 self._interrupting = True
+            # Pulled but its turn not started: the backend has not seen the prompt, and
+            # _gated ends that turn without sending it.
+            unsent = target is not None and self._turn is None
+        # The interrupt goes out before the hook is awaited: a hook doing I/O must never
+        # let the stopped turn end and the next conversation's turn take its place.
         task = self._burst
-        if task is None or task.done():
-            return
-        if stream is not None:
-            stream.request_close()
-        if target is None:
-            return  # between turns: closing the input ends the burst
-        try:
-            await self.backend.interrupt()
-        except Exception:
-            log.exception("backend.interrupt() failed for %s", self.pid)
-        self._spawn(self._backstop(task, target))
+        if task is not None and not task.done():
+            if own and stream is not None:
+                stream.request_close()  # between turns: closing the input ends the burst
+            if target is not None and not unsent:
+                try:
+                    await self.backend.interrupt()
+                except Exception:
+                    log.exception("backend.interrupt() failed for %s", self.pid)
+                self._spawn(self._backstop(task, target))
+        if ids and target_cid is not None:
+            await self._items_failed(target_cid, sorted(ids), "cancelled")
 
     async def _backstop(self, task: asyncio.Task[None], message_id: int) -> None:
         await asyncio.wait({task}, timeout=self._grace)
@@ -371,18 +513,41 @@ class RunEngine:
             )
             task.cancel()
 
-    def add_agent_note(self, text: str) -> None:
-        self._notes.append(text)
+    def add_agent_note(self, text: str, conversation_id: str | None = None) -> None:
+        """A note prefixed to the next model input of ``conversation_id``; None broadcasts
+        it to every open conversation, each sees it once at its next turn (spec §5.3)."""
+        if conversation_id is not None:
+            notes = self._notes.setdefault(conversation_id, [])
+            notes.append(text)
+            del notes[:-_NOTES_KEEP]
+            return
+        self._broadcast.append((next(self._broadcast_ids), utcnow_iso(), text))
+        del self._broadcast[:-_BROADCAST_KEEP]
+
+    def _take_notes(self, conversation: ConversationRow) -> list[str]:
+        cid = conversation.id
+        delivered = self._delivered.setdefault(cid, set())
+        out: list[str] = []
+        for nid, at, text in self._broadcast:
+            # A session opened after the note never saw the state it is about.
+            if nid not in delivered and at >= conversation.created_at:
+                out.append(text)
+            delivered.add(nid)
+        delivered &= {nid for nid, _, _ in self._broadcast}
+        out.extend(self._notes.pop(cid, []))
+        return out
 
     async def replay_and_subscribe(
-        self, since_message_id: int
-    ) -> tuple[list[MessageDTO], Subscription, str | None]:
-        """Snapshot + subscribe atomically w.r.t. publishes: no gap, no duplicate delta."""
+        self, conversation_id: str, since_message_id: int
+    ) -> tuple[list[MessageDTO], Subscription, str | None, str | None]:
+        """Snapshot of one conversation + a subscription to all of the project's live
+        frames, atomically w.r.t. publishes: no gap, no duplicate delta. Also returns the
+        running turn's run and conversation ids."""
         async with self._lock:
-            rows = await self._messages.since(self.pid, since_message_id)
+            rows = await self._messages.since(self.pid, conversation_id, since_message_id)
             dtos = [self.to_dto(r) for r in rows]
             sub = self.broadcaster.subscribe(self.pid)
-            return dtos, sub, self.current_run_id
+            return dtos, sub, self.current_run_id, self.current_conversation_id
 
     def to_dto(self, row: MessageRow) -> MessageDTO:
         wire = row.to_wire()
@@ -395,14 +560,25 @@ class RunEngine:
         return QueuedItem(
             message_id=row.id,
             client_message_id=row.client_message_id or "",
+            conversation_id=row.conversation_id,
             text=row.content,
             attachments=atts,
         )
 
     def _enqueue(self, item: QueuedItem) -> None:
-        if self._stream is not None and self._stream.push(item):
+        """Push into the open stream when the item belongs to its conversation; a foreign
+        item seals that stream and stays DB-queued, like every item while a sealed
+        stream's burst runs. The burst's end re-drives them in id order (spec §5.2)."""
+        if self._sealed_stream is not None:
             return
-        stream: PushStream[QueuedItem] = PushStream()
+        current = self._stream
+        if current is not None and current.conversation_id != item.conversation_id:
+            current.seal()
+            self._sealed_stream = current
+            return
+        if current is not None and current.push(item):
+            return
+        stream: PushStream[QueuedItem] = PushStream(item.conversation_id)
         stream.push(item)
         self._stream = stream
         # The previous burst may still be winding down (its input ended, the backend has
@@ -443,10 +619,14 @@ class RunEngine:
         try:
             if prev is not None:
                 await self._await_wind_down(prev)
-            # Read once per burst, never mid-burst.
-            resume = await self._agent_sessions.get(self.pid)
+            # The burst's conversation and its resume id: read once per burst, never
+            # mid-burst.
+            conversation = await self._conversation(stream.conversation_id)
+            resume = conversation.sdk_session_id
             flusher = asyncio.create_task(self._flush_loop())
-            async for ev in self.backend.start(self.project, self._gated(stream), resume):
+            async for ev in self.backend.start(
+                self.project, conversation, self._gated(stream, conversation), resume
+            ):
                 await self._on_event(ev, stream)
         except asyncio.CancelledError:
             if not self._interrupting:
@@ -481,6 +661,8 @@ class RunEngine:
                 )
             if self._stream is stream:
                 self._stream = None
+            if self._sealed_stream is stream:  # never an older burst unsealing a newer one
+                self._sealed_stream = None
             if self._burst is asyncio.current_task():
                 self._burst = None
             await self._drive_queued()
@@ -495,18 +677,27 @@ class RunEngine:
             if self._stream is stream:
                 self._stream = None  # a submit from here on starts a fresh burst
             ids = stream.pending_ids()
+            cid = stream.conversation_id
             for mid in ids:
                 stream.drop(mid)
                 await self._messages.set_status(mid, "error")
                 await self._publish(
-                    MessageDeltaFrame(project_id=self.pid, message_id=mid, status_patch="error")
+                    MessageDeltaFrame(
+                        project_id=self.pid,
+                        conversation_id=cid,
+                        message_id=mid,
+                        status_patch="error",
+                    )
                 )
             await self._insert(
+                conversation_id=cid,
                 role="system",
                 kind="error",
                 content=f"The agent could not start: {self._safe_reason(exc)}",
                 metadata={"code": "agent_unavailable"},
             )
+        if ids:
+            await self._items_failed(cid, ids, "error")
 
     def _safe_reason(self, exc: Exception) -> str:
         """A short, single-line reason with every configured secret redacted."""
@@ -540,23 +731,36 @@ class RunEngine:
             prev.cancel()
             raise
 
-    async def _gated(self, stream: PushStream[QueuedItem]) -> AsyncIterator[QueuedItem]:
+    async def _gated(
+        self, stream: PushStream[QueuedItem], conversation: ConversationRow
+    ) -> AsyncIterator[QueuedItem]:
         async for item in stream:
             self._inflight = item.message_id
-            yield await self._begin_turn(item)
+            self._inflight_cid = item.conversation_id
+            prepared = await self._begin_turn(item, conversation)
+            if self._interrupting and self._inflight == item.message_id:
+                # Stopped while its turn was starting: never send the prompt.
+                await self._finish_turn("interrupted")
+                stream.release_next()
+                if stream.pending_count() == 0:
+                    stream.request_close()
+                continue
+            yield prepared
 
-    async def _begin_turn(self, item: QueuedItem) -> QueuedItem:
+    async def _begin_turn(self, item: QueuedItem, conversation: ConversationRow) -> QueuedItem:
         run_id = str(uuid.uuid4())
+        cid = item.conversation_id
         row = await self._messages.get(item.message_id)
         info = TurnInfo(
             run_id=run_id,
             message_id=item.message_id,
             text=item.text,
             metadata=row.metadata if row else {},
+            conversation_id=cid,
         )
         async with self._lock:
             self._turn = _Turn(info)
-            await self._runs.start(run_id, self.pid)
+            await self._runs.start(run_id, self.pid, cid)
             await self._messages.assign_run(item.message_id, run_id, "done")
             patch: dict[str, Any] = {"runId": run_id}
             if info.metadata.get("rateLimited"):
@@ -566,26 +770,35 @@ class RunEngine:
             await self._publish(
                 MessageDeltaFrame(
                     project_id=self.pid,
+                    conversation_id=cid,
                     message_id=item.message_id,
                     status_patch="done",
                     metadata_patch=patch,
                 )
             )
-            await self._publish(RunStartedFrame(project_id=self.pid, run_id=run_id))
+            await self._publish(
+                RunStartedFrame(project_id=self.pid, conversation_id=cid, run_id=run_id)
+            )
         try:
             await self.hooks.on_turn_start(info)
         except Exception:
             log.exception("on_turn_start hook failed")
-        notes, self._notes = self._notes, []
-        if not notes:
+        notices = self._take_notes(conversation)
+        try:
+            notices += await self.hooks.before_model_input(info)
+        except Exception:  # the turn continues without the injected notices
+            log.exception("before_model_input hook failed")
+        if not notices:
             return item
-        prefix = "\n".join(f"[CopperChat notice] {n}" for n in notes)
+        # One prefix per notice, at its start; lines inside a notice are repository data
+        # and never get a prefix of their own (S-C3, spec §9.1).
+        prefix = "\n".join(f"{NOTICE_PREFIX} {n}" for n in notices)
         return replace(item, text=f"{prefix}\n\n{item.text}")
 
     # ---- events
     async def _on_event(self, ev: AgentEvent, stream: PushStream[QueuedItem]) -> None:
         if isinstance(ev, SessionId):
-            await self._agent_sessions.set(self.pid, ev.id)
+            await self._conversations.set_sdk_session(stream.conversation_id, ev.id)
             return
         if isinstance(ev, TurnFinished) and ev.unsolicited:
             # End of a turn the CLI started on its own (background task notification,
@@ -658,7 +871,13 @@ class RunEngine:
                     else None,
                 )
                 turn.usage = payload.model_dump(mode="json", by_alias=True)
-                await self._publish(UsageFrame(project_id=self.pid, usage=payload))
+                await self._publish(
+                    UsageFrame(
+                        project_id=self.pid,
+                        conversation_id=turn.info.conversation_id,
+                        usage=payload,
+                    )
+                )
             elif isinstance(ev, RateLimited):
                 turn.rate_limited = ev.resets_at
         if (turn.kicad_failed or turn.document_inconsistent) and not turn.kicad_reported:
@@ -719,6 +938,7 @@ class RunEngine:
             await self._publish(
                 MessageDeltaFrame(
                     project_id=self.pid,
+                    conversation_id=turn.info.conversation_id,
                     message_id=mid,
                     status_patch="queued",
                     metadata_patch={"rateLimited": True},
@@ -757,14 +977,24 @@ class RunEngine:
         async with self._lock:
             await self._close_segment(turn)
             await self._runs.finish(turn.info.run_id, reason, turn.usage)
+            # The session list shows the summed usage and the last activity.
+            await self._publish_conversation(turn.info.conversation_id)
             await self._publish(
-                RunFinishedFrame(project_id=self.pid, run_id=turn.info.run_id, reason=reason)
+                RunFinishedFrame(
+                    project_id=self.pid,
+                    conversation_id=turn.info.conversation_id,
+                    run_id=turn.info.run_id,
+                    reason=reason,
+                )
             )
             self._turn = None
             self._inflight = None
+            self._inflight_cid = None
             self._interrupting = False  # an interrupt targets exactly one turn
         outcome = TurnOutcome(
             reason=reason,
+            conversation_id=turn.info.conversation_id,
+            message_status="queued" if reason == "rate_limited" else "done",
             changed_docs=frozenset(turn.changed),
             mutated=turn.mutated,
             kicad_failed=turn.kicad_failed,
@@ -776,11 +1006,46 @@ class RunEngine:
         except Exception:
             log.exception("on_turn_end hook failed")
 
+    # ---- conversations
+    async def _conversation(self, conversation_id: str) -> ConversationRow:
+        row = await self._conversations.get(conversation_id)
+        if row is None or row.project_id != self.pid:
+            raise ConversationNotFound("no such session in this project")
+        return row
+
+    async def _first_message(self, conversation_id: str) -> bool:
+        """True if the conversation has no message yet (its next insert is the first)."""
+        if conversation_id in self._active:
+            return False
+        self._active.add(conversation_id)
+        row = await self._conversations.get(conversation_id)
+        return row is not None and row.last_message_at is None
+
+    async def _publish_conversation(self, conversation_id: str) -> None:
+        row = await self._conversations.get(conversation_id)
+        if row is None:
+            return
+        try:
+            await publish_conversation(self.broadcaster, self._conversations, row)
+        except Exception:  # the list catches up on its next load
+            log.exception("conversation-updated for %s failed", conversation_id)
+
+    async def _items_failed(self, conversation_id: str, ids: list[int], status: str) -> None:
+        try:
+            await self.hooks.on_items_failed(conversation_id, ids, status)
+        except Exception:
+            log.exception("on_items_failed hook failed")
+
     # ---- persistence helpers (caller holds self._lock)
-    async def _cancel_row(self, message_id: int) -> None:
+    async def _cancel_row(self, message_id: int, conversation_id: str) -> None:
         await self._messages.set_status(message_id, "cancelled")
         await self._publish(
-            MessageDeltaFrame(project_id=self.pid, message_id=message_id, status_patch="cancelled")
+            MessageDeltaFrame(
+                project_id=self.pid,
+                conversation_id=conversation_id,
+                message_id=message_id,
+                status_patch="cancelled",
+            )
         )
 
     async def _publish(self, frame: Wire) -> None:
@@ -794,20 +1059,31 @@ class RunEngine:
         content: str,
         metadata: dict[str, Any] | None = None,
         status: str = "done",
+        conversation_id: str | None = None,
     ) -> MessageRow:
+        """A row in ``conversation_id`` (default: the running turn's). It belongs to the
+        running turn's run only if it is in that turn's conversation."""
+        turn_cid = self.current_conversation_id
+        cid = conversation_id or turn_cid
+        if cid is None:
+            raise RuntimeError("a message outside a turn needs a conversation")
+        first = await self._first_message(cid)
         mid = await self._messages.insert(
             self.pid,
+            cid,
             role=role,
             kind=kind,
             content=content,
             status=status,
-            run_id=self.current_run_id,
+            run_id=self.current_run_id if cid == turn_cid else None,
             metadata=metadata,
         )
         row = await self._messages.get(mid)
         if row is None:
             raise RuntimeError(f"message {mid} vanished after insert")
         await self._publish(MessageFrame(project_id=self.pid, message=self.to_dto(row)))
+        if first:
+            await self._publish_conversation(cid)
         return row
 
     async def _insert_subagent(self, ev: SubagentText | ToolUse | ToolResultEvt) -> None:
@@ -856,7 +1132,12 @@ class RunEngine:
         seg.content += text
         self._live[seg.id] = seg.content
         await self._publish(
-            MessageDeltaFrame(project_id=self.pid, message_id=seg.id, content_delta=text)
+            MessageDeltaFrame(
+                project_id=self.pid,
+                conversation_id=turn.info.conversation_id,
+                message_id=seg.id,
+                content_delta=text,
+            )
         )
         if (
             len(seg.content) - seg.flushed_len >= self._flush_chars
@@ -878,7 +1159,12 @@ class RunEngine:
         self._live.pop(seg.id, None)
         turn.seg = None
         await self._publish(
-            MessageDeltaFrame(project_id=self.pid, message_id=seg.id, status_patch="done")
+            MessageDeltaFrame(
+                project_id=self.pid,
+                conversation_id=turn.info.conversation_id,
+                message_id=seg.id,
+                status_patch="done",
+            )
         )
 
     async def _flush_loop(self) -> None:

@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { useUi } from '@/stores/ui';
 import { createViewStore, ViewStoreContext } from '@/stores/view';
 import { FakeWsClient } from '@/test/fakeWsClient';
 import { setMedia } from '@/test/media';
@@ -12,7 +13,30 @@ let off: Array<() => void> = [];
 afterEach(() => {
   off.forEach((f) => f());
   off = [];
+  useUi.setState({ panelRequest: null });
 });
+
+/** History and Skills panels that render the params they receive. */
+function registerParamPanels() {
+  act(() => {
+    off.push(
+      registerPanel({
+        id: 'history',
+        title: 'History',
+        icon: Icon,
+        component: ({ projectId, params }) => <p>HISTORY PANEL {projectId} {JSON.stringify(params ?? null)}</p>,
+      }),
+    );
+    off.push(
+      registerPanel({
+        id: 'skills',
+        title: 'Skills',
+        icon: Icon,
+        component: ({ params }) => <p>SKILLS PANEL {JSON.stringify(params ?? null)}</p>,
+      }),
+    );
+  });
+}
 
 function renderLayout() {
   return render(
@@ -142,5 +166,31 @@ describe('ProjectLayout', () => {
       </MemoryRouter>,
     );
     expect(screen.getByRole('tab', { name: 'Chat' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it("desktop: openPanel('history') opens the History sheet; params reach the panel", () => {
+    registerParamPanels();
+    renderLayout();
+    act(() => useUi.getState().openPanel('history'));
+    expect(screen.getByRole('dialog', { name: 'History' })).toHaveTextContent('HISTORY PANEL a1b2c3d4e5f6 null');
+    expect(useUi.getState().panelRequest).toBeNull(); // consumed
+    act(() => useUi.getState().openPanel('skills', { revisionId: '7' }));
+    expect(screen.getByRole('dialog', { name: 'Skills' })).toHaveTextContent('SKILLS PANEL {"revisionId":"7"}');
+    // a click opens without params
+    fireEvent.click(screen.getByRole('button', { name: 'History' }));
+    expect(screen.getByRole('dialog', { name: 'History' })).toHaveTextContent('null');
+  });
+
+  it("iPhone: openPanel('history') shows the History tab; other panels open under More with params", () => {
+    setMedia((q) => q === PHONE_QUERY);
+    registerParamPanels();
+    renderLayout();
+    act(() => useUi.getState().openPanel('history', { snapshot: 'abc' }));
+    expect(screen.getByRole('tab', { name: 'History' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByText(/HISTORY PANEL/)).toHaveTextContent('{"snapshot":"abc"}');
+    act(() => useUi.getState().openPanel('skills', { revisionId: '7' }));
+    expect(screen.getByRole('tab', { name: 'More' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByText(/SKILLS PANEL/)).toHaveTextContent('{"revisionId":"7"}');
+    expect(useUi.getState().panelRequest).toBeNull();
   });
 });

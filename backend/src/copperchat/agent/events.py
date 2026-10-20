@@ -5,17 +5,21 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from copperchat.agent.protocol import AttachmentRef
 from copperchat.projects import Project
 from copperchat.tools import ImageBlock
+
+if TYPE_CHECKING:
+    from copperchat.db.repos.conversations import ConversationRow
 
 
 @dataclass(frozen=True)
 class QueuedItem:
     message_id: int
     client_message_id: str
+    conversation_id: str
     text: str
     attachments: tuple[AttachmentRef, ...] = ()
 
@@ -115,6 +119,7 @@ class AgentBackend(Protocol):
     def start(
         self,
         project: Project,
+        conversation: ConversationRow,
         input_stream: AsyncIterator[QueuedItem],
         resume_session_id: str | None,
     ) -> AsyncIterator[AgentEvent]: ...

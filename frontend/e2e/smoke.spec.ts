@@ -1,9 +1,29 @@
-import { expect, test } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+import { expect, type Page, test } from '@playwright/test';
 
 const PID = 'a1b2c3d4e5f6';
+const CID = '0123456789abcdef0123456789abcdef';
+/** The project's one conversation (C1 interim default session). */
+const CONVERSATION = {
+  id: CID,
+  seq: 1,
+  title: 'Session 1',
+  type: 'free',
+  status: 'open',
+  archived: false,
+  createdAt: '2026-10-19T10:00:00.000Z',
+  lastMessageAt: null,
+  closedAt: null,
+  usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+};
+const VERSION = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version;
+/** The build-version check on every WS connect (UpdateBanner). */
+const mockHealth = (page: Page, version = VERSION) =>
+  page.route('**/api/health', (r) => r.fulfill({ json: { status: 'ok', version, kicad: 'ok' } }));
 const msg = (id: number, role: string, content: string, extra: Record<string, unknown> = {}) => ({
   id,
   projectId: PID,
+  conversationId: CID,
   clientMessageId: null,
   runId: null,
   role,
@@ -16,6 +36,7 @@ const msg = (id: number, role: string, content: string, extra: Record<string, un
 });
 
 test('mocked API: login → pick project → chat round-trip', async ({ page }) => {
+  await mockHealth(page);
   let authed = false;
   await page.route('**/api/auth/me', (r) =>
     authed ? r.fulfill({ json: { username: 'admin' } }) : r.fulfill({ status: 401, json: { detail: 'not authenticated' } }),
@@ -43,13 +64,16 @@ test('mocked API: login → pick project → chat round-trip', async ({ page }) 
       },
     }),
   );
-  await page.route(`**/api/projects/${PID}/messages**`, (r) =>
+  await page.route(new RegExp(`/api/projects/${PID}/conversations(\\?.*)?$`), (r) => r.fulfill({ json: [CONVERSATION] }));
+  await page.route(`**/api/projects/${PID}/conversations/${CID}/messages**`, (r) =>
     r.fulfill({ json: { messages: [msg(1, 'assistant', 'Hello from the fixture')], hasMore: false } }),
   );
+  const seen: string[] = [];
   await page.routeWebSocket('**/api/ws', (ws) => {
     ws.onMessage((raw) => {
-      const f = JSON.parse(String(raw)) as { type: string; clientMessageId?: string; text?: string };
+      const f = JSON.parse(String(raw)) as { type: string; conversationId?: string; clientMessageId?: string; text?: string };
       if (f.type === 'ping') ws.send(JSON.stringify({ type: 'pong', projectId: null }));
+      if (f.type === 'subscribe' || f.type === 'send') seen.push(`${f.type}:${f.conversationId}`);
       if (f.type === 'send') {
         ws.send(
           JSON.stringify({
@@ -58,11 +82,11 @@ test('mocked API: login → pick project → chat round-trip', async ({ page }) 
             message: msg(2, 'user', f.text ?? '', { clientMessageId: f.clientMessageId }),
           }),
         );
-        ws.send(JSON.stringify({ type: 'run-started', projectId: PID, runId: 'r1' }));
+        ws.send(JSON.stringify({ type: 'run-started', projectId: PID, conversationId: CID, runId: 'r1' }));
         ws.send(
           JSON.stringify({ type: 'message', projectId: PID, message: msg(3, 'assistant', `Echo: ${f.text}`, { runId: 'r1' }) }),
         );
-        ws.send(JSON.stringify({ type: 'run-finished', projectId: PID, runId: 'r1', reason: 'completed' }));
+        ws.send(JSON.stringify({ type: 'run-finished', projectId: PID, conversationId: CID, runId: 'r1', reason: 'completed' }));
       }
     });
   });
@@ -79,7 +103,33 @@ test('mocked API: login → pick project → chat round-trip', async ({ page }) 
   await page.getByRole('textbox', { name: 'Message' }).fill('ping the board');
   await page.getByRole('button', { name: 'Send' }).click();
   await expect(page.getByText('Echo: ping the board')).toBeVisible();
+  // subscribe (replay) and send name the conversation
+  expect(seen).toEqual(expect.arrayContaining([`subscribe:${CID}`, `send:${CID}`]));
   await expect(page.locator('body')).not.toContainText('Claude Code');
+});
+
+test('mocked API: an old tab after an upgrade offers a reload', async ({ page }) => {
+  await mockHealth(page, '999.0.0');
+  await page.route('**/api/auth/me', (r) => r.fulfill({ json: { username: 'admin' } }));
+  await page.route('**/api/projects', (r) =>
+    r.fulfill({ json: [{ id: PID, name: 'demo', relPath: 'demo/demo.kicad_pro', hasSch: true, hasPcb: false, locked: false }] }),
+  );
+  await page.route(`**/api/projects/${PID}/open`, (r) =>
+    r.fulfill({ json: { id: PID, readOnly: false, lockFiles: [], kicadVersion: '10.99.0', viewFiles: { sch: ['demo.kicad_sch'], pcb: [] } } }),
+  );
+  await page.route(new RegExp(`/api/projects/${PID}/conversations(\\?.*)?$`), (r) => r.fulfill({ json: [CONVERSATION] }));
+  await page.route(`**/api/projects/${PID}/conversations/${CID}/messages**`, (r) =>
+    r.fulfill({ json: { messages: [], hasMore: false } }),
+  );
+  await page.routeWebSocket('**/api/ws', (ws) => {
+    ws.onMessage((raw) => {
+      if ((JSON.parse(String(raw)) as { type: string }).type === 'ping') ws.send(JSON.stringify({ type: 'pong', projectId: null }));
+    });
+  });
+  await page.goto(`/p/${PID}`);
+  const banner = page.getByRole('alert').filter({ hasText: 'CopperChat was updated — reload' });
+  await expect(banner).toBeVisible();
+  await expect(banner.getByRole('button', { name: 'Reload' })).toBeVisible();
 });
 
 test('real backend with dev_fake_agent (opt-in)', async ({ page }) => {
@@ -118,11 +168,12 @@ test('mocked API: plan card propose → approve → done in the chat', async ({ 
     status, changeCount: 0, checkpointId: null, summary: null, failure: null, erc: null, ...over,
   });
   const plan = (status: string, steps: unknown[], updatedAt: string) => ({
-    id: PLAN, projectId: PID, title: 'Add a status LED', summary: 'R and LED on GPIO2.', status, revision: 1,
+    id: PLAN, projectId: PID, conversationId: CID, title: 'Add a status LED', summary: 'R and LED on GPIO2.', status, revision: 1,
     pauseReason: null, steps, createdAt: '2026-10-18T10:00:00.000Z', updatedAt,
   });
   let current = plan('proposed', [step(1, 'pending'), step(2, 'pending')], '2026-10-18T10:00:00.000Z');
   let approves = 0;
+  await mockHealth(page);
   await page.route('**/api/auth/me', (r) => r.fulfill({ json: { username: 'admin' } }));
   await page.route('**/api/projects', (r) =>
     r.fulfill({ json: [{ id: PID, name: 'demo', relPath: 'demo/demo.kicad_pro', hasSch: true, hasPcb: false, locked: false }] }),
@@ -130,7 +181,8 @@ test('mocked API: plan card propose → approve → done in the chat', async ({ 
   await page.route(`**/api/projects/${PID}/open`, (r) =>
     r.fulfill({ json: { id: PID, readOnly: false, lockFiles: [], kicadVersion: '10.99.0', viewFiles: { sch: ['demo.kicad_sch'], pcb: [] } } }),
   );
-  await page.route(`**/api/projects/${PID}/messages**`, (r) =>
+  await page.route(new RegExp(`/api/projects/${PID}/conversations(\\?.*)?$`), (r) => r.fulfill({ json: [CONVERSATION] }));
+  await page.route(`**/api/projects/${PID}/conversations/${CID}/messages**`, (r) =>
     r.fulfill({
       json: {
         messages: [

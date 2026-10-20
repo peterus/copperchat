@@ -11,12 +11,12 @@ import { ApiError } from '@/api/http';
 import type { PlanDTO } from '@/protocol/frames';
 import { createPlansStore, PlansStoreContext } from '@/stores/plans';
 import { FakeWsClient } from '@/test/fakeWsClient';
-import { PID, row } from '@/test/fakeMessageServer';
+import { CID, PID, row } from '@/test/fakeMessageServer';
 import { MessageItem } from './MessageItem';
 
 const PLAN = 'p'.repeat(32);
 const plan: PlanDTO = {
-  id: PLAN, projectId: PID, title: 'Add a status LED', summary: '', status: 'proposed', revision: 1, pauseReason: null,
+  id: PLAN, projectId: PID, conversationId: CID, title: 'Add a status LED', summary: '', status: 'proposed', revision: 1, pauseReason: null,
   steps: [], createdAt: '2026-10-18T10:00:00.000Z', updatedAt: '2026-10-18T10:00:00.000Z',
 };
 const notice = (metadata: Record<string, unknown>, content = 'notice text') =>

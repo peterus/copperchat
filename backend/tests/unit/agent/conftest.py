@@ -16,6 +16,17 @@ from copperchat.db import Database
 from copperchat.projects import Project
 
 PID = "a1b2c3d4e5f6"
+# The default conversation make_engine creates for tests that use a single session.
+CID = "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"
+
+
+async def ensure_default_conversation(db: Database, pid: str = PID, cid: str = CID) -> str:
+    await db.execute(
+        "INSERT OR IGNORE INTO conversations (id, project_id, seq, title, type, created_at, "
+        "updated_at) VALUES (?, ?, 1000, 'Default', 'free', ?, ?)",
+        (cid, pid, "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z"),
+    )
+    return cid
 
 
 @pytest.fixture
@@ -46,6 +57,7 @@ def settings(tmp_path: Path) -> Settings:
 @pytest_asyncio.fixture
 async def db(tmp_path: Path) -> AsyncIterator[Database]:
     d = await Database.open(tmp_path / "t.db")
+    await ensure_default_conversation(d)
     yield d
     await d.close()
 
@@ -64,14 +76,21 @@ async def make_engine(
         with_session: bool = False,
         start: bool = True,
         backend: Any = None,
+        backend_cls: Any = FakeAgent,
         **kw: Any,
     ) -> tuple[RunEngine, Any]:
         box: dict[str, Any] = {}
         session = SimpleNamespace(project=project, closed=False) if with_session else None
+        await ensure_default_conversation(db)
 
-        def factory(ctx_factory: Callable[[], Any]) -> Any:
-            box["agent"] = backend or FakeAgent(
-                script_for, specs=specs, ctx_factory=ctx_factory, ignore_interrupt=ignore_interrupt
+        def factory(ctx_factory: Callable[[], Any], turn_context: Callable[[], Any]) -> Any:
+            box["agent"] = backend or backend_cls(
+                script_for,
+                specs=specs,
+                ctx_factory=ctx_factory,
+                ignore_interrupt=ignore_interrupt,
+                settings=settings,
+                turn_context=turn_context,
             )
             return box["agent"]
 

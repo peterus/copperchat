@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { FakeMessageServer, PID, row } from '@/test/fakeMessageServer';
+import { CID, FakeMessageServer, PID, row } from '@/test/fakeMessageServer';
 import { FakeWsClient } from '@/test/fakeWsClient';
-import { createChatStore, fetchMessagesPage, type ChatStore } from './chat';
+import { chatKey, createChatStore, fetchMessagesPage, type ChatStore } from './chat';
 
 const P = PID;
+const C = CID;
 const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => from + i);
 let ws: FakeWsClient;
 let server: FakeMessageServer;
@@ -11,7 +12,7 @@ let store: ChatStore;
 let cid = 0;
 
 function ids() {
-  return store.getState().chats[P]?.messages.map((m) => m.id) ?? [];
+  return store.getState().chats[chatKey(P, C)]?.messages.map((m) => m.id) ?? [];
 }
 
 beforeEach(() => {
@@ -25,50 +26,50 @@ beforeEach(() => {
 describe('chat store: baseline then subscribe', () => {
   it('subscribes only after the HTTP baseline has set lastSeenId', async () => {
     server.hold();
-    const opening = store.getState().open(P);
+    const opening = store.getState().open(P, C);
     await Promise.resolve();
     expect(ws.framesOfType('subscribe')).toEqual([]);
     server.release();
     await opening;
-    expect(ws.framesOfType('subscribe')).toEqual([{ type: 'subscribe', projectId: P, sinceMessageId: 120 }]);
+    expect(ws.framesOfType('subscribe')).toEqual([{ type: 'subscribe', projectId: P, conversationId: C, sinceMessageId: 120 }]);
     expect(ids()).toEqual(range(71, 120));
-    expect(store.getState().chats[P]?.hasMoreOlder).toBe(true);
+    expect(store.getState().chats[chatKey(P, C)]?.hasMoreOlder).toBe(true);
     expect(ws.ensureCalls).toBeGreaterThan(0);
   });
 
   it('double mount shares one in-flight load and subscribes once', async () => {
-    const a = store.getState().open(P);
-    const b = store.getState().open(P);
+    const a = store.getState().open(P, C);
+    const b = store.getState().open(P, C);
     expect(b).toBe(a);
     await Promise.all([a, b]);
-    await store.getState().open(P);
-    expect(server.messageCalls()).toEqual([`/api/projects/${P}/messages?limit=50`]);
+    await store.getState().open(P, C);
+    expect(server.messageCalls()).toEqual([`/api/projects/${P}/conversations/${C}/messages?limit=50`]);
     expect(ws.framesOfType('subscribe')).toHaveLength(1);
   });
 
   it('opening an already-loaded chat still ensures the socket (it stays down after a logout until ensure)', async () => {
-    await store.getState().open(P);
+    await store.getState().open(P, C);
     const calls = ws.ensureCalls;
-    await store.getState().open(P);
+    await store.getState().open(P, C);
     expect(ws.ensureCalls).toBe(calls + 1);
     expect(server.messageCalls()).toHaveLength(1);
   });
 
   it('defers subscribe to the connection handler when the socket is not open yet', async () => {
     ws.open = false;
-    await store.getState().open(P);
+    await store.getState().open(P, C);
     expect(ws.framesOfType('subscribe')).toEqual([]);
     ws.connect();
-    expect(ws.framesOfType('subscribe')).toEqual([{ type: 'subscribe', projectId: P, sinceMessageId: 120 }]);
+    expect(ws.framesOfType('subscribe')).toEqual([{ type: 'subscribe', projectId: P, conversationId: C, sinceMessageId: 120 }]);
   });
 
   it('a failed baseline load sets lastError and can be retried by opening again', async () => {
     server.failNext = 1;
-    await store.getState().open(P);
-    expect(store.getState().chats[P]).toMatchObject({ loaded: false });
-    expect(store.getState().chats[P]?.lastError).toMatch(/Could not load messages/);
+    await store.getState().open(P, C);
+    expect(store.getState().chats[chatKey(P, C)]).toMatchObject({ loaded: false });
+    expect(store.getState().chats[chatKey(P, C)]?.lastError).toMatch(/Could not load messages/);
     expect(ws.framesOfType('subscribe')).toEqual([]);
-    await store.getState().open(P);
+    await store.getState().open(P, C);
     expect(ids()).toEqual(range(71, 120));
     expect(ws.framesOfType('subscribe')).toHaveLength(1);
   });
@@ -76,14 +77,14 @@ describe('chat store: baseline then subscribe', () => {
 
 describe('chat store: ordering and duplicates', () => {
   beforeEach(async () => {
-    await store.getState().open(P);
+    await store.getState().open(P, C);
   });
 
   it('replay overlapping the baseline yields exactly one row per id in id order', () => {
     for (const id of [118, 119, 120, 121, 122]) ws.emit({ type: 'message', projectId: P, message: row(id) });
     ws.emit({ type: 'message', projectId: P, message: row(121) });
     expect(ids()).toEqual(range(71, 122));
-    expect(store.getState().chats[P]?.lastSeenId).toBe(122);
+    expect(store.getState().chats[chatKey(P, C)]?.lastSeenId).toBe(122);
   });
 
   it('out-of-order live frames are inserted in id order', () => {
@@ -100,19 +101,19 @@ describe('chat store: ordering and duplicates', () => {
   });
 
   it('replaces the optimistic row by the server row with the same clientMessageId, also on retransmit echo', () => {
-    store.getState().send(P, 'hello');
-    store.getState().send(P, 'second');
+    store.getState().send(P, C, 'hello');
+    store.getState().send(P, C, 'second');
     expect(ids().slice(-2)).toEqual([-1, -2]);
     expect(ws.framesOfType('send')[0]).toMatchObject({ clientMessageId: 'c1', text: 'hello', attachments: [] });
     const echo = row(121, { role: 'user', clientMessageId: 'c1', content: 'hello', status: 'queued' });
     ws.emit({ type: 'message', projectId: P, message: echo });
     ws.emit({ type: 'message', projectId: P, message: echo });
     expect(ids().slice(-2)).toEqual([121, -2]);
-    expect(store.getState().chats[P]?.messages.filter((m) => m.clientMessageId === 'c1')).toHaveLength(1);
+    expect(store.getState().chats[chatKey(P, C)]?.messages.filter((m) => m.clientMessageId === 'c1')).toHaveLength(1);
   });
 
   it('retransmits pending optimistic sends with the same clientMessageId after reconnect', () => {
-    store.getState().send(P, 'hello');
+    store.getState().send(P, C, 'hello');
     ws.drop();
     ws.connect();
     expect(ws.framesOfType('send').map((f) => f.clientMessageId)).toEqual(['c1', 'c1']);
@@ -120,7 +121,7 @@ describe('chat store: ordering and duplicates', () => {
 
   it('a send while disconnected goes out exactly once when the socket opens', () => {
     ws.drop();
-    store.getState().send(P, 'offline');
+    store.getState().send(P, C, 'offline');
     expect(ws.framesOfType('send')).toEqual([]);
     ws.connect();
     expect(ws.framesOfType('send').map((f) => f.clientMessageId)).toEqual(['c1']);
@@ -128,10 +129,10 @@ describe('chat store: ordering and duplicates', () => {
 
   it('updates are immutable', () => {
     ws.emit({ type: 'message', projectId: P, message: row(121, { status: 'streaming', content: 'Hel' }) });
-    const before = store.getState().chats[P]!;
+    const before = store.getState().chats[chatKey(P, C)]!;
     const rowBefore = before.messages.at(-1)!;
-    ws.emit({ type: 'message-delta', projectId: P, messageId: 121, contentDelta: 'lo' });
-    const after = store.getState().chats[P]!;
+    ws.emit({ type: 'message-delta', projectId: P, conversationId: C, messageId: 121, contentDelta: 'lo' });
+    const after = store.getState().chats[chatKey(P, C)]!;
     expect(after).not.toBe(before);
     expect(after.messages).not.toBe(before.messages);
     expect(rowBefore.content).toBe('Hel');
@@ -139,63 +140,63 @@ describe('chat store: ordering and duplicates', () => {
   });
 
   it('a late run-finished for an older run does not clear the current run', () => {
-    ws.emit({ type: 'run-started', projectId: P, runId: 'r2' });
-    ws.emit({ type: 'run-finished', projectId: P, runId: 'r1', reason: 'completed' });
-    expect(store.getState().chats[P]).toMatchObject({ runActive: true, currentRunId: 'r2' });
-    ws.emit({ type: 'run-finished', projectId: P, runId: 'r2', reason: 'completed' });
-    expect(store.getState().chats[P]).toMatchObject({ runActive: false, currentRunId: null });
+    ws.emit({ type: 'run-started', projectId: P, conversationId: C, runId: 'r2' });
+    ws.emit({ type: 'run-finished', projectId: P, conversationId: C, runId: 'r1', reason: 'completed' });
+    expect(store.getState().chats[chatKey(P, C)]).toMatchObject({ runActive: true, currentRunId: 'r2' });
+    ws.emit({ type: 'run-finished', projectId: P, conversationId: C, runId: 'r2', reason: 'completed' });
+    expect(store.getState().chats[chatKey(P, C)]).toMatchObject({ runActive: false, currentRunId: null });
   });
 
   it('error frame with clientMessageId marks the optimistic row as failed', () => {
-    store.getState().send(P, 'x');
+    store.getState().send(P, C, 'x');
     ws.emit({ type: 'error', projectId: P, code: 'unknown_attachment', message: 'Unknown attachment', clientMessageId: 'c1' });
-    const last = store.getState().chats[P]!.messages.at(-1)!;
+    const last = store.getState().chats[chatKey(P, C)]!.messages.at(-1)!;
     expect(last.status).toBe('error');
-    expect(store.getState().chats[P]!.lastError).toBe('Unknown attachment');
+    expect(store.getState().chats[chatKey(P, C)]!.lastError).toBe('Unknown attachment');
     ws.drop();
     ws.connect();
     expect(ws.framesOfType('send')).toHaveLength(1); // failed rows are not retransmitted
   });
 
   it('stop sends interrupt with the current run id; cancelQueued sends cancel-queued', () => {
-    ws.emit({ type: 'run-started', projectId: P, runId: 'r9' });
-    store.getState().stop(P);
-    expect(ws.framesOfType('interrupt')).toEqual([{ type: 'interrupt', projectId: P, runId: 'r9' }]);
+    ws.emit({ type: 'run-started', projectId: P, conversationId: C, runId: 'r9' });
+    store.getState().stop(P, C);
+    expect(ws.framesOfType('interrupt')).toEqual([{ type: 'interrupt', projectId: P, conversationId: C, runId: 'r9' }]);
     ws.emit({ type: 'message', projectId: P, message: row(130, { role: 'user', status: 'queued' }) });
-    store.getState().cancelQueued(P, 130);
+    store.getState().cancelQueued(P, C, 130);
     expect(ws.framesOfType('cancel-queued')).toEqual([{ type: 'cancel-queued', projectId: P, messageId: 130 }]);
-    expect(store.getState().chats[P]!.messages.at(-1)!.status).toBe('cancelled');
+    expect(store.getState().chats[chatKey(P, C)]!.messages.at(-1)!.status).toBe('cancelled');
   });
 });
 
 describe('chat store: older pages', () => {
   beforeEach(async () => {
-    await store.getState().open(P);
+    await store.getState().open(P, C);
   });
 
   it('loads older pages with before=oldestId and prepends without duplicates', async () => {
-    await store.getState().loadOlder(P);
-    expect(server.messageCalls().at(-1)).toBe(`/api/projects/${P}/messages?limit=50&before=71`);
+    await store.getState().loadOlder(P, C);
+    expect(server.messageCalls().at(-1)).toBe(`/api/projects/${P}/conversations/${C}/messages?limit=50&before=71`);
     expect(ids()).toEqual(range(21, 120));
-    await store.getState().loadOlder(P);
+    await store.getState().loadOlder(P, C);
     expect(ids()).toEqual(range(1, 120));
-    expect(store.getState().chats[P]?.hasMoreOlder).toBe(false);
-    await store.getState().loadOlder(P);
+    expect(store.getState().chats[chatKey(P, C)]?.hasMoreOlder).toBe(false);
+    await store.getState().loadOlder(P, C);
     expect(server.messageCalls()).toHaveLength(3);
   });
 
   it('concurrent loadOlder calls fetch the page once', async () => {
-    await Promise.all([store.getState().loadOlder(P), store.getState().loadOlder(P)]);
+    await Promise.all([store.getState().loadOlder(P, C), store.getState().loadOlder(P, C)]);
     expect(server.messageCalls()).toHaveLength(2);
     expect(ids()).toEqual(range(21, 120));
   });
 
   it('a failed older-page load resets loadingOlder so it can be retried', async () => {
     server.failNext = 1;
-    await store.getState().loadOlder(P);
-    expect(store.getState().chats[P]).toMatchObject({ loadingOlder: false, hasMoreOlder: true });
-    expect(store.getState().chats[P]?.lastError).toMatch(/older messages/);
-    await store.getState().loadOlder(P);
+    await store.getState().loadOlder(P, C);
+    expect(store.getState().chats[chatKey(P, C)]).toMatchObject({ loadingOlder: false, hasMoreOlder: true });
+    expect(store.getState().chats[chatKey(P, C)]?.lastError).toMatch(/older messages/);
+    await store.getState().loadOlder(P, C);
     expect(ids()[0]).toBe(21);
   });
 });

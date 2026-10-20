@@ -13,11 +13,13 @@ const NO_STEPS: SubagentGroup = { steps: [], result: null };
 
 export interface ChatPanelProps {
   projectId: string;
+  /** The conversation (session) shown; its messages, composer and Stop. */
+  conversationId: string;
   readOnly?: boolean;
 }
 
-export function ChatPanel({ projectId, readOnly = false }: ChatPanelProps) {
-  const chat = useChat(projectId);
+export function ChatPanel({ projectId, conversationId, readOnly = false }: ChatPanelProps) {
+  const chat = useChat(projectId, conversationId);
   const { runActive, loadOlder } = chat;
   // Server-side queued user rows live in the composer queue, not in the history.
   const visible = useMemo(

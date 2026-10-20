@@ -40,6 +40,7 @@ from copperchat.plans.service import PlanService
 from copperchat.projects import discover_projects
 from copperchat.tools import ToolContext, ToolResult, ToolSpec, edit_spec
 from tests.kicad.edit.helpers import item_ids
+from tests.support.conversations import TEST_CID, ensure_test_conversation
 from tests.support.edit import call_tool, free_area
 from tests.support.history import FakeEngine, RecordingBroadcaster
 from tests.support.kicad_cli import cli_netlist, cli_pin_nets
@@ -54,7 +55,8 @@ class Runtime:
         self.engine = FakeEngine()
         self.submitted: list[tuple[str, str]] = []
 
-        async def submit_ex(cid: str, text: str, atts: Any, meta: Any = None) -> Any:
+        async def submit_ex(conv: str, cid: str, text: str, atts: Any, meta: Any = None) -> Any:
+            assert conv == TEST_CID  # Approve/Resume go to the plan's session
             self.submitted.append((cid, text))
             return None, True
 
@@ -99,6 +101,7 @@ async def rig(make_settings: Callable[..., Settings], tmp_path: Path) -> AsyncIt
     project = next(p for p in discover_projects(settings.projects_root) if p.name == "blank")
     sessions = KicadSessionManager(settings)
     db = await Database.open(tmp_path / "db.sqlite")
+    await ensure_test_conversation(db)
     runtime = Runtime()
     history = HistoryService(
         db=db, sessions=sessions, broadcaster=RecordingBroadcaster(), runtime=runtime
@@ -261,5 +264,5 @@ async def test_two_step_plan_end_to_end(rig: Rig, tmp_path: Path) -> None:
     # Restoring step 1's checkpoint gives byte-identical files to those of step 1.
     from copperchat.history.restore import restore_snapshot
 
-    await restore_snapshot(rig.history, project, cp1)
+    await restore_snapshot(rig.history, project, cp1, conversation_id=TEST_CID)
     assert compute_hashes(project) == step1_files

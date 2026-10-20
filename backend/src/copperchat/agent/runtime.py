@@ -36,10 +36,20 @@ def default_backend_factory(
     """FakeAgent when ``dev_fake_agent`` (no model credential needed), else the SDK backend
     (``db``: skills + attachments, X5)."""
 
-    def make(ctx_factory: Callable[[], ToolContext]) -> AgentBackend:
+    def make(
+        ctx_factory: Callable[[], ToolContext], turn_context: Callable[[], str | None]
+    ) -> AgentBackend:
         if settings.dev_fake_agent:
-            return FakeAgent(specs=specs, ctx_factory=ctx_factory)
-        return SdkAgentBackend(settings=settings, specs=specs, ctx_factory=ctx_factory, db=db)
+            return FakeAgent(
+                specs=specs, ctx_factory=ctx_factory, settings=settings, turn_context=turn_context
+            )
+        return SdkAgentBackend(
+            settings=settings,
+            specs=specs,
+            ctx_factory=ctx_factory,
+            db=db,
+            turn_context=turn_context,
+        )
 
     return make
 

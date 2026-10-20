@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatStoreContext } from '@/hooks/useChat';
 import { createChatStore, fetchMessagesPage, type ChatStore } from '@/stores/chat';
 import { useComposer } from '@/stores/composer';
-import { FakeMessageServer, PID, row } from '@/test/fakeMessageServer';
+import { CID as C, FakeMessageServer, PID, row } from '@/test/fakeMessageServer';
 import { FakeWsClient } from '@/test/fakeWsClient';
 import { ChatPanel } from './ChatPanel';
 
@@ -36,13 +36,13 @@ beforeEach(() => {
 
 describe('ChatPanel rendering cost', () => {
   it('a streaming delta re-parses only the Markdown of the row it changes', async () => {
-    render(<ChatStoreContext.Provider value={store}><ChatPanel projectId={PID} /></ChatStoreContext.Provider>);
+    render(<ChatStoreContext.Provider value={store}><ChatPanel projectId={PID} conversationId={C} /></ChatStoreContext.Provider>);
     await screen.findByText('sec');
     const before = { first: parses.get('first answer'), summary: parses.get('card summary') };
     expect(before.first).toBeGreaterThan(0);
     expect(before.summary).toBeGreaterThan(0);
-    act(() => ws.emit({ type: 'message-delta', projectId: PID, messageId: 4, contentDelta: 'ond' }));
-    act(() => ws.emit({ type: 'message-delta', projectId: PID, messageId: 4, contentDelta: '!' }));
+    act(() => ws.emit({ type: 'message-delta', projectId: PID, conversationId: C, messageId: 4, contentDelta: 'ond' }));
+    act(() => ws.emit({ type: 'message-delta', projectId: PID, conversationId: C, messageId: 4, contentDelta: '!' }));
     expect(screen.getByText('second!')).toBeInTheDocument();
     expect(parses.get('first answer')).toBe(before.first);
     expect(parses.get('card summary')).toBe(before.summary);

@@ -26,9 +26,9 @@ const planOpen = (status: string, why = `Plan ${'p'.repeat(32)} is ${status}`, s
 describe('restoreSnapshot', () => {
   beforeEach(() => apiPost.mockReset().mockResolvedValue({ id: 'x', files: [] }));
 
-  it('encodes the project and snapshot ids in the URL', async () => {
-    await restoreSnapshot('a/b', '../c?d');
-    expect(apiPost).toHaveBeenCalledWith('/projects/a%2Fb/history/..%2Fc%3Fd/restore', {});
+  it('encodes the project and snapshot ids in the URL and sends the conversation', async () => {
+    await restoreSnapshot('a/b', '../c?d', 'f'.repeat(32));
+    expect(apiPost).toHaveBeenCalledWith('/projects/a%2Fb/history/..%2Fc%3Fd/restore', { conversationId: 'f'.repeat(32) });
   });
 });
 

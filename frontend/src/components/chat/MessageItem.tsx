@@ -212,7 +212,7 @@ export const MessageItem = memo(function MessageItem({ message: m }: { message: 
         <div className="text-center text-xs text-muted">
           {m.content}
           {md.action === 'restore' && typeof md.snapshotId === 'string' && (
-            <RestoreOffer projectId={m.projectId} snapshotId={md.snapshotId} checkpoint={md.checkpoint === true} />
+            <RestoreOffer projectId={m.projectId} conversationId={m.conversationId} snapshotId={md.snapshotId} checkpoint={md.checkpoint === true} />
           )}
           {erc && (
             <div className="mt-1 flex justify-center">

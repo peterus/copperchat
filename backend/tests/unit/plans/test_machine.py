@@ -12,6 +12,7 @@ from copperchat.db import Database
 from copperchat.plans import machine
 from copperchat.plans.model import InvalidPlanArgument, Plan, PlanStateError, to_dto
 from copperchat.plans.repo import InvalidPlanId, PlanNotFound, PlanRepo
+from tests.support.conversations import TEST_CID, ensure_test_conversation
 
 NOW = "2026-10-18T10:00:00Z"
 LATER = "2026-10-18T10:05:00Z"
@@ -36,6 +37,7 @@ def proposed(n: int = 2, plan_id: str = "f" * 32) -> Plan:
         summary="R + LED",
         steps=machine.build_steps(plan_id, [spec(f"step {i}") for i in range(1, n + 1)]),
         run_id="run-1",
+        conversation_id=TEST_CID,
         now=NOW,
     )
 
@@ -205,6 +207,7 @@ def test_invalid_transition_raises() -> None:
 def test_dto_is_camel_case() -> None:
     dto = to_dto(running())
     assert dto["projectId"] == PID and dto["pauseReason"] is None
+    assert dto["conversationId"] == TEST_CID
     step = dto["steps"][0]
     assert step["expectedChanges"] == 2 and step["changeCount"] == 0
     assert step["touches"] == {"refs": ["R1"], "nets": []} and step["erc"] is None
@@ -216,6 +219,7 @@ def test_dto_is_camel_case() -> None:
 @pytest.fixture
 async def repo(tmp_path: Path) -> AsyncIterator[PlanRepo]:
     db = await Database.open(tmp_path / "db.sqlite")
+    await ensure_test_conversation(db)
     yield PlanRepo(db)
     await db.close()
 

@@ -4,6 +4,8 @@ import { errorText, planOpenRestoreHint, restoreSnapshot } from './restore';
 
 export interface ConfirmRestoreProps {
   projectId: string;
+  /** The conversation the restore is done from (sent in the restore body). */
+  conversationId: string;
   snapshotId: string;
   /** The turn the snapshot was taken before, e.g. its label (shown in quotes). */
   label: string;
@@ -19,6 +21,7 @@ export interface ConfirmRestoreProps {
 /** Modal confirmation before an undo: nothing is restored without an explicit click. */
 export function ConfirmRestore({
   projectId,
+  conversationId,
   snapshotId,
   label,
   createdAt,
@@ -41,7 +44,7 @@ export function ConfirmRestore({
   async function restore() {
     setBusy(true);
     try {
-      await restoreSnapshot(projectId, snapshotId);
+      await restoreSnapshot(projectId, snapshotId, conversationId);
       onDone();
     } catch (e) {
       onError(apiErrorCode(e) === 'plan_open' ? planOpenRestoreHint(e) : errorText(e));
