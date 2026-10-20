@@ -505,6 +505,21 @@ class DesignDocs:
 - The diff (`components/docs/lineDiff.ts`) keeps one `Int32Array(d+1)` per step
   (≤ (D+1)(D+2)/2 entries); revision texts are shown without front matter.
 
+**As built (C2):**
+- `stores/conversations.ts` also holds `status`, `errors`, `unread` and
+  `viewing` per project, plus the actions `load`, `loadArchived`, `view`,
+  `create`, `rename`, `setArchived`, `close`, `reopen` and `interrupt`
+  (sends `interrupt` with `activeRun.conversationId`). `byProject` includes
+  archived sessions once listed. Hooks: `useConversations`,
+  `useConversation`, `useConversationsApi`; tests inject a store through
+  `ConversationsStoreContext`. The chat store keeps its own `activeRuns`.
+- The composer keeps one draft per conversation: `useComposer.activate(chatKey)`
+  (called by `ChatPanel`); `reset()` drops all drafts on logout.
+- `ProjectPage` loads the open plan (plans store) for the "Plan open in
+  Session N" banner; `viewer.spec.ts` mocks `GET /plans/open`.
+- Run pushes deep-link to `/p/{pid}/s/{cid}`; the rate-limit push keeps
+  `/p/{pid}`. `public/sw.js` `safeUrl` accepts the session path.
+
 ---
 
 ## Decided by owner (2026-10-19)
