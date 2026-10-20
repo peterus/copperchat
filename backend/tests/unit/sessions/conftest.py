@@ -13,8 +13,8 @@ import pytest_asyncio
 
 from copperchat.agent.broadcaster import Subscription
 from copperchat.agent.engine import RunEngine
-from copperchat.agent.fake import FakeAgent, ScriptFor, Step, echo_script
 from copperchat.agent.events import QueuedItem
+from copperchat.agent.fake import FakeAgent, ScriptFor, Step, echo_script
 from copperchat.agent.protocol import MessageDTO
 from copperchat.config import Settings
 from copperchat.db.repos.conversations import ConversationRepo, ConversationRow
