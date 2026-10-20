@@ -278,6 +278,7 @@ class RunEngine:
         self.editing: EditingService | None = None
         # Sessions (C5): the design-docs service, passed into every ToolContext.
         self.docs: DesignDocs | None = None
+        self._seen_lock = asyncio.Lock()
         # Phase 8 wires the uploads table (AgentRuntime); unknown ids are rejected.
         self.attachment_resolver: AttachmentResolver = _no_attachments
         self.rate_limited_until: datetime | None = None
@@ -1310,11 +1311,12 @@ class RunEngine:
         """Advance ``docs_seen`` over the conversation's own change only if it had seen the
         version the change was based on: a change by the user or another session in
         between (a stale ``doc_append``) is still reported at the next turn."""
-        conv = await self._conversations.get(conversation_id)
-        if conv is not None and conv.docs_seen.get(path) == prev:
-            await self._conversations.set_docs_seen(
-                conversation_id, {**conv.docs_seen, path: version}
-            )
+        async with self._seen_lock:  # read-modify-write: concurrent doc writes
+            conv = await self._conversations.get(conversation_id)
+            if conv is not None and conv.docs_seen.get(path) == prev:
+                await self._conversations.set_docs_seen(
+                    conversation_id, {**conv.docs_seen, path: version}
+                )
 
     async def _on_mutation(self) -> None:
         turn = self._turn

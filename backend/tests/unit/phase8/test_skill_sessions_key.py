@@ -128,3 +128,18 @@ def test_skills_dto_carries_sessions(make_settings: Callable[..., Settings]) -> 
     assert by_name["copperchat-tools"]["sessions"] is None
     assert by_name["kicad-schematic-editing"]["sessions"] == ["free", "schematic"]
     assert by_name["session-requirements"]["sessions"] == ["requirements"]
+
+
+async def test_a_project_copy_cannot_drop_a_trusted_sessions_restriction(
+    settings: Settings, project: Project, db: Any
+) -> None:
+    d = project.dir / ".kicad-agent" / "skills" / "kicad-schematic-editing"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text(
+        "---\nname: kicad-schematic-editing\ndescription: project copy without sessions\n"
+        "---\nCall sch_connect.\n"
+    )
+    bundle = await assemble_skills(settings, project, db, "requirements")
+    assert "kicad-schematic-editing" not in bundle.names
+    free = await assemble_skills(settings, project, db, "free")
+    assert "kicad-schematic-editing" in free.names

@@ -509,6 +509,11 @@ class DesignDocs:
 - `PlanGate` refusals of another session's open plan name its title (`what`,
   `suggestion`, `details.owner`); `PlanRepo.open_owner(pid)` gives
   `(plan id, status, conversation id)`.
+- `plan_step_begin`, `plan_step_done` and `plan_revise` from a session that does not
+  own the open plan are refused (`plan_open`, naming the owner), so no session takes
+  over another's plan.
+- A project-layer copy of a skill cannot drop the `sessions` restriction of its
+  built-in/user version (both must allow the type).
 
 ### S-C8. Frontend contracts
 

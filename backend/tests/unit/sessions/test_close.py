@@ -13,7 +13,7 @@ import pytest
 
 from copperchat.agent.events import QueuedItem, RateLimited
 from copperchat.agent.fake import Delegate, Emit, Finish, Text, Tool, Wait
-from copperchat.agent.protocol import AttachmentRef
+from copperchat.agent.protocol import AttachmentRef, ConversationUpdatedFrame, MessageFrame
 from copperchat.config import Settings
 from copperchat.db import Database
 from copperchat.db.repos.agent_state import RunRepo
@@ -483,3 +483,50 @@ async def test_close_turn_cannot_commit(env: Env) -> None:
         await commit.handler(ctx, {"message": "x"})
     gate.set()
     await env.idle()
+
+
+async def test_closing_is_published_before_the_close_message(env: Env) -> None:
+    cid = await env.create("free")
+    gate = asyncio.Event()
+    env.script = lambda item: [Wait(gate)]
+    await env.engine()
+    sub = env.subscribe()
+    assert (await _close(env, cid)).status_code == 202
+    frames = []
+    while not sub._q.empty():
+        frame = sub._q.get_nowait()
+        if frame is not None:
+            frames.append(frame)
+    kinds = [
+        ("conv", f.conversation.status)
+        if isinstance(f, ConversationUpdatedFrame)
+        else ("msg", f.message.content == CLOSE_TEXT)
+        for f in frames
+        if isinstance(f, ConversationUpdatedFrame | MessageFrame)
+    ]
+    assert kinds.index(("conv", "closing")) < kinds.index(("msg", True))
+    sub.close()
+    gate.set()
+    await env.idle()
+
+
+async def test_failed_submit_reverts_and_cancels_the_inserted_close_row(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cid = await env.create("free")
+    engine = await env.engine()
+    real = engine._publish
+
+    async def flaky(frame: Any) -> None:
+        if isinstance(frame, MessageFrame) and frame.message.content == CLOSE_TEXT:
+            raise RuntimeError("socket gone")
+        await real(frame)
+
+    monkeypatch.setattr(engine, "_publish", flaky)
+    with pytest.raises(RuntimeError):
+        await env.app.state.conversation_service.close(env.project, cid)
+    monkeypatch.setattr(engine, "_publish", real)
+    assert (await env.conv(cid)).status == "open"
+    rows = [r for r in await env.rows(cid) if r.metadata.get("origin") == CLOSE_ORIGIN]
+    assert [r.status for r in rows if r.role == "user"] == ["cancelled"]
+    assert NOT_COMPLETED not in _notices(await env.rows(cid))

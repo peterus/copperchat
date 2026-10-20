@@ -106,7 +106,13 @@ async def assemble_skills(
     for skill in effective_skills(SkillLayers.for_project(settings, project)):
         if skill.name in disabled:
             continue
-        if skill.sessions is not None and conversation_type not in skill.sessions:
+        # A trusted (built-in/user) restriction holds even when a project-layer copy of
+        # the skill drops the key.
+        trusted_sessions = trusted[skill.name].sessions if skill.name in trusted else None
+        if any(
+            types is not None and conversation_type not in types
+            for types in (skill.sessions, trusted_sessions)
+        ):
             continue
         if skill.agent is not None or trusted.get(skill.name, skill).agent is not None:
             continue  # agent-scoped (or shadowing one): never offered to the main agent

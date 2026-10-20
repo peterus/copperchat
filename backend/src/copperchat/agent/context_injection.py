@@ -255,6 +255,8 @@ async def _change_line(
     path: str,
     seen: str | None,
     current: str | None,
+    *,
+    counts: bool = True,
 ) -> str | None:
     name = _name(path)
     if current is None:
@@ -284,7 +286,7 @@ async def _change_line(
     else:
         who = f"by {sanitize_field(foreign.conversation_label or 'another session')}"
     added, removed = latest.added, latest.removed
-    if seen is not None:
+    if counts and seen is not None:
         old = await repo.content_by_version(project.id, path, seen)
         new = await repo.content_of(project.id, path, latest.id)
         if old is not None and new is not None:
@@ -304,7 +306,16 @@ async def later_turn(docs: DesignDocs, project: Project, conv: ConversationRow) 
     changed = sorted(p for p in set(current) | set(seen) if current.get(p) != seen.get(p))
     lines: list[str] = []
     for path in changed:  # at most the 50 readable docs plus the vanished seen ones
-        line = await _change_line(docs, project, conv, path, seen.get(path), current.get(path))
+        # beyond the cap a line is only counted: no content fetch and diff
+        line = await _change_line(
+            docs,
+            project,
+            conv,
+            path,
+            seen.get(path),
+            current.get(path),
+            counts=len(lines) < MAX_CHANGE_LINES,
+        )
         if line is not None:
             lines.append(line)
     notices = lines[:MAX_CHANGE_LINES]

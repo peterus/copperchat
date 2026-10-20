@@ -221,3 +221,27 @@ async def test_own_plan_refusal_keeps_its_hint(h: Harness) -> None:
     out = await h.call(h.spec())
     assert out["error"]["details"]["owner"] is None
     assert "approve or reject" in out["error"]["suggestion"]
+
+
+async def test_another_session_cannot_take_over_the_plan(h: Harness) -> None:
+    """Sessions C5 (spec §5.4): plan_step_begin, plan_step_done and plan_revise from a
+    session that does not own the open plan are refused, naming the owner."""
+    from copperchat.errors import StructuredToolError
+    from tests.unit.plans.conftest import step_spec
+
+    b = await _owned_by_session_a(h)
+    plan = await h.plans.repo.open_for(PID)
+    assert plan is not None
+    await h.set_status(plan, "approved")
+    base = h.ctx
+    h.ctx = lambda: replace(base(), conversation_id=b)  # type: ignore[method-assign]
+    calls = (
+        lambda: h.plans.step_begin(h.ctx(), 1),
+        lambda: h.plans.step_done(h.ctx(), 1, "done"),
+        lambda: h.plans.revise(h.ctx(), [step_spec("x")], "why"),
+    )
+    for call in calls:
+        with pytest.raises(StructuredToolError) as err:
+            await call()
+        assert err.value.code == "plan_open" and "Session A" in err.value.what
+    assert h.state.active_step_id is None

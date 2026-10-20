@@ -102,13 +102,17 @@ class SessionService:
         # Published before the message is queued: a fast close turn's 'closed' must not
         # be overtaken by this 'closing'.
         await self._publish(row)
+        client_id = f"close-{uuid.uuid4().hex}"
         try:
-            await engine.submit_ex(
-                cid, f"close-{uuid.uuid4().hex}", CLOSE_TEXT, [], {"origin": CLOSE_ORIGIN}
-            )
+            await engine.submit_ex(cid, client_id, CLOSE_TEXT, [], {"origin": CLOSE_ORIGIN})
         except BaseException:
             reverted = await self.conversations.set_status(cid, "open", expect="closing")
             await self._publish(reverted)
+            # the row may be in already (a publish failed after the insert): it must not
+            # run later in an open session (cancelled after the revert, so no notice)
+            row_in = await self.messages.get_by_client_id(project.id, client_id)
+            if row_in is not None:
+                await engine.cancel_queued(row_in.id)
             raise
         return row
 

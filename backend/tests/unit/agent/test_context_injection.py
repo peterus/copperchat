@@ -332,16 +332,57 @@ async def test_bad_files_are_listed_as_ignored_and_never_opened(
 
 
 async def test_change_lines_are_capped_after_dropping_own_changes(env: Env) -> None:
-    for i in range(25):
+    """Own changes are dropped before the 20-line cap: 5 own changes sorting first plus
+    23 hand edits give 20 foreign lines and '3 more', and no own doc is named."""
+    for i in range(28):
         (env.design / f"d{i:02}.md").write_text(f"# D{i}\n")
     cid = await env.create("free")
     env.script = lambda item: []
     await env.send(cid, "first")
-    for i in range(23):
+    env.script = lambda item: [
+        Tool("doc_append", {"path": f"d{i:02}.md", "text": "own", "summary": "own"})
+        for i in range(5)
+    ]
+    await env.send(cid, "own changes")
+    for i in range(5, 28):
         (env.design / f"d{i:02}.md").write_text(f"# D{i}\n\nby hand\n")
     env.script = lambda item: []
     await env.send(cid, "second")
     text = env.agents[0].bursts[-1].prompts[-1]
     lines = _notice_lines(text)
     assert len(lines) == 21
+    assert all(f"d{i:02}.md" not in "\n".join(lines) for i in range(5))
+    assert lines[0].startswith(f"{NOTICE} d05.md changed since your last turn")
     assert lines[-1] == f"{NOTICE} 3 more docs changed since your last turn; doc_list shows them."
+
+
+async def test_inline_decides_on_the_body_size_not_the_file_size(env: Env) -> None:
+    """A body ≤ 8 KiB is inlined even when hand-kept front matter makes the file > 9 KiB."""
+    extra = "".join(f"note{i}: {'z' * 90}\n" for i in range(30))  # ~3 KiB of front matter
+    body = "# Requirements\n\n## Power\n\n" + "p" * 7000 + "\n"
+    (env.design / "requirements.md").write_text(f"---\ndoc: requirements\n{extra}---\n{body}")
+    assert (env.design / "requirements.md").stat().st_size > 9 * 1024
+    cid = await env.create("schematic")
+    await env.send(cid, "go")
+    assert "<<<doc requirements.md" in _prompt(env)
+
+
+async def test_unchanged_docs_seen_is_not_written_again(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (env.design / "requirements.md").write_text(REQ_BODY)
+    cid = await env.create("requirements")
+    env.script = lambda item: []
+    await env.send(cid, "first")
+    from copperchat.db.repos.conversations import ConversationRepo
+
+    writes: list[str] = []
+    real = ConversationRepo.set_docs_seen
+
+    async def spy(self: Any, conversation_id: str, seen: dict[str, str]) -> None:
+        writes.append(conversation_id)
+        await real(self, conversation_id, seen)
+
+    monkeypatch.setattr(ConversationRepo, "set_docs_seen", spy)
+    await env.send(cid, "nothing changed")
+    assert writes == []

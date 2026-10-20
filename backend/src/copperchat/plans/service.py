@@ -239,6 +239,19 @@ class PlanService:
         conv = await self.conversations.get(owner[2])
         return conv.title if conv is not None else "another session"
 
+    async def _check_owner(self, ctx: ToolContext) -> None:
+        """Only the session that owns the open plan works on it (spec §5.4): another
+        session can neither begin or finish its steps nor revise it."""
+        owner = await self.foreign_owner(ctx)
+        if owner is not None:
+            raise StructuredToolError(
+                f"The open plan belongs to {owner}",
+                "Plans are worked on by the session that proposed them",
+                f"Continue the plan in {owner}, or ask the user to finish or abort it.",
+                code="plan_open",
+                details={"owner": owner},
+            )
+
     async def _check_open(self, conversation_id: str) -> None:
         """No new or revised plan while the session is closing (spec §10): Approve would
         target a closed session."""
@@ -321,6 +334,7 @@ class PlanService:
         reason = _text(reason, "reason", REASON_MAX)
         pid = ctx.project.id
         await self._check_open(await self._proposing_conversation(ctx))
+        await self._check_owner(ctx)
         async with self.lock(pid):
             plan = await self._open(pid)
             kept = plan.done_count  # finished steps always stay (machine "revise")
@@ -347,6 +361,7 @@ class PlanService:
 
     async def step_begin(self, ctx: ToolContext, idx: Any) -> PlanStep:
         state = self._turn(ctx)
+        await self._check_owner(ctx)
         if not isinstance(idx, int) or isinstance(idx, bool):
             raise _invalid("Invalid step", "step must be an integer", "Pass the step number.")
         if getattr(ctx.session, "read_only", False):
@@ -448,6 +463,7 @@ class PlanService:
         self, ctx: ToolContext, idx: Any, summary: Any, justifications: Any = None
     ) -> dict[str, Any]:
         state = self._turn(ctx)
+        await self._check_owner(ctx)
         if not isinstance(idx, int) or isinstance(idx, bool):
             raise _invalid("Invalid step", "step must be an integer", "Pass the step number.")
         summary = _text(summary, "summary", SUMMARY_MAX)
