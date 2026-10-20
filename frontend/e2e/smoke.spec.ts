@@ -3,7 +3,7 @@ import { expect, type Page, test } from '@playwright/test';
 
 const PID = 'a1b2c3d4e5f6';
 const CID = '0123456789abcdef0123456789abcdef';
-/** The project's one conversation (C1 interim default session). */
+/** The project's one conversation (/p/:projectId redirects to it). */
 const CONVERSATION = {
   id: CID,
   seq: 1,

@@ -5,7 +5,11 @@ export interface ComposerAttachmentSlotProps {
   disabled: boolean;
   projectId: string;
   attachments: AttachmentRef[];
-  setAttachments(next: AttachmentRef[]): void;
+  /**
+   * Adds an uploaded file to the draft the upload started in (read at write time, so an upload
+   * that finishes after a session switch or a send neither lands elsewhere nor restores old refs).
+   */
+  addAttachment(ref: AttachmentRef): void;
 }
 
 export type ComposerAttachmentSlot = ComponentType<ComposerAttachmentSlotProps> | null;

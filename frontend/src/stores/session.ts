@@ -1,12 +1,14 @@
 import { useAuth } from './auth';
 import { useChatStore } from './chat';
 import { useComposer } from './composer';
+import { useConversationsStore } from './conversations';
 import { useProjects } from './projects';
 
 /** Forget everything that belongs to the signed-in session (L9/L11). */
 export function resetSessionState(): void {
   useChatStore.getState().reset();
-  useComposer.getState().clear();
+  useComposer.getState().reset();
+  useConversationsStore.getState().reset();
   useProjects.getState().reset();
 }
 

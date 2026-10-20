@@ -3,6 +3,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { apiGet } from '@/api/http';
 import { ConfirmRestore } from '@/components/history/ConfirmRestore';
 import { errorText } from '@/components/history/restore';
+import { SessionChip } from '@/components/sessions/SessionChip';
 import { useActiveRun, useCurrentConversationId } from '@/hooks/useChat';
 import { registerPanel } from '@/layouts/panels';
 import { useReloadAfterRun } from './useReloadAfterRun';
@@ -84,7 +85,10 @@ function EntryRow({
         <p className="truncate font-medium" title={e.label}>
           {label}
         </p>
-        <p className="text-sm text-muted">{when(e.createdAt)}</p>
+        <p className="flex flex-wrap items-center gap-x-2 text-sm text-muted">
+          {when(e.createdAt)}
+          <SessionChip title={e.conversationTitle} />
+        </p>
       </div>
       <button
         type="button"
@@ -165,6 +169,7 @@ export function HistoryPanel({ projectId }: { projectId: string }) {
           snapshotId={confirm.id}
           label={confirm.label || (isStep(confirm) ? 'Plan step' : 'Agent turn')}
           createdAt={confirm.createdAt}
+          sessionTitle={confirm.conversationTitle ?? null}
           checkpoint={isStep(confirm)}
           onDone={() => {
             setConfirm(null);

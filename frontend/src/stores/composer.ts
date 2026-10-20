@@ -20,7 +20,21 @@ export function insertAt(text: string, insert: string, selection: Selection | nu
   return { text: head + after, caret };
 }
 
+/** A conversation's unsent message. */
+export interface Draft {
+  text: string;
+  selection: Selection | null;
+  attachments: AttachmentRef[];
+}
+
+/**
+ * The composer edits the active conversation's draft (`text`, `selection`, `attachments`); the
+ * drafts of the other conversations are parked in `drafts` (spec §12.1: keyed per conversation).
+ */
 export interface ComposerState {
+  /** chatKey of the conversation the draft fields belong to, or null before one is shown. */
+  activeKey: string | null;
+  drafts: Readonly<Record<string, Draft>>;
   text: string;
   selection: Selection | null;
   attachments: AttachmentRef[];
@@ -34,9 +48,31 @@ export interface ComposerState {
   removeAttachment: (id: string) => void;
   setAttachments: (next: AttachmentRef[]) => void;
   clear: () => void;
+  /** Parks the current draft and shows the draft of `key` (empty when it has none). */
+  activate: (key: string) => void;
+  /** Parks the current draft; no conversation is shown (what is typed now is dropped). */
+  deactivate: () => void;
+  /** Adds `a` to draft `key`, active or parked (an upload that finishes after a switch); no duplicates. */
+  addAttachmentFor: (key: string, a: AttachmentRef) => void;
+  /** Forgets every draft (logout). */
+  reset: () => void;
+}
+
+const EMPTY_DRAFT: Draft = { text: '', selection: null, attachments: [] };
+
+/** The drafts with the active one parked (an empty draft is dropped). */
+function park(s: ComposerState): Record<string, Draft> {
+  const parked = { ...s.drafts };
+  if (s.activeKey !== null) {
+    if (s.text === '' && s.attachments.length === 0) delete parked[s.activeKey];
+    else parked[s.activeKey] = { text: s.text, selection: s.selection, attachments: s.attachments };
+  }
+  return parked;
 }
 
 export const useComposer = create<ComposerState>()((set, get) => ({
+  activeKey: null,
+  drafts: {},
   text: '',
   selection: null,
   attachments: [],
@@ -54,4 +90,26 @@ export const useComposer = create<ComposerState>()((set, get) => ({
   removeAttachment: (id) => set({ attachments: get().attachments.filter((a) => a.id !== id) }),
   setAttachments: (next) => set({ attachments: next }),
   clear: () => set({ text: '', selection: null, attachments: [], focusToken: 0 }),
+  activate: (key) => {
+    if (key === get().activeKey) return;
+    const parked = park(get());
+    const next = parked[key] ?? EMPTY_DRAFT;
+    delete parked[key];
+    set({ activeKey: key, drafts: parked, ...next, focusToken: 0 });
+  },
+  deactivate: () => {
+    if (get().activeKey === null) return;
+    set({ activeKey: null, drafts: park(get()), ...EMPTY_DRAFT, focusToken: 0 });
+  },
+  addAttachmentFor: (key, a) => {
+    if (key === get().activeKey) {
+      get().addAttachment(a);
+      return;
+    }
+    const drafts = get().drafts;
+    const draft = drafts[key] ?? EMPTY_DRAFT;
+    if (draft.attachments.some((x) => x.id === a.id)) return;
+    set({ drafts: { ...drafts, [key]: { ...draft, attachments: [...draft.attachments, a] } } });
+  },
+  reset: () => set({ activeKey: null, drafts: {}, text: '', selection: null, attachments: [], focusToken: 0 }),
 }));

@@ -14,6 +14,7 @@ export function AppRoutes() {
       <Route element={<RequireAuth />}>
         <Route path="/projects" element={<ProjectPickerPage />} />
         <Route path="/p/:projectId" element={<ProjectPage />} />
+        <Route path="/p/:projectId/s/:cid" element={<ProjectPage />} />
         <Route path="/settings" element={<SettingsPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/projects" replace />} />

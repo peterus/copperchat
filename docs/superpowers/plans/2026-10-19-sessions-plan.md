@@ -505,6 +505,28 @@ class DesignDocs:
 - The diff (`components/docs/lineDiff.ts`) keeps one `Int32Array(d+1)` per step
   (≤ (D+1)(D+2)/2 entries); revision texts are shown without front matter.
 
+**As built (C2):**
+- `stores/conversations.ts` also holds `status`, `errors`, `unread` and
+  `viewing` per project, plus the actions `load`, `loadArchived`, `view`,
+  `create`, `rename`, `setArchived`, `close`, `reopen` and `interrupt`
+  (sends `interrupt` with `activeRun.conversationId`). `byProject` includes
+  archived sessions once listed. Hooks: `useConversations`,
+  `useConversation`, `useConversationsApi`; tests inject a store through
+  `ConversationsStoreContext`. The chat store keeps its own `activeRuns`.
+- The composer keeps one draft per conversation: `useComposer.activate(chatKey)`
+  (called by `ChatPanel`, which is keyed by the session); `deactivate()` while no
+  chat is shown; `reset()` drops all drafts on logout.
+- The composer attachment slot (`composerSlots.ts`, Phase 8 extension point)
+  takes `addAttachment(ref)` instead of `setAttachments(list)`: an upload adds
+  to the draft it started in (`addAttachmentFor(key, ref)`), also after a switch.
+- `ChatDeps.onResubscribe(projectId)` tells the conversations store about a
+  session switch (`resubscribed`): it forgets the active run and re-reads the
+  list; a reconnect re-reads only projects whose page is shown (`leave()`).
+- `ProjectPage` loads the open plan (plans store) for the "Plan open in
+  Session N" banner; `viewer.spec.ts` mocks `GET /plans/open`.
+- Run pushes deep-link to `/p/{pid}/s/{cid}`; the rate-limit push keeps
+  `/p/{pid}`. `public/sw.js` `safeUrl` accepts the session path.
+
 ---
 
 ## Decided by owner (2026-10-19)

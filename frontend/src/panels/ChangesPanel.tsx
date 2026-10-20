@@ -1,14 +1,16 @@
 import { GitCompareArrows } from 'lucide-react';
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { type ChangeEntry, type ChangeRun, type ChangesDiff, fetchChangesDiff } from '@/api/changes';
 import { BeforeAfter } from '@/components/changes/BeforeAfter';
 import { ChangeList } from '@/components/changes/ChangeList';
 import { ErcBadge } from '@/components/changes/ErcBadge';
 import { diffHighlight, entriesHighlight } from '@/components/changes/highlight';
 import { errorText } from '@/components/history/restore';
-import { useChat, useCurrentConversationId } from '@/hooks/useChat';
+import { SessionChip } from '@/components/sessions/SessionChip';
+import { useChat } from '@/hooks/useChat';
 import { registerPanel } from '@/layouts/panels';
 import { entriesKey, useChanges } from '@/stores/changes';
+import { useConversations } from '@/stores/conversations';
 import { useView } from '@/stores/view';
 
 const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : 'unknown time');
@@ -194,7 +196,10 @@ const RunCard = memo(function RunCard({
     <li aria-label={`Turn ${run.runId} at ${when(run.createdAt)}`} className="rounded border border-border bg-surface p-2">
       <div className="flex flex-wrap items-center gap-2">
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium">{when(run.createdAt)}</p>
+          <p className="flex flex-wrap items-center gap-x-2 text-sm font-medium">
+            {when(run.createdAt)}
+            <SessionChip title={run.conversationTitle} />
+          </p>
           <p className="text-xs text-muted">
             {plural(run.count, 'change')}
             {run.sideEffects > 0 && ` · ${plural(run.sideEffects, 'side effect')}`}
@@ -279,8 +284,13 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
   const load = useChanges((s) => s.load);
   const attach = useChanges((s) => s.attach);
   useEffect(() => attach(), [attach]);
-  // Restore notices of the conversation shown (C1 interim: one default session).
-  const { messages } = useChat(projectId, useCurrentConversationId(projectId));
+  // Restore notices of the conversation shown.
+  // The session shown on the project page (null: none, e.g. the empty state).
+  const conversationId = useConversations((s) => s.viewing[projectId] ?? null);
+  const { messages } = useChat(projectId, conversationId);
+  // All sessions by default: the design state is shared (spec §12.4).
+  const [onlyThis, setOnlyThis] = useState(false);
+  const scopeName = useId();
 
   useEffect(() => {
     void load(projectId);
@@ -296,17 +306,32 @@ export function ChangesPanel({ projectId }: { projectId: string }) {
     const restores = JSON.parse(restoresKey) as Restore[];
     // newest first; a restore sits between the runs before and after it
     const timeline = [
-      ...(runs ?? []).map((run) => ({ at: time(run.createdAt), run })),
+      ...(runs ?? [])
+        .filter((run) => !onlyThis || conversationId === null || run.conversationId === conversationId)
+        .map((run) => ({ at: time(run.createdAt), run })),
       ...restores.map((restore) => ({ at: time(restore.at), restore })),
     ].sort((a, b) => b.at - a.at);
     return { timeline, ...restoreInfo(runs ?? [], restores) };
-  }, [runs, restoresKey]);
+  }, [runs, restoresKey, onlyThis, conversationId]);
   return (
     <div className="flex h-full flex-col gap-2 overflow-y-auto p-3 text-fg">
       {error && (
         <p role="alert" className="rounded bg-danger/10 p-2 text-sm text-danger">
           {error}
         </p>
+      )}
+      {runs !== null && runs.length > 0 && conversationId !== null && (
+        <fieldset className="flex gap-3 text-xs text-muted">
+          <legend className="sr-only">Show changes of</legend>
+          <label className="flex items-center gap-1">
+            <input type="radio" name={scopeName} checked={onlyThis} onChange={() => setOnlyThis(true)} />
+            This session
+          </label>
+          <label className="flex items-center gap-1">
+            <input type="radio" name={scopeName} checked={!onlyThis} onChange={() => setOnlyThis(false)} />
+            All sessions
+          </label>
+        </fieldset>
       )}
       {runs === null && !error && <p className="text-muted">Loading…</p>}
       {runs?.length === 0 && <p className="text-sm text-muted">No changes yet. Edits the agent makes to the schematic are listed here per turn.</p>}

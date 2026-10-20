@@ -48,6 +48,30 @@ describe('sw.js', () => {
     );
   });
 
+  it('keeps a session deep link and drops other paths', async () => {
+    const { handlers, self } = loadSw();
+    const deep = '/p/a1b2c3d4e5f6/s/0123456789abcdef0123456789abcdef';
+    const refused = [
+      '/p/a1b2c3d4e5f6/s/xyz',
+      `${deep}/x`,
+      `${deep}/`,
+      `${deep}?next=//evil.example`,
+      `${deep}#x`,
+      `${deep}\n`,
+      '/p/a1b2c3d4e5f6/s/0123456789ABCDEF0123456789ABCDEF',
+      '/p/a1b2c3d4e5f6/s/../../settings',
+      '/p/a1b2c3d4e5f6%2Fs%2F0123456789abcdef0123456789abcdef',
+      '//evil.example/p/a1b2c3d4e5f6',
+      'https://evil.example/p/a1b2c3d4e5f6',
+      '/settings',
+    ];
+    for (const url of [deep, ...refused]) {
+      await fire(handlers.push, { data: { json: () => ({ title: 'T', body: 'B', url, tag: 't' }) } });
+    }
+    const urls = self.registration.showNotification.mock.calls.map((c: unknown[]) => (c[1] as { data: { url: string } }).data.url);
+    expect(urls).toEqual([deep, ...refused.map(() => '/')]);
+  });
+
   it('survives a payload that is not JSON', async () => {
     const { handlers, self } = loadSw();
     await fire(handlers.push, {

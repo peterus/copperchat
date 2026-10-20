@@ -11,6 +11,8 @@ export interface ConfirmRestoreProps {
   label: string;
   /** ISO time of the snapshot, if known. */
   createdAt?: string;
+  /** The session of that turn, if known (spec §12.4). */
+  sessionTitle?: string | null;
   /** A plan step checkpoint: the state at the end of that step (not before a turn). */
   checkpoint?: boolean;
   onDone: () => void;
@@ -25,6 +27,7 @@ export function ConfirmRestore({
   snapshotId,
   label,
   createdAt,
+  sessionTitle = null,
   checkpoint = false,
   onDone,
   onCancel,
@@ -66,6 +69,7 @@ export function ConfirmRestore({
         </h2>
         <p className="mb-4 text-sm">
           Restore the design to its state {checkpoint ? 'at the end of' : 'before'} “{label}”
+          {sessionTitle ? ` in ${sessionTitle}` : ''}
           {createdAt ? ` (${new Date(createdAt).toLocaleString()})` : ''}. Changes made after it are replaced and
           KiCad reloads the restored files.
         </p>

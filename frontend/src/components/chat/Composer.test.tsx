@@ -63,13 +63,13 @@ describe('Composer', () => {
     expect(onCancelQueued).toHaveBeenCalledWith(42);
   });
 
-  it('renders no attachment control until a slot is registered; the slot can set attachments', () => {
+  it('renders no attachment control until a slot is registered; the slot can add attachments', () => {
     const { onSend, box } = setup();
     expect(screen.queryByTestId('attach')).toBeNull();
     act(() =>
-      composerAttachmentSlot.register(({ disabled, projectId, setAttachments }) => (
+      composerAttachmentSlot.register(({ disabled, projectId, addAttachment }) => (
         <button type="button" data-testid="attach" disabled={disabled}
-          onClick={() => setAttachments([{ id: 'u1', kind: 'image', name: `${projectId}.png` }])}>Attach</button>
+          onClick={() => addAttachment({ id: 'u1', kind: 'image', name: `${projectId}.png` })}>Attach</button>
       )),
     );
     fireEvent.click(screen.getByTestId('attach'));

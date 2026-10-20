@@ -1,5 +1,5 @@
 import { Camera, LoaderCircle, Paperclip } from 'lucide-react';
-import { type ChangeEvent, useEffect, useRef, useState } from 'react';
+import { type ChangeEvent, useState } from 'react';
 import { uploadAttachment } from '@/api/uploads';
 import type { ComposerAttachmentSlotProps } from './composerSlots';
 
@@ -10,14 +10,9 @@ const ICON_BUTTON =
  * Composer slot (Phase 8): uploads picked files / camera photos and appends their AttachmentRefs.
  * The chips (with remove buttons) are rendered by the Composer itself.
  */
-export function AttachmentPicker({ disabled, projectId, attachments, setAttachments }: ComposerAttachmentSlotProps) {
+export function AttachmentPicker({ disabled, projectId, addAttachment }: ComposerAttachmentSlotProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Several files upload one after another; each appends to the latest list, not a stale prop.
-  const latest = useRef(attachments);
-  useEffect(() => {
-    latest.current = attachments;
-  }, [attachments]);
 
   async function onFiles(e: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? []);
@@ -27,9 +22,8 @@ export function AttachmentPicker({ disabled, projectId, attachments, setAttachme
     setError(null);
     try {
       for (const file of files) {
-        const ref = await uploadAttachment(projectId, file);
-        latest.current = [...latest.current, ref];
-        setAttachments(latest.current);
+        // Several files upload one after another; each is added on its own.
+        addAttachment(await uploadAttachment(projectId, file));
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

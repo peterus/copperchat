@@ -22,9 +22,19 @@ test('login → open project → send → fake reply → viewer loads; PWA + CSP
     { timeout: 90_000 },
   );
   await page.getByRole('link', { name: /ecc83/ }).first().click();
-  await expect(page).toHaveURL(/\/p\/[0-9a-f]{12}$/);
   // attached, not visible: on phones the viewer stays mounted behind the Chat tab
   await expect(page.getByTestId('viewer-slot').first()).toBeAttached();
+  // A fresh instance has no session yet ("Start a session"); a rerun goes to the newest open one.
+  const message = page.getByRole('textbox', { name: 'Message' });
+  const start = page.getByRole('button', { name: 'Start a session' });
+  await expect(message.or(start)).toBeVisible({ timeout: 30_000 });
+  if (await start.isVisible()) {
+    await start.click();
+    const dialog = page.getByRole('dialog', { name: 'New session' });
+    await dialog.getByText('Free', { exact: true }).click();
+    await dialog.getByRole('button', { name: 'Start session' }).click();
+  }
+  await expect(page).toHaveURL(/\/p\/[0-9a-f]{12}\/s\/[0-9a-f]{32}$/);
 
   // unique: reruns against the same instance keep history, and the desktop and phone projects
   // run in parallel against the same chat (same millisecond seen in CI)
