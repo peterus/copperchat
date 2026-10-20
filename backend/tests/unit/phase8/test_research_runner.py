@@ -397,3 +397,31 @@ async def test_timeout_still_counts_partial_usage(project: Project, settings: Se
 def test_options_restrict_writes_to_the_folder(project: Project, settings: Settings) -> None:
     opts = runner.researcher_options(project, settings, write_folder="TPS62133")
     assert opts.hooks and "PreToolUse" in opts.hooks
+
+
+async def test_query_cap_is_2000_chars(project: Project, settings: Settings) -> None:
+    """Sessions C5 (spec §13): injected doc text must not ship design data to the web
+    in a long research query; the cap is enforced server-side."""
+    calls: list[str] = []
+
+    async def fake(prompt: str, options: ClaudeAgentOptions) -> AsyncIterator[Any]:
+        calls.append(prompt)
+        yield result()
+
+    r, _ = make(project, settings, fake)
+    assert runner.MAX_QUERY_CHARS == 2000
+    with pytest.raises(StructuredToolError) as e:
+        await r.run({"mpn": "TPS62133", "query": "x" * 2001})
+    assert e.value.what == "Question too long" and calls == []
+    await r.run({"mpn": "TPS62133", "query": "x" * 2000})
+    assert len(calls) == 1
+    (spec,) = TOOL_SPECS
+    assert spec.input_schema["properties"]["query"]["maxLength"] == 2000
+
+
+def test_researcher_prompt_forbids_design_data_in_urls_and_queries() -> None:
+    from copperchat.research.agent import researcher_prompt
+
+    text = researcher_prompt().replace("\n", " ")
+    assert "Never put design details from the request" in text
+    assert "into URLs or search queries" in text

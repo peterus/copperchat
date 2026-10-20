@@ -40,6 +40,8 @@ TOOL_SPECS = [
                     "type": "string",
                     "description": "The question, with the operating point if relevant",
                     "minLength": 1,
+                    # a hint only: the runner enforces MAX_QUERY_CHARS itself
+                    "maxLength": 2000,
                 },
                 "attachment_paths": {
                     "type": "array",
