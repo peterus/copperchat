@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { DocConflict } from '@/api/docs';
 import { DocEditor } from '@/components/docs/DocEditor';
 import { DocHistory } from '@/components/docs/DocHistory';
@@ -6,7 +6,7 @@ import { DocIndex } from '@/components/docs/DocIndex';
 import { DocView } from '@/components/docs/DocView';
 import { docName } from '@/components/docs/format';
 import type { PanelProps } from '@/layouts/panels';
-import { useDocs, useDocsStore } from '@/stores/docs';
+import { draftKey, useDocs, useDocsStore } from '@/stores/docs';
 
 type Nav =
   | { view: 'index' }
@@ -26,34 +26,36 @@ function navOf(path: string | undefined, revisionId: string | undefined): Nav {
  * phone it fills the More tab and the editor the whole viewport. Remounted per project.
  */
 export function DocsPanel({ projectId, params }: PanelProps) {
-  return <DocsPanelBody key={projectId} projectId={projectId} path={params?.path} revisionId={params?.revisionId} />;
+  return <DocsPanelBody key={projectId} projectId={projectId} params={params} />;
 }
 
-function DocsPanelBody({
-  projectId,
-  path: paramPath,
-  revisionId: paramRevision,
-}: {
-  projectId: string;
-  path: string | undefined;
-  revisionId: string | undefined;
-}) {
+function DocsPanelBody({ projectId, params }: PanelProps) {
   const store = useDocsStore();
-  const [nav, setNav] = useState<Nav>(() => navOf(paramPath, paramRevision));
+  const [nav, setNav] = useState<Nav>(() => navOf(params?.path, params?.revisionId));
   const [reapprove, setReapprove] = useState<{ path: string; version: string } | null>(null);
   const index = useDocs((s) => s.index);
   const indexError = useDocs((s) => s.indexError);
   const doc = useDocs((s) => s.doc);
   const docError = useDocs((s) => s.docError);
+  const drafts = useDocs((s) => s.drafts);
+  const hasDraft = (path: string) => drafts[draftKey(projectId, path)] !== undefined;
 
   useEffect(() => {
     void store.getState().load(projectId);
+    return () => store.getState().detach();
   }, [store, projectId]);
 
-  // A later openPanel('docs', …) while the panel is open (e.g. another [View diff]).
+  // A later openPanel('docs', …) while the panel is open (e.g. another [View diff]). Keyed on the
+  // params object: every request is a new object, so the same card clicked twice navigates
+  // again. An open editor's text is kept as a draft and resumes from the doc view.
+  const first = useRef(true);
   useEffect(() => {
-    setNav(navOf(paramPath, paramRevision));
-  }, [paramPath, paramRevision]);
+    if (first.current) {
+      first.current = false;
+      return;
+    }
+    if (params) setNav(navOf(params.path, params.revisionId));
+  }, [params]);
 
   const openPath = nav.view === 'index' ? null : nav.path;
   useEffect(() => {
@@ -89,6 +91,8 @@ function DocsPanelBody({
         reapproveVersion={reapprove?.path === nav.path ? reapprove.version : null}
         onReapproveDone={() => setReapprove(null)}
         onChanged={reload}
+        hasDraft={hasDraft(nav.path)}
+        onDiscardDraft={() => store.getState().setDraft(projectId, nav.path, null)}
       />
     );
   } else if (nav.view === 'edit') {
@@ -117,7 +121,10 @@ function DocsPanelBody({
         selected={nav.revisionId}
         onSelect={(revisionId) => setNav({ view: 'history', path: nav.path, revisionId })}
         onReverted={reload}
-        onRevertConflict={(draft, conflict) => setNav({ view: 'edit', path: nav.path, seed: { draft, conflict } })}
+        onRevertConflict={(draft, conflict) => {
+          if (hasDraft(nav.path) && !window.confirm('Replace your unsaved draft of this doc with this revision?')) return;
+          setNav({ view: 'edit', path: nav.path, seed: { draft, conflict } });
+        }}
       />
     );
   }

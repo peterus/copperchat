@@ -158,4 +158,13 @@ describe('doc calls', () => {
     const err = new ApiError(409, { error: { code: 'doc_conflict', message: 'x', details: { currentVersion: null } } }, 'x');
     expect(docConflictOf(err)).toEqual({ currentVersion: null, author: null, conversationTitle: null });
   });
+
+  it('refuses dot or empty segments instead of building a traversing URL', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    for (const p of ['docs/design/../../x.md', 'docs/design/./a.md', 'docs//design/a.md']) {
+      await expect(getDoc(PID, p)).rejects.toThrow(/Invalid doc path/);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });

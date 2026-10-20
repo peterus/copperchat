@@ -1,9 +1,9 @@
-import { useState } from 'react';
+import { type KeyboardEvent, useEffect, useState } from 'react';
 import { type DocConflict, docConflictOf, type DocRead, getDoc, putDoc } from '@/api/docs';
 import { Markdown } from '@/components/chat/Markdown';
 import { errorText } from '@/components/history/restore';
 import { useLayoutMode } from '@/layouts/ProjectLayout';
-import { useDocs } from '@/stores/docs';
+import { draftKey, useDocs, useDocsStore } from '@/stores/docs';
 import { BUTTON, conflictBy, docName, PRIMARY } from './format';
 import { LineDiff } from './LineDiff';
 
@@ -40,13 +40,37 @@ const baseOf = (d: DocRead): Base => ({
  * editing on top of current] and [Discard mine]; the draft is only dropped by the last one.
  */
 export function DocEditor({ projectId, doc, seed, onCancel, onSaved }: DocEditorProps) {
-  const [draft, setDraft] = useState(() => seed?.draft ?? (doc.exists ? doc.body : (doc.template ?? '')));
-  const [base, setBase] = useState<Base>(() => baseOf(doc));
+  const store = useDocsStore();
+  // An unsaved draft of this doc (the editor was closed by the sheet, a panel switch, …) resumes.
+  const [saved] = useState(() => (seed ? undefined : store.getState().drafts[draftKey(projectId, doc.path)]));
+  const [draft, setDraft] = useState(() => seed?.draft ?? saved?.text ?? (doc.exists ? doc.body : (doc.template ?? '')));
+  const [base, setBase] = useState<Base>(() => saved?.base ?? baseOf(doc));
   const [preview, setPreview] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState<DocConflict | null>(seed?.conflict ?? null);
-  const [theirs, setTheirs] = useState<string | null>(null);
+  const [conflict, setConflict] = useState<DocConflict | null>(seed?.conflict ?? saved?.conflict ?? null);
+  /** The current doc as shown by [Show their change]: [Keep editing] re-bases onto exactly this. */
+  const [theirs, setTheirs] = useState<DocRead | null>(null);
+  const pristine = draft === base.body || (base.version === null && draft === (doc.template ?? ''));
+  const dirty = !pristine || conflict !== null;
+
+  // Every change is mirrored to the store, so no unmount can lose it.
+  useEffect(() => {
+    store.getState().setDraft(projectId, doc.path, dirty ? { text: draft, base, conflict } : null);
+  }, [store, projectId, doc.path, dirty, draft, base, conflict]);
+
+  const leave = (then: () => void) => {
+    store.getState().setDraft(projectId, doc.path, null);
+    then();
+  };
+  const cancel = () => {
+    if (dirty && !window.confirm('Discard your unsaved changes to this doc?')) return;
+    leave(onCancel);
+  };
+  // Escape must not reach the panel sheet's close handler (it would unmount the editor).
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') e.stopPropagation();
+  };
   const live = useDocs((s) => s.live[doc.path]);
   const changedMeanwhile = live !== undefined && live.version !== base.version && conflict === null;
   const fullscreen = useLayoutMode() === 'phone';
@@ -56,7 +80,7 @@ export function DocEditor({ projectId, doc, seed, onCancel, onSaved }: DocEditor
     setError(null);
     try {
       const version = await putDoc(projectId, doc.path, draft, base.version);
-      onSaved(version, base.approved);
+      leave(() => onSaved(version, base.approved));
     } catch (e) {
       const c = docConflictOf(e);
       if (c) {
@@ -81,7 +105,7 @@ export function DocEditor({ projectId, doc, seed, onCancel, onSaved }: DocEditor
     setBusy(true);
     const cur = await current();
     setBusy(false);
-    if (cur) setTheirs(cur.exists ? cur.body : '');
+    if (cur) setTheirs(cur);
   }
 
   async function rebase() {
@@ -89,9 +113,12 @@ export function DocEditor({ projectId, doc, seed, onCancel, onSaved }: DocEditor
       'Keep your text and save it on top of the current version? Their change is replaced by your text where they differ.',
     );
     if (!ok) return;
-    setBusy(true);
-    const cur = await current();
-    setBusy(false);
+    let cur = theirs;
+    if (!cur) {
+      setBusy(true);
+      cur = await current();
+      setBusy(false);
+    }
     if (!cur) return;
     setBase(baseOf(cur));
     setConflict(null);
@@ -100,6 +127,7 @@ export function DocEditor({ projectId, doc, seed, onCancel, onSaved }: DocEditor
 
   return (
     <div
+      onKeyDown={onKeyDown}
       data-fullscreen={fullscreen ? 'true' : undefined}
       className={
         fullscreen
@@ -115,7 +143,7 @@ export function DocEditor({ projectId, doc, seed, onCancel, onSaved }: DocEditor
         <button type="button" className={PRIMARY} disabled={busy || conflict !== null} onClick={() => void save()}>
           Save
         </button>
-        <button type="button" className={BUTTON} disabled={busy} onClick={onCancel}>
+        <button type="button" className={BUTTON} disabled={busy} onClick={cancel}>
           Cancel
         </button>
       </div>
@@ -134,13 +162,13 @@ export function DocEditor({ projectId, doc, seed, onCancel, onSaved }: DocEditor
             <button type="button" className={BUTTON} disabled={busy} onClick={() => void rebase()}>
               Keep editing on top of current
             </button>
-            <button type="button" className={BUTTON} disabled={busy} onClick={onCancel}>
+            <button type="button" className={BUTTON} disabled={busy} onClick={() => leave(onCancel)}>
               Discard mine
             </button>
           </div>
           {theirs !== null && (
             <section aria-label="Their change" className="max-h-80 overflow-auto">
-              <LineDiff before={base.body} after={theirs} />
+              <LineDiff before={base.body} after={theirs.exists ? theirs.body : ''} />
             </section>
           )}
         </div>

@@ -55,3 +55,18 @@ export function partOfLink(href: string): string | null {
 
 export const BUTTON = 'rounded border border-border px-2 py-1 text-xs hover:bg-surface-2 disabled:opacity-50';
 export const PRIMARY = 'rounded bg-accent px-2 py-1 text-xs font-medium text-accent-fg disabled:opacity-50';
+
+/**
+ * A stored revision text without its front matter, as the backend splits it
+ * (`design_docs/frontmatter.split`): a BOM is dropped, the block opens and closes with a line
+ * that is `---` after trimming; an unterminated block means the whole text is body.
+ */
+export function docBody(text: string): string {
+  const t = text.startsWith('\ufeff') ? text.slice(1) : text;
+  const lines = t.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+  if (lines.length === 0 || lines[0]!.trim() !== '---') return t;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i]!.trim() === '---') return lines.slice(i + 1).join('');
+  }
+  return t;
+}

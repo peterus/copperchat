@@ -7,7 +7,7 @@ vi.mock('@/api/http', async (importOriginal) => ({ ...(await importOriginal<obje
 
 import { ApiError } from '@/api/http';
 import { PHONE_QUERY } from '@/layouts/ProjectLayout';
-import { createDocsStore, DocsStoreContext } from '@/stores/docs';
+import { createDocsStore, DocsStoreContext, draftKey } from '@/stores/docs';
 import { conflict409, DOC_PID, docRead, REQ } from '@/test/docs';
 import { FakeWsClient } from '@/test/fakeWsClient';
 import { setMedia } from '@/test/media';
@@ -16,17 +16,19 @@ import { DocEditor, type DocEditorProps } from './DocEditor';
 const url = `/projects/${DOC_PID}/docs/${REQ}`;
 const THEIRS = docRead({ version: 'v2', body: '# Requirements\n\nUSB-C power, 15 W.\n' });
 
-async function setup(over: Partial<DocEditorProps> = {}) {
+async function setup(over: Partial<DocEditorProps> = {}, existing?: ReturnType<typeof createDocsStore>) {
   const ws = new FakeWsClient();
-  const store = createDocsStore(ws, { getIndex: vi.fn().mockResolvedValue({ root: 'docs/design', docs: [], ignored: [] }), getDoc: vi.fn() });
+  const store =
+    existing ??
+    createDocsStore(ws, { getIndex: vi.fn().mockResolvedValue({ root: 'docs/design', docs: [], ignored: [] }), getDoc: vi.fn() });
   await store.getState().load(DOC_PID);
   const props: DocEditorProps = { projectId: DOC_PID, doc: docRead(), onCancel: vi.fn(), onSaved: vi.fn(), ...over };
-  render(
+  const view = render(
     <DocsStoreContext.Provider value={store}>
       <DocEditor {...props} />
     </DocsStoreContext.Provider>,
   );
-  return { props, ws, box: () => screen.getByRole('textbox', { name: 'Doc text' }) as HTMLTextAreaElement };
+  return { props, ws, store, view, box: () => screen.getByRole('textbox', { name: 'Doc text' }) as HTMLTextAreaElement };
 }
 
 beforeEach(() => {
@@ -178,5 +180,88 @@ describe('DocEditor', () => {
     setMedia((q) => q === PHONE_QUERY);
     const { box } = await setup();
     expect(box().closest('[data-fullscreen="true"]')).not.toBeNull();
+  });
+
+  describe('the draft survives', () => {
+    it('Escape in the editor does not reach the panel sheet', async () => {
+      const onWindowKey = vi.fn();
+      window.addEventListener('keydown', onWindowKey);
+      const { box } = await setup();
+      await userEvent.type(box(), 'x{Escape}');
+      expect(onWindowKey.mock.calls.some(([e]) => (e as KeyboardEvent).key === 'Escape')).toBe(false);
+      window.removeEventListener('keydown', onWindowKey);
+    });
+
+    it('an unmount (sheet closed, panel switch) keeps the draft; the next editor resumes it', async () => {
+      http.apiPut.mockRejectedValueOnce(conflict409());
+      const first = await setup();
+      await userEvent.clear(first.box());
+      await userEvent.type(first.box(), 'mine');
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await screen.findByRole('alert');
+      first.view.unmount();
+      expect(first.store.getState().drafts[draftKey(DOC_PID, REQ)]?.text).toBe('mine');
+      const second = await setup({}, first.store);
+      expect(second.box().value).toBe('mine');
+      expect(screen.getByRole('alert')).toHaveTextContent('Changed while you were editing');
+    });
+
+    it('an untouched editor leaves no draft; a save clears it', async () => {
+      const { store, box } = await setup();
+      expect(store.getState().drafts).toEqual({});
+      await userEvent.type(box(), '!');
+      expect(store.getState().drafts[draftKey(DOC_PID, REQ)]).toBeDefined();
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(store.getState().drafts).toEqual({}));
+    });
+
+    it('Cancel asks first when there are changes', async () => {
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
+      const { props, store, box } = await setup();
+      await userEvent.type(box(), '!');
+      await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      expect(props.onCancel).not.toHaveBeenCalled();
+      await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      expect(props.onCancel).toHaveBeenCalled();
+      expect(store.getState().drafts).toEqual({});
+      expect(confirm).toHaveBeenCalledTimes(2);
+    });
+
+    it('Cancel without changes does not ask', async () => {
+      const confirm = vi.spyOn(window, 'confirm');
+      const { props } = await setup();
+      await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      expect(props.onCancel).toHaveBeenCalled();
+      expect(confirm).not.toHaveBeenCalled();
+    });
+  });
+
+  it('Keep editing after Show their change re-bases onto exactly the shown version', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    http.apiPut.mockRejectedValueOnce(conflict409());
+    const { box } = await setup();
+    await userEvent.type(box(), '!');
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Show their change' }));
+    await screen.findByRole('region', { name: 'Their change' });
+    http.apiGet.mockResolvedValue(docRead({ version: 'v3' })); // a newer version the user has not seen
+    await userEvent.click(screen.getByRole('button', { name: 'Keep editing on top of current' }));
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(http.apiPut).toHaveBeenLastCalledWith(url, expect.objectContaining({ baseVersion: 'v2' }));
+    expect(http.apiGet).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failing Show their change keeps the draft and the conflict', async () => {
+    http.apiPut.mockRejectedValueOnce(conflict409());
+    http.apiGet.mockRejectedValue(new Error('offline'));
+    const { box } = await setup();
+    await userEvent.clear(box());
+    await userEvent.type(box(), 'mine');
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Show their change' }));
+    expect(await screen.findByText('offline')).toBeInTheDocument();
+    expect(box().value).toBe('mine');
+    expect(screen.getByRole('button', { name: 'Discard mine' })).toBeInTheDocument();
   });
 });

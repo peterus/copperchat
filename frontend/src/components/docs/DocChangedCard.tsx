@@ -10,11 +10,14 @@ export interface DocChanged {
   sections: string[];
 }
 
+/** A doc path as the server writes it (spec §7.5 segments): `docs/design/<a>[/<b>].md`. */
+const DOC_PATH = /^docs\/design\/(?:[a-z0-9][a-z0-9._-]{0,63}\/)?[a-z0-9][a-z0-9._-]{0,63}\.md$/;
+
 const count = (v: unknown) => (typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : 0);
 
 /** The card's data from notice metadata, or null if it is not a usable `doc-changed` notice. */
 export function docChangedOf(md: Record<string, unknown>): DocChanged | null {
-  if (md.action !== 'doc-changed' || typeof md.path !== 'string' || !md.path) return null;
+  if (md.action !== 'doc-changed' || typeof md.path !== 'string' || !DOC_PATH.test(md.path)) return null;
   const rid = md.revisionId;
   return {
     path: md.path,

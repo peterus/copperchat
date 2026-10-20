@@ -33,8 +33,7 @@ function api(path: string): unknown {
   return current;
 }
 
-function withStore(ui: React.ReactNode) {
-  const store = createDocsStore(new FakeWsClient());
+function withStore(ui: React.ReactNode, store = createDocsStore(new FakeWsClient())) {
   return <DocsStoreContext.Provider value={store}>{ui}</DocsStoreContext.Provider>;
 }
 
@@ -150,5 +149,46 @@ describe('DocsPanel', () => {
     act(() => useUi.getState().openPanel('docs', { path: REQ, revisionId: '2' }));
     await waitFor(() => expect(screen.getAllByRole('row').map((r) => r.textContent)).toContain('+ new'));
     expect(within(screen.getByRole('tablist')).getByRole('tab', { name: 'More' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('[View diff] while editing keeps the text as a draft that resumes from the doc view', async () => {
+    const store = createDocsStore(new FakeWsClient());
+    const { rerender } = render(withStore(<DocsPanel projectId={DOC_PID} params={{ path: REQ }} />, store));
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    await userEvent.type(screen.getByRole('textbox', { name: 'Doc text' }), 'unsaved');
+    rerender(withStore(<DocsPanel projectId={DOC_PID} params={{ path: REQ, revisionId: '2' }} />, store));
+    await waitFor(() => expect(screen.getAllByRole('row').map((r) => r.textContent)).toContain('+ new'));
+    await userEvent.click(screen.getByRole('button', { name: '← requirements.md' }));
+    expect(await screen.findByText('You have unsaved changes to this doc.')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Continue editing' }));
+    expect((screen.getByRole('textbox', { name: 'Doc text' }) as HTMLTextAreaElement).value).toMatch(/unsaved$/);
+  });
+
+  it('Discard draft (confirmed) drops the kept draft', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const store = createDocsStore(new FakeWsClient());
+    store.getState().setDraft(DOC_PID, REQ, { text: 'x', base: { version: 'v1', body: '', approved: false }, conflict: null });
+    render(withStore(<DocsPanel projectId={DOC_PID} params={{ path: REQ }} />, store));
+    await userEvent.click(await screen.findByRole('button', { name: 'Discard draft' }));
+    expect(store.getState().drafts).toEqual({});
+    expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument();
+  });
+
+  it('the same [View diff] request twice navigates again (a new params object)', async () => {
+    const store = createDocsStore(new FakeWsClient());
+    const { rerender } = render(withStore(<DocsPanel projectId={DOC_PID} params={{ path: REQ, revisionId: '2' }} />, store));
+    await userEvent.click(await screen.findByRole('button', { name: '← All revisions' }));
+    await userEvent.click(screen.getByRole('button', { name: '← requirements.md' }));
+    await screen.findByRole('button', { name: 'Edit' });
+    rerender(withStore(<DocsPanel projectId={DOC_PID} params={{ path: REQ, revisionId: '2' }} />, store));
+    expect(await screen.findByRole('button', { name: 'Revert to this' })).toBeInTheDocument();
+  });
+
+  it('closing the panel detaches the store', async () => {
+    const store = createDocsStore(new FakeWsClient());
+    const { unmount } = render(withStore(<DocsPanel projectId={DOC_PID} params={{ path: REQ }} />, store));
+    await screen.findByRole('button', { name: 'Edit' });
+    unmount();
+    expect(store.getState().openPath).toBeNull();
   });
 });

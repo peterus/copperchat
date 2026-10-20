@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react';
 import { createStore, type StoreApi, useStore } from 'zustand';
-import { type DocIndexDTO, type DocRead, getDoc, getDocIndex } from '@/api/docs';
+import { type DocConflict, type DocIndexDTO, type DocRead, getDoc, getDocIndex } from '@/api/docs';
 import { type WsClient, wsClient } from '@/api/ws';
 import { errorText } from '@/components/history/restore';
 
@@ -16,6 +16,16 @@ export interface DocLiveUpdate {
   conversationId?: string;
 }
 
+/** An unsaved editor state: it survives the editor's unmount (sheet closed, panel switched, …). */
+export interface DocDraft {
+  text: string;
+  /** What `text` is written on top of: a save sends `version` as `baseVersion`. */
+  base: { version: string | null; body: string; approved: boolean };
+  conflict: DocConflict | null;
+}
+
+export const draftKey = (projectId: string, path: string) => `${projectId}/${path}`;
+
 export interface DocsState {
   projectId: string | null;
   index: DocIndexDTO | null;
@@ -26,11 +36,16 @@ export interface DocsState {
   docError: string | null;
   /** Per path, the last `doc-updated` seen: an editor compares it with its base version. */
   live: Record<string, DocLiveUpdate>;
+  /** Unsaved drafts by draftKey(projectId, path); kept across project switches until saved or discarded. */
+  drafts: Record<string, DocDraft>;
+  setDraft: (projectId: string, path: string, draft: DocDraft | null) => void;
   load: (projectId: string) => Promise<void>;
   refreshIndex: () => Promise<void>;
   /** Shows `path` (null: back to the index) and loads it. */
   open: (path: string | null) => Promise<void>;
   reloadDoc: () => Promise<void>;
+  /** The panel closed: stop following frames until the next load(). */
+  detach: () => void;
   dispose: () => void;
 }
 
@@ -77,16 +92,23 @@ export function createDocsStore(
   let generation = 0;
   // Bumped per open(): a slower response of a previously opened doc is dropped.
   let docToken = 0;
+  // Per request: only the newest started request may apply its response.
+  let indexSeq = 0;
+  let docSeq = 0;
+  // Frames and reconnects only refetch while a Docs panel is attached.
+  let attached = false;
 
   const fetchIndex = async () => {
     const { projectId } = store.getState();
     if (!projectId) return;
     const gen = generation;
+    const seq = ++indexSeq;
+    const current = () => gen === generation && seq === indexSeq;
     try {
       const index = ordered(await deps.getIndex(projectId));
-      if (gen === generation) store.setState({ index, indexError: null });
+      if (current()) store.setState({ index, indexError: null });
     } catch (e) {
-      if (gen === generation) store.setState({ indexError: `Could not load the docs: ${errorText(e)}` });
+      if (current()) store.setState({ indexError: `Could not load the docs: ${errorText(e)}` });
     }
   };
 
@@ -95,11 +117,13 @@ export function createDocsStore(
     if (!projectId || !openPath) return;
     const gen = generation;
     const token = docToken;
+    const seq = ++docSeq;
+    const current = () => gen === generation && token === docToken && seq === docSeq;
     try {
       const doc = await deps.getDoc(projectId, openPath);
-      if (gen === generation && token === docToken) store.setState({ doc, docError: null });
+      if (current()) store.setState({ doc, docError: null });
     } catch (e) {
-      if (gen === generation && token === docToken) store.setState({ docError: `Could not load the doc: ${errorText(e)}` });
+      if (current()) store.setState({ docError: `Could not load the doc: ${errorText(e)}` });
     }
   };
 
@@ -114,7 +138,14 @@ export function createDocsStore(
     doc: null,
     docError: null,
     live: {},
+    drafts: {},
+    setDraft: (projectId, path, draft) => {
+      const key = draftKey(projectId, path);
+      const { [key]: _old, ...rest } = get().drafts;
+      set({ drafts: draft ? { ...rest, [key]: draft } : rest });
+    },
     load: async (projectId) => {
+      attached = true;
       if (get().projectId !== projectId) {
         generation++;
         docToken++;
@@ -131,9 +162,15 @@ export function createDocsStore(
       if (path) await fetchDoc();
     },
     reloadDoc: refreshDoc,
+    detach: () => {
+      attached = false;
+      docToken++;
+      set({ openPath: null, doc: null, docError: null });
+    },
     dispose: () => {
       offFrame();
       offConn();
+      if (typeof window !== 'undefined') window.removeEventListener('beforeunload', onBeforeUnload);
     },
   }));
 
@@ -144,15 +181,21 @@ export function createDocsStore(
     const update: DocLiveUpdate = { version: f.version, author: f.author };
     if (f.conversationId) update.conversationId = f.conversationId;
     store.setState({ live: { ...s.live, [f.path]: update } });
+    if (!attached) return;
     void refreshIndex();
     if (f.path === s.openPath) void refreshDoc();
   });
   const offConn = ws.onConnection((state) => {
-    if (state !== 'open' && state !== 'resumed') return;
+    if (!attached || (state !== 'open' && state !== 'resumed')) return;
     // Frames may have been missed while disconnected.
     void refreshIndex();
     void refreshDoc();
   });
+  // An unsaved draft asks before the tab is closed or reloaded.
+  const onBeforeUnload = (e: BeforeUnloadEvent) => {
+    if (Object.keys(store.getState().drafts).length > 0) e.preventDefault();
+  };
+  if (typeof window !== 'undefined') window.addEventListener('beforeunload', onBeforeUnload);
   return store;
 }
 

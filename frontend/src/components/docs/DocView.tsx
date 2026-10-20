@@ -15,10 +15,23 @@ export interface DocViewProps {
   onReapproveDone: () => void;
   /** Reload the doc and the index after a state change. */
   onChanged: () => void;
+  /** An unsaved editor draft of this doc exists (resumed by [Edit]). */
+  hasDraft?: boolean;
+  onDiscardDraft?: () => void;
 }
 
 /** A doc rendered with the chat `Markdown` (sanitised), plus its status controls (spec §12.2). */
-export function DocView({ projectId, doc, onEdit, onHistory, reapproveVersion, onReapproveDone, onChanged }: DocViewProps) {
+export function DocView({
+  projectId,
+  doc,
+  onEdit,
+  onHistory,
+  reapproveVersion,
+  onReapproveDone,
+  onChanged,
+  hasDraft = false,
+  onDiscardDraft,
+}: DocViewProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
@@ -56,7 +69,7 @@ export function DocView({ projectId, doc, onEdit, onHistory, reapproveVersion, o
         {doc.meta.userEdited && <span className="rounded bg-surface-2 px-1.5 text-xs text-muted">edited by you</span>}
         <span className="mr-auto" />
         <button type="button" className={BUTTON} disabled={busy} onClick={onEdit}>
-          {doc.exists ? 'Edit' : 'Create'}
+          {hasDraft ? 'Continue editing' : doc.exists ? 'Edit' : 'Create'}
         </button>
         {!decisions && version && !doc.meta.approved && (
           <button type="button" className={PRIMARY} disabled={busy} onClick={() => void act(() => approveDoc(projectId, doc.path, version))}>
@@ -72,6 +85,18 @@ export function DocView({ projectId, doc, onEdit, onHistory, reapproveVersion, o
           History
         </button>
       </div>
+      {hasDraft && (
+        <p role="status" className="flex flex-wrap items-center gap-2 rounded border border-warning px-2 py-1 text-sm">
+          <span className="mr-auto">You have unsaved changes to this doc.</span>
+          <button
+            type="button"
+            className={BUTTON}
+            onClick={() => window.confirm('Discard your unsaved changes to this doc?') && onDiscardDraft?.()}
+          >
+            Discard draft
+          </button>
+        </p>
+      )}
       {doc.meta.userEdited && version && (
         <p className="flex flex-wrap items-center gap-2 text-xs text-muted">
           You edited this doc: the agent only patches sections or appends.

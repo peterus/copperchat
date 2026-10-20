@@ -96,7 +96,7 @@ function myers(A: Int32Array, B: Int32Array, maxD: number, stats: DiffStats): Mi
     stats.allocated += d + 1;
     const prev = d > 0 ? trace[d - 1]! : null;
     for (let k = -d; k <= d; k += 2) {
-      let x = d === 0 ? 0 : choose(prev!, d, k, n, m)[0];
+      let x = d === 0 ? 0 : startX(choose(prev!, d, k, n, m));
       if (x >= 0) {
         let y = x - k;
         while (x < n && y < m && A[x] === B[y]) {
@@ -119,7 +119,7 @@ function myers(A: Int32Array, B: Int32Array, maxD: number, stats: DiffStats): Mi
   let y = m;
   for (let d = found; d > 0; d--) {
     const k = x - y;
-    const [, down] = choose(trace[d - 1]!, d, k, n, m);
+    const down = choose(trace[d - 1]!, d, k, n, m) >= 0;
     const pk = down ? k + 1 : k - 1;
     const px = trace[d - 1]![(pk + d - 1) >> 1]!;
     const py = px - pk;
@@ -144,18 +144,20 @@ function myers(A: Int32Array, B: Int32Array, maxD: number, stats: DiffStats): Mi
 }
 
 /**
- * The start x on diagonal k for step d: down (insert B[y]) from k+1, or right (delete A[x])
- * from k-1, whichever reaches further inside the grid; ties go down. -1 if neither fits.
+ * The start on diagonal k for step d: down (insert B[y]) from k+1, or right (delete A[x]) from
+ * k-1, whichever reaches further inside the grid; ties go down. Encoded without allocating:
+ * x ≥ 0 = down to x, ≤ -2 = right to -(r + 2), -1 = neither fits.
  */
-function choose(prev: Int32Array, d: number, k: number, n: number, m: number): [number, boolean] {
-  const at = (kk: number) => (kk < -(d - 1) || kk > d - 1 ? -1 : prev[(kk + d - 1) >> 1]!);
-  const fromDown = at(k + 1);
+function choose(prev: Int32Array, d: number, k: number, n: number, m: number): number {
+  const fromDown = k + 1 > d - 1 ? -1 : prev[(k + d) >> 1]!;
   const downX = fromDown >= 0 && fromDown - k <= m ? fromDown : -1;
-  const fromRight = at(k - 1);
+  const fromRight = k - 1 < -(d - 1) ? -1 : prev[(k + d - 2) >> 1]!;
   const rightX = fromRight >= 0 && fromRight + 1 <= n ? fromRight + 1 : -1;
-  if (downX < 0 && rightX < 0) return [-1, true];
-  return downX >= rightX ? [downX, true] : [rightX, false];
+  if (downX < 0 && rightX < 0) return -1;
+  return downX >= rightX ? downX : -(rightX + 2);
 }
+
+const startX = (r: number) => (r >= -1 ? r : -r - 2);
 
 export type DiffRow = { kind: 'line'; op: DiffOp } | { kind: 'gap'; count: number; ops: DiffOp[] };
 

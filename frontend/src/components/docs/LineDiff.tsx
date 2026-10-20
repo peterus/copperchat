@@ -12,9 +12,15 @@ const SIGN = { eq: ' ', add: '+', del: '-' } as const;
 export function LineDiff({ before, after }: { before: string; after: string }) {
   const result = useMemo(() => diffLines(before, after), [before, after]);
   const rows = useMemo(() => (result.tooLarge ? [] : collapse(result.ops)), [result]);
-  const [open, setOpen] = useState<ReadonlySet<number>>(new Set());
+  // Expanded gaps belong to one diff: new inputs start folded again.
+  const [expanded, setExpanded] = useState<{ of: unknown; rows: ReadonlySet<number> }>({ of: result, rows: new Set() });
+  const open = expanded.of === result ? expanded.rows : new Set<number>();
+  const setOpen = (rows: ReadonlySet<number>) => setExpanded({ of: result, rows });
   if (result.tooLarge) return <p className="p-2 text-sm text-muted">Too large to diff.</p>;
-  if (!result.ops.some((o) => o.t !== 'eq')) return <p className="p-2 text-sm text-muted">No changes.</p>;
+  if (!result.ops.some((o) => o.t !== 'eq')) {
+    const text = before === after ? 'No changes.' : 'Only line endings or the final newline changed.';
+    return <p className="p-2 text-sm text-muted">{text}</p>;
+  }
   return (
     <div role="table" aria-label="Diff" className="overflow-x-auto rounded border border-border font-mono text-xs">
       {rows.map((r, i) =>

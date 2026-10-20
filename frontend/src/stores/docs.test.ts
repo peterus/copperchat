@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { DocIndexDTO, DocIndexEntry, DocRead } from '@/api/docs';
 import { FakeWsClient } from '@/test/fakeWsClient';
-import { createDocsStore, type DocsDeps } from './docs';
+import { createDocsStore, type DocsDeps, draftKey } from './docs';
 
 const PID = 'a1b2c3d4e5f6';
 const entry = (path: string, over: Partial<DocIndexEntry> = {}): DocIndexEntry => ({
@@ -131,5 +131,55 @@ describe('docs store', () => {
     ws.connect();
     await vi.waitFor(() => expect(deps.getDoc).toHaveBeenCalledTimes(2));
     expect(deps.getIndex).toHaveBeenCalledTimes(2);
+  });
+
+  it('an older doc response never replaces a newer one (refresh vs refresh)', async () => {
+    const resolvers: Array<(d: DocRead) => void> = [];
+    const getDoc = vi.fn().mockResolvedValueOnce(doc('v1'));
+    const { store, ws } = setup({ getDoc });
+    await store.getState().load(PID);
+    await store.getState().open('docs/design/requirements.md');
+    getDoc.mockImplementation(() => new Promise<DocRead>((r) => resolvers.push(r)));
+    ws.emit(frame('docs/design/requirements.md', 'v2'));
+    await vi.waitFor(() => expect(resolvers).toHaveLength(1));
+    // a reconnect starts another (non-coalesced) open of the same doc
+    const reopen = store.getState().open('docs/design/requirements.md');
+    await vi.waitFor(() => expect(resolvers).toHaveLength(2));
+    resolvers[1]!(doc('v3'));
+    await reopen;
+    resolvers[0]!(doc('v2'));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(store.getState().doc?.version).toBe('v3');
+  });
+
+  it('after detach() frames and reconnects no longer refetch', async () => {
+    const { store, ws, deps } = setup();
+    await store.getState().load(PID);
+    await store.getState().open('docs/design/requirements.md');
+    store.getState().detach();
+    expect(store.getState().openPath).toBeNull();
+    ws.emit(frame('docs/design/requirements.md', 'v2'));
+    ws.connect();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(deps.getIndex).toHaveBeenCalledTimes(1);
+    expect(deps.getDoc).toHaveBeenCalledTimes(1);
+    expect(store.getState().live['docs/design/requirements.md']?.version).toBe('v2');
+  });
+
+  it('keeps drafts per project across project switches and asks before unload', async () => {
+    const { store } = setup();
+    await store.getState().load(PID);
+    const draft = { text: 'mine', base: { version: 'v1', body: 'b', approved: false }, conflict: null };
+    store.getState().setDraft(PID, 'docs/design/requirements.md', draft);
+    await store.getState().load('ffffffffffff');
+    expect(store.getState().drafts[draftKey(PID, 'docs/design/requirements.md')]).toEqual(draft);
+    const ev = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(ev);
+    expect(ev.defaultPrevented).toBe(true);
+    store.getState().setDraft(PID, 'docs/design/requirements.md', null);
+    const ev2 = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(ev2);
+    expect(ev2.defaultPrevented).toBe(false);
+    store.getState().dispose();
   });
 });

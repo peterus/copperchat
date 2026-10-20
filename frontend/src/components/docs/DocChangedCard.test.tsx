@@ -50,4 +50,11 @@ describe('doc-changed notice', () => {
       path: 'docs/design/requirements.md', revisionId: null, added: 0, removed: 3, sections: ['A'],
     });
   });
+
+  it('only accepts a docs/design path', () => {
+    for (const path of ['../../etc/passwd', 'docs/design/../x.md', 'docs/parts/x.md', 'docs/design/a/b/c.md']) {
+      expect(docChangedOf({ ...MD, path })).toBeNull();
+    }
+    expect(docChangedOf({ ...MD, path: 'docs/design/notes/usb-pd.md' })?.path).toBe('docs/design/notes/usb-pd.md');
+  });
 });

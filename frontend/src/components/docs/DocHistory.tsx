@@ -8,10 +8,9 @@ import {
   type RevisionContent,
   type RevisionDTO,
 } from '@/api/docs';
-import { stripFrontMatter } from '@/api/parts';
 import { errorText } from '@/components/history/restore';
 import { useDocs } from '@/stores/docs';
-import { BUTTON, changedBy } from './format';
+import { BUTTON, changedBy, docBody } from './format';
 import { LineDiff } from './LineDiff';
 
 export interface DocHistoryProps {
@@ -40,13 +39,16 @@ export function DocHistory({ projectId, path, currentVersion, selected, onSelect
   const [busy, setBusy] = useState(false);
   const liveVersion = useDocs((s) => s.live[path]?.version);
   const token = useRef(0);
+  const listToken = useRef(0);
 
+  // One request at a time per doc version; a slower, older response never replaces a newer list.
   const loadList = useCallback(async () => {
+    const t = ++listToken.current;
     try {
       const list = await listRevisions(projectId, path);
-      setRevisions([...list].sort((a, b) => b.id - a.id));
+      if (t === listToken.current) setRevisions([...list].sort((a, b) => b.id - a.id));
     } catch (e) {
-      setError(errorText(e));
+      if (t === listToken.current) setError(errorText(e));
     }
   }, [projectId, path]);
 
@@ -73,7 +75,7 @@ export function DocHistory({ projectId, path, currentVersion, selected, onSelect
       onReverted();
     } catch (e) {
       const c = docConflictOf(e);
-      if (c) onRevertConflict(stripFrontMatter(data.content), c);
+      if (c) onRevertConflict(docBody(data.content), c);
       else setError(errorText(e));
     } finally {
       setBusy(false);
@@ -103,7 +105,7 @@ export function DocHistory({ projectId, path, currentVersion, selected, onSelect
         {errorRow}
         {shown && (
           <>
-            <LineDiff before={stripFrontMatter(shown.prevContent ?? '')} after={stripFrontMatter(shown.content)} />
+            <LineDiff before={docBody(shown.prevContent ?? '')} after={docBody(shown.content)} />
             <button
               type="button"
               className={`${BUTTON} self-start`}

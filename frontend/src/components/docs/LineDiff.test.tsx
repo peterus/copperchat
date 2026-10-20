@@ -29,4 +29,18 @@ describe('LineDiff', () => {
     expect(screen.getByText('Too large to diff.')).toBeInTheDocument();
     spy.mockRestore();
   });
+
+  it('a change of line endings only is not called "No changes"', () => {
+    render(<LineDiff before={'a\nb\n'} after={'a\r\nb'} />);
+    expect(screen.getByText('Only line endings or the final newline changed.')).toBeInTheDocument();
+  });
+
+  it('new inputs start folded again', async () => {
+    const mk = (mid: string) => [...lines(10), mid, ...lines(10, 'm')].join('\n');
+    const { rerender } = render(<LineDiff before={mk('a')} after={mk('b')} />);
+    await userEvent.click(screen.getAllByRole('button', { name: '⋯ 7 unchanged lines' })[0]!);
+    expect(screen.getByText('l0')).toBeInTheDocument();
+    rerender(<LineDiff before={mk('a')} after={mk('c')} />);
+    expect(screen.queryByText('l0')).toBeNull();
+  });
 });

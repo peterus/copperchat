@@ -7,9 +7,15 @@ import { z } from 'zod';
 import { ApiError, apiGet, apiPost, apiPut } from './http';
 
 const enc = encodeURIComponent;
-/** `docs/design/notes/x.md` → each segment encoded, the slashes kept (the route takes a path). */
-const docUrl = (projectId: string, path: string) =>
-  `/projects/${enc(projectId)}/docs/${path.split('/').map(enc).join('/')}`;
+/**
+ * `docs/design/notes/x.md` → each segment encoded, the slashes kept (the route takes a path).
+ * Empty, `.` and `..` segments are refused: the URL must not leave the doc's route.
+ */
+function docUrl(projectId: string, path: string): string {
+  const segments = path.split('/');
+  if (segments.some((s) => s === '' || s === '.' || s === '..')) throw new Error(`Invalid doc path: ${path}`);
+  return `/projects/${enc(projectId)}/docs/${segments.map(enc).join('/')}`;
+}
 
 export const DocIndexEntry = z.object({
   path: z.string(),
