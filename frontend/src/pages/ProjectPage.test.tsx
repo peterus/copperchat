@@ -257,4 +257,23 @@ describe('ProjectPage', () => {
     await screen.findByRole('heading', { name: 'Session 1' });
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('');
   });
+
+  it('a failed archived lookup is tried again after navigating away and back', async () => {
+    const real = globalThis.fetch;
+    let fail = true;
+    conversations[A] = [conv(C1, 1), { ...conv(C2, 2), archived: true }];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) =>
+        fail && url.endsWith('archived=1') ? json({ detail: 'offline' }, 500) : real(url, init),
+      ),
+    );
+    renderPage(`/p/${A}/s/${C2}`);
+    expect(await screen.findByText(/Could not load the sessions/)).toBeInTheDocument();
+    fail = false;
+    act(() => navigate(`/p/${A}/s/${C1}`));
+    await screen.findByRole('heading', { name: 'Session 1' });
+    act(() => navigate(`/p/${A}/s/${C2}`));
+    expect(await screen.findByRole('heading', { name: 'Session 2' })).toBeInTheDocument();
+  });
 });

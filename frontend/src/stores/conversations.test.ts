@@ -186,4 +186,15 @@ describe('conversations store', () => {
     await vi.waitFor(() => expect(api.list).toHaveBeenCalledTimes(1));
     expect(api.list).toHaveBeenCalledWith(PID, {});
   });
+
+  it('a reload requested while a list request is in flight runs once more afterwards', async () => {
+    await store.getState().load(PID);
+    let resolve!: (v: ConversationDTO[]) => void;
+    api.list.mockImplementationOnce(() => new Promise((r) => (resolve = r)));
+    const p = store.getState().load(PID);
+    store.getState().resubscribed(PID); // frames may have been lost after that request started
+    resolve([conv(C1, 1)]);
+    await p;
+    await vi.waitFor(() => expect(api.list).toHaveBeenCalledTimes(3));
+  });
 });

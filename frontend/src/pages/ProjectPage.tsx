@@ -69,6 +69,9 @@ function SessionArea({ projectId, cid, readOnly }: { projectId: string; cid: str
     if (shown === null) useComposer.getState().deactivate();
   }, [shown]);
 
+  // A failed lookup is tried again when the session is opened again (no stale error).
+  useEffect(() => setLookup(null), [cid]);
+
   const loaded = listed && status !== 'loading';
   useEffect(() => {
     if (!loaded || !valid || conversation || lookup?.cid === cid) return;

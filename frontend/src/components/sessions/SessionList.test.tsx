@@ -110,4 +110,14 @@ describe('SessionList', () => {
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(onClose).toHaveBeenCalled();
   });
+
+  it('a failed "Show archived" load is shown with Retry', async () => {
+    f.api.list.mockRejectedValueOnce(new Error('offline'));
+    renderList();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Show archived' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load the archived sessions: offline');
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await within(list()).findByText('Old idea')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
 });

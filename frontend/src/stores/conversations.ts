@@ -144,12 +144,24 @@ export function createConversationsStore(deps: ConversationsDeps) {
       if (state !== 'open' && state !== 'resumed') return;
       // Frames may have been lost with the socket: the lists of the shown projects are read again.
       for (const projectId of Object.keys(get().viewing)) {
-        void get().load(projectId);
+        refresh(projectId);
         if (archivedLoaded.has(projectId)) {
           archivedLoaded.delete(projectId);
           void get().loadArchived(projectId);
         }
       }
+    }
+
+    /** Projects whose list must be read again once the request in flight settles. */
+    const stale = new Set<string>();
+
+    /**
+     * Reads the list again after a gap in the frames: a request already in flight may have been
+     * answered before the gap, so it is followed by one more.
+     */
+    function refresh(projectId: string): void {
+      if (loading.has(projectId)) stale.add(projectId);
+      else void get().load(projectId);
     }
 
     /** True when the list was read (and merged). */
@@ -191,6 +203,7 @@ export function createConversationsStore(deps: ConversationsDeps) {
         if (inflight) return inflight;
         const p = fetchList(projectId, false).then(() => undefined).finally(() => {
           if (loading.get(projectId) === p) loading.delete(projectId);
+          if (stale.delete(projectId)) void get().load(projectId);
         });
         loading.set(projectId, p);
         return p;
@@ -226,7 +239,7 @@ export function createConversationsStore(deps: ConversationsDeps) {
       resubscribed: (projectId) => {
         if (get().byProject[projectId] === undefined) return;
         if (get().activeRun[projectId]) set({ activeRun: { ...get().activeRun, [projectId]: null } });
-        void get().load(projectId);
+        refresh(projectId);
       },
 
       create: async (projectId, body) => {
@@ -262,6 +275,7 @@ export function createConversationsStore(deps: ConversationsDeps) {
         loading.clear();
         archivedLoaded.clear();
         archivedLoading.clear();
+        stale.clear();
         frameSeqOf.clear();
         set({ byProject: {}, status: {}, errors: {}, activeRun: {}, unread: {}, viewing: {} });
       },

@@ -80,17 +80,27 @@ describe('drafts per conversation', () => {
 
 describe('writes bound to a draft', () => {
   beforeEach(() => useComposer.getState().reset());
-  it('setAttachmentsFor() of a parked draft does not touch the active one', () => {
+  it('addAttachmentFor() adds to the draft it names (parked or active), reading it at write time', () => {
     const s = () => useComposer.getState();
+    const a = { id: 'u0', kind: 'pdf' as const, name: 'kept.pdf' };
+    const late = { id: 'u1', kind: 'image' as const, name: 'late.png' };
     s().activate('p/a');
+    s().addAttachment(a);
     s().activate('p/b');
     s().setText('B');
-    s().setAttachmentsFor('p/a', [{ id: 'u1', kind: 'image', name: 'late.png' }]);
+    s().addAttachmentFor('p/a', late);
+    s().addAttachmentFor('p/a', late);
     expect(s().attachments).toEqual([]);
-    s().setAttachmentsFor('p/b', [{ id: 'u2', kind: 'pdf', name: 'now.pdf' }]);
+    s().addAttachmentFor('p/b', { id: 'u2', kind: 'pdf', name: 'now.pdf' });
     expect(s().attachments).toEqual([{ id: 'u2', kind: 'pdf', name: 'now.pdf' }]);
     s().activate('p/a');
-    expect(s().attachments).toEqual([{ id: 'u1', kind: 'image', name: 'late.png' }]);
+    expect(s().attachments).toEqual([a, late]);
+    // a sent (cleared) draft gets only the late upload, never the refs it was sent with
+    s().clear();
+    s().activate('p/b');
+    s().addAttachmentFor('p/a', { id: 'u3', kind: 'image', name: 'later.png' });
+    s().activate('p/a');
+    expect(s().attachments).toEqual([{ id: 'u3', kind: 'image', name: 'later.png' }]);
   });
   it('deactivate() parks the draft; text written without a conversation is dropped', () => {
     const s = () => useComposer.getState();

@@ -39,11 +39,11 @@ export const Composer = memo(function Composer({
   const setSelection = useComposer((s) => s.setSelection);
   // Bound to the draft shown now: an upload that finishes after a session switch lands in its own draft.
   const draftKey = useComposer((s) => s.activeKey);
-  const setAttachmentsFor = useComposer((s) => s.setAttachmentsFor);
-  const setDraftAttachments = useComposer((s) => s.setAttachments);
-  const setAttachments = useCallback(
-    (next: AttachmentRef[]) => (draftKey === null ? setDraftAttachments(next) : setAttachmentsFor(draftKey, next)),
-    [draftKey, setAttachmentsFor, setDraftAttachments],
+  const addAttachmentFor = useComposer((s) => s.addAttachmentFor);
+  const addDraftAttachment = useComposer((s) => s.addAttachment);
+  const addAttachment = useCallback(
+    (a: AttachmentRef) => (draftKey === null ? addDraftAttachment(a) : addAttachmentFor(draftKey, a)),
+    [draftKey, addAttachmentFor, addDraftAttachment],
   );
   const removeAttachment = useComposer((s) => s.removeAttachment);
   const clear = useComposer((s) => s.clear);
@@ -127,7 +127,7 @@ export const Composer = memo(function Composer({
         }}
       >
         {Slot && (
-          <Slot disabled={disabled} projectId={projectId} attachments={attachments} setAttachments={setAttachments} />
+          <Slot disabled={disabled} projectId={projectId} attachments={attachments} addAttachment={addAttachment} />
         )}
         <textarea
           ref={ref}

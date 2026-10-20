@@ -112,6 +112,16 @@ export function SessionList({
   const running = useConversations((s) => s.activeRun[projectId]?.conversationId ?? null);
   const unread = useConversations((s) => s.unread[projectId] ?? NONE);
   const [showArchived, setShowArchived] = useState(false);
+  const [archivedError, setArchivedError] = useState<string | null>(null);
+  const loadArchived = () => {
+    setArchivedError(null);
+    void store
+      .getState()
+      .loadArchived(projectId)
+      .then((ok) => {
+        if (!ok) setArchivedError(store.getState().errors[projectId] ?? 'unknown error');
+      });
+  };
   const [error, setError] = useState<string | null>(null);
   const phone = useMediaQuery(PHONE_QUERY);
 
@@ -134,7 +144,8 @@ export function SessionList({
             checked={showArchived}
             onChange={(e) => {
               setShowArchived(e.target.checked);
-              if (e.target.checked) void store.getState().loadArchived(projectId);
+              if (e.target.checked) loadArchived();
+              else setArchivedError(null);
             }}
           />
           Show archived
@@ -148,6 +159,14 @@ export function SessionList({
       {error && (
         <p role="alert" className="px-3 py-1 text-xs text-danger">
           {error}
+        </p>
+      )}
+      {archivedError && (
+        <p role="alert" className="flex items-center gap-2 px-3 py-1 text-xs text-danger">
+          <span className="flex-1">Could not load the archived sessions: {archivedError}</span>
+          <button type="button" onClick={loadArchived} className="rounded border border-border px-2 text-fg">
+            Retry
+          </button>
         </p>
       )}
       <ul aria-label="Sessions" className="flex-1 overflow-y-auto p-1">

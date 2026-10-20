@@ -52,8 +52,8 @@ export interface ComposerState {
   activate: (key: string) => void;
   /** Parks the current draft; no conversation is shown (what is typed now is dropped). */
   deactivate: () => void;
-  /** Sets the attachments of draft `key`, active or parked (an upload that finishes after a switch). */
-  setAttachmentsFor: (key: string, next: AttachmentRef[]) => void;
+  /** Adds `a` to draft `key`, active or parked (an upload that finishes after a switch); no duplicates. */
+  addAttachmentFor: (key: string, a: AttachmentRef) => void;
   /** Forgets every draft (logout). */
   reset: () => void;
 }
@@ -101,13 +101,15 @@ export const useComposer = create<ComposerState>()((set, get) => ({
     if (get().activeKey === null) return;
     set({ activeKey: null, drafts: park(get()), ...EMPTY_DRAFT, focusToken: 0 });
   },
-  setAttachmentsFor: (key, next) => {
+  addAttachmentFor: (key, a) => {
     if (key === get().activeKey) {
-      set({ attachments: next });
+      get().addAttachment(a);
       return;
     }
     const drafts = get().drafts;
-    set({ drafts: { ...drafts, [key]: { ...(drafts[key] ?? EMPTY_DRAFT), attachments: next } } });
+    const draft = drafts[key] ?? EMPTY_DRAFT;
+    if (draft.attachments.some((x) => x.id === a.id)) return;
+    set({ drafts: { ...drafts, [key]: { ...draft, attachments: [...draft.attachments, a] } } });
   },
   reset: () => set({ activeKey: null, drafts: {}, text: '', selection: null, attachments: [], focusToken: 0 }),
 }));
