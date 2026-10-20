@@ -187,3 +187,42 @@ test('sessions: create, queue behind another session, replies land in their own 
   await expect(page).toHaveURL(new RegExp(`/p/${PID}/s/[0-9a-f]{32}$`));
   await page.screenshot({ path: info.outputPath('sessions.png') });
 });
+
+test('sessions: close hands over and makes the session read-only, reopen makes it writable', async ({ page }) => {
+  const server = new FakeServer();
+  const s = server.create('requirements');
+  server.message(s.id, 'user', 'a USB-C LED blinker');
+  const calls: string[] = [];
+  await mockApi(page, server);
+  await page.route(new RegExp(`/api/projects/${PID}/conversations/${s.id}/(close|reopen)$`), async (r) => {
+    const action = r.request().url().endsWith('/close') ? 'close' : 'reopen';
+    calls.push(action);
+    s.status = action === 'close' ? 'closing' : 'open';
+    await r.fulfill({ status: action === 'close' ? 202 : 200, json: s });
+  });
+  await page.goto(`/p/${PID}/s/${s.id}`);
+  await expect(page.getByRole('heading', { name: 'Session 1' })).toBeVisible();
+
+  // Close: the server enqueues the handover turn, shown as a compact system row.
+  await page.getByRole('button', { name: 'Close session' }).click();
+  await expect.poll(() => calls).toEqual(['close']);
+  await expect(page.getByRole('button', { name: 'Close session' })).toBeHidden();
+  server.frame({ type: 'run-started', projectId: PID, conversationId: s.id, runId: 'run-c' });
+  server.push(server.message(s.id, 'user', 'Close this session: …', { runId: 'run-c', metadata: { origin: 'close-session' } }));
+  server.push(server.message(s.id, 'assistant', 'Requirements are complete. Next: the schematic.', { runId: 'run-c' }));
+  server.frame({ type: 'run-finished', projectId: PID, conversationId: s.id, runId: 'run-c', reason: 'completed' });
+  server.frame({ type: 'conversation-updated', projectId: PID, conversation: { ...s, status: 'closed', closedAt: '2026-10-20T10:00:00Z' } });
+
+  const log = page.getByRole('log');
+  await expect(log.getByText('Closing session…')).toBeVisible();
+  await expect(log.getByText('Close this session')).toHaveCount(0);
+  await expect(log.getByText('Requirements are complete. Next: the schematic.')).toBeVisible();
+  // Closed: read-only, the composer is replaced by [Reopen session].
+  await expect(page.getByText('This session is closed.')).toBeVisible();
+  await expect(page.getByRole('textbox', { name: 'Message' })).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Reopen session' }).click();
+  await expect.poll(() => calls).toEqual(['close', 'reopen']);
+  await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Close session' })).toBeVisible();
+});

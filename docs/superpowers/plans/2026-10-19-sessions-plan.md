@@ -515,6 +515,14 @@ class DesignDocs:
 - A project-layer copy of a skill cannot drop the `sessions` restriction of its
   built-in/user version (both must allow the type).
 
+**As built (C6):**
+- The Skills page shows `sessions` as type chips on every skill. User skills edit them
+  through the existing editor and `PUT /skills/user/{name}`: the panel writes the flat
+  front-matter line `sessions: requirements, schematic` (sorted; no chip = key removed =
+  all types), the format `parse_sessions` reads. Project-layer skills show read-only
+  chips: there is no project-skill write route (they are edited in
+  `.kicad-agent/skills/`), so the "editable for project layers" part of §8.4 is a residual.
+
 ### S-C8. Frontend contracts
 
 - **C1 `openPanel`.** `stores/ui.ts` gains `openPanel(id: string, params?:
@@ -601,6 +609,62 @@ written.
   that C5 adds to the skills DTO.
 - **Plan review amendments** (round 1, 22 findings) are folded into the
   phase files.
+
+---
+
+## As built and residuals (SP3, after C6)
+
+All six phases are merged as one PR each: C1 #43, C3 #42, C2 #45, C4 #44, C5 #46, C6 (this
+PR). The "As built" bullets under the contracts above record the deviations.
+
+**Live checks (2026-10-20, model: CLI default, cost = SDK list-price estimate on the OAuth
+subscription; results in `backend/tests/live/results/2026-10-20.json`):**
+- **Upgrade** (`scripts/live-upgrade-check.sh`): `ghcr.io/peterus/copperchat:0.2.0` chats once
+  on a fresh data dir (a code word); this checkout, in the kicad-base image with the same
+  `/projects` and `/data`, migrates it, opens "Session 1" (Free, history kept) and the resumed
+  SDK session answers the code word. ✅
+- **Guard** (`test_sessions_guard_live.py`): a Requirements session (a) has no `sch_connect`
+  (no `sch_*` call), (b) cannot read `/etc/passwd` (no tool tried, nothing leaked), (c)
+  recognised the injected `requirements.md` as an exfiltration attempt and made no
+  `research_part` call (so no researcher fetch with doc content). US$0.22. ✅ In this run
+  (b) and (c) held because the model refused; the server-side guards behind them (path
+  guard, query cap, profile filter, hook) are covered by the C3/C5 unit tests, not by this
+  run.
+- **Eval** (`test_sessions_live.py`, run in the kicad-base image because it needs KiCad 11):
+
+  | Session | Turns | Plan | Result | Output tokens | US$ | s |
+  |---|---|---|---|---|---|---|
+  | Requirements (+ close) | 1 + 1 | – | 4/4 sections, ATtiny85 + USB-C researched (2 `research_part`), 5 decisions, 0 `sch_*` | 25.5 k | 0.42 | 181 |
+  | Schematic (from the approved docs) | 2 | 4 steps | golden ✅, ERC 0/0 | 16.9 k | 0.77 | 186 |
+  | **Split total** | | | | 42.4 k | **1.19** | 367 |
+  | Baseline: one Free session | 2 | 3 steps | golden ✅, ERC 0/0 | 26.0 k | **0.84** | 257 |
+
+  The split costs about 40 % more than one session for this small board: the requirements
+  session researches parts and writes four docs that the baseline skips. The schematic
+  session itself was cheaper than the baseline. A first eval run was void (harness bug: the
+  project was not opened in KiCad, fixed by `LiveApp.open_project`). Skills were not changed.
+
+**Residuals (deferred, all low):**
+- C1: the upgrade check on a copy of the real prod database is left to the owner:
+  `COPPERCHAT_UPGRADE_DB=<copy of copperchat.db> uv run pytest tests/unit/db/test_upgrade_v020.py`
+  (back up `data/` before the prod upgrade).
+- C3 (pm#6): revisions of deleted docs are not pruned.
+- C3: cross-script look-alikes of `[CopperChat notice]` and `*Session:` lines are not
+  normalised.
+- C5: a close that is reverted (Stop, error) can race with the re-drive of a parked close
+  message.
+- C5: the `plan_propose` refusal hint mentions `plan_revise` also to sessions that do not
+  own the open plan (which then get `plan_open`).
+- §13: the researcher's `WebFetch` may reach any public host (no datasheet allow-list);
+  mitigated by the 2,000-char query cap and the researcher prompt.
+- §7.2: templates are not editable in the Skills GUI (files in
+  `<data>/skills/design-docs/templates/` or the project layer).
+- C6: project-layer skills' `sessions` chips are read-only (see S-C7 as built).
+- Eval observation: in the first turn of the Requirements session the CLI answered four
+  calls (`parts_get_notes`, `doc_read`) with "No such tool available"; the model retried
+  them at once and they worked. Not reproduced in the guard run; probably the CLI's MCP
+  tool list was not ready yet. Watch for it in prod.
+- Board sessions (type `board`, profile defined) stay hidden until SP4.
 
 ---
 

@@ -11,7 +11,10 @@ import {
   type SkillOrigin,
   type SkillSummary,
 } from '@/api/skills';
+import { TYPE_LABEL } from '@/components/sessions/TypeIcon';
 import type { PanelProps } from '@/layouts/panels';
+import type { ConversationType } from '@/protocol/frames';
+import { hasFrontMatter, readSessions, writeSessions } from './frontMatter';
 
 const BADGE: Record<SkillOrigin, string> = {
   builtin: 'bg-surface-2 text-muted',
@@ -21,6 +24,64 @@ const BADGE: Record<SkillOrigin, string> = {
 
 const BUTTON = 'rounded border border-border px-2 py-1 text-xs hover:bg-surface-2 disabled:opacity-50';
 const PRIMARY = 'rounded bg-accent px-2 py-1 text-xs font-medium text-accent-fg disabled:opacity-50';
+
+const CHIP = 'rounded-full border border-border px-1.5 text-xs';
+/** Session types a user can create (board is hidden until board editing lands). */
+const EDITABLE_TYPES: readonly ConversationType[] = ['requirements', 'schematic', 'free'];
+const typeLabel = (t: string) => TYPE_LABEL[t as ConversationType] ?? t;
+
+/** The session types a skill applies to, as static chips ("All sessions" when unrestricted). */
+function SessionChips({ sessions }: { sessions: readonly string[] | null }) {
+  if (!sessions) return <span className={`${CHIP} text-muted`}>All sessions</span>;
+  return (
+    <>
+      {sessions.map((t) => (
+        <span key={t} className={CHIP}>
+          {typeLabel(t)}
+        </span>
+      ))}
+    </>
+  );
+}
+
+/**
+ * Toggle chips that edit `sessions:` in the draft's front matter (saved with the content).
+ * None pressed = every session type. Unknown types already listed are kept as they are.
+ */
+function SessionToggles({ draft, disabled, onChange }: { draft: string; disabled: boolean; onChange: (d: string) => void }) {
+  const current = readSessions(draft) ?? [];
+  const noFrontMatter = !hasFrontMatter(draft);
+  const toggle = (t: string) =>
+    onChange(writeSessions(draft, current.includes(t) ? current.filter((c) => c !== t) : [...current, t]));
+  return (
+    <>
+      {EDITABLE_TYPES.map((t) => {
+        const on = current.includes(t);
+        return (
+          <button
+            key={t}
+            type="button"
+            aria-pressed={on}
+            disabled={disabled || noFrontMatter}
+            onClick={() => toggle(t)}
+            className={`${CHIP} disabled:opacity-50 ${on ? 'border-accent bg-accent text-accent-fg' : 'hover:bg-surface-2'}`}
+          >
+            {TYPE_LABEL[t]}
+          </button>
+        );
+      })}
+      {current
+        .filter((t) => !EDITABLE_TYPES.includes(t as ConversationType))
+        .map((t) => (
+          <span key={t} className={CHIP}>
+            {typeLabel(t)}
+          </span>
+        ))}
+      {current.length === 0 && <span className="text-xs text-muted">All sessions</span>}
+      {noFrontMatter && <span className="text-xs text-muted">Needs a front matter (name, description) to restrict</span>}
+    </>
+  );
+}
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -133,6 +194,9 @@ function SkillsPanelBody({ projectId }: PanelProps) {
                 {s.originUpdated && <span className="text-xs text-warning">original updated</span>}
                 {!s.enabled && <span className="text-xs text-muted">disabled</span>}
               </span>
+              <span className="flex flex-wrap gap-1">
+                <SessionChips sessions={s.sessions} />
+              </span>
               {s.description && <span className="text-xs text-muted">{s.description}</span>}
               {s.shadowed.length > 0 && (
                 <span className="text-xs text-muted">overrides {s.shadowed.join(', ')}</span>
@@ -156,6 +220,14 @@ function SkillsPanelBody({ projectId }: PanelProps) {
             />
             Enabled in this project
           </label>
+          <div role="group" aria-label="Session types" className="flex flex-wrap items-center gap-1.5">
+            <span className="text-sm">Sessions:</span>
+            {selected.editable ? (
+              <SessionToggles draft={draft} disabled={busy} onChange={setDraft} />
+            ) : (
+              <SessionChips sessions={selected.sessions} />
+            )}
+          </div>
           {selected.originUpdated && (
             <div className="flex flex-col gap-2 rounded border border-warning p-2">
               <p className="text-sm font-medium text-warning">

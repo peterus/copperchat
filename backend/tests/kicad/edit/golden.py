@@ -220,10 +220,77 @@ def check_s3(comps: Components, nets: Nets) -> dict[str, bool]:
     return c
 
 
+def check_attiny85_usbc(comps: Components, nets: Nets) -> dict[str, bool]:
+    """Sessions live eval (spec §14.4): USB-C 5 V, an ATtiny85 with decoupling, one LED with
+    a resistor on an MCU pin, a 6-pin ISP header (AVR-ISP-6 names or the standard pin
+    numbers 1 MISO, 2 VCC, 3 SCK, 4 MOSI, 5 RST, 6 GND)."""
+    c: dict[str, bool] = {}
+    M, U = _find(comps, r"^MCU_.*:ATtiny85"), _find(comps, r"USB_C")
+    D, R, C = _find(comps, r"LED"), _find(comps, r"^Device:R"), _find(comps, r"^Device:C")
+    isp = [
+        r
+        for r in _find(comps, r"^Connector")
+        if r not in U and (re.search(r"AVR-ISP-6", comps[r]["lib"]) or len(comps[r]["pins"]) == 6)
+    ]
+    c["parts_present"] = (len(M), len(U), len(isp)) == (1, 1, 1) and bool(D and R and C)
+    if not c["parts_present"]:
+        return c
+    m, u, h = M[0], U[0], isp[0]
+    vbus, gnd = _net(comps, _pin(comps, u, ["VBUS"])), _net(comps, _pin(comps, u, ["GND"]))
+    vcc = _net(comps, _pin(comps, m, ["VCC"]))
+    c["usb_rails"] = _real(vbus) and _real(gnd) and vbus != gnd
+    # VBUS may reach VCC through a fuse, ferrite, inductor or diode (not a resistor/cap)
+    series = _find(comps, r"(?i:fuse)|Ferrite|^Device:(L|D)(_|$)")
+    bridged = any(_two(comps, x) == {vbus, vcc} for x in series)
+    c["mcu_powered_from_usb"] = (
+        _real(vcc) and (vcc == vbus or bridged) and _net(comps, _pin(comps, m, ["GND"])) == gnd
+    )
+    c["mcu_decoupling"] = any(_two(comps, x) == {vcc, gnd} for x in C)
+    rails = {gnd, vcc, vbus}
+    pb = {
+        n
+        for i in range(5)
+        if _real(n := _net(comps, _pin(comps, m, [f"PB{i}"]))) and n not in rails
+    }
+
+    def chain(d: str, r: str) -> bool:
+        """MCU pin -> LED and resistor in series (either order) -> GND or VCC, with the
+        LED's anode towards the higher potential."""
+        led, res = _two(comps, d), _two(comps, r)
+        mid = led & res
+        ends = (led | res) - mid
+        if len(mid) != 1 or len(ends) != 2 or mid & {gnd, vcc}:
+            return False
+        start, rail = sorted(ends, key=lambda n: n in (gnd, vcc))
+        if start not in pb or rail not in (gnd, vcc):
+            return False
+        order = [start, next(iter(mid)), rail]  # current flows start -> rail to GND
+        a = _net(comps, _pin(comps, d, ["A"]))
+        k = _net(comps, _pin(comps, d, ["K"]))
+        if a not in order or k not in order:
+            return False
+        return (order.index(a) < order.index(k)) == (rail == gnd)
+
+    c["led_with_resistor"] = any(chain(d, r) for d in D for r in R)
+    want = {"MISO": "PB1", "SCK": "PB2", "MOSI": "PB0", "RST": "PB5"}
+    numbers = {"MISO": "1", "VCC": "2", "SCK": "3", "MOSI": "4", "RST": "5", "GND": "6"}
+
+    def hdr(sig: str) -> str | None:
+        return _net(comps, _pin(comps, h, [sig, numbers[sig]]))
+
+    c["isp_pins"] = (
+        all(_real(hdr(s)) and hdr(s) == _net(comps, _pin(comps, m, [p])) for s, p in want.items())
+        and hdr("VCC") == vcc
+        and hdr("GND") == gnd
+    )
+    return c
+
+
 CHECKS: dict[str, Callable[[Components, Nets], dict[str, bool]]] = {
     "s1_led": check_s1,
     "s2_ldo": check_s2,
     "s3_mcu_i2c_subsheet": check_s3,
+    "sessions_attiny85_usbc": check_attiny85_usbc,  # live only (tests/live/test_sessions_live.py)
 }
 
 

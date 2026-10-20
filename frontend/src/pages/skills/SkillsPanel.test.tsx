@@ -18,6 +18,7 @@ const userSkill: SkillSummary = {
   originUpdated: true,
   enabled: true,
   agent: null,
+  sessions: null,
 };
 const builtinSkill: SkillSummary = {
   name: 'datasheet-reading',
@@ -28,6 +29,7 @@ const builtinSkill: SkillSummary = {
   originUpdated: false,
   enabled: true,
   agent: 'part-researcher',
+  sessions: ['free', 'schematic'],
 };
 const projectSkill: SkillSummary = { ...builtinSkill, name: 'house-rules', origin: 'project', hasBuiltin: false, agent: null };
 const ownSkill: SkillSummary = { ...userSkill, name: 'mine', hasBuiltin: false, shadowed: [], originUpdated: false };
@@ -155,5 +157,94 @@ describe('SkillsPanel', () => {
     await userEvent.click(await screen.findByText('datasheet-reading'));
     await userEvent.click(await screen.findByRole('button', { name: /customise/i }));
     expect(await screen.findByRole('alert')).toHaveTextContent('already customised');
+  });
+
+  it('shows session types as chips: "All sessions" or the listed types', async () => {
+    render(<SkillsPanel projectId="p1" />);
+    const list = await screen.findByRole('list', { name: 'Skills' });
+    const user = (await within(list).findByText('copperchat-tools')).closest('button')!;
+    expect(within(user).getByText('All sessions')).toBeInTheDocument();
+    const builtin = within(list).getByText('datasheet-reading').closest('button')!;
+    expect(within(builtin).getByText('Free')).toBeInTheDocument();
+    expect(within(builtin).getByText('Schematic')).toBeInTheDocument();
+    expect(within(builtin).queryByText('All sessions')).toBeNull();
+  });
+
+  it('tolerates a skills DTO without the sessions field', async () => {
+    http.apiGet.mockImplementation(async (path: string) => {
+      if (path.startsWith('/skills?')) return [{ ...userSkill, sessions: undefined }];
+      return { ...detail(userSkill), sessions: undefined };
+    });
+    render(<SkillsPanel projectId="p1" />);
+    const list = await screen.findByRole('list', { name: 'Skills' });
+    expect(await within(list).findByText('All sessions')).toBeInTheDocument();
+  });
+
+  it('builtin and project skills show their session types read-only', async () => {
+    render(<SkillsPanel projectId="p1" />);
+    await userEvent.click(await screen.findByText('datasheet-reading'));
+    const group = await screen.findByRole('group', { name: /session types/i });
+    expect(within(group).queryAllByRole('button')).toHaveLength(0);
+    expect(within(group).getByText('Schematic')).toBeInTheDocument();
+    await userEvent.click(screen.getByText('house-rules'));
+    await screen.findByText('.kicad-agent/skills/');
+    expect(within(screen.getByRole('group', { name: /session types/i })).queryAllByRole('button')).toHaveLength(0);
+  });
+
+  it('toggling a session type on a user skill writes `sessions:` into its front matter', async () => {
+    render(<SkillsPanel projectId="p1" />);
+    await userEvent.click(await screen.findByText('copperchat-tools'));
+    const group = await screen.findByRole('group', { name: /session types/i });
+    expect(within(group).getByText(/all sessions/i)).toBeInTheDocument();
+    const schematic = within(group).getByRole('button', { name: 'Schematic' });
+    expect(schematic).toHaveAttribute('aria-pressed', 'false');
+    expect(within(group).queryByRole('button', { name: 'Board' })).toBeNull();
+    await userEvent.click(schematic);
+    await userEvent.click(within(group).getByRole('button', { name: 'Requirements' }));
+    expect(schematic).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('textbox', { name: /skill content/i })).toHaveValue(
+      '---\nname: copperchat-tools\nsessions: requirements, schematic\n---\nbody',
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() =>
+      expect(http.apiPut).toHaveBeenCalledWith('/skills/user/copperchat-tools', {
+        content: '---\nname: copperchat-tools\nsessions: requirements, schematic\n---\nbody',
+      }),
+    );
+  });
+
+  it('removing every restriction drops the `sessions:` key', async () => {
+    http.apiGet.mockImplementation(async (path: string) => {
+      if (path.startsWith('/skills?')) return all;
+      return {
+        ...detail(userSkill),
+        sessions: ['schematic'],
+        content: '---\nname: copperchat-tools\nsessions: schematic\ndescription: Tools\n---\nbody',
+      };
+    });
+    render(<SkillsPanel projectId="p1" />);
+    await userEvent.click(await screen.findByText('copperchat-tools'));
+    const group = await screen.findByRole('group', { name: /session types/i });
+    const schematic = within(group).getByRole('button', { name: 'Schematic' });
+    expect(schematic).toHaveAttribute('aria-pressed', 'true');
+    await userEvent.click(schematic);
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() =>
+      expect(http.apiPut).toHaveBeenCalledWith('/skills/user/copperchat-tools', {
+        content: '---\nname: copperchat-tools\ndescription: Tools\n---\nbody',
+      }),
+    );
+  });
+
+  it('session toggles are disabled with a hint when the content has no front matter', async () => {
+    http.apiGet.mockImplementation(async (path: string) => {
+      if (path.startsWith('/skills?')) return all;
+      return { ...detail(userSkill), content: 'just a body' };
+    });
+    render(<SkillsPanel projectId="p1" />);
+    await userEvent.click(await screen.findByText('copperchat-tools'));
+    const group = await screen.findByRole('group', { name: /session types/i });
+    expect(within(group).getByRole('button', { name: 'Schematic' })).toBeDisabled();
+    expect(within(group).getByText(/front matter/i)).toBeInTheDocument();
   });
 });
