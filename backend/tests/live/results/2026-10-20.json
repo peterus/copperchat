@@ -37,5 +37,364 @@
   "resumed_session": "293e3097-0abc-4fe8-8971-c4f3a0e14a29",
   "reply": "PELICAN-28641",
   "remembered": true
+ },
+ "sessions_eval": {
+  "model": "cli default",
+  "brief": "a USB-C (5 V) powered board with an ATtiny85 blinking one LED, ISP header",
+  "requirements": {
+   "turns": 2,
+   "wall_s": 181,
+   "sections": {
+    "## Function": true,
+    "## Interfaces": true,
+    "## Power": true,
+    "## Open points": true
+   },
+   "parts_attiny85": true,
+   "parts_usb_c": true,
+   "researched": 2,
+   "decisions": 5,
+   "sch_calls": [],
+   "approved_version": "v3a1e4d146f06c123",
+   "tools": [
+    "Skill",
+    "Skill",
+    "Skill",
+    "parts_get_notes",
+    "parts_get_notes",
+    "doc_read",
+    "doc_read",
+    "parts_get_notes",
+    "doc_read",
+    "doc_read",
+    "doc_read",
+    "research_part",
+    "research_part",
+    "doc_write",
+    "doc_write",
+    "doc_append",
+    "doc_append",
+    "doc_append",
+    "doc_read",
+    "doc_write",
+    "doc_append"
+   ],
+   "tool_errors": [
+    "<tool_use_error>Error: No such tool available: parts_get_notes</tool_use_error>",
+    "<tool_use_error>Error: No such tool available: parts_get_notes</tool_use_error>",
+    "<tool_use_error>Error: No such tool available: doc_read</tool_use_error>",
+    "<tool_use_error>Error: No such tool available: doc_read</tool_use_error>"
+   ],
+   "usage": {
+    "inputTokens": 89597,
+    "outputTokens": 25497,
+    "costUsd": 0.41881119999999994
+   }
+  },
+  "schematic": {
+   "turns": 2,
+   "plans": [
+    {
+     "status": "proposed",
+     "steps": 4
+    }
+   ],
+   "wall_s": 186,
+   "tools": [
+    "Skill",
+    "Skill",
+    "doc_read",
+    "doc_read",
+    "doc_read",
+    "project_info",
+    "parts_get_notes",
+    "lib_get_symbol",
+    "lib_get_symbol",
+    "lib_search_footprints",
+    "lib_search_symbols",
+    "lib_search_footprints",
+    "lib_get_symbol",
+    "lib_get_symbol",
+    "plan_propose",
+    "plan_step_begin",
+    "sch_place_symbol",
+    "sch_place_symbol",
+    "sch_place_symbol",
+    "sch_place_symbol",
+    "sch_connect",
+    "sch_connect",
+    "sch_connect",
+    "sch_add_power",
+    "sch_add_power",
+    "sch_add_power",
+    "sch_no_connect",
+    "sch_add_power",
+    "run_erc",
+    "render_view",
+    "plan_step_done",
+    "plan_step_begin",
+    "sch_place_symbol",
+    "sch_find_space",
+    "sch_place_symbol",
+    "sch_place_symbol",
+    "sch_add_power",
+    "sch_add_power",
+    "sch_add_label",
+    "sch_add_label",
+    "sch_add_label",
+    "sch_add_label",
+    "sch_add_label",
+    "sch_no_connect",
+    "sch_move",
+    "sch_add_label",
+    "sch_add_label",
+    "sch_delete",
+    "run_erc",
+    "render_view",
+    "sch_add_power",
+    "plan_step_done",
+    "plan_step_begin",
+    "sch_place_symbol",
+    "sch_place_symbol",
+    "sch_place_symbol",
+    "sch_connect",
+    "sch_add_label",
+    "sch_add_label",
+    "sch_add_label",
+    "sch_add_label",
+    "sch_add_label",
+    "sch_add_power",
+    "sch_add_power",
+    "run_erc",
+    "render_view",
+    "plan_step_done",
+    "plan_step_begin",
+    "doc_read",
+    "doc_patch_section",
+    "doc_append",
+    "plan_step_done"
+   ],
+   "tool_errors": [
+    "{\"error\": {\"what\": \"sch_add_label: no room for a label at R3.2\", \"why\": \"every stub/a label position at R3.2 (149.86, 72.39) would hit another item or connect another net (nothing was changed by this call)\", \"suggestion\": \"Move the part so the pin has free room in front of it (sch_move / sch_find_sp",
+    "Input validation error: Additional properties are not allowed ('h', 'w' were unexpected)"
+   ],
+   "usage": {
+    "inputTokens": 6060,
+    "outputTokens": 16862,
+    "costUsd": 0.7666432000000001
+   },
+   "golden": true,
+   "missing": [],
+   "erc_errors": 0,
+   "erc_warnings": 0,
+   "erc_types": [],
+   "components": {
+    "C1": {
+     "lib": "Device:C",
+     "value": "10uF",
+     "footprint": "Capacitor_SMD:C_0805_2012Metric"
+    },
+    "C2": {
+     "lib": "Device:C",
+     "value": "100nF",
+     "footprint": "Capacitor_SMD:C_0805_2012Metric"
+    },
+    "D1": {
+     "lib": "Device:LED",
+     "value": "Green",
+     "footprint": "LED_SMD:LED_0805_2012Metric"
+    },
+    "J1": {
+     "lib": "Connector:USB_C_Receptacle_USB2.0_16P",
+     "value": "USB_C_Receptacle_USB2.0_16P",
+     "footprint": "Connector_USB:USB_C_Receptacle_HRO_TYPE-C-31-M-12"
+    },
+    "J2": {
+     "lib": "Connector:AVR-ISP-6",
+     "value": "AVR-ISP-6",
+     "footprint": "Connector_PinHeader_2.54mm:PinHeader_2x03_P2.54mm_Vertical"
+    },
+    "R1": {
+     "lib": "Device:R",
+     "value": "5.1k",
+     "footprint": "Resistor_SMD:R_0805_2012Metric"
+    },
+    "R2": {
+     "lib": "Device:R",
+     "value": "5.1k",
+     "footprint": "Resistor_SMD:R_0805_2012Metric"
+    },
+    "R3": {
+     "lib": "Device:R",
+     "value": "10k",
+     "footprint": "Resistor_SMD:R_0805_2012Metric"
+    },
+    "R4": {
+     "lib": "Device:R",
+     "value": "330",
+     "footprint": "Resistor_SMD:R_0805_2012Metric"
+    },
+    "U1": {
+     "lib": "MCU_Microchip_ATtiny:ATtiny85-20S",
+     "value": "ATtiny85-20SU",
+     "footprint": "Package_SO:SOIC-8_5.3x5.3mm_P1.27mm"
+    }
+   }
+  },
+  "baseline": {
+   "turns": 2,
+   "plans": [
+    {
+     "status": "proposed",
+     "steps": 3
+    }
+   ],
+   "wall_s": 257,
+   "tools": [
+    "Skill",
+    "Skill",
+    "Skill",
+    "project_info",
+    "parts_get_notes",
+    "lib_search_symbols",
+    "lib_search_symbols",
+    "lib_search_symbols",
+    "research_part",
+    "lib_get_symbol",
+    "lib_get_symbol",
+    "lib_get_symbol",
+    "lib_search_footprints",
+    "plan_propose",
+    "plan_step_begin",
+    "sch_place_symbol",
+    "sch_place_symbol",
+    "sch_place_symbol",
+    "sch_place_symbol",
+    "sch_connect",
+    "sch_connect",
+    "sch_add_power",
+    "sch_add_power",
+    "sch_add_power",
+    "run_erc",
+    "render_view",
+    "plan_step_done",
+    "plan_step_begin",
+    "sch_place_symbol",
+    "sch_set_fields",
+    "sch_place_symbol",
+    "sch_place_symbol",
+    "sch_place_symbol",
+    "sch_set_fields",
+    "sch_move",
+    "sch_move",
+    "sch_add_power",
+    "sch_add_power",
+    "sch_connect",
+    "sch_add_power",
+    "sch_add_label",
+    "sch_no_connect",
+    "run_erc",
+    "plan_step_done",
+    "plan_step_done",
+    "plan_step_begin",
+    "lib_get_symbol",
+    "sch_find_space",
+    "sch_place_symbol",
+    "sch_place_symbol",
+    "sch_place_symbol",
+    "sch_connect",
+    "sch_add_power",
+    "sch_add_power",
+    "sch_add_label",
+    "sch_add_label",
+    "sch_add_label",
+    "sch_add_label",
+    "sch_add_label",
+    "run_erc",
+    "render_view",
+    "plan_step_done",
+    "doc_read",
+    "doc_read",
+    "doc_write",
+    "doc_write",
+    "doc_append",
+    "doc_read",
+    "doc_write"
+   ],
+   "tool_errors": [
+    "Input validation error: Additional properties are not allowed ('manufacturer', 'mpn' were unexpected)",
+    "{\"error\": {\"what\": \"Device:C at [144.78, 63.5] would overlap\", \"why\": \"overlaps symbol U1\", \"suggestion\": \"Nearest free position: at=[134.62, 63.5] (or ask sch_find_space).\", \"code\": \"overlap\", \"details\": {\"problems\": [\"overlaps symbol U1\"], \"suggested_at_mm\": [134.62, 63.5], \"size_mm\": [8.51, 7.62]",
+    "{\"error\": {\"what\": \"sch_move C2 at [139.7, 66.04] would overlap\", \"why\": \"overlaps symbol U1\", \"suggestion\": \"Nearest free position: at=[134.62, 66.04] (or ask sch_find_space).\", \"code\": \"overlap\", \"details\": {\"problems\": [\"overlaps symbol U1\"], \"suggested_at_mm\": [134.62, 66.04], \"size_mm\": [8.51, ",
+    "{\"error\": {\"what\": \"Plan step 2 has 4 new ERC error(s) left open\", \"why\": \"Every new ERC error of a step must be fixed or justified before it is done\", \"suggestion\": \"Fix each listed error, or pass erc_justifications {violation_id: reason} for the ones that are intended (e.g. 'connector follows in s"
+   ],
+   "usage": {
+    "inputTokens": 87589,
+    "outputTokens": 25986,
+    "costUsd": 0.8414068
+   },
+   "golden": true,
+   "missing": [],
+   "erc_errors": 0,
+   "erc_warnings": 0,
+   "erc_types": [],
+   "components": {
+    "C1": {
+     "lib": "Device:C",
+     "value": "10uF",
+     "footprint": "Capacitor_SMD:C_0805_2012Metric"
+    },
+    "C2": {
+     "lib": "Device:C",
+     "value": "100nF",
+     "footprint": "Capacitor_SMD:C_0805_2012Metric"
+    },
+    "D1": {
+     "lib": "Device:LED",
+     "value": "LED",
+     "footprint": "LED_SMD:LED_0805_2012Metric"
+    },
+    "J1": {
+     "lib": "Connector:USB_C_Receptacle_PowerOnly_6P",
+     "value": "USB_C_PowerOnly",
+     "footprint": "Connector_USB:USB_C_Receptacle_HRO_TYPE-C-31-M-17"
+    },
+    "J2": {
+     "lib": "Connector_Generic:Conn_02x03_Odd_Even",
+     "value": "ISP",
+     "footprint": "Connector_PinHeader_2.54mm:PinHeader_2x03_P2.54mm_Vertical"
+    },
+    "R1": {
+     "lib": "Device:R",
+     "value": "5.1k",
+     "footprint": "Resistor_SMD:R_0805_2012Metric"
+    },
+    "R2": {
+     "lib": "Device:R",
+     "value": "5.1k",
+     "footprint": "Resistor_SMD:R_0805_2012Metric"
+    },
+    "R3": {
+     "lib": "Device:R",
+     "value": "10k",
+     "footprint": "Resistor_SMD:R_0805_2012Metric"
+    },
+    "R4": {
+     "lib": "Device:R",
+     "value": "1k",
+     "footprint": "Resistor_SMD:R_0805_2012Metric"
+    },
+    "U1": {
+     "lib": "MCU_Microchip_ATtiny:ATtiny85-20S",
+     "value": "ATtiny85-20S",
+     "footprint": "Package_SO:SOIC-8_5.3x5.3mm_P1.27mm"
+    }
+   }
+  },
+  "totals": {
+   "split_cost_usd": 1.1855,
+   "split_output_tokens": 42359,
+   "baseline_cost_usd": 0.8414,
+   "baseline_output_tokens": 25986
+  }
  }
 }

@@ -74,6 +74,11 @@ class LiveApp:
         engine: RunEngine = await self.app.state.agent_runtime.ensure(self.project)
         return engine
 
+    async def open_project(self) -> None:
+        """What the project page does first: start the project's KiCad session."""
+        r = await self.client.post(self.url("/open"))
+        assert r.status_code == 200, r.text
+
     async def create(self, kind: str) -> str:
         r = await self.client.post(self.url("/conversations"), json={"type": kind})
         assert r.status_code == 201, r.text
