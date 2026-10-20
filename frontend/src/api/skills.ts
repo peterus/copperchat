@@ -14,6 +14,8 @@ export const SkillSummary = z.object({
   enabled: z.boolean(),
   /** Non-null (e.g. 'part-researcher') when the skill is loaded by a sub-agent, not the main agent. */
   agent: z.string().nullable(),
+  /** Session types the skill is offered in (front matter `sessions:`); null = every type. */
+  sessions: z.array(z.string()).nullable().default(null),
 });
 export type SkillSummary = z.infer<typeof SkillSummary>;
 
