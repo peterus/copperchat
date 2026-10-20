@@ -37,6 +37,13 @@ _BLOCKED_HINT = {
 }
 
 
+def _foreign_hint(owner: str) -> str:
+    return (
+        f"The open plan belongs to {owner}: make the change there, or ask the user to "
+        "finish or abort that plan first."
+    )
+
+
 class PlanGate(BudgetGate):
     def __init__(self, service: EditingService, plans: PlanService) -> None:
         super().__init__(service)
@@ -53,21 +60,26 @@ class PlanGate(BudgetGate):
             await super().before_prepare(ctx, tool)
             return
         plan_id, status = open_
+        # The plan of another session blocks this one too (spec §5.4): say whose.
+        blocked = status in EDIT_BLOCKING or state.active_step_id is None
+        owner = await self.plans.foreign_owner(ctx) if blocked else None
         if status in EDIT_BLOCKING:
+            hint = _BLOCKED_HINT.get(status, "Ask the user to finish or abort the plan.")
             raise StructuredToolError(
-                f"{tool} refused: a plan is {status}",
+                f"{tool} refused: a plan is {status}" + (f" in {owner}" if owner else ""),
                 "No edits happen outside the steps of an open plan",
-                _BLOCKED_HINT.get(status, "Ask the user to finish or abort the plan."),
+                _foreign_hint(owner) if owner else hint,
                 code="plan_open",
-                details={"plan_id": plan_id, "status": status},
+                details={"plan_id": plan_id, "status": status, "owner": owner},
             )
         if state.active_step_id is None:
             raise StructuredToolError(
-                f"{tool} refused: no plan step is active",
+                f"{tool} refused: "
+                + (f"the plan of {owner} is running" if owner else "no plan step is active"),
                 "While a plan runs, every change belongs to one of its steps",
-                "Call plan_step_begin for the next step first.",
+                _foreign_hint(owner) if owner else "Call plan_step_begin for the next step first.",
                 code="plan_step_required",
-                details={"plan_id": plan_id},
+                details={"plan_id": plan_id, "owner": owner},
             )
 
     async def check_budget(self, ctx: ToolContext, cs: ChangeSet) -> None:

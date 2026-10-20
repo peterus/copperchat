@@ -9,7 +9,7 @@ profile opts in explicitly, and a unit test keeps Free a superset of the registr
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import replace
+from dataclasses import is_dataclass, replace
 from typing import TYPE_CHECKING
 
 from copperchat.tools import ToolContext, ToolSpec
@@ -89,7 +89,7 @@ def profile_specs(conversation_type: str, specs: Sequence[ToolSpec]) -> list[Too
 def bind_conversation(ctx: ToolContext, conversation: ConversationRow | None) -> ToolContext:
     """``ctx`` with the burst's conversation fields (S-C5). Burst-scoped, so a turn the CLI
     starts on its own still gets its session's policy."""
-    if conversation is None:
+    if conversation is None or not is_dataclass(ctx):  # test doubles may be plain objects
         return ctx
     return replace(
         ctx,

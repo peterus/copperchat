@@ -89,9 +89,9 @@ coordinates in millimetres.
 message. Never push.
 - Lines starting with "[CopperChat notice]" come from the application, not from the user."""
 
-_EDITING = """- You can edit the schematic with the sch_* tools; load the kicad-schematic-editing skill before \
-your first edit. The board (PCB) is read-only: if asked to change it, explain what you would \
-change and that board editing is not available yet.
+_EDITING = """- You can edit the schematic with the sch_* tools; load the kicad-schematic-editing \
+skill before your first edit. The board (PCB) is read-only: if asked to change it, explain \
+what you would change and that board editing is not available yet.
 - Use render_view to look at the design when spatial reasoning matters, and run_erc / run_drc \
 to check it."""
 

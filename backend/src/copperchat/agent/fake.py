@@ -9,6 +9,8 @@ from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from claude_agent_sdk import PermissionResultDeny, ToolPermissionContext
+
 from copperchat.agent.events import (
     AgentEvent,
     QueuedItem,
@@ -21,6 +23,8 @@ from copperchat.agent.events import (
     TurnFinished,
     Usage,
 )
+from copperchat.agent.guards import make_main_guard
+from copperchat.agent.profiles import bind_conversation, profile_specs
 from copperchat.agent.sdk_tools import build_sdk_tool_list, mcp_result_to_event, sdk_tool_name
 from copperchat.config import Settings
 from copperchat.projects import Project
@@ -87,6 +91,17 @@ def echo_script(item: QueuedItem) -> list[Step]:
     return [Text("You said: "), Text(item.text)]
 
 
+@dataclass
+class FakeBurst:
+    """What one burst saw (spec §14.3): its conversation, its profile's tool list and the
+    prompt text of every item (incl. the injected notices)."""
+
+    conversation_id: str
+    conversation_type: str
+    tool_names: list[str]
+    prompts: list[str] = field(default_factory=list)
+
+
 class FakeAgent:
     def __init__(
         self,
@@ -96,7 +111,7 @@ class FakeAgent:
         ctx_factory: Callable[[], ToolContext] | None = None,
         ignore_interrupt: bool = False,
         settings: Settings | None = None,
-        turn_context: Callable[[], str | None] | None = None,
+        turn_context: Callable[[], ToolContext] | None = None,
     ) -> None:
         self._script_for = script_for or echo_script
         self._specs = list(specs)
@@ -113,7 +128,10 @@ class FakeAgent:
         self.prompts: list[QueuedItem] = []
         self.resume_ids: list[str | None] = []
         self.conversations: list[str] = []  # the conversation of each burst
+        self.bursts: list[FakeBurst] = []
         self.interrupts = 0
+        self._conversation: ConversationRow | None = None
+        self._burst_specs: list[ToolSpec] = self._specs
 
     async def interrupt(self) -> None:
         self.interrupts += 1
@@ -128,31 +146,43 @@ class FakeAgent:
         resume_session_id: str | None,
     ) -> AsyncIterator[AgentEvent]:
         self._project = project
+        self._conversation = conversation
+        # The burst's tool list comes from its profile, as under the SDK backend (C5).
+        self._burst_specs = profile_specs(conversation.type, self._specs)
+        names = [s.name for s in self._burst_specs]
+        record = FakeBurst(conversation.id, conversation.type, names)
+        self.bursts.append(record)
         self.conversations.append(conversation.id)
         self.resume_ids.append(resume_session_id)
         self._burst += 1
         yield SessionId(f"fake-session-{self._burst}")
         async for item in input_stream:
             self.prompts.append(item)
+            record.prompts.append(item.text)
             self._interrupted.clear()
             async for ev in self._run(item):
                 yield ev
 
     def _kicadless_ctx_factory(self) -> Callable[[], ToolContext] | None:
-        project, settings = self._project, self._settings
+        project, settings, conversation = self._project, self._settings, self._conversation
+        turn_context = self._turn_context
+        if turn_context is not None:
+            # The engine's KiCad-less context: run id, docs, doc notices (S-C3, S-C5).
+            return lambda: bind_conversation(turn_context(), conversation)
         if project is None or settings is None:
             return None
-        turn_context = self._turn_context
 
         def make() -> ToolContext:
-            return ToolContext(
-                project=project,
-                session=cast("KicadSession", None),
-                settings=settings,
-                run_id=turn_context() if turn_context is not None else None,
+            ctx = ToolContext(
+                project=project, session=cast("KicadSession", None), settings=settings
             )
+            return bind_conversation(ctx, conversation)
 
         return make
+
+    def _bound(self, factory: Callable[[], ToolContext]) -> Callable[[], ToolContext]:
+        conversation = self._conversation
+        return lambda: bind_conversation(factory(), conversation)
 
     def _expand(self, steps: list[Step]) -> list[Step]:
         """Flatten Delegate steps into Emit/Wait steps (interrupt checks stay per step)."""
@@ -223,12 +253,24 @@ class FakeAgent:
             elif isinstance(step, Tool):
                 tool_id = f"fake-tool-{next(self._tool_ids)}"
                 yield ToolUse(id=tool_id, name=sdk_tool_name(step.name), input=dict(step.args))
-                if self._ctx_factory is None:
+                # The main-agent guard of the burst's profile, as under the SDK backend: a
+                # refused call is an ordinary error result (C5).
+                allowed = frozenset(sdk_tool_name(s.name) for s in self._burst_specs)
+                verdict = await make_main_guard(allowed)(
+                    sdk_tool_name(step.name), dict(step.args), ToolPermissionContext()
+                )
+                if isinstance(verdict, PermissionResultDeny):
+                    yield ToolResultEvt(id=tool_id, content=verdict.message, is_error=True)
+                    continue
+                ctx_factory = self._ctx_factory
+                if ctx_factory is None:
                     raise RuntimeError("FakeAgent Tool step needs ctx_factory")
+                bound = self._bound(ctx_factory)
+
                 tools = {
                     t.name: t
                     for t in build_sdk_tool_list(
-                        self._specs, self._ctx_factory, self._kicadless_ctx_factory()
+                        self._burst_specs, bound, self._kicadless_ctx_factory()
                     )
                 }
                 raw = await tools[step.name].handler(dict(step.args))

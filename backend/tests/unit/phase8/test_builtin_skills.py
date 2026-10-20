@@ -119,7 +119,9 @@ def test_skill_tool_names_exist_in_every_profile_they_apply_to() -> None:
     session type it applies to: a Requirements skill never tells the agent to call
     sch_connect (spec §8.4)."""
     known = {s.name for s in registry.all_specs()}
-    layers = SkillLayers(builtin_root=BUILTIN_ROOT, user_root=BUILTIN_ROOT / "_none", project_root=None)
+    layers = SkillLayers(
+        builtin_root=BUILTIN_ROOT, user_root=BUILTIN_ROOT / "_none", project_root=None
+    )
     checked = 0
     for skill in effective_skills(layers):
         if skill.agent is not None:
@@ -164,7 +166,12 @@ def test_style_skill_has_placement_recipes() -> None:
 
 def test_tools_skill_points_to_the_editing_and_docs_skills() -> None:
     body = (BUILTIN_ROOT / "copperchat-tools" / "SKILL.md").read_text()
-    for phrase in ("kicad-schematic-editing", "`parts_get_notes`", "## Design documents", "`doc_list`"):
+    for phrase in (
+        "kicad-schematic-editing",
+        "`parts_get_notes`",
+        "## Design documents",
+        "`doc_list`",
+    ):
         assert phrase in body, phrase
     assert "## Editing the schematic" not in body
     editing = (BUILTIN_ROOT / "kicad-schematic-editing" / "SKILL.md").read_text()

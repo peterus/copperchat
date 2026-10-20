@@ -103,6 +103,17 @@ class PlanRepo:
         )
         return None if row is None else (str(row["id"]), str(row["status"]))
 
+    async def open_owner(self, project_id: str) -> tuple[str, str, str] | None:
+        """(plan id, status, owning conversation id) of the open plan (sessions C5)."""
+        row = await self._db.fetchone(
+            "SELECT id, status, conversation_id FROM plans WHERE project_id = ? AND status "
+            f"IN {_OPEN_SQL}",
+            (project_id,),
+        )
+        if row is None:
+            return None
+        return str(row["id"]), str(row["status"]), str(row["conversation_id"])
+
     async def run_conversation(self, run_id: str) -> str | None:
         """The conversation of run `run_id` (None for an unknown run)."""
         row = await self._db.fetchone("SELECT conversation_id FROM runs WHERE id = ?", (run_id,))

@@ -1,7 +1,8 @@
 """Conversations ("sessions") of a project and their message pages (spec §6.1).
 
 Every ``cid`` is checked against the project: a conversation of another project is a 404
-(``conversation_not_found``). Close and reopen are added by phase C5.
+(``conversation_not_found``). Close and reopen (sessions C5, spec §10) live in
+``copperchat.sessions``.
 """
 
 from __future__ import annotations
@@ -136,3 +137,25 @@ async def list_messages(
         "messages": [d.model_dump(mode="json", by_alias=True) for d in dtos],
         "hasMore": has_more,
     }
+
+
+@router.post("/{project_id}/conversations/{cid}/close", status_code=202)
+async def close_conversation(
+    project_id: str, cid: str, request: Request, _: CurrentUser
+) -> dict[str, Any]:
+    """``closing`` + the server-authored handover message (409 unless open, 409
+    ``plan_open`` while the session owns an open plan)."""
+    project = _project(request, project_id)
+    conv = await _owned(request, project, cid)
+    row = await request.app.state.conversation_service.close(project, conv.id)
+    return (await conversation_dto(_repo(request), row)).model_dump(mode="json", by_alias=True)
+
+
+@router.post("/{project_id}/conversations/{cid}/reopen")
+async def reopen_conversation(
+    project_id: str, cid: str, request: Request, _: CurrentUser
+) -> dict[str, Any]:
+    project = _project(request, project_id)
+    conv = await _owned(request, project, cid)
+    row = await request.app.state.conversation_service.reopen(project, conv.id)
+    return (await conversation_dto(_repo(request), row)).model_dump(mode="json", by_alias=True)

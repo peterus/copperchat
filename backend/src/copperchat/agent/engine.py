@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from copperchat.agent.broadcaster import Broadcaster, Subscription
 from copperchat.agent.events import (
@@ -28,6 +28,7 @@ from copperchat.agent.events import (
     TurnFinished,
     Usage,
 )
+from copperchat.agent.profiles import bind_conversation
 from copperchat.agent.protocol import (
     AttachmentRef,
     ConversationDTO,
@@ -57,7 +58,9 @@ from copperchat.projects import Project, agent_dir
 from copperchat.tools import ImageBlock, ToolContext
 
 if TYPE_CHECKING:
+    from copperchat.design_docs.service import DesignDocs, DocNotice
     from copperchat.editing.service import EditingService
+    from copperchat.kicad_session import KicadSession
 
 log = logging.getLogger(__name__)
 _IMAGE_EXT = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
@@ -200,8 +203,17 @@ class ChainedHooks(RunHooks):
             raise first
 
 
-# (tool context factory, turn context = the running turn's run id) -> backend (S-C3).
-BackendFactory = Callable[[Callable[[], ToolContext], Callable[[], str | None]], AgentBackend]
+# (tool context factory, turn context = the KiCad-less tool context of the running turn:
+# run id, the burst's conversation, docs) -> backend (S-C3, S-C5).
+BackendFactory = Callable[[Callable[[], ToolContext], Callable[[], ToolContext]], AgentBackend]
+
+
+def doc_card_text(meta: dict[str, Any]) -> str:
+    """Plain text of a ``doc-changed`` notice (the card renders from its metadata)."""
+    name = str(meta["path"]).removeprefix("docs/design/")
+    sections = meta.get("sections") or []
+    where = f" ({', '.join(sections)})" if sections else ""
+    return f"📄 {name} updated — +{meta['added']} / −{meta['removed']}{where}"  # noqa: RUF001
 
 
 async def conversation_dto(repo: ConversationRepo, row: ConversationRow) -> ConversationDTO:
@@ -240,6 +252,8 @@ class _Turn:
     kicad_reported: bool = False
     document_inconsistent: bool = False
     auto_restore: bool = False
+    # One doc-changed card per doc per turn (spec §12.3): path -> (message id, metadata).
+    doc_cards: dict[str, tuple[int, dict[str, Any]]] = field(default_factory=dict)
 
 
 class RunEngine:
@@ -262,6 +276,8 @@ class RunEngine:
         self.hooks = hooks or RunHooks()
         # SP2 (E-C5): set by AgentRuntime.ensure; passed into every ToolContext.
         self.editing: EditingService | None = None
+        # Sessions (C5): the design-docs service, passed into every ToolContext.
+        self.docs: DesignDocs | None = None
         # Phase 8 wires the uploads table (AgentRuntime); unknown ids are rejected.
         self.attachment_resolver: AttachmentResolver = _no_attachments
         self.rate_limited_until: datetime | None = None
@@ -282,6 +298,9 @@ class RunEngine:
         self._burst: asyncio.Task[None] | None = None  # newest burst
         self._bursts: set[asyncio.Task[None]] = set()  # incl. ones still winding down
         self._turn: _Turn | None = None
+        # The conversation of the burst that is talking to the backend: tool contexts
+        # take their session fields from it, also in a turn the CLI started (S-C3).
+        self._burst_conv: ConversationRow | None = None
         self._inflight: int | None = None  # pulled from the stream, turn not finished
         self._inflight_cid: str | None = None  # its conversation (set with _inflight)
         self._live: dict[int, str] = {}  # streaming row id -> full content incl. unflushed
@@ -315,9 +334,21 @@ class RunEngine:
     def current_conversation_id(self) -> str | None:
         return self._turn.info.conversation_id if self._turn else None
 
-    def turn_context(self) -> str | None:
-        """The running turn's run id; KiCad-less tool contexts carry it (S-C3)."""
-        return self.current_run_id
+    def turn_context(self) -> ToolContext:
+        """The KiCad-less tool context (no ``session``): the running turn's run id and
+        user text, the burst's conversation fields, the docs service and the doc-notice
+        callback (S-C3, S-C5). ``_make_ctx`` adds the KiCad session to it."""
+        turn = self._turn
+        ctx = ToolContext(
+            project=self.project,
+            session=cast("KicadSession", None),
+            settings=self._settings,
+            run_id=turn.info.run_id if turn else None,
+            user_message=turn.info.text if turn else None,
+            post_doc_notice=self._post_doc_notice,
+            docs=self.docs,
+        )
+        return bind_conversation(ctx, self._burst_conv)
 
     async def start(self) -> None:
         await self._messages.finalize_streaming(self.pid)
@@ -616,6 +647,7 @@ class RunEngine:
         self, stream: PushStream[QueuedItem], prev: asyncio.Task[None] | None = None
     ) -> None:
         flusher: asyncio.Task[None] | None = None
+        conversation: ConversationRow | None = None
         try:
             if prev is not None:
                 await self._await_wind_down(prev)
@@ -623,6 +655,7 @@ class RunEngine:
             # mid-burst.
             conversation = await self._conversation(stream.conversation_id)
             resume = conversation.sdk_session_id
+            self._burst_conv = conversation
             flusher = asyncio.create_task(self._flush_loop())
             async for ev in self.backend.start(
                 self.project, conversation, self._gated(stream, conversation), resume
@@ -665,6 +698,8 @@ class RunEngine:
                 self._sealed_stream = None
             if self._burst is asyncio.current_task():
                 self._burst = None
+            if conversation is not None and self._burst_conv is conversation:
+                self._burst_conv = None
             await self._drive_queued()
 
     async def _fail_burst(self, stream: PushStream[QueuedItem], exc: Exception) -> None:
@@ -1187,19 +1222,86 @@ class RunEngine:
         session = self._sessions.current()
         if session is None or session.closed or session.project.id != self.pid:
             raise KicadUnavailable("the project is not open in KiCad")
-        turn = self._turn
-        return ToolContext(
-            project=self.project,
+        return replace(
+            self.turn_context(),
             session=session,
-            settings=self._settings,
-            run_id=turn.info.run_id if turn else None,
             on_mutation=self._on_mutation,
-            user_message=turn.info.text if turn else None,
             on_documents_changed=self._on_documents_changed,
             on_kicad_unavailable=self._on_kicad_unavailable,
             editing=self.editing,
             on_document_inconsistent=self._on_document_inconsistent,
         )
+
+    async def _post_doc_notice(self, notice: DocNotice) -> None:
+        """A doc tool changed a doc (S-C5): the conversation's own change updates its
+        ``docs_seen`` at once (so the next turn does not report it), and the chat gets a
+        ``doc-changed`` card, one per doc per turn, updated by ``message-delta``."""
+        burst = self._burst_conv
+        cid = notice.conversation_id or (burst.id if burst is not None else None)
+        if cid is None:
+            return
+        if notice.version is not None:
+            await self._mark_seen(cid, notice.path, notice.version)
+        name = notice.path.removeprefix("docs/design/")
+        if notice.kind == "approval_lost":
+            conv = await self._conversations.get(cid)
+            label = conv.title if conv is not None else "this session"
+            await self.post_notice(
+                cid,
+                f"{name} changed after approval ({label}) — review and re-approve",
+                {"path": notice.path},
+            )
+            return
+        turn = self._turn
+        if turn is not None and turn.info.conversation_id != cid:
+            turn = None
+        async with self._lock:
+            card = turn.doc_cards.get(notice.path) if turn is not None else None
+            if card is None:
+                meta: dict[str, Any] = {
+                    "action": "doc-changed",
+                    "path": notice.path,
+                    "revisionId": notice.revision_id,
+                    "added": notice.added,
+                    "removed": notice.removed,
+                    "sections": list(dict.fromkeys(notice.sections)),
+                }
+                row = await self._insert(
+                    conversation_id=cid,
+                    role="system",
+                    kind="notice",
+                    content=doc_card_text(meta),
+                    metadata=meta,
+                )
+                if turn is not None:
+                    turn.doc_cards[notice.path] = (row.id, meta)
+                return
+            mid, prev = card
+            meta = {
+                **prev,
+                "revisionId": notice.revision_id,
+                "added": prev["added"] + notice.added,
+                "removed": prev["removed"] + notice.removed,
+                "sections": list(dict.fromkeys([*prev["sections"], *notice.sections])),
+            }
+            await self._messages.merge_metadata(mid, meta)
+            await self._messages.set_content(mid, doc_card_text(meta))
+            turn.doc_cards[notice.path] = (mid, meta)  # type: ignore[union-attr]
+            await self._publish(
+                MessageDeltaFrame(
+                    project_id=self.pid,
+                    conversation_id=cid,
+                    message_id=mid,
+                    metadata_patch=meta,
+                )
+            )
+
+    async def _mark_seen(self, conversation_id: str, path: str, version: str) -> None:
+        conv = await self._conversations.get(conversation_id)
+        if conv is not None and conv.docs_seen.get(path) != version:
+            await self._conversations.set_docs_seen(
+                conversation_id, {**conv.docs_seen, path: version}
+            )
 
     async def _on_mutation(self) -> None:
         turn = self._turn

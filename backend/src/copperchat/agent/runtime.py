@@ -24,6 +24,7 @@ from copperchat.projects import Project, get_project
 from copperchat.tools import ToolContext, ToolSpec
 
 if TYPE_CHECKING:
+    from copperchat.design_docs.service import DesignDocs
     from copperchat.editing.service import EditingService
 
 log = logging.getLogger(__name__)
@@ -37,7 +38,7 @@ def default_backend_factory(
     (``db``: skills + attachments, X5)."""
 
     def make(
-        ctx_factory: Callable[[], ToolContext], turn_context: Callable[[], str | None]
+        ctx_factory: Callable[[], ToolContext], turn_context: Callable[[], ToolContext]
     ) -> AgentBackend:
         if settings.dev_fake_agent:
             return FakeAgent(
@@ -83,6 +84,8 @@ class AgentRuntime:
         self.hooks_factory: HooksFactory = hooks_factory or _no_hooks
         # SP2 editing service (install_editing); every engine passes it into ToolContext.
         self.editing: EditingService | None = None
+        # Sessions C5 (install_sessions): the design-docs service of every ToolContext.
+        self.docs: DesignDocs | None = None
         self._engines: dict[str, RunEngine] = {}
         self._lock = asyncio.Lock()
 
@@ -107,6 +110,7 @@ class AgentRuntime:
             )
             engine.hooks = self.hooks_factory(project, engine)
             engine.editing = self.editing
+            engine.docs = self.docs
             engine.attachment_resolver = functools.partial(resolve_attachment, self.db, project.id)
             await engine.start()
             self._engines[project.id] = engine

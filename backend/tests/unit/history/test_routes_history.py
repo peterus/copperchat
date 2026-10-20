@@ -18,6 +18,7 @@ from copperchat.editing.hooks import EditingHooks
 from copperchat.history.hooks import HistoryHooks
 from copperchat.history.store import sha256_file
 from copperchat.projects import Project
+from copperchat.sessions import SessionHooks
 from copperchat.web.app import create_app
 from tests.support.fake_kicad import FakeClientFactory, FakeLauncher, FakeServer
 from tests.support.history import ECC83, copy_project, other_board, replace_with_kicad_file
@@ -192,9 +193,11 @@ def test_hooks_are_installed_before_resume_pending(
         with TestClient(app):
             engine = app.state.agent_runtime.get(project.id)
             assert engine is not None and isinstance(engine.hooks, ChainedHooks)
-            history, editing = engine.hooks.hooks
+            history, editing, sessions = engine.hooks.hooks
             assert isinstance(history, HistoryHooks) and isinstance(editing, EditingHooks)
+            assert isinstance(sessions, SessionHooks)  # sessions C5, chained last
             assert engine.editing is app.state.editing is app.state.agent_runtime.editing
+            assert engine.docs is app.state.docs is app.state.agent_runtime.docs
     finally:
         server.release.set()
 
