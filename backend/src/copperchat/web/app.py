@@ -25,6 +25,7 @@ from copperchat.push.notifier import PushNotifier
 from copperchat.push.store import PushStore
 from copperchat.push.vapid import load_or_create_vapid
 from copperchat.push.visibility import VisibilityRegistry
+from copperchat.sessions import install_sessions, sweep_closing
 from copperchat.web import (
     auth,
     health,
@@ -135,7 +136,9 @@ def create_app(
             install_editing(app)  # after history: chains its hooks after HistoryHooks
             plans = install_plans(app)  # PlanGate replaces the editing gate (E8b)
             install_design_docs(app)  # app.state.docs (sessions C3)
+            install_sessions(app)  # session hooks + close/reopen (sessions C5)
             await plans.pause_all_running()  # a restart leaves no plan running
+            await sweep_closing(db)  # a crash mid-close leaves no session closing
             push = install_push(app)
             # parked / queued work survives a restart
             for project_id in await runtime.resume_pending():

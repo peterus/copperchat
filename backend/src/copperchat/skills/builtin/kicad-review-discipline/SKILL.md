@@ -1,6 +1,7 @@
 ---
 name: kicad-review-discipline
 description: Electrical review checklist and validation discipline for KiCad designs. Use for any design review, any question about whether a circuit or board is correct, and before stating that something is fine or fixed.
+sessions: schematic, board, free
 ---
 
 # Review discipline

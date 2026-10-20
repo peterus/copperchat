@@ -97,6 +97,7 @@ def test_cookie_authenticated_chat_round_trip(make_settings: Callable[..., Setti
         cid = _conversation(client, pid)
         page = client.get(f"/api/projects/{pid}/conversations/{cid}/messages").json()
         assert [m["role"] for m in page["messages"]] == ["user", "assistant"]
+        # the dev echo leaves out the first-turn doc index notice (sessions C5)
         assert page["messages"][1]["content"] == "You said: hello"
         assert client.post("/api/auth/logout").status_code == 204
         with (

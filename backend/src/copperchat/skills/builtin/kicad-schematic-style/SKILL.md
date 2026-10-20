@@ -1,6 +1,7 @@
 ---
 name: kicad-schematic-style
 description: Schematic readability conventions by circuit type. Use when judging, explaining or proposing the layout of a KiCad schematic, or when the user asks whether a schematic is readable or well structured.
+sessions: schematic, free
 ---
 
 # Schematic style by circuit type

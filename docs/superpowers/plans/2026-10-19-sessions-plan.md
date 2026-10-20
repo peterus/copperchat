@@ -318,6 +318,21 @@ class ConversationRepo:
   `new_plan(conversation_id=)` are required, and
   `restore_snapshot(..., conversation_id=)` takes the conversation.
 
+**As built (C5):**
+- `RunEngine.turn_context()` returns the **KiCad-less `ToolContext`** (no
+  `session`; run id, user text, the burst's conversation fields, `docs`,
+  `post_doc_notice`), not the bare run id. `BackendFactory` is
+  `(ctx_factory, turn_context: () -> ToolContext)`; `_make_ctx` is
+  `replace(turn_context(), session=…, callbacks…)`. Both backends also bind the
+  burst's conversation (`agent.profiles.bind_conversation`).
+- `install_sessions(app)` flattens the chain: `engine.hooks` is one
+  `ChainedHooks([history, editing, SessionHooks])`. The service is
+  `app.state.conversation_service` (`app.state.sessions` stays the KiCad session
+  manager). `sweep_closing(db)` runs in the lifespan after `pause_all_running`,
+  before `resume_pending`.
+- The first-turn marker is the `docs_seen` key `#indexed`; a conversation without it
+  gets the index at its next turn (also migrated ones).
+
 ### S-C4. REST and WS (C1; close/reopen: C5; docs: C3)
 
 - **REST** follows spec §6.1. `ConversationDTO` (camelCase):
@@ -390,6 +405,12 @@ docs: DesignDocs | None = None
 - The doc tools refuse ("Design docs are not available") while `ctx.docs` is
   None; C5 wires `docs` into both context factories.
 
+**As built (C5):**
+- `DocNotice` gains `version: str | None = None` (the body version after the
+  change): the engine puts it into the conversation's `docs_seen` at once.
+- `kind='approval_lost'` becomes a plain notice "<doc> changed after approval
+  (<session>) — review and re-approve" (metadata `{path}`).
+
 ### S-C6. `DesignDocs` service (C3) — `design_docs/service.py`
 
 ```python
@@ -460,6 +481,10 @@ class DesignDocs:
 - Residuals: cross-script look-alikes of `[CopperChat notice]` and
   `*Session:` lines; revisions of deleted docs are not pruned.
 
+**As built (C5):**
+- `DesignDocs` counts conflicts per `(project, run, path)`; from the third one in a
+  turn the `doc_conflict` suggestion says to stop and ask the user.
+
 ### S-C7. Profiles (C5) — `agent/profiles.py`
 
 - `PROFILES: dict[str, frozenset[str]]`, exactly as in spec §8.2.
@@ -469,6 +494,26 @@ class DesignDocs:
   - Each name exists in the registry.
 - The `sessions` front-matter key is parsed in `skills/store.py`
   (`EffectiveSkill.sessions: frozenset[str] | None`).
+
+**As built (C5):**
+- `profile_specs("free", specs)` returns every spec (new tools reach Free
+  automatically); an unknown type raises. `PROFILES["free"]` lists today's 45.
+- Board (hidden) = the 13 KiCad read tools, library, parts, git, `doc_list`,
+  `doc_read`, `doc_append`.
+- `assemble_skills(settings, project, db, conversation_type="free")`; the skills
+  DTO gains `sessions: string[] | null` (sorted).
+- The skill tool-name test checks the creatable types (free, requirements,
+  schematic); Board's profile is SP4's. So `design-docs` (all types) names only
+  `doc_list`, `doc_read`, `doc_patch_section`, `doc_append`; `doc_write` is
+  described in `session-requirements`.
+- `PlanGate` refusals of another session's open plan name its title (`what`,
+  `suggestion`, `details.owner`); `PlanRepo.open_owner(pid)` gives
+  `(plan id, status, conversation id)`.
+- `plan_step_begin`, `plan_step_done` and `plan_revise` from a session that does not
+  own the open plan are refused (`plan_open`, naming the owner), so no session takes
+  over another's plan.
+- A project-layer copy of a skill cannot drop the `sessions` restriction of its
+  built-in/user version (both must allow the type).
 
 ### S-C8. Frontend contracts
 

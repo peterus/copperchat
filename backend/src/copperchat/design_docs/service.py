@@ -38,6 +38,8 @@ MAX_READ_BYTES = 64 * 1024
 MAX_SUMMARY_CHARS = 200
 MAX_TITLE_CHARS = 120
 MAX_MUTATIONS_PER_TURN = 40
+# Conflicts on one doc in one turn after which the agent is told to stop and ask (C5).
+MAX_CONFLICTS_PER_TURN = 3
 DIFF_LINE_LIMIT = 4000
 _EXACT_DIFF_LINES = 200
 CONFLICT_DIFF_BYTES = 8 * 1024
@@ -86,6 +88,10 @@ class DocNotice:
     sections: tuple[str, ...]
     conversation_id: str | None
     run_id: str | None
+    # The body versions after and before the change (C5: the conversation's
+    # ``docs_seen`` advances only when it had seen ``prev_version``).
+    version: str | None = None
+    prev_version: str | None = None
 
 
 def scope_refused(why: str) -> DocError:
@@ -519,6 +525,7 @@ class DesignDocs:
         self.broadcaster = broadcaster
         self._locks: dict[str, asyncio.Lock] = {}
         self._turns: OrderedDict[tuple[str, str], int] = OrderedDict()
+        self._conflicts: OrderedDict[tuple[str, str, str], int] = OrderedDict()
         self._vcache: dict[tuple[str, str], tuple[int, int, str]] = {}
 
     def lock(self, project_id: str) -> asyncio.Lock:
@@ -819,11 +826,24 @@ class DesignDocs:
         diff = await asyncio.to_thread(
             conflict_diff, base, current, base_version or "missing", version
         )
+        suggestion = "Re-read the doc (doc_read) and apply your change to the current text."
+        if author == "agent" and run_id is not None:
+            key = (project.id, run_id, doc.rel)
+            self._conflicts[key] = self._conflicts.get(key, 0) + 1
+            self._conflicts.move_to_end(key)
+            while len(self._conflicts) > _TURN_KEYS:
+                self._conflicts.popitem(last=False)
+            if self._conflicts[key] >= MAX_CONFLICTS_PER_TURN:
+                suggestion = (
+                    f"{doc.rel} keeps changing while you edit it "
+                    f"({self._conflicts[key]} conflicts in this turn): stop and ask the "
+                    "user before you change it again."
+                )
         raise DocError(
             "doc_conflict",
             f"{doc.rel} changed since version {base_version or '(none)'}",
             f"the current version is {version}",
-            "Re-read the doc (doc_read) and apply your change to the current text.",
+            suggestion,
             details={
                 "current_version": None if version == "missing" else version,
                 "author": None if newest is None else newest.author,
@@ -894,7 +914,18 @@ class DesignDocs:
         notices: list[DocNotice] = []
         if author == "agent":
             notices.append(
-                DocNotice("changed", doc.rel, rid, added, removed, touched, conversation_id, run_id)
+                DocNotice(
+                    "changed",
+                    doc.rel,
+                    rid,
+                    added,
+                    removed,
+                    touched,
+                    conversation_id,
+                    run_id,
+                    new_version,
+                    state.version,
+                )
             )
             if was_approved and not approved:
                 notices.append(
@@ -907,6 +938,8 @@ class DesignDocs:
                         touched,
                         conversation_id,
                         run_id,
+                        new_version,
+                        state.version,
                     )
                 )
         await self._publish(

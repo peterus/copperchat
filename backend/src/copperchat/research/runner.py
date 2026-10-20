@@ -41,7 +41,9 @@ log = logging.getLogger(__name__)
 
 QueryFn = Callable[[str, ClaudeAgentOptions], AsyncIterator[Any]]
 DEFAULT_TIMEOUT_S = 900.0
-MAX_QUERY_CHARS = 4000
+# Server-side (the SDK does not enforce the schema's maxLength): a long query is the
+# easiest way to carry design data to the web-enabled researcher (spec §13).
+MAX_QUERY_CHARS = 2000
 MAX_ATTACHMENTS = 10
 MAX_BUFFER_BYTES = 64 * 1024 * 1024
 _part_locks: dict[tuple[str, str], asyncio.Lock] = {}

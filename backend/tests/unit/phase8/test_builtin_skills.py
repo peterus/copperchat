@@ -1,5 +1,6 @@
 import re
 
+from copperchat.agent.profiles import PROFILES
 from copperchat.skills.store import BUILTIN_ROOT, SkillLayers, effective_skills, parse_front_matter
 from copperchat.tools import registry
 
@@ -30,7 +31,39 @@ EXPECTED = {
         "preferred_libraries:",
         "deviation",
     ],
-    "design-docs": ["doc_list", "doc_read", "base_version", "decisions.md", "Open points"],
+    "design-docs": [
+        "doc_list",
+        "doc_read",
+        "base_version",
+        "decisions.md",
+        "Open points",
+        "## Conflicts",
+        "front matter",
+        "template",
+        "stop and ask the user",
+    ],
+    "session-requirements": [
+        "function",
+        "interfaces",
+        "acceptance",
+        "ask",
+        "assumption",
+        "research_part",
+        "Open points",
+        "approve",
+        "doc_write",
+    ],
+    "session-schematic": [
+        "requirements.md",
+        "architecture.md",
+        "parts.md",
+        "sheet",
+        "gate",
+        "once",
+        "decisions.md",
+        "placed",
+        "Key parts",
+    ],
 }
 
 
@@ -52,15 +85,12 @@ def test_main_agent_skills_never_mention_the_agent_tool() -> None:
         assert "subagent_type" not in body and "Agent tool" not in body
 
 
-EDITING_SKILLS = (
-    "kicad-schematic-editing",
-    "kicad-schematic-style",
-    "copperchat-tools",
-    "design-docs",
-)
 TOOL_NAME = re.compile(
     r"`((?:sch|lib|plan|parts|pcb|run|render|research|project|git|doc)_[a-z0-9_]+)"
 )
+# Session types a user can create; Board (SP4) is hidden and its profile is defined there,
+# so skills are not checked against it yet.
+ACTIVE_TYPES = ("free", "requirements", "schematic")
 
 # backticked identifiers in the skills that look like tool names but are not
 NOT_TOOLS = {
@@ -84,13 +114,29 @@ NOT_TOOLS = {
 }
 
 
-def test_skill_tool_names_exist() -> None:
-    known = {s.name for s in registry.all_specs()} | NOT_TOOLS
-    for name in EDITING_SKILLS:
-        body = (BUILTIN_ROOT / name / "SKILL.md").read_text()
-        mentioned = set(TOOL_NAME.findall(body))
-        assert mentioned, name
-        assert mentioned <= known, (name, sorted(mentioned - known))
+def test_skill_tool_names_exist_in_every_profile_they_apply_to() -> None:
+    """Each built-in main-agent skill names only tools of the profile of every (active)
+    session type it applies to: a Requirements skill never tells the agent to call
+    sch_connect (spec §8.4)."""
+    known = {s.name for s in registry.all_specs()}
+    layers = SkillLayers(
+        builtin_root=BUILTIN_ROOT, user_root=BUILTIN_ROOT / "_none", project_root=None
+    )
+    checked = 0
+    for skill in effective_skills(layers):
+        if skill.agent is not None:
+            continue  # the researcher's skill: not the main agent's tools
+        body = (skill.dir / "SKILL.md").read_text()
+        mentioned = set(TOOL_NAME.findall(body)) - NOT_TOOLS
+        assert mentioned <= known, (skill.name, sorted(mentioned - known))
+        types = ACTIVE_TYPES if skill.sessions is None else sorted(skill.sessions)
+        for kind in types:
+            if kind not in ACTIVE_TYPES:
+                continue
+            outside = mentioned - PROFILES[kind]
+            assert not outside, (skill.name, kind, sorted(outside))
+        checked += 1
+    assert checked >= 7
 
 
 def test_editing_skill_mentions_every_editing_tool() -> None:
@@ -118,12 +164,16 @@ def test_style_skill_has_placement_recipes() -> None:
         assert phrase in body, phrase
 
 
-def test_tools_skill_lists_editing_tools() -> None:
+def test_tools_skill_points_to_the_editing_and_docs_skills() -> None:
     body = (BUILTIN_ROOT / "copperchat-tools" / "SKILL.md").read_text()
     for phrase in (
         "kicad-schematic-editing",
         "`parts_get_notes`",
-        "`plan_propose`",
-        "`sch_changes`",
+        "## Design documents",
+        "`doc_list`",
     ):
         assert phrase in body, phrase
+    assert "## Editing the schematic" not in body
+    editing = (BUILTIN_ROOT / "kicad-schematic-editing" / "SKILL.md").read_text()
+    for phrase in ("`plan_propose`", "`sch_changes`", "`parts_get_notes`"):
+        assert phrase in editing, phrase

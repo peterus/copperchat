@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 from copperchat.changes import erc
 from copperchat.changes.checkpoints import take_step_checkpoint
 from copperchat.db import Database, utcnow_iso
+from copperchat.db.repos.conversations import ConversationRepo
 from copperchat.errors import CopperChatError, StructuredToolError
 from copperchat.history.store import SnapshotNotFound
 from copperchat.kicad_session import KicadUnavailable
@@ -155,6 +156,7 @@ class PlanService:
         broadcaster: Any | None,
     ) -> None:
         self.repo = PlanRepo(db)
+        self.conversations = ConversationRepo(db)
         self.editing = editing
         self.history = history
         self.runtime = runtime
@@ -227,6 +229,41 @@ class PlanService:
             )
         return str(cid)
 
+    async def foreign_owner(self, ctx: ToolContext) -> str | None:
+        """The title of the session owning the open plan, if it is not ``ctx``'s session."""
+        if ctx.conversation_id is None:
+            return None  # no session context (plain tests): nothing to compare with
+        owner = await self.repo.open_owner(ctx.project.id)
+        if owner is None or owner[2] == ctx.conversation_id:
+            return None
+        conv = await self.conversations.get(owner[2])
+        return conv.title if conv is not None else "another session"
+
+    async def _check_owner(self, ctx: ToolContext) -> None:
+        """Only the session that owns the open plan works on it (spec §5.4): another
+        session can neither begin or finish its steps nor revise it."""
+        owner = await self.foreign_owner(ctx)
+        if owner is not None:
+            raise StructuredToolError(
+                f"The open plan belongs to {owner}",
+                "Plans are worked on by the session that proposed them",
+                f"Continue the plan in {owner}, or ask the user to finish or abort it.",
+                code="plan_open",
+                details={"owner": owner},
+            )
+
+    async def _check_open(self, conversation_id: str) -> None:
+        """No new or revised plan while the session is closing (spec §10): Approve would
+        target a closed session."""
+        conv = await self.conversations.get(conversation_id)
+        if conv is not None and conv.status != "open":
+            raise StructuredToolError(
+                "Plans cannot be proposed while the session is closing",
+                f"{conv.title} is {conv.status}",
+                "Finish the handover; propose the plan in a new or reopened session.",
+                code="conversation_closing",
+            )
+
     @staticmethod
     def clear_step(state: EditTurnState) -> None:
         state.active_step_id = None
@@ -262,6 +299,7 @@ class PlanService:
         specs = validate_steps(steps)
         pid = ctx.project.id
         conversation_id = await self._proposing_conversation(ctx)
+        await self._check_open(conversation_id)
         async with self.lock(pid):
             if await self.repo.open_status(pid) is not None:
                 raise PlanStateError(
@@ -295,6 +333,8 @@ class PlanService:
         self._turn(ctx)
         reason = _text(reason, "reason", REASON_MAX)
         pid = ctx.project.id
+        await self._check_open(await self._proposing_conversation(ctx))
+        await self._check_owner(ctx)
         async with self.lock(pid):
             plan = await self._open(pid)
             kept = plan.done_count  # finished steps always stay (machine "revise")
@@ -321,6 +361,7 @@ class PlanService:
 
     async def step_begin(self, ctx: ToolContext, idx: Any) -> PlanStep:
         state = self._turn(ctx)
+        await self._check_owner(ctx)
         if not isinstance(idx, int) or isinstance(idx, bool):
             raise _invalid("Invalid step", "step must be an integer", "Pass the step number.")
         if getattr(ctx.session, "read_only", False):
@@ -422,6 +463,7 @@ class PlanService:
         self, ctx: ToolContext, idx: Any, summary: Any, justifications: Any = None
     ) -> dict[str, Any]:
         state = self._turn(ctx)
+        await self._check_owner(ctx)
         if not isinstance(idx, int) or isinstance(idx, bool):
             raise _invalid("Invalid step", "step must be an integer", "Pass the step number.")
         summary = _text(summary, "summary", SUMMARY_MAX)
