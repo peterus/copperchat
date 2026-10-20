@@ -35,11 +35,14 @@ const when = (iso: string) => {
 export function DocHistory({ projectId, path, currentVersion, selected, onSelect, onReverted, onRevertConflict }: DocHistoryProps) {
   const [revisions, setRevisions] = useState<RevisionDTO[] | null>(null);
   const [content, setContent] = useState<{ id: number; data: RevisionContent } | null>(null);
+  // The list's own error, separate from a revision/revert error: one never clears the other.
+  const [listError, setListError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const liveVersion = useDocs((s) => s.live[path]?.version);
   const token = useRef(0);
   const listToken = useRef(0);
+  const shownId = useRef<number | null>(null);
 
   // One request at a time per doc version; a slower, older response never replaces a newer list.
   const loadList = useCallback(async () => {
@@ -48,10 +51,10 @@ export function DocHistory({ projectId, path, currentVersion, selected, onSelect
       const list = await listRevisions(projectId, path);
       if (t === listToken.current) {
         setRevisions([...list].sort((a, b) => b.id - a.id));
-        setError(null);
+        setListError(null);
       }
     } catch (e) {
-      if (t === listToken.current) setError(errorText(e));
+      if (t === listToken.current) setListError(errorText(e));
     }
   }, [projectId, path]);
 
@@ -63,8 +66,13 @@ export function DocHistory({ projectId, path, currentVersion, selected, onSelect
     const t = ++token.current;
     setError(null);
     if (selected === null) return;
+    if (shownId.current === selected) return; // revisions are immutable: no refetch
     getRevision(projectId, path, selected).then(
-      (data) => t === token.current && setContent({ id: selected, data }),
+      (data) => {
+        if (t !== token.current) return;
+        shownId.current = selected;
+        setContent({ id: selected, data });
+      },
       (e: unknown) => t === token.current && setError(errorText(e)),
     );
   }, [projectId, path, selected]);
@@ -85,9 +93,9 @@ export function DocHistory({ projectId, path, currentVersion, selected, onSelect
     }
   }
 
-  const errorRow = error && (
+  const errorRow = (error || listError) && (
     <p role="alert" className="rounded border border-danger bg-danger/10 px-2 py-1 text-sm text-danger">
-      {error}
+      {error ?? listError}
     </p>
   );
 

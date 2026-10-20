@@ -1,9 +1,9 @@
-import { type KeyboardEvent, useEffect, useState } from 'react';
+import { type KeyboardEvent, useEffect, useRef, useState } from 'react';
 import { type DocConflict, docConflictOf, type DocRead, getDoc, putDoc } from '@/api/docs';
 import { Markdown } from '@/components/chat/Markdown';
 import { errorText } from '@/components/history/restore';
 import { useLayoutMode } from '@/layouts/ProjectLayout';
-import { draftKey, useDocs, useDocsStore } from '@/stores/docs';
+import { type DocDraft, draftKey, useDocs, useDocsStore } from '@/stores/docs';
 import { BUTTON, conflictBy, docName, PRIMARY } from './format';
 import { LineDiff } from './LineDiff';
 
@@ -58,12 +58,18 @@ export function DocEditor({ projectId, doc, seed, onCancel, onSaved }: DocEditor
   const dirty = !pristine || conflict !== null;
 
   // Every change is mirrored to the store, so no unmount can lose it.
+  const mine = useRef<DocDraft | null>(null);
   useEffect(() => {
-    store.getState().setDraft(projectId, doc.path, dirty ? { text: draft, base, conflict } : null);
+    const next = dirty ? { text: draft, base, conflict } : null;
+    mine.current = next;
+    store.getState().setDraft(projectId, doc.path, next);
   }, [store, projectId, doc.path, dirty, draft, base, conflict]);
 
+  // Clears the stored draft only while it is still this editor's: a save that returns after the
+  // editor was closed and reopened (a newer draft) must not drop the newer one.
   const leave = (then: () => void) => {
-    store.getState().setDraft(projectId, doc.path, null);
+    const key = draftKey(projectId, doc.path);
+    if (store.getState().drafts[key] === mine.current) store.getState().setDraft(projectId, doc.path, null);
     then();
   };
   const cancel = () => {
@@ -75,7 +81,10 @@ export function DocEditor({ projectId, doc, seed, onCancel, onSaved }: DocEditor
     if (e.key === 'Escape') e.stopPropagation();
   };
   const live = useDocs((s) => s.live[doc.path]);
-  const changedMeanwhile = live !== undefined && live.version !== base.version && conflict === null;
+  // A frame since the base, or (a resumed draft, not re-based) a loaded doc that differs from its base.
+  const loadedVersion = doc.exists ? doc.version : null;
+  const staleResume = saved !== undefined && base === initialBase && loadedVersion !== base.version;
+  const changedMeanwhile = conflict === null && ((live !== undefined && live.version !== base.version) || staleResume);
   const fullscreen = useLayoutMode() === 'phone';
 
   async function save() {

@@ -298,4 +298,26 @@ describe('DocEditor', () => {
     expect(box().value).toBe('# T\n');
     expect(store.getState().drafts[draftKey(DOC_PID, REQ)]).toBeDefined();
   });
+
+  it('a resumed draft on an older base shows the banner', async () => {
+    const first = await setup();
+    await userEvent.type(first.box(), '!');
+    first.view.unmount();
+    await setup({ doc: docRead({ version: 'v5', body: 'newer' }) }, first.store);
+    expect(screen.getByRole('status')).toHaveTextContent('This doc changed — your save will conflict.');
+  });
+
+  it('a save returning after close and reopen does not clear the newer draft', async () => {
+    let finish: (v: unknown) => void = () => {};
+    http.apiPut.mockImplementationOnce(() => new Promise((r) => (finish = r)));
+    const first = await setup();
+    await userEvent.type(first.box(), '1');
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    first.view.unmount();
+    const second = await setup({}, first.store);
+    await userEvent.type(second.box(), '2');
+    act(() => finish({ version: 'v9' }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(first.store.getState().drafts[draftKey(DOC_PID, REQ)]?.text).toMatch(/12$/);
+  });
 });

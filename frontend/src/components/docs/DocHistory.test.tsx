@@ -121,4 +121,29 @@ describe('DocHistory', () => {
     await waitFor(() => expect(screen.queryByText('offline')).toBeNull());
     expect(screen.getAllByRole('listitem')).toHaveLength(1);
   });
+
+  it('a revision error survives a later successful list load', async () => {
+    http.apiGet.mockImplementation(async (path: string) => {
+      if (path.includes('/revisions?')) return [revision(1), revision(2)];
+      throw new Error('revision gone');
+    });
+    const { ws } = await setup(2);
+    expect(await screen.findByText('revision gone')).toBeInTheDocument();
+    act(() =>
+      ws.emit({ type: 'doc-updated', projectId: DOC_PID, path: REQ, version: 'v9', status: 'draft', userEdited: false, revisionId: 9, author: 'agent' }),
+    );
+    await waitFor(() => expect(http.apiGet.mock.calls.filter(([p]) => String(p).includes('/revisions?'))).toHaveLength(2));
+    expect(screen.getByText('revision gone')).toBeInTheDocument();
+  });
+
+  it('re-selecting the shown revision does not refetch it', async () => {
+    await setup(2);
+    await screen.findByRole('button', { name: 'Revert to this' });
+    await userEvent.click(screen.getByRole('button', { name: '← All revisions' }));
+    const items = await screen.findAllByRole('listitem');
+    expect(items[1]).toHaveTextContent('change 2');
+    await userEvent.click(items[1]!.querySelector('button')!);
+    await screen.findByRole('button', { name: 'Revert to this' });
+    expect(http.apiGet.mock.calls.filter(([p]) => /\/revisions\/2$/.test(String(p)))).toHaveLength(1);
+  });
 });
