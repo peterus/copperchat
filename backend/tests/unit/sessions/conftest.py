@@ -4,6 +4,7 @@ the sessions C5 tests: the hooks run through the app's real ``hooks_factory``.""
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
@@ -80,7 +81,7 @@ class Env:
 
     async def send(self, cid: str, text: str, *, wait: bool = True) -> MessageDTO:
         engine = await self.engine()
-        dto, _ = await engine.submit_ex(cid, f"m-{text[:20]}-{id(text)}", text, [])
+        dto, _ = await engine.submit_ex(cid, uuid.uuid4().hex, text, [])
         if wait:
             await self.idle()
         return dto

@@ -75,8 +75,9 @@ async def test_unsolicited_turn_keeps_the_burst_conversation(env: Env) -> None:
     env.script = lambda item: [Emit(TurnFinished(reason="completed")), Wait(gate)]
     engine = await env.engine()
     await env.send(cid, "go", wait=False)
-    await until(lambda: engine.is_busy and engine.current_run_id is None and env.agents)
-    await until(lambda: env.agent.prompts)
+    # the scripted turn end ran: the burst still talks to the backend, without a turn
+    await until(lambda: env.agents and env.agent.prompts and engine.current_run_id is None)
+    assert engine.is_busy
     ctx = engine.turn_context()
     assert ctx.run_id is None
     assert (ctx.conversation_id, ctx.conversation_type) == (cid, "schematic")
