@@ -18,6 +18,7 @@ from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from copperchat.gitproc import GitError, run_git
 from copperchat.repo_context.listing import Listing, ListingError, RepoFile, list_repo
 from copperchat.repo_context.paths import (
     RepoPathError,
@@ -26,6 +27,7 @@ from copperchat.repo_context.paths import (
     is_kicad_file,
     is_text_bytes,
     is_text_file,
+    open_regular,
     repo_policy,
     resolve_dir,
     resolve_file,
@@ -41,6 +43,7 @@ GREP_BYTES = 8 * 1024 * 1024
 GREP_TIMEOUT_S = 5.0
 GREP_QUERY_MAX = 200
 GREP_TEXT_MAX = 300
+IGNORE_TIMEOUT_S = 5.0
 LIST_MAX = 500
 LIST_DEFAULT = 200
 LIST_SNIFF_MAX = 500  # entries beyond this many get kind "unknown" (no content sniff)
@@ -368,9 +371,7 @@ def _read_lines(path: Path, rel: str) -> list[str]:
     """The decoded lines of a readable text file: one open of the already-resolved path,
     at most 1 MiB + 1 byte read (a file growing after the size check is still refused),
     the text sniff runs on the bytes read."""
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
-    fd = os.open(path, flags)
-    with os.fdopen(fd, "rb") as fh:
+    with os.fdopen(open_regular(path), "rb") as fh:
         size = os.fstat(fh.fileno()).st_size
         if size > FILE_MAX_BYTES:
             raise _too_large(rel, str(size))
@@ -380,6 +381,36 @@ def _read_lines(path: Path, rel: str) -> list[str]:
     if not is_text_bytes(data):
         raise StructuredToolError(f"{rel} is a binary file", "not UTF-8 text", _BINARY_HINT)
     return split_lines(data.decode("utf-8", errors="replace"))
+
+
+async def _check_not_ignored(policy: RepoPolicy, rels: Iterable[PurePosixPath]) -> None:
+    """Refuse a path git ignores (spec D8); tracked files are never "ignored" here.
+
+    Fails closed: if git cannot answer, the read is refused too.
+    """
+    for rel in dict.fromkeys(rels):
+        try:
+            code, _, _ = await run_git(
+                policy.root, "check-ignore", "-q", "--", rel.as_posix(), timeout_s=IGNORE_TIMEOUT_S
+            )
+        except GitError as exc:
+            raise StructuredToolError(
+                f"{rel} could not be checked against .gitignore",
+                str(exc) or type(exc).__name__,
+                "Try again in a moment.",
+            ) from exc
+        if code == 0:
+            raise StructuredToolError(
+                f"{rel} is ignored by .gitignore",
+                "the path was refused",
+                "Ignored files are not readable; use repo_list to see the available files.",
+            )
+        if code != 1:
+            raise StructuredToolError(
+                f"{rel} could not be checked against .gitignore",
+                f"git check-ignore exited with code {code}",
+                "Use repo_list to see the available files.",
+            )
 
 
 def _cut_utf8(text: str, max_bytes: int) -> str:
@@ -400,6 +431,8 @@ async def _repo_read(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     resolved_rel = PurePosixPath(resolved.relative_to(policy.root).as_posix())
     if is_kicad_file(rel) or is_kicad_file(resolved_rel):
         raise StructuredToolError(f"{rel} is a KiCad file", "not readable as text", _KICAD_HINT)
+    if policy.is_git:
+        await _check_not_ignored(policy, (rel, resolved_rel))
     try:
         lines = await asyncio.to_thread(_read_lines, resolved, rel.as_posix())
     except OSError as exc:
@@ -581,6 +614,7 @@ async def _repo_grep(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         "case_sensitive": case_sensitive,
         "max_results": max_results,
         "max_bytes": GREP_BYTES,
+        "git_dirs": [d.as_posix() for d in policy.git_dirs],
     }
     try:
         matches, files_scanned, stopped_by = await _run_worker(request, max_results)

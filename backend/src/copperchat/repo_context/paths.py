@@ -8,8 +8,10 @@ given and the resolved path, so symlinks cannot reach secrets or leave the root.
 from __future__ import annotations
 
 import codecs
+import errno
 import logging
 import os
+import stat
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
@@ -97,6 +99,21 @@ class RepoPolicy:
     project_dir: Path
     is_git: bool
     projects_root: Path
+    git_dirs: tuple[PurePosixPath, ...] = ()
+    """Git directories inside the root under another name than ``.git`` (e.g. ``.bare``
+    in a bare-repo worktree layout), relative to the root; blocked like ``.git``."""
+
+    def blocked(self, rel: PurePosixPath) -> str | None:
+        """`blocked_reason` plus this repository's own git directories."""
+        reason = blocked_reason(rel)
+        if reason is not None:
+            return reason
+        parts = tuple(part.lower() for part in rel.parts)
+        for git_dir in self.git_dirs:
+            prefix = tuple(part.lower() for part in git_dir.parts)
+            if parts[: len(prefix)] == prefix:
+                return "VCS internals"
+        return None
 
     @property
     def rel_root(self) -> str:
@@ -153,6 +170,37 @@ async def _git_toplevel(project_dir: Path) -> Path | None:
         return None
 
 
+async def _git_dirs_inside(project_dir: Path, root: Path) -> tuple[PurePosixPath, ...]:
+    """The git dir and common dir of `project_dir` that lie inside `root`, relative to it.
+
+    Raises `_GitUnavailable` if git could not tell (so the policy is not cached).
+    """
+    try:
+        code, out, err = await run_git(
+            project_dir,
+            "rev-parse",
+            "--absolute-git-dir",
+            "--git-common-dir",
+            timeout_s=ROOT_LOOKUP_TIMEOUT_S,
+        )
+    except GitError as exc:
+        raise _GitUnavailable(str(exc) or type(exc).__name__) from exc
+    lines = [line for line in os.fsdecode(out).splitlines() if line.strip()]
+    if code != 0 or len(lines) != 2:
+        message = os.fsdecode(err).strip()
+        raise _GitUnavailable(message.splitlines()[0] if message else f"exit code {code}")
+    found: list[PurePosixPath] = []
+    for line in lines:
+        try:
+            resolved = (project_dir / line.strip()).resolve(strict=True)
+            rel = PurePosixPath(resolved.relative_to(root).as_posix())
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if rel.parts and rel not in found:
+            found.append(rel)
+    return tuple(found)
+
+
 async def repo_policy(project: Project, projects_root: Path) -> RepoPolicy:
     """The repository boundary for `project` (spec §4.1), cached per project directory.
 
@@ -181,7 +229,12 @@ async def repo_policy(project: Project, projects_root: Path) -> RepoPolicy:
         and root_dir in top.parents
     )
     if usable and top is not None:
-        policy = RepoPolicy(top, project_dir, True, root_dir)
+        try:
+            git_dirs = await _git_dirs_inside(project_dir, top)
+        except _GitUnavailable as exc:
+            log.warning("git dir lookup failed for %s, using the project dir: %s", project_dir, exc)
+            return RepoPolicy(project_dir, project_dir, False, root_dir)
+        policy = RepoPolicy(top, project_dir, True, root_dir, git_dirs)
     else:
         policy = RepoPolicy(project_dir, project_dir, False, root_dir)
     _policy_cache[key] = policy
@@ -195,6 +248,10 @@ def check_rel_path(raw: str) -> PurePosixPath:
         raise RepoPathError(f"Path is longer than {MAX_PATH_LEN} characters.", hint)
     if any(ord(c) < 32 or ord(c) == 127 for c in raw):
         raise RepoPathError("Path contains control characters.", hint)
+    try:
+        raw.encode("utf-8")
+    except UnicodeEncodeError:
+        raise RepoPathError("Path is not valid UTF-8 text.", hint) from None
     if raw.startswith("/"):
         raise RepoPathError("Absolute paths are not allowed.", hint)
     if raw.startswith("~"):
@@ -230,7 +287,7 @@ def _blocked_error(reason: str) -> RepoPathError:
 
 def _resolve(policy: RepoPolicy, raw: str) -> tuple[Path, PurePosixPath]:
     rel = check_rel_path(raw)
-    reason = blocked_reason(rel)
+    reason = policy.blocked(rel)
     if reason is not None:
         raise _blocked_error(reason)
     try:
@@ -246,7 +303,7 @@ def _resolve(policy: RepoPolicy, raw: str) -> tuple[Path, PurePosixPath]:
             f"{rel.as_posix()} points outside the repository.",
             "Only files inside the repository can be accessed.",
         ) from exc
-    reason = blocked_reason(resolved_rel)
+    reason = policy.blocked(resolved_rel)
     if reason is not None:
         raise _blocked_error(reason)
     return resolved, rel
@@ -288,11 +345,36 @@ def is_text_bytes(data: bytes) -> bool:
     return True
 
 
-def is_text_file(path: Path) -> bool:
-    """`is_text_bytes` on the first 8 KiB of `path` (False if it cannot be read)."""
+_OPEN_FLAGS = (
+    os.O_RDONLY
+    | getattr(os, "O_NOFOLLOW", 0)
+    | getattr(os, "O_CLOEXEC", 0)
+    | getattr(os, "O_NONBLOCK", 0)
+)
+
+
+def open_regular(path: Path) -> int:
+    """A read-only fd on the regular file `path` (already resolved: no symlink followed).
+
+    ``O_NONBLOCK`` keeps a FIFO or device swapped in after the checks from blocking the
+    open; the regular-file check then runs on the opened fd. Raises `OSError` otherwise.
+    """
+    fd = os.open(path, _OPEN_FLAGS)
     try:
-        with path.open("rb") as fh:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "not a regular file", str(path))
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def is_text_file(path: Path) -> bool:
+    """`is_text_bytes` on the first 8 KiB of the regular file `path` (False if it cannot
+    be read or is not a regular file)."""
+    try:
+        with os.fdopen(open_regular(path.resolve(strict=True)), "rb") as fh:
             chunk = fh.read(SNIFF_BYTES)
-    except OSError:
+    except (OSError, RuntimeError):
         return False
     return is_text_bytes(chunk)

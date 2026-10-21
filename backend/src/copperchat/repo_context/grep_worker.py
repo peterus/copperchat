@@ -1,7 +1,7 @@
 """The killable scan process behind repo_grep (spec §5.2).
 
 ``python -P -m copperchat.repo_context.grep_worker`` reads one JSON request
-``{root, files, query, regex, case_sensitive, max_results, max_bytes}`` from stdin
+``{root, files, query, regex, case_sensitive, max_results, max_bytes[, git_dirs]}`` from stdin
 and writes JSON lines to stdout (flushed one by one):
 
 - ``{"path", "line", "text"}`` per match,
@@ -13,7 +13,8 @@ Lines are split on ``\\n`` only (as ``repo_read`` does), so line numbers agree.
 
 Python's ``re`` cannot be interrupted, so the parent enforces the wall-clock budget by
 killing this process. The parent has already filtered the file list; the worker still
-re-checks every path (inside the root, not blocked, not KiCad) and opens it without
+re-checks every path (inside the root, not blocked, not in one of the repository's
+``git_dirs``, not KiCad) and opens it without
 following symlinks, then checks the open file (regular, at most 1 MiB, text).
 """
 
@@ -22,12 +23,17 @@ from __future__ import annotations
 import json
 import os
 import re
-import stat
 import sys
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO
 
-from copperchat.repo_context.paths import SNIFF_BYTES, blocked_reason, is_kicad_file, is_text_bytes
+from copperchat.repo_context.paths import (
+    SNIFF_BYTES,
+    RepoPolicy,
+    is_kicad_file,
+    is_text_bytes,
+    open_regular,
+)
 
 LINE_MATCH_MAX = 2000
 TEXT_OUT_MAX = 300
@@ -39,28 +45,21 @@ def _emit(obj: dict[str, Any]) -> None:
     sys.stdout.flush()
 
 
-def _safe_file(root: Path, raw: str) -> Path | None:
+def _safe_file(policy: RepoPolicy, raw: str) -> Path | None:
+    root = policy.root
     rel = PurePosixPath(raw)
     if rel.is_absolute() or ".." in rel.parts or "\\" in raw or not rel.parts:
         return None
-    if blocked_reason(rel) is not None or is_kicad_file(rel):
+    if policy.blocked(rel) is not None or is_kicad_file(rel):
         return None
     try:
         resolved = (root / rel).resolve(strict=True)
         resolved_rel = PurePosixPath(resolved.relative_to(root).as_posix())
     except (OSError, RuntimeError, ValueError):
         return None
-    if blocked_reason(resolved_rel) is not None or is_kicad_file(resolved_rel):
+    if policy.blocked(resolved_rel) is not None or is_kicad_file(resolved_rel):
         return None
     return resolved
-
-
-_OPEN_FLAGS = (
-    os.O_RDONLY
-    | getattr(os, "O_NOFOLLOW", 0)
-    | getattr(os, "O_CLOEXEC", 0)
-    | getattr(os, "O_NONBLOCK", 0)
-)
 
 
 def _open_scan(path: Path) -> BinaryIO | None:
@@ -68,13 +67,12 @@ def _open_scan(path: Path) -> BinaryIO | None:
     resolved already), a FIFO or device does not block, and the regular-file, size
     and text checks run on the opened file, so a swap after the checks cannot slip in."""
     try:
-        fd = os.open(path, _OPEN_FLAGS)
+        fd = open_regular(path)
     except OSError:
         return None
     fh = os.fdopen(fd, "rb")
     try:
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode) or st.st_size > FILE_MAX_BYTES:
+        if os.fstat(fd).st_size > FILE_MAX_BYTES:
             fh.close()
             return None
         head = fh.read(SNIFF_BYTES)
@@ -90,6 +88,8 @@ def _open_scan(path: Path) -> BinaryIO | None:
 
 def run(request: dict[str, Any]) -> None:
     root = Path(request["root"]).resolve(strict=True)
+    git_dirs = tuple(PurePosixPath(d) for d in request.get("git_dirs", ()) if isinstance(d, str))
+    policy = RepoPolicy(root, root, bool(git_dirs), root, git_dirs)
     query: str = request["query"]
     pattern = query if request.get("regex") else re.escape(query)
     flags = 0 if request.get("case_sensitive") else re.IGNORECASE
@@ -108,7 +108,7 @@ def run(request: dict[str, Any]) -> None:
     for raw in request["files"]:
         if not isinstance(raw, str):
             continue
-        path = _safe_file(root, raw)
+        path = _safe_file(policy, raw)
         fh = _open_scan(path) if path is not None else None
         if fh is None:
             continue

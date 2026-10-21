@@ -3,7 +3,8 @@
 Git repos are listed with ``git ls-files`` (respecting ``.gitignore``; if that fails
 the listing fails with `ListingError` rather than walking ignored files); other
 roots are walked without following directory symlinks. Every path is checked
-against the block list, symlinks are kept only if they point at a regular file
+against the block list (and the repository's own git directories), names that are not
+UTF-8 are skipped, symlinks are kept only if they point at a regular file
 inside the root that is not blocked, files below a symlinked directory are dropped, and
 the result is capped and cached.
 """
@@ -19,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from copperchat.gitproc import GitError, run_git_capped
-from copperchat.repo_context.paths import RepoPolicy, blocked_reason
+from copperchat.repo_context.paths import RepoPolicy
 
 WALK_CAP = 20_000
 CACHE_TTL_S = 10.0
@@ -50,8 +51,19 @@ def clear_listing_cache() -> None:
     _cache.clear()
 
 
-def _file_size(root: Path, rel: PurePosixPath) -> int | None:
+def _utf8_name(rel: PurePosixPath) -> bool:
+    """True if `rel` encodes strictly as UTF-8 (a non-UTF-8 name decoded with
+    surrogate escapes would break JSON and sqlite encoding later)."""
+    try:
+        rel.as_posix().encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _file_size(policy: RepoPolicy, rel: PurePosixPath) -> int | None:
     """Size of `rel` if it is a regular file (or a symlink to one inside the root, unblocked)."""
+    root = policy.root
     full = root / rel
     try:
         st = full.lstat()
@@ -67,7 +79,7 @@ def _file_size(root: Path, rel: PurePosixPath) -> int | None:
         st = target.stat()
     except (OSError, RuntimeError, ValueError):
         return None
-    if blocked_reason(target_rel) is not None or not stat.S_ISREG(st.st_mode):
+    if policy.blocked(target_rel) is not None or not stat.S_ISREG(st.st_mode):
         return None
     return st.st_size
 
@@ -89,14 +101,19 @@ def _real_parent(root: Path, parent: PurePosixPath, memo: dict[PurePosixPath, bo
     return known
 
 
-def _collect(root: Path, candidates: Iterable[PurePosixPath]) -> Listing:
+def _collect(policy: RepoPolicy, candidates: Iterable[PurePosixPath]) -> Listing:
+    root = policy.root
     files: list[RepoFile] = []
     truncated = False
     parents: dict[PurePosixPath, bool] = {}
     for rel in candidates:
-        if blocked_reason(rel) is not None or not _real_parent(root, rel.parent, parents):
+        if (
+            not _utf8_name(rel)
+            or policy.blocked(rel) is not None
+            or not _real_parent(root, rel.parent, parents)
+        ):
             continue
-        size = _file_size(root, rel)
+        size = _file_size(policy, rel)
         if size is None:
             continue
         if len(files) >= WALK_CAP:
@@ -107,14 +124,17 @@ def _collect(root: Path, candidates: Iterable[PurePosixPath]) -> Listing:
     return Listing(tuple(files), truncated)
 
 
-def _walk_candidates(root: Path) -> Iterable[PurePosixPath]:
+def _walk_candidates(policy: RepoPolicy) -> Iterable[PurePosixPath]:
+    root = policy.root
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         base = PurePosixPath(Path(dirpath).relative_to(root).as_posix())
-        # Prune blocked and symlinked directories in place, before descending.
+        # Prune blocked, non-UTF-8 and symlinked directories in place, before descending.
         dirnames[:] = sorted(
             d
             for d in dirnames
-            if blocked_reason(base / d) is None and not os.path.islink(os.path.join(dirpath, d))
+            if _utf8_name(base / d)
+            and policy.blocked(base / d) is None
+            and not os.path.islink(os.path.join(dirpath, d))
         )
         for name in sorted(filenames):
             yield base / name
@@ -123,8 +143,13 @@ def _walk_candidates(root: Path) -> Iterable[PurePosixPath]:
 def _git_candidates(out: bytes) -> list[PurePosixPath]:
     seen: dict[str, None] = {}
     for raw in out.split(b"\0"):
-        if raw:
-            seen.setdefault(os.fsdecode(raw), None)
+        if not raw:
+            continue
+        try:
+            name = raw.decode("utf-8")  # strict: non-UTF-8 names are not listed
+        except UnicodeDecodeError:
+            continue
+        seen.setdefault(name, None)
     return [PurePosixPath(p) for p in seen]
 
 
@@ -167,10 +192,10 @@ async def list_repo(policy: RepoPolicy) -> Listing:
         return cached[1]
     if policy.is_git:
         out, capped = await _git_ls_files(root)
-        result = await asyncio.to_thread(lambda: _collect(root, _git_candidates(out)))
+        result = await asyncio.to_thread(lambda: _collect(policy, _git_candidates(out)))
         if capped and not result.truncated:
             result = Listing(result.files, True)
     else:
-        result = await asyncio.to_thread(lambda: _collect(root, _walk_candidates(root)))
+        result = await asyncio.to_thread(lambda: _collect(policy, _walk_candidates(policy)))
     _cache[root] = (time.monotonic(), result)
     return result
