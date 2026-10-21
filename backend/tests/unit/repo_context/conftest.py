@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from copperchat.projects import Project
+from copperchat.repo_context.listing import clear_listing_cache
 from copperchat.repo_context.paths import clear_repo_policy_cache
 
 
@@ -42,5 +43,7 @@ def make_project(project_dir: Path) -> Project:
 @pytest.fixture(autouse=True)
 def _clear_caches() -> Iterator[None]:
     clear_repo_policy_cache()
+    clear_listing_cache()
     yield
     clear_repo_policy_cache()
+    clear_listing_cache()
