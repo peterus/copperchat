@@ -12,21 +12,28 @@ a symlink, FIFO, oversized or 51st file is listed as ignored and never opened.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
-import secrets
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from copperchat.db.repos.conversations import ConversationRow
 from copperchat.design_docs import frontmatter as fm
 from copperchat.design_docs.paths import ROOT, DocError
-from copperchat.design_docs.sanitize import NOTICE_PREFIX, sanitize_field, sanitize_inline
+from copperchat.design_docs.sanitize import NOTICE_PREFIX, fence, sanitize_field, sanitize_inline
 from copperchat.design_docs.service import DesignDocs, DocIndex, DocIndexEntry, line_counts
 from copperchat.projects import Project
+from copperchat.repo_context.brief import render_brief
+from copperchat.repo_context.paths import RepoPolicy
+
+log = logging.getLogger(__name__)
 
 INDEX_CAP = 4 * 1024
 INLINE_CAP = 8 * 1024
 # docs_seen marker: the conversation got its first-turn index (paths never start with #).
 INDEXED = "#indexed"
+# docs_seen marker: the conversation got the project repository brief (repo-context §6).
+REPO_BRIEF = "#repo-brief"
 MAX_CHANGE_LINES = 20
 # Revisions of one doc looked at for "who changed it since the seen version".
 _REVISION_SCAN = 50
@@ -205,9 +212,8 @@ def render_index(
     return "\n".join([*kept, foot])
 
 
-def _fence(name: str, body: str) -> str:
-    nonce = secrets.token_hex(8)
-    return f"<<<doc {name} {nonce}>>>\n{sanitize_inline(body)}\n<<<end {nonce}>>>"
+def _fence(name: str, body: str, label: str = "doc") -> str:
+    return fence(label, name, sanitize_inline(body))
 
 
 def _gate(kind: str, index: DocIndex) -> str | None:
@@ -302,7 +308,7 @@ async def _change_line(
 
 async def later_turn(docs: DesignDocs, project: Project, conv: ConversationRow) -> Injection:
     current = await docs.versions(project)
-    seen = {k: v for k, v in conv.docs_seen.items() if k != INDEXED}
+    seen = {k: v for k, v in conv.docs_seen.items() if not k.startswith("#")}
     changed = sorted(p for p in set(current) | set(seen) if current.get(p) != seen.get(p))
     lines: list[str] = []
     for path in changed:  # at most the 50 readable docs plus the vanished seen ones
@@ -325,7 +331,32 @@ async def later_turn(docs: DesignDocs, project: Project, conv: ConversationRow) 
     return Injection(notices, {**current, INDEXED: "1"})
 
 
-async def inject(docs: DesignDocs, project: Project, conv: ConversationRow) -> Injection:
+RepoSource = RepoPolicy | Callable[[], Awaitable[RepoPolicy]]
+
+
+async def brief_notice(repo: RepoSource) -> str:
+    """The project brief, or a one-line notice if it cannot be built (spec §6)."""
+    try:
+        policy = repo if isinstance(repo, RepoPolicy) else await repo()
+        return await render_brief(policy)
+    except Exception as exc:
+        log.warning("project repository brief failed", exc_info=True)
+        reason = sanitize_field(str(exc) or type(exc).__name__, 200)
+        return f"Project repository brief unavailable: {reason}; use repo_list"
+
+
+async def inject(
+    docs: DesignDocs, project: Project, conv: ConversationRow, repo: RepoSource | None = None
+) -> Injection:
+    """The notices of this turn. The repository brief has its own marker, so a session
+    created before it existed gets it once on its next turn; it comes before the index."""
     if INDEXED not in conv.docs_seen:
-        return await first_turn(docs, project, conv)
-    return await later_turn(docs, project, conv)
+        result = await first_turn(docs, project, conv)
+    else:
+        result = await later_turn(docs, project, conv)
+    if REPO_BRIEF in conv.docs_seen:
+        return Injection(result.notices, {**result.docs_seen, REPO_BRIEF: "1"})
+    if repo is None:
+        return result
+    notices = [await brief_notice(repo), *result.notices]
+    return Injection(notices, {**result.docs_seen, REPO_BRIEF: "1"})
