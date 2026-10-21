@@ -21,6 +21,8 @@ from typing import Any
 from copperchat.gitproc import GitError, run_git
 from copperchat.repo_context.listing import Listing, ListingError, RepoFile, list_repo
 from copperchat.repo_context.paths import (
+    GIT_DUBIOUS,
+    GIT_MISSING,
     RepoPathError,
     RepoPolicy,
     check_rel_path,
@@ -90,6 +92,13 @@ def _bool_arg(args: dict[str, Any], key: str) -> bool:
     return value
 
 
+_GIT_HINTS = {
+    GIT_DUBIOUS: "Tell the user to make the projects mount owned by the CopperChat user "
+    "(uid 1000).",
+    GIT_MISSING: "Tell the user that git is missing on the CopperChat server.",
+}
+
+
 async def _policy(ctx: ToolContext) -> RepoPolicy:
     """The repository policy; refused (fail closed) while git cannot be run, since the
     "no git" fallback would skip ``.gitignore`` for a repo that has one."""
@@ -97,8 +106,8 @@ async def _policy(ctx: ToolContext) -> RepoPolicy:
     if policy.transient:
         raise StructuredToolError(
             "the repository could not be inspected",
-            "git could not be run",
-            "Try again in a moment.",
+            policy.transient,
+            _GIT_HINTS.get(policy.transient, "Try again in a moment."),
         )
     return policy
 

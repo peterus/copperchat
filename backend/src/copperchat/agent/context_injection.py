@@ -37,6 +37,8 @@ INDEXED = "#indexed"
 REPO_BRIEF = "#repo-brief"
 # Its value: "1" once sent, "failed:<n>" after n failed attempts (retried up to the budget).
 BRIEF_ATTEMPTS = 3
+# Upper bound for building the brief before the model call (git lookups included).
+BRIEF_TIMEOUT_S = 15.0
 _FAILED = "failed:"
 _FAILED_COUNT = re.compile(r"failed:([0-9]{1,4})")
 MAX_CHANGE_LINES = 20
@@ -354,6 +356,8 @@ def _brief_due(value: str | None) -> bool:
 
 def _failure_reason(exc: Exception) -> str:
     """A short fixed reason (the details, possibly host paths, stay in the log)."""
+    if isinstance(exc, TimeoutError):
+        return "building it took too long"
     if isinstance(exc, BriefUnavailable):
         return str(exc)
     if isinstance(exc, ListingError):
@@ -366,9 +370,13 @@ def _failure_reason(exc: Exception) -> str:
 async def brief_notice(repo: RepoSource) -> tuple[str, bool]:
     """The project brief, or a one-line notice if it cannot be built (spec §6); the
     flag tells whether the brief was built."""
-    try:
+
+    async def build() -> str:
         policy = repo if isinstance(repo, RepoPolicy) else await repo()
-        return await render_brief(policy), True
+        return await render_brief(policy)
+
+    try:
+        return await asyncio.wait_for(build(), BRIEF_TIMEOUT_S), True
     except Exception as exc:
         log.warning("project repository brief failed", exc_info=True)
         return f"Project repository brief unavailable: {_failure_reason(exc)}; use repo_list", False

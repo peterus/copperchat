@@ -46,7 +46,12 @@ Deviations from the tasks below; the code and `docs/user/repo-context.md` are au
   as a failed brief ("git could not be run"), not as a brief without git. At most 3 README
   case variants are tried per folder; a README over 1 MiB is skipped. With a `transient`
   policy the `repo_*` handlers refuse too ("try again in a moment"; changes PR 1's
-  fail-open fallback). Brief lines composed of several repo fields are defused as a whole.
+  fail-open fallback); `transient` holds a fixed cause (`GIT_MISSING`, `GIT_TIMEOUT`,
+  `GIT_DUBIOUS`, `GIT_FAILED`) shown in the refusal and the brief notice. Brief lines
+  composed of several repo fields are defused as a whole. README candidates are scanned
+  on disk (not from the possibly truncated listing). The brief has a 15 s overall budget
+  (`BRIEF_TIMEOUT_S`, a timeout counts as a failed attempt). `fence()` strips `<`/`>`
+  from the name.
   The nonce fence moved to `design_docs.sanitize.fence(label, name, clean)`;
   `context_injection._fence(name, body, label="doc")` wraps it. A README that is binary,
   a symlink out of the root or blocked is skipped (next candidate, else "README: none

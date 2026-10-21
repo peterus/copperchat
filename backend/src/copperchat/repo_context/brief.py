@@ -89,11 +89,18 @@ def _size(text: str) -> int:
     return len(text.encode("utf-8"))
 
 
-def _candidates(files: Iterable[RepoFile], folder: PurePosixPath) -> list[PurePosixPath]:
+def _candidates(policy: RepoPolicy, folder: PurePosixPath) -> list[PurePosixPath]:
+    """README files directly in ``folder``, in preference order. Scanned on disk, not taken
+    from the listing (which may be truncated); `resolve_readable` vets each one."""
     found: dict[str, list[PurePosixPath]] = {}
-    for f in files:
-        if f.rel.parent == folder and f.rel.name.casefold() in README_NAMES:
-            found.setdefault(f.rel.name.casefold(), []).append(f.rel)
+    try:
+        with os.scandir(policy.root / folder) as entries:
+            for entry in entries:
+                key = entry.name.casefold()
+                if key in README_NAMES:
+                    found.setdefault(key, []).append(folder / entry.name)
+    except OSError:
+        return []
     ordered = [rel for name in README_NAMES for rel in sorted(found.get(name, []))]
     return ordered[:README_TRIES]
 
@@ -115,13 +122,13 @@ def _read_text(path: Path, rel: PurePosixPath) -> _Readme | None:
     return _Readme(sanitize_field(rel.as_posix(), 200), text, partial)
 
 
-async def _readmes(policy: RepoPolicy, files: tuple[RepoFile, ...]) -> tuple[list[_Readme], bool]:
+async def _readmes(policy: RepoPolicy) -> tuple[list[_Readme], bool]:
     """The root README and, if the KiCad project dir differs, its own README; plus
     whether a root README was found. A candidate must pass ``repo_read``'s checks."""
     folders = [PurePosixPath(".")]
     if policy.rel_project_dir != ".":
         folders.append(PurePosixPath(policy.rel_project_dir))
-    candidates = await asyncio.to_thread(lambda: [_candidates(files, f) for f in folders])
+    candidates = await asyncio.to_thread(lambda: [_candidates(policy, f) for f in folders])
     out: list[_Readme] = []
     root_found = False
     for i, rels in enumerate(candidates):
@@ -243,9 +250,9 @@ async def render_brief(policy: RepoPolicy) -> str:
     extreme folder names) the tree rows. Raises on a listing failure; the caller turns
     that into a one-line notice."""
     if policy.transient:
-        raise BriefUnavailable("git could not be run")
+        raise BriefUnavailable(policy.transient)
     listing = await list_repo(policy)
-    readmes, root_found = await _readmes(policy, listing.files)
+    readmes, root_found = await _readmes(policy)
 
     def tree_rows() -> dict[int, tuple[list[str], int]]:
         folders = _folders(listing.files)

@@ -542,13 +542,31 @@ async def test_brief_transient_git_failure_is_retried(
     from copperchat.repo_context import paths
 
     async def no_git(_: Any) -> Any:
-        raise paths._GitUnavailable("git timed out")
+        raise paths._GitUnavailable("fatal: detected dubious ownership", paths.GIT_DUBIOUS)
 
     monkeypatch.setattr(paths, "_git_toplevel", no_git)
     cid = await env.create("requirements")
     env.script = lambda item: []
     await env.send(cid, "hi")
     assert _prompt(env).startswith(
-        f"{NOTICE} Project repository brief unavailable: git could not be run; use repo_list"
+        f"{NOTICE} Project repository brief unavailable: {paths.GIT_DUBIOUS}; use repo_list"
+    )
+    assert (await env.conv(cid)).docs_seen[REPO_BRIEF] == "failed:1"
+
+
+async def test_brief_time_budget(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    from copperchat.agent import context_injection
+    from copperchat.repo_context import brief
+
+    async def slow(_: Any) -> Any:
+        await asyncio.sleep(10)
+
+    monkeypatch.setattr(brief, "list_repo", slow)
+    monkeypatch.setattr(context_injection, "BRIEF_TIMEOUT_S", 0.05)
+    cid = await env.create("requirements")
+    env.script = lambda item: []
+    await env.send(cid, "hi")
+    assert _prompt(env).startswith(
+        f"{NOTICE} Project repository brief unavailable: building it took too long; use repo_list"
     )
     assert (await env.conv(cid)).docs_seen[REPO_BRIEF] == "failed:1"

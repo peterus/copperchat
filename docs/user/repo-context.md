@@ -19,8 +19,10 @@ The **repository root** is the boundary for everything below:
   (`/projects`). A `/projects` folder that is itself a git repository therefore never
   exposes your other projects.
 - Otherwise the root is the project folder (the one with the `.kicad_pro`).
-- If git cannot be run at the moment (missing, timed out), the tools refuse with "try
-  again in a moment" instead of falling back, so `.gitignore` is never skipped.
+- If git cannot be used (not installed, timed out, or it refuses the repository because
+  the projects mount belongs to another user — "dubious ownership"; make it owned by
+  uid 1000), the tools refuse and name the cause instead of falling back, so
+  `.gitignore` is never skipped. The brief then says "unavailable" with the same cause.
 
 Example: in a repository `OpenDriveHub` with the KiCad project in
 `hardware/transmitter/pcb/main/`, the agent sees the README at the top, the enclosure in

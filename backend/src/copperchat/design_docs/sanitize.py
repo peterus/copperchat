@@ -48,6 +48,8 @@ def sanitize_inline(text: str) -> str:
 def fence(label: str, name: str, clean: str) -> str:
     """Wrap already sanitised text in a random per-call nonce fence (spec §9.1)."""
     nonce = secrets.token_hex(8)
+    # a name with ">>>" and a fake nonce must not make the header look closed early
+    name = name.replace("<", "").replace(">", "")
     return f"<<<{label} {name} {nonce}>>>\n{clean}\n<<<end {nonce}>>>"
 
 

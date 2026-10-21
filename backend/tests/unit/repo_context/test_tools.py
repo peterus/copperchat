@@ -623,3 +623,28 @@ async def test_tools_refuse_while_git_cannot_be_run(
     ):
         with pytest.raises(StructuredToolError, match="could not be inspected"):
             await TOOLS[name].handler(ctx, args)
+
+
+@pytest.mark.parametrize(
+    ("message", "hint"),
+    [
+        ("fatal: detected dubious ownership in repository", "uid 1000"),
+        ("fatal: something else", "Try again in a moment"),
+    ],
+)
+async def test_tools_refusal_names_the_git_cause(
+    ctx: ToolContext,
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    message: str,
+    hint: str,
+) -> None:
+    from copperchat.repo_context import paths
+
+    async def refused(*_: object, **__: object) -> tuple[int, bytes, bytes]:
+        return 128, b"", message.encode()
+
+    monkeypatch.setattr(paths, "run_git", refused)
+    with pytest.raises(StructuredToolError) as err:
+        await TOOLS["repo_list"].handler(ctx, {})
+    assert hint in err.value.suggestion
