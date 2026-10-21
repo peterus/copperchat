@@ -265,3 +265,73 @@ async def test_brief_failure_raises_for_the_caller(
     monkeypatch.setattr(brief, "list_repo", broken)
     with pytest.raises(brief.ListingError):
         await render_brief(policy)
+
+
+async def test_brief_transient_git_failure_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from copperchat.repo_context import paths
+
+    async def no_git(_: Path) -> Path | None:
+        raise paths._GitUnavailable("git timed out")
+
+    monkeypatch.setattr(paths, "_git_toplevel", no_git)
+    policy, _ = await odh(tmp_path)
+    assert policy.transient
+    with pytest.raises(brief.BriefUnavailable, match="git could not be run"):
+        await render_brief(policy)
+
+
+async def test_brief_ignore_check_failure_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy, _ = await odh(tmp_path)
+
+    async def unavailable(*_: object) -> object:
+        raise brief.IgnoreCheckUnavailable("x could not be checked", "timeout", "retry")
+
+    monkeypatch.setattr(brief, "resolve_readable", unavailable)
+    with pytest.raises(brief.BriefUnavailable, match="git could not be run"):
+        await render_brief(policy)
+
+
+async def test_brief_tries_at_most_three_readme_variants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = make_project(tmp_path / "projects" / "board")
+    for name in ("README.md", "ReadMe.md", "Readme.md", "readme.MD", "rEADME.md"):
+        write(project.dir / name, b"\x00binary")
+    tried: list[str] = []
+    real = brief.resolve_readable
+
+    async def spy(policy: RepoPolicy, raw: str) -> object:
+        tried.append(raw)
+        return await real(policy, raw)
+
+    monkeypatch.setattr(brief, "resolve_readable", spy)
+    text = await render_brief(await repo_policy(project, tmp_path / "projects"))
+    assert tried == ["README.md", "ReadMe.md", "Readme.md"]
+    assert "README: none readable" in text
+
+
+async def test_brief_overlong_multibyte_first_line_is_cut_cleanly(tmp_path: Path) -> None:
+    project = make_project(tmp_path / "projects" / "board")
+    write(project.dir / "README.md", "ä" * 4000 + "\nsecond\n")
+    text = await render_brief(await repo_policy(project, tmp_path / "projects"))
+    (fenced,) = re.findall(r"<<<readme [^\n]*>>>\n(.*?)\n<<<end ", text, flags=re.S)
+    assert 0 < len(fenced.encode()) <= README_CAP
+    assert set(fenced) == {"ä"} and "second" not in text
+    assert "… (truncated; repo_read README.md for more)" in text
+
+
+async def test_brief_short_root_readme_leaves_the_rest_to_the_project_readme(
+    tmp_path: Path,
+) -> None:
+    policy, root = await odh(tmp_path)
+    write(root / "hw" / "pcb" / "README.md", "pcb line\n" * 600)
+    commit_all(root)
+    text = await render_brief(policy)
+    fences = re.findall(r"<<<readme [^\n]*>>>\n(.*?)\n<<<end ", text, flags=re.S)
+    assert fences[0] == "# OpenDriveHub\n\nAn RC transmitter."
+    assert len(fences[1].encode()) > README_CAP - len(fences[0].encode()) - 10
+    assert sum(len(f.encode()) for f in fences) <= README_CAP

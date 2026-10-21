@@ -23,7 +23,7 @@ from copperchat.design_docs.paths import ROOT, DocError
 from copperchat.design_docs.sanitize import NOTICE_PREFIX, fence, sanitize_field, sanitize_inline
 from copperchat.design_docs.service import DesignDocs, DocIndex, DocIndexEntry, line_counts
 from copperchat.projects import Project
-from copperchat.repo_context.brief import render_brief
+from copperchat.repo_context.brief import BriefUnavailable, render_brief
 from copperchat.repo_context.listing import ListingError
 from copperchat.repo_context.paths import RepoPolicy
 
@@ -38,6 +38,7 @@ REPO_BRIEF = "#repo-brief"
 # Its value: "1" once sent, "failed:<n>" after n failed attempts (retried up to the budget).
 BRIEF_ATTEMPTS = 3
 _FAILED = "failed:"
+_FAILED_COUNT = re.compile(r"failed:([0-9]{1,4})")
 MAX_CHANGE_LINES = 20
 # Revisions of one doc looked at for "who changed it since the seen version".
 _REVISION_SCAN = 50
@@ -339,8 +340,8 @@ RepoSource = RepoPolicy | Callable[[], Awaitable[RepoPolicy]]
 
 
 def _brief_failures(value: str | None) -> int:
-    if value is not None and value.startswith(_FAILED):
-        return int(value.removeprefix(_FAILED)) if value[len(_FAILED) :].isdigit() else 0
+    if value is not None and (m := _FAILED_COUNT.fullmatch(value)):
+        return int(m.group(1))
     return 0
 
 
@@ -353,6 +354,8 @@ def _brief_due(value: str | None) -> bool:
 
 def _failure_reason(exc: Exception) -> str:
     """A short fixed reason (the details, possibly host paths, stay in the log)."""
+    if isinstance(exc, BriefUnavailable):
+        return str(exc)
     if isinstance(exc, ListingError):
         return "the repository file list could not be read"
     if isinstance(exc, OSError):

@@ -41,7 +41,10 @@ Deviations from the tasks below; the code and `docs/user/repo-context.md` are au
   the README shrinking the excerpt can be left out and the tree cut below 40 rows.
   The README passes `repo_read`'s checks (`specs.resolve_readable`: KiCad, ignored).
   A failed brief stores `failed:<n>` and is retried for up to 3 turns; the notice gives a
-  fixed reason, the error goes to the log.
+  fixed reason, the error goes to the log. A transient "no git" fallback
+  (`RepoPolicy.transient`) or a failed `git check-ignore` (`IgnoreCheckUnavailable`) counts
+  as a failed brief ("git could not be run"), not as a brief without git. At most 3 README
+  case variants are tried per folder.
   The nonce fence moved to `design_docs.sanitize.fence(label, name, clean)`;
   `context_injection._fence(name, body, label="doc")` wraps it. A README that is binary,
   a symlink out of the root or blocked is skipped (next candidate, else "README: none

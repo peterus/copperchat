@@ -102,6 +102,8 @@ class RepoPolicy:
     git_dirs: tuple[PurePosixPath, ...] = ()
     """Git directories inside the root under another name than ``.git`` (e.g. ``.bare``
     in a bare-repo worktree layout), relative to the root; blocked like ``.git``."""
+    transient: bool = False
+    """The "no git" fallback was taken because git could not be run (not cached)."""
 
     def blocked(self, rel: PurePosixPath) -> str | None:
         """`blocked_reason` plus this repository's own git directories."""
@@ -298,7 +300,9 @@ async def repo_policy(project: Project, projects_root: Path) -> RepoPolicy:
         log.warning(
             "git top-level lookup failed for %s, using the project dir: %s", project_dir, exc
         )
-        return RepoPolicy(project_dir, project_dir, False, root_dir, gitfile_dirs(project_dir))
+        return RepoPolicy(
+            project_dir, project_dir, False, root_dir, gitfile_dirs(project_dir), transient=True
+        )
     usable = (
         top is not None
         and (top == project_dir or top in project_dir.parents)
@@ -309,7 +313,9 @@ async def repo_policy(project: Project, projects_root: Path) -> RepoPolicy:
             git_dirs = await _git_dirs_inside(project_dir, top)
         except _GitUnavailable as exc:
             log.warning("git dir lookup failed for %s, using the project dir: %s", project_dir, exc)
-            return RepoPolicy(project_dir, project_dir, False, root_dir, gitfile_dirs(project_dir))
+            return RepoPolicy(
+                project_dir, project_dir, False, root_dir, gitfile_dirs(project_dir), transient=True
+            )
         policy = RepoPolicy(top, project_dir, True, root_dir, _merge(git_dirs, gitfile_dirs(top)))
     else:
         policy = RepoPolicy(project_dir, project_dir, False, root_dir, gitfile_dirs(project_dir))

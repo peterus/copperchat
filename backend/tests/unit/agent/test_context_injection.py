@@ -15,6 +15,8 @@ from copperchat.agent.context_injection import (
     INDEX_CAP,
     INDEXED,
     REPO_BRIEF,
+    _brief_due,
+    _brief_failures,
     render_index,
 )
 from copperchat.agent.fake import Tool, Wait
@@ -513,3 +515,40 @@ async def test_readme_commit_does_not_authorise_git_commit(env: Env) -> None:
     await env.idle()
     (user,) = [r for r in await env.rows(cid) if r.role == "user"]
     assert user.content == "hi there"
+
+
+@pytest.mark.parametrize(
+    ("value", "due", "failures"),
+    [
+        (None, True, 0),
+        ("1", False, 0),
+        ("failed:0", True, 0),
+        ("failed:2", True, 2),
+        ("failed:3", False, 3),
+        ("failed:", True, 0),
+        ("failed:x", True, 0),
+        ("failed:\u00b2", True, 0),
+        ("", False, 0),
+    ],
+)
+def test_brief_marker_parsing(value: str | None, due: bool, failures: int) -> None:
+    assert _brief_due(value) is due
+    assert _brief_failures(value) == failures
+
+
+async def test_brief_transient_git_failure_is_retried(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from copperchat.repo_context import paths
+
+    async def no_git(_: Any) -> Any:
+        raise paths._GitUnavailable("git timed out")
+
+    monkeypatch.setattr(paths, "_git_toplevel", no_git)
+    cid = await env.create("requirements")
+    env.script = lambda item: []
+    await env.send(cid, "hi")
+    assert _prompt(env).startswith(
+        f"{NOTICE} Project repository brief unavailable: git could not be run; use repo_list"
+    )
+    assert (await env.conv(cid)).docs_seen[REPO_BRIEF] == "failed:1"

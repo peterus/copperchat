@@ -26,10 +26,17 @@ from copperchat.repo_context.paths import (
     is_text_bytes,
     open_regular,
 )
-from copperchat.repo_context.specs import resolve_readable
+from copperchat.repo_context.specs import IgnoreCheckUnavailable, resolve_readable
 from copperchat.tools import StructuredToolError
 
-__all__ = ["BRIEF_CAP", "README_CAP", "TREE_MAX_LINES", "ListingError", "render_brief"]
+__all__ = [
+    "BRIEF_CAP",
+    "README_CAP",
+    "TREE_MAX_LINES",
+    "BriefUnavailable",
+    "ListingError",
+    "render_brief",
+]
 
 BRIEF_CAP = 6 * 1024
 README_CAP = 3 * 1024
@@ -37,6 +44,8 @@ TREE_MAX_LINES = 40
 NAME_MAX = 80
 # First match wins, compared case-folded (spec §6: README.md, README, README.txt).
 README_NAMES = ("readme.md", "readme", "readme.txt")
+# Case variants tried per folder (each costs a git check-ignore in a git repo).
+README_TRIES = 3
 # Enough for the excerpt after sanitising and for the text sniff.
 _README_READ = README_CAP + SNIFF_BYTES
 _TIMES = "\u00d7"  # "×" as in "(88: .c ×40, …)"  # noqa: RUF003
@@ -46,6 +55,11 @@ _FOOT = (
     "Explore with repo_list, repo_grep and repo_read before answering questions about "
     "the project, its enclosure or mechanics."
 )
+
+
+class BriefUnavailable(Exception):
+    """The brief cannot be built right now (git could not be run); its message is a short
+    fixed reason for the notice."""
 
 
 @dataclass(frozen=True)
@@ -70,7 +84,8 @@ def _candidates(files: Iterable[RepoFile], folder: PurePosixPath) -> list[PurePo
     for f in files:
         if f.rel.parent == folder and f.rel.name.casefold() in README_NAMES:
             found.setdefault(f.rel.name.casefold(), []).append(f.rel)
-    return [rel for name in README_NAMES for rel in sorted(found.get(name, []))]
+    ordered = [rel for name in README_NAMES for rel in sorted(found.get(name, []))]
+    return ordered[:README_TRIES]
 
 
 def _read_text(path: Path, rel: PurePosixPath) -> _Readme | None:
@@ -94,13 +109,16 @@ async def _readmes(policy: RepoPolicy, files: tuple[RepoFile, ...]) -> tuple[lis
     folders = [PurePosixPath(".")]
     if policy.rel_project_dir != ".":
         folders.append(PurePosixPath(policy.rel_project_dir))
+    candidates = await asyncio.to_thread(lambda: [_candidates(files, f) for f in folders])
     out: list[_Readme] = []
     root_found = False
-    for i, folder in enumerate(folders):
-        for rel in _candidates(files, folder):
+    for i, rels in enumerate(candidates):
+        for rel in rels:
             try:
                 path, _ = await resolve_readable(policy, rel.as_posix())
-            except StructuredToolError:
+            except IgnoreCheckUnavailable as exc:
+                raise BriefUnavailable("git could not be run") from exc
+            except StructuredToolError:  # refused by the policy: try the next one
                 continue
             readme = await asyncio.to_thread(_read_text, path, rel)
             if readme is not None:
@@ -212,6 +230,8 @@ async def render_brief(policy: RepoPolicy) -> str:
     bytes. Shrinks depth 2 → depth 1 first, then the README excerpt, then (only for
     extreme folder names) the tree rows. Raises on a listing failure; the caller turns
     that into a one-line notice."""
+    if policy.transient:
+        raise BriefUnavailable("git could not be run")
     listing = await list_repo(policy)
     readmes, root_found = await _readmes(policy, listing.files)
 

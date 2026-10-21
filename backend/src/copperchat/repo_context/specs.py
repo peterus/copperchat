@@ -401,6 +401,10 @@ def _physical_entry(policy: RepoPolicy, rel: PurePosixPath) -> PurePosixPath:
     return PurePosixPath(parent.as_posix()) / rel.name
 
 
+class IgnoreCheckUnavailable(StructuredToolError):
+    """git could not answer whether a path is ignored (transient; the read is refused)."""
+
+
 async def _check_not_ignored(policy: RepoPolicy, rels: Iterable[PurePosixPath]) -> None:
     """Refuse a path git ignores (spec D8); tracked files are never "ignored" here.
 
@@ -420,7 +424,7 @@ async def _check_not_ignored(policy: RepoPolicy, rels: Iterable[PurePosixPath]) 
                 timeout_s=IGNORE_TIMEOUT_S,
             )
         except GitError as exc:
-            raise StructuredToolError(
+            raise IgnoreCheckUnavailable(
                 f"{rel} could not be checked against .gitignore",
                 str(exc) or type(exc).__name__,
                 "Try again in a moment.",
@@ -439,7 +443,7 @@ async def _check_not_ignored(policy: RepoPolicy, rels: Iterable[PurePosixPath]) 
                 "Only files of this repository itself are available; use repo_list to see them.",
             )
         if code != 1:
-            raise StructuredToolError(
+            raise IgnoreCheckUnavailable(
                 f"{rel} could not be checked against .gitignore",
                 f"git check-ignore exited with code {code}",
                 "Use repo_list to see the available files.",
