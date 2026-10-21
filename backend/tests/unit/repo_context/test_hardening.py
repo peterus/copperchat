@@ -227,3 +227,70 @@ async def test_repo_read_fifo_structured(
     ctx = _ctx(project_dir, make_settings)
     with pytest.raises(StructuredToolError):
         await asyncio.wait_for(call(ctx, "repo_read", path="pipe.txt"), timeout=3)
+
+
+# --- 5. symlinks to ignored files, magic-pathspec names, submodules -----------------------
+
+
+async def test_committed_symlink_to_ignored_file_not_listed(
+    tmp_path: Path, make_settings: Callable[..., Settings]
+) -> None:
+    root = init_repo(tmp_path / "projects" / "repo")
+    (root / ".gitignore").write_text("private/\n")
+    (root / "private").mkdir()
+    (root / "private" / "p.txt").write_text("secret needle\n")
+    (root / "alias.txt").symlink_to("private/p.txt")
+    (root / "real.txt").write_text("public needle\n")
+    (root / "ok-alias.txt").symlink_to("real.txt")
+    git(root, "add", ".gitignore", "alias.txt", "real.txt", "ok-alias.txt")
+    git(root, "commit", "-q", "-m", "init")
+    ctx = _ctx(root / "hw", make_settings)
+
+    data = await call(ctx, "repo_grep", query="needle")
+    assert sorted(m["path"] for m in data["matches"]) == ["ok-alias.txt", "real.txt"]
+    data = await call(ctx, "repo_list")
+    listed = [e["path"] for e in data["entries"]]
+    assert "alias.txt" not in listed
+    assert "ok-alias.txt" in listed
+    with pytest.raises(StructuredToolError):
+        await call(ctx, "repo_read", path="alias.txt")
+
+
+async def test_read_refuses_ignored_magic_pathspec_name(
+    tmp_path: Path, make_settings: Callable[..., Settings]
+) -> None:
+    root = init_repo(tmp_path / "projects" / "repo")
+    (root / ".gitignore").write_text("/:notes.txt\n")
+    (root / ":notes.txt").write_text("private\n")
+    git(root, "add", ".gitignore")
+    git(root, "commit", "-q", "-m", "init")
+    ctx = _ctx(root / "hw", make_settings)
+    with pytest.raises(StructuredToolError) as err:
+        await call(ctx, "repo_read", path=":notes.txt")
+    assert "ignored" in str(err.value)
+
+
+async def test_read_in_submodule_refused_clearly(
+    tmp_path: Path, make_settings: Callable[..., Settings]
+) -> None:
+    sub_src = init_repo(tmp_path / "subsrc")
+    (sub_src / "inner.txt").write_text("inner\n")
+    git(sub_src, "add", "inner.txt")
+    git(sub_src, "commit", "-q", "-m", "sub")
+    root = init_repo(tmp_path / "projects" / "repo")
+    (root / "top.txt").write_text("top\n")
+    git(root, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(sub_src), "sub")
+    git(root, "add", "top.txt")
+    git(root, "commit", "-q", "-m", "init")
+    assert (root / "sub" / "inner.txt").is_file()
+    ctx = _ctx(root / "hw", make_settings)
+
+    # ls-files does not recurse into submodules, so the listing never shows their contents.
+    listed = [e["path"] for e in (await call(ctx, "repo_list"))["entries"]]
+    assert "top.txt" in listed
+    assert not [p for p in listed if p.startswith("sub/")]
+
+    with pytest.raises(StructuredToolError) as err:
+        await call(ctx, "repo_read", path="sub/inner.txt")
+    assert "inside git submodule sub" in str(err.value)
+    assert "could not be checked" not in str(err.value)

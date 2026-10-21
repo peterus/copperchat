@@ -386,12 +386,20 @@ def _read_lines(path: Path, rel: str) -> list[str]:
 async def _check_not_ignored(policy: RepoPolicy, rels: Iterable[PurePosixPath]) -> None:
     """Refuse a path git ignores (spec D8); tracked files are never "ignored" here.
 
-    Fails closed: if git cannot answer, the read is refused too.
+    Fails closed: if git cannot answer, the read is refused too. Paths inside a git
+    submodule (which check-ignore rejects) are refused as such; the listing never
+    shows them either, since ``git ls-files`` does not recurse into submodules.
     """
     for rel in dict.fromkeys(rels):
         try:
-            code, _, _ = await run_git(
-                policy.root, "check-ignore", "-q", "--", rel.as_posix(), timeout_s=IGNORE_TIMEOUT_S
+            # "./" keeps git from parsing a leading ":" as magic pathspec syntax.
+            code, _, err = await run_git(
+                policy.root,
+                "check-ignore",
+                "-q",
+                "--",
+                f"./{rel.as_posix()}",
+                timeout_s=IGNORE_TIMEOUT_S,
             )
         except GitError as exc:
             raise StructuredToolError(
@@ -404,6 +412,14 @@ async def _check_not_ignored(policy: RepoPolicy, rels: Iterable[PurePosixPath]) 
                 f"{rel} is ignored by .gitignore",
                 "the path was refused",
                 "Ignored files are not readable; use repo_list to see the available files.",
+            )
+        if code != 1 and b"submodule" in err:  # git_env pins LC_ALL=C
+            sub = re.search(rb"in submodule '([^']*)'", err)
+            where = f" {os.fsdecode(sub.group(1))}" if sub else ""
+            raise StructuredToolError(
+                f"{rel} is inside git submodule{where}",
+                "submodule contents are not readable",
+                "Only files of this repository itself are available; use repo_list to see them.",
             )
         if code != 1:
             raise StructuredToolError(

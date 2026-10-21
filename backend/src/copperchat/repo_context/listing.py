@@ -5,8 +5,8 @@ the listing fails with `ListingError` rather than walking ignored files); other
 roots are walked without following directory symlinks. Every path is checked
 against the block list (and the repository's own git directories), names that are not
 UTF-8 are skipped, symlinks are kept only if they point at a regular file
-inside the root that is not blocked, files below a symlinked directory are dropped, and
-the result is capped and cached.
+inside the root that is not blocked (and, in git mode, is itself listed), files below a
+symlinked directory are dropped, and the result is capped and cached.
 """
 
 from __future__ import annotations
@@ -61,8 +61,15 @@ def _utf8_name(rel: PurePosixPath) -> bool:
     return True
 
 
-def _file_size(policy: RepoPolicy, rel: PurePosixPath) -> int | None:
-    """Size of `rel` if it is a regular file (or a symlink to one inside the root, unblocked)."""
+def _file_size(
+    policy: RepoPolicy, rel: PurePosixPath, listed: frozenset[PurePosixPath] | None
+) -> int | None:
+    """Size of `rel` if it is a regular file (or a symlink to one inside the root, unblocked).
+
+    With `listed` (git mode: the ``ls-files`` paths, which exclude ignored files) a
+    symlink is only kept if its target is itself listed, so a committed link cannot
+    expose an ignored file.
+    """
     root = policy.root
     full = root / rel
     try:
@@ -80,6 +87,8 @@ def _file_size(policy: RepoPolicy, rel: PurePosixPath) -> int | None:
     except (OSError, RuntimeError, ValueError):
         return None
     if policy.blocked(target_rel) is not None or not stat.S_ISREG(st.st_mode):
+        return None
+    if listed is not None and target_rel not in listed:
         return None
     return st.st_size
 
@@ -101,7 +110,11 @@ def _real_parent(root: Path, parent: PurePosixPath, memo: dict[PurePosixPath, bo
     return known
 
 
-def _collect(policy: RepoPolicy, candidates: Iterable[PurePosixPath]) -> Listing:
+def _collect(
+    policy: RepoPolicy,
+    candidates: Iterable[PurePosixPath],
+    listed: frozenset[PurePosixPath] | None = None,
+) -> Listing:
     root = policy.root
     files: list[RepoFile] = []
     truncated = False
@@ -113,7 +126,7 @@ def _collect(policy: RepoPolicy, candidates: Iterable[PurePosixPath]) -> Listing
             or not _real_parent(root, rel.parent, parents)
         ):
             continue
-        size = _file_size(policy, rel)
+        size = _file_size(policy, rel, listed)
         if size is None:
             continue
         if len(files) >= WALK_CAP:
@@ -192,7 +205,10 @@ async def list_repo(policy: RepoPolicy) -> Listing:
         return cached[1]
     if policy.is_git:
         out, capped = await _git_ls_files(root)
-        result = await asyncio.to_thread(lambda: _collect(policy, _git_candidates(out)))
+        candidates = _git_candidates(out)
+        result = await asyncio.to_thread(
+            lambda: _collect(policy, candidates, frozenset(candidates))
+        )
         if capped and not result.truncated:
             result = Listing(result.files, True)
     else:
