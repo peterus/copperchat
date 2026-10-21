@@ -26,7 +26,11 @@ from copperchat.repo_context.paths import (
     is_text_bytes,
     open_regular,
 )
-from copperchat.repo_context.specs import IgnoreCheckUnavailable, resolve_readable
+from copperchat.repo_context.specs import (
+    FILE_MAX_BYTES,
+    IgnoreCheckUnavailable,
+    resolve_readable,
+)
 from copperchat.tools import StructuredToolError
 
 __all__ = [
@@ -95,6 +99,8 @@ def _read_text(path: Path, rel: PurePosixPath) -> _Readme | None:
     except OSError:
         return None
     with os.fdopen(fd, "rb") as fh:
+        if os.fstat(fh.fileno()).st_size > FILE_MAX_BYTES:  # repo_read refuses it too
+            return None
         data = fh.read(_README_READ + 1)
     if not is_text_bytes(data):
         return None

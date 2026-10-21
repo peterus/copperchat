@@ -335,3 +335,12 @@ async def test_brief_short_root_readme_leaves_the_rest_to_the_project_readme(
     assert fences[0] == "# OpenDriveHub\n\nAn RC transmitter."
     assert len(fences[1].encode()) > README_CAP - len(fences[0].encode()) - 10
     assert sum(len(f.encode()) for f in fences) <= README_CAP
+
+
+async def test_brief_skips_readme_over_1_mib(tmp_path: Path) -> None:
+    project = make_project(tmp_path / "projects" / "board")
+    write(project.dir / "README.md", "HUGE line\n" * 110_000)
+    write(project.dir / "README.txt", "small\n")
+    text = await render_brief(await repo_policy(project, tmp_path / "projects"))
+    assert "HUGE" not in text
+    assert "<<<readme README.txt " in text and "small" in text
