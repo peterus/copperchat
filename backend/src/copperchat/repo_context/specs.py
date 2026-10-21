@@ -383,6 +383,24 @@ def _read_lines(path: Path, rel: str) -> list[str]:
     return split_lines(data.decode("utf-8", errors="replace"))
 
 
+def _physical_entry(policy: RepoPolicy, rel: PurePosixPath) -> PurePosixPath:
+    """`rel` with its directory resolved: the entry as it physically exists in the root.
+
+    ``git check-ignore`` refuses paths "beyond a symbolic link", so a path read through
+    an in-root directory symlink is checked at its real location; the last component
+    is kept as given, so an ignored file symlink is still checked under its own name.
+    """
+    try:
+        parent = (policy.root / rel.parent).resolve(strict=True).relative_to(policy.root)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise StructuredToolError(
+            f"{rel} could not be checked against .gitignore",
+            "its directory does not resolve inside the repository",
+            "Use repo_list to see the available files.",
+        ) from exc
+    return PurePosixPath(parent.as_posix()) / rel.name
+
+
 async def _check_not_ignored(policy: RepoPolicy, rels: Iterable[PurePosixPath]) -> None:
     """Refuse a path git ignores (spec D8); tracked files are never "ignored" here.
 
@@ -413,11 +431,10 @@ async def _check_not_ignored(policy: RepoPolicy, rels: Iterable[PurePosixPath]) 
                 "the path was refused",
                 "Ignored files are not readable; use repo_list to see the available files.",
             )
-        if code != 1 and b"submodule" in err:  # git_env pins LC_ALL=C
-            sub = re.search(rb"in submodule '([^']*)'", err)
-            where = f" {os.fsdecode(sub.group(1))}" if sub else ""
+        sub = re.search(rb"is in submodule '([^']*)'", err) if code != 1 else None
+        if sub is not None:  # git_env pins LC_ALL=C
             raise StructuredToolError(
-                f"{rel} is inside git submodule{where}",
+                f"{rel} is inside git submodule {os.fsdecode(sub.group(1))}",
                 "submodule contents are not readable",
                 "Only files of this repository itself are available; use repo_list to see them.",
             )
@@ -448,7 +465,8 @@ async def _repo_read(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     if is_kicad_file(rel) or is_kicad_file(resolved_rel):
         raise StructuredToolError(f"{rel} is a KiCad file", "not readable as text", _KICAD_HINT)
     if policy.is_git:
-        await _check_not_ignored(policy, (rel, resolved_rel))
+        entry_rel = await asyncio.to_thread(_physical_entry, policy, rel)
+        await _check_not_ignored(policy, (entry_rel, resolved_rel))
     try:
         lines = await asyncio.to_thread(_read_lines, resolved, rel.as_posix())
     except OSError as exc:
@@ -599,7 +617,8 @@ async def _repo_grep(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     raw_glob = _str_arg(args, "glob", None)
     max_results = _int_arg(args, "max_results", GREP_DEFAULT_RESULTS, 1, GREP_MAX_RESULTS)
     try:
-        re.compile(query if regex else re.escape(query), 0 if case_sensitive else re.IGNORECASE)
+        flags = 0 if case_sensitive else re.IGNORECASE
+        await asyncio.to_thread(re.compile, query if regex else re.escape(query), flags)
     except (re.error, OverflowError) as exc:
         raise StructuredToolError(
             "query is not a valid regular expression",

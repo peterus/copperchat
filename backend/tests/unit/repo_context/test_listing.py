@@ -202,3 +202,11 @@ async def test_ls_files_output_is_capped(tmp_path: Path, monkeypatch: pytest.Mon
     assert result.truncated
     assert 0 < len(result.files) <= 100 // len("file000.txt")
     assert all(f.rel.name.startswith("file") and f.rel.suffix == ".txt" for f in result.files)
+
+
+def test_git_candidates_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(listing, "WALK_CAP", 3)
+    out = b"".join(f"f{i}.txt\0".encode() for i in range(100))
+    candidates, truncated = listing._git_candidates(out)
+    assert truncated
+    assert len(candidates) == 4 * 3

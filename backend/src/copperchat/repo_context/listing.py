@@ -153,7 +153,13 @@ def _walk_candidates(policy: RepoPolicy) -> Iterable[PurePosixPath]:
             yield base / name
 
 
-def _git_candidates(out: bytes) -> list[PurePosixPath]:
+def _git_candidates(out: bytes) -> tuple[list[PurePosixPath], bool]:
+    """Unique UTF-8 paths from ``ls-files -z`` output and whether they were cut short.
+
+    Stops after a generous multiple of `WALK_CAP` entries (most may still be dropped
+    by `_collect`), so a huge repository is not materialised in full.
+    """
+    limit = 4 * WALK_CAP
     seen: dict[str, None] = {}
     for raw in out.split(b"\0"):
         if not raw:
@@ -162,8 +168,16 @@ def _git_candidates(out: bytes) -> list[PurePosixPath]:
             name = raw.decode("utf-8")  # strict: non-UTF-8 names are not listed
         except UnicodeDecodeError:
             continue
+        if name not in seen and len(seen) >= limit:
+            return [PurePosixPath(p) for p in seen], True
         seen.setdefault(name, None)
-    return [PurePosixPath(p) for p in seen]
+    return [PurePosixPath(p) for p in seen], False
+
+
+def _collect_git(policy: RepoPolicy, out: bytes) -> Listing:
+    candidates, cut = _git_candidates(out)
+    result = _collect(policy, candidates, frozenset(candidates))
+    return Listing(result.files, True) if cut and not result.truncated else result
 
 
 async def _git_ls_files(root: Path) -> tuple[bytes, bool]:
@@ -205,10 +219,7 @@ async def list_repo(policy: RepoPolicy) -> Listing:
         return cached[1]
     if policy.is_git:
         out, capped = await _git_ls_files(root)
-        candidates = _git_candidates(out)
-        result = await asyncio.to_thread(
-            lambda: _collect(policy, candidates, frozenset(candidates))
-        )
+        result = await asyncio.to_thread(_collect_git, policy, out)
         if capped and not result.truncated:
             result = Listing(result.files, True)
     else:

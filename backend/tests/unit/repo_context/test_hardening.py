@@ -294,3 +294,50 @@ async def test_read_in_submodule_refused_clearly(
         await call(ctx, "repo_read", path="sub/inner.txt")
     assert "inside git submodule sub" in str(err.value)
     assert "could not be checked" not in str(err.value)
+
+
+# --- 6. reads through in-root directory symlinks, check-ignore failure messages -----------
+
+
+async def test_read_through_dir_symlink_git_mode(
+    tmp_path: Path, make_settings: Callable[..., Settings]
+) -> None:
+    root = init_repo(tmp_path / "projects" / "repo")
+    (root / "real").mkdir()
+    (root / "real" / "a.txt").write_text("hello\n")
+    (root / "ln").symlink_to("real")
+    git(root, "add", "real/a.txt", "ln")
+    git(root, "commit", "-q", "-m", "init")
+    ctx = _ctx(root / "hw", make_settings)
+    data = await call(ctx, "repo_read", path="ln/a.txt")
+    assert data["content"] == "hello\n"
+
+
+async def test_read_through_dir_symlink_into_ignored_dir_refused(
+    tmp_path: Path, make_settings: Callable[..., Settings]
+) -> None:
+    root = init_repo(tmp_path / "projects" / "repo")
+    (root / ".gitignore").write_text("real/\n")
+    (root / "real").mkdir()
+    (root / "real" / "a.txt").write_text("secret\n")
+    (root / "ln").symlink_to("real")
+    git(root, "add", ".gitignore", "ln")
+    git(root, "commit", "-q", "-m", "init")
+    ctx = _ctx(root / "hw", make_settings)
+    with pytest.raises(StructuredToolError) as err:
+        await call(ctx, "repo_read", path="ln/a.txt")
+    assert "is ignored" in str(err.value)
+
+
+async def test_check_ignore_failure_mentioning_submodule_is_generic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_run_git(*_args: Any, **_kwargs: Any) -> tuple[int, bytes, bytes]:
+        return 128, b"", b"fatal: something broke at 'submodule-notes/a.txt'\n"
+
+    monkeypatch.setattr(specs, "run_git", fake_run_git)
+    policy = RepoPolicy(root=tmp_path, project_dir=tmp_path, is_git=True, projects_root=tmp_path)
+    with pytest.raises(StructuredToolError) as err:
+        await specs._check_not_ignored(policy, [PurePosixPath("submodule-notes/a.txt")])
+    assert "could not be checked" in str(err.value)
+    assert "inside git submodule" not in str(err.value)
