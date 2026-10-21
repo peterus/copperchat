@@ -22,3 +22,8 @@ redistributed under the same terms, compatible with CopperChat's GPL-3.0-only.
 `golden/png/*.png` and `golden/board_snapshot.json` from `scripts/update-goldens.sh`;
 `kicad-cli/*.json` are `kicad-cli sch erc` / `pcb drc --format json` outputs
 recorded by `scripts/regen-golden.py`. All three scripts run inside the base image.
+
+`repo_context.py` is not a fixture tree but a builder: `build_fixture_repo(tmp_path)`
+writes a small project repository (README, `docs/spec.md`, an OpenSCAD enclosure, a
+binary `.stl`, an `.env`, a symlink out of the repo, a nested KiCad project) and
+commits it with `git init`; no `.git` is committed here (repo-context spec §9).
