@@ -1,6 +1,7 @@
 """The repository file list behind repo_list / repo_grep and the brief (spec §4.4).
 
-Git repos are listed with ``git ls-files`` (respecting ``.gitignore``); other
+Git repos are listed with ``git ls-files`` (respecting ``.gitignore``; if that fails
+the listing fails with `ListingError` rather than walking ignored files); other
 roots are walked without following directory symlinks. Every path is checked
 against the block list, symlinks are kept only if they point at a regular file
 inside the root that is not blocked, files below a symlinked directory are dropped, and
@@ -17,12 +18,17 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from copperchat.gitproc import GitError, run_git
+from copperchat.gitproc import GitError, run_git_capped
 from copperchat.repo_context.paths import RepoPolicy, blocked_reason
 
 WALK_CAP = 20_000
 CACHE_TTL_S = 10.0
 LS_FILES_TIMEOUT_S = 10.0
+LS_FILES_MAX_BYTES = 16 * 1024 * 1024  # far more than WALK_CAP entries need
+
+
+class ListingError(Exception):
+    """``git ls-files`` failed in a git repo; the listing is refused, not walked."""
 
 
 @dataclass(frozen=True)
@@ -122,9 +128,13 @@ def _git_candidates(out: bytes) -> list[PurePosixPath]:
     return [PurePosixPath(p) for p in seen]
 
 
-async def _git_ls_files(root: Path) -> bytes | None:
+async def _git_ls_files(root: Path) -> tuple[bytes, bool]:
+    """The NUL-separated ``ls-files`` output and whether it was cut at the byte cap.
+
+    Raises `ListingError` if git could not be run or failed.
+    """
     try:
-        code, out, _ = await run_git(
+        code, out, err, capped = await run_git_capped(
             root,
             "ls-files",
             "-z",
@@ -132,23 +142,34 @@ async def _git_ls_files(root: Path) -> bytes | None:
             "--others",
             "--exclude-standard",
             timeout_s=LS_FILES_TIMEOUT_S,
+            max_output_bytes=LS_FILES_MAX_BYTES,
         )
-    except GitError:
-        return None
-    return out if code == 0 else None
+    except GitError as exc:
+        raise ListingError(str(exc) or type(exc).__name__) from exc
+    if capped:
+        # Drop the entry the cap cut in half.
+        return out[: out.rfind(b"\0") + 1], True
+    if code != 0:
+        detail = os.fsdecode(err).strip().splitlines()
+        raise ListingError(detail[0] if detail else f"git ls-files exited with code {code}")
+    return out, False
 
 
 async def list_repo(policy: RepoPolicy) -> Listing:
-    """All listable files under the repository root, sorted by path (cached 10 s per root)."""
+    """All listable files under the repository root, sorted by path (cached 10 s per root).
+
+    Raises `ListingError` (not cached) if ``git ls-files`` fails in a git repo.
+    """
     root = policy.root
     now = time.monotonic()
     cached = _cache.get(root)
     if cached is not None and now - cached[0] < CACHE_TTL_S:
         return cached[1]
-    out = await _git_ls_files(root) if policy.is_git else None
-    if out is not None:
-        git_out = out
-        result = await asyncio.to_thread(lambda: _collect(root, _git_candidates(git_out)))
+    if policy.is_git:
+        out, capped = await _git_ls_files(root)
+        result = await asyncio.to_thread(lambda: _collect(root, _git_candidates(out)))
+        if capped and not result.truncated:
+            result = Listing(result.files, True)
     else:
         result = await asyncio.to_thread(lambda: _collect(root, _walk_candidates(root)))
     _cache[root] = (time.monotonic(), result)

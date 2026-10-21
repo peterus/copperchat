@@ -129,17 +129,23 @@ class _GitUnavailable(Exception):
 async def _git_toplevel(project_dir: Path) -> Path | None:
     """The git top-level of `project_dir`, or None if git says it is not in a repo.
 
-    Raises `_GitUnavailable` if git could not be run to completion, so a transient
-    failure is not remembered as "no git".
+    Raises `_GitUnavailable` if git could not be run to completion or failed for any
+    other reason (e.g. "dubious ownership"), so such a failure is not remembered as
+    "no git".
     """
     try:
-        code, out, _ = await run_git(
+        code, out, err = await run_git(
             project_dir, "rev-parse", "--show-toplevel", timeout_s=ROOT_LOOKUP_TIMEOUT_S
         )
     except GitError as exc:
         raise _GitUnavailable(str(exc) or type(exc).__name__) from exc
+    if code != 0:
+        message = os.fsdecode(err).strip()
+        if "not a git repository" in message.lower():
+            return None
+        raise _GitUnavailable(message.splitlines()[0] if message else f"exit code {code}")
     text = os.fsdecode(out).strip()
-    if code != 0 or not text:
+    if not text:
         return None
     try:
         return Path(text).resolve(strict=True)
@@ -153,7 +159,8 @@ async def repo_policy(project: Project, projects_root: Path) -> RepoPolicy:
     The git top-level is used only if it is the project directory or one of its
     ancestors and lies strictly inside the projects root; otherwise the root is
     the project directory itself and the repo counts as "no git". If git could not be
-    run (missing, timed out) the "no git" fallback is used but not cached.
+    run (missing, timed out) or failed other than with "not a git repository", the
+    "no git" fallback is used but not cached.
     """
     project_dir = project.dir.resolve()
     root_dir = projects_root.resolve()

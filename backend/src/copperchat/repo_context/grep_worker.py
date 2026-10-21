@@ -13,18 +13,21 @@ Lines are split on ``\\n`` only (as ``repo_read`` does), so line numbers agree.
 
 Python's ``re`` cannot be interrupted, so the parent enforces the wall-clock budget by
 killing this process. The parent has already filtered the file list; the worker still
-re-checks every path (inside the root, not blocked, not KiCad, regular text file).
+re-checks every path (inside the root, not blocked, not KiCad) and opens it without
+following symlinks, then checks the open file (regular, at most 1 MiB, text).
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
+import stat
 import sys
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, BinaryIO
 
-from copperchat.repo_context.paths import blocked_reason, is_kicad_file, is_text_file
+from copperchat.repo_context.paths import SNIFF_BYTES, blocked_reason, is_kicad_file, is_text_bytes
 
 LINE_MATCH_MAX = 2000
 TEXT_OUT_MAX = 300
@@ -45,13 +48,44 @@ def _safe_file(root: Path, raw: str) -> Path | None:
     try:
         resolved = (root / rel).resolve(strict=True)
         resolved_rel = PurePosixPath(resolved.relative_to(root).as_posix())
-        if not resolved.is_file() or resolved.stat().st_size > FILE_MAX_BYTES:
-            return None
     except (OSError, RuntimeError, ValueError):
         return None
     if blocked_reason(resolved_rel) is not None or is_kicad_file(resolved_rel):
         return None
-    return resolved if is_text_file(resolved) else None
+    return resolved
+
+
+_OPEN_FLAGS = (
+    os.O_RDONLY
+    | getattr(os, "O_NOFOLLOW", 0)
+    | getattr(os, "O_CLOEXEC", 0)
+    | getattr(os, "O_NONBLOCK", 0)
+)
+
+
+def _open_scan(path: Path) -> BinaryIO | None:
+    """`path` opened for scanning, or None: no symlink is followed (the path was
+    resolved already), a FIFO or device does not block, and the regular-file, size
+    and text checks run on the opened file, so a swap after the checks cannot slip in."""
+    try:
+        fd = os.open(path, _OPEN_FLAGS)
+    except OSError:
+        return None
+    fh = os.fdopen(fd, "rb")
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > FILE_MAX_BYTES:
+            fh.close()
+            return None
+        head = fh.read(SNIFF_BYTES)
+        if not is_text_bytes(head):
+            fh.close()
+            return None
+        fh.seek(0)
+    except OSError:
+        fh.close()
+        return None
+    return fh
 
 
 def run(request: dict[str, Any]) -> None:
@@ -75,9 +109,10 @@ def run(request: dict[str, Any]) -> None:
         if not isinstance(raw, str):
             continue
         path = _safe_file(root, raw)
-        if path is None:
+        fh = _open_scan(path) if path is not None else None
+        if fh is None:
             continue
-        with path.open("rb") as fh:
+        with fh:
             for number, line in enumerate(fh, start=1):
                 scanned_bytes += len(line)
                 if scanned_bytes > max_bytes:

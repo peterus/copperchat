@@ -70,3 +70,61 @@ async def run_git(cwd: Path, *args: str, timeout_s: float) -> tuple[int, bytes, 
             raise
         raise GitTimeoutError(f"git did not finish within {timeout_s:g}s") from exc
     return proc.returncode or 0, out, err
+
+
+async def run_git_capped(
+    cwd: Path, *args: str, timeout_s: float, max_output_bytes: int
+) -> tuple[int, bytes, bytes, bool]:
+    """`run_git` with stdout bounded to ``max_output_bytes``.
+
+    Returns ``(returncode, stdout, stderr, capped)``. Once stdout would exceed the cap,
+    git is killed and ``capped`` is True: ``stdout`` then holds the first
+    ``max_output_bytes`` bytes and the return code is not meaningful. stderr is kept
+    to its first 64 KiB.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            *GIT_CONFIG,
+            "-C",
+            str(cwd),
+            *args,
+            env=git_env(),
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError as exc:
+        raise GitNotFoundError(str(exc)) from exc
+    assert proc.stdout is not None and proc.stderr is not None
+    stdout, stderr = proc.stdout, proc.stderr
+
+    async def read_out() -> tuple[bytes, bool]:
+        buf = bytearray()
+        while chunk := await stdout.read(65536):
+            buf += chunk
+            if len(buf) > max_output_bytes:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                return bytes(buf[:max_output_bytes]), True
+        return bytes(buf), False
+
+    async def read_err() -> bytes:
+        buf = bytearray()
+        while chunk := await stderr.read(65536):
+            if len(buf) < 65536:
+                buf += chunk
+        return bytes(buf[:65536])
+
+    try:
+        async with asyncio.timeout(timeout_s):
+            (out, capped), err = await asyncio.gather(read_out(), read_err())
+            await proc.wait()
+    except (TimeoutError, asyncio.CancelledError) as exc:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        await proc.wait()
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+        raise GitTimeoutError(f"git did not finish within {timeout_s:g}s") from exc
+    return proc.returncode or 0, out, err, capped

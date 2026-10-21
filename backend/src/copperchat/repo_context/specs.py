@@ -18,7 +18,7 @@ from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from copperchat.repo_context.listing import RepoFile, list_repo
+from copperchat.repo_context.listing import Listing, ListingError, RepoFile, list_repo
 from copperchat.repo_context.paths import (
     RepoPathError,
     RepoPolicy,
@@ -104,6 +104,18 @@ async def _dir(policy: RepoPolicy, raw: str) -> PurePosixPath:
         raise _path_error(exc) from exc
     rel = resolved.relative_to(policy.root).as_posix()
     return PurePosixPath(rel) if rel else PurePosixPath(".")
+
+
+async def _listing(policy: RepoPolicy) -> Listing:
+    try:
+        return await list_repo(policy)
+    except ListingError as exc:
+        raise StructuredToolError(
+            "git listing failed",
+            f"git ls-files did not succeed: {exc}",
+            "Try again shortly; if it keeps failing, the repository's git state needs repair "
+            "(e.g. run git status in it).",
+        ) from exc
 
 
 # --- glob matching ---------------------------------------------------------------------------
@@ -199,7 +211,8 @@ class Glob:
 
     ``*``/``?``/``[...]`` stay within one segment (an unterminated ``[`` is literal, ``**``
     inside a segment acts like ``*``); a ``**`` segment spans zero or more directories, a
-    trailing ``**`` everything below (one or more segments). Matching is case-insensitive
+    trailing ``**`` everything below (one or more segments); consecutive ``**`` segments
+    collapse into one. Matching is case-insensitive
     (file extensions differ in case across tools). There is no backtracking across
     segments: the match runs a set of reachable path positions through the pattern
     segments, so a pattern of P segments costs O(P * S) segment matches on S segments.
@@ -207,9 +220,12 @@ class Glob:
 
     def __init__(self, pattern: str) -> None:
         self.pattern = pattern
-        self._segments: list[list[_Token] | None] = [  # None = "**"
-            None if seg == "**" else _compile_segment(seg) for seg in pattern.lower().split("/")
-        ]
+        self._segments: list[list[_Token] | None] = []  # None = "**"
+        for seg in pattern.lower().split("/"):
+            if seg != "**":
+                self._segments.append(_compile_segment(seg))
+            elif not self._segments or self._segments[-1] is not None:
+                self._segments.append(None)  # "**/**" spans the same as one "**"
 
     def matches(self, path: str) -> bool:
         names = path.lower().split("/")
@@ -263,6 +279,25 @@ def _under(files: Iterable[RepoFile], base: PurePosixPath) -> list[tuple[RepoFil
 # --- repo_list -------------------------------------------------------------------------------
 
 
+def _select(
+    files: Iterable[RepoFile], base: PurePosixPath, matcher: Glob | None
+) -> tuple[list[RepoFile], dict[str, int]]:
+    """The entries of a repo_list call: every file below `base` matching `matcher`, or
+    without one the files directly in `base` plus the file counts of its sub-directories."""
+    below = _under(files, base)
+    dirs: dict[str, int] = {}
+    if matcher is not None:
+        return [f for f, sub in below if matcher.matches(sub)], dirs
+    selected = []
+    for f, sub in below:
+        head, sep, _ = sub.partition("/")
+        if sep:
+            dirs[head] = dirs.get(head, 0) + 1
+        else:
+            selected.append(f)
+    return selected, dirs
+
+
 def _kinds(root: Path, files: list[RepoFile]) -> list[str]:
     kinds: list[str] = []
     for index, f in enumerate(files):
@@ -286,20 +321,8 @@ async def _repo_list(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     matcher = _check_glob(raw_pattern, "pattern") if raw_pattern else None
     policy = await _policy(ctx)
     base = await _dir(policy, raw_path)
-    listing = await list_repo(policy)
-    below = _under(listing.files, base)
-
-    dirs: dict[str, int] = {}
-    if matcher is not None:
-        selected = [f for f, sub in below if matcher.matches(sub)]
-    else:
-        selected = []
-        for f, sub in below:
-            head, sep, _ = sub.partition("/")
-            if sep:
-                dirs[head] = dirs.get(head, 0) + 1
-            else:
-                selected.append(f)
+    listing = await _listing(policy)
+    selected, dirs = await asyncio.to_thread(_select, listing.files, base, matcher)
 
     shown = selected[:max_entries]
     kinds = await asyncio.to_thread(_kinds, policy.root, shown)
@@ -396,17 +419,19 @@ async def _repo_read(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     parts: list[str] = []
     used = 0
     end = offset - 1
+    line_cut = False
     for line in lines[offset - 1 : offset - 1 + limit]:
         size = len(line.encode("utf-8"))
         if used + size > READ_MAX_BYTES:
             if not parts:  # the first line alone is over the cap: cut the line
                 parts.append(_cut_utf8(line, READ_MAX_BYTES))
                 end += 1
+                line_cut = True
             break
         parts.append(line)
         used += size
         end += 1
-    truncated = end < total
+    truncated = end < total or line_cut
     data = _base(policy) | {
         "path": rel.as_posix(),
         "content": "".join(parts),
@@ -415,7 +440,10 @@ async def _repo_read(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         "total_lines": total,
         "truncated": truncated,
     }
-    if truncated:
+    if line_cut:
+        # The rest of a cut line cannot be reached by any offset; continue after it.
+        data["line_truncated"] = True
+    if end < total:
         data["next_offset"] = end + 1
     return ToolResult(data=data)
 
@@ -434,6 +462,18 @@ async def _kill(proc: asyncio.subprocess.Process) -> None:
     await proc.wait()
 
 
+def _worker_env() -> dict[str, str]:
+    """A minimal environment for the grep worker: no server secrets (API keys, tokens,
+    passwords) are inherited. The venv interpreter finds its site-packages without any
+    variables; PYTHONPATH is passed through only if the server itself runs with one."""
+    env = {"LANG": "C", "LC_ALL": "C", "PYTHONIOENCODING": "utf-8"}
+    for key in ("PATH", "PYTHONPATH"):
+        value = os.environ.get(key)
+        if value:
+            env[key] = value
+    return env
+
+
 async def _run_worker(
     request: dict[str, Any], max_results: int
 ) -> tuple[list[dict[str, Any]], int, str | None]:
@@ -445,6 +485,7 @@ async def _run_worker(
         "-P",  # never put the cwd on sys.path
         "-m",
         _WORKER_MODULE,
+        env=_worker_env(),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
@@ -520,15 +561,18 @@ async def _repo_grep(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     by_name = matcher is not None and "/" not in matcher.pattern
     policy = await _policy(ctx)
     base = await _dir(policy, raw_path)
-    listing = await list_repo(policy)
+    listing = await _listing(policy)
 
-    files = [
-        f.rel.as_posix()
-        for f, sub in _under(listing.files, base)
-        if not is_kicad_file(f.rel)
-        and f.size <= FILE_MAX_BYTES
-        and (matcher is None or matcher.matches(f.rel.name if by_name else sub))
-    ]
+    def select() -> list[str]:
+        return [
+            f.rel.as_posix()
+            for f, sub in _under(listing.files, base)
+            if not is_kicad_file(f.rel)
+            and f.size <= FILE_MAX_BYTES
+            and (matcher is None or matcher.matches(f.rel.name if by_name else sub))
+        ]
+
+    files = await asyncio.to_thread(select)
     request = {
         "root": str(policy.root),
         "files": files,
@@ -630,7 +674,8 @@ TOOL_SPECS = [
     _spec(
         "repo_read",
         "Read a text file of the project's repository (read-only), at most 1000 lines and "
-        "64 KiB per call; continue with offset=next_offset when truncated. KiCad files (use "
+        "64 KiB per call; continue with offset=next_offset when truncated (line_truncated means "
+        "a single line was longer than 64 KiB and was cut). KiCad files (use "
         "the sch_* / pcb_* / lib_* tools), binaries, secrets and files over 1 MiB are refused.",
         {
             "path": _PATH_PROP | {"description": "File path relative to the repository root"},

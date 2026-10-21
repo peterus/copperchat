@@ -53,6 +53,7 @@ from copperchat.agent.events import (
 )
 from copperchat.agent.guards import (
     DELEGATION_TOOL,
+    RepoPolicyProvider,
     ToolCallObserver,
     guard_as_pre_tool_use_hook,
     make_main_guard,
@@ -167,13 +168,13 @@ def build_options(
     skills: SkillBundle | None = None,
     on_tool_allowed: ToolCallObserver | None = None,
     conversation_type: str = "free",
-    repo: RepoPolicy | None = None,
+    repo: RepoPolicy | RepoPolicyProvider | None = None,
 ) -> ClaudeAgentOptions:
     """Main-agent options. Built-in tools: none, or exactly ``["Skill"]`` with enabled
     skills (Phase 8); the part-researcher is our ``research_part`` MCP tool, never a
     built-in. ``on_tool_allowed`` observes every call the guard allows. ``repo`` is the
-    project's repository policy both guard instances check ``repo_*`` paths against
-    (without it those calls are refused)."""
+    project's repository policy (or an async provider of it, asked per call) both guard
+    instances check ``repo_*`` paths against (without it those calls are refused)."""
     guarded = frozenset(sdk_tool_name(n) for n in tool_names)
     env = {
         "CLAUDE_CONFIG_DIR": str(settings.data_dir / "claude"),
@@ -558,15 +559,14 @@ class SdkStreamingBackend:
                 )
             return replace(bind_conversation(base, conversation), research=research)
 
-        # The repository boundary both guard instances check repo_* paths against (cached
-        # per project; the tool handlers resolve it again themselves). Without one the
+        # The repository boundary both guard instances check repo_* paths against, resolved
+        # per repo_* call (cached per project once git answered; a transient fallback is
+        # retried). The tool handlers resolve it again themselves. If it fails, the
         # repo_* calls are refused (fail closed).
-        repo: RepoPolicy | None
-        try:
-            repo = await repo_policy(project, self._settings.projects_root)
-        except OSError:
-            log.warning("repository policy unavailable for %s", project.dir, exc_info=True)
-            repo = None
+        projects_root = self._settings.projects_root
+
+        async def repo() -> RepoPolicy:
+            return await repo_policy(project, projects_root)
 
         # What this burst's MCP tool handlers use.
         self.tool_ctx_factory = ctx_factory

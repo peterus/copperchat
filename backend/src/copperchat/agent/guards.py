@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -47,7 +48,10 @@ SKILL_TOOL = "Skill"
 _PATH_KEY = {"Read": "file_path", "Write": "file_path", "Edit": "file_path", "Glob": "path"}
 _WRITABLE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.(md|txt)$")
 
+log = logging.getLogger(__name__)
+
 ToolCallObserver = Callable[[str, dict[str, Any], ToolPermissionContext], None]
+RepoPolicyProvider = Callable[[], Awaitable[RepoPolicy | None]]
 
 # SDK name -> bare name of the read-only repository tools (repo-context spec §5.5).
 _REPO_SDK_TOOLS = {sdk_tool_name(name): name for name in REPO_TOOLS}
@@ -114,7 +118,7 @@ def repo_path_refusal(policy: RepoPolicy, tool: str, inp: dict[str, Any]) -> str
 def make_main_guard(
     allowed: frozenset[str],
     *,
-    repo: RepoPolicy | None = None,
+    repo: RepoPolicy | RepoPolicyProvider | None = None,
     on_allowed: ToolCallObserver | None = None,
 ) -> CanUseTool:
     """The main agent's guard: exactly the registered CopperChat MCP tools plus ``Skill``.
@@ -122,16 +126,28 @@ def make_main_guard(
     ``on_allowed`` sees every allowed call before it runs; the SDK backend uses it to learn
     the ``tool_use_id`` of a ``research_part`` call (the MCP handler itself does not get it).
     The researcher's own tools are refused here with a hint to delegate. ``repo_*`` calls
-    are additionally checked against ``repo`` (:func:`repo_path_refusal`); without a
-    policy they are refused (fail closed).
+    are additionally checked against ``repo`` (:func:`repo_path_refusal`): a fixed policy,
+    or an async provider asked on every repo_* call (so a transient fallback policy is
+    not kept for a whole burst). Without a policy, or if the provider fails or returns
+    None, they are refused (fail closed).
     """
+
+    async def current_policy() -> RepoPolicy | None:
+        if repo is None or isinstance(repo, RepoPolicy):
+            return repo
+        try:
+            return await repo()
+        except Exception:
+            log.warning("repository policy unavailable", exc_info=True)
+            return None
 
     async def guard(tool: str, inp: dict[str, Any], ctx: ToolPermissionContext) -> PermissionResult:
         if tool in allowed or tool == SKILL_TOOL:
             if tool in _REPO_SDK_TOOLS:
-                if repo is None:
+                policy = await current_policy()
+                if policy is None:
                     return _deny("Repository access is not available in this session.")
-                reason = await asyncio.to_thread(repo_path_refusal, repo, tool, inp)
+                reason = await asyncio.to_thread(repo_path_refusal, policy, tool, inp)
                 if reason is not None:
                     return _deny(f"{_REPO_SDK_TOOLS[tool]} refused: {reason}")
             if on_allowed is not None:

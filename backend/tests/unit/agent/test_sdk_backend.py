@@ -781,3 +781,53 @@ def test_mapper_task_notification_result_is_unsolicited_and_keeps_state():
 def test_mapper_human_origin_result_is_a_normal_turn_end():
     m = SdkEventMapper()
     assert m.map(_result(origin={"kind": "human"}))[-1] == TurnFinished(reason="completed")
+
+
+async def test_streaming_backend_guards_repo_read_through_both_entry_points(settings, project):
+    from copperchat.agent.sdk_tools import sdk_tool_name
+    from copperchat.repo_context.specs import TOOL_SPECS as REPO_SPECS
+
+    (project.dir / "README.md").write_text("# demo\n")
+    (project.dir / ".env").write_text("TOKEN=x\n")
+    clients: list[FakeSdkClient] = []
+
+    def factory(options: Any) -> FakeSdkClient:
+        c = FakeSdkClient(options, [[_result()]])
+        clients.append(c)
+        return c
+
+    backend = SdkStreamingBackend(
+        settings=settings,
+        specs=REPO_SPECS,
+        ctx_factory=lambda: None,  # type: ignore[arg-type,return-value]
+        client_factory=factory,
+    )
+
+    async def items():  # type: ignore[no-untyped-def]
+        yield QueuedItem(
+            message_id=1,
+            client_message_id="c1",
+            conversation_id="c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+            text="x",
+        )
+
+    _ = [ev async for ev in backend.start(project, conversation_row(), items(), None)]
+    options = clients[0].options
+    tool = sdk_tool_name("repo_read")
+    hook = options.hooks["PreToolUse"][0].hooks[0]
+
+    async def via_hook(path: str) -> bool:
+        out = await hook(
+            {"hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": {"path": path}},
+            "t",
+            {},
+        )
+        return out.get("hookSpecificOutput", {}).get("permissionDecision") != "deny"
+
+    async def via_can_use_tool(path: str) -> bool:
+        res = await options.can_use_tool(tool, {"path": path}, ToolPermissionContext())
+        return isinstance(res, PermissionResultAllow)
+
+    for decide in (via_can_use_tool, via_hook):
+        assert await decide("README.md"), decide
+        assert not await decide(".env"), decide

@@ -303,3 +303,43 @@ async def test_transient_git_failure_not_cached(
     second = await repo_policy(project, tmp_path)
     assert second.is_git and second.root == repo.resolve()
     assert await repo_policy(project, tmp_path) is second
+
+
+async def test_other_rev_parse_failure_not_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = init_repo(tmp_path / "repo")
+    project = make_project(repo / "board")
+    real = paths_mod.run_git
+    calls = 0
+
+    async def dubious(*args: object, **kwargs: object) -> tuple[int, bytes, bytes]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return 128, b"", b"fatal: detected dubious ownership in repository at '/x'\n"
+        return await real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(paths_mod, "run_git", dubious)
+    first = await repo_policy(project, tmp_path)
+    assert not first.is_git
+    second = await repo_policy(project, tmp_path)
+    assert second.is_git and second.root == repo.resolve()
+
+
+async def test_not_a_git_repository_is_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = make_project(tmp_path / "plain")
+    calls = 0
+
+    async def no_repo(*_args: object, **_kwargs: object) -> tuple[int, bytes, bytes]:
+        nonlocal calls
+        calls += 1
+        return 128, b"", b"fatal: not a git repository (or any of the parent directories): .git\n"
+
+    monkeypatch.setattr(paths_mod, "run_git", no_repo)
+    first = await repo_policy(project, tmp_path)
+    assert not first.is_git
+    assert await repo_policy(project, tmp_path) is first
+    assert calls == 1

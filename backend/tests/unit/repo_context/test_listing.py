@@ -171,3 +171,34 @@ async def test_listing_is_cached(tmp_path: Path) -> None:
     assert await list_repo(walk_policy(root)) is first
     listing.clear_listing_cache()
     assert paths(await list_repo(walk_policy(root))) == ["a.txt", "b.txt"]
+
+
+def _corrupt_index(root: Path) -> None:
+    (root / ".git" / "index").write_bytes(b"DIRC" + b"\xff" * 64)
+
+
+async def test_failed_ls_files_raises_and_is_not_cached(tmp_path: Path) -> None:
+    root = init_repo(tmp_path / "repo")
+    write(root / ".gitignore", "build/\n")
+    write(root / "build" / "ignored.txt")
+    write(root / "README.md")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "init")
+    _corrupt_index(root)
+    with pytest.raises(listing.ListingError):
+        await list_repo(git_policy(root))
+    assert root.resolve() not in listing._cache
+    (root / ".git" / "index").unlink()
+    git(root, "reset", "-q")
+    assert "build/ignored.txt" not in paths(await list_repo(git_policy(root)))
+
+
+async def test_ls_files_output_is_capped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = init_repo(tmp_path / "repo")
+    for i in range(50):
+        write(root / f"file{i:03}.txt")
+    monkeypatch.setattr(listing, "LS_FILES_MAX_BYTES", 100)
+    result = await list_repo(git_policy(root))
+    assert result.truncated
+    assert 0 < len(result.files) <= 100 // len("file000.txt")
+    assert all(f.rel.name.startswith("file") and f.rel.suffix == ".txt" for f in result.files)

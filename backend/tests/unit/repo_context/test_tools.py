@@ -12,7 +12,7 @@ from copperchat.config import Settings
 from copperchat.kicad_session import KicadSession
 from copperchat.repo_context import specs
 from copperchat.tools import StructuredToolError, ToolContext
-from tests.unit.repo_context.conftest import init_repo, make_project
+from tests.unit.repo_context.conftest import git, init_repo, make_project
 
 TOOLS = {s.name: s for s in specs.TOOL_SPECS}
 
@@ -532,3 +532,74 @@ async def test_read_bounded_when_file_grows(
     monkeypatch.setattr(specs.os, "fstat", lambda fd: _Small(real_fstat(fd)))
     with pytest.raises(StructuredToolError, match="larger than 1 MiB"):
         await call(ctx, "repo_read", path="big.txt")
+
+
+async def test_read_single_huge_last_line_is_truncated(ctx: ToolContext, repo: Path) -> None:
+    write(repo, "one.txt", "z" * (specs.READ_MAX_BYTES + 500))
+    data = await call(ctx, "repo_read", path="one.txt")
+    assert len(data["content"].encode()) == specs.READ_MAX_BYTES
+    assert data["end_line"] == 1 and data["total_lines"] == 1
+    assert data["truncated"] is True and data["line_truncated"] is True
+    assert "next_offset" not in data
+
+
+async def test_read_cut_line_flagged_with_next_offset(ctx: ToolContext, repo: Path) -> None:
+    write(repo, "one.txt", "z" * (specs.READ_MAX_BYTES + 500) + "\nnext\n")
+    data = await call(ctx, "repo_read", path="one.txt")
+    assert data["line_truncated"] is True and data["next_offset"] == 2
+
+
+async def test_read_uncut_has_no_line_truncated(ctx: ToolContext, repo: Path) -> None:
+    write(repo, "doc.txt", "a\nb\n")
+    data = await call(ctx, "repo_read", path="doc.txt")
+    assert data["truncated"] is False and "line_truncated" not in data
+
+
+def _corrupt_git(repo: Path) -> None:
+    write(repo, "a.txt", "x\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "init")
+    (repo / ".git" / "index").write_bytes(b"DIRC" + b"\xff" * 64)
+
+
+@pytest.mark.parametrize(("tool", "args"), [("repo_list", {}), ("repo_grep", {"query": "x"})])
+async def test_git_listing_failure_is_structured(
+    ctx: ToolContext, repo: Path, tool: str, args: dict[str, Any]
+) -> None:
+    _corrupt_git(repo)
+    with pytest.raises(StructuredToolError, match="git listing failed") as info:
+        await call(ctx, tool, **args)
+    assert info.value.suggestion
+
+
+def test_glob_collapses_consecutive_doublestars() -> None:
+    assert specs.Glob("**/**/x")._segments == specs.Glob("**/x")._segments
+    assert specs.Glob("a/**/**/**")._segments == specs.Glob("a/**")._segments
+    for path in ("x", "a/x", "a/b/x", "a/b"):
+        assert specs.glob_match("**/**/x", path) is specs.glob_match("**/x", path)
+    for path in ("a", "a/b", "a/b/c"):
+        assert specs.glob_match("a/**/**", path) is specs.glob_match("a/**", path)
+
+
+async def test_grep_worker_gets_minimal_env(
+    ctx: ToolContext, repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write(repo, "a.txt", "needle\n")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-secret")
+    monkeypatch.setenv("COPPERCHAT_ADMIN_PASSWORD", "hunter2")
+    envs: list[dict[str, str] | None] = []
+    real_exec = asyncio.create_subprocess_exec
+
+    async def spy(*args: Any, **kwargs: Any) -> asyncio.subprocess.Process:
+        if specs._WORKER_MODULE in args:
+            envs.append(kwargs.get("env"))
+        return await real_exec(*args, **kwargs)
+
+    monkeypatch.setattr(specs.asyncio, "create_subprocess_exec", spy)
+    data = await call(ctx, "repo_grep", query="needle")
+    assert [m["path"] for m in data["matches"]] == ["a.txt"]
+    assert len(envs) == 1
+    env = envs[0]
+    assert env is not None
+    assert "ANTHROPIC_API_KEY" not in env and "COPPERCHAT_ADMIN_PASSWORD" not in env
+    assert "sk-secret" not in env.values()

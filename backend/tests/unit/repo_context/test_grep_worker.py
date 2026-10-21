@@ -119,3 +119,28 @@ def test_worker_bad_regex_reports_error(root: Path) -> None:
     assert matches(lines) == []
     final = done(lines)
     assert final["files_scanned"] == 0 and "error" in final
+
+
+def test_open_scan_refuses_fifo_symlink_and_oversize(tmp_path: Path) -> None:
+    import os
+
+    from copperchat.repo_context import grep_worker
+
+    fifo = tmp_path / "pipe"
+    os.mkfifo(fifo)
+    assert grep_worker._open_scan(fifo) is None  # does not block on a FIFO
+    target = tmp_path / "t.txt"
+    target.write_text("hello\n")
+    link = tmp_path / "link.txt"
+    link.symlink_to(target)
+    assert grep_worker._open_scan(link) is None
+    big = tmp_path / "big.txt"
+    big.write_bytes(b"a" * (grep_worker.FILE_MAX_BYTES + 1))
+    assert grep_worker._open_scan(big) is None
+    binary = tmp_path / "bin.dat"
+    binary.write_bytes(b"\x00\x01")
+    assert grep_worker._open_scan(binary) is None
+    fh = grep_worker._open_scan(target)
+    assert fh is not None
+    with fh:
+        assert fh.read() == b"hello\n"

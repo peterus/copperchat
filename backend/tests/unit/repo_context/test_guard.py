@@ -237,3 +237,31 @@ async def test_researcher_still_reads_datasheets(tmp_path: Path, via_hook: bool)
         guard, via_hook, {"file_path": "docs/parts/ABC123/datasheet.pdf"}
     )
     assert await _researcher_allows(guard, via_hook, {"file_path": str(sheet)})
+
+
+async def test_guard_resolves_policy_lazily_per_call(policy: RepoPolicy, repo: Path) -> None:
+    fallback = RepoPolicy(policy.project_dir, policy.project_dir, False, policy.projects_root)
+    answers: list[RepoPolicy] = [fallback, policy]
+
+    async def provider() -> RepoPolicy:
+        return answers.pop(0)
+
+    guard = make_main_guard(frozenset({sdk_tool_name("repo_read")}), repo=provider)
+    inp = {"path": "README.md"}  # in the root, not in the project dir
+    first = await guard(sdk_tool_name("repo_read"), inp, ToolPermissionContext())
+    assert not isinstance(first, PermissionResultAllow)
+    second = await guard(sdk_tool_name("repo_read"), inp, ToolPermissionContext())
+    assert isinstance(second, PermissionResultAllow)
+
+
+async def test_guard_provider_failure_fails_closed() -> None:
+    async def broken() -> RepoPolicy:
+        raise OSError("gone")
+
+    async def missing() -> RepoPolicy | None:
+        return None
+
+    for provider in (broken, missing):
+        guard = make_main_guard(frozenset({sdk_tool_name("repo_read")}), repo=provider)
+        res = await guard(sdk_tool_name("repo_read"), {"path": "x"}, ToolPermissionContext())
+        assert not isinstance(res, PermissionResultAllow)
