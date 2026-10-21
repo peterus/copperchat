@@ -70,6 +70,7 @@ from copperchat.db import Database
 from copperchat.db.repos.conversations import ConversationRow
 from copperchat.kicad_session import KicadSession
 from copperchat.projects import Project
+from copperchat.repo_context.paths import RepoPolicy, repo_policy
 from copperchat.research.runner import QueryFn, ResearchRunner
 from copperchat.skills.assembly import SkillBundle, apply_skills, assemble_skills
 from copperchat.tools import ToolContext, ToolSpec
@@ -161,10 +162,13 @@ def build_options(
     skills: SkillBundle | None = None,
     on_tool_allowed: ToolCallObserver | None = None,
     conversation_type: str = "free",
+    repo: RepoPolicy | None = None,
 ) -> ClaudeAgentOptions:
     """Main-agent options. Built-in tools: none, or exactly ``["Skill"]`` with enabled
     skills (Phase 8); the part-researcher is our ``research_part`` MCP tool, never a
-    built-in. ``on_tool_allowed`` observes every call the guard allows."""
+    built-in. ``on_tool_allowed`` observes every call the guard allows. ``repo`` is the
+    project's repository policy both guard instances check ``repo_*`` paths against
+    (without it those calls are refused)."""
     guarded = frozenset(sdk_tool_name(n) for n in tool_names)
     env = {
         "CLAUDE_CONFIG_DIR": str(settings.data_dir / "claude"),
@@ -181,14 +185,15 @@ def build_options(
         mcp_servers={SERVER_NAME: mcp_server},
         system_prompt=system_prompt(project.name, conversation_type),
         permission_mode="default",
-        can_use_tool=make_main_guard(guarded, on_allowed=on_tool_allowed),
+        can_use_tool=make_main_guard(guarded, repo=repo, on_allowed=on_tool_allowed),
         # Defence in depth (spec §7.5): the same guard as a PreToolUse hook, so a built-in
         # or CLI auto-approval cannot bypass the tool list. A second guard instance WITHOUT
         # on_allowed: firing the observer from both would record research calls twice.
         hooks={
             "PreToolUse": [
                 HookMatcher(
-                    matcher=None, hooks=[guard_as_pre_tool_use_hook(make_main_guard(guarded))]
+                    matcher=None,
+                    hooks=[guard_as_pre_tool_use_hook(make_main_guard(guarded, repo=repo))],
                 )
             ]
         },
@@ -548,6 +553,16 @@ class SdkStreamingBackend:
                 )
             return replace(bind_conversation(base, conversation), research=research)
 
+        # The repository boundary both guard instances check repo_* paths against (cached
+        # per project; the tool handlers resolve it again themselves). Without one the
+        # repo_* calls are refused (fail closed).
+        repo: RepoPolicy | None
+        try:
+            repo = await repo_policy(project, self._settings.projects_root)
+        except OSError:
+            log.warning("repository policy unavailable for %s", project.dir, exc_info=True)
+            repo = None
+
         # What this burst's MCP tool handlers use.
         self.tool_ctx_factory = ctx_factory
         self.kicadless_ctx_factory = kicadless_ctx_factory
@@ -563,6 +578,7 @@ class SdkStreamingBackend:
             skills=skills,
             on_tool_allowed=on_allowed,
             conversation_type=kind,
+            repo=repo,
         )
         client = self._client_factory(options)
         mapper = SdkEventMapper()

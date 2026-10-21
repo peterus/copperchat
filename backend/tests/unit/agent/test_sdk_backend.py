@@ -641,10 +641,11 @@ async def test_streaming_backend_interrupt_delegates_to_client(settings, project
 
     gen = backend.start(project, conversation_row(), items(), None)
     first = asyncio.ensure_future(gen.__anext__())
-    for _ in range(50):
+    # The burst resolves the repository policy (a git subprocess) before it connects.
+    for _ in range(500):
         if client_box:
             break
-        await asyncio.sleep(0)
+        await asyncio.sleep(0.01)
     await backend.interrupt()
     assert client_box[0].interrupts == 1
     gate.set()
@@ -685,10 +686,11 @@ async def test_streaming_backend_failed_interrupt_does_not_mislabel_next_error(s
 
     gen = backend.start(project, conversation_row(), items(), None)
     first = asyncio.ensure_future(gen.__anext__())
-    for _ in range(50):
+    # The burst resolves the repository policy (a git subprocess) before it connects.
+    for _ in range(500):
         if client_box:
             break
-        await asyncio.sleep(0)
+        await asyncio.sleep(0.01)
     with pytest.raises(RuntimeError):
         await backend.interrupt()
     gate.set()
