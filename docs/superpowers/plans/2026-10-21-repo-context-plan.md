@@ -17,6 +17,33 @@ Two PRs, in order (each its own child session, worktree, CI green, review-loop t
 - **PR 1 — tools + guard (Tasks 1–5).** After it, every session can use `repo_*`.
 - **PR 2 — brief + docs (Tasks 6–8).** Depends on PR 1 merged.
 
+## As built (PR 1 #49, PR 2)
+
+Deviations from the tasks below; the code and `docs/user/repo-context.md` are authoritative.
+
+- **Block list** (`paths.BLOCK_RULES`) is wider than spec §4.3: also `*.env`, `id_dsa*`,
+  `*credentials*` (not only `credentials*`), `.ssh`, `.gnupg`, `.aws`, `.pgpass`,
+  `.htpasswd`, `*.tfstate`, `*.tfstate.*`, `*.tfvars`; git dirs under other names
+  (`RepoPolicy.git_dirs`, gitfile `gitdir:`) and git-shaped dirs count as VCS internals.
+- **Root lookup:** only "not a git repository" is cached as no-git; a transient git failure
+  falls back to the project dir without caching. `git ls-files` failing in a git repo
+  refuses the listing (`ListingError`) instead of walking.
+- **`.gitignore`d files** are not readable even by exact path (`git check-ignore` in the
+  `repo_read` handler, fail closed); submodule contents are refused.
+- **Guard:** `make_main_guard(allowed, repo=...)` takes a `RepoPolicy` or an async provider
+  asked on every `repo_*` call (fail closed); it also refuses files over 1 MiB.
+- **Brief (PR 2):** `inject(docs, project, conv, repo)` takes a `RepoPolicy` or an async
+  provider (the session hook passes `repo_policy(...)` lazily, so the lookup only runs when
+  the brief is due). The `#repo-brief` marker is carried over by every later turn;
+  `later_turn` ignores all `#`-keys. The tree is depth 2 only if it fits in 40 lines,
+  otherwise depth 1 (then "+N more folders"); the folder header names the depth used.
+  The nonce fence moved to `design_docs.sanitize.fence(label, name, clean)`;
+  `context_injection._fence(name, body, label="doc")` wraps it. A README that is binary,
+  a symlink out of the root or blocked is skipped (next candidate, else "README: none
+  readable at the repository root").
+- **Live eval (Task 8):** `tests/live/test_repo_context_live.py`; not run in PR 2 (no model
+  credentials in the implementing session).
+
 ## Global Constraints
 
 - Read-only. No new write path; the part-researcher (`make_researcher_guard`, `RESEARCHER_TOOLS`) is not modified.
