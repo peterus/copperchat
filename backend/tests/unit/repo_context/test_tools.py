@@ -134,6 +134,8 @@ async def test_list_max_entries_truncated(ctx: ToolContext, repo: Path) -> None:
         {"path": "../"},
         {"path": ".git"},
         {"path": "missing"},
+        {"pattern": "*a" * 9},
+        {"pattern": "[z-a].txt"},
     ],
 )
 async def test_list_bad_input(ctx: ToolContext, args: dict[str, Any]) -> None:
@@ -439,3 +441,8 @@ async def test_grep_worker_crash_structured_error(
 )
 def test_glob_to_regex(pattern: str, path: str, expected: bool) -> None:
     assert (specs.glob_to_regex(pattern).fullmatch(path) is not None) is expected
+
+
+def test_glob_collapses_repeated_stars() -> None:
+    assert specs.glob_to_regex("a***b").pattern == specs.glob_to_regex("a*b").pattern
+    assert specs.glob_to_regex("x/a**b").pattern == specs.glob_to_regex("x/a*b").pattern

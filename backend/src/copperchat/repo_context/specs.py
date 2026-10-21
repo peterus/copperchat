@@ -104,6 +104,9 @@ async def _dir(policy: RepoPolicy, raw: str) -> PurePosixPath:
 # --- glob matching ---------------------------------------------------------------------------
 
 
+GLOB_MAX_STARS = 8
+
+
 def glob_to_regex(pattern: str) -> re.Pattern[str]:
     """Compile a POSIX glob: ``*``/``?``/``[...]`` stay within one segment, ``**/`` spans
     zero or more directories and a trailing or lone ``**`` matches everything below.
@@ -124,11 +127,13 @@ def glob_to_regex(pattern: str) -> re.Pattern[str]:
                 out.append(".*")
                 i += 2
                 continue
-            out.append("[^/]*")  # "**" inside a segment behaves like "*"
+            if not out or out[-1] != "[^/]*":  # "**" inside a segment behaves like "*"
+                out.append("[^/]*")
             i += 2
             continue
         if c == "*":
-            out.append("[^/]*")
+            if not out or out[-1] != "[^/]*":  # "a**b"/"***": one star, no extra backtracking
+                out.append("[^/]*")
         elif c == "?":
             out.append("[^/]")
         elif c == "[":
@@ -145,7 +150,10 @@ def glob_to_regex(pattern: str) -> re.Pattern[str]:
         else:
             out.append(re.escape(c))
         i += 1
-    return re.compile("".join(out), re.IGNORECASE | re.DOTALL)
+    try:
+        return re.compile("".join(out), re.IGNORECASE | re.DOTALL)
+    except re.error as exc:
+        raise ValueError(f"invalid glob: {exc}") from exc
 
 
 def _check_glob(raw: str, key: str) -> re.Pattern[str]:
@@ -155,7 +163,16 @@ def _check_glob(raw: str, key: str) -> re.Pattern[str]:
         raise _path_error(exc) from exc
     if rel == PurePosixPath("."):
         raise _invalid(f"{key} is empty", "Pass a glob such as **/*.scad.")
-    return glob_to_regex(rel.as_posix())
+    # Globs are matched in-process against every listed path: bound the backtracking a
+    # many-star pattern could cause (each star is a nested [^/]* loop).
+    if rel.as_posix().count("*") > GLOB_MAX_STARS:
+        raise _invalid(
+            f"{key} has too many wildcards", f"Use at most {GLOB_MAX_STARS} '*' characters."
+        )
+    try:
+        return glob_to_regex(rel.as_posix())
+    except ValueError as exc:
+        raise _invalid(f"{key} is not a valid glob", "Check the [...] character classes.") from exc
 
 
 def _under(files: Iterable[RepoFile], base: PurePosixPath) -> list[tuple[RepoFile, str]]:
