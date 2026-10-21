@@ -379,7 +379,10 @@ async def brief_notice(repo: RepoSource) -> tuple[str, bool]:
         return await asyncio.wait_for(build(), BRIEF_TIMEOUT_S), True
     except Exception as exc:
         log.warning("project repository brief failed", exc_info=True)
-        return f"Project repository brief unavailable: {_failure_reason(exc)}; use repo_list", False
+        reason = _failure_reason(exc)
+        if isinstance(exc, BriefUnavailable):  # git is the cause: the repo tools refuse too
+            return f"Project repository brief unavailable: {reason}", False
+        return f"Project repository brief unavailable: {reason}; use repo_list", False
 
 
 async def inject(

@@ -58,8 +58,9 @@ The whole brief is at most 6 KiB; if needed the tree drops to one level, then th
 README excerpt gets shorter or is left out (the agent can still `repo_read` it), and
 with very long folder names the tree gets fewer lines. The README must pass the same
 checks as `repo_read` (no KiCad, binary, blocked, ignored, outside or over-1-MiB file);
-otherwise the next candidate is used, at most three README files per folder. The README text is passed as quoted project data, like the
-design docs: it never counts as an instruction. A README that says "commit" does not let
+otherwise the next candidate is used, at most three README files per folder. Building
+the brief may take at most 15 seconds. The README text is passed as quoted project data,
+like the design docs: it never counts as an instruction. A README that says "commit" does not let
 the agent commit; only your own message can.
 
 - A session created before this feature gets the brief once, at its next turn.

@@ -629,7 +629,7 @@ async def test_tools_refuse_while_git_cannot_be_run(
     ("message", "hint"),
     [
         ("fatal: detected dubious ownership in repository", "uid 1000"),
-        ("fatal: something else", "Try again in a moment"),
+        ("fatal: something else", "see the server log"),
     ],
 )
 async def test_tools_refusal_names_the_git_cause(

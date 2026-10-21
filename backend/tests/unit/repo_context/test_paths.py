@@ -3,7 +3,7 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-from copperchat.gitproc import GitTimeoutError
+from copperchat.gitproc import GitError, GitNotFoundError, GitTimeoutError
 from copperchat.repo_context import paths as paths_mod
 from copperchat.repo_context.paths import (
     RepoPathError,
@@ -343,3 +343,24 @@ async def test_not_a_git_repository_is_cached(
     assert not first.is_git
     assert await repo_policy(project, tmp_path) is first
     assert calls == 1
+
+
+@pytest.mark.parametrize(
+    ("exc", "reason"),
+    [
+        (GitNotFoundError("no git"), paths_mod.GIT_MISSING),
+        (GitTimeoutError("slow"), paths_mod.GIT_TIMEOUT),
+        (GitError("other"), paths_mod.GIT_FAILED),
+    ],
+)
+async def test_transient_reason_names_the_git_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exc: Exception, reason: str
+) -> None:
+    project = make_project(init_repo(tmp_path / "repo") / "board")
+
+    async def failing(*_: object, **__: object) -> tuple[int, bytes, bytes]:
+        raise exc
+
+    monkeypatch.setattr(paths_mod, "run_git", failing)
+    policy = await repo_policy(project, tmp_path)
+    assert policy.transient == reason and not policy.is_git

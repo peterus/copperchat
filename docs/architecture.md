@@ -89,7 +89,7 @@ Design: `docs/superpowers/specs/2026-10-21-repo-context-design.md`; user view:
   through `repo_read`'s acceptance checks (`specs.resolve_readable`). Like the doc index it
   never reaches the turn text, so it authorises nothing. A failure becomes a one-line
   "brief unavailable" notice with a fixed reason (marker `failed:<n>`, retried for up to
-  three turns); the full error goes to the log.
+  three turns, 15 s budget per attempt); the full error goes to the log.
 
 ## Schematic editing
 

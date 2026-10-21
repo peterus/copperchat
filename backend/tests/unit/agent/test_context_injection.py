@@ -549,7 +549,7 @@ async def test_brief_transient_git_failure_is_retried(
     env.script = lambda item: []
     await env.send(cid, "hi")
     assert _prompt(env).startswith(
-        f"{NOTICE} Project repository brief unavailable: {paths.GIT_DUBIOUS}; use repo_list"
+        f"{NOTICE} Project repository brief unavailable: {paths.GIT_DUBIOUS}\n"
     )
     assert (await env.conv(cid)).docs_seen[REPO_BRIEF] == "failed:1"
 

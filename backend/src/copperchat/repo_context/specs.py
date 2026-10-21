@@ -22,6 +22,7 @@ from copperchat.gitproc import GitError, run_git
 from copperchat.repo_context.listing import Listing, ListingError, RepoFile, list_repo
 from copperchat.repo_context.paths import (
     GIT_DUBIOUS,
+    GIT_FAILED,
     GIT_MISSING,
     RepoPathError,
     RepoPolicy,
@@ -96,6 +97,7 @@ _GIT_HINTS = {
     GIT_DUBIOUS: "Tell the user to make the projects mount owned by the CopperChat user "
     "(uid 1000).",
     GIT_MISSING: "Tell the user that git is missing on the CopperChat server.",
+    GIT_FAILED: "Tell the user that git failed on this repository (see the server log).",
 }
 
 
