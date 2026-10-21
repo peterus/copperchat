@@ -201,6 +201,82 @@ async def _git_dirs_inside(project_dir: Path, root: Path) -> tuple[PurePosixPath
     return tuple(found)
 
 
+GITFILE_MAX_BYTES = 4096
+
+
+def _read_small(path: Path) -> str | None:
+    """The text of the small regular file `path` (no symlink followed), or None."""
+    try:
+        with os.fdopen(open_regular(path), "rb") as fh:
+            data = fh.read(GITFILE_MAX_BYTES)
+    except (OSError, RuntimeError):
+        return None
+    return data.decode("utf-8", errors="replace")
+
+
+def _inside(root: Path, base: Path, raw: str) -> PurePosixPath | None:
+    """`raw` (absolute, or relative to `base`) resolved, relative to `root` if strictly inside."""
+    raw = raw.strip()
+    if not raw or "\x00" in raw:
+        return None
+    try:
+        resolved = (base / raw).resolve(strict=True)
+        rel = PurePosixPath(resolved.relative_to(root).as_posix())
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return rel if rel.parts else None
+
+
+def gitfile_dirs(root: Path) -> tuple[PurePosixPath, ...]:
+    """Git dirs named by a ``<root>/.git`` *file* (``gitdir: <path>``, e.g. after
+    ``--separate-git-dir``) and its ``commondir``, if they lie inside `root`.
+
+    Read without git, so they are blocked even when git cannot be run. Unreadable or
+    malformed content yields nothing.
+    """
+    text = _read_small(root / ".git")
+    if text is None:
+        return ()
+    first = text.splitlines()[0] if text else ""
+    if not first.startswith("gitdir:"):
+        return ()
+    rel = _inside(root, root, first[len("gitdir:") :])
+    if rel is None:
+        return ()
+    found = [rel]
+    common = _read_small(root / rel / "commondir")
+    if common:
+        common_rel = _inside(root, root / rel, common.splitlines()[0])
+        if common_rel is not None and common_rel != rel:
+            found.append(common_rel)
+    return tuple(found)
+
+
+def looks_like_git_dir(path: Path) -> bool:
+    """True if `path` is a real directory (not a symlink) shaped like a git dir: a regular
+    file ``HEAD`` and directories ``objects`` and ``refs``."""
+    try:
+        if not stat.S_ISDIR(os.lstat(path).st_mode):
+            return False
+        return (
+            stat.S_ISREG(os.lstat(path / "HEAD").st_mode)
+            and stat.S_ISDIR(os.lstat(path / "objects").st_mode)
+            and stat.S_ISDIR(os.lstat(path / "refs").st_mode)
+        )
+    except (OSError, ValueError):
+        return False
+
+
+def in_git_shaped_dir(root: Path, rel: PurePosixPath) -> bool:
+    """True if `rel` or one of its ancestors below `root` looks like a git dir."""
+    parts = rel.parts
+    return any(looks_like_git_dir(root.joinpath(*parts[:n])) for n in range(1, len(parts) + 1))
+
+
+def _merge(*groups: tuple[PurePosixPath, ...]) -> tuple[PurePosixPath, ...]:
+    return tuple(dict.fromkeys(d for group in groups for d in group))
+
+
 async def repo_policy(project: Project, projects_root: Path) -> RepoPolicy:
     """The repository boundary for `project` (spec §4.1), cached per project directory.
 
@@ -222,7 +298,7 @@ async def repo_policy(project: Project, projects_root: Path) -> RepoPolicy:
         log.warning(
             "git top-level lookup failed for %s, using the project dir: %s", project_dir, exc
         )
-        return RepoPolicy(project_dir, project_dir, False, root_dir)
+        return RepoPolicy(project_dir, project_dir, False, root_dir, gitfile_dirs(project_dir))
     usable = (
         top is not None
         and (top == project_dir or top in project_dir.parents)
@@ -233,10 +309,10 @@ async def repo_policy(project: Project, projects_root: Path) -> RepoPolicy:
             git_dirs = await _git_dirs_inside(project_dir, top)
         except _GitUnavailable as exc:
             log.warning("git dir lookup failed for %s, using the project dir: %s", project_dir, exc)
-            return RepoPolicy(project_dir, project_dir, False, root_dir)
-        policy = RepoPolicy(top, project_dir, True, root_dir, git_dirs)
+            return RepoPolicy(project_dir, project_dir, False, root_dir, gitfile_dirs(project_dir))
+        policy = RepoPolicy(top, project_dir, True, root_dir, _merge(git_dirs, gitfile_dirs(top)))
     else:
-        policy = RepoPolicy(project_dir, project_dir, False, root_dir)
+        policy = RepoPolicy(project_dir, project_dir, False, root_dir, gitfile_dirs(project_dir))
     _policy_cache[key] = policy
     return policy
 
@@ -304,6 +380,10 @@ def _resolve(policy: RepoPolicy, raw: str) -> tuple[Path, PurePosixPath]:
             "Only files inside the repository can be accessed.",
         ) from exc
     reason = policy.blocked(resolved_rel)
+    if reason is None and (
+        in_git_shaped_dir(policy.root, rel) or in_git_shaped_dir(policy.root, resolved_rel)
+    ):
+        reason = "VCS internals"
     if reason is not None:
         raise _blocked_error(reason)
     return resolved, rel

@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from copperchat.gitproc import GitError, run_git_capped
-from copperchat.repo_context.paths import RepoPolicy
+from copperchat.repo_context.paths import RepoPolicy, in_git_shaped_dir, looks_like_git_dir
 
 WALK_CAP = 20_000
 CACHE_TTL_S = 10.0
@@ -44,7 +44,8 @@ class Listing:
     truncated: bool
 
 
-_cache: dict[Path, tuple[float, Listing]] = {}
+_CacheKey = tuple[Path, bool, tuple[PurePosixPath, ...]]
+_cache: dict[_CacheKey, tuple[float, Listing]] = {}
 
 
 def clear_listing_cache() -> None:
@@ -86,7 +87,11 @@ def _file_size(
         st = target.stat()
     except (OSError, RuntimeError, ValueError):
         return None
-    if policy.blocked(target_rel) is not None or not stat.S_ISREG(st.st_mode):
+    if (
+        policy.blocked(target_rel) is not None
+        or not stat.S_ISREG(st.st_mode)
+        or in_git_shaped_dir(root, target_rel)
+    ):
         return None
     if listed is not None and target_rel not in listed:
         return None
@@ -110,6 +115,17 @@ def _real_parent(root: Path, parent: PurePosixPath, memo: dict[PurePosixPath, bo
     return known
 
 
+def _git_shaped(root: Path, parent: PurePosixPath, memo: dict[PurePosixPath, bool]) -> bool:
+    """True if `parent` or one of its ancestors below `root` looks like a git dir."""
+    if not parent.parts:
+        return False
+    known = memo.get(parent)
+    if known is None:
+        known = _git_shaped(root, parent.parent, memo) or looks_like_git_dir(root / parent)
+        memo[parent] = known
+    return known
+
+
 def _collect(
     policy: RepoPolicy,
     candidates: Iterable[PurePosixPath],
@@ -119,11 +135,13 @@ def _collect(
     files: list[RepoFile] = []
     truncated = False
     parents: dict[PurePosixPath, bool] = {}
+    shaped: dict[PurePosixPath, bool] = {}
     for rel in candidates:
         if (
             not _utf8_name(rel)
             or policy.blocked(rel) is not None
             or not _real_parent(root, rel.parent, parents)
+            or _git_shaped(root, rel.parent, shaped)
         ):
             continue
         size = _file_size(policy, rel, listed)
@@ -141,13 +159,14 @@ def _walk_candidates(policy: RepoPolicy) -> Iterable[PurePosixPath]:
     root = policy.root
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         base = PurePosixPath(Path(dirpath).relative_to(root).as_posix())
-        # Prune blocked, non-UTF-8 and symlinked directories in place, before descending.
+        # Prune blocked, non-UTF-8, symlinked and git-dir-shaped directories in place.
         dirnames[:] = sorted(
             d
             for d in dirnames
             if _utf8_name(base / d)
             and policy.blocked(base / d) is None
             and not os.path.islink(os.path.join(dirpath, d))
+            and not looks_like_git_dir(Path(dirpath, d))
         )
         for name in sorted(filenames):
             yield base / name
@@ -208,13 +227,15 @@ async def _git_ls_files(root: Path) -> tuple[bytes, bool]:
 
 
 async def list_repo(policy: RepoPolicy) -> Listing:
-    """All listable files under the repository root, sorted by path (cached 10 s per root).
+    """All listable files under the repository root, sorted by path (cached 10 s per root,
+    listing mode and git dirs, so a fallback walk is never served to a git-mode policy).
 
     Raises `ListingError` (not cached) if ``git ls-files`` fails in a git repo.
     """
     root = policy.root
     now = time.monotonic()
-    cached = _cache.get(root)
+    key: _CacheKey = (root, policy.is_git, policy.git_dirs)
+    cached = _cache.get(key)
     if cached is not None and now - cached[0] < CACHE_TTL_S:
         return cached[1]
     if policy.is_git:
@@ -224,5 +245,5 @@ async def list_repo(policy: RepoPolicy) -> Listing:
             result = Listing(result.files, True)
     else:
         result = await asyncio.to_thread(lambda: _collect(policy, _walk_candidates(policy)))
-    _cache[root] = (time.monotonic(), result)
+    _cache[key] = (time.monotonic(), result)
     return result

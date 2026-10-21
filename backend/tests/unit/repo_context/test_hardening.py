@@ -13,7 +13,9 @@ import pytest
 
 from copperchat.agent.guards import repo_path_refusal
 from copperchat.config import Settings
+from copperchat.gitproc import GitTimeoutError
 from copperchat.kicad_session import KicadSession
+from copperchat.repo_context import paths as paths_mod
 from copperchat.repo_context import specs
 from copperchat.repo_context.listing import list_repo
 from copperchat.repo_context.paths import (
@@ -341,3 +343,96 @@ async def test_check_ignore_failure_mentioning_submodule_is_generic(
         await specs._check_not_ignored(policy, [PurePosixPath("submodule-notes/a.txt")])
     assert "could not be checked" in str(err.value)
     assert "inside git submodule" not in str(err.value)
+
+
+# --- git fallback (git unusable) must still hide in-root git dirs -------------------------
+
+SECRET_URL = "https://user:hunter2token@example.com/repo.git"
+
+
+async def _git_times_out(*_args: Any, **_kwargs: Any) -> tuple[int, bytes, bytes]:
+    raise GitTimeoutError("slow")
+
+
+async def test_fallback_hides_separate_git_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_settings: Callable[..., Settings]
+) -> None:
+    root = tmp_path / "projects" / "repo"
+    root.mkdir(parents=True)
+    git(root, "init", "-q", "-b", "main", f"--separate-git-dir={root / '.bare'}", str(root))
+    git(root, "remote", "add", "origin", SECRET_URL)
+    (root / "README.md").write_text("# hi needle\n")
+    monkeypatch.setattr(paths_mod, "run_git", _git_times_out)
+
+    policy = await repo_policy(make_project(root), root.parent)
+    assert not policy.is_git
+    assert PurePosixPath(".bare") in policy.git_dirs
+
+    listed = [f.rel.as_posix() for f in (await list_repo(policy)).files]
+    assert "README.md" in listed
+    assert not [p for p in listed if p.startswith(".bare")]
+    with pytest.raises(RepoPathError):
+        resolve_file(policy, ".bare/config")
+
+    ctx = _ctx(root, make_settings)
+    with pytest.raises(StructuredToolError):
+        await call(ctx, "repo_read", path=".bare/config")
+    data = await call(ctx, "repo_grep", query="hunter2token")
+    assert data["matches"] == []
+
+
+@pytest.mark.parametrize("content", ["garbage\n", "gitdir: \n", "gitdir: ../outside\n", ""])
+async def test_fallback_tolerates_odd_dot_git_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str
+) -> None:
+    root = tmp_path / "projects" / "repo"
+    root.mkdir(parents=True)
+    (root / ".git").write_text(content)
+    monkeypatch.setattr(paths_mod, "run_git", _git_times_out)
+    policy = await repo_policy(make_project(root), root.parent)
+    assert policy.git_dirs == ()
+
+
+def _git_dir_shape(path: Path) -> None:
+    (path / "objects").mkdir(parents=True)
+    (path / "refs" / "heads").mkdir(parents=True)
+    (path / "HEAD").write_text("ref: refs/heads/main\n")
+    (path / "config").write_text(f"[remote]\n\turl = {SECRET_URL}\n")
+
+
+async def test_git_dir_shaped_dir_pruned_without_git(
+    tmp_path: Path, make_settings: Callable[..., Settings]
+) -> None:
+    root = tmp_path / "projects" / "plain"
+    root.mkdir(parents=True)
+    _git_dir_shape(root / "stash")
+    (root / "stash" / "refs" / "heads" / "main").write_text("0" * 40 + "\n")
+    (root / "notes.txt").write_text("hello\n")
+    (root / "cfg-link").symlink_to(root / "stash" / "config")
+    policy = RepoPolicy(root, root, False, root.parent)
+
+    listed = [f.rel.as_posix() for f in (await list_repo(policy)).files]
+    assert listed == ["notes.txt"]
+    for raw in ("stash/config", "stash/HEAD", "stash/refs/heads/main", "cfg-link"):
+        with pytest.raises(RepoPathError):
+            resolve_file(policy, raw)
+    # Not shaped like a git dir (no objects/): stays readable.
+    (root / "other").mkdir()
+    (root / "other" / "HEAD").write_text("x\n")
+    (root / "other" / "refs").mkdir()
+    resolve_file(policy, "other/HEAD")
+
+
+async def test_listing_cache_keyed_by_policy(tmp_path: Path) -> None:
+    root = init_repo(tmp_path / "projects" / "repo")
+    (root / ".gitignore").write_text("ignored.txt\n")
+    (root / "ignored.txt").write_text("x\n")
+    (root / "kept.txt").write_text("y\n")
+    walk = RepoPolicy(root, root, False, root.parent)
+    gitp = RepoPolicy(root, root, True, root.parent)
+    walk_listed = [f.rel.as_posix() for f in (await list_repo(walk)).files]
+    git_listed = [f.rel.as_posix() for f in (await list_repo(gitp)).files]
+    assert "ignored.txt" in walk_listed
+    assert "ignored.txt" not in git_listed
+    walk_listed = [f.rel.as_posix() for f in (await list_repo(walk)).files]
+    assert "ignored.txt" in walk_listed
