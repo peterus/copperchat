@@ -6,7 +6,10 @@ and writes JSON lines to stdout (flushed one by one):
 
 - ``{"path", "line", "text"}`` per match,
 - ``{"scanned": n}`` after each scanned file (progress for a killed run),
-- a final ``{"done": true, "files_scanned": n, "stopped_by": null|"max_results"|"bytes"}``.
+- a final ``{"done": true, "files_scanned": n, "stopped_by": null|"max_results"|"bytes"}``
+  (with an ``"error"`` and no scan if the query does not compile).
+
+Lines are split on ``\\n`` only (as ``repo_read`` does), so line numbers agree.
 
 Python's ``re`` cannot be interrupted, so the parent enforces the wall-clock budget by
 killing this process. The parent has already filtered the file list; the worker still
@@ -56,7 +59,11 @@ def run(request: dict[str, Any]) -> None:
     query: str = request["query"]
     pattern = query if request.get("regex") else re.escape(query)
     flags = 0 if request.get("case_sensitive") else re.IGNORECASE
-    compiled = re.compile(pattern, flags)
+    try:
+        compiled = re.compile(pattern, flags)
+    except (re.error, OverflowError) as exc:
+        _emit({"done": True, "files_scanned": 0, "stopped_by": None, "error": str(exc)})
+        return
     max_results = int(request["max_results"])
     max_bytes = int(request["max_bytes"])
 

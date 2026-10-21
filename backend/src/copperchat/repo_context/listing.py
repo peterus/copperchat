@@ -3,7 +3,8 @@
 Git repos are listed with ``git ls-files`` (respecting ``.gitignore``); other
 roots are walked without following directory symlinks. Every path is checked
 against the block list, symlinks are kept only if they point at a regular file
-inside the root that is not blocked, and the result is capped and cached.
+inside the root that is not blocked, files below a symlinked directory are dropped, and
+the result is capped and cached.
 """
 
 from __future__ import annotations
@@ -65,11 +66,29 @@ def _file_size(root: Path, rel: PurePosixPath) -> int | None:
     return st.st_size
 
 
+def _real_parent(root: Path, parent: PurePosixPath, memo: dict[PurePosixPath, bool]) -> bool:
+    """True if `parent` resolves to itself below `root` (no symlinked directory on the way).
+
+    A tracked path whose directory was replaced by a symlink (to ``.git``, outside the
+    root, or elsewhere inside it) must not be listed through that symlink.
+    """
+    known = memo.get(parent)
+    if known is None:
+        expected = root / parent
+        try:
+            known = expected.resolve(strict=True) == expected
+        except (OSError, RuntimeError):
+            known = False
+        memo[parent] = known
+    return known
+
+
 def _collect(root: Path, candidates: Iterable[PurePosixPath]) -> Listing:
     files: list[RepoFile] = []
     truncated = False
+    parents: dict[PurePosixPath, bool] = {}
     for rel in candidates:
-        if blocked_reason(rel) is not None:
+        if blocked_reason(rel) is not None or not _real_parent(root, rel.parent, parents):
             continue
         size = _file_size(root, rel)
         if size is None:

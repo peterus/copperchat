@@ -76,3 +76,4 @@ async def test_fake_agent_answers_enclosure_question(tmp_path: Path) -> None:
     assert env.is_error and "API_TOKEN" not in env.content
     assert env.content.startswith("repo_read refused:")  # by the guard, before the handler
     assert outside.is_error and "TOP-SECRET-OUTSIDE" not in outside.content
+    assert outside.content.startswith("repo_read refused:")  # by the guard as well

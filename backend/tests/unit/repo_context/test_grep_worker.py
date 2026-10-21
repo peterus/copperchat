@@ -106,3 +106,16 @@ def test_worker_decodes_with_replace(root: Path) -> None:
     (root / "mixed.txt").write_bytes(b"ok\n" * 3000 + b"beta \xff\n")
     lines = run_worker(root, ["mixed.txt"], "beta")
     assert matches(lines) == [("mixed.txt", 3001, "beta �")]
+
+
+def test_worker_line_numbers_split_on_newline_only(root: Path) -> None:
+    (root / "ff.txt").write_bytes(b"one\n\x0c\ntwo\x0cthree\na\rb\nneedle\r\n")
+    lines = run_worker(root, ["ff.txt"], "needle")
+    assert matches(lines) == [("ff.txt", 5, "needle")]
+
+
+def test_worker_bad_regex_reports_error(root: Path) -> None:
+    lines = run_worker(root, ["a.txt"], "a{99999999999999999999}", regex=True)
+    assert matches(lines) == []
+    final = done(lines)
+    assert final["files_scanned"] == 0 and "error" in final

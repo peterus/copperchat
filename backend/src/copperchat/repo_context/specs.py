@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import re
 import sys
 from collections.abc import Iterable
@@ -23,6 +24,7 @@ from copperchat.repo_context.paths import (
     RepoPolicy,
     check_rel_path,
     is_kicad_file,
+    is_text_bytes,
     is_text_file,
     repo_policy,
     resolve_dir,
@@ -94,83 +96,154 @@ def _base(policy: RepoPolicy) -> dict[str, Any]:
 
 
 async def _dir(policy: RepoPolicy, raw: str) -> PurePosixPath:
+    """The directory `raw` as resolved, relative to the root (a symlinked directory is
+    replaced by its target, since the listing holds files under their real paths)."""
     try:
-        _, rel = await asyncio.to_thread(resolve_dir, policy, raw)
+        resolved, _ = await asyncio.to_thread(resolve_dir, policy, raw)
     except RepoPathError as exc:
         raise _path_error(exc) from exc
-    return rel
+    rel = resolved.relative_to(policy.root).as_posix()
+    return PurePosixPath(rel) if rel else PurePosixPath(".")
 
 
 # --- glob matching ---------------------------------------------------------------------------
 
 
-GLOB_MAX_STARS = 8
+_Token = tuple[str, Any]  # ("*", None) | ("?", None) | ("lit", ch) | ("cls", (negate, ranges))
 
 
-def glob_to_regex(pattern: str) -> re.Pattern[str]:
-    """Compile a POSIX glob: ``*``/``?``/``[...]`` stay within one segment, ``**/`` spans
-    zero or more directories and a trailing or lone ``**`` matches everything below.
-
-    Matching is case-insensitive (file extensions differ in case across tools).
-    """
-    out: list[str] = []
-    i, n = 0, len(pattern)
-    while i < n:
-        c = pattern[i]
-        if pattern.startswith("**", i):
-            at_start = i == 0 or pattern[i - 1] == "/"
-            if at_start and pattern.startswith("**/", i):
-                out.append("(?:.*/)?")
-                i += 3
-                continue
-            if at_start and i + 2 == n:
-                out.append(".*")
-                i += 2
-                continue
-            if not out or out[-1] != "[^/]*":  # "**" inside a segment behaves like "*"
-                out.append("[^/]*")
-            i += 2
-            continue
-        if c == "*":
-            if not out or out[-1] != "[^/]*":  # "a**b"/"***": one star, no extra backtracking
-                out.append("[^/]*")
-        elif c == "?":
-            out.append("[^/]")
-        elif c == "[":
-            end = pattern.find("]", i + 2 if pattern[i + 1 : i + 2] in ("!", "]") else i + 1)
-            if end == -1:
-                out.append(re.escape(c))
-            else:
-                body = pattern[i + 1 : end]
-                if body.startswith("!"):
-                    body = "^" + body[1:]
-                out.append("(?!/)[" + body.replace("\\", "\\\\") + "]")
-                i = end + 1
-                continue
+def _parse_class(segment: str, i: int) -> tuple[_Token, int] | None:
+    """The ``[...]`` class starting at ``segment[i]`` and the index after it, or None if
+    the ``[`` is unterminated (then it is a literal). ``!`` negates, a leading ``]`` is a
+    member, ``a-c`` is a range; a reversed range is an invalid glob (ValueError)."""
+    j = i + 1
+    negate = segment[j : j + 1] == "!"
+    if negate:
+        j += 1
+    body_start = j
+    if segment[j : j + 1] == "]":
+        j += 1
+    end = segment.find("]", j)
+    if end == -1:
+        return None
+    body = segment[body_start:end]
+    ranges: list[tuple[str, str]] = []
+    k = 0
+    while k < len(body):
+        if k + 2 < len(body) and body[k + 1] == "-":
+            low, high = body[k], body[k + 2]
+            if low > high:
+                raise ValueError(f"reversed range {low}-{high}")
+            ranges.append((low, high))
+            k += 3
         else:
-            out.append(re.escape(c))
+            ranges.append((body[k], body[k]))
+            k += 1
+    return ("cls", (negate, tuple(ranges))), end + 1
+
+
+def _compile_segment(segment: str) -> list[_Token]:
+    tokens: list[_Token] = []
+    i = 0
+    while i < len(segment):
+        c = segment[i]
+        if c == "*":
+            if not tokens or tokens[-1][0] != "*":  # "**"/"***" inside a segment = "*"
+                tokens.append(("*", None))
+        elif c == "?":
+            tokens.append(("?", None))
+        elif c == "[" and (parsed := _parse_class(segment, i)) is not None:
+            tokens.append(parsed[0])
+            i = parsed[1]
+            continue
+        else:
+            tokens.append(("lit", c))
         i += 1
-    try:
-        return re.compile("".join(out), re.IGNORECASE | re.DOTALL)
-    except re.error as exc:
-        raise ValueError(f"invalid glob: {exc}") from exc
+    return tokens
 
 
-def _check_glob(raw: str, key: str) -> re.Pattern[str]:
+def _token_matches(token: _Token, ch: str) -> bool:
+    kind, value = token
+    if kind == "?":
+        return True
+    if kind == "lit":
+        return bool(value == ch)
+    negate, ranges = value
+    return bool(any(low <= ch <= high for low, high in ranges) != negate)
+
+
+def _segment_matches(tokens: list[_Token], name: str) -> bool:
+    """Greedy two-pointer wildcard match: O(len(tokens) * len(name)) worst case."""
+    t = n = 0
+    star_t, star_n = -1, 0
+    while n < len(name):
+        if t < len(tokens) and tokens[t][0] == "*":
+            star_t, star_n = t, n
+            t += 1
+        elif t < len(tokens) and _token_matches(tokens[t], name[n]):
+            t += 1
+            n += 1
+        elif star_t != -1:  # let the last star absorb one more character and retry
+            t = star_t + 1
+            star_n += 1
+            n = star_n
+        else:
+            return False
+    while t < len(tokens) and tokens[t][0] == "*":
+        t += 1
+    return t == len(tokens)
+
+
+class Glob:
+    """A compiled POSIX glob, matched in linear time per (pattern segment, path segment).
+
+    ``*``/``?``/``[...]`` stay within one segment (an unterminated ``[`` is literal, ``**``
+    inside a segment acts like ``*``); a ``**`` segment spans zero or more directories, a
+    trailing ``**`` everything below (one or more segments). Matching is case-insensitive
+    (file extensions differ in case across tools). There is no backtracking across
+    segments: the match runs a set of reachable path positions through the pattern
+    segments, so a pattern of P segments costs O(P * S) segment matches on S segments.
+    """
+
+    def __init__(self, pattern: str) -> None:
+        self.pattern = pattern
+        self._segments: list[list[_Token] | None] = [  # None = "**"
+            None if seg == "**" else _compile_segment(seg) for seg in pattern.lower().split("/")
+        ]
+
+    def matches(self, path: str) -> bool:
+        names = path.lower().split("/")
+        last = len(self._segments) - 1
+        states = {0}
+        for index, tokens in enumerate(self._segments):
+            if not states:
+                return False
+            if tokens is None:
+                first = min(states) + (1 if index == last else 0)
+                states = set(range(first, len(names) + 1))
+            else:
+                states = {
+                    j + 1 for j in states if j < len(names) and _segment_matches(tokens, names[j])
+                }
+        return len(names) in states
+
+
+def glob_match(pattern: str, path: str) -> bool:
+    """True if `path` (POSIX, relative) matches the glob `pattern` (see `Glob`)."""
+    return Glob(pattern).matches(path)
+
+
+def _check_glob(raw: str, key: str) -> Glob:
     try:
         rel = check_rel_path(raw)
     except RepoPathError as exc:
         raise _path_error(exc) from exc
     if rel == PurePosixPath("."):
         raise _invalid(f"{key} is empty", "Pass a glob such as **/*.scad.")
-    # Globs are matched in-process against every listed path: bound the backtracking a
-    # many-star pattern could cause (each star is a nested [^/]* loop).
-    if rel.as_posix().count("*") > GLOB_MAX_STARS:
-        raise _invalid(
-            f"{key} has too many wildcards", f"Use at most {GLOB_MAX_STARS} '*' characters."
-        )
+    # No wildcard cap: matching is linear per segment pair and check_rel_path bounds the
+    # pattern to MAX_PATH_LEN characters.
     try:
-        return glob_to_regex(rel.as_posix())
+        return Glob(rel.as_posix())
     except ValueError as exc:
         raise _invalid(f"{key} is not a valid glob", "Check the [...] character classes.") from exc
 
@@ -218,7 +291,7 @@ async def _repo_list(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
 
     dirs: dict[str, int] = {}
     if matcher is not None:
-        selected = [f for f, sub in below if matcher.fullmatch(sub)]
+        selected = [f for f, sub in below if matcher.matches(sub)]
     else:
         selected = []
         for f, sub in below:
@@ -250,18 +323,40 @@ async def _repo_list(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
 # --- repo_read -------------------------------------------------------------------------------
 
 
+def _too_large(rel: str, size: str) -> StructuredToolError:
+    return StructuredToolError(
+        f"{rel} is larger than 1 MiB",
+        f"the file has {size} bytes",
+        "Use repo_grep to find the relevant lines instead.",
+    )
+
+
+def split_lines(text: str) -> list[str]:
+    """Lines as repo_grep numbers them: split on ``\\n`` only, ends kept (a ``\\r``
+    stays in the content), so a grep hit's line number is the repo_read offset."""
+    parts = text.split("\n")
+    lines = [part + "\n" for part in parts[:-1]]
+    if parts[-1]:
+        lines.append(parts[-1])
+    return lines
+
+
 def _read_lines(path: Path, rel: str) -> list[str]:
-    """The decoded lines of a readable text file (checks size and content first)."""
-    size = path.stat().st_size
-    if size > FILE_MAX_BYTES:
-        raise StructuredToolError(
-            f"{rel} is larger than 1 MiB",
-            f"the file has {size} bytes",
-            "Use repo_grep to find the relevant lines instead.",
-        )
-    if not is_text_file(path):
+    """The decoded lines of a readable text file: one open of the already-resolved path,
+    at most 1 MiB + 1 byte read (a file growing after the size check is still refused),
+    the text sniff runs on the bytes read."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    fd = os.open(path, flags)
+    with os.fdopen(fd, "rb") as fh:
+        size = os.fstat(fh.fileno()).st_size
+        if size > FILE_MAX_BYTES:
+            raise _too_large(rel, str(size))
+        data = fh.read(FILE_MAX_BYTES + 1)
+    if len(data) > FILE_MAX_BYTES:
+        raise _too_large(rel, f"more than {FILE_MAX_BYTES}")
+    if not is_text_bytes(data):
         raise StructuredToolError(f"{rel} is a binary file", "not UTF-8 text", _BINARY_HINT)
-    return path.read_bytes().decode("utf-8", errors="replace").splitlines(keepends=True)
+    return split_lines(data.decode("utf-8", errors="replace"))
 
 
 def _cut_utf8(text: str, max_bytes: int) -> str:
@@ -282,7 +377,14 @@ async def _repo_read(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     resolved_rel = PurePosixPath(resolved.relative_to(policy.root).as_posix())
     if is_kicad_file(rel) or is_kicad_file(resolved_rel):
         raise StructuredToolError(f"{rel} is a KiCad file", "not readable as text", _KICAD_HINT)
-    lines = await asyncio.to_thread(_read_lines, resolved, rel.as_posix())
+    try:
+        lines = await asyncio.to_thread(_read_lines, resolved, rel.as_posix())
+    except OSError as exc:
+        raise StructuredToolError(
+            f"{rel} could not be read",
+            exc.strerror or type(exc).__name__,
+            "Use repo_list to check that the file still exists.",
+        ) from exc
 
     total = len(lines)
     if offset > max(total, 1):
@@ -390,6 +492,8 @@ async def _run_worker(
         return matches, files_scanned, stopped_by
     if final is None:
         raise _WorkerFailed(f"worker exited with code {proc.returncode} without a result")
+    if final.get("error"):
+        raise _WorkerFailed(f"the query was refused: {final['error']}")
     return matches, int(final.get("files_scanned", files_scanned)), final.get("stopped_by")
 
 
@@ -406,14 +510,14 @@ async def _repo_grep(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     max_results = _int_arg(args, "max_results", GREP_DEFAULT_RESULTS, 1, GREP_MAX_RESULTS)
     try:
         re.compile(query if regex else re.escape(query), 0 if case_sensitive else re.IGNORECASE)
-    except re.error as exc:
+    except (re.error, OverflowError) as exc:
         raise StructuredToolError(
             "query is not a valid regular expression",
             str(exc),
             "Fix the pattern, or pass regex=false to search for the literal text.",
         ) from exc
     matcher = _check_glob(raw_glob, "glob") if raw_glob else None
-    by_name = raw_glob is not None and "/" not in raw_glob
+    by_name = matcher is not None and "/" not in matcher.pattern
     policy = await _policy(ctx)
     base = await _dir(policy, raw_path)
     listing = await list_repo(policy)
@@ -423,7 +527,7 @@ async def _repo_grep(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         for f, sub in _under(listing.files, base)
         if not is_kicad_file(f.rel)
         and f.size <= FILE_MAX_BYTES
-        and (matcher is None or matcher.fullmatch(f.rel.name if by_name else sub))
+        and (matcher is None or matcher.matches(f.rel.name if by_name else sub))
     ]
     request = {
         "root": str(policy.root),

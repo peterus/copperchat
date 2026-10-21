@@ -8,6 +8,7 @@ given and the resolved path, so symlinks cannot reach secrets or leave the root.
 from __future__ import annotations
 
 import codecs
+import logging
 import os
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
@@ -16,19 +17,22 @@ from pathlib import Path, PurePosixPath
 from copperchat.gitproc import GitError, run_git
 from copperchat.projects import Project
 
+log = logging.getLogger(__name__)
+
 MAX_PATH_LEN = 400
 ROOT_LOOKUP_TIMEOUT_S = 5.0
 SNIFF_BYTES = 8 * 1024
 
 BLOCK_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("VCS internals", (".git",)),
-    ("environment file", (".env", ".env.*")),
+    ("environment file", (".env*", "*.env")),
     (
         "secret or credential file",
         (
             "id_rsa*",
             "id_ed25519*",
             "id_ecdsa*",
+            "id_dsa*",
             "*.pem",
             "*.key",
             "*.p12",
@@ -118,13 +122,22 @@ def clear_repo_policy_cache() -> None:
     _policy_cache.clear()
 
 
+class _GitUnavailable(Exception):
+    """The git top-level lookup failed transiently (git missing, timeout): do not cache."""
+
+
 async def _git_toplevel(project_dir: Path) -> Path | None:
+    """The git top-level of `project_dir`, or None if git says it is not in a repo.
+
+    Raises `_GitUnavailable` if git could not be run to completion, so a transient
+    failure is not remembered as "no git".
+    """
     try:
         code, out, _ = await run_git(
             project_dir, "rev-parse", "--show-toplevel", timeout_s=ROOT_LOOKUP_TIMEOUT_S
         )
-    except GitError:
-        return None
+    except GitError as exc:
+        raise _GitUnavailable(str(exc) or type(exc).__name__) from exc
     text = os.fsdecode(out).strip()
     if code != 0 or not text:
         return None
@@ -139,7 +152,8 @@ async def repo_policy(project: Project, projects_root: Path) -> RepoPolicy:
 
     The git top-level is used only if it is the project directory or one of its
     ancestors and lies strictly inside the projects root; otherwise the root is
-    the project directory itself and the repo counts as "no git".
+    the project directory itself and the repo counts as "no git". If git could not be
+    run (missing, timed out) the "no git" fallback is used but not cached.
     """
     project_dir = project.dir.resolve()
     root_dir = projects_root.resolve()
@@ -147,7 +161,13 @@ async def repo_policy(project: Project, projects_root: Path) -> RepoPolicy:
     cached = _policy_cache.get(key)
     if cached is not None:
         return cached
-    top = await _git_toplevel(project_dir)
+    try:
+        top = await _git_toplevel(project_dir)
+    except _GitUnavailable as exc:
+        log.warning(
+            "git top-level lookup failed for %s, using the project dir: %s", project_dir, exc
+        )
+        return RepoPolicy(project_dir, project_dir, False, root_dir)
     usable = (
         top is not None
         and (top == project_dir or top in project_dir.parents)
@@ -245,16 +265,12 @@ def resolve_dir(policy: RepoPolicy, raw: str) -> tuple[Path, PurePosixPath]:
     return resolved, rel
 
 
-def is_text_file(path: Path) -> bool:
-    """True if the first 8 KiB have no NUL and decode as UTF-8 (spec §4.5).
+def is_text_bytes(data: bytes) -> bool:
+    """True if the first 8 KiB of `data` have no NUL and decode as UTF-8 (spec §4.5).
 
     A multi-byte sequence cut at the 8 KiB edge is tolerated.
     """
-    try:
-        with path.open("rb") as fh:
-            chunk = fh.read(SNIFF_BYTES)
-    except OSError:
-        return False
+    chunk = data[:SNIFF_BYTES]
     if b"\x00" in chunk:
         return False
     decoder = codecs.getincrementaldecoder("utf-8")()
@@ -263,3 +279,13 @@ def is_text_file(path: Path) -> bool:
     except UnicodeDecodeError:
         return False
     return True
+
+
+def is_text_file(path: Path) -> bool:
+    """`is_text_bytes` on the first 8 KiB of `path` (False if it cannot be read)."""
+    try:
+        with path.open("rb") as fh:
+            chunk = fh.read(SNIFF_BYTES)
+    except OSError:
+        return False
+    return is_text_bytes(chunk)

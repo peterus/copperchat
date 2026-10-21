@@ -3,12 +3,15 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
+from copperchat.gitproc import GitTimeoutError
+from copperchat.repo_context import paths as paths_mod
 from copperchat.repo_context.paths import (
     RepoPathError,
     RepoPolicy,
     blocked_reason,
     check_rel_path,
     is_kicad_file,
+    is_text_bytes,
     is_text_file,
     repo_policy,
     resolve_dir,
@@ -121,6 +124,13 @@ def test_static_normalises() -> None:
         "infra/terraform.tfstate",
         "terraform.tfstate.backup",
         "prod.tfvars",
+        ".envrc",
+        ".env-prod",
+        ".env_local",
+        "prod.env",
+        "config/staging.ENV",
+        "id_dsa",
+        "id_dsa.pub",
     ],
 )
 def test_block_list(rel: str) -> None:
@@ -128,7 +138,15 @@ def test_block_list(rel: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "rel", ["README.md", "enclosure.scad", "docs/env.md", "board.kicad_pcb", "."]
+    "rel",
+    [
+        "README.md",
+        "enclosure.scad",
+        "docs/env.md",
+        "environment.md",
+        "board.kicad_pcb",
+        ".",
+    ],
 )
 def test_block_list_allows(rel: str) -> None:
     assert blocked_reason(PurePosixPath(rel)) is None
@@ -254,3 +272,34 @@ def test_text_detection(tmp_path: Path) -> None:
     assert not is_text_file(bad)
     assert is_text_file(cut)
     assert not is_text_file(tmp_path / "missing")
+
+
+def test_text_bytes() -> None:
+    assert is_text_bytes("hällo\n".encode())
+    assert not is_text_bytes(b"abc\x00def")
+    assert not is_text_bytes(b"\xff\xfe")
+    assert is_text_bytes(b"a" * 8191 + "ä".encode())  # cut at the sniff edge
+    assert not is_text_bytes(b"abc" + "ä".encode()[:1])  # short and incomplete
+
+
+async def test_transient_git_failure_not_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = init_repo(tmp_path / "repo")
+    project = make_project(repo / "board")
+    real = paths_mod.run_git
+    calls = 0
+
+    async def flaky(*args: object, **kwargs: object) -> tuple[int, bytes, bytes]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise GitTimeoutError("slow")
+        return await real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(paths_mod, "run_git", flaky)
+    first = await repo_policy(project, tmp_path)
+    assert not first.is_git
+    second = await repo_policy(project, tmp_path)
+    assert second.is_git and second.root == repo.resolve()
+    assert await repo_policy(project, tmp_path) is second

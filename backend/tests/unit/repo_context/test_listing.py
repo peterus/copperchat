@@ -81,6 +81,34 @@ async def test_git_listing_skips_dir_symlinks_and_outside_links(tmp_path: Path) 
     assert paths(await list_repo(git_policy(root))) == ["alias.md", "docs/a.md"]
 
 
+@pytest.mark.parametrize("target", ["git", "outside"])
+async def test_git_listing_refuses_symlinked_parent(tmp_path: Path, target: str) -> None:
+    root = init_repo(tmp_path / "repo")
+    write(root / "docs" / "config", "tracked\n")
+    write(root / "README.md")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "init")
+    outside = tmp_path / "outside"
+    write(outside / "config", "OUTSIDE\n")
+    (root / "docs" / "config").unlink()
+    (root / "docs").rmdir()
+    os.symlink(root / ".git" if target == "git" else outside, root / "docs")
+    assert paths(await list_repo(git_policy(root))) == ["README.md"]
+
+
+async def test_listing_drops_symlinked_parent_inside_root(tmp_path: Path) -> None:
+    root = init_repo(tmp_path / "repo")
+    write(root / "real" / "a.md")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "init")
+    # a tracked path whose parent became a symlink to another directory inside the root
+    write(root / "other" / "a.md")
+    (root / "real" / "a.md").unlink()
+    (root / "real").rmdir()
+    os.symlink("other", root / "real")
+    assert "real/a.md" not in paths(await list_repo(git_policy(root)))
+
+
 async def test_walk_without_git_prunes_blocked_dirs(tmp_path: Path) -> None:
     root = tmp_path / "plain"
     write(root / "README.md")

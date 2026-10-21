@@ -134,7 +134,6 @@ async def test_list_max_entries_truncated(ctx: ToolContext, repo: Path) -> None:
         {"path": "../"},
         {"path": ".git"},
         {"path": "missing"},
-        {"pattern": "*a" * 9},
         {"pattern": "[z-a].txt"},
     ],
 )
@@ -436,13 +435,100 @@ async def test_grep_worker_crash_structured_error(
         ("[ab].txt", "b.txt", True),
         ("[!ab].txt", "c.txt", True),
         ("[!ab].txt", "a.txt", False),
+        ("[a-c]x", "Bx", True),
+        ("[a-c]x", "dx", False),
+        ("[]]x", "]x", True),
+        ("[!]]x", "]x", False),
+        ("[ab", "[ab", True),
+        ("[ab", "a", False),
         ("a+(b).txt", "a+(b).txt", True),
+        ("a***b", "axyb", True),
+        ("x/a**b", "x/ab", True),
+        ("x/a**b", "x/a/b", False),
+        ("*", "a/b", False),
+        ("**/", "a", False),
+        ("a/**/b/**/c", "a/b/c", True),
+        ("a/**/b/**/c", "a/x/b/y/z/c", True),
+        ("a/**/b/**/c", "a/x/c", False),
+        ("*.txt", ".hidden.txt", True),
     ],
 )
-def test_glob_to_regex(pattern: str, path: str, expected: bool) -> None:
-    assert (specs.glob_to_regex(pattern).fullmatch(path) is not None) is expected
+def test_glob_match(pattern: str, path: str, expected: bool) -> None:
+    assert specs.glob_match(pattern, path) is expected
 
 
-def test_glob_collapses_repeated_stars() -> None:
-    assert specs.glob_to_regex("a***b").pattern == specs.glob_to_regex("a*b").pattern
-    assert specs.glob_to_regex("x/a**b").pattern == specs.glob_to_regex("x/a*b").pattern
+@pytest.mark.parametrize(
+    ("pattern", "path"),
+    [
+        ("*?*?*?*?*?*?*?*%", "a" * 50),
+        ("*a*a*a*a*a*a*a*b", "a" * 60),
+        ("*a*a*a*b", "a" * 250),
+        ("**/**/**/**/x", "/".join(["d"] * 300)),
+        ("**/a*a*a*a*b/**/**/y", "/".join(["a" * 40] * 300)),
+    ],
+    ids=["star-qmark", "star-a-60", "star-a-250", "doublestar-deep", "mixed-deep"],
+)
+def test_glob_match_is_linear(pattern: str, path: str) -> None:
+    start = time.perf_counter()
+    assert specs.glob_match(pattern, path) is False
+    assert time.perf_counter() - start < 0.05
+
+
+async def test_list_many_wildcards_allowed(ctx: ToolContext, repo: Path) -> None:
+    write(repo, "abcdefghij.txt", "x\n")
+    data = await call(ctx, "repo_list", pattern="*a*b*c*d*e*f*g*h*i*j*")
+    assert [e["path"] for e in data["entries"]] == ["abcdefghij.txt"]
+
+
+async def test_grep_read_line_numbers_agree(ctx: ToolContext, repo: Path) -> None:
+    write(repo, "ff.txt", b"one\n\x0c\ntwo\x0cthree\nneedle\n")
+    write(repo, "crlf.txt", b"a\r\nb\r\nneedle\r\n")
+    write(repo, "cr.txt", b"a\rb\nneedle\n")
+    data = await call(ctx, "repo_grep", query="needle")
+    found = {m["path"]: m["line"] for m in data["matches"]}
+    assert found == {"ff.txt": 4, "crlf.txt": 3, "cr.txt": 2}
+    for path, line in found.items():
+        read = await call(ctx, "repo_read", path=path, offset=line, limit=1)
+        assert read["content"].rstrip("\r\n") == "needle"
+    assert (await call(ctx, "repo_read", path="ff.txt"))["total_lines"] == 4
+    crlf = await call(ctx, "repo_read", path="crlf.txt")
+    assert crlf["content"] == "a\r\nb\r\nneedle\r\n" and crlf["total_lines"] == 3
+
+
+async def test_grep_glob_normalised(ctx: ToolContext, repo: Path) -> None:
+    write(repo, "mech/case.scad", "pin\n")
+    data = await call(ctx, "repo_grep", query="pin", glob="./*.scad")
+    assert [m["path"] for m in data["matches"]] == ["mech/case.scad"]
+
+
+async def test_grep_regex_overflow_structured_error(ctx: ToolContext) -> None:
+    with pytest.raises(StructuredToolError, match="regular expression"):
+        await call(ctx, "repo_grep", query="a{99999999999999999999}", regex=True)
+
+
+async def test_symlinked_dir_as_path(ctx: ToolContext, repo: Path) -> None:
+    write(repo, "real/a.scad", "pin\n")
+    (repo / "alias").symlink_to("real")
+    listed = await call(ctx, "repo_list", path="alias")
+    assert [e["path"] for e in listed["entries"]] == ["real/a.scad"]
+    assert listed["path"] == "real"
+    found = await call(ctx, "repo_grep", query="pin", path="alias")
+    assert [m["path"] for m in found["matches"]] == ["real/a.scad"]
+
+
+async def test_read_bounded_when_file_grows(
+    ctx: ToolContext, repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write(repo, "big.txt", "x" * (specs.FILE_MAX_BYTES + 10))
+    real_fstat = specs.os.fstat
+
+    class _Small:
+        def __init__(self, st: Any) -> None:
+            self._st = st
+
+        def __getattr__(self, name: str) -> Any:
+            return 10 if name == "st_size" else getattr(self._st, name)
+
+    monkeypatch.setattr(specs.os, "fstat", lambda fd: _Small(real_fstat(fd)))
+    with pytest.raises(StructuredToolError, match="larger than 1 MiB"):
+        await call(ctx, "repo_read", path="big.txt")
