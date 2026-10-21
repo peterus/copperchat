@@ -91,7 +91,16 @@ def _bool_arg(args: dict[str, Any], key: str) -> bool:
 
 
 async def _policy(ctx: ToolContext) -> RepoPolicy:
-    return await repo_policy(ctx.project, ctx.settings.projects_root)
+    """The repository policy; refused (fail closed) while git cannot be run, since the
+    "no git" fallback would skip ``.gitignore`` for a repo that has one."""
+    policy = await repo_policy(ctx.project, ctx.settings.projects_root)
+    if policy.transient:
+        raise StructuredToolError(
+            "the repository could not be inspected",
+            "git could not be run",
+            "Try again in a moment.",
+        )
+    return policy
 
 
 def _base(policy: RepoPolicy) -> dict[str, Any]:

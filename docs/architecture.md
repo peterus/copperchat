@@ -59,7 +59,8 @@ Design: `docs/superpowers/specs/2026-10-21-repo-context-design.md`; user view:
 - **Boundary** (`paths.repo_policy`): the git top level if it is the project directory or
   an ancestor and lies strictly inside the projects root, else the project directory.
   Cached per project; a transient git failure falls back to the project directory without
-  being cached.
+  being cached and marks the policy `transient`: the tools then refuse (fail closed) and
+  the brief counts as failed.
 - **Path policy** (`paths`): relative POSIX paths only (no `..`, `~`, absolute, backslash,
   control characters, > 400 chars); `BLOCK_RULES` matched case-insensitively on every
   segment of the path as given *and* as resolved (so symlinks cannot leave the root or

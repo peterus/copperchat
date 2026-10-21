@@ -603,3 +603,23 @@ async def test_grep_worker_gets_minimal_env(
     assert env is not None
     assert "ANTHROPIC_API_KEY" not in env and "COPPERCHAT_ADMIN_PASSWORD" not in env
     assert "sk-secret" not in env.values()
+
+
+async def test_tools_refuse_while_git_cannot_be_run(
+    ctx: ToolContext, repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from copperchat.repo_context import paths
+
+    async def no_git(_: Path) -> Path | None:
+        raise paths._GitUnavailable("git timed out")
+
+    write(repo, ".gitignore", "private.txt\n")
+    write(repo, "private.txt", "IGNORED\n")
+    monkeypatch.setattr(paths, "_git_toplevel", no_git)
+    for name, args in (
+        ("repo_list", {}),
+        ("repo_grep", {"query": "IGNORED"}),
+        ("repo_read", {"path": "private.txt"}),
+    ):
+        with pytest.raises(StructuredToolError, match="could not be inspected"):
+            await TOOLS[name].handler(ctx, args)

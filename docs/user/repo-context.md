@@ -19,6 +19,8 @@ The **repository root** is the boundary for everything below:
   (`/projects`). A `/projects` folder that is itself a git repository therefore never
   exposes your other projects.
 - Otherwise the root is the project folder (the one with the `.kicad_pro`).
+- If git cannot be run at the moment (missing, timed out), the tools refuse with "try
+  again in a moment" instead of falling back, so `.gitignore` is never skipped.
 
 Example: in a repository `OpenDriveHub` with the KiCad project in
 `hardware/transmitter/pcb/main/`, the agent sees the README at the top, the enclosure in
@@ -53,8 +55,8 @@ just before the design doc index:
 The whole brief is at most 6 KiB; if needed the tree drops to one level, then the
 README excerpt gets shorter or is left out (the agent can still `repo_read` it), and
 with very long folder names the tree gets fewer lines. The README must pass the same
-checks as `repo_read` (no KiCad, binary, blocked, ignored or outside file); otherwise
-the next candidate is used. The README text is passed as quoted project data, like the
+checks as `repo_read` (no KiCad, binary, blocked, ignored, outside or over-1-MiB file);
+otherwise the next candidate is used, at most three README files per folder. The README text is passed as quoted project data, like the
 design docs: it never counts as an instruction. A README that says "commit" does not let
 the agent commit; only your own message can.
 

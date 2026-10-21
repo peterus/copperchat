@@ -44,7 +44,9 @@ Deviations from the tasks below; the code and `docs/user/repo-context.md` are au
   fixed reason, the error goes to the log. A transient "no git" fallback
   (`RepoPolicy.transient`) or a failed `git check-ignore` (`IgnoreCheckUnavailable`) counts
   as a failed brief ("git could not be run"), not as a brief without git. At most 3 README
-  case variants are tried per folder.
+  case variants are tried per folder; a README over 1 MiB is skipped. With a `transient`
+  policy the `repo_*` handlers refuse too ("try again in a moment"; changes PR 1's
+  fail-open fallback). Brief lines composed of several repo fields are defused as a whole.
   The nonce fence moved to `design_docs.sanitize.fence(label, name, clean)`;
   `context_injection._fence(name, body, label="doc")` wraps it. A README that is binary,
   a symlink out of the root or blocked is skipped (next candidate, else "README: none

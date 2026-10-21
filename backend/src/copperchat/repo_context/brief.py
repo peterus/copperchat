@@ -79,6 +79,12 @@ class _Folder:
     exts: Counter[str] = field(default_factory=Counter)
 
 
+def _line(text: str) -> str:
+    """A line composed of separately sanitised repo fields, checked again as a whole (two
+    fields together could pose as a notice)."""
+    return sanitize_inline(text)
+
+
 def _size(text: str) -> int:
     return len(text.encode("utf-8"))
 
@@ -173,14 +179,14 @@ def _readme_lines(readmes: list[_Readme], root_found: bool, budget: int) -> list
         return lines
     if budget <= 0:
         names = ", ".join(r.rel for r in readmes)
-        return [*lines, f"README excerpt left out (brief size limit); repo_read {names}"]
+        return [*lines, _line(f"README excerpt left out (brief size limit); repo_read {names}")]
     for readme, share in zip(
         readmes, _split([_size(r.text) for r in readmes], budget), strict=True
     ):
         text, truncated = _excerpt(readme, share)
         lines.append(fence("readme", readme.rel, text))
         if truncated:
-            lines.append(f"… (truncated; repo_read {readme.rel} for more)")
+            lines.append(_line(f"… (truncated; repo_read {readme.rel} for more)"))
     return lines
 
 
@@ -204,7 +210,7 @@ def _row(key: tuple[str, ...], folder: _Folder) -> str:
     more = ", …" if len(top) > 3 else ""
     detail = f": {exts}{more}" if exts else ""
     indent = "  " * (len(key) - 1)
-    return f"{indent}- {sanitize_field(key[-1], NAME_MAX)}/ ({folder.files}{detail})"
+    return _line(f"{indent}- {sanitize_field(key[-1], NAME_MAX)}/ ({folder.files}{detail})")
 
 
 def _tree_rows(folders: dict[tuple[str, ...], _Folder], depth: int) -> tuple[list[str], int]:
@@ -228,7 +234,7 @@ def _place(policy: RepoPolicy) -> str:
     rel = policy.rel_project_dir
     where = "at the repository root" if rel == "." else f"{sanitize_field(rel, 200)}/"
     git = "" if policy.is_git else " (no git)"
-    return f"repo {name} — this KiCad project is {where}{git}"
+    return _line(f"repo {name} — this KiCad project is {where}{git}")
 
 
 async def render_brief(policy: RepoPolicy) -> str:
@@ -267,7 +273,8 @@ async def render_brief(policy: RepoPolicy) -> str:
         text = build(depth, README_CAP)
         if _size(text) <= cap:
             return text
-    budget = README_CAP
+    # start at what the READMEs can use, so every step changes the output
+    budget = min(README_CAP, sum(_size(r.text) for r in readmes))
     while budget > 0:
         over = _size(build(1, budget)) - cap
         if over <= 0:

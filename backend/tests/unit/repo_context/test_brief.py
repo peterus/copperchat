@@ -344,3 +344,56 @@ async def test_brief_skips_readme_over_1_mib(tmp_path: Path) -> None:
     text = await render_brief(await repo_policy(project, tmp_path / "projects"))
     assert "HUGE" not in text
     assert "<<<readme README.txt " in text and "small" in text
+
+
+async def test_brief_composed_rows_cannot_pose_as_a_notice(tmp_path: Path) -> None:
+    project = make_project(tmp_path / "projects" / "board")
+    write(project.dir / "[CopperChat" / "x.Notice]")
+    text = await render_brief(await repo_policy(project, tmp_path / "projects"))
+    row = next(line for line in text.split("\n") if "[CopperChat/" in line)
+    assert row.startswith("> ")
+
+
+async def test_brief_readme_shrink_loop_is_short(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = make_project(tmp_path / "projects" / "board")
+    write(project.dir / "README.md", "short readme\n")
+    for i in range(30):
+        write(project.dir / f"folder-{i:02d}" / "f.txt")
+    calls = 0
+    real = brief._readme_lines
+
+    def counting(*args: object) -> list[str]:
+        nonlocal calls
+        calls += 1
+        return real(*args)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(brief, "_readme_lines", counting)
+    monkeypatch.setattr(brief, "BRIEF_CAP", 900)
+    text = await render_brief(await repo_policy(project, tmp_path / "projects"))
+    assert len(text.encode()) <= 900
+    assert calls < 60
+
+
+async def test_brief_long_root_readme_and_short_project_readme(tmp_path: Path) -> None:
+    policy, root = await odh(tmp_path)
+    write(root / "README.md", "root line\n" * 600)
+    write(root / "hw" / "pcb" / "README.md", "pcb notes\n")
+    commit_all(root)
+    text = await render_brief(policy)
+    fences = re.findall(r"<<<readme [^\n]*>>>\n(.*?)\n<<<end ", text, flags=re.S)
+    assert fences[1] == "pcb notes"
+    assert len(fences[0].encode()) > README_CAP - len(b"pcb notes") - 10
+    assert sum(len(f.encode()) for f in fences) <= README_CAP
+
+
+async def test_brief_project_readme_without_root_readme(tmp_path: Path) -> None:
+    projects = tmp_path / "projects"
+    root = init_repo(projects / "repo")
+    project = make_project(root / "hw" / "pcb")
+    write(root / "hw" / "pcb" / "README.md", "the board\n")
+    commit_all(root)
+    text = await render_brief(await repo_policy(project, projects))
+    assert "README: none readable at the repository root" in text
+    assert "<<<readme hw/pcb/README.md " in text and "the board" in text
