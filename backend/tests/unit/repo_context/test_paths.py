@@ -112,6 +112,15 @@ def test_static_normalises() -> None:
         "foo-backups/a.txt",
         "fp-info-cache",
         "~x.lck",
+        ".git-credentials",
+        ".ssh/config",
+        ".gnupg/pubring.kbx",
+        ".aws/config",
+        ".pgpass",
+        ".htpasswd",
+        "infra/terraform.tfstate",
+        "terraform.tfstate.backup",
+        "prod.tfvars",
     ],
 )
 def test_block_list(rel: str) -> None:
