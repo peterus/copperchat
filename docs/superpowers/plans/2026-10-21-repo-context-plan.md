@@ -36,7 +36,12 @@ Deviations from the tasks below; the code and `docs/user/repo-context.md` are au
   provider (the session hook passes `repo_policy(...)` lazily, so the lookup only runs when
   the brief is due). The `#repo-brief` marker is carried over by every later turn;
   `later_turn` ignores all `#`-keys. The tree is depth 2 only if it fits in 40 lines,
-  otherwise depth 1 (then "+N more folders"); the folder header names the depth used.
+  otherwise depth 1 (then "+N more folders"); the folder header names the depth used and
+  depth-2 folders are indented rows under their parent (not inline as in spec §6). Past
+  the README shrinking the excerpt can be left out and the tree cut below 40 rows.
+  The README passes `repo_read`'s checks (`specs.resolve_readable`: KiCad, ignored).
+  A failed brief stores `failed:<n>` and is retried for up to 3 turns; the notice gives a
+  fixed reason, the error goes to the log.
   The nonce fence moved to `design_docs.sanitize.fence(label, name, clean)`;
   `context_injection._fence(name, body, label="doc")` wraps it. A README that is binary,
   a symlink out of the root or blocked is skipped (next candidate, else "README: none

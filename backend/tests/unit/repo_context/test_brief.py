@@ -86,7 +86,54 @@ async def test_brief_readme_preference_order(tmp_path: Path) -> None:
     write(project.dir / "docs" / "README.md", "nested\n")
     text = await render_brief(await repo_policy(project, tmp_path / "projects"))
     assert "<<<readme README " in text and "plain" in text
-    assert "txt" not in text.split("Folders")[0].split(">>>", 1)[1]
+    assert "txt\n" not in text and "nested" not in text
+
+
+async def test_brief_readme_case_variants_prefer_upper_case(tmp_path: Path) -> None:
+    project = make_project(tmp_path / "projects" / "board")
+    write(project.dir / "readme.md", "lower\n")
+    write(project.dir / "README.md", "upper\n")
+    text = await render_brief(await repo_policy(project, tmp_path / "projects"))
+    assert "<<<readme README.md " in text and "upper" in text and "lower" not in text
+
+
+async def test_brief_readme_symlink_to_kicad_file_is_skipped(tmp_path: Path) -> None:
+    project = make_project(tmp_path / "projects" / "board")
+    write(project.dir / "board.kicad_pcb", "(kicad_pcb SECRET-BOARD)\n")
+    (project.dir / "README.md").symlink_to("board.kicad_pcb")
+    write(project.dir / "README.txt", "fallback\n")
+    text = await render_brief(await repo_policy(project, tmp_path / "projects"))
+    assert "SECRET-BOARD" not in text
+    assert "<<<readme README.txt " in text and "fallback" in text
+
+
+async def test_brief_ignored_readme_target_is_skipped(tmp_path: Path) -> None:
+    projects = tmp_path / "projects"
+    root = init_repo(projects / "repo")
+    write(root / ".gitignore", "private/\n")
+    write(root / "private" / "notes.md", "IGNORED-TEXT\n")
+    (root / "README.md").symlink_to("private/notes.md")
+    project = make_project(root)
+    commit_all(root)
+    text = await render_brief(await repo_policy(project, projects))
+    assert "IGNORED-TEXT" not in text and "README: none readable" in text
+
+
+async def test_brief_tiny_cap_leaves_out_readme_and_cuts_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = make_project(tmp_path / "projects" / "board")
+    write(project.dir / "README.md", "hello\n" * 50)
+    for i in range(20):
+        write(project.dir / f"folder-with-a-long-name-{i:02d}" / "f.txt")
+    monkeypatch.setattr(brief, "BRIEF_CAP", 900)
+    text = await render_brief(await repo_policy(project, tmp_path / "projects"))
+    assert len(text.encode()) <= 900 - len(b"[CopperChat notice] ")
+    assert "README excerpt left out (brief size limit); repo_read README.md" in text
+    assert "<<<readme" not in text
+    rows = text.split("file counts):\n", 1)[1].split("\nExplore", 1)[0].split("\n")
+    assert len(rows) < 20 and rows[-1].endswith("more folders")
+    assert text.endswith("its enclosure or mechanics.")
 
 
 async def test_brief_cap_huge_readme(tmp_path: Path) -> None:

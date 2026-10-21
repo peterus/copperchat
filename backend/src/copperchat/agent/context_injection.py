@@ -24,6 +24,7 @@ from copperchat.design_docs.sanitize import NOTICE_PREFIX, fence, sanitize_field
 from copperchat.design_docs.service import DesignDocs, DocIndex, DocIndexEntry, line_counts
 from copperchat.projects import Project
 from copperchat.repo_context.brief import render_brief
+from copperchat.repo_context.listing import ListingError
 from copperchat.repo_context.paths import RepoPolicy
 
 log = logging.getLogger(__name__)
@@ -34,6 +35,9 @@ INLINE_CAP = 8 * 1024
 INDEXED = "#indexed"
 # docs_seen marker: the conversation got the project repository brief (repo-context §6).
 REPO_BRIEF = "#repo-brief"
+# Its value: "1" once sent, "failed:<n>" after n failed attempts (retried up to the budget).
+BRIEF_ATTEMPTS = 3
+_FAILED = "failed:"
 MAX_CHANGE_LINES = 20
 # Revisions of one doc looked at for "who changed it since the seen version".
 _REVISION_SCAN = 50
@@ -334,29 +338,54 @@ async def later_turn(docs: DesignDocs, project: Project, conv: ConversationRow) 
 RepoSource = RepoPolicy | Callable[[], Awaitable[RepoPolicy]]
 
 
-async def brief_notice(repo: RepoSource) -> str:
-    """The project brief, or a one-line notice if it cannot be built (spec §6)."""
+def _brief_failures(value: str | None) -> int:
+    if value is not None and value.startswith(_FAILED):
+        return int(value.removeprefix(_FAILED)) if value[len(_FAILED) :].isdigit() else 0
+    return 0
+
+
+def _brief_due(value: str | None) -> bool:
+    """No marker yet, or only failed attempts below the retry budget."""
+    if value is None:
+        return True
+    return value.startswith(_FAILED) and _brief_failures(value) < BRIEF_ATTEMPTS
+
+
+def _failure_reason(exc: Exception) -> str:
+    """A short fixed reason (the details, possibly host paths, stay in the log)."""
+    if isinstance(exc, ListingError):
+        return "the repository file list could not be read"
+    if isinstance(exc, OSError):
+        return "a repository file could not be read"
+    return f"internal error ({type(exc).__name__})"
+
+
+async def brief_notice(repo: RepoSource) -> tuple[str, bool]:
+    """The project brief, or a one-line notice if it cannot be built (spec §6); the
+    flag tells whether the brief was built."""
     try:
         policy = repo if isinstance(repo, RepoPolicy) else await repo()
-        return await render_brief(policy)
+        return await render_brief(policy), True
     except Exception as exc:
         log.warning("project repository brief failed", exc_info=True)
-        reason = sanitize_field(str(exc) or type(exc).__name__, 200)
-        return f"Project repository brief unavailable: {reason}; use repo_list"
+        return f"Project repository brief unavailable: {_failure_reason(exc)}; use repo_list", False
 
 
 async def inject(
     docs: DesignDocs, project: Project, conv: ConversationRow, repo: RepoSource | None = None
 ) -> Injection:
     """The notices of this turn. The repository brief has its own marker, so a session
-    created before it existed gets it once on its next turn; it comes before the index."""
+    created before it existed gets it once on its next turn; it comes before the index.
+    A failed brief is retried on the next turns, at most ``BRIEF_ATTEMPTS`` times."""
     if INDEXED not in conv.docs_seen:
         result = await first_turn(docs, project, conv)
     else:
         result = await later_turn(docs, project, conv)
-    if REPO_BRIEF in conv.docs_seen:
-        return Injection(result.notices, {**result.docs_seen, REPO_BRIEF: "1"})
-    if repo is None:
-        return result
-    notices = [await brief_notice(repo), *result.notices]
-    return Injection(notices, {**result.docs_seen, REPO_BRIEF: "1"})
+    marker = conv.docs_seen.get(REPO_BRIEF)
+    if repo is None or not _brief_due(marker):
+        if marker is None:
+            return result
+        return Injection(result.notices, {**result.docs_seen, REPO_BRIEF: marker})
+    notice, ok = await brief_notice(repo)
+    marker = "1" if ok else f"{_FAILED}{_brief_failures(marker) + 1}"
+    return Injection([notice, *result.notices], {**result.docs_seen, REPO_BRIEF: marker})

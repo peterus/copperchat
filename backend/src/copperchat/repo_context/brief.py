@@ -16,18 +16,18 @@ import os
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from copperchat.design_docs.sanitize import NOTICE_PREFIX, fence, sanitize_field, sanitize_inline
 from copperchat.repo_context.listing import WALK_CAP, ListingError, RepoFile, list_repo
 from copperchat.repo_context.paths import (
     SNIFF_BYTES,
-    RepoPathError,
     RepoPolicy,
     is_text_bytes,
     open_regular,
-    resolve_file,
 )
+from copperchat.repo_context.specs import resolve_readable
+from copperchat.tools import StructuredToolError
 
 __all__ = ["BRIEF_CAP", "README_CAP", "TREE_MAX_LINES", "ListingError", "render_brief"]
 
@@ -73,12 +73,11 @@ def _candidates(files: Iterable[RepoFile], folder: PurePosixPath) -> list[PurePo
     return [rel for name in README_NAMES for rel in sorted(found.get(name, []))]
 
 
-def _read(policy: RepoPolicy, rel: PurePosixPath) -> _Readme | None:
+def _read_text(path: Path, rel: PurePosixPath) -> _Readme | None:
     """The README's sanitised text, or None if it is not a readable text file."""
     try:
-        path, _ = resolve_file(policy, rel.as_posix())
         fd = open_regular(path)
-    except (RepoPathError, OSError):
+    except OSError:
         return None
     with os.fdopen(fd, "rb") as fh:
         data = fh.read(_README_READ + 1)
@@ -89,9 +88,9 @@ def _read(policy: RepoPolicy, rel: PurePosixPath) -> _Readme | None:
     return _Readme(sanitize_field(rel.as_posix(), 200), text, partial)
 
 
-def _readmes(policy: RepoPolicy, files: tuple[RepoFile, ...]) -> tuple[list[_Readme], bool]:
+async def _readmes(policy: RepoPolicy, files: tuple[RepoFile, ...]) -> tuple[list[_Readme], bool]:
     """The root README and, if the KiCad project dir differs, its own README; plus
-    whether a root README was found."""
+    whether a root README was found. A candidate must pass ``repo_read``'s checks."""
     folders = [PurePosixPath(".")]
     if policy.rel_project_dir != ".":
         folders.append(PurePosixPath(policy.rel_project_dir))
@@ -99,7 +98,11 @@ def _readmes(policy: RepoPolicy, files: tuple[RepoFile, ...]) -> tuple[list[_Rea
     root_found = False
     for i, folder in enumerate(folders):
         for rel in _candidates(files, folder):
-            readme = _read(policy, rel)
+            try:
+                path, _ = await resolve_readable(policy, rel.as_posix())
+            except StructuredToolError:
+                continue
+            readme = await asyncio.to_thread(_read_text, path, rel)
             if readme is not None:
                 out.append(readme)
                 root_found = root_found or i == 0
@@ -180,15 +183,20 @@ def _row(key: tuple[str, ...], folder: _Folder) -> str:
     return f"{indent}- {sanitize_field(key[-1], NAME_MAX)}/ ({folder.files}{detail})"
 
 
-def _tree(folders: dict[tuple[str, ...], _Folder], depth: int, max_rows: int) -> list[str]:
+def _tree_rows(folders: dict[tuple[str, ...], _Folder], depth: int) -> tuple[list[str], int]:
+    """The first ``TREE_MAX_LINES`` rows at ``depth`` and the number of folders."""
     keys = sorted(k for k in folders if len(k) <= depth)
-    if not keys:
+    return [_row(k, folders[k]) for k in keys[:TREE_MAX_LINES]], len(keys)
+
+
+def _tree(rows: tuple[list[str], int], max_rows: int) -> list[str]:
+    shown, total = rows
+    if not total:
         return ["- (none)"]
-    rows = [_row(k, folders[k]) for k in keys]
-    if len(rows) <= max_rows:
-        return rows
+    if total <= max_rows:
+        return shown[:max_rows]
     keep = max(max_rows - 1, 0)
-    return [*rows[:keep], f"- +{len(rows) - keep} more folders"]
+    return [*shown[:keep], f"- +{total - keep} more folders"]
 
 
 def _place(policy: RepoPolicy) -> str:
@@ -205,8 +213,13 @@ async def render_brief(policy: RepoPolicy) -> str:
     extreme folder names) the tree rows. Raises on a listing failure; the caller turns
     that into a one-line notice."""
     listing = await list_repo(policy)
-    readmes, root_found = await asyncio.to_thread(_readmes, policy, listing.files)
-    folders = _folders(listing.files)
+    readmes, root_found = await _readmes(policy, listing.files)
+
+    def tree_rows() -> dict[int, tuple[list[str], int]]:
+        folders = _folders(listing.files)
+        return {depth: _tree_rows(folders, depth) for depth in (1, 2)}
+
+    rows = await asyncio.to_thread(tree_rows)
     cap = BRIEF_CAP - _PREFIX_BYTES
     note = f"; listing truncated at {WALK_CAP} files" if listing.truncated else ""
 
@@ -217,13 +230,13 @@ async def render_brief(policy: RepoPolicy) -> str:
                 _place(policy),
                 *_readme_lines(readmes, root_found, budget),
                 f"Folders (depth {depth}, file counts{note}):",
-                *_tree(folders, depth, max_rows),
+                *_tree(rows[depth], max_rows),
                 _FOOT,
             ]
         )
 
     # depth 2 only if all its rows fit in the line limit; otherwise depth 1 (collapsed)
-    depth2 = sum(1 for k in folders if len(k) <= 2) <= TREE_MAX_LINES
+    depth2 = rows[2][1] <= TREE_MAX_LINES
     for depth in (2, 1) if depth2 else (1,):
         text = build(depth, README_CAP)
         if _size(text) <= cap:

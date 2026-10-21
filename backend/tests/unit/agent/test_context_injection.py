@@ -10,7 +10,13 @@ from typing import Any
 
 import pytest
 
-from copperchat.agent.context_injection import INDEX_CAP, INDEXED, REPO_BRIEF, render_index
+from copperchat.agent.context_injection import (
+    BRIEF_ATTEMPTS,
+    INDEX_CAP,
+    INDEXED,
+    REPO_BRIEF,
+    render_index,
+)
 from copperchat.agent.fake import Tool, Wait
 from copperchat.db.repos.conversations import ConversationRepo
 from copperchat.design_docs.paths import Ignored
@@ -433,23 +439,55 @@ async def test_brief_for_preexisting_session(env: Env) -> None:
     assert "Project repository" not in env.agents[0].bursts[2].prompts[0]
 
 
-async def test_brief_failure_notice(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_brief_failure_notice_and_retry(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
     from copperchat.repo_context import brief
 
-    async def broken(_: Any) -> Any:
-        raise brief.ListingError("git ls-files exited with code 128")
+    real = brief.list_repo
+    fail = [True]
 
-    monkeypatch.setattr(brief, "list_repo", broken)
+    async def flaky(policy: Any) -> Any:
+        if fail[0]:
+            raise brief.ListingError("git ls-files: fatal: /srv/secret/path")
+        return await real(policy)
+
+    monkeypatch.setattr(brief, "list_repo", flaky)
     cid = await env.create("requirements")
     env.script = lambda item: []
     await env.send(cid, "hi")
     lines = _prompt(env).split("\n")
     assert lines[0] == (
-        f"{NOTICE} Project repository brief unavailable: git ls-files exited with code 128; "
-        "use repo_list"
+        f"{NOTICE} Project repository brief unavailable: the repository file list could "
+        "not be read; use repo_list"
     )
+    assert "/srv/secret" not in _prompt(env)  # details stay in the log
     assert any(x.startswith(INDEX_HEAD) for x in lines)
+    assert (await env.conv(cid)).docs_seen[REPO_BRIEF] == "failed:1"
+    # retried on the next turn; succeeds once the listing works again
+    await env.send(cid, "again")
+    assert "brief unavailable" in env.agents[0].bursts[1].prompts[0]
+    assert (await env.conv(cid)).docs_seen[REPO_BRIEF] == "failed:2"
+    fail[0] = False
+    await env.send(cid, "third")
+    assert env.agents[0].bursts[2].prompts[0].startswith(BRIEF_HEAD)
     assert (await env.conv(cid)).docs_seen[REPO_BRIEF] == "1"
+
+
+async def test_brief_retry_budget_is_bounded(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    from copperchat.repo_context import brief
+
+    async def broken(_: Any) -> Any:
+        raise OSError("boom")
+
+    monkeypatch.setattr(brief, "list_repo", broken)
+    cid = await env.create("requirements")
+    env.script = lambda item: []
+    for i in range(BRIEF_ATTEMPTS + 1):
+        await env.send(cid, f"turn {i}")
+        prompt = env.agents[0].bursts[i].prompts[0]
+        assert ("brief unavailable: a repository file could not be read" in prompt) == (
+            i < BRIEF_ATTEMPTS
+        )
+    assert (await env.conv(cid)).docs_seen[REPO_BRIEF] == f"failed:{BRIEF_ATTEMPTS}"
 
 
 async def test_readme_commit_does_not_authorise_git_commit(env: Env) -> None:

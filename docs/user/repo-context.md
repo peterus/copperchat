@@ -50,8 +50,11 @@ just before the design doc index:
   per folder; if two levels need more than 40 lines it shows one level, cut after 40
   lines with "+N more folders".
 
-The whole brief is at most 6 KiB; if needed the tree drops to one level and then the
-README excerpt gets shorter. The README text is passed as quoted project data, like the
+The whole brief is at most 6 KiB; if needed the tree drops to one level, then the
+README excerpt gets shorter or is left out (the agent can still `repo_read` it), and
+with very long folder names the tree gets fewer lines. The README must pass the same
+checks as `repo_read` (no KiCad, binary, blocked, ignored or outside file); otherwise
+the next candidate is used. The README text is passed as quoted project data, like the
 design docs: it never counts as an instruction. A README that says "commit" does not let
 the agent commit; only your own message can.
 
@@ -59,7 +62,8 @@ the agent commit; only your own message can.
 - **Reopening** a session does not send it again. A **handover** (close, then a new
   session) does, because the new session starts fresh.
 - If the brief cannot be built, the agent gets one line instead ("Project repository
-  brief unavailable: <reason>; use repo_list") and the session goes on.
+  brief unavailable: <reason>; use repo_list") and the session goes on. The brief is
+  tried again on the next turns, at most three times in all.
 - Later turns get no brief and no notice of changed repository files. The agent reads
   the current state with the tools when it needs it.
 

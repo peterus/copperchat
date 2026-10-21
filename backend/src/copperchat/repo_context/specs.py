@@ -450,13 +450,9 @@ def _cut_utf8(text: str, max_bytes: int) -> str:
     return text.encode("utf-8")[:max_bytes].decode("utf-8", errors="ignore")
 
 
-async def _repo_read(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
-    raw_path = _str_arg(args, "path", None)
-    if not raw_path:
-        raise _invalid("path is required", "Pass a file path relative to the repository root.")
-    offset = _int_arg(args, "offset", 1, 1, 10**9)
-    limit = _int_arg(args, "limit", READ_MAX_LINES, 1, READ_MAX_LINES)
-    policy = await _policy(ctx)
+async def resolve_readable(policy: RepoPolicy, raw_path: str) -> tuple[Path, PurePosixPath]:
+    """``repo_read``'s file acceptance: path policy, not a KiCad file (as given or as
+    resolved), not ignored by git. Raises `StructuredToolError`. Also used by the brief."""
     try:
         resolved, rel = await asyncio.to_thread(resolve_file, policy, raw_path)
     except RepoPathError as exc:
@@ -467,6 +463,17 @@ async def _repo_read(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     if policy.is_git:
         entry_rel = await asyncio.to_thread(_physical_entry, policy, rel)
         await _check_not_ignored(policy, (entry_rel, resolved_rel))
+    return resolved, rel
+
+
+async def _repo_read(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
+    raw_path = _str_arg(args, "path", None)
+    if not raw_path:
+        raise _invalid("path is required", "Pass a file path relative to the repository root.")
+    offset = _int_arg(args, "offset", 1, 1, 10**9)
+    limit = _int_arg(args, "limit", READ_MAX_LINES, 1, READ_MAX_LINES)
+    policy = await _policy(ctx)
+    resolved, rel = await resolve_readable(policy, raw_path)
     try:
         lines = await asyncio.to_thread(_read_lines, resolved, rel.as_posix())
     except OSError as exc:
