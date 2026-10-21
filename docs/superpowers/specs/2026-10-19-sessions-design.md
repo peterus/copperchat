@@ -103,7 +103,8 @@ sub-project 4 on 2026-10-19.
 - **Cross-session chat access.** The agent cannot search or read another
   session's messages. The user can, in the UI.
 - **Generic file tools for the main agent.** The agent has no Read/Write/Glob.
-  Only the doc tools under `docs/design/` are added.
+  Only the doc tools under `docs/design/` are added. Lifted for read-only repo access on
+  2026-10-21, see [2026-10-21-repo-context-design.md](2026-10-21-repo-context-design.md).
 - **Rich-text or WYSIWYG doc editing.** The editor is a plain Markdown
   textarea with a preview.
 - **Multi-user collaboration.** CopperChat stays single-user.

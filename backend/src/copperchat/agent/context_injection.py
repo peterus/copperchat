@@ -12,21 +12,35 @@ a symlink, FIFO, oversized or 51st file is listed as ignored and never opened.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
-import secrets
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from copperchat.db.repos.conversations import ConversationRow
 from copperchat.design_docs import frontmatter as fm
 from copperchat.design_docs.paths import ROOT, DocError
-from copperchat.design_docs.sanitize import NOTICE_PREFIX, sanitize_field, sanitize_inline
+from copperchat.design_docs.sanitize import NOTICE_PREFIX, fence, sanitize_field, sanitize_inline
 from copperchat.design_docs.service import DesignDocs, DocIndex, DocIndexEntry, line_counts
 from copperchat.projects import Project
+from copperchat.repo_context.brief import BriefUnavailable, render_brief
+from copperchat.repo_context.listing import ListingError
+from copperchat.repo_context.paths import RepoPolicy
+
+log = logging.getLogger(__name__)
 
 INDEX_CAP = 4 * 1024
 INLINE_CAP = 8 * 1024
 # docs_seen marker: the conversation got its first-turn index (paths never start with #).
 INDEXED = "#indexed"
+# docs_seen marker: the conversation got the project repository brief (repo-context §6).
+REPO_BRIEF = "#repo-brief"
+# Its value: "1" once sent, "failed:<n>" after n failed attempts (retried up to the budget).
+BRIEF_ATTEMPTS = 3
+# Upper bound for building the brief before the model call (git lookups included).
+BRIEF_TIMEOUT_S = 15.0
+_FAILED = "failed:"
+_FAILED_COUNT = re.compile(r"failed:([0-9]{1,4})")
 MAX_CHANGE_LINES = 20
 # Revisions of one doc looked at for "who changed it since the seen version".
 _REVISION_SCAN = 50
@@ -205,9 +219,8 @@ def render_index(
     return "\n".join([*kept, foot])
 
 
-def _fence(name: str, body: str) -> str:
-    nonce = secrets.token_hex(8)
-    return f"<<<doc {name} {nonce}>>>\n{sanitize_inline(body)}\n<<<end {nonce}>>>"
+def _fence(name: str, body: str, label: str = "doc") -> str:
+    return fence(label, name, sanitize_inline(body))
 
 
 def _gate(kind: str, index: DocIndex) -> str | None:
@@ -302,7 +315,7 @@ async def _change_line(
 
 async def later_turn(docs: DesignDocs, project: Project, conv: ConversationRow) -> Injection:
     current = await docs.versions(project)
-    seen = {k: v for k, v in conv.docs_seen.items() if k != INDEXED}
+    seen = {k: v for k, v in conv.docs_seen.items() if not k.startswith("#")}
     changed = sorted(p for p in set(current) | set(seen) if current.get(p) != seen.get(p))
     lines: list[str] = []
     for path in changed:  # at most the 50 readable docs plus the vanished seen ones
@@ -325,7 +338,68 @@ async def later_turn(docs: DesignDocs, project: Project, conv: ConversationRow) 
     return Injection(notices, {**current, INDEXED: "1"})
 
 
-async def inject(docs: DesignDocs, project: Project, conv: ConversationRow) -> Injection:
+RepoSource = RepoPolicy | Callable[[], Awaitable[RepoPolicy]]
+
+
+def _brief_failures(value: str | None) -> int:
+    if value is not None and (m := _FAILED_COUNT.fullmatch(value)):
+        return int(m.group(1))
+    return 0
+
+
+def _brief_due(value: str | None) -> bool:
+    """No marker yet, or only failed attempts below the retry budget."""
+    if value is None:
+        return True
+    return value.startswith(_FAILED) and _brief_failures(value) < BRIEF_ATTEMPTS
+
+
+def _failure_reason(exc: Exception) -> str:
+    """A short fixed reason (the details, possibly host paths, stay in the log)."""
+    if isinstance(exc, TimeoutError):
+        return "building it took too long"
+    if isinstance(exc, BriefUnavailable):
+        return str(exc)
+    if isinstance(exc, ListingError):
+        return "the repository file list could not be read"
+    if isinstance(exc, OSError):
+        return "a repository file could not be read"
+    return f"internal error ({type(exc).__name__})"
+
+
+async def brief_notice(repo: RepoSource) -> tuple[str, bool]:
+    """The project brief, or a one-line notice if it cannot be built (spec §6); the
+    flag tells whether the brief was built."""
+
+    async def build() -> str:
+        policy = repo if isinstance(repo, RepoPolicy) else await repo()
+        return await render_brief(policy)
+
+    try:
+        return await asyncio.wait_for(build(), BRIEF_TIMEOUT_S), True
+    except Exception as exc:
+        log.warning("project repository brief failed", exc_info=True)
+        reason = _failure_reason(exc)
+        if isinstance(exc, BriefUnavailable):  # git is the cause: the repo tools refuse too
+            return f"Project repository brief unavailable: {reason}", False
+        return f"Project repository brief unavailable: {reason}; use repo_list", False
+
+
+async def inject(
+    docs: DesignDocs, project: Project, conv: ConversationRow, repo: RepoSource | None = None
+) -> Injection:
+    """The notices of this turn. The repository brief has its own marker, so a session
+    created before it existed gets it once on its next turn; it comes before the index.
+    A failed brief is retried on the next turns, at most ``BRIEF_ATTEMPTS`` times."""
     if INDEXED not in conv.docs_seen:
-        return await first_turn(docs, project, conv)
-    return await later_turn(docs, project, conv)
+        result = await first_turn(docs, project, conv)
+    else:
+        result = await later_turn(docs, project, conv)
+    marker = conv.docs_seen.get(REPO_BRIEF)
+    if repo is None or not _brief_due(marker):
+        if marker is None:
+            return result
+        return Injection(result.notices, {**result.docs_seen, REPO_BRIEF: marker})
+    notice, ok = await brief_notice(repo)
+    marker = "1" if ok else f"{_FAILED}{_brief_failures(marker) + 1}"
+    return Injection([notice, *result.notices], {**result.docs_seen, REPO_BRIEF: marker})

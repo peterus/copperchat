@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 
-from copperchat.gitproc import GitError, run_git
+from copperchat.gitproc import GitError, GitNotFoundError, GitTimeoutError, run_git
 from copperchat.projects import Project
 
 log = logging.getLogger(__name__)
@@ -102,6 +102,9 @@ class RepoPolicy:
     git_dirs: tuple[PurePosixPath, ...] = ()
     """Git directories inside the root under another name than ``.git`` (e.g. ``.bare``
     in a bare-repo worktree layout), relative to the root; blocked like ``.git``."""
+    transient: str = ""
+    """Set (a short reason) when the "no git" fallback was taken because git could not be
+    run or refused the repository (not cached); the tools and the brief then refuse."""
 
     def blocked(self, rel: PurePosixPath) -> str | None:
         """`blocked_reason` plus this repository's own git directories."""
@@ -139,8 +142,31 @@ def clear_repo_policy_cache() -> None:
     _policy_cache.clear()
 
 
+GIT_MISSING = "git is not installed"
+GIT_TIMEOUT = "git timed out"
+GIT_DUBIOUS = "git refuses the repository: it belongs to another user (dubious ownership)"
+GIT_FAILED = "git failed"
+
+
 class _GitUnavailable(Exception):
-    """The git top-level lookup failed transiently (git missing, timeout): do not cache."""
+    """The git top-level lookup failed (git missing, timeout, refused): do not cache.
+    ``reason`` is one of the short fixed ``GIT_*`` texts."""
+
+    def __init__(self, message: str, reason: str = GIT_FAILED) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+def _error_reason(exc: GitError) -> str:
+    if isinstance(exc, GitNotFoundError):
+        return GIT_MISSING
+    if isinstance(exc, GitTimeoutError):
+        return GIT_TIMEOUT
+    return GIT_FAILED
+
+
+def _exit_reason(message: str) -> str:
+    return GIT_DUBIOUS if "dubious ownership" in message.lower() else GIT_FAILED
 
 
 async def _git_toplevel(project_dir: Path) -> Path | None:
@@ -155,12 +181,14 @@ async def _git_toplevel(project_dir: Path) -> Path | None:
             project_dir, "rev-parse", "--show-toplevel", timeout_s=ROOT_LOOKUP_TIMEOUT_S
         )
     except GitError as exc:
-        raise _GitUnavailable(str(exc) or type(exc).__name__) from exc
+        raise _GitUnavailable(str(exc) or type(exc).__name__, _error_reason(exc)) from exc
     if code != 0:
         message = os.fsdecode(err).strip()
         if "not a git repository" in message.lower():
             return None
-        raise _GitUnavailable(message.splitlines()[0] if message else f"exit code {code}")
+        raise _GitUnavailable(
+            message.splitlines()[0] if message else f"exit code {code}", _exit_reason(message)
+        )
     text = os.fsdecode(out).strip()
     if not text:
         return None
@@ -184,11 +212,13 @@ async def _git_dirs_inside(project_dir: Path, root: Path) -> tuple[PurePosixPath
             timeout_s=ROOT_LOOKUP_TIMEOUT_S,
         )
     except GitError as exc:
-        raise _GitUnavailable(str(exc) or type(exc).__name__) from exc
+        raise _GitUnavailable(str(exc) or type(exc).__name__, _error_reason(exc)) from exc
     lines = [line for line in os.fsdecode(out).splitlines() if line.strip()]
     if code != 0 or len(lines) != 2:
         message = os.fsdecode(err).strip()
-        raise _GitUnavailable(message.splitlines()[0] if message else f"exit code {code}")
+        raise _GitUnavailable(
+            message.splitlines()[0] if message else f"exit code {code}", _exit_reason(message)
+        )
     found: list[PurePosixPath] = []
     for line in lines:
         try:
@@ -298,7 +328,14 @@ async def repo_policy(project: Project, projects_root: Path) -> RepoPolicy:
         log.warning(
             "git top-level lookup failed for %s, using the project dir: %s", project_dir, exc
         )
-        return RepoPolicy(project_dir, project_dir, False, root_dir, gitfile_dirs(project_dir))
+        return RepoPolicy(
+            project_dir,
+            project_dir,
+            False,
+            root_dir,
+            gitfile_dirs(project_dir),
+            transient=exc.reason,
+        )
     usable = (
         top is not None
         and (top == project_dir or top in project_dir.parents)
@@ -309,7 +346,14 @@ async def repo_policy(project: Project, projects_root: Path) -> RepoPolicy:
             git_dirs = await _git_dirs_inside(project_dir, top)
         except _GitUnavailable as exc:
             log.warning("git dir lookup failed for %s, using the project dir: %s", project_dir, exc)
-            return RepoPolicy(project_dir, project_dir, False, root_dir, gitfile_dirs(project_dir))
+            return RepoPolicy(
+                project_dir,
+                project_dir,
+                False,
+                root_dir,
+                gitfile_dirs(project_dir),
+                transient=exc.reason,
+            )
         policy = RepoPolicy(top, project_dir, True, root_dir, _merge(git_dirs, gitfile_dirs(top)))
     else:
         policy = RepoPolicy(project_dir, project_dir, False, root_dir, gitfile_dirs(project_dir))

@@ -27,6 +27,7 @@ from copperchat.design_docs.paths import DocError
 from copperchat.design_docs.service import ConversationInfo
 from copperchat.errors import ConversationStateConflict, CopperChatError
 from copperchat.plans.repo import PlanRepo
+from copperchat.repo_context.paths import repo_policy
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -218,7 +219,10 @@ class SessionHooks(RunHooks):
         conv = await svc.conversations.get(turn.conversation_id)
         if conv is None:
             return []
-        result = await inject(svc.docs, self.project, conv)
+        projects_root = svc.runtime.settings.projects_root
+        result = await inject(
+            svc.docs, self.project, conv, lambda: repo_policy(self.project, projects_root)
+        )
         if result.docs_seen != conv.docs_seen:
             await svc.conversations.set_docs_seen(conv.id, result.docs_seen)
         return result.notices

@@ -21,6 +21,9 @@ from typing import Any
 from copperchat.gitproc import GitError, run_git
 from copperchat.repo_context.listing import Listing, ListingError, RepoFile, list_repo
 from copperchat.repo_context.paths import (
+    GIT_DUBIOUS,
+    GIT_FAILED,
+    GIT_MISSING,
     RepoPathError,
     RepoPolicy,
     check_rel_path,
@@ -90,8 +93,25 @@ def _bool_arg(args: dict[str, Any], key: str) -> bool:
     return value
 
 
+_GIT_HINTS = {
+    GIT_DUBIOUS: "Tell the user to make the projects mount owned by the CopperChat user "
+    "(uid 1000).",
+    GIT_MISSING: "Tell the user that git is missing on the CopperChat server.",
+    GIT_FAILED: "Tell the user that git failed on this repository (see the server log).",
+}
+
+
 async def _policy(ctx: ToolContext) -> RepoPolicy:
-    return await repo_policy(ctx.project, ctx.settings.projects_root)
+    """The repository policy; refused (fail closed) while git cannot be run, since the
+    "no git" fallback would skip ``.gitignore`` for a repo that has one."""
+    policy = await repo_policy(ctx.project, ctx.settings.projects_root)
+    if policy.transient:
+        raise StructuredToolError(
+            "the repository could not be inspected",
+            policy.transient,
+            _GIT_HINTS.get(policy.transient, "Try again in a moment."),
+        )
+    return policy
 
 
 def _base(policy: RepoPolicy) -> dict[str, Any]:
@@ -401,6 +421,10 @@ def _physical_entry(policy: RepoPolicy, rel: PurePosixPath) -> PurePosixPath:
     return PurePosixPath(parent.as_posix()) / rel.name
 
 
+class IgnoreCheckUnavailable(StructuredToolError):
+    """git could not answer whether a path is ignored (transient; the read is refused)."""
+
+
 async def _check_not_ignored(policy: RepoPolicy, rels: Iterable[PurePosixPath]) -> None:
     """Refuse a path git ignores (spec D8); tracked files are never "ignored" here.
 
@@ -420,7 +444,7 @@ async def _check_not_ignored(policy: RepoPolicy, rels: Iterable[PurePosixPath]) 
                 timeout_s=IGNORE_TIMEOUT_S,
             )
         except GitError as exc:
-            raise StructuredToolError(
+            raise IgnoreCheckUnavailable(
                 f"{rel} could not be checked against .gitignore",
                 str(exc) or type(exc).__name__,
                 "Try again in a moment.",
@@ -439,7 +463,7 @@ async def _check_not_ignored(policy: RepoPolicy, rels: Iterable[PurePosixPath]) 
                 "Only files of this repository itself are available; use repo_list to see them.",
             )
         if code != 1:
-            raise StructuredToolError(
+            raise IgnoreCheckUnavailable(
                 f"{rel} could not be checked against .gitignore",
                 f"git check-ignore exited with code {code}",
                 "Use repo_list to see the available files.",
@@ -450,13 +474,9 @@ def _cut_utf8(text: str, max_bytes: int) -> str:
     return text.encode("utf-8")[:max_bytes].decode("utf-8", errors="ignore")
 
 
-async def _repo_read(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
-    raw_path = _str_arg(args, "path", None)
-    if not raw_path:
-        raise _invalid("path is required", "Pass a file path relative to the repository root.")
-    offset = _int_arg(args, "offset", 1, 1, 10**9)
-    limit = _int_arg(args, "limit", READ_MAX_LINES, 1, READ_MAX_LINES)
-    policy = await _policy(ctx)
+async def resolve_readable(policy: RepoPolicy, raw_path: str) -> tuple[Path, PurePosixPath]:
+    """``repo_read``'s file acceptance: path policy, not a KiCad file (as given or as
+    resolved), not ignored by git. Raises `StructuredToolError`. Also used by the brief."""
     try:
         resolved, rel = await asyncio.to_thread(resolve_file, policy, raw_path)
     except RepoPathError as exc:
@@ -467,6 +487,17 @@ async def _repo_read(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     if policy.is_git:
         entry_rel = await asyncio.to_thread(_physical_entry, policy, rel)
         await _check_not_ignored(policy, (entry_rel, resolved_rel))
+    return resolved, rel
+
+
+async def _repo_read(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
+    raw_path = _str_arg(args, "path", None)
+    if not raw_path:
+        raise _invalid("path is required", "Pass a file path relative to the repository root.")
+    offset = _int_arg(args, "offset", 1, 1, 10**9)
+    limit = _int_arg(args, "limit", READ_MAX_LINES, 1, READ_MAX_LINES)
+    policy = await _policy(ctx)
+    resolved, rel = await resolve_readable(policy, raw_path)
     try:
         lines = await asyncio.to_thread(_read_lines, resolved, rel.as_posix())
     except OSError as exc:

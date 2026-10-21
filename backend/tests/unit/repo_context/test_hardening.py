@@ -377,8 +377,9 @@ async def test_fallback_hides_separate_git_dir(
     ctx = _ctx(root, make_settings)
     with pytest.raises(StructuredToolError):
         await call(ctx, "repo_read", path=".bare/config")
-    data = await call(ctx, "repo_grep", query="hunter2token")
-    assert data["matches"] == []
+    # the tools refuse outright while git cannot be run (fail closed)
+    with pytest.raises(StructuredToolError, match="could not be inspected"):
+        await call(ctx, "repo_grep", query="hunter2token")
 
 
 @pytest.mark.parametrize("content", ["garbage\n", "gitdir: \n", "gitdir: ../outside\n", ""])

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import html
 import re
+import secrets
 import unicodedata
 
 NOTICE_PREFIX = "[CopperChat notice]"
@@ -42,6 +43,14 @@ def sanitize_inline(text: str) -> str:
     Unicode line break, and prefix ``> `` to lines that would pose as an application
     notice. Lines are joined with ``\\n``."""
     return "\n".join(_defuse(line) for line in _strip_controls(text).splitlines())
+
+
+def fence(label: str, name: str, clean: str) -> str:
+    """Wrap already sanitised text in a random per-call nonce fence (spec §9.1)."""
+    nonce = secrets.token_hex(8)
+    # a name with ">>>" and a fake nonce must not make the header look closed early
+    name = name.replace("<", "").replace(">", "")
+    return f"<<<{label} {name} {nonce}>>>\n{clean}\n<<<end {nonce}>>>"
 
 
 def sanitize_field(text: str, limit: int = 80) -> str:

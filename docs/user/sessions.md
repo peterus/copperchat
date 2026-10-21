@@ -66,6 +66,10 @@ most 8 KiB (a larger one, and the other docs, it reads with its doc tools). When
 doc changes later (by you or another session), the next turn gets a short notice of what
 changed. Doc text is always passed as quoted project data, never as instructions.
 
+Every session also gets a short brief of the project's repository at its first turn (README
+excerpt and folder tree), and every session type can read the repository with read-only
+tools. See [Repository context](repo-context.md).
+
 ## Design docs
 
 The docs live in the project under `docs/design/`, so they are committed with it:
