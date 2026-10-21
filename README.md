@@ -40,6 +40,11 @@ affiliated with or endorsed by Anthropic.
   with edit, approval, conflict check, history and diffs. Closing a session hands over:
   the agent updates the docs and the summary becomes a decision. See
   [docs/user/sessions.md](docs/user/sessions.md).
+- **Repository context:** the agent can read the project's repository (README, specs,
+  OpenSCAD enclosures, firmware) with read-only `repo_list` / `repo_grep` / `repo_read`
+  tools, and gets a short project brief at the start of each session. Secrets, `.git`,
+  ignored files and KiCad files as text stay out of reach. See
+  [docs/user/repo-context.md](docs/user/repo-context.md).
 
 Boards (PCB) stay read-only.
 
@@ -106,11 +111,16 @@ notifications in Settings › Notifications.
   is always on, also behind Cloudflare Access.
 - **The main agent has no file, shell or web tools.** It only gets CopperChat's own design
   tools (KiCad API reads, schematic edits, ERC/DRC, views, git status/diff/commit-on-request),
-  the `Skill` tool and `research_part`. Design data is read and written only through the
+  the read-only repository tools, the `Skill` tool and `research_part`. Design data is read and written only through the
   running KiCad API server — never by a CopperChat file parser or writer. Edits are refused
   for a project open read-only, over the change budget, and while a plan is open outside
   its begun step. Design docs are read and written only under `docs/design/` (no
   symlinks, size-capped), and each session type gets only its own tools.
+- **Repository reads are confined.** The repository tools read only inside the project's
+  repository root, never `.git`, `.env*`, keys, credentials, `.gitignore`d files or
+  submodules, never KiCad files or binaries as text, with size and time caps, and are
+  checked by the tool guard and again in the tool
+  ([block list and limits](docs/user/repo-context.md#what-the-agent-cannot-see)).
 - **The part researcher is guarded.** It runs as a separate agent query with web access
   (public hosts only, no private/loopback addresses, redirects re-checked) and may write only
   `.md`/`.txt` files under `<project>/docs/parts/<MPN>/` and read only `docs/parts/` and the

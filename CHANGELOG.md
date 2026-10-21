@@ -7,6 +7,22 @@ All notable changes to CopperChat are documented in this file. The format follow
 
 ## [Unreleased]
 
+### Added
+
+- **Repository context.** The agent can read the project's repository (the git top level
+  inside the projects folder, else the project folder) in every session type, through
+  three read-only tools: `repo_list` (files and folders, kinds text/binary/kicad/large),
+  `repo_grep` (literal or regex search in a killable worker, stops at 100 results, 8 MiB or
+  5 s) and `repo_read` (1000 lines / 64 KiB per call, files up to 1 MiB). A block list hides
+  `.git`, `.env*`, keys, credentials, CopperChat state and KiCad backups; `.gitignore`d
+  files, submodules and symlinks out of the root are refused; KiCad files and binaries are
+  listed but not readable. Paths are checked in `can_use_tool`, the PreToolUse hook and the
+  tool itself; built-in file tools stay denied.
+- **Project brief.** At the first turn of a session the agent gets the repository name, the
+  project's location in it, a README excerpt (fenced as project data, never instructions)
+  and a folder tree, at most 6 KiB. See
+  [docs/user/repo-context.md](docs/user/repo-context.md).
+
 ## [0.3.0] - 2026-10-20
 
 Sub-project 3: **sessions and design docs**. Several chat sessions per project, typed by

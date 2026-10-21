@@ -39,6 +39,7 @@ are in `docs/superpowers/plans/`.
 | `agent` | run engine per project: gated streaming input, queue, interrupt, resume, rate-limit parking, message persistence, WebSocket protocol, tool guard |
 | `history`, `git_tools` | per-turn snapshots/undo, autosave, external-change detection, crash recovery, git status/diff/commit |
 | `skills` | built-in + user + project skills; the agent-scoped `part-notes` template |
+| `repo_context` | read-only repository access for the main agent: `paths` (repository root, path checks, block list, text sniff), `listing` (cached file list), `specs` (`repo_list` / `repo_grep` / `repo_read`), `grep_worker` (killable scan process), `brief` (project brief at session start); see "Repository context" |
 | `research` | `research_part` MCP tool: a separate, guarded SDK query (web + writes only under `docs/parts/<MPN>/`) whose messages are streamed into the chat as a nested "Part research" card |
 | `push` | VAPID keys (`/data/vapid.json`), subscriptions, visibility registry, notifier on `run-finished` / `rate-limited` frames |
 | `web` | FastAPI app, login cookie, REST routes, `/api/ws`, security headers (CSP), static PWA with SPA fallback |
@@ -46,7 +47,46 @@ are in `docs/superpowers/plans/`.
 Design data is read and written only through the running API server (or `kicad-cli` for
 ERC/DRC, netlist/diff checks and exports) — never by a CopperChat file parser or writer. The
 main agent has no file, shell or web tools: its only SDK built-in is `Skill`; everything else
-is CopperChat's own MCP tools.
+is CopperChat's own MCP tools (including the read-only `repo_*` tools).
+
+## Repository context
+
+The main agent reads the project's repository (README, specs, OpenSCAD enclosures,
+firmware) through three read-only MCP tools, never through the CLI's built-in file tools.
+Design: `docs/superpowers/specs/2026-10-21-repo-context-design.md`; user view:
+`docs/user/repo-context.md`.
+
+- **Boundary** (`paths.repo_policy`): the git top level if it is the project directory or
+  an ancestor and lies strictly inside the projects root, else the project directory.
+  Cached per project; a transient git failure falls back to the project directory without
+  being cached.
+- **Path policy** (`paths`): relative POSIX paths only (no `..`, `~`, absolute, backslash,
+  control characters, > 400 chars); `BLOCK_RULES` matched case-insensitively on every
+  segment of the path as given *and* as resolved (so symlinks cannot leave the root or
+  reach a blocked target); the repository's own git dirs under other names and git-shaped
+  dirs count as `.git`. KiCad files and binaries (NUL or invalid UTF-8 in the first 8 KiB)
+  are listed but not readable.
+- **Listing** (`listing`): `git ls-files --cached --others --exclude-standard` in git
+  repos (a failure refuses the listing instead of walking ignored files), else a walk that
+  does not follow directory symlinks; capped at 20 000 files, cached 10 s.
+- **Tools** (`specs`, a provider in `tools/registry.py`): `repo_read` (1000 lines / 64 KiB
+  per call, files ≤ 1 MiB, `git check-ignore` refuses ignored and submodule paths),
+  `repo_list` (200 / 500 entries), `repo_grep` (Python `re` in `grep_worker`, a separate
+  process killed after 5 s; 8 MiB scanned, 100 results).
+- **Guard layering:** the three tools are in every profile (`agent/profiles.REPO_TOOLS`),
+  so the profile's tool list is the first layer. `make_main_guard(allowed, repo=...)`, used
+  both as `can_use_tool` and as the PreToolUse hook (`guard_as_pre_tool_use_hook`),
+  re-checks every `repo_*` path via `repo_path_refusal` against the cached policy (no
+  policy → refused). The handler checks again (`resolve_file` / `resolve_dir`, plus the
+  `.gitignore` check) and the grep worker re-checks each file it opens. Built-in
+  `Read` / `Glob` / `Grep` stay denied for the main agent; the part-researcher's guard is
+  unchanged.
+- **Brief** (`brief`): a `before_model_input` notice from `context_injection.inject`, sent
+  once per conversation (marker `#repo-brief` in `docs_seen`, next to `#indexed`): repo
+  name, project location, a sanitised, nonce-fenced README excerpt (≤ 3 KiB) and a folder
+  tree (depth 2 if it fits in 40 lines, else depth 1), ≤ 6 KiB in total. Like the doc index it never reaches the
+  turn text, so it authorises nothing. A failure becomes a one-line "brief unavailable"
+  notice.
 
 ## Schematic editing
 
