@@ -7,13 +7,11 @@ or fsmonitor.
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
-import os
 import re
 from pathlib import Path
 from typing import Any
 
+from copperchat.gitproc import GitNotFoundError, GitTimeoutError, run_git
 from copperchat.tools import StructuredToolError, ToolContext, ToolResult, ToolSpec
 
 COMMIT_INTENT = re.compile(r"\bcommit\b", re.IGNORECASE)
@@ -32,7 +30,6 @@ PATHSPEC = [
     *(f":(exclude){d}" for d in EXCLUDED_DIRS),
     *(f":(exclude,glob){g}" for g in _EXCLUDED_GLOBS),
 ]
-_GIT_CONFIG = ("-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null")
 _TIMEOUT_S = 30.0
 MESSAGE_MAX = 2000
 
@@ -41,50 +38,20 @@ FILES_MAX = 200  # changed files listed per call (tool result and Git panel)
 _DUBIOUS = "dubious ownership"
 
 
-def _env() -> dict[str, str]:
-    # No stray GIT_DIR/GIT_WORK_TREE/... from the server environment; no optional locks,
-    # so a status never takes index.lock away from the user's own git.
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-    return {
-        **env,
-        "GIT_TERMINAL_PROMPT": "0",
-        "GIT_OPTIONAL_LOCKS": "0",
-        "LANG": "C",
-        "LC_ALL": "C",
-    }
-
-
 async def _git(project_dir: Path, *args: str) -> tuple[int, str, str]:
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "git",
-            *_GIT_CONFIG,
-            "-C",
-            str(project_dir),
-            *args,
-            env=_env(),
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-    except FileNotFoundError as exc:
+        code, out, err = await run_git(project_dir, *args, timeout_s=_TIMEOUT_S)
+    except GitNotFoundError as exc:
         raise StructuredToolError(
             "git is not installed", str(exc), "Install git in the CopperChat image."
         ) from exc
-    try:
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=_TIMEOUT_S)
-    except (TimeoutError, asyncio.CancelledError) as exc:
-        with contextlib.suppress(ProcessLookupError):
-            proc.kill()
-        await proc.wait()
-        if isinstance(exc, asyncio.CancelledError):
-            raise
+    except GitTimeoutError as exc:
         raise StructuredToolError(
             f"git {args[0] if args else ''} timed out".strip(),
             f"git did not finish within {_TIMEOUT_S:g}s",
             "The repository may be very large or locked; try again later.",
         ) from exc
-    return proc.returncode or 0, out.decode(errors="replace"), err.decode(errors="replace")
+    return code, out.decode(errors="replace"), err.decode(errors="replace")
 
 
 async def _repo_state(project_dir: Path) -> tuple[bool, str]:

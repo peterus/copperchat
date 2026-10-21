@@ -16,6 +16,7 @@ from copperchat.agent.profiles import (
     DOC_TOOLS,
     PLAN_TOOLS,
     PROFILES,
+    REPO_TOOLS,
     SCH_WRITES,
     TODAY,
     profile_specs,
@@ -53,10 +54,15 @@ SPEC_82 = {
         "git_status",
         "git_diff_summary",
         "git_commit",
-    },
-    "schematic": set(TODAY) | {"doc_list", "doc_read", "doc_append", "doc_patch_section"},
-    "free": set(TODAY) | set(DOC_TOOLS),
+    }
+    | set(REPO_TOOLS),
+    "schematic": set(TODAY)
+    | {"doc_list", "doc_read", "doc_append", "doc_patch_section"}
+    | set(REPO_TOOLS),
+    "free": set(TODAY) | set(DOC_TOOLS) | set(REPO_TOOLS),
 }
+# repo-context 2026-10-21: REPO_TOOLS (repo_list, repo_grep, repo_read) were deliberately
+# added to every profile (repo-context spec §5.4).
 
 
 @pytest.fixture

@@ -24,10 +24,11 @@ from copperchat.agent.events import (
     Usage,
 )
 from copperchat.agent.guards import make_main_guard
-from copperchat.agent.profiles import bind_conversation, profile_specs
+from copperchat.agent.profiles import REPO_TOOLS, bind_conversation, profile_specs
 from copperchat.agent.sdk_tools import build_sdk_tool_list, mcp_result_to_event, sdk_tool_name
 from copperchat.config import Settings
 from copperchat.projects import Project
+from copperchat.repo_context.paths import RepoPolicy, repo_policy
 from copperchat.tools import ToolContext, ToolSpec
 
 if TYPE_CHECKING:
@@ -186,6 +187,26 @@ class FakeAgent:
 
         return make
 
+    async def _repo_policy(self) -> RepoPolicy | None:
+        """The burst project's repository policy for the guard, as under the SDK backend.
+        The projects root comes from ``settings``, else from a tool context; without one
+        the repo_* calls are refused (fail closed)."""
+        if self._project is None:
+            return None
+        settings = self._settings
+        if settings is None:
+            for factory in (self._turn_context, self._ctx_factory):
+                ctx = factory() if factory is not None else None
+                settings = getattr(ctx, "settings", None)
+                if isinstance(settings, Settings):
+                    break
+            else:
+                return None
+        try:
+            return await repo_policy(self._project, settings.projects_root)
+        except OSError:
+            return None
+
     def _bound(self, factory: Callable[[], ToolContext]) -> Callable[[], ToolContext]:
         conversation = self._conversation
         return lambda: bind_conversation(factory(), conversation)
@@ -262,7 +283,9 @@ class FakeAgent:
                 # The main-agent guard of the burst's profile, as under the SDK backend: a
                 # refused call is an ordinary error result (C5).
                 allowed = frozenset(sdk_tool_name(s.name) for s in self._burst_specs)
-                verdict = await make_main_guard(allowed)(
+                # The repository policy only for repo_* steps: other scripts need no git.
+                repo = await self._repo_policy() if step.name in REPO_TOOLS else None
+                verdict = await make_main_guard(allowed, repo=repo)(
                     sdk_tool_name(step.name), dict(step.args), ToolPermissionContext()
                 )
                 if isinstance(verdict, PermissionResultDeny):

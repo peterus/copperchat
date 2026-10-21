@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -17,8 +19,20 @@ from claude_agent_sdk.types import (
     PermissionResult,
 )
 
+from copperchat.agent.profiles import REPO_TOOLS
+from copperchat.agent.sdk_tools import sdk_tool_name
 from copperchat.parts import InvalidMpn, mpn_dirname, notes_user_edited
 from copperchat.projects import Project
+from copperchat.repo_context.paths import (
+    RepoPathError,
+    RepoPolicy,
+    check_rel_path,
+    is_kicad_file,
+    is_text_file,
+    resolve_dir,
+    resolve_file,
+)
+from copperchat.repo_context.specs import FILE_MAX_BYTES
 from copperchat.research.agent import PARTS_TOOLS, RESEARCHER_TOOLS
 from copperchat.research.net import Resolver, url_refusal
 from copperchat.research.paths import (
@@ -34,25 +48,108 @@ SKILL_TOOL = "Skill"
 _PATH_KEY = {"Read": "file_path", "Write": "file_path", "Edit": "file_path", "Glob": "path"}
 _WRITABLE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.(md|txt)$")
 
+log = logging.getLogger(__name__)
+
 ToolCallObserver = Callable[[str, dict[str, Any], ToolPermissionContext], None]
+RepoPolicyProvider = Callable[[], Awaitable[RepoPolicy | None]]
+
+# SDK name -> bare name of the read-only repository tools (repo-context spec §5.5).
+_REPO_SDK_TOOLS = {sdk_tool_name(name): name for name in REPO_TOOLS}
+_REPO_GLOB_KEY = {"repo_list": "pattern", "repo_grep": "glob"}
 
 
 def _deny(msg: str) -> PermissionResult:
     return PermissionResultDeny(message=msg, interrupt=False)
 
 
+def _refusal(exc: RepoPathError) -> str:
+    return f"{exc.message} {exc.hint}".strip()
+
+
+def _repo_read_refusal(policy: RepoPolicy, raw: object) -> str | None:
+    if not isinstance(raw, str) or not raw:
+        return "repo_read needs `path`: a file path relative to the repository root."
+    resolved, rel = resolve_file(policy, raw)
+    resolved_rel = PurePosixPath(resolved.relative_to(policy.root).as_posix())
+    if is_kicad_file(rel) or is_kicad_file(resolved_rel):
+        return (
+            f"{rel.as_posix()} is a KiCad file and cannot be read as text; use the "
+            "sch_* / pcb_* / lib_* tools instead."
+        )
+    if resolved.stat().st_size > FILE_MAX_BYTES:
+        return f"{rel.as_posix()} is larger than 1 MiB; use repo_grep to find the relevant lines."
+    if not is_text_file(resolved):
+        return f"{rel.as_posix()} is a binary file; binary files cannot be read."
+    return None
+
+
+def repo_path_refusal(policy: RepoPolicy, tool: str, inp: dict[str, Any]) -> str | None:
+    """Why the repo_* call ``tool`` (bare or SDK name) with ``inp`` is refused, or None.
+
+    The full path policy against the cached repository root (spec §5.5): ``repo_read``
+    gets the file checks incl. KiCad, size and binary sniff; ``repo_list`` / ``repo_grep``
+    get the directory check on ``path`` (default ``.``) and the static checks on their
+    glob (``pattern`` / ``glob``). A value of the wrong type is refused. Blocking file
+    system I/O: call it off the event loop. The tool handler checks again.
+    """
+    name = _REPO_SDK_TOOLS.get(tool, tool)
+    try:
+        if name == "repo_read":
+            return _repo_read_refusal(policy, inp.get("path"))
+        glob_key = _REPO_GLOB_KEY.get(name)
+        if glob_key is None:
+            return f"{tool} is not a repository tool."
+        raw_dir = inp.get("path")
+        if raw_dir is not None and not isinstance(raw_dir, str):
+            return "`path` must be a string."
+        resolve_dir(policy, raw_dir or ".")
+        pattern = inp.get(glob_key)
+        if pattern is not None and not isinstance(pattern, str):
+            return f"`{glob_key}` must be a string."
+        if pattern:
+            check_rel_path(pattern)
+    except RepoPathError as exc:
+        return _refusal(exc)
+    except OSError as exc:
+        return f"The path could not be checked ({exc.strerror or type(exc).__name__})."
+    return None
+
+
 def make_main_guard(
-    allowed: frozenset[str], *, on_allowed: ToolCallObserver | None = None
+    allowed: frozenset[str],
+    *,
+    repo: RepoPolicy | RepoPolicyProvider | None = None,
+    on_allowed: ToolCallObserver | None = None,
 ) -> CanUseTool:
     """The main agent's guard: exactly the registered CopperChat MCP tools plus ``Skill``.
 
     ``on_allowed`` sees every allowed call before it runs; the SDK backend uses it to learn
     the ``tool_use_id`` of a ``research_part`` call (the MCP handler itself does not get it).
-    The researcher's own tools are refused here with a hint to delegate.
+    The researcher's own tools are refused here with a hint to delegate. ``repo_*`` calls
+    are additionally checked against ``repo`` (:func:`repo_path_refusal`): a fixed policy,
+    or an async provider asked on every repo_* call (so a transient fallback policy is
+    not kept for a whole burst). Without a policy, or if the provider fails or returns
+    None, they are refused (fail closed).
     """
+
+    async def current_policy() -> RepoPolicy | None:
+        if repo is None or isinstance(repo, RepoPolicy):
+            return repo
+        try:
+            return await repo()
+        except Exception:
+            log.warning("repository policy unavailable", exc_info=True)
+            return None
 
     async def guard(tool: str, inp: dict[str, Any], ctx: ToolPermissionContext) -> PermissionResult:
         if tool in allowed or tool == SKILL_TOOL:
+            if tool in _REPO_SDK_TOOLS:
+                policy = await current_policy()
+                if policy is None:
+                    return _deny("Repository access is not available in this session.")
+                reason = await asyncio.to_thread(repo_path_refusal, policy, tool, inp)
+                if reason is not None:
+                    return _deny(f"{_REPO_SDK_TOOLS[tool]} refused: {reason}")
             if on_allowed is not None:
                 on_allowed(tool, inp, ctx)
             return PermissionResultAllow(updated_input=inp)

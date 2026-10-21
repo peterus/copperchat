@@ -1,0 +1,438 @@
+"""Regression tests for the repo-context hardening findings (git dirs, names, FIFOs)."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import os
+from collections.abc import Callable
+from pathlib import Path, PurePosixPath
+from typing import Any, cast
+
+import pytest
+
+from copperchat.agent.guards import repo_path_refusal
+from copperchat.config import Settings
+from copperchat.gitproc import GitTimeoutError
+from copperchat.kicad_session import KicadSession
+from copperchat.repo_context import paths as paths_mod
+from copperchat.repo_context import specs
+from copperchat.repo_context.listing import list_repo
+from copperchat.repo_context.paths import (
+    RepoPathError,
+    RepoPolicy,
+    check_rel_path,
+    is_text_file,
+    repo_policy,
+    resolve_file,
+)
+from copperchat.tools import StructuredToolError, ToolContext
+
+from .conftest import git, init_repo, make_project
+
+TOOLS = {s.name: s for s in specs.TOOL_SPECS}
+
+
+async def call(ctx: ToolContext, name: str, **args: Any) -> dict[str, Any]:
+    result = await TOOLS[name].handler(ctx, args)
+    assert result.data is not None
+    return result.data
+
+
+def _ctx(project_dir: Path, make_settings: Callable[..., Settings]) -> ToolContext:
+    project = make_project(project_dir)
+    return ToolContext(project=project, session=cast(KicadSession, None), settings=make_settings())
+
+
+# --- 1. in-root git dir not named .git ----------------------------------------------------
+
+
+@pytest.fixture
+def bare_layout(tmp_path: Path) -> Path:
+    root = tmp_path / "projects" / "repo"
+    root.mkdir(parents=True)
+    git(root, "init", "-q", "-b", "main", f"--separate-git-dir={root / '.bare'}", str(root))
+    assert (root / ".git").is_file()
+    (root / "README.md").write_text("# hi needle\n")
+    (root / "cfg-link").symlink_to(root / ".bare" / "config")
+    return root
+
+
+async def test_git_dir_named_bare_is_blocked(
+    bare_layout: Path, make_settings: Callable[..., Settings]
+) -> None:
+    root = bare_layout
+    project = make_project(root / "hw")
+    policy = await repo_policy(project, root.parent)
+    assert policy.is_git
+    assert PurePosixPath(".bare") in policy.git_dirs
+
+    listed = [f.rel.as_posix() for f in (await list_repo(policy)).files]
+    assert "README.md" in listed
+    assert not [p for p in listed if p.startswith(".bare") or p == "cfg-link"]
+
+    for raw in (".bare/config", ".BARE/config", "cfg-link"):
+        with pytest.raises(RepoPathError):
+            resolve_file(policy, raw)
+        assert repo_path_refusal(policy, "repo_read", {"path": raw}) is not None
+    assert repo_path_refusal(policy, "repo_list", {"path": ".bare"}) is not None
+
+    ctx = _ctx(root / "hw", make_settings)
+    with pytest.raises(StructuredToolError):
+        await call(ctx, "repo_read", path=".bare/config")
+    data = await call(ctx, "repo_grep", query="core")
+    assert data["matches"] == []
+    data = await call(ctx, "repo_grep", query="needle")
+    assert [m["path"] for m in data["matches"]] == ["README.md"]
+
+
+def test_policy_default_has_no_git_dirs(tmp_path: Path) -> None:
+    policy = RepoPolicy(tmp_path, tmp_path, False, tmp_path.parent)
+    assert policy.git_dirs == ()
+
+
+# --- 2. non-UTF-8 file names --------------------------------------------------------------
+
+
+def _bad_name(root: Path) -> None:
+    try:
+        with open(os.path.join(os.fsencode(root), b"Geh\xe4use.scad"), "wb") as fh:
+            fh.write(b"cube(1);\n")
+    except OSError:
+        pytest.skip("the file system refuses non-UTF-8 names")
+
+
+@pytest.mark.parametrize("is_git", [True, False])
+async def test_non_utf8_names_skipped(tmp_path: Path, is_git: bool) -> None:
+    root = tmp_path / "repo"
+    if is_git:
+        init_repo(root)
+    else:
+        root.mkdir()
+    (root / "ok.scad").write_text("x\n")
+    _bad_name(root)
+    policy = RepoPolicy(root.resolve(), root.resolve(), is_git, tmp_path.resolve())
+    files = (await list_repo(policy)).files
+    assert [f.rel.as_posix() for f in files] == ["ok.scad"]
+    for f in files:
+        f.rel.as_posix().encode("utf-8")
+
+
+# --- 3. gitignored files by exact path ----------------------------------------------------
+
+
+async def test_read_refuses_gitignored(
+    tmp_path: Path, make_settings: Callable[..., Settings]
+) -> None:
+    root = init_repo(tmp_path / "projects" / "repo")
+    (root / ".gitignore").write_text("local.cfg\nignored-dir/\n")
+    (root / "local.cfg").write_text("password=x\n")
+    (root / "tracked.cfg").write_text("ok\n")
+    (root / "ignored-dir").mkdir()
+    (root / "ignored-dir" / "a.txt").write_text("a\n")
+    (root / "alias.txt").symlink_to(root / "local.cfg")
+    git(root, "add", ".gitignore", "tracked.cfg")
+    git(root, "commit", "-q", "-m", "init")
+    ctx = _ctx(root / "hw", make_settings)
+    for raw in ("local.cfg", "ignored-dir/a.txt", "alias.txt"):
+        with pytest.raises(StructuredToolError) as err:
+            await call(ctx, "repo_read", path=raw)
+        assert "ignore" in str(err.value).lower() or "ignore" in err.value.suggestion.lower()
+    data = await call(ctx, "repo_read", path="tracked.cfg")
+    assert data["content"] == "ok\n"
+
+
+async def test_read_force_tracked_ignored_file_allowed(
+    tmp_path: Path, make_settings: Callable[..., Settings]
+) -> None:
+    root = init_repo(tmp_path / "projects" / "repo")
+    (root / ".gitignore").write_text("*.cfg\n")
+    (root / "forced.cfg").write_text("ok\n")
+    git(root, "add", "-f", ".gitignore", "forced.cfg")
+    git(root, "commit", "-q", "-m", "init")
+    ctx = _ctx(root / "hw", make_settings)
+    data = await call(ctx, "repo_read", path="forced.cfg")
+    assert data["content"] == "ok\n"
+
+
+async def test_read_gitignore_irrelevant_without_git(
+    tmp_path: Path, make_settings: Callable[..., Settings]
+) -> None:
+    project_dir = tmp_path / "projects" / "plain"
+    project_dir.mkdir(parents=True)
+    (project_dir / ".gitignore").write_text("local.cfg\n")
+    (project_dir / "local.cfg").write_text("v\n")
+    ctx = _ctx(project_dir, make_settings)
+    data = await call(ctx, "repo_read", path="local.cfg")
+    assert data["content"] == "v\n"
+
+
+# --- 4. lone surrogates in agent paths ----------------------------------------------------
+
+
+def test_lone_surrogate_path_refused(tmp_path: Path) -> None:
+    with pytest.raises(RepoPathError):
+        check_rel_path("a\ud800.txt")
+    policy = RepoPolicy(tmp_path, tmp_path, False, tmp_path.parent)
+    for tool, key in (("repo_read", "path"), ("repo_list", "path"), ("repo_grep", "glob")):
+        assert repo_path_refusal(policy, tool, {key: "a\ud800.txt"}) is not None
+
+
+# --- 5. FIFOs never block -----------------------------------------------------------------
+
+
+async def _no_hang(fn: Callable[[], Any], fifo: Path) -> Any:
+    task = asyncio.ensure_future(asyncio.to_thread(fn))
+    try:
+        return await asyncio.wait_for(asyncio.shield(task), timeout=3)
+    except TimeoutError:
+        # Unblock the stuck open so the thread can finish, then fail.
+        with contextlib.suppress(OSError):
+            os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+        with contextlib.suppress(BaseException):
+            await task
+        pytest.fail("opening a FIFO blocked")
+
+
+@pytest.fixture
+def fifo(tmp_path: Path) -> Path:
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("no FIFOs on this platform")
+    path = tmp_path / "pipe.txt"
+    os.mkfifo(path)
+    return path
+
+
+async def test_is_text_file_fifo(fifo: Path) -> None:
+    assert await _no_hang(lambda: is_text_file(fifo), fifo) is False
+
+
+async def test_read_lines_fifo(fifo: Path) -> None:
+    def read() -> str:
+        try:
+            specs._read_lines(fifo, "pipe.txt")
+        except (OSError, StructuredToolError) as exc:
+            return type(exc).__name__
+        return "read"
+
+    assert await _no_hang(read, fifo) != "read"
+
+
+async def test_repo_read_fifo_structured(
+    tmp_path: Path, make_settings: Callable[..., Settings]
+) -> None:
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("no FIFOs on this platform")
+    project_dir = tmp_path / "projects" / "plain"
+    project_dir.mkdir(parents=True)
+    os.mkfifo(project_dir / "pipe.txt")
+    ctx = _ctx(project_dir, make_settings)
+    with pytest.raises(StructuredToolError):
+        await asyncio.wait_for(call(ctx, "repo_read", path="pipe.txt"), timeout=3)
+
+
+# --- 5. symlinks to ignored files, magic-pathspec names, submodules -----------------------
+
+
+async def test_committed_symlink_to_ignored_file_not_listed(
+    tmp_path: Path, make_settings: Callable[..., Settings]
+) -> None:
+    root = init_repo(tmp_path / "projects" / "repo")
+    (root / ".gitignore").write_text("private/\n")
+    (root / "private").mkdir()
+    (root / "private" / "p.txt").write_text("secret needle\n")
+    (root / "alias.txt").symlink_to("private/p.txt")
+    (root / "real.txt").write_text("public needle\n")
+    (root / "ok-alias.txt").symlink_to("real.txt")
+    git(root, "add", ".gitignore", "alias.txt", "real.txt", "ok-alias.txt")
+    git(root, "commit", "-q", "-m", "init")
+    ctx = _ctx(root / "hw", make_settings)
+
+    data = await call(ctx, "repo_grep", query="needle")
+    assert sorted(m["path"] for m in data["matches"]) == ["ok-alias.txt", "real.txt"]
+    data = await call(ctx, "repo_list")
+    listed = [e["path"] for e in data["entries"]]
+    assert "alias.txt" not in listed
+    assert "ok-alias.txt" in listed
+    with pytest.raises(StructuredToolError):
+        await call(ctx, "repo_read", path="alias.txt")
+
+
+async def test_read_refuses_ignored_magic_pathspec_name(
+    tmp_path: Path, make_settings: Callable[..., Settings]
+) -> None:
+    root = init_repo(tmp_path / "projects" / "repo")
+    (root / ".gitignore").write_text("/:notes.txt\n")
+    (root / ":notes.txt").write_text("private\n")
+    git(root, "add", ".gitignore")
+    git(root, "commit", "-q", "-m", "init")
+    ctx = _ctx(root / "hw", make_settings)
+    with pytest.raises(StructuredToolError) as err:
+        await call(ctx, "repo_read", path=":notes.txt")
+    assert "ignored" in str(err.value)
+
+
+async def test_read_in_submodule_refused_clearly(
+    tmp_path: Path, make_settings: Callable[..., Settings]
+) -> None:
+    sub_src = init_repo(tmp_path / "subsrc")
+    (sub_src / "inner.txt").write_text("inner\n")
+    git(sub_src, "add", "inner.txt")
+    git(sub_src, "commit", "-q", "-m", "sub")
+    root = init_repo(tmp_path / "projects" / "repo")
+    (root / "top.txt").write_text("top\n")
+    git(root, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(sub_src), "sub")
+    git(root, "add", "top.txt")
+    git(root, "commit", "-q", "-m", "init")
+    assert (root / "sub" / "inner.txt").is_file()
+    ctx = _ctx(root / "hw", make_settings)
+
+    # ls-files does not recurse into submodules, so the listing never shows their contents.
+    listed = [e["path"] for e in (await call(ctx, "repo_list"))["entries"]]
+    assert "top.txt" in listed
+    assert not [p for p in listed if p.startswith("sub/")]
+
+    with pytest.raises(StructuredToolError) as err:
+        await call(ctx, "repo_read", path="sub/inner.txt")
+    assert "inside git submodule sub" in str(err.value)
+    assert "could not be checked" not in str(err.value)
+
+
+# --- 6. reads through in-root directory symlinks, check-ignore failure messages -----------
+
+
+async def test_read_through_dir_symlink_git_mode(
+    tmp_path: Path, make_settings: Callable[..., Settings]
+) -> None:
+    root = init_repo(tmp_path / "projects" / "repo")
+    (root / "real").mkdir()
+    (root / "real" / "a.txt").write_text("hello\n")
+    (root / "ln").symlink_to("real")
+    git(root, "add", "real/a.txt", "ln")
+    git(root, "commit", "-q", "-m", "init")
+    ctx = _ctx(root / "hw", make_settings)
+    data = await call(ctx, "repo_read", path="ln/a.txt")
+    assert data["content"] == "hello\n"
+
+
+async def test_read_through_dir_symlink_into_ignored_dir_refused(
+    tmp_path: Path, make_settings: Callable[..., Settings]
+) -> None:
+    root = init_repo(tmp_path / "projects" / "repo")
+    (root / ".gitignore").write_text("real/\n")
+    (root / "real").mkdir()
+    (root / "real" / "a.txt").write_text("secret\n")
+    (root / "ln").symlink_to("real")
+    git(root, "add", ".gitignore", "ln")
+    git(root, "commit", "-q", "-m", "init")
+    ctx = _ctx(root / "hw", make_settings)
+    with pytest.raises(StructuredToolError) as err:
+        await call(ctx, "repo_read", path="ln/a.txt")
+    assert "is ignored" in str(err.value)
+
+
+async def test_check_ignore_failure_mentioning_submodule_is_generic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_run_git(*_args: Any, **_kwargs: Any) -> tuple[int, bytes, bytes]:
+        return 128, b"", b"fatal: something broke at 'submodule-notes/a.txt'\n"
+
+    monkeypatch.setattr(specs, "run_git", fake_run_git)
+    policy = RepoPolicy(root=tmp_path, project_dir=tmp_path, is_git=True, projects_root=tmp_path)
+    with pytest.raises(StructuredToolError) as err:
+        await specs._check_not_ignored(policy, [PurePosixPath("submodule-notes/a.txt")])
+    assert "could not be checked" in str(err.value)
+    assert "inside git submodule" not in str(err.value)
+
+
+# --- git fallback (git unusable) must still hide in-root git dirs -------------------------
+
+SECRET_URL = "https://user:hunter2token@example.com/repo.git"
+
+
+async def _git_times_out(*_args: Any, **_kwargs: Any) -> tuple[int, bytes, bytes]:
+    raise GitTimeoutError("slow")
+
+
+async def test_fallback_hides_separate_git_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_settings: Callable[..., Settings]
+) -> None:
+    root = tmp_path / "projects" / "repo"
+    root.mkdir(parents=True)
+    git(root, "init", "-q", "-b", "main", f"--separate-git-dir={root / '.bare'}", str(root))
+    git(root, "remote", "add", "origin", SECRET_URL)
+    (root / "README.md").write_text("# hi needle\n")
+    monkeypatch.setattr(paths_mod, "run_git", _git_times_out)
+
+    policy = await repo_policy(make_project(root), root.parent)
+    assert not policy.is_git
+    assert PurePosixPath(".bare") in policy.git_dirs
+
+    listed = [f.rel.as_posix() for f in (await list_repo(policy)).files]
+    assert "README.md" in listed
+    assert not [p for p in listed if p.startswith(".bare")]
+    with pytest.raises(RepoPathError):
+        resolve_file(policy, ".bare/config")
+
+    ctx = _ctx(root, make_settings)
+    with pytest.raises(StructuredToolError):
+        await call(ctx, "repo_read", path=".bare/config")
+    data = await call(ctx, "repo_grep", query="hunter2token")
+    assert data["matches"] == []
+
+
+@pytest.mark.parametrize("content", ["garbage\n", "gitdir: \n", "gitdir: ../outside\n", ""])
+async def test_fallback_tolerates_odd_dot_git_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str
+) -> None:
+    root = tmp_path / "projects" / "repo"
+    root.mkdir(parents=True)
+    (root / ".git").write_text(content)
+    monkeypatch.setattr(paths_mod, "run_git", _git_times_out)
+    policy = await repo_policy(make_project(root), root.parent)
+    assert policy.git_dirs == ()
+
+
+def _git_dir_shape(path: Path) -> None:
+    (path / "objects").mkdir(parents=True)
+    (path / "refs" / "heads").mkdir(parents=True)
+    (path / "HEAD").write_text("ref: refs/heads/main\n")
+    (path / "config").write_text(f"[remote]\n\turl = {SECRET_URL}\n")
+
+
+async def test_git_dir_shaped_dir_pruned_without_git(
+    tmp_path: Path, make_settings: Callable[..., Settings]
+) -> None:
+    root = tmp_path / "projects" / "plain"
+    root.mkdir(parents=True)
+    _git_dir_shape(root / "stash")
+    (root / "stash" / "refs" / "heads" / "main").write_text("0" * 40 + "\n")
+    (root / "notes.txt").write_text("hello\n")
+    (root / "cfg-link").symlink_to(root / "stash" / "config")
+    policy = RepoPolicy(root, root, False, root.parent)
+
+    listed = [f.rel.as_posix() for f in (await list_repo(policy)).files]
+    assert listed == ["notes.txt"]
+    for raw in ("stash/config", "stash/HEAD", "stash/refs/heads/main", "cfg-link"):
+        with pytest.raises(RepoPathError):
+            resolve_file(policy, raw)
+    # Not shaped like a git dir (no objects/): stays readable.
+    (root / "other").mkdir()
+    (root / "other" / "HEAD").write_text("x\n")
+    (root / "other" / "refs").mkdir()
+    resolve_file(policy, "other/HEAD")
+
+
+async def test_listing_cache_keyed_by_policy(tmp_path: Path) -> None:
+    root = init_repo(tmp_path / "projects" / "repo")
+    (root / ".gitignore").write_text("ignored.txt\n")
+    (root / "ignored.txt").write_text("x\n")
+    (root / "kept.txt").write_text("y\n")
+    walk = RepoPolicy(root, root, False, root.parent)
+    gitp = RepoPolicy(root, root, True, root.parent)
+    walk_listed = [f.rel.as_posix() for f in (await list_repo(walk)).files]
+    git_listed = [f.rel.as_posix() for f in (await list_repo(gitp)).files]
+    assert "ignored.txt" in walk_listed
+    assert "ignored.txt" not in git_listed
+    walk_listed = [f.rel.as_posix() for f in (await list_repo(walk)).files]
+    assert "ignored.txt" in walk_listed

@@ -60,17 +60,25 @@ PLAN_TOOLS = frozenset({"plan_propose", "plan_revise", "plan_step_begin", "plan_
 DOC_TOOLS = frozenset({"doc_list", "doc_read", "doc_write", "doc_patch_section", "doc_append"})
 # The 40 tools of e2d73b5 (spec §8.1).
 TODAY = READ_KICAD | LIBRARY | PARTS | GIT | SCH_WRITES | PLAN_TOOLS
+# Read-only repository access, in every profile (repo-context spec §5.4).
+REPO_TOOLS = frozenset({"repo_list", "repo_grep", "repo_read"})
 
 PROFILES: dict[str, frozenset[str]] = {
     "requirements": DOC_TOOLS
     | PARTS
     | LIBRARY
     | (READ_KICAD - {"sch_find_space", "sch_changes"})
-    | GIT,
-    "schematic": TODAY | {"doc_list", "doc_read", "doc_append", "doc_patch_section"},
+    | GIT
+    | REPO_TOOLS,
+    "schematic": TODAY | {"doc_list", "doc_read", "doc_append", "doc_patch_section"} | REPO_TOOLS,
     # SP4 (hidden): the read, ERC/DRC, git, library and parts tools; later the pcb_* writes.
-    "board": READ_KICAD | LIBRARY | PARTS | GIT | {"doc_list", "doc_read", "doc_append"},
-    "free": TODAY | DOC_TOOLS,
+    "board": READ_KICAD
+    | LIBRARY
+    | PARTS
+    | GIT
+    | {"doc_list", "doc_read", "doc_append"}
+    | REPO_TOOLS,
+    "free": TODAY | DOC_TOOLS | REPO_TOOLS,
 }
 
 
