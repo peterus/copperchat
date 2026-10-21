@@ -82,3 +82,11 @@ def test_rejects_non_object_schema(
     monkeypatch.setattr(registry, "_PROVIDERS", (fake_module.__name__,))
     with pytest.raises(ToolRegistryError, match="object"):
         registry.all_specs()
+
+
+def test_registry_has_repo_tools() -> None:
+    specs = {s.name: s for s in registry.all_specs()}
+    for name in ("repo_list", "repo_grep", "repo_read"):
+        assert name in specs
+        assert specs[name].requires_kicad is False
+        assert specs[name].mutating is False
