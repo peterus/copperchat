@@ -7,6 +7,11 @@ All notable changes to CopperChat are documented in this file. The format follow
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-22
+
+**Repository context**: the agent can read (never write) its project's repository and
+gets a short project brief at session start.
+
 ### Added
 
 - **Repository context.** The agent can read the project's repository (the git top level
@@ -188,7 +193,8 @@ projects, in the browser on desktop, iPad and iPhone.
 - The KiCanvas patches live in this repository (`frontend/vendor-patches/kicanvas/`), not in
   an upstream fork; the main JavaScript chunk is large (~590 kB).
 
-[Unreleased]: https://github.com/peterus/copperchat/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/peterus/copperchat/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/peterus/copperchat/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/peterus/copperchat/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/peterus/copperchat/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/peterus/copperchat/compare/v0.1.0...v0.1.1
