@@ -362,7 +362,8 @@ async def test_shared_sheet_failure_after_a_restart_undoes_the_saved_placement(
 
     monkeypatch.setattr(place_mod, "apply_change_set", crashed)  # the third change set
     out, err = await call_tool(ctx, "sch_place_symbol", lib_id="Device:R", at=at, sheet="2")
-    assert err and out_code(out) != "document_inconsistent", out
+    assert err and out["error"].get("code") != "document_inconsistent", out
+    assert "stopped responding" in out["error"]["what"]
     assert await s.call(item_ids) == before
     await s.restart()
     assert await s.call(item_ids) == before
