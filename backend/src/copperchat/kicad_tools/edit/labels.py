@@ -183,6 +183,11 @@ def label_box(at: Point, text: str, d: Dir, kind: str = "label") -> Box:
 _SPIN_DIR = {1: (-1, 0), 2: (0, -1), 3: (1, 0), 4: (0, 1)}
 
 
+def label_extent(lb: LabelInfo) -> Box:
+    """`label_box` of a label read from the design (its text runs as its spin style says)."""
+    return label_box(lb.at, lb.text, _SPIN_DIR.get(lb.spin, (1, 0)), lb.kind)
+
+
 # -- the prepare-time world -------------------------------------------------------------
 
 
@@ -544,7 +549,7 @@ class Clearance:
             self.boxes.extend(s.fields)
         self.boxes.extend(scene.sheets.values())
         for lb in scene.labels.values():
-            self.boxes.append(label_box(lb.at, lb.text, _SPIN_DIR.get(lb.spin, (1, 0)), lb.kind))
+            self.boxes.append(label_extent(lb))
         self.points = [p.at for p in scene.all_pins()] + [lb.at for lb in scene.labels.values()]
         self.points += list(scene.junctions.values()) + list(scene.no_connects.values())
         self.wires = [(w.start, w.end) for w in scene.wires.values()]
