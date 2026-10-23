@@ -4,10 +4,10 @@ Port of spike 2D `geo.route` / `path_problems`, extended after 2D failure mode 4
 route may end on a wire of the target net (T-join, junction), and items of the nets
 being joined are contacts, not obstacles. A route never touches a connection point of
 another net (pin end, wire end, label, junction), never runs along or turns on a wire
-of another net (all of these would connect it, spike 2A Q3), never enters a symbol or
-sheet body, and has at most `max_segments` segments. Every 1-3 segment orthogonal path
-is either straight, an L or a Z (H-V-H / V-H-V), so the candidates below enumerate all
-of them within a window around both ends.
+of another net (all of these would connect it, spike 2A Q3), never enters a symbol body,
+keeps the sheet-edge clearance (`sheet_edges`, #9), and has at most `max_segments`
+segments. Every 1-3 segment orthogonal path is either straight, an L or a Z (H-V-H /
+V-H-V), so the candidates below enumerate all of them within a window around both ends.
 """
 
 from __future__ import annotations
@@ -34,6 +34,13 @@ from copperchat.kicad_tools.edit.geometry import (
     snap,
 )
 from copperchat.kicad_tools.edit.scene import Scene, WireInfo
+from copperchat.kicad_tools.edit.sheet_edges import (
+    SHEET_EDGE_CLEARANCE_MM,
+    SheetBox,
+    sheet_boxes,
+    sheet_edge_problems,
+    sheet_pin_points,
+)
 
 WINDOW_MM = 25.4  # how far a Z route may swing beyond the box spanned by both ends
 MAX_TARGET_POINTS = 24  # T-join candidates per target wire (nearest first)
@@ -84,6 +91,16 @@ def _collinear_overlap(a: Point, b: Point, c: Point, d: Point) -> bool:
         lo = max(min(a[0], b[0]), min(c[0], d[0]))
         hi = min(max(a[0], b[0]), max(c[0], d[0]))
         return hi - lo > EPS_MM
+    return False
+
+
+def _on_line(a: Point, b: Point, line: tuple[Point, Point]) -> bool:
+    """Segment a-b lies on the infinite axis-aligned line through `line`."""
+    (c, d) = line
+    if abs(c[0] - d[0]) < EPS_MM:  # vertical
+        return abs(a[0] - c[0]) < EPS_MM and abs(b[0] - c[0]) < EPS_MM
+    if abs(c[1] - d[1]) < EPS_MM:  # horizontal
+        return abs(a[1] - c[1]) < EPS_MM and abs(b[1] - c[1]) < EPS_MM
     return False
 
 
@@ -194,10 +211,12 @@ class Obstacles:
         )
         self._v_x = [v[0] for v in self._v_all]
         self._h_y = [h[0] for h in self._h_all]
-        for uid, box in scene.sheets.items():
-            grown = box.grow(0.2)  # sheet pins sit on the sheet edge
-            for cell in _cells(grown):
-                self.bodies.setdefault(cell, []).append((grown, uid, "a sheet symbol"))
+        # sheet symbols: the shared sheet-edge rule (#9), whatever the route's ends are
+        self.sheet_pins = sheet_pin_points(scene)
+        self.sheets: dict[tuple[int, int], list[SheetBox]] = {}
+        for s in sheet_boxes(scene):
+            for cell in _cells(s.box.grow(SHEET_EDGE_CLEARANCE_MM)):
+                self.sheets.setdefault(cell, []).append(s)
 
     def crossings(self, a: Point, b: Point) -> int:
         """Wires the segment a-b crosses perpendicularly (interiors only)."""
@@ -229,7 +248,11 @@ class Obstacles:
         points: Sequence[Point],
         own_symbols: tuple[str | None, str | None] = (None, None),
         first_only: bool = False,
+        legacy_line: tuple[Point, Point] | None = None,
     ) -> list[str]:
+        """Why a wire along `points` would be unsafe. `legacy_line`: the line of an
+        existing wire that already broke the sheet-edge rule (#9); segments on that line
+        keep it (they are the old wire, dragged), every other segment is checked."""
         pts = list(points)
         segs = list(itertools.pairwise(pts))
         if not segs:
@@ -270,6 +293,12 @@ class Obstacles:
                     )
                     if not own and box.hit_by_segment(a, b) and add(f"crosses {what}"):
                         return out
+            if legacy_line is not None and _on_line(a, b, legacy_line):
+                continue
+            near = {s.uuid: s for cell in _cells(seg_box) for s in self.sheets.get(cell, ())}
+            for msg in sheet_edge_problems((a, b), list(near.values()), sheet_pins=self.sheet_pins):
+                if add(msg):
+                    return out
         for j, p in enumerate(pts):
             corner = 0 < j < len(pts) - 1
             for foreign, w, interior in self._wires_through(p):
@@ -292,6 +321,7 @@ def route_problems(
     *,
     item_nets: Mapping[str, str] | None = None,
     own_symbols: tuple[str | None, str | None] = (None, None),
+    legacy_line: tuple[Point, Point] | None = None,
 ) -> list[str]:
     """Why a wire along `points` would be unsafe (empty = OK).
 
@@ -300,7 +330,9 @@ def route_problems(
     be touched anywhere. Corners never sit on a wire. `own_symbols`: the symbols whose
     pin the first / last point is: an outward first/last segment may touch their body
     box (it contains the pin)."""
-    return Obstacles(scene, netlist, allowed_nets, item_nets).problems(points, own_symbols)
+    return Obstacles(scene, netlist, allowed_nets, item_nets).problems(
+        points, own_symbols, legacy_line=legacy_line
+    )
 
 
 def needed_junctions(points: Sequence[Point], scene: Scene) -> list[Point]:
