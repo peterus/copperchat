@@ -25,8 +25,9 @@ from copperchat.kicad_tools.edit.changeset import (
     static_stage,
 )
 from copperchat.kicad_tools.edit.engine import apply_change_set, edit_result, root_sheet
-from copperchat.kicad_tools.edit.geometry import pin_ends
+from copperchat.kicad_tools.edit.geometry import mm_point, pin_ends
 from copperchat.kicad_tools.edit.scene import resolve_sheet, sheet_api, sheet_refs
+from copperchat.kicad_tools.edit.specs_transform import prepare_move
 from tests.kicad.edit.helpers import item_ids, local_label, v2, wire
 from tests.support.edit import (
     RUN_ID,
@@ -35,6 +36,7 @@ from tests.support.edit import (
     get_item,
     kiids,
     place_direct,
+    place_raw,
     two_resistors,
 )
 
@@ -419,4 +421,42 @@ async def test_joined_mismatch_is_undone(ecc83_session: KicadSession) -> None:
         await apply_change_set(edit_ctx(s), cs)
     assert err.value.code == "verification_failed"
     assert err.value.details is not None and err.value.details["expected"]["joined"]
+    assert await _state(s) == before
+
+
+async def _wires(s: KicadSession) -> dict[str, tuple[Any, Any]]:
+    def run(h: KicadHandle) -> dict[str, tuple[Any, Any]]:
+        from kipy.proto.schematic.schematic_types_pb2 import SchematicLineType
+
+        return {
+            access.kiid(w): (mm_point(w.start), mm_point(w.end))
+            for w in h.schematic().get_lines()
+            if int(w.type) == SchematicLineType.SLT_WIRE
+        }
+
+    return await s.call(run)
+
+
+async def test_move_compensation_restores_split_wire(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    """#6 (prod run be26737b): a PWR_FLAG on a stub at a wire corner moved so that its
+    dragged stub runs on along the wire. KiCad merges the updated stub into the wire at
+    push (its UUID vanishes); undoing must bring the stub back with its UUID instead of
+    silently updating an item that no longer exists."""
+    s = blank_session
+    await s.ensure_symbol_libraries()
+    corner, flag_at = (60.96, 91.44), (60.96, 88.9)
+    await place_raw(s, "Device:R", (30.48, 95.25), "R1")  # pin 1 at (30.48, 91.44)
+    await place_raw(s, "power:PWR_FLAG", flag_at, "#FLG02")
+    along, stub = wire((30.48, 91.44), corner), wire(corner, flag_at)
+    async with s.commit("wires"):
+        await s.call(lambda h: h.schematic().create_items([along, stub]))
+    before, wires_before = await _state(s), await _wires(s)
+    ctx = edit_ctx(s, edit_db)
+    cs = await prepare_move(ctx, {"items": ["#FLG02"], "to": [71.12, 91.44]})
+    with pytest.raises(StructuredToolError) as err:
+        await apply_change_set(ctx, cs, _verify=_forced)
+    assert err.value.code == "verification_failed"
+    assert await _wires(s) == wires_before
     assert await _state(s) == before

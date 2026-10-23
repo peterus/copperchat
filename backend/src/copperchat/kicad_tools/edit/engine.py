@@ -440,6 +440,12 @@ def _copy_symbol_onto(src: Any, dst: Any) -> None:
     dst.proto.ClearField("definition")
 
 
+def _recreatable(item: Any) -> bool:
+    """Items create_items re-creates losslessly with their UUID (not symbols: they need
+    the library, not sheet symbols: E7)."""
+    return type(item).__name__ not in ("SchematicSymbolInstance", "SheetSymbol")
+
+
 def _has_board(ctx: ToolContext) -> bool:
     pcb = ctx.project.pcb_file
     return pcb is not None and pcb.exists()
@@ -484,9 +490,19 @@ async def _compensate(
         for s, uids in by_sheet.values():
             sheets.api(s).remove_items_by_id([_kiid(u) for u in uids])
         restore: dict[str, tuple[SheetRef, list[Any]]] = {}
-        for u, s in run.modified.items():
-            restore.setdefault(s.path, (s, []))[1].append(copy_item(run.pre[u]))
         recreate: dict[str, tuple[SheetRef, list[Any]]] = {}
+        modified: dict[str, tuple[SheetRef, list[str]]] = {}
+        for u, s in run.modified.items():
+            modified.setdefault(s.path, (s, []))[1].append(u)
+        for s, uids in modified.values():
+            # KiCad's push cleanup can merge an updated wire into a collinear neighbour
+            # (its UUID vanishes, #6). update_items ignores a missing id silently, so a
+            # vanished item is re-created with its UUID instead.
+            present = by_id(sheets.api(s), uids)
+            for u in uids:
+                vanished = u not in present and _recreatable(run.pre[u])
+                target = recreate if vanished else restore
+                target.setdefault(s.path, (s, []))[1].append(copy_item(run.pre[u]))
         for u, s in run.deleted.items():
             if u not in symbols_deleted and u not in sheets_deleted:
                 recreate.setdefault(s.path, (s, []))[1].append(copy_item(run.pre[u]))
