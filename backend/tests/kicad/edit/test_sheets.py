@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import itertools
+import re
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +26,7 @@ from copperchat.kicad_tools.edit.changeset import (
     static_stage,
 )
 from copperchat.kicad_tools.edit.engine import apply_change_set
-from copperchat.kicad_tools.edit.geometry import on_grid, pin_ends
+from copperchat.kicad_tools.edit.geometry import Box, on_grid, pin_ends
 from copperchat.kicad_tools.edit.scene import resolve_sheet, sheet_api
 from tests.kicad.edit.helpers import item_ids, wire
 from tests.support.edit import call_tool, edit_ctx, free_area, get_item, place_raw
@@ -587,3 +589,149 @@ async def test_parent_in_a_subdirectory_is_refused(
     assert is_error and res["error"]["code"] == "invalid_argument"
     assert "sub-directory" in res["error"]["why"]
     assert not (s.project.dir / "deep.kicad_sch").exists()
+
+
+# -- sheet pin text and hierarchical-label spots (v0.4.1 SP, #5) -------------------------
+
+REFERENCE = Path(__file__).parents[2] / "fixtures" / "reference" / "sheet_pins.kicad_sch"
+_SHEET_RE = re.compile(
+    r"\n\t\(sheet\n\t\t\(at ([\d.-]+) ([\d.-]+)\)\n\t\t\(size ([\d.]+) ([\d.]+)\)"
+)
+_PIN_RE = re.compile(
+    r'\n\t\t\(pin "([^"]*)" \w+\n\t\t\t\(at ([\d.-]+) ([\d.-]+) (\d+)\).*?\(justify ([^)]*)\)',
+    re.S,
+)
+
+
+def _sheet_pin_lines(text: str) -> dict[str, tuple[int, str]]:
+    """Per sheet edge ('left'/'right') the (angle, justify) KiCad wrote for its pins; read
+    from the .kicad_sch text. Fails when two pins on one edge disagree."""
+    out: dict[str, tuple[int, str]] = {}
+    starts = [m.start() for m in _SHEET_RE.finditer(text)] + [len(text)]
+    for m, end in zip(_SHEET_RE.finditer(text), starts[1:], strict=True):
+        sx, w = float(m.group(1)), float(m.group(3))
+        for p in _PIN_RE.finditer(text, m.end(), end):
+            x = float(p.group(2))
+            side = "left" if abs(x - sx) < 1e-3 else "right" if abs(x - sx - w) < 1e-3 else "?"
+            got = (int(p.group(4)), p.group(5))
+            assert out.setdefault(side, got) == got, (side, out[side], got)
+    return out
+
+
+def _text_box(h: KicadHandle, text: Any) -> Box:
+    """KiCad's own extents of a text item, in mm."""
+    e = h.kicad.get_text_extents(text)
+    x, y, w, ht = e.pos.x / 1e6, e.pos.y / 1e6, e.size.x / 1e6, e.size.y / 1e6
+    return Box(x, y, x + w, y + ht)
+
+
+def test_reference_has_left_and_right_pins() -> None:
+    ref = _sheet_pin_lines(REFERENCE.read_text())
+    assert ref == {"left": (180, "left"), "right": (0, "right")}
+
+
+async def test_left_sheet_pin_matches_gui(blank_session: KicadSession, edit_db: Database) -> None:
+    """A left pin is written like one placed in KiCad (reference: a file eeschema wrote):
+    angle 180, justify left, so its text runs into the sheet box. Found in v0.4.1: KiCad's
+    API applies the request's spin style after the side, and an unset one means LEFT."""
+    s = blank_session
+    ctx = edit_ctx(s, edit_db)
+    out = await _add_sheet(ctx, s)
+    await _sheet_with_pin(s, ctx, "LEFT_IN", "input", side="left")
+    await _sheet_with_pin(s, ctx, "RIGHT_OUT", "output", side="right")
+    await s.save("sch")
+    root = s.project.sch_file
+    assert root is not None
+    ours = _sheet_pin_lines(root.read_text())
+    assert ours == _sheet_pin_lines(REFERENCE.read_text())
+    x0, y0 = out["created"][0]["at_mm"]
+    box = Box(x0, y0, x0 + 50.8, y0 + 38.1)
+
+    def extents(h: KicadHandle) -> list[tuple[str, Box]]:
+        sym = next(iter(h.schematic().get_sheet_symbols()))
+        return [(str(p.text.value), _text_box(h, p.text)) for p in sym.pins]
+
+    for name, text_box in await s.call(extents):
+        assert box.x0 - 1e-3 <= text_box.x0 and text_box.x1 <= box.x1 + 1e-3, (name, text_box)
+
+
+async def _label_text_boxes(s: KicadSession, path: str) -> dict[str, Box]:
+    """KiCad's own text extents of the hierarchical labels on sheet `path`."""
+
+    def run(h: KicadHandle) -> dict[str, Box]:
+        sheet = resolve_sheet(h, path)
+        return {
+            str(lb.text.value): _text_box(h, lb.text)
+            for lb in sheet_api(h, sheet).get_labels()
+            if type(lb).__name__ == "HierarchicalLabel"
+        }
+
+    return await s.call(run)
+
+
+async def test_twenty_sheet_pins_fit(blank_session: KicadSession, edit_db: Database) -> None:
+    """#5: the label column of the sub-sheet was full after 11 labels (each label blocked
+    a square of 1.3 mm per character around itself, so the spots were 15.24 mm apart)."""
+    s = blank_session
+    ctx = edit_ctx(s, edit_db)
+    await _add_sheet(ctx, s, size=[50.8, 55.88])
+    names = [f"SIG_{i:02d}" for i in range(20)]
+    spots = []
+    for n in names:  # one turn each: 20 changes exceed one turn's change budget
+        out = await _sheet_with_pin(s, edit_ctx(s, edit_db, run_id=f"run-{n}"), n, "input")
+        spots.append(tuple(out["label"]["at_mm"]))
+    assert len(set(spots)) == 20
+    assert all(on_grid(p) for p in spots)
+    boxes = await _label_text_boxes(s, "/Power/")
+    assert sorted(boxes) == names
+    for (a, ba), (b, bb) in itertools.combinations(boxes.items(), 2):
+        assert not ba.overlaps(bb), (a, ba, b, bb)
+
+
+async def test_label_column_overflow_opens_second_column(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    """A first column that has no room left (here: a wire along it) moves the label into a
+    second column to its right instead of failing."""
+    s = blank_session
+    ctx = edit_ctx(s, edit_db)
+    await _add_sheet(ctx, s)
+    first = await _sheet_with_pin(s, ctx, "FIRST", "input")
+    fx, _fy = first["label"]["at_mm"]
+    sheet = await s.call(lambda h: resolve_sheet(h, "/Power/"))
+
+    def block(h: KicadHandle) -> None:
+        sheet_api(h, sheet).create_items([wire((fx - 1.27, 12.7), (fx - 1.27, 195.58))])
+
+    async with s.commit("test: wall along the label column"):
+        await s.call(block)
+    out = await _sheet_with_pin(s, ctx, "SECOND", "input")
+    x, _y = out["label"]["at_mm"]
+    assert x > fx + 2.54, (fx, out["label"])
+    boxes = await _label_text_boxes(s, "/Power/")
+    assert not boxes["FIRST"].overlaps(boxes["SECOND"])
+
+
+async def test_parallel_sheet_pins_get_distinct_spots(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    """Concurrent calls through the tool adapter (which holds the project's edit lock from
+    prepare to apply) get distinct pin positions and label spots, and no pin is lost."""
+    s = blank_session
+    ctx = edit_ctx(s, edit_db)
+    await _add_sheet(ctx, s)
+    res = await asyncio.gather(
+        *[
+            call_tool(ctx, "sch_add_sheet_pin", sheet="/Power/", name=f"P{i}", direction="input")
+            for i in range(5)
+        ]
+    )
+    assert not any(err for _r, err in res), res
+    assert len({tuple(r["pin"]["at_mm"]) for r, _e in res}) == 5
+    assert len({tuple(r["label"]["at_mm"]) for r, _e in res}) == 5
+
+    def pins(h: KicadHandle) -> set[str]:
+        sym = next(iter(h.schematic().get_sheet_symbols()))
+        return {str(p.text.value) for p in sym.pins}
+
+    assert await s.call(pins) == {f"P{i}" for i in range(5)}

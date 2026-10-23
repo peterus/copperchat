@@ -3,6 +3,7 @@ and `sch_add_sheet_pin`. Writes go through the E2 engine only."""
 
 from __future__ import annotations
 
+import math
 import re
 import uuid as uuidlib
 from collections.abc import Iterable
@@ -23,7 +24,16 @@ from copperchat.kicad_tools.edit.changeset import (
     Update,
     static_stage,
 )
-from copperchat.kicad_tools.edit.geometry import NM, Box, Point, mm_point, snap, snap_point
+from copperchat.kicad_tools.edit.geometry import (
+    GRID_MM,
+    NM,
+    Box,
+    Point,
+    mm_point,
+    snap,
+    snap_point,
+)
+from copperchat.kicad_tools.edit.labels import label_box, label_extent
 from copperchat.kicad_tools.edit.scene import (
     Scene,
     read_scene,
@@ -40,6 +50,12 @@ DEFAULT_SIZE = (50.8, 38.1)
 MIN_SIZE = 12.7
 MAX_SIZE = 500.0
 PIN_PITCH = 2.54
+# Hierarchical labels in a sub-sheet: columns from the left margin, one label per grid row
+LABEL_TOP = 25.4
+LABEL_BOTTOM = 180.0  # stays above the title block of an A4 page
+LABEL_COLUMNS = 4
+LABEL_COLUMN_STEP = 25.4
+LABEL_STUB = 2.54  # kept free right of a label's point for its wire
 
 
 def _bad(
@@ -202,6 +218,10 @@ def _shape(direction: str) -> Any:
 
 
 def build_sheet_pin(name: str, at: Point, side: str, direction: str) -> Any:
+    """The spin style is what KiCad's own SCH_SHEET_PIN::SetSide gives the side (text runs
+    into the box). It has to be sent: KiCad applies the request's spin style after the side,
+    and an unset one means LEFT, which put the text of left pins outside the box (v0.4.1)."""
+    from kipy.proto.schematic.schematic_types_pb2 import SchematicLabelSpinStyle as Spin
     from kipy.proto.schematic.schematic_types_pb2 import SheetSide
     from kipy.schematic_types import SheetPin
 
@@ -209,18 +229,24 @@ def build_sheet_pin(name: str, at: Point, side: str, direction: str) -> Any:
     p.text.value = name
     p.position = _v2(at)
     p.text.position = _v2(at)
-    p.side = SheetSide.SHS_LEFT if side == "left" else SheetSide.SHS_RIGHT
+    if side == "left":
+        p.side, p.spin_style = SheetSide.SHS_LEFT, Spin.SLSS_RIGHT
+    else:
+        p.side, p.spin_style = SheetSide.SHS_RIGHT, Spin.SLSS_LEFT
     p.shape = _shape(direction)
     return p
 
 
 def build_hier_label(name: str, at: Point, direction: str) -> Any:
+    """Its text runs left of `at` (`_label_room`), the wire leaves to the right."""
+    from kipy.proto.schematic.schematic_types_pb2 import SchematicLabelSpinStyle as Spin
     from kipy.schematic_types import HierarchicalLabel
 
     lb = HierarchicalLabel()
     lb.text.value = name
     lb.position = _v2(at)
     lb.text.position = _v2(at)
+    lb.spin_style = Spin.SLSS_LEFT
     lb.shape = _shape(direction)
     lb.proto.id.value = str(uuidlib.uuid4())
     return lb
@@ -235,10 +261,7 @@ def _blockers(scene: Scene) -> list[Box]:
     out += [Box.around([w.start, w.end]) for w in scene.wires.values()]
     out += [Box.around([p, p]) for p in scene.junctions.values()]
     out += [Box.around([p, p]) for p in scene.no_connects.values()]
-    out += [
-        Box.around([lb.at, lb.at]).grow(max(2.54, 1.3 * len(lb.text)))
-        for lb in scene.labels.values()
-    ]
+    out += [label_extent(lb) for lb in scene.labels.values()]  # each contains its point
     return out
 
 
@@ -392,19 +415,30 @@ def _free_pin_y(sym: Any, side: str, taken: list[Point]) -> float:
         k += 1
 
 
+def _label_room(at: Point, name: str) -> Box:
+    """What a new hierarchical label at `at` covers: its text (`build_hier_label`) and the
+    start of its wire."""
+    text = label_box(at, name, (-1, 0), "hierarchical_label")
+    return Box(text.x0, text.y0, at[0] + LABEL_STUB, text.y1)
+
+
 def _label_spot(scene: Scene, name: str) -> Point:
-    width = 1.4 * len(name)
-    x = snap(max(25.4, 12.7 + width))
+    """The first free grid row of the first column with room, top to bottom; columns
+    start at the left margin. Each label blocks only its own text box (#5: a square of
+    1.3 mm per character around every label filled the column after ~11 labels)."""
+    reach = -_label_room((0.0, 0.0), name).x0
+    first = math.ceil(max(LABEL_TOP, 12.7 + reach) / GRID_MM - 1e-6) * GRID_MM
     blockers = _blockers(scene)
-    y = 25.4
-    while y < 180:
-        cand = Box(x - width - 2, y - 2.54, x + width + 2, y + 2.54)
-        if not any(cand.overlaps(b) for b in blockers):
-            return (x, snap(y))
-        y += 5.08
+    rows = int((LABEL_BOTTOM - LABEL_TOP) / PIN_PITCH + 1e-6) + 1
+    for col in range(LABEL_COLUMNS):
+        x = snap(first + col * LABEL_COLUMN_STEP)
+        for row in range(rows):
+            at = (x, snap(LABEL_TOP + row * PIN_PITCH))
+            if not any(_label_room(at, name).overlaps(b) for b in blockers):
+                return at
     raise _bad(
         "No room for the hierarchical label",
-        "the sub-sheet has no free spot in its left part",
+        f"the left part of the sub-sheet ({LABEL_COLUMNS} label columns) has no free spot",
         "Free some space on the sub-sheet first.",
         code="overlap",
     )

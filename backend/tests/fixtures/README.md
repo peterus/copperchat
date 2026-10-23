@@ -12,6 +12,13 @@ records that commit in `projects/KICAD_COMMIT`.
 | `projects/complex_hierarchy/` | `complex_hierarchy/` (hierarchical sheets: one root, `ampli_ht.kicad_sch` instantiated twice) |
 | `projects/blank/` | not a demo: `scripts/make-blank-fixture.py` (called by `refresh-fixtures.sh`) copies KiCad's `template/kicad.kicad_pro`, has a headless api-server create and save an empty `blank.kicad_sch` + `blank.kicad_pcb`, and copies the ecc83 project library (`ecc83-pp.kicad_sym`, `sym-lib-table`) verbatim |
 
+`reference/` holds single files written by eeschema at the pinned commit, compared as
+text by tests (never opened as projects); also made by `scripts/refresh-fixtures.sh`:
+
+| Fixture | Source (KiCad repo `demos/`) | Used for |
+|---|---|---|
+| `reference/sheet_pins.kicad_sch` | `simulation/subsheets/mainsheet.kicad_sch` | how KiCad writes sheet pins on the left (`at … 180`, `justify left`) and right edge (`at … 0`, `justify right`) |
+
 Files are copied verbatim and upgraded only with `kicad-cli sch upgrade --force` /
 `kicad-cli pcb upgrade --force`; the `.kicad_prl` files kicad-cli writes while
 upgrading are removed. License: the KiCad source repository
