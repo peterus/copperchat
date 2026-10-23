@@ -261,8 +261,7 @@ def _blockers(scene: Scene) -> list[Box]:
     out += [Box.around([w.start, w.end]) for w in scene.wires.values()]
     out += [Box.around([p, p]) for p in scene.junctions.values()]
     out += [Box.around([p, p]) for p in scene.no_connects.values()]
-    for lb in scene.labels.values():
-        out += [label_extent(lb), Box.around([lb.at, lb.at])]
+    out += [label_extent(lb) for lb in scene.labels.values()]  # each contains its point
     return out
 
 
