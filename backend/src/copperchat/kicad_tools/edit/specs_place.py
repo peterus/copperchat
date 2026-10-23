@@ -477,7 +477,7 @@ def _plan_place(
     inherited = field_values(siblings[0].item) if siblings else {}
     value = fields.get("Value") or inherited.get("Value")
     lay = layout(template, at, rotation, mirror, reference=ref, value=value)
-    problems = clashes(d.scene, lay)
+    problems = clashes(d.scene, lay, own_fields=True)
     if problems:
         raise overlap_error(d.scene, lay, problems, f"{lib_id}")
     plan = PlacePlan(

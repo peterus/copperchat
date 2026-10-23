@@ -219,10 +219,20 @@ def layout(
 INDEX_MIN_PINS = 16  # above this pin count clashes() indexes the scene's connection points
 
 
-def clashes(scene: Scene, lay: Layout, exclude: frozenset[str] = frozenset()) -> list[str]:
+def clashes(
+    scene: Scene,
+    lay: Layout,
+    exclude: frozenset[str] = frozenset(),
+    *,
+    own_fields: bool = False,
+) -> list[str]:
     """Why `lay` cannot go where it is: overlaps of its body/fields with the scene, and
-    pins landing on an existing connection point (that would connect them)."""
+    pins landing on an existing connection point (that would connect them). With
+    `own_fields` (a fresh placement, whose fields we laid out) also its Reference/Value
+    over its own body or pins; a moved part keeps the layout its author chose."""
     out: list[str] = []
+    if own_fields and any(box.overlaps(lay.body) for box in lay.fields):
+        out.append("a Reference/Value field would overlap the part's own body or pins")
     mine = [lay.body, *lay.fields]
     seen: set[str] = set()
     for name, box in named_obstacles(scene, exclude):
