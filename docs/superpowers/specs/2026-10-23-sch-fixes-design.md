@@ -241,9 +241,11 @@ field-vs-body and field-vs-pins so this case is reported if it happens anyway.
 
 ## 12. #5 — hierarchical labels in a sub-sheet
 
-Today the column at the left margin (x = 25.4 mm, pitch 15.24 mm) is full after
-~11 pins ("No room for the hierarchical label"), and parallel calls get the same
-spot.
+The feedback reports the column at the left margin (x = 25.4 mm, pitch 15.24 mm)
+full after ~11 pins ("No room for the hierarchical label"), and parallel calls
+getting the same spot. Note: the code (`kicad_tools/edit/sheets.py` `_label_spot`)
+steps 5.08 mm while y < 180 mm, so ~30 slots in theory; the repro must show why
+it fills after ~11 (blockers? spacing in effect?) before anything is changed.
 
 - Place labels on a 2.54 mm-grid pitch tight enough for normal label heights
   (exact pitch is the builder's call; labels must not overlap), and open a second
