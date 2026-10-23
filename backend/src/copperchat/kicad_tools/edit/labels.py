@@ -62,6 +62,7 @@ from copperchat.kicad_tools.edit.scene import (
     sheet_refs,
     short,
 )
+from copperchat.kicad_tools.edit.space import pin_corridor
 
 LabelKind = Literal["local", "global", "hierarchical"]
 Dir = tuple[int, int]
@@ -786,6 +787,32 @@ def _power_candidates(
         yield pts, at, rot
 
 
+NEIGHBOUR_ROOM_MM = 5.08  # one stub length plus a grid step in front of a neighbour pin
+
+
+def _blocks_neighbour(
+    pts: list[Point], pin_at: Point, rot: int, sym: PowerSymbol, corridors: list[Box]
+) -> bool:
+    box = power_box(sym, pin_at, rot)
+    return any(
+        box.overlaps(c) or any(c.hit_by_segment(a, b) for a, b in itertools.pairwise(pts))
+        for c in corridors
+    )
+
+
+def _by_room(
+    candidates: list[tuple[list[Point], Point, int]], sym: PowerSymbol, corridors: list[Box]
+) -> Iterator[tuple[list[Point], Point, int]]:
+    """Candidates that leave the neighbour pins' corridors free first, the rest after."""
+    rest = []
+    for cand in candidates:
+        if _blocks_neighbour(cand[0], cand[1], cand[2], sym, corridors):
+            rest.append(cand)
+        else:
+            yield cand
+    yield from rest
+
+
 def plan_power(
     world: World, pin: PinEnd, sym: PowerSymbol, allowed: set[str], reference: str
 ) -> PowerPlan | None:
@@ -796,7 +823,16 @@ def plan_power(
     net = world.net(pin)
     obstacles = Obstacles(scene, world.netlist, allowed, nets)
     room = Clearance(scene)
-    for n, (pts, pin_at, rot) in enumerate(_power_candidates(scene, pin, sym.body_dir)):
+    # The line in front of every other pin stays free for that pin's own stub/label (#11):
+    # a stub or symbol standing in it leaves the neighbour no room. Preferred, not
+    # absolute: a part with no variant outside the corridors still gets its power symbol.
+    corridors = [
+        pin_corridor(p, NEIGHBOUR_ROOM_MM, 0.5)
+        for p in scene.all_pins()
+        if not same_point(p.at, pin.at)
+    ]
+    candidates = list(_power_candidates(scene, pin, sym.body_dir))
+    for n, (pts, pin_at, rot) in enumerate(_by_room(candidates, sym, corridors)):
         if n % 16 == 0:
             world.check_time("sch_add_power")
         at_pin = same_point(pts[0], pin.at)
