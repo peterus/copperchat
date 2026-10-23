@@ -209,6 +209,12 @@ class HistoryHooks(RunHooks):
                         "that failed. Every earlier edit of this turn was saved, so nothing "
                         "else was lost and no restore is needed."
                     )
+                elif outcome.save_failed:  # KiCad failed before the save was retried
+                    text = (
+                        f"The design is back at {state}. An edit of this turn could not be "
+                        "saved before KiCad failed, so that edit is lost; the edits saved "
+                        "before it are kept."
+                    )
                 else:  # KiCad failed - during an edit or any other call
                     text = (
                         f"The design is back at {state}. Every successful edit of this turn "

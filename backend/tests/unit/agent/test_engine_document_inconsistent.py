@@ -123,3 +123,4 @@ async def test_failed_per_edit_save_ends_turn_with_one_error_row(make_engine, db
     assert run is not None and run["reason"] == "error"
     outcome = hooks.outcomes[0]
     assert outcome.changed_docs == {"sch"} and not outcome.document_inconsistent
+    assert outcome.save_failed

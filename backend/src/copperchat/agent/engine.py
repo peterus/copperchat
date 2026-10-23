@@ -123,6 +123,9 @@ class TurnOutcome:
     # last_save_partial: that save may still hold part of the failed edit.
     document_inconsistent: bool = False
     last_save_partial: bool = False
+    # An edit was applied but its save failed (#6): the turn-end autosave retries it,
+    # unless KiCad failed too - then that edit is lost.
+    save_failed: bool = False
 
 
 class RunHooks:
@@ -1055,6 +1058,7 @@ class RunEngine:
             kicad_failed=turn.kicad_failed,
             document_inconsistent=turn.document_inconsistent,
             last_save_partial=turn.last_save_partial,
+            save_failed=bool(turn.save_failed),
         )
         try:
             await self.hooks.on_turn_end(turn.info, outcome)

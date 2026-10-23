@@ -107,6 +107,22 @@ async def test_kicad_failed_editing_turn_says_successful_edits_are_kept(opened: 
     assert undo_meta == {"action": "restore", "snapshotId": snap.id}
 
 
+async def test_kicad_failure_after_a_failed_save_names_the_lost_edit(opened: Opened) -> None:
+    """save_failed, then KiCad fails in the same turn (no autosave retry): the notice
+    must not claim every successful edit was saved - the unsaved one is lost."""
+    env = opened.env
+    t = await _mutating_turn(opened, "run-sfk")
+    env.server.crash()
+    outcome = TurnOutcome(
+        reason="error", changed_docs=frozenset({"sch"}), mutated=True, kicad_failed=True,
+        save_failed=True,
+    )  # fmt: skip
+    await opened.hooks.on_turn_end(t, outcome)
+    text, _meta = next(n for n in env.engine.notices if n[1] == {"action": "recovered"})
+    assert "could not be saved" in text and "is lost" in text
+    assert "nothing that succeeded was lost" not in text
+
+
 async def test_kicad_failed_turn_without_changes_keeps_old_text(opened: Opened) -> None:
     env = opened.env
     t = await _mutating_turn(opened, "run-kf2")  # snapshot taken, but nothing changed
