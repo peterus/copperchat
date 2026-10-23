@@ -158,7 +158,15 @@ def owned_stub_chains(
         labels.setdefault(_key(lb.at), []).append(lb.uuid)
     for uid, nc_at in scene.no_connects.items():
         labels.setdefault(_key(nc_at), []).append(uid)
-    sheet_pin_points = [i.pin.at for i in scene.sheet_pins.values()]
+    # every connection point once: what may sit inside a chain wire (its own ends are no
+    # interior points, so the wire itself needs no exclusion)
+    points = [p.at for p in scene.all_pins()] + [i.pin.at for i in scene.sheet_pins.values()]
+    points += [q for w in scene.wires.values() for q in (w.start, w.end)]
+    points += [lb.at for lb in scene.labels.values()] + list(scene.junctions.values())
+    points += list(scene.no_connects.values())
+
+    def attached_inside(w: WireInfo) -> bool:
+        return any(in_segment_interior(q, w.start, w.end) for q in points)
 
     def passes_through(q: Point) -> bool:
         return any(in_segment_interior(q, w.start, w.end) for w in scene.wires.values())
@@ -172,7 +180,7 @@ def owned_stub_chains(
             return None  # another part's pin sits on it too (bridged as before)
         w, q, chain = ends[k][0], p, StubChain([], [], [p])
         while True:
-            if w.uuid in chain.wires or _interior_attached(scene, w, sheet_pin_points):
+            if w.uuid in chain.wires or attached_inside(w):
                 return None
             chain.wires.append(w.uuid)
             q = w.end if same_point(q, w.start) else w.start
@@ -576,8 +584,11 @@ def plan_move(
         if not lone or same_point(m.old, m.new):
             continue
         stub = _own_stub(scene, m.old, moved_ids)
-        if stub is not None and not any(u in carried for u in stub.wires):
-            restubs.append((stub, m))
+        if stub is None or any(u in carried for u in stub.wires):
+            continue
+        if any(stub.wires == other.wires for other, _m in restubs):
+            continue  # a label and a power symbol on one stub end: laid once
+        restubs.append((stub, m))
     restubbed = {u for stub, _m in restubs for u in stub.wires}
 
     # -- the scene after the move --------------------------------------------------------
@@ -657,69 +668,8 @@ def plan_move(
     wire_updates: dict[str, tuple[Point, Point]] = {}
     fixed_points: set[tuple[int, int]] = set()
     edge_sheets = sheet_boxes(scene)
-    trouble: list[str] = []
-    for uid in [*carried, *restubbed]:
+    for uid in [*carried, *restubbed]:  # laid at their new place after the drags
         del check.scene.wires[uid]
-    for chain in chains:  # carried chains: checked like routes at their new place
-        world.check_time(tool)
-        d = carried[chain.wires[0]]
-        pts = [_add(p, d) for p in chain.points]
-        net = nets.get(chain.wires[0])
-        own_ncs = {
-            u: check.scene.no_connects.pop(u)
-            for u in chain.end_items
-            if u in check.scene.no_connects
-        }
-        trouble = check.problems(
-            pts, net, (_owner(check.scene, pts[0]), _owner(check.scene, pts[-1]))
-        )
-        check.scene.no_connects.update(own_ncs)  # its own markers travel with it
-        if trouble:
-            raise StructuredToolError(
-                f"{tool} refused: the stub wire at {fmt(chain.points[0])} cannot travel "
-                "with the part",
-                "at its new place it would " + problems_summary(trouble),
-                "Move the part elsewhere (sch_find_space), or delete the stub and reconnect "
-                "afterwards.",
-                code="overlap",
-                details={"problems": trouble[:12]},
-            )
-        for uid in chain.wires:
-            w = scene.wires[uid]
-            a, b = _add(w.start, d), _add(w.end, d)
-            wire_updates[uid] = (a, b)
-            check.scene.wires[uid] = WireInfo(uid, a, b)
-    for stub, m in restubs:
-        world.check_time(tool)
-        pin = stub.points[0]
-        net = nets.get(stub.wires[0])
-        plan.dragged += len(stub.wires)
-        paths = _corner_paths(pin, m.new, _pin_direction(scene, pin))
-        chosen = None
-        trouble = []
-        for pts in paths:
-            trouble = check.problems(
-                pts, net, (_owner(check.scene, pts[0]), _owner(check.scene, pts[-1]))
-            )
-            if not trouble:
-                chosen = pts
-                break
-        if paths and chosen is None:
-            raise StructuredToolError(
-                f"{tool} refused: the stub from {fmt(pin)} cannot follow to {fmt(m.new)}",
-                "a wire there would " + problems_summary(trouble),
-                "Pick another position, or reconnect it afterwards (sch_connect).",
-                code="overlap",
-                details={"problems": trouble[:12]},
-            )
-        if chosen is not None and len(chosen) == 2 and len(stub.wires) == 1:
-            wire_updates[stub.wires[0]] = (chosen[0], chosen[1])
-            check.scene.wires[stub.wires[0]] = WireInfo(stub.wires[0], chosen[0], chosen[1])
-            continue
-        deletes += stub.wires
-        for a, b in itertools.pairwise(chosen or []):
-            creates.append(make_wire(a, b))
-            check.add_wire(a, b, net)
     for w in list(scene.wires.values()):
         world.check_time(tool)
         if w.uuid in carried or w.uuid in restubbed:
@@ -826,6 +776,112 @@ def plan_move(
             creates.append(make_wire(a, b))
             check.add_wire(a, b, m.net)
         plan.bridges += 1
+    # carried chains and laid-anew stubs: checked like routes at their new place, after
+    # every dragged wire and bridge is in the check scene
+    for chain in chains:
+        world.check_time(tool)
+        d = carried[chain.wires[0]]
+        net = nets.get(chain.wires[0])
+        own_ncs = {
+            u: check.scene.no_connects.pop(u)
+            for u in chain.end_items
+            if u in check.scene.no_connects
+        }
+        old_segs = list(itertools.pairwise(chain.points))
+        segs = [(_add(a, d), _add(b, d)) for a, b in old_segs]
+        # a wire that already broke the sheet-edge rule may keep doing so on its own line
+        # (as a dragged wire does): such a chain is checked segment by segment, warned (#9)
+        broke = [
+            bool(sheet_edge_problems(seg, edge_sheets, sheet_pins=sheet_pin_points))
+            for seg in old_segs
+        ]
+        pts = [_add(p, d) for p in chain.points]
+        checks: list[tuple[list[Point], tuple[Point, Point] | None, str | None]] = [
+            (pts, None, None)
+        ]
+        if any(broke):
+            checks = [
+                ([a, b], (a, b) if was_bad else None, uid)
+                for uid, (a, b), was_bad in zip(chain.wires, segs, broke, strict=True)
+            ]
+        for path, line, seg_uid in checks:
+            trouble = check.problems(
+                path,
+                net,
+                (_owner(check.scene, path[0]), _owner(check.scene, path[-1])),
+                legacy_line=line,
+            )
+            if trouble:
+                raise StructuredToolError(
+                    f"{tool} refused: the stub wire at {fmt(chain.points[0])} cannot travel "
+                    "with the part",
+                    "at its new place it would " + problems_summary(trouble),
+                    "Move the part elsewhere (sch_find_space), or delete the stub and "
+                    "reconnect afterwards.",
+                    code="overlap",
+                    details={"problems": trouble[:12]},
+                )
+            if seg_uid is not None:  # the next segment joins this one
+                check.scene.wires[seg_uid] = WireInfo(seg_uid, path[0], path[1])
+        for uid, was_bad in zip(chain.wires, broke, strict=True):
+            w = scene.wires[uid]  # its own direction kept
+            a, b = _add(w.start, d), _add(w.end, d)
+            check.scene.wires[uid] = WireInfo(uid, a, b)
+            wire_updates[uid] = (a, b)
+            if was_bad and (still := sheet_edge_problems((a, b), edge_sheets,
+                                                     sheet_pins=sheet_pin_points)):  # fmt: skip
+                plan.warnings.append(
+                    f"carried wire {uid} still breaks the sheet-edge rule: {still[0]}; "
+                    "consider sch_reroute"
+                )
+        check.scene.no_connects.update(own_ncs)  # its own markers travel with it
+    for stub, m in restubs:
+        world.check_time(tool)
+        pin = stub.points[0]
+        net = nets.get(stub.wires[0])
+        plan.dragged += len(stub.wires)
+        first = scene.wires[stub.wires[0]]  # the wire at the pin: its line may stay (#9)
+        legacy = sheet_edge_problems(
+            (first.start, first.end), edge_sheets, sheet_pins=sheet_pin_points
+        )
+        paths = _corner_paths(pin, m.new, _pin_direction(scene, pin))
+        chosen = None
+        trouble = []
+        for pts in paths:
+            trouble = check.problems(
+                pts,
+                net,
+                (_owner(check.scene, pts[0]), _owner(check.scene, pts[-1])),
+                legacy_line=(first.start, first.end) if legacy else None,
+            )
+            if not trouble:
+                chosen = pts
+                break
+        if paths and chosen is None:
+            raise StructuredToolError(
+                f"{tool} refused: the stub from {fmt(pin)} cannot follow to {fmt(m.new)}",
+                "a wire there would " + problems_summary(trouble),
+                "Pick another position, or reconnect it afterwards (sch_connect).",
+                code="overlap",
+                details={"problems": trouble[:12]},
+            )
+        if (
+            chosen is not None
+            and legacy
+            and (still := path_edge_problems(chosen, edge_sheets, sheet_pins=sheet_pin_points))
+        ):
+            plan.warnings.append(
+                f"stub wire {first.uuid} still breaks the sheet-edge rule: {still[0]}; "
+                "consider sch_reroute"
+            )
+        if chosen is not None and len(chosen) == 2 and len(stub.wires) == 1:
+            wire_updates[stub.wires[0]] = (chosen[0], chosen[1])
+            check.scene.wires[stub.wires[0]] = WireInfo(stub.wires[0], chosen[0], chosen[1])
+            continue
+        deletes += stub.wires
+        for a, b in itertools.pairwise(chosen or []):
+            creates.append(make_wire(a, b))
+            check.add_wire(a, b, net)
     # junctions: one where 3+ connections meet at a new point (KiCad drops the others)
     junction_points: list[Point] = []
     for item in creates:

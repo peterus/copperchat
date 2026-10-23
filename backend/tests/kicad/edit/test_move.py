@@ -126,6 +126,7 @@ async def test_mirror_keeps_nets(blank_session: KicadSession, edit_db: Database)
     nets = await pin_nets(s)
     out = await _ok(ctx, "sch_move", items=[q], mirror="y")
     assert out["connectivity_verified"] is True
+    assert "carried_wires" not in out  # a mirror drags, it carries nothing (#7/#8)
     assert (await state(s))[1] == partition
     assert await pin_nets(s) == nets
     sc = await _scene(s)
@@ -526,3 +527,50 @@ async def test_move_switch_carries_label_and_power(
     assert all(same_point(p1[r], (a[0] + d[0], a[1] + d[1])) for r, a in p0.items())
     (lb0,) = sc0.labels.values()
     assert same_point(sc.labels[lb0.uuid].at, (lb0.at[0] + d[0], lb0.at[1] + d[1]))
+
+
+async def test_move_two_labels_on_one_stub_laid_once(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    """Two labels on the same stub end, both moved: the stub is laid once."""
+    s = blank_session
+    await s.ensure_symbol_libraries()
+    ctx = edit_ctx(s, edit_db)
+    r = await _place(ctx, "Device:R", [101.6, 76.2])
+    out = await _ok(ctx, "sch_add_label", net="SDA", at=[f"{r}.1"])
+    first = next(x for x in out["created"] if x["kind"] == "label")
+    out = await _ok(ctx, "sch_add_label", net="SDA", at=first["at_mm"])
+    second = next(x for x in out["created"] if x["kind"] == "label")
+    _ids, partition = await state(s)
+    n_wires = len((await _scene(s)).wires)
+    out = await _ok(ctx, "sch_move", items=[first["uuid"], second["uuid"]], by=[7.62, -5.08])
+    assert out["connectivity_verified"] is True
+    assert (await state(s))[1] == partition
+    sc = await _scene(s)
+    new_at = (first["at_mm"][0] + 7.62, first["at_mm"][1] - 5.08)
+    assert all(same_point(sc.labels[x["uuid"]].at, new_at) for x in (first, second))
+    assert _wired(sc, new_at) and _all_orthogonal(sc)
+    assert len(sc.wires) <= n_wires + 1  # one L at most, not two
+    assert mm_point((await _symbol(s, r)).position) == (101.6, 76.2)
+
+
+async def test_move_label_alone_lays_multi_wire_stub_anew(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    s = blank_session
+    await s.ensure_symbol_libraries()
+    ctx = edit_ctx(s, edit_db)
+    r = await _place(ctx, "Device:R", [101.6, 76.2])
+    a, b = await _pin(ctx, f"{r}.1"), await _pin(ctx, f"{r}.2")
+    top = a if a[1] < b[1] else b
+    corner, end = (top[0], top[1] - 5.08), (top[0] + 7.62, top[1] - 5.08)
+    await _ok(ctx, "sch_add_wire", points=[list(top), list(corner), list(end)])
+    out = await _ok(ctx, "sch_add_label", net="CLK", at=list(end))
+    label = next(x for x in out["created"] if x["kind"] == "label")
+    _ids, partition = await state(s)
+    out = await _ok(ctx, "sch_move", items=[label["uuid"]], by=[-7.62, -2.54])
+    assert (await state(s))[1] == partition
+    sc = await _scene(s)
+    new_at = (corner[0], corner[1] - 2.54)
+    assert same_point(sc.labels[label["uuid"]].at, new_at)
+    assert _shape(sc) == sorted([(top, new_at)]) or _shape(sc) == sorted([(new_at, top)])
