@@ -491,8 +491,8 @@ class KicadSession:
     async def applying(self) -> AsyncIterator[None]:
         """Held while one edit's stages are pushed, verified and compensated (the edit
         engine): `refresh_jobs` waits for it, so it never saves a half-applied edit into
-        the last save a later failure falls back to (#6); `save_copy` likewise. Not
-        re-entrant."""
+        the last save a later failure falls back to (#6); `save` and `save_copy`
+        likewise. Not re-entrant: never save inside it."""
         async with self._apply_lock:
             yield
 
@@ -581,7 +581,7 @@ class KicadSession:
                 "project is open in KiCad (lock file present) - close it there first"
             )
         self._check_not_in_commit()
-        async with self._commit_lock:
+        async with self._apply_lock, self._commit_lock:  # never a half-applied edit (#6)
             await self._save_locked(doc)
 
     async def _save_locked(self, doc: DocKind) -> None:

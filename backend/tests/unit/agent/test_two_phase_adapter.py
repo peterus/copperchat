@@ -194,7 +194,32 @@ async def test_restart_between_apply_and_save_is_a_kicad_failure(h: Harness) -> 
     raw = await tool.handler({})
     assert raw["is_error"]
     assert "stopped responding" in json.loads(raw["content"][0]["text"])["error"]["what"]
-    assert len(lost) == 1 and not any(e.startswith("save") for e in h.log)
+    assert len(lost) == 1
+
+
+async def test_restart_during_the_save_is_a_kicad_failure(h: Harness) -> None:
+    """The window between apply and the end of the save is checked as a whole: a restart
+    there (or a lazy start inside the save) means the reloaded pre-edit document was
+    saved - a KiCad failure, never a success."""
+    lost: list[Exception] = []
+
+    def ctx() -> ToolContext:
+        c = Harness.ctx(h)
+        save = c.session.save
+
+        async def restarting_save(doc: str) -> None:
+            c.session.generation += 1  # type: ignore[attr-defined]
+            await save(doc)
+
+        c.session.save = restarting_save  # type: ignore[method-assign]
+        c.on_kicad_unavailable = lost.append
+        return c
+
+    tool = build_sdk_tool_list([h.spec()], ctx)[0]
+    raw = await tool.handler({})
+    assert raw["is_error"]
+    assert "stopped responding" in json.loads(raw["content"][0]["text"])["error"]["what"]
+    assert len(lost) == 1
 
 
 async def test_order_prepare_budget_snapshot_apply(h: Harness) -> None:

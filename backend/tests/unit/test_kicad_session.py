@@ -452,7 +452,7 @@ async def test_refresh_jobs_never_saves_an_unmodified_schematic(
     assert session.jobs_stale is False
 
 
-@pytest.mark.parametrize("call", ["refresh_jobs", "save_copy"])
+@pytest.mark.parametrize("call", ["refresh_jobs", "save_copy", "save"])
 async def test_saving_calls_wait_for_an_edit_being_applied(
     manager: KicadSessionManager,
     server: FakeServer,
@@ -460,7 +460,7 @@ async def test_saving_calls_wait_for_an_edit_being_applied(
     tmp_path: Path,
     call: str,
 ) -> None:
-    """#6: refresh_jobs / save_copy save a modified schematic. Between two stages of an
+    """#6: refresh_jobs / save_copy / save write a modified schematic. Between two stages of an
     edit that would put a half-applied edit into the last save - the state a later
     failure falls back to - so they wait until the edit is applied."""
     session = await manager.open(make_project(make_settings().projects_root))
@@ -468,6 +468,8 @@ async def test_saving_calls_wait_for_an_edit_being_applied(
     async with session.applying():
         if call == "refresh_jobs":
             task = asyncio.create_task(session.refresh_jobs())
+        elif call == "save":  # e.g. plan_step_done's checkpoint, parallel to an edit
+            task = asyncio.create_task(session.save("sch"))
         else:
             task = asyncio.create_task(session.save_copy("sch", tmp_path / "copy.kicad_sch"))
         await asyncio.sleep(0.05)

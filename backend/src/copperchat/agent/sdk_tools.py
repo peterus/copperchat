@@ -98,12 +98,6 @@ async def _two_phase_steps(spec: ToolSpec, ctx: ToolContext, args: dict[str, Any
         await ctx.on_mutation()
     generation = getattr(ctx.session, "generation", None)
     result = await spec.apply(ctx, cs)
-    if getattr(ctx.session, "generation", None) != generation:
-        # Restarted after the edit (e.g. a parallel read tool timed out): the server
-        # holds the last save, the edit is gone - a KiCad failure, never a success.
-        raise KicadUnavailable(
-            "the KiCad api-server restarted right after the edit; it holds the last save"
-        )
     if gate is not None:
         try:  # the change is applied and verified: bookkeeping never fails the call
             await gate.record(ctx, cs)
@@ -112,6 +106,13 @@ async def _two_phase_steps(spec: ToolSpec, ctx: ToolContext, args: dict[str, Any
         except Exception:
             log.exception("recording the budget of %s failed", spec.name)
     await _save_edit(spec, ctx, result)
+    if getattr(ctx.session, "generation", None) != generation:
+        # Restarted between the edit and the end of its save (e.g. a parallel read tool
+        # timed out, or the save started the server lazily): the server reloaded the
+        # last save, so the edit is gone - a KiCad failure, never a success.
+        raise KicadUnavailable(
+            "the KiCad api-server restarted right after the edit; it holds the last save"
+        )
     return result
 
 
