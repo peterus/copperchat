@@ -59,7 +59,7 @@ async def test_no_autosave_and_session_reopened(opened: Opened, reopens: list[st
     assert env.engine.errors == []  # the engine owns the error row (X18)
 
 
-async def test_recovery_notice_names_last_save_time(opened: Opened, reopens: list[str]) -> None:
+async def test_recovery_notice_says_nothing_lost(opened: Opened, reopens: list[str]) -> None:
     """#6 (spec §5.4): every successful edit was saved, so the notice says the design is
     at the state just before the failed edit, nothing else was lost and no restore is
     needed; the turn snapshot stays offered as an optional undo."""
