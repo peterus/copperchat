@@ -8,6 +8,11 @@ dragged (spike 2A Q4). So the move is planned here and written in one commit:
   field shifted with it (rotated about the origin on a transform change, Reference /
   Value laid out again as on placement);
 - power symbols, labels and no-connects sitting directly on a moved pin travel with it;
+- a stub chain hanging only on moved pins (no junction, branch, other pin or sheet pin;
+  any length) travels whole by the same offset with the power symbols, labels and
+  no-connects at its end (#7/#8; translations only — a rotation / mirror drags);
+- a label or power symbol moved without its part gets its stub chain laid anew from the
+  pin that stays (its own stub is no obstacle);
 - a wire ending on a moved point is dragged: its end follows the point; where that
   makes the segment diagonal it is replaced by an L (Delete + Create: KiCad may merge
   a leg with a collinear wire at push), the corner chosen by the router's checks;
@@ -24,6 +29,7 @@ Verification: the netlist partition must stay identical (`keep_partition`).
 from __future__ import annotations
 
 import itertools
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
@@ -116,6 +122,86 @@ class MovePlan:
     dragged: int = 0
     bridges: int = 0
     warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
+class StubChain:
+    """Wires that hang only on moved pins (#7/#8): from a pin through plain corners to a
+    free end (nothing there, or only power symbols, labels, no-connects: `end_items`) or
+    to another pin moving with it. `points`: the pin, the corners, the far end."""
+
+    wires: list[str]
+    end_items: list[str]
+    points: list[Point] = field(default_factory=list)
+
+
+def owned_stub_chains(
+    scene: Scene, pin_points: Sequence[Point], moving: Collection[str] = ()
+) -> list[StubChain]:
+    """The stub chains of the pins at `pin_points`. `moving`: the symbols travelling by
+    the same offset (a chain may run to one of their pins). A chain is not owned when it
+    meets a junction, a point joining three or more connections, a wire interior,
+    anything attached to its own interior, a sheet pin or a pin of any other symbol."""
+    moving = set(moving)
+    ends: dict[tuple[int, int], list[WireInfo]] = {}
+    for w in scene.wires.values():
+        for p in (w.start, w.end):
+            ends.setdefault(_key(p), []).append(w)
+    pins: dict[tuple[int, int], list[SymbolInfo]] = {}
+    for s in scene.symbols.values():
+        for pe in s.pins:
+            pins.setdefault(_key(pe.at), []).append(s)
+    blocked = {_key(j) for j in scene.junctions.values()}
+    blocked |= {_key(i.pin.at) for i in scene.sheet_pins.values()}
+    labels: dict[tuple[int, int], list[str]] = {}
+    for lb in scene.labels.values():
+        labels.setdefault(_key(lb.at), []).append(lb.uuid)
+    for uid, nc_at in scene.no_connects.items():
+        labels.setdefault(_key(nc_at), []).append(uid)
+    sheet_pin_points = [i.pin.at for i in scene.sheet_pins.values()]
+
+    def passes_through(q: Point) -> bool:
+        return any(in_segment_interior(q, w.start, w.end) for w in scene.wires.values())
+
+    def walk(p: Point) -> StubChain | None:
+        k = _key(p)
+        here = pins.get(k, [])
+        if len(ends.get(k, [])) != 1 or k in blocked or passes_through(p):
+            return None
+        if sum(1 for s in here if not s.power) != 1:
+            return None  # another part's pin sits on it too (bridged as before)
+        w, q, chain = ends[k][0], p, StubChain([], [], [p])
+        while True:
+            if w.uuid in chain.wires or _interior_attached(scene, w, sheet_pin_points):
+                return None
+            chain.wires.append(w.uuid)
+            q = w.end if same_point(q, w.start) else w.start
+            k = _key(q)
+            chain.points.append(q)
+            if k in blocked or passes_through(q):
+                return None
+            here = pins.get(k, [])
+            if any(not s.power and s.uuid not in moving for s in here):
+                return None
+            further = [x for x in ends.get(k, []) if x.uuid != w.uuid]
+            if any(s.uuid in moving for s in here):  # another moving pin: the chain ends
+                return chain if not further else None
+            chain.end_items += [s.uuid for s in here]
+            chain.end_items += labels.get(k, [])
+            if not further:
+                return chain
+            if len(further) > 1:
+                return None
+            w = further[0]
+
+    out: list[StubChain] = []
+    seen: set[frozenset[str]] = set()
+    for p in pin_points:
+        chain = walk(p)
+        if chain is not None and frozenset(chain.wires) not in seen:
+            seen.add(frozenset(chain.wires))
+            out.append(chain)
+    return out
 
 
 def _matrix_inverse(m: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
@@ -300,6 +386,7 @@ def plan_move(
     updates: list[Any] = []
     moved_ids: set[str] = set()
     new_infos: list[tuple[SymbolInfo, Any, int, Mirror, str]] = []
+    rigid: set[str] = set()  # symbols moved without a rotation / mirror change
     sheet_pin_points = [i.pin.at for i in scene.sheet_pins.values()]
     api = sheet_api(world.h, sheet)
     cache: dict[str, dict[str, Any]] = {}
@@ -324,7 +411,9 @@ def plan_move(
             at = _add(old.at, delta_for(old.at))
             rot = old.rotation if rotation is None else rotation % 360
             mir: Mirror = old.mirror if mirror is None else mirror  # type: ignore[assignment]
-            sym, _changed = moved_symbol(old, at, rot, mir)
+            sym, changed = moved_symbol(old, at, rot, mir)
+            if not changed:
+                rigid.add(old.uuid)
             new_pins = {p.number: p for p in pin_ends(sym)}
             for pe in old.pins:
                 q = new_pins.get(pe.number)
@@ -445,6 +534,51 @@ def plan_move(
                 updates.append(nc)
                 along_ids.add(uid)
                 plan.along.append("no-connect marker")
+    # stub chains hanging only on the moved pins travel whole, shape kept (#7/#8)
+    carried: dict[str, Point] = {}  # wire uuid -> offset
+    chains = [  # not when a rotated / mirrored part sits at the end
+        c
+        for c in owned_stub_chains(scene, [m.old for m in pin_points if m.own in rigid], rigid)
+        if not any(u in moved_ids and u in scene.symbols for u in c.end_items)
+    ]
+    for chain in chains:
+        d = next(_sub(m.new, m.old) for m in pin_points if same_point(m.old, chain.points[0]))
+        for uid in chain.wires:
+            carried[uid] = d
+        for uid in chain.end_items:
+            if uid in moved_ids or uid in along_ids:
+                continue
+            along_ids.add(uid)
+            if uid in scene.symbols:
+                s = scene.symbols[uid]
+                psym, _ = moved_symbol(s, _add(s.at, d), s.rotation, s.mirror)  # type: ignore[arg-type]
+                updates.append(psym)
+                new_infos.append((s, psym, s.rotation, s.mirror, s.ref))  # type: ignore[arg-type]
+                plan.along.append(f"power symbol {s.ref}")
+            elif uid in scene.labels:
+                item = item_of("labels", uid)
+                item.position = _v2(_add(scene.labels[uid].at, d))
+                item.text.position = _v2(_add(mm_point(item.text.position), d))
+                updates.append(item)
+                plan.along.append(f"label {scene.labels[uid].text}")
+            else:
+                nc = item_of("no_connects", uid)
+                nc.position = _v2(_add(scene.no_connects[uid], d))
+                updates.append(nc)
+                plan.along.append("no-connect marker")
+    if carried:
+        plan.along.append("stub wires")
+    # a label / power symbol moved without its part: its stub is laid anew from the
+    # part's pin to the new place (no own-stub clash, no L left on the old course)
+    restubs: list[tuple[StubChain, _Moving]] = []
+    for m in moving:
+        lone = m.label or (m.own in scene.symbols and scene.symbols[m.own].power)
+        if not lone or same_point(m.old, m.new):
+            continue
+        stub = _own_stub(scene, m.old, moved_ids)
+        if stub is not None and not any(u in carried for u in stub.wires):
+            restubs.append((stub, m))
+    restubbed = {u for stub, _m in restubs for u in stub.wires}
 
     # -- the scene after the move --------------------------------------------------------
     check = _Check(world, sheet, scene)
@@ -488,7 +622,11 @@ def plan_move(
 
     moved_points = [m.old for m in moving if not same_point(m.old, m.new)]
     for w in scene.wires.values():  # attached wires follow (checked as routes below)
-        if any(same_point(w.start, q) or same_point(w.end, q) for q in moved_points):
+        if (
+            w.uuid in carried
+            or w.uuid in restubbed
+            or any(same_point(w.start, q) or same_point(w.end, q) for q in moved_points)
+        ):
             others.wires.pop(w.uuid, None)
 
     # -- bodies --------------------------------------------------------------------------
@@ -519,8 +657,73 @@ def plan_move(
     wire_updates: dict[str, tuple[Point, Point]] = {}
     fixed_points: set[tuple[int, int]] = set()
     edge_sheets = sheet_boxes(scene)
+    trouble: list[str] = []
+    for uid in [*carried, *restubbed]:
+        del check.scene.wires[uid]
+    for chain in chains:  # carried chains: checked like routes at their new place
+        world.check_time(tool)
+        d = carried[chain.wires[0]]
+        pts = [_add(p, d) for p in chain.points]
+        net = nets.get(chain.wires[0])
+        own_ncs = {
+            u: check.scene.no_connects.pop(u)
+            for u in chain.end_items
+            if u in check.scene.no_connects
+        }
+        trouble = check.problems(
+            pts, net, (_owner(check.scene, pts[0]), _owner(check.scene, pts[-1]))
+        )
+        check.scene.no_connects.update(own_ncs)  # its own markers travel with it
+        if trouble:
+            raise StructuredToolError(
+                f"{tool} refused: the stub wire at {fmt(chain.points[0])} cannot travel "
+                "with the part",
+                "at its new place it would " + problems_summary(trouble),
+                "Move the part elsewhere (sch_find_space), or delete the stub and reconnect "
+                "afterwards.",
+                code="overlap",
+                details={"problems": trouble[:12]},
+            )
+        for uid in chain.wires:
+            w = scene.wires[uid]
+            a, b = _add(w.start, d), _add(w.end, d)
+            wire_updates[uid] = (a, b)
+            check.scene.wires[uid] = WireInfo(uid, a, b)
+    for stub, m in restubs:
+        world.check_time(tool)
+        pin = stub.points[0]
+        net = nets.get(stub.wires[0])
+        plan.dragged += len(stub.wires)
+        paths = _corner_paths(pin, m.new, _pin_direction(scene, pin))
+        chosen = None
+        trouble = []
+        for pts in paths:
+            trouble = check.problems(
+                pts, net, (_owner(check.scene, pts[0]), _owner(check.scene, pts[-1]))
+            )
+            if not trouble:
+                chosen = pts
+                break
+        if paths and chosen is None:
+            raise StructuredToolError(
+                f"{tool} refused: the stub from {fmt(pin)} cannot follow to {fmt(m.new)}",
+                "a wire there would " + problems_summary(trouble),
+                "Pick another position, or reconnect it afterwards (sch_connect).",
+                code="overlap",
+                details={"problems": trouble[:12]},
+            )
+        if chosen is not None and len(chosen) == 2 and len(stub.wires) == 1:
+            wire_updates[stub.wires[0]] = (chosen[0], chosen[1])
+            check.scene.wires[stub.wires[0]] = WireInfo(stub.wires[0], chosen[0], chosen[1])
+            continue
+        deletes += stub.wires
+        for a, b in itertools.pairwise(chosen or []):
+            creates.append(make_wire(a, b))
+            check.add_wire(a, b, net)
     for w in list(scene.wires.values()):
         world.check_time(tool)
+        if w.uuid in carried or w.uuid in restubbed:
+            continue
         ms, me = mapping.get(_key(w.start)), mapping.get(_key(w.end))
         if ms is None and me is None:
             continue
@@ -685,12 +888,51 @@ def plan_move(
         summary={
             "moved": plan.moved,
             "dragged_wires": plan.dragged,
+            **({"carried_wires": len(carried)} if carried else {}),
             "bridges": plan.bridges,
             **({"warnings": plan.warnings} if plan.warnings else {}),
         },
         notes=notes,
     )
     return cs, plan
+
+
+def _own_stub(scene: Scene, p: Point, moved: set[str]) -> StubChain | None:
+    """The stub chain a moved label / power symbol at `p` hangs on, seen from the pin of
+    the part that stays; None unless everything at the chain's end moves."""
+
+    def wires_at(q: Point) -> list[WireInfo]:
+        return [w for w in scene.wires.values() if same_point(w.start, q) or same_point(w.end, q)]
+
+    first = wires_at(p)
+    if len(first) != 1 or any(  # something that stays sits there too
+        i.get("where") or (i["kind"] != "wire" and i["uuid"] not in moved)
+        for i in scene.items_at(p)
+    ):
+        return None
+    w, q, seen = first[0], p, set()
+    while w.uuid not in seen:  # along plain corners to the chain's other end
+        seen.add(w.uuid)
+        q = w.end if same_point(q, w.start) else w.start
+        further = [x for x in wires_at(q) if x.uuid != w.uuid]
+        if len(further) != 1 or any(i["kind"] != "wire" for i in scene.items_at(q)):
+            break
+        w = further[0]
+    if any(
+        s.uuid in moved for s in scene.symbols.values() for pe in s.pins if same_point(pe.at, q)
+    ):
+        return None  # the part moves too
+    for chain in owned_stub_chains(scene, [q], moved):
+        if same_point(chain.points[-1], p) and set(chain.end_items) <= moved:
+            return chain
+    return None
+
+
+def _pin_direction(scene: Scene, p: Point) -> str | None:
+    for pe in scene.all_pins():
+        if same_point(pe.at, p) and pe.direction is not None:
+            return str(pe.direction)
+    return None
 
 
 def _owner(scene: Scene, p: Point) -> str | None:

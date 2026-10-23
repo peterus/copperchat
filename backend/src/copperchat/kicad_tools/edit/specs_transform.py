@@ -178,9 +178,13 @@ TOOL_SPECS: list[ToolSpec] = [
     edit_spec(
         "sch_move",
         "Move, rotate or mirror symbols (every unit of a reference, or one unit by UUID), "
-        "and move labels and sheet symbols, keeping every connection: attached wires are "
-        "dragged (a diagonal becomes an L), power symbols, labels and no-connects on a "
-        "moved pin travel with it, fields move with the part. to=[x, y] (one item) or "
+        "and move labels and sheet symbols, keeping every connection. A moved symbol takes "
+        "along, by the same offset and in shape, every stub chain hanging only on its pins "
+        "(wires with no junction, branch or other pin, any length) with the power symbols, "
+        "labels and no-connects at its end or on the pin; other attached wires are dragged "
+        "(a diagonal becomes an L). Rotating / mirroring drags all wires. A label or power "
+        "symbol moved alone gets its stub laid anew from the pin that stays. Fields move "
+        "with the part. to=[x, y] (one item) or "
         "by=[dx, dy] (mm, snapped to 1.27 mm); rotation (absolute, degrees CCW) / mirror "
         "alone rotate in place. Refused before writing when a part would overlap (the "
         "nearest free position is suggested) or a dragged wire would touch another net; "
