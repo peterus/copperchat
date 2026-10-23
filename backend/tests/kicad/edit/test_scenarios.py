@@ -81,7 +81,7 @@ SENSOR = "/Sensor/"
 
 S3: list[Step] = [
     ("sch_place_symbol", {"lib_id": MCU, "at": [88.9, 101.6]}, "U"),
-    ("sch_place_symbol", {"lib_id": "Device:C", "at": [55.88, 101.6], "value": "100nF",
+    ("sch_place_symbol", {"lib_id": "Device:C", "at": [55.88, 99.06], "value": "100nF",
                           "footprint": C0805}, "C"),
     ("sch_add_power", {"net": "+3V3", "at": ["{U}.VCC", "{C}.1"]}),
     ("sch_add_power", {"net": "GND", "at": ["{U}.GND", "{C}.2"]}),
