@@ -145,7 +145,7 @@ async def test_existing_violating_wire_warns_not_refuses(
     blank_session: KicadSession, edit_db: Database
 ) -> None:
     """A legacy wire 1.27 mm above the sheet's top edge (drawn before the rule): a new wire
-    T-joining it is accepted (it keeps the rule itself) and the result names the old one."""
+    touched by a move, sch_add_wire, sch_connect or sch_reroute: accepted, the result names it."""
     s = blank_session
     ctx = edit_ctx(s, edit_db)
     g = await _setup(s, ctx)
@@ -154,6 +154,14 @@ async def test_existing_violating_wire_warns_not_refuses(
     legacy = wire((box.x0 + 5.08, y), (box.x0 + 15.24, y))
     async with s.commit("legacy wire"):
         await s.call(lambda h: h.schematic().create_items([legacy]))
+    # sch_move drags the legacy wire along its line (a new bridge wire there would be
+    # refused): allowed, it keeps its old fault; warned
+    await place(s, ("Device:R", "R4", (box.x0 + 1.27, y), 90))
+    r4, err = await call_tool(ctx, "sch_get_pin", pin="R4.2")
+    assert not err and r4["at_mm"] == pytest.approx([box.x0 + 5.08, y]), r4
+    out, err = await call_tool(ctx, "sch_move", items=["R4"], by=[-2.54, 0])
+    assert not err, out
+    assert any(legacy.proto.id.value in w for w in out["warnings"]), out
     out, err = await call_tool(
         ctx, "sch_add_wire", points=[[box.x0 + 10.16, y], [box.x0 + 10.16, y - 10.16]]
     )
@@ -166,3 +174,20 @@ async def test_existing_violating_wire_warns_not_refuses(
     )
     assert not err, out
     assert "warnings" not in out
+
+    # sch_connect T-joins the legacy wire: its own route is clean, the old wire is named
+    await place(s, ("Device:R", "R3", (box.x0 + 12.7, y - 10.16), 0))
+    out, err = await call_tool(ctx, "sch_connect", **{"from": "R3.2", "to": "R4.2"})
+    assert not err, out
+    start, end = out["route"]["points"][0], out["route"]["points"][-1]
+    assert [c for p in out["route"]["points"] for c in p] == pytest.approx(
+        [box.x0 + 12.7, y - 6.35, box.x0 + 12.7, y]
+    )
+    assert any(legacy.proto.id.value in w for w in out["warnings"]), out
+    # sch_reroute of that connection (a detour, same ends): warned again
+    wires = [c["uuid"] for c in out["created"] if c["kind"] == "wire"]
+    x = start[0] + 1.27
+    detour = [start, [x, start[1]], [x, end[1] - 2.54], [end[0], end[1] - 2.54], end]
+    out, err = await call_tool(ctx, "sch_reroute", wires=wires, points=detour)
+    assert not err, out
+    assert any(legacy.proto.id.value in w for w in out["warnings"]), out

@@ -74,6 +74,7 @@ from copperchat.kicad_tools.edit.scene import (
     sheet_api,
     symbol_info,
 )
+from copperchat.kicad_tools.edit.sheet_edges import sheet_boxes, sheet_edge_problems
 from copperchat.kicad_tools.edit.targets import LABEL_KINDS, Target, bad, sheet_symbols
 
 Mirror = Literal["", "x", "y"]
@@ -110,6 +111,7 @@ class MovePlan:
     along: list[str] = field(default_factory=list)  # what travelled with the parts
     dragged: int = 0
     bridges: int = 0
+    warnings: list[str] = field(default_factory=list)
 
 
 def _matrix_inverse(m: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
@@ -223,7 +225,11 @@ class _Check:
             self.nets[uid] = net
 
     def problems(
-        self, pts: list[Point], net: str | None, own: tuple[str | None, str | None]
+        self,
+        pts: list[Point],
+        net: str | None,
+        own: tuple[str | None, str | None],
+        sheet_edges: bool = True,
     ) -> list[str]:
         allowed = {net} if net is not None else set()
         # sheet pins of other nets (not at the path's ends) are foreign connection points:
@@ -242,7 +248,13 @@ class _Check:
                                       0, "", [pin], Box(*pin.at, *pin.at), [], False)  # fmt: skip
         scene = replace(self.scene, symbols=symbols)
         return route_problems(
-            pts, scene, self.world.netlist, allowed, item_nets=self.nets, own_symbols=own
+            pts,
+            scene,
+            self.world.netlist,
+            allowed,
+            item_nets=self.nets,
+            own_symbols=own,
+            sheet_edges=sheet_edges,
         )
 
 
@@ -502,6 +514,7 @@ def plan_move(
     deletes: list[str] = []
     wire_updates: dict[str, tuple[Point, Point]] = {}
     fixed_points: set[tuple[int, int]] = set()
+    edge_sheets = sheet_boxes(scene)
     for w in list(scene.wires.values()):
         world.check_time(tool)
         ms, me = mapping.get(_key(w.start)), mapping.get(_key(w.end))
@@ -527,17 +540,27 @@ def plan_move(
             moved_end, fixed_end, end = (s_new, e_new, ms) if ms else (e_new, s_new, me)
             assert end is not None
             paths = _corner_paths(moved_end, fixed_end, end.direction)
+        # a wire that already broke the sheet-edge rule may keep doing so: warn (#9)
+        legacy = sheet_edge_problems((w.start, w.end), edge_sheets, sheet_pins=sheet_pin_points)
         chosen = None
         found: list[str] = []
         for pts in paths:
             found = check.problems(
-                pts, net, (_owner(check.scene, pts[0]), _owner(check.scene, pts[-1]))
+                pts,
+                net,
+                (_owner(check.scene, pts[0]), _owner(check.scene, pts[-1])),
+                sheet_edges=not legacy,
             )
             if not found:
                 chosen = pts
                 break
         if chosen is None:
             raise _short(tool, w, found)
+        if legacy:
+            plan.warnings.append(
+                f"dragged wire {w.uuid} already broke the sheet-edge rule: {legacy[0]}; "
+                "consider sch_reroute"
+            )
         if len(chosen) == 2:
             wire_updates[w.uuid] = (chosen[0], chosen[1])
             check.add_wire(chosen[0], chosen[1], net)
@@ -653,7 +676,12 @@ def plan_move(
         pre_images={},
         intent=NetIntent(keep_partition=True),
         logical=Logical(logical),
-        summary={"moved": plan.moved, "dragged_wires": plan.dragged, "bridges": plan.bridges},
+        summary={
+            "moved": plan.moved,
+            "dragged_wires": plan.dragged,
+            "bridges": plan.bridges,
+            **({"warnings": plan.warnings} if plan.warnings else {}),
+        },
         notes=notes,
     )
     return cs, plan

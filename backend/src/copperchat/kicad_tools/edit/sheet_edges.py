@@ -11,7 +11,7 @@ reported (`edge_warnings`), never refused.
 from __future__ import annotations
 
 import itertools
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from copperchat.kicad_tools.edit.geometry import EPS_MM, Box, Point, on_segment, same_point
@@ -113,19 +113,17 @@ def path_edge_problems(
     return out
 
 
-def edge_warnings(scene: Scene, points: Sequence[Point], *, skip: Iterable[str] = ()) -> list[str]:
-    """Existing wires (not in `skip`) that break the rule and touch the new path at a
-    point: they stay as they are, the result only names them."""
+def edge_warnings(scene: Scene, points: Sequence[Point]) -> list[str]:
+    """Existing wires of `scene` that break the rule and touch the new path at a point:
+    they stay as they are, the result only names them (pass a scene without wires the
+    edit replaces)."""
     sheets = sheet_boxes(scene)
     if not sheets:
         return []
     pins = sheet_pin_points(scene)
-    skipped = set(skip)
     segs = list(itertools.pairwise(points))
     out: list[str] = []
     for w in scene.wires.values():
-        if w.uuid in skipped:
-            continue
         touches = any(on_segment(p, a, b) for p in (w.start, w.end) for a, b in segs) or any(
             on_segment(p, w.start, w.end) for p in points
         )

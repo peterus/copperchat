@@ -106,4 +106,3 @@ def test_edge_warnings_name_touched_existing_wires_only() -> None:
     out = edge_warnings(scene, [(60.96, 49.53), (60.96, 40.64)])
     assert len(out) == 1 and "old" in out[0] and "1.27 mm" in out[0], out
     assert edge_warnings(scene, [(60.96, 30.48), (60.96, 40.64)]) == []
-    assert edge_warnings(scene, [(60.96, 49.53), (60.96, 40.64)], skip=["old"]) == []

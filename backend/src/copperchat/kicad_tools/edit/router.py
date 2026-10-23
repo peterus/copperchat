@@ -238,7 +238,10 @@ class Obstacles:
         points: Sequence[Point],
         own_symbols: tuple[str | None, str | None] = (None, None),
         first_only: bool = False,
+        sheet_edges: bool = True,
     ) -> list[str]:
+        """Why a wire along `points` would be unsafe. `sheet_edges=False` skips the
+        sheet-edge rule (only for an existing wire that already broke it, #9)."""
         pts = list(points)
         segs = list(itertools.pairwise(pts))
         if not segs:
@@ -279,6 +282,8 @@ class Obstacles:
                     )
                     if not own and box.hit_by_segment(a, b) and add(f"crosses {what}"):
                         return out
+            if not sheet_edges:
+                continue
             near = {s.uuid: s for cell in _cells(seg_box) for s in self.sheets.get(cell, ())}
             for msg in sheet_edge_problems((a, b), list(near.values()), sheet_pins=self.sheet_pins):
                 if add(msg):
@@ -305,6 +310,7 @@ def route_problems(
     *,
     item_nets: Mapping[str, str] | None = None,
     own_symbols: tuple[str | None, str | None] = (None, None),
+    sheet_edges: bool = True,
 ) -> list[str]:
     """Why a wire along `points` would be unsafe (empty = OK).
 
@@ -313,7 +319,9 @@ def route_problems(
     be touched anywhere. Corners never sit on a wire. `own_symbols`: the symbols whose
     pin the first / last point is: an outward first/last segment may touch their body
     box (it contains the pin)."""
-    return Obstacles(scene, netlist, allowed_nets, item_nets).problems(points, own_symbols)
+    return Obstacles(scene, netlist, allowed_nets, item_nets).problems(
+        points, own_symbols, sheet_edges=sheet_edges
+    )
 
 
 def needed_junctions(points: Sequence[Point], scene: Scene) -> list[Point]:
