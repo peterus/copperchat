@@ -39,6 +39,13 @@ from copperchat.kicad_tools.edit.scene import (
     resolve_sheet,
     sheet_pin_net,
 )
+from copperchat.kicad_tools.edit.sheet_edges import (
+    SHEET_EDGE_CLEARANCE_MM,
+    edge_warnings,
+    path_edge_problems,
+    sheet_boxes,
+    sheet_pin_points,
+)
 from copperchat.tools.spec import ToolContext, ToolResult, ToolSpec, edit_spec
 
 EXACT_MM = 1e-4  # a point given "on" a pin must be on it up to float noise
@@ -273,6 +280,13 @@ def _check_path(
                 f"the wire would touch {what} at {_fmt(pt)} and connect another net",
                 "Route around it.",
             )
+    edge = path_edge_problems(points, sheet_boxes(scene), sheet_pins=sheet_pin_points(scene))
+    if edge:
+        raise overlap(
+            f"{edge[0]}: wires keep at least {SHEET_EDGE_CLEARANCE_MM:g} mm from sheet edges",
+            "Route at least 2.54 mm away from the sheet; touch a sheet edge only at a sheet "
+            "pin, arriving perpendicular to the edge.",
+        )
     last = len(segments) - 1
     for i, (a, b) in enumerate(segments):
         for sym in scene.symbols.values():
@@ -399,7 +413,11 @@ def _plan_wire(raw_points: list[Point], sheet_arg: str | None) -> Any:
             pre_images={},
             intent=NetIntent(merge=[frozenset(group)] if len(group) > 1 else [], joined=joined),
             logical=Logical(1),
-            summary={"points_mm": [list(p) for p in points], "sheet": sheet.human_path},
+            summary={
+                "points_mm": [list(p) for p in points],
+                "sheet": sheet.human_path,
+                **({"warnings": w} if (w := edge_warnings(scene, points)) else {}),
+            },
             notes=notes,
         )
 
@@ -444,7 +462,12 @@ TOOL_SPECS: list[ToolSpec] = [
         "Draw one wire as an orthogonal polyline (mm, snapped to the 1.27 mm grid). Ends "
         "must be exactly on pin ends (take at_mm from sch_get_pin), on existing wires/labels, "
         "or free. Refused before writing when a segment would run over a foreign pin, wire "
-        "end, label or symbol body. Verified against KiCad's netlist after writing: the "
+        "end, label or symbol body. "
+        "Sheet-edge rule (same for sch_connect, sch_add_wire, sch_reroute): no segment on a "
+        "sheet symbol's edge or within 2.54 mm parallel to it; a wire touches a sheet edge "
+        "only perpendicular, ending on a sheet pin. Existing wires that break it are "
+        "named under warnings, not refused. "
+        "Verified against KiCad's netlist after writing: the "
         "pins at both ends end up on one net, nothing else changes. One logical change.",
         _obj(
             {

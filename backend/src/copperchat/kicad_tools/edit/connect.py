@@ -65,6 +65,7 @@ from copperchat.kicad_tools.edit.scene import (
     sheet_api,
     short,
 )
+from copperchat.kicad_tools.edit.sheet_edges import edge_warnings
 
 Via = Literal["auto", "wire", "label"]
 NEAR_MM = 25.4  # a wire of a named target net this close to the pin is routed to
@@ -206,6 +207,7 @@ def _wire_change_set(
             "points": [list(p) for p in r.points],
             "junction": list(r.junction_at) if r.junction_at else None,
         },
+        **({"warnings": w} if (w := edge_warnings(world.scene(sheet), r.points)) else {}),
     }
     # A sheet pin end: its own netlist item must end on the route's net, also when the
     # sub-sheet net has no symbol pin to stand in for it (E6 review).
@@ -788,7 +790,9 @@ def plan_reroute(world: World, tool: str, wires: Any, points: list[Point]) -> Ch
         raise StructuredToolError(
             f"{tool} refused: the new route would change connections",
             problems_summary(problems),
-            "Choose corner points that keep clear of other pins, wires, labels and bodies.",
+            "Choose corner points that keep clear of other pins, wires, labels and bodies, "
+            "and at least 2.54 mm from sheet edges (a sheet edge only at a sheet pin, "
+            "perpendicular).",
             code="overlap",
             details={"problems": problems[:12]},
         )
@@ -818,6 +822,7 @@ def plan_reroute(world: World, tool: str, wires: Any, points: list[Point]) -> Ch
             "points_mm": [list(p) for p in pts],
             "replaced_wires": list(uuids),
             "sheet": sheet.human_path,
+            **({"warnings": w} if (w := edge_warnings(trimmed, pts)) else {}),
         },
         notes=notes,
     )

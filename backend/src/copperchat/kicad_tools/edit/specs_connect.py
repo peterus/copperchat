@@ -390,7 +390,12 @@ TOOL_SPECS: list[ToolSpec] = [
         "clean route exists, via='auto' falls back to labels (net_name, an existing net "
         "name, or N_<ref>_<pin>). to=<net name>: power nets get a power symbol, other nets a "
         "wire when one of their wires/pins is within 25.4 mm, else a label. Refuses to merge "
-        "two named nets. Verified against KiCad's netlist. One logical change.",
+        "two named nets. "
+        "Sheet-edge rule (same for sch_connect, sch_add_wire, sch_reroute): no segment on a "
+        "sheet symbol's edge or within 2.54 mm parallel to it; a wire touches a sheet edge "
+        "only perpendicular, ending on a sheet pin. Existing wires that break it are "
+        "named under warnings, not refused. "
+        "Verified against KiCad's netlist. One logical change.",
         _obj(
             {
                 "from": {
@@ -498,7 +503,12 @@ TOOL_SPECS: list[ToolSpec] = [
         "Replace the course of an existing wire route (wire uuids, or the chain between two "
         "pins) with new orthogonal points (mm, snapped); the new route must start and end on "
         "the old route's ends. Refused before writing when it would touch another net, and "
-        "undone unless the netlist stays identical. One logical change.",
+        "undone unless the netlist stays identical. "
+        "Sheet-edge rule (same for sch_connect, sch_add_wire, sch_reroute): no segment on a "
+        "sheet symbol's edge or within 2.54 mm parallel to it; a wire touches a sheet edge "
+        "only perpendicular, ending on a sheet pin. Existing wires that break it are "
+        "named under warnings, not refused. "
+        "One logical change.",
         _obj(
             {
                 "wires": {
