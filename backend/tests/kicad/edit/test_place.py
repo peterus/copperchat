@@ -429,3 +429,42 @@ async def test_unused_reference_refused(blank_session: KicadSession, edit_db: Da
     )
     assert err and out["error"]["code"] == "invalid_argument", out
     assert "R1" in out["error"]["suggestion"]
+
+
+async def test_conn_01x14_value_field_clear_of_body_and_pins(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    """#14: the 14-pin connector's text is long; at every rotation/mirror the Reference and
+    Value texts, as KiCad measures them, stay clear of the body box (which holds the pins)."""
+    s = blank_session
+    await s.ensure_symbol_libraries()
+    ctx = edit_ctx(s, edit_db)
+    uids = []
+    for n, (rotation, mirror) in enumerate((r, m) for r in (0, 90, 180, 270) for m in ("", "y")):
+        out = await _place(
+            ctx,
+            lib_id="Connector_Generic:Conn_01x14",
+            at=[60.0 + 60.0 * (n % 4), 60.0 + 70.0 * (n // 4)],
+            rotation=rotation,
+            mirror=mirror,
+        )
+        uids.append((out["placed"]["uuid"], rotation, mirror))
+
+    def read(h: KicadHandle) -> list[tuple[int, str, Box, list[Box]]]:
+        from copperchat.kicad_tools.edit.geometry import body_box
+
+        found = []
+        for uid, rotation, mirror in uids:
+            sym = get_item(h, uid)
+            boxes = []
+            for f in (sym.reference_field, sym.value_field):
+                ext = h.kicad.get_text_extents(f.text)  # KiCad's own measure of the text
+                w, ht = sorted((ext.size.x / 1e6, ext.size.y / 1e6), reverse=True)
+                cx, cy = mm_point(f.text.position)  # centred on its position, shown horizontal
+                boxes.append(Box(cx - w / 2, cy - ht / 2, cx + w / 2, cy + ht / 2))
+            found.append((rotation, mirror, body_box(sym, margin=0.0), boxes))
+        return found
+
+    for rotation, mirror, body, boxes in await s.call(read):
+        for box in boxes:
+            assert not box.overlaps(body), (rotation, mirror, box, body)

@@ -7,7 +7,7 @@ import pytest
 from copperchat.errors import StructuredToolError
 from copperchat.kicad_tools.edit.annotate_tool import components, plan_renames
 from copperchat.kicad_tools.edit.changeset import SheetRef
-from copperchat.kicad_tools.edit.fields import field_layout, normalize_fields, spot_box
+from copperchat.kicad_tools.edit.fields import FieldSpot, field_layout, normalize_fields, spot_box
 from copperchat.kicad_tools.edit.geometry import Box, PinEnd, on_grid
 from copperchat.kicad_tools.edit.scene import LabelInfo, Scene, SymbolInfo, WireInfo
 from copperchat.kicad_tools.edit.space import (
@@ -279,3 +279,24 @@ def test_field_name_must_be_utf8_and_limit_zero_is_empty() -> None:
     with pytest.raises(StructuredToolError):
         normalize_fields({"\ud800x": "a"})
     assert find_space(Scene(ROOT), SHAPE, (50.8, 50.8), limit=0) == []
+
+
+def test_overlap_check_reports_field_over_own_pins() -> None:
+    from copperchat.kicad_tools.edit.place import Layout, clashes
+
+    body = Box(0, 0, 6.35, 35.56)  # body + pins of a connector
+    spots = (FieldSpot((8, 1), 0.0), FieldSpot((3, 10), 0.0))
+    fine = Layout(
+        None,
+        (0, 0),
+        0,
+        "",
+        [],
+        body,
+        spots,
+        [Box(7, 0, 9, 2), Box(7, 3, 18, 5)],  # type: ignore[arg-type]
+    )
+    bad = Layout(None, (0, 0), 0, "", [], body, spots, [Box(7, 0, 9, 2), Box(0, 8, 11, 10)])  # type: ignore[arg-type]
+    assert clashes(Scene(ROOT), fine, own_fields=True) == []
+    assert any("own body or pins" in p for p in clashes(Scene(ROOT), bad, own_fields=True))
+    assert clashes(Scene(ROOT), bad) == []  # a moved part keeps its author's layout

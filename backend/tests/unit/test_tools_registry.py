@@ -1,3 +1,4 @@
+import re
 import sys
 import types
 from collections.abc import Iterator
@@ -90,3 +91,35 @@ def test_registry_has_repo_tools() -> None:
         assert name in specs
         assert specs[name].requires_kicad is False
         assert specs[name].mutating is False
+
+
+def _schema_names(schema: object, acc: set[str]) -> set[str]:
+    if isinstance(schema, dict):
+        for key, sub in schema.get("properties", {}).items():
+            acc.add(key)
+            _schema_names(sub, acc)
+        _schema_names(schema.get("items"), acc)
+        _schema_names(schema.get("additionalProperties"), acc)
+        for combo in ("anyOf", "oneOf", "allOf"):
+            for sub in schema.get(combo, []):
+                _schema_names(sub, acc)
+    return acc
+
+
+# Names a description mentions as `name=` that are result fields, not parameters.
+_RESULT_FIELDS = {("parts_get_notes", "researched"), ("doc_append", "stale_base")}
+# A parameter-looking token: `name=...` or the "name (field X)" shorthand for a field name
+# that is only reachable through a map parameter. Limitation: a bare list of parameter names
+# ("value, footprint, datasheet") carries no marker and is not detected; descriptions should
+# name parameters in the `name=` form.
+_PARAM_TOKEN = re.compile(r"`?\b([a-z][a-z_]*)\b`?(?:=| \(field )")
+
+
+def test_descriptions_name_only_schema_params() -> None:
+    problems = []
+    for spec in registry.all_specs():
+        known = _schema_names(spec.input_schema, set())
+        for token in set(_PARAM_TOKEN.findall(spec.description)):
+            if token not in known and (spec.name, token) not in _RESULT_FIELDS:
+                problems.append(f"{spec.name}: description names `{token}`, not in its schema")
+    assert not problems, "\n".join(problems)

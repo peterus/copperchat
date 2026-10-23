@@ -190,3 +190,33 @@ async def test_label_at_position_must_touch_wire(blank_session: KicadSession) ->
     assert not err, out
     nets = await pin_nets(s)
     assert nets["R1.2"] == "/SIG"
+
+
+CONN14 = "Connector_Generic:Conn_01x14"
+
+
+async def test_power_stub_avoids_neighbour_pin_stub(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    """2.54 mm pitch (microSD-like): power on pins 4 and 6 must not touch pin 5 or 3 / 7."""
+    s = blank_session
+    await place(s, (CONN14, "J1", (101.6, 101.6), 0))
+    ctx = edit_ctx(s, edit_db)
+    out, err = await call_tool(ctx, "sch_add_power", net="+3V3", at=["J1.4"])
+    assert not err, out
+    out, err = await call_tool(ctx, "sch_add_power", net="GND", at=["J1.6"])
+    assert not err, out
+    nets = await pin_nets(s)
+    assert nets["J1.4"] == "+3V3"
+    assert nets["J1.6"] == "GND"
+    for neighbour in ("J1.3", "J1.5", "J1.7"):  # still alone on their own nets
+        sharing = sorted(k for k, n in nets.items() if n == nets.get(neighbour) and k != neighbour)
+        assert nets.get(neighbour) not in ("+3V3", "GND"), (neighbour, nets)
+        assert not sharing, (neighbour, sharing)
+    for pin, net in (("J1.5", "CMD"), ("J1.3", "CLK"), ("J1.7", "DAT0")):
+        out, err = await call_tool(ctx, "sch_add_label", net=net, at=[pin])
+        assert not err, out
+    nets = await pin_nets(s)
+    assert nets["J1.5"] == "/CMD"
+    assert nets["J1.4"] == "+3V3"
+    assert nets["J1.6"] == "GND"
