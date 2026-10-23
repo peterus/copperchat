@@ -865,8 +865,9 @@ def plan_power(
         )
         if rot:
             note = (
-                note + "; " if note else f"{pin.label}: "
-            ) + "symbol placed upside down (no room upright)"
+                (note + "; " if note else f"{pin.label}: ")
+                + "symbol placed upside down (no free spot upright, or upright would block a neighbour pin)"
+            )
         return PowerPlan(pin, sheet, wires, origin, rot, reference, pts, note)
     return None
 

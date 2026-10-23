@@ -109,7 +109,9 @@ def _schema_names(schema: object, acc: set[str]) -> set[str]:
 # Names a description mentions as `name=` that are result fields, not parameters.
 _RESULT_FIELDS = {("parts_get_notes", "researched"), ("doc_append", "stale_base")}
 # A parameter-looking token: `name=...` or the "name (field X)" shorthand for a field name
-# that is only reachable through a map parameter.
+# that is only reachable through a map parameter. Limitation: a bare list of parameter names
+# ("value, footprint, datasheet") carries no marker and is not detected; descriptions should
+# name parameters in the `name=` form.
 _PARAM_TOKEN = re.compile(r"`?\b([a-z][a-z_]*)\b`?(?:=| \(field )")
 
 
