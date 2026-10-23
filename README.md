@@ -17,7 +17,7 @@ affiliated with or endorsed by Anthropic.
 - Schematic and board viewer (KiCanvas, with sheet tree, layers, pinch zoom), plus annotated
   "agent views" — the same images the agent looks at. Tap a part to mention it (`@R12`).
 - Chat with message queue, Stop, resume after rate limits, usage display, image/PDF
-  attachments, autosave after every turn and per-turn undo snapshots.
+  attachments, a save after every successful edit and per-turn undo snapshots.
 - Skills (built-in, your own, per project) and a part researcher that collects datasheets
   and pinout/application notes under `docs/parts/<MPN>/` in the project.
 - Git status, diff summary and commit — only when you ask.

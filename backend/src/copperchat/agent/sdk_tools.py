@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -13,6 +14,7 @@ from claude_agent_sdk import McpSdkServerConfig, SdkMcpTool, create_sdk_mcp_serv
 from copperchat.agent.events import ToolResultEvt
 from copperchat.errors import DocumentInconsistent
 from copperchat.kicad_session import KicadUnavailable
+from copperchat.kicad_tools.edit.engine import save_after_edit
 from copperchat.tools import ImageBlock, StructuredToolError, ToolContext, ToolResult, ToolSpec
 
 log = logging.getLogger(__name__)
@@ -66,14 +68,22 @@ async def _run_two_phase(spec: ToolSpec, ctx: ToolContext, args: dict[str, Any])
     if editing is None:
         return await _two_phase_steps(spec, ctx, args)
     async with editing.edit_lock(ctx.project.id):
-        if editing.turn(ctx.project.id, ctx.run_id).halted:
+        state = editing.turn(ctx.project.id, ctx.run_id)
+        if state.halted:
             raise StructuredToolError(
-                f"{spec.name} refused: an earlier edit of this turn could not be undone",
-                "The design is reloaded from its last save when this turn ends",
+                f"{spec.name} refused: an earlier edit of this turn failed",
+                _HALTED_WHY.get(state.halted_by, _HALTED_WHY["document_inconsistent"]),
                 "Stop editing; tell the user what happened.",
-                code="document_inconsistent",
+                code=state.halted_by,
             )
         return await _two_phase_steps(spec, ctx, args)
+
+
+_HALTED_WHY = {
+    "document_inconsistent": "It could not be undone exactly; this turn ends and the design "
+    "is reloaded from its last save",
+    "save_failed": "Saving it failed; this turn ends and CopperChat tries the save again",
+}
 
 
 async def _two_phase_steps(spec: ToolSpec, ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
@@ -86,6 +96,7 @@ async def _two_phase_steps(spec: ToolSpec, ctx: ToolContext, args: dict[str, Any
         await gate.check_budget(ctx, cs)
     if ctx.on_mutation is not None:
         await ctx.on_mutation()
+    generation = getattr(ctx.session, "generation", None)
     result = await spec.apply(ctx, cs)
     if gate is not None:
         try:  # the change is applied and verified: bookkeeping never fails the call
@@ -94,7 +105,89 @@ async def _two_phase_steps(spec: ToolSpec, ctx: ToolContext, args: dict[str, Any
                 result.data["budget"] = await gate.budget_info(ctx)
         except Exception:
             log.exception("recording the budget of %s failed", spec.name)
+    await _save_edit(spec, ctx, result)
+    if getattr(ctx.session, "generation", None) != generation:
+        # Restarted between the edit and the end of its save (e.g. a parallel read tool
+        # timed out, or the save started the server lazily): the server reloaded the
+        # last save, so the edit is gone - a KiCad failure, never a success.
+        raise KicadUnavailable(
+            "the KiCad api-server restarted right after the edit; it holds the last save"
+        )
     return result
+
+
+async def _save_edit(spec: ToolSpec, ctx: ToolContext, result: ToolResult) -> None:
+    """Every successful edit is saved at once (#6). A failing save is never swallowed:
+    the call fails with `save_failed`, further edits of the turn are refused and the
+    run engine ends the turn; the turn-end autosave tries again (the change is in
+    KiCad's memory, so the changed documents are still reported to the turn)."""
+    try:
+        await save_after_edit(ctx, result.changed_docs)
+    except (asyncio.CancelledError, KicadUnavailable):
+        raise  # KicadUnavailable: the server restarted from the last save (handler)
+    except Exception as exc:
+        log.warning("saving after %s failed: %s", spec.name, exc)
+        if ctx.editing is not None:
+            state = ctx.editing.turn(ctx.project.id, ctx.run_id)
+            state.halted, state.halted_by = True, "save_failed"
+        if result.changed_docs and ctx.on_documents_changed is not None:
+            ctx.on_documents_changed(set(result.changed_docs))
+        if ctx.on_save_failed is not None:
+            ctx.on_save_failed(exc)
+        raise StructuredToolError(
+            f"{spec.name} was applied, but saving the design afterwards failed",
+            str(exc) or type(exc).__name__,
+            "This turn ends; CopperChat tries the save again. Tell the user the edit is "
+            "in KiCad but may not be on disk yet, and do not edit further in this turn.",
+            code="save_failed",
+        ) from exc
+
+
+_TARGET_KEYS = ("items", "pins", "pin", "at", "from", "to", "ref", "net", "old", "new",
+                "lib_id", "name")  # fmt: skip
+
+
+def _target(args: dict[str, Any]) -> str:
+    """What a tool call acted on, for a message ("#FLG02", "R1.1 R2.1"): the string
+    arguments that name items, pins or nets."""
+    parts: list[str] = []
+    for key in _TARGET_KEYS:
+        value = args.get(key)
+        if isinstance(value, str):
+            parts.append(value)
+        elif isinstance(value, list) and value and all(isinstance(v, str) for v in value):
+            parts.append(", ".join(value))
+    text = " ".join(parts)
+    return text if len(text) <= 80 else text[:77] + "..."
+
+
+def _inconsistent_error(tool: str, args: dict[str, Any], exc: Exception) -> StructuredToolError:
+    """Plain words for the agent to pass on (#6b, spec §5.4): what failed, what the
+    design is reloaded to, that earlier edits are kept; the internal reason in details."""
+    target = _target(args)
+    edit = f"{tool} {target}" if target else tool
+    if getattr(exc, "last_save_partial", False):
+        why = (
+            "Undoing it did not bring the design back exactly. When this turn ends, "
+            "CopperChat reloads the design from its last save, which may still contain "
+            "part of this edit."
+        )
+        kept = "The earlier edits of this turn are saved and kept; check this edit's part."
+    else:
+        why = (
+            "Undoing it did not bring the design back exactly. When this turn ends, "
+            "CopperChat reloads the design from its last save: the state just before "
+            "this edit."
+        )
+        kept = "Only this edit is lost; the earlier edits of this turn are saved and kept."
+    return StructuredToolError(
+        f"{edit} failed and could not be undone exactly",
+        why,
+        f"{kept} Stop editing, explain this to the user (what you tried, that it was "
+        "rolled back, what is kept) and do not retry in this turn.",
+        code="document_inconsistent",
+        details={"detail": str(exc)},
+    )
 
 
 def _make_handler(
@@ -136,15 +229,7 @@ def _make_handler(
             on_inconsistent = getattr(ctx, "on_document_inconsistent", None)
             if on_inconsistent is not None:
                 on_inconsistent(exc)
-            return _error(
-                StructuredToolError(
-                    f"{spec.name} failed and its partial change could not be undone exactly",
-                    str(exc),
-                    "This turn ends; the design is reloaded from its last save. Tell the "
-                    "user what you tried and do not retry in this turn.",
-                    code="document_inconsistent",
-                )
-            )
+            return _error(_inconsistent_error(spec.name, args, exc))
         except KicadUnavailable as exc:
             if ctx.on_kicad_unavailable is not None:
                 ctx.on_kicad_unavailable(exc)

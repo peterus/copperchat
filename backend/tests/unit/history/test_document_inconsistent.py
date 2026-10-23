@@ -1,6 +1,7 @@
 """HistoryHooks after a failed edit that could not be undone exactly (E2 Task 5,
 spec §5.1 step 8 / §5.4): no autosave, reopen from disk, recovery notice naming the
-last save, optional auto-restore of the turn snapshot."""
+last save (= the state just before the failed edit, #6), the turn snapshot and the
+last plan-step checkpoint offered as optional undo."""
 
 from __future__ import annotations
 
@@ -9,6 +10,7 @@ from typing import Any, cast
 import pytest
 
 from copperchat.agent.engine import TurnOutcome
+from copperchat.changes.checkpoints import take_step_checkpoint
 from copperchat.history.store import compute_hashes
 from copperchat.kicad_session import KicadSession, KicadUnavailable
 from tests.support.history import other_board, replace_with_kicad_file
@@ -16,13 +18,12 @@ from tests.unit.history.conftest import Opened
 from tests.unit.history.test_history_hooks import done, turn
 
 
-def inconsistent(*docs: str, auto_restore: bool = False) -> TurnOutcome:
+def inconsistent(*docs: str) -> TurnOutcome:
     return TurnOutcome(
         reason="error",
         changed_docs=frozenset(cast(Any, docs)),
         mutated=True,
         document_inconsistent=True,
-        auto_restore=auto_restore,
     )
 
 
@@ -58,7 +59,10 @@ async def test_no_autosave_and_session_reopened(opened: Opened, reopens: list[st
     assert env.engine.errors == []  # the engine owns the error row (X18)
 
 
-async def test_recovery_notice_names_last_save_time(opened: Opened, reopens: list[str]) -> None:
+async def test_recovery_notice_says_nothing_lost(opened: Opened, reopens: list[str]) -> None:
+    """#6 (spec §5.4): every successful edit was saved, so the notice says the design is
+    at the state just before the failed edit, nothing else was lost and no restore is
+    needed; the turn snapshot stays offered as an optional undo."""
     env = opened.env
     await opened.session.save("sch")
     stamp = opened.session.last_saved_at
@@ -68,20 +72,23 @@ async def test_recovery_notice_names_last_save_time(opened: Opened, reopens: lis
     await opened.hooks.on_turn_end(t, inconsistent("sch"))
     snap = await env.svc.store(opened.project).latest_for_run("run-di2")
     assert snap is not None
-    text, meta = env.engine.notices[-1]
-    assert stamp in text and "changes after that are lost" in text
-    assert meta == {"action": "restore", "snapshotId": snap.id}
+    (text, meta), (undo, undo_meta) = env.engine.notices[-2:]
+    assert stamp in text and "just before the edit that failed" in text
+    assert "nothing else was lost" in text and "no restore is needed" in text
+    assert meta == {"action": "recovered"}
+    assert undo.startswith("Optional:") and "undo every change of this turn" in undo
+    assert undo_meta == {"action": "restore", "snapshotId": snap.id}
     assert env.saved == []
 
 
 async def test_recovery_notice_without_a_save_says_last_save(opened: Opened) -> None:
     t = await _mutating_turn(opened, "run-di3")
     await opened.hooks.on_turn_end(t, inconsistent("sch"))
-    text, _ = opened.env.engine.notices[-1]
-    assert "the last save" in text and "changes after that are lost" in text
+    text, _ = next(n for n in opened.env.engine.notices if n[1] == {"action": "recovered"})
+    assert "its last save:" in text and "nothing else was lost" in text
 
 
-async def test_kicad_failed_editing_turn_uses_same_wording(opened: Opened) -> None:
+async def test_kicad_failed_editing_turn_says_successful_edits_are_kept(opened: Opened) -> None:
     env = opened.env
     await opened.session.save("pcb")
     stamp = opened.session.last_saved_at
@@ -93,9 +100,27 @@ async def test_kicad_failed_editing_turn_uses_same_wording(opened: Opened) -> No
     await opened.hooks.on_turn_end(t, done("sch", reason="error", failed=True))
     snap = await env.svc.store(opened.project).latest_for_run("run-kf")
     assert snap is not None
-    text, meta = env.engine.notices[-1]
-    assert stamp in text and "changes after that are lost" in text
-    assert meta == {"action": "restore", "snapshotId": snap.id}
+    (text, meta), (_undo, undo_meta) = env.engine.notices[-2:]
+    assert stamp in text and "nothing that succeeded was lost" in text
+    assert "edit that failed" not in text  # KiCad failed, not necessarily an edit
+    assert meta == {"action": "recovered"}
+    assert undo_meta == {"action": "restore", "snapshotId": snap.id}
+
+
+async def test_kicad_failure_after_a_failed_save_names_the_lost_edit(opened: Opened) -> None:
+    """save_failed, then KiCad fails in the same turn (no autosave retry): the notice
+    must not claim every successful edit was saved - the unsaved one is lost."""
+    env = opened.env
+    t = await _mutating_turn(opened, "run-sfk")
+    env.server.crash()
+    outcome = TurnOutcome(
+        reason="error", changed_docs=frozenset({"sch"}), mutated=True, kicad_failed=True,
+        save_failed=True,
+    )  # fmt: skip
+    await opened.hooks.on_turn_end(t, outcome)
+    text, _meta = next(n for n in env.engine.notices if n[1] == {"action": "recovered"})
+    assert "could not be saved" in text and "is lost" in text
+    assert "nothing that succeeded was lost" not in text
 
 
 async def test_kicad_failed_turn_without_changes_keeps_old_text(opened: Opened) -> None:
@@ -105,39 +130,57 @@ async def test_kicad_failed_turn_without_changes_keeps_old_text(opened: Opened) 
     outcome = TurnOutcome(reason="error", kicad_failed=True)
     await opened.hooks.on_turn_end(t, outcome)
     text, _ = env.engine.notices[-1]
-    assert "changes after that are lost" not in text and "snapshot" in text
+    assert "nothing else was lost" not in text and "snapshot" in text
 
 
-async def test_auto_restore_restores_turn_snapshot(opened: Opened, reopens: list[str]) -> None:
+async def test_auto_restore_uses_last_save(opened: Opened, reopens: list[str]) -> None:
+    """Owner decision (#6): the former auto-restore cases (a deleted symbol that cannot
+    be re-placed losslessly, a deleted sheet symbol) reopen the last save too - schematic
+    and board - never an older turn snapshot or plan-step checkpoint automatically."""
     env, project = opened.env, opened.project
     assert project.pcb_file is not None
-    before = compute_hashes(project)
     t = await _mutating_turn(opened, "run-ar")
-    replace_with_kicad_file(project.pcb_file, other_board())  # the partial edit on disk
-    env.engine.is_busy = True  # the turn is still ending: no busy check here
-    await opened.hooks.on_turn_end(t, inconsistent("pcb", auto_restore=True))
+    cp = await take_step_checkpoint(env.svc, project, "run-ar", "step-1", "Step 1")
+    env.saved.clear()  # the checkpoint saves first
+    replace_with_kicad_file(project.pcb_file, other_board())  # a later edit's save
+    saved = compute_hashes(project)
+    env.engine.is_busy = True  # the turn is still ending
+    await opened.hooks.on_turn_end(t, inconsistent("sch", "pcb"))
+    assert compute_hashes(project) == saved  # nothing older restored
+    assert reopens == [project.id]
+    assert env.saved == []
     snap = await env.svc.store(project).latest_for_run("run-ar")
     assert snap is not None
-    assert compute_hashes(project) == before
-    assert env.saved == []
-    assert len(reopens) == 1  # the restore's reload is the only reopen
-    text, meta = env.engine.notices[-1]
-    assert meta == {"action": "restored", "snapshotId": snap.id}
-    assert "before this turn" in text
+    metas = [m for _, m in env.engine.notices]
+    assert {"action": "recovered"} in metas
+    assert not any(m and m.get("action") == "restored" for m in metas)
+    assert {"action": "restore", "snapshotId": snap.id} in metas  # optional undo
+    assert metas[-1] == {"action": "restore", "snapshotId": cp.id, "checkpoint": True}
     assert env.engine.errors == []
 
 
-async def test_auto_restore_without_snapshot_posts_recovery_notice(
-    opened: Opened, reopens: list[str]
-) -> None:
+async def test_partial_last_save_is_said_plainly(opened: Opened, reopens: list[str]) -> None:
+    """A shared-sheet placement saved part of itself and could not undo it: the notice
+    must not claim the state before the failed edit; it says the last save may still
+    hold part of it and that the turn snapshot removes it (with this turn's edits)."""
     env = opened.env
-    t = turn("run-ns")
-    await opened.hooks.on_turn_start(t)
-    await opened.hooks.on_turn_end(t, inconsistent("sch", auto_restore=True))
+    t = await _mutating_turn(opened, "run-psp")
+    outcome = TurnOutcome(
+        reason="error",
+        changed_docs=frozenset({"sch"}),
+        mutated=True,
+        document_inconsistent=True,
+        last_save_partial=True,
+    )
+    await opened.hooks.on_turn_end(t, outcome)
     assert reopens == [opened.project.id]
-    text, meta = env.engine.notices[-1]
-    assert "changes after that are lost" in text
-    assert meta is not None and meta.get("action") != "restored"
+    snap = await env.svc.store(opened.project).latest_for_run("run-psp")
+    assert snap is not None
+    (text, meta), (undo, undo_meta) = env.engine.notices[-2:]
+    assert "may still contain part of the edit that failed" in text
+    assert "nothing else was lost" not in text and meta == {"action": "recovered"}
+    assert "also undoes this turn's earlier edits" in undo
+    assert undo_meta == {"action": "restore", "snapshotId": snap.id}
 
 
 async def test_failed_reopen_is_reported_not_raised(

@@ -19,11 +19,8 @@ from tests.support.history import (
     ECC83,
     HIERARCHY,
     copy_project,
-    other_board,
-    replace_with_kicad_file,
 )
 from tests.unit.history.conftest import Opened
-from tests.unit.history.test_document_inconsistent import inconsistent
 from tests.unit.history.test_history_hooks import done, turn
 
 
@@ -161,23 +158,6 @@ async def test_recover_without_checkpoint_posts_one_notice(opened: Opened) -> No
     assert len(restores) == 1 and "checkpoint" not in restores[0]
 
 
-async def test_auto_restore_prefers_last_step_checkpoint(opened: Opened) -> None:
-    env, project = opened.env, opened.project
-    assert project.pcb_file is not None
-    t = turn("run-ar2")
-    await opened.hooks.on_turn_start(t)
-    await opened.hooks.on_first_mutation(t)
-    replace_with_kicad_file(project.pcb_file, other_board())  # finished step on disk
-    at_step = compute_hashes(project)
-    cp = await take_step_checkpoint(env.svc, project, "run-ar2", "step-1", "Step 1")
-    replace_with_kicad_file(project.pcb_file, ECC83 / "ecc83-pp.kicad_pcb")  # partial edit
-    await opened.hooks.on_turn_end(t, inconsistent("pcb", auto_restore=True))
-    assert compute_hashes(project) == at_step
-    text, meta = env.engine.notices[-1]
-    assert meta == {"action": "restored", "snapshotId": cp.id}
-    assert "plan step" in text
-
-
 async def test_prune_drops_step_only_runs_older_than_kept_turns(
     db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -192,41 +172,6 @@ async def test_prune_drops_step_only_runs_older_than_kept_turns(
     listed = {s.id for s in await store.list()}
     assert listed == {kept_turn, newer_step, last}
     assert old_step not in listed
-
-
-async def test_failed_checkpoint_restore_falls_back_to_turn_snapshot(
-    opened: Opened, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    env, project = opened.env, opened.project
-    assert project.pcb_file is not None
-    before = compute_hashes(project)
-    t = turn("run-fb")
-    await opened.hooks.on_turn_start(t)
-    await opened.hooks.on_first_mutation(t)
-    cp = await take_step_checkpoint(env.svc, project, "run-fb", "step-1", "Step 1")
-    (env.svc.store(project).snapshot_dir(cp.id) / "manifest.json").write_text("{}")  # corrupt
-    replace_with_kicad_file(project.pcb_file, other_board())
-    await opened.hooks.on_turn_end(t, inconsistent("pcb", auto_restore=True))
-    snap = await env.svc.store(project).latest_for_run("run-fb")
-    assert snap is not None
-    assert compute_hashes(project) == before
-    assert env.engine.errors == []  # the fallback succeeded: no manual-restore advice
-    assert env.engine.notices[-1][1] == {"action": "restored", "snapshotId": snap.id}
-
-
-async def test_both_restores_failing_reports_the_turn_snapshot(opened: Opened) -> None:
-    env, project = opened.env, opened.project
-    t = turn("run-fb2")
-    await opened.hooks.on_turn_start(t)
-    await opened.hooks.on_first_mutation(t)
-    cp = await take_step_checkpoint(env.svc, project, "run-fb2", "step-1", "Step 1")
-    snap = await env.svc.store(project).latest_for_run("run-fb2")
-    assert snap is not None
-    for sid in (cp.id, snap.id):
-        (env.svc.store(project).snapshot_dir(sid) / "manifest.json").write_text("{}")
-    await opened.hooks.on_turn_end(t, inconsistent("pcb", auto_restore=True))
-    [(text, meta)] = env.engine.errors
-    assert "before this turn" in text and meta == {"code": "restore_failed"}
 
 
 async def test_step_checkpoints_are_capped_per_project(

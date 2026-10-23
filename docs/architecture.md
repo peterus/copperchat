@@ -103,7 +103,10 @@ Design: `docs/superpowers/specs/2026-10-21-repo-context-design.md`; user view:
   the items are read back and the live `GetSchematicNetlist` is compared with the intent
   (merged pins, pins allowed to change, expected names, joined items). A mismatch undoes the
   stages in reverse; when that is impossible (e.g. a deleted symbol of a project with a
-  board) the turn ends `document_inconsistent` and the last checkpoint is restored.
+  board) the turn ends `document_inconsistent` and the design is reloaded from its last
+  save. The adapter saves every successful edit at once, so that save is the state just
+  before the failed edit: earlier edits of the turn are never lost (#6). Turn snapshots
+  and step checkpoints stay manual undo points.
 - **Geometry** (`geometry.py`, `scene.py`, `router.py`, `space.py`): 1.27 mm grid, canonical
   transforms, body and field boxes, an indexed router for orthogonal routes with T-joins
   onto the target net, free-space search that keeps pin corridors free.

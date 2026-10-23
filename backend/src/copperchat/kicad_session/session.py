@@ -194,6 +194,7 @@ class KicadSession:
         self.last_saved_at: str | None = None
         self._save_listeners = save_listeners if save_listeners is not None else []
         self._commit_lock = asyncio.Lock()
+        self._apply_lock = asyncio.Lock()  # applying(): one edit's stages, as a whole
         self._commit_owner: asyncio.Task[Any] | None = None
         self._active_scope: CommitScope | None = None
         self._generation = 0  # counts successful server starts
@@ -487,6 +488,15 @@ class KicadSession:
 
     # -- editing -------------------------------------------------------------------
     @contextlib.asynccontextmanager
+    async def applying(self) -> AsyncIterator[None]:
+        """Held while one edit's stages are pushed, verified and compensated (the edit
+        engine): `refresh_jobs` waits for it, so it never saves a half-applied edit into
+        the last save a later failure falls back to (#6); `save` and `save_copy`
+        likewise. Not re-entrant: never save inside it."""
+        async with self._apply_lock:
+            yield
+
+    @contextlib.asynccontextmanager
     async def commit(self, label: str, *, dry_run: bool = False) -> AsyncIterator[CommitScope]:
         """Group the schematic writes made inside the scope into one KiCad commit.
 
@@ -571,7 +581,7 @@ class KicadSession:
                 "project is open in KiCad (lock file present) - close it there first"
             )
         self._check_not_in_commit()
-        async with self._commit_lock:
+        async with self._apply_lock, self._commit_lock:  # never a half-applied edit (#6)
             await self._save_locked(doc)
 
     async def _save_locked(self, doc: DocKind) -> None:
@@ -597,9 +607,9 @@ class KicadSession:
     async def refresh_jobs(self) -> None:
         """Make the api-server's export jobs (PNG, netlist) see the edits: they keep
         their own copy of the schematic, refreshed only by save + close_document +
-        open_document (spike 2A, Q3)."""
+        open_document (spike 2A, Q3). Waits for an edit being applied (`applying`)."""
         self._check_not_in_commit()
-        async with self._commit_lock:
+        async with self._apply_lock, self._commit_lock:
             if not self.jobs_stale or self.read_only or "sch" not in self._open_docs:
                 return
             # Reopening loads the files: unsaved edits are saved first. An unmodified
@@ -654,7 +664,7 @@ class KicadSession:
             schematic.save_as(str(dest), overwrite=True, include_project=False)
             return [str(sheet.filename) for sheet in schematic.get_hierarchy()]
 
-        async with self._commit_lock:
+        async with self._apply_lock, self._commit_lock:  # never a half-applied edit (#6)
             if (
                 doc == "sch"
                 and not self.read_only

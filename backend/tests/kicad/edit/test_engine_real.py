@@ -25,16 +25,19 @@ from copperchat.kicad_tools.edit.changeset import (
     static_stage,
 )
 from copperchat.kicad_tools.edit.engine import apply_change_set, edit_result, root_sheet
-from copperchat.kicad_tools.edit.geometry import pin_ends
+from copperchat.kicad_tools.edit.geometry import mm_point, pin_ends
 from copperchat.kicad_tools.edit.scene import resolve_sheet, sheet_api, sheet_refs
+from copperchat.kicad_tools.edit.specs_transform import prepare_move
 from tests.kicad.edit.helpers import item_ids, local_label, v2, wire
 from tests.support.edit import (
     RUN_ID,
+    call_tool,
     edit_ctx,
     free_area,
     get_item,
     kiids,
     place_direct,
+    place_raw,
     two_resistors,
 )
 
@@ -206,7 +209,7 @@ async def test_compensated_symbol_delete_with_board_requests_restore(
     cs = _cs(await _root(s), static_stage("delete", Delete([a])), deleted=[a])
     with pytest.raises(DocumentInconsistent) as err:
         await apply_change_set(edit_ctx(s), cs, _verify=_forced)
-    assert err.value.auto_restore is True
+    assert not err.value.last_save_partial and "last save" in str(err.value)
 
 
 async def test_one_stage_writes_two_sheet_instances(hier_session: KicadSession) -> None:
@@ -420,3 +423,116 @@ async def test_joined_mismatch_is_undone(ecc83_session: KicadSession) -> None:
     assert err.value.code == "verification_failed"
     assert err.value.details is not None and err.value.details["expected"]["joined"]
     assert await _state(s) == before
+
+
+async def _wires(s: KicadSession) -> dict[str, tuple[Any, Any]]:
+    def run(h: KicadHandle) -> dict[str, tuple[Any, Any]]:
+        from kipy.proto.schematic.schematic_types_pb2 import SchematicLineType
+
+        return {
+            access.kiid(w): (mm_point(w.start), mm_point(w.end))
+            for w in h.schematic().get_lines()
+            if int(w.type) == SchematicLineType.SLT_WIRE
+        }
+
+    return await s.call(run)
+
+
+async def test_move_compensation_restores_split_wire(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    """#6 (prod run be26737b): a PWR_FLAG on a stub at a wire corner moved so that its
+    dragged stub runs on along the wire. KiCad merges the updated stub into the wire at
+    push (its UUID vanishes); undoing must bring the stub back with its UUID instead of
+    silently updating an item that no longer exists."""
+    s = blank_session
+    await s.ensure_symbol_libraries()
+    corner, flag_at = (60.96, 91.44), (60.96, 88.9)
+    await place_raw(s, "Device:R", (30.48, 95.25), "R1")  # pin 1 at (30.48, 91.44)
+    await place_raw(s, "power:PWR_FLAG", flag_at, "#FLG02")
+    along, stub = wire((30.48, 91.44), corner), wire(corner, flag_at)
+    async with s.commit("wires"):
+        await s.call(lambda h: h.schematic().create_items([along, stub]))
+    before, wires_before = await _state(s), await _wires(s)
+    ctx = edit_ctx(s, edit_db)
+    cs = await prepare_move(ctx, {"items": ["#FLG02"], "to": [71.12, 91.44]})
+    with pytest.raises(StructuredToolError) as err:
+        await apply_change_set(ctx, cs, _verify=_forced)
+    assert err.value.code == "verification_failed"
+    assert await _wires(s) == wires_before
+    assert await _state(s) == before
+
+
+async def _flag_pair(s: KicadSession) -> None:
+    """R1 with #FLG01 / #FLG02 on its pin-1 net; the turn's first edit is to come."""
+    await s.ensure_symbol_libraries()
+    await place_raw(s, "Device:R", (30.48, 95.25), "R1")  # pin 1 at (30.48, 91.44)
+    await place_raw(s, "power:PWR_FLAG", (45.72, 91.44), "#FLG01")
+    await place_raw(s, "power:PWR_FLAG", (60.96, 88.9), "#FLG02")
+    ws = [wire((30.48, 91.44), (45.72, 91.44)), wire((45.72, 91.44), (60.96, 91.44)),
+          wire((60.96, 91.44), (60.96, 88.9))]  # fmt: skip
+    async with s.commit("wires"):
+        await s.call(lambda h: h.schematic().create_items(ws))
+    await s.save("sch")
+
+
+async def _refs(s: KicadSession) -> dict[str, tuple[float, float]]:
+    def run(h: KicadHandle) -> dict[str, tuple[float, float]]:
+        return {str(x.reference): mm_point(x.position) for x in h.schematic().get_symbols()}
+
+    return await s.call(run)
+
+
+async def test_failed_compensation_keeps_earlier_unsaved_edit(
+    blank_session: KicadSession, edit_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#6 (prod run be26737b): edit 1 (sch_delete #FLG01) succeeds, edit 2 (sch_move
+    #FLG02) fails and cannot be undone exactly. The turn end reopens the last save:
+    edit 1 must still be in it (it was saved at once), edit 2 is gone."""
+    from copperchat.kicad_tools.edit import engine, verify
+
+    s = blank_session
+    await _flag_pair(s)
+    ctx = edit_ctx(s, edit_db)
+    out, err = await call_tool(ctx, "sch_delete", items=["#FLG01"])
+    assert not err, out
+
+    async def broken(*_a: Any, **_k: Any) -> dict[str, str]:
+        raise DocumentInconsistent("forced: the undo diverged")
+
+    monkeypatch.setattr(verify, "check", _forced)
+    monkeypatch.setattr(engine, "_compensate", broken)
+    out, err = await call_tool(ctx, "sch_move", items=["#FLG02"], to=[60.96, 81.28])
+    assert err and out["error"]["code"] == "document_inconsistent", out
+    await s.restart()  # what the turn-end recovery does: KiCad reloads the files on disk
+    refs = await _refs(s)
+    assert "#FLG01" not in refs  # edit 1 survived
+    assert refs["#FLG02"] == (60.96, 88.9)  # edit 2 is gone
+
+
+async def test_cancel_after_successful_edit_keeps_it(
+    blank_session: KicadSession, edit_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#6 (Review Focus 3): Stop while edit 2 is being applied, after edit 1 succeeded:
+    edit 2 is undone and edit 1 is on disk (nothing earlier lost, even before the
+    turn-end autosave)."""
+    import asyncio
+
+    from copperchat.kicad_tools.edit import engine
+
+    s = blank_session
+    await _flag_pair(s)
+    ctx = edit_ctx(s, edit_db)
+    out, err = await call_tool(ctx, "sch_delete", items=["#FLG01"])
+    assert not err, out
+
+    def stopped(*_a: Any) -> StageInput:
+        raise asyncio.CancelledError  # Stop arrives after edit 2's push
+
+    monkeypatch.setattr(engine, "_read_back", stopped)
+    with pytest.raises(asyncio.CancelledError):
+        await call_tool(ctx, "sch_move", items=["#FLG02"], to=[60.96, 81.28])
+    assert (await _refs(s))["#FLG02"] == (60.96, 88.9)  # edit 2 undone in KiCad
+    await s.restart()  # the files on disk
+    refs = await _refs(s)
+    assert "#FLG01" not in refs and refs["#FLG02"] == (60.96, 88.9)

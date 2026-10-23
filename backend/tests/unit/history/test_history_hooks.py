@@ -8,6 +8,8 @@ from copperchat.history.store import compute_hashes
 from copperchat.kicad_session import KicadUnavailable
 from copperchat.tools import StructuredToolError, ToolContext, ToolResult, ToolSpec
 from tests.support.conversations import TEST_CID as CID
+from tests.support.history import HIERARCHY, replace_with_kicad_file
+from tests.support.kicad_project import FIXTURES
 from tests.unit.history.conftest import Opened
 
 
@@ -125,10 +127,42 @@ async def test_turn_end_autosaves_changed_docs_and_publishes_view(opened: Opened
 
 async def test_interrupted_and_rate_limited_turns_still_autosave(opened: Opened) -> None:
     env = opened.env
+    opened.session.modified = True  # e.g. Stop between an edit and its own save
     await opened.hooks.on_turn_end(turn("a"), done("sch", reason="interrupted"))
     await opened.hooks.on_turn_end(turn("b"), done("pcb", reason="rate_limited"))
     assert env.saved == ["sch", "pcb"]
     assert [f.version for f in env.broadcaster.frames] == [1, 2]
+
+
+async def test_turn_end_autosave_skips_a_saved_schematic(opened: Opened) -> None:
+    """#6: every edit saved itself, so the turn-end autosave is a no-op for an unmodified
+    schematic; the view is still published once for the turn."""
+    env = opened.env
+    assert not opened.session.modified
+    await opened.hooks.on_turn_end(turn(), done("sch"))
+    assert env.saved == []
+    assert [f.docs for f in env.broadcaster.frames] == [["sch"]] and env.written == ["sch"]
+    assert env.engine.errors == [] and env.engine.notices == []
+
+
+async def test_mid_turn_saves_are_not_external_changes(opened: Opened) -> None:
+    """#6 (Review Focus 2): the per-edit saves record the hashes, so the next turn start
+    never reports CopperChat's own mid-turn saves as a change outside CopperChat."""
+    env = opened.env
+    t = turn("run-mid")
+    await opened.hooks.on_turn_start(t)
+    await opened.hooks.on_first_mutation(t)
+    assert opened.project.sch_file is not None
+    # Two edits, each saved at once (the fake's save leaves the file alone: swap in other
+    # KiCad-written content, as a real save would rewrite it).
+    for content in (FIXTURES / "blank" / "blank.kicad_sch", HIERARCHY / "ampli_ht.kicad_sch"):
+        opened.session.modified = True
+        replace_with_kicad_file(opened.project.sch_file, content)
+        await opened.session.save("sch")
+    await opened.hooks.on_turn_end(t, done("sch"))
+    await opened.hooks.on_turn_start(turn("next"))
+    assert not any(m and m.get("action") == "external-change" for _, m in env.engine.notices)
+    assert env.engine.notes == []
 
 
 async def test_turn_without_changes_does_nothing(opened: Opened) -> None:
@@ -163,6 +197,7 @@ async def test_failed_autosave_posts_one_error_and_offers_restore(opened: Opened
 async def test_partial_autosave_records_hashes_and_publishes_saved_docs(opened: Opened) -> None:
     env = opened.env
     env.save_error, env.save_error_doc = KicadUnavailable("save timed out"), "sch"
+    opened.session.modified = True
     await opened.hooks.on_turn_end(turn(), done("pcb", "sch"))
     assert env.saved == ["pcb"]
     [(text, meta)] = env.engine.errors

@@ -28,6 +28,8 @@ class EditTurnState:
     step_placed: set[str] = field(default_factory=set)  # symbols placed inside the step
     # (step id, violation ids) of the last `erc_errors_open` refusal of plan_step_done.
     erc_refusal: tuple[str, frozenset[str]] | None = None
-    # A failed edit could not be undone exactly: every further edit of the turn is refused
-    # (the turn ends and the session is reloaded).
+    # A failed edit could not be undone exactly, or a successful one could not be saved:
+    # every further edit of the turn is refused (the turn ends). `halted_by` is the error
+    # code of that failure, repeated in the refusals.
     halted: bool = False
+    halted_by: str = "document_inconsistent"

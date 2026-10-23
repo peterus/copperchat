@@ -81,13 +81,15 @@ class StructuredToolError(CopperChatError):
 
 class DocumentInconsistent(CopperChatError):
     """A failed edit could not be undone exactly (E-C4): the turn ends without autosave
-    and the session is reopened from the last save. `auto_restore`: restore the last step
-    checkpoint / turn snapshot at turn end (owner decision 4)."""
+    and the session is reopened from the last save - the state just before that edit,
+    since every successful edit saved itself (#6). `last_save_partial`: the failed edit
+    had saved part of itself already (a shared-sheet placement) and undoing that failed,
+    so the last save may still hold it (the recovery notice says so)."""
 
     code = "document_inconsistent"
 
-    def __init__(self, message: str = "", *, auto_restore: bool = False) -> None:
-        self.auto_restore = auto_restore
+    def __init__(self, message: str = "", *, last_save_partial: bool = False) -> None:
+        self.last_save_partial = last_save_partial
         super().__init__(message)
 
 

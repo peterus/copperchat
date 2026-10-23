@@ -26,6 +26,7 @@ from claude_agent_sdk import (
     PermissionResultDeny,
     RateLimitEvent,
     RateLimitInfo,
+    ResultError,
     ResultMessage,
     StreamEvent,
     SystemMessage,
@@ -253,6 +254,8 @@ class SdkEventMapper:
         # without model_usage, the cumulative token totals were never seen.
         self._token_baseline_known = False
         self._interrupt_requested = False
+        # The last result ended its turn as an interrupt we requested (see ends_burst).
+        self._interrupted = False
 
     def note_interrupt_requested(self) -> None:
         """Our own interrupt() was sent; the next aborted result is an interrupt."""
@@ -261,6 +264,17 @@ class SdkEventMapper:
     def clear_interrupt_requested(self) -> None:
         """The interrupt request failed: an aborted result is a real error again."""
         self._interrupt_requested = False
+
+    def ends_burst(self, exc: BaseException) -> bool:
+        """The CLI ends an error_during_execution result by exiting non-zero, which the
+        SDK raises as ResultError after that result. Right after an interrupt we
+        requested (e.g. after document_inconsistent, #6b) that is the expected end of
+        the burst, not a backend failure ("The agent could not start")."""
+        return (
+            self._interrupted
+            and isinstance(exc, ResultError)
+            and exc.subtype == "error_during_execution"
+        )
 
     def map(self, msg: object) -> list[AgentEvent]:
         out: list[AgentEvent] = []
@@ -271,6 +285,8 @@ class SdkEventMapper:
             self._session_id = sid
             out.append(SessionId(sid))
 
+        if isinstance(msg, (AssistantMessage, UserMessage, StreamEvent)):
+            self._interrupted = False  # the conversation moved on after that result
         parent = getattr(msg, "parent_tool_use_id", None)
         if parent:
             # Sub-agent message (spike 1A (h4c)): only tagged, complete events; it never
@@ -434,9 +450,8 @@ class SdkEventMapper:
 
     def _finished(self, msg: ResultMessage) -> TurnFinished:
         requested, self._interrupt_requested = self._interrupt_requested, False
-        if msg.terminal_reason in _ABORTED or (
-            requested and msg.subtype == "error_during_execution"
-        ):
+        self._interrupted = requested and msg.subtype == "error_during_execution"
+        if msg.terminal_reason in _ABORTED or self._interrupted:
             return TurnFinished(reason="interrupted")
         if msg.is_error:
             detail = "; ".join(msg.errors or []) or msg.result or msg.subtype
@@ -607,8 +622,10 @@ class SdkStreamingBackend:
             while True:
                 item = await queue.get()
                 if isinstance(item, _StreamEnd):
-                    if item.error is not None:
+                    if item.error is not None and not mapper.ends_burst(item.error):
                         raise item.error
+                    if item.error is not None:
+                        log.info("agent CLI exited after the requested interrupt: %s", item.error)
                     return
                 parent = getattr(item, "parent_tool_use_id", None)
                 if parent and parent not in seen:

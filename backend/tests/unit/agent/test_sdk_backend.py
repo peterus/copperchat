@@ -709,6 +709,84 @@ async def test_streaming_backend_failed_interrupt_does_not_mislabel_next_error(s
     assert rest[-1] == TurnFinished(reason="error", error="real failure")
 
 
+_EDE = "[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use"
+
+
+class ExitingAfterErrorResultClient(FakeSdkClient):
+    """The CLI ends an error_during_execution result by exiting non-zero: the SDK then
+    raises ResultError (carrying that result) from receive_messages."""
+
+    async def receive_messages(self):  # type: ignore[no-untyped-def]
+        while (msg := await self.out.get()) is not None:
+            yield msg
+        from claude_agent_sdk import ResultError
+
+        raise ResultError(
+            f"Claude Code returned an error result: {_EDE}",
+            data={
+                "type": "result",
+                "subtype": "error_during_execution",
+                "is_error": True,
+                "errors": [_EDE],
+            },
+            exit_code=1,
+        )
+
+
+async def _burst_ending_in_ede(settings: Any, project: Any, *, interrupt: bool) -> Any:
+    gate = asyncio.Event()
+    client_box: list[FakeSdkClient] = []
+
+    def factory(options: Any) -> FakeSdkClient:
+        ede = _result(subtype="error_during_execution", is_error=True, errors=[_EDE])
+        c = ExitingAfterErrorResultClient(options, [[ede]])
+        client_box.append(c)
+        return c
+
+    backend = SdkStreamingBackend(
+        settings=settings,
+        specs=[],
+        ctx_factory=lambda: None,  # type: ignore[arg-type,return-value]
+        client_factory=factory,
+    )
+
+    async def items():  # type: ignore[no-untyped-def]
+        await gate.wait()
+        yield QueuedItem(
+            message_id=1,
+            client_message_id="c1",
+            conversation_id="c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+            text="x",
+        )
+
+    gen = backend.start(project, conversation_row(), items(), None)
+    first = asyncio.ensure_future(gen.__anext__())
+    for _ in range(500):
+        if client_box:
+            break
+        await asyncio.sleep(0.01)
+    if interrupt:
+        await backend.interrupt()  # e.g. CopperChat's own, after document_inconsistent
+    gate.set()
+    return [await first] + [ev async for ev in gen]
+
+
+async def test_interrupt_after_inconsistency_is_not_start_failure(settings, project):
+    """#6b (prod run be26737b): CopperChat interrupts mid tool use; the CLI reports
+    error_during_execution ([ede_diagnostic] ... stop_reason=tool_use) and exits, so the
+    SDK raises ResultError after the turn ended. That is the expected end of the burst,
+    not a backend failure (which the engine shows as "The agent could not start")."""
+    events = await _burst_ending_in_ede(settings, project, interrupt=True)
+    assert events[-1] == TurnFinished(reason="interrupted")
+
+
+async def test_unrequested_error_result_exit_still_raises(settings, project):
+    from claude_agent_sdk import ResultError
+
+    with pytest.raises(ResultError):
+        await _burst_ending_in_ede(settings, project, interrupt=False)
+
+
 def test_mapper_tool_result_with_invalid_base64_image_skips_the_image():
     m = SdkEventMapper()
     block = ToolResultBlock(

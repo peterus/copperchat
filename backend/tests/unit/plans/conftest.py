@@ -92,9 +92,12 @@ class Harness:
         async def on_mutation() -> None:
             self.log.append("on_mutation")
 
+        async def save(doc: str) -> None:  # every successful edit is saved (#6)
+            pass
+
         return ToolContext(
             project=self.project(),
-            session=cast(Any, SimpleNamespace(read_only=self.read_only)),
+            session=cast(Any, SimpleNamespace(read_only=self.read_only, save=save)),
             settings=cast(Any, None),
             run_id=self.run_id,
             on_mutation=on_mutation,
