@@ -810,8 +810,9 @@ TOOL_SPECS: list[ToolSpec] = [
     ),
     edit_spec(
         "sch_set_fields",
-        "Edit fields of one reference (all its units): value, footprint, datasheet, mpn "
-        "(field MPN), manufacturer (field Manufacturer) or any custom field; dnp, "
+        "Edit fields of one reference (all its units). Pass the fields as a map, "
+        "fields={\"Value\": \"100k\", \"Footprint\": ..., \"Datasheet\": ..., \"MPN\": ..., "
+        "\"Manufacturer\": ...} - standard or custom field names as keys. Also dnp, "
         "exclude_from_bom, exclude_from_board; remove_fields removes custom fields. New "
         "custom fields are hidden at the symbol; existing fields keep their position. "
         "Connectivity is verified unchanged. One logical change.",
