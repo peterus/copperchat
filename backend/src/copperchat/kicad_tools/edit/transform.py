@@ -583,6 +583,7 @@ def plan_move(
         lone = m.label or (m.own in scene.symbols and scene.symbols[m.own].power)
         if not lone or same_point(m.old, m.new):
             continue
+        world.check_time(tool)
         stub = _own_stub(scene, m.old, moved_ids)
         if stub is None or any(u in carried for u in stub.wires):
             continue

@@ -574,3 +574,21 @@ async def test_move_label_alone_lays_multi_wire_stub_anew(
     new_at = (corner[0], corner[1] - 2.54)
     assert same_point(sc.labels[label["uuid"]].at, new_at)
     assert _shape(sc) == sorted([(top, new_at)]) or _shape(sc) == sorted([(new_at, top)])
+
+
+async def test_move_refused_when_carried_stub_would_touch_another_net(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    """The carried +3V3 stub would touch the end of a FOO wire at its new place: refused,
+    nothing written."""
+    s = blank_session
+    await s.ensure_symbol_libraries()
+    ctx = edit_ctx(s, edit_db)
+    c = await _cap_with_rails(ctx)
+    await _ok(ctx, "sch_add_wire", points=[[109.22, 71.12], [124.46, 71.12]])
+    await _ok(ctx, "sch_add_label", net="FOO", at=[124.46, 71.12])
+    before = await state(s)
+    out, err = await call_tool(ctx, "sch_move", items=[c], by=[7.62, 0])
+    assert err and out["error"]["code"] == "overlap", out
+    assert "stub wire" in out["error"]["what"], out
+    assert await state(s) == before
