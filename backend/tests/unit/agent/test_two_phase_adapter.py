@@ -63,18 +63,26 @@ class Harness:
         self.svc.gate = LoggingGate(self.svc, self.log)
         self.read_only = False
         self.tmp_path = tmp_path
+        self.save_error: Exception | None = None
+        self.save_failures: list[Exception] = []
 
     def ctx(self) -> ToolContext:
         async def on_mutation() -> None:
             self.log.append("on_mutation")
 
+        async def save(doc: str) -> None:
+            if self.save_error is not None:
+                raise self.save_error
+            self.log.append(f"save {doc}")
+
         return ToolContext(
             project=_project(self.tmp_path),
-            session=cast(Any, SimpleNamespace(read_only=self.read_only)),
+            session=cast(Any, SimpleNamespace(read_only=self.read_only, save=save)),
             settings=cast(Any, None),
             run_id="run1",
             on_mutation=on_mutation,
             editing=self.svc,
+            on_save_failed=self.save_failures.append,
         )
 
     def spec(
@@ -136,9 +144,35 @@ async def test_budget_refusal_takes_no_snapshot(h: Harness) -> None:
     assert h.state.logical_used == 0
 
 
+async def test_successful_edit_is_saved_at_once(h: Harness) -> None:
+    """#6 (spec §5.3): every successful edit is saved before its result returns, after
+    the change log, so a later failure that reopens the last save never drops it."""
+    out = await h.call(h.spec())
+    assert out["ok"] is True
+    assert h.log[-2:] == ["record", "save sch"]
+
+
+async def test_failed_per_edit_save_is_reported(h: Harness) -> None:
+    """A failing save is never swallowed: an error result (save_failed), the turn is
+    told (it ends like a KiCad failure) and further edits of the turn are refused."""
+    h.save_error = OSError("No space left on device")
+    out = await h.call(h.spec())
+    err = out["error"]
+    assert err["code"] == "save_failed"
+    assert "No space left on device" in err["why"]
+    assert "sch_fake" in err["what"]
+    assert [str(e) for e in h.save_failures] == ["No space left on device"]
+    assert h.state.halted
+    h.log.clear()
+    h.save_error = None
+    out = await h.call(h.spec())
+    assert out["error"]["code"] == "save_failed" and h.log == []
+
+
 async def test_order_prepare_budget_snapshot_apply(h: Harness) -> None:
     out = await h.call(h.spec(changes=2))
-    assert h.log == ["before_prepare", "prepare", "check_budget", "on_mutation", "apply", "record"]
+    assert h.log == ["before_prepare", "prepare", "check_budget", "on_mutation", "apply", "record",
+                     "save sch"]  # fmt: skip
     assert out["budget"] == {"used": 2, "limit": 20}
 
 
@@ -308,6 +342,33 @@ async def test_document_inconsistent_halts_further_edits(h: Harness) -> None:
     out = await h.call(h.spec())
     assert out["error"]["code"] == "document_inconsistent"
     assert h.log == []  # refused before the gate, prepare and the snapshot
+
+
+async def test_inconsistent_tool_result_names_failed_edit(h: Harness) -> None:
+    """#6b (spec §5.4): the agent gets what failed (tool + target), that earlier edits
+    of the turn are kept, and to explain it to the user - in plain words; the internal
+    reason (UUIDs, "compensating") only in details."""
+    from copperchat.errors import DocumentInconsistent
+
+    async def prepare(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
+        return ChangeSet("sch_move", SHEET, [], {}, NetIntent(), Logical(1))
+
+    async def apply(ctx: ToolContext, cs: ChangeSet) -> ToolResult:
+        raise DocumentInconsistent(
+            "compensating sch_move did not restore the document (missing "
+            "['8b946cae-ceca-4601-b0a6-9c463dfb0140'], left over [])"
+        )
+
+    move = edit_spec("sch_move", "d", SCHEMA, prepare, apply)
+    out = await h.call(move, items=["#FLG02"], to=[71.12, 91.44])
+    err = out["error"]
+    assert err["code"] == "document_inconsistent"
+    assert "sch_move #FLG02" in err["what"]
+    plain = " ".join((err["what"], err["why"], err["suggestion"]))
+    assert "earlier edits of this turn are saved and kept" in plain
+    assert "explain" in plain and "user" in plain
+    assert "compensat" not in plain.lower() and "8b946cae" not in plain
+    assert "8b946cae" in err["details"]["detail"]
 
 
 async def test_failing_budget_record_does_not_fail_an_applied_call(

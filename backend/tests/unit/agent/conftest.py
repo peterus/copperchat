@@ -74,13 +74,22 @@ async def make_engine(
         ignore_interrupt: bool = False,
         specs: Any = (),
         with_session: bool = False,
+        session_save: Callable[[str], Any] | None = None,
         start: bool = True,
         backend: Any = None,
         backend_cls: Any = FakeAgent,
         **kw: Any,
     ) -> tuple[RunEngine, Any]:
         box: dict[str, Any] = {}
-        session = SimpleNamespace(project=project, closed=False) if with_session else None
+
+        async def saved(doc: str) -> None:
+            pass
+
+        session = (
+            SimpleNamespace(project=project, closed=False, save=session_save or saved)
+            if with_session
+            else None
+        )
         await ensure_default_conversation(db)
 
         def factory(ctx_factory: Callable[[], Any], turn_context: Callable[[], Any]) -> Any:

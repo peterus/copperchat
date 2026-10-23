@@ -144,8 +144,11 @@ UUIDs; pass full UUIDs between tool calls only for wires and labels.
 - If the same call fails twice, change approach: `sch_move` the part, or `sch_delete` it
   (stubs, labels and power symbols go with it) and place it again via `sch_find_space`.
   Never leave stray symbols, loose wires or labels behind as workarounds.
-- `document_inconsistent`: stop editing and tell the user; the turn end restores the
-  last checkpoint.
+- `document_inconsistent`: stop editing and tell the user what failed; the turn end
+  reloads the last save, the state just before that edit (every successful edit is saved
+  at once, so earlier edits of the turn are kept).
+- `save_failed`: the edit is in KiCad but could not be saved; stop editing and tell the
+  user (the turn ends and CopperChat retries the save).
 
 ## Missing parts
 

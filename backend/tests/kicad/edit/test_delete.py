@@ -295,7 +295,9 @@ async def real(make_settings: Callable[..., Settings], tmp_path: Path) -> AsyncI
         await db.close()
 
 
-async def test_compensation_with_board_restores_snapshot(real: Real) -> None:
+async def test_compensation_with_board_reopens_last_save(real: Real) -> None:
+    """A deleted symbol cannot be re-placed losslessly with a board: the turn end reopens
+    the last save (#6: the state just before this edit), which still has it."""
     project, hooks = await real.open(ECC83)
     t = turn("run-del")
     await hooks.on_turn_start(t)
@@ -313,7 +315,7 @@ async def test_compensation_with_board_restores_snapshot(real: Real) -> None:
     cs = await prepare_delete(ctx, {"items": [target[0]], "with_attached": False})
     with pytest.raises(DocumentInconsistent) as err:
         await apply_change_set(ctx, cs, _verify=_forced)
-    assert err.value.auto_restore is True
+    assert not err.value.last_save_partial
     await hooks.on_turn_end(
         t,
         TurnOutcome(
@@ -321,7 +323,6 @@ async def test_compensation_with_board_restores_snapshot(real: Real) -> None:
             changed_docs=frozenset({"sch"}),
             mutated=True,
             document_inconsistent=True,
-            auto_restore=True,
         ),
     )
     s2 = real.sessions.current()
@@ -339,7 +340,7 @@ async def test_compensated_sheet_delete_restores_at_turn_end(hier_session: Kicad
     cs = await prepare_delete(ctx, {"items": ["sheet:ampli_ht_horizontal"]})
     with pytest.raises(DocumentInconsistent) as err:
         await apply_change_set(ctx, cs, _verify=_forced)
-    assert err.value.auto_restore is True and "sheet symbol" in str(err.value)
+    assert "last save" in str(err.value) and "sheet symbol" in str(err.value)
     names = await s.call(lambda h: [str(i.name) for i in h.schematic().get_hierarchy()])
     assert "ampli_ht_horizontal" not in names  # left for the turn-end restore
     assert before[0] - (await state(s))[0]  # the sheet stays deleted until then
@@ -371,7 +372,7 @@ async def test_compensated_shared_file_symbol_delete_restores_at_turn_end(
     hier_nopcb_session: KicadSession,
 ) -> None:
     """Without a board a symbol would be re-placed, but not in a sheet file used twice
-    (invisible in the other instance until a reload): auto_restore instead."""
+    (invisible in the other instance until a reload): the turn end reopens the last save."""
     s = hier_nopcb_session
     assert s.project.pcb_file is None
     ref, _uid = await s.call(_shared_part)
@@ -379,7 +380,7 @@ async def test_compensated_shared_file_symbol_delete_restores_at_turn_end(
     cs = await prepare_delete(ctx, {"items": [ref], "with_attached": False})
     with pytest.raises(DocumentInconsistent) as err:
         await apply_change_set(ctx, cs, _verify=_forced)
-    assert err.value.auto_restore is True and "several instances" in str(err.value)
+    assert "last save" in str(err.value) and "several instances" in str(err.value)
 
 
 async def test_shared_file_symbol_counts_once_per_instance(hier_session: KicadSession) -> None:

@@ -119,10 +119,10 @@ class TurnOutcome:
     mutated: bool = False
     kicad_failed: bool = False
     # A failed edit could not be undone exactly (E-C4): like kicad_failed, no autosave;
-    # the session is reopened from disk. auto_restore: restore the last step checkpoint /
-    # turn snapshot (owner decision 4).
+    # the session is reopened from its last save, the state just before that edit (#6).
+    # last_save_partial: that save may still hold part of the failed edit.
     document_inconsistent: bool = False
-    auto_restore: bool = False
+    last_save_partial: bool = False
 
 
 class RunHooks:
@@ -251,7 +251,10 @@ class _Turn:
     kicad_failed: bool = False
     kicad_reported: bool = False
     document_inconsistent: bool = False
-    auto_restore: bool = False
+    last_save_partial: bool = False
+    # A successful edit could not be saved (#6): reported and interrupted like
+    # kicad_failed; the turn-end autosave tries again. The error text of the save.
+    save_failed: str | None = None
     # One doc-changed card per doc per turn (spec §12.3): path -> (message id, metadata).
     doc_cards: dict[str, tuple[int, dict[str, Any]]] = field(default_factory=dict)
 
@@ -924,7 +927,8 @@ class RunEngine:
                 )
             elif isinstance(ev, RateLimited):
                 turn.rate_limited = ev.resets_at
-        if (turn.kicad_failed or turn.document_inconsistent) and not turn.kicad_reported:
+        ended = turn.kicad_failed or turn.document_inconsistent or turn.save_failed
+        if ended and not turn.kicad_reported:
             turn.kicad_reported = True
             if turn.kicad_failed:
                 content = (
@@ -932,12 +936,19 @@ class RunEngine:
                     "this turn ended. Send your message again to retry."
                 )
                 code = "kicad_unavailable"
-            else:
+            elif turn.document_inconsistent:
                 content = (
                     "A failed edit could not be undone exactly, so this turn ended. "
                     "CopperChat reloads the design (see the notice below)."
                 )
                 code = "document_inconsistent"
+            else:
+                content = (
+                    f"Saving the design after an edit failed ({turn.save_failed}), so this "
+                    "turn ended. The edit is in KiCad; CopperChat tries the save once more "
+                    "now and reports if that fails too."
+                )
+                code = "save_failed"
             async with self._lock:
                 await self._insert(
                     role="system", kind="error", content=content, metadata={"code": code}
@@ -956,7 +967,7 @@ class RunEngine:
         if ev.reason == "error" and ev.error:
             async with self._lock:
                 await self._insert(role="system", kind="error", content=ev.error)
-        failed = turn.kicad_failed or turn.document_inconsistent
+        failed = turn.kicad_failed or turn.document_inconsistent or bool(turn.save_failed)
         await self._finish_turn("error" if failed else ev.reason)
         stream.release_next()
         if stream.pending_count() == 0:
@@ -1043,7 +1054,7 @@ class RunEngine:
             mutated=turn.mutated,
             kicad_failed=turn.kicad_failed,
             document_inconsistent=turn.document_inconsistent,
-            auto_restore=turn.auto_restore,
+            last_save_partial=turn.last_save_partial,
         )
         try:
             await self.hooks.on_turn_end(turn.info, outcome)
@@ -1239,6 +1250,7 @@ class RunEngine:
             on_kicad_unavailable=self._on_kicad_unavailable,
             editing=self.editing,
             on_document_inconsistent=self._on_document_inconsistent,
+            on_save_failed=self._on_save_failed,
         )
 
     async def _post_doc_notice(self, notice: DocNotice) -> None:
@@ -1342,7 +1354,12 @@ class RunEngine:
             self._turn.document_inconsistent = True  # reported + interrupted like kicad_failed
             if self.editing is not None:  # every report halts further edits of the turn
                 self.editing.turn(self.pid, self._turn.info.run_id).halted = True
-            self._turn.auto_restore |= bool(getattr(exc, "auto_restore", False))
+            self._turn.last_save_partial |= bool(getattr(exc, "last_save_partial", False))
+
+    def _on_save_failed(self, exc: Exception) -> None:
+        log.warning("saving after an edit failed during turn: %s", exc)
+        if self._turn is not None:  # reported + interrupted like kicad_failed
+            self._turn.save_failed = self._safe_reason(exc)
 
     def _spawn(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
         task = asyncio.create_task(coro)

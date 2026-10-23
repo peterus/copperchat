@@ -31,6 +31,7 @@ from copperchat.kicad_tools.edit.specs_transform import prepare_move
 from tests.kicad.edit.helpers import item_ids, local_label, v2, wire
 from tests.support.edit import (
     RUN_ID,
+    call_tool,
     edit_ctx,
     free_area,
     get_item,
@@ -208,7 +209,7 @@ async def test_compensated_symbol_delete_with_board_requests_restore(
     cs = _cs(await _root(s), static_stage("delete", Delete([a])), deleted=[a])
     with pytest.raises(DocumentInconsistent) as err:
         await apply_change_set(edit_ctx(s), cs, _verify=_forced)
-    assert err.value.auto_restore is True
+    assert not err.value.last_save_partial and "last save" in str(err.value)
 
 
 async def test_one_stage_writes_two_sheet_instances(hier_session: KicadSession) -> None:
@@ -460,3 +461,78 @@ async def test_move_compensation_restores_split_wire(
     assert err.value.code == "verification_failed"
     assert await _wires(s) == wires_before
     assert await _state(s) == before
+
+
+async def _flag_pair(s: KicadSession) -> None:
+    """R1 with #FLG01 / #FLG02 on its pin-1 net; the turn's first edit is to come."""
+    await s.ensure_symbol_libraries()
+    await place_raw(s, "Device:R", (30.48, 95.25), "R1")  # pin 1 at (30.48, 91.44)
+    await place_raw(s, "power:PWR_FLAG", (45.72, 91.44), "#FLG01")
+    await place_raw(s, "power:PWR_FLAG", (60.96, 88.9), "#FLG02")
+    ws = [wire((30.48, 91.44), (45.72, 91.44)), wire((45.72, 91.44), (60.96, 91.44)),
+          wire((60.96, 91.44), (60.96, 88.9))]  # fmt: skip
+    async with s.commit("wires"):
+        await s.call(lambda h: h.schematic().create_items(ws))
+    await s.save("sch")
+
+
+async def _refs(s: KicadSession) -> dict[str, tuple[float, float]]:
+    def run(h: KicadHandle) -> dict[str, tuple[float, float]]:
+        return {str(x.reference): mm_point(x.position) for x in h.schematic().get_symbols()}
+
+    return await s.call(run)
+
+
+async def test_failed_compensation_keeps_earlier_unsaved_edit(
+    blank_session: KicadSession, edit_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#6 (prod run be26737b): edit 1 (sch_delete #FLG01) succeeds, edit 2 (sch_move
+    #FLG02) fails and cannot be undone exactly. The turn end reopens the last save:
+    edit 1 must still be in it (it was saved at once), edit 2 is gone."""
+    from copperchat.kicad_tools.edit import engine, verify
+
+    s = blank_session
+    await _flag_pair(s)
+    ctx = edit_ctx(s, edit_db)
+    out, err = await call_tool(ctx, "sch_delete", items=["#FLG01"])
+    assert not err, out
+
+    async def broken(*_a: Any, **_k: Any) -> dict[str, str]:
+        raise DocumentInconsistent("forced: the undo diverged")
+
+    monkeypatch.setattr(verify, "check", _forced)
+    monkeypatch.setattr(engine, "_compensate", broken)
+    out, err = await call_tool(ctx, "sch_move", items=["#FLG02"], to=[60.96, 81.28])
+    assert err and out["error"]["code"] == "document_inconsistent", out
+    await s.restart()  # what the turn-end recovery does: KiCad reloads the files on disk
+    refs = await _refs(s)
+    assert "#FLG01" not in refs  # edit 1 survived
+    assert refs["#FLG02"] == (60.96, 88.9)  # edit 2 is gone
+
+
+async def test_cancel_after_successful_edit_keeps_it(
+    blank_session: KicadSession, edit_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#6 (Review Focus 3): Stop while edit 2 is being applied, after edit 1 succeeded:
+    edit 2 is undone and edit 1 is on disk (nothing earlier lost, even before the
+    turn-end autosave)."""
+    import asyncio
+
+    from copperchat.kicad_tools.edit import engine
+
+    s = blank_session
+    await _flag_pair(s)
+    ctx = edit_ctx(s, edit_db)
+    out, err = await call_tool(ctx, "sch_delete", items=["#FLG01"])
+    assert not err, out
+
+    def stopped(*_a: Any) -> StageInput:
+        raise asyncio.CancelledError  # Stop arrives after edit 2's push
+
+    monkeypatch.setattr(engine, "_read_back", stopped)
+    with pytest.raises(asyncio.CancelledError):
+        await call_tool(ctx, "sch_move", items=["#FLG02"], to=[60.96, 81.28])
+    assert (await _refs(s))["#FLG02"] == (60.96, 88.9)  # edit 2 undone in KiCad
+    await s.restart()  # the files on disk
+    refs = await _refs(s)
+    assert "#FLG01" not in refs and refs["#FLG02"] == (60.96, 88.9)

@@ -5,10 +5,11 @@ Each Stage is one `session.commit`; ops go through `for_sheet(op.sheet or cs.she
 statuses, 2A Q6) plus the wire/junction neighbourhood of every touched point, so
 KiCad's local cleanup (dropped junctions, merged segments, 2A Q5) is recorded as side
 effects. After the last stage the live netlist is checked against the intent; a
-mismatch is compensated in reverse (created items removed, updated items restored,
-deleted non-symbol items re-created with their original UUIDs; deleted symbols:
-re-placed from the library without a board, `DocumentInconsistent(auto_restore=True)`
-with one — owner decision 4), re-verified and reported as `verification_failed`.
+mismatch is compensated in reverse (created items removed, updated items restored -
+re-created when KiCad merged them away, #6 - deleted non-symbol items re-created with
+their original UUIDs; deleted symbols: re-placed from the library without a board, else
+`DocumentInconsistent`: the turn end reopens the last save, the state just before this
+edit), re-verified and reported as `verification_failed`.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from typing import Any
 
 from copperchat.changes.repo import ChangeEntry
 from copperchat.errors import DocumentInconsistent, StructuredToolError
-from copperchat.kicad_session import KicadHandle, KicadUnavailable
+from copperchat.kicad_session import DocKind, KicadHandle, KicadUnavailable
 from copperchat.kicad_tools import access
 from copperchat.kicad_tools.access import Netlist, PinKey
 from copperchat.kicad_tools.edit import verify
@@ -463,7 +464,7 @@ async def _compensate(
         if type(run.pre.get(u)).__name__ == "SchematicSymbolInstance"
     }
     # A sheet symbol re-created through the API gets a blank screen and its next save
-    # replaces the sheet file (E7): never re-created, the turn end restores instead.
+    # replaces the sheet file (E7): never re-created, the turn end reopens the last save.
     sheets_deleted = {u for u in run.deleted if type(run.pre.get(u)).__name__ == "SheetSymbol"}
     shared: set[str] = set()
     if symbols_deleted and not has_board:
@@ -474,9 +475,7 @@ async def _compensate(
         except (asyncio.CancelledError, KicadUnavailable):
             raise
         except Exception as exc:  # nothing undone yet: restore at turn end
-            raise DocumentInconsistent(
-                f"undoing the partial {run.cs.tool} change failed", auto_restore=True
-            ) from exc
+            raise DocumentInconsistent(f"undoing the partial {run.cs.tool} change failed") from exc
         shared = {u for u, s in symbols_deleted.items() if files.count(s.file) > 1}
     replace = {} if has_board or shared else symbols_deleted
     restore_at_turn_end = (has_board and bool(symbols_deleted)) or bool(shared or sheets_deleted)
@@ -556,8 +555,7 @@ async def _compensate(
             else "deleted symbols of a sheet file used by several instances cannot be re-placed"
         )
         raise DocumentInconsistent(
-            f"{run.cs.tool}: {what}; the last checkpoint is restored at turn end",
-            auto_restore=True,
+            f"{run.cs.tool}: {what}; the design is reloaded from its last save at turn end"
         )
     # Re-verify: original UUIDs back, created ones gone, netlist identical.
     expect_present = [u for u in [*run.modified, *run.deleted] if u not in replace]
@@ -657,10 +655,25 @@ async def apply_change_set(
     _before_compensate: Callable[[], None] | None = None,
     record: bool = True,
 ) -> Applied:
-    """Write `cs` stage by stage, verify by read-back, compensate on mismatch.
+    """Write `cs` stage by stage, verify by read-back, compensate on mismatch - as a
+    whole under `session.applying()` (no save of a half-applied edit, #6).
 
     `_verify` / `_before_compensate` are test seams (force a mismatch, inject a
     compensation failure)."""
+    async with ctx.session.applying():
+        return await _apply(
+            ctx, cs, _verify=_verify, _before_compensate=_before_compensate, record=record
+        )
+
+
+async def _apply(
+    ctx: ToolContext,
+    cs: ChangeSet,
+    *,
+    _verify: Verifier | None,
+    _before_compensate: Callable[[], None] | None,
+    record: bool,
+) -> Applied:
     session = ctx.session
     run = _Run(cs)
     before, refs = await session.call(_before)
@@ -843,6 +856,15 @@ async def record_applied(ctx: ToolContext, tool: str, changes: list[ChangeEntry]
         await ctx.editing.record_changes(ctx, changes)
     except Exception:  # the edit is applied and verified; never fail it afterwards
         log.exception("recording changes of %s failed", tool)
+
+
+async def save_after_edit(ctx: ToolContext, docs: Iterable[DocKind]) -> None:
+    """Save what a successful edit changed, at once (#6, spec §5.3): a later failure
+    that reopens the last save then falls back to the state just before that failing
+    edit and never drops an earlier one. The IPC API writes sub-sheets only on a real
+    save, so this saves the project files themselves (no separate checkpoint copy)."""
+    for doc in sorted(docs):
+        await ctx.session.save(doc)
 
 
 def _intent_keys(cs: ChangeSet) -> set[PinKey]:

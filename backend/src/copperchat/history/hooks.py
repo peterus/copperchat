@@ -7,7 +7,6 @@ import logging
 from typing import TYPE_CHECKING
 
 from copperchat.agent.engine import RunHooks, TurnInfo, TurnOutcome
-from copperchat.history.restore import restore_snapshot
 from copperchat.history.store import Snapshot, compute_hashes_async, ensure_gitignore
 from copperchat.kicad_session import DocKind, KicadUnavailable
 from copperchat.projects import Project
@@ -128,11 +127,13 @@ class HistoryHooks(RunHooks):
         session = self.svc.open_session(self.project)
         if session is None or session.read_only:
             return
-        saved: set[DocKind] = set()
+        # Every edit saved itself (#6): an unmodified schematic is on disk already. The
+        # board has no modified flag; it is saved whenever the turn changed it.
+        saved: set[DocKind] = set() if session.modified else docs & {"sch"}
         failure: Exception | None = None
         async with self.svc.lock(self.project):
             try:
-                for doc in sorted(docs):
+                for doc in sorted(docs - saved):
                     await session.save(doc)
                     saved.add(doc)
             except Exception as exc:
@@ -157,22 +158,16 @@ class HistoryHooks(RunHooks):
         await self._recover(turn, outcome)
 
     async def _recover_inconsistent(self, turn: TurnInfo, outcome: TurnOutcome) -> None:
-        """Spec §5.1 step 8 / §5.4: no autosave; reopen the session from disk once (or
-        restore the turn snapshot when `auto_restore`), then the recovery notice. Never
-        raises and never posts the engine's error row."""
+        """Spec §5.1 step 8 / §5.4: no autosave; reopen the session from disk once, then
+        the recovery notice. Every successful edit saved itself (#6), so the last save
+        is the state just before the failed edit - also when the failed edit left a
+        partial change KiCad cannot undo (owner decision: schematic and board come back
+        from the last save, never automatically from an older snapshot or plan-step
+        checkpoint; those stay optional undo actions). Never raises and never posts the
+        engine's error row."""
         session = self.svc.open_session(self.project)
         last_saved = session.last_saved_at if session is not None else None
-        store = self.svc.store(self.project)
-        snap = await store.latest_for_run(turn.run_id)
-        if outcome.auto_restore:
-            # Owner decision 4: the run's last step checkpoint (keeps finished plan
-            # steps), else the turn snapshot.
-            checkpoint = await store.latest_step_checkpoint(turn.run_id)
-            targets = [t for t in (checkpoint, snap) if t is not None]
-            for i, target in enumerate(targets):  # a failed checkpoint falls back to the turn
-                last = i == len(targets) - 1
-                if await self._auto_restore(target, turn.conversation_id, last=last):
-                    return
+        snap = await self.svc.store(self.project).latest_for_run(turn.run_id)
         if session is not None and self.svc.open_session(self.project) is session:
             try:
                 await self.svc.sessions.reopen(self.project)
@@ -185,40 +180,6 @@ class HistoryHooks(RunHooks):
                 )
         await self._recovery_notice(outcome, snap, last_saved, turn.conversation_id)
 
-    async def _auto_restore(
-        self, snap: Snapshot, conversation_id: str, *, last: bool = True
-    ) -> bool:
-        """Restore the step checkpoint / turn snapshot at turn end, without the REST
-        path's agent-busy check (the turn is ending). False: the restore failed (and
-        was reported when `last`; otherwise the caller tries an older snapshot)."""
-        state = (
-            "at the end of the last finished plan step"
-            if snap.kind == "step"
-            else "before this turn"
-        )
-        try:
-            await restore_snapshot(
-                self.svc,
-                self.project,
-                snap.id,
-                conversation_id=conversation_id,
-                check_busy=False,
-                notice="A failed edit could not be undone exactly, so the design was "
-                f"restored to its state {state}.",
-            )
-        except Exception as exc:
-            log.warning("auto-restore of snapshot %s failed: %s", snap.id, exc)
-            if not last:  # the next (older) snapshot is tried; report only the outcome
-                return False
-            await self.engine.post_error(
-                conversation_id,
-                f"Restoring the design to its state {state} failed; restore the "
-                "snapshot from the History panel.",
-                {"code": "restore_failed"},
-            )
-            return False
-        return True
-
     async def _recovery_notice(
         self,
         outcome: TurnOutcome,
@@ -229,25 +190,40 @@ class HistoryHooks(RunHooks):
         """The recovery notices go to the session of the turn they recover from."""
         lost = outcome.kicad_failed or outcome.document_inconsistent
         if lost and (outcome.mutated or outcome.changed_docs):
-            # The in-memory changes of this turn are gone; KiCad holds the files on disk.
-            state = f"the last save ({last_saved})" if last_saved else "the last save"
-            text = f"The design is at the state of {state}; changes after that are lost."
-            if snap is None:
-                await self.engine.post_notice(conversation_id, text, {"action": "recovered"})
-                return
-            await self.engine.post_notice(
-                conversation_id,
-                f"{text} A snapshot from before this turn exists; restore it to go back "
-                "to that state.",
-                {"action": "restore", "snapshotId": snap.id},
-            )
+            # KiCad holds the files on disk: every successful edit saved itself (#6), so
+            # only the edit that failed is gone.
+            state = f"its last save ({last_saved})" if last_saved else "its last save"
+            if outcome.last_save_partial:
+                text = (
+                    f"The design is back at {state}. That save may still contain part of "
+                    "the edit that failed (it could not be undone); check the design."
+                )
+                undo = (
+                    "Restore the snapshot from before this turn to remove it; this also "
+                    "undoes this turn's earlier edits."
+                )
+            else:
+                text = (
+                    f"The design is back at {state}: the state just before the edit that "
+                    "failed. Every earlier edit of this turn was saved, so nothing else "
+                    "was lost and no restore is needed."
+                )
+                undo = (
+                    "Optional: restore the snapshot from before this turn to undo every "
+                    "change of this turn."
+                )
+            await self.engine.post_notice(conversation_id, text, {"action": "recovered"})
+            if snap is not None:
+                await self.engine.post_notice(
+                    conversation_id, undo, {"action": "restore", "snapshotId": snap.id}
+                )
         elif snap is not None:
             await self.engine.post_notice(
                 conversation_id,
                 "A snapshot from before this turn exists. Restore it to undo this turn's changes.",
                 {"action": "restore", "snapshotId": snap.id},
             )
-        else:
+        if snap is None:
             return
         checkpoint = await self.svc.store(self.project).latest_step_checkpoint(snap.run_id)
         if checkpoint is not None:
@@ -255,8 +231,8 @@ class HistoryHooks(RunHooks):
             # checkpoint is offered too, so finished plan steps can be kept.
             await self.engine.post_notice(
                 conversation_id,
-                f"The checkpoint of the last finished plan step ({checkpoint.label}) "
-                "exists; restore it to keep the finished steps.",
+                f"Optional: restore the checkpoint of the last finished plan step "
+                f"({checkpoint.label}) to go back to the end of that step.",
                 {"action": "restore", "snapshotId": checkpoint.id, "checkpoint": True},
             )
 

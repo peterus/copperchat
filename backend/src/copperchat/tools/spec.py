@@ -70,6 +70,9 @@ class ToolContext:
     # A failed edit could not be undone exactly: the run engine ends the turn (like
     # on_kicad_unavailable) and the history hook reopens the session from disk.
     on_document_inconsistent: Callable[[Exception], None] | None = None
+    # A successful edit could not be saved (#6): the run engine ends the turn (like
+    # on_kicad_unavailable); the turn-end autosave tries the save once more.
+    on_save_failed: Callable[[Exception], None] | None = None
     # Sessions (S-C5): the conversation of the burst, for the doc write policy and
     # attribution. conversation_type None is Free only while conversation_id is None too
     # (plain tests); with a conversation_id it is refused (fail closed).

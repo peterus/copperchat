@@ -14,6 +14,7 @@ separate change set after a save + reload (spike 2A Q7).
 
 from __future__ import annotations
 
+import logging
 import re
 import weakref
 from collections import OrderedDict
@@ -77,6 +78,8 @@ MAX_PINS = 200  # pins echoed in a placement result (sch_get_pin reads any pin)
 _PROBES: weakref.WeakKeyDictionary[Any, tuple[int, OrderedDict[tuple[str, int], Any]]] = (
     weakref.WeakKeyDictionary()
 )
+log = logging.getLogger(__name__)
+
 Mirror = Literal["", "x", "y"]
 REF_RE = re.compile(r"^[A-Za-z][A-Za-z_]{0,7}[0-9]{1,6}$")
 
@@ -419,9 +422,10 @@ async def fix_shared_instances(
     """Give the new symbol its own reference on the other instances of a shared sheet:
     save + reload (it is invisible there before), then set each instance's reference via
     `for_sheet(other)` (spike 2A Q7). On failure the placement is undone (symbol removed,
-    sibling units restored); if that is impossible (the save already holds the placement
-    and the server was replaced, or the undo fails) -> `DocumentInconsistent` with
-    `auto_restore` (the turn snapshot predates the placement)."""
+    sibling units restored) and saved again: the save above holds the placement, and the
+    last save must be the state before this edit (#6) - also when KiCad restarted after
+    that save (the undo then runs on the reloaded document). If that fails too ->
+    `DocumentInconsistent(last_save_partial=True)`."""
     from copperchat.kicad_tools.edit.engine import by_id
 
     session = ctx.session
@@ -464,13 +468,18 @@ async def fix_shared_instances(
         )
         applied = await apply_change_set(ctx, cs, record=False)  # the caller records
     except BaseException as exc:
-        if session.generation != generation or not session.server_alive:
+        restarted = session.generation != generation or not session.server_alive
+        try:
+            await _undo_placement(ctx, plan, uid, tool)
+            await session.save("sch")
+        except Exception as undo_exc:
+            log.warning("undoing the shared-sheet placement of %s failed: %s", tool, undo_exc)
             raise DocumentInconsistent(
-                f"the {tool} placement on a shared sheet could not be completed (KiCad "
-                "restarted after saving it)",
-                auto_restore=True,
+                f"the {tool} placement on a shared sheet could not be completed"
+                + (" (KiCad restarted after saving it)" if restarted else "")
+                + " and undoing it failed",
+                last_save_partial=True,
             ) from exc
-        await _undo_placement(ctx, plan, uid, tool)
         raise
     renamed = [{"sheet": other.human_path, "ref": str(sym.reference)} for other, sym in items]
     return applied, renamed
@@ -494,9 +503,7 @@ async def _undo_placement(ctx: ToolContext, plan: PlacePlan, uid: str, tool: str
         async with session.commit(f"{tool}: undo placement"):
             await session.call(undo)
     except Exception as exc:
-        raise DocumentInconsistent(
-            f"undoing the partial {tool} placement failed", auto_restore=True
-        ) from exc
+        raise DocumentInconsistent(f"undoing the partial {tool} placement failed") from exc
 
 
 def _kiid(value: str) -> Any:
