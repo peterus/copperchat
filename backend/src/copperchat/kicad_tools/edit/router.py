@@ -94,6 +94,16 @@ def _collinear_overlap(a: Point, b: Point, c: Point, d: Point) -> bool:
     return False
 
 
+def _on_line(a: Point, b: Point, line: tuple[Point, Point]) -> bool:
+    """Segment a-b lies on the infinite axis-aligned line through `line`."""
+    (c, d) = line
+    if abs(c[0] - d[0]) < EPS_MM:  # vertical
+        return abs(a[0] - c[0]) < EPS_MM and abs(b[0] - c[0]) < EPS_MM
+    if abs(c[1] - d[1]) < EPS_MM:  # horizontal
+        return abs(a[1] - c[1]) < EPS_MM and abs(b[1] - c[1]) < EPS_MM
+    return False
+
+
 def simplify(points: Sequence[Point]) -> list[Point]:
     """Drop repeated and collinear middle points; [] when the path reverses on itself."""
     pts = [points[0]]
@@ -238,10 +248,11 @@ class Obstacles:
         points: Sequence[Point],
         own_symbols: tuple[str | None, str | None] = (None, None),
         first_only: bool = False,
-        sheet_edges: bool = True,
+        legacy_line: tuple[Point, Point] | None = None,
     ) -> list[str]:
-        """Why a wire along `points` would be unsafe. `sheet_edges=False` skips the
-        sheet-edge rule (only for an existing wire that already broke it, #9)."""
+        """Why a wire along `points` would be unsafe. `legacy_line`: the line of an
+        existing wire that already broke the sheet-edge rule (#9); segments on that line
+        keep it (they are the old wire, dragged), every other segment is checked."""
         pts = list(points)
         segs = list(itertools.pairwise(pts))
         if not segs:
@@ -282,7 +293,7 @@ class Obstacles:
                     )
                     if not own and box.hit_by_segment(a, b) and add(f"crosses {what}"):
                         return out
-            if not sheet_edges:
+            if legacy_line is not None and _on_line(a, b, legacy_line):
                 continue
             near = {s.uuid: s for cell in _cells(seg_box) for s in self.sheets.get(cell, ())}
             for msg in sheet_edge_problems((a, b), list(near.values()), sheet_pins=self.sheet_pins):
@@ -310,7 +321,7 @@ def route_problems(
     *,
     item_nets: Mapping[str, str] | None = None,
     own_symbols: tuple[str | None, str | None] = (None, None),
-    sheet_edges: bool = True,
+    legacy_line: tuple[Point, Point] | None = None,
 ) -> list[str]:
     """Why a wire along `points` would be unsafe (empty = OK).
 
@@ -320,7 +331,7 @@ def route_problems(
     pin the first / last point is: an outward first/last segment may touch their body
     box (it contains the pin)."""
     return Obstacles(scene, netlist, allowed_nets, item_nets).problems(
-        points, own_symbols, sheet_edges=sheet_edges
+        points, own_symbols, legacy_line=legacy_line
     )
 
 

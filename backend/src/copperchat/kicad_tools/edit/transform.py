@@ -74,7 +74,11 @@ from copperchat.kicad_tools.edit.scene import (
     sheet_api,
     symbol_info,
 )
-from copperchat.kicad_tools.edit.sheet_edges import sheet_boxes, sheet_edge_problems
+from copperchat.kicad_tools.edit.sheet_edges import (
+    path_edge_problems,
+    sheet_boxes,
+    sheet_edge_problems,
+)
 from copperchat.kicad_tools.edit.targets import LABEL_KINDS, Target, bad, sheet_symbols
 
 Mirror = Literal["", "x", "y"]
@@ -229,7 +233,7 @@ class _Check:
         pts: list[Point],
         net: str | None,
         own: tuple[str | None, str | None],
-        sheet_edges: bool = True,
+        legacy_line: tuple[Point, Point] | None = None,
     ) -> list[str]:
         allowed = {net} if net is not None else set()
         # sheet pins of other nets (not at the path's ends) are foreign connection points:
@@ -254,7 +258,7 @@ class _Check:
             allowed,
             item_nets=self.nets,
             own_symbols=own,
-            sheet_edges=sheet_edges,
+            legacy_line=legacy_line,
         )
 
 
@@ -540,7 +544,8 @@ def plan_move(
             moved_end, fixed_end, end = (s_new, e_new, ms) if ms else (e_new, s_new, me)
             assert end is not None
             paths = _corner_paths(moved_end, fixed_end, end.direction)
-        # a wire that already broke the sheet-edge rule may keep doing so: warn (#9)
+        # a wire that already broke the sheet-edge rule may keep doing so along its own
+        # line (new legs are checked strictly): warn (#9)
         legacy = sheet_edge_problems((w.start, w.end), edge_sheets, sheet_pins=sheet_pin_points)
         chosen = None
         found: list[str] = []
@@ -549,16 +554,17 @@ def plan_move(
                 pts,
                 net,
                 (_owner(check.scene, pts[0]), _owner(check.scene, pts[-1])),
-                sheet_edges=not legacy,
+                legacy_line=(w.start, w.end) if legacy else None,
             )
             if not found:
                 chosen = pts
                 break
         if chosen is None:
             raise _short(tool, w, found)
-        if legacy:
+        still = path_edge_problems(chosen, edge_sheets, sheet_pins=sheet_pin_points)
+        if legacy and still:
             plan.warnings.append(
-                f"dragged wire {w.uuid} already broke the sheet-edge rule: {legacy[0]}; "
+                f"dragged wire {w.uuid} still breaks the sheet-edge rule: {still[0]}; "
                 "consider sch_reroute"
             )
         if len(chosen) == 2:

@@ -106,3 +106,19 @@ def test_edge_warnings_name_touched_existing_wires_only() -> None:
     out = edge_warnings(scene, [(60.96, 49.53), (60.96, 40.64)])
     assert len(out) == 1 and "old" in out[0] and "1.27 mm" in out[0], out
     assert edge_warnings(scene, [(60.96, 30.48), (60.96, 40.64)]) == []
+
+
+def test_legacy_line_exempts_only_the_old_wire_line() -> None:
+    """A legacy wire 1.27 mm above the top edge, dragged: its own line keeps the old
+    fault, but a new leg of the dragged path is still checked (it may not cross the
+    sheet or hug another edge)."""
+    w, r2, _vin = _sheet_world()
+    obstacles = Obstacles(w.scene, w.netlist, w.allowed(r2), w.item_nets)
+    old = ((55.88, 49.53), (66.04, 49.53))
+    along = [(53.34, 49.53), (66.04, 49.53)]
+    assert obstacles.problems(along, legacy_line=old) == []
+    assert obstacles.problems(along) != []  # strict without the exemption
+    through = [(60.96, 60.96), (60.96, 49.53), (66.04, 49.53)]  # new leg inside the sheet
+    assert any("crosses sheet Power" in p for p in obstacles.problems(through, legacy_line=old))
+    parallel = [(49.53, 60.96), (49.53, 49.53), (66.04, 49.53)]  # new leg hugs the left edge
+    assert any("left edge" in p for p in obstacles.problems(parallel, legacy_line=old))
