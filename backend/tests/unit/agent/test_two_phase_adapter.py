@@ -75,9 +75,10 @@ class Harness:
                 raise self.save_error
             self.log.append(f"save {doc}")
 
+        self.session = SimpleNamespace(read_only=self.read_only, save=save, generation=0)
         return ToolContext(
             project=_project(self.tmp_path),
-            session=cast(Any, SimpleNamespace(read_only=self.read_only, save=save)),
+            session=cast(Any, self.session),
             settings=cast(Any, None),
             run_id="run1",
             on_mutation=on_mutation,
@@ -167,6 +168,33 @@ async def test_failed_per_edit_save_is_reported(h: Harness) -> None:
     h.save_error = None
     out = await h.call(h.spec())
     assert out["error"]["code"] == "save_failed" and h.log == []
+
+
+async def test_restart_between_apply_and_save_is_a_kicad_failure(h: Harness) -> None:
+    """KiCad restarted (e.g. a parallel read tool timed out) after the edit was applied
+    but before its save: the server holds the last save, so the edit is gone - never
+    report it as a success, and never save the reloaded document in its name."""
+    lost: list[Exception] = []
+    spec = h.spec()
+    real_apply = spec.apply
+
+    async def apply(ctx: ToolContext, cs: ChangeSet) -> ToolResult:
+        result = await real_apply(ctx, cs)
+        ctx.session.generation += 1  # type: ignore[attr-defined]
+        return result
+
+    def ctx() -> ToolContext:
+        c = Harness.ctx(h)
+        c.on_kicad_unavailable = lost.append
+        return c
+
+    from dataclasses import replace as dc_replace
+
+    tool = build_sdk_tool_list([dc_replace(spec, apply=apply)], ctx)[0]
+    raw = await tool.handler({})
+    assert raw["is_error"]
+    assert "stopped responding" in json.loads(raw["content"][0]["text"])["error"]["what"]
+    assert len(lost) == 1 and not any(e.startswith("save") for e in h.log)
 
 
 async def test_order_prepare_budget_snapshot_apply(h: Harness) -> None:

@@ -424,8 +424,9 @@ async def fix_shared_instances(
     `for_sheet(other)` (spike 2A Q7). On failure the placement is undone (symbol removed,
     sibling units restored) and saved again: the save above holds the placement, and the
     last save must be the state before this edit (#6) - also when KiCad restarted after
-    that save (the undo then runs on the reloaded document). If that fails too ->
-    `DocumentInconsistent(last_save_partial=True)`."""
+    that save (the undo then runs on the reloaded document). If that fails too, or the
+    references' change set itself ends inconsistent -> `DocumentInconsistent(
+    last_save_partial=True)`."""
     from copperchat.kicad_tools.edit.engine import by_id
 
     session = ctx.session
@@ -467,6 +468,13 @@ async def fix_shared_instances(
             logical=Logical(0),
         )
         applied = await apply_change_set(ctx, cs, record=False)  # the caller records
+    except DocumentInconsistent as exc:
+        # The references' own undo diverged: the in-memory document is not trustworthy,
+        # so it is never saved; the last save (refresh_jobs) holds the placement.
+        raise DocumentInconsistent(
+            f"the {tool} placement on a shared sheet could not be completed ({exc})",
+            last_save_partial=True,
+        ) from exc
     except BaseException as exc:
         restarted = session.generation != generation or not session.server_alive
         try:

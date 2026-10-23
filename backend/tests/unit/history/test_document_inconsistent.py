@@ -88,7 +88,7 @@ async def test_recovery_notice_without_a_save_says_last_save(opened: Opened) -> 
     assert "its last save:" in text and "nothing else was lost" in text
 
 
-async def test_kicad_failed_editing_turn_uses_same_wording(opened: Opened) -> None:
+async def test_kicad_failed_editing_turn_says_successful_edits_are_kept(opened: Opened) -> None:
     env = opened.env
     await opened.session.save("pcb")
     stamp = opened.session.last_saved_at
@@ -101,7 +101,8 @@ async def test_kicad_failed_editing_turn_uses_same_wording(opened: Opened) -> No
     snap = await env.svc.store(opened.project).latest_for_run("run-kf")
     assert snap is not None
     (text, meta), (_undo, undo_meta) = env.engine.notices[-2:]
-    assert stamp in text and "nothing else was lost" in text
+    assert stamp in text and "nothing that succeeded was lost" in text
+    assert "edit that failed" not in text  # KiCad failed, not necessarily an edit
     assert meta == {"action": "recovered"}
     assert undo_meta == {"action": "restore", "snapshotId": snap.id}
 

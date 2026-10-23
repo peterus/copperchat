@@ -191,7 +191,7 @@ class HistoryHooks(RunHooks):
         lost = outcome.kicad_failed or outcome.document_inconsistent
         if lost and (outcome.mutated or outcome.changed_docs):
             # KiCad holds the files on disk: every successful edit saved itself (#6), so
-            # only the edit that failed is gone.
+            # at most the edit that failed is gone.
             state = f"its last save ({last_saved})" if last_saved else "its last save"
             if outcome.last_save_partial:
                 text = (
@@ -203,11 +203,18 @@ class HistoryHooks(RunHooks):
                     "undoes this turn's earlier edits."
                 )
             else:
-                text = (
-                    f"The design is back at {state}: the state just before the edit that "
-                    "failed. Every earlier edit of this turn was saved, so nothing else "
-                    "was lost and no restore is needed."
-                )
+                if outcome.document_inconsistent:
+                    text = (
+                        f"The design is back at {state}: the state just before the edit "
+                        "that failed. Every earlier edit of this turn was saved, so nothing "
+                        "else was lost and no restore is needed."
+                    )
+                else:  # KiCad failed - during an edit or any other call
+                    text = (
+                        f"The design is back at {state}. Every successful edit of this turn "
+                        "was saved, so nothing that succeeded was lost and no restore is "
+                        "needed."
+                    )
                 undo = (
                     "Optional: restore the snapshot from before this turn to undo every "
                     "change of this turn."

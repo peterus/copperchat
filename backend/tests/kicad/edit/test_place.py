@@ -344,6 +344,38 @@ async def test_shared_sheet_failure_removes_placement_and_its_rows(
     assert await s.call(item_ids) == before
 
 
+async def test_shared_sheet_inconsistent_references_are_never_saved(
+    hier_session: KicadSession, edit_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The references change set itself ends DocumentInconsistent: the in-memory
+    document is not trustworthy, so it is not saved over the last save; the turn is
+    told that save may still hold part of the placement."""
+    from copperchat.errors import DocumentInconsistent
+
+    s = hier_session
+    await s.ensure_symbol_libraries()
+    ctx = edit_ctx(s, edit_db)
+    at = await _spot(s, sheet="2")
+    seen: list[Exception] = []
+    ctx.on_document_inconsistent = seen.append
+    saves: list[str] = []
+    real_save = s.save
+
+    async def broken(*_: Any, **__: Any) -> Any:
+        async def recording(doc: Any) -> None:
+            saves.append(doc)
+            await real_save(doc)
+
+        monkeypatch.setattr(s, "save", recording)
+        raise DocumentInconsistent("forced: the undo diverged")
+
+    monkeypatch.setattr(place_mod, "apply_change_set", broken)
+    out, err = await call_tool(ctx, "sch_place_symbol", lib_id="Device:R", at=at, sheet="2")
+    assert err and out_code(out) == "document_inconsistent", out
+    assert saves == []
+    assert len(seen) == 1 and getattr(seen[0], "last_save_partial", False)
+
+
 async def test_shared_sheet_failure_after_a_restart_undoes_the_saved_placement(
     hier_session: KicadSession, edit_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
