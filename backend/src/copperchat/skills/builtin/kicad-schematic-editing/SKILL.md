@@ -65,15 +65,31 @@ channel ×3 with `net_suffix="_CH{n}"`), `sch_add_wire` (an explicit wire by
 coordinates; prefer `sch_connect`), `sch_reroute` (tidy an existing route, the nets
 stay identical), `sch_rename_net`, `sch_add_sheet` + `sch_add_sheet_pin`
 (hierarchical sheets; connect a sheet pin as `'<sheet name>.<pin name>'`),
-`sch_get_pin`, `sch_get_net`, `sch_list_symbols` (look before you act, and after an
-error), `sch_changes` (what this turn / step / plan changed).
+`sch_get_pin`, `sch_get_net`, `sch_list_symbols`, `sch_list_items` (look before you
+act, and after an error), `sch_changes` (what this turn / step / plan changed).
 
 ## Addressing pins
 
 `REF.PIN` with the pin number (`U1.3`) or a unique pin name (`U1.VIN`; `U1.PB0` also
 matches `AREF/PB0`). If a call fails with `ambiguous_pin`, use the number. A sheet pin
-on the parent sheet is `'<sheet name>.<pin name>'`. Quote references to the user, never
-UUIDs; pass full UUIDs between tool calls only for wires and labels.
+on the parent sheet is `'<sheet name>.<pin name>'` or its UUID (from `sch_add_sheet_pin`,
+`sch_list_items` or `sch_get_pin`); both work as `sch_connect` endpoints and as
+`sch_move` / `sch_delete` items. Quote references to the user, never UUIDs; pass full
+UUIDs between tool calls only for wires, labels, junctions, no-connects and sheet pins.
+
+## Finding items
+
+- `sch_list_items` lists the items of one sheet (default root; `sheet="/Power/"`) with
+  their UUID, type, position (`start_mm` / `end_mm` for wires), text and net (`null` =
+  connected to nothing). Filter with `types` (`label`, `global_label`, `hier_label`,
+  `wire`, `junction`, `no_connect`, `sheet_pin`, `power`, `symbol`, `sheet`), `bbox`
+  ([x1, y1, x2, y2] mm), `net` and `text` (substring or glob like `SPI*`). It pages
+  (`limit` default 100, at most 500; `offset`, `total`). Use it to find what you placed
+  wrongly — a floating label, a sheet pin on the wrong edge, a stray wire — and repair
+  it with `sch_move` / `sch_delete` by UUID.
+- `sch_get_pin` lists the items exactly at the pin (`connected`, sheet pins included) and,
+  when the pin has its own stub, what hangs at the stub's far end (`stub_end`: labels,
+  power symbols, no-connects with UUIDs) and the stub's wires (`stub_wires`).
 
 ## Rails and labels
 
@@ -99,6 +115,14 @@ UUIDs; pass full UUIDs between tool calls only for wires and labels.
   `sch_connect(from="U2.SDA", to="<pin name>")`: within 25.4 mm it wires onto the label;
   farther away first `sch_move` the label (its UUID is in the `sch_add_sheet_pin` result)
   next to the pin. An unwired hierarchical label is an ERC error.
+- **Repairing a sheet pin**: `sch_move(items=["<sheet>.<pin>"], to=[x, y])` moves it
+  along its edge (its own stub travels with it) or onto another edge (`to` within 2.54 mm
+  of that edge; the side and text orientation follow, its wires are dragged). Pins stay
+  2.54 mm apart and one pitch clear of the corners; rotation / mirror is refused for sheet
+  pins. `sch_delete(items=["<sheet>.<pin>"])` removes the pin and its own stub; the
+  sub-sheet's hierarchical label of that name goes too if it is connected to nothing and
+  no other sheet symbol of a shared file still has that pin (a note says when it stays).
+  A sheet cannot have two pins of one name.
 - Leave ≥ 7.62 mm free in front of every pin that still needs a power symbol or label;
   a pin boxed in by another part cannot be connected cleanly.
 - Inputs must not float: enable/address pins go to a rail or GND as the notes or the
@@ -114,8 +138,8 @@ UUIDs; pass full UUIDs between tool calls only for wires and labels.
 
   | Tool | Cost |
   |------|------|
-  | `sch_delete` | 1 per symbol (all units), 1 per sheet; all wires, junctions, labels and no-connects you list that are on one net: 1 together per net |
-  | `sch_move` | 1 per moved symbol, label or sheet; carried stubs and their end items are free |
+  | `sch_delete` | 1 per symbol (all units), 1 per sheet, 1 per sheet pin (its stub and child label included); all wires, junctions, labels and no-connects you list that are on one net: 1 together per net |
+  | `sch_move` | 1 per moved symbol, label, sheet or sheet pin; carried stubs and their end items are free |
 - When a request needs more than the budget (a new circuit block, a whole sub-sheet),
   or a tool answers `plan_required`, call `plan_propose` **before** editing: steps of
   5–10 logical changes each, every step with a clear intent, `expected_changes` and how
@@ -159,6 +183,8 @@ UUIDs; pass full UUIDs between tool calls only for wires and labels.
 - An `overlap` error carries the nearest free position: use it, or `sch_find_space`.
 - `no_route`: the parts usually face away from each other; prefer `sch_move` (rotate /
   mirror) over long detours, or connect by label.
+- Repair before you recreate: find the wrong item (`sch_list_items`, `sch_get_pin`) and
+  `sch_move` it; delete and add again only what cannot be moved.
 - If the same call fails twice, change approach: `sch_move` the part, or `sch_delete` it
   (stubs, labels and power symbols go with it) and place it again via `sch_find_space`.
   Never leave stray symbols, loose wires or labels behind as workarounds.
