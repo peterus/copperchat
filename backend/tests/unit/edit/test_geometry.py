@@ -63,12 +63,21 @@ class _P:
 
 
 class _Field:
-    def __init__(self, value: str, angle: float = 0.0) -> None:
+    def __init__(
+        self,
+        value: str,
+        angle: float = 0.0,
+        halign: int = 2,
+        valign: int = 2,
+        visible: bool = True,
+    ) -> None:
         from types import SimpleNamespace as NS
 
-        attrs = NS(size=_P(1.27, 1.27), horizontal_alignment=2, vertical_alignment=2, angle=angle)
+        attrs = NS(
+            size=_P(1.27, 1.27), horizontal_alignment=halign, vertical_alignment=valign, angle=angle
+        )
         self.text = NS(value=value, position=_P(10, 10), attributes=attrs)
-        self.visible = True
+        self.visible = visible
 
 
 def test_field_box_matches_layout_extent() -> None:
@@ -83,3 +92,28 @@ def test_field_box_matches_layout_extent() -> None:
     assert r is not None
     assert r.x1 - r.x0 == pytest.approx(1.6 * 1.27)
     assert r.y1 - r.y0 == pytest.approx(text_width("10k", 1.27))
+
+
+@pytest.mark.parametrize(
+    ("halign", "x0_off"),
+    [(1, 0.0), (2, -0.5), (3, -1.0)],  # left, centre, right
+)
+@pytest.mark.parametrize(
+    ("valign", "y0_off"), [(1, 0.0), (2, -0.5), (3, -1.0)]
+)  # top, centre, bottom
+def test_field_box_alignment_anchor(halign: int, x0_off: float, valign: int, y0_off: float) -> None:
+    from copperchat.kicad_tools.edit.fields import text_width
+    from copperchat.kicad_tools.edit.geometry import _field_box
+
+    b = _field_box(_Field("10k", halign=halign, valign=valign))
+    assert b is not None
+    w, h = text_width("10k", 1.27), 1.6 * 1.27
+    assert b.x0 == pytest.approx(10 + x0_off * w)
+    assert b.y0 == pytest.approx(10 + y0_off * h)
+
+
+def test_field_box_skips_invisible_and_empty() -> None:
+    from copperchat.kicad_tools.edit.geometry import _field_box
+
+    assert _field_box(_Field("10k", visible=False)) is None
+    assert _field_box(_Field("")) is None
