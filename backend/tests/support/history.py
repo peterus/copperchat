@@ -54,6 +54,7 @@ class FakeEngine:
         self.notice_conversations: list[str] = []
         self.error_conversations: list[str] = []
         self.note_conversations: list[str | None] = []
+        self.submitted: list[tuple[str, str]] = []  # (client message id, text)
 
     async def post_notice(
         self, conversation_id: str, text: str, metadata: dict[str, Any] | None = None
@@ -71,10 +72,20 @@ class FakeEngine:
         self.notes.append(text)
         self.note_conversations.append(conversation_id)
 
+    async def submit_ex(
+        self, conversation_id: str, client_id: str, text: str, atts: Any, meta: Any = None
+    ) -> Any:
+        self.submitted.append((client_id, text))
+        return None, True
+
 
 class FakeRuntime:
     def __init__(self, engine: FakeEngine | None) -> None:
         self.engine = engine
 
     def get(self, project_id: str) -> FakeEngine | None:
+        return self.engine
+
+    async def ensure(self, project: Any) -> FakeEngine:
+        assert self.engine is not None
         return self.engine

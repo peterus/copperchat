@@ -83,9 +83,83 @@ def test_revise_from_paused_returns_to_proposed() -> None:
     assert revised.steps[0].checkpoint_id == "c1"
 
 
-def test_revise_refused_while_running() -> None:
-    with pytest.raises(PlanStateError):
-        go(running(), "revise", steps=())
+def _mid_step(n: int = 2) -> Plan:
+    """Step 1 running with 3 logical changes used and one own placement."""
+    return machine.with_step(running(n), 1, used=3, placed=("u1",))
+
+
+def _revise_mid_step(plan: Plan, expected: int = 8) -> Plan:
+    steps = machine.build_steps(plan.id, [spec("bigger", expected), spec("rest")], start=1)
+    return go(plan, "revise", steps=steps, reason="needs more")
+
+
+def test_revise_allowed_while_running() -> None:
+    """#13 (spec §9.2): the running step is paused, not failed, and becomes the first
+    step of the new revision with its id, used count and own-placement ledger."""
+    plan = _mid_step()
+    old = plan.step(1)
+    revised = _revise_mid_step(plan)
+    assert revised.status == "proposed" and revised.revision == 2
+    assert revised.revise_reason == "needs more" and revised.pause_reason is None
+    first, second = revised.steps
+    assert (first.id, first.status, first.title) == (old.id, "paused", "bigger")
+    assert (first.used, first.placed, first.expected_changes) == (3, ("u1",), 8)
+    assert first.run_id == old.run_id and first.failure is None
+    assert second.status == "pending" and second.used == 0
+    assert revised.running_step is None and revised.next_step == first
+    prev = revised.previous
+    assert prev is not None and prev.revision == 1 and prev.status == "paused"
+    assert prev.step(1).status == "paused" and prev.step(1).used == 3
+    assert [s.title for s in prev.steps] == ["step 1", "step 2"]
+
+
+def test_revise_again_keeps_the_paused_step_and_its_fallback() -> None:
+    once = _revise_mid_step(_mid_step())
+    twice = _revise_mid_step(once, expected=6)
+    assert twice.revision == 3
+    assert (twice.steps[0].id, twice.steps[0].status, twice.steps[0].used) == (
+        once.steps[0].id,
+        "paused",
+        3,
+    )
+    assert twice.previous is not None and twice.previous.revision == 1  # still the paused one
+
+
+def test_reject_mid_step_revision_falls_back_paused() -> None:
+    plan = _mid_step()
+    revised = _revise_mid_step(plan)
+    back = go(revised, "reject")
+    assert back.status == "paused" and back.revision == 1
+    assert back.pause_reason == "revision_rejected" and back.previous is None
+    assert [(s.id, s.title) for s in back.steps] == [(s.id, s.title) for s in plan.steps]
+    assert back.step(1).status == "paused" and back.step(1).used == 3
+    assert back.step(1).placed == ("u1",)
+    # the user continues with the existing actions
+    assert go(back, "resume").status == "approved"
+
+
+def test_reject_of_a_revision_of_a_proposed_plan_ends_it() -> None:
+    revised = go(proposed(), "revise", steps=machine.build_steps("f" * 32, [spec("only")]))
+    assert revised.previous is None
+    assert go(revised, "reject").status == "rejected"
+
+
+def test_approve_drops_the_fallback() -> None:
+    revised = _revise_mid_step(_mid_step())
+    assert go(revised, "approve").previous is None
+
+
+def test_step_begin_of_a_paused_step_keeps_its_counters() -> None:
+    plan = go(go(_revise_mid_step(_mid_step()), "approve"), "step_begin", idx=1, run_id="r3")
+    step = plan.step(1)
+    assert step.status == "running" and step.used == 3 and step.run_id == "r3"
+
+
+def test_rollback_resets_step_counters() -> None:
+    plan = go(_mid_step(), "interrupt")
+    back = go(plan, "rollback", to_step=0)
+    assert back.step(1).status == "pending" and back.step(1).used == 0
+    assert back.step(1).placed == ()
 
 
 def test_approve_then_step_begin_runs() -> None:
@@ -211,6 +285,15 @@ def test_dto_is_camel_case() -> None:
     step = dto["steps"][0]
     assert step["expectedChanges"] == 2 and step["changeCount"] == 0
     assert step["touches"] == {"refs": ["R1"], "nets": []} and step["erc"] is None
+    assert step["used"] == 0
+    assert dto["reviseReason"] is None and dto["previousRevision"] is None
+
+
+def test_dto_of_a_mid_step_revision() -> None:
+    dto = to_dto(_revise_mid_step(_mid_step()))
+    assert dto["reviseReason"] == "needs more" and dto["previousRevision"] == 1
+    assert dto["steps"][0]["status"] == "paused" and dto["steps"][0]["used"] == 3
+    assert "placed" not in dto["steps"][0]  # symbol UUIDs stay server-side
 
 
 # -- repository -------------------------------------------------------------------
@@ -232,6 +315,21 @@ async def test_insert_get_and_save_roundtrip(repo: PlanRepo) -> None:
     nxt = await repo.save(go(go(plan, "approve"), "step_begin", idx=1, run_id="run-2"))
     assert await repo.get(PID, plan.id) == nxt
     assert [p.id for p in await repo.running()] == [plan.id]
+
+
+async def test_mid_step_revision_roundtrip(repo: PlanRepo) -> None:
+    plan = await repo.insert(proposed())
+    revised = await repo.save(_revise_mid_step(_mid_step()))
+    assert await repo.get(PID, plan.id) == revised
+    back = await repo.save(go(revised, "reject"))
+    assert await repo.get(PID, plan.id) == back
+
+
+async def test_step_counters_saved_alone(repo: PlanRepo) -> None:
+    plan = await repo.insert(running())
+    await repo.save_step_counters(plan.id, plan.step(1).id, 4, {"b", "a"})
+    step = (await repo.get(PID, plan.id)).step(1)
+    assert (step.used, step.placed) == (4, ("a", "b"))
 
 
 async def test_second_open_plan_rejected(repo: PlanRepo) -> None:

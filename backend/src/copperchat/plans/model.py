@@ -8,7 +8,9 @@ from typing import Any, Literal
 from copperchat.errors import StructuredToolError
 
 PlanStatus = Literal["proposed", "approved", "running", "paused", "done", "rejected", "aborted"]
-StepStatus = Literal["pending", "running", "done", "failed", "interrupted"]
+# `paused`: interrupted by a mid-step plan_revise; it continues, with its counters, as
+# the first step of the approved revision (spec §9.2).
+StepStatus = Literal["pending", "running", "done", "failed", "interrupted", "paused"]
 OPEN: frozenset[str] = frozenset({"proposed", "approved", "running", "paused"})
 # No edits while one of these (owner decision): resume, revise or abort first.
 EDIT_BLOCKING: frozenset[str] = frozenset({"proposed", "approved", "paused"})
@@ -57,6 +59,10 @@ class PlanStep:
     summary: str | None = None
     failure: str | None = None
     erc_result_id: str | None = None
+    # Budget counters of a begun step (persisted, restored when it resumes in a later
+    # run): logical changes used and the symbols placed inside the step (refund ledger).
+    used: int = 0
+    placed: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -77,6 +83,10 @@ class Plan:
     event_seq: int = 0
     pause_reason: str | None = None
     base_snapshot_id: str | None = None
+    revise_reason: str | None = None  # the agent's reason of the latest revision (data)
+    # The paused revision this proposed revision replaced: rejecting falls back to it
+    # (spec §9.2) instead of ending a plan whose edits are on disk.
+    previous: Plan | None = None
 
     @property
     def is_open(self) -> bool:
@@ -137,6 +147,7 @@ def to_dto(plan: Plan, erc: dict[str, StepErc] | None = None) -> dict[str, Any]:
             "checkpointId": s.checkpoint_id,
             "summary": s.summary,
             "failure": s.failure,
+            "used": s.used,
             "erc": None
             if e is None
             else {
@@ -156,6 +167,8 @@ def to_dto(plan: Plan, erc: dict[str, StepErc] | None = None) -> dict[str, Any]:
         "status": plan.status,
         "revision": plan.revision,
         "pauseReason": plan.pause_reason,
+        "reviseReason": plan.revise_reason,
+        "previousRevision": None if plan.previous is None else plan.previous.revision,
         "steps": [step(s) for s in plan.steps],
         "createdAt": plan.created_at,
         "updatedAt": plan.updated_at,

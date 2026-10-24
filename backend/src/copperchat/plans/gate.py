@@ -125,6 +125,13 @@ class PlanGate(BudgetGate):
         state.step_used = max(0, state.step_used + cost)
         state.step_placed -= set(cs.logical.deleted_symbols)
         state.step_placed |= set(cs.logical.placed_symbols)
+        # Persisted with the step: a revision or resume continues in another run
+        # (spec §9.2), possibly after a server restart.
+        open_ = await self.plans.repo.open_status(ctx.project.id)
+        if open_ is not None and state.active_step_id is not None:
+            await self.plans.repo.save_step_counters(
+                open_[0], state.active_step_id, state.step_used, state.step_placed
+            )
 
     @staticmethod
     def _step_cost(state: EditTurnState, cs: ChangeSet) -> int:

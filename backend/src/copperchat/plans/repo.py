@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from dataclasses import asdict, replace
 from typing import Any
 
 from copperchat.db import Database
@@ -51,6 +52,41 @@ def _step(row: Any) -> PlanStep:
         summary=row["summary"],
         failure=row["failure"],
         erc_result_id=row["erc_result_id"],
+        used=int(row["step_used"]),
+        placed=tuple(json.loads(row["step_placed"])),
+    )
+
+
+def _previous_json(plan: Plan) -> str | None:
+    """The fallback revision of a proposed revision (`Plan.previous`) as JSON: the fields
+    a revision changes; the rest is the plan's own."""
+    prev = plan.previous
+    if prev is None:
+        return None
+    return json.dumps(
+        {
+            "revision": prev.revision,
+            "status": prev.status,
+            "pause_reason": prev.pause_reason,
+            "revise_reason": prev.revise_reason,
+            "steps": [asdict(s) for s in prev.steps],
+        }
+    )
+
+
+def _previous(plan: Plan, raw: str | None) -> Plan | None:
+    if raw is None:
+        return None
+    data = json.loads(raw)
+    steps = tuple(PlanStep(**{**s, "placed": tuple(s["placed"])}) for s in data["steps"])
+    return replace(
+        plan,
+        revision=int(data["revision"]),
+        status=data["status"],
+        pause_reason=data["pause_reason"],
+        revise_reason=data["revise_reason"],
+        steps=steps,
+        previous=None,
     )
 
 
@@ -62,7 +98,7 @@ class PlanRepo:
         steps = await self._db.fetchall(
             "SELECT * FROM plan_steps WHERE plan_id = ? ORDER BY idx", (row["id"],)
         )
-        return Plan(
+        plan = Plan(
             id=str(row["id"]),
             project_id=str(row["project_id"]),
             title=str(row["title"]),
@@ -77,7 +113,9 @@ class PlanRepo:
             event_seq=int(row["event_seq"]),
             pause_reason=row["pause_reason"],
             base_snapshot_id=row["base_snapshot_id"],
+            revise_reason=row["revise_reason"],
         )
+        return replace(plan, previous=_previous(plan, row["previous"]))
 
     async def get(self, project_id: str, plan_id: str) -> Plan:
         pid = validate_plan_id(plan_id)
@@ -142,7 +180,8 @@ class PlanRepo:
             await self._db.execute(
                 "INSERT INTO plan_steps(id, plan_id, idx, title, intent, expected_changes,"
                 " touches, verification, status, run_id, checkpoint_id, change_count, summary,"
-                " failure, erc_result_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " failure, erc_result_id, step_used, step_placed)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     s.id,
                     plan.id,
@@ -159,8 +198,19 @@ class PlanRepo:
                     s.summary,
                     s.failure,
                     s.erc_result_id,
+                    s.used,
+                    json.dumps(list(s.placed)),
                 ),
             )
+
+    async def save_step_counters(
+        self, plan_id: str, step_id: str, used: int, placed: set[str]
+    ) -> None:
+        """The budget counters of a begun step after one of its edits (PlanGate)."""
+        await self._db.execute(
+            "UPDATE plan_steps SET step_used = ?, step_placed = ? WHERE id = ? AND plan_id = ?",
+            (used, json.dumps(sorted(placed)), step_id, plan_id),
+        )
 
     async def insert(self, plan: Plan) -> Plan:
         """A second open plan of the project violates `ux_plans_open` -> `plan_open`."""
@@ -169,7 +219,8 @@ class PlanRepo:
                 await self._db.execute(
                     "INSERT INTO plans(id, project_id, title, summary, status, revision,"
                     " event_seq, pause_reason, base_snapshot_id, created_run_id, conversation_id,"
-                    " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    " created_at, updated_at, revise_reason, previous)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         plan.id,
                         plan.project_id,
@@ -184,6 +235,8 @@ class PlanRepo:
                         plan.conversation_id,
                         plan.created_at,
                         plan.updated_at,
+                        plan.revise_reason,
+                        _previous_json(plan),
                     ),
                 )
                 await self._write_steps(plan)
@@ -202,8 +255,8 @@ class PlanRepo:
         async with self._db.transaction():
             await self._db.execute(
                 "UPDATE plans SET title = ?, summary = ?, status = ?, revision = ?,"
-                " event_seq = ?, pause_reason = ?, base_snapshot_id = ?, updated_at = ?"
-                " WHERE id = ? AND project_id = ?",
+                " event_seq = ?, pause_reason = ?, base_snapshot_id = ?, updated_at = ?,"
+                " revise_reason = ?, previous = ? WHERE id = ? AND project_id = ?",
                 (
                     plan.title,
                     plan.summary,
@@ -213,6 +266,8 @@ class PlanRepo:
                     plan.pause_reason,
                     plan.base_snapshot_id,
                     plan.updated_at,
+                    plan.revise_reason,
+                    _previous_json(plan),
                     plan.id,
                     plan.project_id,
                 ),
