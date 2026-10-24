@@ -16,9 +16,9 @@ editing real designs. Status per item:
 
 - **#6 data loss: FIXED.** The compensation of a failed edit re-creates wires that KiCad
   had merged away, so a failed `sch_move` no longer ends in an inconsistent document. The
-  design is saved after every successful edit (15–128 ms); a failure reopens the last
-  save, which is the state before the failed edit, so earlier edits of the turn are never
-  lost. The user sees a plain-language notice, and the chat no longer claims "the agent
+  design is saved after every successful edit (typically 15–130 ms, growing with schematic
+  size: ~0.9 s at 20 MiB); a failure reopens the last save, which is the state before the
+  failed edit, so earlier edits of the turn are kept (unless saving itself fails). The user sees a plain-language notice, and the chat no longer claims "the agent
   could not start".
 - **Left sheet pins: FIXED.** KiCad's API treats an unset spin style as LEFT; CopperChat
   now sends it explicitly. No KiCad patch needed.
@@ -27,11 +27,12 @@ editing real designs. Status per item:
   wires.
 - **#9: FIXED.** One 2.54 mm sheet-edge clearance rule for `sch_connect`, `sch_add_wire`,
   `sch_reroute` and move; legacy violations in existing designs only warn.
-- **#10: FIXED.**
-- **#11: FIXED.** Stubs keep the room of neighbouring pins free (no net merge happened
-  before either).
-- **#14: FIXED.** Text widths are measured from KiCad; a field overlapping its own symbol
-  is detected.
+- **#10: FIXED.** The `sch_set_fields` description now matches its schema
+  (`fields={...}`); a test checks all tool descriptions.
+- **#11: FIXED.** Stub routes prefer candidates that keep the room of neighbouring pins
+  free (no net merge happened before either).
+- **#14: FIXED.** Text-width constants are measured from KiCad; placing a symbol reports a
+  field overlapping its own body or pins.
 - **#5:** the label column is FIXED (2.54 mm pitch, up to 4 columns); the parallel
   collision is NOT REPRODUCIBLE (editing holds a project-wide lock).
 
