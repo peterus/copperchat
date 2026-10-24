@@ -16,14 +16,17 @@ from dataclasses import dataclass
 from typing import Any
 
 from copperchat.errors import StructuredToolError
-from copperchat.kicad_tools.edit.geometry import GRID_MM, NM, Box, Point, mm_point
+from copperchat.kicad_tools.edit.geometry import (
+    FIELD_SIZE_MM,
+    GRID_MM,
+    NM,
+    TEXT_H,
+    Box,
+    Point,
+    mm_point,
+    text_width,
+)
 
-FIELD_SIZE_MM = 1.27  # KiCad's default field text size
-# KiCad's stroke font as measured with get_text_extents (size 1.27): "Conn_01x14" is
-# 11.77 mm x 2.04 mm, "J1" 2.40 mm: ~0.93 em per character plus ~0.1 em, 1.6 em high.
-CHAR_W = 0.93
-TEXT_PAD = 0.1
-TEXT_H = 1.6
 MAX_FIELDS = 32
 MAX_FIELD_NAME = 64
 MAX_FIELD_VALUE = 1024
@@ -46,10 +49,6 @@ _NAME_RE = re.compile(r"^[^\x00-\x1f\x7f]+$")
 class FieldSpot:
     at: Point  # text centre, absolute mm
     angle: float  # field angle as stored (relative to the symbol: 90 on a rotated part)
-
-
-def text_width(text: str, size: float = FIELD_SIZE_MM) -> float:
-    return size * (CHAR_W * max(len(text), 1) + TEXT_PAD)
 
 
 def spot_box(spot: FieldSpot, text: str, size: float = FIELD_SIZE_MM) -> Box:

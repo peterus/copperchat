@@ -268,20 +268,33 @@ def body_box(sym: Any, margin: float = 2.0) -> Box:
     return box.grow(margin) if margin else box
 
 
+# KiCad's stroke font as measured with get_text_extents (size 1.27): "Conn_01x14" is
+# 11.77 mm x 2.04 mm, "J1" 2.40 mm: ~0.93 em per character plus ~0.1 em, 1.6 em high.
+# The one set of text-extent constants (defined here because fields.py imports geometry).
+FIELD_SIZE_MM = 1.27  # KiCad's default field text size
+CHAR_W = 0.93
+TEXT_PAD = 0.1
+TEXT_H = 1.6
+
+
+def text_width(text: str, size: float = FIELD_SIZE_MM) -> float:
+    return size * (CHAR_W * max(len(text), 1) + TEXT_PAD)
+
+
 TextExtents = Callable[[Any], Box | None]
 
 
 def _field_box(field: Any) -> Box | None:
-    """Approximate extent of a visible field: 0.6 x size per character (KiCad's stroke
-    font averages ~0.6 em), one line high; honours alignment and 90/270 degree angles."""
+    """Measured extent of a visible field (`text_width` / `TEXT_H`, the same constants the
+    field layout uses); honours alignment and 90/270 degree angles."""
     text = field.text
     value = str(text.value)
     if not field.visible or not value:
         return None
     attrs = text.attributes
     size = attrs.size
-    w = 0.6 * (size.x / NM) * len(value)
-    h = size.y / NM
+    w = text_width(value, size.x / NM)
+    h = TEXT_H * (size.y / NM)
     x, y = mm_point(text.position)
     halign = int(attrs.horizontal_alignment)  # HA_LEFT = 1, HA_CENTER = 2, HA_RIGHT = 3
     valign = int(attrs.vertical_alignment)  # VA_TOP = 1, VA_CENTER = 2, VA_BOTTOM = 3
