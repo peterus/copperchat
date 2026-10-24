@@ -364,12 +364,13 @@ class PlanService:
                 steps=machine.build_steps(plan.id, specs, start=kept + 1),
                 reason=reason,
             )
-            await self._save(new)
             # A revision needs the user's approval again: what was justified for the
-            # steps it replaces (or the begun step it keeps) is submitted anew.
+            # steps it replaces (or the begun step it keeps) is submitted anew. Before
+            # the save: if that is cut short, the stored rules are gone, not kept.
             await self.editing.erc_results.forget_steps(
                 [s.id for s in plan.steps if s.status != "done"]
             )
+            await self._save(new)
         if running is not None and state.active_step_id == running.id:
             self.clear_step(state)
         paused = (
@@ -620,8 +621,10 @@ class PlanService:
                 )
             # Persist before the ERC run (a failing run keeps them) unless over the cap:
             # then they are checked against the live errors first and not stored if too many.
+            persisted_ids, persisted_rules = stored_ids, stored_rules
             if (given or given_rules) and len(all_ids) <= JUSTIFICATIONS_MAX:
                 await self.editing.erc_results.put_step_justifications(step.id, all_ids, all_rules)
+                persisted_ids, persisted_rules = all_ids, all_rules
             delta, baseline_id = await self._erc(ctx, plan, step, state)
             new_ids = {str(v.get("id")) for v in delta.new_errors}
             justified = {k: v for k, v in all_ids.items() if k in new_ids}
@@ -631,7 +634,7 @@ class PlanService:
                     f"{len(justified)} justified errors (max {JUSTIFICATIONS_MAX} by id)",
                     "Cover groups of alike errors with erc_rules instead.",
                 )
-            if justified != stored_ids or all_rules != stored_rules:
+            if justified != persisted_ids or all_rules != persisted_rules:
                 # lapsed ids (fixed or changed) fall away
                 await self.editing.erc_results.put_step_justifications(
                     step.id, justified, all_rules
@@ -944,8 +947,8 @@ class PlanService:
         async with self.lock(project.id):
             plan = await self.repo.get(project.id, plan_id)
             new = machine.transition(plan, event, now=utcnow_iso())
-            await self._save(new)
             await self.editing.erc_results.forget_steps([s.id for s in plan.steps])
+            await self._save(new)
         if new.is_open:  # a rejected revision fell back to the previous one (spec §9.2)
             await self._restored(project, plan, new)
             return new
@@ -1021,10 +1024,10 @@ class PlanService:
                 await restore_snapshot(
                     self.history, project, target, conversation_id=plan.conversation_id
                 )
-            await self._save(new)
             await self.editing.erc_results.forget_steps(
                 [s.id for s in plan.steps if s.idx > to_step]
             )
+            await self._save(new)
         return new
 
     async def get(self, project: Project, plan_id: str) -> Plan:

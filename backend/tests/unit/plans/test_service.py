@@ -670,6 +670,44 @@ async def test_fresh_begin_forgets_stored_justifications(rig: Rig) -> None:
     assert await rig.editing.erc_results.step_justifications(step_id) == ({}, [])
 
 
+async def test_stored_justifications_survive_pause_and_resume(rig: Rig) -> None:
+    await rig.begun()
+    a = violation("pin_not_connected", U1)
+    rig.render()
+    # the rule is stored by a refused call (another error stays open) ...
+    b = violation("wire_dangling", U2)
+    rig.current = [a, b]
+    await expect_error(
+        rig.plans.step_done(rig.ctx(), 1, "x", None, [rule(type="pin_not_connected")]),
+        "erc_errors_open",
+    )
+    await rig.plans.pause(rig.opened.project, "turn_ended")
+    approved = machine.transition(await rig.last_plan(), "resume", now=NOW)
+    await rig.plans.repo.save(approved)
+    rig.run_id = "run-resumed"
+    await rig.plans.step_begin(rig.ctx(), 1)
+    rig.render()
+    # ... and still applies after the resume, without being sent again; other types stay refused
+    err = await expect_error(rig.plans.step_done(rig.ctx(), 1, "x"), "erc_errors_open")
+    assert err.details is not None and [e["type"] for e in err.details["errors"]] == [
+        "wire_dangling"
+    ]
+    out = await rig.plans.step_done(rig.ctx(), 1, "x", {vid(b): "ok"})
+    assert out["status"] == "done" and out["erc"]["rules"][0]["covered"] == 1
+
+
+async def test_retry_with_non_new_ids_drops_lapsed_ones(rig: Rig) -> None:
+    await rig.begun()
+    a, x = violation("pin_not_connected", U1), violation("pin_not_connected", U2)
+    rig.current = [a, violation("wire_dangling", "33" * 4 + "-3333-3333-3333-333333333333")]
+    await expect_error(rig.plans.step_done(rig.ctx(), 1, "x", {vid(a): "later"}), "erc_errors_open")
+    await expect_error(
+        rig.plans.step_done(rig.ctx(), 1, "x", {vid(x): "not new"}), "erc_errors_open"
+    )
+    ids, _ = await rig.editing.erc_results.step_justifications((await rig.last_plan()).steps[0].id)
+    assert set(ids) == {vid(a)}  # x matched no new error: it did not stay
+
+
 # -- pauses -------------------------------------------------------------------------
 
 

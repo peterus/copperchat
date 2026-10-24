@@ -214,10 +214,12 @@ async def current_erc(session: KicadSession, state: EditTurnState | None) -> lis
     if erc_is_fresh(state):
         assert state is not None and state.last_erc is not None
         return state.last_erc
+    # The stamp is taken before the run: an edit that lands while it runs is newer.
+    seq = state.call_seq if state is not None else None
     violations = await check_violations(session, "sch")
     if state is not None:
         state.last_erc = violations
-        state.last_erc_seq = state.call_seq
+        state.last_erc_seq = seq
     return violations
 
 
