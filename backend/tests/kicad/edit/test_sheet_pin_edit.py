@@ -215,6 +215,36 @@ async def test_move_two_sheet_pins_one_pitch_together(
     assert pins["Power.GND"]["at"] == pytest.approx((gx, gy + d))
 
 
+async def test_move_top_pin_and_part_on_its_stub_by_a_diagonal(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    """The pin snaps back onto the top edge (offset (2.54, 0)) while R1 at its stub's end
+    moves by (2.54, 2.54): the stub is dragged, not carried, and R1 stays connected."""
+    s = blank_session
+    await s.ensure_symbol_libraries()
+    ctx = edit_ctx(s, edit_db)
+    await _power(s, ctx, ("VIN", "left"))
+    out, err = await call_tool(ctx, "sch_move", items=["Power.VIN"], to=[76.2, 49.53])
+    assert not err, out
+    x, y = (await _pins(s))["Power.VIN"]["at"]
+    assert (x, y) == (76.2, SHEET_AT[1])
+    await place(s, ("Device:R", "R1", (x, y - 7.62 - 3.81), 0))
+    bottom = None
+    for p in ("R1.1", "R1.2"):
+        data, err = await call_tool(ctx, "sch_get_pin", pin=p)
+        assert not err, data
+        if data["direction"] == "down":
+            bottom = data["at_mm"]
+    assert bottom == [x, y - 7.62], bottom
+    await _commit(s, "/", wire((x, y), (x, y - 7.62)))
+    before = await state(s)
+    out, err = await call_tool(ctx, "sch_move", items=["R1", "Power.VIN"], by=[2.54, 2.54])
+    assert not err, out
+    assert out["connectivity_verified"] is True, out
+    assert (await _pins(s))["Power.VIN"]["at"] == pytest.approx((x + 2.54, y))
+    assert (await state(s))[1] == before[1]  # R1 still on the sheet pin's net
+
+
 async def test_move_two_wired_sheet_pins_one_pitch_together(
     blank_session: KicadSession, edit_db: Database
 ) -> None:
@@ -493,3 +523,34 @@ async def test_delete_sheet_with_its_own_pin_costs_one(
     assert not err, out
     assert out["logical_changes"] == 1
     assert "Power.VIN" not in await _pins(s)
+
+
+async def test_delete_bus_sheet_pin_keeps_the_child_bus_label(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    """Buses are not followed: a bus label in the sub-sheet stays, with a note."""
+    s = blank_session
+    ctx = edit_ctx(s, edit_db)
+    (added,) = await _power(s, ctx, ("D[0..7]", "left"))
+    out, err = await call_tool(ctx, "sch_delete", items=["Power.D[0..7]"])
+    assert not err, out
+    assert added["label"]["uuid"] in await _hier_labels(s, "/Power/")
+    assert any("bus" in n for n in out["notes"]), out["notes"]
+
+
+@pytest.mark.parametrize("pin_end", ["from", "to"])
+async def test_connect_unknown_sheet_pin_uuid_not_found(
+    blank_session: KicadSession, edit_db: Database, pin_end: str
+) -> None:
+    """A UUID that is no sheet pin is refused, never placed as a net label."""
+    s = blank_session
+    await s.ensure_symbol_libraries()
+    ctx = edit_ctx(s, edit_db)
+    await place(s, ("Device:R", "R1", (101.6, 101.6), 0))
+    before = await state(s)
+    uid = "0f0f0f0f-0000-4000-8000-000000000000"
+    ends = {"from": uid, "to": "R1.1"} if pin_end == "from" else {"from": "R1.1", "to": uid}
+    out, err = await call_tool(ctx, "sch_connect", **ends)
+    assert err and out["error"]["code"] == "not_found", out
+    assert "sch_list_items" in out["error"]["suggestion"]
+    assert await state(s) == before

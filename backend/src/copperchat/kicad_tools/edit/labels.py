@@ -204,6 +204,15 @@ UUID_RE = re.compile(
 )
 
 
+def sheet_pin_uuid_not_found(spec: str) -> StructuredToolError:
+    return StructuredToolError(
+        f"Sheet pin {short(spec)} not found",
+        "no sheet pin has that UUID (pins are 'REF.PIN', sheet pins '<sheet>.<pin>' or their UUID)",
+        "List the sheet pins with sch_list_items(types=['sheet_pin']).",
+        code="not_found",
+    )
+
+
 class World:
     """One consistent read of the design for `prepare` (inside one session.call)."""
 
@@ -312,6 +321,8 @@ class World:
         (a symbol reference wins over a sheet name of the same text)."""
         if isinstance(spec, str) and (by_uuid := self.sheet_pin_by_uuid(spec)) is not None:
             return by_uuid
+        if isinstance(spec, str) and UUID_RE.fullmatch(spec.strip()):
+            raise sheet_pin_uuid_not_found(spec)
         if isinstance(spec, str) and not any(
             s.ref == spec.strip().partition(".")[0] for s in self.symbols
         ):

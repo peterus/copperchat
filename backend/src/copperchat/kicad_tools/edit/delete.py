@@ -20,6 +20,7 @@ otherwise it stays and a note says why.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
@@ -40,6 +41,7 @@ from copperchat.kicad_tools.edit.geometry import (
     EPS_MM,
     Point,
     in_segment_interior,
+    mm_point,
     on_segment,
     orthogonal,
 )
@@ -535,8 +537,16 @@ def _child_labels(
         ]
     dead: list[tuple[SheetRef, str]] = []
     notes: list[str] = []
+    buses: list[tuple[Point, Point]] | None = None  # bus lines (the scene has wires only)
     for lb in labels:
         here = [i for i in scene.items_at(lb.at) if i["uuid"] != lb.uuid]
+        if not here and _BUS_NAME.search(name):
+            here = [{"kind": "bus label"}]  # a bus member list: its bus is not followed
+        if not here:
+            if buses is None:
+                buses = _bus_lines(world, child)
+            if any(on_segment(lb.at, a, b) for a, b in buses):
+                here = [{"kind": "bus"}]
         if here:
             notes.append(
                 f"sheet pin {info.pin.label}: the hierarchical label {name} in {child.file} "
@@ -547,6 +557,25 @@ def _child_labels(
         else:
             dead.append((child, lb.uuid))
     return dead, notes
+
+
+_BUS_NAME = re.compile(r"\[\d+\.\.\d+\]|\{.*\}")  # 'D[0..7]', '{SDA SCL}'
+
+
+def _bus_lines(world: World, sheet: SheetRef) -> list[tuple[Point, Point]]:
+    """Bus lines and bus entries on `sheet` (end points in mm)."""
+    from kipy.proto.schematic.schematic_types_pb2 import SchematicLineType
+
+    api = sheet_api(world.h, sheet)
+    out = [
+        (mm_point(ln.start), mm_point(ln.end))
+        for ln in api.get_lines()
+        if int(ln.type) == SchematicLineType.SLT_BUS
+    ]
+    for e in api.get_bus_entries():
+        a, d = mm_point(e.position), mm_point(e.size)
+        out.append((a, (a[0] + d[0], a[1] + d[1])))
+    return out
 
 
 def removed_paths(world: World, t: Target) -> set[str]:

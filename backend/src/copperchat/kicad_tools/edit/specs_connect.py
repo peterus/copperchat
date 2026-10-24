@@ -24,6 +24,7 @@ from copperchat.kicad_tools.edit.engine import apply_change_set, edit_result
 from copperchat.kicad_tools.edit.geometry import Point
 from copperchat.kicad_tools.edit.labels import (
     PLAN_BUDGET_S,
+    UUID_RE,
     LabelKind,
     PowerSymbol,
     World,
@@ -37,6 +38,7 @@ from copperchat.kicad_tools.edit.labels import (
     power_change_set,
     power_symbol,
     refuse_rail_label,
+    sheet_pin_uuid_not_found,
 )
 from copperchat.kicad_tools.edit.scene import resolve_sheet, short
 from copperchat.kicad_tools.edit.specs_core import MAX_POINTS, _coord
@@ -240,6 +242,8 @@ async def prepare_connect(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
         # '<sheet name>.<pin name>': a sheet pin (sheet names may hold any character);
         # a dotted net name that is no pin of that sheet stays a net ('I2C.SDA')
         sheet_pin = world.sheet_pin_by_uuid(to)
+        if sheet_pin is None and UUID_RE.fullmatch(to.strip()):
+            raise sheet_pin_uuid_not_found(to)  # no net label named after a UUID
         if sheet_pin is None and not known_ref:
             try:
                 sheet_pin = world.sheet_pin(to)
