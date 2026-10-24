@@ -138,6 +138,14 @@ UUIDs; pass full UUIDs between tool calls only for wires and labels.
   open, the connector follows in step 4"). In a plan step `plan_step_done` refuses open
   errors without a justification in `erc_justifications {violation_id: reason}`; outside
   a plan it is your duty and the turn's ERC badge shows open errors in red.
+- `run_erc` lists every violation with the same `id` that `plan_step_done` takes, so you
+  can justify before the step ends. It is paged (`limit` 50, max 200, `offset`) and takes
+  `sheet` (name or path); `total` and `counts` (by type / sheet) show the shape first.
+- Many alike errors: `plan_step_done(erc_rules=[{match: {type?, sheet?}, reason}])`
+  (≤ 20 rules) justifies every new error a rule matches, **in that step only**. Ids and
+  rules are kept per step, so after a refusal send only what is new. A refusal lists 20
+  errors with `total`/`counts`; page the rest with `run_erc(sheet=…, offset=…)`. Do not
+  use a rule to wave through errors you have not looked at.
 - New **warnings** are only reported (name them in the summary).
 - Run `run_erc` after your last change of a step or turn, not after every call.
 

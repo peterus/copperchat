@@ -244,12 +244,13 @@ class ErcResultRepo:
         baseline_snapshot_id: str | None,
         delta: ErcDelta,
         justifications: dict[str, str] | None = None,
+        rules: list[dict[str, Any]] | None = None,
     ) -> str:
         rid = uuid.uuid4().hex
         await self._db.execute(
             "INSERT INTO erc_results(id, project_id, run_id, plan_step_id,"
             " baseline_snapshot_id, new_errors, new_warnings, resolved, justifications,"
-            " created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " rules, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 rid,
                 project_id,
@@ -260,6 +261,7 @@ class ErcResultRepo:
                 json.dumps(delta.new_warnings),
                 json.dumps(delta.resolved),
                 json.dumps(justifications or {}),
+                json.dumps(rules or []),
                 utcnow_iso(),
             ),
         )
@@ -276,8 +278,32 @@ class ErcResultRepo:
             "new_warnings": json.loads(row["new_warnings"]),
             "resolved": json.loads(row["resolved"]),
             "justifications": json.loads(row["justifications"]),
+            "rules": json.loads(row["rules"]),
             "created_at": str(row["created_at"]),
         }
+
+    async def step_justifications(
+        self, plan_step_id: str
+    ) -> tuple[dict[str, str], list[dict[str, Any]]]:
+        """(id -> reason, pattern rules) stored for a plan step (`put_step_justifications`)."""
+        row = await self._db.fetchone(
+            "SELECT justifications, rules FROM erc_step_justifications WHERE plan_step_id = ?",
+            (plan_step_id,),
+        )
+        if row is None:
+            return {}, []
+        return json.loads(row["justifications"]), json.loads(row["rules"])
+
+    async def put_step_justifications(
+        self, plan_step_id: str, justifications: dict[str, str], rules: list[dict[str, Any]]
+    ) -> None:
+        await self._db.execute(
+            "INSERT INTO erc_step_justifications(plan_step_id, justifications, rules, updated_at)"
+            " VALUES (?, ?, ?, ?) ON CONFLICT(plan_step_id) DO UPDATE SET"
+            " justifications = excluded.justifications, rules = excluded.rules,"
+            " updated_at = excluded.updated_at",
+            (plan_step_id, json.dumps(justifications), json.dumps(rules), utcnow_iso()),
+        )
 
     async def get(self, project_id: str, result_id: str) -> dict[str, Any]:
         rid = validate_erc_result_id(result_id)

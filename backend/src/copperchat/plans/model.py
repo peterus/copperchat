@@ -126,6 +126,7 @@ class StepErc:
     errors: int
     warnings: int
     justifications: dict[str, str] = field(default_factory=dict)
+    rules: list[dict[str, Any]] = field(default_factory=list)
     result_id: str | None = None
 
 
@@ -157,6 +158,7 @@ def to_dto(plan: Plan, erc: dict[str, StepErc] | None = None) -> dict[str, Any]:
                 "errors": e.errors,
                 "warnings": e.warnings,
                 "justifications": dict(e.justifications),
+                "rules": [dict(r) for r in e.rules],
                 "resultId": e.result_id,
             },
         }
