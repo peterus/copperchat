@@ -71,7 +71,7 @@ export function PlanStepRow({
   const finished = step.status === 'done';
   const awaiting = step.status === 'paused' && awaitingRevision;
   // Changes so far count against the step's budget (spec §9.1); shown once the step has begun.
-  const inProgress = (step.status === 'running' || step.status === 'paused') && step.used > 0;
+  const inProgress = (step.status === 'running' || step.status === 'paused' || step.status === 'interrupted') && step.used > 0;
   const erc = step.erc;
   return (
     <li className="flex gap-2 py-1.5">

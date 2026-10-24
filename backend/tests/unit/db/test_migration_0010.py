@@ -50,7 +50,7 @@ async def _check(db: Database, tmp_path: Path) -> None:
         " ?, ?, ?)",
         (PLAN, PID, TEST_CID, NOW, NOW),
     )
-    for idx, status in ((1, "done"), (2, "interrupted")):
+    for idx, status in ((1, "done"), (2, "interrupted"), (3, "interrupted")):
         await db.execute(
             "INSERT INTO plan_steps(id, plan_id, idx, title, intent, expected_changes,"
             " touches, verification, status, change_count) VALUES (?, ?, ?, 'st', 'i', 4,"
@@ -65,14 +65,16 @@ async def _check(db: Database, tmp_path: Path) -> None:
             (10 * i, PID, run, f"{step}" * 32, NOW),
         )
     await db.execute("UPDATE plan_steps SET run_id = 'r1'")
+    await db.execute("UPDATE plan_steps SET run_id = 'r9' WHERE idx = 3")  # no rows in r9
     await migrate(db)
     plan = await PlanRepo(db).get(PID, PLAN)
     # the unfinished step keeps counting its last run's rows; the index exists
-    assert [s.change_base for s in plan.steps] == [0, 19]
+    assert [s.change_base for s in plan.steps] == [0, 19, 30]
     assert await db.fetchone("SELECT name FROM sqlite_master WHERE name = 'ix_changes_step'")
     assert [(s.idx, s.status, s.change_count, s.used, s.placed) for s in plan.steps] == [
         (1, "done", 2, 0, ()),
         (2, "interrupted", 2, 0, ()),
+        (3, "interrupted", 2, 0, ()),
     ]
     assert plan.revise_reason is None and plan.previous is None
     await db.execute("UPDATE plan_steps SET status = 'paused' WHERE idx = 2")

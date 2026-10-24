@@ -325,6 +325,12 @@ describe('PlanCard', () => {
     expect(within(item).queryByText('old reason')).toBeNull();
   });
 
+  it('an interrupted step shows the changes it already used', async () => {
+    setup(plan({ status: 'paused', pauseReason: 'turn_ended', steps: [step(1, { status: 'interrupted', used: 2, expectedChanges: 5 })] }));
+    const item = (await screen.findAllByRole('listitem'))[0]!;
+    expect(within(item).getByText('2 of 5 changes used')).toBeInTheDocument();
+  });
+
   it('rejecting a mid-step revision says it returns to the previous revision', async () => {
     const { deps } = setup(plan({ revision: 3, previousRevision: 2, steps: [step(1, { status: 'paused' })] }));
     const reject = await screen.findByRole('button', { name: 'Reject revision' });
