@@ -254,7 +254,7 @@ async def prepare_connect(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
             return plan_connect_pins(world, tool, pa, world.pin(to), via, net_name)
         name = check_net_name(to, tool)
         if to_rail or looks_like_rail(world, name):
-            return PowerNeeded(pa.label, name, "to is a power net")
+            return PowerNeeded(pa.label, name, "to is a power net", end=pa)
         return plan_connect_net(world, tool, pa, name, via)
 
     def run(h: KicadHandle) -> ConnectChangeSet | PowerNeeded:
@@ -281,7 +281,7 @@ async def prepare_connect(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
         world = worlds[0]  # nothing was written since (the adapter holds the edit lock)
         world.h = h
         world.deadline = time.monotonic() + PLAN_BUDGET_S
-        pin = world.endpoint(planned.pin)
+        pin = planned.end if planned.end is not None else world.endpoint(planned.pin)
         cs = power_change_set(world, tool, [pin], sym, "PWR_FLAG" if sym.flag else planned.net)
         out = ConnectChangeSet(
             tool=cs.tool,

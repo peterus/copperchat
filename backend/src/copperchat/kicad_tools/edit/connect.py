@@ -85,6 +85,7 @@ class PowerNeeded:
     pin: str
     net: str
     reason: str
+    end: PinEnd | None = None  # `pin` as resolved (a sheet pin given by UUID, too)
 
 
 def _distance(p: Point, a: Point, b: Point) -> float:
@@ -340,7 +341,9 @@ def plan_connect_pins(
     rail = next((n for n in named if n and base_name(n) in world.power_values()), None)
     if rail is not None and not net_name:
         other = pb if world.net(pa) == rail else pa
-        return PowerNeeded(other.label, base_name(rail), "the other pin is on a power net")
+        return PowerNeeded(
+            other.label, base_name(rail), "the other pin is on a power net", end=other
+        )
     kind: Literal["local", "global"] = "local" if sa.path == sb.path else "global"
     local_named = [n for n in named if n and n.startswith("/")]
     if kind == "global" and local_named and not net_name:

@@ -674,11 +674,20 @@ def plan_move(
             continue  # a label and a power symbol on one stub end: laid once
         restubs.append((stub, m))
     restubbed = {u for stub, _m in restubs for u in stub.wires}
-    if pin_moves:  # what leaves in this call (it moves, travels along or is carried)
+    if pin_moves:  # what leaves in this call: it moves (pins of moved sheets too),
+        # travels along, is carried, or is a wire dragged off a moving pin's old point
+        vacated = [m.old for m in moving if not m.label and not same_point(m.old, m.new)]
+        dragged = {
+            w.uuid
+            for w in scene.wires.values()
+            if any(same_point(q, p) for q in (w.start, w.end) for p in vacated)
+            and not _interior_attached(scene, w, sheet_pin_points)  # those stay put
+        }
+        leaving = {x["uuid"] for x in plan.moved} | along_ids | set(carried)
+        leaving |= {u for u, i in scene.sheet_pins.items() if i.sheet_uuid in moved_ids}
         _refuse_pin_landing(
-            world, tool, scene, nets, [m for m in moving if m.sheet_pin],
-            {x["uuid"] for x in plan.moved} | along_ids | set(carried),
-            [m.old for m in moving if not m.label],
+            world, tool, scene, nets, [m for m in moving if m.sheet_pin], leaving,
+            dragged, vacated,
         )  # fmt: skip
 
     # -- the scene after the move --------------------------------------------------------
@@ -1092,16 +1101,19 @@ def _refuse_pin_landing(
     nets: dict[str, str],
     moving: list[_Moving],
     moved: set[str],
+    dragged: set[str],
     vacated: list[Point],
 ) -> None:
     """A moved sheet pin must not land on an item of another net (it would join it).
     What leaves that spot in the same call does not count: items in `moved` (by uuid)
-    and wire ends at `vacated`, the old points of moving pins (dragged along)."""
+    and the ends of `dragged` wires at `vacated`, the old points of moving pins (their
+    other ends and interiors stay)."""
     for m in moving:
         info = scene.sheet_pins[m.sheet_pin or ""]
         leaves = any(same_point(m.new, q) for q in vacated)
         for i in scene.items_at(m.new):
-            if i["uuid"] in moved or (leaves and i["kind"] == "wire" and not i.get("where")):
+            drags = leaves and i["uuid"] in dragged and not i.get("where")
+            if i["uuid"] in moved or drags:
                 continue
             if i["kind"] == "pin":
                 net = world.netlist.net_of((scene.sheet.path, i["uuid"], i["pin"]))

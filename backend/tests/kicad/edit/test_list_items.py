@@ -224,6 +224,13 @@ async def test_list_items_unwired_sheet_pin_net_null(
     assert pin["net"] is None, pin
     (label,) = (await _items(ctx, sheet="/Power/", types=["hier_label"]))["items"]
     assert label["net"] is None, label
+    # one dangling wire on the parent: the pin and the wire report the same net
+    x, y = pin["position_mm"]
+    out, err = await call_tool(ctx, "sch_add_wire", points=[[x, y], [x - 7.62, y]])
+    assert not err, out
+    (pin,) = (await _items(ctx, types=["sheet_pin"]))["items"]
+    (w,) = (await _items(ctx, types=["wire"]))["items"]
+    assert pin["net"] is not None and pin["net"] == w["net"], (pin, w)
 
 
 async def test_get_pin_connected_includes_sheet_pin(

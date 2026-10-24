@@ -63,7 +63,8 @@ def _move(net: str | None = "/VIN") -> _Moving:
 
 def _run(sc: Scene, nets: dict[str, str], world: Any = None, **kw: Any) -> None:
     _refuse_pin_landing(world or _world({}, {}), "sch_move", sc, nets, [_move()],
-                        kw.get("moved", set()), kw.get("vacated", [OLD]))  # fmt: skip
+                        kw.get("moved", set()), kw.get("dragged", set()),
+                        kw.get("vacated", [OLD]))  # fmt: skip
 
 
 VIN = _spin("vin", "VIN", OLD)
@@ -97,12 +98,26 @@ def test_items_moving_away_do_not_count() -> None:
 
 
 def test_wire_end_at_a_vacated_point_is_dragged_away() -> None:
-    """GND (moving too) sat at NEW with a stub: its wire end leaves with it."""
+    """GND (moving too) sat at NEW with a wire: the wire's end leaves with it."""
     w = WireInfo("w", NEW, (40.0, 52.54))
-    _run(_scene(VIN, w), {"w": "/GND"}, vacated=[OLD, NEW])
+    _run(_scene(VIN, w), {"w": "/GND"}, dragged={"w"}, vacated=[OLD, NEW])
+
+
+def test_wire_that_stays_put_at_a_vacated_point_refused() -> None:
+    """Not dragged (something joins its interior): its end stays at NEW."""
+    w = WireInfo("w", NEW, (40.0, 52.54))
+    with pytest.raises(StructuredToolError):
+        _run(_scene(VIN, w), {"w": "/GND"}, vacated=[OLD, NEW])
+
+
+def test_dragged_wire_end_elsewhere_still_refused() -> None:
+    """The wire is dragged by its other end; the end at NEW stays."""
+    w = WireInfo("w", NEW, (40.0, 52.54))
+    with pytest.raises(StructuredToolError):
+        _run(_scene(VIN, w), {"w": "/GND"}, dragged={"w"}, vacated=[OLD, (40.0, 52.54)])
 
 
 def test_wire_interior_at_a_vacated_point_still_refused() -> None:
     w = WireInfo("w", (50.0, 45.0), (50.0, 60.0))  # runs through NEW
     with pytest.raises(StructuredToolError):
-        _run(_scene(VIN, w), {"w": "/GND"}, vacated=[OLD, NEW])
+        _run(_scene(VIN, w), {"w": "/GND"}, dragged={"w"}, vacated=[OLD, NEW])
