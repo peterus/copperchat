@@ -210,7 +210,7 @@ describe('PlanCard', () => {
       plan({
         status: 'running',
         steps: [
-          step(1, { status: 'done', changeCount: 4, checkpointId: CP1, summary: 'Placed R5 and D2', erc: { errors: 1, warnings: 2, justifications, resultId: 'e'.repeat(32) } }),
+          step(1, { status: 'done', changeCount: 4, checkpointId: CP1, summary: 'Placed R5 and D2', erc: { errors: 1, warnings: 2, justifications, rules: [], resultId: 'e'.repeat(32) } }),
           step(2, { status: 'running' }),
         ],
       }),
@@ -229,6 +229,39 @@ describe('PlanCard', () => {
     expect(img.getAttribute('src')).toBe(`/api/projects/${PID}/history/${CP1}/preview`);
     fireEvent.error(img); // no preview rendered, or pruned
     expect(within(dialog).getByText('The image is not available.')).toBeInTheDocument();
+  });
+
+  it('done step lists pattern rules with the number of errors they covered', async () => {
+    const rules = [{ match: { type: 'pin_not_connected', sheet: 'Power' }, reason: 'wired in step 3', covered: 12 }];
+    setup(
+      plan({
+        status: 'running',
+        steps: [
+          step(1, { status: 'done', checkpointId: CP1, erc: { errors: 12, warnings: 0, justifications: { v1: 'one id' }, rules, resultId: 'e'.repeat(32) } }),
+          step(2, { status: 'running' }),
+        ],
+      }),
+    );
+    const first = (await screen.findAllByRole('listitem'))[0]!;
+    fireEvent.click(within(first).getByText(/13 justified/));
+    expect(within(first).getByText(/pin_not_connected · Power: wired in step 3 \(12 errors\)/)).toBeInTheDocument();
+    expect(within(first).getByText('one id')).toBeInTheDocument();
+  });
+
+  it('shows how many pattern rules are not listed', async () => {
+    const rules = Array.from({ length: 7 }, (_, i) => ({ match: { type: `t${i}` }, reason: `r${i}`, covered: 1 }));
+    setup(
+      plan({
+        status: 'running',
+        steps: [
+          step(1, { status: 'done', checkpointId: CP1, erc: { errors: 7, warnings: 0, justifications: {}, rules, resultId: 'e'.repeat(32) } }),
+          step(2, { status: 'running' }),
+        ],
+      }),
+    );
+    const first = (await screen.findAllByRole('listitem'))[0]!;
+    fireEvent.click(within(first).getByText(/7 justified/));
+    expect(within(first).getByText('+2 more rules')).toBeInTheDocument();
   });
 
   it('failed step shows its failure', async () => {

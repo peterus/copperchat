@@ -43,6 +43,16 @@
        "justifications": {
         "a1b2c3d4e5f6": "connector follows in step 2"
        },
+       "rules": [
+        {
+         "match": {
+          "type": "pin_not_connected",
+          "sheet": "Power"
+         },
+         "reason": "wired in step 3",
+         "covered": 2
+        }
+       ],
        "resultId": "fedcba9876543210fedcba9876543210"
       }
      },
@@ -133,6 +143,7 @@
        "justifications": {
         "a1b2c3d4e5f6": "connector follows in step 2"
        },
+       "rules": [],
        "resultId": "fedcba9876543210fedcba9876543210"
       }
      },
@@ -197,6 +208,7 @@
        "justifications": {
         "a1b2c3d4e5f6": "connector follows in step 2"
        },
+       "rules": [],
        "resultId": "fedcba9876543210fedcba9876543210"
       }
      },
@@ -260,6 +272,7 @@
        "justifications": {
         "a1b2c3d4e5f6": "connector follows in step 2"
        },
+       "rules": [],
        "resultId": "fedcba9876543210fedcba9876543210"
       }
      },
@@ -324,6 +337,7 @@
        "justifications": {
         "a1b2c3d4e5f6": "connector follows in step 2"
        },
+       "rules": [],
        "resultId": "fedcba9876543210fedcba9876543210"
       }
      }
@@ -369,6 +383,7 @@
        "justifications": {
         "a1b2c3d4e5f6": "connector follows in step 2"
        },
+       "rules": [],
        "resultId": "fedcba9876543210fedcba9876543210"
       }
      }
@@ -414,6 +429,7 @@
        "justifications": {
         "a1b2c3d4e5f6": "connector follows in step 2"
        },
+       "rules": [],
        "resultId": "fedcba9876543210fedcba9876543210"
       },
       "extra": 1
@@ -458,6 +474,7 @@
        "errors": -1,
        "warnings": 0,
        "justifications": {},
+       "rules": [],
        "resultId": null
       }
      }
@@ -503,6 +520,7 @@
        "justifications": {
         "a1b2c3d4e5f6": "connector follows in step 2"
        },
+       "rules": [],
        "resultId": "fedcba9876543210fedcba9876543210"
       }
      },
@@ -568,6 +586,7 @@
        "justifications": {
         "a1b2c3d4e5f6": "connector follows in step 2"
        },
+       "rules": [],
        "resultId": "fedcba9876543210fedcba9876543210"
       }
      },

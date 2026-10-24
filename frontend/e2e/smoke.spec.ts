@@ -230,7 +230,7 @@ test('mocked API: plan card propose → approve → done in the chat', async ({ 
     plan(
       'done',
       [
-        step(1, 'done', { changeCount: 2, checkpointId: 'a'.repeat(32), erc: { errors: 0, warnings: 0, justifications: {}, resultId: null } }),
+        step(1, 'done', { changeCount: 2, checkpointId: 'a'.repeat(32), erc: { errors: 0, warnings: 0, justifications: {}, rules: [], resultId: null } }),
         step(2, 'done', { changeCount: 3, checkpointId: 'b'.repeat(32) }),
       ],
       '2026-10-18T10:03:00.000Z',

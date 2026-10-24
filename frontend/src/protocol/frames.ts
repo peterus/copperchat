@@ -131,6 +131,13 @@ export const PlanStepDTO = z.strictObject({
       errors: z.number().int().nonnegative(),
       warnings: z.number().int().nonnegative(),
       justifications: z.record(z.string(), z.string()),
+      rules: z.array(
+        z.strictObject({
+          match: z.record(z.string(), z.string()),
+          reason: z.string(),
+          covered: z.number().int().nonnegative(),
+        }),
+      ),
       resultId: z.string().nullable(),
     })
     .nullable(),

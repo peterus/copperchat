@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections import Counter
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
@@ -21,6 +22,7 @@ from copperchat.db.repos.conversations import ConversationRepo
 from copperchat.errors import CopperChatError, StructuredToolError
 from copperchat.history.store import SnapshotNotFound
 from copperchat.kicad_session import KicadUnavailable
+from copperchat.kicad_tools.checks import sheet_matches
 from copperchat.plans import machine
 from copperchat.plans.model import (
     InvalidPlanArgument,
@@ -52,6 +54,9 @@ TOUCH_ITEM_MAX = 64
 REASON_MAX = 500
 JUSTIFICATIONS_MAX = 100
 ERRORS_LISTED = 20  # new ERC errors named in a refusal
+ERC_RULES_MAX = 20  # pattern rules per plan_step_done call
+RULE_KEYS = ("type", "sheet")
+MATCH_VALUE_MAX = 128
 _DESC_CHARS = 160
 
 
@@ -174,6 +179,7 @@ class PlanService:
                 errors=r["errors"],
                 warnings=r["warnings"],
                 justifications=r["justifications"],
+                rules=r["rules"],
                 result_id=r["id"],
             )
             for sid, r in rows.items()
@@ -358,6 +364,12 @@ class PlanService:
                 steps=machine.build_steps(plan.id, specs, start=kept + 1),
                 reason=reason,
             )
+            # A revision needs the user's approval again: what was justified for the
+            # steps it replaces (or the begun step it keeps) is submitted anew. Before
+            # the save: if that is cut short, the stored rules are gone, not kept.
+            await self.editing.erc_results.forget_steps(
+                [s.id for s in plan.steps if s.status != "done"]
+            )
             await self._save(new)
         if running is not None and state.active_step_id == running.id:
             self.clear_step(state)
@@ -399,6 +411,8 @@ class PlanService:
             )
             if plan.step(idx).status not in machine.RESUMABLE:  # a fresh begin
                 new = machine.with_step(new, idx, change_base=await self.repo.last_change_id())
+                # Justifications of an earlier attempt of this step (rollback, redo) lapse.
+                await self.editing.erc_results.forget_steps([plan.step(idx).id])
             if new.base_snapshot_id is None:
                 # The pre-plan state: this turn's undo snapshot (taken now if the turn
                 # has none yet), the target of "roll back to start".
@@ -482,8 +496,92 @@ class PlanService:
             )
         return {k: v.strip() for k, v in raw.items()}
 
+    @staticmethod
+    def _rules(raw: Any) -> list[dict[str, Any]]:
+        """Pattern rules `[{match: {type?, sheet?}, reason}]` of one call (spec §8.2)."""
+        if raw is None:
+            return []
+        hint = (
+            "Pass erc_rules as [{match: {type: 'pin_not_connected', sheet: 'Power'}, "
+            f"reason: '...'}}] with at most {ERC_RULES_MAX} rules."
+        )
+        if not isinstance(raw, list) or len(raw) > ERC_RULES_MAX:
+            raise _invalid(
+                "Invalid erc_rules", f"erc_rules is a list of at most {ERC_RULES_MAX} rules", hint
+            )
+        out: dict[tuple[str | None, str | None], dict[str, Any]] = {}
+        for rule in raw:
+            match = rule.get("match") if isinstance(rule, dict) else None
+            reason = rule.get("reason") if isinstance(rule, dict) else None
+            if (
+                not isinstance(rule, dict)
+                or set(rule) - {"match", "reason"}
+                or not isinstance(match, dict)
+                or not match
+                or set(match) - set(RULE_KEYS)
+                or not all(
+                    isinstance(v, str) and v.strip() and len(v) <= MATCH_VALUE_MAX
+                    for v in match.values()
+                )
+                or not isinstance(reason, str)
+                or not reason.strip()
+                or len(reason) > REASON_MAX
+            ):
+                raise _invalid(
+                    "Invalid erc_rules",
+                    "each rule needs a match with type and/or sheet (non-empty strings) and "
+                    f"a reason of 1-{REASON_MAX} characters",
+                    hint,
+                )
+            clean = {k: match[k].strip() for k in RULE_KEYS if k in match}
+            if "sheet" in clean:
+                parts = [p for p in clean["sheet"].split("/") if p]
+                # One spelling per sheet: a path is `/a/b/` (root `/`), a bare name stays.
+                clean["sheet"] = (
+                    "/" + "".join(f"{p}/" for p in parts)
+                    if "/" in clean["sheet"]
+                    else clean["sheet"]
+                )
+                if "type" not in clean and "/" in clean["sheet"] and not parts:
+                    raise _invalid(
+                        "Invalid erc_rules",
+                        "a rule on the root sheet alone would justify every new error of a "
+                        "flat design",
+                        "Add a type to the rule, or justify the errors by id.",
+                    )
+            out[(clean.get("type"), clean.get("sheet"))] = {
+                "match": clean,
+                "reason": reason.strip(),
+            }
+        return list(out.values())
+
+    @staticmethod
+    def _rule_matches(rule: dict[str, Any], v: dict[str, Any]) -> bool:
+        match = rule["match"]
+        return ("type" not in match or v.get("type") == match["type"]) and (
+            "sheet" not in match or sheet_matches(v.get("sheet"), match["sheet"])
+        )
+
+    @staticmethod
+    def _merge_rules(
+        stored: list[dict[str, Any]], given: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Same match replaces; the rest accumulates (bounded like the per-id list)."""
+
+        def key(r: dict[str, Any]) -> tuple[Any, Any]:
+            return (r["match"].get("type"), r["match"].get("sheet"))
+
+        merged = {key(r): r for r in stored}
+        merged.update({key(r): r for r in given})
+        return list(merged.values())
+
     async def step_done(
-        self, ctx: ToolContext, idx: Any, summary: Any, justifications: Any = None
+        self,
+        ctx: ToolContext,
+        idx: Any,
+        summary: Any,
+        justifications: Any = None,
+        rules: Any = None,
     ) -> dict[str, Any]:
         state = self._turn(ctx)
         await self._check_owner(ctx)
@@ -491,6 +589,7 @@ class PlanService:
             raise _invalid("Invalid step", "step must be an integer", "Pass the step number.")
         summary = _text(summary, "summary", SUMMARY_MAX)
         given = self._justifications(justifications)
+        given_rules = self._rules(rules)
         pid = ctx.project.id
         # The edit lock first (as revise): no parallel edit lands after the checkpoint.
         async with self.editing.edit_lock(pid), self.lock(pid):
@@ -508,18 +607,62 @@ class PlanService:
                     "A step begins and finishes in the same turn",
                     "Ask the user to resume the plan.",
                 )
+            # Stored per step as soon as submitted (also when this call is refused): the
+            # retry sends only what is new. Pattern rules stay with this step (§8.4).
+            stored_ids, stored_rules = await self.editing.erc_results.step_justifications(step.id)
+            all_ids = {**stored_ids, **given}
+            all_rules = self._merge_rules(stored_rules, given_rules)
+            if len(all_ids) > 2 * JUSTIFICATIONS_MAX or len(all_rules) > JUSTIFICATIONS_MAX:
+                raise _invalid(
+                    "Too many ERC justifications for this step",
+                    f"a step keeps at most {JUSTIFICATIONS_MAX} rules and "
+                    f"{JUSTIFICATIONS_MAX} justifications of live errors",
+                    "Fix the errors, or cover groups with fewer erc_rules.",
+                )
+            # Persist before the ERC run (a failing run keeps them) unless over the cap:
+            # then they are checked against the live errors first and not stored if too many.
+            persisted_ids, persisted_rules = stored_ids, stored_rules
+            if (given or given_rules) and len(all_ids) <= JUSTIFICATIONS_MAX:
+                await self.editing.erc_results.put_step_justifications(step.id, all_ids, all_rules)
+                persisted_ids, persisted_rules = all_ids, all_rules
             delta, baseline_id = await self._erc(ctx, plan, step, state)
             new_ids = {str(v.get("id")) for v in delta.new_errors}
-            open_errors = [v for v in delta.new_errors if str(v.get("id")) not in given]
-            justified = {k: v for k, v in given.items() if k in new_ids}
+            justified = {k: v for k, v in all_ids.items() if k in new_ids}
+            if len(justified) > JUSTIFICATIONS_MAX:
+                raise _invalid(
+                    "Too many ERC justifications for this step",
+                    f"{len(justified)} justified errors (max {JUSTIFICATIONS_MAX} by id)",
+                    "Cover groups of alike errors with erc_rules instead.",
+                )
+            if justified != persisted_ids or all_rules != persisted_rules:
+                # lapsed ids (fixed or changed) fall away
+                await self.editing.erc_results.put_step_justifications(
+                    step.id, justified, all_rules
+                )
+            covered = [0] * len(all_rules)
+            open_errors = []
+            for v in delta.new_errors:
+                if str(v.get("id")) in justified:
+                    continue
+                hit = next((i for i, r in enumerate(all_rules) if self._rule_matches(r, v)), None)
+                if hit is None:
+                    open_errors.append(v)
+                else:
+                    covered[hit] += 1
+            rule_report = [
+                {"match": r["match"], "reason": r["reason"], "covered": n}
+                for r, n in zip(all_rules, covered, strict=True)
+            ]
+            # Rules that covered nothing are not kept in the result (and the plan card).
+            used_rules = [r for r in rule_report if r["covered"]]
             if open_errors:
                 return await self._refuse_erc(
-                    ctx, plan, step, state, delta, baseline_id, justified, open_errors
+                    ctx, plan, step, state, delta, baseline_id, justified, open_errors, used_rules
                 )
             if self.history is None:
                 raise KicadUnavailable("no history service: the checkpoint cannot be taken")
             rid = await self.editing.erc_results.add(
-                pid, str(ctx.run_id), step.id, baseline_id, delta, justified
+                pid, str(ctx.run_id), step.id, baseline_id, delta, justified, used_rules
             )
             snap = await take_step_checkpoint(
                 self.history, ctx.project, str(ctx.run_id), step.id, f"Plan step {idx}"
@@ -547,8 +690,11 @@ class PlanService:
             "change_count": count,
             "erc": {
                 "new_errors": len(delta.new_errors),
-                "justified": sorted(justified),
+                "justified": sorted(justified)[:ERRORS_LISTED],
+                "justified_count": len(justified),
+                "rules": [{"match": r["match"], "covered": r["covered"]} for r in rule_report],
                 "new_warnings": [_brief(v) for v in delta.new_warnings[:ERRORS_LISTED]],
+                "new_warnings_count": len(delta.new_warnings),
                 "resolved": len(delta.resolved),
             },
             "next_step": None if nxt is None else nxt.idx,
@@ -589,26 +735,43 @@ class PlanService:
         baseline_id: str | None,
         justified: dict[str, str],
         open_errors: list[dict[str, Any]],
+        rule_report: list[dict[str, Any]],
     ) -> dict[str, Any]:
         """Spec §6.3 / §11: refused while new errors are neither fixed nor justified; the
         second identical refusal of the same step pauses the plan (needs attention)."""
         ids = frozenset(str(v.get("id")) for v in open_errors)
         listed = [_brief(v) for v in open_errors[:ERRORS_LISTED]]
-        details: dict[str, Any] = {"errors": listed, "count": len(open_errors)}
+        details: dict[str, Any] = {
+            "errors": listed,
+            "count": len(open_errors),
+            "total": len(delta.new_errors),
+            "counts": {
+                "by_type": dict(Counter(str(v.get("type")) for v in open_errors)),
+                "by_sheet": dict(Counter(str(v.get("sheet") or "/") for v in open_errors)),
+            },
+        }
+        if len(open_errors) > len(listed):
+            details["hint"] = (
+                f"Only {len(listed)} of {len(open_errors)} are listed: page the rest with "
+                "run_erc(sheet=…, offset=…) (same ids), or justify a whole group with "
+                "erc_rules [{match: {type, sheet}, reason}] (applies to this step only)."
+            )
         if state.erc_refusal != (step.id, ids):
             state.erc_refusal = (step.id, ids)
             raise StructuredToolError(
                 f"Plan step {step.idx} has {len(open_errors)} new ERC error(s) left open",
                 "Every new ERC error of a step must be fixed or justified before it is done",
                 "Fix each listed error, or pass erc_justifications {violation_id: reason} for "
-                "the ones that are intended (e.g. 'connector follows in step 4'), then call "
-                "plan_step_done again.",
+                "the ones that are intended (e.g. 'connector follows in step 4'), or erc_rules "
+                "[{match: {type?, sheet?}, reason}] for a whole group; both are kept for "
+                "this step, so the retry sends only what is new. Then call plan_step_done "
+                "again.",
                 code="erc_errors_open",
                 details=details,
             )
         pid = ctx.project.id
         rid = await self.editing.erc_results.add(
-            pid, str(ctx.run_id), step.id, baseline_id, delta, justified
+            pid, str(ctx.run_id), step.id, baseline_id, delta, justified, rule_report
         )
         names = ", ".join(f"{v['type']} ({v['id']})" for v in listed[:5])
         new = machine.transition(
@@ -784,6 +947,7 @@ class PlanService:
         async with self.lock(project.id):
             plan = await self.repo.get(project.id, plan_id)
             new = machine.transition(plan, event, now=utcnow_iso())
+            await self.editing.erc_results.forget_steps([s.id for s in plan.steps])
             await self._save(new)
         if new.is_open:  # a rejected revision fell back to the previous one (spec §9.2)
             await self._restored(project, plan, new)
@@ -860,6 +1024,9 @@ class PlanService:
                 await restore_snapshot(
                     self.history, project, target, conversation_id=plan.conversation_id
                 )
+            await self.editing.erc_results.forget_steps(
+                [s.id for s in plan.steps if s.idx > to_step]
+            )
             await self._save(new)
         return new
 

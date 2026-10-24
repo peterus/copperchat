@@ -299,7 +299,7 @@ class PlanRepo:
         marks = ", ".join("?" for _ in ids)
         rows = await self._db.fetchall(
             "SELECT id, json_array_length(new_errors) AS errors,"
-            " json_array_length(new_warnings) AS warnings, justifications"
+            " json_array_length(new_warnings) AS warnings, justifications, rules"
             f" FROM erc_results WHERE project_id = ? AND id IN ({marks})",
             (plan.project_id, *ids),
         )
@@ -313,5 +313,6 @@ class PlanRepo:
                     "errors": int(r["errors"]),
                     "warnings": int(r["warnings"]),
                     "justifications": json.loads(r["justifications"]),
+                    "rules": json.loads(r["rules"]),
                 }
         return out

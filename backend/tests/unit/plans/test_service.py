@@ -32,14 +32,16 @@ U2 = "22222222-2222-2222-2222-222222222222"
 RUN = "run-p1"
 
 
-def violation(type_: str, uuid: str = U1, severity: str = "error") -> dict[str, Any]:
+def violation(
+    type_: str, uuid: str = U1, severity: str = "error", sheet: str = "/"
+) -> dict[str, Any]:
     return {
         "type": type_,
         "severity": severity,
         "description": f"{type_} on R1",
         "position_mm": {"x": 1.0, "y": 2.0},
         "items": [{"uuid": uuid, "description": "R1", "position_mm": None}],
-        "sheet": "/",
+        "sheet": sheet,
     }
 
 
@@ -55,6 +57,7 @@ class Rig:
     hooks: ChainedHooks
     current: list[dict[str, Any]] = field(default_factory=list)
     baselines: list[str] = field(default_factory=list)
+    base: list[dict[str, Any]] = field(default_factory=list)
     mutations: list[str] = field(default_factory=list)
     run_id: str = RUN
 
@@ -146,7 +149,7 @@ def rig(opened: Opened, monkeypatch: pytest.MonkeyPatch) -> Rig:  # noqa: F811
 
     async def baseline(svc: Any, project: Any, snap: Any) -> list[dict[str, Any]]:
         r.baselines.append(snap.id)
-        return []
+        return list(r.base)
 
     async def runner(session: Any, doc: str) -> list[dict[str, Any]]:
         return list(r.current)
@@ -276,6 +279,7 @@ async def test_step_done_accepts_justification(rig: Rig) -> None:
         "errors": 1,
         "warnings": 0,
         "justifications": {vid(v): "the connector follows in step 2"},
+        "rules": [],
         "resultId": plan.steps[0].erc_result_id,
     }
 
@@ -380,6 +384,351 @@ async def test_unknown_justification_ids_are_reported(rig: Rig) -> None:
     out = await rig.plans.step_done(rig.ctx(), 1, "x", {"deadbeef0000": "why"})
     assert any("deadbeef0000" in n for n in out["notes"])
     await expect_error(rig.plans.step_done(rig.ctx(), 2, "x", {"a": ""}), "invalid_argument")
+
+
+# -- ERC pattern rules and per-step persistence (#12) -----------------------------------
+
+
+def rule(reason: str = "wired in step 3", **match: str) -> dict[str, Any]:
+    return {"match": match, "reason": reason}
+
+
+async def test_pattern_rule_justifies_matching_new_errors(rig: Rig) -> None:
+    await rig.begun()
+    rig.current = [
+        violation("pin_not_connected", U1, sheet="/Power/"),
+        violation("pin_not_connected", U2, sheet="/Power/"),
+    ]
+    rig.render()
+    out = await rig.plans.step_done(
+        rig.ctx(), 1, "x", None, [rule(type="pin_not_connected", sheet="Power")]
+    )
+    assert out["erc"]["new_errors"] == 2 and out["erc"]["justified"] == []
+    assert out["erc"]["rules"] == [
+        {"match": {"type": "pin_not_connected", "sheet": "Power"}, "covered": 2}
+    ]
+    dto = await rig.plans.dto(await rig.last_plan())
+    assert dto["steps"][0]["erc"]["rules"][0]["covered"] == 2
+
+
+async def test_pattern_rule_only_covers_what_it_matches(rig: Rig) -> None:
+    await rig.begun()
+    rig.current = [
+        violation("pin_not_connected", U1, sheet="/Power/"),
+        violation("pin_not_connected", U2, sheet="/Other/"),
+    ]
+    err = await expect_error(
+        rig.plans.step_done(rig.ctx(), 1, "x", None, [rule(sheet="Power")]), "erc_errors_open"
+    )
+    assert err.details is not None and err.details["count"] == 1
+
+
+async def test_justifications_persist_across_retry(rig: Rig) -> None:
+    await rig.begun()
+    a, b, c = (
+        violation("pin_not_connected", u)
+        for u in (U1, U2, "33" * 4 + "-3333-3333-3333-333333333333")
+    )
+    rig.current = [a, b, c]
+    err = await expect_error(
+        rig.plans.step_done(rig.ctx(), 1, "x", {vid(a): "later", vid(b): "later too"}),
+        "erc_errors_open",
+    )
+    assert err.details is not None and err.details["count"] == 1  # only c is open
+    rig.render()
+    out = await rig.plans.step_done(rig.ctx(), 1, "x", {vid(c): "and this"})  # only what is new
+    assert out["status"] == "done" and out["erc"]["justified_count"] == 3
+    plan = await rig.last_plan()
+    row = await rig.editing.erc_results.get(rig.pid, plan.steps[0].erc_result_id or "")
+    assert set(row["justifications"]) == {vid(a), vid(b), vid(c)}
+
+
+async def test_pattern_rule_persists_across_retry(rig: Rig) -> None:
+    await rig.begun()
+    rig.current = [violation("pin_not_connected", U1), violation("wire_dangling", U2)]
+    await expect_error(
+        rig.plans.step_done(rig.ctx(), 1, "x", None, [rule(type="pin_not_connected")]),
+        "erc_errors_open",
+    )
+    rig.render()
+    out = await rig.plans.step_done(rig.ctx(), 1, "x", {vid(rig.current[1]): "ok"})
+    assert out["status"] == "done"
+    assert out["erc"]["rules"][0]["covered"] == 1
+
+
+async def test_same_match_replaces_stored_rule(rig: Rig) -> None:
+    await rig.begun()
+    rig.current = [violation("pin_not_connected")]
+    await expect_error(
+        rig.plans.step_done(rig.ctx(), 1, "x", None, [rule("old", type="wire_dangling")]),
+        "erc_errors_open",
+    )
+    await expect_error(
+        rig.plans.step_done(rig.ctx(), 1, "x", None, [rule("new", type="wire_dangling")]),
+        "erc_errors_open",
+    )
+    _, stored = await rig.editing.erc_results.step_justifications(
+        (await rig.last_plan()).steps[0].id
+    )
+    assert stored == [rule("new", type="wire_dangling")]
+
+
+async def test_pattern_rule_does_not_carry_to_next_step(rig: Rig) -> None:
+    await rig.begun()
+    rig.current = [violation("pin_not_connected", U1)]
+    rig.render()
+    await rig.plans.step_done(rig.ctx(), 1, "x", None, [rule(type="pin_not_connected")])
+    await rig.plans.step_begin(rig.ctx(), 2)
+    rig.base = [violation("pin_not_connected", U1)]  # step 1's result is step 2's baseline
+    rig.current = [violation("pin_not_connected", U1), violation("pin_not_connected", U2)]
+    rig.mutate()
+    err = await expect_error(rig.plans.step_done(rig.ctx(), 2, "y"), "erc_errors_open")
+    assert err.details is not None and err.details["count"] == 1  # U2 is brand new
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        [{"match": {}, "reason": "r"}],
+        [{"match": {"colour": "red"}, "reason": "r"}],
+        [{"match": {"type": ""}, "reason": "r"}],
+        [{"match": {"type": "t"}, "reason": " "}],
+        [{"match": {"type": "t"}}],
+        [{"match": {"type": "t"}, "reason": "r", "extra": 1}],
+        {"match": {"type": "t"}, "reason": "r"},
+    ],
+)
+async def test_rule_needs_type_or_sheet(rig: Rig, bad: Any) -> None:
+    await rig.begun()
+    await expect_error(rig.plans.step_done(rig.ctx(), 1, "x", None, bad), "invalid_argument")
+
+
+async def test_more_than_20_rules_refused(rig: Rig) -> None:
+    await rig.begun()
+    rules = [rule(type=f"t{i}") for i in range(21)]
+    await expect_error(rig.plans.step_done(rig.ctx(), 1, "x", None, rules), "invalid_argument")
+    rig.render()
+    out = await rig.plans.step_done(rig.ctx(), 1, "x", None, rules[:20])
+    assert out["status"] == "done"
+
+
+async def test_refusal_has_total_and_counts(rig: Rig) -> None:
+    await rig.begun()
+    rig.current = [
+        violation("pin_not_connected", f"{i:08d}-0000-0000-0000-000000000000", sheet="/A/")
+        for i in range(25)
+    ] + [violation("wire_dangling", U2, sheet="/B/")]
+    err = await expect_error(rig.plans.step_done(rig.ctx(), 1, "x"), "erc_errors_open")
+    d = err.details
+    assert d is not None and len(d["errors"]) == 20
+    assert d["total"] == 26 and d["count"] == 26
+    assert d["counts"] == {
+        "by_type": {"pin_not_connected": 25, "wire_dangling": 1},
+        "by_sheet": {"/A/": 25, "/B/": 1},
+    }
+    assert "run_erc(sheet" in d["hint"] and "erc_rules" in d["hint"]
+
+
+async def test_step_result_delta_bounded(rig: Rig) -> None:
+    await rig.begun()
+    rig.current = [
+        violation("wire_dangling", f"{i:08d}-0000-0000-0000-000000000000", severity="warning")
+        for i in range(60)
+    ]
+    rig.render()
+    out = await rig.plans.step_done(rig.ctx(), 1, "x")
+    assert len(out["erc"]["new_warnings"]) == 20 and out["erc"]["new_warnings_count"] == 60
+
+
+async def test_stored_justifications_lapse_when_errors_are_fixed(rig: Rig) -> None:
+    await rig.begun()
+    a, b = violation("pin_not_connected", U1), violation("pin_not_connected", U2)
+    rig.current = [a, b]
+    rig.current = [a, violation("wire_dangling", "33" * 4 + "-3333-3333-3333-333333333333")]
+    await expect_error(
+        rig.plans.step_done(rig.ctx(), 1, "x", {vid(a): "later", vid(b): "gone"}), "erc_errors_open"
+    )
+    ids, _ = await rig.editing.erc_results.step_justifications((await rig.last_plan()).steps[0].id)
+    assert set(ids) == {vid(a)}  # b no longer exists: its justification lapsed
+
+
+async def test_fresh_begin_forgets_earlier_attempt(rig: Rig) -> None:
+    plan = await rig.begun()
+    step_id = plan.steps[0].id
+    await rig.editing.erc_results.put_step_justifications(
+        step_id, {}, [rule(type="pin_not_connected")]
+    )
+    await rig.plans.pause(rig.opened.project, "turn_ended")
+    await rig.plans.rollback(rig.opened.project, plan.id, 0)
+    assert await rig.editing.erc_results.step_justifications(step_id) == ({}, [])
+
+
+async def test_revise_forgets_stored_justifications(rig: Rig) -> None:
+    plan = await rig.begun()
+    step_id = plan.steps[0].id
+    await rig.editing.erc_results.put_step_justifications(step_id, {"a": "r"}, [rule(type="t")])
+    await rig.plans.revise(rig.ctx(), [step_spec("n1", 5)], "new idea")
+    assert await rig.editing.erc_results.step_justifications(step_id) == ({}, [])
+
+
+async def test_root_sheet_rule_needs_a_type(rig: Rig) -> None:
+    await rig.begun()
+    await expect_error(
+        rig.plans.step_done(rig.ctx(), 1, "x", None, [rule(sheet="/")]), "invalid_argument"
+    )
+    await expect_error(
+        rig.plans.step_done(rig.ctx(), 1, "x", None, [rule(sheet="//")]), "invalid_argument"
+    )
+    rig.render()
+    out = await rig.plans.step_done(rig.ctx(), 1, "x", None, [rule(type="t", sheet="/")])
+    assert out["status"] == "done"
+
+
+async def test_sheet_spellings_are_one_rule(rig: Rig) -> None:
+    await rig.begun()
+    rig.current = [violation("pin_not_connected", sheet="/Other/")]
+    rules = [
+        rule("a", sheet="/Power"),
+        rule("b", sheet="Power/"),
+        rule("c", sheet="/Power/", type="x"),
+    ]
+    await expect_error(rig.plans.step_done(rig.ctx(), 1, "x", None, rules), "erc_errors_open")
+    _, stored = await rig.editing.erc_results.step_justifications(
+        (await rig.last_plan()).steps[0].id
+    )
+    # "/Power" and "Power/" are the same path: one rule, the later reason wins
+    assert [(r["match"], r["reason"]) for r in stored] == [
+        ({"sheet": "/Power/"}, "b"),
+        ({"type": "x", "sheet": "/Power/"}, "c"),
+    ]
+
+
+def uid(i: int) -> str:
+    return f"{i:08d}-0000-0000-0000-000000000000"
+
+
+async def test_over_cap_ids_are_not_a_dead_end(rig: Rig) -> None:
+    await rig.begun()
+    rig.current = [violation("pin_not_connected", uid(i)) for i in range(140)]
+    ids = [vid(v) for v in rig.current]
+    await expect_error(
+        rig.plans.step_done(rig.ctx(), 1, "x", {i: "later" for i in ids[:90]}), "erc_errors_open"
+    )
+    err = await expect_error(
+        rig.plans.step_done(rig.ctx(), 1, "x", {i: "later" for i in ids[90:]}), "invalid_argument"
+    )
+    assert "erc_rules" in err.to_dict()["suggestion"]
+    step_id = (await rig.last_plan()).steps[0].id
+    stored, _ = await rig.editing.erc_results.step_justifications(step_id)
+    assert set(stored) == set(ids[:90])  # the over-cap call stored nothing
+    rig.render()
+    out = await rig.plans.step_done(rig.ctx(), 1, "x", None, [rule(type="pin_not_connected")])
+    assert out["status"] == "done" and out["erc"]["rules"][0]["covered"] == 50
+
+
+async def test_id_justification_does_not_cover_the_same_violation_on_another_sheet(
+    rig: Rig,
+) -> None:
+    await rig.begun()
+    a = violation("pin_not_connected", U1, sheet="/A/")
+    b = violation("pin_not_connected", U1, sheet="/B/")  # same items, another instance
+    assert vid(a) != vid(b)
+    rig.current = [a, b]
+    err = await expect_error(
+        rig.plans.step_done(rig.ctx(), 1, "x", {vid(a): "only a"}), "erc_errors_open"
+    )
+    assert err.details is not None and err.details["errors"][0]["id"] == vid(b)
+
+
+async def test_refused_revise_keeps_stored_justifications(rig: Rig) -> None:
+    plan = await rig.begun()
+    step_id = plan.steps[0].id
+    await rig.editing.erc_results.put_step_justifications(step_id, {"a": "r"}, [rule(type="t")])
+    await expect_error(rig.plans.revise(rig.ctx(), [], "bad"), "invalid_argument")
+    assert await rig.editing.erc_results.step_justifications(step_id) == (
+        {"a": "r"},
+        [rule(type="t")],
+    )
+
+
+async def test_closing_a_plan_forgets_stored_justifications(rig: Rig) -> None:
+    plan = await rig.begun()
+    step_id = plan.steps[0].id
+    await rig.editing.erc_results.put_step_justifications(step_id, {"a": "r"}, [])
+    await rig.plans.pause(rig.opened.project, "turn_ended")
+    await rig.plans.abort(rig.opened.project, plan.id)
+    assert await rig.editing.erc_results.step_justifications(step_id) == ({}, [])
+
+
+async def test_fresh_begin_forgets_stored_justifications(rig: Rig) -> None:
+    plan = await rig.begun()
+    step_id = plan.steps[1].id  # step 2 was never begun; a row for it is stale
+    await rig.editing.erc_results.put_step_justifications(step_id, {"a": "r"}, [rule(type="t")])
+    rig.render()
+    await rig.plans.step_done(rig.ctx(), 1, "x")
+    await rig.plans.step_begin(rig.ctx(), 2)
+    assert await rig.editing.erc_results.step_justifications(step_id) == ({}, [])
+
+
+async def test_stored_justifications_survive_pause_and_resume(rig: Rig) -> None:
+    await rig.begun()
+    a = violation("pin_not_connected", U1)
+    rig.render()
+    # the rule is stored by a refused call (another error stays open) ...
+    b = violation("wire_dangling", U2)
+    rig.current = [a, b]
+    await expect_error(
+        rig.plans.step_done(rig.ctx(), 1, "x", None, [rule(type="pin_not_connected")]),
+        "erc_errors_open",
+    )
+    await rig.plans.pause(rig.opened.project, "turn_ended")
+    approved = machine.transition(await rig.last_plan(), "resume", now=NOW)
+    await rig.plans.repo.save(approved)
+    rig.run_id = "run-resumed"
+    await rig.plans.step_begin(rig.ctx(), 1)
+    rig.render()
+    # ... and still applies after the resume, without being sent again; other types stay refused
+    err = await expect_error(rig.plans.step_done(rig.ctx(), 1, "x"), "erc_errors_open")
+    assert err.details is not None and [e["type"] for e in err.details["errors"]] == [
+        "wire_dangling"
+    ]
+    out = await rig.plans.step_done(rig.ctx(), 1, "x", {vid(b): "ok"})
+    assert out["status"] == "done" and out["erc"]["rules"][0]["covered"] == 1
+
+
+async def test_retry_with_non_new_ids_drops_lapsed_ones(rig: Rig) -> None:
+    await rig.begun()
+    a, x = violation("pin_not_connected", U1), violation("pin_not_connected", U2)
+    rig.current = [a, violation("wire_dangling", "33" * 4 + "-3333-3333-3333-333333333333")]
+    await expect_error(rig.plans.step_done(rig.ctx(), 1, "x", {vid(a): "later"}), "erc_errors_open")
+    await expect_error(
+        rig.plans.step_done(rig.ctx(), 1, "x", {vid(x): "not new"}), "erc_errors_open"
+    )
+    ids, _ = await rig.editing.erc_results.step_justifications((await rig.last_plan()).steps[0].id)
+    assert set(ids) == {vid(a)}  # x matched no new error: it did not stay
+
+
+async def test_forget_runs_before_the_save_in_revise_and_rollback(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = await rig.begun()
+    step_id = plan.steps[0].id
+    put = rig.editing.erc_results.put_step_justifications
+    await rig.plans.pause(rig.opened.project, "turn_ended")
+
+    async def failing_save(_plan: Any) -> Any:
+        raise RuntimeError("save cut short")
+
+    monkeypatch.setattr(rig.plans, "_save", failing_save)
+    await put(step_id, {"a": "r"}, [rule(type="t")])
+    with pytest.raises(RuntimeError):
+        await rig.plans.revise(rig.ctx(), [step_spec("n1", 5)], "new idea")
+    assert await rig.editing.erc_results.step_justifications(step_id) == ({}, [])
+
+    await put(step_id, {"a": "r"}, [rule(type="t")])
+    with pytest.raises(RuntimeError):
+        await rig.plans.rollback(rig.opened.project, plan.id, 0)
+    assert await rig.editing.erc_results.step_justifications(step_id) == ({}, [])
 
 
 # -- pauses -------------------------------------------------------------------------

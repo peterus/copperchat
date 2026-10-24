@@ -47,3 +47,30 @@ async def test_filters(ecc83_session: KicadSession) -> None:
 async def test_hierarchical_erc_sees_every_sheet(hier_session: KicadSession) -> None:
     raw = await checks.run_kicad_check(hier_session, "sch", hier_session.settings)
     assert '"ampli_ht_vertical' in raw or "/ampli_ht_vertical/" in raw
+
+
+async def test_run_erc_ids_match_step_done_ids(ecc83_session: KicadSession) -> None:
+    from copperchat.changes.erc import violation_id
+
+    erc = await checks.run_erc(ctx(ecc83_session), {})
+    assert erc.data is not None  # the fixture may have no ERC findings: ids only checked if any
+    for v in erc.data["violations"]:
+        assert v["id"] == violation_id(v)
+
+
+async def test_run_erc_sheet_filter_and_paging(hier_session: KicadSession) -> None:
+    everything = await checks.run_erc(ctx(hier_session), {"limit": 200})
+    assert everything.data is not None
+    sheets = {v["sheet"] for v in everything.data["violations"]}
+    assert everything.data["counts"]["by_sheet"].keys() == sheets
+    for path in sheets:
+        name = path.strip("/").split("/")[-1] or "/"
+        only = await checks.run_erc(ctx(hier_session), {"sheet": name, "limit": 200})
+        assert only.data is not None
+        assert only.data["total"] >= 1
+        assert {v["sheet"].strip("/").split("/")[-1] or "/" for v in only.data["violations"]} == {
+            name
+        }
+    page = await checks.run_erc(ctx(hier_session), {"limit": 1, "offset": 1})
+    assert page.data is not None
+    assert page.data["count"] <= 1 and page.data["total"] == everything.data["total"]

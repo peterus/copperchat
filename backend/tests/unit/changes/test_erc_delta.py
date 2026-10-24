@@ -129,8 +129,60 @@ async def test_run_erc_tool_notes_the_report(monkeypatch: pytest.MonkeyPatch) ->
         run_id = "run-1"
         editing = Editing()
 
-    monkeypatch.setattr(checks, "check_violations", runner)
+    monkeypatch.setattr(erc, "check_violations", runner)
     ctx = Ctx()
     res = await checks.run_erc(ctx, {})  # type: ignore[arg-type]
     assert res.data is not None and res.data["count"] == 1
     assert ctx.editing.state.last_erc is report and ctx.editing.state.last_erc_seq == 7
+    # Another page of the same report is a view of it: no second kicad-cli run.
+    ctx.editing.state.last_mutation_seq = 3
+
+    async def boom(session: Any, doc: str) -> list[dict[str, Any]]:
+        raise AssertionError("ERC ran again")
+
+    monkeypatch.setattr(erc, "check_violations", boom)
+    again = await checks.run_erc(ctx, {"offset": 1})  # type: ignore[arg-type]
+    assert again.data is not None and again.data["total"] == 1 and again.data["count"] == 0
+
+
+async def test_run_erc_runs_again_after_a_mutation(monkeypatch: pytest.MonkeyPatch) -> None:
+    from copperchat.kicad_tools import checks
+
+    runs: list[int] = []
+
+    async def runner(session: Any, doc: str) -> list[dict[str, Any]]:
+        runs.append(1)
+        return [v("pin_not_connected", U1)]
+
+    monkeypatch.setattr(erc, "check_violations", runner)
+    state = EditTurnState(call_seq=5, last_erc=[], last_erc_seq=2, last_mutation_seq=4)
+
+    class Editing:
+        def turn(self, project_id: str, run_id: str | None) -> EditTurnState:
+            return state
+
+    class Ctx:
+        project = type("P", (), {"id": "p"})()
+        session = object()
+        run_id = "run-1"
+        editing = Editing()
+
+    res = await checks.run_erc(Ctx(), {})  # type: ignore[arg-type]
+    assert runs == [1] and res.data is not None and res.data["total"] == 1
+
+
+async def test_current_erc_stamp_is_taken_before_the_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    state = EditTurnState(call_seq=5)
+    runs: list[int] = []
+
+    async def runner(session: Any, doc: str) -> list[dict[str, Any]]:
+        runs.append(1)
+        state.call_seq += 1  # an edit lands while the check runs
+        state.last_mutation_seq = state.call_seq
+        return []
+
+    monkeypatch.setattr(erc, "check_violations", runner)
+    await current_erc(object(), state)  # type: ignore[arg-type]
+    assert not erc.erc_is_fresh(state)  # the report predates the edit
+    await current_erc(object(), state)  # type: ignore[arg-type]
+    assert runs == [1, 1]

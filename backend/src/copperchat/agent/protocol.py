@@ -222,10 +222,17 @@ class PlanTouches(Wire):
     nets: list[str]
 
 
+class PlanStepRule(Wire):
+    match: dict[str, str]
+    reason: str
+    covered: int = Field(ge=0)
+
+
 class PlanStepErc(Wire):
     errors: int = Field(ge=0)
     warnings: int = Field(ge=0)
     justifications: dict[str, str]
+    rules: list[PlanStepRule]
     result_id: str | None
 
 

@@ -31,17 +31,30 @@ const STEP_STATUS_CLASS: Record<PlanStepDTO['status'], string> = {
 export const checkpointPreviewUrl = (projectId: string, snapshotId: string) =>
   `/api/projects/${encodeURIComponent(projectId)}/history/${encodeURIComponent(snapshotId)}/preview`;
 
-function Justifications({ items }: { items: Array<[string, string]> }) {
+type Rule = NonNullable<PlanStepDTO['erc']>['rules'][number];
+
+/** "type · sheet" of a pattern rule's match. */
+const ruleLabel = (r: Rule) => [r.match.type, r.match.sheet].filter(Boolean).join(' · ');
+
+/** Id justifications are collapsed to a count + a short list; pattern rules show what they covered. */
+function Justifications({ items, rules }: { items: Array<[string, string]>; rules: Rule[] }) {
   const [open, setOpen] = useState(false);
-  if (items.length === 0) return null;
+  const total = items.length + rules.reduce((n, r) => n + r.covered, 0);
+  if (items.length === 0 && rules.length === 0) return null;
   const shown = items.slice(0, JUSTIFICATIONS_SHOWN);
   return (
     <div>
       <button type="button" aria-expanded={open} onClick={() => setOpen((o) => !o)} className="text-muted underline">
-        {items.length} justified
+        {total} justified
       </button>
       {open && (
         <ul className="mt-1 flex flex-col gap-0.5 break-words text-muted">
+          {rules.slice(0, JUSTIFICATIONS_SHOWN).map((r) => (
+            <li key={`${r.match.type ?? ''}|${r.match.sheet ?? ''}`}>
+              {ruleLabel(r)}: {clip(r.reason)} ({plural(r.covered, 'error')})
+            </li>
+          ))}
+          {rules.length > JUSTIFICATIONS_SHOWN && <li>+{rules.length - JUSTIFICATIONS_SHOWN} more rules</li>}
           {shown.map(([id, reason]) => (
             <li key={id}>{clip(reason)}</li>
           ))}
@@ -112,7 +125,7 @@ export function PlanStepRow({
         {step.failure && <p className="mt-0.5 break-words text-xs text-danger">{step.failure}</p>}
         {erc && (
           <div className="mt-0.5 text-xs">
-            <Justifications items={Object.entries(erc.justifications)} />
+            <Justifications items={Object.entries(erc.justifications)} rules={erc.rules} />
           </div>
         )}
       </div>

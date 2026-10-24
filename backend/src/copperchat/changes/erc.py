@@ -54,9 +54,10 @@ class ErcResultNotFound(CopperChatError):
 
 
 def violation_id(v: dict[str, Any]) -> str:
-    """Stable id of a violation: type + its items' UUIDs (moving an item keeps it)."""
+    """Stable id of a violation: type + sheet + its items' UUIDs (moving an item keeps
+    it). The sheet keeps the violations of a reused sheet's instances apart."""
     uuids = sorted(str(i.get("uuid", "")) for i in v.get("items", []))
-    key = "|".join([str(v.get("type", "")), *uuids])
+    key = "|".join([str(v.get("type", "")), str(v.get("sheet") or "/"), *uuids])
     return hashlib.sha1(key.encode(), usedforsecurity=False).hexdigest()[:12]
 
 
@@ -213,10 +214,12 @@ async def current_erc(session: KicadSession, state: EditTurnState | None) -> lis
     if erc_is_fresh(state):
         assert state is not None and state.last_erc is not None
         return state.last_erc
+    # The stamp is taken before the run: an edit that lands while it runs is newer.
+    seq = state.call_seq if state is not None else None
     violations = await check_violations(session, "sch")
     if state is not None:
         state.last_erc = violations
-        state.last_erc_seq = state.call_seq
+        state.last_erc_seq = seq
     return violations
 
 
@@ -244,12 +247,13 @@ class ErcResultRepo:
         baseline_snapshot_id: str | None,
         delta: ErcDelta,
         justifications: dict[str, str] | None = None,
+        rules: list[dict[str, Any]] | None = None,
     ) -> str:
         rid = uuid.uuid4().hex
         await self._db.execute(
             "INSERT INTO erc_results(id, project_id, run_id, plan_step_id,"
             " baseline_snapshot_id, new_errors, new_warnings, resolved, justifications,"
-            " created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " rules, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 rid,
                 project_id,
@@ -260,6 +264,7 @@ class ErcResultRepo:
                 json.dumps(delta.new_warnings),
                 json.dumps(delta.resolved),
                 json.dumps(justifications or {}),
+                json.dumps(rules or []),
                 utcnow_iso(),
             ),
         )
@@ -276,8 +281,42 @@ class ErcResultRepo:
             "new_warnings": json.loads(row["new_warnings"]),
             "resolved": json.loads(row["resolved"]),
             "justifications": json.loads(row["justifications"]),
+            "rules": json.loads(row["rules"]),
             "created_at": str(row["created_at"]),
         }
+
+    async def step_justifications(
+        self, plan_step_id: str
+    ) -> tuple[dict[str, str], list[dict[str, Any]]]:
+        """(id -> reason, pattern rules) stored for a plan step (`put_step_justifications`)."""
+        row = await self._db.fetchone(
+            "SELECT justifications, rules FROM erc_step_justifications WHERE plan_step_id = ?",
+            (plan_step_id,),
+        )
+        if row is None:
+            return {}, []
+        return json.loads(row["justifications"]), json.loads(row["rules"])
+
+    async def put_step_justifications(
+        self, plan_step_id: str, justifications: dict[str, str], rules: list[dict[str, Any]]
+    ) -> None:
+        await self._db.execute(
+            "INSERT INTO erc_step_justifications(plan_step_id, justifications, rules, updated_at)"
+            " VALUES (?, ?, ?, ?) ON CONFLICT(plan_step_id) DO UPDATE SET"
+            " justifications = excluded.justifications, rules = excluded.rules,"
+            " updated_at = excluded.updated_at",
+            (plan_step_id, json.dumps(justifications), json.dumps(rules), utcnow_iso()),
+        )
+
+    async def forget_steps(self, plan_step_ids: list[str]) -> None:
+        """Drop the stored justifications of steps whose attempt is over."""
+        if not plan_step_ids:
+            return
+        marks = ", ".join("?" for _ in plan_step_ids)
+        await self._db.execute(
+            f"DELETE FROM erc_step_justifications WHERE plan_step_id IN ({marks})",
+            tuple(plan_step_ids),
+        )
 
     async def get(self, project_id: str, result_id: str) -> dict[str, Any]:
         rid = validate_erc_result_id(result_id)

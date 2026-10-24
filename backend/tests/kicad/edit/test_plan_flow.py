@@ -220,12 +220,22 @@ async def test_two_step_plan_end_to_end(rig: Rig, tmp_path: Path) -> None:
     assert err and out["error"]["code"] == "erc_errors_open", out
     open_ids = [e["id"] for e in out["error"]["details"]["errors"]]
     assert open_ids
-    just = {i: "the connections follow in step 2" for i in open_ids}
+    assert out["error"]["details"]["total"] == len(open_ids) >= 2
+    # Justify one error by id; the retry sends only a pattern rule for the rest (the id
+    # justification is kept for the step, spec §8.4).
+    first = {open_ids[0]: "the connections follow in step 2"}
     out, err = await call_tool(
-        ctx, "plan_step_done", step=1, summary="placed R1, D1", erc_justifications=just
+        ctx, "plan_step_done", step=1, summary="placed R1, D1", erc_justifications=first
+    )
+    assert err and out["error"]["code"] == "erc_errors_open", out  # the others stay open
+    types = sorted({e["type"] for e in out["error"]["details"]["errors"]})
+    rules = [{"match": {"type": t}, "reason": "the connections follow in step 2"} for t in types]
+    out, err = await call_tool(
+        ctx, "plan_step_done", step=1, summary="placed R1, D1", erc_rules=rules
     )
     assert not err, out
-    assert sorted(out["erc"]["justified"]) == sorted(open_ids)
+    assert out["erc"]["justified"] == [open_ids[0]]
+    assert sum(r["covered"] for r in out["erc"]["rules"]) == len(open_ids) - 1
     assert out["change_count"] >= 2 and out["next_step"] == 2
     cp1 = out["checkpoint_id"]
     step1_files = compute_hashes(project)

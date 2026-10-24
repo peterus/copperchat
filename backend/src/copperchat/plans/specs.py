@@ -6,7 +6,9 @@ from typing import Any
 
 from copperchat.errors import StructuredToolError
 from copperchat.plans.service import (
+    ERC_RULES_MAX,
     EXPECTED_MAX,
+    MATCH_VALUE_MAX,
     MAX_STEPS,
     REASON_MAX,
     SUMMARY_MAX,
@@ -117,7 +119,11 @@ async def _step_begin(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
 
 async def _step_done(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     data = await _plans(ctx).step_done(
-        ctx, args.get("step"), args.get("summary"), args.get("erc_justifications")
+        ctx,
+        args.get("step"),
+        args.get("summary"),
+        args.get("erc_justifications"),
+        args.get("erc_rules"),
     )
     return ToolResult(data=data)
 
@@ -179,8 +185,11 @@ TOOL_SPECS = [
         "plan_step_done",
         "Finish the active plan step: runs the step's ERC delta and takes a checkpoint. "
         "Refused (erc_errors_open, with the list) while a new ERC error is neither fixed "
-        "nor justified in erc_justifications {violation_id: reason}; leaving the same "
-        "errors open twice pauses the plan. Render the step's region before calling it.",
+        "nor justified in erc_justifications {violation_id: reason} (ids as run_erc lists "
+        "them) or covered by erc_rules [{match: {type?, sheet?}, reason}] (at most 20; a rule "
+        "justifies every new error it matches, in this step only). Both are kept per step: "
+        "after a refusal send only what is new. Leaving the same errors open twice pauses "
+        "the plan. Render the step's region before calling it.",
         {
             "type": "object",
             "properties": {
@@ -189,6 +198,27 @@ TOOL_SPECS = [
                 "erc_justifications": {
                     "type": "object",
                     "additionalProperties": {"type": "string", "maxLength": REASON_MAX},
+                },
+                "erc_rules": {
+                    "type": "array",
+                    "maxItems": ERC_RULES_MAX,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "match": {
+                                "type": "object",
+                                "properties": {
+                                    "type": {"type": "string", "maxLength": MATCH_VALUE_MAX},
+                                    "sheet": {"type": "string", "maxLength": MATCH_VALUE_MAX},
+                                },
+                                "minProperties": 1,
+                                "additionalProperties": False,
+                            },
+                            "reason": {"type": "string", "maxLength": REASON_MAX},
+                        },
+                        "required": ["match", "reason"],
+                        "additionalProperties": False,
+                    },
                 },
             },
             "required": ["step", "summary"],

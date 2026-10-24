@@ -11,7 +11,8 @@ sessions: schematic, board, free
 Never state that a schematic or board is correct, clean or fixed without
 evidence from this turn:
 
-1. `run_erc` on the schematic — read every violation. Zero violations, or
+1. `run_erc` on the schematic — read every violation (it is paged: check `total`, and
+   use `sheet` / `offset` for the rest; each violation has a stable `id`). Zero violations, or
    each one explained (what it means, why it is acceptable or how to fix it).
 2. `run_drc` on the board, if a board exists — same standard.
 3. `render_view` of the area you are talking about — look at the image and
