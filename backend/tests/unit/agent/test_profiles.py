@@ -45,6 +45,7 @@ SPEC_82 = {
         "sch_get_symbol",
         "sch_get_net",
         "sch_get_pin",
+        "sch_list_items",
         "pcb_list_footprints",
         "pcb_get_footprint",
         "pcb_get_net",
@@ -84,8 +85,8 @@ def settings(tmp_path: Path) -> Settings:
     )
 
 
-def test_today_is_the_40_tools_of_spec_81() -> None:
-    assert len(TODAY) == 40
+def test_today_is_the_40_tools_of_spec_81_plus_list_items() -> None:
+    assert len(TODAY) == 41  # + sch_list_items (v0.5.0, #3)
     assert len(DOC_TOOLS) == 5
 
 
