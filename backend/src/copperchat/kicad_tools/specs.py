@@ -81,8 +81,21 @@ TOOL_SPECS: list[ToolSpec] = [
     ToolSpec(
         "run_erc",
         "Run KiCad's electrical rules check on the schematic as currently loaded; returns "
-        "violations with type, severity, sheet, mm position and item UUIDs.",
-        _obj(_CHECK),
+        "violations with a stable id (the one plan_step_done takes in erc_justifications), "
+        "type, severity, sheet, mm position and item UUIDs. Filters: severity, type "
+        "(glob), sheet (name or path). Paged: limit (default 50, max 200) and offset; "
+        "total and counts by type / sheet cover everything that matches.",
+        _obj(
+            {
+                **_CHECK,
+                "sheet": {
+                    "type": "string",
+                    "description": "Only a sheet: name ('Power') or path ('/Power/'); '/' is root.",
+                },
+                "limit": {"type": "integer", "minimum": 1, "maximum": checks.ERC_PAGE_MAX},
+                "offset": {"type": "integer", "minimum": 0},
+            }
+        ),
         checks.run_erc,
     ),
     ToolSpec(

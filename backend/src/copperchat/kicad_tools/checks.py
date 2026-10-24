@@ -234,6 +234,71 @@ def _result(vs: list[dict[str, Any]], args: dict[str, Any]) -> ToolResult:
     )
 
 
+ERC_PAGE = 50
+ERC_PAGE_MAX = 200
+
+
+def sheet_matches(violation_sheet: Any, wanted: str) -> bool:
+    """A violation's sheet path (`/`, `/Power/`, `/Power/Reg/`) against a sheet filter:
+    the whole human path or the name of the innermost sheet; `/` is the root."""
+    path = [p for p in str(violation_sheet or "/").split("/") if p]
+    want = [p for p in wanted.split("/") if p]
+    return path == want or (len(want) == 1 and bool(path) and path[-1] == want[0])
+
+
+def _page_arg(args: dict[str, Any], key: str, default: int, low: int, high: int | None) -> int:
+    raw = args.get(key, default)
+    if (
+        not isinstance(raw, int)
+        or isinstance(raw, bool)
+        or raw < low
+        or (high is not None and raw > high)
+    ):
+        raise StructuredToolError(
+            f"Invalid {key}",
+            f"{key} must be an integer from {low}" + (f" to {high}" if high else ""),
+            f"Page with limit (default {ERC_PAGE}, max {ERC_PAGE_MAX}) and offset.",
+            code="invalid_argument",
+        )
+    return raw
+
+
+def erc_page(vs: list[dict[str, Any]], args: dict[str, Any]) -> dict[str, Any]:
+    """The `run_erc` view of a full ERC result: filtered by severity / type / sheet, with
+    stable ids (the ones `plan_step_done` uses), paged, and counts over the whole match."""
+    from copperchat.changes.erc import violation_id  # local: changes.erc imports this module
+
+    limit = _page_arg(args, "limit", ERC_PAGE, 1, ERC_PAGE_MAX)
+    offset = _page_arg(args, "offset", 0, 0, None)
+    severity, sheet = args.get("severity"), args.get("sheet")
+    if sheet is not None and (not isinstance(sheet, str) or not sheet.strip()):
+        raise StructuredToolError(
+            "Invalid sheet",
+            "sheet must be a sheet name or path",
+            "Pass e.g. 'Power' or '/Power/'.",
+            code="invalid_argument",
+        )
+    matching = [
+        v
+        for v in vs
+        if (not severity or v["severity"] == severity)
+        and matches(args.get("type"), v["type"])
+        and (sheet is None or sheet_matches(v.get("sheet"), sheet))
+    ]
+    return {
+        "count": len(matching[offset : offset + limit]),
+        "total": len(matching),
+        "bySeverity": dict(Counter(v["severity"] for v in vs)),
+        "counts": {
+            "by_type": dict(Counter(v["type"] for v in matching)),
+            "by_sheet": dict(Counter(str(v.get("sheet", "/")) for v in matching)),
+        },
+        "offset": offset,
+        "limit": limit,
+        "violations": [{"id": violation_id(v), **v} for v in matching[offset : offset + limit]],
+    }
+
+
 async def run_erc(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     vs = await check_violations(ctx.session, "sch")
     if ctx.editing is not None and ctx.run_id is not None:
@@ -242,7 +307,7 @@ async def run_erc(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         state = ctx.editing.turn(ctx.project.id, ctx.run_id)
         state.last_erc = vs
         state.last_erc_seq = state.call_seq
-    return _result(vs, args)
+    return ToolResult(data=erc_page(vs, args))
 
 
 async def run_drc(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
