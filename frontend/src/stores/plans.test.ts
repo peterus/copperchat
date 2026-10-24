@@ -6,7 +6,7 @@ import { createPlansStore, type PlansDeps } from './plans';
 const PID = 'a1b2c3d4e5f6';
 const OTHER = 'ffffffffffff';
 const plan = (over: Partial<PlanDTO> = {}): PlanDTO => ({
-  id: 'p'.repeat(32), projectId: PID, conversationId: 'c'.repeat(32), title: 'T', summary: '', status: 'proposed', revision: 1, pauseReason: null,
+  id: 'p'.repeat(32), projectId: PID, conversationId: 'c'.repeat(32), title: 'T', summary: '', status: 'proposed', revision: 1, pauseReason: null, reviseReason: null, previousRevision: null,
   steps: [], createdAt: '2026-10-18T10:00:00.000Z', updatedAt: '2026-10-18T10:00:00.000Z', ...over,
 });
 const deps = (over: Partial<PlansDeps> = {}): PlansDeps => ({

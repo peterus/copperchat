@@ -28,6 +28,8 @@ const plan = (conversationId: string, status: PlanDTO['status'] = 'proposed'): P
   status,
   revision: 1,
   pauseReason: null,
+  reviseReason: null,
+  previousRevision: null,
   steps: [],
   createdAt: '2026-10-19T10:00:00Z',
   updatedAt: '2026-10-19T10:00:00Z',

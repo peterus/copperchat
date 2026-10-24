@@ -29,6 +29,12 @@ affiliated with or endorsed by Anthropic.
   KiCad's API, every change verified against KiCad's netlist before it is reported.
   - Larger changes come as a **plan** you approve or reject in the chat; every plan step
     ends with an ERC check and a checkpoint you can roll back to.
+  - When the agent revises a plan, the plan card is posted again at the bottom of the chat
+    with the agent's reason and **Approve** / **Reject**; earlier cards of that plan shrink
+    to one line "Superseded by revision N" (click to view them read-only). A step the
+    agent interrupted for the revision shows "Paused – revision awaiting approval" and
+    continues once you approve. Rejecting such a mid-step revision (**Reject revision**)
+    does not end the plan: it returns to the previous revision, paused, with no edit lost.
   - A per-turn change budget (Settings › Editing), a **Changes** panel with the change log,
     before/after highlights in the viewer, and undo per turn or plan step.
   - Part preferences (e.g. passives in 0805) and part research before active parts.

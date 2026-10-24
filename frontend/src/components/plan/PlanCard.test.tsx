@@ -23,6 +23,7 @@ const step = (idx: number, over: Partial<PlanStepDTO> = {}): PlanStepDTO => ({
   verification: 'ERC clean',
   status: 'pending',
   changeCount: 0,
+  used: 0,
   checkpointId: null,
   summary: null,
   failure: null,
@@ -38,6 +39,8 @@ const plan = (over: Partial<PlanDTO> = {}): PlanDTO => ({
   status: 'proposed',
   revision: 1,
   pauseReason: null,
+  reviseReason: null,
+  previousRevision: null,
   steps: [step(1), step(2)],
   createdAt: '2026-10-18T10:00:00.000Z',
   updatedAt: '2026-10-18T10:00:00.000Z',
@@ -288,6 +291,66 @@ describe('PlanCard', () => {
   it('a load failure is shown', async () => {
     setup(plan(), { fetchOpen: async () => null, fetchPlan: async () => Promise.reject(new Error('HTTP 500')) });
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not load the plan: HTTP 500');
+  });
+
+  it('paused step shows "Paused – revision awaiting approval" and the reason', async () => {
+    setup(
+      plan({
+        revision: 2,
+        previousRevision: 1,
+        reviseReason: 'The LED needs <b>a second</b> resistor',
+        steps: [step(1, { status: 'done', changeCount: 2 }), step(2, { status: 'paused', used: 2, expectedChanges: 5 })],
+      }),
+    );
+    const items = await screen.findAllByRole('listitem');
+    expect(within(items[1]!).getByText('Paused – revision awaiting approval')).toBeInTheDocument();
+    // Agent-authored: plain text, never markup.
+    expect(within(items[1]!).getByText('The LED needs <b>a second</b> resistor')).toBeInTheDocument();
+    expect(within(items[1]!).getByText('2 of 5 changes used')).toBeInTheDocument();
+    expect(items[1]!.querySelector('b')).toBeNull();
+  });
+
+  it('a paused step of a paused plan just shows "Paused"', async () => {
+    setup(
+      plan({
+        status: 'paused',
+        pauseReason: 'interrupted',
+        reviseReason: 'old reason',
+        steps: [step(1, { status: 'paused', used: 1 })],
+      }),
+    );
+    const item = (await screen.findAllByRole('listitem'))[0]!;
+    expect(within(item).getByText('Paused')).toBeInTheDocument();
+    expect(within(item).queryByText(/awaiting approval/)).toBeNull();
+    expect(within(item).queryByText('old reason')).toBeNull();
+  });
+
+  it('rejecting a mid-step revision says it returns to the previous revision', async () => {
+    const { deps } = setup(plan({ revision: 3, previousRevision: 2, steps: [step(1, { status: 'paused' })] }));
+    const reject = await screen.findByRole('button', { name: 'Reject revision' });
+    expect(screen.getByText(/Rejecting returns the plan to revision 2, paused/)).toBeInTheDocument();
+    fireEvent.click(reject);
+    expect(deps.event).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Really reject revision?' }));
+    await waitFor(() => expect(deps.event).toHaveBeenCalledWith(PID, PLAN, 'reject'));
+  });
+
+  it('a revision without a previous revision keeps the plain Reject', async () => {
+    setup(plan({ revision: 2 }));
+    expect(await screen.findByRole('button', { name: 'Reject' })).toBeInTheDocument();
+    expect(screen.queryByText(/Rejecting returns/)).toBeNull();
+  });
+
+  it('read-only shows the plan without action buttons', async () => {
+    const ws = new FakeWsClient();
+    const plans = createPlansStore(ws, { fetchOpen: async () => plan(), fetchPlan: vi.fn(), event: vi.fn(), rollback: vi.fn() });
+    render(
+      <PlansStoreContext.Provider value={plans}>
+        <PlanCard projectId={PID} planId={PLAN} readOnly />
+      </PlansStoreContext.Provider>,
+    );
+    expect(await screen.findByRole('heading', { name: 'Add a status LED' })).toBeInTheDocument();
+    expect(screen.queryAllByRole('button')).toHaveLength(0);
   });
 
   it('phone layout: buttons full width', async () => {

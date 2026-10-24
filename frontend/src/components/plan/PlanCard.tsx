@@ -37,6 +37,7 @@ const PAUSE_REASON: Record<string, string> = {
   external_change: 'the design files were changed outside CopperChat',
   server_restart: 'the server restarted',
   rolled_back: 'it was rolled back',
+  revision_rejected: 'its revision was rejected',
 };
 
 /** Full width on phones (the card sits in the chat stream), natural width from `sm` up. */
@@ -80,12 +81,21 @@ function ArmedButton({
   );
 }
 
+export interface PlanCardProps {
+  projectId: string;
+  planId: string;
+  /** No action buttons: the expanded view of a superseded card (spec §9.4). */
+  readOnly?: boolean;
+  /** One plain-text line under the header, e.g. the agent's reason of a revision. */
+  note?: string | null;
+}
+
 /**
  * The plan card in the chat (spec §7.3): title, summary, numbered steps with their status and,
- * once finished, change count, checkpoint and ERC; buttons by plan state. Rendered for notice
- * rows with `metadata.action === 'plan'`; follows `plan-updated` frames through the plans store.
+ * once finished, change count, checkpoint and ERC; buttons by plan state. Rendered for plan
+ * notice rows (see PlanNotice); follows `plan-updated` frames through the plans store.
  */
-export function PlanCard({ projectId, planId }: { projectId: string; planId: string }) {
+export function PlanCard({ projectId, planId, readOnly = false, note = null }: PlanCardProps) {
   const store = usePlansStore();
   const plan = usePlans((s) => (s.projectId === projectId ? s.byId[planId] : undefined));
   const pending = usePlans((s) => s.pending[planId]);
@@ -118,6 +128,10 @@ export function PlanCard({ projectId, planId }: { projectId: string; planId: str
   // A new revision (or another plan) disarms a pending "Really …?", also when the status stays.
   const armKey = `${plan.id}:${plan.revision}`;
   const reason = plan.pauseReason ? (PAUSE_REASON[plan.pauseReason] ?? plan.pauseReason.replaceAll('_', ' ')) : null;
+  const proposed = plan.status === 'proposed';
+  // A mid-step revision: rejecting it falls back to the previous revision instead of ending the plan.
+  const fallback = proposed ? plan.previousRevision : null;
+  const actions = !readOnly;
   return (
     <section
       aria-labelledby={`plan-${plan.id}-title`}
@@ -133,12 +147,13 @@ export function PlanCard({ projectId, planId }: { projectId: string; planId: str
           {STATUS_LABEL[plan.status]}
         </span>
       </header>
+      {note && <p className="mt-1 whitespace-pre-wrap break-words text-xs text-muted">{note}</p>}
       {plan.summary && <p className="mt-1 whitespace-pre-wrap break-words">{plan.summary}</p>}
       {plan.status === 'paused' && reason && <p className="mt-1 text-xs text-warning">Paused because {reason}.</p>}
       {plan.status === 'approved' && <p className="mt-1 text-xs text-muted">Waiting for the agent to start.</p>}
       <ol className="mt-2 divide-y divide-border">
         {plan.steps.map((st) => (
-          <PlanStepRow key={st.idx} projectId={projectId} step={st} />
+          <PlanStepRow key={st.idx} projectId={projectId} step={st} awaitingRevision={proposed} reviseReason={plan.reviseReason} />
         ))}
       </ol>
       {error && (
@@ -146,20 +161,33 @@ export function PlanCard({ projectId, planId }: { projectId: string; planId: str
           {error.message}
         </p>
       )}
-      {plan.status === 'proposed' && (
-        <div className="mt-2 flex flex-col gap-2 sm:flex-row">
-          <button type="button" disabled={busy} onClick={() => void s.approve(plan.id)} className={PRIMARY}>
-            {pending === 'approve' ? 'Approving…' : 'Approve'}
-          </button>
-          <ArmedButton key={armKey} label="Reject" disabled={busy} className={SECONDARY} onConfirm={() => void s.reject(plan.id)} />
-        </div>
+      {actions && proposed && (
+        <>
+          <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+            <button type="button" disabled={busy} onClick={() => void s.approve(plan.id)} className={PRIMARY}>
+              {pending === 'approve' ? 'Approving…' : 'Approve'}
+            </button>
+            <ArmedButton
+              key={armKey}
+              label={fallback !== null ? 'Reject revision' : 'Reject'}
+              disabled={busy}
+              className={SECONDARY}
+              onConfirm={() => void s.reject(plan.id)}
+            />
+          </div>
+          {fallback !== null && (
+            <p className="mt-1 text-xs text-muted">
+              Rejecting returns the plan to revision {fallback}, paused at the interrupted step; no edit is lost.
+            </p>
+          )}
+        </>
       )}
-      {plan.status === 'approved' && (
+      {actions && plan.status === 'approved' && (
         <div className="mt-2 flex flex-col gap-2 sm:flex-row">
           <ArmedButton key={armKey} label="Abort" disabled={busy} className={DANGER} onConfirm={() => void s.abort(plan.id)} />
         </div>
       )}
-      {plan.status === 'running' && (
+      {actions && plan.status === 'running' && (
         <div className="mt-2 flex flex-col gap-2 sm:flex-row">
           <button
             type="button"
@@ -171,7 +199,7 @@ export function PlanCard({ projectId, planId }: { projectId: string; planId: str
           </button>
         </div>
       )}
-      {plan.status === 'paused' && (
+      {actions && plan.status === 'paused' && (
         <div className="mt-2 flex flex-col gap-2 sm:flex-row">
           <button type="button" disabled={busy} onClick={() => void s.resume(plan.id)} className={PRIMARY}>
             {pending === 'resume' ? 'Resuming…' : 'Resume'}
@@ -182,7 +210,7 @@ export function PlanCard({ projectId, planId }: { projectId: string; planId: str
           <ArmedButton key={armKey} label="Abort" disabled={busy} className={DANGER} onConfirm={() => void s.abort(plan.id)} />
         </div>
       )}
-      {confirm && (
+      {actions && confirm && (
         <ConfirmRollback
           plan={plan}
           onCancel={() => setConfirm(false)}

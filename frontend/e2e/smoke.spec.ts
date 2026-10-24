@@ -165,11 +165,11 @@ test('mocked API: plan card propose → approve → done in the chat', async ({ 
   const PLAN = 'f'.repeat(32);
   const step = (idx: number, status: string, over: Record<string, unknown> = {}) => ({
     idx, title: `Step ${idx}`, intent: '', expectedChanges: 2, touches: { refs: [], nets: [] }, verification: '',
-    status, changeCount: 0, checkpointId: null, summary: null, failure: null, erc: null, ...over,
+    status, changeCount: 0, used: 0, checkpointId: null, summary: null, failure: null, erc: null, ...over,
   });
   const plan = (status: string, steps: unknown[], updatedAt: string) => ({
     id: PLAN, projectId: PID, conversationId: CID, title: 'Add a status LED', summary: 'R and LED on GPIO2.', status, revision: 1,
-    pauseReason: null, steps, createdAt: '2026-10-18T10:00:00.000Z', updatedAt,
+    pauseReason: null, reviseReason: null, previousRevision: null, steps, createdAt: '2026-10-18T10:00:00.000Z', updatedAt,
   });
   let current = plan('proposed', [step(1, 'pending'), step(2, 'pending')], '2026-10-18T10:00:00.000Z');
   let approves = 0;
