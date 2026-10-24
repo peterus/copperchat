@@ -256,7 +256,6 @@ class World:
         (a hierarchical label of that name joins them)."""
         from copperchat.kicad_tools import access
         from copperchat.kicad_tools.edit.geometry import mm_point
-        from copperchat.kicad_tools.edit.scene import sheet_api
 
         cached = self._pin_nets.get((sheet.path, text))
         if cached is not None:
@@ -265,10 +264,8 @@ class World:
         parent = self.sheets.get(parent_path)
         if parent is None:
             return set()
-        if parent.path not in self._sheet_symbols:
-            self._sheet_symbols[parent.path] = list(sheet_api(self.h, parent).get_sheet_symbols())
         out: set[str] = set()
-        for symbol in self._sheet_symbols[parent.path]:
+        for symbol in self.sheet_symbol_list(parent):
             if access.kiid(symbol) != symbol_uuid:
                 continue
             for pin in symbol.pins:
@@ -323,23 +320,31 @@ class World:
                 return pin
         return self.pin(spec)
 
-    def sheet_pin(self, spec: str) -> PinEnd | None:
+    def sheet_pin(self, spec: str, *, one_item: bool = False) -> PinEnd | None:
         """'<sheet name>.<pin name>' as a pseudo pin end (see `SheetPinInfo`); None when
         no sheet instance has a name `spec` starts with (the longest name wins: sheet
-        names may contain dots)."""
+        names may contain dots). `one_item`: a sheet symbol in a parent file used by
+        several instances is one item (sch_move / sch_delete): its first instance."""
         named = [r for r in self.sheets.values() if spec.startswith(f"{r.name}.") and r.name]
         named = [r for r in named if r.path.rpartition("/")[0] in self.sheets]  # not the root
         if not named:
             return None
         longest = max(len(r.name) for r in named)
         named = [r for r in named if len(r.name) == longest]
+        if one_item:
+            items: dict[tuple[str, str], SheetRef] = {}
+            for r in named:
+                parent, _, uid = r.path.rpartition("/")
+                items.setdefault((self.sheets[parent].file, uid), r)
+            named = list(items.values())
         name, wanted = named[0].name, spec[longest + 1 :]
         if len(named) > 1:
             places = sorted(self.sheets[r.path.rpartition("/")[0]].human_path for r in named)
             raise StructuredToolError(
                 f"Sheet pin {short(spec)} is ambiguous",
                 f"{len(named)} sheet symbols are named {name} (on {', '.join(places[:6])})",
-                "Rename one of the sheets, or connect inside the sheet with labels.",
+                "Pass the sheet pin's UUID (sch_list_items types=['sheet_pin']), rename "
+                "one of the sheets, or connect inside the sheet with labels.",
                 code="ambiguous_pin",
                 details={"candidates": places[:MAX_CANDIDATES], "total": len(places)},
             )
@@ -376,26 +381,37 @@ class World:
         """A sheet pin by its UUID as a pseudo pin end; None when `spec` is no UUID or no
         sheet pin has it. KiCad's GetItemsById skips sheet pins: the sheet symbols of each
         sheet file are scanned, and only the sheet holding the pin is read in full."""
-        from copperchat.kicad_tools.edit.scene import sheet_api
+        from copperchat.kicad_tools.edit.scene import _iter_sheets
 
         uid = spec.strip().lower()
         if not UUID_RE.fullmatch(uid):
             return None
         files: set[str] = set()
-        for sheet in self.sheets.values():
-            if sheet.file in files:
+        for inst, sheet in _iter_sheets(self.h):  # one hierarchy walk for the scan
+            if sheet.file in files or sheet.path not in self.sheets:
                 continue
             files.add(sheet.file)
             self.check_time("item lookup")
-            if sheet.path not in self._sheet_symbols:
-                self._sheet_symbols[sheet.path] = list(sheet_api(self.h, sheet).get_sheet_symbols())
-            if any(access.kiid(p) == uid for s in self._sheet_symbols[sheet.path] for p in s.pins):
+            symbols = self.sheet_symbol_list(sheet, inst)
+            if any(access.kiid(p) == uid for s in symbols for p in s.pins):
                 info = self.scene(sheet).sheet_pins.get(uid)
                 if info is None:
                     return None
                 self._sheet_pin_ends = {**self._sheet_pin_ends, info.pin.key: info}
                 return info.pin
         return None
+
+    def sheet_symbol_list(self, sheet: SheetRef, inst: Any = None) -> list[Any]:
+        """The sheet symbols on `sheet` (read once per world; `inst`: its hierarchy node
+        when the caller already has it, saving a hierarchy walk). Copy before changing."""
+        from copperchat.kicad_tools.edit.scene import sheet_api
+
+        if sheet.path not in self._sheet_symbols:
+            api = (
+                self.h.schematic().for_sheet(inst) if inst is not None else sheet_api(self.h, sheet)
+            )
+            self._sheet_symbols[sheet.path] = list(api.get_sheet_symbols())
+        return self._sheet_symbols[sheet.path]
 
     def sheet_pin_info(self, key: PinKey) -> SheetPinInfo | None:
         return self._sheet_pin_ends.get(key)

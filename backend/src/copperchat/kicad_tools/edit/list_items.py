@@ -135,6 +135,11 @@ def _list(
         name = clean(nets.get((path, uid)))
         return name if name is not None and members[name] > 1 else None
 
+    def bridge(name: str | None) -> str | None:
+        """A sheet pin and its child's hierarchical label alone (no symbol pin, nothing
+        else on the net) connect nothing either."""
+        return None if name is None or (name not in netlist.nets and members[name] <= 2) else name
+
     def pin_net(n: Netlist, key: Any) -> str | None:
         return clean(n.net_of(key))
 
@@ -154,6 +159,7 @@ def _list(
     for lb in scene.labels.values():
         n = item_net(lb.uuid)
         kind = LABEL_TYPE.get(lb.kind, lb.kind)
+        n = bridge(n) if kind == "hier_label" else n
         add(_point(lb.uuid, kind, human, lb.at, text=lb.text, net=n), [lb.text], {n}, [lb.at])
     for w in scene.wires.values():
         n = item_net(w.uuid)
@@ -171,7 +177,7 @@ def _list(
         add(_point(uid, "no_connect", human, at, net=n), [], {n}, [at])
     refs = {r.path: r for r in sheet_refs(h)}
     sp_nets = _sheet_pin_nets(h, scene, nets, refs) if types & {"sheet_pin", "sheet"} else {}
-    sp_nets = {u: clean(x) for u, x in sp_nets.items()}
+    sp_nets = {u: bridge(clean(x)) for u, x in sp_nets.items()}
     nets_of_sheet: dict[str, set[str | None]] = {}
     for u, i in scene.sheet_pins.items():
         nets_of_sheet.setdefault(i.sheet_uuid, set()).add(sp_nets.get(u))

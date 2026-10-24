@@ -215,6 +215,48 @@ async def test_move_two_sheet_pins_one_pitch_together(
     assert pins["Power.GND"]["at"] == pytest.approx((gx, gy + d))
 
 
+async def test_move_two_wired_sheet_pins_one_pitch_together(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    """VIN lands on the end of GND's stub, which GND carries away in the same call."""
+    s = blank_session
+    ctx = edit_ctx(s, edit_db)
+    await _power(s, ctx, ("VIN", "left"), ("GND", "left"))
+    pins = await _pins(s)
+    (x, vy), (_, gy) = pins["Power.VIN"]["at"], pins["Power.GND"]["at"]
+    items = []
+    for name, y in (("VIN", vy), ("GND", gy)):
+        items += [wire((x, y), (x - 7.62, y)), local_label(f"{name}_EXT", (x - 7.62, y))]
+    await _commit(s, "/", *items)
+    before = await state(s)
+    d = round(gy - vy, 4)
+    out, err = await call_tool(ctx, "sch_move", items=["Power.VIN", "Power.GND"], by=[0, d])
+    assert not err, out
+    assert out["connectivity_verified"] is True and out.get("carried_wires") == 2, out
+    pins = await _pins(s)
+    assert pins["Power.VIN"]["at"] == pytest.approx((x, gy))
+    assert (await state(s))[1] == before[1]  # partition unchanged
+
+
+async def test_move_wired_sheet_pin_to_other_edge_refused_when_wire_cannot_follow(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    """A side change drags the pin's wire (no rigid carry). Dragged onto the top edge, the
+    wire would cross the sheet box and run along its edge: refused, nothing written."""
+    s = blank_session
+    ctx = edit_ctx(s, edit_db)
+    (added,) = await _power(s, ctx, ("VIN", "left"))
+    x, y = added["pin"]["at_mm"]
+    await _commit(s, "/", wire((x, y), (x - 7.62, y)), local_label("VIN_EXT", (x - 7.62, y)))
+    before = await state(s)
+    out, err = await call_tool(ctx, "sch_move", items=["Power.VIN"], to=[x + 7.62, SHEET_AT[1]])
+    assert err and out["error"]["code"] == "overlap", out
+    assert "dragging the wire" in out["error"]["what"]
+    assert any("sheet Power" in p for p in out["error"]["details"]["problems"]), out
+    assert await state(s) == before
+    assert (await _pins(s))["Power.VIN"]["at"] == (x, y)
+
+
 async def test_move_sheet_pin_by_name_to_other_edge_changes_side(
     blank_session: KicadSession, edit_db: Database
 ) -> None:

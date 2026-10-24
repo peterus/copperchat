@@ -205,6 +205,27 @@ async def test_get_pin_wire_to_own_other_pin_is_no_stub(
         assert pin["stub_end"] == [] and pin["stub_wires"] == [], pin
 
 
+async def test_list_items_unwired_sheet_pin_net_null(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    """A sheet pin and its child label with nothing attached: KiCad still names a net
+    ('/Power/VIN'), but it connects nothing."""
+    s = blank_session
+    ctx = edit_ctx(s, edit_db)
+    out, err = await call_tool(
+        ctx, "sch_add_sheet", name="Power", file="power.kicad_sch", at=list(SHEET_AT)
+    )
+    assert not err, out
+    out, err = await call_tool(
+        ctx, "sch_add_sheet_pin", sheet="/Power/", name="VIN", direction="input"
+    )
+    assert not err, out
+    (pin,) = (await _items(ctx, types=["sheet_pin"]))["items"]
+    assert pin["net"] is None, pin
+    (label,) = (await _items(ctx, sheet="/Power/", types=["hier_label"]))["items"]
+    assert label["net"] is None, label
+
+
 async def test_get_pin_connected_includes_sheet_pin(
     blank_session: KicadSession, edit_db: Database
 ) -> None:

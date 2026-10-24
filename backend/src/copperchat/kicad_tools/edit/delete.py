@@ -448,6 +448,7 @@ def plan_delete(
                     f"{t.pin.pin.name} stays (with_attached is false)"
                 )
                 continue
+            world.check_time(tool)
             dead, why = _child_labels(world, t, dead_pin_ids, dead_sheet_ids)
             notes += why
             for child, uid in dead:
@@ -510,13 +511,16 @@ def _child_labels(
     if not labels:
         return [], []
     users = []  # other sheet symbols of the child file that still have a pin `name`
+    seen = {(t.sheet.file, info.sheet_uuid), *dead_sheets}  # (parent file, sheet symbol)
     for r in world.sheets.values():
         parent_path, _, sheet_uuid = r.path.rpartition("/")
         parent = world.sheets.get(parent_path)
         if r.file != child.file or parent is None:
             continue
-        if (parent.file, sheet_uuid) in {(t.sheet.file, info.sheet_uuid), *dead_sheets}:
-            continue
+        if (parent.file, sheet_uuid) in seen:
+            continue  # this one, a deleted one, or one already read through an instance
+        seen.add((parent.file, sheet_uuid))
+        world.check_time("sch_delete")
         if any(
             p.sheet_uuid == sheet_uuid
             and p.pin.name == name

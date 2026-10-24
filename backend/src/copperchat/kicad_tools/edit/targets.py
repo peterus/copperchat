@@ -23,7 +23,6 @@ from copperchat.kicad_tools.edit.scene import (
     MAX_CANDIDATES,
     SheetPinInfo,
     SymbolInfo,
-    sheet_api,
     short,
 )
 from copperchat.kicad_tools.filtering import natural_key
@@ -78,9 +77,7 @@ def sheet_symbols(world: World, sheet: SheetRef) -> dict[str, Any]:
     """Sheet symbols on `sheet` by uuid (cached on the world)."""
     cache: dict[str, dict[str, Any]] = world.__dict__.setdefault("_e6_sheet_symbols", {})
     if sheet.path not in cache:
-        cache[sheet.path] = {
-            access.kiid(s): s for s in sheet_api(world.h, sheet).get_sheet_symbols()
-        }
+        cache[sheet.path] = {access.kiid(s): s for s in world.sheet_symbol_list(sheet)}
     return cache[sheet.path]
 
 
@@ -195,7 +192,7 @@ def _sheet_pin_by_name(world: World, spec: str) -> Target | None:
     reference beats a sheet name); None when no sheet name matches."""
     if any(s.ref == spec.partition(".")[0] for s in world.symbols):
         return None
-    pin = world.sheet_pin(spec)
+    pin = world.sheet_pin(spec, one_item=True)
     if pin is None:
         return None
     info = world.sheet_pin_info(pin.key)

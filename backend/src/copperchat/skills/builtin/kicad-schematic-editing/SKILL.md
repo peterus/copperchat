@@ -117,7 +117,9 @@ UUIDs between tool calls only for wires, labels, junctions, no-connects and shee
   next to the pin. An unwired hierarchical label is an ERC error.
 - **Repairing a sheet pin**: `sch_move(items=["<sheet>.<pin>"], to=[x, y])` moves it
   along its edge (its own stub travels with it) or onto another edge (`to` within 2.54 mm
-  of that edge; the side and text orientation follow, its wires are dragged). Pins stay
+  of that edge; the side and text orientation follow, its wires are dragged; if they
+cannot follow without crossing the sheet, it is refused: `sch_delete` the wire, move the
+pin, then `sch_connect` again). Pins stay
   2.54 mm apart and one pitch clear of the corners; rotation / mirror is refused for sheet
   pins. `sch_delete(items=["<sheet>.<pin>"])` removes the pin and its own stub; the
   sub-sheet's hierarchical label of that name goes too if it is connected to nothing and
