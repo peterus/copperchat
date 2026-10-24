@@ -405,3 +405,64 @@ async def test_unannotated_parts_count_one_each(
     out, err = await call_tool(edit_ctx(s, edit_db), "sch_delete", items=uids)
     assert err and out["error"]["code"] == "plan_required"
     assert await state(s) == before
+
+
+# -- #13 (spec §9.1): wires, junctions, labels and no-connects cost 1 per net together
+
+
+async def _t_net(ctx: Any, y: float) -> dict[str, Any]:
+    """R1-R2 joined by one wire, R3 and R4 T-joining it (two junctions), a label MID<y>
+    on the wire: one net."""
+    r1 = await _place(ctx, "Device:R", [76.2, y], 90)
+    r2 = await _place(ctx, "Device:R", [152.4, y], 90)
+    r3 = await _place(ctx, "Device:R", [101.6, y + 12.7])
+    r4 = await _place(ctx, "Device:R", [127.0, y + 12.7])
+    a, b = await _pin_at(ctx, f"{r1}.2"), await _pin_at(ctx, f"{r2}.1")
+    await _ok(ctx, "sch_add_wire", points=[a, b])
+    for r in (r3, r4):
+        top = await _pin_at(ctx, f"{r}.1")
+        await _ok(ctx, "sch_add_wire", points=[top, [top[0], a[1]]])
+    await _ok(ctx, "sch_add_label", net=f"MID{int(y)}", at=[f"{r1}.2"])
+    return {"refs": [r1, r2, r3, r4], "y": a[1]}
+
+
+def _net_items(sc: Any) -> list[str]:
+    return [*sc.wires, *sc.junctions, *sc.labels]
+
+
+async def test_delete_wire_run_with_junctions_and_label_costs_one(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    s = blank_session
+    await s.ensure_symbol_libraries()
+    await _t_net(edit_ctx(s, edit_db), 76.2)
+    sc = await _scene(s)
+    assert len(sc.wires) >= 3 and len(sc.junctions) >= 2 and len(sc.labels) >= 1
+    cs = await prepare_delete(edit_ctx(s), {"items": _net_items(sc), "with_attached": False})
+    assert cs.logical.changes == 1
+
+
+async def test_delete_items_on_two_nets_costs_two(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    s = blank_session
+    await s.ensure_symbol_libraries()
+    ctx = edit_ctx(s, edit_db)
+    await _t_net(ctx, 50.8)
+    await _t_net(ctx, 101.6)
+    sc = await _scene(s)
+    assert len(sc.junctions) >= 4
+    cs = await prepare_delete(edit_ctx(s), {"items": _net_items(sc), "with_attached": False})
+    assert cs.logical.changes == 2
+
+
+async def test_delete_symbol_and_its_net_items(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    s = blank_session
+    await s.ensure_symbol_libraries()
+    c = await _t_net(edit_ctx(s, edit_db, run_id="run-setup"), 76.2)
+    sc = await _scene(s)
+    items = [c["refs"][2], *sc.junctions, *sc.labels]
+    cs = await prepare_delete(edit_ctx(s), {"items": items, "with_attached": False})
+    assert cs.logical.changes == 2  # the symbol 1 + its net's junctions and label 1

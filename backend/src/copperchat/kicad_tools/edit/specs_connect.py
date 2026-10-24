@@ -395,7 +395,7 @@ TOOL_SPECS: list[ToolSpec] = [
         "sheet symbol's edge or within 2.54 mm parallel to it; a wire touches a sheet edge "
         "only perpendicular, ending on a sheet pin. Existing wires that break it are "
         "named under warnings, not refused. "
-        "Verified against KiCad's netlist. One logical change.",
+        "Verified against KiCad's netlist. Budget: 1 logical change.",
         _obj(
             {
                 "from": {
@@ -425,7 +425,7 @@ TOOL_SPECS: list[ToolSpec] = [
         "the part; at the free end of an existing wire when the pin is wired), or one label "
         "exactly at a point [x, y] that touches a wire or pin end. All pins or none: a pin "
         "without room fails the call before anything is written. Rail names (GND, +3V3 ...) "
-        "are refused: use sch_add_power. One logical change per pin.",
+        "are refused: use sch_add_power. Budget: 1 logical change per pin.",
         _obj(
             {
                 "net": {"type": "string", "maxLength": 64},
@@ -459,7 +459,7 @@ TOOL_SPECS: list[ToolSpec] = [
         "Attach a power symbol from the 'power' library to each pin (stub + symbol, supplies "
         "pointing up, grounds down; from the free stub end when the pin is wired). "
         "net='PWR_FLAG' places power flags. symbol overrides the library symbol (the net "
-        "keeps the given name). All pins or none. One logical change per pin.",
+        "keeps the given name). All pins or none. Budget: 1 logical change per pin.",
         _obj(
             {
                 "net": {"type": "string", "maxLength": 64, "description": "e.g. 'GND', '+3V3'."},
@@ -478,7 +478,7 @@ TOOL_SPECS: list[ToolSpec] = [
     edit_spec(
         "sch_no_connect",
         "Mark free pins as intentionally unconnected (no-connect marker on the pin end). "
-        "Refused for a connected pin. All pins or none. One logical change per pin.",
+        "Refused for a connected pin. All pins or none. Budget: 1 logical change per pin.",
         _obj({"pins": {**_PINS, "description": "['REF.PIN', ...]"}}, ["pins"]),
         prepare_no_connect,
         _apply,
@@ -508,7 +508,7 @@ TOOL_SPECS: list[ToolSpec] = [
         "sheet symbol's edge or within 2.54 mm parallel to it; a wire touches a sheet edge "
         "only perpendicular, ending on a sheet pin. Existing wires that break it are "
         "named under warnings, not refused. "
-        "One logical change.",
+        "Budget: 1 logical change.",
         _obj(
             {
                 "wires": {

@@ -188,7 +188,8 @@ TOOL_SPECS: list[ToolSpec] = [
         "by=[dx, dy] (mm, snapped to 1.27 mm); rotation (absolute, degrees CCW) / mirror "
         "alone rotate in place. Refused before writing when a part would overlap (the "
         "nearest free position is suggested) or a dragged wire would touch another net; "
-        "verified: the netlist stays identical. One logical change per moved item.",
+        "verified: the netlist stays identical. Budget: 1 logical change per moved symbol, "
+        "label or sheet; carried stubs and their end items are free.",
         _obj(
             {
                 "items": {**_ITEMS, "description": "['R5', '<label uuid>', 'sheet:power']"},
@@ -209,8 +210,9 @@ TOOL_SPECS: list[ToolSpec] = [
         "symbol; its file stays on disk). with_attached (default true) also removes what only "
         "served the deleted items: stub wires (cut back to a T where they branch), labels, "
         "junctions, no-connects and power symbols attached only to them; wires shared with "
-        "other pins stay. Reports nets_changed. One logical change per symbol, label or "
-        "sheet; at most 3 symbols that existed before the turn per turn without a plan.",
+        "other pins stay. Reports nets_changed. Budget: 1 logical change per symbol (all "
+        "units) or sheet, plus 1 per net for all wires, junctions, labels and no-connects "
+        "listed on it; at most 3 symbols that existed before the turn per turn without a plan.",
         _obj(
             {
                 "items": {**_ITEMS, "description": "['R5', '#PWR03', '<uuid>', 'sheet:power']"},

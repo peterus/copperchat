@@ -789,7 +789,7 @@ TOOL_SPECS: list[ToolSpec] = [
         "sch_find_space first). Fields are placed readable. Returns placed: ref, uuid, "
         "box_mm and every pin end (at_mm, direction) for wiring, and notes (part "
         "preference deviations, footprint unverified, active part without notes) to "
-        "relay to the user. Power symbols: use sch_add_power. One logical change.",
+        "relay to the user. Power symbols: use sch_add_power. Budget: 1 logical change.",
         _obj(
             {
                 "lib_id": {"type": "string", "maxLength": MAX_LIB_ID},
@@ -815,7 +815,7 @@ TOOL_SPECS: list[ToolSpec] = [
         '"Manufacturer": ...} - standard or custom field names as keys. Also dnp, '
         "exclude_from_bom, exclude_from_board; remove_fields removes custom fields. New "
         "custom fields are hidden at the symbol; existing fields keep their position. "
-        "Connectivity is verified unchanged. One logical change.",
+        "Connectivity is verified unchanged. Budget: 1 logical change.",
         _obj(
             {
                 "ref": {"type": "string", "maxLength": 32},
@@ -843,7 +843,7 @@ TOOL_SPECS: list[ToolSpec] = [
         "placed this turn), 'sheet' (needs sheet), 'all'. Multi-unit parts keep one "
         "reference (units sharing a reference, lib_id and sheet; unannotated units are "
         "numbered one by one, so give the units of a new multi-unit part its reference "
-        "when placing them). One logical change per renamed reference.",
+        "when placing them). Budget: 1 logical change per renamed reference.",
         _obj(
             {
                 "scope": {"type": "string", "enum": ["new", "sheet", "all"]},
