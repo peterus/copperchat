@@ -164,7 +164,7 @@ async def apply_add_sheet_pin(ctx: ToolContext, cs: ChangeSet) -> ToolResult:
     out: dict[str, Any] = {"pin": pin, "label": None}
     if label is not None:
         created = [c for c in applied.created if type(c).__name__ == "HierarchicalLabel"]
-        out["label"] = {**label, "uuid": access.kiid(created[0]) if created else None}
+        out["label"] = {**label, "uuid": access.kiid(created[0]) if created else label["uuid"]}
     cs.summary = out
     return edit_result(cs, applied)
 
@@ -208,7 +208,9 @@ TOOL_SPECS: list[ToolSpec] = [
         "net. `sheet` is the sub-sheet (name, path like '/Power/' or page). The pin goes on the "
         "sheet edge (`side`, default left; outputs right), stacked 2.54 mm apart on the grid. "
         "Refused when a pin of that name exists. On a sheet file used twice the label exists "
-        "once; the pin is added to the chosen sheet symbol only. Budget: 1 logical change.",
+        "once (reused: true); the pin is added to the chosen sheet symbol only. Returns the "
+        "pin's and the label's UUIDs (pass the pin UUID or '<sheet name>.<pin name>' to "
+        "sch_move / sch_delete). Budget: 1 logical change.",
         _obj(
             {
                 "sheet": {
