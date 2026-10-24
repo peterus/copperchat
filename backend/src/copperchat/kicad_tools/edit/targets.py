@@ -11,7 +11,6 @@ the other instances (`also_in`) so results can say the change shows there too.
 from __future__ import annotations
 
 import difflib
-import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -19,7 +18,7 @@ from copperchat.errors import StructuredToolError
 from copperchat.kicad_tools import access
 from copperchat.kicad_tools.edit.changeset import SheetRef
 from copperchat.kicad_tools.edit.geometry import Box, Point
-from copperchat.kicad_tools.edit.labels import World
+from copperchat.kicad_tools.edit.labels import UUID_RE, World
 from copperchat.kicad_tools.edit.scene import (
     MAX_CANDIDATES,
     SheetPinInfo,
@@ -29,9 +28,6 @@ from copperchat.kicad_tools.edit.scene import (
 )
 from copperchat.kicad_tools.filtering import natural_key
 
-UUID_RE = re.compile(
-    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
-)
 MAX_ITEMS = 64
 
 Kind = Literal[
@@ -185,13 +181,13 @@ def _sheet_pin_target(world: World, spec: str, sheet: SheetRef, info: SheetPinIn
 
 
 def _sheet_pin_by_uuid(world: World, spec: str) -> Target | None:
-    """KiCad's GetItemsById skips sheet pins: they are looked up in the scenes."""
-    for sheet in first_instances(world):
-        world.check_time("item lookup")
-        info = world.scene(sheet).sheet_pins.get(spec)
-        if info is not None:
-            return _sheet_pin_target(world, spec, sheet, info)
-    return None
+    """KiCad's GetItemsById skips sheet pins: see `World.sheet_pin_by_uuid`."""
+    pin = world.sheet_pin_by_uuid(spec)
+    if pin is None:
+        return None
+    info = world.sheet_pin_info(pin.key)
+    assert info is not None
+    return _sheet_pin_target(world, spec, world.sheet_of(pin), info)
 
 
 def _sheet_pin_by_name(world: World, spec: str) -> Target | None:

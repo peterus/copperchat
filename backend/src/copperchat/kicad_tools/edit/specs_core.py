@@ -74,7 +74,9 @@ def _fmt(p: Point) -> str:
 
 def _stub_end(scene: Scene, at: Point, owner: str) -> tuple[list[dict[str, Any]], list[str]]:
     """The pin's own stub chain (v0.4.1 definition): the items at its far end (no wires)
-    and its wire UUIDs; nothing when the pin has no owned chain."""
+    and its wire UUIDs; nothing when the pin has no owned chain. A chain that ends on a
+    sheet pin is not owned (`owned_stub_chains`), and one that ends on another pin of the
+    same part is a connection, not a stub."""
     chains = owned_stub_chains(scene, [at], moving=[owner])
     if not chains:
         return [], []
@@ -87,12 +89,10 @@ def _stub_end(scene: Scene, at: Point, owner: str) -> tuple[list[dict[str, Any]]
         if kind == "pin":
             sym = scene.symbols[uid]
             if not sym.power:
-                continue  # the chain ends on another pin of the same part
+                return [], []  # it runs to another pin of the same part
             out.append({"uuid": uid, "type": "power", "text": sym.value})
-        elif kind in ("no_connect", "junction"):
+        elif kind == "no_connect":
             out.append({"uuid": uid, "type": kind})
-        elif kind == "sheet_pin":
-            out.append({"uuid": uid, "type": kind, "text": i["pin"]})
         else:
             out.append({"uuid": uid, "type": LABEL_TYPE.get(kind, kind),
                         "text": scene.labels[uid].text})  # fmt: skip

@@ -362,9 +362,10 @@ expected, call `plan_revise` *before* exceeding the budget; explain why."
 - `connected` unchanged (items exactly at the pin), but now also includes sheet
   pins at the point (`Scene.items_at` misses them today).
 - New field `stub_end`: if the pin has an own stub chain (v0.4.1 definition),
-  the items at its far end (labels, power symbols, no-connects, sheet pins) with
+  the items at its far end (labels, power symbols, no-connects) with
   UUID, type, text, position; plus `stub_wires` (UUIDs). Empty / absent when no
-  owned chain.
+  owned chain. (As built: a chain ending on a sheet pin is not owned under the
+  v0.4.1 definition, and a wire to another pin of the same part is no stub.)
 
 ## 11. #19 — one set of text-extent constants
 

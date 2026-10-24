@@ -184,6 +184,27 @@ async def test_get_pin_stub_end_shows_label_at_far_end(
     assert free["stub_end"] == [] and free["stub_wires"] == []
 
 
+async def test_get_pin_wire_to_own_other_pin_is_no_stub(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    """A wire from R1.1 to R1.2 is a connection, not a stub an agent may clear."""
+    s = blank_session
+    ctx = edit_ctx(s, edit_db)
+    await place(s, (R, "R1", (101.6, 101.6), 0))
+    a, err = await call_tool(ctx, "sch_get_pin", pin="R1.1")
+    assert not err, a
+    b, err = await call_tool(ctx, "sch_get_pin", pin="R1.2")
+    assert not err, b
+    (ax, ay), (bx, by) = a["at_mm"], b["at_mm"]
+    out, err = await call_tool(ctx, "sch_add_wire", points=[[ax, ay], [ax + 5.08, ay],
+                                                            [bx + 5.08, by], [bx, by]])  # fmt: skip
+    assert not err, out
+    for p in ("R1.1", "R1.2"):
+        pin, err = await call_tool(ctx, "sch_get_pin", pin=p)
+        assert not err, pin
+        assert pin["stub_end"] == [] and pin["stub_wires"] == [], pin
+
+
 async def test_get_pin_connected_includes_sheet_pin(
     blank_session: KicadSession, edit_db: Database
 ) -> None:

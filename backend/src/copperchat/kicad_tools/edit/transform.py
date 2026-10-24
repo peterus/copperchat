@@ -590,7 +590,10 @@ def plan_move(
         )
     if pin_moves:  # one updated copy per sheet symbol whose pins move
         updates += _moved_sheet_pins(world, sheet, scene, pin_moves)
-        _refuse_pin_landing(world, tool, scene, nets, [m for m in moving if m.sheet_pin])
+        _refuse_pin_landing(
+            world, tool, scene, nets, [m for m in moving if m.sheet_pin],
+            {x["uuid"] for x in plan.moved},
+        )  # fmt: skip
 
     # -- items that travel with moved pins -----------------------------------------------
     along_ids: set[str] = set()
@@ -1081,13 +1084,19 @@ _SIDE_NAMES = {1: "left", 2: "right", 3: "top", 4: "bottom"}  # SheetSide
 
 
 def _refuse_pin_landing(
-    world: World, tool: str, scene: Scene, nets: dict[str, str], moving: list[_Moving]
+    world: World,
+    tool: str,
+    scene: Scene,
+    nets: dict[str, str],
+    moving: list[_Moving],
+    moved: set[str],
 ) -> None:
-    """A moved sheet pin must not land on an item of another net (it would join it)."""
+    """A moved sheet pin must not land on an item of another net (it would join it);
+    items that move away in the same call (`moved`, by uuid) do not count."""
     for m in moving:
         info = scene.sheet_pins[m.sheet_pin or ""]
         for i in scene.items_at(m.new):
-            if i["uuid"] == m.sheet_pin:
+            if i["uuid"] in moved:
                 continue
             if i["kind"] == "pin":
                 net = world.netlist.net_of((scene.sheet.path, i["uuid"], i["pin"]))

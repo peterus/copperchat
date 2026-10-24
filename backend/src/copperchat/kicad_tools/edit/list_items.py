@@ -13,6 +13,7 @@ from copperchat.errors import StructuredToolError
 from copperchat.kicad_session import KicadHandle
 from copperchat.kicad_tools import access
 from copperchat.kicad_tools.access import Netlist
+from copperchat.kicad_tools.edit.changeset import SheetRef
 from copperchat.kicad_tools.edit.geometry import Box, Point, same_point
 from copperchat.kicad_tools.edit.scene import (
     Scene,
@@ -90,11 +91,10 @@ def _text_matcher(text: str | None) -> Callable[[list[str]], bool] | None:
 
 
 def _sheet_pin_nets(
-    h: KicadHandle, scene: Scene, nets: dict[tuple[str, str], str]
+    h: KicadHandle, scene: Scene, nets: dict[tuple[str, str], str], refs: dict[str, SheetRef]
 ) -> dict[str, str | None]:
     """`scene.sheet_pin_net` for every sheet pin, each sub-sheet read once."""
     by_child: dict[str, dict[str, str]] = {}
-    refs = {r.path: r for r in sheet_refs(h)}
     out: dict[str, str | None] = {}
     for uid, info in scene.sheet_pins.items():
         net = nets.get((scene.sheet.path, uid))
@@ -162,12 +162,19 @@ def _list(
     for uid, at in scene.junctions.items():
         n = item_net(uid)
         add(_point(uid, "junction", human, at, net=n), [], {n}, [at])
+    pins_at: dict[tuple[float, float], list[Any]] = {}
+    for pe in scene.all_pins() if scene.no_connects else ():
+        pins_at.setdefault(_grid(pe.at), []).append(pe)
     for uid, at in scene.no_connects.items():
-        on = [p.key for p in scene.all_pins() if same_point(p.at, at)]
+        on = [p.key for p in pins_at.get(_grid(at), []) if same_point(p.at, at)]
         n = next((x for k in on if (x := pin_net(netlist, k)) is not None), None)
         add(_point(uid, "no_connect", human, at, net=n), [], {n}, [at])
-    sp_nets = _sheet_pin_nets(h, scene, nets) if types & {"sheet_pin", "sheet"} else {}
+    refs = {r.path: r for r in sheet_refs(h)}
+    sp_nets = _sheet_pin_nets(h, scene, nets, refs) if types & {"sheet_pin", "sheet"} else {}
     sp_nets = {u: clean(x) for u, x in sp_nets.items()}
+    nets_of_sheet: dict[str, set[str | None]] = {}
+    for u, i in scene.sheet_pins.items():
+        nets_of_sheet.setdefault(i.sheet_uuid, set()).add(sp_nets.get(u))
     for uid, info in scene.sheet_pins.items():
         p, n = info.pin, sp_nets.get(uid)
         address = f"{p.ref}.{p.name}"
@@ -186,7 +193,6 @@ def _list(
             item = _item(s.uuid, "symbol", human, position_mm=list(s.at), ref=s.ref)
             item.update(value=s.value, unit=s.unit)
             add(item, [s.ref, s.value], pnets, [s.at])
-    refs = {r.path: r for r in sheet_refs(h)}
     for uid, box in scene.sheets.items():
         child = refs.get(f"{path}/{uid}")
         name = child.name if child else ""
@@ -194,8 +200,7 @@ def _list(
         item["file"] = child.file if child else ""
         item["size_mm"] = [round(box.width, 4), round(box.height, 4)]
         item["path"] = child.human_path if child else None
-        pins = {sp_nets.get(u) for u, i in scene.sheet_pins.items() if i.sheet_uuid == uid}
-        add(item, [name], pins, [], ("box", box))
+        add(item, [name], nets_of_sheet.get(uid, set()), [], ("box", box))
 
     out: list[dict[str, Any]] = []
     for item, texts, item_nets, points, hit in rows:
@@ -222,6 +227,11 @@ def _list(
         "offset": offset,
         "limit": limit,
     }
+
+
+def _grid(p: Point) -> tuple[float, float]:
+    """A bucket key for points equal up to float noise (`same_point` still decides)."""
+    return (round(p[0], 2), round(p[1], 2))
 
 
 def _item(uid: str, kind: str, sheet: str, **fields: Any) -> dict[str, Any]:

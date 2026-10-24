@@ -330,6 +330,7 @@ def plan_delete(
     attached: dict[str, Pruned] = {}
     notes: list[str] = []
     child_labels: list[str] = []
+    labels_gone: set[tuple[str, str]] = set()  # (child file, label uuid)
     dead_pin_ids = {(t.sheet.file, t.uuid) for t in targets if t.kind == "sheet_pin"}
     dead_sheet_ids = {(t.sheet.file, t.uuid) for t in targets if t.kind == "sheet"}
     for sheet, ts in by_sheet.values():
@@ -450,6 +451,9 @@ def plan_delete(
             dead, why = _child_labels(world, t, dead_pin_ids, dead_sheet_ids)
             notes += why
             for child, uid in dead:
+                if (child.file, uid) in labels_gone:
+                    continue  # pins into instances of one child file: one label
+                labels_gone.add((child.file, uid))
                 deleted_ids.setdefault(child.path, (child, []))[1].append(uid)
                 child_labels.append(uid)
     ops: list[Any] = [Delete(list(dict.fromkeys(u)), sheet=s) for s, u in deleted_ids.values() if u]
@@ -567,6 +571,7 @@ def _logical(
     units: dict[str, set[int]] = {}  # part key -> units counted
     booked: set[str] = set()  # entries of `deleted` (a set: large sheets stay linear)
     item_nets: set[str] = set()  # nets of deleted wires / junctions / labels / NCs
+    dead_sheets = {(t.sheet.file, t.uuid) for t in targets if t.kind == "sheet"}
 
     def part_key(path: str, ref: str, uid: str) -> str:
         # unannotated parts ('R?') are separate parts even with equal references
@@ -633,6 +638,8 @@ def _logical(
                         changes += 1  # refunded by the gate with the placement
                 else:
                     count(sym.uuid, sym.sheet.path, sym.ref, sym.unit)
+        elif t.kind == "sheet_pin" and t.pin and (t.sheet.file, t.pin.sheet_uuid) in dead_sheets:
+            continue  # goes with its sheet symbol
         else:
             changes += 1
     return changes, deleted

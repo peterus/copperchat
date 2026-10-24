@@ -239,8 +239,8 @@ async def prepare_connect(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
         known_ref = any(x.ref == ref for x in world.symbols)
         # '<sheet name>.<pin name>': a sheet pin (sheet names may hold any character);
         # a dotted net name that is no pin of that sheet stays a net ('I2C.SDA')
-        sheet_pin = None
-        if not known_ref:
+        sheet_pin = world.sheet_pin_by_uuid(to)
+        if sheet_pin is None and not known_ref:
             try:
                 sheet_pin = world.sheet_pin(to)
             except StructuredToolError as exc:
@@ -384,7 +384,7 @@ TOOL_SPECS: list[ToolSpec] = [
     edit_spec(
         "sch_connect",
         "Connect a pin to another pin or to a net. A pin is 'REF.PIN' or a sheet pin "
-        "'<sheet name>.<pin name>' on the parent sheet (joins the sub-sheet's net; a "
+        "'<sheet name>.<pin name>' or its UUID on the parent sheet (joins the sub-sheet's net; a "
         "symbol reference wins over a sheet name). to=pin: a computed orthogonal wire "
         "(<= 3 segments, may T-join onto a wire of the target net with a junction); if no "
         "clean route exists, via='auto' falls back to labels (net_name, an existing net "
@@ -400,12 +400,12 @@ TOOL_SPECS: list[ToolSpec] = [
             {
                 "from": {
                     **_PIN,
-                    "description": "Pin 'REF.PIN', e.g. 'C1.1', or sheet pin 'SHEET.PIN'.",
+                    "description": "Pin 'REF.PIN', e.g. 'C1.1', or sheet pin 'SHEET.PIN' / UUID.",
                 },
                 "to": {
                     **_PIN,
                     "description": "Pin 'REF.PIN', sheet pin 'SHEET.PIN' (sheet name and "
-                    "pin name) or a net name like 'VIN'/'GND'.",
+                    "pin name) or UUID, or a net name like 'VIN'/'GND'.",
                 },
                 "via": {"type": "string", "enum": list(_VIA), "default": "auto"},
                 "net_name": {

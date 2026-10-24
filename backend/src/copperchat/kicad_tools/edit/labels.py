@@ -199,6 +199,11 @@ class Planned:
     items: list[Any] = field(default_factory=list)
 
 
+UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+
 class World:
     """One consistent read of the design for `prepare` (inside one session.call)."""
 
@@ -306,8 +311,10 @@ class World:
         return resolve_pin(self.h, spec[:64], symbols=self.symbols)
 
     def endpoint(self, spec: Any) -> PinEnd:
-        """A symbol pin 'REF.PIN' or a sheet pin '<sheet name>.<pin name>' (a symbol
-        reference wins over a sheet name of the same text)."""
+        """A symbol pin 'REF.PIN', or a sheet pin by UUID or as '<sheet name>.<pin name>'
+        (a symbol reference wins over a sheet name of the same text)."""
+        if isinstance(spec, str) and (by_uuid := self.sheet_pin_by_uuid(spec)) is not None:
+            return by_uuid
         if isinstance(spec, str) and not any(
             s.ref == spec.strip().partition(".")[0] for s in self.symbols
         ):
@@ -364,6 +371,31 @@ class World:
             )
         self._sheet_pin_ends = {**self._sheet_pin_ends, hits[0].pin.key: hits[0]}
         return hits[0].pin
+
+    def sheet_pin_by_uuid(self, spec: str) -> PinEnd | None:
+        """A sheet pin by its UUID as a pseudo pin end; None when `spec` is no UUID or no
+        sheet pin has it. KiCad's GetItemsById skips sheet pins: the sheet symbols of each
+        sheet file are scanned, and only the sheet holding the pin is read in full."""
+        from copperchat.kicad_tools.edit.scene import sheet_api
+
+        uid = spec.strip().lower()
+        if not UUID_RE.fullmatch(uid):
+            return None
+        files: set[str] = set()
+        for sheet in self.sheets.values():
+            if sheet.file in files:
+                continue
+            files.add(sheet.file)
+            self.check_time("item lookup")
+            if sheet.path not in self._sheet_symbols:
+                self._sheet_symbols[sheet.path] = list(sheet_api(self.h, sheet).get_sheet_symbols())
+            if any(access.kiid(p) == uid for s in self._sheet_symbols[sheet.path] for p in s.pins):
+                info = self.scene(sheet).sheet_pins.get(uid)
+                if info is None:
+                    return None
+                self._sheet_pin_ends = {**self._sheet_pin_ends, info.pin.key: info}
+                return info.pin
+        return None
 
     def sheet_pin_info(self, key: PinKey) -> SheetPinInfo | None:
         return self._sheet_pin_ends.get(key)

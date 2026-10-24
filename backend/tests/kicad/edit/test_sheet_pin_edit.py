@@ -169,6 +169,52 @@ async def test_move_sheet_pin_drags_a_wire_to_another_part(
     assert (await state(s))[1] == before[1]
 
 
+@pytest.mark.parametrize("pin_end", ["from", "to"])
+async def test_connect_sheet_pin_by_uuid(
+    blank_session: KicadSession, edit_db: Database, pin_end: str
+) -> None:
+    """Spec 5.1: a sheet pin's UUID works as a sch_connect endpoint, on either end."""
+    s = blank_session
+    await s.ensure_symbol_libraries()
+    ctx = edit_ctx(s, edit_db)
+    (added,) = await _power(s, ctx, ("VIN", "left"))
+    x, y = added["pin"]["at_mm"]
+    await place(s, ("Device:R", "R1", (x - 15.24, y), 90))
+    facing = []
+    for p in ("R1.1", "R1.2"):
+        data, err = await call_tool(ctx, "sch_get_pin", pin=p)
+        assert not err, data
+        if data["direction"] == "right":
+            facing.append(p)
+    (r1,) = facing
+    uid = added["pin"]["uuid"]
+    ends = {"from": uid, "to": r1} if pin_end == "from" else {"from": r1, "to": uid}
+    out, err = await call_tool(ctx, "sch_connect", **ends)
+    assert not err, out
+    assert out["connectivity_verified"] is True
+    data, err = await call_tool(ctx, "sch_get_pin", pin=r1)
+    assert not err, data
+    assert data["net"] is not None and not data["free"]
+
+
+async def test_move_two_sheet_pins_one_pitch_together(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    """A pin may land where another pin moving away in the same call sat."""
+    s = blank_session
+    ctx = edit_ctx(s, edit_db)
+    await _power(s, ctx, ("VIN", "left"), ("GND", "left"))
+    pins = await _pins(s)
+    (vx, vy), (gx, gy) = pins["Power.VIN"]["at"], pins["Power.GND"]["at"]
+    assert vx == gx and gy > vy
+    d = round(gy - vy, 4)
+    out, err = await call_tool(ctx, "sch_move", items=["Power.VIN", "Power.GND"], by=[0, d])
+    assert not err, out
+    pins = await _pins(s)
+    assert pins["Power.VIN"]["at"] == pytest.approx((vx, gy))
+    assert pins["Power.GND"]["at"] == pytest.approx((gx, gy + d))
+
+
 async def test_move_sheet_pin_by_name_to_other_edge_changes_side(
     blank_session: KicadSession, edit_db: Database
 ) -> None:
@@ -378,6 +424,7 @@ async def test_delete_both_shared_pins_in_one_call_removes_label(
     )
     assert not err, out
     assert out["logical_changes"] == 2
+    assert out["deleted_summary"]["child_labels"] == 1  # one label of the shared file
     assert label not in await _hier_labels(s, "/ampli_ht_vertical/")
 
 
@@ -391,3 +438,16 @@ async def test_delete_sheet_pin_with_attached_false_keeps_label(
     assert not err, out
     assert "Power.VIN" not in await _pins(s)
     assert added["label"]["uuid"] in await _hier_labels(s, "/Power/")
+
+
+async def test_delete_sheet_with_its_own_pin_costs_one(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    """The pin goes with its sheet symbol: no extra logical change."""
+    s = blank_session
+    ctx = edit_ctx(s, edit_db)
+    await _power(s, ctx, ("VIN", "left"))
+    out, err = await call_tool(ctx, "sch_delete", items=["sheet:Power", "Power.VIN"])
+    assert not err, out
+    assert out["logical_changes"] == 1
+    assert "Power.VIN" not in await _pins(s)
