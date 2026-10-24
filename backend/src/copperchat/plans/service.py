@@ -346,6 +346,11 @@ class PlanService:
         async with self.editing.edit_lock(pid), self.lock(pid):
             plan = await self._open(pid)
             kept = plan.done_count  # finished steps always stay (machine "revise")
+            # A revision needs the user's approval again: what was justified for the
+            # steps it replaces (or the begun step it keeps) is submitted anew.
+            await self.editing.erc_results.forget_steps(
+                [s.id for s in plan.steps if s.status != "done"]
+            )
             specs = validate_steps(steps, offset=kept)
             running = plan.running_step
             if running is not None and state.active_step_id == running.id:
@@ -405,6 +410,8 @@ class PlanService:
             )
             if plan.step(idx).status not in machine.RESUMABLE:  # a fresh begin
                 new = machine.with_step(new, idx, change_base=await self.repo.last_change_id())
+                # Justifications of an earlier attempt of this step (rollback, redo) lapse.
+                await self.editing.erc_results.forget_steps([plan.step(idx).id])
             if new.base_snapshot_id is None:
                 # The pre-plan state: this turn's undo snapshot (taken now if the turn
                 # has none yet), the target of "roll back to start".
@@ -526,6 +533,21 @@ class PlanService:
                     hint,
                 )
             clean = {k: match[k].strip() for k in RULE_KEYS if k in match}
+            if "sheet" in clean:
+                parts = [p for p in clean["sheet"].split("/") if p]
+                # One spelling per sheet: a path is `/a/b/` (root `/`), a bare name stays.
+                clean["sheet"] = (
+                    "/" + "".join(f"{p}/" for p in parts)
+                    if "/" in clean["sheet"]
+                    else clean["sheet"]
+                )
+                if "type" not in clean and "/" in clean["sheet"] and not parts:
+                    raise _invalid(
+                        "Invalid erc_rules",
+                        "a rule on the root sheet alone would justify every new error of a "
+                        "flat design",
+                        "Add a type to the rule, or justify the errors by id.",
+                    )
             out[(clean.get("type"), clean.get("sheet"))] = {
                 "match": clean,
                 "reason": reason.strip(),
@@ -589,10 +611,11 @@ class PlanService:
             stored_ids, stored_rules = await self.editing.erc_results.step_justifications(step.id)
             all_ids = {**stored_ids, **given}
             all_rules = self._merge_rules(stored_rules, given_rules)
-            if len(all_ids) > JUSTIFICATIONS_MAX or len(all_rules) > JUSTIFICATIONS_MAX:
+            if len(all_ids) > 2 * JUSTIFICATIONS_MAX or len(all_rules) > JUSTIFICATIONS_MAX:
                 raise _invalid(
                     "Too many ERC justifications for this step",
-                    f"a step keeps at most {JUSTIFICATIONS_MAX} justifications and rules",
+                    f"a step keeps at most {JUSTIFICATIONS_MAX} rules and "
+                    f"{JUSTIFICATIONS_MAX} justifications of live errors",
                     "Fix the errors, or cover groups with fewer erc_rules.",
                 )
             if given or given_rules:
@@ -600,6 +623,16 @@ class PlanService:
             delta, baseline_id = await self._erc(ctx, plan, step, state)
             new_ids = {str(v.get("id")) for v in delta.new_errors}
             justified = {k: v for k, v in all_ids.items() if k in new_ids}
+            if len(justified) > JUSTIFICATIONS_MAX:
+                raise _invalid(
+                    "Too many ERC justifications for this step",
+                    f"{len(justified)} justified errors (max {JUSTIFICATIONS_MAX} by id)",
+                    "Cover groups of alike errors with erc_rules instead.",
+                )
+            if len(justified) != len(all_ids):  # lapsed ids (fixed or changed) fall away
+                await self.editing.erc_results.put_step_justifications(
+                    step.id, justified, all_rules
+                )
             covered = [0] * len(all_rules)
             open_errors = []
             for v in delta.new_errors:
@@ -614,14 +647,16 @@ class PlanService:
                 {"match": r["match"], "reason": r["reason"], "covered": n}
                 for r, n in zip(all_rules, covered, strict=True)
             ]
+            # Rules that covered nothing are not kept in the result (and the plan card).
+            used_rules = [r for r in rule_report if r["covered"]]
             if open_errors:
                 return await self._refuse_erc(
-                    ctx, plan, step, state, delta, baseline_id, justified, open_errors, rule_report
+                    ctx, plan, step, state, delta, baseline_id, justified, open_errors, used_rules
                 )
             if self.history is None:
                 raise KicadUnavailable("no history service: the checkpoint cannot be taken")
             rid = await self.editing.erc_results.add(
-                pid, str(ctx.run_id), step.id, baseline_id, delta, justified, rule_report
+                pid, str(ctx.run_id), step.id, baseline_id, delta, justified, used_rules
             )
             snap = await take_step_checkpoint(
                 self.history, ctx.project, str(ctx.run_id), step.id, f"Plan step {idx}"
@@ -703,10 +738,10 @@ class PlanService:
         details: dict[str, Any] = {
             "errors": listed,
             "count": len(open_errors),
-            "total": len(open_errors),
+            "total": len(delta.new_errors),
             "counts": {
                 "by_type": dict(Counter(str(v.get("type")) for v in open_errors)),
-                "by_sheet": dict(Counter(str(v.get("sheet")) for v in open_errors)),
+                "by_sheet": dict(Counter(str(v.get("sheet") or "/") for v in open_errors)),
             },
         }
         if len(open_errors) > len(listed):
@@ -907,6 +942,7 @@ class PlanService:
             plan = await self.repo.get(project.id, plan_id)
             new = machine.transition(plan, event, now=utcnow_iso())
             await self._save(new)
+            await self.editing.erc_results.forget_steps([s.id for s in plan.steps])
         if new.is_open:  # a rejected revision fell back to the previous one (spec §9.2)
             await self._restored(project, plan, new)
             return new
@@ -969,6 +1005,9 @@ class PlanService:
             if engine is not None and engine.is_busy:
                 raise AgentBusy("the agent is working; stop it or wait before rolling back")
             new = machine.transition(plan, "rollback", now=utcnow_iso(), to_step=to_step)
+            await self.editing.erc_results.forget_steps(
+                [s.id for s in plan.steps if s.idx > to_step]
+            )
             target = plan.base_snapshot_id if to_step == 0 else plan.step(to_step).checkpoint_id
             if target is None and plan.done_count > to_step:
                 raise PlanStateError(

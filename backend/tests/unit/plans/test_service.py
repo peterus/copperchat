@@ -540,6 +540,69 @@ async def test_step_result_delta_bounded(rig: Rig) -> None:
     assert len(out["erc"]["new_warnings"]) == 20 and out["erc"]["new_warnings_count"] == 60
 
 
+async def test_stored_justifications_lapse_when_errors_are_fixed(rig: Rig) -> None:
+    await rig.begun()
+    a, b = violation("pin_not_connected", U1), violation("pin_not_connected", U2)
+    rig.current = [a, b]
+    rig.current = [a, violation("wire_dangling", "33" * 4 + "-3333-3333-3333-333333333333")]
+    await expect_error(
+        rig.plans.step_done(rig.ctx(), 1, "x", {vid(a): "later", vid(b): "gone"}), "erc_errors_open"
+    )
+    ids, _ = await rig.editing.erc_results.step_justifications((await rig.last_plan()).steps[0].id)
+    assert set(ids) == {vid(a)}  # b no longer exists: its justification lapsed
+
+
+async def test_fresh_begin_forgets_earlier_attempt(rig: Rig) -> None:
+    plan = await rig.begun()
+    step_id = plan.steps[0].id
+    await rig.editing.erc_results.put_step_justifications(
+        step_id, {}, [rule(type="pin_not_connected")]
+    )
+    await rig.plans.pause(rig.opened.project, "turn_ended")
+    await rig.plans.rollback(rig.opened.project, plan.id, 0)
+    assert await rig.editing.erc_results.step_justifications(step_id) == ({}, [])
+
+
+async def test_revise_forgets_stored_justifications(rig: Rig) -> None:
+    plan = await rig.begun()
+    step_id = plan.steps[0].id
+    await rig.editing.erc_results.put_step_justifications(step_id, {"a": "r"}, [rule(type="t")])
+    await rig.plans.revise(rig.ctx(), [step_spec("n1", 5)], "new idea")
+    assert await rig.editing.erc_results.step_justifications(step_id) == ({}, [])
+
+
+async def test_root_sheet_rule_needs_a_type(rig: Rig) -> None:
+    await rig.begun()
+    await expect_error(
+        rig.plans.step_done(rig.ctx(), 1, "x", None, [rule(sheet="/")]), "invalid_argument"
+    )
+    await expect_error(
+        rig.plans.step_done(rig.ctx(), 1, "x", None, [rule(sheet="//")]), "invalid_argument"
+    )
+    rig.render()
+    out = await rig.plans.step_done(rig.ctx(), 1, "x", None, [rule(type="t", sheet="/")])
+    assert out["status"] == "done"
+
+
+async def test_sheet_spellings_are_one_rule(rig: Rig) -> None:
+    await rig.begun()
+    rig.current = [violation("pin_not_connected", sheet="/Other/")]
+    rules = [
+        rule("a", sheet="/Power"),
+        rule("b", sheet="Power/"),
+        rule("c", sheet="/Power/", type="x"),
+    ]
+    await expect_error(rig.plans.step_done(rig.ctx(), 1, "x", None, rules), "erc_errors_open")
+    _, stored = await rig.editing.erc_results.step_justifications(
+        (await rig.last_plan()).steps[0].id
+    )
+    # "/Power" and "Power/" are the same path: one rule, the later reason wins
+    assert [(r["match"], r["reason"]) for r in stored] == [
+        ({"sheet": "/Power/"}, "b"),
+        ({"type": "x", "sheet": "/Power/"}, "c"),
+    ]
+
+
 # -- pauses -------------------------------------------------------------------------
 
 

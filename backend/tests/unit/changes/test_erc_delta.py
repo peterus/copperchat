@@ -129,8 +129,17 @@ async def test_run_erc_tool_notes_the_report(monkeypatch: pytest.MonkeyPatch) ->
         run_id = "run-1"
         editing = Editing()
 
-    monkeypatch.setattr(checks, "check_violations", runner)
+    monkeypatch.setattr(erc, "check_violations", runner)
     ctx = Ctx()
     res = await checks.run_erc(ctx, {})  # type: ignore[arg-type]
     assert res.data is not None and res.data["count"] == 1
     assert ctx.editing.state.last_erc is report and ctx.editing.state.last_erc_seq == 7
+    # Another page of the same report is a view of it: no second kicad-cli run.
+    ctx.editing.state.last_mutation_seq = 3
+
+    async def boom(session: Any, doc: str) -> list[dict[str, Any]]:
+        raise AssertionError("ERC ran again")
+
+    monkeypatch.setattr(erc, "check_violations", boom)
+    again = await checks.run_erc(ctx, {"offset": 1})  # type: ignore[arg-type]
+    assert again.data is not None and again.data["total"] == 1 and again.data["count"] == 0

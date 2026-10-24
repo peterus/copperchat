@@ -248,6 +248,22 @@ describe('PlanCard', () => {
     expect(within(first).getByText('one id')).toBeInTheDocument();
   });
 
+  it('shows how many pattern rules are not listed', async () => {
+    const rules = Array.from({ length: 7 }, (_, i) => ({ match: { type: `t${i}` }, reason: `r${i}`, covered: 1 }));
+    setup(
+      plan({
+        status: 'running',
+        steps: [
+          step(1, { status: 'done', checkpointId: CP1, erc: { errors: 7, warnings: 0, justifications: {}, rules, resultId: 'e'.repeat(32) } }),
+          step(2, { status: 'running' }),
+        ],
+      }),
+    );
+    const first = (await screen.findAllByRole('listitem'))[0]!;
+    fireEvent.click(within(first).getByText(/7 justified/));
+    expect(within(first).getByText('+2 more rules')).toBeInTheDocument();
+  });
+
   it('failed step shows its failure', async () => {
     setup(plan({ status: 'paused', pauseReason: 'step_exceeded', steps: [step(1, { status: 'failed', failure: 'step exceeded 15 changes' })] }));
     expect(await screen.findByText('step exceeded 15 changes')).toBeInTheDocument();

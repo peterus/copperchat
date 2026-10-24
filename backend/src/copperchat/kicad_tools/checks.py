@@ -240,10 +240,13 @@ ERC_PAGE_MAX = 200
 
 def sheet_matches(violation_sheet: Any, wanted: str) -> bool:
     """A violation's sheet path (`/`, `/Power/`, `/Power/Reg/`) against a sheet filter:
-    the whole human path or the name of the innermost sheet; `/` is the root."""
+    a path (contains `/`) must be the whole path, a bare name matches the innermost
+    sheet; `/` is the root."""
     path = [p for p in str(violation_sheet or "/").split("/") if p]
     want = [p for p in wanted.split("/") if p]
-    return path == want or (len(want) == 1 and bool(path) and path[-1] == want[0])
+    if "/" in wanted:
+        return path == want
+    return bool(path) and len(want) == 1 and path[-1] == want[0]
 
 
 def _page_arg(args: dict[str, Any], key: str, default: int, low: int, high: int | None) -> int:
@@ -291,7 +294,7 @@ def erc_page(vs: list[dict[str, Any]], args: dict[str, Any]) -> dict[str, Any]:
         "bySeverity": dict(Counter(v["severity"] for v in vs)),
         "counts": {
             "by_type": dict(Counter(v["type"] for v in matching)),
-            "by_sheet": dict(Counter(str(v.get("sheet", "/")) for v in matching)),
+            "by_sheet": dict(Counter(str(v.get("sheet") or "/") for v in matching)),
         },
         "offset": offset,
         "limit": limit,
@@ -300,14 +303,16 @@ def erc_page(vs: list[dict[str, Any]], args: dict[str, Any]) -> dict[str, Any]:
 
 
 async def run_erc(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
-    vs = await check_violations(ctx.session, "sch")
-    if ctx.editing is not None and ctx.run_id is not None:
-        # E-C5 "no double runs": the step-/turn-end ERC delta reuses this report while
-        # no mutation followed it (copperchat.changes.erc.current_erc).
-        state = ctx.editing.turn(ctx.project.id, ctx.run_id)
-        state.last_erc = vs
-        state.last_erc_seq = state.call_seq
-    return ToolResult(data=erc_page(vs, args))
+    from copperchat.changes.erc import current_erc  # local: changes.erc imports this module
+
+    # E-C5 "no double runs": the step-/turn-end ERC delta reuses this report while no
+    # mutation followed it, and so do further pages of it (`current_erc`).
+    state = (
+        ctx.editing.turn(ctx.project.id, ctx.run_id)
+        if ctx.editing is not None and ctx.run_id is not None
+        else None
+    )
+    return ToolResult(data=erc_page(await current_erc(ctx.session, state), args))
 
 
 async def run_drc(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:

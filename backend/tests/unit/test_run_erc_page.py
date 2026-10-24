@@ -38,6 +38,8 @@ def test_run_erc_sheet_filter() -> None:
     assert names({"sheet": "/Power/"}) == ["a 2"]
     assert names({"sheet": "Reg"}) == ["b 3"]
     assert names({"sheet": "/Power/Reg"}) == ["b 3"]
+    assert names({"sheet": "/Reg/"}) == []  # a path is the whole path, not a name
+    assert names({"sheet": "/Power/"}) == ["a 2"]
     assert names({"sheet": "/"}) == ["a 1"]
     assert names({"sheet": "Nope"}) == []
 

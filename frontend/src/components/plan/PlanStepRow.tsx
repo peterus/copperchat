@@ -50,10 +50,11 @@ function Justifications({ items, rules }: { items: Array<[string, string]>; rule
       {open && (
         <ul className="mt-1 flex flex-col gap-0.5 break-words text-muted">
           {rules.slice(0, JUSTIFICATIONS_SHOWN).map((r) => (
-            <li key={ruleLabel(r)}>
+            <li key={`${r.match.type ?? ''}|${r.match.sheet ?? ''}`}>
               {ruleLabel(r)}: {clip(r.reason)} ({plural(r.covered, 'error')})
             </li>
           ))}
+          {rules.length > JUSTIFICATIONS_SHOWN && <li>+{rules.length - JUSTIFICATIONS_SHOWN} more rules</li>}
           {shown.map(([id, reason]) => (
             <li key={id}>{clip(reason)}</li>
           ))}

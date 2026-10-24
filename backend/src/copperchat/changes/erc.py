@@ -305,6 +305,16 @@ class ErcResultRepo:
             (plan_step_id, json.dumps(justifications), json.dumps(rules), utcnow_iso()),
         )
 
+    async def forget_steps(self, plan_step_ids: list[str]) -> None:
+        """Drop the stored justifications of steps whose attempt is over."""
+        if not plan_step_ids:
+            return
+        marks = ", ".join("?" for _ in plan_step_ids)
+        await self._db.execute(
+            f"DELETE FROM erc_step_justifications WHERE plan_step_id IN ({marks})",
+            tuple(plan_step_ids),
+        )
+
     async def get(self, project_id: str, result_id: str) -> dict[str, Any]:
         rid = validate_erc_result_id(result_id)
         row = await self._db.fetchone(
