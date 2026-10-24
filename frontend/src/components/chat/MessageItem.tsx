@@ -3,7 +3,7 @@ import { isUploadId, uploadUrl } from '@/api/uploads';
 import { ErcBadge } from '@/components/changes/ErcBadge';
 import { DocChangedCard, docChangedOf } from '@/components/docs/DocChangedCard';
 import { RestoreOffer } from '@/components/history/RestoreOffer';
-import { PlanCard } from '@/components/plan/PlanCard';
+import { PlanNotice, planCardOf } from '@/components/plan/PlanNotice';
 import type { MessageDTO } from '@/protocol/frames';
 import { Lightbox } from './Lightbox';
 import { Markdown } from './Markdown';
@@ -217,9 +217,8 @@ export const MessageItem = memo(function MessageItem({ message: m }: { message: 
       );
     case 'notice': {
       const md = m.metadata;
-      if (md.action === 'plan' && typeof md.planId === 'string' && md.planId) {
-        return <PlanCard projectId={m.projectId} planId={md.planId} />;
-      }
+      const planId = planCardOf(m);
+      if (planId) return <PlanNotice message={m} planId={planId} />;
       const docChanged = docChangedOf(md);
       if (docChanged) return <DocChangedCard change={docChanged} />;
       const erc = ercOf(md);

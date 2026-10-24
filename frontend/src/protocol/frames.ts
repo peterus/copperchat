@@ -110,7 +110,8 @@ export type ClientFrame = z.infer<typeof ClientFrame>;
 
 /** E-C11 PlanDTO (backend `PlanDTO` in agent/protocol.py). */
 export const PlanStatus = z.enum(['proposed', 'approved', 'running', 'paused', 'done', 'rejected', 'aborted']);
-export const PlanStepStatus = z.enum(['pending', 'running', 'done', 'failed', 'interrupted']);
+// `paused`: interrupted by a mid-step `plan_revise`; it continues when the revision is approved.
+export const PlanStepStatus = z.enum(['pending', 'running', 'done', 'failed', 'interrupted', 'paused']);
 export const PlanStepDTO = z.strictObject({
   idx: z.number().int().min(1),
   title: z.string(),
@@ -120,6 +121,8 @@ export const PlanStepDTO = z.strictObject({
   verification: z.string(),
   status: PlanStepStatus,
   changeCount: z.number().int().nonnegative(),
+  /** Logical changes the step has used so far (its budget is `expectedChanges`). Defaults as in the backend. */
+  used: z.number().int().nonnegative().default(0),
   checkpointId: z.string().nullable(),
   summary: z.string().nullable(),
   failure: z.string().nullable(),
@@ -142,6 +145,10 @@ export const PlanDTO = z.strictObject({
   status: PlanStatus,
   revision: z.number().int().min(1),
   pauseReason: z.string().nullable(),
+  /** The agent's reason of the latest revision (agent-authored: plain text). */
+  reviseReason: z.string().nullable().default(null),
+  /** Set while a mid-step revision awaits approval: rejecting it returns to this revision, paused. */
+  previousRevision: z.number().int().min(1).nullable().default(null),
   steps: z.array(PlanStepDTO),
   createdAt: z.string(),
   updatedAt: z.string(),

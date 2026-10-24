@@ -40,6 +40,8 @@ from copperchat.kicad_tools.edit.scene import Scene, sheet_api
 from copperchat.kicad_tools.edit.targets import LABEL_KINDS, Target, sheet_pins
 
 NodeKey = tuple[int, int]
+# Items that cost one logical change per net together when deleted (spec §9.1).
+NET_ITEM_KINDS = frozenset({"wire", "junction", "no_connect", *LABEL_KINDS})
 
 
 def node_key(p: Point) -> NodeKey:
@@ -441,8 +443,9 @@ def removed_paths(world: World, t: Target) -> set[str]:
 def _logical(
     world: World, targets: list[Target], placed_this_turn: set[str]
 ) -> tuple[int, list[str]]:
-    """E-C6: 1 per deleted symbol (all units of a reference), label, sheet, junction,
-    no-connect; directly deleted wires 1 per net they were on. `deleted_symbols`: every
+    """E-C6 / #13 (spec §9.1): 1 per deleted symbol (all units of a reference) and
+    sheet; directly deleted wires, junctions, labels and no-connects 1 per net they were
+    on together (an item on no net is its own net). `deleted_symbols`: every
     own placement (refunded by the gate) plus one entry per pre-existing non-power
     reference and sheet instance (the <= 3 rule counts parts, not units): a symbol of a
     sheet file used N times leaves N parts (`uuid@path` for the other instances), and
@@ -451,7 +454,7 @@ def _logical(
     deleted: list[str] = []
     units: dict[str, set[int]] = {}  # part key -> units counted
     booked: set[str] = set()  # entries of `deleted` (a set: large sheets stay linear)
-    wire_nets: set[str] = set()
+    item_nets: set[str] = set()  # nets of deleted wires / junctions / labels / NCs
 
     def part_key(path: str, ref: str, uid: str) -> str:
         # unannotated parts ('R?') are separate parts even with equal references
@@ -498,10 +501,10 @@ def _logical(
                 if sym is not None and count(t.uuid, inst.path, sym.ref, sym.unit) and first:
                     changes += 1  # one logical change per part (its first instance)
                 first = False
-        elif t.kind == "wire":
+        elif t.kind in NET_ITEM_KINDS:
             net = world.nets(t.sheet).get(t.uuid) or t.uuid
-            if net not in wire_nets:
-                wire_nets.add(net)
+            if net not in item_nets:
+                item_nets.add(net)
                 changes += 1
         elif t.kind == "sheet":
             changes += 1

@@ -98,6 +98,7 @@ NOT_TOOLS = {
     "plan_open",
     "plan_required",
     "plan_step_required",
+    "plan_step_exceeded",
     # design-doc error codes (sessions S-C6)
     "doc_path_refused",
     "doc_conflict",

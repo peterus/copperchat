@@ -592,3 +592,16 @@ async def test_move_refused_when_carried_stub_would_touch_another_net(
     assert err and out["error"]["code"] == "overlap", out
     assert "stub wire" in out["error"]["what"], out
     assert await state(s) == before
+
+
+async def test_move_carried_stubs_are_free(blank_session: KicadSession, edit_db: Database) -> None:
+    """#13 (spec §9.1): a moved symbol costs 1; the stub chains it carries are free."""
+    s = blank_session
+    await s.ensure_symbol_libraries()
+    ctx = edit_ctx(s, edit_db)
+    r = await _place(ctx, "Device:R", [101.6, 76.2])
+    await _ok(ctx, "sch_add_label", net="SDA", at=[f"{r}.1"])
+    await _ok(ctx, "sch_add_power", net="GND", at=[f"{r}.2"])
+    out = await _ok(ctx, "sch_move", items=[r], by=[7.62, 0])
+    assert out["carried_wires"] >= 2
+    assert out["logical_changes"] == 1

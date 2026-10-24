@@ -3,8 +3,8 @@
 | From                          | Event            | To        |
 |-------------------------------|------------------|-----------|
 | —                             | propose          | proposed  (revision 1, `new_plan`) |
-| proposed                      | reject           | rejected  |
-| proposed, paused              | revise           | proposed  (revision + 1) |
+| proposed                      | reject           | rejected, or paused at the previous revision |
+| proposed, running, paused     | revise           | proposed  (revision + 1; running step paused) |
 | proposed                      | approve          | approved  (event_seq + 1) |
 | approved, running             | step_begin       | running   (only the next step, none running) |
 | running                       | step_done        | running / done after the last step |
@@ -28,9 +28,11 @@ from typing import Any
 
 from copperchat.plans.model import Plan, PlanStateError, PlanStatus, PlanStep, StepStatus
 
+# Begun steps that continue with their counters (step_begin, revise).
+RESUMABLE: frozenset[str] = frozenset({"paused", "interrupted"})
 _ALLOWED: dict[str, frozenset[str]] = {
     "reject": frozenset({"proposed"}),
-    "revise": frozenset({"proposed", "paused"}),
+    "revise": frozenset({"proposed", "running", "paused"}),
     "approve": frozenset({"proposed"}),
     "step_begin": frozenset({"approved", "running"}),
     "step_done": frozenset({"running"}),
@@ -44,7 +46,8 @@ _ALLOWED: dict[str, frozenset[str]] = {
 }
 _HINT = {
     "reject": "Only a proposed plan can be rejected.",
-    "revise": "Revise the plan only while it is proposed or paused.",
+    "revise": "Revise the plan only while it is proposed, running or paused; an approved "
+    "plan: begin its next step first.",
     "approve": "Only a proposed plan can be approved.",
     "step_begin": "Steps begin only in an approved or running plan; wait for the user's "
     "approval (or Resume).",
@@ -130,6 +133,41 @@ def _pause(plan: Plan, reason: str, step_status: StepStatus, failure: str | None
     return replace(plan, status="paused", pause_reason=reason, steps=steps, updated_at=now)
 
 
+def _revise(plan: Plan, new_steps: tuple[PlanStep, ...], reason: str | None, now: str) -> Plan:
+    """Finished steps stay (their checkpoints are the plan's history); `new_steps`
+    replaces everything after them. A begun step (running, or paused / interrupted)
+    becomes the first new step, `paused`, keeping its id, run and counters: its edits so
+    far belong to it (spec §9.2). Revising a running or paused plan keeps that state as
+    `previous` for a reject; revising a proposed one keeps its `previous`."""
+    base = plan
+    if plan.status == "running":
+        base = _pause(plan, "revised", "paused", None, now)
+    previous = replace(base, previous=None) if plan.status != "proposed" else plan.previous
+    kept = tuple(s for s in base.steps if s.status == "done")
+    begun = next((s for s in base.steps if s.status != "done"), None)
+    if begun is not None and begun.status in RESUMABLE and new_steps:
+        first = replace(
+            new_steps[0],
+            id=begun.id,
+            status="paused",
+            run_id=begun.run_id,
+            used=begun.used,
+            placed=begun.placed,
+            change_base=begun.change_base,
+        )
+        new_steps = (first, *new_steps[1:])
+    return replace(
+        plan,
+        status="proposed",
+        revision=plan.revision + 1,
+        pause_reason=None,
+        revise_reason=reason,
+        previous=previous,
+        steps=kept + new_steps,
+        updated_at=now,
+    )
+
+
 def transition(plan: Plan, event: str, *, now: str, **kw: Any) -> Plan:
     allowed = _ALLOWED.get(event)
     if allowed is None:
@@ -137,22 +175,22 @@ def transition(plan: Plan, event: str, *, now: str, **kw: Any) -> Plan:
     if plan.status not in allowed:
         raise _refuse(plan, event)
     status: PlanStatus
+    if event == "reject" and plan.previous is not None:
+        # A revision of a plan with edits on disk: back to the revision it replaced,
+        # paused where it stopped (spec §9.2); nothing is discarded.
+        return replace(
+            plan.previous,
+            status="paused",
+            pause_reason="revision_rejected",
+            event_seq=plan.event_seq,
+            updated_at=now,
+            previous=None,
+        )
     if event in ("reject", "abort"):
         status = "rejected" if event == "reject" else "aborted"
         return replace(plan, status=status, updated_at=now)
     if event == "revise":
-        # Finished steps stay (their checkpoints are the plan's history); `steps`
-        # replaces everything after them.
-        kept = tuple(s for s in plan.steps if s.status == "done")
-        new_steps: tuple[PlanStep, ...] = kw["steps"]
-        return replace(
-            plan,
-            status="proposed",
-            revision=plan.revision + 1,
-            pause_reason=None,
-            steps=kept + new_steps,
-            updated_at=now,
-        )
+        return _revise(plan, kw["steps"], kw.get("reason"), now)
     if event in ("approve", "resume"):
         return replace(
             plan,
@@ -160,6 +198,7 @@ def transition(plan: Plan, event: str, *, now: str, **kw: Any) -> Plan:
             event_seq=plan.event_seq + 1,
             pause_reason=None,
             updated_at=now,
+            previous=None,
         )
     if event == "step_begin":
         idx: int = kw["idx"]
@@ -179,7 +218,12 @@ def transition(plan: Plan, event: str, *, now: str, **kw: Any) -> Plan:
                 + (f" and the next step is {nxt.idx}" if nxt is not None else ""),
                 f"Begin step {nxt.idx} instead." if nxt is not None else "The plan is complete.",
             )
-        steps = _set_step(plan, idx, status="running", run_id=kw["run_id"], failure=None)
+        # A paused or interrupted step continues with its counters (its edits are on
+        # disk); any other step starts its budget afresh.
+        counters = {} if step.status in RESUMABLE else {"used": 0, "placed": ()}
+        steps = _set_step(
+            plan, idx, status="running", run_id=kw["run_id"], failure=None, **counters
+        )
         return replace(plan, status="running", pause_reason=None, steps=steps, updated_at=now)
     if event == "step_done":
         idx = kw["idx"]
@@ -234,6 +278,9 @@ def transition(plan: Plan, event: str, *, now: str, **kw: Any) -> Plan:
             summary=None,
             failure=None,
             erc_result_id=None,
+            used=0,
+            placed=(),
+            change_base=0,
         )
         if s.idx > to_step
         else s

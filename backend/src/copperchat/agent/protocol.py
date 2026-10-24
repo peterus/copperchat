@@ -214,7 +214,7 @@ class ChangesUpdatedFrame(Wire):
 
 
 PlanStatusWire = Literal["proposed", "approved", "running", "paused", "done", "rejected", "aborted"]
-StepStatusWire = Literal["pending", "running", "done", "failed", "interrupted"]
+StepStatusWire = Literal["pending", "running", "done", "failed", "interrupted", "paused"]
 
 
 class PlanTouches(Wire):
@@ -241,6 +241,7 @@ class PlanStepDTO(Wire):
     checkpoint_id: str | None
     summary: str | None
     failure: str | None
+    used: int = Field(default=0, ge=0)
     erc: PlanStepErc | None
 
 
@@ -255,6 +256,8 @@ class PlanDTO(Wire):
     status: PlanStatusWire
     revision: int = Field(ge=1)
     pause_reason: str | None
+    revise_reason: str | None = None
+    previous_revision: int | None = Field(default=None, ge=1)
     steps: list[PlanStepDTO]
     created_at: str
     updated_at: str

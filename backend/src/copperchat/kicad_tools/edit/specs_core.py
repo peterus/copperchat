@@ -468,7 +468,7 @@ TOOL_SPECS: list[ToolSpec] = [
         "only perpendicular, ending on a sheet pin. Existing wires that break it are "
         "named under warnings, not refused. "
         "Verified against KiCad's netlist after writing: the "
-        "pins at both ends end up on one net, nothing else changes. One logical change.",
+        "pins at both ends end up on one net, nothing else changes. Budget: 1 logical change.",
         _obj(
             {
                 "points": {

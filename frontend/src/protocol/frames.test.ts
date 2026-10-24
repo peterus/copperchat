@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { ALL_FRAME_TYPES, AnyFrame, ClientFrame, ServerFrame } from './frames';
+import { ALL_FRAME_TYPES, AnyFrame, ClientFrame, PlanDTO, ServerFrame } from './frames';
 
 // String form on purpose: jsdom's global URL class is rejected by Node's fileURLToPath.
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../protocol-fixtures');
@@ -73,4 +73,22 @@ it('knows the visibility frame', () => {
   expect(ALL_FRAME_TYPES).toContain('visibility');
   expect(ClientFrame.safeParse({ type: 'visibility', projectId: 'a1b2c3d4e5f6', visible: true }).success).toBe(true);
   expect(ClientFrame.safeParse({ type: 'visibility', projectId: 'a1b2c3d4e5f6', visible: 1 }).success).toBe(false);
+});
+
+it('plan DTO: revise fields and step usage default like the backend, paused step parses', () => {
+  const step = {
+    idx: 1, title: 'S', intent: '', expectedChanges: 2, touches: { refs: [], nets: [] }, verification: '',
+    status: 'paused', changeCount: 0, checkpointId: null, summary: null, failure: null, erc: null,
+  };
+  const plan = {
+    id: 'f'.repeat(32), projectId: 'a1b2c3d4e5f6', conversationId: 'c'.repeat(32), title: 'T', summary: '',
+    status: 'proposed', revision: 2, pauseReason: null, steps: [step], createdAt: 'x', updatedAt: 'x',
+  };
+  const parsed = PlanDTO.parse(plan);
+  expect(parsed).toMatchObject({ reviseReason: null, previousRevision: null, steps: [{ status: 'paused', used: 0 }] });
+  expect(PlanDTO.parse({ ...plan, reviseReason: 'r', previousRevision: 1, steps: [{ ...step, used: 3 }] })).toMatchObject({
+    reviseReason: 'r', previousRevision: 1, steps: [{ used: 3 }],
+  });
+  expect(PlanDTO.safeParse({ ...plan, previousRevision: 0 }).success).toBe(false);
+  expect(PlanDTO.safeParse({ ...plan, steps: [{ ...step, used: -1 }] }).success).toBe(false);
 });

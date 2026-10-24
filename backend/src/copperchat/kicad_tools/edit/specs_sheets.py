@@ -177,7 +177,7 @@ TOOL_SPECS: list[ToolSpec] = [
         "file must not exist yet). The new sheet gets the next page number. `at` is its top-left "
         "corner in mm (snapped to the grid), `size` [w, h] defaults to [50.8, 38.1]. Refused "
         "when the area is occupied or the name is taken. The file is written when the tool "
-        "returns. One logical change. Then add pins with sch_add_sheet_pin and place parts "
+        "returns. Budget: 1 logical change. Then add pins with sch_add_sheet_pin and place parts "
         "on the new sheet by passing its path as `sheet`.",
         _obj(
             {
@@ -208,7 +208,7 @@ TOOL_SPECS: list[ToolSpec] = [
         "net. `sheet` is the sub-sheet (name, path like '/Power/' or page). The pin goes on the "
         "sheet edge (`side`, default left; outputs right), stacked 2.54 mm apart on the grid. "
         "Refused when a pin of that name exists. On a sheet file used twice the label exists "
-        "once; the pin is added to the chosen sheet symbol only. One logical change.",
+        "once; the pin is added to the chosen sheet symbol only. Budget: 1 logical change.",
         _obj(
             {
                 "sheet": {

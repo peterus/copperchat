@@ -15,13 +15,17 @@ export const STEP_STATUS_LABEL: Record<PlanStepDTO['status'], string> = {
   done: 'Done',
   failed: 'Failed',
   interrupted: 'Interrupted',
+  paused: 'Paused',
 };
+/** A step paused by a mid-step revision while that revision awaits the user's approval. */
+export const AWAITING_REVISION_LABEL = 'Paused – revision awaiting approval';
 const STEP_STATUS_CLASS: Record<PlanStepDTO['status'], string> = {
   pending: 'text-muted',
   running: 'bg-accent/15 text-accent',
   done: 'bg-success/15 text-success',
   failed: 'bg-danger/15 text-danger',
   interrupted: 'bg-warning/15 text-warning',
+  paused: 'bg-warning/15 text-warning',
 };
 
 export const checkpointPreviewUrl = (projectId: string, snapshotId: string) =>
@@ -48,10 +52,26 @@ function Justifications({ items }: { items: Array<[string, string]> }) {
   );
 }
 
-/** One numbered step of the plan card (spec §7.3). */
-export function PlanStepRow({ projectId, step }: { projectId: string; step: PlanStepDTO }) {
+/**
+ * One numbered step of the plan card (spec §7.3). `awaitingRevision`: the plan's revision awaits
+ * approval (spec §9.4); a paused step then says so, with the agent's `reviseReason` (plain text).
+ */
+export function PlanStepRow({
+  projectId,
+  step,
+  awaitingRevision = false,
+  reviseReason = null,
+}: {
+  projectId: string;
+  step: PlanStepDTO;
+  awaitingRevision?: boolean;
+  reviseReason?: string | null;
+}) {
   const [preview, setPreview] = useState(false);
   const finished = step.status === 'done';
+  const awaiting = step.status === 'paused' && awaitingRevision;
+  // Changes so far count against the step's budget (spec §9.1); shown once the step has begun.
+  const inProgress = (step.status === 'running' || step.status === 'paused' || step.status === 'interrupted') && step.used > 0;
   const erc = step.erc;
   return (
     <li className="flex gap-2 py-1.5">
@@ -60,13 +80,16 @@ export function PlanStepRow({ projectId, step }: { projectId: string; step: Plan
         <div className="flex flex-wrap items-baseline gap-x-2">
           <span className="min-w-0 break-words font-medium">{step.title}</span>
           <span className={`rounded px-1.5 text-xs font-medium ${STEP_STATUS_CLASS[step.status]}`}>
-            {STEP_STATUS_LABEL[step.status]}
+            {awaiting ? AWAITING_REVISION_LABEL : STEP_STATUS_LABEL[step.status]}
           </span>
         </div>
         {step.intent && <p className="break-words text-xs text-muted">{step.intent}</p>}
+        {awaiting && reviseReason && <p className="line-clamp-6 whitespace-pre-wrap break-words text-xs text-muted">{`Agent's reason: ${reviseReason}`}</p>}
         <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
           {finished ? (
             <span>{plural(step.changeCount, 'change')}</span>
+          ) : inProgress ? (
+            <span className="text-muted">{`${step.used} of ${plural(step.expectedChanges, 'change')} used`}</span>
           ) : (
             <span className="text-muted">{plural(step.expectedChanges, 'change')} expected</span>
           )}

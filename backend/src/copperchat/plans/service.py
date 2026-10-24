@@ -330,25 +330,45 @@ class PlanService:
         return plan
 
     async def revise(self, ctx: ToolContext, steps: Any, reason: Any) -> Plan:
-        self._turn(ctx)
+        state = self._turn(ctx)
         reason = _text(reason, "reason", REASON_MAX)
         pid = ctx.project.id
         await self._check_open(await self._proposing_conversation(ctx))
         await self._check_owner(ctx)
-        async with self.lock(pid):
+        # The edit lock first (the tool adapter's order): no edit of the step is between
+        # its gate check and its budget record while the counters are taken.
+        async with self.editing.edit_lock(pid), self.lock(pid):
             plan = await self._open(pid)
             kept = plan.done_count  # finished steps always stay (machine "revise")
             specs = validate_steps(steps, offset=kept)
+            running = plan.running_step
+            if running is not None and state.active_step_id == running.id:
+                # Spec §9.2: the step pauses with this turn's counters (PlanGate also
+                # persists them after every edit of the step).
+                plan = machine.with_step(
+                    plan,
+                    running.idx,
+                    used=state.step_used,
+                    placed=tuple(sorted(state.step_placed)),
+                )
             new = machine.transition(
                 plan,
                 "revise",
                 now=utcnow_iso(),
                 steps=machine.build_steps(plan.id, specs, start=kept + 1),
+                reason=reason,
             )
             await self._save(new)
+        if running is not None and state.active_step_id == running.id:
+            self.clear_step(state)
+        paused = (
+            f" Step {running.idx} is paused until then; it continues with its edits so far."
+            if running is not None
+            else ""
+        )
         await self._notice(
             new,
-            f"The agent revised the plan (revision {new.revision}). Approve or reject it.",
+            f"The agent revised the plan (revision {new.revision}).{paused} Approve or reject it.",
             # The reason is agent-authored text: data for the plan card, not system voice.
             {
                 "action": "plan-revised",
@@ -377,6 +397,8 @@ class PlanService:
             new = machine.transition(
                 plan, "step_begin", now=utcnow_iso(), idx=idx, run_id=str(ctx.run_id)
             )
+            if plan.step(idx).status not in machine.RESUMABLE:  # a fresh begin
+                new = machine.with_step(new, idx, change_base=await self.repo.last_change_id())
             if new.base_snapshot_id is None:
                 # The pre-plan state: this turn's undo snapshot (taken now if the turn
                 # has none yet), the target of "roll back to start".
@@ -391,9 +413,10 @@ class PlanService:
         state.active_step_id = step.id
         state.step_idx = idx
         state.step_expected = step.expected_changes
-        state.step_used = 0
+        # A paused / interrupted step resumes with its persisted counters (spec §9.2).
+        state.step_used = step.used
         state.step_begin_seq = state.call_seq
-        state.step_placed = set()
+        state.step_placed = set(step.placed)
         state.erc_refusal = None
         return step
 
@@ -469,7 +492,8 @@ class PlanService:
         summary = _text(summary, "summary", SUMMARY_MAX)
         given = self._justifications(justifications)
         pid = ctx.project.id
-        async with self.lock(pid):
+        # The edit lock first (as revise): no parallel edit lands after the checkpoint.
+        async with self.editing.edit_lock(pid), self.lock(pid):
             plan = await self._open(pid)
             step = plan.step(idx)
             if plan.status != "running" or step.status != "running":
@@ -500,7 +524,7 @@ class PlanService:
             snap = await take_step_checkpoint(
                 self.history, ctx.project, str(ctx.run_id), step.id, f"Plan step {idx}"
             )
-            count = await self.repo.step_change_count(pid, str(ctx.run_id), step.id)
+            count = await self.repo.step_change_count(pid, step)
             new = machine.transition(
                 plan,
                 "step_done",
@@ -761,6 +785,9 @@ class PlanService:
             plan = await self.repo.get(project.id, plan_id)
             new = machine.transition(plan, event, now=utcnow_iso())
             await self._save(new)
+        if new.is_open:  # a rejected revision fell back to the previous one (spec §9.2)
+            await self._restored(project, plan, new)
+            return new
         word = "rejected" if event == "reject" else "aborted"
         kept = "" if event == "reject" else " The design is kept as it is."
         engine = await self.runtime.ensure(project)
@@ -775,6 +802,23 @@ class PlanService:
             conversation_id=new.conversation_id,
         )
         return new
+
+    async def _restored(self, project: Project, rejected: Plan, new: Plan) -> None:
+        nxt = new.next_step
+        at = f", paused at step {nxt.idx}" if nxt is not None else ", paused"
+        engine = await self.runtime.ensure(project)
+        await engine.post_notice(
+            new.conversation_id,
+            f"The user rejected revision {rejected.revision}. The plan is back at revision "
+            f"{new.revision}{at}: resume it, roll back or abort it.",
+            {"action": "plan-restored", "planId": new.id, "revision": new.revision},
+        )
+        engine.add_agent_note(
+            f"The user rejected revision {rejected.revision} of plan {new.id}; it is back at "
+            f"revision {new.revision}{at}. Do not edit until the user resumes it; ask how to "
+            "continue.",
+            conversation_id=new.conversation_id,
+        )
 
     async def reject(self, project: Project, plan_id: str) -> Plan:
         return await self._close(project, plan_id, "reject")

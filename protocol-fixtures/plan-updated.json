@@ -15,6 +15,8 @@
     "status": "running",
     "revision": 1,
     "pauseReason": null,
+    "reviseReason": null,
+    "previousRevision": null,
     "steps": [
      {
       "idx": 1,
@@ -34,6 +36,7 @@
       "checkpointId": "0123456789abcdef0123456789abcdef",
       "summary": "placed",
       "failure": null,
+      "used": 4,
       "erc": {
        "errors": 1,
        "warnings": 0,
@@ -60,6 +63,7 @@
       "checkpointId": null,
       "summary": null,
       "failure": null,
+      "used": 0,
       "erc": null
      }
     ],
@@ -79,6 +83,8 @@
     "status": "paused",
     "revision": 1,
     "pauseReason": "turn_ended",
+    "reviseReason": null,
+    "previousRevision": null,
     "steps": [],
     "createdAt": "2026-10-18T10:00:00Z",
     "updatedAt": "2026-10-18T10:05:00Z",

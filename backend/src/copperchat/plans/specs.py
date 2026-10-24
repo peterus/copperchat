@@ -87,6 +87,7 @@ async def _propose(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
 
 async def _revise(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     plan = await _plans(ctx).revise(ctx, args.get("steps"), args.get("reason"))
+    nxt = plan.next_step  # a step paused mid-way by this revision continues first
     return ToolResult(
         data={
             "plan_id": plan.id,
@@ -94,6 +95,7 @@ async def _revise(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
             "revision": plan.revision,
             "steps": len(plan.steps),
             "kept_done_steps": plan.done_count,
+            **({"paused_step": nxt.idx} if nxt is not None and nxt.status == "paused" else {}),
             "next": "The user must approve the revised plan; end your turn now and wait.",
         }
     )
@@ -143,9 +145,13 @@ TOOL_SPECS = [
     ),
     ToolSpec(
         "plan_revise",
-        "Revise the open plan while it is proposed or paused (the user approves it again). "
-        "For a paused plan the finished steps are kept; `steps` replaces the remaining "
-        "ones (numbered after the finished steps).",
+        "Revise the open plan while it is proposed, running or paused (the user approves "
+        "it again). The finished steps are kept; `steps` replaces the remaining ones "
+        "(numbered after the finished steps). Mid-step: if the running step needs more "
+        "changes than expected, call plan_revise before exceeding its limit and say why "
+        "in reason; the step pauses with its edits and used count and continues as the "
+        "first of the new steps once the user approves (begin it again then). Exceeding "
+        "the limit still fails the step. Budget: free.",
         {
             "type": "object",
             "properties": {

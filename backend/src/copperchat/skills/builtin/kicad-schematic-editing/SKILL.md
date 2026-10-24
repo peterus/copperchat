@@ -110,6 +110,12 @@ UUIDs; pass full UUIDs between tool calls only for wires and labels.
   plan, at most 3 deletions of parts that existed before the turn). One logical change =
   a placed / moved / edited / deleted part, a connection, one pin given a label / power
   symbol / no-connect. Correcting a part you placed yourself in the same turn is free.
+  Each tool description ends with its `Budget:` line; the two that count by item:
+
+  | Tool | Cost |
+  |------|------|
+  | `sch_delete` | 1 per symbol (all units), 1 per sheet; all wires, junctions, labels and no-connects you list that are on one net: 1 together per net |
+  | `sch_move` | 1 per moved symbol, label or sheet; carried stubs and their end items are free |
 - When a request needs more than the budget (a new circuit block, a whole sub-sheet),
   or a tool answers `plan_required`, call `plan_propose` **before** editing: steps of
   5–10 logical changes each, every step with a clear intent, `expected_changes` and how
@@ -118,9 +124,13 @@ UUIDs; pass full UUIDs between tool calls only for wires and labels.
   `plan_step_required`). After approval: `plan_step_begin(k)` → edits → `run_erc` +
   `render_view` → `plan_step_done(k, summary, erc_justifications)`. Steps run in order and
   begin and finish in the same turn.
-- **Never exceed the plan.** A step may use at most its `expected_changes` + 50 %. If
-  the work turns out different, stop and `plan_revise` (with the reason) instead of
-  improvising; the user approves the revision.
+- **Never exceed the plan.** A step may use at most its `expected_changes` + 50 %
+  (`budget` in each edit result shows `used` / `limit`). If you see mid-step that the
+  step needs more changes than expected, call `plan_revise` *before* exceeding the budget
+  and explain why: the running step is paused (its edits and its used count stay), the
+  user approves the revision, and the step continues as the first step of the new
+  revision with its used count against the new `expected_changes`. Exceeding the limit
+  still fails the step and pauses the plan (`plan_step_exceeded`).
 
 ## ERC policy
 
