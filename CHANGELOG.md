@@ -7,6 +7,40 @@ All notable changes to CopperChat are documented in this file. The format follow
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-24
+
+**Schematic editing correctness and data loss**: fixes for the `sch_*` problems found while
+editing real designs. Status per item:
+
+### Fixed
+
+- **#6 data loss: FIXED.** The compensation of a failed edit re-creates wires that KiCad
+  had merged away, so a failed `sch_move` no longer ends in an inconsistent document. The
+  design is saved after every successful edit (15–128 ms); a failure reopens the last
+  save, which is the state before the failed edit, so earlier edits of the turn are never
+  lost. The user sees a plain-language notice, and the chat no longer claims "the agent
+  could not start".
+- **Left sheet pins: FIXED.** KiCad's API treats an unset spin style as LEFT; CopperChat
+  now sends it explicitly. No KiCad patch needed.
+- **#7/#8: FIXED.** Translating a symbol (`sch_move`) carries its owned stub chains and
+  the power symbols, labels and no-connects on them. Rotate and mirror still only drag the
+  wires.
+- **#9: FIXED.** One 2.54 mm sheet-edge clearance rule for `sch_connect`, `sch_add_wire`,
+  `sch_reroute` and move; legacy violations in existing designs only warn.
+- **#10: FIXED.**
+- **#11: FIXED.** Stubs keep the room of neighbouring pins free (no net merge happened
+  before either).
+- **#14: FIXED.** Text widths are measured from KiCad; a field overlapping its own symbol
+  is detected.
+- **#5:** the label column is FIXED (2.54 mm pitch, up to 4 columns); the parallel
+  collision is NOT REPRODUCIBLE (editing holds a project-wide lock).
+
+### Known follow-ups
+
+- `geometry._field_box` still assumes 0.6 em text width.
+- KiCad API quirks noted for a possible upstream issue (nothing submitted): `update_items`
+  ignores unknown ids; an unset spin style means LEFT.
+
 ## [0.4.0] - 2026-10-22
 
 **Repository context**: the agent can read (never write) its project's repository and
@@ -193,7 +227,8 @@ projects, in the browser on desktop, iPad and iPhone.
 - The KiCanvas patches live in this repository (`frontend/vendor-patches/kicanvas/`), not in
   an upstream fork; the main JavaScript chunk is large (~590 kB).
 
-[Unreleased]: https://github.com/peterus/copperchat/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/peterus/copperchat/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/peterus/copperchat/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/peterus/copperchat/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/peterus/copperchat/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/peterus/copperchat/compare/v0.1.1...v0.2.0
