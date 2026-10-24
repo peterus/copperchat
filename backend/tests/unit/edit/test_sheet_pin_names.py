@@ -45,3 +45,11 @@ def test_shared_parent_stays_ambiguous_for_connect_and_names_the_uuid_form() -> 
         _world().sheet_pin("Bias.VB")
     assert exc.value.code == "ambiguous_pin"
     assert "UUID" in exc.value.suggestion
+
+
+def test_lookup_past_the_deadline_says_so() -> None:
+    w = _world()
+    w.deadline = 0.0
+    with pytest.raises(StructuredToolError) as exc:
+        w.check_time("sch_move", lookup=True)
+    assert exc.value.code == "timeout" and "looking up" in exc.value.what

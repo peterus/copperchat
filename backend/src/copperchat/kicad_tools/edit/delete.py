@@ -522,7 +522,7 @@ def _child_labels(
         if (parent.file, sheet_uuid) in seen:
             continue  # this one, a deleted one, or one already read through an instance
         seen.add((parent.file, sheet_uuid))
-        world.check_time("sch_delete")
+        world.check_time("sch_delete", lookup=True)
         if any(
             p.sheet_uuid == sheet_uuid
             and p.pin.name == name

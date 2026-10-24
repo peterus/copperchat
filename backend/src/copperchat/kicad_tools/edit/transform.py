@@ -628,20 +628,20 @@ def plan_move(
     carried: dict[str, Point] = {}  # wire uuid -> offset
     rigid_points = [m.old for m in pin_points if m.own in rigid or m.sheet_pin in rigid_pins]
 
-    def offset_at(p: Point) -> Point | None:
-        return next((_sub(m.new, m.old) for m in pin_points if same_point(m.old, p)), None)
+    def offset_at(p: Point, among: list[_Moving]) -> Point | None:
+        return next((_sub(m.new, m.old) for m in among if same_point(m.old, p)), None)
 
-    chains = [  # not when a rotated / mirrored part sits at the end, nor when the pin at
-        c  # its far end moves by another offset (a sheet pin snapped onto its edge)
+    chains = [  # not when a rotated / mirrored part sits at the end, nor when a pin or
+        c  # label at its far end moves by another offset (a sheet pin snapped onto its edge)
         for c in owned_stub_chains(scene, rigid_points, rigid, sheet_pins=rigid_pins)
         if not any(u in moved_ids and u in scene.symbols for u in c.end_items)
         and (
-            (far := offset_at(c.points[-1])) is None
-            or same_point(far, offset_at(c.points[0]) or (0.0, 0.0))
+            (far := offset_at(c.points[-1], moving)) is None
+            or same_point(far, offset_at(c.points[0], pin_points) or (0.0, 0.0))
         )
     ]
     for chain in chains:
-        start = offset_at(chain.points[0])
+        start = offset_at(chain.points[0], pin_points)
         assert start is not None
         d = start
         for uid in chain.wires:
@@ -685,8 +685,8 @@ def plan_move(
         restubs.append((stub, m))
     restubbed = {u for stub, _m in restubs for u in stub.wires}
     if pin_moves:  # what leaves in this call: it moves (pins of moved sheets too),
-        # travels along, is carried, or is a wire dragged off a moving pin's old point
-        vacated = [m.old for m in moving if not m.label and not same_point(m.old, m.new)]
+        # travels along, is carried, or is a wire dragged off a moving pin's or label's old point
+        vacated = [m.old for m in moving if not same_point(m.old, m.new)]
         gone_from = {_key(p) for p in vacated}  # keyed like the drag pass's `mapping`
         dragged = set()
         for w in scene.wires.values():
@@ -694,7 +694,7 @@ def plan_move(
                 world.check_time(tool)
                 if not _interior_attached(scene, w, sheet_pin_points):  # those stay put
                     dragged.add(w.uuid)
-        leaving = {x["uuid"] for x in plan.moved} | along_ids | set(carried)
+        leaving = {x["uuid"] for x in plan.moved} | along_ids | set(carried) | restubbed
         leaving |= {u for u, i in scene.sheet_pins.items() if i.sheet_uuid in moved_ids}
         _refuse_pin_landing(
             world, tool, scene, nets, [m for m in moving if m.sheet_pin], leaving,

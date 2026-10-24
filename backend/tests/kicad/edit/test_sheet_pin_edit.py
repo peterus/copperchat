@@ -245,6 +245,34 @@ async def test_move_top_pin_and_part_on_its_stub_by_a_diagonal(
     assert (await state(s))[1] == before[1]  # R1 still on the sheet pin's net
 
 
+async def test_move_top_pin_and_label_on_its_stub_by_a_diagonal(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    """As with a part: the label at the stub's far end moves by (2.54, 2.54), the snapped
+    pin by (2.54, 0); the stub is dragged and the label stays on the net."""
+    s = blank_session
+    ctx = edit_ctx(s, edit_db)
+    await _power(s, ctx, ("VIN", "left"))
+    out, err = await call_tool(ctx, "sch_move", items=["Power.VIN"], to=[76.2, 49.53])
+    assert not err, out
+    x, y = (await _pins(s))["Power.VIN"]["at"]
+    label = local_label("VIN_EXT", (x, y - 7.62))
+    await _commit(s, "/", wire((x, y), (x, y - 7.62)), label)
+    before = await state(s)
+    out, err = await call_tool(
+        ctx, "sch_move", items=[access.kiid(label), "Power.VIN"], by=[2.54, 2.54]
+    )
+    assert not err, out
+    assert out["connectivity_verified"] is True, out
+    items = await _items(s)
+    lx, ly = items["labels"][access.kiid(label)]
+    assert (lx, ly) == pytest.approx((x + 2.54, y - 5.08))
+    ends = [p for w in items["wires"].values() for p in (w[:2], w[2:])]
+    assert any(p == pytest.approx((lx, ly)) for p in ends), items  # still on a wire
+    assert any(p == pytest.approx((x + 2.54, y)) for p in ends), items  # and on the pin
+    assert (await state(s))[1] == before[1]
+
+
 async def test_move_two_wired_sheet_pins_one_pitch_together(
     blank_session: KicadSession, edit_db: Database
 ) -> None:

@@ -235,6 +235,7 @@ class World:
         self._planned: dict[str, list[tuple[str, str, str | None, Planner]]] = {}
         self._pin_nets: dict[tuple[str, str], set[str]] = {}
         self._sheet_symbols: dict[str, list[Any]] = {}
+        self._sheet_pin_index: dict[str, SheetRef] | None = None  # see sheet_pin_by_uuid
         self._fake = itertools.count()
         # Planning runs inside one session.call (kicad_api_timeout_s): it stops early.
         self.deadline = time.monotonic() + PLAN_BUDGET_S
@@ -288,14 +289,23 @@ class World:
         self._pin_nets[(sheet.path, text)] = out
         return out
 
-    def check_time(self, tool: str) -> None:
-        if time.monotonic() > self.deadline:
+    def check_time(self, tool: str, *, lookup: bool = False) -> None:
+        """Stop planning past the deadline. `lookup`: while finding items (not placing)."""
+        if time.monotonic() <= self.deadline:
+            return
+        if lookup:
             raise StructuredToolError(
-                f"{tool}: planning took too long",
-                f"no clean position was found within {PLAN_BUDGET_S:g} s on this sheet",
-                "Call it for fewer pins at a time, or give the parts more free room.",
-                code="overlap",
+                f"{tool}: looking up the items took too long",
+                f"the design was not searched within {PLAN_BUDGET_S:g} s",
+                "Pass fewer items per call, or name them by reference / '<sheet>.<pin>'.",
+                code="timeout",
             )
+        raise StructuredToolError(
+            f"{tool}: planning took too long",
+            f"no clean position was found within {PLAN_BUDGET_S:g} s on this sheet",
+            "Call it for fewer pins at a time, or give the parts more free room.",
+            code="overlap",
+        )
 
     def scene(self, sheet: SheetRef) -> Scene:
         if sheet.path not in self._scenes:
@@ -397,20 +407,24 @@ class World:
         uid = spec.strip().lower()
         if not UUID_RE.fullmatch(uid):
             return None
-        files: set[str] = set()
-        for inst, sheet in _iter_sheets(self.h):  # one hierarchy walk for the scan
-            if sheet.file in files or sheet.path not in self.sheets:
-                continue
-            files.add(sheet.file)
-            self.check_time("item lookup")
-            symbols = self.sheet_symbol_list(sheet, inst)
-            if any(access.kiid(p) == uid for s in symbols for p in s.pins):
-                info = self.scene(sheet).sheet_pins.get(uid)
-                if info is None:
-                    return None
-                self._sheet_pin_ends = {**self._sheet_pin_ends, info.pin.key: info}
-                return info.pin
-        return None
+        if self._sheet_pin_index is None:  # every sheet pin's uuid -> its sheet, built once
+            index: dict[str, SheetRef] = {}
+            files: set[str] = set()
+            for inst, sheet in _iter_sheets(self.h):  # one hierarchy walk
+                if sheet.file in files or sheet.path not in self.sheets:
+                    continue
+                files.add(sheet.file)
+                self.check_time("item lookup", lookup=True)
+                for s in self.sheet_symbol_list(sheet, inst):
+                    for p in s.pins:
+                        index.setdefault(access.kiid(p), sheet)
+            self._sheet_pin_index = index
+        hit = self._sheet_pin_index.get(uid)
+        info = self.scene(hit).sheet_pins.get(uid) if hit is not None else None
+        if info is None:
+            return None
+        self._sheet_pin_ends = {**self._sheet_pin_ends, info.pin.key: info}
+        return info.pin
 
     def sheet_symbol_list(self, sheet: SheetRef, inst: Any = None) -> list[Any]:
         """The sheet symbols on `sheet` (read once per world; `inst`: its hierarchy node
