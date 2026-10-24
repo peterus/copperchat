@@ -11,6 +11,7 @@ from copperchat.kicad_tools.edit.scene import (
     ConnectionIndex,
     LabelInfo,
     Scene,
+    SheetPinInfo,
     SymbolInfo,
     WireInfo,
 )
@@ -55,6 +56,10 @@ def _scene(rng: random.Random) -> tuple[Scene, list[Point]]:
         scene.junctions[f"j-{i}"] = pt()
     for i in range(20):
         scene.no_connects[f"nc-{i}"] = pt()
+    for i in range(20):  # sheet pins are connection items too (#3)
+        pin = PinEnd((SHEET.path, "sheet-0", f"P{i}"), "S", f"P{i}", f"P{i}", "sheet_pin", pt(),
+                     "left")  # fmt: skip
+        scene.sheet_pins[f"sp-{i}"] = SheetPinInfo(f"sp-{i}", "sheet-0", "/root/sheet-0", pin)
     return scene, pts
 
 

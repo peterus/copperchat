@@ -1,6 +1,7 @@
 """Item targets of `sch_move` / `sch_delete` / `sch_duplicate` (E6): a reference (every
-unit), a power reference (`#PWR03`), any item UUID, or `sheet:<name>`, resolved over
-every sheet instance from one prepare-time `World` read.
+unit), a power reference (`#PWR03`), any item UUID, `sheet:<name>`, or a sheet pin as
+`<sheet name>.<pin name>` (v0.5.0 #1), resolved over every sheet instance from one
+prepare-time `World` read.
 
 An item of a sheet file used by several instances is one item (one UUID) shown in
 each instance: it is resolved once, through its first instance, and the target lists
@@ -43,6 +44,7 @@ Kind = Literal[
     "junction",
     "no_connect",
     "sheet",
+    "sheet_pin",
 ]
 LABEL_KINDS = ("label", "global_label", "hierarchical_label", "directive_label")
 
@@ -58,6 +60,7 @@ class Target:
     at: Point | None = None
     also_in: list[SheetRef] = field(default_factory=list)  # other instances of the file
     child: SheetRef | None = None  # kind == "sheet": the sub-sheet instance
+    pin: SheetPinInfo | None = None  # kind == "sheet_pin" (on `sheet`, the parent)
 
     @property
     def power(self) -> bool:
@@ -109,9 +112,9 @@ def _not_found(spec: str, world: World) -> StructuredToolError:
         "no symbol has that reference and no item that UUID"
         + (f"; close references: {', '.join(close)}" if close else ""),
         "Pass a reference ('R5', '#PWR03'), an item UUID (wires, labels, junctions, "
-        "no-connects) or 'sheet:<name>' "
+        "no-connects, sheet pins), '<sheet name>.<pin name>' or 'sheet:<name>' "
         + (f"({', '.join(sheets[:6])})" if sheets else "")
-        + "; list symbols with sch_list_symbols.",
+        + "; find items with sch_list_items, symbols with sch_list_symbols.",
         code="not_found",
         details={"candidates": close},
     )
@@ -175,17 +178,45 @@ _SUPPORTED = {
 }
 
 
+def _sheet_pin_target(world: World, spec: str, sheet: SheetRef, info: SheetPinInfo) -> Target:
+    return Target(
+        "sheet_pin", info.uuid, sheet, spec, at=info.pin.at, also_in=others(world, sheet), pin=info
+    )
+
+
+def _sheet_pin_by_uuid(world: World, spec: str) -> Target | None:
+    """KiCad's GetItemsById skips sheet pins: they are looked up in the scenes."""
+    for sheet in first_instances(world):
+        world.check_time("item lookup")
+        info = world.scene(sheet).sheet_pins.get(spec)
+        if info is not None:
+            return _sheet_pin_target(world, spec, sheet, info)
+    return None
+
+
+def _sheet_pin_by_name(world: World, spec: str) -> Target | None:
+    """'<sheet name>.<pin name>' (`World.sheet_pin`: the longest sheet name wins, a symbol
+    reference beats a sheet name); None when no sheet name matches."""
+    if any(s.ref == spec.partition(".")[0] for s in world.symbols):
+        return None
+    pin = world.sheet_pin(spec)
+    if pin is None:
+        return None
+    info = world.sheet_pin_info(pin.key)
+    assert info is not None
+    return _sheet_pin_target(world, spec, world.sheet_of(pin), info)
+
+
 def _by_uuid(world: World, spec: str, found: dict[str, Any]) -> Target | None:
     """`found`: one batched GetItemsById of every UUID the call names."""
     item = found.get(spec)
     if item is None:
-        return None
+        return _sheet_pin_by_uuid(world, spec)
     if type(item).__name__ not in _SUPPORTED:
         raise bad(
             f"Item {spec} cannot be handled here",
-            f"it is a {type(item).__name__} (text, bus, field or sheet pin)",
-            "Pass symbols, wires, labels, junctions, no-connects or sheet symbols; a sheet "
-            "pin moves with its sheet symbol.",
+            f"it is a {type(item).__name__} (text, bus or field)",
+            "Pass symbols, wires, labels, junctions, no-connects, sheet symbols or sheet pins.",
         )
     for sym in world.symbols:
         if sym.uuid == spec:
@@ -252,7 +283,7 @@ def resolve(world: World, raw: Any, tool: str, *, allow: tuple[str, ...] = ()) -
         raise bad(
             f"{tool}: items needs 1 to {MAX_ITEMS} entries",
             f"items was {short(raw)}",
-            "Pass items=['R5', ...] (references, item UUIDs or 'sheet:<name>').",
+            "Pass items=['R5', ...] (references, item UUIDs, '<sheet>.<pin>' or 'sheet:<name>').",
         )
     out: list[Target] = []
     seen: set[tuple[str, str]] = set()
@@ -263,7 +294,7 @@ def resolve(world: World, raw: Any, tool: str, *, allow: tuple[str, ...] = ()) -
         if not isinstance(spec, str) or not spec.strip() or len(spec) > 128:
             raise bad(
                 f"{tool}: invalid item {short(spec)}",
-                "an item is a reference, a UUID or 'sheet:<name>'",
+                "an item is a reference, a UUID, '<sheet>.<pin>' or 'sheet:<name>'",
                 "Pass items=['R5', '#PWR03', '<uuid>', 'sheet:power'].",
             )
         spec = spec.strip()
@@ -277,9 +308,13 @@ def resolve(world: World, raw: Any, tool: str, *, allow: tuple[str, ...] = ()) -
             found = [hit]
         else:
             units = [s for s in world.symbols if s.ref == spec]
-            if not units:
+            pin = None if units or "." not in spec else _sheet_pin_by_name(world, spec)
+            if pin is not None:
+                found = [pin]
+            elif not units:
                 raise _not_found(spec, world)
-            found = _symbol_target(world, spec, units)
+            else:
+                found = _symbol_target(world, spec, units)
         for t in found:
             if allow and t.kind not in allow:
                 raise bad(

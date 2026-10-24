@@ -24,6 +24,7 @@ READ_KICAD = frozenset(
         "sch_get_symbol",
         "sch_get_net",
         "sch_get_pin",
+        "sch_list_items",
         "pcb_list_footprints",
         "pcb_get_footprint",
         "pcb_get_net",
@@ -58,7 +59,7 @@ SCH_WRITES = frozenset(
 )
 PLAN_TOOLS = frozenset({"plan_propose", "plan_revise", "plan_step_begin", "plan_step_done"})
 DOC_TOOLS = frozenset({"doc_list", "doc_read", "doc_write", "doc_patch_section", "doc_append"})
-# The 40 tools of e2d73b5 (spec §8.1).
+# The 40 tools of e2d73b5 (spec §8.1), plus sch_list_items (v0.5.0, #3).
 TODAY = READ_KICAD | LIBRARY | PARTS | GIT | SCH_WRITES | PLAN_TOOLS
 # Read-only repository access, in every profile (repo-context spec §5.4).
 REPO_TOOLS = frozenset({"repo_list", "repo_grep", "repo_read"})

@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from copperchat.kicad_tools.edit.changeset import SheetRef
 from copperchat.kicad_tools.edit.geometry import Box, PinEnd, Point
-from copperchat.kicad_tools.edit.scene import LabelInfo, Scene, SymbolInfo, WireInfo
+from copperchat.kicad_tools.edit.scene import (
+    SHEET_PIN,
+    LabelInfo,
+    Scene,
+    SheetPinInfo,
+    SymbolInfo,
+    WireInfo,
+)
 from copperchat.kicad_tools.edit.transform import owned_stub_chains
 
 SHEET = SheetRef("/r", "1", "top.kicad_sch", "", "/")
@@ -83,3 +90,25 @@ def test_chain_between_two_moving_pins_is_found_once() -> None:
     assert chain.wires == ["a", "b", "c"] and chain.end_items == ["g"]
     # the second part does not move: its pin ends the chain foreign
     assert owned_stub_chains(_scene(r, gnd, *wires), [(0, 0)], set()) == []
+
+
+def _sheet_pin(uid: str, at: Point) -> SheetPinInfo:
+    pin = PinEnd((SHEET.path, "sh", uid), "Power", uid, uid, SHEET_PIN, at, "left")
+    return SheetPinInfo(uid, "sh", f"{SHEET.path}/sh", pin)
+
+
+def test_a_listed_sheet_pin_starts_a_chain() -> None:
+    """v0.5.0 #1: a moved sheet pin's own stub (here to a label) is owned; an unlisted
+    sheet pin stays a blocker, as before."""
+    lb = LabelInfo("lb", "VIN", (0, 5), "label", 0)
+    sc = _scene(lb, WireInfo("w1", (10, 5), (0, 5)))
+    sc.sheet_pins["sp"] = _sheet_pin("sp", (10, 5))
+    (chain,) = owned_stub_chains(sc, [(10, 5)], sheet_pins={"sp"})
+    assert chain.wires == ["w1"] and chain.end_items == ["lb"]
+    assert owned_stub_chains(sc, [(10, 5)]) == []
+
+
+def test_sheet_pin_chain_to_another_pin_is_not_owned() -> None:
+    sc = _scene(_sym("r", (0, 5), (0, 0)), WireInfo("w1", (10, 5), (0, 5)))
+    sc.sheet_pins["sp"] = _sheet_pin("sp", (10, 5))
+    assert owned_stub_chains(sc, [(10, 5)], sheet_pins={"sp"}) == []

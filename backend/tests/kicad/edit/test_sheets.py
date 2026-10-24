@@ -395,7 +395,8 @@ async def test_shared_sheet_label_once(hier_session: KicadSession, edit_db: Data
         ctx, "sch_add_sheet_pin", sheet=p2, name="SHARED_NET", direction="input"
     )
     assert not e2, r2
-    assert r2["label"] is None and any("shared sheet" in n for n in r2["notes"])
+    assert r2["label"]["reused"] is True and r2["label"]["uuid"] == r1["label"]["uuid"]
+    assert any("shared sheet" in n for n in r2["notes"])
 
     def count(h: KicadHandle) -> tuple[int, list[int]]:
         inst = [i for i in h.schematic().get_hierarchy() if str(i.filename) == shared]
