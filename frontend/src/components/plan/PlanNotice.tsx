@@ -36,20 +36,27 @@ export function latestPlanCards(messages: readonly MessageDTO[]): Map<string, nu
   return map;
 }
 
-/** The note of a card row: the agent's reason of a revision, or the fallback after a rejection. */
-function noteOf(md: MessageDTO['metadata']): string | null {
+/**
+ * The note of a card row while it still describes the plan (same revision): the agent's reason
+ * of a revision — unless a paused step already shows it — or the fallback after a rejection.
+ */
+function useNote(m: MessageDTO, planId: string): string | null {
+  const plan = usePlans((s) => (s.projectId === m.projectId ? s.byId[planId] : undefined));
+  const md = m.metadata;
+  if (!plan || md.revision !== plan.revision) return null;
   if (md.action === 'plan-revised') {
-    // Agent-authored: rendered as plain text by PlanCard.
-    return typeof md.agentReason === 'string' && md.agentReason ? `Revised: ${md.agentReason}` : null;
+    const shownAtStep = plan.status === 'proposed' && plan.steps.some((st) => st.status === 'paused');
+    // Agent-authored: rendered as plain text by PlanCard, attributed to the agent.
+    return !shownAtStep && typeof md.agentReason === 'string' && md.agentReason ? `Agent's reason: ${md.agentReason}` : null;
   }
-  if (md.action === 'plan-restored') {
-    return typeof md.revision === 'number' ? `Revision rejected – back to revision ${md.revision}, paused.` : null;
+  if (md.action === 'plan-restored' && plan.status === 'paused') {
+    return `Revision rejected – back to revision ${plan.revision}, paused.`;
   }
   return null;
 }
 
 /** An earlier card of a plan: one line, expandable to a read-only view of the plan. */
-function SupersededPlan({ projectId, planId, note }: { projectId: string; planId: string; note: string | null }) {
+function SupersededPlan({ projectId, planId }: { projectId: string; planId: string }) {
   const store = usePlansStore();
   const revision = usePlans((s) => (s.projectId === projectId ? s.byId[planId]?.revision : undefined));
   const [open, setOpen] = useState(false);
@@ -65,7 +72,8 @@ function SupersededPlan({ projectId, planId, note }: { projectId: string; planId
       </button>
       {open && (
         <div className="mt-1">
-          <PlanCard projectId={projectId} planId={planId} readOnly note={note} />
+          {/* Only the plan's current state is kept, not each revision's. */}
+          <PlanCard projectId={projectId} planId={planId} readOnly note={revision !== undefined ? `Current state of the plan (revision ${revision})` : null} />
         </div>
       )}
     </div>
@@ -83,9 +91,9 @@ export function PlanNotice({ message: m, planId }: { message: MessageDTO; planId
     const c = s.chats[chatKey(m.projectId, m.conversationId)];
     return c ? latestPlanCards(c.messages).get(planId) : undefined;
   });
-  const note = noteOf(m.metadata);
+  const note = useNote(m, planId);
   if (latest !== undefined && latest !== m.id) {
-    return <SupersededPlan projectId={m.projectId} planId={planId} note={note} />;
+    return <SupersededPlan projectId={m.projectId} planId={planId} />;
   }
   return <PlanCard projectId={m.projectId} planId={planId} note={note} />;
 }

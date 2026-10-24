@@ -84,7 +84,7 @@ export function PlanStepRow({
           </span>
         </div>
         {step.intent && <p className="break-words text-xs text-muted">{step.intent}</p>}
-        {awaiting && reviseReason && <p className="whitespace-pre-wrap break-words text-xs text-warning">{reviseReason}</p>}
+        {awaiting && reviseReason && <p className="line-clamp-6 whitespace-pre-wrap break-words text-xs text-muted">{`Agent's reason: ${reviseReason}`}</p>}
         <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
           {finished ? (
             <span>{plural(step.changeCount, 'change')}</span>

@@ -155,3 +155,13 @@ async def test_revise_mid_step_validates_before_pausing(h: Harness) -> None:
         await h.plans.revise(h.ctx(), [], "why")
     plan = await h.plan()
     assert plan.status == "running" and h.state.active_step_id is not None
+
+
+async def test_revise_from_another_run_uses_the_persisted_counters(h: Harness) -> None:
+    """The running step is not this turn's (no in-memory counters): the persisted ones
+    go with the paused step."""
+    await _used_3(h)
+    h.run_id = "run-other"
+    revised = await _revise(h)
+    assert revised.step(1).status == "paused" and revised.step(1).used == 3
+    assert revised.step(1).placed == ("own",)

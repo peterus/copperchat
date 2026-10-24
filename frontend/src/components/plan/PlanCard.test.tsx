@@ -305,7 +305,7 @@ describe('PlanCard', () => {
     const items = await screen.findAllByRole('listitem');
     expect(within(items[1]!).getByText('Paused – revision awaiting approval')).toBeInTheDocument();
     // Agent-authored: plain text, never markup.
-    expect(within(items[1]!).getByText('The LED needs <b>a second</b> resistor')).toBeInTheDocument();
+    expect(within(items[1]!).getByText("Agent's reason: The LED needs <b>a second</b> resistor")).toBeInTheDocument();
     expect(within(items[1]!).getByText('2 of 5 changes used')).toBeInTheDocument();
     expect(items[1]!.querySelector('b')).toBeNull();
   });

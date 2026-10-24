@@ -147,7 +147,7 @@ export function PlanCard({ projectId, planId, readOnly = false, note = null }: P
           {STATUS_LABEL[plan.status]}
         </span>
       </header>
-      {note && <p className="mt-1 whitespace-pre-wrap break-words text-xs text-muted">{note}</p>}
+      {note && <p className="mt-1 line-clamp-6 whitespace-pre-wrap break-words text-xs text-muted">{note}</p>}
       {plan.summary && <p className="mt-1 whitespace-pre-wrap break-words">{plan.summary}</p>}
       {plan.status === 'paused' && reason && <p className="mt-1 text-xs text-warning">Paused because {reason}.</p>}
       {plan.status === 'approved' && <p className="mt-1 text-xs text-muted">Waiting for the agent to start.</p>}
@@ -177,7 +177,7 @@ export function PlanCard({ projectId, planId, readOnly = false, note = null }: P
           </div>
           {fallback !== null && (
             <p className="mt-1 text-xs text-muted">
-              Rejecting returns the plan to revision {fallback}, paused at the interrupted step; no edit is lost.
+              Rejecting returns the plan to revision {fallback}, paused; no edit is lost.
             </p>
           )}
         </>

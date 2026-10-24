@@ -279,6 +279,7 @@ def transition(plan: Plan, event: str, *, now: str, **kw: Any) -> Plan:
             erc_result_id=None,
             used=0,
             placed=(),
+            change_base=0,
         )
         if s.idx > to_step
         else s

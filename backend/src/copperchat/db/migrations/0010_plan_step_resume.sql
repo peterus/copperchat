@@ -23,6 +23,8 @@ CREATE TABLE plan_steps_new (
     erc_result_id     TEXT NULL,
     step_used         INTEGER NOT NULL DEFAULT 0,   -- logical changes used so far
     step_placed       TEXT NOT NULL DEFAULT '[]',   -- JSON: symbols placed in the step
+    -- changes.id before the step's fresh begin: its change count spans every run since
+    step_change_base  INTEGER NOT NULL DEFAULT 0,
     UNIQUE (plan_id, idx)
 );
 INSERT INTO plan_steps_new(id, plan_id, idx, title, intent, expected_changes, touches,

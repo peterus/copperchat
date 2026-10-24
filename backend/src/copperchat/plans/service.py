@@ -335,7 +335,9 @@ class PlanService:
         pid = ctx.project.id
         await self._check_open(await self._proposing_conversation(ctx))
         await self._check_owner(ctx)
-        async with self.lock(pid):
+        # The edit lock first (the tool adapter's order): no edit of the step is between
+        # its gate check and its budget record while the counters are taken.
+        async with self.editing.edit_lock(pid), self.lock(pid):
             plan = await self._open(pid)
             kept = plan.done_count  # finished steps always stay (machine "revise")
             specs = validate_steps(steps, offset=kept)
@@ -395,6 +397,8 @@ class PlanService:
             new = machine.transition(
                 plan, "step_begin", now=utcnow_iso(), idx=idx, run_id=str(ctx.run_id)
             )
+            if plan.step(idx).status not in machine.RESUMABLE:  # a fresh begin
+                new = machine.with_step(new, idx, change_base=await self.repo.last_change_id(pid))
             if new.base_snapshot_id is None:
                 # The pre-plan state: this turn's undo snapshot (taken now if the turn
                 # has none yet), the target of "roll back to start".
@@ -519,7 +523,7 @@ class PlanService:
             snap = await take_step_checkpoint(
                 self.history, ctx.project, str(ctx.run_id), step.id, f"Plan step {idx}"
             )
-            count = await self.repo.step_change_count(pid, str(ctx.run_id), step.id)
+            count = await self.repo.step_change_count(pid, step)
             new = machine.transition(
                 plan,
                 "step_done",

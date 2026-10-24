@@ -63,6 +63,9 @@ class PlanStep:
     # run): logical changes used and the symbols placed inside the step (refund ledger).
     used: int = 0
     placed: tuple[str, ...] = ()
+    # Last `changes` row id before the step began afresh: its change count covers every
+    # run of the step since (a resumed step finishes in another run), not older attempts.
+    change_base: int = 0
 
 
 @dataclass(frozen=True)

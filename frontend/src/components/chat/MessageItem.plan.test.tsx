@@ -99,7 +99,8 @@ describe('plan cards in the chat list', () => {
     expect(within(last).getByRole('button', { name: 'Approve' })).toBeEnabled();
     expect(within(last).getByRole('button', { name: 'Reject revision' })).toBeEnabled();
     // The agent's reason is plain text, never markup.
-    expect(within(last).getByText(`Revised: ${REASON}`)).toBeInTheDocument();
+    // Shown once, attributed to the agent (at the paused step, not again in the header).
+    expect(within(last).getAllByText(`Agent's reason: ${REASON}`)).toHaveLength(1);
     expect(last.querySelector('b')).toBeNull();
     // Exactly one interactive card for the plan.
     expect(screen.getAllByRole('button', { name: 'Approve' })).toHaveLength(1);
@@ -166,6 +167,25 @@ describe('plan cards in the chat list', () => {
       'collapsed: Superseded by revision 1',
       'card: Resume, Roll back to…, Abort',
     ]);
+  });
+
+  it('a restored card drops its note once the plan is resumed', async () => {
+    // Restored, then resumed: the plan-restored card stays the live one without its stale note.
+    const resumed = plan({ status: 'approved', revision: 1, previousRevision: null, reviseReason: null });
+    await mount([...REVISED, notice(5, { action: 'plan-restored', planId: PLAN, revision: 1 }, 'x')], resumed);
+    expect(within(item(5)).queryByText(/Revision rejected/)).toBeNull();
+  });
+
+  it('a revision without a paused step shows the agent reason in the header, once', async () => {
+    await mount(REVISED, plan({ steps: [step(1, { status: 'done', changeCount: 2 }), step(2)] }));
+    expect(within(item(4)).getAllByText(`Agent's reason: ${REASON}`)).toHaveLength(1);
+  });
+
+  it('an expanded superseded card says it shows the current plan', async () => {
+    await mount(REVISED, plan());
+    fireEvent.click(within(item(2)).getByRole('button', { name: 'Superseded by revision 2' }));
+    expect(within(item(2)).getByText('Current state of the plan (revision 2)')).toBeInTheDocument();
+    expect(within(item(2)).queryByText(/^Agent's reason/)).not.toBeNull(); // the paused step's own text
   });
 
   it('a plan-revised notice without a plan id stays a plain notice', async () => {

@@ -54,6 +54,7 @@ def _step(row: Any) -> PlanStep:
         erc_result_id=row["erc_result_id"],
         used=int(row["step_used"]),
         placed=tuple(json.loads(row["step_placed"])),
+        change_base=int(row["step_change_base"]),
     )
 
 
@@ -180,8 +181,8 @@ class PlanRepo:
             await self._db.execute(
                 "INSERT INTO plan_steps(id, plan_id, idx, title, intent, expected_changes,"
                 " touches, verification, status, run_id, checkpoint_id, change_count, summary,"
-                " failure, erc_result_id, step_used, step_placed)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " failure, erc_result_id, step_used, step_placed, step_change_base)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     s.id,
                     plan.id,
@@ -200,17 +201,23 @@ class PlanRepo:
                     s.erc_result_id,
                     s.used,
                     json.dumps(list(s.placed)),
+                    s.change_base,
                 ),
             )
 
-    async def save_step_counters(
-        self, plan_id: str, step_id: str, used: int, placed: set[str]
-    ) -> None:
-        """The budget counters of a begun step after one of its edits (PlanGate)."""
+    async def save_step_counters(self, step_id: str, used: int, placed: set[str]) -> None:
+        """The budget counters of a begun step after one of its edits (PlanGate; under
+        the plan lock, so no full plan save interleaves)."""
         await self._db.execute(
-            "UPDATE plan_steps SET step_used = ?, step_placed = ? WHERE id = ? AND plan_id = ?",
-            (used, json.dumps(sorted(placed)), step_id, plan_id),
+            "UPDATE plan_steps SET step_used = ?, step_placed = ? WHERE id = ?",
+            (used, json.dumps(sorted(placed)), step_id),
         )
+
+    async def last_change_id(self, project_id: str) -> int:
+        row = await self._db.fetchone(
+            "SELECT MAX(id) AS n FROM changes WHERE project_id = ?", (project_id,)
+        )
+        return 0 if row is None or row["n"] is None else int(row["n"])
 
     async def insert(self, plan: Plan) -> Plan:
         """A second open plan of the project violates `ux_plans_open` -> `plan_open`."""
@@ -275,11 +282,12 @@ class PlanRepo:
             await self._write_steps(plan)
         return plan
 
-    async def step_change_count(self, project_id: str, run_id: str, step_id: str) -> int:
+    async def step_change_count(self, project_id: str, step: PlanStep) -> int:
+        """Change rows of `step` in every run since it began afresh (`change_base`)."""
         row = await self._db.fetchone(
-            "SELECT COUNT(*) AS n FROM changes WHERE project_id = ? AND run_id = ?"
-            " AND plan_step_id = ?",
-            (project_id, run_id, step_id),
+            "SELECT COUNT(*) AS n FROM changes WHERE project_id = ? AND plan_step_id = ?"
+            " AND id > ?",
+            (project_id, step.id, step.change_base),
         )
         return 0 if row is None else int(row["n"])
 

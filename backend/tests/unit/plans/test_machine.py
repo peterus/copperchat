@@ -327,7 +327,7 @@ async def test_mid_step_revision_roundtrip(repo: PlanRepo) -> None:
 
 async def test_step_counters_saved_alone(repo: PlanRepo) -> None:
     plan = await repo.insert(running())
-    await repo.save_step_counters(plan.id, plan.step(1).id, 4, {"b", "a"})
+    await repo.save_step_counters(plan.step(1).id, 4, {"b", "a"})
     step = (await repo.get(PID, plan.id)).step(1)
     assert (step.used, step.placed) == (4, ("a", "b"))
 
@@ -365,3 +365,26 @@ async def test_protected_snapshot_ids(repo: PlanRepo) -> None:
     plan = go(running(), "step_done", idx=1, checkpoint_id="c" * 32)
     await repo.insert(replace(plan, base_snapshot_id="b" * 32))
     assert await repo.protected_snapshot_ids(PID) == {"b" * 32, "c" * 32}
+
+
+def test_revise_between_steps_then_reject() -> None:
+    """A running plan between two steps: nothing is paused mid-way; reject falls back."""
+    plan = go(running(3), "step_done", idx=1, checkpoint_id="c1", change_count=2)
+    steps = machine.build_steps(plan.id, [spec("new")], start=2)
+    revised = go(plan, "revise", steps=steps, reason="r")
+    assert [(s.idx, s.status) for s in revised.steps] == [(1, "done"), (2, "pending")]
+    back = go(revised, "reject")
+    assert back.status == "paused" and back.pause_reason == "revision_rejected"
+    assert [(s.idx, s.status) for s in back.steps] == [(1, "done"), (2, "pending"), (3, "pending")]
+
+
+def test_revise_after_a_failed_step_then_reject() -> None:
+    """The step_exceeded path stays: the failed step is replaced afresh; rejecting the
+    revision returns to the paused plan with the failed step (resume / roll back)."""
+    plan = go(running(), "fail", reason="step_exceeded", failure="needed 9")
+    steps = machine.build_steps(plan.id, [spec("bigger", 6)], start=1)
+    revised = go(plan, "revise", steps=steps, reason="r")
+    assert revised.steps[0].status == "pending" and revised.steps[0].id != plan.step(1).id
+    back = go(revised, "reject")
+    assert back.status == "paused" and back.step(1).status == "failed"
+    assert back.step(1).failure == "needed 9"
