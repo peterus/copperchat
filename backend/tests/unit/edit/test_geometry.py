@@ -55,3 +55,31 @@ def test_box_and_segments() -> None:
     assert in_segment_interior((5, 0), (0, 0), (10, 0))
     assert not in_segment_interior((10, 0), (0, 0), (10, 0))
     assert not on_segment((5, 0.02), (0, 0), (10, 0))
+
+
+class _P:
+    def __init__(self, x: float, y: float) -> None:
+        self.x, self.y = int(x * 1e6), int(y * 1e6)
+
+
+class _Field:
+    def __init__(self, value: str, angle: float = 0.0) -> None:
+        from types import SimpleNamespace as NS
+
+        attrs = NS(size=_P(1.27, 1.27), horizontal_alignment=2, vertical_alignment=2, angle=angle)
+        self.text = NS(value=value, position=_P(10, 10), attributes=attrs)
+        self.visible = True
+
+
+def test_field_box_matches_layout_extent() -> None:
+    from copperchat.kicad_tools.edit.fields import text_width
+    from copperchat.kicad_tools.edit.geometry import _field_box
+
+    b = _field_box(_Field("10k"))
+    assert b is not None
+    assert b.x1 - b.x0 == pytest.approx(text_width("10k", 1.27))
+    assert b.y1 - b.y0 == pytest.approx(1.6 * 1.27)
+    r = _field_box(_Field("10k", angle=90))
+    assert r is not None
+    assert r.x1 - r.x0 == pytest.approx(1.6 * 1.27)
+    assert r.y1 - r.y0 == pytest.approx(text_width("10k", 1.27))
