@@ -34,6 +34,13 @@ SELECT id, plan_id, idx, title, intent, expected_changes, touches, verification,
     run_id, checkpoint_id, change_count, summary, failure, erc_result_id FROM plan_steps;
 DROP TABLE plan_steps;
 ALTER TABLE plan_steps_new RENAME TO plan_steps;
+-- Unfinished steps keep today's count (the rows of their last run).
+UPDATE plan_steps SET step_change_base = COALESCE(
+    (SELECT MIN(c.id) - 1 FROM changes c
+     WHERE c.plan_step_id = plan_steps.id AND c.run_id = plan_steps.run_id), 0)
+WHERE status != 'done';
+-- A step's change count (plan_step_done) filters by step and row id.
+CREATE INDEX IF NOT EXISTS ix_changes_step ON changes(project_id, plan_step_id, id);
 
 ALTER TABLE plans ADD COLUMN revise_reason TEXT NULL;
 -- The paused revision a proposed revision replaced (JSON {revision, pause_reason,

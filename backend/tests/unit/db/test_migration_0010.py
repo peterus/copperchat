@@ -57,8 +57,19 @@ async def _check(db: Database, tmp_path: Path) -> None:
             " '{\"refs\": [], \"nets\": []}', 'v', ?, 2)",
             (f"{idx}" * 32, PLAN, idx, status),
         )
+    for i, (run, step) in enumerate((("r0", 2), ("r1", 2), ("r1", 1)), start=1):
+        await db.execute(
+            "INSERT INTO changes(id, project_id, run_id, plan_step_id, call_seq, tool, op,"
+            " kind, uuid, sheet_path, created_at) VALUES (?, ?, ?, ?, 1, 't', 'add', 'wire',"
+            " 'u', '/', ?)",
+            (10 * i, PID, run, f"{step}" * 32, NOW),
+        )
+    await db.execute("UPDATE plan_steps SET run_id = 'r1'")
     await migrate(db)
     plan = await PlanRepo(db).get(PID, PLAN)
+    # the unfinished step keeps counting its last run's rows; the index exists
+    assert [s.change_base for s in plan.steps] == [0, 19]
+    assert await db.fetchone("SELECT name FROM sqlite_master WHERE name = 'ix_changes_step'")
     assert [(s.idx, s.status, s.change_count, s.used, s.placed) for s in plan.steps] == [
         (1, "done", 2, 0, ()),
         (2, "interrupted", 2, 0, ()),

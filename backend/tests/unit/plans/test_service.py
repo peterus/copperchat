@@ -506,3 +506,28 @@ async def test_resumed_step_counts_the_changes_of_all_its_runs(rig: Rig) -> None
     rig.render()
     out = await rig.plans.step_done(rig.ctx(), 1, "wired")
     assert out["change_count"] == 3
+
+
+async def test_step_resumed_through_a_revision_counts_since_its_fresh_begin(rig: Rig) -> None:
+    """Rollback + re-begin, a mid-step revise, approval in a new run: the count spans
+    both runs of this attempt, not the rolled-back one."""
+    step_id = (await rig.begun()).steps[0].id
+
+    def entry(uuid: str, run_id: str) -> ChangeEntry:
+        return ChangeEntry(rig.pid, run_id, step_id, 1, "sch_add_wire", "add", "wire", uuid, "/r")
+
+    await rig.editing.changes.add_many([entry("x", RUN), entry("y", RUN)])  # rolled back
+    await rig.plans.pause(rig.opened.project, "turn_ended")
+    plan = await rig.last_plan()
+    plan = machine.transition(plan, "rollback", now=NOW, to_step=0)
+    await rig.plans.repo.save(machine.transition(plan, "resume", now=NOW))
+    await rig.plans.step_begin(rig.ctx(), 1)
+    await rig.editing.changes.add_many([entry("a", RUN)])
+    await rig.plans.revise(rig.ctx(), [step_spec("bigger", 8), step_spec("b")], "more")
+    await rig.plans.repo.save(machine.transition(await rig.last_plan(), "approve", now=NOW))
+    rig.run_id = "run-p2"
+    await rig.plans.step_begin(rig.ctx(), 1)
+    await rig.editing.changes.add_many([entry("b", "run-p2")])
+    rig.render()
+    out = await rig.plans.step_done(rig.ctx(), 1, "wired")
+    assert out["change_count"] == 2

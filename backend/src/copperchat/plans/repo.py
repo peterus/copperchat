@@ -213,10 +213,9 @@ class PlanRepo:
             (used, json.dumps(sorted(placed)), step_id),
         )
 
-    async def last_change_id(self, project_id: str) -> int:
-        row = await self._db.fetchone(
-            "SELECT MAX(id) AS n FROM changes WHERE project_id = ?", (project_id,)
-        )
+    async def last_change_id(self) -> int:
+        # Table-wide (O(1) on the rowid): any bound up to the project's last row works.
+        row = await self._db.fetchone("SELECT MAX(id) AS n FROM changes")
         return 0 if row is None or row["n"] is None else int(row["n"])
 
     async def insert(self, plan: Plan) -> Plan:

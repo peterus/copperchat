@@ -153,6 +153,7 @@ def _revise(plan: Plan, new_steps: tuple[PlanStep, ...], reason: str | None, now
             run_id=begun.run_id,
             used=begun.used,
             placed=begun.placed,
+            change_base=begun.change_base,
         )
         new_steps = (first, *new_steps[1:])
     return replace(

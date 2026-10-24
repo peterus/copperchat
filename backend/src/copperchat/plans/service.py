@@ -398,7 +398,7 @@ class PlanService:
                 plan, "step_begin", now=utcnow_iso(), idx=idx, run_id=str(ctx.run_id)
             )
             if plan.step(idx).status not in machine.RESUMABLE:  # a fresh begin
-                new = machine.with_step(new, idx, change_base=await self.repo.last_change_id(pid))
+                new = machine.with_step(new, idx, change_base=await self.repo.last_change_id())
             if new.base_snapshot_id is None:
                 # The pre-plan state: this turn's undo snapshot (taken now if the turn
                 # has none yet), the target of "roll back to start".
@@ -492,7 +492,8 @@ class PlanService:
         summary = _text(summary, "summary", SUMMARY_MAX)
         given = self._justifications(justifications)
         pid = ctx.project.id
-        async with self.lock(pid):
+        # The edit lock first (as revise): no parallel edit lands after the checkpoint.
+        async with self.editing.edit_lock(pid), self.lock(pid):
             plan = await self._open(pid)
             step = plan.step(idx)
             if plan.status != "running" or step.status != "running":
