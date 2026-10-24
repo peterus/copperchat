@@ -708,6 +708,29 @@ async def test_retry_with_non_new_ids_drops_lapsed_ones(rig: Rig) -> None:
     assert set(ids) == {vid(a)}  # x matched no new error: it did not stay
 
 
+async def test_forget_runs_before_the_save_in_revise_and_rollback(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = await rig.begun()
+    step_id = plan.steps[0].id
+    put = rig.editing.erc_results.put_step_justifications
+    await rig.plans.pause(rig.opened.project, "turn_ended")
+
+    async def failing_save(_plan: Any) -> Any:
+        raise RuntimeError("save cut short")
+
+    monkeypatch.setattr(rig.plans, "_save", failing_save)
+    await put(step_id, {"a": "r"}, [rule(type="t")])
+    with pytest.raises(RuntimeError):
+        await rig.plans.revise(rig.ctx(), [step_spec("n1", 5)], "new idea")
+    assert await rig.editing.erc_results.step_justifications(step_id) == ({}, [])
+
+    await put(step_id, {"a": "r"}, [rule(type="t")])
+    with pytest.raises(RuntimeError):
+        await rig.plans.rollback(rig.opened.project, plan.id, 0)
+    assert await rig.editing.erc_results.step_justifications(step_id) == ({}, [])
+
+
 # -- pauses -------------------------------------------------------------------------
 
 

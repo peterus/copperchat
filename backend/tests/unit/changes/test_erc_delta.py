@@ -169,3 +169,20 @@ async def test_run_erc_runs_again_after_a_mutation(monkeypatch: pytest.MonkeyPat
 
     res = await checks.run_erc(Ctx(), {})  # type: ignore[arg-type]
     assert runs == [1] and res.data is not None and res.data["total"] == 1
+
+
+async def test_current_erc_stamp_is_taken_before_the_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    state = EditTurnState(call_seq=5)
+    runs: list[int] = []
+
+    async def runner(session: Any, doc: str) -> list[dict[str, Any]]:
+        runs.append(1)
+        state.call_seq += 1  # an edit lands while the check runs
+        state.last_mutation_seq = state.call_seq
+        return []
+
+    monkeypatch.setattr(erc, "check_violations", runner)
+    await current_erc(object(), state)  # type: ignore[arg-type]
+    assert not erc.erc_is_fresh(state)  # the report predates the edit
+    await current_erc(object(), state)  # type: ignore[arg-type]
+    assert runs == [1, 1]
