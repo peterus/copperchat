@@ -54,9 +54,10 @@ class ErcResultNotFound(CopperChatError):
 
 
 def violation_id(v: dict[str, Any]) -> str:
-    """Stable id of a violation: type + its items' UUIDs (moving an item keeps it)."""
+    """Stable id of a violation: type + sheet + its items' UUIDs (moving an item keeps
+    it). The sheet keeps the violations of a reused sheet's instances apart."""
     uuids = sorted(str(i.get("uuid", "")) for i in v.get("items", []))
-    key = "|".join([str(v.get("type", "")), *uuids])
+    key = "|".join([str(v.get("type", "")), str(v.get("sheet") or "/"), *uuids])
     return hashlib.sha1(key.encode(), usedforsecurity=False).hexdigest()[:12]
 
 

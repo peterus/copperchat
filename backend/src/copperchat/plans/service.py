@@ -346,11 +346,6 @@ class PlanService:
         async with self.editing.edit_lock(pid), self.lock(pid):
             plan = await self._open(pid)
             kept = plan.done_count  # finished steps always stay (machine "revise")
-            # A revision needs the user's approval again: what was justified for the
-            # steps it replaces (or the begun step it keeps) is submitted anew.
-            await self.editing.erc_results.forget_steps(
-                [s.id for s in plan.steps if s.status != "done"]
-            )
             specs = validate_steps(steps, offset=kept)
             running = plan.running_step
             if running is not None and state.active_step_id == running.id:
@@ -370,6 +365,11 @@ class PlanService:
                 reason=reason,
             )
             await self._save(new)
+            # A revision needs the user's approval again: what was justified for the
+            # steps it replaces (or the begun step it keeps) is submitted anew.
+            await self.editing.erc_results.forget_steps(
+                [s.id for s in plan.steps if s.status != "done"]
+            )
         if running is not None and state.active_step_id == running.id:
             self.clear_step(state)
         paused = (
@@ -618,7 +618,9 @@ class PlanService:
                     f"{JUSTIFICATIONS_MAX} justifications of live errors",
                     "Fix the errors, or cover groups with fewer erc_rules.",
                 )
-            if given or given_rules:
+            # Persist before the ERC run (a failing run keeps them) unless over the cap:
+            # then they are checked against the live errors first and not stored if too many.
+            if (given or given_rules) and len(all_ids) <= JUSTIFICATIONS_MAX:
                 await self.editing.erc_results.put_step_justifications(step.id, all_ids, all_rules)
             delta, baseline_id = await self._erc(ctx, plan, step, state)
             new_ids = {str(v.get("id")) for v in delta.new_errors}
@@ -629,7 +631,8 @@ class PlanService:
                     f"{len(justified)} justified errors (max {JUSTIFICATIONS_MAX} by id)",
                     "Cover groups of alike errors with erc_rules instead.",
                 )
-            if len(justified) != len(all_ids):  # lapsed ids (fixed or changed) fall away
+            if justified != stored_ids or all_rules != stored_rules:
+                # lapsed ids (fixed or changed) fall away
                 await self.editing.erc_results.put_step_justifications(
                     step.id, justified, all_rules
                 )
@@ -1005,9 +1008,6 @@ class PlanService:
             if engine is not None and engine.is_busy:
                 raise AgentBusy("the agent is working; stop it or wait before rolling back")
             new = machine.transition(plan, "rollback", now=utcnow_iso(), to_step=to_step)
-            await self.editing.erc_results.forget_steps(
-                [s.id for s in plan.steps if s.idx > to_step]
-            )
             target = plan.base_snapshot_id if to_step == 0 else plan.step(to_step).checkpoint_id
             if target is None and plan.done_count > to_step:
                 raise PlanStateError(
@@ -1022,6 +1022,9 @@ class PlanService:
                     self.history, project, target, conversation_id=plan.conversation_id
                 )
             await self._save(new)
+            await self.editing.erc_results.forget_steps(
+                [s.id for s in plan.steps if s.idx > to_step]
+            )
         return new
 
     async def get(self, project: Project, plan_id: str) -> Plan:

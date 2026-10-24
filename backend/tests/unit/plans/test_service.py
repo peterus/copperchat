@@ -603,6 +603,73 @@ async def test_sheet_spellings_are_one_rule(rig: Rig) -> None:
     ]
 
 
+def uid(i: int) -> str:
+    return f"{i:08d}-0000-0000-0000-000000000000"
+
+
+async def test_over_cap_ids_are_not_a_dead_end(rig: Rig) -> None:
+    await rig.begun()
+    rig.current = [violation("pin_not_connected", uid(i)) for i in range(140)]
+    ids = [vid(v) for v in rig.current]
+    await expect_error(
+        rig.plans.step_done(rig.ctx(), 1, "x", {i: "later" for i in ids[:90]}), "erc_errors_open"
+    )
+    err = await expect_error(
+        rig.plans.step_done(rig.ctx(), 1, "x", {i: "later" for i in ids[90:]}), "invalid_argument"
+    )
+    assert "erc_rules" in err.to_dict()["suggestion"]
+    step_id = (await rig.last_plan()).steps[0].id
+    stored, _ = await rig.editing.erc_results.step_justifications(step_id)
+    assert set(stored) == set(ids[:90])  # the over-cap call stored nothing
+    rig.render()
+    out = await rig.plans.step_done(rig.ctx(), 1, "x", None, [rule(type="pin_not_connected")])
+    assert out["status"] == "done" and out["erc"]["rules"][0]["covered"] == 50
+
+
+async def test_id_justification_does_not_cover_the_same_violation_on_another_sheet(
+    rig: Rig,
+) -> None:
+    await rig.begun()
+    a = violation("pin_not_connected", U1, sheet="/A/")
+    b = violation("pin_not_connected", U1, sheet="/B/")  # same items, another instance
+    assert vid(a) != vid(b)
+    rig.current = [a, b]
+    err = await expect_error(
+        rig.plans.step_done(rig.ctx(), 1, "x", {vid(a): "only a"}), "erc_errors_open"
+    )
+    assert err.details is not None and err.details["errors"][0]["id"] == vid(b)
+
+
+async def test_refused_revise_keeps_stored_justifications(rig: Rig) -> None:
+    plan = await rig.begun()
+    step_id = plan.steps[0].id
+    await rig.editing.erc_results.put_step_justifications(step_id, {"a": "r"}, [rule(type="t")])
+    await expect_error(rig.plans.revise(rig.ctx(), [], "bad"), "invalid_argument")
+    assert await rig.editing.erc_results.step_justifications(step_id) == (
+        {"a": "r"},
+        [rule(type="t")],
+    )
+
+
+async def test_closing_a_plan_forgets_stored_justifications(rig: Rig) -> None:
+    plan = await rig.begun()
+    step_id = plan.steps[0].id
+    await rig.editing.erc_results.put_step_justifications(step_id, {"a": "r"}, [])
+    await rig.plans.pause(rig.opened.project, "turn_ended")
+    await rig.plans.abort(rig.opened.project, plan.id)
+    assert await rig.editing.erc_results.step_justifications(step_id) == ({}, [])
+
+
+async def test_fresh_begin_forgets_stored_justifications(rig: Rig) -> None:
+    plan = await rig.begun()
+    step_id = plan.steps[1].id  # step 2 was never begun; a row for it is stale
+    await rig.editing.erc_results.put_step_justifications(step_id, {"a": "r"}, [rule(type="t")])
+    rig.render()
+    await rig.plans.step_done(rig.ctx(), 1, "x")
+    await rig.plans.step_begin(rig.ctx(), 2)
+    assert await rig.editing.erc_results.step_justifications(step_id) == ({}, [])
+
+
 # -- pauses -------------------------------------------------------------------------
 
 

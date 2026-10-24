@@ -143,3 +143,29 @@ async def test_run_erc_tool_notes_the_report(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(erc, "check_violations", boom)
     again = await checks.run_erc(ctx, {"offset": 1})  # type: ignore[arg-type]
     assert again.data is not None and again.data["total"] == 1 and again.data["count"] == 0
+
+
+async def test_run_erc_runs_again_after_a_mutation(monkeypatch: pytest.MonkeyPatch) -> None:
+    from copperchat.kicad_tools import checks
+
+    runs: list[int] = []
+
+    async def runner(session: Any, doc: str) -> list[dict[str, Any]]:
+        runs.append(1)
+        return [v("pin_not_connected", U1)]
+
+    monkeypatch.setattr(erc, "check_violations", runner)
+    state = EditTurnState(call_seq=5, last_erc=[], last_erc_seq=2, last_mutation_seq=4)
+
+    class Editing:
+        def turn(self, project_id: str, run_id: str | None) -> EditTurnState:
+            return state
+
+    class Ctx:
+        project = type("P", (), {"id": "p"})()
+        session = object()
+        run_id = "run-1"
+        editing = Editing()
+
+    res = await checks.run_erc(Ctx(), {})  # type: ignore[arg-type]
+    assert runs == [1] and res.data is not None and res.data["total"] == 1
