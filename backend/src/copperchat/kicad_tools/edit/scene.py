@@ -156,7 +156,7 @@ class Scene:
 
     def items_at(self, pt: Point) -> list[dict[str, str]]:
         """Connection items at `pt`: pins, wire ends and interiors, labels, junctions,
-        no-connects ({kind, uuid[, pin, ref]})."""
+        no-connects, sheet pins ({kind, uuid[, pin, ref | sheet]})."""
         out: list[dict[str, str]] = []
         for s in self.symbols.values():
             for p in s.pins:
@@ -176,6 +176,10 @@ class Scene:
         for uid, n in self.no_connects.items():
             if same_point(n, pt):
                 out.append({"kind": "no_connect", "uuid": uid})
+        for uid, sp in self.sheet_pins.items():
+            if same_point(sp.pin.at, pt):
+                out.append({"kind": "sheet_pin", "uuid": uid, "sheet": sp.pin.ref,
+                            "pin": sp.pin.name})  # fmt: skip
         return out
 
     def wires_through(self, pt: Point) -> list[WireInfo]:
@@ -232,6 +236,8 @@ class ConnectionIndex:
             add(3, uid, j, at(j))
         for uid, n in scene.no_connects.items():
             add(4, uid, n, at(n))
+        for uid, sp in scene.sheet_pins.items():
+            add(5, uid, sp.pin, at(sp.pin.at))
 
     def items_at(self, pt: Point) -> list[dict[str, str]]:
         cell = (math.floor(pt[0] / _INDEX_CELL_MM), math.floor(pt[1] / _INDEX_CELL_MM))
@@ -248,6 +254,9 @@ class ConnectionIndex:
             elif kind == 2:
                 if same_point(a.at, pt):
                     out.append({"kind": a.kind, "uuid": a.uuid})
+            elif kind == 5:
+                if same_point(b.at, pt):
+                    out.append({"kind": "sheet_pin", "uuid": a, "sheet": b.ref, "pin": b.name})
             elif same_point(b, pt):
                 out.append({"kind": "junction" if kind == 3 else "no_connect", "uuid": a})
         return out
