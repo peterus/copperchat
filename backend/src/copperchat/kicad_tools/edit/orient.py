@@ -275,11 +275,12 @@ def _place_fields(
     from copperchat.kicad_tools.edit.labels import _v2
 
     quarter = m[0] == 0
-    if not (sym.fields_autoplaced and quarter):  # KiCad: the fields shift with the corner
-        dx, dy = new.x0 - old.x0, new.y0 - old.y0
-        for f in (sym.name_field, sym.filename_field, *sym.user_fields):
-            p = mm_point(f.text.position)
-            f.text.position = _v2((_r(p[0] + dx), _r(p[1] + dy)))
+    dx, dy = new.x0 - old.x0, new.y0 - old.y0
+    autoplace = bool(sym.fields_autoplaced) and quarter
+    for f in (*((sym.name_field, sym.filename_field) if not autoplace else ()), *sym.user_fields):
+        p = mm_point(f.text.position)  # KiCad: these shift with the corner
+        f.text.position = _v2((_r(p[0] + dx), _r(p[1] + dy)))
+    if not autoplace:
         return
     name_m, file_m = _margins(sym, old, _vertical(old_sides))
     vertical = _vertical(new_sides)

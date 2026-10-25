@@ -77,7 +77,9 @@ async def prepare_move(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
 
     def run(h: KicadHandle) -> ChangeSet:
         world = World(h)
-        targets = resolve(world, args.get("items"), tool, allow=MOVE_KINDS)
+        turning = rotation is not None or mirror is not None  # the §6.4 refusal names them
+        allow = (*MOVE_KINDS, "junction", "no_connect", "wire") if turning else MOVE_KINDS
+        targets = resolve(world, args.get("items"), tool, allow=allow)
         cs, _plan = plan_move(world, tool, targets, to, by, rotation, mirror, expect_net)
         cs.notes = [*notes, *cs.notes]
         return cs

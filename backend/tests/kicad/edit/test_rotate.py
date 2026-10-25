@@ -169,6 +169,7 @@ async def test_rotate_no_connect_refused(blank_session: KicadSession, edit_db: D
     ids, partition = await state(s)
     out, err = await call_tool(ctx, "sch_move", items=[access.kiid(nc)], rotation=90)
     assert err and out["error"]["code"] == "invalid_argument", out
+    assert "applies to symbols, labels and sheet symbols" in out["error"]["what"], out
     assert await state(s) == (ids, partition)
 
 
@@ -421,3 +422,63 @@ async def test_not_owned_chain_rubber_banded_on_rotate(
     assert "carried_wires" not in out
     assert out["dragged_wires"] >= 1
     assert (await state(s))[1] == partition
+
+
+async def _pin_stub(s: KicadSession) -> tuple[str, str]:
+    """A 5.08 mm stub left of 'Power.VIN' (50.8, 53.34) with the label VIN_EXT at its end."""
+    w = wire((50.8, 53.34), (45.72, 53.34))
+    lb = local_label("VIN_EXT", (45.72, 53.34))
+    lb.spin_style = 1  # LEFT, away from the sheet
+    await _commit(s, w, lb)
+    return access.kiid(w), access.kiid(lb)
+
+
+async def test_move_sheet_carries_its_pin_stub(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    s = blank_session
+    ctx = edit_ctx(s, edit_db)
+    await _power_sheet(ctx, ("VIN", "left"))
+    wid, lid = await _pin_stub(s)
+    _ids, partition = await state(s)
+    out = await _ok(ctx, "sch_move", items=["sheet:Power"], by=[0, 2.54])
+    assert out["carried_wires"] == 1, out
+    sc = await scene(s)
+    assert {sc.wires[wid].start, sc.wires[wid].end} == {(50.8, 55.88), (45.72, 55.88)}
+    assert (await _labels(s))[lid] == ((45.72, 55.88), 1)
+    assert (await state(s))[1] == partition
+
+
+async def test_rotate_sheet_turns_its_pin_stub(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    """Turned 90 CCW about (76.2, 69.85): VIN goes to the bottom edge (59.69, 95.25), its
+    stub turns with it (now pointing down) and the label's text follows (BOTTOM)."""
+    s = blank_session
+    ctx = edit_ctx(s, edit_db)
+    await _power_sheet(ctx, ("VIN", "left"))
+    wid, lid = await _pin_stub(s)
+    _ids, partition = await state(s)
+    out = await _ok(ctx, "sch_move", items=["sheet:Power"], rotation=90)
+    assert out["carried_wires"] == 1, out
+    sc = await scene(s)
+    assert {sc.wires[wid].start, sc.wires[wid].end} == {(59.69, 95.25), (59.69, 100.33)}
+    assert (await _labels(s))[lid] == ((59.69, 100.33), 4)
+    assert (await state(s))[1] == partition
+
+
+async def test_rotate_sheet_over_label_refused(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    """Turned, the sheet box (57.15, 44.45)-(95.25, 95.25) would cover a label below it."""
+    s = blank_session
+    ctx = edit_ctx(s, edit_db)
+    await _power_sheet(ctx, ("VIN", "left"))
+    await _commit(s, local_label("LOOSE", (66.04, 92.71)))
+    before = await _sheet(s)
+    ids, partition = await state(s)
+    out, err = await call_tool(ctx, "sch_move", items=["sheet:Power"], rotation=90)
+    assert err and out["error"]["code"] == "overlap", out
+    assert "label" in out["error"]["what"], out
+    assert await _sheet(s) == before
+    assert await state(s) == (ids, partition)

@@ -100,3 +100,25 @@ def test_moved_item_unlisted_before_counts_as_its_own_group() -> None:
     assert (
         check_expect(BEFORE, before_items, BEFORE, after_items, intent("/SDA", item("lbl"))) == []
     )
+
+
+def test_split_of_the_joined_net_refused() -> None:
+    """Only part of the moved net joins the target, the rest is cut off."""
+    before = Netlist(
+        {"/SDA": frozenset({pin("U1", "5")}), "/A": frozenset({pin("R1", "1"), pin("R2", "1")})}
+    )
+    after = Netlist(
+        {
+            "/SDA": frozenset({pin("U1", "5"), pin("R1", "1")}),
+            "Net-(R2)": frozenset({pin("R2", "1")}),
+        }
+    )
+    problems = check_expect(before, {}, after, {}, intent("/SDA", pin("R1", "1")))
+    assert any("'/A'" in p and "split" in p for p in problems), problems
+
+
+def test_two_unlisted_pins_of_one_part_stay_separate_groups() -> None:
+    before = Netlist({"/SDA": frozenset({pin("U1", "5")})})
+    after = Netlist({"/SDA": frozenset({pin("U1", "5"), pin("R1", "1"), pin("R1", "2")})})
+    problems = check_expect(before, {}, after, {}, intent("/SDA", pin("R1", "1"), pin("R1", "2")))
+    assert problems and "not one" in problems[0], problems

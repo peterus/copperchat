@@ -192,7 +192,7 @@ def check_expect(
     for k in expect.moved:  # a moved item KiCad lists on one side only: a group of its own
         for of, groups in ((b_of, b_groups), (a_of, a_groups)):
             if k not in of:
-                of[k] = f"<unconnected {k[1][:8]}>"
+                of[k] = f"<unconnected {'/'.join(k)}>"
                 groups[of[k]] = {k}
     universe = b_of.keys() & a_of.keys()
     target = b_groups.get(expect.name, set()) & universe
@@ -228,10 +228,12 @@ def check_expect(
             f"the move would connect {expect.name!r} to {other!r}, which is not a net of the "
             "moved items"
         )
-    # every other group: the same members as before
-    expected = {expect.name} | (joined if len(joined) == 1 else set())
+    # every other group: the same members as before (the joined one whole, not split)
     for net, keys in sorted(b_groups.items()):
-        if net in expected:
+        if len(problems) >= _MAX_PROBLEMS:
+            problems.append("... more connectivity differences")
+            break
+        if net == expect.name:
             continue
         keys = keys & universe
         if not keys:
@@ -247,7 +249,4 @@ def check_expect(
                 f"{members(net, keys)} would also connect to "
                 + ", ".join(map(repr, sorted(gained)))
             )
-        if len(problems) >= _MAX_PROBLEMS:
-            problems.append("... more connectivity differences")
-            break
     return problems

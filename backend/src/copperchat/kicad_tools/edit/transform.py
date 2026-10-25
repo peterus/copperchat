@@ -691,7 +691,7 @@ def plan_move(
         if direction is not None and DIRS[direction] != new_dir:  # text away from the pin
             new_dir = DIRS[direction]
             item.spin_style = spin_of(new_dir)
-        if new_dir != old_dir:
+        if new_dir != old_dir or not f.rigid:  # its text is checked at the new place
             turned_labels[uid] = (pin, new_dir)
         updates.append(item)
         along_ids.add(uid)
@@ -866,10 +866,15 @@ def plan_move(
             )  # fmt: skip
         if problems:
             raise overlap_error(others, lay, problems, f"{tool} {old.ref}")
+    room_wires = dict(others.wires)  # staying wires and carried ones at their new place
+    room_wires.update({u: WireInfo(u, f(scene.wires[u].start), f(scene.wires[u].end))
+                       for u, f in carried.items()})  # fmt: skip
     for uid, (pin_name, d) in turned_labels.items():  # a turned label's text (#2, #20)
+        world.check_time(tool)
         lb = check.scene.labels[uid]
         box = label_box(lb.at, lb.text, d, lb.kind)
-        room = replace(others, symbols=check.scene.symbols, labels={
+        room = replace(others, symbols=check.scene.symbols, sheets=check.scene.sheets,
+                       wires=room_wires, labels={
             u: x for u, x in check.scene.labels.items() if u != uid
         })  # fmt: skip
         if not Clearance(room).clear(box, ignore=[lb.at]):

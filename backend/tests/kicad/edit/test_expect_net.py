@@ -12,7 +12,7 @@ from copperchat.db import Database
 from copperchat.kicad_session import KicadHandle, KicadSession
 from copperchat.kicad_tools import access
 from copperchat.kicad_tools.edit.scene import netlists, resolve_sheet, sheet_api
-from tests.kicad.edit.connect_support import state
+from tests.kicad.edit.connect_support import pin_nets, state
 from tests.kicad.edit.helpers import local_label, wire
 from tests.support.edit import call_tool, edit_ctx, place_raw
 
@@ -182,3 +182,24 @@ async def test_expect_net_two_pins_onto_target_refused(
     assert err and out["error"]["code"] == "verification_failed", out
     assert "not one" in out["error"]["why"], out
     assert await state(s) == before
+
+
+async def test_expect_net_pin_onto_wire_end_passes(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    """A part's pin moved onto the end of the declared net's wire: the intended join,
+    not a placement clash."""
+    s = blank_session
+    await s.ensure_symbol_libraries()
+    ctx = edit_ctx(s, edit_db)
+    await place_raw(s, "Device:R", (127.0, 63.5), "R1")  # pins (127, 59.69) / (127, 67.31)
+    w = wire((127.0, 44.45), (127.0, 54.61))
+    tgt = local_label("TGT", (127.0, 44.45))
+    tgt.spin_style = 2
+    await _commit(s, w, tgt)
+    target = await _net_of(s, access.kiid(w))
+    assert target
+    out = await _ok(ctx, "sch_move", items=["R1"], by=[0, -5.08], expect_net=target)
+    assert out["connectivity_verified"] is True
+    nets = await pin_nets(s)
+    assert nets["R1.1"] == await _net_of(s, access.kiid(w))
