@@ -544,7 +544,7 @@ def plan_move(
             before, in_place = copy_item(item), copy_item(item)
             turn_label(in_place, Frame(lb.at, lb.at, lm))  # the turn alone changes it?
             new_dir = turn_label(item, Frame(lb.at, at, lm))  # fields follow (#2)
-            if in_place.proto != before.proto:  # its text / fields change: checked anew
+            if lm != IDENT and in_place.proto != before.proto:  # text / fields turn: re-checked
                 turned = True
                 turned_labels[t.uuid] = (None, new_dir)
             updates.append(item)
