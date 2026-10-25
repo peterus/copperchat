@@ -58,7 +58,7 @@ async def prepare_move(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
     notes: list[str] = []
     to, by = _xy(args, "to", notes), _xy(args, "by", notes)
     rotation, mirror = args.get("rotation"), args.get("mirror")
-    if rotation is not None and rotation not in (0, 90, 180, 270):
+    if rotation is not None and (type(rotation) is not int or rotation not in (0, 90, 180, 270)):
         raise bad(f"{tool}: invalid rotation", f"rotation was {short(rotation)}",
                   "Use 0, 90, 180 or 270 (degrees counter-clockwise).")  # fmt: skip
     if mirror is not None and mirror not in ("", "x", "y"):

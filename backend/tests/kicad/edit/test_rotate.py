@@ -482,3 +482,16 @@ async def test_rotate_sheet_over_label_refused(
     assert "label" in out["error"]["what"], out
     assert await _sheet(s) == before
     assert await state(s) == (ids, partition)
+
+
+async def test_noop_label_mirror_is_nothing_to_do(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    """mirror 'x' (up-down) on a horizontal label without fields changes nothing."""
+    s = blank_session
+    ctx = edit_ctx(s, edit_db)
+    lb = local_label("FLAT", (63.5, 63.5))
+    lb.spin_style = 3
+    await _commit(s, lb)
+    out, err = await call_tool(ctx, "sch_move", items=[access.kiid(lb)], mirror="x")
+    assert err and "nothing moves" in out["error"]["what"], out

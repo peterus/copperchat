@@ -231,6 +231,8 @@ def owned_stub_chains(
             return None  # another part's pin sits on it too (bridged as before)
         w, q, chain = ends[k][0], p, StubChain([], [], [p])
         while True:
+            if tick is not None:
+                tick()
             if w.uuid in chain.wires or attached_inside(w):
                 return None
             chain.wires.append(w.uuid)
@@ -539,8 +541,10 @@ def plan_move(
             at = _add(lb.at, delta_for(lb.at))
             item = item_of("labels", t.uuid)
             lm = label_matrix(lb.spin, rotation, mirror) if turning else IDENT
+            before, in_place = copy_item(item), copy_item(item)
+            turn_label(in_place, Frame(lb.at, lb.at, lm))  # the turn alone changes it?
             new_dir = turn_label(item, Frame(lb.at, at, lm))  # fields follow (#2)
-            if lm != IDENT:  # turned or flipped: its text and fields are checked anew
+            if in_place.proto != before.proto:  # its text / fields change: checked anew
                 turned = True
                 turned_labels[t.uuid] = (None, new_dir)
             updates.append(item)
@@ -1396,14 +1400,14 @@ def _obstacles_in(scene: Scene, boxes: list[Box], ignore: Sequence[Point] = ()) 
         return any(x.contains(p) for x in boxes) and not any(same_point(p, q) for q in ignore)
 
     syms = list(scene.symbols.values())
-    out = [f"symbol {s.ref} ({s.uuid}) at {fmt(s.at)}" for s in syms if hit(s.body)]
-    out += [f"a field of {s.ref} ({s.uuid})" for s in syms if any(map(hit, s.fields))]
+    out = [f"symbol {short(s.ref, 40)} ({s.uuid}) at {fmt(s.at)}" for s in syms if hit(s.body)]
+    out += [f"a field of {short(s.ref, 40)} ({s.uuid})" for s in syms if any(map(hit, s.fields))]
     out += [
         f"pin {s.ref}.{pe.number} at {fmt(pe.at)}"
         for s in scene.symbols.values() for pe in s.pins if inside(pe.at)
     ]  # fmt: skip
     out += [
-        f"label {lb.text} ({u}) at {fmt(lb.at)}"
+        f"label {short(lb.text, 40)} ({u}) at {fmt(lb.at)}"
         for u, lb in scene.labels.items()
         if hit(label_box(lb.at, lb.text, SPIN_DIR.get(lb.spin, (1, 0)), lb.kind))
     ]
@@ -1441,9 +1445,9 @@ def _obstacles_on(scene: Scene, path: list[Point], own: set[str]) -> list[str]:
         out += [f"pin {s.ref}.{pe.number} at {fmt(pe.at)}" for pe in s.pins if on(pe.at)]
         if s.uuid != start_owner and any(s.body.hit_by_segment(a, b) for a, b in segs):
             out.append(f"symbol {s.ref} ({s.uuid}) at {fmt(s.at)}")
-    out += [f"label {lb.text} ({u}) at {fmt(lb.at)}" for u, lb in scene.labels.items()
+    out += [f"label {short(lb.text, 40)} ({u}) at {fmt(lb.at)}" for u, lb in scene.labels.items()
             if u not in own and on(lb.at)]  # fmt: skip
-    out += [f"sheet pin {i.pin.label} ({u}) at {fmt(i.pin.at)}"
+    out += [f"sheet pin {short(i.pin.label, 40)} ({u}) at {fmt(i.pin.at)}"
             for u, i in scene.sheet_pins.items() if on(i.pin.at)]  # fmt: skip
     out += [f"junction ({u}) at {fmt(p)}" for u, p in scene.junctions.items() if on(p)]
     out += [f"no-connect ({u}) at {fmt(p)}" for u, p in scene.no_connects.items()
