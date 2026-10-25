@@ -215,7 +215,11 @@ def check_expect(
         return [f"net {expect.name!r} would be split into {len(after_nets)} nets"]
     joined = {b_of[k] for k in a_groups[next(iter(after_nets))] & universe} - {expect.name}
     problems: list[str] = []
-    if not joined:
+    if not joined and expect.name in moved_nets:
+        problems.append(
+            f"the moved items already are on {expect.name!r}: the move makes no new connection"
+        )
+    elif not joined:
         what = ", ".join(sorted(moved_nets)) or "the moved items"
         problems.append(
             f"the move would not connect to {expect.name!r}: {what} stays a separate net"

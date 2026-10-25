@@ -540,7 +540,7 @@ def plan_move(
             item = item_of("labels", t.uuid)
             lm = label_matrix(lb.spin, rotation, mirror) if turning else IDENT
             new_dir = turn_label(item, Frame(lb.at, at, lm))  # fields follow (#2)
-            if lm != IDENT and new_dir != SPIN_DIR.get(lb.spin):
+            if lm != IDENT:  # turned or flipped: its text and fields are checked anew
                 turned = True
                 turned_labels[t.uuid] = (None, new_dir)
             updates.append(item)
@@ -875,7 +875,10 @@ def plan_move(
         world.check_time(tool)
         lb = check.scene.labels[uid]
         box = label_box(lb.at, lb.text, d, lb.kind)
-        room = replace(others, symbols=check.scene.symbols, sheets=check.scene.sheets,
+        room = replace(others, symbols={  # a power symbol on the same stub end is its own
+            u: x for u, x in check.scene.symbols.items()
+            if not (x.power and any(same_point(p.at, lb.at) for p in x.pins))
+        }, sheets=check.scene.sheets,
                        wires=room_wires, labels={
             u: x for u, x in check.scene.labels.items() if u != uid
         })  # fmt: skip
@@ -900,6 +903,14 @@ def plan_move(
                 n for u, b in others.sheets.items() if u != t.uuid and b.overlaps(box) for n in [u]
             ]
             hit += [s.ref for s in others.symbols.values() if s.body.grow(2.0).overlaps(box)]
+            hit += [  # what moves in the same call, at its new place
+                f"sheet {u}" for u in turned_sheets
+                if u != t.uuid and check.scene.sheets[u].overlaps(box)
+            ]  # fmt: skip
+            hit += [
+                check.scene.symbols[u].ref for u in moved_ids | along_ids
+                if u in check.scene.symbols and check.scene.symbols[u].body.overlaps(box)
+            ]  # fmt: skip
             if hit:
                 raise StructuredToolError(
                     f"{tool}: the sheet at its new position would overlap",

@@ -122,3 +122,9 @@ def test_two_unlisted_pins_of_one_part_stay_separate_groups() -> None:
     after = Netlist({"/SDA": frozenset({pin("U1", "5"), pin("R1", "1"), pin("R1", "2")})})
     problems = check_expect(before, {}, after, {}, intent("/SDA", pin("R1", "1"), pin("R1", "2")))
     assert problems and "not one" in problems[0], problems
+
+
+def test_moved_items_already_on_target_named() -> None:
+    items = {item("w1"): "/SDA", item("lbl"): "/SDA"}
+    problems = check_expect(BEFORE, items, BEFORE, items, intent("/SDA", item("lbl")))
+    assert problems and "already are on '/SDA'" in problems[0], problems
