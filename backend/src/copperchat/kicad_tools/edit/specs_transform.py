@@ -58,7 +58,7 @@ async def prepare_move(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
     notes: list[str] = []
     to, by = _xy(args, "to", notes), _xy(args, "by", notes)
     rotation, mirror = args.get("rotation"), args.get("mirror")
-    if rotation is not None and rotation not in (0, 90, 180, 270):
+    if rotation is not None and (type(rotation) is not int or rotation not in (0, 90, 180, 270)):
         raise bad(f"{tool}: invalid rotation", f"rotation was {short(rotation)}",
                   "Use 0, 90, 180 or 270 (degrees counter-clockwise).")  # fmt: skip
     if mirror is not None and mirror not in ("", "x", "y"):
@@ -67,14 +67,20 @@ async def prepare_move(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
     if to is not None and by is not None:
         raise bad(f"{tool}: pass either to or by", "both were given",
                   "to=[x, y] places one item there; by=[dx, dy] shifts all items.")  # fmt: skip
+    expect_net = args.get("expect_net")
+    if expect_net is not None and (not isinstance(expect_net, str) or not expect_net.strip()):
+        raise bad(f"{tool}: invalid expect_net", f"expect_net was {short(expect_net)}",
+                  "Pass a net name as sch_get_net / sch_list_items report it.")  # fmt: skip
     if to is None and by is None and rotation is None and mirror is None:
         raise bad(f"{tool} has nothing to do", "no to, by, rotation or mirror was given",
                   "Pass to=[x, y], by=[dx, dy] and/or rotation / mirror.")  # fmt: skip
 
     def run(h: KicadHandle) -> ChangeSet:
         world = World(h)
-        targets = resolve(world, args.get("items"), tool, allow=MOVE_KINDS)
-        cs, _plan = plan_move(world, tool, targets, to, by, rotation, mirror)
+        turning = rotation is not None or mirror is not None  # the §6.4 refusal names them
+        allow = (*MOVE_KINDS, "junction", "no_connect", "wire") if turning else MOVE_KINDS
+        targets = resolve(world, args.get("items"), tool, allow=allow)
+        cs, _plan = plan_move(world, tool, targets, to, by, rotation, mirror, expect_net)
         cs.notes = [*notes, *cs.notes]
         return cs
 
@@ -183,22 +189,32 @@ _XY = {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 
 TOOL_SPECS: list[ToolSpec] = [
     edit_spec(
         "sch_move",
-        "Move, rotate or mirror symbols (every unit of a reference, or one unit by UUID), and "
-        "move labels, sheet symbols and sheet pins, keeping every connection. A moved symbol "
-        "takes along, by the same offset and in shape, every stub chain hanging only on its "
-        "pins (wires with no junction, branch or other pin, any length) with the power symbols,"
-        " labels and no-connects at its end or on the pin; other attached wires are dragged (a "
-        "diagonal becomes an L). Rotating / mirroring drags all wires. A label or power symbol "
+        "Move, rotate or mirror symbols (every unit of a reference, or one unit by UUID), "
+        "labels and sheet symbols, and move sheet pins, keeping every connection. A moved "
+        "symbol takes along every stub chain hanging only on its pins (wires with no "
+        "junction, branch or other pin, any length) with the power symbols, labels and "
+        "no-connects at its end or on the pin: by the same offset, or on a rotation / mirror "
+        "turned with the part (a power symbol keeps pointing away, a label's text follows its"
+        " stub); if a carried wire or item would hit something, the whole call is refused. "
+        "Other attached wires are dragged (a diagonal becomes an L). A label or power symbol "
         "moved alone gets its stub laid anew from the pin that stays. Fields move with the "
-        "part. to=[x, y] (one item) or by=[dx, dy] (mm, snapped to 1.27 mm); rotation "
-        "(absolute, degrees CCW) / mirror alone rotate in place. A sheet pin (its UUID or "
-        "'<sheet name>.<pin name>') lands on the nearest edge of its sheet symbol (at most 2.54"
-        " mm off it, on the grid, one pitch clear of the corners, not on another pin); on "
-        "another edge its side and orientation change, its wires are dragged; rotation / mirror"
-        " are refused for it. Refused before writing when a part would overlap (the nearest "
-        "free position is suggested) or a dragged wire would touch another net; verified: the "
-        "netlist stays identical. Budget: 1 logical change per moved symbol, label, sheet or "
-        "sheet pin; carried stubs and their end items are free.",
+        "part. to=[x, y] (one item) or by=[dx, dy] (mm, snapped to 1.27 mm). rotation is "
+        "degrees CCW: absolute for a symbol and for a label's text direction (0 right, 90 up,"
+        " 180 left, 270 down; about its anchor); for a sheet symbol a turn by that much about "
+        "its centre (its pins change edges with it). mirror 'x' = upside down, 'y' = "
+        "left-right: absolute for a symbol, a flip for a label's text or a sheet. Junctions, "
+        "no-connects and wires do not rotate. A sheet pin (its UUID or '<sheet name>.<pin "
+        "name>') lands on the nearest edge of its sheet symbol (at most 2.54 mm off it, on the"
+        " grid, one pitch clear of the corners, not on another pin); on another edge its side"
+        " and orientation change, its wires are dragged; rotation / mirror are refused for "
+        "it. Refused before writing when a part would overlap (the nearest free position is "
+        "suggested), a dragged wire would touch another net, or a moved / turned sheet box "
+        "would cross or run along a wire that stays or cover a label, junction or "
+        "no-connect; verified: the netlist stays identical — or, with expect_net, exactly one "
+        "net of the moved items joins that net "
+        "(e.g. a label dropped onto a wire) and nothing else changes; anything else is undone"
+        " and named. Budget: 1 logical change per moved symbol, label, sheet or sheet pin; "
+        "carried stubs and their end items are free.",
         _obj(
             {
                 "items": {
@@ -209,6 +225,11 @@ TOOL_SPECS: list[ToolSpec] = [
                 "by": {**_XY, "description": "Shift [dx, dy] in mm."},
                 "rotation": {"type": "integer", "enum": [0, 90, 180, 270]},
                 "mirror": {"type": "string", "enum": ["", "x", "y"]},
+                "expect_net": {
+                    "type": "string",
+                    "description": "Net the move is meant to connect to (as sch_get_net / "
+                    "sch_list_items name it); omit to keep every connection.",
+                },
             },
             ["items"],
         ),

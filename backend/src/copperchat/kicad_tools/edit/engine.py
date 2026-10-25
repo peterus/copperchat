@@ -589,10 +589,14 @@ def _pin_labeler(symbols: dict[tuple[str, str], str]) -> verify.PinLabel:
     return label
 
 
-def _before(h: KicadHandle) -> tuple[Netlist, dict[tuple[str, str], str]]:
+def _before(
+    h: KicadHandle,
+) -> tuple[Netlist, dict[tuple[str, str], str], dict[tuple[str, str], str]]:
+    """The pin netlist, symbol references and (sheet_path, item uuid) -> net."""
     symbols = h.schematic().get_symbols()
     refs = {(access.sheet_path_key(s.path), access.kiid(s)): str(s.reference) for s in symbols}
-    return netlists(h, symbols)[0], refs
+    netlist, items = netlists(h, symbols)
+    return netlist, refs, items
 
 
 def _change(
@@ -676,8 +680,16 @@ async def _apply(
 ) -> Applied:
     session = ctx.session
     run = _Run(cs)
-    before, refs = await session.call(_before)
+    before, refs, before_items = await session.call(_before)
     label = _pin_labeler(refs)
+    expect = cs.intent.expect
+    if expect is not None and expect.name not in {*before.nets, *before_items.values()}:
+        raise StructuredToolError(  # resolved on the netlist before anything is written
+            f"{cs.tool}: unknown expect_net {expect.name!r}",
+            "no net of that name exists before the move",
+            "Pass a net name as sch_get_net / sch_list_items report it, or omit expect_net.",
+            code="invalid_argument",
+        )
     has_board = _has_board(ctx)
     generation = session.generation
     inp = StageInput()
@@ -788,7 +800,9 @@ async def _apply(
         await undo_shielded()
         raise
 
-    def final_read(h: KicadHandle) -> tuple[Netlist, dict[str, Any], dict[str, str], list[str]]:
+    def final_read(
+        h: KicadHandle,
+    ) -> tuple[Netlist, dict[str, Any], dict[str, str], list[str], dict[tuple[str, str], str]]:
         found = by_id(h.schematic(), [*run.created, *run.modified])
         netlist, nets = netlists(h)
         paths = {u: s.path for u, s in [*run.created.items(), *run.modified.items()]}
@@ -798,12 +812,19 @@ async def _apply(
             found,
             item_net,
             verify.check_joined(netlist, nets, cs.intent, label, run.vanished_created),
+            nets,
         )
 
-    after, final, item_net, joined = await session.call(final_read)
+    after, final, item_net, joined, after_items = await session.call(final_read)
     ensure_same_server()
     problems = list(run.problems)
-    problems += (_verify or verify.check)(before, after, cs.intent, label)
+    if expect is not None and _verify is None:
+        problems += verify.check_expect(
+            before, before_items, after, after_items, cs.intent,
+            lambda k: label(k) if len(k) == 3 else f"item {k[1][:8]}",
+        )  # fmt: skip
+    else:
+        problems += (_verify or verify.check)(before, after, cs.intent, label)
     if _verify is None:
         problems += joined
     if problems:
@@ -880,6 +901,7 @@ def _expected(cs: ChangeSet, label: verify.PinLabel) -> dict[str, Any]:
         "may_change": sorted(label(k) for k in cs.intent.may_change),
         "names": {label(k): v for k, v in cs.intent.names.items()},
         "keep_partition": cs.intent.keep_partition,
+        **({"expect_net": cs.intent.expect.name} if cs.intent.expect else {}),
         "joined": [
             sorted(label(k) if len(k) == 3 else f"item {k[1][:8]}" for k in g)
             for g in cs.intent.joined

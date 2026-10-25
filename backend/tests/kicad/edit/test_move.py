@@ -126,7 +126,7 @@ async def test_mirror_keeps_nets(blank_session: KicadSession, edit_db: Database)
     nets = await pin_nets(s)
     out = await _ok(ctx, "sch_move", items=[q], mirror="y")
     assert out["connectivity_verified"] is True
-    assert "carried_wires" not in out  # a mirror drags, it carries nothing (#7/#8)
+    assert out["carried_wires"] >= 2  # the power stubs turn with it (#20)
     assert (await state(s))[1] == partition
     assert await pin_nets(s) == nets
     sc = await _scene(s)

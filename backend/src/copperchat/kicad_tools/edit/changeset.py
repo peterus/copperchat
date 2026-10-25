@@ -85,6 +85,18 @@ def static_stage(label: str, *ops: EditOp) -> Stage:
     return Stage(label, lambda _inp: list(ops))
 
 
+@dataclass(frozen=True)
+class ExpectNet:
+    """`sch_move(expect_net=...)` (v0.5.0 #4): exactly one connectivity group of the
+    moved items joins the group of net `name`, both taken from the netlist before the
+    write; nothing else changes. Groups are item-level: `moved` holds pin keys
+    (sheet_path, symbol uuid, pin) and netlist items (sheet_path, item uuid) — labels,
+    sheet pins, wires — so a floating label joining a wire counts."""
+
+    name: str
+    moved: frozenset[tuple[str, ...]]
+
+
 @dataclass
 class NetIntent:
     merge: list[frozenset[PinKey]] = field(default_factory=list)  # each group ends on one net
@@ -95,6 +107,7 @@ class NetIntent:
     # (sheet_path, item uuid) — e.g. a sheet pin and the wire drawn onto it, which the
     # pin partition cannot express when the sub-sheet net has no symbol pin
     joined: list[frozenset[tuple[str, ...]]] = field(default_factory=list)
+    expect: ExpectNet | None = None  # replaces keep_partition (sch_move expect_net, #4)
 
 
 @dataclass
