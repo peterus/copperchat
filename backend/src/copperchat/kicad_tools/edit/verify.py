@@ -172,6 +172,11 @@ def item_groups(netlist: Netlist, items: Mapping[tuple[str, str], str]) -> dict[
     return out
 
 
+def _capped(nets: list[str], limit: int = 6) -> list[str]:
+    shown = [repr(n) for n in nets[:limit]]
+    return shown + ([f"(+{len(nets) - limit} more)"] if len(nets) > limit else [])
+
+
 def check_expect(
     before: Netlist,
     before_items: Mapping[tuple[str, str], str],
@@ -216,11 +221,11 @@ def check_expect(
             f"the move would not connect to {expect.name!r}: {what} stays a separate net"
         )
     elif len(joined) > 1:
-        extra = sorted(joined - moved_nets) or sorted(joined)[1:]
+        extra = _capped(sorted(joined - moved_nets) or sorted(joined)[1:])
         problems.append(
             f"the move would join {expect.name!r} with {len(joined)} nets, not one: "
-            + "; ".join(members(n, b_groups[n] & universe) for n in sorted(joined))
-            + (f" — it would also connect to {', '.join(map(repr, extra))}" if extra else "")
+            + "; ".join(members(n, b_groups[n] & universe) for n in sorted(joined)[:4])
+            + (f" — it would also connect to {', '.join(extra)}" if extra else "")
         )
     elif not joined & moved_nets:
         (other,) = joined
@@ -246,7 +251,6 @@ def check_expect(
         if got != keys and not (got & target):
             gained = {b_of[k] for k in got - keys}
             problems.append(
-                f"{members(net, keys)} would also connect to "
-                + ", ".join(map(repr, sorted(gained)))
+                f"{members(net, keys)} would also connect to " + ", ".join(_capped(sorted(gained)))
             )
     return problems

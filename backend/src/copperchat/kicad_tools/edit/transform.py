@@ -39,7 +39,7 @@ net and nothing else changes (`verify.check_expect`).
 from __future__ import annotations
 
 import itertools
-from collections.abc import Collection, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
@@ -81,7 +81,6 @@ from copperchat.kicad_tools.edit.labels import (
     label_box,
     make_junction,
     make_wire,
-    spin_of,
 )
 from copperchat.kicad_tools.edit.orient import (
     DIR_ANGLE,
@@ -179,6 +178,7 @@ def owned_stub_chains(
     moving: Collection[str] = (),
     *,
     sheet_pins: Collection[str] = (),
+    tick: Callable[[], None] | None = None,
 ) -> list[StubChain]:
     """The stub chains of the pins at `pin_points`. `moving`: the symbols travelling by
     the same offset (a chain may run to one of their pins). `sheet_pins`: uuids of sheet
@@ -256,6 +256,8 @@ def owned_stub_chains(
     out: list[StubChain] = []
     seen: set[frozenset[str]] = set()
     for p in pin_points:
+        if tick is not None:
+            tick()  # the planning time limit (many pins on a big sheet)
         chain = walk(p)
         if chain is not None and frozenset(chain.wires) not in seen:
             seen.add(frozenset(chain.wires))
@@ -687,10 +689,8 @@ def plan_move(
     def carry_label(uid: str, f: Frame, pin: str, direction: str | None = None) -> None:
         item = item_of("labels", uid)
         old_dir = SPIN_DIR.get(scene.labels[uid].spin, (1, 0))
-        new_dir = turn_label(item, f)
-        if direction is not None and DIRS[direction] != new_dir:  # text away from the pin
-            new_dir = DIRS[direction]
-            item.spin_style = spin_of(new_dir)
+        # a label on the pin reads away from it; fields laid out for that direction
+        new_dir = turn_label(item, f, DIRS[direction] if direction is not None else None)
         if new_dir != old_dir or not f.rigid:  # its text is checked at the new place
             turned_labels[uid] = (pin, new_dir)
         updates.append(item)
@@ -733,6 +733,7 @@ def plan_move(
         [m.old for m in starts],
         moved_ids,
         sheet_pins={u for m in starts if (u := m.sheet_pin or m.pin_uuid) is not None},
+        tick=lambda: world.check_time(tool),
     ):
         start = moving_at(c.points[0], starts)
         assert start is not None

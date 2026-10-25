@@ -208,8 +208,10 @@ TOOL_SPECS: list[ToolSpec] = [
         " grid, one pitch clear of the corners, not on another pin); on another edge its side"
         " and orientation change, its wires are dragged; rotation / mirror are refused for "
         "it. Refused before writing when a part would overlap (the nearest free position is "
-        "suggested) or a dragged wire would touch another net; verified: the netlist stays "
-        "identical — or, with expect_net, exactly one net of the moved items joins that net "
+        "suggested), a dragged wire would touch another net, or a moved / turned sheet box "
+        "would cross or run along a wire that stays or cover a label, junction or "
+        "no-connect; verified: the netlist stays identical — or, with expect_net, exactly one "
+        "net of the moved items joins that net "
         "(e.g. a label dropped onto a wire) and nothing else changes; anything else is undone"
         " and named. Budget: 1 logical change per moved symbol, label, sheet or sheet pin; "
         "carried stubs and their end items are free.",

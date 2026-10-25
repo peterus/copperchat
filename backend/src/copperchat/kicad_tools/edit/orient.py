@@ -129,14 +129,15 @@ def label_fields(item: Any) -> list[Any]:
     return out
 
 
-def turn_label(item: Any, frame: Frame) -> Dir:
+def turn_label(item: Any, frame: Frame, direction: Dir | None = None) -> Dir:
     """Move and turn kipy label `item` by `frame` (anchor mapped, text direction turned,
-    fields following); returns the new text direction."""
+    fields following); `direction` overrides the turned text direction (a label on a pin
+    reads away from it). Returns the new text direction."""
     from copperchat.kicad_tools.edit.labels import _v2
 
     old_at = mm_point(item.position)
     old_dir = SPIN_DIR.get(int(item.spin_style), (1, 0))
-    at, new_dir = frame(old_at), frame.dir(old_dir)
+    at, new_dir = frame(old_at), direction or frame.dir(old_dir)
     item.position = _v2(at)
     item.text.position = _v2(frame(mm_point(item.text.position)))
     item.spin_style = DIR_SPIN[new_dir]
