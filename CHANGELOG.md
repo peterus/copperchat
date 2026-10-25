@@ -7,6 +7,69 @@ All notable changes to CopperChat are documented in this file. The format follow
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-25
+
+**Schematic addressability and ergonomics** (PM topic #15): the agent can find, address and
+turn more schematic items without deleting and re-creating them. Status per item:
+
+### Added
+
+- **#1 sheet pins addressable: DONE.** `sch_move` / `sch_delete` accept a sheet pin by UUID
+  or `'<sheet>.<pin>'`. A move snaps the pin onto the nearest edge of its sheet symbol; a
+  side change sets the matching spin style. Delete updates the sheet symbol without the pin
+  (KiCad's API cannot delete a sheet pin by UUID) and removes the child's hierarchical label
+  only if nothing else uses it.
+- **#2 rotate / mirror labels and sheet symbols: DONE.** Labels turn about their anchor
+  (absolute text direction); sheet symbols turn about their centre with their pins and
+  autoplaced fields. No KiCad patch needed.
+- **#3 finding items: DONE.** New read tool `sch_list_items` (sheet, types, bbox, net, text
+  filter, paging). `sch_get_pin` gains `stub_end` / `stub_wires`, and `connected` lists
+  sheet pins.
+- **#4 `expect_net`: DONE.** `sch_move(..., expect_net=...)` declares the net a move must
+  join; anything else is refused and rolled back with "would not connect to …" / "would
+  also connect to …".
+- **#12 ERC ergonomics: DONE.** `run_erc(sheet?, limit, offset)` returns violations with
+  stable ids, totals and counts per type and sheet. `plan_step_done` takes
+  `erc_rules: [{match: {type?, sheet?}, reason}]`; justifications are stored per step.
+- **#13 plan budget: DONE.** The budget counts logical operations (`sch_delete` books all
+  items on one net as one change); every mutating tool description states its cost.
+  `plan_revise` works while a step runs: the step is paused, keeps its counters and resumes
+  in the new revision. Rejecting such a revision restores the previous one, paused.
+- **#20 rotate / mirror carries owned stubs: DONE.** Owned stub chains (wires, power
+  symbols, labels, no-connects) turn along with their part, as on translation. A collision
+  of a carried item with a foreign item refuses the whole call before writing.
+
+### Fixed
+
+- **#19: DONE.** `geometry._field_box` uses the measured text extents (one constant set)
+  instead of 0.6 em per character.
+
+### Changed behaviour
+
+- ERC violation ids now include the sheet (type + sheet + item UUIDs), so instances of a
+  reused sheet get distinct ids.
+- Moving or rotating a sheet carries its pins' own stubs (before: dragged) and refuses
+  landing over wires or labels that stay.
+- A sheet-pin side change whose wire cannot follow is refused.
+- Placing a symbol pin onto a sheet pin is refused.
+- A revised plan is re-posted at the bottom of the chat for approval; earlier plan cards
+  collapse to "Superseded by revision N".
+- A step interrupted by a turn end resumes with its persisted counters.
+- **Migrations 0010 and 0011** (`plan_steps` rebuilt, per-step ERC justifications). Back up
+  `data/` before upgrading.
+
+No KiCad patches needed.
+
+### Known limitations / deferred
+
+- Orphan ERC justification rows of deleted plans are not cleaned up.
+- Item-less duplicate ERC violations on one sheet share an id.
+- Concurrent `run_erc` pages each run `kicad-cli`.
+- Carried items are not checked against other parts moved in the same call (PM #26).
+- `expect_net` on a child file with several instances is refused (PM #27).
+- A turned label's text is not checked against wires re-laid in the same move.
+- The hierarchy is re-read per edit helper call (PM #24).
+
 ## [0.4.1] - 2026-10-24
 
 **Schematic editing correctness and data loss**: fixes for the `sch_*` problems found while

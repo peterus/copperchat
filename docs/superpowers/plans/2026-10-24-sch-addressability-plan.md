@@ -245,3 +245,15 @@ Task K (KiCad patch, as v0.4.1 plan Task K) is added to whichever PR finds a KiC
 - [ ] Release PR → CI green → merge → verify `gh pr view --json state` == `MERGED` → tag `v0.5.0` → release workflow green.
 - [ ] Prod upgrade only after owner OK (backup `data/` with app stopped).
 - [ ] Delete own `review/<PR>/*` memory keys; `pm_report done` with status list.
+
+## As-built (v0.5.0)
+
+PRs per wave: A #61 (#19), B #62 (#13), C #60 (#12), D #63 (#1, #3), E #64 (#2, #20, #4); release PR: this one. All items done, no KiCad patches.
+
+Deviations from the plan/spec:
+
+- The text-width constants live in `geometry.py`, not `fields.py` (`fields.py` imports `geometry`, so it cannot be the source).
+- The ERC violation id includes the sheet (type + sheet + item UUIDs), so instances of a reused sheet get distinct ids.
+- The sheet rotation is computed from KiCad's `SCH_SHEET` code (`Rotate` / `Mirror*` / `AutoplaceFields`) with a half-grid centre shift, so pins stay on the 1.27 mm grid.
+
+Deferred: PM #24 (hierarchy re-read per helper call), #26 (carried items vs other parts moved in the same call), #27 (`expect_net` on multi-instance child files).
