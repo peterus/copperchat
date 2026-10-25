@@ -155,3 +155,99 @@ def check(
             problems.append("... more connectivity differences")
             break
     return problems
+
+
+ItemKey = tuple[str, ...]  # a PinKey (sheet_path, symbol uuid, pin) or (sheet_path, uuid)
+ItemLabel = Callable[[ItemKey], str]
+
+
+def item_groups(netlist: Netlist, items: Mapping[tuple[str, str], str]) -> dict[str, set[ItemKey]]:
+    """Net name -> its members: symbol pins and netlist items (wires, labels, sheet
+    pins, junctions ...), the item-level groups of `expect_net` (v0.5.0 #4)."""
+    out: dict[str, set[ItemKey]] = {}
+    for name, keys in netlist.nets.items():
+        out.setdefault(name, set()).update(keys)
+    for key, name in items.items():
+        out.setdefault(name, set()).add(key)
+    return out
+
+
+def check_expect(
+    before: Netlist,
+    before_items: Mapping[tuple[str, str], str],
+    after: Netlist,
+    after_items: Mapping[tuple[str, str], str],
+    intent: NetIntent,
+    label: ItemLabel | None = None,
+) -> list[str]:
+    """`intent.expect`: after the write exactly one group of the moved items has joined
+    the group of net `expect.name` (groups as before the write), and every other group
+    is unchanged. Items present on one side only (wires a drag replaced) are left out."""
+    assert intent.expect is not None
+    expect = intent.expect
+    name = label or (lambda k: f"{k[1][:8]}.{k[2]}" if len(k) == 3 else f"item {k[1][:8]}")
+    b_groups, a_groups = item_groups(before, before_items), item_groups(after, after_items)
+    b_of = {k: n for n, keys in b_groups.items() for k in keys}
+    a_of = {k: n for n, keys in a_groups.items() for k in keys}
+    for k in expect.moved:  # a moved item KiCad lists on one side only: a group of its own
+        for of, groups in ((b_of, b_groups), (a_of, a_groups)):
+            if k not in of:
+                of[k] = f"<unconnected {k[1][:8]}>"
+                groups[of[k]] = {k}
+    universe = b_of.keys() & a_of.keys()
+    target = b_groups.get(expect.name, set()) & universe
+    if not target:
+        return [f"net {expect.name!r} has no member left after the move"]
+    moved_nets = {b_of[k] for k in expect.moved if k in universe}
+
+    def members(net: str, keys: set[ItemKey]) -> str:
+        shown = sorted(name(k) for k in keys if len(k) == 3) or sorted(name(k) for k in keys)
+        more = f" (+{len(shown) - 4} more)" if len(shown) > 4 else ""
+        return f"net {net!r} ({', '.join(shown[:4])}{more})"
+
+    after_nets = {a_of[k] for k in target}
+    if len(after_nets) > 1:
+        return [f"net {expect.name!r} would be split into {len(after_nets)} nets"]
+    joined = {b_of[k] for k in a_groups[next(iter(after_nets))] & universe} - {expect.name}
+    problems: list[str] = []
+    if not joined:
+        what = ", ".join(sorted(moved_nets)) or "the moved items"
+        problems.append(
+            f"the move would not connect to {expect.name!r}: {what} stays a separate net"
+        )
+    elif len(joined) > 1:
+        extra = sorted(joined - moved_nets) or sorted(joined)[1:]
+        problems.append(
+            f"the move would join {expect.name!r} with {len(joined)} nets, not one: "
+            + "; ".join(members(n, b_groups[n] & universe) for n in sorted(joined))
+            + (f" — it would also connect to {', '.join(map(repr, extra))}" if extra else "")
+        )
+    elif not joined & moved_nets:
+        (other,) = joined
+        problems.append(
+            f"the move would connect {expect.name!r} to {other!r}, which is not a net of the "
+            "moved items"
+        )
+    # every other group: the same members as before
+    expected = {expect.name} | (joined if len(joined) == 1 else set())
+    for net, keys in sorted(b_groups.items()):
+        if net in expected:
+            continue
+        keys = keys & universe
+        if not keys:
+            continue
+        now = {a_of[k] for k in keys}
+        if len(now) > 1:
+            problems.append(f"{members(net, keys)} would be split")
+            continue
+        got = a_groups[next(iter(now))] & universe
+        if got != keys and not (got & target):
+            gained = {b_of[k] for k in got - keys}
+            problems.append(
+                f"{members(net, keys)} would also connect to "
+                + ", ".join(map(repr, sorted(gained)))
+            )
+        if len(problems) >= _MAX_PROBLEMS:
+            problems.append("... more connectivity differences")
+            break
+    return problems
