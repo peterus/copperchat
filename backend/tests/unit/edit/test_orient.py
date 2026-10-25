@@ -140,3 +140,20 @@ def test_mirror_sheet_swaps_pin_sides_and_shifts_fields() -> None:
     assert _xy(pin.position) == (171.45, 101.6) and int(pin.side) == 2
     assert t.pins[access.kiid(pin)] == ((171.45, 101.6), "right")
     assert _xy(s.name_field.text.position) == (157.48, 94.5384)  # type: ignore[attr-defined]
+
+
+def test_turn_label_direction_override_lays_fields_out_for_it() -> None:
+    """A label on a turned pin reads away from the pin: the override is the direction
+    the autoplaced fields are laid out for (not a spin set afterwards)."""
+    from kipy.proto.common.types.enums_pb2 import HA_RIGHT
+
+    lb = make_label("CLK", (50.8, 50.8), (1, 0), "global")
+    lb.fields_autoplaced = True
+    lb.intersheet_refs_field.text.position = _v2((58.0, 50.8))
+    frame = Frame((50.8, 50.8), (50.8, 50.8), matrix_of(90, ""))  # would turn it UP
+    assert turn_label(lb, frame, (-1, 0)) == (-1, 0)
+    assert int(lb.spin_style) == 1  # LEFT
+    f = lb.intersheet_refs_field
+    assert (f.text.position.x, f.text.position.y) == (43_600_000, 50_800_000)
+    assert f.text.attributes.horizontal_alignment == HA_RIGHT
+    assert f.text.attributes.angle == 0

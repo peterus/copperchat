@@ -475,7 +475,7 @@ def plan_move(
     moved_ids: set[str] = set()
     new_infos: list[tuple[SymbolInfo, Any, int, Mirror, str]] = []
     turned = False  # some target's orientation changes
-    turned_labels: dict[str, tuple[str | None, Dir]] = {}  # label -> (carried by pin, text dir)
+    turned_labels: dict[str, tuple[Point | None, Dir]] = {}  # label -> (its pin point, text dir)
     turned_sheets: dict[str, TurnedSheet] = {}  # moved sheet symbols: new box and pins
     sheet_pin_points = [i.pin.at for i in scene.sheet_pins.values()]
     pin_moves: dict[str, tuple[str, Point]] = {}  # sheet pin uuid -> (new side, new point)
@@ -668,14 +668,14 @@ def plan_move(
 
     # -- items that travel with moved pins -----------------------------------------------
     along_ids: set[str] = set()
-    carried_by: dict[str, str] = {}  # carried item uuid -> the pin it hangs on (errors)
+    carried_by: dict[str, Point] = {}  # carried item uuid -> its pin's point (named in errors)
     # symbol and sheet pins
     pin_points = [m for m in moving if not m.label and (m.own in moved_ids or m.sheet_pin)]
 
     def frame_of(m: _Moving) -> Frame:
         return m.frame if m.frame is not None else translation(_sub(m.new, m.old))
 
-    def carry_power(s: SymbolInfo, f: Frame, pin: str) -> None:
+    def carry_power(s: SymbolInfo, f: Frame, pin: Point) -> None:
         """A power symbol travels with frame `f`: it turns with it, so it keeps pointing
         away from its pin (#20)."""
         rot, mir = decompose(compose(f.m, _transform(s.rotation, s.mirror)))  # type: ignore[arg-type]
@@ -686,7 +686,7 @@ def plan_move(
         new_infos.append((s, psym, rot, mir, s.ref))
         plan.along.append(f"power symbol {s.ref}")
 
-    def carry_label(uid: str, f: Frame, pin: str, direction: str | None = None) -> None:
+    def carry_label(uid: str, f: Frame, pin: Point, direction: str | None = None) -> None:
         item = item_of("labels", uid)
         old_dir = SPIN_DIR.get(scene.labels[uid].spin, (1, 0))
         # a label on the pin reads away from it; fields laid out for that direction
@@ -700,7 +700,8 @@ def plan_move(
 
     for m in pin_points:
         f = frame_of(m)
-        pin = _pin_name(scene, m.old)
+        world.check_time(tool)
+        pin = m.old
         for lb in scene.labels.values():
             if lb.uuid in moved_ids or lb.uuid in along_ids or not same_point(lb.at, m.old):
                 continue
@@ -747,7 +748,7 @@ def plan_move(
     for chain in chains:
         start = chain_starts[id(chain)]
         f = frame_of(start)
-        pin = _pin_name(scene, start.old)
+        pin = start.old
         for uid in chain.wires:
             carried[uid] = f
             carried_by[uid] = pin
@@ -862,8 +863,8 @@ def plan_move(
         ]
         if problems and old.uuid in carried_by:  # carried with a part: nothing written (O8)
             raise _carried_error(
-                tool, carried_by[old.uuid], f"power symbol {old.ref}", old.uuid, lay.at,
-                problems, _obstacles_in(others, [lay.body]),
+                tool, _pin_name(scene, carried_by[old.uuid]), f"power symbol {old.ref}",
+                old.uuid, lay.at, problems, _obstacles_in(others, [lay.body]),
             )  # fmt: skip
         if problems:
             raise overlap_error(others, lay, problems, f"{tool} {old.ref}")
@@ -882,7 +883,7 @@ def plan_move(
             blockers = _obstacles_in(room, [box], ignore=[lb.at])
             if pin_name is not None:
                 raise _carried_error(
-                    tool, pin_name, f"label {lb.text}", uid, lb.at,
+                    tool, _pin_name(scene, pin_name), f"label {lb.text}", uid, lb.at,
                     ["have its text cover something"], blockers,
                 )  # fmt: skip
             raise StructuredToolError(
@@ -1065,7 +1066,7 @@ def plan_move(
             if trouble:
                 wire = seg_uid or chain.wires[0]
                 raise _carried_error(
-                    tool, carried_by[wire], "stub wire", wire, path[0], trouble,
+                    tool, _pin_name(scene, carried_by[wire]), "stub wire", wire, path[0], trouble,
                     _obstacles_on(check.scene, path, set(chain.wires) | set(chain.end_items)),
                 )  # fmt: skip
             if seg_uid is not None:  # the next segment joins this one
