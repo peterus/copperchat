@@ -217,23 +217,36 @@ def _shape(direction: str) -> Any:
     }[direction]
 
 
+SIDES = ("left", "right", "top", "bottom")
+
+
+def side_attrs(side: str) -> tuple[Any, Any]:
+    """(SheetSide, spin style) of a sheet pin on `side`: the spin style KiCad's own
+    SCH_SHEET_PIN::SetSide gives that side (text runs into the box)."""
+    from kipy.proto.schematic.schematic_types_pb2 import SchematicLabelSpinStyle as Spin
+    from kipy.proto.schematic.schematic_types_pb2 import SheetSide
+
+    return {
+        "left": (SheetSide.SHS_LEFT, Spin.SLSS_RIGHT),
+        "right": (SheetSide.SHS_RIGHT, Spin.SLSS_LEFT),
+        "top": (SheetSide.SHS_TOP, Spin.SLSS_BOTTOM),
+        "bottom": (SheetSide.SHS_BOTTOM, Spin.SLSS_UP),
+    }[side]
+
+
 def build_sheet_pin(name: str, at: Point, side: str, direction: str) -> Any:
     """The spin style is what KiCad's own SCH_SHEET_PIN::SetSide gives the side (text runs
     into the box). It has to be sent: KiCad applies the request's spin style after the side,
     and an unset one means LEFT, which put the text of left pins outside the box (v0.4.1)."""
-    from kipy.proto.schematic.schematic_types_pb2 import SchematicLabelSpinStyle as Spin
-    from kipy.proto.schematic.schematic_types_pb2 import SheetSide
     from kipy.schematic_types import SheetPin
 
     p = SheetPin()
     p.text.value = name
     p.position = _v2(at)
     p.text.position = _v2(at)
-    if side == "left":
-        p.side, p.spin_style = SheetSide.SHS_LEFT, Spin.SLSS_RIGHT
-    else:
-        p.side, p.spin_style = SheetSide.SHS_RIGHT, Spin.SLSS_LEFT
+    p.side, p.spin_style = side_attrs(side)
     p.shape = _shape(direction)
+    p.proto.id.value = str(uuidlib.uuid4())
     return p
 
 
@@ -415,6 +428,92 @@ def _free_pin_y(sym: Any, side: str, taken: list[Point]) -> float:
         k += 1
 
 
+EDGE_SNAP_MM = 2.54  # a sheet pin target this far off an edge still lands on it (§5.2)
+
+
+def _edge_range(lo: float, hi: float) -> tuple[float, float] | None:
+    """Grid positions along an edge from `lo` to `hi`, one pin pitch clear of both
+    corners; None when the edge is too short."""
+    first = math.ceil((lo + PIN_PITCH) / GRID_MM - 1e-6) * GRID_MM
+    last = math.floor((hi - PIN_PITCH) / GRID_MM + 1e-6) * GRID_MM
+    return (round(first, 4), round(last, 4)) if first <= last + 1e-6 else None
+
+
+def sheet_edges(box: Box) -> dict[str, dict[str, Any]]:
+    """Where a pin may sit on each edge: the fixed coordinate and the along range."""
+    out: dict[str, dict[str, Any]] = {}
+    for side, fixed, lo, hi in (
+        ("left", ("x", box.x0), box.y0, box.y1),
+        ("right", ("x", box.x1), box.y0, box.y1),
+        ("top", ("y", box.y0), box.x0, box.x1),
+        ("bottom", ("y", box.y1), box.x0, box.x1),
+    ):
+        span = _edge_range(lo, hi)
+        if span is not None:
+            out[side] = {fixed[0]: fixed[1], ("y" if fixed[0] == "x" else "x"): list(span)}
+    return out
+
+
+def snap_to_sheet_edge(
+    name: str,
+    box: Box,
+    point: Point,
+    others: Iterable[tuple[str, str, Point]],
+    *,
+    current: str | None = None,
+) -> tuple[str, Point]:
+    """The side and on-grid point a sheet pin of the sheet `name` lands on when asked to
+    go to `point`: the nearest edge (at most EDGE_SNAP_MM off its line and extent; the
+    pin's `current` side wins a tie), along it clamped one pin pitch clear of the corners.
+    `others`: (pin name, side, point) of the sheet's other pins; landing within a pin pitch
+    of one on the same edge is refused."""
+    edges = sheet_edges(box)
+    gaps: list[tuple[float, int, str]] = []
+    for side, edge in edges.items():
+        vertical = side in ("left", "right")
+        fixed = edge["x"] if vertical else edge["y"]
+        along, across = (point[1], point[0]) if vertical else (point[0], point[1])
+        lo, hi = (box.y0, box.y1) if vertical else (box.x0, box.x1)
+        off_line = abs(across - fixed)
+        off_span = max(lo - along, 0.0, along - hi)
+        gaps.append((math.hypot(off_line, off_span), side != current, side))
+    if not gaps or min(gaps)[0] > EDGE_SNAP_MM + 1e-6:
+        raise StructuredToolError(
+            f"Sheet pin target {_fmt(point)} is not on an edge of sheet {name}",
+            f"a sheet pin sits on an edge of its sheet symbol; {_fmt(point)} is more than "
+            f"{EDGE_SNAP_MM:g} mm from every edge (box {_fmt((box.x0, box.y0))}-"
+            f"{_fmt((box.x1, box.y1))})",
+            "Pass a point on (or within 2.54 mm of) one of the listed edges.",
+            code="invalid_argument",
+            details={"edges": edges},
+        )
+    side = min(gaps)[2]
+    edge = edges[side]
+    if side in ("left", "right"):
+        lo, hi = edge["y"]
+        at = (edge["x"], min(max(snap(point[1]), lo), hi))
+    else:
+        lo, hi = edge["x"]
+        at = (min(max(snap(point[0]), lo), hi), edge["y"])
+    at = (round(at[0], 4), round(at[1], 4))
+    k = 1 if side in ("left", "right") else 0
+    for other, other_side, p in others:
+        if other_side == side and abs(p[k] - at[k]) < PIN_PITCH - 0.01:
+            raise StructuredToolError(
+                f"Sheet pin target {_fmt(at)} is taken",
+                f"sheet pin {name}.{other} sits at {_fmt(p)} on the {side} edge; pins keep "
+                f"{PIN_PITCH:g} mm apart",
+                "Pick another position on the edge (or another edge).",
+                code="overlap",
+                details={"edges": edges},
+            )
+    return side, at
+
+
+def _fmt(p: Point) -> str:
+    return f"({p[0]:g}, {p[1]:g})"
+
+
 def _label_room(at: Point, name: str) -> Box:
     """What a new hierarchical label at `at` covers: its text (`build_hier_label`) and the
     start of its wire."""
@@ -486,8 +585,13 @@ def plan_add_sheet_pin(args: dict[str, Any]) -> Any:
         updated = type(sym)(proto=sym.proto)
         updated.pins = [*pins, pin]
         cscene = read_scene(h, child)
-        reused = any(
-            lb.kind == "hierarchical_label" and lb.text == name for lb in cscene.labels.values()
+        reused = next(
+            (
+                lb.uuid
+                for lb in cscene.labels.values()
+                if lb.kind == "hierarchical_label" and lb.text == name
+            ),
+            None,
         )
         ops: list[Any] = [Update([updated], sheet=parent)]
         label_at: Point | None = None
@@ -499,7 +603,8 @@ def plan_add_sheet_pin(args: dict[str, Any]) -> Any:
             )
         else:
             label_at = _label_spot(cscene, name)
-            ops.append(Create([build_hier_label(name, label_at, direction)], sheet=child))
+            label = build_hier_label(name, label_at, direction)
+            ops.append(Create([label], sheet=child))
         return ChangeSet(
             tool="sch_add_sheet_pin",
             sheet=parent,
@@ -509,15 +614,20 @@ def plan_add_sheet_pin(args: dict[str, Any]) -> Any:
             logical=Logical(1),
             summary={
                 "pin": {
+                    "uuid": access.kiid(pin),
                     "sheet": child.human_path,
                     "name": name,
                     "at_mm": [x, y],
                     "side": side,
                     "direction": direction,
                 },
-                "label": None
+                "label": {"uuid": reused, "sheet": child.human_path, "text": name, "reused": True}
                 if label_at is None
-                else {"sheet": child.human_path, "at_mm": list(label_at), "text": name},
+                else {
+                    "sheet": child.human_path,
+                    "at_mm": list(label_at),
+                    "text": name,
+                },
             },
             notes=notes,
         )

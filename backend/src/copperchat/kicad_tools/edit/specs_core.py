@@ -1,4 +1,5 @@
-"""Core edit tools (E2): `sch_get_pin` (read-only) and `sch_add_wire` (two-phase)."""
+"""Core edit tools (E2): `sch_get_pin` (read-only) and `sch_add_wire` (two-phase); the
+read-only `sch_list_items` lives in `list_items`."""
 
 from __future__ import annotations
 
@@ -29,6 +30,7 @@ from copperchat.kicad_tools.edit.geometry import (
     same_point,
     snap_point,
 )
+from copperchat.kicad_tools.edit.list_items import LABEL_TYPE, LIST_ITEMS_SPEC
 from copperchat.kicad_tools.edit.scene import (
     Scene,
     all_symbols,
@@ -46,6 +48,7 @@ from copperchat.kicad_tools.edit.sheet_edges import (
     sheet_boxes,
     sheet_pin_points,
 )
+from copperchat.kicad_tools.edit.transform import owned_stub_chains
 from copperchat.tools.spec import ToolContext, ToolResult, ToolSpec, edit_spec
 
 EXACT_MM = 1e-4  # a point given "on" a pin must be on it up to float noise
@@ -69,6 +72,34 @@ def _fmt(p: Point) -> str:
 # -- sch_get_pin ------------------------------------------------------------------------
 
 
+def _stub_end(scene: Scene, at: Point, owner: str) -> tuple[list[dict[str, Any]], list[str]]:
+    """The pin's own stub chain (v0.4.1 definition): the items at its far end (no wires)
+    and its wire UUIDs; nothing when the pin has no owned chain. A chain that ends on a
+    sheet pin is not owned (`owned_stub_chains`), and one that ends on another pin of the
+    same part is a connection, not a stub."""
+    chains = owned_stub_chains(scene, [at], moving=[owner])
+    if not chains:
+        return [], []
+    end = chains[0].points[-1]
+    out: list[dict[str, Any]] = []
+    for i in scene.items_at(end):
+        kind, uid = i["kind"], i["uuid"]
+        if kind == "wire":
+            continue
+        if kind == "pin":
+            sym = scene.symbols[uid]
+            if not sym.power:
+                return [], []  # it runs to another pin of the same part
+            out.append({"uuid": uid, "type": "power", "text": sym.value})
+        elif kind == "no_connect":
+            out.append({"uuid": uid, "type": kind})
+        else:
+            out.append({"uuid": uid, "type": LABEL_TYPE.get(kind, kind),
+                        "text": scene.labels[uid].text})  # fmt: skip
+        out[-1]["position_mm"] = list(end)
+    return out, list(chains[0].wires)
+
+
 def _get_pin(spec: str) -> Any:
     def run(h: KicadHandle) -> dict[str, Any]:
         raw = h.schematic().get_symbols()
@@ -82,6 +113,7 @@ def _get_pin(spec: str) -> Any:
             for i in scene.items_at(pin.at)
             if not (i["kind"] == "pin" and i["uuid"] == owner.uuid and i["pin"] == pin.number)
         ]
+        stub_end, stub_wires = _stub_end(scene, pin.at, owner.uuid)
         return {
             "ref": pin.ref,
             "pin": pin.number,
@@ -96,6 +128,8 @@ def _get_pin(spec: str) -> Any:
             "net": None if net is None or net.startswith("unconnected-") else net,
             "free": not connected,
             "connected": connected,
+            "stub_end": stub_end,
+            "stub_wires": stub_wires,
         }
 
     return run
@@ -450,7 +484,10 @@ TOOL_SPECS: list[ToolSpec] = [
         "One schematic pin by 'REF.PIN' (number, or a unique pin name like 'U1.VIN'): "
         "name, electrical type, exact connection point in mm, outward direction, sheet, "
         "net, whether it is free, and the items connected at its end (wires, labels, "
-        "pins, no-connects with full UUIDs). Use its at_mm for wire end points.",
+        "pins, no-connects, sheet pins with full UUIDs). stub_wires / stub_end: the wires "
+        "of the pin's own stub chain and the items at its far end (labels, power symbols, "
+        "no-connects with UUID, type, text, position_mm); empty without one. Read-only. "
+        "Use its at_mm for wire end points.",
         _obj(
             {"pin": {"type": "string", "maxLength": 64, "description": "e.g. 'R5.2' or 'U1.VIN'."}},
             ["pin"],
@@ -490,4 +527,5 @@ TOOL_SPECS: list[ToolSpec] = [
         prepare_add_wire,
         apply_change,
     ),
+    LIST_ITEMS_SPEC,
 ]

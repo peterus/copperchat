@@ -10,14 +10,22 @@ not deleted), and a wire shared with other pins stays. Labels, junctions, no-con
 and power symbols at dead points go with it (spec §6.2). One `Delete` stage (plus
 `Update`s of shortened wires); KiCad's push cleanup (dropped junctions, merged
 segments) is read back by the engine as side effects.
+
+A sheet pin (v0.5.0 #1, spec §5.3) is deleted by updating its sheet symbol without it
+(KiCad's API deletes no sheet pin by UUID); its stub on the parent sheet is pruned like a
+symbol pin's. The child's hierarchical label of that name goes too when it is connected
+to nothing and no other sheet symbol of the same child file still has a pin of that name;
+otherwise it stays and a note says why.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
+from copperchat.kicad_tools import access
 from copperchat.kicad_tools.access import Netlist, PinKey
 from copperchat.kicad_tools.edit.changeset import (
     ChangeSet,
@@ -28,16 +36,18 @@ from copperchat.kicad_tools.edit.changeset import (
     Stage,
     Update,
 )
+from copperchat.kicad_tools.edit.engine import copy_item
 from copperchat.kicad_tools.edit.geometry import (
     EPS_MM,
     Point,
     in_segment_interior,
+    mm_point,
     on_segment,
     orthogonal,
 )
 from copperchat.kicad_tools.edit.labels import World, _v2
 from copperchat.kicad_tools.edit.scene import Scene, sheet_api
-from copperchat.kicad_tools.edit.targets import LABEL_KINDS, Target, sheet_pins
+from copperchat.kicad_tools.edit.targets import LABEL_KINDS, Target, sheet_pins, sheet_symbols
 
 NodeKey = tuple[int, int]
 # Items that cost one logical change per net together when deleted (spec §9.1).
@@ -302,6 +312,7 @@ class DeletePlan:
     nets: set[str]  # nets of the deleted items before the call
     shared: list[str]  # notes about shared sheet files
     sheet_users: dict[str, list[str]] = field(default_factory=dict)  # deleted sheet -> users
+    child_labels: list[str] = field(default_factory=list)  # hier labels deleted with pins
 
 
 def plan_delete(
@@ -319,17 +330,38 @@ def plan_delete(
     deleted_ids: dict[str, tuple[SheetRef, list[str]]] = {}
     updates: dict[str, tuple[SheetRef, list[Any]]] = {}
     attached: dict[str, Pruned] = {}
+    notes: list[str] = []
+    child_labels: list[str] = []
+    labels_gone: set[tuple[str, str]] = set()  # (child file, label uuid)
+    dead_pin_ids = {(t.sheet.file, t.uuid) for t in targets if t.kind == "sheet_pin"}
+    dead_sheet_ids = {(t.sheet.file, t.uuid) for t in targets if t.kind == "sheet"}
     for sheet, ts in by_sheet.values():
         world.check_time(tool)
         scene = world.scene(sheet)
         pins = sheet_pins(world, sheet)
         dead_symbols = {t.uuid for t in ts if t.kind == "symbol"}
         dead_sheets = {t.uuid for t in ts if t.kind == "sheet"}
+        dead_pins = {
+            t.uuid: t.pin
+            for t in ts
+            if t.kind == "sheet_pin" and t.pin is not None and t.pin.sheet_uuid not in dead_sheets
+        }
         ids = deleted_ids.setdefault(sheet.path, (sheet, []))[1]
         starts: list[Point] = []
         for t in ts:
-            ids.append(t.uuid)
-            if t.kind == "symbol":
+            if t.kind != "sheet_pin":
+                ids.append(t.uuid)
+            if t.kind == "sheet_pin":
+                assert t.pin is not None
+                starts.append(t.pin.pin.at)
+                on = {world.sheet_pin_net(t.pin)}
+                for inst in world.instances(sheet):  # a shared parent file: each copy
+                    on.add(world.nets(inst).get(t.uuid))
+                    on |= {world.nets(inst).get(w.uuid) for w in scene.wires_through(t.pin.pin.at)}
+                for n in on - {None}:
+                    nets.add(n)  # type: ignore[arg-type]
+                    may_change |= set(world.members(n))
+            elif t.kind == "symbol":
                 assert t.symbol is not None
                 starts += [p.at for p in t.symbol.pins]
                 keys = _symbol_keys(world, t.uuid, sheet)
@@ -369,7 +401,11 @@ def plan_delete(
             starts,
             dead_symbols,
             cuts=[p.pin.at for p in pins],
-            keep=[p.pin.at for p in pins if p.sheet_uuid not in dead_sheets],
+            keep=[
+                p.pin.at
+                for p in pins
+                if p.sheet_uuid not in dead_sheets and p.uuid not in dead_pins
+            ],
             dead_items=[t.uuid for t in ts],
             dead_wires=[t.uuid for t in ts if t.kind == "wire"],
             check=lambda: world.check_time(tool),
@@ -397,6 +433,32 @@ def plan_delete(
                 line.start, line.end = _v2(a), _v2(b)
                 items.append(line)
             updates.setdefault(sheet.path, (sheet, []))[1].extend(items)
+    for sheet, ts in by_sheet.values():  # sheet pins: their sheet symbol without them
+        cut = {t.uuid for t in ts if t.kind == "sheet_pin"}
+        owners = {t.pin.sheet_uuid for t in ts if t.kind == "sheet_pin" and t.pin is not None}
+        owners -= {t.uuid for t in ts if t.kind == "sheet"}
+        for sheet_uuid in sorted(owners):
+            sym = copy_item(sheet_symbols(world, sheet)[sheet_uuid])
+            sym.pins = [p for p in sym.pins if access.kiid(p) not in cut]
+            updates.setdefault(sheet.path, (sheet, []))[1].append(sym)
+        for t in ts:
+            if t.kind != "sheet_pin" or t.pin is None or t.pin.sheet_uuid not in owners:
+                continue
+            if not with_attached:
+                notes.append(
+                    f"sheet pin {t.pin.pin.label}: the sub-sheet's hierarchical label "
+                    f"{t.pin.pin.name} stays (with_attached is false)"
+                )
+                continue
+            world.check_time(tool)
+            dead, why = _child_labels(world, t, dead_pin_ids, dead_sheet_ids)
+            notes += why
+            for child, uid in dead:
+                if (child.file, uid) in labels_gone:
+                    continue  # pins into instances of one child file: one label
+                labels_gone.add((child.file, uid))
+                deleted_ids.setdefault(child.path, (child, []))[1].append(uid)
+                child_labels.append(uid)
     ops: list[Any] = [Delete(list(dict.fromkeys(u)), sheet=s) for s, u in deleted_ids.values() if u]
     ops += [Update(items, sheet=s) for s, items in updates.values() if items]
     logical, deleted_symbols = _logical(world, targets, placed_this_turn)
@@ -415,7 +477,7 @@ def plan_delete(
         pre_images={},
         intent=NetIntent(may_change=frozenset(may_change)),
         logical=Logical(logical, deleted_symbols=deleted_symbols),
-        notes=list(shared),
+        notes=[*shared, *notes],
     )
     users: dict[str, list[str]] = {}
     for t in targets:
@@ -426,7 +488,94 @@ def plan_delete(
                 for r in world.sheets.values()
                 if r.file == t.child.file and r.path != gone and not r.path.startswith(gone + "/")
             )
-    return cs, DeletePlan(targets, attached, nets, shared, users)
+    return cs, DeletePlan(targets, attached, nets, shared, users, child_labels)
+
+
+def _child_labels(
+    world: World,
+    t: Target,
+    dead_pins: set[tuple[str, str]],
+    dead_sheets: set[tuple[str, str]],
+) -> tuple[list[tuple[SheetRef, str]], list[str]]:
+    """The child's hierarchical labels named like the deleted sheet pin `t` that go with
+    it, and notes on those that stay. `dead_pins` / `dead_sheets`: (parent file, uuid) of
+    every sheet pin / sheet symbol this call deletes (they use the label no longer)."""
+    info = t.pin
+    assert info is not None
+    child = world.sheets.get(info.child)
+    if child is None:
+        return [], []
+    scene = world.scene(child)
+    name = info.pin.name
+    labels = [
+        lb for lb in scene.labels.values() if lb.kind == "hierarchical_label" and lb.text == name
+    ]
+    if not labels:
+        return [], []
+    users = []  # other sheet symbols of the child file that still have a pin `name`
+    seen = {(t.sheet.file, info.sheet_uuid), *dead_sheets}  # (parent file, sheet symbol)
+    for r in world.sheets.values():
+        parent_path, _, sheet_uuid = r.path.rpartition("/")
+        parent = world.sheets.get(parent_path)
+        if r.file != child.file or parent is None:
+            continue
+        if (parent.file, sheet_uuid) in seen:
+            continue  # this one, a deleted one, or one already read through an instance
+        seen.add((parent.file, sheet_uuid))
+        world.check_time("sch_delete", lookup=True)
+        if any(
+            p.sheet_uuid == sheet_uuid
+            and p.pin.name == name
+            and (parent.file, p.uuid) not in dead_pins
+            for p in world.scene(parent).sheet_pins.values()
+        ):
+            users.append(r.human_path)
+    if users:
+        return [], [
+            f"sheet pin {info.pin.label}: the hierarchical label {name} in {child.file} stays: "
+            f"{', '.join(sorted(set(users)))} still has a pin {name} (shared sheet file)"
+        ]
+    dead: list[tuple[SheetRef, str]] = []
+    notes: list[str] = []
+    buses: list[tuple[Point, Point]] | None = None  # bus lines (the scene has wires only)
+    for lb in labels:
+        here = [i for i in scene.items_at(lb.at) if i["uuid"] != lb.uuid]
+        if not here and _BUS_NAME.search(name):
+            here = [{"kind": "bus label"}]  # a bus member list: its bus is not followed
+        if not here:
+            if buses is None:
+                buses = _bus_lines(world, child)
+            if any(on_segment(lb.at, a, b) for a, b in buses):
+                here = [{"kind": "bus"}]
+        if here:
+            notes.append(
+                f"sheet pin {info.pin.label}: the hierarchical label {name} in {child.file} "
+                f"stays: it is connected ({here[0]['kind'].replace('_', ' ')} at "
+                f"({lb.at[0]:g}, {lb.at[1]:g})); delete it in the sub-sheet if it is no longer "
+                "needed"
+            )
+        else:
+            dead.append((child, lb.uuid))
+    return dead, notes
+
+
+_BUS_NAME = re.compile(r"\[\d+\.\.\d+\]|\{.*\}")  # 'D[0..7]', '{SDA SCL}'
+
+
+def _bus_lines(world: World, sheet: SheetRef) -> list[tuple[Point, Point]]:
+    """Bus lines and bus entries on `sheet` (end points in mm)."""
+    from kipy.proto.schematic.schematic_types_pb2 import SchematicLineType
+
+    api = sheet_api(world.h, sheet)
+    out = [
+        (mm_point(ln.start), mm_point(ln.end))
+        for ln in api.get_lines()
+        if int(ln.type) == SchematicLineType.SLT_BUS
+    ]
+    for e in api.get_bus_entries():
+        a, d = mm_point(e.position), mm_point(e.size)
+        out.append((a, (a[0] + d[0], a[1] + d[1])))
+    return out
 
 
 def removed_paths(world: World, t: Target) -> set[str]:
@@ -455,6 +604,7 @@ def _logical(
     units: dict[str, set[int]] = {}  # part key -> units counted
     booked: set[str] = set()  # entries of `deleted` (a set: large sheets stay linear)
     item_nets: set[str] = set()  # nets of deleted wires / junctions / labels / NCs
+    dead_sheets = {(t.sheet.file, t.uuid) for t in targets if t.kind == "sheet"}
 
     def part_key(path: str, ref: str, uid: str) -> str:
         # unannotated parts ('R?') are separate parts even with equal references
@@ -521,6 +671,8 @@ def _logical(
                         changes += 1  # refunded by the gate with the placement
                 else:
                     count(sym.uuid, sym.sheet.path, sym.ref, sym.unit)
+        elif t.kind == "sheet_pin" and t.pin and (t.sheet.file, t.pin.sheet_uuid) in dead_sheets:
+            continue  # goes with its sheet symbol
         else:
             changes += 1
     return changes, deleted

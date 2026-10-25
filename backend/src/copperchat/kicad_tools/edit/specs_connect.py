@@ -24,6 +24,7 @@ from copperchat.kicad_tools.edit.engine import apply_change_set, edit_result
 from copperchat.kicad_tools.edit.geometry import Point
 from copperchat.kicad_tools.edit.labels import (
     PLAN_BUDGET_S,
+    UUID_RE,
     LabelKind,
     PowerSymbol,
     World,
@@ -37,6 +38,7 @@ from copperchat.kicad_tools.edit.labels import (
     power_change_set,
     power_symbol,
     refuse_rail_label,
+    sheet_pin_uuid_not_found,
 )
 from copperchat.kicad_tools.edit.scene import resolve_sheet, short
 from copperchat.kicad_tools.edit.specs_core import MAX_POINTS, _coord
@@ -239,8 +241,10 @@ async def prepare_connect(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
         known_ref = any(x.ref == ref for x in world.symbols)
         # '<sheet name>.<pin name>': a sheet pin (sheet names may hold any character);
         # a dotted net name that is no pin of that sheet stays a net ('I2C.SDA')
-        sheet_pin = None
-        if not known_ref:
+        sheet_pin = world.sheet_pin_by_uuid(to)
+        if sheet_pin is None and UUID_RE.fullmatch(to.strip()):
+            raise sheet_pin_uuid_not_found(to)  # no net label named after a UUID
+        if sheet_pin is None and not known_ref:
             try:
                 sheet_pin = world.sheet_pin(to)
             except StructuredToolError as exc:
@@ -254,7 +258,7 @@ async def prepare_connect(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
             return plan_connect_pins(world, tool, pa, world.pin(to), via, net_name)
         name = check_net_name(to, tool)
         if to_rail or looks_like_rail(world, name):
-            return PowerNeeded(pa.label, name, "to is a power net")
+            return PowerNeeded(pa.label, name, "to is a power net", end=pa)
         return plan_connect_net(world, tool, pa, name, via)
 
     def run(h: KicadHandle) -> ConnectChangeSet | PowerNeeded:
@@ -281,7 +285,7 @@ async def prepare_connect(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
         world = worlds[0]  # nothing was written since (the adapter holds the edit lock)
         world.h = h
         world.deadline = time.monotonic() + PLAN_BUDGET_S
-        pin = world.endpoint(planned.pin)
+        pin = planned.end if planned.end is not None else world.endpoint(planned.pin)
         cs = power_change_set(world, tool, [pin], sym, "PWR_FLAG" if sym.flag else planned.net)
         out = ConnectChangeSet(
             tool=cs.tool,
@@ -384,7 +388,7 @@ TOOL_SPECS: list[ToolSpec] = [
     edit_spec(
         "sch_connect",
         "Connect a pin to another pin or to a net. A pin is 'REF.PIN' or a sheet pin "
-        "'<sheet name>.<pin name>' on the parent sheet (joins the sub-sheet's net; a "
+        "'<sheet name>.<pin name>' or its UUID on the parent sheet (joins the sub-sheet's net; a "
         "symbol reference wins over a sheet name). to=pin: a computed orthogonal wire "
         "(<= 3 segments, may T-join onto a wire of the target net with a junction); if no "
         "clean route exists, via='auto' falls back to labels (net_name, an existing net "
@@ -400,12 +404,12 @@ TOOL_SPECS: list[ToolSpec] = [
             {
                 "from": {
                     **_PIN,
-                    "description": "Pin 'REF.PIN', e.g. 'C1.1', or sheet pin 'SHEET.PIN'.",
+                    "description": "Pin 'REF.PIN', e.g. 'C1.1', or sheet pin 'SHEET.PIN' / UUID.",
                 },
                 "to": {
                     **_PIN,
                     "description": "Pin 'REF.PIN', sheet pin 'SHEET.PIN' (sheet name and "
-                    "pin name) or a net name like 'VIN'/'GND'.",
+                    "pin name) or UUID, or a net name like 'VIN'/'GND'.",
                 },
                 "via": {"type": "string", "enum": list(_VIA), "default": "auto"},
                 "net_name": {

@@ -1,5 +1,5 @@
-"""`sch_move` planning (E6 Task 1): move / rotate / mirror symbols, move labels and sheet
-symbols, keeping every connection.
+"""`sch_move` planning (E6 Task 1): move / rotate / mirror symbols, move labels, sheet
+symbols and sheet pins, keeping every connection.
 
 KiCad's API moves only the item: fields stay where they were and attached wires are not
 dragged (spike 2A Q4). So the move is planned here and written in one commit:
@@ -18,7 +18,11 @@ dragged (spike 2A Q4). So the move is planned here and written in one commit:
   a leg with a collinear wire at push), the corner chosen by the router's checks;
 - where a moved point has connections that cannot be dragged (a wire passing through
   it, a wire with something attached to its interior, another part's pin, a sheet pin),
-  a bridge wire joins the new point to the old one.
+  a bridge wire joins the new point to the old one;
+- a sheet pin (v0.5.0 #1) is snapped onto the nearest edge of its sheet symbol
+  (`sheets.snap_to_sheet_edge`); its side, and so its orientation, follows the edge. Along
+  the same edge its own stub chains travel with it like a part's; on a side change they
+  are dragged. The child sheet's hierarchical label is not touched.
 
 Every new or changed segment is checked like a router route (no foreign pin, wire end,
 label or body touched; corners not on wires) and the moved bodies like a placement
@@ -85,10 +89,11 @@ from copperchat.kicad_tools.edit.sheet_edges import (
     sheet_boxes,
     sheet_edge_problems,
 )
+from copperchat.kicad_tools.edit.sheets import side_attrs, snap_to_sheet_edge
 from copperchat.kicad_tools.edit.targets import LABEL_KINDS, Target, bad, sheet_symbols
 
 Mirror = Literal["", "x", "y"]
-MOVE_KINDS = ("symbol", *LABEL_KINDS, "sheet")
+MOVE_KINDS = ("symbol", *LABEL_KINDS, "sheet", "sheet_pin")
 
 
 def _key(p: Point) -> tuple[int, int]:
@@ -113,6 +118,7 @@ class _Moving:
     own: str | None  # symbol uuid whose pin this is (route checks may touch its body)
     direction: str | None  # outward direction at the new point (pins)
     label: bool = False  # a moved label (its pin stays: connections there are fixed)
+    sheet_pin: str | None = None  # a moved sheet pin's uuid (`own`: its sheet symbol)
 
 
 @dataclass
@@ -136,13 +142,20 @@ class StubChain:
 
 
 def owned_stub_chains(
-    scene: Scene, pin_points: Sequence[Point], moving: Collection[str] = ()
+    scene: Scene,
+    pin_points: Sequence[Point],
+    moving: Collection[str] = (),
+    *,
+    sheet_pins: Collection[str] = (),
 ) -> list[StubChain]:
     """The stub chains of the pins at `pin_points`. `moving`: the symbols travelling by
-    the same offset (a chain may run to one of their pins). A chain is not owned when it
-    meets a junction, a point joining three or more connections, a wire interior,
-    anything attached to its own interior, a sheet pin or a pin of any other symbol."""
+    the same offset (a chain may run to one of their pins). `sheet_pins`: uuids of sheet
+    pins whose point may start a chain like a symbol pin (a moved sheet pin, v0.5.0 #1).
+    A chain is not owned when it meets a junction, a point joining three or more
+    connections, a wire interior, anything attached to its own interior, a sheet pin or a
+    pin of any other symbol."""
     moving = set(moving)
+    starts = {_key(i.pin.at) for u, i in scene.sheet_pins.items() if u in sheet_pins}
     ends: dict[tuple[int, int], list[WireInfo]] = {}
     for w in scene.wires.values():
         for p in (w.start, w.end):
@@ -174,9 +187,15 @@ def owned_stub_chains(
     def walk(p: Point) -> StubChain | None:
         k = _key(p)
         here = pins.get(k, [])
-        if len(ends.get(k, [])) != 1 or k in blocked or passes_through(p):
+        if k in starts:  # a sheet pin: nothing else may sit on it
+            sheet_pin_count = sum(1 for i in scene.sheet_pins.values() if _key(i.pin.at) == k)
+            if len(ends.get(k, [])) != 1 or passes_through(p) or sheet_pin_count != 1:
+                return None
+            if any(not s.power for s in here):
+                return None
+        elif len(ends.get(k, [])) != 1 or k in blocked or passes_through(p):
             return None
-        if sum(1 for s in here if not s.power) != 1:
+        elif sum(1 for s in here if not s.power) != 1:
             return None  # another part's pin sits on it too (bridged as before)
         w, q, chain = ends[k][0], p, StubChain([], [], [p])
         while True:
@@ -380,6 +399,19 @@ def plan_move(
             + "; a reference names every unit of a part)",
             "Use 'by' to move several items, or pass one unit by its UUID.",
         )
+    if (rotation is not None or mirror is not None) and any(t.kind == "sheet_pin" for t in targets):
+        raise bad(
+            f"{tool}: a sheet pin does not rotate or mirror",
+            "the side defines a sheet pin's orientation",
+            "Move it to another edge of its sheet symbol instead (to=[x, y] on that edge).",
+        )
+    moved_sheets = {t.uuid for t in targets if t.kind == "sheet"}
+    if any(t.pin is not None and t.pin.sheet_uuid in moved_sheets for t in targets):
+        raise bad(
+            f"{tool}: a sheet and one of its own pins were both given",
+            "moving the sheet symbol carries all its pins",
+            "Move the sheet, or its pins, per call.",
+        )
     if (rotation is not None or mirror is not None) and any(t.kind != "symbol" for t in targets):
         raise bad(
             f"{tool}: only symbols rotate or mirror",
@@ -396,8 +428,11 @@ def plan_move(
     new_infos: list[tuple[SymbolInfo, Any, int, Mirror, str]] = []
     rigid: set[str] = set()  # symbols moved without a rotation / mirror change
     sheet_pin_points = [i.pin.at for i in scene.sheet_pins.values()]
+    pin_moves: dict[str, tuple[str, Point]] = {}  # sheet pin uuid -> (new side, new point)
+    rigid_pins: set[str] = set()  # sheet pins moved along their edge
     api = sheet_api(world.h, sheet)
     cache: dict[str, dict[str, Any]] = {}
+    notes_snap: list[str] = []
 
     def item_of(kind: str, uid: str) -> Any:
         """One read per item kind and call (`labels`, `no_connects`, `junctions` ...)."""
@@ -497,10 +532,54 @@ def plan_move(
                     "to_mm": list(_add(old_at, d)),
                 }
             )
+        elif t.kind == "sheet_pin":
+            assert t.pin is not None
+            info = t.pin
+            box = scene.sheets[info.sheet_uuid]
+            side_of = {"left": "left", "right": "right", "up": "top", "down": "bottom"}
+            old_side = side_of[info.pin.direction]
+            others_on_sheet = [
+                (o.pin.name, *pin_moves.get(o.uuid, (side_of[o.pin.direction], o.pin.at)))
+                for o in scene.sheet_pins.values()
+                if o.sheet_uuid == info.sheet_uuid
+                and o.uuid != info.uuid
+                and (o.uuid in pin_moves or not any(x.uuid == o.uuid for x in targets))
+            ]
+            wanted = _add(info.pin.at, delta_for(info.pin.at))
+            side, at = snap_to_sheet_edge(
+                info.pin.ref, box, wanted, others_on_sheet, current=old_side
+            )
+            pin_moves[info.uuid] = (side, at)
+            if side == old_side:
+                rigid_pins.add(info.uuid)
+            if not same_point(at, wanted):
+                notes_snap.append(
+                    f"sheet pin {info.pin.ref}.{info.pin.name}: {fmt(wanted)} snapped onto "
+                    f"the {side} edge at {fmt(at)}"
+                )
+            direction = {"left": "left", "right": "right", "top": "up", "bottom": "down"}[side]
+            moving.append(
+                _Moving(
+                    info.pin.at, at, nets.get(info.uuid), info.sheet_uuid, direction,
+                    sheet_pin=info.uuid,
+                )
+            )  # fmt: skip
+            plan.moved.append(
+                {
+                    "kind": "sheet_pin",
+                    "sheet": info.pin.ref,
+                    "pin": info.pin.name,
+                    "uuid": info.uuid,
+                    "from_mm": list(info.pin.at),
+                    "to_mm": list(at),
+                    "side": side,
+                    **({"from_side": old_side} if side != old_side else {}),
+                }
+            )
         else:
             raise bad(
                 f"{tool} cannot move {t.kind.replace('_', ' ')} {t.spec}",
-                "sch_move moves symbols, labels and sheet symbols; wires follow them",
+                "sch_move moves symbols, labels, sheet symbols and sheet pins; wires follow them",
                 "Use sch_reroute to change a wire's course.",
             )
     if rotation is None and mirror is None and all(x["from_mm"] == x["to_mm"] for x in plan.moved):
@@ -509,10 +588,13 @@ def plan_move(
             "the items already are at that position",
             "Pass another 'to' / 'by', or a rotation / mirror.",
         )
+    if pin_moves:  # one updated copy per sheet symbol whose pins move
+        updates += _moved_sheet_pins(world, sheet, scene, pin_moves)
 
     # -- items that travel with moved pins -----------------------------------------------
     along_ids: set[str] = set()
-    pin_points = [m for m in moving if not m.label and m.own in moved_ids]  # symbol/sheet pins
+    # symbol and sheet pins
+    pin_points = [m for m in moving if not m.label and (m.own in moved_ids or m.sheet_pin)]
     for m in pin_points:
         d = _sub(m.new, m.old)
         for lb in scene.labels.values():
@@ -544,13 +626,24 @@ def plan_move(
                 plan.along.append("no-connect marker")
     # stub chains hanging only on the moved pins travel whole, shape kept (#7/#8)
     carried: dict[str, Point] = {}  # wire uuid -> offset
-    chains = [  # not when a rotated / mirrored part sits at the end
-        c
-        for c in owned_stub_chains(scene, [m.old for m in pin_points if m.own in rigid], rigid)
+    rigid_points = [m.old for m in pin_points if m.own in rigid or m.sheet_pin in rigid_pins]
+
+    def offset_at(p: Point, among: list[_Moving]) -> Point | None:
+        return next((_sub(m.new, m.old) for m in among if same_point(m.old, p)), None)
+
+    chains = [  # not when a rotated / mirrored part sits at the end, nor when a pin or
+        c  # label at its far end moves by another offset (a sheet pin snapped onto its edge)
+        for c in owned_stub_chains(scene, rigid_points, rigid, sheet_pins=rigid_pins)
         if not any(u in moved_ids and u in scene.symbols for u in c.end_items)
+        and (
+            (far := offset_at(c.points[-1], moving)) is None
+            or same_point(far, offset_at(c.points[0], pin_points) or (0.0, 0.0))
+        )
     ]
     for chain in chains:
-        d = next(_sub(m.new, m.old) for m in pin_points if same_point(m.old, chain.points[0]))
+        start = offset_at(chain.points[0], pin_points)
+        assert start is not None
+        d = start
         for uid in chain.wires:
             carried[uid] = d
         for uid in chain.end_items:
@@ -591,6 +684,22 @@ def plan_move(
             continue  # a label and a power symbol on one stub end: laid once
         restubs.append((stub, m))
     restubbed = {u for stub, _m in restubs for u in stub.wires}
+    if pin_moves:  # what leaves in this call: it moves (pins of moved sheets too),
+        # travels along, is carried, or is a wire dragged off a moving pin's or label's old point
+        vacated = [m.old for m in moving if not same_point(m.old, m.new)]
+        gone_from = {_key(p) for p in vacated}  # keyed like the drag pass's `mapping`
+        dragged = set()
+        for w in scene.wires.values():
+            if _key(w.start) in gone_from or _key(w.end) in gone_from:
+                world.check_time(tool)
+                if not _interior_attached(scene, w, sheet_pin_points):  # those stay put
+                    dragged.add(w.uuid)
+        leaving = {x["uuid"] for x in plan.moved} | along_ids | set(carried) | restubbed
+        leaving |= {u for u, i in scene.sheet_pins.items() if i.sheet_uuid in moved_ids}
+        _refuse_pin_landing(
+            world, tool, scene, nets, [m for m in moving if m.sheet_pin], leaving,
+            dragged, vacated,
+        )  # fmt: skip
 
     # -- the scene after the move --------------------------------------------------------
     check = _Check(world, sheet, scene)
@@ -631,6 +740,12 @@ def plan_move(
                 if info.sheet_uuid == t.uuid:
                     pin = replace(info.pin, at=_add(info.pin.at, d))
                     check.scene.sheet_pins[uid] = replace(info, pin=pin)
+    for m in moving:
+        if m.sheet_pin is not None:
+            info = scene.sheet_pins[m.sheet_pin]
+            pin = replace(info.pin, at=m.new, direction=m.direction)  # type: ignore[arg-type]
+            check.scene.sheet_pins[m.sheet_pin] = replace(info, pin=pin)
+    new_pin_points = [i.pin.at for i in check.scene.sheet_pins.values()]
 
     moved_points = [m.old for m in moving if not same_point(m.old, m.new)]
     for w in scene.wires.values():  # attached wires follow (checked as routes below)
@@ -715,7 +830,7 @@ def plan_move(
                 break
         if chosen is None:
             raise _short(tool, w, found)
-        still = path_edge_problems(chosen, edge_sheets, sheet_pins=sheet_pin_points)
+        still = path_edge_problems(chosen, edge_sheets, sheet_pins=new_pin_points)
         if legacy and still:
             plan.warnings.append(
                 f"dragged wire {w.uuid} still breaks the sheet-edge rule: {still[0]}; "
@@ -747,7 +862,9 @@ def plan_move(
             if any(same_point(p.at, m.old) for p in s.pins):
                 fixed = True
         if any(  # a sheet pin that stays where it is
-            same_point(i.pin.at, m.old) and i.sheet_uuid not in moved_ids
+            same_point(i.pin.at, m.old)
+            and i.sheet_uuid not in moved_ids
+            and i.uuid not in pin_moves
             for i in scene.sheet_pins.values()
         ):
             fixed = True
@@ -830,7 +947,7 @@ def plan_move(
             check.scene.wires[uid] = WireInfo(uid, a, b)
             wire_updates[uid] = (a, b)
             if was_bad and (still := sheet_edge_problems((a, b), edge_sheets,
-                                                     sheet_pins=sheet_pin_points)):  # fmt: skip
+                                                     sheet_pins=new_pin_points)):  # fmt: skip
                 plan.warnings.append(
                     f"carried wire {uid} still breaks the sheet-edge rule: {still[0]}; "
                     "consider sch_reroute"
@@ -869,7 +986,7 @@ def plan_move(
         if (
             chosen is not None
             and legacy
-            and (still := path_edge_problems(chosen, edge_sheets, sheet_pins=sheet_pin_points))
+            and (still := path_edge_problems(chosen, edge_sheets, sheet_pins=new_pin_points))
         ):
             plan.warnings.append(
                 f"stub wire {first.uuid} still breaks the sheet-edge rule: {still[0]}; "
@@ -921,7 +1038,12 @@ def plan_move(
         if t.kind == "symbol"
     }
     logical = len(parts) + sum(1 for t in targets if t.kind != "symbol")
-    notes: list[str] = []
+    notes: list[str] = list(notes_snap)
+    if any("from_side" in x for x in plan.moved):
+        notes.append(
+            "a sheet pin changed sides: its orientation follows the new edge; its wires were "
+            "dragged (the child sheet's hierarchical label is unchanged)"
+        )
     if plan.along:
         notes.append("moved along with the parts: " + ", ".join(sorted(set(plan.along))))
     if plan.bridges:
@@ -952,6 +1074,75 @@ def plan_move(
         notes=notes,
     )
     return cs, plan
+
+
+def _moved_sheet_pins(
+    world: World, sheet: SheetRef, scene: Scene, moves: dict[str, tuple[str, Point]]
+) -> list[Any]:
+    """Copies of the sheet symbols whose pins move (`moves`: pin uuid -> side, point). A
+    pin keeps its UUID; on a new side it gets that side's spin style (`side_attrs`)."""
+    out = []
+    for sheet_uuid in dict.fromkeys(scene.sheet_pins[u].sheet_uuid for u in moves):
+        sym = copy_item(sheet_symbols(world, sheet)[sheet_uuid])
+        pins = []
+        for pin in sym.pins:
+            uid = access.kiid(pin)
+            if uid in moves:
+                side, at = moves[uid]
+                old = mm_point(pin.position)
+                pin.position = _v2(at)
+                if side == _SIDE_NAMES.get(int(pin.side)):
+                    pin.text.position = _v2(_add(mm_point(pin.text.position), _sub(at, old)))
+                else:
+                    pin.text.position = _v2(at)
+                    pin.side, pin.spin_style = side_attrs(side)
+            pins.append(pin)
+        sym.pins = pins
+        out.append(sym)
+    return out
+
+
+_SIDE_NAMES = {1: "left", 2: "right", 3: "top", 4: "bottom"}  # SheetSide
+
+
+def _refuse_pin_landing(
+    world: World,
+    tool: str,
+    scene: Scene,
+    nets: dict[str, str],
+    moving: list[_Moving],
+    moved: set[str],
+    dragged: set[str],
+    vacated: list[Point],
+) -> None:
+    """A moved sheet pin must not land on an item of another net (it would join it).
+    What leaves that spot in the same call does not count: items in `moved` (by uuid)
+    and the ends of `dragged` wires at `vacated`, the old points of moving pins (their
+    other ends and interiors stay)."""
+    for m in moving:
+        info = scene.sheet_pins[m.sheet_pin or ""]
+        leaves = any(same_point(m.new, q) for q in vacated)
+        for i in scene.items_at(m.new):
+            drags = leaves and i["uuid"] in dragged and not i.get("where")
+            if i["uuid"] in moved or drags:
+                continue
+            if i["kind"] == "pin":
+                net = world.netlist.net_of((scene.sheet.path, i["uuid"], i["pin"]))
+                what = f"pin {i.get('ref')}.{i['pin']}"
+            elif i["kind"] == "sheet_pin":
+                other = scene.sheet_pins[i["uuid"]]
+                net = world.sheet_pin_net(other)
+                what = f"sheet pin {other.pin.label}"
+            else:
+                net = nets.get(i["uuid"])
+                what = i["kind"].replace("_", " ")
+            if net is None or net != m.net:
+                raise StructuredToolError(
+                    f"{tool} refused: sheet pin {info.pin.label} would land on {what}",
+                    f"at {fmt(m.new)} sits {what} ({net or 'unconnected'}); the pin would join it",
+                    "Pick a free spot on the edge.",
+                    code="overlap",
+                )
 
 
 def _own_stub(scene: Scene, p: Point, moved: set[str]) -> StubChain | None:

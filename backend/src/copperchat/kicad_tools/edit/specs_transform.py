@@ -135,6 +135,12 @@ async def apply_delete(ctx: ToolContext, cs: ChangeSet) -> ToolResult:
             for t in plan.targets
             if t.kind == "sheet"
         ],
+        "sheet_pins": [
+            {"sheet": t.pin.pin.ref, "pin": t.pin.pin.name}
+            for t in plan.targets
+            if t.kind == "sheet_pin" and t.pin is not None
+        ],
+        "child_labels": len(plan.child_labels),
         "attached": {
             "wires": sum(len(p.wires) for p in plan.attached.values()),
             "wires_shortened": sum(len(p.shortened) for p in plan.attached.values()),
@@ -177,22 +183,28 @@ _XY = {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 
 TOOL_SPECS: list[ToolSpec] = [
     edit_spec(
         "sch_move",
-        "Move, rotate or mirror symbols (every unit of a reference, or one unit by UUID), "
-        "and move labels and sheet symbols, keeping every connection. A moved symbol takes "
-        "along, by the same offset and in shape, every stub chain hanging only on its pins "
-        "(wires with no junction, branch or other pin, any length) with the power symbols, "
-        "labels and no-connects at its end or on the pin; other attached wires are dragged "
-        "(a diagonal becomes an L). Rotating / mirroring drags all wires. A label or power "
-        "symbol moved alone gets its stub laid anew from the pin that stays. Fields move "
-        "with the part. to=[x, y] (one item) or "
-        "by=[dx, dy] (mm, snapped to 1.27 mm); rotation (absolute, degrees CCW) / mirror "
-        "alone rotate in place. Refused before writing when a part would overlap (the "
-        "nearest free position is suggested) or a dragged wire would touch another net; "
-        "verified: the netlist stays identical. Budget: 1 logical change per moved symbol, "
-        "label or sheet; carried stubs and their end items are free.",
+        "Move, rotate or mirror symbols (every unit of a reference, or one unit by UUID), and "
+        "move labels, sheet symbols and sheet pins, keeping every connection. A moved symbol "
+        "takes along, by the same offset and in shape, every stub chain hanging only on its "
+        "pins (wires with no junction, branch or other pin, any length) with the power symbols,"
+        " labels and no-connects at its end or on the pin; other attached wires are dragged (a "
+        "diagonal becomes an L). Rotating / mirroring drags all wires. A label or power symbol "
+        "moved alone gets its stub laid anew from the pin that stays. Fields move with the "
+        "part. to=[x, y] (one item) or by=[dx, dy] (mm, snapped to 1.27 mm); rotation "
+        "(absolute, degrees CCW) / mirror alone rotate in place. A sheet pin (its UUID or "
+        "'<sheet name>.<pin name>') lands on the nearest edge of its sheet symbol (at most 2.54"
+        " mm off it, on the grid, one pitch clear of the corners, not on another pin); on "
+        "another edge its side and orientation change, its wires are dragged; rotation / mirror"
+        " are refused for it. Refused before writing when a part would overlap (the nearest "
+        "free position is suggested) or a dragged wire would touch another net; verified: the "
+        "netlist stays identical. Budget: 1 logical change per moved symbol, label, sheet or "
+        "sheet pin; carried stubs and their end items are free.",
         _obj(
             {
-                "items": {**_ITEMS, "description": "['R5', '<label uuid>', 'sheet:power']"},
+                "items": {
+                    **_ITEMS,
+                    "description": "['R5', '<label uuid>', 'sheet:power', 'Power.VIN']",
+                },
                 "to": {**_XY, "description": "New position [x, y] in mm (one item)."},
                 "by": {**_XY, "description": "Shift [dx, dy] in mm."},
                 "rotation": {"type": "integer", "enum": [0, 90, 180, 270]},
@@ -206,16 +218,24 @@ TOOL_SPECS: list[ToolSpec] = [
     edit_spec(
         "sch_delete",
         "Delete items: references (every unit; '#PWR03' for a power symbol), item UUIDs "
-        "(wires, labels, junctions, no-connects, sheet symbols) or 'sheet:<name>' (the sheet "
+        "(wires, labels, junctions, no-connects, sheet symbols, sheet pins), "
+        "'<sheet name>.<pin name>' (a sheet pin) or 'sheet:<name>' (the sheet "
         "symbol; its file stays on disk). with_attached (default true) also removes what only "
         "served the deleted items: stub wires (cut back to a T where they branch), labels, "
         "junctions, no-connects and power symbols attached only to them; wires shared with "
-        "other pins stay. Reports nets_changed. Budget: 1 logical change per symbol (all "
-        "units) or sheet, plus 1 per net for all wires, junctions, labels and no-connects "
-        "listed on it; at most 3 symbols that existed before the turn per turn without a plan.",
+        "other pins stay. A deleted sheet pin also takes the sub-sheet's hierarchical label "
+        "of its name when that label is connected to nothing and no other sheet symbol of "
+        "the same file still has such a pin (else a note says why it stays). Reports "
+        "nets_changed. Budget: 1 logical change per symbol (all "
+        "units), sheet or sheet pin, plus 1 per net for all wires, junctions, labels and "
+        "no-connects listed on it; at most 3 symbols that existed before the turn per turn "
+        "without a plan.",
         _obj(
             {
-                "items": {**_ITEMS, "description": "['R5', '#PWR03', '<uuid>', 'sheet:power']"},
+                "items": {
+                    **_ITEMS,
+                    "description": "['R5', '#PWR03', '<uuid>', 'sheet:power', 'Power.VIN']",
+                },
                 "with_attached": {"type": "boolean", "default": True},
             },
             ["items"],
