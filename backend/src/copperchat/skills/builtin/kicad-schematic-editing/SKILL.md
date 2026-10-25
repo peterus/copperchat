@@ -59,7 +59,8 @@ plan step.
    and the self-check below.
 
 Other tools: `sch_set_fields` (value, footprint, MPN, DNP, custom fields of one
-reference), `sch_move` (move / rotate / mirror; wires are dragged), `sch_delete`
+reference), `sch_move` (move / rotate / mirror symbols, labels and sheets; see below),
+`sch_delete`
 (with its stubs, labels and power symbols), `sch_duplicate` (copy a block, e.g. a
 channel ×3 with `net_suffix="_CH{n}"`), `sch_add_wire` (an explicit wire by
 coordinates; prefer `sch_connect`), `sch_reroute` (tidy an existing route, the nets
@@ -91,6 +92,30 @@ UUIDs between tool calls only for wires, labels, junctions, no-connects and shee
   when the pin has its own stub, what hangs at the stub's far end (`stub_end`: labels,
   power symbols, no-connects with UUIDs) and the stub's wires (`stub_wires`).
 
+## Moving, rotating, declaring a connection
+
+- `sch_move` moves symbols, labels, sheet symbols and sheet pins; `rotation` / `mirror`
+  apply to symbols, labels and sheet symbols (junctions, no-connects and wires have no
+  orientation). A symbol's `rotation` / `mirror` are absolute. A label's `rotation` is
+  its text direction (0 right, 90 up, 180 left, 270 down) about its anchor, which stays
+  on its wire; `mirror` flips the text ('y' left-right, 'x' up-down). A sheet symbol
+  turns by `rotation` about its centre and `mirror` flips it: its pins change edges with
+  it (as KiCad's own rotate does); the box must then still be clear of other wires,
+  parts and sheets, else it is refused.
+- A part's own stubs (wires hanging only on its pins, with the power symbol, label or
+  no-connect at their end) travel with it — on a rotation / mirror they turn with it: a
+  power symbol keeps pointing away from its pin, a label's text follows the stub. If a
+  carried wire or item would hit something, the whole move is refused and nothing is
+  written; the error names the pin, the carried item and what is in the way (make room,
+  or pick another angle). Wires to other parts are dragged.
+- Without `expect_net` a move must leave every connection as it was. To **make** a
+  connection by moving — a label dropped onto its wire, a pin onto a wire end — pass
+  `expect_net="<net>"` (the name `sch_get_net` / `sch_list_items` report for the wire or
+  label it should join). Exactly one net of the moved items may join that net and
+  nothing else may change; otherwise the move is undone and the error says what it
+  would have connected ("would also connect to X" / "would not connect to Y"). An
+  unknown name is refused before anything is written.
+
 ## Rails and labels
 
 - **Rails and GND only via `sch_add_power(net, at=[REF.PIN, …])`** — one call for all
@@ -115,7 +140,8 @@ UUIDs between tool calls only for wires, labels, junctions, no-connects and shee
   `sch_connect(from="U2.SDA", to="<pin name>")`: within 25.4 mm it wires onto the label;
   farther away first `sch_move` the label (its UUID is in the `sch_add_sheet_pin` result)
   next to the pin. An unwired hierarchical label is an ERC error.
-- **Repairing a sheet pin**: `sch_move(items=["<sheet>.<pin>"], to=[x, y])` moves it
+- **Repairing a sheet pin**: `sch_move(items=["<sheet>.<pin>"], to=[x, y])` (add
+  `expect_net` when it is meant to land on a wire end of that net) moves it
   along its edge (its own stub travels with it) or onto another edge (`to` within 2.54 mm
   of that edge; the side and text orientation follow, its wires are dragged; if they
 cannot follow without crossing the sheet, it is refused: `sch_delete` the wire, move the
@@ -186,7 +212,8 @@ pin, then `sch_connect` again). Pins stay
 - `no_route`: the parts usually face away from each other; prefer `sch_move` (rotate /
   mirror) over long detours, or connect by label.
 - Repair before you recreate: find the wrong item (`sch_list_items`, `sch_get_pin`) and
-  `sch_move` it; delete and add again only what cannot be moved.
+  `sch_move` it (with `expect_net` when the move is meant to connect it); delete and add
+  again only what cannot be moved.
 - If the same call fails twice, change approach: `sch_move` the part, or `sch_delete` it
   (stubs, labels and power symbols go with it) and place it again via `sch_find_space`.
   Never leave stray symbols, loose wires or labels behind as workarounds.

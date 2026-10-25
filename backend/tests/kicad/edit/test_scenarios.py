@@ -322,3 +322,101 @@ async def test_s3_mcu_decoupling_i2c_sensor_on_subsheet(
     assert await s.call(sensor_sheet) == {refs["S"], refs["CS"]}  # the sensor block
     diff = await check_change_log_matches_diff(s, ctx, svc, snap)
     assert len(diff["sheets"]) == 2  # root + the new sub-sheet
+
+
+# -- v0.5.0 acceptance (spec §12): repair without delete-and-recreate -------------------
+
+
+async def test_repair_wrong_sheet_pin_and_unknown_label(
+    blank_session: KicadSession, edit_db: Database
+) -> None:
+    """A sheet pin created on the wrong (left) edge, and a label (UUID unknown to the
+    agent) sitting off its wire. Through the tools only: sch_list_items finds both, the
+    pin moves to the right edge onto the wire meant for it (side change, the join
+    declared with expect_net), the label moves onto its wire — a wrong expect_net is
+    refused and rolled back, the right one passes. No sch_delete / sch_add_* in the
+    repair; ERC on the root sheet clean."""
+    from copperchat.kicad_tools.edit.labels import make_no_connect
+    from tests.kicad.edit.connect_support import state
+    from tests.kicad.edit.helpers import local_label, wire
+
+    s = blank_session
+    await s.ensure_symbol_libraries()
+    ctx = edit_ctx(s, edit_db)
+    setup = [
+        ("sch_add_sheet", {"name": "Power", "file": "power.kicad_sch", "at": [50.8, 50.8]}),
+        ("sch_add_sheet_pin", {"sheet": "/Power/", "name": "VOUT", "direction": "output",
+                               "side": "left"}),
+        ("sch_place_symbol", {"lib_id": "Device:R", "at": [147.32, 63.5], "rotation": 90,
+                              "sheet": "/"}),
+        ("sch_place_symbol", {"lib_id": "Device:R", "at": [127.0, 63.5], "rotation": 90,
+                              "sheet": "/"}),
+    ]  # fmt: skip
+    for tool_name, args in setup:
+        out, err = await call_tool(ctx, tool_name, **args)
+        assert not err, out
+    ref = out["placed"]["ref"]
+    ends = []
+    for n in ("1", "2"):
+        got, err = await call_tool(ctx, "sch_get_pin", pin=f"{ref}.{n}")
+        assert not err, got
+        ends.append(tuple(got["at_mm"]))
+    (xl, y), (xr, _y) = sorted(ends)
+    # the wire meant for the pin (labelled VOUT) runs from the part's left pin to the
+    # right edge of the sheet, another from its right pin to the second part; the label
+    # SIG lies beside that one
+    sig = local_label("SIG", (xr + 6.35, y + 5.08))
+    sig.spin_style = 3
+    vout = local_label("VOUT", (111.76, y))
+    vout.spin_style = 2
+
+    def fixture(h: KicadHandle) -> None:
+        from copperchat.kicad_tools.edit.scene import resolve_sheet, sheet_api
+
+        sheet_api(h, resolve_sheet(h, "/")).create_items(
+            [
+                wire((101.6, y), (xl, y)),
+                wire((xr, y), (xr + 12.7, y)),
+                sig,
+                vout,
+                make_no_connect((xr + 20.32, y)),
+            ]  # the second part's free pin
+        )
+
+    async with s.commit("fixture"):
+        await s.call(fixture)
+
+    repair: list[str] = []
+
+    async def tool(name: str, **args: Any) -> tuple[dict[str, Any], bool]:
+        repair.append(name)
+        return await call_tool(ctx, name, **args)
+
+    found, err = await tool("sch_list_items", types=["sheet_pin", "label", "wire"])
+    assert not err, found
+    by_type: dict[str, list[dict[str, Any]]] = {}
+    for item in found["items"]:
+        by_type.setdefault(item["type"], []).append(item)
+    (pin,) = by_type["sheet_pin"]
+    (label,) = [x for x in by_type["label"] if x.get("text") == "SIG"]
+    nets = {tuple(w["start_mm"]): w["net"] for w in by_type["wire"]}
+    to_pin, to_label = nets[(101.6, y)], nets[(xr, y)]
+    assert to_pin and to_label and to_pin != to_label, nets
+
+    out, err = await tool("sch_move", items=[pin["uuid"]], to=[101.6, y], expect_net=to_pin)
+    assert not err, out
+    assert out["moved"][0]["side"] == "right"
+    before = await state(s)
+    out, err = await tool(
+        "sch_move", items=[label["uuid"]], to=[xr + 6.35, y], expect_net=to_pin
+    )  # the wrong net: refused, rolled back
+    assert err and out["error"]["code"] == "verification_failed", out
+    assert await state(s) == before
+    out, err = await tool("sch_move", items=[label["uuid"]], to=[xr + 6.35, y], expect_net=to_label)
+    assert not err, out
+    assert not [t for t in repair if t == "sch_delete" or t.startswith("sch_add")], repair
+
+    erc, err = await call_tool(ctx, "run_erc", sheet="/")
+    assert not err, erc
+    errors = [v for v in erc["violations"] if v["severity"] == "error"]
+    assert not errors, errors
