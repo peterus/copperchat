@@ -67,7 +67,8 @@ coordinates; prefer `sch_connect`), `sch_reroute` (tidy an existing route, the n
 stay identical), `sch_rename_net`, `sch_add_sheet` + `sch_add_sheet_pin`
 (hierarchical sheets; connect a sheet pin as `'<sheet name>.<pin name>'`),
 `sch_get_pin`, `sch_get_net`, `sch_list_symbols`, `sch_list_items` (look before you
-act, and after an error), `sch_changes` (what this turn / step / plan changed).
+act, and after an error), `sch_changes` (what this turn / step / plan changed),
+`sch_shift_sheet` (see below).
 
 ## Addressing pins
 
@@ -108,6 +109,12 @@ UUIDs between tool calls only for wires, labels, junctions, no-connects and shee
   carried wire or item would hit something, the whole move is refused and nothing is
   written; the error names the pin, the carried item and what is in the way (make room,
   or pick another angle). Wires to other parts are dragged.
+- `sch_shift_sheet` moves the whole content of one sheet rigidly (everything, incl.
+  texts and graphics; sub-sheet contents and the title block stay): `center=true` when
+  the drawing sits glued to a page edge or off-centre (it is centred in the frame, clear
+  of the title block when it fits), or `by=[dx, dy]`. The offset is snapped to 1.27 mm;
+  the nets stay identical; one logical change. Do not move every part with `sch_move`
+  for that.
 - Without `expect_net` a move must leave every connection as it was. To **make** a
   connection by moving — a label dropped onto its wire, a pin onto a wire end — pass
   `expect_net="<net>"` (the name `sch_get_net` / `sch_list_items` report for the wire or

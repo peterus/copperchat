@@ -287,14 +287,21 @@ TextExtents = Callable[[Any], Box | None]
 def _field_box(field: Any) -> Box | None:
     """Measured extent of a visible field (`text_width` / `TEXT_H`, the same constants the
     field layout uses); honours alignment and 90/270 degree angles."""
-    text = field.text
+    if not field.visible:
+        return None
+    return text_box(field.text)
+
+
+def text_box(text: Any) -> Box | None:
+    """`_field_box` of a kipy `Text` (a field's, a schematic text's); None when empty."""
     value = str(text.value)
-    if not field.visible or not value:
+    if not value:
         return None
     attrs = text.attributes
     size = attrs.size
-    w = text_width(value, size.x / NM)
-    h = TEXT_H * (size.y / NM)
+    lines = value.split("\n")
+    w = max(text_width(line, size.x / NM) for line in lines)
+    h = TEXT_H * (size.y / NM) * len(lines)
     x, y = mm_point(text.position)
     halign = int(attrs.horizontal_alignment)  # HA_LEFT = 1, HA_CENTER = 2, HA_RIGHT = 3
     valign = int(attrs.vertical_alignment)  # VA_TOP = 1, VA_CENTER = 2, VA_BOTTOM = 3

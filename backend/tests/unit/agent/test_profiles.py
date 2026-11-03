@@ -86,7 +86,7 @@ def settings(tmp_path: Path) -> Settings:
 
 
 def test_today_is_the_40_tools_of_spec_81_plus_list_items() -> None:
-    assert len(TODAY) == 41  # + sch_list_items (v0.5.0, #3)
+    assert len(TODAY) == 42  # + sch_list_items (v0.5.0, #3), sch_shift_sheet
     assert len(DOC_TOOLS) == 5
 
 
