@@ -7,6 +7,19 @@ All notable changes to CopperChat are documented in this file. The format follow
 
 ## [Unreleased]
 
+### Added
+
+- **`sch_shift_sheet`: move a whole sheet.** New editing tool for a drawing glued to a page
+  edge or sitting off-centre: `center=true` centres the content of one sheet (default root)
+  in the page's drawing frame, clear of the title block when it fits above or left of it;
+  `by=[dx, dy]` shifts by an explicit offset. The offset is always snapped to the 1.27 mm
+  grid. Everything on the sheet moves rigidly in one commit — symbols with their fields,
+  wires, buses, bus entries, junctions, no-connects, every label kind, sheet symbols with
+  pins and fields, texts, text boxes, graphics, images, tables; sub-sheet contents and the
+  title block stay. Refused when the shift would push content (further) off the paper; a
+  zero offset is a no-op. Every item must read back at its shifted position and the netlist
+  must stay identical (else undone). One logical change.
+
 ## [0.5.0] - 2026-10-25
 
 **Schematic addressability and ergonomics** (PM topic #15): the agent can find, address and

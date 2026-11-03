@@ -1,9 +1,9 @@
-"""Move / delete / duplicate tools (E6): `sch_move`, `sch_delete`, `sch_duplicate` —
-all two-phase (E-C4)."""
+"""Move / delete / duplicate tools (E6): `sch_move`, `sch_delete`, `sch_duplicate`, and
+`sch_shift_sheet` (a whole sheet) — all two-phase (E-C4)."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from copperchat.kicad_session import KicadHandle
@@ -12,8 +12,23 @@ from copperchat.kicad_tools.edit.delete import DeletePlan, nets_changed, plan_de
 from copperchat.kicad_tools.edit.duplicate import DUPLICATE_SPECS
 from copperchat.kicad_tools.edit.engine import _pin_labeler, apply_change_set, edit_result
 from copperchat.kicad_tools.edit.geometry import Point, same_point, snap_point
-from copperchat.kicad_tools.edit.labels import World
-from copperchat.kicad_tools.edit.scene import short
+from copperchat.kicad_tools.edit.labels import World, no_change
+from copperchat.kicad_tools.edit.scene import resolve_sheet, sheet_api, sheet_refs, short
+from copperchat.kicad_tools.edit.shift import TOOL as SHIFT_TOOL
+from copperchat.kicad_tools.edit.shift import (
+    inside,
+    item_boxes,
+    leaves_paper,
+    placement_notes,
+    plan_centring,
+    plan_shift,
+    read_page,
+    sheet_item_types,
+    shift_change_set,
+    shifted,
+    snap_offset,
+    union,
+)
 from copperchat.kicad_tools.edit.specs_core import _coord, apply_change
 from copperchat.kicad_tools.edit.targets import bad, resolve
 from copperchat.kicad_tools.edit.transform import MOVE_KINDS, plan_move
@@ -174,6 +189,119 @@ async def apply_delete(ctx: ToolContext, cs: ChangeSet) -> ToolResult:
     )
 
 
+# -- sch_shift_sheet ----------------------------------------------------------------------
+
+
+def _mm(p: Point) -> list[float]:
+    return [round(p[0], 4) + 0.0, round(p[1], 4) + 0.0]
+
+
+def _box(b: Any) -> list[float]:
+    return [round(v, 2) + 0.0 for v in (b.x0, b.y0, b.x1, b.y1)]
+
+
+def _shift_args(args: dict[str, Any]) -> tuple[str | None, Point | None]:
+    tool = SHIFT_TOOL
+    sheet, by, center = args.get("sheet"), args.get("by"), args.get("center")
+    if sheet is not None and not isinstance(sheet, str):
+        raise bad(f"{tool}: sheet must be a string", f"sheet was {short(sheet)}",
+                  "Pass a sheet instance path like '/amp/', a name or a page number.")  # fmt: skip
+    if center is not None and not isinstance(center, bool):
+        raise bad(f"{tool}: center must be true or false", f"center was {short(center)}",
+                  "Pass center=true to centre the sheet's content on the page.")  # fmt: skip
+    if by is not None and (
+        not isinstance(by, list) or len(by) != 2 or not all(_coord(c) for c in by)
+    ):
+        raise bad(f"{tool}: invalid by", f"by was {short(by)}",
+                  "Pass by=[dx, dy] in mm.")  # fmt: skip
+    if (by is None) == (not center):
+        raise bad(f"{tool}: pass exactly one of by and center",
+                  "both were given" if by is not None else "neither was given",
+                  "by=[dx, dy] shifts by an offset; center=true centres the content "
+                  "on the page.")  # fmt: skip
+    return sheet, (float(by[0]), float(by[1])) if by is not None else None
+
+
+async def prepare_shift_sheet(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
+    tool = SHIFT_TOOL
+    sheet_arg, by = _shift_args(args)
+
+    def run(h: KicadHandle) -> ChangeSet:
+        sheet = resolve_sheet(h, sheet_arg)
+        sch = sheet_api(h, sheet)
+        items = list(sch.get_items(types=sheet_item_types()))
+        page = read_page(sch.get_page_settings())
+        notes: list[str] = []
+        unknown: list[str] = []
+        content = union(b for i in items for b in item_boxes(i, unknown))
+        if unknown:
+            notes.append(f"the extent of {', '.join(unknown[:8])} could not be read: only "
+                         "its anchor was counted for centring and the page check")  # fmt: skip
+        summary: dict[str, Any] = {"sheet": sheet.as_dict(), "page": page.as_dict()}
+        if content is None:
+            return no_change(tool, sheet, {**summary, "offset_mm": [0.0, 0.0]},
+                             [f"sheet {sheet.human_path} is empty: nothing to shift"])  # fmt: skip
+        centring = None
+        if by is not None:
+            d = snap_offset(by)
+            if not same_point(by, d, 1e-4):
+                notes.append(f"by snapped to the 1.27 mm grid: {_mm(by)} -> {_mm(d)}")
+        else:
+            centring = plan_centring(content, page)
+            d = centring.offset
+        after = shifted(content, d)
+        summary |= {"offset_mm": _mm(d), "bbox_before_mm": _box(content),
+                    "bbox_after_mm": _box(after)}  # fmt: skip
+        if d == (0.0, 0.0):
+            msg = ("the content is already centred (offset 0 after snapping to the 1.27 mm "
+                   "grid)" if by is None else "the offset is 0 after snapping to the 1.27 mm "
+                   "grid: nothing to shift")  # fmt: skip
+            return no_change(tool, sheet, summary, [*notes, msg])
+        off = (
+            leaves_paper(content, after, page.paper)
+            if by is not None
+            else not inside(after, page.paper)
+        )
+        if off:
+            raise bad(
+                f"{tool}: the content would leave the page",
+                f"shifted by {_mm(d)} mm its box {_box(after)} is not inside the "
+                f"{page.name} paper {_box(page.paper)}",
+                "Shift by less, or use center=true; enlarge the page in KiCad if the "
+                "content does not fit."
+                if by is not None
+                else "The content is larger than the paper: enlarge the page in KiCad "
+                "(Page Settings) or make the drawing smaller first.",
+                offset_mm=_mm(d),
+                bbox_before_mm=_box(content),
+                bbox_after_mm=_box(after),
+                page=page.as_dict(),
+            )
+        notes += placement_notes(after, page, centring, content)
+        users = [r.human_path for r in sheet_refs(h) if r.file == sheet.file]
+        if len(users) > 1:
+            notes.append(f"{sheet.file} is used by {len(users)} sheet instances "
+                         f"({', '.join(users[:8])}): all of them show the shift")  # fmt: skip
+        plan = plan_shift(items, d)
+        summary |= {"shifted": plan.counts}
+        if plan.skipped:
+            summary |= {"not_shifted": plan.skipped}  # groups: member lists, no position
+        return shift_change_set(sheet, items, plan, summary, notes)
+
+    return await ctx.session.call(run)
+
+
+async def apply_shift_sheet(ctx: ToolContext, cs: ChangeSet) -> ToolResult:
+    """Like `apply_change`, but without one row per shifted item or touched net (hundreds
+    on a large sheet; a rigid shift changes no net): `shifted` counts the items by kind,
+    `modified_count` / `nets_touched_count` the rest. Created / deleted rows (KiCad's
+    cleanup) and side effects stay listed."""
+    applied = await apply_change_set(ctx, cs)
+    compact = replace(applied, modified=[], nets_touched=[])  # cs.applied stays complete
+    return edit_result(cs, compact, modified_count=len(applied.modified),
+                       nets_touched_count=len(applied.nets_touched))  # fmt: skip
+
+
 # -- specs --------------------------------------------------------------------------------
 
 _ITEM = {"type": "string", "maxLength": 128}
@@ -265,4 +393,38 @@ TOOL_SPECS: list[ToolSpec] = [
         apply_delete,
     ),
     *DUPLICATE_SPECS,
+    edit_spec(
+        "sch_shift_sheet",
+        "Shift EVERYTHING on one sheet rigidly by one offset: symbols with their fields, "
+        "wires, buses, bus entries, junctions, no-connects, all labels, sheet symbols with "
+        "their pins and fields, texts, text boxes, graphics, images, tables. Use it when "
+        "the whole drawing sits glued to a page edge or off-centre; to rearrange single "
+        "parts use sch_move. center=true centres the content box (bodies, visible fields "
+        "and label texts, wires, graphics) in the page's drawing frame (paper minus the "
+        "10 mm border), clear of the title block in the bottom-right corner when it fits "
+        "above or left of it (else centred over it, and a note says so); by=[dx, dy] (mm) "
+        "shifts by an explicit offset. Exactly one of the two. The offset is always "
+        "snapped to the 1.27 mm grid, so pins and wires stay on grid; 0 after snapping is "
+        "a no-op. Sub-sheet contents and the frame / title block do not move. Refused "
+        "when the shift would push content (further) off the paper. Verified: every item "
+        "is at its shifted position and the netlist stays identical, else undone. "
+        "Reports offset_mm, bbox_before_mm / bbox_after_mm, the page frame and shifted "
+        "counts per kind. Budget: 1 logical change.",
+        _obj(
+            {
+                "sheet": {
+                    "type": "string",
+                    "maxLength": 256,
+                    "description": "Sheet instance path like '/amp/', name or page; default root.",
+                },
+                "by": {**_XY, "description": "Shift [dx, dy] in mm (snapped to 1.27 mm)."},
+                "center": {
+                    "type": "boolean",
+                    "description": "true: centre the content in the page frame.",
+                },
+            }
+        ),
+        prepare_shift_sheet,
+        apply_shift_sheet,
+    ),
 ]
