@@ -18,7 +18,8 @@ from copperchat.kicad_tools.edit.shift import TOOL as SHIFT_TOOL
 from copperchat.kicad_tools.edit.shift import (
     inside,
     item_boxes,
-    overlaps,
+    leaves_paper,
+    placement_notes,
     plan_centring,
     plan_shift,
     read_page,
@@ -240,22 +241,14 @@ async def prepare_shift_sheet(ctx: ToolContext, args: dict[str, Any]) -> ChangeS
         if content is None:
             return no_change(tool, sheet, {**summary, "offset_mm": [0.0, 0.0]},
                              [f"sheet {sheet.human_path} is empty: nothing to shift"])  # fmt: skip
+        centring = None
         if by is not None:
             d = snap_offset(by)
             if not same_point(by, d, 1e-4):
                 notes.append(f"by snapped to the 1.27 mm grid: {_mm(by)} -> {_mm(d)}")
         else:
-            c = plan_centring(content, page)
-            d = c.offset
-            if not c.fits_frame:
-                notes.append("the content is larger than the drawing frame: centred on it, "
-                             "it reaches into the frame margins")  # fmt: skip
-            elif not c.clear_of_title_block:
-                notes.append("the content cannot be centred clear of the title block: "
-                             "centred in the frame, it overlaps the title block")  # fmt: skip
-            elif c.area != "frame":
-                notes.append(f"centred {c.area} (centred in the frame it would overlap "
-                             "the title block)")  # fmt: skip
+            centring = plan_centring(content, page)
+            d = centring.offset
         after = shifted(content, d)
         summary |= {"offset_mm": _mm(d), "bbox_before_mm": _box(content),
                     "bbox_after_mm": _box(after)}  # fmt: skip
@@ -264,7 +257,12 @@ async def prepare_shift_sheet(ctx: ToolContext, args: dict[str, Any]) -> ChangeS
                    "grid)" if by is None else "the offset is 0 after snapping to the 1.27 mm "
                    "grid: nothing to shift")  # fmt: skip
             return no_change(tool, sheet, summary, [*notes, msg])
-        if not inside(after, page.paper):
+        off = (
+            leaves_paper(content, after, page.paper)
+            if by is not None
+            else not inside(after, page.paper)
+        )
+        if off:
             raise bad(
                 f"{tool}: the content would leave the page",
                 f"shifted by {_mm(d)} mm its box {_box(after)} is not inside the "
@@ -279,13 +277,7 @@ async def prepare_shift_sheet(ctx: ToolContext, args: dict[str, Any]) -> ChangeS
                 bbox_after_mm=_box(after),
                 page=page.as_dict(),
             )
-        if by is not None and not inside(after, page.frame):
-            notes.append("the shifted content reaches into the frame margins")
-        if by is not None and overlaps(after, page.title_block):
-            notes.append("the shifted content overlaps the title block")
-        if page.custom_sheet:
-            notes.append("the page uses a custom drawing sheet: its frame and title block "
-                         "were assumed to be KiCad's default ones")  # fmt: skip
+        notes += placement_notes(after, page, centring)
         users = [r.human_path for r in sheet_refs(h) if r.file == sheet.file]
         if len(users) > 1:
             notes.append(f"{sheet.file} is used by {len(users)} sheet instances "

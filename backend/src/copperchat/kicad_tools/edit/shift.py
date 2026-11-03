@@ -27,12 +27,15 @@ from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from copperchat.errors import StructuredToolError
 from copperchat.kicad_tools import access
 from copperchat.kicad_tools.edit.changeset import (
     ChangeSet,
     Logical,
     NetIntent,
     SheetRef,
+    Stage,
+    StageInput,
     Update,
     static_stage,
 )
@@ -386,6 +389,49 @@ def plan_centring(content: Box, page: Page) -> Centring:
     return Centring(best[2], True, True, best[1])
 
 
+def overflow(b: Box, paper: Box) -> tuple[float, float, float, float]:
+    """How far `b` sticks out of `paper` on the left, top, right and bottom (>= 0)."""
+    return (
+        max(0.0, paper.x0 - b.x0),
+        max(0.0, paper.y0 - b.y0),
+        max(0.0, b.x1 - paper.x1),
+        max(0.0, b.y1 - paper.y1),
+    )
+
+
+def leaves_paper(before: Box, after: Box, paper: Box, eps: float = 1e-6) -> bool:
+    """The shift pushes content (further) off the paper on some side. Content that was
+    already off the paper may be shifted back towards it."""
+    return any(a > b + eps for a, b in zip(overflow(after, paper), overflow(before, paper),
+                                            strict=True))  # fmt: skip
+
+
+def placement_notes(after: Box, page: Page, centring: Centring | None) -> list[str]:
+    """What the result says about where the content ended up (`centring` None: by mode)."""
+    notes: list[str] = []
+    if centring is not None:
+        if not centring.fits_frame:
+            notes.append("the content is larger than the drawing frame: centred on it, it "
+                         "reaches into the frame margins")  # fmt: skip
+        elif not centring.clear_of_title_block:
+            notes.append("the content cannot be centred clear of the title block: centred "
+                         "in the frame, it overlaps the title block")  # fmt: skip
+        elif centring.area != "frame":
+            notes.append(f"centred {centring.area} (centred in the frame it would overlap "
+                         "the title block)")  # fmt: skip
+    else:
+        if not inside(after, page.paper):
+            notes.append("the content still reaches off the paper (less than before)")
+        elif not inside(after, page.frame):
+            notes.append("the shifted content reaches into the frame margins")
+        if overlaps(after, page.title_block):
+            notes.append("the shifted content overlaps the title block")
+    if page.custom_sheet:
+        notes.append("the page uses a custom drawing sheet: its frame and title block were "
+                     "assumed to be KiCad's default ones")  # fmt: skip
+    return notes
+
+
 # -- the change set ---------------------------------------------------------------------
 
 
@@ -480,10 +526,59 @@ def shift_change_set(
     return ChangeSet(
         tool=TOOL,
         sheet=sheet,
-        stages=[static_stage("shift sheet", Update(list(plan.items), sheet=sheet))],
+        stages=[
+            static_stage("shift sheet", Update(list(plan.items), sheet=sheet)),
+            check_stage(plan.items),
+        ],
         pre_images={access.kiid(i): copy_item(i) for i in items},
         intent=NetIntent(keep_partition=True),
         logical=Logical(1),
         summary=summary,
         notes=notes,
     )
+
+
+_LINE_KINDS = frozenset({"wire", "bus", "line"})
+
+
+def _nm(msg: Any) -> list[tuple[int, int]]:
+    return [(v.x_nm, v.y_nm) for v in _vectors(msg)]
+
+
+def shift_problems(sent: Sequence[Any], read_back: Sequence[Any]) -> list[str]:
+    """Items KiCad did not take as sent: it marks a refused item in a batch update and
+    carries on (kipy drops the per-item status), so the read-back must show every
+    translated point. A line may have been merged with a collinear one by KiCad's cleanup:
+    one of its ends is enough. Items missing from the read-back are the engine's
+    (`modified item disappeared`)."""
+    got = {access.kiid(i): i for i in read_back}
+    out: list[str] = []
+    for item in sent:
+        uid = access.kiid(item)
+        now = got.get(uid)
+        if now is None:
+            continue
+        want, have = _nm(item.proto), _nm(now.proto)
+        ok = bool(set(want) & set(have)) if item_kind(item) in _LINE_KINDS else want == have
+        if not ok:
+            out.append(f"{kind_name(item)} {uid}")
+    return out
+
+
+def check_stage(sent: Sequence[Any]) -> Stage:
+    """Writes nothing: refuses (and so undoes the shift) when an item did not move."""
+
+    def build(inp: StageInput) -> list[Any]:
+        problems = shift_problems(sent, inp.modified)
+        if problems:
+            raise StructuredToolError(
+                f"{TOOL}: KiCad did not move every item",
+                f"{len(problems)} item(s) are not at their shifted position: "
+                + ", ".join(problems[:12]),
+                "The shift was undone; move these items by hand in KiCad, then retry.",
+                code="verification_failed",
+                details={"items": problems[:64]},
+            )
+        return []
+
+    return Stage("check shift", build)

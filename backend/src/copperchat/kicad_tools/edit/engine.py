@@ -747,6 +747,8 @@ async def _apply(
     try:
         for stage in cs.stages:
             ops = stage.build(inp)
+            if not ops:  # a stage with nothing to write (e.g. a check): no commit
+                continue
             created_before = set(run.created)
             saved = run.checkpoint()
             scope: Any = None

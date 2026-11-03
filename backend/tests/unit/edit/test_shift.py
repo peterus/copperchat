@@ -26,13 +26,18 @@ from copperchat.errors import StructuredToolError
 from copperchat.kicad_tools.edit.geometry import NM, Box, on_grid
 from copperchat.kicad_tools.edit.sheets import build_sheet_pin, build_sheet_symbol
 from copperchat.kicad_tools.edit.shift import (
+    Centring,
     Page,
+    check_stage,
     item_boxes,
     item_points,
+    leaves_paper,
     page_of,
+    placement_notes,
     plan_centring,
     plan_shift,
     read_page,
+    shift_problems,
     shifted,
     snap_offset,
     translate_proto,
@@ -303,3 +308,112 @@ def test_an_undecodable_image_is_its_anchor_and_named() -> None:
     img.proto.id.value = "img1"
     assert item_boxes(img, unknown) == [Box(100, 100, 100, 100)]
     assert unknown == ["image img1"]
+
+
+def test_leaving_the_paper_is_refused_only_when_it_gets_worse() -> None:
+    paper = A4.paper
+    inside_box = Box(50, 50, 100, 100)
+    assert not leaves_paper(inside_box, shifted(inside_box, (10, 0)), paper)
+    assert leaves_paper(inside_box, shifted(inside_box, (250, 0)), paper)
+    off = Box(-20, 50, 30, 100)  # already 20 mm off the left edge
+    assert not leaves_paper(off, shifted(off, (10, 0)), paper)  # less overflow: allowed
+    assert leaves_paper(off, shifted(off, (-1.27, 0)), paper)
+    assert leaves_paper(off, shifted(off, (10, 200)), paper)  # better left, worse bottom
+
+
+def _centring(**kw: Any) -> Centring:
+    base: dict[str, Any] = {
+        "offset": (0.0, 0.0),
+        "clear_of_title_block": True,
+        "fits_frame": True,
+        "area": "frame",
+    }
+    return Centring(**{**base, **kw})
+
+
+def test_placement_notes_per_mode() -> None:
+    assert placement_notes(Box(50, 50, 100, 100), A4, None) == []
+    assert placement_notes(Box(50, 50, 100, 100), A4, _centring()) == []
+    (n,) = placement_notes(Box(5, 50, 100, 100), A4, None)
+    assert "frame margins" in n
+    notes = placement_notes(Box(150, 150, 250, 190), A4, None)
+    assert notes == ["the shifted content overlaps the title block"]
+    (n,) = placement_notes(Box(-5, 50, 100, 100), A4, None)
+    assert "off the paper" in n
+    (n,) = placement_notes(Box(0, 0, 1, 1), A4, _centring(fits_frame=False))
+    assert "larger than the drawing frame" in n
+    (n,) = placement_notes(Box(0, 0, 1, 1), A4, _centring(clear_of_title_block=False))
+    assert "overlaps the title block" in n
+    (n,) = placement_notes(Box(0, 0, 1, 1), A4, _centring(area="above the title block"))
+    assert n.startswith("centred above the title block")
+    custom = page_of("A4", 297, 210, custom_sheet=True)
+    (n,) = placement_notes(Box(50, 50, 100, 100), custom, None)
+    assert "custom drawing sheet" in n
+
+
+def _wire(uid: str, a: tuple[float, float], b: tuple[float, float]) -> SchematicLine:
+    w = SchematicLine()
+    w.proto.id.value = uid
+    w.proto.type = st.SchematicLineType.SLT_WIRE
+    _set(w.proto.start, *a)
+    _set(w.proto.end, *b)
+    return w
+
+
+def _text(uid: str, at: tuple[float, float]) -> SchematicText:
+    t = SchematicText()
+    t.proto.id.value = uid
+    _set(t.proto.text.position, *at)
+    return t
+
+
+def test_shift_problems_names_items_kicad_did_not_move() -> None:
+    sent = [_wire("w1", (10, 10), (20, 10)), _text("t1", (30, 30)), _text("t2", (40, 40))]
+    back = [
+        _wire("w1", (10, 10), (25.08, 10)),  # merged with a collinear wire: one end kept
+        _text("t1", (28.73, 30)),  # refused: still at the old place
+    ]  # t2 missing: the engine reports that one
+    assert shift_problems(sent, back) == ["text t1"]
+    assert shift_problems(sent, [_wire("w1", (0, 0), (5, 0))]) == ["wire w1"]
+
+
+def test_check_stage_refuses_and_writes_nothing() -> None:
+    from copperchat.kicad_tools.edit.changeset import StageInput
+
+    sent = [_text("t1", (30, 30))]
+    stage = check_stage(sent)
+    assert stage.build(StageInput(modified=[_text("t1", (30, 30))])) == []
+    with pytest.raises(StructuredToolError) as err:
+        stage.build(StageInput(modified=[_text("t1", (1, 1))]))
+    assert err.value.code == "verification_failed"
+
+
+@pytest.mark.parametrize(
+    ("args", "why"),
+    [
+        ({}, "neither"),
+        ({"center": False}, "neither"),
+        ({"by": [1.27, 0], "center": True}, "both"),
+        ({"center": "yes"}, "center must be"),
+        ({"by": [1.27]}, "invalid by"),
+        ({"by": [1.27, True]}, "invalid by"),
+        ({"by": [float("nan"), 0]}, "invalid by"),
+        ({"by": [float("inf"), 0]}, "invalid by"),
+        ({"by": "1,2"}, "invalid by"),
+        ({"by": [1.27, 0], "sheet": 3}, "sheet must be"),
+    ],
+)
+def test_shift_args_are_validated(args: dict[str, Any], why: str) -> None:
+    from copperchat.kicad_tools.edit.specs_transform import _shift_args
+
+    with pytest.raises(StructuredToolError) as err:
+        _shift_args(args)
+    assert why in f"{err.value}", err.value
+
+
+def test_shift_args_accepts_both_modes() -> None:
+    from copperchat.kicad_tools.edit.specs_transform import _shift_args
+
+    assert _shift_args({"by": [1, -2]}) == (None, (1.0, -2.0))
+    assert _shift_args({"center": True, "sheet": "/amp/"}) == ("/amp/", None)
+    assert _shift_args({"by": [0, 0], "center": False}) == (None, (0.0, 0.0))
