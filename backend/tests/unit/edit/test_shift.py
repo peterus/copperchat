@@ -3,6 +3,7 @@ frame and the centring math, without KiCad."""
 
 from __future__ import annotations
 
+import io
 from typing import Any
 
 import pytest
@@ -258,3 +259,47 @@ def test_item_boxes_cover_texts_labels_and_shapes() -> None:
     _set(s.proto.position, 30, 30)
     _set(s.proto.size, 20, 10)
     assert union(item_boxes(s)) == Box(30, 30, 50, 40)
+
+
+def test_a_reversed_rectangle_still_counts() -> None:
+    r = SchematicGraphicShape()
+    _set(r.proto.shape.rectangle.top_left, 100, 100)  # drawn right-to-left
+    _set(r.proto.shape.rectangle.bottom_right, 50, 50)
+    (box,) = item_boxes(r)
+    assert (box.x0, box.y0, box.x1, box.y1) == pytest.approx((50, 50, 100, 100))
+    assert union([Box(60, 60, 70, 70), Box(100, 100, 50, 50)]) == Box(50, 50, 100, 100)
+
+
+def test_an_ellipse_counts_with_its_radius() -> None:
+    e = SchematicGraphicShape()
+    _set(e.proto.shape.ellipse.center, 40, 40)
+    e.proto.shape.ellipse.major_radius.value_nm = 10 * NM
+    e.proto.shape.ellipse.minor_radius.value_nm = 4 * NM
+    assert item_boxes(e) == [Box(30, 30, 50, 50)]
+
+
+def _image(data: bytes, scale: float = 1.0) -> SchematicImage:
+    img = SchematicImage()
+    _set(img.proto.position, 100, 100)
+    img.image_scale = scale
+    img.image_data = data
+    return img
+
+
+def test_image_extent_from_pixels_dpi_and_scale() -> None:
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (300, 150)).save(buf, format="PNG", dpi=(300, 300))
+    (box,) = item_boxes(_image(buf.getvalue(), scale=2.0))  # 25.4 x 12.7 mm, doubled
+    assert (box.x0, box.y0, box.x1, box.y1) == pytest.approx((74.6, 87.3, 125.4, 112.7), abs=1e-3)
+    (neg,) = item_boxes(_image(buf.getvalue(), scale=-1.0))  # a bad scale counts as 1
+    assert neg.width == pytest.approx(25.4, abs=1e-3)
+
+
+def test_an_undecodable_image_is_its_anchor_and_named() -> None:
+    unknown: list[str] = []
+    img = _image(b"%!PS-Adobe-3.0 EPSF not a bitmap")
+    img.proto.id.value = "img1"
+    assert item_boxes(img, unknown) == [Box(100, 100, 100, 100)]
+    assert unknown == ["image img1"]

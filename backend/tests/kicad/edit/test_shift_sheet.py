@@ -14,11 +14,13 @@ from kipy.schematic_types import (
     BusEntry,
     DirectiveLabel,
     GlobalLabel,
+    Group,
     HierarchicalLabel,
     NoConnectMarker,
     SchematicGraphicShape,
     SchematicImage,
     SchematicLine,
+    SchematicRuleArea,
     SchematicTable,
     SchematicText,
     SchematicTextBox,
@@ -77,7 +79,9 @@ async def test_shift_by_moves_the_root_sheet_and_keeps_nets(
     assert any("snapped" in n for n in out["notes"])
     for kind in ("symbol", "power_symbol", "wire", "junction", "sheet", "no_connect"):
         assert out["shifted"].get(kind, 0) > 0, (kind, out["shifted"])
-    assert out["modified"] == sum(out["shifted"].values())
+    assert out["modified_count"] == sum(out["shifted"].values())
+    assert out["modified"] == [] and out["nets_touched"] == []  # compact on large sheets
+    assert out["nets_touched_count"] > 0
     b0, b1 = out["bbox_before_mm"], out["bbox_after_mm"]
     assert b1[0] == pytest.approx(b0[0] + 2.54) and b1[3] == pytest.approx(b0[3] - 1.27)
     _assert_shifted(root, await _points(s), (2.54, -1.27))
@@ -202,8 +206,69 @@ def _every_kind() -> list[Any]:
         poly,
         img,
     ]
+    reversed_rect = SchematicGraphicShape()  # drawn right-to-left: corners not normalised
+    reversed_rect.proto.shape.rectangle.top_left.CopyFrom(v2(160.02, 50.8).proto)
+    reversed_rect.proto.shape.rectangle.bottom_right.CopyFrom(v2(149.86, 40.64).proto)
+    bezier = SchematicGraphicShape()
+    bz = bezier.proto.shape.bezier
+    for vec, (x, y) in ((bz.start, (25.4, 50.8)), (bz.control1, (30.48, 40.64)),
+                        (bz.control2, (35.56, 60.96)), (bz.end, (40.64, 50.8))):  # fmt: skip
+        vec.CopyFrom(v2(x, y).proto)
+    area = SchematicRuleArea()
+    ring = area.proto.shape.polygon.polygons.add().outline
+    for x, y in ((50.8, 40.64), (71.12, 40.64), (71.12, 55.88), (50.8, 55.88)):
+        ring.nodes.add().point.CopyFrom(v2(x, y).proto)
+    ring.closed = True
+    multi = SchematicText()
+    multi.proto.text.text = "line one\nline two"
+    multi.proto.text.position.CopyFrom(v2(88.9, 50.8).proto)
+    multi.proto.text.attributes.size.CopyFrom(v2(1.27, 1.27).proto)
+    items += [reversed_rect, bezier, area, multi]
     items += [wire((33.02, 104.14), (45.72, 104.14)), local_label("BUS_X", (40.64, 104.14))]
     return [_with_id(i) for i in items]
+
+
+def _probe(h: KicadHandle) -> dict[str, tuple[int, int]]:
+    """Hand-picked coordinates per kind read through kipy's own accessors (independent of
+    the proto walker that does the shift)."""
+    sch = sheet_api(h, resolve_sheet(h, None))
+    out: dict[str, tuple[int, int]] = {}
+
+    def put(name: str, v: Any) -> None:  # a kipy Vector2 or a raw proto one
+        out[name] = (int(v.x), int(v.y)) if hasattr(v, "x") else (v.x_nm, v.y_nm)
+
+    sym = next(x for x in sch.get_symbols() if str(x.reference) == "R1")
+    put("symbol", sym.position)
+    put("symbol.reference", sym.reference_field.text.position)
+    put("symbol.value", sym.value_field.text.position)
+    sheet = sch.get_sheet_symbols()[0]
+    put("sheet", sheet.position)
+    put("sheet.name", sheet.name_field.text.position)
+    put("sheet.pin", sheet.pins[0].position)
+    put("sheet.pin.text", sheet.pins[0].text.position)
+    for lb in sch.get_labels():
+        put(f"label {lb.text.value}", lb.position)
+        put(f"label {lb.text.value}.text", lb.text.position)
+    for t in sch.get_text():
+        if isinstance(t, SchematicTextBox):
+            put("text_box", t.top_left)
+        else:
+            put(f"text {t.value[:4]}", t.text.position)
+    for sh in sch.get_shapes():
+        geo = sh.proto.shape.WhichOneof("geometry")
+        attr = {"rectangle": "bottom_right", "circle": "radius_point", "arc": "mid",
+                "bezier": "control2"}.get(geo)  # fmt: skip
+        if attr is not None:
+            put(f"shape {access.kiid(sh)} {geo}", getattr(getattr(sh.proto.shape, geo), attr))
+    for img in sch.get_images():
+        put("image", img.position)
+    for be in sch.get_bus_entries():
+        put("bus_entry", be.position)
+    for tb in sch.get_tables():
+        put("table.cell", tb.proto.cells[1].text_box.textbox.top_left)
+    for ra in sch.get_rule_areas():
+        put("rule_area", ra.proto.shape.polygon.polygons[0].outline.nodes[2].point)
+    return out
 
 
 async def test_every_item_kind_moves(blank_session: KicadSession, edit_db: Database) -> None:
@@ -219,18 +284,35 @@ async def test_every_item_kind_moves(blank_session: KicadSession, edit_db: Datab
 
     async with s.commit("every kind"):
         await s.call(create)
+
+    def group(h: KicadHandle) -> None:
+        sch = sheet_api(h, resolve_sheet(h, None))
+        g = _with_id(Group())
+        for t in sch.get_shapes()[:2]:
+            g.proto.items.add().CopyFrom(t.proto.id)
+        sch.create_items([g])
+
+    async with s.commit("group"):
+        await s.call(group)
     _ids, partition = await state(s)
     before = await _points(s)
+    probe = await s.call(_probe)
     out = await _ok(ctx, "sch_shift_sheet", by=[-1.27, 2.54])
     after = await _points(s)
     _assert_shifted(before, after, (-1.27, 2.54))
+    moved = await s.call(_probe)
+    assert set(moved) == set(probe) and len(probe) >= 20, sorted(probe)
+    for name, (x, y) in probe.items():
+        assert moved[name] == (x - 1_270_000, y + 2_540_000), name
     shifted = out["shifted"]
     # (the lone junction is dropped by KiCad's cleanup at creation; junctions: root test)
     for kind in ("bus", "bus_entry", "no_connect", "global_label",
                  "hierarchical_label", "label", "text", "text_box", "shape", "image",
-                 "symbol", "sheet", "wire", "directive_label", "table"):  # fmt: skip
+                 "symbol", "sheet", "wire", "directive_label", "table",
+                 "rule_area"):  # fmt: skip
         assert shifted.get(kind, 0) > 0, (kind, shifted)
-    assert shifted["shape"] == 4
+    assert shifted["shape"] == 6 and shifted["text"] == 2
+    assert out["not_shifted"] == {"group": 1}
     assert (await state(s))[1] == partition
 
 
@@ -252,8 +334,12 @@ async def test_refused_off_the_paper_and_zero_offset_is_a_no_op(
     assert await _points(s) == before
     both, err = await call_tool(ctx, "sch_shift_sheet", by=[1.27, 0], center=True)
     assert err and "exactly one" in both["error"]["what"]
-    empty = await _ok(ctx, "sch_shift_sheet", sheet="/", center=True)
-    assert empty["logical_changes"] == 1  # R1 alone is centred
+    alone = await _ok(ctx, "sch_shift_sheet", sheet="/", center=True)
+    assert alone["logical_changes"] == 1  # R1 alone is centred
+    await _ok(ctx, "sch_add_sheet", name="sub", file="sub.kicad_sch", at=[25.4, 25.4])
+    empty = await _ok(ctx, "sch_shift_sheet", sheet="/sub/", center=True)
+    assert empty["logical_changes"] == 0 and empty["offset_mm"] == [0.0, 0.0]
+    assert any("is empty" in n for n in empty["notes"])
 
 
 def _forced(*_args: Any) -> list[str]:

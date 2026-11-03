@@ -194,38 +194,53 @@ def _shape_box(shape: Any) -> Box | None:
 
     if shape is None:
         return None
+    geometry = shape.proto.WhichOneof("geometry")
+    if geometry in ("ellipse", "ellipse_arc"):  # kipy has no box for these
+        e = getattr(shape.proto, geometry)
+        c = (e.center.x_nm / NM, e.center.y_nm / NM)
+        r = max(e.major_radius.value_nm, e.minor_radius.value_nm) / NM
+        return _pt_box(c, r)  # contains the ellipse at any rotation
     concrete = to_concrete_shape(shape) or shape
     try:
         b = concrete.bounding_box()
     except Exception:  # a shape kind without a box: its points still count (below)
         return None
-    return Box(b.pos.x / NM, b.pos.y / NM, (b.pos.x + b.size.x) / NM, (b.pos.y + b.size.y) / NM)
+    # KiCad does not normalise a shape's corners: a rectangle drawn right-to-left has a
+    # negative size here.
+    return Box.around([(b.pos.x / NM, b.pos.y / NM),
+                       ((b.pos.x + b.size.x) / NM, (b.pos.y + b.size.y) / NM)])  # fmt: skip
 
 
 IMAGE_PPI = 300  # KiCad's default for a bitmap without resolution metadata
+# What KiCad embeds as a schematic bitmap (wxImage handlers); only these parsers run.
+IMAGE_FORMATS = ("PNG", "JPEG", "BMP", "GIF", "TIFF", "WEBP")
 
 
-def _image_box(item: Any) -> Box:
+def _image_box(item: Any) -> Box | None:
+    """The bitmap's extent (its position is its centre); None when it cannot be read."""
+    from PIL import Image
+
     at = mm_point(item.position)
     try:
-        from PIL import Image
-
-        with Image.open(io.BytesIO(item.image_data)) as img:
+        with Image.open(io.BytesIO(item.image_data), formats=IMAGE_FORMATS) as img:
             px_w, px_h = img.size
             dpi = img.info.get("dpi", (IMAGE_PPI, IMAGE_PPI))
-    except Exception:  # undecodable data: only its anchor
-        return _pt_box(at)
-    scale = float(item.image_scale) or 1.0
-    ppi_x = float(dpi[0]) or IMAGE_PPI
-    ppi_y = float(dpi[1]) or IMAGE_PPI
+        ppi_x, ppi_y = float(dpi[0]), float(dpi[1])
+    except (OSError, ValueError, TypeError, IndexError, Image.DecompressionBombError):
+        return None
+    scale = float(item.image_scale)
+    ppi_x = ppi_x if ppi_x > 0 else IMAGE_PPI
+    ppi_y = ppi_y if ppi_y > 0 else IMAGE_PPI
+    scale = scale if scale > 0 else 1.0
     w = px_w / ppi_x * 25.4 * scale
     h = px_h / ppi_y * 25.4 * scale
     return Box(at[0] - w / 2, at[1] - h / 2, at[0] + w / 2, at[1] + h / 2)
 
 
-def item_boxes(item: Any) -> list[Box]:
+def item_boxes(item: Any, unknown: list[str] | None = None) -> list[Box]:
     """What `item` covers on the page (bodies and visible texts as the scene estimates
-    them; points for the rest)."""
+    them; points for the rest). An item whose extent cannot be read (an undecodable
+    image) counts as its anchor and is named in `unknown`."""
     kind = item_kind(item)
     if kind == "symbol":
         return [body_box(item, margin=0.0), *field_boxes(item)]
@@ -257,7 +272,12 @@ def item_boxes(item: Any) -> list[Box]:
         b = _shape_box(item.shape)
         return [b] if b is not None else _point_boxes(item.proto)
     if kind == "SchematicImage":
-        return [_image_box(item)]
+        box = _image_box(item)
+        if box is None:
+            if unknown is not None:
+                unknown.append(f"image {access.kiid(item)}")
+            return [_pt_box(mm_point(item.position))]
+        return [box]
     return _point_boxes(item.proto)  # tables and anything else: its points
 
 
@@ -273,7 +293,8 @@ def _point_boxes(msg: Any) -> list[Box]:
 
 def union(boxes: Iterable[Box]) -> Box | None:
     out: Box | None = None
-    for b in boxes:
+    for raw in boxes:
+        b = Box.around([(raw.x0, raw.y0), (raw.x1, raw.y1)])  # tolerate inverted boxes
         out = (
             b
             if out is None

@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from copperchat.kicad_session import KicadHandle
@@ -231,7 +231,11 @@ async def prepare_shift_sheet(ctx: ToolContext, args: dict[str, Any]) -> ChangeS
         items = list(sch.get_items(types=sheet_item_types()))
         page = read_page(sch.get_page_settings())
         notes: list[str] = []
-        content = union(b for i in items for b in item_boxes(i))
+        unknown: list[str] = []
+        content = union(b for i in items for b in item_boxes(i, unknown))
+        if unknown:
+            notes.append(f"the extent of {', '.join(unknown[:8])} could not be read: only "
+                         "its anchor was counted for centring and the page check")  # fmt: skip
         summary: dict[str, Any] = {"sheet": sheet.as_dict(), "page": page.as_dict()}
         if content is None:
             return no_change(tool, sheet, {**summary, "offset_mm": [0.0, 0.0]},
@@ -252,9 +256,6 @@ async def prepare_shift_sheet(ctx: ToolContext, args: dict[str, Any]) -> ChangeS
             elif c.area != "frame":
                 notes.append(f"centred {c.area} (centred in the frame it would overlap "
                              "the title block)")  # fmt: skip
-            if page.custom_sheet:
-                notes.append("the page uses a custom drawing sheet: its frame and title "
-                             "block were assumed to be KiCad's default ones")  # fmt: skip
         after = shifted(content, d)
         summary |= {"offset_mm": _mm(d), "bbox_before_mm": _box(content),
                     "bbox_after_mm": _box(after)}  # fmt: skip
@@ -269,7 +270,10 @@ async def prepare_shift_sheet(ctx: ToolContext, args: dict[str, Any]) -> ChangeS
                 f"shifted by {_mm(d)} mm its box {_box(after)} is not inside the "
                 f"{page.name} paper {_box(page.paper)}",
                 "Shift by less, or use center=true; enlarge the page in KiCad if the "
-                "content does not fit.",
+                "content does not fit."
+                if by is not None
+                else "The content is larger than the paper: enlarge the page in KiCad "
+                "(Page Settings) or make the drawing smaller first.",
                 offset_mm=_mm(d),
                 bbox_before_mm=_box(content),
                 bbox_after_mm=_box(after),
@@ -279,6 +283,9 @@ async def prepare_shift_sheet(ctx: ToolContext, args: dict[str, Any]) -> ChangeS
             notes.append("the shifted content reaches into the frame margins")
         if by is not None and overlaps(after, page.title_block):
             notes.append("the shifted content overlaps the title block")
+        if page.custom_sheet:
+            notes.append("the page uses a custom drawing sheet: its frame and title block "
+                         "were assumed to be KiCad's default ones")  # fmt: skip
         users = [r.human_path for r in sheet_refs(h) if r.file == sheet.file]
         if len(users) > 1:
             notes.append(f"{sheet.file} is used by {len(users)} sheet instances "
@@ -293,13 +300,14 @@ async def prepare_shift_sheet(ctx: ToolContext, args: dict[str, Any]) -> ChangeS
 
 
 async def apply_shift_sheet(ctx: ToolContext, cs: ChangeSet) -> ToolResult:
-    """Like `apply_change`, but without one row per shifted item (hundreds on a large
-    sheet): `shifted` counts them by kind."""
+    """Like `apply_change`, but without one row per shifted item or touched net (hundreds
+    on a large sheet; a rigid shift changes no net): `shifted` counts the items by kind,
+    `modified_count` / `nets_touched_count` the rest. Created / deleted rows (KiCad's
+    cleanup) and side effects stay listed."""
     applied = await apply_change_set(ctx, cs)
-    result = edit_result(cs, applied)
-    assert isinstance(result.data, dict)
-    result.data["modified"] = len(applied.modified)
-    return result
+    compact = replace(applied, modified=[], nets_touched=[])  # cs.applied stays complete
+    return edit_result(cs, compact, modified_count=len(applied.modified),
+                       nets_touched_count=len(applied.nets_touched))  # fmt: skip
 
 
 # -- specs --------------------------------------------------------------------------------
