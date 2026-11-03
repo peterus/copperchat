@@ -214,6 +214,7 @@ def _shape_box(shape: Any) -> Box | None:
                        ((b.pos.x + b.size.x) / NM, (b.pos.y + b.size.y) / NM)])  # fmt: skip
 
 
+MAX_IMAGE_MM = 10_000.0  # larger than any paper KiCad offers
 IMAGE_PPI = 300  # KiCad's default for a bitmap without resolution metadata
 # What KiCad embeds as a schematic bitmap (wxImage handlers); only these parsers run.
 IMAGE_FORMATS = ("PNG", "JPEG", "BMP", "GIF", "TIFF", "WEBP")
@@ -237,6 +238,8 @@ def _image_box(item: Any) -> Box | None:
     scale = scale if scale > 0 else 1.0
     w = px_w / ppi_x * 25.4 * scale
     h = px_h / ppi_y * 25.4 * scale
+    if not (math.isfinite(w) and math.isfinite(h)) or max(w, h) > MAX_IMAGE_MM:
+        return None  # absurd scale / resolution: not a real extent
     return Box(at[0] - w / 2, at[1] - h / 2, at[0] + w / 2, at[1] + h / 2)
 
 
@@ -406,8 +409,11 @@ def leaves_paper(before: Box, after: Box, paper: Box, eps: float = 1e-6) -> bool
                                             strict=True))  # fmt: skip
 
 
-def placement_notes(after: Box, page: Page, centring: Centring | None) -> list[str]:
-    """What the result says about where the content ended up (`centring` None: by mode)."""
+def placement_notes(
+    after: Box, page: Page, centring: Centring | None, before: Box | None = None
+) -> list[str]:
+    """What the result says about where the content ended up (`centring` None: by mode;
+    `before`: the content box before the shift)."""
     notes: list[str] = []
     if centring is not None:
         if not centring.fits_frame:
@@ -421,7 +427,12 @@ def placement_notes(after: Box, page: Page, centring: Centring | None) -> list[s
                          "the title block)")  # fmt: skip
     else:
         if not inside(after, page.paper):
-            notes.append("the content still reaches off the paper (less than before)")
+            less = (
+                before is not None
+                and sum(overflow(after, page.paper)) < sum(overflow(before, page.paper)) - 1e-6
+            )
+            notes.append("the content still reaches off the paper ("
+                         + ("less than before)" if less else "as before)"))  # fmt: skip
         elif not inside(after, page.frame):
             notes.append("the shifted content reaches into the frame margins")
         if overlaps(after, page.title_block):
@@ -528,7 +539,7 @@ def shift_change_set(
         sheet=sheet,
         stages=[
             static_stage("shift sheet", Update(list(plan.items), sheet=sheet)),
-            check_stage(plan.items),
+            check_stage(plan.items, items),
         ],
         pre_images={access.kiid(i): copy_item(i) for i in items},
         intent=NetIntent(keep_partition=True),
@@ -545,13 +556,17 @@ def _nm(msg: Any) -> list[tuple[int, int]]:
     return [(v.x_nm, v.y_nm) for v in _vectors(msg)]
 
 
-def shift_problems(sent: Sequence[Any], read_back: Sequence[Any]) -> list[str]:
+def shift_problems(
+    sent: Sequence[Any], read_back: Sequence[Any], original: Sequence[Any]
+) -> list[str]:
     """Items KiCad did not take as sent: it marks a refused item in a batch update and
     carries on (kipy drops the per-item status), so the read-back must show every
     translated point. A line may have been merged with a collinear one by KiCad's cleanup:
-    one of its ends is enough. Items missing from the read-back are the engine's
+    one of its new ends that was not an old end is enough (a wire as long as the offset
+    has an end at an old position). Items missing from the read-back are the engine's
     (`modified item disappeared`)."""
     got = {access.kiid(i): i for i in read_back}
+    old = {access.kiid(i): set(_nm(i.proto)) for i in original}
     out: list[str] = []
     for item in sent:
         uid = access.kiid(item)
@@ -559,17 +574,20 @@ def shift_problems(sent: Sequence[Any], read_back: Sequence[Any]) -> list[str]:
         if now is None:
             continue
         want, have = _nm(item.proto), _nm(now.proto)
-        ok = bool(set(want) & set(have)) if item_kind(item) in _LINE_KINDS else want == have
+        if item_kind(item) in _LINE_KINDS:
+            ok = bool((set(want) - old.get(uid, set())) & set(have))
+        else:
+            ok = want == have
         if not ok:
             out.append(f"{kind_name(item)} {uid}")
     return out
 
 
-def check_stage(sent: Sequence[Any]) -> Stage:
+def check_stage(sent: Sequence[Any], original: Sequence[Any]) -> Stage:
     """Writes nothing: refuses (and so undoes the shift) when an item did not move."""
 
     def build(inp: StageInput) -> list[Any]:
-        problems = shift_problems(sent, inp.modified)
+        problems = shift_problems(sent, inp.modified, original)
         if problems:
             raise StructuredToolError(
                 f"{TOOL}: KiCad did not move every item",

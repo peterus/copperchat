@@ -16,8 +16,9 @@ All notable changes to CopperChat are documented in this file. The format follow
   grid. Everything on the sheet moves rigidly in one commit — symbols with their fields,
   wires, buses, bus entries, junctions, no-connects, every label kind, sheet symbols with
   pins and fields, texts, text boxes, graphics, images, tables; sub-sheet contents and the
-  title block stay. Refused when the content would leave the paper; a zero offset is a
-  no-op. The netlist must stay identical (else undone). One logical change.
+  title block stay. Refused when the shift would push content (further) off the paper; a
+  zero offset is a no-op. Every item must read back at its shifted position and the netlist
+  must stay identical (else undone). One logical change.
 
 ## [0.5.0] - 2026-10-25
 

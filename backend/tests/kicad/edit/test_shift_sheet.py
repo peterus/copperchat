@@ -395,3 +395,31 @@ async def test_a_large_sheet_shifts_in_one_commit(
     _assert_shifted(before, await _points(s), out["offset_mm"])
     assert (await state(s))[1] == partition
     print(f"shift of 800 items: {elapsed:.2f} s")
+
+
+async def test_an_item_kicad_did_not_move_undoes_the_shift(
+    hier_session: KicadSession, edit_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The check stage runs on the real read-back inside the engine: a reported item
+    makes the call fail as verification_failed and every item goes back."""
+    from copperchat.kicad_tools.edit import shift
+
+    seen: list[int] = []
+    real = shift.shift_problems
+
+    def refused(sent: Any, read_back: Any, original: Any) -> list[str]:
+        seen.append(len(read_back))
+        assert real(sent, read_back, original) == []  # KiCad did move everything
+        return ["text 00000000-0000-0000-0000-000000000000"]
+
+    monkeypatch.setattr(shift, "shift_problems", refused)
+    s = hier_session
+    ctx = edit_ctx(s, edit_db)
+    _ids, partition = await state(s)
+    before = await _points(s)
+    out, err = await call_tool(ctx, "sch_shift_sheet", by=[2.54, 2.54])
+    assert err and out["error"]["code"] == "verification_failed", out
+    assert "did not move every item" in out["error"]["what"]
+    assert seen == [len(before)]  # the check saw the read-back of every shifted item
+    assert await _points(s) == before
+    assert (await state(s))[1] == partition

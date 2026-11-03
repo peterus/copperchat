@@ -338,8 +338,10 @@ def test_placement_notes_per_mode() -> None:
     assert "frame margins" in n
     notes = placement_notes(Box(150, 150, 250, 190), A4, None)
     assert notes == ["the shifted content overlaps the title block"]
-    (n,) = placement_notes(Box(-5, 50, 100, 100), A4, None)
-    assert "off the paper" in n
+    (n,) = placement_notes(Box(-5, 50, 100, 100), A4, None, Box(-20, 50, 85, 100))
+    assert n.endswith("off the paper (less than before)")
+    (n,) = placement_notes(Box(-5, 60, 100, 110), A4, None, Box(-5, 50, 100, 100))
+    assert n.endswith("off the paper (as before)")
     (n,) = placement_notes(Box(0, 0, 1, 1), A4, _centring(fits_frame=False))
     assert "larger than the drawing frame" in n
     (n,) = placement_notes(Box(0, 0, 1, 1), A4, _centring(clear_of_title_block=False))
@@ -368,20 +370,33 @@ def _text(uid: str, at: tuple[float, float]) -> SchematicText:
 
 
 def test_shift_problems_names_items_kicad_did_not_move() -> None:
+    # shifted by (1.27, 0)
+    orig = [
+        _wire("w1", (8.73, 10), (18.73, 10)),
+        _text("t1", (28.73, 30)),
+        _text("t2", (38.73, 40)),
+    ]
     sent = [_wire("w1", (10, 10), (20, 10)), _text("t1", (30, 30)), _text("t2", (40, 40))]
     back = [
         _wire("w1", (10, 10), (25.08, 10)),  # merged with a collinear wire: one end kept
         _text("t1", (28.73, 30)),  # refused: still at the old place
     ]  # t2 missing: the engine reports that one
-    assert shift_problems(sent, back) == ["text t1"]
-    assert shift_problems(sent, [_wire("w1", (0, 0), (5, 0))]) == ["wire w1"]
+    assert shift_problems(sent, back, orig) == ["text t1"]
+    assert shift_problems(sent, [_wire("w1", (0, 0), (5, 0))], orig) == ["wire w1"]
+
+
+def test_a_refused_wire_as_long_as_the_offset_is_caught() -> None:
+    orig = [_wire("w1", (0, 0), (2.54, 0))]
+    sent = [_wire("w1", (2.54, 0), (5.08, 0))]  # shifted by (2.54, 0): shares (2.54, 0)
+    assert shift_problems(sent, orig, orig) == ["wire w1"]  # read back unmoved
+    assert shift_problems(sent, sent, orig) == []
 
 
 def test_check_stage_refuses_and_writes_nothing() -> None:
     from copperchat.kicad_tools.edit.changeset import StageInput
 
     sent = [_text("t1", (30, 30))]
-    stage = check_stage(sent)
+    stage = check_stage(sent, [_text("t1", (1, 1))])
     assert stage.build(StageInput(modified=[_text("t1", (30, 30))])) == []
     with pytest.raises(StructuredToolError) as err:
         stage.build(StageInput(modified=[_text("t1", (1, 1))]))
@@ -417,3 +432,30 @@ def test_shift_args_accepts_both_modes() -> None:
     assert _shift_args({"by": [1, -2]}) == (None, (1.0, -2.0))
     assert _shift_args({"center": True, "sheet": "/amp/"}) == ("/amp/", None)
     assert _shift_args({"by": [0, 0], "center": False}) == (None, (0.0, 0.0))
+
+
+def test_the_change_set_writes_once_then_checks() -> None:
+    from copperchat.kicad_tools.edit.changeset import SheetRef, StageInput, Update
+    from copperchat.kicad_tools.edit.shift import shift_change_set
+
+    items = [_text("t1", (10, 10))]
+    plan = plan_shift(items, (1.27, 0))
+    cs = shift_change_set(SheetRef("/", "1", "x.kicad_sch", "x"), items, plan, {}, [])
+    assert [st_.label for st_ in cs.stages] == ["shift sheet", "check shift"]
+    (op,) = cs.stages[0].build(StageInput())
+    assert isinstance(op, Update) and op.items == plan.items
+    assert cs.intent.keep_partition and cs.logical.changes == 1
+    with pytest.raises(StructuredToolError):
+        cs.stages[1].build(StageInput(modified=items))  # read back unmoved
+
+
+def test_absurd_image_scale_is_no_extent() -> None:
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (10, 10)).save(buf, format="PNG")
+    unknown: list[str] = []
+    img = _image(buf.getvalue(), scale=1e308)
+    img.proto.id.value = "big"
+    assert item_boxes(img, unknown) == [Box(100, 100, 100, 100)]
+    assert unknown == ["image big"]

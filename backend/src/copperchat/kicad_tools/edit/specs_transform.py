@@ -277,7 +277,7 @@ async def prepare_shift_sheet(ctx: ToolContext, args: dict[str, Any]) -> ChangeS
                 bbox_after_mm=_box(after),
                 page=page.as_dict(),
             )
-        notes += placement_notes(after, page, centring)
+        notes += placement_notes(after, page, centring, content)
         users = [r.human_path for r in sheet_refs(h) if r.file == sheet.file]
         if len(users) > 1:
             notes.append(f"{sheet.file} is used by {len(users)} sheet instances "
@@ -406,9 +406,10 @@ TOOL_SPECS: list[ToolSpec] = [
         "shifts by an explicit offset. Exactly one of the two. The offset is always "
         "snapped to the 1.27 mm grid, so pins and wires stay on grid; 0 after snapping is "
         "a no-op. Sub-sheet contents and the frame / title block do not move. Refused "
-        "when the content would leave the paper. Verified: the netlist stays identical, "
-        "else undone. Reports offset_mm, bbox_before_mm / bbox_after_mm, the page frame "
-        "and shifted counts per kind. Budget: 1 logical change.",
+        "when the shift would push content (further) off the paper. Verified: every item "
+        "is at its shifted position and the netlist stays identical, else undone. "
+        "Reports offset_mm, bbox_before_mm / bbox_after_mm, the page frame and shifted "
+        "counts per kind. Budget: 1 logical change.",
         _obj(
             {
                 "sheet": {
