@@ -32,7 +32,11 @@ model, notes, error messages or logs:
 - httpx logs every request URL (INFO, logger `httpx`): a logging filter on that logger
   redacts `apiKey=…` in its records (httpcore's own records carry no URL).
 - The researcher never sees the key: its Mouser tools run in-process in our `parts` MCP
-  server, not in its environment.
+  server, not in its environment. Both CLI subprocesses (main agent, researcher) get
+  `MOUSER_API_KEY=""`, masking the value they would otherwise inherit from the container
+  environment.
+- A part missing from a truncated answer comes back as `found: null` ("query this part
+  alone"), not as not found.
 
 ## 4. Tools
 

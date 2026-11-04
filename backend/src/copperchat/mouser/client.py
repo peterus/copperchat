@@ -490,6 +490,7 @@ class MouserClient:
             # Mouser may cap the parts list below NumberOfResult; a part missing from a
             # truncated answer is not known to be absent, so it is not cached as not found.
             truncated = total is not None and total > len(parts)
+            unknown: set[str] = set()
             for mpn in missing:
                 fold = mpn.casefold()
                 offers = [
@@ -502,6 +503,8 @@ class MouserClient:
                     )
                 ][:MAX_OFFERS]
                 results[fold] = (fetched, offers)
+                if truncated and not offers:
+                    unknown.add(fold)
                 # A truncated answer may also miss offers of a found part: cache nothing.
                 if not truncated:
                     self._put(("pn", fold), (fetched, offers))
@@ -510,6 +513,14 @@ class MouserClient:
             _date, offers = results[mpn.casefold()]
             if offers:
                 out.append({"mpn": mpn, "found": True, "offers": offers})
+            elif missing and mpn.casefold() in unknown:
+                out.append(
+                    {
+                        "mpn": mpn,
+                        "found": None,
+                        "note": "not in Mouser's truncated answer; query this part alone",
+                    }
+                )
             else:
                 out.append({"mpn": mpn, "found": False, "note": "not found at Mouser"})
         # The oldest fetch date among the parts (cached results can be up to 1 h old).

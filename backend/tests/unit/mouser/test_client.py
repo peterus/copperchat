@@ -407,7 +407,8 @@ async def test_truncated_batch_does_not_cache_not_found() -> None:
     rec = Recorder(httpx.Response(200, json=data))
     c = make(rec)
     out = await c.parts(["TPS62133RGTR", "MISSING1"])
-    assert out["parts"][1]["found"] is False
+    assert out["parts"][1]["found"] is None  # absence unknown, not "not found"
+    assert "truncated" in out["parts"][1]["note"]
     await c.parts(["TPS62133RGTR", "MISSING1"])
     assert len(rec.requests) == 2  # nothing from the truncated answer was cached
     assert rec.body()["SearchByPartRequest"]["mouserPartNumber"] == "TPS62133RGTR|MISSING1"

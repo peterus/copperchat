@@ -130,6 +130,21 @@ def test_settings_repr_hides_key(tmp_path: Path) -> None:
 # ---- system prompt
 
 
+def test_main_agent_env_masks_the_key(project: Project, tmp_path: Path) -> None:
+    from copperchat.agent.sdk_backend import build_options
+    from copperchat.agent.sdk_tools import build_sdk_tools
+
+    opts = build_options(
+        settings=settings(tmp_path),
+        project=project,
+        mcp_server=build_sdk_tools([], lambda: None, lambda: None),  # type: ignore[arg-type,return-value]
+        tool_names=[],
+        resume_session_id=None,
+        fork_session=False,
+    )
+    assert opts.env["MOUSER_API_KEY"] == ""
+
+
 def test_system_prompt_routes_quick_sourcing_questions_to_mouser() -> None:
     for kind in ("free", "requirements", "schematic", "board"):
         prompt = system_prompt("demo", kind)
@@ -191,6 +206,7 @@ def test_researcher_options_wire_mouser(project: Project, tmp_path: Path) -> Non
     assert isinstance(opts.system_prompt, str)
     assert "Sourcing (Mouser" in opts.system_prompt
     assert KEY not in json.dumps(opts.env) and KEY not in opts.system_prompt
+    assert opts.env["MOUSER_API_KEY"] == ""  # masks the inherited process env
     opts = runner.researcher_options(project, settings(tmp_path, None), "SKILL")
     assert isinstance(opts.system_prompt, str)
     assert "Sourcing (Mouser" not in opts.system_prompt

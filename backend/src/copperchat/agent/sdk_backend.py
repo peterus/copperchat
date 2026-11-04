@@ -186,6 +186,8 @@ def build_options(
         "CLAUDE_CONFIG_DIR": str(settings.data_dir / "claude"),
         # Mitigation against backgrounded sub-agents ending a turn early (spike 1A (h), X20 (3)).
         "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
+        # The CLI inherits os.environ; the Mouser key (from .env via compose) stays here.
+        "MOUSER_API_KEY": "",
     }
     if settings.claude_code_oauth_token is not None:
         env["CLAUDE_CODE_OAUTH_TOKEN"] = settings.claude_code_oauth_token.get_secret_value()
