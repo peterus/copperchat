@@ -8,6 +8,12 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request supersedes its running CI; pushes to main always run to the end
+# (the group is unique per main run, so nothing on main is ever cancelled).
+concurrency:
+  group: ci-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   backend:
     runs-on: ubuntu-latest
@@ -61,16 +67,19 @@ jobs:
           echo "supported: $matrix"; echo "app base: $base"
 
   kicad:
-    # Real-KiCad tests against every supported kicad-base tag.
+    # Real-KiCad tests against every supported kicad-base tag, each split round-robin into
+    # parallel shards (tests/support/sharding.py; tests/unit/test_sharding.py checks that the
+    # shards together are the full `-m kicad` run and reads N from the `shard` list below).
     needs: kicad-commits
-    name: kicad (${{ matrix.commit }})
+    name: kicad (${{ matrix.kicad.commit }}, ${{ matrix.shard }}/8)
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJson(needs.kicad-commits.outputs.matrix) }}
+        kicad: ${{ fromJson(needs.kicad-commits.outputs.matrix) }}
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     container:
-      image: ${{ matrix.image }}
+      image: ${{ matrix.kicad.image }}
       # The /__w workspace belongs to the runner uid; checkout and setup-uv need root (X13).
       options: --user root
     env:
@@ -87,7 +96,7 @@ jobs:
           cache-dependency-glob: backend/uv.lock
       - run: uv python install 3.13
       - run: uv sync --locked
-      - run: uv run pytest -m kicad
+      - run: uv run pytest -m kicad --shard ${{ matrix.shard }}/8
 
   frontend:
     runs-on: ubuntu-latest
