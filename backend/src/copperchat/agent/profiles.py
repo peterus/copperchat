@@ -56,12 +56,13 @@ SCH_WRITES = frozenset(
         "sch_delete",
         "sch_duplicate",
         "sch_shift_sheet",
+        "sch_set_title_block",
     }
 )
 PLAN_TOOLS = frozenset({"plan_propose", "plan_revise", "plan_step_begin", "plan_step_done"})
 DOC_TOOLS = frozenset({"doc_list", "doc_read", "doc_write", "doc_patch_section", "doc_append"})
 # The 40 tools of e2d73b5 (spec §8.1), plus sch_list_items (v0.5.0, #3) and
-# sch_shift_sheet.
+# sch_shift_sheet, sch_set_title_block.
 TODAY = READ_KICAD | LIBRARY | PARTS | GIT | SCH_WRITES | PLAN_TOOLS
 # Read-only repository access, in every profile (repo-context spec §5.4).
 REPO_TOOLS = frozenset({"repo_list", "repo_grep", "repo_read"})

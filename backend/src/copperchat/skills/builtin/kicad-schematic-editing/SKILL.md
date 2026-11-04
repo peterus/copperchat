@@ -68,7 +68,7 @@ stay identical), `sch_rename_net`, `sch_add_sheet` + `sch_add_sheet_pin`
 (hierarchical sheets; connect a sheet pin as `'<sheet name>.<pin name>'`),
 `sch_get_pin`, `sch_get_net`, `sch_list_symbols`, `sch_list_items` (look before you
 act, and after an error), `sch_changes` (what this turn / step / plan changed),
-`sch_shift_sheet` (see below).
+`sch_shift_sheet` (see below), `sch_set_title_block` (the title block).
 
 ## Addressing pins
 
@@ -115,6 +115,13 @@ UUIDs between tool calls only for wires, labels, junctions, no-connects and shee
   of the title block when it fits), or `by=[dx, dy]`. The offset is snapped to 1.27 mm;
   the nets stay identical; one logical change. Do not move every part with `sch_move`
   for that.
+- `sch_set_title_block` sets the title block (the text block bottom-right of the drawing
+  frame): `title`, `date` (`"today"` works), `rev`, `company`, `comments={"1": ..., "9":
+  ...}`. Only the fields you pass change, `""` clears one. Default target is the root
+  sheet; `sheet='/amp/'` another, `all_sheets=true` every sheet file (the instances of one
+  file share one block). Read the current values first in `project_info`
+  (`sheets[].title_block`); the result lists before / after per sheet. Single-line text
+  only; it does not touch any connection.
 - Without `expect_net` a move must leave every connection as it was. To **make** a
   connection by moving — a label dropped onto its wire, a pin onto a wire end — pass
   `expect_net="<net>"` (the name `sch_get_net` / `sch_list_items` report for the wire or

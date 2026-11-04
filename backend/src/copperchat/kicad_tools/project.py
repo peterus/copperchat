@@ -4,6 +4,7 @@ from typing import Any
 
 from copperchat.kicad_session import KicadHandle
 from copperchat.kicad_tools import access
+from copperchat.kicad_tools.edit.title_block import nonempty, read_values
 from copperchat.tools.spec import ToolContext, ToolResult
 
 
@@ -35,8 +36,12 @@ def _board_info(h: KicadHandle) -> dict[str, Any]:
 def _schematic_info(h: KicadHandle) -> dict[str, Any]:
     sch = h.schematic()
     refs = {str(s.reference) for s in sch.get_symbols()}
+    sheets = access.hierarchy(sch)
+    for entry, instance in zip(sheets, sch.get_hierarchy(), strict=True):
+        # What sch_set_title_block sets (non-empty fields only; shared by a file's instances)
+        entry["title_block"] = nonempty(read_values(sch.for_sheet(instance)))
     return {
-        "sheets": access.hierarchy(sch),
+        "sheets": sheets,
         # One entry per part: units and sheet instances share a reference; power
         # symbols (#PWR...) are not parts.
         "symbolCount": sum(1 for r in refs if not r.startswith("#")),

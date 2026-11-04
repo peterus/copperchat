@@ -62,7 +62,12 @@
       "file": "ecc83-pp.kicad_sch",
       "name": "ecc83-pp",
       "page": "1",
-      "path": "/"
+      "path": "/",
+      "title_block": {
+        "date": "Sat 21 Mar 2015",
+        "rev": "0.1",
+        "title": "ECC Push-Pull"
+      }
     }
   ],
   "symbolCount": 15,
