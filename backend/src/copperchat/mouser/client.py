@@ -9,9 +9,11 @@ appears in a result, an error or a log record (:func:`redact`, :class:`_RedactFi
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import math
 import re
+import ssl
 import time
 from collections import OrderedDict, deque
 from collections.abc import Callable
@@ -54,7 +56,8 @@ def redact(text: str, key: str | None) -> str:
 
 
 class _RedactFilter(logging.Filter):
-    """Redacts ``apiKey=`` in records of httpx/httpcore (httpx logs every request URL)."""
+    """Redacts ``apiKey=`` in records of the ``httpx`` logger, which logs every request URL
+    (INFO). httpcore logs on child loggers without the URL, so it needs no filter."""
 
     def filter(self, record: logging.LogRecord) -> bool:
         try:
@@ -71,10 +74,9 @@ _FILTER = _RedactFilter()
 
 
 def _install_log_filter() -> None:
-    for name in ("httpx", "httpcore"):
-        logger = logging.getLogger(name)
-        if _FILTER not in logger.filters:
-            logger.addFilter(_FILTER)
+    logger = logging.getLogger("httpx")
+    if _FILTER not in logger.filters:
+        logger.addFilter(_FILTER)
 
 
 def _error(what: str, why: str, code: str, **details: Any) -> StructuredToolError:
@@ -105,25 +107,45 @@ def not_configured() -> StructuredToolError:
 
 # ---- parsing
 
-_NUM = re.compile(r"[0-9][0-9.,]*")
+# Digits with separators; spaces, NBSP, thin spaces and apostrophes group thousands.
+_NUM = re.compile(r"[0-9](?:[0-9.,'\u00a0\u202f\u2009 ]*[0-9])?")
+_GROUPING = re.compile(r"['\u00a0\u202f\u2009 ]")
+# Decimal separator of the currencies Mouser prices in, for the ambiguous "1,234" / "1.234".
+_DECIMAL_COMMA = frozenset({"EUR", "DKK", "SEK", "NOK", "PLN", "CZK", "HUF", "BRL", "RON"})
+_DECIMAL_POINT = frozenset(
+    {"USD", "GBP", "CHF", "JPY", "CNY", "HKD", "SGD", "AUD", "CAD", "INR", "ILS", "KRW", "TWD"}
+)
 
 
-def parse_price(raw: str | None) -> float | None:
-    """Best-effort numeric value of a Mouser price string (``2,79 €``, ``$1,234.50``)."""
+def parse_price(raw: str | None, currency: str | None = None) -> float | None:
+    """Best-effort numeric value of a Mouser price string (``2,79 €``, ``$1,234.50``).
+
+    None when unparseable or ambiguous: a single separator followed by exactly three
+    digits ("1,234", "1.234") is resolved only through ``currency``."""
     if not raw:
         return None
     m = _NUM.search(raw)
     if m is None:
         return None
-    s = m.group(0).rstrip(".,")
+    s = _GROUPING.sub("", m.group(0))
     if "," in s and "." in s:
         dec = "," if s.rfind(",") > s.rfind(".") else "."
         s = s.replace("." if dec == "," else ",", "").replace(dec, ".")
-    elif "," in s:
-        # One comma is a decimal comma (EUR: "0,123 €"); several are thousands groups.
-        s = s.replace(",", "") if s.count(",") > 1 else s.replace(",", ".")
-    elif s.count(".") > 1:
-        s = s.replace(".", "")
+    elif "," in s or "." in s:
+        sep = "," if "," in s else "."
+        tail = s.rsplit(sep, 1)[1]
+        if s.count(sep) > 1:
+            s = s.replace(sep, "")  # several: thousands groups
+        elif len(tail) != 3:
+            s = s.replace(sep, ".")  # "2,79" / "2.79": decimal
+        else:
+            cur = (currency or "").upper()
+            if cur in _DECIMAL_COMMA:
+                s = s.replace(",", ".") if sep == "," else s.replace(".", "")
+            elif cur in _DECIMAL_POINT:
+                s = s if sep == "." else s.replace(",", "")
+            else:
+                return None
     try:
         value = float(s)
     except ValueError:
@@ -163,12 +185,13 @@ def _breaks(part: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(b, dict):
             continue
         price = _str(b.get("Price"), 40)
+        currency = _str(b.get("Currency"), 8)
         out.append(
             {
                 "quantity": _int(b.get("Quantity")),
                 "price": price,
-                "value": parse_price(price),
-                "currency": _str(b.get("Currency"), 8),
+                "value": parse_price(price, currency),
+                "currency": currency,
             }
         )
     return out
@@ -184,8 +207,16 @@ def _on_order(part: dict[str, Any]) -> list[dict[str, Any]]:
     return out[:5]
 
 
-def _stock(part: dict[str, Any]) -> int:
-    return _int(part.get("AvailabilityInStock")) or 0
+_IN_STOCK = re.compile(r"^\s*([0-9][0-9.,]*)\s+In Stock", re.IGNORECASE)
+
+
+def _stock(part: dict[str, Any]) -> int | None:
+    """Units in stock; None when Mouser does not say (not the same as 0)."""
+    n = _int(part.get("AvailabilityInStock"))
+    if n is not None:
+        return n
+    m = _IN_STOCK.match(str(part.get("Availability") or ""))
+    return _int(m.group(1)) if m else None
 
 
 def _offer(part: dict[str, Any]) -> dict[str, Any]:
@@ -222,6 +253,20 @@ def _hit(part: dict[str, Any]) -> dict[str, Any]:
         "currency": first["currency"] if first else None,
         "lifecycle": _lifecycle(part),
     }
+
+
+def _printable(text: str) -> bool:
+    try:
+        text.encode("utf-8")
+    except UnicodeError:
+        return False
+    return text.isprintable()
+
+
+@functools.cache
+def _ssl_context() -> ssl.SSLContext:
+    """One SSL context for all requests (loading the CA bundle is slow and blocking)."""
+    return httpx.create_ssl_context()
 
 
 # ---- client
@@ -307,10 +352,13 @@ class MouserClient:
         key = self.__key
         try:
             async with httpx.AsyncClient(
-                base_url=self._base_url, transport=self._transport, timeout=_TIMEOUT
+                base_url=self._base_url,
+                transport=self._transport,
+                timeout=_TIMEOUT,
+                verify=_ssl_context(),
             ) as http:
                 resp = await http.post(path, params={"apiKey": key}, json=body)
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, UnicodeError) as exc:
             log.warning("Mouser request failed: %s", type(exc).__name__)
             raise _error(
                 "Mouser request failed",
@@ -336,7 +384,8 @@ class MouserClient:
             raise _error("Mouser request failed", "unexpected response shape", "upstream_error")
         results = data.get("SearchResults")
         errors = data.get("Errors")
-        if isinstance(errors, list) and errors and not results:
+        listed = results.get("Parts") if isinstance(results, dict) else None
+        if isinstance(errors, list) and errors and not listed:
             msgs = [
                 redact(str(e.get("Message") or e.get("Code") or "error"), key)[:200]
                 for e in errors
@@ -364,6 +413,8 @@ class MouserClient:
         keyword = keyword.strip()
         if len(keyword) > MAX_KEYWORD_CHARS:
             raise _invalid(f"keyword is longer than {MAX_KEYWORD_CHARS} characters")
+        if not _printable(keyword):
+            raise _invalid("keyword contains control or unencodable characters")
         if (
             isinstance(limit, bool)
             or not isinstance(limit, int)
@@ -381,14 +432,13 @@ class MouserClient:
                 }
             }
             parts, total = await self._post(KEYWORD_PATH, body)
-            cached = {"total": total, "hits": [_hit(p) for p in parts[:limit]]}
+            cached = {
+                "as_of": self._today().isoformat(),
+                "total": total,
+                "hits": [_hit(p) for p in parts[:limit]],
+            }
             self._put(ckey, cached)
-        return {
-            "source": "Mouser",
-            "as_of": self._today().isoformat(),
-            "keyword": keyword,
-            **cached,
-        }
+        return {"source": "Mouser", "keyword": keyword, **cached}
 
     async def parts(self, mpns: object) -> dict[str, Any]:
         """Arguments as the model sent them; validated here."""
@@ -406,10 +456,13 @@ class MouserClient:
                 raise _invalid(f"{mpn!r}: a part number has 3 to 40 characters")
             if "|" in mpn:
                 raise _invalid(f"{mpn!r}: '|' is not allowed in a part number")
+            if not _printable(mpn):
+                raise _invalid(f"{mpn!r}: control or unencodable characters")
             if mpn.casefold() not in seen:
                 seen.add(mpn.casefold())
                 wanted.append(mpn)
-        results: dict[str, list[dict[str, Any]]] = {}
+        # casefolded MPN -> (fetch date, offers); the date is that of the Mouser request.
+        results: dict[str, tuple[str, list[dict[str, Any]]]] = {}
         missing: list[str] = []
         for mpn in wanted:
             found, cached = self._get(("pn", mpn.casefold()))
@@ -424,7 +477,11 @@ class MouserClient:
                     "partSearchOptions": "Exact",
                 }
             }
-            parts, _total = await self._post(PART_PATH, body)
+            parts, total = await self._post(PART_PATH, body)
+            fetched = self._today().isoformat()
+            # Mouser may cap the parts list below NumberOfResult; a part missing from a
+            # truncated answer is not known to be absent, so it is not cached as not found.
+            truncated = total is not None and total > len(parts)
             for mpn in missing:
                 fold = mpn.casefold()
                 offers = [
@@ -436,16 +493,19 @@ class MouserClient:
                         str(p.get("MouserPartNumber") or "").strip().casefold(),
                     )
                 ][:MAX_OFFERS]
-                results[fold] = offers
-                self._put(("pn", fold), offers)
+                results[fold] = (fetched, offers)
+                if offers or not truncated:
+                    self._put(("pn", fold), (fetched, offers))
         out: list[dict[str, Any]] = []
         for mpn in wanted:
-            offers = results[mpn.casefold()]
+            _date, offers = results[mpn.casefold()]
             if offers:
                 out.append({"mpn": mpn, "found": True, "offers": offers})
             else:
                 out.append({"mpn": mpn, "found": False, "note": "not found at Mouser"})
-        return {"source": "Mouser", "as_of": self._today().isoformat(), "parts": out}
+        # The oldest fetch date among the parts (cached results can be up to 1 h old).
+        as_of = min(results[m.casefold()][0] for m in wanted)
+        return {"source": "Mouser", "as_of": as_of, "parts": out}
 
 
 _clients: dict[str, MouserClient] = {}

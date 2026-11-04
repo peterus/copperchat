@@ -63,21 +63,29 @@ def ok(name: str) -> httpx.Response:
 
 
 @pytest.mark.parametrize(
-    ("raw", "value"),
+    ("raw", "currency", "value"),
     [
-        ("2,79 €", 2.79),
-        ("€2.79", 2.79),
-        ("$1,234.50", 1234.5),
-        ("1.012,50 €", 1012.5),
-        ("0,123 €", 0.123),
-        ("12 €", 12.0),
-        ("n/a", None),
-        ("", None),
-        (None, None),
+        ("2,79 €", "EUR", 2.79),
+        ("€2.79", "EUR", 2.79),
+        ("$1,234.50", "USD", 1234.5),
+        ("1.012,50 €", "EUR", 1012.5),
+        ("0,123 €", "EUR", 0.123),
+        ("12 €", "EUR", 12.0),
+        ("$1,234", "USD", 1234.0),
+        ("1.234 €", "EUR", 1234.0),
+        ("0.123 $", "USD", 0.123),
+        ("¥1,234", "JPY", 1234.0),
+        ("1,234", None, None),  # ambiguous without a currency
+        ("1 234,56 €", "EUR", 1234.56),
+        ("1\u00a0234,56 €", "EUR", 1234.56),
+        ("CHF 1'234.50", "CHF", 1234.5),
+        ("n/a", "EUR", None),
+        ("", "EUR", None),
+        (None, "EUR", None),
     ],
 )
-def test_parse_price(raw: str | None, value: float | None) -> None:
-    assert parse_price(raw) == value
+def test_parse_price(raw: str | None, currency: str | None, value: float | None) -> None:
+    assert parse_price(raw, currency) == value
 
 
 async def test_part_parsing_and_request_shape() -> None:
@@ -125,7 +133,7 @@ async def test_part_parsing_and_request_shape() -> None:
     lmo = lm["offers"][0]
     assert lmo["lifecycle"] == "Not Recommended for New Designs"
     assert lmo["suggested_replacement"] == "LM358BIDR"
-    assert lmo["stock"] == 0
+    assert lmo["stock"] is None  # unknown, not zero
     assert lmo["min_order_qty"] == 2500 and lmo["order_multiple"] == 2500
     assert lmo["lead_time"] is None and lmo["availability"] is None
     oldo = old["offers"][0]
@@ -359,6 +367,95 @@ async def test_mouser_errors_entity() -> None:
     assert ei.value.code == "upstream_error"
     assert "Invalid unique identifier" in ei.value.why
     assert KEY not in json.dumps(ei.value.to_dict())
+
+
+async def test_stock_falls_back_to_availability_text() -> None:
+    data = fixture("partnumber.json")
+    part = data["SearchResults"]["Parts"][0]
+    part["AvailabilityInStock"] = None
+    part["Availability"] = "1,250 In Stock"
+    rec = Recorder(httpx.Response(200, json=data))
+    out = await make(rec).parts(["TPS62133RGTR"])
+    assert out["parts"][0]["offers"][0]["stock"] == 1250
+
+
+async def test_errors_with_empty_results_object_not_cached() -> None:
+    data = fixture("invalid_key.json")
+    data["SearchResults"] = {"NumberOfResult": 0, "Parts": []}
+    rec = Recorder(httpx.Response(200, json=data), ok("partnumber.json"))
+    c = make(rec)
+    with pytest.raises(StructuredToolError) as ei:
+        await c.parts(["TPS62133RGTR"])
+    assert ei.value.code == "upstream_error"
+    out = await c.parts(["TPS62133RGTR"])  # not negatively cached
+    assert out["parts"][0]["found"] is True
+    assert len(rec.requests) == 2
+
+
+async def test_truncated_batch_does_not_cache_not_found() -> None:
+    data = fixture("partnumber.json")
+    data["SearchResults"]["NumberOfResult"] = 50  # more than the 3 parts listed
+    rec = Recorder(httpx.Response(200, json=data))
+    c = make(rec)
+    out = await c.parts(["TPS62133RGTR", "MISSING1"])
+    assert out["parts"][1]["found"] is False
+    await c.parts(["TPS62133RGTR", "MISSING1"])
+    assert len(rec.requests) == 2
+    assert rec.body()["SearchByPartRequest"]["mouserPartNumber"] == "MISSING1"
+
+
+async def test_as_of_is_the_fetch_date() -> None:
+    day = [date(2026, 11, 4)]
+    rec = Recorder(ok("partnumber.json"))
+    c = MouserClient(
+        KEY, transport=httpx.MockTransport(rec), clock=FakeClock(), today=lambda: day[0]
+    )
+    await c.parts(["TPS62133RGTR"])
+    day[0] = date(2026, 11, 5)
+    out = await c.parts(["TPS62133RGTR", "LM358DR"])
+    assert out["as_of"] == "2026-11-04"  # oldest data in the answer
+    rec2 = Recorder(ok("keyword.json"))
+    c2 = MouserClient(
+        KEY, transport=httpx.MockTransport(rec2), clock=FakeClock(), today=lambda: day[0]
+    )
+    await c2.search("buck", 5)
+    day[0] = date(2026, 11, 6)
+    assert (await c2.search("buck", 5))["as_of"] == "2026-11-05"
+
+
+@pytest.mark.parametrize("bad", ["TPS\ud800X", "TPS\x00123", "TPS\n123"])
+async def test_unencodable_input_rejected_before_rate_limit(bad: str) -> None:
+    rec = Recorder(ok("partnumber.json"))
+    c = make(rec, per_minute=1)
+    for call in (c.parts([bad]), c.search(bad, 5)):
+        with pytest.raises(StructuredToolError) as ei:
+            await call
+        assert ei.value.code == "invalid_input"
+    await c.parts(["TPS62133RGTR"])  # the one slot is still free
+    assert len(rec.requests) == 1
+
+
+async def test_rate_limit_under_concurrency() -> None:
+    import asyncio
+
+    rec = Recorder(ok("keyword.json"))
+    c = make(rec, per_minute=2, per_day=100)
+    results = await asyncio.gather(
+        *(c.search(f"kw{i}", 5) for i in range(3)), return_exceptions=True
+    )
+    errors = [r for r in results if isinstance(r, StructuredToolError)]
+    assert len(rec.requests) == 2
+    assert len(errors) == 1 and errors[0].code == "rate_limited"
+
+
+async def test_failed_requests_count_toward_the_limit() -> None:
+    rec = Recorder(httpx.Response(500), ok("keyword.json"))
+    c = make(rec, per_minute=1, per_day=100)
+    with pytest.raises(StructuredToolError):
+        await c.search("a", 5)
+    with pytest.raises(StructuredToolError) as ei:
+        await c.search("a", 5)
+    assert ei.value.code == "rate_limited"
 
 
 def test_redact() -> None:

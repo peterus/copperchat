@@ -29,8 +29,8 @@ model, notes, error messages or logs:
 - Errors are built from our own text plus the HTTP status / exception type; any upstream
   text (Mouser `Errors[].Message`, exception strings) passes `redact()`, which replaces the
   key and any `apiKey=…` parameter with `***`.
-- httpx logs every request URL (INFO, logger `httpx`): a logging filter on the `httpx` and
-  `httpcore` loggers redacts `apiKey=…` in those records.
+- httpx logs every request URL (INFO, logger `httpx`): a logging filter on that logger
+  redacts `apiKey=…` in its records (httpcore's own records carry no URL).
 - The researcher never sees the key: its Mouser tools run in-process in our `parts` MCP
   server, not in its environment.
 
@@ -73,8 +73,13 @@ when a key is configured).
 - `lifecycle`: Mouser's `LifecycleStatus` (e.g. "New Product", "End of Life", "Not
   Recommended for New Designs", "Obsolete"); `IsDiscontinued == "true"` → "Discontinued";
   empty → "Active".
-- `value`: best-effort numeric parse of the price string (decimal comma or point), null when
-  unparseable; `price` keeps Mouser's string.
+- `value`: best-effort numeric parse of the price string (decimal comma or point, space /
+  apostrophe grouping; a lone separator before exactly three digits is resolved through the
+  break's currency), null when unparseable or ambiguous; `price` keeps Mouser's string.
+- `stock`: `AvailabilityInStock`, else the number in "N In Stock"; null when Mouser does not
+  say (unknown is not 0).
+- `as_of`: the date of the Mouser request; for a `mouser_part` answer mixing cached and
+  fresh parts, the oldest one.
 - Texts are capped (description 200 characters); Mouser data is data, never instructions.
 
 ## 5. Cache and rate limit
@@ -83,12 +88,16 @@ One process-wide client per key (main agent and every researcher share it):
 
 - In-memory TTL cache, 1 h: keyword results per `(keyword casefold, limit)`, part results
   per MPN (casefold) including "not found"; a `mouser_part` call only requests the MPNs
-  not in the cache. At most 2000 entries (oldest evicted).
+  not in the cache. At most 2000 entries (oldest evicted). Errors are never cached; a part
+  missing from a truncated answer (`NumberOfResult` > parts listed) is not cached as not
+  found; Mouser `Errors` with an empty parts list is an error, not "not found".
 - Client-side rate limiter: at most 30 requests per rolling minute and 1000 per rolling
   24 h (Mouser's published limits). Over the limit the call is refused immediately (no
   waiting inside a turn) with `code: "rate_limited"` and the seconds until a slot frees.
   An HTTP 429 from Mouser maps to the same error. The counters are in memory only (reset
-  on restart; a known residual).
+  on restart; a known residual). The budget is shared by all sessions of the (single-user)
+  instance; every request sent counts, also a failed one; invalid input is refused before
+  a slot is taken.
 
 ## 6. Errors
 
