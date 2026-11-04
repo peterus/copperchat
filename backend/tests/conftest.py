@@ -16,6 +16,9 @@ from tests.support.kicad_project import (
     hier_session,
 )
 
+# `--shard I/N` (CI splits the real-KiCad run into parallel jobs); pytester for its tests.
+pytest_plugins = ["pytester", "tests.support.sharding"]
+
 __all__ = [
     "blank_nopcb_session",
     "blank_session",
