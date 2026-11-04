@@ -218,7 +218,8 @@ TOOL_SPECS: list[ToolSpec] = [
         "Set the title block of a schematic sheet (the text block in the bottom-right "
         "corner of the drawing frame: title, date, revision, company and comments 1-9). "
         "Partial update: only the fields you pass change; an empty string clears a "
-        "field. date also accepts "today" (becomes YYYY-MM-DD, the server's local date). Target: one sheet "
+        'field. date also accepts "today" (becomes YYYY-MM-DD, the server\'s local date). '
+        "Target: one sheet "
         "(default root; a sheet path like '/amp/', a name or a page number) or "
         "all_sheets=true for every sheet file of the project (each file written once; "
         "all instances of a file share one title block). Text is single-line, at most "
