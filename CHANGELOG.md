@@ -25,7 +25,8 @@ company, comments) of one sheet or all sheets. No migrations, no KiCad patches.
   journal row per sheet file. `project_info` now lists each sheet's non-empty `title_block`.
 - **Mouser parts data** (optional `MOUSER_API_KEY` in `.env`). Two read-only tools for the
   main agent (every session type) and the part researcher: `mouser_search(keyword, limit)`
-  returns a short hit list (MPN, manufacturer, description, stock, qty-1 price,
+  returns a short hit list (MPN, manufacturer, description, stock, first price
+  break,
   lifecycle); `mouser_part(mpns)` returns, for up to 10 exact part numbers in one request,
   price breaks, stock, on-order quantities, lead time, lifecycle (Active / NRND / End of
   Life / Obsolete / Discontinued), suggested replacement, datasheet and product URL, Mouser

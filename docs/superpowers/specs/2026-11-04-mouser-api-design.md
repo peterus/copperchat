@@ -46,7 +46,7 @@ when a key is configured).
 {"source": "Mouser", "as_of": "2026-11-04", "keyword": "buck 3A", "total": 812,
  "hits": [{"mpn": "TPS62133RGTR", "manufacturer": "Texas Instruments",
            "mouser_part_number": "595-TPS62133RGTR", "description": "…",
-           "stock": 4521, "price_qty1": "2,79 €", "currency": "EUR",
+           "stock": 4521, "price": "2,79 €", "price_qty": 1, "currency": "EUR",
            "lifecycle": "Active"}]}
 ```
 
@@ -90,7 +90,7 @@ One process-wide client per key (main agent and every researcher share it):
   per MPN (casefold) including "not found"; a `mouser_part` call only requests the MPNs
   not in the cache. At most 2000 entries (oldest evicted). Errors are never cached; a part
   missing from a truncated answer (`NumberOfResult` > parts listed) is not cached as not
-  found; Mouser `Errors` with an empty parts list is an error, not "not found".
+  found and its found parts are not cached either (offers may be missing); Mouser `Errors` with an empty parts list is an error, not "not found".
 - Client-side rate limiter: at most 30 requests per rolling minute and 1000 per rolling
   24 h (Mouser's published limits). Over the limit the call is refused immediately (no
   waiting inside a turn) with `code: "rate_limited"` and the seconds until a slot frees.

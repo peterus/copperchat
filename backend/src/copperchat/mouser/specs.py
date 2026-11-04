@@ -58,8 +58,9 @@ PART_SCHEMA: dict[str, Any] = {
 }
 SEARCH_DESCRIPTION = (
     "Search Mouser's catalogue by keyword: a short hit list (MPN, manufacturer, description, "
-    "stock, qty-1 price, lifecycle). Use it to find the exact orderable part number, then "
-    "mouser_part for details. Read-only; figures are Mouser's at today's date."
+    "stock, first price break with its quantity, lifecycle). Use it to find the exact "
+    "orderable part number, then mouser_part for details. "
+    "Read-only; figures are Mouser's at the returned as_of date."
 )
 PART_DESCRIPTION = (
     "Mouser data for up to 10 exact part numbers in one call: price breaks (in the currency "

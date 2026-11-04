@@ -37,6 +37,7 @@ MAX_MPNS = 10
 MAX_KEYWORD_RESULTS = 50
 MAX_KEYWORD_CHARS = 200
 MAX_OFFERS = 5
+MAX_BREAKS = 10
 MAX_TEXT = 200
 _TIMEOUT = httpx.Timeout(20.0, connect=10.0)
 _MINUTE = 60.0
@@ -133,11 +134,12 @@ def parse_price(raw: str | None, currency: str | None = None) -> float | None:
         s = s.replace("." if dec == "," else ",", "").replace(dec, ".")
     elif "," in s or "." in s:
         sep = "," if "," in s else "."
-        tail = s.rsplit(sep, 1)[1]
+        head, tail = s.rsplit(sep, 1)
         if s.count(sep) > 1:
             s = s.replace(sep, "")  # several: thousands groups
-        elif len(tail) != 3:
-            s = s.replace(sep, ".")  # "2,79" / "2.79": decimal
+        elif len(tail) != 3 or head in ("", "0") or len(head) > 3:
+            # "2,79" / "0,123" / "1234,567": cannot be a thousands group, so decimal
+            s = s.replace(sep, ".")
         else:
             cur = (currency or "").upper()
             if cur in _DECIMAL_COMMA:
@@ -194,7 +196,7 @@ def _breaks(part: dict[str, Any]) -> list[dict[str, Any]]:
                 "currency": currency,
             }
         )
-    return out
+    return out[:MAX_BREAKS]
 
 
 def _on_order(part: dict[str, Any]) -> list[dict[str, Any]]:
@@ -249,7 +251,9 @@ def _hit(part: dict[str, Any]) -> dict[str, Any]:
         "mouser_part_number": _str(part.get("MouserPartNumber"), 64),
         "description": _str(part.get("Description")),
         "stock": _stock(part),
-        "price_qty1": first["price"] if first else None,
+        # The first price break; its quantity is the minimum order (not always 1).
+        "price": first["price"] if first else None,
+        "price_qty": first["quantity"] if first else None,
         "currency": first["currency"] if first else None,
         "lifecycle": _lifecycle(part),
     }
@@ -494,7 +498,8 @@ class MouserClient:
                     )
                 ][:MAX_OFFERS]
                 results[fold] = (fetched, offers)
-                if offers or not truncated:
+                # A truncated answer may also miss offers of a found part: cache nothing.
+                if not truncated:
                     self._put(("pn", fold), (fetched, offers))
         out: list[dict[str, Any]] = []
         for mpn in wanted:

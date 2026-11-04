@@ -76,6 +76,9 @@ def ok(name: str) -> httpx.Response:
         ("0.123 $", "USD", 0.123),
         ("¥1,234", "JPY", 1234.0),
         ("1,234", None, None),  # ambiguous without a currency
+        ("0,123", None, 0.123),
+        ("$0.123", "MXN", 0.123),
+        ("1234,567", None, 1234.567),
         ("1 234,56 €", "EUR", 1234.56),
         ("1\u00a0234,56 €", "EUR", 1234.56),
         ("CHF 1'234.50", "CHF", 1234.5),
@@ -210,7 +213,8 @@ async def test_keyword_parsing_and_request_shape() -> None:
             "mouser_part_number": "595-TPS62133RGTR",
             "description": "Switching Voltage Regulators 3-17V 3A Step-Down Converter in 3x3 QFN",
             "stock": 4521,
-            "price_qty1": "2,79 €",
+            "price": "2,79 €",
+            "price_qty": 1,
             "currency": "EUR",
             "lifecycle": "Active",
         },
@@ -220,7 +224,8 @@ async def test_keyword_parsing_and_request_shape() -> None:
             "mouser_part_number": "584-LT1234",
             "description": "Buck converter, end of life",
             "stock": 0,
-            "price_qty1": None,
+            "price": None,
+            "price_qty": None,
             "currency": None,
             "lifecycle": "End of Life",
         },
@@ -400,8 +405,21 @@ async def test_truncated_batch_does_not_cache_not_found() -> None:
     out = await c.parts(["TPS62133RGTR", "MISSING1"])
     assert out["parts"][1]["found"] is False
     await c.parts(["TPS62133RGTR", "MISSING1"])
-    assert len(rec.requests) == 2
-    assert rec.body()["SearchByPartRequest"]["mouserPartNumber"] == "MISSING1"
+    assert len(rec.requests) == 2  # nothing from the truncated answer was cached
+    assert rec.body()["SearchByPartRequest"]["mouserPartNumber"] == "TPS62133RGTR|MISSING1"
+
+
+async def test_price_breaks_capped_and_first_break_quantity() -> None:
+    data = fixture("partnumber.json")
+    lm = data["SearchResults"]["Parts"][1]
+    lm["PriceBreaks"] = [
+        {"Quantity": 2500 * (i + 1), "Price": "0,10 €", "Currency": "EUR"} for i in range(30)
+    ]
+    rec = Recorder(httpx.Response(200, json=data))
+    out = await make(rec).parts(["LM358DR"])
+    assert len(out["parts"][0]["offers"][0]["price_breaks"]) == mc.MAX_BREAKS
+    hit = mc._hit(lm)
+    assert hit["price_qty"] == 2500 and hit["price"] == "0,10 €"
 
 
 async def test_as_of_is_the_fetch_date() -> None:
