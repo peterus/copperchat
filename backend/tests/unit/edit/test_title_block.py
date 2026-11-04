@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from datetime import date
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -59,6 +62,8 @@ def test_nothing_to_set_is_refused() -> None:
         {"comments": {"0": "x"}},
         {"comments": {"10": "x"}},
         {"comments": {"one": "x"}},
+        {"title": "evil" + chr(0x202E) + "txt"},
+        {"company": "zero" + chr(0x200B) + "width"},
         {"comments": {"01": "x"}},
         {"comments": {"+1": "x"}},
         {"comments": {"\u00b2": "x"}},
@@ -102,3 +107,57 @@ def test_unchanged_values_are_not_changes() -> None:
 
 def test_nonempty_drops_empty_fields() -> None:
     assert nonempty({**EMPTY, "title": "T", "comment4": "c"}) == {"title": "T", "comment4": "c"}
+
+
+class _Sch:
+    """Stub schematic: two instances of one file and one of another."""
+
+    def __init__(self, broken: str | None = None) -> None:
+        self.reads: list[str] = []
+        self.broken = broken
+
+    def get_hierarchy(self) -> list[SimpleNamespace]:
+        return [
+            SimpleNamespace(name=n, filename=f, page_number="1", path=SimpleNamespace(path=[]))
+            for n, f in (("a", "root.kicad_sch"), ("b", "sub.kicad_sch"), ("c", "sub.kicad_sch"))
+        ]
+
+    def for_sheet(self, inst: SimpleNamespace) -> _Sch:
+        self.reads.append(inst.filename)
+        sheet = _Sch(self.broken)
+        sheet.get_title_block = lambda: self._block(inst.filename)  # type: ignore[attr-defined]
+        return sheet
+
+    def _block(self, filename: str) -> SimpleNamespace:
+        from kipy.errors import ApiError
+
+        if filename == self.broken:
+            raise ApiError("boom")
+        return SimpleNamespace(title=filename, date="", revision="", company="", comments={})
+
+
+def _info(sch: _Sch) -> list[dict[str, Any]]:
+    from copperchat.kicad_tools import access, project
+
+    sch.get_symbols = lambda: []  # type: ignore[attr-defined]
+    handle = SimpleNamespace(schematic=lambda: sch)
+    with patch.object(access, "sheet_label", lambda s: s.name):
+        out: list[dict[str, Any]] = project._schematic_info(handle)["sheets"]  # type: ignore[arg-type]
+    return out
+
+
+def test_project_info_reads_each_sheet_file_once() -> None:
+    sch = _Sch()
+    sheets = _info(sch)
+    assert sch.reads == ["root.kicad_sch", "sub.kicad_sch"]  # not once per instance
+    assert [s["title_block"] for s in sheets] == [
+        {"title": "root.kicad_sch"},
+        {"title": "sub.kicad_sch"},
+        {"title": "sub.kicad_sch"},
+    ]
+
+
+def test_project_info_omits_a_title_block_that_cannot_be_read() -> None:
+    sheets = _info(_Sch(broken="sub.kicad_sch"))
+    assert "title_block" in sheets[0]
+    assert "title_block" not in sheets[1] and "title_block" not in sheets[2]

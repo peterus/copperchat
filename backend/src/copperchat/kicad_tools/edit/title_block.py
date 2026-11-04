@@ -41,8 +41,10 @@ def _text(field: str, value: Any) -> str:
     limit = MAX_LEN.get(field, MAX_COMMENT_LEN)
     if len(value) > limit:
         raise _bad_value(field, value, f"{field} is {len(value)} characters; at most {limit}")
-    if any(unicodedata.category(c) in ("Cc", "Cs", "Zl", "Zp") for c in value):
-        raise _bad_value(field, value, f"{field} contains a newline or control character")
+    if any(unicodedata.category(c) in ("Cc", "Cf", "Cs", "Zl", "Zp") for c in value):
+        raise _bad_value(
+            field, value, f"{field} contains a newline, control or invisible formatting character"
+        )
     return value
 
 
