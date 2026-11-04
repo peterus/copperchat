@@ -63,7 +63,7 @@ def test_nothing_to_set_is_refused() -> None:
         {"title": "a\nb"},
         {"company": "tab\there"},
         {"rev": "nul\x00"},
-        {"comments": {"2": "x y"}},
+        {"comments": {"2": "x" + chr(0x2028) + "y"}},
         {"title": "x" * 257},
         {"rev": "x" * 65},
         {"comments": {"1": "x" * 257}},
