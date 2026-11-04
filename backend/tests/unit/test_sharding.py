@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -21,6 +23,7 @@ def _ci_shards() -> int:
     shards = [int(s) for s in listed[0].split(",")]
     assert shards == list(range(1, len(shards) + 1))
     assert f"--shard ${{{{ matrix.shard }}}}/{len(shards)}" in text
+    assert f"${{{{ matrix.shard }}}}/{len(shards)})" in text, "kicad job name: wrong /N"
     return len(shards)
 
 
@@ -71,24 +74,31 @@ def test_shard_option_deselects_after_marker_selection(pytester: pytest.Pytester
 
 
 def _collect(*args: str) -> list[str]:
-    out = subprocess.run(
+    # Collection only: never demand a real api-server here, even if the caller's env does.
+    env = {k: v for k, v in os.environ.items() if k != "COPPERCHAT_REQUIRE_KICAD"}
+    proc = subprocess.run(
         [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider", *args],
         cwd=BACKEND,
+        env=env,
         capture_output=True,
         text=True,
-        check=True,
         timeout=300,
-    ).stdout
-    return [line for line in out.splitlines() if "::" in line]
+    )
+    assert proc.returncode == 0, (
+        f"{args}: exit {proc.returncode}\n{proc.stdout[-2000:]}\n{proc.stderr[-2000:]}"
+    )
+    return [line for line in proc.stdout.splitlines() if "::" in line]
 
 
 def test_ci_shards_cover_the_whole_kicad_selection() -> None:
     """The CI matrix runs `-m kicad --shard I/N`; together the shards must be the full run."""
     total = _ci_shards()
-    full = _collect("-m", "kicad", "tests")
+    runs = [("-m", "kicad", "tests")] + [
+        ("-m", "kicad", "--shard", f"{index}/{total}", "tests") for index in range(1, total + 1)
+    ]
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        full, *shards = pool.map(lambda args: _collect(*args), runs)
     assert full, "no kicad tests collected"
-    union: list[str] = []
-    for index in range(1, total + 1):
-        union += _collect("-m", "kicad", "--shard", f"{index}/{total}", "tests")
+    union = [nodeid for shard in shards for nodeid in shard]
     assert sorted(union) == sorted(full)
     assert len(union) == len(set(union))

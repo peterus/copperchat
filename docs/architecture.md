@@ -155,12 +155,12 @@ and broadcast → turn end: ERC delta of an editing turn, plan pause, autosave, 
   `pytest -m kicad --shard i/8`, every 8th selected test (`tests/support/sharding.py`);
   `tests/unit/test_sharding.py` checks the shards together are the full `-m kicad` run.
   Locally, `pytest -m kicad` still runs everything.
-
-A new push to a pull request cancels that pull request's running CI (`concurrency`); runs on
-`main` are never cancelled.
 - `e2e` — builds the app image, checks the token-missing refusal, starts it with
   `DEV_FAKE_AGENT=true` and the `ecc83` fixture, and runs the Playwright happy path
   (`frontend/e2e/smoke-docker.spec.ts`: login → project → message → reply → viewer, service
   worker, no CSP violations).
+
+A new push to a pull request cancels that pull request's running CI (`concurrency`); runs on
+`main` are never cancelled.
 
 `release.yml` (tags `v*` only) builds, re-checks the token refusal and pushes the image.
