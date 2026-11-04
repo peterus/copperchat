@@ -56,7 +56,7 @@ def _comments(raw: Any) -> Values:
     out: Values = {}
     for key, value in raw.items():
         index = str(key)
-        if not (index.isascii() and index.isdigit()) or not 1 <= int(index) <= COMMENT_COUNT:
+        if index not in {str(i) for i in range(1, COMMENT_COUNT + 1)}:
             raise bad(
                 f"{TOOL}: invalid comment index {index[:20]!r}",
                 f"KiCad title blocks have comments 1 to {COMMENT_COUNT}",

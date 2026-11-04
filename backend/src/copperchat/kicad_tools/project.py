@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from kipy.errors import ApiError
+
 from copperchat.kicad_session import KicadHandle
 from copperchat.kicad_tools import access
 from copperchat.kicad_tools.edit.title_block import nonempty, read_values
@@ -38,11 +40,15 @@ def _schematic_info(h: KicadHandle) -> dict[str, Any]:
     refs = {str(s.reference) for s in sch.get_symbols()}
     instances = list(sch.get_hierarchy())
     sheets = access.hierarchy(sch, instances)
-    blocks: dict[str, dict[str, str]] = {}  # per sheet file: its instances share one block
+    blocks: dict[str, dict[str, str] | None] = {}  # per sheet file: its instances share one
     for entry, instance in zip(sheets, instances, strict=True):
         if entry["file"] not in blocks:
-            blocks[entry["file"]] = nonempty(read_values(sch.for_sheet(instance)))
-        entry["title_block"] = blocks[entry["file"]]  # what sch_set_title_block sets
+            try:
+                blocks[entry["file"]] = nonempty(read_values(sch.for_sheet(instance)))
+            except ApiError:  # an extra field never takes the whole project_info down
+                blocks[entry["file"]] = None
+        if blocks[entry["file"]] is not None:
+            entry["title_block"] = blocks[entry["file"]]  # what sch_set_title_block sets
     return {
         "sheets": sheets,
         # One entry per part: units and sheet instances share a reference; power

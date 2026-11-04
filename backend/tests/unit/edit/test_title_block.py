@@ -59,6 +59,8 @@ def test_nothing_to_set_is_refused() -> None:
         {"comments": {"0": "x"}},
         {"comments": {"10": "x"}},
         {"comments": {"one": "x"}},
+        {"comments": {"01": "x"}},
+        {"comments": {"+1": "x"}},
         {"comments": {"\u00b2": "x"}},
         {"comments": {"1": 5}},
         {"title": "a\nb"},
