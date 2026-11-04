@@ -127,8 +127,9 @@ def pin_type_name(value: Any) -> str:
     return _PIN_TYPE_NAMES.get(name, name)
 
 
-def hierarchy(sch: Any) -> list[dict[str, Any]]:
-    """Every sheet instance, depth-first from the root."""
+def hierarchy(sch: Any, instances: Any = None) -> list[dict[str, Any]]:
+    """Every sheet instance, depth-first from the root (`instances`: an already fetched
+    `sch.get_hierarchy()`)."""
     return [
         {
             "name": str(s.name),
@@ -136,7 +137,7 @@ def hierarchy(sch: Any) -> list[dict[str, Any]]:
             "path": sheet_label(s),
             "page": str(s.page_number),
         }
-        for s in sch.get_hierarchy()
+        for s in (sch.get_hierarchy() if instances is None else instances)
     ]
 
 

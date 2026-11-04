@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from kipy.errors import ApiError
+
 from copperchat.kicad_session import KicadHandle
 from copperchat.kicad_tools import access
+from copperchat.kicad_tools.edit.title_block import nonempty, read_values
 from copperchat.tools.spec import ToolContext, ToolResult
 
 
@@ -35,8 +38,19 @@ def _board_info(h: KicadHandle) -> dict[str, Any]:
 def _schematic_info(h: KicadHandle) -> dict[str, Any]:
     sch = h.schematic()
     refs = {str(s.reference) for s in sch.get_symbols()}
+    instances = list(sch.get_hierarchy())
+    sheets = access.hierarchy(sch, instances)
+    blocks: dict[str, dict[str, str] | None] = {}  # per sheet file: its instances share one
+    for entry, instance in zip(sheets, instances, strict=True):
+        if entry["file"] not in blocks:
+            try:
+                blocks[entry["file"]] = nonempty(read_values(sch.for_sheet(instance)))
+            except ApiError:  # an extra field never takes the whole project_info down
+                blocks[entry["file"]] = None
+        if blocks[entry["file"]] is not None:
+            entry["title_block"] = blocks[entry["file"]]  # what sch_set_title_block sets
     return {
-        "sheets": access.hierarchy(sch),
+        "sheets": sheets,
         # One entry per part: units and sheet instances share a reference; power
         # symbols (#PWR...) are not parts.
         "symbolCount": sum(1 for r in refs if not r.startswith("#")),

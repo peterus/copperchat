@@ -7,6 +7,18 @@ All notable changes to CopperChat are documented in this file. The format follow
 
 ## [Unreleased]
 
+### Added
+
+- **`sch_set_title_block`: set the title block.** New editing tool for the text block in the
+  bottom-right corner of the drawing frame: `title`, `date` (`"today"` becomes YYYY-MM-DD),
+  `rev`, `company` and `comments` 1-9. Partial update (only the fields passed change, an
+  empty string clears one); one sheet (default root, same addressing as the other `sch_*`
+  tools) or `all_sheets=true` for every sheet file of the project, each file written once
+  (all instances of a file share one block). Values are single-line text with length
+  limits; KiCad writes the `(title_block ...)` node itself (created when missing, quotes
+  and backslashes escaped). Read back after writing, else undone; one logical change, one
+  journal row per sheet file. `project_info` now lists each sheet's non-empty `title_block`.
+
 ## [0.6.0] - 2026-11-03
 
 **Whole-sheet shift**: the agent can move or centre the entire content of a sheet, e.g. a
