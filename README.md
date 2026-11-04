@@ -51,6 +51,9 @@ affiliated with or endorsed by Anthropic.
   tools, and gets a short project brief at the start of each session. Secrets, `.git`,
   ignored files and KiCad files as text stay out of reach. See
   [docs/user/repo-context.md](docs/user/repo-context.md).
+- **Mouser parts data** (optional, `MOUSER_API_KEY`): the agent answers availability,
+  price, stock, lead-time and lifecycle questions from Mouser's Search API, and the part
+  researcher adds a dated "Sourcing (Mouser)" section to the part notes.
 
 Boards (PCB) stay read-only.
 
@@ -117,7 +120,9 @@ notifications in Settings › Notifications.
   is always on, also behind Cloudflare Access.
 - **The main agent has no file, shell or web tools.** It only gets CopperChat's own design
   tools (KiCad API reads, schematic edits, ERC/DRC, views, git status/diff/commit-on-request),
-  the read-only repository tools, the `Skill` tool and `research_part`. Design data is read and written only through the
+  the read-only repository tools, the `Skill` tool, `research_part` and — with a
+  `MOUSER_API_KEY` — the read-only Mouser lookups `mouser_search` / `mouser_part` (the key
+  stays on the server and is never shown to the agent or written to logs). Design data is read and written only through the
   running KiCad API server — never by a CopperChat file parser or writer. Edits are refused
   for a project open read-only, over the change budget, and while a plan is open outside
   its begun step. Design docs are read and written only under `docs/design/` (no
@@ -149,6 +154,7 @@ notifications in Settings › Notifications.
 | `COPPERCHAT_PORT`, `COPPERCHAT_BIND` | host port (default 8080) and bind address (default: all addresses; `127.0.0.1` = this machine only) |
 | `PUBLIC_BASE_URL` | public HTTPS URL (WebSocket origin check behind a proxy) |
 | `VAPID_SUBJECT` | push contact, e.g. `mailto:you@example.com` |
+| `MOUSER_API_KEY` | optional Mouser Search API key: price, stock and lifecycle lookups (`mouser_search` / `mouser_part`) |
 | `CLOUDFLARE_TUNNEL_TOKEN` | optional `cloudflared` service (`--profile tunnel`) |
 | `FORWARDED_ALLOW_IPS` | trusted reverse-proxy addresses (default: the compose `cloudflared`) |
 | `COOKIE_SECURE=false` | only for plain-http LAN use |

@@ -1,0 +1,29 @@
+{
+  "Errors": [],
+  "SearchResults": {
+    "NumberOfResult": 812,
+    "Parts": [
+      {
+        "Availability": "4521 In Stock",
+        "Description": "Switching Voltage Regulators 3-17V 3A Step-Down Converter in 3x3 QFN",
+        "LifecycleStatus": null,
+        "Manufacturer": "Texas Instruments",
+        "ManufacturerPartNumber": "TPS62133RGTR",
+        "MouserPartNumber": "595-TPS62133RGTR",
+        "PriceBreaks": [{"Quantity": 1, "Price": "2,79 €", "Currency": "EUR"}],
+        "AvailabilityInStock": "4521",
+        "IsDiscontinued": "false"
+      },
+      {
+        "Availability": "None",
+        "Description": "Buck converter, end of life",
+        "LifecycleStatus": "End of Life",
+        "Manufacturer": "Analog Devices Inc.",
+        "ManufacturerPartNumber": "LT1234",
+        "MouserPartNumber": "584-LT1234",
+        "PriceBreaks": [],
+        "AvailabilityInStock": "0"
+      }
+    ]
+  }
+}
