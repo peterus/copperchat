@@ -503,7 +503,9 @@ class MouserClient:
                     )
                 ][:MAX_OFFERS]
                 results[fold] = (fetched, offers)
-                if truncated and not offers:
+                # Asked alone, a missing part is simply not listed: "query it alone"
+                # would only repeat the same request.
+                if truncated and not offers and len(missing) > 1:
                     unknown.add(fold)
                 # A truncated answer may also miss offers of a found part: cache nothing.
                 if not truncated:

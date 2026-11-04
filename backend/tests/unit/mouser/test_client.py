@@ -414,6 +414,14 @@ async def test_truncated_batch_does_not_cache_not_found() -> None:
     assert rec.body()["SearchByPartRequest"]["mouserPartNumber"] == "TPS62133RGTR|MISSING1"
 
 
+async def test_truncated_single_mpn_is_not_found() -> None:
+    data = fixture("partnumber.json")
+    data["SearchResults"]["NumberOfResult"] = 50
+    rec = Recorder(httpx.Response(200, json=data))
+    out = await make(rec).parts(["MISSING1"])
+    assert out["parts"][0] == {"mpn": "MISSING1", "found": False, "note": "not found at Mouser"}
+
+
 async def test_price_breaks_capped_and_first_break_quantity() -> None:
     data = fixture("partnumber.json")
     lm = data["SearchResults"]["Parts"][1]
