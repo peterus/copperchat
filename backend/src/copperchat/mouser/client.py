@@ -129,6 +129,10 @@ def parse_price(raw: str | None, currency: str | None = None) -> float | None:
     if m is None:
         return None
     s = _GROUPING.sub("", m.group(0))
+    if m.start() > 0 and raw[m.start() - 1] in ".,":
+        s = "0." + s if "," not in s and "." not in s else ""  # ".50" -> 0.50; ".1,5" -> None
+    if not s:
+        return None
     if "," in s and "." in s:
         dec = "," if s.rfind(",") > s.rfind(".") else "."
         s = s.replace("." if dec == "," else ",", "").replace(dec, ".")
