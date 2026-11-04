@@ -47,6 +47,16 @@ def test_bad_shard_values_are_usage_errors(value: str) -> None:
         parse_shard(value)
 
 
+def test_shard_membership_ignores_collection_order() -> None:
+    items = [f"t{i:03}" for i in range(50)]
+    shuffled = items[::-1][7:] + items[::-1][:7]
+    for index in (1, 3):
+        kept, _ = shard_split(items, index, 3)
+        kept_shuffled, _ = shard_split(shuffled, index, 3)
+        assert sorted(kept_shuffled) == sorted(kept)
+        assert kept_shuffled == [t for t in shuffled if t in kept]  # run order is kept
+
+
 def test_parse_shard() -> None:
     assert parse_shard("3/8") == (3, 8)
 

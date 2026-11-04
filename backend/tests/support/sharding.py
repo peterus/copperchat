@@ -1,11 +1,13 @@
 """`--shard I/N`: run every N-th selected test, so CI can split a slow run into parallel jobs.
 
-Items are dealt round-robin in collection order, after `-m`/`-k` deselection: the N shards
+Items are dealt round-robin in node-id order, after `-m`/`-k` deselection: the N shards
 are disjoint and together hold exactly the full selection, whatever tests are added, and
 each test file is spread across all shards (tests of one file cost about the same).
 """
 
 from __future__ import annotations
+
+from collections.abc import Callable
 
 import pytest
 
@@ -24,10 +26,18 @@ def parse_shard(value: str) -> tuple[int, int]:
     return index, total
 
 
-def shard_split[T](items: list[T], index: int, total: int) -> tuple[list[T], list[T]]:
-    """Split into (kept, deselected) for shard `index` of `total`."""
-    kept = [item for i, item in enumerate(items) if i % total == index - 1]
-    dropped = [item for i, item in enumerate(items) if i % total != index - 1]
+def shard_split[T](
+    items: list[T], index: int, total: int, key: Callable[[T], str] = str
+) -> tuple[list[T], list[T]]:
+    """Split into (kept, deselected) for shard `index` of `total`, both in the given order.
+
+    Membership goes by each item's rank in `key` order (the node id), not by its position,
+    so every shard process agrees on the split even if collection order differed.
+    """
+    order = sorted(range(len(items)), key=lambda i: (key(items[i]), i))
+    rank = {i: r for r, i in enumerate(order)}
+    kept = [item for i, item in enumerate(items) if rank[i] % total == index - 1]
+    dropped = [item for i, item in enumerate(items) if rank[i] % total != index - 1]
     return kept, dropped
 
 
@@ -46,7 +56,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     if value is None:
         return
     index, total = parse_shard(value)
-    kept, dropped = shard_split(items, index, total)
+    kept, dropped = shard_split(items, index, total, key=lambda item: item.nodeid)
     config.stash[_KEY] = (index, total, len(items))
     if dropped:
         config.hook.pytest_deselected(items=dropped)
