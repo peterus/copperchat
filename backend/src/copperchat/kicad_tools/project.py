@@ -36,10 +36,13 @@ def _board_info(h: KicadHandle) -> dict[str, Any]:
 def _schematic_info(h: KicadHandle) -> dict[str, Any]:
     sch = h.schematic()
     refs = {str(s.reference) for s in sch.get_symbols()}
-    sheets = access.hierarchy(sch)
-    for entry, instance in zip(sheets, sch.get_hierarchy(), strict=True):
-        # What sch_set_title_block sets (non-empty fields only; shared by a file's instances)
-        entry["title_block"] = nonempty(read_values(sch.for_sheet(instance)))
+    instances = list(sch.get_hierarchy())
+    sheets = access.hierarchy(sch, instances)
+    blocks: dict[str, dict[str, str]] = {}  # per sheet file: its instances share one block
+    for entry, instance in zip(sheets, instances, strict=True):
+        if entry["file"] not in blocks:
+            blocks[entry["file"]] = nonempty(read_values(sch.for_sheet(instance)))
+        entry["title_block"] = blocks[entry["file"]]  # what sch_set_title_block sets
     return {
         "sheets": sheets,
         # One entry per part: units and sheet instances share a reference; power
