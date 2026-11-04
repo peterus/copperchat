@@ -7,6 +7,11 @@ All notable changes to CopperChat are documented in this file. The format follow
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-04
+
+**Title block**: the agent can set the schematic title block (title, date, revision,
+company, comments) of one sheet or all sheets. No migrations, no KiCad patches.
+
 ### Added
 
 - **`sch_set_title_block`: set the title block.** New editing tool for the text block in the
@@ -321,7 +326,8 @@ projects, in the browser on desktop, iPad and iPhone.
 - The KiCanvas patches live in this repository (`frontend/vendor-patches/kicanvas/`), not in
   an upstream fork; the main JavaScript chunk is large (~590 kB).
 
-[Unreleased]: https://github.com/peterus/copperchat/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/peterus/copperchat/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/peterus/copperchat/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/peterus/copperchat/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/peterus/copperchat/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/peterus/copperchat/compare/v0.4.0...v0.4.1
