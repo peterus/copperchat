@@ -7,6 +7,11 @@ All notable changes to CopperChat are documented in this file. The format follow
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-11-05
+
+**Git identity for commits**: optional `COPPERCHAT_GIT_NAME` / `COPPERCHAT_GIT_EMAIL` so
+`git_commit` works in the container without a git identity. No migrations, no KiCad patches.
+
 ### Added
 
 - `COPPERCHAT_GIT_NAME` / `COPPERCHAT_GIT_EMAIL` (optional): fallback author and committer
@@ -368,7 +373,8 @@ projects, in the browser on desktop, iPad and iPhone.
 - The KiCanvas patches live in this repository (`frontend/vendor-patches/kicanvas/`), not in
   an upstream fork; the main JavaScript chunk is large (~590 kB).
 
-[Unreleased]: https://github.com/peterus/copperchat/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/peterus/copperchat/compare/v0.8.2...HEAD
+[0.8.2]: https://github.com/peterus/copperchat/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/peterus/copperchat/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/peterus/copperchat/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/peterus/copperchat/compare/v0.6.0...v0.7.0
