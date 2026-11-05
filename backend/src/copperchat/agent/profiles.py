@@ -66,6 +66,8 @@ DOC_TOOLS = frozenset({"doc_list", "doc_read", "doc_write", "doc_patch_section",
 TODAY = READ_KICAD | LIBRARY | PARTS | GIT | SCH_WRITES | PLAN_TOOLS
 # Read-only repository access, in every profile (repo-context spec §5.4).
 REPO_TOOLS = frozenset({"repo_list", "repo_grep", "repo_read"})
+# Read-only Mouser lookups (price, stock, lifecycle), in every profile (mouser-api spec §4).
+MOUSER_TOOLS = frozenset({"mouser_search", "mouser_part"})
 
 PROFILES: dict[str, frozenset[str]] = {
     "requirements": DOC_TOOLS
@@ -73,16 +75,21 @@ PROFILES: dict[str, frozenset[str]] = {
     | LIBRARY
     | (READ_KICAD - {"sch_find_space", "sch_changes"})
     | GIT
-    | REPO_TOOLS,
-    "schematic": TODAY | {"doc_list", "doc_read", "doc_append", "doc_patch_section"} | REPO_TOOLS,
+    | REPO_TOOLS
+    | MOUSER_TOOLS,
+    "schematic": TODAY
+    | {"doc_list", "doc_read", "doc_append", "doc_patch_section"}
+    | REPO_TOOLS
+    | MOUSER_TOOLS,
     # SP4 (hidden): the read, ERC/DRC, git, library and parts tools; later the pcb_* writes.
     "board": READ_KICAD
     | LIBRARY
     | PARTS
     | GIT
     | {"doc_list", "doc_read", "doc_append"}
-    | REPO_TOOLS,
-    "free": TODAY | DOC_TOOLS | REPO_TOOLS,
+    | REPO_TOOLS
+    | MOUSER_TOOLS,
+    "free": TODAY | DOC_TOOLS | REPO_TOOLS | MOUSER_TOOLS,
 }
 
 

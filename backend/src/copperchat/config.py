@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     forwarded_allow_ips: str = "127.0.0.1"
     # Web Push (Phase 9): VAPID "sub" claim, a contact the push services can reach.
     vapid_subject: str = "mailto:copperchat@localhost"
+    # Mouser Search API key (optional): enables mouser_search / mouser_part. Sent only to
+    # api.mouser.com; prices come in the currency of the Mouser account.
+    mouser_api_key: SecretStr | None = None
 
 
 @lru_cache(maxsize=1)

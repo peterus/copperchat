@@ -1,0 +1,83 @@
+{
+  "Errors": [],
+  "SearchResults": {
+    "NumberOfResult": 3,
+    "Parts": [
+      {
+        "Availability": "4521 In Stock",
+        "DataSheetUrl": "https://www.ti.com/lit/ds/symlink/tps62133.pdf",
+        "Description": "Switching Voltage Regulators 3-17V 3A Step-Down Converter in 3x3 QFN",
+        "FactoryStock": "0",
+        "ImagePath": "https://www.mouser.com/images/texasinstruments/images/VQFN-16_RGT_t.jpg",
+        "Category": "Switching Voltage Regulators",
+        "LeadTime": "42 Days",
+        "LifecycleStatus": null,
+        "Manufacturer": "Texas Instruments",
+        "ManufacturerPartNumber": "TPS62133RGTR",
+        "Min": "1",
+        "Mult": "1",
+        "MouserPartNumber": "595-TPS62133RGTR",
+        "ProductAttributes": [
+          {"AttributeName": "Packaging", "AttributeValue": "Reel", "AttributeCost": null}
+        ],
+        "PriceBreaks": [
+          {"Quantity": 1, "Price": "2,79 €", "Currency": "EUR"},
+          {"Quantity": 10, "Price": "2,01 €", "Currency": "EUR"},
+          {"Quantity": 3000, "Price": "1.012,50 €", "Currency": "EUR"}
+        ],
+        "AlternatePackagings": [{"APMfrPN": "TPS62133RGTT"}],
+        "ProductDetailUrl": "https://www.mouser.at/ProductDetail/Texas-Instruments/TPS62133RGTR",
+        "Reeling": true,
+        "ROHSStatus": "RoHS Compliant",
+        "SuggestedReplacement": "",
+        "MultiSimBlue": 0,
+        "IsDiscontinued": "false",
+        "MouserProductCategory": "Switching Voltage Regulators",
+        "AvailabilityInStock": "4521",
+        "AvailabilityOnOrder": [{"Quantity": 3000, "Date": "2026-12-01T00:00:00"}],
+        "InfoMessages": [],
+        "SalesMaximumOrderQty": null,
+        "RestrictionMessage": null,
+        "PID": "123",
+        "ProductCompliance": [{"ComplianceName": "USHTS", "ComplianceValue": "8542390090"}]
+      },
+      {
+        "Availability": "",
+        "DataSheetUrl": "https://www.ti.com/lit/ds/symlink/lm358.pdf",
+        "Description": "Operational Amplifiers - Op Amps Dual",
+        "Category": "Operational Amplifiers",
+        "LeadTime": "",
+        "LifecycleStatus": "Not Recommended for New Designs",
+        "Manufacturer": "Texas Instruments",
+        "ManufacturerPartNumber": "LM358DR",
+        "Min": "2500",
+        "Mult": "2500",
+        "MouserPartNumber": "595-LM358DR",
+        "PriceBreaks": [{"Quantity": 2500, "Price": "0,123 €", "Currency": "EUR"}],
+        "ProductDetailUrl": "https://www.mouser.at/ProductDetail/Texas-Instruments/LM358DR",
+        "ROHSStatus": "RoHS Compliant",
+        "SuggestedReplacement": "LM358BIDR",
+        "IsDiscontinued": "false",
+        "AvailabilityInStock": null,
+        "AvailabilityOnOrder": []
+      },
+      {
+        "Availability": "12 In Stock",
+        "DataSheetUrl": "",
+        "Description": "Old part",
+        "LeadTime": null,
+        "LifecycleStatus": null,
+        "Manufacturer": "Acme",
+        "ManufacturerPartNumber": "OLD555",
+        "Min": "1",
+        "Mult": "1",
+        "MouserPartNumber": "999-OLD555",
+        "PriceBreaks": [{"Quantity": 1, "Price": "n/a", "Currency": "EUR"}],
+        "ProductDetailUrl": "https://www.mouser.at/ProductDetail/Acme/OLD555",
+        "SuggestedReplacement": "",
+        "IsDiscontinued": "true",
+        "AvailabilityInStock": "12"
+      }
+    ]
+  }
+}

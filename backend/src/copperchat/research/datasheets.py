@@ -13,6 +13,8 @@ from claude_agent_sdk import McpSdkServerConfig, SdkMcpTool, create_sdk_mcp_serv
 
 from copperchat.errors import StructuredToolError
 from copperchat.fsutil import atomic_write_bytes
+from copperchat.mouser.client import MouserClient
+from copperchat.mouser.specs import PART_DESCRIPTION, PART_SCHEMA, SEARCH_DESCRIPTION, SEARCH_SCHEMA
 from copperchat.parts import InvalidMpn, part_dir
 from copperchat.projects import Project
 from copperchat.research.agent import PARTS_SERVER
@@ -140,7 +142,11 @@ def notes_check(project: Project, mpn: str) -> dict[str, Any]:
     }
 
 
-def parts_mcp_server(project: Project, *, resolver: Resolver | None = None) -> McpSdkServerConfig:
+def parts_tools(
+    project: Project, *, resolver: Resolver | None = None, mouser: MouserClient | None = None
+) -> list[SdkMcpTool[Any]]:
+    """The tools of the ``parts`` server; the mouser_* tools only with a configured key."""
+
     async def _download(args: dict[str, Any]) -> dict[str, Any]:
         try:
             path = await download_datasheet(
@@ -181,4 +187,45 @@ def parts_mcp_server(project: Project, *, resolver: Resolver | None = None) -> M
             handler=_check,
         ),
     ]
-    return create_sdk_mcp_server(name=PARTS_SERVER, version="1.0.0", tools=tools)
+    if mouser is not None:
+        tools.extend(_mouser_tools(mouser))
+    return tools
+
+
+def _mouser_tools(mouser: MouserClient) -> list[SdkMcpTool[Any]]:
+    async def _search(args: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return _text(await mouser.search(args.get("keyword"), args.get("limit", 10)))
+        except StructuredToolError as err:
+            return _text({"error": err.to_dict()}, is_error=True)
+
+    async def _part(args: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return _text(await mouser.parts(args.get("mpns")))
+        except StructuredToolError as err:
+            return _text({"error": err.to_dict()}, is_error=True)
+
+    return [
+        SdkMcpTool(
+            name="mouser_search",
+            description=SEARCH_DESCRIPTION,
+            input_schema=SEARCH_SCHEMA,
+            handler=_search,
+        ),
+        SdkMcpTool(
+            name="mouser_part",
+            description=PART_DESCRIPTION,
+            input_schema=PART_SCHEMA,
+            handler=_part,
+        ),
+    ]
+
+
+def parts_mcp_server(
+    project: Project, *, resolver: Resolver | None = None, mouser: MouserClient | None = None
+) -> McpSdkServerConfig:
+    return create_sdk_mcp_server(
+        name=PARTS_SERVER,
+        version="1.0.0",
+        tools=parts_tools(project, resolver=resolver, mouser=mouser),
+    )

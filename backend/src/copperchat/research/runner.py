@@ -30,6 +30,7 @@ from copperchat.agent.events import AgentEvent
 from copperchat.agent.sdk_messages import Totals, result_totals, subagent_events, usage_totals
 from copperchat.config import Settings
 from copperchat.errors import StructuredToolError
+from copperchat.mouser.client import client_for
 from copperchat.parts import InvalidMpn, mpn_dirname
 from copperchat.projects import Project
 from copperchat.research.agent import MAX_TURNS, PARTS_SERVER, RESEARCHER_TOOLS, researcher_prompt
@@ -67,14 +68,18 @@ def researcher_options(
     env = {
         "CLAUDE_CONFIG_DIR": str(settings.data_dir / "claude"),
         "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
+        # The CLI inherits os.environ; the Mouser key (from .env via compose) stays here.
+        "MOUSER_API_KEY": "",
     }
     if settings.claude_code_oauth_token is not None:
         env["CLAUDE_CODE_OAUTH_TOKEN"] = settings.claude_code_oauth_token.get_secret_value()
     if settings.anthropic_api_key is not None:
         env["ANTHROPIC_API_KEY"] = settings.anthropic_api_key.get_secret_value()
     guard = make_researcher_guard(project, resolver=resolver, write_folder=write_folder)
+    # The key stays in this process: the mouser_* tools run in our in-process parts server.
+    mouser = client_for(settings)
     return ClaudeAgentOptions(
-        system_prompt=researcher_prompt(notes_skill),
+        system_prompt=researcher_prompt(notes_skill, mouser=mouser is not None),
         tools=list(RESEARCHER_TOOLS),
         allowed_tools=[],
         permission_mode="default",
@@ -83,7 +88,7 @@ def researcher_options(
         hooks={
             "PreToolUse": [HookMatcher(matcher=None, hooks=[guard_as_pre_tool_use_hook(guard)])]
         },
-        mcp_servers={PARTS_SERVER: parts_mcp_server(project, resolver=resolver)},
+        mcp_servers={PARTS_SERVER: parts_mcp_server(project, resolver=resolver, mouser=mouser)},
         setting_sources=[],
         cwd=str(project.dir),
         env=env,

@@ -99,6 +99,16 @@ In Schematic and Free sessions the schematic is edited with the `sch_*` tools; l
 `kicad-schematic-editing` skill before the first edit. Look up part knowledge with
 `parts_get_notes` first, and call `research_part` when a part has no notes yet.
 
+## Sourcing (Mouser)
+
+- `mouser_part(mpns)`: price breaks, stock, lead time, lifecycle (Active / NRND / End of
+  Life / Obsolete), datasheet and product URL, MOQ for up to 10 exact part numbers.
+- `mouser_search(keyword, limit=10)`: find the orderable part number first.
+
+Answer quick availability / price / lifecycle questions with these directly instead of
+`research_part`, and give the `as_of` date. Without a Mouser key (`not_configured`), when
+rate-limited or on an upstream error, use `research_part` (it searches the web).
+
 ## Git
 
 Use `git_commit` only when the user explicitly asks for a commit.

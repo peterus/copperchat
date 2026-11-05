@@ -14,6 +14,7 @@ from copperchat.agent import sdk_backend
 from copperchat.agent.events import QueuedItem
 from copperchat.agent.profiles import (
     DOC_TOOLS,
+    MOUSER_TOOLS,
     PLAN_TOOLS,
     PROFILES,
     REPO_TOOLS,
@@ -56,14 +57,17 @@ SPEC_82 = {
         "git_diff_summary",
         "git_commit",
     }
-    | set(REPO_TOOLS),
+    | set(REPO_TOOLS)
+    | set(MOUSER_TOOLS),
     "schematic": set(TODAY)
     | {"doc_list", "doc_read", "doc_append", "doc_patch_section"}
-    | set(REPO_TOOLS),
-    "free": set(TODAY) | set(DOC_TOOLS) | set(REPO_TOOLS),
+    | set(REPO_TOOLS)
+    | set(MOUSER_TOOLS),
+    "free": set(TODAY) | set(DOC_TOOLS) | set(REPO_TOOLS) | set(MOUSER_TOOLS),
 }
 # repo-context 2026-10-21: REPO_TOOLS (repo_list, repo_grep, repo_read) were deliberately
-# added to every profile (repo-context spec §5.4).
+# added to every profile (repo-context spec §5.4); likewise MOUSER_TOOLS (mouser-api
+# spec §4, 2026-11-04).
 
 
 @pytest.fixture
