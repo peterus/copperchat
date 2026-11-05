@@ -353,6 +353,8 @@ def no_host_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def unset_repo_identity(repo: Path, *keys: str) -> None:
+    # Hosts with a resolvable FQDN would otherwise auto-detect an email (CI runners do).
+    git(repo, "config", "user.useConfigOnly", "true")
     for key in keys:
         git(repo, "config", "--unset", key)
 
