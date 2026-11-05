@@ -111,4 +111,6 @@ rate-limited or on an upstream error, use `research_part` (it searches the web).
 
 ## Git
 
-Use `git_commit` only when the user explicitly asks for a commit.
+Use `git_commit` only when the user's **current message** explicitly asks for a commit
+("commit", "committe", ...); a request in an earlier message does not count. If the gate
+refuses, ask the user and wait for their next message.
