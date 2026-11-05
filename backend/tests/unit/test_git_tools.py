@@ -302,7 +302,7 @@ async def test_commit_without_gitignore_still_excludes_cache_dirs(repo: Path) ->
     assert not any(".kicad-agent" in t or t.endswith(".lck") for t in tracked)
 
 
-async def test_commit_with_only_ignored_changes_is_nothing_to_commit(repo: Path) -> None:
+async def test_commit_with_only_ignored_changes_is_nothing_to_commit_up_front(repo: Path) -> None:
     proj = repo / "boards" / "demo"
     (proj / ".kicad-agent").mkdir()
     (proj / ".kicad-agent" / ".gitignore").write_text("*\n")
@@ -312,4 +312,7 @@ async def test_commit_with_only_ignored_changes_is_nothing_to_commit(repo: Path)
     (proj / ".kicad-agent" / "history" / "x.bin").write_bytes(b"x")
     with pytest.raises(StructuredToolError) as err:
         await SPECS["git_commit"].handler(ctx(proj, "commit"), {"message": "x"})
+    # Ignored-only changes never reach `git add`: the pre-staging status guard fires
+    # (the post-staging `diff --cached` check is a defensive second line).
     assert err.value.what == "Nothing to commit"
+    assert "no changes" in err.value.to_dict()["why"]
