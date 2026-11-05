@@ -7,6 +7,11 @@ All notable changes to CopperChat are documented in this file. The format follow
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-05
+
+**git_commit fix**: committing works again in projects whose `.kicad-agent/.gitignore`
+ignores the agent's cache directories. No migrations, no KiCad patches.
+
 ### Fixed
 
 - `git_commit` no longer fails with "paths are ignored by one of your .gitignore files" when
@@ -356,7 +361,8 @@ projects, in the browser on desktop, iPad and iPhone.
 - The KiCanvas patches live in this repository (`frontend/vendor-patches/kicanvas/`), not in
   an upstream fork; the main JavaScript chunk is large (~590 kB).
 
-[Unreleased]: https://github.com/peterus/copperchat/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/peterus/copperchat/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/peterus/copperchat/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/peterus/copperchat/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/peterus/copperchat/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/peterus/copperchat/compare/v0.5.0...v0.6.0
