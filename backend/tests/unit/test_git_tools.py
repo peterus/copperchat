@@ -339,10 +339,17 @@ def no_host_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
-    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
-    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
-    for var in ("EMAIL", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME"):
-        monkeypatch.delenv(var, raising=False)
+    monkeypatch.delenv("EMAIL", raising=False)
+    # gitproc.git_env() strips every GIT_* variable (so GIT_CONFIG_NOSYSTEM cannot help):
+    # a system-wide identity would leak into these tests, so skip instead.
+    system = subprocess.run(
+        ["git", "config", "--system", "--get-regexp", "^user\\.(name|email)$"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if system.stdout.strip():
+        pytest.skip("system gitconfig sets a git identity")
 
 
 def unset_repo_identity(repo: Path, *keys: str) -> None:
