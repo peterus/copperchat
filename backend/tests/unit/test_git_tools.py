@@ -382,7 +382,7 @@ async def test_commit_uses_configured_identity_for_author_and_committer(repo: Pa
         "Copper Bot <bot@example.org>|Copper Bot <bot@example.org>"
     )
     persisted = subprocess.run(
-        ["git", "-C", str(repo), "config", "--local", "--get-regexp", "^user\\."],
+        ["git", "-C", str(repo), "config", "--local", "--get-regexp", "^user\\.(name|email)$"],
         capture_output=True,
         text=True,
         timeout=30,
