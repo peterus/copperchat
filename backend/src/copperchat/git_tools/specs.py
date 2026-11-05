@@ -16,8 +16,8 @@ from copperchat.tools import StructuredToolError, ToolContext, ToolResult, ToolS
 
 # The current user message must ask for a commit: English (commit, committing) and
 # German (committe, committen, committet, commite, commiten, commitet) forms. "committed" is
-# deliberately not accepted ("I'm committed to this design"), nor is the noun "commits" ("show the commits"), nor "recommit",
-# "uncommitted" or "committee".
+# deliberately not accepted ("I'm committed to this design"), nor is the noun "commits"
+# ("show the commits"), nor "recommit", "uncommitted" or "committee".
 COMMIT_INTENT = re.compile(r"\bcommit(?:ting|te|ten|tet|e|en|et)?\b", re.IGNORECASE)
 EXCLUDED_DIRS = (
     ".kicad-agent/history",
