@@ -83,6 +83,7 @@ def test_registered_in_registry() -> None:
         ("committing now", True),
         ("uncommitted changes", False),
         ("the committee", False),
+        ("show me the commits", False),
         ("show git status", False),
     ],
 )
