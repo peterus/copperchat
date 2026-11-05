@@ -65,7 +65,7 @@ class Settings(BaseSettings):
             raise ValueError(f"{info.field_name} must not contain control characters")
         if any(c in value for c in "<>"):
             raise ValueError(f"{info.field_name} must not contain < or >")
-        if info.field_name == "git_email" and ("@" not in value or " " in value):
+        if info.field_name == "git_email" and (" " in value or not all(value.partition("@")[::2])):
             raise ValueError("git_email must look like name@example.com")
         return value
 

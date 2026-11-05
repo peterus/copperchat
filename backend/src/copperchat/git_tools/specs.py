@@ -217,8 +217,10 @@ async def _identity_args(project_dir: Path, settings: Settings | None) -> list[s
     for key, fallback in (("user.name", settings.git_name), ("user.email", settings.git_email)):
         if not fallback:
             continue
-        _, out, _ = await _git(project_dir, "config", "--get", key)
-        if not out.strip():
+        code, out, _ = await _git(project_dir, "config", "--get", key)
+        # Exit 1 = key not set. Any other failure (e.g. a corrupt config) is left for
+        # `git commit` to report instead of papering over it with the fallback.
+        if code in (0, 1) and not out.strip():
             args += ["-c", f"{key}={fallback}"]
     return args
 

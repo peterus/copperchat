@@ -415,7 +415,16 @@ async def test_only_name_configured_still_reports_missing_email(repo: Path) -> N
 
 @pytest.mark.parametrize(
     ("name", "email"),
-    [("a\nb", None), (None, "a@b\nc"), ("x\x00y", None), (None, "no-at-sign"), ("A <b>", None)],
+    [
+        ("a\nb", None),
+        (None, "a@b\nc"),
+        ("x\x00y", None),
+        (None, "no-at-sign"),
+        (None, "@"),
+        (None, "a@"),
+        (None, "@b"),
+        ("A <b>", None),
+    ],
 )
 def test_identity_settings_reject_bad_values(name: str | None, email: str | None) -> None:
     with pytest.raises(ValueError):
