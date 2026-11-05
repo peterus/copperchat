@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from copperchat.errors import MissingCredentialsError
@@ -17,7 +17,9 @@ MISSING_CREDENTIALS_MESSAGE = (
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore", populate_by_name=True
+    )
 
     projects_root: Path = Path("/projects")
     data_dir: Path = Path("/data")
@@ -46,6 +48,26 @@ class Settings(BaseSettings):
     # Mouser Search API key (optional): enables mouser_search / mouser_part. Sent only to
     # api.mouser.com; prices come in the currency of the Mouser account.
     mouser_api_key: SecretStr | None = None
+    # Fallback author/committer identity for git_commit, used only for what git itself
+    # (repo-local or global config) does not provide.
+    git_name: str | None = Field(default=None, validation_alias="COPPERCHAT_GIT_NAME")
+    git_email: str | None = Field(default=None, validation_alias="COPPERCHAT_GIT_EMAIL")
+
+    @field_validator("git_name", "git_email")
+    @classmethod
+    def _git_identity(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return None
+        if any(ord(c) < 32 or ord(c) == 127 for c in value):
+            raise ValueError(f"{info.field_name} must not contain control characters")
+        if any(c in value for c in "<>"):
+            raise ValueError(f"{info.field_name} must not contain < or >")
+        if info.field_name == "git_email" and ("@" not in value or " " in value):
+            raise ValueError("git_email must look like name@example.com")
+        return value
 
 
 @lru_cache(maxsize=1)

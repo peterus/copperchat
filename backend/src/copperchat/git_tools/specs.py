@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from copperchat.config import Settings
 from copperchat.gitproc import GitNotFoundError, GitTimeoutError, run_git
 from copperchat.tools import StructuredToolError, ToolContext, ToolResult, ToolSpec
 
@@ -30,6 +31,19 @@ EXCLUDED_DIRS = (
 _EXCLUDED_GLOBS = ("**/~*.lck",)
 _TIMEOUT_S = 30.0
 MESSAGE_MAX = 2000
+# What git prints (LANG=C) when no committer identity can be determined.
+_IDENTITY_ERRORS = (
+    "author identity unknown",
+    "committer identity unknown",
+    "unable to auto-detect email address",
+    "unable to auto-detect name",
+    "please tell me who you are",
+    "empty ident name",
+)
+_IDENTITY_FIX = (
+    "Ask the user to set COPPERCHAT_GIT_NAME and COPPERCHAT_GIT_EMAIL in the CopperChat .env "
+    "(and restart it) or to set user.name and user.email in the repository."
+)
 
 
 FILES_MAX = 200  # changed files listed per call (tool result and Git panel)
@@ -190,6 +204,25 @@ async def git_diff_summary(ctx: ToolContext, args: dict[str, Any]) -> ToolResult
     )
 
 
+async def _identity_args(project_dir: Path, settings: Settings | None) -> list[str]:
+    """``-c user.*`` overrides for the identity git itself does not know.
+
+    Identity configured in git (repo-local or any config git sees) wins; the CopperChat
+    settings only fill what is missing. ``-c`` sets author and committer alike, unlike
+    GIT_AUTHOR_*/GIT_COMMITTER_* which would override the repository's own config.
+    """
+    if settings is None:
+        return []
+    args: list[str] = []
+    for key, fallback in (("user.name", settings.git_name), ("user.email", settings.git_email)):
+        if not fallback:
+            continue
+        _, out, _ = await _git(project_dir, "config", "--get", key)
+        if not out.strip():
+            args += ["-c", f"{key}={fallback}"]
+    return args
+
+
 async def git_commit(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     d = ctx.project.dir
     if not ctx.user_message or not COMMIT_INTENT.search(ctx.user_message):
@@ -227,13 +260,14 @@ async def git_commit(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         )
     # With a pathspec, `git commit` records only those paths (--only): changes the
     # user staged outside the project directory stay staged and uncommitted.
-    code, _, err = await _git(d, "commit", "--no-verify", "-q", "-m", message, *pathspec)
+    identity = await _identity_args(d, ctx.settings)
+    code, _, err = await _git(d, *identity, "commit", "--no-verify", "-q", "-m", message, *pathspec)
     if code != 0:
         raise StructuredToolError(
             "git commit failed",
             err.strip(),
-            "Ask the user to configure git user.name/user.email."
-            if "user.email" in err or "identity" in err.lower()
+            _IDENTITY_FIX
+            if any(m in err.lower() for m in _IDENTITY_ERRORS)
             else "Tell the user what git reported; they may need to finish a merge or "
             "remove a stale index.lock in their repository.",
         )
