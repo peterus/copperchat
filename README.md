@@ -155,6 +155,7 @@ notifications in Settings › Notifications.
 | `PUBLIC_BASE_URL` | public HTTPS URL (WebSocket origin check behind a proxy) |
 | `VAPID_SUBJECT` | push contact, e.g. `mailto:you@example.com` |
 | `MOUSER_API_KEY` | optional Mouser Search API key: price, stock and lifecycle lookups (`mouser_search` / `mouser_part`) |
+| `COPPERCHAT_GIT_NAME`, `COPPERCHAT_GIT_EMAIL` | optional fallback author/committer identity for `git_commit`; used only when the repository (or git config) has no `user.name` / `user.email` |
 | `CLOUDFLARE_TUNNEL_TOKEN` | optional `cloudflared` service (`--profile tunnel`) |
 | `FORWARDED_ALLOW_IPS` | trusted reverse-proxy addresses (default: the compose `cloudflared`) |
 | `COOKIE_SECURE=false` | only for plain-http LAN use |

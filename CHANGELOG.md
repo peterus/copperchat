@@ -7,6 +7,13 @@ All notable changes to CopperChat are documented in this file. The format follow
 
 ## [Unreleased]
 
+### Added
+
+- `COPPERCHAT_GIT_NAME` / `COPPERCHAT_GIT_EMAIL` (optional): fallback author and committer
+  identity for `git_commit`. Identity configured in git (repo-local or global) wins; the
+  settings only fill in what is missing. When no identity is available, the error now names
+  these settings.
+
 ## [0.8.1] - 2026-11-05
 
 **git_commit fix**: committing works again in projects whose `.kicad-agent/.gitignore`

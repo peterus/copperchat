@@ -316,3 +316,137 @@ async def test_commit_with_only_ignored_changes_is_nothing_to_commit_up_front(re
     # (the post-staging `diff --cached` check is a defensive second line).
     assert err.value.what == "Nothing to commit"
     assert "no changes" in err.value.to_dict()["why"]
+
+
+# --- configurable identity (COPPERCHAT_GIT_NAME / COPPERCHAT_GIT_EMAIL) --------------------
+
+
+def identity_ctx(
+    project_dir: Path, name: str | None, email: str | None, message: str = "commit please"
+) -> ToolContext:
+    settings = Settings(_env_file=None, git_name=name, git_email=email)  # type: ignore[call-arg]
+    return ToolContext(
+        project=discover_projects(project_dir.parent)[0],
+        session=cast(Any, None),
+        settings=settings,
+        user_message=message,
+    )
+
+
+@pytest.fixture
+def no_host_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "empty-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    monkeypatch.delenv("EMAIL", raising=False)
+    # gitproc.git_env() strips every GIT_* variable (so GIT_CONFIG_NOSYSTEM cannot help):
+    # a system-wide identity would leak into these tests, so skip instead.
+    system = subprocess.run(
+        ["git", "config", "--system", "--get-regexp", "^user\\.(name|email)$"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if system.stdout.strip():
+        pytest.skip("system gitconfig sets a git identity")
+
+
+def unset_repo_identity(repo: Path, *keys: str) -> None:
+    # Hosts with a resolvable FQDN would otherwise auto-detect an email (CI runners do).
+    git(repo, "config", "user.useConfigOnly", "true")
+    for key in keys:
+        git(repo, "config", "--unset", key)
+
+
+@pytest.mark.usefixtures("no_host_identity")
+async def test_commit_without_any_identity_names_the_env_vars(repo: Path) -> None:
+    unset_repo_identity(repo, "user.name", "user.email")
+    proj = make_changes(repo)
+    with pytest.raises(StructuredToolError) as err:
+        await SPECS["git_commit"].handler(identity_ctx(proj, None, None), {"message": "x"})
+    d = err.value.to_dict()
+    assert "COPPERCHAT_GIT_NAME" in d["suggestion"] and "COPPERCHAT_GIT_EMAIL" in d["suggestion"]
+    assert git(repo, "rev-list", "--count", "HEAD").strip() == "1"
+
+
+@pytest.mark.usefixtures("no_host_identity")
+async def test_commit_uses_configured_identity_for_author_and_committer(repo: Path) -> None:
+    unset_repo_identity(repo, "user.name", "user.email")
+    proj = make_changes(repo)
+    res = await SPECS["git_commit"].handler(
+        identity_ctx(proj, "Copper Bot", "bot@example.org"), {"message": "x"}
+    )
+    assert res.data is not None
+    assert git(repo, "log", "-1", "--format=%an <%ae>|%cn <%ce>").strip() == (
+        "Copper Bot <bot@example.org>|Copper Bot <bot@example.org>"
+    )
+    persisted = subprocess.run(
+        ["git", "-C", str(repo), "config", "--local", "--get-regexp", "^user\\.(name|email)$"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert persisted.stdout.strip() == ""  # nothing written to the repository
+
+
+@pytest.mark.usefixtures("no_host_identity")
+async def test_repo_identity_wins_over_settings(repo: Path) -> None:
+    proj = make_changes(repo)  # repo fixture has user.name=Test, user.email=t@example.com
+    await SPECS["git_commit"].handler(
+        identity_ctx(proj, "Copper Bot", "bot@example.org"), {"message": "x"}
+    )
+    assert git(repo, "log", "-1", "--format=%an <%ae>|%cn <%ce>").strip() == (
+        "Test <t@example.com>|Test <t@example.com>"
+    )
+
+
+@pytest.mark.usefixtures("no_host_identity")
+async def test_settings_fill_only_the_missing_email(repo: Path) -> None:
+    unset_repo_identity(repo, "user.email")
+    proj = make_changes(repo)
+    await SPECS["git_commit"].handler(
+        identity_ctx(proj, "Copper Bot", "bot@example.org"), {"message": "x"}
+    )
+    assert git(repo, "log", "-1", "--format=%an <%ae>|%cn <%ce>").strip() == (
+        "Test <bot@example.org>|Test <bot@example.org>"
+    )
+
+
+@pytest.mark.usefixtures("no_host_identity")
+async def test_only_name_configured_still_reports_missing_email(repo: Path) -> None:
+    unset_repo_identity(repo, "user.name", "user.email")
+    proj = make_changes(repo)
+    with pytest.raises(StructuredToolError) as err:
+        await SPECS["git_commit"].handler(identity_ctx(proj, "Copper Bot", None), {"message": "x"})
+    assert "COPPERCHAT_GIT_EMAIL" in err.value.to_dict()["suggestion"]
+
+
+@pytest.mark.parametrize(
+    ("name", "email"),
+    [
+        ("a\nb", None),
+        (None, "a@b\nc"),
+        ("x\x00y", None),
+        (None, "no-at-sign"),
+        (None, "@"),
+        (None, "a@"),
+        (None, "@b"),
+        ("A <b>", None),
+    ],
+)
+def test_identity_settings_reject_bad_values(name: str | None, email: str | None) -> None:
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, git_name=name, git_email=email)  # type: ignore[call-arg]
+
+
+def test_identity_settings_strip_and_empty_is_unset() -> None:
+    s = Settings(_env_file=None, git_name="  Bot  ", git_email="   ")  # type: ignore[call-arg]
+    assert s.git_name == "Bot" and s.git_email is None
+
+
+def test_identity_settings_read_the_copperchat_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("COPPERCHAT_GIT_NAME", "Env Bot")
+    monkeypatch.setenv("COPPERCHAT_GIT_EMAIL", "env@example.org")
+    s = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert (s.git_name, s.git_email) == ("Env Bot", "env@example.org")
