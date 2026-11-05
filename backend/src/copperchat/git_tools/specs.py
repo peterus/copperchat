@@ -14,7 +14,11 @@ from typing import Any
 from copperchat.gitproc import GitNotFoundError, GitTimeoutError, run_git
 from copperchat.tools import StructuredToolError, ToolContext, ToolResult, ToolSpec
 
-COMMIT_INTENT = re.compile(r"\bcommit\b", re.IGNORECASE)
+# The current user message must ask for a commit: English (commit, commits, committing) and
+# German (committe, committen, committet, commite, commiten, commitet) forms. "committed" is
+# deliberately not accepted ("I'm committed to this design"), nor are "recommit",
+# "uncommitted" or "committee".
+COMMIT_INTENT = re.compile(r"\bcommit(?:s|ting|te|ten|tet|e|en|et)?\b", re.IGNORECASE)
 EXCLUDED_DIRS = (
     ".kicad-agent/history",
     ".kicad-agent/view",
@@ -24,12 +28,6 @@ EXCLUDED_DIRS = (
 )
 # KiCad's (and CopperChat's own api-server's) lock files are never project content.
 _EXCLUDED_GLOBS = ("**/~*.lck",)
-PATHSPEC = [
-    "--",
-    ".",
-    *(f":(exclude){d}" for d in EXCLUDED_DIRS),
-    *(f":(exclude,glob){g}" for g in _EXCLUDED_GLOBS),
-]
 _TIMEOUT_S = 30.0
 MESSAGE_MAX = 2000
 
@@ -52,6 +50,23 @@ async def _git(project_dir: Path, *args: str) -> tuple[int, str, str]:
             "The repository may be very large or locked; try again later.",
         ) from exc
     return code, out.decode(errors="replace"), err.decode(errors="replace")
+
+
+async def _pathspec(project_dir: Path) -> list[str]:
+    """Pathspec for the project directory minus CopperChat caches and lock files.
+
+    `git add -A` fails (exit 1, after staging the rest) when an exclude pathspec names a
+    path that .gitignore already ignores, so excludes for ignored directories are
+    dropped: git skips them anyway. Directories that are not ignored stay excluded.
+    """
+    code, out, _ = await _git(project_dir, "check-ignore", "--", *(f"{d}/" for d in EXCLUDED_DIRS))
+    ignored = {line.rstrip("/") for line in out.splitlines()} if code == 0 else set()
+    return [
+        "--",
+        ".",
+        *(f":(exclude){d}" for d in EXCLUDED_DIRS if d not in ignored),
+        *(f":(exclude,glob){g}" for g in _EXCLUDED_GLOBS),
+    ]
 
 
 async def _repo_state(project_dir: Path) -> tuple[bool, str]:
@@ -83,7 +98,12 @@ async def _branch(project_dir: Path) -> str | None:
 
 async def _status_files(project_dir: Path) -> list[dict[str, str]]:
     code, out, err = await _git(
-        project_dir, "status", "--porcelain=v1", "-z", "--untracked-files=all", *PATHSPEC
+        project_dir,
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        *await _pathspec(project_dir),
     )
     if code != 0:
         raise StructuredToolError("git status failed", err.strip(), "Check the repository state.")
@@ -156,7 +176,9 @@ async def git_diff_summary(ctx: ToolContext, args: dict[str, Any]) -> ToolResult
     code, _, _ = await _git(d, "rev-parse", "--verify", "--quiet", "HEAD")
     numstat: dict[str, tuple[int | None, int | None]] = {}
     if code == 0:
-        _, out, _ = await _git(d, "diff", "HEAD", "--no-ext-diff", "--numstat", "-z", *PATHSPEC)
+        _, out, _ = await _git(
+            d, "diff", "HEAD", "--no-ext-diff", "--numstat", "-z", *await _pathspec(d)
+        )
         numstat = _parse_numstat(out)
     status = await _status_files(d)
     files = []
@@ -173,8 +195,10 @@ async def git_commit(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     if not ctx.user_message or not COMMIT_INTENT.search(ctx.user_message):
         raise StructuredToolError(
             "Commit refused",
-            "git_commit is only allowed when the user's message explicitly asks to commit",
-            "Ask the user whether they want to commit, or tell them to use the Commit button.",
+            "git_commit is only allowed when the user's current message explicitly asks to "
+            "commit (earlier messages do not count)",
+            "Ask the user whether they want to commit and wait for a message that says so, "
+            "or tell them to use the Commit button.",
         )
     message = str(args.get("message", "")).strip()
     if not message or len(message) > MESSAGE_MAX:
@@ -190,12 +214,20 @@ async def git_commit(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
             "the project has no changes",
             "Tell the user the working tree is clean.",
         )
-    code, _, err = await _git(d, "add", "-A", *PATHSPEC)
+    pathspec = await _pathspec(d)
+    code, _, err = await _git(d, "add", "-A", *pathspec)
     if code != 0:
         raise StructuredToolError("git add failed", err.strip(), "Check the repository state.")
+    code, _, _ = await _git(d, "diff", "--cached", "--quiet", *pathspec)
+    if code == 0:
+        raise StructuredToolError(
+            "Nothing to commit",
+            "no project changes are left to commit after staging (the rest is git-ignored)",
+            "Tell the user the working tree is clean.",
+        )
     # With a pathspec, `git commit` records only those paths (--only): changes the
     # user staged outside the project directory stay staged and uncommitted.
-    code, _, err = await _git(d, "commit", "--no-verify", "-q", "-m", message, *PATHSPEC)
+    code, _, err = await _git(d, "commit", "--no-verify", "-q", "-m", message, *pathspec)
     if code != 0:
         raise StructuredToolError(
             "git commit failed",
@@ -229,7 +261,7 @@ TOOL_SPECS: list[ToolSpec] = [
     ToolSpec(
         "git_commit",
         "Commit the project's changes (project directory only). Only when the user "
-        "explicitly asked to commit in their message. Never pushes.",
+        "explicitly asked to commit in their current message (not an earlier one). Never pushes.",
         {
             "type": "object",
             "properties": {"message": {"type": "string", "minLength": 1, "maxLength": MESSAGE_MAX}},

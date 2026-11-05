@@ -7,6 +7,14 @@ All notable changes to CopperChat are documented in this file. The format follow
 
 ## [Unreleased]
 
+### Fixed
+
+- `git_commit` no longer fails with "paths are ignored by one of your .gitignore files" when
+  the project's `.kicad-agent/.gitignore` already ignores `history/`, `images/`, `view/` and
+  `renders/` (excludes for ignored directories are dropped; others stay excluded), and
+  reports "Nothing to commit" when nothing is left to stage.
+- The commit-intent check also accepts German forms ("committe", "committen", "commite", ...).
+
 ## [0.8.0] - 2026-11-05
 
 **Mouser parts data**: the agent and the part researcher can look up parts, prices, stock,

@@ -75,6 +75,14 @@ def test_registered_in_registry() -> None:
         ("what did I commit to?", True),
         ("I'm committed to this design", False),
         ("recommit", False),
+        ("Committe regelmäßig", True),
+        ("bitte committen", True),
+        ("kannst du das commiten?", True),
+        ("commite die Änderungen", True),
+        ("er committet", True),
+        ("committing now", True),
+        ("uncommitted changes", False),
+        ("the committee", False),
         ("show git status", False),
     ],
 )
@@ -247,3 +255,60 @@ async def test_dubious_ownership_is_explained(monkeypatch: pytest.MonkeyPatch, r
     with pytest.raises(StructuredToolError) as err:
         await SPECS["git_status"].handler(ctx(repo / "boards" / "demo", None), {})
     assert "dubious" in err.value.why
+
+
+async def test_commit_with_ignored_cache_dirs_in_subdir_project(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    proj = root / "hardware" / "tx" / "pcb" / "main"
+    (proj / ".kicad-agent").mkdir(parents=True)
+    git(root, "init", "-q", "-b", "main")
+    git(root, "config", "user.email", "t@example.com")
+    git(root, "config", "user.name", "Test")
+    git(root, "config", "commit.gpgsign", "false")
+    (proj / ".kicad-agent" / ".gitignore").write_text("history/\nimages/\nview/\nrenders/\n")
+    for name in ("main.kicad_pro", "main.kicad_sch", "gone.txt", "mod.txt"):
+        (proj / name).write_text("v1\n")
+    (root / "outside.txt").write_text("v1\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "init")
+    for sub in ("history", "images", "view", "renders"):
+        (proj / ".kicad-agent" / sub).mkdir()
+        (proj / ".kicad-agent" / sub / "x.bin").write_bytes(b"x")
+    (proj / "new.txt").write_text("new\n")
+    (proj / "mod.txt").write_text("v2\n")
+    (proj / "gone.txt").unlink()
+    (root / "outside.txt").write_text("v2\n")
+
+    res = (
+        await SPECS["git_commit"].handler(ctx(proj, "bitte committe das"), {"message": "rev B"})
+    ).data
+    assert res is not None
+    base = "hardware/tx/pcb/main/"
+    assert sorted(res["files"]) == [base + "gone.txt", base + "mod.txt", base + "new.txt"]
+    assert git(root, "rev-list", "--count", "HEAD").strip() == "2"
+    assert sorted(git(root, "show", "--name-only", "--format=", "HEAD").split()) == sorted(
+        res["files"]
+    )
+    assert git(root, "status", "--porcelain").strip() == "M outside.txt"
+    assert git(root, "ls-files", "--", ".kicad-agent").strip() == ""
+
+
+async def test_commit_without_gitignore_still_excludes_cache_dirs(repo: Path) -> None:
+    proj = make_changes(repo)
+    res = (await SPECS["git_commit"].handler(ctx(proj, "commit"), {"message": "x"})).data
+    assert res is not None and res["files"] == ["boards/demo/notes.txt"]
+    tracked = git(repo, "ls-files").split()
+    assert not any(".kicad-agent" in t or t.endswith(".lck") for t in tracked)
+
+
+async def test_commit_with_only_ignored_changes_is_nothing_to_commit(repo: Path) -> None:
+    proj = repo / "boards" / "demo"
+    (proj / ".kicad-agent").mkdir()
+    (proj / ".kicad-agent" / ".gitignore").write_text("*\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "ignore", "--allow-empty")
+    (proj / ".kicad-agent" / "history").mkdir()
+    (proj / ".kicad-agent" / "history" / "x.bin").write_bytes(b"x")
+    with pytest.raises(StructuredToolError) as err:
+        await SPECS["git_commit"].handler(ctx(proj, "commit"), {"message": "x"})
+    assert err.value.what == "Nothing to commit"
