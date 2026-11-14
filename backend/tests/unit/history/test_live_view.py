@@ -436,6 +436,21 @@ async def test_catch_up_failure_only_logs(rig: Rig, caplog: pytest.LogCaptureFix
     assert "after live frames failed" in caplog.text
 
 
+async def test_turn_end_that_raises_still_catches_up(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await live_frame_sent(rig)
+    hooks = rig.opened.hooks
+
+    async def boom(*_: Any) -> bool:
+        raise RuntimeError("recovery broke")
+
+    monkeypatch.setattr(hooks, "_turn_end", boom)
+    with pytest.raises(RuntimeError, match="recovery broke"):
+        await hooks.on_turn_end(turn(), done("sch", reason="kicad_failed", failed=True))
+    assert rig.disk == 1  # the catch-up still ran, then the error propagated
+
+
 async def test_engine_close_hook_closes_the_publisher(rig: Rig) -> None:
     rig.opened.hooks.on_documents_changed(turn(), {"sch"})
     await rig.opened.hooks.on_engine_close()
