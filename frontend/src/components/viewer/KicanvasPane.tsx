@@ -172,6 +172,27 @@ export function KicanvasPane({
   /** The embed shown is about to be replaced (new files/theme): do not apply anything to it. */
   const staleRef = useRef(false);
   staleRef.current = loadKey !== wantKey;
+  const retry = useCallback(() => {
+    coalesceMs.current = LOAD_COALESCE_MAX_MS;
+    setStatus({ kind: 'loading' });
+    setAttempt((n) => n + 1);
+  }, []);
+  /**
+   * The sources (`srcKey`) when the pane failed. New sources retry once automatically: the
+   * failure may have been a sheet removed during the load (its file is deleted right before the
+   * frame with the new list arrives), and the failed pane has no host for the reload.
+   */
+  const failedSrc = useRef<string | null>(null);
+  useEffect(() => {
+    if (status.kind !== 'failed') {
+      failedSrc.current = null;
+    } else if (failedSrc.current === null) {
+      failedSrc.current = srcKey;
+    } else if (failedSrc.current !== srcKey) {
+      failedSrc.current = null;
+      retry();
+    }
+  }, [status, srcKey, retry]);
   /** A sheet switch is in flight: the viewer still shows the previous page until viewerload. */
   const pageLoading = useRef(false);
   useEffect(() => {
@@ -492,11 +513,7 @@ export function KicanvasPane({
             <button
               type="button"
               className="rounded border border-border px-2 py-1"
-              onClick={() => {
-                coalesceMs.current = LOAD_COALESCE_MAX_MS;
-                setStatus({ kind: 'loading' });
-                setAttempt((n) => n + 1);
-              }}
+              onClick={retry}
             >
               Retry
             </button>

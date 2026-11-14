@@ -53,14 +53,18 @@ class FakeKicanvas {
   };
   project = Object.assign(new EventTarget(), {
     active_page: root as KcPage | null,
-    pages: () => [root, power, reg],
+    pages: () => this.pageList,
     set_active_page: vi.fn((p: KcPage | string) => {
-      this.project.active_page = typeof p === 'string' ? ([root, power, reg].find((x) => x.project_path === p) ?? null) : p;
+      this.project.active_page = typeof p === 'string' ? (this.pageList.find((x) => x.project_path === p) ?? null) : p;
       this.project.dispatchEvent(new Event('change'));
       setTimeout(() => this.load(), 0); // the viewer re-loads the new page
     }),
   });
-  constructor(public embed: HTMLElement) {
+  constructor(
+    public embed: HTMLElement,
+    /** The pages KiCanvas parsed from the sources (root first). */
+    public pageList: KcPage[] = [root, power, reg],
+  ) {
     Object.assign(this.inner, { viewer: this.viewer });
     embed.appendChild(this.inner);
     Object.assign(embed, { project: this.project });
@@ -102,8 +106,8 @@ const wait = async (ms: number) =>
   });
 const srcOf = (embed: HTMLElement) => embed.querySelector('kicanvas-source')!.getAttribute('src');
 
-async function loadReady() {
-  const kc = new FakeKicanvas(embedEl());
+async function loadReady(pages?: KcPage[]) {
+  const kc = new FakeKicanvas(embedEl(), pages);
   act(() => kc.load());
   await act(async () => {
     vi.advanceTimersByTime(LOAD_GRACE_MS + 10);
@@ -560,6 +564,7 @@ describe('KicanvasPane', () => {
       const kc = await loadReady();
       expect(onActiveSheet).toHaveBeenLastCalledWith('top.kicad_sch');
       act(() => kc.project.set_active_page(reg.project_path));
+      await wait(10); // its viewerload: the camera captured is of that page
       expect(onActiveSheet).toHaveBeenLastCalledWith('reg.kicad_sch');
       expect(onActiveSheet).not.toHaveBeenCalledWith(null);
     });
@@ -599,6 +604,71 @@ describe('KicanvasPane', () => {
       const regulator = screen.getByRole('button', { name: 'Regulator, updated' });
       expect(within(regulator).getByText(', updated')).toHaveClass('sr-only');
       expect(screen.getByRole('button', { name: 'Power' })).not.toHaveTextContent('updated');
+    });
+
+    it('a sheet added to the files appears in the tree, marked', async () => {
+      const added = page('/r/n', 'new.kicad_sch', 'New');
+      const { rerenderWith } = await renderPane();
+      await loadReady();
+      await rerenderWith({ files: ['top.kicad_sch', 'sub/new.kicad_sch', 'sub/reg.kicad_sch'], rev: 4, staleSheets: ['sub/new.kicad_sch'] });
+      expect(embedEl().querySelectorAll('kicanvas-source')).toHaveLength(3);
+      await loadReady([root, added, power, reg]);
+      fireEvent.click(screen.getByRole('button', { name: 'Sheets (4, updated)' }));
+      expect(screen.getByRole('button', { name: 'New, updated' })).toBeInTheDocument();
+    });
+
+    it('a removed active sheet falls back to the root', async () => {
+      const onActiveSheet = vi.fn();
+      const { rerenderWith } = await renderPane({ onActiveSheet });
+      const kc = await loadReady();
+      act(() => kc.project.set_active_page(reg.project_path));
+      await wait(10); // its viewerload: the camera captured is of that page
+      expect(onActiveSheet).toHaveBeenLastCalledWith('reg.kicad_sch');
+      await rerenderWith({ onActiveSheet, files: ['top.kicad_sch'], rev: 4 });
+      const kc2 = await loadReady([root]);
+      await wait(10);
+      expect(kc2.project.set_active_page).not.toHaveBeenCalled();
+      expect(onActiveSheet).toHaveBeenLastCalledWith('top.kicad_sch');
+      expect(screen.queryByRole('alert')).toBeNull();
+      expect(kc2.viewer.zoom_to_page).toHaveBeenCalled(); // fitted: the camera was of another page
+    });
+  });
+
+  describe('failed load', () => {
+    const fail = () =>
+      act(() => {
+        window.dispatchEvent(Object.assign(new Event('unhandledrejection'), { reason: new TypeError('Load failed') }));
+      });
+
+    it('retries once when the sources change (a removed sheet raced the load)', async () => {
+      const { rerenderWith } = await renderPane();
+      fail();
+      expect(screen.getByRole('alert')).toHaveTextContent('Load failed');
+      await rerenderWith({ files: ['top.kicad_sch'], rev: 4 });
+      expect(screen.queryByRole('alert')).toBeNull();
+      expect([...embedEl().querySelectorAll('kicanvas-source')].map((x) => x.getAttribute('src'))).toEqual([
+        `/api/projects/${PID}/view/files/top.kicad_sch?v=4`,
+      ]);
+      await loadReady([root]);
+      expect(screen.queryByRole('alert')).toBeNull();
+    });
+
+    it('does not retry while the sources stay the same', async () => {
+      const { rerenderWith } = await renderPane();
+      fail();
+      await rerenderWith({ theme: 'dark' });
+      await wait(LOAD_COALESCE_MAX_MS);
+      expect(screen.getByRole('alert')).toHaveTextContent('Load failed');
+      expect(embedEl()).toBeNull();
+      // a retry that fails again waits for the next change of sources
+      await rerenderWith({ rev: 4 });
+      expect(embedEl()).not.toBeNull();
+      fail();
+      expect(screen.getByRole('alert')).toBeInTheDocument();
+      await wait(LOAD_COALESCE_MAX_MS);
+      expect(embedEl()).toBeNull();
+      await rerenderWith({ rev: 5 });
+      expect(embedEl().querySelector('kicanvas-source')!.getAttribute('src')).toContain('?v=5');
     });
   });
 

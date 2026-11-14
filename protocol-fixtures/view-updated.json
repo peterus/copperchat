@@ -35,6 +35,46 @@
    ],
    "version": 3,
    "changedFiles": []
+  },
+  {
+   "type": "view-updated",
+   "projectId": "a1b2c3d4e5f6",
+   "docs": [
+    "sch",
+    "pcb"
+   ],
+   "version": 4,
+   "changedFiles": [
+    "ecc83.kicad_sch",
+    "sub/new.kicad_sch"
+   ],
+   "viewFiles": {
+    "sch": [
+     "ecc83.kicad_sch",
+     "sub/new.kicad_sch",
+     "sub/power.kicad_sch"
+    ],
+    "pcb": [
+     "ecc83.kicad_pcb"
+    ]
+   }
+  },
+  {
+   "type": "view-updated",
+   "projectId": "a1b2c3d4e5f6",
+   "docs": [
+    "sch"
+   ],
+   "version": 5,
+   "changedFiles": [
+    "ecc83.kicad_sch"
+   ],
+   "viewFiles": {
+    "sch": [
+     "ecc83.kicad_sch"
+    ]
+   },
+   "live": true
   }
  ],
  "invalid": [
@@ -71,6 +111,43 @@
    "changedFiles": [
     ""
    ]
+  },
+  {
+   "type": "view-updated",
+   "projectId": "a1b2c3d4e5f6",
+   "docs": [
+    "sch"
+   ],
+   "version": 2,
+   "viewFiles": {
+    "sch": [
+     ""
+    ]
+   }
+  },
+  {
+   "type": "view-updated",
+   "projectId": "a1b2c3d4e5f6",
+   "docs": [
+    "sch"
+   ],
+   "version": 2,
+   "viewFiles": {
+    "3d": [
+     "a.kicad_sch"
+    ]
+   }
+  },
+  {
+   "type": "view-updated",
+   "projectId": "a1b2c3d4e5f6",
+   "docs": [
+    "sch"
+   ],
+   "version": 2,
+   "viewFiles": {
+    "sch": []
+   }
   }
  ]
 }

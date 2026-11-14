@@ -7,6 +7,9 @@ import { readLiveView, saveLiveView } from './viewerPrefs';
 
 type PerDoc<T> = Record<DocKind, T>;
 
+/** View files per doc as frames and the open response carry them (root first). */
+export type ViewFileLists = Partial<PerDoc<readonly string[]>>;
+
 /** "Find REF" request; `seq` makes repeated searches for the same ref distinct. */
 export interface FindRequest {
   ref: string;
@@ -65,6 +68,17 @@ export interface ViewState {
   /** Schematic view files changed since the pane loaded them (shown sheet unaffected): no reload yet. */
   staleSheets: string[];
   /**
+   * The view files the KiCad pane loads per doc (root first): seeded from the open response, then
+   * replaced by the `viewFiles` of applied frames whose set of files differs (sheets added or
+   * removed by the agent); null = not known yet.
+   */
+  files: PerDoc<readonly string[] | null>;
+  /**
+   * Schematic sheets that appeared in `files` since the project was opened and were not opened yet:
+   * marked like stale sheets, but loaded fresh already (opening one does not reload).
+   */
+  addedSheets: string[];
+  /**
    * Bumped whenever a sheet is marked stale (also again); each stale entry remembers the value of
    * its last mark, so `clearStale` keeps sheets that changed again during a load.
    */
@@ -77,8 +91,11 @@ export interface ViewState {
   openSeq: number;
   highlight: HighlightRequest | null;
   find: FindRequest | null;
-  /** Called on every project open: resets versions, sheet state, fullscreen, highlight and find. */
-  setProject: (id: string) => void;
+  /**
+   * Called on every project open: resets versions, sheet state, fullscreen, highlight and find;
+   * `files` (the open response's `viewFiles`) seeds `files`.
+   */
+  setProject: (id: string, files?: ViewFileLists | null) => void;
   /** Persists the pref; turning it on applies the live changes deferred meanwhile. */
   setLive: (on: boolean) => void;
   /** Reported by the KiCad schematic pane; opening a stale sheet reloads fresh data. */
@@ -110,6 +127,19 @@ const union = (a: Changes | null, b: Changes): Changes =>
 
 const bump = (n: number | null) => (n ?? 0) + 1;
 
+/**
+ * Whether two view file lists name the same files with the same root (first entry). The order of
+ * the rest may differ: the open response lists sheets in hierarchy order, frames sorted.
+ */
+const sameFileSet = (a: readonly string[], b: readonly string[]) => {
+  if (a[0] !== b[0]) return false;
+  const set = new Set(a);
+  return set.size === new Set(b).size && b.every((f) => set.has(f));
+};
+
+/** The state a frame (or `setLive`) changes; `apply` mutates a copy of it. */
+type Patch = Pick<ViewState, 'revs' | 'kicadRevs' | 'staleSheets' | 'staleSeq' | 'activeSheet' | 'files' | 'addedSheets'>;
+
 export function createViewStore(ws: Pick<WsClient, 'onFrame' | 'onConnection'>): StoreApi<ViewState> {
   // Docs whose next view-updated is accepted even with a lower version: after a reconnect the
   // server may run a new session whose counter restarted at 0 (X2).
@@ -117,6 +147,8 @@ export function createViewStore(ws: Pick<WsClient, 'onFrame' | 'onConnection'>):
   // Changes of live frames received while "Live view" is off, applied with the next applied frame
   // (the turn-end publish, which may itself carry `changedFiles: []`) or when it is turned on.
   let deferred: PerDoc<Changes | null> = { ...NONE };
+  // The latest `viewFiles` list of those deferred frames (full snapshots: the last one wins).
+  let deferredFiles: PerDoc<readonly string[] | null> = { ...NONE };
   let seq = 0;
   // Per stale sheet: the `staleSeq` of its last mark.
   const staleGen = new Map<string, number>();
@@ -124,16 +156,25 @@ export function createViewStore(ws: Pick<WsClient, 'onFrame' | 'onConnection'>):
   /**
    * The state patch applying `changes` to doc `d` on top of `s` (mutated: callers pass copies).
    * `live` changes (incl. deferred ones applied by `setLive`) only reach the KiCad pane, not `revs`.
+   * `list` is the doc's current view file list, if the frame (or a deferred one) carried it.
    */
-  const apply = (
-    s: Pick<ViewState, 'revs' | 'kicadRevs' | 'staleSheets' | 'staleSeq' | 'activeSheet'>,
-    d: DocKind,
-    changes: Changes,
-    live: boolean,
-  ) => {
+  const apply = (s: Patch, d: DocKind, changes: Changes, live: boolean, list: readonly string[] | null) => {
     if (!live) s.revs[d] = bump(s.revs[d]);
+    const old = s.files[d];
+    const listChanged = list !== null && old !== null && !sameFileSet(old, list);
+    if (list !== null && (old === null || listChanged)) s.files[d] = list;
     if (d === 'pcb') {
       s.kicadRevs.pcb = bump(s.kicadRevs.pcb);
+      return;
+    }
+    if (listChanged) {
+      // Sheets added or removed: reload every file fresh (unchanged URLs could come from cache).
+      const added = list.filter((f) => f !== list[0] && !old.includes(f));
+      const kept = s.addedSheets.filter((f) => list.includes(f));
+      s.addedSheets = [...kept, ...added.filter((f) => !kept.includes(f))];
+      s.kicadRevs.sch = bump(s.kicadRevs.sch);
+      s.staleSheets = [];
+      staleGen.clear();
       return;
     }
     // Only schematic files concern the sheets (a frame for both docs lists the board file too).
@@ -150,7 +191,7 @@ export function createViewStore(ws: Pick<WsClient, 'onFrame' | 'onConnection'>):
       s.staleSheets = [...s.staleSheets, ...files.filter((f) => !s.staleSheets.includes(f))];
     }
   };
-  const snapshot = () => {
+  const snapshot = (): Patch => {
     const s = store.getState();
     return {
       revs: { ...s.revs },
@@ -158,6 +199,8 @@ export function createViewStore(ws: Pick<WsClient, 'onFrame' | 'onConnection'>):
       staleSheets: s.staleSheets,
       staleSeq: s.staleSeq,
       activeSheet: s.activeSheet,
+      files: { ...s.files },
+      addedSheets: s.addedSheets,
     };
   };
 
@@ -170,6 +213,8 @@ export function createViewStore(ws: Pick<WsClient, 'onFrame' | 'onConnection'>):
     activeSheet: null,
     staleSheets: [],
     staleSeq: 0,
+    files: { ...NONE },
+    addedSheets: [],
     doc: 'sch',
     mode: 'kicad',
     layers: [...DEFAULT_LAYERS],
@@ -177,9 +222,10 @@ export function createViewStore(ws: Pick<WsClient, 'onFrame' | 'onConnection'>):
     highlight: null,
     find: null,
     openSeq: 0,
-    setProject: (id) => {
+    setProject: (id, files) => {
       acceptAny = { sch: false, pcb: false };
       deferred = { ...NONE };
+      deferredFiles = { ...NONE };
       staleGen.clear();
       set({
         openSeq: get().openSeq + 1,
@@ -189,6 +235,8 @@ export function createViewStore(ws: Pick<WsClient, 'onFrame' | 'onConnection'>):
         kicadRevs: { ...NONE },
         activeSheet: null,
         staleSheets: [],
+        files: { sch: files?.sch ?? null, pcb: files?.pcb ?? null },
+        addedSheets: [],
         fullscreen: false,
         highlight: null,
         find: null,
@@ -200,8 +248,10 @@ export function createViewStore(ws: Pick<WsClient, 'onFrame' | 'onConnection'>):
       if (live) {
         for (const d of ['sch', 'pcb'] as const) {
           const changes = deferred[d];
+          const list = deferredFiles[d];
           deferred[d] = null;
-          if (changes !== null) apply(next, d, changes, true);
+          deferredFiles[d] = null;
+          if (changes !== null) apply(next, d, changes, true, list);
         }
       }
       set(next);
@@ -209,12 +259,15 @@ export function createViewStore(ws: Pick<WsClient, 'onFrame' | 'onConnection'>):
     setActiveSheet: (activeSheet) => {
       const s = get();
       if (activeSheet === s.activeSheet) return;
+      // an added sheet was loaded fresh with the list: opening it only drops its mark
+      const left = activeSheet === null ? s.addedSheets : s.addedSheets.filter((f) => !sameViewFile(f, activeSheet));
+      const addedSheets = left.length === s.addedSheets.length ? s.addedSheets : left;
       if (activeSheet !== null && s.staleSheets.some((f) => sameViewFile(f, activeSheet))) {
         // the pane reloads (all files fresh) and restores this sheet
         staleGen.clear();
-        set({ activeSheet, staleSheets: [], kicadRevs: { ...s.kicadRevs, sch: bump(s.kicadRevs.sch) } });
+        set({ activeSheet, addedSheets, staleSheets: [], kicadRevs: { ...s.kicadRevs, sch: bump(s.kicadRevs.sch) } });
       } else {
-        set({ activeSheet });
+        set({ activeSheet, addedSheets });
       }
     },
     clearStale: (loadSeq) => {
@@ -257,13 +310,17 @@ export function createViewStore(ws: Pick<WsClient, 'onFrame' | 'onConnection'>):
       acceptAny[d] = false;
       versions[d] = f.version;
       changed = true;
+      const list = f.viewFiles?.[d] ?? null;
       if (f.live && !s.live) {
         deferred[d] = union(deferred[d], changes); // versions advance, so replays stay rejected
+        deferredFiles[d] = list ?? deferredFiles[d];
         continue;
       }
       const all = union(deferred[d], changes);
+      const files = list ?? deferredFiles[d];
       deferred[d] = null;
-      apply(next, d, all, Boolean(f.live));
+      deferredFiles[d] = null;
+      apply(next, d, all, Boolean(f.live), files);
     }
     if (changed) store.setState({ versions, ...next });
   });

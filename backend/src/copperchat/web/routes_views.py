@@ -48,7 +48,11 @@ def _session_for(request: Request, project_id: str) -> KicadSession:
 def _etag(session: KicadSession, path: Path) -> str:
     # The view version (X2) restarts at 0 with every session; the file's mtime
     # keeps a reopened project's snapshot from matching a stale cached copy.
-    return f'"{session.view_version}.{path.stat().st_mtime_ns:x}"'
+    try:
+        mtime = path.stat().st_mtime_ns
+    except FileNotFoundError:  # a sub-sheet a publish removed meanwhile
+        raise ViewNotFound("no such view file") from None
+    return f'"{session.view_version}.{mtime:x}"'
 
 
 def _serve_snapshot(request: Request, session: KicadSession, path: Path) -> Response:

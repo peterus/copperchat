@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import shutil
 from pathlib import Path
 
 import pytest
 
+from copperchat.agent.protocol import ViewUpdatedFrame, dump_frame
 from copperchat.kicad_session import DocumentModified, KicadSession
 from copperchat.projects import Project
 from copperchat.views import snapshot, write_kicanvas_snapshot
@@ -19,6 +21,7 @@ from copperchat.views.snapshot import (
     snapshot_path,
     view_dir,
     view_file_hashes,
+    view_file_list,
 )
 from tests.support.history import ECC83, HIERARCHY, replace_with_kicad_file
 from tests.support.kicad_project import FIXTURES
@@ -445,3 +448,93 @@ async def test_disk_view_without_an_open_session_sends_nothing(
     assert await env.svc.publish_disk_view(project) is None
     assert len(frames(env)) == 1
     assert snapshot_path(project, "sch").read_bytes() != b"(kicad_sch later)"
+
+
+# ---- viewFiles: every frame carries the full list of view files per doc
+
+
+def view_files(env: Env) -> list[dict[str, list[str]] | None]:
+    return [f.view_files for f in env.broadcaster.frames]
+
+
+def add_sheet(env: Env, project: Project, name: str = "sub/new.kicad_sch") -> str:
+    (project.dir / name).parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(ECC83 / "ecc83-pp.kicad_sch", project.dir / name)
+    env.server.hierarchy = [*env.server.hierarchy, name]
+    return name
+
+
+async def test_view_file_list_puts_the_root_first_then_sorts(
+    hier: tuple[Env, Project, KicadSession],
+) -> None:
+    _, project, _ = hier
+    names = ["z.kicad_sch", "complex_hierarchy.kicad_pcb", "a/b.kicad_sch", ROOT]
+    assert view_file_list(project, "sch", names) == [ROOT, "a/b.kicad_sch", "z.kicad_sch"]
+    assert view_file_list(project, "pcb", names) == ["complex_hierarchy.kicad_pcb"]
+    # The root is always listed, even when the directory does not hold it (yet).
+    assert view_file_list(project, "sch", []) == [ROOT]
+    assert view_file_list(project, "pcb", ["x.kicad_sch"]) == ["complex_hierarchy.kicad_pcb"]
+
+
+async def test_frames_carry_the_view_files_of_added_and_removed_sheets(
+    hier: tuple[Env, Project, KicadSession],
+) -> None:
+    env, project, session = hier
+    svc = env.svc
+    await svc.publish_view(project, session, {"sch"})
+    new = add_sheet(env, project)
+    await svc.publish_view(project, session, {"sch"})
+    await svc.publish_view(project, session, {"sch"})  # unchanged sheet set
+    env.server.hierarchy = [ROOT, new]
+    await svc.publish_view(project, session, {"sch"})
+    assert view_files(env) == [
+        {"sch": [ROOT, SUB]},
+        {"sch": [ROOT, SUB, new]},
+        {"sch": [ROOT, SUB, new]},
+        {"sch": [ROOT, new]},
+    ]
+    assert [f.changed_files for f in env.broadcaster.frames][1:] == [[new], [], [SUB]]
+
+
+async def test_view_files_have_one_entry_per_published_doc(
+    hier: tuple[Env, Project, KicadSession],
+) -> None:
+    env, project, session = hier
+    await env.svc.publish_view(project, session, {"sch", "pcb"})
+    await env.svc.publish_view(project, session, {"pcb"})
+    assert view_files(env) == [
+        {"sch": [ROOT, SUB], "pcb": ["complex_hierarchy.kicad_pcb"]},
+        {"pcb": ["complex_hierarchy.kicad_pcb"]},
+    ]
+
+
+async def test_live_frame_carries_a_new_sheet_and_no_change_sends_nothing(
+    hier: tuple[Env, Project, KicadSession],
+) -> None:
+    env, project, session = hier
+    svc = env.svc
+    await svc.publish_view(project, session, {"sch"})
+    new = add_sheet(env, project)
+    assert await svc.publish_view(project, session, {"sch"}, live=True) == 2
+    assert await svc.publish_view(project, session, {"sch"}, live=True) == 2  # nothing new
+    assert len(env.broadcaster.frames) == 2
+    last = env.broadcaster.frames[-1]
+    assert last.live is True and last.changed_files == [new]
+    assert last.view_files == {"sch": [ROOT, SUB, new]}
+
+
+async def test_disk_view_frame_carries_the_view_files(
+    hier: tuple[Env, Project, KicadSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env, project, session = hier
+    await env.svc.publish_view(project, session, {"sch", "pcb"})
+    no_kicad(monkeypatch)
+    assert await env.svc.publish_disk_view(project) == 2
+    assert view_files(env)[-1] == {"sch": [ROOT, SUB]}
+
+
+def test_view_files_serialise_as_camel_case_and_are_omitted_when_none() -> None:
+    base = {"project_id": "a1b2c3d4e5f6", "docs": ["sch"], "version": 1}
+    wire = json.loads(dump_frame(ViewUpdatedFrame(**base, view_files={"sch": [ROOT]})))
+    assert wire["viewFiles"] == {"sch": [ROOT]} and "view_files" not in wire
+    assert "viewFiles" not in json.loads(dump_frame(ViewUpdatedFrame(**base)))

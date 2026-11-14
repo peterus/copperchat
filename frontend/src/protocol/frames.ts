@@ -194,6 +194,16 @@ export const ServerFrame = z.discriminatedUnion('type', [
     changedFiles: z.array(z.string().min(1)).optional(),
     /** A mid-turn schematic refresh ("Live view"); absent for the turn-end publish. */
     live: z.literal(true).optional(),
+    /**
+     * The view files per doc of `docs` now (root first, then sorted; a full snapshot, last frame
+     * wins): sub-sheets the agent added or removed appear without reopening the project.
+     */
+    viewFiles: z
+      .strictObject({
+        sch: z.array(z.string().min(1)).min(1).optional(),
+        pcb: z.array(z.string().min(1)).min(1).optional(),
+      })
+      .optional(),
   }),
   // Change rows of a run (and plan step) were written (E-C12).
   z.strictObject({

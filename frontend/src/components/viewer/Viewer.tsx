@@ -1,5 +1,5 @@
 import { Maximize2, Minimize2, Radio, Search, X } from 'lucide-react';
-import { type FormEvent, useEffect, useState } from 'react';
+import { type FormEvent, useEffect, useMemo, useState } from 'react';
 import { useActiveRun } from '@/hooks/useChat';
 import type { DocKind } from '@/lib/viewUrls';
 import { useProjects } from '@/stores/projects';
@@ -23,13 +23,24 @@ export function Viewer({ projectId }: { projectId: string }) {
   const v = useView((s) => s);
   const { setProject, setFullscreen, fullscreen, find, setFind, highlight, clearHighlight } = v;
   const current = useProjects((s) => (s.current?.id === projectId ? s.current : null));
-  const files = current?.viewFiles ?? NO_FILES;
+  const openFiles = current?.viewFiles ?? NO_FILES;
+  // Frames replace a doc's list when the agent adds or removes sheets (else the open response's;
+  // also before `setProject` ran for this project, while the store still has the previous one).
+  const own = v.projectId === projectId ? v.files : null;
+  const files = { sch: own?.sch ?? openFiles.sch, pcb: own?.pcb ?? openFiles.pcb };
+  // Files not in the open response (new sheets) count 0 in `bytes`: their size is unknown.
   const bytes = current?.viewBytes ?? {};
+  /** Sheets marked in the tree: changed since loaded, or added since the project was opened. */
+  const { staleSheets, addedSheets } = v;
+  const marked = useMemo(
+    () => (addedSheets.length === 0 ? staleSheets : [...staleSheets, ...addedSheets.filter((f) => !staleSheets.includes(f))]),
+    [staleSheets, addedSheets],
+  );
   /** The agent is working: with "Live view" on, the schematic follows its edits now. */
   const liveNow = useActiveRun(projectId) !== null && v.live;
 
   // Every open (a new KiCad session) restarts the server's view counter (X2).
-  useEffect(() => setProject(projectId), [projectId, current, setProject]);
+  useEffect(() => setProject(projectId, current?.viewFiles), [projectId, current, setProject]);
   useEffect(() => {
     if (!fullscreen) return;
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setFullscreen(false);
@@ -191,7 +202,7 @@ export function Viewer({ projectId }: { projectId: string }) {
               highlight={t.doc === 'sch' ? highlight : null}
               onHighlightResult={onHighlightResult}
               onActiveSheet={t.doc === 'sch' ? v.setActiveSheet : undefined}
-              staleSheets={t.doc === 'sch' ? v.staleSheets : undefined}
+              staleSheets={t.doc === 'sch' ? marked : undefined}
               staleSeq={t.doc === 'sch' ? v.staleSeq : undefined}
               onLoaded={t.doc === 'sch' ? v.clearStale : undefined}
             />

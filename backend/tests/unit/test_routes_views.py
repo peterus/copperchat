@@ -63,6 +63,42 @@ def test_view_files_are_traversal_safe(make_settings: Callable[..., Settings]) -
             assert client.get(f"/api/projects/{pid}/view/files/{bad}").status_code == 404, bad
 
 
+def test_view_files_follow_added_and_removed_sub_sheets(
+    make_settings: Callable[..., Settings],
+) -> None:
+    """A sub-sheet a publish lists (also in a sub-directory) is served; one removed
+    from the view directory (left the hierarchy) is a clean 404."""
+    with app_client(make_settings) as (client, pid):
+        client.post("/api/auth/login", json=GOOD)
+        client.post(f"/api/projects/{pid}/open")
+        project = discover_projects(client.app.state.settings.projects_root)[0]  # type: ignore[attr-defined]
+        sheet = agent_dir(project) / "view" / "sub" / "new.kicad_sch"
+        sheet.parent.mkdir(parents=True, exist_ok=True)
+        sheet.write_bytes(b"(kicad_sch new)")
+        r = client.get(f"/api/projects/{pid}/view/files/sub/new.kicad_sch")
+        assert r.status_code == 200 and r.content == b"(kicad_sch new)"
+        sheet.unlink()
+        gone = client.get(f"/api/projects/{pid}/view/files/sub/new.kicad_sch")
+        assert gone.status_code == 404 and gone.json()["error"]["code"] == "not_found"
+
+
+def test_view_file_removed_after_resolve_is_a_clean_404(
+    make_settings: Callable[..., Settings], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sub-sheet a concurrent publish deletes between `resolve_view_file` and the
+    stat for the ETag is a 404, not a server error."""
+    from copperchat.web import routes_views
+
+    with app_client(make_settings) as (client, pid):
+        client.post("/api/auth/login", json=GOOD)
+        client.post(f"/api/projects/{pid}/open")
+        project = discover_projects(client.app.state.settings.projects_root)[0]  # type: ignore[attr-defined]
+        gone = agent_dir(project) / "view" / "gone.kicad_sch"
+        monkeypatch.setattr(routes_views, "resolve_view_file", lambda _p, _n: gone)
+        r = client.get(f"/api/projects/{pid}/view/files/gone.kicad_sch")
+        assert r.status_code == 404 and r.json()["error"]["code"] == "not_found"
+
+
 def test_view_needs_open_project(make_settings: Callable[..., Settings]) -> None:
     with app_client(make_settings) as (client, pid):
         client.post("/api/auth/login", json=GOOD)
