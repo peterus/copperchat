@@ -21,7 +21,7 @@ import logging
 import os
 import stat
 from collections.abc import Iterable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 
 from copperchat.fsutil import atomic_write_bytes
@@ -76,7 +76,9 @@ async def view_files(session: KicadSession, doc: DocKind) -> list[str]:
     root = snapshot_path(project, doc).name
     if doc == "pcb":
         return [root]
-    sheets = await session.call(_sheet_files)
+    # Normalised like the frames' `view_file_list` names ("./a.kicad_sch" -> "a.kicad_sch"),
+    # so a client compares the open response's list with theirs as a set.
+    sheets = [PurePosixPath(s).as_posix() for s in await session.call(_sheet_files)]
     others = [s for s in dict.fromkeys(sheets) if s != (project.sch_file or Path()).name]
     return [root, *others]
 

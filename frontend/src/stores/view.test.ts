@@ -389,6 +389,14 @@ describe('view files of view-updated frames', () => {
     expect(st().kicadRevs.sch).toBeNull();
   });
 
+  it('an empty open list (failed open snapshot) is no baseline', () => {
+    st().setProject(P1, { sch: [], pcb: [] });
+    expect(st().files).toEqual({ sch: null, pcb: null });
+    frame(1, { changedFiles: [], viewFiles: { sch: [TOP, NEW, POWER] } });
+    expect(st().files.sch).toEqual([TOP, NEW, POWER]);
+    expect(st().addedSheets).toEqual([]);
+  });
+
   it('opening an added sheet clears its mark without a reload', () => {
     frame(1, { viewFiles: { sch: [TOP, NEW, POWER] } });
     const rev = st().kicadRevs.sch;
@@ -427,11 +435,12 @@ describe('view files of view-updated frames', () => {
     });
 
     it('a sheet added and removed again while deferred never shows up', () => {
-      frame(1, { live: true, viewFiles: { sch: [TOP, NEW, POWER] } });
-      frame(2, { live: true, viewFiles: { sch: [TOP, POWER] } });
+      frame(1, { live: true, changedFiles: [TOP, NEW], viewFiles: { sch: [TOP, NEW, POWER] } });
+      frame(2, { live: true, changedFiles: [TOP, NEW], viewFiles: { sch: [TOP, POWER] } });
       frame(3, { changedFiles: [] });
       expect(st().files.sch).toEqual([TOP, POWER]);
       expect(st().addedSheets).toEqual([]);
+      expect(st().staleSheets).toEqual([TOP]); // the shown sheet is POWER; NEW is gone
     });
 
     it('the applied frame’s own list wins over the deferred one', () => {

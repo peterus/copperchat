@@ -177,18 +177,22 @@ export function KicanvasPane({
     setStatus({ kind: 'loading' });
     setAttempt((n) => n + 1);
   }, []);
+  /** The sources (`srcKey`) of the load started last. */
+  const loadSrc = useRef<string | null>(null);
   /**
-   * The sources (`srcKey`) when the pane failed. New sources retry once automatically: the
-   * failure may have been a sheet removed during the load (its file is deleted right before the
-   * frame with the new list arrives), and the failed pane has no host for the reload.
+   * The sources of the load that failed. Newer sources retry once automatically - also when they
+   * arrived while that load was in flight: the failure may have been a sheet removed during the
+   * load (its file is deleted right before the frame with the new list arrives), and the failed
+   * pane has no host for the reload.
    */
   const failedSrc = useRef<string | null>(null);
   useEffect(() => {
     if (status.kind !== 'failed') {
       failedSrc.current = null;
-    } else if (failedSrc.current === null) {
-      failedSrc.current = srcKey;
-    } else if (failedSrc.current !== srcKey) {
+      return;
+    }
+    failedSrc.current ??= loadSrc.current;
+    if (failedSrc.current !== srcKey) {
       failedSrc.current = null;
       retry();
     }
@@ -290,6 +294,7 @@ export function KicanvasPane({
     const el = host.current;
     if (!el || loadKey === null) return;
     const { urls, kTheme, projectId: pid, doc: kind } = source.current;
+    loadSrc.current = urls.join('\n');
     // The previous embed's camera; applied instead of the fit once the page it showed is shown again.
     let restore = savedCam.current?.projectId === pid ? savedCam.current : null;
     savedCam.current = null;

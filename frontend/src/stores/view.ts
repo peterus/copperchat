@@ -177,8 +177,13 @@ export function createViewStore(ws: Pick<WsClient, 'onFrame' | 'onConnection'>):
       staleGen.clear();
       return;
     }
-    // Only schematic files concern the sheets (a frame for both docs lists the board file too).
-    const files = changes === 'all' ? 'all' : [...changes].filter((f) => f.endsWith('.kicad_sch'));
+    // Only schematic files concern the sheets (a frame for both docs lists the board file too),
+    // and only those still in the list: a sheet added and removed again while deferred is gone.
+    const known = s.files.sch;
+    const files =
+      changes === 'all'
+        ? 'all'
+        : [...changes].filter((f) => f.endsWith('.kicad_sch') && (known === null || known.includes(f)));
     if (files !== 'all' && files.length === 0) return;
     const active = s.activeSheet;
     if (files === 'all' || active === null || files.some((f) => sameViewFile(f, active))) {
@@ -235,7 +240,8 @@ export function createViewStore(ws: Pick<WsClient, 'onFrame' | 'onConnection'>):
         kicadRevs: { ...NONE },
         activeSheet: null,
         staleSheets: [],
-        files: { sch: files?.sch ?? null, pcb: files?.pcb ?? null },
+        // an empty list (the open snapshot failed) is no baseline: the first frame's list is
+        files: { sch: files?.sch?.length ? files.sch : null, pcb: files?.pcb?.length ? files.pcb : null },
         addedSheets: [],
         fullscreen: false,
         highlight: null,

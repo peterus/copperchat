@@ -453,15 +453,14 @@ describe('KicanvasPane', () => {
     expect(onFindResult).toHaveBeenCalledExactlyOnceWith('J1', true);
   });
 
-  it('a new rev while a load fails applies once retried', async () => {
+  it('a new rev while a load fails is loaded right away (automatic retry)', async () => {
     const { rerenderWith } = await renderPane();
     await rerenderWith({ rev: 4 });
     act(() => {
       window.dispatchEvent(Object.assign(new Event('unhandledrejection'), { reason: new TypeError('Load failed') }));
     });
-    expect(screen.getByRole('alert')).toHaveTextContent('Load failed');
-    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await act(async () => {});
+    expect(screen.queryByRole('alert')).toBeNull();
     expect(embedEl().querySelector('kicanvas-source')!.getAttribute('src')).toContain('?v=4');
   });
 
@@ -651,6 +650,19 @@ describe('KicanvasPane', () => {
       ]);
       await loadReady([root]);
       expect(screen.queryByRole('alert')).toBeNull();
+    });
+
+    it('retries when the sources changed while the failing load was in flight', async () => {
+      const { rerenderWith } = await renderPane();
+      // the new list arrives during the load (coalesced: the load in flight is kept) ...
+      await rerenderWith({ files: ['top.kicad_sch'], rev: 4 });
+      // ... which then fails on the sheet the publish removed
+      fail();
+      await wait(10);
+      expect(screen.queryByRole('alert')).toBeNull();
+      expect([...embedEl().querySelectorAll('kicanvas-source')].map((x) => x.getAttribute('src'))).toEqual([
+        `/api/projects/${PID}/view/files/top.kicad_sch?v=4`,
+      ]);
     });
 
     it('does not retry while the sources stay the same', async () => {

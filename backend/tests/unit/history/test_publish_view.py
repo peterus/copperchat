@@ -496,6 +496,24 @@ async def test_frames_carry_the_view_files_of_added_and_removed_sheets(
     assert [f.changed_files for f in env.broadcaster.frames][1:] == [[new], [], [SUB]]
 
 
+async def test_open_response_and_frames_list_the_same_sheet_set(
+    hier: tuple[Env, Project, KicadSession],
+) -> None:
+    """The open response (hierarchy filenames, normalised) and the next frame (the
+    view directory) name the same files, incl. a sub-directory sheet written as
+    "./sub/...": a client sees no sheet-set change where there is none."""
+    env, project, session = hier
+    new = add_sheet(env, project)
+    env.server.hierarchy = [ROOT, f"./{new}", SUB]
+    opened = await env.svc.write_open_snapshots(session)
+    assert opened["sch"] == [ROOT, new, SUB]
+    await env.svc.publish_view(project, session, {"sch"})
+    (frame,) = view_files(env)
+    assert frame is not None
+    assert frame["sch"][0] == opened["sch"][0]
+    assert set(frame["sch"]) == set(opened["sch"])
+
+
 async def test_view_files_have_one_entry_per_published_doc(
     hier: tuple[Env, Project, KicadSession],
 ) -> None:
