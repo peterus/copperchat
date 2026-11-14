@@ -190,6 +190,10 @@ export const ServerFrame = z.discriminatedUnion('type', [
     projectId: ProjectId,
     docs: z.array(DocKind).min(1),
     version: z.number().int().nonnegative(),
+    /** View files whose content changed since the previous publish; absent = unknown (all). */
+    changedFiles: z.array(z.string().min(1)).optional(),
+    /** A mid-turn schematic refresh ("Live view"); absent for the turn-end publish. */
+    live: z.literal(true).optional(),
   }),
   // Change rows of a run (and plan step) were written (E-C12).
   z.strictObject({

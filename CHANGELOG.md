@@ -7,6 +7,17 @@ All notable changes to CopperChat are documented in this file. The format follow
 
 ## [Unreleased]
 
+### Added
+
+- **Live view** for the schematic: while the agent edits, the KiCad schematic view refreshes
+  after its edits (debounced, at most about once every 2.5 s) instead of only at turn end.
+  Only the sheet you are looking at reloads; other changed sheets get a dot in the sheet tree
+  and load fresh when you open them. Zoom, pan and the open sheet are kept across reloads.
+  A "Live view" toggle in the viewer (per browser, default on) switches back to refreshing at
+  turn end. The board still refreshes at turn end only.
+- `view-updated` frames carry the changed view files (`changedFiles`) and mark mid-turn
+  refreshes (`live`).
+
 ## [0.8.2] - 2026-11-05
 
 **Git identity for commits**: optional `COPPERCHAT_GIT_NAME` / `COPPERCHAT_GIT_EMAIL` so

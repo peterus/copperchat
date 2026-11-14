@@ -18,8 +18,10 @@ export interface KicadPaneProps {
   doc: DocKind;
   /** Snapshot file names from the open response's `viewFiles[doc]`, root first (X3). */
   files: readonly string[];
-  /** Reload counter from the view store (`revs[doc]`); a change reloads the pane. */
+  /** Reload counter from the view store (`kicadRevs[doc]`); a change reloads the pane. */
   rev: number | null;
+  /** Reload counter of the agent-view fallback (`revs[doc]`); default `rev`. */
+  agentRev?: number | null;
   theme: ResolvedTheme;
   onPick: (ref: string) => void;
   find?: FindRequest | null;
@@ -34,6 +36,17 @@ export interface KicadPaneProps {
   highlight?: HighlightRequest | null;
   /** Once per highlight request, after its page is shown; `reason` when it cannot be shown at all. */
   onHighlightResult?: (result: HighlightResult, reason?: string) => void;
+  /** Schematic only: the filename (`KcPage.filename`) of the page shown, on every page change. */
+  onActiveSheet?: (file: string | null) => void;
+  /** Schematic only: view files changed since this pane loaded them; marked in the sheet tree. */
+  staleSheets?: readonly string[];
+  /** Schematic only: the view store's `staleSeq` (bumped whenever a sheet is marked stale). */
+  staleSeq?: number;
+  /**
+   * Schematic only: a full load (every file fetched fresh) is ready; `staleSeq` = the `staleSeq`
+   * when that load started (sheets marked stale since are newer than what it fetched).
+   */
+  onLoaded?: (staleSeq: number) => void;
 }
 
 /** Tap on a part → `@REF ` in the composer. */

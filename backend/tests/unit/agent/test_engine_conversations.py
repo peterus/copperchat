@@ -708,3 +708,28 @@ async def test_chained_on_items_failed_runs_all_then_raises_first() -> None:
     with pytest.raises(RuntimeError, match="a"):
         await chain.on_items_failed("c" * 32, [1], "cancelled")
     assert log == ["failed:a", "failed:b", "failed:c"]
+
+
+async def test_chained_hooks_forward_documents_changed_and_engine_close() -> None:
+    log: list[str] = []
+
+    class _D(RunHooks):
+        def __init__(self, name: str, fail: bool = False) -> None:
+            self.name, self.fail = name, fail
+
+        def on_documents_changed(self, turn: TurnInfo, docs: set[Any]) -> None:
+            log.append(f"docs:{self.name}:{','.join(sorted(docs))}")
+            if self.fail:
+                raise RuntimeError(self.name)
+
+        async def on_engine_close(self) -> None:
+            log.append(f"close:{self.name}")
+            if self.fail:
+                raise RuntimeError(self.name)
+
+    chain = ChainedHooks([_D("a", fail=True), _D("b")])
+    chain.on_documents_changed(_TURN, {"sch"})  # never raises: a tool call depends on it
+    await chain.on_engine_close()  # every hook runs, errors are logged
+    assert log == ["docs:a:sch", "docs:b:sch", "close:a", "close:b"]
+    RunHooks().on_documents_changed(_TURN, {"sch"})
+    await RunHooks().on_engine_close()

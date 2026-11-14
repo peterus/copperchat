@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { agentViewUrl, DEFAULT_LAYERS, PCB_LAYERS, viewFileUrl } from './viewUrls';
+import { agentViewUrl, DEFAULT_LAYERS, PCB_LAYERS, sameViewFile, viewFileUrl } from './viewUrls';
 
 describe('viewFileUrl', () => {
   it('adds the reload counter as cache buster', () => {
@@ -34,5 +34,17 @@ describe('agentViewUrl', () => {
   it('has eight layers and sensible defaults', () => {
     expect(PCB_LAYERS).toHaveLength(8);
     expect(DEFAULT_LAYERS).toEqual(['F.Cu', 'B.Cu', 'F.SilkS', 'B.SilkS', 'Edge.Cuts']);
+  });
+});
+
+describe('sameViewFile', () => {
+  it('matches equal names and a bare basename against a relative path', () => {
+    expect(sameViewFile('sub/power.kicad_sch', 'sub/power.kicad_sch')).toBe(true);
+    expect(sameViewFile('power.kicad_sch', 'sub/power.kicad_sch')).toBe(true);
+    expect(sameViewFile('sub/power.kicad_sch', 'power.kicad_sch')).toBe(true);
+  });
+  it('keeps different directories and names apart', () => {
+    expect(sameViewFile('a/power.kicad_sch', 'b/power.kicad_sch')).toBe(false);
+    expect(sameViewFile('power.kicad_sch', 'reg.kicad_sch')).toBe(false);
   });
 });

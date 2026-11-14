@@ -1,10 +1,11 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { useEffect } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { useChatStore } from '@/stores/chat';
 import { useComposer } from '@/stores/composer';
 import { type OpenProject, useProjects } from '@/stores/projects';
 import { createViewStore, ViewStoreContext } from '@/stores/view';
-import { DEFAULT_VIEWER_LIMITS, useViewerPrefs } from '@/stores/viewerPrefs';
+import { DEFAULT_VIEWER_LIMITS, LIVE_VIEW_KEY, useViewerPrefs } from '@/stores/viewerPrefs';
 import { FakeWsClient } from '@/test/fakeWsClient';
 import { setMedia } from '@/test/media';
 import type { KicadPaneProps } from './types';
@@ -23,10 +24,26 @@ vi.mock('./KicadPane', () => ({
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [p.highlight]);
     return (
-      <div data-testid={`kicad-pane-${p.doc}`} data-rev={String(p.rev)} data-theme={p.theme} data-files={p.files.join(',')}>
+      <div
+        data-testid={`kicad-pane-${p.doc}`}
+        data-rev={String(p.rev)}
+        data-theme={p.theme}
+        data-files={p.files.join(',')}
+        data-stale={p.staleSheets?.join(',') ?? 'none'}
+      >
         <button type="button" onClick={() => p.onPick('R12')}>
           pick R12 on {p.doc}
         </button>
+        {p.onActiveSheet && (
+          <>
+            <button type="button" onClick={() => p.onActiveSheet?.('demo.kicad_sch')}>
+              show root on {p.doc}
+            </button>
+            <button type="button" onClick={() => p.onActiveSheet?.('power.kicad_sch')}>
+              show power on {p.doc}
+            </button>
+          </>
+        )}
         {p.highlight && (
           <button type="button" onClick={() => p.onHighlightResult?.({ found: [], missing: ['R9'] })}>
             highlight {p.highlight.refs.length} on {p.doc}
@@ -78,6 +95,8 @@ const agentImg = () => screen.getByRole('img', { name: /Agent view/ });
 
 beforeEach(() => {
   mounts.length = 0;
+  localStorage.clear();
+  useChatStore.setState({ activeRuns: {} });
   setMedia(() => false);
   useComposer.getState().clear();
   useViewerPrefs.setState({ limits: { ...DEFAULT_VIEWER_LIMITS } });
@@ -112,6 +131,67 @@ describe('Viewer', () => {
     expect(agentImg().getAttribute('src')).toContain('&v=1');
     act(() => ws.emit({ type: 'view-updated', projectId: PID, docs: ['pcb'], version: 7 }));
     expect(agentImg().getAttribute('src')).toContain('&v=2');
+  });
+
+  describe('live view', () => {
+    const live = (version: number, changedFiles: string[]) =>
+      act(() => ws.emit({ type: 'view-updated', projectId: PID, docs: ['sch'], version, changedFiles, live: true }));
+
+    it('reloads the schematic pane only when the sheet shown changed; marks other sheets', () => {
+      renderViewer();
+      fireEvent.click(screen.getByRole('button', { name: 'show root on sch' }));
+      expect(screen.queryByRole('button', { name: /on pcb/ })).toBeNull(); // boards report no sheet
+      live(1, ['power.kicad_sch']);
+      expect(pane('sch').dataset.rev).toBe('null');
+      expect(pane('sch').dataset.stale).toBe('power.kicad_sch');
+      fireEvent.click(screen.getByRole('button', { name: 'Agent view' }));
+      // mid-turn re-renders are expensive: the agent view waits for the turn-end frame
+      expect(agentImg().getAttribute('src')).not.toContain('v=');
+      fireEvent.click(screen.getByRole('button', { name: 'KiCad view' }));
+      fireEvent.click(screen.getByRole('button', { name: 'show power on sch' }));
+      expect(pane('sch').dataset.rev).toBe('1');
+      expect(pane('sch').dataset.stale).toBe('');
+      live(2, ['power.kicad_sch']);
+      expect(pane('sch').dataset.rev).toBe('2');
+    });
+
+    it('has a persisted "Live view" toggle, on by default', () => {
+      const store = renderViewer();
+      const toggle = screen.getByRole('button', { name: 'Live view' });
+      expect(toggle).toHaveAttribute('aria-pressed', 'true');
+      expect(toggle.title).toMatch(/while the agent edits/);
+      fireEvent.click(toggle);
+      expect(toggle).toHaveAttribute('aria-pressed', 'false');
+      expect(toggle.title).toMatch(/when the agent's turn ends/);
+      expect(store.getState().live).toBe(false);
+      expect(localStorage.getItem(LIVE_VIEW_KEY)).toBe('false');
+      live(1, ['demo.kicad_sch']);
+      expect(pane('sch').dataset.rev).toBe('null'); // deferred to the turn end
+    });
+
+    it('shows the live indicator only while the agent runs and live view is on', () => {
+      renderViewer();
+      const indicator = () => screen.queryByRole('status', { name: /live/i });
+      expect(indicator()).toBeNull();
+      act(() => useChatStore.setState({ activeRuns: { [PID]: { conversationId: 'c1', runId: 'r1' } } }));
+      expect(indicator()).toHaveTextContent(/live/i);
+      fireEvent.click(screen.getByRole('button', { name: 'Live view' }));
+      expect(indicator()).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Live view' }));
+      act(() => useChatStore.setState({ activeRuns: { '0123456789ab': { conversationId: 'c2', runId: 'r2' } } }));
+      expect(indicator()).toBeNull(); // another project's run
+    });
+
+    it('the large-file fallback follows the agent view counter (turn-end frames)', () => {
+      openProject({ viewBytes: { 'demo.kicad_sch': 70_000_000, 'power.kicad_sch': 20_000, 'demo.kicad_pcb': 160_000 } });
+      const store = renderViewer();
+      act(() => store.getState().setActiveSheet('demo.kicad_sch'));
+      live(1, ['power.kicad_sch']);
+      expect(store.getState().kicadRevs.sch).toBeNull();
+      expect(agentImg().getAttribute('src')).not.toContain('v='); // live frames: not re-rendered
+      act(() => ws.emit({ type: 'view-updated', projectId: PID, docs: ['sch'], version: 2, changedFiles: [] })); // turn end
+      expect(agentImg().getAttribute('src')).toContain('&v=1');
+    });
   });
 
   it('inserts @REF into the composer when a part is picked', () => {

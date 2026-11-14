@@ -5,11 +5,13 @@ import {
   countSheets,
   findRefPage,
   fitViewer,
+  getCamera,
   type KcPage,
   type KcSymbol,
   type KcViewer,
   kicanvasTheme,
   refOf,
+  setCamera,
   zoomViewer,
 } from './kicanvas';
 
@@ -116,6 +118,20 @@ describe('viewer helpers', () => {
     const v = fakeViewer(false);
     zoomViewer(v, 1.5);
     expect(v.viewport?.zoom_about).toHaveBeenCalledWith(1.5);
+  });
+  it('reads and restores the camera (centre + zoom) defensively', () => {
+    const v = fakeViewer(false);
+    expect(getCamera(v)).toBeNull(); // no camera exposed
+    expect(setCamera(v, { x: 1, y: 2, zoom: 3 })).toBe(false);
+    const center = { x: 10, y: 20, set: vi.fn((x: number, y: number) => Object.assign(center, { x, y })) };
+    v.viewport = { zoom_about: vi.fn(), camera: { center, zoom: 4 } };
+    expect(getCamera(v)).toEqual({ x: 10, y: 20, zoom: 4 });
+    expect(setCamera(v, { x: 5, y: 6, zoom: 7 })).toBe(true);
+    expect(center.set).toHaveBeenCalledWith(5, 6);
+    expect(getCamera(v)).toEqual({ x: 5, y: 6, zoom: 7 });
+    expect(v.draw).toHaveBeenCalled();
+    v.viewport.camera!.zoom = Number.NaN;
+    expect(getCamera(v)).toBeNull();
   });
   it('maps the app theme to a KiCanvas theme', () => {
     expect(kicanvasTheme('dark')).toBe('witchhazel');

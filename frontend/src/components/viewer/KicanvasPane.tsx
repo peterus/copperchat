@@ -7,13 +7,16 @@ import {
   EMBED_CONTROLSLIST,
   findRefPage,
   fitViewer,
+  getCamera,
   type HighlightKind,
+  type KcCamera,
   type KcEmbed,
   type KcPage,
   type KcViewer,
   kicanvasTheme,
   loadKicanvas,
   refOf,
+  setCamera,
   type SheetNode,
   zoomViewer,
 } from '@/lib/kicanvas';
@@ -29,6 +32,15 @@ import { ZoomControls } from './ZoomControls';
  * pane failed. Later errors (e.g. a KiCanvas bug on some click) only show a notice.
  */
 export const LOAD_GRACE_MS = 400;
+/**
+ * Reloads wait for the load in flight (coalescing), but at most this long: a load that never
+ * becomes ready nor fails must not block every later one. Large boards can take tens of seconds.
+ * Each overdue replacement doubles the limit for the next load, up to LOAD_COALESCE_CAP_MS (a
+ * device too slow for it must still finish one while live frames keep coming); a ready load sets
+ * it to twice its own duration (at least this), a failed load or a retry resets it.
+ */
+export const LOAD_COALESCE_MAX_MS = 60_000;
+export const LOAD_COALESCE_CAP_MS = 8 * LOAD_COALESCE_MAX_MS;
 const NOTICE_MS = 6000;
 const ZOOM_STEP = 1.6;
 const DOC_LABEL = { sch: 'schematic', pcb: 'board' } as const;
@@ -77,17 +89,30 @@ function highlightItems(h: HighlightRequest, sheetPath: string | null) {
   return { refs, boxes };
 }
 
+/** The camera of the page last loaded before a reload; restored when the reload shows that page. */
+interface SavedCamera {
+  projectId: string;
+  /** `project_path` of the page ('' when KiCanvas has no project, e.g. a lone board). */
+  page: string;
+  camera: KcCamera;
+}
+
 export function KicanvasPane({
   projectId,
   doc,
   files,
   rev,
+  agentRev,
   theme,
   onPick,
   find,
   onFindResult,
   highlight,
   onHighlightResult,
+  onActiveSheet,
+  staleSheets,
+  staleSeq,
+  onLoaded,
   visible = true,
 }: KicadPaneProps) {
   const host = useRef<HTMLDivElement>(null);
@@ -96,6 +121,13 @@ export function KicanvasPane({
   const readyRef = useRef(false);
   /** Sheet shown before a reload (theme change, view-updated): restored afterwards. */
   const activeRef = useRef<string | null>(null);
+  /**
+   * Page whose viewer was loaded last (per `kicanvas:viewerload`). Not `activeRef`: a sheet switch
+   * updates that before the new page is loaded, while the viewer (and camera) still shows the old one.
+   */
+  const loadedPage = useRef<string | null>(null);
+  /** Captured when an embed is torn down for a reload; consumed by the next load. */
+  const savedCam = useRef<SavedCamera | null>(null);
   /** A select() we issue ourselves must not insert a mention. */
   const programmatic = useRef(false);
   const pendingFind = useRef<FindRequest | null>(null);
@@ -103,8 +135,10 @@ export function KicanvasPane({
   const highlightReq = useRef<HighlightRequest | null>(null);
   /** Per request: its page was opened (`navigated`) and its result reported (`reported`). */
   const highlightProgress = useRef({ seq: -1, navigated: false, reported: false });
-  const handlers = useRef({ onPick, onFindResult, onHighlightResult });
-  handlers.current = { onPick, onFindResult, onHighlightResult };
+  const handlers = useRef({ onPick, onFindResult, onHighlightResult, onActiveSheet, onLoaded });
+  handlers.current = { onPick, onFindResult, onHighlightResult, onActiveSheet, onLoaded };
+  const staleSeqRef = useRef(staleSeq);
+  staleSeqRef.current = staleSeq;
 
   const [status, setStatus] = useState<Status>({ kind: 'loading' });
   const [notice, setNotice] = useState<string | null>(null);
@@ -118,26 +152,47 @@ export function KicanvasPane({
   const kTheme = kicanvasTheme(theme);
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
-  const source = useRef({ urls, kTheme });
-  source.current = { urls, kTheme };
-  // What should be loaded; applied (loadKey) only while the pane is visible.
+  const source = useRef({ urls, kTheme, projectId, doc });
+  source.current = { urls, kTheme, projectId, doc };
+  // What should be loaded; applied (loadKey) only while the pane is visible, and never while a load
+  // is in flight: edits arriving faster than a load would otherwise restart it over and over. The
+  // latest wantKey is applied once that load is ready (or failed), or once it is overdue.
   const wantKey = `${srcKey}\n${kTheme}\n${attempt}`;
   const [loadKey, setLoadKey] = useState<string | null>(visible ? wantKey : null);
+  const [inFlight, setInFlight] = useState(false);
+  /** The load in flight has taken longer than `coalesceMs`: stop waiting for it. */
+  const [overdue, setOverdue] = useState(false);
+  /**
+   * The current coalescing limit: doubled per overdue replacement (at most
+   * LOAD_COALESCE_CAP_MS), back to LOAD_COALESCE_MAX_MS after a failed load or a retry, and after a
+   * ready load twice what that load took (at least LOAD_COALESCE_MAX_MS): a load slower than the
+   * base limit is not discarded every other time.
+   */
+  const coalesceMs = useRef(LOAD_COALESCE_MAX_MS);
   /** The embed shown is about to be replaced (new files/theme): do not apply anything to it. */
   const staleRef = useRef(false);
   staleRef.current = loadKey !== wantKey;
   /** A sheet switch is in flight: the viewer still shows the previous page until viewerload. */
   const pageLoading = useRef(false);
   useEffect(() => {
-    if (visible) setLoadKey(wantKey);
-  }, [visible, wantKey]);
+    setOverdue(false); // per load
+    if (!inFlight) return;
+    const timer = setTimeout(() => setOverdue(true), coalesceMs.current);
+    return () => clearTimeout(timer);
+  }, [inFlight, loadKey]);
+  useEffect(() => {
+    if (!visible || (inFlight && !overdue)) return;
+    if (inFlight && wantKey !== loadKey) coalesceMs.current = Math.min(coalesceMs.current * 2, LOAD_COALESCE_CAP_MS); // replacing an overdue load
+    setLoadKey(wantKey);
+  }, [visible, wantKey, inFlight, overdue, loadKey]);
 
   /** Select `req.ref`, switching to the sheet that contains it first (KiCanvas searches only the current sheet). */
   const runFind = useCallback(() => {
     const req = pendingFind.current;
     const viewer = viewerRef.current;
     const project = embedRef.current?.project;
-    if (!req || !viewer || !readyRef.current) return;
+    // A stale embed is about to be replaced: the find stays pending for the new one.
+    if (!req || !viewer || !readyRef.current || staleRef.current) return;
     if (doc === 'sch' && project) {
       const page = findRefPage(project.pages(), req.ref);
       if (!page) {
@@ -213,15 +268,23 @@ export function KicanvasPane({
   useEffect(() => {
     const el = host.current;
     if (!el || loadKey === null) return;
-    const { urls, kTheme } = source.current;
+    const { urls, kTheme, projectId: pid, doc: kind } = source.current;
+    // The previous embed's camera; applied instead of the fit once the page it showed is shown again.
+    let restore = savedCam.current?.projectId === pid ? savedCam.current : null;
+    savedCam.current = null;
     let cancelled = false;
     let failed = false;
     let graceTimer: ReturnType<typeof setTimeout> | undefined;
     let noticeTimer: ReturnType<typeof setTimeout> | undefined;
     const offs: Array<() => void> = [];
+    // Every file is fetched fresh: the sheets stale now are not stale any more once it is ready.
+    const staleAtStart = staleSeqRef.current ?? 0;
+    const startedAt = Date.now();
     readyRef.current = false;
     pageLoading.current = false;
     viewerRef.current = null;
+    loadedPage.current = null;
+    setInFlight(true);
     setStatus({ kind: 'loading' });
     setNotice(null);
     setTree([]);
@@ -231,6 +294,8 @@ export function KicanvasPane({
       if (cancelled) return;
       if (!readyRef.current) {
         failed = true;
+        coalesceMs.current = LOAD_COALESCE_MAX_MS;
+        setInFlight(false);
         setStatus({ kind: 'failed', error: msg });
       } else if (pageLoading.current) {
         pageLoading.current = false; // a failed sheet load fires no viewerload
@@ -300,19 +365,37 @@ export function KicanvasPane({
           syncActive();
         };
         const syncActive = () => {
-          const id = embed.project?.active_page?.project_path ?? null;
-          activeRef.current = id;
-          setActive(id);
+          const page = embed.project?.active_page ?? null;
+          activeRef.current = page?.project_path ?? null;
+          setActive(activeRef.current);
+          if (kind === 'sch') handlers.current.onActiveSheet?.(page?.filename ?? null);
+        };
+        /**
+         * The camera to restore on the page just loaded (one-shot), or null to keep the fit: another
+         * page, or a pending find / highlight, which zooms itself.
+         */
+        const takeCamera = () => {
+          const r = restore;
+          restore = null;
+          if (!r || r.page !== loadedPage.current) return null;
+          const h = highlightReq.current;
+          if (pendingFind.current || (h && !highlightProgress.current.reported)) return null;
+          return r.camera;
         };
         // embed-host-integration.patch: fires for every page load (first load, sheet switch).
         embed.addEventListener('kicanvas:viewerload', (e) => {
+          if (cancelled) return; // a sheet load the torn-down embed had in flight
           const target = e.composedPath()[0] as { viewer?: KcViewer } | undefined;
           viewerRef.current = target?.viewer ?? viewerRef.current;
+          loadedPage.current = embed.project?.active_page?.project_path ?? '';
           pageLoading.current = false;
           if (readyRef.current) {
             // after a sheet switch; KiCanvas clears the selection right after this event
             setTimeout(() => {
               if (cancelled) return;
+              // the sheet restored after a reload: back to where the user looked
+              const cam = takeCamera();
+              if (cam && viewerRef.current) setCamera(viewerRef.current, cam);
               runFind();
               runHighlight();
             }, 0);
@@ -332,8 +415,17 @@ export function KicanvasPane({
               if (remembered && remembered !== project.active_page) project.set_active_page(remembered);
               syncActive();
             }
-            if (viewerRef.current) fitViewer(viewerRef.current);
+            // while the remembered sheet loads, the camera waits for its viewerload
+            const viewer = viewerRef.current;
+            const cam = pageLoading.current ? null : takeCamera();
+            if (viewer && !(cam && setCamera(viewer, cam))) fitViewer(viewer);
             setStatus({ kind: 'ready' });
+            setInFlight(false);
+            coalesceMs.current = Math.min(
+              Math.max(LOAD_COALESCE_MAX_MS, 2 * (Date.now() - startedAt)),
+              LOAD_COALESCE_CAP_MS,
+            );
+            if (kind === 'sch') handlers.current.onLoaded?.(staleAtStart);
             // after restoring the remembered sheet, its viewerload runs them on the right page
             if (pageLoading.current) return;
             runFind();
@@ -348,12 +440,22 @@ export function KicanvasPane({
 
     return () => {
       cancelled = true;
+      // Reload (new files, theme, retry): remember where the user looked. A load torn down before it
+      // was ready keeps the camera it would have restored.
+      const viewer = readyRef.current ? viewerRef.current : null;
+      const camera = viewer ? getCamera(viewer) : null;
+      savedCam.current = !readyRef.current
+        ? restore
+        : camera && loadedPage.current !== null
+          ? { projectId: pid, page: loadedPage.current, camera }
+          : null;
       clearTimeout(graceTimer);
       clearTimeout(noticeTimer);
       offs.forEach((off) => off());
       embedRef.current = null;
       viewerRef.current = null;
       readyRef.current = false;
+      setInFlight(false);
       el.replaceChildren();
     };
   }, [loadKey, runFind, runHighlight]);
@@ -379,7 +481,7 @@ export function KicanvasPane({
       <AgentViewPane
         projectId={projectId}
         doc={doc}
-        rev={rev}
+        rev={agentRev === undefined ? rev : agentRev}
         theme={theme}
         layers={DEFAULT_LAYERS}
         banner={
@@ -391,6 +493,7 @@ export function KicanvasPane({
               type="button"
               className="rounded border border-border px-2 py-1"
               onClick={() => {
+                coalesceMs.current = LOAD_COALESCE_MAX_MS;
                 setStatus({ kind: 'loading' });
                 setAttempt((n) => n + 1);
               }}
@@ -412,7 +515,7 @@ export function KicanvasPane({
         </p>
       )}
       {status.kind === 'ready' && countSheets(tree) > 1 && (
-        <SheetNavigator tree={tree} active={active} onOpen={openSheet} closeOnPick={coarse} />
+        <SheetNavigator tree={tree} active={active} stale={staleSheets} onOpen={openSheet} closeOnPick={coarse} />
       )}
       {notice && (
         <div role="status" className="absolute inset-x-2 bottom-3 z-10 mr-14 flex items-start gap-2 rounded border border-warning bg-bg/95 px-3 py-2 text-xs shadow">

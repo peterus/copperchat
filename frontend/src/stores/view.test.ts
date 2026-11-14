@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FakeWsClient } from '@/test/fakeWsClient';
 import { createViewStore } from './view';
+import { LIVE_VIEW_KEY } from './viewerPrefs';
 
 const P1 = 'a1b2c3d4e5f6';
 const P2 = 'b1b2c3d4e5f6';
@@ -11,6 +12,7 @@ const updated = (docs: Array<'sch' | 'pcb'>, version: number, projectId = P1) =>
   ws.emit({ type: 'view-updated', projectId, docs, version });
 
 beforeEach(() => {
+  localStorage.clear();
   ws = new FakeWsClient();
   store = createViewStore(ws);
   store.getState().setProject(P1);
@@ -61,6 +63,7 @@ describe('view store', () => {
     store.getState().setProject(P2);
     expect(store.getState().versions).toEqual({ sch: null, pcb: null });
     expect(store.getState().revs).toEqual({ sch: null, pcb: null });
+    expect(store.getState().kicadRevs).toEqual({ sch: null, pcb: null });
     expect(store.getState().fullscreen).toBe(false);
     store.getState().setProject(P2); // re-open of the same project (new session) also resets
     updated(['pcb'], 0, P2);
@@ -110,5 +113,199 @@ describe('view store', () => {
     store.getState().dispose();
     updated(['pcb'], 3);
     expect(store.getState().versions.pcb).toBeNull();
+  });
+});
+
+describe('live schematic view', () => {
+  const sch = (version: number, changedFiles?: string[], live = false) =>
+    ws.emit({ type: 'view-updated', projectId: P1, docs: ['sch'], version, ...(changedFiles ? { changedFiles } : {}), ...(live ? { live: true } : {}) });
+  const st = () => store.getState();
+
+  beforeEach(() => st().setActiveSheet('top.kicad_sch'));
+
+  it('is on by default', () => {
+    expect(st().live).toBe(true);
+  });
+
+  it('a live frame touching the shown sheet reloads the KiCad pane', () => {
+    sch(1, ['top.kicad_sch'], true);
+    expect(st().revs.sch).toBeNull(); // agent view and Changes panel wait for the turn end
+    expect(st().kicadRevs.sch).toBe(1);
+    expect(st().staleSheets).toEqual([]);
+  });
+
+  it('live frames never bump revs; the turn-end frame does (agent view, Changes panel)', () => {
+    sch(1, ['top.kicad_sch'], true);
+    sch(2, ['sub/power.kicad_sch'], true);
+    expect(st().revs.sch).toBeNull();
+    sch(3, []);
+    expect(st().revs.sch).toBe(1);
+    expect(st().kicadRevs.sch).toBe(1);
+  });
+
+  it('a live frame touching only another sheet marks it stale without a reload', () => {
+    sch(1, ['sub/power.kicad_sch'], true);
+    expect(st().revs.sch).toBeNull();
+    expect(st().kicadRevs.sch).toBeNull();
+    expect(st().staleSheets).toEqual(['sub/power.kicad_sch']);
+    sch(2, ['sub/power.kicad_sch', 'sub/reg.kicad_sch'], true);
+    expect(st().staleSheets).toEqual(['sub/power.kicad_sch', 'sub/reg.kicad_sch']);
+    expect(st().kicadRevs.sch).toBeNull();
+  });
+
+  it('switching to a stale sheet reloads and clears the stale marks', () => {
+    sch(1, ['sub/power.kicad_sch', 'sub/reg.kicad_sch'], true);
+    st().setActiveSheet('top.kicad_sch'); // not stale: nothing
+    expect(st().kicadRevs.sch).toBeNull();
+    st().setActiveSheet('power.kicad_sch'); // KiCanvas may only know the basename
+    expect(st().activeSheet).toBe('power.kicad_sch');
+    expect(st().kicadRevs.sch).toBe(1);
+    expect(st().staleSheets).toEqual([]);
+  });
+
+  it('a reload clears every stale mark (all files load fresh)', () => {
+    sch(1, ['sub/power.kicad_sch'], true);
+    sch(2, ['top.kicad_sch'], true);
+    expect(st().kicadRevs.sch).toBe(1);
+    expect(st().staleSheets).toEqual([]);
+  });
+
+  it('clearStale drops only the sheets known when the full load started', () => {
+    sch(1, ['sub/power.kicad_sch'], true);
+    const atLoadStart = st().staleSeq;
+    sch(2, ['sub/reg.kicad_sch'], true); // arrives while the pane loads
+    st().clearStale(atLoadStart);
+    expect(st().staleSheets).toEqual(['sub/reg.kicad_sch']);
+    const before = st().staleSheets;
+    st().clearStale(atLoadStart);
+    expect(st().staleSheets).toBe(before); // nothing to drop: no new state
+  });
+
+  it('clearStale keeps a stale sheet that changed again during the load', () => {
+    sch(1, ['sub/power.kicad_sch', 'sub/reg.kicad_sch'], true);
+    const atLoadStart = st().staleSeq;
+    sch(2, ['sub/power.kicad_sch'], true); // changed again while the pane loads
+    st().clearStale(atLoadStart);
+    expect(st().staleSheets).toEqual(['sub/power.kicad_sch']);
+    st().clearStale(st().staleSeq); // a later load fetched it fresh
+    expect(st().staleSheets).toEqual([]);
+  });
+
+  it('matches by basename', () => {
+    st().setActiveSheet('power.kicad_sch');
+    sch(1, ['sub/power.kicad_sch'], true);
+    expect(st().kicadRevs.sch).toBe(1);
+  });
+
+  it('reloads when changedFiles is absent (unknown) or no sheet is known yet', () => {
+    sch(1);
+    expect(st().kicadRevs.sch).toBe(1);
+    st().setActiveSheet(null);
+    sch(2, ['sub/power.kicad_sch'], true);
+    expect(st().kicadRevs.sch).toBe(2);
+  });
+
+  it('empty changes do not reload the pane', () => {
+    sch(1, []);
+    expect(st().revs.sch).toBe(1);
+    expect(st().kicadRevs.sch).toBeNull();
+    expect(st().staleSheets).toEqual([]);
+  });
+
+  it('live off defers live frames; the turn-end frame applies them with its own changes', () => {
+    st().setLive(false);
+    sch(1, ['sub/power.kicad_sch'], true);
+    sch(2, ['top.kicad_sch'], true);
+    expect(st().versions.sch).toBe(2);
+    expect(st().revs.sch).toBeNull();
+    expect(st().kicadRevs.sch).toBeNull();
+    sch(2, ['top.kicad_sch'], true); // replay still rejected
+    sch(3, []);
+    expect(st().revs.sch).toBe(1);
+    expect(st().kicadRevs.sch).toBe(1);
+    sch(4, ['sub/power.kicad_sch'], true);
+    sch(5, []);
+    expect(st().kicadRevs.sch).toBe(1);
+    expect(st().staleSheets).toEqual(['sub/power.kicad_sch']);
+  });
+
+  it('live off: a turn-end frame touching only other sheets marks them stale', () => {
+    st().setLive(false);
+    sch(1, ['sub/reg.kicad_sch'], true);
+    sch(2, ['sub/power.kicad_sch']);
+    expect(st().revs.sch).toBe(1);
+    expect(st().kicadRevs.sch).toBeNull();
+    expect(st().staleSheets).toEqual(['sub/reg.kicad_sch', 'sub/power.kicad_sch']);
+  });
+
+  it('turning live back on applies the deferred changes', () => {
+    st().setLive(false);
+    sch(1, ['top.kicad_sch'], true);
+    st().setLive(true);
+    expect(st().revs.sch).toBeNull(); // still live changes: the turn-end frame bumps it
+    expect(st().kicadRevs.sch).toBe(1);
+    st().setLive(true); // nothing deferred any more
+    expect(st().kicadRevs.sch).toBe(1);
+  });
+
+  it('pcb frames reload the board pane as before', () => {
+    ws.emit({ type: 'view-updated', projectId: P1, docs: ['pcb'], version: 1, changedFiles: [] });
+    ws.emit({ type: 'view-updated', projectId: P1, docs: ['sch', 'pcb'], version: 2, changedFiles: ['sub/power.kicad_sch'] });
+    expect(st().kicadRevs.pcb).toBe(2);
+    expect(st().revs.pcb).toBe(2);
+    expect(st().kicadRevs.sch).toBeNull();
+  });
+
+  it('the first frame after a reconnect counts as "everything changed" (frames may be lost)', () => {
+    sch(1, ['sub/power.kicad_sch'], true);
+    ws.resume();
+    sch(0, ['sub/power.kicad_sch'], true);
+    expect(st().kicadRevs.sch).toBe(1);
+    sch(1, ['sub/power.kicad_sch'], true);
+    expect(st().kicadRevs.sch).toBe(1);
+    expect(st().staleSheets).toEqual(['sub/power.kicad_sch']);
+  });
+
+  it('a deferred frame after a reconnect also counts as everything', () => {
+    st().setLive(false);
+    ws.drop();
+    ws.connect();
+    sch(0, ['sub/power.kicad_sch'], true);
+    sch(1, []);
+    expect(st().kicadRevs.sch).toBe(1);
+  });
+
+  it('a project open resets the sheet state and deferred changes', () => {
+    st().setLive(false);
+    sch(1, ['top.kicad_sch'], true);
+    st().setProject(P1);
+    expect(st()).toMatchObject({ activeSheet: null, staleSheets: [], kicadRevs: { sch: null, pcb: null } });
+    st().setLive(true);
+    expect(st().revs.sch).toBeNull();
+  });
+
+  describe('pref', () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    it('persists the toggle per browser', () => {
+      st().setLive(false);
+      expect(localStorage.getItem(LIVE_VIEW_KEY)).toBe('false');
+      expect(createViewStore(new FakeWsClient()).getState().live).toBe(false);
+      st().setLive(true);
+      expect(createViewStore(new FakeWsClient()).getState().live).toBe(true);
+    });
+
+    it('survives unavailable storage (default on, toggle applies for the session)', () => {
+      vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+        throw new Error('denied');
+      });
+      vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+        throw new Error('denied');
+      });
+      const s = createViewStore(new FakeWsClient());
+      expect(s.getState().live).toBe(true);
+      s.getState().setLive(false);
+      expect(s.getState().live).toBe(false);
+    });
   });
 });

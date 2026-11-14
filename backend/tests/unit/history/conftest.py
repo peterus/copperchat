@@ -55,7 +55,7 @@ async def env(
     )
     e = Env(svc, sessions, server, engine, broadcaster, settings)
 
-    async def write_view(session: Any, doc: str) -> Path:
+    async def write_view(session: Any, doc: str, *, save_modified: bool = True) -> Path:
         e.written.append(doc)
         return tmp_path / doc
 

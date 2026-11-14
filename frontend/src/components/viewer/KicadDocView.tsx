@@ -61,7 +61,7 @@ export function KicadDocView(
       <AgentViewPane
         projectId={pane.projectId}
         doc={pane.doc}
-        rev={pane.rev}
+        rev={pane.agentRev === undefined ? pane.rev : pane.agentRev}
         theme={pane.theme}
         layers={layers}
         banner={

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { KcPage, KcViewer } from '@/lib/kicanvas';
 import { useComposer } from '@/stores/composer';
 import { KicadPane } from './KicadPane';
-import { KICANVAS_SCRIPT, LOAD_GRACE_MS } from './KicanvasPane';
+import { KICANVAS_SCRIPT, LOAD_COALESCE_CAP_MS, LOAD_COALESCE_MAX_MS, LOAD_GRACE_MS } from './KicanvasPane';
 import { insertMention, type KicadPaneProps } from './types';
 
 vi.mock('@/lib/kicanvas', async (orig) => ({
@@ -21,9 +21,15 @@ const root = page('/r', 'top.kicad_sch', 'Root', ['J1']);
 const power = page('/r/p', 'power.kicad_sch', 'Power');
 const reg = page('/r/p/g', 'reg.kicad_sch', 'Regulator', ['U3']);
 
+function fakeCamera() {
+  const center = { x: 0, y: 0, set: vi.fn((x: number, y: number) => Object.assign(center, { x, y })) };
+  return { center, zoom: 1 };
+}
+
 /** Stand-in for what the patched KiCanvas does inside <kicanvas-embed>. */
 class FakeKicanvas {
   inner = document.createElement('div');
+  camera = fakeCamera();
   viewer: KcViewer & { selected: unknown } = {
     selected: null,
     highlight: vi.fn((targets: string[]) => {
@@ -43,7 +49,7 @@ class FakeKicanvas {
     draw: vi.fn(),
     zoom_to_page: vi.fn(),
     zoom_to_selection: vi.fn(),
-    viewport: { zoom_about: vi.fn() },
+    viewport: { zoom_about: vi.fn(), camera: this.camera },
   };
   project = Object.assign(new EventTarget(), {
     active_page: root as KcPage | null,
@@ -89,6 +95,12 @@ async function renderPane(over: Partial<KicadPaneProps> = {}) {
     await act(async () => {});
   } };
 }
+
+const wait = async (ms: number) =>
+  act(async () => {
+    vi.advanceTimersByTime(ms);
+  });
+const srcOf = (embed: HTMLElement) => embed.querySelector('kicanvas-source')!.getAttribute('src');
 
 async function loadReady() {
   const kc = new FakeKicanvas(embedEl());
@@ -288,11 +300,306 @@ describe('KicanvasPane', () => {
     expect(kc2.project.set_active_page).toHaveBeenCalledWith(reg);
   });
 
+  it('coalesces reloads: a new rev while loading waits, then only the latest one loads', async () => {
+    const { rerenderWith } = await renderPane();
+    const first = embedEl();
+    await rerenderWith({ rev: 4 });
+    await rerenderWith({ rev: 5 });
+    expect(embedEl()).toBe(first); // the load in flight is not restarted
+    expect(first.querySelector('kicanvas-source')!.getAttribute('src')).toContain('?v=3');
+    await loadReady();
+    const second = embedEl();
+    expect(second).not.toBe(first);
+    expect(second.querySelector('kicanvas-source')!.getAttribute('src')).toContain('?v=5');
+    await loadReady();
+    expect(embedEl()).toBe(second);
+    expect(screen.getByRole('button', { name: 'Fit to view' })).toBeInTheDocument();
+  });
+
+  it('a load that never settles stops coalescing after LOAD_COALESCE_MAX_MS', async () => {
+    const { rerenderWith } = await renderPane();
+    const first = embedEl(); // never becomes ready nor fails
+    await rerenderWith({ rev: 4 });
+    await act(async () => {
+      vi.advanceTimersByTime(LOAD_COALESCE_MAX_MS - 10);
+    });
+    expect(embedEl()).toBe(first);
+    await act(async () => {
+      vi.advanceTimersByTime(20);
+    });
+    expect(embedEl()).not.toBe(first);
+    expect(embedEl().querySelector('kicanvas-source')!.getAttribute('src')).toContain('?v=4');
+    // the new load coalesces again (its own watchdog)
+    const second = embedEl();
+    await rerenderWith({ rev: 5 });
+    expect(embedEl()).toBe(second);
+    await loadReady();
+    expect(embedEl().querySelector('kicanvas-source')!.getAttribute('src')).toContain('?v=5');
+  });
+
+  it('backs off after an overdue replacement; a ready load sets twice its duration', async () => {
+    const { rerenderWith } = await renderPane();
+    const first = embedEl(); // a load slower than the limit
+    await rerenderWith({ rev: 4 });
+    await wait(LOAD_COALESCE_MAX_MS + 10);
+    const second = embedEl();
+    expect(second).not.toBe(first); // replaced: the next load gets twice the time
+    await rerenderWith({ rev: 5 });
+    await wait(LOAD_COALESCE_MAX_MS + 10);
+    expect(embedEl()).toBe(second);
+    await wait(LOAD_COALESCE_MAX_MS);
+    const third = embedEl();
+    expect(third).not.toBe(second);
+    expect(third.querySelector('kicanvas-source')!.getAttribute('src')).toContain('?v=5');
+    await rerenderWith({ rev: 6 });
+    await wait(2 * LOAD_COALESCE_MAX_MS + 10);
+    expect(embedEl()).toBe(third); // doubled again: 4x
+    await loadReady(); // ready after > 2x: the limit is twice that, not back at the base
+    const fourth = embedEl();
+    expect(fourth.querySelector('kicanvas-source')!.getAttribute('src')).toContain('?v=6');
+    await rerenderWith({ rev: 7 });
+    await wait(LOAD_COALESCE_MAX_MS + 10);
+    expect(embedEl()).toBe(fourth);
+  });
+
+  it('a load slower than the base limit is not discarded every other time', async () => {
+    const { rerenderWith } = await renderPane();
+    await rerenderWith({ rev: 4 });
+    await wait(LOAD_COALESCE_MAX_MS + 10); // overdue: replaced, the limit doubles to 2x
+    const second = embedEl();
+    expect(srcOf(second)).toContain('?v=4');
+    await wait(90_000 - LOAD_GRACE_MS); // it started on the overdue render, 10 ms in
+    await loadReady(); // took 90 s: the limit becomes 180 s, not 60 s again
+    await rerenderWith({ rev: 5 });
+    const third = embedEl();
+    expect(third).not.toBe(second);
+    await rerenderWith({ rev: 6 });
+    await wait(180_000 - 10);
+    expect(embedEl()).toBe(third);
+    await wait(20);
+    const fourth = embedEl();
+    expect(fourth).not.toBe(third);
+    expect(srcOf(fourth)).toContain('?v=6');
+    await loadReady(); // a fast load lowers it to the base again
+    await rerenderWith({ rev: 7 });
+    const fifth = embedEl();
+    await rerenderWith({ rev: 8 });
+    await wait(LOAD_COALESCE_MAX_MS - 10);
+    expect(embedEl()).toBe(fifth);
+    await wait(20);
+    expect(srcOf(embedEl())).toContain('?v=8');
+  });
+
+  it('the back-off is capped at LOAD_COALESCE_CAP_MS', async () => {
+    expect(LOAD_COALESCE_CAP_MS).toBe(8 * LOAD_COALESCE_MAX_MS);
+    const { rerenderWith } = await renderPane();
+    let rev = 3;
+    // 1x, 2x, 4x, 8x, then the cap holds
+    for (const limit of [1, 2, 4, 8, 8].map((n) => n * LOAD_COALESCE_MAX_MS)) {
+      const shown = embedEl();
+      await rerenderWith({ rev: ++rev });
+      await wait(limit - 10);
+      expect(embedEl()).toBe(shown);
+      await wait(20);
+      expect(embedEl()).not.toBe(shown);
+      expect(srcOf(embedEl())).toContain(`?v=${rev}`);
+    }
+  });
+
+  it('a failed load and a retry reset the back-off to the base limit', async () => {
+    const { rerenderWith } = await renderPane();
+    await rerenderWith({ rev: 4 });
+    await wait(LOAD_COALESCE_MAX_MS + 10); // replaced: 2x
+    await rerenderWith({ rev: 5 });
+    await wait(2 * LOAD_COALESCE_MAX_MS + 10); // replaced: 4x
+    act(() => {
+      window.dispatchEvent(Object.assign(new Event('unhandledrejection'), { reason: new TypeError('Load failed') }));
+    });
+    expect(screen.getByRole('alert')).toHaveTextContent('Load failed');
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await act(async () => {});
+    const retried = embedEl();
+    await rerenderWith({ rev: 6 });
+    await wait(LOAD_COALESCE_MAX_MS - 10);
+    expect(embedEl()).toBe(retried);
+    await wait(20);
+    expect(srcOf(embedEl())).toContain('?v=6');
+  });
+
+  it('an overdue load without a newer rev is left alone', async () => {
+    await renderPane();
+    const first = embedEl();
+    await act(async () => {
+      vi.advanceTimersByTime(LOAD_COALESCE_MAX_MS + 10);
+    });
+    expect(embedEl()).toBe(first);
+  });
+
+  it('a find while a reload is pending waits for the new embed', async () => {
+    const onFindResult = vi.fn();
+    const { rerenderWith } = await renderPane({ onFindResult });
+    const kc = await loadReady();
+    await rerenderWith({ onFindResult, rev: 4, visible: false }); // reload deferred: shown embed is stale
+    await rerenderWith({ onFindResult, rev: 4, visible: false, find: { ref: 'J1', seq: 1 } });
+    expect(kc.viewer.select).not.toHaveBeenCalled();
+    expect(onFindResult).not.toHaveBeenCalled();
+    await rerenderWith({ onFindResult, rev: 4, visible: true, find: { ref: 'J1', seq: 1 } });
+    const kc2 = await loadReady();
+    expect(kc2.viewer.select).toHaveBeenCalledWith('J1');
+    expect(onFindResult).toHaveBeenCalledExactlyOnceWith('J1', true);
+  });
+
+  it('a new rev while a load fails applies once retried', async () => {
+    const { rerenderWith } = await renderPane();
+    await rerenderWith({ rev: 4 });
+    act(() => {
+      window.dispatchEvent(Object.assign(new Event('unhandledrejection'), { reason: new TypeError('Load failed') }));
+    });
+    expect(screen.getByRole('alert')).toHaveTextContent('Load failed');
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await act(async () => {});
+    expect(embedEl().querySelector('kicanvas-source')!.getAttribute('src')).toContain('?v=4');
+  });
+
   it('changes the theme without a page reload by re-creating the embed', async () => {
     const { rerenderWith } = await renderPane();
     await loadReady();
     await rerenderWith({ theme: 'light' });
     expect(embedEl().getAttribute('theme')).toBe('kicad');
+  });
+
+  describe('camera across reloads', () => {
+    /** The user panned/zoomed: the camera moved away from the fit. */
+    const look = (kc: FakeKicanvas, x: number, y: number, zoom: number) => Object.assign(kc.camera.center, { x, y }) && (kc.camera.zoom = zoom);
+
+    it('restores the camera after a reload of the same page instead of fitting', async () => {
+      const { rerenderWith } = await renderPane();
+      const kc = await loadReady();
+      look(kc, 12, 34, 5);
+      await rerenderWith({ rev: 4 });
+      const kc2 = await loadReady();
+      expect(kc2.camera.center.set).toHaveBeenCalledWith(12, 34);
+      expect(kc2.camera.zoom).toBe(5);
+      expect(kc2.viewer.zoom_to_page).not.toHaveBeenCalled();
+      expect(kc2.viewer.draw).toHaveBeenCalled();
+    });
+
+    it('restores it on a sub-sheet once that sheet is loaded again', async () => {
+      const { rerenderWith } = await renderPane();
+      const kc = await loadReady();
+      act(() => kc.project.set_active_page(reg.project_path));
+      await act(async () => {
+        vi.advanceTimersByTime(10);
+      });
+      look(kc, 7, 8, 9);
+      await rerenderWith({ theme: 'light' }); // a theme change reloads too
+      const kc2 = await loadReady();
+      await act(async () => {
+        vi.advanceTimersByTime(10);
+      });
+      expect(kc2.project.set_active_page).toHaveBeenCalledWith(reg);
+      expect(kc2.viewer.zoom_to_page).toHaveBeenCalledTimes(1); // the root page shown first
+      expect(kc2.camera.center.set).toHaveBeenCalledTimes(1); // then the restored sheet
+      expect(kc2.camera.center.set).toHaveBeenCalledWith(7, 8);
+      expect(kc2.camera.zoom).toBe(9);
+    });
+
+    it('fits when the reload shows another page than the one last loaded', async () => {
+      const { rerenderWith } = await renderPane();
+      const kc = await loadReady();
+      look(kc, 1, 2, 3);
+      act(() => kc.project.set_active_page(reg.project_path)); // reloads before reg is loaded
+      await rerenderWith({ rev: 4 });
+      const kc2 = await loadReady();
+      await act(async () => {
+        vi.advanceTimersByTime(10);
+      });
+      expect(kc2.project.active_page).toBe(reg);
+      expect(kc2.camera.center.set).not.toHaveBeenCalled();
+      expect(kc2.viewer.zoom_to_page).toHaveBeenCalled();
+    });
+
+    it('fits when no camera was captured or the new viewer has none', async () => {
+      const { rerenderWith } = await renderPane();
+      const kc = await loadReady();
+      look(kc, 1, 2, 3);
+      await rerenderWith({ rev: 4 });
+      const kc2 = new FakeKicanvas(embedEl());
+      delete kc2.viewer.viewport!.camera;
+      act(() => kc2.load());
+      await act(async () => {
+        vi.advanceTimersByTime(LOAD_GRACE_MS + 10);
+      });
+      expect(kc2.viewer.zoom_to_page).toHaveBeenCalled();
+      delete kc2.viewer.viewport!.camera; // nothing to capture either
+      await rerenderWith({ rev: 5 });
+      const kc3 = await loadReady();
+      expect(kc3.camera.center.set).not.toHaveBeenCalled();
+      expect(kc3.viewer.zoom_to_page).toHaveBeenCalled();
+    });
+
+    it('a pending find wins over the restored camera', async () => {
+      const onFindResult = vi.fn();
+      const { rerenderWith } = await renderPane({ onFindResult });
+      const kc = await loadReady();
+      look(kc, 1, 2, 3);
+      await rerenderWith({ onFindResult, rev: 4 });
+      await rerenderWith({ onFindResult, rev: 4, find: { ref: 'J1', seq: 1 } }); // while reloading
+      const kc2 = await loadReady();
+      expect(kc2.camera.center.set).not.toHaveBeenCalled();
+      expect(kc2.viewer.zoom_to_selection).toHaveBeenCalled();
+      expect(onFindResult).toHaveBeenCalledWith('J1', true);
+    });
+  });
+
+  describe('live view', () => {
+    it('reports the schematic page shown (filename)', async () => {
+      const onActiveSheet = vi.fn();
+      await renderPane({ onActiveSheet });
+      expect(onActiveSheet).not.toHaveBeenCalled(); // not while loading
+      const kc = await loadReady();
+      expect(onActiveSheet).toHaveBeenLastCalledWith('top.kicad_sch');
+      act(() => kc.project.set_active_page(reg.project_path));
+      expect(onActiveSheet).toHaveBeenLastCalledWith('reg.kicad_sch');
+      expect(onActiveSheet).not.toHaveBeenCalledWith(null);
+    });
+
+    it('does not report boards', async () => {
+      const onActiveSheet = vi.fn();
+      await renderPane({ doc: 'pcb', files: ['top.kicad_pcb'], onActiveSheet });
+      await loadReady();
+      expect(onActiveSheet).not.toHaveBeenCalled();
+    });
+
+    it('a full load reports the stale seq when it started (newer marks stay)', async () => {
+      const onLoaded = vi.fn();
+      const { rerenderWith } = await renderPane({ onLoaded, staleSheets: ['sub/reg.kicad_sch'], staleSeq: 1 });
+      await rerenderWith({ onLoaded, staleSheets: ['sub/reg.kicad_sch', 'power.kicad_sch'], staleSeq: 2 }); // while loading
+      expect(onLoaded).not.toHaveBeenCalled();
+      await loadReady();
+      expect(onLoaded).toHaveBeenCalledExactlyOnceWith(1);
+      await rerenderWith({ onLoaded, staleSheets: ['power.kicad_sch'], staleSeq: 2, theme: 'light' }); // full reload
+      await loadReady();
+      expect(onLoaded).toHaveBeenLastCalledWith(2);
+    });
+
+    it('boards report no load', async () => {
+      const onLoaded = vi.fn();
+      await renderPane({ doc: 'pcb', files: ['top.kicad_pcb'], onLoaded });
+      await loadReady();
+      expect(onLoaded).not.toHaveBeenCalled();
+    });
+
+    it('marks sheets changed since the load in the tree and on its toggle', async () => {
+      const { rerenderWith } = await renderPane();
+      await loadReady();
+      expect(screen.getByRole('button', { name: 'Sheets (3)' })).toBeInTheDocument();
+      await rerenderWith({ staleSheets: ['sub/reg.kicad_sch'] });
+      fireEvent.click(screen.getByRole('button', { name: 'Sheets (3, updated)' }));
+      const regulator = screen.getByRole('button', { name: 'Regulator, updated' });
+      expect(within(regulator).getByText(', updated')).toHaveClass('sr-only');
+      expect(screen.getByRole('button', { name: 'Power' })).not.toHaveTextContent('updated');
+    });
   });
 
   describe('highlight', () => {

@@ -25,7 +25,7 @@ async def test_snapshot_written_without_version_bump(ecc83_session: KicadSession
     assert path == snapshot_path(ecc83_session.project, "pcb")
     assert path.is_file() and path.stat().st_size > 1000
     assert ".kicad-agent/view" in path.as_posix()
-    assert ecc83_session.view_version == before  # X2: only the turn-end publish bumps
+    assert ecc83_session.view_version == before  # X2: only publish_view bumps
 
 
 # A KiCad-authored design rules file shipped with the base image's demos.

@@ -1,4 +1,9 @@
-"""History wiring: snapshot store, document hashes, view publishing and run hooks."""
+"""History wiring: snapshot store, document hashes, view publishing and run hooks.
+
+Lock order, always: `HistoryService.lock` (restore / turn-start check / autosave / live
+publish) -> `HistoryService.view_lock` (every write of the view directory) -> the
+session's locks.
+"""
 
 from __future__ import annotations
 
@@ -6,14 +11,21 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from copperchat.agent.protocol import ViewUpdatedFrame
 from copperchat.db import Database
+from copperchat.history.live import LiveViewPublisher
 from copperchat.history.store import DocumentHashRepo, HistoryStore, document_files, sha256_file
 from copperchat.kicad_session import DocKind, KicadSession, KicadSessionManager
 from copperchat.projects import Project
 from copperchat.views import render_view, write_kicanvas_snapshot
+from copperchat.views.snapshot import (
+    VIEW_SUFFIXES,
+    copy_disk_schematic,
+    view_file_hashes,
+    write_view_snapshots,
+)
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -22,6 +34,14 @@ if TYPE_CHECKING:
     from copperchat.history.hooks import HistoryHooks
 
 log = logging.getLogger(__name__)
+
+
+class ViewWriter(Protocol):
+    """`write_kicanvas_snapshot`'s shape (tests substitute it)."""
+
+    def __call__(
+        self, session: KicadSession, doc: DocKind, *, save_modified: bool = ...
+    ) -> Awaitable[Path]: ...
 
 
 async def _default_preview(session: KicadSession, doc: DocKind) -> bytes | None:
@@ -41,13 +61,16 @@ class HistoryService:
         self.broadcaster = broadcaster
         self.runtime = runtime
         self.hashes = DocumentHashRepo(db)
-        self.write_view: Callable[[KicadSession, DocKind], Awaitable[Path]] = (
-            write_kicanvas_snapshot
-        )
+        self.write_view: ViewWriter = write_kicanvas_snapshot
         self.render_preview: Callable[[KicadSession, DocKind], Awaitable[bytes | None]] = (
             _default_preview
         )
         self._locks: dict[str, asyncio.Lock] = {}
+        self._view_locks: dict[str, asyncio.Lock] = {}
+        # Per project: hashes of the view files as of the last view-updated frame, i.e.
+        # what the clients have loaded ("" = unknown, listed by the next publish).
+        self._view_hashes: dict[str, dict[str, str]] = {}
+        self.live = LiveViewPublisher(self)
         # (project, changed files) after the turn-start check found an external change
         # (E8b: a running/approved/paused plan is paused). Errors are logged.
         self.on_external_change: list[Callable[[Project, list[str]], Awaitable[None]]] = []
@@ -82,6 +105,12 @@ class HistoryService:
         """Serialises restore against the turn-start hash check and the turn-end autosave."""
         return self._locks.setdefault(project.id, asyncio.Lock())
 
+    def view_lock(self, project: Project) -> asyncio.Lock:
+        """Serialises every write of the project's view directory (publishes and the
+        open snapshots), so the hashes before/after a write belong to that write. Taken
+        inside `lock` when both are needed, never the other way round."""
+        return self._view_locks.setdefault(project.id, asyncio.Lock())
+
     @staticmethod
     def docs_of(project: Project) -> set[DocKind]:
         docs: set[DocKind] = set()
@@ -99,27 +128,123 @@ class HistoryService:
         return current
 
     async def publish_view(
-        self, project: Project, session: KicadSession, docs: set[DocKind]
+        self,
+        project: Project,
+        session: KicadSession,
+        docs: set[DocKind],
+        *,
+        live: bool = False,
     ) -> int:
-        """Fresh KiCanvas snapshots for `docs`, then ONE view-updated frame (X2)."""
+        """Fresh KiCanvas snapshots for `docs`, then ONE view-updated frame (X2) whose
+        `changedFiles` lists the view files that differ from the previous frame (changed,
+        added or removed sub-sheets). `live` (the debounced mid-turn schematic refresh):
+        no change -> no frame and no version bump; a schematic with unsaved edits (a
+        failed partial edit the turn end throws away) is never saved for it: the write
+        raises `DocumentModified` and nothing is published. Every other publish always
+        sends, even unchanged - the turn end is the guaranteed final state."""
         docs = docs & self.docs_of(project)
         if not docs:
             return session.view_version
-        for doc in sorted(docs):
-            await self.write_view(session, doc)
+
+        async def write() -> None:
+            for doc in sorted(docs):
+                if live:
+                    await self.write_view(session, doc, save_modified=False)
+                else:
+                    await self.write_view(session, doc)
+
+        async with self.view_lock(project):
+            return await self._publish_locked(project, session, docs, write, live=live)
+
+    async def publish_disk_view(self, project: Project) -> int | None:
+        """The turn end's catch-up after live frames: the schematic view files become
+        byte copies of the project's files ON DISK (the last save - what the recovery
+        notices say the design is back at), without KiCad (no call, no restart, never a
+        save), then ONE non-live frame like `publish_view`. No open session (no version
+        source): nothing is written or sent, returns None."""
+        if project.sch_file is None:
+            return None
+        async with self.view_lock(project):
+            session = self.open_session(project)
+            if session is None:
+                return None
+
+            async def write() -> None:
+                await asyncio.to_thread(copy_disk_schematic, project)
+
+            return await self._publish_locked(project, session, {"sch"}, write, live=False)
+
+    async def _publish_locked(
+        self,
+        project: Project,
+        session: KicadSession,
+        docs: set[DocKind],
+        write: Callable[[], Awaitable[None]],
+        *,
+        live: bool,
+    ) -> int:
+        """`write` the view files of `docs`, then the frame (under `view_lock`)."""
+        known = self._view_hashes.get(project.id)
+        if known is None:  # nothing published yet: what is in the view directory now
+            all_docs = self.docs_of(project)
+            known_now = await asyncio.to_thread(view_file_hashes, project, all_docs)
+        else:
+            known_now = known
+        before = {k: v for k, v in known_now.items() if _of_docs(k, docs)}
+        try:
+            await write()
+        except BaseException:
+            # Whatever was written is not what the clients have: the baseline
+            # stays, so the next publish still lists it.
+            self._view_hashes.setdefault(project.id, known_now)
+            raise
+        after = await asyncio.to_thread(view_file_hashes, project, docs)
+        changed = sorted(k for k in before.keys() | after.keys() if before.get(k) != after.get(k))
+        if live and not changed:
+            return session.view_version
+        rest = {k: v for k, v in known_now.items() if not _of_docs(k, docs)}
+        self._view_hashes[project.id] = rest | after
         session.view_version += 1
+        version = session.view_version
         await self.broadcaster.publish(
             project.id,
             ViewUpdatedFrame(
-                project_id=project.id, docs=sorted(docs), version=session.view_version
+                project_id=project.id,
+                docs=sorted(docs),
+                version=version,
+                changed_files=changed,
+                live=True if live else None,
             ),
         )
-        return session.view_version
+        return version
+
+    async def write_open_snapshots(self, session: KicadSession) -> dict[DocKind, list[str]]:
+        """`write_view_snapshots` for the open response (X1/X3), under the view lock. It
+        sends no frame: before the first publish what it wrote is the baseline; after
+        it, every file that now differs from what the clients have is marked unknown,
+        so the next publish lists it (also a live one that changed nothing itself)."""
+        project = session.project
+        async with self.view_lock(project):
+            try:
+                return await write_view_snapshots(session)
+            finally:
+                now = await asyncio.to_thread(view_file_hashes, project, self.docs_of(project))
+                known = self._view_hashes.get(project.id)
+                if known is None:
+                    self._view_hashes[project.id] = now
+                else:
+                    for name in known.keys() | now.keys():
+                        if known.get(name) != now.get(name):
+                            known[name] = ""
 
     def hooks_factory(self, project: Project, engine: RunEngine) -> HistoryHooks:
         from copperchat.history.hooks import HistoryHooks
 
         return HistoryHooks(self, project, engine)
+
+
+def _of_docs(name: str, docs: set[DocKind]) -> bool:
+    return name.endswith(tuple(VIEW_SUFFIXES[d] for d in docs))
 
 
 def install_history(app: FastAPI) -> HistoryService:

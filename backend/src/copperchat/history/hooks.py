@@ -1,5 +1,6 @@
 """Run hooks: external-change check before a turn, snapshot before the first mutation,
-autosave + view refresh after a turn that changed documents, crash recovery."""
+debounced live schematic view while a turn edits, autosave + view refresh after a turn
+that changed documents, crash recovery."""
 
 from __future__ import annotations
 
@@ -109,24 +110,59 @@ class HistoryHooks(RunHooks):
                 "(the project directory may be full or not writable).",
             ) from exc
 
+    def on_documents_changed(self, turn: TurnInfo, docs: set[DocKind]) -> None:
+        if "sch" in docs:  # the board stays turn-end only
+            self.svc.live.schedule(self.project)
+
+    async def on_engine_close(self) -> None:
+        await self.svc.live.close(self.project)
+
     async def on_turn_end(self, turn: TurnInfo, outcome: TurnOutcome) -> None:
+        # Every outcome: no live publish of this turn after this point, and none runs
+        # into the autosave / recovery below.
+        live_sent = await self.svc.live.finish(self.project)
+        # Live frames went out but this turn end published no schematic (a failed turn,
+        # a failed autosave, a recovery that raised, ...): the agent view and Live-off
+        # clients only follow non-live frames, so send one of the schematic on disk.
+        try:
+            published = await self._turn_end(turn, outcome, live_sent)
+        except Exception:
+            if live_sent:
+                await self._catch_up_view()
+            raise
+        if live_sent and not published:
+            await self._catch_up_view()
+
+    async def _catch_up_view(self) -> None:
+        """Best effort: a non-live schematic frame of the files ON DISK (the last save:
+        what the recovery notices say the design is back at). Never calls KiCad - it may
+        be down after a failed restart, and its document may hold unsaved edits that a
+        view copy would save."""
+        try:
+            async with self.svc.lock(self.project):
+                await self.svc.publish_disk_view(self.project)
+        except Exception:  # only the viewer lags
+            log.warning("view refresh after live frames failed", exc_info=True)
+
+    async def _turn_end(self, turn: TurnInfo, outcome: TurnOutcome, live_sent: bool) -> bool:
+        """Autosave / recovery; True if it published the schematic (non-live)."""
         if outcome.document_inconsistent:
             # The engine already posted the error row (X18). KiCad's in-memory document
             # is not trustworthy: never autosave it, reload from disk instead.
             await self._recover_inconsistent(turn, outcome)
-            return
+            return False
         if outcome.kicad_failed:
             # The engine already posted the "KiCad stopped responding" row for this
             # turn (X18). Its in-memory changes are lost: no autosave.
             await self._recover(turn, outcome)
-            return
+            return False
         # Every reason incl. interrupted / rate_limited: what changed is in KiCad's memory.
         docs: set[DocKind] = set(outcome.changed_docs)
         if not docs:
-            return
+            return False
         session = self.svc.open_session(self.project)
         if session is None or session.read_only:
-            return
+            return False
         # Every edit saved itself (#6): an unmodified schematic is on disk already. The
         # board has no modified flag; it is saved whenever the turn changed it.
         saved: set[DocKind] = set() if session.modified else docs & {"sch"}
@@ -141,13 +177,19 @@ class HistoryHooks(RunHooks):
                 failure = exc
             # Each successful save() recorded the hashes itself (HistoryService save
             # listener), so a partial autosave is never taken for an external change.
+        published = False
         if saved:
+            # After live frames the schematic rides along (one frame, also when only
+            # the board was saved) - unless it holds unsaved edits (its save failed).
+            ride = live_sent and not session.modified
+            publish: set[DocKind] = saved | {"sch"} if ride else saved
             try:
-                await self.svc.publish_view(self.project, session, saved)
+                await self.svc.publish_view(self.project, session, publish)
+                published = "sch" in publish
             except Exception:  # the design is saved; only the viewer refresh failed
                 log.warning("view refresh after autosave failed", exc_info=True)
         if failure is None:
-            return
+            return published
         # Not a kicad_failed turn: the engine has posted nothing, so report the save.
         unsaved = ", ".join(sorted(docs - saved))
         await self.engine.post_error(
@@ -156,6 +198,7 @@ class HistoryHooks(RunHooks):
             {"code": "autosave_failed"},
         )
         await self._recover(turn, outcome)
+        return published
 
     async def _recover_inconsistent(self, turn: TurnInfo, outcome: TurnOutcome) -> None:
         """Spec §5.1 step 8 / §5.4: no autosave; reopen the session from disk once, then

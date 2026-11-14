@@ -52,7 +52,10 @@ async def open_project(project_id: str, request: Request, _: CurrentUser) -> dic
     # snapshot that cannot be written leaves that viewer empty; it must not make
     # the (already open) project unusable for the agent.
     try:
-        view_files = await write_view_snapshots(session)
+        # Under the history's view lock (a live publish may be writing the same files).
+        history = getattr(state, "history", None)
+        write = write_view_snapshots if history is None else history.write_open_snapshots
+        view_files = await write(session)
     except KicadUnavailable:
         raise
     except (CopperChatError, OSError, ApiError) as exc:

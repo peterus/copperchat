@@ -16,7 +16,12 @@ from kipy.errors import ConnectionError as KipyConnectionError
 from copperchat.config import Settings
 from copperchat.db import utcnow_iso
 from copperchat.errors import CopperChatError, DocumentNotOpen, ReadOnlyProject
-from copperchat.kicad_session.errors import KicadCallTimeout, KicadUnavailable, LibrariesLoading
+from copperchat.kicad_session.errors import (
+    DocumentModified,
+    KicadCallTimeout,
+    KicadUnavailable,
+    LibrariesLoading,
+)
 from copperchat.kicad_session.launcher import ServerLauncher
 from copperchat.projects import (
     LockStatus,
@@ -636,14 +641,16 @@ class KicadSession:
                 ) from exc
             self.jobs_stale = False
 
-    async def save_copy(self, doc: DocKind, dest: Path) -> Path:
+    async def save_copy(self, doc: DocKind, dest: Path, *, save_modified: bool = True) -> Path:
         """SaveCopyOfDocument to `dest`.
 
         Spike 1C (Q4): for a schematic the API writes only the root sheet, so the
         sub-sheet files named by the hierarchy are byte-copied from the project
         directory next to it (same relative paths). Those files are only current
         after a save, so a modified schematic is saved first (spike 2A, Q8: else
-        stale sub-sheets, and a crash on a new sheet).
+        stale sub-sheets, and a crash on a new sheet). `save_modified=False` (the live
+        view: the document may hold a failed partial edit that must never be saved)
+        raises `DocumentModified` instead, without saving or copying anything.
 
         For a board, KiCad copies the project's `.kicad_dru` next to the copy and
         refuses ("board could not be saved to ...") when `<dest>.kicad_dru` already
@@ -670,6 +677,8 @@ class KicadSession:
                 and not self.read_only
                 and await self.call(lambda h: h.schematic().is_document_modified())
             ):
+                if not save_modified:
+                    raise DocumentModified("the schematic has unsaved edits")
                 await self._save_locked("sch")
             sheet_files = await self.call(_copy)
         if sheet_files:

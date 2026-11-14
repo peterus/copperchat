@@ -143,6 +143,15 @@ class RunHooks:
     async def on_turn_end(self, turn: TurnInfo, outcome: TurnOutcome) -> None:
         return None
 
+    def on_documents_changed(self, turn: TurnInfo, docs: set[DocKind]) -> None:
+        """A tool call of `turn` changed `docs` (sync, inside the tool call: schedule
+        work, never await it; the live schematic view hangs off this)."""
+        return None
+
+    async def on_engine_close(self) -> None:
+        """The engine closes (shutdown): stop background work started by the hooks."""
+        return None
+
     async def before_model_input(self, turn: TurnInfo) -> list[str]:
         """Extra notices for the model input of this turn (C5 context injection). Each
         entry is one notice: it gets exactly one ``[CopperChat notice]`` prefix at its
@@ -160,7 +169,8 @@ class RunHooks:
 class ChainedHooks(RunHooks):
     """Several hooks in order (history first, E-C5). A failing start/mutation/input hook
     stops the chain and propagates (a failed snapshot must fail the tool call); turn-end
-    and items-failed hooks all run, then the first error propagates."""
+    and items-failed hooks all run, then the first error propagates. Documents-changed
+    and engine-close hooks all run; their errors are logged, never raised."""
 
     def __init__(self, hooks: list[RunHooks]) -> None:
         self.hooks = hooks
@@ -186,6 +196,20 @@ class ChainedHooks(RunHooks):
                 first = first or exc
         if first is not None:
             raise first
+
+    def on_documents_changed(self, turn: TurnInfo, docs: set[DocKind]) -> None:
+        for h in self.hooks:
+            try:
+                h.on_documents_changed(turn, docs)
+            except Exception:
+                log.exception("on_documents_changed hook failed")
+
+    async def on_engine_close(self) -> None:
+        for h in self.hooks:
+            try:
+                await h.on_engine_close()
+            except Exception:
+                log.exception("on_engine_close hook failed")
 
     async def before_model_input(self, turn: TurnInfo) -> list[str]:
         out: list[str] = []
@@ -378,6 +402,10 @@ class RunEngine:
                 await task
         for t in list(self._bg):
             t.cancel()
+        try:  # after the bursts: no tool call schedules new hook work any more
+            await self.hooks.on_engine_close()
+        except Exception:
+            log.exception("on_engine_close hook failed")
 
     async def submit(
         self,
@@ -1343,9 +1371,17 @@ class RunEngine:
             turn.mutated = True
 
     def _on_documents_changed(self, docs: set[DocKind]) -> None:
-        # X2: Phase 5 never publishes view-updated; Phase 7 does it from TurnOutcome.
-        if self._turn is not None:
-            self._turn.changed |= docs
+        # X2: the engine never publishes view-updated itself. The history hooks publish
+        # the turn's final state from TurnOutcome and a debounced live schematic view
+        # from this callback (they only schedule it: the tool call never waits).
+        turn = self._turn
+        if turn is None:
+            return
+        turn.changed |= docs
+        try:
+            self.hooks.on_documents_changed(turn.info, docs)
+        except Exception:  # the viewer may lag; the tool call must not fail
+            log.exception("on_documents_changed hook failed")
 
     def _on_kicad_unavailable(self, exc: Exception) -> None:
         log.warning("KiCad unavailable during turn: %s", exc)

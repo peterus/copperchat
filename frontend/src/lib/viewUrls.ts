@@ -41,3 +41,14 @@ export function agentViewUrl(o: {
   if (o.rev !== null) q.push(`v=${o.rev}`);
   return `${apiUrl(`${project(o.projectId)}/agent-view`)}?${q.join('&')}`;
 }
+
+const basename = (name: string) => name.slice(name.lastIndexOf('/') + 1);
+
+/**
+ * Whether two view file names denote the same file: equal, or equal basenames when one of them
+ * has no directory (KiCanvas may only know a sheet's basename, `viewFiles` has the relative path).
+ */
+export function sameViewFile(a: string, b: string): boolean {
+  if (a === b) return true;
+  return (!a.includes('/') || !b.includes('/')) && basename(a) === basename(b);
+}

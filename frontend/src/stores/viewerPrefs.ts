@@ -52,6 +52,29 @@ export const useViewerPrefs = create<ViewerPrefsState>()((set, get) => ({
   },
 }));
 
+/**
+ * "Live view" (default on): the KiCad schematic follows the agent's edits mid-turn. Off: it
+ * refreshes when the agent's turn ends. Client-only (the server always publishes live frames);
+ * the view store owns the toggle, this is its per-browser persistence.
+ */
+export const LIVE_VIEW_KEY = 'copperchat.viewer.live';
+
+export function readLiveView(): boolean {
+  try {
+    return localStorage.getItem(LIVE_VIEW_KEY) !== 'false';
+  } catch {
+    return true; // unavailable storage: default
+  }
+}
+
+export function saveLiveView(on: boolean): void {
+  try {
+    localStorage.setItem(LIVE_VIEW_KEY, String(on));
+  } catch {
+    // storage unavailable (private mode): applies for this session only
+  }
+}
+
 export interface LargeFileGuard {
   bytes: number;
   limitMb: number;

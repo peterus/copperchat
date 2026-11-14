@@ -141,6 +141,24 @@ in-process MCP server (the first edit of a turn takes the turn snapshot) → mes
 and broadcast → turn end: ERC delta of an editing turn, plan pause, autosave, snapshot,
 `view-updated` → viewer reload; a push notification if no client is visible.
 
+While a turn edits the schematic, the viewer follows near-live: every schematic change
+(`RunHooks.on_documents_changed`) schedules a debounced publish in `history/live.py`
+(`LIVE_VIEW_*`: trailing debounce, minimum interval, maximum wait). It runs under the
+history lock (never overlapping a restore, the turn-start check or the autosave), writes
+the schematic snapshots and sends `view-updated` with `live: true` — only if a view file
+changed. A schematic with unsaved edits (a failed partial edit, which the turn end
+reloads from disk) is never saved for it: that live publish is skipped. Every
+`view-updated` carries `changedFiles` (view files that differ from the previous frame,
+from before/after hashes under `HistoryService.view_lock`), so the viewer reloads only
+those; live frames reload only the KiCad pane, the agent view and Changes panel follow
+the turn-end frame. The turn end stops the live publisher first; its own publish is the
+guaranteed final state and always sent. After live frames, also a turn end that publishes
+nothing itself (KiCad failed, inconsistent document, failed autosave) sends a non-live
+schematic frame once its recovery is done (`HistoryService.publish_disk_view`): the
+schematic view files are byte-copied from the project's files on disk — the last save the
+recovery notices name — without any KiCad call, so it never restarts KiCad or saves. The board stays
+turn-end only.
+
 ## CI
 
 `.github/workflows/ci.yml`:
