@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from copperchat.agent.engine import TurnOutcome
 from copperchat.agent.protocol import ViewUpdatedFrame
 from copperchat.history.live import LiveViewPublisher
 from copperchat.kicad_session import DocKind, KicadSession
@@ -82,7 +83,12 @@ def make_rig(opened: Opened, **kw: Any) -> Rig:
     real: Callable[..., Awaitable[int]] = svc.publish_view
 
     async def recording(
-        project: Project, session: KicadSession, docs: set[DocKind], *, live: bool = False
+        project: Project,
+        session: KicadSession,
+        docs: set[DocKind],
+        *,
+        live: bool = False,
+        **kw: Any,
     ) -> int:
         rig.calls.append((t.now, set(docs), live))
         if rig.gate is not None:
@@ -90,9 +96,10 @@ def make_rig(opened: Opened, **kw: Any) -> Rig:
         if rig.error is not None:
             raise rig.error
         if not live:
-            return await real(project, session, docs, live=live)
+            return await real(project, session, docs, live=live, **kw)
         # No real live write: its hashing thread finishes in wall-clock time, so the
         # fake-clock time of the publish's end would depend on the machine's load.
+        session.view_version += 1  # a live frame was sent
         return session.view_version
 
     svc.publish_view = recording  # type: ignore[method-assign]
@@ -301,6 +308,118 @@ async def test_turn_end_finishes_the_live_publisher_before_the_autosave(rig: Rig
     assert order == ["finish", "finish", "publish:False"]
     await rig.time.advance(30)
     assert order == ["finish", "finish", "publish:False"]
+
+
+# ---- the turn end always catches up after live frames (non-live schematic frame)
+
+
+async def live_frame_sent(rig: Rig) -> None:
+    rig.opened.hooks.on_documents_changed(turn(), {"sch"})
+    await rig.time.advance(2.0)
+    assert rig.calls == [(2.0, {"sch"}, True)]
+
+
+def turn_end_calls(rig: Rig) -> list[tuple[set[DocKind], bool]]:
+    return [(docs, live) for _, docs, live in rig.calls[1:]]
+
+
+async def test_finish_reports_whether_a_live_frame_was_sent(rig: Rig) -> None:
+    project = rig.opened.project
+    rig.schedule()
+    await rig.time.advance(1.0)
+    assert await rig.live.finish(project) is False  # cancelled before publishing
+    rig.schedule()
+    await rig.time.advance(2.0)
+    assert await rig.live.finish(project) is True
+
+
+async def test_unchanged_live_publish_counts_as_not_sent(rig: Rig) -> None:
+    real = rig.opened.env.svc.publish_view
+
+    async def unchanged(project: Project, session: KicadSession, docs: Any, **kw: Any) -> int:
+        if kw.get("live"):
+            return session.view_version  # nothing changed: no frame, no bump
+        return await real(project, session, docs, **kw)
+
+    rig.opened.env.svc.publish_view = unchanged  # type: ignore[method-assign]
+    rig.schedule()
+    await rig.time.advance(2.0)
+    assert await rig.live.finish(rig.opened.project) is False
+
+
+async def test_success_after_live_frames_sends_exactly_one_turn_end_frame(rig: Rig) -> None:
+    await live_frame_sent(rig)
+    await rig.opened.hooks.on_turn_end(turn(), done("sch"))
+    assert turn_end_calls(rig) == [({"sch"}, False)]
+
+
+async def test_board_only_save_after_live_frames_carries_the_schematic(rig: Rig) -> None:
+    await live_frame_sent(rig)
+    rig.opened.session.modified = True
+    rig.opened.env.save_error, rig.opened.env.save_error_doc = RuntimeError("full"), "sch"
+    await rig.opened.hooks.on_turn_end(turn(), done("pcb"))  # e.g. sch edits saved, then pcb
+    # pcb saved, sch holds unsaved edits: one frame for the board, one announcing the
+    # last live copy (never saving the schematic for a view copy).
+    assert turn_end_calls(rig) == [({"pcb"}, False), ({"sch"}, False)]
+
+
+async def test_kicad_failed_after_live_frames_sends_a_turn_end_frame(rig: Rig) -> None:
+    await live_frame_sent(rig)
+    await rig.opened.hooks.on_turn_end(turn(), done("sch", reason="kicad_failed", failed=True))
+    assert turn_end_calls(rig) == [({"sch"}, False)]
+
+
+async def test_inconsistent_after_live_frames_sends_a_frame_from_the_reopened_session(
+    rig: Rig,
+) -> None:
+    env, project = rig.opened.env, rig.opened.project
+    await live_frame_sent(rig)
+    outcome = TurnOutcome(
+        reason="completed",
+        changed_docs=frozenset({"sch"}),
+        mutated=True,
+        document_inconsistent=True,
+    )
+    await rig.opened.hooks.on_turn_end(turn(), outcome)
+    assert turn_end_calls(rig) == [({"sch"}, False)]
+    fresh = env.svc.open_session(project)
+    assert fresh is not None and fresh is not rig.opened.session
+    frames = [f for f in env.broadcaster.frames if isinstance(f, ViewUpdatedFrame)]
+    assert frames[-1].version == fresh.view_version and frames[-1].live is None
+
+
+async def test_autosave_failure_after_live_frames_announces_the_last_live_copy(
+    rig: Rig,
+) -> None:
+    env = rig.opened.env
+    await live_frame_sent(rig)
+    rig.opened.session.modified = True  # the turn's last edit could not save itself
+    env.save_error = RuntimeError("disk full")
+    written = list(env.written)
+    await rig.opened.hooks.on_turn_end(turn(), done("sch"))
+    assert turn_end_calls(rig) == [({"sch"}, False)]
+    assert env.written == written  # no view copy: it would save the schematic
+    assert env.saved == []
+
+
+async def test_closed_session_after_live_frames_sends_nothing(rig: Rig) -> None:
+    await live_frame_sent(rig)
+    await rig.opened.env.sessions.close_all()
+    await rig.opened.hooks.on_turn_end(turn(), done("sch"))
+    assert turn_end_calls(rig) == []
+
+
+async def test_failed_turn_without_live_frames_sends_nothing(rig: Rig) -> None:
+    await rig.opened.hooks.on_turn_end(turn(), done("sch", reason="kicad_failed", failed=True))
+    assert rig.calls == []
+
+
+async def test_catch_up_failure_only_logs(rig: Rig, caplog: pytest.LogCaptureFixture) -> None:
+    await live_frame_sent(rig)
+    rig.error = RuntimeError("SaveCopy failed")
+    with caplog.at_level(logging.WARNING, logger="copperchat.history.hooks"):
+        await rig.opened.hooks.on_turn_end(turn(), done("sch", reason="kicad_failed", failed=True))
+    assert "after live frames failed" in caplog.text
 
 
 async def test_engine_close_hook_closes_the_publisher(rig: Rig) -> None:

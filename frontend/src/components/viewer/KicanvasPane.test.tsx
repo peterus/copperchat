@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { KcPage, KcViewer } from '@/lib/kicanvas';
 import { useComposer } from '@/stores/composer';
 import { KicadPane } from './KicadPane';
-import { KICANVAS_SCRIPT, LOAD_GRACE_MS } from './KicanvasPane';
+import { KICANVAS_SCRIPT, LOAD_COALESCE_MAX_MS, LOAD_GRACE_MS } from './KicanvasPane';
 import { insertMention, type KicadPaneProps } from './types';
 
 vi.mock('@/lib/kicanvas', async (orig) => ({
@@ -310,6 +310,50 @@ describe('KicanvasPane', () => {
     expect(screen.getByRole('button', { name: 'Fit to view' })).toBeInTheDocument();
   });
 
+  it('a load that never settles stops coalescing after LOAD_COALESCE_MAX_MS', async () => {
+    const { rerenderWith } = await renderPane();
+    const first = embedEl(); // never becomes ready nor fails
+    await rerenderWith({ rev: 4 });
+    await act(async () => {
+      vi.advanceTimersByTime(LOAD_COALESCE_MAX_MS - 10);
+    });
+    expect(embedEl()).toBe(first);
+    await act(async () => {
+      vi.advanceTimersByTime(20);
+    });
+    expect(embedEl()).not.toBe(first);
+    expect(embedEl().querySelector('kicanvas-source')!.getAttribute('src')).toContain('?v=4');
+    // the new load coalesces again (its own watchdog)
+    const second = embedEl();
+    await rerenderWith({ rev: 5 });
+    expect(embedEl()).toBe(second);
+    await loadReady();
+    expect(embedEl().querySelector('kicanvas-source')!.getAttribute('src')).toContain('?v=5');
+  });
+
+  it('an overdue load without a newer rev is left alone', async () => {
+    await renderPane();
+    const first = embedEl();
+    await act(async () => {
+      vi.advanceTimersByTime(LOAD_COALESCE_MAX_MS + 10);
+    });
+    expect(embedEl()).toBe(first);
+  });
+
+  it('a find while a reload is pending waits for the new embed', async () => {
+    const onFindResult = vi.fn();
+    const { rerenderWith } = await renderPane({ onFindResult });
+    const kc = await loadReady();
+    await rerenderWith({ onFindResult, rev: 4, visible: false }); // reload deferred: shown embed is stale
+    await rerenderWith({ onFindResult, rev: 4, visible: false, find: { ref: 'J1', seq: 1 } });
+    expect(kc.viewer.select).not.toHaveBeenCalled();
+    expect(onFindResult).not.toHaveBeenCalled();
+    await rerenderWith({ onFindResult, rev: 4, visible: true, find: { ref: 'J1', seq: 1 } });
+    const kc2 = await loadReady();
+    expect(kc2.viewer.select).toHaveBeenCalledWith('J1');
+    expect(onFindResult).toHaveBeenCalledExactlyOnceWith('J1', true);
+  });
+
   it('a new rev while a load fails applies once retried', async () => {
     const { rerenderWith } = await renderPane();
     await rerenderWith({ rev: 4 });
@@ -432,16 +476,16 @@ describe('KicanvasPane', () => {
       expect(onActiveSheet).not.toHaveBeenCalled();
     });
 
-    it('a full load reports the stale sheets known when it started (newer ones stay)', async () => {
+    it('a full load reports the stale seq when it started (newer marks stay)', async () => {
       const onLoaded = vi.fn();
-      const { rerenderWith } = await renderPane({ onLoaded, staleSheets: ['sub/reg.kicad_sch'] });
-      await rerenderWith({ onLoaded, staleSheets: ['sub/reg.kicad_sch', 'power.kicad_sch'] }); // while loading
+      const { rerenderWith } = await renderPane({ onLoaded, staleSheets: ['sub/reg.kicad_sch'], staleSeq: 1 });
+      await rerenderWith({ onLoaded, staleSheets: ['sub/reg.kicad_sch', 'power.kicad_sch'], staleSeq: 2 }); // while loading
       expect(onLoaded).not.toHaveBeenCalled();
       await loadReady();
-      expect(onLoaded).toHaveBeenCalledExactlyOnceWith(['sub/reg.kicad_sch']);
-      await rerenderWith({ onLoaded, staleSheets: ['power.kicad_sch'], theme: 'light' }); // full reload
+      expect(onLoaded).toHaveBeenCalledExactlyOnceWith(1);
+      await rerenderWith({ onLoaded, staleSheets: ['power.kicad_sch'], staleSeq: 2, theme: 'light' }); // full reload
       await loadReady();
-      expect(onLoaded).toHaveBeenLastCalledWith(['power.kicad_sch']);
+      expect(onLoaded).toHaveBeenLastCalledWith(2);
     });
 
     it('boards report no load', async () => {

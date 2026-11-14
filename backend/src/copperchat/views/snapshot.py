@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import os
 import stat
 from collections.abc import Iterable
 from pathlib import Path
@@ -111,10 +112,34 @@ def view_file_hashes(project: Project, docs: Iterable[DocKind]) -> dict[str, str
             continue
         name = path.relative_to(root).as_posix()
         try:
-            out[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+            digest = _hash_regular(path)
         except OSError:
-            out[name] = ""
+            digest = ""
+        if digest is not None:
+            out[name] = digest
     return out
+
+
+_OPEN_FLAGS = (
+    os.O_RDONLY
+    | getattr(os, "O_NOFOLLOW", 0)
+    | getattr(os, "O_NONBLOCK", 0)  # a FIFO swapped in never blocks the open
+    | getattr(os, "O_BINARY", 0)
+)
+_CHUNK = 1 << 16
+
+
+def _hash_regular(path: Path) -> str | None:
+    """sha256 of `path` read in chunks from one fd; None if it is no regular file by
+    then (swapped for a symlink/FIFO after the lstat: never followed, never blocks)."""
+    fd = os.open(path, _OPEN_FLAGS)
+    with os.fdopen(fd, "rb") as fh:
+        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+            return None
+        h = hashlib.sha256()
+        for chunk in iter(lambda: fh.read(_CHUNK), b""):
+            h.update(chunk)
+        return h.hexdigest()
 
 
 def _remove_stale_sheets(project: Project, current: list[str]) -> None:

@@ -40,11 +40,13 @@ export interface KicadPaneProps {
   onActiveSheet?: (file: string | null) => void;
   /** Schematic only: view files changed since this pane loaded them; marked in the sheet tree. */
   staleSheets?: readonly string[];
+  /** Schematic only: the view store's `staleSeq` (bumped whenever a sheet is marked stale). */
+  staleSeq?: number;
   /**
-   * Schematic only: a full load (every file fetched fresh) is ready; `stale` = the `staleSheets`
-   * known when that load started (entries added since are newer than what it fetched).
+   * Schematic only: a full load (every file fetched fresh) is ready; `staleSeq` = the `staleSeq`
+   * when that load started (sheets marked stale since are newer than what it fetched).
    */
-  onLoaded?: (stale: readonly string[]) => void;
+  onLoaded?: (staleSeq: number) => void;
 }
 
 /** Tap on a part → `@REF ` in the composer. */

@@ -172,13 +172,23 @@ describe('live schematic view', () => {
 
   it('clearStale drops only the sheets known when the full load started', () => {
     sch(1, ['sub/power.kicad_sch'], true);
-    const atLoadStart = [...st().staleSheets];
+    const atLoadStart = st().staleSeq;
     sch(2, ['sub/reg.kicad_sch'], true); // arrives while the pane loads
     st().clearStale(atLoadStart);
     expect(st().staleSheets).toEqual(['sub/reg.kicad_sch']);
     const before = st().staleSheets;
-    st().clearStale(['sub/other.kicad_sch']);
+    st().clearStale(atLoadStart);
     expect(st().staleSheets).toBe(before); // nothing to drop: no new state
+  });
+
+  it('clearStale keeps a stale sheet that changed again during the load', () => {
+    sch(1, ['sub/power.kicad_sch', 'sub/reg.kicad_sch'], true);
+    const atLoadStart = st().staleSeq;
+    sch(2, ['sub/power.kicad_sch'], true); // changed again while the pane loads
+    st().clearStale(atLoadStart);
+    expect(st().staleSheets).toEqual(['sub/power.kicad_sch']);
+    st().clearStale(st().staleSeq); // a later load fetched it fresh
+    expect(st().staleSheets).toEqual([]);
   });
 
   it('matches by basename', () => {

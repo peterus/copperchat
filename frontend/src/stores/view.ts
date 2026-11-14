@@ -64,6 +64,11 @@ export interface ViewState {
   activeSheet: string | null;
   /** Schematic view files changed since the pane loaded them (shown sheet unaffected): no reload yet. */
   staleSheets: string[];
+  /**
+   * Bumped whenever a sheet is marked stale (also again); each stale entry remembers the value of
+   * its last mark, so `clearStale` keeps sheets that changed again during a load.
+   */
+  staleSeq: number;
   doc: DocKind;
   mode: ViewMode;
   layers: PcbLayer[];
@@ -79,10 +84,10 @@ export interface ViewState {
   /** Reported by the KiCad schematic pane; opening a stale sheet reloads fresh data. */
   setActiveSheet: (file: string | null) => void;
   /**
-   * Reported by the KiCad schematic pane after a full load (it fetched every file fresh): `files`
-   * are the stale sheets known when that load started; entries added since stay stale.
+   * Reported by the KiCad schematic pane after a full load (it fetched every file fresh): `seq` is
+   * the `staleSeq` when that load started; entries marked (again) since stay stale.
    */
-  clearStale: (files: readonly string[]) => void;
+  clearStale: (seq: number) => void;
   setDoc: (d: DocKind) => void;
   setMode: (m: ViewMode) => void;
   toggleLayer: (l: PcbLayer) => void;
@@ -113,13 +118,15 @@ export function createViewStore(ws: Pick<WsClient, 'onFrame' | 'onConnection'>):
   // (the turn-end publish, which may itself carry `changedFiles: []`) or when it is turned on.
   let deferred: PerDoc<Changes | null> = { ...NONE };
   let seq = 0;
+  // Per stale sheet: the `staleSeq` of its last mark.
+  const staleGen = new Map<string, number>();
 
   /**
    * The state patch applying `changes` to doc `d` on top of `s` (mutated: callers pass copies).
    * `live` changes (incl. deferred ones applied by `setLive`) only reach the KiCad pane, not `revs`.
    */
   const apply = (
-    s: Pick<ViewState, 'revs' | 'kicadRevs' | 'staleSheets' | 'activeSheet'>,
+    s: Pick<ViewState, 'revs' | 'kicadRevs' | 'staleSheets' | 'staleSeq' | 'activeSheet'>,
     d: DocKind,
     changes: Changes,
     live: boolean,
@@ -136,13 +143,22 @@ export function createViewStore(ws: Pick<WsClient, 'onFrame' | 'onConnection'>):
     if (files === 'all' || active === null || files.some((f) => sameViewFile(f, active))) {
       s.kicadRevs.sch = bump(s.kicadRevs.sch);
       s.staleSheets = []; // a reload loads every file fresh
+      staleGen.clear();
     } else {
+      s.staleSeq += 1;
+      for (const f of files) staleGen.set(f, s.staleSeq);
       s.staleSheets = [...s.staleSheets, ...files.filter((f) => !s.staleSheets.includes(f))];
     }
   };
   const snapshot = () => {
     const s = store.getState();
-    return { revs: { ...s.revs }, kicadRevs: { ...s.kicadRevs }, staleSheets: s.staleSheets, activeSheet: s.activeSheet };
+    return {
+      revs: { ...s.revs },
+      kicadRevs: { ...s.kicadRevs },
+      staleSheets: s.staleSheets,
+      staleSeq: s.staleSeq,
+      activeSheet: s.activeSheet,
+    };
   };
 
   const store = createStore<ViewState>()((set, get) => ({
@@ -153,6 +169,7 @@ export function createViewStore(ws: Pick<WsClient, 'onFrame' | 'onConnection'>):
     live: readLiveView(),
     activeSheet: null,
     staleSheets: [],
+    staleSeq: 0,
     doc: 'sch',
     mode: 'kicad',
     layers: [...DEFAULT_LAYERS],
@@ -163,6 +180,7 @@ export function createViewStore(ws: Pick<WsClient, 'onFrame' | 'onConnection'>):
     setProject: (id) => {
       acceptAny = { sch: false, pcb: false };
       deferred = { ...NONE };
+      staleGen.clear();
       set({
         openSeq: get().openSeq + 1,
         projectId: id,
@@ -193,15 +211,18 @@ export function createViewStore(ws: Pick<WsClient, 'onFrame' | 'onConnection'>):
       if (activeSheet === s.activeSheet) return;
       if (activeSheet !== null && s.staleSheets.some((f) => sameViewFile(f, activeSheet))) {
         // the pane reloads (all files fresh) and restores this sheet
+        staleGen.clear();
         set({ activeSheet, staleSheets: [], kicadRevs: { ...s.kicadRevs, sch: bump(s.kicadRevs.sch) } });
       } else {
         set({ activeSheet });
       }
     },
-    clearStale: (files) => {
+    clearStale: (loadSeq) => {
       const s = get();
-      const left = s.staleSheets.filter((f) => !files.includes(f));
-      if (left.length !== s.staleSheets.length) set({ staleSheets: left });
+      const left = s.staleSheets.filter((f) => (staleGen.get(f) ?? 0) > loadSeq);
+      if (left.length === s.staleSheets.length) return;
+      for (const f of s.staleSheets) if (!left.includes(f)) staleGen.delete(f);
+      set({ staleSheets: left });
     },
     setDoc: (doc) => set({ doc }),
     setMode: (mode) => set({ mode }),

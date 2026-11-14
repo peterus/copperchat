@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import shutil
 
@@ -11,7 +12,7 @@ import pytest
 from copperchat.kicad_session import DocumentModified, KicadSession
 from copperchat.projects import Project
 from copperchat.views import write_kicanvas_snapshot
-from copperchat.views.snapshot import view_dir, view_file_hashes
+from copperchat.views.snapshot import _hash_regular, view_dir, view_file_hashes
 from tests.support.history import ECC83, HIERARCHY, replace_with_kicad_file
 from tests.support.kicad_project import FIXTURES
 from tests.unit.history.conftest import Env
@@ -69,6 +70,35 @@ async def test_view_file_hashes_skip_symlinks_and_never_fail_on_one_file(
     assert len(hashes[ROOT]) == 64
     if os.geteuid() != 0:  # root reads it anyway
         assert hashes[SUB] == ""  # unreadable: unknown, listed as changed
+
+
+async def test_view_file_hashes_read_a_large_file_in_chunks(
+    hier: tuple[Env, Project, KicadSession],
+) -> None:
+    _, project, _ = hier
+    data = os.urandom(3 * (1 << 16) + 123)  # several chunks plus a partial one
+    path = view_dir(project) / "big.kicad_sch"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    assert view_file_hashes(project, {"sch"}) == {"big.kicad_sch": hashlib.sha256(data).hexdigest()}
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs FIFOs")
+async def test_a_file_swapped_after_the_lstat_is_never_followed_nor_blocks(
+    hier: tuple[Env, Project, KicadSession],
+) -> None:
+    """The lstat/open race: a FIFO opens without blocking and is skipped; a symlink
+    is never followed (O_NOFOLLOW)."""
+    _, project, _ = hier
+    root = view_dir(project)
+    root.mkdir(parents=True, exist_ok=True)
+    fifo = root / "fifo.kicad_sch"
+    os.mkfifo(fifo)
+    assert await asyncio.wait_for(asyncio.to_thread(_hash_regular, fifo), 5) is None
+    link = root / "link.kicad_sch"
+    link.symlink_to(BLANK_SCH)
+    with pytest.raises(OSError):
+        _hash_regular(link)
 
 
 async def test_changed_files_come_from_before_and_after_hashes(

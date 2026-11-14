@@ -120,24 +120,47 @@ class HistoryHooks(RunHooks):
     async def on_turn_end(self, turn: TurnInfo, outcome: TurnOutcome) -> None:
         # Every outcome: no live publish of this turn after this point, and none runs
         # into the autosave / recovery below.
-        await self.svc.live.finish(self.project)
+        live_sent = await self.svc.live.finish(self.project)
+        if not await self._turn_end(turn, outcome, live_sent) and live_sent:
+            # Live frames went out but this turn end published no schematic (a failed
+            # turn, a failed autosave, ...): the agent view and Live-off clients only
+            # follow non-live frames, so send one of the state KiCad holds now.
+            await self._catch_up_view()
+
+    async def _catch_up_view(self) -> None:
+        """Best effort: a non-live schematic frame from the open session (if any). A
+        schematic with unsaved edits (its autosave failed) is never saved for it (a view
+        copy would save it first): that frame announces the last live copy as it is."""
+        session = self.svc.open_session(self.project)
+        if session is None:
+            return
+        try:
+            async with self.svc.lock(self.project):
+                await self.svc.publish_view(
+                    self.project, session, {"sch"}, write=not session.modified
+                )
+        except Exception:  # only the viewer lags
+            log.warning("view refresh after live frames failed", exc_info=True)
+
+    async def _turn_end(self, turn: TurnInfo, outcome: TurnOutcome, live_sent: bool) -> bool:
+        """Autosave / recovery; True if it published the schematic (non-live)."""
         if outcome.document_inconsistent:
             # The engine already posted the error row (X18). KiCad's in-memory document
             # is not trustworthy: never autosave it, reload from disk instead.
             await self._recover_inconsistent(turn, outcome)
-            return
+            return False
         if outcome.kicad_failed:
             # The engine already posted the "KiCad stopped responding" row for this
             # turn (X18). Its in-memory changes are lost: no autosave.
             await self._recover(turn, outcome)
-            return
+            return False
         # Every reason incl. interrupted / rate_limited: what changed is in KiCad's memory.
         docs: set[DocKind] = set(outcome.changed_docs)
         if not docs:
-            return
+            return False
         session = self.svc.open_session(self.project)
         if session is None or session.read_only:
-            return
+            return False
         # Every edit saved itself (#6): an unmodified schematic is on disk already. The
         # board has no modified flag; it is saved whenever the turn changed it.
         saved: set[DocKind] = set() if session.modified else docs & {"sch"}
@@ -152,13 +175,19 @@ class HistoryHooks(RunHooks):
                 failure = exc
             # Each successful save() recorded the hashes itself (HistoryService save
             # listener), so a partial autosave is never taken for an external change.
+        published = False
         if saved:
+            # After live frames the schematic rides along (one frame, also when only
+            # the board was saved) - unless it holds unsaved edits (its save failed).
+            ride = live_sent and not session.modified
+            publish: set[DocKind] = saved | {"sch"} if ride else saved
             try:
-                await self.svc.publish_view(self.project, session, saved)
+                await self.svc.publish_view(self.project, session, publish)
+                published = "sch" in publish
             except Exception:  # the design is saved; only the viewer refresh failed
                 log.warning("view refresh after autosave failed", exc_info=True)
         if failure is None:
-            return
+            return published
         # Not a kicad_failed turn: the engine has posted nothing, so report the save.
         unsaved = ", ".join(sorted(docs - saved))
         await self.engine.post_error(
@@ -167,6 +196,7 @@ class HistoryHooks(RunHooks):
             {"code": "autosave_failed"},
         )
         await self._recover(turn, outcome)
+        return published
 
     async def _recover_inconsistent(self, turn: TurnInfo, outcome: TurnOutcome) -> None:
         """Spec §5.1 step 8 / §5.4: no autosave; reopen the session from disk once, then

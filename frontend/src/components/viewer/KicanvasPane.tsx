@@ -32,6 +32,11 @@ import { ZoomControls } from './ZoomControls';
  * pane failed. Later errors (e.g. a KiCanvas bug on some click) only show a notice.
  */
 export const LOAD_GRACE_MS = 400;
+/**
+ * Reloads wait for the load in flight (coalescing), but at most this long: a load that never
+ * becomes ready nor fails must not block every later one. Large boards can take tens of seconds.
+ */
+export const LOAD_COALESCE_MAX_MS = 60_000;
 const NOTICE_MS = 6000;
 const ZOOM_STEP = 1.6;
 const DOC_LABEL = { sch: 'schematic', pcb: 'board' } as const;
@@ -102,6 +107,7 @@ export function KicanvasPane({
   onHighlightResult,
   onActiveSheet,
   staleSheets,
+  staleSeq,
   onLoaded,
   visible = true,
 }: KicadPaneProps) {
@@ -127,8 +133,8 @@ export function KicanvasPane({
   const highlightProgress = useRef({ seq: -1, navigated: false, reported: false });
   const handlers = useRef({ onPick, onFindResult, onHighlightResult, onActiveSheet, onLoaded });
   handlers.current = { onPick, onFindResult, onHighlightResult, onActiveSheet, onLoaded };
-  const staleSheetsRef = useRef(staleSheets);
-  staleSheetsRef.current = staleSheets;
+  const staleSeqRef = useRef(staleSeq);
+  staleSeqRef.current = staleSeq;
 
   const [status, setStatus] = useState<Status>({ kind: 'loading' });
   const [notice, setNotice] = useState<string | null>(null);
@@ -146,25 +152,34 @@ export function KicanvasPane({
   source.current = { urls, kTheme, projectId, doc };
   // What should be loaded; applied (loadKey) only while the pane is visible, and never while a load
   // is in flight: edits arriving faster than a load would otherwise restart it over and over. The
-  // latest wantKey is applied once that load is ready (or failed).
+  // latest wantKey is applied once that load is ready (or failed), or once it is overdue.
   const wantKey = `${srcKey}\n${kTheme}\n${attempt}`;
   const [loadKey, setLoadKey] = useState<string | null>(visible ? wantKey : null);
   const [inFlight, setInFlight] = useState(false);
+  /** The load in flight has taken longer than LOAD_COALESCE_MAX_MS: stop waiting for it. */
+  const [overdue, setOverdue] = useState(false);
   /** The embed shown is about to be replaced (new files/theme): do not apply anything to it. */
   const staleRef = useRef(false);
   staleRef.current = loadKey !== wantKey;
   /** A sheet switch is in flight: the viewer still shows the previous page until viewerload. */
   const pageLoading = useRef(false);
   useEffect(() => {
-    if (visible && !inFlight) setLoadKey(wantKey);
-  }, [visible, wantKey, inFlight]);
+    setOverdue(false); // per load
+    if (!inFlight) return;
+    const timer = setTimeout(() => setOverdue(true), LOAD_COALESCE_MAX_MS);
+    return () => clearTimeout(timer);
+  }, [inFlight, loadKey]);
+  useEffect(() => {
+    if (visible && (!inFlight || overdue)) setLoadKey(wantKey);
+  }, [visible, wantKey, inFlight, overdue]);
 
   /** Select `req.ref`, switching to the sheet that contains it first (KiCanvas searches only the current sheet). */
   const runFind = useCallback(() => {
     const req = pendingFind.current;
     const viewer = viewerRef.current;
     const project = embedRef.current?.project;
-    if (!req || !viewer || !readyRef.current) return;
+    // A stale embed is about to be replaced: the find stays pending for the new one.
+    if (!req || !viewer || !readyRef.current || staleRef.current) return;
     if (doc === 'sch' && project) {
       const page = findRefPage(project.pages(), req.ref);
       if (!page) {
@@ -250,7 +265,7 @@ export function KicanvasPane({
     let noticeTimer: ReturnType<typeof setTimeout> | undefined;
     const offs: Array<() => void> = [];
     // Every file is fetched fresh: the sheets stale now are not stale any more once it is ready.
-    const staleAtStart = [...(staleSheetsRef.current ?? [])];
+    const staleAtStart = staleSeqRef.current ?? 0;
     readyRef.current = false;
     pageLoading.current = false;
     viewerRef.current = null;

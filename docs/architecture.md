@@ -152,7 +152,10 @@ reloads from disk) is never saved for it: that live publish is skipped. Every
 from before/after hashes under `HistoryService.view_lock`), so the viewer reloads only
 those; live frames reload only the KiCad pane, the agent view and Changes panel follow
 the turn-end frame. The turn end stops the live publisher first; its own publish is the
-guaranteed final state and always sent. The board stays turn-end only.
+guaranteed final state and always sent. After live frames, also a turn end that publishes
+nothing itself (KiCad failed, inconsistent document, failed autosave) sends a non-live
+schematic frame from the open session once its recovery is done. The board stays
+turn-end only.
 
 ## CI
 

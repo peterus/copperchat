@@ -123,7 +123,13 @@ class HistoryService:
         return current
 
     async def publish_view(
-        self, project: Project, session: KicadSession, docs: set[DocKind], *, live: bool = False
+        self,
+        project: Project,
+        session: KicadSession,
+        docs: set[DocKind],
+        *,
+        live: bool = False,
+        write: bool = True,
     ) -> int:
         """Fresh KiCanvas snapshots for `docs`, then ONE view-updated frame (X2) whose
         `changedFiles` lists the view files that differ from the previous frame (changed,
@@ -131,7 +137,10 @@ class HistoryService:
         no change -> no frame and no version bump; a schematic with unsaved edits (a
         failed partial edit the turn end throws away) is never saved for it: the write
         raises `DocumentModified` and nothing is published. Every other publish always
-        sends, even unchanged - the turn end is the guaranteed final state."""
+        sends, even unchanged - the turn end is the guaranteed final state. `write=False`
+        (the turn end after live frames whose schematic holds unsaved edits: a copy
+        would save them): no new snapshots, the frame announces the view files as the
+        last live publish left them."""
         docs = docs & self.docs_of(project)
         if not docs:
             return session.view_version
@@ -144,7 +153,7 @@ class HistoryService:
                 known_now = known
             before = {k: v for k, v in known_now.items() if _of_docs(k, docs)}
             try:
-                for doc in sorted(docs):
+                for doc in sorted(docs) if write else ():
                     if live:
                         await self.write_view(session, doc, save_modified=False)
                     else:
