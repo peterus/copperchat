@@ -151,7 +151,12 @@ reloads from disk) is never saved for it: that live publish is skipped. Every
 `view-updated` carries `changedFiles` (view files that differ from the previous frame,
 from before/after hashes under `HistoryService.view_lock`), so the viewer reloads only
 those; live frames reload only the KiCad pane, the agent view and Changes panel follow
-the turn-end frame. The turn end stops the live publisher first; its own publish is the
+the turn-end frame. Every frame also carries `viewFiles`: per published document the view
+files as they are in the view directory after the write (root first, the sub-sheets sorted;
+stale sub-sheets are removed on every KiCad write), a full snapshot rather than a delta so a
+client that missed, deferred or replayed frames just takes the latest. The viewer compares it
+with the files it loaded as a set; a different set (a sub-sheet added or removed) reloads the
+schematic pane with the new list and marks the added sheets in the sheet tree. The turn end stops the live publisher first; its own publish is the
 guaranteed final state and always sent. After live frames, also a turn end that publishes
 nothing itself (KiCad failed, inconsistent document, failed autosave) sends a non-live
 schematic frame once its recovery is done (`HistoryService.publish_disk_view`): the

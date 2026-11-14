@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import Literal, cast
@@ -45,18 +46,31 @@ def _session_for(request: Request, project_id: str) -> KicadSession:
     return current
 
 
-def _etag(session: KicadSession, path: Path) -> str:
+def _stat(path: Path) -> os.stat_result:
+    try:
+        return path.stat()
+    except FileNotFoundError:  # a sub-sheet a publish removed meanwhile
+        raise ViewNotFound("no such view file") from None
+
+
+def _etag(session: KicadSession, st: os.stat_result) -> str:
     # The view version (X2) restarts at 0 with every session; the file's mtime
     # keeps a reopened project's snapshot from matching a stale cached copy.
-    return f'"{session.view_version}.{path.stat().st_mtime_ns:x}"'
+    return f'"{session.view_version}.{st.st_mtime_ns:x}"'
 
 
 def _serve_snapshot(request: Request, session: KicadSession, path: Path) -> Response:
-    etag = _etag(session, path)
+    # One stat for the ETag and the response (which would otherwise stat again): a file
+    # a publish deleted before it is a 404. One deleted or replaced after it, while the
+    # response opens or streams it, aborts that response (the client retries the load).
+    st = _stat(path)
+    etag = _etag(session, st)
     headers = {"ETag": etag, "Cache-Control": "no-cache"}
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=304, headers=headers)
-    return FileResponse(path, media_type="application/octet-stream", headers=headers)
+    return FileResponse(
+        path, media_type="application/octet-stream", headers=headers, stat_result=st
+    )
 
 
 @router.get("/{project_id}/view/files/{name:path}")

@@ -309,3 +309,167 @@ describe('live schematic view', () => {
     });
   });
 });
+
+describe('view files of view-updated frames', () => {
+  const TOP = 'top.kicad_sch';
+  const POWER = 'sub/power.kicad_sch';
+  const NEW = 'sub/new.kicad_sch';
+  const BOARD = 'top.kicad_pcb';
+  type Lists = { sch?: string[]; pcb?: string[] };
+  const frame = (version: number, o: { docs?: Array<'sch' | 'pcb'>; changedFiles?: string[]; live?: boolean; viewFiles?: Lists } = {}) =>
+    ws.emit({
+      type: 'view-updated',
+      projectId: P1,
+      docs: o.docs ?? ['sch'],
+      version,
+      changedFiles: o.changedFiles ?? [TOP],
+      ...(o.live ? { live: true } : {}),
+      ...(o.viewFiles ? { viewFiles: o.viewFiles } : {}),
+    });
+  const st = () => store.getState();
+
+  beforeEach(() => {
+    st().setProject(P1, { sch: [TOP, POWER], pcb: [BOARD] });
+    st().setActiveSheet(POWER);
+  });
+
+  it('setProject seeds the files from the open response and resets them', () => {
+    expect(st().files).toEqual({ sch: [TOP, POWER], pcb: [BOARD] });
+    expect(st().addedSheets).toEqual([]);
+    st().setProject(P2);
+    expect(st().files).toEqual({ sch: null, pcb: null });
+  });
+
+  it('a new sheet replaces the list, reloads the schematic pane and is marked added', () => {
+    frame(1, { changedFiles: [POWER], live: true }); // the shown sheet: reloads
+    frame(2, { changedFiles: [TOP], live: true }); // other sheet: stale
+    expect(st().staleSheets).toEqual([TOP]);
+    const rev = st().kicadRevs.sch;
+    frame(3, { changedFiles: [TOP, NEW], live: true, viewFiles: { sch: [TOP, NEW, POWER] } });
+    expect(st().files.sch).toEqual([TOP, NEW, POWER]);
+    expect(st().kicadRevs.sch).toBe((rev ?? 0) + 1);
+    expect(st().staleSheets).toEqual([]);
+    expect(st().addedSheets).toEqual([NEW]);
+  });
+
+  it('a removed sheet leaves files, addedSheets and staleSheets', () => {
+    frame(1, { changedFiles: [TOP, NEW], viewFiles: { sch: [TOP, NEW, POWER] } });
+    expect(st().addedSheets).toEqual([NEW]);
+    frame(2, { changedFiles: [NEW] }); // stale (the shown sheet is POWER)
+    expect(st().staleSheets).toEqual([NEW]);
+    frame(3, { changedFiles: [TOP], viewFiles: { sch: [TOP, POWER] } });
+    expect(st().files.sch).toEqual([TOP, POWER]);
+    expect(st().addedSheets).toEqual([]);
+    expect(st().staleSheets).toEqual([]);
+  });
+
+  it('the same set in another order changes nothing (open response is hierarchy order)', () => {
+    st().setProject(P1, { sch: [TOP, POWER, NEW], pcb: [BOARD] });
+    st().setActiveSheet(TOP);
+    const files = st().files.sch;
+    frame(1, { changedFiles: [POWER], viewFiles: { sch: [TOP, NEW, POWER] } });
+    expect(st().files.sch).toBe(files);
+    expect(st().kicadRevs.sch).toBeNull(); // only marked stale
+    expect(st().staleSheets).toEqual([POWER]);
+    expect(st().addedSheets).toEqual([]);
+  });
+
+  it('a different root is a change', () => {
+    frame(1, { changedFiles: [], viewFiles: { sch: [POWER, TOP] } });
+    expect(st().files.sch).toEqual([POWER, TOP]);
+    expect(st().kicadRevs.sch).toBe(1);
+    expect(st().addedSheets).toEqual([]);
+  });
+
+  it('without a baseline the list is just taken', () => {
+    st().setProject(P1);
+    frame(1, { changedFiles: [], viewFiles: { sch: [TOP, NEW] } });
+    expect(st().files.sch).toEqual([TOP, NEW]);
+    expect(st().addedSheets).toEqual([]);
+    expect(st().kicadRevs.sch).toBeNull();
+  });
+
+  it('an empty open list (failed open snapshot) is no baseline', () => {
+    st().setProject(P1, { sch: [], pcb: [] });
+    expect(st().files).toEqual({ sch: null, pcb: null });
+    frame(1, { changedFiles: [], viewFiles: { sch: [TOP, NEW, POWER] } });
+    expect(st().files.sch).toEqual([TOP, NEW, POWER]);
+    expect(st().addedSheets).toEqual([]);
+  });
+
+  it('opening an added sheet clears its mark without a reload', () => {
+    frame(1, { viewFiles: { sch: [TOP, NEW, POWER] } });
+    const rev = st().kicadRevs.sch;
+    st().setActiveSheet('new.kicad_sch'); // KiCanvas may only know the basename
+    expect(st().addedSheets).toEqual([]);
+    expect(st().kicadRevs.sch).toBe(rev);
+  });
+
+  it('board lists are replaced on a set change', () => {
+    frame(1, { docs: ['sch', 'pcb'], viewFiles: { sch: [TOP, POWER], pcb: ['other.kicad_pcb'] } });
+    expect(st().files).toEqual({ sch: [TOP, POWER], pcb: ['other.kicad_pcb'] });
+    expect(st().kicadRevs.pcb).toBe(1);
+  });
+
+  describe('live view off', () => {
+    beforeEach(() => st().setLive(false));
+
+    it('applies the latest deferred list with the turn-end frame without a list', () => {
+      frame(1, { live: true, viewFiles: { sch: [TOP, POWER, 'sub/a.kicad_sch'] } });
+      frame(2, { live: true, viewFiles: { sch: [TOP, NEW, POWER] } });
+      expect(st().files.sch).toEqual([TOP, POWER]);
+      frame(3, { changedFiles: [] });
+      expect(st().files.sch).toEqual([TOP, NEW, POWER]);
+      expect(st().addedSheets).toEqual([NEW]);
+      expect(st().kicadRevs.sch).toBe(1);
+    });
+
+    it('applies the deferred list when live view is turned on', () => {
+      frame(1, { live: true, viewFiles: { sch: [TOP, POWER, 'sub/a.kicad_sch'] } });
+      frame(2, { live: true, viewFiles: { sch: [TOP, NEW, POWER] } });
+      st().setLive(true);
+      expect(st().files.sch).toEqual([TOP, NEW, POWER]);
+      expect(st().addedSheets).toEqual([NEW]);
+      frame(3, { changedFiles: [] }); // no deferred list left
+      expect(st().files.sch).toEqual([TOP, NEW, POWER]);
+    });
+
+    it('a sheet added and removed again while deferred never shows up', () => {
+      frame(1, { live: true, changedFiles: [TOP, NEW], viewFiles: { sch: [TOP, NEW, POWER] } });
+      frame(2, { live: true, changedFiles: [TOP, NEW], viewFiles: { sch: [TOP, POWER] } });
+      frame(3, { changedFiles: [] });
+      expect(st().files.sch).toEqual([TOP, POWER]);
+      expect(st().addedSheets).toEqual([]);
+      expect(st().staleSheets).toEqual([TOP]); // the shown sheet is POWER; NEW is gone
+    });
+
+    it('the applied frame’s own list wins over the deferred one', () => {
+      frame(1, { live: true, viewFiles: { sch: [TOP, NEW, POWER] } });
+      frame(2, { changedFiles: [], viewFiles: { sch: [TOP, POWER] } });
+      expect(st().files.sch).toEqual([TOP, POWER]);
+      expect(st().addedSheets).toEqual([]);
+    });
+
+    it('a project open drops the deferred list', () => {
+      frame(1, { live: true, viewFiles: { sch: [TOP, NEW, POWER] } });
+      st().setProject(P1, { sch: [TOP, POWER], pcb: [BOARD] });
+      st().setLive(true);
+      expect(st().files.sch).toEqual([TOP, POWER]);
+    });
+  });
+
+  it('the first frame after a reconnect applies its list', () => {
+    frame(5);
+    ws.drop();
+    ws.connect();
+    frame(0, { viewFiles: { sch: [TOP, NEW, POWER] } });
+    expect(st().files.sch).toEqual([TOP, NEW, POWER]);
+    expect(st().addedSheets).toEqual([NEW]);
+  });
+
+  it('setProject resets addedSheets', () => {
+    frame(1, { viewFiles: { sch: [TOP, NEW, POWER] } });
+    st().setProject(P1, { sch: [TOP, NEW, POWER], pcb: [BOARD] });
+    expect(st().addedSheets).toEqual([]);
+  });
+});

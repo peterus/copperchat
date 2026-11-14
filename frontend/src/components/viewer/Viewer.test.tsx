@@ -192,6 +192,25 @@ describe('Viewer', () => {
       act(() => ws.emit({ type: 'view-updated', projectId: PID, docs: ['sch'], version: 2, changedFiles: [] })); // turn end
       expect(agentImg().getAttribute('src')).toContain('&v=1');
     });
+
+    it('loads the view files of frames: a new sheet is marked like a changed one until opened', () => {
+      const store = renderViewer();
+      fireEvent.click(screen.getByRole('button', { name: 'show power on sch' }));
+      live(1, ['demo.kicad_sch']);
+      expect(pane('sch').dataset.stale).toBe('demo.kicad_sch');
+      const files = ['demo.kicad_sch', 'new.kicad_sch', 'power.kicad_sch'];
+      act(() =>
+        ws.emit({ type: 'view-updated', projectId: PID, docs: ['sch'], version: 2, changedFiles: ['new.kicad_sch'], live: true, viewFiles: { sch: files } }),
+      );
+      expect(pane('sch').dataset.files).toBe(files.join(','));
+      expect(pane('sch').dataset.rev).toBe('1'); // a full reload
+      expect(pane('sch').dataset.stale).toBe('new.kicad_sch');
+      live(3, ['demo.kicad_sch']);
+      expect(pane('sch').dataset.stale).toBe('demo.kicad_sch,new.kicad_sch');
+      act(() => store.getState().setActiveSheet('new.kicad_sch'));
+      expect(pane('sch').dataset.stale).toBe('demo.kicad_sch');
+      expect(pane('sch').dataset.rev).toBe('1');
+    });
   });
 
   it('inserts @REF into the composer when a part is picked', () => {

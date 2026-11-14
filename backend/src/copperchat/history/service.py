@@ -24,6 +24,7 @@ from copperchat.views.snapshot import (
     VIEW_SUFFIXES,
     copy_disk_schematic,
     view_file_hashes,
+    view_file_list,
     write_view_snapshots,
 )
 
@@ -137,7 +138,8 @@ class HistoryService:
     ) -> int:
         """Fresh KiCanvas snapshots for `docs`, then ONE view-updated frame (X2) whose
         `changedFiles` lists the view files that differ from the previous frame (changed,
-        added or removed sub-sheets). `live` (the debounced mid-turn schematic refresh):
+        added or removed sub-sheets) and whose `viewFiles` is the current list of view
+        files per doc (root first, then sorted). `live` (the debounced mid-turn schematic refresh):
         no change -> no frame and no version bump; a schematic with unsaved edits (a
         failed partial edit the turn end throws away) is never saved for it: the write
         raises `DocumentModified` and nothing is published. Every other publish always
@@ -183,7 +185,11 @@ class HistoryService:
         *,
         live: bool,
     ) -> int:
-        """`write` the view files of `docs`, then the frame (under `view_lock`)."""
+        """`write` the view files of `docs`, then the frame (under `view_lock`). The
+        frame's `view_files` is a full snapshot of every doc in `docs` as the view
+        directory holds it after the write (stale sub-sheets are removed by then), sent
+        on every frame, not only when the sheet set changed: a client that missed or
+        deferred frames, or reconnected, just takes the latest one."""
         known = self._view_hashes.get(project.id)
         if known is None:  # nothing published yet: what is in the view directory now
             all_docs = self.docs_of(project)
@@ -213,6 +219,7 @@ class HistoryService:
                 docs=sorted(docs),
                 version=version,
                 changed_files=changed,
+                view_files={d: view_file_list(project, d, after) for d in sorted(docs)},
                 live=True if live else None,
             ),
         )

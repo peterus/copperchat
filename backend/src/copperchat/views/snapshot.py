@@ -7,7 +7,9 @@ Written to `<project>/.kicad-agent/view/` under the documents' real file names
 references between them (X3). Writing a snapshot never bumps
 `KicadSession.view_version`; only `HistoryService.publish_view` (X2: the turn-end,
 external-change, restore and the debounced live schematic publishes) and
-`HistoryService.publish_disk_view` (the turn end's catch-up after live frames) do.
+`HistoryService.publish_disk_view` (the turn end's catch-up after live frames) do;
+their frames list the view files per doc as the directory holds them after the write
+(`view_file_list`).
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ import errno
 import hashlib
 import logging
 import os
+import posixpath
 import stat
 from collections.abc import Iterable
 from pathlib import Path
@@ -74,7 +77,10 @@ async def view_files(session: KicadSession, doc: DocKind) -> list[str]:
     root = snapshot_path(project, doc).name
     if doc == "pcb":
         return [root]
-    sheets = await session.call(_sheet_files)
+    # Normalised like the frames' `view_file_list` names (directory-relative: "./a" and
+    # "sub/../a" -> "a"), so a client compares the open response's list with theirs as a
+    # set. Sheets outside the project ("../x") never get here: `save_copy` refuses them.
+    sheets = [posixpath.normpath(s) for s in await session.call(_sheet_files)]
     others = [s for s in dict.fromkeys(sheets) if s != (project.sch_file or Path()).name]
     return [root, *others]
 
@@ -127,6 +133,15 @@ def view_file_hashes(project: Project, docs: Iterable[DocKind]) -> dict[str, str
         if digest is not None:
             out[name] = digest
     return out
+
+
+def view_file_list(project: Project, doc: DocKind, names: Iterable[str]) -> list[str]:
+    """The view files of `doc` among `names` (view-relative, e.g. the keys of
+    `view_file_hashes`), as a view-updated frame's `viewFiles` lists them: the root
+    snapshot first - always, even if `names` lacks it - then the others sorted."""
+    root = snapshot_path(project, doc).name
+    suffix = VIEW_SUFFIXES[doc]
+    return [root, *sorted({n for n in names if n.endswith(suffix) and n != root})]
 
 
 _OPEN_FLAGS = (

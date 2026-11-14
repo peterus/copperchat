@@ -199,16 +199,27 @@ class RunFinishedFrame(Wire):
 class ViewUpdatedFrame(Wire):
     """New KiCanvas snapshots of `docs` (X2). `changed_files`: the view files (names as in
     the open response's `viewFiles`) whose content changed since the previous publish,
-    incl. added and removed sub-sheets; None = unknown (reload everything). `live`: a
-    mid-turn schematic refresh (clients may defer it); omitted for the turn-end and every
-    other publish."""
+    incl. added and removed sub-sheets; None = unknown (reload everything). `view_files`:
+    the full current list of view files of each doc in `docs` (shaped like the open
+    response's `viewFiles`, root first, then the sub-sheets sorted where the open response
+    has hierarchy order: compare as a set), so a client learns added, removed or renamed
+    sub-sheets; the backend sends it on every frame, None = not sent (keep the list you
+    have). `live`: a mid-turn schematic refresh (clients may defer it); omitted
+    for the turn-end and every other publish."""
 
-    OMIT_IF_NONE: ClassVar[frozenset[str]] = frozenset({"changed_files", "live"})
+    OMIT_IF_NONE: ClassVar[frozenset[str]] = frozenset({"changed_files", "view_files", "live"})
     type: Literal["view-updated"] = "view-updated"
     project_id: ProjectId
     docs: list[Literal["sch", "pcb"]] = Field(min_length=1)
     version: int = Field(ge=0)
     changed_files: list[Annotated[str, Field(min_length=1)]] | None = None
+    view_files: (
+        dict[
+            Literal["sch", "pcb"],
+            Annotated[list[Annotated[str, Field(min_length=1)]], Field(min_length=1)],
+        ]
+        | None
+    ) = None
     live: Literal[True] | None = None
 
 

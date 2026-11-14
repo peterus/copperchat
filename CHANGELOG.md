@@ -17,6 +17,15 @@ All notable changes to CopperChat are documented in this file. The format follow
   turn end. The board still refreshes at turn end only.
 - `view-updated` frames carry the changed view files (`changedFiles`) and mark mid-turn
   refreshes (`live`).
+- `view-updated` frames carry the current view file list of each published document
+  (`viewFiles`, like the open response), so the viewer follows added and removed sub-sheets.
+
+### Fixed
+
+- A sub-sheet the agent adds during a turn now appears in the KiCad schematic view's sheet
+  tree (with a "changed" dot) without reopening the project; a removed sub-sheet disappears,
+  and if it was the sheet on screen the view falls back to the root sheet. A KiCad view that
+  failed to load retries by itself once the schematic changes again.
 
 ## [0.8.2] - 2026-11-05
 

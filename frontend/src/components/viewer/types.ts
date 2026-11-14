@@ -16,7 +16,10 @@ export interface HighlightResult {
 export interface KicadPaneProps {
   projectId: string;
   doc: DocKind;
-  /** Snapshot file names from the open response's `viewFiles[doc]`, root first (X3). */
+  /**
+   * Snapshot file names, root first (X3): the open response's `viewFiles[doc]`, replaced by the
+   * `viewFiles` of later `view-updated` frames when sheets were added or removed.
+   */
   files: readonly string[];
   /** Reload counter from the view store (`kicadRevs[doc]`); a change reloads the pane. */
   rev: number | null;
