@@ -9,7 +9,12 @@ from kipy.errors import ApiError
 
 from copperchat.config import Settings
 from copperchat.errors import CopperChatError, DocumentNotOpen, ReadOnlyProject
-from copperchat.kicad_session import KicadSessionManager, KicadUnavailable, socket_path_for
+from copperchat.kicad_session import (
+    DocumentModified,
+    KicadSessionManager,
+    KicadUnavailable,
+    socket_path_for,
+)
 from copperchat.projects import Project, discover_projects, lock_status
 from tests.support.fake_kicad import FakeClientFactory, FakeKiCad, FakeLauncher, FakeServer
 
@@ -815,3 +820,21 @@ async def test_finish_turns_a_late_failure_into_the_cancellation() -> None:
     with pytest.raises(asyncio.CancelledError) as info:
         await caller
     assert isinstance(info.value.__cause__, RuntimeError)
+
+
+async def test_save_copy_without_save_modified_never_saves_a_modified_schematic(
+    manager: KicadSessionManager,
+    server: FakeServer,
+    make_settings: Callable[..., Settings],
+    tmp_path: Path,
+) -> None:
+    """The live view must never persist a failed partial edit: no save, no copy."""
+    session = await manager.open(make_project(make_settings().projects_root))
+    dest = tmp_path / "view" / "demo.kicad_sch"
+    server.modified = True
+    with pytest.raises(DocumentModified):
+        await session.save_copy("sch", dest, save_modified=False)
+    assert server.saved == [] and not dest.exists() and server.modified is True
+    server.modified = False
+    assert await session.save_copy("sch", dest, save_modified=False) == dest
+    assert dest.exists() and server.saved == []

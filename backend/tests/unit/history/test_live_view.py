@@ -10,9 +10,12 @@ from typing import Any
 
 import pytest
 
+from copperchat.agent.protocol import ViewUpdatedFrame
 from copperchat.history.live import LiveViewPublisher
 from copperchat.kicad_session import DocKind, KicadSession
 from copperchat.projects import Project
+from copperchat.views import write_kicanvas_snapshot
+from copperchat.views.snapshot import snapshot_path
 from tests.unit.history.conftest import Opened
 from tests.unit.history.test_history_hooks import done, turn
 
@@ -200,6 +203,23 @@ async def test_close_cancels_even_a_running_publish(rig: Rig) -> None:
     assert rig.times == [2.0]
 
 
+async def test_cancelled_finish_cancels_the_running_publish(rig: Rig) -> None:
+    """finish popped the state: if its caller is cancelled while awaiting the publish,
+    nothing else could ever cancel that task - finish cancels it itself."""
+    rig.gate = asyncio.Event()  # never set
+    rig.schedule()
+    await rig.time.advance(2.0)
+    task = rig.live._states[rig.opened.project.id].task
+    assert task is not None and not task.done()
+    finishing = asyncio.create_task(rig.live.finish(rig.opened.project))
+    await settle()
+    finishing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await finishing
+    await settle()
+    assert task.cancelled()
+
+
 async def test_finish_and_close_without_state_are_no_ops(rig: Rig) -> None:
     await rig.live.finish(rig.opened.project)
     await rig.live.close(rig.opened.project)
@@ -288,3 +308,74 @@ async def test_engine_close_hook_closes_the_publisher(rig: Rig) -> None:
     await rig.opened.hooks.on_engine_close()
     await rig.time.advance(30)
     assert rig.calls == []
+
+
+# ---- the real publish_view behind the publisher
+
+
+def view_frames(opened: Opened) -> list[tuple[int, list[str] | None, bool | None]]:
+    return [
+        (f.version, f.changed_files, f.live)
+        for f in opened.env.broadcaster.frames
+        if isinstance(f, ViewUpdatedFrame)
+    ]
+
+
+async def until(cond: Callable[[], bool]) -> None:
+    """publish_view hashes in a thread: wait for it in real time."""
+    for _ in range(500):
+        if cond():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("timed out")
+
+
+def real_rig(opened: Opened) -> tuple[FakeTime, LiveViewPublisher]:
+    t = FakeTime()
+    live = LiveViewPublisher(opened.env.svc, clock=t.clock, sleep=t.sleep)
+    opened.env.svc.live = live
+    return t, live
+
+
+async def test_live_publish_then_turn_end_through_the_real_publish_view(opened: Opened) -> None:
+    project, svc = opened.project, opened.env.svc
+    content = {"sch": b"(kicad_sch v1)"}
+
+    async def write_view(session: KicadSession, doc: DocKind, *, save_modified: bool = True) -> Any:
+        path = snapshot_path(project, doc)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content.get(doc, b"(board)"))
+        return path
+
+    svc.write_view = write_view  # type: ignore[assignment]
+    t, live = real_rig(opened)
+    root = snapshot_path(project, "sch").name
+    await svc.publish_view(project, opened.session, {"sch"})  # what the clients have
+    content["sch"] = b"(kicad_sch v2)"
+    opened.hooks.on_documents_changed(turn(), {"sch"})
+    await t.advance(2.0)
+    await until(lambda: len(view_frames(opened)) == 2)
+    assert view_frames(opened)[1] == (2, [root], True)
+    await until(lambda: not live._states[project.id].publishing)
+    await opened.hooks.on_turn_end(turn(), done("sch"))
+    assert view_frames(opened)[2:] == [(3, [], None)]  # nothing new since the live one
+
+
+async def test_live_publish_of_a_modified_schematic_is_skipped(
+    opened: Opened, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A failed partial edit (document modified): no save, no frame, no version bump."""
+    env, project, session = opened.env, opened.project, opened.session
+    env.svc.write_view = write_kicanvas_snapshot
+    t, live = real_rig(opened)
+    env.server.modified = True
+    with caplog.at_level(logging.INFO, logger="copperchat.history.live"):
+        live.schedule(project)
+        task = live._states[project.id].task
+        assert task is not None
+        await t.advance(2.0)
+        await until(task.done)
+    assert "skipped" in caplog.text
+    assert env.server.saved == [] and env.server.modified is True
+    assert view_frames(opened) == [] and session.view_version == 0
+    assert not snapshot_path(project, "sch").exists()

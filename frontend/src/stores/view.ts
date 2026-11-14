@@ -45,14 +45,17 @@ export interface ViewState {
   /** Last accepted `view-updated.version` per doc (server counter, index X2); null = none yet. */
   versions: PerDoc<number | null>;
   /**
-   * "Data changed" counter per doc, bumped for every applied `view-updated`; `?v=` and reload key
-   * of the agent view, and the "schematic changed" signal of the Changes panel. Unlike `versions`
-   * it never repeats, so a server counter that restarted (new session) still reloads.
+   * "Data changed" counter per doc, bumped for every applied non-live `view-updated` (live frames
+   * would re-render the agent view and refetch the Changes diff mid-turn; the turn-end frame always
+   * follows them); `?v=` and reload key of the agent view, and the "schematic changed" signal of
+   * the Changes panel. Unlike `versions` it never repeats, so a server counter that restarted (new
+   * session) still reloads.
    */
   revs: PerDoc<number | null>;
   /**
-   * Reload counter of the KiCad pane (`?v=` of its files). Boards bump with `revs`; the schematic
-   * only when the sheet shown (or every sheet) changed, or a stale sheet is opened.
+   * Reload counter of the KiCad pane (`?v=` of its files), live frames included. Boards bump for
+   * every applied frame; the schematic only when the sheet shown (or every sheet) changed, or a
+   * stale sheet is opened.
    */
   kicadRevs: PerDoc<number | null>;
   /** "Live view" (per-browser pref): apply mid-turn (`live`) frames; off defers them to the turn end. */
@@ -75,6 +78,11 @@ export interface ViewState {
   setLive: (on: boolean) => void;
   /** Reported by the KiCad schematic pane; opening a stale sheet reloads fresh data. */
   setActiveSheet: (file: string | null) => void;
+  /**
+   * Reported by the KiCad schematic pane after a full load (it fetched every file fresh): `files`
+   * are the stale sheets known when that load started; entries added since stay stale.
+   */
+  clearStale: (files: readonly string[]) => void;
   setDoc: (d: DocKind) => void;
   setMode: (m: ViewMode) => void;
   toggleLayer: (l: PcbLayer) => void;
@@ -106,9 +114,17 @@ export function createViewStore(ws: Pick<WsClient, 'onFrame' | 'onConnection'>):
   let deferred: PerDoc<Changes | null> = { ...NONE };
   let seq = 0;
 
-  /** The state patch applying `changes` to doc `d` on top of `s` (mutated: callers pass copies). */
-  const apply = (s: Pick<ViewState, 'revs' | 'kicadRevs' | 'staleSheets' | 'activeSheet'>, d: DocKind, changes: Changes) => {
-    s.revs[d] = bump(s.revs[d]);
+  /**
+   * The state patch applying `changes` to doc `d` on top of `s` (mutated: callers pass copies).
+   * `live` changes (incl. deferred ones applied by `setLive`) only reach the KiCad pane, not `revs`.
+   */
+  const apply = (
+    s: Pick<ViewState, 'revs' | 'kicadRevs' | 'staleSheets' | 'activeSheet'>,
+    d: DocKind,
+    changes: Changes,
+    live: boolean,
+  ) => {
+    if (!live) s.revs[d] = bump(s.revs[d]);
     if (d === 'pcb') {
       s.kicadRevs.pcb = bump(s.kicadRevs.pcb);
       return;
@@ -167,7 +183,7 @@ export function createViewStore(ws: Pick<WsClient, 'onFrame' | 'onConnection'>):
         for (const d of ['sch', 'pcb'] as const) {
           const changes = deferred[d];
           deferred[d] = null;
-          if (changes !== null) apply(next, d, changes);
+          if (changes !== null) apply(next, d, changes, true);
         }
       }
       set(next);
@@ -181,6 +197,11 @@ export function createViewStore(ws: Pick<WsClient, 'onFrame' | 'onConnection'>):
       } else {
         set({ activeSheet });
       }
+    },
+    clearStale: (files) => {
+      const s = get();
+      const left = s.staleSheets.filter((f) => !files.includes(f));
+      if (left.length !== s.staleSheets.length) set({ staleSheets: left });
     },
     setDoc: (doc) => set({ doc }),
     setMode: (mode) => set({ mode }),
@@ -221,7 +242,7 @@ export function createViewStore(ws: Pick<WsClient, 'onFrame' | 'onConnection'>):
       }
       const all = union(deferred[d], changes);
       deferred[d] = null;
-      apply(next, d, all);
+      apply(next, d, all, Boolean(f.live));
     }
     if (changed) store.setState({ versions, ...next });
   });

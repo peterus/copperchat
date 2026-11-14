@@ -102,6 +102,7 @@ export function KicanvasPane({
   onHighlightResult,
   onActiveSheet,
   staleSheets,
+  onLoaded,
   visible = true,
 }: KicadPaneProps) {
   const host = useRef<HTMLDivElement>(null);
@@ -124,8 +125,10 @@ export function KicanvasPane({
   const highlightReq = useRef<HighlightRequest | null>(null);
   /** Per request: its page was opened (`navigated`) and its result reported (`reported`). */
   const highlightProgress = useRef({ seq: -1, navigated: false, reported: false });
-  const handlers = useRef({ onPick, onFindResult, onHighlightResult, onActiveSheet });
-  handlers.current = { onPick, onFindResult, onHighlightResult, onActiveSheet };
+  const handlers = useRef({ onPick, onFindResult, onHighlightResult, onActiveSheet, onLoaded });
+  handlers.current = { onPick, onFindResult, onHighlightResult, onActiveSheet, onLoaded };
+  const staleSheetsRef = useRef(staleSheets);
+  staleSheetsRef.current = staleSheets;
 
   const [status, setStatus] = useState<Status>({ kind: 'loading' });
   const [notice, setNotice] = useState<string | null>(null);
@@ -141,17 +144,20 @@ export function KicanvasPane({
   visibleRef.current = visible;
   const source = useRef({ urls, kTheme, projectId, doc });
   source.current = { urls, kTheme, projectId, doc };
-  // What should be loaded; applied (loadKey) only while the pane is visible.
+  // What should be loaded; applied (loadKey) only while the pane is visible, and never while a load
+  // is in flight: edits arriving faster than a load would otherwise restart it over and over. The
+  // latest wantKey is applied once that load is ready (or failed).
   const wantKey = `${srcKey}\n${kTheme}\n${attempt}`;
   const [loadKey, setLoadKey] = useState<string | null>(visible ? wantKey : null);
+  const [inFlight, setInFlight] = useState(false);
   /** The embed shown is about to be replaced (new files/theme): do not apply anything to it. */
   const staleRef = useRef(false);
   staleRef.current = loadKey !== wantKey;
   /** A sheet switch is in flight: the viewer still shows the previous page until viewerload. */
   const pageLoading = useRef(false);
   useEffect(() => {
-    if (visible) setLoadKey(wantKey);
-  }, [visible, wantKey]);
+    if (visible && !inFlight) setLoadKey(wantKey);
+  }, [visible, wantKey, inFlight]);
 
   /** Select `req.ref`, switching to the sheet that contains it first (KiCanvas searches only the current sheet). */
   const runFind = useCallback(() => {
@@ -243,10 +249,13 @@ export function KicanvasPane({
     let graceTimer: ReturnType<typeof setTimeout> | undefined;
     let noticeTimer: ReturnType<typeof setTimeout> | undefined;
     const offs: Array<() => void> = [];
+    // Every file is fetched fresh: the sheets stale now are not stale any more once it is ready.
+    const staleAtStart = [...(staleSheetsRef.current ?? [])];
     readyRef.current = false;
     pageLoading.current = false;
     viewerRef.current = null;
     loadedPage.current = null;
+    setInFlight(true);
     setStatus({ kind: 'loading' });
     setNotice(null);
     setTree([]);
@@ -256,6 +265,7 @@ export function KicanvasPane({
       if (cancelled) return;
       if (!readyRef.current) {
         failed = true;
+        setInFlight(false);
         setStatus({ kind: 'failed', error: msg });
       } else if (pageLoading.current) {
         pageLoading.current = false; // a failed sheet load fires no viewerload
@@ -380,6 +390,8 @@ export function KicanvasPane({
             const cam = pageLoading.current ? null : takeCamera();
             if (viewer && !(cam && setCamera(viewer, cam))) fitViewer(viewer);
             setStatus({ kind: 'ready' });
+            setInFlight(false);
+            if (kind === 'sch') handlers.current.onLoaded?.(staleAtStart);
             // after restoring the remembered sheet, its viewerload runs them on the right page
             if (pageLoading.current) return;
             runFind();
@@ -409,6 +421,7 @@ export function KicanvasPane({
       embedRef.current = null;
       viewerRef.current = null;
       readyRef.current = false;
+      setInFlight(false);
       el.replaceChildren();
     };
   }, [loadKey, runFind, runHighlight]);

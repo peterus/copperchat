@@ -6,7 +6,9 @@ the first unpublished change (continuous edits still refresh the viewer). The pu
 runs under `HistoryService.lock`, so it never overlaps a restore, the turn-start check or
 the turn-end autosave. The turn end (`finish`) stops it before the autosave; its own
 publish is the guaranteed final state. A failed live publish only lets the viewer lag.
-The board stays turn-end only.
+The board stays turn-end only. A schematic with unsaved edits (a failed partial edit,
+which the turn end reloads from disk) is never saved for a live publish: that publish is
+skipped.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from copperchat.kicad_session import DocumentModified
 from copperchat.projects import Project
 
 if TYPE_CHECKING:
@@ -103,20 +106,28 @@ class LiveViewPublisher:
                 if svc.open_session(project) is not session:
                     return  # restored / reloaded meanwhile: that path published itself
                 await svc.publish_view(project, session, {"sch"}, live=True)
+        except DocumentModified:  # a failed partial edit: never saved, the turn end reloads
+            log.info("live view publish for %s skipped: unsaved edits", project.rel_path)
         except Exception:  # only the viewer lags; the turn and its turn-end publish go on
             log.warning("live view publish for %s failed", project.rel_path, exc_info=True)
 
     async def finish(self, project: Project) -> None:
         """Turn end (every outcome): afterwards nothing of the turn publishes any more.
         A sleeping task is cancelled; a running publish is awaited, never cancelled (a
-        KiCad call cancelled mid-way can restart the api-server)."""
+        KiCad call cancelled mid-way can restart the api-server). If the caller itself is
+        cancelled meanwhile, the task is cancelled too: its state is gone, so no later
+        `close` could reach it."""
         st = self._states.pop(project.id, None)
         if st is None or st.task is None:
             return
         st.stopped = True
         if not st.publishing:
             st.task.cancel()
-        await _wait(st.task)
+        try:
+            await _wait(st.task)
+        except asyncio.CancelledError:
+            st.task.cancel()
+            raise
 
     async def close(self, project: Project) -> None:
         """Engine close (shutdown): cancel unconditionally."""

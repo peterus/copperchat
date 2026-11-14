@@ -146,9 +146,12 @@ While a turn edits the schematic, the viewer follows near-live: every schematic 
 (`LIVE_VIEW_*`: trailing debounce, minimum interval, maximum wait). It runs under the
 history lock (never overlapping a restore, the turn-start check or the autosave), writes
 the schematic snapshots and sends `view-updated` with `live: true` — only if a view file
-changed. Every `view-updated` carries `changedFiles` (view files that differ from the
-previous frame, from before/after hashes under `HistoryService.view_lock`), so the viewer
-reloads only those. The turn end stops the live publisher first; its own publish is the
+changed. A schematic with unsaved edits (a failed partial edit, which the turn end
+reloads from disk) is never saved for it: that live publish is skipped. Every
+`view-updated` carries `changedFiles` (view files that differ from the previous frame,
+from before/after hashes under `HistoryService.view_lock`), so the viewer reloads only
+those; live frames reload only the KiCad pane, the agent view and Changes panel follow
+the turn-end frame. The turn end stops the live publisher first; its own publish is the
 guaranteed final state and always sent. The board stays turn-end only.
 
 ## CI

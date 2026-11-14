@@ -192,6 +192,7 @@ export function Viewer({ projectId }: { projectId: string }) {
               onHighlightResult={onHighlightResult}
               onActiveSheet={t.doc === 'sch' ? v.setActiveSheet : undefined}
               staleSheets={t.doc === 'sch' ? v.staleSheets : undefined}
+              onLoaded={t.doc === 'sch' ? v.clearStale : undefined}
             />
           </div>
         ))}

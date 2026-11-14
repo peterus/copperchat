@@ -145,7 +145,8 @@ describe('Viewer', () => {
       expect(pane('sch').dataset.rev).toBe('null');
       expect(pane('sch').dataset.stale).toBe('power.kicad_sch');
       fireEvent.click(screen.getByRole('button', { name: 'Agent view' }));
-      expect(agentImg().getAttribute('src')).toContain('&v=1'); // the agent view follows every change
+      // mid-turn re-renders are expensive: the agent view waits for the turn-end frame
+      expect(agentImg().getAttribute('src')).not.toContain('v=');
       fireEvent.click(screen.getByRole('button', { name: 'KiCad view' }));
       fireEvent.click(screen.getByRole('button', { name: 'show power on sch' }));
       expect(pane('sch').dataset.rev).toBe('1');
@@ -181,12 +182,14 @@ describe('Viewer', () => {
       expect(indicator()).toBeNull(); // another project's run
     });
 
-    it('the large-file fallback follows the agent view counter', () => {
+    it('the large-file fallback follows the agent view counter (turn-end frames)', () => {
       openProject({ viewBytes: { 'demo.kicad_sch': 70_000_000, 'power.kicad_sch': 20_000, 'demo.kicad_pcb': 160_000 } });
       const store = renderViewer();
       act(() => store.getState().setActiveSheet('demo.kicad_sch'));
       live(1, ['power.kicad_sch']);
       expect(store.getState().kicadRevs.sch).toBeNull();
+      expect(agentImg().getAttribute('src')).not.toContain('v='); // live frames: not re-rendered
+      act(() => ws.emit({ type: 'view-updated', projectId: PID, docs: ['sch'], version: 2, changedFiles: [] })); // turn end
       expect(agentImg().getAttribute('src')).toContain('&v=1');
     });
   });

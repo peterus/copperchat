@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 
 import pytest
 
-from copperchat.kicad_session import KicadSession
+from copperchat.kicad_session import DocumentModified, KicadSession
 from copperchat.projects import Project
 from copperchat.views import write_kicanvas_snapshot
 from copperchat.views.snapshot import view_dir, view_file_hashes
@@ -47,6 +48,27 @@ async def test_view_file_hashes_cover_every_sheet_and_the_board(
     assert set(view_file_hashes(project, {"pcb"})) == {"complex_hierarchy.kicad_pcb"}
     both = view_file_hashes(project, {"sch", "pcb"})
     assert len(both) == 4 and all(len(h) == 64 for h in both.values())
+
+
+async def test_view_file_hashes_skip_symlinks_and_never_fail_on_one_file(
+    hier: tuple[Env, Project, KicadSession],
+) -> None:
+    _, project, session = hier
+    await write_kicanvas_snapshot(session, "sch")
+    root = view_dir(project)
+    outside = project.dir.parent / "outside.kicad_sch"
+    shutil.copyfile(BLANK_SCH, outside)
+    (root / "link.kicad_sch").symlink_to(outside)
+    (root / "fifo.kicad_sch").mkdir()  # not a regular file
+    (root / SUB).chmod(0)
+    try:
+        hashes = view_file_hashes(project, {"sch"})
+    finally:
+        (root / SUB).chmod(0o644)
+    assert set(hashes) == {ROOT, SUB}
+    assert len(hashes[ROOT]) == 64
+    if os.geteuid() != 0:  # root reads it anyway
+        assert hashes[SUB] == ""  # unreadable: unknown, listed as changed
 
 
 async def test_changed_files_come_from_before_and_after_hashes(
@@ -160,3 +182,45 @@ async def test_view_lock_serialises_publishes(
             await asyncio.sleep(0)
         assert not task.done() and not (view_dir(project) / ROOT).exists()
     assert await task == 1
+
+
+async def test_live_publish_never_saves_a_modified_schematic(
+    hier: tuple[Env, Project, KicadSession],
+) -> None:
+    """A failed partial edit leaves KiCad's document modified: the live publish neither
+    saves it nor sends a frame; the hashes stay what the clients have."""
+    env, project, session = hier
+    svc = env.svc
+    assert await svc.publish_view(project, session, {"sch"}) == 1
+    replace_with_kicad_file(project.dir / SUB, BLANK_SCH)  # would be listed if written
+    env.server.modified = True
+    with pytest.raises(DocumentModified):
+        await svc.publish_view(project, session, {"sch"}, live=True)
+    assert env.server.saved == [] and env.server.modified is True
+    assert session.view_version == 1 and len(env.broadcaster.frames) == 1
+    env.server.modified = False
+    assert await svc.publish_view(project, session, {"sch"}, live=True) == 2
+    assert frames(env)[-1] == (2, [SUB], True)
+
+
+async def test_failed_first_publish_keeps_the_baseline(
+    hier: tuple[Env, Project, KicadSession],
+) -> None:
+    """Nothing published yet and the write fails half-way: the next publish still lists
+    what that write changed (the baseline is the view directory before it)."""
+    env, project, session = hier
+    svc = env.svc
+    await svc.write_open_snapshots(session)
+    svc._view_hashes.clear()  # e.g. a restart: no frame sent yet in this process
+    replace_with_kicad_file(project.dir / SUB, BLANK_SCH)
+
+    async def half(session: KicadSession, doc: str, *, save_modified: bool = True) -> object:
+        await write_kicanvas_snapshot(session, "sch")
+        raise OSError("disk full")
+
+    svc.write_view = half  # type: ignore[assignment]
+    with pytest.raises(OSError):
+        await svc.publish_view(project, session, {"sch"})
+    svc.write_view = write_kicanvas_snapshot
+    await svc.publish_view(project, session, {"sch"}, live=True)
+    assert frames(env) == [(1, [SUB], True)]

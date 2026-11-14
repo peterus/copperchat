@@ -294,6 +294,34 @@ describe('KicanvasPane', () => {
     expect(kc2.project.set_active_page).toHaveBeenCalledWith(reg);
   });
 
+  it('coalesces reloads: a new rev while loading waits, then only the latest one loads', async () => {
+    const { rerenderWith } = await renderPane();
+    const first = embedEl();
+    await rerenderWith({ rev: 4 });
+    await rerenderWith({ rev: 5 });
+    expect(embedEl()).toBe(first); // the load in flight is not restarted
+    expect(first.querySelector('kicanvas-source')!.getAttribute('src')).toContain('?v=3');
+    await loadReady();
+    const second = embedEl();
+    expect(second).not.toBe(first);
+    expect(second.querySelector('kicanvas-source')!.getAttribute('src')).toContain('?v=5');
+    await loadReady();
+    expect(embedEl()).toBe(second);
+    expect(screen.getByRole('button', { name: 'Fit to view' })).toBeInTheDocument();
+  });
+
+  it('a new rev while a load fails applies once retried', async () => {
+    const { rerenderWith } = await renderPane();
+    await rerenderWith({ rev: 4 });
+    act(() => {
+      window.dispatchEvent(Object.assign(new Event('unhandledrejection'), { reason: new TypeError('Load failed') }));
+    });
+    expect(screen.getByRole('alert')).toHaveTextContent('Load failed');
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await act(async () => {});
+    expect(embedEl().querySelector('kicanvas-source')!.getAttribute('src')).toContain('?v=4');
+  });
+
   it('changes the theme without a page reload by re-creating the embed', async () => {
     const { rerenderWith } = await renderPane();
     await loadReady();
@@ -402,6 +430,25 @@ describe('KicanvasPane', () => {
       await renderPane({ doc: 'pcb', files: ['top.kicad_pcb'], onActiveSheet });
       await loadReady();
       expect(onActiveSheet).not.toHaveBeenCalled();
+    });
+
+    it('a full load reports the stale sheets known when it started (newer ones stay)', async () => {
+      const onLoaded = vi.fn();
+      const { rerenderWith } = await renderPane({ onLoaded, staleSheets: ['sub/reg.kicad_sch'] });
+      await rerenderWith({ onLoaded, staleSheets: ['sub/reg.kicad_sch', 'power.kicad_sch'] }); // while loading
+      expect(onLoaded).not.toHaveBeenCalled();
+      await loadReady();
+      expect(onLoaded).toHaveBeenCalledExactlyOnceWith(['sub/reg.kicad_sch']);
+      await rerenderWith({ onLoaded, staleSheets: ['power.kicad_sch'], theme: 'light' }); // full reload
+      await loadReady();
+      expect(onLoaded).toHaveBeenLastCalledWith(['power.kicad_sch']);
+    });
+
+    it('boards report no load', async () => {
+      const onLoaded = vi.fn();
+      await renderPane({ doc: 'pcb', files: ['top.kicad_pcb'], onLoaded });
+      await loadReady();
+      expect(onLoaded).not.toHaveBeenCalled();
     });
 
     it('marks sheets changed since the load in the tree and on its toggle', async () => {

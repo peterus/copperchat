@@ -129,14 +129,23 @@ describe('live schematic view', () => {
 
   it('a live frame touching the shown sheet reloads the KiCad pane', () => {
     sch(1, ['top.kicad_sch'], true);
-    expect(st().revs.sch).toBe(1);
+    expect(st().revs.sch).toBeNull(); // agent view and Changes panel wait for the turn end
     expect(st().kicadRevs.sch).toBe(1);
     expect(st().staleSheets).toEqual([]);
   });
 
+  it('live frames never bump revs; the turn-end frame does (agent view, Changes panel)', () => {
+    sch(1, ['top.kicad_sch'], true);
+    sch(2, ['sub/power.kicad_sch'], true);
+    expect(st().revs.sch).toBeNull();
+    sch(3, []);
+    expect(st().revs.sch).toBe(1);
+    expect(st().kicadRevs.sch).toBe(1);
+  });
+
   it('a live frame touching only another sheet marks it stale without a reload', () => {
     sch(1, ['sub/power.kicad_sch'], true);
-    expect(st().revs.sch).toBe(1); // agent view and Changes panel still follow
+    expect(st().revs.sch).toBeNull();
     expect(st().kicadRevs.sch).toBeNull();
     expect(st().staleSheets).toEqual(['sub/power.kicad_sch']);
     sch(2, ['sub/power.kicad_sch', 'sub/reg.kicad_sch'], true);
@@ -159,6 +168,17 @@ describe('live schematic view', () => {
     sch(2, ['top.kicad_sch'], true);
     expect(st().kicadRevs.sch).toBe(1);
     expect(st().staleSheets).toEqual([]);
+  });
+
+  it('clearStale drops only the sheets known when the full load started', () => {
+    sch(1, ['sub/power.kicad_sch'], true);
+    const atLoadStart = [...st().staleSheets];
+    sch(2, ['sub/reg.kicad_sch'], true); // arrives while the pane loads
+    st().clearStale(atLoadStart);
+    expect(st().staleSheets).toEqual(['sub/reg.kicad_sch']);
+    const before = st().staleSheets;
+    st().clearStale(['sub/other.kicad_sch']);
+    expect(st().staleSheets).toBe(before); // nothing to drop: no new state
   });
 
   it('matches by basename', () => {
@@ -212,7 +232,7 @@ describe('live schematic view', () => {
     st().setLive(false);
     sch(1, ['top.kicad_sch'], true);
     st().setLive(true);
-    expect(st().revs.sch).toBe(1);
+    expect(st().revs.sch).toBeNull(); // still live changes: the turn-end frame bumps it
     expect(st().kicadRevs.sch).toBe(1);
     st().setLive(true); // nothing deferred any more
     expect(st().kicadRevs.sch).toBe(1);

@@ -11,7 +11,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from copperchat.agent.protocol import ViewUpdatedFrame
 from copperchat.db import Database
@@ -31,6 +31,14 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+class ViewWriter(Protocol):
+    """`write_kicanvas_snapshot`'s shape (tests substitute it)."""
+
+    def __call__(
+        self, session: KicadSession, doc: DocKind, *, save_modified: bool = ...
+    ) -> Awaitable[Path]: ...
+
+
 async def _default_preview(session: KicadSession, doc: DocKind) -> bytes | None:
     try:
         return (await render_view(session, doc, "agent", persist=False)).data
@@ -48,9 +56,7 @@ class HistoryService:
         self.broadcaster = broadcaster
         self.runtime = runtime
         self.hashes = DocumentHashRepo(db)
-        self.write_view: Callable[[KicadSession, DocKind], Awaitable[Path]] = (
-            write_kicanvas_snapshot
-        )
+        self.write_view: ViewWriter = write_kicanvas_snapshot
         self.render_preview: Callable[[KicadSession, DocKind], Awaitable[bytes | None]] = (
             _default_preview
         )
@@ -122,26 +128,39 @@ class HistoryService:
         """Fresh KiCanvas snapshots for `docs`, then ONE view-updated frame (X2) whose
         `changedFiles` lists the view files that differ from the previous frame (changed,
         added or removed sub-sheets). `live` (the debounced mid-turn schematic refresh):
-        no change -> no frame and no version bump. Every other publish always sends,
-        even unchanged - the turn end is the guaranteed final state."""
+        no change -> no frame and no version bump; a schematic with unsaved edits (a
+        failed partial edit the turn end throws away) is never saved for it: the write
+        raises `DocumentModified` and nothing is published. Every other publish always
+        sends, even unchanged - the turn end is the guaranteed final state."""
         docs = docs & self.docs_of(project)
         if not docs:
             return session.view_version
         async with self.view_lock(project):
             known = self._view_hashes.get(project.id)
-            if known is not None:
-                before = {k: v for k, v in known.items() if _of_docs(k, docs)}
-            else:  # nothing published yet: what is in the view directory now
-                before = await asyncio.to_thread(view_file_hashes, project, docs)
-            for doc in sorted(docs):
-                await self.write_view(session, doc)
+            if known is None:  # nothing published yet: what is in the view directory now
+                all_docs = self.docs_of(project)
+                known_now = await asyncio.to_thread(view_file_hashes, project, all_docs)
+            else:
+                known_now = known
+            before = {k: v for k, v in known_now.items() if _of_docs(k, docs)}
+            try:
+                for doc in sorted(docs):
+                    if live:
+                        await self.write_view(session, doc, save_modified=False)
+                    else:
+                        await self.write_view(session, doc)
+            except BaseException:
+                # Whatever was written is not what the clients have: the baseline
+                # stays, so the next publish still lists it.
+                self._view_hashes.setdefault(project.id, known_now)
+                raise
             after = await asyncio.to_thread(view_file_hashes, project, docs)
             changed = sorted(
                 k for k in before.keys() | after.keys() if before.get(k) != after.get(k)
             )
             if live and not changed:
                 return session.view_version
-            rest = {k: v for k, v in (known or {}).items() if not _of_docs(k, docs)}
+            rest = {k: v for k, v in known_now.items() if not _of_docs(k, docs)}
             self._view_hashes[project.id] = rest | after
             session.view_version += 1
             version = session.view_version

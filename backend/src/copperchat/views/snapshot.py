@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import stat
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -37,17 +38,21 @@ def _project_has(project: Project, doc: DocKind) -> bool:
     return (project.sch_file if doc == "sch" else project.pcb_file) is not None
 
 
-async def _write(session: KicadSession, doc: DocKind) -> list[str]:
-    await session.save_copy(doc, snapshot_path(session.project, doc))
+async def _write(session: KicadSession, doc: DocKind, *, save_modified: bool = True) -> list[str]:
+    await session.save_copy(doc, snapshot_path(session.project, doc), save_modified=save_modified)
     files = await view_files(session, doc)
     if doc == "sch":
         _remove_stale_sheets(session.project, files)
     return files
 
 
-async def write_kicanvas_snapshot(session: KicadSession, doc: DocKind) -> Path:
-    """SaveCopyOfDocument (+ sub-sheet copies) into the view directory; returns the root."""
-    await _write(session, doc)
+async def write_kicanvas_snapshot(
+    session: KicadSession, doc: DocKind, *, save_modified: bool = True
+) -> Path:
+    """SaveCopyOfDocument (+ sub-sheet copies) into the view directory; returns the root.
+    `save_modified=False`: a schematic with unsaved edits raises `DocumentModified` and
+    nothing is written (see `KicadSession.save_copy`)."""
+    await _write(session, doc, save_modified=save_modified)
     return snapshot_path(session.project, doc)
 
 
@@ -87,7 +92,9 @@ def view_bytes(project: Project, files: dict[DocKind, list[str]]) -> dict[str, i
 def view_file_hashes(project: Project, docs: Iterable[DocKind]) -> dict[str, str]:
     """sha256 of the view files of `docs` by view-relative posix name: every
     `*.kicad_sch` under the view directory for `sch` (sub-sheets incl. stale ones), the
-    board snapshot for `pcb`. Blocking: call it in a thread."""
+    board snapshot for `pcb`. Symlinks and other non-regular files are skipped; a file
+    that cannot be read hashes as "" (unknown: listed as changed), so one bad file never
+    fails a publish. Blocking: call it in a thread."""
     root = view_dir(project)
     paths: list[Path] = []
     for doc in set(docs):
@@ -98,9 +105,15 @@ def view_file_hashes(project: Project, docs: Iterable[DocKind]) -> dict[str, str
     out: dict[str, str] = {}
     for path in paths:
         try:
-            out[path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
-        except (FileNotFoundError, IsADirectoryError):
+            if not stat.S_ISREG(path.lstat().st_mode):
+                continue
+        except OSError:  # gone meanwhile (or unreadable directory entry)
             continue
+        name = path.relative_to(root).as_posix()
+        try:
+            out[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            out[name] = ""
     return out
 
 

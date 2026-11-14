@@ -1,4 +1,9 @@
-from copperchat.kicad_session.errors import KicadCallTimeout, KicadUnavailable, LibrariesLoading
+from copperchat.kicad_session.errors import (
+    DocumentModified,
+    KicadCallTimeout,
+    KicadUnavailable,
+    LibrariesLoading,
+)
 from copperchat.kicad_session.launcher import KicadCliLauncher, ServerLauncher
 from copperchat.kicad_session.session import (
     ClientFactory,
@@ -15,6 +20,7 @@ __all__ = [
     "ClientFactory",
     "CommitScope",
     "DocKind",
+    "DocumentModified",
     "KicadCallTimeout",
     "KicadCliLauncher",
     "KicadHandle",

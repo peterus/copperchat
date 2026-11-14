@@ -17,3 +17,11 @@ class LibrariesLoading(CopperChatError):
 
     code = "libraries_loading"
     http_status = 503
+
+
+class DocumentModified(CopperChatError):
+    """`save_copy(save_modified=False)` found unsaved edits (e.g. a failed partial edit
+    a later restore throws away): nothing was saved or copied."""
+
+    code = "document_modified"
+    http_status = 409
