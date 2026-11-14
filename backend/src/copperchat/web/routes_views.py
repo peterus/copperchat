@@ -61,7 +61,8 @@ def _etag(session: KicadSession, st: os.stat_result) -> str:
 
 def _serve_snapshot(request: Request, session: KicadSession, path: Path) -> Response:
     # One stat for the ETag and the response (which would otherwise stat again): a file
-    # a publish deletes meanwhile is a 404 here, never a server error.
+    # a publish deleted before it is a 404. One deleted or replaced after it, while the
+    # response opens or streams it, aborts that response (the client retries the load).
     st = _stat(path)
     etag = _etag(session, st)
     headers = {"ETag": etag, "Cache-Control": "no-cache"}

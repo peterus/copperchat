@@ -501,10 +501,11 @@ async def test_open_response_and_frames_list_the_same_sheet_set(
 ) -> None:
     """The open response (hierarchy filenames, normalised) and the next frame (the
     view directory) name the same files, incl. a sub-directory sheet written as
-    "./sub/...": a client sees no sheet-set change where there is none."""
+    "./sub/..." and one as "sub/../...": a client sees no sheet-set change where there
+    is none."""
     env, project, session = hier
     new = add_sheet(env, project)
-    env.server.hierarchy = [ROOT, f"./{new}", SUB]
+    env.server.hierarchy = [ROOT, f"./{new}", f"sub/../{SUB}"]
     opened = await env.svc.write_open_snapshots(session)
     assert opened["sch"] == [ROOT, new, SUB]
     await env.svc.publish_view(project, session, {"sch"})
