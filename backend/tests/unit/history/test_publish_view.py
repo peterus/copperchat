@@ -6,13 +6,20 @@ import asyncio
 import hashlib
 import os
 import shutil
+from pathlib import Path
 
 import pytest
 
 from copperchat.kicad_session import DocumentModified, KicadSession
 from copperchat.projects import Project
-from copperchat.views import write_kicanvas_snapshot
-from copperchat.views.snapshot import _hash_regular, snapshot_path, view_dir, view_file_hashes
+from copperchat.views import snapshot, write_kicanvas_snapshot
+from copperchat.views.snapshot import (
+    _hash_regular,
+    copy_disk_schematic,
+    snapshot_path,
+    view_dir,
+    view_file_hashes,
+)
 from tests.support.history import ECC83, HIERARCHY, replace_with_kicad_file
 from tests.support.kicad_project import FIXTURES
 from tests.unit.history.conftest import Env
@@ -321,6 +328,111 @@ async def test_disk_view_refuses_paths_escaping_the_project_or_view_dir(
     assert (root / "link.kicad_sch").is_symlink()
     assert (elsewhere / "x.kicad_sch").read_bytes() == b"untouched"
     assert (root / ROOT).read_bytes() == (project.dir / ROOT).read_bytes()
+
+
+async def test_disk_view_refuses_a_symlinked_agent_or_view_dir(
+    hier: tuple[Env, Project, KicadSession], caplog: pytest.LogCaptureFixture
+) -> None:
+    """A symlinked `.kicad-agent` or `view` directory: nothing is copied (nor written
+    through it), the refusal is logged."""
+    _, project, _ = hier
+    (project.dir / ROOT).write_bytes(b"(kicad_sch disk)")
+    elsewhere = project.dir.parent / "elsewhere"
+    (elsewhere / "view").mkdir(parents=True)
+    agent = view_dir(project).parent
+    shutil.rmtree(agent, ignore_errors=True)
+    agent.symlink_to(elsewhere, target_is_directory=True)
+    assert copy_disk_schematic(project) == []
+    assert list((elsewhere / "view").iterdir()) == []
+    agent.unlink()
+    agent.mkdir()
+    view_dir(project).symlink_to(elsewhere / "view", target_is_directory=True)
+    assert copy_disk_schematic(project) == []
+    assert list((elsewhere / "view").iterdir()) == []
+    assert caplog.text.count("symlinked view directory") == 2
+
+
+async def test_disk_view_refuses_a_view_dir_outside_the_project(
+    hier: tuple[Env, Project, KicadSession],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _, project, _ = hier
+    outside = project.dir.parent / "outside-view"
+    monkeypatch.setattr(snapshot, "view_dir", lambda p: outside)
+    assert copy_disk_schematic(project) == []
+    assert not any(outside.iterdir())
+    assert "is outside the project" in caplog.text
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs FIFOs")
+async def test_disk_view_skips_a_fifo_source_without_blocking(
+    hier: tuple[Env, Project, KicadSession], caplog: pytest.LogCaptureFixture
+) -> None:
+    env, project, session = hier
+    await env.svc.publish_view(project, session, {"sch"})
+    view_sub = (view_dir(project) / SUB).read_bytes()
+    (project.dir / SUB).unlink()
+    os.mkfifo(project.dir / SUB)
+    copied = await asyncio.wait_for(asyncio.to_thread(copy_disk_schematic, project), 5)
+    assert copied == [ROOT]
+    assert (view_dir(project) / SUB).read_bytes() == view_sub
+    assert f"refused for {SUB} (no regular file)" in caplog.text
+
+
+async def test_disk_view_keeps_a_view_only_sub_sheet(
+    hier: tuple[Env, Project, KicadSession], caplog: pytest.LogCaptureFixture
+) -> None:
+    """A sub-sheet only the view directory holds (not saved yet): skipped silently,
+    its view copy stays."""
+    env, project, session = hier
+    await env.svc.publish_view(project, session, {"sch"})
+    view_sub = (view_dir(project) / SUB).read_bytes()
+    (project.dir / SUB).unlink()
+    assert copy_disk_schematic(project) == [ROOT]
+    assert (view_dir(project) / SUB).read_bytes() == view_sub
+    assert SUB not in caplog.text
+
+
+async def test_disk_view_skips_a_file_that_fails_to_copy(
+    hier: tuple[Env, Project, KicadSession],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    env, project, session = hier
+    await env.svc.publish_view(project, session, {"sch"})
+    real = snapshot.atomic_write_bytes
+
+    def failing(path: Path, data: bytes) -> None:
+        if path.name == SUB:
+            raise OSError(28, "No space left on device")
+        real(path, data)
+
+    monkeypatch.setattr(snapshot, "atomic_write_bytes", failing)
+    assert copy_disk_schematic(project) == [ROOT]
+    assert f"view copy from disk failed for {SUB}" in caplog.text
+
+
+async def test_disk_view_failure_keeps_the_baseline_and_sends_nothing(
+    hier: tuple[Env, Project, KicadSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """copy_disk_schematic raises: the error propagates, no frame is sent and the
+    baseline stays what the clients have."""
+    env, project, session = hier
+    svc = env.svc
+    await svc.publish_view(project, session, {"sch"})
+    baseline = dict(svc._view_hashes[project.id])
+
+    def boom(project: Project) -> list[str]:
+        raise OSError("disk gone")
+
+    monkeypatch.setattr("copperchat.history.service.copy_disk_schematic", boom)
+    no_kicad(monkeypatch)
+    with pytest.raises(OSError, match="disk gone"):
+        await svc.publish_disk_view(project)
+    assert len(frames(env)) == 1
+    assert svc._view_hashes[project.id] == baseline
+    assert session.view_version == 1
 
 
 async def test_disk_view_without_an_open_session_sends_nothing(

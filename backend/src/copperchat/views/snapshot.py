@@ -5,8 +5,9 @@ turn end's catch-up after live frames copies the schematic files on disk instead
 Written to `<project>/.kicad-agent/view/` under the documents' real file names
 (hierarchical sub-sheets keep their relative paths), so KiCanvas resolves sheet
 references between them (X3). Writing a snapshot never bumps
-`KicadSession.view_version`; only `HistoryService.publish_view` does (X2: the turn-end,
-external-change, restore and the debounced live schematic publishes).
+`KicadSession.view_version`; only `HistoryService.publish_view` (X2: the turn-end,
+external-change, restore and the debounced live schematic publishes) and
+`HistoryService.publish_disk_view` (the turn end's catch-up after live frames) do.
 """
 
 from __future__ import annotations
@@ -181,13 +182,25 @@ def copy_disk_schematic(project: Project) -> list[str]:
     over their view copies, without KiCad: the root sheet, and every sub-sheet the view
     directory already holds whose counterpart exists under the project directory. Names
     that escape the project or view directory, symlinks and non-regular files are
-    refused; a file that cannot be copied is logged and skipped. Returns the
-    view-relative names copied. Blocking: call it in a thread."""
+    refused; a file that cannot be copied is logged and skipped. A symlinked
+    `.kicad-agent` or view directory, or a view directory resolving outside the project
+    directory, is refused as a whole (logged, nothing copied). Returns the view-relative
+    names copied. Blocking: call it in a thread.
+
+    Out of the threat model: a same-user race swapping a parent directory for a symlink
+    between these checks and the copies - the view directory is owned by the app user,
+    who could write anywhere it points anyway."""
     if project.sch_file is None:
         return []
     root_view = view_dir(project)
+    if agent_dir(project).is_symlink() or root_view.is_symlink():
+        log.warning("view copy from disk refused: symlinked view directory %s", root_view)
+        return []
     root_view.mkdir(parents=True, exist_ok=True)
     vroot, proot = root_view.resolve(), project.dir.resolve()
+    if not vroot.is_relative_to(proot):
+        log.warning("view copy from disk refused: %s is outside the project", vroot)
+        return []
     root_name = snapshot_path(project, "sch").name
     names = [root_name]
     for path in sorted(vroot.rglob("*.kicad_sch")):

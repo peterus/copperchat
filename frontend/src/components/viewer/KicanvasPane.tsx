@@ -35,10 +35,12 @@ export const LOAD_GRACE_MS = 400;
 /**
  * Reloads wait for the load in flight (coalescing), but at most this long: a load that never
  * becomes ready nor fails must not block every later one. Large boards can take tens of seconds.
- * Each overdue replacement doubles the limit for the next load (a device too slow for it must
- * still finish one while live frames keep coming); a ready load resets it.
+ * Each overdue replacement doubles the limit for the next load, up to LOAD_COALESCE_CAP_MS (a
+ * device too slow for it must still finish one while live frames keep coming); a ready load sets
+ * it to twice its own duration (at least this), a failed load or a retry resets it.
  */
 export const LOAD_COALESCE_MAX_MS = 60_000;
+export const LOAD_COALESCE_CAP_MS = 8 * LOAD_COALESCE_MAX_MS;
 const NOTICE_MS = 6000;
 const ZOOM_STEP = 1.6;
 const DOC_LABEL = { sch: 'schematic', pcb: 'board' } as const;
@@ -160,7 +162,12 @@ export function KicanvasPane({
   const [inFlight, setInFlight] = useState(false);
   /** The load in flight has taken longer than `coalesceMs`: stop waiting for it. */
   const [overdue, setOverdue] = useState(false);
-  /** The current coalescing limit: LOAD_COALESCE_MAX_MS, doubled per overdue replacement. */
+  /**
+   * The current coalescing limit: doubled per overdue replacement (at most
+   * LOAD_COALESCE_CAP_MS), back to LOAD_COALESCE_MAX_MS after a failed load or a retry, and after a
+   * ready load twice what that load took (at least LOAD_COALESCE_MAX_MS): a load slower than the
+   * base limit is not discarded every other time.
+   */
   const coalesceMs = useRef(LOAD_COALESCE_MAX_MS);
   /** The embed shown is about to be replaced (new files/theme): do not apply anything to it. */
   const staleRef = useRef(false);
@@ -175,7 +182,7 @@ export function KicanvasPane({
   }, [inFlight, loadKey]);
   useEffect(() => {
     if (!visible || (inFlight && !overdue)) return;
-    if (inFlight && wantKey !== loadKey) coalesceMs.current *= 2; // replacing an overdue load
+    if (inFlight && wantKey !== loadKey) coalesceMs.current = Math.min(coalesceMs.current * 2, LOAD_COALESCE_CAP_MS); // replacing an overdue load
     setLoadKey(wantKey);
   }, [visible, wantKey, inFlight, overdue, loadKey]);
 
@@ -272,6 +279,7 @@ export function KicanvasPane({
     const offs: Array<() => void> = [];
     // Every file is fetched fresh: the sheets stale now are not stale any more once it is ready.
     const staleAtStart = staleSeqRef.current ?? 0;
+    const startedAt = Date.now();
     readyRef.current = false;
     pageLoading.current = false;
     viewerRef.current = null;
@@ -286,6 +294,7 @@ export function KicanvasPane({
       if (cancelled) return;
       if (!readyRef.current) {
         failed = true;
+        coalesceMs.current = LOAD_COALESCE_MAX_MS;
         setInFlight(false);
         setStatus({ kind: 'failed', error: msg });
       } else if (pageLoading.current) {
@@ -412,7 +421,10 @@ export function KicanvasPane({
             if (viewer && !(cam && setCamera(viewer, cam))) fitViewer(viewer);
             setStatus({ kind: 'ready' });
             setInFlight(false);
-            coalesceMs.current = LOAD_COALESCE_MAX_MS;
+            coalesceMs.current = Math.min(
+              Math.max(LOAD_COALESCE_MAX_MS, 2 * (Date.now() - startedAt)),
+              LOAD_COALESCE_CAP_MS,
+            );
             if (kind === 'sch') handlers.current.onLoaded?.(staleAtStart);
             // after restoring the remembered sheet, its viewerload runs them on the right page
             if (pageLoading.current) return;
@@ -481,6 +493,7 @@ export function KicanvasPane({
               type="button"
               className="rounded border border-border px-2 py-1"
               onClick={() => {
+                coalesceMs.current = LOAD_COALESCE_MAX_MS;
                 setStatus({ kind: 'loading' });
                 setAttempt((n) => n + 1);
               }}

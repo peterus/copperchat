@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { KcPage, KcViewer } from '@/lib/kicanvas';
 import { useComposer } from '@/stores/composer';
 import { KicadPane } from './KicadPane';
-import { KICANVAS_SCRIPT, LOAD_COALESCE_MAX_MS, LOAD_GRACE_MS } from './KicanvasPane';
+import { KICANVAS_SCRIPT, LOAD_COALESCE_CAP_MS, LOAD_COALESCE_MAX_MS, LOAD_GRACE_MS } from './KicanvasPane';
 import { insertMention, type KicadPaneProps } from './types';
 
 vi.mock('@/lib/kicanvas', async (orig) => ({
@@ -95,6 +95,12 @@ async function renderPane(over: Partial<KicadPaneProps> = {}) {
     await act(async () => {});
   } };
 }
+
+const wait = async (ms: number) =>
+  act(async () => {
+    vi.advanceTimersByTime(ms);
+  });
+const srcOf = (embed: HTMLElement) => embed.querySelector('kicanvas-source')!.getAttribute('src');
 
 async function loadReady() {
   const kc = new FakeKicanvas(embedEl());
@@ -331,12 +337,8 @@ describe('KicanvasPane', () => {
     expect(embedEl().querySelector('kicanvas-source')!.getAttribute('src')).toContain('?v=5');
   });
 
-  it('backs off after an overdue replacement and resets once a load is ready', async () => {
+  it('backs off after an overdue replacement; a ready load sets twice its duration', async () => {
     const { rerenderWith } = await renderPane();
-    const wait = async (ms: number) =>
-      act(async () => {
-        vi.advanceTimersByTime(ms);
-      });
     const first = embedEl(); // a load slower than the limit
     await rerenderWith({ rev: 4 });
     await wait(LOAD_COALESCE_MAX_MS + 10);
@@ -352,13 +354,76 @@ describe('KicanvasPane', () => {
     await rerenderWith({ rev: 6 });
     await wait(2 * LOAD_COALESCE_MAX_MS + 10);
     expect(embedEl()).toBe(third); // doubled again: 4x
-    await loadReady(); // ready: the limit is back at LOAD_COALESCE_MAX_MS
+    await loadReady(); // ready after > 2x: the limit is twice that, not back at the base
     const fourth = embedEl();
     expect(fourth.querySelector('kicanvas-source')!.getAttribute('src')).toContain('?v=6');
     await rerenderWith({ rev: 7 });
     await wait(LOAD_COALESCE_MAX_MS + 10);
-    expect(embedEl()).not.toBe(fourth);
-    expect(embedEl().querySelector('kicanvas-source')!.getAttribute('src')).toContain('?v=7');
+    expect(embedEl()).toBe(fourth);
+  });
+
+  it('a load slower than the base limit is not discarded every other time', async () => {
+    const { rerenderWith } = await renderPane();
+    await rerenderWith({ rev: 4 });
+    await wait(LOAD_COALESCE_MAX_MS + 10); // overdue: replaced, the limit doubles to 2x
+    const second = embedEl();
+    expect(srcOf(second)).toContain('?v=4');
+    await wait(90_000 - LOAD_GRACE_MS); // it started on the overdue render, 10 ms in
+    await loadReady(); // took 90 s: the limit becomes 180 s, not 60 s again
+    await rerenderWith({ rev: 5 });
+    const third = embedEl();
+    expect(third).not.toBe(second);
+    await rerenderWith({ rev: 6 });
+    await wait(180_000 - 10);
+    expect(embedEl()).toBe(third);
+    await wait(20);
+    const fourth = embedEl();
+    expect(fourth).not.toBe(third);
+    expect(srcOf(fourth)).toContain('?v=6');
+    await loadReady(); // a fast load lowers it to the base again
+    await rerenderWith({ rev: 7 });
+    const fifth = embedEl();
+    await rerenderWith({ rev: 8 });
+    await wait(LOAD_COALESCE_MAX_MS - 10);
+    expect(embedEl()).toBe(fifth);
+    await wait(20);
+    expect(srcOf(embedEl())).toContain('?v=8');
+  });
+
+  it('the back-off is capped at LOAD_COALESCE_CAP_MS', async () => {
+    expect(LOAD_COALESCE_CAP_MS).toBe(8 * LOAD_COALESCE_MAX_MS);
+    const { rerenderWith } = await renderPane();
+    let rev = 3;
+    // 1x, 2x, 4x, 8x, then the cap holds
+    for (const limit of [1, 2, 4, 8, 8].map((n) => n * LOAD_COALESCE_MAX_MS)) {
+      const shown = embedEl();
+      await rerenderWith({ rev: ++rev });
+      await wait(limit - 10);
+      expect(embedEl()).toBe(shown);
+      await wait(20);
+      expect(embedEl()).not.toBe(shown);
+      expect(srcOf(embedEl())).toContain(`?v=${rev}`);
+    }
+  });
+
+  it('a failed load and a retry reset the back-off to the base limit', async () => {
+    const { rerenderWith } = await renderPane();
+    await rerenderWith({ rev: 4 });
+    await wait(LOAD_COALESCE_MAX_MS + 10); // replaced: 2x
+    await rerenderWith({ rev: 5 });
+    await wait(2 * LOAD_COALESCE_MAX_MS + 10); // replaced: 4x
+    act(() => {
+      window.dispatchEvent(Object.assign(new Event('unhandledrejection'), { reason: new TypeError('Load failed') }));
+    });
+    expect(screen.getByRole('alert')).toHaveTextContent('Load failed');
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await act(async () => {});
+    const retried = embedEl();
+    await rerenderWith({ rev: 6 });
+    await wait(LOAD_COALESCE_MAX_MS - 10);
+    expect(embedEl()).toBe(retried);
+    await wait(20);
+    expect(srcOf(embedEl())).toContain('?v=6');
   });
 
   it('an overdue load without a newer rev is left alone', async () => {
