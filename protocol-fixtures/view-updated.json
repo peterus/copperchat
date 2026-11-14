@@ -12,6 +12,29 @@
     "pcb"
    ],
    "version": 1
+  },
+  {
+   "type": "view-updated",
+   "projectId": "a1b2c3d4e5f6",
+   "docs": [
+    "sch"
+   ],
+   "version": 2,
+   "changedFiles": [
+    "ecc83.kicad_sch",
+    "sub/power.kicad_sch"
+   ],
+   "live": true
+  },
+  {
+   "type": "view-updated",
+   "projectId": "a1b2c3d4e5f6",
+   "docs": [
+    "sch",
+    "pcb"
+   ],
+   "version": 3,
+   "changedFiles": []
   }
  ],
  "invalid": [
@@ -28,6 +51,26 @@
     "3d"
    ],
    "version": 1
+  },
+  {
+   "type": "view-updated",
+   "projectId": "a1b2c3d4e5f6",
+   "docs": [
+    "sch"
+   ],
+   "version": 2,
+   "live": false
+  },
+  {
+   "type": "view-updated",
+   "projectId": "a1b2c3d4e5f6",
+   "docs": [
+    "sch"
+   ],
+   "version": 2,
+   "changedFiles": [
+    ""
+   ]
   }
  ]
 }
