@@ -1,5 +1,6 @@
-import { Maximize2, Minimize2, Search, X } from 'lucide-react';
+import { Maximize2, Minimize2, Radio, Search, X } from 'lucide-react';
 import { type FormEvent, useEffect, useState } from 'react';
+import { useActiveRun } from '@/hooks/useChat';
 import type { DocKind } from '@/lib/viewUrls';
 import { useProjects } from '@/stores/projects';
 import { useUi } from '@/stores/ui';
@@ -24,6 +25,8 @@ export function Viewer({ projectId }: { projectId: string }) {
   const current = useProjects((s) => (s.current?.id === projectId ? s.current : null));
   const files = current?.viewFiles ?? NO_FILES;
   const bytes = current?.viewBytes ?? {};
+  /** The agent is working: with "Live view" on, the schematic follows its edits now. */
+  const liveNow = useActiveRun(projectId) !== null && v.live;
 
   // Every open (a new KiCad session) restarts the server's view counter (X2).
   useEffect(() => setProject(projectId), [projectId, current, setProject]);
@@ -99,6 +102,30 @@ export function Viewer({ projectId }: { projectId: string }) {
             Agent view
           </button>
         </div>
+        {v.doc === 'sch' && (
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              aria-pressed={v.live}
+              className={`flex items-center gap-1 ${seg(v.live)}`}
+              title={
+                v.live
+                  ? 'Live view on: the schematic refreshes while the agent edits it.'
+                  : "Live view off: the schematic refreshes when the agent's turn ends."
+              }
+              onClick={() => v.setLive(!v.live)}
+            >
+              <Radio size={14} aria-hidden />
+              Live view
+            </button>
+            {liveNow && (
+              <span role="status" aria-label="Live: the agent is editing" className="flex items-center gap-1 text-xs text-muted">
+                <span className="h-2 w-2 animate-pulse rounded-full bg-success" aria-hidden />
+                live
+              </span>
+            )}
+          </div>
+        )}
         <form role="search" onSubmit={submitFind} className="flex items-center gap-1">
           <input
             aria-label="Find reference"
@@ -154,7 +181,8 @@ export function Viewer({ projectId }: { projectId: string }) {
               exists={t.doc === 'sch' ? (current?.hasSch ?? false) : (current?.hasPcb ?? false)}
               bytes={files[t.doc].reduce((sum, f) => sum + (bytes[f] ?? 0), 0)}
               layers={v.layers}
-              rev={v.revs[t.doc]}
+              rev={v.kicadRevs[t.doc]}
+              agentRev={v.revs[t.doc]}
               theme={theme}
               onPick={insertMention}
               find={t.doc === v.doc ? find : null}
@@ -162,6 +190,8 @@ export function Viewer({ projectId }: { projectId: string }) {
               onFindResult={onFindResult}
               highlight={t.doc === 'sch' ? highlight : null}
               onHighlightResult={onHighlightResult}
+              onActiveSheet={t.doc === 'sch' ? v.setActiveSheet : undefined}
+              staleSheets={t.doc === 'sch' ? v.staleSheets : undefined}
             />
           </div>
         ))}

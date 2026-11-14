@@ -82,7 +82,11 @@ export interface KcViewer {
   zoom_to_page(): void;
   zoom_to_selection(): void;
   zoom_to_board?: () => void;
-  viewport?: { zoom_about?: (factor: number) => void };
+  viewport?: {
+    zoom_about?: (factor: number) => void;
+    /** KiCanvas' Camera2: `center` is a Vec2 (schematic/board units), `zoom` a scale factor. */
+    camera?: { center?: { x: number; y: number; set?: (x: number, y: number) => void }; zoom?: number };
+  };
 }
 /** The <kicanvas-embed> element with `embed.project` (fork commit "expose the loaded project"). */
 export interface KcEmbed extends HTMLElement {
@@ -184,4 +188,31 @@ export function fitViewer(viewer: KcViewer): void {
   if (viewer.zoom_to_board) viewer.zoom_to_board();
   else viewer.zoom_to_page();
   viewer.draw();
+}
+
+/** What the viewer looks at: camera centre and zoom (restored across reloads of the same page). */
+export interface KcCamera {
+  x: number;
+  y: number;
+  zoom: number;
+}
+
+const finite = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n);
+
+/** The viewer's camera, or null when the bundle does not expose one. */
+export function getCamera(viewer: KcViewer): KcCamera | null {
+  const cam = viewer.viewport?.camera;
+  const c = cam?.center;
+  if (!c || !finite(c.x) || !finite(c.y) || !finite(cam.zoom)) return null;
+  return { x: c.x, y: c.y, zoom: cam.zoom };
+}
+
+/** Moves the camera to `cam` and repaints; false when the bundle does not expose a camera. */
+export function setCamera(viewer: KcViewer, cam: KcCamera): boolean {
+  const camera = viewer.viewport?.camera;
+  if (!camera?.center?.set) return false;
+  camera.center.set(cam.x, cam.y);
+  camera.zoom = cam.zoom;
+  viewer.draw();
+  return true;
 }

@@ -3,12 +3,15 @@
 Written to `<project>/.kicad-agent/view/` under the documents' real file names
 (hierarchical sub-sheets keep their relative paths), so KiCanvas resolves sheet
 references between them (X3). Writing a snapshot never bumps
-`KicadSession.view_version`; only the turn-end publish does (X2).
+`KicadSession.view_version`; only `HistoryService.publish_view` does (X2: the turn-end,
+external-change, restore and the debounced live schematic publishes).
 """
 
 from __future__ import annotations
 
 import contextlib
+import hashlib
+from collections.abc import Iterable
 from pathlib import Path
 
 from copperchat.kicad_session import DocKind, KicadHandle, KicadSession
@@ -78,6 +81,26 @@ def view_bytes(project: Project, files: dict[DocKind, list[str]]) -> dict[str, i
         path = resolve_view_file(project, name)
         if path is not None:
             out[name] = path.stat().st_size
+    return out
+
+
+def view_file_hashes(project: Project, docs: Iterable[DocKind]) -> dict[str, str]:
+    """sha256 of the view files of `docs` by view-relative posix name: every
+    `*.kicad_sch` under the view directory for `sch` (sub-sheets incl. stale ones), the
+    board snapshot for `pcb`. Blocking: call it in a thread."""
+    root = view_dir(project)
+    paths: list[Path] = []
+    for doc in set(docs):
+        if doc == "sch":
+            paths.extend(root.rglob("*.kicad_sch"))
+        else:
+            paths.append(snapshot_path(project, doc))
+    out: dict[str, str] = {}
+    for path in paths:
+        try:
+            out[path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+        except (FileNotFoundError, IsADirectoryError):
+            continue
     return out
 
 

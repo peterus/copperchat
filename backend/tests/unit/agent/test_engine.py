@@ -180,6 +180,66 @@ async def test_changed_docs_are_recorded_in_outcome_and_not_published(make_engin
     assert "view-updated" not in [f.type for f in await drain(sub)]
 
 
+async def test_documents_changed_is_forwarded_to_the_hooks(make_engine, until, drain):
+    """The live schematic view hangs off this: the hook sees every change of the turn."""
+    seen: list[tuple[str, set[str]]] = []
+    ended: list[TurnOutcome] = []
+
+    class Rec(RunHooks):
+        def on_documents_changed(self, turn: TurnInfo, docs: set[Any]) -> None:
+            seen.append((turn.run_id, set(docs)))
+
+        async def on_turn_end(self, turn: TurnInfo, outcome: TurnOutcome) -> None:
+            ended.append(outcome)
+
+    async def edit(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
+        return ToolResult(data={}, changed_docs={"sch"})
+
+    spec = ToolSpec(name="edit", description="d", input_schema={"type": "object"}, handler=edit)
+    engine, _ = await make_engine(
+        lambda item: [Tool("edit")], specs=[spec], with_session=True, hooks=Rec()
+    )
+    await engine.submit_ex(CID, "c", "go", [])
+    await until(lambda: len(ended) == 1)
+    assert [docs for _, docs in seen] == [{"sch"}] and seen[0][0]
+    assert ended[0].changed_docs == frozenset({"sch"})
+
+
+async def test_raising_documents_changed_hook_never_breaks_the_tool_call(make_engine, until):
+    ended: list[TurnOutcome] = []
+
+    class Boom(RunHooks):
+        def on_documents_changed(self, turn: TurnInfo, docs: set[Any]) -> None:
+            raise RuntimeError("live view hook")
+
+        async def on_turn_end(self, turn: TurnInfo, outcome: TurnOutcome) -> None:
+            ended.append(outcome)
+
+    async def edit(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
+        return ToolResult(data={"ok": True}, changed_docs={"sch"})
+
+    spec = ToolSpec(name="edit", description="d", input_schema={"type": "object"}, handler=edit)
+    engine, _ = await make_engine(
+        lambda item: [Tool("edit")], specs=[spec], with_session=True, hooks=Boom()
+    )
+    await engine.submit_ex(CID, "c", "go", [])
+    await until(lambda: len(ended) == 1)
+    assert ended[0].changed_docs == frozenset({"sch"}) and ended[0].reason == "completed"
+
+
+async def test_close_runs_the_engine_close_hook_even_if_it_raises(make_engine):
+    calls: list[str] = []
+
+    class Rec(RunHooks):
+        async def on_engine_close(self) -> None:
+            calls.append("close")
+            raise RuntimeError("close hook")
+
+    engine, _ = await make_engine(hooks=Rec())
+    await engine.close()
+    assert calls == ["close"]
+
+
 async def test_unsolicited_turn_finished_neither_finishes_nor_releases(make_engine, db, until):
     """A ResultMessage of a background task-notification turn (X20 (3)) is tagged
     unsolicited by the adapter: it must not end the running turn."""

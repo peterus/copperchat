@@ -21,9 +21,15 @@ const root = page('/r', 'top.kicad_sch', 'Root', ['J1']);
 const power = page('/r/p', 'power.kicad_sch', 'Power');
 const reg = page('/r/p/g', 'reg.kicad_sch', 'Regulator', ['U3']);
 
+function fakeCamera() {
+  const center = { x: 0, y: 0, set: vi.fn((x: number, y: number) => Object.assign(center, { x, y })) };
+  return { center, zoom: 1 };
+}
+
 /** Stand-in for what the patched KiCanvas does inside <kicanvas-embed>. */
 class FakeKicanvas {
   inner = document.createElement('div');
+  camera = fakeCamera();
   viewer: KcViewer & { selected: unknown } = {
     selected: null,
     highlight: vi.fn((targets: string[]) => {
@@ -43,7 +49,7 @@ class FakeKicanvas {
     draw: vi.fn(),
     zoom_to_page: vi.fn(),
     zoom_to_selection: vi.fn(),
-    viewport: { zoom_about: vi.fn() },
+    viewport: { zoom_about: vi.fn(), camera: this.camera },
   };
   project = Object.assign(new EventTarget(), {
     active_page: root as KcPage | null,
@@ -293,6 +299,121 @@ describe('KicanvasPane', () => {
     await loadReady();
     await rerenderWith({ theme: 'light' });
     expect(embedEl().getAttribute('theme')).toBe('kicad');
+  });
+
+  describe('camera across reloads', () => {
+    /** The user panned/zoomed: the camera moved away from the fit. */
+    const look = (kc: FakeKicanvas, x: number, y: number, zoom: number) => Object.assign(kc.camera.center, { x, y }) && (kc.camera.zoom = zoom);
+
+    it('restores the camera after a reload of the same page instead of fitting', async () => {
+      const { rerenderWith } = await renderPane();
+      const kc = await loadReady();
+      look(kc, 12, 34, 5);
+      await rerenderWith({ rev: 4 });
+      const kc2 = await loadReady();
+      expect(kc2.camera.center.set).toHaveBeenCalledWith(12, 34);
+      expect(kc2.camera.zoom).toBe(5);
+      expect(kc2.viewer.zoom_to_page).not.toHaveBeenCalled();
+      expect(kc2.viewer.draw).toHaveBeenCalled();
+    });
+
+    it('restores it on a sub-sheet once that sheet is loaded again', async () => {
+      const { rerenderWith } = await renderPane();
+      const kc = await loadReady();
+      act(() => kc.project.set_active_page(reg.project_path));
+      await act(async () => {
+        vi.advanceTimersByTime(10);
+      });
+      look(kc, 7, 8, 9);
+      await rerenderWith({ theme: 'light' }); // a theme change reloads too
+      const kc2 = await loadReady();
+      await act(async () => {
+        vi.advanceTimersByTime(10);
+      });
+      expect(kc2.project.set_active_page).toHaveBeenCalledWith(reg);
+      expect(kc2.viewer.zoom_to_page).toHaveBeenCalledTimes(1); // the root page shown first
+      expect(kc2.camera.center.set).toHaveBeenCalledTimes(1); // then the restored sheet
+      expect(kc2.camera.center.set).toHaveBeenCalledWith(7, 8);
+      expect(kc2.camera.zoom).toBe(9);
+    });
+
+    it('fits when the reload shows another page than the one last loaded', async () => {
+      const { rerenderWith } = await renderPane();
+      const kc = await loadReady();
+      look(kc, 1, 2, 3);
+      act(() => kc.project.set_active_page(reg.project_path)); // reloads before reg is loaded
+      await rerenderWith({ rev: 4 });
+      const kc2 = await loadReady();
+      await act(async () => {
+        vi.advanceTimersByTime(10);
+      });
+      expect(kc2.project.active_page).toBe(reg);
+      expect(kc2.camera.center.set).not.toHaveBeenCalled();
+      expect(kc2.viewer.zoom_to_page).toHaveBeenCalled();
+    });
+
+    it('fits when no camera was captured or the new viewer has none', async () => {
+      const { rerenderWith } = await renderPane();
+      const kc = await loadReady();
+      look(kc, 1, 2, 3);
+      await rerenderWith({ rev: 4 });
+      const kc2 = new FakeKicanvas(embedEl());
+      delete kc2.viewer.viewport!.camera;
+      act(() => kc2.load());
+      await act(async () => {
+        vi.advanceTimersByTime(LOAD_GRACE_MS + 10);
+      });
+      expect(kc2.viewer.zoom_to_page).toHaveBeenCalled();
+      delete kc2.viewer.viewport!.camera; // nothing to capture either
+      await rerenderWith({ rev: 5 });
+      const kc3 = await loadReady();
+      expect(kc3.camera.center.set).not.toHaveBeenCalled();
+      expect(kc3.viewer.zoom_to_page).toHaveBeenCalled();
+    });
+
+    it('a pending find wins over the restored camera', async () => {
+      const onFindResult = vi.fn();
+      const { rerenderWith } = await renderPane({ onFindResult });
+      const kc = await loadReady();
+      look(kc, 1, 2, 3);
+      await rerenderWith({ onFindResult, rev: 4 });
+      await rerenderWith({ onFindResult, rev: 4, find: { ref: 'J1', seq: 1 } }); // while reloading
+      const kc2 = await loadReady();
+      expect(kc2.camera.center.set).not.toHaveBeenCalled();
+      expect(kc2.viewer.zoom_to_selection).toHaveBeenCalled();
+      expect(onFindResult).toHaveBeenCalledWith('J1', true);
+    });
+  });
+
+  describe('live view', () => {
+    it('reports the schematic page shown (filename)', async () => {
+      const onActiveSheet = vi.fn();
+      await renderPane({ onActiveSheet });
+      expect(onActiveSheet).not.toHaveBeenCalled(); // not while loading
+      const kc = await loadReady();
+      expect(onActiveSheet).toHaveBeenLastCalledWith('top.kicad_sch');
+      act(() => kc.project.set_active_page(reg.project_path));
+      expect(onActiveSheet).toHaveBeenLastCalledWith('reg.kicad_sch');
+      expect(onActiveSheet).not.toHaveBeenCalledWith(null);
+    });
+
+    it('does not report boards', async () => {
+      const onActiveSheet = vi.fn();
+      await renderPane({ doc: 'pcb', files: ['top.kicad_pcb'], onActiveSheet });
+      await loadReady();
+      expect(onActiveSheet).not.toHaveBeenCalled();
+    });
+
+    it('marks sheets changed since the load in the tree and on its toggle', async () => {
+      const { rerenderWith } = await renderPane();
+      await loadReady();
+      expect(screen.getByRole('button', { name: 'Sheets (3)' })).toBeInTheDocument();
+      await rerenderWith({ staleSheets: ['sub/reg.kicad_sch'] });
+      fireEvent.click(screen.getByRole('button', { name: 'Sheets (3, updated)' }));
+      const regulator = screen.getByRole('button', { name: 'Regulator, updated' });
+      expect(within(regulator).getByText(', updated')).toHaveClass('sr-only');
+      expect(screen.getByRole('button', { name: 'Power' })).not.toHaveTextContent('updated');
+    });
   });
 
   describe('highlight', () => {

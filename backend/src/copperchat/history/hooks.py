@@ -1,5 +1,6 @@
 """Run hooks: external-change check before a turn, snapshot before the first mutation,
-autosave + view refresh after a turn that changed documents, crash recovery."""
+debounced live schematic view while a turn edits, autosave + view refresh after a turn
+that changed documents, crash recovery."""
 
 from __future__ import annotations
 
@@ -109,7 +110,17 @@ class HistoryHooks(RunHooks):
                 "(the project directory may be full or not writable).",
             ) from exc
 
+    def on_documents_changed(self, turn: TurnInfo, docs: set[DocKind]) -> None:
+        if "sch" in docs:  # the board stays turn-end only
+            self.svc.live.schedule(self.project)
+
+    async def on_engine_close(self) -> None:
+        await self.svc.live.close(self.project)
+
     async def on_turn_end(self, turn: TurnInfo, outcome: TurnOutcome) -> None:
+        # Every outcome: no live publish of this turn after this point, and none runs
+        # into the autosave / recovery below.
+        await self.svc.live.finish(self.project)
         if outcome.document_inconsistent:
             # The engine already posted the error row (X18). KiCad's in-memory document
             # is not trustworthy: never autosave it, reload from disk instead.

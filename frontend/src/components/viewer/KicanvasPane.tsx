@@ -7,13 +7,16 @@ import {
   EMBED_CONTROLSLIST,
   findRefPage,
   fitViewer,
+  getCamera,
   type HighlightKind,
+  type KcCamera,
   type KcEmbed,
   type KcPage,
   type KcViewer,
   kicanvasTheme,
   loadKicanvas,
   refOf,
+  setCamera,
   type SheetNode,
   zoomViewer,
 } from '@/lib/kicanvas';
@@ -77,17 +80,28 @@ function highlightItems(h: HighlightRequest, sheetPath: string | null) {
   return { refs, boxes };
 }
 
+/** The camera of the page last loaded before a reload; restored when the reload shows that page. */
+interface SavedCamera {
+  projectId: string;
+  /** `project_path` of the page ('' when KiCanvas has no project, e.g. a lone board). */
+  page: string;
+  camera: KcCamera;
+}
+
 export function KicanvasPane({
   projectId,
   doc,
   files,
   rev,
+  agentRev,
   theme,
   onPick,
   find,
   onFindResult,
   highlight,
   onHighlightResult,
+  onActiveSheet,
+  staleSheets,
   visible = true,
 }: KicadPaneProps) {
   const host = useRef<HTMLDivElement>(null);
@@ -96,6 +110,13 @@ export function KicanvasPane({
   const readyRef = useRef(false);
   /** Sheet shown before a reload (theme change, view-updated): restored afterwards. */
   const activeRef = useRef<string | null>(null);
+  /**
+   * Page whose viewer was loaded last (per `kicanvas:viewerload`). Not `activeRef`: a sheet switch
+   * updates that before the new page is loaded, while the viewer (and camera) still shows the old one.
+   */
+  const loadedPage = useRef<string | null>(null);
+  /** Captured when an embed is torn down for a reload; consumed by the next load. */
+  const savedCam = useRef<SavedCamera | null>(null);
   /** A select() we issue ourselves must not insert a mention. */
   const programmatic = useRef(false);
   const pendingFind = useRef<FindRequest | null>(null);
@@ -103,8 +124,8 @@ export function KicanvasPane({
   const highlightReq = useRef<HighlightRequest | null>(null);
   /** Per request: its page was opened (`navigated`) and its result reported (`reported`). */
   const highlightProgress = useRef({ seq: -1, navigated: false, reported: false });
-  const handlers = useRef({ onPick, onFindResult, onHighlightResult });
-  handlers.current = { onPick, onFindResult, onHighlightResult };
+  const handlers = useRef({ onPick, onFindResult, onHighlightResult, onActiveSheet });
+  handlers.current = { onPick, onFindResult, onHighlightResult, onActiveSheet };
 
   const [status, setStatus] = useState<Status>({ kind: 'loading' });
   const [notice, setNotice] = useState<string | null>(null);
@@ -118,8 +139,8 @@ export function KicanvasPane({
   const kTheme = kicanvasTheme(theme);
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
-  const source = useRef({ urls, kTheme });
-  source.current = { urls, kTheme };
+  const source = useRef({ urls, kTheme, projectId, doc });
+  source.current = { urls, kTheme, projectId, doc };
   // What should be loaded; applied (loadKey) only while the pane is visible.
   const wantKey = `${srcKey}\n${kTheme}\n${attempt}`;
   const [loadKey, setLoadKey] = useState<string | null>(visible ? wantKey : null);
@@ -213,7 +234,10 @@ export function KicanvasPane({
   useEffect(() => {
     const el = host.current;
     if (!el || loadKey === null) return;
-    const { urls, kTheme } = source.current;
+    const { urls, kTheme, projectId: pid, doc: kind } = source.current;
+    // The previous embed's camera; applied instead of the fit once the page it showed is shown again.
+    let restore = savedCam.current?.projectId === pid ? savedCam.current : null;
+    savedCam.current = null;
     let cancelled = false;
     let failed = false;
     let graceTimer: ReturnType<typeof setTimeout> | undefined;
@@ -222,6 +246,7 @@ export function KicanvasPane({
     readyRef.current = false;
     pageLoading.current = false;
     viewerRef.current = null;
+    loadedPage.current = null;
     setStatus({ kind: 'loading' });
     setNotice(null);
     setTree([]);
@@ -300,19 +325,37 @@ export function KicanvasPane({
           syncActive();
         };
         const syncActive = () => {
-          const id = embed.project?.active_page?.project_path ?? null;
-          activeRef.current = id;
-          setActive(id);
+          const page = embed.project?.active_page ?? null;
+          activeRef.current = page?.project_path ?? null;
+          setActive(activeRef.current);
+          if (kind === 'sch') handlers.current.onActiveSheet?.(page?.filename ?? null);
+        };
+        /**
+         * The camera to restore on the page just loaded (one-shot), or null to keep the fit: another
+         * page, or a pending find / highlight, which zooms itself.
+         */
+        const takeCamera = () => {
+          const r = restore;
+          restore = null;
+          if (!r || r.page !== loadedPage.current) return null;
+          const h = highlightReq.current;
+          if (pendingFind.current || (h && !highlightProgress.current.reported)) return null;
+          return r.camera;
         };
         // embed-host-integration.patch: fires for every page load (first load, sheet switch).
         embed.addEventListener('kicanvas:viewerload', (e) => {
+          if (cancelled) return; // a sheet load the torn-down embed had in flight
           const target = e.composedPath()[0] as { viewer?: KcViewer } | undefined;
           viewerRef.current = target?.viewer ?? viewerRef.current;
+          loadedPage.current = embed.project?.active_page?.project_path ?? '';
           pageLoading.current = false;
           if (readyRef.current) {
             // after a sheet switch; KiCanvas clears the selection right after this event
             setTimeout(() => {
               if (cancelled) return;
+              // the sheet restored after a reload: back to where the user looked
+              const cam = takeCamera();
+              if (cam && viewerRef.current) setCamera(viewerRef.current, cam);
               runFind();
               runHighlight();
             }, 0);
@@ -332,7 +375,10 @@ export function KicanvasPane({
               if (remembered && remembered !== project.active_page) project.set_active_page(remembered);
               syncActive();
             }
-            if (viewerRef.current) fitViewer(viewerRef.current);
+            // while the remembered sheet loads, the camera waits for its viewerload
+            const viewer = viewerRef.current;
+            const cam = pageLoading.current ? null : takeCamera();
+            if (viewer && !(cam && setCamera(viewer, cam))) fitViewer(viewer);
             setStatus({ kind: 'ready' });
             // after restoring the remembered sheet, its viewerload runs them on the right page
             if (pageLoading.current) return;
@@ -348,6 +394,15 @@ export function KicanvasPane({
 
     return () => {
       cancelled = true;
+      // Reload (new files, theme, retry): remember where the user looked. A load torn down before it
+      // was ready keeps the camera it would have restored.
+      const viewer = readyRef.current ? viewerRef.current : null;
+      const camera = viewer ? getCamera(viewer) : null;
+      savedCam.current = !readyRef.current
+        ? restore
+        : camera && loadedPage.current !== null
+          ? { projectId: pid, page: loadedPage.current, camera }
+          : null;
       clearTimeout(graceTimer);
       clearTimeout(noticeTimer);
       offs.forEach((off) => off());
@@ -379,7 +434,7 @@ export function KicanvasPane({
       <AgentViewPane
         projectId={projectId}
         doc={doc}
-        rev={rev}
+        rev={agentRev === undefined ? rev : agentRev}
         theme={theme}
         layers={DEFAULT_LAYERS}
         banner={
@@ -412,7 +467,7 @@ export function KicanvasPane({
         </p>
       )}
       {status.kind === 'ready' && countSheets(tree) > 1 && (
-        <SheetNavigator tree={tree} active={active} onOpen={openSheet} closeOnPick={coarse} />
+        <SheetNavigator tree={tree} active={active} stale={staleSheets} onOpen={openSheet} closeOnPick={coarse} />
       )}
       {notice && (
         <div role="status" className="absolute inset-x-2 bottom-3 z-10 mr-14 flex items-start gap-2 rounded border border-warning bg-bg/95 px-3 py-2 text-xs shadow">
