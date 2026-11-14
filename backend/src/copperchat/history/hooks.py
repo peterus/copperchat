@@ -124,21 +124,17 @@ class HistoryHooks(RunHooks):
         if not await self._turn_end(turn, outcome, live_sent) and live_sent:
             # Live frames went out but this turn end published no schematic (a failed
             # turn, a failed autosave, ...): the agent view and Live-off clients only
-            # follow non-live frames, so send one of the state KiCad holds now.
+            # follow non-live frames, so send one of the schematic on disk.
             await self._catch_up_view()
 
     async def _catch_up_view(self) -> None:
-        """Best effort: a non-live schematic frame from the open session (if any). A
-        schematic with unsaved edits (its autosave failed) is never saved for it (a view
-        copy would save it first): that frame announces the last live copy as it is."""
-        session = self.svc.open_session(self.project)
-        if session is None:
-            return
+        """Best effort: a non-live schematic frame of the files ON DISK (the last save:
+        what the recovery notices say the design is back at). Never calls KiCad - it may
+        be down after a failed restart, and its document may hold unsaved edits that a
+        view copy would save."""
         try:
             async with self.svc.lock(self.project):
-                await self.svc.publish_view(
-                    self.project, session, {"sch"}, write=not session.modified
-                )
+                await self.svc.publish_disk_view(self.project)
         except Exception:  # only the viewer lags
             log.warning("view refresh after live frames failed", exc_info=True)
 

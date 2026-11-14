@@ -331,6 +331,36 @@ describe('KicanvasPane', () => {
     expect(embedEl().querySelector('kicanvas-source')!.getAttribute('src')).toContain('?v=5');
   });
 
+  it('backs off after an overdue replacement and resets once a load is ready', async () => {
+    const { rerenderWith } = await renderPane();
+    const wait = async (ms: number) =>
+      act(async () => {
+        vi.advanceTimersByTime(ms);
+      });
+    const first = embedEl(); // a load slower than the limit
+    await rerenderWith({ rev: 4 });
+    await wait(LOAD_COALESCE_MAX_MS + 10);
+    const second = embedEl();
+    expect(second).not.toBe(first); // replaced: the next load gets twice the time
+    await rerenderWith({ rev: 5 });
+    await wait(LOAD_COALESCE_MAX_MS + 10);
+    expect(embedEl()).toBe(second);
+    await wait(LOAD_COALESCE_MAX_MS);
+    const third = embedEl();
+    expect(third).not.toBe(second);
+    expect(third.querySelector('kicanvas-source')!.getAttribute('src')).toContain('?v=5');
+    await rerenderWith({ rev: 6 });
+    await wait(2 * LOAD_COALESCE_MAX_MS + 10);
+    expect(embedEl()).toBe(third); // doubled again: 4x
+    await loadReady(); // ready: the limit is back at LOAD_COALESCE_MAX_MS
+    const fourth = embedEl();
+    expect(fourth.querySelector('kicanvas-source')!.getAttribute('src')).toContain('?v=6');
+    await rerenderWith({ rev: 7 });
+    await wait(LOAD_COALESCE_MAX_MS + 10);
+    expect(embedEl()).not.toBe(fourth);
+    expect(embedEl().querySelector('kicanvas-source')!.getAttribute('src')).toContain('?v=7');
+  });
+
   it('an overdue load without a newer rev is left alone', async () => {
     await renderPane();
     const first = embedEl();

@@ -1,4 +1,6 @@
-"""KiCanvas sources: copies of the open documents as the api-server holds them.
+"""KiCanvas sources: copies of the open documents as the api-server holds them (the
+turn end's catch-up after live frames copies the schematic files on disk instead,
+`copy_disk_schematic`, without KiCad).
 
 Written to `<project>/.kicad-agent/view/` under the documents' real file names
 (hierarchical sub-sheets keep their relative paths), so KiCanvas resolves sheet
@@ -10,14 +12,20 @@ external-change, restore and the debounced live schematic publishes).
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
+import logging
 import os
 import stat
 from collections.abc import Iterable
 from pathlib import Path
+from typing import BinaryIO
 
+from copperchat.fsutil import atomic_write_bytes
 from copperchat.kicad_session import DocKind, KicadHandle, KicadSession
 from copperchat.projects import Project, agent_dir
+
+log = logging.getLogger(__name__)
 
 VIEW_SUFFIXES: dict[DocKind, str] = {"sch": ".kicad_sch", "pcb": ".kicad_pcb"}
 
@@ -131,15 +139,83 @@ _CHUNK = 1 << 16
 
 def _hash_regular(path: Path) -> str | None:
     """sha256 of `path` read in chunks from one fd; None if it is no regular file by
-    then (swapped for a symlink/FIFO after the lstat: never followed, never blocks)."""
-    fd = os.open(path, _OPEN_FLAGS)
-    with os.fdopen(fd, "rb") as fh:
-        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
-            return None
+    then (swapped for a symlink - the O_NOFOLLOW open fails with ELOOP - or a FIFO after
+    the lstat: never followed, never blocks). Other OSErrors propagate."""
+    fh = _open_regular(path)
+    if fh is None:
+        return None
+    with fh:
         h = hashlib.sha256()
         for chunk in iter(lambda: fh.read(_CHUNK), b""):
             h.update(chunk)
         return h.hexdigest()
+
+
+def _open_regular(path: Path) -> BinaryIO | None:
+    """`path` opened for reading without following a symlink or blocking on a FIFO;
+    None if it is a symlink (ELOOP) or no regular file. Other OSErrors propagate."""
+    try:
+        fd = os.open(path, _OPEN_FLAGS)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            return None
+        raise
+    fh = os.fdopen(fd, "rb")
+    if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+        fh.close()
+        return None
+    return fh
+
+
+def _inside(base: Path, name: str) -> Path | None:
+    """`base / name` if it stays inside the (resolved) `base` without a symlink or `..`
+    on the way (the resolved path is the literal one), else None."""
+    path = base / name
+    if "\x00" in name or path.resolve() != path or path == base:
+        return None
+    return path
+
+
+def copy_disk_schematic(project: Project) -> list[str]:
+    """Byte copies of the project's schematic files as they are ON DISK (the last save)
+    over their view copies, without KiCad: the root sheet, and every sub-sheet the view
+    directory already holds whose counterpart exists under the project directory. Names
+    that escape the project or view directory, symlinks and non-regular files are
+    refused; a file that cannot be copied is logged and skipped. Returns the
+    view-relative names copied. Blocking: call it in a thread."""
+    if project.sch_file is None:
+        return []
+    root_view = view_dir(project)
+    root_view.mkdir(parents=True, exist_ok=True)
+    vroot, proot = root_view.resolve(), project.dir.resolve()
+    root_name = snapshot_path(project, "sch").name
+    names = [root_name]
+    for path in sorted(vroot.rglob("*.kicad_sch")):
+        name = path.relative_to(vroot).as_posix()
+        if name not in (root_name, project.sch_file.name):
+            names.append(name)
+    copied: list[str] = []
+    for name in names:
+        dst = _inside(vroot, name)
+        src = _inside(proot, project.sch_file.name if name == root_name else name)
+        if dst is None or src is None or src.is_relative_to(vroot):
+            log.warning("view copy from disk refused for %s", name)
+            continue
+        try:
+            fh = _open_regular(src)
+            if fh is None:
+                log.warning("view copy from disk refused for %s (no regular file)", name)
+                continue
+            with fh:
+                data = fh.read()
+            atomic_write_bytes(dst, data)  # replaces a symlink at dst, never writes through
+        except FileNotFoundError:
+            continue  # no counterpart on disk (yet): the view copy stays
+        except OSError:
+            log.warning("view copy from disk failed for %s", name, exc_info=True)
+            continue
+        copied.append(name)
+    return copied
 
 
 def _remove_stale_sheets(project: Project, current: list[str]) -> None:

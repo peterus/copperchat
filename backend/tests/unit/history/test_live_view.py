@@ -63,6 +63,7 @@ class Rig:
     time: FakeTime
     live: LiveViewPublisher
     calls: list[tuple[float, set[DocKind], bool]] = field(default_factory=list)
+    disk: int = 0  # publish_disk_view calls (also recorded in `calls` as ({"sch"}, False))
     gate: asyncio.Event | None = None  # set: publish_view waits for it
     error: Exception | None = None
 
@@ -102,7 +103,17 @@ def make_rig(opened: Opened, **kw: Any) -> Rig:
         session.view_version += 1  # a live frame was sent
         return session.view_version
 
+    real_disk: Callable[[Project], Awaitable[int | None]] = svc.publish_disk_view
+
+    async def recording_disk(project: Project) -> int | None:
+        rig.calls.append((t.now, {"sch"}, False))
+        rig.disk += 1
+        if rig.error is not None:
+            raise rig.error
+        return await real_disk(project)
+
     svc.publish_view = recording  # type: ignore[method-assign]
+    svc.publish_disk_view = recording_disk  # type: ignore[method-assign]
     return rig
 
 
@@ -358,15 +369,16 @@ async def test_board_only_save_after_live_frames_carries_the_schematic(rig: Rig)
     rig.opened.session.modified = True
     rig.opened.env.save_error, rig.opened.env.save_error_doc = RuntimeError("full"), "sch"
     await rig.opened.hooks.on_turn_end(turn(), done("pcb"))  # e.g. sch edits saved, then pcb
-    # pcb saved, sch holds unsaved edits: one frame for the board, one announcing the
-    # last live copy (never saving the schematic for a view copy).
+    # pcb saved, sch holds unsaved edits: one frame for the board, one of the
+    # schematic on disk (never saving the schematic for a view copy).
     assert turn_end_calls(rig) == [({"pcb"}, False), ({"sch"}, False)]
+    assert rig.disk == 1
 
 
 async def test_kicad_failed_after_live_frames_sends_a_turn_end_frame(rig: Rig) -> None:
     await live_frame_sent(rig)
     await rig.opened.hooks.on_turn_end(turn(), done("sch", reason="kicad_failed", failed=True))
-    assert turn_end_calls(rig) == [({"sch"}, False)]
+    assert turn_end_calls(rig) == [({"sch"}, False)] and rig.disk == 1
 
 
 async def test_inconsistent_after_live_frames_sends_a_frame_from_the_reopened_session(
@@ -388,7 +400,7 @@ async def test_inconsistent_after_live_frames_sends_a_frame_from_the_reopened_se
     assert frames[-1].version == fresh.view_version and frames[-1].live is None
 
 
-async def test_autosave_failure_after_live_frames_announces_the_last_live_copy(
+async def test_autosave_failure_after_live_frames_announces_the_disk_state(
     rig: Rig,
 ) -> None:
     env = rig.opened.env
@@ -397,7 +409,7 @@ async def test_autosave_failure_after_live_frames_announces_the_last_live_copy(
     env.save_error = RuntimeError("disk full")
     written = list(env.written)
     await rig.opened.hooks.on_turn_end(turn(), done("sch"))
-    assert turn_end_calls(rig) == [({"sch"}, False)]
+    assert turn_end_calls(rig) == [({"sch"}, False)] and rig.disk == 1
     assert env.written == written  # no view copy: it would save the schematic
     assert env.saved == []
 
@@ -406,7 +418,9 @@ async def test_closed_session_after_live_frames_sends_nothing(rig: Rig) -> None:
     await live_frame_sent(rig)
     await rig.opened.env.sessions.close_all()
     await rig.opened.hooks.on_turn_end(turn(), done("sch"))
-    assert turn_end_calls(rig) == []
+    assert turn_end_calls(rig) == [({"sch"}, False)]  # the catch-up finds no session
+    frames = [f for f in rig.opened.env.broadcaster.frames if isinstance(f, ViewUpdatedFrame)]
+    assert frames == []
 
 
 async def test_failed_turn_without_live_frames_sends_nothing(rig: Rig) -> None:
@@ -498,3 +512,173 @@ async def test_live_publish_of_a_modified_schematic_is_skipped(
     assert env.server.saved == [] and env.server.modified is True
     assert view_frames(opened) == [] and session.view_version == 0
     assert not snapshot_path(project, "sch").exists()
+
+
+# ---- the catch-up copies the schematic on disk (the last save), never through KiCad
+
+
+def disk_rig(opened: Opened) -> tuple[FakeTime, LiveViewPublisher, dict[str, bytes]]:
+    """The real publish_view behind a fake writer that copies `content` into the view."""
+    project, svc = opened.project, opened.env.svc
+    content = {"sch": b"(kicad_sch v1)"}
+
+    async def write_view(session: KicadSession, doc: DocKind, *, save_modified: bool = True) -> Any:
+        path = snapshot_path(project, doc)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content.get(doc, b"(board)"))
+        return path
+
+    svc.write_view = write_view  # type: ignore[assignment]
+    t, live = real_rig(opened)
+    return t, live, content
+
+
+def kicad_calls_during_catch_up(
+    opened: Opened, monkeypatch: pytest.MonkeyPatch
+) -> tuple[list[str], list[int]]:
+    """KiCad calls / server starts made while `_catch_up_view` runs."""
+    calls: list[str] = []
+    starts: list[int] = []
+    inside = False
+    hooks, server = opened.hooks, opened.env.server
+    real_catch_up = hooks._catch_up_view
+
+    async def catch_up() -> None:
+        nonlocal inside
+        inside, before = True, server.starts
+        try:
+            await real_catch_up()
+        finally:
+            inside = False
+            starts.append(server.starts - before)
+
+    def record(name: str, real: Callable[..., Any]) -> Callable[..., Any]:
+        async def wrapper(self: KicadSession, *a: Any, **kw: Any) -> Any:
+            if inside:
+                calls.append(name)
+            return await real(self, *a, **kw)
+
+        return wrapper
+
+    for name in ("call", "save", "save_copy", "start"):
+        monkeypatch.setattr(KicadSession, name, record(name, getattr(KicadSession, name)))
+    hooks._catch_up_view = catch_up  # type: ignore[method-assign]
+    return calls, starts
+
+
+async def test_catch_up_announces_the_last_save_from_disk(
+    opened: Opened, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """E1 published live; E2 saved itself but its live publish was cancelled by the turn
+    end; E3 could not save itself and the autosave failed. The catch-up frame lists the
+    root and the sub-sheet with E2's content from disk."""
+    env, project, session = opened.env, opened.project, opened.session
+    t, live, content = disk_rig(opened)
+    root, sub = snapshot_path(project, "sch").name, "sub.kicad_sch"
+    view = snapshot_path(project, "sch").parent
+    view.mkdir(parents=True, exist_ok=True)
+    (project.dir / sub).write_bytes(b"(sub v1)")
+    (view / sub).write_bytes(b"(sub v1)")
+    await env.svc.publish_view(project, session, {"sch"})  # what the clients have
+    content["sch"] = b"(kicad_sch E1)"
+    opened.hooks.on_documents_changed(turn(), {"sch"})  # E1
+    await t.advance(2.0)
+    await until(lambda: len(view_frames(opened)) == 2)
+    await until(lambda: not live._states[project.id].publishing)
+    assert project.sch_file is not None
+    project.sch_file.write_bytes(b"(kicad_sch E2)")  # E2 saved itself ...
+    (project.dir / sub).write_bytes(b"(sub E2)")
+    opened.hooks.on_documents_changed(turn(), {"sch"})  # ... its live publish is pending
+    session.modified = True  # E3 could not save itself
+    env.save_error = RuntimeError("disk full")  # nor can the autosave
+    calls, starts = kicad_calls_during_catch_up(opened, monkeypatch)
+    await opened.hooks.on_turn_end(turn(), done("sch"))
+    assert view_frames(opened)[2:] == [(3, sorted([root, sub]), None)]
+    assert (view / root).read_bytes() == b"(kicad_sch E2)"
+    assert (view / sub).read_bytes() == b"(sub E2)"
+    assert calls == [] and starts == [0]
+    assert env.saved == [] and env.server.saved == []
+
+
+async def test_kicad_down_after_kicad_failed_catch_up_never_calls_kicad(
+    opened: Opened, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env, project = opened.env, opened.project
+    t, live, content = disk_rig(opened)
+    await env.svc.publish_view(project, opened.session, {"sch"})
+    content["sch"] = b"(kicad_sch E1)"
+    opened.hooks.on_documents_changed(turn(), {"sch"})
+    await t.advance(2.0)
+    await until(lambda: len(view_frames(opened)) == 2)
+    await until(lambda: not live._states[project.id].publishing)
+    env.server.crash()
+    env.server.fail_start_with_exit_code = 1  # every restart fails
+    calls, starts = kicad_calls_during_catch_up(opened, monkeypatch)
+    await opened.hooks.on_turn_end(turn(), done("sch", reason="kicad_failed", failed=True))
+    assert any(meta == {"code": "kicad_restart_failed"} for _, meta in env.engine.errors)
+    assert calls == [] and starts == [0]
+    assert env.saved == [] and env.server.saved == []
+    assert project.sch_file is not None
+    assert view_frames(opened)[2:] == [(3, [snapshot_path(project, "sch").name], None)]
+    assert snapshot_path(project, "sch").read_bytes() == project.sch_file.read_bytes()
+
+
+async def test_autosave_publish_failure_after_live_frames_catches_up_once(
+    rig: Rig, caplog: pytest.LogCaptureFixture
+) -> None:
+    svc = rig.opened.env.svc
+    await live_frame_sent(rig)
+    recording, recording_disk = svc.publish_view, svc.publish_disk_view
+    failed: list[bool] = []
+    locked: list[bool] = []
+
+    async def failing_once(p: Project, session: KicadSession, docs: Any, **kw: Any) -> int:
+        if not kw.get("live") and not failed:
+            failed.append(True)
+            rig.calls.append((rig.time.now, set(docs), False))
+            raise RuntimeError("SaveCopy failed")
+        return await recording(p, session, docs, **kw)
+
+    async def disk(p: Project) -> int | None:
+        locked.append(svc.lock(p).locked())
+        return await recording_disk(p)
+
+    svc.publish_view = failing_once  # type: ignore[method-assign]
+    svc.publish_disk_view = disk  # type: ignore[method-assign]
+    with caplog.at_level(logging.WARNING, logger="copperchat.history.hooks"):
+        await rig.opened.hooks.on_turn_end(turn(), done("sch"))
+    assert rig.opened.env.saved == []  # every edit saved itself: nothing to autosave
+    assert turn_end_calls(rig) == [({"sch"}, False), ({"sch"}, False)]
+    assert rig.disk == 1 and locked == [True]
+    assert "view refresh after autosave failed" in caplog.text
+    frames = [f for f in rig.opened.env.broadcaster.frames if isinstance(f, ViewUpdatedFrame)]
+    assert [f.live for f in frames] == [None]
+    assert frames[0].version == rig.opened.session.view_version
+
+
+async def test_read_only_session_after_the_inconsistent_reopen_catches_up(
+    rig: Rig,
+) -> None:
+    env, project = rig.opened.env, rig.opened.project
+    await live_frame_sent(rig)
+    real_reopen = env.sessions.reopen
+
+    async def reopen_read_only(p: Project) -> KicadSession:
+        fresh = await real_reopen(p)
+        fresh.read_only = True  # e.g. KiCad's GUI took the lock meanwhile
+        return fresh
+
+    env.sessions.reopen = reopen_read_only  # type: ignore[method-assign]
+    outcome = TurnOutcome(
+        reason="completed",
+        changed_docs=frozenset({"sch"}),
+        mutated=True,
+        document_inconsistent=True,
+    )
+    await rig.opened.hooks.on_turn_end(turn(), outcome)
+    fresh = env.svc.open_session(project)
+    assert fresh is not None and fresh.read_only
+    assert turn_end_calls(rig) == [({"sch"}, False)] and rig.disk == 1
+    frames = [f for f in env.broadcaster.frames if isinstance(f, ViewUpdatedFrame)]
+    assert [(f.version, f.live) for f in frames] == [(fresh.view_version, None)]
+    assert env.saved == [] and env.server.saved == []

@@ -12,7 +12,7 @@ import pytest
 from copperchat.kicad_session import DocumentModified, KicadSession
 from copperchat.projects import Project
 from copperchat.views import write_kicanvas_snapshot
-from copperchat.views.snapshot import _hash_regular, view_dir, view_file_hashes
+from copperchat.views.snapshot import _hash_regular, snapshot_path, view_dir, view_file_hashes
 from tests.support.history import ECC83, HIERARCHY, replace_with_kicad_file
 from tests.support.kicad_project import FIXTURES
 from tests.unit.history.conftest import Env
@@ -97,8 +97,7 @@ async def test_a_file_swapped_after_the_lstat_is_never_followed_nor_blocks(
     assert await asyncio.wait_for(asyncio.to_thread(_hash_regular, fifo), 5) is None
     link = root / "link.kicad_sch"
     link.symlink_to(BLANK_SCH)
-    with pytest.raises(OSError):
-        _hash_regular(link)
+    assert _hash_regular(link) is None  # ELOOP from O_NOFOLLOW: skipped, not "changed"
 
 
 async def test_changed_files_come_from_before_and_after_hashes(
@@ -254,3 +253,83 @@ async def test_failed_first_publish_keeps_the_baseline(
     svc.write_view = write_kicanvas_snapshot
     await svc.publish_view(project, session, {"sch"}, live=True)
     assert frames(env) == [(1, [SUB], True)]
+
+
+# ---- publish_disk_view: the turn end's catch-up from the files on disk, never KiCad
+
+
+def no_kicad(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    calls: list[str] = []
+
+    async def call(self: KicadSession, *a: object, **kw: object) -> None:
+        calls.append("call")
+        raise AssertionError("publish_disk_view must not call KiCad")
+
+    async def save_copy(self: KicadSession, *a: object, **kw: object) -> None:
+        calls.append("save_copy")
+        raise AssertionError("publish_disk_view must not call KiCad")
+
+    monkeypatch.setattr(KicadSession, "call", call)
+    monkeypatch.setattr(KicadSession, "save_copy", save_copy)
+    return calls
+
+
+async def test_disk_view_copies_the_last_save_without_kicad(
+    hier: tuple[Env, Project, KicadSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env, project, session = hier
+    svc = env.svc
+    assert await svc.publish_view(project, session, {"sch"}) == 1  # what the clients have
+    starts = env.server.starts
+    (project.dir / ROOT).write_bytes(b"(kicad_sch root E2)")  # saved after the last frame
+    (project.dir / SUB).write_bytes(b"(kicad_sch sub E2)")
+    calls = no_kicad(monkeypatch)
+    assert await svc.publish_disk_view(project) == 2
+    assert frames(env)[-1] == (2, sorted([ROOT, SUB]), None)  # non-live
+    assert (view_dir(project) / ROOT).read_bytes() == b"(kicad_sch root E2)"
+    assert (view_dir(project) / SUB).read_bytes() == b"(kicad_sch sub E2)"
+    assert calls == [] and env.server.starts == starts and env.server.saved == []
+    assert await svc.publish_disk_view(project) == 3  # always sent, even unchanged
+    assert frames(env)[-1] == (3, [], None)
+
+
+async def test_disk_view_refuses_paths_escaping_the_project_or_view_dir(
+    hier: tuple[Env, Project, KicadSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env, project, session = hier
+    await env.svc.publish_view(project, session, {"sch"})
+    root = view_dir(project)
+    outside = project.dir.parent / "outside.kicad_sch"
+    outside.write_bytes(b"secret")
+    # A project-side symlink pointing outside: never read.
+    (root / "evil.kicad_sch").write_bytes(b"view copy")
+    (project.dir / "evil.kicad_sch").symlink_to(outside)
+    # A view-side symlink pointing outside: never written through.
+    (root / "link.kicad_sch").symlink_to(outside)
+    (project.dir / "link.kicad_sch").write_bytes(b"overwrite")
+    # A symlinked view sub-directory: refused as a whole.
+    (project.dir / "sub").mkdir()
+    (project.dir / "sub" / "x.kicad_sch").write_bytes(b"via dir link")
+    elsewhere = project.dir.parent / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "x.kicad_sch").write_bytes(b"untouched")
+    (root / "sub").symlink_to(elsewhere, target_is_directory=True)
+    no_kicad(monkeypatch)
+    await env.svc.publish_disk_view(project)
+    assert outside.read_bytes() == b"secret"
+    assert (root / "evil.kicad_sch").read_bytes() == b"view copy"
+    assert (root / "link.kicad_sch").is_symlink()
+    assert (elsewhere / "x.kicad_sch").read_bytes() == b"untouched"
+    assert (root / ROOT).read_bytes() == (project.dir / ROOT).read_bytes()
+
+
+async def test_disk_view_without_an_open_session_sends_nothing(
+    hier: tuple[Env, Project, KicadSession],
+) -> None:
+    env, project, session = hier
+    await env.svc.publish_view(project, session, {"sch"})
+    await env.sessions.close_all()
+    (project.dir / ROOT).write_bytes(b"(kicad_sch later)")
+    assert await env.svc.publish_disk_view(project) is None
+    assert len(frames(env)) == 1
+    assert snapshot_path(project, "sch").read_bytes() != b"(kicad_sch later)"

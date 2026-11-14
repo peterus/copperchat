@@ -35,6 +35,8 @@ export const LOAD_GRACE_MS = 400;
 /**
  * Reloads wait for the load in flight (coalescing), but at most this long: a load that never
  * becomes ready nor fails must not block every later one. Large boards can take tens of seconds.
+ * Each overdue replacement doubles the limit for the next load (a device too slow for it must
+ * still finish one while live frames keep coming); a ready load resets it.
  */
 export const LOAD_COALESCE_MAX_MS = 60_000;
 const NOTICE_MS = 6000;
@@ -156,8 +158,10 @@ export function KicanvasPane({
   const wantKey = `${srcKey}\n${kTheme}\n${attempt}`;
   const [loadKey, setLoadKey] = useState<string | null>(visible ? wantKey : null);
   const [inFlight, setInFlight] = useState(false);
-  /** The load in flight has taken longer than LOAD_COALESCE_MAX_MS: stop waiting for it. */
+  /** The load in flight has taken longer than `coalesceMs`: stop waiting for it. */
   const [overdue, setOverdue] = useState(false);
+  /** The current coalescing limit: LOAD_COALESCE_MAX_MS, doubled per overdue replacement. */
+  const coalesceMs = useRef(LOAD_COALESCE_MAX_MS);
   /** The embed shown is about to be replaced (new files/theme): do not apply anything to it. */
   const staleRef = useRef(false);
   staleRef.current = loadKey !== wantKey;
@@ -166,12 +170,14 @@ export function KicanvasPane({
   useEffect(() => {
     setOverdue(false); // per load
     if (!inFlight) return;
-    const timer = setTimeout(() => setOverdue(true), LOAD_COALESCE_MAX_MS);
+    const timer = setTimeout(() => setOverdue(true), coalesceMs.current);
     return () => clearTimeout(timer);
   }, [inFlight, loadKey]);
   useEffect(() => {
-    if (visible && (!inFlight || overdue)) setLoadKey(wantKey);
-  }, [visible, wantKey, inFlight, overdue]);
+    if (!visible || (inFlight && !overdue)) return;
+    if (inFlight && wantKey !== loadKey) coalesceMs.current *= 2; // replacing an overdue load
+    setLoadKey(wantKey);
+  }, [visible, wantKey, inFlight, overdue, loadKey]);
 
   /** Select `req.ref`, switching to the sheet that contains it first (KiCanvas searches only the current sheet). */
   const runFind = useCallback(() => {
@@ -406,6 +412,7 @@ export function KicanvasPane({
             if (viewer && !(cam && setCamera(viewer, cam))) fitViewer(viewer);
             setStatus({ kind: 'ready' });
             setInFlight(false);
+            coalesceMs.current = LOAD_COALESCE_MAX_MS;
             if (kind === 'sch') handlers.current.onLoaded?.(staleAtStart);
             // after restoring the remembered sheet, its viewerload runs them on the right page
             if (pageLoading.current) return;
