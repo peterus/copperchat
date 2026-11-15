@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import Any, cast
 
 import pytest
@@ -173,3 +174,51 @@ async def test_failed_library_recovers_and_expires(monkeypatch: pytest.MonkeyPat
     assert [r["lib_id"] for r in rows] == ["Bad_SMD:R_0805_2012Metric"]
     _, failed = await svc.search_footprints_detailed("smd 0805")
     assert failed == {}
+
+
+class ProbeSession(FakeSession):
+    """KiCad returns `Device:R` without items (a derived symbol whose parent it cannot
+    resolve): get_symbol falls back to the probe placement."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.commits: list[tuple[str, bool]] = []
+
+    def commit(self, message: str, *, dry_run: bool = False) -> Any:
+        self.commits.append((message, dry_run))
+        return contextlib.nullcontext()
+
+    async def call(self, fn: Any) -> Any:
+        from kipy.proto.schematic import schematic_types_pb2 as st
+
+        name = getattr(getattr(fn, "func", None), "__name__", "")
+        if name not in ("_fetch_symbol", "_place_probe"):
+            return await super().call(fn)
+        self.calls += 1
+        sy = st.SchematicSymbol()
+        sy.id.library_nickname, sy.id.entry_name = "Device", "R"
+        if name == "_place_probe":
+            for number in ("1", "2"):
+                sy.items.add().item.Pack(st.SchematicPin(number=number, name="~"))
+        return sy
+
+
+async def test_item_less_symbol_gets_its_pins_from_a_dropped_probe() -> None:
+    session = ProbeSession()
+    svc = _svc(session)
+    assert await svc.wait_ready(5)
+    detail = await svc.get_symbol("Device:R")
+    assert detail.pins_known and sorted(p.number for p in detail.pins) == ["1", "2"]
+    assert session.commits == [("probe Device:R", True)]  # always a dropped commit
+    [row] = [r for r in await svc.search_symbols("resistor") if r["lib_id"] == "Device:R"]
+    assert row["pin_count"] == 2
+
+
+async def test_item_less_symbol_on_read_only_has_unknown_pins() -> None:
+    session = ProbeSession()
+    session.read_only = True  # a probe is a (dropped) write: refused on read-only
+    svc = _svc(session)
+    assert await svc.wait_ready(5)
+    detail = await svc.get_symbol("Device:R")
+    assert detail.pins_known is False and detail.pins == []
+    assert session.commits == []

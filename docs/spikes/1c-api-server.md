@@ -31,6 +31,10 @@
   2026-10-16, version `0.9.0.dev0`; source `https://gitlab.com/kicad/code/kicad-python.git`;
   its `kicad` submodule pins KiCad `dcadf9baa30d43d7d1b3d0342345f05ec0da26e1` for the protos).
   The first candidate (`main` HEAD) passed every check, so no bisecting was needed.
+  - Since 2026-11-15 (PR #82) the pin is `ab07e9886772c23779842cd4c7b8bfc16cd4fced` on branch `copperchat` of
+    https://github.com/peterus/kicad-python: upstream `main` `76b47d25` plus the fix for
+    upstream issue #147 (`create_items`/`update_items` raise `AttributeError: type_url`),
+    with KiCad `52b43fb8`. Back to upstream once #147 is fixed.
   - As a uv git source (`kicad-python = { git = "...", rev = "87b945a0..." }`) a cold
     `uv sync` works but takes 4 min 28 s and leaves a 3.5 GB uv cache, because uv
     clones the whole KiCad submodule. The spike itself uses a local checkout

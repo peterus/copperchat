@@ -2,17 +2,22 @@
 # Copies KiCad demo projects verbatim and upgrades them with kicad-cli.
 # Never edit the results by hand.
 #
-# Run inside the KiCad base image (ghcr.io/peterus/copperchat-kicad-base:<KICAD_COMMIT>),
-# whose /usr/share/kicad/demos is installed from the pinned KiCad commit:
+# Run inside the KiCad base image (ghcr.io/peterus/copperchat-kicad-base:<KICAD_COMMIT>):
 #   scripts/refresh-fixtures.sh [DEMOS_DIR]   (default: /usr/share/kicad/demos)
+# The slim image keeps only the ecc83 and complex_hierarchy demos, not simulation/ (the
+# sheet_pins reference), so pass the demos of the pinned KiCad source instead, e.g.
+#   git -C <kicad clone> archive <KICAD_COMMIT> demos/ecc83 demos/complex_hierarchy \
+#     demos/simulation/subsheets | tar -x -C /tmp/kicad-src
+#   scripts/refresh-fixtures.sh /tmp/kicad-src/demos
 set -euo pipefail
 DEMOS="${1:-/usr/share/kicad/demos}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 COMMIT="$(tr -d '[:space:]' < "$ROOT/docker/kicad-base/KICAD_COMMIT")"
 DEST="$ROOT/backend/tests/fixtures/projects"
 REF="$ROOT/backend/tests/fixtures/reference"
-[ -d "$DEMOS/ecc83" ] && [ -d "$DEMOS/complex_hierarchy" ] || {
-  echo "no KiCad demos in $DEMOS" >&2; exit 1; }
+[ -d "$DEMOS/ecc83" ] && [ -d "$DEMOS/complex_hierarchy" ] \
+  && [ -f "$DEMOS/simulation/subsheets/mainsheet.kicad_sch" ] || {
+  echo "no KiCad demos (ecc83, complex_hierarchy, simulation/subsheets) in $DEMOS" >&2; exit 1; }
 
 rm -rf "$DEST" "$REF"
 mkdir -p "$DEST/ecc83" "$DEST/complex_hierarchy" "$REF"

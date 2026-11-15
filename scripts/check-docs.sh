@@ -21,6 +21,12 @@ grep -q "claude setup-token" .env.example || fail ".env.example: setup-token hin
 commit="$(tr -d '[:space:]' < docker/kicad-base/KICAD_COMMIT)"
 grep -q "KICAD_COMMIT: ${commit}\$" docker-compose.yml \
   || fail "docker-compose.yml: build arg KICAD_COMMIT must be ${commit} (docker/kicad-base/KICAD_COMMIT)"
+kipy="$(tr -d '[:space:]' < docker/kicad-base/KIPY_COMMIT)"
+grep -qE "^kicad-python = \{ git = \"[^\"]+\", rev = \"${kipy}\" \}\$" backend/pyproject.toml \
+  || fail "backend/pyproject.toml: kicad-python rev must be ${kipy} (docker/kicad-base/KIPY_COMMIT)"
+kipy_repo="$(sed -nE 's/^ARG KIPY_REPO=(.*)$/\1/p' docker/kicad-base/Dockerfile)"
+grep -qF "kicad-python = { git = \"${kipy_repo}\", rev = " backend/pyproject.toml \
+  || fail "backend/pyproject.toml: kicad-python git must be ${kipy_repo} (docker/kicad-base/Dockerfile KIPY_REPO)"
 version="$(sed -nE 's/^version = "(.*)"$/\1/p' backend/pyproject.toml | head -n1)"
 [ -n "$version" ] || fail "backend/pyproject.toml: version"
 grep -q "^__version__ = \"${version}\"\$" backend/src/copperchat/__init__.py \

@@ -89,26 +89,29 @@ async def test_search_while_loading_errors(blank_session: KicadSession) -> None:
 # -- Task 2: symbol detail --------------------------------------------------------------
 
 
-async def test_derived_symbol_pins_via_probe(blank_session: KicadSession) -> None:
+async def test_derived_symbol_pins_from_library(blank_session: KicadSession) -> None:
+    # Since KiCad 0f5acecd (2026-10-18) GetItemsFromLibrary returns derived (`extends`)
+    # symbols flattened, pins included: no probe placement is needed for them.
     svc = await _ready(blank_session)
     lib_id = "MCU_ST_STM32F1:STM32F103C8Tx"
     before = next(r for r in await svc.search_symbols("STM32F103C8Tx") if r["lib_id"] == lib_id)
-    assert before["pin_count"] is None  # derived symbol: no pins in the library listing
+    assert before["pin_count"] == 48  # pins are known already in the library listing
     detail = await svc.get_symbol(lib_id)
     assert len({p.number for p in detail.pins}) == 48 and detail.pins_known
     assert detail.footprint == "Package_QFP:LQFP-48_7x7mm_P0.5mm"
     assert detail.body_size_mm[0] > 10 and detail.body_size_mm[1] > 10
     assert detail.pin_directions_by_rotation is None
-    after = next(r for r in await svc.search_symbols("STM32F103C8Tx") if r["lib_id"] == lib_id)
-    assert after["pin_count"] == 48
     assert await svc.get_symbol(lib_id) is detail  # cached
 
 
 async def test_probe_leaves_document_unchanged(blank_session: KicadSession) -> None:
+    # The probe is only the fallback for a derived symbol KiCad returns without items
+    # (unresolvable parent); called directly here, it must still read the pins.
     s = blank_session
     svc = await _ready(s)
     before = await s.call(item_ids)
-    await svc.get_symbol("Amplifier_Operational:LM358")  # derived (extends)
+    definition = await svc._probe(s, "Amplifier_Operational:LM358")  # derived (extends)
+    assert len(definition.items) > 0
     assert await s.call(item_ids) == before
     assert await s.call(lambda h: h.schematic().is_document_modified()) is False
     assert s.modified is False and s.jobs_stale is False
@@ -145,14 +148,16 @@ async def test_unknown_symbol_not_found(blank_session: KicadSession) -> None:
     assert "Amplifier_Operational:LM358" in err.value.suggestion
 
 
-async def test_read_only_derived_symbol_without_probe(blank_session: KicadSession) -> None:
+async def test_read_only_derived_symbol_has_pins(blank_session: KicadSession) -> None:
+    # No probe (a dropped write, refused on read-only) is needed any more: the library
+    # API returns derived symbols flattened (KiCad 0f5acecd).
     svc = await _ready(blank_session)
-    blank_session.read_only = True  # a probe would be a (dropped) write
+    blank_session.read_only = True
     try:
         d = await svc.get_symbol("MCU_ST_STM32F1:STM32F103C8Tx")
     finally:
         blank_session.read_only = False
-    assert d.pins_known is False and d.pins == [] and d.to_dict()["pin_count"] is None
+    assert d.pins_known is True and d.to_dict()["pin_count"] == 48
 
 
 # -- Task 3: footprints lazily ------------------------------------------------------------

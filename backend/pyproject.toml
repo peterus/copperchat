@@ -45,9 +45,13 @@ packages = ["src/copperchat"]
 artifacts = ["src/copperchat/skills/builtin/**"]
 
 # kicad-python 0.8.0 on PyPI is broken for KiCad 11 (see tests/unit/test_kipy_imports.py).
-# Revision recorded in docs/spikes/1c-api-server.md ("kipy revision").
+# Revision recorded in docs/spikes/1c-api-server.md ("kipy revision"); must equal
+# docker/kicad-base/KIPY_COMMIT. Branch `copperchat` of the peterus mirror = upstream main
+# 76b47d25 + the fix for upstream issue #147 (create/update_items raise
+# AttributeError: type_url); tag copperchat-ab07e98 keeps the commit reachable. Switch back
+# to gitlab.com/kicad/code/kicad-python once fixed.
 [tool.uv.sources]
-kicad-python = { git = "https://gitlab.com/kicad/code/kicad-python.git", rev = "87b945a0d56b26a78bf547db9771ff9bf3a057ea" }
+kicad-python = { git = "https://github.com/peterus/kicad-python.git", rev = "ab07e9886772c23779842cd4c7b8bfc16cd4fced" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

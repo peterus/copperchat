@@ -14,6 +14,9 @@ ARG DEBIAN=debian:trixie
 # deps: toolchain and -dev packages for the KiCad build (never reaches runtime)
 FROM ${DEBIAN} AS deps
 ENV DEBIAN_FRONTEND=noninteractive
+# glslang-tools + spirv-tools: glslangValidator / spirv-opt compile the RHI's GLSL shaders
+# at build time (KiCad 471d4417, 2026-10-13). No Vulkan headers: the headless image needs no
+# Vulkan backend. libsqlite3-dev: native SQLite backend (KiCad 0a49e56f, 2026-10-27).
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     rm -f /etc/apt/apt.conf.d/docker-clean && apt-get update && apt-get install -y --no-install-recommends \
@@ -24,9 +27,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       libocct-data-exchange-dev libocct-visualization-dev libocct-foundation-dev \
       libocct-modeling-data-dev libocct-modeling-algorithms-dev libocct-ocaf-dev \
       libngspice0-dev libharfbuzz-dev libfontconfig-dev libfreetype-dev \
-      libgit2-dev libsecret-1-dev libzstd-dev zlib1g-dev libssl-dev unixodbc-dev \
+      libgit2-dev libsecret-1-dev libzstd-dev zlib1g-dev libssl-dev unixodbc-dev libsqlite3-dev \
       libprotobuf-dev protobuf-compiler libnng-dev libpoppler-glib-dev libspnav-dev \
-      shared-mime-info
+      glslang-tools spirv-tools shared-mime-info
 
 # ---------------------------------------------------------------------------
 # build: KiCad at KICAD_COMMIT, installed into /out. Clone, build and cleanup
@@ -122,7 +125,9 @@ RUN set -eu; . /tmp/LIBS_COMMITS; \
 # protos (docs/spikes/1c-api-server.md: a full submodule clone costs minutes and GBs).
 FROM ${DEBIAN} AS kipy
 ARG KIPY_REV
-ARG KIPY_REPO=https://gitlab.com/kicad/code/kicad-python.git
+# The peterus mirror carries the fix for upstream issue #147 (create/update_items raise
+# AttributeError: type_url); switch back to gitlab.com/kicad/code/kicad-python once it is fixed.
+ARG KIPY_REPO=https://github.com/peterus/kicad-python.git
 ENV DEBIAN_FRONTEND=noninteractive
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
