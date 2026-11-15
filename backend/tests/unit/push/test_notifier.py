@@ -143,18 +143,36 @@ async def test_suppressed_when_visible_and_for_interrupt(env: Env) -> None:
     assert d.sent == []
 
 
-async def test_stale_or_other_project_visibility_does_not_suppress(
+async def test_other_project_visibility_does_not_suppress(
     env: Env, caplog: pytest.LogCaptureFixture
 ) -> None:
     db, d, vis, n = env
     await _row(db, "r1", "ERC is clean.")
-    vis.set(1, "ffffffffffff", True)  # a window on another project
-    vis.set(2, PID, True)
-    vis.ttl_s = -1.0  # … and a claim on this project that went stale (frozen page)
+    vis.set(1, "ffffffffffff", True)  # a live window on another project
     with caplog.at_level(logging.INFO, logger="copperchat.push.notifier"):
         await n.handle(_finished("r1", "completed"))
     assert len(d.sent) == 1
     assert "sent to 1 subscription" in caplog.text
+
+
+async def test_stale_visibility_does_not_suppress(tmp_path: Path) -> None:
+    db = await Database.open(tmp_path / "c.db")
+    await ensure_test_conversation(db, PID)
+    now = [1000.0]
+    d = FakeDispatcher()
+    vis = VisibilityRegistry(clock=lambda: now[0])
+    n = PushNotifier(db, d, vis, project_names=lambda pid: "ecc83-pp")
+    try:
+        await _row(db, "r1", "ERC is clean.")
+        vis.set(1, PID, True)
+        await n.handle(_finished("r1", "completed"))
+        assert d.sent == []  # fresh claim: suppressed
+        now[0] += vis.ttl_s + 1  # the page froze and stopped sending frames
+        await n.handle(_finished("r1", "completed"))
+        assert len(d.sent) == 1
+    finally:
+        await n.close()
+        await db.close()
 
 
 async def test_suppression_is_logged(env: Env, caplog: pytest.LogCaptureFixture) -> None:

@@ -34,6 +34,9 @@ export function startVisibilityReporter(
   document.addEventListener('visibilitychange', report);
   document.addEventListener('freeze', hide);
   window.addEventListener('pagehide', hide);
+  // Coming back from bfcache or a freeze may not fire visibilitychange.
+  document.addEventListener('resume', report);
+  window.addEventListener('pageshow', report);
   const offConnection = ws.onConnection((s) => {
     if (s === 'open' || s === 'resumed') report();
   });
@@ -43,6 +46,8 @@ export function startVisibilityReporter(
       document.removeEventListener('visibilitychange', report);
       document.removeEventListener('freeze', hide);
       window.removeEventListener('pagehide', hide);
+      document.removeEventListener('resume', report);
+      window.removeEventListener('pageshow', report);
       offConnection();
     },
   };
