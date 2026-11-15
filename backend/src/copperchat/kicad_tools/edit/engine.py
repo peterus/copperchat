@@ -490,25 +490,29 @@ async def _compensate(
             sheets.api(s).remove_items_by_id([_kiid(u) for u in uids])
         restore: dict[str, tuple[SheetRef, list[Any]]] = {}
         recreate: dict[str, tuple[SheetRef, list[Any]]] = {}
-        modified: dict[str, tuple[SheetRef, list[str]]] = {}
+        modified: dict[str, tuple[SheetRef, dict[str, Any]]] = {}
         for u, s in run.modified.items():
-            modified.setdefault(s.path, (s, []))[1].append(u)
-        for s, uids in modified.values():
+            modified.setdefault(s.path, (s, {}))[1][u] = run.pre[u]
+        for u, (op, _b, _a) in run.side.items():
+            nb = run.neighbours[u]
+            if op == "modify":
+                modified.setdefault(nb.sheet.path, (nb.sheet, {}))[1].setdefault(u, nb.item)
+            else:
+                recreate.setdefault(nb.sheet.path, (nb.sheet, []))[1].append(copy_item(nb.item))
+        for s, pre_items in modified.values():
             # KiCad's push cleanup can merge an updated wire into a collinear neighbour
-            # (its UUID vanishes, #6). update_items ignores a missing id silently, so a
-            # vanished item is re-created with its UUID instead.
-            present = by_id(sheets.api(s), uids)
-            for u in uids:
-                vanished = u not in present and _recreatable(run.pre[u])
-                target = recreate if vanished else restore
-                target.setdefault(s.path, (s, []))[1].append(copy_item(run.pre[u]))
+            # (its UUID vanishes, #6), and update_items raises ApiError for a missing id
+            # (kipy 6904820), so a vanished item is re-created with its UUID instead, or
+            # skipped if it cannot be (as update_items used to skip it silently).
+            present = by_id(sheets.api(s), pre_items)
+            for u, pre in pre_items.items():
+                if u in present:
+                    restore.setdefault(s.path, (s, []))[1].append(copy_item(pre))
+                elif _recreatable(pre):
+                    recreate.setdefault(s.path, (s, []))[1].append(copy_item(pre))
         for u, s in run.deleted.items():
             if u not in symbols_deleted and u not in sheets_deleted:
                 recreate.setdefault(s.path, (s, []))[1].append(copy_item(run.pre[u]))
-        for u, (op, _b, _a) in run.side.items():
-            nb = run.neighbours[u]
-            target = restore if op == "modify" else recreate
-            target.setdefault(nb.sheet.path, (nb.sheet, []))[1].append(copy_item(nb.item))
         for s, items in restore.values():
             for item in items:
                 if type(item).__name__ == "SchematicSymbolInstance":
