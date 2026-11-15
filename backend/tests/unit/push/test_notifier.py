@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -140,6 +141,30 @@ async def test_suppressed_when_visible_and_for_interrupt(env: Env) -> None:
     await n.handle(_finished("r1", "interrupted"))
     await n.handle(_finished("r1", "rate_limited"))
     assert d.sent == []
+
+
+async def test_stale_or_other_project_visibility_does_not_suppress(
+    env: Env, caplog: pytest.LogCaptureFixture
+) -> None:
+    db, d, vis, n = env
+    await _row(db, "r1", "ERC is clean.")
+    vis.set(1, "ffffffffffff", True)  # a window on another project
+    vis.set(2, PID, True)
+    vis.ttl_s = -1.0  # … and a claim on this project that went stale (frozen page)
+    with caplog.at_level(logging.INFO, logger="copperchat.push.notifier"):
+        await n.handle(_finished("r1", "completed"))
+    assert len(d.sent) == 1
+    assert "sent to 1 subscription" in caplog.text
+
+
+async def test_suppression_is_logged(env: Env, caplog: pytest.LogCaptureFixture) -> None:
+    db, d, vis, n = env
+    await _row(db, "r1", "ERC is clean.")
+    vis.set(1, PID, True)
+    with caplog.at_level(logging.INFO, logger="copperchat.push.notifier"):
+        await n.handle(_finished("r1", "completed"))
+    assert d.sent == []
+    assert f"push suppressed: project {PID} is visible" in caplog.text
 
 
 async def test_rate_limit_reopened(env: Env) -> None:

@@ -61,8 +61,8 @@ export function NotificationsSection() {
     body = (
       <div className="space-y-2">
         <p className="text-sm text-muted">
-          Get notified when a run finishes, the agent needs you, or the rate-limit window reopens — only while no CopperChat
-          window is visible. Signing out turns notifications off on this device.
+          Get notified when a run finishes, the agent needs you, or the rate-limit window reopens — unless a CopperChat
+          window is showing that project. Signing out turns notifications off on this device.
         </p>
         {subscribed ? (
           <button

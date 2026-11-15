@@ -8,10 +8,12 @@ export interface VisibilityWs {
 }
 
 /**
- * Tells the server whether this page is in the foreground, so push notifications only go out
- * while no CopperChat window is visible. Reported on page visibility changes, on every
+ * Tells the server whether this page is in the foreground, so push notifications about the
+ * project on screen are held back while it is visible. Reported on page visibility changes, on every
  * (re)connect and when the current project changes (`notify()`). Frames are only sent on an
  * open socket: a queued frame would open a connection by itself, even when signed out.
+ * `pagehide`/`freeze` report hidden early where the browser fires them (best effort: iOS may
+ * freeze the page first; the server then expires the claim once our pings stop).
  */
 export function startVisibilityReporter(
   getProjectId: () => string | null,
@@ -20,14 +22,18 @@ export function startVisibilityReporter(
   // The frame names a project; after leaving a project page the last one is reused, so a
   // page hidden on the project picker still reports itself hidden.
   let last: string | null = null;
-  const report = () => {
+  const send = (visible: boolean) => {
     const projectId = getProjectId() ?? last;
     if (!projectId || !ws.isOpen()) return;
     last = projectId;
-    ws.send({ type: 'visibility', projectId, visible: document.visibilityState === 'visible' });
+    ws.send({ type: 'visibility', projectId, visible });
   };
+  const report = () => send(document.visibilityState === 'visible');
+  const hide = () => send(false);
   report();
   document.addEventListener('visibilitychange', report);
+  document.addEventListener('freeze', hide);
+  window.addEventListener('pagehide', hide);
   const offConnection = ws.onConnection((s) => {
     if (s === 'open' || s === 'resumed') report();
   });
@@ -35,6 +41,8 @@ export function startVisibilityReporter(
     notify: report,
     stop: () => {
       document.removeEventListener('visibilitychange', report);
+      document.removeEventListener('freeze', hide);
+      window.removeEventListener('pagehide', hide);
       offConnection();
     },
   };

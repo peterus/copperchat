@@ -103,7 +103,7 @@ export const ClientFrame = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('interrupt'), projectId: ProjectId, conversationId: ConversationId, runId: z.string().nullable() }),
   z.strictObject({ type: z.literal('cancel-queued'), projectId: ProjectId, messageId: z.number().int().min(1) }),
   z.strictObject({ type: z.literal('ping'), projectId: NullProject }),
-  // Page in the foreground or not (push goes out only while no client is visible, Phase 9).
+  // Page in the foreground or not (a push about the project is held back while it is visible, Phase 9).
   z.strictObject({ type: z.literal('visibility'), projectId: ProjectId, visible: z.boolean() }),
 ]);
 export type ClientFrame = z.infer<typeof ClientFrame>;

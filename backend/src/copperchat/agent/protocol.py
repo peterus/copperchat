@@ -141,8 +141,8 @@ class PingFrame(Wire):
 
 
 class VisibilityFrame(Wire):
-    """Whether this connection's page is in the foreground (push only goes out while no
-    connection is visible, Phase 9)."""
+    """Whether this connection's page is in the foreground (a push about the project is held
+    back while a live connection shows it, Phase 9)."""
 
     type: Literal["visibility"] = "visibility"
     project_id: ProjectId

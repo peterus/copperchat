@@ -131,15 +131,16 @@ React 19 + Vite + zustand + zod + Tailwind 4. `protocol/frames.ts` mirrors the b
 protocol; `protocol-fixtures/*.json` are validated by both test suites. The chat store merges
 the REST baseline and the WebSocket replay by server id. The viewer embeds a vendored
 KiCanvas built from the fork `peterus/kicanvas` (`frontend/vendor-patches/kicanvas/README.md`). `public/sw.js` handles push only and
-never caches; `push/visibility.ts` reports page visibility so pushes go out only while no
-window is visible.
+never caches; `push/visibility.ts` reports page visibility so a push about a project is held
+back while a window shows that project (the server drops a claim about 60 s after the
+connection's last frame, so a frozen page does not suppress pushes).
 
 ## Data flow of a turn
 
 Composer → `send` frame → run engine queue → SDK streaming input → tool calls through the
 in-process MCP server (the first edit of a turn takes the turn snapshot) → messages persisted
 and broadcast → turn end: ERC delta of an editing turn, plan pause, autosave, snapshot,
-`view-updated` → viewer reload; a push notification if no client is visible.
+`view-updated` → viewer reload; a push notification unless a live client shows that project.
 
 While a turn edits the schematic, the viewer follows near-live: every schematic change
 (`RunHooks.on_documents_changed`) schedules a debounced publish in `history/live.py`

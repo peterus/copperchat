@@ -28,6 +28,14 @@ All notable changes to CopperChat are documented in this file. The format follow
   tree (with a "changed" dot) without reopening the project; a removed sub-sheet disappears,
   and if it was the sheet on screen the view falls back to the root sheet. A KiCad view that
   failed to load retries by itself once the schematic changes again.
+- Push notifications stopped arriving once an installed iPhone app had been in the foreground:
+  iOS can freeze the page before it reports itself hidden, and its connection stays open, so
+  the server treated it as visible and suppressed every push. A "visible" report now only
+  counts while that page keeps talking to the server (it expires about 60 s after the last
+  frame), and the page also reports itself hidden on `pagehide` / `freeze`. A window on one
+  project no longer suppresses notifications about other projects.
+- The server now logs its own INFO lines (e.g. each push sent or suppressed because the
+  project is visible); before, only uvicorn's lines and warnings reached the container log.
 
 ## [0.8.2] - 2026-11-05
 
