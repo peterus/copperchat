@@ -7,6 +7,8 @@ All notable changes to CopperChat are documented in this file. The format follow
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-11-15
+
 ### Fixed
 
 - Push notifications stopped arriving once an installed iPhone app had been in the foreground:
@@ -406,7 +408,8 @@ projects, in the browser on desktop, iPad and iPhone.
 - The KiCanvas patches live in this repository (`frontend/vendor-patches/kicanvas/`), not in
   an upstream fork; the main JavaScript chunk is large (~590 kB).
 
-[Unreleased]: https://github.com/peterus/copperchat/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/peterus/copperchat/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/peterus/copperchat/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/peterus/copperchat/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/peterus/copperchat/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/peterus/copperchat/compare/v0.8.0...v0.8.1
