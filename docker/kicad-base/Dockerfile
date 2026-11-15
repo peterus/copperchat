@@ -125,7 +125,9 @@ RUN set -eu; . /tmp/LIBS_COMMITS; \
 # protos (docs/spikes/1c-api-server.md: a full submodule clone costs minutes and GBs).
 FROM ${DEBIAN} AS kipy
 ARG KIPY_REV
-ARG KIPY_REPO=https://gitlab.com/kicad/code/kicad-python.git
+# The peterus mirror carries the fix for upstream issue #147 (create/update_items raise
+# AttributeError: type_url); switch back to gitlab.com/kicad/code/kicad-python once it is fixed.
+ARG KIPY_REPO=https://github.com/peterus/kicad-python.git
 ENV DEBIAN_FRONTEND=noninteractive
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
