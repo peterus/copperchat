@@ -14,6 +14,9 @@ ARG DEBIAN=debian:trixie
 # deps: toolchain and -dev packages for the KiCad build (never reaches runtime)
 FROM ${DEBIAN} AS deps
 ENV DEBIAN_FRONTEND=noninteractive
+# glslang-tools + spirv-tools: glslangValidator / spirv-opt compile the RHI's GLSL shaders
+# at build time (KiCad 471d4417, 2026-10-13). No Vulkan headers: the headless image needs no
+# Vulkan backend.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     rm -f /etc/apt/apt.conf.d/docker-clean && apt-get update && apt-get install -y --no-install-recommends \
@@ -26,7 +29,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       libngspice0-dev libharfbuzz-dev libfontconfig-dev libfreetype-dev \
       libgit2-dev libsecret-1-dev libzstd-dev zlib1g-dev libssl-dev unixodbc-dev \
       libprotobuf-dev protobuf-compiler libnng-dev libpoppler-glib-dev libspnav-dev \
-      shared-mime-info
+      glslang-tools spirv-tools shared-mime-info
 
 # ---------------------------------------------------------------------------
 # build: KiCad at KICAD_COMMIT, installed into /out. Clone, build and cleanup
