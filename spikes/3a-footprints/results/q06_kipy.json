@@ -1,0 +1,56 @@
+{
+  "question": "q06_kipy",
+  "checks": [
+    {
+      "name": "pads_and_shapes_via_wrapper",
+      "ok": true,
+      "evidence": "(True, '7')"
+    },
+    {
+      "name": "fields_break_board_wrapper",
+      "ok": true,
+      "evidence": "(False, 'AssertionError: ')"
+    },
+    {
+      "name": "save_as_not_usable_for_lib_ids",
+      "ok": true,
+      "evidence": "(False, \"ApiError: KiCad returned error: failed to save footprint copy 'Copy' to library '/spike/copperchat'\")"
+    },
+    {
+      "name": "no_table_wrappers",
+      "ok": true,
+      "evidence": ""
+    }
+  ],
+  "notes": {
+    "KiCad.open_document(lib_id, DOCTYPE_FOOTPRINT)": "OK  ok",
+    "KiCad.get_open_documents(DOCTYPE_FOOTPRINT)": "OK  1",
+    "Board(doc).get_items()": "ERR AssertionError: ",
+    "Board(doc).get_items([pad, shape])": "OK  7",
+    "Board(doc).get_items([field])": "ERR AssertionError: ",
+    "Board(doc).get_items_by_id(footprint id)": "OK  FootprintInstance",
+    "Board(doc).begin_commit()": "OK  ok",
+    "Board(doc).create_items(Pad)": "OK  Pad",
+    "Board(doc).create_items(BoardRectangle)": "ERR ApiError: Failed to create items: attempted to add item with no overlapping layers with the board (ISC_INVALID_DATA)",
+    "Board(doc).update_items(Pad)": "OK  Vector2(-1200000, 0)",
+    "Board(doc).remove_items(Pad)": "OK  ok",
+    "Board(doc).drop_commit()": "OK  ok",
+    "Board(doc).save()": "OK  ok",
+    "Board(doc).save_as('copperchat:Copy')": "ERR ApiError: KiCad returned error: failed to save footprint copy 'Copy' to library '/spike/copperchat'",
+    "Board(doc).is_document_modified()": "OK  False",
+    "Board(doc).get_as_string()": "OK  5198",
+    "KiCad.close_document(doc)": "OK  ok",
+    "KiCad.get_library_footprints([nick])": "OK  1",
+    "KiCad.get_library_footprint(id)": "OK  2",
+    "KiCad.get_library_statuses()": "OK  379",
+    "KiCad.reload_library(LT_FOOTPRINT, LTS_PROJECT, [nick])": "OK  ok",
+    "KiCad.wait_for_libraries()": "OK  [LibraryStatus('4xxx', LLS_INVALID), LibraryStatus('4xxx_IEEE', LLS_INVALID), LibraryStatus('74xGxx', LLS_INVALID), LibraryStatus('74xx', LLS_INVALID), LibraryS",
+    "KiCad.open_library_item(...) (GUI only)": "ERR ApiError: KiCad returned error: no handler available for request of type kiapi.common.commands.OpenLibraryItem",
+    "KiCad.add_library_table_entry (wrapper exists?)": "ERR absent",
+    "KiCad.get_library_table (wrapper exists?)": "ERR absent",
+    "KiCad.update_library_table_entry (wrapper exists?)": "ERR absent",
+    "KiCad.delete_library_table_entry (wrapper exists?)": "ERR absent",
+    "KiCad.save_copy_of_document (wrapper exists?)": "ERR absent",
+    "KiCad.create_library (wrapper exists?)": "ERR absent"
+  }
+}

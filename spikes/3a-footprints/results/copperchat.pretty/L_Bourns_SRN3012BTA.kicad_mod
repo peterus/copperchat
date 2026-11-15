@@ -1,0 +1,161 @@
+(kicad_footprint_lib
+	(version 20261031)
+	(generator "kicad_footprint_editor")
+	(generator_version "10.99")
+	(footprint "L_Bourns_SRN3012BTA"
+		(layer "F.Cu")
+		(descr "Bourns SRN4018 series SMD inductor, https://www.bourns.com/docs/Product-Datasheets/SRN4018.pdf")
+		(tags "Bourns SRN4018 SMD inductor")
+		(property "Reference" "REF**"
+			(at 0 -2.8 0)
+			(layer "F.SilkS")
+			(uuid "3dedb81c-61d2-4b15-b3b1-d119f87f68b9")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.15)
+				)
+			)
+		)
+		(property "Value" "L_Bourns_SRN3012BTA"
+			(at 0 2.8 0)
+			(layer "F.Fab")
+			(uuid "8d7c144c-2333-437b-baae-4a4d24ad8406")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.15)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "d443e058-8d6d-4f68-9bfa-293c3e3d57eb")
+			(effects
+				(font
+					(size 1.27 1.27)
+					(thickness 0.15)
+				)
+			)
+		)
+		(property "Description" "Bourns SRN3012BTA SMD power inductor, 3.0x3.0x1.2 mm, https://www.bourns.com/docs/product-datasheets/srn3012bta.pdf"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "c1941028-f9a0-471c-a0bf-5dba4320af9b")
+			(effects
+				(font
+					(size 1.27 1.27)
+					(thickness 0.15)
+				)
+			)
+		)
+		(property "Footprint source" "Bourns SRN3012BTA datasheet, recommended land pattern (CopperChat spike 3A)"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "e6847eb9-2a35-44ff-b0d6-fa46f9c4124b")
+			(effects
+				(font
+					(size 1.27 1.27)
+					(thickness 0.15)
+				)
+			)
+		)
+		(attr smd)
+		(duplicate_pad_numbers_are_jumpers no)
+		(fp_line
+			(start -1.95 -1.75)
+			(end -1.95 1)
+			(stroke
+				(width 0.12)
+				(type solid)
+			)
+			(layer "F.SilkS")
+			(uuid "ef7d7542-50f0-4375-aba5-86c27518a475")
+		)
+		(fp_line
+			(start -0.25 -1.6)
+			(end 0.25 -1.6)
+			(stroke
+				(width 0.12)
+				(type solid)
+			)
+			(layer "F.SilkS")
+			(uuid "a1ee328f-7a62-4aff-a8ac-d371a18b380b")
+		)
+		(fp_line
+			(start -0.25 1.6)
+			(end 0.25 1.6)
+			(stroke
+				(width 0.12)
+				(type solid)
+			)
+			(layer "F.SilkS")
+			(uuid "6f0b0070-b367-45d7-a915-f20b7cc52f31")
+		)
+		(fp_rect
+			(start -2 -2)
+			(end 2 2)
+			(stroke
+				(width 0.05)
+				(type solid)
+			)
+			(fill no)
+			(layer "F.CrtYd")
+			(uuid "90cffe93-cf7b-4881-91b9-510138f85174")
+		)
+		(fp_rect
+			(start -1.5 -1.5)
+			(end 1.5 1.5)
+			(stroke
+				(width 0.1)
+				(type solid)
+			)
+			(fill no)
+			(layer "F.Fab")
+			(uuid "5f2c0485-1c68-425e-80eb-3d8cdbbaf080")
+		)
+		(fp_text user "${REFERENCE}"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(uuid "47b8f0e7-690e-441f-b9ce-55e708bff40d")
+			(effects
+				(font
+					(size 0.6 0.6)
+					(thickness 0.09)
+				)
+			)
+		)
+		(pad "1" smd rect
+			(at -1.1 0)
+			(size 1.3 3.5)
+			(layers "F.Cu" "F.Mask" "F.Paste")
+			(uuid "042fe5f3-f109-4110-a6c1-720e65fc6136")
+		)
+		(pad "2" smd rect
+			(at 1.1 0)
+			(size 1.3 3.5)
+			(layers "F.Cu" "F.Mask" "F.Paste")
+			(uuid "0cc8bb64-9c0c-4af3-a655-b19ffd9f6c89")
+		)
+		(embedded_fonts no)
+		(model "${KICAD10_3DMODEL_DIR}/Inductor_SMD.3dshapes/L_Bourns-SRN4018.step"
+			(offset
+				(xyz 0 0 0)
+			)
+			(scale
+				(xyz 1 1 1)
+			)
+			(rotate
+				(xyz 0 0 0)
+			)
+		)
+	)
+)

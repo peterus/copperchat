@@ -1,0 +1,78 @@
+{
+  "question": "q04_coexist",
+  "checks": [
+    {
+      "name": "fp_created_during_open_sch_commit",
+      "ok": true,
+      "evidence": ""
+    },
+    {
+      "name": "sch_drop_after_fp_save_exact",
+      "ok": true,
+      "evidence": "0 left"
+    },
+    {
+      "name": "sch_push_with_fp_commit_open",
+      "ok": true,
+      "evidence": ""
+    },
+    {
+      "name": "fp_drop_exact",
+      "ok": true,
+      "evidence": "['${REFERENCE}']"
+    },
+    {
+      "name": "sch_still_usable_after_fp_close",
+      "ok": true,
+      "evidence": "1"
+    },
+    {
+      "name": "board_untouched",
+      "ok": true,
+      "evidence": "(0, 0)"
+    },
+    {
+      "name": "only_one_fp_document",
+      "ok": true,
+      "evidence": "['L_Bourns_SRN3012BTA']"
+    },
+    {
+      "name": "close_second_fails_stale_entry",
+      "ok": true,
+      "evidence": "KiCad returned error: Requested document does not match the open document"
+    },
+    {
+      "name": "close_first_fails_too",
+      "ok": true,
+      "evidence": "KiCad returned error: Requested document does not match the open document"
+    },
+    {
+      "name": "reopen_after_stale_entry",
+      "ok": true,
+      "evidence": "23"
+    },
+    {
+      "name": "sch_fine_after_stale_entry",
+      "ok": true,
+      "evidence": ""
+    },
+    {
+      "name": "save_into_stock_library_refused",
+      "ok": true,
+      "evidence": "KiCad returned error: failed to save footprint"
+    },
+    {
+      "name": "server_alive",
+      "ok": true,
+      "evidence": ""
+    }
+  ],
+  "notes": {
+    "open_docs_after_fp_close": {
+      "DOCTYPE_SCHEMATIC": 1,
+      "DOCTYPE_PCB": 1,
+      "DOCTYPE_FOOTPRINT": "KiCad returned error: no handler available for request of type kiapi.common.commands.GetOpenDocuments"
+    },
+    "rss_mb": 2038.984375
+  }
+}

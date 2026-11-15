@@ -1,0 +1,61 @@
+{
+  "question": "q07_assign",
+  "checks": [
+    {
+      "name": "footprint_field_set",
+      "ok": true,
+      "evidence": "{'L201': 'copperchat:L_Bourns_SRN3012BTA', 'L202': 'copperchat:Does_Not_Exist'}"
+    },
+    {
+      "name": "board_places_new_footprint",
+      "ok": true,
+      "evidence": "[('1', -1.1), ('2', 1.1)]"
+    },
+    {
+      "name": "board_drop_exact",
+      "ok": true,
+      "evidence": "0"
+    },
+    {
+      "name": "server_alive",
+      "ok": true,
+      "evidence": ""
+    },
+    {
+      "name": "erc_clean_for_L201",
+      "ok": true,
+      "evidence": "[\"Footprint 'Does_Not_Exist' not found in library 'copperchat' | Symbol L202 [L]\"]"
+    },
+    {
+      "name": "erc_flags_negative_control_L202",
+      "ok": true,
+      "evidence": "[\"Footprint 'Does_Not_Exist' not found in library 'copperchat' | Symbol L202 [L]\"]"
+    },
+    {
+      "name": "fresh_board_place_needs_loaded_library",
+      "ok": true,
+      "evidence": "KiCad returned error: footprint 'copperchat:L_Bourns_SRN3012BTA' not found"
+    },
+    {
+      "name": "fresh_board_reads_definition",
+      "ok": true,
+      "evidence": "2"
+    },
+    {
+      "name": "fresh_board_places_new_footprint",
+      "ok": true,
+      "evidence": "2"
+    }
+  ],
+  "notes": {
+    "footprint_link_issues": [
+      "Footprint 'Does_Not_Exist' not found in library 'copperchat' | Symbol L202 [L]"
+    ],
+    "erc_violation_types": [
+      "endpoint_off_grid",
+      "footprint_link_issues",
+      "pin_not_connected"
+    ],
+    "fresh_board_rss_mb": 121
+  }
+}

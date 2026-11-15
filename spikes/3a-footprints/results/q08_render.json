@@ -1,0 +1,124 @@
+{
+  "question": "q08_render",
+  "checks": [
+    {
+      "name": "svg_scale_known",
+      "ok": true,
+      "evidence": "{'all': 1.0, 'crtyd': 1.0, 'fab': 1.0, 'cu': 1.0}"
+    },
+    {
+      "name": "crtyd_extent",
+      "ok": true,
+      "evidence": "(4.0, 4.0)"
+    },
+    {
+      "name": "fab_extent_without_text",
+      "ok": true,
+      "evidence": "(3.0, 3.0)"
+    },
+    {
+      "name": "fab_texts_present",
+      "ok": true,
+      "evidence": "2"
+    },
+    {
+      "name": "cu_extent",
+      "ok": true,
+      "evidence": "(3.5, 3.5)"
+    },
+    {
+      "name": "page_fits_all_content",
+      "ok": true,
+      "evidence": "{'width': '17.154764mm', 'height': '7.296500mm', 'viewBox': [-8.577382, -3.64825, 17.154764, 7.2965], 'unit_per_mm': 1.0, 'extent_mm': (4.0, 4.0), 'text_groups': 3, 'stroke_colors': ['#000000', '#AFAFAF', '#F2EDA1', '#FF26E2'], 'bytes': 16190}"
+    }
+  ],
+  "notes": {
+    "svg": {
+      "all": {
+        "width": "17.154764mm",
+        "height": "7.296500mm",
+        "viewBox": [
+          -8.577382,
+          -3.64825,
+          17.154764,
+          7.2965
+        ],
+        "unit_per_mm": 1.0,
+        "extent_mm": [
+          4.0,
+          4.0
+        ],
+        "text_groups": 3,
+        "stroke_colors": [
+          "#000000",
+          "#AFAFAF",
+          "#F2EDA1",
+          "#FF26E2"
+        ],
+        "bytes": 16190
+      },
+      "crtyd": {
+        "width": "17.154764mm",
+        "height": "7.296500mm",
+        "viewBox": [
+          -8.577382,
+          -3.64825,
+          17.154764,
+          7.2965
+        ],
+        "unit_per_mm": 1.0,
+        "extent_mm": [
+          4.0,
+          4.0
+        ],
+        "text_groups": 0,
+        "stroke_colors": [
+          "#000000",
+          "#FF26E2"
+        ],
+        "bytes": 1009
+      },
+      "fab": {
+        "width": "17.154764mm",
+        "height": "7.296500mm",
+        "viewBox": [
+          -8.577382,
+          -3.64825,
+          17.154764,
+          7.2965
+        ],
+        "unit_per_mm": 1.0,
+        "extent_mm": [
+          3.0,
+          3.0
+        ],
+        "text_groups": 2,
+        "stroke_colors": [
+          "#000000",
+          "#AFAFAF"
+        ],
+        "bytes": 12668
+      },
+      "cu": {
+        "width": "17.154764mm",
+        "height": "7.296500mm",
+        "viewBox": [
+          -8.577382,
+          -3.64825,
+          17.154764,
+          7.2965
+        ],
+        "unit_per_mm": 1.0,
+        "extent_mm": [
+          3.5,
+          3.5
+        ],
+        "text_groups": 0,
+        "stroke_colors": [
+          "#000000"
+        ],
+        "bytes": 1094
+      }
+    }
+  }
+}

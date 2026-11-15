@@ -1,0 +1,13 @@
+NOTE scratch.seed_items: ['BoardGraphicShape', 'BoardText', 'Field', 'Pad']
+PASS scratch.delete_seed_items: 19 deleted: {'IDS_OK'}
+PASS scratch.mandatory_field_delete_refused: {'3dedb81c-61d2-4b15-b3b1-d119f87f68b9': 'IDS_IMMUTABLE'}
+PASS scratch.create_items: ['Pad', 'Pad', 'BoardGraphicShape', 'BoardGraphicShape', 'BoardGraphicShape', 'BoardGraphicShape', 'BoardGraphicShape', 'BoardText', 'Field']
+PASS scratch.update_mandatory_fields: ['REF**', 'L_Bourns_SRN3012BTA', 'Bourns SRN3012BTA SMD power inductor, 3.0x3.0x1.2 mm, https://www.bourns.com/docs/product-datasheets/srn3012bta.pdf']
+NOTE q08_render.svg: {'all': {'width': '17.154764mm', 'height': '7.296500mm', 'viewBox': [-8.577382, -3.64825, 17.154764, 7.2965], 'unit_per_mm': 1.0, 'extent_mm': (4.0, 4.0), 'text_groups': 3, 'stroke_colors': ['#000000', '#AFAFAF', '#F2EDA1', '#FF26E2'], 'bytes': 16190}, 'crtyd': {'width': '17.154764mm', 'height': '7.296500mm', 'viewBox': [-8.577382, -3.64825, 17.154764, 7.2965], 'unit_per_mm': 1.0, 'extent_mm': (4.0, 4.0), 'text_groups': 0, 'stroke_colors': ['#000000', '#FF26E2'], 'bytes': 1009}, 'fab': {'width': '17.154764mm', 'height': '7.296500mm', 'viewBox': [-8.577382, -3.64825, 17.154764, 7.2965], 'unit_p
+PASS q08_render.svg_scale_known: {'all': 1.0, 'crtyd': 1.0, 'fab': 1.0, 'cu': 1.0}
+PASS q08_render.crtyd_extent: (4.0, 4.0)
+PASS q08_render.fab_extent_without_text: (3.0, 3.0)
+PASS q08_render.fab_texts_present: 2
+PASS q08_render.cu_extent: (3.5, 3.5)
+PASS q08_render.page_fits_all_content: {'width': '17.154764mm', 'height': '7.296500mm', 'viewBox': [-8.577382, -3.64825, 17.154764, 7.2965], 'unit_per_mm': 1.0, 'extent_mm': (4.0, 4.0), 'text_groups': 3, 'stroke_colors': ['#000000', '#AFAFAF', '#F2EDA1', '#FF26E2'], 'bytes': 16190}
+DONE q08_render: 6 pass, 0 fail
