@@ -100,6 +100,10 @@ def main() -> int:
     cu = info["cu"]["extent_mm"]
     # copper: two 1.3x3.5 pads at x=+-1.1 -> 3.5 x 3.5
     r.check("cu_extent", cu == (3.5, 3.5), cu)
+    miss = base / "missing" / "dir"
+    p = cli("fp", "export", "svg", "--fp", l201.NAME, "-o", str(miss), str(repo.lib_dir))
+    r.check("missing_out_dir_exit0_no_file", p.returncode == 0 and not list(base.glob("missing/**/*.svg")),
+            (p.returncode, (p.stdout + p.stderr)[-200:]))
     r.check("page_fits_all_content", info["all"]["viewBox"][2] >= info["all"]["extent_mm"][0], info["all"])
     return r.finish()
 

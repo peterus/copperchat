@@ -73,6 +73,8 @@
       "DOCTYPE_PCB": 1,
       "DOCTYPE_FOOTPRINT": "KiCad returned error: no handler available for request of type kiapi.common.commands.GetOpenDocuments"
     },
-    "rss_mb": 2038.984375
+    "stock_lib_dir_writable_by_probe_user": false,
+    "server_log_tail": "",
+    "rss_mb": 1962.96484375
   }
 }

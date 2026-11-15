@@ -117,7 +117,7 @@ def main() -> int:
         r.check("batch_complete", len(batch) == len(names), (len(batch), len(names)))
 
         # route 2: footprint document per footprint (items + footprint-level data)
-        per = []
+        per, descr = [], {}
         for i in ids:
             t = time.monotonic()
             fp = FootprintDoc(k, i)
@@ -126,9 +126,13 @@ def main() -> int:
             inst = fp.items_by_id([parent])[0]
             fp.close()
             per.append(time.monotonic() - t)
+            descr[i] = inst.definition.attributes.description
         r.note("doc_read_ms", {"median": round(statistics.median(per) * 1000, 1), "max": round(max(per) * 1000, 1)})
-        r.check("doc_route_has_attributes", inst.definition.attributes.description == l201.DESCRIPTION
-                or inst.definition.attributes.description != "", inst.definition.attributes.description[:80])
+        r.check("doc_route_stock_descriptions", all(descr[i] for i in STOCK), {i: descr[i][:40] for i in STOCK})
+        # G2 evidence: the local footprint still carries the SEED's description, not L201's
+        local = descr[f"{LIB}:{l201.NAME}"]
+        r.check("doc_route_local_descr_is_seeds", local == descr["Inductor_SMD:L_Bourns-SRN4018"]
+                and local != l201.DESCRIPTION, local[:80])
         r.note("rss_end_mb", round(srv.rss()))
         r.check("server_alive", srv.alive(), srv.log()[-300:])
     return r.finish()

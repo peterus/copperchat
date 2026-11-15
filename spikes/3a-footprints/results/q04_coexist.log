@@ -16,6 +16,8 @@ PASS q04_coexist.close_first_fails_too: KiCad returned error: Requested document
 PASS q04_coexist.reopen_after_stale_entry: 23
 PASS q04_coexist.sch_fine_after_stale_entry: 
 PASS q04_coexist.save_into_stock_library_refused: KiCad returned error: failed to save footprint
+NOTE q04_coexist.stock_lib_dir_writable_by_probe_user: False
+NOTE q04_coexist.server_log_tail: 
 PASS q04_coexist.server_alive: 
-NOTE q04_coexist.rss_mb: 2038.984375
+NOTE q04_coexist.rss_mb: 1962.96484375
 DONE q04_coexist: 13 pass, 0 fail

@@ -7,14 +7,14 @@ PASS q02_library.save_without_table_row_fails: KiCad returned error: failed to s
 NOTE q02_library.status_row_dir_missing: ('LLS_INVALID', None)
 PASS q02_library.save_into_missing_dir_fails: KiCad returned error: failed to save footprint copy 'X' to library 'copperchat'
 PASS q02_library.missing_dir_not_created: False
-NOTE q02_library.status_empty_dir_before_reload: ('LLS_ERROR', "Footprint library '/tmp/c3a-q2b-86qf9xhc/repo/footprints/copperchat.pretty' not found.")
+NOTE q02_library.status_empty_dir_before_reload: ('LLS_ERROR', "Footprint library '/tmp/c3a-q2b-jh3y2b8f/repo/footprints/copperchat.pretty' not found.")
 PASS q02_library.save_after_mkdir_needs_reload: KiCad returned error: failed to save footprint copy 'X' to library 'copperchat'
 NOTE q02_library.reload_result: code: LCS_OK
 NOTE q02_library.status_after_reload: ('LLS_LOADED', None)
 PASS q02_library.save_into_empty_dir_after_reload_ok: ['X.kicad_mod']
 NOTE q02_library.status_after_save: ('LLS_LOADED', None)
 PASS q02_library.listed_after_save: ['X']
-PASS q02_library.no_delete_library_item_command: ['DeleteLibraryTableEntry']
+PASS q02_library.no_delete_library_item_command: ['editor_commands_pb2.DeleteItems', 'editor_commands_pb2.DeleteItemsResponse', 'editor_commands_pb2.RemoveFromSelection', 'library_commands_pb2.DeleteLibraryTableEntry', 'variant_commands_pb2.DeleteVariant']
 PASS q02_library.save_copy_overwrites_existing_silently: content replaced
 PASS q02_library.server_alive: 
 DONE q02_library: 14 pass, 0 fail

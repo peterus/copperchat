@@ -31,7 +31,7 @@
     "Board(doc).get_items_by_id(footprint id)": "OK  FootprintInstance",
     "Board(doc).begin_commit()": "OK  ok",
     "Board(doc).create_items(Pad)": "OK  Pad",
-    "Board(doc).create_items(BoardRectangle)": "ERR ApiError: Failed to create items: attempted to add item with no overlapping layers with the board (ISC_INVALID_DATA)",
+    "Board(doc).create_items(BoardRectangle)": "OK  1",
     "Board(doc).update_items(Pad)": "OK  Vector2(-1200000, 0)",
     "Board(doc).remove_items(Pad)": "OK  ok",
     "Board(doc).drop_commit()": "OK  ok",

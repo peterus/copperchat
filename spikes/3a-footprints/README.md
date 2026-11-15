@@ -4,8 +4,8 @@ Throwaway. Not run in CI. Findings: `docs/spikes/3a-footprints.md`.
 
 Runs inside the pinned image `ghcr.io/peterus/copperchat-kicad-base:52b43fb8…-rf96c7c8335ad9c6f`
 (`kicad-cli` + kipy + stock libraries; override with `KICAD_BASE_IMAGE`). Needs docker only. If the
-image still ships upstream kipy `76b47d25`, `run.sh` overlays `.deps/kipy` = that kipy + the fork's
-#147 fix (`ab07e98`).
+image still ships upstream kipy `76b47d25`, `run.sh` overlays `.deps/<that revision>/kipy` = that kipy + the
+fork's #147 fix (`ab07e98`); for any other image the overlay is not used.
 
 ```
 ./run_all.sh              # all questions, results/summary.md + results/*.json|log

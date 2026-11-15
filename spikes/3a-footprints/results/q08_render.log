@@ -9,5 +9,6 @@ PASS q08_render.crtyd_extent: (4.0, 4.0)
 PASS q08_render.fab_extent_without_text: (3.0, 3.0)
 PASS q08_render.fab_texts_present: 2
 PASS q08_render.cu_extent: (3.5, 3.5)
+PASS q08_render.missing_out_dir_exit0_no_file: (0, "g'.\nFailed to create file '/tmp/c3a-q8-svg-wk4q070j/missing/dir/L_Bourns_SRN3012BTA.svg'.\nFailed to create file '/tmp/c3a-q8-svg-wk4q070j/missing/dir/L_Bourns_SRN3012BTA.svg'.\nError creating svg file\n")
 PASS q08_render.page_fits_all_content: {'width': '17.154764mm', 'height': '7.296500mm', 'viewBox': [-8.577382, -3.64825, 17.154764, 7.2965], 'unit_per_mm': 1.0, 'extent_mm': (4.0, 4.0), 'text_groups': 3, 'stroke_colors': ['#000000', '#AFAFAF', '#F2EDA1', '#FF26E2'], 'bytes': 16190}
-DONE q08_render: 6 pass, 0 fail
+DONE q08_render: 7 pass, 0 fail

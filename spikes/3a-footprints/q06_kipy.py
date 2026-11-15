@@ -7,6 +7,7 @@ from pathlib import Path
 from kipy.board import Board
 from kipy.board_types import BoardRectangle, Pad
 from kipy.geometry import Vector2
+from kipy.proto.board import board_types_pb2 as bt
 from kipy.proto.common.types import DocumentType, enums_pb2 as en, library_types_pb2 as lt
 
 import l201
@@ -54,7 +55,9 @@ def main() -> int:
         p2.position = Vector2.from_xy_mm(0, 2.5)
         table["Board(doc).create_items(Pad)"] = outcome(lambda: type(fp.create_items([p2])[0]).__name__)
         rect = BoardRectangle()
-        rect.layer = 0
+        rect.layer = bt.BoardLayer.BL_F_Fab
+        rect.top_left = Vector2.from_xy_mm(-1, -1)
+        rect.bottom_right = Vector2.from_xy_mm(1, 1)
         table["Board(doc).create_items(BoardRectangle)"] = outcome(lambda: len(fp.create_items([rect])))
         pad.position = Vector2.from_xy_mm(-1.2, 0)
         table["Board(doc).update_items(Pad)"] = outcome(lambda: fp.update_items([pad])[0].position)

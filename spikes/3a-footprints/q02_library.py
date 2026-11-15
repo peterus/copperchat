@@ -82,8 +82,19 @@ def main() -> int:
         r.check("listed_after_save", names == ["X"], names)
         seed.close()
         # undo of a created footprint: there is no DeleteFootprint/DeleteLibraryItem command
+        # (a proto-surface check over every kipy command module at this pin, not a server query)
+        import importlib
+        import pkgutil
+
+        import kipy.proto as kp
+        msgs = []
+        for m in pkgutil.walk_packages(kp.__path__, "kipy.proto."):
+            if m.name.endswith("_pb2"):
+                mod = importlib.import_module(m.name)
+                msgs += [f"{m.name.rsplit('.', 1)[-1]}.{n}" for n, d in getattr(mod, "DESCRIPTOR").message_types_by_name.items()
+                         if n.startswith(("Delete", "Remove"))]
         r.check("no_delete_library_item_command",
-                not any(n for n in dir(lc) if "Delete" in n and "Table" not in n), [n for n in dir(lc) if "Delete" in n])
+                not [n for n in msgs if "Library" in n and "Table" not in n or "Footprint" in n], msgs)
         # overwrite: SaveCopy onto an existing name replaces it silently?
         seed = FootprintDoc(k, "Inductor_SMD:L_Bourns-SRN6028")
         before = (repo.lib_dir / "X.kicad_mod").read_text()

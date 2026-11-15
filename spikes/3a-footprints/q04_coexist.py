@@ -81,7 +81,8 @@ def main() -> int:
         c = FootprintDoc(k, SEED)
         r.check("reopen_after_stale_entry", len(c.items()) > 0, len(c.items()))
         r.check("sch_fine_after_stale_entry", len(sch.get_symbols()) == 1, "")
-        # editing the stock seed and saving it: refused (system library read-only)?
+        # editing the stock seed and saving it: refused — KiCad's read-only check or just file
+        # permissions (the probe runs as a non-root user, /usr/share/kicad is root-owned)?
         cid = c.begin()
         c.create([l201.fab_ref_text()])
         c.end(cid)
@@ -90,6 +91,10 @@ def main() -> int:
             r.check("save_into_stock_library_refused", False, "saved into stock library")
         except Exception as e:  # noqa: BLE001
             r.check("save_into_stock_library_refused", True, str(e))
+            import os
+            r.note("stock_lib_dir_writable_by_probe_user",
+                   os.access("/usr/share/kicad/footprints/Inductor_SMD.pretty", os.W_OK))
+            r.note("server_log_tail", srv.log()[-600:])
         r.check("server_alive", srv.alive(), srv.log()[-400:])
         r.note("rss_mb", srv.rss())
     return r.finish()

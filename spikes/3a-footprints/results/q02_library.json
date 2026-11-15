@@ -59,7 +59,7 @@
     {
       "name": "no_delete_library_item_command",
       "ok": true,
-      "evidence": "['DeleteLibraryTableEntry']"
+      "evidence": "['editor_commands_pb2.DeleteItems', 'editor_commands_pb2.DeleteItemsResponse', 'editor_commands_pb2.RemoveFromSelection', 'library_commands_pb2.DeleteLibraryTableEntry', 'variant_commands_pb2.DeleteVariant']"
     },
     {
       "name": "save_copy_overwrites_existing_silently",
@@ -79,7 +79,7 @@
     ],
     "status_empty_dir_before_reload": [
       "LLS_ERROR",
-      "Footprint library '/tmp/c3a-q2b-86qf9xhc/repo/footprints/copperchat.pretty' not found."
+      "Footprint library '/tmp/c3a-q2b-jh3y2b8f/repo/footprints/copperchat.pretty' not found."
     ],
     "reload_result": "code: LCS_OK",
     "status_after_reload": [

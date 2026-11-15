@@ -37,7 +37,12 @@
       "evidence": "(401, 401)"
     },
     {
-      "name": "doc_route_has_attributes",
+      "name": "doc_route_stock_descriptions",
+      "ok": true,
+      "evidence": "{'Resistor_SMD:R_0805_2012Metric': 'Resistor SMD 0805 (2012 Metric), square ', 'Inductor_SMD:L_Bourns-SRN4018': 'Bourns SRN4018 series SMD inductor, http', 'Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical': 'Through hole straight pin header, 1x02, ', 'Package_SO:SOIC-8_3.9x4.9mm_P1.27mm': 'SOIC, 8 Pin (JEDEC MS-012AA, https://www', 'Package_DFN_QFN:QFN-32-1EP_5x5mm_P0.5mm_EP3.45x3.45mm': 'QFN, 32 Pin (http://www.analog.com/media'}"
+    },
+    {
+      "name": "doc_route_local_descr_is_seeds",
       "ok": true,
       "evidence": "Bourns SRN4018 series SMD inductor, https://www.bourns.com/docs/Product-Datashee"
     },
@@ -49,11 +54,11 @@
   ],
   "notes": {
     "rss_sch_only_mb": 221,
-    "first_fp_open_s": 2.93,
-    "rss_after_first_fp_open_mb": 1973,
+    "first_fp_open_s": 2.88,
+    "rss_after_first_fp_open_mb": 1914,
     "lib_single_ms": {
-      "median": 66.7,
-      "max": 155.1
+      "median": 66.9,
+      "max": 148.3
     },
     "definitions": [
       {
@@ -271,9 +276,9 @@
       "s": 0.2
     },
     "doc_read_ms": {
-      "median": 50.4,
-      "max": 52.8
+      "median": 50.2,
+      "max": 53.5
     },
-    "rss_end_mb": 4069
+    "rss_end_mb": 4010
   }
 }

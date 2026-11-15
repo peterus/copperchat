@@ -9,7 +9,7 @@ echo "| Question | Result | Failed checks |" > results/summary.md
 echo "|---|---|---|" >> results/summary.md
 rc=0
 for q in q01_create q02_library q03_shared q04_coexist q05_read q06_kipy q07_assign q08_render; do
-  timeout 600 ./run.sh "$q.py" > "results/$q.log" 2>&1
+  timeout -k 30 600 ./run.sh "$q.py" > "results/$q.log" 2>&1
   code=$?
   if [ ! -f "results/$q.json" ]; then
     echo "| $q | CRASH (exit $code, see results/$q.log) | |" >> results/summary.md

@@ -136,6 +136,10 @@ def main() -> int:
     r.note("file_descr_tags_model", [ln.strip() for ln in text.splitlines()
                                      if ln.strip().startswith(("(descr", "(tags", "(model", "(attr"))])
     r.check("file_version", any(ln.startswith("(version ") for ln in head), head)
+    # G2: the Description FIELD was updated, the footprint-level (descr) is still the seed's
+    descr = next(ln.strip() for ln in text.splitlines() if ln.strip().startswith("(descr "))
+    r.check("file_descr_is_seeds_not_l201", "SRN4018" in descr and l201.DESCRIPTION not in descr, descr)
+    r.check("file_description_field_is_l201", f'(property "Description" "{l201.DESCRIPTION}"' in text, "")
 
     # kicad-cli round trip: upgrade --force into a copy must not change the content
     out = base / "upgraded"
