@@ -34,6 +34,10 @@
           "uuid": "00000000-0000-0000-0000-000054a581e5"
         }
       ],
+      "pos": {
+        "x": 141.605,
+        "y": 99.695
+      },
       "severity": "warning",
       "type": "footprint_symbol_mismatch"
     },
@@ -49,6 +53,10 @@
           "uuid": "00000000-0000-0000-0000-000054a581ea"
         }
       ],
+      "pos": {
+        "x": 137.16,
+        "y": 125.095
+      },
       "severity": "warning",
       "type": "footprint_symbol_mismatch"
     },
@@ -64,6 +72,10 @@
           "uuid": "00000000-0000-0000-0000-000054a58203"
         }
       ],
+      "pos": {
+        "x": 125.095,
+        "y": 93.98
+      },
       "severity": "warning",
       "type": "footprint_symbol_mismatch"
     },
@@ -79,6 +91,10 @@
           "uuid": "00000000-0000-0000-0000-000054a58207"
         }
       ],
+      "pos": {
+        "x": 169.545,
+        "y": 93.98
+      },
       "severity": "warning",
       "type": "footprint_symbol_mismatch"
     },
@@ -94,6 +110,10 @@
           "uuid": "00000000-0000-0000-0000-000054a5820b"
         }
       ],
+      "pos": {
+        "x": 169.545,
+        "y": 132.715
+      },
       "severity": "warning",
       "type": "footprint_symbol_mismatch"
     },
@@ -109,6 +129,10 @@
           "uuid": "00000000-0000-0000-0000-00005d88946b"
         }
       ],
+      "pos": {
+        "x": 125.095,
+        "y": 132.715
+      },
       "severity": "warning",
       "type": "footprint_symbol_mismatch"
     },
@@ -124,6 +148,10 @@
           "uuid": "00000000-0000-0000-0000-000054a58213"
         }
       ],
+      "pos": {
+        "x": 136.271,
+        "y": 107.95
+      },
       "severity": "warning",
       "type": "footprint_symbol_mismatch"
     },
@@ -139,6 +167,10 @@
           "uuid": "00000000-0000-0000-0000-000054a58218"
         }
       ],
+      "pos": {
+        "x": 156.21,
+        "y": 95.885
+      },
       "severity": "warning",
       "type": "footprint_symbol_mismatch"
     },
@@ -154,6 +186,10 @@
           "uuid": "00000000-0000-0000-0000-00005a33370f"
         }
       ],
+      "pos": {
+        "x": 133.985,
+        "y": 125.095
+      },
       "severity": "warning",
       "type": "footprint_symbol_mismatch"
     },
@@ -169,6 +205,10 @@
           "uuid": "00000000-0000-0000-0000-000054a58222"
         }
       ],
+      "pos": {
+        "x": 164.465,
+        "y": 117.475
+      },
       "severity": "warning",
       "type": "footprint_symbol_mismatch"
     }
@@ -196,6 +236,10 @@
           "uuid": "a4d1deb0-9296-4d9f-8b45-b343befbe2e3"
         }
       ],
+      "pos": {
+        "x": 142.922,
+        "y": 136.525
+      },
       "severity": "warning",
       "type": "silk_edge_clearance"
     },
@@ -219,6 +263,10 @@
           "uuid": "fa4e4619-2310-496a-9c63-4fb385cf27a0"
         }
       ],
+      "pos": {
+        "x": 153.162,
+        "y": 136.525
+      },
       "severity": "warning",
       "type": "silk_edge_clearance"
     }
