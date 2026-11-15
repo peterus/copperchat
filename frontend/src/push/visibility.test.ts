@@ -67,3 +67,20 @@ it('keeps reporting under the last project after leaving it', () => {
   ]);
   r.stop();
 });
+
+it('reports hidden on pagehide and freeze, and visible again on pageshow and resume', () => {
+  const { ws, sent } = fakeWs();
+  vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => 'visible');
+  const r = startVisibilityReporter(() => PID, ws);
+  const on = { type: 'visibility', projectId: PID, visible: true };
+  const off = { type: 'visibility', projectId: PID, visible: false };
+  window.dispatchEvent(new Event('pagehide')); // before visibilityState changes
+  window.dispatchEvent(new Event('pageshow'));
+  document.dispatchEvent(new Event('freeze'));
+  document.dispatchEvent(new Event('resume'));
+  expect(sent).toEqual([on, off, on, off, on]);
+  r.stop();
+  for (const t of ['pagehide', 'pageshow']) window.dispatchEvent(new Event(t));
+  for (const t of ['freeze', 'resume']) document.dispatchEvent(new Event(t));
+  expect(sent).toHaveLength(5);
+});

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sys
 
 import uvicorn
@@ -9,7 +10,18 @@ from copperchat.errors import ConfigError
 from copperchat.web.app import create_app
 
 
+def configure_logging() -> None:
+    """uvicorn configures only its own loggers, so app records had no handler and anything
+    below WARNING was dropped. Give the root a stderr handler (unless something already set
+    one up) and let copperchat.* log at INFO; other libraries stay at WARNING."""
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s:     %(name)s: %(message)s")
+    app = logging.getLogger("copperchat")
+    if app.level == logging.NOTSET:
+        app.setLevel(logging.INFO)
+
+
 def main() -> None:
+    configure_logging()
     settings = get_settings()
     try:
         check_model_credentials(settings)

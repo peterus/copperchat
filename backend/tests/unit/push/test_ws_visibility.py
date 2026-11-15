@@ -23,17 +23,38 @@ def test_visibility_frames_reach_the_registry(make_settings: Callable[..., Setti
             sock.send_text(json.dumps({"type": "visibility", "projectId": pid, "visible": True}))
             sock.send_text(json.dumps({"type": "ping", "projectId": None}))
             assert json.loads(sock.receive_text())["type"] == "pong"  # frames are in order
-            assert registry.any_visible() is True
+            assert registry.visible_for(pid) is True
             sock.send_text(json.dumps({"type": "visibility", "projectId": pid, "visible": False}))
             sock.send_text(json.dumps({"type": "ping", "projectId": None}))
             assert json.loads(sock.receive_text())["type"] == "pong"
-            assert registry.any_visible() is False
+            assert registry.visible_for(pid) is False
             sock.send_text(json.dumps({"type": "visibility", "projectId": pid, "visible": True}))
             sock.send_text(json.dumps({"type": "visibility", "projectId": pid, "visible": "yes"}))
             assert json.loads(sock.receive_text())["code"] == "invalid_frame"
-            assert registry.any_visible() is True
+            assert registry.visible_for(pid) is True
         # the socket closed while visible: it no longer suppresses pushes
-        assert registry.any_visible() is False
+        assert registry.visible_for(pid) is False
+
+
+def test_client_frames_keep_a_visible_claim_fresh(make_settings: Callable[..., Settings]) -> None:
+    settings = make_settings()
+    (settings.projects_root / "demo").mkdir()
+    (settings.projects_root / "demo" / "demo.kicad_pro").write_text("")
+    pid = project_id_for("demo/demo.kicad_pro")
+    now = [1000.0]
+    with TestClient(create_app(settings)) as c:
+        c.post("/api/auth/login", json=GOOD)
+        registry: Any = c.app.state.push.visibility  # type: ignore[attr-defined]
+        registry._clock = lambda: now[0]
+        with c.websocket_connect("/api/ws") as sock:
+            sock.send_text(json.dumps({"type": "visibility", "projectId": pid, "visible": True}))
+            sock.send_text(json.dumps({"type": "ping", "projectId": None}))
+            assert json.loads(sock.receive_text())["type"] == "pong"
+            now[0] += registry.ttl_s + 1  # the page froze: no frames for longer than the TTL
+            assert registry.visible_for(pid) is False
+            sock.send_text(json.dumps({"type": "ping", "projectId": None}))  # it woke up
+            assert json.loads(sock.receive_text())["type"] == "pong"
+            assert registry.visible_for(pid) is True
 
 
 def test_parked_rate_limit_rearms_reopen_push_after_restart(

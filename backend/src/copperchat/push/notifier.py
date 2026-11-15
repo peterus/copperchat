@@ -8,9 +8,10 @@
 | rate-limited{resetsAt}                  | at resetsAt: "rate limit window reopened" |
 | run-finished interrupted / rate_limited | none                            |
 
-Nothing is sent while any client reports itself visible. ``on_frame`` is the
-Broadcaster listener: it only enqueues, so publishing (which runs under the engine's
-lock) never waits for the database or the push service.
+Nothing about a project is sent while a live client shows that project in the foreground
+(push/visibility.py; a claim from a connection that stopped sending frames expires).
+``on_frame`` is the Broadcaster listener: it only enqueues, so publishing (which runs under
+the engine's lock) never waits for the database or the push service.
 """
 
 from __future__ import annotations
@@ -124,7 +125,7 @@ class PushNotifier:
     async def _run_finished(self, f: RunFinishedFrame) -> None:
         if f.reason not in ("completed", "error"):
             return  # Stop pressed by the user, or parked (the reopen push covers that)
-        if self.visibility.any_visible():
+        if self._suppressed(f.project_id):
             return
         final = await self._final_row(f.project_id, f.run_id)
         kind, text = final if final is not None else ("", "")
@@ -187,12 +188,12 @@ class PushNotifier:
     ) -> None:
         """Title "<project>: <title>", or "<project> · <session>: <title>" for a run; the
         URL deep-links to the run's session, /p/{pid}/s/{cid} (spec §6.3)."""
-        if self.visibility.any_visible():
+        if self._suppressed(project_id):
             return
         name = self.project_names(project_id)
         if session:
             name = f"{name} · {session}"
-        await self.dispatcher.send_all(
+        sent = await self.dispatcher.send_all(
             {
                 "title": f"{name}: {title}",
                 "body": body,
@@ -200,6 +201,13 @@ class PushNotifier:
                 "tag": tag,
             }
         )
+        log.info("push %r sent to %d subscription(s)", tag, sent)
+
+    def _suppressed(self, project_id: str) -> bool:
+        if not self.visibility.visible_for(project_id):
+            return False
+        log.info("push suppressed: project %s is visible in a client", project_id)
+        return True
 
     async def close(self) -> None:
         self._closed = True

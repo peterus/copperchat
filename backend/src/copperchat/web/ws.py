@@ -129,6 +129,11 @@ class _Connection:
         if registry is not None:
             registry.set(id(self), project_id, visible)
 
+    def touch_visibility(self) -> None:
+        registry = self._visibility()
+        if registry is not None:
+            registry.touch(id(self))
+
     def forget_visibility(self) -> None:
         registry = self._visibility()
         if registry is not None:
@@ -328,6 +333,7 @@ async def chat_ws(ws: WebSocket) -> None:
             if not await _session_alive(ws):  # logged out since the upgrade
                 await conn.close_socket(CLOSE_UNAUTHENTICATED)
                 break
+            conn.touch_visibility()  # a frozen page stops talking: its claim expires
             text = msg.get("text")
             if text is None:
                 await conn.send(
