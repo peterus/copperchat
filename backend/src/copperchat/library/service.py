@@ -2,8 +2,10 @@
 footprint libraries (lazy, one library per request) - E-C9, spike 2B, owner decision 1.
 
 Data comes only from KiCad's library API: listing = `GetLibraryItems` (names only),
-details = `GetItemsFromLibrary` in batches of 500 ids, pins of derived (`extends`)
-symbols = the flattened definition of a placement inside a dropped commit.
+details = `GetItemsFromLibrary` in batches of 500 ids. KiCad returns derived (`extends`)
+symbols flattened since 0f5acecd (2026-10-18); a derived symbol it returns without items
+(unresolvable parent) falls back to the flattened definition of a placement inside a
+dropped commit (spike 2B).
 """
 
 from __future__ import annotations
@@ -329,9 +331,9 @@ class LibraryService:
         return self.state == "ready" and lib_id in self._rows
 
     async def get_symbol(self, lib_id: str) -> SymbolDetail:
-        """Detail of one library symbol; pins of derived symbols come from a probe
-        placement in a dropped commit (`session.commit(dry_run=True)`). Must not be
-        called from inside an open commit of the same task."""
+        """Detail of one library symbol; a symbol KiCad returns without items gets its
+        pins from a probe placement in a dropped commit (`session.commit(dry_run=True)`).
+        Must not be called from inside an open commit of the same task."""
         index = self._ready_index()
         lib_id = lib_id.strip()
         cached = self._details.get(lib_id)

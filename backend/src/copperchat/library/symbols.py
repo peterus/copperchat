@@ -106,8 +106,9 @@ def _kind(child: Any) -> str:
 
 
 def has_drawing(sy: Any) -> bool:
-    """False for derived (`extends`) symbols: the API returns them without any child
-    items (spike 2B, finding 3)."""
+    """False for a symbol the API returns without any child items: derived (`extends`)
+    symbols before KiCad 0f5acecd (spike 2B, finding 3), since then only one whose parent
+    cannot be resolved."""
     return len(sy.items) > 0
 
 
