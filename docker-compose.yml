@@ -14,7 +14,7 @@ services:
       dockerfile: docker/app/Dockerfile
       args:
         # Must equal docker/kicad-base/KICAD_COMMIT (checked by scripts/check-docs.sh).
-        KICAD_COMMIT: 0616634034fa1a8c92c141c293342cbef2f68dff
+        KICAD_COMMIT: 52b43fb8fc8e11fdab5d683eaefc91a49f9cbcd7
     restart: unless-stopped
     init: true  # reaps the kicad-cli api-server processes
     env_file: .env

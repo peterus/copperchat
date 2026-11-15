@@ -47,7 +47,7 @@ artifacts = ["src/copperchat/skills/builtin/**"]
 # kicad-python 0.8.0 on PyPI is broken for KiCad 11 (see tests/unit/test_kipy_imports.py).
 # Revision recorded in docs/spikes/1c-api-server.md ("kipy revision").
 [tool.uv.sources]
-kicad-python = { git = "https://gitlab.com/kicad/code/kicad-python.git", rev = "87b945a0d56b26a78bf547db9771ff9bf3a057ea" }
+kicad-python = { git = "https://gitlab.com/kicad/code/kicad-python.git", rev = "76b47d25a826a56a301660f5f572dda968c84d59" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

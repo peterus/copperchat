@@ -593,7 +593,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "itsdangerous", specifier = ">=2.2" },
-    { name = "kicad-python", git = "https://gitlab.com/kicad/code/kicad-python.git?rev=87b945a0d56b26a78bf547db9771ff9bf3a057ea" },
+    { name = "kicad-python", git = "https://gitlab.com/kicad/code/kicad-python.git?rev=76b47d25a826a56a301660f5f572dda968c84d59" },
     { name = "pillow", specifier = ">=11" },
     { name = "pydantic", specifier = ">=2.9" },
     { name = "pydantic-settings", specifier = ">=2.6" },
@@ -981,7 +981,7 @@ wheels = [
 [[package]]
 name = "kicad-python"
 version = "0.9.0.dev0"
-source = { git = "https://gitlab.com/kicad/code/kicad-python.git?rev=87b945a0d56b26a78bf547db9771ff9bf3a057ea#87b945a0d56b26a78bf547db9771ff9bf3a057ea" }
+source = { git = "https://gitlab.com/kicad/code/kicad-python.git?rev=76b47d25a826a56a301660f5f572dda968c84d59#76b47d25a826a56a301660f5f572dda968c84d59" }
 dependencies = [
     { name = "jsonschema" },
     { name = "protobuf" },
