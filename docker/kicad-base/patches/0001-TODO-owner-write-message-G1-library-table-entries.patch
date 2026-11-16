@@ -1,16 +1,17 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Peter Buchegger <peter.buchegger7@gmail.com>
-Date: Mon, 16 Nov 2026 23:24:41 +0100
+Date: Tue, 17 Nov 2026 00:08:05 +0100
 Subject: [PATCH 1/4] TODO(owner): write message (G1 library table entries)
 
 Assisted-by: Claude
 ---
  .../common/commands/library_commands.proto    |   4 +
- common/api/api_handler_libraries.cpp          | 371 ++++++++++++++++++
+ common/api/api_handler_libraries.cpp          | 375 ++++++++++++++++++
  include/api/api_handler_libraries.h           |  18 +
+ pcbnew/pcbnew.cpp                             |   3 +-
  qa/tests/api/CMakeLists.txt                   |   1 +
  qa/tests/api/test_api_e2e_libraries.cpp       | 189 +++++++++
- 5 files changed, 583 insertions(+)
+ 6 files changed, 589 insertions(+), 1 deletion(-)
  create mode 100644 qa/tests/api/test_api_e2e_libraries.cpp
 
 diff --git a/api/proto/common/commands/library_commands.proto b/api/proto/common/commands/library_commands.proto
@@ -29,7 +30,7 @@ index be9ac8d6..f1e7fcb3 100644
  
  // Modifies an existing row, matched by entry.nickname (and scope).
 diff --git a/common/api/api_handler_libraries.cpp b/common/api/api_handler_libraries.cpp
-index c4ab4144..6da6f770 100644
+index c4ab4144..b76f7ee8 100644
 --- a/common/api/api_handler_libraries.cpp
 +++ b/common/api/api_handler_libraries.cpp
 @@ -25,11 +25,15 @@
@@ -97,7 +98,7 @@ index c4ab4144..6da6f770 100644
  HANDLER_RESULT<LibraryItemsResponse>
  API_HANDLER_LIBRARIES::handleGetLibraryItems( const HANDLER_CONTEXT<GetLibraryItems>& aCtx )
  {
-@@ -440,6 +478,339 @@ LibraryCommandStatus API_HANDLER_LIBRARIES::loadAllLibraries()
+@@ -440,6 +478,343 @@ LibraryCommandStatus API_HANDLER_LIBRARIES::loadAllLibraries()
  }
  
  
@@ -145,7 +146,7 @@ index c4ab4144..6da6f770 100644
 +    // aTable is replaced by the reload and must not be used after this point
 +    Pgm().GetLibraryManager().ReloadTables( scope, { aType } );
 +
-+    // Queue again the background loads the modification aborted
++    // Queue again the background loads the modification cancelled
 +    Pgm().GetLibraryManager().RestartAsyncLoads();
 +
 +    if( !result )
@@ -277,8 +278,9 @@ index c4ab4144..6da6f770 100644
 +    LIBRARY_MANAGER& manager = Pgm().GetLibraryManager();
 +    LIBRARY_TABLE_SCOPE scope = table->Scope();
 +
-+    // Background loads hold raw row pointers into the table being modified
-+    manager.AbortAsyncLoads();
++    // Background loads hold raw row pointers into the table being modified.  Cancelled loads are
++    // queued again by saveAndReloadTable().
++    manager.AbortAsyncLoads( true );
 +
 +    LIBRARY_TABLE_ROW& row = table->InsertRow();
 +    row.SetNickname( nickname );
@@ -306,6 +308,9 @@ index c4ab4144..6da6f770 100644
 +        error = wxS( "no library adapter is available for this library type" );
 +    else if( !resolved || ( *resolved )->Scope() != scope )
 +        error = wxString::Format( wxS( "library '%s' is shadowed by a row in another table" ), nickname );
++    else if( wxString parent = wxFileName( path ).GetPath();
++             !wxFileName::DirExists( parent ) && !wxFileName::Mkdir( parent, wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL ) )
++        error = wxString::Format( wxS( "could not create the directory '%s'" ), parent );
 +    else if( !adapter->CreateLibrary( nickname ) )
 +        error = wxString::Format( wxS( "could not create a library at '%s'" ), path );
 +
@@ -361,7 +366,7 @@ index c4ab4144..6da6f770 100644
 +                                                           table->Path() ) );
 +    }
 +
-+    Pgm().GetLibraryManager().AbortAsyncLoads();
++    Pgm().GetLibraryManager().AbortAsyncLoads( true );
 +
 +    unpackTableEntry( entry, **row );
 +
@@ -394,7 +399,7 @@ index c4ab4144..6da6f770 100644
 +                                                           table->Path() ) );
 +    }
 +
-+    Pgm().GetLibraryManager().AbortAsyncLoads();
++    Pgm().GetLibraryManager().AbortAsyncLoads( true );
 +
 +    std::erase_if( table->Rows(),
 +                   [&]( const LIBRARY_TABLE_ROW& aRow )
@@ -466,6 +471,20 @@ index dc1a0ddd..d34ab8d7 100644
      /// Starts a background load of all libraries of this handler's type.
      kiapi::common::types::LibraryCommandStatus loadAllLibraries();
  
+diff --git a/pcbnew/pcbnew.cpp b/pcbnew/pcbnew.cpp
+index 2282c07e..0ea99ffc 100644
+--- a/pcbnew/pcbnew.cpp
++++ b/pcbnew/pcbnew.cpp
+@@ -612,7 +612,8 @@ static struct IFACE : public KIFACE_BASE, public UNITS_PROVIDER
+             // without directly linking to pcbnew or pcbcommon, going through PROJECT::FootprintLibAdapter
+             PROJECT* project = nullptr;
+ 
+-            if( wxTheApp )
++            // kicad-cli's app is a console app without windows
++            if( wxTheApp && Pgm().IsGUI() )
+             {
+                 wxWindow* focus = wxWindow::FindFocus();
+                 wxWindow* top = focus ? wxGetTopLevelParent( focus ) : wxTheApp->GetTopWindow();
 diff --git a/qa/tests/api/CMakeLists.txt b/qa/tests/api/CMakeLists.txt
 index d6c5a69c..0f1ca92d 100644
 --- a/qa/tests/api/CMakeLists.txt

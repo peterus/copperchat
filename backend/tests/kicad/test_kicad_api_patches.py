@@ -205,6 +205,10 @@ def build_l201(kicad: Any) -> None:
         ]
     )
 
+    value = next(i for i in fp.items() if i.DESCRIPTOR.name == "Field" and i.name == "Value")
+    value.text.text.text = NAME
+    fp.update([value])
+
     # G2: the footprint's own properties (refused before the patch: "Tried to create a
     # footprint in Footprint, which is not a board")
     footprint = fp.footprint()
@@ -282,6 +286,17 @@ def l201_cycle(kicad: Any, project_dir: Path) -> None:
         kicad.add_library_table_entry(FP, PROJECT, LIB, LIB_URI)
     assert dup.value.code == LibraryCommandStatus.Code.LCS_ALREADY_EXISTS
 
+    # A global row that the project row shadows: nothing would be created at its own URI
+    shadowed = project_dir / "shadowed.pretty"
+    with pytest.raises(LibraryCommandError) as shadow:
+        kicad.add_library_table_entry(
+            FP, LibraryTableScope.LTS_GLOBAL, LIB, str(shadowed), create_library=True
+        )
+    assert shadow.value.code == LibraryCommandStatus.Code.LCS_ERROR
+    assert not shadowed.exists()
+    global_rows = kicad.get_library_table(FP, LibraryTableScope.LTS_GLOBAL).rows
+    assert LIB not in [r.nickname for r in global_rows]
+
     # G2: L201 with its own description, keywords and attributes
     build_l201(kicad)
     back = read_back(kicad)
@@ -297,7 +312,9 @@ def l201_cycle(kicad: Any, project_dir: Path) -> None:
     assert not [a for a in footprint.definition.items if a.type_url.endswith("Footprint3DModel")]
     text = (project_dir / "footprints" / "copperchat.pretty" / f"{NAME}.kicad_mod").read_text()
     assert f'(descr "{DESCRIPTION}")' in text and f'(tags "{KEYWORDS}")' in text
-    assert "(attr smd exclude_from_bom)" in text and "(model " not in text and "SRN4018" not in text
+    assert "(attr smd exclude_from_bom)" in text
+    assert "(model " not in text
+    assert "SRN4018" not in text
 
     # G3: delete the footprint from the library. The table change first drops the loaded
     # library, so the delete has to load it itself.
@@ -367,11 +384,22 @@ def bad_requests(kicad: Any, project_dir: Path) -> None:
     assert "x" not in rows(kicad)
 
 
+def design_block_library(kicad: Any, project_dir: Path) -> None:
+    kind = LibraryType.LT_DESIGN_BLOCK
+    uri = "${KIPRJMOD}/blocks.kicad_blocks"
+    kicad.add_library_table_entry(kind, PROJECT, "blocks", uri, create_library=True)
+    assert (project_dir / "blocks.kicad_blocks").is_dir()
+    assert [r.nickname for r in kicad.get_library_table(kind, PROJECT).rows] == ["blocks"]
+    kicad.delete_library_table_entry(kind, PROJECT, "blocks")
+    assert not kicad.get_library_table(kind, PROJECT).rows
+
+
 async def test_l201_cycle_with_board(blank_session: KicadSession) -> None:
     s = blank_session
     await s.call(lambda h: l201_cycle(h.kicad, s.project.dir), timeout=TIMEOUT)
     await s.call(lambda h: reopen_without_close(h.kicad), timeout=TIMEOUT)
     await s.call(lambda h: bad_requests(h.kicad, s.project.dir), timeout=TIMEOUT)
+    await s.call(lambda h: design_block_library(h.kicad, s.project.dir), timeout=TIMEOUT)
     # the schematic and the board stay usable
     assert await s.call(lambda h: len(h.board().get_footprints())) == 0
     assert await s.call(lambda h: len(h.schematic().get_symbols())) == 0

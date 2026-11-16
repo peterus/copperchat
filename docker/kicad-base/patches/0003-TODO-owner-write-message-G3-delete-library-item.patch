@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Peter Buchegger <peter.buchegger7@gmail.com>
-Date: Mon, 16 Nov 2026 23:24:41 +0100
+Date: Tue, 17 Nov 2026 00:08:06 +0100
 Subject: [PATCH 3/4] TODO(owner): write message (G3 delete library item)
 
 Assisted-by: Claude
@@ -38,7 +38,7 @@ index f1e7fcb3..4c8ee22b 100644
   * Library queries
   */
 diff --git a/common/api/api_handler_libraries.cpp b/common/api/api_handler_libraries.cpp
-index 6da6f770..89c33efb 100644
+index b76f7ee8..bf83660f 100644
 --- a/common/api/api_handler_libraries.cpp
 +++ b/common/api/api_handler_libraries.cpp
 @@ -25,6 +25,7 @@
