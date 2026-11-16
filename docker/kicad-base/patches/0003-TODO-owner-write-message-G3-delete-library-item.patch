@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Peter Buchegger <peter.buchegger7@gmail.com>
-Date: Tue, 17 Nov 2026 00:08:06 +0100
+Date: Tue, 17 Nov 2026 00:19:00 +0100
 Subject: [PATCH 3/4] TODO(owner): write message (G3 delete library item)
 
 Assisted-by: Claude
@@ -38,7 +38,7 @@ index f1e7fcb3..4c8ee22b 100644
   * Library queries
   */
 diff --git a/common/api/api_handler_libraries.cpp b/common/api/api_handler_libraries.cpp
-index b76f7ee8..bf83660f 100644
+index c2917c42..76b57b3d 100644
 --- a/common/api/api_handler_libraries.cpp
 +++ b/common/api/api_handler_libraries.cpp
 @@ -25,6 +25,7 @@
@@ -241,10 +241,10 @@ index 64f65baf..14526111 100644
  
  #endif //KICAD_API_HANDLER_FP_LIBRARIES_H
 diff --git a/qa/tests/api/test_api_e2e_libraries.cpp b/qa/tests/api/test_api_e2e_libraries.cpp
-index 27aed315..dd1904a1 100644
+index 2a615d86..869f234f 100644
 --- a/qa/tests/api/test_api_e2e_libraries.cpp
 +++ b/qa/tests/api/test_api_e2e_libraries.cpp
-@@ -287,4 +287,36 @@ BOOST_FIXTURE_TEST_CASE( UpdateFootprintProperties, API_SERVER_E2E_FIXTURE )
+@@ -289,4 +289,36 @@ BOOST_FIXTURE_TEST_CASE( UpdateFootprintProperties, API_SERVER_E2E_FIXTURE )
  }
  
  

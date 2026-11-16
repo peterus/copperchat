@@ -1,17 +1,17 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Peter Buchegger <peter.buchegger7@gmail.com>
-Date: Tue, 17 Nov 2026 00:08:05 +0100
+Date: Tue, 17 Nov 2026 00:19:00 +0100
 Subject: [PATCH 1/4] TODO(owner): write message (G1 library table entries)
 
 Assisted-by: Claude
 ---
  .../common/commands/library_commands.proto    |   4 +
- common/api/api_handler_libraries.cpp          | 375 ++++++++++++++++++
+ common/api/api_handler_libraries.cpp          | 377 ++++++++++++++++++
  include/api/api_handler_libraries.h           |  18 +
  pcbnew/pcbnew.cpp                             |   3 +-
  qa/tests/api/CMakeLists.txt                   |   1 +
  qa/tests/api/test_api_e2e_libraries.cpp       | 189 +++++++++
- 6 files changed, 589 insertions(+), 1 deletion(-)
+ 6 files changed, 591 insertions(+), 1 deletion(-)
  create mode 100644 qa/tests/api/test_api_e2e_libraries.cpp
 
 diff --git a/api/proto/common/commands/library_commands.proto b/api/proto/common/commands/library_commands.proto
@@ -30,7 +30,7 @@ index be9ac8d6..f1e7fcb3 100644
  
  // Modifies an existing row, matched by entry.nickname (and scope).
 diff --git a/common/api/api_handler_libraries.cpp b/common/api/api_handler_libraries.cpp
-index c4ab4144..b76f7ee8 100644
+index c4ab4144..c2917c42 100644
 --- a/common/api/api_handler_libraries.cpp
 +++ b/common/api/api_handler_libraries.cpp
 @@ -25,11 +25,15 @@
@@ -98,7 +98,7 @@ index c4ab4144..b76f7ee8 100644
  HANDLER_RESULT<LibraryItemsResponse>
  API_HANDLER_LIBRARIES::handleGetLibraryItems( const HANDLER_CONTEXT<GetLibraryItems>& aCtx )
  {
-@@ -440,6 +478,343 @@ LibraryCommandStatus API_HANDLER_LIBRARIES::loadAllLibraries()
+@@ -440,6 +478,345 @@ LibraryCommandStatus API_HANDLER_LIBRARIES::loadAllLibraries()
  }
  
  
@@ -319,6 +319,8 @@ index c4ab4144..b76f7ee8 100644
 +        // Don't leave a row behind that points at nothing
 +        if( std::optional<LIBRARY_TABLE*> reloaded = manager.Table( type, scope ) )
 +        {
++            manager.AbortAsyncLoads( true );
++
 +            std::erase_if( ( *reloaded )->Rows(),
 +                           [&]( const LIBRARY_TABLE_ROW& aRow )
 +                           {

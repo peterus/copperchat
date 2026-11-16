@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Peter Buchegger <peter.buchegger7@gmail.com>
-Date: Tue, 17 Nov 2026 00:08:06 +0100
+Date: Tue, 17 Nov 2026 00:19:00 +0100
 Subject: [PATCH 4/4] TODO(owner): write message (G4 api-server open footprint)
 
 Assisted-by: Claude
@@ -29,10 +29,10 @@ index e65d5b26..7949dae5 100644
              doc.type = requestType;
              doc.libId = fpid;
 diff --git a/qa/tests/api/test_api_e2e_libraries.cpp b/qa/tests/api/test_api_e2e_libraries.cpp
-index dd1904a1..d1a6658e 100644
+index 869f234f..1c055fa7 100644
 --- a/qa/tests/api/test_api_e2e_libraries.cpp
 +++ b/qa/tests/api/test_api_e2e_libraries.cpp
-@@ -319,4 +319,28 @@ BOOST_FIXTURE_TEST_CASE( DeleteFootprintFromLibrary, API_SERVER_E2E_FIXTURE )
+@@ -321,4 +321,28 @@ BOOST_FIXTURE_TEST_CASE( DeleteFootprintFromLibrary, API_SERVER_E2E_FIXTURE )
  }
  
  

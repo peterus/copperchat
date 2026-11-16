@@ -1,13 +1,13 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Peter Buchegger <peter.buchegger7@gmail.com>
-Date: Tue, 17 Nov 2026 00:08:06 +0100
+Date: Tue, 17 Nov 2026 00:19:00 +0100
 Subject: [PATCH 2/4] TODO(owner): write message (G2 footprint properties)
 
 Assisted-by: Claude
 ---
  pcbnew/api/api_handler_board.cpp        |  52 ++++++++++++
- qa/tests/api/test_api_e2e_libraries.cpp | 101 ++++++++++++++++++++++++
- 2 files changed, 153 insertions(+)
+ qa/tests/api/test_api_e2e_libraries.cpp | 103 ++++++++++++++++++++++++
+ 2 files changed, 155 insertions(+)
 
 diff --git a/pcbnew/api/api_handler_board.cpp b/pcbnew/api/api_handler_board.cpp
 index 5d1e08af..e14e40e7 100644
@@ -87,7 +87,7 @@ index 5d1e08af..e14e40e7 100644
              // doesn't currently know what to do with a footprint that has had its children
              // replaced with other children; which results in things like the view not having its
 diff --git a/qa/tests/api/test_api_e2e_libraries.cpp b/qa/tests/api/test_api_e2e_libraries.cpp
-index 00cceaf1..27aed315 100644
+index 00cceaf1..2a615d86 100644
 --- a/qa/tests/api/test_api_e2e_libraries.cpp
 +++ b/qa/tests/api/test_api_e2e_libraries.cpp
 @@ -19,6 +19,8 @@
@@ -99,7 +99,16 @@ index 00cceaf1..27aed315 100644
  #include <boost/test/unit_test.hpp>
  #include <qa_utils/file_utils.h>
  
-@@ -133,6 +135,57 @@ commands::AddLibraryTableEntry MakeAddRequest()
+@@ -26,6 +28,8 @@
+ #include <wx/filefn.h>
+ #include <wx/filename.h>
+ 
++#include <google/protobuf/empty.pb.h>
++
+ #include <api/board/board_types.pb.h>
+ #include <api/common/commands/editor_commands.pb.h>
+ #include <api/common/commands/library_commands.pb.h>
+@@ -133,6 +137,57 @@ commands::AddLibraryTableEntry MakeAddRequest()
  
  
  
@@ -157,7 +166,7 @@ index 00cceaf1..27aed315 100644
  
  } // namespace
  
-@@ -186,4 +239,52 @@ BOOST_FIXTURE_TEST_CASE( LibraryTableEntries, API_SERVER_E2E_FIXTURE )
+@@ -186,4 +241,52 @@ BOOST_FIXTURE_TEST_CASE( LibraryTableEntries, API_SERVER_E2E_FIXTURE )
  }
  
  
