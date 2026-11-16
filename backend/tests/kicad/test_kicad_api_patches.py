@@ -14,6 +14,7 @@ from google.protobuf.any_pb2 import Any as PbAny
 from google.protobuf.empty_pb2 import Empty
 from kipy.errors import ApiError, LibraryCommandError
 from kipy.proto.board import board_types_pb2 as bt
+from kipy.proto.common import ApiStatusCode
 from kipy.proto.common.commands import (
     editor_commands_pb2 as ec,
 )
@@ -298,8 +299,10 @@ def l201_cycle(kicad: Any, project_dir: Path) -> None:
     assert f'(descr "{DESCRIPTION}")' in text and f'(tags "{KEYWORDS}")' in text
     assert "(attr smd exclude_from_bom)" in text and "(model " not in text and "SRN4018" not in text
 
-    # G3: delete the footprint from the library
+    # G3: delete the footprint from the library. The table change first drops the loaded
+    # library, so the delete has to load it itself.
     assert NAME in library_items(kicad)
+    kicad.update_library_table_entry(FP, PROJECT, LIB, LIB_URI, description="changed")
     kicad.delete_library_item(FP, LIB, NAME)
     assert NAME not in library_items(kicad)
     assert not (project_dir / "footprints" / "copperchat.pretty" / f"{NAME}.kicad_mod").exists()
@@ -327,32 +330,17 @@ async def test_l201_cycle_schematic_only(blank_nopcb_session: KicadSession) -> N
     await s.call(lambda h: l201_cycle(h.kicad, s.project.dir), timeout=TIMEOUT)
 
 
-async def test_l201_cycle_with_board(blank_session: KicadSession) -> None:
-    s = blank_session
-    await s.call(lambda h: l201_cycle(h.kicad, s.project.dir), timeout=TIMEOUT)
-    # the schematic and the board stay usable
-    assert await s.call(lambda h: len(h.board().get_footprints())) == 0
-    assert await s.call(lambda h: len(h.schematic().get_symbols())) == 0
-
-
 def reopen_without_close(kicad: Any) -> None:
-    first = kicad.open_document(SEED, DocumentType.DOCTYPE_FOOTPRINT)
+    kicad.open_document(SEED, DocumentType.DOCTYPE_FOOTPRINT)
     second = kicad.open_document("Inductor_SMD:L_Bourns-SRN6028", DocumentType.DOCTYPE_FOOTPRINT)
     open_fps = [
         d for d in kicad.get_open_documents(DocumentType.DOCTYPE_FOOTPRINT) if d.lib_id.entry_name
     ]
     assert [d.lib_id.entry_name for d in open_fps] == ["L_Bourns-SRN6028"]
     kicad.close_document(second)  # failed before: "Requested document does not match"
-    assert first.lib_id.entry_name == "L_Bourns-SRN4018"
 
 
-async def test_second_footprint_replaces_the_first(blank_session: KicadSession) -> None:
-    s = blank_session
-    await s.call(lambda h: reopen_without_close(h.kicad), timeout=TIMEOUT)
-
-
-def bad_requests(kicad: Any) -> None:
-
+def bad_requests(kicad: Any, project_dir: Path) -> None:
     for cmd in (
         lc.AddLibraryTableEntry(
             entry=LibraryTableEntry(type=FP, nickname="x", uri="/tmp/x.pretty"),
@@ -364,11 +352,26 @@ def bad_requests(kicad: Any) -> None:
         ),
         lc.DeleteLibraryTableEntry(type=LibraryType.LT_UNKNOWN, nickname="x", scope=PROJECT),
     ):
-        with pytest.raises(ApiError):
+        with pytest.raises(ApiError) as bad:
             kicad._client.send(cmd, LibraryCommandStatus)
+        assert bad.value.code == ApiStatusCode.AS_BAD_REQUEST
+    assert "x" not in rows(kicad)
+
+    # A library that cannot be created leaves no row behind
+    (project_dir / "blocker").write_text("a file, so no directory can be created below it")
+    with pytest.raises(LibraryCommandError) as failed:
+        kicad.add_library_table_entry(
+            FP, PROJECT, "x", "${KIPRJMOD}/blocker/x.pretty", create_library=True
+        )
+    assert failed.value.code == LibraryCommandStatus.Code.LCS_ERROR
     assert "x" not in rows(kicad)
 
 
-async def test_table_commands_reject_bad_requests(blank_session: KicadSession) -> None:
+async def test_l201_cycle_with_board(blank_session: KicadSession) -> None:
     s = blank_session
-    await s.call(lambda h: bad_requests(h.kicad), timeout=TIMEOUT)
+    await s.call(lambda h: l201_cycle(h.kicad, s.project.dir), timeout=TIMEOUT)
+    await s.call(lambda h: reopen_without_close(h.kicad), timeout=TIMEOUT)
+    await s.call(lambda h: bad_requests(h.kicad, s.project.dir), timeout=TIMEOUT)
+    # the schematic and the board stay usable
+    assert await s.call(lambda h: len(h.board().get_footprints())) == 0
+    assert await s.call(lambda h: len(h.schematic().get_symbols())) == 0

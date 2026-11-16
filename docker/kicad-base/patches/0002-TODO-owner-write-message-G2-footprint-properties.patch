@@ -1,25 +1,28 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Peter Buchegger <peter.buchegger7@gmail.com>
-Date: Mon, 16 Nov 2026 22:43:49 +0100
+Date: Mon, 16 Nov 2026 23:24:41 +0100
 Subject: [PATCH 2/4] TODO(owner): write message (G2 footprint properties)
 
 Assisted-by: Claude
 ---
- pcbnew/api/api_handler_board.cpp        |  49 ++++++++++++
+ pcbnew/api/api_handler_board.cpp        |  52 ++++++++++++
  qa/tests/api/test_api_e2e_libraries.cpp | 101 ++++++++++++++++++++++++
- 2 files changed, 150 insertions(+)
+ 2 files changed, 153 insertions(+)
 
 diff --git a/pcbnew/api/api_handler_board.cpp b/pcbnew/api/api_handler_board.cpp
-index 5d1e08af..a575cb7d 100644
+index 5d1e08af..e14e40e7 100644
 --- a/pcbnew/api/api_handler_board.cpp
 +++ b/pcbnew/api/api_handler_board.cpp
-@@ -61,6 +61,37 @@ using types::DocumentType;
+@@ -61,6 +61,40 @@ using types::DocumentType;
  using types::ItemRequestStatus;
  
  
 +/**
 + * Copies the properties a footprint has of its own (those of a library footprint, not of its
 + * placement or its children) from @a aSource to @a aTarget.
++ *
++ * Not copied: embedded files, custom properties, and the instance data of a board footprint
++ * (position, orientation, layer, locked state, symbol link, fields).
 + */
 +static void CopyFootprintDefinitionProperties( const FOOTPRINT& aSource, FOOTPRINT& aTarget )
 +{
@@ -51,7 +54,7 @@ index 5d1e08af..a575cb7d 100644
  API_HANDLER_BOARD::API_HANDLER_BOARD( std::shared_ptr<BOARD_CONTEXT> aContext,
                                        EDA_BASE_FRAME* aFrame ) :
          API_HANDLER_EDITOR( aFrame ),
-@@ -497,6 +528,12 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_BOARD::handleCreateUpdateItemsInte
+@@ -497,6 +531,12 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_BOARD::handleCreateUpdateItemsInte
                          return HANDLER_RESULT<std::unique_ptr<BOARD_ITEM>>( std::move( genItem ) );
                      }
  
@@ -64,7 +67,7 @@ index 5d1e08af..a575cb7d 100644
                      return createItemForType( *type, container );
                  }();
  
-@@ -689,6 +726,18 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_BOARD::handleCreateUpdateItemsInte
+@@ -689,6 +729,18 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_BOARD::handleCreateUpdateItemsInte
                  table->Serialize( newItem );
              }
  

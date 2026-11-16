@@ -1,16 +1,16 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Peter Buchegger <peter.buchegger7@gmail.com>
-Date: Mon, 16 Nov 2026 22:43:48 +0100
+Date: Mon, 16 Nov 2026 23:24:41 +0100
 Subject: [PATCH 1/4] TODO(owner): write message (G1 library table entries)
 
 Assisted-by: Claude
 ---
  .../common/commands/library_commands.proto    |   4 +
- common/api/api_handler_libraries.cpp          | 360 ++++++++++++++++++
+ common/api/api_handler_libraries.cpp          | 371 ++++++++++++++++++
  include/api/api_handler_libraries.h           |  18 +
  qa/tests/api/CMakeLists.txt                   |   1 +
  qa/tests/api/test_api_e2e_libraries.cpp       | 189 +++++++++
- 5 files changed, 572 insertions(+)
+ 5 files changed, 583 insertions(+)
  create mode 100644 qa/tests/api/test_api_e2e_libraries.cpp
 
 diff --git a/api/proto/common/commands/library_commands.proto b/api/proto/common/commands/library_commands.proto
@@ -29,10 +29,10 @@ index be9ac8d6..f1e7fcb3 100644
  
  // Modifies an existing row, matched by entry.nickname (and scope).
 diff --git a/common/api/api_handler_libraries.cpp b/common/api/api_handler_libraries.cpp
-index c4ab4144..24b8b3f2 100644
+index c4ab4144..6da6f770 100644
 --- a/common/api/api_handler_libraries.cpp
 +++ b/common/api/api_handler_libraries.cpp
-@@ -25,11 +25,14 @@
+@@ -25,11 +25,15 @@
  
  #include <api/api_enums.h>
  #include <api/api_utils.h>
@@ -40,6 +40,7 @@ index c4ab4144..24b8b3f2 100644
  #include <libraries/library_manager.h>
  #include <kiway.h>
  #include <pgm_base.h>
++#include <project.h>
  #include <settings/settings_manager.h>
  
 +#include <wx/filename.h>
@@ -47,7 +48,7 @@ index c4ab4144..24b8b3f2 100644
  #include <api/common/types/base_types.pb.h>
  #include <api/common/commands/editor_commands.pb.h>
  #include <api/common/types/library_types.pb.h>
-@@ -57,7 +60,19 @@ API_HANDLER_LIBRARIES::API_HANDLER_LIBRARIES( LIBRARY_TABLE_TYPE aType ) :
+@@ -57,7 +61,19 @@ API_HANDLER_LIBRARIES::API_HANDLER_LIBRARIES( LIBRARY_TABLE_TYPE aType ) :
      // (ordered by pointer, not registration order) could route the command to an instance
      // without a KIWAY, which would fail the request.
      if( aType == LIBRARY_TABLE_TYPE::DESIGN_BLOCK )
@@ -67,7 +68,7 @@ index c4ab4144..24b8b3f2 100644
  }
  
  
-@@ -77,6 +92,28 @@ std::vector<wxString> API_HANDLER_LIBRARIES::getItemNames( LIBRARY_MANAGER_ADAPT
+@@ -77,6 +93,28 @@ std::vector<wxString> API_HANDLER_LIBRARIES::getItemNames( LIBRARY_MANAGER_ADAPT
  }
  
  
@@ -96,7 +97,7 @@ index c4ab4144..24b8b3f2 100644
  HANDLER_RESULT<LibraryItemsResponse>
  API_HANDLER_LIBRARIES::handleGetLibraryItems( const HANDLER_CONTEXT<GetLibraryItems>& aCtx )
  {
-@@ -440,6 +477,329 @@ LibraryCommandStatus API_HANDLER_LIBRARIES::loadAllLibraries()
+@@ -440,6 +478,339 @@ LibraryCommandStatus API_HANDLER_LIBRARIES::loadAllLibraries()
  }
  
  
@@ -143,6 +144,9 @@ index c4ab4144..24b8b3f2 100644
 +
 +    // aTable is replaced by the reload and must not be used after this point
 +    Pgm().GetLibraryManager().ReloadTables( scope, { aType } );
++
++    // Queue again the background loads the modification aborted
++    Pgm().GetLibraryManager().RestartAsyncLoads();
 +
 +    if( !result )
 +        return makeLibraryCommandStatus( LibraryCommandStatus::LCS_ERROR, result.error().message );
@@ -294,11 +298,14 @@ index c4ab4144..24b8b3f2 100644
 +    if( wxFileName::Exists( path ) )
 +        return status;
 +
-+    LIBRARY_MANAGER_ADAPTER* adapter = ensureAdapter( type );
-+    wxString                 error;
++    LIBRARY_MANAGER_ADAPTER*          adapter = ensureAdapter( type );
++    std::optional<LIBRARY_TABLE_ROW*> resolved = adapter ? adapter->GetRow( nickname ) : std::nullopt;
++    wxString                          error;
 +
 +    if( !adapter )
 +        error = wxS( "no library adapter is available for this library type" );
++    else if( !resolved || ( *resolved )->Scope() != scope )
++        error = wxString::Format( wxS( "library '%s' is shadowed by a row in another table" ), nickname );
 +    else if( !adapter->CreateLibrary( nickname ) )
 +        error = wxString::Format( wxS( "could not create a library at '%s'" ), path );
 +
@@ -406,17 +413,21 @@ index c4ab4144..24b8b3f2 100644
 +    if( std::optional<LIBRARY_MANAGER_ADAPTER*> adapter = manager.Adapter( aType ) )
 +        return *adapter;
 +
-+    // In headless mode the adapters of the symbol and footprint libraries are created by their
-+    // kifaces, which are only loaded on demand
-+    if( !m_kiway || aType == LIBRARY_TABLE_TYPE::DESIGN_BLOCK )
++    PROJECT& project = Pgm().GetSettingsManager().Prj();
++
++    if( aType == LIBRARY_TABLE_TYPE::DESIGN_BLOCK )
++        return project.DesignBlockLibs();
++
++    // The footprint adapter comes from the PCB kiface, which in headless mode is only loaded on
++    // demand.  The symbol adapter is only created by the schematic editor itself.
++    if( aType != LIBRARY_TABLE_TYPE::FOOTPRINT || !m_kiway )
 +        return nullptr;
 +
-+    KIFACE* kiface = m_kiway->KiFACE( aType == LIBRARY_TABLE_TYPE::SYMBOL ? KIWAY::FACE_SCH : KIWAY::FACE_PCB );
++    // Creates and registers the adapter as a side effect
++    project.FootprintLibAdapter( *m_kiway );
 +
-+    if( !kiface )
-+        return nullptr;
-+
-+    if( m_handlerRegisterCallback )
++    // Serve the footprint library commands from now on, as LoadAllLibraries does
++    if( KIFACE* kiface = m_kiway->KiFACE( KIWAY::FACE_PCB ); kiface && m_handlerRegisterCallback )
 +        m_handlerRegisterCallback( kiface );
 +
 +    return manager.Adapter( aType ).value_or( nullptr );

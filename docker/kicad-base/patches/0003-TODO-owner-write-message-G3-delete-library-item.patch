@@ -1,19 +1,19 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Peter Buchegger <peter.buchegger7@gmail.com>
-Date: Mon, 16 Nov 2026 22:43:49 +0100
+Date: Mon, 16 Nov 2026 23:24:41 +0100
 Subject: [PATCH 3/4] TODO(owner): write message (G3 delete library item)
 
 Assisted-by: Claude
 ---
  .../common/commands/library_commands.proto    | 11 +++
- common/api/api_handler_libraries.cpp          | 77 +++++++++++++++++++
+ common/api/api_handler_libraries.cpp          | 78 +++++++++++++++++++
  eeschema/api/api_handler_sch_libraries.cpp    |  7 ++
  eeschema/api/api_handler_sch_libraries.h      |  3 +
  include/api/api_handler_libraries.h           | 11 +++
  pcbnew/api/api_handler_fp_libraries.cpp       |  7 ++
  pcbnew/api/api_handler_fp_libraries.h         |  3 +
- qa/tests/api/test_api_e2e_libraries.cpp       | 25 ++++++
- 8 files changed, 144 insertions(+)
+ qa/tests/api/test_api_e2e_libraries.cpp       | 32 ++++++++
+ 8 files changed, 152 insertions(+)
 
 diff --git a/api/proto/common/commands/library_commands.proto b/api/proto/common/commands/library_commands.proto
 index f1e7fcb3..4c8ee22b 100644
@@ -38,7 +38,7 @@ index f1e7fcb3..4c8ee22b 100644
   * Library queries
   */
 diff --git a/common/api/api_handler_libraries.cpp b/common/api/api_handler_libraries.cpp
-index 24b8b3f2..b43eb6d7 100644
+index 6da6f770..89c33efb 100644
 --- a/common/api/api_handler_libraries.cpp
 +++ b/common/api/api_handler_libraries.cpp
 @@ -25,6 +25,7 @@
@@ -49,16 +49,15 @@ index 24b8b3f2..b43eb6d7 100644
  #include <lib_id.h>
  #include <libraries/library_manager.h>
  #include <kiway.h>
-@@ -59,6 +60,8 @@ API_HANDLER_LIBRARIES::API_HANDLER_LIBRARIES( LIBRARY_TABLE_TYPE aType ) :
-     // the per-type (SYMBOL/FOOTPRINT) handlers registered it too, the server's handler set
-     // (ordered by pointer, not registration order) could route the command to an instance
-     // without a KIWAY, which would fail the request.
+@@ -54,6 +55,7 @@ API_HANDLER_LIBRARIES::API_HANDLER_LIBRARIES( LIBRARY_TABLE_TYPE aType ) :
+     registerHandler<GetLibraryStatuses, LibraryStatusResponse>( &API_HANDLER_LIBRARIES::handleGetLibraryStatuses );
+     registerHandler<ReloadLibrary, LibraryCommandStatus>( &API_HANDLER_LIBRARIES::handleReloadLibrary );
+     registerHandler<GetItemsFromLibrary, GetItemsResponse>( &API_HANDLER_LIBRARIES::handleGetItemsFromLibrary );
 +    registerHandler<DeleteLibraryItem, LibraryCommandStatus>( &API_HANDLER_LIBRARIES::handleDeleteLibraryItem );
-+
-     if( aType == LIBRARY_TABLE_TYPE::DESIGN_BLOCK )
-     {
-         registerHandler<LoadAllLibraries, LibraryCommandStatus>( &API_HANDLER_LIBRARIES::handleLoadAllLibraries );
-@@ -92,6 +95,13 @@ std::vector<wxString> API_HANDLER_LIBRARIES::getItemNames( LIBRARY_MANAGER_ADAPT
+ 
+     // Only the design-block instance registers LoadAllLibraries: it is the dispatcher that
+     // lazily loads the schematic and PCB kifaces and forwards to their per-type loads.  If
+@@ -93,6 +95,13 @@ std::vector<wxString> API_HANDLER_LIBRARIES::getItemNames( LIBRARY_MANAGER_ADAPT
  }
  
  
@@ -72,7 +71,7 @@ index 24b8b3f2..b43eb6d7 100644
  static LibraryCommandStatus makeLibraryCommandStatus( LibraryCommandStatus::Code aCode,
                                                        const wxString& aMessage = wxEmptyString )
  {
-@@ -477,6 +487,73 @@ LibraryCommandStatus API_HANDLER_LIBRARIES::loadAllLibraries()
+@@ -478,6 +487,75 @@ LibraryCommandStatus API_HANDLER_LIBRARIES::loadAllLibraries()
  }
  
  
@@ -97,7 +96,9 @@ index 24b8b3f2..b43eb6d7 100644
 +    if( !adapter )
 +        return tl::unexpected( makeBadRequest( wxS( "no library adapter is available for this library type" ) ) );
 +
-+    if( !adapter->HasLibrary( nickname, true ) )
++    std::optional<LIBRARY_TABLE_ROW*> row = adapter->GetRow( nickname );
++
++    if( !row || ( *row )->Disabled() )
 +    {
 +        return makeLibraryCommandStatus( LibraryCommandStatus::LCS_NOT_FOUND,
 +                                         wxString::Format( wxS( "Library '%s' not found" ), nickname ) );
@@ -240,10 +241,10 @@ index 64f65baf..14526111 100644
  
  #endif //KICAD_API_HANDLER_FP_LIBRARIES_H
 diff --git a/qa/tests/api/test_api_e2e_libraries.cpp b/qa/tests/api/test_api_e2e_libraries.cpp
-index 27aed315..8fd24ce2 100644
+index 27aed315..dd1904a1 100644
 --- a/qa/tests/api/test_api_e2e_libraries.cpp
 +++ b/qa/tests/api/test_api_e2e_libraries.cpp
-@@ -287,4 +287,29 @@ BOOST_FIXTURE_TEST_CASE( UpdateFootprintProperties, API_SERVER_E2E_FIXTURE )
+@@ -287,4 +287,36 @@ BOOST_FIXTURE_TEST_CASE( UpdateFootprintProperties, API_SERVER_E2E_FIXTURE )
  }
  
  
@@ -253,6 +254,13 @@ index 27aed315..8fd24ce2 100644
 +
 +    TEMP_PROJECT project;
 +    PrepareLibrary( Client(), project, { FP_NAME, wxS( "Second" ) } );
++
++    // A table change drops the loaded libraries, so the delete has to load the library itself
++    commands::UpdateLibraryTableEntry update;
++    *update.mutable_entry() = GetProjectFootprintTable( Client() ).rows( 0 );
++    update.mutable_entry()->set_description( "reloaded" );
++    update.set_scope( types::LTS_PROJECT );
++    BOOST_REQUIRE_EQUAL( SendLibraryCommand( Client(), update ), LibraryCommandStatus::LCS_OK );
 +
 +    commands::DeleteLibraryItem remove;
 +    remove.set_type( types::LT_FOOTPRINT );
