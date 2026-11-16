@@ -1,0 +1,664 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Peter Buchegger <peter.buchegger7@gmail.com>
+Date: Mon, 16 Nov 2026 22:43:48 +0100
+Subject: [PATCH 1/4] TODO(owner): write message (G1 library table entries)
+
+Assisted-by: Claude
+---
+ .../common/commands/library_commands.proto    |   4 +
+ common/api/api_handler_libraries.cpp          | 360 ++++++++++++++++++
+ include/api/api_handler_libraries.h           |  18 +
+ qa/tests/api/CMakeLists.txt                   |   1 +
+ qa/tests/api/test_api_e2e_libraries.cpp       | 189 +++++++++
+ 5 files changed, 572 insertions(+)
+ create mode 100644 qa/tests/api/test_api_e2e_libraries.cpp
+
+diff --git a/api/proto/common/commands/library_commands.proto b/api/proto/common/commands/library_commands.proto
+index be9ac8d6..f1e7fcb3 100644
+--- a/api/proto/common/commands/library_commands.proto
++++ b/api/proto/common/commands/library_commands.proto
+@@ -72,6 +72,10 @@ message AddLibraryTableEntry
+ 
+   // Which table to modify.  LTS_BOTH is invalid here.
+   kiapi.common.types.LibraryTableScope scope = 2;
++
++  // If true and nothing exists at the entry's URI yet, an empty library is created there
++  // (for example an empty .pretty directory for a footprint library).
++  bool create_library = 3;
+ }
+ 
+ // Modifies an existing row, matched by entry.nickname (and scope).
+diff --git a/common/api/api_handler_libraries.cpp b/common/api/api_handler_libraries.cpp
+index c4ab4144..24b8b3f2 100644
+--- a/common/api/api_handler_libraries.cpp
++++ b/common/api/api_handler_libraries.cpp
+@@ -25,11 +25,14 @@
+ 
+ #include <api/api_enums.h>
+ #include <api/api_utils.h>
++#include <lib_id.h>
+ #include <libraries/library_manager.h>
+ #include <kiway.h>
+ #include <pgm_base.h>
+ #include <settings/settings_manager.h>
+ 
++#include <wx/filename.h>
++
+ #include <api/common/types/base_types.pb.h>
+ #include <api/common/commands/editor_commands.pb.h>
+ #include <api/common/types/library_types.pb.h>
+@@ -57,7 +60,19 @@ API_HANDLER_LIBRARIES::API_HANDLER_LIBRARIES( LIBRARY_TABLE_TYPE aType ) :
+     // (ordered by pointer, not registration order) could route the command to an instance
+     // without a KIWAY, which would fail the request.
+     if( aType == LIBRARY_TABLE_TYPE::DESIGN_BLOCK )
++    {
+         registerHandler<LoadAllLibraries, LibraryCommandStatus>( &API_HANDLER_LIBRARIES::handleLoadAllLibraries );
++
++        // The library tables are owned by the LIBRARY_MANAGER rather than by a kiface, so the
++        // table commands are type-agnostic and handled by this (always present) instance only.
++        registerHandler<GetLibraryTable, LibraryTableResponse>( &API_HANDLER_LIBRARIES::handleGetLibraryTable );
++        registerHandler<AddLibraryTableEntry, LibraryCommandStatus>(
++                &API_HANDLER_LIBRARIES::handleAddLibraryTableEntry );
++        registerHandler<UpdateLibraryTableEntry, LibraryCommandStatus>(
++                &API_HANDLER_LIBRARIES::handleUpdateLibraryTableEntry );
++        registerHandler<DeleteLibraryTableEntry, LibraryCommandStatus>(
++                &API_HANDLER_LIBRARIES::handleDeleteLibraryTableEntry );
++    }
+ }
+ 
+ 
+@@ -77,6 +92,28 @@ std::vector<wxString> API_HANDLER_LIBRARIES::getItemNames( LIBRARY_MANAGER_ADAPT
+ }
+ 
+ 
++static LibraryCommandStatus makeLibraryCommandStatus( LibraryCommandStatus::Code aCode,
++                                                      const wxString& aMessage = wxEmptyString )
++{
++    LibraryCommandStatus status;
++    status.set_code( aCode );
++
++    if( !aMessage.empty() )
++        status.set_error_message( aMessage.ToUTF8() );
++
++    return status;
++}
++
++
++static ApiResponseStatus makeBadRequest( const wxString& aMessage )
++{
++    ApiResponseStatus e;
++    e.set_status( ApiStatusCode::AS_BAD_REQUEST );
++    e.set_error_message( aMessage.ToUTF8() );
++    return e;
++}
++
++
+ HANDLER_RESULT<LibraryItemsResponse>
+ API_HANDLER_LIBRARIES::handleGetLibraryItems( const HANDLER_CONTEXT<GetLibraryItems>& aCtx )
+ {
+@@ -440,6 +477,329 @@ LibraryCommandStatus API_HANDLER_LIBRARIES::loadAllLibraries()
+ }
+ 
+ 
++/**
++ * Resolves the single library table a table-mutation command addresses.
++ *
++ * @return the table, or a bad-request status if the type or scope is invalid or the table
++ *         does not exist (e.g. a project table when no project is open)
++ */
++static HANDLER_RESULT<LIBRARY_TABLE*> tableForMutation( LibraryType aType, LibraryTableScope aScope )
++{
++    LIBRARY_TABLE_TYPE type = FromProtoEnum<LIBRARY_TABLE_TYPE, LibraryType>( aType );
++
++    if( type == LIBRARY_TABLE_TYPE::UNINITIALIZED )
++        return tl::unexpected( makeBadRequest( wxS( "a valid library type is required" ) ) );
++
++    if( aScope != LibraryTableScope::LTS_GLOBAL && aScope != LibraryTableScope::LTS_PROJECT )
++        return tl::unexpected( makeBadRequest( wxS( "choose one table: LTS_GLOBAL or LTS_PROJECT" ) ) );
++
++    LIBRARY_TABLE_SCOPE scope = FromProtoEnum<LIBRARY_TABLE_SCOPE>( aScope );
++
++    std::optional<LIBRARY_TABLE*> table = Pgm().GetLibraryManager().Table( type, scope );
++
++    if( !table )
++    {
++        return tl::unexpected( makeBadRequest( scope == LIBRARY_TABLE_SCOPE::PROJECT
++                                                       ? wxS( "no project is open" )
++                                                       : wxS( "the global library table is not available" ) ) );
++    }
++
++    return *table;
++}
++
++
++/**
++ * Writes a modified library table to disk and reloads it, so that the library manager and its
++ * adapters see the change.  On a save error the table is reloaded from disk too, which drops the
++ * in-memory modification.
++ */
++static LibraryCommandStatus saveAndReloadTable( LIBRARY_TABLE& aTable, LIBRARY_TABLE_TYPE aType )
++{
++    LIBRARY_TABLE_SCOPE  scope = aTable.Scope();
++    LIBRARY_RESULT<void> result = aTable.Save();
++
++    // aTable is replaced by the reload and must not be used after this point
++    Pgm().GetLibraryManager().ReloadTables( scope, { aType } );
++
++    if( !result )
++        return makeLibraryCommandStatus( LibraryCommandStatus::LCS_ERROR, result.error().message );
++
++    return makeLibraryCommandStatus( LibraryCommandStatus::LCS_OK );
++}
++
++
++static void unpackTableEntry( const kiapi::common::types::LibraryTableEntry& aEntry, LIBRARY_TABLE_ROW& aRow )
++{
++    aRow.SetURI( wxString::FromUTF8( aEntry.uri() ) );
++    aRow.SetDescription( wxString::FromUTF8( aEntry.description() ) );
++
++    std::map<std::string, UTF8> options;
++
++    for( const auto& [key, value] : aEntry.options() )
++        options[key] = UTF8( value );
++
++    aRow.SetOptions( LIBRARY_TABLE::FormatOptions( &options ) );
++    aRow.SetDisabled( aEntry.disabled() );
++    aRow.SetHidden( aEntry.hidden() );
++}
++
++
++HANDLER_RESULT<LibraryTableResponse>
++API_HANDLER_LIBRARIES::handleGetLibraryTable( const HANDLER_CONTEXT<GetLibraryTable>& aCtx )
++{
++    LIBRARY_TABLE_TYPE type = FromProtoEnum<LIBRARY_TABLE_TYPE, LibraryType>( aCtx.Request.type() );
++
++    if( type == LIBRARY_TABLE_TYPE::UNINITIALIZED )
++        return tl::unexpected( makeBadRequest( wxS( "a valid library type is required" ) ) );
++
++    LIBRARY_TABLE_SCOPE scope = FromProtoEnum<LIBRARY_TABLE_SCOPE>( aCtx.Request.scope() );
++
++    if( scope == LIBRARY_TABLE_SCOPE::UNINITIALIZED )
++        return tl::unexpected( makeBadRequest( wxS( "unknown library table scope" ) ) );
++
++    LIBRARY_MANAGER&     manager = Pgm().GetLibraryManager();
++    LibraryTableResponse response;
++
++    auto packRows =
++            [&]( const std::deque<LIBRARY_TABLE_ROW>& aRows )
++            {
++                for( const LIBRARY_TABLE_ROW& row : aRows )
++                {
++                    kiapi::common::types::LibraryTableEntry* entry = response.add_rows();
++                    packTableEntry( *entry, type, row );
++
++                    if( aCtx.Request.substituted() )
++                        entry->set_uri( LIBRARY_MANAGER::GetFullURI( &row, true ).ToUTF8() );
++                }
++            };
++
++    if( scope == LIBRARY_TABLE_SCOPE::BOTH )
++    {
++        // Project rows first: they take precedence over global rows with the same nickname
++        for( LIBRARY_TABLE_SCOPE single : { LIBRARY_TABLE_SCOPE::PROJECT, LIBRARY_TABLE_SCOPE::GLOBAL } )
++        {
++            if( std::optional<LIBRARY_TABLE*> table = manager.Table( type, single ) )
++                packRows( ( *table )->Rows() );
++        }
++
++        return response;
++    }
++
++    std::optional<LIBRARY_TABLE*> optTable = manager.Table( type, scope );
++
++    if( !optTable )
++    {
++        return tl::unexpected( makeBadRequest( scope == LIBRARY_TABLE_SCOPE::PROJECT
++                                                       ? wxS( "no project is open" )
++                                                       : wxS( "the global library table is not available" ) ) );
++    }
++
++    const LIBRARY_TABLE* table = *optTable;
++
++    kiapi::common::types::LibraryTable* tableMsg = response.mutable_table();
++    tableMsg->set_path( table->Path().ToUTF8() );
++    tableMsg->set_scope( ToProtoEnum<LIBRARY_TABLE_SCOPE, LibraryTableScope>( table->Scope() ) );
++    tableMsg->set_valid( table->IsOk() );
++
++    if( !table->IsOk() )
++        tableMsg->set_error_message( table->ErrorDescription().ToUTF8() );
++
++    packRows( table->Rows() );
++
++    return response;
++}
++
++
++HANDLER_RESULT<LibraryCommandStatus>
++API_HANDLER_LIBRARIES::handleAddLibraryTableEntry( const HANDLER_CONTEXT<AddLibraryTableEntry>& aCtx )
++{
++    const kiapi::common::types::LibraryTableEntry& entry = aCtx.Request.entry();
++    HANDLER_RESULT<LIBRARY_TABLE*> optTable = tableForMutation( entry.type(), aCtx.Request.scope() );
++
++    if( !optTable )
++        return tl::unexpected( optTable.error() );
++
++    wxString nickname = wxString::FromUTF8( entry.nickname() );
++
++    if( nickname.IsEmpty() || entry.uri().empty() )
++        return tl::unexpected( makeBadRequest( wxS( "a library table entry needs a nickname and a URI" ) ) );
++
++    if( unsigned illegal = LIB_ID::FindIllegalLibraryNameChar( entry.nickname() ) )
++    {
++        return tl::unexpected( makeBadRequest( wxString::Format( wxS( "illegal character '%c' in nickname '%s'" ),
++                                                                 illegal, nickname ) ) );
++    }
++
++    LIBRARY_TABLE*     table = *optTable;
++    LIBRARY_TABLE_TYPE type = FromProtoEnum<LIBRARY_TABLE_TYPE, LibraryType>( entry.type() );
++
++    if( table->HasRow( nickname ) )
++    {
++        return makeLibraryCommandStatus( LibraryCommandStatus::LCS_ALREADY_EXISTS,
++                                         wxString::Format( wxS( "Library '%s' already exists in %s" ), nickname,
++                                                           table->Path() ) );
++    }
++
++    if( table->IsReadOnly() )
++    {
++        return makeLibraryCommandStatus( LibraryCommandStatus::LCS_READ_ONLY,
++                                         wxString::Format( wxS( "Library table '%s' is read-only" ),
++                                                           table->Path() ) );
++    }
++
++    LIBRARY_MANAGER& manager = Pgm().GetLibraryManager();
++    LIBRARY_TABLE_SCOPE scope = table->Scope();
++
++    // Background loads hold raw row pointers into the table being modified
++    manager.AbortAsyncLoads();
++
++    LIBRARY_TABLE_ROW& row = table->InsertRow();
++    row.SetNickname( nickname );
++
++    // KiCad's own format is the only one the API can create or write libraries in
++    row.SetType( wxS( "KiCad" ) );
++    unpackTableEntry( entry, row );
++
++    LibraryCommandStatus status = saveAndReloadTable( *table, type );
++
++    if( status.code() != LibraryCommandStatus::LCS_OK || !aCtx.Request.create_library() )
++        return status;
++
++    wxString path = LIBRARY_MANAGER::ExpandURI( wxString::FromUTF8( entry.uri() ),
++                                                Pgm().GetSettingsManager().Prj() );
++
++    if( wxFileName::Exists( path ) )
++        return status;
++
++    LIBRARY_MANAGER_ADAPTER* adapter = ensureAdapter( type );
++    wxString                 error;
++
++    if( !adapter )
++        error = wxS( "no library adapter is available for this library type" );
++    else if( !adapter->CreateLibrary( nickname ) )
++        error = wxString::Format( wxS( "could not create a library at '%s'" ), path );
++
++    if( !error.IsEmpty() )
++    {
++        // Don't leave a row behind that points at nothing
++        if( std::optional<LIBRARY_TABLE*> reloaded = manager.Table( type, scope ) )
++        {
++            std::erase_if( ( *reloaded )->Rows(),
++                           [&]( const LIBRARY_TABLE_ROW& aRow )
++                           {
++                               return aRow.Nickname() == nickname;
++                           } );
++
++            saveAndReloadTable( **reloaded, type );
++        }
++
++        return makeLibraryCommandStatus( LibraryCommandStatus::LCS_ERROR, error );
++    }
++
++    adapter->ReloadLibraryEntry( nickname, scope );
++    return status;
++}
++
++
++HANDLER_RESULT<LibraryCommandStatus>
++API_HANDLER_LIBRARIES::handleUpdateLibraryTableEntry( const HANDLER_CONTEXT<UpdateLibraryTableEntry>& aCtx )
++{
++    const kiapi::common::types::LibraryTableEntry& entry = aCtx.Request.entry();
++    HANDLER_RESULT<LIBRARY_TABLE*> optTable = tableForMutation( entry.type(), aCtx.Request.scope() );
++
++    if( !optTable )
++        return tl::unexpected( optTable.error() );
++
++    if( entry.uri().empty() )
++        return tl::unexpected( makeBadRequest( wxS( "a library table entry needs a URI" ) ) );
++
++    LIBRARY_TABLE*                    table = *optTable;
++    wxString                          nickname = wxString::FromUTF8( entry.nickname() );
++    std::optional<LIBRARY_TABLE_ROW*> row = table->Row( nickname );
++
++    if( !row )
++    {
++        return makeLibraryCommandStatus( LibraryCommandStatus::LCS_NOT_FOUND,
++                                         wxString::Format( wxS( "Library '%s' not found in %s" ), nickname,
++                                                           table->Path() ) );
++    }
++
++    if( table->IsReadOnly() )
++    {
++        return makeLibraryCommandStatus( LibraryCommandStatus::LCS_READ_ONLY,
++                                         wxString::Format( wxS( "Library table '%s' is read-only" ),
++                                                           table->Path() ) );
++    }
++
++    Pgm().GetLibraryManager().AbortAsyncLoads();
++
++    unpackTableEntry( entry, **row );
++
++    return saveAndReloadTable( *table, FromProtoEnum<LIBRARY_TABLE_TYPE, LibraryType>( entry.type() ) );
++}
++
++
++HANDLER_RESULT<LibraryCommandStatus>
++API_HANDLER_LIBRARIES::handleDeleteLibraryTableEntry( const HANDLER_CONTEXT<DeleteLibraryTableEntry>& aCtx )
++{
++    HANDLER_RESULT<LIBRARY_TABLE*> optTable = tableForMutation( aCtx.Request.type(), aCtx.Request.scope() );
++
++    if( !optTable )
++        return tl::unexpected( optTable.error() );
++
++    LIBRARY_TABLE* table = *optTable;
++    wxString       nickname = wxString::FromUTF8( aCtx.Request.nickname() );
++
++    if( !table->HasRow( nickname ) )
++    {
++        return makeLibraryCommandStatus( LibraryCommandStatus::LCS_NOT_FOUND,
++                                         wxString::Format( wxS( "Library '%s' not found in %s" ), nickname,
++                                                           table->Path() ) );
++    }
++
++    if( table->IsReadOnly() )
++    {
++        return makeLibraryCommandStatus( LibraryCommandStatus::LCS_READ_ONLY,
++                                         wxString::Format( wxS( "Library table '%s' is read-only" ),
++                                                           table->Path() ) );
++    }
++
++    Pgm().GetLibraryManager().AbortAsyncLoads();
++
++    std::erase_if( table->Rows(),
++                   [&]( const LIBRARY_TABLE_ROW& aRow )
++                   {
++                       return aRow.Nickname() == nickname;
++                   } );
++
++    return saveAndReloadTable( *table, FromProtoEnum<LIBRARY_TABLE_TYPE, LibraryType>( aCtx.Request.type() ) );
++}
++
++
++LIBRARY_MANAGER_ADAPTER* API_HANDLER_LIBRARIES::ensureAdapter( LIBRARY_TABLE_TYPE aType )
++{
++    LIBRARY_MANAGER& manager = Pgm().GetLibraryManager();
++
++    if( std::optional<LIBRARY_MANAGER_ADAPTER*> adapter = manager.Adapter( aType ) )
++        return *adapter;
++
++    // In headless mode the adapters of the symbol and footprint libraries are created by their
++    // kifaces, which are only loaded on demand
++    if( !m_kiway || aType == LIBRARY_TABLE_TYPE::DESIGN_BLOCK )
++        return nullptr;
++
++    KIFACE* kiface = m_kiway->KiFACE( aType == LIBRARY_TABLE_TYPE::SYMBOL ? KIWAY::FACE_SCH : KIWAY::FACE_PCB );
++
++    if( !kiface )
++        return nullptr;
++
++    if( m_handlerRegisterCallback )
++        m_handlerRegisterCallback( kiface );
++
++    return manager.Adapter( aType ).value_or( nullptr );
++}
++
++
+ HANDLER_RESULT<GetItemsResponse>
+ API_HANDLER_LIBRARIES::handleGetItemsFromLibrary( const HANDLER_CONTEXT<GetItemsFromLibrary>& aCtx )
+ {
+diff --git a/include/api/api_handler_libraries.h b/include/api/api_handler_libraries.h
+index dc1a0ddd..d34ab8d7 100644
+--- a/include/api/api_handler_libraries.h
++++ b/include/api/api_handler_libraries.h
+@@ -72,6 +72,24 @@ protected:
+     HANDLER_RESULT<kiapi::common::types::LibraryCommandStatus>
+     handleLoadAllLibraries( const HANDLER_CONTEXT<kiapi::common::commands::LoadAllLibraries>& aCtx );
+ 
++    HANDLER_RESULT<kiapi::common::commands::LibraryTableResponse>
++    handleGetLibraryTable( const HANDLER_CONTEXT<kiapi::common::commands::GetLibraryTable>& aCtx );
++
++    HANDLER_RESULT<kiapi::common::types::LibraryCommandStatus>
++    handleAddLibraryTableEntry( const HANDLER_CONTEXT<kiapi::common::commands::AddLibraryTableEntry>& aCtx );
++
++    HANDLER_RESULT<kiapi::common::types::LibraryCommandStatus>
++    handleUpdateLibraryTableEntry( const HANDLER_CONTEXT<kiapi::common::commands::UpdateLibraryTableEntry>& aCtx );
++
++    HANDLER_RESULT<kiapi::common::types::LibraryCommandStatus>
++    handleDeleteLibraryTableEntry( const HANDLER_CONTEXT<kiapi::common::commands::DeleteLibraryTableEntry>& aCtx );
++
++    /**
++     * Returns the library adapter for the given type, loading the kiface that provides it if
++     * needed (headless mode only).  Returns nullptr if no adapter is available.
++     */
++    LIBRARY_MANAGER_ADAPTER* ensureAdapter( LIBRARY_TABLE_TYPE aType );
++
+     /// Starts a background load of all libraries of this handler's type.
+     kiapi::common::types::LibraryCommandStatus loadAllLibraries();
+ 
+diff --git a/qa/tests/api/CMakeLists.txt b/qa/tests/api/CMakeLists.txt
+index d6c5a69c..0f1ca92d 100644
+--- a/qa/tests/api/CMakeLists.txt
++++ b/qa/tests/api/CMakeLists.txt
+@@ -20,6 +20,7 @@ set( QA_API_SRCS
+     test_api_enums.cpp
+     test_api_proto.cpp
+     test_api_e2e.cpp
++    test_api_e2e_libraries.cpp
+     test_api_handler_pcb.cpp
+     test_api_tasks.cpp
+     test_api_jobs.cpp
+diff --git a/qa/tests/api/test_api_e2e_libraries.cpp b/qa/tests/api/test_api_e2e_libraries.cpp
+new file mode 100644
+index 00000000..00cceaf1
+--- /dev/null
++++ b/qa/tests/api/test_api_e2e_libraries.cpp
+@@ -0,0 +1,189 @@
++/*
++ * This program source code file is part of KiCad, a free EDA CAD application.
++ *
++ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
++ *
++ * This program is free software: you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License as published by the
++ * Free Software Foundation, either version 3 of the License, or (at your
++ * option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
++ */
++
++#include "api_e2e_utils.h"
++
++#include <boost/test/unit_test.hpp>
++#include <qa_utils/file_utils.h>
++
++#include <wx/ffile.h>
++#include <wx/filefn.h>
++#include <wx/filename.h>
++
++#include <api/board/board_types.pb.h>
++#include <api/common/commands/editor_commands.pb.h>
++#include <api/common/commands/library_commands.pb.h>
++#include <api/common/commands/project_commands.pb.h>
++#include <api/common/types/library_types.pb.h>
++
++using namespace kiapi::common;
++using kiapi::common::types::LibraryCommandStatus;
++
++
++namespace
++{
++
++const char* const LIB_NICKNAME = "api_e2e_fp";
++const char* const LIB_URI = "${KIPRJMOD}/api_e2e_fp.pretty";
++const char* const FP_NAME = "R_0402_1005Metric";
++
++
++template <typename RESPONSE>
++ApiStatusCode Send( API_TEST_CLIENT& aClient, const google::protobuf::Message& aRequest, RESPONSE* aResponse )
++{
++    ApiResponse response;
++
++    BOOST_REQUIRE_MESSAGE( aClient.SendCommand( aRequest, &response ), "send failed: " + aClient.LastError() );
++
++    if( response.status().status() == AS_OK )
++        BOOST_REQUIRE( response.message().UnpackTo( aResponse ) );
++
++    return response.status().status();
++}
++
++
++LibraryCommandStatus::Code SendLibraryCommand( API_TEST_CLIENT& aClient, const google::protobuf::Message& aRequest )
++{
++    LibraryCommandStatus status;
++    BOOST_REQUIRE_EQUAL( Send( aClient, aRequest, &status ), AS_OK );
++    return status.code();
++}
++
++
++/// A copy of the kitchen sink board in a temporary project directory
++class TEMP_PROJECT
++{
++public:
++    TEMP_PROJECT() :
++            m_dir( "kicad_api_e2e_libraries" )
++    {
++        wxString testDataDir = wxString::FromUTF8( KI_TEST::GetPcbnewTestDataDir() );
++
++        for( const wxString& ext : { wxString( wxS( "kicad_pcb" ) ), wxString( wxS( "kicad_pro" ) ) } )
++        {
++            wxFileName src( testDataDir, wxS( "api_kitchen_sink." ) + ext );
++            wxFileName dst( m_dir.PathStr(), src.GetFullName() );
++            BOOST_REQUIRE( wxCopyFile( src.GetFullPath(), dst.GetFullPath(), true ) );
++        }
++    }
++
++    wxString Board() const
++    {
++        return wxFileName( m_dir.PathStr(), wxS( "api_kitchen_sink.kicad_pcb" ) ).GetFullPath();
++    }
++
++    wxFileName File( const wxString& aRelPath ) const
++    {
++        return wxFileName( m_dir.PathStr() + wxFileName::GetPathSeparator() + aRelPath );
++    }
++
++private:
++    KI_TEST::SCOPED_TEMP_DIR m_dir;
++};
++
++
++wxString ReadFile( const wxFileName& aFile )
++{
++    wxFFile  file( aFile.GetFullPath(), wxS( "rb" ) );
++    wxString content;
++    BOOST_REQUIRE( file.IsOpened() && file.ReadAll( &content ) );
++    return content;
++}
++
++
++commands::LibraryTableResponse GetProjectFootprintTable( API_TEST_CLIENT& aClient )
++{
++    commands::GetLibraryTable request;
++    request.set_type( types::LT_FOOTPRINT );
++    request.set_scope( types::LTS_PROJECT );
++
++    commands::LibraryTableResponse response;
++    BOOST_REQUIRE_EQUAL( Send( aClient, request, &response ), AS_OK );
++    return response;
++}
++
++
++commands::AddLibraryTableEntry MakeAddRequest()
++{
++    commands::AddLibraryTableEntry request;
++    request.mutable_entry()->set_type( types::LT_FOOTPRINT );
++    request.mutable_entry()->set_nickname( LIB_NICKNAME );
++    request.mutable_entry()->set_uri( LIB_URI );
++    request.mutable_entry()->set_description( "API test library" );
++    request.set_scope( types::LTS_PROJECT );
++    request.set_create_library( true );
++    return request;
++}
++
++
++
++
++} // namespace
++
++
++BOOST_AUTO_TEST_SUITE( ApiE2ELibraries )
++
++
++BOOST_FIXTURE_TEST_CASE( LibraryTableEntries, API_SERVER_E2E_FIXTURE )
++{
++    BOOST_REQUIRE_MESSAGE( Start(), LastError() );
++
++    TEMP_PROJECT project;
++    BOOST_REQUIRE_MESSAGE( Client().OpenDocument( project.Board() ), Client().LastError() );
++
++    BOOST_CHECK_EQUAL( SendLibraryCommand( Client(), MakeAddRequest() ), LibraryCommandStatus::LCS_OK );
++    BOOST_CHECK( project.File( wxS( "api_e2e_fp.pretty" ) ).DirExists() );
++    BOOST_CHECK( ReadFile( project.File( wxS( "fp-lib-table" ) ) ).Contains( wxS( "api_e2e_fp.pretty" ) ) );
++    BOOST_CHECK_EQUAL( SendLibraryCommand( Client(), MakeAddRequest() ), LibraryCommandStatus::LCS_ALREADY_EXISTS );
++
++    commands::LibraryTableResponse table = GetProjectFootprintTable( Client() );
++    BOOST_CHECK( table.table().valid() );
++    BOOST_REQUIRE_EQUAL( table.rows_size(), 1 );
++    BOOST_CHECK_EQUAL( table.rows( 0 ).nickname(), LIB_NICKNAME );
++    BOOST_CHECK_EQUAL( table.rows( 0 ).uri(), LIB_URI );
++    BOOST_CHECK_EQUAL( table.rows( 0 ).description(), "API test library" );
++
++    commands::UpdateLibraryTableEntry update;
++    *update.mutable_entry() = table.rows( 0 );
++    update.mutable_entry()->set_description( "updated" );
++    update.mutable_entry()->set_disabled( true );
++    update.set_scope( types::LTS_PROJECT );
++    BOOST_CHECK_EQUAL( SendLibraryCommand( Client(), update ), LibraryCommandStatus::LCS_OK );
++
++    table = GetProjectFootprintTable( Client() );
++    BOOST_REQUIRE_EQUAL( table.rows_size(), 1 );
++    BOOST_CHECK_EQUAL( table.rows( 0 ).description(), "updated" );
++    BOOST_CHECK( table.rows( 0 ).disabled() );
++
++    commands::DeleteLibraryTableEntry remove;
++    remove.set_type( types::LT_FOOTPRINT );
++    remove.set_nickname( LIB_NICKNAME );
++    remove.set_scope( types::LTS_PROJECT );
++    BOOST_CHECK_EQUAL( SendLibraryCommand( Client(), remove ), LibraryCommandStatus::LCS_OK );
++    BOOST_CHECK_EQUAL( GetProjectFootprintTable( Client() ).rows_size(), 0 );
++    BOOST_CHECK_EQUAL( SendLibraryCommand( Client(), remove ), LibraryCommandStatus::LCS_NOT_FOUND );
++
++    commands::AddLibraryTableEntry both = MakeAddRequest();
++    both.set_scope( types::LTS_BOTH );
++    LibraryCommandStatus status;
++    BOOST_CHECK_EQUAL( Send( Client(), both, &status ), AS_BAD_REQUEST );
++}
++
++
++BOOST_AUTO_TEST_SUITE_END()

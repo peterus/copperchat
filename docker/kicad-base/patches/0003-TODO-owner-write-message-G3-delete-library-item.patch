@@ -1,0 +1,275 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Peter Buchegger <peter.buchegger7@gmail.com>
+Date: Mon, 16 Nov 2026 22:43:49 +0100
+Subject: [PATCH 3/4] TODO(owner): write message (G3 delete library item)
+
+Assisted-by: Claude
+---
+ .../common/commands/library_commands.proto    | 11 +++
+ common/api/api_handler_libraries.cpp          | 77 +++++++++++++++++++
+ eeschema/api/api_handler_sch_libraries.cpp    |  7 ++
+ eeschema/api/api_handler_sch_libraries.h      |  3 +
+ include/api/api_handler_libraries.h           | 11 +++
+ pcbnew/api/api_handler_fp_libraries.cpp       |  7 ++
+ pcbnew/api/api_handler_fp_libraries.h         |  3 +
+ qa/tests/api/test_api_e2e_libraries.cpp       | 25 ++++++
+ 8 files changed, 144 insertions(+)
+
+diff --git a/api/proto/common/commands/library_commands.proto b/api/proto/common/commands/library_commands.proto
+index f1e7fcb3..4c8ee22b 100644
+--- a/api/proto/common/commands/library_commands.proto
++++ b/api/proto/common/commands/library_commands.proto
+@@ -155,6 +155,17 @@ message LoadAllLibraries
+   repeated kiapi.common.types.LibraryType type = 1;
+ }
+ 
++// Deletes an item (symbol, footprint, or design block) from a writable library.
++// Returns LibraryCommandStatus
++// Since: 11.0
++message DeleteLibraryItem
++{
++  kiapi.common.types.LibraryType type = 1;
++
++  // The library and the name of the item to delete
++  kiapi.common.types.LibraryIdentifier item = 2;
++}
++
+ /*
+  * Library queries
+  */
+diff --git a/common/api/api_handler_libraries.cpp b/common/api/api_handler_libraries.cpp
+index 24b8b3f2..b43eb6d7 100644
+--- a/common/api/api_handler_libraries.cpp
++++ b/common/api/api_handler_libraries.cpp
+@@ -25,6 +25,7 @@
+ 
+ #include <api/api_enums.h>
+ #include <api/api_utils.h>
++#include <ki_exception.h>
+ #include <lib_id.h>
+ #include <libraries/library_manager.h>
+ #include <kiway.h>
+@@ -59,6 +60,8 @@ API_HANDLER_LIBRARIES::API_HANDLER_LIBRARIES( LIBRARY_TABLE_TYPE aType ) :
+     // the per-type (SYMBOL/FOOTPRINT) handlers registered it too, the server's handler set
+     // (ordered by pointer, not registration order) could route the command to an instance
+     // without a KIWAY, which would fail the request.
++    registerHandler<DeleteLibraryItem, LibraryCommandStatus>( &API_HANDLER_LIBRARIES::handleDeleteLibraryItem );
++
+     if( aType == LIBRARY_TABLE_TYPE::DESIGN_BLOCK )
+     {
+         registerHandler<LoadAllLibraries, LibraryCommandStatus>( &API_HANDLER_LIBRARIES::handleLoadAllLibraries );
+@@ -92,6 +95,13 @@ std::vector<wxString> API_HANDLER_LIBRARIES::getItemNames( LIBRARY_MANAGER_ADAPT
+ }
+ 
+ 
++void API_HANDLER_LIBRARIES::deleteLibraryItem( LIBRARY_MANAGER_ADAPTER& aAdapter, const wxString& aNickname,
++                                               const wxString& aItemName ) const
++{
++    static_cast<DESIGN_BLOCK_LIBRARY_ADAPTER&>( aAdapter ).DeleteDesignBlock( aNickname, aItemName );
++}
++
++
+ static LibraryCommandStatus makeLibraryCommandStatus( LibraryCommandStatus::Code aCode,
+                                                       const wxString& aMessage = wxEmptyString )
+ {
+@@ -477,6 +487,73 @@ LibraryCommandStatus API_HANDLER_LIBRARIES::loadAllLibraries()
+ }
+ 
+ 
++HANDLER_RESULT<LibraryCommandStatus>
++API_HANDLER_LIBRARIES::handleDeleteLibraryItem( const HANDLER_CONTEXT<DeleteLibraryItem>& aCtx )
++{
++    if( aCtx.Request.type() != ToProtoEnum<LIBRARY_TABLE_TYPE, LibraryType>( m_type ) )
++    {
++        ApiResponseStatus e;
++        e.set_status( ApiStatusCode::AS_UNHANDLED );
++        return tl::unexpected( e );
++    }
++
++    wxString nickname = wxString::FromUTF8( aCtx.Request.item().library_nickname() );
++    wxString itemName = wxString::FromUTF8( aCtx.Request.item().entry_name() );
++
++    if( nickname.IsEmpty() || itemName.IsEmpty() )
++        return tl::unexpected( makeBadRequest( wxS( "both a library nickname and an item name are required" ) ) );
++
++    LIBRARY_MANAGER_ADAPTER* adapter = adapterForProject( Pgm().GetSettingsManager().Prj() );
++
++    if( !adapter )
++        return tl::unexpected( makeBadRequest( wxS( "no library adapter is available for this library type" ) ) );
++
++    if( !adapter->HasLibrary( nickname, true ) )
++    {
++        return makeLibraryCommandStatus( LibraryCommandStatus::LCS_NOT_FOUND,
++                                         wxString::Format( wxS( "Library '%s' not found" ), nickname ) );
++    }
++
++    std::optional<LIB_STATUS> libStatus = adapter->LoadLibraryEntry( nickname );
++
++    if( !libStatus || libStatus->load_status != LOAD_STATUS::LOADED )
++    {
++        wxString msg = wxString::Format( wxS( "Library '%s' could not be loaded" ), nickname );
++
++        if( libStatus && libStatus->error )
++            msg << wxS( ": " ) << libStatus->error->message;
++
++        return makeLibraryCommandStatus( LibraryCommandStatus::LCS_ERROR, msg );
++    }
++
++    if( !adapter->IsWritable( nickname ) )
++    {
++        return makeLibraryCommandStatus( LibraryCommandStatus::LCS_READ_ONLY,
++                                         wxString::Format( wxS( "Library '%s' is read-only" ), nickname ) );
++    }
++
++    std::vector<wxString> names = getItemNames( *adapter, nickname );
++
++    if( std::ranges::find( names, itemName ) == names.end() )
++    {
++        return makeLibraryCommandStatus( LibraryCommandStatus::LCS_NOT_FOUND,
++                                         wxString::Format( wxS( "'%s' not found in library '%s'" ),
++                                                           itemName, nickname ) );
++    }
++
++    try
++    {
++        deleteLibraryItem( *adapter, nickname, itemName );
++    }
++    catch( const IO_ERROR& ioe )
++    {
++        return makeLibraryCommandStatus( LibraryCommandStatus::LCS_ERROR, ioe.What() );
++    }
++
++    return makeLibraryCommandStatus( LibraryCommandStatus::LCS_OK );
++}
++
++
+ /**
+  * Resolves the single library table a table-mutation command addresses.
+  *
+diff --git a/eeschema/api/api_handler_sch_libraries.cpp b/eeschema/api/api_handler_sch_libraries.cpp
+index 50aa3af5..61300334 100644
+--- a/eeschema/api/api_handler_sch_libraries.cpp
++++ b/eeschema/api/api_handler_sch_libraries.cpp
+@@ -41,6 +41,13 @@ std::vector<wxString> API_HANDLER_SCH_LIBRARIES::getItemNames( LIBRARY_MANAGER_A
+ }
+ 
+ 
++void API_HANDLER_SCH_LIBRARIES::deleteLibraryItem( LIBRARY_MANAGER_ADAPTER& aAdapter, const wxString& aNickname,
++                                                   const wxString& aItemName ) const
++{
++    static_cast<SYMBOL_LIBRARY_ADAPTER&>( aAdapter ).DeleteSymbol( aNickname, aItemName );
++}
++
++
+ bool API_HANDLER_SCH_LIBRARIES::packLibraryItem( const LIB_ID& aId, google::protobuf::Any& aOutput ) const
+ {
+     SYMBOL_LIBRARY_ADAPTER* adapter =
+diff --git a/eeschema/api/api_handler_sch_libraries.h b/eeschema/api/api_handler_sch_libraries.h
+index ae30a2c1..1479fe84 100644
+--- a/eeschema/api/api_handler_sch_libraries.h
++++ b/eeschema/api/api_handler_sch_libraries.h
+@@ -36,6 +36,9 @@ protected:
+ 
+     std::vector<wxString> getItemNames( LIBRARY_MANAGER_ADAPTER& aAdapter,
+                                         const wxString& aNickname ) const override;
++
++    void deleteLibraryItem( LIBRARY_MANAGER_ADAPTER& aAdapter, const wxString& aNickname,
++                            const wxString& aItemName ) const override;
+ };
+ 
+ #endif //KICAD_API_HANDLER_SCH_LIBRARIES_H
+diff --git a/include/api/api_handler_libraries.h b/include/api/api_handler_libraries.h
+index d34ab8d7..826ae0c5 100644
+--- a/include/api/api_handler_libraries.h
++++ b/include/api/api_handler_libraries.h
+@@ -72,6 +72,9 @@ protected:
+     HANDLER_RESULT<kiapi::common::types::LibraryCommandStatus>
+     handleLoadAllLibraries( const HANDLER_CONTEXT<kiapi::common::commands::LoadAllLibraries>& aCtx );
+ 
++    HANDLER_RESULT<kiapi::common::types::LibraryCommandStatus>
++    handleDeleteLibraryItem( const HANDLER_CONTEXT<kiapi::common::commands::DeleteLibraryItem>& aCtx );
++
+     HANDLER_RESULT<kiapi::common::commands::LibraryTableResponse>
+     handleGetLibraryTable( const HANDLER_CONTEXT<kiapi::common::commands::GetLibraryTable>& aCtx );
+ 
+@@ -108,6 +111,14 @@ protected:
+      */
+     virtual std::vector<wxString> getItemNames( LIBRARY_MANAGER_ADAPTER& aAdapter, const wxString& aNickname ) const;
+ 
++    /**
++     * Deletes an item from a loaded, writable library.
++     *
++     * @throw IO_ERROR if the library plugin fails to delete the item
++     */
++    virtual void deleteLibraryItem( LIBRARY_MANAGER_ADAPTER& aAdapter, const wxString& aNickname,
++                                    const wxString& aItemName ) const;
++
+ private:
+     LIBRARY_TABLE_TYPE m_type;
+ 
+diff --git a/pcbnew/api/api_handler_fp_libraries.cpp b/pcbnew/api/api_handler_fp_libraries.cpp
+index e071b0ca..d8d28316 100644
+--- a/pcbnew/api/api_handler_fp_libraries.cpp
++++ b/pcbnew/api/api_handler_fp_libraries.cpp
+@@ -42,6 +42,13 @@ std::vector<wxString> API_HANDLER_FP_LIBRARIES::getItemNames( LIBRARY_MANAGER_AD
+ }
+ 
+ 
++void API_HANDLER_FP_LIBRARIES::deleteLibraryItem( LIBRARY_MANAGER_ADAPTER& aAdapter, const wxString& aNickname,
++                                                  const wxString& aItemName ) const
++{
++    static_cast<FOOTPRINT_LIBRARY_ADAPTER&>( aAdapter ).DeleteFootprint( aNickname, aItemName );
++}
++
++
+ bool API_HANDLER_FP_LIBRARIES::packLibraryItem( const LIB_ID& aId, google::protobuf::Any& aOutput ) const
+ {
+     FOOTPRINT_LIBRARY_ADAPTER* adapter =
+diff --git a/pcbnew/api/api_handler_fp_libraries.h b/pcbnew/api/api_handler_fp_libraries.h
+index 64f65baf..14526111 100644
+--- a/pcbnew/api/api_handler_fp_libraries.h
++++ b/pcbnew/api/api_handler_fp_libraries.h
+@@ -36,6 +36,9 @@ protected:
+ 
+     std::vector<wxString> getItemNames( LIBRARY_MANAGER_ADAPTER& aAdapter,
+                                         const wxString& aNickname ) const override;
++
++    void deleteLibraryItem( LIBRARY_MANAGER_ADAPTER& aAdapter, const wxString& aNickname,
++                            const wxString& aItemName ) const override;
+ };
+ 
+ #endif //KICAD_API_HANDLER_FP_LIBRARIES_H
+diff --git a/qa/tests/api/test_api_e2e_libraries.cpp b/qa/tests/api/test_api_e2e_libraries.cpp
+index 27aed315..8fd24ce2 100644
+--- a/qa/tests/api/test_api_e2e_libraries.cpp
++++ b/qa/tests/api/test_api_e2e_libraries.cpp
+@@ -287,4 +287,29 @@ BOOST_FIXTURE_TEST_CASE( UpdateFootprintProperties, API_SERVER_E2E_FIXTURE )
+ }
+ 
+ 
++BOOST_FIXTURE_TEST_CASE( DeleteFootprintFromLibrary, API_SERVER_E2E_FIXTURE )
++{
++    BOOST_REQUIRE_MESSAGE( Start(), LastError() );
++
++    TEMP_PROJECT project;
++    PrepareLibrary( Client(), project, { FP_NAME, wxS( "Second" ) } );
++
++    commands::DeleteLibraryItem remove;
++    remove.set_type( types::LT_FOOTPRINT );
++    remove.mutable_item()->set_library_nickname( LIB_NICKNAME );
++    remove.mutable_item()->set_entry_name( FP_NAME );
++    BOOST_CHECK_EQUAL( SendLibraryCommand( Client(), remove ), LibraryCommandStatus::LCS_OK );
++    BOOST_CHECK( !project.File( wxS( "api_e2e_fp.pretty/" ) + wxString( FP_NAME ) + wxS( ".kicad_mod" ) ).FileExists() );
++    BOOST_CHECK_EQUAL( SendLibraryCommand( Client(), remove ), LibraryCommandStatus::LCS_NOT_FOUND );
++
++    commands::GetLibraryItems items;
++    items.set_type( types::LT_FOOTPRINT );
++    items.add_nickname( LIB_NICKNAME );
++    commands::LibraryItemsResponse remaining;
++    BOOST_REQUIRE_EQUAL( Send( Client(), items, &remaining ), AS_OK );
++    BOOST_REQUIRE_EQUAL( remaining.items_size(), 1 );
++    BOOST_CHECK_EQUAL( remaining.items( 0 ).entry_name(), "Second" );
++}
++
++
+ BOOST_AUTO_TEST_SUITE_END()

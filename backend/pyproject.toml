@@ -48,10 +48,11 @@ artifacts = ["src/copperchat/skills/builtin/**"]
 # Revision recorded in docs/spikes/1c-api-server.md ("kipy revision"); must equal
 # docker/kicad-base/KIPY_COMMIT. Branch `copperchat` of the peterus mirror = upstream main
 # 76b47d25 + the fix for upstream issue #147 (create/update_items raise
-# AttributeError: type_url); tag copperchat-ab07e98 keeps the commit reachable. Switch back
-# to gitlab.com/kicad/code/kicad-python once fixed.
+# AttributeError: type_url) + the protos and wrappers of CopperChat's KiCad API patches
+# (docker/kicad-base/patches/); tag copperchat-e0c9c8e keeps the commit reachable. Switch
+# back to gitlab.com/kicad/code/kicad-python once both are upstream.
 [tool.uv.sources]
-kicad-python = { git = "https://github.com/peterus/kicad-python.git", rev = "ab07e9886772c23779842cd4c7b8bfc16cd4fced" }
+kicad-python = { git = "https://github.com/peterus/kicad-python.git", rev = "e0c9c8e44edc3e44db3c97582a29c8a446b832c3" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
