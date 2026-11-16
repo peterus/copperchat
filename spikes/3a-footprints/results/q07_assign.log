@@ -1,0 +1,18 @@
+NOTE scratch.seed_items: ['BoardGraphicShape', 'BoardText', 'Field', 'Pad']
+PASS scratch.delete_seed_items: 19 deleted: {'IDS_OK'}
+PASS scratch.mandatory_field_delete_refused: {'3dedb81c-61d2-4b15-b3b1-d119f87f68b9': 'IDS_IMMUTABLE'}
+PASS scratch.create_items: ['Pad', 'Pad', 'BoardGraphicShape', 'BoardGraphicShape', 'BoardGraphicShape', 'BoardGraphicShape', 'BoardGraphicShape', 'BoardText', 'Field']
+PASS scratch.update_mandatory_fields: ['REF**', 'L_Bourns_SRN3012BTA', 'Bourns SRN3012BTA SMD power inductor, 3.0x3.0x1.2 mm, https://www.bourns.com/docs/product-datasheets/srn3012bta.pdf']
+PASS q07_assign.footprint_field_set: {'L201': 'copperchat:L_Bourns_SRN3012BTA', 'L202': 'copperchat:Does_Not_Exist'}
+PASS q07_assign.board_places_new_footprint: [('1', -1.1), ('2', 1.1)]
+PASS q07_assign.board_drop_exact: 0
+PASS q07_assign.server_alive: 
+NOTE q07_assign.footprint_link_issues: ["Footprint 'Does_Not_Exist' not found in library 'copperchat' | Symbol L202 [L]"]
+PASS q07_assign.erc_clean_for_L201: ["Footprint 'Does_Not_Exist' not found in library 'copperchat' | Symbol L202 [L]"]
+PASS q07_assign.erc_flags_negative_control_L202: ["Footprint 'Does_Not_Exist' not found in library 'copperchat' | Symbol L202 [L]"]
+NOTE q07_assign.erc_violation_types: ['endpoint_off_grid', 'footprint_link_issues', 'pin_not_connected']
+PASS q07_assign.fresh_board_place_needs_loaded_library: KiCad returned error: footprint 'copperchat:L_Bourns_SRN3012BTA' not found
+PASS q07_assign.fresh_board_reads_definition: 2
+PASS q07_assign.fresh_board_places_new_footprint: 2
+NOTE q07_assign.fresh_board_rss_mb: 121
+DONE q07_assign: 9 pass, 0 fail

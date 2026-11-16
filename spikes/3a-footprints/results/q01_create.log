@@ -1,0 +1,35 @@
+PASS q01_create.save_copy_creates_file: ['L_Bourns_SRN3012BTA.kicad_mod']
+PASS q01_create.open_copy_without_reload: library_nickname: "copperchat"
+entry_name: "L_Bourns_SRN3012BTA"
+
+NOTE q01_create.seed_items: ['BoardGraphicShape', 'BoardText', 'Field', 'Pad']
+PASS q01_create.delete_seed_items: 19 deleted: {'IDS_OK'}
+PASS q01_create.mandatory_field_delete_refused: {'3dedb81c-61d2-4b15-b3b1-d119f87f68b9': 'IDS_IMMUTABLE'}
+PASS q01_create.create_items: ['Pad', 'Pad', 'BoardGraphicShape', 'BoardGraphicShape', 'BoardGraphicShape', 'BoardGraphicShape', 'BoardGraphicShape', 'BoardText', 'Field']
+PASS q01_create.update_mandatory_fields: ['REF**', 'L_Bourns_SRN3012BTA', 'Bourns SRN3012BTA SMD power inductor, 3.0x3.0x1.2 mm, https://www.bourns.com/docs/product-datasheets/srn3012bta.pdf']
+NOTE q01_create.modified_after_commit: 0
+PASS q01_create.footprint_readable_by_parent_id: ['FootprintInstance']
+NOTE q01_create.footprint_attributes_before: {'description': 'Bourns SRN4018 series SMD inductor, https://www.bourns.com/docs/Product-Datasheets/SRN4018.pdf', 'keywords': '', 'models': ['type.googleapis.com/kiapi.board.types.Footprint3DModel']}
+PASS q01_create.update_footprint_attributes_refused: update failed: IRS_OK ['Tried to create a footprint in Footprint, which is not a board (ISC_INVALID_TYPE)']
+PASS q01_create.create_3d_model_item_refused: create failed: IRS_OK ['Could not decode a valid type from type.googleapis.com/kiapi.board.types.Footprint3DModel (ISC_INVALID_TYPE)']
+NOTE q01_create.create_wall_s: 3.135
+NOTE q01_create.modified_after_save: 0
+NOTE q01_create.readback: {'pads': [{'number': '1', 'type': 'PT_SMD', 'shape': 'PSS_RECTANGLE', 'pos': (-1.1, 0.0), 'size': (1.3, 3.5), 'drill': (0.0, 0.0), 'layers': ['BL_F_Cu', 'BL_F_Mask', 'BL_F_Paste']}, {'number': '2', 'type': 'PT_SMD', 'shape': 'PSS_RECTANGLE', 'pos': (1.1, 0.0), 'size': (1.3, 3.5), 'drill': (0.0, 0.0), 'layers': ['BL_F_Cu', 'BL_F_Mask', 'BL_F_Paste']}], 'shapes': [{'layer': 'BL_F_SilkS', 'geometry': 'segment', 'stroke': 0.12, 'start': (-0.25, 1.6), 'end': (0.25, 1.6)}, {'layer': 'BL_F_SilkS', 'geometry': 'segment', 'stroke': 0.12, 'start': (-0.25, -1.6), 'end': (0.25, -1.6)}, {'layer': 'BL_F_Sil
+PASS q01_create.pads: [{'number': '1', 'type': 'PT_SMD', 'shape': 'PSS_RECTANGLE', 'pos': (-1.1, 0.0), 'size': (1.3, 3.5), 'drill': (0.0, 0.0), 'layers': ['BL_F_Cu', 'BL_F_Mask', 'BL_F_Paste']}, {'number': '2', 'type': 'PT_SMD', 'shape': 'PSS_RECTANGLE', 'pos': (1.1, 0.0), 'size': (1.3, 3.5), 'drill': (0.0, 0.0), 'layers': ['BL_F_Cu', 'BL_F_Mask', 'BL_F_Paste']}]
+PASS q01_create.pad_layers: [['BL_F_Cu', 'BL_F_Mask', 'BL_F_Paste'], ['BL_F_Cu', 'BL_F_Mask', 'BL_F_Paste']]
+PASS q01_create.courtyard_4x4: {'layer': 'BL_F_CrtYd', 'geometry': 'rectangle', 'stroke': 0.05, 'size': (4.0, 4.0), 'center': (0.0, 0.0)}
+PASS q01_create.fab_3x3: {'layer': 'BL_F_Fab', 'geometry': 'rectangle', 'stroke': 0.1, 'size': (3.0, 3.0), 'center': (0.0, 0.0)}
+PASS q01_create.silk_outside_pads: [{'layer': 'BL_F_SilkS', 'geometry': 'segment', 'stroke': 0.12, 'start': (-0.25, 1.6), 'end': (0.25, 1.6)}, {'layer': 'BL_F_SilkS', 'geometry': 'segment', 'stroke': 0.12, 'start': (-0.25, -1.6), 'end': (0.25, -1.6)}, {'layer': 'BL_F_SilkS', 'geometry': 'segment', 'stroke': 0.12, 'start': (-1.93, -1.75), 'end': (-1.93, 1.0)}]
+PASS q01_create.fields: {'Reference': {'text': 'REF**', 'layer': 'BL_F_SilkS', 'visible': True, 'id': 1}, 'Value': {'text': 'L_Bourns_SRN3012BTA', 'layer': 'BL_F_Fab', 'visible': True, 'id': 2}, 'Datasheet': {'text': '', 'layer': 'BL_F_Fab', 'visible': False, 'id': 4}, 'Description': {'text': 'Bourns SRN3012BTA SMD power inductor, 3.0x3.0x1.2 mm, https://www.bourns.com/docs/product-datasheets/srn3012bta.pdf', 'layer': 'BL_F_Fab', 'visible': False, 'id': 5}, 'Footprint source': {'text': 'Bourns SRN3012BTA datasheet, recommended land pattern (CopperChat spike 3A)', 'layer': 'BL_F_Fab', 'visible': False, 'id': 0}}
+PASS q01_create.silk_inside_courtyard: [{'layer': 'BL_F_SilkS', 'geometry': 'segment', 'stroke': 0.12, 'start': (-0.25, 1.6), 'end': (0.25, 1.6)}, {'layer': 'BL_F_SilkS', 'geometry': 'segment', 'stroke': 0.12, 'start': (-0.25, -1.6), 'end': (0.25, -1.6)}, {'layer': 'BL_F_SilkS', 'geometry': 'segment', 'stroke': 0.12, 'start': (-1.93, -1.75), 'end': (-1.93, 1.0)}]
+PASS q01_create.pin1_left: {'number': '1', 'type': 'PT_SMD', 'shape': 'PSS_RECTANGLE', 'pos': (-1.1, 0.0), 'size': (1.3, 3.5), 'drill': (0.0, 0.0), 'layers': ['BL_F_Cu', 'BL_F_Mask', 'BL_F_Paste']}
+NOTE q01_create.timing_s: {'open': [2.9223, 0.0123, 0.0147], 'save_copy': [0.0256], 'get_items': [0.0136, 0.0108, 0.0106], 'begin': [0.0101], 'delete': [0.0105, 0.01], 'create': [0.0104, 0.01], 'update': [0.0098, 0.0102], 'end': [0.0158], 'modified': [0.0103, 0.0101], 'get_items_by_id': [0.0106], 'save': [0.0286]}
+PASS q01_create.server_alive: 
+NOTE q01_create.file_head: ['(kicad_footprint_lib', '(version 20261031)', '(generator "kicad_footprint_editor")', '(generator_version "10.99")', '(footprint "L_Bourns_SRN3012BTA"', '(layer "F.Cu")', '(descr "Bourns SRN4018 series SMD inductor, https://www.bourns.com/docs/Product-Datasheets/SRN4018.pdf")', '(tags "Bourns SRN4018 SMD inductor")']
+NOTE q01_create.file_descr_tags_model: ['(descr "Bourns SRN4018 series SMD inductor, https://www.bourns.com/docs/Product-Datasheets/SRN4018.pdf")', '(tags "Bourns SRN4018 SMD inductor")', '(attr smd)', '(model "${KICAD10_3DMODEL_DIR}/Inductor_SMD.3dshapes/L_Bourns-SRN4018.step"']
+PASS q01_create.file_version: ['(kicad_footprint_lib', '(version 20261031)', '(generator "kicad_footprint_editor")', '(generator_version "10.99")', '(footprint "L_Bourns_SRN3012BTA"', '(layer "F.Cu")', '(descr "Bourns SRN4018 series SMD inductor, https://www.bourns.com/docs/Product-Datasheets/SRN4018.pdf")', '(tags "Bourns SRN4018 SMD inductor")']
+PASS q01_create.file_descr_is_seeds_not_l201: (descr "Bourns SRN4018 series SMD inductor, https://www.bourns.com/docs/Product-Datasheets/SRN4018.pdf")
+PASS q01_create.file_description_field_is_l201: 
+NOTE q01_create.fp_upgrade: (0, '', '')
+PASS q01_create.fp_upgrade_roundtrip_identical: rc=0 identical=True
+DONE q01_create: 22 pass, 0 fail

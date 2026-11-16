@@ -1,0 +1,39 @@
+NOTE scratch.seed_items: ['BoardGraphicShape', 'BoardText', 'Field', 'Pad']
+PASS scratch.delete_seed_items: 19 deleted: {'IDS_OK'}
+PASS scratch.mandatory_field_delete_refused: {'3dedb81c-61d2-4b15-b3b1-d119f87f68b9': 'IDS_IMMUTABLE'}
+PASS scratch.create_items: ['Pad', 'Pad', 'BoardGraphicShape', 'BoardGraphicShape', 'BoardGraphicShape', 'BoardGraphicShape', 'BoardGraphicShape', 'BoardText', 'Field']
+PASS scratch.update_mandatory_fields: ['REF**', 'L_Bourns_SRN3012BTA', 'Bourns SRN3012BTA SMD power inductor, 3.0x3.0x1.2 mm, https://www.bourns.com/docs/product-datasheets/srn3012bta.pdf']
+NOTE q06_kipy.KiCad.open_document(lib_id, DOCTYPE_FOOTPRINT): OK  ok
+NOTE q06_kipy.KiCad.get_open_documents(DOCTYPE_FOOTPRINT): OK  1
+NOTE q06_kipy.Board(doc).get_items(): ERR AssertionError: 
+NOTE q06_kipy.Board(doc).get_items([pad, shape]): OK  7
+NOTE q06_kipy.Board(doc).get_items([field]): ERR AssertionError: 
+NOTE q06_kipy.Board(doc).get_items_by_id(footprint id): OK  FootprintInstance
+NOTE q06_kipy.Board(doc).begin_commit(): OK  ok
+NOTE q06_kipy.Board(doc).create_items(Pad): OK  Pad
+NOTE q06_kipy.Board(doc).create_items(BoardRectangle): OK  1
+NOTE q06_kipy.Board(doc).update_items(Pad): OK  Vector2(-1200000, 0)
+NOTE q06_kipy.Board(doc).remove_items(Pad): OK  ok
+NOTE q06_kipy.Board(doc).drop_commit(): OK  ok
+NOTE q06_kipy.Board(doc).save(): OK  ok
+NOTE q06_kipy.Board(doc).save_as('copperchat:Copy'): ERR ApiError: KiCad returned error: failed to save footprint copy 'Copy' to library '/spike/copperchat'
+NOTE q06_kipy.Board(doc).is_document_modified(): OK  False
+NOTE q06_kipy.Board(doc).get_as_string(): OK  5198
+NOTE q06_kipy.KiCad.close_document(doc): OK  ok
+NOTE q06_kipy.KiCad.get_library_footprints([nick]): OK  1
+NOTE q06_kipy.KiCad.get_library_footprint(id): OK  2
+NOTE q06_kipy.KiCad.get_library_statuses(): OK  379
+NOTE q06_kipy.KiCad.reload_library(LT_FOOTPRINT, LTS_PROJECT, [nick]): OK  ok
+NOTE q06_kipy.KiCad.wait_for_libraries(): OK  [LibraryStatus('4xxx', LLS_INVALID), LibraryStatus('4xxx_IEEE', LLS_INVALID), LibraryStatus('74xGxx', LLS_INVALID), LibraryStatus('74xx', LLS_INVALID), LibraryS
+NOTE q06_kipy.KiCad.open_library_item(...) (GUI only): ERR ApiError: KiCad returned error: no handler available for request of type kiapi.common.commands.OpenLibraryItem
+NOTE q06_kipy.KiCad.add_library_table_entry (wrapper exists?): ERR absent
+NOTE q06_kipy.KiCad.get_library_table (wrapper exists?): ERR absent
+NOTE q06_kipy.KiCad.update_library_table_entry (wrapper exists?): ERR absent
+NOTE q06_kipy.KiCad.delete_library_table_entry (wrapper exists?): ERR absent
+NOTE q06_kipy.KiCad.save_copy_of_document (wrapper exists?): ERR absent
+NOTE q06_kipy.KiCad.create_library (wrapper exists?): ERR absent
+PASS q06_kipy.pads_and_shapes_via_wrapper: (True, '7')
+PASS q06_kipy.fields_break_board_wrapper: (False, 'AssertionError: ')
+PASS q06_kipy.save_as_not_usable_for_lib_ids: (False, "ApiError: KiCad returned error: failed to save footprint copy 'Copy' to library '/spike/copperchat'")
+PASS q06_kipy.no_table_wrappers: 
+DONE q06_kipy: 4 pass, 0 fail

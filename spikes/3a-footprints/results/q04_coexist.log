@@ -1,0 +1,23 @@
+NOTE scratch.seed_items: ['BoardGraphicShape', 'BoardText', 'Field', 'Pad']
+PASS scratch.delete_seed_items: 19 deleted: {'IDS_OK'}
+PASS scratch.mandatory_field_delete_refused: {'3dedb81c-61d2-4b15-b3b1-d119f87f68b9': 'IDS_IMMUTABLE'}
+PASS scratch.create_items: ['Pad', 'Pad', 'BoardGraphicShape', 'BoardGraphicShape', 'BoardGraphicShape', 'BoardGraphicShape', 'BoardGraphicShape', 'BoardText', 'Field']
+PASS scratch.update_mandatory_fields: ['REF**', 'L_Bourns_SRN3012BTA', 'Bourns SRN3012BTA SMD power inductor, 3.0x3.0x1.2 mm, https://www.bourns.com/docs/product-datasheets/srn3012bta.pdf']
+PASS q04_coexist.fp_created_during_open_sch_commit: 
+PASS q04_coexist.sch_drop_after_fp_save_exact: 0 left
+PASS q04_coexist.sch_push_with_fp_commit_open: 
+PASS q04_coexist.fp_drop_exact: ['${REFERENCE}']
+PASS q04_coexist.sch_still_usable_after_fp_close: 1
+PASS q04_coexist.board_untouched: (0, 0)
+NOTE q04_coexist.open_docs_after_fp_close: {'DOCTYPE_SCHEMATIC': 1, 'DOCTYPE_PCB': 1, 'DOCTYPE_FOOTPRINT': 'KiCad returned error: no handler available for request of type kiapi.common.commands.GetOpenDocuments'}
+PASS q04_coexist.only_one_fp_document: ['L_Bourns_SRN3012BTA']
+PASS q04_coexist.close_second_fails_stale_entry: KiCad returned error: Requested document does not match the open document
+PASS q04_coexist.close_first_fails_too: KiCad returned error: Requested document does not match the open document
+PASS q04_coexist.reopen_after_stale_entry: 23
+PASS q04_coexist.sch_fine_after_stale_entry: 
+PASS q04_coexist.save_into_stock_library_refused: KiCad returned error: failed to save footprint
+NOTE q04_coexist.stock_lib_dir_writable_by_probe_user: False
+NOTE q04_coexist.server_log_tail: 
+PASS q04_coexist.server_alive: 
+NOTE q04_coexist.rss_mb: 1963.95703125
+DONE q04_coexist: 13 pass, 0 fail

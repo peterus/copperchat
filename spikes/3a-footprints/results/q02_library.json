@@ -1,0 +1,94 @@
+{
+  "question": "q02_library",
+  "checks": [
+    {
+      "name": "GetLibraryTable_no_handler",
+      "ok": true,
+      "evidence": "KiCad returned error: no handler available for request of type kiapi.common.commands.GetLibraryTable"
+    },
+    {
+      "name": "AddLibraryTableEntry_no_handler",
+      "ok": true,
+      "evidence": "KiCad returned error: no handler available for request of type kiapi.common.commands.AddLibraryTableEntry"
+    },
+    {
+      "name": "UpdateLibraryTableEntry_no_handler",
+      "ok": true,
+      "evidence": "KiCad returned error: no handler available for request of type kiapi.common.commands.UpdateLibraryTableEntry"
+    },
+    {
+      "name": "DeleteLibraryTableEntry_no_handler",
+      "ok": true,
+      "evidence": "KiCad returned error: no handler available for request of type kiapi.common.commands.DeleteLibraryTableEntry"
+    },
+    {
+      "name": "no_table_file_written",
+      "ok": true,
+      "evidence": "['main.kicad_prl', 'main.kicad_pro', 'main.kicad_sch', '~main.kicad_pro.lck']"
+    },
+    {
+      "name": "save_without_table_row_fails",
+      "ok": true,
+      "evidence": "KiCad returned error: failed to save footprint copy 'X' to library 'copperchat'"
+    },
+    {
+      "name": "save_into_missing_dir_fails",
+      "ok": true,
+      "evidence": "KiCad returned error: failed to save footprint copy 'X' to library 'copperchat'"
+    },
+    {
+      "name": "missing_dir_not_created",
+      "ok": true,
+      "evidence": "False"
+    },
+    {
+      "name": "save_after_mkdir_needs_reload",
+      "ok": true,
+      "evidence": "KiCad returned error: failed to save footprint copy 'X' to library 'copperchat'"
+    },
+    {
+      "name": "save_into_empty_dir_after_reload_ok",
+      "ok": true,
+      "evidence": "['X.kicad_mod']"
+    },
+    {
+      "name": "listed_after_save",
+      "ok": true,
+      "evidence": "['X']"
+    },
+    {
+      "name": "no_delete_library_item_command",
+      "ok": true,
+      "evidence": "['editor_commands_pb2.DeleteItems', 'editor_commands_pb2.DeleteItemsResponse', 'editor_commands_pb2.RemoveFromSelection', 'library_commands_pb2.DeleteLibraryTableEntry', 'variant_commands_pb2.DeleteVariant']"
+    },
+    {
+      "name": "save_copy_overwrites_existing_silently",
+      "ok": true,
+      "evidence": "content replaced"
+    },
+    {
+      "name": "server_alive",
+      "ok": true,
+      "evidence": ""
+    }
+  ],
+  "notes": {
+    "status_row_dir_missing": [
+      "LLS_INVALID",
+      null
+    ],
+    "status_empty_dir_before_reload": [
+      "LLS_ERROR",
+      "Footprint library '/tmp/c3a-q2b-swubme45/repo/footprints/copperchat.pretty' not found."
+    ],
+    "reload_result": "code: LCS_OK",
+    "status_after_reload": [
+      "LLS_LOADED",
+      null
+    ],
+    "status_after_save": [
+      "LLS_LOADED",
+      null
+    ]
+  }
+}
