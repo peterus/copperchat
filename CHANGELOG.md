@@ -7,6 +7,24 @@ All notable changes to CopperChat are documented in this file. The format follow
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-16
+
+### Changed
+
+- KiCad updated to master `52b43fb8` (2026-11-15) and kicad-python to its current main. The
+  kicad-python pin is the fork `github.com/peterus/kicad-python` (branch `copperchat`): upstream
+  main plus a fix for upstream issue #147 (every `create_items` / `update_items` call raised
+  `AttributeError: type_url`). CopperChat switches back to upstream once #147 is fixed.
+- Library symbols that derive from another symbol (`extends`, about half of the stock symbols)
+  now come with their pins straight from KiCad; the place-and-drop probe is only a fallback.
+- Undo checks that the edited items still exist before restoring them (the new kicad-python
+  reports missing items as an error).
+
+### Added
+
+- Spike 3A (`docs/spikes/3a-footprints.md`): creating and reading footprints through the KiCad
+  API, groundwork for the footprint tools.
+
 ## [0.9.1] - 2026-11-15
 
 ### Fixed
@@ -408,7 +426,8 @@ projects, in the browser on desktop, iPad and iPhone.
 - The KiCanvas patches live in this repository (`frontend/vendor-patches/kicanvas/`), not in
   an upstream fork; the main JavaScript chunk is large (~590 kB).
 
-[Unreleased]: https://github.com/peterus/copperchat/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/peterus/copperchat/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/peterus/copperchat/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/peterus/copperchat/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/peterus/copperchat/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/peterus/copperchat/compare/v0.8.1...v0.8.2
