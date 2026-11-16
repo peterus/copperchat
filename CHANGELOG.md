@@ -7,6 +7,15 @@ All notable changes to CopperChat are documented in this file. The format follow
 
 ## [Unreleased]
 
+### Added
+
+- The KiCad base image now carries four KiCad API patches (`docker/kicad-base/patches/`, meant
+  for upstream): library table rows can be read, added (optionally creating an empty library),
+  updated and deleted through the API; a footprint's own properties (description, keywords,
+  attributes, overrides, 3D models) can be updated in a footprint document; library items can be
+  deleted (`DeleteLibraryItem`); and opening a second footprint no longer leaves a stale document
+  behind. kicad-python (fork, branch `copperchat`) carries the matching protos and wrappers.
+
 ## [0.10.0] - 2026-11-16
 
 ### Changed

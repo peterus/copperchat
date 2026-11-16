@@ -1,0 +1,221 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Peter Buchegger <peter.buchegger7@gmail.com>
+Date: Tue, 17 Nov 2026 00:29:34 +0100
+Subject: [PATCH 2/4] TODO(owner): write message (G2 footprint properties)
+
+Assisted-by: Claude
+---
+ pcbnew/api/api_handler_board.cpp        |  52 ++++++++++++
+ qa/tests/api/test_api_e2e_libraries.cpp | 103 ++++++++++++++++++++++++
+ 2 files changed, 155 insertions(+)
+
+diff --git a/pcbnew/api/api_handler_board.cpp b/pcbnew/api/api_handler_board.cpp
+index 5d1e08af..e14e40e7 100644
+--- a/pcbnew/api/api_handler_board.cpp
++++ b/pcbnew/api/api_handler_board.cpp
+@@ -61,6 +61,40 @@ using types::DocumentType;
+ using types::ItemRequestStatus;
+ 
+ 
++/**
++ * Copies the properties a footprint has of its own (those of a library footprint, not of its
++ * placement or its children) from @a aSource to @a aTarget.
++ *
++ * Not copied: embedded files, custom properties, and the instance data of a board footprint
++ * (position, orientation, layer, locked state, symbol link, fields).
++ */
++static void CopyFootprintDefinitionProperties( const FOOTPRINT& aSource, FOOTPRINT& aTarget )
++{
++    aTarget.SetLibDescription( aSource.GetLibDescription() );
++    aTarget.SetKeywords( aSource.GetKeywords() );
++    aTarget.SetAttributes( aSource.GetAttributes() );
++    aTarget.SetAllowMissingCourtyard( aSource.AllowMissingCourtyard() );
++    aTarget.SetAllowSolderMaskBridges( aSource.AllowSolderMaskBridges() );
++
++    aTarget.SetLocalClearance( aSource.GetLocalClearance() );
++    aTarget.SetLocalSolderMaskMargin( aSource.GetLocalSolderMaskMargin() );
++    aTarget.SetLocalSolderPasteMargin( aSource.GetLocalSolderPasteMargin() );
++    aTarget.SetLocalSolderPasteMarginRatio( aSource.GetLocalSolderPasteMarginRatio() );
++    aTarget.SetLocalZoneConnection( aSource.GetLocalZoneConnection() );
++
++    aTarget.ClearNetTiePadGroups();
++
++    for( const wxString& group : aSource.GetNetTiePadGroups() )
++        aTarget.AddNetTiePadGroup( group );
++
++    aTarget.SetPrivateLayers( aSource.GetPrivateLayers() );
++    aTarget.SetDuplicatePadNumbersAreJumpers( aSource.GetDuplicatePadNumbersAreJumpers() );
++    aTarget.JumperPadGroups() = aSource.JumperPadGroups();
++    aTarget.SetHeight( aSource.GetHeight() );
++    aTarget.Models() = aSource.Models();
++}
++
++
+ API_HANDLER_BOARD::API_HANDLER_BOARD( std::shared_ptr<BOARD_CONTEXT> aContext,
+                                       EDA_BASE_FRAME* aFrame ) :
+         API_HANDLER_EDITOR( aFrame ),
+@@ -497,6 +531,12 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_BOARD::handleCreateUpdateItemsInte
+                         return HANDLER_RESULT<std::unique_ptr<BOARD_ITEM>>( std::move( genItem ) );
+                     }
+ 
++                    // An update only deserializes into this item to copy from it, so a footprint
++                    // is parented to the board even when the container is a footprint (the
++                    // footprint editor's footprint)
++                    if( !aCreate && *type == PCB_FOOTPRINT_T )
++                        return createItemForType( *type, board );
++
+                     return createItemForType( *type, container );
+                 }();
+ 
+@@ -689,6 +729,18 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_BOARD::handleCreateUpdateItemsInte
+                 table->Serialize( newItem );
+             }
+ 
++            // In the footprint editor the footprint is the document rather than one of its items,
++            // so it is updated in place: only its own properties are copied, and its children are
++            // updated as separate items
++            else if( boardItem == getDefaultContainer() && boardItem->Type() == PCB_FOOTPRINT_T )
++            {
++                FOOTPRINT* footprint = static_cast<FOOTPRINT*>( boardItem );
++
++                commit->Modify( footprint );
++                CopyFootprintDefinitionProperties( *static_cast<FOOTPRINT*>( item.get() ), *footprint );
++                footprint->Serialize( newItem );
++            }
++
+             // Footprints can't be modified by CopyFrom at the moment because the commit system
+             // doesn't currently know what to do with a footprint that has had its children
+             // replaced with other children; which results in things like the view not having its
+diff --git a/qa/tests/api/test_api_e2e_libraries.cpp b/qa/tests/api/test_api_e2e_libraries.cpp
+index 00cceaf1..2a615d86 100644
+--- a/qa/tests/api/test_api_e2e_libraries.cpp
++++ b/qa/tests/api/test_api_e2e_libraries.cpp
+@@ -19,6 +19,8 @@
+ 
+ #include "api_e2e_utils.h"
+ 
++#include <vector>
++
+ #include <boost/test/unit_test.hpp>
+ #include <qa_utils/file_utils.h>
+ 
+@@ -26,6 +28,8 @@
+ #include <wx/filefn.h>
+ #include <wx/filename.h>
+ 
++#include <google/protobuf/empty.pb.h>
++
+ #include <api/board/board_types.pb.h>
+ #include <api/common/commands/editor_commands.pb.h>
+ #include <api/common/commands/library_commands.pb.h>
+@@ -133,6 +137,57 @@ commands::AddLibraryTableEntry MakeAddRequest()
+ 
+ 
+ 
++/// The footprint open in the headless footprint editor, read back by its own ID
++kiapi::board::types::FootprintInstance GetEditedFootprint( API_TEST_CLIENT&                aClient,
++                                                           const types::DocumentSpecifier& aDocument )
++{
++    commands::GetItems itemsRequest;
++    *itemsRequest.mutable_header()->mutable_document() = aDocument;
++    itemsRequest.add_types( types::KOT_PCB_PAD );
++
++    commands::GetItemsResponse items;
++    BOOST_REQUIRE_EQUAL( Send( aClient, itemsRequest, &items ), AS_OK );
++    BOOST_REQUIRE_GT( items.items_size(), 0 );
++
++    kiapi::board::types::Pad pad;
++    BOOST_REQUIRE( items.items( 0 ).UnpackTo( &pad ) );
++
++    commands::GetItemsById byIdRequest;
++    *byIdRequest.mutable_header()->mutable_document() = aDocument;
++    *byIdRequest.add_items() = pad.parent();
++
++    commands::GetItemsResponse byId;
++    BOOST_REQUIRE_EQUAL( Send( aClient, byIdRequest, &byId ), AS_OK );
++    BOOST_REQUIRE_EQUAL( byId.items_size(), 1 );
++
++    kiapi::board::types::FootprintInstance footprint;
++    BOOST_REQUIRE( byId.items( 0 ).UnpackTo( &footprint ) );
++    return footprint;
++}
++
++
++/// Adds the test library to the project table and copies a footprint into it under each name
++void PrepareLibrary( API_TEST_CLIENT& aClient, const TEMP_PROJECT& aProject, const std::vector<wxString>& aNames )
++{
++    BOOST_REQUIRE_MESSAGE( aClient.OpenDocument( aProject.Board() ), aClient.LastError() );
++    BOOST_REQUIRE_EQUAL( SendLibraryCommand( aClient, MakeAddRequest() ), LibraryCommandStatus::LCS_OK );
++
++    wxFileName source( wxString::FromUTF8( KI_TEST::GetTestDataRootDir() ) + wxS( "/libraries/Resistor_SMD.pretty" ),
++                       wxString( FP_NAME ) + wxS( ".kicad_mod" ) );
++
++    for( const wxString& name : aNames )
++    {
++        wxFileName copy = aProject.File( wxS( "api_e2e_fp.pretty/" ) + name + wxS( ".kicad_mod" ) );
++        BOOST_REQUIRE( wxCopyFile( source.GetFullPath(), copy.GetFullPath() ) );
++    }
++
++    commands::ReloadLibrary reload;
++    reload.set_type( types::LT_FOOTPRINT );
++    reload.set_scope( types::LTS_PROJECT );
++    reload.add_nickname( LIB_NICKNAME );
++    BOOST_REQUIRE_EQUAL( SendLibraryCommand( aClient, reload ), LibraryCommandStatus::LCS_OK );
++}
++
+ 
+ } // namespace
+ 
+@@ -186,4 +241,52 @@ BOOST_FIXTURE_TEST_CASE( LibraryTableEntries, API_SERVER_E2E_FIXTURE )
+ }
+ 
+ 
++BOOST_FIXTURE_TEST_CASE( UpdateFootprintProperties, API_SERVER_E2E_FIXTURE )
++{
++    BOOST_REQUIRE_MESSAGE( Start(), LastError() );
++
++    TEMP_PROJECT project;
++    PrepareLibrary( Client(), project, { FP_NAME } );
++
++    types::DocumentSpecifier document;
++    wxString                 libId = wxString( LIB_NICKNAME ) + wxS( ":" ) + FP_NAME;
++    BOOST_REQUIRE_MESSAGE( Client().OpenDocument( libId, types::DOCTYPE_FOOTPRINT, &document ), Client().LastError() );
++
++    kiapi::board::types::FootprintInstance footprint = GetEditedFootprint( Client(), document );
++    footprint.mutable_definition()->mutable_attributes()->set_description( "API description" );
++    footprint.mutable_definition()->mutable_attributes()->set_keywords( "api keywords" );
++    footprint.mutable_attributes()->set_mounting_style( kiapi::board::types::FMS_THROUGH_HOLE );
++    footprint.mutable_attributes()->set_exclude_from_bill_of_materials( true );
++    footprint.mutable_overrides()->mutable_copper_clearance()->set_value_nm( 200000 );
++
++    commands::UpdateItems update;
++    *update.mutable_header()->mutable_document() = document;
++    update.add_items()->PackFrom( footprint );
++
++    commands::UpdateItemsResponse updated;
++    BOOST_REQUIRE_EQUAL( Send( Client(), update, &updated ), AS_OK );
++    BOOST_REQUIRE_EQUAL( updated.updated_items_size(), 1 );
++    BOOST_CHECK_MESSAGE( updated.updated_items( 0 ).status().code() == commands::ISC_OK,
++                         updated.updated_items( 0 ).status().error_message() );
++
++    kiapi::board::types::FootprintInstance after = GetEditedFootprint( Client(), document );
++    BOOST_CHECK_EQUAL( after.definition().attributes().description(), "API description" );
++    BOOST_CHECK_EQUAL( after.definition().attributes().keywords(), "api keywords" );
++    BOOST_CHECK_EQUAL( after.attributes().mounting_style(), kiapi::board::types::FMS_THROUGH_HOLE );
++    BOOST_CHECK( after.attributes().exclude_from_bill_of_materials() );
++    BOOST_CHECK_EQUAL( after.overrides().copper_clearance().value_nm(), 200000 );
++    BOOST_CHECK_EQUAL( after.definition().items_size(), footprint.definition().items_size() );
++
++    commands::SaveDocument save;
++    *save.mutable_document() = document;
++    google::protobuf::Empty empty;
++    BOOST_REQUIRE_EQUAL( Send( Client(), save, &empty ), AS_OK );
++
++    wxString saved = ReadFile( project.File( wxS( "api_e2e_fp.pretty/" ) + wxString( FP_NAME ) + wxS( ".kicad_mod" ) ) );
++    BOOST_CHECK( saved.Contains( wxS( "(descr \"API description\")" ) ) );
++    BOOST_CHECK( saved.Contains( wxS( "(tags \"api keywords\")" ) ) );
++    BOOST_CHECK( saved.Contains( wxS( "(attr through_hole exclude_from_bom)" ) ) );
++}
++
++
+ BOOST_AUTO_TEST_SUITE_END()

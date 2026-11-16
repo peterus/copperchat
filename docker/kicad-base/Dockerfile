@@ -3,6 +3,8 @@
 # commit, plus the stock symbol/footprint libraries and kipy, running headless
 # as the non-root user `copperchat` (uid 1000).
 #
+# KiCad gets the patches in patches/ applied before the build.
+#
 # Build args (the workflow passes them from the pin files in this directory):
 #   KICAD_COMMIT  40-char SHA from KICAD_COMMIT (required)
 #   KIPY_REV      40-char kicad-python SHA from KIPY_COMMIT (required)
@@ -38,6 +40,9 @@ FROM deps AS build
 ARG KICAD_COMMIT
 ARG KICAD_REPO=https://gitlab.com/kicad/code/kicad.git
 ENV CCACHE_DIR=/ccache CCACHE_MAXSIZE=5G CCACHE_SLOPPINESS=pch_defines,time_macros,include_file_mtime,include_file_ctime
+# patches/: CopperChat's KiCad API additions on top of KICAD_COMMIT (git format-patch series,
+# applied in order; see patches/README.md). Meant for upstream; drop each once KiCad has it.
+COPY patches/ /patches/
 RUN --mount=type=cache,target=/ccache \
     test -n "${KICAD_COMMIT}" || { echo "KICAD_COMMIT build-arg required" >&2; exit 1; }; \
     set -eux; \
@@ -46,6 +51,7 @@ RUN --mount=type=cache,target=/ccache \
     git -C /src/kicad fetch -q --depth 1 origin "${KICAD_COMMIT}"; \
     git -C /src/kicad checkout -q --detach FETCH_HEAD; \
     test "$(git -C /src/kicad rev-parse HEAD)" = "${KICAD_COMMIT}"; \
+    for p in /patches/*.patch; do git -C /src/kicad apply --verbose "$p"; done; \
     # A shallow clone has no tags, so `git describe` falls back to "10.99.0-unknown";
     # the extra suffix keeps the commit visible in `kicad-cli version`.
     cmake -S /src/kicad -B /src/build -G Ninja \

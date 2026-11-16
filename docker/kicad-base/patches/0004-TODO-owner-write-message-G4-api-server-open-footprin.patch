@@ -1,0 +1,63 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Peter Buchegger <peter.buchegger7@gmail.com>
+Date: Tue, 17 Nov 2026 00:29:34 +0100
+Subject: [PATCH 4/4] TODO(owner): write message (G4 api-server open footprint)
+
+Assisted-by: Claude
+---
+ kicad/cli/command_api_server.cpp        |  8 ++++++++
+ qa/tests/api/test_api_e2e_libraries.cpp | 24 ++++++++++++++++++++++++
+ 2 files changed, 32 insertions(+)
+
+diff --git a/kicad/cli/command_api_server.cpp b/kicad/cli/command_api_server.cpp
+index e65d5b26..7949dae5 100644
+--- a/kicad/cli/command_api_server.cpp
++++ b/kicad/cli/command_api_server.cpp
+@@ -234,6 +234,14 @@ int CLI::API_SERVER_COMMAND::doPerform( KIWAY& aKiway )
+                 return tl::unexpected( e );
+             }
+ 
++            // The headless footprint editor holds one footprint at a time, so opening another
++            // one replaces the footprint that was open before
++            std::erase_if( openDocuments,
++                           []( const OPEN_DOCUMENT& d )
++                           {
++                               return d.type == types::DOCTYPE_FOOTPRINT;
++                           } );
++
+             OPEN_DOCUMENT doc;
+             doc.type = requestType;
+             doc.libId = fpid;
+diff --git a/qa/tests/api/test_api_e2e_libraries.cpp b/qa/tests/api/test_api_e2e_libraries.cpp
+index 869f234f..1c055fa7 100644
+--- a/qa/tests/api/test_api_e2e_libraries.cpp
++++ b/qa/tests/api/test_api_e2e_libraries.cpp
+@@ -321,4 +321,28 @@ BOOST_FIXTURE_TEST_CASE( DeleteFootprintFromLibrary, API_SERVER_E2E_FIXTURE )
+ }
+ 
+ 
++// The headless footprint editor holds one footprint, so opening another one replaces it
++BOOST_FIXTURE_TEST_CASE( OpenFootprintReplacesOpenFootprint, API_SERVER_E2E_FIXTURE )
++{
++    BOOST_REQUIRE_MESSAGE( Start(), LastError() );
++
++    TEMP_PROJECT project;
++    PrepareLibrary( Client(), project, { FP_NAME, wxS( "Second" ) } );
++
++    types::DocumentSpecifier first;
++    types::DocumentSpecifier second;
++    BOOST_REQUIRE_MESSAGE( Client().OpenDocument( wxString( LIB_NICKNAME ) + wxS( ":" ) + FP_NAME,
++                                                  types::DOCTYPE_FOOTPRINT, &first ),
++                           Client().LastError() );
++    BOOST_REQUIRE_MESSAGE( Client().OpenDocument( wxString( LIB_NICKNAME ) + wxS( ":Second" ),
++                                                  types::DOCTYPE_FOOTPRINT, &second ),
++                           Client().LastError() );
++
++    commands::CloseDocument close;
++    *close.mutable_document() = second;
++    google::protobuf::Empty empty;
++    BOOST_CHECK_EQUAL( Send( Client(), close, &empty ), AS_OK );
++}
++
++
+ BOOST_AUTO_TEST_SUITE_END()
