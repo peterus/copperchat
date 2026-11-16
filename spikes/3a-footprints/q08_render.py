@@ -16,7 +16,7 @@ from steps import create_l201, open_sch
 NUM = re.compile(r"-?\d+(?:\.\d+)?")
 
 
-def svg_info(path: Path) -> dict:
+def svg_info(path: Path, with_text: bool = False) -> dict:
     root = ET.parse(path).getroot()  # noqa: S314
     w, h = root.get("width", ""), root.get("height", "")
     vb = [float(x) for x in root.get("viewBox", "0 0 0 0").split()]
@@ -26,7 +26,8 @@ def svg_info(path: Path) -> dict:
     for g in root.iter():
         if g.tag.split("}")[-1] == "g" and g.get("class") == "stroked-text":
             texts += 1
-            skip.update(id(e) for e in g.iter())
+            if not with_text:
+                skip.update(id(e) for e in g.iter())
     for el in root.iter():
         if id(el) in skip:
             continue
@@ -104,7 +105,11 @@ def main() -> int:
     p = cli("fp", "export", "svg", "--fp", l201.NAME, "-o", str(miss), str(repo.lib_dir))
     r.check("missing_out_dir_exit0_no_file", p.returncode == 0 and not list(base.glob("missing/**/*.svg")),
             (p.returncode, (p.stdout + p.stderr)[-200:]))
-    r.check("page_fits_all_content", info["all"]["viewBox"][2] >= info["all"]["extent_mm"][0], info["all"])
+    # the page is the bounding box of everything incl. texts (+ a small margin)
+    full = svg_info(res / "q08_all.svg", with_text=True)["extent_mm"]
+    vb = info["all"]["viewBox"]
+    r.note("all_extent_with_text_mm", full)
+    r.check("page_is_content_bbox", 0 <= vb[2] - full[0] < 1.0 and 0 <= vb[3] - full[1] < 1.0, (vb, full))
     return r.finish()
 
 

@@ -69,6 +69,7 @@ def main() -> int:
         r.note("main_texts_without_reload", before_reload)
         km._client.send(lc.ReloadLibrary(type=lt.LT_FOOTPRINT, scope=lt.LTS_PROJECT, nickname=[LIB]),
                         lt.LibraryCommandStatus)
+        km.wait_for_libraries()  # ReloadLibrary is asynchronous (kipy docstring); wait before reading
         fpm = FootprintDoc(km, FPID)
         after_reload = texts(fpm)
         r.check("main_sees_io_edit_after_reload", "edited-by-io" in after_reload, after_reload)

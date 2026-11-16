@@ -79,7 +79,7 @@
     ],
     "status_empty_dir_before_reload": [
       "LLS_ERROR",
-      "Footprint library '/tmp/c3a-q2b-jh3y2b8f/repo/footprints/copperchat.pretty' not found."
+      "Footprint library '/tmp/c3a-q2b-swubme45/repo/footprints/copperchat.pretty' not found."
     ],
     "reload_result": "code: LCS_OK",
     "status_after_reload": [

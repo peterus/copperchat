@@ -95,7 +95,7 @@ def silk_items() -> list[bt.BoardGraphicShape]:
     body lines between the pads; all inside the 4x4 courtyard and outside the copper."""
     s = bt.BoardLayer.BL_F_SilkS
     return [
-        segment(s, (-1.95, -1.75), (-1.95, 1.0), 0.12),  # pin-1 side bar, 0.14 mm from pad copper
+        segment(s, (-1.93, -1.75), (-1.93, 1.0), 0.12),  # pin-1 side bar: 0.12 mm clear of copper, edge at -1.99 inside CrtYd
         segment(s, (-0.25, -1.6), (0.25, -1.6), 0.12),
         segment(s, (-0.25, 1.6), (0.25, 1.6), 0.12),
     ]

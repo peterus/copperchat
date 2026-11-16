@@ -54,11 +54,11 @@
   ],
   "notes": {
     "rss_sch_only_mb": 221,
-    "first_fp_open_s": 2.88,
-    "rss_after_first_fp_open_mb": 1914,
+    "first_fp_open_s": 2.96,
+    "rss_after_first_fp_open_mb": 1990,
     "lib_single_ms": {
-      "median": 66.9,
-      "max": 148.3
+      "median": 66.6,
+      "max": 149.1
     },
     "definitions": [
       {
@@ -276,9 +276,9 @@
       "s": 0.2
     },
     "doc_read_ms": {
-      "median": 50.2,
-      "max": 53.5
+      "median": 51.0,
+      "max": 54.2
     },
-    "rss_end_mb": 4010
+    "rss_end_mb": 4086
   }
 }

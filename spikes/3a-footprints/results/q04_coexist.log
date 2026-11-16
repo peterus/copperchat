@@ -19,5 +19,5 @@ PASS q04_coexist.save_into_stock_library_refused: KiCad returned error: failed t
 NOTE q04_coexist.stock_lib_dir_writable_by_probe_user: False
 NOTE q04_coexist.server_log_tail: 
 PASS q04_coexist.server_alive: 
-NOTE q04_coexist.rss_mb: 1962.96484375
+NOTE q04_coexist.rss_mb: 1963.95703125
 DONE q04_coexist: 13 pass, 0 fail

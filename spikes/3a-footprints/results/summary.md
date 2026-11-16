@@ -1,6 +1,6 @@
 | Question | Result | Failed checks |
 |---|---|---|
-| q01_create | 21 pass / 0 fail |  |
+| q01_create | 22 pass / 0 fail |  |
 | q02_library | 14 pass / 0 fail |  |
 | q03_shared | 8 pass / 0 fail |  |
 | q04_coexist | 13 pass / 0 fail |  |

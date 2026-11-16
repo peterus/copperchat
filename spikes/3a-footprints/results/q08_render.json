@@ -29,12 +29,12 @@
     {
       "name": "missing_out_dir_exit0_no_file",
       "ok": true,
-      "evidence": "(0, \"g'.\\nFailed to create file '/tmp/c3a-q8-svg-wk4q070j/missing/dir/L_Bourns_SRN3012BTA.svg'.\\nFailed to create file '/tmp/c3a-q8-svg-wk4q070j/missing/dir/L_Bourns_SRN3012BTA.svg'.\\nError creating svg file\\n\")"
+      "evidence": "(0, \"g'.\\nFailed to create file '/tmp/c3a-q8-svg-u1p9m_aq/missing/dir/L_Bourns_SRN3012BTA.svg'.\\nFailed to create file '/tmp/c3a-q8-svg-u1p9m_aq/missing/dir/L_Bourns_SRN3012BTA.svg'.\\nError creating svg file\\n\")"
     },
     {
-      "name": "page_fits_all_content",
+      "name": "page_is_content_bbox",
       "ok": true,
-      "evidence": "{'width': '17.154764mm', 'height': '7.296500mm', 'viewBox': [-8.577382, -3.64825, 17.154764, 7.2965], 'unit_per_mm': 1.0, 'extent_mm': (4.0, 4.0), 'text_groups': 3, 'stroke_colors': ['#000000', '#AFAFAF', '#F2EDA1', '#FF26E2'], 'bytes': 16190}"
+      "evidence": "([-8.577382, -3.64825, 17.154764, 7.2965], (16.571, 6.695))"
     }
   ],
   "notes": {
@@ -124,6 +124,10 @@
         ],
         "bytes": 1094
       }
-    }
+    },
+    "all_extent_with_text_mm": [
+      16.571,
+      6.695
+    ]
   }
 }

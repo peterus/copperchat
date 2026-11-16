@@ -124,6 +124,9 @@ def main() -> int:
         f = g["fields"]
         r.check("fields", f["Value"]["text"] == l201.NAME and f["Description"]["text"] == l201.DESCRIPTION
                 and f.get("Footprint source", {}).get("text") == l201.SOURCE, f)
+        r.check("silk_inside_courtyard", all(max(abs(s["start"][0]), abs(s["end"][0])) + s["stroke"] / 2 <= 2.0
+                                             and max(abs(s["start"][1]), abs(s["end"][1])) + s["stroke"] / 2 <= 2.0
+                                             for s in silk), silk)
         r.check("pin1_left", pads[0]["number"] == "1" and pads[0]["pos"][0] < 0, pads[0])
         fp2.close()
         r.note("timing_s", {n: [round(x, 4) for x in v] for n, v in t.calls.items()})

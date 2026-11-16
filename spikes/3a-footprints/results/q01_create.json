@@ -69,12 +69,17 @@
     {
       "name": "silk_outside_pads",
       "ok": true,
-      "evidence": "[{'layer': 'BL_F_SilkS', 'geometry': 'segment', 'stroke': 0.12, 'start': (-0.25, 1.6), 'end': (0.25, 1.6)}, {'layer': 'BL_F_SilkS', 'geometry': 'segment', 'stroke': 0.12, 'start': (-0.25, -1.6), 'end': (0.25, -1.6)}, {'layer': 'BL_F_SilkS', 'geometry': 'segment', 'stroke': 0.12, 'start': (-1.95, -1.75), 'end': (-1.95, 1.0)}]"
+      "evidence": "[{'layer': 'BL_F_SilkS', 'geometry': 'segment', 'stroke': 0.12, 'start': (-0.25, 1.6), 'end': (0.25, 1.6)}, {'layer': 'BL_F_SilkS', 'geometry': 'segment', 'stroke': 0.12, 'start': (-0.25, -1.6), 'end': (0.25, -1.6)}, {'layer': 'BL_F_SilkS', 'geometry': 'segment', 'stroke': 0.12, 'start': (-1.93, -1.75), 'end': (-1.93, 1.0)}]"
     },
     {
       "name": "fields",
       "ok": true,
       "evidence": "{'Reference': {'text': 'REF**', 'layer': 'BL_F_SilkS', 'visible': True, 'id': 1}, 'Value': {'text': 'L_Bourns_SRN3012BTA', 'layer': 'BL_F_Fab', 'visible': True, 'id': 2}, 'Datasheet': {'text': '', 'layer': 'BL_F_Fab', 'visible': False, 'id': 4}, 'Description': {'text': 'Bourns SRN3012BTA SMD power inductor, 3.0x3.0x1.2 mm, https://www.bourns.com/docs/product-datasheets/srn3012bta.pdf', 'layer': 'BL_F_Fab', 'visible': False, 'id': 5}, 'Footprint source': {'text': 'Bourns SRN3012BTA datasheet, recommended land pattern (CopperChat spike 3A)', 'layer': 'BL_F_Fab', 'visible': False, 'id': 0}}"
+    },
+    {
+      "name": "silk_inside_courtyard",
+      "ok": true,
+      "evidence": "[{'layer': 'BL_F_SilkS', 'geometry': 'segment', 'stroke': 0.12, 'start': (-0.25, 1.6), 'end': (0.25, 1.6)}, {'layer': 'BL_F_SilkS', 'geometry': 'segment', 'stroke': 0.12, 'start': (-0.25, -1.6), 'end': (0.25, -1.6)}, {'layer': 'BL_F_SilkS', 'geometry': 'segment', 'stroke': 0.12, 'start': (-1.93, -1.75), 'end': (-1.93, 1.0)}]"
     },
     {
       "name": "pin1_left",
@@ -122,7 +127,7 @@
         "type.googleapis.com/kiapi.board.types.Footprint3DModel"
       ]
     },
-    "create_wall_s": 3.106,
+    "create_wall_s": 3.135,
     "modified_after_save": 0,
     "readback": {
       "pads": [
@@ -203,11 +208,11 @@
           "geometry": "segment",
           "stroke": 0.12,
           "start": [
-            -1.95,
+            -1.93,
             -1.75
           ],
           "end": [
-            -1.95,
+            -1.93,
             1.0
           ]
         },
@@ -279,45 +284,45 @@
     },
     "timing_s": {
       "open": [
-        2.8811,
-        0.0147,
-        0.0151
+        2.9223,
+        0.0123,
+        0.0147
       ],
       "save_copy": [
-        0.0264
+        0.0256
       ],
       "get_items": [
-        0.0158,
-        0.0105,
-        0.0107
+        0.0136,
+        0.0108,
+        0.0106
       ],
       "begin": [
-        0.01
-      ],
-      "delete": [
-        0.0104,
-        0.0102
-      ],
-      "create": [
-        0.0101,
         0.0101
       ],
+      "delete": [
+        0.0105,
+        0.01
+      ],
+      "create": [
+        0.0104,
+        0.01
+      ],
       "update": [
-        0.0101,
-        0.0103
+        0.0098,
+        0.0102
       ],
       "end": [
-        0.0156
+        0.0158
       ],
       "modified": [
         0.0103,
-        0.01
+        0.0101
       ],
       "get_items_by_id": [
         0.0106
       ],
       "save": [
-        0.0337
+        0.0286
       ]
     },
     "file_head": [

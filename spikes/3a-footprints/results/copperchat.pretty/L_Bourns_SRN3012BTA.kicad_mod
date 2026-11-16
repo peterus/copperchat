@@ -59,7 +59,7 @@
 			(unlocked yes)
 			(layer "F.Fab")
 			(hide yes)
-			(uuid "949acc65-c5b1-464c-827f-56428ae4139b")
+			(uuid "1d68aec6-9aeb-4938-9812-308e4c26176b")
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -70,14 +70,14 @@
 		(attr smd)
 		(duplicate_pad_numbers_are_jumpers no)
 		(fp_line
-			(start -1.95 -1.75)
-			(end -1.95 1)
+			(start -1.93 -1.75)
+			(end -1.93 1)
 			(stroke
 				(width 0.12)
 				(type solid)
 			)
 			(layer "F.SilkS")
-			(uuid "9a5dbe8d-27a7-492a-9834-ef4827a477e2")
+			(uuid "16348422-f96c-489a-9db5-b967483bdda6")
 		)
 		(fp_line
 			(start -0.25 -1.6)
@@ -87,7 +87,7 @@
 				(type solid)
 			)
 			(layer "F.SilkS")
-			(uuid "dff91b7d-1935-4f98-afff-31546fabdb77")
+			(uuid "ea228267-832e-4f3c-bc65-6b14de6d25f9")
 		)
 		(fp_line
 			(start -0.25 1.6)
@@ -97,7 +97,7 @@
 				(type solid)
 			)
 			(layer "F.SilkS")
-			(uuid "842f5335-b386-45f5-8194-a1c37681550d")
+			(uuid "a76429b3-15f7-4853-ab56-cc2c9eeed776")
 		)
 		(fp_rect
 			(start -2 -2)
@@ -108,7 +108,7 @@
 			)
 			(fill no)
 			(layer "F.CrtYd")
-			(uuid "a43bb22a-4e90-4c34-a55c-654bef3b647a")
+			(uuid "e952d200-7487-4c3a-91e6-5db7f552dda3")
 		)
 		(fp_rect
 			(start -1.5 -1.5)
@@ -119,13 +119,13 @@
 			)
 			(fill no)
 			(layer "F.Fab")
-			(uuid "25c67ca6-207f-4d47-ad1c-2597b207c4ef")
+			(uuid "dcfeea0d-29bd-443c-8683-25ee6ac35256")
 		)
 		(fp_text user "${REFERENCE}"
 			(at 0 0 0)
 			(unlocked yes)
 			(layer "F.Fab")
-			(uuid "295e2d16-9e92-437a-a110-e3225b50f1a4")
+			(uuid "c66c8522-a152-4629-b5ca-66b8c699c99c")
 			(effects
 				(font
 					(size 0.6 0.6)
@@ -137,13 +137,13 @@
 			(at -1.1 0)
 			(size 1.3 3.5)
 			(layers "F.Cu" "F.Mask" "F.Paste")
-			(uuid "b303dd33-9bdf-438c-b09a-34af7d51654d")
+			(uuid "996385a2-dd5b-49d4-b659-6907dac98080")
 		)
 		(pad "2" smd rect
 			(at 1.1 0)
 			(size 1.3 3.5)
 			(layers "F.Cu" "F.Mask" "F.Paste")
-			(uuid "98e9fd9f-8a28-4d7a-858c-51547a9b98e5")
+			(uuid "7108205b-998b-495e-ae74-84ebb2ddf727")
 		)
 		(embedded_fonts no)
 		(model "${KICAD10_3DMODEL_DIR}/Inductor_SMD.3dshapes/L_Bourns-SRN4018.step"
