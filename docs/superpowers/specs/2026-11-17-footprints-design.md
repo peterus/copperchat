@@ -766,6 +766,15 @@ geometry and no review flag, may be on disk. Four things cover this:
 
    A `replace` target is therefore never destroyed: its pre-image lives only in the turn
    snapshot, and History undo restores it.
+
+   `prepare` of every writing footprint tool **already knows the cleanup outcome**: it
+   computes the same classification read-only, and it validates against the state **after**
+   cleanup.
+   - A cleanable `create` copy counts as free for `fp_create`. So a retry with the same name
+     succeeds.
+   - For `replace`, `fp_approve` and `fp_delete`, a cleanable copy counts as `not_found`. Such a
+     call is refused, and the cleanup does not run in that call.
+   - `apply` runs the cleanup first and then the tool's own stages.
 3. The cleanup re-records hashes for what it touched, like any footprint write.
 4. Independently, `footprint_notes` and `fp_check` treat **any local footprint without
    `Footprint source` or `needs_user_review`**, or with a `pending` journal row, as unreviewed:
@@ -858,11 +867,16 @@ therefore never undo another project's footprint work.
   (`footprint_writes`, §9.3) knows which footprints this project's tool calls created,
   replaced, approved or deleted after the snapshot. It includes `leftover` and `pending` rows of
   failed calls. Only those are restored. **The same guard applies to every state:**
-  - A file is restored only when its current sha256 equals the sha recorded on this project's
-    latest row for it. That is `post_sha256` for `done`, the hash stored at finalisation for
-    `leftover` / `compensated`, and `post_s2_sha256` for `pending`.
-  - No later journal row of **another** project may touch the same lib id.
-  - A row without any recorded sha is skipped and reported.
+  - **Recording.** Every recorded sha may also be the explicit value `absent`. A finished
+    `delete` stores `post_sha256 = absent`, and a `compensated` create stores `absent`.
+  - **Done, leftover and compensated rows.** A file is restored only when its current state
+    (sha256, or `absent` when the file does not exist) equals the value recorded on this
+    project's latest row for it. That is `post_sha256` for `done`, and the value stored at
+    finalisation for `leftover` / `compensated`.
+  - **Pending rows.** S3 may have completed, so any current state is accepted, as long as no
+    later row of another project claims the lib id.
+  - **Other projects.** No later journal row of **another** project may touch the same lib id.
+  - A row without any recorded value is skipped and reported.
 
   If someone changed the file since (another project, the KiCad GUI), it is left alone. Per
   file:
@@ -1274,8 +1288,11 @@ by KiCad, as in spike 3A.
   `document_inconsistent`, and both the error text and the turn-end notice name the leftover lib
   id. History undo then removes it (journal row `leftover`).
 - **Server death after S2.** Kill the api-server after S2. The call fails with
-  `KicadUnavailable`. The next activation deletes the seed copy (journal `pending`) and reports
-  it. Until then, `footprint_notes` treats the footprint as unreviewed.
+  `KicadUnavailable`. Then:
+  - `fp_get` / activation write nothing and flag the footprint as unreviewed;
+  - the next **writing** footprint call deletes the seed copy (journal `pending`, hash
+    unchanged) and reports it;
+  - a retry of `fp_create` with the same name succeeds.
 - **Row stage hashes.** After `sch_set_fields` adds a row, the next turn start reports no
   external change and pauses no plan.
 - **Concurrent library use.** A restore in `main` and an `fp_create` in `io` serialise on the
@@ -1288,7 +1305,7 @@ by KiCad, as in spike 3A.
   `fp_create`, then restore. The `.kicad_mod` and the empty directory are gone, the table is as
   before, and `fp_get` → `not_found` after the reopen. Repeat with a library directory that
   already exists from another project: only this project's footprint is removed. The same for
-  `fp_delete` → restore → the footprint is back.
+  `fp_delete` → restore → the footprint is back, through the recorded `absent` state.
 - **Cross-project.**
   - `main` creates A; `io` creates B and approves A.
   - Restoring `main` to before A removes A only if `io` did not change it since; otherwise A is
