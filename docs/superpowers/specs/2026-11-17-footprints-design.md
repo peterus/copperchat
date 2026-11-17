@@ -1,9 +1,10 @@
 # CopperChat — Footprint tools (design)
 
 Date: 2026-11-17
-Status: draft for owner review. The owner decided the main points in chat between 2026-11-15
-and 2026-11-17; §14 lists them. Decisions the author made alone are marked
-**(author call)** and are listed again in §14.2. The open owner questions are in §15.
+Status: **approved by the owner on 2026-11-17.** The owner decided the main points in chat
+between 2026-11-15 and 2026-11-17; §14 lists them. Decisions the author made alone are marked
+**(author call)** and are listed again in §14.2. The owner accepted those calls together with
+the four follow-up decisions in §15.
 
 Inputs:
 
@@ -77,7 +78,7 @@ The owner's acceptance case comes from the real OpenDriveHub board:
   later option (§4).
 - Board-level checks against the project's design rules (`.kicad_dru`, board setup). v1 uses
   fixed, board-agnostic thresholds (§8). The project's rules come with SP4.
-- Downloading manufacturer or third-party footprints (see §15 Q2).
+- Downloading or importing manufacturer or third-party footprints (owner decision, §15 D2).
 
 ### Anti-goals (the feature fails if one of these happens, even if it "works")
 
@@ -171,7 +172,7 @@ Owner decision B: **one library per repo, at the repo root**, shared by all proj
   `fp_delete`, `fp_create(replace)`, `fp_approve`, the `source_missing` rule and the history
   coverage (§10) work only on it. **Every other library is read-only for CopperChat.** That
   includes other `.pretty` directories inside the repo, such as a vendor library committed by
-  the user (§15 Q2). `fp_list_local` lists only the local library.
+  the user (§15 D2). `fp_list_local` lists only the local library.
 
 `LibraryService` (`library/service.py`) gets these methods:
 
@@ -225,9 +226,10 @@ Owner decision B: **one library per repo, at the repo root**, shared by all proj
       the caches.
   - An out-of-memory kill of the api-server is handled like any other server death: restart
     from the last save, `KicadUnavailable`.
-- **Better fix for later.** A KiCad patch that stops `handleOpenFootprint` from loading every
-  library would remove the cost (the spike suggested it). It is not in the 0001–0004 series, so
-  it needs an owner decision (§15 Q4).
+- **No fifth KiCad patch in v1** (owner decision, §15 D4). A KiCad patch that stops
+  `handleOpenFootprint` from loading every library would remove the cost (the spike suggested
+  it). It stays a later option for a KiCad bump, if PROD memory gets tight; the PROD host has
+  31 GiB today.
 - **Logging.** On activation CopperChat logs RSS before and after. The first tool result in the
   turn gets a `notes` entry `{kind: "footprint_libraries_loaded", seconds}`, so that a slow call
   is explained.
@@ -525,7 +527,8 @@ the approval:
   7. Error-free `fp_check` on the current read-back.
 
   Guards 3–6 are the strongest server-side evidence available that the user saw this geometry
-  and approved it. They still cannot judge how clear the approval was (§15 Q1).
+  and approved it. They still cannot judge how clear the approval was; the owner accepted this for
+  v1 (§15 D1).
 - **Effect** (one commit on the footprint document):
   - `needs_user_review` → `no`;
   - a new field `User review` = `approved <YYYY-MM-DD>, conversation <id8>, geometry <hash8>`;
@@ -534,8 +537,8 @@ the approval:
 - **No "un-approve" tool.** Any later change through `fp_create replace=true` sets
   `needs_user_review = yes` again and drops `User review`. History undo restores the earlier
   state.
-- **A safer variant for later.** An "Approve" button on the render card in the chat would record
-  the approval without the agent. See §15 Q1.
+- **Later, with the SP4 frontend work** (owner decision, §15 D1): an "Approve" button on the
+  render card in the chat, which records the approval without the agent.
 
 ### 7.8 `fp_delete` (writing, Schematic + Free)
 
@@ -997,7 +1000,7 @@ Footprint tools count against the same per-turn budget (`EditingSettings.change_
 
 | Tool | `Logical.changes` (author call) |
 |---|---|
-| `fp_create` (new) | 5. A footprint is one unit for the user, but it carries many items and needs a review. At most 4 new footprints fit in a turn without a plan. |
+| `fp_create` (new) | 5 (owner decision, §15 D3). A footprint is one unit for the user, but it carries many items and needs a review. At most 4 new footprints fit in a turn without a plan. |
 | `fp_create(replace)` | 5 |
 | `fp_approve` | 1 |
 | `fp_delete` | 1. It is not counted against `MAX_PREEXISTING_SYMBOL_DELETES`. |
@@ -1159,34 +1162,31 @@ Footprint tools count against the same per-turn budget (`EditingSettings.change_
   - A library-only external change reloads libraries, not the session.
   - Content-addressed library blobs in `.kicad-agent/history-blobs/`.
   - A process-wide lock per library directory.
-- **Budget (§12).** `fp_create` costs 5, `fp_approve` / `fp_delete` 1, the row 0.
+- **Budget (§12).** `fp_approve` / `fp_delete` cost 1, the row 0. (The weight 5 for `fp_create` became an owner decision, §15 D3.)
 - **Profiles and skills (§13).**
   - `fp_check` / `fp_list_local` in all profiles.
   - A separate `kicad-footprints` skill.
   - An optional `## Land pattern` section in part notes.
 
-## 15. Open questions for the owner
+## 15. Decided by the owner (2026-11-17)
 
-1. **How the approval is recorded.** With an agent tool (`fp_approve`, guarded by "human reply + quote +
-   geometry hash"), the agent could still approve after a vague "looks fine" from the user. An
-   "Approve" button on the render card would make the approval a direct user action.
-   *Recommendation:* ship `fp_approve` in v1 as designed, and add the button with the frontend
-   work of SP4.
-2. **Manufacturer and third-party footprints in v1.** The library rule ranks them before
-   handmade footprints, but there is no API to import a `.kicad_mod`, and CopperChat must not
-   write one. *Recommendation:* in v1 the user adds such a library themselves, e.g. in the KiCad
-   GUI or by committing the vendor `.pretty`; CopperChat reads and checks it (`fp_get` /
-   `fp_check`). A later `fp_import` tool would add a project row through the API for an uploaded
-   `.pretty`.
-3. **Budget weight of `fp_create`.** At 5 logical changes, at most 4 new footprints fit in a turn
-   without a plan. *Recommendation:* keep 5, so that a batch of new footprints goes through a
-   plan.
-4. **A fifth KiCad patch for memory.** Every footprint document open loads all ~156 footprint
-   libraries: +1.7 GB RSS, up to 4 GB peak, also on board servers once something is written. A
-   small patch to `handleOpenFootprint` (load only the footprint's own library) would remove
-   this. It would be carried like 0001–0004 and offered upstream through the owner.
-   *Recommendation:* ship v1 without it, using the switch and the documented RAM need (§6.1).
-   Do the patch together with the next KiCad bump, if PROD memory turns out to be tight.
+These were the open questions of the draft. The owner accepted every recommendation ("passt").
+
+- **D1. How the approval is recorded.** v1 ships the guarded agent tool `fp_approve` (§7.7). An
+  "Approve" button on the render card, which makes the approval a direct user action, follows
+  with the SP4 frontend work.
+- **D2. Manufacturer and third-party footprints in v1.** There is no API to import a
+  `.kicad_mod`, and CopperChat must not write one. So in v1 the user adds such a library
+  themselves, in the KiCad GUI or by committing the vendor `.pretty`. CopperChat only reads and
+  checks it (`fp_get` / `fp_check`); it is read-only for CopperChat (§5). A later `fp_import`
+  tool will add a project row through the API for an uploaded `.pretty`.
+- **D3. Budget weight of `fp_create`.** It costs 5 logical changes, so at most 4 new footprints
+  fit in a turn without a plan, and a larger batch goes through a plan (§12).
+- **D4. No fifth KiCad patch in v1.** Every footprint document open loads all ~156 footprint
+  libraries: +1.7 GB RSS, up to 4 GB peak, also on board servers once something is written.
+  v1 handles this with the `COPPERCHAT_FOOTPRINT_TOOLS` switch and a documented RAM need
+  (§6.1); the PROD host has 31 GiB. A lazy-load patch to `handleOpenFootprint` stays an option
+  for a later KiCad bump, if PROD memory turns out to be tight.
 
 ## 16. Testing
 
