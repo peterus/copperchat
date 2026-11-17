@@ -13,6 +13,7 @@ import asyncio
 import hashlib
 import os
 import re
+import stat
 import uuid
 from pathlib import Path
 
@@ -44,6 +45,15 @@ class BlobStore:
         self.agent_dir = agent_dir
         self.root = agent_dir / BLOB_DIR
 
+    def _root_is_real(self) -> bool:
+        """The agent dir and the blob dir are real directories, never symlinks: a
+        cloned repo could ship `.kicad-agent/history-blobs` as a link elsewhere, and GC
+        must never delete outside CopperChat's own directory. Missing → False."""
+        try:
+            return all(stat.S_ISDIR(p.lstat().st_mode) for p in (self.agent_dir, self.root))
+        except FileNotFoundError:
+            return False
+
     def path(self, sha: object) -> Path:
         """The blob's path; a sha that is not 64 lowercase hex digits is refused."""
         if not isinstance(sha, str) or _SHA_RE.fullmatch(sha) is None:
@@ -61,6 +71,8 @@ class BlobStore:
             except FileNotFoundError:
                 pass
         self.root.mkdir(parents=True, exist_ok=True)
+        if not self._root_is_real():
+            raise CorruptSnapshot(f"{self.root} is not a real directory (symlink?)")
         tmp = self.root / f"{_TMP_PREFIX}{uuid.uuid4().hex}"
         h = hashlib.sha256()
         size = 0
@@ -84,24 +96,26 @@ class BlobStore:
         return sha, size
 
     def has_temp_files(self) -> bool:
-        if not self.root.is_dir():
+        if not self._root_is_real():
             return False
         return any(p.name.startswith(_TMP_PREFIX) for p in self.root.iterdir())
 
     def gc(self, referenced: set[str]) -> int:
         """Remove every blob not in `referenced` and every `.tmp-*` file (blocking).
         Never parses a manifest: the caller passes the refs from the database."""
-        if not self.root.is_dir():
+        if not self._root_is_real():
             return 0
         removed = 0
         for child in self.root.iterdir():
             name = child.name
-            if not name.startswith(_TMP_PREFIX) and name in referenced:
-                continue
-            if child.is_dir() and not child.is_symlink():
-                continue
+            if name.startswith(_TMP_PREFIX):
+                pass
+            elif _SHA_RE.fullmatch(name) is None or name in referenced:
+                continue  # only CopperChat's own blob names are ever removed
             try:
-                child.unlink()
+                if stat.S_ISDIR(child.lstat().st_mode):
+                    continue
+                child.unlink()  # a symlink is removed itself, never its target
             except FileNotFoundError:
                 continue
             removed += 1

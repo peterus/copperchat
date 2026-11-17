@@ -96,6 +96,31 @@ def test_gc_without_blob_dir(blobs: BlobStore) -> None:
     assert blobs.gc(set()) == 0
 
 
+def test_gc_never_follows_symlinked_blob_dir(tmp_path: Path, lib: Path) -> None:
+    # A cloned repo could ship `.kicad-agent/history-blobs` as a link elsewhere.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    victim = elsewhere / ("0" * 64)
+    shutil.copyfile(lib / "A.kicad_mod", victim)
+    agent = tmp_path / "agent"
+    agent.mkdir()
+    (agent / "history-blobs").symlink_to(elsewhere)
+    blobs = BlobStore(agent)
+    assert blobs.gc(set()) == 0
+    assert not blobs.has_temp_files()
+    assert victim.is_file()
+    with pytest.raises(CorruptSnapshot):
+        blobs.put(lib / "A.kicad_mod", None)
+
+
+def test_gc_only_removes_own_names(blobs: BlobStore, lib: Path) -> None:
+    a, _ = blobs.put(lib / "A.kicad_mod", None)
+    shutil.copyfile(lib / "B.kicad_mod", blobs.root / "notes.txt")
+    assert blobs.gc(set()) == 1
+    assert sorted(p.name for p in blobs.root.iterdir()) == ["notes.txt"]
+    assert a
+
+
 def test_gc_does_not_parse_manifests(
     blobs: BlobStore, lib: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
