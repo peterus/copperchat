@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     git_name: str | None = Field(default=None, validation_alias="COPPERCHAT_GIT_NAME")
     git_email: str | None = Field(default=None, validation_alias="COPPERCHAT_GIT_EMAIL")
 
+    # COPPERCHAT_FOOTPRINT_TOOLS = on (default) | off; off removes the footprint tools from
+    # every profile and makes footprint activation raise footprint_tools_disabled.
+    footprint_tools: bool = Field(default=True, validation_alias="COPPERCHAT_FOOTPRINT_TOOLS")
+
     @field_validator("git_name", "git_email")
     @classmethod
     def _git_identity(cls, value: str | None, info: ValidationInfo) -> str | None:

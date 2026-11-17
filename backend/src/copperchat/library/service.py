@@ -121,6 +121,13 @@ def _footprint_type() -> int:
     return int(LibraryType.LT_FOOTPRINT)
 
 
+def _global_footprint_nicknames(h: KicadHandle) -> frozenset[str]:
+    from kipy.proto.common.types import LibraryTableScope, LibraryType
+
+    table = h.kicad.get_library_table(LibraryType.LT_FOOTPRINT, LibraryTableScope.LTS_GLOBAL)
+    return frozenset(row.nickname for row in table.rows)
+
+
 def _scopes(library_type: int) -> Callable[[KicadHandle], dict[str, Scope]]:
     def run(h: KicadHandle) -> dict[str, Scope]:
         from kipy.proto.common.types import LibraryTableScope
@@ -224,6 +231,7 @@ class LibraryService:
         # nickname -> (reason, loop time); forgotten after FAILED_RETRY_S (KiCad may have
         # been busy or restarted).
         self._fp_failed: dict[str, tuple[str, float]] = {}
+        self._global_fp_nicknames: tuple[int, frozenset[str]] | None = None
 
     @property
     def _session(self) -> KicadSession:
@@ -231,6 +239,21 @@ class LibraryService:
         if session is None:
             raise KicadUnavailable("the KiCad session of this library service is gone")
         return session
+
+    async def global_footprint_nicknames(self) -> frozenset[str]:
+        """Nicknames of the global footprint table, cached per session generation.
+
+        Probed on a real api-server (F1 Task 1): `GetLibraryTable(LT_FOOTPRINT, LTS_GLOBAL)`
+        answers on a boardless server before any footprint document was opened.
+        """
+        session = self._session
+        generation = session.generation
+        cached = self._global_fp_nicknames
+        if cached is not None and cached[0] == generation:
+            return cached[1]
+        nicknames = await session.call(_global_footprint_nicknames)
+        self._global_fp_nicknames = (generation, nicknames)
+        return nicknames
 
     # -- warm-up -------------------------------------------------------------------
     @property

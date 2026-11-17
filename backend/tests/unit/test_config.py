@@ -64,3 +64,15 @@ def test_structured_tool_error_dict() -> None:
         "why": "No symbol has that reference",
         "suggestion": "Did you mean: R1, R9?",
     }
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"), [("off", False), ("on", True), ("false", False), ("true", True)]
+)
+def test_footprint_tools_env(monkeypatch: pytest.MonkeyPatch, value: str, expected: bool) -> None:
+    monkeypatch.setenv("COPPERCHAT_FOOTPRINT_TOOLS", value)
+    assert Settings(_env_file=None).footprint_tools is expected  # type: ignore[call-arg]
+
+
+def test_footprint_tools_default_on() -> None:
+    assert Settings(_env_file=None).footprint_tools is True  # type: ignore[call-arg]
