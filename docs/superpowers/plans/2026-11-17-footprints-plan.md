@@ -439,6 +439,55 @@ server-death case) and the error is re-raised.
 (Filled by each phase PR: one bullet per deviation from FP-C1…FP-C9 or from a
 phase file, with the reason.)
 
+### As built (F3)
+
+- **`CorruptSnapshot`** now lives in `history/blobs.py` (import cycle); `history/store.py`
+  re-exports it, so existing imports are unchanged.
+- **`HashRow`** (`sha256, size, mtime_ns, inode`) in `history/store.py`;
+  `DocumentHashRepo.replace` accepts `HashRow` or plain digests (stored without stats).
+  Project files store their stats too but never reuse them; stats are dropped when they
+  change during hashing or `mtime` is within 2 s of now (`RACY_NS`).
+- **`LibraryLocator`** type alias lives in `history/store.py`; `HistoryStore(db, project,
+  locate_library=...)`; `HistoryService.store()` passes `self.locate_library`.
+- **Manifest v2:** `repoRootRel` is `"."` for a project at the repo root and `null` (like
+  `library`/`table`) when the locator returns `None`. `BlobStore` refuses a symlinked
+  `.kicad-agent` / `history-blobs` dir and GC only removes 64-hex blob names and
+  `.tmp-*` files (a cloned repo could ship a link elsewhere). The blob lock is held until
+  the snapshot row and its `history_blob_refs` are committed.
+- **`FootprintWriteRepo`** returns `FootprintWrite` rows (frozen dataclass, every column);
+  `finalise` refuses `"pending"`. Constants `ABSENT`, `OPS`, `STATES`, `FINAL_STATES`.
+- **`library_restore.apply_library_plan(plan, blob_path, *, location, project_dir) ->
+  list[str]`** re-validates every path at apply time; order copies → deletes → own table
+  file (`remove_table`) → `rmdir`; delete/`rmdir` problems come back as notice lines.
+  `verify_blob(path, sha)` re-hashes before copy. A pending row counts as "no recorded
+  value" only if `pre`, `post_s2` and `post` are all null. Library-row nicknames are the
+  `lib_id` of `row_add` rows whose `file_rel` is this project's `fp-lib-table` — **F4a
+  must write `row_add` rows with `lib_id = <nickname>` and `file_rel = <repo-rel
+  project dir>/fp-lib-table`**. `rmdir` only when the dir did not exist at snapshot time,
+  this project added the row for `location.nickname` since, nothing is copied back and the
+  dir is empty after the deletes (residual: another project adding its own row to that
+  empty dir in between is not visible in this project's journal).
+- **Restore** (`history/restore.py`): table rows via injectable `_read_table_rows(session)`
+  / `_remove_table_rows(session, nicks)`; a failed table read is treated like "project not
+  open". The notice is posted after reopen + row removal and lists skipped files, apply
+  notes, the refused reason and unremoved rows (also "KiCad did not restart"). The blob
+  lock is taken inside the library lock during the copy. Listeners get `"restore"` only
+  when something changed.
+- **Tool adapter / hooks:** `RunHooks.on_library_changed(files)` (no-op default,
+  forwarded by `ChainedHooks`, implemented by `HistoryHooks` → `HistoryService.
+  on_library_changed`); `engine._make_ctx` sets `library_touched=[]` and
+  `on_library_changed=self.hooks.on_library_changed`. `HistoryService.notify_library(
+  project, rels, reason)` calls listeners and logs errors. The adapter runs the callback
+  in `finally` as a shielded task (a cancel lets it finish in the background).
+- **Library vs. project classification** at turn start: a rel ending in `.kicad_mod`
+  (`hooks.is_library_rel`) is a library file (works for deleted files and root projects).
+  Mixed changes take today's reload path **and** call the library listeners with
+  `"external"` for the library part (the reload does not refresh library caches).
+- **For F4a to wire:** `HistoryService.locate_library` (default `None`),
+  `library_listeners` (cache invalidation / `ReloadLibrary`), journal writes, the
+  restart-on-`restart_pending` at turn end (FP-C2).
+- `tests/kicad/test_history_real.py` unchanged; covered by the CI kicad job.
+
 ## Residuals
 
 (Filled by F5.) Known before the start:
