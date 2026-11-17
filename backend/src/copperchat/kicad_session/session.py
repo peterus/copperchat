@@ -751,11 +751,19 @@ class KicadSession:
                 async with self._footprint_document_locked(lib_id):
                     pass
             except ApiError as exc:
+                if "not found" in str(exc).lower():  # "Footprint not found: <lib_id>"
+                    raise StructuredToolError(
+                        f"could not load the footprint libraries (seed {lib_id})",
+                        f"KiCad could not find the seed footprint {lib_id}: {exc}",
+                        "check that the KiCad stock footprint libraries are installed",
+                        code="seed_missing",
+                        details={"lib_id": lib_id},
+                    ) from exc
                 raise StructuredToolError(
-                    f"could not load the footprint libraries (seed {lib_id})",
-                    f"KiCad could not open the seed footprint {lib_id}: {exc}",
-                    "check that the KiCad stock footprint libraries are installed",
-                    code="seed_missing",
+                    "could not load the footprint libraries",
+                    f"KiCad refused to open the seed footprint {lib_id}: {exc}",
+                    "retry later; if it keeps failing, check the KiCad api-server log",
+                    code="library_error",
                     details={"lib_id": lib_id},
                 ) from exc
             seconds = time.monotonic() - started
@@ -780,11 +788,11 @@ class KicadSession:
     async def _footprint_document_locked(self, lib_id: str) -> AsyncIterator[FootprintDocument]:
         # The open runs to completion even on a cancel, so its handle is never lost (a
         # footprint document left open breaks the next open/close, spike 3A Q4).
+        # Only the open that loads the footprint libraries needs the long timeout; a
+        # later hung open must not hold off a restart or a Stop for minutes.
+        timeout = None if self.footprints_active else footprint_doc.OPEN_TIMEOUT_S
         spec, cancelled = await _finish(
-            self.call(
-                lambda h: footprint_doc.open_footprint(h, lib_id),
-                timeout=footprint_doc.OPEN_TIMEOUT_S,
-            )
+            self.call(lambda h: footprint_doc.open_footprint(h, lib_id), timeout=timeout)
         )
         generation = self._generation  # read after the call: a lazy start bumps it
         self._footprints_generation = generation
