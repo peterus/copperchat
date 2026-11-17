@@ -5,6 +5,7 @@ that changed documents, crash recovery."""
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from copperchat.agent.engine import RunHooks, TurnInfo, TurnOutcome
@@ -114,6 +115,9 @@ class HistoryHooks(RunHooks):
     def on_documents_changed(self, turn: TurnInfo, docs: set[DocKind]) -> None:
         if "sch" in docs:  # the board stays turn-end only
             self.svc.live.schedule(self.project)
+
+    async def on_library_changed(self, files: list[Path]) -> None:
+        await self.svc.on_library_changed(self.project, files)
 
     async def on_engine_close(self) -> None:
         await self.svc.live.close(self.project)

@@ -42,6 +42,10 @@ class ToolResult:
     # Plain-text result for the model (and the chat row) instead of JSON ``data``; used by
     # research_part, whose summary is rendered as Markdown in the "Part research" card.
     text: str | None = None
+    # Nicknames of the footprint libraries this call changed (FP-C6, success only). A
+    # result with library_changed and no changed_docs is already saved, so the adapter
+    # skips its generation check for it.
+    library_changed: set[str] = field(default_factory=set)
 
 
 class ResearchService(Protocol):
@@ -84,6 +88,15 @@ class ToolContext:
     post_doc_notice: Callable[[DocNotice], Awaitable[None]] | None = None
     # The DesignDocs service; None outside the run engine wiring (doc tools then refuse).
     docs: DesignDocs | None = None
+    # Library files (footprints, the project's fp-lib-table) this call wrote, appended by
+    # every write stage incl. compensation and cleanup (FP-C6); the context is built per
+    # tool call.
+    library_touched: list[Path] = field(default_factory=list)
+    # Re-records the hashes of exactly those files (history). The adapter awaits it in
+    # `finally` (shielded) whenever library_touched is non-empty, for successful and
+    # failed calls alike, after the library lock and _apply_lock are released; it never
+    # takes HistoryService.lock.
+    on_library_changed: Callable[[list[Path]], Awaitable[None]] | None = None
 
 
 ToolHandler = Callable[[ToolContext, dict[str, Any]], Awaitable[ToolResult]]
