@@ -119,7 +119,8 @@ through the placed symbol's pins; `polarized` = exactly 2 pins whose names diffe
 neither `~` nor equal to their number).
 
 - [ ] **Step 1: Failing unit tests** (`test_check_tool.py`): schema (`expected.pads.maxItems
-  512`, `allow_unmatched_pads.maxItems 64`, `tolerance_mm` 0.001…1.0, additionalProperties
+  512`, `allow_unmatched_pads.maxItems 64` (items ≤ 16 chars), `symbol` ≤ 256, the numeric
+  bounds of index call 18 on `expected` values, `tolerance_mm` 0.001…1.0, additionalProperties
   false at every level); `symbol` that is neither `lib:Name` nor `^[A-Za-z#]+[0-9]+$` →
   `invalid_argument`; the check runs via `asyncio.to_thread` (patch and assert called).
 - [ ] **Step 2: Failing kicad tests** (`test_fp_check.py`, `blank_nopcb_session`):
@@ -157,8 +158,10 @@ kill/reap code now inside `kicad_tools/checks.py` (`run_kicad_check_on_dir`).
 **Interfaces:** Produces FP-C5 `render_footprint`, plus pure helpers in
 `views/footprint_render.py`: `auto_grid(extent_mm) -> float` (≤ 5 → 0.1, ≤ 20 → 0.25,
 ≤ 50 → 0.5, else 1.0), `load_kicad_svg(data: bytes) -> ET.Element` (refuses output > 10 MB and `<!DOCTYPE` /
-`<!ENTITY` with `render_failed`; drops `script`, `foreignObject`, every `on*` attribute
-and any `href`/`xlink:href` that is not a `#fragment` while re-serialising), `build_wrapper(kicad_svg: ET.Element, geometry,
+`<!ENTITY` with `render_failed`; drops `script`, `style` and `foreignObject` elements, every `on*` attribute, any `href`
+attribute in any namespace (matched on the local name of the Clark key, e.g.
+`{http://www.w3.org/1999/xlink}href`) that is not a `#fragment`, and any `url(` not pointing
+to `#…` in `style` attributes while re-serialising), `build_wrapper(kicad_svg: ET.Element, geometry,
 grid_mm, labels) -> bytes`, `rasterise(svg: bytes, extent_mm) -> tuple[bytes, float]`
 (scale = max(40, …) px/mm, longest side ≤ 2000 px, `cairosvg.svg2png(bytestring=…,
 url_fetcher=_refuse, output_width=…)`, run via `asyncio.to_thread`). The **whole** render
@@ -170,10 +173,14 @@ url_fetcher=_refuse, output_width=…)`, run via `asyncio.to_thread`). The **who
     `_refuse` was called and raised; no socket opened (patch `socket.socket` to fail).
   - `test_oversize_output_refused` (10 MB + 1 byte → `render_failed`) and
     `test_active_content_dropped` (`<script>`, `onload=`, `<foreignObject>`,
-    `href="http://x"` are gone from the wrapper; `href="#a"` stays).
+    `href="http://x"`, `xlink:href="http://x"`, `<style>`, `style="fill:url(http://x)"` are gone
+    from the wrapper; `href="#a"` stays).
   - `test_wrapper_structure`: for viewBox `-2 -2 4 4` and grid 0.1 → minor lines every 0.1,
     major every 1.0, axis lines through 0, tick labels on two edges, nested `<svg>` with the
     same viewBox; a pad number `"<&>"` is escaped (parse the output with `ET.fromstring`).
+  - `test_grid_coarsened_for_large_extent` (200 mm extent, `grid_mm=0.1` → ≤ 500 lines per
+    axis); `test_bad_dir_or_name_refused` (relative dir, dir not ending in `.pretty`, name with
+    `/` or `..` → `render_failed`/`invalid_argument` without spawning kicad-cli).
   - `test_major_every_5mm_above_20`: extent 30 mm → major spacing 5.
   - `test_raster_size`: 4×4 mm → width ≥ 160 px; 100×10 mm → longest side 2000 px.
   - `test_missing_or_empty_output`: fake `run_kicad_cli` returns 0 but writes nothing / an
@@ -182,7 +189,11 @@ url_fetcher=_refuse, output_width=…)`, run via `asyncio.to_thread`). The **who
     the second starts after the first ended (module `asyncio.Semaphore(1)`).
 - [ ] **Step 2: Run** — FAIL.
 - [ ] **Step 3: Implement**: library directory = `GetLibraryTable(…, substituted)` row of
-  the nickname (project scope first, then global); `kicad-cli fp export svg <dir> --fp=<name>
+  the nickname (project scope first, then global), which must be an absolute, existing
+  directory ending in `.pretty`; the name must not contain `/`, `\\`, NUL or `..`; and
+  `footprint_geometry(lib_id)` must succeed first (`not_found` stops before kicad-cli);
+  `build_wrapper` coarsens an explicit `grid_mm` so that no axis gets more than 500 grid
+  lines; `kicad-cli fp export svg <dir> --fp=<name>
   --layers <csv> -o <mkdtemp>` with timeout 60 s; default layers F.Cu, F.Mask, F.Paste,
   F.SilkS, F.Fab, F.CrtYd plus each B.* layer the geometry uses; dimension labels (pad-1
   size and centre, pitch between pad 1 and the next number, courtyard size) taken from the

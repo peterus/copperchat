@@ -52,7 +52,11 @@ index call 9; then `derive_local_library` → `LibraryLocation`), and one librar
   still the derived `LibraryLocation`); `test_tools_off_no_fp_tool_in_any_profile` (all
   registered `fp_*` tools incl. `fp_create`, also in Free).
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement**; wire `fp_get`/`fp_list_local`/`fp_check`:
-  `pending = journal.pending(project) has lib_id`.
+  `pending = journal.pending(project) has lib_id` — also into `footprint_notes`
+  (`specs_place.py`), so a footprint with a pending row gets `footprint_needs_review`.
+  Turn-end restart: `HistoryHooks` turn end calls `session.restart()` once when
+  `session.restart_pending` is set and clears the flag (unit test
+  `test_restart_pending_restarts_at_turn_end` with a fake session whose close raised).
 - [ ] **Step 4: Run** — PASS. **Step 5: Commit** `feat(footprints): write-path types and wiring`.
 
 ### Task 2: Target geometry and `fp_create.prepare`
@@ -96,7 +100,8 @@ free; `replace=true` requires an existing local footprint and reads the API pre-
 or `http(s)` URL; every failure → the **same** `invalid_argument` message; `location`
 non-empty) → model path (`${KIPRJMOD}/` or `${KICAD<n>_3DMODEL_DIR}/` with n in 6…11,
 no `..`, suffix `.step/.stp/.wrl/.wrz`; missing file → note `model_missing`) →
-`build_target` → `run_checks` (any error → `check_failed` with `details.findings`) →
+`build_target` → `run_checks` via `asyncio.to_thread` (any error → `check_failed` with
+`details = to_result(report)`, capped as in FP-C4) →
 `Logical(changes=5)`; S1 planned when no row.
 
 - [ ] **Step 1: Failing unit tests** (`test_build.py`, `test_create_prepare.py`):
@@ -111,6 +116,11 @@ no `..`, suffix `.step/.stp/.wrl/.wrz`; missing file → note `model_missing`) �
     `${KICAD10_3DMODEL_DIR}/x.step` accepted + `model_missing` note.
   - `test_name_taken_on_disk_without_row`: no row, `X.kicad_mod` on disk → `already_exists`.
   - `test_check_error_refuses`: a pad without mask → `check_failed`, no snapshot callback.
+  - `test_check_failed_details_capped`: a 512-pad input with 0.05 mm gaps → `check_failed`,
+    `details.findings` ≤ 200, `truncated: true`.
+  - `test_bounds` (index call 18): coordinate 501 mm, size 0, size 201 mm, `NaN` rotation,
+    a 17-char pad number, extra field names `"User review "`, `"User\u00a0review"`,
+    `"needs_user_review\u200b"` → `invalid_argument` each.
   - `test_limits`: 513 pads / 257 silk segments / 17 fields / each string limit above + 1 →
     `invalid_argument` from the schema.
   - `test_reserved_field_names_refused`: extra fields `needs_user_review`, `User Review`,
@@ -130,7 +140,11 @@ no `..`, suffix `.step/.stp/.wrl/.wrz`; missing file → note `model_missing`) �
 Stage order inside `session.applying()`: cleanup (Task 4) → S1 `ensure_library`
 (`AddLibraryTableEntry(create_library=True)`; `LCS_ALREADY_EXISTS` with the same URI is OK;
 read back `GetLibraryTable` + `GetLibraryStatuses == LLS_LOADED`) → **API name re-check**
-(`GetLibraryItems`; taken → `already_exists`, compensate S1) → S2 `copy_seed`
+(`GetLibraryItems`, under the library lock, after `local_library_dir_safe` and
+`local_footprint_file_safe`: **new name** taken → `already_exists`, compensate S1;
+**replace**: missing → `not_found`, and the file's sha256, `geometry_hash` and fields must
+equal the prepare pre-image, else `library_conflict` ("changed since prepare"), before
+any write) → S2 `copy_seed`
 (`footprint_document(SEED)` → `save_copy(lib:name)`; store `post_s2_sha256`) → S3 `rebuild`
 (open the copy; one commit: delete all children except the immutable fields, create pads,
 shapes, texts and fields, `update_footprint` with description/keywords/attributes/model or
@@ -151,8 +165,10 @@ Result (spec §7.6): `{created: [lib_id], file: <repo-relative path>, library_cr
 `check` (fp_check on the read-back), `geometry` (summary), `needs_user_review: true`,
 `logical_changes`, `budget`, `notes`}`; the suggestion text tells the agent to call
 `fp_render` and present render, check and source for approval.
-Test hook: `cs.fail_after ∈ {"ensure_library", "copy_seed", "rebuild_saved", "verify"}`
+Test hook: `cs.fail_after ∈ {"ensure_library", "copy_seed", "rebuild_saved"}`
 raises `InjectedFailure` (a `StructuredToolError` with `code="injected"`, only set by tests);
+`cs.fail_after = "verify"` instead shifts pad 1 of the read-back by 2 µm, so the real
+comparison raises `verification_failed`;
 `cs.kill_after` (same stage names) kills the api-server PID after that stage;
 `cs.fail_compensation = True` makes `DeleteLibraryItem` raise.
 
@@ -204,7 +220,10 @@ files, returns notes `pending_cleaned` / `pending_leftover`).
   with `KicadUnavailable`; journal row `pending` with `post_s2_sha256`; then `fp_get` and
   `fp_list_local` write nothing (hashes of repo files and journal rows unchanged) and show
   `unreviewed`; then `fp_create` of another name deletes the seed copy and reports
-  `pending_cleaned`; then a retry with the first name succeeds.
+  `pending_cleaned`; then a retry with the first name succeeds. Before the cleanup call,
+  `fp_check` on the pending lib id and a prepare-only `sch_set_fields` (refused by the gate
+  after `prepare`, e.g. budget 0) also leave journal rows and file hashes unchanged, and
+  `footprint_notes` adds `footprint_needs_review`.
 - [ ] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS.
 - [ ] **Step 6: Commit** `feat(footprints): clean up pending writes`.
 
@@ -236,12 +255,18 @@ items + `FootprintInstance`) through a footprint document; S2 copies the **seed*
 the name (`save_copy` overwrites; the name was checked to be this local footprint);
 the result drops `User review` and sets `needs_user_review = yes`. Compensation rebuilds the
 pre-image through the S3 code path and compares `geometry_hash` + fields; any difference →
-`document_inconsistent` naming the footprint (history is the backstop).
+`document_inconsistent` naming the footprint (history is the backstop). The pre-image is
+re-verified under the library lock before S2 (Task 3 re-check), so a change by another
+project or the GUI after prepare is refused, never overwritten by the compensation.
 
 - [ ] **Step 1: Failing kicad tests** (`test_fp_create.py`): `test_replace_resets_review`
   (approve via direct API field update in the test setup, then `replace` → `needs_user_review
   == "yes"`, no `User review`, new hash); `test_replace_compensation_rebuilds_preimage`
   (`fail_after="rebuild_saved"` → same hash as before, or `document_inconsistent`);
+  `test_replace_preimage_changed_between_prepare_and_apply` (change the footprint through
+  the raw API after prepare → refused, file untouched, no journal row `done`);
+  `test_replace_missing_at_apply` → `not_found`; `test_replace_symlinked_file_refused`
+  (`<name>.kicad_mod` replaced by a symlink → `library_conflict`);
   `test_replace_journal_pending_never_deleted` (kill after S2 of a replace → next writing
   call marks it `leftover`, file stays).
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS.

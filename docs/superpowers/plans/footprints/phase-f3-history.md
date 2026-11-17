@@ -40,7 +40,8 @@ row removal after a restore.
 run_id, lib_id, file_rel, op, pre_sha256, geometry_hash=None) -> int`, `set_post_s2(id, sha)`,
 `finalise(id, state, post_sha256)`, `pending(project_id) -> list[Row]`, `since(project_id,
 created_at) -> list[Row]`, `latest_for_file(file_rel) -> Row | None`,
-`later_foreign(file_rel, project_id, after_id) -> bool`, `any_for_lib(project_id, lib_id) -> bool`).
+`later_foreign(file_rel, project_id, after_id) -> bool`, `max_id() -> int`,
+`after_id(project_id, after_id) -> list[Row]`).
 `ABSENT = "absent"`.
 
 - [ ] **Step 1: Failing tests** (`test_footprint_journal.py`, in-memory DB as in
@@ -78,7 +79,8 @@ created_at) -> list[Row]`, `latest_for_file(file_rel) -> Row | None`,
 **Interfaces:** Produces `HashRow(sha256, size, mtime_ns, inode)`,
 `compute_tracked_hashes(files: list[TrackedFile], previous: dict[str, HashRow]) -> dict[str, HashRow]`
 (blocking; a library file whose `(size, mtime_ns, inode)` equals `previous` reuses its sha;
-stat before and after hashing, stat dropped if they differ), `DocumentHashRepo.get_rows`,
+stat before and after hashing, stat dropped if they differ or if `mtime_ns` is within 2 s of
+now — racily-clean rule), `DocumentHashRepo.get_rows`,
 `DocumentHashRepo.replace(project_id, rows: dict[str, HashRow])`,
 `HistoryService.current_hashes(project) -> dict[str, HashRow]` (calls `locate_library`).
 Existing `compute_hashes(project)` keeps its signature for project files only and is used
@@ -102,7 +104,9 @@ known_sha: str | None) -> tuple[str, int]` (reuse if `known_sha` blob exists; el
 `.tmp-<uuid>` while hashing, `fsync`, rename to `<sha>`), `path(sha) -> Path` (validates
 `^[0-9a-f]{64}$`, else `CorruptSnapshot`), `gc(referenced: set[str]) -> int`
 (removes unreferenced blobs and every `.tmp-*`; also run from a failed `snapshot()`), `blob_lock(project_id) -> asyncio.Lock`.
-`HistoryStore.snapshot` writes manifest v2 (index FP-C6) and inserts `history_blob_refs`
+`HistoryService.store(project)` passes `self.locate_library` into `HistoryStore`, so both
+snapshot callers (turn snapshot in `hooks.py`, step checkpoint in `changes/checkpoints.py`)
+get it. `HistoryStore.snapshot` writes manifest v2 (index FP-C6, plus `journalMaxId`) and inserts `history_blob_refs`
 in the same transaction as the snapshot row; `_prune` deletes refs with their snapshot
 and runs `gc` only if it removed ≥ 1 snapshot or temp files exist.
 
@@ -128,7 +132,11 @@ and runs `gc` only if it removed ≥ 1 snapshot or temp files exist.
 
 **Interfaces:** Produces in `history/library_restore.py`:
 `plan_library_restore(manifest: dict, location: LibraryLocation, project_dir: Path,
-journal: list[Row], foreign_later: Callable[[str, int], bool], current: Callable[[Path], str])
+journal: list[Row], foreign_later: Callable[[str, int], bool], current: Callable[[Path], str],
+table_rows: list[tuple[str, str]] | None)` (`table_rows` = the project's current
+`(nickname, uri)` rows from the API, `None` when the project is not open → `remove_table`
+is never set and own `row_add` rows go to `skipped` as "not removed (project not open)";
+`current` always computes a **fresh** sha256 — never the stat-reused hash of Task 3)
 -> LibraryRestorePlan(copy: list[tuple[str, Path]], delete: list[Path],
 rmdir: Path | None, remove_rows: list[str], remove_table: bool, skipped: list[str], refused: str | None)`
 and `validate_delete(path: Path, location: LibraryLocation, project_dir: Path, *, table: bool) -> None`
@@ -139,8 +147,9 @@ may be created only non-recursively below an existing real `footprints/`). Befor
 copy the blob is re-hashed against its name (`CorruptSnapshot` otherwise), as today's
 restore re-hashes snapshot files.
 
-Rules (spec §10, binding): only files named by this project's journal rows created after
-the snapshot are considered; per file the **latest** such row decides: `done` →
+Rules (spec §10, binding): only files named by this project's journal rows with
+`id > manifest.journalMaxId` are considered (index call 17); `row_add` rows only feed
+`remove_rows`/`remove_table`, never the copy or delete lists; per file the **latest** such row decides: `done` →
 `current == post_sha256`; `leftover`/`compensated` → `current == post_sha256` (value stored
 at finalisation); `pending` → any current state; a row without any recorded value →
 skipped and reported; any later row of another project on the same `file_rel` → skipped
@@ -164,6 +173,9 @@ not in it → delete. `library.dir` ≠ derived dir, or `repoRootRel` ≠ today'
   - `test_root_project_restore_uses_library_files` (project at the repo root: library entries
     have no `../` and are classified through `library.files`).
   - `test_never_touches_untouched_files` (a footprint with no journal row stays as is).
+  - `test_row_add_never_deletes_table_file_directly`; `test_journal_boundary_by_id` (a row
+    with the same millisecond timestamp as the snapshot but a higher id is restored);
+    `test_current_is_fresh_hash` (a stat-cached hash that is stale is not used).
   - `test_remove_table_only_if_all_rows_own` (snapshot `table.existed=false`; rows supplied
     by the caller from the API) and `test_otherwise_remove_rows`.
   - `test_rmdir_only_if_created_after_snapshot_by_this_project`.

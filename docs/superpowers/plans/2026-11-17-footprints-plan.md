@@ -200,6 +200,8 @@ async def footprint_geometry(self, lib_id: str, notes: list[dict[str, Any]] | No
                              ) -> FootprintGeometry | None  # LRU 64; appends footprint_libraries_loaded
 #   never called while the caller holds _fp_lock (activation takes it); read-backs run after
 #   the footprint document is closed
+def local_footprint_file_safe(lib: LocalLibrary, name: str) -> None  # lstat <dir>/<name>.kicad_mod:
+#   if it exists it must be a regular file (no symlink), else library_conflict
 def local_library_dir_safe(lib: LocalLibrary) -> None  # lstat every existing component from
 #   repo_root to lib.dir: a symlink or non-directory → library_conflict (used by for_write=True)
 ```
@@ -337,6 +339,7 @@ Manifest v2 (written by every snapshot from F3 on):
 {"version": 2, "id": "…", "projectId": "…", "runId": "…", "createdAt": "…", "label": "…",
  "kind": "turn", "planStepId": null,
  "repoRootRel": "hardware/main",                    // project dir relative to the repo root
+ "journalMaxId": 41,                                // highest footprint_writes.id at snapshot time
  "files": [{"relPath": "main.kicad_sch", "sha256": "…", "size": 1}],   // project files, copied as today
  "library": {"dir": "footprints/X.pretty",          // repo-root-relative; null while transient
              "existed": true,
@@ -377,15 +380,17 @@ CREATE TABLE footprint_reviews (
 `file_rel` is **repo-root-relative**, so two projects of one repo name the same file
 the same way (the cross-project guard compares it). `db/repos/footprints.py` (F3):
 `FootprintWriteRepo.insert_pending(...) -> int`, `.set_post_s2(id, sha)`,
-`.finalise(id, state, post_sha256)`, `.pending(project_id)`, `.since(project_id, created_at)`,
-`.latest_for_file(file_rel)`, `.later_foreign(file_rel, project_id, after_id) -> bool`;
+`.finalise(id, state, post_sha256)`, `.pending(project_id)`,
+`.latest_for_file(file_rel)`, `.later_foreign(file_rel, project_id, after_id) -> bool`,
+`.max_id() -> int`, `.after_id(project_id, after_id) -> list[Row]`;
 `FootprintReviewRepo` is added by F4b in the same module.
 
 ### FP-C8. Write path — `copperchat.kicad_tools.footprints.engine` (F4a)
 
 ```python
 NO_SHEET = SheetRef(path="", page="", file="", name="<footprint>")
-@dataclass(frozen=True) class LibraryRowStage: nickname: str; uri: str; create_library: bool
+@dataclass(frozen=True) class LibraryRowStage: library: LocalLibrary; create_library: bool
+#   nickname/uri/dir come from `library`
 @dataclass(frozen=True) class FpStage: kind: Literal["ensure_library","copy_seed","rebuild","approve","delete"]; ...
 @dataclass
 class FootprintChangeSet(ChangeSet):      # sheet=NO_SHEET, stages=[], pre_images={}, intent=NetIntent()
@@ -398,7 +403,10 @@ class FootprintChangeSet(ChangeSet):      # sheet=NO_SHEET, stages=[], pre_image
     fail_compensation: bool = False                # test hook: DeleteLibraryItem raises
 ChangeSet.library_row: LibraryRowStage | None = None      # new base field (default None)
 async def apply_footprint_change_set(ctx: ToolContext, cs: FootprintChangeSet) -> FootprintApplied
-async def run_library_row(ctx: ToolContext, stage: LibraryRowStage, lib: LocalLibrary, *, verify: str | None) -> bool
+async def run_library_row(ctx: ToolContext, stage: LibraryRowStage, *, verify: str | None) -> bool
+#   lock-free; asserts library_lock(stage.library.dir); re-runs local_library_dir_safe first
+# apply_footprint_change_set also re-runs local_library_dir_safe (and, for replace/approve/
+# delete, local_footprint_file_safe) under the library lock before its first write
 async def cleanup_pending(ctx: ToolContext, lib: LocalLibrary) -> list[dict[str, Any]]   # notes
 def classify_pending(rows, current_sha: Callable[[str], str]) -> list[PendingOutcome]   # pure, used by prepare too
 ```
@@ -500,8 +508,8 @@ test in the named phase.
    `fp_check` until it is re-created with `fp_create(replace=true)` and a source; the
    `kicad-footprints` skill tells the agent to explain this. F2 Task 2.
 7. **Journal test gaps**: added — pending `replace` → `leftover`; every read path
-   (`fp_get`, `fp_list_local`, `fp_check`, `footprint_notes`, activation) leaves journal
-   and files unchanged; a `leftover` later changed by another project is skipped by
+   (`fp_get`, `fp_list_local`, `fp_check`, a prepare-only `sch_set_fields` through
+   `footprint_notes`, activation) leaves journal and files unchanged (F4a Task 4); a `leftover` later changed by another project is skipped by
    restore; a generation change between the crash and the cleanup does not matter (the
    cleanup compares file hashes only). F3 Task 5, F4a Task 4.
 8. **`FootprintChangeSet.sheet`**: the base `ChangeSet.sheet` stays `SheetRef` (mypy);
@@ -520,10 +528,11 @@ test in the named phase.
 12. **Migration ownership**: F3 creates all footprint tables in one migration
     `0012_footprints.sql` (spec: "same migration"), because restore (F3) already reads
     the journal.
-13. **`fp_approve` and plan policy `always`**: `fp_approve` is exempt from the
-    "no active plan step" refusal in `BudgetGate.before_prepare` (it records a user
-    decision, not a design edit, and guard 6 forbids it during plan execution), so an
-    approval is possible in `always` projects. F4b Task 1.
+13. **`fp_approve` and plans**: `fp_approve` is exempt from the plan refusals in
+    **both** gates — `BudgetGate.before_prepare` ("no active plan step" under policy
+    `always`) and `PlanGate.before_prepare` (`plan_open` for proposed/approved/paused
+    plans, `plan_step_required`) — because it records a user decision, not a design edit;
+    guard 6 still refuses it while a plan is `running`. F4b Task 1.
 14. **Restore of a project that is not open**: no API is available, so the table is left
     untouched and every own `row_add` row since the snapshot is listed in the notice as
     "library row <nick> not removed (project not open)"; `remove_table` is never taken
@@ -531,9 +540,19 @@ test in the named phase.
 15. **`user_quote`** must hold at least 2 words and 8 non-space characters and match on
     word boundaries (or be the whole message when that is shorter); a stricter reading of
     spec guard 5, not a weaker one. F4b Task 1.
-16. **Output caps**: `fp_get detail="full"` returns at most 500 shapes and 64 points per
-    shape (`truncated: true`, note pointing to `fp_render`); `fp_check` findings are capped
-    (FP-C4). F1 Task 5, F2 Task 2.
+16. **Output caps**: `fp_get` returns at most 256 pads (`summary`) / 1,000 pads (`full`)
+    with `pads_truncated: true` and an exact `pad_count`; `full` returns at most 500 shapes
+    and 64 points per shape (`truncated: true`, note pointing to `fp_render`); `fp_check`
+    findings are capped (FP-C4), also in `fp_create`'s `check_failed` details. F1 Task 5,
+    F2 Task 2, F4a Task 2.
+17. **Journal boundary**: the manifest stores `journalMaxId` (the highest `footprint_writes.id`
+    at snapshot time); restore considers rows with `id > journalMaxId`, never timestamps.
+    F3 Tasks 1, 4, 5.
+18. **Numeric and string bounds** for every footprint tool input: coordinates |x|,|y| ≤ 500 mm,
+    sizes 0 < s ≤ 200 mm, drills 0 < d ≤ 50 mm, finite rotations, pad numbers ≤ 16 chars,
+    `symbol` ≤ 256, layers from the fixed layer-name pattern; extra field names
+    `^[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}$` (checked after NFKC + whitespace collapse, before
+    the `RESERVED_FIELDS` casefold check). F2 Task 3, F4a Task 2.
 
 ## Provisional — needs owner confirmation
 

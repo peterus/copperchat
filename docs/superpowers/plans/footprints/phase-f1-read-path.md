@@ -75,7 +75,9 @@ FP-C2 (`activate_footprints`, `footprints_active`, `footprint_document`,
 
 - [ ] **Step 1: Failing unit tests** (`test_read_tools.py`, fake session object):
   `test_activation_refused_when_disabled` — `footprint_tools=False` → `StructuredToolError`
-  `code == "footprint_tools_disabled"` and the fake records **no** open-document call.
+  `code == "footprint_tools_disabled"` and the fake records **no** open-document call;
+  `test_document_refused_when_disabled` — the same for `footprint_document()`;
+  `test_failed_close_sets_restart_pending` — the fake's close raises → `restart_pending`.
 - [ ] **Step 2: Failing kicad tests** (`test_activation.py`, `blank_nopcb_session`):
   - `test_activate_once`: first `activate_footprints()` returns a float > 0,
     `footprints_active` is True, second call returns `None`; RSS before/after is logged
@@ -86,8 +88,6 @@ FP-C2 (`activate_footprints`, `footprints_active`, `footprint_document`,
     with an `entry_name`, and `h.schematic().get_symbols()` still works.
   - `test_read_items_of_seed`: `items()` contains 2 pads; `footprint()` has the seed's
     description; no write was made (seed `.kicad_mod` mtime unchanged).
-  - `test_document_refused_when_disabled` (unit, fake session): `footprint_tools=False` →
-    `footprint_document()` raises `footprint_tools_disabled` before any KiCad call.
   - `test_seed_missing`: monkeypatch `SEED_LIB_ID` to `Inductor_SMD:Nope` → activation raises
     `code == "seed_missing"` naming the lib id.
 - [ ] **Step 3: Run** — FAIL.
@@ -177,9 +177,10 @@ FP-C2 (`activate_footprints`, `footprints_active`, `footprint_document`,
     `footprint_tools=False` no profile (incl. Free) contains **any** tool whose name starts
     with `fp_` (the filter is by prefix, so F2/F4 tools are covered without touching it
     again); Free stays a superset of the registry when enabled.
-  - `test_full_detail_truncates_large_footprint`: a synthetic 10,000-shape geometry →
-    `to_dict("full")` has 500 shapes, polygons ≤ 64 points, `truncated: true` and a note
-    pointing to `fp_render` (index call 16).
+  - `test_full_detail_truncates_large_footprint`: a synthetic 10,000-shape, 2,000-pad
+    geometry → `to_dict("full")` has 500 shapes, polygons ≤ 64 points, 1,000 pads,
+    `truncated`/`pads_truncated: true`, exact `pad_count` and a note pointing to `fp_render`;
+    `to_dict("summary")` has 256 pads (index call 16).
   - `test_fp_get_schema`: `additionalProperties: false`, `lib_id.maxLength == 256`,
     `detail.enum == ["summary", "full"]`; `lib_id` without `:` → `invalid_argument`.
 - [ ] **Step 2: Failing kicad tests** (`test_fp_get.py`):
