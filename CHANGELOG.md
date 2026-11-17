@@ -7,6 +7,8 @@ All notable changes to CopperChat are documented in this file. The format follow
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-17
+
 ### Added
 
 - The KiCad base image now carries four KiCad API patches (`docker/kicad-base/patches/`, meant
@@ -435,7 +437,8 @@ projects, in the browser on desktop, iPad and iPhone.
 - The KiCanvas patches live in this repository (`frontend/vendor-patches/kicanvas/`), not in
   an upstream fork; the main JavaScript chunk is large (~590 kB).
 
-[Unreleased]: https://github.com/peterus/copperchat/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/peterus/copperchat/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/peterus/copperchat/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/peterus/copperchat/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/peterus/copperchat/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/peterus/copperchat/compare/v0.8.2...v0.9.0
