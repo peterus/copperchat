@@ -49,5 +49,5 @@ def test_same_result_for_two_projects(tmp_path: Path) -> None:
 def test_name_re() -> None:
     for ok in ("L_Bourns_SRN3012BTA", "R_0805+x.1", "a"):
         assert NAME_RE.match(ok)
-    for bad in ("", "-x", "a/b", "..", "a b", "a" * 101):
+    for bad in ("", "-x", "a/b", "..", "a b", "a" * 101, "a\n"):
         assert not NAME_RE.match(bad)

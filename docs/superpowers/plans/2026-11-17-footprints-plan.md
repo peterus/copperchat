@@ -512,6 +512,11 @@ phase file, with the reason.)
   restart-on-`restart_pending` at turn end (FP-C2).
 - `tests/kicad/test_history_real.py` unchanged; covered by the CI kicad job.
 
+### As built (F1)
+
+- **F1 Task 1 probe (author call 9):** `GetLibraryTable(LT_FOOTPRINT, LTS_GLOBAL)` answers on a boardless api-server before any footprint document is opened (155 rows incl. `Inductor_SMD`, KiCad 52b43fb8 + patches 0001–0004), so `global_footprint_nicknames()` uses the API table; the stock-dir fallback is not implemented. `tests/kicad/footprints/test_activation.py::test_global_table_before_activation` pins this branch.
+- **FP-C1 `NAME_RE`:** ends in `\Z` instead of `$` so a trailing newline is rejected.
+
 ## Residuals
 
 (Filled by F5.) Known before the start:

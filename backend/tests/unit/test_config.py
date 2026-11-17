@@ -74,5 +74,6 @@ def test_footprint_tools_env(monkeypatch: pytest.MonkeyPatch, value: str, expect
     assert Settings(_env_file=None).footprint_tools is expected  # type: ignore[call-arg]
 
 
-def test_footprint_tools_default_on() -> None:
+def test_footprint_tools_default_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("COPPERCHAT_FOOTPRINT_TOOLS", raising=False)
     assert Settings(_env_file=None).footprint_tools is True  # type: ignore[call-arg]

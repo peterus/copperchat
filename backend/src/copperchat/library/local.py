@@ -12,7 +12,7 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
 
-NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+-]{0,99}$")
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+-]{0,99}\Z")
 LIBRARY_DESCRIPTION = "CopperChat local footprints"
 NICKNAME_MAX = 32
 _UNSAFE = re.compile(r"[^A-Za-z0-9_-]")
