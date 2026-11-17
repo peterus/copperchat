@@ -4,6 +4,7 @@ from copperchat.kicad_session.errors import (
     KicadUnavailable,
     LibrariesLoading,
 )
+from copperchat.kicad_session.footprint_doc import SEED_LIB_ID, FootprintDocument
 from copperchat.kicad_session.launcher import KicadCliLauncher, ServerLauncher
 from copperchat.kicad_session.session import (
     ClientFactory,
@@ -17,10 +18,12 @@ from copperchat.kicad_session.session import (
 )
 
 __all__ = [
+    "SEED_LIB_ID",
     "ClientFactory",
     "CommitScope",
     "DocKind",
     "DocumentModified",
+    "FootprintDocument",
     "KicadCallTimeout",
     "KicadCliLauncher",
     "KicadHandle",
