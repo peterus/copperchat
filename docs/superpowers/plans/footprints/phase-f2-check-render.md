@@ -165,7 +165,8 @@ to `#…` in `style` attributes while re-serialising), `build_wrapper(kicad_svg:
 grid_mm, labels) -> bytes`, `rasterise(svg: bytes, extent_mm) -> tuple[bytes, float]`
 (scale = max(40, …) px/mm, longest side ≤ 2000 px, `cairosvg.svg2png(bytestring=…,
 url_fetcher=_refuse, output_width=…)`, run via `asyncio.to_thread`). The **whole** render
-(kicad-cli, parse, wrapper, rasterise) runs under the module `Semaphore(1)`.
+(kicad-cli, parse, wrapper, rasterise) runs under the module `Semaphore(1)`; parse +
+sanitise + `build_wrapper` run in one `asyncio.to_thread` call, rasterise in another.
 
 - [ ] **Step 1: Failing unit tests** (`test_render_wrapper.py`):
   - `test_doctype_refused`, `test_entity_refused` → `render_failed`.

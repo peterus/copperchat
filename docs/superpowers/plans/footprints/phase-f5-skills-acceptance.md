@@ -104,7 +104,8 @@ wording. `part-notes`: rule 10 allows `<repo-nick>:<name>`; new optional section
     as a library-only change (libraries reloaded, no plan pause).
   - `test_concurrent_restore_and_create`: a restore of `main` (project not open) and an
     `fp_create` in `io` run concurrently → they serialise on the library lock (both
-    succeed; order observable through the journal timestamps), and the restore does not
+    succeed; the order is observed through an instrumented `library_lock` that records
+    acquire/release per holder), and the restore does not
     hold the lock during `io`'s KiCad calls.
   - `test_leftover_removed_by_undo`: a `document_inconsistent` leftover (F4a hook) is removed
     by restoring the turn snapshot.

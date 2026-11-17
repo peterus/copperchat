@@ -81,7 +81,8 @@ run_id, lib_id, file_rel, op, pre_sha256, geometry_hash=None) -> int`, `set_post
 stat before and after hashing, stat dropped if they differ or if `mtime_ns` is within 2 s of
 now — racily-clean rule), `DocumentHashRepo.get_rows`,
 `DocumentHashRepo.replace(project_id, rows: dict[str, HashRow])`,
-`HistoryService.current_hashes(project) -> dict[str, HashRow]` (calls `locate_library`).
+`async HistoryService.current_hashes(project) -> dict[str, HashRow]` (awaits `locate_library`,
+then runs `compute_tracked_hashes` via `asyncio.to_thread`).
 Existing `compute_hashes(project)` keeps its signature for project files only and is used
 by callers that do not know the library.
 
@@ -105,7 +106,8 @@ known_sha: str | None) -> tuple[str, int]` (reuse if `known_sha` blob exists; el
 (removes unreferenced blobs and every `.tmp-*`; also run from a failed `snapshot()`), `blob_lock(project_id) -> asyncio.Lock`.
 `HistoryService.store(project)` passes `self.locate_library` into `HistoryStore`, so both
 snapshot callers (turn snapshot in `hooks.py`, step checkpoint in `changes/checkpoints.py`)
-get it. `HistoryStore.snapshot` writes manifest v2 (index FP-C6, plus `journalMaxId`) and inserts `history_blob_refs`
+get it. The snapshot's library part (hashing + `BlobStore.put` for every library file) runs as
+**one** `asyncio.to_thread` call under the library and blob locks. `HistoryStore.snapshot` writes manifest v2 (index FP-C6, plus `journalMaxId`) and inserts `history_blob_refs`
 in the same transaction as the snapshot row; `_prune` deletes refs with their snapshot
 and runs `gc` only if it removed ≥ 1 snapshot or temp files exist.
 
@@ -132,6 +134,7 @@ and runs `gc` only if it removed ≥ 1 snapshot or temp files exist.
 **Interfaces:** Produces in `history/library_restore.py`:
 `plan_library_restore(manifest: dict, location: LibraryLocation, project_dir: Path,
 journal: list[Row], foreign_later: Callable[[str, int], bool], current: Callable[[Path], str],
+#   foreign_later(file_rel, manifest.journalMaxId): any other-project row after the snapshot
 table_rows: list[tuple[str, str]] | None)` (`table_rows` = the project's current
 `(nickname, uri)` rows from the API, `None` when the project is not open → `remove_table`
 is never set and own `row_add` rows go to `skipped` as "not removed (project not open)";
@@ -162,6 +165,8 @@ not in it → delete. `library.dir` ≠ derived dir, or `repoRootRel` ≠ today'
   - `test_copies_back_own_changed_and_deleted` (delete row with `post_sha256 = absent`).
   - `test_skips_file_changed_elsewhere` (current ≠ `post_sha256`).
   - `test_skips_when_foreign_row_later` (another project approved it after this create).
+  - `test_skips_when_foreign_row_between_snapshot_and_own_row` (foreign row 10, own `done`
+    row 11, current == own post → skipped).
   - `test_pending_accepts_any_state` and `test_pending_replace_is_restored_from_blob`.
   - `test_leftover_restored_unless_changed_by_other_project` (index call 7).
   - `test_row_without_value_skipped_and_reported`.

@@ -148,7 +148,8 @@ FP-C2 (`activate_footprints`, `footprints_active`, `footprint_document`,
     `Path.read_bytes`/`open` to raise).
   - `test_for_write_symlinked_dir_refused`: `<root>/footprints` a symlink, and separately
     `<root>/footprints/X.pretty` a symlink or a regular file → `local_library(for_write=True)`
-    raises `library_conflict` (`local_library_dir_safe`); reads still work.
+    raises `library_conflict` (`local_library_dir_safe`); reads still work. The same when the
+    project's `fp-lib-table` is a symlink.
   - `test_local_library_transient_returns_none` and
     `test_local_library_for_write_transient_raises` (`code == "repo_root_unknown"`).
   - `test_row_conflict`: project rows `{OpenDriveHub: other uri}` → `row_conflict` names both

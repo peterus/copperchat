@@ -203,7 +203,9 @@ async def footprint_geometry(self, lib_id: str, notes: list[dict[str, Any]] | No
 def local_footprint_file_safe(lib: LocalLibrary, name: str) -> None  # lstat <dir>/<name>.kicad_mod:
 #   if it exists it must be a regular file (no symlink), else library_conflict
 def local_library_dir_safe(lib: LocalLibrary) -> None  # lstat every existing component from
-#   repo_root to lib.dir: a symlink or non-directory → library_conflict (used by for_write=True)
+#   repo_root to lib.dir: a symlink or non-directory → library_conflict; also the project's
+#   fp-lib-table (lib.table): if it exists it must be a regular file with no symlink
+#   component (used by for_write=True, run_library_row and the engine before S1)
 ```
 
 ### FP-C2. KiCad session — `copperchat.kicad_session` (F1)
@@ -241,7 +243,7 @@ SEED_LIB_ID = "Inductor_SMD:L_Bourns-SRN4018"
     roundrect_ratio, drill: Drill | None, layers: tuple[str, ...],
     extra: tuple[tuple[str, Any], ...]   # clearance, margins, zone/thermal: hashed only
 @dataclass(frozen=True) class Shape: kind, layer, points, center, size, width, closed
-@dataclass(frozen=True) class Text:  kind, layer, at, size, value
+@dataclass(frozen=True) class Text:  kind, layer, at, size, rotation, value
 @dataclass(frozen=True) class Model3D: path, offset, rotation, scale
 @dataclass(frozen=True)
 class FootprintGeometry:
@@ -396,7 +398,8 @@ NO_SHEET = SheetRef(path="", page="", file="", name="<footprint>")
 class FootprintChangeSet(ChangeSet):      # sheet=NO_SHEET, stages=[], pre_images={}, intent=NetIntent()
     fp_stages: list[FpStage] = field(default_factory=list)
     target: FootprintGeometry | None = None
-    pre_image: FootprintPreImage | None = None     # replace only (API data)
+    pre_image: FootprintPreImage | None = None     # replace only (API data):
+    #   FootprintPreImage(items: list[bytes], definition: bytes, file_sha256: str, geometry_hash: str)
     library: LocalLibrary | None = None
     fail_after: str | None = None                  # test hook: raise InjectedFailure after a stage
     kill_after: str | None = None                  # test hook: kill the api-server after a stage
@@ -405,8 +408,9 @@ ChangeSet.library_row: LibraryRowStage | None = None      # new base field (defa
 async def apply_footprint_change_set(ctx: ToolContext, cs: FootprintChangeSet) -> FootprintApplied
 async def run_library_row(ctx: ToolContext, stage: LibraryRowStage, *, verify: str | None) -> bool
 #   lock-free; asserts library_lock(stage.library.dir); re-runs local_library_dir_safe first
-# apply_footprint_change_set also re-runs local_library_dir_safe (and, for replace/approve/
-# delete, local_footprint_file_safe) under the library lock before its first write
+# apply_footprint_change_set also re-runs local_library_dir_safe and local_footprint_file_safe
+# (for every create — new name and replace — approve and delete) under the library lock
+# before its first write
 async def cleanup_pending(ctx: ToolContext, lib: LocalLibrary) -> list[dict[str, Any]]   # notes
 def classify_pending(rows, current_sha: Callable[[str], str]) -> list[PendingOutcome]   # pure, used by prepare too
 ```
@@ -508,8 +512,9 @@ test in the named phase.
    `fp_check` until it is re-created with `fp_create(replace=true)` and a source; the
    `kicad-footprints` skill tells the agent to explain this. F2 Task 2.
 7. **Journal test gaps**: added — pending `replace` → `leftover`; every read path
-   (`fp_get`, `fp_list_local`, `fp_check`, a prepare-only `sch_set_fields` through
-   `footprint_notes`, activation) leaves journal and files unchanged (F4a Task 4); a `leftover` later changed by another project is skipped by
+   (`fp_get`, `fp_list_local`, `fp_check`, activation — F4a Task 4; a prepare-only
+   `sch_set_fields` through `footprint_notes` — F4b Task 3) leaves journal and files
+   unchanged; a `leftover` later changed by another project is skipped by
    restore; a generation change between the crash and the cleanup does not matter (the
    cleanup compares file hashes only). F3 Task 5, F4a Task 4.
 8. **`FootprintChangeSet.sheet`**: the base `ChangeSet.sheet` stays `SheetRef` (mypy);

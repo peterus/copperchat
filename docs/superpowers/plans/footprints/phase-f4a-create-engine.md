@@ -34,7 +34,8 @@ compensated, every write journalled, and the call is undoable from History.
 ### Task 1: Types, schematic-engine guard, F1 ↔ F3 wiring
 
 **Interfaces:** Produces FP-C8 types (`NO_SHEET`, `LibraryRowStage`, `FpStage`,
-`FootprintChangeSet`, `FootprintPreImage(items: list[bytes], definition: bytes)`,
+`FootprintChangeSet`, `FootprintPreImage(items: list[bytes], definition: bytes,
+file_sha256: str, geometry_hash: str)` (the last two filled in prepare when `replace=true`),
 `FootprintApplied`), `DocumentInconsistent(…, leftovers: list[str] = [])`,
 `make_library_locator(settings: Settings, sessions: KicadSessionManager) -> LibraryLocator`
 (per `Project`, also for a project that is not open: `repo_policy(project,
@@ -52,8 +53,8 @@ index call 9; then `derive_local_library` → `LibraryLocation`), and one librar
   still the derived `LibraryLocation`); `test_tools_off_no_fp_tool_in_any_profile` (all
   registered `fp_*` tools incl. `fp_create`, also in Free).
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement**; wire `fp_get`/`fp_list_local`/`fp_check`:
-  `pending = journal.pending(project) has lib_id` — also into `footprint_notes`
-  (`specs_place.py`), so a footprint with a pending row gets `footprint_needs_review`.
+  `pending = journal.pending(project) has lib_id` (the `footprint_notes` wiring follows in
+  F4b Task 3, which adds its local-library branch).
   Turn-end restart: `HistoryHooks` turn end calls `session.restart()` once when
   `session.restart_pending` is set and clears the flag (unit test
   `test_restart_pending_restarts_at_turn_end` with a fake session whose close raised).
@@ -141,7 +142,8 @@ Stage order inside `session.applying()`: cleanup (Task 4) → S1 `ensure_library
 (`AddLibraryTableEntry(create_library=True)`; `LCS_ALREADY_EXISTS` with the same URI is OK;
 read back `GetLibraryTable` + `GetLibraryStatuses == LLS_LOADED`) → **API name re-check**
 (`GetLibraryItems`, under the library lock, after `local_library_dir_safe` and
-`local_footprint_file_safe`: **new name** taken → `already_exists`, compensate S1;
+`local_footprint_file_safe`: **new name** taken in the API listing **or** `lstat(<dir>/<name>.kicad_mod)`
+exists and is not a cleanable pending copy → `already_exists`, compensate S1;
 **replace**: missing → `not_found`, and the file's sha256, `geometry_hash` and fields must
 equal the prepare pre-image, else `library_conflict` ("changed since prepare"), before
 any write) → S2 `copy_seed`
@@ -178,6 +180,13 @@ comparison raises `verification_failed`;
     `needs_user_review: true`, `check.passed`, journal rows `row_add` + `create` are `done`.
   - `test_refusals_write_nothing`: existing name, missing source, check error → sha256 of
     the table and every library file identical before/after; no journal row.
+  - `test_file_on_disk_before_s2_refused`: between prepare and apply, a regular
+    `<name>.kicad_mod` appears on disk (written as a byte copy of an API-saved footprint)
+    without being in the API listing → `already_exists`, file untouched, S1 compensated.
+  - `test_create_new_name_symlink_refused`: `<name>.kicad_mod` is a dangling symlink, no row
+    → prepare passes, apply returns `library_conflict`, S1 compensated, target untouched.
+  - `test_table_symlink_refused`: the project's `fp-lib-table` is a symlink →
+    `library_conflict` before S1, nothing written.
   - `test_api_recheck_before_s2_refuses_and_rolls_back_row`: between prepare and apply,
     create the same name through the raw API (simulating the GUI) → `already_exists`, the
     row this call added is gone, the empty dir it created is gone, the foreign footprint
@@ -221,9 +230,8 @@ files, returns notes `pending_cleaned` / `pending_leftover`).
   `fp_list_local` write nothing (hashes of repo files and journal rows unchanged) and show
   `unreviewed`; then `fp_create` of another name deletes the seed copy and reports
   `pending_cleaned`; then a retry with the first name succeeds. Before the cleanup call,
-  `fp_check` on the pending lib id and a prepare-only `sch_set_fields` (refused by the gate
-  after `prepare`, e.g. budget 0) also leave journal rows and file hashes unchanged, and
-  `footprint_notes` adds `footprint_needs_review`.
+  `fp_check` on the pending lib id also leaves journal rows and file hashes unchanged and
+  reports `needs_user_review` (info) for it.
 - [ ] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS.
 - [ ] **Step 6: Commit** `feat(footprints): clean up pending writes`.
 

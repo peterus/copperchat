@@ -29,7 +29,8 @@ assign a local footprint, which adds its library row on the way.
 **Interfaces:** `FootprintReviewRepo.record(conversation_id, lib_id, geometry_hash, run_id,
 *, rendered: bool = False, checked: bool = False, check_errors: int | None = None)` (upsert,
 stamps `rendered_at`/`checked_at` with `utcnow_iso()`), `.get(conversation_id, lib_id,
-geometry_hash) -> Row | None`. `fp_render` and `fp_check` call `record` when
+geometry_hash) -> Row | None`. `fp_render`, `fp_check` **and `fp_create`** (for its read-back check, `checked=True`,
+F4b modifies `kicad_tools/footprints/create.py`) call `record` when
 `ctx.conversation_id` is set (local and stock footprints alike). Tool
 `fp_approve({lib_id, geometry_hash: ^[0-9a-f]{64}$, user_quote: 1..300})` (the 2-word /
 8-character rule is enforced by guard 5, not the schema). `fp_approve` is exempt from the
@@ -75,7 +76,8 @@ with `user_quote` in `after`, `Logical(1)`, `library_changed={nick}`.
   `test_approve_with_paused_plan` and `test_approve_with_proposed_plan` (allowed);
   `test_approve_symlinked_dir_refused`, `test_approve_symlinked_file_refused`
   (`library_conflict`);
-  `test_geometry_changed_between_prepare_and_apply` → guard 2; `test_plan_running` — 6; `test_not_local`,
+  `test_geometry_changed_between_prepare_and_apply` → guard 2;
+  `test_create_counts_as_check` (`fp_create` + `fp_render`, no `fp_check` → guard 3 passes); `test_plan_running` — 6; `test_not_local`,
   `test_already_approved` — 1; `test_happy_path_effect` (fields, journal, change log,
   budget 1). `tests/unit/web/test_ws.py::test_submit_stamps_origin_user`: a WS send stores
   `metadata.origin == "user"`; the plan-execute submit does not.
@@ -142,7 +144,10 @@ API → on mismatch delete the row and raise `not_found`), then `spec.apply`; if
 `spec.apply` fails, `DeleteLibraryTableEntry` (shielded) and re-raise. Journal `row_add`
 like S1. Result gets `side_effects: ["fp_lib_table_row_added"]`; budget 0 for the row.
 
-- [ ] **Step 1: Failing unit tests**: `test_footprint_notes_local.py` (row present → API path +
+- [ ] **Step 1: Failing unit tests**: `test_footprint_notes_local.py` (pending journal row with
+  both fields present → `footprint_needs_review`; a prepare-only call leaves journal rows and
+  file hashes unchanged; `fp-lib-table` symlinked → `library_conflict` before the row stage;
+  row present → API path +
   `footprint_needs_review`; row missing → disk path + `library_row` + `footprint_review_unknown`;
   tools off with row present and with row missing → disk check + `footprint_unverified`,
   no `library_row`, `activate_footprints` and the API never called; stock footprint on a boardless
