@@ -12,7 +12,8 @@ assign a local footprint, which adds its library row on the way.
 
 **Files:**
 - Create: `backend/src/copperchat/kicad_tools/footprints/{approve,delete,usage}.py`
-- Modify: `db/repos/footprints.py` (+ `FootprintReviewRepo`), `web/ws.py` (submit with
+- Modify: `db/repos/footprints.py` (+ `FootprintReviewRepo`), `kicad_tools/footprints/create.py`
+  (record the read-back check), `web/ws.py` (submit with
   `metadata={"origin": "user"}`), `kicad_tools/footprints/{read,specs}.py` (record renders and
   checks; `fp_approve`, `fp_delete` specs), `kicad_tools/edit/specs_place.py`
   (`footprint_notes` local branch; `ChangeSet.library_row`), `agent/sdk_tools.py`
@@ -77,7 +78,10 @@ with `user_quote` in `after`, `Logical(1)`, `library_changed={nick}`.
   `test_approve_symlinked_dir_refused`, `test_approve_symlinked_file_refused`
   (`library_conflict`);
   `test_geometry_changed_between_prepare_and_apply` → guard 2;
-  `test_create_counts_as_check` (`fp_create` + `fp_render`, no `fp_check` → guard 3 passes); `test_plan_running` — 6; `test_not_local`,
+  `test_create_counts_as_check` (`fp_create` + `fp_render`, no `fp_check` → guard 3 passes);
+  kicad (`test_fp_approve.py`): `test_approve_without_fp_check` — real `fp_create` +
+  `fp_render` + human message + `fp_approve`, no `fp_check` call → approved, and the
+  `footprint_reviews` row has `checked_at` set by `fp_create`; `test_plan_running` — 6; `test_not_local`,
   `test_already_approved` — 1; `test_happy_path_effect` (fields, journal, change log,
   budget 1). `tests/unit/web/test_ws.py::test_submit_stamps_origin_user`: a WS send stores
   `metadata.origin == "user"`; the plan-execute submit does not.
@@ -131,7 +135,8 @@ tools **off** (`settings.footprint_tools` False, row present or not): only the
 `local_names_on_disk()` existence check plus the `footprint_unverified` note — no
 activation, no `library_row` stage, no API call; row present (tools on): `activate_footprints()`
 and API existence check (`not_found` with `closest` from the local
-library), note `footprint_needs_review` unless `review_state == "approved"`; row missing:
+library), note `footprint_needs_review` unless `review_state(g, pending=<journal has a pending row for
+the lib id>) == "approved"`; row missing:
 `local_names_on_disk()` existence check, a `LibraryRowStage(library=lib,
 create_library=False)`, note `footprint_review_unknown`. `footprint_notes` changes its
 return type to `tuple[list[dict], LibraryRowStage | None]`; both callers in
@@ -144,8 +149,8 @@ API → on mismatch delete the row and raise `not_found`), then `spec.apply`; if
 `spec.apply` fails, `DeleteLibraryTableEntry` (shielded) and re-raise. Journal `row_add`
 like S1. Result gets `side_effects: ["fp_lib_table_row_added"]`; budget 0 for the row.
 
-- [ ] **Step 1: Failing unit tests**: `test_footprint_notes_local.py` (pending journal row with
-  both fields present → `footprint_needs_review`; a prepare-only call leaves journal rows and
+- [ ] **Step 1: Failing unit tests**: `test_footprint_notes_local.py` (`Footprint source` present, `needs_user_review = no` **and** a pending journal row →
+  `footprint_needs_review`, proving the `pending` wiring; a prepare-only call leaves journal rows and
   file hashes unchanged; `fp-lib-table` symlinked → `library_conflict` before the row stage;
   row present → API path +
   `footprint_needs_review`; row missing → disk path + `library_row` + `footprint_review_unknown`;
