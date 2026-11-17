@@ -92,6 +92,10 @@ class HistoryService:
         # (project, changed files) after the turn-start check found an external change
         # (E8b: a running/approved/paused plan is paused). Errors are logged.
         self.on_external_change: list[Callable[[Project, list[str]], Awaitable[None]]] = []
+        # (project, changed rel paths, reason "own" | "external" | "restore") after the
+        # local footprint library changed (FP-C6); F4a registers the cache invalidation /
+        # ReloadLibrary reaction. Errors are logged, never raised.
+        self.library_listeners: list[Callable[[Project, list[str], str], Awaitable[None]]] = []
         # Every CopperChat save rewrites the files: record their hashes right after it,
         # so the turn-start check never takes our own save for an external change.
         sessions.add_save_listener(self._on_saved)
