@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -102,6 +103,74 @@ def document_files(project: Project) -> list[Path]:
     files.extend(sorted(sheets))
     if project.pcb_file is not None and project.pcb_file.is_file():
         files.append(project.pcb_file)
+    return files
+
+
+@dataclass(frozen=True)
+class LibraryLocation:
+    """The local footprint library as history sees it (FP-C6; F4a adapts LocalLibrary)."""
+
+    dir: Path
+    repo_root: Path
+    table: Path  # the project's fp-lib-table (may not exist)
+    nickname: str
+
+
+@dataclass(frozen=True)
+class TrackedFile:
+    path: Path
+    rel: str  # project-relative POSIX path; library files may start with "../"
+    library: bool
+
+
+def _regular_file(path: Path) -> bool:
+    try:
+        return stat.S_ISREG(path.lstat().st_mode)
+    except OSError:
+        return False
+
+
+def _library_dir(location: LibraryLocation) -> Path | None:
+    """The library dir below the resolved repo root, or None if it is missing or any
+    component from the repo root down is a symlink. Outside the repo root: ValueError."""
+    root = location.repo_root.resolve()
+    target = Path(os.path.normpath(os.path.abspath(location.dir)))
+    for base in (Path(os.path.normpath(os.path.abspath(location.repo_root))), root):
+        if target.is_relative_to(base):
+            parts = target.relative_to(base).parts
+            break
+    else:
+        raise ValueError(f"library dir {location.dir} is outside the repo root {root}")
+    here = root
+    for part in parts:
+        here = here / part
+        try:
+            if not stat.S_ISDIR(here.lstat().st_mode):
+                return None
+        except OSError:
+            return None
+    return here
+
+
+def tracked_files(project: Project, library: LibraryLocation | None) -> list[TrackedFile]:
+    """document_files plus, with a library, the project's fp-lib-table and every
+    `*.kicad_mod` directly in the local library dir (regular files only, no symlinks)."""
+    files = [
+        TrackedFile(p, p.relative_to(project.dir).as_posix(), False)
+        for p in document_files(project)
+    ]
+    if library is None:
+        return files
+    lib_dir = _library_dir(library)  # validates containment even when the table is absent
+    if _regular_file(library.table):
+        rel = Path(os.path.relpath(library.table, project.dir)).as_posix()
+        files.append(TrackedFile(library.table, rel, False))
+    if lib_dir is None:
+        return files
+    for path in sorted(lib_dir.glob("*.kicad_mod")):
+        if _regular_file(path):
+            rel = Path(os.path.relpath(path, project.dir)).as_posix()
+            files.append(TrackedFile(path, rel, True))
     return files
 
 
