@@ -132,7 +132,7 @@ class HistoryService:
         return await asyncio.to_thread(compute)
 
     def store(self, project: Project) -> HistoryStore:
-        return HistoryStore(self.db, project)
+        return HistoryStore(self.db, project, locate_library=self.locate_library)
 
     def lock(self, project: Project) -> asyncio.Lock:
         """Serialises restore against the turn-start hash check and the turn-end autosave."""

@@ -123,7 +123,14 @@ async def test_gitignore_and_hash_repo(db: Database, tmp_path: Path) -> None:
     ensure_gitignore(project)
     text = (agent_dir(project) / ".gitignore").read_text()
     assert text.splitlines() == list(GITIGNORE_LINES)
-    assert {"history/", "view/", "renders/", "uploads/", "images/"} == set(GITIGNORE_LINES)
+    assert {
+        "history/",
+        "history-blobs/",
+        "view/",
+        "renders/",
+        "uploads/",
+        "images/",
+    } == set(GITIGNORE_LINES)
     hashes = compute_hashes(project)
     assert len(hashes) == 3 and all(len(h) == 64 for h in hashes.values())
     repo = DocumentHashRepo(db)

@@ -16,12 +16,17 @@ import stat
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Iterable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from copperchat.db import Database, utcnow_iso
+from copperchat.db.repos.footprints import FootprintWriteRepo
 from copperchat.errors import CopperChatError
+from copperchat.history.blobs import BlobStore, blob_lock
+from copperchat.history.blobs import CorruptSnapshot as CorruptSnapshot
+from copperchat.history.library_lock import library_lock
 from copperchat.plans.repo import PlanRepo
 from copperchat.projects import SKIP_DIRS, Project, agent_dir
 
@@ -32,7 +37,8 @@ HISTORY_KEEP = 50  # turn snapshots; step checkpoints are pruned with their turn
 STEP_KEEP = 100
 SNAPSHOT_KINDS = ("turn", "step")
 # CopperChat's caches inside `.kicad-agent/`; kept out of the user's git repository.
-GITIGNORE_LINES = ("history/", "view/", "renders/", "uploads/", "images/")
+GITIGNORE_LINES = ("history/", "history-blobs/", "view/", "renders/", "uploads/", "images/")
+MANIFEST_VERSION = 2
 LABEL_MAX = 200
 _ID_RE = re.compile(r"[0-9a-f]{32}")
 
@@ -45,13 +51,6 @@ class InvalidSnapshotId(CopperChatError):
 class SnapshotNotFound(CopperChatError):
     code = "snapshot_not_found"
     http_status = 404
-
-
-class CorruptSnapshot(CopperChatError):
-    """The snapshot on disk does not match its manifest (edited, truncated, escaping)."""
-
-    code = "corrupt_snapshot"
-    http_status = 422
 
 
 @dataclass(frozen=True)
@@ -179,6 +178,16 @@ def tracked_files(project: Project, library: LibraryLocation | None) -> list[Tra
     return files
 
 
+def repo_rel(path: Path, repo_root: Path) -> str:
+    """`path` relative to the repo root as POSIX ("." for the root itself); the root
+    may be given resolved or not. Outside the repo root: ValueError."""
+    target = Path(os.path.normpath(os.path.abspath(path)))
+    for base in (Path(os.path.normpath(os.path.abspath(repo_root))), repo_root.resolve()):
+        if target.is_relative_to(base):
+            return target.relative_to(base).as_posix()
+    raise ValueError(f"{path} is outside the repo root {repo_root}")
+
+
 def sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as fh:
@@ -259,10 +268,14 @@ def ensure_gitignore(project: Project) -> None:
 
 
 class HistoryStore:
-    def __init__(self, db: Database, project: Project) -> None:
+    def __init__(
+        self, db: Database, project: Project, *, locate_library: LibraryLocator | None = None
+    ) -> None:
         self._db = db
         self.project = project
         self.root = agent_dir(project) / "history"
+        self.blobs = BlobStore(agent_dir(project))
+        self._locate_library = locate_library
 
     def snapshot_dir(self, snapshot_id: str) -> Path:
         sid = validate_snapshot_id(snapshot_id)
@@ -287,6 +300,43 @@ class HistoryStore:
             )
         return entries
 
+    def _store_library(
+        self, location: LibraryLocation, previous: Mapping[str, HashRow]
+    ) -> dict[str, Any]:
+        """The manifest's `library` part; puts every library file into the blob store
+        (blocking; the caller holds the library and blob locks). A stored hash whose
+        (size, mtime_ns, inode) still matches names the blob without reading the file."""
+        exists = _library_dir(location) is not None
+        entries: list[dict[str, Any]] = []
+        for f in tracked_files(self.project, location):
+            if not f.library:
+                continue
+            try:
+                prev = previous.get(f.rel)
+                known = (
+                    prev.sha256 if prev is not None and _reusable(prev, f.path.lstat()) else None
+                )
+                sha, size = self.blobs.put(f.path, known)
+            except FileNotFoundError:  # vanished between listing and copying
+                continue
+            entries.append({"relPath": f.rel, "sha256": sha, "size": size})
+        return {
+            "dir": repo_rel(location.dir, location.repo_root),
+            "existed": exists,
+            "files": entries,
+        }
+
+    async def _blob_refs(self) -> set[str]:
+        rows = await self._db.fetchall(
+            "SELECT DISTINCT sha256 FROM history_blob_refs WHERE project_id = ?",
+            (self.project.id,),
+        )
+        return {str(r["sha256"]) for r in rows}
+
+    async def _gc_blobs_locked(self) -> int:
+        """Blobs no snapshot row references, and every temp file (blob lock held)."""
+        return await asyncio.to_thread(self.blobs.gc, await self._blob_refs())
+
     def _sweep_orphans(self, known: set[str]) -> None:
         """Snapshot dirs without a DB row (killed mid-snapshot) and stale temp dirs."""
         if not self.root.is_dir():
@@ -307,16 +357,34 @@ class HistoryStore:
         if kind not in SNAPSHOT_KINDS:
             raise ValueError(f"unknown snapshot kind {kind!r}")
         ensure_gitignore(self.project)
+        location = (
+            None if self._locate_library is None else await self._locate_library(self.project)
+        )
         sid = uuid.uuid4().hex
         dest = self.snapshot_dir(sid)
         tmp = self.root / f".tmp-{sid}"
         label = label[:LABEL_MAX]
+        journal_max_id = await FootprintWriteRepo(self._db).max_id()
+        library: dict[str, Any] | None = None
+        blobs_lock = blob_lock(self.project.id)
+        blobs_held = False
+        renamed = False
         try:
+            if location is not None:
+                previous = await DocumentHashRepo(self._db).get_rows(self.project.id)
+                # The library part only (index lock order: library lock -> blob lock).
+                # The blob lock stays held until the refs are committed, so a GC
+                # never removes a blob that is about to be referenced.
+                async with library_lock(location.dir):
+                    await blobs_lock.acquire()
+                    blobs_held = True
+                    library = await asyncio.to_thread(self._store_library, location, previous)
             entries = await asyncio.to_thread(self._copy_documents, tmp)
             created = utcnow_iso()
             if preview_png is not None:
                 (tmp / "preview.png").write_bytes(preview_png)
             manifest = {
+                "version": MANIFEST_VERSION,
                 "id": sid,
                 "projectId": self.project.id,
                 "runId": run_id,
@@ -324,32 +392,49 @@ class HistoryStore:
                 "label": label,
                 "kind": kind,
                 "planStepId": plan_step_id,
+                "repoRootRel": (
+                    None if location is None else repo_rel(self.project.dir, location.repo_root)
+                ),
+                "journalMaxId": journal_max_id,
                 "files": entries,
+                "library": library,
+                "table": None if location is None else {"existed": _regular_file(location.table)},
             }
             (tmp / "manifest.json").write_text(json.dumps(manifest, indent=2))
             tmp.rename(dest)
+            renamed = True
+            files = [e["relPath"] for e in entries]
+            shas = sorted({e["sha256"] for e in (library or {}).get("files", [])})
+            async with self._db.transaction():
+                await self._db.execute(
+                    "INSERT INTO history_snapshots(id, project_id, run_id, created_at, label,"
+                    " files, kind, plan_step_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        sid,
+                        self.project.id,
+                        run_id,
+                        created,
+                        label,
+                        json.dumps(files),
+                        kind,
+                        plan_step_id,
+                    ),
+                )
+                for sha in shas:
+                    await self._db.execute(
+                        "INSERT INTO history_blob_refs(project_id, snapshot_id, sha256)"
+                        " VALUES (?, ?, ?)",
+                        (self.project.id, sid, sha),
+                    )
         except BaseException:
-            shutil.rmtree(tmp, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, dest if renamed else tmp, True)
+            if blobs_held:  # blobs written for this snapshot are orphans now
+                with suppress(Exception):
+                    await self._gc_blobs_locked()
             raise
-        files = [e["relPath"] for e in entries]
-        try:
-            await self._db.execute(
-                "INSERT INTO history_snapshots(id, project_id, run_id, created_at, label, files,"
-                " kind, plan_step_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    sid,
-                    self.project.id,
-                    run_id,
-                    created,
-                    label,
-                    json.dumps(files),
-                    kind,
-                    plan_step_id,
-                ),
-            )
-        except BaseException:
-            await asyncio.to_thread(shutil.rmtree, dest, True)
-            raise
+        finally:
+            if blobs_held:
+                blobs_lock.release()
         await self._prune()
         return Snapshot(
             sid,
@@ -465,12 +550,21 @@ class HistoryStore:
         protected = await PlanRepo(self._db).protected_snapshot_ids(self.project.id)
         doomed = list(dict.fromkeys(str(r["id"]) for r in rows if str(r["id"]) not in protected))
         for sid in doomed:
-            await self._db.execute("DELETE FROM history_snapshots WHERE id = ?", (sid,))
+            async with self._db.transaction():
+                await self._db.execute(
+                    "DELETE FROM history_blob_refs WHERE snapshot_id = ?", (sid,)
+                )
+                await self._db.execute("DELETE FROM history_snapshots WHERE id = ?", (sid,))
             await asyncio.to_thread(shutil.rmtree, self.snapshot_dir(sid), True)
         kept = await self._db.fetchall(
             "SELECT id FROM history_snapshots WHERE project_id = ?", (self.project.id,)
         )
         await asyncio.to_thread(self._sweep_orphans, {str(r["id"]) for r in kept})
+        # Rows and dirs first, blobs last: a crash in between leaves unreferenced
+        # blobs, never dangling references (spec §10 "Pruning").
+        if bool(doomed) or await asyncio.to_thread(self.blobs.has_temp_files):
+            async with blob_lock(self.project.id):
+                await self._gc_blobs_locked()
 
 
 class DocumentHashRepo:
