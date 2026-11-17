@@ -548,8 +548,10 @@ the approval:
   does a read-only byte search for the exact lib-id string in the `*.kicad_sch` / `*.kicad_pcb`
   files of the other project directories under the repo root. A hit gives a warning note
   `possibly_in_use_elsewhere`, not a refusal (author call). No file is parsed or written.
-  - The walk reuses `document_files`' pruning: hidden dirs, `SKIP_DIRS` and symlinks are
-    skipped.
+  - The walk skips hidden dirs, `SKIP_DIRS` and symlinks, like `document_files`. Unlike
+    `document_files`, it **does** descend into subdirectories that hold their own
+    `*.kicad_pro`, because those are exactly the sibling projects it must search. A test checks
+    that a sibling project's reference is found.
   - It is capped at 500 files and 20 MB per file; above the cap the note says the search was
     incomplete.
   - It runs in `asyncio.to_thread`.
@@ -668,11 +670,21 @@ also drives the turn-end autosave (`history/hooks.py`), the save listener, `publ
 
 - `ToolResult` gains a field `library_changed: set[str]` (nicknames).
 - The adapter passes it to a new `ToolContext.on_library_changed` callback. That callback:
-  - re-records the hashes of the tracked library set **and of the project's `fp-lib-table`**
-    (§10), so CopperChat's own writes are never taken for external changes. The `library_row`
+  - re-records the hashes of **only the files this call wrote**: the footprint files and,
+    after a row change, the project's `fp-lib-table`. They are merged into the stored hashes,
+    as `_on_saved` does for schematics. Other library files keep their old hashes, so changes
+    made meanwhile by other projects or the GUI are still detected (§10). The `library_row`
     pre-stage (§7.9) reports `library_changed` too.
+  - The re-recording also runs **in `finally` for failed calls**, including compensation and
+    leftovers. It covers the files the journal says this call touched, so a compensated S1 that
+    rewrote `fp-lib-table` is not reported as an external change on the next turn.
   - calls `invalidate_footprints`;
   - marks the turn as changed for the UI change list.
+- **Generation check.** The adapter raises `KicadUnavailable` when the server generation changed
+  during the call (`sdk_tools.py`), because an unsaved schematic edit is lost then. A footprint
+  write that returned `library_changed` and no `changed_docs` is already saved and journalled
+  as `done`, so for such results the adapter **skips** the generation check and reports
+  success. A test restarts the server after `apply`.
 - Footprint stages save inside `apply` (C9), so the adapter's save step has nothing to do for
   them.
 
@@ -736,17 +748,30 @@ silent.
 
 **The KiCad server dies mid-call** (crash, out of memory, timeout) between S2 and S3. Then no
 compensation can run: the call fails with `KicadUnavailable`, and S2's seed copy, with the seed's
-geometry and no review flag, may be on disk. Three things cover this:
+geometry and no review flag, may be on disk. Four things cover this:
 
-1. The journal row stays `pending`.
-2. At the next activation (§6.1), CopperChat scans this project's `pending` rows. For each
-   footprint, if its file's hash still equals the state after S2, or it has no `Footprint
-   source` field, it is deleted with `DeleteLibraryItem`. The row becomes `compensated`, and the
-   turn's notice says so.
-3. Independently, `footprint_notes` and `fp_check` treat **any local footprint without
-   `Footprint source` or `needs_user_review`** as unreviewed: `source_missing` is an error and
-   the note `footprint_needs_review` is added. A half-built footprint can never be assigned
-   silently.
+1. The journal row stays `pending`. After S2's save, the engine stores the copy's file hash in
+   the row (`post_s2_sha256`).
+2. **Cleanup only happens as a write.** At the start of the next **writing** footprint tool call
+   in this project, inside its own `apply`, CopperChat processes this project's `pending` rows.
+   At that point the call already holds `edit_lock` and the library lock, and the turn snapshot
+   is taken. Read tools, `prepare` and activation never write; they only flag (point 4). Per
+   row:
+   - `op = create` **and** the file's current hash equals `post_s2_sha256` (an untouched seed
+     copy): it is deleted with `DeleteLibraryItem`; the row becomes `compensated`, with the
+     hash at that moment.
+   - Anything else becomes `leftover`, with the current hash and a notice naming the lib id; it
+     is never deleted automatically. This covers a `replace`, `approve` or `delete` row, a file
+     that changed since S2 (S3 may have completed), and a missing hash.
+
+   A `replace` target is therefore never destroyed: its pre-image lives only in the turn
+   snapshot, and History undo restores it.
+3. The cleanup re-records hashes for what it touched, like any footprint write.
+4. Independently, `footprint_notes` and `fp_check` treat **any local footprint without
+   `Footprint source` or `needs_user_review`**, or with a `pending` journal row, as unreviewed:
+   `source_missing` is an error and the note `footprint_needs_review` is added. A half-built
+   footprint can never be assigned silently, also on servers that never write again or when
+   the tools are switched off.
 
 **Cancellation.** The compensation runs shielded, like `KicadSession.commit` cleanup.
 
@@ -832,10 +857,15 @@ therefore never undo another project's footprint work.
 - **Restoring the library is scoped to this project's own changes.** The write journal
   (`footprint_writes`, §9.3) knows which footprints this project's tool calls created,
   replaced, approved or deleted after the snapshot. It includes `leftover` and `pending` rows of
-  failed calls. Only those are restored. For `done` rows, a file is restored only when its
-  current sha256 still equals the row's `post_sha256`, i.e. the state right after this
-  project's own last write. If someone changed the file since (another project, the KiCad GUI),
-  it is left alone. Per file:
+  failed calls. Only those are restored. **The same guard applies to every state:**
+  - A file is restored only when its current sha256 equals the sha recorded on this project's
+    latest row for it. That is `post_sha256` for `done`, the hash stored at finalisation for
+    `leftover` / `compensated`, and `post_s2_sha256` for `pending`.
+  - No later journal row of **another** project may touch the same lib id.
+  - A row without any recorded sha is skipped and reported.
+
+  If someone changed the file since (another project, the KiCad GUI), it is left alone. Per
+  file:
   - created here after the snapshot → deleted;
   - changed or deleted here → the snapshot bytes are copied back;
   - changed elsewhere since → **skipped**, and listed in the restore notice as "changed outside
@@ -879,11 +909,17 @@ therefore never undo another project's footprint work.
     changed footprints. A reload would drop `footprints_active` and cost 3 s and 1.7 GB again
     for nothing.
 - **One lock per library.** The library is shared across projects, but `HistoryService.lock` is
-  per project. A process-wide `asyncio.Lock` keyed by the resolved library directory is
-  therefore taken by every footprint stage, by the `library_row` pre-stage, and by the library
-  part of snapshot and restore. The lock order (§6.2) becomes `edit_lock` → library lock →
-  `_apply_lock` → `_fp_lock` → `_commit_lock` → `_lock`. A restore takes the library lock
-  inside the history lock.
+  per project. So a process-wide `asyncio.Lock` keyed by the resolved library directory is used:
+  - It is taken **once, at the outermost level**: by the adapter around `library_row` +
+    `spec.apply` for writing footprint tools and for `sch_set_fields` with a row stage, and by
+    snapshot and restore around their library part.
+  - The row step, the footprint stages and the pending cleanup are lock-free helpers that
+    assert the caller holds the lock. The lock is not re-entrant, so S1 inside `fp_create` must
+    never take it again.
+  - The lock order (§6.2) becomes `edit_lock` → library lock → `_apply_lock` → `_fp_lock` →
+    `_commit_lock` → `_lock`.
+  - A restore takes the library lock inside the history lock, once, for both file restore and
+    the API row removal.
 - **Snapshot size: content-addressed library blobs.** Snapshots are taken often (`HISTORY_KEEP`
   50 turn snapshots plus `STEP_KEEP` 100 step checkpoints), and there is one history per project
   of the repo, so copying the whole library each time is too expensive. Instead:
@@ -1183,8 +1219,18 @@ Footprint tools count against the same per-turn budget (`EditingSettings.change_
   - a file changed externally with the same size gets a fresh hash, never a stale blob;
   - a forged sha in a manifest is refused;
   - a project at the repo root classifies its library files through `library.files`.
-- Write journal: a `pending` row with a seed-state file is cleaned up on the next activation; a
-  `leftover` row is removed by the turn's restore.
+- Write journal:
+  - a `pending` `create` row whose file still matches `post_s2_sha256` is cleaned up by the
+    next **writing** call;
+  - a `pending` `replace` row, or a changed file, becomes `leftover` and is never deleted;
+  - `fp_get` after a crash writes nothing and flags the footprint as unreviewed;
+  - a `leftover` row is removed by the turn's restore, unless another project touched the file
+    later.
+- Hash re-recording: only the files written by the call are re-recorded (a concurrent foreign
+  change is still detected), and a failed, compensated `fp_create` causes no external change on
+  the next turn.
+- Library lock: `fp_create` with S1 does not deadlock (the lock is taken once).
+- The adapter generation check is skipped for footprint-only results.
 - `COPPERCHAT_FOOTPRINT_TOOLS=off`: `sch_set_fields` with a local footprint never activates (it
   falls back to the on-disk check), and a library-only external change does not call
   `ReloadLibrary`.
