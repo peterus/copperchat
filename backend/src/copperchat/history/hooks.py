@@ -5,7 +5,7 @@ that changed documents, crash recovery."""
 from __future__ import annotations
 
 import logging
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from copperchat.agent.engine import RunHooks, TurnInfo, TurnOutcome
@@ -21,6 +21,17 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 LABEL_CHARS = 80
 _RECOVER_ATTEMPTS = 2  # the first call after a crash restarts the server and still raises
+
+
+def is_library_rel(rel: str) -> bool:
+    """A stored/current hash row of a local library footprint, else a project file.
+
+    `tracked_files` tracks the documents and the project's fp-lib-table (never a
+    `.kicad_mod`) plus the `*.kicad_mod` files of the local library. So the suffix alone
+    classifies a row - also one whose file is gone now, or one recorded under a library
+    dir the locator no longer returns; no path-prefix rule ("../", the library dir rel)
+    is needed, which would break for a project at the repo root."""
+    return rel.endswith(".kicad_mod")
 
 
 class HistoryHooks(RunHooks):
@@ -39,7 +50,12 @@ class HistoryHooks(RunHooks):
 
     async def on_turn_start(self, turn: TurnInfo) -> None:
         """Hash check (Review Focus 4). The engine awaits this before releasing the
-        message, so a reload and the agent note reach this very turn."""
+        message, so a reload and the agent note reach this very turn.
+
+        A change of project files (documents, the project's fp-lib-table) reloads the
+        session, pauses a plan and lists every changed file. A change of ONLY local
+        library footprints (another project of the repo, the KiCad GUI) does neither:
+        it gets a short notice and the library listeners (reason "external")."""
         async with self.svc.lock(self.project):
             stored = await self.svc.hashes.get(self.project.id)
             rows = await self.svc.current_hashes(self.project)
@@ -50,23 +66,17 @@ class HistoryHooks(RunHooks):
             changed = sorted(k for k in stored.keys() | now.keys() if stored.get(k) != now.get(k))
             if not changed:
                 return
+            library = [k for k in changed if is_library_rel(k)]
+            library_only = len(library) == len(changed)
             state = "not-open"  # nothing to reload: opening the project reads the files
-            if self.svc.open_session(self.project) is not None:
-                try:
-                    session = await self.svc.sessions.reopen(self.project)
-                    state = "reloaded"
-                except KicadUnavailable as exc:
-                    # The turn's tools then fail and the engine reports KiCad (X18).
-                    log.warning("reload after external change failed: %s", exc)
-                    state = "failed"
-                if state == "reloaded":
-                    try:
-                        await self.svc.publish_view(
-                            self.project, session, self.svc.docs_of(self.project)
-                        )
-                    except Exception:  # KiCad has the new files; only the viewer lags
-                        log.warning("view refresh after external change failed", exc_info=True)
+            if not library_only and self.svc.open_session(self.project) is not None:
+                state = await self._reload()
             await self.svc.hashes.replace(self.project.id, rows)
+        if library:  # also when mixed: the reload covers KiCad, not the library caches
+            await self.svc.notify_library(self.project, library, "external")
+        if library_only:
+            await self._library_notice(turn, library)
+            return
         for listener in list(self.svc.on_external_change):
             try:
                 await listener(self.project, changed)
@@ -91,6 +101,35 @@ class HistoryHooks(RunHooks):
         self.engine.add_agent_note(
             f"The design files {files} were changed outside CopperChat{outcome[1]}"
             "Re-read any design data you rely on."
+        )
+
+    async def _reload(self) -> str:
+        """Reopen the session from disk (under `svc.lock`) and refresh the view."""
+        try:
+            session = await self.svc.sessions.reopen(self.project)
+        except KicadUnavailable as exc:
+            # The turn's tools then fail and the engine reports KiCad (X18).
+            log.warning("reload after external change failed: %s", exc)
+            return "failed"
+        try:
+            await self.svc.publish_view(self.project, session, self.svc.docs_of(self.project))
+        except Exception:  # KiCad has the new files; only the viewer lags
+            log.warning("view refresh after external change failed", exc_info=True)
+        return "reloaded"
+
+    async def _library_notice(self, turn: TurnInfo, library: list[str]) -> None:
+        """Only local library footprints changed (another project of the repo, the KiCad
+        GUI): a short notice naming them - no reload (it would drop the footprint
+        document and cost a full restart) and no plan pause."""
+        stems = ", ".join(sorted({PurePosixPath(rel).stem for rel in library}))
+        await self.engine.post_notice(
+            turn.conversation_id,
+            f"Footprints changed outside this project: {stems}",
+            {"action": "library-external-change", "files": library},
+        )
+        self.engine.add_agent_note(
+            f"The footprints {stems} of the local library were changed outside this "
+            "project. Re-read any footprint data you rely on."
         )
 
     async def on_first_mutation(self, turn: TurnInfo) -> None:

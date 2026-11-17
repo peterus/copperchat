@@ -19,7 +19,7 @@ from copperchat.history.store import LibraryLocation
 from copperchat.kicad_tools.edit.changeset import ChangeSet, Logical, NetIntent, SheetRef
 from copperchat.projects import Project
 from copperchat.tools import ToolContext, ToolResult, edit_spec
-from tests.support.history import ECC83, replace_with_kicad_file
+from tests.support.history import ECC83, HIERARCHY, other_board, replace_with_kicad_file
 from tests.unit.history.conftest import Env
 from tests.unit.history.test_history_hooks import turn
 
@@ -177,3 +177,85 @@ async def test_saved_listener_keeps_library_rows(lib: Lib) -> None:
     await env.svc._on_saved(project, "sch")
     after = await env.svc.hashes.get_rows(project.id)
     assert {k: after[k] for k in library} == library
+
+
+# ---- Task 8: library-only external changes
+
+
+@pytest.fixture
+async def opened_lib(env: Env) -> Lib:
+    return await _setup(env, open_session=True)
+
+
+async def test_library_only_change_does_not_reload_or_pause(opened_lib: Lib) -> None:
+    lib = opened_lib
+    env = lib.env
+    session = env.sessions.current()
+    lib.change("B")
+    lib.change("A")
+
+    await lib.hooks.on_turn_start(turn("run-2"))
+
+    assert env.sessions.current() is session and env.server.starts == 1  # no reopen
+    assert lib.external == []  # on_external_change (plan pause) not called
+    rels = sorted(lib.rel(lib.file(s)) for s in "AB")
+    text, meta = env.engine.notices[-1]
+    assert text == "Footprints changed outside this project: A, B"
+    assert meta == {"action": "library-external-change", "files": rels}
+    assert env.engine.notice_conversations[-1] == turn().conversation_id
+    assert env.engine.notes and "A, B" in env.engine.notes[-1]
+    assert lib.events == [(rels, "external")]
+    # re-recorded: the next turn start reports nothing
+    await lib.hooks.on_turn_start(turn("run-3"))
+    assert len(env.engine.notices) == 1 and lib.events == [(rels, "external")]
+
+
+async def test_deleted_library_file_is_library_only(opened_lib: Lib) -> None:
+    lib = opened_lib
+    lib.file("C").unlink()
+    await lib.hooks.on_turn_start(turn("run-2"))
+    assert lib.env.server.starts == 1 and lib.external == []
+    assert lib.env.engine.notices[-1][0] == "Footprints changed outside this project: C"
+
+
+async def test_mixed_change_takes_todays_path(opened_lib: Lib) -> None:
+    lib = opened_lib
+    env, project = lib.env, lib.project
+    assert project.pcb_file is not None
+    session = env.sessions.current()
+    lib.change("B")
+    replace_with_kicad_file(project.pcb_file, other_board())
+
+    await lib.hooks.on_turn_start(turn("run-2"))
+
+    changed = sorted([lib.rel(lib.file("B")), project.pcb_file.name])
+    assert env.sessions.current() is not session and env.server.starts == 2  # reloaded
+    assert lib.external == [changed]
+    text, meta = env.engine.notices[-1]
+    assert "outside CopperChat" in text
+    assert meta == {"action": "external-change", "files": changed}
+    # the library caches still hear about the library part
+    assert lib.events == [([lib.rel(lib.file("B"))], "external")]
+
+
+async def test_table_only_change_takes_todays_path(opened_lib: Lib) -> None:
+    lib = opened_lib
+    env, project = lib.env, lib.project
+    session = env.sessions.current()
+    replace_with_kicad_file(project.dir / "fp-lib-table", HIERARCHY / "fp-lib-table")
+
+    await lib.hooks.on_turn_start(turn("run-2"))
+
+    assert env.sessions.current() is not session and env.server.starts == 2
+    assert lib.external == [["fp-lib-table"]]
+    assert env.engine.notices[-1][1] == {"action": "external-change", "files": ["fp-lib-table"]}
+    assert lib.events == []
+
+
+async def test_no_change_does_nothing(opened_lib: Lib) -> None:
+    lib = opened_lib
+    session = lib.env.sessions.current()
+    await lib.hooks.on_turn_start(turn("run-2"))
+    assert lib.env.engine.notices == [] and lib.env.engine.notes == []
+    assert lib.external == [] and lib.events == []
+    assert lib.env.sessions.current() is session and lib.env.server.starts == 1
