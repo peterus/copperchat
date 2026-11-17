@@ -19,7 +19,7 @@ happens only when a footprint tool needs it.
   (`footprints_active`, `_fp_lock`, `activate_footprints`, `footprint_document`),
   `library/service.py` (FP-C1 additions; `footprints_available` → `footprint_libraries_ready`),
   `kicad_tools/edit/specs_place.py` (caller rename + `footprint_unverified` wording only),
-  `library/specs.py` (caller rename), `tools/registry.py` (provider
+  `tools/registry.py` (provider
   `copperchat.kicad_tools.footprints.specs`), `agent/profiles.py` (`FP_READ` part 1,
   `footprint_tools` filter), `.env.example` (commented `COPPERCHAT_FOOTPRINT_TOOLS=on`)
 - Tests: `backend/tests/unit/footprints/{__init__,test_local_library,test_model,test_read_tools}.py`,
@@ -86,6 +86,8 @@ FP-C2 (`activate_footprints`, `footprints_active`, `footprint_document`,
     with an `entry_name`, and `h.schematic().get_symbols()` still works.
   - `test_read_items_of_seed`: `items()` contains 2 pads; `footprint()` has the seed's
     description; no write was made (seed `.kicad_mod` mtime unchanged).
+  - `test_document_refused_when_disabled` (unit, fake session): `footprint_tools=False` →
+    `footprint_document()` raises `footprint_tools_disabled` before any KiCad call.
   - `test_seed_missing`: monkeypatch `SEED_LIB_ID` to `Inductor_SMD:Nope` → activation raises
     `code == "seed_missing"` naming the lib id.
 - [ ] **Step 3: Run** — FAIL.
@@ -144,6 +146,9 @@ FP-C2 (`activate_footprints`, `footprints_active`, `footprint_document`,
   - `test_local_names_on_disk`: dir with `A.kicad_mod`, `B.kicad_mod`, `c.txt`, a symlink
     `D.kicad_mod` → `["A", "B"]`; missing dir → `[]`; file content never opened (patch
     `Path.read_bytes`/`open` to raise).
+  - `test_for_write_symlinked_dir_refused`: `<root>/footprints` a symlink, and separately
+    `<root>/footprints/X.pretty` a symlink or a regular file → `local_library(for_write=True)`
+    raises `library_conflict` (`local_library_dir_safe`); reads still work.
   - `test_local_library_transient_returns_none` and
     `test_local_library_for_write_transient_raises` (`code == "repo_root_unknown"`).
   - `test_row_conflict`: project rows `{OpenDriveHub: other uri}` → `row_conflict` names both
@@ -154,8 +159,8 @@ FP-C2 (`activate_footprints`, `footprints_active`, `footprint_document`,
   `GetItemsFromLibrary` (existing `_get_items`) and an LRU (`functools`-free dict, 64
   entries); on a boardless server it calls `activate_footprints()` first and returns the
   seconds through a `notes` list the caller passes in. Rename every
-  `footprints_available()` call (`specs_place.footprint_notes`,
-  `library/specs.py`, `_require_footprints`) to `footprint_libraries_ready()`; change the
+  `footprints_available()` call (`specs_place.footprint_notes`, `_require_footprints`
+  in `library/service.py`) to `footprint_libraries_ready()`; change the
   `footprint_unverified` text to "footprint libraries are not loaded (no board, no
   footprint tool used)". Update the existing tests that assert the old text.
 - [ ] **Step 4: Run** — PASS (unit + `uv run pytest -m kicad tests/kicad/edit/test_library_real.py`).
@@ -169,8 +174,12 @@ FP-C2 (`activate_footprints`, `footprints_active`, `footprint_document`,
 
 - [ ] **Step 1: Failing unit tests**:
   - `test_profiles`: `FP_READ` ⊆ `requirements`, `schematic`, `board`, `free`; with
-    `footprint_tools=False` no profile (incl. Free) contains `fp_get`; Free stays a superset
-    of the registry when enabled.
+    `footprint_tools=False` no profile (incl. Free) contains **any** tool whose name starts
+    with `fp_` (the filter is by prefix, so F2/F4 tools are covered without touching it
+    again); Free stays a superset of the registry when enabled.
+  - `test_full_detail_truncates_large_footprint`: a synthetic 10,000-shape geometry →
+    `to_dict("full")` has 500 shapes, polygons ≤ 64 points, `truncated: true` and a note
+    pointing to `fp_render` (index call 16).
   - `test_fp_get_schema`: `additionalProperties: false`, `lib_id.maxLength == 256`,
     `detail.enum == ["summary", "full"]`; `lib_id` without `:` → `invalid_argument`.
 - [ ] **Step 2: Failing kicad tests** (`test_fp_get.py`):

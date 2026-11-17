@@ -114,11 +114,15 @@ Every task implicitly includes these (plus the editing and foundation Global Con
 - Seed `Inductor_SMD:L_Bourns-SRN4018`; one footprint document per api-server; always
   close before the next open; never close the schematic for footprint work.
 - Lock order: `edit_lock` → library lock → `_apply_lock` → `_fp_lock` → `_commit_lock`
-  → `_lock`; none is re-entrant; the library lock is taken once at the outermost level.
+  → `_lock`; for restore and step checkpoints `HistoryService.lock` comes first
+  (`svc.lock` → library lock → …). None is re-entrant; the library lock is taken once at
+  the outermost level. `on_library_changed` runs only after the library lock and
+  `_apply_lock` are released and never takes `HistoryService.lock`.
 - Budget: `fp_create` (new or `replace`) **5**, `fp_approve` 1, `fp_delete` 1, library
   row 0, read tools 0; limit 20/turn as today.
 - `COPPERCHAT_FOOTPRINT_TOOLS` = `on` (default) | `off`; `off` removes `FP_READ` and
-  `FP_WRITES` from every profile and makes activation raise `footprint_tools_disabled`.
+  `FP_WRITES` from every profile **including Free**, and makes both activation and
+  `footprint_document()` raise `footprint_tools_disabled`.
 - Render: `cairosvg>=2.7.0`, refusing `url_fetcher`, never `unsafe=True`; KiCad SVG
   containing `<!DOCTYPE` or `<!ENTITY` → `render_failed`; one `kicad-cli fp export`
   at a time, 60 s timeout, argv list with `--fp=<name>` as one element; ≥ 40 px/mm,
@@ -192,7 +196,12 @@ async def local_library(self, *, for_write: bool = False) -> LocalLibraryInfo | 
 def local_names_on_disk(self, lib: LocalLibrary) -> list[str]   # *.kicad_mod stems, no parsing
 def footprint_libraries_ready(self) -> bool                     # board open or footprints_active
 def invalidate_footprints(self, nickname: str | None = None) -> None
-async def footprint_geometry(self, lib_id: str) -> FootprintGeometry | None  # LRU 64
+async def footprint_geometry(self, lib_id: str, notes: list[dict[str, Any]] | None = None
+                             ) -> FootprintGeometry | None  # LRU 64; appends footprint_libraries_loaded
+#   never called while the caller holds _fp_lock (activation takes it); read-backs run after
+#   the footprint document is closed
+def local_library_dir_safe(lib: LocalLibrary) -> None  # lstat every existing component from
+#   repo_root to lib.dir: a symlink or non-directory → library_conflict (used by for_write=True)
 ```
 
 ### FP-C2. KiCad session — `copperchat.kicad_session` (F1)
@@ -204,6 +213,7 @@ async def KicadSession.activate_footprints(self) -> float | None
 #   StructuredToolError(code="footprint_tools_disabled") when settings.footprint_tools
 #   is False; StructuredToolError(code="seed_missing") if the seed lib_id is unknown
 def KicadSession.footprint_document(self, lib_id: str) -> AsyncContextManager[FootprintDocument]
+#   raises footprint_tools_disabled when settings.footprint_tools is False (defence in depth);
 #   takes _fp_lock; opens DOCTYPE_FOOTPRINT; close in finally (shielded); a failed close
 #   sets KicadSession.restart_pending = True (new flag, F1); F4a makes the turn end
 #   (history/hooks.py, F3-owned in wave 1) restart the server when it is set
@@ -247,6 +257,9 @@ def geometry_from_proto(definition: Any, items: Sequence[Any], lib_id: str, scop
 def geometry_hash(g: FootprintGeometry) -> str      # sha256 hex, §9.4, 1 nm rounding
 def geometry_equal(a: FootprintGeometry, b: FootprintGeometry, tol_mm: float = 1e-3) -> list[str]  # diffs
 REVIEW_FIELD = "needs_user_review"; SOURCE_FIELD = "Footprint source"; APPROVAL_FIELD = "User review"
+RESERVED_FIELDS = {"reference", "value", "footprint source", "needs_user_review", "user review"}
+#   (casefolded) never accepted as fp_create extra fields; only fp_approve writes
+#   needs_user_review = "no" and User review
 def review_state(g: FootprintGeometry, *, pending: bool) -> Literal["approved", "needs_user_review", "unreviewed"]
 ```
 
@@ -268,10 +281,11 @@ class CheckInput:
     expected: Expected | None = None
     allow_unmatched: frozenset[str] = frozenset()
     local: bool = False
-    copperchat_made: bool = False          # REVIEW_FIELD present or a journal row: source_missing = error
     pending: bool = False
 def run_checks(inp: CheckInput) -> CheckReport   # pure; CheckReport(passed, counts, findings, geometry_hash)
 def to_result(report: CheckReport) -> dict[str, Any]
+#   counts stay exact; findings capped at 20 per rule and 200 overall, with
+#   truncated: true and omitted: {rule: n}
 ```
 
 ### FP-C5. CLI + render (F2)
@@ -298,6 +312,9 @@ class TrackedFile: path: Path; rel: str; library: bool   # rel = project-relativ
 def tracked_files(project: Project, library: LibraryLocation | None) -> list[TrackedFile]
 LibraryLocator = Callable[[Project], Awaitable[LibraryLocation | None]]
 HistoryService.locate_library: LibraryLocator          # default: async lambda _: None
+#   per Project, also for projects that are not open (restore of a closed project, C14):
+#   F4a builds it from repo_policy + derive_local_library + global nicknames (current
+#   session's LibraryService if any, else the stock-dir fallback of author call 9)
 HistoryService.library_listeners: list[Callable[[Project, list[str], str], Awaitable[None]]]
 #   (project, changed rel paths, reason in {"own", "external", "restore"})
 async def HistoryService.on_library_changed(self, project: Project, files: Iterable[Path]) -> None
@@ -310,7 +327,8 @@ ToolContext.library_touched: list[Path]                      # appended by every
 #   incl. compensation and cleanup; the context is built per tool call
 ToolContext.on_library_changed: Callable[[list[Path]], Awaitable[None]] | None
 #   the adapter calls it in `finally` (shielded) whenever library_touched is non-empty,
-#   for successful and failed calls alike
+#   for successful and failed calls alike — after the library lock and _apply_lock are
+#   released; it never takes HistoryService.lock
 ```
 
 Manifest v2 (written by every snapshot from F3 on):
@@ -360,7 +378,7 @@ CREATE TABLE footprint_reviews (
 the same way (the cross-project guard compares it). `db/repos/footprints.py` (F3):
 `FootprintWriteRepo.insert_pending(...) -> int`, `.set_post_s2(id, sha)`,
 `.finalise(id, state, post_sha256)`, `.pending(project_id)`, `.since(project_id, created_at)`,
-`.latest_for_file(file_rel)`, `.any_for_lib(project_id, lib_id) -> bool`;
+`.latest_for_file(file_rel)`, `.later_foreign(file_rel, project_id, after_id) -> bool`;
 `FootprintReviewRepo` is added by F4b in the same module.
 
 ### FP-C8. Write path — `copperchat.kicad_tools.footprints.engine` (F4a)
@@ -375,7 +393,9 @@ class FootprintChangeSet(ChangeSet):      # sheet=NO_SHEET, stages=[], pre_image
     target: FootprintGeometry | None = None
     pre_image: FootprintPreImage | None = None     # replace only (API data)
     library: LocalLibrary | None = None
-    fail_after: str | None = None                  # test hook: "copy_seed" | "rebuild_saved" | ...
+    fail_after: str | None = None                  # test hook: raise InjectedFailure after a stage
+    kill_after: str | None = None                  # test hook: kill the api-server after a stage
+    fail_compensation: bool = False                # test hook: DeleteLibraryItem raises
 ChangeSet.library_row: LibraryRowStage | None = None      # new base field (default None)
 async def apply_footprint_change_set(ctx: ToolContext, cs: FootprintChangeSet) -> FootprintApplied
 async def run_library_row(ctx: ToolContext, stage: LibraryRowStage, lib: LocalLibrary, *, verify: str | None) -> bool
@@ -384,7 +404,11 @@ def classify_pending(rows, current_sha: Callable[[str], str]) -> list[PendingOut
 ```
 
 `apply_change_set` (schematic engine) raises `TypeError` on a `FootprintChangeSet`.
-`DocumentInconsistent` gains `leftovers: list[str]` (default `[]`).
+`DocumentInconsistent` gains `leftovers: list[str]` (default `[]`) and `footprint_only: bool`;
+the run engine carries both to `TurnOutcome` for `_recovery_notice`, and a turn whose
+inconsistencies are all `footprint_only` skips the schematic reopen. `KicadUnavailable` (or a generation
+change) during a stage **skips compensation**: journal rows stay `pending` (spec §9.3
+server-death case) and the error is re-raised.
 
 ### FP-C9. Error codes (all phases)
 
@@ -410,6 +434,8 @@ phase file, with the reason.)
 - Flaky `test_streamed_text_is_persisted_by_size_and_by_time` (timing) and kicad-shard
   submodule fetch errors: rerun the failed job (`gh run rerun --failed`), do not
   "fix" in a footprint PR.
+- Footprint renders (`.png`, `.svg`, `.svg.json`) in `.kicad-agent/renders/` are not pruned,
+  like `render_view` output today.
 - Board sessions get `FP_WRITES` with SP4; the "Approve" button with the SP4 frontend
   work (D1); `fp_import` for vendor libraries later (D2); lazy-load KiCad patch only if
   PROD memory gets tight (D4); IPC-7351 generation and real 3D models later.
@@ -466,12 +492,13 @@ test in the named phase.
    `review_state` keeps the footprint `unreviewed` (assignment carries
    `footprint_needs_review`). History undo still covers them. Turning the switch back on
    lets the next writing call clean up. The README says so. F1 Task 6, F5 Task 4.
-6. **"missing either" + `source_missing` severity** (§9.3 point 4, §8): unreviewed =
-   **either** field missing (FP-C3 `review_state`). `source_missing` is an **error** only
-   for a footprint CopperChat made (`needs_user_review` field present, or a journal row of
-   this project for it); for a footprint the user put into the local directory by hand it
-   is a **warning** (CopperChat cannot approve it: `fp_approve` guard 1 needs the flag),
-   so a hand-made footprint is not permanently "failed". F2 Task 2.
+6. **"missing either"** (§9.3 point 4): unreviewed = **either** `Footprint source` **or**
+   `needs_user_review` missing, or a `pending` journal row (FP-C3 `review_state`).
+   `source_missing` stays an **error for every local footprint**, as spec §8 says
+   (a crashed seed copy looks hand-made from a sibling project, so no weaker rule is
+   safe). A footprint the user put into the local directory by hand therefore fails
+   `fp_check` until it is re-created with `fp_create(replace=true)` and a source; the
+   `kicad-footprints` skill tells the agent to explain this. F2 Task 2.
 7. **Journal test gaps**: added — pending `replace` → `leftover`; every read path
    (`fp_get`, `fp_list_local`, `fp_check`, `footprint_notes`, activation) leaves journal
    and files unchanged; a `leftover` later changed by another project is skipped by
@@ -493,6 +520,20 @@ test in the named phase.
 12. **Migration ownership**: F3 creates all footprint tables in one migration
     `0012_footprints.sql` (spec: "same migration"), because restore (F3) already reads
     the journal.
+13. **`fp_approve` and plan policy `always`**: `fp_approve` is exempt from the
+    "no active plan step" refusal in `BudgetGate.before_prepare` (it records a user
+    decision, not a design edit, and guard 6 forbids it during plan execution), so an
+    approval is possible in `always` projects. F4b Task 1.
+14. **Restore of a project that is not open**: no API is available, so the table is left
+    untouched and every own `row_add` row since the snapshot is listed in the notice as
+    "library row <nick> not removed (project not open)"; `remove_table` is never taken
+    in that case. F3 Task 6.
+15. **`user_quote`** must hold at least 2 words and 8 non-space characters and match on
+    word boundaries (or be the whole message when that is shorter); a stricter reading of
+    spec guard 5, not a weaker one. F4b Task 1.
+16. **Output caps**: `fp_get detail="full"` returns at most 500 shapes and 64 points per
+    shape (`truncated: true`, note pointing to `fp_render`); `fp_check` findings are capped
+    (FP-C4). F1 Task 5, F2 Task 2.
 
 ## Provisional — needs owner confirmation
 

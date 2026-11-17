@@ -31,7 +31,9 @@ assign a local footprint, which adds its library row on the way.
 stamps `rendered_at`/`checked_at` with `utcnow_iso()`), `.get(conversation_id, lib_id,
 geometry_hash) -> Row | None`. `fp_render` and `fp_check` call `record` when
 `ctx.conversation_id` is set (local and stock footprints alike). Tool
-`fp_approve({lib_id, geometry_hash: ^[0-9a-f]{64}$, user_quote: 1..300})`.
+`fp_approve({lib_id, geometry_hash: ^[0-9a-f]{64}$, user_quote: 8..300})`. `fp_approve` is
+exempt from the plan-policy "no active plan step" refusal in `BudgetGate.before_prepare`
+(index call 13).
 
 Guards (spec §7.7, all → `approval_not_allowed` with a `details.guard` number):
 1. `lib_id` local and `review_state == "needs_user_review"`;
@@ -42,9 +44,16 @@ Guards (spec §7.7, all → `approval_not_allowed` with a `details.guard` number
    `user`) include one with `metadata.origin == "user"` created after both timestamps; no
    plan of this conversation is `running`;
 5. `user_quote` is a substring of that message after whitespace normalisation
-   (`" ".join(s.split())`, case-sensitive);
+   (`" ".join(s.split())`, case-sensitive), starts and ends on word boundaries, and holds
+   ≥ 2 words and ≥ 8 non-space characters — or equals the whole normalised message when
+   that is shorter (index call 15);
 7. `run_checks` on the current read-back has no error.
 
+Apply (under the adapter's library lock, `FootprintChangeSet` with `library` set):
+`cleanup_pending` → `insert_pending(op="approve")` → open the document and recompute
+`geometry_hash` **before** `begin()`; ≠ `args.geometry_hash` → `approval_not_allowed`
+(guard 2, TOCTOU) → commit + save → read-back hash must equal `args.geometry_hash` →
+`finalise(done, post_sha256)`.
 Effect: one commit on the footprint document (`needs_user_review = no`, new field
 `User review = "approved <YYYY-MM-DD>, conversation <id8>, geometry <hash8>"`), save,
 read-back (hash unchanged), journal `approve` row, change-log kind `footprint_approved`
@@ -56,7 +65,11 @@ with `user_quote` in `after`, `Logical(1)`, `library_changed={nick}`.
   `test_check_errors` — 7; `test_server_message_does_not_count` parametrised over the
   plan-execute message (`plans/service.py`), the close-session prompt (`origin =
   "close-session"`) and a notice → 4; `test_quote_not_in_message` — 5;
-  `test_whitespace_normalised_quote_ok`; `test_plan_running` — 6; `test_not_local`,
+  `test_whitespace_normalised_quote_ok`; `test_trivial_quote_refused` (`"e"`, `"ok"`);
+  `test_quote_word_boundary` (`"ok go"` inside `"look good"` refused);
+  `test_short_whole_message_ok` (message `"ok!"`, quote `"ok!"`);
+  `test_approve_with_policy_always` (no active plan step, policy `always` → allowed);
+  `test_geometry_changed_between_prepare_and_apply` → guard 2; `test_plan_running` — 6; `test_not_local`,
   `test_already_approved` — 1; `test_happy_path_effect` (fields, journal, change log,
   budget 1). `test_ws.py::test_submit_stamps_origin_user`: a WS send stores
   `metadata.origin == "user"`; the plan-execute submit does not.
@@ -73,9 +86,11 @@ with `user_quote` in `after`, `Logical(1)`, `library_changed={nick}`.
 **Interfaces:** `scan_other_projects(repo_root: Path, own_project_dir: Path, lib_id: str)
 -> ScanResult(hits: list[str], complete: bool)` in `usage.py` (blocking; run with
 `asyncio.to_thread`): walks the repo root, skips hidden dirs, `SKIP_DIRS` and symlinks,
-**descends** into dirs with their own `*.kicad_pro`, skips `own_project_dir`, reads
-`*.kicad_sch`/`*.kicad_pcb` as bytes and searches `b'"' + lib_id + b'"'`; caps 500 files and
-20 MB per file (larger files are skipped and make `complete=False`). Tool
+**descends** into dirs with their own `*.kicad_pro`, skips only the own project's document
+files (`document_files(own project)`, not its subtree — a project at the repo root would
+otherwise hide every nested sibling), streams `*.kicad_sch`/`*.kicad_pcb` in 1 MB chunks with
+`len(needle)` overlap and searches `b'"' + lib_id + b'"'`; caps 500 files, 20 MB per file,
+200 MB in total and 20,000 directories visited (any cap → `complete=False`). Tool
 `fp_delete({lib_id})`: prepare refuses `not_found` (incl. a cleanable pending copy),
 `not_local`, `in_use` (refs of the open project in `details.refs`); scan hits → note
 `possibly_in_use_elsewhere` (with `complete`); apply = cleanup → journal `delete` →
@@ -85,19 +100,23 @@ counted in `MAX_PREEXISTING_SYMBOL_DELETES`; change-log kind `footprint_deleted`
 - [ ] **Step 1: Failing unit tests** (`test_usage_scan.py`, `tmp_path`): a sibling project's
   `*.kicad_sch` containing the lib id is found; the own project is skipped; a symlinked dir
   is not followed; 501 files → `complete=False`; a 21 MB file → skipped, `complete=False`;
-  `"X:L1"` does not match `"X:L10"` (quotes in the needle).
+  `"X:L1"` does not match `"X:L10"` (quotes in the needle); `test_root_project_finds_nested_sibling`;
+  `test_total_bytes_cap` (patch the cap to 1 MB); a match across a chunk boundary is found.
 - [ ] **Step 2: Failing kicad tests** (`test_fp_delete.py`): `test_delete_in_use` → `in_use`
   naming `L1`; `test_delete_stock_not_local`; `test_delete_ok` (file gone, `GetLibraryItems`
   without it, journal `done` with `absent`, caches invalidated so `fp_get` → `not_found` in
-  the same turn).
+  the same turn); `test_delete_budget_one_not_preexisting_delete` (unit: `Logical(1)`,
+  `deleted_symbols == []`, four `fp_delete` do not hit `MAX_PREEXISTING_SYMBOL_DELETES`).
 - [ ] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS.
 - [ ] **Step 6: Commit** `feat(footprints): fp_delete`.
 
 ### Task 3: Local footprints in `sch_set_fields` / `sch_place_symbol`, `library_row` step
 
 **Interfaces:** `footprint_notes` (spec §7.9): nickname == local nickname →
-row present: `activate_footprints()` (`footprint_tools_disabled` → fall back to the
-on-disk check below) and API existence check (`not_found` with `closest` from the local
+tools **off** (`settings.footprint_tools` False, row present or not): only the
+`local_names_on_disk()` existence check plus the `footprint_unverified` note — no
+activation, no `library_row` stage, no API call; row present (tools on): `activate_footprints()`
+and API existence check (`not_found` with `closest` from the local
 library), note `footprint_needs_review` unless `review_state == "approved"`; row missing:
 `local_names_on_disk()` existence check, `cs.library_row = LibraryRowStage(nick, uri,
 create_library=False)`, note `footprint_review_unknown`. Stock nicknames unchanged
@@ -110,7 +129,8 @@ like S1. Result gets `side_effects: ["fp_lib_table_row_added"]`; budget 0 for th
 
 - [ ] **Step 1: Failing unit tests**: `test_footprint_notes_local.py` (row present → API path +
   `footprint_needs_review`; row missing → disk path + `library_row` + `footprint_review_unknown`;
-  tools off → disk path, `activate_footprints` never called; stock footprint on a boardless
+  tools off with row present and with row missing → disk check + `footprint_unverified`,
+  no `library_row`, `activate_footprints` and the API never called; stock footprint on a boardless
   server → `footprint_unverified`, no activation); `test_sdk_tools_library_row.py`
   (`test_row_compensated_when_apply_fails`, `test_row_mismatch_raises_not_found_and_removes_row`,
   `test_row_costs_zero_budget`).

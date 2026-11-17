@@ -15,12 +15,16 @@ compensated, every write journalled, and the call is undoable from History.
 - Create: `backend/src/copperchat/kicad_tools/footprints/{engine,build,journal,create}.py`
 - Modify: `kicad_tools/edit/changeset.py` (`ChangeSet.library_row = None`),
   `kicad_tools/edit/engine.py` (`apply_change_set` refuses `FootprintChangeSet`),
-  `errors.py` (`DocumentInconsistent.leftovers`), `agent/sdk_tools.py` (library lock around
+  `errors.py` (`DocumentInconsistent.leftovers`, `footprint_only`), `agent/engine.py`
+  (`_on_document_inconsistent` collects `leftovers`/`footprint_only` into the turn state →
+  `TurnOutcome`), `agent/sdk_tools.py` (library lock around
   `apply` for footprint sets; `_inconsistent_error` leftovers branch), `history/hooks.py`
-  (`_recovery_notice` leftovers branch; restart the server at turn end when
+  (`_recovery_notice` leftovers branch; `_recover_inconsistent` skips the schematic reopen
+  when every inconsistency of the turn is `footprint_only` — the schematic is intact and a
+  reopen would drop `footprints_active`; restart the server at turn end when
   `session.restart_pending` is set — F1 flag), `history/service.py` wiring site (`install_history`
   or the app factory: `locate_library` + library listener), `kicad_tools/footprints/{read,specs}.py`
-  (`pending`/`copperchat_made` from the journal; `fp_create` spec), `agent/profiles.py`
+  (`pending` from the journal; `fp_create` spec), `agent/profiles.py`
   (`fp_create` into a new `FP_WRITES`, added to `schematic` and `free` only)
 - Tests: `backend/tests/unit/footprints/{test_build,test_create_prepare,test_engine_unit,test_journal_cleanup}.py`,
   `backend/tests/kicad/footprints/{test_fp_create,test_compensation,test_server_death,test_turn_end}.py`
@@ -32,8 +36,11 @@ compensated, every write journalled, and the call is undoable from History.
 **Interfaces:** Produces FP-C8 types (`NO_SHEET`, `LibraryRowStage`, `FpStage`,
 `FootprintChangeSet`, `FootprintPreImage(items: list[bytes], definition: bytes)`,
 `FootprintApplied`), `DocumentInconsistent(…, leftovers: list[str] = [])`,
-`history_library_location(svc: LibraryService) -> LibraryLocator` (adapts `LocalLibrary`
-to `LibraryLocation`; `None` while transient), and one library listener: `own`/`restore` →
+`make_library_locator(settings: Settings, sessions: KicadSessionManager) -> LibraryLocator`
+(per `Project`, also for a project that is not open: `repo_policy(project,
+settings.projects_root)` → `None` while transient; global nicknames from the current
+session's `LibraryService` when it serves this project, else the stock-dir fallback of
+index call 9; then `derive_local_library` → `LibraryLocation`), and one library listener: `own`/`restore` →
 `invalidate_footprints(nick)`; `external` → `ReloadLibrary(nick)` + `wait_for_libraries`
 **only if** `settings.footprint_tools` and `footprint_libraries_ready()`, then invalidate.
 
@@ -41,10 +48,11 @@ to `LibraryLocation`; `None` while transient), and one library listener: `own`/`
   → `TypeError`; `BudgetGate.check_budget` and `PlanGate.check_budget` accept a
   `FootprintChangeSet` with `Logical(5)`; listener with `footprint_tools=False` and
   reason `external` → no `ReloadLibrary` call, caches cleared; locator returns `None` while
-  the fake repo policy is transient.
+  the fake repo policy is transient; `test_locator_for_project_not_open` (no session for it →
+  still the derived `LibraryLocation`); `test_tools_off_no_fp_tool_in_any_profile` (all
+  registered `fp_*` tools incl. `fp_create`, also in Free).
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement**; wire `fp_get`/`fp_list_local`/`fp_check`:
-  `pending = journal.pending(project) has lib_id`, `copperchat_made = REVIEW_FIELD in fields
-  or journal.any_for_lib(project, lib_id)`.
+  `pending = journal.pending(project) has lib_id`.
 - [ ] **Step 4: Run** — PASS. **Step 5: Commit** `feat(footprints): write-path types and wiring`.
 
 ### Task 2: Target geometry and `fp_create.prepare`
@@ -69,10 +77,18 @@ Build rules (spec §7.1, §7.6; author calls pinned here):
   `clamp(min(body)/3, 0.25, 1.0)`; other texts 1.0 × 1.0, thickness 0.15.
 - Fields: `Reference = "REF**"`, `Value = name`, `Datasheet` = `fields.Datasheet` or the
   source URL, `Footprint source = "<document>, <location>[, MPN <mpn>]"`,
-  `needs_user_review = "yes"`, plus up to 16 extra fields (name ≤ 64, value ≤ 1024).
+  `needs_user_review = "yes"`, plus up to 16 extra fields (name ≤ 64, value ≤ 1024);
+  extra names in `RESERVED_FIELDS` (casefolded) → `invalid_argument`, and the tool-set
+  fields are applied last anyway.
+- Input length limits (schema): `description`/`keywords` ≤ 1024, `source.document` ≤ 400
+  (repo path) / ≤ 2048 (URL), `source.location` 1…200, `source.mpn` ≤ 64, `model.path` ≤ 400,
+  `model.offset/rotation/scale` exactly 3 numbers each.
 - Model: the link if given, else none (seed model removed).
 
-`prepare_create` order (spec §7.6, nothing written): schema → `NAME_RE` → `local_library(for_write=True)`
+`prepare_create` order (spec §7.6, nothing written): schema → `NAME_RE` →
+`activate_footprints()` (also on board servers: S2/S3 open documents anyway; adds the
+`footprint_libraries_loaded` note) + seed existence check (`seed_missing`, also on board
+servers) → `local_library(for_write=True)`
 (`repo_root_unknown`, `library_conflict`) → name free (row present: `GetLibraryItems`;
 no row: `local_names_on_disk()`; a copy that `classify_pending` would clean counts as
 free; `replace=true` requires an existing local footprint and reads the API pre-image) →
@@ -95,7 +111,12 @@ no `..`, suffix `.step/.stp/.wrl/.wrz`; missing file → note `model_missing`) �
     `${KICAD10_3DMODEL_DIR}/x.step` accepted + `model_missing` note.
   - `test_name_taken_on_disk_without_row`: no row, `X.kicad_mod` on disk → `already_exists`.
   - `test_check_error_refuses`: a pad without mask → `check_failed`, no snapshot callback.
-  - `test_limits`: 513 pads / 257 silk segments / 17 fields → `invalid_argument` from the schema.
+  - `test_limits`: 513 pads / 257 silk segments / 17 fields / each string limit above + 1 →
+    `invalid_argument` from the schema.
+  - `test_reserved_field_names_refused`: extra fields `needs_user_review`, `User Review`,
+    `footprint source`, `Reference`, `VALUE` → `invalid_argument` each; nothing is built.
+  - `test_seed_missing_refused_in_prepare` (fake library without the seed, board server) →
+    `seed_missing` before any write.
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS.
 - [ ] **Step 5: Commit** `feat(footprints): fp_create prepare and target geometry`.
 
@@ -118,7 +139,10 @@ no model; `push`; `save`) → read-back (`invalidate_footprints` → `footprint_
 Journal: `insert_pending` before S1 (`row_add`, `lib_id = nickname`, `file_rel` = the
 project's table, repo-relative) and before S2 (`create`/`replace`, `pre_sha256` = current or
 `absent`); `finalise(done, post_sha256)` after each stage's read-back. Every write appends
-its file to `ctx.library_touched`. Compensation runs in reverse, shielded
+its file to `ctx.library_touched`. The read-back runs **after** the footprint document is closed (no `_fp_lock` held).
+`KicadUnavailable` or a generation change during any stage **skips compensation**: rows
+stay `pending` (with `post_s2_sha256` if S2 saved) and the error is re-raised (spec §9.3
+server-death case; F4a Task 4 cleans up later). Otherwise compensation runs in reverse, shielded
 (`asyncio.shield`): S3 before save → `drop`; S2 → `DeleteLibraryItem`; S1 →
 `DeleteLibraryTableEntry` + `rmdir` of the `.pretty` dir if empty **and** created by this
 call. Journal rows become `compensated` (with the current sha or `absent`). A failing
@@ -129,6 +153,7 @@ Result (spec §7.6): `{created: [lib_id], file: <repo-relative path>, library_cr
 `fp_render` and present render, check and source for approval.
 Test hook: `cs.fail_after ∈ {"ensure_library", "copy_seed", "rebuild_saved", "verify"}`
 raises `InjectedFailure` (a `StructuredToolError` with `code="injected"`, only set by tests);
+`cs.kill_after` (same stage names) kills the api-server PID after that stage;
 `cs.fail_compensation = True` makes `DeleteLibraryItem` raise.
 
 - [ ] **Step 1: Failing kicad tests** (`test_fp_create.py`, `test_compensation.py`, `repo_session`):
@@ -148,7 +173,11 @@ raises `InjectedFailure` (a `StructuredToolError` with `code="injected"`, only s
   - `test_compensation_failure_reports_leftover`: `fail_after="rebuild_saved"` +
     `fail_compensation` → `document_inconsistent`; the error text and the turn-end
     `_recovery_notice` name the lib id; journal row `leftover`.
-- [ ] **Step 2: Failing unit test** (`test_engine_unit.py`):
+- [ ] **Step 2: Failing unit tests** (`test_engine_unit.py`):
+  `test_kicad_unavailable_skips_compensation` (fake session raises `KicadUnavailable` in S3 →
+  no `DeleteLibraryItem`, row `pending`, error re-raised);
+  `test_footprint_only_inconsistency_skips_reopen` (turn outcome with `footprint_only` →
+  `_recover_inconsistent` does not reopen, the notice names the leftovers);
   `test_library_lock_taken_once`: a fake apply with S1 completes (no deadlock) and
   `assert_library_locked` holds inside S1.
 - [ ] **Step 3: Run** — FAIL. **Step 4: Implement** `engine.py`, `journal.py` (thin helpers
@@ -170,8 +199,8 @@ files, returns notes `pending_cleaned` / `pending_leftover`).
   classified under generation 3 → same outcome, only hashes count);
   `test_prepare_counts_cleanable_copy_as_free` (`fp_create`) and as `not_found` for
   `replace` (index FP-C8).
-- [ ] **Step 2: Failing kicad test** (`test_server_death.py`): `fail_after="copy_seed"` with
-  a kill of the api-server PID (pattern of `tests/kicad/test_server_kill.py`) → call fails
+- [ ] **Step 2: Failing kicad test** (`test_server_death.py`): `kill_after="copy_seed"`
+  (kills the api-server PID, pattern of `tests/kicad/test_server_kill.py`) → call fails
   with `KicadUnavailable`; journal row `pending` with `post_s2_sha256`; then `fp_get` and
   `fp_list_local` write nothing (hashes of repo files and journal rows unchanged) and show
   `unreviewed`; then `fp_create` of another name deletes the seed copy and reports

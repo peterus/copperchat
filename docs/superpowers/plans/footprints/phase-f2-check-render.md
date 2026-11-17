@@ -29,7 +29,7 @@ journal-based `pending` (F4a wires it into `CheckInput.pending`).
 ### Task 1: Geometry primitives
 
 **Interfaces:** Produces in `geom.py`: `pad_polygon(pad: Pad) -> list[tuple[float, float]]`
-(rect, roundrect, oval, trapezoid exact polygons; arcs as 16-segment chords per quarter;
+(rect, roundrect, oval, trapezoid as exact polygons; arcs as 16-segment chords per quarter;
 circle → `("circle", center, r)` handled separately), `stroke_segments(shape: Shape) ->
 list[Seg]` (centre lines; arcs/circles as chords, half width carried),
 `distance(a, b) -> float` (polygon/polygon, polygon/segment, circle cases; 0 when they
@@ -67,7 +67,7 @@ Rules, thresholds and severities (spec §8, binding):
 | `courtyard_margin` | gap < 0.25 mm (< 0.1 mm if body or copper extent ≤ 1.0 mm) | warning |
 | `fab_missing` | no F.Fab outline | warning |
 | `silk_on_pad` | silk–copper clearance < 0.1 mm | warning |
-| `silk_outside_courtyard` | silk outside the courtyard | warning |
+| `silk_outside_courtyard` | silk outside the courtyard (Reference/Value field texts excluded: KiCad puts Reference outside the courtyard) | warning |
 | `pin1_marker_missing` | > 2 pads, or 2 pads and `polarized`: no silk/fab mark nearer to pad 1 than to any other pad within `max(pad1.size) + 1.0` mm | warning |
 | `mask_missing` | SMD pad without F.Mask | error |
 | `paste_missing` | SMD pad without F.Paste | warning |
@@ -77,7 +77,7 @@ Rules, thresholds and severities (spec §8, binding):
 | `pad_gap_small` | gap between pads of different numbers < 0.15 (warning), < 0.1 (error) | warning / error |
 | `drill_small` | drill < 0.2 (error), 0.2 ≤ d < 0.3 (warning) | error / warning |
 | `annular_ring_small` | `(min(pad size) − max(drill)) / 2 < 0.15` | warning |
-| `source_missing` | local, no `Footprint source`: **error** if `copperchat_made`, else **warning** (index call 6); n/a for non-local | error / warning |
+| `source_missing` | local footprint without `Footprint source` (spec §8; index call 6); n/a for non-local | error |
 | `needs_user_review` | local and `review_state != "approved"` | info |
 | `approved_geometry_changed` | `User review` present and its `geometry <hash8>` ≠ current hash[:8] | warning |
 | `too_complex_partial_check` | > 2,000 pads or > 5,000 shapes: names the skipped pair rules (`pad_gap_small`, `silk_on_pad`) | info |
@@ -94,8 +94,13 @@ rotated by the text rotation.
     with `allow_unmatched={"10","11"}` → info; `passed` in both.
   - `test_drc0010j_expected_mismatch`: 10 pads + EP `11`, `expected` with pad 3 shifted
     0.05 mm and EP 0.1 mm larger → two `expected_mismatch` errors.
-  - `test_source_missing_severity`: local + no source + `copperchat_made` → error; local
-    hand-made → warning; global → absent.
+  - `test_source_missing_severity`: local + no source → error (also for a seed copy without
+    any custom field); global → absent.
+  - `test_reference_text_outside_courtyard_ok`: Reference on F.SilkS 1 mm above the courtyard
+    → no `silk_outside_courtyard`; a silk segment there → warning; the Reference text over a
+    pad → `silk_on_pad`.
+  - `test_findings_capped`: the 1,000-pad grid with 0.05 mm gaps → `counts` exact, at most 20
+    findings per rule and 200 overall, `truncated: true`, `omitted` per rule.
   - `test_pending_counts_unreviewed`: both fields present, `pending=True` →
     `needs_user_review` info present.
   - `test_cost_bound`: 2,500-pad grid → `too_complex_partial_check` info, other rules
@@ -151,16 +156,21 @@ kill/reap code now inside `kicad_tools/checks.py` (`run_kicad_check_on_dir`).
 
 **Interfaces:** Produces FP-C5 `render_footprint`, plus pure helpers in
 `views/footprint_render.py`: `auto_grid(extent_mm) -> float` (≤ 5 → 0.1, ≤ 20 → 0.25,
-≤ 50 → 0.5, else 1.0), `load_kicad_svg(data: bytes) -> ET.Element` (refuses `<!DOCTYPE` /
-`<!ENTITY` with `render_failed`), `build_wrapper(kicad_svg: ET.Element, geometry,
+≤ 50 → 0.5, else 1.0), `load_kicad_svg(data: bytes) -> ET.Element` (refuses output > 10 MB and `<!DOCTYPE` /
+`<!ENTITY` with `render_failed`; drops `script`, `foreignObject`, every `on*` attribute
+and any `href`/`xlink:href` that is not a `#fragment` while re-serialising), `build_wrapper(kicad_svg: ET.Element, geometry,
 grid_mm, labels) -> bytes`, `rasterise(svg: bytes, extent_mm) -> tuple[bytes, float]`
 (scale = max(40, …) px/mm, longest side ≤ 2000 px, `cairosvg.svg2png(bytestring=…,
-url_fetcher=_refuse, output_width=…)`, run via `asyncio.to_thread`).
+url_fetcher=_refuse, output_width=…)`, run via `asyncio.to_thread`). The **whole** render
+(kicad-cli, parse, wrapper, rasterise) runs under the module `Semaphore(1)`.
 
 - [ ] **Step 1: Failing unit tests** (`test_render_wrapper.py`):
   - `test_doctype_refused`, `test_entity_refused` → `render_failed`.
   - `test_url_fetcher_refuses`: an SVG with `<image href="http://127.0.0.1:1/x.png">` →
     `_refuse` was called and raised; no socket opened (patch `socket.socket` to fail).
+  - `test_oversize_output_refused` (10 MB + 1 byte → `render_failed`) and
+    `test_active_content_dropped` (`<script>`, `onload=`, `<foreignObject>`,
+    `href="http://x"` are gone from the wrapper; `href="#a"` stays).
   - `test_wrapper_structure`: for viewBox `-2 -2 4 4` and grid 0.1 → minor lines every 0.1,
     major every 1.0, axis lines through 0, tick labels on two edges, nested `<svg>` with the
     same viewBox; a pad number `"<&>"` is escaped (parse the output with `ET.fromstring`).
@@ -181,8 +191,9 @@ url_fetcher=_refuse, output_width=…)`, run via `asyncio.to_thread`).
 
 ### Task 6: `fp_render` tool, SVG route, dependency
 
-**Interfaces:** Produces tool `fp_render` (spec §7.5: `{lib_id, layers?, grid_mm? ∈ {0.1,
-0.25, 0.5, 1.0}, labels?}` → `{image, svg, scale_px_per_mm, extent_mm, geometry_hash}` +
+**Interfaces:** Produces tool `fp_render` (spec §7.5: `{lib_id, layers? (maxItems 32, each matching
+`^(F|B)\.(Cu|Mask|Paste|SilkS|Fab|CrtYd)$` or `^Edge\.Cuts$`), grid_mm? ∈ {0.1, 0.25, 0.5,
+1.0}, labels?}` → `{image, svg, scale_px_per_mm, extent_mm, geometry_hash}` +
 one PNG `ImageBlock`); files `.kicad-agent/renders/<uuid32>.png`, `<uuid32>.svg`,
 `<uuid32>.svg.json` (`{"download_name": "<lib>_<name>.svg"}`, index call 3).
 
@@ -203,7 +214,7 @@ one PNG `ImageBlock`); files `.kicad-agent/renders/<uuid32>.png`, `<uuid32>.svg`
 - [ ] **Step 3: Run** — FAIL.
 - [ ] **Step 4: Implement**: `uv add 'cairosvg>=2.7.0'` (lockfile updated); tool in `specs.py`
   (+ `FP_READ`); route pattern `^[0-9a-f]{32}\.(png|svg)$`, dispatch by suffix. Check
-  that the app image is built from the kicad base (`docker/Dockerfile`); if it installs
+  that the app image is built from the kicad base (`docker/app/Dockerfile`); if it installs
   Python deps separately, `libcairo2` must be present there too — add the test above to
   the image smoke test if needed.
 - [ ] **Step 5: Run** — PASS. **Step 6: Commit** `feat(footprints): fp_render and SVG route`.

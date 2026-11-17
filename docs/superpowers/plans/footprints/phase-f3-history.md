@@ -101,7 +101,7 @@ by callers that do not know the library.
 known_sha: str | None) -> tuple[str, int]` (reuse if `known_sha` blob exists; else copy to
 `.tmp-<uuid>` while hashing, `fsync`, rename to `<sha>`), `path(sha) -> Path` (validates
 `^[0-9a-f]{64}$`, else `CorruptSnapshot`), `gc(referenced: set[str]) -> int`
-(removes unreferenced blobs and every `.tmp-*`), `blob_lock(project_id) -> asyncio.Lock`.
+(removes unreferenced blobs and every `.tmp-*`; also run from a failed `snapshot()`), `blob_lock(project_id) -> asyncio.Lock`.
 `HistoryStore.snapshot` writes manifest v2 (index FP-C6) and inserts `history_blob_refs`
 in the same transaction as the snapshot row; `_prune` deletes refs with their snapshot
 and runs `gc` only if it removed ≥ 1 snapshot or temp files exist.
@@ -109,8 +109,9 @@ and runs `gc` only if it removed ≥ 1 snapshot or temp files exist.
 - [ ] **Step 1: Failing tests** (`test_blobs.py`, `test_manifest_v2.py`):
   - `test_dedup_across_snapshots`: two snapshots with an unchanged library file → one blob,
     two ref rows.
-  - `test_blob_written_before_manifest`: make the manifest write fail → the blob exists, no
-    snapshot row; the next `_prune` GC removes it.
+  - `test_blob_written_before_manifest`: make the manifest write fail → no snapshot row;
+    the failing `snapshot()` runs GC in its `except` path (under the blob lock) and the
+    orphan blob is gone.
   - `test_blobs_survive_prune_and_sweep`: blobs outside `history/` are untouched by
     `_sweep_orphans`; pruning the only referencing snapshot removes the blob.
   - `test_gc_does_not_parse_manifests`: patch `json.loads` to raise inside GC → GC still works.
@@ -130,7 +131,13 @@ and runs `gc` only if it removed ≥ 1 snapshot or temp files exist.
 journal: list[Row], foreign_later: Callable[[str, int], bool], current: Callable[[Path], str])
 -> LibraryRestorePlan(copy: list[tuple[str, Path]], delete: list[Path],
 rmdir: Path | None, remove_rows: list[str], remove_table: bool, skipped: list[str], refused: str | None)`
-and `validate_delete(path: Path, location: LibraryLocation, project_dir: Path, *, table: bool) -> None`.
+and `validate_delete(path: Path, location: LibraryLocation, project_dir: Path, *, table: bool) -> None`
+and `validate_copy_target(path: Path, location: LibraryLocation) -> None` (same rules as a
+delete: a `*.kicad_mod` directly in the derived library dir, `lstat` on every component from
+the repo root, no symlink, an existing target must be a regular file; the library dir itself
+may be created only non-recursively below an existing real `footprints/`). Before each
+copy the blob is re-hashed against its name (`CorruptSnapshot` otherwise), as today's
+restore re-hashes snapshot files.
 
 Rules (spec §10, binding): only files named by this project's journal rows created after
 the snapshot are considered; per file the **latest** such row decides: `done` →
@@ -152,6 +159,10 @@ not in it → delete. `library.dir` ≠ derived dir, or `repoRootRel` ≠ today'
   - `test_row_without_value_skipped_and_reported`.
   - `test_forged_library_dir_refused`, `test_moved_repo_refused`.
   - `test_symlink_component_never_deleted`, `test_only_kicad_mod_in_lib_dir_or_own_table`.
+  - `test_copy_target_symlink_component_refused`, `test_copy_target_outside_lib_dir_refused`,
+    `test_tampered_blob_refused`.
+  - `test_root_project_restore_uses_library_files` (project at the repo root: library entries
+    have no `../` and are classified through `library.files`).
   - `test_never_touches_untouched_files` (a footprint with no journal row stays as is).
   - `test_remove_table_only_if_all_rows_own` (snapshot `table.existed=false`; rows supplied
     by the caller from the API) and `test_otherwise_remove_rows`.
@@ -162,7 +173,10 @@ not in it → delete. `library.dir` ≠ derived dir, or `repoRootRel` ≠ today'
 ### Task 6: Restore integration, narrowed lock (index call 4)
 
 **Interfaces:** Consumes Tasks 2–5. `restore_snapshot` order: `svc.lock(project)` →
-read the project's library rows through the API (if the session is open) → close session
+read the project's library rows through the API (if the session is open; a project that
+is **not open** keeps its table untouched and every own `row_add` row since the snapshot is
+listed in the notice as "library row <nick> not removed (project not open)", index call 14)
+→ close session
 → **`library_lock`**: library plan + copy/delete/`rmdir` → **release** → copy project files
 → re-record hashes → reopen → `DeleteLibraryTableEntry` for `remove_rows` (history lock
 only) → re-record the table hash → `library_listeners(reason="restore")` → notice.
@@ -171,6 +185,8 @@ only) → re-record the table hash → `library_listeners(reason="restore")` →
   session API):
   - `test_restore_notice_lists_skipped_and_unremoved_rows` (a row whose API removal fails is
     named, never silent).
+  - `test_restore_not_open_project_lists_rows` (no session: table untouched, each own
+    `row_add` named in the notice, `remove_table` not applied).
   - `test_library_lock_not_held_during_reopen` (the fake `reopen` asserts the lock is free).
   - `test_library_part_skipped_when_locator_none` (transient) — project files restored.
   - `test_listeners_called_with_restore`.
