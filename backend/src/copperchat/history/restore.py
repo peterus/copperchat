@@ -18,7 +18,7 @@ from typing import Any
 
 from copperchat.errors import CopperChatError, ReadOnlyProject
 from copperchat.history.service import HistoryService
-from copperchat.history.store import CorruptSnapshot, Snapshot, compute_hashes_async, sha256_file
+from copperchat.history.store import CorruptSnapshot, Snapshot, sha256_file
 from copperchat.projects import Project
 
 log = logging.getLogger(__name__)
@@ -122,7 +122,7 @@ async def restore_snapshot(
             await session.close()  # KiCad must not keep the replaced documents in memory
         try:
             await asyncio.to_thread(_copy_back, plan)
-            await svc.hashes.replace(project.id, await compute_hashes_async(project))
+            await svc.hashes.replace(project.id, await svc.current_hashes(project))
         except BaseException:
             if session is not None:  # never leave the closed session as the current one
                 await _reload(svc, project, engine, conversation_id)

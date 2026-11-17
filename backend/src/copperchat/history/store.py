@@ -13,8 +13,9 @@ import os
 import re
 import shutil
 import stat
+import time
 import uuid
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -123,6 +124,10 @@ class TrackedFile:
     library: bool
 
 
+# Finds the project's local footprint library (None: the project has none).
+LibraryLocator = Callable[[Project], Awaitable[LibraryLocation | None]]
+
+
 def _regular_file(path: Path) -> bool:
     try:
         return stat.S_ISREG(path.lstat().st_mode)
@@ -189,6 +194,59 @@ def compute_hashes(project: Project) -> dict[str, str]:
 
 async def compute_hashes_async(project: Project) -> dict[str, str]:
     return await asyncio.to_thread(compute_hashes, project)
+
+
+# A file whose mtime is this close to now may still be written to within the same
+# timestamp granularity ("racily clean"): its stats are never stored for reuse.
+RACY_NS = 2_000_000_000
+
+
+@dataclass(frozen=True)
+class HashRow:
+    """A stored document hash; the stats are None when the row must never be reused."""
+
+    sha256: str
+    size: int | None = None
+    mtime_ns: int | None = None
+    inode: int | None = None
+
+
+def _stat_key(st: os.stat_result) -> tuple[int, int, int]:
+    return (st.st_size, st.st_mtime_ns, st.st_ino)
+
+
+def _reusable(row: HashRow | None, st: os.stat_result) -> bool:
+    if row is None or row.size is None or row.mtime_ns is None or row.inode is None:
+        return False
+    return (row.size, row.mtime_ns, row.inode) == _stat_key(st)
+
+
+def compute_tracked_hashes(
+    files: list[TrackedFile], previous: dict[str, HashRow]
+) -> dict[str, HashRow]:
+    """rel -> HashRow for every file still present (blocking; FP-C7). A library file
+    whose lstat (size, mtime_ns, inode) equals its previous row's reuses that sha
+    without reading the file; project files are always hashed. A row gets stats only
+    if they did not change while hashing and the mtime is not within RACY_NS of now."""
+    rows: dict[str, HashRow] = {}
+    for f in files:
+        try:
+            before = f.path.lstat()
+            prev = previous.get(f.rel)
+            if f.library and _reusable(prev, before):
+                assert prev is not None
+                rows[f.rel] = prev
+                continue
+            digest = sha256_file(f.path)
+            after = f.path.lstat()
+        except FileNotFoundError:  # vanished between listing and hashing
+            continue
+        stable = _stat_key(before) == _stat_key(after)
+        if stable and abs(time.time_ns() - after.st_mtime_ns) >= RACY_NS:
+            rows[f.rel] = HashRow(digest, *_stat_key(after))
+        else:
+            rows[f.rel] = HashRow(digest)
+    return rows
 
 
 def ensure_gitignore(project: Project) -> None:
@@ -425,13 +483,26 @@ class DocumentHashRepo:
         )
         return {r["rel_path"]: r["sha256"] for r in rows}
 
-    async def replace(self, project_id: str, hashes: dict[str, str]) -> None:
+    async def get_rows(self, project_id: str) -> dict[str, HashRow]:
+        rows = await self._db.fetchall(
+            "SELECT rel_path, sha256, size, mtime_ns, inode FROM document_hashes"
+            " WHERE project_id = ?",
+            (project_id,),
+        )
+        return {
+            r["rel_path"]: HashRow(r["sha256"], r["size"], r["mtime_ns"], r["inode"]) for r in rows
+        }
+
+    async def replace(self, project_id: str, hashes: Mapping[str, HashRow | str]) -> None:
+        """Replace every stored row; a plain digest is stored without stats."""
         async with self._db.transaction():
             await self._db.execute(
                 "DELETE FROM document_hashes WHERE project_id = ?", (project_id,)
             )
-            for rel, digest in sorted(hashes.items()):
+            for rel, value in sorted(hashes.items()):
+                row = HashRow(value) if isinstance(value, str) else value
                 await self._db.execute(
-                    "INSERT INTO document_hashes(project_id, rel_path, sha256) VALUES (?, ?, ?)",
-                    (project_id, rel, digest),
+                    "INSERT INTO document_hashes(project_id, rel_path, sha256, size, mtime_ns,"
+                    " inode) VALUES (?, ?, ?, ?, ?, ?)",
+                    (project_id, rel, row.sha256, row.size, row.mtime_ns, row.inode),
                 )

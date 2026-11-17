@@ -8,7 +8,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from copperchat.agent.engine import RunHooks, TurnInfo, TurnOutcome
-from copperchat.history.store import Snapshot, compute_hashes_async, ensure_gitignore
+from copperchat.history.store import Snapshot, ensure_gitignore
 from copperchat.kicad_session import DocKind, KicadUnavailable
 from copperchat.projects import Project
 from copperchat.tools import StructuredToolError
@@ -29,7 +29,7 @@ class HistoryHooks(RunHooks):
         self.engine = engine
 
     async def _record_hashes(self) -> None:
-        await self.svc.hashes.replace(self.project.id, await compute_hashes_async(self.project))
+        await self.svc.hashes.replace(self.project.id, await self.svc.current_hashes(self.project))
 
     async def on_engine_start(self) -> None:
         ensure_gitignore(self.project)
@@ -41,10 +41,11 @@ class HistoryHooks(RunHooks):
         message, so a reload and the agent note reach this very turn."""
         async with self.svc.lock(self.project):
             stored = await self.svc.hashes.get(self.project.id)
-            now = await compute_hashes_async(self.project)
+            rows = await self.svc.current_hashes(self.project)
             if not stored:
-                await self.svc.hashes.replace(self.project.id, now)
+                await self.svc.hashes.replace(self.project.id, rows)
                 return
+            now = {k: r.sha256 for k, r in rows.items()}
             changed = sorted(k for k in stored.keys() | now.keys() if stored.get(k) != now.get(k))
             if not changed:
                 return
@@ -64,7 +65,7 @@ class HistoryHooks(RunHooks):
                         )
                     except Exception:  # KiCad has the new files; only the viewer lags
                         log.warning("view refresh after external change failed", exc_info=True)
-            await self.svc.hashes.replace(self.project.id, now)
+            await self.svc.hashes.replace(self.project.id, rows)
         for listener in list(self.svc.on_external_change):
             try:
                 await listener(self.project, changed)
