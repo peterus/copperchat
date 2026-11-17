@@ -109,8 +109,8 @@ From the spike, the patches and the existing system:
 | C1 | There is no "new footprint" API call. A new footprint = open a stock **seed** → `SaveCopyOfDocument("lib:Name")` → close the seed → open the copy → rebuild it in **one** commit → `SaveDocument` → close. | spike Q1 |
 | C2 | Only **one** footprint document may be open per api-server. Always close it before opening the next. Patch 0004 makes a second open replace the first, but CopperChat does not rely on that. | spike Q4, patch 0004 |
 | C3 | Closing the **last** open document unloads the project. The schematic always stays open, so this is safe as long as CopperChat never closes the schematic for footprint work. | spike Q4 |
-| C4 | The first footprint access (`OpenDocument(DOCTYPE_FOOTPRINT)`, or `AddLibraryTableEntry(create_library)`, which registers the PCB kiface library handler) loads **every** footprint library in the tables: about +1.7–1.8 GB RSS and about 3 s. Up to 4 GB was observed under heavy reads. Once loaded, `GetItemsFromLibrary` is fast: 401 footprints in 0.2 s. | spike Q5, patch notes |
-| C5 | Library table rows can be written only through patch 0001: `Add/Update/DeleteLibraryTableEntry` with `scope = LTS_PROJECT`. Pass `${KIPRJMOD}`-relative URIs, never substituted ones. `create_library = true` creates the empty `.pretty` directory, including parent directories, and is rolled back on failure. Status codes: `LCS_OK`, `LCS_ALREADY_EXISTS`, `LCS_NOT_FOUND`, `LCS_READ_ONLY`, `LCS_ERROR`. A row that shadows a global nickname cannot be created with `create_library` (`LCS_ERROR`). | patch 0001, `test_kicad_api_patches.py` |
+| C4 | Every `OpenDocument(DOCTYPE_FOOTPRINT)` runs `AsyncLoad` + `BlockUntilLoaded` on the footprint adapter, so the first one loads **every** footprint library in the tables: about +1.7–1.8 GB RSS and about 3 s. This also applies on servers **with** a board, where reads alone would load libraries lazily. Opening a footprint document, or `AddLibraryTableEntry(create_library)`, also registers the PCB kiface library handler on boardless servers. Up to 4 GB was observed under heavy reads. Once loaded, `GetItemsFromLibrary` is fast: 401 footprints in 0.2 s. | spike Q5, patch notes |
+| C5 | Library table rows can be written only through patch 0001: `Add/Update/DeleteLibraryTableEntry` with `scope = LTS_PROJECT`. Pass `${KIPRJMOD}`-relative URIs, never substituted ones. `create_library = true` creates the empty `.pretty` directory, including parent directories, and is rolled back on failure. Status codes: `LCS_OK`, `LCS_ALREADY_EXISTS`, `LCS_NOT_FOUND`, `LCS_READ_ONLY`, `LCS_ERROR`. The tested refusal goes the other way: a **global** row with `create_library` is refused (`LCS_ERROR`, nothing created) when a **project** row with the same nickname shadows it. A project row that reuses a global nickname is not refused; it silently shadows the stock library. | patch 0001, `test_kicad_api_patches.py` |
 | C6 | Properties of the footprint itself can be written only through patch 0002, `UpdateItems(FootprintInstance)` on the open footprint document. These are: description, keywords, attributes (SMD/THT, exclude from BOM/position files), overrides, net ties, private layers, jumpers, height and 3D models. Custom fields are separate items (`Field`). | patch 0002 |
 | C7 | Footprints can be deleted only through patch 0003, `DeleteLibraryItem{LT_FOOTPRINT, lib_id}`. | patch 0003 |
 | C8 | kipy's `Board` wrapper cannot handle a footprint document: fields fail, and `save_as` resolves the wrong path. Footprint documents need raw protobuf. The starting point is `FootprintDoc` in `backend/tests/kicad/test_kicad_api_patches.py`. | spike Q6 |
@@ -138,12 +138,19 @@ Owner decision B: **one library per repo, at the repo root**, shared by all proj
 - **Root.** The root is `repo_policy(project).root` (`repo_context/paths.py`): the git toplevel
   when it is the project directory or an ancestor of it, and the project directory otherwise
   (non-git projects).
-- **Directory.** `<root>/footprints/<nick>.pretty`.
+- **Stable root.** While `repo_policy` reports `transient` (git failed or timed out, so the root
+  fell back to the project directory), every footprint **write** is refused with
+  `repo_root_unknown`. Snapshots skip the library part and restore leaves it untouched in that
+  state (§10). Otherwise a git hiccup would create a second library in the project directory.
+- **Directory.** `<root>/footprints/<nick>.pretty`. This one directory is **the local library**.
 - **Nickname** (author call). The repo root directory name, cut down to `[A-Za-z0-9_-]` (other
-  characters become `_`, at most 32 characters). Example: `OpenDriveHub`. If that name is already
-  a nickname in the **global** table, `_local` is appended (C5: shadowing rows cannot be created).
-  The resolved nickname is stored nowhere else: the project table row is the single source of
-  truth.
+  characters become `_`, at most 32 characters). Example: `OpenDriveHub`.
+  - If that name is already a nickname in the **global** table, `_local` is appended, and the
+    directory name follows it. A project row would silently shadow the stock library (C5), and
+    that would confuse lib ids.
+  - The derivation depends only on the repo directory name and the global table. The global table
+    is the same for every project of the CopperChat server. So every project of the repo derives
+    the **same** nickname and the same directory, and the nickname needs to be stored nowhere.
 - **URI.** `${KIPRJMOD}/` followed by the path from the project directory to the library,
   POSIX-style. Examples: `${KIPRJMOD}/../../footprints/OpenDriveHub.pretty` for
   `hardware/main/main.kicad_pro`; `${KIPRJMOD}/footprints/x.pretty` for a project at the root.
@@ -153,18 +160,32 @@ Owner decision B: **one library per repo, at the repo root**, shared by all proj
   - `LCS_ALREADY_EXISTS` is fine when the existing row has the same URI.
   - A row with the same nickname but a different URI is an error (`library_conflict`). The
     footprint tool then refuses, and the message names both URIs.
-  - If another project-scope row already points to the same `.pretty` directory (same resolved
-    path), CopperChat reuses that row and its nickname (the user may have added it in the GUI).
+  - A row that points to the local directory under **another** nickname (e.g. one the user added
+    in the GUI) is also a `library_conflict`. The message asks the user to rename or remove that
+    row. CopperChat does not reuse it, because the projects of the repo would then use different
+    lib ids for the same footprint.
 - **When.** The row is created lazily, by the first `fp_create` in a project, as the first stage
   of that call (§9.3). The other projects of the repo get their row the first time a footprint
-  tool writes in them, or when `sch_set_fields` assigns a local footprint there.
-- **Local libraries** = project-scope rows whose resolved path lies inside the repo root.
-  `fp_list_local`, `fp_delete` and the history coverage (§10) work only on these. Rows outside
-  the root, global rows and stock libraries are read-only for CopperChat.
+  tool writes in them, or when `sch_set_fields` assigns a local footprint there (§7.9).
+- **Local library** = exactly `<root>/footprints/<nick>.pretty` under the nickname `<nick>`.
+  `fp_delete`, `fp_create(replace)`, `fp_approve`, the `source_missing` rule and the history
+  coverage (§10) work only on it. **Every other library is read-only for CopperChat.** That
+  includes other `.pretty` directories inside the repo, such as a vendor library committed by
+  the user (§15 Q2). `fp_list_local` lists only the local library.
 
-`LibraryService` (`library/service.py`) gets two methods: `local_library()`, which returns
-`(nickname, uri, path) | None` from `GetLibraryTable(LT_FOOTPRINT, LTS_PROJECT)`, and
-`ensure_local_library()`, which is used inside `apply` only.
+`LibraryService` (`library/service.py`) gets these methods:
+
+- `local_library()` returns `(nickname, uri, path, row_present)`. The name and path are derived
+  as above; `row_present` comes from `GetLibraryTable(LT_FOOTPRINT, LTS_PROJECT)`.
+- `ensure_local_library()` is used inside `apply` only.
+- `local_names_on_disk()` lists `*.kicad_mod` **file names** in the local directory. It is
+  read-only and parses no content, and it is used only while the project has no row, when the API
+  cannot list the library (§7.6, §7.9).
+- `invalidate_footprints(nickname | None)` clears every footprint cache: `_fp_scopes`,
+  `_fp_libs[nickname]` and its failure entry, and the `fp_get` LRU. It is called after every
+  footprint stage (row added, footprint written or deleted, approval), after a history restore,
+  and after an external library change (§10). Otherwise `footprint_notes` and
+  `lib_search_footprints` would answer from stale data in the same turn.
 
 ## 6. Footprint access in the KiCad session
 
@@ -185,8 +206,21 @@ Owner decision B: **one library per repo, at the repo root**, shared by all proj
     the `footprint_unverified` note, unless the handler is already active.
   - As a result, the memory cost hits only servers whose sessions actually use footprint tools,
     as the owner decided.
+  - **Board projects pay too, once they write.** With a board, `fp_get` / `fp_check` read lazily
+    per library and cost little. But `fp_create`, `fp_approve` and the `replace` path open a
+    footprint document, and that loads every library (C4) on a board server as well.
 - **No unloading.** The memory stays until the server restarts. A project switch restarts the
   server anyway (C14).
+- **Guard rails** (author call):
+  - The README states the requirement: about 2 GB extra RAM, 4 GB peak, per api-server that uses
+    footprint tools.
+  - A setting `COPPERCHAT_FOOTPRINT_TOOLS` (`on` by default, `off` to disable) removes `FP_READ`
+    and `FP_WRITES` from every profile, and so prevents any activation on small hosts.
+  - An out-of-memory kill of the api-server is handled like any other server death: restart
+    from the last save, `KicadUnavailable`.
+- **Better fix for later.** A KiCad patch that stops `handleOpenFootprint` from loading every
+  library would remove the cost (the spike suggested it). It is not in the 0001–0004 series, so
+  it needs an owner decision (§15 Q4).
 - **Logging.** On activation CopperChat logs RSS before and after. The first tool result in the
   turn gets a `notes` entry `{kind: "footprint_libraries_loaded", seconds}`, so that a slow call
   is explained.
@@ -199,9 +233,14 @@ the test helper `FootprintDoc`.
 - **Entry point.** `async with session.footprint_document(lib_id) as fd:`
 - **Locks.**
   - It takes a new `KicadSession._fp_lock`: one footprint document per server (C2).
-  - It runs each KiCad call through `session.call` as today.
-  - For writing tools it also takes `_apply_lock`, through the adapter's edit lock.
+  - It runs each KiCad call through `session.call` (`_lock`) as today.
+  - Writing tools run under the adapter's `EditingService.edit_lock`. Their footprint engine
+    enters `session.applying()` (`_apply_lock`) before it takes `_fp_lock`.
   - Read-only tools that open a document (the `fp_get` fallback) hold only `_fp_lock`.
+  - **Lock order:** `edit_lock` → `_apply_lock` → `_fp_lock` → `_commit_lock` → `_lock`. None of
+    these locks is re-entrant. A read tool must never ask for `_apply_lock` while it holds
+    `_fp_lock`, and `session.save()` (which takes `_apply_lock`) is never called inside a
+    footprint document block.
 - **Methods.** `items()`, `footprint()`, `fields()`, `begin()` / `push()` / `drop()`,
   `create()`, `update()`, `delete()`, `update_footprint(props)` (patch 0002), `save()` and
   `save_copy(target)`.
@@ -267,13 +306,22 @@ on it. It is a pure dataclass in `kicad_tools/footprints/model.py`, built from t
                "F.Fab": {...}, "F.SilkS": {...}},      // per-layer summary
   "shapes": [...],            // full list only with detail="full": kind, layer, points/center/size, width
   "models": [{"path": "...", "offset": [0, 0, 0], "rotation": [0, 0, 0], "scale": [1, 1, 1]}],
-  "bbox": [xmin, ymin, xmax, ymax],
-  "geometry_hash": "a1b2c3d4…"   // sha256 over the canonical pads + shapes (§9.4)
+  "texts": [{"kind": "reference" | "value" | "user", "layer": "F.SilkS", "at": [0, -3.0], "size": [1, 1]}],
+  "bbox": [xmin, ymin, xmax, ymax],   // pads + shapes, texts excluded
+  "geometry_hash": "a1b2c3d4…"   // sha256 over everything manufacturing-relevant (§9.4)
 }
 ```
 
-The default `detail` is `"summary"` (no `shapes` list). This keeps results small for footprints
-with many graphics (author call).
+- The default `detail` is `"summary"` (no `shapes` list). This keeps results small for footprints
+  with many graphics (author call).
+- **Reference and Value texts** (author call). The seed's mandatory fields cannot be deleted
+  (`IDS_IMMUTABLE`, spike Q1), so `fp_create` **moves** them, following KiCad's convention:
+  - Reference: on F.SilkS, 1.0 mm above the courtyard;
+  - Value: on F.Fab, 1.0 mm below the courtyard;
+  - a `${REFERENCE}` user text on F.Fab at the body centre.
+
+  Texts are left out of `bbox`, but they **are** included in the silk checks (§8) and in the
+  hash.
 
 ### 7.2 `fp_get` (read-only, all session types)
 
@@ -283,8 +331,8 @@ with many graphics (author call).
   - `notes`, e.g. `footprint_libraries_loaded`.
 - **Errors.** `not_found` (with `details.closest` from the existing `_closest_footprints`),
   `invalid_argument` and `library_error`.
-- **Path.** Batched `GetItemsFromLibrary` with an LRU cache by lib id. The cache is invalidated
-  per library on every write by a CopperChat tool and on `on_turn_start` external changes.
+- **Path.** Batched `GetItemsFromLibrary` with an LRU cache by lib id. The cache is cleared by
+  `invalidate_footprints` (§5).
 
 ### 7.3 `fp_list_local` (read-only, all session types)
 
@@ -337,11 +385,19 @@ The rules are in §8.
 - **Pipeline** (`views/footprint_render.py`, author call):
   1. Find the library directory of `lib_id`: the resolved URI from `GetLibraryTable`
      (`substituted = true`) for project rows, or the stock path for global rows.
-  2. Run `kicad-cli fp export svg <dir.pretty> --fp <name> --layers … -o <tmpdir>`. The call
-     uses an argv list (no shell), a timeout of 60 s, and an output directory that CopperChat
-     created beforehand. CopperChat **checks that the SVG file exists and is not empty** (C10),
-     because the exit code is no proof.
-  3. CopperChat writes its own wrapper SVG. It holds:
+  2. Run `kicad-cli fp export svg <dir.pretty> --fp=<name> --layers … -o <tmpdir>`.
+     - It reuses the existing kicad-cli runner in `kicad_tools/checks.py`: isolated env and
+       config home, kill and reap on timeout, one kicad-cli process at a time.
+     - Arguments go as an argv list (no shell), with `--fp=<name>` as a single element, so a name
+       that starts with `-` is never read as an option.
+     - The timeout is 60 s.
+     - `<tmpdir>` is a fresh `tempfile.mkdtemp()` that is removed in `finally`.
+     - CopperChat **checks that the SVG file exists and is not empty** (C10), because the exit
+       code is no proof; otherwise it reports `render_failed`.
+  3. CopperChat writes its own wrapper SVG. It is built with an XML API (`xml.etree`), never by
+     string concatenation. KiCad's output is parsed and re-serialised without its prolog or
+     DOCTYPE, and all label text (pad numbers, names from stock libraries) is escaped by the XML
+     API. The wrapper holds:
      - a mm grid: minor lines at `grid_mm`, major lines every 1 mm (every 5 mm above 20 mm
        extent);
      - axis lines through the origin and mm tick labels on two edges;
@@ -353,7 +409,8 @@ The rules are in §8.
   4. Rasterise the wrapper to PNG with **CairoSVG** (author call). It is a new Python dependency;
      `libcairo2` is already a KiCad runtime library in the base image, which phase 2 verifies.
      The scale is chosen so that 1 mm is at least 40 px, and the longer side is at most
-     2000 px.
+     2000 px. CairoSVG runs with its defaults (no `unsafe=True`, so no external entities and no
+     file access) and in `asyncio.to_thread`, so the CPU work never blocks the event loop.
   5. Store both files under `.kicad-agent/renders/` (as `render_view` does).
 - **Why the model sees a PNG.** The Claude API takes raster images only. The SVG stays available
   to the user as a zoomable link (§11).
@@ -370,9 +427,9 @@ The rules are in §8.
     "pads": [ /* ≤ 512, same shape as FootprintGeometry.pads; layers default by type */ ],
     "courtyard"?: {"rect": [w, h], "center"?: [x, y]} | {"margin": 0.25},  // default margin 0.25 around pads + body
     "body": {"rect": [w, h], "center"?: [x, y]},          // F.Fab outline (mandatory: it documents the part outline)
-    "silkscreen"?: "auto" | {"segments": [[[x1, y1], [x2, y2]], …]},  // auto: body outline clipped 0.2 mm clear of pads
+    "silkscreen"?: "auto" | {"segments": [[[x1, y1], [x2, y2]], …]},  // ≤ 256 segments; auto: body outline clipped 0.2 mm clear of pads
     "pin1_marker"?: "auto" | "none",                      // auto: silk + fab marker at pad 1
-    "fields"?: {"Datasheet": "...", "...": "..."},        // ≤ 16 extra fields; Reference/Value are set by the tool
+    "fields"?: {"Datasheet": "...", "...": "..."},        // ≤ 16 extra fields, names ≤ 64, values ≤ 1024 chars; Reference/Value are set by the tool
     "model"?: {"path": "${KICAD<n>_3DMODEL_DIR}/…" | "${KIPRJMOD}/…", "offset"?, "rotation"?, "scale"?},
     "source": {                                           // MANDATORY
       "document": "docs/parts/SRN3012BTA-2R2M/datasheet.pdf" | "https://…",
@@ -384,14 +441,29 @@ The rules are in §8.
   }
   ```
 - **prepare** (read-only, may refuse; nothing is written yet):
-  - Validate the schema and the name. The name must be free in the local library unless
-    `replace` is set; this is checked through `GetLibraryItems` (C1 overwrite).
+  - Validate the schema and the name.
+  - **The name must be free** in the local library unless `replace` is set:
+    - with a row, this is checked through `GetLibraryItems`;
+    - **without a row** in this project, the API cannot list the library, so prepare uses
+      `local_names_on_disk()` (§5). The shared directory may already hold another project's
+      footprint of that name.
+    - `apply` checks again through the API right before S2 (§9.3). This closes the gap from a row
+      that was missing at prepare time and from edits in the KiCad GUI. `SaveCopyOfDocument`
+      would otherwise overwrite silently (C1).
   - Validate `source`:
-    - a repo path must resolve inside the repo (`resolve_inside`) and exist;
-    - a URL must be http(s);
+    - A repo path must be **relative**. It is resolved through `repo_context`'s file resolution,
+      which applies the repo root, the block rules (`.git`, env files, `.kicad-agent`, …) and the
+      symlink policy, and it must exist as a regular file. Absolute paths and blocked paths are
+      refused with the same `invalid_argument` message as missing files, so the check cannot be
+      used to probe for files.
+    - A URL must be http(s).
     - `location` must be non-empty.
-  - Validate the model path: it must be inside the repo or start with a KiCad 3D-model variable.
-    It is a link only, so the file need not exist; if it is missing, a note says so.
+  - Validate the model path. It is a link only, so the file need not exist; if it is missing, a
+    note says so. The rules:
+    - it must start with `${KIPRJMOD}/` or `${KICAD<n>_3DMODEL_DIR}/` (a fixed list of variable
+      names);
+    - no `..` segment;
+    - the suffix is `.step`, `.stp`, `.wrl` or `.wrz`.
   - Build the target `FootprintGeometry` (auto courtyard, silk, pin-1 marker) and run `fp_check`
     on it, with `symbol` if given. Any **error** refuses the call (`check_failed`, with
     `details.findings`); warnings pass through to the result.
@@ -417,12 +489,22 @@ the approval:
   1. `lib_id` is a local footprint with `needs_user_review = yes`.
   2. `geometry_hash` equals the current read-back hash. This proves that the user approved this
      geometry and not an earlier version.
-  3. In an **earlier turn** of the same conversation, CopperChat produced an `fp_render` **and**
-     an `fp_check` result for that hash. The server records these in a small per-conversation
-     table `footprint_reviews(conversation_id, lib_id, geometry_hash, run_id, rendered_at,
-     checked_at)`. "Earlier turn" means that a user message came between the render and the
-     approval. That is the strongest server-side evidence available that the user saw it.
-  4. Error-free `fp_check` on the current read-back.
+  3. CopperChat produced an `fp_render` **and** an `fp_check` result for that hash in this
+     conversation. The server records these in a small per-conversation table
+     `footprint_reviews(conversation_id, lib_id, geometry_hash, run_id, rendered_at,
+     checked_at)`, created by a new migration (`00NN_footprints.sql`).
+  4. After both `rendered_at` and `checked_at`, the conversation has a **human** user message:
+     one typed by the user. Server-generated user-role messages do not count: the plan-execute
+     message (`plans/service.py`), session-close or handover prompts, notices and other entries
+     with origin, plan or event metadata.
+  5. `user_quote` is a substring of that human message, compared after whitespace
+     normalisation. The agent cannot make up the words.
+  6. No plan is `running` in this conversation, and the turn was started by that human message.
+     So `fp_approve` cannot be called inside plan execution or an automated turn.
+  7. Error-free `fp_check` on the current read-back.
+
+  Guards 3–6 are the strongest server-side evidence available that the user saw this geometry
+  and approved it. They still cannot judge how clear the approval was (§15 Q1).
 - **Effect** (one commit on the footprint document):
   - `needs_user_review` → `no`;
   - a new field `User review` = `approved <YYYY-MM-DD>, conversation <id8>, geometry <hash8>`;
@@ -454,20 +536,34 @@ the approval:
 
 `footprint_notes` (`kicad_tools/edit/specs_place.py`) changes as follows:
 
-- If the footprint's nickname is the **local** library:
-  1. Ensure the project has the row (§5). If the row is missing but the library exists in the
-     repo, `prepare` adds an op "add table row" to the change set. This costs 0 logical changes;
-     the result reports it as `side_effects: ["fp_lib_table_row_added"]`.
-  2. Activate the handler (§6.1).
-  3. Check existence. An unknown name → `not_found` with `closest` from the local library.
-  4. If the footprint has `needs_user_review = yes`, add the note `footprint_needs_review`. The
-     assignment is allowed: the user may approve later.
+- If the footprint's nickname is the **local** library (`footprint_notes` runs in `prepare`, so
+  it writes nothing):
+  1. **The row exists:** activate the handler (§6.1) and check existence through the API. An
+     unknown name → `not_found`, with `closest` from the local library. If the footprint has
+     `needs_user_review = yes`, add the note `footprint_needs_review`. The assignment is allowed:
+     the user may approve later.
+  2. **The row is missing:** check existence with `local_names_on_disk()` (§5) and set
+     `ToolChangeSet.library_row = LibraryRowStage(nickname, uri)`. The review flag cannot be
+     read yet, so the note `footprint_review_unknown` is added.
 - Otherwise, if `footprint_libraries_ready()` is true, the existing behaviour applies.
 - Otherwise the existing `footprint_unverified` note stays. Its text changes from "this project
   has no board" to "footprint libraries are not loaded (no board, no footprint tool used)".
 
-Writing the table row is the only KiCad write that `sch_set_fields` gains. It runs as the first
-stage of the schematic change set, and its compensation is `DeleteLibraryTableEntry` (§9.3).
+**The row stage runs outside the schematic engine** (author call). `apply_change_set` and the
+schematic `Stage` stay unchanged. The adapter (`agent/sdk_tools.py`, `_two_phase_steps`) gains
+one generic step: after the turn snapshot and before `spec.apply`, it runs `cs.library_row` when
+it is set. That step:
+
+1. calls `AddLibraryTableEntry`;
+2. reads the row back and checks through the API that the footprint exists;
+3. on a mismatch, deletes the row again and raises `not_found`.
+
+If `spec.apply` then fails, the adapter compensates with `DeleteLibraryTableEntry`. The
+`create_library` flag is never set here, because the directory already exists.
+
+- **Budget.** The row costs 0 logical changes.
+- **Result.** `side_effects: ["fp_lib_table_row_added"]`.
+- **The same step serves `fp_create`'s S1.** The footprint engine calls it directly.
 
 ## 8. `fp_check` rules (author call)
 
@@ -508,6 +604,15 @@ polygons, circle exact, custom by its polygon. Graphics are taken as stroke cent
 half the stroke width. The checks use **no shapely or other new library** (author call). The
 shapes are simple, and the existing `edit/geometry.py` style is plain Python.
 
+**Cost bounds** (author call). Stock footprints can be large (BGAs, logos), so `fp_check` must
+not stall the server:
+
+- It runs in `asyncio.to_thread`.
+- Pair checks (`pad_gap_small`, `silk_on_pad`) first filter candidate pairs by bounding box,
+  with sort-and-sweep on x, so they are not all-pairs.
+- Above 2,000 pads or 5,000 shapes, the exact pair checks are skipped. An info finding
+  `too_complex_partial_check` then names the skipped rules. The other rules still run.
+
 ## 9. Write path, atomicity and compensation
 
 ### 9.1 Adapter integration
@@ -530,9 +635,19 @@ The writing footprint tools use `edit_spec(prepare, apply)` and go through the s
 `stages`. Its payload is a list of `FpStage` objects, applied by
 `kicad_tools/footprints/engine.py`. The schematic engine is not touched.
 
-**`DocKind`** gains `"fplib"`. `save_after_edit` skips it, because footprint stages save inside
-`apply`. The turn still reports it as changed, so history hashing (§10) and the UI change list
-see it.
+**`DocKind` stays `"sch" | "pcb"`.** Footprint tools return `changed_docs = set()`. `DocKind`
+also drives the turn-end autosave (`history/hooks.py`), the save listener, `publish_view` and
+`editing/hooks.py`; a new kind would make them call `session.save()` with a footprint kind that
+`_document_type` maps to a PCB. Instead:
+
+- `ToolResult` gains a field `library_changed: set[str]` (nicknames).
+- The adapter passes it to a new `ToolContext.on_library_changed` callback. That callback:
+  - re-records the hashes of the tracked library set (§10), so CopperChat's own writes are never
+    taken for external changes;
+  - calls `invalidate_footprints`;
+  - marks the turn as changed for the UI change list.
+- Footprint stages save inside `apply` (C9), so the adapter's save step has nothing to do for
+  them.
 
 ### 9.2 Read-back verification
 
@@ -555,13 +670,24 @@ ones in reverse order before it raises the error:
 | Stage | Writes | Compensation |
 |---|---|---|
 | S1 `ensure_library` (only if no local row) | `AddLibraryTableEntry(create_library)`: the row plus an empty `.pretty` directory | `DeleteLibraryTableEntry`. Then the `.pretty` directory is removed with `rmdir`, but only if it is **empty and was created by this call** (author call: this is the only file-system operation, and it writes no content). |
-| S2 `copy_seed` | `SaveCopyOfDocument(seed → lib:name)`: a new `.kicad_mod`. With `replace`, the existing file is backed up in memory first (§9.5). | `DeleteLibraryItem` (patch 0003). With `replace`, the old footprint is rebuilt from the pre-image (§9.5). |
+| S2 `copy_seed` | `SaveCopyOfDocument(seed → lib:name)`: a new `.kicad_mod`. With `replace`, the API pre-image was read in `prepare` (§9.5). | `DeleteLibraryItem` (patch 0003). With `replace`, the old footprint is rebuilt from the pre-image (§9.5). |
 | S3 `rebuild` | Open the copy, then one commit: delete all children, create pads, graphics and fields, update footprint properties (patch 0002), remove the seed model or set the link; then `SaveDocument`. | A failure before save → `drop` the commit, then compensate S2. A failure after save → compensate S2. |
 
+**Before S2** (author call), the engine re-checks the name through the API
+(`GetLibraryItems`), now that the row exists. If the name is taken, it raises `already_exists`
+and compensates S1. This prevents a silent overwrite.
+
 **If compensation itself fails**, CopperChat raises `document_inconsistent`, as the schematic
-engine does. The turn ends. The turn snapshot (§10) restores the repo state, and the error message
-names the leftover item. In that one case the anti-goal is met through history, not by the tool
-itself.
+engine does. `_recover_inconsistent` only reopens the session from the last save; it **never
+restores a snapshot automatically** (owner rule). So the leftover stays on disk:
+
+- a footprint saved by S2/S3, or a table row added by S1;
+- the error and the turn-end notice name it exactly (lib id or row);
+- the user removes it with History → undo of the turn (§10 makes that work), or the agent removes
+  it with `fp_delete` in a later turn.
+
+This one case breaks "tool error = nothing written", and the notice says so; it is never
+silent.
 
 **Cancellation.** The compensation runs shielded, like `KicadSession.commit` cleanup.
 
@@ -570,53 +696,130 @@ before save is a `drop`.
 
 ### 9.4 Geometry hash
 
-`geometry_hash` is a sha256 over a canonical JSON of the pads and of all shapes on Cu, Mask,
-Paste, SilkS, Fab and CrtYd. Coordinates are rounded to 1 nm, and the list is sorted. Fields and
-description are left out, so editing metadata does not invalidate an approval, but every
-geometry change does. `fp_render`, `fp_check`, `fp_create` and `fp_approve` all report it.
+`geometry_hash` is a sha256 over a canonical JSON of **everything that changes what is
+manufactured or placed**. Coordinates are rounded to 1 nm, and lists are sorted. The hash
+covers:
+
+- every pad with all its properties: number, type, shape, position, rotation, size, drill,
+  layers, per-pad clearance, mask and paste margins, zone connection and thermal settings;
+- all shapes on the Cu, Mask, Paste, SilkS, Fab and CrtYd layers;
+- the positions, sizes and layers of all texts;
+- the footprint-level properties from patch 0002: mounting type, exclude-from-BOM/position,
+  clearance/mask/paste/zone overrides, net ties, private layers and jumpers;
+- the 3D model links.
+
+Left out are only the description, keywords and field **values**. So editing metadata does not
+invalidate an approval, but every manufacturing-relevant change does. `fp_render`, `fp_check`,
+`fp_create` and `fp_approve` all report the hash.
 
 ### 9.5 `replace`
 
 `fp_create(replace=true)` is allowed only for an existing **local** footprint. It counts as
 deletion plus creation in one call:
 
-- `prepare` reads the full pre-image: the footprint definition and its fields.
+- `prepare` reads the full pre-image as **API data**: the raw protobuf items (pads, shapes,
+  texts, fields) and the `FootprintInstance` definition. CopperChat never keeps file bytes for
+  this.
 - S2 uses the **seed** again, so the result is built from scratch.
-- Compensation on failure rebuilds the pre-image through the same S3 code path. The pre-image is
-  API data, not file bytes.
+- **Compensation is best effort.**
+  - On failure, CopperChat rebuilds the pre-image through the same S3 code path and compares
+    the read-back with the pre-image: the geometry hash plus fields.
+  - Things the API does not expose may be lost (e.g. groups). Any difference raises
+    `document_inconsistent` and names the footprint (§9.3).
+  - The turn snapshot holds the exact old bytes, so History → undo is the backstop.
 - The result has `needs_user_review = yes`, and any `User review` field is dropped.
 
 ## 10. Undo, history and snapshots
 
-C12 is extended in `history/store.py` (author call for the mechanism):
+C12 is extended in `history/store.py` (author call for the mechanism).
+
+**The core problem.** The local library is shared by every project of the repo, but history is
+per project (`HistoryStore` per `agent_dir(project)`, hashes per `project_id`). Restore must
+therefore never undo another project's footprint work.
 
 - **`document_files(project)` → `tracked_files(project, repo_root)`.** The tracked set is:
   - the existing project files;
   - the project's `fp-lib-table` (it may be absent);
-  - every `*.kicad_mod` in each **local** library directory (§5) referenced by the project
-    table.
+  - every `*.kicad_mod` in the **local library directory** `<root>/footprints/<nick>.pretty`
+    (§5).
 
-  This covers the repo-root library above the project directory. Files outside the repo root are
-  never tracked.
-- **Manifest v2.** `relPath` becomes relative to the **repo root** (it was relative to the
-  project directory before), and a new `trackedDirs` list names the local `.pretty` directories.
-  Old manifests (v1, no version key) are still read with project-relative paths.
-- **Restore.**
-  - After copying the manifest files back, restore also **deletes `*.kicad_mod` files in a
-    `trackedDirs` directory that are missing from the manifest**. These are footprints created
-    after the snapshot; deleting them is what makes `fp_create` undoable.
-  - If the snapshot had **no** `fp-lib-table`, restore deletes the table that exists now. The
-    same applies to a library directory that did not exist then (a non-recursive `rmdir` of an
-    empty `.pretty` directory after its files were removed).
-  - These are restore-time file operations, like today's byte copy-back of `.kicad_sch` files.
-    They are snapshot bytes written by KiCad, not CopperChat-authored content.
-  - Restore already closes and reopens the session (`restore.py`), which reloads the tables and
-    libraries. The `fp_get` cache is cleared.
-- **External-change check.** `on_turn_start` hashes the tracked set, so a footprint edited in the
-  KiCad GUI is noticed. The reaction is the existing reload-after-external-change.
-- **Snapshot size.** Footprint files are small, a few KB each, so the full local library is
-  copied per snapshot. This is fine for libraries with hundreds of footprints. A library above
-  2,000 files logs a warning; there is no cap in v1.
+  The library directory is derived (§5), not read from the table. So it is tracked even before
+  this project has a row, or before the directory exists, and the very first `fp_create` is
+  undoable. The walk:
+  - takes regular files only (`lstat`);
+  - skips symlinks, as `document_files` does today;
+  - never tracks anything outside the repo root.
+
+  While `repo_policy` is `transient` (§5), the library part is left out of snapshots, and
+  restore does not touch it.
+- **Paths.** `relPath` stays **project-relative**, as today. Library files get `../` prefixes,
+  e.g. `../../footprints/X.pretty/L.kicad_mod`. Existing manifests, the `document_hashes.rel_path`
+  keys and `history_snapshots.files` keep their meaning, so no data migration is needed.
+  Restore's `_inside` check changes from "inside the project dir" to "inside the repo root",
+  with no symlink component, and for `../` entries "inside the local library directory".
+- **Manifest v2** adds:
+  - `version: 2`;
+  - `repoRootRel`: the project directory relative to the root;
+  - `library`: `{dir, existed, files}`;
+  - `table`: `{existed}`.
+
+  Restore refuses the library part, and says so, when `repoRootRel` or the derived library
+  directory differs from today's (the repo was moved or renamed). The project files are restored
+  as usual in that case.
+- **Restoring the library is scoped to this project's own changes.** The change log knows which
+  footprints this project's tool calls created, replaced, approved or deleted after the
+  snapshot. Only those are restored, and only when the file's current hash still equals the hash
+  this project recorded right after its own last write. If someone changed the file since
+  (another project, the KiCad GUI), it is left alone. Per file:
+  - created here after the snapshot → deleted;
+  - changed or deleted here → the snapshot bytes are copied back;
+  - changed elsewhere since → **skipped**, and listed in the restore notice as "changed outside
+    this project, not restored".
+
+  Library files that this project never touched are never modified by its restore. These are
+  restore-time file operations on snapshot bytes that KiCad wrote, like today's copy-back of
+  `.kicad_sch` files; CopperChat never authors content.
+- **The table and the library directory on restore** (v2 manifests only):
+  - If the v2 snapshot had **no** `fp-lib-table` and the current table holds only rows that
+    CopperChat added after the snapshot (change log `fp_lib_table_row_added`), the table is
+    removed. Otherwise only those rows are removed, through the API after the reopen. Any other
+    row stays.
+  - An empty library directory that this project created after the snapshot is removed with a
+    non-recursive `rmdir`.
+  - **v1 manifests** (older snapshots, without the table or the library) **never** delete
+    anything. They restore project files only, exactly as today. So restoring an old snapshot
+    cannot remove a hand-made `fp-lib-table`.
+- **Validation of every delete.** A file is deleted only if all of these hold:
+  - it is a regular file (`lstat`);
+  - it lies directly in the derived local library directory;
+  - its name ends in `.kicad_mod`;
+  - no path component is a symlink.
+
+  A `library.dir` in the manifest that differs from the derived directory is refused, so an
+  edited manifest cannot steer deletes elsewhere.
+- **After a restore.** Restore already closes and reopens the session (`restore.py`), which
+  reloads the tables and libraries. `invalidate_footprints` is called.
+- **Own writes are not external changes.** After every footprint stage, `on_library_changed`
+  (§9.1) re-records the hashes of the tracked library files. So the next `on_turn_start` does not
+  report CopperChat's own `fp_create` as an external edit.
+- **Real external changes** are detected by `on_turn_start`, which hashes the tracked set. There
+  are two cases:
+  - A change in **project files** (`.kicad_sch`, `.kicad_pcb`, `.kicad_pro`, the project's own
+    `fp-lib-table`) keeps today's reaction: reload, notice, plan pause.
+  - A change **only in library files** (another project of the repo, the KiCad GUI) does not
+    reload the session and does not pause a plan. It calls `ReloadLibrary(nick)` +
+    `wait_for_libraries`, then `invalidate_footprints`, and posts a short notice naming the
+    changed footprints. A reload would drop `footprints_active` and cost 3 s and 1.7 GB again
+    for nothing.
+- **Snapshot size: content-addressed library blobs.** Snapshots are taken often (`HISTORY_KEEP`
+  50 turn snapshots plus `STEP_KEEP` 100 step checkpoints), and there is one history per project
+  of the repo, so copying the whole library each time is too expensive. Instead:
+  - library files are stored once per content, as `.kicad-agent/history/blobs/<sha256>`;
+  - the manifest references them by sha;
+  - an unchanged file costs nothing per snapshot;
+  - pruning a snapshot removes blobs that no manifest references any more;
+  - hashing reuses the hashes recorded by `on_library_changed`, so only files that changed are
+    read again.
 - **Change log.** The change log (`changes`) gets these kinds for the UI change list, each with
   the lib_id and the geometry hash:
   - `footprint_created`;
@@ -630,15 +833,22 @@ C12 is extended in `history/store.py` (author call for the mechanism):
 - **Rendering.** `fp_render` returns a PNG `ImageBlock`. The run engine already stores tool
   images (`.kicad-agent/images/…`) and shows them in the chat row. No new frontend component is
   needed for v1.
-- **The SVG link.** The SVG is served from `/api/projects/<id>/renders/<name>.svg` (the existing
-  allowed prefix in `web/security.py`), with these headers:
-  - `Content-Type: image/svg+xml`;
-  - `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`;
-  - `X-Content-Type-Options: nosniff`.
+- **The SVG link.** The existing renders route (`web/routes_views.py`) accepts only
+  `^[0-9a-f]{32}\.png$` and always sends `image/png`, so the SVG needs its own route (author
+  call). The route is `GET /api/projects/<id>/renders/<uuid>.svg`:
+  - its name pattern is `^[0-9a-f]{32}\.svg$`, and the names are server-generated uuids, never
+    derived from footprint names;
+  - it sends these headers:
+    - `Content-Type: image/svg+xml`;
+    - `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`;
+    - `X-Content-Type-Options: nosniff`;
+    - `Content-Disposition: inline; filename="<lib>_<name>.svg"` (sanitised).
 
-  The agent may link it in markdown so the user can zoom. Markdown image rendering of SVG stays
-  an `<img>` (no script execution). Field values in KiCad's SVG are escaped text, but the CSP is
-  defence in depth.
+  The path stays under the `/renders/` prefix, which the markdown policy already allows (see
+  the `web/security.py` docstring). The agent may link the SVG in markdown so the user can
+  zoom. Markdown image rendering of SVG stays an `<img>` (no script execution). The SVG is
+  re-serialised by CopperChat (§7.5), and the CSP is defence in depth. P2 includes a route test
+  for the headers and the name pattern.
 - **The approval message** that the skill prescribes contains:
   - the render;
   - the `fp_check` summary with every warning;
@@ -660,8 +870,9 @@ Footprint tools count against the same per-turn budget (`EditingSettings.change_
 | S1 library row (inside `fp_create` / `sch_set_fields`) | 0 (infrastructure) |
 | read-only `fp_*` | 0 |
 
-- **Plans.** A plan step may contain footprint tools. `plan_propose` step kinds are free text
-  today, so nothing changes there.
+- **Plans.** A plan step may contain `fp_create` and `fp_delete`. `plan_propose` step kinds are
+  free text today, so nothing changes there. `fp_approve` is **never** allowed while a plan is
+  running (§7.7 guard 6). Approval stays a separate turn after the user's answer.
 - **Turn snapshot.** The snapshot is taken on the first mutation (§9.1). An `fp_create` refused in
   `prepare` takes no snapshot, as today.
 
@@ -759,31 +970,66 @@ Footprint tools count against the same per-turn budget (`EditingSettings.change_
 
 ### 14.2 Calls made by the author (for review)
 
-- The nickname is the repo directory name, with a `_local` suffix on a global collision; the row
-  is created lazily by the first write (§5).
-- A `footprints_active` flag, activation by opening a pinned stock footprint, and no unloading
-  (§6.1).
-- A single pinned seed `Inductor_SMD:L_Bourns-SRN4018` for SMD and THT (§6.3).
-- The `FootprintGeometry` model, with `detail = summary` as the default (§7.1).
-- `fp_render`: CopperChat's own wrapper SVG with grid, axes and pad labels, rasterised to PNG
-  with CairoSVG (a new dependency); the SVG is served with a sandbox CSP (§7.5, §11).
-- A separate `fp_approve` tool with a geometry hash, a "rendered and checked in an earlier turn"
-  guard and a `User review` field (§7.7).
-- `fp_delete`: refused if the footprint is used in the open project; only a warning when it may
-  be used in other projects of the repo (§7.8).
-- The `fp_check` rules, thresholds and severities (§8); no new geometry library.
-- `FootprintChangeSet`, its stages and compensation; `rmdir` of an empty library directory
-  created by the failing call (§9).
-- A geometry hash that ignores metadata (§9.4).
-- `replace` rebuilds from the seed, and compensation uses the pre-image (§9.5).
-- Manifest v2, repo-root-relative, with deletion of untracked `.kicad_mod` files on restore (§10).
-- Budget costs: `fp_create` 5, `fp_approve` / `fp_delete` 1, the row 0 (§12).
-- `fp_check` / `fp_list_local` in all profiles; a separate `kicad-footprints` skill; an optional
-  `## Land pattern` section in part notes (§13).
+- **Library (§5).**
+  - The nickname is the repo directory name, with a `_local` suffix on a global collision, the
+    same in every project.
+  - The local library is exactly that one directory, and every other library is read-only.
+  - A row pointing at it under another nickname is a `library_conflict`.
+  - Writes are refused while the repo root is transient.
+  - The row is created lazily by the first write.
+- **Footprint access (§6).**
+  - A `footprints_active` flag, activation by opening a pinned stock footprint, and no
+    unloading.
+  - The `COPPERCHAT_FOOTPRINT_TOOLS` switch and the documented RAM need.
+  - The lock order.
+- **Seed (§6.3).** A single pinned seed `Inductor_SMD:L_Bourns-SRN4018` for SMD and THT.
+- **Geometry model (§7.1).** The `FootprintGeometry` model with `detail = summary` as the
+  default, and the placement of the Reference/Value texts.
+- **Rendering (§7.5, §11).**
+  - CopperChat's own wrapper SVG with grid, axes and pad labels, built with an XML API.
+  - The existing kicad-cli runner.
+  - Rasterising to PNG with CairoSVG (a new dependency) in a thread.
+  - A separate SVG route with a sandbox CSP.
+- **Approval (§7.7).** A separate `fp_approve` tool with these guards:
+  - the geometry hash;
+  - a render and a check followed by a **human** user message;
+  - `user_quote` must be a substring of that message;
+  - not during plan execution.
+
+  It writes a `User review` field.
+- **Deleting (§7.8).** `fp_delete` is refused if the footprint is used in the open project; it
+  only warns when it may be used in other projects of the repo.
+- **`sch_set_fields` (§7.9).** The row stage is a generic adapter step, outside the schematic
+  engine.
+- **Checks (§8).**
+  - The `fp_check` rules, thresholds and severities.
+  - No new geometry library.
+  - Bounding-box prefiltering and complexity caps.
+- **Write path (§9).**
+  - `FootprintChangeSet`, its stages and compensation.
+  - An API name re-check before S2.
+  - `rmdir` of an empty library directory created by the failing call.
+  - A `library_changed` result field instead of a new `DocKind`.
+- **Geometry hash (§9.4).** It covers everything manufacturing-relevant and leaves out only
+  text metadata.
+- **`replace` (§9.5).** It rebuilds from the seed; its compensation is best effort from the API
+  pre-image, with history as the backstop.
+- **History (§10).**
+  - Project-relative manifest paths, with `../` for library files.
+  - Manifest v2.
+  - Library restore scoped to this project's own changes, with a hash check.
+  - No deletes from v1 manifests.
+  - A library-only external change reloads libraries, not the session.
+  - Content-addressed library blobs.
+- **Budget (§12).** `fp_create` costs 5, `fp_approve` / `fp_delete` 1, the row 0.
+- **Profiles and skills (§13).**
+  - `fp_check` / `fp_list_local` in all profiles.
+  - A separate `kicad-footprints` skill.
+  - An optional `## Land pattern` section in part notes.
 
 ## 15. Open questions for the owner
 
-1. **How the approval is recorded.** With an agent tool (`fp_approve`, guarded by "earlier turn +
+1. **How the approval is recorded.** With an agent tool (`fp_approve`, guarded by "human reply + quote +
    geometry hash"), the agent could still approve after a vague "looks fine" from the user. An
    "Approve" button on the render card would make the approval a direct user action.
    *Recommendation:* ship `fp_approve` in v1 as designed, and add the button with the frontend
@@ -797,6 +1043,12 @@ Footprint tools count against the same per-turn budget (`EditingSettings.change_
 3. **Budget weight of `fp_create`.** At 5 logical changes, at most 4 new footprints fit in a turn
    without a plan. *Recommendation:* keep 5, so that a batch of new footprints goes through a
    plan.
+4. **A fifth KiCad patch for memory.** Every footprint document open loads all ~156 footprint
+   libraries: +1.7 GB RSS, up to 4 GB peak, also on board servers once something is written. A
+   small patch to `handleOpenFootprint` (load only the footprint's own library) would remove
+   this. It would be carried like 0001–0004 and offered upstream through the owner.
+   *Recommendation:* ship v1 without it, using the switch and the documented RAM need (§6.1).
+   Do the patch together with the next KiCad bump, if PROD memory turns out to be tight.
 
 ## 16. Testing
 
@@ -806,15 +1058,38 @@ Footprint tools count against the same per-turn budget (`EditingSettings.change_
   - the J402 case (9 pins, 11 pads) → a `pad_without_pin` warning for 10/11, or info with
     `allow_unmatched_pads`;
   - a DRC0010J-like 10 + EP case with `expected` mismatches → `expected_mismatch`.
-- `model.py`: protobuf → geometry, using recorded protobuf fixtures; the canonical
-  `geometry_hash` is stable and changes on geometry changes only.
-- Schema and `prepare` validation: name regex, source rules (path escape, missing file, empty
-  location), model path rules, `replace` on non-local, the overwrite refusal.
-- Nickname and URI derivation (§5) for nested, root and non-git projects, and for a global
-  collision.
-- `fp_approve` guards: same turn, wrong hash, no render, no check, check errors.
-- History: `tracked_files`, manifest v2 read/write, v1 compatibility, restore deleting untracked
-  `.kicad_mod` files and the table (`tmp_path`, no KiCad).
+- `model.py`: protobuf → geometry, using recorded protobuf fixtures. The canonical
+  `geometry_hash` is stable. It changes on every manufacturing-relevant change, such as a paste
+  margin, a mounting attribute or a model link, but not on a description or field value.
+- `checks.py` cost bounds: a synthetic 2,500-pad footprint → `too_complex_partial_check`, and the
+  run finishes within a time bound.
+- Schema and `prepare` validation:
+  - the name regex;
+  - the source rules: absolute path, `..`, blocked path (`.env`, `.git/…`), missing file and
+    empty location all give the same error;
+  - the model path rules;
+  - `replace` on a non-local footprint;
+  - the overwrite refusal, also from `local_names_on_disk()` when the row is missing.
+- Nickname and URI derivation (§5): nested, root and non-git projects; a global collision; the
+  same result for two projects of one repo; `library_conflict` for a foreign nickname on the
+  directory; `repo_root_unknown` while the policy is transient.
+- `fp_approve` guards:
+  - same turn, wrong hash, no render, no check, check errors;
+  - a server-generated user message in between (plan execute, session close, notice);
+  - a `user_quote` that is not in the human message;
+  - a call while a plan is running.
+- History (`tmp_path`, no KiCad):
+  - `tracked_files`, including the derived library directory before it exists, and symlinked
+    files and directories being skipped;
+  - manifest v2 read/write and v1 compatibility;
+  - **a v1 restore with an existing `fp-lib-table` deletes nothing**;
+  - restore deletes only this project's own footprints created after the snapshot;
+  - a file changed by "another project" after this project's write is skipped and reported;
+  - a manifest with a forged `library.dir` or a symlinked component deletes nothing;
+  - blobs are deduplicated across snapshots, and prune removes unreferenced blobs.
+- Adapter: `library_changed` re-records hashes, so no external change is reported on the next
+  turn start; the `library_row` pre-stage is compensated when `spec.apply` fails.
+- `LibraryService.invalidate_footprints` clears `_fp_scopes`, `_fp_libs` and the LRU.
 - Render wrapper: the grid SVG for a given `viewBox` (pure string/XML); rasterisation with
   CairoSVG produces a PNG of the expected size; a missing or empty kicad-cli output →
   `render_failed`.
@@ -841,15 +1116,38 @@ by KiCad, as in spike 3A.
 - **Refusals write nothing.** An existing name, a missing source and a check error each leave the
   table and the library byte-identical (hashes before and after).
 - **Compensation.** Inject a failure after S2 and after S3's save (a test hook in
-  `FootprintChangeSet`). Then the footprint is gone, and the row is gone when this call created
-  it. The error is `verification_failed`, not success.
-- **Undo.** Snapshot, then `fp_create`, then restore. The `.kicad_mod` is gone, the table is
-  back, and `fp_get` → `not_found` after the reopen. The same for `fp_delete` → restore → the
-  footprint is back.
+  `FootprintChangeSet`). Then:
+  - the footprint is gone, and the row is gone when this call created it;
+  - an empty library directory created by the call is gone, but a directory that existed before
+    is kept;
+  - the error is the injected one (a failure in the read-back would be `verification_failed`),
+    never success.
+- **Compensation failure.** Also make `DeleteLibraryItem` fail. The result is
+  `document_inconsistent`, and the notice names the leftover lib id. History undo then removes
+  it.
+- **Turn end after footprint writes.** The turn-end autosave succeeds (no footprint `DocKind`),
+  and the next turn start reports **no** external change.
+- **Same-turn use.** `fp_create`, then `sch_set_fields` with the new lib id in the same turn: the
+  existence check passes (cache invalidated).
+- **Undo of the first `fp_create`.** Snapshot (no row, no library directory yet), then
+  `fp_create`, then restore. The `.kicad_mod` and the empty directory are gone, the table is as
+  before, and `fp_get` → `not_found` after the reopen. Repeat with a library directory that
+  already exists from another project: only this project's footprint is removed. The same for
+  `fp_delete` → restore → the footprint is back.
+- **Cross-project.**
+  - `main` creates A; `io` creates B and approves A.
+  - Restoring `main` to before A removes A only if `io` did not change it since; otherwise A is
+    skipped and reported.
+  - B is never touched.
+  - `main` sees `io`'s writes as a library-only change: libraries reload, no plan pause.
+- **`replace` compensation.** Inject a failure in S3 of a `replace`. The pre-image is rebuilt
+  with an equal hash, or the error is `document_inconsistent`.
 - **`fp_approve`.** The happy path, and the refusal after a `replace` that changed the hash.
 - **`fp_delete` in use** → `in_use`.
-- **`fp_render`.** The PNG exists; the SVG `viewBox` extents match the CrtYd 4.0 × 4.0 within
-  0.01 mm.
+- **`fp_render`.** The PNG exists. A CrtYd-only export (`--layers F.CrtYd`) has extents of
+  4.0 × 4.0 within 0.01 mm. The full export's `viewBox` also contains the texts (spike Q8), so it
+  is not asserted. The SVG route sends the CSP and `nosniff` headers and rejects names that are
+  not uuids.
 - **Coexistence.** An `fp_get` while the schematic has an open commit; the footprint document is
   always closed after each tool (`get_open_documents`); the schematic still works afterwards.
 - **Stock footprint check.** `fp_check` on a stock footprint with `expected` (the U202 pattern).
@@ -872,7 +1170,7 @@ by KiCad, as in spike 3A.
 |---|---|---|
 | P1 Read path | `FootprintDocument`, handler activation and `footprints_active`, `FootprintGeometry`, `fp_get`, `fp_list_local`, local-library resolution (§5, read side), `FP_READ` profiles, `footprint_libraries_ready()` | — |
 | P2 Check + render | `checks.py` with all §8 rules, `fp_check`; the `fp_render` pipeline (kicad-cli, wrapper, CairoSVG), SVG serving with CSP | P1 |
-| P3 History coverage | `tracked_files`, manifest v2, restore deletes, external-change hashing, `DocKind "fplib"` | — (parallel to P1/P2) |
+| P3 History coverage | `tracked_files` (derived library dir), manifest v2, content-addressed library blobs, project-scoped library restore, library-only external-change handling, `library_changed` result field + hash re-recording, `invalidate_footprints` | — (parallel to P1/P2) |
 | P4 Writes | `FootprintChangeSet` and engine, S1–S3 with compensation, `fp_create` (incl. `replace`), `fp_delete`, `fp_approve` with the `footprint_reviews` table, budget costs, change-log kinds, `sch_set_fields` / `sch_place_symbol` local check and row stage | P1, P2, P3 |
 | P5 Skills + acceptance | `kicad-footprints` skill, `kicad-schematic-editing` / `part-notes` / `copperchat-tools` updates, research prompt (Land pattern), L201 golden end-to-end, docs (README tool list, CHANGELOG) | P4 |
 
