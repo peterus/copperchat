@@ -38,8 +38,7 @@ row removal after a restore.
 
 **Interfaces:** Produces FP-C7 tables and `FootprintWriteRepo` (`insert_pending(project_id,
 run_id, lib_id, file_rel, op, pre_sha256, geometry_hash=None) -> int`, `set_post_s2(id, sha)`,
-`finalise(id, state, post_sha256)`, `pending(project_id) -> list[Row]`, `since(project_id,
-created_at) -> list[Row]`, `latest_for_file(file_rel) -> Row | None`,
+`finalise(id, state, post_sha256)`, `pending(project_id) -> list[Row]`, `latest_for_file(file_rel) -> Row | None`,
 `later_foreign(file_rel, project_id, after_id) -> bool`, `max_id() -> int`,
 `after_id(project_id, after_id) -> list[Row]`).
 `ABSENT = "absent"`.
