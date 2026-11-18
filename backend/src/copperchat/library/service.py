@@ -242,6 +242,19 @@ def _project_footprint_rows(h: KicadHandle) -> list[tuple[str, str, str]]:
     return [(r.nickname, r.uri, resolved.get(r.nickname, r.uri)) for r in raw]
 
 
+def _footprint_table_uri(nickname: str, h: KicadHandle) -> str | None:
+    """Substituted URI of the footprint table row `nickname`: the project table first
+    (it shadows a global row of the same nickname), then the global one."""
+    from kipy.proto.common.types import LibraryTableScope, LibraryType
+
+    for scope in (LibraryTableScope.LTS_PROJECT, LibraryTableScope.LTS_GLOBAL):
+        table = h.kicad.get_library_table(LibraryType.LT_FOOTPRINT, scope, substituted=True)
+        for row in table.rows:
+            if row.nickname == nickname:
+                return str(row.uri)
+    return None
+
+
 # -- local library (FP-C1) -------------------------------------------------------------
 
 
@@ -796,6 +809,12 @@ class LibraryService:
         self._fp_failed.pop(nickname, None)
         for lib_id in [k for k in self._fp_geometry if _split(k)[0] == nickname]:
             del self._fp_geometry[lib_id]
+
+    async def footprint_library_uri(self, nickname: str) -> str | None:
+        """The resolved (`substituted`) URI of a footprint library row, project table
+        first, then the global one; None without a row (`fp_render`, spec §7.5)."""
+        with _kicad_errors(f"Could not read the footprint library table row {nickname[:80]!r}"):
+            return await self._session.call(partial(_footprint_table_uri, nickname))
 
     async def local_library(
         self, *, for_write: bool = False, require_root: bool = False

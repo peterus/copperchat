@@ -20,6 +20,7 @@ dependencies = [
     "python-multipart>=0.0.20",
     "pywebpush>=2.0",
     "requests>=2.32",
+    "cairosvg>=2.7.0",
 ]
 
 [dependency-groups]
