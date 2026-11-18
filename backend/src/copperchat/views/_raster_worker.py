@@ -3,11 +3,12 @@ CairoSVG, in a process of its own.
 
 Run as `python -I -m copperchat.views._raster_worker <width_px> <height_px>` by
 `footprint_render.rasterise`: the wrapper SVG on stdin, the PNG on stdout, exit 0; any
-error exits non-zero with only the exception's class name on stderr. CairoSVG's cost is
+error exits non-zero with only the exception's class name on stderr. All three are
+files in the per-render temp dir (opened by the parent), never pipes. CairoSVG's cost is
 not bounded by any cheap estimate of the SVG (stroke width, self-crossing paths, ...), so
 the parent kills this process after a wall-clock timeout; this process also caps its own
-address space and CPU time first (`resource.setrlimit`), so a runaway render can neither
-exhaust the machine's memory nor outlive a dead parent for long.
+address space, CPU time and file size first (`resource.setrlimit`), so a runaway render
+can neither exhaust the machine's memory or disk nor outlive a dead parent for long.
 """
 
 from __future__ import annotations
@@ -22,6 +23,11 @@ MEMORY_LIMIT_BYTES = 1536 * 1024 * 1024
 # which is what normally ends a slow render. SIGXCPU at the soft, SIGKILL at the hard limit.
 CPU_LIMIT_S = 30
 MAX_SIDE_PX = 2000
+# Largest file the worker may write (its stdout PNG, fontconfig's cache in HOME): the
+# parent's PNG cap (`footprint_render.MAX_PNG_BYTES`, 2000 x 2000 RGBA + 1 MB) plus a
+# margin, so the parent sees an oversized PNG and refuses it, but the disk never fills.
+# Writing past it raises SIGXFSZ (the worker dies: a non-zero exit).
+FILE_LIMIT_BYTES = 4 * MAX_SIDE_PX * MAX_SIDE_PX + 2 * 1024 * 1024
 
 
 def _limit(which: int, value: int, hard: int) -> None:
@@ -34,6 +40,7 @@ def _limit(which: int, value: int, hard: int) -> None:
 def limit_resources() -> None:
     _limit(resource.RLIMIT_AS, MEMORY_LIMIT_BYTES, MEMORY_LIMIT_BYTES)
     _limit(resource.RLIMIT_CPU, CPU_LIMIT_S, CPU_LIMIT_S + 2)
+    _limit(resource.RLIMIT_FSIZE, FILE_LIMIT_BYTES, FILE_LIMIT_BYTES)
 
 
 def refuse(url: str, resource_type: str) -> bytes:

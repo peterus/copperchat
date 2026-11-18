@@ -755,17 +755,25 @@ phase file, with the reason.)
   its own, `python -I -m copperchat.views._raster_worker <width> <height>`
   (`create_subprocess_exec`, argv only, `RASTER_WORKER`): the wrapper SVG on stdin, the
   PNG on stdout; on an error it exits 2 with only the exception class name on stderr.
-  The worker sets `RLIMIT_AS` 1.5 GB and `RLIMIT_CPU` 30 s (hard 32 s) itself before
-  CairoSVG is imported. Its environment is only `PATH`, `LANG=C.UTF-8`, `HOME` and
+  stdin, stdout and stderr are **files, never pipes** (review fix: a stdout reader
+  cancelled or stopped at the cap left a paused pipe transport that never saw EOF, so
+  `proc.wait()` hung forever under `_render_lock`): the parent writes the SVG into
+  `worker-in.svg` and creates `worker-out.png` / `worker-err.txt` (`O_CREAT|O_EXCL|
+  O_NOFOLLOW`, 0600) in the per-render temp dir, passes the fds, and only awaits
+  `proc.wait()`. The worker sets `RLIMIT_AS` 1.5 GB, `RLIMIT_CPU` 30 s (hard 32 s) and
+  `RLIMIT_FSIZE` `FILE_LIMIT_BYTES` (2000 x 2000 RGBA + 2 MiB: above the parent's PNG
+  cap, so the disk cannot fill; SIGXFSZ kills it) itself before CairoSVG is imported.
+  Its environment is only `PATH`, `LANG=C.UTF-8`, `HOME` and
   `XDG_CACHE_HOME` in a throw-away temp dir (no secret of the app's is inherited;
   `-I` ignores `PYTHON*` variables; fontconfig uses the image's system cache), its own
   session (`start_new_session`). The parent waits at most `RASTER_TIMEOUT_S` = 20 s
-  wall clock (stock maximum ~3 s, a cold font cache ~13 s), then kills (SIGKILL) and
-  reaps it: `render_failed` "render timed out". On every way out — timeout, error,
-  cancellation — the worker is killed and reaped and its pipes drained before
-  `_render_lock` is released (`_settle`, as for the threads). stdout is capped at
-  `MAX_PNG_BYTES` (a raw 2000 x 2000 RGBA image + 1 MiB; more is `render_failed`),
-  stderr is drained but only an identifier is quoted, and the output must start with
+  wall clock (stock maximum ~3 s, a cold font cache ~13 s): `render_failed` "render
+  timed out". On every way out — timeout, error, cancellation — its process group is
+  SIGKILLed and it is reaped (bounded `REAP_TIMEOUT_S` = 5 s wait, shielded by
+  `_settle`) before `_render_lock` is released. After a clean exit the output size is
+  checked with `os.fstat` against `MAX_PNG_BYTES` (a raw 2000 x 2000 RGBA image + 1 MiB;
+  more is `render_failed`) **before** it is read; of stderr at most 100 bytes are read
+  and only an identifier is quoted; the output must start with
   the PNG signature. Parse/sanitise/wrap stay in a worker thread (linear in the
   4 MB-capped input). The thick-stroke attack now fails after 20.0 s instead of 44 s;
   a small render costs ~0.3 s more (interpreter start). `scripts/app-image-tools.sh`

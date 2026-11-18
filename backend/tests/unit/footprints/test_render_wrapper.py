@@ -1107,3 +1107,110 @@ async def test_thick_strokes_time_out(monkeypatch: pytest.MonkeyPatch) -> None:
         await fr.rasterise(wrapped.svg, wrapped.extent_mm)
     assert time.monotonic() - started < 6
     assert _code(exc) == "render_failed" and "render timed out" in exc.value.why
+
+
+# --- the worker's I/O: temp files, no pipes -----------------------------------------------
+
+# A worker that writes to fd `fd` until it is killed (1 MB per write), or, when that fd
+# is a file, until RLIMIT_FSIZE (16 MB, set here: it does not apply to pipes) stops it,
+# then it sleeps. If the fd is a pipe it is first grown to 1 MB, so a parent that stops
+# reading leaves far more than asyncio's StreamReader high-water mark (128 KB) behind:
+# the old pipe-based rasteriser then paused the pipe transport, never saw EOF and hung
+# in `proc.wait()` while holding the render lock (every time, not 2 runs in 12).
+FLOOD = """
+import fcntl, os, resource, signal, time
+signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+resource.setrlimit(resource.RLIMIT_FSIZE, (16 << 20, 16 << 20))
+with open({info!r} + ".tmp", "w") as f:
+    f.write(str(os.getpid()))
+os.rename({info!r} + ".tmp", {info!r})
+try:
+    fcntl.fcntl({fd}, fcntl.F_SETPIPE_SZ, 1 << 20)
+except OSError:
+    pass  # a file, not a pipe
+block = b"x" * (1 << 20)
+try:
+    while True:
+        os.write({fd}, block)
+except OSError:
+    pass  # EFBIG: the file reached RLIMIT_FSIZE
+time.sleep(60)
+"""
+
+
+def _flood(info: Path, fd: int) -> str:
+    return FLOOD.format(info=str(info), fd=fd)
+
+
+async def test_cancel_while_worker_writes_releases_lock(
+    ctx: ToolContext, svc: FakeService, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A render cancelled while its worker writes a large output returns promptly, with
+    the worker killed and reaped and the render lock free again (20 times: the old
+    pipe-based reader could stop with a paused pipe and hang forever)."""
+    monkeypatch.setattr(fr, "run_kicad_cli", FakeCli(kicad_svg()))
+    for run in range(20):
+        info = tmp_path / f"info-{run}.json"
+        _fake_worker(monkeypatch, _flood(info, 1))
+        task = asyncio.create_task(fr.render_footprint(ctx, "Lib:R_1", None, None, True))
+        pid = int(await _wait_for_file(info))
+        time.sleep(0.2)  # the loop stalls: a pipe would fill up meanwhile
+        started = time.monotonic()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert time.monotonic() - started < 5, run
+        assert _gone(pid), run
+        assert not fr._render_lock.locked(), run
+
+
+async def test_oversized_output_fails_promptly(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """More output than the PNG cap: `render_failed` as soon as the worker exits (its
+    size is checked before anything is read), the worker reaped."""
+    monkeypatch.setattr(fr, "MAX_PNG_BYTES", 1000)
+    info = tmp_path / "info.json"
+    _fake_worker(monkeypatch, _flood(info, 1).replace("time.sleep(60)", ""))
+    started = time.monotonic()
+    with pytest.raises(StructuredToolError) as exc:
+        await fr.rasterise(kicad_svg(), (4.0, 4.0))
+    assert time.monotonic() - started < 5
+    assert _code(exc) == "render_failed" and "more than a PNG" in exc.value.why
+    assert _gone(int(info.read_text()))
+
+
+async def test_stderr_flood_does_not_block(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A worker writing a lot to stderr neither blocks nor hangs the timeout path:
+    the loop stalls across the deadline (a stderr pipe would be full then) and the
+    render is still `render_failed` "render timed out" within moments, worker reaped;
+    stderr is never quoted."""
+    monkeypatch.setattr(fr, "RASTER_TIMEOUT_S", 1.0)
+    info = tmp_path / "info.json"
+    _fake_worker(monkeypatch, _flood(info, 2))
+    task = asyncio.create_task(fr.rasterise(kicad_svg(), (4.0, 4.0)))
+    pid = int(await _wait_for_file(info))
+    time.sleep(1.2)  # past the deadline with the loop stalled
+    started = time.monotonic()
+    with pytest.raises(StructuredToolError) as exc:
+        await task
+    assert time.monotonic() - started < 5
+    assert _code(exc) == "render_failed" and "render timed out" in exc.value.why
+    assert "xxx" not in exc.value.why and _gone(pid)
+
+
+def test_worker_file_size_limit(tmp_path: Path) -> None:
+    """The real worker's rlimits stop it writing past FILE_LIMIT_BYTES (above the
+    parent's PNG cap), so a runaway output cannot fill the disk."""
+    import subprocess
+
+    assert raster_worker.FILE_LIMIT_BYTES > fr.MAX_PNG_BYTES
+    code = (
+        "import sys\nfrom copperchat.views import _raster_worker as w\nw.limit_resources()\n"
+        "sys.stdout.buffer.write(b'x' * (w.FILE_LIMIT_BYTES + 1))\n"
+    )
+    out = tmp_path / "out"
+    with out.open("wb") as f:
+        rc = subprocess.run([sys.executable, "-c", code], stdout=f, timeout=60).returncode
+    assert rc != 0
+    assert out.stat().st_size <= raster_worker.FILE_LIMIT_BYTES

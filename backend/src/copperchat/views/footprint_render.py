@@ -25,9 +25,13 @@ Hardening (spec §7.5, C10):
   with a backslash) goes with its subtree, decided before any value is filtered;
 - CairoSVG runs in a process of its own (`_raster_worker`: argv only, `python -I`, a
   minimal environment without the app's secrets, a throw-away HOME, 1.5 GB address
-  space and 30 s CPU rlimits), with a URL fetcher that refuses everything, never with
-  `unsafe=True`; after `RASTER_TIMEOUT_S` (20 s wall clock) it is killed and reaped and
-  the render is `render_failed` ("render timed out"); its PNG output is capped.
+  space, 30 s CPU and file-size rlimits), with a URL fetcher that refuses everything,
+  never with `unsafe=True`; its stdin, stdout and stderr are files in the per-render
+  temp dir (no pipes: nothing can block on a reader that stopped), the parent only waits
+  for its exit; after `RASTER_TIMEOUT_S` (20 s wall clock), on an error or a
+  cancellation its process group is killed and it is reaped before the render lock is
+  released, and the render is `render_failed` ("render timed out"); its PNG output is
+  size-checked before it is read, stderr is never quoted.
 
 Coordinates: mm in footprint space (origin = anchor, y down). KiCad's SVG `viewBox` is
 that space (spike Q8), so the wrapper draws in it directly and embeds KiCad's drawing as
@@ -42,6 +46,7 @@ import math
 import os
 import re
 import shutil
+import signal
 import sys
 import tempfile
 import uuid
@@ -88,6 +93,7 @@ MAX_SIDE_PX = 2000
 # thick 1,990-point strokes: within every cap above) took 41 s under the render lock.
 RASTER_WORKER = (sys.executable, "-I", "-m", "copperchat.views._raster_worker")
 RASTER_TIMEOUT_S = 20.0
+REAP_TIMEOUT_S = 5.0  # waiting for the SIGKILLed worker to be reaped
 # a PNG of at most 2000 x 2000 px: raw RGBA plus filter bytes, zlib and chunk overhead
 MAX_PNG_BYTES = 4 * MAX_SIDE_PX * MAX_SIDE_PX + 1024 * 1024
 MAX_GRID_LINES = 500  # per axis
@@ -576,80 +582,95 @@ def _worker_env(home: Path) -> dict[str, str]:
     }
 
 
-async def _read_capped(stream: asyncio.StreamReader, cap: int, *, strict: bool) -> bytes:
-    """All of `stream`; over `cap` bytes `render_failed` (`strict`) or only the first
-    `cap` bytes kept (the rest is read and dropped, so the worker never blocks)."""
+def _io_file(home: Path, name: str, flags: int) -> int:
+    """A new file of the worker's I/O in its per-render directory (never an existing
+    one: O_EXCL, O_NOFOLLOW), readable by the parent through the returned fd."""
+    return os.open(home / name, flags | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        view = view[os.write(fd, view) :]
+
+
+def _read_fd(fd: int, size: int) -> bytes:
+    """The first `size` bytes of `fd` (fewer if it is shorter), from offset 0."""
     chunks: list[bytes] = []
-    size = 0
-    while chunk := await stream.read(65536):
-        if size + len(chunk) > cap:
-            if strict:
-                raise _failed("the rasteriser wrote more than a PNG of the drawing can hold")
-            chunk = chunk[: max(0, cap - size)]
-        size += len(chunk)
+    offset = 0
+    while offset < size and (chunk := os.pread(fd, min(size - offset, 1 << 20), offset)):
         chunks.append(chunk)
+        offset += len(chunk)
     return b"".join(chunks)
 
 
-async def _feed(stdin: asyncio.StreamWriter, data: bytes) -> None:
-    try:
-        stdin.write(data)
-        await stdin.drain()
-    except (BrokenPipeError, ConnectionResetError):
-        pass  # the worker died early: its exit code reports it
-    finally:
-        stdin.close()
+def _kill_group(proc: asyncio.subprocess.Process) -> None:
+    """SIGKILL the worker's process group (its own session: pgid == pid) while it has
+    not been reaped, so the pid cannot have been reused."""
+    if proc.returncode is None:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
 
 
 async def _run_worker(svg: bytes, width: int, height: int, home: Path) -> bytes:
     """The PNG from the worker process, or `render_failed` (exit code, timeout,
-    oversized output). The worker is killed and reaped on every way out, a
-    cancellation included (which waits for the reaping, then propagates)."""
+    oversized output). Its stdin, stdout and stderr are files in `home` (no pipe, so
+    the worker never blocks on the parent and the parent only waits for its exit). The
+    worker is killed and reaped on every way out, a cancellation included (which waits
+    for the reaping, then propagates)."""
+    fds: list[int] = []
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *RASTER_WORKER,
-            str(width),
-            str(height),
-            cwd=home,
-            env=_worker_env(home),
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,  # no terminal signals from the app's process group
-        )
+        fds.append(_io_file(home, "worker-in.svg", os.O_WRONLY))
+        _write_all(fds[0], svg)
+        fds.append(os.open(home / "worker-in.svg", os.O_RDONLY | os.O_NOFOLLOW))
+        fds.append(_io_file(home, "worker-out.png", os.O_RDWR))
+        fds.append(_io_file(home, "worker-err.txt", os.O_RDWR))
     except OSError as exc:
-        raise _failed(f"the rasteriser could not be started ({type(exc).__name__})") from None
-    assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
-    out_task = asyncio.ensure_future(_read_capped(proc.stdout, MAX_PNG_BYTES, strict=True))
-    err_task = asyncio.ensure_future(_read_capped(proc.stderr, MAX_RAW_CHARS, strict=False))
-    exit_task = asyncio.ensure_future(proc.wait())
-    tasks = [asyncio.ensure_future(_feed(proc.stdin, svg)), out_task, err_task, exit_task]
+        for fd in fds:
+            os.close(fd)
+        raise _failed(f"the rasteriser input could not be written ({type(exc).__name__})") from None
+    in_fd, out_fd, err_fd = fds[1], fds[2], fds[3]
     try:
-        await asyncio.wait_for(asyncio.gather(*tasks), RASTER_TIMEOUT_S)
-        out, err, returncode = out_task.result(), err_task.result(), exit_task.result()
-    except TimeoutError:
-        raise _failed(
-            f"render timed out (rasterising took longer than {RASTER_TIMEOUT_S:.0f} s)",
-            "The drawing is too complex to render; use fp_get for its geometry.",
-        ) from None
+        os.close(fds[0])
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *RASTER_WORKER,
+                str(width),
+                str(height),
+                cwd=home,
+                env=_worker_env(home),
+                stdin=in_fd,
+                stdout=out_fd,
+                stderr=err_fd,
+                start_new_session=True,  # no terminal signals; its own process group
+            )
+        except OSError as exc:
+            raise _failed(f"the rasteriser could not be started ({type(exc).__name__})") from None
+        try:
+            returncode = await asyncio.wait_for(proc.wait(), RASTER_TIMEOUT_S)
+        except TimeoutError:
+            raise _failed(
+                f"render timed out (rasterising took longer than {RASTER_TIMEOUT_S:.0f} s)",
+                "The drawing is too complex to render; use fp_get for its geometry.",
+            ) from None
+        finally:
+            # killed and reaped on every way out, also when this task was cancelled:
+            # the render lock is held until then (bounded: SIGKILL cannot be ignored)
+            _kill_group(proc)
+            await _settle(asyncio.ensure_future(asyncio.wait_for(proc.wait(), REAP_TIMEOUT_S)))
+        if returncode != 0:
+            # the worker writes only an exception class name; anything else (a
+            # traceback of a failed start) is not quoted
+            name = _read_fd(err_fd, 100).decode("ascii", "replace").strip()
+            why = name if name.isidentifier() else f"exit code {returncode}"
+            raise _failed(f"the drawing could not be rasterised ({why[:80]})")
+        size = os.fstat(out_fd).st_size
+        if size > MAX_PNG_BYTES:
+            raise _failed("the rasteriser wrote more than a PNG of the drawing can hold")
+        return _read_fd(out_fd, size)
     finally:
-        if proc.returncode is None:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-        for task in tasks:  # no-op for the finished ones
-            task.cancel()
-        # the worker reaped (and its pipes drained) on every way out, also when this
-        # task was cancelled: the render lock is held until then
-        await _settle(
-            asyncio.ensure_future(asyncio.gather(proc.wait(), *tasks, return_exceptions=True))
-        )
-    if returncode != 0:
-        # the worker writes only an exception class name; anything else (a traceback of
-        # a failed start) is not quoted
-        name = err.decode("ascii", "replace").strip()
-        why = name if name.isidentifier() else f"exit code {returncode}"
-        raise _failed(f"the drawing could not be rasterised ({why[:80]})")
-    return out
+        for fd in (in_fd, out_fd, err_fd):
+            os.close(fd)
 
 
 async def rasterise(svg: bytes, extent_mm: tuple[float, float]) -> tuple[bytes, float]:
