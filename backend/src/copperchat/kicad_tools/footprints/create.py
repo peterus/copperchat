@@ -78,6 +78,14 @@ def _file_sha256(path: Path) -> str:
         fd = open_regular(path)
     except FileNotFoundError:
         return ABSENT
+    except OSError as exc:  # swapped for a symlink (ELOOP), a FIFO (EINVAL), ...
+        raise StructuredToolError(
+            "The local footprint library is not safe to write",
+            f"{path} cannot be read as a regular file: {exc.strerror or exc}",
+            "Ask the user to replace it with the footprint file KiCad saved; nothing was written.",
+            code="library_conflict",
+            details={"path": str(path)},
+        ) from exc
     digest = hashlib.sha256()
     with os.fdopen(fd, "rb") as fh:
         for chunk in iter(lambda: fh.read(1 << 20), b""):
@@ -161,17 +169,21 @@ def _model_note(ctx: ToolContext, model: ModelSpec) -> dict[str, Any] | None:
     """The `model_missing` note when the linked file cannot be found from here (a link
     only: the footprint is created anyway)."""
     if model.variable == "KIPRJMOD":
-        base: str | None = str(ctx.project.dir)
+        base = str(ctx.project.dir)
     else:
-        base = os.environ.get(model.variable)
-    if base and os.path.isfile(os.path.join(base, *model.rel.split("/"))):
+        # the api-server inherits this process's environment (launcher.kicad_cli_env);
+        # an unset variable is resolved by KiCad itself: no claim either way, no note
+        env = os.environ.get(model.variable)
+        if not env:
+            return None
+        base = env
+    if os.path.isfile(os.path.join(base, *model.rel.split("/"))):
         return None
-    where = "not set here" if not base else "has no such file"
     return {
         "kind": "model_missing",
         "path": model.path,
-        "message": f"3D model {model.path} not found (${{{model.variable}}} {where}); the "
-        "footprint links it anyway. Tell the user to add the model file.",
+        "message": f"3D model {model.path} not found; the footprint links it anyway. "
+        "Tell the user to add the model file.",
     }
 
 
@@ -226,10 +238,16 @@ async def prepare_create(
     pre_image = None
     if parsed.replace:
         if not (info.row_present and taken):
+            why = (
+                f"this project has no library row for the local library ({lib.nickname}) "
+                "yet, so it has no local footprint to rebuild"
+                if not info.row_present
+                else f"no footprint named {name!r} is in the local library ({lib.nickname}); "
+                "replace=true only rebuilds an existing one"
+            )
             raise _error(
                 f"{lib_id} is not a footprint of the local library",
-                "replace=true only rebuilds an existing footprint of this repository's "
-                f"local library ({lib.nickname})",
+                why,
                 "Leave replace out to create a new footprint; list the local ones with "
                 "fp_list_local.",
                 "not_local",

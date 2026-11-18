@@ -34,6 +34,13 @@ from copperchat.kicad_tools.footprints.model import (
     Shape,
     Text,
 )
+from copperchat.kicad_tools.footprints.read import (  # one rule (author call 18)
+    MAX_COORD_MM,
+    MAX_DRILL_MM,
+    MAX_PAD_NUMBER_CHARS,
+    MAX_SIZE_MM,
+    MAX_SYMBOL_CHARS,
+)
 from copperchat.library.local import NAME_RE, LocalLibrary
 
 Point = tuple[float, float]
@@ -54,12 +61,7 @@ MAX_DOCUMENT_URL_CHARS = 2048
 MAX_LOCATION_CHARS = 200
 MAX_MPN_CHARS = 64
 MAX_MODEL_PATH_CHARS = 400
-MAX_SYMBOL_CHARS = 256
-MAX_PAD_NUMBER_CHARS = 16
 MAX_PAD_LAYERS = 8
-MAX_COORD_MM = 500.0
-MAX_SIZE_MM = 200.0
-MAX_DRILL_MM = 50.0
 MAX_ANGLE_DEG = 360.0
 MAX_MARGIN_MM = 10.0
 MAX_ROUNDRECT_RATIO = 0.5
@@ -458,8 +460,13 @@ def _model(value: Any) -> ModelSpec | None:
 def _symbol(value: Any) -> str | None:
     if value is None:
         return None
-    symbol = _string(value, "symbol", MAX_SYMBOL_CHARS, min_chars=2)
-    return symbol.strip()
+    if not isinstance(value, str) or not 2 <= len(value.strip()) <= MAX_SYMBOL_CHARS:
+        raise invalid(
+            "Invalid symbol",
+            f"symbol must be a non-blank string of 2..{MAX_SYMBOL_CHARS} characters",
+            "e.g. 'Device:L' or 'L201'",
+        )
+    return value.strip()
 
 
 ARG_KEYS = {"name", "description", "keywords", "mounting", "pads", "courtyard", "body",

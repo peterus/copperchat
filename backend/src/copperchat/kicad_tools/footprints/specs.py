@@ -126,7 +126,7 @@ _RECT = _obj(
 
 _CREATE_PAD = _obj(
     {
-        "number": {"type": "string", "maxLength": b.MAX_PAD_NUMBER_CHARS,
+        "number": {"type": "string", "maxLength": MAX_PAD_NUMBER_CHARS,
                    "description": "Pad number ('' only for NPTH holes)."},
         "type": {"type": "string", "enum": list(b.PAD_TYPES)},
         "shape": {"type": "string", "enum": list(b.PAD_SHAPES)},
@@ -141,7 +141,7 @@ _CREATE_PAD = _obj(
         "drill": _obj(
             {
                 "size": _xy({"type": "number", "exclusiveMinimum": 0,
-                             "maximum": b.MAX_DRILL_MM}, "Drill [w, h] in mm."),
+                             "maximum": MAX_DRILL_MM}, "Drill [w, h] in mm."),
                 "shape": {"type": "string", "enum": list(b.DRILL_SHAPES)},
             },
             ["size"],
@@ -238,7 +238,7 @@ FP_CREATE_SCHEMA = _obj(
             },
             ["document", "location"],
         ),
-        "symbol": {"type": "string", "minLength": 2, "maxLength": b.MAX_SYMBOL_CHARS,
+        "symbol": {"type": "string", "minLength": 2, "maxLength": MAX_SYMBOL_CHARS,
                    "description": "Symbol whose pins the check compares ('Device:L' or a "
                    "placed reference)."},
         "replace": {"type": "boolean", "default": False,

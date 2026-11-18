@@ -188,11 +188,11 @@ async def test_cleanable_copy_seam(session: CreateSession) -> None:
 
 async def test_replace_on_non_local(session: CreateSession) -> None:
     err = await _refused(session, l201_args(replace=True))  # no row
-    assert err.code == "not_local"
+    assert err.code == "not_local" and "no library row" in err.why
     session.rows = {REPO: LOCAL_URI}
     session.names = ["Other"]
     err = await _refused(session, l201_args(replace=True))  # not in the local library
-    assert err.code == "not_local"
+    assert err.code == "not_local" and "no footprint named" in err.why
     assert session.documents == []
 
 
@@ -214,6 +214,24 @@ async def test_replace_reads_preimage(session: CreateSession) -> None:
     assert pre.geometry_hash == geometry_hash(expected)
     assert [s.kind for s in cs.fp_stages] == ["copy_seed", "rebuild"]
     assert session.documents == [lib_id]
+
+
+async def test_replace_preimage_file_not_regular(
+    session: CreateSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The file swapped for a FIFO after the lstat check: a structured
+    `library_conflict`, never a raw OSError."""
+    import os
+
+    session.rows = {REPO: LOCAL_URI}
+    session.names = [NAME]
+    session.documents_ok.add(f"{REPO}:{NAME}")
+    _pretty(session).mkdir(parents=True)
+    os.mkfifo(_pretty(session) / f"{NAME}.kicad_mod")
+    monkeypatch.setattr(create_mod, "local_footprint_file_safe", lambda lib, name: None)
+    err = await _refused(session, l201_args(replace=True))
+    assert err.code == "library_conflict"
+    assert "regular file" in err.why
 
 
 # --- source and model --------------------------------------------------------------------
@@ -268,19 +286,32 @@ async def test_model_rules_refused(session: CreateSession, path: str) -> None:
     assert err.code == "invalid_argument"
 
 
-async def test_model_rules(session: CreateSession, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_model_rules(
+    session: CreateSession, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    link = l201_args(model={"path": "${KICAD10_3DMODEL_DIR}/x.step"})
+    # unset here (and so in the api-server's env): KiCad resolves it, no claim, no note
     monkeypatch.delenv("KICAD10_3DMODEL_DIR", raising=False)
-    cs = await prepare_create(
-        _ctx(session), l201_args(model={"path": "${KICAD10_3DMODEL_DIR}/x.step"})
-    )
-    notes = cs.summary["notes"]
-    assert [n["kind"] for n in notes] == ["footprint_libraries_loaded", "model_missing"]
+    cs = await prepare_create(_ctx(session), link)
+    assert [n["kind"] for n in cs.summary["notes"]] == ["footprint_libraries_loaded"]
     assert cs.target is not None and cs.target.models[0].path == "${KICAD10_3DMODEL_DIR}/x.step"
-    # an existing project-relative model: no note
+    # set, but the file is not there: model_missing
+    models = tmp_path / "3dmodels"
+    models.mkdir()
+    monkeypatch.setenv("KICAD10_3DMODEL_DIR", str(models))
+    cs = await prepare_create(_ctx(session), link)
+    assert [n["kind"] for n in cs.summary["notes"]] == ["model_missing"]
+    (models / "x.step").write_text("x")
+    cs = await prepare_create(_ctx(session), link)
+    assert cs.summary["notes"] == []
+    # a project-relative model
+    rel = l201_args(model={"path": "${KIPRJMOD}/3d/x.STEP"})
+    cs = await prepare_create(_ctx(session), rel)
+    assert [n["kind"] for n in cs.summary["notes"]] == ["model_missing"]
     (session.project.dir / "3d").mkdir()
     (session.project.dir / "3d" / "x.STEP").write_text("x")
-    cs = await prepare_create(_ctx(session), l201_args(model={"path": "${KIPRJMOD}/3d/x.STEP"}))
-    assert [n["kind"] for n in cs.summary["notes"]] == []  # already activated: no load note
+    cs = await prepare_create(_ctx(session), rel)
+    assert cs.summary["notes"] == []
 
 
 # --- check gate ----------------------------------------------------------------------------
@@ -363,6 +394,8 @@ def _pad(**kw: Any) -> list[dict[str, Any]]:
         l201_args(model={"path": "${KIPRJMOD}/x.step", "offset": [0, 0]}),
         l201_args(model={"path": "${KIPRJMOD}/x.step", "scale": [1, 1, math.nan]}),
         l201_args(symbol="x" * 257),
+        l201_args(symbol="   "),
+        l201_args(symbol=" L "),
         l201_args(replace="yes"),
         l201_args(mounting="unspecified"),
     ],
