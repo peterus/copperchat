@@ -117,6 +117,8 @@ class Shape:
     closed: bool
     filled: bool = False
     radius: float | None = None  # rect corner radius
+    rotation: float | None = None  # ellipse / ellipse_arc, degrees
+    arc_angles: tuple[float, float] | None = None  # ellipse_arc start, end, degrees
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"kind": self.kind, "layer": self.layer}
@@ -128,6 +130,10 @@ class Shape:
             d["size"] = _pt(self.size)
         if self.radius is not None:
             d["radius"] = _r(self.radius)
+        if self.rotation is not None:
+            d["rotation"] = _r(self.rotation)
+        if self.arc_angles is not None:
+            d["arc_angles"] = _pt(self.arc_angles)
         d.update(width=_r(self.width), closed=self.closed, filled=self.filled)
         return d
 
@@ -184,6 +190,9 @@ class FootprintGeometry:
     texts: tuple[Text, ...]
     models: tuple[Model3D, ...]
     overrides: tuple[tuple[str, Any], ...]  # footprint-level (patch 0002) properties, hashed
+    # items the model does not describe (zones, points, ...): (type, sha256 of the
+    # deterministic protobuf without ids), hashed so a keepout change changes the hash
+    other: tuple[tuple[str, str], ...] = ()
 
     def bbox(self) -> tuple[float, float, float, float]:
         """Extent of pads and shapes (texts excluded); (0, 0, 0, 0) when empty."""
@@ -315,6 +324,9 @@ def _shapes_from(graphic: Any) -> list[Shape]:
     if kind in ("ellipse", "ellipse_arc"):
         e = getattr(s, kind)
         major, minor = _mm(e.major_radius.value_nm), _mm(e.minor_radius.value_nm)
+        arc_angles = None
+        if kind == "ellipse_arc":
+            arc_angles = (e.start_angle.value_degrees + 0.0, e.end_angle.value_degrees + 0.0)
         return [
             Shape(
                 kind,
@@ -325,6 +337,8 @@ def _shapes_from(graphic: Any) -> list[Shape]:
                 width,
                 kind == "ellipse",
                 filled,
+                rotation=e.rotation.value_degrees + 0.0,
+                arc_angles=arc_angles,
             )
         ]
     return []
@@ -493,6 +507,17 @@ def _overrides(definition: Any, fp: Any) -> tuple[tuple[str, Any], ...]:
     return tuple(sorted(out.items()))
 
 
+def _opaque_digest(item: Any) -> str:
+    """Stable digest of an item the model does not describe: its protobuf without the
+    per-load KIIDs (`id`, `parent`), serialised deterministically."""
+    copy = type(item)()
+    copy.CopyFrom(item)
+    for name in ("id", "parent"):
+        if name in copy.DESCRIPTOR.fields_by_name:
+            copy.ClearField(name)
+    return hashlib.sha256(copy.SerializeToString(deterministic=True)).hexdigest()
+
+
 def geometry_from_proto(
     definition: Any, items: Sequence[Any], lib_id: str, scope: str
 ) -> FootprintGeometry:
@@ -515,6 +540,7 @@ def geometry_from_proto(
     pads: list[Pad] = []
     shapes: list[Shape] = []
     models: list[Model3D] = []
+    other: list[tuple[str, str]] = []
     for raw in items:
         item = unpack_any(raw) if hasattr(raw, "type_url") else raw
         name = item.DESCRIPTOR.name
@@ -532,6 +558,8 @@ def geometry_from_proto(
             models.append(
                 Model3D(item.filename, _vec3(item.offset), _vec3(item.rotation), _vec3(item.scale))
             )
+        else:
+            other.append((name, _opaque_digest(item)))
     mounting = _MOUNTING.get(bt.FootprintMountingStyle.Name(attrs.mounting_style), "unspecified")
     return FootprintGeometry(
         lib_id=lib_id,
@@ -548,6 +576,7 @@ def geometry_from_proto(
         texts=tuple(texts),
         models=tuple(models),
         overrides=_overrides(definition, fp),
+        other=tuple(sorted(other)),
     )
 
 
@@ -703,6 +732,7 @@ def _content(g: FootprintGeometry) -> dict[str, Any]:
         ),
         "texts": sorted((_text_content(t) for t in g.texts), key=_dumps),
         "models": sorted((asdict(m) for m in g.models), key=_dumps),
+        "other": sorted([list(o) for o in g.other]),
     }
 
 
@@ -712,55 +742,127 @@ def geometry_hash(g: FootprintGeometry) -> str:
     return hashlib.sha256(_dumps(_content(g)).encode()).hexdigest()
 
 
-def _close(a: Any, b: Any, tol: float) -> bool:
+# Numbers that are not lengths (degrees, ratios, scale factors) compare with this
+# tolerance instead of `tol_mm`.
+_NON_LENGTH = frozenset(
+    {
+        "rotation",
+        "roundrect_ratio",
+        "chamfer_ratio",
+        "paste_margin_ratio",
+        "back_paste_margin_ratio",
+        "thermal_angle",
+        "scale",
+        "arc_angles",
+    }
+)
+_NON_LENGTH_TOL = 1e-6
+_FAR = 1e9  # distance of structurally different values
+
+
+def _close(a: Any, b: Any, tol: float, key: str | None = None) -> bool:
     if isinstance(a, bool) or isinstance(b, bool):
         return a is b
     if isinstance(a, (int, float)) and isinstance(b, (int, float)):
-        return abs(float(a) - float(b)) <= tol + 1e-12
+        limit = _NON_LENGTH_TOL if key in _NON_LENGTH else tol
+        return abs(float(a) - float(b)) <= limit + 1e-12
     if isinstance(a, dict) and isinstance(b, dict):
-        return a.keys() == b.keys() and all(_close(a[k], b[k], tol) for k in a)
+        return a.keys() == b.keys() and all(_close(a[k], b[k], tol, k) for k in a)
     if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
-        return len(a) == len(b) and all(_close(x, y, tol) for x, y in zip(a, b, strict=True))
+        return len(a) == len(b) and all(_close(x, y, tol, key) for x, y in zip(a, b, strict=True))
     return bool(a == b)
 
 
+def _distance(a: Any, b: Any) -> float:
+    """How far apart two items are (sum of numeric differences), for pairing."""
+    if isinstance(a, bool) or isinstance(b, bool):
+        return 0.0 if a is b else _FAR
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return abs(float(a) - float(b))
+    if isinstance(a, dict) and isinstance(b, dict):
+        if a.keys() != b.keys():
+            return _FAR
+        return sum(_distance(a[k], b[k]) for k in a)
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+        if len(a) != len(b):
+            return _FAR
+        return sum(_distance(x, y) for x, y in zip(a, b, strict=True))
+    return 0.0 if a == b else _FAR
+
+
 def _item_diffs(
-    label: str,
     xs: list[dict[str, Any]],
     ys: list[dict[str, Any]],
     tol: float,
+    group: Callable[[dict[str, Any]], tuple[str, ...]],
     name: Callable[[dict[str, Any]], str],
 ) -> list[str]:
-    if len(xs) != len(ys):
-        return [f"{label} count: {len(xs)} != {len(ys)}"]
+    """Pair the items of `xs` and `ys` within each group (pad number, shape layer and
+    kind, ...): first every item with a match within tolerance, then the rest by
+    nearest distance. A 1 nm shift that reorders the canonical sort gives no diff."""
+    groups: dict[tuple[str, ...], tuple[list[Any], list[Any]]] = {}
+    for side, items in ((0, xs), (1, ys)):
+        for item in items:
+            groups.setdefault(group(item), ([], []))[side].append(item)
     out: list[str] = []
-    for x, y in zip(xs, ys, strict=True):
-        keys = [k for k in sorted(x.keys() | y.keys()) if not _close(x.get(k), y.get(k), tol)]
-        if keys:
+    for _key, (gx, gy) in sorted(groups.items()):
+        label = name(gx[0] if gx else gy[0])
+        if len(gx) != len(gy):
+            out.append(f"{label} count: {len(gx)} != {len(gy)}")
+            continue
+        left, right = list(gx), list(gy)
+        for x in list(left):
+            close = [y for y in right if _close(x, y, tol)]
+            if close:
+                right.remove(min(close, key=lambda y: _distance(x, y)))
+                left.remove(x)
+        for x in left:
+            y = min(right, key=lambda c: _distance(x, c))
+            right.remove(y)
+            keys = [
+                k for k in sorted(x.keys() | y.keys()) if not _close(x.get(k), y.get(k), tol, k)
+            ]
             parts = "; ".join(f"{k} {x.get(k)!r} != {y.get(k)!r}" for k in keys)
-            out.append(f"{name(x)}: {parts}")
+            out.append(f"{label}: {parts}")
     return out
 
 
 def geometry_equal(a: FootprintGeometry, b: FootprintGeometry, tol_mm: float = 1e-3) -> list[str]:
-    """Differences between two geometries (empty = equal): coordinates within `tol_mm`,
-    plus description, keywords and every field value exactly (read-back, §9.2)."""
+    """Differences between two geometries (empty = equal): lengths within `tol_mm`,
+    angles / ratios / scale within 1e-6, plus description, keywords and every field
+    value exactly (read-back, §9.2). Items are paired tolerance-aware, not by index."""
     ca, cb = _content(a), _content(b)
     diffs: list[str] = []
-    for key in ("mounting", "exclude_from_bom", "exclude_from_pos", "dnp", "overrides"):
+    for key in ("mounting", "exclude_from_bom", "exclude_from_pos", "dnp", "overrides", "other"):
         if not _close(ca[key], cb[key], tol_mm):
             diffs.append(f"{key}: {ca[key]!r} != {cb[key]!r}")
     diffs += _item_diffs(
-        "pad", ca["pads"], cb["pads"], tol_mm, lambda d: f"pad {d['number'] or '(unnumbered)'}"
+        ca["pads"],
+        cb["pads"],
+        tol_mm,
+        lambda d: (d["number"],),
+        lambda d: f"pad {d['number'] or '(unnumbered)'}",
     )
     diffs += _item_diffs(
-        "shape", ca["shapes"], cb["shapes"], tol_mm, lambda d: f"shape {d['kind']} on {d['layer']}"
+        ca["shapes"],
+        cb["shapes"],
+        tol_mm,
+        lambda d: (d["layer"], d["kind"]),
+        lambda d: f"shape {d['kind']} on {d['layer']}",
     )
     diffs += _item_diffs(
-        "text", ca["texts"], cb["texts"], tol_mm, lambda d: f"text {d['kind']} on {d['layer']}"
+        ca["texts"],
+        cb["texts"],
+        tol_mm,
+        lambda d: (d["kind"], d["layer"]),
+        lambda d: f"text {d['kind']} on {d['layer']}",
     )
     diffs += _item_diffs(
-        "model", ca["models"], cb["models"], tol_mm, lambda d: f"model {d['path']}"
+        ca["models"],
+        cb["models"],
+        tol_mm,
+        lambda d: (d["path"],),
+        lambda d: f"model {d['path']}",
     )
     for key in ("description", "keywords"):
         if getattr(a, key) != getattr(b, key):
@@ -775,9 +877,10 @@ def geometry_equal(a: FootprintGeometry, b: FootprintGeometry, tol_mm: float = 1
 
 
 def review_state(g: FootprintGeometry, *, pending: bool) -> ReviewState:
-    """For a local footprint: `unreviewed` when `Footprint source` or `needs_user_review`
-    is missing or a `pending` journal row exists; `needs_user_review` for `yes`;
-    `approved` for `no`. Any other value counts as unreviewed."""
+    """Review state of a **local** footprint; callers pass only local geometries (for
+    project/global ones the result means nothing). `unreviewed` when `Footprint source`
+    or `needs_user_review` is missing or a `pending` journal row exists;
+    `needs_user_review` for `yes`; `approved` for `no`; any other value: unreviewed."""
     source = g.fields.get(SOURCE_FIELD, "").strip()
     flag = g.fields.get(REVIEW_FIELD)
     if pending or not source or flag is None:

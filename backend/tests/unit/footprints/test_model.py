@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 from kipy.proto.common.commands import editor_commands_pb2 as ec
+from kipy.proto.common.types import base_types_pb2 as base_types
 from kipy.util.proto import unpack_any
 
 from copperchat.kicad_tools.footprints.model import (
@@ -409,3 +410,122 @@ def test_field_constants() -> None:
         "needs_user_review",
         "user review",
     } == RESERVED_FIELDS
+
+
+# -- review fixes: tolerance-aware pairing, non-length tolerances, opaque items ------------
+
+
+def _vertical(x: float) -> Shape:
+    return Shape(
+        kind="segment",
+        layer="F.SilkS",
+        points=((x, 0.0), (x, 1.0)),
+        center=None,
+        size=None,
+        width=0.12,
+        closed=False,
+    )
+
+
+NM = 1e-6
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ((1.0, 1.5), (1.0 - NM, 1.5)),  # "0.999999" sorts differently from "1.0"
+        ((0.0, -0.5), (-NM, -0.5)),  # crosses the sign / digit boundary
+    ],
+)
+def test_geometry_equal_pairs_shapes_not_by_index(
+    seed: FootprintGeometry, before: tuple[float, float], after: tuple[float, float]
+) -> None:
+    a = dataclasses.replace(seed, shapes=tuple(_vertical(x) for x in before))
+    b = dataclasses.replace(seed, shapes=tuple(_vertical(x) for x in after))
+    assert geometry_equal(a, b) == []
+
+
+def test_geometry_equal_pairs_unnumbered_pads(seed: FootprintGeometry) -> None:
+    template = dataclasses.replace(seed.pads[0], number="")
+    a = dataclasses.replace(
+        seed,
+        pads=(
+            dataclasses.replace(template, at=(0.0, 0.0)),
+            dataclasses.replace(template, at=(0.0, 1.0)),
+        ),
+    )
+    b = dataclasses.replace(
+        seed,
+        pads=(
+            dataclasses.replace(template, at=(NM, 0.0)),
+            dataclasses.replace(template, at=(0.0, 1.0)),
+        ),
+    )
+    assert geometry_equal(a, b) == []
+    moved = dataclasses.replace(b, pads=(dataclasses.replace(template, at=(0.0, 0.01)), b.pads[1]))
+    (diff,) = geometry_equal(a, moved)
+    assert "pad (unnumbered)" in diff
+
+
+def test_geometry_equal_real_shape_move_names_item(seed: FootprintGeometry) -> None:
+    a = dataclasses.replace(seed, shapes=(_vertical(1.0), _vertical(1.5)))
+    b = dataclasses.replace(seed, shapes=(_vertical(1.01), _vertical(1.5)))
+    (diff,) = geometry_equal(a, b)
+    assert diff.startswith("shape segment on F.SilkS")
+
+
+def test_geometry_equal_angles_not_compared_with_mm_tolerance(seed: FootprintGeometry) -> None:
+    rotated = _replace_pad(seed, "1", rotation=0.0005)
+    (diff,) = geometry_equal(seed, rotated)
+    assert "pad 1" in diff and "rotation" in diff
+    ratio = _replace_pad(seed, "1", shape="roundrect", roundrect_ratio=0.2505)
+    other = _replace_pad(seed, "1", shape="roundrect", roundrect_ratio=0.25)
+    assert geometry_equal(ratio, other)
+
+
+def test_hash_includes_ellipse_rotation_and_arc_angles(seed: FootprintGeometry) -> None:
+    def ellipse(rotation: float, angles: tuple[float, float] | None) -> FootprintGeometry:
+        shape = Shape(
+            kind="ellipse_arc" if angles else "ellipse",
+            layer="F.Fab",
+            points=(),
+            center=(0.0, 0.0),
+            size=(2.0, 1.0),
+            width=0.1,
+            closed=angles is None,
+            rotation=rotation,
+            arc_angles=angles,
+        )
+        return dataclasses.replace(seed, shapes=(shape,))
+
+    assert geometry_hash(ellipse(0.0, None)) != geometry_hash(ellipse(30.0, None))
+    assert geometry_hash(ellipse(0.0, (0.0, 90.0))) != geometry_hash(ellipse(0.0, (0.0, 180.0)))
+    assert ellipse(30.0, None).to_dict("full")["shapes"][0]["rotation"] == 30.0
+
+
+def _with_zone(x_nm: int, zone_id: str) -> FootprintGeometry:
+    """The seed plus a keepout zone (API message built in memory)."""
+    from google.protobuf.any_pb2 import Any as PbAny  # type: ignore[import-untyped]
+    from kipy.proto.board import board_types_pb2 as bt
+
+    msg = _message("seed_srn4018.instance")
+    zone = bt.Zone()
+    zone.id.value = zone_id
+    zone.type = bt.ZoneType.ZT_RULE_AREA
+    zone.layers.append(bt.BoardLayer.BL_F_Cu)
+    outline = zone.outline.polygons.add().outline
+    for x, y in ((0, 0), (x_nm, 0), (x_nm, 1_000_000)):
+        outline.nodes.add().point.CopyFrom(base_types.Vector2(x_nm=x, y_nm=y))
+    outline.closed = True
+    packed = PbAny()
+    packed.Pack(zone)
+    return geometry_from_proto(msg, [*msg.definition.items, packed], SEED, "global")
+
+
+def test_hash_includes_unmodelled_items(seed: FootprintGeometry) -> None:
+    zoned = _with_zone(1_000_000, "a")
+    assert [name for name, _ in zoned.other] == ["Zone"]
+    assert geometry_hash(zoned) != geometry_hash(seed)
+    assert geometry_hash(_with_zone(1_000_000, "b")) == geometry_hash(zoned)  # ids ignored
+    assert geometry_hash(_with_zone(2_000_000, "a")) != geometry_hash(zoned)
+    assert geometry_equal(zoned, _with_zone(2_000_000, "a"))
