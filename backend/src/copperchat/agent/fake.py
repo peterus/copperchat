@@ -155,7 +155,11 @@ class FakeAgent:
         self._project = project
         self._conversation = conversation
         # The burst's tool list comes from its profile, as under the SDK backend (C5).
-        self._burst_specs = profile_specs(conversation.type, self._specs)
+        self._burst_specs = profile_specs(
+            conversation.type,
+            self._specs,
+            footprint_tools=self._settings is None or self._settings.footprint_tools,
+        )
         names = [s.name for s in self._burst_specs]
         record = FakeBurst(conversation.id, conversation.type, names)
         self.bursts.append(record)

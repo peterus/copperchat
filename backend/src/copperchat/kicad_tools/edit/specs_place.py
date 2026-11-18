@@ -73,7 +73,7 @@ from copperchat.library.prefs import (
     is_passive,
     preference_notes,
 )
-from copperchat.library.service import LibraryService, library_for
+from copperchat.library.service import LibraryService, closest_footprints, library_for
 from copperchat.library.specs import READY_WAIT_S
 from copperchat.library.symbols import SymbolDetail
 from copperchat.tools.spec import ToolContext, ToolResult, ToolSpec, edit_spec
@@ -219,7 +219,7 @@ async def footprint_notes(
     if svc.footprint_libraries_ready():
         detail = await svc.footprint(footprint)
         if detail is None:
-            close = await _closest_footprints(svc, nickname, name)
+            close = await closest_footprints(svc, nickname, name)
             if explicit:
                 raise StructuredToolError(
                     f"Footprint {footprint!r} is not in the libraries",
@@ -248,16 +248,6 @@ async def footprint_notes(
         )
     notes += preference_notes(prefs, lib_id, footprint, detail)
     return notes
-
-
-async def _closest_footprints(svc: LibraryService, nickname: str, name: str) -> list[str]:
-    query = " ".join(name.replace("_", " ").split()[:6])[:200] or name[:200]
-    try:
-        libs = await svc.footprint_libraries()
-        rows = await svc.search_footprints(query, nickname if nickname in libs else None, 5)
-    except StructuredToolError:
-        return []
-    return [str(r.get("lib_id")) for r in rows]
 
 
 def _structured(cs: ChangeSet) -> list[dict[str, Any]]:

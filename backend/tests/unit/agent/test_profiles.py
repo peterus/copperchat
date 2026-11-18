@@ -14,6 +14,7 @@ from copperchat.agent import sdk_backend
 from copperchat.agent.events import QueuedItem
 from copperchat.agent.profiles import (
     DOC_TOOLS,
+    FP_READ,
     MOUSER_TOOLS,
     PLAN_TOOLS,
     PROFILES,
@@ -58,16 +59,18 @@ SPEC_82 = {
         "git_commit",
     }
     | set(REPO_TOOLS)
-    | set(MOUSER_TOOLS),
+    | set(MOUSER_TOOLS)
+    | set(FP_READ),
     "schematic": set(TODAY)
     | {"doc_list", "doc_read", "doc_append", "doc_patch_section"}
     | set(REPO_TOOLS)
-    | set(MOUSER_TOOLS),
-    "free": set(TODAY) | set(DOC_TOOLS) | set(REPO_TOOLS) | set(MOUSER_TOOLS),
+    | set(MOUSER_TOOLS)
+    | set(FP_READ),
+    "free": set(TODAY) | set(DOC_TOOLS) | set(REPO_TOOLS) | set(MOUSER_TOOLS) | set(FP_READ),
 }
 # repo-context 2026-10-21: REPO_TOOLS (repo_list, repo_grep, repo_read) were deliberately
 # added to every profile (repo-context spec §5.4); likewise MOUSER_TOOLS (mouser-api
-# spec §4, 2026-11-04).
+# spec §4, 2026-11-04); FP_READ (footprints spec §13.1, 2026-11-17) to every profile.
 
 
 @pytest.fixture
@@ -111,6 +114,26 @@ def test_free_covers_the_registry_and_every_name_exists() -> None:
     assert set(PROFILES["free"]) >= names, sorted(names - PROFILES["free"])
     for kind, tools in PROFILES.items():
         assert tools <= names, (kind, sorted(tools - names))
+
+
+def test_fp_read_in_every_profile() -> None:
+    assert "fp_get" in FP_READ
+    for kind in ("requirements", "schematic", "board", "free"):
+        assert set(FP_READ) <= PROFILES[kind], kind
+        names = {s.name for s in profile_specs(kind, registry.all_specs())}
+        assert set(FP_READ) <= names, kind
+
+
+def test_footprint_tools_off_removes_every_fp_tool() -> None:
+    # future fp_* tools (F2/F4) are covered by the prefix filter, also in Free
+    specs = [*registry.all_specs(), _spec("fp_future_write")]
+    for kind in ("requirements", "schematic", "board", "free"):
+        names = {s.name for s in profile_specs(kind, specs, footprint_tools=False)}
+        assert not {n for n in names if n.startswith("fp_")}, kind
+    free_on = {s.name for s in profile_specs("free", specs, footprint_tools=True)}
+    assert free_on == {s.name for s in specs}
+    free_off = {s.name for s in profile_specs("free", specs, footprint_tools=False)}
+    assert free_off == {s.name for s in specs if not s.name.startswith("fp_")}
 
 
 def _spec(name: str) -> ToolSpec:
@@ -232,6 +255,17 @@ async def test_schematic_and_free_are_todays_tools_plus_their_doc_tools(
     assert await _decision(options.can_use_tool, sdk_tool_name("sch_connect"))
     writes = await _decision(options.can_use_tool, sdk_tool_name("doc_write"))
     assert writes is (kind == "free")
+
+
+@pytest.mark.parametrize("kind", ["requirements", "free"])
+async def test_burst_without_footprint_tools(
+    settings: Settings, project: Project, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    off = settings.model_copy(update={"footprint_tools": False})
+    _, names = await _burst(off, project, kind, monkeypatch)
+    assert set(names) == SPEC_82[kind] - set(FP_READ)
+    _, names = await _burst(settings, project, kind, monkeypatch)
+    assert set(FP_READ) <= set(names)
 
 
 async def test_burst_system_prompt_is_per_type(

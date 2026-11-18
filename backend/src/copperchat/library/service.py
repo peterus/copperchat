@@ -212,10 +212,18 @@ def _fetch_footprints(nickname: str, names: list[str], h: KicadHandle) -> list[F
 
 def _fetch_footprint_proto(nickname: str, name: str, h: KicadHandle) -> Any:
     """The library `Footprint` of one id (batched `GetItemsFromLibrary` with one id), or
-    None when KiCad does not serve it."""
+    None when KiCad does not serve it (an unknown name in a known library is an
+    `ApiError` "none of the requested items were found")."""
+    from kipy.errors import ApiError
     from kipy.proto.board import board_types_pb2
 
-    for packed in _get_items(h, _footprint_type(), [(nickname, name)]):
+    try:
+        items = _get_items(h, _footprint_type(), [(nickname, name)])
+    except ApiError as exc:
+        if "none of the requested items were found" in str(exc).lower():
+            return None
+        raise
+    for packed in items:
         fp = board_types_pb2.Footprint()
         packed.Unpack(fp)
         return fp
@@ -923,6 +931,19 @@ class LibraryService:
         geometry = geometry_from_proto(proto, proto.items, lib_id, scope)
         _note_incomplete(notes, lib_id)
         return dataclasses.replace(geometry, mounting="unspecified")
+
+
+async def closest_footprints(svc: LibraryService, nickname: str, name: str) -> list[str]:
+    """Up to 5 lib ids close to an unknown `<nickname>:<name>` (searched in that library
+    when it exists, else in the libraries matching the name); [] when the footprint
+    libraries are unavailable or the search fails."""
+    query = " ".join(name.replace("_", " ").split()[:6])[:200] or name[:200]
+    try:
+        libs = await svc.footprint_libraries()
+        rows = await svc.search_footprints(query, nickname if nickname in libs else None, 5)
+    except StructuredToolError:
+        return []
+    return [str(r.get("lib_id")) for r in rows]
 
 
 def _note_incomplete(notes: list[dict[str, Any]] | None, lib_id: str) -> None:

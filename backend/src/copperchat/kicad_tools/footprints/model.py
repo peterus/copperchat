@@ -42,6 +42,12 @@ RESERVED_FIELDS = frozenset(
 NM_PER_MM = 1_000_000
 HASH_VERSION = 1
 
+# Output caps of `to_dict` (author call 16): pads per detail level, shapes and points per
+# shape with detail "full". `pad_count` stays exact; the per-layer summary covers all.
+MAX_PADS = {"summary": 256, "full": 1000}
+MAX_SHAPES = 500
+MAX_SHAPE_POINTS = 64
+
 _PAD_TYPES = {"PT_SMD": "smd", "PT_PTH": "tht", "PT_NPTH": "npth", "PT_EDGE_CONNECTOR": "connector"}
 _PAD_SHAPES = {
     "PSS_CIRCLE": "circle",
@@ -215,6 +221,10 @@ class FootprintGeometry:
         }
 
     def to_dict(self, detail: Literal["summary", "full"] = "summary") -> dict[str, Any]:
+        """The JSON shape of spec §7.1, capped (author call 16): at most 256 (summary) /
+        1,000 (full) pads with `pads_truncated`; `full` lists at most 500 shapes of at
+        most 64 points each with `truncated`. `pad_count` is always exact."""
+        max_pads = MAX_PADS[detail]
         d: dict[str, Any] = {
             "lib_id": self.lib_id,
             "scope": self.scope,
@@ -225,11 +235,34 @@ class FootprintGeometry:
             "exclude_from_pos": self.exclude_from_pos,
             "dnp": self.dnp,
             "fields": dict(self.fields),
-            "pads": [p.to_dict() for p in self.pads],
+            "pad_count": len(self.pads),
+            "pads": [p.to_dict() for p in self.pads[:max_pads]],
             "graphics": self.layer_summary(),
         }
+        if len(self.pads) > max_pads:
+            d["pads_truncated"] = True
+        notes: list[str] = []
+        if len(self.pads) > max_pads:
+            notes.append(f"only the first {max_pads} of {len(self.pads)} pads")
         if detail == "full":
-            d["shapes"] = [s.to_dict() for s in self.shapes]
+            shapes: list[dict[str, Any]] = []
+            cut = len(self.shapes) > MAX_SHAPES
+            for s in self.shapes[:MAX_SHAPES]:
+                sd = s.to_dict()
+                if len(s.points) > MAX_SHAPE_POINTS:
+                    sd["points"] = sd["points"][:MAX_SHAPE_POINTS]
+                    sd["points_truncated"] = True
+                    cut = True
+                shapes.append(sd)
+            d["shapes"] = shapes
+            if cut:
+                d["truncated"] = True
+                notes.append(
+                    f"shapes capped at {MAX_SHAPES} of {len(self.shapes)}, "
+                    f"{MAX_SHAPE_POINTS} points each (`graphics` covers all)"
+                )
+        if notes:
+            d["note"] = "Output truncated: " + "; ".join(notes) + ". Use fp_render to see it."
         d.update(
             models=[m.to_dict() for m in self.models],
             texts=[t.to_dict() for t in self.texts],

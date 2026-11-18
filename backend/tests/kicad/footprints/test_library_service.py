@@ -41,6 +41,7 @@ async def test_local_footprint_read_through_document(blank_nopcb_session: KicadS
         "footprint_attributes_unavailable",
     ]
     assert svc.footprint_libraries_ready()
+    assert await svc.footprint_geometry("Inductor_SMD:L_Bourns-SRN4019") is None
 
     # the local library row and one footprint, both written by KiCad
     def add_row(h: KicadHandle) -> None:
