@@ -10,6 +10,7 @@ from copperchat.kicad_tools.access import PinKey
 
 if TYPE_CHECKING:
     from copperchat.kicad_tools.edit.engine import Applied
+    from copperchat.kicad_tools.footprints.engine import LibraryRowStage
 
 
 @dataclass(frozen=True)
@@ -128,3 +129,6 @@ class ChangeSet:
     summary: dict[str, Any] = field(default_factory=dict)  # echoed in the result
     notes: list[str] = field(default_factory=list)
     applied: Applied | None = None  # set by apply_change_set
+    # The project's row for the local footprint library, added before the edit (spec
+    # §7.9, FP-C8); None for every edit that needs no row.
+    library_row: LibraryRowStage | None = None

@@ -84,12 +84,24 @@ class DocumentInconsistent(CopperChatError):
     and the session is reopened from the last save - the state just before that edit,
     since every successful edit saved itself (#6). `last_save_partial`: the failed edit
     had saved part of itself already (a shared-sheet placement) and undoing that failed,
-    so the last save may still hold it (the recovery notice says so)."""
+    so the last save may still hold it (the recovery notice says so).
+    `leftovers`: what a failed footprint compensation left behind (lib ids, "row <nick>";
+    FP-C8); `footprint_only`: only the footprint library is affected - the schematic is
+    intact, so the turn end need not reopen it."""
 
     code = "document_inconsistent"
 
-    def __init__(self, message: str = "", *, last_save_partial: bool = False) -> None:
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        last_save_partial: bool = False,
+        leftovers: list[str] | None = None,
+        footprint_only: bool = False,
+    ) -> None:
         self.last_save_partial = last_save_partial
+        self.leftovers: list[str] = list(leftovers) if leftovers else []
+        self.footprint_only = footprint_only
         super().__init__(message)
 
 

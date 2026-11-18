@@ -210,17 +210,39 @@ class HistoryHooks(RunHooks):
         # Every outcome: no live publish of this turn after this point, and none runs
         # into the autosave / recovery below.
         live_sent = await self.svc.live.finish(self.project)
-        # Live frames went out but this turn end published no schematic (a failed turn,
-        # a failed autosave, a recovery that raised, ...): the agent view and Live-off
-        # clients only follow non-live frames, so send one of the schematic on disk.
         try:
-            published = await self._turn_end(turn, outcome, live_sent)
-        except Exception:
-            if live_sent:
+            # Live frames went out but this turn end published no schematic (a failed
+            # turn, a failed autosave, a recovery that raised, ...): the agent view and
+            # Live-off clients only follow non-live frames, so send one of the
+            # schematic on disk.
+            try:
+                published = await self._turn_end(turn, outcome, live_sent)
+            except Exception:
+                if live_sent:
+                    await self._catch_up_view()
+                raise
+            if live_sent and not published:
                 await self._catch_up_view()
-            raise
-        if live_sent and not published:
-            await self._catch_up_view()
+        finally:
+            await self._restart_if_pending()
+
+    async def _restart_if_pending(self) -> None:
+        """A footprint document could not be closed this turn (FP-C2 `restart_pending`):
+        the api-server holds a stale one, so restart it once, after the autosave (the
+        restart loads the files on disk). The flag is cleared also when the restart
+        fails (logged; the next call starts the server lazily). Under `svc.lock`, so it
+        never races a restore's reopen."""
+        session = self.svc.open_session(self.project)
+        if session is None or not session.restart_pending:
+            return
+        session.restart_pending = False
+        try:
+            async with self.svc.lock(self.project):
+                if self.svc.open_session(self.project) is not session:
+                    return  # reopened meanwhile: a fresh server holds no footprint
+                await session.restart()
+        except Exception as exc:
+            log.warning("restart after a failed footprint close failed: %s", exc)
 
     async def _catch_up_view(self) -> None:
         """Best effort: a non-live schematic frame of the files ON DISK (the last save:
