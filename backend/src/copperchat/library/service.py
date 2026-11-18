@@ -353,14 +353,16 @@ def _row_conflict(lib: LocalLibrary, rows: list[tuple[str, str, str]]) -> tuple[
                 present = True
             else:
                 conflicts.append(
-                    f"the project footprint table has a row {nickname!r} with URI {uri!r}, "
-                    f"but CopperChat's local library {nickname!r} must point at {lib.uri!r}"
+                    f"the project footprint table has a row {nickname[:80]!r} with URI "
+                    f"{uri[:200]!r}, but CopperChat's local library {nickname[:80]!r} must "
+                    f"point at {lib.uri!r}"
                 )
         elif _same_dir(substituted, local_dir, table_dir):
             conflicts.append(
-                f"the project footprint table row {nickname!r} ({uri!r}) points at the local "
-                f"footprint library directory, which CopperChat uses under the nickname "
-                f"{lib.nickname!r}; ask the user to rename or remove the row {nickname!r}"
+                f"the project footprint table row {nickname[:80]!r} ({uri[:200]!r}) points at "
+                f"the local footprint library directory, which CopperChat uses under the "
+                f"nickname {lib.nickname!r}; ask the user to rename or remove the row "
+                f"{nickname[:80]!r}"
             )
     return present, "; ".join(conflicts) or None
 
@@ -462,6 +464,8 @@ class LibraryService:
         self._global_fp_nicknames: tuple[int, frozenset[str]] | None = None
         # footprint_geometry LRU (lib id -> geometry); cleared by invalidate_footprints
         self._fp_geometry: OrderedDict[str, _CachedGeometry] = OrderedDict()
+        # bumped by invalidate_footprints; a read that started before a bump is not cached
+        self._fp_geometry_epoch = 0
 
     @property
     def _session(self) -> KicadSession:
@@ -782,6 +786,7 @@ class LibraryService:
         library for None). Called after every footprint stage, a history restore and an
         external library change (spec §5)."""
         self._fp_scopes = None
+        self._fp_geometry_epoch += 1
         if nickname is None:
             self._fp_libs.clear()
             self._fp_failed.clear()
@@ -878,18 +883,24 @@ class LibraryService:
                 "e.g. Resistor_SMD:R_0805_2012Metric",
             )
         cached = self._fp_geometry.get(lib_id)
-        if cached is not None and cached.file is not None:
+        while cached is not None and cached.file is not None:
             current = await asyncio.to_thread(_file_validator, cached.file)
-            if self._fp_geometry.get(lib_id) is not cached:
-                cached = None  # invalidated or evicted during the lstat: read again
-            elif current != cached.validator:
+            latest = self._fp_geometry.get(lib_id)
+            if latest is not cached:
+                # invalidated or evicted during the lstat (read again), or replaced by a
+                # newer entry (revalidate that one; it is never popped as stale)
+                cached = latest
+                continue
+            if current != cached.validator:
                 self._fp_geometry.pop(lib_id, None)  # changed or removed: read again
                 cached = None
+            break
         if cached is not None:
             self._fp_geometry.move_to_end(lib_id)
             if cached.geometry.scope != "local":
                 _note_incomplete(notes, lib_id)
             return cached.geometry
+        epoch = self._fp_geometry_epoch
         lib, transient = await self._derive_local()
         if lib is None:
             if nickname not in await self.global_footprint_nicknames():
@@ -903,6 +914,8 @@ class LibraryService:
             entry = None if geometry is None else _CachedGeometry(geometry)
         if entry is None:
             return None
+        if self._fp_geometry_epoch != epoch:  # invalidated during the read: may be stale
+            return entry.geometry
         self._fp_geometry[lib_id] = entry
         while len(self._fp_geometry) > GEOMETRY_CACHE_SIZE:
             self._fp_geometry.popitem(last=False)

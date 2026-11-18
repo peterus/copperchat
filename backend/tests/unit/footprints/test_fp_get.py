@@ -225,6 +225,20 @@ def test_to_dict_caps_repo_controlled_strings_and_lists() -> None:
     assert named["models"][0]["path"] == "p" * 500 + "…"
 
 
+def test_to_dict_capped_field_name_collision_keeps_first() -> None:
+    prefix = "k" * 64
+    g = dataclasses.replace(
+        _large(),
+        pads=(),
+        shapes=(),
+        fields={prefix + "A": "first", prefix + "B": "second", "Short": "v"},
+    )
+    d = g.to_dict()
+    assert d["fields"] == {prefix + "…": "first", "Short": "v"}
+    assert d["truncated"] is True
+    assert "1 field(s) dropped" in d["note"]
+
+
 # -- fp_get against a fake session/service -------------------------------------------------
 
 
@@ -293,6 +307,36 @@ async def test_fp_get_local_read_review_and_source(
     assert r.data["source"] == "datasheet p. 4"
     assert r.data["review"] == "needs_user_review"
     assert "shapes" in r.data
+
+
+async def test_fp_get_long_source_is_capped(fake: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from kipy.proto.board import board_types_pb2 as bt
+
+    from copperchat.kicad_tools.footprints.model import SOURCE_FIELD
+    from copperchat.library.service import library_for
+    from tests.unit.library import test_service
+    from tests.unit.library.test_service import LOCAL_URI, REPO
+
+    instance = test_service._fixture("seed_srn4018.instance")
+    field = bt.Field()
+    field.name = SOURCE_FIELD
+    field.text.text.text = "s" * 600
+    instance.definition.items.add().Pack(field)
+    real = test_service._fixture
+    monkeypatch.setattr(
+        test_service,
+        "_fixture",
+        lambda name: instance if name.endswith(".instance") else real(name),
+    )
+    fake.rows = {REPO: LOCAL_URI}
+    info = await library_for(fake).local_library()
+    assert info is not None
+    info.lib.dir.mkdir(parents=True)
+    (info.lib.dir / "L_Local.kicad_mod").write_bytes(b"")
+    r = await read.fp_get(_fake_ctx(fake), {"lib_id": f"{REPO}:L_Local"})
+    assert r.data is not None
+    assert r.data["source"] == "s" * 500 + "…"
+    assert r.data["truncated"] is True and "source cut at 500 chars" in r.data["note"]
 
 
 async def test_fp_get_unknown_is_not_found_with_closest(

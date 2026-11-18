@@ -9,7 +9,12 @@ from copperchat.errors import DocumentNotOpen, StructuredToolError
 from copperchat.kicad_session import KicadHandle
 from copperchat.kicad_tools import access
 from copperchat.kicad_tools.filtering import natural_key
-from copperchat.kicad_tools.footprints.model import SOURCE_FIELD, review_state
+from copperchat.kicad_tools.footprints.model import (
+    MAX_TEXT_CHARS,
+    SOURCE_FIELD,
+    _cap_text,
+    review_state,
+)
 from copperchat.library.service import closest_footprints, library_for
 from copperchat.tools.spec import ToolContext, ToolResult
 
@@ -77,7 +82,15 @@ async def fp_get(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
             details={"closest": close},
         )
     data = geometry.to_dict(cast(Literal["summary", "full"], detail))
-    data["source"] = geometry.fields.get(SOURCE_FIELD)
+    source = geometry.fields.get(SOURCE_FIELD)
+    if source is not None:
+        source, cut = _cap_text(source)
+        if cut:
+            data["truncated"] = True
+            extra = f"source cut at {MAX_TEXT_CHARS} chars"
+            prior = data.get("note")
+            data["note"] = f"{prior} Also {extra}." if prior else f"Output truncated: {extra}."
+    data["source"] = source
     data["review"] = review_state(geometry, pending=False) if geometry.scope == "local" else None
     data["notes"] = notes
     return ToolResult(data=data)
@@ -165,15 +178,30 @@ async def fp_list_local(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         haystack = f"{name} {g.description}".casefold()
         if not all(t in haystack for t in terms):
             continue
-        rows.append(
+        # the filter above matches the full text; only the output is capped
+        description, cut_description = _cap_text(g.description)
+        source = g.fields.get(SOURCE_FIELD)
+        cut_source = False
+        if source is not None:
+            source, cut_source = _cap_text(source)
+        row: dict[str, Any] = {
+            "name": name,
+            "lib_id": g.lib_id,
+            "description": description,
+            "pad_count": len(g.pads),
+            "needs_user_review": review_state(g, pending=False),
+            "source": source,
+            "used_by": users.get(g.lib_id, []),
+        }
+        if cut_description or cut_source:
+            row["truncated"] = True
+        rows.append(row)
+    if any(r.get("truncated") for r in rows[:limit]):
+        notes.append(
             {
-                "name": name,
-                "lib_id": g.lib_id,
-                "description": g.description,
-                "pad_count": len(g.pads),
-                "needs_user_review": review_state(g, pending=False),
-                "source": g.fields.get(SOURCE_FIELD),
-                "used_by": users.get(g.lib_id, []),
+                "kind": "strings_truncated",
+                "message": f"descriptions/sources longer than {MAX_TEXT_CHARS} chars are "
+                "cut ('…' appended; those rows carry `truncated: true`)",
             }
         )
     return ToolResult(

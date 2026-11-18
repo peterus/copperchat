@@ -434,7 +434,8 @@ server-death case) and the error is re-raised.
 `model_missing`, `pending_cleaned`, `pending_leftover`,
 `footprint_attributes_unavailable` (`lib_id`; added in F1 Task 4, see "As built"),
 `no_local_library`, `library_conflict`, `footprint_unreadable` (`count`, `lib_ids`;
-all three added in F1 Task 6, see "As built").
+all three added in F1 Task 6, see "As built"), `strings_truncated` (`fp_list_local`
+rows whose description or source was cut at 500 chars; added in the F1 review loop).
 
 ---
 

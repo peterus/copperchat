@@ -7,10 +7,12 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from kipy.proto.board import board_types_pb2 as bt
 
 from copperchat.errors import StructuredToolError
 from copperchat.kicad_session import KicadSession
 from copperchat.kicad_tools.footprints import read
+from copperchat.kicad_tools.footprints.model import SOURCE_FIELD
 from copperchat.library import service as service_mod
 from copperchat.tools import ToolContext
 from tests.unit.library.test_service import (
@@ -30,6 +32,7 @@ class ListSession(LocalSession):
     def __init__(self, root: Path) -> None:
         super().__init__(root)
         self.footprints: dict[str, str] = {}
+        self.sources: dict[str, str] = {}  # name -> "Footprint source" field value
         self.unreadable: set[str] = set()
 
     async def call(self, fn: Any) -> Any:
@@ -45,6 +48,11 @@ class ListSession(LocalSession):
                 proto = _fixture("seed_srn4018")
                 proto.id.entry_name = name
                 proto.attributes.description = self.footprints[name]
+                if name in self.sources:
+                    field = bt.Field()
+                    field.name = SOURCE_FIELD
+                    field.text.text.text = self.sources[name]
+                    proto.items.add().Pack(field)
                 out.append(proto)
             return out
         if getattr(func, "__name__", "") == "footprint_users":
@@ -175,3 +183,22 @@ async def test_no_row_counts_files_off_the_event_loop(
     monkeypatch.setattr(service_mod.LibraryService, "local_names_on_disk", spy)
     await read.fp_list_local(_ctx(session), {})
     assert threads and loop_thread not in threads
+
+
+async def test_long_description_and_source_capped_in_output_only(session: ListSession) -> None:
+    session.rows = {REPO: LOCAL_URI}
+    long_description = "d" * 600 + " needle"  # the query word lies past the cap
+    session.footprints = {"A_Long": long_description, "B_Short": "short"}
+    session.sources = {"A_Long": "s" * 600, "B_Short": "datasheet p. 4"}
+    r = await read.fp_list_local(_ctx(session), {"query": "needle"})
+    assert r.data is not None
+    (row,) = r.data["footprints"]  # the filter still sees the full description
+    assert row["name"] == "A_Long" and row["truncated"] is True
+    assert row["description"] == "d" * 500 + "…" and row["source"] == "s" * 500 + "…"
+    (note,) = [n for n in r.data["notes"] if n["kind"] == "strings_truncated"]
+    assert "500 chars" in note["message"]
+    short = await read.fp_list_local(_ctx(session), {"query": "short"})
+    assert short.data is not None
+    (row,) = short.data["footprints"]
+    assert "truncated" not in row and row["source"] == "datasheet p. 4"
+    assert "strings_truncated" not in [n["kind"] for n in short.data["notes"]]

@@ -244,8 +244,13 @@ class FootprintGeometry:
         keywords, cut_keywords = _cap_text(self.keywords)
         fields: dict[str, str] = {}
         cut_values = False
+        dropped_fields = 0
         for key, value in list(self.fields.items())[:MAX_ENTRIES]:
             name, cut_name = _cap_text(key, MAX_NAME_CHARS)
+            if name in fields:  # two long names share the capped prefix: keep the first
+                dropped_fields += 1
+                cut_values = True
+                continue
             fields[name], cut = _cap_text(value)
             cut_values = cut_values or cut or cut_name
         texts: list[dict[str, Any]] = []
@@ -308,6 +313,11 @@ class FootprintGeometry:
             notes.append(
                 f"strings cut at {MAX_TEXT_CHARS} chars, fields/texts/models at "
                 f"{MAX_ENTRIES} entries"
+            )
+        if dropped_fields:
+            notes.append(
+                f"{dropped_fields} field(s) dropped whose name shares its first "
+                f"{MAX_NAME_CHARS} chars with an earlier field"
             )
         if notes:
             joined = "; ".join(notes)

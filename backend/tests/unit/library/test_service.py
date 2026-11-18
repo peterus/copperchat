@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -484,6 +485,22 @@ async def test_local_library_for_write_transient_raises(
     assert err.value.code == "repo_root_unknown"
 
 
+async def test_row_conflict_caps_table_text(local: LocalSession) -> None:
+    """Repo-controlled fp-lib-table URIs and nicknames are cut in the conflict text."""
+    svc = _svc(local)
+    long_uri = "${KIPRJMOD}/" + "u" * 500 + ".pretty"
+    local.rows = {REPO: long_uri}
+    info = await svc.local_library()
+    assert info is not None and info.row_conflict is not None
+    assert long_uri not in info.row_conflict and repr(long_uri[:200]) in info.row_conflict
+    long_nick = "N" * 300
+    local.rows = {long_nick: LOCAL_URI}
+    info = await svc.local_library()
+    assert info is not None and info.row_conflict is not None
+    assert long_nick not in info.row_conflict and repr(long_nick[:80]) in info.row_conflict
+    assert len(info.row_conflict) < 600
+
+
 async def test_row_conflict(local: LocalSession) -> None:
     svc = _svc(local)
     local.rows = {REPO: "${KIPRJMOD}/vendor/other.pretty"}
@@ -645,7 +662,9 @@ async def test_geometry_transient_repo_root(
 async def test_geometry_cache_entry_dropped_during_revalidation(
     local: LocalSession, monkeypatch: pytest.MonkeyPatch, changed: bool
 ) -> None:
-    """An invalidate (or LRU eviction) while the hit's lstat runs: no KeyError, re-read."""
+    """changed=False: an invalidate (or LRU eviction) while the hit's lstat runs: no
+    KeyError, re-read. changed=True: a pure validator mismatch (no invalidate): the stale
+    entry is popped and the footprint read again."""
     local.rows = {REPO: LOCAL_URI}
     svc = _svc(local)
     info = await svc.local_library()
@@ -657,11 +676,77 @@ async def test_geometry_cache_entry_dropped_during_revalidation(
     assert g is not None and len(local.documents) == 1
     real = service_mod._file_validator
 
+    calls = 0
+
     def racing(path: Path) -> Any:
+        nonlocal calls
+        calls += 1
+        if changed:
+            return (0, 0, calls)  # never matches the cached validator
         svc.invalidate_footprints()  # concurrent invalidate while the lstat runs
-        result = real(path)
-        return (0, 0, 0) if changed else result
+        return real(path)
 
     monkeypatch.setattr(service_mod, "_file_validator", racing)
     g2 = await svc.footprint_geometry(lib_id)
     assert g2 is not None and g2 is not g and len(local.documents) == 2
+    if changed:  # the mismatching entry was replaced by the re-read
+        assert svc._fp_geometry[lib_id].geometry is g2
+
+
+async def test_geometry_cache_entry_replaced_during_revalidation(
+    local: LocalSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A newer entry stored while the hit's lstat runs survives (not popped as stale)
+    and is served after its own revalidation, without a re-read."""
+    local.rows = {REPO: LOCAL_URI}
+    svc = _svc(local)
+    info = await svc.local_library()
+    assert info is not None
+    info.lib.dir.mkdir(parents=True)
+    file = info.lib.dir / "L_Local.kicad_mod"
+    file.write_bytes(b"v1")
+    lib_id = f"{REPO}:L_Local"
+    g = await svc.footprint_geometry(lib_id)
+    assert g is not None
+    old = svc._fp_geometry[lib_id]
+    real = service_mod._file_validator
+    newer_geometry = dataclasses.replace(g, description="newer")
+    newer = service_mod._CachedGeometry(newer_geometry, file, real(file))
+
+    def racing(path: Path) -> Any:
+        if svc._fp_geometry.get(lib_id) is old:
+            svc._fp_geometry[lib_id] = newer  # a concurrent read stored a newer entry
+            return (9, 9, 9)  # the old entry's validator no longer matches
+        return real(path)
+
+    monkeypatch.setattr(service_mod, "_file_validator", racing)
+    documents = len(local.documents)
+    g2 = await svc.footprint_geometry(lib_id)
+    assert g2 is newer_geometry and len(local.documents) == documents  # no re-read
+    assert svc._fp_geometry[lib_id] is newer
+
+
+async def test_geometry_not_cached_when_invalidated_during_read(
+    local: LocalSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An invalidate_footprints while a cache-miss read awaits: the result is returned
+    but not cached (it may predate the change that caused the invalidate)."""
+    local.rows = {REPO: LOCAL_URI}
+    svc = _svc(local)
+    info = await svc.local_library()
+    assert info is not None
+    info.lib.dir.mkdir(parents=True)
+    (info.lib.dir / "L_Local.kicad_mod").write_bytes(b"v1")
+    lib_id = f"{REPO}:L_Local"
+    real = service_mod._file_validator
+
+    def racing(path: Path) -> Any:
+        svc.invalidate_footprints(REPO)  # concurrent invalidate during the read
+        return real(path)
+
+    monkeypatch.setattr(service_mod, "_file_validator", racing)
+    g = await svc.footprint_geometry(lib_id)
+    assert g is not None and lib_id not in svc._fp_geometry
+    monkeypatch.setattr(service_mod, "_file_validator", real)
+    g2 = await svc.footprint_geometry(lib_id)  # no concurrent invalidate: cached
+    assert g2 is not None and svc._fp_geometry[lib_id].geometry is g2
