@@ -806,6 +806,85 @@ phase file, with the reason.)
   - Filled shapes are measured as outlines; a bezier by its control polygon.
   - Renders are not pruned (existing residual below).
 
+### As built (F4a)
+
+- **FP-C8 types:** `FootprintChangeSet` is a `kw_only` dataclass (build it with keywords) with
+  its own `fp_applied` (the base `applied` is unchanged) and the check inputs `check_pins` /
+  `polarized`; `FpStage(kind, lib_id="")`; `FootprintApplied(lib_ids, files, row_added,
+  dir_created, readback, notes)`; `FootprintPreImage` gains a required `fields` (the
+  pre-image's fields, compared before S2 and after a restore). `InjectedFailure` is a
+  `StructuredToolError` with `code="injected"`; `fail_after="verify"` shifts pad 1 of the
+  read-back by 2 µm (`VERIFY_SHIFT_MM`).
+- **Locator (index call 9):** F1 never needed the stock-dir fallback; F4a implements it
+  for `make_library_locator` when the project is not open or the table read fails
+  (`stock_footprint_nicknames`: `*.pretty` names under `<kicad template dir>/../footprints`).
+  `tests/kicad/footprints/test_fp_create.py` pins that these names equal the api-server's global table in
+  the base image.
+- **Library listener:** `own`/`restore` invalidate; `external` calls `ReloadLibrary` only
+  when footprint tools are on, the libraries are loaded **and the project has the local
+  row** (a sibling project's library writes caused warning noise otherwise); it always
+  invalidates (also when the reload fails).
+- **Turn end:** `HistoryHooks` restarts the server once when `session.restart_pending` is
+  set (re-checked under `svc.lock`; a failed restart is logged, never raised).
+- **`fp_create` input (author call 18 and beyond):** bounds the plan left open — rotation
+  ±360°, roundrect ratio 0–0.5, courtyard margin 0–10 mm, model scale (0, 100], ≤ 8 pad
+  layers; pad shapes rect/roundrect/circle/oval only (trapezoid, chamfered and custom need
+  data the input does not carry). A whitespace-only `symbol` is refused. An extra field
+  named `Description` (casefolded) is refused in `build.py`: it collides with KiCad's
+  built-in footprint Description field (verified against KiCad; not added to FP-C3
+  `RESERVED_FIELDS`). `model_missing` for `${KICAD<n>_3DMODEL_DIR}` is only checked when
+  the variable is set in the backend environment (the api-server inherits it).
+- **Read-back equality (risk "KiCad normalises on save"):** the target builder matches what
+  KiCad reads back — pad layers in KiCad's order with `*.Mask`/`*.Paste` expanded
+  (`canonical_pad_layers`), the pad zone/thermal defaults (`PAD_DEFAULT_EXTRA`), equal
+  sizes for circle pads. `geometry_equal` (1 µm) is unchanged.
+- **S1:** a freshly added row reports `LLS_INVALID` until `GetLibraryItems` loads it; the
+  read-back accepts that and loads the row. `LCS_ALREADY_EXISTS` with the same URI is
+  `row_added=False` (journal row `compensated`, never deleted or rmdir'd).
+- **Symlinks:** a dangling `<name>.kicad_mod` symlink is refused **before** S1 (FP-C8
+  "before the first write"), so that test has no S1 compensation.
+- **Journal / compensation:** `post_s2_sha256` is recorded right after the copy, before
+  the server check, and also when the copy step fails after KiCad saved. Compensation
+  deletes a footprint only when its bytes are this call's (sha = post-S2 or the S3 save),
+  else `leftover`; `rmdir` only when this call's row added the dir; journal failures
+  during compensation are logged and never hide the leftovers. Compensation and the S3
+  `drop` run to completion (`_uncancellable` / `kicad_session.session._finish`: a Stop
+  waits, then wins, chained).
+- **Pending cleanup (§9.3):** a pending `row_add` row becomes `leftover` (kept; note
+  `row <nick>`); a cleaned copy becomes `compensated` with hash `absent`. A copy is only
+  deleted if it is this project's own and no other project wrote that file later
+  (`later_foreign`); the hash is re-checked under the lock. Each delete + finalise runs to
+  completion. Cleanup notes travel on errors too (`errors.attach_tool_notes` → the
+  adapter's `details.notes`), so a later stage failure never hides them.
+- **Leftovers:** `DocumentInconsistent` also carries `replaced` (leftovers that are
+  `replace` targets; `TurnOutcome.replaced_leftovers`); `errors.leftover_advice` words the
+  error and the turn-end notice per kind — a replaced footprint is never to be deleted
+  (History undo brings the earlier version back).
+- **Change log:** `fp_lib_table_row_added` rows carry `ref = nickname` and
+  `after = {"uri": …}` (no geometry hash: a row has none); footprint rows `ref = lib_id`,
+  `after.geometry_hash`, `sheet_path = ""`. Frontend: such rows are listed but not
+  click-to-locate and are skipped when building highlights (the sheet comes from the
+  first schematic entry), so "Show all changes" keeps working.
+- **`replace`:** the re-check under the library lock compares the file sha, then the
+  geometry hash and fields re-read through the document; the compensation rebuilds the
+  pre-image only over this call's own bytes (a file that still holds the pre-image needs
+  nothing) — best effort: groups, height and embedded files are not restored and
+  re-created items get new ids; the hash/field comparison decides, a difference is
+  `document_inconsistent`.
+
+- **Residuals for later phases (F4a):**
+  - F4b wires `cleanup_pending` and `cleanable_copy` into `fp_approve` / `fp_delete`, and
+    `leftover_advice` drops "once that tool is available" when `fp_delete` exists.
+  - A turn-end restart after a failed autosave drops unsaved in-memory edits (rare; the
+    user only sees "autosave failed").
+  - The `replace` geometry/fields re-check branch is only unit-covered (a real API edit
+    always changes the sha first).
+  - Cleanup queries `later_foreign` per candidate row (`foreign_after` would batch it).
+  - A Stop during the change-log write can lose that row (same as the schematic engine);
+    footprint file and journal stay correct.
+  - A second cancel while hashing the S3 save turns this call's file into a `leftover`
+    (safe side).
+
 ## Residuals
 
 (Filled by F5.) Known before the start:

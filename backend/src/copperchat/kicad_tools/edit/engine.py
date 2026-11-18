@@ -667,7 +667,12 @@ async def apply_change_set(
     whole under `session.applying()` (no save of a half-applied edit, #6).
 
     `_verify` / `_before_compensate` are test seams (force a mismatch, inject a
-    compensation failure)."""
+    compensation failure). A `FootprintChangeSet` is refused (`TypeError`): it belongs
+    to `apply_footprint_change_set` (FP-C8)."""
+    from copperchat.kicad_tools.footprints.engine import FootprintChangeSet
+
+    if isinstance(cs, FootprintChangeSet):
+        raise TypeError("apply_change_set got a FootprintChangeSet; use the footprint engine")
     async with ctx.session.applying():
         return await _apply(
             ctx, cs, _verify=_verify, _before_compensate=_before_compensate, record=record

@@ -740,10 +740,11 @@ class KicadSession:
         first footprint document of a server loads every library in the tables, spike
         3A Q5). Returns the seconds spent, or None when the current server has them.
 
-        Takes `_fp_lock`: must not be called while holding `_fp_lock`, `_commit_lock` or
-        `_apply_lock` (none is re-entrant). Known exception: a footprint read nested in
-        the caller's own open schematic commit (`_commit_lock` → `_fp_lock`) is safe only
-        while nothing holding `_fp_lock` waits on `_commit_lock` (plan "As built")."""
+        Takes `_fp_lock` (not re-entrant): never call it while holding `_fp_lock`.
+        Holding `_apply_lock` (inside `applying()`, as the footprint engine does) or the
+        caller's own open schematic commit (`_commit_lock` → `_fp_lock`) is safe only
+        while nothing holding `_fp_lock` waits on `_apply_lock` or `_commit_lock` (plan
+        "As built")."""
         self._check_footprint_tools()
         if self.footprints_active:
             return None

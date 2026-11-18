@@ -127,6 +127,12 @@ class TurnOutcome:
     # An edit was applied but its save failed (#6): the turn-end autosave retries it,
     # unless KiCad failed too - then that edit is lost.
     save_failed: bool = False
+    # A failed footprint compensation (FP-C8): what it left in the local library (lib
+    # ids, "row <nick>"), and whether every inconsistency of the turn concerned only the
+    # footprint library - the schematic is intact, so the turn end skips the reopen.
+    leftovers: tuple[str, ...] = ()
+    replaced_leftovers: tuple[str, ...] = ()  # the leftovers that are `replace` targets
+    footprint_only: bool = False
 
 
 class RunHooks:
@@ -294,6 +300,11 @@ class _Turn:
     kicad_reported: bool = False
     document_inconsistent: bool = False
     last_save_partial: bool = False
+    leftovers: list[str] = field(default_factory=list)
+    replaced_leftovers: list[str] = field(default_factory=list)
+    # every inconsistency of the turn was footprint-only (meaningful with
+    # document_inconsistent)
+    footprint_only: bool = True
     # A successful edit could not be saved (#6): reported and interrupted like
     # kicad_failed; the turn-end autosave tries again. The error text of the save.
     save_failed: str | None = None
@@ -982,6 +993,12 @@ class RunEngine:
                     "this turn ended. Send your message again to retry."
                 )
                 code = "kicad_unavailable"
+            elif turn.document_inconsistent and turn.footprint_only:
+                content = (
+                    "A failed footprint write could not be undone completely, so this "
+                    "turn ended. The design itself is not affected (see the notice below)."
+                )
+                code = "document_inconsistent"
             elif turn.document_inconsistent:
                 content = (
                     "A failed edit could not be undone exactly, so this turn ended. "
@@ -1102,6 +1119,9 @@ class RunEngine:
             document_inconsistent=turn.document_inconsistent,
             last_save_partial=turn.last_save_partial,
             save_failed=bool(turn.save_failed),
+            leftovers=tuple(dict.fromkeys(turn.leftovers)),
+            replaced_leftovers=tuple(dict.fromkeys(turn.replaced_leftovers)),
+            footprint_only=turn.document_inconsistent and turn.footprint_only,
         )
         try:
             await self.hooks.on_turn_end(turn.info, outcome)
@@ -1412,6 +1432,9 @@ class RunEngine:
             if self.editing is not None:  # every report halts further edits of the turn
                 self.editing.turn(self.pid, self._turn.info.run_id).halted = True
             self._turn.last_save_partial |= bool(getattr(exc, "last_save_partial", False))
+            self._turn.leftovers += list(getattr(exc, "leftovers", None) or [])
+            self._turn.replaced_leftovers += list(getattr(exc, "replaced", None) or [])
+            self._turn.footprint_only &= bool(getattr(exc, "footprint_only", False))
 
     def _on_save_failed(self, exc: Exception) -> None:
         log.warning("saving after an edit failed during turn: %s", exc)

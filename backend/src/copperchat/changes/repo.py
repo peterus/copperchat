@@ -16,6 +16,19 @@ _COLUMNS = (
     "ref, net, before, after, side_effect, created_at"
 )
 
+# Change kinds of the local footprint library (spec §10): listed by `sch_changes` and
+# the UI change list like every row, never part of the schematic diff. ref = the lib
+# id ("<nick>:<name>"; the nickname for a row), after = {"geometry_hash": ...}.
+FOOTPRINT_KINDS = frozenset(
+    {
+        "footprint_created",
+        "footprint_replaced",
+        "footprint_deleted",
+        "footprint_approved",
+        "fp_lib_table_row_added",
+    }
+)
+
 
 @dataclass
 class ChangeEntry:

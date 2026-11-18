@@ -8,6 +8,18 @@ export type HighlightInput = Omit<HighlightRequest, 'seq'>;
 export const OP_KIND: Record<string, HighlightKind> = { add: 'added', modify: 'modified', delete: 'removed' };
 export const kindOf = (op: string): HighlightKind => OP_KIND[op] ?? 'modified';
 
+/** Change kinds of the local footprint library (backend `FOOTPRINT_KINDS`): no schematic item. */
+export const FOOTPRINT_KINDS: ReadonlySet<string> = new Set([
+  'footprint_created',
+  'footprint_replaced',
+  'footprint_deleted',
+  'footprint_approved',
+  'fp_lib_table_row_added',
+]);
+
+/** An entry that names a schematic item on a sheet (footprint library rows have no sheet). */
+export const isSchematicEntry = (e: ChangeEntry): boolean => e.sheetPath !== '' && !FOOTPRINT_KINDS.has(e.kind);
+
 /** The diff box of an item on a sheet instance, if the diff has one. */
 export function diffBox(diff: ChangesDiff | null | undefined, sheetPath: string, uuid: string): HighlightBox | null {
   const hit = diff?.sheets[sheetPath]?.find((d) => d.uuid === uuid && d.boxMm);
@@ -26,7 +38,9 @@ function entryItems(e: ChangeEntry, diff: ChangesDiff | null | undefined): { ref
   return { ref: { ref: e.ref ?? e.uuid, kind, sheetPath: e.sheetPath } };
 }
 
-export function entriesHighlight(entries: ChangeEntry[], diff?: ChangesDiff | null): HighlightInput {
+export function entriesHighlight(all: ChangeEntry[], diff?: ChangesDiff | null): HighlightInput {
+  // Footprint library rows are not in the schematic: never highlighted, never pick the sheet.
+  const entries = all.filter(isSchematicEntry);
   // One item per sheet instance + UUID: the first op names it, a later delete wins; an item
   // placed and deleted again in the run is not shown.
   const byItem = new Map<string, ChangeEntry>();

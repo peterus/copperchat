@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from copperchat.agent.engine import RunHooks, TurnInfo, TurnOutcome
 from copperchat.db.repos.footprints import ABSENT
+from copperchat.errors import leftover_advice
 from copperchat.history.store import Snapshot, ensure_gitignore, is_marker_rel
 from copperchat.kicad_session import DocKind, KicadUnavailable
 from copperchat.projects import Project
@@ -210,17 +211,39 @@ class HistoryHooks(RunHooks):
         # Every outcome: no live publish of this turn after this point, and none runs
         # into the autosave / recovery below.
         live_sent = await self.svc.live.finish(self.project)
-        # Live frames went out but this turn end published no schematic (a failed turn,
-        # a failed autosave, a recovery that raised, ...): the agent view and Live-off
-        # clients only follow non-live frames, so send one of the schematic on disk.
         try:
-            published = await self._turn_end(turn, outcome, live_sent)
-        except Exception:
-            if live_sent:
+            # Live frames went out but this turn end published no schematic (a failed
+            # turn, a failed autosave, a recovery that raised, ...): the agent view and
+            # Live-off clients only follow non-live frames, so send one of the
+            # schematic on disk.
+            try:
+                published = await self._turn_end(turn, outcome, live_sent)
+            except Exception:
+                if live_sent:
+                    await self._catch_up_view()
+                raise
+            if live_sent and not published:
                 await self._catch_up_view()
-            raise
-        if live_sent and not published:
-            await self._catch_up_view()
+        finally:
+            await self._restart_if_pending()
+
+    async def _restart_if_pending(self) -> None:
+        """A footprint document could not be closed this turn (FP-C2 `restart_pending`):
+        the api-server holds a stale one, so restart it once, after the autosave (the
+        restart loads the files on disk). The flag is cleared also when the restart
+        fails (logged; the next call starts the server lazily). Under `svc.lock`, so it
+        never races a restore's reopen."""
+        session = self.svc.open_session(self.project)
+        if session is None or not session.restart_pending:
+            return
+        session.restart_pending = False
+        try:
+            async with self.svc.lock(self.project):
+                if self.svc.open_session(self.project) is not session:
+                    return  # reopened meanwhile: a fresh server holds no footprint
+                await session.restart()
+        except Exception as exc:
+            log.warning("restart after a failed footprint close failed: %s", exc)
 
     async def _catch_up_view(self) -> None:
         """Best effort: a non-live schematic frame of the files ON DISK (the last save:
@@ -300,7 +323,11 @@ class HistoryHooks(RunHooks):
         session = self.svc.open_session(self.project)
         last_saved = session.last_saved_at if session is not None else None
         snap = await self.svc.store(self.project).latest_for_run(turn.run_id)
-        if session is not None and self.svc.open_session(self.project) is session:
+        # Only the footprint library is inconsistent (a failed compensation, FP-C8): the
+        # schematic is intact, and a reopen would only drop the loaded footprint
+        # libraries (`footprints_active`).
+        reopen = not outcome.footprint_only
+        if reopen and session is not None and self.svc.open_session(self.project) is session:
             try:
                 await self.svc.sessions.reopen(self.project)
             except KicadUnavailable as exc:
@@ -320,7 +347,10 @@ class HistoryHooks(RunHooks):
         conversation_id: str,
     ) -> None:
         """The recovery notices go to the session of the turn they recover from."""
-        lost = outcome.kicad_failed or outcome.document_inconsistent
+        if outcome.leftovers:
+            await self._leftovers_notice(outcome, conversation_id)
+        inconsistent = outcome.document_inconsistent and not outcome.footprint_only
+        lost = outcome.kicad_failed or inconsistent
         if lost and (outcome.mutated or outcome.changed_docs):
             # KiCad holds the files on disk: every successful edit saved itself (#6), so
             # at most the edit that failed is gone.
@@ -335,7 +365,7 @@ class HistoryHooks(RunHooks):
                     "undoes this turn's earlier edits."
                 )
             else:
-                if outcome.document_inconsistent:
+                if inconsistent:
                     text = (
                         f"The design is back at {state}: the state just before the edit "
                         "that failed. Every earlier edit of this turn was saved, so nothing "
@@ -380,6 +410,26 @@ class HistoryHooks(RunHooks):
                 f"({checkpoint.label}) to go back to the end of that step.",
                 {"action": "restore", "snapshotId": checkpoint.id, "checkpoint": True},
             )
+
+    async def _leftovers_notice(self, outcome: TurnOutcome, conversation_id: str) -> None:
+        """A failed footprint compensation (spec §9.3): name every leftover; this is the
+        one case where a tool error leaves something behind, and it is never silent."""
+        named = ", ".join(outcome.leftovers)
+        affected = (
+            "The design itself was not affected and is not reloaded."
+            if outcome.footprint_only
+            else ""
+        )
+        text = (
+            "A failed footprint write could not be undone completely. Left in the local "
+            f"footprint library: {named}. They were not verified; do not use them. "
+            f"{affected} {leftover_advice(outcome.leftovers, outcome.replaced_leftovers)}"
+        )
+        await self.engine.post_notice(
+            conversation_id,
+            " ".join(text.split()),
+            {"action": "recovered", "leftovers": list(outcome.leftovers)},
+        )
 
     async def _recover(self, turn: TurnInfo, outcome: TurnOutcome) -> None:
         """Make sure KiCad runs again and offer the turn's snapshot. Never posts the

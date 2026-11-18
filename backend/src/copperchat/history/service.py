@@ -30,6 +30,7 @@ from copperchat.history.store import (
     with_presence_rows,
 )
 from copperchat.kicad_session import DocKind, KicadSession, KicadSessionManager
+from copperchat.kicad_tools.footprints.engine import make_library_listener, make_library_locator
 from copperchat.projects import Project
 from copperchat.views import render_view, write_kicanvas_snapshot
 from copperchat.views.snapshot import (
@@ -351,6 +352,10 @@ def install_history(app: FastAPI) -> HistoryService:
         broadcaster=runtime.broadcaster,
         runtime=runtime,
     )
+    # The local footprint library (F1 <-> F3 wiring, FP-C6): locator and listener.
+    settings = app.state.settings
+    svc.locate_library = make_library_locator(settings, app.state.sessions)
+    svc.library_listeners.append(make_library_listener(settings, app.state.sessions))
     runtime.hooks_factory = svc.hooks_factory
     app.state.history = svc
     return svc

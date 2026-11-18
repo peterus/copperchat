@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any, Literal, cast
 
+from copperchat.db.repos.footprints import FootprintWriteRepo
 from copperchat.errors import DocumentNotOpen, StructuredToolError
 from copperchat.kicad_session import KicadHandle
 from copperchat.kicad_tools import access
@@ -84,6 +85,17 @@ def parse_lib_id(value: Any) -> tuple[str, str, str]:
     return lib_id, nickname, name
 
 
+async def pending_lib_ids(ctx: ToolContext) -> frozenset[str]:
+    """Lib ids with a `pending` write-journal row of this project (FP-C3: such a
+    footprint is `unreviewed`). Read-only; empty without the editing service (no DB,
+    e.g. plain tool contexts outside the run engine). `row_add` rows carry the bare
+    nickname, so they never match a `<nick>:<name>`."""
+    if ctx.editing is None:
+        return frozenset()
+    rows = await FootprintWriteRepo(ctx.editing.db).pending(ctx.project.id)
+    return frozenset(r.lib_id for r in rows)
+
+
 async def _geometry(
     ctx: ToolContext, lib_id: str, nickname: str, name: str, notes: list[dict[str, Any]]
 ) -> FootprintGeometry:
@@ -124,7 +136,11 @@ async def fp_get(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
             prior = data.get("note")
             data["note"] = f"{prior} Also {extra}." if prior else f"Output truncated: {extra}."
     data["source"] = source
-    data["review"] = review_state(geometry, pending=False) if geometry.scope == "local" else None
+    if geometry.scope == "local":
+        pending = geometry.lib_id in await pending_lib_ids(ctx)
+        data["review"] = review_state(geometry, pending=pending)
+    else:
+        data["review"] = None
     data["notes"] = notes
     return ToolResult(data=data)
 
@@ -204,6 +220,7 @@ async def fp_list_local(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
             )
         return _no_library(notes, "no_local_library", message)
     geometries = await svc.local_footprints(lib, notes)
+    pending = await pending_lib_ids(ctx)
     users = await ctx.session.call(_footprint_users(lib.nickname))
     rows: list[dict[str, Any]] = []
     for g in sorted(geometries, key=lambda g: natural_key(g.lib_id)):
@@ -222,7 +239,7 @@ async def fp_list_local(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
             "lib_id": g.lib_id,
             "description": description,
             "pad_count": len(g.pads),
-            "needs_user_review": review_state(g, pending=False),
+            "needs_user_review": review_state(g, pending=g.lib_id in pending),
             "source": source,
             "used_by": users.get(g.lib_id, []),
         }
@@ -507,14 +524,15 @@ async def fp_check(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     notes: list[dict[str, Any]] = []
     geometry = await _geometry(ctx, lib_id, nickname, name, notes)
     pins, polarized = await symbol_pins(ctx, symbol) if symbol else (None, False)
+    local = geometry.scope == "local"
     inp = CheckInput(
         geometry=geometry,
         pins=pins,
         polarized=polarized,
         expected=expected,
         allow_unmatched=allow,
-        local=geometry.scope == "local",
-        pending=False,  # F4a wires the write journal
+        local=local,
+        pending=local and geometry.lib_id in await pending_lib_ids(ctx),
     )
     report = await asyncio.to_thread(run_checks, inp)
     return ToolResult(data={"lib_id": geometry.lib_id, **to_result(report), "notes": notes})

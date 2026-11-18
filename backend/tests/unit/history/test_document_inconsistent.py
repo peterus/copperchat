@@ -196,3 +196,49 @@ async def test_failed_reopen_is_reported_not_raised(
     await opened.hooks.on_turn_end(t, inconsistent("sch"))
     assert [m for _, m in env.engine.errors] == [{"code": "kicad_restart_failed"}]
     assert env.saved == []
+
+
+def footprint_leftovers(*, footprint_only: bool) -> TurnOutcome:
+    return TurnOutcome(
+        reason="error",
+        mutated=True,
+        document_inconsistent=True,
+        leftovers=("OpenDriveHub:L_X", "row OpenDriveHub"),
+        footprint_only=footprint_only,
+    )
+
+
+async def test_footprint_only_inconsistency_skips_reopen(
+    opened: Opened, reopens: list[str]
+) -> None:
+    """FP-C8: a failed footprint compensation leaves the schematic intact - no reopen
+    (it would drop `footprints_active`), no autosave, and the notice names every
+    leftover instead of "the design is back at its last save"; the turn snapshot is
+    offered as the undo."""
+    env = opened.env
+    t = await _mutating_turn(opened, "run-fp1")
+    await opened.hooks.on_turn_end(t, footprint_leftovers(footprint_only=True))
+    assert reopens == []
+    assert env.sessions.current() is opened.session and not opened.session.closed
+    assert env.saved == []
+    snap = await env.svc.store(opened.project).latest_for_run("run-fp1")
+    assert snap is not None
+    texts = [n[0] for n in env.engine.notices]
+    (leftover, meta) = next(n for n in env.engine.notices if n[1].get("leftovers"))
+    assert "OpenDriveHub:L_X" in leftover and "row OpenDriveHub" in leftover
+    assert "not affected" in leftover and "History" in leftover
+    assert meta == {"action": "recovered", "leftovers": ["OpenDriveHub:L_X", "row OpenDriveHub"]}
+    assert not any("is back at" in text for text in texts)
+    assert env.engine.notices[-1][1] == {"action": "restore", "snapshotId": snap.id}
+
+
+async def test_mixed_inconsistency_reopens_and_names_leftovers(
+    opened: Opened, reopens: list[str]
+) -> None:
+    env = opened.env
+    t = await _mutating_turn(opened, "run-fp2")
+    await opened.hooks.on_turn_end(t, footprint_leftovers(footprint_only=False))
+    assert reopens == [opened.project.id]
+    texts = [n[0] for n in env.engine.notices]
+    assert any("OpenDriveHub:L_X" in text for text in texts)
+    assert any("is back at" in text for text in texts)

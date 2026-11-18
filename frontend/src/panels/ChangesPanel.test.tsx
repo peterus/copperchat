@@ -166,6 +166,25 @@ describe('ChangesPanel', () => {
     ]);
   });
 
+  it('footprint library rows are listed but not pickable, and never hide the run\'s schematic changes', async () => {
+    const fp = entry(0, { tool: 'fp_create', kind: 'footprint_created', uuid: 'Nick:L_Test', ref: 'Nick:L_Test',
+      sheetPath: '', after: { geometry_hash: 'h' } });
+    apiGet.mockImplementation(async (p: string) =>
+      p.startsWith(`/projects/${PID}/changes?runId=r2`) ? [fp, ...ENTRIES] : routes(p));
+    const { view } = setup();
+    await screen.findAllByRole('listitem', { name: /^Turn/ });
+    fireEvent.click(within(runItem('r2')).getByRole('button', { name: /Show changes/ }));
+    const row = await screen.findByLabelText(/Added footprint_created Nick:L_Test/);
+    expect(row.tagName).not.toBe('BUTTON');
+    expect(screen.queryByRole('button', { name: /footprint_created/ })).toBeNull();
+    fireEvent.click(row);
+    expect(view.getState().highlight).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Show all changes' }));
+    const h = view.getState().highlight!;
+    expect(h.sheetPath).toBe(ROOT);
+    expect(h.refs.map((r) => (typeof r === 'string' ? r : r.ref))).toEqual(['R1', 'C105', 'uuid-w']);
+  });
+
   it('Diff fetches the diff of the run snapshot and highlights boxes by kind; off clears', async () => {
     const { view } = setup();
     await screen.findAllByRole('listitem', { name: /^Turn/ });

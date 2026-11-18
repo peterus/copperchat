@@ -13,7 +13,7 @@ from typing import Any
 from claude_agent_sdk import McpSdkServerConfig, SdkMcpTool, create_sdk_mcp_server
 
 from copperchat.agent.events import ToolResultEvt
-from copperchat.errors import DocumentInconsistent
+from copperchat.errors import DocumentInconsistent, leftover_advice, tool_notes
 from copperchat.kicad_session import KicadUnavailable
 from copperchat.kicad_tools.edit.engine import save_after_edit
 from copperchat.tools import ImageBlock, StructuredToolError, ToolContext, ToolResult, ToolSpec
@@ -30,7 +30,14 @@ def sdk_tool_name(name: str) -> str:
     return f"mcp__{SERVER_NAME}__{name}"
 
 
-def _error(err: StructuredToolError) -> dict[str, Any]:
+def _error(err: StructuredToolError, cause: BaseException | None = None) -> dict[str, Any]:
+    """The error payload; notes the failing call attached to `cause` (work it did before
+    it failed, `attach_tool_notes`) go into `details.notes`, never silently dropped."""
+    notes = tool_notes(cause) if cause is not None else []
+    if notes:
+        details = dict(err.details or {})
+        details["notes"] = [*details.get("notes", []), *notes]
+        err.details = details
     text = json.dumps({"error": err.to_dict()}, ensure_ascii=False)
     return {"content": [{"type": "text", "text": text}], "is_error": True}
 
@@ -135,9 +142,9 @@ async def _two_phase_steps(spec: ToolSpec, ctx: ToolContext, args: dict[str, Any
     if gate is not None:
         await gate.check_budget(ctx, cs)
     if ctx.on_mutation is not None:
-        await ctx.on_mutation()
+        await ctx.on_mutation()  # the turn snapshot takes the library lock itself
     generation = getattr(ctx.session, "generation", None)
-    result = await spec.apply(ctx, cs)
+    result = await _apply(spec, ctx, cs)
     if gate is not None:
         try:  # the change is applied and verified: bookkeeping never fails the call
             await gate.record(ctx, cs)
@@ -157,6 +164,20 @@ async def _two_phase_steps(spec: ToolSpec, ctx: ToolContext, args: dict[str, Any
             "the KiCad api-server restarted right after the edit; it holds the last save"
         )
     return result
+
+
+async def _apply(spec: ToolSpec, ctx: ToolContext, cs: Any) -> ToolResult:
+    """`spec.apply`; a footprint change set runs under its library's lock (FP-C6: taken
+    once, here, after the turn snapshot released it; the engine only asserts it)."""
+    assert spec.apply is not None
+    from copperchat.kicad_tools.footprints.engine import FootprintChangeSet
+
+    if isinstance(cs, FootprintChangeSet) and cs.library is not None:
+        from copperchat.history.library_lock import library_lock
+
+        async with library_lock(cs.library.dir):
+            return await spec.apply(ctx, cs)
+    return await spec.apply(ctx, cs)
 
 
 async def _save_edit(spec: ToolSpec, ctx: ToolContext, result: ToolResult) -> None:
@@ -206,9 +227,28 @@ def _target(args: dict[str, Any]) -> str:
 
 def _inconsistent_error(tool: str, args: dict[str, Any], exc: Exception) -> StructuredToolError:
     """Plain words for the agent to pass on (#6b, spec §5.4): what failed, what the
-    design is reloaded to, that earlier edits are kept; the internal reason in details."""
+    design is reloaded to, that earlier edits are kept; the internal reason in details.
+    A failed footprint compensation names what it left behind (spec §9.3)."""
     target = _target(args)
     edit = f"{tool} {target}" if target else tool
+    leftovers: list[str] = list(getattr(exc, "leftovers", None) or [])
+    if leftovers:
+        named = ", ".join(leftovers)
+        where = (
+            "the local footprint library; the schematic is not affected"
+            if getattr(exc, "footprint_only", False)
+            else "the local footprint library"
+        )
+        return StructuredToolError(
+            f"{edit} failed and could not be undone completely",
+            f"Rolling it back failed, so these remain in {where}: {named}. They were "
+            "not verified; do not use them.",
+            "Stop editing and tell the user exactly what was left behind ("
+            f"{named}). {leftover_advice(leftovers, getattr(exc, 'replaced', None) or [])} "
+            "Do not retry in this turn.",
+            code="document_inconsistent",
+            details={"detail": str(exc), "leftovers": leftovers},
+        )
     if getattr(exc, "last_save_partial", False):
         why = (
             "Undoing it did not bring the design back exactly. When this turn ends, "
@@ -265,14 +305,14 @@ def _make_handler(
                     await ctx.on_mutation()
                 result = await spec.handler(ctx, args)
         except StructuredToolError as err:
-            return _error(err)
+            return _error(err, err)
         except DocumentInconsistent as exc:
             if editing is not None:
                 editing.turn(ctx.project.id, ctx.run_id).halted = True
             on_inconsistent = getattr(ctx, "on_document_inconsistent", None)
             if on_inconsistent is not None:
                 on_inconsistent(exc)
-            return _error(_inconsistent_error(spec.name, args, exc))
+            return _error(_inconsistent_error(spec.name, args, exc), exc)
         except KicadUnavailable as exc:
             if ctx.on_kicad_unavailable is not None:
                 ctx.on_kicad_unavailable(exc)
@@ -281,7 +321,8 @@ def _make_handler(
                     f"{spec.name} failed because KiCad stopped responding",
                     str(exc),
                     "The KiCad API server was restarted and this turn ends. Ask again to retry.",
-                )
+                ),
+                exc,
             )
         except Exception as exc:  # a bug in a tool must reach the agent as a clear error
             log.exception("tool %s failed", spec.name)
@@ -290,7 +331,8 @@ def _make_handler(
                     f"{spec.name} failed unexpectedly",
                     f"{type(exc).__name__}: {exc}",
                     "This is a CopperChat bug; do not retry the same call.",
-                )
+                ),
+                exc,
             )
         if result.changed_docs and ctx.on_documents_changed is not None:
             ctx.on_documents_changed(set(result.changed_docs))
