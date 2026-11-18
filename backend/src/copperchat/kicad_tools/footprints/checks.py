@@ -55,6 +55,9 @@ PIN1_AXIS_TOL_DEG = 1.0  # an edge within this of the x or y axis is not diagona
 TEXT_CHAR_WIDTH = 0.8  # text box: len(value) * 0.8 * size_x by size_y
 MAX_PAIR_PADS = 2000
 MAX_PAIR_SHAPES = 5000
+# a pad with more copper pieces (custom pad primitives, arcs as chords) is left out of
+# the pair rules and named in `too_complex_partial_check`: bounds the piece-pair work
+MAX_PAD_PARTS = 256
 PAIR_RULES = ("pad_gap_small", "silk_on_pad")
 PER_RULE_CAP = 20
 TOTAL_CAP = 200
@@ -219,9 +222,16 @@ def _geom_box(g: geom.Geometry) -> Box:
 
 
 def _points(g: geom.Geometry) -> list[Point]:
-    """Points to test for containment: polygon vertices, segment ends, circle chords."""
+    """Points to test for containment: polygon vertices, circle chords, and for a
+    stroked segment its ends, plus with a stroke 8 points around each end at the half
+    width (the stadium's extremes along both board axes and the diagonals)."""
     if isinstance(g, Seg):
-        return [g.a, g.b]
+        h = g.half_width
+        if h <= 0.0:
+            return [g.a, g.b]
+        d = h * math.sqrt(0.5)
+        ring = ((h, 0.0), (d, d), (0.0, h), (-d, d), (-h, 0.0), (-d, -d), (0.0, -h), (d, -d))
+        return [(x + ox, y + oy) for x, y in (g.a, g.b) for ox, oy in ring]
     if geom.is_circle(g):
         (cx, cy), r = g[1], g[2]
         return [
@@ -239,16 +249,19 @@ def _min_dist(
     by: Sequence[Box] | None = None,
 ) -> float:
     """Shortest distance between two groups of pieces, exact when it is below `below`
-    (else some value >= `below`). Piece pairs are visited by bounding-box gap, a lower
-    bound of their distance, and skipped once that gap reaches the best so far."""
+    (else some value >= `below`). Lazy: piece pairs are visited in order with a running
+    best and skipped when their bounding-box gap (a lower bound of their distance)
+    already reaches it; nothing is materialised or sorted."""
     bx = bx if bx is not None else [_geom_box(x) for x in xs]
     by = by if by is not None else [_geom_box(y) for y in ys]
-    order = sorted((_box_gap(a, b), i, j) for i, a in enumerate(bx) for j, b in enumerate(by))
     best = below
-    for gap, i, j in order:
-        if gap >= best or best <= 0.0:
-            break
-        best = min(best, geom.distance(xs[i], ys[j]))
+    for i, a in enumerate(bx):
+        for j, b in enumerate(by):
+            if _box_gap(a, b) >= best:
+                continue
+            best = min(best, geom.distance(xs[i], ys[j]))
+            if best <= 0.0:
+                return 0.0
     return best
 
 
@@ -436,7 +449,7 @@ class _Run:
             n = ep.number
             if off(pad.at, ep.at):
                 mismatch(f"pad {n} position", pad.at, ep.at, [n])
-            size = _board_size(pad)
+            size = geom.board_size(pad)
             if off(size, ep.size):
                 mismatch(f"pad {n} size", size, ep.size, [n])
             if ep.drill is not None:
@@ -515,16 +528,14 @@ class _Run:
         items: list[tuple[int, geom.Geometry]] = [
             (i, part) for i in range(len(self.g.pads)) for part in self.parts[i]
         ] + [(-1, s) for s in self.fab_segs]
-        n = len(edges)
-        boxes = [_geom_box(e) for e in edges] + [_geom_box(g) for _, g in items]
-        best, near = math.inf, -1
-        for a, b in geom.candidate_pairs(boxes, limit):
-            if (a < n) == (b < n):
-                continue
-            e, k = (a, b - n) if a < n else (b, a - n)
+        edge_boxes = [_geom_box(e) for e in edges]
+        item_boxes = [_geom_box(g) for _, g in items]
+        best, near_k = math.inf, -1
+        for e, k in geom.cross_pairs(edge_boxes, item_boxes, limit):
             d = geom.distance(edges[e], items[k][1])
-            if d < best:
-                best, near = d, items[k][0]
+            if d < best or (d == best and k < near_k):  # ties: the first item
+                best, near_k = d, k
+        near = items[near_k][0] if near_k >= 0 else -1
         if best < limit - EPS:
             pad = self.g.pads[near] if near >= 0 else None
             what = f"pad {pad.number}" if pad and pad.number else "pad" if pad else "body"
@@ -571,6 +582,18 @@ class _Run:
                 expected={"pads": MAX_PAIR_PADS, "shapes": MAX_PAIR_SHAPES},
             )
             return
+        complex_pads = {i for i in self.copper if len(self.parts[i]) > MAX_PAD_PARTS}
+        if complex_pads:
+            names = [g.pads[i].number or "(unnumbered)" for i in sorted(complex_pads)]
+            self.add(
+                "too_complex_partial_check",
+                "info",
+                f"pad(s) {', '.join(names[:10])} have more than {MAX_PAD_PARTS} copper "
+                f"pieces: skipped {', '.join(PAIR_RULES)} for them",
+                pads=[g.pads[i].number for i in sorted(complex_pads) if g.pads[i].number],
+                measured={"pieces": max(len(self.parts[i]) for i in complex_pads)},
+                expected={"pieces": MAX_PAD_PARTS},
+            )
         # items: copper pads (index into pads), then one item per silk shape / text
         # (side, pieces); silk farther than the clearance from all copper is dropped
         raw: list[tuple[str, list[geom.Geometry]]] = [
@@ -589,6 +612,10 @@ class _Run:
         gaps: list[tuple[int, int, float]] = []
         silk_min: dict[int, float] = {}
         for a, b in geom.candidate_pairs(boxes, max(PAD_GAP_WARN, SILK_CLEARANCE)):
+            if (a < n and self.copper[a] in complex_pads) or (
+                b < n and self.copper[b] in complex_pads
+            ):
+                continue
             if a < n and b < n:
                 i, j = self.copper[a], self.copper[b]
                 pi, pj = g.pads[i], g.pads[j]
@@ -789,13 +816,6 @@ def _fmt(v: Any) -> str:
     if isinstance(v, tuple | list):
         return "(" + ", ".join(f"{x:.3f}" for x in v) + ")"
     return _mm(float(v))
-
-
-def _board_size(pad: Pad) -> Point:
-    """Pad size in board axes (swapped for a 90/270 degree pad)."""
-    w, h = pad.size
-    r = pad.rotation % 180
-    return (h, w) if abs(r - 90) < 1e-6 else (w, h)
 
 
 def run_checks(inp: CheckInput) -> CheckReport:

@@ -4,13 +4,15 @@ labels) and rasterised to PNG with CairoSVG.
 
 Hardening (spec §7.5, C10):
 - one `kicad-cli fp export` at a time: the **whole** render (cli, parse, wrap,
-  rasterise) runs under the module semaphore;
+  rasterise) runs under the module semaphore; a cancelled render keeps it until its
+  worker thread (wrap/rasterise) and the temp-dir removal have finished;
 - argv list only, `--fp=<name>` one element; the library directory comes from the
   footprint table (absolute, existing, `*.pretty`), the name never holds a path;
 - KiCad's output must exist, be non-empty and at most 10 MB; any `<!DOCTYPE` other than
   KiCad's own SVG 1.1 public prolog, and any `<!ENTITY`, is refused; scripts, styles,
-  foreign objects, event handlers, non-fragment links and external `url(...)` are
-  dropped while it is re-serialised with `xml.etree` (never by string concatenation);
+  foreign objects, event handlers, non-fragment links, external `url(...)` and
+  attribute values with a backslash (CSS escapes), `image-set(` or `src(` are dropped
+  while it is re-serialised with `xml.etree` (never by string concatenation);
 - CairoSVG runs with a URL fetcher that refuses everything, never with `unsafe=True`.
 
 Coordinates: mm in footprint space (origin = anchor, y down). KiCad's SVG `viewBox` is
@@ -37,6 +39,7 @@ import cairosvg.surface  # type: ignore[import-untyped]
 from copperchat.errors import StructuredToolError
 from copperchat.kicad_tools.cli import run_kicad_cli
 from copperchat.kicad_tools.footprints.checks import pitch_pad_pair
+from copperchat.kicad_tools.footprints.geom import board_size
 from copperchat.kicad_tools.footprints.model import FootprintGeometry, geometry_hash
 from copperchat.library.service import closest_footprints, library_for
 from copperchat.projects import agent_dir
@@ -85,6 +88,8 @@ _KICAD_PROLOG = re.compile(
 _XML_DECL = re.compile(r"\A\s*<\?xml[^>]*\?>")
 _DECLARATION = re.compile(r"<!\s*(?:DOCTYPE|ENTITY)", re.IGNORECASE)
 _EXTERNAL_URL = re.compile(r"""url\((?!\s*['"]?\s*#)[^)]*\)""", re.IGNORECASE)
+# CSS functions that load a resource without `url(` (image-set("x.png"), src("x"))
+_CSS_FETCH = re.compile(r"(?:image-set|src)\s*\(", re.IGNORECASE)
 
 # Colours (dark, like KiCad's footprint editor: its layer colours are made for it).
 BG, MINOR, MAJOR, AXIS, TEXT, ACCENT = (
@@ -206,8 +211,8 @@ def _clean(src: ET.Element, depth: int) -> ET.Element | None:
             continue
         if kns and not (kns == XML_NS and klocal == "space"):
             continue  # inkscape:, sodipodi:, xml:base, ...
-        if "\\" in value and "url" in value.lower():
-            continue  # CSS escapes could hide a url(...)
+        if "\\" in value or _CSS_FETCH.search(value):
+            continue  # a CSS escape (u\72 l() can hide url(); image-set()/src() fetch too
         out.set(key, _EXTERNAL_URL.sub("none", value))
     out.text = src.text
     out.tail = src.tail
@@ -276,7 +281,7 @@ def _label_lines(g: FootprintGeometry) -> list[str]:
     lines: list[str] = []
     pad1 = next((p for p in g.pads if p.number == "1"), None)
     if pad1 is not None:
-        (w, h), (x, y) = pad1.size, pad1.at
+        (w, h), (x, y) = board_size(pad1), pad1.at  # as drawn (90/270 degrees swap)
         lines.append(f"pad 1: {_num(w, 3)} x {_num(h, 3)} mm at ({_num(x, 3)}, {_num(y, 3)})")
     pair = pitch_pad_pair(g)
     if pair is not None:
@@ -466,8 +471,13 @@ def _check_grid(grid_mm: float | None) -> None:
         return
     if isinstance(grid_mm, bool) or not isinstance(grid_mm, int | float):
         raise _invalid("Invalid grid_mm", "grid_mm must be a number", "Omit it for auto")
-    if not math.isfinite(grid_mm) or grid_mm <= 0:
-        raise _invalid("Invalid grid_mm", "grid_mm must be a positive number", "Omit it for auto")
+    if not math.isfinite(grid_mm) or grid_mm not in GRID_LADDER:
+        # off the ladder the grid would be changed silently (0.2 -> 0.25)
+        raise _invalid(
+            "Invalid grid_mm",
+            f"grid_mm must be one of {', '.join(str(g) for g in GRID_LADDER)}",
+            "Omit it for auto",
+        )
 
 
 async def _library_dir(ctx: ToolContext, nickname: str) -> Path:
@@ -508,6 +518,31 @@ def _wrap(
     data: bytes, geometry: FootprintGeometry, grid_mm: float | None, labels: bool
 ) -> _Wrapped:
     return _build(load_kicad_svg(data), geometry, grid_mm, labels)
+
+
+def _post(
+    tmp: Path, name: str, geometry: FootprintGeometry, grid_mm: float | None, labels: bool
+) -> tuple[_Wrapped, bytes, float]:
+    """The CPU part after kicad-cli (blocking): read, sanitise, wrap, rasterise."""
+    wrapped = _wrap(_output_svg(tmp, name), geometry, grid_mm, labels)
+    png, scale = rasterise(wrapped.svg, wrapped.extent_mm)
+    return wrapped, png, scale
+
+
+async def _settle(fut: asyncio.Future[Any]) -> None:
+    """Wait until `fut` (a worker thread) has finished, also when this task is
+    cancelled meanwhile (a thread cannot be stopped; leaving it running would let the
+    next render start beside it). A cancellation that arrived is re-raised after."""
+    cancelled = False
+    while not fut.done():
+        try:
+            await asyncio.wait({fut})
+        except asyncio.CancelledError:
+            cancelled = True
+    if not fut.cancelled():
+        fut.exception()  # retrieved: the caller reports its own error
+    if cancelled:
+        raise asyncio.CancelledError
 
 
 def _tail(result_text: str) -> str:
@@ -561,11 +596,18 @@ async def render_footprint(
                     f"kicad-cli fp export exited with {result.returncode}: "
                     f"{_tail(result.stderr or result.stdout)}"
                 )
-            data = await asyncio.to_thread(_output_svg, tmp, name)
-            wrapped = await asyncio.to_thread(_wrap, data, geometry, grid_mm, labels)
-            png, scale = await asyncio.to_thread(rasterise, wrapped.svg, wrapped.extent_mm)
+            work = asyncio.ensure_future(
+                asyncio.to_thread(_post, tmp, name, geometry, grid_mm, labels)
+            )
+            try:
+                wrapped, png, scale = await asyncio.shield(work)
+            except asyncio.CancelledError:
+                await _settle(work)  # hold the semaphore until the thread has ended
+                raise
         finally:
-            shutil.rmtree(tmp, ignore_errors=True)
+            await _settle(
+                asyncio.ensure_future(asyncio.to_thread(shutil.rmtree, tmp, ignore_errors=True))
+            )
     out_dir = agent_dir(ctx.project) / "renders"
     stem = uuid.uuid4().hex
     png_path, svg_path = out_dir / f"{stem}.png", out_dir / f"{stem}.svg"

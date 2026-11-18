@@ -636,3 +636,86 @@ async def test_one_render_at_a_time(
     # the second kicad-cli run starts only after the first render was rasterised
     assert cli.events == ["start", "end", "raster", "start", "end", "raster"]
     assert a.png != b.png
+
+
+# --- review-loop round 1 ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "attr",
+    [
+        'style="fill:u\\72 l(http://x/a)"',  # CSS escape hiding url(
+        'fill="\\75rl(http://x)"',
+        'style="fill:image-set(&quot;http://x/a.png&quot; 1x)"',
+        'style="fill:-WEBKIT-Image-Set(&quot;x.png&quot; 1x)"',
+        'style="fill:SRC(&quot;http://x&quot;)"',
+    ],
+)
+def test_css_escape_and_fetch_functions_dropped(attr: str) -> None:
+    root = fr.load_kicad_svg(kicad_svg(f'<path id="p" {attr} d="M 0 0 L 1 1"/>'))
+    (path,) = list(root.iter("path"))
+    assert path.get("d") == "M 0 0 L 1 1"  # the element stays, the attribute goes
+    assert path.get("style") is None and path.get("fill") is None
+
+
+@pytest.mark.parametrize("rot", [90.0, 270.0, -90.0])
+def test_pad1_label_in_board_axes(rot: float) -> None:
+    g = geo([P("1", (0.0, 0.0), (0.6, 1.2), rot=rot)])
+    root = ET.fromstring(fr.build_wrapper(fr.load_kicad_svg(kicad_svg()), g, None, True))
+    assert "pad 1: 1.2 x 0.6 mm at (0, 0)" in _legend(root)
+    flat = geo([P("1", (0.0, 0.0), (0.6, 1.2), rot=180.0)])
+    root = ET.fromstring(fr.build_wrapper(fr.load_kicad_svg(kicad_svg()), flat, None, True))
+    assert "pad 1: 0.6 x 1.2 mm at (0, 0)" in _legend(root)
+
+
+async def test_off_ladder_grid_refused(
+    ctx: ToolContext, svc: FakeService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _no_cli(monkeypatch)
+    for grid in (0.2, 0.3, 2.0, 5.0, 1e-9):
+        with pytest.raises(StructuredToolError) as exc:
+            await fr.render_footprint(ctx, "Lib:R_1", None, grid, True)
+        assert _code(exc) == "invalid_argument", grid
+    monkeypatch.setattr(fr, "run_kicad_cli", FakeCli(kicad_svg()))
+    for grid in (0.1, 0.25, 0.5, 1, 1.0):
+        out = await fr.render_footprint(ctx, "Lib:R_1", None, grid, True)
+        assert out.grid_mm == grid
+
+
+async def test_cancel_holds_lock_until_thread_ends(
+    ctx: ToolContext, svc: FakeService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A render cancelled while its worker thread rasterises keeps the semaphore until
+    that thread has finished: the next kicad-cli run starts only afterwards, and the
+    temp dir is removed."""
+    import threading
+
+    cli = FakeCli(kicad_svg())
+    monkeypatch.setattr(fr, "run_kicad_cli", cli)
+    real = fr.rasterise
+    entered, release = threading.Event(), threading.Event()
+    first = True
+
+    def raster(svg: bytes, extent: tuple[float, float]) -> tuple[bytes, float]:
+        nonlocal first
+        if first:
+            first = False
+            entered.set()
+            assert release.wait(5)
+        cli.events.append("raster-end")
+        return real(svg, extent)
+
+    monkeypatch.setattr(fr, "rasterise", raster)
+    task = asyncio.create_task(fr.render_footprint(ctx, "Lib:R_1", None, None, True))
+    assert await asyncio.to_thread(entered.wait, 5)
+    task.cancel()
+    second = asyncio.create_task(fr.render_footprint(ctx, "Lib:R_2", None, None, True))
+    await asyncio.sleep(0.1)
+    assert cli.events == ["start", "end"]  # the second has not started kicad-cli
+    assert not task.done()  # still waiting for its thread
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await second
+    assert cli.events == ["start", "end", "raster-end", "start", "end", "raster-end"]
+    assert not [p for p in _tmp_dirs(cli) if p.exists()]

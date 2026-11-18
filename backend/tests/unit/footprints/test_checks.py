@@ -550,3 +550,67 @@ def test_pitch_pad_pair() -> None:
     pair = pitch_pad_pair(geo(pads))
     assert pair is not None and pair[1].number == "2"
     assert pitch_pad_pair(geo([P("1", (0, 0))])) is None
+
+
+# --- review-loop round 1 ----------------------------------------------------------------
+
+
+def _custom(number: str, at: tuple[float, float], prims: Sequence[dict[str, Any]]) -> Pad:
+    extra = {"anchor": "rect", "primitives": tuple(prims)}
+    return Pad(
+        number, "smd", "custom", at, 0.0, (0.2, 0.2), None, None, SMD, tuple(sorted(extra.items()))
+    )
+
+
+def test_custom_pad_stroke_crossing_courtyard_is_not_enclosed() -> None:
+    """A primitive segment whose centre line ends 0.1 mm inside the courtyard but whose
+    0.4 mm stroke crosses it is outside, not only a margin warning."""
+    stroke = {"kind": "segment", "points": [(0.0, 0.0), (0.0, 1.9)], "width": 0.4}
+    pads = (_custom("1", (-1.1, 0.0), [stroke]), P("2", (1.1, 0.0), (1.3, 1.0)))
+    g = geo(pads, [L201_CRTYD, L201_FAB, *L201_SILK], L201_TEXTS)
+    (f,) = of(check(g), "courtyard_not_enclosing")
+    assert f.severity == "error" and f.pads == ("1",)
+    thin = {**stroke, "width": 0.1}
+    g = geo((_custom("1", (-1.1, 0.0), [thin]), pads[1]), [L201_CRTYD, L201_FAB, *L201_SILK])
+    assert not of(check(g), "courtyard_not_enclosing")
+
+
+def test_diagonal_stroke_extremes_checked() -> None:
+    """A diagonal stroked segment: the stadium's axis extremes around its ends count."""
+    stroke = {"kind": "segment", "points": [(0.0, 0.0), (0.8, 0.8)], "width": 0.6}
+    # centre line ends at (0.9, 1.8): inside the +-2 courtyard; the cap reaches y = 2.1
+    pads = (_custom("1", (0.1, 1.0), [stroke]), P("2", (-1.1, 0.0), (0.5, 0.5)))
+    g = geo(pads, [L201_CRTYD])
+    assert [f.pads for f in of(check(g), "courtyard_not_enclosing")] == [("1",)]
+
+
+def _many_segments(n: int) -> list[dict[str, Any]]:
+    """A zig-zag of n short stroked segments, about 0.5 x 0.5 mm."""
+    pts = [(0.5 * (i % 2), 0.5 * i / n) for i in range(n + 1)]
+    return [{"kind": "segment", "points": [pts[i], pts[i + 1]], "width": 0.05} for i in range(n)]
+
+
+def test_pad_with_many_parts_is_reported_and_fast() -> None:
+    big = _many_segments(3000)
+    pads = (_custom("1", (-0.3, 0.0), big), _custom("2", (0.3, 0.0), big))
+    g = geo(pads, [rect("F.CrtYd", -2, -2, 2, 2), rect("F.SilkS", -0.5, -0.5, 1.0, 1.0)])
+    t0 = time.perf_counter()
+    report = check(g)
+    assert time.perf_counter() - t0 < 5.0
+    (f,) = of(report, "too_complex_partial_check")
+    assert f.pads == ("1", "2") and f.expected == {"pieces": 256}
+    assert not of(report, "pad_gap_small") and not of(report, "silk_on_pad")
+
+
+def test_pads_below_part_cap_still_compared_quickly() -> None:
+    """250 + 250 pieces (below the cap) overlap: the lazy pair search still finds the
+    gap 0 and stops early."""
+    few = _many_segments(250)
+    pads = (_custom("1", (0.0, 0.0), few), _custom("2", (0.3, 0.0), few))
+    g = geo(pads, [rect("F.CrtYd", -2, -2, 2, 2)])
+    t0 = time.perf_counter()
+    report = check(g)
+    assert time.perf_counter() - t0 < 5.0
+    assert not of(report, "too_complex_partial_check")
+    (f,) = of(report, "pad_gap_small")
+    assert f.measured == 0.0 and f.severity == "error"

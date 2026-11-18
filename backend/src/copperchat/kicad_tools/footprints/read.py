@@ -6,6 +6,7 @@ import asyncio
 import difflib
 import math
 import re
+from dataclasses import dataclass
 from functools import partial
 from typing import Any, Literal, cast
 
@@ -381,20 +382,48 @@ def _symbol(value: Any) -> str | None:
     )
 
 
-def is_polarized(pins: dict[str, str]) -> bool:
-    """Exactly 2 pins whose names differ and are neither `~` (or empty) nor equal to
-    their number (a diode's K/A, not a resistor's 1/2)."""
+POLARIZED_NAME_RE = re.compile(r"^(?:C_Polarized|CP)")  # KiCad names, case-sensitive
+POLARIZED_WORDS = ("polarized", "polarised", "electrolytic", "tantalum")
+# KiCad's Device:C is "Unpolarized capacitor"; bipolar electrolytics are not polarised
+UNPOLARIZED_WORDS = ("unpolar", "non-polar", "nonpolar", "non polar", "bipolar")
+
+
+def is_polarized(
+    pins: dict[str, str], name: str = "", description: str = "", keywords: str = ""
+) -> bool:
+    """Exactly 2 pins, and either their names differ and are neither `~` (or empty) nor
+    equal to their number (a diode's K/A, not a resistor's 1/2), or the symbol is a
+    polarised capacitor whose pins are both `~` (spec §8): its library name starts with
+    `C_Polarized` or `CP` (`CP`, `CP_Small`, ...), or its description or keywords say
+    polarized / polarised / electrolytic / tantalum and not unpolarised / non-polarised /
+    bipolar (KiCad's plain `Device:C` is "Unpolarized capacitor")."""
     if len(pins) != 2:
         return False
     names = list(pins.values())
-    if names[0] == names[1]:
+    if names[0] != names[1] and all(
+        pin and pin != "~" and pin != number for number, pin in pins.items()
+    ):
+        return True
+    text = f"{description} {keywords}".casefold()
+    if POLARIZED_NAME_RE.match(name):
+        return True
+    if any(w in text for w in UNPOLARIZED_WORDS):
         return False
-    return all(name and name != "~" and name != number for number, name in pins.items())
+    return any(w in text for w in POLARIZED_WORDS)
 
 
-def _placed_pins(ref: str, h: KicadHandle) -> tuple[dict[str, str] | None, list[str] | None]:
-    """(pin number -> name over every unit of the placed symbol `ref`, or None when not
-    placed; the placed references, or None without an open schematic)."""
+@dataclass(frozen=True)
+class PlacedSymbol:
+    pins: dict[str, str]  # pin number -> name over every unit
+    name: str = ""  # library entry name of the definition
+    description: str = ""
+    keywords: str = ""
+
+
+def _placed_pins(ref: str, h: KicadHandle) -> tuple[PlacedSymbol | None, list[str] | None]:
+    """(the placed symbol `ref`'s pins over every unit plus its definition's name,
+    description and keywords, or None when not placed; the placed references, or None
+    without an open schematic)."""
     try:
         schematic = h.schematic()
     except DocumentNotOpen:
@@ -405,14 +434,21 @@ def _placed_pins(ref: str, h: KicadHandle) -> tuple[dict[str, str] | None, list[
         refs.append(reference)
         if reference != ref:
             continue
+        definition = sym.definition
         pins: dict[str, str] = {}
-        for child in sym.definition.items:  # every unit and body style of the definition
+        for child in definition.items:  # every unit and body style of the definition
             if child.kind != "SchematicPin":
                 continue
             pin: Any = child.item
             if str(pin.number):
                 pins.setdefault(str(pin.number), str(pin.name))
-        return pins, refs
+        placed = PlacedSymbol(
+            pins,
+            str(definition.id.name),
+            str(definition.description_field.text.value),
+            str(definition.keywords),
+        )
+        return placed, refs
     return None, refs
 
 
@@ -420,8 +456,8 @@ async def symbol_pins(ctx: ToolContext, symbol: str) -> tuple[list[str], bool]:
     """(pin numbers, polarized) of a library symbol (`lib:Name`, via
     `LibraryService.get_symbol`) or of a placed reference; all units' pins."""
     if REFERENCE_RE.match(symbol):
-        pins, refs = await ctx.session.call(partial(_placed_pins, symbol))
-        if pins is None:
+        placed, refs = await ctx.session.call(partial(_placed_pins, symbol))
+        if placed is None:
             if refs is None:
                 why, suggestion = "no schematic is open", "Pass the library symbol id instead."
             else:
@@ -435,6 +471,8 @@ async def symbol_pins(ctx: ToolContext, symbol: str) -> tuple[list[str], bool]:
             raise StructuredToolError(
                 f"Symbol {symbol} not found", why, suggestion, code="not_found"
             )
+        pins = placed.pins
+        polarized = is_polarized(pins, placed.name, placed.description, placed.keywords)
     else:
         detail = await library_for(ctx.session).get_symbol(symbol)
         if not detail.pins_known:
@@ -449,7 +487,9 @@ async def symbol_pins(ctx: ToolContext, symbol: str) -> tuple[list[str], bool]:
         for pin in detail.pins:
             if pin.number:
                 pins.setdefault(pin.number, pin.name)
-    return sorted(pins, key=natural_key), is_polarized(pins)
+        name = symbol.partition(":")[2]
+        polarized = is_polarized(pins, name, detail.description, detail.keywords)
+    return sorted(pins, key=natural_key), polarized
 
 
 async def fp_check(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:

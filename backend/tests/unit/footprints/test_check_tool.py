@@ -183,7 +183,7 @@ class FakeService:
 class FakeSession:
     """`call` serves the placed-symbol reader with `placed` (ref -> {number: name})."""
 
-    def __init__(self, placed: dict[str, dict[str, str]] | None) -> None:
+    def __init__(self, placed: dict[str, dict[str, str] | read.PlacedSymbol] | None) -> None:
         self.placed = placed
 
     async def call(self, fn: Any) -> Any:
@@ -191,14 +191,17 @@ class FakeSession:
         (ref,) = fn.args
         if self.placed is None:
             return None, []
-        return self.placed.get(ref), sorted(self.placed)
+        sym = self.placed.get(ref)
+        if isinstance(sym, dict):
+            sym = read.PlacedSymbol(sym)
+        return sym, sorted(self.placed)
 
 
 @pytest.fixture
 def svc(monkeypatch: pytest.MonkeyPatch) -> FakeService:
     s = FakeService(l201())
     s.symbols["Device:L"] = SimpleNamespace(
-        pins=[_lib_pin("1", "1"), _lib_pin("2", "2")], pins_known=True
+        pins=[_lib_pin("1", "1"), _lib_pin("2", "2")], pins_known=True, description="", keywords=""
     )
     monkeypatch.setattr(read, "library_for", lambda _session: s)
 
@@ -209,7 +212,9 @@ def svc(monkeypatch: pytest.MonkeyPatch) -> FakeService:
     return s
 
 
-def _with_session(ctx: ToolContext, placed: dict[str, dict[str, str]] | None) -> ToolContext:
+def _with_session(
+    ctx: ToolContext, placed: dict[str, dict[str, str] | read.PlacedSymbol] | None
+) -> ToolContext:
     return dataclasses.replace(ctx, session=cast(KicadSession, FakeSession(placed)))
 
 
@@ -266,7 +271,10 @@ async def test_fp_check_lib_symbol(ctx: ToolContext, svc: FakeService) -> None:
 
 async def test_fp_check_lib_symbol_mismatch(ctx: ToolContext, svc: FakeService) -> None:
     svc.symbols["Device:Q"] = SimpleNamespace(
-        pins=[_lib_pin("1", "B"), _lib_pin("2", "C"), _lib_pin("3", "E")], pins_known=True
+        pins=[_lib_pin("1", "B"), _lib_pin("2", "C"), _lib_pin("3", "E")],
+        pins_known=True,
+        description="",
+        keywords="",
     )
     r = await read.fp_check(ctx, {"lib_id": LIB_ID, "symbol": "Device:Q"})
     assert r.data is not None and not r.data["passed"]
@@ -363,9 +371,101 @@ async def test_symbol_pins_union_of_units(ctx: ToolContext, svc: FakeService) ->
             _lib_pin("8", "V+", 0),  # once per body style
         ],
         pins_known=True,
+        description="",
+        keywords="",
     )
     assert await read.symbol_pins(ctx, "Amp:Dual") == (["1", "2", "5", "8"], False)
     svc.symbols["Device:D"] = SimpleNamespace(
-        pins=[_lib_pin("1", "K"), _lib_pin("2", "A")], pins_known=True
+        pins=[_lib_pin("1", "K"), _lib_pin("2", "A")], pins_known=True, description="", keywords=""
     )
     assert await read.symbol_pins(ctx, "Device:D") == (["1", "2"], True)
+
+
+@pytest.mark.parametrize(
+    ("name", "description", "keywords", "polarized"),
+    [
+        ("C_Polarized", "", "", True),
+        ("C_Polarized_Small_US", "", "", True),
+        ("CP", "", "", True),
+        ("CP_Small", "", "", True),
+        ("C", "Polarized capacitor", "", True),
+        ("C", "", "cap ELECTROLYTIC", True),
+        ("C", "Tantalum capacitor", "", True),
+        ("C", "polarised cap", "", True),
+        ("C", "Unpolarized capacitor", "cap capacitor", False),  # KiCad's Device:C
+        ("C", "Non-polarised capacitor", "", False),
+        ("C_Bipolar", "Bipolar electrolytic capacitor", "", False),
+        ("C", "capacitor", "cap", False),
+        ("cp", "", "", False),  # KiCad names are case-sensitive
+    ],
+)
+def test_polarized_capacitor(name: str, description: str, keywords: str, polarized: bool) -> None:
+    pins = {"1": "~", "2": "~"}
+    assert read.is_polarized(pins, name, description, keywords) is polarized
+    # never for a symbol that does not have exactly 2 pins
+    assert read.is_polarized({"1": "~"}, name, description, keywords) is False
+
+
+async def test_symbol_pins_polarized_capacitor(ctx: ToolContext, svc: FakeService) -> None:
+    tilde = [_lib_pin("1", "~"), _lib_pin("2", "~")]
+    svc.symbols["Device:C_Polarized"] = SimpleNamespace(
+        pins=tilde, pins_known=True, description="", keywords=""
+    )
+    assert await read.symbol_pins(ctx, "Device:C_Polarized") == (["1", "2"], True)
+    svc.symbols["My:Cap"] = SimpleNamespace(
+        pins=tilde, pins_known=True, description="Tantalum capacitor", keywords=""
+    )
+    assert await read.symbol_pins(ctx, "My:Cap") == (["1", "2"], True)
+    svc.symbols["Device:C"] = SimpleNamespace(
+        pins=tilde, pins_known=True, description="Unpolarised capacitor", keywords=""
+    )
+    c = _with_session(
+        ctx,
+        {
+            "C1": read.PlacedSymbol({"1": "~", "2": "~"}, "CP_Small"),
+            "C2": read.PlacedSymbol({"1": "~", "2": "~"}, "C", "capacitor", "cap"),
+        },
+    )
+    assert await read.symbol_pins(c, "C1") == (["1", "2"], True)
+    assert await read.symbol_pins(c, "C2") == (["1", "2"], False)
+
+
+async def test_fp_check_pin1_for_polarized_capacitor(ctx: ToolContext, svc: FakeService) -> None:
+    """A "~"/"~" polarised cap on a 2-pad footprint without a mark: pin1_marker_missing."""
+    svc.symbols["Device:CP"] = SimpleNamespace(
+        pins=[_lib_pin("1", "~"), _lib_pin("2", "~")],
+        pins_known=True,
+        description="Polarized capacitor",
+        keywords="cap capacitor",
+    )
+    svc.symbols["Device:C"] = SimpleNamespace(
+        pins=[_lib_pin("1", "~"), _lib_pin("2", "~")],
+        pins_known=True,
+        description="capacitor",
+        keywords="cap",
+    )
+    cp = await read.fp_check(ctx, {"lib_id": LIB_ID, "symbol": "Device:CP"})
+    c = await read.fp_check(ctx, {"lib_id": LIB_ID, "symbol": "Device:C"})
+    assert cp.data is not None and c.data is not None
+    assert "pin1_marker_missing" in _rules(cp.data)
+    assert "pin1_marker_missing" not in _rules(c.data)
+
+
+def test_placed_pins_reads_definition_name_and_text() -> None:
+    def pin(number: str) -> Any:
+        return SimpleNamespace(kind="SchematicPin", item=SimpleNamespace(number=number, name="~"))
+
+    definition = SimpleNamespace(
+        items=[pin("1"), pin("2"), SimpleNamespace(kind="SchematicShape", item=None)],
+        id=SimpleNamespace(name="CP_Small"),
+        description_field=SimpleNamespace(text=SimpleNamespace(value="Polarized capacitor")),
+        keywords="cap capacitor",
+    )
+    sym = SimpleNamespace(reference="C1", definition=definition)
+    sch = SimpleNamespace(get_symbols=lambda: [SimpleNamespace(reference="R1"), sym])
+    h = cast(Any, SimpleNamespace(schematic=lambda: sch))
+    placed, refs = read._placed_pins("C1", h)
+    assert placed == read.PlacedSymbol(
+        {"1": "~", "2": "~"}, "CP_Small", "Polarized capacitor", "cap capacitor"
+    )
+    assert refs == ["R1", "C1"]

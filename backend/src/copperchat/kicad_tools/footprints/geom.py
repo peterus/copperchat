@@ -146,6 +146,13 @@ def _base_polygon(
     return _rounded_rect(w, h, 0.0)  # rect, unknown, or data missing
 
 
+def board_size(pad: Pad) -> Point:
+    """Pad size in board axes (swapped for a 90/270 degree pad)."""
+    w, h = pad.size
+    r = pad.rotation % 180
+    return (h, w) if abs(r - 90) < 1e-6 else (w, h)
+
+
 def pad_geometry(pad: Pad) -> Polygon | Circle:
     """Exact outline of the pad's main (anchor) shape: a `("circle", centre, r)` for
     round pads, else a polygon (arcs as 16 chords per quarter).
@@ -409,19 +416,36 @@ def closed_outline(shapes: Sequence[Shape]) -> list[Point] | None:
     def near(p: Point, q: Point) -> bool:
         return math.hypot(p[0] - q[0], p[1] - q[1]) <= LOOP_TOL_MM
 
-    path = list(pieces.pop(0))
-    while pieces:
-        for i, piece in enumerate(pieces):
-            if near(path[-1], piece[0]):
-                path += piece[1:]
-            elif near(path[-1], piece[-1]):
-                path += piece[-2::-1]
-            else:
-                continue
-            del pieces[i]
-            break
-        else:
+    # endpoint index on a LOOP_TOL_MM grid: two points within the tolerance lie in the
+    # same or a neighbouring cell, so a lookup checks the 3 x 3 cells around a point.
+    # The match is the lowest-index unused piece (start before end), as a linear scan.
+    def cell(p: Point) -> tuple[int, int]:
+        return (math.floor(p[0] / LOOP_TOL_MM), math.floor(p[1] / LOOP_TOL_MM))
+
+    index: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    for i, piece in enumerate(pieces):
+        if i == 0:
+            continue
+        for end, p in ((0, piece[0]), (1, piece[-1])):
+            index.setdefault(cell(p), []).append((i, end))
+    used = [False] * len(pieces)
+    used[0] = True
+    path = list(pieces[0])
+    for _ in range(len(pieces) - 1):
+        tail = path[-1]
+        cx, cy = cell(tail)
+        best: tuple[int, int] | None = None
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for i, end in index.get((cx + dx, cy + dy), ()):
+                    p = pieces[i][-1] if end else pieces[i][0]
+                    if not used[i] and (best is None or (i, end) < best) and near(tail, p):
+                        best = (i, end)
+        if best is None:
             return None
+        i, end = best
+        used[i] = True
+        path += pieces[i][-2::-1] if end else pieces[i][1:]
     if len(path) < 4 or not near(path[0], path[-1]):
         return None
     return path[:-1]
@@ -441,3 +465,29 @@ def candidate_pairs(boxes: Sequence[Box], gap: float) -> Iterator[tuple[int, int
                 break
             if boxes[j][1] <= boxes[i][3] + gap and boxes[i][1] <= boxes[j][3] + gap:
                 yield (i, j) if i < j else (j, i)
+
+
+def cross_pairs(a: Sequence[Box], b: Sequence[Box], gap: float) -> Iterator[tuple[int, int]]:
+    """Index pairs (i into `a`, j into `b`) whose boxes are within `gap` on both axes.
+
+    A sweep on x over both groups that only ever pairs across them: unlike
+    `candidate_pairs` on the concatenation it never visits the (possibly quadratic)
+    pairs inside one group, e.g. thousands of overlapping pieces of one custom pad.
+    """
+    groups = (a, b)
+    events = sorted(
+        [(box[0], 0, i) for i, box in enumerate(a)] + [(box[0], 1, j) for j, box in enumerate(b)]
+    )
+    active: tuple[list[int], list[int]] = ([], [])
+    for x0, g, k in events:
+        box, other = groups[g][k], 1 - g
+        keep: list[int] = []
+        for m in active[other]:
+            ob = groups[other][m]
+            if ob[2] + gap < x0:
+                continue  # ends left of every later box: dropped for good
+            keep.append(m)
+            if ob[1] <= box[3] + gap and box[1] <= ob[3] + gap:
+                yield (k, m) if g == 0 else (m, k)
+        active[other][:] = keep
+        active[g].append(k)

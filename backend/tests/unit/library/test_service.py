@@ -750,3 +750,51 @@ async def test_geometry_not_cached_when_invalidated_during_read(
     monkeypatch.setattr(service_mod, "_file_validator", real)
     g2 = await svc.footprint_geometry(lib_id)  # no concurrent invalidate: cached
     assert g2 is not None and svc._fp_geometry[lib_id].geometry is g2
+
+
+# --- footprint table URI (fp_render) --------------------------------------------------
+
+
+class TableSession(FakeSession):
+    """Runs the table reader against a fake handle: `project` / `global_` map nickname ->
+    substituted URI of the footprint table of that scope."""
+
+    def __init__(self, project: dict[str, str], global_: dict[str, str]) -> None:
+        super().__init__()
+        self.tables = {"project": project, "global": global_}
+        self.reads: list[tuple[str, bool]] = []
+
+    def get_library_table(self, kind: Any, scope: Any, substituted: bool = False) -> Any:
+        from kipy.proto.common.types import LibraryTableScope, LibraryType
+
+        assert kind == LibraryType.LT_FOOTPRINT
+        name = "project" if scope == LibraryTableScope.LTS_PROJECT else "global"
+        self.reads.append((name, substituted))
+        rows = [SimpleNamespace(nickname=n, uri=u) for n, u in self.tables[name].items()]
+        return SimpleNamespace(rows=rows)
+
+    async def call(self, fn: Any) -> Any:
+        assert getattr(fn, "func", None) is service_mod._footprint_table_uri, fn
+        return fn(SimpleNamespace(kicad=self))
+
+
+@pytest.mark.parametrize(
+    ("project", "global_", "uri"),
+    [
+        ({"Lib": "/p/Lib.pretty"}, {}, "/p/Lib.pretty"),  # project only
+        ({}, {"Lib": "/g/Lib.pretty"}, "/g/Lib.pretty"),  # global only
+        ({"Lib": "/p/Lib.pretty"}, {"Lib": "/g/Lib.pretty"}, "/p/Lib.pretty"),  # project wins
+        ({"Other": "/p/O.pretty"}, {"Other2": "/g/O.pretty"}, None),  # no row
+        ({}, {}, None),
+    ],
+)
+async def test_footprint_library_uri(
+    project: dict[str, str], global_: dict[str, str], uri: str | None
+) -> None:
+    session = TableSession(project, global_)
+    svc = _svc(session)
+    assert await svc.footprint_library_uri("Lib") == uri
+    # always the substituted rows; the global table only when the project has no row
+    assert all(substituted for _, substituted in session.reads)
+    scopes = [name for name, _ in session.reads]
+    assert scopes == (["project"] if "Lib" in project else ["project", "global"])

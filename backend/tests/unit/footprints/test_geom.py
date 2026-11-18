@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import random
+import time
 
 import pytest
 
@@ -229,3 +230,108 @@ def test_oval_stadium() -> None:
     assert max(p[1] for p in poly) == pytest.approx(0.5)
     assert geom.point_in_polygon((0.0, 0.4), poly)
     assert not geom.point_in_polygon((1.45, 0.4), poly)  # outside the rounded end
+
+
+def _closed_outline_linear(pieces: list[list[tuple[float, float]]]):
+    """The pre-index chaining (linear scan), as the reference for the endpoint index."""
+
+    def near(p, q) -> bool:
+        return math.hypot(p[0] - q[0], p[1] - q[1]) <= geom.LOOP_TOL_MM
+
+    pieces = [list(p) for p in pieces]
+    path = list(pieces.pop(0))
+    while pieces:
+        for i, piece in enumerate(pieces):
+            if near(path[-1], piece[0]):
+                path += piece[1:]
+            elif near(path[-1], piece[-1]):
+                path += piece[-2::-1]
+            else:
+                continue
+            del pieces[i]
+            break
+        else:
+            return None
+    if len(path) < 4 or not near(path[0], path[-1]):
+        return None
+    return path[:-1]
+
+
+def _ring(n: int, r: float = 10.0, jitter: float = 0.0, rng=None):
+    pts = [(r * math.cos(2 * math.pi * i / n), r * math.sin(2 * math.pi * i / n)) for i in range(n)]
+
+    def j(p):
+        if not jitter:
+            return p
+        return (p[0] + rng.uniform(-jitter, jitter), p[1] + rng.uniform(-jitter, jitter))
+
+    return [(j(pts[i]), j(pts[(i + 1) % n])) for i in range(n)]
+
+
+def test_closed_outline_large_loop_fast() -> None:
+    rng = random.Random(7)
+    ends = _ring(5000)
+    rng.shuffle(ends)
+    segs = [_seg(a, b) if rng.random() < 0.5 else _seg(b, a) for a, b in ends]
+    t0 = time.perf_counter()
+    poly = geom.closed_outline(segs)
+    assert time.perf_counter() - t0 < 1.0
+    assert poly is not None and len(poly) == 5000
+
+
+def test_closed_outline_matches_linear_scan() -> None:
+    """Same result as the linear scan, also with endpoints jittered within the 1 um
+    tolerance across cell boundaries, with gaps, branches and arcs."""
+    rng = random.Random(11)
+    for trial in range(300):
+        n = rng.randint(3, 12)
+        ends = _ring(n, rng.uniform(0.0005, 5.0), rng.choice([0.0, 0.0003, 0.0007]), rng)
+        if trial % 5 == 1:
+            ends.append(ends[rng.randrange(n)])  # a duplicate (branch)
+        if trial % 7 == 2:
+            a, b = ends[0]
+            ends[0] = (a, (b[0] + 0.01, b[1]))  # a gap
+        rng.shuffle(ends)
+        shapes = [_seg(a, b) if rng.random() < 0.5 else _seg(b, a) for a, b in ends]
+        if trial % 3 == 0:
+            arc = Shape("arc", "F.CrtYd", ((0, 0), (1, 1), (2, 0)), None, None, 0.05, False)
+            shapes.append(arc)
+        pieces = [
+            [s.points[0], s.points[1]] if s.kind == "segment" else geom._arc_points(*s.points)
+            for s in shapes
+        ]
+        assert geom.closed_outline(shapes) == _closed_outline_linear(pieces), trial
+
+
+def test_board_size() -> None:
+    assert geom.board_size(_pad(size=(1.0, 2.0), rot=0.0)) == (1.0, 2.0)
+    assert geom.board_size(_pad(size=(1.0, 2.0), rot=90.0)) == (2.0, 1.0)
+    assert geom.board_size(_pad(size=(1.0, 2.0), rot=-90.0)) == (2.0, 1.0)
+    assert geom.board_size(_pad(size=(1.0, 2.0), rot=180.0)) == (1.0, 2.0)
+
+
+def test_cross_pairs_matches_brute_force() -> None:
+    rnd = random.Random(5)
+
+    def boxes(n: int, w: float) -> list[tuple[float, float, float, float]]:
+        out = []
+        for _ in range(n):
+            x, y = rnd.uniform(0, 50), rnd.uniform(0, 50)
+            out.append((x, y, x + rnd.uniform(0, w), y + rnd.uniform(0, w)))
+        return out
+
+    a, b = boxes(300, 3), boxes(40, 20)  # few long boxes (edges) against many small ones
+    a.append(b[0])  # identical boxes, same x0
+    gap = 0.25
+    brute = {
+        (i, j)
+        for i in range(len(a))
+        for j in range(len(b))
+        if a[i][0] - gap <= b[j][2]
+        and b[j][0] - gap <= a[i][2]
+        and a[i][1] - gap <= b[j][3]
+        and b[j][1] - gap <= a[i][3]
+    }
+    got = list(geom.cross_pairs(a, b, gap))
+    assert len(got) == len(set(got))
+    assert set(got) == brute
