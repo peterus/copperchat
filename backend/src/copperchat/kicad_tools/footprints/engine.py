@@ -53,7 +53,7 @@ from copperchat.kicad_tools.footprints.journal import (
     sha_of,
     table_rel,
 )
-from copperchat.kicad_tools.footprints.model import geometry_equal
+from copperchat.kicad_tools.footprints.model import geometry_equal, geometry_hash
 from copperchat.library.local import LIBRARY_DESCRIPTION, LocalLibrary, derive_local_library
 from copperchat.library.service import (
     library_for,
@@ -97,13 +97,16 @@ class FpStage:
 @dataclass(frozen=True)
 class FootprintPreImage:
     """What `replace` overwrites, read through the API in prepare (spec §9.5):
-    serialized items and definition, plus the file's sha256 and the geometry hash that
-    the engine re-checks under the library lock before it writes."""
+    serialized items (`google.protobuf.Any`) and definition (`FootprintInstance`), plus
+    the file's sha256, the geometry hash and the fields that the engine re-checks under
+    the library lock before it writes, and compares the rebuilt pre-image with when it
+    compensates."""
 
     items: list[bytes]
     definition: bytes
     file_sha256: str
     geometry_hash: str
+    fields: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(kw_only=True)
@@ -367,6 +370,66 @@ async def _recheck_name(ctx: ToolContext, lib: LocalLibrary, name: str) -> None:
         )
 
 
+async def _local_geometry(ctx: ToolContext, lib_id: str) -> FootprintGeometry | None:
+    """The footprint as KiCad reads it now (through the footprint document, as
+    `read_pre_image` did; the cache is dropped first). No document may be open."""
+    svc = library_for(ctx.session)
+    svc.invalidate_footprints(lib_id.split(":", 1)[0])
+    return await svc.footprint_geometry(lib_id)
+
+
+def _pre_image_diffs(pre: FootprintPreImage, got: FootprintGeometry) -> list[str]:
+    """How `got` differs from the pre-image: its geometry hash and its fields."""
+    diffs: list[str] = []
+    if geometry_hash(got) != pre.geometry_hash:
+        diffs.append("the geometry hash differs")
+    for name in sorted(pre.fields.keys() | got.fields.keys()):
+        if pre.fields.get(name) != got.fields.get(name):
+            diffs.append(f"field {name!r} differs")
+    return diffs
+
+
+async def _recheck_replace(
+    ctx: ToolContext, lib: LocalLibrary, name: str, pre: FootprintPreImage
+) -> None:
+    """Before S2 of a `replace` (FP-C8, under the library lock): the footprint must
+    still be there (`not_found`) and equal the pre-image prepare read - the file's
+    sha256, the geometry hash and the fields - else `library_conflict`; so a change by
+    the GUI or another project after prepare is refused, never overwritten (and never
+    "restored" away by a compensation)."""
+    lib_id = f"{lib.nickname}:{name}"
+    file = lib.dir / f"{name}.kicad_mod"
+    await asyncio.to_thread(_file_checks, lib, name)
+    names = await library_for(ctx.session).footprint_names(lib.nickname)
+    if name not in names or not await asyncio.to_thread(_lexists, file):
+        raise StructuredToolError(
+            f"Footprint {lib_id} not found",
+            f"{lib_id} was removed after the call was planned (the KiCad GUI or another "
+            "project of this repository may have deleted it)",
+            "Leave replace out to create it again; list the local footprints with "
+            "fp_list_local. Nothing was written.",
+            code="not_found",
+        )
+    why = ""
+    if await _sha_or_absent(file) != pre.file_sha256:
+        why = "its file changed"
+    else:
+        got = await _local_geometry(ctx, lib_id)
+        if got is None:
+            why = "KiCad cannot read it any more"
+        else:
+            why = "; ".join(_pre_image_diffs(pre, got))
+    if why:
+        raise StructuredToolError(
+            f"Footprint {lib_id} changed since prepare",
+            f"{lib_id} changed since prepare ({why}): the KiCad GUI or another project of "
+            "this repository edited it after the call was planned",
+            "Read it again with fp_get, then ask the user whether to replace it; nothing "
+            "was written.",
+            code="library_conflict",
+        )
+
+
 async def _copy_seed(ctx: ToolContext, lib_id: str) -> None:
     """S2: `SaveCopyOfDocument(seed -> lib_id)`."""
     from kipy.errors import ApiError
@@ -391,10 +454,7 @@ async def _rebuild_commit(doc: FootprintDocument, target: FootprintGeometry) -> 
     fields = {i.name: i for i, k in zip(items, kind, strict=True) if k == "Field"}
     if template_pad is None or not {"Reference", "Value", "Datasheet"} <= fields.keys():
         raise RuntimeError("the seed copy has no pad or misses a mandatory field")
-    stale = [i.id.value for i, k in zip(items, kind, strict=True) if k != "Field"]
-    stale += [f.text.id.value for n, f in fields.items() if n not in protos.MANDATORY_FIELDS]
-    if stale:
-        await doc.delete(stale)
+    await _delete_children(doc, items)
 
     texts = {t.kind: t for t in target.texts if t.kind != "user"}
     new: list[Any] = [protos.pad_proto(template_pad, p) for p in target.pads]
@@ -430,6 +490,104 @@ async def _rebuild_commit(doc: FootprintDocument, target: FootprintGeometry) -> 
         packed = definition.items.add()
         packed.Pack(protos.model_proto(model))
     await doc.update_footprint(instance)
+
+
+async def _delete_children(doc: FootprintDocument, items: list[Any]) -> None:
+    """Delete every child of the open footprint but its own (mandatory) fields."""
+    from copperchat.kicad_tools.footprints import protos
+
+    stale = [
+        i.text.id.value if i.DESCRIPTOR.name == "Field" else i.id.value
+        for i in items
+        if i.DESCRIPTOR.name != "Field" or i.name not in protos.MANDATORY_FIELDS
+    ]
+    if stale:
+        await doc.delete(stale)
+
+
+def _unpack(raw: bytes) -> Any:
+    from google.protobuf.any_pb2 import Any as PbAny  # type: ignore[import-untyped]
+    from kipy.util.proto import unpack_any
+
+    packed = PbAny()
+    packed.ParseFromString(raw)
+    return unpack_any(packed)
+
+
+def _is_model(packed: Any) -> bool:
+    return bool(packed.type_url.endswith("Footprint3DModel"))
+
+
+async def _restore_commit(doc: FootprintDocument, pre: FootprintPreImage) -> None:
+    """The compensation of a `replace` through the S3 code path (spec §9.5): in the open
+    commit, delete every child but the footprint's own fields, create the pre-image's
+    items again (fresh ids), set the own fields as they were, then the footprint-level
+    properties and the 3D model links of the pre-image's definition."""
+    from kipy.proto.board import board_types_pb2 as bt
+
+    from copperchat.kicad_tools.footprints import protos
+
+    items = await doc.items()
+    own = {i.name: i for i in items if i.DESCRIPTOR.name == "Field"}
+    await _delete_children(doc, items)
+    new: list[Any] = []
+    updated: list[Any] = []
+    for raw in pre.items:
+        item = _unpack(raw)
+        if item.DESCRIPTOR.name == "Field":
+            if item.name in protos.MANDATORY_FIELDS:
+                if item.name in own:  # set in place, keeping this footprint's ids
+                    kept = own[item.name]
+                    item.id.CopyFrom(kept.id)
+                    item.text.id.CopyFrom(kept.text.id)
+                    updated.append(item)
+                continue
+            item.ClearField("id")
+            item.text.id.CopyFrom(protos.kiid())
+        elif "id" in item.DESCRIPTOR.fields_by_name:
+            item.id.CopyFrom(protos.kiid())
+        new.append(item)
+    if new:
+        await doc.create(new)
+    if updated:
+        await doc.update(updated)
+
+    before = bt.FootprintInstance()
+    before.ParseFromString(pre.definition)
+    instance = await doc.footprint()
+    definition, old = instance.definition, before.definition
+    groups: list[tuple[Any, Any, tuple[str, ...]]] = [
+        (definition, old, ("attributes", "overrides", "jumpers")),
+        (instance, before, ("attributes", "overrides")),
+    ]
+    for msg, src, names in groups:
+        for name in names:
+            msg.ClearField(name)
+            if src.HasField(name):
+                getattr(msg, name).CopyFrom(getattr(src, name))
+    for name in ("net_ties", "private_layers"):  # repeated
+        definition.ClearField(name)
+        getattr(definition, name).extend(getattr(old, name))
+    kept_items = [a for a in definition.items if not _is_model(a)]
+    del definition.items[:]
+    definition.items.extend(kept_items)
+    definition.items.extend(a for a in old.items if _is_model(a))
+    await doc.update_footprint(instance)
+
+
+async def _restore_pre_image(ctx: ToolContext, lib_id: str, pre: FootprintPreImage) -> None:
+    """Rebuild the pre-image of a `replace` into `lib_id` (open, one commit - dropped on
+    any failure before the push -, save); the document is closed before this returns."""
+    async with ctx.session.footprint_document(lib_id) as doc:
+        await doc.begin()
+        try:
+            await _restore_commit(doc, pre)
+            await doc.push(f"fp_create {lib_id}: restore")
+        except BaseException:
+            if doc.open_commit:
+                await _drop(doc)
+            raise
+        await doc.save()
 
 
 async def _drop(doc: FootprintDocument) -> None:
@@ -493,7 +651,7 @@ async def _kill_server(session: KicadSession) -> None:
 @dataclass
 class _CreateProgress:
     row: _RowProgress = field(default_factory=_RowProgress)
-    journal_id: int | None = None  # the create row
+    journal_id: int | None = None  # the create / replace row
     attempted: bool = False  # S2 started (the footprint file may exist)
     post_s2: str | None = None  # sha of this call's seed copy
     s3_saving: bool = False  # S3 reached its save
@@ -512,6 +670,9 @@ async def apply_footprint_change_set(ctx: ToolContext, cs: FootprintChangeSet) -
     First the cleanup of this project's `pending` rows (`cleanup_pending`, spec §9.3),
     then, for a new name: S1 `ensure_library` (only when planned) -> API name re-check -> S2
     `copy_seed` -> S3 `rebuild` -> read-back (`geometry_equal(target, read-back) == []`).
+    For `replace` (`cs.pre_image`, spec §9.5) the re-check verifies the footprint still
+    equals the pre-image instead, S2 copies the seed over it and the compensation
+    rebuilds the pre-image (never `DeleteLibraryItem`).
     Every failure compensates in reverse, shielded; `KicadUnavailable` or a server
     restart skips the compensation (journal rows stay `pending`). A failed compensation
     raises `DocumentInconsistent(leftovers=..., footprint_only=True)`."""
@@ -519,13 +680,8 @@ async def apply_footprint_change_set(ctx: ToolContext, cs: FootprintChangeSet) -
         raise TypeError("apply_footprint_change_set needs a planned FootprintChangeSet")
     lib = cs.library
     assert_library_locked(lib.dir)
-    if cs.pre_image is not None or cs.summary.get("replace"):
-        raise StructuredToolError(
-            f"{cs.tool} replace=true is not available yet",
-            "rebuilding an existing local footprint is not implemented in this version",
-            "Create the footprint under a new name instead; nothing was written.",
-            code="invalid_argument",
-        )
+    if bool(cs.summary.get("replace")) != (cs.pre_image is not None):
+        raise TypeError("a replace change set needs its pre-image (and only a replace has one)")
     async with ctx.session.applying():
         cleaned = await cleanup_pending(ctx, lib)  # first, before the tool's own stages
         try:
@@ -544,6 +700,7 @@ async def _apply_create(
 ) -> FootprintApplied:
     assert cs.target is not None
     target = cs.target
+    pre = cs.pre_image  # replace only
     lib_id = target.lib_id
     name = lib_id.split(":", 1)[1]
     file = lib.dir / f"{name}.kicad_mod"
@@ -598,32 +755,41 @@ async def _apply_create(
             await journal.finalise(row.journal_id, state, await sha_of(lib.table))
             row.final = True
             await after("ensure_library")
-        await _recheck_name(ctx, lib, name)
+        if pre is None:
+            await _recheck_name(ctx, lib, name)
+        else:
+            await _recheck_replace(ctx, lib, name, pre)
         progress.journal_id = await journal.pending(
-            "create", lib_id, footprint_rel(lib, name), await sha_of(file)
+            "create" if pre is None else "replace",
+            lib_id,
+            footprint_rel(lib, name),
+            await sha_of(file),
         )
         progress.attempted = True
         ctx.library_touched.append(file)
 
-        async def record_s2() -> None:
+        async def record_s2(copied: bool) -> None:
             # Needs no server: the seed copy's hash goes into the journal also when
             # KiCad died right after (or while) saving it, so the next write's cleanup
             # can recognise it (spec §9.3 point 1). The re-check proved the name
-            # absent under the library lock, so a file there now is this call's copy.
+            # absent (or, for replace, equal to the pre-image) under the library lock,
+            # so a file there now is this call's copy - unless a failed replace S2
+            # left the pre-image's bytes untouched.
             sha = await _sha_or_absent(file)
-            if sha != ABSENT:
-                progress.post_s2 = sha
-                await journal.post_s2(progress.journal_id, sha)
+            if sha == ABSENT or (pre is not None and not copied and sha == pre.file_sha256):
+                return
+            progress.post_s2 = sha
+            await journal.post_s2(progress.journal_id, sha)
 
         try:
             await _copy_seed(ctx, lib_id)
         except BaseException:
             try:
-                await record_s2()
+                await record_s2(False)
             except Exception as exc:  # the stage's own error wins
                 log.warning("recording the seed copy of %s failed: %s", lib_id, exc)
             raise
-        await record_s2()
+        await record_s2(True)
         svc.invalidate_footprints(lib.nickname)
         if progress.post_s2 is None:
             ensure_same_server()
@@ -651,8 +817,9 @@ async def _apply_create(
             else geometry_equal(target, readback)
         )
         if diffs:
+            undone = "it was removed" if pre is None else "the previous version was restored"
             raise StructuredToolError(
-                f"{cs.tool}: the footprint KiCad saved differs from the plan; it was removed",
+                f"{cs.tool}: the footprint KiCad saved differs from the plan; {undone}",
                 "; ".join(diffs[:6]),
                 "Nothing was written. Check the input (pads, shapes, fields) and retry "
                 "once; if it fails again, tell the user.",
@@ -713,7 +880,8 @@ async def _compensate(
 ) -> None:
     """Undo S3/S2/S1 in reverse (spec §9.3). An open S3 commit was dropped already (the
     document is closed). S2: `DeleteLibraryItem`, only of a file this call wrote (its
-    hash is the seed copy's or S3's save; the GUI is not under the library lock). S1:
+    hash is the seed copy's or S3's save; the GUI is not under the library lock); for
+    `replace` the pre-image is rebuilt instead (`_compensate_replace`). S1:
     `DeleteLibraryTableEntry` and `rmdir` of the library dir if this call's row
     created it and it is empty. Rows become `compensated`; when a step fails (or the
     file is not this call's), it and every earlier stage stay as they are
@@ -726,7 +894,20 @@ async def _compensate(
     leftovers: list[str] = []
     failure: BaseException | None = None
 
-    if progress.attempted and not progress.final:
+    if progress.attempted and not progress.final and cs.pre_image is not None:
+        ctx.library_touched.append(file)
+        try:
+            restored = await _compensate_replace(ctx, cs, lib_id, file, cs.pre_image, progress)
+        except KicadUnavailable:
+            raise
+        except Exception as exc:
+            log.warning("restoring %s after a failed replace failed: %s", lib_id, exc)
+            failure = exc
+            leftovers.append(lib_id)
+            await _finalise(journal, progress.journal_id, "leftover", await _sha_or_absent(file))
+        else:
+            await _finalise(journal, progress.journal_id, "compensated", restored)
+    elif progress.attempted and not progress.final:
         ctx.library_touched.append(file)
         try:
             if await asyncio.to_thread(_lexists, file):
@@ -785,6 +966,43 @@ async def _compensate(
             leftovers=leftovers,
             footprint_only=True,
         ) from failure
+
+
+async def _compensate_replace(
+    ctx: ToolContext,
+    cs: FootprintChangeSet,
+    lib_id: str,
+    file: Path,
+    pre: FootprintPreImage,
+    progress: _CreateProgress,
+) -> str:
+    """Undo S2/S3 of a `replace` (spec §9.5): the file still holds the pre-image -> nothing
+    to do; it holds this call's seed copy or S3 save -> rebuild the pre-image through
+    the S3 code path, save, and compare the read-back's geometry hash and fields with
+    the pre-image. Anything else (a file changed by someone else, gone, a failed or
+    unequal rebuild) raises: the footprint is never deleted. Returns the file's hash."""
+    current = await _sha_or_absent(file)
+    if current == pre.file_sha256:
+        return current
+    if not progress.ours(current):
+        raise RuntimeError(
+            f"{lib_id} is not the file this call wrote (changed meanwhile); it is kept as it is"
+        )
+    if cs.fail_compensation:
+        raise RuntimeError("injected compensation failure (rebuilding the pre-image)")
+    from kipy.errors import ApiError
+
+    try:
+        await _restore_pre_image(ctx, lib_id, pre)
+    except (ApiError, RuntimeError, ValueError) as exc:
+        raise RuntimeError(f"rebuilding {lib_id} as it was failed: {exc}") from exc
+    finally:
+        library_for(ctx.session).invalidate_footprints(lib_id.split(":", 1)[0])
+    got = await _local_geometry(ctx, lib_id)
+    diffs = ["it cannot be read back"] if got is None else _pre_image_diffs(pre, got)
+    if diffs:
+        raise RuntimeError(f"{lib_id} was rebuilt from its earlier version, but {'; '.join(diffs)}")
+    return await _sha_or_absent(file)
 
 
 async def _finalise(journal: Journal, row: int | None, state: str, sha: str) -> None:

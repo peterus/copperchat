@@ -84,7 +84,7 @@ def _packed(item: Any) -> bytes:
 async def read_pre_image(ctx: ToolContext, lib: LocalLibrary, name: str) -> FootprintPreImage:
     """What `replace` overwrites, as API data (spec §9.5): every item of the footprint
     document (each a serialized `google.protobuf.Any`), the serialized
-    `FootprintInstance`, the file's sha256 and the geometry hash. Read with the document
+    `FootprintInstance`, the file's sha256, the geometry hash and the fields. Read with the document
     closed again before anything else runs (no `_fp_lock` held afterwards)."""
     from kipy.errors import ApiError
 
@@ -111,6 +111,7 @@ async def read_pre_image(ctx: ToolContext, lib: LocalLibrary, name: str) -> Foot
         definition=bytes(instance.SerializeToString(deterministic=True)),
         file_sha256=await asyncio.to_thread(file_sha),
         geometry_hash=geometry_hash(geometry),
+        fields=dict(geometry.fields),
     )
 
 

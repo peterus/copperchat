@@ -349,3 +349,267 @@ async def test_api_recheck_before_s2_refuses_and_rolls_back_row(
     assert foreign.is_file() and "SRN4018" in foreign.read_text()
     rows = await journal(edit_db, session)
     assert [(r.op, r.state) for r in rows] == [("row_add", "compensated")]
+
+
+# -- replace (F4a Task 6, spec §9.5) --------------------------------------------------------
+
+APPROVAL = "approved 2026-11-18, conversation abcd1234, geometry 0123abcd"
+
+
+async def edit_footprint(session: KicadSession, lib_id: str, change: Any) -> None:
+    """Change a local footprint through the raw footprint document API (as the KiCad GUI
+    or another project would): one commit, `change(doc, items)` stages the updates,
+    then save. The file is never edited directly."""
+    async with session.footprint_document(lib_id) as doc:
+        await doc.begin()
+        await change(doc, await doc.items())
+        await doc.push("test edit")
+        await doc.save()
+    library_for(session).invalidate_footprints()
+
+
+async def approve_via_api(session: KicadSession, lib_id: str) -> None:
+    """What `fp_approve` will write (spec §7.7): `needs_user_review` -> `no` plus a
+    `User review` field, set through the raw API."""
+    from copperchat.kicad_tools.footprints import protos
+
+    async def change(doc: Any, items: list[Any]) -> None:
+        fields = {i.name: i for i in items if i.DESCRIPTOR.name == "Field"}
+        flag = fields["needs_user_review"]
+        flag.text.text.text = "no"
+        await doc.update([flag])
+        await doc.create([protos.custom_field_proto(fields["Datasheet"], "User review", APPROVAL)])
+
+    await edit_footprint(session, lib_id, change)
+
+
+async def move_pad_one(session: KicadSession, lib_id: str, dx_nm: int = 50_000) -> None:
+    async def change(doc: Any, items: list[Any]) -> None:
+        pad = next(i for i in items if i.DESCRIPTOR.name == "Pad" and i.number == "1")
+        pad.position.x_nm += dx_nm
+        await doc.update([pad])
+
+    await edit_footprint(session, lib_id, change)
+
+
+async def current(session: KicadSession, lib_id: str = LIB_ID) -> tuple[str, dict[str, str]]:
+    """The geometry hash and the fields of the footprint as KiCad reads it now."""
+    from copperchat.kicad_tools.footprints.model import geometry_hash
+
+    svc = library_for(session)
+    svc.invalidate_footprints()
+    g = await svc.footprint_geometry(lib_id)
+    assert g is not None, lib_id
+    return geometry_hash(g), dict(g.fields)
+
+
+def wider_pads() -> list[dict[str, Any]]:
+    return [
+        {"number": "1", "type": "smd", "shape": "rect", "at": [-1.15, 0], "size": [1.2, 3.4]},
+        {"number": "2", "type": "smd", "shape": "rect", "at": [1.15, 0], "size": [1.2, 3.4]},
+    ]
+
+
+async def created_and_approved(session: KicadSession, db: Database) -> tuple[str, dict[str, str]]:
+    out, err = await run_create(edit_ctx(session, db), l201_args(fields={"Manufacturer": "Bourns"}))
+    if err:
+        pytest.fail(json.dumps(out, indent=1))
+    await approve_via_api(session, LIB_ID)
+    return await current(session)
+
+
+async def test_replace_resets_review(repo_session: Any, edit_db: Database) -> None:
+    open_session, root = repo_session
+    session = await open_session("main")
+    old_hash, old_fields = await created_and_approved(session, edit_db)
+    assert old_fields["needs_user_review"] == "no" and old_fields["User review"] == APPROVAL
+    got = await fp_get(edit_ctx(session, edit_db), {"lib_id": LIB_ID})
+    assert got.data is not None and got.data["review"] == "approved"
+    file = lib_dir(root) / f"{NAME}.kicad_mod"
+    pre_sha = sha(file)
+
+    out, err = await run_create(
+        edit_ctx(session, edit_db), l201_args(pads=wider_pads(), replace=True)
+    )
+    if err:
+        pytest.fail(json.dumps(out, indent=1))
+    assert out["created"] == [LIB_ID] and out["needs_user_review"] is True
+    assert out["library_created"] is False and out["check"]["passed"], out["check"]
+    new_hash, fields = await current(session)
+    assert new_hash != old_hash
+    assert fields["needs_user_review"] == "yes" and "User review" not in fields
+    assert "Manufacturer" not in fields  # rebuilt from scratch: only what this call set
+    got = await fp_get(edit_ctx(session, edit_db), {"lib_id": LIB_ID})
+    assert got.data is not None and got.data["review"] == "needs_user_review"
+    rows = await journal(edit_db, session)
+    replace = rows[-1]
+    assert (replace.op, replace.state, replace.lib_id) == ("replace", "done", LIB_ID)
+    assert replace.pre_sha256 == pre_sha and replace.post_sha256 == sha(file) != pre_sha
+    assert replace.post_s2_sha256 not in (None, "absent", pre_sha)
+
+
+@pytest.mark.parametrize("stage", ["copy_seed", "rebuild_saved", "verify"])
+async def test_replace_compensation_rebuilds_preimage(
+    repo_session: Any, edit_db: Database, stage: str
+) -> None:
+    """A failure after S2 / S3 / in the read-back of a replace: the old footprint is
+    rebuilt from the API pre-image (never deleted) with the same geometry hash and
+    fields - including the approval - and the journal row is `compensated` with the
+    restored file's hash. Spec §16 allows `document_inconsistent` instead; this pins
+    that the pinned KiCad restores it exactly."""
+    open_session, root = repo_session
+    session = await open_session("main")
+    old_hash, old_fields = await created_and_approved(session, edit_db)
+    file = lib_dir(root) / f"{NAME}.kicad_mod"
+    pre_sha = sha(file)
+
+    out, err = await run_create(
+        edit_ctx(session, edit_db), l201_args(pads=wider_pads(), replace=True), fail_after=stage
+    )
+    code = "verification_failed" if stage == "verify" else "injected"
+    if not (err and out["error"]["code"] == code):
+        pytest.fail(json.dumps(out, indent=1))
+    assert file.is_file()
+    assert await current(session) == (old_hash, old_fields)
+    rows = await journal(edit_db, session)
+    replace = rows[-1]
+    assert (replace.op, replace.state) == ("replace", "compensated")
+    assert replace.pre_sha256 == pre_sha and replace.post_sha256 == sha(file)
+    assert NICK in await project_rows(session)  # the row was there before: never touched
+
+
+async def test_replace_compensation_failure_keeps_the_footprint(
+    repo_session: Any, edit_db: Database
+) -> None:
+    """The rebuild of the pre-image fails: `document_inconsistent` naming the footprint,
+    which is never deleted (the original must not vanish); the row is `leftover`."""
+    open_session, root = repo_session
+    session = await open_session("main")
+    await created_and_approved(session, edit_db)
+    file = lib_dir(root) / f"{NAME}.kicad_mod"
+    out, err = await run_create(
+        edit_ctx(session, edit_db),
+        l201_args(pads=wider_pads(), replace=True),
+        fail_after="rebuild_saved",
+        fail_compensation=True,
+    )
+    assert err and out["error"]["code"] == "document_inconsistent", out
+    assert out["error"]["details"]["leftovers"] == [LIB_ID]
+    assert LIB_ID in out["error"]["why"]
+    assert file.is_file() and NICK in await project_rows(session)
+    rows = await journal(edit_db, session)
+    assert (rows[-1].op, rows[-1].state, rows[-1].post_sha256) == ("replace", "leftover", sha(file))
+
+
+async def test_replace_preimage_changed_between_prepare_and_apply(
+    repo_session: Any, edit_db: Database
+) -> None:
+    """The footprint is changed through the raw API after prepare (the GUI, another
+    project): the re-check under the library lock refuses before any write, the
+    change stays, no `replace` journal row."""
+    open_session, root = repo_session
+    session = await open_session("main")
+    await created_and_approved(session, edit_db)
+    file = lib_dir(root) / f"{NAME}.kicad_mod"
+    rows_before = await journal(edit_db, session)
+    edited: list[str] = []
+
+    async def gui_edit(c: ToolContext, _cs: FootprintChangeSet) -> None:
+        await move_pad_one(c.session, LIB_ID)
+        edited.append(sha(file))
+
+    out, err = await run_create(
+        edit_ctx(session, edit_db), l201_args(pads=wider_pads(), replace=True),
+        after_prepare=gui_edit,
+    )  # fmt: skip
+    assert err and out["error"]["code"] == "library_conflict", out
+    assert "changed since prepare" in out["error"]["why"]
+    assert [sha(file)] == edited
+    g = await library_for(session).footprint_geometry(LIB_ID)
+    assert g is not None
+    assert next(p for p in g.pads if p.number == "1").at[0] == pytest.approx(-1.05)
+    assert await journal(edit_db, session) == rows_before
+
+
+async def test_replace_missing_at_apply(repo_session: Any, edit_db: Database) -> None:
+    open_session, root = repo_session
+    session = await open_session("main")
+    await created_and_approved(session, edit_db)
+    rows_before = await journal(edit_db, session)
+
+    async def gone(c: ToolContext, _cs: FootprintChangeSet) -> None:
+        def delete(h: KicadHandle) -> None:
+            h.kicad.delete_library_item(FP, NICK, NAME)
+
+        await c.session.call(delete)
+        library_for(c.session).invalidate_footprints()
+
+    out, err = await run_create(
+        edit_ctx(session, edit_db), l201_args(replace=True), after_prepare=gone
+    )
+    assert err and out["error"]["code"] == "not_found", out
+    assert not (lib_dir(root) / f"{NAME}.kicad_mod").exists()
+    assert await journal(edit_db, session) == rows_before
+
+
+async def test_replace_symlinked_file_refused(repo_session: Any, edit_db: Database) -> None:
+    """`<name>.kicad_mod` replaced by a symlink (to the same KiCad-saved bytes) after
+    prepare: `library_conflict` under the library lock, nothing written; a later call
+    is refused in prepare already."""
+    open_session, root = repo_session
+    session = await open_session("main")
+    await created_and_approved(session, edit_db)
+    file = lib_dir(root) / f"{NAME}.kicad_mod"
+    elsewhere = root / "elsewhere.kicad_mod"
+    rows_before = await journal(edit_db, session)
+    snapshot: dict[str, dict[str, str]] = {}
+
+    async def swap(_c: ToolContext, _cs: FootprintChangeSet) -> None:
+        file.rename(elsewhere)
+        file.symlink_to(elsewhere)
+        snapshot["tree"] = tree(root)
+
+    out, err = await run_create(
+        edit_ctx(session, edit_db), l201_args(replace=True), after_prepare=swap
+    )
+    assert err and out["error"]["code"] == "library_conflict", out
+    assert file.is_symlink() and tree(root) == snapshot["tree"]
+    out, err = await run_create(edit_ctx(session, edit_db), l201_args(replace=True))
+    assert err and out["error"]["code"] == "library_conflict", out
+    assert tree(root) == snapshot["tree"]
+    assert await journal(edit_db, session) == rows_before
+
+
+async def test_replace_journal_pending_never_deleted(repo_session: Any, edit_db: Database) -> None:
+    """The server dies right after S2 of a replace (the seed copy overwrote the name):
+    the row stays `pending`; the next writing call marks it `leftover` and never deletes
+    the file (spec §9.3: a replace target is never destroyed; History restores it)."""
+    from copperchat.kicad_session import KicadUnavailable
+
+    open_session, root = repo_session
+    session = await open_session("main")
+    await created_and_approved(session, edit_db)
+    unavailable: list[KicadUnavailable] = []
+
+    def ctx() -> ToolContext:
+        return edit_ctx(session, edit_db, on_kicad_unavailable=unavailable.append)
+
+    out, err = await run_create(ctx(), l201_args(replace=True), kill_after="copy_seed")
+    assert err and len(unavailable) == 1, out
+    file = lib_dir(root) / f"{NAME}.kicad_mod"
+    seed_copy = sha(file)
+    rows = await journal(edit_db, session)
+    assert (rows[-1].op, rows[-1].state) == ("replace", "pending")
+    assert rows[-1].post_s2_sha256 == seed_copy
+
+    await session.restart()
+    out, err = await run_create(ctx(), l201_args(name="L_Other_3030"))
+    if err:
+        pytest.fail(json.dumps(out, indent=1))
+    leftover = [n for n in out["notes"] if n["kind"] == "pending_leftover"]
+    assert [n["lib_id"] for n in leftover] == [LIB_ID], out["notes"]
+    assert not [n for n in out["notes"] if n["kind"] == "pending_cleaned"]
+    assert file.is_file() and sha(file) == seed_copy
+    rows = await journal(edit_db, session)
+    replace = next(r for r in rows if r.op == "replace")
+    assert (replace.state, replace.post_sha256) == ("leftover", seed_copy)

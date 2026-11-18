@@ -212,6 +212,7 @@ async def test_replace_reads_preimage(session: CreateSession) -> None:
     assert pre.file_sha256 == hashlib.sha256(b"old bytes").hexdigest()
     expected = geometry_from_proto(instance, instance.definition.items, lib_id, "local")
     assert pre.geometry_hash == geometry_hash(expected)
+    assert pre.fields == expected.fields and pre.fields
     assert [s.kind for s in cs.fp_stages] == ["copy_seed", "rebuild"]
     assert session.documents == [lib_id]
 

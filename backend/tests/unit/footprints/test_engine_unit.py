@@ -889,3 +889,148 @@ async def test_stop_during_a_failing_compensation_is_not_swallowed(
     assert isinstance(err.value.__cause__, DocumentInconsistent)
     (exc,) = seen
     assert isinstance(exc, DocumentInconsistent) and exc.leftovers
+
+
+# -- replace (F4a Task 6) --------------------------------------------------------------------
+
+OLD = b"(footprint old, approved)"
+
+
+def _replace_setup(
+    tmp_path: Path, settings: Settings, editing: EditingService, monkeypatch: pytest.MonkeyPatch
+) -> tuple[ToolContext, _EngineSession, FootprintChangeSet, list[Any]]:
+    """A replace of an existing local footprint (row present, file on disk); the
+    re-check's geometry read returns `reads[0]` (the target's geometry: equal to the
+    pre-image)."""
+    import dataclasses
+    import hashlib
+
+    from copperchat.kicad_tools.footprints.model import geometry_hash
+
+    ctx, session, cs = _engine_setup(tmp_path, settings, editing)
+    assert cs.library is not None and cs.target is not None
+    lib, target = cs.library, cs.target
+    session.kicad.rows[lib.nickname] = lib.uri
+    lib.dir.mkdir(parents=True)
+    (lib.dir / FILE).write_bytes(OLD)
+    cs.fp_stages = [s for s in cs.fp_stages if s.kind != "ensure_library"]
+    cs.pre_image = FootprintPreImage(
+        items=[],
+        definition=b"",
+        file_sha256=hashlib.sha256(OLD).hexdigest(),
+        geometry_hash=geometry_hash(target),
+        fields=dict(target.fields),
+    )
+    cs.summary["replace"] = True
+    reads: list[Any] = [target]
+
+    async def read(_ctx: ToolContext, lib_id: str) -> Any:
+        return reads[0]
+
+    monkeypatch.setattr(fp_engine, "_local_geometry", read)
+    reads.append(dataclasses.replace(target, fields={**target.fields, "User review": "x"}))
+    return ctx, session, cs, reads
+
+
+async def test_replace_recheck_missing_is_not_found(
+    make_settings: Callable[..., Settings],
+    editing: EditingService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = make_settings()
+    ctx, session, cs, _ = _replace_setup(settings.projects_root, settings, editing, monkeypatch)
+    assert cs.library is not None
+    (cs.library.dir / FILE).unlink()
+    with pytest.raises(StructuredToolError) as err:
+        await _apply_locked(ctx, cs)
+    assert err.value.code == "not_found"
+    assert session.kicad.calls == [] and await _journal(editing) == []
+
+
+@pytest.mark.parametrize("what", ["sha", "fields"])
+async def test_replace_recheck_changed_since_prepare(
+    make_settings: Callable[..., Settings],
+    editing: EditingService,
+    monkeypatch: pytest.MonkeyPatch,
+    what: str,
+) -> None:
+    """The file's bytes, or the fields KiCad reads, differ from the pre-image:
+    `library_conflict` ("changed since prepare") before any write."""
+    settings = make_settings()
+    ctx, session, cs, reads = _replace_setup(settings.projects_root, settings, editing, monkeypatch)
+    assert cs.library is not None
+    file = cs.library.dir / FILE
+    if what == "sha":
+        file.write_bytes(OLD + b" edited")
+    else:
+        reads.pop(0)  # KiCad reads the footprint with an extra field
+    before = file.read_bytes()
+    with pytest.raises(StructuredToolError) as err:
+        await _apply_locked(ctx, cs)
+    assert err.value.code == "library_conflict" and "changed since prepare" in err.value.why
+    assert file.read_bytes() == before
+    assert session.kicad.calls == [] and await _journal(editing) == []
+
+
+async def test_replace_failure_never_deletes_the_target(
+    make_settings: Callable[..., Settings],
+    editing: EditingService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """S3 of a replace fails and so does the rebuild of the pre-image (the fake cannot
+    begin a commit): never DeleteLibraryItem - `document_inconsistent` names the
+    footprint, the journal row `replace` is `leftover` with the file's hash."""
+    import hashlib
+
+    settings = make_settings()
+    ctx, session, cs, _ = _replace_setup(settings.projects_root, settings, editing, monkeypatch)
+    assert cs.library is not None and cs.target is not None
+    with pytest.raises(DocumentInconsistent) as err:
+        await _apply_locked(ctx, cs)
+    assert err.value.leftovers == [cs.target.lib_id] and err.value.footprint_only
+    assert "delete_item" not in session.kicad.calls and "delete_row" not in session.kicad.calls
+    file = cs.library.dir / FILE
+    assert file.read_text() == "(footprint seed copy)"
+    rows = await _journal(editing)
+    assert [(r.op, r.state) for r in rows] == [("replace", "leftover")]
+    assert rows[0].pre_sha256 == hashlib.sha256(OLD).hexdigest()
+    assert rows[0].post_sha256 == hashlib.sha256(file.read_bytes()).hexdigest()
+    assert rows[0].post_s2_sha256 == rows[0].post_sha256
+
+
+async def test_replace_nothing_written_needs_no_rebuild(
+    make_settings: Callable[..., Settings],
+    editing: EditingService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """S2 of a replace fails before KiCad wrote anything (the file still holds the
+    pre-image): nothing to rebuild, the row is `compensated` with the pre-image's hash."""
+    import hashlib
+
+    settings = make_settings()
+    ctx, session, cs, _ = _replace_setup(settings.projects_root, settings, editing, monkeypatch)
+
+    class _NoCopy(_FakeDoc):
+        async def save_copy(self, target: str) -> None:
+            raise RuntimeError("SaveCopyOfDocument refused")
+
+    monkeypatch.setattr(
+        session, "footprint_document", lambda lib_id: _async_cm(_NoCopy(session, lib_id))
+    )
+    with pytest.raises(StructuredToolError) as err:
+        await _apply_locked(ctx, cs)
+    assert err.value.code == "library_error"
+    rows = await _journal(editing)
+    assert [(r.op, r.state) for r in rows] == [("replace", "compensated")]
+    assert rows[0].post_sha256 == hashlib.sha256(OLD).hexdigest()
+    assert rows[0].post_s2_sha256 is None
+
+
+def _async_cm(value: Any) -> Any:
+    import contextlib
+
+    @contextlib.asynccontextmanager
+    async def cm() -> AsyncIterator[Any]:
+        yield value
+
+    return cm()

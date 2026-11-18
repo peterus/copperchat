@@ -244,8 +244,9 @@ def _inconsistent_error(tool: str, args: dict[str, Any], exc: Exception) -> Stru
             f"Rolling it back failed, so these remain in {where}: {named}. They were "
             "not verified; do not use them.",
             "Stop editing and tell the user exactly what was left behind ("
-            f"{named}). Undoing this turn in History removes them; or remove them with "
-            "fp_delete in a later turn. Do not retry in this turn.",
+            f"{named}). Undoing this turn in History removes them (a replaced footprint "
+            "gets its earlier version back); or remove them with fp_delete in a later "
+            "turn. Do not retry in this turn.",
             code="document_inconsistent",
             details={"detail": str(exc), "leftovers": leftovers},
         )

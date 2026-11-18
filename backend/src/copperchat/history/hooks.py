@@ -422,8 +422,8 @@ class HistoryHooks(RunHooks):
         text = (
             "A failed footprint write could not be undone completely. Left in the local "
             f"footprint library: {named}. They were not verified; do not use them. "
-            f"{affected} Undo this turn in History to remove them, or ask to remove them "
-            "with fp_delete."
+            f"{affected} Undo this turn in History to remove them (a replaced footprint "
+            "gets its earlier version back), or ask to remove them with fp_delete."
         )
         await self.engine.post_notice(
             conversation_id,
