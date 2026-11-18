@@ -85,7 +85,8 @@ async def test_report_halts_further_edits_of_the_turn(make_engine, db):
     engine._turn = cast(
         Any,
         SimpleNamespace(info=SimpleNamespace(run_id="r1"), document_inconsistent=False,
-                        last_save_partial=False, leftovers=[], footprint_only=True),
+                        last_save_partial=False, leftovers=[], replaced_leftovers=[],
+                        footprint_only=True),
     )  # fmt: skip
     engine._on_document_inconsistent(DocumentInconsistent("x", last_save_partial=True))
     assert svc.turn(PID, "r1").halted

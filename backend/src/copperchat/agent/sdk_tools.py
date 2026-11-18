@@ -13,7 +13,7 @@ from typing import Any
 from claude_agent_sdk import McpSdkServerConfig, SdkMcpTool, create_sdk_mcp_server
 
 from copperchat.agent.events import ToolResultEvt
-from copperchat.errors import DocumentInconsistent, tool_notes
+from copperchat.errors import DocumentInconsistent, leftover_advice, tool_notes
 from copperchat.kicad_session import KicadUnavailable
 from copperchat.kicad_tools.edit.engine import save_after_edit
 from copperchat.tools import ImageBlock, StructuredToolError, ToolContext, ToolResult, ToolSpec
@@ -244,9 +244,8 @@ def _inconsistent_error(tool: str, args: dict[str, Any], exc: Exception) -> Stru
             f"Rolling it back failed, so these remain in {where}: {named}. They were "
             "not verified; do not use them.",
             "Stop editing and tell the user exactly what was left behind ("
-            f"{named}). Undoing this turn in History removes them (a replaced footprint "
-            "gets its earlier version back); or remove them with fp_delete in a later "
-            "turn. Do not retry in this turn.",
+            f"{named}). {leftover_advice(leftovers, getattr(exc, 'replaced', None) or [])} "
+            "Do not retry in this turn.",
             code="document_inconsistent",
             details={"detail": str(exc), "leftovers": leftovers},
         )

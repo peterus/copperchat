@@ -886,13 +886,13 @@ class LibraryService:
         `repo_root_unknown` instead of a silently incomplete read, and nothing read in
         that state is cached.
 
-        Activation seconds go to `notes` as `footprint_libraries_loaded`. Must not be
-        called while the caller holds the session's `_fp_lock`, `_commit_lock` or
-        `_apply_lock` (activation and the document take `_fp_lock`; none is
-        re-entrant). Known exception, pinned by `test_coexistence_with_open_commit`: a
-        read nested inside the caller's own open schematic commit takes `_commit_lock` →
-        `_fp_lock`; safe only because nothing holding `_fp_lock` waits on `_commit_lock`
-        (plan "As built")."""
+        Activation seconds go to `notes` as `footprint_libraries_loaded`. Activation and
+        the document take `_fp_lock` (not re-entrant): never call this while holding
+        `_fp_lock`. Holding `_apply_lock` is safe (order `_apply_lock` → `_fp_lock`; the
+        footprint engine's read-back runs inside `applying()`), and so is a read nested
+        in the caller's own open schematic commit (`_commit_lock` → `_fp_lock`, pinned by
+        `test_coexistence_with_open_commit`) - both only because nothing holding
+        `_fp_lock` waits on `_apply_lock` or `_commit_lock` (plan "As built")."""
         lib_id = lib_id.strip()
         nickname, name = _split(lib_id)
         if not nickname or not name:

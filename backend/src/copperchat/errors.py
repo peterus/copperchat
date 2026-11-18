@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 
@@ -99,8 +100,9 @@ class DocumentInconsistent(CopperChatError):
     had saved part of itself already (a shared-sheet placement) and undoing that failed,
     so the last save may still hold it (the recovery notice says so).
     `leftovers`: what a failed footprint compensation left behind (lib ids, "row <nick>";
-    FP-C8); `footprint_only`: only the footprint library is affected - the schematic is
-    intact, so the turn end need not reopen it."""
+    FP-C8); `replaced`: the leftovers that are `replace` targets (an existing footprint
+    that may now differ - never to be deleted); `footprint_only`: only the footprint
+    library is affected - the schematic is intact, so the turn end need not reopen it."""
 
     code = "document_inconsistent"
 
@@ -110,12 +112,38 @@ class DocumentInconsistent(CopperChatError):
         *,
         last_save_partial: bool = False,
         leftovers: list[str] | None = None,
+        replaced: list[str] | None = None,
         footprint_only: bool = False,
     ) -> None:
         self.last_save_partial = last_save_partial
         self.leftovers: list[str] = list(leftovers) if leftovers else []
+        self.replaced: list[str] = list(replaced) if replaced else []
         self.footprint_only = footprint_only
         super().__init__(message)
+
+
+def leftover_advice(leftovers: list[str] | tuple[str, ...], replaced: Iterable[str]) -> str:
+    """What the user can do about the leftovers of a failed footprint compensation (spec
+    §9.3, §9.5), per kind: a new footprint or library row goes with a History undo (a
+    footprint also with fp_delete, once that tool exists); a `replace` target is an
+    existing footprint of the user - History undo brings its earlier version back, and
+    it must never be deleted."""
+    kept = set(replaced)
+    removable = [x for x in leftovers if x not in kept]
+    restorable = [x for x in leftovers if x in kept]
+    parts: list[str] = []
+    if removable:
+        parts.append(
+            f"Undoing this turn in History removes {', '.join(removable)}; a footprint "
+            "left behind can also be removed with fp_delete once that tool is available."
+        )
+    if restorable:
+        parts.append(
+            f"{', '.join(restorable)} replaced an existing footprint: undoing this turn in "
+            "History brings back its earlier version. Do not delete it - that would lose "
+            "the user's footprint."
+        )
+    return " ".join(parts)
 
 
 class ConversationNotFound(CopperChatError):

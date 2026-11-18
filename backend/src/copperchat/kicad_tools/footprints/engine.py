@@ -106,7 +106,7 @@ class FootprintPreImage:
     definition: bytes
     file_sha256: str
     geometry_hash: str
-    fields: dict[str, str] = field(default_factory=dict)
+    fields: dict[str, str]
 
 
 @dataclass(kw_only=True)
@@ -541,6 +541,12 @@ async def _restore_commit(doc: FootprintDocument, pre: FootprintPreImage) -> Non
                     item.id.CopyFrom(kept.id)
                     item.text.id.CopyFrom(kept.text.id)
                     updated.append(item)
+                else:  # cannot be created; the read-back comparison reports a difference
+                    log.warning(
+                        "restoring %s: the copy has no own field %r, skipped",
+                        doc.lib_id,
+                        item.name,
+                    )
                 continue
             item.ClearField("id")
             item.text.id.CopyFrom(protos.kiid())
@@ -673,9 +679,10 @@ async def apply_footprint_change_set(ctx: ToolContext, cs: FootprintChangeSet) -
     For `replace` (`cs.pre_image`, spec §9.5) the re-check verifies the footprint still
     equals the pre-image instead, S2 copies the seed over it and the compensation
     rebuilds the pre-image (never `DeleteLibraryItem`).
-    Every failure compensates in reverse, shielded; `KicadUnavailable` or a server
-    restart skips the compensation (journal rows stay `pending`). A failed compensation
-    raises `DocumentInconsistent(leftovers=..., footprint_only=True)`."""
+    Every failure compensates in reverse, run to completion (`_uncancellable`: a Stop
+    waits for it, then wins); `KicadUnavailable` or a server restart skips the
+    compensation (journal rows stay `pending`). A failed compensation raises
+    `DocumentInconsistent(leftovers=..., replaced=..., footprint_only=True)`."""
     if not isinstance(cs, FootprintChangeSet) or cs.library is None or cs.target is None:
         raise TypeError("apply_footprint_change_set needs a planned FootprintChangeSet")
     lib = cs.library
@@ -892,6 +899,7 @@ async def _compensate(
     lib_id = f"{lib.nickname}:{name}"
     file = lib.dir / f"{name}.kicad_mod"
     leftovers: list[str] = []
+    replaced: list[str] = []  # leftovers that are replace targets (never to be deleted)
     failure: BaseException | None = None
 
     if progress.attempted and not progress.final and cs.pre_image is not None:
@@ -904,6 +912,7 @@ async def _compensate(
             log.warning("restoring %s after a failed replace failed: %s", lib_id, exc)
             failure = exc
             leftovers.append(lib_id)
+            replaced.append(lib_id)
             await _finalise(journal, progress.journal_id, "leftover", await _sha_or_absent(file))
         else:
             await _finalise(journal, progress.journal_id, "compensated", restored)
@@ -964,6 +973,7 @@ async def _compensate(
             f"undoing the partial {cs.tool} of {lib_id} failed: {failure}; left behind: "
             + ", ".join(leftovers),
             leftovers=leftovers,
+            replaced=replaced,
             footprint_only=True,
         ) from failure
 

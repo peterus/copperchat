@@ -131,6 +131,7 @@ class TurnOutcome:
     # ids, "row <nick>"), and whether every inconsistency of the turn concerned only the
     # footprint library - the schematic is intact, so the turn end skips the reopen.
     leftovers: tuple[str, ...] = ()
+    replaced_leftovers: tuple[str, ...] = ()  # the leftovers that are `replace` targets
     footprint_only: bool = False
 
 
@@ -300,6 +301,7 @@ class _Turn:
     document_inconsistent: bool = False
     last_save_partial: bool = False
     leftovers: list[str] = field(default_factory=list)
+    replaced_leftovers: list[str] = field(default_factory=list)
     # every inconsistency of the turn was footprint-only (meaningful with
     # document_inconsistent)
     footprint_only: bool = True
@@ -1118,6 +1120,7 @@ class RunEngine:
             last_save_partial=turn.last_save_partial,
             save_failed=bool(turn.save_failed),
             leftovers=tuple(dict.fromkeys(turn.leftovers)),
+            replaced_leftovers=tuple(dict.fromkeys(turn.replaced_leftovers)),
             footprint_only=turn.document_inconsistent and turn.footprint_only,
         )
         try:
@@ -1430,6 +1433,7 @@ class RunEngine:
                 self.editing.turn(self.pid, self._turn.info.run_id).halted = True
             self._turn.last_save_partial |= bool(getattr(exc, "last_save_partial", False))
             self._turn.leftovers += list(getattr(exc, "leftovers", None) or [])
+            self._turn.replaced_leftovers += list(getattr(exc, "replaced", None) or [])
             self._turn.footprint_only &= bool(getattr(exc, "footprint_only", False))
 
     def _on_save_failed(self, exc: Exception) -> None:

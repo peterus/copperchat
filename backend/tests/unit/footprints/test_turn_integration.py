@@ -101,7 +101,7 @@ async def test_replace_is_logged_as_footprint_replaced(
     ctx, _session, cs = _engine_setup(settings.projects_root, settings, editing)
     assert cs.target is not None
     cs.pre_image = FootprintPreImage(
-        items=[], definition=b"", file_sha256="ab" * 32, geometry_hash="old-hash"
+        items=[], definition=b"", file_sha256="ab" * 32, geometry_hash="old-hash", fields={}
     )
     await _apply(monkeypatch, ctx, cs, _applied(cs, row_added=False))
     rows = await editing.changes.for_run(PID, "run1")

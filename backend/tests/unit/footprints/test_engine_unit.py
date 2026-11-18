@@ -78,7 +78,9 @@ def test_stage_and_pre_image_types(tmp_path: Path) -> None:
     assert row.library.nickname == tmp_path.name
     stage = FpStage(kind="copy_seed")
     assert stage.kind == "copy_seed"
-    pre = FootprintPreImage(items=[b"a"], definition=b"d", file_sha256="", geometry_hash="")
+    pre = FootprintPreImage(
+        items=[b"a"], definition=b"d", file_sha256="", geometry_hash="", fields={}
+    )
     assert pre.items == [b"a"] and pre.definition == b"d"
     cs = FootprintChangeSet(
         tool="fp_create", logical=Logical(5), fp_stages=[stage], library=lib, pre_image=pre
@@ -977,17 +979,22 @@ async def test_replace_failure_never_deletes_the_target(
     editing: EditingService,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """S3 of a replace fails and so does the rebuild of the pre-image (the fake cannot
-    begin a commit): never DeleteLibraryItem - `document_inconsistent` names the
-    footprint, the journal row `replace` is `leftover` with the file's hash."""
+    """A failure injected after S2 of a replace, and the rebuild of the pre-image fails
+    too (`fail_compensation`): never DeleteLibraryItem - `document_inconsistent` names
+    the footprint as a replaced one, the journal row `replace` is `leftover` with the
+    file's hash."""
     import hashlib
 
     settings = make_settings()
     ctx, session, cs, _ = _replace_setup(settings.projects_root, settings, editing, monkeypatch)
     assert cs.library is not None and cs.target is not None
+    cs.fail_after = "copy_seed"
+    cs.fail_compensation = True
     with pytest.raises(DocumentInconsistent) as err:
         await _apply_locked(ctx, cs)
     assert err.value.leftovers == [cs.target.lib_id] and err.value.footprint_only
+    assert err.value.replaced == [cs.target.lib_id]
+    assert "injected compensation failure" in str(err.value)
     assert "delete_item" not in session.kicad.calls and "delete_row" not in session.kicad.calls
     file = cs.library.dir / FILE
     assert file.read_text() == "(footprint seed copy)"
@@ -1034,3 +1041,18 @@ def _async_cm(value: Any) -> Any:
         yield value
 
     return cm()
+
+
+def test_leftover_advice_per_kind() -> None:
+    """A new footprint / row goes with History undo (fp_delete once available); a
+    replaced footprint gets its earlier version back and must never be deleted."""
+    from copperchat.errors import leftover_advice
+
+    created = leftover_advice(["L:A", "row L"], [])
+    assert "removes L:A, row L" in created and "fp_delete once that tool is available" in created
+    assert "earlier version" not in created
+    replaced = leftover_advice(["L:B"], ["L:B"])
+    assert "earlier version" in replaced and "Do not delete it" in replaced
+    assert "fp_delete" not in replaced
+    both = leftover_advice(["L:A", "L:B"], ["L:B"])
+    assert "removes L:A;" in both and "L:B replaced" in both

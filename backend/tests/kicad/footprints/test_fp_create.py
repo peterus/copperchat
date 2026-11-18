@@ -496,6 +496,8 @@ async def test_replace_compensation_failure_keeps_the_footprint(
     assert err and out["error"]["code"] == "document_inconsistent", out
     assert out["error"]["details"]["leftovers"] == [LIB_ID]
     assert LIB_ID in out["error"]["why"]
+    advice = out["error"]["suggestion"]
+    assert "earlier version" in advice and "fp_delete" not in advice, advice
     assert file.is_file() and NICK in await project_rows(session)
     rows = await journal(edit_db, session)
     assert (rows[-1].op, rows[-1].state, rows[-1].post_sha256) == ("replace", "leftover", sha(file))
