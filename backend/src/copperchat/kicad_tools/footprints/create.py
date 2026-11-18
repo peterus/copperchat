@@ -17,9 +17,11 @@ from typing import Any
 
 from google.protobuf.any_pb2 import Any as PbAny  # type: ignore[import-untyped]
 
+from copperchat.changes.repo import ChangeEntry
 from copperchat.errors import StructuredToolError
 from copperchat.kicad_session import SEED_LIB_ID
 from copperchat.kicad_tools.edit.changeset import Logical
+from copperchat.kicad_tools.edit.engine import record_applied
 from copperchat.kicad_tools.footprints.build import (
     CreateArgs,
     ModelSpec,
@@ -30,6 +32,7 @@ from copperchat.kicad_tools.footprints.build import (
 )
 from copperchat.kicad_tools.footprints.checks import CheckInput, run_checks, to_result
 from copperchat.kicad_tools.footprints.engine import (
+    FootprintApplied,
     FootprintChangeSet,
     FootprintPreImage,
     FpStage,
@@ -312,6 +315,7 @@ async def apply_footprint_create(ctx: ToolContext, cs: Any) -> ToolResult:
     check = to_result(await asyncio.to_thread(run_checks, inp))
     lib_id = applied.lib_ids[0]
     source = readback.fields.get(SOURCE_FIELD, "")
+    await record_applied(ctx, cs.tool, change_entries(ctx, cs, applied, geometry_hash(readback)))
     data: dict[str, Any] = {
         "created": list(applied.lib_ids),
         "file": applied.files[0],
@@ -324,4 +328,45 @@ async def apply_footprint_create(ctx: ToolContext, cs: Any) -> ToolResult:
         "notes": [*cs.summary.get("notes", []), *applied.notes],
         "suggestion": RENDER_SUGGESTION.format(lib_id=lib_id, source=source),
     }
-    return ToolResult(data=data, library_changed={cs.library.nickname})
+    # Library-only (spec §9.1): saved and journalled inside apply, so the adapter's save
+    # step has nothing to do and its generation check is skipped.
+    return ToolResult(data=data, changed_docs=set(), library_changed={cs.library.nickname})
+
+
+def change_entries(
+    ctx: ToolContext, cs: Any, applied: FootprintApplied, new_hash: str
+) -> list[ChangeEntry]:
+    """The change-log rows of an applied footprint write (spec §10): the project's
+    library row when this call added it (`fp_lib_table_row_added`, ref = the nickname,
+    after = its URI), then per footprint `footprint_created` (op add) or, for
+    `replace`, `footprint_replaced` (op modify, before = the pre-image's hash); ref and
+    uuid = the lib id, after = {"geometry_hash": ...}. No sheet: never diffed."""
+    state = ctx.editing.turn(ctx.project.id, ctx.run_id) if ctx.editing is not None else None
+
+    def entry(op: str, kind: str, ref: str, **values: Any) -> ChangeEntry:
+        return ChangeEntry(
+            project_id=ctx.project.id,
+            run_id=ctx.run_id or "",
+            plan_step_id=state.active_step_id if state else None,
+            call_seq=state.call_seq if state else 0,
+            tool=cs.tool,
+            op=op,
+            kind=kind,
+            uuid=ref,
+            sheet_path="",
+            ref=ref,
+            **values,
+        )
+
+    out: list[ChangeEntry] = []
+    lib = cs.library
+    if applied.row_added and lib is not None:
+        out.append(entry("add", "fp_lib_table_row_added", lib.nickname, after={"uri": lib.uri}))
+    after = {"geometry_hash": new_hash}
+    for lib_id in applied.lib_ids:
+        if cs.pre_image is not None:
+            before = {"geometry_hash": cs.pre_image.geometry_hash}
+            out.append(entry("modify", "footprint_replaced", lib_id, before=before, after=after))
+        else:
+            out.append(entry("add", "footprint_created", lib_id, after=dict(after)))
+    return out

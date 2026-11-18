@@ -19,6 +19,19 @@ REPO = "OpenDriveHub"
 SessionFactory = Callable[..., Awaitable[KicadSession]]
 
 
+def make_repo(settings: Settings) -> Path:
+    """The git repo `<projects_root>/OpenDriveHub` with `hardware/main` and `hardware/io`,
+    each a verbatim copy of the KiCad-generated blank project without its board."""
+    root = settings.projects_root / REPO
+    for name in ("main", "io"):
+        dest = root / "hardware" / name
+        shutil.copytree(FIXTURES / "blank", dest)
+        for pcb in dest.glob("*.kicad_pcb"):
+            pcb.unlink()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    return root
+
+
 @pytest.fixture
 async def repo_session(
     make_settings: Callable[..., Settings],
@@ -29,13 +42,7 @@ async def repo_session(
     that project's api-server; one server at a time (C14), so opening one closes the
     previous."""
     settings = real_settings(make_settings)
-    root = settings.projects_root / REPO
-    for name in ("main", "io"):
-        dest = root / "hardware" / name
-        shutil.copytree(FIXTURES / "blank", dest)
-        for pcb in dest.glob("*.kicad_pcb"):
-            pcb.unlink()
-    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    root = make_repo(settings)
     manager = KicadSessionManager(settings)
 
     async def open_session(name: str = "main") -> KicadSession:

@@ -89,7 +89,9 @@ TOOL_SPECS = [
         "sch_changes",
         "List what the editing tools changed in the schematic (the change log): per item "
         "op (add/modify/delete), kind, uuid, ref, net, sheet and before/after values, "
-        "incl. KiCad's own cleanup (side_effect: true). scope: 'turn' (this turn, "
+        "incl. KiCad's own cleanup (side_effect: true); footprint tools add rows of the "
+        "local library (kind footprint_* or fp_lib_table_row_added, ref = lib id, "
+        "after.geometry_hash). scope: 'turn' (this turn, "
         "default), 'step' (the active plan step, all its runs) or 'plan' (every step of "
         "the open plan).",
         {
