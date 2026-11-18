@@ -216,7 +216,7 @@ async def footprint_notes(
             "e.g. Resistor_SMD:R_0805_2012Metric",
         )
     detail = None
-    if svc.footprints_available():
+    if svc.footprint_libraries_ready():
         detail = await svc.footprint(footprint)
         if detail is None:
             close = await _closest_footprints(svc, nickname, name)
@@ -242,8 +242,8 @@ async def footprint_notes(
             {
                 "kind": "footprint_unverified",
                 "footprint": footprint,
-                "message": f"{footprint} is unverified: this project has no board, so "
-                "footprint libraries are not checked. Tell the user.",
+                "message": f"{footprint} is unverified: footprint libraries are not "
+                "loaded (no board, no footprint tool used). Tell the user.",
             }
         )
     notes += preference_notes(prefs, lib_id, footprint, detail)

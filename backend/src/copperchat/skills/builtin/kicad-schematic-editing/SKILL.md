@@ -218,8 +218,8 @@ pin, then `sch_connect` again). Pins stay
 ## Results and errors
 
 - Read `connectivity_verified`, `nets_touched` and `notes` in every result.
-- `notes` with `footprint_unverified` (project without a board: footprint existence is
-  not checked) → tell the user the footprint is **unverified**. `preference_deviation`
+- `notes` with `footprint_unverified` (footprint libraries not loaded: no board, no
+  footprint tool used; footprint existence is not checked) → tell the user the footprint is **unverified**. `preference_deviation`
   (e.g. a passive not in 0805) → justify it to the user or fix it with `sch_set_fields`.
   `active_part_without_notes` → you skipped the research; do it.
 - An `overlap` error carries the nearest free position: use it, or `sch_find_space`.

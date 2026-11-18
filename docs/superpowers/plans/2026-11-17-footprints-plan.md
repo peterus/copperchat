@@ -431,7 +431,8 @@ server-death case) and the error is re-raised.
 `document_inconsistent`, `approval_not_allowed`, `in_use`. Notes (`notes[].kind`):
 `footprint_libraries_loaded` (`seconds`), `footprint_needs_review`,
 `footprint_review_unknown`, `footprint_unverified`, `possibly_in_use_elsewhere`,
-`model_missing`, `pending_cleaned`, `pending_leftover`.
+`model_missing`, `pending_cleaned`, `pending_leftover`,
+`footprint_attributes_unavailable` (`lib_id`; added in F1 Task 4, see "As built").
 
 ---
 
@@ -516,6 +517,28 @@ phase file, with the reason.)
 
 - **F1 Task 1 probe (author call 9):** `GetLibraryTable(LT_FOOTPRINT, LTS_GLOBAL)` answers on a boardless api-server before any footprint document is opened (155 rows incl. `Inductor_SMD`, KiCad 52b43fb8 + patches 0001–0004), so `global_footprint_nicknames()` uses the API table; the stock-dir fallback is not implemented. `tests/kicad/footprints/test_activation.py::test_global_table_before_activation` pins this branch.
 - **FP-C1 `NAME_RE`:** ends in `\Z` instead of `$` so a trailing newline is rejected.
+- **FP-C1 `footprint_geometry` read path (controller ruling, F1 Task 4):** at the pinned
+  KiCad, `GetItemsFromLibrary` (`FOOTPRINT::SerializeDefinition`) omits the
+  Reference/Value fields and their text geometry, the mounting attributes, the
+  exclude/DNP flags and the footprint-level overrides, so its geometry hash differs from
+  a document read. Therefore a footprint of the **local** library (row present with the
+  local URI) is read through the footprint document (`FootprintInstance` incl.
+  `definition.items`; complete data, authoritative §9.4 hash), and the libraries are
+  activated first **also on a board server** — `fp_get` on a local footprint costs the
+  activation (+1.7 GB) even with a board open. Every other library is read with batched
+  `GetItemsFromLibrary` (activation only on a boardless server); that geometry is flagged
+  incomplete: `mounting` is `"unspecified"` and the call appends the new note kind
+  `footprint_attributes_unavailable` (FP-C9) on every read, also from the LRU. Spec §6.2
+  ("open a document only for data that is not in the library response; the spike found
+  none") is superseded for the local library. `footprint_geometry` must not be called
+  while the caller holds `_fp_lock`.
+- **FP-C1 `LocalLibraryInfo.row_present`:** true only for a project row with the local
+  nickname **and** the local URI; a same-nickname row with another URI is reported in
+  `row_conflict` (both URIs), as is a row under another nickname whose substituted URI is
+  the local directory (asks to rename or remove it). `local_library()` derives from
+  `repo_policy(...).project_dir`/`.root` (resolved paths).
+- **FP-C3 hash, `Group` items:** the opaque digest of a `Group` drops its member `items`
+  (per-load KIIDs) as well as `id`/`parent`.
 
 ## Residuals
 

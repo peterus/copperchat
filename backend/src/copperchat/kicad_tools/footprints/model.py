@@ -509,10 +509,12 @@ def _overrides(definition: Any, fp: Any) -> tuple[tuple[str, Any], ...]:
 
 def _opaque_digest(item: Any) -> str:
     """Stable digest of an item the model does not describe: its protobuf without the
-    per-load KIIDs (`id`, `parent`), serialised deterministically."""
+    per-load KIIDs (`id`, `parent`, and a `Group`'s member ids), serialised
+    deterministically."""
     copy = type(item)()
     copy.CopyFrom(item)
-    for name in ("id", "parent"):
+    kiids = ("id", "parent", "items") if copy.DESCRIPTOR.name == "Group" else ("id", "parent")
+    for name in kiids:
         if name in copy.DESCRIPTOR.fields_by_name:
             copy.ClearField(name)
     return hashlib.sha256(copy.SerializeToString(deterministic=True)).hexdigest()

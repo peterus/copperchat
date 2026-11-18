@@ -12,20 +12,29 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import difflib
 import logging
+import os
+import stat
 import weakref
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Literal
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Literal
 
 from copperchat.errors import DocumentNotOpen, StructuredToolError
 from copperchat.kicad_session import KicadHandle, KicadSession, KicadUnavailable, LibrariesLoading
 from copperchat.library.index import Index, Scope, SymbolRow, tokenize
+from copperchat.library.local import NAME_RE, LocalLibrary, derive_local_library
 from copperchat.library.packages import FootprintDetail, footprint_from_proto
 from copperchat.library.symbols import SymbolDetail, detail_from_proto, has_drawing, row_from_proto
+from copperchat.repo_context.paths import repo_policy
+
+if TYPE_CHECKING:
+    from copperchat.kicad_tools.footprints.model import FootprintGeometry
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +43,7 @@ MAX_LIMIT = 50
 MAX_QUERY_CHARS = 200
 FAILED_RETRY_S = 300.0  # a footprint library that failed to load is retried after this
 DETAIL_CACHE_SIZE = 512
+GEOMETRY_CACHE_SIZE = 64  # footprint_geometry LRU (fp_get), by lib id
 FOOTPRINT_SEARCH_LIBRARIES = 3  # libraries loaded for a search without `library`
 State = Literal["loading", "ready", "failed"]
 
@@ -200,6 +210,154 @@ def _fetch_footprints(nickname: str, names: list[str], h: KicadHandle) -> list[F
     return out
 
 
+def _fetch_footprint_proto(nickname: str, name: str, h: KicadHandle) -> Any:
+    """The library `Footprint` of one id (batched `GetItemsFromLibrary` with one id), or
+    None when KiCad does not serve it."""
+    from kipy.proto.board import board_types_pb2
+
+    for packed in _get_items(h, _footprint_type(), [(nickname, name)]):
+        fp = board_types_pb2.Footprint()
+        packed.Unpack(fp)
+        return fp
+    return None
+
+
+def _project_footprint_rows(h: KicadHandle) -> list[tuple[str, str, str]]:
+    """(nickname, uri, substituted uri) of every row of the project footprint table."""
+    from kipy.proto.common.types import LibraryTableScope, LibraryType
+
+    fp, project = LibraryType.LT_FOOTPRINT, LibraryTableScope.LTS_PROJECT
+    raw = h.kicad.get_library_table(fp, project).rows
+    resolved = {
+        r.nickname: r.uri for r in h.kicad.get_library_table(fp, project, substituted=True).rows
+    }
+    return [(r.nickname, r.uri, resolved.get(r.nickname, r.uri)) for r in raw]
+
+
+# -- local library (FP-C1) -------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class LocalLibraryInfo:
+    lib: LocalLibrary
+    row_present: bool  # a project row with the local nickname and the local URI
+    row_conflict: str | None  # why the project table conflicts with the local library
+
+
+def _conflict(why: str, suggestion: str, path: Path) -> StructuredToolError:
+    return StructuredToolError(
+        "The local footprint library is not safe to write",
+        why,
+        suggestion,
+        code="library_conflict",
+        details={"path": str(path)},
+    )
+
+
+def _lstat(path: Path) -> os.stat_result | None:
+    try:
+        return path.lstat()
+    except FileNotFoundError:
+        return None
+
+
+def _check_chain(base: Path, target: Path, *, leaf_file: bool) -> None:
+    """lstat every existing component below `base` down to `target`: none may be a
+    symlink; all but a file leaf must be directories (the leaf, with `leaf_file`, a
+    regular file)."""
+    parts = target.relative_to(base).parts
+    current = base
+    for i, part in enumerate(parts):
+        current = current / part
+        st = _lstat(current)
+        if st is None:
+            return  # nothing below a missing component exists
+        if stat.S_ISLNK(st.st_mode):
+            raise _conflict(
+                f"{current} is a symbolic link",
+                "CopperChat writes only into real directories of the repository. Ask the "
+                "user to replace the link with a directory (or file) of its own.",
+                current,
+            )
+        want_file = leaf_file and i == len(parts) - 1
+        ok = stat.S_ISREG(st.st_mode) if want_file else stat.S_ISDIR(st.st_mode)
+        if not ok:
+            kind = "a regular file" if want_file else "a directory"
+            raise _conflict(
+                f"{current} is not {kind}",
+                "Ask the user to move it out of the way of the local footprint library.",
+                current,
+            )
+
+
+def local_library_dir_safe(lib: LocalLibrary) -> None:
+    """Raise `library_conflict` unless every existing path component from the repo root
+    to the library directory is a real directory (no symlink) and the project's
+    `fp-lib-table`, if it exists, is a regular file without a symlink component."""
+    _check_chain(lib.repo_root, lib.dir, leaf_file=False)
+    try:
+        lib.table.relative_to(lib.repo_root)
+    except ValueError:  # the project lies outside the repo root: check its own directory
+        _check_chain(lib.table.parent, lib.table, leaf_file=True)
+    else:
+        _check_chain(lib.repo_root, lib.table, leaf_file=True)
+
+
+def local_footprint_file_safe(lib: LocalLibrary, name: str) -> None:
+    """Raise `library_conflict` if `<dir>/<name>.kicad_mod` exists and is not a regular
+    file (a symlink or a directory); `invalid_argument` for a name outside `NAME_RE`."""
+    if not NAME_RE.match(name):
+        raise _invalid(
+            f"Invalid footprint name {name[:80]!r}",
+            "footprint names match ^[A-Za-z0-9][A-Za-z0-9_.+-]{0,99}$",
+            "Use letters, digits and _ . + - only.",
+        )
+    path = lib.dir / f"{name}.kicad_mod"
+    st = _lstat(path)
+    if st is not None and not stat.S_ISREG(st.st_mode):
+        raise _conflict(
+            f"{path} is not a regular file",
+            "Ask the user to remove the link or directory in the local footprint library.",
+            path,
+        )
+
+
+def _row_conflict(lib: LocalLibrary, rows: list[tuple[str, str, str]]) -> tuple[bool, str | None]:
+    own = _norm_uri(lib.uri)
+    present = False
+    conflicts: list[str] = []
+    local_dir = os.path.normpath(lib.dir.resolve())
+    for nickname, uri, substituted in rows:
+        if nickname == lib.nickname:
+            if _norm_uri(uri) == own:
+                present = True
+            else:
+                conflicts.append(
+                    f"the project footprint table has a row {nickname!r} with URI {uri!r}, "
+                    f"but CopperChat's local library {nickname!r} must point at {lib.uri!r}"
+                )
+        elif _same_dir(substituted, local_dir):
+            conflicts.append(
+                f"the project footprint table row {nickname!r} ({uri!r}) points at the local "
+                f"footprint library directory, which CopperChat uses under the nickname "
+                f"{lib.nickname!r}; ask the user to rename or remove the row {nickname!r}"
+            )
+    return present, "; ".join(conflicts) or None
+
+
+def _norm_uri(uri: str) -> str:
+    return uri.strip().replace("\\", "/").rstrip("/")
+
+
+def _same_dir(uri: str, local_dir: str) -> bool:
+    if "${" in uri or "://" in uri:  # unresolved variable or a remote library
+        return False
+    try:
+        return os.path.normpath(Path(uri).resolve()) == local_dir
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def _build_index(rows: Iterable[tuple[str, str, str, Scope]]) -> Index:
     index = Index()
     for lib_id, description, keywords, scope in rows:
@@ -232,6 +390,8 @@ class LibraryService:
         # been busy or restarted).
         self._fp_failed: dict[str, tuple[str, float]] = {}
         self._global_fp_nicknames: tuple[int, frozenset[str]] | None = None
+        # footprint_geometry LRU (lib id -> geometry); cleared by invalidate_footprints
+        self._fp_geometry: OrderedDict[str, FootprintGeometry] = OrderedDict()
 
     @property
     def _session(self) -> KicadSession:
@@ -413,17 +573,18 @@ class LibraryService:
                 return await session.call(partial(_place_probe, lib_id))
 
     # -- footprints ----------------------------------------------------------------
-    def footprints_available(self) -> bool:
-        """KiCad serves footprint libraries only with a board open (spike 2B, Q4);
-        without a `.kicad_pcb` they are never load-all'ed (owner decision 3)."""
-        return self._session.project.pcb_file is not None
+    def footprint_libraries_ready(self) -> bool:
+        """KiCad serves footprint libraries with a board open (spike 2B, Q4) or once a
+        footprint tool activated them (`footprints_active`, F1); a boardless project
+        never loads them otherwise (owner decision 3)."""
+        session = self._session
+        return session.project.pcb_file is not None or session.footprints_active
 
     def _require_footprints(self) -> None:
-        if not self.footprints_available():
+        if not self.footprint_libraries_ready():
             raise StructuredToolError(
                 "Footprint libraries are not available",
-                "this project has no board (.kicad_pcb), and KiCad serves footprint "
-                "libraries only with a board open",
+                "footprint libraries are not loaded (no board, no footprint tool used)",
                 "Pick the footprint by its usual KiCad name (e.g. "
                 "Resistor_SMD:R_0805_2012Metric) and tell the user it is unverified.",
                 code="footprints_unavailable",
@@ -466,7 +627,7 @@ class LibraryService:
 
     async def footprint(self, lib_id: str) -> FootprintDetail | None:
         """Detail of one footprint (loads its library only); None if unknown. Raises
-        `footprints_unavailable` without a board."""
+        `footprints_unavailable` while the footprint libraries are not loaded."""
         nickname, name = _split(lib_id.strip())
         if not nickname or not name:
             raise _invalid(
@@ -543,3 +704,172 @@ class LibraryService:
                 hits.append((score, lib_id, lib.details[lib_id]))
         hits.sort(key=lambda h: (-h[0], h[1]))
         return [d.to_dict() for _, _, d in hits[:limit]], failed
+
+    # -- footprint tools (F1, FP-C1) -------------------------------------------------
+    def invalidate_footprints(self, nickname: str | None = None) -> None:
+        """Forget cached footprint data: the table scopes always, and the loaded library,
+        its failure entry and its `footprint_geometry` entries for `nickname` (every
+        library for None). Called after every footprint stage, a history restore and an
+        external library change (spec §5)."""
+        self._fp_scopes = None
+        if nickname is None:
+            self._fp_libs.clear()
+            self._fp_failed.clear()
+            self._fp_geometry.clear()
+            return
+        self._fp_libs.pop(nickname, None)
+        self._fp_failed.pop(nickname, None)
+        for lib_id in [k for k in self._fp_geometry if _split(k)[0] == nickname]:
+            del self._fp_geometry[lib_id]
+
+    async def local_library(self, *, for_write: bool = False) -> LocalLibraryInfo | None:
+        """The repo's local footprint library (spec §5) and the state of its project row.
+
+        None while the repo root is unknown (`repo_policy` transient); with `for_write`
+        that raises `repo_root_unknown` instead, and the library path and the project
+        table are checked with `local_library_dir_safe` (`library_conflict`)."""
+        session = self._session
+        policy = await repo_policy(session.project, session.settings.projects_root)
+        if policy.transient:
+            if for_write:
+                raise StructuredToolError(
+                    "The repository root is unknown right now",
+                    f"git could not answer ({policy.transient}), so CopperChat cannot tell "
+                    "where the repo's footprint library lives",
+                    "Try again in a moment; nothing was written.",
+                    code="repo_root_unknown",
+                )
+            return None
+        nicknames = await self.global_footprint_nicknames()
+        lib = derive_local_library(policy.project_dir, policy.root, nicknames)
+        if for_write:
+            await asyncio.to_thread(local_library_dir_safe, lib)
+        with _kicad_errors("Could not read the project footprint table"):
+            rows = await session.call(_project_footprint_rows)
+        present, conflict = await asyncio.to_thread(_row_conflict, lib, rows)
+        return LocalLibraryInfo(lib, present, conflict)
+
+    def local_names_on_disk(self, lib: LocalLibrary) -> list[str]:
+        """Stems of the regular `*.kicad_mod` files in the local library directory
+        (sorted; symlinks and directories skipped; no file is opened)."""
+        st = _lstat(lib.dir)
+        if st is None or not stat.S_ISDIR(st.st_mode):
+            return []
+        names: list[str] = []
+        with os.scandir(lib.dir) as entries:
+            for entry in entries:
+                if entry.name.endswith(".kicad_mod") and entry.is_file(follow_symlinks=False):
+                    names.append(entry.name.removesuffix(".kicad_mod"))
+        return sorted(names)
+
+    async def footprint_geometry(
+        self, lib_id: str, notes: list[dict[str, Any]] | None = None
+    ) -> FootprintGeometry | None:
+        """The geometry of one footprint, None if unknown (LRU of 64 by lib id).
+
+        A footprint of the **local** library is read through the footprint document
+        (complete `FootprintInstance`; its hash is authoritative). The footprint libraries
+        are activated first, also on a board server (the document open loads every
+        library anyway). Every other library is read with `GetItemsFromLibrary`, which
+        lacks Reference/Value, the mounting attributes, the exclude/DNP flags and the
+        overrides: `mounting` is "unspecified" and a `footprint_attributes_unavailable`
+        note is added. Only a boardless server is activated for that read.
+
+        Activation seconds go to `notes` as `footprint_libraries_loaded`. Must not be
+        called while the caller holds the session's `_fp_lock` (activation and the
+        document take it; the lock is not re-entrant)."""
+        lib_id = lib_id.strip()
+        nickname, name = _split(lib_id)
+        if not nickname or not name:
+            raise _invalid(
+                f"Invalid footprint id {lib_id[:80]!r}",
+                "expected <library nickname>:<footprint name>",
+                "e.g. Resistor_SMD:R_0805_2012Metric",
+            )
+        cached = self._fp_geometry.get(lib_id)
+        if cached is not None:
+            self._fp_geometry.move_to_end(lib_id)
+            if cached.scope != "local":
+                _note_incomplete(notes, lib_id)
+            return cached
+        info = await self.local_library()
+        if info is not None and info.row_present and nickname == info.lib.nickname:
+            geometry = await self._local_geometry(info.lib, lib_id, name, notes)
+        else:
+            geometry = await self._library_geometry(lib_id, nickname, name, notes)
+        if geometry is None:
+            return None
+        self._fp_geometry[lib_id] = geometry
+        while len(self._fp_geometry) > GEOMETRY_CACHE_SIZE:
+            self._fp_geometry.popitem(last=False)
+        return geometry
+
+    async def _activate(self, notes: list[dict[str, Any]] | None) -> None:
+        seconds = await self._session.activate_footprints()
+        if seconds is not None:
+            self._fp_scopes = None  # the tables may answer differently once loaded
+            if notes is not None:
+                notes.append({"kind": "footprint_libraries_loaded", "seconds": round(seconds, 1)})
+
+    async def _local_geometry(
+        self, lib: LocalLibrary, lib_id: str, name: str, notes: list[dict[str, Any]] | None
+    ) -> FootprintGeometry | None:
+        from kipy.errors import ApiError
+
+        from copperchat.kicad_tools.footprints.model import geometry_from_proto
+
+        on_disk = await asyncio.to_thread(self.local_names_on_disk, lib)
+        if name not in on_disk:
+            return None
+        await self._activate(notes)
+        session = self._session
+        try:
+            with _kicad_errors(f"Could not read footprint {lib_id}"):
+                async with session.footprint_document(lib_id) as doc:
+                    instance = await doc.footprint()
+        except StructuredToolError as exc:
+            cause = exc.__cause__
+            if isinstance(cause, ApiError) and "not found" in str(cause).lower():
+                return None
+            raise
+        except RuntimeError as exc:  # FootprintDocument: no parent / no FootprintInstance
+            raise StructuredToolError(
+                f"Could not read footprint {lib_id}",
+                f"the footprint document is incomplete: {exc}",
+                "Ask the user to open the footprint in KiCad and check it.",
+                code="library_error",
+            ) from exc
+        return geometry_from_proto(instance, instance.definition.items, lib_id, "local")
+
+    async def _library_geometry(
+        self, lib_id: str, nickname: str, name: str, notes: list[dict[str, Any]] | None
+    ) -> FootprintGeometry | None:
+        from copperchat.kicad_tools.footprints.model import geometry_from_proto
+
+        if not self.footprint_libraries_ready():
+            await self._activate(notes)  # boardless server only
+        scopes = await self.footprint_libraries()
+        scope = scopes.get(nickname)
+        if scope is None:
+            return None
+        with _kicad_errors(f"Could not read footprint {lib_id}"):
+            proto = await self._session.call(partial(_fetch_footprint_proto, nickname, name))
+        if proto is None:
+            return None
+        geometry = geometry_from_proto(proto, proto.items, lib_id, scope)
+        _note_incomplete(notes, lib_id)
+        return dataclasses.replace(geometry, mounting="unspecified")
+
+
+def _note_incomplete(notes: list[dict[str, Any]] | None, lib_id: str) -> None:
+    if notes is None:
+        return
+    notes.append(
+        {
+            "kind": "footprint_attributes_unavailable",
+            "lib_id": lib_id,
+            "message": "Read from the library listing, which has no mounting type "
+            "(shown as 'unspecified'), no Reference/Value fields or text, no "
+            "exclude-from-BOM/position or DNP flags and no footprint-level overrides.",
+        }
+    )

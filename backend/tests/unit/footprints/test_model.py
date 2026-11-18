@@ -529,3 +529,24 @@ def test_hash_includes_unmodelled_items(seed: FootprintGeometry) -> None:
     assert geometry_hash(_with_zone(1_000_000, "b")) == geometry_hash(zoned)  # ids ignored
     assert geometry_hash(_with_zone(2_000_000, "a")) != geometry_hash(zoned)
     assert geometry_equal(zoned, _with_zone(2_000_000, "a"))
+
+
+def _with_group(name: str, members: list[str]) -> FootprintGeometry:
+    from google.protobuf.any_pb2 import Any as PbAny  # type: ignore[import-untyped]
+    from kipy.proto.board import board_types_pb2 as bt
+
+    msg = _message("seed_srn4018.instance")
+    group = bt.Group()
+    group.id.value = members[0] + "-group"
+    group.name = name
+    group.items.extend(base_types.KIID(value=m) for m in members)
+    packed = PbAny()
+    packed.Pack(group)
+    return geometry_from_proto(msg, [*msg.definition.items, packed], SEED, "global")
+
+
+def test_hash_ignores_group_member_ids() -> None:
+    """Group members are per-load KIIDs: they must not change the hash."""
+    a = _with_group("g", ["a1", "a2"])
+    assert geometry_hash(_with_group("g", ["b1", "b2"])) == geometry_hash(a)
+    assert geometry_hash(_with_group("h", ["a1", "a2"])) != geometry_hash(a)
