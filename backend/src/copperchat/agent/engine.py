@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from copperchat.agent.broadcaster import Broadcaster, Subscription
@@ -148,6 +149,12 @@ class RunHooks:
         work, never await it; the live schematic view hangs off this)."""
         return None
 
+    async def on_library_changed(self, files: list[Path]) -> None:
+        """A tool call of this engine wrote these library files (footprints, the
+        fp-lib-table; FP-C6). Awaited at the end of the call, also of a failed one; the
+        history hook re-records their hashes. Must never take `HistoryService.lock`."""
+        return None
+
     async def on_engine_close(self) -> None:
         """The engine closes (shutdown): stop background work started by the hooks."""
         return None
@@ -169,8 +176,9 @@ class RunHooks:
 class ChainedHooks(RunHooks):
     """Several hooks in order (history first, E-C5). A failing start/mutation/input hook
     stops the chain and propagates (a failed snapshot must fail the tool call); turn-end
-    and items-failed hooks all run, then the first error propagates. Documents-changed
-    and engine-close hooks all run; their errors are logged, never raised."""
+    and items-failed hooks all run, then the first error propagates. Documents-changed,
+    library-changed and engine-close hooks all run; their errors are logged, never
+    raised."""
 
     def __init__(self, hooks: list[RunHooks]) -> None:
         self.hooks = hooks
@@ -203,6 +211,13 @@ class ChainedHooks(RunHooks):
                 h.on_documents_changed(turn, docs)
             except Exception:
                 log.exception("on_documents_changed hook failed")
+
+    async def on_library_changed(self, files: list[Path]) -> None:
+        for h in self.hooks:
+            try:
+                await h.on_library_changed(files)
+            except Exception:
+                log.exception("on_library_changed hook failed")
 
     async def on_engine_close(self) -> None:
         for h in self.hooks:
@@ -1283,6 +1298,8 @@ class RunEngine:
             editing=self.editing,
             on_document_inconsistent=self._on_document_inconsistent,
             on_save_failed=self._on_save_failed,
+            library_touched=[],
+            on_library_changed=self.hooks.on_library_changed,
         )
 
     async def _post_doc_notice(self, notice: DocNotice) -> None:

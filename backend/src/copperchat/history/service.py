@@ -9,14 +9,26 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+import os
+from collections.abc import Awaitable, Callable, Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from copperchat.agent.protocol import ViewUpdatedFrame
 from copperchat.db import Database
 from copperchat.history.live import LiveViewPublisher
-from copperchat.history.store import DocumentHashRepo, HistoryStore, document_files, sha256_file
+from copperchat.history.store import (
+    DocumentHashRepo,
+    HashRow,
+    HistoryStore,
+    LibraryLocation,
+    LibraryLocator,
+    TrackedFile,
+    compute_tracked_hashes,
+    document_files,
+    tracked_files,
+    with_presence_rows,
+)
 from copperchat.kicad_session import DocKind, KicadSession, KicadSessionManager
 from copperchat.projects import Project
 from copperchat.views import render_view, write_kicanvas_snapshot
@@ -53,6 +65,10 @@ async def _default_preview(session: KicadSession, doc: DocKind) -> bytes | None:
         return None
 
 
+async def _no_library(project: Project) -> LibraryLocation | None:
+    return None
+
+
 class HistoryService:
     def __init__(
         self, *, db: Database, sessions: KicadSessionManager, broadcaster: Any, runtime: Any
@@ -62,6 +78,9 @@ class HistoryService:
         self.broadcaster = broadcaster
         self.runtime = runtime
         self.hashes = DocumentHashRepo(db)
+        # The project's local footprint library, tracked with the documents (FP-C6);
+        # replaced once the footprint tools are wired (F4a).
+        self.locate_library: LibraryLocator = _no_library
         self.write_view: ViewWriter = write_kicanvas_snapshot
         self.render_preview: Callable[[KicadSession, DocKind], Awaitable[bytes | None]] = (
             _default_preview
@@ -75,6 +94,10 @@ class HistoryService:
         # (project, changed files) after the turn-start check found an external change
         # (E8b: a running/approved/paused plan is paused). Errors are logged.
         self.on_external_change: list[Callable[[Project, list[str]], Awaitable[None]]] = []
+        # (project, changed rel paths, reason "own" | "external" | "restore") after the
+        # local footprint library changed (FP-C6); F4a registers the cache invalidation /
+        # ReloadLibrary reaction. Errors are logged, never raised.
+        self.library_listeners: list[Callable[[Project, list[str], str], Awaitable[None]]] = []
         # Every CopperChat save rewrites the files: record their hashes right after it,
         # so the turn-start check never takes our own save for an external change.
         sessions.add_save_listener(self._on_saved)
@@ -82,25 +105,89 @@ class HistoryService:
     async def _on_saved(self, project: Project, doc: DocKind) -> None:
         """Re-record the saved document's files (+ the project file KiCad may rewrite);
         the other document's stored hashes stay, so an external change to it is still
-        reported at the next turn start."""
+        reported at the next turn start. Library, table and presence rows are never
+        owned (no document suffix), so they stay as they are."""
         suffix = ".kicad_sch" if doc == "sch" else ".kicad_pcb"
         pro = project.pro_file.relative_to(project.dir).as_posix()
 
         def owned(rel: str) -> bool:
             return rel == pro or rel.endswith(suffix)
 
-        def owned_hashes() -> dict[str, str]:
-            rels = {p.relative_to(project.dir).as_posix(): p for p in document_files(project)}
-            return {rel: sha256_file(path) for rel, path in rels.items() if owned(rel)}
+        def owned_hashes() -> dict[str, HashRow]:
+            files = [
+                TrackedFile(p, rel, False)
+                for p in document_files(project)
+                if owned(rel := p.relative_to(project.dir).as_posix())
+            ]
+            return compute_tracked_hashes(files, {})
 
         now = await asyncio.to_thread(owned_hashes)
+        # Only the owned rows are written (one transaction): a row another path stored
+        # meanwhile is never overwritten with a stale copy.
         stored = await self.hashes.get(project.id)
-        merged = {k: v for k, v in stored.items() if not owned(k)}
-        merged |= now
-        await self.hashes.replace(project.id, merged)
+        await self.hashes.upsert(project.id, now, delete=[k for k in stored if owned(k)])
+
+    async def on_library_changed(
+        self, project: Project, files: Iterable[Path], reason: str = "own"
+    ) -> None:
+        """CopperChat itself wrote `files` (footprints, the project's fp-lib-table; FP-C6):
+        re-record only their rows (fresh hash + stats), leaving every other row as it
+        is like `_on_saved`, so the next turn start does not take the own write for an
+        external change while changes other projects made to the rest of the library
+        still show.
+        A file that no longer exists, or is not tracked (no library located, a symlink),
+        loses its row - except the project's fp-lib-table with a library located, which
+        gets its ABSENT presence row (store.py). The library marker is never written
+        here: a library not tracked before stays a silent baseline at the next turn start.
+        Then the library listeners get `reason` ("own"; restore's failure path passes
+        "restore"; errors logged).
+
+        Never takes `HistoryService.lock` (FP-C6 lock rule): it runs in the `finally` of
+        a tool call, and `svc.lock` is always taken first (restore, step checkpoints:
+        `svc.lock` -> library lock -> ...), so a holder of `svc.lock` may be waiting for
+        this very call; waiting for it here could deadlock. Safe without it: it writes
+        the rows of `files` only, in one transaction (`DocumentHashRepo.upsert`; sha
+        computed from the file as it is now), and the turn-start check, snapshot and
+        restore hash the tracked files themselves. The worst a race with them can cause
+        is one extra or one missed report of exactly these files at the next turn start,
+        never a stale row for another file."""
+        targets = {Path(os.path.relpath(f, project.dir)).as_posix() for f in files}
+        if not targets:
+            return
+        location = await self.locate_library(project)
+
+        def compute() -> dict[str, HashRow]:
+            tracked = [f for f in tracked_files(project, location) if f.rel in targets]
+            rows = with_presence_rows(compute_tracked_hashes(tracked, {}), project, location)
+            return {k: v for k, v in rows.items() if k in targets}
+
+        now = await asyncio.to_thread(compute)
+        await self.hashes.upsert(project.id, now, delete=targets)
+        await self.notify_library(project, sorted(targets), reason)
+
+    async def notify_library(self, project: Project, rels: list[str], reason: str) -> None:
+        """Call every library listener; a failing one is logged, never raised."""
+        for listener in list(self.library_listeners):
+            try:
+                await listener(project, rels, reason)
+            except Exception:
+                log.exception("library listener failed (%s)", reason)
+
+    async def current_hashes(self, project: Project) -> dict[str, HashRow]:
+        """Hashes of every tracked file (documents, fp-lib-table, local library) plus,
+        with a library located, its presence rows (marker, absent table; store.py);
+        library files with unchanged stats reuse their stored sha (FP-C7)."""
+        location = await self.locate_library(project)
+        previous = await self.hashes.get_rows(project.id)
+
+        def compute() -> dict[str, HashRow]:
+            rows = compute_tracked_hashes(tracked_files(project, location), previous)
+            return with_presence_rows(rows, project, location)
+
+        return await asyncio.to_thread(compute)
 
     def store(self, project: Project) -> HistoryStore:
-        return HistoryStore(self.db, project)
+        return HistoryStore(self.db, project, locate_library=self.locate_library)
 
     def lock(self, project: Project) -> asyncio.Lock:
         """Serialises restore against the turn-start hash check and the turn-end autosave."""

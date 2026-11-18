@@ -5,10 +5,13 @@ that changed documents, crash recovery."""
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from copperchat.agent.engine import RunHooks, TurnInfo, TurnOutcome
-from copperchat.history.store import Snapshot, compute_hashes_async, ensure_gitignore
+from copperchat.db.repos.footprints import ABSENT
+from copperchat.history.store import Snapshot, ensure_gitignore, is_marker_rel
 from copperchat.kicad_session import DocKind, KicadUnavailable
 from copperchat.projects import Project
 from copperchat.tools import StructuredToolError
@@ -22,6 +25,58 @@ LABEL_CHARS = 80
 _RECOVER_ATTEMPTS = 2  # the first call after a crash restarts the server and still raises
 
 
+def is_library_rel(rel: str) -> bool:
+    """A stored/current hash row of a local library footprint, else a project file.
+
+    `tracked_files` tracks the documents and the project's fp-lib-table (never a
+    `.kicad_mod`) plus the `*.kicad_mod` files of the local library. So the suffix alone
+    classifies a row - also one whose file is gone now, or one recorded under a library
+    dir the locator no longer returns; no path-prefix rule ("../", the library dir rel)
+    is needed, which would break for a project at the repo root."""
+    return rel.endswith(".kicad_mod")
+
+
+def _is_table_rel(rel: str) -> bool:
+    return PurePosixPath(rel).name == "fp-lib-table"
+
+
+def _marker_of(rel: str) -> str:
+    """The marker rel of the library dir a footprint rel lies directly in."""
+    return PurePosixPath(rel).parent.as_posix() + "/"
+
+
+def changed_rels(stored: Mapping[str, str], now: Mapping[str, str]) -> list[str]:
+    """Sorted file rels whose sha differs between the stored and the current hashes.
+
+    Presence rows (store.py): a missing row and an ABSENT row are the same state, and
+    library marker rows are never reported. The baseline is keyed on the marker: when
+    no current marker is stored (the library was not tracked when the rows were
+    recorded - the locator only started returning it), library footprints and the
+    fp-lib-table without a stored row are recorded silently, not reported. Once it was
+    tracked, a first footprint in an empty library or a newly created table is a change.
+
+    Symmetrically, a stored footprint row whose library marker is not current (the
+    locator returns another dir or none - also for rows `on_library_changed` recorded
+    without a marker) is dropped silently; a deleted but still located library keeps
+    its ABSENT marker, so its footprints are reported; with no
+    current library at all the stored table row is dropped silently too (the table is
+    only tracked together with a library). The caller re-records the current rows."""
+    tracked = any(is_marker_rel(k) and k in stored for k in now)
+    any_library = any(is_marker_rel(k) for k in now)
+    out: list[str] = []
+    for k in stored.keys() | now.keys():
+        if is_marker_rel(k) or stored.get(k, ABSENT) == now.get(k, ABSENT):
+            continue
+        if k not in stored and not tracked and (is_library_rel(k) or _is_table_rel(k)):
+            continue  # baseline
+        if k not in now and is_library_rel(k) and _marker_of(k) not in now:
+            continue  # its library is no longer the located one (or was never marked)
+        if k not in now and not any_library and _is_table_rel(k):
+            continue  # untracked table
+        out.append(k)
+    return sorted(out)
+
+
 class HistoryHooks(RunHooks):
     def __init__(self, svc: HistoryService, project: Project, engine: RunEngine) -> None:
         self.svc = svc
@@ -29,7 +84,7 @@ class HistoryHooks(RunHooks):
         self.engine = engine
 
     async def _record_hashes(self) -> None:
-        await self.svc.hashes.replace(self.project.id, await compute_hashes_async(self.project))
+        await self.svc.hashes.replace(self.project.id, await self.svc.current_hashes(self.project))
 
     async def on_engine_start(self) -> None:
         ensure_gitignore(self.project)
@@ -38,33 +93,35 @@ class HistoryHooks(RunHooks):
 
     async def on_turn_start(self, turn: TurnInfo) -> None:
         """Hash check (Review Focus 4). The engine awaits this before releasing the
-        message, so a reload and the agent note reach this very turn."""
+        message, so a reload and the agent note reach this very turn.
+
+        A change of project files (documents, the project's fp-lib-table) reloads the
+        session, pauses a plan and lists every changed file. A change of ONLY local
+        library footprints (another project of the repo, the KiCad GUI) does neither:
+        it gets a short notice and the library listeners (reason "external")."""
         async with self.svc.lock(self.project):
             stored = await self.svc.hashes.get(self.project.id)
-            now = await compute_hashes_async(self.project)
+            rows = await self.svc.current_hashes(self.project)
             if not stored:
-                await self.svc.hashes.replace(self.project.id, now)
+                await self.svc.hashes.replace(self.project.id, rows)
                 return
-            changed = sorted(k for k in stored.keys() | now.keys() if stored.get(k) != now.get(k))
+            now = {k: r.sha256 for k, r in rows.items()}
+            changed = changed_rels(stored, now)
             if not changed:
+                if now != stored:  # a baseline / presence-row update: record it silently
+                    await self.svc.hashes.replace(self.project.id, rows)
                 return
+            library = [k for k in changed if is_library_rel(k)]
+            library_only = len(library) == len(changed)
             state = "not-open"  # nothing to reload: opening the project reads the files
-            if self.svc.open_session(self.project) is not None:
-                try:
-                    session = await self.svc.sessions.reopen(self.project)
-                    state = "reloaded"
-                except KicadUnavailable as exc:
-                    # The turn's tools then fail and the engine reports KiCad (X18).
-                    log.warning("reload after external change failed: %s", exc)
-                    state = "failed"
-                if state == "reloaded":
-                    try:
-                        await self.svc.publish_view(
-                            self.project, session, self.svc.docs_of(self.project)
-                        )
-                    except Exception:  # KiCad has the new files; only the viewer lags
-                        log.warning("view refresh after external change failed", exc_info=True)
-            await self.svc.hashes.replace(self.project.id, now)
+            if not library_only and self.svc.open_session(self.project) is not None:
+                state = await self._reload()
+            await self.svc.hashes.replace(self.project.id, rows)
+        if library:  # also when mixed: the reload covers KiCad, not the library caches
+            await self.svc.notify_library(self.project, library, "external")
+        if library_only:
+            await self._library_notice(turn, library)
+            return
         for listener in list(self.svc.on_external_change):
             try:
                 await listener(self.project, changed)
@@ -91,6 +148,35 @@ class HistoryHooks(RunHooks):
             "Re-read any design data you rely on."
         )
 
+    async def _reload(self) -> str:
+        """Reopen the session from disk (under `svc.lock`) and refresh the view."""
+        try:
+            session = await self.svc.sessions.reopen(self.project)
+        except KicadUnavailable as exc:
+            # The turn's tools then fail and the engine reports KiCad (X18).
+            log.warning("reload after external change failed: %s", exc)
+            return "failed"
+        try:
+            await self.svc.publish_view(self.project, session, self.svc.docs_of(self.project))
+        except Exception:  # KiCad has the new files; only the viewer lags
+            log.warning("view refresh after external change failed", exc_info=True)
+        return "reloaded"
+
+    async def _library_notice(self, turn: TurnInfo, library: list[str]) -> None:
+        """Only local library footprints changed (another project of the repo, the KiCad
+        GUI): a short notice naming them - no reload (it would drop the footprint
+        document and cost a full restart) and no plan pause."""
+        stems = ", ".join(sorted({PurePosixPath(rel).stem for rel in library}))
+        await self.engine.post_notice(
+            turn.conversation_id,
+            f"Footprints changed outside this project: {stems}",
+            {"action": "library-external-change", "files": library},
+        )
+        self.engine.add_agent_note(
+            f"The footprints {stems} of the local library were changed outside this "
+            "project. Re-read any footprint data you rely on."
+        )
+
     async def on_first_mutation(self, turn: TurnInfo) -> None:
         """Undo point before the turn's first mutating tool call. An exception here
         makes that tool call fail, so nothing is changed without a snapshot."""
@@ -113,6 +199,9 @@ class HistoryHooks(RunHooks):
     def on_documents_changed(self, turn: TurnInfo, docs: set[DocKind]) -> None:
         if "sch" in docs:  # the board stays turn-end only
             self.svc.live.schedule(self.project)
+
+    async def on_library_changed(self, files: list[Path]) -> None:
+        await self.svc.on_library_changed(self.project, files)
 
     async def on_engine_close(self) -> None:
         await self.svc.live.close(self.project)

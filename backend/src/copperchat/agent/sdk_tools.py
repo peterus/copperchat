@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 from collections.abc import Awaitable, Callable, Sequence
@@ -55,7 +56,46 @@ def _success(result: ToolResult) -> dict[str, Any]:
 async def _run_two_phase(spec: ToolSpec, ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     """E-C4 adapter order: read-only -> gate.before_prepare -> prepare -> check_budget ->
     on_mutation (turn snapshot) -> apply -> gate.record. Every refusal happens before
-    the snapshot and before any write (owner rule "refusals never snapshot")."""
+    the snapshot and before any write (owner rule "refusals never snapshot").
+
+    Library files the call wrote (`ctx.library_touched`) are re-recorded in `finally`,
+    for successful and failed calls alike (FP-C6). This is the outermost frame of the
+    call, so the edit lock, the library lock and `_apply_lock` (all taken inside) are
+    released by then."""
+    try:
+        return await _run_two_phase_locked(spec, ctx, args)
+    finally:
+        await _record_library(ctx)
+
+
+# Re-recordings that outlived a cancelled tool call (kept referenced until done).
+_LIBRARY_TASKS: set[asyncio.Task[None]] = set()
+
+
+def _library_task_done(task: asyncio.Task[None]) -> None:
+    _LIBRARY_TASKS.discard(task)
+    if not task.cancelled() and (exc := task.exception()) is not None:
+        log.error("re-recording the library hashes failed", exc_info=exc)
+
+
+async def _record_library(ctx: ToolContext) -> None:
+    """Await `ctx.on_library_changed(touched files)` shielded: a cancel (interrupt) of the
+    tool call never stops it - it then finishes in the background and the CancelledError
+    propagates. Its own errors are logged, never raised, so the call's result or its
+    original exception is kept."""
+    callback = ctx.on_library_changed
+    if not ctx.library_touched or callback is None:
+        return
+    task = asyncio.ensure_future(callback(list(dict.fromkeys(ctx.library_touched))))
+    _LIBRARY_TASKS.add(task)
+    task.add_done_callback(_library_task_done)
+    with contextlib.suppress(Exception):  # logged by _library_task_done
+        await asyncio.shield(task)
+
+
+async def _run_two_phase_locked(
+    spec: ToolSpec, ctx: ToolContext, args: dict[str, Any]
+) -> ToolResult:
     assert spec.prepare is not None and spec.apply is not None
     if getattr(ctx.session, "read_only", False):
         raise StructuredToolError(
@@ -106,7 +146,10 @@ async def _two_phase_steps(spec: ToolSpec, ctx: ToolContext, args: dict[str, Any
         except Exception:
             log.exception("recording the budget of %s failed", spec.name)
     await _save_edit(spec, ctx, result)
-    if getattr(ctx.session, "generation", None) != generation:
+    # A library-only result (footprint write) is saved and journalled inside apply, so
+    # a restart after it loses nothing (spec §9.1): it skips the generation check.
+    library_only = bool(result.library_changed) and not result.changed_docs
+    if not library_only and getattr(ctx.session, "generation", None) != generation:
         # Restarted between the edit and the end of its save (e.g. a parallel read tool
         # timed out, or the save started the server lazily): the server reloaded the
         # last save, so the edit is gone - a KiCad failure, never a success.
