@@ -10,7 +10,8 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from copperchat.agent.engine import RunHooks, TurnInfo, TurnOutcome
-from copperchat.history.store import Snapshot, ensure_gitignore
+from copperchat.db.repos.footprints import ABSENT
+from copperchat.history.store import Snapshot, ensure_gitignore, is_marker_rel
 from copperchat.kicad_session import DocKind, KicadUnavailable
 from copperchat.projects import Project
 from copperchat.tools import StructuredToolError
@@ -35,23 +36,28 @@ def is_library_rel(rel: str) -> bool:
     return rel.endswith(".kicad_mod")
 
 
-def _category(rel: str) -> str:
-    if is_library_rel(rel):
-        return "library"
-    return "table" if PurePosixPath(rel).name == "fp-lib-table" else "project"
+def _is_table_rel(rel: str) -> bool:
+    return PurePosixPath(rel).name == "fp-lib-table"
 
 
 def changed_rels(stored: Mapping[str, str], now: Mapping[str, str]) -> list[str]:
-    """Sorted rels whose sha differs between the stored and the current hashes. A
-    current file without a stored row is a baseline, not a change, when its category
-    (library footprints / the fp-lib-table) has no stored row at all: the locator only
-    started returning a library (or the table appeared) since the rows were recorded."""
-    recorded = {_category(k) for k in stored}
-    return sorted(
-        k
-        for k in stored.keys() | now.keys()
-        if stored.get(k) != now.get(k) and (k in stored or _category(k) in recorded)
-    )
+    """Sorted file rels whose sha differs between the stored and the current hashes.
+
+    Presence rows (store.py): a missing row and an ABSENT row are the same state, and
+    library marker rows are never reported. The baseline is keyed on the marker: when
+    no current marker is stored (the library was not tracked when the rows were
+    recorded - the locator only started returning it), library footprints and the
+    fp-lib-table without a stored row are recorded silently, not reported. Once it was
+    tracked, a first footprint in an empty library or a newly created table is a change."""
+    tracked = any(is_marker_rel(k) and k in stored for k in now)
+    out: list[str] = []
+    for k in stored.keys() | now.keys():
+        if is_marker_rel(k) or stored.get(k, ABSENT) == now.get(k, ABSENT):
+            continue
+        if k not in stored and not tracked and (is_library_rel(k) or _is_table_rel(k)):
+            continue  # baseline
+        out.append(k)
+    return sorted(out)
 
 
 class HistoryHooks(RunHooks):
@@ -85,7 +91,7 @@ class HistoryHooks(RunHooks):
             now = {k: r.sha256 for k, r in rows.items()}
             changed = changed_rels(stored, now)
             if not changed:
-                if now.keys() != stored.keys():  # a baseline: record it silently
+                if now != stored:  # a baseline / presence-row update: record it silently
                     await self.svc.hashes.replace(self.project.id, rows)
                 return
             library = [k for k in changed if is_library_rel(k)]

@@ -100,6 +100,15 @@ class FootprintWriteRepo:
         )
         return r is not None
 
+    async def foreign_after(self, project_id: str, after_id: int) -> set[str]:
+        """Every ``file_rel`` another project journalled a write to after ``after_id``
+        (``later_foreign`` for all files in one query)."""
+        rows = await self._db.fetchall(
+            "SELECT DISTINCT file_rel FROM footprint_writes WHERE id > ? AND project_id != ?",
+            (after_id, project_id),
+        )
+        return {str(r[0]) for r in rows}
+
     async def max_id(self) -> int:
         r = await self._db.fetchone("SELECT COALESCE(MAX(id), 0) FROM footprint_writes")
         return 0 if r is None else int(r[0])

@@ -10,12 +10,14 @@ under the project's `blob_lock`, so every `.tmp-*` file GC sees is a crash lefto
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import os
 import re
 import stat
 import uuid
 from pathlib import Path
+from typing import BinaryIO
 
 from copperchat.errors import CopperChatError
 
@@ -31,12 +33,31 @@ class CorruptSnapshot(CopperChatError):
     http_status = 422
 
 
-def sha256_file(path: Path) -> str:
+def _sha256_stream(fh: BinaryIO) -> str:
     h = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 16), b""):
-            h.update(chunk)
+    for chunk in iter(lambda: fh.read(1 << 16), b""):
+        h.update(chunk)
     return h.hexdigest()
+
+
+def sha256_file(path: Path) -> str:
+    with path.open("rb") as fh:
+        return _sha256_stream(fh)
+
+
+def _open_regular(src: Path) -> BinaryIO:
+    """`src` opened ONCE for reading, never through a symlink (O_NOFOLLOW: ELOOP) and
+    only if it is a regular file (fstat of the opened fd; O_NONBLOCK so a FIFO cannot
+    hang the open). OSError otherwise - no check-then-open race."""
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+    fd = os.open(src, flags)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "not a regular file", str(src))
+        return os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 _LOCKS: dict[str, asyncio.Lock] = {}
@@ -73,37 +94,44 @@ class BlobStore:
         exists is reused without reading `src`. Otherwise `src` is hashed first and an
         existing blob of that content is reused without copying; only new content is
         copied (hashed again while copying, so the blob name always equals the hash of
-        the stored bytes, also when `src` changed in between)."""
-        sha = known_sha
-        if sha is None or not self.path(sha).exists():
-            sha = sha256_file(src)
-        try:
-            return sha, self.path(sha).stat().st_size
-        except FileNotFoundError:
-            pass
-        self.root.mkdir(parents=True, exist_ok=True)
-        if not self._root_is_real():
-            raise CorruptSnapshot(f"{self.root} is not a real directory (symlink?)")
-        tmp = self.root / f"{_TMP_PREFIX}{uuid.uuid4().hex}"
-        h = hashlib.sha256()
-        size = 0
-        try:
-            with open(src, "rb") as fin, open(tmp, "xb") as fout:
-                for chunk in iter(lambda: fin.read(1 << 16), b""):
-                    h.update(chunk)
-                    fout.write(chunk)
-                    size += len(chunk)
-                fout.flush()
-                os.fsync(fout.fileno())
-            sha = h.hexdigest()
-            target = self.path(sha)
-            if target.exists():
-                tmp.unlink()
-            else:
-                tmp.rename(target)
-        except BaseException:
-            tmp.unlink(missing_ok=True)
-            raise
+        the stored bytes, also when `src` changed in between). `src` is opened once,
+        without following a symlink, and must be a regular file (else OSError); the
+        hash and the copy both read that one fd."""
+        if known_sha is not None and self.path(known_sha).exists():
+            try:
+                return known_sha, self.path(known_sha).stat().st_size
+            except FileNotFoundError:
+                pass
+        with _open_regular(src) as fin:  # one fd: hashed, then copied from
+            sha = _sha256_stream(fin)
+            try:
+                return sha, self.path(sha).stat().st_size
+            except FileNotFoundError:
+                pass
+            self.root.mkdir(parents=True, exist_ok=True)
+            if not self._root_is_real():
+                raise CorruptSnapshot(f"{self.root} is not a real directory (symlink?)")
+            fin.seek(0)
+            tmp = self.root / f"{_TMP_PREFIX}{uuid.uuid4().hex}"
+            h = hashlib.sha256()
+            size = 0
+            try:
+                with open(tmp, "xb") as fout:
+                    for chunk in iter(lambda: fin.read(1 << 16), b""):
+                        h.update(chunk)
+                        fout.write(chunk)
+                        size += len(chunk)
+                    fout.flush()
+                    os.fsync(fout.fileno())
+                sha = h.hexdigest()
+                target = self.path(sha)
+                if target.exists():
+                    tmp.unlink()
+                else:
+                    tmp.rename(target)
+            except BaseException:
+                tmp.unlink(missing_ok=True)
+                raise
         return sha, size
 
     def has_temp_files(self) -> bool:

@@ -6,6 +6,7 @@ import hashlib
 import json
 import shutil
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -91,17 +92,31 @@ def test_put_names_blob_after_copied_bytes(
     from copperchat.history import blobs as blobs_mod
 
     src = lib / "A.kicad_mod"
-    real = blobs_mod.sha256_file
+    real = blobs_mod._sha256_stream
 
-    def then_change(path: Path) -> str:
-        digest = real(path)
-        shutil.copyfile(lib / "B.kicad_mod", src)  # a concurrent KiCad save
+    def then_change(fh: Any) -> str:
+        digest = real(fh)
+        shutil.copyfile(lib / "B.kicad_mod", src)  # a concurrent in-place KiCad save
         return digest
 
-    monkeypatch.setattr(blobs_mod, "sha256_file", then_change)
+    monkeypatch.setattr(blobs_mod, "_sha256_stream", then_change)
     sha, _ = blobs.put(src, None)
     assert sha == _sha(lib / "B.kicad_mod")
     assert blobs.path(sha).read_bytes() == (lib / "B.kicad_mod").read_bytes()
+
+
+def test_put_refuses_symlink_source(blobs: BlobStore, lib: Path) -> None:
+    """The source is opened once without following a symlink (no check-then-open race)."""
+    link = lib / "L.kicad_mod"
+    link.symlink_to(lib / "A.kicad_mod")
+    with pytest.raises(OSError):
+        blobs.put(link, None)
+    assert not blobs.root.exists() or not any(blobs.root.iterdir())
+
+
+def test_put_refuses_non_regular_source(blobs: BlobStore, lib: Path) -> None:
+    with pytest.raises(OSError):
+        blobs.put(lib, None)  # a directory
 
 
 @pytest.mark.parametrize(

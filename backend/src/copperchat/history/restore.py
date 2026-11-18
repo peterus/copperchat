@@ -215,10 +215,7 @@ async def _restore_library(
         # Another project's library write takes this lock too: the journal and the
         # files are read consistently while it is held.
         journal = await repo.after_id(project.id, max_id)
-        foreign = {
-            rel: await repo.later_foreign(rel, project.id, max_id)
-            for rel in {r.file_rel for r in journal if r.op != "row_add"}
-        }
+        foreign = await repo.foreign_after(project.id, max_id)  # one query
 
         def plan_and_apply() -> _LibraryOutcome:
             plan = plan_library_restore(
@@ -226,7 +223,7 @@ async def _restore_library(
                 location,
                 project.dir,
                 journal,
-                lambda rel, _after: foreign.get(rel, False),
+                lambda rel, _after: rel in foreign,
                 _fresh_sha,
                 table_rows,
             )

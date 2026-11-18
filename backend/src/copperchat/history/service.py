@@ -27,6 +27,7 @@ from copperchat.history.store import (
     compute_tracked_hashes,
     document_files,
     tracked_files,
+    with_presence_rows,
 )
 from copperchat.kicad_session import DocKind, KicadSession, KicadSessionManager
 from copperchat.projects import Project
@@ -104,7 +105,8 @@ class HistoryService:
     async def _on_saved(self, project: Project, doc: DocKind) -> None:
         """Re-record the saved document's files (+ the project file KiCad may rewrite);
         the other document's stored hashes stay, so an external change to it is still
-        reported at the next turn start."""
+        reported at the next turn start. Library, table and presence rows are never
+        owned (no document suffix), so they stay as they are."""
         suffix = ".kicad_sch" if doc == "sch" else ".kicad_pcb"
         pro = project.pro_file.relative_to(project.dir).as_posix()
 
@@ -132,7 +134,10 @@ class HistoryService:
         external change while changes other projects made to the rest of the library
         still show.
         A file that no longer exists, or is not tracked (no library located, a symlink),
-        loses its row. Then the library listeners get reason "own" (errors logged).
+        loses its row - except the project's fp-lib-table with a library located, which
+        gets its ABSENT presence row (store.py). The library marker is never written
+        here: a library not tracked before stays a silent baseline at the next turn start.
+        Then the library listeners get reason "own" (errors logged).
 
         Never takes `HistoryService.lock` (FP-C6 lock rule): it runs in the `finally` of
         a tool call, and `svc.lock` is always taken first (restore, step checkpoints:
@@ -150,7 +155,8 @@ class HistoryService:
 
         def compute() -> dict[str, HashRow]:
             tracked = [f for f in tracked_files(project, location) if f.rel in targets]
-            return compute_tracked_hashes(tracked, {})
+            rows = with_presence_rows(compute_tracked_hashes(tracked, {}), project, location)
+            return {k: v for k, v in rows.items() if k in targets}
 
         now = await asyncio.to_thread(compute)
         await self.hashes.upsert(project.id, now, delete=targets)
@@ -165,13 +171,15 @@ class HistoryService:
                 log.exception("library listener failed (%s)", reason)
 
     async def current_hashes(self, project: Project) -> dict[str, HashRow]:
-        """Hashes of every tracked file (documents, fp-lib-table, local library); library
-        files with unchanged stats reuse their stored sha (FP-C7)."""
+        """Hashes of every tracked file (documents, fp-lib-table, local library) plus,
+        with a library located, its presence rows (marker, absent table; store.py);
+        library files with unchanged stats reuse their stored sha (FP-C7)."""
         location = await self.locate_library(project)
         previous = await self.hashes.get_rows(project.id)
 
         def compute() -> dict[str, HashRow]:
-            return compute_tracked_hashes(tracked_files(project, location), previous)
+            rows = compute_tracked_hashes(tracked_files(project, location), previous)
+            return with_presence_rows(rows, project, location)
 
         return await asyncio.to_thread(compute)
 

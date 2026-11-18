@@ -327,7 +327,7 @@ async def test_restore_removes_table_this_project_created(env: Env, lib: Lib) ->
     await restore_snapshot(env.svc, project, snap.id, conversation_id=TEST_CID)
 
     assert not table.exists() and lib.removed == []
-    assert "fp-lib-table" not in await env.svc.hashes.get(project.id)
+    assert (await env.svc.hashes.get(project.id))["fp-lib-table"] == ABSENT
     assert lib.calls and "fp-lib-table" in lib.calls[-1][1]
 
 
@@ -469,3 +469,21 @@ async def test_restore_reports_foreign_library_change_it_did_not_touch(env: Env,
     assert "- Footprints changed outside this project: B" in _notice(env)
     stored = await env.svc.hashes.get(project.id)
     assert stored[b] == sha256_file(lib.dir / "B.kicad_mod")
+
+
+async def test_restore_reports_first_footprint_in_empty_tracked_library(env: Env, lib: Lib) -> None:
+    """The library was tracked but empty at the last turn start: the first footprint
+    another project wrote since is reported as external, not taken as a baseline."""
+    project = lib.project
+    for name in ("A.kicad_mod", "B.kicad_mod"):
+        (lib.dir / name).unlink()
+    await env.svc.hashes.replace(project.id, await env.svc.current_hashes(project))  # turn start
+    snap = await env.svc.store(project).snapshot("run-1", "turn")
+    lib.put("D.kicad_mod", 3)  # another project created D
+
+    await restore_snapshot(env.svc, project, snap.id, conversation_id=TEST_CID)
+
+    d = "../footprints/X.pretty/D.kicad_mod"
+    assert lib.calls == [(project, [d], "external")]
+    assert "- Footprints changed outside this project: D" in _notice(env)
+    assert (lib.dir / "D.kicad_mod").exists()

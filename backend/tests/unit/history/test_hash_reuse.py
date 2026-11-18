@@ -33,6 +33,15 @@ def _age(path: Path, seconds: float = _OLD) -> None:
     os.utime(path, ns=(t, t))
 
 
+_SHIFT = 5_000_000_000  # copying/aging a file sets its ctime to now: look at it 5 s later
+
+
+@pytest.fixture(autouse=True)
+def later_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The hashing clock runs 5 s ahead, so freshly aged files are not racily clean."""
+    monkeypatch.setattr(store_mod, "_now_ns", lambda: time.time_ns() + _SHIFT)
+
+
 @pytest.fixture
 def lib(tmp_path: Path) -> Path:
     d = tmp_path / "lib" / "X.pretty"
@@ -147,12 +156,30 @@ def test_stat_changes_during_hash_not_stored(lib: Path, monkeypatch: pytest.Monk
 
 def test_racily_clean_not_stored(lib: Path, counted: list[Path]) -> None:
     files = _files(lib)
-    os.utime(lib / "A.kicad_mod")  # mtime = now
+    now = store_mod._now_ns()
+    os.utime(lib / "A.kicad_mod", ns=(now, now))  # mtime = now
     rows = compute_tracked_hashes(files, {})
     assert rows[files[0].rel].size is None and rows[files[0].rel].mtime_ns is None
     counted.clear()
     compute_tracked_hashes(files, rows)
     assert counted == [lib / "A.kicad_mod"]
+
+
+def test_racily_clean_ctime_not_stored(
+    lib: Path, counted: list[Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An old mtime does not make a file clean: its ctime (set by the aging utime just
+    now) is in the reuse key too and still within RACY_NS."""
+    monkeypatch.setattr(store_mod, "_now_ns", time.time_ns)
+    files = _files(lib)
+    a = (lib / "A.kicad_mod").stat()
+    assert time.time_ns() - a.st_mtime_ns >= store_mod.RACY_NS
+    assert time.time_ns() - a.st_ctime_ns < store_mod.RACY_NS
+    rows = compute_tracked_hashes(files, {})
+    assert rows[files[0].rel] == HashRow(sha256_file(lib / "A.kicad_mod"))
+    counted.clear()
+    compute_tracked_hashes(files, rows)
+    assert sorted(counted) == sorted(f.path for f in files)
 
 
 def test_null_stats_rehash(lib: Path, counted: list[Path]) -> None:

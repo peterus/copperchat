@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from copperchat.db import Database, utcnow_iso
-from copperchat.db.repos.footprints import FootprintWriteRepo
+from copperchat.db.repos.footprints import ABSENT, FootprintWriteRepo
 from copperchat.errors import CopperChatError
 from copperchat.history.blobs import BlobStore, blob_lock
 from copperchat.history.blobs import CorruptSnapshot as CorruptSnapshot
@@ -178,6 +178,42 @@ def tracked_files(project: Project, library: LibraryLocation | None) -> list[Tra
     return files
 
 
+# Presence rows (FP-C6): hash rows that stand for no file content. With a library
+# located, the current hashes carry
+# - the library MARKER: rel = the library dir's project-relative POSIX path + "/",
+#   sha LIBRARY_PRESENT ("dir") or ABSENT if the dir is missing, and
+# - the project's fp-lib-table with sha ABSENT when it does not exist (a present table
+#   is a tracked file with its real sha).
+# A stored marker means "the library was tracked when these rows were recorded": a
+# footprint (or table) without a stored row is then a change, not a baseline
+# (`hooks.changed_rels`). Marker rows are never hashed, reported or passed to listeners.
+LIBRARY_PRESENT = "dir"
+
+
+def is_marker_rel(rel: str) -> bool:
+    """The library marker row (no file: its rel ends with "/")."""
+    return rel.endswith("/")
+
+
+def library_marker_rel(project: Project, library: LibraryLocation) -> str:
+    return Path(os.path.relpath(library.dir, project.dir)).as_posix() + "/"
+
+
+def with_presence_rows(
+    rows: Mapping[str, HashRow], project: Project, library: LibraryLocation | None
+) -> dict[str, HashRow]:
+    """`rows` (hashes of `tracked_files`) plus the presence rows (blocking: one lstat
+    per library dir component). No library: `rows` unchanged."""
+    out = dict(rows)
+    if library is None:
+        return out
+    present = _library_dir(library) is not None
+    out[library_marker_rel(project, library)] = HashRow(LIBRARY_PRESENT if present else ABSENT)
+    table = Path(os.path.relpath(library.table, project.dir)).as_posix()
+    out.setdefault(table, HashRow(ABSENT))
+    return out
+
+
 def repo_rel(path: Path, repo_root: Path) -> str:
     """`path` relative to the repo root as POSIX ("." for the root itself); the root
     may be given resolved or not. Outside the repo root: ValueError."""
@@ -197,9 +233,10 @@ async def compute_hashes_async(project: Project) -> dict[str, str]:
     return await asyncio.to_thread(compute_hashes, project)
 
 
-# A file whose mtime is this close to now may still be written to within the same
-# timestamp granularity ("racily clean"): its stats are never stored for reuse.
+# A file whose mtime or ctime is this close to now may still be written to within the
+# same timestamp granularity ("racily clean"): its stats are never stored for reuse.
 RACY_NS = 2_000_000_000
+_now_ns = time.time_ns  # the racily-clean clock (tests shift it)
 
 
 @dataclass(frozen=True)
@@ -230,7 +267,8 @@ def compute_tracked_hashes(
     """rel -> HashRow for every file still present (blocking; FP-C7). A library file
     whose lstat (size, mtime_ns, inode, ctime_ns) equals its previous row's reuses that sha
     without reading the file; project files are always hashed. A row gets stats only
-    if they did not change while hashing and the mtime is not within RACY_NS of now."""
+    if they did not change while hashing and neither the mtime nor the ctime is within
+    RACY_NS of now. Presence rows are added by `with_presence_rows`, never here."""
     rows: dict[str, HashRow] = {}
     for f in files:
         try:
@@ -245,7 +283,8 @@ def compute_tracked_hashes(
         except FileNotFoundError:  # vanished between listing and hashing
             continue
         stable = _stat_key(before) == _stat_key(after)
-        if stable and abs(time.time_ns() - after.st_mtime_ns) >= RACY_NS:
+        newest = max(after.st_mtime_ns, after.st_ctime_ns)
+        if stable and abs(_now_ns() - newest) >= RACY_NS:
             rows[f.rel] = HashRow(digest, *_stat_key(after))
         else:
             rows[f.rel] = HashRow(digest)
@@ -420,12 +459,11 @@ class HistoryStore:
                         plan_step_id,
                     ),
                 )
-                for sha in shas:
-                    await self._db.execute(
-                        "INSERT INTO history_blob_refs(project_id, snapshot_id, sha256)"
-                        " VALUES (?, ?, ?)",
-                        (self.project.id, sid, sha),
-                    )
+                await self._db.executemany(
+                    "INSERT INTO history_blob_refs(project_id, snapshot_id, sha256)"
+                    " VALUES (?, ?, ?)",
+                    [(self.project.id, sid, sha) for sha in shas],
+                )
         except BaseException:
             await asyncio.to_thread(shutil.rmtree, dest if renamed else tmp, True)
             if blobs_held:  # blobs written for this snapshot are orphans now

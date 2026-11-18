@@ -449,16 +449,31 @@ phase file, with the reason.)
   still changes it; nullable column `ctime_ns` in 0012);
   `DocumentHashRepo.replace` accepts `HashRow` or plain digests (stored without stats).
   Project files store their stats too but never reuse them; stats are dropped when they
-  change during hashing or `mtime` is within 2 s of now (`RACY_NS`).
+  change during hashing or `mtime` or `ctime` is within 2 s of now (`RACY_NS`).
+- **Presence rows** (`history/store.py`, `with_presence_rows`; added by
+  `HistoryService.current_hashes` and, filtered to the written files,
+  `on_library_changed`): with a library located the hashes carry a **library marker**
+  (rel = the library dir's project-relative POSIX path + `/`, sha `"dir"`, or `ABSENT` if
+  the dir is missing) and the fp-lib-table row with sha `ABSENT` when there is no table.
+  `hooks.changed_rels` treats a missing row like `ABSENT`, never reports marker rows, and
+  takes footprints / the table without a stored row as a silent baseline **only when the
+  current marker is not stored** (library not tracked before). So the first footprint in
+  an empty tracked library is an external change (also in restore's check), and a table
+  created externally takes the reload path. `_on_saved` never owns these rows;
+  `on_library_changed` never writes the marker (an untracked library stays a baseline).
 - **`LibraryLocator`** type alias lives in `history/store.py`; `HistoryStore(db, project,
   locate_library=...)`; `HistoryService.store()` passes `self.locate_library`.
 - **Manifest v2:** `repoRootRel` is `"."` for a project at the repo root and `null` (like
   `library`/`table`) when the locator returns `None`. `BlobStore` refuses a symlinked
   `.kicad-agent` / `history-blobs` dir and GC only removes 64-hex blob names and
-  `.tmp-*` files (a cloned repo could ship a link elsewhere). The blob lock is held until
+  `.tmp-*` files (a cloned repo could ship a link elsewhere). `BlobStore.put` opens the source once
+  (`O_NOFOLLOW`, fstat regular file, else `OSError`) and hashes/copies that fd; blob refs
+  are inserted with one `executemany`. The blob lock is held until
   the snapshot row and its `history_blob_refs` are committed.
 - **`FootprintWriteRepo`** returns `FootprintWrite` rows (frozen dataclass, every column);
-  `finalise` refuses `"pending"`. Constants `ABSENT`, `OPS`, `STATES`, `FINAL_STATES`.
+  `finalise` refuses `"pending"`. `foreign_after(project_id, after_id) -> set[str]`
+  (distinct `file_rel` of other projects' writes after `after_id`) serves restore in one
+  query. Constants `ABSENT`, `OPS`, `STATES`, `FINAL_STATES`.
 - **`library_restore.apply_library_plan(plan, blob_path, *, location, project_dir) ->
   list[str]`** re-validates every path at apply time; order copies → deletes → own table
   file (`remove_table`) → `rmdir`; delete/`rmdir` problems come back as notice lines.

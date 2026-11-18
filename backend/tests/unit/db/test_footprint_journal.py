@@ -155,6 +155,20 @@ async def test_later_foreign(db: Database) -> None:
     assert await repo.later_foreign(FILE, P2, own)  # P1's newer approve is foreign to P2
 
 
+async def test_foreign_after(db: Database) -> None:
+    repo = FootprintWriteRepo(db)
+    own = await repo.insert_pending(P1, "r1", "X:R", FILE, "create", ABSENT)
+    assert await repo.foreign_after(P1, own) == set()
+    await repo.insert_pending(P1, "r1", "X:R", FILE, "approve", SHA_A)  # own, newer
+    assert await repo.foreign_after(P1, own) == set()
+    first = await repo.insert_pending(P2, "r2", "X:S", "other.kicad_mod", "create", ABSENT)
+    await repo.insert_pending(P2, "r2", "X:R", FILE, "replace", SHA_A)
+    await repo.insert_pending(P2, "r2", "X:R", FILE, "approve", SHA_A)  # distinct
+    assert await repo.foreign_after(P1, own) == {FILE, "other.kicad_mod"}
+    assert await repo.foreign_after(P1, first) == {FILE}  # not newer than after_id: excluded
+    assert await repo.foreign_after(P2, 0) == {FILE}  # P1's writes are foreign to P2
+
+
 async def test_max_id_and_after_id(db: Database) -> None:
     repo = FootprintWriteRepo(db)
     assert await repo.max_id() == 0

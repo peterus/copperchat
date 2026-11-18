@@ -15,6 +15,7 @@ from typing import Any, cast
 import pytest
 
 from copperchat.agent.sdk_tools import build_sdk_tool_list
+from copperchat.db.repos.footprints import ABSENT
 from copperchat.history.hooks import HistoryHooks
 from copperchat.history.store import LibraryLocation
 from copperchat.kicad_tools.edit.changeset import ChangeSet, Logical, NetIntent, SheetRef
@@ -49,13 +50,23 @@ class Lib:
         replace_with_kicad_file(path, other)
 
 
-async def _setup(env: Env, *, open_session: bool = False) -> Lib:
+async def _setup(
+    env: Env,
+    *,
+    open_session: bool = False,
+    stems: str = "ABC",
+    lib_dir_exists: bool = True,
+    table: bool = True,
+) -> Lib:
     project = env.project()
     repo = env.settings.projects_root
     lib_dir = repo / "footprints" / "X.pretty"
-    lib_dir.mkdir(parents=True)
-    for stem, src in zip("ABC", _FOOTPRINTS, strict=False):
+    if lib_dir_exists:
+        lib_dir.mkdir(parents=True)
+    for stem, src in zip(stems, _FOOTPRINTS, strict=False):
         shutil.copyfile(src, lib_dir / f"{stem}.kicad_mod")  # byte copies of KiCad files
+    if not table:
+        (project.dir / "fp-lib-table").rename(repo / "fp-lib-table.aside")
     location = LibraryLocation(
         dir=lib_dir, repo_root=repo, table=project.dir / "fp-lib-table", nickname="X"
     )
@@ -174,7 +185,8 @@ async def test_saved_listener_keeps_library_rows(lib: Lib) -> None:
     env, project = lib.env, lib.project
     before = await env.svc.hashes.get_rows(project.id)
     library = {k: v for k, v in before.items() if k.startswith("../") or k == "fp-lib-table"}
-    assert len(library) == 4  # fp-lib-table + A, B, C
+    assert len(library) == 5  # fp-lib-table + A, B, C + the library marker
+    assert "../footprints/X.pretty/" in library
     await env.svc._on_saved(project, "sch")
     after = await env.svc.hashes.get_rows(project.id)
     assert {k: after[k] for k in library} == library
@@ -266,7 +278,7 @@ async def test_rerecord_keeps_rows_written_meanwhile(
     lib: Lib, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """on_library_changed / _on_saved write only their own rows: a row another path
-    stored while they were hashing (or between their read and write) survives."""
+    stored while they were hashing, or between _on_saved's read and its write, survives."""
     from copperchat.history import service as service_mod
 
     env, project = lib.env, lib.project
@@ -288,24 +300,96 @@ async def test_rerecord_keeps_rows_written_meanwhile(
         asyncio.run_coroutine_threadsafe(other_path(rel), loop).result()
         return rows
 
-    real_get_rows = env.svc.hashes.get_rows
+    real_get = env.svc.hashes.get
+    reads: list[str] = []
 
-    async def get_rows(project_id: str) -> Any:
-        rows = await real_get_rows(project_id)
-        await other_path(f"between-{len(injected)}.kicad_sch")
+    async def get(project_id: str) -> Any:
+        # _on_saved's read of the stored rows; the injected row is written after it, so
+        # a read-modify-write of the whole set would drop it.
+        rows = await real_get(project_id)
+        rel = f"between-{len(injected)}.kicad_sch"
+        reads.append(rel)
+        await other_path(rel)
         return rows
 
     monkeypatch.setattr(service_mod, "compute_tracked_hashes", computing)
-    monkeypatch.setattr(env.svc.hashes, "get_rows", get_rows)
+    monkeypatch.setattr(env.svc.hashes, "get", get)
     lib.change("A")
     await env.svc.on_library_changed(project, [lib.file("A")])
     await env.svc._on_saved(project, "pcb")
+    monkeypatch.setattr(env.svc.hashes, "get", real_get)
 
     stored = await env.svc.hashes.get(project.id)
-    assert injected and all(stored.get(rel) == "7" * 64 for rel in injected)
+    assert reads == ["between-2.kicad_sch"]  # only _on_saved reads
+    assert len(injected) == 3 and all(stored.get(rel) == "7" * 64 for rel in injected)
     monkeypatch.setattr(service_mod, "compute_tracked_hashes", real_compute)
     current = await env.svc.current_hashes(project)
     assert stored[lib.rel(lib.file("A"))] == current[lib.rel(lib.file("A"))].sha256
+
+
+@pytest.mark.parametrize("lib_dir_exists", [True, False])
+async def test_first_footprint_in_empty_tracked_library_is_external(
+    env: Env, lib_dir_exists: bool
+) -> None:
+    """The library was tracked (empty, or its dir missing) when the rows were recorded:
+    the first footprint another project / the GUI writes there is an external change."""
+    lib = await _setup(env, open_session=True, stems="", lib_dir_exists=lib_dir_exists)
+    lib.location.dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(_FOOTPRINTS[0], lib.file("D"))  # a KiCad-saved footprint appears
+
+    await lib.hooks.on_turn_start(turn("run-2"))
+
+    d = lib.rel(lib.file("D"))
+    assert lib.env.server.starts == 1 and lib.external == []  # no reload, no pause
+    assert lib.env.engine.notices[-1] == (
+        "Footprints changed outside this project: D",
+        {"action": "library-external-change", "files": [d]},
+    )
+    assert lib.events == [([d], "external")]
+    await lib.hooks.on_turn_start(turn("run-3"))  # re-recorded
+    assert len(lib.env.engine.notices) == 1
+
+
+async def test_table_created_externally_takes_todays_path(env: Env) -> None:
+    """No fp-lib-table when the rows were recorded: one created outside CopperChat is a
+    project-file change (reload, plan pause, notice), not a silent baseline."""
+    lib = await _setup(env, open_session=True, table=False)
+    session = env.sessions.current()
+    stored = await env.svc.hashes.get(lib.project.id)
+    assert stored["fp-lib-table"] == ABSENT
+    replace_with_kicad_file(lib.project.dir / "fp-lib-table", HIERARCHY / "fp-lib-table")
+
+    await lib.hooks.on_turn_start(turn("run-2"))
+
+    assert env.sessions.current() is not session and env.server.starts == 2
+    assert lib.external == [["fp-lib-table"]]
+    assert env.engine.notices[-1][1] == {"action": "external-change", "files": ["fp-lib-table"]}
+    assert lib.events == []
+
+
+async def test_marker_rows_are_never_reported(opened_lib: Lib) -> None:
+    """The library dir vanishing changes its marker row; only the footprints that went
+    with it are reported (the marker is no file)."""
+    lib = opened_lib
+    shutil.rmtree(lib.location.dir)
+    await lib.hooks.on_turn_start(turn("run-2"))
+    rels = sorted(lib.rel(lib.file(s)) for s in "ABC")
+    assert lib.events == [(rels, "external")]
+    assert lib.env.engine.notices[-1][1] == {"action": "library-external-change", "files": rels}
+    stored = await lib.env.svc.hashes.get(lib.project.id)
+    assert stored["../footprints/X.pretty/"] == ABSENT
+
+
+async def test_own_table_removal_records_absent_row(lib: Lib) -> None:
+    """CopperChat removed the table itself: its row becomes ABSENT (not deleted), so the
+    next turn start neither reports it nor takes a later external re-creation silently."""
+    env, project = lib.env, lib.project
+    table = project.dir / "fp-lib-table"
+    table.unlink()
+    await env.svc.on_library_changed(project, [table])
+    assert (await env.svc.hashes.get(project.id))["fp-lib-table"] == ABSENT
+    await lib.hooks.on_turn_start(turn("run-2"))
+    assert env.engine.notices == [] and lib.external == []
 
 
 async def test_library_appearing_later_is_a_baseline(env: Env) -> None:
