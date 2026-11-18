@@ -606,9 +606,11 @@ def _read_fd(fd: int, size: int) -> bytes:
 
 def _kill_group(proc: asyncio.subprocess.Process) -> None:
     """SIGKILL the worker's process group (its own session: pgid == pid) while it has
-    not been reaped, so the pid cannot have been reused."""
+    not been reaped, so the pid is not normally reused (strictly guaranteed only with
+    the pidfd child watcher; a group that already exited or is no longer ours is
+    ignored)."""
     if proc.returncode is None:
-        with contextlib.suppress(ProcessLookupError):
+        with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(proc.pid, signal.SIGKILL)
 
 
@@ -676,7 +678,8 @@ async def _run_worker(svg: bytes, width: int, height: int, home: Path) -> bytes:
 async def rasterise(svg: bytes, extent_mm: tuple[float, float]) -> tuple[bytes, float]:
     """PNG of `svg` (whose viewBox is `extent_mm`) and its px/mm: at least 40 px/mm,
     the longer side at most 2000 px. CairoSVG runs in a worker process
-    (`_raster_worker`: address-space and CPU rlimits, minimal environment) that is
+    (`_raster_worker`: address-space, CPU and file-size (RLIMIT_FSIZE) rlimits, minimal
+    environment; its stdin/stdout/stderr are temp files, not pipes) that is
     killed after `RASTER_TIMEOUT_S` (`render_failed`, "render timed out")."""
     width, height, scale = _raster_size(extent_mm)
     home = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="cc-fp-raster-"))

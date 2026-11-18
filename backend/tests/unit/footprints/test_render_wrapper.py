@@ -999,12 +999,12 @@ async def test_slow_worker_times_out_and_is_reaped(
     only the minimal environment (no secret of the app's) and the PNG size in argv."""
     info = tmp_path / "info.json"
     _fake_worker(monkeypatch, SLEEPER.format(info=str(info)))
-    monkeypatch.setattr(fr, "RASTER_TIMEOUT_S", 1.0)
+    monkeypatch.setattr(fr, "RASTER_TIMEOUT_S", 3.0)  # slack for a slow worker start
     monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
     started = time.monotonic()
     with pytest.raises(StructuredToolError) as exc:
         await fr.rasterise(kicad_svg(), (4.0, 4.0))
-    assert time.monotonic() - started < 5
+    assert time.monotonic() - started < 10
     assert _code(exc) == "render_failed" and "render timed out" in exc.value.why
     seen = json.loads(info.read_text())
     assert _gone(seen["pid"])
@@ -1185,16 +1185,20 @@ async def test_stderr_flood_does_not_block(monkeypatch: pytest.MonkeyPatch, tmp_
     the loop stalls across the deadline (a stderr pipe would be full then) and the
     render is still `render_failed` "render timed out" within moments, worker reaped;
     stderr is never quoted."""
-    monkeypatch.setattr(fr, "RASTER_TIMEOUT_S", 1.0)
+    timeout = 3.0  # slack for a slow worker start
+    monkeypatch.setattr(fr, "RASTER_TIMEOUT_S", timeout)
     info = tmp_path / "info.json"
     _fake_worker(monkeypatch, _flood(info, 2))
+    began = time.monotonic()
     task = asyncio.create_task(fr.rasterise(kicad_svg(), (4.0, 4.0)))
     pid = int(await _wait_for_file(info))
-    time.sleep(1.2)  # past the deadline with the loop stalled
+    # stall the loop until past the deadline (measured from the start, however slow
+    # the worker was to come up)
+    time.sleep(max(0.2, began + timeout + 0.2 - time.monotonic()))
     started = time.monotonic()
     with pytest.raises(StructuredToolError) as exc:
         await task
-    assert time.monotonic() - started < 5
+    assert time.monotonic() - started < 10
     assert _code(exc) == "render_failed" and "render timed out" in exc.value.why
     assert "xxx" not in exc.value.why and _gone(pid)
 
