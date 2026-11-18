@@ -54,17 +54,23 @@ PIN1_EDGE_KINDS = ("polygon", "polygon_hole", "rect")  # closed outlines: edges 
 PIN1_AXIS_TOL_DEG = 1.0  # an edge within this of the x or y axis is not diagonal
 TEXT_CHAR_WIDTH = 0.8  # text box: len(value) * 0.8 * size_x by size_y
 MAX_PAIR_PADS = 2000
-MAX_PAIR_SHAPES = 5000
+MAX_PAIR_SHAPES = 5000  # all shapes plus the silk texts
 # a pad with more copper pieces (custom pad primitives, arcs as chords) or more copper
 # vertices is left out of the pair rules, measured by its bounding box in the pin-1 rule
 # and named in `too_complex_partial_check`: `geom.distance` is O(Va * Vb) per piece pair
 MAX_PAD_PARTS = 256
 MAX_PAD_VERTICES = 512
-# footprint-level budget of the pair rules, in vertex pairs (sum of Va * Vb over the
-# measured candidate pairs, an upper bound of the edge pairs visited); pairs beyond it
-# are skipped and counted in `too_complex_partial_check`
-MAX_PAIR_WORK = 2_000_000
+# One work budget per run, shared by every loop whose cost is a product of two input
+# sizes: closed-outline building, expected-pad matching, courtyard containment (points x
+# courtyard vertices), courtyard margin, the pair sweeps and distances, the pin-1 mark
+# distances. A unit is about one point-to-segment distance (~0.7 us in CPython). Each
+# such loop charges its work (`_Run.afford`) before it runs; a rule that cannot afford
+# its next step stops there and is named in the one `too_complex_partial_check` info.
+WORK_BUDGET = 1_500_000
 PAIR_RULES = ("pad_gap_small", "silk_on_pad")
+COURTYARD_RULES = ("courtyard_not_enclosing", "courtyard_margin", "silk_outside_courtyard")
+# why a rule is partial, in message order
+_TOO_MANY, _COMPLEX, _BBOX, _BUDGET = "too_many_items", "complex_pads", "bounding_box", "budget"
 PER_RULE_CAP = 20
 TOTAL_CAP = 200
 DEFAULT_TOLERANCE = 0.01
@@ -279,6 +285,13 @@ def _vertices(pieces: Iterable[geom.Geometry]) -> int:
     return total
 
 
+def _dist_cost(va: int, vb: int) -> int:
+    """Work units of `geom.distance` / `_min_dist` between pieces of `va` and `vb`
+    vertices: up to 4 point-segment distances per edge pair, plus the containment tests
+    and the piece-box gaps."""
+    return 4 * va * vb + va + vb
+
+
 def _box_polygon(b: Box) -> Polygon:
     return [(b[0], b[1]), (b[2], b[1]), (b[2], b[3]), (b[0], b[3])]
 
@@ -292,17 +305,19 @@ def _diagonal(seg: Seg) -> bool:
     return PIN1_AXIS_TOL_DEG < angle < 90.0 - PIN1_AXIS_TOL_DEG
 
 
-def _inside(poly: Polygon) -> Callable[[Point], bool]:
-    """Containment test for `poly` (boundary = inside); a bounds check for an
-    axis-aligned rectangle, the usual courtyard."""
+def _inside(poly: Polygon) -> tuple[Callable[[Point], bool], int]:
+    """Containment test for `poly` (boundary = inside) and its work units per point; a
+    bounds check for an axis-aligned rectangle, the usual courtyard."""
     if len(poly) == 4:
         (ax, ay), (bx, by), (cx, cy), (dx, dy) = poly
         if (ay == by and bx == cx and cy == dy and dx == ax) or (
             ax == bx and by == cy and cx == dx and dy == ay
         ):
             x0, y0, x1, y1 = _box(poly)
-            return lambda q: x0 - 1e-12 <= q[0] <= x1 + 1e-12 and y0 - 1e-12 <= q[1] <= y1 + 1e-12
-    return lambda q: geom.point_in_polygon(q, poly)
+            return (
+                lambda q: x0 - 1e-12 <= q[0] <= x1 + 1e-12 and y0 - 1e-12 <= q[1] <= y1 + 1e-12
+            ), 1
+    return (lambda q: geom.point_in_polygon(q, poly)), len(poly)
 
 
 def text_box(t: Text) -> list[Point]:
@@ -347,10 +362,16 @@ def pitch_pad_pair(g: FootprintGeometry) -> tuple[Pad, Pad] | None:
 # --- the checks ---------------------------------------------------------------------
 
 
+class _OutOfBudget(Exception):
+    """Raised inside a rule when `_Run.afford` refuses its next step."""
+
+
 @dataclass
 class _Run:
     inp: CheckInput
     findings: list[Finding] = field(default_factory=list)
+    work: int = 0  # units spent of WORK_BUDGET
+    partial: dict[str, list[str]] = field(default_factory=dict)  # reason -> rules
 
     def __post_init__(self) -> None:
         g = self.inp.geometry
@@ -371,9 +392,77 @@ class _Run:
         self.fab = [s for s in g.shapes if s.layer == f"{self.side}.Fab"]
         self.fab_segs = [sg for s in self.fab for sg in geom.stroke_segments(s)]
         self.silk = [s for s in g.shapes if s.layer == f"{self.side}.SilkS"]
+        silk_texts = sum(1 for t in g.texts if t.layer in ("F.SilkS", "B.SilkS"))
+        self.pair_shapes = len(g.shapes) + silk_texts
         crtyd = [s for s in g.shapes if s.layer == f"{self.side}.CrtYd"]
         self.crtyd_shapes = crtyd
-        self.outline = geom.closed_outline(crtyd) if crtyd else None
+        afford = self.charger("courtyard_missing", *COURTYARD_RULES)
+        self.outline = geom.closed_outline(crtyd, afford) if crtyd else None
+        self.outline_unknown = self.outline is None and _BUDGET in self.partial
+
+    # -- the shared work budget ----------------------------------------------------------
+
+    def afford(self, cost: int, *rules: str) -> bool:
+        """Charge `cost` units of `WORK_BUDGET`; False (and `rules` noted as partial)
+        when they do not fit, then the caller skips the rest of its rule."""
+        if self.work + cost > WORK_BUDGET:
+            self.note(_BUDGET, *rules)
+            return False
+        self.work += cost
+        return True
+
+    def charger(self, *rules: str) -> Callable[[int], bool]:
+        return lambda cost: self.afford(cost, *rules)
+
+    def note(self, reason: str, *rules: str) -> None:
+        got = self.partial.setdefault(reason, [])
+        got += [r for r in rules if r not in got]
+
+    def finish(self) -> None:
+        """The single `too_complex_partial_check` info: every rule that was skipped or
+        only partly run, grouped by reason."""
+        if not self.partial:
+            return
+        g = self.g
+        cx = sorted(self.complex_pads)
+        names = [g.pads[i].number or "(unnumbered)" for i in cx]
+        shown = ", ".join(names[:10]) + (", ..." if len(names) > 10 else "")
+        why = {
+            _TOO_MANY: f"skipped: {len(g.pads)} pads / {self.pair_shapes} shapes and silk "
+            f"texts exceed {MAX_PAIR_PADS} / {MAX_PAIR_SHAPES}",
+            _COMPLEX: f"skipped for pad(s) {shown} (more than {MAX_PAD_PARTS} copper pieces "
+            f"or {MAX_PAD_VERTICES} vertices)",
+            _BBOX: f"measured pad(s) {shown} by their bounding box",
+            _BUDGET: f"stopped early: the work budget of {WORK_BUDGET} units is used up",
+        }
+        measured: dict[str, Any] = {"skipped": {r: list(v) for r, v in self.partial.items()}}
+        expected: dict[str, Any] = {}
+        if _TOO_MANY in self.partial:
+            measured |= {"pads": len(g.pads), "shapes": self.pair_shapes}
+            expected |= {"pads": MAX_PAIR_PADS, "shapes": MAX_PAIR_SHAPES}
+        if _COMPLEX in self.partial or _BBOX in self.partial:
+            measured |= {
+                "pieces": max(len(self.parts[i]) for i in cx),
+                "vertices": max(self.vertices[i] for i in cx),
+            }
+            expected |= {"pieces": MAX_PAD_PARTS, "vertices": MAX_PAD_VERTICES}
+        if _BUDGET in self.partial:
+            measured["work"] = self.work
+            expected["work"] = WORK_BUDGET
+        parts = [
+            f"{', '.join(self.partial[r])} {why[r]}"
+            for r in (_TOO_MANY, _COMPLEX, _BBOX, _BUDGET)
+            if r in self.partial
+        ]
+        complex_named = _COMPLEX in self.partial or _BBOX in self.partial
+        self.add(
+            "too_complex_partial_check",
+            "info",
+            "partial check: " + "; ".join(parts),
+            pads=[g.pads[i].number for i in cx if g.pads[i].number] if complex_named else (),
+            measured=measured,
+            expected=expected,
+        )
 
     def geoms(self, shape: Shape) -> list[geom.Geometry]:
         key = id(shape)
@@ -460,6 +549,8 @@ class _Run:
                 by_num.setdefault(p.number, []).append(p)
         for ep in exp.pads:
             cands = by_num.get(ep.number)
+            if not self.afford(len(cands or ()) + 1, "expected_mismatch", "expected_missing_pad"):
+                break
             if not cands:
                 self.add(
                     "expected_missing_pad",
@@ -495,7 +586,9 @@ class _Run:
             if measured is None or abs(measured - exp.pitch) > tol + EPS:
                 names = [pair[0].number, pair[1].number] if pair else []
                 mismatch("pitch", measured, exp.pitch, names)
-        if exp.courtyard is not None:
+        if exp.courtyard is not None and self.outline_unknown:
+            self.note(_BUDGET, "expected_mismatch")
+        elif exp.courtyard is not None:
             b = _box(self.outline) if self.outline else None
             cy = (b[2] - b[0], b[3] - b[1]) if b else None
             if off(cy, exp.courtyard):
@@ -514,34 +607,46 @@ class _Run:
             self.add("fab_missing", "warning", f"no {self.side}.Fab outline")
         poly = self.outline
         if poly is None:
+            if self.outline_unknown:  # building it ran out of budget: noted there
+                return
             why = "is not one closed outline" if self.crtyd_shapes else "is missing"
             self.add("courtyard_missing", "error", f"{layer} {why}")
             return
-        enclosing = True
-        inside = _inside(poly)
+        rule = "courtyard_not_enclosing"
+        enclosing, complete = True, True
+        inside, cost = _inside(poly)
         for i, pad in enumerate(self.g.pads):
             pts = [q for part in self.parts[i] for q in _points(part)]
+            if not self.afford(len(pts) * cost, rule):
+                complete = False
+                break
             if not all(inside(q) for q in pts):
                 enclosing = False
                 self.add(
-                    "courtyard_not_enclosing",
+                    rule,
                     "error",
                     f"pad {pad.number or '(unnumbered)'} extends outside the courtyard",
                     pads=[pad.number] if pad.number else (),
                     at=pad.at,
                 )
-        outside = [q for s in self.fab_segs for q in (s.a, s.b) if not inside(q)]
-        if outside:
-            enclosing = False
-            self.add(
-                "courtyard_not_enclosing",
-                "error",
-                f"the body ({self.side}.Fab) extends outside the courtyard at {_xy(outside[0])}",
-                at=outside[0],
-            )
-        if enclosing:
+        if complete and self.afford(2 * len(self.fab_segs) * cost, rule):
+            outside = [q for s in self.fab_segs for q in (s.a, s.b) if not inside(q)]
+            if outside:
+                enclosing = False
+                self.add(
+                    rule,
+                    "error",
+                    f"the body ({self.side}.Fab) extends outside the courtyard at "
+                    f"{_xy(outside[0])}",
+                    at=outside[0],
+                )
+        else:
+            complete = False
+        if not complete:  # the margin needs to know the outline encloses everything
+            self.note(_BUDGET, "courtyard_margin")
+        elif enclosing:
             self._margin(poly)
-        self._silk_outside(inside)
+        self._silk_outside(inside, cost)
 
     def _margin(self, poly: Polygon) -> None:
         copper = _union(self.boxes[i] for i in self.copper)
@@ -554,8 +659,11 @@ class _Run:
         ] + [(-1, s) for s in self.fab_segs]
         edge_boxes = [_geom_box(e) for e in edges]
         item_boxes = [_geom_box(g) for _, g in items]
+        afford = self.charger("courtyard_margin")
         best, near_k = math.inf, -1
-        for e, k in geom.cross_pairs(edge_boxes, item_boxes, limit):
+        for e, k in geom.cross_pairs(edge_boxes, item_boxes, limit, afford):
+            if not afford(_dist_cost(2, _vertices([items[k][1]]))):
+                break  # a gap found so far is still real: reported below
             d = geom.distance(edges[e], items[k][1])
             if d < best or (d == best and k < near_k):  # ties: the first item
                 best, near_k = d, k
@@ -572,7 +680,7 @@ class _Run:
                 expected=limit,
             )
 
-    def _silk_outside(self, inside: Callable[[Point], bool]) -> None:
+    def _silk_outside(self, inside: Callable[[Point], bool], cost: int) -> None:
         items: list[tuple[str, list[Point]]] = [
             (s.kind, [q for x in self.geoms(s) if isinstance(x, Seg) for q in (x.a, x.b)])
             for s in self.silk
@@ -583,6 +691,8 @@ class _Run:
             if t.layer == f"{self.side}.SilkS" and t.kind not in ("reference", "value")
         ]
         for what, pts in items:
+            if not self.afford(len(pts) * cost, "silk_outside_courtyard"):
+                return
             out = next((q for q in pts if not inside(q)), None)
             if out is not None:
                 self.add(
@@ -596,100 +706,55 @@ class _Run:
 
     def pairs(self) -> None:
         g = self.g
-        if len(g.pads) > MAX_PAIR_PADS or len(g.shapes) > MAX_PAIR_SHAPES:
-            self.add(
-                "too_complex_partial_check",
-                "info",
-                f"{len(g.pads)} pads / {len(g.shapes)} shapes exceed {MAX_PAIR_PADS} / "
-                f"{MAX_PAIR_SHAPES}: skipped {', '.join(PAIR_RULES)}",
-                measured={"pads": len(g.pads), "shapes": len(g.shapes)},
-                expected={"pads": MAX_PAIR_PADS, "shapes": MAX_PAIR_SHAPES},
-            )
+        if len(g.pads) > MAX_PAIR_PADS or self.pair_shapes > MAX_PAIR_SHAPES:
+            self.note(_TOO_MANY, *PAIR_RULES)
             return
-        complex_pads = self.complex_pads
-        if complex_pads:
-            names = [g.pads[i].number or "(unnumbered)" for i in sorted(complex_pads)]
-            self.add(
-                "too_complex_partial_check",
-                "info",
-                f"pad(s) {', '.join(names[:10])} have more than {MAX_PAD_PARTS} copper "
-                f"pieces or {MAX_PAD_VERTICES} vertices: skipped {', '.join(PAIR_RULES)} "
-                "for them; pin1_marker_missing measures them by their bounding box",
-                pads=[g.pads[i].number for i in sorted(complex_pads) if g.pads[i].number],
-                measured={
-                    "pieces": max(len(self.parts[i]) for i in complex_pads),
-                    "vertices": max(self.vertices[i] for i in complex_pads),
-                },
-                expected={"pieces": MAX_PAD_PARTS, "vertices": MAX_PAD_VERTICES},
-            )
-        # items: copper pads (index into pads), then one item per silk shape / text
-        # (side, pieces); silk farther than the clearance from all copper is dropped
+        if self.complex_pads:
+            self.note(_COMPLEX, *PAIR_RULES)
+        # complex pads stay out; silk farther than the clearance from all copper too
+        pads = [i for i in self.copper if i not in self.complex_pads]
         raw: list[tuple[str, list[geom.Geometry]]] = [
             (s.layer[0], self.geoms(s)) for s in g.shapes if s.layer in ("F.SilkS", "B.SilkS")
         ]
         raw += [(t.layer[0], [text_box(t)]) for t in g.texts if t.layer in ("F.SilkS", "B.SilkS")]
-        reach = _union(self.boxes[i] for i in self.copper)
+        reach = _union(self.boxes[i] for i in pads)
         silk: list[tuple[str, list[geom.Geometry], list[Box], Box, int]] = []
         for side, pieces in raw:
             pboxes = [_geom_box(x) for x in pieces]
             box = _union(pboxes)
             if box and reach and _box_gap(box, reach) <= SILK_CLEARANCE:
                 silk.append((side, pieces, pboxes, box, _vertices(pieces)))
-        n = len(self.copper)
-        boxes = [self.boxes[i] for i in self.copper] + [s[3] for s in silk]
+        pad_boxes = [self.boxes[i] for i in pads]
+
         gaps: list[tuple[int, int, float]] = []
-        silk_min: dict[int, float] = {}
-        work = 0
-        over_budget = 0
-
-        def afford(cost: int) -> bool:
-            nonlocal work, over_budget
-            if work + cost > MAX_PAIR_WORK:
-                over_budget += 1
-                return False
-            work += cost
-            return True
-
-        for a, b in geom.candidate_pairs(boxes, max(PAD_GAP_WARN, SILK_CLEARANCE)):
-            if (a < n and self.copper[a] in complex_pads) or (
-                b < n and self.copper[b] in complex_pads
-            ):
+        afford = self.charger("pad_gap_small")
+        for a, b in geom.candidate_pairs(pad_boxes, PAD_GAP_WARN, afford):
+            i, j = pads[a], pads[b]
+            pi, pj = g.pads[i], g.pads[j]
+            if (pi.number and pi.number == pj.number) or not _share_copper(pi, pj):
                 continue
-            if a < n and b < n:
-                i, j = self.copper[a], self.copper[b]
-                pi, pj = g.pads[i], g.pads[j]
-                if (pi.number and pi.number == pj.number) or not _share_copper(pi, pj):
-                    continue
-                if not afford(self.vertices[i] * self.vertices[j]):
-                    continue
-                d = _min_dist(
-                    self.parts[i],
-                    self.parts[j],
-                    PAD_GAP_WARN,
-                    self.part_boxes[i],
-                    self.part_boxes[j],
-                )
-                if d < PAD_GAP_WARN - EPS:
-                    gaps.append((min(i, j), max(i, j), d))
-            elif a < n or b < n:
-                i = self.copper[min(a, b)]
-                side, pieces, pboxes, _, verts = silk[max(a, b) - n]
-                if side not in _sides(g.pads[i]):
-                    continue
-                if not afford(verts * self.vertices[i]):
-                    continue
-                d = _min_dist(pieces, self.parts[i], SILK_CLEARANCE, pboxes, self.part_boxes[i])
-                if d < SILK_CLEARANCE - EPS and d < silk_min.get(i, math.inf):
-                    silk_min[i] = d
-        if over_budget:
-            self.add(
-                "too_complex_partial_check",
-                "info",
-                f"pair checks exceed {MAX_PAIR_WORK} vertex pairs: skipped {over_budget} "
-                f"candidate pair(s) of {', '.join(PAIR_RULES)}",
-                measured={"skipped_pairs": over_budget},
-                expected={"vertex_pairs": MAX_PAIR_WORK},
+            if not afford(_dist_cost(self.vertices[i], self.vertices[j])):
+                break
+            d = _min_dist(
+                self.parts[i], self.parts[j], PAD_GAP_WARN, self.part_boxes[i], self.part_boxes[j]
             )
+            if d < PAD_GAP_WARN - EPS:
+                gaps.append((min(i, j), max(i, j), d))
+
+        silk_min: dict[int, float] = {}
+        afford = self.charger("silk_on_pad")
+        silk_boxes = [s[3] for s in silk]
+        for a, b in geom.cross_pairs(pad_boxes, silk_boxes, SILK_CLEARANCE, afford):
+            i = pads[a]
+            side, pieces, pboxes, _, verts = silk[b]
+            if side not in _sides(g.pads[i]):
+                continue
+            if not afford(_dist_cost(verts, self.vertices[i])):
+                break
+            d = _min_dist(pieces, self.parts[i], SILK_CLEARANCE, pboxes, self.part_boxes[i])
+            if d < SILK_CLEARANCE - EPS and d < silk_min.get(i, math.inf):
+                silk_min[i] = d
+
         for i, j, d in sorted(gaps):
             pi, pj = g.pads[i], g.pads[j]
             error = d < PAD_GAP_ERROR - EPS
@@ -725,7 +790,9 @@ class _Run:
         shapes, plus the single diagonal edges of polygons and rects: a pin-1 chamfer
         drawn into one closed body outline is as near to the other corner pads as a
         whole, but its chamfer edge alone is not. A too-complex pad (see `pairs`) is
-        measured by its bounding box, so the rule stays bounded."""
+        measured by its bounding box; every distance is charged to the work budget, and
+        when that runs out the rule ends without a verdict."""
+        rule = "pin1_marker_missing"
         g = self.g
         n = len(self.copper)
         if not (n > 2 or (n == 2 and self.inp.polarized)):
@@ -737,35 +804,55 @@ class _Run:
         others = [i for i in self.copper if g.pads[i].number != "1"]
 
         def parts(i: int) -> list[geom.Geometry]:
-            return [_box_polygon(self.boxes[i])] if i in self.complex_pads else self.parts[i]
+            if i in self.complex_pads:
+                self.note(_BBOX, rule)
+                return [_box_polygon(self.boxes[i])]
+            return self.parts[i]
 
-        p1_parts = [part for i in ones for part in parts(i)]
+        def verts(i: int) -> int:
+            return 4 if i in self.complex_pads else self.vertices[i]
+
+        p1_parts: list[geom.Geometry] = []  # built on first use (may note _BBOX)
+        p1_verts = sum(verts(i) for i in ones)
         reach = max(max(g.pads[i].size) for i in ones) + PIN1_REACH
+
+        def charge(cost: int) -> None:
+            if not self.afford(cost, rule):
+                raise _OutOfBudget
 
         def marks(pieces: Sequence[geom.Geometry]) -> bool:
             sbox = _union(_geom_box(x) for x in pieces)
             if sbox is None or _box_gap(sbox, p1_box) > reach + EPS:
                 return False
+            sv = _vertices(pieces)
+            charge(_dist_cost(sv, p1_verts) + len(others))
+            if not p1_parts:
+                p1_parts.extend(part for i in ones for part in parts(i))
             d1 = _min_dist(pieces, p1_parts)
             if d1 > reach + EPS:
                 return False
-            return all(
-                _box_gap(sbox, self.boxes[j]) > d1 + EPS
-                or _min_dist(pieces, parts(j), d1 + EPS) > d1 + EPS
-                for j in others
-            )
+            for j in others:
+                if _box_gap(sbox, self.boxes[j]) > d1 + EPS:
+                    continue
+                charge(_dist_cost(sv, verts(j)))
+                if _min_dist(pieces, parts(j), d1 + EPS) <= d1 + EPS:
+                    return False
+            return True
 
         shapes = [*self.silk, *self.fab]
-        if any(marks(self.geoms(s)) for s in shapes):
-            return
-        for s in shapes:
-            if s.kind not in PIN1_EDGE_KINDS:
-                continue
-            if any(_diagonal(e) and marks([e]) for e in geom.stroke_segments(s)):
+        try:
+            if any(marks(self.geoms(s)) for s in shapes):
                 return
+            for s in shapes:
+                if s.kind not in PIN1_EDGE_KINDS:
+                    continue
+                if any(_diagonal(e) and marks([e]) for e in geom.stroke_segments(s)):
+                    return
+        except _OutOfBudget:
+            return  # no verdict: noted by `afford`
         pad = g.pads[ones[0]]
         self.add(
-            "pin1_marker_missing",
+            rule,
             "warning",
             f"no silk or fab mark next to pad 1 (within {_mm(reach)})",
             pads=["1"],
@@ -886,6 +973,7 @@ def run_checks(inp: CheckInput) -> CheckReport:
     run.pin1()
     run.pads()
     run.fields(digest)
+    run.finish()
     counts = Counter(f.severity for f in run.findings)
     exact = {s: counts.get(s, 0) for s in ("error", "warning", "info")}
     return CheckReport(exact["error"] == 0, exact, tuple(run.findings), digest)

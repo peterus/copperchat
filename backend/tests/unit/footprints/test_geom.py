@@ -335,3 +335,31 @@ def test_cross_pairs_matches_brute_force() -> None:
     got = list(geom.cross_pairs(a, b, gap))
     assert len(got) == len(set(got))
     assert set(got) == brute
+
+
+def test_sweeps_and_outline_stop_when_work_is_refused() -> None:
+    """`afford` is charged before each box's scan; a refusal ends the iteration."""
+    boxes = [(0.0, float(i), 1.0, i + 1.05) for i in range(50)]  # x: all; y: neighbours
+    spent: list[int] = []
+
+    def budget(limit: int) -> geom.Afford:
+        def afford(n: int) -> bool:
+            if sum(spent) + n > limit:
+                return False
+            spent.append(n)
+            return True
+
+        return afford
+
+    full = list(geom.candidate_pairs(boxes, 0.1, budget(10**6)))
+    assert full == list(geom.candidate_pairs(boxes, 0.1)) and len(full) == 49
+    assert sum(spent) == sum(range(1, 51))  # 1 + the active boxes, per box
+    spent.clear()
+    assert 0 < len(list(geom.candidate_pairs(boxes, 0.1, budget(100)))) < 49
+    spent.clear()
+    assert list(geom.cross_pairs(boxes, boxes, 0.1, budget(10))) != list(
+        geom.cross_pairs(boxes, boxes, 0.1)
+    )
+    segs = [Shape("segment", "F.CrtYd", ((0, 0), (0, 0)), None, None, 0.05, False)] * 10
+    spent.clear()
+    assert geom.closed_outline(segs, budget(5)) is None

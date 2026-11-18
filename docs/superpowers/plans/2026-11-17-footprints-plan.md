@@ -636,12 +636,25 @@ phase file, with the reason.)
 - **FP-C4 rule details:** `mask_missing`/`paste_missing`/`paste_on_tht` are side-aware (a
   B.Cu-only SMD pad needs B.Mask/B.Paste); NPTH holes count in the courtyard rules;
   the annular ring is checked per axis for oval drills.
-- **`fp_check` complexity caps (beyond spec §8):** a copper pad with more than 256 pieces
-  or 512 vertices is left out of `pad_gap_small`/`silk_on_pad`, measured by its bounding
-  box in the pin-1 rule, and named in `too_complex_partial_check`; the pair rules also
-  stop at a footprint budget of 2,000,000 vertex pairs (skipped pairs counted in a
-  second `too_complex_partial_check`). The render sanitiser drops `use` and `tref`
-  (nested `use` amplifies exponentially; KiCad's fp export writes neither).
+- **`fp_check` complexity caps (beyond spec §8):** > 2,000 pads or > 5,000 shapes plus
+  silk texts skip `pad_gap_small`/`silk_on_pad`; a copper pad with more than 256 pieces
+  or 512 vertices is left out of those two and measured by its bounding box in the
+  pin-1 rule. Every loop whose cost is a product of two input sizes (closed-outline
+  building, expected-pad matching, courtyard containment and margin, silk outside the
+  courtyard, the pad and copper x silk sweeps and distances, pin-1 mark distances incl.
+  per diagonal edge) charges one shared per-run work budget (`WORK_BUDGET`, 1,500,000
+  units of about one point-segment distance, ~1 s in CPython) before it runs; a rule
+  that cannot afford its next step stops there (pin 1 and the courtyard rules then give
+  no verdict). One `too_complex_partial_check` info at the end lists exactly the rules
+  skipped or partial, grouped by reason (`measured.skipped`: `too_many_items`,
+  `complex_pads`, `bounding_box` — only when pin 1 actually used one —, `budget`).
+- **`fp_render` sanitiser allowlist:** only the elements KiCad's `fp export svg` writes
+  (seen: svg, g, path, circle, text, title, desc) plus the other plain shapes of its SVG
+  plotter (ellipse, rect, line, polyline, polygon, tspan) survive; anything else goes
+  with its subtree (use, tref, pattern, marker, mask, filter, clipPath, image,
+  foreignObject, ...: nested references amplify exponentially under the render lock).
+  `href` and every attribute value with `url(` (fragment or not), `image-set(`, `src(`
+  or a backslash are dropped.
 - **Pin-1 heuristic:** a silk/fab piece marks pin 1 when it is within
   `max(pad1.size) + 1` mm of pad 1 and strictly nearer to pad 1 than to any other pad;
   pieces are whole shapes plus the single **diagonal** edges (not within 1° of x/y) of

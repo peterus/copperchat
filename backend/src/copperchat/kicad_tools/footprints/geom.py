@@ -13,13 +13,14 @@ Geometry the distance function understands:
 from __future__ import annotations
 
 import math
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Literal, TypeIs
 
 from copperchat.kicad_tools.footprints.model import Pad, Shape
 
 Point = tuple[float, float]
+Afford = Callable[[int], bool]  # charge n units of work; False = budget exhausted, stop
 Box = tuple[float, float, float, float]  # x0, y0, x1, y1
 Circle = tuple[Literal["circle"], Point, float]
 Polygon = Sequence[Point]
@@ -390,9 +391,10 @@ def distance(a: Geometry, b: Geometry) -> float:
 # --- outlines and pair search -------------------------------------------------------
 
 
-def closed_outline(shapes: Sequence[Shape]) -> list[Point] | None:
+def closed_outline(shapes: Sequence[Shape], afford: Afford | None = None) -> list[Point] | None:
     """One closed polygon from graphics: a rect, a polygon, a circle, or segments/arcs
-    whose endpoints chain into a single loop within 1 um. None otherwise."""
+    whose endpoints chain into a single loop within 1 um. None otherwise, also when
+    `afford` refuses the work of an endpoint lookup (many endpoints in one cell)."""
     if not shapes:
         return None
     if len(shapes) == 1:
@@ -437,7 +439,10 @@ def closed_outline(shapes: Sequence[Shape]) -> list[Point] | None:
         best: tuple[int, int] | None = None
         for dx in (-1, 0, 1):
             for dy in (-1, 0, 1):
-                for i, end in index.get((cx + dx, cy + dy), ()):
+                found = index.get((cx + dx, cy + dy), ())
+                if afford is not None and not afford(len(found) + 1):
+                    return None
+                for i, end in found:
                     p = pieces[i][-1] if end else pieces[i][0]
                     if not used[i] and (best is None or (i, end) < best) and near(tail, p):
                         best = (i, end)
@@ -451,28 +456,43 @@ def closed_outline(shapes: Sequence[Shape]) -> list[Point] | None:
     return path[:-1]
 
 
-def candidate_pairs(boxes: Sequence[Box], gap: float) -> Iterator[tuple[int, int]]:
+def candidate_pairs(
+    boxes: Sequence[Box], gap: float, afford: Afford | None = None
+) -> Iterator[tuple[int, int]]:
     """Index pairs (i < j) whose boxes are within `gap` of each other on both axes.
 
-    Boxes are (x0, y0, x1, y1). Sort-and-sweep on x, then a y overlap test; boxes that
-    are farther apart than `gap` on either axis are never yielded.
+    Boxes are (x0, y0, x1, y1). Sort-and-sweep on x with an active list, then a y
+    overlap test; boxes that are farther apart than `gap` on either axis are never
+    yielded. With `afford`, each box first charges the active boxes it is tested
+    against; when that is refused the sweep stops (the caller's budget records it).
     """
     order = sorted(range(len(boxes)), key=lambda i: boxes[i][0])
-    for pos, i in enumerate(order):
-        xi1 = boxes[i][2] + gap
-        for j in order[pos + 1 :]:
-            if boxes[j][0] > xi1:
-                break
-            if boxes[j][1] <= boxes[i][3] + gap and boxes[i][1] <= boxes[j][3] + gap:
+    active: list[int] = []
+    for i in order:
+        box = boxes[i]
+        if afford is not None and not afford(len(active) + 1):
+            return
+        keep: list[int] = []
+        for j in active:
+            other = boxes[j]
+            if other[2] + gap < box[0]:
+                continue  # ends left of every later box: dropped for good
+            keep.append(j)
+            if other[1] <= box[3] + gap and box[1] <= other[3] + gap:
                 yield (i, j) if i < j else (j, i)
+        keep.append(i)
+        active = keep
 
 
-def cross_pairs(a: Sequence[Box], b: Sequence[Box], gap: float) -> Iterator[tuple[int, int]]:
+def cross_pairs(
+    a: Sequence[Box], b: Sequence[Box], gap: float, afford: Afford | None = None
+) -> Iterator[tuple[int, int]]:
     """Index pairs (i into `a`, j into `b`) whose boxes are within `gap` on both axes.
 
     A sweep on x over both groups that only ever pairs across them: unlike
     `candidate_pairs` on the concatenation it never visits the (possibly quadratic)
     pairs inside one group, e.g. thousands of overlapping pieces of one custom pad.
+    `afford` as in `candidate_pairs`.
     """
     groups = (a, b)
     events = sorted(
@@ -481,6 +501,8 @@ def cross_pairs(a: Sequence[Box], b: Sequence[Box], gap: float) -> Iterator[tupl
     active: tuple[list[int], list[int]] = ([], [])
     for x0, g, k in events:
         box, other = groups[g][k], 1 - g
+        if afford is not None and not afford(len(active[other]) + 1):
+            return
         keep: list[int] = []
         for m in active[other]:
             ob = groups[other][m]

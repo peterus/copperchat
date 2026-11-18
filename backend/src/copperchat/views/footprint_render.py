@@ -9,10 +9,12 @@ Hardening (spec §7.5, C10):
 - argv list only, `--fp=<name>` one element; the library directory comes from the
   footprint table (absolute, existing, `*.pretty`), the name never holds a path;
 - KiCad's output must exist, be non-empty and at most 10 MB; any `<!DOCTYPE` other than
-  KiCad's own SVG 1.1 public prolog, and any `<!ENTITY`, is refused; scripts, styles,
-  foreign objects, event handlers, non-fragment links, external `url(...)` and
-  attribute values with a backslash (CSS escapes), `image-set(` or `src(` are dropped
-  while it is re-serialised with `xml.etree` (never by string concatenation);
+  KiCad's own SVG 1.1 public prolog, and any `<!ENTITY`, is refused; it is re-serialised
+  with `xml.etree` (never by string concatenation) keeping only the elements KiCad's
+  `fp export svg` writes (`ALLOWED_TAGS`; anything else goes with its subtree, so no
+  script, style, image, `use`, pattern, marker, mask, filter, clipPath, ...), without
+  links (`href`), event handlers, and attribute values holding `url(` (fragment or not),
+  a backslash (CSS escape), `image-set(` or `src(`;
 - CairoSVG runs with a URL fetcher that refuses everything, never with `unsafe=True`.
 
 Coordinates: mm in footprint space (origin = anchor, y down). KiCad's SVG `viewBox` is
@@ -62,25 +64,26 @@ BACK = ("B.Cu", "B.Mask", "B.Paste", "B.SilkS", "B.Fab", "B.CrtYd")
 MAX_LAYERS = 32
 LAYER_RE = re.compile(r"^(?:(?:F|B)\.(?:Cu|Mask|Paste|SilkS|Fab|CrtYd)|Edge\.Cuts)$")
 GRID_LADDER = (0.1, 0.25, 0.5, 1.0)
-DROP_TAGS = frozenset(
+# The elements KiCad's `fp export svg` writes (seen in the base image: svg, g, path,
+# circle, text, title, desc) plus the other plain shapes its SVG plotter can emit. An
+# allowlist, not a drop list: every element that instantiates or paints other elements
+# (use, tref, pattern, marker, mask, filter, clipPath, gradients, ...) can be nested into
+# an exponential "billion laughs" that holds the render lock, and none is needed here.
+ALLOWED_TAGS = frozenset(
     {
-        "script",
-        "style",
-        "foreignobject",
-        "set",
-        "animate",
-        "animatemotion",
-        "animatetransform",
-        "iframe",
-        "object",
-        "embed",
-        "handler",
-        "listener",
-        # `use` / `tref` instantiate other elements: nested ones amplify exponentially
-        # (an SVG "billion laughs" that holds the render lock); KiCad's fp export never
-        # writes them
-        "use",
-        "tref",
+        "svg",
+        "g",
+        "path",
+        "circle",
+        "ellipse",
+        "rect",
+        "line",
+        "polyline",
+        "polygon",
+        "text",
+        "tspan",
+        "title",
+        "desc",
     }
 )
 # KiCad's own prolog (seen in the base image): XML declaration + the SVG 1.1 public
@@ -92,11 +95,9 @@ _KICAD_PROLOG = re.compile(
 )
 _XML_DECL = re.compile(r"\A\s*<\?xml[^>]*\?>")
 _DECLARATION = re.compile(r"<!\s*(?:DOCTYPE|ENTITY)", re.IGNORECASE)
-# a url( whose target is not a #fragment, up to `)` or the end of the value (CSS closes
-# an unterminated url token at EOF)
-_EXTERNAL_URL = re.compile(r"""url\((?!\s*['"]?\s*#)[^)]*(?:\)|\Z)""", re.IGNORECASE)
-# CSS functions that load a resource without `url(` (image-set("x.png"), src("x"))
-_CSS_FETCH = re.compile(r"(?:image-set|src)\s*\(", re.IGNORECASE)
+# CSS functions that load or reference a resource: url(...) (also a #fragment: the
+# allowlisted elements need none), image-set("x.png"), src("x")
+_CSS_REF = re.compile(r"(?:url|image-set|src)\s*\(", re.IGNORECASE)
 
 # Colours (dark, like KiCad's footprint editor: its layer colours are made for it).
 BG, MINOR, MAJOR, AXIS, TEXT, ACCENT = (
@@ -205,22 +206,18 @@ def _clean(src: ET.Element, depth: int) -> ET.Element | None:
     if depth > MAX_DEPTH:
         raise _failed("kicad-cli wrote an SVG nested too deeply")
     ns, local = _split(src.tag) if isinstance(src.tag, str) else ("?", "")
-    if ns != SVG_NS or local.lower() in DROP_TAGS:
+    if ns != SVG_NS or local not in ALLOWED_TAGS:
         return None
     out = ET.Element(local)
     for key, value in src.attrib.items():
         kns, klocal = _split(key)
-        if klocal.lower().startswith("on"):
-            continue
-        if klocal == "href":  # any namespace (xlink:href, href)
-            if value.strip().startswith("#"):
-                out.set("href", value.strip())
-            continue
+        if klocal.lower().startswith("on") or klocal.lower() == "href":
+            continue  # event handlers; links (xlink:href, href): nothing allowed needs one
         if kns and not (kns == XML_NS and klocal == "space"):
             continue  # inkscape:, sodipodi:, xml:base, ...
-        if "\\" in value or _CSS_FETCH.search(value):
-            continue  # a CSS escape (u\72 l() can hide url(); image-set()/src() fetch too
-        out.set(key, _EXTERNAL_URL.sub("none", value))
+        if "\\" in value or _CSS_REF.search(value):
+            continue  # url()/image-set()/src(); a CSS escape (u\72 l() can hide one
+        out.set(key, value)
     out.text = src.text
     out.tail = src.tail
     for child in src:
