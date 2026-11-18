@@ -117,7 +117,7 @@ def test_free_covers_the_registry_and_every_name_exists() -> None:
 
 
 def test_fp_read_in_every_profile() -> None:
-    assert "fp_get" in FP_READ
+    assert {"fp_get", "fp_list_local"} <= FP_READ
     for kind in ("requirements", "schematic", "board", "free"):
         assert set(FP_READ) <= PROFILES[kind], kind
         names = {s.name for s in profile_specs(kind, registry.all_specs())}

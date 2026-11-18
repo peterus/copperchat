@@ -1,4 +1,5 @@
-"""`fp_get` without KiCad: output caps (author call 16) and the input schema (F1 Task 5)."""
+"""`fp_get` / `fp_list_local` without KiCad: output caps (author call 16) and the input
+schemas (F1 Tasks 5, 6)."""
 
 from __future__ import annotations
 
@@ -157,3 +158,23 @@ async def test_fp_get_refused_when_disabled(ctx: ToolContext, make_settings: Any
     with pytest.raises(StructuredToolError) as err:
         await read.fp_get(ctx, {"lib_id": "Inductor_SMD:L_Bourns-SRN4018"})
     assert err.value.code == "footprint_tools_disabled"
+
+
+def test_fp_list_local_schema() -> None:
+    spec = next(s for s in TOOL_SPECS if s.name == "fp_list_local")
+    schema = spec.input_schema
+    assert schema["additionalProperties"] is False and schema["required"] == []
+    assert schema["properties"]["query"]["maxLength"] == 200
+    limit = schema["properties"]["limit"]
+    assert (limit["minimum"], limit["maximum"], limit["default"]) == (1, 200, 50)
+    assert not spec.mutating
+
+
+@pytest.mark.parametrize(
+    "args",
+    [{"query": "x" * 201}, {"query": 5}, {"limit": 0}, {"limit": 201}, {"limit": True}],
+)
+async def test_fp_list_local_invalid_argument(ctx: ToolContext, args: dict[str, Any]) -> None:
+    with pytest.raises(StructuredToolError) as err:
+        await read.fp_list_local(ctx, args)
+    assert err.value.code == "invalid_argument"

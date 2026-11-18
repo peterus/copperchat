@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from copperchat.kicad_tools.footprints.read import MAX_LIB_ID_CHARS, fp_get
+from copperchat.kicad_tools.footprints.read import (
+    DEFAULT_LIST_LIMIT,
+    MAX_LIB_ID_CHARS,
+    MAX_LIST_LIMIT,
+    MAX_QUERY_CHARS,
+    fp_get,
+    fp_list_local,
+)
 from copperchat.tools.spec import ToolSpec
 
 
@@ -47,5 +54,31 @@ TOOL_SPECS: list[ToolSpec] = [
             ["lib_id"],
         ),
         fp_get,
+    ),
+    ToolSpec(
+        "fp_list_local",
+        "List the footprints of this repository's local footprint library (the one "
+        "CopperChat creates footprints in): name, lib_id, description, pad count, review "
+        "state (needs_user_review: unreviewed / needs_user_review / approved), source and "
+        "the references of this project's symbols that use it (used_by). library is null "
+        "while the project has no local library yet.",
+        _obj(
+            {
+                "query": {
+                    "type": "string",
+                    "maxLength": MAX_QUERY_CHARS,
+                    "description": "Only footprints whose name or description contain every word.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_LIST_LIMIT,
+                    "default": DEFAULT_LIST_LIMIT,
+                    "description": f"Maximum number of footprints (default {DEFAULT_LIST_LIMIT}).",
+                },
+            },
+            [],
+        ),
+        fp_list_local,
     ),
 ]

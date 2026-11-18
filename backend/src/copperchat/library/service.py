@@ -230,6 +230,18 @@ def _fetch_footprint_proto(nickname: str, name: str, h: KicadHandle) -> Any:
     return None
 
 
+def _fetch_footprint_protos(nickname: str, names: list[str], h: KicadHandle) -> list[Any]:
+    """The library `Footprint`s of `names` in one batched `GetItemsFromLibrary`."""
+    from kipy.proto.board import board_types_pb2
+
+    out: list[Any] = []
+    for packed in _get_items(h, _footprint_type(), [(nickname, n) for n in names]):
+        fp = board_types_pb2.Footprint()
+        packed.Unpack(fp)
+        out.append(fp)
+    return out
+
+
 def _project_footprint_rows(h: KicadHandle) -> list[tuple[str, str, str]]:
     """(nickname, uri, substituted uri) of every row of the project footprint table."""
     from kipy.proto.common.types import LibraryTableScope, LibraryType
@@ -882,6 +894,37 @@ class LibraryService:
         while len(self._fp_geometry) > GEOMETRY_CACHE_SIZE:
             self._fp_geometry.popitem(last=False)
         return entry.geometry
+
+    async def local_footprints(
+        self, lib: LocalLibrary, notes: list[dict[str, Any]] | None = None
+    ) -> list[FootprintGeometry]:
+        """Every footprint of the local library (its project row must be present), read
+        with `GetLibraryItems` + batched `GetItemsFromLibrary` (not cached; no document
+        is opened). Library reads carry the custom fields (`Footprint source`,
+        `needs_user_review`), the pads and the description, enough for listing; mounting,
+        Reference/Value and the hash are not authoritative here (use
+        `footprint_geometry`). A boardless server is activated first (at the pinned KiCad
+        both requests have no handler before that); the seconds go to `notes`."""
+        from copperchat.kicad_tools.footprints.model import geometry_from_proto
+
+        if not self.footprint_libraries_ready():
+            await self._activate(notes)
+        nickname = lib.nickname
+        session = self._session
+        out: list[FootprintGeometry] = []
+        with _kicad_errors(f"Could not list footprint library {nickname}"):
+            names = await session.call(partial(_footprint_names, nickname))
+            for i in range(0, len(names), BATCH):
+                batch = names[i : i + BATCH]
+                protos = await session.call(partial(_fetch_footprint_protos, nickname, batch))
+                aligned = len(protos) == len(batch)  # KiCad skips ids it cannot load
+                for j, proto in enumerate(protos):
+                    name = proto.id.entry_name or (batch[j] if aligned else "")
+                    if not name:
+                        continue
+                    lib_id = f"{nickname}:{name}"
+                    out.append(geometry_from_proto(proto, proto.items, lib_id, "local"))
+        return out
 
     async def _activate(self, notes: list[dict[str, Any]] | None) -> None:
         seconds = await self._session.activate_footprints()
