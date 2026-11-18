@@ -127,7 +127,9 @@ class HistoryService:
         stored = await self.hashes.get(project.id)
         await self.hashes.upsert(project.id, now, delete=[k for k in stored if owned(k)])
 
-    async def on_library_changed(self, project: Project, files: Iterable[Path]) -> None:
+    async def on_library_changed(
+        self, project: Project, files: Iterable[Path], reason: str = "own"
+    ) -> None:
         """CopperChat itself wrote `files` (footprints, the project's fp-lib-table; FP-C6):
         re-record only their rows (fresh hash + stats), leaving every other row as it
         is like `_on_saved`, so the next turn start does not take the own write for an
@@ -137,7 +139,8 @@ class HistoryService:
         loses its row - except the project's fp-lib-table with a library located, which
         gets its ABSENT presence row (store.py). The library marker is never written
         here: a library not tracked before stays a silent baseline at the next turn start.
-        Then the library listeners get reason "own" (errors logged).
+        Then the library listeners get `reason` ("own"; restore's failure path passes
+        "restore"; errors logged).
 
         Never takes `HistoryService.lock` (FP-C6 lock rule): it runs in the `finally` of
         a tool call, and `svc.lock` is always taken first (restore, step checkpoints:
@@ -160,7 +163,7 @@ class HistoryService:
 
         now = await asyncio.to_thread(compute)
         await self.hashes.upsert(project.id, now, delete=targets)
-        await self.notify_library(project, sorted(targets), "own")
+        await self.notify_library(project, sorted(targets), reason)
 
     async def notify_library(self, project: Project, rels: list[str], reason: str) -> None:
         """Call every library listener; a failing one is logged, never raised."""

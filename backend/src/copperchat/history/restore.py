@@ -26,7 +26,7 @@ from typing import Any
 
 from copperchat.db.repos.footprints import ABSENT, FootprintWriteRepo
 from copperchat.errors import CopperChatError, ReadOnlyProject
-from copperchat.history.blobs import blob_lock
+from copperchat.history.blobs import blob_lock, sha256_regular
 from copperchat.history.hooks import changed_rels, is_library_rel
 from copperchat.history.library_lock import library_lock
 from copperchat.history.library_restore import (
@@ -191,11 +191,18 @@ def _wants_library(manifest: dict[str, Any]) -> bool:
     return manifest.get("version") not in (None, 1) and manifest.get("library") is not None
 
 
+# Never equals a recorded sha or ABSENT: a file that is no longer a regular file is
+# "changed elsewhere" for the plan, so it is skipped and reported, never touched.
+_NOT_REGULAR = "not-a-regular-file"
+
+
 def _fresh_sha(path: Path) -> str:
     try:
-        return sha256_file(path)
+        return sha256_regular(path)
     except FileNotFoundError:
         return ABSENT
+    except OSError:
+        return _NOT_REGULAR
 
 
 async def _restore_library(
@@ -290,6 +297,13 @@ async def restore_snapshot(
             current = await svc.current_hashes(project)
             await svc.hashes.replace(project.id, current)
         except BaseException:
+            if library is not None and library.changed:
+                # The library part is applied already: record what it wrote, so the
+                # next turn start does not report it as an external change.
+                try:
+                    await svc.on_library_changed(project, library.changed, reason="restore")
+                except Exception:
+                    log.exception("re-recording the restored library failed")
             if session is not None:  # never leave the closed session as the current one
                 await _reload(svc, project, engine, conversation_id)
             raise

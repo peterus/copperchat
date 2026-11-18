@@ -63,6 +63,13 @@ def _open_regular(src: Path) -> BinaryIO:
         raise
 
 
+def sha256_regular(path: Path) -> str:
+    """sha256 of a regular file opened via `_open_regular` (never through a symlink,
+    never blocking on a FIFO); OSError for anything else."""
+    with _open_regular(path) as fh:
+        return _sha256_stream(fh)
+
+
 _LOCKS: dict[str, asyncio.Lock] = {}
 
 

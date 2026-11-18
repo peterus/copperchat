@@ -56,6 +56,12 @@ def _files(lib: Path) -> list[TrackedFile]:
     return [TrackedFile(p, f"../lib/X.pretty/{p.name}", True) for p in sorted(lib.iterdir())]
 
 
+def _patch_hashing(monkeypatch: pytest.MonkeyPatch, fn: object) -> None:
+    """Library files are hashed via sha256_regular, project files via sha256_file."""
+    monkeypatch.setattr(store_mod, "sha256_file", fn)
+    monkeypatch.setattr(store_mod, "sha256_regular", fn)
+
+
 @pytest.fixture
 def counted(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
     calls: list[Path] = []
@@ -64,7 +70,7 @@ def counted(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
         calls.append(path)
         return sha256_file(path)
 
-    monkeypatch.setattr(store_mod, "sha256_file", counting)
+    _patch_hashing(monkeypatch, counting)
     return calls
 
 
@@ -148,7 +154,7 @@ def test_stat_changes_during_hash_not_stored(lib: Path, monkeypatch: pytest.Monk
             _age(a, 100)  # a concurrent writer changes the stats mid-hash
         return digest
 
-    monkeypatch.setattr(store_mod, "sha256_file", touching)
+    _patch_hashing(monkeypatch, touching)
     rows = compute_tracked_hashes(files, {})
     assert rows[files[0].rel] == HashRow(sha256_file(a))
     assert rows[files[1].rel].size is not None
@@ -227,7 +233,7 @@ def test_vanished_file_skipped(lib: Path, monkeypatch: pytest.MonkeyPatch) -> No
             raise FileNotFoundError(path)
         return sha256_file(path)
 
-    monkeypatch.setattr(store_mod, "sha256_file", vanishing)
+    _patch_hashing(monkeypatch, vanishing)
     rows = compute_tracked_hashes(files, {})
     assert set(rows) == {files[1].rel}
     a_gone = compute_tracked_hashes(files, {})  # gone before the stat
@@ -294,3 +300,14 @@ async def test_current_hashes_includes_library(env: Env, counted: list[Path]) ->
     again = await svc.current_hashes(project)
     assert again[rel] == rows[rel]
     assert lib / "A.kicad_mod" not in counted
+
+
+def test_symlink_and_fifo_library_files_skipped(lib: Path) -> None:
+    """A library file swapped for a symlink or a FIFO after the listing is neither
+    followed nor read (a FIFO would block the turn-start check under svc.lock)."""
+    files = _files(lib)
+    (lib / "A.kicad_mod").unlink()
+    (lib / "A.kicad_mod").symlink_to(lib / "B.kicad_mod")
+    (lib / "B.kicad_mod").rename(lib / "C.kicad_mod")
+    os.mkfifo(lib / "B.kicad_mod")
+    assert compute_tracked_hashes(files, {}) == {}

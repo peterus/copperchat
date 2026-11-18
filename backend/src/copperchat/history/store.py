@@ -23,7 +23,7 @@ from typing import Any
 from copperchat.db import Database, utcnow_iso
 from copperchat.db.repos.footprints import ABSENT, FootprintWriteRepo
 from copperchat.errors import CopperChatError
-from copperchat.history.blobs import BlobStore, blob_lock
+from copperchat.history.blobs import BlobStore, blob_lock, sha256_regular
 from copperchat.history.blobs import CorruptSnapshot as CorruptSnapshot
 from copperchat.history.blobs import sha256_file as sha256_file
 from copperchat.history.library_lock import library_lock
@@ -271,6 +271,9 @@ def compute_tracked_hashes(
     RACY_NS of now. Presence rows are added by `with_presence_rows`, never here."""
     rows: dict[str, HashRow] = {}
     for f in files:
+        # Library and table files are shared with other projects / the KiCad GUI:
+        # never follow a symlink or block on a FIFO swapped in after the listing.
+        outside = f.library or f.path.name == "fp-lib-table"
         try:
             before = f.path.lstat()
             prev = previous.get(f.rel)
@@ -278,10 +281,14 @@ def compute_tracked_hashes(
                 assert prev is not None
                 rows[f.rel] = prev
                 continue
-            digest = sha256_file(f.path)
+            digest = sha256_regular(f.path) if outside else sha256_file(f.path)
             after = f.path.lstat()
         except FileNotFoundError:  # vanished between listing and hashing
             continue
+        except OSError:
+            if not outside:
+                raise
+            continue  # no longer a regular file: not tracked, like in tracked_files
         stable = _stat_key(before) == _stat_key(after)
         now = _now_ns()
         clean = all(abs(now - t) >= RACY_NS for t in (after.st_mtime_ns, after.st_ctime_ns))

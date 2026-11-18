@@ -487,3 +487,33 @@ async def test_restore_reports_first_footprint_in_empty_tracked_library(env: Env
     assert lib.calls == [(project, [d], "external")]
     assert "- Footprints changed outside this project: D" in _notice(env)
     assert (lib.dir / "D.kicad_mod").exists()
+
+
+async def test_failed_restore_after_library_part_rerecords_it(
+    env: Env, lib: Lib, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The library part is applied, then copying the project files fails: what the
+    restore wrote is re-recorded (listeners get "restore"), so the next turn start does
+    not report it as an external change."""
+    from copperchat.history import restore as restore_mod
+    from copperchat.history.hooks import changed_rels
+
+    project = lib.project
+    await env.svc.hashes.replace(project.id, await env.svc.current_hashes(project))
+    snap = await env.svc.store(project).snapshot("run-1", "turn")
+    await lib.write("A.kicad_mod", "replace", lib.put("A.kicad_mod", 2))
+    await env.svc.on_library_changed(project, [lib.dir / "A.kicad_mod"])
+    lib.calls.clear()
+
+    def broken(plan: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(restore_mod, "_copy_back", broken)
+    with pytest.raises(OSError):
+        await restore_snapshot(env.svc, project, snap.id, conversation_id=TEST_CID)
+
+    a = "../footprints/X.pretty/A.kicad_mod"
+    assert lib.calls == [(project, [a], "restore")]
+    stored = await env.svc.hashes.get(project.id)
+    now = {k: r.sha256 for k, r in (await env.svc.current_hashes(project)).items()}
+    assert a not in changed_rels(stored, now)
