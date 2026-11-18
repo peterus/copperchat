@@ -537,6 +537,18 @@ phase file, with the reason.)
   `row_conflict` (both URIs), as is a row under another nickname whose substituted URI is
   the local directory (asks to rename or remove it). `local_library()` derives from
   `repo_policy(...).project_dir`/`.root` (resolved paths).
+- **FP-C1 `footprint_geometry` cache and transient root (Task 4 review):** a cached
+  local footprint keeps the lstat validator (`st_ino`, `st_size`, `st_mtime_ns`, taken
+  before the read) of its `.kicad_mod`; every hit re-lstats it and re-reads on a
+  mismatch or a missing file (then `None`). While `repo_policy` is transient the local
+  nickname cannot be derived (the fallback root is the project dir), so any nickname
+  that is **not in the global table** raises `repo_root_unknown` (the local library is
+  never a global nickname); global libraries still read, and nothing read in that state
+  is cached.
+- **FP-C1 `local_footprint_file_safe`:** also raises `invalid_argument` for a name
+  outside `NAME_RE` (no path outside the library directory). It checks only the file:
+  it is meaningful after `local_library_dir_safe`. F4a must call **both** under the
+  library lock immediately before S1.
 - **FP-C3 hash, `Group` items:** the opaque digest of a `Group` drops its member `items`
   (per-load KIIDs) as well as `id`/`parent`.
 

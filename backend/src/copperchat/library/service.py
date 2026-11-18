@@ -305,7 +305,11 @@ def local_library_dir_safe(lib: LocalLibrary) -> None:
 
 def local_footprint_file_safe(lib: LocalLibrary, name: str) -> None:
     """Raise `library_conflict` if `<dir>/<name>.kicad_mod` exists and is not a regular
-    file (a symlink or a directory); `invalid_argument` for a name outside `NAME_RE`."""
+    file (a symlink or a directory); `invalid_argument` for a name outside `NAME_RE`.
+
+    Meaningful only after `local_library_dir_safe(lib)` passed: it checks the file, not
+    the directories above it. Writers call both under the library lock immediately
+    before the first stage."""
     if not NAME_RE.match(name):
         raise _invalid(
             f"Invalid footprint name {name[:80]!r}",
@@ -327,6 +331,7 @@ def _row_conflict(lib: LocalLibrary, rows: list[tuple[str, str, str]]) -> tuple[
     present = False
     conflicts: list[str] = []
     local_dir = os.path.normpath(lib.dir.resolve())
+    table_dir = lib.table.parent
     for nickname, uri, substituted in rows:
         if nickname == lib.nickname:
             if _norm_uri(uri) == own:
@@ -336,7 +341,7 @@ def _row_conflict(lib: LocalLibrary, rows: list[tuple[str, str, str]]) -> tuple[
                     f"the project footprint table has a row {nickname!r} with URI {uri!r}, "
                     f"but CopperChat's local library {nickname!r} must point at {lib.uri!r}"
                 )
-        elif _same_dir(substituted, local_dir):
+        elif _same_dir(substituted, local_dir, table_dir):
             conflicts.append(
                 f"the project footprint table row {nickname!r} ({uri!r}) points at the local "
                 f"footprint library directory, which CopperChat uses under the nickname "
@@ -349,11 +354,13 @@ def _norm_uri(uri: str) -> str:
     return uri.strip().replace("\\", "/").rstrip("/")
 
 
-def _same_dir(uri: str, local_dir: str) -> bool:
+def _same_dir(uri: str, local_dir: str, table_dir: Path) -> bool:
+    """`uri` (substituted) names `local_dir`; a relative URI is taken relative to the
+    directory of the project table."""
     if "${" in uri or "://" in uri:  # unresolved variable or a remote library
         return False
     try:
-        return os.path.normpath(Path(uri).resolve()) == local_dir
+        return os.path.normpath((table_dir / uri).resolve()) == local_dir
     except (OSError, RuntimeError, ValueError):
         return False
 
@@ -364,6 +371,37 @@ def _build_index(rows: Iterable[tuple[str, str, str, Scope]]) -> Index:
         index.add(lib_id, description, keywords, scope)
     index.finish()
     return index
+
+
+@dataclass(frozen=True)
+class _CachedGeometry:
+    geometry: FootprintGeometry
+    # local footprints: the .kicad_mod file and its lstat validator taken before the read
+    # (st_ino, st_size, st_mtime_ns); a hit whose file changed or vanished is dropped
+    file: Path | None = None
+    validator: tuple[int, int, int] | None = None
+
+
+def _validator(st: os.stat_result) -> tuple[int, int, int]:
+    return (st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def _file_validator(path: Path) -> tuple[int, int, int] | None:
+    """The validator of a regular file (no symlink), None when missing or not regular."""
+    st = _lstat(path)
+    if st is None or not stat.S_ISREG(st.st_mode):
+        return None
+    return _validator(st)
+
+
+def _repo_root_unknown(transient: str, what: str) -> StructuredToolError:
+    return StructuredToolError(
+        "The repository root is unknown right now",
+        f"git could not answer ({transient}), so CopperChat cannot tell where the "
+        "repo's footprint library lives",
+        f"Try again in a moment; {what}.",
+        code="repo_root_unknown",
+    )
 
 
 @dataclass
@@ -391,7 +429,7 @@ class LibraryService:
         self._fp_failed: dict[str, tuple[str, float]] = {}
         self._global_fp_nicknames: tuple[int, frozenset[str]] | None = None
         # footprint_geometry LRU (lib id -> geometry); cleared by invalidate_footprints
-        self._fp_geometry: OrderedDict[str, FootprintGeometry] = OrderedDict()
+        self._fp_geometry: OrderedDict[str, _CachedGeometry] = OrderedDict()
 
     @property
     def _session(self) -> KicadSession:
@@ -728,24 +766,28 @@ class LibraryService:
         None while the repo root is unknown (`repo_policy` transient); with `for_write`
         that raises `repo_root_unknown` instead, and the library path and the project
         table are checked with `local_library_dir_safe` (`library_conflict`)."""
+        lib, transient = await self._derive_local()
+        if lib is None:
+            if for_write:
+                raise _repo_root_unknown(transient, "nothing was written")
+            return None
+        if for_write:
+            await asyncio.to_thread(local_library_dir_safe, lib)
+        return await self._local_info(lib)
+
+    async def _derive_local(self) -> tuple[LocalLibrary | None, str]:
+        """The derived local library, or (None, reason) while `repo_policy` is
+        transient. No API call besides the cached global nicknames."""
         session = self._session
         policy = await repo_policy(session.project, session.settings.projects_root)
         if policy.transient:
-            if for_write:
-                raise StructuredToolError(
-                    "The repository root is unknown right now",
-                    f"git could not answer ({policy.transient}), so CopperChat cannot tell "
-                    "where the repo's footprint library lives",
-                    "Try again in a moment; nothing was written.",
-                    code="repo_root_unknown",
-                )
-            return None
+            return None, policy.transient
         nicknames = await self.global_footprint_nicknames()
-        lib = derive_local_library(policy.project_dir, policy.root, nicknames)
-        if for_write:
-            await asyncio.to_thread(local_library_dir_safe, lib)
+        return derive_local_library(policy.project_dir, policy.root, nicknames), ""
+
+    async def _local_info(self, lib: LocalLibrary) -> LocalLibraryInfo:
         with _kicad_errors("Could not read the project footprint table"):
-            rows = await session.call(_project_footprint_rows)
+            rows = await self._session.call(_project_footprint_rows)
         present, conflict = await asyncio.to_thread(_row_conflict, lib, rows)
         return LocalLibraryInfo(lib, present, conflict)
 
@@ -775,6 +817,13 @@ class LibraryService:
         overrides: `mounting` is "unspecified" and a `footprint_attributes_unavailable`
         note is added. Only a boardless server is activated for that read.
 
+        A cached local footprint is re-validated (lstat of its `.kicad_mod`: inode, size,
+        mtime) on every hit and re-read when the file changed or vanished. While the repo
+        root is unknown (`repo_policy` transient) the local nickname cannot be derived:
+        a nickname that is not in the global table (it may be the local library) raises
+        `repo_root_unknown` instead of a silently incomplete read, and nothing read in
+        that state is cached.
+
         Activation seconds go to `notes` as `footprint_libraries_loaded`. Must not be
         called while the caller holds the session's `_fp_lock` (activation and the
         document take it; the lock is not re-entrant)."""
@@ -787,22 +836,33 @@ class LibraryService:
                 "e.g. Resistor_SMD:R_0805_2012Metric",
             )
         cached = self._fp_geometry.get(lib_id)
+        if cached is not None and cached.file is not None:
+            current = await asyncio.to_thread(_file_validator, cached.file)
+            if current != cached.validator:
+                del self._fp_geometry[lib_id]  # changed or removed: read again
+                cached = None
         if cached is not None:
             self._fp_geometry.move_to_end(lib_id)
-            if cached.scope != "local":
+            if cached.geometry.scope != "local":
                 _note_incomplete(notes, lib_id)
-            return cached
-        info = await self.local_library()
-        if info is not None and info.row_present and nickname == info.lib.nickname:
-            geometry = await self._local_geometry(info.lib, lib_id, name, notes)
+            return cached.geometry
+        lib, transient = await self._derive_local()
+        if lib is None:
+            if nickname not in await self.global_footprint_nicknames():
+                raise _repo_root_unknown(transient, f"{lib_id} may be a local footprint")
+            return await self._library_geometry(lib_id, nickname, name, notes)  # not cached
+        entry: _CachedGeometry | None = None
+        if nickname == lib.nickname and (await self._local_info(lib)).row_present:
+            entry = await self._local_geometry(lib, lib_id, name, notes)
         else:
             geometry = await self._library_geometry(lib_id, nickname, name, notes)
-        if geometry is None:
+            entry = None if geometry is None else _CachedGeometry(geometry)
+        if entry is None:
             return None
-        self._fp_geometry[lib_id] = geometry
+        self._fp_geometry[lib_id] = entry
         while len(self._fp_geometry) > GEOMETRY_CACHE_SIZE:
             self._fp_geometry.popitem(last=False)
-        return geometry
+        return entry.geometry
 
     async def _activate(self, notes: list[dict[str, Any]] | None) -> None:
         seconds = await self._session.activate_footprints()
@@ -813,13 +873,16 @@ class LibraryService:
 
     async def _local_geometry(
         self, lib: LocalLibrary, lib_id: str, name: str, notes: list[dict[str, Any]] | None
-    ) -> FootprintGeometry | None:
+    ) -> _CachedGeometry | None:
         from kipy.errors import ApiError
 
         from copperchat.kicad_tools.footprints.model import geometry_from_proto
 
-        on_disk = await asyncio.to_thread(self.local_names_on_disk, lib)
-        if name not in on_disk:
+        if not NAME_RE.match(name):
+            return None  # never a file of the local library (and no path outside it)
+        file = lib.dir / f"{name}.kicad_mod"
+        validator = await asyncio.to_thread(_file_validator, file)  # before the read
+        if validator is None:
             return None
         await self._activate(notes)
         session = self._session
@@ -839,7 +902,8 @@ class LibraryService:
                 "Ask the user to open the footprint in KiCad and check it.",
                 code="library_error",
             ) from exc
-        return geometry_from_proto(instance, instance.definition.items, lib_id, "local")
+        geometry = geometry_from_proto(instance, instance.definition.items, lib_id, "local")
+        return _CachedGeometry(geometry, file, validator)
 
     async def _library_geometry(
         self, lib_id: str, nickname: str, name: str, notes: list[dict[str, Any]] | None

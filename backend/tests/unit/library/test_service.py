@@ -393,7 +393,10 @@ async def test_local_names_on_disk(
     monkeypatch.setattr(Path, "read_bytes", boom)
     monkeypatch.setattr(Path, "read_text", boom)
     monkeypatch.setattr(Path, "open", boom)
-    assert svc.local_names_on_disk(lib) == ["A", "B"]
+    monkeypatch.setattr("builtins.open", boom)
+    names = svc.local_names_on_disk(lib)
+    monkeypatch.undo()
+    assert names == ["A", "B"]
 
 
 async def test_local_library_info(local: LocalSession) -> None:
@@ -495,6 +498,9 @@ async def test_row_conflict(local: LocalSession) -> None:
     assert info.row_conflict is not None
     assert "MyParts" in info.row_conflict
     assert "rename" in info.row_conflict and "remove" in info.row_conflict
+    local.rows = {"Rel": "../../footprints/OpenDriveHub.pretty"}  # relative to the table dir
+    info = await svc.local_library()
+    assert info is not None and info.row_conflict is not None and "Rel" in info.row_conflict
     local.rows = {REPO: LOCAL_URI, "Vendor": "${KIPRJMOD}/vendor/v.pretty"}
     info = await svc.local_library()
     assert info is not None and (info.row_present, info.row_conflict) == (True, None)
@@ -580,3 +586,41 @@ async def test_geometry_local_without_row_is_not_found(local: LocalSession) -> N
     (info.lib.dir / "L_Local.kicad_mod").write_bytes(b"")
     assert await _svc(local).footprint_geometry(f"{REPO}:L_Local") is None
     assert local.documents == []
+
+
+async def test_geometry_local_cache_revalidated(local: LocalSession) -> None:
+    local.rows = {REPO: LOCAL_URI}
+    svc = _svc(local)
+    info = await svc.local_library()
+    assert info is not None
+    info.lib.dir.mkdir(parents=True)
+    file = info.lib.dir / "L_Local.kicad_mod"
+    file.write_bytes(b"v1")
+    lib_id = f"{REPO}:L_Local"
+    g = await svc.footprint_geometry(lib_id)
+    assert g is not None and len(local.documents) == 1
+    assert await svc.footprint_geometry(lib_id) is g  # unchanged file: cached
+    assert len(local.documents) == 1
+    file.write_bytes(b"version 2")  # rewritten (size and mtime change)
+    g2 = await svc.footprint_geometry(lib_id)
+    assert g2 is not None and g2 is not g and len(local.documents) == 2
+    file.unlink()  # removed: the stale entry is dropped and the read finds nothing
+    assert await svc.footprint_geometry(lib_id) is None
+    assert len(local.documents) == 2 and lib_id not in svc._fp_geometry
+
+
+async def test_geometry_transient_repo_root(
+    local: LocalSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _transient(monkeypatch, local)
+    svc = _svc(local)
+    for lib_id in (f"{REPO}:L_Local", "main:L_Local", "Vendor:X"):  # maybe the local library
+        with pytest.raises(StructuredToolError) as err:
+            await svc.footprint_geometry(lib_id)
+        assert err.value.code == "repo_root_unknown"
+    assert local.documents == [] and local.library_reads == []
+    notes: list[dict[str, Any]] = []
+    g = await svc.footprint_geometry(SEED, notes)  # a global library still reads
+    assert g is not None and g.scope == "global"
+    assert "footprint_attributes_unavailable" in [n["kind"] for n in notes]
+    assert svc._fp_geometry == {}  # nothing read while transient is cached
