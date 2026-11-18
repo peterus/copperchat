@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import type { ChangeEntry } from '@/api/changes';
+import { isSchematicEntry } from '@/components/changes/highlight';
 
 const OP_LABEL: Record<string, string> = { add: 'Added', modify: 'Modified', delete: 'Deleted' };
 const KIND_CLASS: Record<string, string> = { add: 'text-success', modify: 'text-warning', delete: 'text-danger' };
@@ -7,6 +8,22 @@ const KIND_CLASS: Record<string, string> = { add: 'text-success', modify: 'text-
 /** What the entry is about: reference, net or a short UUID. */
 export function entryName(e: ChangeEntry): string {
   return e.ref ?? e.net ?? e.uuid.slice(0, 8);
+}
+
+const entryLabel = (e: ChangeEntry) =>
+  `${OP_LABEL[e.op] ?? e.op} ${e.kind} ${entryName(e)}${e.sideEffect ? ', side effect' : ''} (${e.tool})`;
+
+function EntryText({ e }: { e: ChangeEntry }) {
+  return (
+    <>
+      <span className={`shrink-0 font-medium ${KIND_CLASS[e.op] ?? ''}`}>{OP_LABEL[e.op] ?? e.op}</span>
+      <span className="min-w-0 flex-1 truncate">
+        {e.kind} {entryName(e)}
+      </span>
+      {e.sideEffect && <span className="shrink-0 rounded bg-warning/15 px-1 text-xs">side effect</span>}
+      <span className="shrink-0 text-xs text-muted">{e.tool}</span>
+    </>
+  );
 }
 
 /**
@@ -44,19 +61,21 @@ export function ChangeList({
             <ul className="flex flex-col">
               {groups.get(step)!.map((e) => (
                 <li key={e.id}>
-                  <button
-                    type="button"
-                    onClick={() => onPick(e)}
-                    aria-label={`${OP_LABEL[e.op] ?? e.op} ${e.kind} ${entryName(e)}${e.sideEffect ? ', side effect' : ''} (${e.tool})`}
-                    className="flex w-full items-baseline gap-2 rounded px-1 py-1 text-left text-sm hover:bg-surface-2"
-                  >
-                    <span className={`shrink-0 font-medium ${KIND_CLASS[e.op] ?? ''}`}>{OP_LABEL[e.op] ?? e.op}</span>
-                    <span className="min-w-0 flex-1 truncate">
-                      {e.kind} {entryName(e)}
-                    </span>
-                    {e.sideEffect && <span className="shrink-0 rounded bg-warning/15 px-1 text-xs">side effect</span>}
-                    <span className="shrink-0 text-xs text-muted">{e.tool}</span>
-                  </button>
+                  {isSchematicEntry(e) ? (
+                    <button
+                      type="button"
+                      onClick={() => onPick(e)}
+                      aria-label={entryLabel(e)}
+                      className="flex w-full items-baseline gap-2 rounded px-1 py-1 text-left text-sm hover:bg-surface-2"
+                    >
+                      <EntryText e={e} />
+                    </button>
+                  ) : (
+                    // Not in the schematic (footprint library): nothing to locate.
+                    <div aria-label={entryLabel(e)} className="flex w-full items-baseline gap-2 px-1 py-1 text-sm">
+                      <EntryText e={e} />
+                    </div>
+                  )}
                 </li>
               ))}
             </ul>

@@ -315,6 +315,8 @@ async def apply_footprint_create(ctx: ToolContext, cs: Any) -> ToolResult:
     check = to_result(await asyncio.to_thread(run_checks, inp))
     lib_id = applied.lib_ids[0]
     source = readback.fields.get(SOURCE_FIELD, "")
+    # one footprint per call: the read-back (and its hash) is that of lib_ids[0]
+    assert len(applied.lib_ids) == 1, applied.lib_ids
     await record_applied(ctx, cs.tool, change_entries(ctx, cs, applied, geometry_hash(readback)))
     data: dict[str, Any] = {
         "created": list(applied.lib_ids),
@@ -366,7 +368,9 @@ def change_entries(
     for lib_id in applied.lib_ids:
         if cs.pre_image is not None:
             before = {"geometry_hash": cs.pre_image.geometry_hash}
-            out.append(entry("modify", "footprint_replaced", lib_id, before=before, after=after))
+            out.append(
+                entry("modify", "footprint_replaced", lib_id, before=before, after=dict(after))
+            )
         else:
             out.append(entry("add", "footprint_created", lib_id, after=dict(after)))
     return out
