@@ -86,26 +86,132 @@ def _rounded_rect(w: float, h: float, r: float) -> list[Point]:
     return _dedupe(out)
 
 
-def pad_geometry(pad: Pad) -> Polygon | Circle:
-    """Exact pad outline: a `("circle", centre, r)` for round pads, else a polygon.
+def _chamfered_rect(w: float, h: float, c: float, corners: Sequence[str]) -> list[Point]:
+    """Rectangle centred on the origin with the named corners cut by c (y down)."""
+    hx, hy = w / 2, h / 2
+    c = min(max(c, 0.0), hx, hy)
+    out: list[Point] = []
+    # clockwise on screen: top_left, top_right, bottom_right, bottom_left
+    for name, (x, y), (ax, ay), (bx, by) in (
+        ("top_left", (-hx, -hy), (0, 1), (1, 0)),
+        ("top_right", (hx, -hy), (-1, 0), (0, 1)),
+        ("bottom_right", (hx, hy), (0, -1), (-1, 0)),
+        ("bottom_left", (-hx, hy), (1, 0), (0, -1)),
+    ):
+        if name in corners and c > 1e-9:
+            out += [(x + ax * c, y + ay * c), (x + bx * c, y + by * c)]
+        else:
+            out.append((x, y))
+    return out
 
-    rect, roundrect (ratio default 0.25), oval (stadium) and trapezoid are polygons
-    (arcs as 16 chords per quarter). Approximations: `trapezoid` and `chamfered_rect`
-    use the full `size` rectangle (the model carries no delta / chamfer data), and
-    `custom` uses its bounding rectangle from `size`. All are applied with the pad
-    rotation around the pad centre.
+
+def _trapezoid(w: float, h: float, delta: Point) -> list[Point]:
+    """KiCad trapezoid: delta.x moves the left/right sides' corners on y (+-dx/2),
+    delta.y the top/bottom sides' corners on x (+-dy/2). Order: bottom-left, top-left,
+    top-right, bottom-right (y down)."""
+    hx, hy = w / 2, h / 2
+    dx, dy = delta[0] / 2, delta[1] / 2
+    return [
+        (-hx - dy, hy + dx),
+        (-hx + dy, -hy - dx),
+        (hx - dy, -hy + dx),
+        (hx + dy, hy - dx),
+    ]
+
+
+def _translate_rotate(
+    pts: Sequence[Point], local: Point, at: Point, rotation: float
+) -> list[Point]:
+    """Shift by `local` (pad frame), then rotate around the pad centre `at`."""
+    return _rotate([(x + local[0], y + local[1]) for x, y in pts], at, rotation)
+
+
+def _base_polygon(
+    shape: str, size: Point, extra: dict[str, object], ratio: float | None
+) -> list[Point]:
+    w, h = size
+    if shape == "roundrect":
+        return _rounded_rect(w, h, (0.25 if ratio is None else ratio) * min(w, h))
+    if shape == "oval":
+        return _rounded_rect(w, h, min(w, h) / 2)
+    if shape == "trapezoid":
+        delta = extra.get("trapezoid_delta")
+        if isinstance(delta, tuple | list) and len(delta) == 2:
+            return _trapezoid(w, h, (float(delta[0]), float(delta[1])))
+    if shape == "chamfered_rect":
+        corners = extra.get("chamfered_corners")
+        cr = extra.get("chamfer_ratio")
+        if isinstance(corners, tuple | list) and isinstance(cr, int | float):
+            return _chamfered_rect(w, h, float(cr) * min(w, h), [str(c) for c in corners])
+    return _rounded_rect(w, h, 0.0)  # rect, unknown, or data missing
+
+
+def pad_geometry(pad: Pad) -> Polygon | Circle:
+    """Exact outline of the pad's main (anchor) shape: a `("circle", centre, r)` for
+    round pads, else a polygon (arcs as 16 chords per quarter).
+
+    rect, roundrect (ratio default 0.25), oval (stadium), trapezoid (`trapezoid_delta`)
+    and chamfered_rect (`chamfer_ratio`, `chamfered_corners`) are exact; the copper
+    `offset` is applied in the pad frame before the pad rotation (around the pad centre).
+    For a custom pad this is only the anchor shape, use `pad_parts` for the whole pad.
     """
+    ex: dict[str, object] = dict(pad.extra)
+    shape = pad.shape
+    if shape == "custom":
+        shape = str(ex.get("anchor", "rect"))
+    off = _vec_extra(ex.get("offset"))
     w, h = pad.size
-    if pad.shape == "circle":
-        return ("circle", pad.at, min(w, h) / 2 if w != h else w / 2)
-    if pad.shape == "roundrect":
-        ratio = 0.25 if pad.roundrect_ratio is None else pad.roundrect_ratio
-        base = _rounded_rect(w, h, ratio * min(w, h))
-    elif pad.shape == "oval":
-        base = _rounded_rect(w, h, min(w, h) / 2)
-    else:  # rect, trapezoid, chamfered_rect, custom, unknown
-        base = _rounded_rect(w, h, 0.0)
-    return _rotate(base, pad.at, pad.rotation)
+    if shape == "circle":
+        return (
+            "circle",
+            _translate_rotate([(0.0, 0.0)], off, pad.at, pad.rotation)[0],
+            min(w, h) / 2,
+        )
+    base = _base_polygon(shape, pad.size, ex, pad.roundrect_ratio)
+    return _translate_rotate(base, off, pad.at, pad.rotation)
+
+
+def _vec_extra(v: object) -> Point:
+    if isinstance(v, tuple | list) and len(v) == 2:
+        return (float(v[0]), float(v[1]))
+    return (0.0, 0.0)
+
+
+def pad_parts(pad: Pad) -> list[Polygon | Seg | Circle]:
+    """All copper pieces of a pad (rotated, absolute). One part for ordinary pads; a
+    custom pad gives its anchor shape plus its primitives (filled polygon/rect as
+    polygons, circle as a disc grown by half its stroke, segments/arcs as `Seg`s).
+    Primitives are in the pad frame, unaffected by the copper offset. Pad-to-pad gap is
+    the minimum `distance` over the parts.
+    """
+    parts: list[Polygon | Seg | Circle] = [pad_geometry(pad)]
+    if pad.shape != "custom":
+        return parts
+    prims = dict(pad.extra).get("primitives", ())
+    for d in prims if isinstance(prims, tuple | list) else ():
+        if not isinstance(d, dict):
+            continue
+        pts = [(float(x), float(y)) for x, y in d.get("points", [])]
+        kind = d.get("kind")
+        hw = float(d.get("width", 0.0)) / 2
+        if kind == "polygon" and len(pts) >= 3:
+            parts.append(_abs(pts, pad))
+        elif kind == "rect" and len(pts) >= 2:
+            (x0, y0), (x1, y1) = pts[0], pts[1]
+            parts.append(_abs([(x0, y0), (x1, y0), (x1, y1), (x0, y1)], pad))
+        elif kind == "circle" and d.get("center") and d.get("size"):
+            cx, cy = d["center"]
+            c = _abs([(float(cx), float(cy))], pad)[0]
+            parts.append(("circle", c, float(d["size"][0]) / 2 + hw))
+        elif kind in ("segment", "arc") and len(pts) >= 2:
+            chain = _arc_points(*pts[:3]) if kind == "arc" and len(pts) >= 3 else pts[:2]
+            for sg in _chain(_abs(chain, pad), hw, False):
+                parts.append(sg)
+    return parts
+
+
+def _abs(pts: Sequence[Point], pad: Pad) -> list[Point]:
+    return _translate_rotate(pts, (0.0, 0.0), pad.at, pad.rotation)
 
 
 def pad_polygon(pad: Pad) -> list[Point]:

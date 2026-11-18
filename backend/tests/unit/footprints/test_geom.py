@@ -136,3 +136,78 @@ def test_candidate_pairs_matches_brute_force() -> None:
     got = list(geom.candidate_pairs(boxes, gap))
     assert len(got) == len(set(got))
     assert set(got) == brute
+
+
+def _xpad(shape: str, size, extra: dict, at=(0.0, 0.0), rot=0.0) -> Pad:
+    return Pad(
+        "1", "smd", shape, at, rot, size, None, None, ("F.Cu",), tuple(sorted(extra.items()))
+    )
+
+
+def _flat(pts) -> list[float]:
+    return [c for p in pts for c in p]
+
+
+def test_trapezoid_exact_corners() -> None:
+    pad = _xpad("trapezoid", (2.0, 1.0), {"trapezoid_delta": (0.0, 0.4)})
+    want = [(-1.2, 0.5), (-0.8, -0.5), (0.8, -0.5), (1.2, 0.5)]
+    assert _flat(geom.pad_polygon(pad)) == pytest.approx(_flat(want))
+    pad = _xpad("trapezoid", (2.0, 1.0), {"trapezoid_delta": (0.2, 0.0)})
+    want = [(-1.0, 0.6), (-1.0, -0.6), (1.0, -0.4), (1.0, 0.4)]
+    assert _flat(geom.pad_polygon(pad)) == pytest.approx(_flat(want))
+
+
+def test_chamfered_rect_corner_cut() -> None:
+    pad = _xpad(
+        "chamfered_rect", (2.0, 1.0), {"chamfer_ratio": 0.2, "chamfered_corners": ("top_left",)}
+    )
+    poly = geom.pad_polygon(pad)
+    assert len(poly) == 5
+    assert (-1.0, -0.5) not in poly
+    assert (-0.8, -0.5) in [(round(x, 9), round(y, 9)) for x, y in poly]
+    assert (-1.0, -0.3) in [(round(x, 9), round(y, 9)) for x, y in poly]
+    assert (1.0, 0.5) in poly
+
+
+def test_custom_pad_parts() -> None:
+    sq = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+    prim = {"kind": "polygon", "points": sq, "width": 0.0, "closed": True, "filled": True}
+    seg = {"kind": "segment", "points": [(0.0, 0.0), (0.0, 2.0)], "width": 0.2}
+    pad = _xpad(
+        "custom", (0.2, 0.2), {"anchor": "circle", "primitives": (prim, seg)}, at=(5.0, 5.0)
+    )
+    parts = geom.pad_parts(pad)
+    assert len(parts) == 3
+    assert geom.is_circle(parts[0]) and parts[0] == ("circle", (5.0, 5.0), 0.1)
+    assert _flat(parts[1]) == pytest.approx(_flat([(5 + x, 5 + y) for x, y in sq]))
+    assert parts[2] == geom.Seg((5.0, 5.0), (5.0, 7.0), 0.1)
+    assert geom.pad_parts(_pad())[0] == geom.pad_geometry(_pad())
+
+
+def test_offset_applied_before_rotation() -> None:
+    pad = _xpad("rect", (2.0, 1.0), {"offset": (1.0, 0.0)}, at=(10.0, 10.0), rot=90.0)
+    poly = geom.pad_polygon(pad)
+    xs, ys = [p[0] for p in poly], [p[1] for p in poly]
+    # KiCad +90 deg is counter-clockwise on screen: local +x -> screen up (y down => -y)
+    assert (min(xs) + max(xs)) / 2 == pytest.approx(10.0)
+    assert (min(ys) + max(ys)) / 2 == pytest.approx(9.0)
+    c = _xpad("circle", (1.0, 1.0), {"offset": (1.0, 0.0)}, at=(10.0, 10.0), rot=90.0)
+    g = geom.pad_geometry(c)
+    assert geom.is_circle(g) and g[1] == pytest.approx((10.0, 9.0))
+
+
+def test_rotation_sign_30_degrees() -> None:
+    pad = _pad("rect", at=(0.0, 0.0), size=(2.0, 0.0001), rot=30.0)
+    xs = [p for p in geom.pad_polygon(pad)]
+    right = max(xs)
+    # local +x end rotates counter-clockwise on screen: up, i.e. negative y
+    assert right[0] == pytest.approx(math.cos(math.radians(30)), abs=1e-3)
+    assert right[1] == pytest.approx(-0.5, abs=1e-3)
+
+
+def test_oval_stadium() -> None:
+    poly = geom.pad_polygon(_pad("oval", at=(0, 0), size=(3.0, 1.0)))
+    assert max(p[0] for p in poly) == pytest.approx(1.5)
+    assert max(p[1] for p in poly) == pytest.approx(0.5)
+    assert geom.point_in_polygon((0.0, 0.4), poly)
+    assert not geom.point_in_polygon((1.45, 0.4), poly)  # outside the rounded end
