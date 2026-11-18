@@ -601,6 +601,64 @@ phase file, with the reason.)
   - Skills (`copperchat-tools`, `session-schematic`) do not list `fp_get`/`fp_list_local`
     yet (F5).
 
+### As built (F2)
+
+- **Render, KiCad's DOCTYPE (FP-C5, Task 5 ruling):** the KiCad SVG always carries the
+  standard SVG 1.1 DOCTYPE (no internal subset), so exactly that declaration is stripped
+  before parsing; any other `<!DOCTYPE` or any `<!ENTITY` raises `render_failed`, and the
+  SVG must be UTF-8 (a UTF-16 file would hide the markers from the byte check) — spec
+  intent is "no DTD/entity processing", which the exact match keeps.
+- **Render, cairosvg API:** cairosvg 2.9.1 `svg2png` has no `url_fetcher` parameter, so the
+  PNG comes from `cairosvg.surface.PNGSurface.convert(url_fetcher=_refuse, unsafe=False)`.
+- **FP-C5 additions:** `render_footprint(..., *, notes=None)` (library-loading notes pass
+  through to the tool result); `RenderOutput` gains `origin_mm` and `grid_mm` (the
+  effective grid, also when auto-picked); the reported extent and the scale include the
+  render margins.
+- **Render scale:** the longest side stays <= 2000 px, so above ~50 mm extent the scale
+  drops below 40 px/mm (the cap wins; spec numbers cannot both hold there).
+- **`fp_render` result:** besides image/svg/scale/extent/geometry_hash it carries `svg_url`
+  (same-origin link for zooming; the model needs a link), `lib_id`, `origin_mm`,
+  `grid_mm` and `notes` when present.
+- **Renders route sidecar hardening:** a `<uuid>.svg.json` sidecar that is a symlink, a
+  directory, larger than 4 KB or too deeply nested JSON is ignored and the route falls back to
+  the `<uuid>.svg` download name.
+- **Kicad render test:** `test_crtyd_extent_matches_geometry` asserts the extent of the
+  drawn paths (= `fp_get` CrtYd bbox ±0.01 mm) and only that the viewBox contains it —
+  KiCad's viewBox also covers texts of layers it does not draw.
+- **Golden:** DRC0010J is pinned as `Package_SON:Texas_DRC0010J`; the golden
+  `tests/fixtures/golden/fp_check_DRC0010J.json` is regenerated with `UPDATE_GOLDENS=1`.
+- **`fp_check` errors:** it reuses the library errors, incl. `libraries_loading` (not in
+  FP-C9); a derived (`extends`) symbol in a read-only session gives `library_error`.
+  `expected: null` is rejected (`invalid_argument`, the schema says object), as are JSON
+  ints too large for a float (`10**400`) in `expected` and `fp_render`'s `grid_mm`.
+- **FP-C4 public helpers:** `ExpectedPad` dataclass; `pitch_pad_pair`, `natural_key` and
+  `text_box` are public in `checks.py` (shared with `fp_render` and the tests).
+- **FP-C4 rule details:** `mask_missing`/`paste_missing`/`paste_on_tht` are side-aware (a
+  B.Cu-only SMD pad needs B.Mask/B.Paste); NPTH holes count in the courtyard rules;
+  the annular ring is checked per axis for oval drills.
+- **Pin-1 heuristic:** a silk/fab piece marks pin 1 when it is within
+  `max(pad1.size) + 1` mm of pad 1 and strictly nearer to pad 1 than to any other pad;
+  pieces are whole shapes plus the single **diagonal** edges (not within 1° of x/y) of
+  polygons and rects, so a pin-1 chamfer drawn into one closed F.Fab body counts
+  (final fix wave). Separate line shapes are judged one by one, as before.
+- **Geometry (FP-C3 consumers):** `geom.pad_parts` gives every copper piece of a custom
+  pad (anchor + primitives, primitives placed at pad position + rotated `offset`, as
+  KiCad does; `model._pad_extent` got the same offset fix); trapezoid and chamfered-rect
+  pads are exact from `Pad.extra`. Polygon arc nodes are flattened by the model's
+  `_polyline` without a marker (residual).
+- **Image:** the app image gets `libcairo2` only through KiCad's shared-library
+  dependencies (ldd), guarded by the `scripts/app-image-tools.sh` smoke test.
+- **`run_kicad_cli`:** kills the process, not a process group (as `render_view` before).
+
+- **Residuals for later phases (F2):**
+  - F4a feeds `CheckInput.pending` from the journal and runs `fp_check` inside
+    `fp_create` (errors block the write).
+  - F4b records renders and checks in `footprint_reviews`.
+  - `checks.py` is ~840 lines — a split candidate.
+  - The `< 2 s` timing tests are wall-clock (CI noise).
+  - Filled shapes are measured as outlines; a bezier by its control polygon.
+  - Renders are not pruned (existing residual below).
+
 ## Residuals
 
 (Filled by F5.) Known before the start:
