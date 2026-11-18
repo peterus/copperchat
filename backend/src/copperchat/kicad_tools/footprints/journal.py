@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -30,24 +31,50 @@ __all__ = [
     "classify_pending",
     "file_sha256",
     "footprint_rel",
+    "repo_rel",
+    "scrub_repo",
     "table_rel",
 ]
 
+log = logging.getLogger(__name__)
 
-def file_sha256(path: Path) -> str:
+
+def repo_rel(root: Path, path: Path) -> str:
+    """`path` relative to the repo root `root` (POSIX), for agent-facing text; host paths
+    stay in the logs."""
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:  # a project outside the repo root (never for repo_policy roots)
+        return Path(os.path.relpath(path, root)).as_posix()
+
+
+def scrub_repo(text: str, root: Path) -> str:
+    """`text` (a KiCad or OS error message) with the repo root's host path replaced by
+    `<repo>`, so agent-facing errors carry no absolute host paths."""
+    for prefix in sorted({str(root), root.as_posix(), str(root.resolve())}, key=len, reverse=True):
+        if prefix and prefix != ".":
+            text = text.replace(prefix, "<repo>")
+    return text
+
+
+def file_sha256(path: Path, root: Path | None = None) -> str:
     """sha256 of the regular file `path` (no symlink followed), or `absent`; anything
-    else there (a symlink, a FIFO, ...) is `library_conflict`."""
+    else there (a symlink, a FIFO, ...) is `library_conflict`. Its text and
+    `details.path` name the file relative to the repo root `root` (only the file name
+    without one); the host path goes to the log."""
     try:
         fd = open_regular(path)
     except FileNotFoundError:
         return ABSENT
     except OSError as exc:  # swapped for a symlink (ELOOP), a FIFO (EINVAL), ...
+        log.warning("%s cannot be read as a regular file: %s", path, exc)
+        shown = path.name if root is None else repo_rel(root, path)
         raise StructuredToolError(
             "The local footprint library is not safe to write",
-            f"{path} cannot be read as a regular file: {exc.strerror or exc}",
+            f"{shown} cannot be read as a regular file: {exc.strerror or type(exc).__name__}",
             "Ask the user to replace it with the footprint file KiCad saved; nothing was written.",
             code="library_conflict",
-            details={"path": str(path)},
+            details={"path": shown},
         ) from exc
     digest = hashlib.sha256()
     with os.fdopen(fd, "rb") as fh:
@@ -57,10 +84,7 @@ def file_sha256(path: Path) -> str:
 
 
 def _repo_rel(lib: LocalLibrary, path: Path) -> str:
-    try:
-        return path.relative_to(lib.repo_root).as_posix()
-    except ValueError:  # a project outside the repo root (never for repo_policy roots)
-        return Path(os.path.relpath(path, lib.repo_root)).as_posix()
+    return repo_rel(lib.repo_root, path)
 
 
 def table_rel(lib: LocalLibrary) -> str:
@@ -100,9 +124,9 @@ class Journal:
             await self._repo.finalise(row, state, post_sha256)
 
 
-async def sha_of(path: Path) -> str:
+async def sha_of(path: Path, root: Path | None = None) -> str:
     """`file_sha256` in a worker thread."""
-    return await asyncio.to_thread(file_sha256, path)
+    return await asyncio.to_thread(file_sha256, path, root)
 
 
 # -- pending rows after a server death (spec §9.3, FP-C8) ---------------------------------

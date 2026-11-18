@@ -10,6 +10,7 @@ Order: schema → name → activation + seed check → local library → name fr
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
@@ -40,12 +41,15 @@ from copperchat.kicad_tools.footprints.engine import (
     cleanable_copy,
 )
 from copperchat.kicad_tools.footprints.journal import file_sha256 as _file_sha256
+from copperchat.kicad_tools.footprints.journal import scrub_repo
 from copperchat.kicad_tools.footprints.model import SOURCE_FIELD, geometry_from_proto, geometry_hash
 from copperchat.kicad_tools.footprints.read import require_enabled, symbol_pins
 from copperchat.library.local import LocalLibrary
 from copperchat.library.service import LibraryService, library_for, local_footprint_file_safe
 from copperchat.repo_context.paths import RepoPathError, open_regular, repo_policy, resolve_file
 from copperchat.tools.spec import ToolContext, ToolResult
+
+log = logging.getLogger(__name__)
 
 TOOL = "fp_create"
 LOGICAL_CHANGES = 5  # spec §12 (owner decision D3), new and replace alike
@@ -94,9 +98,10 @@ async def read_pre_image(ctx: ToolContext, lib: LocalLibrary, name: str) -> Foot
             items = await doc.items()
             instance = await doc.footprint()
     except (ApiError, RuntimeError) as exc:  # KicadUnavailable passes through
+        log.warning("reading the pre-image of %s failed: %s", lib_id, exc)
         raise StructuredToolError(
             f"Could not read footprint {lib_id}",
-            f"KiCad could not open the footprint to replace: {exc}",
+            "KiCad could not open the footprint to replace: " + scrub_repo(str(exc), lib.repo_root),
             "Check it with fp_get; ask the user to open it in KiCad if it keeps failing.",
             code="library_error",
         ) from exc
@@ -104,7 +109,7 @@ async def read_pre_image(ctx: ToolContext, lib: LocalLibrary, name: str) -> Foot
 
     def file_sha() -> str:
         local_footprint_file_safe(lib, name)
-        return _file_sha256(lib.dir / f"{name}.kicad_mod")
+        return _file_sha256(lib.dir / f"{name}.kicad_mod", lib.repo_root)
 
     return FootprintPreImage(
         items=[_packed(i) for i in items],

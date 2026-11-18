@@ -37,8 +37,8 @@ async def test_compensation_after_stage(
 ) -> None:
     """Covers test_compensation_after_copy_seed / _after_rebuild_saved (and after S1):
     the footprint is gone, the row this call added is gone, an empty directory this
-    call created is gone, one that existed before is kept; the error is the injected
-    one (never a success)."""
+    call created is gone (with its parent `footprints/` it created), one that existed
+    before is kept; the error is the injected one (never a success)."""
     open_session, root = repo_session
     if dir_existed:
         await library_via_io(open_session)  # the sibling project made the (empty) dir
@@ -50,6 +50,10 @@ async def test_compensation_after_stage(
     assert not (lib_dir(root) / f"{NAME}.kicad_mod").exists()
     assert NICK not in await project_rows(session)
     assert lib_dir(root).is_dir() is dir_existed
+    # `footprints/` was created along with the library dir (new-dir): gone too; one
+    # that existed before (dir-existed) is kept
+    assert lib_dir(root).parent.is_dir() is dir_existed
+    assert root.resolve().is_dir()
     rows = await journal(edit_db, session)
     expected = [("row_add", "compensated")]
     if stage != "ensure_library":

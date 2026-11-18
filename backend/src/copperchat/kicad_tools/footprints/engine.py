@@ -22,6 +22,7 @@ import os
 import re
 import signal
 import stat
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from functools import partial
@@ -50,6 +51,7 @@ from copperchat.kicad_tools.footprints.journal import (
     classify_pending,
     file_sha256,
     footprint_rel,
+    scrub_repo,
     sha_of,
     table_rel,
 )
@@ -148,6 +150,7 @@ class FootprintApplied:
 # -- the staged write engine (FP-C8, spec §9.3) --------------------------------------------
 
 ROW_LOAD_TIMEOUT_S = 30.0  # wait for the new project row's library to load (S1 read-back)
+LOAD_POLL_S = 0.1  # GetLibraryStatuses interval while a library loads
 VERIFY_SHIFT_MM = 0.002  # `fail_after="verify"`: pad 1 of the read-back moved by 2 um
 _DIFFS_SHOWN = 20
 
@@ -165,8 +168,11 @@ class InjectedFailure(StructuredToolError):
         )
 
 
-def _library_error(what: str, exc: BaseException) -> StructuredToolError:
-    reason = str(exc) or type(exc).__name__
+def _library_error(what: str, exc: BaseException, root: Path) -> StructuredToolError:
+    """A KiCad refusal as `library_error`; its text has the repo root scrubbed (`root`
+    -> `<repo>`), the full text goes to the log."""
+    log.warning("%s: %s", what, exc)
+    reason = scrub_repo(str(exc), root) or type(exc).__name__
     return StructuredToolError(
         what,
         f"KiCad refused it: {reason[:300]}",
@@ -212,37 +218,70 @@ def _add_row(lib: LocalLibrary, create_library: bool, h: KicadHandle) -> bool:
     return True
 
 
-def _row_problem(lib: LocalLibrary, h: KicadHandle) -> str | None:
-    """S1 read-back (spec §9.2): the project table has the row with the local URI and
-    KiCad reports the library `LLS_LOADED`; else what is wrong."""
+# the clock and sleep of the load polls (tests replace them)
+_clock = time.monotonic
+_sleep = time.sleep
+
+
+def _library_loaded(h: KicadHandle, nickname: str, deadline: float) -> Any:
+    """Poll `GetLibraryStatuses` (project scope) until the footprint library `nickname`
+    is no longer `LLS_LOADING`; its status, or None when KiCad does not list it. Only
+    this library counts (another one still loading does not hold it up). At least one
+    poll; `TimeoutError` once `deadline` (`_clock()`) passed while it still loads."""
     from kipy.proto.common.types import LibraryTableScope, LibraryType
     from kipy.proto.common.types.library_types_pb2 import LibraryLoadStatus
 
+    while True:
+        statuses = h.kicad.get_library_statuses(
+            LibraryType.LT_FOOTPRINT, LibraryTableScope.LTS_PROJECT
+        )
+        status = next((s for s in statuses if s.nickname == nickname), None)
+        if status is None or status.status != LibraryLoadStatus.LLS_LOADING:
+            return status
+        remaining = deadline - _clock()
+        if remaining <= 0:
+            raise TimeoutError(f"library {nickname!r} is still loading")
+        _sleep(min(LOAD_POLL_S, remaining))
+
+
+def row_call_timeout(wait_s: float, api_timeout_s: float) -> float:
+    """The `session.call` limit of a handle function that waits up to `wait_s` for a
+    library (one deadline) and makes API calls of up to `api_timeout_s` each: the
+    waits end by the deadline, but up to two calls may straddle it (a poll and, in
+    `_row_problem`, the status read after the on-demand load) - so strictly more than
+    `wait_s + 2 * api_timeout_s`, never a server restart for a slow load."""
+    return wait_s + 3 * api_timeout_s
+
+
+def _row_problem(
+    lib: LocalLibrary, h: KicadHandle, timeout_s: float = ROW_LOAD_TIMEOUT_S
+) -> str | None:
+    """S1 read-back (spec §9.2): the project table has the row with the local URI and
+    KiCad reports the library `LLS_LOADED`; else what is wrong. Waits for this library
+    only, with one deadline (`timeout_s`) across both waits."""
+    from kipy.proto.common.types.library_types_pb2 import LibraryLoadStatus
+
+    deadline = _clock() + timeout_s
     uri = _project_rows(h).get(lib.nickname)
     if uri is None or _norm_uri(uri) != _norm_uri(lib.uri):
         return f"the project table has no row {lib.nickname!r} -> {lib.uri!r} afterwards"
-
-    def loaded() -> Any:
-        statuses = h.kicad.wait_for_libraries(
-            LibraryType.LT_FOOTPRINT,
-            interval_ms=100,
-            timeout_s=ROW_LOAD_TIMEOUT_S,
-            scope=LibraryTableScope.LTS_PROJECT,
-        )
-        return next((s for s in statuses if s.nickname == lib.nickname), None)
-
     try:
-        status = loaded()
+        status = _library_loaded(h, lib.nickname, deadline)
         if status is not None and status.status == LibraryLoadStatus.LLS_INVALID:
             # A new row is not loaded yet (LLS_INVALID, verified F4a Task 3 for a row
             # over an existing directory); GetLibraryItems loads it on demand.
+            if _clock() >= deadline:
+                raise TimeoutError(f"no time left to load library {lib.nickname!r}")
             h.kicad.get_library_footprints([lib.nickname])
-            status = loaded()
+            status = _library_loaded(h, lib.nickname, deadline)
     except TimeoutError:
-        return f"library {lib.nickname!r} did not finish loading in {ROW_LOAD_TIMEOUT_S:g} s"
+        return f"library {lib.nickname!r} did not finish loading in {timeout_s:g} s"
     if status is None or status.status != LibraryLoadStatus.LLS_LOADED:
         state = "missing" if status is None else LibraryLoadStatus.Name(status.status)
-        detail = "" if status is None else f" ({status.error_message or ''})"
+        detail = ""
+        if status is not None:
+            log.warning("library %s is %s: %s", lib.nickname, state, status.error_message)
+            detail = f" ({scrub_repo(status.error_message or '', lib.repo_root)})"
         return f"library {lib.nickname!r} is {state} after adding the row{detail}"
     return None
 
@@ -289,6 +328,31 @@ class _RowProgress:
     attempted: bool = False
     added: bool = False  # this call wrote the row
     final: bool = False  # journal row finalised after the read-back
+    # ancestors of the library dir (below the repo root, deepest first) missing before S1
+    missing_parents: list[Path] = field(default_factory=list)
+
+
+def _missing_parents(lib: LocalLibrary) -> list[Path]:
+    """The ancestors of `lib.dir` strictly below the repo root that do not exist (deepest
+    first): `create_library` makes them along with the directory."""
+    out: list[Path] = []
+    for parent in lib.dir.parents:
+        if parent == lib.repo_root or not parent.is_relative_to(lib.repo_root):
+            break
+        if _lexists(parent):
+            break  # everything above it exists too
+        out.append(parent)
+    return out
+
+
+def _rmdir_created(lib_dir: Path, parents: list[Path]) -> None:
+    """S1 compensation: `rmdir` the library dir, then the ancestors this call's row
+    created with it (deepest first) - each only if empty; stops at the first kept."""
+    if not _rmdir_if_empty(lib_dir):
+        return
+    for parent in parents:
+        if not _rmdir_if_empty(parent):
+            return
 
 
 async def _ensure_row(ctx: ToolContext, stage: LibraryRowStage, progress: _RowProgress) -> None:
@@ -304,11 +368,13 @@ async def _ensure_row(ctx: ToolContext, stage: LibraryRowStage, progress: _RowPr
         progress.added = await session.call(partial(_add_row, lib, stage.create_library))
         problem = await session.call(
             partial(_row_problem, lib),
-            timeout=ROW_LOAD_TIMEOUT_S + session.settings.kicad_api_timeout_s,
+            timeout=row_call_timeout(ROW_LOAD_TIMEOUT_S, session.settings.kicad_api_timeout_s),
         )
     except ApiError as exc:
         raise _library_error(
-            f"Could not add the local footprint library {lib.nickname} to the project", exc
+            f"Could not add the local footprint library {lib.nickname} to the project",
+            exc,
+            lib.repo_root,
         ) from exc
     finally:
         library_for(session).invalidate_footprints(lib.nickname)
@@ -430,7 +496,7 @@ async def _recheck_replace(
         )
 
 
-async def _copy_seed(ctx: ToolContext, lib_id: str) -> None:
+async def _copy_seed(ctx: ToolContext, lib: LocalLibrary, lib_id: str) -> None:
     """S2: `SaveCopyOfDocument(seed -> lib_id)`."""
     from kipy.errors import ApiError
 
@@ -438,7 +504,9 @@ async def _copy_seed(ctx: ToolContext, lib_id: str) -> None:
         async with ctx.session.footprint_document(SEED_LIB_ID) as doc:
             await doc.save_copy(lib_id)
     except (ApiError, RuntimeError) as exc:
-        raise _library_error(f"Could not copy the seed footprint to {lib_id}", exc) from exc
+        raise _library_error(
+            f"Could not copy the seed footprint to {lib_id}", exc, lib.repo_root
+        ) from exc
 
 
 async def _rebuild_commit(doc: FootprintDocument, target: FootprintGeometry) -> None:
@@ -612,7 +680,11 @@ async def _drop(doc: FootprintDocument) -> None:
 
 
 async def _rebuild(
-    ctx: ToolContext, lib_id: str, target: FootprintGeometry, progress: _CreateProgress
+    ctx: ToolContext,
+    lib: LocalLibrary,
+    lib_id: str,
+    target: FootprintGeometry,
+    progress: _CreateProgress,
 ) -> None:
     """S3: open the copy, one commit (dropped on any failure before the push), save.
     The document is closed before this returns."""
@@ -631,7 +703,7 @@ async def _rebuild(
             progress.s3_saving = True  # from here the file may hold S3's save
             await doc.save()
     except (ApiError, RuntimeError, ValueError) as exc:
-        raise _library_error(f"Could not build footprint {lib_id}", exc) from exc
+        raise _library_error(f"Could not build footprint {lib_id}", exc, lib.repo_root) from exc
 
 
 def _shift_pad_one(g: FootprintGeometry) -> FootprintGeometry:
@@ -752,14 +824,15 @@ async def _apply_create(
         if need_row:
             row = progress.row
             row.dir_existed = await asyncio.to_thread(_lexists, lib.dir)
+            row.missing_parents = await asyncio.to_thread(_missing_parents, lib)
             row.journal_id = await journal.pending(
-                "row_add", lib.nickname, table_rel(lib), await sha_of(lib.table)
+                "row_add", lib.nickname, table_rel(lib), await sha_of(lib.table, lib.repo_root)
             )
             stage = LibraryRowStage(library=lib, create_library=not row.dir_existed)
             await _ensure_row(ctx, stage, row)
             # a row that was there already (same URI) wrote nothing: nothing to undo
             state = "done" if row.added else "compensated"
-            await journal.finalise(row.journal_id, state, await sha_of(lib.table))
+            await journal.finalise(row.journal_id, state, await sha_of(lib.table, lib.repo_root))
             row.final = True
             await after("ensure_library")
         if pre is None:
@@ -770,7 +843,7 @@ async def _apply_create(
             "create" if pre is None else "replace",
             lib_id,
             footprint_rel(lib, name),
-            await sha_of(file),
+            await sha_of(file, lib.repo_root),
         )
         progress.attempted = True
         ctx.library_touched.append(file)
@@ -789,7 +862,7 @@ async def _apply_create(
             await journal.post_s2(progress.journal_id, sha)
 
         try:
-            await _copy_seed(ctx, lib_id)
+            await _copy_seed(ctx, lib, lib_id)
         except BaseException:
             try:
                 await record_s2(False)
@@ -808,7 +881,7 @@ async def _apply_create(
             )
         await after("copy_seed")
         try:
-            await _rebuild(ctx, lib_id, target, progress)
+            await _rebuild(ctx, lib, lib_id, target, progress)
         finally:
             if progress.s3_saving:
                 progress.saved = await _sha_or_absent(file)
@@ -834,7 +907,7 @@ async def _apply_create(
                 details={"diffs": diffs[:_DIFFS_SHOWN], "diff_count": len(diffs)},
             )
         assert readback is not None
-        await journal.finalise(progress.journal_id, "done", await sha_of(file))
+        await journal.finalise(progress.journal_id, "done", await sha_of(file, lib.repo_root))
         progress.final = True
     except asyncio.CancelledError:
         # The turn is being stopped: roll back (to completion), then keep cancelling.
@@ -951,9 +1024,9 @@ async def _compensate(
             try:
                 if row.added:
                     await session.call(partial(_delete_row, lib.nickname))
-                # only a directory this call's own row created
+                # only a directory (and its parents) this call's own row created
                 if row.added and not row.dir_existed:
-                    await asyncio.to_thread(_rmdir_if_empty, lib.dir)
+                    await asyncio.to_thread(_rmdir_created, lib.dir, row.missing_parents)
                 svc.invalidate_footprints(lib.nickname)
             except KicadUnavailable:
                 raise
@@ -968,9 +1041,14 @@ async def _compensate(
                 await _finalise(
                     journal, row.journal_id, "compensated", await _sha_or_absent(lib.table)
                 )
+    elif not row.final:
+        # S1 failed before AddLibraryTableEntry (e.g. `local_library_dir_safe`): nothing
+        # was added, but the row was journalled pending
+        await _finalise(journal, row.journal_id, "compensated", await _sha_or_absent(lib.table))
     if failure is not None:
+        reason = scrub_repo(str(failure), lib.repo_root)
         raise DocumentInconsistent(
-            f"undoing the partial {cs.tool} of {lib_id} failed: {failure}; left behind: "
+            f"undoing the partial {cs.tool} of {lib_id} failed: {reason}; left behind: "
             + ", ".join(leftovers),
             leftovers=leftovers,
             replaced=replaced,
@@ -1193,7 +1271,7 @@ async def cleanup_pending(ctx: ToolContext, lib: LocalLibrary) -> list[dict[str,
 # -- history wiring: library locator (FP-C6) ---------------------------------------------
 
 _FOOTPRINT_DIR_ENV = re.compile(r"^KICAD(\d+)_FOOTPRINT_DIR$")
-RELOAD_WAIT_S = 20.0  # wait_for_libraries after ReloadLibrary (external change)
+RELOAD_WAIT_S = 20.0  # wait for the library's load after ReloadLibrary (external change)
 
 
 def stock_footprint_dir(settings: Settings) -> Path | None:
@@ -1269,20 +1347,19 @@ def make_library_locator(settings: Settings, sessions: KicadSessionManager) -> L
 # -- history wiring: library listener (FP-C6) ----------------------------------------------
 
 
-def _reload_footprint_library(nickname: str, h: KicadHandle) -> None:
-    """ReloadLibrary of the project row, then wait for the (asynchronous) load. Without
-    a project row of that nickname there is nothing to reload (no request, no warning)."""
+def _reload_footprint_library(
+    nickname: str, h: KicadHandle, timeout_s: float = RELOAD_WAIT_S
+) -> None:
+    """ReloadLibrary of the project row, then wait for the (asynchronous) load of that
+    library only, within one deadline (`TimeoutError` after `timeout_s`). Without a
+    project row of that nickname there is nothing to reload (no request, no warning)."""
     from kipy.proto.common.types import LibraryTableScope, LibraryType
 
+    deadline = _clock() + timeout_s
     if nickname not in _project_rows(h):
         return
     h.kicad.reload_library(LibraryType.LT_FOOTPRINT, LibraryTableScope.LTS_PROJECT, [nickname])
-    h.kicad.wait_for_libraries(
-        LibraryType.LT_FOOTPRINT,
-        interval_ms=100,
-        timeout_s=RELOAD_WAIT_S,
-        scope=LibraryTableScope.LTS_PROJECT,
-    )
+    _library_loaded(h, nickname, deadline)
 
 
 LibraryListener = Callable[[Project, list[str], str], Awaitable[None]]
@@ -1314,7 +1391,7 @@ def make_library_listener(settings: Settings, sessions: KicadSessionManager) -> 
             ):
                 await session.call(
                     partial(_reload_footprint_library, nickname),
-                    timeout=RELOAD_WAIT_S + settings.kicad_api_timeout_s,
+                    timeout=row_call_timeout(RELOAD_WAIT_S, settings.kicad_api_timeout_s),
                 )
         finally:
             svc.invalidate_footprints(nickname)

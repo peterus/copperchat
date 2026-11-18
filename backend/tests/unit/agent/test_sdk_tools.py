@@ -193,3 +193,42 @@ def test_mcp_result_to_event_roundtrip():
     )
     assert ev.id == "t1" and ev.content == "a" and ev.is_error is True
     assert ev.images[0].data == b"PNG"
+
+
+async def test_footprint_leftovers_reach_the_agent(ctx_factory):
+    """A failed footprint compensation (DocumentInconsistent with leftovers, spec §9.3):
+    the agent sees what was left behind, per kind (a replaced footprint must not be
+    deleted), that the schematic is not affected, and the notes the call carried."""
+    from copperchat.errors import DocumentInconsistent, attach_tool_notes
+
+    seen: list[Exception] = []
+    note = {"kind": "pending_cleaned", "lib_id": "L:Old", "message": "Removed L:Old"}
+
+    async def handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
+        exc = DocumentInconsistent(
+            "undoing the partial fp_create of L:A failed: boom; left behind: L:A, L:B, row L",
+            leftovers=["L:A", "L:B", "row L"],
+            replaced=["L:B"],
+            footprint_only=True,
+        )
+        attach_tool_notes(exc, [note])
+        raise exc
+
+    def make() -> ToolContext:
+        ctx = ctx_factory()
+        ctx.on_document_inconsistent = seen.append
+        return ctx
+
+    raw = await _tool(_spec(handler, name="fp_create"), make).handler({"lib_id": "L:A"})
+    assert raw["is_error"] is True
+    err = json.loads(raw["content"][0]["text"])["error"]
+    assert err["code"] == "document_inconsistent"
+    assert err["details"]["leftovers"] == ["L:A", "L:B", "row L"]
+    assert err["details"]["notes"] == [note]
+    assert "the schematic is not affected" in err["why"]
+    assert "L:A, L:B, row L" in err["why"]
+    assert "removes L:A, row L" in err["suggestion"]
+    assert "L:B replaced an existing footprint" in err["suggestion"]
+    assert "Do not delete" in err["suggestion"]
+    assert "fp_create L:A" in err["what"]
+    assert len(seen) == 1 and isinstance(seen[0], DocumentInconsistent)

@@ -405,7 +405,7 @@ class _ReloadKiCad:
     def reload_library(self, type: Any, scope: Any, nicknames: Any) -> None:
         self.seen.append(("reload", (type, scope, list(nicknames))))
 
-    def wait_for_libraries(self, types: Any = None, **kw: Any) -> list[Any]:
+    def get_library_statuses(self, types: Any = None, scope: Any = None) -> list[Any]:
         self.seen.append(("wait", types))
         return []
 
@@ -508,7 +508,7 @@ class _FakeKiCad:
         if create_library:
             self.lib.dir.mkdir(parents=True, exist_ok=True)
 
-    def wait_for_libraries(self, types: Any = None, **kw: Any) -> list[Any]:
+    def get_library_statuses(self, types: Any = None, scope: Any = None) -> list[Any]:
         from kipy.proto.common.types.library_types_pb2 import LibraryLoadStatus
 
         loaded = LibraryLoadStatus.LLS_LOADED
@@ -664,6 +664,8 @@ async def test_failure_in_s3_compensates_in_reverse(
     assert err.value.code == "library_error"
     assert session.kicad.calls == ["add_row", "delete_item", "delete_row"]
     assert cs.library is not None and not cs.library.dir.exists()  # created here: rmdir
+    # its parent `footprints/` was created along with it: gone too; the repo root stays
+    assert not cs.library.dir.parent.exists() and cs.library.repo_root.is_dir()
     rows = await _journal(editing)
     assert [(r.op, r.state) for r in rows] == [("row_add", "compensated"),
                                                 ("create", "compensated")]  # fmt: skip
@@ -1056,3 +1058,214 @@ def test_leftover_advice_per_kind() -> None:
     assert "fp_delete" not in replaced
     both = leftover_advice(["L:A", "L:B"], ["L:B"])
     assert "removes L:A;" in both and "L:B replaced" in both
+
+
+# -- review fixes (PR #92, round 1) -----------------------------------------------------------
+
+
+async def test_compensation_keeps_a_parent_that_existed(
+    make_settings: Callable[..., Settings], editing: EditingService
+) -> None:
+    """F3: only ancestors this call's row created go with the library dir; an (empty)
+    `footprints/` that existed before S1 is kept."""
+    settings = make_settings()
+    ctx, _session, cs = _engine_setup(settings.projects_root, settings, editing)
+    assert cs.library is not None
+    cs.library.dir.parent.mkdir(parents=True)
+    with pytest.raises(StructuredToolError):
+        await _apply_locked(ctx, cs)
+    assert not cs.library.dir.exists()
+    assert cs.library.dir.parent.is_dir()
+
+
+def test_missing_parents_stop_at_the_repo_root(tmp_path: Path) -> None:
+    lib = derive_local_library(tmp_path / "hw", tmp_path, frozenset())
+    assert fp_engine._missing_parents(lib) == [tmp_path / "footprints"]
+    (tmp_path / "footprints").mkdir()
+    assert fp_engine._missing_parents(lib) == []
+
+
+async def test_row_journal_finalised_when_s1_fails_before_adding(
+    make_settings: Callable[..., Settings],
+    editing: EditingService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F2: `local_library_dir_safe` raises inside `_ensure_row` (after the row_add row was
+    journalled, before AddLibraryTableEntry): nothing was added, the row is
+    `compensated`, never left `pending`."""
+    settings = make_settings()
+    ctx, session, cs = _engine_setup(settings.projects_root, settings, editing)
+    real = fp_engine.local_library_dir_safe
+    checks: list[int] = []
+
+    def flaky(lib: Any) -> None:
+        checks.append(1)
+        if len(checks) == 2:  # the check inside _ensure_row
+            raise service_mod._conflict("a symlink appeared", "fix it", lib.dir)
+        real(lib)
+
+    monkeypatch.setattr(fp_engine, "local_library_dir_safe", flaky)
+    with pytest.raises(StructuredToolError) as err:
+        await _apply_locked(ctx, cs)
+    assert err.value.code == "library_conflict"
+    assert session.kicad.calls == []
+    rows = await _journal(editing)
+    assert [(r.op, r.state) for r in rows] == [("row_add", "compensated")]
+
+
+class _StatusKiCad:
+    """`GetLibraryStatuses` from a script on a fake clock (F1)."""
+
+    def __init__(self, lib: Any, script: Callable[[str, float, bool], dict[str, Any]]) -> None:
+        self.lib = lib
+        self.script = script  # (own nickname, now, loaded on demand) -> {nickname: status}
+        self.now = 0.0
+        self.loaded = False
+        self.reloads: list[Any] = []
+
+    def get_library_table(self, type: Any, scope: Any, substituted: bool = False) -> Any:
+        return SimpleNamespace(rows=[SimpleNamespace(nickname=self.lib.nickname, uri=self.lib.uri)])
+
+    def get_library_statuses(self, types: Any = None, scope: Any = None) -> list[Any]:
+        return [
+            SimpleNamespace(nickname=n, status=st, error_message=f"{self.lib.dir} broken")
+            for n, st in self.script(self.lib.nickname, self.now, self.loaded).items()
+        ]
+
+    def get_library_footprints(self, nicknames: Any) -> list[Any]:
+        self.now += 1.0  # the on-demand load takes a while
+        self.loaded = True
+        return []
+
+    def reload_library(self, type: Any, scope: Any, nicknames: Any) -> None:
+        self.reloads.append(list(nicknames))
+
+
+def _status_kicad(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, script: Callable[[str, float, bool], Any]
+) -> tuple[Any, _StatusKiCad, Any]:
+    lib = derive_local_library(tmp_path / "hw", tmp_path, frozenset())
+    kicad = _StatusKiCad(lib, script)
+
+    def sleep(seconds: float) -> None:
+        kicad.now += seconds
+
+    monkeypatch.setattr(fp_engine, "_clock", lambda: kicad.now)
+    monkeypatch.setattr(fp_engine, "_sleep", sleep)
+    return lib, kicad, cast(Any, SimpleNamespace(kicad=kicad))
+
+
+def test_row_problem_ignores_another_library_still_loading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F1: a slow vendor library of the project does not fail S1 once the new row is
+    loaded (only its own status counts)."""
+    from kipy.proto.common.types.library_types_pb2 import LibraryLoadStatus as S
+
+    lib, kicad, h = _status_kicad(
+        tmp_path,
+        monkeypatch,
+        lambda own, now, loaded: {"Vendor": S.LLS_LOADING, own: S.LLS_LOADED},
+    )
+    assert fp_engine._row_problem(lib, h) is None
+    assert kicad.now == 0.0  # no wait at all
+
+
+def test_row_problem_shares_one_deadline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """F1: the wait before and after the on-demand load share one deadline: loading for
+    20 s, then not loaded (LLS_INVALID), then loading forever -> the timeout after 30 s
+    in total (two separate waits would take 51 s)."""
+    from kipy.proto.common.types.library_types_pb2 import LibraryLoadStatus as S
+
+    def script(own: str, now: float, loaded: bool) -> dict[str, Any]:
+        if loaded:
+            return {own: S.LLS_LOADING}
+        return {own: S.LLS_LOADING if now < 20 else S.LLS_INVALID}
+
+    lib, kicad, h = _status_kicad(tmp_path, monkeypatch, script)
+    problem = fp_engine._row_problem(lib, h)
+    assert problem is not None and "did not finish loading in 30 s" in problem
+    assert kicad.loaded
+    assert fp_engine.ROW_LOAD_TIMEOUT_S <= kicad.now <= fp_engine.ROW_LOAD_TIMEOUT_S + 0.2
+    # the session limit is strictly larger than the wait plus the straddling calls
+    api = 30.0
+    assert fp_engine.row_call_timeout(fp_engine.ROW_LOAD_TIMEOUT_S, api) > (
+        fp_engine.ROW_LOAD_TIMEOUT_S + 2 * api
+    )
+
+
+def test_row_problem_error_text_has_no_host_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F4: KiCad's error message is scrubbed of the repo root."""
+    from kipy.proto.common.types.library_types_pb2 import LibraryLoadStatus as S
+
+    lib, _kicad, h = _status_kicad(
+        tmp_path, monkeypatch, lambda own, now, loaded: {own: S.LLS_ERROR}
+    )
+    problem = fp_engine._row_problem(lib, h)
+    assert problem is not None and "LLS_ERROR" in problem
+    assert str(tmp_path) not in problem
+    assert "<repo>/footprints/" in problem
+
+
+def test_reload_waits_for_its_library_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """F1: after ReloadLibrary only that library is waited for (another one loading does
+    not hold it up), within one deadline of RELOAD_WAIT_S."""
+    from kipy.proto.common.types.library_types_pb2 import LibraryLoadStatus as S
+
+    state = {"own": S.LLS_LOADED}
+    lib, kicad, h = _status_kicad(
+        tmp_path,
+        monkeypatch,
+        lambda own, now, loaded: {"Vendor": S.LLS_LOADING, own: state["own"]},
+    )
+    fp_engine._reload_footprint_library(lib.nickname, h)
+    assert kicad.reloads == [[lib.nickname]] and kicad.now == 0.0
+
+    state["own"] = S.LLS_LOADING
+    with pytest.raises(TimeoutError):
+        fp_engine._reload_footprint_library(lib.nickname, h)
+    assert fp_engine.RELOAD_WAIT_S <= kicad.now <= fp_engine.RELOAD_WAIT_S + 0.2
+
+
+def test_agent_facing_errors_have_no_host_paths(tmp_path: Path) -> None:
+    """F4: file_sha256's library_conflict names the file repo-relative (text and
+    details.path); KiCad error text has the repo root scrubbed."""
+    from copperchat.kicad_tools.footprints.journal import file_sha256, scrub_repo
+
+    lib = derive_local_library(tmp_path / "hw", tmp_path, frozenset())
+    lib.dir.mkdir(parents=True)
+    link = lib.dir / "X.kicad_mod"
+    link.symlink_to(tmp_path / "elsewhere")
+    with pytest.raises(StructuredToolError) as err:
+        file_sha256(link, lib.repo_root)
+    rel = f"footprints/{lib.nickname}.pretty/X.kicad_mod"
+    assert err.value.details == {"path": rel}
+    assert rel in err.value.why and str(tmp_path) not in err.value.why
+
+    assert scrub_repo(f"cannot open {tmp_path}/a/b.kicad_mod", tmp_path) == (
+        "cannot open <repo>/a/b.kicad_mod"
+    )
+    exc = fp_engine._library_error("Could not build", RuntimeError(f"{lib.dir}: io"), tmp_path)
+    assert str(tmp_path) not in exc.why and f"<repo>/footprints/{lib.nickname}.pretty" in exc.why
+
+
+async def test_document_inconsistent_message_has_no_host_path(
+    make_settings: Callable[..., Settings], editing: EditingService
+) -> None:
+    """F4: a compensation failure whose text names a host path reaches the agent (the
+    DocumentInconsistent message -> details.detail) with the repo root scrubbed."""
+    settings = make_settings()
+    ctx, session, cs = _engine_setup(settings.projects_root, settings, editing)
+    assert cs.library is not None
+    lib = cs.library
+
+    async def refuse() -> None:
+        raise RuntimeError(f"cannot delete {lib.dir / FILE}")
+
+    session.before_delete = refuse
+    with pytest.raises(DocumentInconsistent) as err:
+        await _apply_locked(ctx, cs)
+    assert str(lib.repo_root) not in str(err.value)
+    assert f"<repo>/footprints/{lib.nickname}.pretty/{FILE}" in str(err.value)
