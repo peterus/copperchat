@@ -751,8 +751,8 @@ def _pad_extent(pad: Pad) -> list[Point]:
         x, y = pad.at[0] + cx, pad.at[1] + cy
         return [(x - w / 2, y - w / 2), (x + w / 2, y + w / 2)]
     local = [(ox + sx * w / 2, oy + sy * h / 2) for sx in (-1, 1) for sy in (-1, 1)]
-    for prim in extra.get("primitives", ()):
-        local += _primitive_extent(prim)
+    for prim in extra.get("primitives", ()):  # placed at the shape position, as the anchor
+        local += [(ox + px, oy + py) for px, py in _primitive_extent(prim)]
     return [
         (pad.at[0] + rx, pad.at[1] + ry) for rx, ry in (_rotate(p, pad.rotation) for p in local)
     ]

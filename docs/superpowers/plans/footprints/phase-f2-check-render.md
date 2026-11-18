@@ -218,9 +218,10 @@ one PNG `ImageBlock`); files `.kicad-agent/renders/<uuid32>.png`, `<uuid32>.svg`
   `<uuid>.svg.json`); `test_non_uuid_rejected`.
 - [ ] **Step 2: Failing kicad tests** (`test_fp_render.py`, `blank_nopcb_session`):
   - `test_render_seed`: PNG exists and decodes; result `geometry_hash` equals `fp_get`'s.
-  - `test_crtyd_extent_matches_geometry`: `layers=["F.CrtYd"]` → the KiCad SVG viewBox size
-    equals `fp_get`'s `graphics["F.CrtYd"].bbox` size within 0.01 mm (full exports include
-    texts and are not asserted, spec §16.2).
+  - `test_crtyd_extent_matches_geometry`: `layers=["F.CrtYd"]` → the extent of the drawn
+    SVG paths equals `fp_get`'s `graphics["F.CrtYd"].bbox` within 0.01 mm and the viewBox
+    contains it (as built: KiCad's viewBox also covers texts of undrawn layers; full exports
+    include texts and are not asserted, spec §16.2).
   - `test_cairosvg_in_image`: `import cairosvg; cairosvg.__version__ >= "2.7.0"` and a 1×1 mm
     SVG rasterises (verifies `libcairo2` in the base image).
 - [ ] **Step 3: Run** — FAIL.

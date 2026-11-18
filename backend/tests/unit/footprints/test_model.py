@@ -25,8 +25,10 @@ from copperchat.kicad_tools.footprints.model import (
     SOURCE_FIELD,
     FootprintGeometry,
     Model3D,
+    Pad,
     Shape,
     Text,
+    _pad_extent,
     geometry_equal,
     geometry_from_proto,
     geometry_hash,
@@ -183,6 +185,22 @@ def test_bbox_includes_pads() -> None:
     x0, y0, x1, y1 = no_shapes.bbox()
     assert x0 == pytest.approx(-1.225) and x1 == pytest.approx(1.225)
     assert y0 == pytest.approx(-0.75) and y1 == pytest.approx(0.75)
+
+
+def test_custom_pad_extent_follows_offset() -> None:
+    prim = {
+        "kind": "rect",
+        "layer": "F.Cu",
+        "points": [(0.0, 0.0), (1.0, 0.5)],
+        "width": 0.0,
+        "closed": True,
+    }
+    extra = (("anchor", "rect"), ("offset", (1.0, 0.0)), ("primitives", (prim,)))
+    pad = Pad("1", "smd", "custom", (10.0, 10.0), 0.0, (0.2, 0.2), None, None, ("F.Cu",), extra)
+    xs = [x for x, _ in _pad_extent(pad)]
+    ys = [y for _, y in _pad_extent(pad)]
+    assert (min(xs), max(xs)) == pytest.approx((10.9, 12.0))
+    assert (min(ys), max(ys)) == pytest.approx((9.9, 10.5))
 
 
 def test_summary_has_no_shapes(seed: FootprintGeometry) -> None:

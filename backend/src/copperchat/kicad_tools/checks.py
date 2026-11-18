@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import shutil
 import tempfile
@@ -13,7 +12,7 @@ from typing import Any
 from copperchat.config import Settings
 from copperchat.errors import StructuredToolError
 from copperchat.kicad_session import DocKind, KicadSession
-from copperchat.kicad_session.launcher import kicad_cli_env, kicad_config_home
+from copperchat.kicad_tools.cli import run_kicad_cli
 from copperchat.kicad_tools.filtering import matches
 from copperchat.projects import Project
 from copperchat.tools.spec import ToolContext, ToolResult
@@ -119,48 +118,36 @@ async def run_kicad_check_on_dir(
     sub = ["sch", "erc"] if doc == "sch" else ["pcb", "drc"]
     if doc == "pcb" and parity:
         sub.append("--schematic-parity")
-    proc = await asyncio.create_subprocess_exec(
-        settings.kicad_cli,
-        *sub,
-        "--format",
-        "json",
-        "--units",
-        "mm",
-        "--severity-all",
-        "--define-var",
-        f"KIPRJMOD={project.dir}",
-        "--output",
-        str(report),
-        str(doc_path),
-        cwd=workdir,
-        env=kicad_cli_env(settings.kicad_cli, kicad_config_home(settings)),
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
     try:
-        out, err = await asyncio.wait_for(proc.communicate(), settings.kicad_api_timeout_s * 4)
+        res = await run_kicad_cli(
+            settings,
+            [
+                *sub,
+                "--format",
+                "json",
+                "--units",
+                "mm",
+                "--severity-all",
+                "--define-var",
+                f"KIPRJMOD={project.dir}",
+                "--output",
+                str(report),
+                str(doc_path),
+            ],
+            timeout=settings.kicad_api_timeout_s * 4,
+            cwd=workdir,
+        )
     except TimeoutError:
-        with contextlib.suppress(ProcessLookupError):
-            proc.kill()
-        await proc.wait()
         raise StructuredToolError(
             f"{name} timed out",
             "kicad-cli did not finish in time",
             "Retry once; if it persists, inspect the design with render_view instead",
         ) from None
-    except asyncio.CancelledError:
-        with contextlib.suppress(ProcessLookupError):
-            proc.kill()
-        # Reap it before the temp dir goes away; the cancellation still wins.
-        with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.shield(proc.wait())
-        raise
     if not report.is_file():
-        detail = (err or out).decode(errors="replace").strip()[-500:]
+        detail = (res.stderr or res.stdout).strip()[-500:]
         raise StructuredToolError(
             f"{name} failed",
-            detail or f"kicad-cli exited with {proc.returncode} and wrote no report",
+            detail or f"kicad-cli exited with {res.returncode} and wrote no report",
             "Check that the document loads in KiCad",
         )
     return report.read_text(encoding="utf-8")

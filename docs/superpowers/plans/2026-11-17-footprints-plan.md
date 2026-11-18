@@ -601,6 +601,211 @@ phase file, with the reason.)
   - Skills (`copperchat-tools`, `session-schematic`) do not list `fp_get`/`fp_list_local`
     yet (F5).
 
+### As built (F2)
+
+- **Render, KiCad's DOCTYPE (FP-C5, Task 5 ruling):** the KiCad SVG always carries the
+  standard SVG 1.1 DOCTYPE (no internal subset), so exactly that declaration is stripped
+  before parsing; any other `<!DOCTYPE` or any `<!ENTITY` raises `render_failed`, and the
+  SVG must be UTF-8 (a UTF-16 file would hide the markers from the byte check) — spec
+  intent is "no DTD/entity processing", which the exact match keeps.
+- **Render, cairosvg API:** cairosvg 2.9.1 `svg2png` has no `url_fetcher` parameter, so the
+  PNG comes from `cairosvg.surface.PNGSurface.convert(url_fetcher=refuse, unsafe=False)`
+  (in `views/_raster_worker.py`, see the rasteriser process below).
+- **FP-C5 additions:** `render_footprint(..., *, notes=None)` (library-loading notes pass
+  through to the tool result); `RenderOutput` gains `origin_mm` and `grid_mm` (the
+  effective grid, also when auto-picked); the reported extent and the scale include the
+  render margins.
+- **Render scale:** the longest side stays <= 2000 px, so above ~50 mm extent the scale
+  drops below 40 px/mm (the cap wins; spec numbers cannot both hold there).
+- **`fp_render` result:** besides image/svg/scale/extent/geometry_hash it carries `svg_url`
+  (same-origin link for zooming; the model needs a link), `lib_id`, `origin_mm`,
+  `grid_mm` and `notes` when present.
+- **Renders route sidecar hardening:** a `<uuid>.svg.json` sidecar that is a symlink, a
+  directory, larger than 4 KB or too deeply nested JSON is ignored and the route falls back to
+  the `<uuid>.svg` download name.
+- **Kicad render test:** `test_crtyd_extent_matches_geometry` asserts the extent of the
+  drawn paths (= `fp_get` CrtYd bbox ±0.01 mm) and only that the viewBox contains it —
+  KiCad's viewBox also covers texts of layers it does not draw.
+- **Golden:** DRC0010J is pinned as `Package_SON:Texas_DRC0010J`; the golden
+  `tests/fixtures/golden/fp_check_DRC0010J.json` is regenerated with `UPDATE_GOLDENS=1`.
+- **`fp_check` errors:** it reuses the library errors, incl. `libraries_loading` (not in
+  FP-C9); a derived (`extends`) symbol in a read-only session gives `library_error`.
+  `expected: null` is rejected (`invalid_argument`, the schema says object), as are JSON
+  ints too large for a float (`10**400`) in `expected` and `fp_render`'s `grid_mm`.
+- **FP-C4 public helpers:** `ExpectedPad` dataclass; `pitch_pad_pair`, `natural_key` and
+  `text_box` are public in `checks.py` (shared with `fp_render` and the tests).
+- **FP-C4 rule details:** `mask_missing`/`paste_missing`/`paste_on_tht` are side-aware (a
+  B.Cu-only SMD pad needs B.Mask/B.Paste); NPTH holes count in the courtyard rules;
+  the annular ring is checked per axis for oval drills.
+- **`fp_check` complexity caps (beyond spec §8):** > 2,000 pads or > 5,000 shapes plus
+  silk texts skip `pad_gap_small`/`silk_on_pad`; a copper pad with more than 256 pieces
+  or 512 vertices is left out of those two and measured by its bounding box in the
+  pin-1 rule. Every loop whose cost is a product of two input sizes (closed-outline
+  building, expected-pad matching, courtyard containment and margin, silk outside the
+  courtyard, the pad and copper x silk sweeps and distances, pin-1 mark distances incl.
+  per diagonal edge, the chords of every arc/circle graphic used) charges one shared
+  per-run work budget (`WORK_BUDGET`, 1,000,000 units of about one point-segment
+  distance, ~1 s in CPython) before it runs; a rule that cannot afford its next step
+  stops there (pin 1 and the courtyard rules then give no verdict). One
+  `too_complex_partial_check` info at the end lists exactly the rules skipped or
+  partial, grouped by reason (`measured.skipped`: `too_many_items`, `complex_pads`,
+  `bounding_box` — only when pin 1 actually used one —, `budget`). `CheckReport.work`
+  holds the units spent (not in the JSON result; the tests assert on it).
+- **`fp_check` cost model (review-loop round 4):** each step charges what it actually
+  does, just before it does it: `_min_dist` charges its piece-box tests, then each
+  `geom.distance` it really measures (`_dist_cost` of the two pieces' vertices), not
+  the whole pad pair up front. For distances a roundrect pad is a `geom.Rounded` (its
+  inner rectangle grown by the corner radius: exact, 4 vertices instead of the 68 of
+  its chord polygon), an oval a stadium `Seg` or a circle (`geom.pad_distance_parts`);
+  containment still tests the chord polygon's points. Points are counted
+  (`_point_count`) and charged before any is made, and made one part at a time. A
+  non-rectangular courtyard is tested through a `geom.BandIndex` (edges bucketed in
+  horizontal bands, its build cost charged first), so a point costs the edges of one
+  band, not all. Arc/circle tessellation is charged before it is built (`segment_count`,
+  `arc_chord_count`; `_Run.geoms`, the F.Fab chords, `closed_outline`), and silk outside
+  the courtyard is built lazily, item by item. Sweep over all 15,468 footprints of the
+  base image's stock libraries (`run_checks` per footprint, throwaway script): no
+  footprint gets a partial-check info (7398212: 19, incl. LQFP-128/176/216, TQFP-128/
+  176 and the ArtInChip QFN-88); the costliest spends 209,278 units (p99 74,665), so
+  the budget was lowered from 1.5 M to 1 M (about 5x headroom); `run_checks` max
+  0.118 s, p99 0.033 s (643e2ce: 1.50 s / 0.34 s). Findings against 643e2ce: identical
+  rules/severities/pads on 15,460 footprints; 8 differ only in `courtyard_margin` — 6
+  name another pad at the same (tied) distance, 2 (`MountingHole_4.3x6.2mm_M4_Pad`,
+  `_Via`) newly warn at 0.247 mm (the exact oval reaches ~3 um past its chord
+  polygon) — and 7 `silk_on_pad` messages moved by 0.001 mm for the same reason. The
+  ArtInChip QFN-88 keeps all 84 `pad_gap_small` findings. Guards: synthetic 176/216-pad
+  0.4 mm roundrect LQFPs (unit) and the stock `Package_QFP:LQFP-216_24x24mm_P0.4mm` /
+  `Package_DFN_QFN:ArtInChip_QFN-88-1EP_10x10mm_P0.4mm_EP6.74x6.74mm` (kicad).
+- **`fp_check` input caps (review-loop round 5):** building the pads' pieces is charged
+  too. Every pad is first counted (`geom.pad_part_counts`: exact pieces/vertices of a
+  custom pad — its anchor built, the primitives counted —, an upper bound for the
+  others), complex pads are classified from these counts, and the build of all pads
+  (`PAD_BUILD_COST` 16 + `PAD_VERTEX_COST` 2 per vertex; measured 0.2-0.6 us per unit)
+  is charged before any piece is made; refused, every rule needing the pads' geometry
+  (`courtyard_not_enclosing`, `courtyard_margin`, `pad_gap_small`, `silk_on_pad`,
+  `pin1_marker_missing` when it applies) is skipped as `budget`. Above
+  `MAX_TOTAL_PADS` = 20,000 pads (stock maximum 1,924, Xilinx RF1930) nothing is
+  counted or built; the same rules are skipped with reason `too_many_pads`
+  (`measured.pads` / `expected.pads`). 50,000 arc primitives on one custom pad (1.6 M
+  pieces, 5.6 s / 798 MB before) and 100,000 roundrect pads (11.5 s / 1.19 GB) now
+  build nothing; `run_checks` takes ~1 s / ~3.5 s for them, almost all of it
+  `geometry_hash` (residual below).
+- **Non-convex courtyards (round 5):** points inside a notched outline do not prove a
+  part inside, so for a non-convex outline (`geom.is_convex`) every pad part's test
+  segments (polygon edges, a circle's 16 chords, a stroke's centre line, or for a wide
+  stroke its side lines and end octagons — all inside the part) and the fab lines are
+  swept against the outline's edges (`geom.cross_pairs`, gap 0). Verification pass:
+  every contact counts, not only a proper crossing — `geom.segment_contacts` gives the
+  parameters where a test segment crosses, touches (an end on the other segment, within
+  1 nm) or runs along an edge (both overlap ends); the segment is split there and the
+  middle of each piece tested with the containment test (a piece meets no edge, so it
+  is inside or outside as a whole; one unit per edge pair plus the containment cost per
+  piece, charged as before). So a pad flush in a notch (corners on its walls) and a fab
+  line from one notch wall to the other are outside; the body is reported where it
+  leaves the outline. `geom.is_convex` also needs the turns to sum to one full turn and
+  rejects turning back, so a self-intersecting star (every turn the same way) takes
+  the edge test. Counted and charged before any test segment is made. Findings are
+  emitted in pad order, then the body. 2,923 stock courtyards are non-convex; none gets
+  a new finding (round 5 and verification pass).
+- **Stock sweep (round 5)** — all 15,468 footprints, geometries dumped once from the
+  base image (`GetItemsFromLibrary`), `run_checks` on 8671110 and on this round:
+  findings identical on every footprint, none partial; costliest 291,699 units (p99
+  93,121; the pad build added), so `WORK_BUDGET` stays 1 M (~3.4x headroom);
+  `run_checks` max 0.125 s, p99 0.039 s (8671110 on the same run: 0.117 s / 0.033 s).
+  Verification pass (edge contacts, `is_convex`): findings identical to 3ca27be on all
+  15,468, none partial, the same costliest 291,699 units; max 0.128 s, p99 0.041 s.
+- **`fp_render` sanitiser allowlist:** only the elements KiCad's `fp export svg` writes
+  (seen: svg, g, path, circle, text, title, desc) plus the other plain shapes of its SVG
+  plotter (ellipse, rect, line, polyline, polygon, tspan) survive; anything else goes
+  with its subtree (use, tref, pattern, marker, mask, filter, clipPath, image,
+  foreignObject, ...: nested references amplify exponentially under the render lock).
+  `href` and every attribute value with `url(` (fragment or not), `image-set(`, `src(`
+  or a backslash are dropped. Group `opacity` (attribute or `style` declaration) is
+  dropped too — nested opacity groups multiply CairoSVG's work under the render lock;
+  `fill-opacity`/`stroke-opacity` stay — and an element with opacity 0 goes with its
+  subtree: KiCad does write `opacity="0"` on its hidden REF**/name texts (seen in 47k
+  stock texts), which must stay invisible. Round 5: the opacity check runs before any
+  value filter (a hidden element with a `url(` in its style stays hidden); `0%`,
+  `0 !important`, a negative, non-finite or unreadable value (a CSS comment, `bogus`)
+  hide the element, as does a `style` with a backslash (an escape can spell
+  `opacity`); a hidden root is `render_failed` (was a bare `AssertionError`).
+- **`fp_render` rasterising caps (round 5):** CairoSVG's cost is bounded before it runs
+  (`_Tally` in `_clean`, kept elements only), each cap about 2-3x the largest of all
+  15,468 stock exports (all F/B layers; the stock maximum in brackets): 4 MB
+  (`MAX_SVG_BYTES`; 466 KB), 10,000 elements (`MAX_ELEMENTS`, was 20,000; 6,205,
+  Xilinx FLG1925), 50,000 coordinate pairs in all `d`/`points` (`MAX_COORDS`; 23,924,
+  Xilinx FLG1925; a circle/ellipse/rect counts 4, a line 2, text characters 1),
+  2,000 pairs in one element (`MAX_ELEMENT_COORDS`; 586, Symbol `Smolhaj_Scale_0.1`:
+  one self-crossing path tessellates superlinearly — 100k pairs took 226 s), and an
+  outline length of 1,000 drawing extents (`MAX_SPAN`, the summed segment/outline
+  lengths over the viewBox's longer side; 364, `CP_Radial_D40.0mm_P10.00mm_SnapIn`
+  hatching: a stroke or fill edge across the drawing costs ~0.1-0.3 ms at 2000 px
+  wherever its points are). Worst cases at the caps through `load_kicad_svg` +
+  wrapper + `rasterise` at 2000 px: one random 2,000-point path up to the span cap
+  0.9-1.4 s (stroke 0.3-20 mm), 25 dense self-crossing 2,000-point scribbles 1.4-2.5 s,
+  318 full-canvas circles 0.5 s, 9,990 small paths / circles 2.6 / 2.3 s; the stock
+  maximum (Xilinx FLG1925) 1.0 s. None of the 15,468 stock exports is refused; a
+  sample of the 20 largest (by bytes, elements, points, points per element and span)
+  renders through `render_footprint` in the base image in 0.9-3.1 s each, kicad-cli
+  and the default layers included (the Xilinx BGAs ~3.1 s), none refused. These caps
+  are now cheap pre-filters only: three rounds of estimate caps were each bypassed by
+  another cost dimension (verification pass: 24 `fp_poly` of 1,990 points stroked
+  40 mm wide pass every cap and took 41-44 s in CairoSVG under the render lock).
+- **`fp_render` rasteriser process (verification pass):** CairoSVG runs in a process of
+  its own, `python -I -m copperchat.views._raster_worker <width> <height>`
+  (`create_subprocess_exec`, argv only, `RASTER_WORKER`): the wrapper SVG on stdin, the
+  PNG on stdout; on an error it exits 2 with only the exception class name on stderr.
+  stdin, stdout and stderr are **files, never pipes** (review fix: a stdout reader
+  cancelled or stopped at the cap left a paused pipe transport that never saw EOF, so
+  `proc.wait()` hung forever under `_render_lock`): the parent writes the SVG into
+  `worker-in.svg` and creates `worker-out.png` / `worker-err.txt` (`O_CREAT|O_EXCL|
+  O_NOFOLLOW`, 0600) in the per-render temp dir, passes the fds, and only awaits
+  `proc.wait()`. The worker sets `RLIMIT_AS` 1.5 GB, `RLIMIT_CPU` 30 s (hard 32 s) and
+  `RLIMIT_FSIZE` `FILE_LIMIT_BYTES` (2000 x 2000 RGBA + 2 MiB: above the parent's PNG
+  cap, so the disk cannot fill; SIGXFSZ kills it) itself before CairoSVG is imported.
+  Its environment is only `PATH`, `LANG=C.UTF-8`, `HOME` and
+  `XDG_CACHE_HOME` in a throw-away temp dir (no secret of the app's is inherited;
+  `-I` ignores `PYTHON*` variables; fontconfig uses the image's system cache), its own
+  session (`start_new_session`). The parent waits at most `RASTER_TIMEOUT_S` = 20 s
+  wall clock (stock maximum ~3 s, a cold font cache ~13 s): `render_failed` "render
+  timed out". On every way out — timeout, error, cancellation — its process group is
+  SIGKILLed and it is reaped (bounded `REAP_TIMEOUT_S` = 5 s wait, shielded by
+  `_settle`) before `_render_lock` is released. After a clean exit the output size is
+  checked with `os.fstat` against `MAX_PNG_BYTES` (a raw 2000 x 2000 RGBA image + 1 MiB;
+  more is `render_failed`) **before** it is read; of stderr at most 100 bytes are read
+  and only an identifier is quoted; the output must start with
+  the PNG signature. Parse/sanitise/wrap stay in a worker thread (linear in the
+  4 MB-capped input). The thick-stroke attack now fails after 20.0 s instead of 44 s;
+  a small render costs ~0.3 s more (interpreter start). `scripts/app-image-tools.sh`
+  and `test_cairosvg_in_image` rasterise through the worker process (uid 1000 in the
+  app image; the base image in the kicad tests).
+- **Pin-1 heuristic:** a silk/fab piece marks pin 1 when it is within
+  `max(pad1.size) + 1` mm of pad 1 and strictly nearer to pad 1 than to any other pad;
+  pieces are whole shapes plus the single **diagonal** edges (not within 1° of x/y) of
+  polygons and rects, so a pin-1 chamfer drawn into one closed F.Fab body counts
+  (final fix wave). Separate line shapes are judged one by one, as before.
+- **Geometry (FP-C3 consumers):** `geom.pad_parts` gives every copper piece of a custom
+  pad (anchor + primitives, primitives placed at pad position + rotated `offset`, as
+  KiCad does; `model._pad_extent` got the same offset fix); trapezoid and chamfered-rect
+  pads are exact from `Pad.extra`. Polygon arc nodes are flattened by the model's
+  `_polyline` without a marker (residual).
+- **Image:** the app image gets `libcairo2` only through KiCad's shared-library
+  dependencies (ldd), guarded by the `scripts/app-image-tools.sh` smoke test.
+- **`run_kicad_cli`:** kills the process, not a process group (as `render_view` before).
+
+- **Residuals for later phases (F2):**
+  - F4a feeds `CheckInput.pending` from the journal and runs `fp_check` inside
+    `fp_create` (errors block the write).
+  - F4b records renders and checks in `footprint_reviews`.
+  - `checks.py` is ~1,200 lines — a split candidate.
+  - `fp_check` input passes outside the budget are linear in the input, not capped:
+    reading the footprint (`geometry_from_proto`) and `geometry_hash` (~1 s for 50,000
+    custom-pad primitives, ~3 s for 100,000 pads). A size cap on the read would bound
+    them (F4a, with `fp_create`).
+  - The `< 2 s` timing tests are wall-clock (CI noise).
+  - Filled shapes are measured as outlines; a bezier by its control polygon.
+  - Renders are not pruned (existing residual below).
+
 ## Residuals
 
 (Filled by F5.) Known before the start:

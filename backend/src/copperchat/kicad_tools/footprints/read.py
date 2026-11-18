@@ -1,17 +1,31 @@
-"""Read-only footprint tools (spec §7.2/§7.3): `fp_get`, `fp_list_local`."""
+"""Read-only footprint tools (spec §7.2-§7.4): `fp_get`, `fp_list_local`, `fp_check`."""
 
 from __future__ import annotations
 
 import asyncio
+import difflib
+import math
+import re
+from dataclasses import dataclass
+from functools import partial
 from typing import Any, Literal, cast
 
 from copperchat.errors import DocumentNotOpen, StructuredToolError
 from copperchat.kicad_session import KicadHandle
 from copperchat.kicad_tools import access
 from copperchat.kicad_tools.filtering import natural_key
+from copperchat.kicad_tools.footprints.checks import (
+    DEFAULT_TOLERANCE,
+    CheckInput,
+    Expected,
+    ExpectedPad,
+    run_checks,
+    to_result,
+)
 from copperchat.kicad_tools.footprints.model import (
     MAX_TEXT_CHARS,
     SOURCE_FIELD,
+    FootprintGeometry,
     _cap_text,
     review_state,
 )
@@ -23,6 +37,17 @@ DETAILS = ("summary", "full")
 MAX_QUERY_CHARS = 200
 MAX_LIST_LIMIT = 200
 DEFAULT_LIST_LIMIT = 50
+# fp_check input bounds (plan author call 18)
+MAX_SYMBOL_CHARS = 256
+MAX_PAD_NUMBER_CHARS = 16
+MAX_EXPECTED_PADS = 512
+MAX_ALLOW_UNMATCHED = 64
+MAX_COORD_MM = 500.0
+MAX_SIZE_MM = 200.0
+MAX_DRILL_MM = 50.0
+MIN_TOLERANCE_MM = 0.001
+MAX_TOLERANCE_MM = 1.0
+REFERENCE_RE = re.compile(r"^[A-Za-z#]+[0-9]+$")
 
 
 def _invalid(what: str, why: str, suggestion: str) -> StructuredToolError:
@@ -59,18 +84,11 @@ def parse_lib_id(value: Any) -> tuple[str, str, str]:
     return lib_id, nickname, name
 
 
-async def fp_get(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
-    """One footprint's geometry (spec §7.2): `FootprintGeometry.to_dict(detail)` plus
-    `source`, `review` (local footprints only, else null) and `notes`."""
-    lib_id, nickname, name = parse_lib_id(args.get("lib_id"))
-    detail = args.get("detail", "summary")
-    if detail not in DETAILS:
-        raise _invalid(
-            "Invalid detail", "detail must be 'summary' or 'full'", "omit it for 'summary'"
-        )
-    require_enabled(ctx)
+async def _geometry(
+    ctx: ToolContext, lib_id: str, nickname: str, name: str, notes: list[dict[str, Any]]
+) -> FootprintGeometry:
+    """The footprint's geometry, else `not_found` with the closest lib ids."""
     svc = library_for(ctx.session)
-    notes: list[dict[str, Any]] = []
     geometry = await svc.footprint_geometry(lib_id, notes)
     if geometry is None:
         close = await closest_footprints(svc, nickname, name)
@@ -81,6 +99,21 @@ async def fp_get(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
             code="not_found",
             details={"closest": close},
         )
+    return geometry
+
+
+async def fp_get(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
+    """One footprint's geometry (spec §7.2): `FootprintGeometry.to_dict(detail)` plus
+    `source`, `review` (local footprints only, else null) and `notes`."""
+    lib_id, nickname, name = parse_lib_id(args.get("lib_id"))
+    detail = args.get("detail", "summary")
+    if detail not in DETAILS:
+        raise _invalid(
+            "Invalid detail", "detail must be 'summary' or 'full'", "omit it for 'summary'"
+        )
+    require_enabled(ctx)
+    notes: list[dict[str, Any]] = []
+    geometry = await _geometry(ctx, lib_id, nickname, name, notes)
     data = geometry.to_dict(cast(Literal["summary", "full"], detail))
     source = geometry.fields.get(SOURCE_FIELD)
     if source is not None:
@@ -216,3 +249,272 @@ async def fp_list_local(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
             "notes": notes,
         }
     )
+
+
+# --- fp_check (spec §7.4) -------------------------------------------------------------
+
+
+def _keys(value: Any, what: str, allowed: set[str], required: set[str]) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise _invalid(f"Invalid {what}", f"{what} must be an object", "see the tool schema")
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise _invalid(
+            f"Invalid {what}", f"unknown key(s) {unknown}", f"allowed: {sorted(allowed)}"
+        )
+    missing = sorted(required - set(value))
+    if missing:
+        raise _invalid(f"Invalid {what}", f"missing key(s) {missing}", "see the tool schema")
+    return value
+
+
+def _as_float(value: Any) -> float:
+    """A JSON number as float; NaN for non-numbers, bools and ints too large for a
+    float (`10**400` raises OverflowError in `float()`), so callers reject them."""
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        return math.nan
+    try:
+        return float(value)
+    except OverflowError:
+        return math.nan
+
+
+def _number(value: Any, what: str, lo: float, hi: float, *, open_lo: bool = False) -> float:
+    v = _as_float(value)
+    if not (math.isfinite(v) and (v > lo if open_lo else v >= lo) and v <= hi):
+        bound = f"{lo} < {what} <= {hi}" if open_lo else f"{lo} <= {what} <= {hi}"
+        raise _invalid(f"Invalid {what}", f"{what} must be a finite number, {bound} (mm)", bound)
+    return v
+
+
+def _pair(
+    value: Any, what: str, lo: float, hi: float, *, open_lo: bool = False
+) -> tuple[float, float]:
+    if not isinstance(value, list | tuple) or len(value) != 2:
+        raise _invalid(
+            f"Invalid {what}", f"{what} must be [x, y] (two numbers, mm)", "e.g. [1.0, 0.5]"
+        )
+    return (
+        _number(value[0], what, lo, hi, open_lo=open_lo),
+        _number(value[1], what, lo, hi, open_lo=open_lo),
+    )
+
+
+def _pad_number(value: Any, what: str) -> str:
+    if not isinstance(value, str) or not 1 <= len(value) <= MAX_PAD_NUMBER_CHARS:
+        raise _invalid(
+            f"Invalid {what}",
+            f"a pad number is a string of 1..{MAX_PAD_NUMBER_CHARS} characters",
+            "e.g. '1' or 'EP'",
+        )
+    return value
+
+
+def _size(value: Any, what: str) -> tuple[float, float]:
+    return _pair(value, what, 0.0, MAX_SIZE_MM, open_lo=True)
+
+
+def _expected(value: Any) -> Expected:
+    exp = _keys(value, "expected", {"pads", "pitch", "courtyard", "body", "tolerance_mm"}, {"pads"})
+    raw = exp["pads"]
+    if not isinstance(raw, list) or len(raw) > MAX_EXPECTED_PADS:
+        raise _invalid(
+            "Invalid expected.pads",
+            f"expected.pads must be a list of at most {MAX_EXPECTED_PADS} pads",
+            "one entry per datasheet pad",
+        )
+    pads: list[ExpectedPad] = []
+    for i, item in enumerate(raw):
+        what = f"expected.pads[{i}]"
+        p = _keys(item, what, {"number", "at", "size", "drill"}, {"number", "at", "size"})
+        drill = p.get("drill")
+        pads.append(
+            ExpectedPad(
+                number=_pad_number(p["number"], f"{what}.number"),
+                at=_pair(p["at"], f"{what}.at", -MAX_COORD_MM, MAX_COORD_MM),
+                size=_size(p["size"], f"{what}.size"),
+                drill=None
+                if drill is None
+                else _number(drill, f"{what}.drill", 0.0, MAX_DRILL_MM, open_lo=True),
+            )
+        )
+    pitch, courtyard, body = exp.get("pitch"), exp.get("courtyard"), exp.get("body")
+    tolerance = exp.get("tolerance_mm")
+    return Expected(
+        pads=tuple(pads),
+        pitch=None
+        if pitch is None
+        else _number(pitch, "expected.pitch", 0.0, MAX_SIZE_MM, open_lo=True),
+        courtyard=None if courtyard is None else _size(courtyard, "expected.courtyard"),
+        body=None if body is None else _size(body, "expected.body"),
+        tolerance_mm=DEFAULT_TOLERANCE
+        if tolerance is None
+        else _number(tolerance, "expected.tolerance_mm", MIN_TOLERANCE_MM, MAX_TOLERANCE_MM),
+    )
+
+
+def _allow_unmatched(value: Any) -> frozenset[str]:
+    if value is None:
+        return frozenset()
+    if not isinstance(value, list) or len(value) > MAX_ALLOW_UNMATCHED:
+        raise _invalid(
+            "Invalid allow_unmatched_pads",
+            f"allow_unmatched_pads must be a list of at most {MAX_ALLOW_UNMATCHED} pad numbers",
+            "e.g. ['10', '11'] for shell pads",
+        )
+    return frozenset(_pad_number(v, "allow_unmatched_pads item") for v in value)
+
+
+def _symbol(value: Any) -> str | None:
+    """A `lib:Name` symbol id or a placed reference (`R201`, `#PWR01`), else invalid."""
+    if value is None:
+        return None
+    if isinstance(value, str) and len(value) <= MAX_SYMBOL_CHARS:
+        symbol = value.strip()
+        nickname, sep, name = symbol.partition(":")
+        if (sep and nickname and name) or REFERENCE_RE.match(symbol):
+            return symbol
+    raise _invalid(
+        "Invalid symbol",
+        f"symbol must be a library symbol id <nickname>:<name> or a placed reference "
+        f"like R201 (at most {MAX_SYMBOL_CHARS} characters)",
+        "e.g. 'Device:L' or 'L201'",
+    )
+
+
+POLARIZED_NAME_RE = re.compile(r"^(?:C_Polarized|CP)")  # KiCad names, case-sensitive
+POLARIZED_WORDS = ("polarized", "polarised", "electrolytic", "tantalum")
+# KiCad's Device:C is "Unpolarized capacitor"; bipolar electrolytics are not polarised
+UNPOLARIZED_WORDS = ("unpolar", "non-polar", "nonpolar", "non polar", "bipolar")
+
+
+def is_polarized(
+    pins: dict[str, str], name: str = "", description: str = "", keywords: str = ""
+) -> bool:
+    """Exactly 2 pins, and either their names differ and are neither `~` (or empty) nor
+    equal to their number (a diode's K/A, not a resistor's 1/2), or the symbol is a
+    polarised capacitor whose pins are both `~` (spec §8): its library name starts with
+    `C_Polarized` or `CP` (`CP`, `CP_Small`, ...), or its description or keywords say
+    polarized / polarised / electrolytic / tantalum and not unpolarised / non-polarised /
+    bipolar (KiCad's plain `Device:C` is "Unpolarized capacitor")."""
+    if len(pins) != 2:
+        return False
+    names = list(pins.values())
+    if names[0] != names[1] and all(
+        pin and pin != "~" and pin != number for number, pin in pins.items()
+    ):
+        return True
+    text = f"{description} {keywords}".casefold()
+    if POLARIZED_NAME_RE.match(name):
+        return True
+    if any(w in text for w in UNPOLARIZED_WORDS):
+        return False
+    return any(w in text for w in POLARIZED_WORDS)
+
+
+@dataclass(frozen=True)
+class PlacedSymbol:
+    pins: dict[str, str]  # pin number -> name over every unit
+    name: str = ""  # library entry name of the definition
+    description: str = ""
+    keywords: str = ""
+
+
+def _placed_pins(ref: str, h: KicadHandle) -> tuple[PlacedSymbol | None, list[str] | None]:
+    """(the placed symbol `ref`'s pins over every unit plus its definition's name,
+    description and keywords, or None when not placed; the placed references, or None
+    without an open schematic)."""
+    try:
+        schematic = h.schematic()
+    except DocumentNotOpen:
+        return None, None
+    refs: list[str] = []
+    for sym in schematic.get_symbols():
+        reference = str(sym.reference)
+        refs.append(reference)
+        if reference != ref:
+            continue
+        definition = sym.definition
+        pins: dict[str, str] = {}
+        for child in definition.items:  # every unit and body style of the definition
+            if child.kind != "SchematicPin":
+                continue
+            pin: Any = child.item
+            if str(pin.number):
+                pins.setdefault(str(pin.number), str(pin.name))
+        placed = PlacedSymbol(
+            pins,
+            str(definition.id.name),
+            str(definition.description_field.text.value),
+            str(definition.keywords),
+        )
+        return placed, refs
+    return None, refs
+
+
+async def symbol_pins(ctx: ToolContext, symbol: str) -> tuple[list[str], bool]:
+    """(pin numbers, polarized) of a library symbol (`lib:Name`, via
+    `LibraryService.get_symbol`) or of a placed reference; all units' pins."""
+    if REFERENCE_RE.match(symbol):
+        placed, refs = await ctx.session.call(partial(_placed_pins, symbol))
+        if placed is None:
+            if refs is None:
+                why, suggestion = "no schematic is open", "Pass the library symbol id instead."
+            else:
+                close = difflib.get_close_matches(symbol, sorted(set(refs)), n=5, cutoff=0.5)
+                why = "no symbol with this reference is placed in the open schematic"
+                suggestion = (
+                    f"Did you mean: {', '.join(close)}?"
+                    if close
+                    else "Use sch_list_symbols, or pass the library symbol id instead."
+                )
+            raise StructuredToolError(
+                f"Symbol {symbol} not found", why, suggestion, code="not_found"
+            )
+        pins = placed.pins
+        polarized = is_polarized(pins, placed.name, placed.description, placed.keywords)
+    else:
+        detail = await library_for(ctx.session).get_symbol(symbol)
+        if not detail.pins_known:
+            raise StructuredToolError(
+                f"Could not read the pins of {symbol}",
+                "a derived symbol's pins need a probe placement, which this read-only "
+                "session cannot make",
+                "Pass the reference of a placed instance (e.g. 'U202') or the base symbol.",
+                code="library_error",
+            )
+        pins = {}
+        for pin in detail.pins:
+            if pin.number:
+                pins.setdefault(pin.number, pin.name)
+        name = symbol.partition(":")[2]
+        polarized = is_polarized(pins, name, detail.description, detail.keywords)
+    return sorted(pins, key=natural_key), polarized
+
+
+async def fp_check(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
+    """The spec §8 rules on one footprint (spec §7.4): `{lib_id, passed, counts,
+    findings, geometry_hash, truncated, notes}`; read-only, also for stock footprints."""
+    unknown = sorted(set(args) - {"lib_id", "symbol", "expected", "allow_unmatched_pads"})
+    if unknown:
+        raise _invalid("Invalid arguments", f"unknown key(s) {unknown}", "see the tool schema")
+    lib_id, nickname, name = parse_lib_id(args.get("lib_id"))
+    symbol = _symbol(args.get("symbol"))
+    # absent -> no expectations; an explicit null is rejected (the schema says object)
+    expected = _expected(args["expected"]) if "expected" in args else None
+    allow = _allow_unmatched(args.get("allow_unmatched_pads"))
+    require_enabled(ctx)
+    notes: list[dict[str, Any]] = []
+    geometry = await _geometry(ctx, lib_id, nickname, name, notes)
+    pins, polarized = await symbol_pins(ctx, symbol) if symbol else (None, False)
+    inp = CheckInput(
+        geometry=geometry,
+        pins=pins,
+        polarized=polarized,
+        expected=expected,
+        allow_unmatched=allow,
+        local=geometry.scope == "local",
+        pending=False,  # F4a wires the write journal
+    )
+    report = await asyncio.to_thread(run_checks, inp)
+    return ToolResult(data={"lib_id": geometry.lib_id, **to_result(report), "notes": notes})
