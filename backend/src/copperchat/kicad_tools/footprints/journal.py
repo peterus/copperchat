@@ -12,15 +12,26 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
-from copperchat.db.repos.footprints import ABSENT, FootprintWriteRepo
+from copperchat.db.repos.footprints import ABSENT, FootprintWrite, FootprintWriteRepo
 from copperchat.errors import StructuredToolError
 from copperchat.library.local import LocalLibrary
 from copperchat.repo_context.paths import open_regular
 from copperchat.tools.spec import ToolContext
 
-__all__ = ["ABSENT", "Journal", "file_sha256", "footprint_rel", "table_rel"]
+__all__ = [
+    "ABSENT",
+    "Journal",
+    "PendingOutcome",
+    "classify_pending",
+    "file_sha256",
+    "footprint_rel",
+    "table_rel",
+]
 
 
 def file_sha256(path: Path) -> str:
@@ -92,3 +103,40 @@ class Journal:
 async def sha_of(path: Path) -> str:
     """`file_sha256` in a worker thread."""
     return await asyncio.to_thread(file_sha256, path)
+
+
+# -- pending rows after a server death (spec §9.3, FP-C8) ---------------------------------
+
+PendingAction = Literal["delete", "leftover"]
+
+
+@dataclass(frozen=True)
+class PendingOutcome:
+    """What the cleanup does with one `pending` journal row: `delete` (an untouched seed
+    copy, removed with `DeleteLibraryItem`, the row becomes `compensated`) or
+    `leftover` (kept, the row becomes `leftover`); `current_sha256` is the file's hash
+    the decision was made on."""
+
+    row: FootprintWrite
+    action: PendingAction
+    current_sha256: str
+
+
+def classify_pending(
+    rows: Iterable[FootprintWrite], current_sha: Callable[[str], str]
+) -> list[PendingOutcome]:
+    """Pure (spec §9.3 point 2; used by `prepare` read-only and by the cleanup): a
+    `create` row whose file's current hash (`current_sha(row.file_rel)`) equals its
+    `post_s2_sha256` is `delete`; everything else is `leftover` - a `replace`,
+    `approve`, `delete` or `row_add` row, a file changed or gone since S2, and a
+    missing hash. Only the hashes count (no server generation, no run)."""
+    out: list[PendingOutcome] = []
+    for row in rows:
+        current = current_sha(row.file_rel)
+        untouched = (
+            row.op == "create"
+            and row.post_s2_sha256 not in (None, ABSENT)
+            and current == row.post_s2_sha256
+        )
+        out.append(PendingOutcome(row, "delete" if untouched else "leftover", current))
+    return out

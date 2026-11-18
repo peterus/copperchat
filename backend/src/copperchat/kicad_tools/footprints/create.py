@@ -34,6 +34,7 @@ from copperchat.kicad_tools.footprints.engine import (
     FootprintPreImage,
     FpStage,
     apply_footprint_change_set,
+    cleanable_copy,
 )
 from copperchat.kicad_tools.footprints.journal import file_sha256 as _file_sha256
 from copperchat.kicad_tools.footprints.model import SOURCE_FIELD, geometry_from_proto, geometry_hash
@@ -47,13 +48,9 @@ TOOL = "fp_create"
 LOGICAL_CHANGES = 5  # spec §12 (owner decision D3), new and replace alike
 
 # Whether an existing `<name>` of the local library is a half-built copy the next write
-# cleans up (spec §9.3, FP-C8 `classify_pending`); such a copy counts as free.
+# cleans up (spec §9.3, FP-C8 `classify_pending`, read-only): free for a new name,
+# `not_found` for `replace`.
 CleanableCopy = Callable[[ToolContext, LocalLibrary, str], Awaitable[bool]]
-
-
-async def no_cleanable_copy(ctx: ToolContext, lib: LocalLibrary, name: str) -> bool:
-    """Without the pending-write classifier every existing footprint counts as taken."""
-    return False
 
 
 def _error(what: str, why: str, suggestion: str, code: str) -> StructuredToolError:
@@ -192,12 +189,14 @@ async def _check(
 
 
 async def prepare_create(
-    ctx: ToolContext, args: dict[str, Any], *, cleanable: CleanableCopy = no_cleanable_copy
+    ctx: ToolContext, args: dict[str, Any], *, cleanable: CleanableCopy = cleanable_copy
 ) -> FootprintChangeSet:
     """Plan an `fp_create` (spec §7.6); refuses with a structured error, writes nothing.
 
     `cleanable` decides whether an existing local footprint of the requested name is a
-    half-built copy the write path cleans up first (it then counts as free)."""
+    half-built copy the write path cleans up first (spec §9.3): prepare validates
+    against the state after that cleanup, so the copy counts as free for a new name
+    and as `not_found` for `replace` (such a call is refused; its cleanup never runs)."""
     parsed = parse_create_args(args)  # schema + NAME_RE
     require_enabled(ctx)
     notes: list[dict[str, Any]] = []
@@ -220,9 +219,19 @@ async def prepare_create(
         names = await svc.footprint_names(lib.nickname)
     else:
         names = await asyncio.to_thread(svc.local_names_on_disk, lib)
-    taken = name in names and not await cleanable(ctx, lib, name)
+    cleanable_now = name in names and await cleanable(ctx, lib, name)
+    taken = name in names and not cleanable_now
     pre_image = None
     if parsed.replace:
+        if info.row_present and cleanable_now:
+            raise _error(
+                f"Footprint {lib_id} not found",
+                f"{lib_id} is only an unfinished copy left by an earlier footprint call that "
+                "stopped when the KiCad server died; the next footprint write removes it",
+                "Leave replace out to create the footprint under this name; list the local "
+                "ones with fp_list_local.",
+                "not_found",
+            )
         if not (info.row_present and taken):
             why = (
                 f"this project has no library row for the local library ({lib.nickname}) "
