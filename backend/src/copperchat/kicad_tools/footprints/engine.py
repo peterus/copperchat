@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from copperchat.config import Settings
 from copperchat.db.repos.footprints import FootprintWrite, FootprintWriteRepo
-from copperchat.errors import DocumentInconsistent, StructuredToolError
+from copperchat.errors import DocumentInconsistent, StructuredToolError, attach_tool_notes
 from copperchat.history.library_lock import assert_library_locked
 from copperchat.history.store import LibraryLocation, LibraryLocator
 from copperchat.kicad_session import (
@@ -528,7 +528,12 @@ async def apply_footprint_change_set(ctx: ToolContext, cs: FootprintChangeSet) -
         )
     async with ctx.session.applying():
         cleaned = await cleanup_pending(ctx, lib)  # first, before the tool's own stages
-        applied = await _apply_create(ctx, cs, lib)
+        try:
+            applied = await _apply_create(ctx, cs, lib)
+        except BaseException as exc:
+            # the cleanup's deletes and leftovers stay; the error must say so (§9.3)
+            attach_tool_notes(exc, cleaned)
+            raise
     applied.notes[:0] = cleaned
     cs.fp_applied = applied
     return applied
@@ -862,25 +867,69 @@ def _cleaned_note(lib_id: str) -> dict[str, Any]:
 
 
 def _leftover_note(row: FootprintWrite) -> dict[str, Any]:
+    """The `pending_leftover` notice of one row (spec §9.3: names the lib id and why the
+    cleanup kept it)."""
+    died = "that stopped when the KiCad server died"
     if row.op == "row_add":
         name = f"row {row.lib_id}"
-        what = (
-            f"The library row {row.lib_id} from an earlier call that stopped when the "
-            "KiCad server died"
+        message = (
+            f"The library row {row.lib_id} added by an earlier call {died} is kept: the "
+            "cleanup never removes library rows. Undoing that turn in History removes it."
         )
     else:
         name = row.lib_id
-        what = (
-            f"{row.lib_id}, written by an earlier {row.op} that stopped when the KiCad "
-            "server died (it changed since, or cannot be matched),"
+        if row.op == "create":
+            why = (
+                f"{row.lib_id} was left by an earlier fp_create {died}. It changed since "
+                "then or cannot be matched to that call, so it is kept as it is."
+            )
+        else:
+            why = (
+                f"{row.lib_id} was written by an earlier {row.op} {died}. It is not a "
+                "create, so it is kept as it is."
+            )
+        message = (
+            f"{why} It may be half-built: check it with fp_get and fp_check and tell the "
+            "user. Undoing that turn in History, or fp_delete, removes it."
         )
-    return {
-        "kind": "pending_leftover",
-        "lib_id": name,
-        "op": row.op,
-        "message": f"{what} is kept as it is. It may be half-built: check it with fp_get / "
-        "fp_check and tell the user; History undo of that turn or fp_delete removes it.",
-    }
+    return {"kind": "pending_leftover", "lib_id": name, "op": row.op, "message": message}
+
+
+async def _clean_row(
+    ctx: ToolContext, lib: LocalLibrary, journal: Journal, outcome: PendingOutcome
+) -> dict[str, Any]:
+    """One pending row: delete an untouched copy (`DeleteLibraryItem`) and finalise the
+    row `compensated`, else finalise it `leftover`; returns its note. Run to completion
+    (`_finish`), so a Stop cannot land between the delete and the journal update.
+    `KicadUnavailable` passes through with the row still `pending`."""
+    row = outcome.row
+    sha = outcome.current_sha256
+    if outcome.action == "delete":
+        name = _own_copy(lib, row)
+        assert name is not None
+        file = lib.dir / f"{name}.kicad_mod"
+        svc = library_for(ctx.session)
+        try:
+            await asyncio.to_thread(local_footprint_file_safe, lib, name)
+            if await _sha_or_absent(file) != row.post_s2_sha256:
+                raise RuntimeError("the copy changed after it was classified")
+            ctx.library_touched.append(file)
+            try:
+                await ctx.session.call(partial(_delete_item, lib.nickname, name))
+            finally:
+                svc.invalidate_footprints(lib.nickname)
+            if await asyncio.to_thread(_lexists, file):
+                raise RuntimeError(f"{row.file_rel} is still on disk")
+        except KicadUnavailable:
+            raise
+        except Exception as exc:
+            log.warning("cleaning up the pending copy %s failed: %s", row.lib_id, exc)
+            sha = await _sha_or_absent(file)
+        else:
+            await _finalise(journal, row.id, "compensated", ABSENT)
+            return _cleaned_note(row.lib_id)
+    await _finalise(journal, row.id, "leftover", sha)
+    return _leftover_note(row)
 
 
 async def cleanup_pending(ctx: ToolContext, lib: LocalLibrary) -> list[dict[str, Any]]:
@@ -890,46 +939,26 @@ async def cleanup_pending(ctx: ToolContext, lib: LocalLibrary) -> list[dict[str,
     removed with `DeleteLibraryItem` and its row becomes `compensated`; everything
     else - and a copy whose delete fails - becomes `leftover` with its current hash and
     is never deleted. Deleted files go to `ctx.library_touched`. Returns the notes
-    (`pending_cleaned` / `pending_leftover`). `KicadUnavailable` passes through (the
-    remaining rows stay `pending`)."""
+    (`pending_cleaned` / `pending_leftover`). Each row runs to completion even under a
+    Stop. When the cleanup raises (`KicadUnavailable` - the remaining rows stay
+    `pending` - or a Stop), the notes of the rows already finalised ride on the
+    exception (`attach_tool_notes`), so the agent still sees them."""
     assert_library_locked(lib.dir)
     outcomes = await _pending_outcomes(ctx, lib)
     if not outcomes:
         return []
     await asyncio.to_thread(local_library_dir_safe, lib)
-    session = ctx.session
-    svc = library_for(session)
     journal = Journal(ctx)
     notes: list[dict[str, Any]] = []
-    for o in outcomes:
-        row = o.row
-        sha = o.current_sha256
-        if o.action == "delete":
-            name = _own_copy(lib, row)
-            assert name is not None
-            file = lib.dir / f"{name}.kicad_mod"
-            try:
-                await asyncio.to_thread(local_footprint_file_safe, lib, name)
-                if await _sha_or_absent(file) != row.post_s2_sha256:
-                    raise RuntimeError("the copy changed after it was classified")
-                ctx.library_touched.append(file)
-                try:
-                    await session.call(partial(_delete_item, lib.nickname, name))
-                finally:
-                    svc.invalidate_footprints(lib.nickname)
-                if await asyncio.to_thread(_lexists, file):
-                    raise RuntimeError(f"{row.file_rel} is still on disk")
-            except KicadUnavailable:
-                raise
-            except Exception as exc:
-                log.warning("cleaning up the pending copy %s failed: %s", row.lib_id, exc)
-                sha = await _sha_or_absent(file)
-            else:
-                await _finalise(journal, row.id, "compensated", ABSENT)
-                notes.append(_cleaned_note(row.lib_id))
-                continue
-        await _finalise(journal, row.id, "leftover", sha)
-        notes.append(_leftover_note(row))
+    try:
+        for o in outcomes:
+            note, cancelled = await _finish(_clean_row(ctx, lib, journal, o))
+            notes.append(note)
+            if cancelled:
+                raise asyncio.CancelledError
+    except BaseException as exc:
+        attach_tool_notes(exc, notes)
+        raise
     return notes
 
 

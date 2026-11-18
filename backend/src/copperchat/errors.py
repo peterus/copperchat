@@ -79,6 +79,19 @@ class StructuredToolError(CopperChatError):
         return out
 
 
+def attach_tool_notes(exc: BaseException, notes: list[dict[str, Any]]) -> None:
+    """Carry notes of work a failing tool call already did (e.g. the footprint pending
+    cleanup, spec §9.3) on its exception; the tool adapter puts them into the error's
+    `details.notes`, whatever error it turns the exception into."""
+    if notes:
+        exc.tool_notes = [*tool_notes(exc), *notes]  # type: ignore[attr-defined]
+
+
+def tool_notes(exc: BaseException) -> list[dict[str, Any]]:
+    """The notes `attach_tool_notes` put on `exc` (empty if none)."""
+    return list(getattr(exc, "tool_notes", None) or [])
+
+
 class DocumentInconsistent(CopperChatError):
     """A failed edit could not be undone exactly (E-C4): the turn ends without autosave
     and the session is reopened from the last save - the state just before that edit,

@@ -13,7 +13,7 @@ from typing import Any
 from claude_agent_sdk import McpSdkServerConfig, SdkMcpTool, create_sdk_mcp_server
 
 from copperchat.agent.events import ToolResultEvt
-from copperchat.errors import DocumentInconsistent
+from copperchat.errors import DocumentInconsistent, tool_notes
 from copperchat.kicad_session import KicadUnavailable
 from copperchat.kicad_tools.edit.engine import save_after_edit
 from copperchat.tools import ImageBlock, StructuredToolError, ToolContext, ToolResult, ToolSpec
@@ -30,7 +30,14 @@ def sdk_tool_name(name: str) -> str:
     return f"mcp__{SERVER_NAME}__{name}"
 
 
-def _error(err: StructuredToolError) -> dict[str, Any]:
+def _error(err: StructuredToolError, cause: BaseException | None = None) -> dict[str, Any]:
+    """The error payload; notes the failing call attached to `cause` (work it did before
+    it failed, `attach_tool_notes`) go into `details.notes`, never silently dropped."""
+    notes = tool_notes(cause) if cause is not None else []
+    if notes:
+        details = dict(err.details or {})
+        details["notes"] = [*details.get("notes", []), *notes]
+        err.details = details
     text = json.dumps({"error": err.to_dict()}, ensure_ascii=False)
     return {"content": [{"type": "text", "text": text}], "is_error": True}
 
@@ -298,14 +305,14 @@ def _make_handler(
                     await ctx.on_mutation()
                 result = await spec.handler(ctx, args)
         except StructuredToolError as err:
-            return _error(err)
+            return _error(err, err)
         except DocumentInconsistent as exc:
             if editing is not None:
                 editing.turn(ctx.project.id, ctx.run_id).halted = True
             on_inconsistent = getattr(ctx, "on_document_inconsistent", None)
             if on_inconsistent is not None:
                 on_inconsistent(exc)
-            return _error(_inconsistent_error(spec.name, args, exc))
+            return _error(_inconsistent_error(spec.name, args, exc), exc)
         except KicadUnavailable as exc:
             if ctx.on_kicad_unavailable is not None:
                 ctx.on_kicad_unavailable(exc)
@@ -314,7 +321,8 @@ def _make_handler(
                     f"{spec.name} failed because KiCad stopped responding",
                     str(exc),
                     "The KiCad API server was restarted and this turn ends. Ask again to retry.",
-                )
+                ),
+                exc,
             )
         except Exception as exc:  # a bug in a tool must reach the agent as a clear error
             log.exception("tool %s failed", spec.name)
@@ -323,7 +331,8 @@ def _make_handler(
                     f"{spec.name} failed unexpectedly",
                     f"{type(exc).__name__}: {exc}",
                     "This is a CopperChat bug; do not retry the same call.",
-                )
+                ),
+                exc,
             )
         if result.changed_docs and ctx.on_documents_changed is not None:
             ctx.on_documents_changed(set(result.changed_docs))

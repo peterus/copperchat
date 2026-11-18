@@ -396,5 +396,140 @@ async def test_apply_runs_the_cleanup_first(
     assert err.value.code == "library_error"  # S3 of the fake, not already_exists
     assert session.kicad.calls == ["delete_item", "delete_item"]  # cleanup, compensation
     rows = await _journal(editing)
-    assert [(r.op, r.state) for r in rows] == [("create", "compensated"),
-                                                ("create", "compensated")]  # fmt: skip
+    assert [(r.op, r.state) for r in rows] == [
+        ("create", "compensated"),
+        ("create", "compensated"),
+    ]
+
+
+# -- review fixes (Task 4, round 1) ---------------------------------------------------------
+
+
+async def _create_through_adapter(ctx: ToolContext, cs: Any) -> dict[str, Any]:
+    """`fp_create` with the planned `cs` through the real adapter (library lock, error
+    payload); returns the error payload."""
+    import json
+
+    from copperchat.agent.sdk_tools import build_sdk_tool_list
+    from copperchat.tools import edit_spec
+
+    async def prepare(_c: ToolContext, _a: dict[str, Any]) -> Any:
+        return cs
+
+    async def apply(c: ToolContext, planned: Any) -> Any:
+        await fp_engine.apply_footprint_change_set(c, planned)
+        raise AssertionError("the fake S3 always fails")
+
+    spec = edit_spec("fp_create", "d", {"type": "object"}, prepare, apply)
+    raw = await build_sdk_tool_list([spec], lambda: ctx)[0].handler({})
+    assert raw.get("is_error")
+    payload: dict[str, Any] = json.loads(raw["content"][0]["text"])
+    return payload["error"]
+
+
+@pytest.mark.parametrize("touch", [False, True])
+async def test_failing_stage_still_reports_the_cleanup(
+    make_settings: Callable[..., Settings], editing: EditingService, touch: bool
+) -> None:
+    """The tool's own stages fail after the cleanup (S3 of the fake): the deleted copy
+    (`pending_cleaned`) or the kept one (`pending_leftover`) is named in the error's
+    `details.notes` - the rows are no longer pending, so this is the only notice."""
+    settings = make_settings()
+    ctx, session, cs = _engine_setup(settings.projects_root, settings, editing)
+    lib = cs.library
+    assert lib is not None and cs.target is not None
+    session.kicad.rows = {lib.nickname: lib.uri}
+    cs.fp_stages = [FpStage("copy_seed", cs.target.lib_id), FpStage("rebuild", cs.target.lib_id)]
+    await _pending_copy(editing, lib, "A", touch=touch)
+    error = await _create_through_adapter(ctx, cs)
+    assert error["code"] == "library_error"
+    kind = "pending_leftover" if touch else "pending_cleaned"
+    notes = error["details"]["notes"]
+    assert [(n["kind"], n["lib_id"]) for n in notes] == [(kind, f"{lib.nickname}:A")]
+    states = [r.state for r in await _journal(editing)]
+    assert states[0] == ("leftover" if touch else "compensated")
+
+
+async def test_server_death_mid_cleanup_reports_finished_rows(
+    make_settings: Callable[..., Settings], editing: EditingService
+) -> None:
+    """KicadUnavailable while deleting the second copy: the first row (finalised) is
+    still named in the error; the second stays `pending`."""
+    settings = make_settings()
+    ctx, session, cs = _engine_setup(settings.projects_root, settings, editing)
+    lib = cs.library
+    assert lib is not None
+    session.kicad.rows = {lib.nickname: lib.uri}
+    await _pending_copy(editing, lib, "A", op="replace")  # leftover, finalised first
+    second = await _pending_copy(editing, lib, "B")
+
+    async def die() -> None:
+        raise KicadUnavailable("the api-server died")
+
+    session.before_delete = die
+    error = await _create_through_adapter(ctx, cs)
+    assert "KiCad stopped responding" in error["what"]
+    assert [(n["kind"], n["lib_id"]) for n in error["details"]["notes"]] == [
+        ("pending_leftover", f"{lib.nickname}:A")
+    ]
+    assert [r.state for r in await _journal(editing)] == ["leftover", "pending"]
+    assert second.exists()
+
+
+async def test_stop_during_a_cleanup_delete_still_finalises(
+    make_settings: Callable[..., Settings], editing: EditingService
+) -> None:
+    """A Stop between DeleteLibraryItem and the journal update: the row still becomes
+    `compensated` (the row runs to completion), then the cancellation wins, carrying
+    the note."""
+    import asyncio
+
+    settings = make_settings()
+    ctx, session, cs = _engine_setup(settings.projects_root, settings, editing)
+    lib = cs.library
+    assert lib is not None
+    file = await _pending_copy(editing, lib, "A")
+    deleting = asyncio.Event()
+    go_on = asyncio.Event()
+
+    async def slow() -> None:
+        deleting.set()
+        await go_on.wait()
+
+    session.before_delete = slow
+
+    async def run() -> list[dict[str, Any]]:
+        async with library_lock(lib.dir):
+            return await cleanup_pending(ctx, lib)
+
+    task = asyncio.ensure_future(run())
+    await deleting.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    go_on.set()
+    with pytest.raises(asyncio.CancelledError) as err:
+        await task
+    assert not file.exists()
+    assert [r.state for r in await _journal(editing)] == ["compensated"]
+    from copperchat.errors import tool_notes
+
+    assert [n["kind"] for n in tool_notes(err.value)] == ["pending_cleaned"]
+
+
+@pytest.mark.parametrize(
+    ("op", "lib_id", "expected"),
+    [
+        ("create", f"{REPO}:X", "changed since then or cannot be matched"),
+        ("replace", f"{REPO}:X", "It is not a create, so it is kept"),
+        ("approve", f"{REPO}:X", "It is not a create, so it is kept"),
+        ("delete", f"{REPO}:X", "It is not a create, so it is kept"),
+        ("row_add", REPO, "never removes library rows"),
+    ],
+)
+def test_leftover_note_wording(op: str, lib_id: str, expected: str) -> None:
+    note = fp_engine._leftover_note(_write(op, SHA_A, lib_id=lib_id))
+    assert note["kind"] == "pending_leftover" and note["op"] == op
+    assert expected in note["message"]
+    assert note["lib_id"] == (f"row {REPO}" if op == "row_add" else lib_id)
+    if op != "row_add":
+        assert lib_id in note["message"] and "fp_delete" in note["message"]
