@@ -43,7 +43,7 @@ from copperchat.kicad_tools.footprints.engine import (
 from copperchat.kicad_tools.footprints.journal import file_sha256 as _file_sha256
 from copperchat.kicad_tools.footprints.journal import scrub_repo
 from copperchat.kicad_tools.footprints.model import SOURCE_FIELD, geometry_from_proto, geometry_hash
-from copperchat.kicad_tools.footprints.read import require_enabled, symbol_pins
+from copperchat.kicad_tools.footprints.read import record_review, require_enabled, symbol_pins
 from copperchat.library.local import LocalLibrary
 from copperchat.library.service import LibraryService, library_for, local_footprint_file_safe
 from copperchat.repo_context.paths import RepoPathError, open_regular, repo_policy, resolve_file
@@ -318,12 +318,17 @@ async def apply_footprint_create(ctx: ToolContext, cs: Any) -> ToolResult:
     inp = CheckInput(
         geometry=readback, pins=cs.check_pins, polarized=cs.polarized, local=True, pending=False
     )
-    check = to_result(await asyncio.to_thread(run_checks, inp))
+    report = await asyncio.to_thread(run_checks, inp)
+    check = to_result(report)
     lib_id = applied.lib_ids[0]
     source = readback.fields.get(SOURCE_FIELD, "")
     # one footprint per call: the read-back (and its hash) is that of lib_ids[0]
     assert len(applied.lib_ids) == 1, applied.lib_ids
     await record_applied(ctx, cs.tool, change_entries(ctx, cs, applied, geometry_hash(readback)))
+    # the read-back check counts as the fp_check of this geometry (fp_approve guard 3)
+    await record_review(
+        ctx, lib_id, report.geometry_hash, checked=True, check_errors=report.counts["error"]
+    )
     data: dict[str, Any] = {
         "created": list(applied.lib_ids),
         "file": applied.files[0],

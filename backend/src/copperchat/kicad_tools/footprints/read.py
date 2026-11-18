@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import logging
 import math
 import re
 from dataclasses import dataclass
 from functools import partial
 from typing import Any, Literal, cast
 
-from copperchat.db.repos.footprints import FootprintWriteRepo
+from copperchat.db.repos.footprints import FootprintReviewRepo, FootprintWriteRepo
 from copperchat.errors import DocumentNotOpen, StructuredToolError
 from copperchat.kicad_session import KicadHandle
 from copperchat.kicad_tools import access
@@ -32,6 +33,8 @@ from copperchat.kicad_tools.footprints.model import (
 )
 from copperchat.library.service import closest_footprints, library_for
 from copperchat.tools.spec import ToolContext, ToolResult
+
+log = logging.getLogger(__name__)
 
 MAX_LIB_ID_CHARS = 256
 DETAILS = ("summary", "full")
@@ -94,6 +97,35 @@ async def pending_lib_ids(ctx: ToolContext) -> frozenset[str]:
         return frozenset()
     rows = await FootprintWriteRepo(ctx.editing.db).pending(ctx.project.id)
     return frozenset(r.lib_id for r in rows)
+
+
+async def record_review(
+    ctx: ToolContext,
+    lib_id: str,
+    digest: str,
+    *,
+    rendered: bool = False,
+    checked: bool = False,
+    check_errors: int | None = None,
+) -> None:
+    """Record that this conversation was shown a render or a check of `lib_id` at
+    geometry `digest` (`footprint_reviews`, spec §7.7 guard 3; local and stock footprints
+    alike). Needs the conversation and the database (the run engine's contexts); a
+    failure is logged, never fails the read tool (`fp_approve` then refuses, guard 3)."""
+    if ctx.conversation_id is None or ctx.editing is None:
+        return
+    try:
+        await FootprintReviewRepo(ctx.editing.db).record(
+            ctx.conversation_id,
+            lib_id,
+            digest,
+            ctx.run_id,
+            rendered=rendered,
+            checked=checked,
+            check_errors=check_errors,
+        )
+    except Exception:
+        log.exception("recording the review of %s failed", lib_id)
 
 
 async def _geometry(
@@ -535,4 +567,11 @@ async def fp_check(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         pending=local and geometry.lib_id in await pending_lib_ids(ctx),
     )
     report = await asyncio.to_thread(run_checks, inp)
+    await record_review(
+        ctx,
+        geometry.lib_id,
+        report.geometry_hash,
+        checked=True,
+        check_errors=report.counts["error"],
+    )
     return ToolResult(data={"lib_id": geometry.lib_id, **to_result(report), "notes": notes})

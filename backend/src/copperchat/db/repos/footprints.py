@@ -119,3 +119,74 @@ class FootprintWriteRepo:
             (project_id, after_id),
         )
         return [_row(r) for r in rows]
+
+
+@dataclass(frozen=True)
+class FootprintReview:
+    """What CopperChat showed in one conversation for one footprint geometry (FP-C7,
+    spec §7.7 guard 3): when it was first rendered and first checked (`fp_render`,
+    `fp_check`, `fp_create`'s read-back check) and the error count of the latest check."""
+
+    conversation_id: str
+    lib_id: str
+    geometry_hash: str
+    run_id: str | None
+    rendered_at: str | None
+    checked_at: str | None
+    check_errors: int | None
+
+
+_REVIEW_COLUMNS = (
+    "conversation_id, lib_id, geometry_hash, run_id, rendered_at, checked_at, check_errors"
+)
+
+
+class FootprintReviewRepo:
+    """`footprint_reviews` (FP-C7): the server-side evidence `fp_approve` checks."""
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def record(
+        self,
+        conversation_id: str,
+        lib_id: str,
+        geometry_hash: str,
+        run_id: str | None,
+        *,
+        rendered: bool = False,
+        checked: bool = False,
+        check_errors: int | None = None,
+    ) -> None:
+        """Upsert the row: `rendered` / `checked` stamp `rendered_at` / `checked_at` with
+        the current time unless already stamped (the first time this geometry was shown
+        counts, so a re-render or re-check in the approval turn keeps the evidence);
+        `run_id` and `check_errors` take the latest value."""
+        now = utcnow_iso()
+        await self._db.execute(
+            f"INSERT INTO footprint_reviews({_REVIEW_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(conversation_id, lib_id, geometry_hash) DO UPDATE SET "
+            "run_id = COALESCE(excluded.run_id, footprint_reviews.run_id), "
+            "rendered_at = COALESCE(footprint_reviews.rendered_at, excluded.rendered_at), "
+            "checked_at = COALESCE(footprint_reviews.checked_at, excluded.checked_at), "
+            "check_errors = COALESCE(excluded.check_errors, footprint_reviews.check_errors)",
+            (
+                conversation_id,
+                lib_id,
+                geometry_hash,
+                run_id,
+                now if rendered else None,
+                now if checked else None,
+                check_errors,
+            ),
+        )
+
+    async def get(
+        self, conversation_id: str, lib_id: str, geometry_hash: str
+    ) -> FootprintReview | None:
+        r = await self._db.fetchone(
+            f"SELECT {_REVIEW_COLUMNS} FROM footprint_reviews "
+            "WHERE conversation_id = ? AND lib_id = ? AND geometry_hash = ?",
+            (conversation_id, lib_id, geometry_hash),
+        )
+        return None if r is None else FootprintReview(*tuple(r))

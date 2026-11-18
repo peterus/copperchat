@@ -13,6 +13,10 @@ from copperchat.db import Database, utcnow_iso
 
 utcnow = utcnow_iso  # contract: Phase 7 imports messages.utcnow
 
+# `metadata.origin` of a message the user typed (stamped by the WebSocket submit only);
+# every other user-role row is server-generated (footprints spec §7.7 guard 4).
+USER_ORIGIN = "user"
+
 _COLS = (
     "id, project_id, conversation_id, client_message_id, run_id, role, kind, content, status, "
     "metadata, created_at, updated_at"
@@ -180,6 +184,16 @@ class MessageRepo:
             f"SELECT {_COLS} FROM messages WHERE conversation_id = ? AND project_id = ? "
             "AND id > ? ORDER BY id",
             (conversation_id, project_id, since_id),
+        )
+        return [_row(r) for r in rows]
+
+    async def run_user_messages(self, conversation_id: str, run_id: str) -> list[MessageRow]:
+        """The user-role rows of `conversation_id` that run `run_id` processed (oldest
+        first)."""
+        rows = await self._db.fetchall(
+            f"SELECT {_COLS} FROM messages WHERE conversation_id = ? AND run_id = ? "
+            "AND role = 'user' ORDER BY id",
+            (conversation_id, run_id),
         )
         return [_row(r) for r in rows]
 

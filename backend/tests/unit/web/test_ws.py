@@ -100,6 +100,35 @@ def test_subscribe_send_streams_and_every_frame_has_project_id(build_chat_app: A
         assert any(f["type"] == "usage" for f in frames)
 
 
+def test_submit_stamps_origin_user(build_chat_app: Any) -> None:
+    """A message sent over the WebSocket is stored with `metadata.origin == "user"`: the
+    only origin fp_approve accepts as a human message (footprints spec §7.7 guard 4).
+    Server-generated prompts (plan execute, close-session) never get it."""
+    app, pid = build_chat_app()
+    with TestClient(app) as client, client.websocket_connect("/api/ws") as sock:
+        send(sock, type="subscribe", projectId=pid, conversationId=CID, sinceMessageId=0)
+        send(
+            sock,
+            type="send",
+            projectId=pid,
+            conversationId=CID,
+            clientMessageId="c-origin",
+            text="looks good, approve it",
+            attachments=[],
+        )
+        frames = recv_until(sock, lambda f: f["type"] == "run-finished")
+        queued = frames[0]["message"]
+        assert queued["role"] == "user" and queued["metadata"] == {"origin": "user"}
+
+        async def stored() -> Any:
+            return await app.state.db.fetchone(
+                "SELECT metadata FROM messages WHERE client_message_id = 'c-origin'"
+            )
+
+        row = client.portal.call(stored)  # type: ignore[union-attr]
+        assert json.loads(row["metadata"]) == {"origin": "user"}
+
+
 def test_one_connection_subscribes_to_several_projects(build_chat_app: Any) -> None:
     app, pid = build_chat_app()
     with TestClient(app) as client, client.websocket_connect("/api/ws") as sock:

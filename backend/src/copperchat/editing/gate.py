@@ -19,6 +19,11 @@ if TYPE_CHECKING:
 
 MAX_PREEXISTING_SYMBOL_DELETES = 3
 
+# Tools that record a user decision, not a design edit: exempt from the plan refusals of
+# `before_prepare` (both gates; footprints index author call 13). `fp_approve` refuses
+# itself while a plan of its conversation is running (spec §7.7 guard 6).
+PLAN_EXEMPT_TOOLS = frozenset({"fp_approve"})
+
 
 class EditGate(Protocol):
     async def before_prepare(self, ctx: ToolContext, tool: str) -> None: ...
@@ -45,6 +50,8 @@ class BudgetGate:
         return settings.plan_policy, settings.change_budget
 
     async def before_prepare(self, ctx: ToolContext, tool: str) -> None:
+        if tool in PLAN_EXEMPT_TOOLS:
+            return
         policy, _ = await self._policy(ctx)
         state = self.service.turn(ctx.project.id, ctx.run_id)
         if policy == "always" and state.active_step_id is None:

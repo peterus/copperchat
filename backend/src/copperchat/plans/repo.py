@@ -160,6 +160,15 @@ class PlanRepo:
             None if row is None or row["conversation_id"] is None else str(row["conversation_id"])
         )
 
+    async def running_in_conversation(self, conversation_id: str) -> bool:
+        """Whether a plan of conversation `conversation_id` is `running` (fp_approve guard
+        6, footprints spec §7.7)."""
+        row = await self._db.fetchone(
+            "SELECT 1 FROM plans WHERE conversation_id = ? AND status = 'running' LIMIT 1",
+            (conversation_id,),
+        )
+        return row is not None
+
     async def running(self) -> list[Plan]:
         rows = await self._db.fetchall("SELECT * FROM plans WHERE status = 'running'")
         return [await self._load(r) for r in rows]
