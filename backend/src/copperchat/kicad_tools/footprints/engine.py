@@ -40,6 +40,7 @@ from copperchat.kicad_session import (
     KicadUnavailable,
 )
 from copperchat.kicad_session.launcher import kicad_template_dir
+from copperchat.kicad_session.session import _finish, _uncancellable
 from copperchat.kicad_tools.edit.changeset import ChangeSet, NetIntent, SheetRef, Stage
 from copperchat.kicad_tools.footprints.journal import (
     ABSENT,
@@ -427,7 +428,24 @@ async def _rebuild_commit(doc: FootprintDocument, target: FootprintGeometry) -> 
     await doc.update_footprint(instance)
 
 
-async def _rebuild(ctx: ToolContext, lib_id: str, target: FootprintGeometry) -> None:
+async def _drop(doc: FootprintDocument) -> None:
+    """Drop the open S3 commit to completion (`_finish`, as `KicadSession.commit` does):
+    a further cancel waits for the drop and then wins; a failed drop only logs (the
+    document's close drops again)."""
+    try:
+        _, cancelled = await _finish(doc.drop())
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        log.warning("dropping the footprint commit of %s failed: %s", doc.lib_id, exc)
+        return
+    if cancelled:
+        raise asyncio.CancelledError
+
+
+async def _rebuild(
+    ctx: ToolContext, lib_id: str, target: FootprintGeometry, progress: _CreateProgress
+) -> None:
     """S3: open the copy, one commit (dropped on any failure before the push), save.
     The document is closed before this returns."""
     from kipy.errors import ApiError
@@ -440,9 +458,9 @@ async def _rebuild(ctx: ToolContext, lib_id: str, target: FootprintGeometry) -> 
                 await doc.push(f"fp_create {lib_id}")
             except BaseException:
                 if doc.open_commit:
-                    with contextlib.suppress(Exception):
-                        await asyncio.shield(doc.drop())
+                    await _drop(doc)
                 raise
+            progress.s3_saving = True  # from here the file may hold S3's save
             await doc.save()
     except (ApiError, RuntimeError, ValueError) as exc:
         raise _library_error(f"Could not build footprint {lib_id}", exc) from exc
@@ -473,7 +491,14 @@ class _CreateProgress:
     row: _RowProgress = field(default_factory=_RowProgress)
     journal_id: int | None = None  # the create row
     attempted: bool = False  # S2 started (the footprint file may exist)
+    post_s2: str | None = None  # sha of this call's seed copy
+    s3_saving: bool = False  # S3 reached its save
+    saved: str | None = None  # sha after S3's save
     final: bool = False
+
+    def ours(self, sha: str) -> bool:
+        """`sha` is a state of the footprint file this call wrote (S2 or S3)."""
+        return sha != ABSENT and sha in (self.post_s2, self.saved)
 
 
 async def apply_footprint_change_set(ctx: ToolContext, cs: FootprintChangeSet) -> FootprintApplied:
@@ -534,8 +559,15 @@ async def _apply_create(
         if cs.fail_after == stage:
             raise InjectedFailure(stage)
 
-    async def undo() -> None:
-        await _compensate(ctx, cs, lib, name, progress, journal)
+    async def rollback() -> None:
+        """Compensate to completion; a Stop meanwhile wins (chained, never swallowed)
+        and a compensation failure under it still reaches the turn."""
+        try:
+            await _uncancellable(_compensate(ctx, cs, lib, name, progress, journal))
+        except asyncio.CancelledError as again:
+            if isinstance(again.__cause__, Exception):
+                _report(ctx, again.__cause__)
+            raise
 
     try:
         # FP-C8: the library path, the project table and the target file are checked
@@ -560,20 +592,41 @@ async def _apply_create(
         )
         progress.attempted = True
         ctx.library_touched.append(file)
-        await _copy_seed(ctx, lib_id)
+
+        async def record_s2() -> None:
+            # Needs no server: the seed copy's hash goes into the journal also when
+            # KiCad died right after (or while) saving it, so the next write's cleanup
+            # can recognise it (spec §9.3 point 1). The re-check proved the name
+            # absent under the library lock, so a file there now is this call's copy.
+            sha = await _sha_or_absent(file)
+            if sha != ABSENT:
+                progress.post_s2 = sha
+                await journal.post_s2(progress.journal_id, sha)
+
+        try:
+            await _copy_seed(ctx, lib_id)
+        except BaseException:
+            try:
+                await record_s2()
+            except Exception as exc:  # the stage's own error wins
+                log.warning("recording the seed copy of %s failed: %s", lib_id, exc)
+            raise
+        await record_s2()
         svc.invalidate_footprints(lib.nickname)
-        ensure_same_server()
-        post_s2 = await sha_of(file)
-        if post_s2 == ABSENT:
+        if progress.post_s2 is None:
+            ensure_same_server()
             raise StructuredToolError(
                 f"Could not copy the seed footprint to {lib_id}",
                 f"KiCad reported success, but {footprint_rel(lib, name)} is not on disk",
                 "Nothing is left behind; tell the user.",
                 code="verification_failed",
             )
-        await journal.post_s2(progress.journal_id, post_s2)
         await after("copy_seed")
-        await _rebuild(ctx, lib_id, target)
+        try:
+            await _rebuild(ctx, lib_id, target, progress)
+        finally:
+            if progress.s3_saving:
+                progress.saved = await _sha_or_absent(file)
         svc.invalidate_footprints(lib.nickname)
         await after("rebuild_saved")
         readback = await svc.footprint_geometry(lib_id)  # the document is closed
@@ -598,10 +651,10 @@ async def _apply_create(
         await journal.finalise(progress.journal_id, "done", await sha_of(file))
         progress.final = True
     except asyncio.CancelledError:
-        # The turn is being stopped: roll back (shielded), then keep cancelling.
+        # The turn is being stopped: roll back (to completion), then keep cancelling.
         if same_server():
             try:
-                await _shielded(undo)
+                await rollback()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -615,7 +668,7 @@ async def _apply_create(
                 "the KiCad api-server restarted during the footprint write; the journal "
                 "keeps the write pending"
             ) from exc
-        await _shielded(undo)
+        await rollback()
         raise
     svc.invalidate_footprints(lib.nickname)
     return FootprintApplied(
@@ -628,33 +681,14 @@ async def _apply_create(
 
 
 def _report(ctx: ToolContext, exc: BaseException) -> None:
-    """A compensation that failed while the call was being cancelled."""
+    """A compensation that failed while the call was being cancelled (the adapter only
+    sees the CancelledError, so the turn is told here)."""
     if isinstance(exc, DocumentInconsistent) and ctx.on_document_inconsistent is not None:
         ctx.on_document_inconsistent(exc)
     elif isinstance(exc, KicadUnavailable) and ctx.on_kicad_unavailable is not None:
         ctx.on_kicad_unavailable(exc)
     else:
         log.error("rolling back a footprint write after a cancellation failed: %s", exc)
-
-
-async def _shielded(fn: Callable[[], Awaitable[None]]) -> None:
-    """Run `fn` to completion even when the caller is cancelled (Stop), then re-raise
-    the cancellation; `fn`'s own error is raised otherwise."""
-    task = asyncio.ensure_future(fn())
-    cancelled = False
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            cancelled = True
-        except BaseException:
-            break
-    if not cancelled:
-        await task
-        return
-    if not task.cancelled() and task.exception() is not None:
-        raise task.exception()  # type: ignore[misc]
-    raise asyncio.CancelledError
 
 
 async def _compensate(
@@ -666,11 +700,13 @@ async def _compensate(
     journal: Journal,
 ) -> None:
     """Undo S3/S2/S1 in reverse (spec §9.3). An open S3 commit was dropped already (the
-    document is closed). S2: `DeleteLibraryItem`. S1: `DeleteLibraryTableEntry` and
-    `rmdir` of the library dir if this call created it and it is empty. Rows become
-    `compensated`; when a step fails, it and every earlier stage stay as they are
-    (`leftover`), and `DocumentInconsistent` names them. `KicadUnavailable` passes
-    through (rows stay `pending`)."""
+    document is closed). S2: `DeleteLibraryItem`, only of a file this call wrote (its
+    hash is the seed copy's or S3's save; the GUI is not under the library lock). S1:
+    `DeleteLibraryTableEntry` and `rmdir` of the library dir if this call's row
+    created it and it is empty. Rows become `compensated`; when a step fails (or the
+    file is not this call's), it and every earlier stage stay as they are
+    (`leftover`), and `DocumentInconsistent` names them - also when the journal itself
+    cannot be updated. `KicadUnavailable` passes through (rows stay `pending`)."""
     session = ctx.session
     svc = library_for(session)
     lib_id = f"{lib.nickname}:{name}"
@@ -682,46 +718,54 @@ async def _compensate(
         ctx.library_touched.append(file)
         try:
             if await asyncio.to_thread(_lexists, file):
+                if not progress.ours(await _sha_or_absent(file)):
+                    raise RuntimeError(
+                        f"{footprint_rel(lib, name)} is not the file this call wrote "
+                        "(changed meanwhile); it is not deleted"
+                    )
                 if cs.fail_compensation:
                     raise RuntimeError("injected compensation failure (DeleteLibraryItem)")
                 await session.call(partial(_delete_item, lib.nickname, name))
             svc.invalidate_footprints(lib.nickname)
             if await asyncio.to_thread(_lexists, file):
                 raise RuntimeError(f"{footprint_rel(lib, name)} is still on disk")
-            await journal.finalise(progress.journal_id, "compensated", ABSENT)
         except KicadUnavailable:
             raise
         except Exception as exc:
             log.warning("compensating S2 of %s failed: %s", lib_id, exc)
             failure = exc
             leftovers.append(lib_id)
-            await journal.finalise(progress.journal_id, "leftover", await _sha_or_absent(file))
+            await _finalise(journal, progress.journal_id, "leftover", await _sha_or_absent(file))
+        else:
+            await _finalise(journal, progress.journal_id, "compensated", ABSENT)
 
     row = progress.row
     if row.attempted:
         if failure is not None and row.added:
             leftovers.append(f"row {lib.nickname}")
-            await journal.finalise(row.journal_id, "leftover", await _sha_or_absent(lib.table))
+            await _finalise(journal, row.journal_id, "leftover", await _sha_or_absent(lib.table))
         else:
             ctx.library_touched.append(lib.table)
             try:
                 if row.added:
                     await session.call(partial(_delete_row, lib.nickname))
-                # only a directory this call's AddLibraryTableEntry may have created (a
-                # row that was there already wrote nothing)
-                if not row.dir_existed and (row.added or not row.final):
+                # only a directory this call's own row created
+                if row.added and not row.dir_existed:
                     await asyncio.to_thread(_rmdir_if_empty, lib.dir)
                 svc.invalidate_footprints(lib.nickname)
-                await journal.finalise(
-                    row.journal_id, "compensated", await _sha_or_absent(lib.table)
-                )
             except KicadUnavailable:
                 raise
             except Exception as exc:
                 log.warning("compensating S1 of %s failed: %s", lib.nickname, exc)
                 failure = exc
                 leftovers.append(f"row {lib.nickname}")
-                await journal.finalise(row.journal_id, "leftover", await _sha_or_absent(lib.table))
+                await _finalise(
+                    journal, row.journal_id, "leftover", await _sha_or_absent(lib.table)
+                )
+            else:
+                await _finalise(
+                    journal, row.journal_id, "compensated", await _sha_or_absent(lib.table)
+                )
     if failure is not None:
         raise DocumentInconsistent(
             f"undoing the partial {cs.tool} of {lib_id} failed: {failure}; left behind: "
@@ -729,6 +773,15 @@ async def _compensate(
             leftovers=leftovers,
             footprint_only=True,
         ) from failure
+
+
+async def _finalise(journal: Journal, row: int | None, state: str, sha: str) -> None:
+    """`journal.finalise` during compensation: a database failure is logged, never
+    raised, so the compensation's outcome (and its leftovers) is still reported."""
+    try:
+        await journal.finalise(row, state, sha)
+    except Exception:
+        log.exception("journalling footprint write %s as %s failed", row, state)
 
 
 async def _sha_or_absent(path: Path) -> str:

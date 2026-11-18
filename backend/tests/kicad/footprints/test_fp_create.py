@@ -211,6 +211,16 @@ async def test_pad_kinds_round_trip(repo_session: Any, edit_db: Database) -> Non
     out, err = await run_create(edit_ctx(session, edit_db), args)
     if err:
         pytest.fail(json.dumps(out, indent=1))
+    geometry = out["geometry"]
+    assert geometry["lib_id"] == f"{NICK}:J_Test" and geometry["mounting"] == "tht"
+    assert geometry["pad_count"] == 8 and geometry["keywords"] == "test header"
+    assert [m["path"] for m in geometry["models"]] == ["${KICAD10_3DMODEL_DIR}/x.3dshapes/x.step"]
+    by_number = {p["number"]: p for p in geometry["pads"]}
+    assert by_number["3"]["drill"] == {"size": [0.8, 1.4], "shape": "oval"}
+    assert by_number["4"]["layers"] == ["B.Cu", "B.Mask", "B.Paste"]
+    assert by_number["4"]["rotation"] == 90.0
+    assert by_number["7"]["layers"] == ["*.Cu", "F.Mask", "F.Paste", "B.Paste"]
+    assert geometry["fields"]["MPN"] == "X-1"
 
 
 async def test_description_extra_field(repo_session: Any, edit_db: Database) -> None:

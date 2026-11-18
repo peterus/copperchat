@@ -487,6 +487,7 @@ class _FakeKiCad:
         self.lib = lib
         self.rows: dict[str, str] = {}
         self.calls: list[str] = []
+        self.listed: set[str] = set()  # names KiCad lists without a file (GUI, cache)
 
     def get_library_table(self, type: Any, scope: Any, substituted: bool = False) -> Any:
         return SimpleNamespace(
@@ -513,7 +514,8 @@ class _FakeKiCad:
 
     def get_library_footprints(self, nicknames: Any) -> list[Any]:
         files = sorted(self.lib.dir.glob("*.kicad_mod")) if self.lib.dir.is_dir() else []
-        return [SimpleNamespace(proto=SimpleNamespace(entry_name=f.stem)) for f in files]
+        names = sorted({f.stem for f in files} | self.listed)
+        return [SimpleNamespace(proto=SimpleNamespace(entry_name=n)) for n in names]
 
     def delete_library_item(self, type: Any, nickname: str, name: str) -> None:
         self.calls.append("delete_item")
@@ -531,8 +533,12 @@ class _FakeDoc:
     async def save_copy(self, target: str) -> None:
         name = target.split(":", 1)[1]
         (self.session.kicad.lib.dir / f"{name}.kicad_mod").write_text("(footprint seed copy)")
+        if self.session.copy_error is not None:  # saved, then the call failed
+            raise self.session.copy_error
 
     async def begin(self) -> None:
+        if self.session.on_begin is not None:
+            await self.session.on_begin()
         raise self.session.rebuild_error
 
 
@@ -549,6 +555,9 @@ class _EngineSession:
         self.closed = False
         self.footprints_active = True
         self.rebuild_error: BaseException = RuntimeError("no rebuild in this fake")
+        self.copy_error: BaseException | None = None
+        self.on_begin: Any = None  # awaited at S3's begin
+        self.before_delete: Any = None  # awaited before DeleteLibraryItem
         self._apply = asyncio.Lock()
 
     @property
@@ -562,6 +571,9 @@ class _EngineSession:
             self.generation += 1  # the real session restarts the server and raises
             self.process = None
             raise KicadUnavailable("the KiCad api-server had stopped")
+        name = getattr(getattr(fn, "func", fn), "__name__", "")
+        if name == "_delete_item" and self.before_delete is not None:
+            await self.before_delete()
         return fn(SimpleNamespace(kicad=self.kicad))
 
     def applying(self) -> Any:
@@ -719,3 +731,161 @@ async def test_library_lock_taken_once(
     # without the adapter's lock the stage refuses to run
     with pytest.raises(AssertionError, match="library lock"):
         await fp_engine.run_library_row(ctx, LibraryRowStage(lib, create_library=True))
+
+
+# -- review fixes (F4a Task 3, round 1) ----------------------------------------------------
+
+FILE = "L_Bourns_SRN3012BTA.kicad_mod"
+
+
+async def test_copy_seed_unavailable_after_saving_records_post_s2(
+    make_settings: Callable[..., Settings], editing: EditingService
+) -> None:
+    """S2 saved the seed copy, then the call failed with KicadUnavailable: the create row
+    stays pending, but with the copy's hash (the next write's cleanup recognises it)."""
+    import hashlib
+
+    from copperchat.kicad_session import KicadUnavailable
+
+    settings = make_settings()
+    ctx, session, cs = _engine_setup(settings.projects_root, settings, editing)
+    session.copy_error = KicadUnavailable("closing the seed timed out")
+    with pytest.raises(KicadUnavailable):
+        await _apply_locked(ctx, cs)
+    assert cs.library is not None
+    copy = cs.library.dir / FILE
+    rows = await _journal(editing)
+    assert [(r.op, r.state) for r in rows] == [("row_add", "done"), ("create", "pending")]
+    assert rows[1].post_s2_sha256 == hashlib.sha256(copy.read_bytes()).hexdigest()
+    assert session.kicad.calls == ["add_row"]
+
+
+async def test_compensation_never_deletes_a_foreign_file(
+    make_settings: Callable[..., Settings], editing: EditingService
+) -> None:
+    """The file was changed by someone else (the GUI is not under the library lock)
+    after S2: compensation does not delete it; it and the row are leftovers."""
+    settings = make_settings()
+    ctx, session, cs = _engine_setup(settings.projects_root, settings, editing)
+    assert cs.library is not None
+    lib = cs.library
+
+    async def gui_edit() -> None:
+        (lib.dir / FILE).write_text("(footprint edited in the GUI)")
+
+    session.on_begin = gui_edit
+    with pytest.raises(DocumentInconsistent) as err:
+        await _apply_locked(ctx, cs)
+    assert err.value.leftovers == [cs.target.lib_id if cs.target else "", f"row {lib.nickname}"]
+    assert err.value.footprint_only
+    assert (lib.dir / FILE).read_text() == "(footprint edited in the GUI)"
+    assert "delete_item" not in session.kicad.calls and "delete_row" not in session.kicad.calls
+    rows = await _journal(editing)
+    assert [(r.op, r.state) for r in rows] == [("row_add", "leftover"), ("create", "leftover")]
+
+
+@pytest.mark.parametrize("fail_compensation", [True, False])
+async def test_journal_failure_keeps_the_leftovers(
+    make_settings: Callable[..., Settings],
+    editing: EditingService,
+    monkeypatch: pytest.MonkeyPatch,
+    fail_compensation: bool,
+) -> None:
+    """The journal cannot be finalised during compensation: a failed compensation still
+    raises DocumentInconsistent with its leftovers, a successful one the stage's own
+    error (never the database's)."""
+    from copperchat.db.repos.footprints import FootprintWriteRepo
+
+    real = FootprintWriteRepo.finalise
+
+    async def broken(self: Any, write_id: int, state: str, sha: str | None) -> None:
+        if state in ("compensated", "leftover"):
+            raise RuntimeError("database is locked")
+        await real(self, write_id, state, sha)
+
+    monkeypatch.setattr(FootprintWriteRepo, "finalise", broken)
+    settings = make_settings()
+    ctx, session, cs = _engine_setup(settings.projects_root, settings, editing)
+    cs.fail_compensation = fail_compensation
+    if fail_compensation:
+        with pytest.raises(DocumentInconsistent) as err:
+            await _apply_locked(ctx, cs)
+        assert cs.target is not None and cs.target.lib_id in err.value.leftovers
+    else:
+        with pytest.raises(StructuredToolError) as plain:
+            await _apply_locked(ctx, cs)
+        assert plain.value.code == "library_error"
+        assert session.kicad.calls == ["add_row", "delete_item", "delete_row"]
+
+
+async def test_recheck_refuses_a_name_only_in_the_api_listing(
+    make_settings: Callable[..., Settings], editing: EditingService
+) -> None:
+    settings = make_settings()
+    ctx, session, cs = _engine_setup(settings.projects_root, settings, editing)
+    session.kicad.listed.add("L_Bourns_SRN3012BTA")  # no file on disk
+    with pytest.raises(StructuredToolError) as err:
+        await _apply_locked(ctx, cs)
+    assert err.value.code == "already_exists" and "listing" in err.value.why
+    assert session.kicad.calls == ["add_row", "delete_row"]
+    assert cs.library is not None and not cs.library.dir.exists()
+    rows = await _journal(editing)
+    assert [(r.op, r.state) for r in rows] == [("row_add", "compensated")]
+
+
+async def test_cancel_compensates_then_reraises(
+    make_settings: Callable[..., Settings], editing: EditingService
+) -> None:
+    """A Stop during S3: the compensation runs to completion, then CancelledError."""
+    import asyncio
+
+    settings = make_settings()
+    ctx, session, cs = _engine_setup(settings.projects_root, settings, editing)
+    started = asyncio.Event()
+
+    async def hang() -> None:
+        started.set()
+        await asyncio.sleep(3600)
+
+    session.on_begin = hang
+    task = asyncio.ensure_future(_apply_locked(ctx, cs))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert session.kicad.calls == ["add_row", "delete_item", "delete_row"]
+    rows = await _journal(editing)
+    assert [(r.op, r.state) for r in rows] == [("row_add", "compensated"),
+                                                ("create", "compensated")]  # fmt: skip
+
+
+async def test_stop_during_a_failing_compensation_is_not_swallowed(
+    make_settings: Callable[..., Settings], editing: EditingService
+) -> None:
+    """A cancel that lands while the compensation runs, which then fails: the Stop
+    wins (CancelledError chained to DocumentInconsistent) and the leftovers still reach
+    the turn through on_document_inconsistent."""
+    import asyncio
+
+    settings = make_settings()
+    ctx, session, cs = _engine_setup(settings.projects_root, settings, editing)
+    seen: list[Exception] = []
+    ctx.on_document_inconsistent = seen.append
+    deleting, release = asyncio.Event(), asyncio.Event()
+
+    async def blocked() -> None:
+        deleting.set()
+        await release.wait()
+        raise RuntimeError("DeleteLibraryItem refused")
+
+    session.before_delete = blocked
+    task = asyncio.ensure_future(_apply_locked(ctx, cs))
+    await deleting.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    release.set()
+    with pytest.raises(asyncio.CancelledError) as err:
+        await task
+    assert isinstance(err.value.__cause__, DocumentInconsistent)
+    (exc,) = seen
+    assert isinstance(exc, DocumentInconsistent) and exc.leftovers
