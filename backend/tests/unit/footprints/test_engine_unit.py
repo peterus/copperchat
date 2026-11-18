@@ -37,7 +37,7 @@ from copperchat.library.local import derive_local_library
 from copperchat.plans.gate import PlanGate
 from copperchat.projects import Project
 from copperchat.repo_context.paths import RepoPolicy
-from copperchat.tools import ToolContext, ToolResult, ToolSpec, registry
+from copperchat.tools import ToolContext, ToolResult, registry
 
 PID = "a1b2c3d4e5f6"
 REPO = "OpenDriveHub"
@@ -389,20 +389,38 @@ async def test_listener_transient_invalidates_everything(
     assert invalidated == [None]
 
 
+class _ReloadKiCad:
+    """Records the reload requests of `_reload_footprint_library`."""
+
+    def __init__(self, rows: list[str]) -> None:
+        self.rows = rows
+        self.seen: list[tuple[str, Any]] = []
+
+    def get_library_table(self, type: Any, scope: Any, substituted: bool = False) -> Any:
+        rows = [SimpleNamespace(nickname=n, uri=f"${{KIPRJMOD}}/{n}.pretty") for n in self.rows]
+        return SimpleNamespace(rows=rows)
+
+    def reload_library(self, type: Any, scope: Any, nicknames: Any) -> None:
+        self.seen.append(("reload", (type, scope, list(nicknames))))
+
+    def wait_for_libraries(self, types: Any = None, **kw: Any) -> list[Any]:
+        self.seen.append(("wait", types))
+        return []
+
+
 def test_reload_handle_function_reloads_and_waits() -> None:
-    seen: list[tuple[str, Any]] = []
+    kicad = _ReloadKiCad(["Lib"])
+    fp_engine._reload_footprint_library("Lib", cast(Any, SimpleNamespace(kicad=kicad)))
+    assert [s[0] for s in kicad.seen] == ["reload", "wait"]
+    assert kicad.seen[0][1][2] == ["Lib"]
 
-    class KiCad:
-        def reload_library(self, type: Any, scope: Any, nicknames: Any) -> None:
-            seen.append(("reload", (type, scope, list(nicknames))))
 
-        def wait_for_libraries(self, types: Any = None, **kw: Any) -> list[Any]:
-            seen.append(("wait", types))
-            return []
-
-    fp_engine._reload_footprint_library("Lib", cast(Any, SimpleNamespace(kicad=KiCad())))
-    assert [s[0] for s in seen] == ["reload", "wait"]
-    assert seen[0][1][2] == ["Lib"]
+def test_reload_skipped_without_the_project_row() -> None:
+    """Parked T1 minor (a): an external change in a project without the local row must
+    not ask KiCad to reload a nickname it does not know (warning noise)."""
+    kicad = _ReloadKiCad(["Other"])
+    fp_engine._reload_footprint_library("Lib", cast(Any, SimpleNamespace(kicad=kicad)))
+    assert kicad.seen == []
 
 
 # -- wiring --------------------------------------------------------------------------------
@@ -434,14 +452,9 @@ async def test_install_history_wires_locator_and_listener(
 # -- profiles ------------------------------------------------------------------------------
 
 
-def _spec(name: str) -> ToolSpec:
-    async def handler(_ctx: Any, _args: dict[str, Any]) -> ToolResult:
-        return ToolResult(text="ok")
-
-    return ToolSpec(name=name, description="d", input_schema={"type": "object"}, handler=handler)
-
-
 def test_fp_writes_in_schematic_and_free_only() -> None:
+    assert "fp_create" in FP_WRITES  # registered with the write engine (F4a Task 3)
+    assert {s.name for s in registry.all_specs()} >= FP_WRITES
     assert not FP_WRITES & FP_READ
     assert all(n.startswith("fp_") for n in FP_WRITES)
     for kind in ("schematic", "free"):
@@ -452,8 +465,6 @@ def test_fp_writes_in_schematic_and_free_only() -> None:
 
 def test_tools_off_no_fp_tool_in_any_profile() -> None:
     specs = list(registry.all_specs())
-    if "fp_create" not in {s.name for s in specs}:  # registered from F4a Task 3 on
-        specs.append(_spec("fp_create"))
     fp_names = {s.name for s in specs if s.name.startswith("fp_")}
     assert {"fp_create"} | set(FP_READ) | set(FP_WRITES) <= fp_names
     for kind in PROFILES:
@@ -463,3 +474,248 @@ def test_tools_off_no_fp_tool_in_any_profile() -> None:
         assert off == {n for n in on if not n.startswith("fp_")}, kind
     free_on = {s.name for s in profile_specs("free", specs)}
     assert fp_names <= free_on
+
+
+# -- the staged write engine (F4a Task 3) -----------------------------------------------------
+
+
+class _FakeKiCad:
+    """Library commands of an api-server (fake KiCad of the unit tests: it writes the
+    library directory and footprint files into tmp_path as KiCad would)."""
+
+    def __init__(self, lib: Any) -> None:
+        self.lib = lib
+        self.rows: dict[str, str] = {}
+        self.calls: list[str] = []
+
+    def get_library_table(self, type: Any, scope: Any, substituted: bool = False) -> Any:
+        return SimpleNamespace(
+            rows=[SimpleNamespace(nickname=n, uri=u) for n, u in self.rows.items()]
+        )
+
+    def add_library_table_entry(
+        self, type: Any, scope: Any, nickname: str, uri: str, *, description: str = "",
+        create_library: bool = False,
+    ) -> None:  # fmt: skip
+        from copperchat.history.library_lock import assert_library_locked
+
+        assert_library_locked(self.lib.dir)  # S1 runs inside the adapter's library lock
+        self.calls.append("add_row")
+        self.rows[nickname] = uri
+        if create_library:
+            self.lib.dir.mkdir(parents=True, exist_ok=True)
+
+    def wait_for_libraries(self, types: Any = None, **kw: Any) -> list[Any]:
+        from kipy.proto.common.types.library_types_pb2 import LibraryLoadStatus
+
+        loaded = LibraryLoadStatus.LLS_LOADED
+        return [SimpleNamespace(nickname=n, status=loaded, error_message=None) for n in self.rows]
+
+    def get_library_footprints(self, nicknames: Any) -> list[Any]:
+        files = sorted(self.lib.dir.glob("*.kicad_mod")) if self.lib.dir.is_dir() else []
+        return [SimpleNamespace(proto=SimpleNamespace(entry_name=f.stem)) for f in files]
+
+    def delete_library_item(self, type: Any, nickname: str, name: str) -> None:
+        self.calls.append("delete_item")
+        (self.lib.dir / f"{name}.kicad_mod").unlink()
+
+    def delete_library_table_entry(self, type: Any, scope: Any, nickname: str) -> None:
+        self.calls.append("delete_row")
+        del self.rows[nickname]
+
+
+class _FakeDoc:
+    def __init__(self, session: _EngineSession, lib_id: str) -> None:
+        self.session, self.lib_id = session, lib_id
+
+    async def save_copy(self, target: str) -> None:
+        name = target.split(":", 1)[1]
+        (self.session.kicad.lib.dir / f"{name}.kicad_mod").write_text("(footprint seed copy)")
+
+    async def begin(self) -> None:
+        raise self.session.rebuild_error
+
+
+class _EngineSession:
+    """The KiCad session as the engine uses it (applying, call, footprint_document)."""
+
+    def __init__(self, project: Project, settings: Settings, lib: Any) -> None:
+        import asyncio
+
+        self.project, self.settings = project, settings
+        self.kicad = _FakeKiCad(lib)
+        self.generation = 1
+        self.process: Any = None
+        self.closed = False
+        self.footprints_active = True
+        self.rebuild_error: BaseException = RuntimeError("no rebuild in this fake")
+        self._apply = asyncio.Lock()
+
+    @property
+    def server_alive(self) -> bool:
+        return self.process is None or self.process.returncode is None
+
+    async def call(self, fn: Any, *, timeout: float | None = None) -> Any:
+        from copperchat.kicad_session import KicadUnavailable
+
+        if not self.server_alive:
+            self.generation += 1  # the real session restarts the server and raises
+            self.process = None
+            raise KicadUnavailable("the KiCad api-server had stopped")
+        return fn(SimpleNamespace(kicad=self.kicad))
+
+    def applying(self) -> Any:
+        return self._apply
+
+    def footprint_document(self, lib_id: str) -> Any:
+        import contextlib
+
+        @contextlib.asynccontextmanager
+        async def doc() -> AsyncIterator[_FakeDoc]:
+            yield _FakeDoc(self, lib_id)
+
+        return doc()
+
+
+def _engine_setup(
+    tmp_path: Path, settings: Settings, editing: EditingService
+) -> tuple[ToolContext, _EngineSession, FootprintChangeSet]:
+    from copperchat.kicad_tools.footprints.build import build_target, parse_create_args
+    from tests.unit.footprints.test_build import l201_args
+
+    project = _project(settings.projects_root)
+    lib = derive_local_library(project.dir, settings.projects_root / REPO, frozenset())
+    session = _EngineSession(project, settings, lib)
+    ctx = ToolContext(
+        project=project, session=cast(Any, session), settings=settings, run_id="run1",
+        editing=editing,
+    )  # fmt: skip
+    target = build_target(parse_create_args(l201_args()), lib)
+    cs = FootprintChangeSet(
+        tool="fp_create",
+        logical=Logical(5),
+        fp_stages=[
+            FpStage("ensure_library"),
+            FpStage("copy_seed", target.lib_id),
+            FpStage("rebuild", target.lib_id),
+        ],
+        target=target,
+        library=lib,
+    )
+    return ctx, session, cs
+
+
+async def _journal(editing: EditingService) -> list[Any]:
+    from copperchat.db.repos.footprints import FootprintWriteRepo
+
+    return await FootprintWriteRepo(editing.db).after_id(PID, 0)
+
+
+async def _apply_locked(ctx: ToolContext, cs: FootprintChangeSet) -> Any:
+    from copperchat.history.library_lock import library_lock
+
+    assert cs.library is not None
+    async with library_lock(cs.library.dir):
+        return await fp_engine.apply_footprint_change_set(ctx, cs)
+
+
+async def test_kicad_unavailable_skips_compensation(
+    make_settings: Callable[..., Settings], editing: EditingService
+) -> None:
+    """Spec §9.3 server death: KicadUnavailable in S3 is re-raised without compensation -
+    no DeleteLibraryItem, the row stays, the create journal row stays `pending` with
+    the seed copy's hash (Task 4's cleanup decides later)."""
+    from copperchat.kicad_session import KicadUnavailable
+
+    settings = make_settings()
+    ctx, session, cs = _engine_setup(settings.projects_root, settings, editing)
+    session.rebuild_error = KicadUnavailable("api-server died in S3")
+    with pytest.raises(KicadUnavailable, match="died in S3"):
+        await _apply_locked(ctx, cs)
+    assert session.kicad.calls == ["add_row"]
+    assert cs.library is not None and (cs.library.dir / "L_Bourns_SRN3012BTA.kicad_mod").exists()
+    rows = await _journal(editing)
+    assert [(r.op, r.state) for r in rows] == [("row_add", "done"), ("create", "pending")]
+    assert rows[1].post_s2_sha256 not in (None, "absent")
+    assert rows[1].pre_sha256 == "absent"
+
+
+async def test_failure_in_s3_compensates_in_reverse(
+    make_settings: Callable[..., Settings], editing: EditingService
+) -> None:
+    settings = make_settings()
+    ctx, session, cs = _engine_setup(settings.projects_root, settings, editing)
+    with pytest.raises(StructuredToolError) as err:
+        await _apply_locked(ctx, cs)
+    assert err.value.code == "library_error"
+    assert session.kicad.calls == ["add_row", "delete_item", "delete_row"]
+    assert cs.library is not None and not cs.library.dir.exists()  # created here: rmdir
+    rows = await _journal(editing)
+    assert [(r.op, r.state) for r in rows] == [("row_add", "compensated"),
+                                                ("create", "compensated")]  # fmt: skip
+    assert {cs.library.table, cs.library.dir / "L_Bourns_SRN3012BTA.kicad_mod"} <= set(
+        ctx.library_touched
+    )
+
+
+async def test_kill_after_skips_compensation(
+    make_settings: Callable[..., Settings], editing: EditingService
+) -> None:
+    """`kill_after` SIGKILLs the api-server process after the stage; the generation
+    check then raises KicadUnavailable and nothing is compensated."""
+    import asyncio
+
+    from copperchat.kicad_session import KicadUnavailable
+
+    settings = make_settings()
+    ctx, session, cs = _engine_setup(settings.projects_root, settings, editing)
+    session.process = await asyncio.create_subprocess_exec("sleep", "60")
+    cs.kill_after = "copy_seed"
+    with pytest.raises(KicadUnavailable):
+        await _apply_locked(ctx, cs)
+    assert session.process.returncode is not None
+    assert session.kicad.calls == ["add_row"]
+    rows = await _journal(editing)
+    assert [(r.op, r.state) for r in rows] == [("row_add", "done"), ("create", "pending")]
+
+
+async def test_library_lock_taken_once(
+    make_settings: Callable[..., Settings], editing: EditingService
+) -> None:
+    """The adapter runs the turn snapshot (which takes the library lock itself) first,
+    then takes the lock once around apply: S1 completes without a deadlock and
+    `assert_library_locked` holds inside it (the fake KiCad asserts it)."""
+    import asyncio
+
+    from copperchat.agent.sdk_tools import _two_phase_steps
+    from copperchat.history.library_lock import library_lock
+
+    settings = make_settings()
+    ctx, session, cs = _engine_setup(settings.projects_root, settings, editing)
+    assert cs.library is not None
+    lib = cs.library
+    snapshots: list[bool] = []
+
+    async def snapshot() -> None:
+        async with library_lock(lib.dir):  # as HistoryService's turn snapshot does
+            snapshots.append(True)
+
+    async def prepare(_ctx: ToolContext, _args: dict[str, Any]) -> Any:
+        return cs
+
+    async def apply(c: ToolContext, _cs: Any) -> ToolResult:
+        added = await fp_engine.run_library_row(c, LibraryRowStage(lib, create_library=True))
+        return ToolResult(data={"added": added}, library_changed={lib.nickname})
+
+    from copperchat.tools import edit_spec
+
+    ctx.on_mutation = snapshot
+    ctx.editing = None
+    spec = edit_spec("fp_fake", "d", {"type": "object"}, prepare, apply)
+    result = await asyncio.wait_for(_two_phase_steps(spec, ctx, {}), timeout=5)
+    assert result.data == {"added": True} and snapshots == [True]
+    assert not library_lock(lib.dir).locked()
+    assert session.kicad.rows == {lib.nickname: lib.uri}
+    # without the adapter's lock the stage refuses to run
+    with pytest.raises(AssertionError, match="library lock"):
+        await fp_engine.run_library_row(ctx, LibraryRowStage(lib, create_library=True))

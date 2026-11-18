@@ -10,11 +10,9 @@ Order: schema → name → activation + seed check → local library → name fr
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
-from pathlib import Path
 from typing import Any
 
 from google.protobuf.any_pb2 import Any as PbAny  # type: ignore[import-untyped]
@@ -31,17 +29,22 @@ from copperchat.kicad_tools.footprints.build import (
     source_error,
 )
 from copperchat.kicad_tools.footprints.checks import CheckInput, run_checks, to_result
-from copperchat.kicad_tools.footprints.engine import FootprintChangeSet, FootprintPreImage, FpStage
-from copperchat.kicad_tools.footprints.model import geometry_from_proto, geometry_hash
+from copperchat.kicad_tools.footprints.engine import (
+    FootprintChangeSet,
+    FootprintPreImage,
+    FpStage,
+    apply_footprint_change_set,
+)
+from copperchat.kicad_tools.footprints.journal import file_sha256 as _file_sha256
+from copperchat.kicad_tools.footprints.model import SOURCE_FIELD, geometry_from_proto, geometry_hash
 from copperchat.kicad_tools.footprints.read import require_enabled, symbol_pins
 from copperchat.library.local import LocalLibrary
 from copperchat.library.service import LibraryService, library_for, local_footprint_file_safe
 from copperchat.repo_context.paths import RepoPathError, open_regular, repo_policy, resolve_file
-from copperchat.tools.spec import ToolContext
+from copperchat.tools.spec import ToolContext, ToolResult
 
 TOOL = "fp_create"
 LOGICAL_CHANGES = 5  # spec §12 (owner decision D3), new and replace alike
-ABSENT = "absent"  # FP-C7: the sha of a file that does not exist
 
 # Whether an existing `<name>` of the local library is a half-built copy the next write
 # cleans up (spec §9.3, FP-C8 `classify_pending`); such a copy counts as free.
@@ -70,27 +73,6 @@ async def _activate(svc: LibraryService, notes: list[dict[str, Any]]) -> None:
             code="seed_missing",
             details={"lib_id": SEED_LIB_ID},
         )
-
-
-def _file_sha256(path: Path) -> str:
-    """sha256 of the regular file `path` (no symlink followed), or `absent`."""
-    try:
-        fd = open_regular(path)
-    except FileNotFoundError:
-        return ABSENT
-    except OSError as exc:  # swapped for a symlink (ELOOP), a FIFO (EINVAL), ...
-        raise StructuredToolError(
-            "The local footprint library is not safe to write",
-            f"{path} cannot be read as a regular file: {exc.strerror or exc}",
-            "Ask the user to replace it with the footprint file KiCad saved; nothing was written.",
-            code="library_conflict",
-            details={"path": str(path)},
-        ) from exc
-    digest = hashlib.sha256()
-    with os.fdopen(fd, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _packed(item: Any) -> bytes:
@@ -187,7 +169,11 @@ def _model_note(ctx: ToolContext, model: ModelSpec) -> dict[str, Any] | None:
     }
 
 
-async def _check(ctx: ToolContext, args: CreateArgs, target: Any) -> dict[str, Any]:
+async def _check(
+    ctx: ToolContext, args: CreateArgs, target: Any
+) -> tuple[dict[str, Any], list[str] | None, bool]:
+    """fp_check of the target (errors refuse); returns the result and the symbol pins
+    it used (the read-back is checked against the same pins)."""
     pins, polarized = await symbol_pins(ctx, args.symbol) if args.symbol else (None, False)
     inp = CheckInput(geometry=target, pins=pins, polarized=polarized, local=True)
     report = await asyncio.to_thread(run_checks, inp)
@@ -202,7 +188,7 @@ async def _check(ctx: ToolContext, args: CreateArgs, target: Any) -> dict[str, A
             code="check_failed",
             details=result,
         )
-    return result
+    return result, pins, polarized
 
 
 async def prepare_create(
@@ -269,7 +255,7 @@ async def prepare_create(
             notes.append(note)
     parsed = replace(parsed, source=source)
     target = await asyncio.to_thread(build_target, parsed, lib)
-    check = await _check(ctx, parsed, target)
+    check, pins, polarized = await _check(ctx, parsed, target)
 
     stages: list[FpStage] = []
     if not info.row_present:
@@ -292,4 +278,41 @@ async def prepare_create(
         target=target,
         pre_image=pre_image,
         library=lib,
+        check_pins=pins,
+        polarized=polarized,
     )
+
+
+RENDER_SUGGESTION = (
+    "Call fp_render on {lib_id} and show the user the render, this check and the source "
+    "({source}); the footprint needs their review before it is used (needs_user_review)."
+)
+
+
+async def apply_footprint_create(ctx: ToolContext, cs: Any) -> ToolResult:
+    """`fp_create.apply` (spec §7.6): run the write engine, then build the result from
+    the read-back: `created`, `file`, `library_created`, `check` (fp_check on the
+    read-back), `geometry` (summary), `needs_user_review`, `logical_changes`, `budget`
+    (filled in by the adapter), `notes` and the suggestion to render and present it."""
+    applied = await apply_footprint_change_set(ctx, cs)
+    readback = applied.readback
+    assert readback is not None
+    inp = CheckInput(
+        geometry=readback, pins=cs.check_pins, polarized=cs.polarized, local=True, pending=False
+    )
+    check = to_result(await asyncio.to_thread(run_checks, inp))
+    lib_id = applied.lib_ids[0]
+    source = readback.fields.get(SOURCE_FIELD, "")
+    data: dict[str, Any] = {
+        "created": list(applied.lib_ids),
+        "file": applied.files[0],
+        "library_created": applied.row_added,
+        "check": check,
+        "geometry": readback.to_dict("summary"),
+        "needs_user_review": True,
+        "logical_changes": cs.logical.changes,
+        "budget": None,
+        "notes": [*cs.summary.get("notes", []), *applied.notes],
+        "suggestion": RENDER_SUGGESTION.format(lib_id=lib_id, source=source),
+    }
+    return ToolResult(data=data, library_changed={cs.library.nickname})

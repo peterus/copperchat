@@ -322,7 +322,11 @@ class HistoryHooks(RunHooks):
         session = self.svc.open_session(self.project)
         last_saved = session.last_saved_at if session is not None else None
         snap = await self.svc.store(self.project).latest_for_run(turn.run_id)
-        if session is not None and self.svc.open_session(self.project) is session:
+        # Only the footprint library is inconsistent (a failed compensation, FP-C8): the
+        # schematic is intact, and a reopen would only drop the loaded footprint
+        # libraries (`footprints_active`).
+        reopen = not outcome.footprint_only
+        if reopen and session is not None and self.svc.open_session(self.project) is session:
             try:
                 await self.svc.sessions.reopen(self.project)
             except KicadUnavailable as exc:
@@ -342,7 +346,10 @@ class HistoryHooks(RunHooks):
         conversation_id: str,
     ) -> None:
         """The recovery notices go to the session of the turn they recover from."""
-        lost = outcome.kicad_failed or outcome.document_inconsistent
+        if outcome.leftovers:
+            await self._leftovers_notice(outcome, conversation_id)
+        inconsistent = outcome.document_inconsistent and not outcome.footprint_only
+        lost = outcome.kicad_failed or inconsistent
         if lost and (outcome.mutated or outcome.changed_docs):
             # KiCad holds the files on disk: every successful edit saved itself (#6), so
             # at most the edit that failed is gone.
@@ -357,7 +364,7 @@ class HistoryHooks(RunHooks):
                     "undoes this turn's earlier edits."
                 )
             else:
-                if outcome.document_inconsistent:
+                if inconsistent:
                     text = (
                         f"The design is back at {state}: the state just before the edit "
                         "that failed. Every earlier edit of this turn was saved, so nothing "
@@ -402,6 +409,27 @@ class HistoryHooks(RunHooks):
                 f"({checkpoint.label}) to go back to the end of that step.",
                 {"action": "restore", "snapshotId": checkpoint.id, "checkpoint": True},
             )
+
+    async def _leftovers_notice(self, outcome: TurnOutcome, conversation_id: str) -> None:
+        """A failed footprint compensation (spec §9.3): name every leftover; this is the
+        one case where a tool error leaves something behind, and it is never silent."""
+        named = ", ".join(outcome.leftovers)
+        affected = (
+            "The design itself was not affected and is not reloaded."
+            if outcome.footprint_only
+            else ""
+        )
+        text = (
+            "A failed footprint write could not be undone completely. Left in the local "
+            f"footprint library: {named}. They were not verified; do not use them. "
+            f"{affected} Undo this turn in History to remove them, or ask to remove them "
+            "with fp_delete."
+        )
+        await self.engine.post_notice(
+            conversation_id,
+            " ".join(text.split()),
+            {"action": "recovered", "leftovers": list(outcome.leftovers)},
+        )
 
     async def _recover(self, turn: TurnInfo, outcome: TurnOutcome) -> None:
         """Make sure KiCad runs again and offer the turn's snapshot. Never posts the

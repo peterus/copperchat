@@ -86,6 +86,26 @@ DEFAULT_LAYERS: dict[str, tuple[str, ...]] = {
     "npth": ("*.Cu", "*.Mask"),
     "connector": ("F.Cu", "F.Mask"),
 }
+# What KiCad reads back for a pad CopperChat writes with its defaults (verified against
+# the real api-server, F4a Task 3): zone connection inherited from the footprint and
+# thermal spokes at 90 degrees. Part of the target so the read-back compares equal.
+PAD_DEFAULT_EXTRA: tuple[tuple[str, Any], ...] = (
+    ("thermal_angle", 90.0),
+    ("zone_connection", "inherited"),
+)
+# KiCad lists a pad's layers in PCB_LAYER_ID order (F_Cu 0, F_Mask 1, B_Cu 2, B_Mask 3,
+# In<n>_Cu 2+2n, F_Paste 13, B_Paste 15) and `*.Mask` / `*.Paste` as both sides; the
+# read model collapses only a full copper set back to `*.Cu`.
+_PAD_LAYER_ORDER = {"F.Cu": 0, "F.Mask": 1, "B.Cu": 2, "B.Mask": 3, "F.Paste": 13,
+                    "B.Paste": 15}  # fmt: skip
+_PAD_WILDCARDS = {
+    "*.Cu": ("*.Cu",),
+    "*.Mask": ("F.Mask", "B.Mask"),
+    "*.Paste": ("F.Paste", "B.Paste"),
+}
+# FOOTPRINT's own fields besides Reference / Value / Datasheet: an extra field of that
+# name lands in KiCad's built-in field and is lost on read-back (verified, F4a Task 3).
+BUILTIN_FIELDS = frozenset({"description"})
 DEFAULT_ROUNDRECT_RATIO = 0.25  # KiCad's default
 DEFAULT_MARGIN = 0.25
 COURTYARD_GRID = 0.01  # an auto courtyard is rounded outward to this
@@ -300,7 +320,25 @@ def _pad(value: Any, i: int) -> Pad:
                 "e.g. ['F.Cu', 'F.Mask', 'F.Paste'], or omit it for the default of the type",
             )
         layers = tuple(raw)
-    return Pad(number, kind, shape, at, rotation, size, ratio, drill, layers)
+    if shape == "circle" and size[0] != size[1]:
+        raise invalid(f"Invalid {what}.size", "a circle pad has equal sizes [d, d]")
+    return Pad(
+        number, kind, shape, at, rotation, size, ratio, drill, canonical_pad_layers(layers),
+        PAD_DEFAULT_EXTRA,
+    )  # fmt: skip
+
+
+def canonical_pad_layers(layers: Sequence[str]) -> tuple[str, ...]:
+    """`layers` as KiCad reads them back: wildcards of Mask/Paste expanded to both sides,
+    in KiCad's layer order, `*.Cu` (or F.Cu and B.Cu ... every copper layer) first."""
+    names: list[str] = []
+    for name in layers:
+        for one in _PAD_WILDCARDS.get(name, (name,)):
+            if one not in names:
+                names.append(one)
+    if "*.Cu" in names:
+        names = [n for n in names if not n.endswith(".Cu") or n == "*.Cu"]
+    return tuple(sorted(names, key=lambda n: -1 if n == "*.Cu" else _PAD_LAYER_ORDER[n]))
 
 
 def _rect(value: Any, what: str, *, extra: set[str] | None = None) -> RectSpec:
@@ -382,6 +420,13 @@ def _fields(value: Any) -> tuple[tuple[tuple[str, str], ...], str | None]:
                 "Reference, Value, Footprint source, needs_user_review and User review are "
                 "written by CopperChat only (User review only by fp_approve)",
                 "Leave it out; the source goes into `source`.",
+            )
+        if folded in BUILTIN_FIELDS:
+            raise invalid(
+                f"Field {shown!r} is built into KiCad footprints",
+                "KiCad keeps its own Description field (the footprint description); an "
+                "extra field of that name would be lost",
+                "Put the text into `description`, or use another field name.",
             )
         text = _string(val, f"fields[{shown!r}]", MAX_FIELD_VALUE_CHARS)
         if any(unicodedata.category(c) == "Cc" for c in text):

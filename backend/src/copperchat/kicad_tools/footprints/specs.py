@@ -6,7 +6,7 @@ from typing import Any
 
 from copperchat.kicad_tools.footprints import build as b
 from copperchat.kicad_tools.footprints.checks import DEFAULT_TOLERANCE
-from copperchat.kicad_tools.footprints.create import prepare_create
+from copperchat.kicad_tools.footprints.create import apply_footprint_create, prepare_create
 from copperchat.kicad_tools.footprints.read import (
     DEFAULT_LIST_LIMIT,
     MAX_ALLOW_UNMATCHED,
@@ -386,4 +386,5 @@ TOOL_SPECS: list[ToolSpec] = [
         ),
         fp_render,
     ),
+    fp_create_spec(apply_footprint_create),
 ]

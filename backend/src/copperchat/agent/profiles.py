@@ -70,9 +70,9 @@ REPO_TOOLS = frozenset({"repo_list", "repo_grep", "repo_read"})
 MOUSER_TOOLS = frozenset({"mouser_search", "mouser_part"})
 # Read-only footprint tools, in every profile (footprints spec §13.1).
 FP_READ = frozenset({"fp_get", "fp_list_local", "fp_check", "fp_render"})
-# Writing footprint tools (footprints spec §13.1): schematic and Free only. fp_create joins
-# with F4a Task 3, fp_approve / fp_delete with F4b.
-FP_WRITES: frozenset[str] = frozenset()
+# Writing footprint tools (footprints spec §13.1): schematic and Free only. fp_approve /
+# fp_delete join with F4b.
+FP_WRITES: frozenset[str] = frozenset({"fp_create"})
 # Every footprint tool starts with it; COPPERCHAT_FOOTPRINT_TOOLS=off drops them all
 # (FP_READ and FP_WRITES), Free included.
 FP_PREFIX = "fp_"

@@ -15,6 +15,7 @@ from copperchat.agent.events import QueuedItem
 from copperchat.agent.profiles import (
     DOC_TOOLS,
     FP_READ,
+    FP_WRITES,
     MOUSER_TOOLS,
     PLAN_TOOLS,
     PROFILES,
@@ -65,12 +66,19 @@ SPEC_82 = {
     | {"doc_list", "doc_read", "doc_append", "doc_patch_section"}
     | set(REPO_TOOLS)
     | set(MOUSER_TOOLS)
-    | set(FP_READ),
-    "free": set(TODAY) | set(DOC_TOOLS) | set(REPO_TOOLS) | set(MOUSER_TOOLS) | set(FP_READ),
+    | set(FP_READ)
+    | set(FP_WRITES),
+    "free": set(TODAY)
+    | set(DOC_TOOLS)
+    | set(REPO_TOOLS)
+    | set(MOUSER_TOOLS)
+    | set(FP_READ)
+    | set(FP_WRITES),
 }
 # repo-context 2026-10-21: REPO_TOOLS (repo_list, repo_grep, repo_read) were deliberately
 # added to every profile (repo-context spec §5.4); likewise MOUSER_TOOLS (mouser-api
-# spec §4, 2026-11-04); FP_READ (footprints spec §13.1, 2026-11-17) to every profile.
+# spec §4, 2026-11-04); FP_READ (footprints spec §13.1, 2026-11-17) to every profile,
+# FP_WRITES (fp_create, F4a) to schematic and free only.
 
 
 @pytest.fixture
@@ -263,7 +271,7 @@ async def test_burst_without_footprint_tools(
 ) -> None:
     off = settings.model_copy(update={"footprint_tools": False})
     _, names = await _burst(off, project, kind, monkeypatch)
-    assert set(names) == SPEC_82[kind] - set(FP_READ)
+    assert set(names) == SPEC_82[kind] - set(FP_READ) - set(FP_WRITES)
     _, names = await _burst(settings, project, kind, monkeypatch)
     assert set(FP_READ) <= set(names)
 

@@ -147,14 +147,46 @@ def test_layers_by_type() -> None:
          "layers": ["B.Cu", "B.Mask", "B.Paste"]},
     ]  # fmt: skip
     g = target(pads=pads, mounting="tht", body={"rect": [12, 3], "center": [4.5, 0]})
+    # as KiCad reads them back: *.Mask on both sides, KiCad's layer order (F4a Task 3)
     assert [p.layers for p in g.pads] == [
-        ("*.Cu", "*.Mask"),
-        ("*.Cu", "*.Mask"),
+        ("*.Cu", "F.Mask", "B.Mask"),
+        ("*.Cu", "F.Mask", "B.Mask"),
         ("F.Cu", "F.Mask"),
         ("B.Cu", "B.Mask", "B.Paste"),
     ]
+    assert all(p.extra == build.PAD_DEFAULT_EXTRA for p in g.pads)
     assert g.pads[3].roundrect_ratio == 0.25 and g.pads[0].roundrect_ratio is None
     assert g.pads[0].drill is not None and g.pads[0].drill.size == (0.8, 0.8)
+
+
+@pytest.mark.parametrize(
+    ("given", "canonical"),
+    [
+        (["F.Paste", "F.Cu", "F.Mask"], ("F.Cu", "F.Mask", "F.Paste")),
+        (["B.Mask", "*.Cu"], ("*.Cu", "B.Mask")),
+        (["*.Cu", "*.Paste", "F.Cu", "*.Mask"],
+         ("*.Cu", "F.Mask", "B.Mask", "F.Paste", "B.Paste")),
+        (["B.Paste", "B.Cu", "F.Cu"], ("F.Cu", "B.Cu", "B.Paste")),
+    ],
+)  # fmt: skip
+def test_canonical_pad_layers(given: list[str], canonical: tuple[str, ...]) -> None:
+    assert build.canonical_pad_layers(given) == canonical
+
+
+def test_circle_pad_needs_equal_sizes() -> None:
+    pad = {"number": "1", "type": "smd", "shape": "circle", "at": [0, 0], "size": [1, 2]}
+    with pytest.raises(StructuredToolError) as err:
+        parse_create_args(l201_args(pads=[pad]))
+    assert err.value.code == "invalid_argument"
+
+
+def test_description_extra_field_refused() -> None:
+    """KiCad keeps a built-in Description field: an extra field of that name would be
+    lost on read-back (verified against KiCad, F4a Task 3)."""
+    for name in ("Description", "description", " DESCRIPTION "):
+        with pytest.raises(StructuredToolError) as err:
+            parse_create_args(l201_args(fields={name: "x"}))
+        assert err.value.code == "invalid_argument" and "built into" in err.value.what
 
 
 def test_user_text_size_clamped_and_fields() -> None:

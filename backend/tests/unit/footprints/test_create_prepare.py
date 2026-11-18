@@ -17,7 +17,7 @@ from copperchat.errors import StructuredToolError
 from copperchat.kicad_session import SEED_LIB_ID, KicadSession
 from copperchat.kicad_tools.footprints import build as build_mod
 from copperchat.kicad_tools.footprints import create as create_mod
-from copperchat.kicad_tools.footprints.create import prepare_create
+from copperchat.kicad_tools.footprints.create import apply_footprint_create, prepare_create
 from copperchat.kicad_tools.footprints.engine import FootprintChangeSet, FpStage
 from copperchat.kicad_tools.footprints.model import geometry_from_proto, geometry_hash
 from copperchat.kicad_tools.footprints.specs import FP_CREATE_SCHEMA, TOOL_SPECS, fp_create_spec
@@ -517,5 +517,7 @@ def test_fp_create_schema_and_spec() -> None:
     assert p["symbol"]["maxLength"] == 256
     spec = fp_create_spec(cast(Any, None))
     assert spec.name == "fp_create" and spec.prepare is prepare_create and spec.mutating
-    # not registered until the write engine exists
-    assert "fp_create" not in {s.name for s in TOOL_SPECS}
+    # registered with the write engine as its apply (F4a Task 3)
+    registered = next(s for s in TOOL_SPECS if s.name == "fp_create")
+    assert registered.prepare is prepare_create
+    assert registered.apply is apply_footprint_create

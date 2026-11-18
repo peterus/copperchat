@@ -85,7 +85,7 @@ async def test_report_halts_further_edits_of_the_turn(make_engine, db):
     engine._turn = cast(
         Any,
         SimpleNamespace(info=SimpleNamespace(run_id="r1"), document_inconsistent=False,
-                        last_save_partial=False),
+                        last_save_partial=False, leftovers=[], footprint_only=True),
     )  # fmt: skip
     engine._on_document_inconsistent(DocumentInconsistent("x", last_save_partial=True))
     assert svc.turn(PID, "r1").halted
@@ -124,3 +124,53 @@ async def test_failed_per_edit_save_ends_turn_with_one_error_row(make_engine, db
     outcome = hooks.outcomes[0]
     assert outcome.changed_docs == {"sch"} and not outcome.document_inconsistent
     assert outcome.save_failed
+
+
+def leftover_edit(name: str, *, footprint_only: bool, leftovers: list[str]) -> Any:
+    async def prepare(ctx: ToolContext, args: dict[str, Any]) -> Any:
+        return cast(Any, object())
+
+    async def apply(ctx: ToolContext, cs: Any) -> ToolResult:
+        raise DocumentInconsistent(
+            "compensation failed", leftovers=leftovers, footprint_only=footprint_only
+        )
+
+    return edit_spec(name, "d", {"type": "object"}, prepare, apply)
+
+
+async def test_leftovers_and_footprint_only_reach_the_outcome(make_engine, db, until):
+    """FP-C8: `_on_document_inconsistent` carries a failed footprint compensation's
+    leftovers and `footprint_only` into the turn state and on to `TurnOutcome`; the
+    error row says the design is not affected."""
+    hooks = RecordingHooks()
+    engine, agent = await make_engine(
+        lambda item: [Tool("fp_broken"), Text("after")],
+        specs=[leftover_edit("fp_broken", footprint_only=True, leftovers=["Lib:A", "row Lib"])],
+        with_session=True,
+        hooks=hooks,
+    )
+    await engine.submit_ex(CID, "a", "m1", [])
+    await until(lambda: len(agent.prompts) == 1 and not engine.is_busy)
+    outcome = hooks.outcomes[0]
+    assert outcome.document_inconsistent and outcome.footprint_only
+    assert outcome.leftovers == ("Lib:A", "row Lib")
+    rows, _ = await MessageRepo(db).page(PID, CID, limit=50)
+    (error,) = [r for r in rows if r.kind == "error"]
+    assert "not affected" in error.content and "reloads" not in error.content
+
+
+async def test_footprint_only_needs_every_inconsistency(make_engine, db):
+    """One schematic inconsistency in the turn makes it a schematic recovery again."""
+    from types import SimpleNamespace
+
+    from copperchat.agent.engine import _Turn
+
+    engine, _agent = await make_engine(lambda item: [Text("x")])
+    engine._turn = _Turn(info=cast(Any, SimpleNamespace(run_id="r1")))
+    engine._on_document_inconsistent(
+        DocumentInconsistent("fp", leftovers=["Lib:A"], footprint_only=True)
+    )
+    assert engine._turn.footprint_only and engine._turn.leftovers == ["Lib:A"]
+    engine._on_document_inconsistent(DocumentInconsistent("sch"))
+    assert not engine._turn.footprint_only and engine._turn.leftovers == ["Lib:A"]
+    engine._turn = None

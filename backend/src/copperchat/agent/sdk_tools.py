@@ -135,9 +135,9 @@ async def _two_phase_steps(spec: ToolSpec, ctx: ToolContext, args: dict[str, Any
     if gate is not None:
         await gate.check_budget(ctx, cs)
     if ctx.on_mutation is not None:
-        await ctx.on_mutation()
+        await ctx.on_mutation()  # the turn snapshot takes the library lock itself
     generation = getattr(ctx.session, "generation", None)
-    result = await spec.apply(ctx, cs)
+    result = await _apply(spec, ctx, cs)
     if gate is not None:
         try:  # the change is applied and verified: bookkeeping never fails the call
             await gate.record(ctx, cs)
@@ -157,6 +157,20 @@ async def _two_phase_steps(spec: ToolSpec, ctx: ToolContext, args: dict[str, Any
             "the KiCad api-server restarted right after the edit; it holds the last save"
         )
     return result
+
+
+async def _apply(spec: ToolSpec, ctx: ToolContext, cs: Any) -> ToolResult:
+    """`spec.apply`; a footprint change set runs under its library's lock (FP-C6: taken
+    once, here, after the turn snapshot released it; the engine only asserts it)."""
+    assert spec.apply is not None
+    from copperchat.kicad_tools.footprints.engine import FootprintChangeSet
+
+    if isinstance(cs, FootprintChangeSet) and cs.library is not None:
+        from copperchat.history.library_lock import library_lock
+
+        async with library_lock(cs.library.dir):
+            return await spec.apply(ctx, cs)
+    return await spec.apply(ctx, cs)
 
 
 async def _save_edit(spec: ToolSpec, ctx: ToolContext, result: ToolResult) -> None:
@@ -206,9 +220,28 @@ def _target(args: dict[str, Any]) -> str:
 
 def _inconsistent_error(tool: str, args: dict[str, Any], exc: Exception) -> StructuredToolError:
     """Plain words for the agent to pass on (#6b, spec §5.4): what failed, what the
-    design is reloaded to, that earlier edits are kept; the internal reason in details."""
+    design is reloaded to, that earlier edits are kept; the internal reason in details.
+    A failed footprint compensation names what it left behind (spec §9.3)."""
     target = _target(args)
     edit = f"{tool} {target}" if target else tool
+    leftovers: list[str] = list(getattr(exc, "leftovers", None) or [])
+    if leftovers:
+        named = ", ".join(leftovers)
+        where = (
+            "the local footprint library; the schematic is not affected"
+            if getattr(exc, "footprint_only", False)
+            else "the local footprint library"
+        )
+        return StructuredToolError(
+            f"{edit} failed and could not be undone completely",
+            f"Rolling it back failed, so these remain in {where}: {named}. They were "
+            "not verified; do not use them.",
+            "Stop editing and tell the user exactly what was left behind ("
+            f"{named}). Undoing this turn in History removes them; or remove them with "
+            "fp_delete in a later turn. Do not retry in this turn.",
+            code="document_inconsistent",
+            details={"detail": str(exc), "leftovers": leftovers},
+        )
     if getattr(exc, "last_save_partial", False):
         why = (
             "Undoing it did not bring the design back exactly. When this turn ends, "
