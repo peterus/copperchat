@@ -76,6 +76,11 @@ DROP_TAGS = frozenset(
         "embed",
         "handler",
         "listener",
+        # `use` / `tref` instantiate other elements: nested ones amplify exponentially
+        # (an SVG "billion laughs" that holds the render lock); KiCad's fp export never
+        # writes them
+        "use",
+        "tref",
     }
 )
 # KiCad's own prolog (seen in the base image): XML declaration + the SVG 1.1 public
@@ -87,7 +92,9 @@ _KICAD_PROLOG = re.compile(
 )
 _XML_DECL = re.compile(r"\A\s*<\?xml[^>]*\?>")
 _DECLARATION = re.compile(r"<!\s*(?:DOCTYPE|ENTITY)", re.IGNORECASE)
-_EXTERNAL_URL = re.compile(r"""url\((?!\s*['"]?\s*#)[^)]*\)""", re.IGNORECASE)
+# a url( whose target is not a #fragment, up to `)` or the end of the value (CSS closes
+# an unterminated url token at EOF)
+_EXTERNAL_URL = re.compile(r"""url\((?!\s*['"]?\s*#)[^)]*(?:\)|\Z)""", re.IGNORECASE)
 # CSS functions that load a resource without `url(` (image-set("x.png"), src("x"))
 _CSS_FETCH = re.compile(r"(?:image-set|src)\s*\(", re.IGNORECASE)
 

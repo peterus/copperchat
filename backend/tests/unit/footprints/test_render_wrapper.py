@@ -150,7 +150,7 @@ def test_active_content_dropped() -> None:
         '<image xlink:href="http://x/j.png" width="1" height="1"/>'
         '<image href="data:image/png;base64,AAAA" width="1" height="1"/>'
         '<path style="fill:url(http://x);stroke:url( \'#b\' )" fill="url(http://y)" d="M 0 0"/>'
-        '<use href="#a"/><use xlink:href="#a"/>'
+        '<linearGradient href="#a"/><linearGradient xlink:href="#a"/>'
         '<set attributeName="href" to="http://x"/>'
     )
     root = fr.load_kicad_svg(kicad_svg(body))
@@ -166,6 +166,32 @@ def test_active_content_dropped() -> None:
     styles = [v for k, v in attrs if k == "style" and "url(" in v]
     assert styles and all("#b" in v for v in styles)
     assert b"<!DOCTYPE" not in out and b"<?xml" not in out
+
+
+def test_unterminated_external_url_dropped() -> None:
+    """CSS closes an unterminated url( at the end of the value: still external."""
+    body = (
+        '<path style="fill:url(https://evil/x" d="M 0 0"/>'
+        '<path fill="url(  \'https://evil/y\'" d="M 0 0"/>'
+        '<path style="fill:url(#ok" d="M 0 0"/>'
+    )
+    root = fr.load_kicad_svg(kicad_svg(body))
+    attrs = _all_attrs(root)
+    assert not [v for _, v in attrs if "evil" in v]
+    assert ("style", "fill:url(#ok") in attrs
+
+
+def test_nested_use_dropped() -> None:
+    """An SVG billion laughs (nested `use` x10 per level) never reaches cairosvg."""
+    body = '<path id="l0" d="M 0 0 L 1 1"/>'
+    for k in range(1, 6):
+        uses = "".join(f'<use href="#l{k - 1}"/>' for _ in range(10))
+        body += f'<g id="l{k}">{uses}</g>'
+    body += '<tref href="#l0"/>'
+    root = fr.load_kicad_svg(kicad_svg(body))
+    wrapped = ET.fromstring(fr.build_wrapper(root, l201(), 0.5, True))
+    tags = {el.tag.split("}")[-1] for el in wrapped.iter()}
+    assert not tags & {"use", "tref"}
 
 
 # --- rasterise ------------------------------------------------------------------------

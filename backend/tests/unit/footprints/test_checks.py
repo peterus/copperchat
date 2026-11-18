@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import itertools
+import math
 import time
 from collections.abc import Callable, Sequence
 from typing import Any
@@ -598,7 +599,7 @@ def test_pad_with_many_parts_is_reported_and_fast() -> None:
     report = check(g)
     assert time.perf_counter() - t0 < 5.0
     (f,) = of(report, "too_complex_partial_check")
-    assert f.pads == ("1", "2") and f.expected == {"pieces": 256}
+    assert f.pads == ("1", "2") and f.expected == {"pieces": 256, "vertices": 512}
     assert not of(report, "pad_gap_small") and not of(report, "silk_on_pad")
 
 
@@ -614,3 +615,55 @@ def test_pads_below_part_cap_still_compared_quickly() -> None:
     assert not of(report, "too_complex_partial_check")
     (f,) = of(report, "pad_gap_small")
     assert f.measured == 0.0 and f.severity == "error"
+
+
+# --- review-loop round 2 ----------------------------------------------------------------
+
+
+def _ngon(number: str, at: tuple[float, float], n: int, r: float = 0.5) -> Pad:
+    """A custom pad whose single primitive is an n-vertex polygon (radius r)."""
+    pts = [(r * math.cos(2 * math.pi * k / n), r * math.sin(2 * math.pi * k / n)) for k in range(n)]
+    return _custom(number, at, [{"kind": "polygon", "points": pts, "width": 0.0}])
+
+
+def test_pads_with_many_vertices_are_reported_and_fast() -> None:
+    """Two adjacent 2000-vertex polygon pads: excluded from the pair rules (O(Va * Vb))."""
+    pads = (_ngon("1", (-0.55, 0.0), 2000), _ngon("2", (0.55, 0.0), 2000))
+    g = geo(pads, [rect("F.CrtYd", -2, -2, 2, 2)])
+    t0 = time.perf_counter()
+    report = check(g)
+    assert time.perf_counter() - t0 < 2.0
+    (f,) = of(report, "too_complex_partial_check")
+    assert f.pads == ("1", "2") and f.measured == {"pieces": 2, "vertices": 2004}  # + anchor
+    assert not of(report, "pad_gap_small")
+
+
+def test_pair_work_budget_bounds_total() -> None:
+    """Many pads each just below the vertex cap, all touching their neighbours: the
+    footprint-level budget stops the pair rules and says so."""
+    pads = [_ngon(str(k + 1), (k * 0.9, 0.0), 500) for k in range(20)]
+    g = geo(pads, [rect("F.CrtYd", -1, -1, 19, 1)])
+    t0 = time.perf_counter()
+    report = check(g)
+    assert time.perf_counter() - t0 < 5.0
+    (f,) = of(report, "too_complex_partial_check")
+    assert f.measured["skipped_pairs"] > 0 and not f.pads
+    assert of(report, "pad_gap_small")  # the pairs within the budget are still measured
+
+
+def test_pin1_bounded_with_complex_pads() -> None:
+    """3 pads of 3000 segments plus 300 silk rects: pin 1 measures complex pads by their
+    bounding box, so it stays fast, and a mark next to pad 1 still counts."""
+    big = _many_segments(3000)
+    pads = [_custom(str(k + 1), (k * 2.0, 0.0), big) for k in range(3)]
+    silk = [rect("F.SilkS", 0.1 * k, 1.0, 0.1 * k + 0.05, 1.05) for k in range(300)]
+    mark = seg("F.SilkS", (-0.4, -0.4), (-0.4, -0.1))
+    g = geo(pads, [rect("F.CrtYd", -1, -1, 6, 2), *silk, mark])
+    t0 = time.perf_counter()
+    report = check(g)
+    assert time.perf_counter() - t0 < 2.0
+    assert not of(report, "pin1_marker_missing")
+    (f,) = of(report, "too_complex_partial_check")
+    assert "pin1_marker_missing" in f.message
+    g = geo(pads, [rect("F.CrtYd", -1, -1, 6, 2), *silk[150:]])
+    assert of(check(g), "pin1_marker_missing")

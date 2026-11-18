@@ -55,9 +55,15 @@ PIN1_AXIS_TOL_DEG = 1.0  # an edge within this of the x or y axis is not diagona
 TEXT_CHAR_WIDTH = 0.8  # text box: len(value) * 0.8 * size_x by size_y
 MAX_PAIR_PADS = 2000
 MAX_PAIR_SHAPES = 5000
-# a pad with more copper pieces (custom pad primitives, arcs as chords) is left out of
-# the pair rules and named in `too_complex_partial_check`: bounds the piece-pair work
+# a pad with more copper pieces (custom pad primitives, arcs as chords) or more copper
+# vertices is left out of the pair rules, measured by its bounding box in the pin-1 rule
+# and named in `too_complex_partial_check`: `geom.distance` is O(Va * Vb) per piece pair
 MAX_PAD_PARTS = 256
+MAX_PAD_VERTICES = 512
+# footprint-level budget of the pair rules, in vertex pairs (sum of Va * Vb over the
+# measured candidate pairs, an upper bound of the edge pairs visited); pairs beyond it
+# are skipped and counted in `too_complex_partial_check`
+MAX_PAIR_WORK = 2_000_000
 PAIR_RULES = ("pad_gap_small", "silk_on_pad")
 PER_RULE_CAP = 20
 TOTAL_CAP = 200
@@ -265,6 +271,18 @@ def _min_dist(
     return best
 
 
+def _vertices(pieces: Iterable[geom.Geometry]) -> int:
+    """Vertex count of pieces (a segment 2, a circle 1): the `geom.distance` cost unit."""
+    total = 0
+    for x in pieces:
+        total += 2 if isinstance(x, Seg) else 1 if geom.is_circle(x) else len(x)
+    return total
+
+
+def _box_polygon(b: Box) -> Polygon:
+    return [(b[0], b[1]), (b[2], b[1]), (b[2], b[3]), (b[0], b[3])]
+
+
 def _diagonal(seg: Seg) -> bool:
     """True when the segment is not parallel to x or y within `PIN1_AXIS_TOL_DEG`."""
     dx, dy = seg.b[0] - seg.a[0], seg.b[1] - seg.a[1]
@@ -342,6 +360,12 @@ class _Run:
         self.part_boxes = [[_geom_box(x) for x in parts] for parts in self.parts]
         self.boxes = [_union(b) or (0, 0, 0, 0) for b in self.part_boxes]
         self.copper = [i for i, p in enumerate(g.pads) if is_copper(p)]
+        self.vertices = [_vertices(parts) for parts in self.parts]
+        self.complex_pads = {
+            i
+            for i in self.copper
+            if len(self.parts[i]) > MAX_PAD_PARTS or self.vertices[i] > MAX_PAD_VERTICES
+        }
         bottom = bool(self.copper) and all(_sides(g.pads[i]) == {"B"} for i in self.copper)
         self.side = "B" if bottom else "F"
         self.fab = [s for s in g.shapes if s.layer == f"{self.side}.Fab"]
@@ -582,17 +606,21 @@ class _Run:
                 expected={"pads": MAX_PAIR_PADS, "shapes": MAX_PAIR_SHAPES},
             )
             return
-        complex_pads = {i for i in self.copper if len(self.parts[i]) > MAX_PAD_PARTS}
+        complex_pads = self.complex_pads
         if complex_pads:
             names = [g.pads[i].number or "(unnumbered)" for i in sorted(complex_pads)]
             self.add(
                 "too_complex_partial_check",
                 "info",
                 f"pad(s) {', '.join(names[:10])} have more than {MAX_PAD_PARTS} copper "
-                f"pieces: skipped {', '.join(PAIR_RULES)} for them",
+                f"pieces or {MAX_PAD_VERTICES} vertices: skipped {', '.join(PAIR_RULES)} "
+                "for them; pin1_marker_missing measures them by their bounding box",
                 pads=[g.pads[i].number for i in sorted(complex_pads) if g.pads[i].number],
-                measured={"pieces": max(len(self.parts[i]) for i in complex_pads)},
-                expected={"pieces": MAX_PAD_PARTS},
+                measured={
+                    "pieces": max(len(self.parts[i]) for i in complex_pads),
+                    "vertices": max(self.vertices[i] for i in complex_pads),
+                },
+                expected={"pieces": MAX_PAD_PARTS, "vertices": MAX_PAD_VERTICES},
             )
         # items: copper pads (index into pads), then one item per silk shape / text
         # (side, pieces); silk farther than the clearance from all copper is dropped
@@ -601,16 +629,27 @@ class _Run:
         ]
         raw += [(t.layer[0], [text_box(t)]) for t in g.texts if t.layer in ("F.SilkS", "B.SilkS")]
         reach = _union(self.boxes[i] for i in self.copper)
-        silk: list[tuple[str, list[geom.Geometry], list[Box], Box]] = []
+        silk: list[tuple[str, list[geom.Geometry], list[Box], Box, int]] = []
         for side, pieces in raw:
             pboxes = [_geom_box(x) for x in pieces]
             box = _union(pboxes)
             if box and reach and _box_gap(box, reach) <= SILK_CLEARANCE:
-                silk.append((side, pieces, pboxes, box))
+                silk.append((side, pieces, pboxes, box, _vertices(pieces)))
         n = len(self.copper)
-        boxes = [self.boxes[i] for i in self.copper] + [box for *_, box in silk]
+        boxes = [self.boxes[i] for i in self.copper] + [s[3] for s in silk]
         gaps: list[tuple[int, int, float]] = []
         silk_min: dict[int, float] = {}
+        work = 0
+        over_budget = 0
+
+        def afford(cost: int) -> bool:
+            nonlocal work, over_budget
+            if work + cost > MAX_PAIR_WORK:
+                over_budget += 1
+                return False
+            work += cost
+            return True
+
         for a, b in geom.candidate_pairs(boxes, max(PAD_GAP_WARN, SILK_CLEARANCE)):
             if (a < n and self.copper[a] in complex_pads) or (
                 b < n and self.copper[b] in complex_pads
@@ -620,6 +659,8 @@ class _Run:
                 i, j = self.copper[a], self.copper[b]
                 pi, pj = g.pads[i], g.pads[j]
                 if (pi.number and pi.number == pj.number) or not _share_copper(pi, pj):
+                    continue
+                if not afford(self.vertices[i] * self.vertices[j]):
                     continue
                 d = _min_dist(
                     self.parts[i],
@@ -632,12 +673,23 @@ class _Run:
                     gaps.append((min(i, j), max(i, j), d))
             elif a < n or b < n:
                 i = self.copper[min(a, b)]
-                side, pieces, pboxes, _ = silk[max(a, b) - n]
+                side, pieces, pboxes, _, verts = silk[max(a, b) - n]
                 if side not in _sides(g.pads[i]):
+                    continue
+                if not afford(verts * self.vertices[i]):
                     continue
                 d = _min_dist(pieces, self.parts[i], SILK_CLEARANCE, pboxes, self.part_boxes[i])
                 if d < SILK_CLEARANCE - EPS and d < silk_min.get(i, math.inf):
                     silk_min[i] = d
+        if over_budget:
+            self.add(
+                "too_complex_partial_check",
+                "info",
+                f"pair checks exceed {MAX_PAIR_WORK} vertex pairs: skipped {over_budget} "
+                f"candidate pair(s) of {', '.join(PAIR_RULES)}",
+                measured={"skipped_pairs": over_budget},
+                expected={"vertex_pairs": MAX_PAIR_WORK},
+            )
         for i, j, d in sorted(gaps):
             pi, pj = g.pads[i], g.pads[j]
             error = d < PAD_GAP_ERROR - EPS
@@ -672,7 +724,8 @@ class _Run:
         pad 1 and strictly nearer to pad 1 than to any other pad. Pieces are whole
         shapes, plus the single diagonal edges of polygons and rects: a pin-1 chamfer
         drawn into one closed body outline is as near to the other corner pads as a
-        whole, but its chamfer edge alone is not."""
+        whole, but its chamfer edge alone is not. A too-complex pad (see `pairs`) is
+        measured by its bounding box, so the rule stays bounded."""
         g = self.g
         n = len(self.copper)
         if not (n > 2 or (n == 2 and self.inp.polarized)):
@@ -682,7 +735,11 @@ class _Run:
         if p1_box is None:  # no copper pad "1"
             return
         others = [i for i in self.copper if g.pads[i].number != "1"]
-        p1_parts = [part for i in ones for part in self.parts[i]]
+
+        def parts(i: int) -> list[geom.Geometry]:
+            return [_box_polygon(self.boxes[i])] if i in self.complex_pads else self.parts[i]
+
+        p1_parts = [part for i in ones for part in parts(i)]
         reach = max(max(g.pads[i].size) for i in ones) + PIN1_REACH
 
         def marks(pieces: Sequence[geom.Geometry]) -> bool:
@@ -694,7 +751,7 @@ class _Run:
                 return False
             return all(
                 _box_gap(sbox, self.boxes[j]) > d1 + EPS
-                or _min_dist(pieces, self.parts[j], d1 + EPS) > d1 + EPS
+                or _min_dist(pieces, parts(j), d1 + EPS) > d1 + EPS
                 for j in others
             )
 

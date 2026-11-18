@@ -636,6 +636,12 @@ phase file, with the reason.)
 - **FP-C4 rule details:** `mask_missing`/`paste_missing`/`paste_on_tht` are side-aware (a
   B.Cu-only SMD pad needs B.Mask/B.Paste); NPTH holes count in the courtyard rules;
   the annular ring is checked per axis for oval drills.
+- **`fp_check` complexity caps (beyond spec §8):** a copper pad with more than 256 pieces
+  or 512 vertices is left out of `pad_gap_small`/`silk_on_pad`, measured by its bounding
+  box in the pin-1 rule, and named in `too_complex_partial_check`; the pair rules also
+  stop at a footprint budget of 2,000,000 vertex pairs (skipped pairs counted in a
+  second `too_complex_partial_check`). The render sanitiser drops `use` and `tref`
+  (nested `use` amplifies exponentially; KiCad's fp export writes neither).
 - **Pin-1 heuristic:** a silk/fab piece marks pin 1 when it is within
   `max(pad1.size) + 1` mm of pad 1 and strictly nearer to pad 1 than to any other pad;
   pieces are whole shapes plus the single **diagonal** edges (not within 1° of x/y) of
