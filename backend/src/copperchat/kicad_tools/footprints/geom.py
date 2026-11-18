@@ -181,13 +181,16 @@ def pad_parts(pad: Pad) -> list[Polygon | Seg | Circle]:
     """All copper pieces of a pad (rotated, absolute). One part for ordinary pads; a
     custom pad gives its anchor shape plus its primitives (filled polygon/rect as
     polygons, circle as a disc grown by half its stroke, segments/arcs as `Seg`s).
-    Primitives are in the pad frame, unaffected by the copper offset. Pad-to-pad gap is
-    the minimum `distance` over the parts.
+    Primitives sit at the shape position like the anchor shape (KiCad: pad position +
+    rotated copper `offset`), so the offset applies to them too. Pad-to-pad gap is the
+    minimum `distance` over the parts.
     """
     parts: list[Polygon | Seg | Circle] = [pad_geometry(pad)]
     if pad.shape != "custom":
         return parts
-    prims = dict(pad.extra).get("primitives", ())
+    extra = dict(pad.extra)
+    off = _vec_extra(extra.get("offset"))
+    prims = extra.get("primitives", ())
     for d in prims if isinstance(prims, tuple | list) else ():
         if not isinstance(d, dict):
             continue
@@ -195,23 +198,23 @@ def pad_parts(pad: Pad) -> list[Polygon | Seg | Circle]:
         kind = d.get("kind")
         hw = float(d.get("width", 0.0)) / 2
         if kind == "polygon" and len(pts) >= 3:
-            parts.append(_abs(pts, pad))
+            parts.append(_abs(pts, pad, off))
         elif kind == "rect" and len(pts) >= 2:
             (x0, y0), (x1, y1) = pts[0], pts[1]
-            parts.append(_abs([(x0, y0), (x1, y0), (x1, y1), (x0, y1)], pad))
+            parts.append(_abs([(x0, y0), (x1, y0), (x1, y1), (x0, y1)], pad, off))
         elif kind == "circle" and d.get("center") and d.get("size"):
             cx, cy = d["center"]
-            c = _abs([(float(cx), float(cy))], pad)[0]
+            c = _abs([(float(cx), float(cy))], pad, off)[0]
             parts.append(("circle", c, float(d["size"][0]) / 2 + hw))
         elif kind in ("segment", "arc") and len(pts) >= 2:
             chain = _arc_points(*pts[:3]) if kind == "arc" and len(pts) >= 3 else pts[:2]
-            for sg in _chain(_abs(chain, pad), hw, False):
+            for sg in _chain(_abs(chain, pad, off), hw, False):
                 parts.append(sg)
     return parts
 
 
-def _abs(pts: Sequence[Point], pad: Pad) -> list[Point]:
-    return _translate_rotate(pts, (0.0, 0.0), pad.at, pad.rotation)
+def _abs(pts: Sequence[Point], pad: Pad, off: Point) -> list[Point]:
+    return _translate_rotate(pts, off, pad.at, pad.rotation)
 
 
 def pad_polygon(pad: Pad) -> list[Point]:

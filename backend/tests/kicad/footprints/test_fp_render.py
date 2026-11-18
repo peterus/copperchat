@@ -76,6 +76,10 @@ async def test_fp_render_tool_seed(blank_nopcb_session: KicadSession) -> None:
     assert data["scale_px_per_mm"] >= 40
 
 
+# a path command letter, or a number (exponent notation included)
+_PATH_TOKEN = re.compile(r"([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)|([A-Za-z])")
+
+
 async def test_crtyd_extent_matches_geometry(blank_nopcb_session: KicadSession) -> None:
     """Only F.CrtYd: the extent of KiCad's drawing (its path centrelines) is the
     courtyard bbox fp_get reports (spike Q8: "CrtYd 4.0 x 4.0 ... exact").
@@ -92,10 +96,18 @@ async def test_crtyd_extent_matches_geometry(blank_nopcb_session: KicadSession) 
     (nested,) = root.findall(f"{SVG}svg")
     xs: list[float] = []
     ys: list[float] = []
+    commands: set[str] = set()
     for path in nested.iter(f"{SVG}path"):
-        nums = [float(v) for v in re.findall(r"-?\d+(?:\.\d+)?", path.get("d", ""))]
+        nums: list[float] = []
+        for num, cmd in _PATH_TOKEN.findall(path.get("d", "")):
+            if cmd:
+                commands.add(cmd.upper())
+            else:
+                nums.append(float(num))
         xs += nums[0::2]
         ys += nums[1::2]
+    # the pairing above assumes absolute move/line pairs only: fail loudly otherwise
+    assert commands <= {"M", "L", "Z"}, commands
     assert xs and ys
     got = await fp_get(ctx, {"lib_id": SEED_LIB_ID})
     assert got.data is not None

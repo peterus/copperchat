@@ -120,6 +120,7 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> FakeRender:
         {"lib_id": LIB_ID, "grid_mm": True},
         {"lib_id": LIB_ID, "grid_mm": "0.5"},
         {"lib_id": LIB_ID, "grid_mm": float("nan")},
+        {"lib_id": LIB_ID, "grid_mm": 10**400},
         {"lib_id": LIB_ID, "labels": "yes"},
         {"lib_id": LIB_ID, "labels": 1},
     ],

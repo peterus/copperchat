@@ -184,6 +184,24 @@ def test_custom_pad_parts() -> None:
     assert geom.pad_parts(_pad())[0] == geom.pad_geometry(_pad())
 
 
+def test_custom_pad_primitives_follow_offset() -> None:
+    """KiCad draws primitives at the shape position: pad position + rotated offset."""
+    prim = {"kind": "rect", "points": [(0.0, 0.0), (1.0, 0.5)], "width": 0.0}
+    circ = {"kind": "circle", "center": (0.0, 0.0), "size": (0.4, 0.4), "width": 0.0}
+    seg = {"kind": "segment", "points": [(0.0, 0.0), (1.0, 0.0)], "width": 0.2}
+    extra = {"anchor": "rect", "offset": (1.0, 0.0), "primitives": (prim, circ, seg)}
+    pad = _xpad("custom", (0.2, 0.2), extra, at=(10.0, 10.0), rot=90.0)
+    anchor, rect, disc, line = geom.pad_parts(pad)
+    # +90 deg: local +x -> screen -y, local +y -> screen +x
+    assert _flat(rect) == pytest.approx(_flat([(10, 9), (10, 8), (10.5, 8), (10.5, 9)]))
+    assert geom.is_circle(disc) and disc[1] == pytest.approx((10.0, 9.0))
+    assert isinstance(line, geom.Seg)
+    assert line.a == pytest.approx((10.0, 9.0)) and line.b == pytest.approx((10.0, 8.0))
+    xs = [x for x, _ in anchor]
+    ys = [y for _, y in anchor]
+    assert (sum(xs) / 4, sum(ys) / 4) == pytest.approx((10.0, 9.0))
+
+
 def test_offset_applied_before_rotation() -> None:
     pad = _xpad("rect", (2.0, 1.0), {"offset": (1.0, 0.0)}, at=(10.0, 10.0), rot=90.0)
     poly = geom.pad_polygon(pad)

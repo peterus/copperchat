@@ -267,9 +267,19 @@ def _keys(value: Any, what: str, allowed: set[str], required: set[str]) -> dict[
     return value
 
 
+def _as_float(value: Any) -> float:
+    """A JSON number as float; NaN for non-numbers, bools and ints too large for a
+    float (`10**400` raises OverflowError in `float()`), so callers reject them."""
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        return math.nan
+    try:
+        return float(value)
+    except OverflowError:
+        return math.nan
+
+
 def _number(value: Any, what: str, lo: float, hi: float, *, open_lo: bool = False) -> float:
-    ok = isinstance(value, int | float) and not isinstance(value, bool)
-    v = float(value) if ok else math.nan
+    v = _as_float(value)
     if not (math.isfinite(v) and (v > lo if open_lo else v >= lo) and v <= hi):
         bound = f"{lo} < {what} <= {hi}" if open_lo else f"{lo} <= {what} <= {hi}"
         raise _invalid(f"Invalid {what}", f"{what} must be a finite number, {bound} (mm)", bound)
@@ -303,9 +313,7 @@ def _size(value: Any, what: str) -> tuple[float, float]:
     return _pair(value, what, 0.0, MAX_SIZE_MM, open_lo=True)
 
 
-def _expected(value: Any) -> Expected | None:
-    if value is None:
-        return None
+def _expected(value: Any) -> Expected:
     exp = _keys(value, "expected", {"pads", "pitch", "courtyard", "body", "tolerance_mm"}, {"pads"})
     raw = exp["pads"]
     if not isinstance(raw, list) or len(raw) > MAX_EXPECTED_PADS:
@@ -452,7 +460,8 @@ async def fp_check(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         raise _invalid("Invalid arguments", f"unknown key(s) {unknown}", "see the tool schema")
     lib_id, nickname, name = parse_lib_id(args.get("lib_id"))
     symbol = _symbol(args.get("symbol"))
-    expected = _expected(args.get("expected"))
+    # absent -> no expectations; an explicit null is rejected (the schema says object)
+    expected = _expected(args["expected"]) if "expected" in args else None
     allow = _allow_unmatched(args.get("allow_unmatched_pads"))
     require_enabled(ctx)
     notes: list[dict[str, Any]] = []

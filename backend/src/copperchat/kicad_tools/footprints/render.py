@@ -49,13 +49,17 @@ def _grid(value: Any) -> float | None:
     if value is None:
         return None
     ok = isinstance(value, int | float) and not isinstance(value, bool)
-    if not ok or not math.isfinite(value) or float(value) not in GRID_LADDER:
+    try:
+        v = float(value) if ok else math.nan
+    except OverflowError:  # a huge JSON int such as 10**400
+        v = math.nan
+    if not math.isfinite(v) or v not in GRID_LADDER:
         raise _invalid(
             "Invalid grid_mm",
             f"grid_mm must be one of {', '.join(str(g) for g in GRID_LADDER)}",
             "Omit it for an automatic grid",
         )
-    return float(value)
+    return v
 
 
 def _labels(value: Any) -> bool:

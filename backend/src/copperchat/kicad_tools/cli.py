@@ -48,8 +48,11 @@ async def run_kicad_cli(
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.shield(proc.wait())
         raise
+    # communicate() only returns after the process exited, so this wait() is
+    # immediate; it yields a plain int (no unreachable None fallback needed).
+    returncode = await proc.wait()
     return CliResult(
-        proc.returncode if proc.returncode is not None else -1,
+        returncode,
         out.decode(errors="replace"),
         err.decode(errors="replace"),
     )

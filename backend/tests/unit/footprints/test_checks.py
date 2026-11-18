@@ -515,6 +515,34 @@ def test_negative_cases() -> None:
     assert not of(check(l201(pads, silk=())), "pad_gap_small")
 
 
+def _soic8(fab: Sequence[tuple[float, float]]) -> FootprintGeometry:
+    """SOIC-8-like: the F.Fab body (one closed polygon) overlaps every pad row."""
+    ys = (-1.905, -0.635, 0.635, 1.905)
+    pads = [P(str(i + 1), (-2.475, y), (1.95, 0.6)) for i, y in enumerate(ys)]
+    pads += [P(str(8 - i), (2.475, y), (1.95, 0.6)) for i, y in enumerate(ys)]
+    body = Shape("polygon", "F.Fab", tuple(fab), None, None, 0.1, True)
+    return geo(pads, [rect("F.CrtYd", -3.7, -2.7, 3.7, 2.7), body])
+
+
+def test_pin1_chamfer_in_fab_polygon() -> None:
+    chamfered = [(-0.95, -2.45), (1.95, -2.45), (1.95, 2.45), (-1.95, 2.45), (-1.95, -1.45)]
+    assert not of(check(_soic8(chamfered)), "pin1_marker_missing")
+    plain = [(-1.95, -2.45), (1.95, -2.45), (1.95, 2.45), (-1.95, 2.45)]
+    assert of(check(_soic8(plain)), "pin1_marker_missing")
+    # the chamfer at the pad-4 corner is nearer to pad 4 than to pad 1: no mark
+    wrong = [(-1.95, -2.45), (1.95, -2.45), (1.95, 2.45), (-0.95, 2.45), (-1.95, 1.45)]
+    assert of(check(_soic8(wrong)), "pin1_marker_missing")
+
+
+def test_pin1_axis_aligned_outline_is_no_mark() -> None:
+    """A polarized 2-pad part whose closed fab outline (rect or 4-corner polygon) has
+    only axis-aligned edges: no single edge counts, the warning stays."""
+    corners = ((-1.5, -1.5), (1.5, -1.5), (1.5, 1.5), (-1.5, 1.5))
+    poly = Shape("polygon", "F.Fab", corners, None, None, 0.1, True)
+    for fab in (L201_FAB, poly):
+        assert of(check(l201(fab=(fab,), silk=()), polarized=True), "pin1_marker_missing")
+
+
 def test_pitch_pad_pair() -> None:
     pair = pitch_pad_pair(geo(_drc0010j_pads()))
     assert pair is not None and (pair[0].number, pair[1].number) == ("1", "2")

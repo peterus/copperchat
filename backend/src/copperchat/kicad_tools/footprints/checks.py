@@ -50,6 +50,8 @@ MARGIN = 0.25
 MARGIN_SMALL = 0.1
 SMALL_EXTENT = 1.0  # 0402 and smaller
 PIN1_REACH = 1.0  # mark within max(pad1.size) + this
+PIN1_EDGE_KINDS = ("polygon", "polygon_hole", "rect")  # closed outlines: edges count alone
+PIN1_AXIS_TOL_DEG = 1.0  # an edge within this of the x or y axis is not diagonal
 TEXT_CHAR_WIDTH = 0.8  # text box: len(value) * 0.8 * size_x by size_y
 MAX_PAIR_PADS = 2000
 MAX_PAIR_SHAPES = 5000
@@ -248,6 +250,15 @@ def _min_dist(
             break
         best = min(best, geom.distance(xs[i], ys[j]))
     return best
+
+
+def _diagonal(seg: Seg) -> bool:
+    """True when the segment is not parallel to x or y within `PIN1_AXIS_TOL_DEG`."""
+    dx, dy = seg.b[0] - seg.a[0], seg.b[1] - seg.a[1]
+    if dx == 0.0 and dy == 0.0:
+        return False
+    angle = math.degrees(math.atan2(abs(dy), abs(dx)))  # 0..90
+    return PIN1_AXIS_TOL_DEG < angle < 90.0 - PIN1_AXIS_TOL_DEG
 
 
 def _inside(poly: Polygon) -> Callable[[Point], bool]:
@@ -630,31 +641,43 @@ class _Run:
     # -- pin 1 mark ----------------------------------------------------------------------
 
     def pin1(self) -> None:
+        """A silk/fab piece marks pin 1 when it lies within `max(pad1.size) + 1` mm of
+        pad 1 and strictly nearer to pad 1 than to any other pad. Pieces are whole
+        shapes, plus the single diagonal edges of polygons and rects: a pin-1 chamfer
+        drawn into one closed body outline is as near to the other corner pads as a
+        whole, but its chamfer edge alone is not."""
         g = self.g
         n = len(self.copper)
         if not (n > 2 or (n == 2 and self.inp.polarized)):
             return
         ones = [i for i in self.copper if g.pads[i].number == "1"]
-        if not ones:
+        p1_box = _union(self.boxes[i] for i in ones)
+        if p1_box is None:  # no copper pad "1"
             return
         others = [i for i in self.copper if g.pads[i].number != "1"]
         p1_parts = [part for i in ones for part in self.parts[i]]
-        p1_box = _union(self.boxes[i] for i in ones)
-        assert p1_box is not None
         reach = max(max(g.pads[i].size) for i in ones) + PIN1_REACH
-        for s in [*self.silk, *self.fab]:
-            pieces = self.geoms(s)
+
+        def marks(pieces: Sequence[geom.Geometry]) -> bool:
             sbox = _union(_geom_box(x) for x in pieces)
             if sbox is None or _box_gap(sbox, p1_box) > reach + EPS:
-                continue
+                return False
             d1 = _min_dist(pieces, p1_parts)
             if d1 > reach + EPS:
-                continue
-            if all(
+                return False
+            return all(
                 _box_gap(sbox, self.boxes[j]) > d1 + EPS
                 or _min_dist(pieces, self.parts[j], d1 + EPS) > d1 + EPS
                 for j in others
-            ):
+            )
+
+        shapes = [*self.silk, *self.fab]
+        if any(marks(self.geoms(s)) for s in shapes):
+            return
+        for s in shapes:
+            if s.kind not in PIN1_EDGE_KINDS:
+                continue
+            if any(_diagonal(e) and marks([e]) for e in geom.stroke_segments(s)):
                 return
         pad = g.pads[ones[0]]
         self.add(

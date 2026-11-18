@@ -110,6 +110,7 @@ def _exp(*pads: dict[str, Any], **kw: Any) -> dict[str, Any]:
         {"lib_id": LIB_ID, "allow_unmatched_pads": [""]},
         {"lib_id": LIB_ID, "allow_unmatched_pads": [10]},
         {"lib_id": LIB_ID, "expected": []},
+        {"lib_id": LIB_ID, "expected": None},
         {"lib_id": LIB_ID, "expected": {}},
         {"lib_id": LIB_ID, "expected": {"pads": [_pad()] * 513}},
         _exp(_pad(at=[500.5, 0])),
@@ -118,6 +119,11 @@ def _exp(*pads: dict[str, Any], **kw: Any) -> dict[str, Any]:
         _exp(_pad(at=[0, 0, 0])),
         _exp(_pad(at=[float("nan"), 0])),
         _exp(_pad(at=[True, 0])),
+        _exp(_pad(at=[10**400, 0])),
+        _exp(_pad(size=[1, 10**400])),
+        _exp(_pad(drill=10**400)),
+        _exp(pitch=10**400),
+        _exp(tolerance_mm=-(10**400)),
         _exp(_pad(size=[0, 1])),
         _exp(_pad(size=[1, 200.1])),
         _exp(_pad(size=[1, float("inf")])),
@@ -302,9 +308,13 @@ async def test_fp_check_reference_without_schematic(ctx: ToolContext, svc: FakeS
     assert err.value.code == "not_found"
 
 
-async def test_fp_check_expected_and_allow(ctx: ToolContext, svc: FakeService) -> None:
-    pads = [_pad(number="1", at=[-1.1, 0], size=[1.3, 3.5]), _pad(at=[1.1, 0], size=[1.3, 3.5])]
-    pads[1]["number"] = "2"
+async def test_fp_check_expected_pads_match_and_mismatch(
+    ctx: ToolContext, svc: FakeService
+) -> None:
+    pads = [
+        _pad(number="1", at=[-1.1, 0], size=[1.3, 3.5]),
+        _pad(number="2", at=[1.1, 0], size=[1.3, 3.5]),
+    ]
     ok = await read.fp_check(ctx, _exp(*pads, pitch=2.2, tolerance_mm=0.001))
     assert ok.data is not None and ok.data["passed"], ok.data
     pads[0]["at"] = [-1.0, 0]
