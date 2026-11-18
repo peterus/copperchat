@@ -55,12 +55,13 @@ def changed_rels(stored: Mapping[str, str], now: Mapping[str, str]) -> list[str]
     fp-lib-table without a stored row are recorded silently, not reported. Once it was
     tracked, a first footprint in an empty library or a newly created table is a change.
 
-    Symmetrically, a stored marker that is not current any more (the locator returns
-    another dir or none) drops that library's stored footprint rows silently; with no
+    Symmetrically, a stored footprint row whose library marker is not current (the
+    locator returns another dir or none - also for rows `on_library_changed` recorded
+    without a marker) is dropped silently; a deleted but still located library keeps
+    its ABSENT marker, so its footprints are reported; with no
     current library at all the stored table row is dropped silently too (the table is
     only tracked together with a library). The caller re-records the current rows."""
     tracked = any(is_marker_rel(k) and k in stored for k in now)
-    gone = {k for k in stored if is_marker_rel(k) and k not in now}
     any_library = any(is_marker_rel(k) for k in now)
     out: list[str] = []
     for k in stored.keys() | now.keys():
@@ -68,8 +69,8 @@ def changed_rels(stored: Mapping[str, str], now: Mapping[str, str]) -> list[str]
             continue
         if k not in stored and not tracked and (is_library_rel(k) or _is_table_rel(k)):
             continue  # baseline
-        if k not in now and is_library_rel(k) and _marker_of(k) in gone:
-            continue  # the library is no longer the located one
+        if k not in now and is_library_rel(k) and _marker_of(k) not in now:
+            continue  # its library is no longer the located one (or was never marked)
         if k not in now and not any_library and _is_table_rel(k):
             continue  # untracked table
         out.append(k)

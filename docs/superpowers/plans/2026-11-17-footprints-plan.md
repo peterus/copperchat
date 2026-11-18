@@ -460,9 +460,9 @@ phase file, with the reason.)
   takes footprints / the table without a stored row as a silent baseline **only when the
   current marker is not stored** (library not tracked before). So the first footprint in
   an empty tracked library is an external change (also in restore's check), and a table
-  created externally takes the reload path. Symmetrically, a stored marker that is no
-  longer current (the locator returns another dir or `None`) drops that library's stored
-  footprint rows silently, and with no current library the stored table row too (the
+  created externally takes the reload path. Symmetrically, a stored footprint row whose
+  library marker is not current (the locator returns another dir or `None`, also rows
+  `on_library_changed` recorded without a marker) is dropped silently, and with no current library the stored table row too (the
   table is only tracked with a library); the rows are re-recorded. `_on_saved` never owns these rows;
   `on_library_changed` never writes the marker (an untracked library stays a baseline).
 - **`LibraryLocator`** type alias lives in `history/store.py`; `HistoryStore(db, project,
@@ -473,7 +473,7 @@ phase file, with the reason.)
   `.tmp-*` files (a cloned repo could ship a link elsewhere). `BlobStore.put` opens the source once
   (`O_NOFOLLOW|O_NONBLOCK|O_NOCTTY`, fstat regular file, else `OSError`; dir components are
   lstat-checked by `tracked_files`) and hashes/copies that fd; after a snapshot's puts
-  `BlobStore.sync_dir()` fsyncs `history-blobs/` once if a blob was renamed in; blob refs
+  `BlobStore.sync_dir()` fsyncs `history-blobs/` once per snapshot that references blobs; blob refs
   are inserted with one `executemany`. The blob lock is held until
   the snapshot row and its `history_blob_refs` are committed.
 - **`FootprintWriteRepo`** returns `FootprintWrite` rows (frozen dataclass, every column);

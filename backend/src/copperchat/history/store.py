@@ -354,7 +354,8 @@ class HistoryStore:
             except FileNotFoundError:  # vanished between listing and copying
                 continue
             entries.append({"relPath": f.rel, "sha256": sha, "size": size})
-        self.blobs.sync_dir()  # durable dir entries before the refs are committed
+        if entries:  # durable dir entries before the refs are committed
+            self.blobs.sync_dir()
         return {
             "dir": repo_rel(location.dir, location.repo_root),
             "existed": exists,

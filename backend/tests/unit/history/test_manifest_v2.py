@@ -205,7 +205,7 @@ async def test_blob_dir_fsynced_once_per_snapshot_with_new_blobs(
     db: Database, repo: Path, project: Project, lib_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The renamed blobs' directory entries are made durable (one fsync of the blob dir)
-    before their refs are committed; a snapshot that adds no blob syncs nothing."""
+    before their refs are committed, once per snapshot that references blobs."""
     store = HistoryStore(db, project, locate_library=_locator(repo, lib_dir))
     synced: list[tuple[int, int]] = []
     real = os.fsync
@@ -221,8 +221,9 @@ async def test_blob_dir_fsynced_once_per_snapshot_with_new_blobs(
     root = (agent_dir(project) / "history-blobs").stat()
     assert synced.count((root.st_dev, root.st_ino)) == 1
     synced.clear()
-    await store.snapshot("run-2", "two")  # every blob exists: nothing renamed
-    assert (root.st_dev, root.st_ino) not in synced
+    await store.snapshot("run-2", "two")  # reused blobs: synced again (an earlier
+    # failed snapshot may have renamed them without a sync)
+    assert synced.count((root.st_dev, root.st_ino)) == 1
 
 
 async def test_blob_written_before_manifest(

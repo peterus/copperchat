@@ -76,7 +76,6 @@ class BlobStore:
     def __init__(self, agent_dir: Path) -> None:
         self.agent_dir = agent_dir
         self.root = agent_dir / BLOB_DIR
-        self._dirty = False  # a blob was renamed into `root` since the last sync_dir
 
     def _root_is_real(self) -> bool:
         """The agent dir and the blob dir are real directories, never symlinks: a
@@ -133,24 +132,21 @@ class BlobStore:
                     tmp.unlink()
                 else:
                     tmp.rename(target)
-                    self._dirty = True
             except BaseException:
                 tmp.unlink(missing_ok=True)
                 raise
         return sha, size
 
     def sync_dir(self) -> None:
-        """fsync the blob dir if a blob was renamed into it since the last call
-        (blocking), so the new directory entries survive a power loss before the refs
-        naming them are committed. Called once per snapshot, after its puts."""
-        if not self._dirty:
-            return
+        """fsync the blob dir (blocking), so the directory entries of every blob a
+        snapshot references survive a power loss before the refs naming them are
+        committed - also a reused blob whose rename an earlier, failed snapshot never
+        synced. Called once per snapshot that references blobs, after its puts."""
         fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0))
         try:
             os.fsync(fd)
         finally:
             os.close(fd)
-        self._dirty = False
 
     def has_temp_files(self) -> bool:
         if not self._root_is_real():

@@ -16,7 +16,7 @@ import pytest
 
 from copperchat.agent.sdk_tools import build_sdk_tool_list
 from copperchat.db.repos.footprints import ABSENT
-from copperchat.history.hooks import HistoryHooks
+from copperchat.history.hooks import HistoryHooks, changed_rels
 from copperchat.history.store import LibraryLocation
 from copperchat.kicad_tools.edit.changeset import ChangeSet, Logical, NetIntent, SheetRef
 from copperchat.projects import Project
@@ -500,3 +500,17 @@ async def test_locator_returning_none_while_the_table_exists(opened_lib: Lib) ->
     stored = await env.svc.hashes.get(lib.project.id)
     assert "fp-lib-table" not in stored
     assert not any(k.endswith((".kicad_mod", "/")) for k in stored)
+
+
+def test_markerless_footprint_rows_dropped_when_no_library_is_located() -> None:
+    # on_library_changed records footprint/table rows but never the marker: when the
+    # locator then returns None, those rows are not external changes.
+    stored = {"a.kicad_pro": "1", "fp-lib-table": "t", "../lib/x.kicad_mod": "s"}
+    assert changed_rels(stored, {"a.kicad_pro": "1"}) == []
+
+
+def test_deleted_but_located_library_is_reported() -> None:
+    # The library dir is gone but still located: its marker is ABSENT, not missing.
+    stored = {"a.kicad_pro": "1", "../lib/": "dir", "../lib/x.kicad_mod": "s"}
+    now = {"a.kicad_pro": "1", "../lib/": ABSENT}
+    assert changed_rels(stored, now) == ["../lib/x.kicad_mod"]
