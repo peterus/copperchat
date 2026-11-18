@@ -675,6 +675,34 @@ phase file, with the reason.)
   ArtInChip QFN-88 keeps all 84 `pad_gap_small` findings. Guards: synthetic 176/216-pad
   0.4 mm roundrect LQFPs (unit) and the stock `Package_QFP:LQFP-216_24x24mm_P0.4mm` /
   `Package_DFN_QFN:ArtInChip_QFN-88-1EP_10x10mm_P0.4mm_EP6.74x6.74mm` (kicad).
+- **`fp_check` input caps (review-loop round 5):** building the pads' pieces is charged
+  too. Every pad is first counted (`geom.pad_part_counts`: exact pieces/vertices of a
+  custom pad — its anchor built, the primitives counted —, an upper bound for the
+  others), complex pads are classified from these counts, and the build of all pads
+  (`PAD_BUILD_COST` 16 + `PAD_VERTEX_COST` 2 per vertex; measured 0.2-0.6 us per unit)
+  is charged before any piece is made; refused, every rule needing the pads' geometry
+  (`courtyard_not_enclosing`, `courtyard_margin`, `pad_gap_small`, `silk_on_pad`,
+  `pin1_marker_missing` when it applies) is skipped as `budget`. Above
+  `MAX_TOTAL_PADS` = 20,000 pads (stock maximum 1,924, Xilinx RF1930) nothing is
+  counted or built; the same rules are skipped with reason `too_many_pads`
+  (`measured.pads` / `expected.pads`). 50,000 arc primitives on one custom pad (1.6 M
+  pieces, 5.6 s / 798 MB before) and 100,000 roundrect pads (11.5 s / 1.19 GB) now
+  build nothing; `run_checks` takes ~1 s / ~3.5 s for them, almost all of it
+  `geometry_hash` (residual below).
+- **Non-convex courtyards (round 5):** points inside a notched outline do not prove a
+  part inside, so for a non-convex outline (`geom.is_convex`) every pad part's test
+  segments (polygon edges, a circle's 16 chords, a stroke's centre line, or for a wide
+  stroke its side lines and end octagons — all inside the part) and the fab lines are
+  swept against the outline's edges (`geom.cross_pairs`, gap 0); a proper crossing
+  (`geom.segments_cross`, touching is not crossing) puts the pad outside, the body at
+  the crossing point. Counted and charged before any test segment is made. Findings
+  are emitted in pad order, then the body. 2,923 stock courtyards are non-convex; none
+  gets a new finding.
+- **Stock sweep (round 5)** — all 15,468 footprints, geometries dumped once from the
+  base image (`GetItemsFromLibrary`), `run_checks` on 8671110 and on this round:
+  findings identical on every footprint, none partial; costliest 291,699 units (p99
+  93,121; the pad build added), so `WORK_BUDGET` stays 1 M (~3.4x headroom);
+  `run_checks` max 0.125 s, p99 0.039 s (8671110 on the same run: 0.117 s / 0.033 s).
 - **`fp_render` sanitiser allowlist:** only the elements KiCad's `fp export svg` writes
   (seen: svg, g, path, circle, text, title, desc) plus the other plain shapes of its SVG
   plotter (ellipse, rect, line, polyline, polygon, tspan) survive; anything else goes
@@ -685,10 +713,30 @@ phase file, with the reason.)
   dropped too — nested opacity groups multiply CairoSVG's work under the render lock;
   `fill-opacity`/`stroke-opacity` stay — and an element with opacity 0 goes with its
   subtree: KiCad does write `opacity="0"` on its hidden REF**/name texts (seen in 47k
-  stock texts), which must stay invisible. At most 20,000 kept elements
-  (`MAX_ELEMENTS`) and 4 MB (`MAX_SVG_BYTES`, was 10 MB), else `render_failed`: the
-  largest stock export (all F/B layers) is 6,208 elements (Xilinx FLG1925 BGA) and
-  466 KB; 20k small paths rasterise in ~3 s.
+  stock texts), which must stay invisible. Round 5: the opacity check runs before any
+  value filter (a hidden element with a `url(` in its style stays hidden); `0%`,
+  `0 !important`, a negative, non-finite or unreadable value (a CSS comment, `bogus`)
+  hide the element, as does a `style` with a backslash (an escape can spell
+  `opacity`); a hidden root is `render_failed` (was a bare `AssertionError`).
+- **`fp_render` rasterising caps (round 5):** CairoSVG's cost is bounded before it runs
+  (`_Tally` in `_clean`, kept elements only), each cap about 2-3x the largest of all
+  15,468 stock exports (all F/B layers; the stock maximum in brackets): 4 MB
+  (`MAX_SVG_BYTES`; 466 KB), 10,000 elements (`MAX_ELEMENTS`, was 20,000; 6,205,
+  Xilinx FLG1925), 50,000 coordinate pairs in all `d`/`points` (`MAX_COORDS`; 23,924,
+  Xilinx FLG1925; a circle/ellipse/rect counts 4, a line 2, text characters 1),
+  2,000 pairs in one element (`MAX_ELEMENT_COORDS`; 586, Symbol `Smolhaj_Scale_0.1`:
+  one self-crossing path tessellates superlinearly — 100k pairs took 226 s), and an
+  outline length of 1,000 drawing extents (`MAX_SPAN`, the summed segment/outline
+  lengths over the viewBox's longer side; 364, `CP_Radial_D40.0mm_P10.00mm_SnapIn`
+  hatching: a stroke or fill edge across the drawing costs ~0.1-0.3 ms at 2000 px
+  wherever its points are). Worst cases at the caps through `load_kicad_svg` +
+  wrapper + `rasterise` at 2000 px: one random 2,000-point path up to the span cap
+  0.9-1.4 s (stroke 0.3-20 mm), 25 dense self-crossing 2,000-point scribbles 1.4-2.5 s,
+  318 full-canvas circles 0.5 s, 9,990 small paths / circles 2.6 / 2.3 s; the stock
+  maximum (Xilinx FLG1925) 1.0 s. None of the 15,468 stock exports is refused; a
+  sample of the 20 largest (by bytes, elements, points, points per element and span)
+  renders through `render_footprint` in the base image in 0.9-3.1 s each, kicad-cli
+  and the default layers included (the Xilinx BGAs ~3.1 s), none refused.
 - **Pin-1 heuristic:** a silk/fab piece marks pin 1 when it is within
   `max(pad1.size) + 1` mm of pad 1 and strictly nearer to pad 1 than to any other pad;
   pieces are whole shapes plus the single **diagonal** edges (not within 1° of x/y) of
@@ -707,7 +755,11 @@ phase file, with the reason.)
   - F4a feeds `CheckInput.pending` from the journal and runs `fp_check` inside
     `fp_create` (errors block the write).
   - F4b records renders and checks in `footprint_reviews`.
-  - `checks.py` is ~840 lines — a split candidate.
+  - `checks.py` is ~1,200 lines — a split candidate.
+  - `fp_check` input passes outside the budget are linear in the input, not capped:
+    reading the footprint (`geometry_from_proto`) and `geometry_hash` (~1 s for 50,000
+    custom-pad primitives, ~3 s for 100,000 pads). A size cap on the read would bound
+    them (F4a, with `fp_create`).
   - The `< 2 s` timing tests are wall-clock (CI noise).
   - Filled shapes are measured as outlines; a bezier by its control polygon.
   - Renders are not pruned (existing residual below).

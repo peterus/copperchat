@@ -8,8 +8,9 @@ Hardening (spec §7.5, C10):
   worker thread (wrap/rasterise) and the temp-dir removal have finished;
 - argv list only, `--fp=<name>` one element; the library directory comes from the
   footprint table (absolute, existing, `*.pretty`), the name never holds a path;
-- KiCad's output must exist, be non-empty, at most 4 MB and at most 20,000 elements
-  (the largest stock footprint export: 466 KB, 6,208 elements); any `<!DOCTYPE` other than
+- KiCad's output must exist, be non-empty and stay under the rasterising caps (4 MB,
+  10,000 elements, 50,000 points, 2,000 points in one element, lines 1,000 times the
+  drawing long: about 2-3x the largest stock export each); any `<!DOCTYPE` other than
   KiCad's own SVG 1.1 public prolog, and any `<!ENTITY`, is refused; it is re-serialised
   with `xml.etree` (never by string concatenation) keeping only the elements KiCad's
   `fp export svg` writes (`ALLOWED_TAGS`; anything else goes with its subtree, so no
@@ -18,7 +19,8 @@ Hardening (spec §7.5, C10):
   a backslash (CSS escape), `image-set(` or `src(`; group `opacity` (an attribute or a
   `style` declaration) is dropped, as nested opacity groups multiply CairoSVG's work
   (`fill-opacity` / `stroke-opacity` stay), and an element KiCad hid with opacity 0 (its
-  invisible REF** / name texts) goes with its subtree;
+  invisible REF** / name texts; also `0%`, `!important`, an unreadable value or a style
+  with a backslash) goes with its subtree, decided before any value is filtered;
 - CairoSVG runs with a URL fetcher that refuses everything, never with `unsafe=True`.
 
 Coordinates: mm in footprint space (origin = anchor, y down). KiCad's SVG `viewBox` is
@@ -53,11 +55,21 @@ from copperchat.tools.spec import ToolContext
 
 SVG_NS = "http://www.w3.org/2000/svg"
 XML_NS = "http://www.w3.org/XML/1998/namespace"
-# the largest stock footprint export (base image libraries, all layers) is 466 KB and
-# 6,208 elements; rasterising is roughly linear in the element count and holds the
-# global render lock
+# What CairoSVG's rasterising costs (under the global render lock), bounded before it
+# runs. Calibrated on all 15,468 stock footprint exports of the base image (all F/B
+# layers; plan "As built (F2)"), stock maximum in brackets: bytes (466 KB), elements
+# (6,205: a full-canvas fill each costs ~0.4 ms), coordinate pairs in all `d`/`points`
+# (23,924: Xilinx FLG1925), pairs of one element (586: a WEEE logo; one self-crossing
+# path tessellates superlinearly, 100k pairs ~226 s) and the summed outline length in
+# drawing extents (364: CP_Radial_D40 hatching; a stroke across the drawing costs
+# ~0.1-0.3 ms at 2000 px, wherever its pairs are).
 MAX_SVG_BYTES = 4 * 1024 * 1024
-MAX_ELEMENTS = 20_000
+MAX_ELEMENTS = 10_000
+MAX_COORDS = 50_000
+MAX_ELEMENT_COORDS = 2_000
+MAX_SPAN = 1_000.0
+# coordinate pairs charged per plain shape (its outline is a few Bezier curves)
+SHAPE_COORDS = {"circle": 4, "ellipse": 4, "rect": 4, "line": 2}
 MAX_DEPTH = 64  # KiCad's SVG nests 2-3 levels
 MAX_VIEW_MM = 10_000.0
 CLI_TIMEOUT_S = 60.0
@@ -108,6 +120,8 @@ _DECLARATION = re.compile(r"<!\s*(?:DOCTYPE|ENTITY)", re.IGNORECASE)
 _CSS_REF = re.compile(r"(?:url|image-set|src)\s*\(", re.IGNORECASE)
 # a `style` declaration of group opacity (not fill-opacity / stroke-opacity)
 _OPACITY_DECL = re.compile(r"^\s*opacity\s*:(.*)$", re.IGNORECASE | re.DOTALL)
+_IMPORTANT = re.compile(r"!\s*important\s*$", re.IGNORECASE)
+_NUMBER = re.compile(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?")
 
 # Colours (dark, like KiCad's footprint editor: its layer colours are made for it).
 BG, MINOR, MAJOR, AXIS, TEXT, ACCENT = (
@@ -212,16 +226,24 @@ def _split(key: str) -> tuple[str, str]:
 
 
 def _transparent(value: str) -> bool:
-    """True for an opacity value of 0 (or below); an unreadable value is not."""
+    """True for an opacity value of 0 or below (also `0%`, `0 !important`) and for one
+    that cannot be read (a CSS comment, an escape, `nan`, ...): when in doubt hidden."""
+    v = _IMPORTANT.sub("", value).strip()
+    if v.endswith("%"):
+        v = v[:-1]
     try:
-        return float(value.strip()) <= 0.0
+        x = float(v)
     except ValueError:
-        return False
+        return True
+    return not math.isfinite(x) or x <= 0.0
 
 
 def _without_opacity(style: str) -> tuple[str, bool]:
     """`style` without its `opacity:` declarations (unchanged without one), and whether
-    one was 0."""
+    the element is hidden: one was 0 or unreadable, or the style holds a backslash (a
+    CSS escape can spell `opacity` so that no plain match sees it)."""
+    if "\\" in style:
+        return style, True
     kept: list[str] = []
     hidden = found = False
     for decl in style.split(";"):
@@ -234,10 +256,69 @@ def _without_opacity(style: str) -> tuple[str, bool]:
     return (";".join(kept) if found else style), hidden
 
 
-def _clean(src: ET.Element, depth: int, count: list[int]) -> ET.Element | None:
+@dataclass
+class _Tally:
+    """What the kept elements will cost CairoSVG, against the `MAX_*` caps."""
+
+    extent: float  # the drawing's longer side (viewBox), the unit of `span`
+    elements: int = 0
+    coords: int = 0
+    span: float = 0.0
+
+    def add(self, coords: int, length: float) -> None:
+        self.elements += 1
+        self.coords += coords
+        self.span += length / self.extent
+        if coords > MAX_ELEMENT_COORDS:
+            raise _failed(
+                f"kicad-cli wrote an SVG element of more than {MAX_ELEMENT_COORDS} points"
+            )
+        if self.elements > MAX_ELEMENTS:
+            raise _failed(f"kicad-cli wrote an SVG of more than {MAX_ELEMENTS} elements")
+        if self.coords > MAX_COORDS:
+            raise _failed(f"kicad-cli wrote an SVG of more than {MAX_COORDS} points")
+        if self.span > MAX_SPAN:
+            raise _failed(
+                f"kicad-cli wrote an SVG whose lines are longer than {MAX_SPAN:.0f} times "
+                "the drawing"
+            )
+
+
+def _path_cost(value: str) -> tuple[int, float]:
+    """(coordinate pairs, length) of a `d` / `points` value: its numbers taken as
+    consecutive points (KiCad writes absolute M/L paths; an arc's 7 numbers count as
+    3.5 points and add a little length: an over-estimate is fine)."""
+    nums = [float(t) for t in _NUMBER.findall(value)]
+    pts = list(zip(nums[0::2], nums[1::2], strict=False))
+    length = sum(math.dist(pts[i], pts[i + 1]) for i in range(len(pts) - 1))
+    return (len(nums) + 1) // 2, length if math.isfinite(length) else math.inf
+
+
+def _shape_cost(local: str, attrs: dict[str, str]) -> tuple[int, float]:
+    """(coordinate pairs, outline length) of a circle, ellipse, rect or line."""
+
+    def num(key: str) -> float:
+        try:
+            v = float(attrs.get(key, "0"))
+        except ValueError:
+            return 0.0
+        return v if math.isfinite(v) else math.inf
+
+    if local in ("circle", "ellipse"):
+        r = abs(num("r")) if local == "circle" else max(abs(num("rx")), abs(num("ry")))
+        return SHAPE_COORDS[local], 2 * math.pi * r
+    if local == "rect":
+        return SHAPE_COORDS[local], 2 * (abs(num("width")) + abs(num("height")))
+    if local == "line":
+        dx, dy = num("x2") - num("x1"), num("y2") - num("y1")
+        return SHAPE_COORDS[local], math.hypot(dx, dy) if math.isfinite(dx + dy) else math.inf
+    return 0, 0.0
+
+
+def _clean(src: ET.Element, depth: int, tally: _Tally) -> ET.Element | None:
     """An un-namespaced copy of an SVG element without active content and without
-    group opacity; None to drop. `count` holds the elements kept so far (at most
-    `MAX_ELEMENTS`, else `render_failed`)."""
+    group opacity; None to drop (also a hidden element: opacity 0). `tally` adds up
+    what the kept elements cost (`render_failed` above a `MAX_*` cap)."""
     if depth > MAX_DEPTH:
         raise _failed("kicad-cli wrote an SVG nested too deeply")
     ns, local = _split(src.tag) if isinstance(src.tag, str) else ("?", "")
@@ -246,28 +327,35 @@ def _clean(src: ET.Element, depth: int, count: list[int]) -> ET.Element | None:
     out = ET.Element(local)
     for key, value in src.attrib.items():
         kns, klocal = _split(key)
-        if klocal.lower().startswith("on") or klocal.lower() == "href":
-            continue  # event handlers; links (xlink:href, href): nothing allowed needs one
+        name = klocal.lower()
         if kns and not (kns == XML_NS and klocal == "space"):
             continue  # inkscape:, sodipodi:, xml:base, ...
-        if "\\" in value or _CSS_REF.search(value):
-            continue  # url()/image-set()/src(); a CSS escape (u\72 l() can hide one
-        if klocal.lower() == "opacity":  # group opacity: nested, it multiplies the work
+        # opacity first: a hidden element stays hidden whatever else its value holds
+        if name == "opacity":  # group opacity: nested, it multiplies the work
             if _transparent(value):
                 return None  # hidden (KiCad's invisible texts): drawn as nothing anyway
             continue
-        if klocal.lower() == "style":
+        if name == "style":
             value, hidden = _without_opacity(value)
             if hidden:
                 return None
+        if name.startswith("on") or name == "href":
+            continue  # event handlers; links (xlink:href, href): nothing allowed needs one
+        if "\\" in value or _CSS_REF.search(value):
+            continue  # url()/image-set()/src(); a CSS escape (u\72 l() can hide one
         out.set(key, value)
-    count[0] += 1
-    if count[0] > MAX_ELEMENTS:
-        raise _failed(f"kicad-cli wrote an SVG of more than {MAX_ELEMENTS} elements")
+    coords, length = _shape_cost(local, out.attrib)
+    for key in ("d", "points"):
+        if key in out.attrib:
+            c, n = _path_cost(out.attrib[key])
+            coords, length = coords + c, length + n
+    if local in ("text", "tspan"):  # glyphs CairoSVG lays out
+        coords += len(src.text or "") + len(src.tail or "")
+    tally.add(coords, length)
     out.text = src.text
     out.tail = src.tail
     for child in src:
-        cleaned = _clean(child, depth + 1, count)
+        cleaned = _clean(child, depth + 1, tally)
         if cleaned is not None:
             out.append(cleaned)
     return out
@@ -275,8 +363,9 @@ def _clean(src: ET.Element, depth: int, count: list[int]) -> ET.Element | None:
 
 def load_kicad_svg(data: bytes) -> ET.Element:
     """KiCad's SVG, parsed and sanitised (an un-namespaced `svg` element tree), or
-    `render_failed` for output over 4 MB or 20,000 elements, a foreign DOCTYPE, an
-    ENTITY declaration or markup `xml.etree` cannot parse."""
+    `render_failed` for output over a `MAX_*` cap (bytes, elements, points, line
+    length), a hidden root, a foreign DOCTYPE, an ENTITY declaration or markup
+    `xml.etree` cannot parse."""
     if len(data) > MAX_SVG_BYTES:
         raise _failed(f"kicad-cli wrote more than {MAX_SVG_BYTES} bytes of SVG")
     # UTF-8 only (a BOM is dropped): the checks below run on the decoded text and expat
@@ -299,8 +388,10 @@ def load_kicad_svg(data: bytes) -> ET.Element:
         raise _failed(f"kicad-cli's SVG could not be parsed: {str(exc)[:200]}") from None
     if root.tag != f"{{{SVG_NS}}}svg":
         raise _failed("kicad-cli's output is not an SVG document")
-    cleaned = _clean(root, 0, [0])
-    assert cleaned is not None
+    extent = max(_view_box(root)[2:])
+    cleaned = _clean(root, 0, _Tally(extent))
+    if cleaned is None:  # the root itself hidden (opacity 0): nothing to show
+        raise _failed("kicad-cli's SVG is hidden as a whole (opacity 0)")
     return cleaned
 
 

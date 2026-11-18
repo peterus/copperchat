@@ -137,14 +137,14 @@ def test_oversize_output_refused() -> None:
 
 
 def test_element_cap() -> None:
-    """At most 20,000 kept elements (the largest stock export has 6,208); dropped
+    """At most 10,000 kept elements (the largest stock export has 6,205); dropped
     elements do not count."""
-    path = '<path d="M 0 0 L 1 1"/>'
+    path = '<path d="M 0 0 L 0.01 0"/>'
     root = fr.load_kicad_svg(kicad_svg(path * (fr.MAX_ELEMENTS - 1)))  # + the root
     assert len(root) == fr.MAX_ELEMENTS - 1
     with pytest.raises(StructuredToolError) as exc:
         fr.load_kicad_svg(kicad_svg(path * fr.MAX_ELEMENTS))
-    assert _code(exc) == "render_failed" and "20000 elements" in exc.value.why
+    assert _code(exc) == "render_failed" and "10000 elements" in exc.value.why
     fr.load_kicad_svg(kicad_svg(path * 10 + "<script/>" * (2 * fr.MAX_ELEMENTS)))
 
 
@@ -156,7 +156,7 @@ def test_group_opacity_dropped() -> None:
         '<g style="OPACITY:0.9"><path d="M 0 0 L 1 1" stroke-opacity="0.5"/></g>'
         '<text opacity="0" stroke-opacity="0">REF**</text>'
         '<text style="opacity:0.0">hidden</text>'
-        '<text opacity="bogus">shown</text></g>'
+        '<text opacity="0.2">shown</text></g>'
     )
     root = fr.load_kicad_svg(kicad_svg(body))
     attrs = _all_attrs(root)
@@ -775,8 +775,7 @@ async def test_one_render_at_a_time(
 @pytest.mark.parametrize(
     "attr",
     [
-        'style="fill:u\\72 l(http://x/a)"',  # CSS escape hiding url(
-        'fill="\\75rl(http://x)"',
+        'fill="\\75rl(http://x)"',  # CSS escape hiding url(
         'style="fill:image-set(&quot;http://x/a.png&quot; 1x)"',
         'style="fill:-WEBKIT-Image-Set(&quot;x.png&quot; 1x)"',
         'style="fill:SRC(&quot;http://x&quot;)"',
@@ -850,3 +849,88 @@ async def test_cancel_holds_lock_until_thread_ends(
     await second
     assert cli.events == ["start", "end", "raster-end", "start", "end", "raster-end"]
     assert not [p for p in _tmp_dirs(cli) if p.exists()]
+
+
+# --- review-loop round 5 ----------------------------------------------------------------
+
+
+def _many_points(n: int, step: float = 0.0001) -> str:
+    return "M " + " ".join(f"{(k % 2) * step:.4f},{k * step:.4f}" for k in range(n))
+
+
+def test_point_caps() -> None:
+    """One element of more than 2,000 points (stock maximum 586) or more than 50,000
+    points in all (stock maximum 23,924: Xilinx FLG1925) is refused before CairoSVG
+    sees it: one self-crossing path of 100k points took 226 s under the render lock."""
+    fr.load_kicad_svg(kicad_svg(f'<path d="{_many_points(fr.MAX_ELEMENT_COORDS)}"/>'))
+    for body in (
+        f'<path d="{_many_points(fr.MAX_ELEMENT_COORDS + 1)}"/>',
+        f'<polyline points="{_many_points(fr.MAX_ELEMENT_COORDS + 1)[2:]}"/>',
+        f'<path d="{_many_points(100_000)}"/>',
+    ):
+        with pytest.raises(StructuredToolError) as exc:
+            fr.load_kicad_svg(kicad_svg(body))
+        assert _code(exc) == "render_failed" and "2000 points" in exc.value.why
+    per = fr.MAX_COORDS // 25
+    fr.load_kicad_svg(kicad_svg(f'<path d="{_many_points(per)}"/>' * 25))
+    with pytest.raises(StructuredToolError) as exc:
+        fr.load_kicad_svg(kicad_svg(f'<path d="{_many_points(per)}"/>' * 26))
+    assert _code(exc) == "render_failed" and "50000 points" in exc.value.why
+
+
+def test_span_cap() -> None:
+    """Lines (and shape outlines) summing to more than 1,000 times the drawing's
+    longer side are refused: a stroke across the whole drawing costs CairoSVG ~0.1-0.3
+    ms however few points it has (stock maximum: 364, CP_Radial_D40)."""
+    across = '<path d="M -2,-2 2,2"/>'  # sqrt(32) / 4 = 1.41 drawings
+    fr.load_kicad_svg(kicad_svg(across * 700))
+    for body in (
+        across * 710,
+        '<circle cx="0" cy="0" r="2"/>' * 320,  # 3.14 each
+        '<rect x="-2" y="-2" width="4" height="4"/>' * 251,
+        '<line x1="-2" y1="0" x2="2" y2="0"/>' * 1001,
+        '<path d="M 0,0 1e308,1e308"/>',
+    ):
+        with pytest.raises(StructuredToolError) as exc:
+            fr.load_kicad_svg(kicad_svg(body))
+        assert _code(exc) == "render_failed" and "1000 times" in exc.value.why
+
+
+def test_hidden_root_is_render_failed() -> None:
+    for attr in ('opacity="0"', 'style="opacity:0"'):
+        with pytest.raises(StructuredToolError) as exc:
+            fr.load_kicad_svg(kicad_svg().replace(b"<svg ", f"<svg {attr} ".encode(), 1))
+        assert _code(exc) == "render_failed" and "hidden" in exc.value.why
+
+
+@pytest.mark.parametrize(
+    "attr",
+    [
+        'opacity="0%"',
+        'opacity=" 0 "',
+        'opacity="-1"',
+        'opacity="nan"',
+        'opacity="bogus"',  # unreadable: hidden
+        'style="opacity:0%"',
+        'style="opacity:0 !important"',
+        'style="opacity: 0 ! IMPORTANT ;fill:#fff"',
+        'style="opacity:/**/1"',  # a comment: unreadable
+        'style="opacity:0;fill:url(http://x/a)"',  # the url filter must not unhide it
+        'style="opacity:0;fill:u\\72 l(x)"',
+        'style="op\\61 city:0"',  # a CSS escape can spell opacity
+        'opacity="0" fill="url(#x)"',
+    ],
+)
+def test_hidden_variants(attr: str) -> None:
+    root = fr.load_kicad_svg(kicad_svg(f'<g><text {attr}>hidden</text><path d="M 0 0 L 1 1"/></g>'))
+    assert not list(root.iter("text")), attr
+    assert len(list(root.iter("path"))) == 1
+
+
+@pytest.mark.parametrize(
+    "attr", ['opacity="50%"', 'style="opacity:1 !important"', 'opacity="0.01"']
+)
+def test_visible_opacity_values(attr: str) -> None:
+    root = fr.load_kicad_svg(kicad_svg(f"<text {attr}>shown</text>"))
+    assert [t.text for t in root.iter("text")] == ["shown"]
+    assert not [k for el in root.iter() for k in el.attrib if k == "opacity"]

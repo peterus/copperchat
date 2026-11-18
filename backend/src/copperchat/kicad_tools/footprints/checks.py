@@ -7,7 +7,9 @@ Conventions:
 - *Bottom-only* means every copper pad is on B.Cu only; then the courtyard, fab and
   silk rules use the B.* layers. Mask/paste rules are side-aware per pad: an SMD pad on
   B.Cu needs B.Mask / B.Paste.
-- Courtyard rules (enclosure, margin) consider every pad, also NPTH holes.
+- Courtyard rules (enclosure, margin) consider every pad, also NPTH holes. A part is
+  enclosed when its points are inside the outline and, for a non-convex outline, no
+  outline edge properly crosses it (a pad or body line spanning a notch).
 - `pad_gap_small` compares copper pads that share a copper layer, unless both carry the
   same non-empty number (an EP split or a multi-pad pin); unnumbered copper pads count
   as different from every other pad.
@@ -71,13 +73,30 @@ MAX_PAD_VERTICES = 512
 # `Rounded`, not its 68-vertex chord polygon), a chord 1. A rule that cannot afford its
 # next step stops there and is named in the one `too_complex_partial_check` info.
 # Sized from a sweep over all 15,468 stock KiCad footprints of the base image: the
-# costliest spends 209,278 units (p99 74,665), so about 5x headroom for local ones,
-# while an adversarial footprint stops after about a second (plan "As built (F2)").
+# costliest spends 291,699 units with the pad build (p99 93,121), so about 3x headroom
+# for local ones, while an adversarial footprint stops after about a second (plan "As
+# built (F2)").
 WORK_BUDGET = 1_000_000
+# Building the pads' pieces (chord polygons, distance pieces, boxes) is charged too, for
+# all pads before any is built: `PAD_BUILD_COST` plus `PAD_VERTEX_COST` per counted
+# vertex (`geom.pad_part_counts`; measured 0.2-0.6 us per unit charged). Above
+# `MAX_TOTAL_PADS` pads (stock maximum 1,924, Xilinx RF1930) nothing is counted or
+# built and every rule that needs the pads' geometry is skipped.
+PAD_BUILD_COST = 16
+PAD_VERTEX_COST = 2
+MAX_TOTAL_PADS = 20_000
 PAIR_RULES = ("pad_gap_small", "silk_on_pad")
 COURTYARD_RULES = ("courtyard_not_enclosing", "courtyard_margin", "silk_outside_courtyard")
+# the rules that need the pads' geometry
+PAD_GEOMETRY_RULES = (
+    "courtyard_not_enclosing",
+    "courtyard_margin",
+    *PAIR_RULES,
+    "pin1_marker_missing",
+)
 # why a rule is partial, in message order
 _TOO_MANY, _COMPLEX, _BBOX, _BUDGET = "too_many_items", "complex_pads", "bounding_box", "budget"
+_TOO_LARGE = "too_many_pads"
 PER_RULE_CAP = 20
 TOTAL_CAP = 200
 DEFAULT_TOLERANCE = 0.01
@@ -274,6 +293,35 @@ def _point_count(g: geom.Part) -> int:
     return len(g)
 
 
+def _test_segment_count(g: geom.Part) -> int:
+    """`len(_test_segments(g))` without building them."""
+    if isinstance(g, Seg):
+        return 18 if g.half_width > 0.0 else 1
+    if geom.is_circle(g):
+        return 16
+    return len(g)
+
+
+def _test_segments(g: geom.Part) -> list[tuple[Point, Point]]:
+    """Segments that lie inside a part (on or within its outline): a courtyard edge
+    that properly crosses one passes through the part, so the part is not enclosed. A
+    polygon's edges, a circle's 16 chords, a stroke's centre line, or for a wide stroke
+    its two side lines and the octagon around each end (`_points`' rings)."""
+    if isinstance(g, Seg):
+        if g.half_width <= 0.0:
+            return [(g.a, g.b)]
+        pts = _points(g)
+        out = [(pts[k], pts[(k + 1) % 8]) for k in range(8)]
+        out += [(pts[8 + k], pts[8 + (k + 1) % 8]) for k in range(8)]
+        (ax, ay), (bx, by), h = g.a, g.b, g.half_width
+        length = math.hypot(bx - ax, by - ay)
+        nx, ny = ((ay - by) / length * h, (bx - ax) / length * h) if length else (0.0, 0.0)
+        out += [((ax + sx * nx, ay + sx * ny), (bx + sx * nx, by + sx * ny)) for sx in (1, -1)]
+        return out
+    pts = _points(g)
+    return [(pts[k], pts[(k + 1) % len(pts)]) for k in range(len(pts))]
+
+
 @dataclass(frozen=True)
 class _Pieces:
     """A group of pieces for `_min_dist` with their boxes and vertex counts."""
@@ -429,20 +477,16 @@ class _Run:
         g = self.inp.geometry
         self.g = g
         self._geoms: dict[int, list[geom.Geometry]] = {}
-        # `parts`: chord polygons (containment points); `pieces`: for distances
-        self.parts = [geom.pad_parts(p) for p in g.pads]
-        self.pieces = [
-            _Pieces.of(geom.pad_distance_parts(p, parts))
-            for p, parts in zip(g.pads, self.parts, strict=True)
-        ]
-        self.boxes = [_union(pc.boxes) or (0, 0, 0, 0) for pc in self.pieces]
         self.copper = [i for i, p in enumerate(g.pads) if is_copper(p)]
-        self.vertices = [_vertices(parts) for parts in self.parts]
-        self.complex_pads = {
-            i
-            for i in self.copper
-            if len(self.parts[i]) > MAX_PAD_PARTS or self.vertices[i] > MAX_PAD_VERTICES
-        }
+        # counted, classified and charged before any pad piece is built
+        self.counts: list[tuple[int, int]] = []
+        self.complex_pads: set[int] = set()
+        # `parts`: chord polygons (containment points); `pieces`: for distances; all
+        # empty when the pads' geometry is not built (`self.pad_geometry` False)
+        self.parts: list[list[geom.Part]] = []
+        self.pieces: list[_Pieces] = []
+        self.boxes: list[Box] = []
+        self.pad_geometry = self._build_pads()
         bottom = bool(self.copper) and all(_sides(g.pads[i]) == {"B"} for i in self.copper)
         self.side = "B" if bottom else "F"
         self.fab = [s for s in g.shapes if s.layer == f"{self.side}.Fab"]
@@ -461,6 +505,39 @@ class _Run:
         self.fab_segs: list[Seg] | None = None
         if self.afford(sum(_shape_cost(s) for s in self.fab), *fab_rules):
             self.fab_segs = [sg for s in self.fab for sg in geom.stroke_segments(s)]
+
+    def _build_pads(self) -> bool:
+        """Count every pad's pieces (cheap), classify the complex ones, charge the build
+        of all of them, then build: False (rules noted) when there are more than
+        `MAX_TOTAL_PADS` pads or the build does not fit the budget."""
+        pads = self.g.pads
+        if len(pads) > MAX_TOTAL_PADS:
+            self.note(_TOO_LARGE, *self._pad_rules())
+            return False
+        self.counts = [geom.pad_part_counts(p) for p in pads]
+        self.complex_pads = {
+            i
+            for i in self.copper
+            if self.counts[i][0] > MAX_PAD_PARTS or self.counts[i][1] > MAX_PAD_VERTICES
+        }
+        cost = sum(PAD_BUILD_COST + PAD_VERTEX_COST * v for _, v in self.counts)
+        if not self.afford(cost, *self._pad_rules()):
+            return False
+        self.parts = [geom.pad_parts(p) for p in pads]
+        self.pieces = [
+            _Pieces.of(geom.pad_distance_parts(p, parts))
+            for p, parts in zip(pads, self.parts, strict=True)
+        ]
+        self.boxes = [_union(pc.boxes) or (0, 0, 0, 0) for pc in self.pieces]
+        return True
+
+    def _pin1_applies(self) -> bool:
+        n = len(self.copper)
+        return n > 2 or (n == 2 and self.inp.polarized)
+
+    def _pad_rules(self) -> list[str]:
+        """The rules that need the pads' geometry and would run here."""
+        return [r for r in PAD_GEOMETRY_RULES if r != "pin1_marker_missing" or self._pin1_applies()]
 
     # -- the shared work budget ----------------------------------------------------------
 
@@ -505,16 +582,20 @@ class _Run:
             f"or {MAX_PAD_VERTICES} vertices)",
             _BBOX: f"measured pad(s) {shown} by their bounding box",
             _BUDGET: f"stopped early: the work budget of {WORK_BUDGET} units is used up",
+            _TOO_LARGE: f"skipped: {len(g.pads)} pads exceed {MAX_TOTAL_PADS}",
         }
         measured: dict[str, Any] = {"skipped": {r: list(v) for r, v in self.partial.items()}}
         expected: dict[str, Any] = {}
-        if _TOO_MANY in self.partial:
+        if _TOO_LARGE in self.partial:
+            measured |= {"pads": len(g.pads)}
+            expected |= {"pads": MAX_TOTAL_PADS}
+        elif _TOO_MANY in self.partial:
             measured |= {"pads": len(g.pads), "shapes": self.pair_shapes}
             expected |= {"pads": MAX_PAIR_PADS, "shapes": MAX_PAIR_SHAPES}
-        if _COMPLEX in self.partial or _BBOX in self.partial:
+        if cx and (_COMPLEX in self.partial or _BBOX in self.partial):
             measured |= {
-                "pieces": max(len(self.parts[i]) for i in cx),
-                "vertices": max(self.vertices[i] for i in cx),
+                "pieces": max(self.counts[i][0] for i in cx),
+                "vertices": max(self.counts[i][1] for i in cx),
             }
             expected |= {"pieces": MAX_PAD_PARTS, "vertices": MAX_PAD_VERTICES}
         if _BUDGET in self.partial:
@@ -522,7 +603,7 @@ class _Run:
             expected["work"] = WORK_BUDGET
         parts = [
             f"{', '.join(self.partial[r])} {why[r]}"
-            for r in (_TOO_MANY, _COMPLEX, _BBOX, _BUDGET)
+            for r in (_TOO_LARGE, _TOO_MANY, _COMPLEX, _BBOX, _BUDGET)
             if r in self.partial
         ]
         complex_named = _COMPLEX in self.partial or _BBOX in self.partial
@@ -687,45 +768,99 @@ class _Run:
             why = "is not one closed outline" if self.crtyd_shapes else "is missing"
             self.add("courtyard_missing", "error", f"{layer} {why}")
             return
-        rule = "courtyard_not_enclosing"
-        enclosing, complete = True, True
         test = _inside(poly, self.charger(*COURTYARD_RULES))
         if test is None:  # noted by `afford`
             return
         inside, cost = test
-        for i, pad in enumerate(self.g.pads):
+        if self.pad_geometry:  # else noted when the pads were counted
+            self._enclosing(poly, inside, cost)
+        self._silk_outside(inside, cost)
+
+    def _enclosing(self, poly: Polygon, inside: Callable[[Point], bool], cost: int) -> None:
+        """`courtyard_not_enclosing` (every pad part and the body inside the outline),
+        then, when everything is inside, `courtyard_margin`."""
+        rule = "courtyard_not_enclosing"
+        complete = True
+        outside: set[int] = set()
+        for i in range(len(self.g.pads)):
             # counted, charged, then the points made one part at a time (never a list)
             if not self.afford(sum(_point_count(x) for x in self.parts[i]) * cost, rule):
                 complete = False
                 break
             if not all(inside(q) for part in self.parts[i] for q in _points(part)):
-                enclosing = False
-                self.add(
-                    rule,
-                    "error",
-                    f"pad {pad.number or '(unnumbered)'} extends outside the courtyard",
-                    pads=[pad.number] if pad.number else (),
-                    at=pad.at,
-                )
+                outside.add(i)
         fab_segs = self.fab_segs
+        body_out: Point | None = None
         if complete and fab_segs is not None and self.afford(2 * len(fab_segs) * cost, rule):
-            outside = [q for s in fab_segs for q in (s.a, s.b) if not inside(q)]
-            if outside:
-                enclosing = False
-                self.add(
-                    rule,
-                    "error",
-                    f"the body ({self.side}.Fab) extends outside the courtyard at "
-                    f"{_xy(outside[0])}",
-                    at=outside[0],
-                )
+            body_out = next((q for s in fab_segs for q in (s.a, s.b) if not inside(q)), None)
         else:
             complete = False
+        if complete and not geom.is_convex(poly):
+            # all points inside a notched outline: a part can still span a notch
+            done, crossed = self._crossings(poly, outside, fab_segs or [], body_out is None)
+            complete = done
+            body_out = body_out or crossed
+        for i in sorted(outside):
+            pad = self.g.pads[i]
+            self.add(
+                rule,
+                "error",
+                f"pad {pad.number or '(unnumbered)'} extends outside the courtyard",
+                pads=[pad.number] if pad.number else (),
+                at=pad.at,
+            )
+        if body_out is not None:
+            self.add(
+                rule,
+                "error",
+                f"the body ({self.side}.Fab) extends outside the courtyard at {_xy(body_out)}",
+                at=body_out,
+            )
         if not complete:  # the margin needs to know the outline encloses everything
             self.note(_BUDGET, "courtyard_margin")
-        elif enclosing and fab_segs is not None:
+        elif not outside and body_out is None and fab_segs is not None:
             self._margin(poly, fab_segs)
-        self._silk_outside(inside, cost)
+
+    def _crossings(
+        self, poly: Polygon, outside: set[int], fab_segs: list[Seg], body: bool
+    ) -> tuple[bool, Point | None]:
+        """Pads (not yet in `outside`) and, with `body`, fab lines that cross an edge of
+        the non-convex outline `poly` although their points are inside: crossed pads go
+        to `outside`; the first crossing of the body is returned. Test segments lie
+        inside each part (polygon edges, a circle's chords, a stroke's centre line, side
+        lines and end octagons). Gives (complete, the body's first crossing or None);
+        not complete when the budget refused (noted)."""
+        rule = "courtyard_not_enclosing"
+        owners = [i for i in range(len(self.g.pads)) if i not in outside]
+        count = sum(_test_segment_count(x) for i in owners for x in self.parts[i])
+        count += len(fab_segs) if body else 0
+        if not self.afford(count + len(poly), rule):
+            return False, None
+        tests: list[tuple[int, Point, Point]] = [
+            (i, a, b) for i in owners for x in self.parts[i] for a, b in _test_segments(x)
+        ]
+        if body:
+            tests += [(-1, sg.a, sg.b) for sg in fab_segs]
+        edges = [(poly[k], poly[(k + 1) % len(poly)]) for k in range(len(poly))]
+        edge_boxes = [_box(e) for e in edges]
+        test_boxes = [_box((a, b)) for _, a, b in tests]
+        afford = self.charger(rule)
+        hit: Point | None = None
+        for e, t in geom.cross_pairs(edge_boxes, test_boxes, 0.0, afford):
+            owner, a, b = tests[t]
+            if (owner >= 0 and owner in outside) or (owner < 0 and hit is not None):
+                continue
+            if not afford(1):
+                return False, None
+            (c, d) = edges[e]
+            if geom.segments_cross(a, b, c, d):
+                if owner >= 0:
+                    outside.add(owner)
+                else:
+                    hit = geom.crossing_point(a, b, c, d)
+        if rule in self.partial.get(_BUDGET, ()):
+            return False, None  # the sweep stopped early
+        return True, hit
 
     def _margin(self, poly: Polygon, fab_segs: list[Seg]) -> None:
         copper = _union(self.boxes[i] for i in self.copper)
@@ -789,6 +924,8 @@ class _Run:
 
     def pairs(self) -> None:
         g = self.g
+        if not self.pad_geometry:  # noted when the pads were counted
+            return
         if len(g.pads) > MAX_PAIR_PADS or self.pair_shapes > MAX_PAIR_SHAPES:
             self.note(_TOO_MANY, *PAIR_RULES)
             return
@@ -886,8 +1023,7 @@ class _Run:
         when that runs out the rule ends without a verdict."""
         rule = "pin1_marker_missing"
         g = self.g
-        n = len(self.copper)
-        if not (n > 2 or (n == 2 and self.inp.polarized)):
+        if not self._pin1_applies() or not self.pad_geometry:
             return
         ones = [i for i in self.copper if g.pads[i].number == "1"]
         p1_box = _union(self.boxes[i] for i in ones)

@@ -233,6 +233,41 @@ def pad_parts(pad: Pad) -> list[Part]:
     return parts
 
 
+def pad_part_counts(pad: Pad) -> tuple[int, int]:
+    """(parts, vertices) of `pad_parts(pad)` without building them: the work a caller
+    charges before it asks for them. Exact for a custom pad (its anchor is built, a
+    handful of vertices; the primitives are counted); for any other pad an upper bound
+    (one part: a chord polygon of at most 68 vertices, 8 for a chamfered rectangle, 4
+    for any other, a circle 1)."""
+    if pad.shape != "custom":
+        if pad.shape == "circle":
+            return 1, 1
+        if pad.shape in ("roundrect", "oval"):
+            return 1, 4 * (ARC_STEPS_PER_QUARTER + 1)
+        return 1, 8 if pad.shape == "chamfered_rect" else 4
+    main = pad_geometry(pad)
+    parts, vertices = 1, 1 if is_circle(main) else len(main)
+    prims = dict(pad.extra).get("primitives", ())
+    for d in prims if isinstance(prims, tuple | list) else ():
+        if not isinstance(d, dict):
+            continue
+        n = len(d.get("points", []))
+        kind = d.get("kind")
+        if kind == "polygon" and n >= 3:
+            parts, vertices = parts + 1, vertices + n
+        elif kind == "rect" and n >= 2:
+            parts, vertices = parts + 1, vertices + 4
+        elif kind == "circle" and d.get("center") and d.get("size"):
+            parts, vertices = parts + 1, vertices + 1
+        elif kind in ("segment", "arc") and n >= 2:
+            k = 1
+            if kind == "arc" and n >= 3:
+                a, b, c = ((float(x), float(y)) for x, y in d["points"][:3])
+                k = arc_chord_count(a, b, c)
+            parts, vertices = parts + k, vertices + 2 * k
+    return parts, vertices
+
+
 def pad_distance_parts(pad: Pad, parts: Sequence[Part] | None = None) -> list[Geometry]:
     """`pad_parts` (or the given `parts`, its result) for distances: the main shape of a
     roundrect or oval pad is exact and small (a `Rounded` inner rectangle, a stadium
@@ -541,6 +576,37 @@ def distance(a: Geometry, b: Geometry) -> float:
     pa, poly_a, ra = _core(a)
     pb, poly_b, rb = _core(b)
     return max(0.0, _core_distance(pa, poly_a, pb, poly_b) - ra - rb)
+
+
+def is_convex(poly: Polygon) -> bool:
+    """True when every turn of the closed polygon goes the same way (collinear vertices
+    allowed): then a region whose points are all inside it lies inside it."""
+    n = len(poly)
+    sign = 0
+    for i in range(n):
+        c = _cross(poly[i], poly[(i + 1) % n], poly[(i + 2) % n])
+        if abs(c) <= 1e-12:
+            continue
+        if sign == 0:
+            sign = 1 if c > 0 else -1
+        elif (c > 0) != (sign > 0):
+            return False
+    return True
+
+
+def segments_cross(a: Point, b: Point, c: Point, d: Point) -> bool:
+    """True when a-b and c-d properly cross (each strictly separates the other's ends;
+    touching or collinear is not crossing)."""
+    d1, d2 = _cross(a, b, c), _cross(a, b, d)
+    d3, d4 = _cross(c, d, a), _cross(c, d, b)
+    return d1 * d2 < 0 and d3 * d4 < 0
+
+
+def crossing_point(a: Point, b: Point, c: Point, d: Point) -> Point:
+    """Where the lines a-b and c-d meet (for segments that `segments_cross`)."""
+    d1, d2 = _cross(c, d, a), _cross(c, d, b)
+    t = d1 / (d1 - d2)
+    return (a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]))
 
 
 # --- outlines and pair search -------------------------------------------------------

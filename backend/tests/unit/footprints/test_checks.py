@@ -885,13 +885,6 @@ def test_fine_pitch_qfp_is_checked_in_full(n: int) -> None:
     assert not of(stock, "too_complex_partial_check") and not of(stock, "pad_gap_small")
 
 
-def test_min_dist_charges_only_measured_pairs() -> None:
-    """The pair distance is charged per piece pair measured, not up front for all."""
-    pads = (_custom("1", (-0.3, 0.0), _many_segments(200)), P("2", (5.0, 0.0), (0.5, 0.5)))
-    report = _timed(geo(pads, [rect("F.CrtYd", -2, -2, 6, 2)]))
-    assert report.work < 10_000  # pads 5 mm apart: no distance measured at all
-
-
 @pytest.fixture
 def small_budget(monkeypatch: pytest.MonkeyPatch) -> Callable[[int], None]:
     def set_budget(units: int) -> None:
@@ -944,20 +937,200 @@ def test_fab_containment_is_budgeted(small_budget: Callable[[int], None]) -> Non
     assert report.work < 12_000  # the pads' points and the chords; the fab test refused
 
 
-def test_tessellation_is_charged(small_budget: Callable[[int], None]) -> None:
-    """20k tiny silk arcs: their chords are charged before they are built."""
-    small_budget(50_000)
-    arc = Shape("arc", "F.SilkS", ((0.0, 0.0), (0.01, 0.01), (0.02, 0.0)), None, None, 0.12, False)
-    report = _timed(l201(silk=[arc] * 20_000))
-    assert "silk_outside_courtyard" in _skipped(report)["budget"]
+# --- review-loop round 5: exact charges, pad build, input caps, notched courtyards -----
 
 
-def test_courtyard_points_counted_before_built(small_budget: Callable[[int], None]) -> None:
-    """A custom pad of 2000 stroked arcs (32 chords x 16 points each): its containment
-    points are counted and refused before any is made."""
-    small_budget(100_000)
+def test_min_dist_charges_only_measured_pairs() -> None:
+    """A 201-piece custom pad 0.12 mm from pad 2 with one primitive near it: the pair
+    costs its 201 box tests plus that one measured distance, not all 201 distances.
+    The same footprint with pad 2 numbered "1" never measures the pair: the difference
+    is exactly the `_min_dist` charge."""
+    far = [
+        {"kind": "segment", "points": [(-4.0, -1.0 + 0.01 * k), (-3.5, -1.0 + 0.01 * k)]}
+        for k in range(199)
+    ]
+    near = {"kind": "segment", "points": [(0.0, 0.0), (1.0, 0.0)], "width": 0.1}
+    custom = _custom("1", (0.0, 0.0), [*far, near])  # anchor + 200 = 201 pieces
+    crtyd = [rect("F.CrtYd", -6, -3, 4, 3)]
+
+    def run(number: str) -> CheckReport:
+        return _timed(geo((custom, P(number, (1.27, 0.0), (0.2, 0.2))), crtyd))
+
+    measured, skipped = run("2"), run("1")
+    (gap,) = of(measured, "pad_gap_small")
+    assert gap.pads == ("1", "2") and gap.measured == pytest.approx(0.12)
+    assert not of(skipped, "pad_gap_small")
+    one = checks._dist_cost(2, 4)  # the near Seg x the rect pad
+    assert measured.work - skipped.work == 201 * 1 + one
+    assert measured.work - skipped.work < 201 * one // 10  # far below the full pair cost
+
+
+def test_tessellation_is_charged() -> None:
+    """50 distinct silk arcs (32-33 chords each) inside the courtyard, beyond the
+    silk-to-pad reach: each costs exactly its chords (+1) when built plus its points
+    when tested against the rectangular courtyard; built shapes are cached by
+    identity, so distinct objects are each charged once (one object 50 times: once)."""
+    arcs = [
+        Shape(
+            "arc", "F.SilkS", ((x, 1.9), (x + 0.02, 1.92), (x + 0.04, 1.9)), None, None, 0.01, False
+        )
+        for x in (-1.9 + 0.07 * k for k in range(50))
+    ]
+    chords = sum(geom.segment_count(a) for a in arcs)
+    assert 50 * 32 <= chords <= 50 * 33
+    base = _timed(l201(silk=()))
+    report = _timed(l201(silk=arcs))
+    assert not of(report, "silk_outside_courtyard") and not of(report, "silk_on_pad")
+    assert report.work - base.work == (chords + 50) + 2 * chords
+    same = _timed(l201(silk=[arcs[0]] * 50))
+    one = geom.segment_count(arcs[0])
+    assert same.work - base.work == (one + 1) + 50 * 2 * one
+
+
+def test_courtyard_points_counted_before_built(
+    small_budget: Callable[[int], None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A custom pad of 2000 stroked arcs (64,000 pieces, 1,024,000 containment points):
+    its pieces fit the budget, its points do not; they are counted and refused before
+    a single one is made."""
+    small_budget(400_000)
+    made: list[object] = []
+    real = checks._points
+    monkeypatch.setattr(checks, "_points", lambda g: made.append(g) or real(g))
     arc = {"kind": "arc", "points": [(0.0, 0.0), (0.5, 0.5), (1.0, 0.0)], "width": 0.1}
     pads = (_custom("1", (-1.1, 0.0), [arc] * 2000), P("2", (1.1, 0.0)))
     report = _timed(geo(pads, [rect("F.CrtYd", -3, -3, 3, 3)]))
+    assert _skipped(report)["budget"] == ["courtyard_not_enclosing", "courtyard_margin"]
+    assert made == []
+    pieces = 16 + 2 * (4 + 2000 * 32 * 2)  # PAD_BUILD_COST + PAD_VERTEX_COST * vertices
+    assert report.work < pieces + 1_000  # the pieces' build, the outline; no points
+
+
+def _built(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """Records every pad whose pieces are built."""
+    built: list[object] = []
+    real = geom.pad_parts
+    monkeypatch.setattr(geom, "pad_parts", lambda p: built.append(p) or real(p))
+    return built
+
+
+def test_pad_build_is_charged_before_built(monkeypatch: pytest.MonkeyPatch) -> None:
+    """50,000 arc primitives on one custom pad (1.6 M pieces, ~800 MB when built): its
+    pieces are counted and refused before any is built; every rule needing the pads'
+    geometry is skipped, the others still run."""
+    built = _built(monkeypatch)
+    arc = {"kind": "arc", "points": [(0.0, 0.0), (0.5, 0.5), (1.0, 0.0)], "width": 0.1}
+    pads = (_custom("1", (0.0, 0.0), [dict(arc) for _ in range(50_000)]), P("2", (3.0, 0.0)))
+    t0 = time.perf_counter()
+    report = check(geo(pads, [rect("F.CrtYd", -3, -3, 6, 3)]), polarized=True)
+    assert time.perf_counter() - t0 < HANG_S
+    assert built == [] and report.work == 0
+    assert _skipped(report) == {
+        "budget": [
+            "courtyard_not_enclosing",
+            "courtyard_margin",
+            "pad_gap_small",
+            "silk_on_pad",
+            "pin1_marker_missing",
+        ]
+    }
+    assert of(report, "fab_missing")  # the rules without pad geometry still ran
+
+
+def test_too_many_pads_skip_the_geometry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """100,000 roundrect pads (6.8 M chord points when built): above `MAX_TOTAL_PADS`
+    nothing is counted or built, one info names the skipped rules. The hash over the
+    input (a linear pass like the read itself) is left out of the timing."""
+    built = _built(monkeypatch)
+    monkeypatch.setattr(checks, "geometry_hash", lambda g: "0" * 64)
+    pads = [
+        Pad(str(k), "smd", "roundrect", (k % 400, k // 400), 0.0, (0.5, 0.3), 0.25, None, SMD)
+        for k in range(100_000)
+    ]
+    g = geo(pads, [rect("F.CrtYd", -3, -3, 403, 253)])
+    t0 = time.perf_counter()
+    report = check(g)
+    assert time.perf_counter() - t0 < HANG_S
+    assert built == [] and report.work == 0
+    (f,) = of(report, "too_complex_partial_check")
+    assert f.measured == {
+        "skipped": {
+            "too_many_pads": [
+                "courtyard_not_enclosing",
+                "courtyard_margin",
+                "pad_gap_small",
+                "silk_on_pad",
+                "pin1_marker_missing",
+            ]
+        },
+        "pads": 100_000,
+    }
+    assert f.expected == {"pads": checks.MAX_TOTAL_PADS}
+    assert "100000 pads exceed 20000" in f.message
+    # the stock maximum (1,924 pads, Xilinx RF1930) is far below the cap
+    assert checks.MAX_TOTAL_PADS >= 10 * 1924
+
+
+# a U: two arms (x -3..-1 and 1..3) joined at the top (y -2..-1), open at the bottom
+U_CRTYD = Shape(
+    "polygon",
+    "F.CrtYd",
+    ((-3, -2), (3, -2), (3, 2), (1, 2), (1, -1), (-1, -1), (-1, 2), (-3, 2)),
+    None,
+    None,
+    0.05,
+    False,
+)
+
+
+def _u(pads: Sequence[Pad], fab: Sequence[Shape] = ()) -> FootprintGeometry:
+    return geo(pads, [U_CRTYD, *fab])
+
+
+def test_pad_spanning_a_courtyard_notch_is_not_enclosed() -> None:
+    """All four corners of a pad lie in the arms of a U-shaped courtyard, its middle
+    in the notch: it is outside (round 4 tested points only and passed it)."""
+    inside = (P("1", (-2.0, 0.0), (0.5, 0.5)), P("2", (2.0, 0.0), (0.5, 0.5)))
+    assert not of(check(_u(inside)), "courtyard_not_enclosing")
+    spanning = (*inside, P("3", (0.0, 1.0), (4.0, 0.5)))
+    report = check(_u(spanning))
+    (f,) = of(report, "courtyard_not_enclosing")
+    assert f.severity == "error" and f.pads == ("3",)
+    assert not report.passed and not of(report, "too_complex_partial_check")
+    assert not of(report, "courtyard_margin")  # no margin verdict once outside
+
+
+def test_stroke_and_body_spanning_a_courtyard_notch() -> None:
+    """A custom pad's wide stroke and a fab line with both ends in the arms cross the
+    notch: the pad is outside, the body is reported at the first crossing."""
+    stroke = {"kind": "segment", "points": [(-4.0, 0.0), (0.0, 0.0)], "width": 0.2}
+    pads = (P("1", (-2.0, 0.0), (0.5, 0.5)), _custom("2", (2.0, 1.5), [stroke]))
+    fab = [seg("F.Fab", (-2.5, 1.5), (2.5, 1.5), 0.1)]
+    found = of(check(_u(pads, fab)), "courtyard_not_enclosing")
+    assert [f.pads for f in found] == [("2",), ()]
+    assert found[1].message == "the body (F.Fab) extends outside the courtyard at (-1.000, 1.500)"
+
+
+def test_notch_crossing_is_budgeted(
+    small_budget: Callable[[int], None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The crossing test of a notched courtyard is counted and charged before its
+    segments are made: refused, neither enclosure nor margin gives a verdict."""
+    pads = (P("1", (-2.0, 0.0), (0.5, 0.5)), P("2", (2.0, 0.0), (0.5, 0.5)))
+    entry: list[int] = []
+    real = checks._Run._crossings
+
+    def spy(self: Any, *args: Any) -> Any:
+        entry.append(self.work)
+        return real(self, *args)
+
+    monkeypatch.setattr(checks._Run, "_crossings", spy)
+    assert not of(_timed(_u(pads)), "too_complex_partial_check")
+    small_budget(entry[0] + 8)  # the 8 pad edges fit, the outline's 8 edges not
+    made: list[object] = []
+    real_segments = checks._test_segments
+    monkeypatch.setattr(checks, "_test_segments", lambda g: made.append(g) or real_segments(g))
+    report = _timed(_u(pads))
+    assert made == []  # counted and refused before any test segment is made
     assert _skipped(report)["budget"][:2] == ["courtyard_not_enclosing", "courtyard_margin"]
-    assert report.work < 100
+    assert not of(report, "courtyard_not_enclosing")
