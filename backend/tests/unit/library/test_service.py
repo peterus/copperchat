@@ -288,7 +288,7 @@ class LocalSession(FakeSession):
 
         assert not self.fp_lock_held, "one footprint document at a time"
         self.documents.append(lib_id)
-        if not lib_id.endswith(":L_Local"):
+        if not lib_id.endswith((":L_Local", ":My FP")):
             raise ApiError(f"Footprint not found: {lib_id}")
         self.footprints_active = True
         self.fp_lock_held = True
@@ -577,6 +577,21 @@ async def test_geometry_local_reads_document(local: LocalSession, tmp_path: Path
     # not on disk: no document is opened
     assert await _svc(local).footprint_geometry(f"{REPO}:Missing") is None
     assert local.documents == [f"{REPO}:L_Local"]
+
+
+async def test_geometry_local_gui_name_readable_unsafe_name_not(local: LocalSession) -> None:
+    local.rows = {REPO: LOCAL_URI}
+    svc = _svc(local)
+    info = await svc.local_library()
+    assert info is not None
+    info.lib.dir.mkdir(parents=True)
+    (info.lib.dir / "My FP.kicad_mod").write_bytes(b"")  # a name the KiCad GUI allows
+    g = await svc.footprint_geometry(f"{REPO}:My FP")
+    assert g is not None and g.scope == "local"
+    assert local.documents == [f"{REPO}:My FP"]
+    for name in ("../My FP", "sub/x", "a\\b", "..", "a\0b"):
+        assert await svc.footprint_geometry(f"{REPO}:{name}") is None
+    assert local.documents == [f"{REPO}:My FP"]
 
 
 async def test_geometry_local_without_row_is_not_found(local: LocalSession) -> None:

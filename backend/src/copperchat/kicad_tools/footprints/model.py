@@ -239,10 +239,9 @@ class FootprintGeometry:
             "pads": [p.to_dict() for p in self.pads[:max_pads]],
             "graphics": self.layer_summary(),
         }
-        if len(self.pads) > max_pads:
-            d["pads_truncated"] = True
         notes: list[str] = []
         if len(self.pads) > max_pads:
+            d["pads_truncated"] = True
             notes.append(f"only the first {max_pads} of {len(self.pads)} pads")
         if detail == "full":
             shapes: list[dict[str, Any]] = []
@@ -262,7 +261,8 @@ class FootprintGeometry:
                     f"{MAX_SHAPE_POINTS} points each (`graphics` covers all)"
                 )
         if notes:
-            d["note"] = "Output truncated: " + "; ".join(notes) + ". Use fp_render to see it."
+            joined = "; ".join(notes)
+            d["note"] = f"Output truncated: {joined} (see fp_render, when available)."
         d.update(
             models=[m.to_dict() for m in self.models],
             texts=[t.to_dict() for t in self.texts],

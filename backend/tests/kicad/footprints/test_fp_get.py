@@ -63,14 +63,19 @@ async def test_fp_get_with_board_is_lazy(blank_session: KicadSession) -> None:
 async def test_fp_get_not_found_closest(blank_session: KicadSession) -> None:
     with pytest.raises(StructuredToolError) as err:
         await fp_get(ctx(blank_session), {"lib_id": "Inductor_SMD:L_Bourns-SRN4019"})
-    assert err.value.code == "not_found", (err.value.why, repr(err.value.__cause__))
+    assert err.value.code == "not_found", err.value.why
     assert err.value.details is not None
     assert SEED_LIB_ID in err.value.details["closest"]
 
 
 async def test_coexistence_with_open_commit(blank_nopcb_session: KicadSession) -> None:
     """fp_get (here: activating, i.e. opening and closing a footprint document) inside an
-    open schematic commit neither lands in nor breaks that commit."""
+    open schematic commit neither lands in nor breaks that commit.
+
+    Lock order: the nested read takes `_commit_lock` → `_fp_lock`, the reverse of the
+    documented order. Safe only because nothing holding `_fp_lock` waits on
+    `_commit_lock`; F4a must keep it that way or never read inside a commit (plan
+    "As built")."""
     session = blank_nopcb_session
     await session.ensure_symbol_libraries()
     before = await session.call(item_ids)

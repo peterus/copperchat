@@ -298,6 +298,13 @@ def _check_chain(base: Path, target: Path, *, leaf_file: bool) -> None:
             )
 
 
+def _plain_file_name(name: str) -> bool:
+    """Path safety only (reads): `<name>.kicad_mod` stays a file directly inside the
+    library directory. Unlike `NAME_RE` (new names CopperChat writes) it accepts names a
+    user saved from the KiCad GUI, e.g. "My FP"."""
+    return bool(name) and name not in {".", ".."} and not any(c in name for c in "/\\\0")
+
+
 def local_library_dir_safe(lib: LocalLibrary) -> None:
     """Raise `library_conflict` unless every existing path component from the repo root
     to the library directory is a real directory (no symlink) and the project's
@@ -833,8 +840,12 @@ class LibraryService:
         that state is cached.
 
         Activation seconds go to `notes` as `footprint_libraries_loaded`. Must not be
-        called while the caller holds the session's `_fp_lock` (activation and the
-        document take it; the lock is not re-entrant)."""
+        called while the caller holds the session's `_fp_lock`, `_commit_lock` or
+        `_apply_lock` (activation and the document take `_fp_lock`; none is
+        re-entrant). Known exception, pinned by `test_coexistence_with_open_commit`: a
+        read nested inside the caller's own open schematic commit takes `_commit_lock` →
+        `_fp_lock`; safe only because nothing holding `_fp_lock` waits on `_commit_lock`
+        (plan "As built")."""
         lib_id = lib_id.strip()
         nickname, name = _split(lib_id)
         if not nickname or not name:
@@ -886,7 +897,7 @@ class LibraryService:
 
         from copperchat.kicad_tools.footprints.model import geometry_from_proto
 
-        if not NAME_RE.match(name):
+        if not _plain_file_name(name):
             return None  # never a file of the local library (and no path outside it)
         file = lib.dir / f"{name}.kicad_mod"
         validator = await asyncio.to_thread(_file_validator, file)  # before the read

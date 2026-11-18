@@ -549,6 +549,14 @@ phase file, with the reason.)
   outside `NAME_RE` (no path outside the library directory). It checks only the file:
   it is meaningful after `local_library_dir_safe`. F4a must call **both** under the
   library lock immediately before S1.
+- **Lock order, nested reads (F1 Task 5 review):** fp reads nested inside an open
+  schematic commit take `_commit_lock` → `_fp_lock`; safe only because nothing holding
+  `_fp_lock` waits on `_commit_lock` — F4a must keep it that way or never read inside a
+  commit (`tests/kicad/footprints/test_fp_get.py::test_coexistence_with_open_commit`).
+- **FP-C1 local reads accept GUI names (F1 Task 5 review):** `footprint_geometry` and
+  `fp_list_local` gate local names only for path safety (non-empty, not `.`/`..`, no
+  `/`, `\`, NUL), so a footprint saved from the KiCad GUI (e.g. `My FP`) is readable and
+  listed; `NAME_RE` stays the rule for names CopperChat writes.
 - **FP-C3 hash, `Group` items:** the opaque digest of a `Group` drops its member `items`
   (per-load KIIDs) as well as `id`/`parent`.
 
