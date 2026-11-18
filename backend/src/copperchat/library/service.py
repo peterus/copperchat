@@ -978,6 +978,27 @@ class LibraryService:
             notes.append(_unreadable_note(missing))
         return out
 
+    async def activate_footprints(self, notes: list[dict[str, Any]] | None = None) -> None:
+        """Load the footprint libraries now, also on a board server (`fp_create`: its
+        stages open footprint documents anyway); the seconds go to `notes` as
+        `footprint_libraries_loaded` when this call loaded them."""
+        await self._activate(notes)
+
+    async def footprint_names(self, nickname: str) -> list[str]:
+        """The footprint names KiCad lists for library `nickname` (`GetLibraryItems`;
+        the libraries must be loaded)."""
+        with _kicad_errors(f"Could not list footprint library {nickname}"):
+            names: list[str] = await self._session.call(partial(_footprint_names, nickname))
+        return names
+
+    async def has_footprint(self, lib_id: str) -> bool:
+        """Whether KiCad serves `lib_id` from its library (one `GetItemsFromLibrary`, not
+        cached; the libraries must be loaded)."""
+        nickname, name = _split(lib_id)
+        with _kicad_errors(f"Could not read footprint {lib_id}"):
+            proto = await self._session.call(partial(_fetch_footprint_proto, nickname, name))
+        return proto is not None
+
     async def _activate(self, notes: list[dict[str, Any]] | None) -> None:
         seconds = await self._session.activate_footprints()
         if seconds is not None:
