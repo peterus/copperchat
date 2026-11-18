@@ -108,7 +108,7 @@ def _footprint_users(nickname: str) -> Any:
     """lib_id -> sorted references of the open project's symbols whose Footprint field
     names a footprint of `nickname` (the symbol reader of sch_list_symbols)."""
 
-    def run(h: KicadHandle) -> dict[str, list[str]]:
+    def footprint_users(h: KicadHandle) -> dict[str, list[str]]:
         users: dict[str, set[str]] = {}
         for sym in h.schematic().get_symbols():
             d = access.symbol_dict(sym)
@@ -117,7 +117,7 @@ def _footprint_users(nickname: str) -> Any:
                 users.setdefault(footprint, set()).add(d["ref"])
         return {k: sorted(v, key=natural_key) for k, v in users.items()}
 
-    return run
+    return footprint_users
 
 
 def _no_library(notes: list[dict[str, Any]], kind: str, message: str) -> ToolResult:
@@ -133,14 +133,8 @@ async def fp_list_local(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     require_enabled(ctx)
     svc = library_for(ctx.session)
     notes: list[dict[str, Any]] = []
-    info = await svc.local_library()
-    if info is None:
-        return _no_library(
-            notes,
-            "repo_root_unknown",
-            "The repository root is unknown right now (git did not answer), so the "
-            "local footprint library cannot be located. Try again later.",
-        )
+    info = await svc.local_library(require_root=True)
+    assert info is not None  # require_root raises repo_root_unknown instead
     lib = info.lib
     if info.row_conflict:
         return _no_library(notes, "library_conflict", info.row_conflict)

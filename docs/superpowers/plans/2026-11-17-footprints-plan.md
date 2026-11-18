@@ -432,7 +432,9 @@ server-death case) and the error is re-raised.
 `footprint_libraries_loaded` (`seconds`), `footprint_needs_review`,
 `footprint_review_unknown`, `footprint_unverified`, `possibly_in_use_elsewhere`,
 `model_missing`, `pending_cleaned`, `pending_leftover`,
-`footprint_attributes_unavailable` (`lib_id`; added in F1 Task 4, see "As built").
+`footprint_attributes_unavailable` (`lib_id`; added in F1 Task 4, see "As built"),
+`no_local_library`, `library_conflict`, `footprint_unreadable` (`count`, `lib_ids`;
+all three added in F1 Task 6, see "As built").
 
 ---
 
@@ -553,10 +555,27 @@ phase file, with the reason.)
   schematic commit take `_commit_lock` → `_fp_lock`; safe only because nothing holding
   `_fp_lock` waits on `_commit_lock` — F4a must keep it that way or never read inside a
   commit (`tests/kicad/footprints/test_fp_get.py::test_coexistence_with_open_commit`).
-- **FP-C1 local reads accept GUI names (F1 Task 5 review):** `footprint_geometry` and
-  `fp_list_local` gate local names only for path safety (non-empty, not `.`/`..`, no
-  `/`, `\`, NUL), so a footprint saved from the KiCad GUI (e.g. `My FP`) is readable and
-  listed; `NAME_RE` stays the rule for names CopperChat writes.
+- **FP-C1 local reads accept GUI names (F1 Task 5 review):** `footprint_geometry` gates
+  local names only for path safety (non-empty, not `.`/`..`, no `/`, `\`, NUL), so a
+  footprint saved from the KiCad GUI (e.g. `My FP`) is readable; `fp_list_local` lists
+  every name KiCad returns (it opens no file by path), and only `footprint_geometry`
+  applies the path-safety gate. `NAME_RE` stays the rule for names CopperChat writes.
+- **`fp_list_local` notes and errors (F1 Task 6 review, controller ruling):** while the
+  repo root is unknown (`repo_policy` transient) it raises `repo_root_unknown` like
+  `fp_get` (new keyword `LibraryService.local_library(require_root=True)`: the error
+  without the `for_write` checks). Without a usable row it returns `library: null` and
+  one note, and activates nothing: `no_local_library` (no project row; counts any
+  `*.kicad_mod` already in the repo's library directory) or `library_conflict` (the
+  `row_conflict` text; reads keep working through KiCad, a write refuses later with the
+  error `library_conflict`). With the row it reads `GetLibraryItems` + batched
+  `GetItemsFromLibrary` (`LibraryService.local_footprints`; library reads carry the
+  custom fields, so review state and source need no document), which on a boardless
+  server needs the activation first (probe: both requests answer "no handler available"
+  before it) and appends `footprint_libraries_loaded`. Names KiCad lists but does not
+  load are left out with one `footprint_unreadable` note (`count`, up to 50 `lib_ids`);
+  a batch where KiCad loads none ("none of the requested items were found") is empty,
+  so one bad footprint never fails the listing (also for the per-library footprint
+  index).
 - **FP-C3 hash, `Group` items:** the opaque digest of a `Group` drops its member `items`
   (per-load KIIDs) as well as `id`/`parent`.
 

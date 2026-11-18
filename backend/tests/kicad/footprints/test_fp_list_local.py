@@ -117,11 +117,18 @@ async def test_used_by(repo_session: Any, edit_db: Database) -> None:
 
 
 def _hashes(root: Path) -> dict[str, str]:
-    return {
-        str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
-        for p in sorted(root.rglob("*"))
-        if p.is_file() and not p.is_symlink()
-    }
+    """sha256 of every file and a marker for every directory and symlink below `root`
+    (so a created or removed directory shows as well)."""
+    out: dict[str, str] = {}
+    for p in sorted(root.rglob("*")):
+        key = str(p.relative_to(root))
+        if p.is_symlink():
+            out[key] = f"symlink:{p.readlink()}"
+        elif p.is_dir():
+            out[key] = "dir"
+        elif p.is_file():
+            out[key] = hashlib.sha256(p.read_bytes()).hexdigest()
+    return out
 
 
 async def test_read_paths_write_nothing(repo_session: Any) -> None:

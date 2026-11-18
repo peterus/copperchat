@@ -200,42 +200,30 @@ def _footprint_names(nickname: str, h: KicadHandle) -> list[str]:
 
 
 def _fetch_footprints(nickname: str, names: list[str], h: KicadHandle) -> list[FootprintDetail]:
-    from kipy.proto.board import board_types_pb2
-
-    out: list[FootprintDetail] = []
-    for packed in _get_items(h, _footprint_type(), [(nickname, n) for n in names]):
-        fp = board_types_pb2.Footprint()
-        packed.Unpack(fp)
-        out.append(footprint_from_proto(fp))
-    return out
+    return [footprint_from_proto(fp) for fp in _fetch_footprint_protos(nickname, names, h)]
 
 
 def _fetch_footprint_proto(nickname: str, name: str, h: KicadHandle) -> Any:
-    """The library `Footprint` of one id (batched `GetItemsFromLibrary` with one id), or
-    None when KiCad does not serve it (an unknown name in a known library is an
-    `ApiError` "none of the requested items were found")."""
+    """The library `Footprint` of one id, or None when KiCad does not serve it."""
+    protos = _fetch_footprint_protos(nickname, [name], h)
+    return protos[0] if protos else None
+
+
+def _fetch_footprint_protos(nickname: str, names: list[str], h: KicadHandle) -> list[Any]:
+    """The library `Footprint`s of `names` in one batched `GetItemsFromLibrary`. KiCad
+    skips ids it cannot load; when it loads none of them it answers with an `ApiError`
+    "none of the requested items were found", which is an empty batch here."""
     from kipy.errors import ApiError
     from kipy.proto.board import board_types_pb2
 
     try:
-        items = _get_items(h, _footprint_type(), [(nickname, name)])
+        items = _get_items(h, _footprint_type(), [(nickname, n) for n in names])
     except ApiError as exc:
         if "none of the requested items were found" in str(exc).lower():
-            return None
+            return []
         raise
-    for packed in items:
-        fp = board_types_pb2.Footprint()
-        packed.Unpack(fp)
-        return fp
-    return None
-
-
-def _fetch_footprint_protos(nickname: str, names: list[str], h: KicadHandle) -> list[Any]:
-    """The library `Footprint`s of `names` in one batched `GetItemsFromLibrary`."""
-    from kipy.proto.board import board_types_pb2
-
     out: list[Any] = []
-    for packed in _get_items(h, _footprint_type(), [(nickname, n) for n in names]):
+    for packed in items:
         fp = board_types_pb2.Footprint()
         packed.Unpack(fp)
         out.append(fp)
@@ -419,6 +407,23 @@ def _file_validator(path: Path) -> tuple[int, int, int] | None:
     if st is None or not stat.S_ISREG(st.st_mode):
         return None
     return _validator(st)
+
+
+MAX_UNREADABLE_IDS = 50
+
+
+def _unreadable_note(lib_ids: list[str]) -> dict[str, Any]:
+    """Note `footprint_unreadable`: KiCad lists these footprints but does not load them."""
+    return {
+        "kind": "footprint_unreadable",
+        "count": len(lib_ids),
+        "lib_ids": lib_ids[:MAX_UNREADABLE_IDS],
+        "message": (
+            f"KiCad lists {len(lib_ids)} footprint(s) of this library but could not load "
+            "them (damaged or unsupported file?); they are missing from this list. Open "
+            "one with fp_get for the error."
+        ),
+    }
 
 
 def _repo_root_unknown(transient: str, what: str) -> StructuredToolError:
@@ -787,16 +792,22 @@ class LibraryService:
         for lib_id in [k for k in self._fp_geometry if _split(k)[0] == nickname]:
             del self._fp_geometry[lib_id]
 
-    async def local_library(self, *, for_write: bool = False) -> LocalLibraryInfo | None:
+    async def local_library(
+        self, *, for_write: bool = False, require_root: bool = False
+    ) -> LocalLibraryInfo | None:
         """The repo's local footprint library (spec §5) and the state of its project row.
 
         None while the repo root is unknown (`repo_policy` transient); with `for_write`
         that raises `repo_root_unknown` instead, and the library path and the project
-        table are checked with `local_library_dir_safe` (`library_conflict`)."""
+        table are checked with `local_library_dir_safe` (`library_conflict`).
+        `require_root` (reads such as `fp_list_local`) raises `repo_root_unknown` too,
+        without the write checks."""
         lib, transient = await self._derive_local()
         if lib is None:
             if for_write:
                 raise _repo_root_unknown(transient, "nothing was written")
+            if require_root:
+                raise _repo_root_unknown(transient, "nothing was read")
             return None
         if for_write:
             await asyncio.to_thread(local_library_dir_safe, lib)
@@ -904,7 +915,8 @@ class LibraryService:
         `needs_user_review`), the pads and the description, enough for listing; mounting,
         Reference/Value and the hash are not authoritative here (use
         `footprint_geometry`). A boardless server is activated first (at the pinned KiCad
-        both requests have no handler before that); the seconds go to `notes`."""
+        both requests have no handler before that); the seconds go to `notes`. Footprints
+        KiCad lists but does not load are left out with one `footprint_unreadable` note."""
         from copperchat.kicad_tools.footprints.model import geometry_from_proto
 
         if not self.footprint_libraries_ready():
@@ -912,18 +924,24 @@ class LibraryService:
         nickname = lib.nickname
         session = self._session
         out: list[FootprintGeometry] = []
+        missing: list[str] = []
         with _kicad_errors(f"Could not list footprint library {nickname}"):
             names = await session.call(partial(_footprint_names, nickname))
             for i in range(0, len(names), BATCH):
                 batch = names[i : i + BATCH]
                 protos = await session.call(partial(_fetch_footprint_protos, nickname, batch))
                 aligned = len(protos) == len(batch)  # KiCad skips ids it cannot load
+                got: set[str] = set()
                 for j, proto in enumerate(protos):
                     name = proto.id.entry_name or (batch[j] if aligned else "")
-                    if not name:
+                    if not name or name in got:
                         continue
+                    got.add(name)
                     lib_id = f"{nickname}:{name}"
                     out.append(geometry_from_proto(proto, proto.items, lib_id, "local"))
+                missing += [f"{nickname}:{n}" for n in batch if n not in got]
+        if missing and notes is not None:
+            notes.append(_unreadable_note(missing))
         return out
 
     async def _activate(self, notes: list[dict[str, Any]] | None) -> None:
