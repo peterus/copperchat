@@ -579,6 +579,27 @@ phase file, with the reason.)
 - **FP-C3 hash, `Group` items:** the opaque digest of a `Group` drops its member `items`
   (per-load KIIDs) as well as `id`/`parent`.
 
+- **Residuals for later phases (F1):**
+  - F4a wires `LibraryService.invalidate_footprints` into `HistoryService.library_listeners`
+    (F3) and after every footprint stage; F1 has no caller yet (the local cache entries are
+    also lstat-validated, other libraries rely on invalidation).
+  - `fp_get`/`fp_list_local` pass `review_state(..., pending=False)`; F4a feeds `pending`
+    from `FootprintWriteRepo.pending`.
+  - `FootprintDocument.begin/push/drop` run footprint-document commits without
+    `_commit_lock`/`_active_scope`; the F4a engine decides (lock order `_fp_lock →
+    _commit_lock`, see the nested-read bullet above).
+  - After the last footprint document is closed, `GetOpenDocuments(DOCTYPE_FOOTPRINT)`
+    answers "no handler available"; treat that as "none open".
+  - Measured activation in the kicad-base image: 5.7 s, api-server RSS 227 MB → 3.2 GB
+    (spike: ~3 s, +1.7 GB) — README/D4 RAM note in F5 should use the higher figure.
+  - Not hashed: pad secondary drills, post-machining, `zone_layer_overrides`; footprint
+    zones/points/other items are hashed opaquely (type + sha256 of the proto without ids).
+  - While git is unavailable (transient `repo_policy`, also permanently without git),
+    every non-global nickname raises `repo_root_unknown` in `fp_get` (could be narrowed to
+    the candidate local nicknames).
+  - Skills (`copperchat-tools`, `session-schematic`) do not list `fp_get`/`fp_list_local`
+    yet (F5).
+
 ## Residuals
 
 (Filled by F5.) Known before the start:
