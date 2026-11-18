@@ -1,5 +1,8 @@
+import json
+import re
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -8,6 +11,7 @@ from kipy.errors import ApiError
 from copperchat.config import Settings
 from copperchat.projects import agent_dir, discover_projects
 from copperchat.web.app import create_app
+from copperchat.web.security import CONTENT_SECURITY_POLICY
 from tests.support.fake_kicad import FakeClientFactory, FakeDocument, FakeLauncher, FakeServer
 from tests.support.kicad_project import copy_fixture
 
@@ -158,3 +162,164 @@ def test_open_survives_a_kicad_save_error(
         client.post("/api/auth/login", json=GOOD)
         r = client.post(f"/api/projects/{pid}/open")
         assert r.status_code == 200 and r.json()["viewFiles"] == {"sch": [], "pcb": []}
+
+
+# --- renders route: PNG and the fp_render SVG (footprints spec §11, index call 3) -------
+
+UUID = "0123456789abcdef0123456789abcdef"
+SVG = b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>'
+SVG_CSP = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+
+
+@contextmanager
+def renders_client(
+    make_settings: Callable[..., Settings],
+) -> Iterator[tuple[TestClient, str, Path]]:
+    with app_client(make_settings) as (client, pid):
+        client.post("/api/auth/login", json=GOOD)
+        project = discover_projects(client.app.state.settings.projects_root)[0]  # type: ignore[attr-defined]
+        renders = agent_dir(project) / "renders"
+        renders.mkdir(parents=True)
+        yield client, pid, renders
+
+
+def _sidecar(renders: Path, payload: object) -> None:
+    (renders / f"{UUID}.svg.json").write_text(json.dumps(payload))
+
+
+def test_png_unchanged(make_settings: Callable[..., Settings]) -> None:
+    with renders_client(make_settings) as (client, pid, renders):
+        (renders / f"{UUID}.png").write_bytes(b"\x89PNG")
+        r = client.get(f"/api/projects/{pid}/renders/{UUID}.png")
+        assert r.status_code == 200 and r.content == b"\x89PNG"
+        assert r.headers["content-type"] == "image/png"
+        assert r.headers["cache-control"] == "private"
+        # the app-wide policy (web/security.py), not the SVG one; no download name
+        assert r.headers["content-security-policy"] == CONTENT_SECURITY_POLICY
+        assert "content-disposition" not in r.headers
+        assert set(r.headers) == {
+            "content-type",
+            "content-length",
+            "cache-control",
+            "last-modified",
+            "etag",
+            "accept-ranges",
+            "content-security-policy",
+            "x-content-type-options",
+            "x-frame-options",
+            "referrer-policy",
+        }
+
+
+def test_svg_headers(make_settings: Callable[..., Settings]) -> None:
+    with renders_client(make_settings) as (client, pid, renders):
+        (renders / f"{UUID}.svg").write_bytes(SVG)
+        _sidecar(renders, {"download_name": "OpenDriveHub_L_Bourns_SRN3012BTA.svg"})
+        r = client.get(f"/api/projects/{pid}/renders/{UUID}.svg")
+        assert r.status_code == 200 and r.content == SVG
+        assert r.headers["content-type"] == "image/svg+xml"
+        assert r.headers["content-security-policy"] == SVG_CSP
+        assert r.headers["x-content-type-options"] == "nosniff"
+        assert r.headers["content-disposition"] == (
+            'inline; filename="OpenDriveHub_L_Bourns_SRN3012BTA.svg"'
+        )
+        assert r.headers["cache-control"] == "private"
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ('../a b".svg', ".._a_b_.svg"),
+        ("Lib_ÄÖ name;x=1.svg", "Lib____name_x_1.svg"),
+        ("a\r\nContent-Type: text/html.svg", "a__Content-Type__text_html.svg"),
+        ("Lib_" + "x" * 300 + ".svg", "Lib_" + "x" * 112 + ".svg"),
+        ("Lib_R+0805.svg", "Lib_R+0805.svg"),
+    ],
+)
+def test_svg_name_sanitised(
+    make_settings: Callable[..., Settings], name: str, expected: str
+) -> None:
+    with renders_client(make_settings) as (client, pid, renders):
+        (renders / f"{UUID}.svg").write_bytes(SVG)
+        _sidecar(renders, {"download_name": name})
+        r = client.get(f"/api/projects/{pid}/renders/{UUID}.svg")
+        assert r.status_code == 200
+        disposition = r.headers["content-disposition"]
+        assert disposition == f'inline; filename="{expected}"'
+        sent = disposition.removeprefix('inline; filename="').removesuffix('"')
+        assert re.fullmatch(r"[A-Za-z0-9_.+-]+", sent) and len(sent) <= 120
+        assert sent.endswith(".svg")
+
+
+@pytest.mark.parametrize(
+    "sidecar",
+    [
+        None,  # no sidecar
+        {"download_name": "Lib_R.png"},  # not .svg
+        {"download_name": ""},
+        {"download_name": 5},
+        {"name": "Lib_R.svg"},
+        ["Lib_R.svg"],
+        "not json",
+    ],
+)
+def test_svg_without_sidecar(make_settings: Callable[..., Settings], sidecar: object) -> None:
+    with renders_client(make_settings) as (client, pid, renders):
+        (renders / f"{UUID}.svg").write_bytes(SVG)
+        if sidecar == "not json":
+            (renders / f"{UUID}.svg.json").write_bytes(b"\xff{")
+        elif sidecar is not None:
+            _sidecar(renders, sidecar)
+        r = client.get(f"/api/projects/{pid}/renders/{UUID}.svg")
+        assert r.status_code == 200
+        assert r.headers["content-disposition"] == f'inline; filename="{UUID}.svg"'
+        assert r.headers["content-security-policy"] == SVG_CSP
+
+
+@pytest.mark.parametrize("kind", ["dir", "symlink", "deep", "oversize"])
+def test_svg_bad_sidecar_falls_back(make_settings: Callable[..., Settings], kind: str) -> None:
+    with renders_client(make_settings) as (client, pid, renders):
+        (renders / f"{UUID}.svg").write_bytes(SVG)
+        sidecar = renders / f"{UUID}.svg.json"
+        if kind == "dir":
+            sidecar.mkdir()
+        elif kind == "symlink":
+            target = renders.parent / "elsewhere.json"
+            target.write_text(json.dumps({"download_name": "Leak_secret.svg"}))
+            sidecar.symlink_to(target)
+        elif kind == "deep":
+            sidecar.write_text("[" * 4000)
+        else:
+            sidecar.write_text(json.dumps({"download_name": "Lib_R.svg", "pad": "x" * 5000}))
+        r = client.get(f"/api/projects/{pid}/renders/{UUID}.svg")
+        assert r.status_code == 200
+        assert r.headers["content-disposition"] == f'inline; filename="{UUID}.svg"'
+
+
+def test_json_not_served(make_settings: Callable[..., Settings]) -> None:
+    with renders_client(make_settings) as (client, pid, renders):
+        (renders / f"{UUID}.svg").write_bytes(SVG)
+        _sidecar(renders, {"download_name": "Lib_R.svg"})
+        for name in (f"{UUID}.svg.json", f"{UUID}.json"):
+            r = client.get(f"/api/projects/{pid}/renders/{name}")
+            assert r.status_code in (400, 404), name
+            assert b"download_name" not in r.content
+
+
+def test_non_uuid_rejected(make_settings: Callable[..., Settings]) -> None:
+    with renders_client(make_settings) as (client, pid, renders):
+        (renders / "Lib_R.svg").write_bytes(SVG)
+        for bad in (
+            "Lib_R.svg",
+            UUID[:31] + ".svg",
+            UUID + "0.svg",
+            UUID.upper() + ".svg",
+            UUID + ".SVG",
+            UUID + ".svgz",
+            UUID + ".svg%00",
+            "..%2F" + UUID + ".svg",
+        ):
+            r = client.get(f"/api/projects/{pid}/renders/{bad}")
+            assert r.status_code in (400, 404), bad
+        missing = client.get(f"/api/projects/{pid}/renders/{UUID}.svg")
+        assert missing.status_code == 404 and missing.json()["error"]["code"] == "not_found"

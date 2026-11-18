@@ -23,7 +23,9 @@ from copperchat.kicad_tools.footprints.read import (
     fp_get,
     fp_list_local,
 )
+from copperchat.kicad_tools.footprints.render import fp_render
 from copperchat.tools.spec import ToolSpec
+from copperchat.views.footprint_render import GRID_LADDER, LAYER_RE, MAX_LAYERS
 
 
 def _obj(props: dict[str, Any], required: list[str]) -> dict[str, Any]:
@@ -187,5 +189,42 @@ TOOL_SPECS: list[ToolSpec] = [
             ["lib_id"],
         ),
         fp_check,
+    ),
+    ToolSpec(
+        "fp_render",
+        "Render one footprint (local, project or stock) as an image you can look at: "
+        "KiCad's drawing of the chosen layers on a mm grid with axes through the origin "
+        "(anchor), mm ticks and, with labels, pad 1 size/position, pitch and courtyard "
+        "size. Returns the PNG (shown to you and in the chat), image/svg filenames, "
+        "svg_url (a same-origin link to the zoomable SVG; give it to the user as a "
+        "markdown link), scale_px_per_mm, extent_mm and origin_mm (PNG pixel (px, py) = "
+        "footprint mm origin_mm + (px, py) / scale_px_per_mm, y down), the grid drawn "
+        "and geometry_hash. Read-only.",
+        _obj(
+            {
+                "lib_id": _LIB_ID,
+                "layers": {
+                    "type": "array",
+                    "items": {"type": "string", "pattern": LAYER_RE.pattern},
+                    "minItems": 1,
+                    "maxItems": MAX_LAYERS,
+                    "description": "Layers to draw, e.g. ['F.Cu', 'F.CrtYd']; default "
+                    "F.Cu, F.Mask, F.Paste, F.SilkS, F.Fab, F.CrtYd plus the B.* layers "
+                    "the footprint uses.",
+                },
+                "grid_mm": {
+                    "type": "number",
+                    "enum": list(GRID_LADDER),
+                    "description": "Minor grid in mm (default: automatic from the size).",
+                },
+                "labels": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Draw the dimension labels (default true).",
+                },
+            },
+            ["lib_id"],
+        ),
+        fp_render,
     ),
 ]

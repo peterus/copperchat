@@ -452,7 +452,7 @@ def _layers(layers: list[str] | None, geometry: FootprintGeometry) -> list[str]:
     if layers is None:
         return default_layers(geometry)
     ok = isinstance(layers, list) and 0 < len(layers) <= MAX_LAYERS
-    if not ok or not all(isinstance(n, str) and LAYER_RE.match(n) for n in layers):
+    if not ok or not all(isinstance(n, str) and LAYER_RE.fullmatch(n) for n in layers):
         raise _invalid(
             "Invalid layers",
             f"1 to {MAX_LAYERS} names like F.Cu, B.SilkS, F.CrtYd or Edge.Cuts",

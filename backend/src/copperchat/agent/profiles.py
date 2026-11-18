@@ -68,9 +68,8 @@ TODAY = READ_KICAD | LIBRARY | PARTS | GIT | SCH_WRITES | PLAN_TOOLS
 REPO_TOOLS = frozenset({"repo_list", "repo_grep", "repo_read"})
 # Read-only Mouser lookups (price, stock, lifecycle), in every profile (mouser-api spec §4).
 MOUSER_TOOLS = frozenset({"mouser_search", "mouser_part"})
-# Read-only footprint tools, in every profile (footprints spec §13.1); fp_check and
-# fp_render join as their phases land.
-FP_READ = frozenset({"fp_get", "fp_list_local", "fp_check"})
+# Read-only footprint tools, in every profile (footprints spec §13.1).
+FP_READ = frozenset({"fp_get", "fp_list_local", "fp_check", "fp_render"})
 # Every footprint tool starts with it; COPPERCHAT_FOOTPRINT_TOOLS=off drops them all.
 FP_PREFIX = "fp_"
 
