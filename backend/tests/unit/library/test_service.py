@@ -639,3 +639,29 @@ async def test_geometry_transient_repo_root(
     assert g is not None and g.scope == "global"
     assert "footprint_attributes_unavailable" in [n["kind"] for n in notes]
     assert svc._fp_geometry == {}  # nothing read while transient is cached
+
+
+@pytest.mark.parametrize("changed", [False, True])
+async def test_geometry_cache_entry_dropped_during_revalidation(
+    local: LocalSession, monkeypatch: pytest.MonkeyPatch, changed: bool
+) -> None:
+    """An invalidate (or LRU eviction) while the hit's lstat runs: no KeyError, re-read."""
+    local.rows = {REPO: LOCAL_URI}
+    svc = _svc(local)
+    info = await svc.local_library()
+    assert info is not None
+    info.lib.dir.mkdir(parents=True)
+    (info.lib.dir / "L_Local.kicad_mod").write_bytes(b"v1")
+    lib_id = f"{REPO}:L_Local"
+    g = await svc.footprint_geometry(lib_id)
+    assert g is not None and len(local.documents) == 1
+    real = service_mod._file_validator
+
+    def racing(path: Path) -> Any:
+        svc.invalidate_footprints()  # concurrent invalidate while the lstat runs
+        result = real(path)
+        return (0, 0, 0) if changed else result
+
+    monkeypatch.setattr(service_mod, "_file_validator", racing)
+    g2 = await svc.footprint_geometry(lib_id)
+    assert g2 is not None and g2 is not g and len(local.documents) == 2

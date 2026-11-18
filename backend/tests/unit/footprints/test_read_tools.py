@@ -211,3 +211,54 @@ async def test_cancel_during_close_completes_the_close(
     assert not session._fp_lock.locked()
     assert not session.restart_pending
     assert session.server_alive
+
+
+async def test_activation_resets_on_kill(session: KicadSession) -> None:
+    await session.activate_footprints()
+    assert session.footprints_active
+    await session._kill()  # e.g. a failed restart: no server, generation unchanged
+    assert not session.footprints_active
+
+
+async def test_cancel_during_open_closes_the_document(
+    session: KicadSession, server: FakeServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await session.activate_footprints()
+    server.closed_docs.clear()
+    gate, reached = threading.Event(), threading.Event()
+    real_open = FakeKiCad.open_document
+
+    def gated(self: FakeKiCad, path: str, type: int) -> Any:
+        if type == FP:
+            reached.set()
+            gate.wait(10)
+        return real_open(self, path, type)
+
+    monkeypatch.setattr(FakeKiCad, "open_document", gated)
+    entered: list[bool] = []
+
+    async def use() -> None:
+        async with session.footprint_document(SEED_LIB_ID):
+            entered.append(True)
+
+    task = asyncio.create_task(use())
+    assert await asyncio.to_thread(reached.wait, 5)
+    task.cancel()
+    await asyncio.sleep(0.05)
+    assert not task.done()  # the open runs to completion
+    gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert entered == []  # the body never ran
+    assert server.closed_docs == [SEED_LIB_ID]
+    assert not session._fp_lock.locked()
+    assert not session.restart_pending
+
+
+async def test_concurrent_activation_opens_the_seed_once(
+    session: KicadSession, server: FakeServer
+) -> None:
+    results = await asyncio.gather(session.activate_footprints(), session.activate_footprints())
+    assert sum(r is not None for r in results) == 1
+    assert _footprint_opens(server) == [(SEED_LIB_ID, FP)]
+    assert server.closed_docs == [SEED_LIB_ID]

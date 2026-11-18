@@ -178,3 +178,122 @@ async def test_fp_list_local_invalid_argument(ctx: ToolContext, args: dict[str, 
     with pytest.raises(StructuredToolError) as err:
         await read.fp_list_local(ctx, args)
     assert err.value.code == "invalid_argument"
+
+
+def test_to_dict_caps_repo_controlled_strings_and_lists() -> None:
+    from copperchat.kicad_tools.footprints.model import Model3D, Text
+
+    long = "x" * 600
+    text = Text("user", "F.Fab", (0.0, 0.0), (1.0, 1.0), 0.0, long)
+    model = Model3D("m.step", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (1.0, 1.0, 1.0))
+    g = dataclasses.replace(
+        _large(),
+        pads=(),
+        shapes=(),
+        description=long,
+        keywords=long,
+        fields={f"F{i}": long for i in range(70)},
+        texts=(text,) * 70,
+        models=(model,) * 70,
+    )
+    for detail in ("summary", "full"):
+        d = g.to_dict(detail)
+        assert d["truncated"] is True and "500 chars" in d["note"]
+        assert d["description"] == "x" * 500 + "…" and d["keywords"] == "x" * 500 + "…"
+        assert len(d["fields"]) == 64 and set(d["fields"].values()) == {"x" * 500 + "…"}
+        assert len(d["texts"]) == 64 and d["texts"][0]["value"] == "x" * 500 + "…"
+        assert len(d["models"]) == 64
+    # only the entry count over the cap
+    many = dataclasses.replace(_large(), pads=(), shapes=(), models=(model,) * 65)
+    assert many.to_dict()["truncated"] is True
+    short = dataclasses.replace(
+        _large(), pads=(), shapes=(), description="x" * 500, fields={"A": "y" * 500}
+    ).to_dict()
+    assert "truncated" not in short and short["description"] == "x" * 500
+
+
+# -- fp_get against a fake session/service -------------------------------------------------
+
+
+@pytest.fixture
+def fake(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+    from copperchat.library import service as service_mod
+    from tests.unit.library.test_service import REPO, LocalSession, _policy
+
+    session = LocalSession(tmp_path / REPO)
+
+    async def policy(project: Any, projects_root: Path) -> Any:
+        return _policy(session.root, project.dir)
+
+    monkeypatch.setattr(service_mod, "repo_policy", policy)
+    return session
+
+
+def _fake_ctx(session: Any) -> ToolContext:
+    return ToolContext(
+        project=cast(Any, session.project),
+        session=cast(KicadSession, session),
+        settings=cast(Any, session.settings),
+    )
+
+
+async def test_fp_get_global_read(fake: Any) -> None:
+    from tests.unit.library.test_service import SEED
+
+    r = await read.fp_get(_fake_ctx(fake), {"lib_id": SEED})
+    assert r.data is not None
+    assert r.data["lib_id"] == SEED and r.data["scope"] == "global"
+    assert r.data["review"] is None and r.data["source"] is None
+    kinds = [n["kind"] for n in r.data["notes"]]
+    assert "footprint_attributes_unavailable" in kinds
+
+
+async def test_fp_get_local_read_review_and_source(
+    fake: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kipy.proto.board import board_types_pb2 as bt
+
+    from copperchat.kicad_tools.footprints.model import REVIEW_FIELD, SOURCE_FIELD
+    from copperchat.library.service import library_for
+    from tests.unit.library import test_service
+    from tests.unit.library.test_service import LOCAL_URI, REPO
+
+    instance = test_service._fixture("seed_srn4018.instance")
+    for name, value in ((SOURCE_FIELD, "datasheet p. 4"), (REVIEW_FIELD, "yes")):
+        field = bt.Field()
+        field.name = name
+        field.text.text.text = value
+        instance.definition.items.add().Pack(field)
+    real = test_service._fixture
+    monkeypatch.setattr(
+        test_service,
+        "_fixture",
+        lambda name: instance if name.endswith(".instance") else real(name),
+    )
+    fake.rows = {REPO: LOCAL_URI}
+    info = await library_for(fake).local_library()
+    assert info is not None
+    info.lib.dir.mkdir(parents=True)
+    (info.lib.dir / "L_Local.kicad_mod").write_bytes(b"")
+    r = await read.fp_get(_fake_ctx(fake), {"lib_id": f"{REPO}:L_Local", "detail": "full"})
+    assert r.data is not None and r.data["scope"] == "local"
+    assert r.data["source"] == "datasheet p. 4"
+    assert r.data["review"] == "needs_user_review"
+    assert "shapes" in r.data
+
+
+async def test_fp_get_unknown_is_not_found_with_closest(
+    fake: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asked: list[tuple[str, str]] = []
+
+    async def closest(svc: Any, nickname: str, name: str) -> list[str]:
+        asked.append((nickname, name))
+        return ["Inductor_SMD:L_Bourns-SRN4018"]
+
+    monkeypatch.setattr(read, "closest_footprints", closest)
+    with pytest.raises(StructuredToolError) as err:
+        await read.fp_get(_fake_ctx(fake), {"lib_id": "Inductor_SMD:L_Bourns-SRN4019"})
+    assert err.value.code == "not_found"
+    assert err.value.details == {"closest": ["Inductor_SMD:L_Bourns-SRN4018"]}
+    assert asked == [("Inductor_SMD", "L_Bourns-SRN4019")]

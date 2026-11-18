@@ -146,3 +146,32 @@ def test_none_found_batch_is_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(service_mod, "_get_items", other)
     with pytest.raises(ApiError):
         service_mod._fetch_footprint_protos(REPO, ["X"], h)
+
+
+def test_footprint_users_without_schematic_is_empty() -> None:
+    from copperchat.kicad_session import KicadHandle
+
+    class NoKiCad:
+        def get_schematic(self) -> Any:
+            raise AssertionError("no schematic is open")
+
+    handle = KicadHandle(NoKiCad(), frozenset({"pcb"}))  # board-only project
+    assert read._footprint_users(REPO)(handle) == {}
+
+
+async def test_no_row_counts_files_off_the_event_loop(
+    session: ListSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+    real = service_mod.LibraryService.local_names_on_disk
+
+    def spy(self: Any, lib: Any) -> list[str]:
+        threads.append(threading.get_ident())
+        return real(self, lib)
+
+    monkeypatch.setattr(service_mod.LibraryService, "local_names_on_disk", spy)
+    await read.fp_list_local(_ctx(session), {})
+    assert threads and loop_thread not in threads

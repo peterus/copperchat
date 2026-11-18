@@ -399,6 +399,7 @@ class KicadSession:
         proc, self.process = self.process, None
         client, self._kicad = self._kicad, None
         self._open_docs = frozenset()
+        self._footprints_generation = None  # the libraries die with the server
         _close_client(client)
         if proc is None or proc.returncode is not None:
             return

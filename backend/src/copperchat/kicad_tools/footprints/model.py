@@ -47,6 +47,17 @@ HASH_VERSION = 1
 MAX_PADS = {"summary": 256, "full": 1000}
 MAX_SHAPES = 500
 MAX_SHAPE_POINTS = 64
+# Repo-controlled strings and lists (any detail): description, keywords, field and text
+# values are cut to 500 chars ("…" appended); fields, texts and models to 64 entries.
+MAX_TEXT_CHARS = 500
+MAX_ENTRIES = 64
+
+
+def _cap_text(value: str) -> tuple[str, bool]:
+    if len(value) <= MAX_TEXT_CHARS:
+        return value, False
+    return value[:MAX_TEXT_CHARS] + "…", True
+
 
 _PAD_TYPES = {"PT_SMD": "smd", "PT_PTH": "tht", "PT_NPTH": "npth", "PT_EDGE_CONNECTOR": "connector"}
 _PAD_SHAPES = {
@@ -223,18 +234,34 @@ class FootprintGeometry:
     def to_dict(self, detail: Literal["summary", "full"] = "summary") -> dict[str, Any]:
         """The JSON shape of spec §7.1, capped (author call 16): at most 256 (summary) /
         1,000 (full) pads with `pads_truncated`; `full` lists at most 500 shapes of at
-        most 64 points each with `truncated`. `pad_count` is always exact."""
+        most 64 points each with `truncated`. `pad_count` is always exact. Description,
+        keywords, field and text values longer than 500 chars are cut ("…" appended) and
+        fields, texts and models capped at 64 entries each, also with `truncated`."""
         max_pads = MAX_PADS[detail]
+        description, cut_description = _cap_text(self.description)
+        keywords, cut_keywords = _cap_text(self.keywords)
+        fields: dict[str, str] = {}
+        cut_values = False
+        for key, value in list(self.fields.items())[:MAX_ENTRIES]:
+            fields[key], cut = _cap_text(value)
+            cut_values = cut_values or cut
+        texts: list[dict[str, Any]] = []
+        for t in self.texts[:MAX_ENTRIES]:
+            td = t.to_dict()
+            td["value"], cut = _cap_text(t.value)
+            cut_values = cut_values or cut
+            texts.append(td)
+        cut_entries = max(len(self.fields), len(self.texts), len(self.models)) > MAX_ENTRIES
         d: dict[str, Any] = {
             "lib_id": self.lib_id,
             "scope": self.scope,
-            "description": self.description,
-            "keywords": self.keywords,
+            "description": description,
+            "keywords": keywords,
             "mounting": self.mounting,
             "exclude_from_bom": self.exclude_from_bom,
             "exclude_from_pos": self.exclude_from_pos,
             "dnp": self.dnp,
-            "fields": dict(self.fields),
+            "fields": fields,
             "pad_count": len(self.pads),
             "pads": [p.to_dict() for p in self.pads[:max_pads]],
             "graphics": self.layer_summary(),
@@ -260,12 +287,18 @@ class FootprintGeometry:
                     f"shapes capped at {MAX_SHAPES} of {len(self.shapes)}, "
                     f"{MAX_SHAPE_POINTS} points each (`graphics` covers all)"
                 )
+        if cut_description or cut_keywords or cut_values or cut_entries:
+            d["truncated"] = True
+            notes.append(
+                f"strings cut at {MAX_TEXT_CHARS} chars, fields/texts/models at "
+                f"{MAX_ENTRIES} entries"
+            )
         if notes:
             joined = "; ".join(notes)
             d["note"] = f"Output truncated: {joined} (see fp_render, when available)."
         d.update(
-            models=[m.to_dict() for m in self.models],
-            texts=[t.to_dict() for t in self.texts],
+            models=[m.to_dict() for m in self.models[:MAX_ENTRIES]],
+            texts=texts,
             bbox=list(self.bbox()),
             geometry_hash=geometry_hash(self),
         )

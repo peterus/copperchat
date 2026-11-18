@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Literal, cast
 
-from copperchat.errors import StructuredToolError
+from copperchat.errors import DocumentNotOpen, StructuredToolError
 from copperchat.kicad_session import KicadHandle
 from copperchat.kicad_tools import access
 from copperchat.kicad_tools.filtering import natural_key
@@ -106,11 +107,16 @@ def _list_limit(value: Any) -> int:
 
 def _footprint_users(nickname: str) -> Any:
     """lib_id -> sorted references of the open project's symbols whose Footprint field
-    names a footprint of `nickname` (the symbol reader of sch_list_symbols)."""
+    names a footprint of `nickname` (the symbol reader of sch_list_symbols); empty for a
+    board-only project (no schematic open)."""
 
     def footprint_users(h: KicadHandle) -> dict[str, list[str]]:
+        try:
+            schematic = h.schematic()
+        except DocumentNotOpen:
+            return {}
         users: dict[str, set[str]] = {}
-        for sym in h.schematic().get_symbols():
+        for sym in schematic.get_symbols():
             d = access.symbol_dict(sym)
             footprint = d["footprint"].strip()
             if footprint.partition(":")[0] == nickname:
@@ -139,7 +145,7 @@ async def fp_list_local(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     if info.row_conflict:
         return _no_library(notes, "library_conflict", info.row_conflict)
     if not info.row_present:
-        on_disk = len(svc.local_names_on_disk(lib))
+        on_disk = len(await asyncio.to_thread(svc.local_names_on_disk, lib))
         message = (
             f"This project has no local footprint library yet ({lib.nickname}); the "
             "first fp_create adds it."

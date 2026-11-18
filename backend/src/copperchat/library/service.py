@@ -880,8 +880,10 @@ class LibraryService:
         cached = self._fp_geometry.get(lib_id)
         if cached is not None and cached.file is not None:
             current = await asyncio.to_thread(_file_validator, cached.file)
-            if current != cached.validator:
-                del self._fp_geometry[lib_id]  # changed or removed: read again
+            if self._fp_geometry.get(lib_id) is not cached:
+                cached = None  # invalidated or evicted during the lstat: read again
+            elif current != cached.validator:
+                self._fp_geometry.pop(lib_id, None)  # changed or removed: read again
                 cached = None
         if cached is not None:
             self._fp_geometry.move_to_end(lib_id)
