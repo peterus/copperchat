@@ -7,7 +7,8 @@ turns counter-clockwise as seen on screen, which in y-down coordinates is
 Geometry the distance function understands:
 - a polygon: `Sequence[Point]` (implicitly closed, at least 3 vertices),
 - a `Seg`: a stroked segment (centre line `a`-`b` plus `half_width`),
-- a circle: `("circle", centre, radius)`.
+- a circle: `("circle", centre, radius)`,
+- a `Rounded`: a polygon core grown by a radius (a roundrect pad, exactly).
 """
 
 from __future__ import annotations
@@ -38,7 +39,18 @@ class Seg:
     half_width: float = 0.0
 
 
-Geometry = Polygon | Seg | Circle
+@dataclass(frozen=True)
+class Rounded:
+    """A filled polygon `core` grown by `radius` on every side (Minkowski sum with a
+    disc): a rounded rectangle is its inner rectangle grown by the corner radius, so its
+    distance is exact and costs 4 vertices instead of the 68 of its chord polygon."""
+
+    core: tuple[Point, ...]
+    radius: float
+
+
+Part = Polygon | Seg | Circle  # what `pad_parts` and `stroke_segments` give
+Geometry = Part | Rounded
 
 
 def is_circle(g: object) -> TypeIs[Circle]:
@@ -185,7 +197,7 @@ def _vec_extra(v: object) -> Point:
     return (0.0, 0.0)
 
 
-def pad_parts(pad: Pad) -> list[Polygon | Seg | Circle]:
+def pad_parts(pad: Pad) -> list[Part]:
     """All copper pieces of a pad (rotated, absolute). One part for ordinary pads; a
     custom pad gives its anchor shape plus its primitives (filled polygon/rect as
     polygons, circle as a disc grown by half its stroke, segments/arcs as `Seg`s).
@@ -193,7 +205,7 @@ def pad_parts(pad: Pad) -> list[Polygon | Seg | Circle]:
     rotated copper `offset`), so the offset applies to them too. Pad-to-pad gap is the
     minimum `distance` over the parts.
     """
-    parts: list[Polygon | Seg | Circle] = [pad_geometry(pad)]
+    parts: list[Part] = [pad_geometry(pad)]
     if pad.shape != "custom":
         return parts
     extra = dict(pad.extra)
@@ -221,6 +233,40 @@ def pad_parts(pad: Pad) -> list[Polygon | Seg | Circle]:
     return parts
 
 
+def pad_distance_parts(pad: Pad, parts: Sequence[Part] | None = None) -> list[Geometry]:
+    """`pad_parts` (or the given `parts`, its result) for distances: the main shape of a
+    roundrect or oval pad is exact and small (a `Rounded` inner rectangle, a stadium
+    `Seg`, or a circle) instead of its 68-vertex chord polygon; the other parts as is."""
+    out: list[Geometry] = list(pad_parts(pad) if parts is None else parts)
+    if pad.shape in ("roundrect", "oval"):
+        out[0] = _rounded_main(pad)
+    return out
+
+
+def _rounded_main(pad: Pad) -> Geometry:
+    w, h = pad.size
+    hx, hy = w / 2, h / 2
+    if pad.shape == "oval":
+        r = min(hx, hy)
+    else:
+        ratio = 0.25 if pad.roundrect_ratio is None else pad.roundrect_ratio
+        r = min(max(ratio * min(w, h), 0.0), hx, hy)
+    off = _vec_extra(dict(pad.extra).get("offset"))
+    ix, iy = hx - r, hy - r  # the inner rectangle's half sizes
+
+    def place(pts: Sequence[Point]) -> list[Point]:
+        return _translate_rotate(pts, off, pad.at, pad.rotation)
+
+    if r <= 1e-9:
+        return place(_rounded_rect(w, h, 0.0))
+    if ix <= 1e-9 and iy <= 1e-9:
+        return ("circle", place([(0.0, 0.0)])[0], r)
+    if ix <= 1e-9 or iy <= 1e-9:
+        a, b = place([(-ix, -iy), (ix, iy)])
+        return Seg(a, b, r)
+    return Rounded(tuple(place(_rounded_rect(2 * ix, 2 * iy, 0.0))), r)
+
+
 def _abs(pts: Sequence[Point], pad: Pad, off: Point) -> list[Point]:
     return _translate_rotate(pts, off, pad.at, pad.rotation)
 
@@ -244,14 +290,15 @@ def _circle_points(center: Point, r: float) -> list[Point]:
     ]
 
 
-def _arc_points(start: Point, mid: Point, end: Point) -> list[Point]:
-    """Chord points of the arc start -> mid -> end (both ends included)."""
+def _arc_sweep(start: Point, mid: Point, end: Point) -> tuple[Point, float, float, float] | None:
+    """(centre, radius, start angle, signed sweep) of the arc start -> mid -> end; None
+    when the three points are collinear."""
     ax, ay = start
     bx, by = mid
     cx, cy = end
     d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
     if abs(d) < 1e-12:  # collinear
-        return [start, end]
+        return None
     ux = (
         (ax**2 + ay**2) * (by - cy) + (bx**2 + by**2) * (cy - ay) + (cx**2 + cy**2) * (ay - by)
     ) / d
@@ -267,7 +314,26 @@ def _arc_points(start: Point, mid: Point, end: Point) -> list[Point]:
     ccw_mid = (am - a0) % two_pi
     ccw_end = (a1 - a0) % two_pi
     sweep = ccw_end if ccw_mid <= ccw_end else ccw_end - two_pi
-    n = max(1, math.ceil(abs(sweep) / (math.pi / 2) * ARC_STEPS_PER_QUARTER))
+    return (ux, uy), r, a0, sweep
+
+
+def _arc_chords(sweep: float) -> int:
+    return max(1, math.ceil(abs(sweep) / (math.pi / 2) * ARC_STEPS_PER_QUARTER))
+
+
+def arc_chord_count(start: Point, mid: Point, end: Point) -> int:
+    """Chords `_arc_points` gives for this arc, without building them."""
+    arc = _arc_sweep(start, mid, end)
+    return 1 if arc is None else _arc_chords(arc[3])
+
+
+def _arc_points(start: Point, mid: Point, end: Point) -> list[Point]:
+    """Chord points of the arc start -> mid -> end (both ends included)."""
+    arc = _arc_sweep(start, mid, end)
+    if arc is None:
+        return [start, end]
+    (ux, uy), r, a0, sweep = arc
+    n = _arc_chords(sweep)
     pts = [
         (ux + r * math.cos(a0 + sweep * i / n), uy + r * math.sin(a0 + sweep * i / n))
         for i in range(n + 1)
@@ -316,6 +382,26 @@ def stroke_segments(shape: Shape) -> list[Seg]:
     return []
 
 
+def segment_count(shape: Shape) -> int:
+    """`len(stroke_segments(shape))` without building them: the tessellation work a
+    caller charges before it asks for the segments."""
+    k, n = shape.kind, len(shape.points)
+    if k == "segment":
+        return 1 if n >= 2 else 0
+    if k == "rect":
+        return 4 if n >= 2 else 0
+    if k == "arc":
+        return arc_chord_count(*shape.points[:3]) if n >= 3 else 0
+    if k in ("circle", "ellipse"):
+        ok = shape.center is not None and shape.size is not None
+        return 4 * ARC_STEPS_PER_QUARTER if ok else 0
+    if k in ("polygon", "polygon_hole"):
+        return n if shape.closed or n > 2 else max(n - 1, 0)
+    if k == "bezier":
+        return max(n - 1, 0)
+    return 0
+
+
 # --- distance -----------------------------------------------------------------------
 
 
@@ -332,6 +418,72 @@ def point_in_polygon(p: Point, poly: Polygon) -> bool:
         if (y0 > y) != (y1 > y) and x < (x1 - x0) * (y - y0) / (y1 - y0) + x0:
             inside = not inside
     return inside
+
+
+class BandIndex:
+    """`point_in_polygon` with the polygon's edges bucketed into horizontal bands: a
+    point is tested against the edges of its band only (the crossings and the boundary
+    test only ever involve edges whose y-range holds the point's y), outside the
+    polygon's box against none. `cost` is the most edges of one band: the work units of
+    one `contains`. Build with `BandIndex.build_cost` charged first (an edge enters
+    every band its y-range spans)."""
+
+    _PAD = 1e-9  # an edge's y-range, grown so a boundary point (1e-12) finds its edge
+
+    def __init__(self, poly: Polygon) -> None:
+        self.poly = poly
+        xs = [p[0] for p in poly]
+        ys = [p[1] for p in poly]
+        self.box = (min(xs), min(ys), max(xs), max(ys))
+        n = len(poly)
+        self.n = max(n, 1)
+        span = self.box[3] - self.box[1]
+        self.h = span / self.n if span > 0 else 1.0
+        self.bands: list[list[tuple[Point, Point]]] = [[] for _ in range(self.n)]
+        for i in range(n):
+            a, b = poly[i], poly[(i + 1) % n]
+            lo, hi = self._range(a, b)
+            for k in range(lo, hi + 1):
+                self.bands[k].append((a, b))
+        self.cost = max((len(b) for b in self.bands), default=0) + 1
+
+    def _band(self, y: float) -> int:
+        return min(self.n - 1, max(0, int((y - self.box[1]) / self.h)))
+
+    def _range(self, a: Point, b: Point) -> tuple[int, int]:
+        lo = self._band(min(a[1], b[1]) - self._PAD)
+        return lo, self._band(max(a[1], b[1]) + self._PAD)
+
+    @staticmethod
+    def build_cost(poly: Polygon) -> int:
+        """Work of building the index (edge-band entries), without building it."""
+        n = len(poly)
+        if n == 0:
+            return 1
+        y0 = min(p[1] for p in poly)
+        span = max(p[1] for p in poly) - y0
+        h = span / n if span > 0 else 1.0
+        total = n
+        for i in range(n):
+            a, b = poly[i], poly[(i + 1) % n]
+            lo = min(n - 1, max(0, int((min(a[1], b[1]) - BandIndex._PAD - y0) / h)))
+            hi = min(n - 1, max(0, int((max(a[1], b[1]) + BandIndex._PAD - y0) / h)))
+            total += hi - lo + 1
+        return total
+
+    def contains(self, p: Point) -> bool:
+        """As `point_in_polygon` (even-odd, boundary = inside)."""
+        x, y = p
+        x0, y0, x1, y1 = self.box
+        if not (x0 - 1e-12 <= x <= x1 + 1e-12 and y0 - 1e-12 <= y <= y1 + 1e-12):
+            return False
+        inside = False
+        for (ax, ay), (bx, by) in self.bands[self._band(y)]:
+            if _point_seg_dist(p, (ax, ay), (bx, by)) <= 1e-12:
+                return True
+            if (ay > y) != (by > y) and x < (bx - ax) * (y - ay) / (by - ay) + ax:
+                inside = not inside
+        return inside
 
 
 def _point_seg_dist(p: Point, a: Point, b: Point) -> float:
@@ -364,6 +516,8 @@ def _core(g: Geometry) -> tuple[list[Point], bool, float]:
         return [g.a, g.b], False, g.half_width
     if is_circle(g):
         return [g[1]], False, g[2]
+    if isinstance(g, Rounded):
+        return list(g.core), len(g.core) >= 3, g.radius
     return list(g), len(g) >= 3, 0.0
 
 
@@ -381,7 +535,8 @@ def distance(a: Geometry, b: Geometry) -> float:
     """Shortest gap between two shapes; 0.0 when they touch, overlap or nest.
 
     Polygons are filled regions (containment gives 0); a `Seg` is a stadium (centre line
-    inflated by its half width); a circle is a filled disc.
+    inflated by its half width); a circle is a filled disc; a `Rounded` its core polygon
+    inflated by its radius.
     """
     pa, poly_a, ra = _core(a)
     pb, poly_b, rb = _core(b)
@@ -406,6 +561,10 @@ def closed_outline(shapes: Sequence[Shape], afford: Afford | None = None) -> lis
             return list(s.points)
         if s.kind == "circle" and s.center is not None and s.size is not None:
             return _circle_points(s.center, s.size[0] / 2)
+    if any(s.kind not in ("segment", "arc") for s in shapes):
+        return None
+    if afford is not None and not afford(sum(segment_count(s) + 1 for s in shapes)):
+        return None  # the tessellation of the arcs, charged before it is built
     pieces: list[list[Point]] = []
     for s in shapes:
         if s.kind == "segment" and len(s.points) >= 2:

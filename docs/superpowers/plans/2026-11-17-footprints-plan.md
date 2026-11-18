@@ -642,19 +642,53 @@ phase file, with the reason.)
   pin-1 rule. Every loop whose cost is a product of two input sizes (closed-outline
   building, expected-pad matching, courtyard containment and margin, silk outside the
   courtyard, the pad and copper x silk sweeps and distances, pin-1 mark distances incl.
-  per diagonal edge) charges one shared per-run work budget (`WORK_BUDGET`, 1,500,000
-  units of about one point-segment distance, ~1 s in CPython) before it runs; a rule
-  that cannot afford its next step stops there (pin 1 and the courtyard rules then give
-  no verdict). One `too_complex_partial_check` info at the end lists exactly the rules
-  skipped or partial, grouped by reason (`measured.skipped`: `too_many_items`,
-  `complex_pads`, `bounding_box` — only when pin 1 actually used one —, `budget`).
+  per diagonal edge, the chords of every arc/circle graphic used) charges one shared
+  per-run work budget (`WORK_BUDGET`, 1,000,000 units of about one point-segment
+  distance, ~1 s in CPython) before it runs; a rule that cannot afford its next step
+  stops there (pin 1 and the courtyard rules then give no verdict). One
+  `too_complex_partial_check` info at the end lists exactly the rules skipped or
+  partial, grouped by reason (`measured.skipped`: `too_many_items`, `complex_pads`,
+  `bounding_box` — only when pin 1 actually used one —, `budget`). `CheckReport.work`
+  holds the units spent (not in the JSON result; the tests assert on it).
+- **`fp_check` cost model (review-loop round 4):** each step charges what it actually
+  does, just before it does it: `_min_dist` charges its piece-box tests, then each
+  `geom.distance` it really measures (`_dist_cost` of the two pieces' vertices), not
+  the whole pad pair up front. For distances a roundrect pad is a `geom.Rounded` (its
+  inner rectangle grown by the corner radius: exact, 4 vertices instead of the 68 of
+  its chord polygon), an oval a stadium `Seg` or a circle (`geom.pad_distance_parts`);
+  containment still tests the chord polygon's points. Points are counted
+  (`_point_count`) and charged before any is made, and made one part at a time. A
+  non-rectangular courtyard is tested through a `geom.BandIndex` (edges bucketed in
+  horizontal bands, its build cost charged first), so a point costs the edges of one
+  band, not all. Arc/circle tessellation is charged before it is built (`segment_count`,
+  `arc_chord_count`; `_Run.geoms`, the F.Fab chords, `closed_outline`), and silk outside
+  the courtyard is built lazily, item by item. Sweep over all 15,468 footprints of the
+  base image's stock libraries (`run_checks` per footprint, throwaway script): no
+  footprint gets a partial-check info (7398212: 19, incl. LQFP-128/176/216, TQFP-128/
+  176 and the ArtInChip QFN-88); the costliest spends 209,278 units (p99 74,665), so
+  the budget was lowered from 1.5 M to 1 M (about 5x headroom); `run_checks` max
+  0.118 s, p99 0.033 s (643e2ce: 1.50 s / 0.34 s). Findings against 643e2ce: identical
+  rules/severities/pads on 15,460 footprints; 8 differ only in `courtyard_margin` — 6
+  name another pad at the same (tied) distance, 2 (`MountingHole_4.3x6.2mm_M4_Pad`,
+  `_Via`) newly warn at 0.247 mm (the exact oval reaches ~3 um past its chord
+  polygon) — and 7 `silk_on_pad` messages moved by 0.001 mm for the same reason. The
+  ArtInChip QFN-88 keeps all 84 `pad_gap_small` findings. Guards: synthetic 176/216-pad
+  0.4 mm roundrect LQFPs (unit) and the stock `Package_QFP:LQFP-216_24x24mm_P0.4mm` /
+  `Package_DFN_QFN:ArtInChip_QFN-88-1EP_10x10mm_P0.4mm_EP6.74x6.74mm` (kicad).
 - **`fp_render` sanitiser allowlist:** only the elements KiCad's `fp export svg` writes
   (seen: svg, g, path, circle, text, title, desc) plus the other plain shapes of its SVG
   plotter (ellipse, rect, line, polyline, polygon, tspan) survive; anything else goes
   with its subtree (use, tref, pattern, marker, mask, filter, clipPath, image,
   foreignObject, ...: nested references amplify exponentially under the render lock).
   `href` and every attribute value with `url(` (fragment or not), `image-set(`, `src(`
-  or a backslash are dropped.
+  or a backslash are dropped. Group `opacity` (attribute or `style` declaration) is
+  dropped too — nested opacity groups multiply CairoSVG's work under the render lock;
+  `fill-opacity`/`stroke-opacity` stay — and an element with opacity 0 goes with its
+  subtree: KiCad does write `opacity="0"` on its hidden REF**/name texts (seen in 47k
+  stock texts), which must stay invisible. At most 20,000 kept elements
+  (`MAX_ELEMENTS`) and 4 MB (`MAX_SVG_BYTES`, was 10 MB), else `render_failed`: the
+  largest stock export (all F/B layers) is 6,208 elements (Xilinx FLG1925 BGA) and
+  466 KB; 20k small paths rasterise in ~3 s.
 - **Pin-1 heuristic:** a silk/fab piece marks pin 1 when it is within
   `max(pad1.size) + 1` mm of pad 1 and strictly nearer to pad 1 than to any other pad;
   pieces are whole shapes plus the single **diagonal** edges (not within 1° of x/y) of

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import math
 import random
 import time
@@ -363,3 +364,97 @@ def test_sweeps_and_outline_stop_when_work_is_refused() -> None:
     segs = [Shape("segment", "F.CrtYd", ((0, 0), (0, 0)), None, None, 0.05, False)] * 10
     spent.clear()
     assert geom.closed_outline(segs, budget(5)) is None
+
+
+# --- review-loop round 4: exact rounded pads, chord counts --------------------------------
+
+
+@pytest.mark.parametrize(
+    ("shape", "size", "ratio", "kind"),
+    [
+        ("roundrect", (1.475, 0.25), 0.25, geom.Rounded),
+        ("roundrect", (1.0, 1.0), 0.0, list),
+        ("oval", (1.6, 0.8), None, geom.Seg),
+        ("oval", (0.8, 0.8), None, tuple),  # a circle
+    ],
+)
+def test_distance_parts_of_rounded_pads(
+    shape: str, size: tuple[float, float], ratio: float | None, kind: type
+) -> None:
+    """A roundrect / oval pad's distance part is small and exact: distances agree with
+    its 68-vertex chord polygon to within the chord sagitta (inscribed: never larger)."""
+    rng = random.Random(4)
+    for rot in (0.0, 30.0, 90.0):
+        pad = _pad(shape, at=(0.3, -0.2), size=size, rot=rot, ratio=ratio)
+        (main,) = geom.pad_distance_parts(pad)
+        assert isinstance(main, kind)
+        chords = geom.pad_polygon(pad)
+        for _ in range(50):
+            other = ("circle", (rng.uniform(-3, 3), rng.uniform(-3, 3)), 0.05)
+            exact, approx = geom.distance(main, other), geom.distance(chords, other)
+            assert exact - 1e-9 <= approx <= exact + 0.002 * max(size)
+
+
+def test_rounded_pad_gap_is_exact() -> None:
+    """Two 0.3 mm roundrect pads at 0.4 mm pitch: exactly 0.1 mm apart, 4 core vertices."""
+    a, b = (_pad("roundrect", at=(0, y), size=(1.475, 0.3), ratio=0.25) for y in (0, 0.4))
+    (pa,), (pb,) = geom.pad_distance_parts(a), geom.pad_distance_parts(b)
+    assert isinstance(pa, geom.Rounded) and len(pa.core) == 4
+    assert geom.distance(pa, pb) == pytest.approx(0.1, abs=1e-12)
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        Shape("segment", "F.SilkS", ((0, 0), (1, 0)), None, None, 0.1, False),
+        Shape("rect", "F.SilkS", ((0, 0), (1, 1)), None, None, 0.1, False),
+        Shape("arc", "F.SilkS", ((0, 0), (0.5, 0.5), (1, 0)), None, None, 0.1, False),
+        Shape("arc", "F.SilkS", ((0, 0), (0.01, 0.0001), (0.02, 0)), None, None, 0.1, False),
+        Shape("arc", "F.SilkS", ((0, 0), (1, 1), (2, 2)), None, None, 0.1, False),  # line
+        Shape("circle", "F.SilkS", (), (0, 0), (1, 1), 0.1, False),
+        Shape("ellipse", "F.SilkS", (), (0, 0), (2, 1), 0.1, False),
+        Shape("polygon", "F.SilkS", ((0, 0), (1, 0), (1, 1)), None, None, 0.1, True),
+        Shape("polygon", "F.SilkS", ((0, 0), (1, 0)), None, None, 0.1, False),
+        Shape("bezier", "F.SilkS", ((0, 0), (1, 0), (1, 1), (2, 1)), None, None, 0.1, False),
+        Shape("ellipse_arc", "F.SilkS", (), (0, 0), (2, 1), 0.1, False),
+    ],
+)
+def test_segment_count_matches_tessellation(shape: Shape) -> None:
+    assert geom.segment_count(shape) == len(geom.stroke_segments(shape))
+
+
+def test_closed_outline_charges_arc_chords_first() -> None:
+    """The arcs' chords are charged before they are built: refused, nothing is built."""
+    arcs = [
+        Shape("arc", "F.CrtYd", ((0, 0), (1, 1), (2, 0)), None, None, 0.05, False),
+        Shape("arc", "F.CrtYd", ((2, 0), (1, -1), (0, 0)), None, None, 0.05, False),
+    ]
+    asked: list[int] = []
+
+    def refuse(cost: int) -> bool:
+        asked.append(cost)
+        return False
+
+    assert geom.closed_outline(arcs, refuse) is None
+    assert asked == [sum(geom.segment_count(s) + 1 for s in arcs)]
+    assert geom.closed_outline(arcs, lambda cost: True) is not None
+
+
+def test_band_index_matches_point_in_polygon() -> None:
+    rng = random.Random(7)
+    star = [
+        (
+            (1.0 if k % 2 else 0.4) * math.cos(k * math.pi / 9),
+            (1.0 if k % 2 else 0.4) * math.sin(k * math.pi / 9),
+        )
+        for k in range(18)
+    ]
+    for poly in (star, [(0, 0), (2, 0), (2, 1), (1, 1), (1, 2), (0, 2)], [(0, 0), (1, 0), (2, 0)]):
+        index = geom.BandIndex(poly)
+        assert geom.BandIndex.build_cost(poly) >= sum(len(b) for b in index.bands)
+        pts = [(rng.uniform(-1.2, 2.2), rng.uniform(-1.2, 2.2)) for _ in range(2000)]
+        pts += list(poly) + [
+            ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2) for a, b in itertools.pairwise(poly)
+        ]
+        for q in pts:
+            assert index.contains(q) == geom.point_in_polygon(q, poly), (poly, q)

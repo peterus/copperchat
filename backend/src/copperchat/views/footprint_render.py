@@ -8,13 +8,17 @@ Hardening (spec §7.5, C10):
   worker thread (wrap/rasterise) and the temp-dir removal have finished;
 - argv list only, `--fp=<name>` one element; the library directory comes from the
   footprint table (absolute, existing, `*.pretty`), the name never holds a path;
-- KiCad's output must exist, be non-empty and at most 10 MB; any `<!DOCTYPE` other than
+- KiCad's output must exist, be non-empty, at most 4 MB and at most 20,000 elements
+  (the largest stock footprint export: 466 KB, 6,208 elements); any `<!DOCTYPE` other than
   KiCad's own SVG 1.1 public prolog, and any `<!ENTITY`, is refused; it is re-serialised
   with `xml.etree` (never by string concatenation) keeping only the elements KiCad's
   `fp export svg` writes (`ALLOWED_TAGS`; anything else goes with its subtree, so no
   script, style, image, `use`, pattern, marker, mask, filter, clipPath, ...), without
   links (`href`), event handlers, and attribute values holding `url(` (fragment or not),
-  a backslash (CSS escape), `image-set(` or `src(`;
+  a backslash (CSS escape), `image-set(` or `src(`; group `opacity` (an attribute or a
+  `style` declaration) is dropped, as nested opacity groups multiply CairoSVG's work
+  (`fill-opacity` / `stroke-opacity` stay), and an element KiCad hid with opacity 0 (its
+  invisible REF** / name texts) goes with its subtree;
 - CairoSVG runs with a URL fetcher that refuses everything, never with `unsafe=True`.
 
 Coordinates: mm in footprint space (origin = anchor, y down). KiCad's SVG `viewBox` is
@@ -49,7 +53,11 @@ from copperchat.tools.spec import ToolContext
 
 SVG_NS = "http://www.w3.org/2000/svg"
 XML_NS = "http://www.w3.org/XML/1998/namespace"
-MAX_SVG_BYTES = 10 * 1024 * 1024
+# the largest stock footprint export (base image libraries, all layers) is 466 KB and
+# 6,208 elements; rasterising is roughly linear in the element count and holds the
+# global render lock
+MAX_SVG_BYTES = 4 * 1024 * 1024
+MAX_ELEMENTS = 20_000
 MAX_DEPTH = 64  # KiCad's SVG nests 2-3 levels
 MAX_VIEW_MM = 10_000.0
 CLI_TIMEOUT_S = 60.0
@@ -98,6 +106,8 @@ _DECLARATION = re.compile(r"<!\s*(?:DOCTYPE|ENTITY)", re.IGNORECASE)
 # CSS functions that load or reference a resource: url(...) (also a #fragment: the
 # allowlisted elements need none), image-set("x.png"), src("x")
 _CSS_REF = re.compile(r"(?:url|image-set|src)\s*\(", re.IGNORECASE)
+# a `style` declaration of group opacity (not fill-opacity / stroke-opacity)
+_OPACITY_DECL = re.compile(r"^\s*opacity\s*:(.*)$", re.IGNORECASE | re.DOTALL)
 
 # Colours (dark, like KiCad's footprint editor: its layer colours are made for it).
 BG, MINOR, MAJOR, AXIS, TEXT, ACCENT = (
@@ -201,8 +211,33 @@ def _split(key: str) -> tuple[str, str]:
     return "", key
 
 
-def _clean(src: ET.Element, depth: int) -> ET.Element | None:
-    """An un-namespaced copy of an SVG element without active content; None to drop."""
+def _transparent(value: str) -> bool:
+    """True for an opacity value of 0 (or below); an unreadable value is not."""
+    try:
+        return float(value.strip()) <= 0.0
+    except ValueError:
+        return False
+
+
+def _without_opacity(style: str) -> tuple[str, bool]:
+    """`style` without its `opacity:` declarations (unchanged without one), and whether
+    one was 0."""
+    kept: list[str] = []
+    hidden = found = False
+    for decl in style.split(";"):
+        m = _OPACITY_DECL.match(decl)
+        if m:
+            found = True
+            hidden = hidden or _transparent(m.group(1))
+        elif decl.strip():
+            kept.append(decl)
+    return (";".join(kept) if found else style), hidden
+
+
+def _clean(src: ET.Element, depth: int, count: list[int]) -> ET.Element | None:
+    """An un-namespaced copy of an SVG element without active content and without
+    group opacity; None to drop. `count` holds the elements kept so far (at most
+    `MAX_ELEMENTS`, else `render_failed`)."""
     if depth > MAX_DEPTH:
         raise _failed("kicad-cli wrote an SVG nested too deeply")
     ns, local = _split(src.tag) if isinstance(src.tag, str) else ("?", "")
@@ -217,11 +252,22 @@ def _clean(src: ET.Element, depth: int) -> ET.Element | None:
             continue  # inkscape:, sodipodi:, xml:base, ...
         if "\\" in value or _CSS_REF.search(value):
             continue  # url()/image-set()/src(); a CSS escape (u\72 l() can hide one
+        if klocal.lower() == "opacity":  # group opacity: nested, it multiplies the work
+            if _transparent(value):
+                return None  # hidden (KiCad's invisible texts): drawn as nothing anyway
+            continue
+        if klocal.lower() == "style":
+            value, hidden = _without_opacity(value)
+            if hidden:
+                return None
         out.set(key, value)
+    count[0] += 1
+    if count[0] > MAX_ELEMENTS:
+        raise _failed(f"kicad-cli wrote an SVG of more than {MAX_ELEMENTS} elements")
     out.text = src.text
     out.tail = src.tail
     for child in src:
-        cleaned = _clean(child, depth + 1)
+        cleaned = _clean(child, depth + 1, count)
         if cleaned is not None:
             out.append(cleaned)
     return out
@@ -229,8 +275,8 @@ def _clean(src: ET.Element, depth: int) -> ET.Element | None:
 
 def load_kicad_svg(data: bytes) -> ET.Element:
     """KiCad's SVG, parsed and sanitised (an un-namespaced `svg` element tree), or
-    `render_failed` for output over 10 MB, a foreign DOCTYPE, an ENTITY declaration or
-    markup `xml.etree` cannot parse."""
+    `render_failed` for output over 4 MB or 20,000 elements, a foreign DOCTYPE, an
+    ENTITY declaration or markup `xml.etree` cannot parse."""
     if len(data) > MAX_SVG_BYTES:
         raise _failed(f"kicad-cli wrote more than {MAX_SVG_BYTES} bytes of SVG")
     # UTF-8 only (a BOM is dropped): the checks below run on the decoded text and expat
@@ -253,7 +299,7 @@ def load_kicad_svg(data: bytes) -> ET.Element:
         raise _failed(f"kicad-cli's SVG could not be parsed: {str(exc)[:200]}") from None
     if root.tag != f"{{{SVG_NS}}}svg":
         raise _failed("kicad-cli's output is not an SVG document")
-    cleaned = _clean(root, 0)
+    cleaned = _clean(root, 0, [0])
     assert cleaned is not None
     return cleaned
 

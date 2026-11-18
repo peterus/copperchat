@@ -129,11 +129,42 @@ def test_unparsable_refused() -> None:
 def test_oversize_output_refused() -> None:
     data = kicad_svg()
     data = data + b" " * (fr.MAX_SVG_BYTES + 1 - len(data))
-    assert len(data) == 10 * 1024 * 1024 + 1
+    assert len(data) == 4 * 1024 * 1024 + 1
     with pytest.raises(StructuredToolError) as exc:
         fr.load_kicad_svg(data)
     assert _code(exc) == "render_failed"
-    fr.load_kicad_svg(data[:-1])  # exactly 10 MB is fine
+    fr.load_kicad_svg(data[:-1])  # exactly 4 MB is fine
+
+
+def test_element_cap() -> None:
+    """At most 20,000 kept elements (the largest stock export has 6,208); dropped
+    elements do not count."""
+    path = '<path d="M 0 0 L 1 1"/>'
+    root = fr.load_kicad_svg(kicad_svg(path * (fr.MAX_ELEMENTS - 1)))  # + the root
+    assert len(root) == fr.MAX_ELEMENTS - 1
+    with pytest.raises(StructuredToolError) as exc:
+        fr.load_kicad_svg(kicad_svg(path * fr.MAX_ELEMENTS))
+    assert _code(exc) == "render_failed" and "20000 elements" in exc.value.why
+    fr.load_kicad_svg(kicad_svg(path * 10 + "<script/>" * (2 * fr.MAX_ELEMENTS)))
+
+
+def test_group_opacity_dropped() -> None:
+    """Group opacity (attribute or style) goes: nested, it multiplies CairoSVG's work;
+    fill-/stroke-opacity stay. KiCad's hidden texts (opacity 0) go entirely."""
+    body = (
+        '<g opacity="0.5" style="fill:#fff; opacity : 0.4;fill-opacity:0.4">'
+        '<g style="OPACITY:0.9"><path d="M 0 0 L 1 1" stroke-opacity="0.5"/></g>'
+        '<text opacity="0" stroke-opacity="0">REF**</text>'
+        '<text style="opacity:0.0">hidden</text>'
+        '<text opacity="bogus">shown</text></g>'
+    )
+    root = fr.load_kicad_svg(kicad_svg(body))
+    attrs = _all_attrs(root)
+    assert not [k for k, _ in attrs if k == "opacity"]
+    styles = [v for k, v in attrs if k == "style"]
+    assert styles == ["fill:#fff;fill-opacity:0.4", ""]
+    assert ("stroke-opacity", "0.5") in attrs
+    assert [t.text for t in root.iter("text")] == ["shown"]
 
 
 def _all_attrs(root: ET.Element) -> list[tuple[str, str]]:
@@ -255,14 +286,17 @@ KICAD_LIKE = (
 
 
 def test_kicad_like_sample_unchanged() -> None:
-    """Every element and attribute KiCad's fp export writes survives unchanged."""
+    """Every element and attribute KiCad's fp export writes survives unchanged, except
+    its hidden (opacity 0) texts, which are drawn as nothing anyway."""
     src = ET.fromstring(kicad_svg(KICAD_LIKE))
     root = fr.load_kicad_svg(kicad_svg(KICAD_LIKE))
 
     def shape(el: ET.Element) -> list[tuple[str, dict[str, str], str | None]]:
         return [(e.tag.split("}")[-1], dict(e.attrib), e.text) for e in el.iter()]
 
-    assert shape(root) == shape(src)
+    visible = [e for e in shape(src) if e[1].get("opacity") != "0"]
+    assert len(visible) < len(shape(src))
+    assert shape(root) == visible
 
 
 # --- rasterise ------------------------------------------------------------------------

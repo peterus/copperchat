@@ -121,3 +121,24 @@ async def test_stock_expected_u202_pattern(blank_nopcb_session: KicadSession) ->
     mismatch = _rules(bad.data)["expected_mismatch"]
     assert [f["pads"] for f in mismatch] == [["1"]]
     assert bad.data["geometry_hash"] == ok.data["geometry_hash"] == got.data["geometry_hash"]
+
+
+# fine-pitch stock footprints the work budget once cut short (review-loop round 4): a
+# roundrect pad is now a 4-vertex `Rounded` for distances, so they are checked in full
+LQFP216 = "Package_QFP:LQFP-216_24x24mm_P0.4mm"
+QFN88 = "Package_DFN_QFN:ArtInChip_QFN-88-1EP_10x10mm_P0.4mm_EP6.74x6.74mm"
+
+
+async def test_fine_pitch_stock_checked_in_full(blank_nopcb_session: KicadSession) -> None:
+    session = blank_nopcb_session
+    assert await library_for(session).wait_ready(120)
+    lqfp = await fp_check(ctx(session), {"lib_id": LQFP216})
+    qfn = await fp_check(ctx(session), {"lib_id": QFN88})
+    assert lqfp.data is not None and qfn.data is not None
+    for data in (lqfp.data, qfn.data):
+        assert "too_complex_partial_check" not in _rules(data), data["findings"]
+    assert "pad_gap_small" not in _rules(lqfp.data)  # 0.25 mm pads at 0.4 mm: 0.15 mm
+    # 0.100 mm gaps between the QFN-88 side pads, all of them (20 shown + omitted)
+    gaps = _rules(qfn.data)["pad_gap_small"]
+    assert len(gaps) + qfn.data.get("omitted", {}).get("pad_gap_small", 0) == 84
+    assert {g["severity"] for g in gaps} == {"warning"}

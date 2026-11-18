@@ -16,15 +16,16 @@ Conventions:
 
 from __future__ import annotations
 
+import itertools
 import math
 import re
 from collections import Counter
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from copperchat.kicad_tools.footprints import geom
-from copperchat.kicad_tools.footprints.geom import Box, Point, Polygon, Seg
+from copperchat.kicad_tools.footprints.geom import Box, Point, Polygon, Rounded, Seg
 from copperchat.kicad_tools.footprints.model import (
     APPROVAL_FIELD,
     SOURCE_FIELD,
@@ -61,12 +62,18 @@ MAX_PAIR_SHAPES = 5000  # all shapes plus the silk texts
 MAX_PAD_PARTS = 256
 MAX_PAD_VERTICES = 512
 # One work budget per run, shared by every loop whose cost is a product of two input
-# sizes: closed-outline building, expected-pad matching, courtyard containment (points x
-# courtyard vertices), courtyard margin, the pair sweeps and distances, the pin-1 mark
-# distances. A unit is about one point-to-segment distance (~0.7 us in CPython). Each
-# such loop charges its work (`_Run.afford`) before it runs; a rule that cannot afford
-# its next step stops there and is named in the one `too_complex_partial_check` info.
-WORK_BUDGET = 1_500_000
+# sizes or that tessellates arcs: closed-outline building, expected-pad matching,
+# courtyard containment (points x courtyard vertices), courtyard margin, the pair sweeps
+# and distances, the pin-1 mark distances, the chords of every graphic used. A unit is
+# about one point-to-segment distance (~0.7 us in CPython). Each step charges what it
+# actually does (`_Run.afford`) before it does it: a box test 1, a `geom.distance`
+# between two pieces `_dist_cost` of their vertices (a roundrect pad is a 4-vertex
+# `Rounded`, not its 68-vertex chord polygon), a chord 1. A rule that cannot afford its
+# next step stops there and is named in the one `too_complex_partial_check` info.
+# Sized from a sweep over all 15,468 stock KiCad footprints of the base image: the
+# costliest spends 209,278 units (p99 74,665), so about 5x headroom for local ones,
+# while an adversarial footprint stops after about a second (plan "As built (F2)").
+WORK_BUDGET = 1_000_000
 PAIR_RULES = ("pad_gap_small", "silk_on_pad")
 COURTYARD_RULES = ("courtyard_not_enclosing", "courtyard_margin", "silk_outside_courtyard")
 # why a rule is partial, in message order
@@ -136,6 +143,7 @@ class CheckReport:
     counts: dict[str, int]
     findings: tuple[Finding, ...]
     geometry_hash: str
+    work: int = 0  # units of WORK_BUDGET spent (not in the JSON result)
 
 
 # --- small helpers ------------------------------------------------------------------
@@ -230,10 +238,14 @@ def _geom_box(g: geom.Geometry) -> Box:
     if geom.is_circle(g):
         (cx, cy), r = g[1], g[2]
         return (cx - r, cy - r, cx + r, cy + r)
+    if isinstance(g, Rounded):
+        x0, y0, x1, y1 = _box(g.core)
+        r = g.radius
+        return (x0 - r, y0 - r, x1 + r, y1 + r)
     return _box(g)
 
 
-def _points(g: geom.Geometry) -> list[Point]:
+def _points(g: geom.Part) -> list[Point]:
     """Points to test for containment: polygon vertices, circle chords, and for a
     stroked segment its ends, plus with a stroke 8 points around each end at the half
     width (the stadium's extremes along both board axes and the diagonals)."""
@@ -253,35 +265,63 @@ def _points(g: geom.Geometry) -> list[Point]:
     return list(g)
 
 
+def _point_count(g: geom.Part) -> int:
+    """`len(_points(g))` without building them."""
+    if isinstance(g, Seg):
+        return 16 if g.half_width > 0.0 else 2
+    if geom.is_circle(g):
+        return 16
+    return len(g)
+
+
+@dataclass(frozen=True)
+class _Pieces:
+    """A group of pieces for `_min_dist` with their boxes and vertex counts."""
+
+    items: Sequence[geom.Geometry]
+    boxes: Sequence[Box]
+    verts: Sequence[int]
+
+    @classmethod
+    def of(cls, items: Sequence[geom.Geometry]) -> _Pieces:
+        return cls(items, [_geom_box(x) for x in items], [_vertices([x]) for x in items])
+
+
 def _min_dist(
-    xs: Sequence[geom.Geometry],
-    ys: Sequence[geom.Geometry],
-    below: float = math.inf,
-    bx: Sequence[Box] | None = None,
-    by: Sequence[Box] | None = None,
+    a: _Pieces, b: _Pieces, charge: Callable[[int], None], below: float = math.inf
 ) -> float:
     """Shortest distance between two groups of pieces, exact when it is below `below`
     (else some value >= `below`). Lazy: piece pairs are visited in order with a running
     best and skipped when their bounding-box gap (a lower bound of their distance)
-    already reaches it; nothing is materialised or sorted."""
-    bx = bx if bx is not None else [_geom_box(x) for x in xs]
-    by = by if by is not None else [_geom_box(y) for y in ys]
+    already reaches it; nothing is materialised or sorted. `charge` is called with the
+    work before it is done (the box tests, then each distance measured): it raises
+    `_OutOfBudget` to stop."""
+    charge(len(a.boxes) * len(b.boxes))
     best = below
-    for i, a in enumerate(bx):
-        for j, b in enumerate(by):
-            if _box_gap(a, b) >= best:
+    for i, ba in enumerate(a.boxes):
+        for j, bb in enumerate(b.boxes):
+            if _box_gap(ba, bb) >= best:
                 continue
-            best = min(best, geom.distance(xs[i], ys[j]))
+            charge(_dist_cost(a.verts[i], b.verts[j]))
+            best = min(best, geom.distance(a.items[i], b.items[j]))
             if best <= 0.0:
                 return 0.0
     return best
 
 
 def _vertices(pieces: Iterable[geom.Geometry]) -> int:
-    """Vertex count of pieces (a segment 2, a circle 1): the `geom.distance` cost unit."""
+    """Vertex count of pieces (a segment 2, a circle 1, a `Rounded` its core): the
+    `geom.distance` cost unit."""
     total = 0
     for x in pieces:
-        total += 2 if isinstance(x, Seg) else 1 if geom.is_circle(x) else len(x)
+        if isinstance(x, Seg):
+            total += 2
+        elif isinstance(x, Rounded):
+            total += len(x.core)
+        elif geom.is_circle(x):
+            total += 1
+        else:
+            total += len(x)
     return total
 
 
@@ -305,9 +345,12 @@ def _diagonal(seg: Seg) -> bool:
     return PIN1_AXIS_TOL_DEG < angle < 90.0 - PIN1_AXIS_TOL_DEG
 
 
-def _inside(poly: Polygon) -> tuple[Callable[[Point], bool], int]:
+def _inside(
+    poly: Polygon, afford: Callable[[int], bool]
+) -> tuple[Callable[[Point], bool], int] | None:
     """Containment test for `poly` (boundary = inside) and its work units per point; a
-    bounds check for an axis-aligned rectangle, the usual courtyard."""
+    bounds check for an axis-aligned rectangle, the usual courtyard, else a band index
+    (`geom.BandIndex`, its build charged to `afford`: None when refused)."""
     if len(poly) == 4:
         (ax, ay), (bx, by), (cx, cy), (dx, dy) = poly
         if (ay == by and bx == cx and cy == dy and dx == ax) or (
@@ -317,7 +360,10 @@ def _inside(poly: Polygon) -> tuple[Callable[[Point], bool], int]:
             return (
                 lambda q: x0 - 1e-12 <= q[0] <= x1 + 1e-12 and y0 - 1e-12 <= q[1] <= y1 + 1e-12
             ), 1
-    return (lambda q: geom.point_in_polygon(q, poly)), len(poly)
+    if not afford(geom.BandIndex.build_cost(poly)):
+        return None
+    index = geom.BandIndex(poly)
+    return index.contains, index.cost
 
 
 def text_box(t: Text) -> list[Point]:
@@ -332,6 +378,12 @@ def text_box(t: Text) -> list[Point]:
         (cx + x * c + y * s, cy - x * s + y * c)
         for x, y in ((-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh))
     ]
+
+
+def _shape_cost(shape: Shape) -> int:
+    """Work of `_shape_geoms`: its chords plus the filled polygon's vertices."""
+    filled = shape.filled and shape.kind in ("polygon", "rect")
+    return geom.segment_count(shape) + (len(shape.points) if filled else 0) + 1
 
 
 def _shape_geoms(shape: Shape) -> list[geom.Geometry]:
@@ -377,9 +429,13 @@ class _Run:
         g = self.inp.geometry
         self.g = g
         self._geoms: dict[int, list[geom.Geometry]] = {}
+        # `parts`: chord polygons (containment points); `pieces`: for distances
         self.parts = [geom.pad_parts(p) for p in g.pads]
-        self.part_boxes = [[_geom_box(x) for x in parts] for parts in self.parts]
-        self.boxes = [_union(b) or (0, 0, 0, 0) for b in self.part_boxes]
+        self.pieces = [
+            _Pieces.of(geom.pad_distance_parts(p, parts))
+            for p, parts in zip(g.pads, self.parts, strict=True)
+        ]
+        self.boxes = [_union(pc.boxes) or (0, 0, 0, 0) for pc in self.pieces]
         self.copper = [i for i, p in enumerate(g.pads) if is_copper(p)]
         self.vertices = [_vertices(parts) for parts in self.parts]
         self.complex_pads = {
@@ -390,7 +446,6 @@ class _Run:
         bottom = bool(self.copper) and all(_sides(g.pads[i]) == {"B"} for i in self.copper)
         self.side = "B" if bottom else "F"
         self.fab = [s for s in g.shapes if s.layer == f"{self.side}.Fab"]
-        self.fab_segs = [sg for s in self.fab for sg in geom.stroke_segments(s)]
         self.silk = [s for s in g.shapes if s.layer == f"{self.side}.SilkS"]
         silk_texts = sum(1 for t in g.texts if t.layer in ("F.SilkS", "B.SilkS"))
         self.pair_shapes = len(g.shapes) + silk_texts
@@ -399,6 +454,13 @@ class _Run:
         afford = self.charger("courtyard_missing", *COURTYARD_RULES)
         self.outline = geom.closed_outline(crtyd, afford) if crtyd else None
         self.outline_unknown = self.outline is None and _BUDGET in self.partial
+        # the body's chords (courtyard, margin, expected body), charged before built
+        fab_rules: tuple[str, ...] = ("courtyard_not_enclosing", "courtyard_margin")
+        if self.inp.expected is not None and self.inp.expected.body is not None:
+            fab_rules += ("expected_mismatch",)
+        self.fab_segs: list[Seg] | None = None
+        if self.afford(sum(_shape_cost(s) for s in self.fab), *fab_rules):
+            self.fab_segs = [sg for s in self.fab for sg in geom.stroke_segments(s)]
 
     # -- the shared work budget ----------------------------------------------------------
 
@@ -413,6 +475,15 @@ class _Run:
 
     def charger(self, *rules: str) -> Callable[[int], bool]:
         return lambda cost: self.afford(cost, *rules)
+
+    def spender(self, *rules: str) -> Callable[[int], None]:
+        """`afford` for `_min_dist`: raises `_OutOfBudget` when refused."""
+
+        def spend(cost: int) -> None:
+            if not self.afford(cost, *rules):
+                raise _OutOfBudget
+
+        return spend
 
     def note(self, reason: str, *rules: str) -> None:
         got = self.partial.setdefault(reason, [])
@@ -464,9 +535,13 @@ class _Run:
             expected=expected,
         )
 
-    def geoms(self, shape: Shape) -> list[geom.Geometry]:
+    def geoms(self, shape: Shape, *rules: str) -> list[geom.Geometry]:
+        """The pieces of a graphic, built once; the first build charges its chords to
+        `rules` and raises `_OutOfBudget` when refused."""
         key = id(shape)
         if key not in self._geoms:
+            if not self.afford(_shape_cost(shape), *rules):
+                raise _OutOfBudget
             self._geoms[key] = _shape_geoms(shape)
         return self._geoms[key]
 
@@ -593,7 +668,7 @@ class _Run:
             cy = (b[2] - b[0], b[3] - b[1]) if b else None
             if off(cy, exp.courtyard):
                 mismatch("courtyard size", cy, exp.courtyard)
-        if exp.body is not None:
+        if exp.body is not None and self.fab_segs is not None:  # else noted as budget
             fb = _union(_geom_box(Seg(s.a, s.b)) for s in self.fab_segs)
             body = (fb[2] - fb[0], fb[3] - fb[1]) if fb else None
             if off(body, exp.body):
@@ -614,13 +689,16 @@ class _Run:
             return
         rule = "courtyard_not_enclosing"
         enclosing, complete = True, True
-        inside, cost = _inside(poly)
+        test = _inside(poly, self.charger(*COURTYARD_RULES))
+        if test is None:  # noted by `afford`
+            return
+        inside, cost = test
         for i, pad in enumerate(self.g.pads):
-            pts = [q for part in self.parts[i] for q in _points(part)]
-            if not self.afford(len(pts) * cost, rule):
+            # counted, charged, then the points made one part at a time (never a list)
+            if not self.afford(sum(_point_count(x) for x in self.parts[i]) * cost, rule):
                 complete = False
                 break
-            if not all(inside(q) for q in pts):
+            if not all(inside(q) for part in self.parts[i] for q in _points(part)):
                 enclosing = False
                 self.add(
                     rule,
@@ -629,8 +707,9 @@ class _Run:
                     pads=[pad.number] if pad.number else (),
                     at=pad.at,
                 )
-        if complete and self.afford(2 * len(self.fab_segs) * cost, rule):
-            outside = [q for s in self.fab_segs for q in (s.a, s.b) if not inside(q)]
+        fab_segs = self.fab_segs
+        if complete and fab_segs is not None and self.afford(2 * len(fab_segs) * cost, rule):
+            outside = [q for s in fab_segs for q in (s.a, s.b) if not inside(q)]
             if outside:
                 enclosing = False
                 self.add(
@@ -644,19 +723,19 @@ class _Run:
             complete = False
         if not complete:  # the margin needs to know the outline encloses everything
             self.note(_BUDGET, "courtyard_margin")
-        elif enclosing:
-            self._margin(poly)
+        elif enclosing and fab_segs is not None:
+            self._margin(poly, fab_segs)
         self._silk_outside(inside, cost)
 
-    def _margin(self, poly: Polygon) -> None:
+    def _margin(self, poly: Polygon, fab_segs: list[Seg]) -> None:
         copper = _union(self.boxes[i] for i in self.copper)
-        body = _union(_geom_box(Seg(s.a, s.b)) for s in self.fab_segs)
+        body = _union(_geom_box(Seg(s.a, s.b)) for s in fab_segs)
         small = any(b is not None and _extent(b) <= SMALL_EXTENT + EPS for b in (copper, body))
         limit = MARGIN_SMALL if small else MARGIN
         edges = [Seg(poly[k], poly[(k + 1) % len(poly)]) for k in range(len(poly))]
         items: list[tuple[int, geom.Geometry]] = [
-            (i, part) for i in range(len(self.g.pads)) for part in self.parts[i]
-        ] + [(-1, s) for s in self.fab_segs]
+            (i, part) for i in range(len(self.g.pads)) for part in self.pieces[i].items
+        ] + [(-1, s) for s in fab_segs]
         edge_boxes = [_geom_box(e) for e in edges]
         item_boxes = [_geom_box(g) for _, g in items]
         afford = self.charger("courtyard_margin")
@@ -681,26 +760,30 @@ class _Run:
             )
 
     def _silk_outside(self, inside: Callable[[Point], bool], cost: int) -> None:
-        items: list[tuple[str, list[Point]]] = [
-            (s.kind, [q for x in self.geoms(s) if isinstance(x, Seg) for q in (x.a, x.b)])
-            for s in self.silk
-        ]
-        items += [
-            (f"text {t.value!r}", text_box(t))
-            for t in self.g.texts
-            if t.layer == f"{self.side}.SilkS" and t.kind not in ("reference", "value")
-        ]
-        for what, pts in items:
-            if not self.afford(len(pts) * cost, "silk_outside_courtyard"):
-                return
-            out = next((q for q in pts if not inside(q)), None)
-            if out is not None:
-                self.add(
-                    "silk_outside_courtyard",
-                    "warning",
-                    f"silk {what} lies outside the courtyard at {_xy(out)}",
-                    at=out,
-                )
+        rule = "silk_outside_courtyard"
+
+        def items() -> Iterator[tuple[str, list[Point]]]:  # lazily: one at a time
+            for s in self.silk:
+                segs = [x for x in self.geoms(s, rule) if isinstance(x, Seg)]
+                yield s.kind, [q for x in segs for q in (x.a, x.b)]
+            for t in self.g.texts:
+                if t.layer == f"{self.side}.SilkS" and t.kind not in ("reference", "value"):
+                    yield f"text {t.value!r}", text_box(t)
+
+        try:
+            for what, pts in items():
+                if not self.afford(len(pts) * cost, rule):
+                    return
+                out = next((q for q in pts if not inside(q)), None)
+                if out is not None:
+                    self.add(
+                        rule,
+                        "warning",
+                        f"silk {what} lies outside the courtyard at {_xy(out)}",
+                        at=out,
+                    )
+        except _OutOfBudget:
+            return  # noted by `afford`
 
     # -- pair checks (sweep) -------------------------------------------------------------
 
@@ -713,47 +796,56 @@ class _Run:
             self.note(_COMPLEX, *PAIR_RULES)
         # complex pads stay out; silk farther than the clearance from all copper too
         pads = [i for i in self.copper if i not in self.complex_pads]
-        raw: list[tuple[str, list[geom.Geometry]]] = [
-            (s.layer[0], self.geoms(s)) for s in g.shapes if s.layer in ("F.SilkS", "B.SilkS")
-        ]
-        raw += [(t.layer[0], [text_box(t)]) for t in g.texts if t.layer in ("F.SilkS", "B.SilkS")]
-        reach = _union(self.boxes[i] for i in pads)
-        silk: list[tuple[str, list[geom.Geometry], list[Box], Box, int]] = []
-        for side, pieces in raw:
-            pboxes = [_geom_box(x) for x in pieces]
-            box = _union(pboxes)
-            if box and reach and _box_gap(box, reach) <= SILK_CLEARANCE:
-                silk.append((side, pieces, pboxes, box, _vertices(pieces)))
         pad_boxes = [self.boxes[i] for i in pads]
 
         gaps: list[tuple[int, int, float]] = []
         afford = self.charger("pad_gap_small")
-        for a, b in geom.candidate_pairs(pad_boxes, PAD_GAP_WARN, afford):
-            i, j = pads[a], pads[b]
-            pi, pj = g.pads[i], g.pads[j]
-            if (pi.number and pi.number == pj.number) or not _share_copper(pi, pj):
-                continue
-            if not afford(_dist_cost(self.vertices[i], self.vertices[j])):
-                break
-            d = _min_dist(
-                self.parts[i], self.parts[j], PAD_GAP_WARN, self.part_boxes[i], self.part_boxes[j]
-            )
-            if d < PAD_GAP_WARN - EPS:
-                gaps.append((min(i, j), max(i, j), d))
+        spend = self.spender("pad_gap_small")
+        try:
+            for a, b in geom.candidate_pairs(pad_boxes, PAD_GAP_WARN, afford):
+                i, j = pads[a], pads[b]
+                pi, pj = g.pads[i], g.pads[j]
+                if (pi.number and pi.number == pj.number) or not _share_copper(pi, pj):
+                    continue
+                d = _min_dist(self.pieces[i], self.pieces[j], spend, PAD_GAP_WARN)
+                if d < PAD_GAP_WARN - EPS:
+                    gaps.append((min(i, j), max(i, j), d))
+        except _OutOfBudget:
+            pass  # noted; the gaps measured so far are real
 
         silk_min: dict[int, float] = {}
-        afford = self.charger("silk_on_pad")
-        silk_boxes = [s[3] for s in silk]
-        for a, b in geom.cross_pairs(pad_boxes, silk_boxes, SILK_CLEARANCE, afford):
-            i = pads[a]
-            side, pieces, pboxes, _, verts = silk[b]
-            if side not in _sides(g.pads[i]):
-                continue
-            if not afford(_dist_cost(verts, self.vertices[i])):
-                break
-            d = _min_dist(pieces, self.parts[i], SILK_CLEARANCE, pboxes, self.part_boxes[i])
-            if d < SILK_CLEARANCE - EPS and d < silk_min.get(i, math.inf):
-                silk_min[i] = d
+        rule = "silk_on_pad"
+        reach = _union(self.boxes[i] for i in pads)
+        silk: list[tuple[str, _Pieces, Box]] = []
+        try:
+            # silk farther than the clearance from all copper stays out
+            layers = ("F.SilkS", "B.SilkS")
+            raw = ((s.layer[0], s, None) for s in g.shapes if s.layer in layers)
+            texts = ((t.layer[0], None, t) for t in g.texts if t.layer in layers)
+            for side, shape, txt in itertools.chain(raw, texts):
+                if shape is not None:
+                    pieces = self.geoms(shape, rule)
+                elif self.afford(5, rule) and txt is not None:
+                    pieces = [text_box(txt)]
+                else:
+                    raise _OutOfBudget
+                pc = _Pieces.of(pieces)
+                box = _union(pc.boxes)
+                if box and reach and _box_gap(box, reach) <= SILK_CLEARANCE:
+                    silk.append((side, pc, box))
+            afford = self.charger(rule)
+            spend = self.spender(rule)
+            silk_boxes = [s[2] for s in silk]
+            for a, b in geom.cross_pairs(pad_boxes, silk_boxes, SILK_CLEARANCE, afford):
+                i = pads[a]
+                side, pc, _ = silk[b]
+                if side not in _sides(g.pads[i]):
+                    continue
+                d = _min_dist(pc, self.pieces[i], spend, SILK_CLEARANCE)
+                if d < SILK_CLEARANCE - EPS and d < silk_min.get(i, math.inf):
+                    silk_min[i] = d
+        except _OutOfBudget:
+            pass  # noted; the clearances measured so far are real
 
         for i, j, d in sorted(gaps):
             pi, pj = g.pads[i], g.pads[j]
@@ -803,50 +895,43 @@ class _Run:
             return
         others = [i for i in self.copper if g.pads[i].number != "1"]
 
-        def parts(i: int) -> list[geom.Geometry]:
+        def parts(i: int) -> _Pieces:
             if i in self.complex_pads:
                 self.note(_BBOX, rule)
-                return [_box_polygon(self.boxes[i])]
-            return self.parts[i]
+                return _Pieces.of([_box_polygon(self.boxes[i])])
+            return self.pieces[i]
 
-        def verts(i: int) -> int:
-            return 4 if i in self.complex_pads else self.vertices[i]
-
-        p1_parts: list[geom.Geometry] = []  # built on first use (may note _BBOX)
-        p1_verts = sum(verts(i) for i in ones)
+        p1: list[_Pieces] = []  # built on first use (may note _BBOX)
         reach = max(max(g.pads[i].size) for i in ones) + PIN1_REACH
+        charge = self.spender(rule)
 
-        def charge(cost: int) -> None:
-            if not self.afford(cost, rule):
-                raise _OutOfBudget
-
-        def marks(pieces: Sequence[geom.Geometry]) -> bool:
-            sbox = _union(_geom_box(x) for x in pieces)
+        def marks(items: Sequence[geom.Geometry]) -> bool:
+            sbox = _union(_geom_box(x) for x in items)
             if sbox is None or _box_gap(sbox, p1_box) > reach + EPS:
                 return False
-            sv = _vertices(pieces)
-            charge(_dist_cost(sv, p1_verts) + len(others))
-            if not p1_parts:
-                p1_parts.extend(part for i in ones for part in parts(i))
-            d1 = _min_dist(pieces, p1_parts)
+            if not p1:
+                p1.append(_Pieces.of([x for i in ones for x in parts(i).items]))
+            pieces = _Pieces.of(items)
+            d1 = _min_dist(pieces, p1[0], charge)
             if d1 > reach + EPS:
                 return False
+            charge(len(others))  # the box tests below
             for j in others:
                 if _box_gap(sbox, self.boxes[j]) > d1 + EPS:
                     continue
-                charge(_dist_cost(sv, verts(j)))
-                if _min_dist(pieces, parts(j), d1 + EPS) <= d1 + EPS:
+                if _min_dist(pieces, parts(j), charge, d1 + EPS) <= d1 + EPS:
                     return False
             return True
 
         shapes = [*self.silk, *self.fab]
         try:
-            if any(marks(self.geoms(s)) for s in shapes):
+            if any(marks(self.geoms(s, rule)) for s in shapes):
                 return
             for s in shapes:
                 if s.kind not in PIN1_EDGE_KINDS:
                     continue
-                if any(_diagonal(e) and marks([e]) for e in geom.stroke_segments(s)):
+                edges = [x for x in self.geoms(s, rule) if isinstance(x, Seg)]
+                if any(_diagonal(e) and marks([e]) for e in edges):
                     return
         except _OutOfBudget:
             return  # no verdict: noted by `afford`
@@ -976,7 +1061,7 @@ def run_checks(inp: CheckInput) -> CheckReport:
     run.finish()
     counts = Counter(f.severity for f in run.findings)
     exact = {s: counts.get(s, 0) for s in ("error", "warning", "info")}
-    return CheckReport(exact["error"] == 0, exact, tuple(run.findings), digest)
+    return CheckReport(exact["error"] == 0, exact, tuple(run.findings), digest, run.work)
 
 
 def to_result(report: CheckReport) -> dict[str, Any]:

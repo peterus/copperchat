@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from copperchat.kicad_tools.footprints import geom
+from copperchat.kicad_tools.footprints import checks, geom
 from copperchat.kicad_tools.footprints.checks import (
     MAX_PAIR_SHAPES,
     WORK_BUDGET,
@@ -37,6 +37,9 @@ from copperchat.kicad_tools.footprints.model import (
 )
 
 SMD = ("F.Cu", "F.Mask", "F.Paste")
+# wall-clock asserts are only a loose hang guard (slow CI); the bound itself is asserted
+# on the work units a run spent (`CheckReport.work`)
+HANG_S = 10.0
 THT = ("*.Cu", "F.Mask", "B.Mask")
 SOURCE = {SOURCE_FIELD: "datasheet rev B p. 3", REVIEW_FIELD: "yes"}
 
@@ -469,7 +472,8 @@ def test_cost_bound() -> None:
     pads = grid(50, 50, 1.0, 0.5)  # 2,500 pads
     t = time.perf_counter()
     report = check(auto(pads), pins=[str(i) for i in range(1, 2501)])
-    assert time.perf_counter() - t < 2.0
+    assert time.perf_counter() - t < HANG_S
+    assert report.work < WORK_BUDGET // 10  # the pair rules never started
     (f,) = of(report, "too_complex_partial_check")
     assert f.severity == "info"
     assert "pad_gap_small" in f.message and "silk_on_pad" in f.message
@@ -496,8 +500,9 @@ def test_pad_gap_uses_sweep() -> None:
     pads = grid(40, 25, 0.5, 0.4)
     t = time.perf_counter()
     report = check(auto(pads))
-    assert time.perf_counter() - t < 2.0
+    assert time.perf_counter() - t < HANG_S
     assert len(of(report, "pad_gap_small")) > 1000
+    assert not of(report, "too_complex_partial_check") and report.work < WORK_BUDGET // 2
     sub = grid(10, 10, 0.5, 0.4)
     got = {
         (tuple(sorted(f.pads, key=int)), f.severity) for f in of(check(auto(sub)), "pad_gap_small")
@@ -599,7 +604,8 @@ def test_pad_with_many_parts_is_reported_and_fast() -> None:
     g = geo(pads, [rect("F.CrtYd", -2, -2, 2, 2), rect("F.SilkS", -0.5, -0.5, 1.0, 1.0)])
     t0 = time.perf_counter()
     report = check(g)
-    assert time.perf_counter() - t0 < 5.0
+    assert time.perf_counter() - t0 < HANG_S
+    assert report.work <= WORK_BUDGET
     (f,) = of(report, "too_complex_partial_check")
     assert f.pads == ("1", "2") and f.expected == {"pieces": 256, "vertices": 512}
     assert not of(report, "pad_gap_small") and not of(report, "silk_on_pad")
@@ -613,8 +619,9 @@ def test_pads_below_part_cap_still_compared_quickly() -> None:
     g = geo(pads, [rect("F.CrtYd", -2, -2, 2, 2)])
     t0 = time.perf_counter()
     report = check(g)
-    assert time.perf_counter() - t0 < 5.0
+    assert time.perf_counter() - t0 < HANG_S
     assert not of(report, "too_complex_partial_check")
+    assert report.work < WORK_BUDGET // 10  # gap 0 found early: the rest not charged
     (f,) = of(report, "pad_gap_small")
     assert f.measured == 0.0 and f.severity == "error"
 
@@ -634,7 +641,8 @@ def test_pads_with_many_vertices_are_reported_and_fast() -> None:
     g = geo(pads, [rect("F.CrtYd", -2, -2, 2, 2)])
     t0 = time.perf_counter()
     report = check(g)
-    assert time.perf_counter() - t0 < 2.0
+    assert time.perf_counter() - t0 < HANG_S
+    assert report.work < WORK_BUDGET // 10  # left out of the pair rules up front
     (f,) = of(report, "too_complex_partial_check")
     assert f.pads == ("1", "2")
     assert f.measured == {
@@ -647,15 +655,16 @@ def test_pads_with_many_vertices_are_reported_and_fast() -> None:
 
 
 def test_pair_work_budget_bounds_total() -> None:
-    """Many pads each just below the vertex cap, all touching their neighbours: the
+    """Many 400-vertex pads (below the cap), all touching their neighbours: the
     footprint-level budget stops the pair rules and says so."""
-    pads = [_ngon(str(k + 1), (k * 0.9, 0.0), 500) for k in range(20)]
+    pads = [_ngon(str(k + 1), (k * 0.9, 0.0), 400) for k in range(20)]
     g = geo(pads, [rect("F.CrtYd", -1, -1, 19, 1)])
     t0 = time.perf_counter()
     report = check(g)
-    assert time.perf_counter() - t0 < 5.0
+    assert time.perf_counter() - t0 < HANG_S
     (f,) = of(report, "too_complex_partial_check")
     assert f.measured["skipped"] == {"budget": ["pad_gap_small"]} and not f.pads
+    assert f.measured["work"] == report.work <= WORK_BUDGET
     assert f.expected == {"work": WORK_BUDGET}
     assert of(report, "pad_gap_small")  # the pairs within the budget are still measured
 
@@ -671,7 +680,8 @@ def test_pin1_bounded_with_complex_pads() -> None:
     mark = seg("F.SilkS", (-0.4, -0.4), (-0.4, -0.1))
     t0 = time.perf_counter()
     report = check(geo(pads, [crtyd, *silk]))
-    assert time.perf_counter() - t0 < 2.0
+    assert time.perf_counter() - t0 < HANG_S
+    assert report.work < WORK_BUDGET // 2  # complex pads cost a 4-vertex box each
     assert of(report, "pin1_marker_missing")
     (f,) = of(report, "too_complex_partial_check")
     assert f.measured["skipped"]["bounding_box"] == ["pin1_marker_missing"]
@@ -694,14 +704,18 @@ def _skipped(report: CheckReport) -> dict[str, list[str]]:
 
 
 def _timed(g: FootprintGeometry, **kw: Any) -> CheckReport:
+    """`check` with the bound asserted on the work spent; the clock only guards hangs."""
     t0 = time.perf_counter()
     report = check(g, **kw)
-    assert time.perf_counter() - t0 < 2.0
+    assert time.perf_counter() - t0 < HANG_S
+    assert report.work <= WORK_BUDGET
     return report
 
 
 def test_courtyard_containment_is_budgeted() -> None:
-    """2000 pads inside a 10k-vertex courtyard polygon: points x courtyard vertices."""
+    """2000 pads inside a 10k-vertex courtyard ring: the band index makes each point
+    test a few edges, all within budget; a comb of 4000 full-height teeth (every edge
+    in every band) is refused before its index is built."""
     pads = grid(50, 40, 1.0, 0.5)
     n = 10_000
     ring = tuple(
@@ -710,16 +724,27 @@ def test_courtyard_containment_is_budgeted() -> None:
     )
     crtyd = Shape("polygon", "F.CrtYd", ring, None, None, 0.05, False)
     report = _timed(geo(pads, [crtyd, rect("F.Fab", 0, 0, 49, 39, 0.1)]))
+    assert not of(report, "too_complex_partial_check") and not of(report, "courtyard_missing")
+    assert not of(report, "courtyard_not_enclosing")
+    comb: list[tuple[float, float]] = []
+    for k in range(4000):
+        x = -1 + 51 * k / 4000
+        comb += [(x, -1.0), (x, 40.0), (x + 0.005, 40.0), (x + 0.005, -1.0)]
+    crtyd = Shape("polygon", "F.CrtYd", tuple(comb), None, None, 0.05, False)
+    report = _timed(geo(pads, [crtyd, rect("F.Fab", 0, 0, 49, 39, 0.1)]))
     skipped = _skipped(report)
     assert skipped["budget"][:2] == ["courtyard_not_enclosing", "courtyard_margin"]
-    assert not of(report, "courtyard_missing")
+    assert not of(report, "courtyard_missing") and not of(report, "courtyard_not_enclosing")
 
 
 def test_pin1_silk_side_is_budgeted() -> None:
-    """A 20k-vertex silk polygon next to a 500-vertex pad 1 (just below the complex-pad
-    cap): the whole-shape distance and every diagonal edge's are charged."""
+    """A 20k-vertex silk ring around a 500-vertex pad 1 (just below the complex-pad
+    cap): every ring edge is as near as the best so far, so no box test prunes it and
+    each edge-to-pad distance is charged."""
     n = 20_000
-    pts = tuple((-1.0 + 0.3 * math.cos(k), 0.5 * math.sin(k)) for k in range(n))
+    pts = tuple(
+        (0.6 * math.cos(2 * math.pi * k / n), 0.6 * math.sin(2 * math.pi * k / n)) for k in range(n)
+    )
     poly = Shape("polygon", "F.SilkS", pts, None, None, 0.12, False)
     pads = [_ngon("1", (0, 0), 500, 0.25), P("2", (3, 0), (0.5, 0.5)), P("3", (6, 0), (0.5, 0.5))]
     report = _timed(geo(pads, [rect("F.CrtYd", -2, -2, 7, 2), poly]))
@@ -820,3 +845,119 @@ def test_budget_leaves_normal_footprints_alone(
     """Normal footprints: no partial-check info, the findings exactly as before."""
     report = run()
     assert [(f.rule, f.severity, f.pads, f.message) for f in report.findings] == want
+
+
+# --- review-loop round 4: cost model, fine-pitch guard, every budgeted family -----------
+
+
+def _qfp(n: int, pitch: float = 0.4, width: float = 0.3, length: float = 1.475) -> list[Pad]:
+    """A stock-like LQFP: n roundrect pads (ratio 0.25) on 4 sides, numbered counter-
+    clockwise from the top of the left side, the rows `length / 2 + 1.5` mm out."""
+    m = n // 4
+    half = (m - 1) / 2 * pitch
+    c = half + length / 2 + 1.325
+    pads: list[Pad] = []
+    for side in range(4):
+        for k in range(m):
+            t = -half + k * pitch
+            at, rot = [((-c, t), 0.0), ((t, c), 90.0), ((c, -t), 0.0), ((-t, -c), 90.0)][side]
+            num = str(side * m + k + 1)
+            pads.append(Pad(num, "smd", "roundrect", at, rot, (length, width), 0.25, None, SMD))
+    return pads
+
+
+@pytest.mark.parametrize("n", [176, 216])
+def test_fine_pitch_qfp_is_checked_in_full(n: int) -> None:
+    """Guard: a 176 / 216-pad 0.4 mm-pitch roundrect LQFP is checked completely (no
+    partial info) and every neighbour pair on a side is a 0.1 mm gap warning. A roundrect
+    pad is a 4-vertex `Rounded` for distances, so this costs a fraction of the budget."""
+    pads = _qfp(n)
+    report = _timed(auto(pads))
+    assert not of(report, "too_complex_partial_check")
+    m = n // 4
+    want = {(str(s * m + k + 1), str(s * m + k + 2)) for s in range(4) for k in range(m - 1)}
+    gaps = of(report, "pad_gap_small")
+    assert {f.pads for f in gaps} == want
+    assert all(f.severity == "warning" and f.measured == pytest.approx(0.1) for f in gaps)
+    assert report.work < WORK_BUDGET // 10
+    # stock pad width (0.25 mm): gap 0.15 mm, no finding, still no partial info
+    stock = _timed(auto(_qfp(n, width=0.25)))
+    assert not of(stock, "too_complex_partial_check") and not of(stock, "pad_gap_small")
+
+
+def test_min_dist_charges_only_measured_pairs() -> None:
+    """The pair distance is charged per piece pair measured, not up front for all."""
+    pads = (_custom("1", (-0.3, 0.0), _many_segments(200)), P("2", (5.0, 0.0), (0.5, 0.5)))
+    report = _timed(geo(pads, [rect("F.CrtYd", -2, -2, 6, 2)]))
+    assert report.work < 10_000  # pads 5 mm apart: no distance measured at all
+
+
+@pytest.fixture
+def small_budget(monkeypatch: pytest.MonkeyPatch) -> Callable[[int], None]:
+    def set_budget(units: int) -> None:
+        monkeypatch.setattr(checks, "WORK_BUDGET", units)
+
+    return set_budget
+
+
+def test_silk_outside_is_budgeted(small_budget: Callable[[int], None]) -> None:
+    """3000 silk segments inside the courtyard: each one's chords and points are
+    charged, built one at a time; the rule stops when the budget is used up."""
+    small_budget(5_000)
+    silk = [seg("F.SilkS", (-1.9 + 0.001 * k, 1.5), (-1.9 + 0.001 * k, 1.6)) for k in range(3000)]
+    report = _timed(l201(silk=silk))
+    assert _skipped(report)["budget"][0] == "silk_outside_courtyard"
+    assert report.work <= 5_000
+
+
+def test_expected_pad_matching_is_budgeted(small_budget: Callable[[int], None]) -> None:
+    """3000 expected pads: each lookup is charged; matching stops with the budget."""
+    small_budget(5_000)
+    exp = Expected(pads=tuple(ExpectedPad("1", (-1.1, 0.0), (1.3, 3.5)) for _ in range(3000)))
+    report = _timed(l201(), expected=exp)
+    assert _skipped(report)["budget"][:2] == ["expected_mismatch", "expected_missing_pad"]
+
+
+def test_margin_pairs_are_budgeted(small_budget: Callable[[int], None]) -> None:
+    """3000 fab segments along the courtyard edge: containment completes, then the
+    margin's edge x item pairs and distances run out of budget."""
+    small_budget(20_000)
+    fab = [seg("F.Fab", (-1.9 + 0.001 * k, -1.9), (-1.9 + 0.001 * k, -1.85)) for k in range(3000)]
+    report = _timed(l201(fab=fab, silk=()))
+    skipped = _skipped(report)
+    assert skipped["budget"][0] == "courtyard_margin"
+    assert "courtyard_not_enclosing" not in skipped["budget"]
+
+
+def test_fab_containment_is_budgeted(small_budget: Callable[[int], None]) -> None:
+    """3000 fab segments in an octagon courtyard: the body's points x courtyard vertices
+    are charged after the pads'; refused, neither enclosure nor margin has a verdict."""
+    small_budget(20_000)
+    octagon = tuple(
+        (2.5 * math.cos(k * math.pi / 4), 2.5 * math.sin(k * math.pi / 4)) for k in range(8)
+    )
+    crtyd = Shape("polygon", "F.CrtYd", octagon, None, None, 0.05, False)
+    fab = [seg("F.Fab", (-1.0 + 0.0005 * k, 0.5), (-1.0 + 0.0005 * k, 0.6)) for k in range(3000)]
+    report = _timed(l201(crtyd=(crtyd,), fab=fab, silk=()))
+    assert _skipped(report)["budget"][:2] == ["courtyard_not_enclosing", "courtyard_margin"]
+    assert not of(report, "courtyard_not_enclosing")
+    assert report.work < 12_000  # the pads' points and the chords; the fab test refused
+
+
+def test_tessellation_is_charged(small_budget: Callable[[int], None]) -> None:
+    """20k tiny silk arcs: their chords are charged before they are built."""
+    small_budget(50_000)
+    arc = Shape("arc", "F.SilkS", ((0.0, 0.0), (0.01, 0.01), (0.02, 0.0)), None, None, 0.12, False)
+    report = _timed(l201(silk=[arc] * 20_000))
+    assert "silk_outside_courtyard" in _skipped(report)["budget"]
+
+
+def test_courtyard_points_counted_before_built(small_budget: Callable[[int], None]) -> None:
+    """A custom pad of 2000 stroked arcs (32 chords x 16 points each): its containment
+    points are counted and refused before any is made."""
+    small_budget(100_000)
+    arc = {"kind": "arc", "points": [(0.0, 0.0), (0.5, 0.5), (1.0, 0.0)], "width": 0.1}
+    pads = (_custom("1", (-1.1, 0.0), [arc] * 2000), P("2", (1.1, 0.0)))
+    report = _timed(geo(pads, [rect("F.CrtYd", -3, -3, 3, 3)]))
+    assert _skipped(report)["budget"][:2] == ["courtyard_not_enclosing", "courtyard_margin"]
+    assert report.work < 100
