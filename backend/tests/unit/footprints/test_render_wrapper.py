@@ -83,6 +83,42 @@ def test_entity_refused() -> None:
     assert _code(exc) == "render_failed"
 
 
+ENTITY_DOC = (
+    f'<!DOCTYPE svg [<!ENTITY a "PWNED">]><svg xmlns="{SVG_NS}" viewBox="0 0 1 1">'
+    "<text>&a;</text></svg>"
+)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        ENTITY_DOC.encode("utf-16"),  # with BOM
+        ENTITY_DOC.encode("utf-16-le"),  # without BOM
+        ENTITY_DOC.encode("utf-16-be"),
+        ('<?xml version="1.0" encoding="UTF-16"?>' + ENTITY_DOC).encode("utf-16"),
+        ('<?xml version="1.0" encoding="UTF-16"?>' + ENTITY_DOC).encode("utf-16-le"),
+        ENTITY_DOC.encode("utf-32"),
+    ],
+)
+def test_non_utf8_refused(data: bytes) -> None:
+    """The DOCTYPE/ENTITY check must see what expat parses: UTF-16/32 is refused."""
+    with pytest.raises(StructuredToolError) as exc:
+        fr.load_kicad_svg(data)
+    assert _code(exc) == "render_failed"
+
+
+def test_utf8_bom_and_declared_encoding() -> None:
+    """A UTF-8 BOM is dropped; the parsed text never follows a declared encoding."""
+    root = fr.load_kicad_svg(b"\xef\xbb\xbf" + kicad_svg('<path d="M 0 0"/>'))
+    assert [el.tag for el in root] == ["path"]
+    declared = b'<?xml version="1.0" encoding="UTF-16"?>' + kicad_svg("<text>\u00e4</text>")
+    root = fr.load_kicad_svg(declared)
+    assert [el.text for el in root] == ["\u00e4"]
+    with pytest.raises(StructuredToolError) as exc:
+        fr.load_kicad_svg(kicad_svg("<text>a\x00b</text>"))
+    assert _code(exc) == "render_failed"
+
+
 def test_unparsable_refused() -> None:
     for bad in (b"<svg", b"not xml", f'<x xmlns="{SVG_NS}"/>'.encode()):
         with pytest.raises(StructuredToolError) as exc:
@@ -237,7 +273,7 @@ def test_wrapper_structure() -> None:
     top = {t.text for t in tick_texts if t.get("class") == "tick-x"}
     left = {t.text for t in tick_texts if t.get("class") == "tick-y"}
     assert {"-1", "0", "1"} <= top and {"-1", "0", "1"} <= left
-    labels = "\n".join(t.text or "" for t in _group(root, "labels").iter(f"{S}text"))
+    labels = "\n".join(_legend(root))
     assert "<&>" in labels
     assert "pad 1: 0.6 x 0.8 mm at (-1, 0)" in labels
     assert "pitch 1 → <&>: 2 mm" in labels
@@ -245,9 +281,24 @@ def test_wrapper_structure() -> None:
     assert b"&lt;&amp;&gt;" in out
 
 
+def _legend(root: ET.Element) -> list[str]:
+    return [t.text or "" for t in _group(root, "legend").iter(f"{S}text")]
+
+
 def test_labels_off() -> None:
     out = fr.build_wrapper(fr.load_kicad_svg(kicad_svg()), l201(), None, False)
-    assert ET.fromstring(out).find(f".//{S}g[@id='labels']") is None
+    root = ET.fromstring(out)
+    assert root.find(f".//{S}g[@id='labels']") is None
+    assert _legend(root) == ["grid 0.1 mm, major 1 mm"]  # the grid is always stated
+
+
+@pytest.mark.parametrize("grid", [0.1, 0.25, 0.5, 1.0])
+def test_requested_grid_kept_and_stated(grid: float) -> None:
+    root = ET.fromstring(fr.build_wrapper(fr.load_kicad_svg(kicad_svg()), l201(), grid, True))
+    minor_x, _ = _lines(root, "grid-minor")
+    major_x, _ = _lines(root, "grid-major")
+    assert _steps(sorted(minor_x + major_x)) == {grid}
+    assert _legend(root)[0] == f"grid {grid:g} mm, major 1 mm"
 
 
 def test_labels_without_pad_1_or_courtyard() -> None:
@@ -264,6 +315,7 @@ def test_grid_coarsened_for_large_extent() -> None:
     major_x, major_y = _lines(root, "grid-major")
     assert len(minor_x) + len(major_x) <= 500
     assert len(minor_y) + len(major_y) <= 500
+    assert _legend(root)[0] == "grid 0.5 mm, major 5 mm"  # coarsened, and said so
 
 
 def test_major_every_5mm_above_20() -> None:
@@ -307,6 +359,8 @@ class FakeService:
         self.uri_calls = 0
 
     async def footprint_geometry(self, lib_id: str, notes: Any = None) -> Any:
+        if notes is not None:
+            notes.append({"kind": "footprint_attributes_unavailable", "lib_id": lib_id})
         return self.geometry
 
     async def footprint_library_uri(self, nickname: str) -> str | None:
@@ -397,6 +451,48 @@ async def test_render_ok(
     assert h == round(out.extent_mm[1] * out.scale_px_per_mm)
     assert ET.fromstring(out.svg.read_bytes()).tag == f"{S}svg"
     assert out.geometry_hash == geometry_hash(l201())
+    assert out.grid_mm == 0.1  # auto grid for the 4 mm drawing
+    # origin_mm + extent_mm is the wrapper viewBox: px map back to footprint mm
+    view_box = [float(v) for v in ET.fromstring(out.svg.read_bytes()).get("viewBox", "").split()]
+    assert view_box == pytest.approx([*out.origin_mm, *out.extent_mm], abs=1e-6)
+    assert out.origin_mm[0] < -2 and out.origin_mm[1] < -2
+
+
+async def test_notes_passed_through(
+    ctx: ToolContext, svc: FakeService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(fr, "run_kicad_cli", FakeCli(kicad_svg()))
+    notes: list[dict[str, Any]] = []
+    await fr.render_footprint(ctx, "Lib:R_1", None, None, True, notes=notes)
+    assert notes == [{"kind": "footprint_attributes_unavailable", "lib_id": "Lib:R_1"}]
+
+
+async def test_reported_grid_after_coarsening(
+    ctx: ToolContext, svc: FakeService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(fr, "run_kicad_cli", FakeCli(kicad_svg(view_box="-100 -100 200 200")))
+    out = await fr.render_footprint(ctx, "Lib:R_1", None, 0.25, True)
+    assert out.grid_mm == 0.5
+    out = await fr.render_footprint(ctx, "Lib:R_1", None, 1.0, True)
+    assert out.grid_mm == 1.0
+
+
+async def test_write_failure_leaves_nothing(
+    ctx: ToolContext, svc: FakeService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(fr, "run_kicad_cli", FakeCli(kicad_svg()))
+    real = Path.write_bytes
+
+    def flaky(self: Path, data: bytes) -> int:
+        if self.suffix == ".svg" and self.parent.name == "renders":
+            raise OSError(28, "No space left on device")
+        return real(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", flaky)
+    with pytest.raises(StructuredToolError) as exc:
+        await fr.render_footprint(ctx, "Lib:R_1", None, None, True)
+    assert _code(exc) == "render_failed"
+    assert list((ctx.project.dir / ".kicad-agent" / "renders").iterdir()) == []
 
 
 async def test_render_explicit_layers_and_name_starting_with_dash(

@@ -21,6 +21,7 @@ a nested `<svg>` with the same `viewBox`.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import math
 import re
 import shutil
@@ -29,6 +30,7 @@ import uuid
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import cairosvg.surface  # type: ignore[import-untyped]
 
@@ -77,10 +79,11 @@ DROP_TAGS = frozenset(
 # DOCTYPE without an internal subset. Exactly this is stripped; any other DOCTYPE or an
 # ENTITY declaration is refused.
 _KICAD_PROLOG = re.compile(
-    rb'\A\s*(?:<\?xml[^>]*\?>\s*)?<!DOCTYPE\s+svg\s+PUBLIC\s+"-//W3C//DTD SVG 1\.1//EN"\s+'
-    rb'"http://www\.w3\.org/Graphics/SVG/1\.1/DTD/svg11\.dtd"\s*>'
+    r'\A\s*(?:<\?xml[^>]*\?>\s*)?<!DOCTYPE\s+svg\s+PUBLIC\s+"-//W3C//DTD SVG 1\.1//EN"\s+'
+    r'"http://www\.w3\.org/Graphics/SVG/1\.1/DTD/svg11\.dtd"\s*>'
 )
-_DECLARATION = re.compile(rb"<!\s*(?:DOCTYPE|ENTITY)", re.IGNORECASE)
+_XML_DECL = re.compile(r"\A\s*<\?xml[^>]*\?>")
+_DECLARATION = re.compile(r"<!\s*(?:DOCTYPE|ENTITY)", re.IGNORECASE)
 _EXTERNAL_URL = re.compile(r"""url\((?!\s*['"]?\s*#)[^)]*\)""", re.IGNORECASE)
 
 # Colours (dark, like KiCad's footprint editor: its layer colours are made for it).
@@ -100,10 +103,25 @@ _render_lock = asyncio.Semaphore(1)
 @dataclass(frozen=True)
 class RenderOutput:
     png: Path
-    svg: Path
+    svg: Path  # the wrapper SVG (not KiCad's raw output)
+    # px per mm of the PNG; the PNG is `extent_mm * scale_px_per_mm` px
     scale_px_per_mm: float
-    extent_mm: tuple[float, float]  # of the PNG / wrapper viewBox
+    # size of the whole PNG / wrapper viewBox in mm, margins (ticks, legend) included
+    extent_mm: tuple[float, float]
     geometry_hash: str
+    # top-left of the PNG / wrapper viewBox in footprint mm (y down):
+    # footprint (x, y) = origin_mm + (px, py) / scale_px_per_mm
+    origin_mm: tuple[float, float]
+    grid_mm: float  # the minor grid actually drawn (after the 500-line cap)
+
+
+@dataclass(frozen=True)
+class _Wrapped:
+    svg: bytes
+    origin_mm: tuple[float, float]
+    extent_mm: tuple[float, float]
+    grid_mm: float
+    major_mm: float
 
 
 def _failed(
@@ -206,8 +224,18 @@ def load_kicad_svg(data: bytes) -> ET.Element:
     markup `xml.etree` cannot parse."""
     if len(data) > MAX_SVG_BYTES:
         raise _failed(f"kicad-cli wrote more than {MAX_SVG_BYTES} bytes of SVG")
-    match = _KICAD_PROLOG.match(data)
-    body = data[match.end() :] if match else data
+    # UTF-8 only (a BOM is dropped): the checks below run on the decoded text and expat
+    # parses that text, so a declared or BOM-signalled other encoding (UTF-16 hiding a
+    # DOCTYPE from a byte search) can never change what is checked.
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise _failed("kicad-cli's SVG is not UTF-8") from None
+    if "\x00" in text:
+        raise _failed("kicad-cli's SVG contains NUL characters")
+    match = _KICAD_PROLOG.match(text) or _XML_DECL.match(text)
+    # without its declaration expat reads the text as UTF-8, never a declared encoding
+    body = text[match.end() :] if match else text
     if _DECLARATION.search(body):
         raise _failed("kicad-cli's SVG declares a DOCTYPE or an ENTITY; it was not parsed")
     try:
@@ -281,7 +309,7 @@ def _multiple(v: float, step: float) -> bool:
 
 def _build(
     kicad_svg: ET.Element, geometry: FootprintGeometry, grid_mm: float | None, labels: bool
-) -> tuple[bytes, tuple[float, float]]:
+) -> _Wrapped:
     vx, vy, vw, vh = _view_box(kicad_svg)
     x0, y0, w, h = vx, vy, vw, vh
     x1, y1 = x0 + w, y0 + h
@@ -299,9 +327,10 @@ def _build(
     gx1, gy1 = math.ceil((x1 + pad) / grid) * grid, math.ceil((y1 + pad) / grid) * grid
     size = max(gx1 - gx0, gy1 - gy0)
     font = 0.02 * size
-    legend = _label_lines(geometry) if labels else []
+    dims = _label_lines(geometry) if labels else []
+    legend = [f"grid {_num(grid, 3)} mm, major {_num(major, 3)} mm", *dims]
     left, top, right = 4.0 * font, 2.0 * font, font
-    bottom = font + (len(legend) * 1.5 * font + 0.5 * font if legend else 0.0)
+    bottom = font + len(legend) * 1.5 * font + 0.5 * font
     ox, oy = gx0 - left, gy0 - top
     ow, oh = (gx1 - gx0) + left + right, (gy1 - gy0) + top + bottom
 
@@ -341,8 +370,12 @@ def _build(
     nested.set("viewBox", " ".join(_num(v) for v in (vx, vy, vw, vh)))
     nested.extend(list(kicad_svg))
 
-    if legend:
-        group = _sub(root, "g", id="labels", fill=TEXT, font_family=FONT, font_size=font)
+    note = _sub(root, "g", id="legend", fill=TEXT, font_family=FONT, font_size=font)
+    for i, text in enumerate(legend):
+        t = _sub(note, "text", x=ox + 0.5 * font, y=gy1 + 1.6 * font + i * 1.5 * font)
+        t.text = text
+    if dims:
+        group = _sub(root, "g", id="labels", fill=ACCENT)
         marks = _sub(group, "g", fill="none", stroke=ACCENT, stroke_width=0.004 * size)
         pad1 = next((p for p in geometry.pads if p.number == "1"), None)
         if pad1 is not None:
@@ -352,14 +385,9 @@ def _build(
             (ax, ay), (bx, by) = pair[0].at, pair[1].at
             line = _sub(marks, "line", x1=ax, y1=ay, x2=bx, y2=by)
             line.set("stroke-dasharray", _num(0.6 * font))
-        for i, text in enumerate(legend):
-            t = _sub(group, "text", x=ox + 0.5 * font, y=gy1 + 1.6 * font + i * 1.5 * font)
-            t.text = text
-    try:
-        data = ET.tostring(root, encoding="utf-8", xml_declaration=False)
-    except RecursionError:
-        raise _failed("kicad-cli wrote an SVG nested too deeply") from None
-    return data, (ow, oh)
+    # depth is bounded by _clean's MAX_DEPTH, so the recursive serialiser is safe
+    data = ET.tostring(root, encoding="utf-8", xml_declaration=False)
+    return _Wrapped(data, (ox, oy), (ow, oh), grid, major)
 
 
 def build_wrapper(
@@ -368,9 +396,9 @@ def build_wrapper(
     """CopperChat's SVG around KiCad's (sanitised) drawing: mm grid (minor `grid_mm`,
     auto by default, coarsened to at most 500 lines per axis; major every 1 mm, every
     5 mm above 20 mm extent), axis lines through the origin, mm tick labels on the top
-    and left edge, optional dimension labels, and KiCad's drawing as a nested `<svg>`
-    with KiCad's `viewBox`."""
-    return _build(kicad_svg, geometry, grid_mm, labels)[0]
+    and left edge, a legend stating the grid drawn, optional dimension labels, and
+    KiCad's drawing as a nested `<svg>` with KiCad's `viewBox`."""
+    return _build(kicad_svg, geometry, grid_mm, labels).svg
 
 
 def rasterise(svg: bytes, extent_mm: tuple[float, float]) -> tuple[bytes, float]:
@@ -478,7 +506,7 @@ def _output_svg(tmp: Path, name: str) -> bytes:
 
 def _wrap(
     data: bytes, geometry: FootprintGeometry, grid_mm: float | None, labels: bool
-) -> tuple[bytes, tuple[float, float]]:
+) -> _Wrapped:
     return _build(load_kicad_svg(data), geometry, grid_mm, labels)
 
 
@@ -493,15 +521,18 @@ async def render_footprint(
     layers: list[str] | None,
     grid_mm: float | None,
     labels: bool,
+    *,
+    notes: list[dict[str, Any]] | None = None,
 ) -> RenderOutput:
     """PNG + wrapper SVG of one library footprint under `.kicad-agent/renders/<uuid32>`.
 
     Checks before kicad-cli: the name (`invalid_argument`), the geometry
-    (`not_found`), the library directory (`render_failed`)."""
+    (`not_found`), the library directory (`render_failed`). Library notes
+    (`footprint_libraries_loaded`, `footprint_attributes_unavailable`) go to `notes`."""
     lib_id, nickname, name = _parse(lib_id)
     _check_grid(grid_mm)
     svc = library_for(ctx.session)
-    geometry = await svc.footprint_geometry(lib_id)
+    geometry = await svc.footprint_geometry(lib_id, notes)
     if geometry is None:
         close = await closest_footprints(svc, nickname, name)
         raise StructuredToolError(
@@ -531,8 +562,8 @@ async def render_footprint(
                     f"{_tail(result.stderr or result.stdout)}"
                 )
             data = await asyncio.to_thread(_output_svg, tmp, name)
-            svg, extent = await asyncio.to_thread(_wrap, data, geometry, grid_mm, labels)
-            png, scale = await asyncio.to_thread(rasterise, svg, extent)
+            wrapped = await asyncio.to_thread(_wrap, data, geometry, grid_mm, labels)
+            png, scale = await asyncio.to_thread(rasterise, wrapped.svg, wrapped.extent_mm)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
     out_dir = agent_dir(ctx.project) / "renders"
@@ -540,9 +571,26 @@ async def render_footprint(
     png_path, svg_path = out_dir / f"{stem}.png", out_dir / f"{stem}.svg"
 
     def write() -> None:
-        out_dir.mkdir(parents=True, exist_ok=True)
-        png_path.write_bytes(png)
-        svg_path.write_bytes(svg)
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            png_path.write_bytes(png)
+            svg_path.write_bytes(wrapped.svg)
+        except OSError as exc:
+            for path in (png_path, svg_path):  # never leave half a render behind
+                with contextlib.suppress(OSError):
+                    path.unlink(missing_ok=True)
+            raise _failed(
+                f"the render could not be stored ({type(exc).__name__})",
+                "Ask the user to check the project directory (disk space, permissions)",
+            ) from None
 
     await asyncio.to_thread(write)
-    return RenderOutput(png_path, svg_path, scale, extent, geometry_hash(geometry))
+    return RenderOutput(
+        png_path,
+        svg_path,
+        scale,
+        wrapped.extent_mm,
+        geometry_hash(geometry),
+        wrapped.origin_mm,
+        wrapped.grid_mm,
+    )
