@@ -210,6 +210,19 @@ def test_to_dict_caps_repo_controlled_strings_and_lists() -> None:
         _large(), pads=(), shapes=(), description="x" * 500, fields={"A": "y" * 500}
     ).to_dict()
     assert "truncated" not in short and short["description"] == "x" * 500
+    # names and paths: field names and pad numbers at 64 chars, model paths at 500
+    pad = _large().pads[0]
+    named = dataclasses.replace(
+        _large(),
+        pads=(dataclasses.replace(pad, number="n" * 70),),
+        shapes=(),
+        fields={"k" * 70: "v"},
+        models=(dataclasses.replace(model, path="p" * 600),),
+    ).to_dict()
+    assert named["truncated"] is True
+    assert list(named["fields"]) == ["k" * 64 + "…"]
+    assert named["pads"][0]["number"] == "n" * 64 + "…"
+    assert named["models"][0]["path"] == "p" * 500 + "…"
 
 
 # -- fp_get against a fake session/service -------------------------------------------------

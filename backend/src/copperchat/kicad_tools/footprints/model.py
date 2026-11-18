@@ -48,15 +48,17 @@ MAX_PADS = {"summary": 256, "full": 1000}
 MAX_SHAPES = 500
 MAX_SHAPE_POINTS = 64
 # Repo-controlled strings and lists (any detail): description, keywords, field and text
-# values are cut to 500 chars ("…" appended); fields, texts and models to 64 entries.
+# values and model paths are cut to 500 chars, field names and pad numbers to 64 ("…"
+# appended); fields, texts and models to 64 entries.
 MAX_TEXT_CHARS = 500
+MAX_NAME_CHARS = 64
 MAX_ENTRIES = 64
 
 
-def _cap_text(value: str) -> tuple[str, bool]:
-    if len(value) <= MAX_TEXT_CHARS:
+def _cap_text(value: str, limit: int = MAX_TEXT_CHARS) -> tuple[str, bool]:
+    if len(value) <= limit:
         return value, False
-    return value[:MAX_TEXT_CHARS] + "…", True
+    return value[:limit] + "…", True
 
 
 _PAD_TYPES = {"PT_SMD": "smd", "PT_PTH": "tht", "PT_NPTH": "npth", "PT_EDGE_CONNECTOR": "connector"}
@@ -243,14 +245,28 @@ class FootprintGeometry:
         fields: dict[str, str] = {}
         cut_values = False
         for key, value in list(self.fields.items())[:MAX_ENTRIES]:
-            fields[key], cut = _cap_text(value)
-            cut_values = cut_values or cut
+            name, cut_name = _cap_text(key, MAX_NAME_CHARS)
+            fields[name], cut = _cap_text(value)
+            cut_values = cut_values or cut or cut_name
         texts: list[dict[str, Any]] = []
         for t in self.texts[:MAX_ENTRIES]:
             td = t.to_dict()
             td["value"], cut = _cap_text(t.value)
             cut_values = cut_values or cut
             texts.append(td)
+        pads: list[dict[str, Any]] = []
+        for p in self.pads[:max_pads]:
+            pd = p.to_dict()
+            if isinstance(pd.get("number"), str):
+                pd["number"], cut = _cap_text(pd["number"], MAX_NAME_CHARS)
+                cut_values = cut_values or cut
+            pads.append(pd)
+        models: list[dict[str, Any]] = []
+        for m in self.models[:MAX_ENTRIES]:
+            md = m.to_dict()
+            md["path"], cut = _cap_text(m.path)
+            cut_values = cut_values or cut
+            models.append(md)
         cut_entries = max(len(self.fields), len(self.texts), len(self.models)) > MAX_ENTRIES
         d: dict[str, Any] = {
             "lib_id": self.lib_id,
@@ -263,7 +279,7 @@ class FootprintGeometry:
             "dnp": self.dnp,
             "fields": fields,
             "pad_count": len(self.pads),
-            "pads": [p.to_dict() for p in self.pads[:max_pads]],
+            "pads": pads,
             "graphics": self.layer_summary(),
         }
         notes: list[str] = []
@@ -297,7 +313,7 @@ class FootprintGeometry:
             joined = "; ".join(notes)
             d["note"] = f"Output truncated: {joined} (see fp_render, when available)."
         d.update(
-            models=[m.to_dict() for m in self.models[:MAX_ENTRIES]],
+            models=models,
             texts=texts,
             bbox=list(self.bbox()),
             geometry_hash=geometry_hash(self),
