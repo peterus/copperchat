@@ -235,6 +235,29 @@ async def test_replace_preimage_file_not_regular(
     assert "regular file" in err.why
 
 
+async def test_replace_preimage_read_error_names_no_host_path(
+    session: CreateSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """KiCad's error text for the replace pre-image read carries the repo root scrubbed
+    to `<repo>` - never the host path."""
+    session.rows = {REPO: LOCAL_URI}
+    session.names = [NAME]
+    _pretty(session).mkdir(parents=True)
+    (_pretty(session) / f"{NAME}.kicad_mod").write_bytes(b"old bytes")
+    bad = _pretty(session) / f"{NAME}.kicad_mod"
+
+    @contextlib.asynccontextmanager
+    async def failing(lib_id: str) -> Any:
+        raise RuntimeError(f"{bad}: cannot open")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(session, "footprint_document", failing)
+    err = await _refused(session, l201_args(replace=True))
+    assert err.code == "library_error"
+    assert str(session.root) not in err.why
+    assert f"<repo>/footprints/{REPO}.pretty/{NAME}.kicad_mod" in err.why
+
+
 # --- source and model --------------------------------------------------------------------
 
 

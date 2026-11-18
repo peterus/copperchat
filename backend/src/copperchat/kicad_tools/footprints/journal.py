@@ -50,8 +50,10 @@ def repo_rel(root: Path, path: Path) -> str:
 
 def scrub_repo(text: str, root: Path) -> str:
     """`text` (a KiCad or OS error message) with the repo root's host path replaced by
-    `<repo>`, so agent-facing errors carry no absolute host paths."""
-    for prefix in sorted({str(root), root.as_posix(), str(root.resolve())}, key=len, reverse=True):
+    `<repo>`, so agent-facing errors carry no absolute host paths. Lexical only (no
+    filesystem access on the event loop): `LocalLibrary.repo_root` is already resolved
+    (`repo_policy`)."""
+    for prefix in sorted({str(root), root.as_posix()}, key=len, reverse=True):
         if prefix and prefix != ".":
             text = text.replace(prefix, "<repo>")
     return text

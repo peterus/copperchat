@@ -962,9 +962,10 @@ async def _compensate(
     document is closed). S2: `DeleteLibraryItem`, only of a file this call wrote (its
     hash is the seed copy's or S3's save; the GUI is not under the library lock); for
     `replace` the pre-image is rebuilt instead (`_compensate_replace`). S1:
-    `DeleteLibraryTableEntry` and `rmdir` of the library dir if this call's row
-    created it and it is empty. Rows become `compensated`; when a step fails (or the
-    file is not this call's), it and every earlier stage stay as they are
+    `DeleteLibraryTableEntry` and `rmdir` of the library dir and of the ancestors below
+    the repo root that this call's row created, each only if empty. Rows become
+    `compensated`; when a step fails (or the file is not this call's), it and every
+    earlier stage stay as they are
     (`leftover`), and `DocumentInconsistent` names them - also when the journal itself
     cannot be updated. `KicadUnavailable` passes through (rows stay `pending`)."""
     session = ctx.session
@@ -1368,8 +1369,9 @@ LibraryListener = Callable[[Project, list[str], str], Awaitable[None]]
 def make_library_listener(settings: Settings, sessions: KicadSessionManager) -> LibraryListener:
     """The library listener (FP-C6) of the project's open session: `own` / `restore` ->
     `invalidate_footprints(nick)`; `external` -> `ReloadLibrary(nick)` +
-    `wait_for_libraries` only when the footprint tools are on and the libraries are
-    loaded (a reload would otherwise load them: +1.7 GB), then invalidate - also when
+    a wait for that library's own load (one deadline, `_library_loaded`) only when the
+    footprint tools are on, the libraries are loaded (a reload would otherwise load
+    them: +1.7 GB) and the project has the local row, then invalidate - also when
     the reload failed (the error goes on to `notify_library`, which logs it). Without
     an open session there is nothing cached; while the root is unknown every library
     is invalidated."""
