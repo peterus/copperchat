@@ -4,11 +4,22 @@ from __future__ import annotations
 
 from typing import Any
 
+from copperchat.kicad_tools.footprints.checks import DEFAULT_TOLERANCE
 from copperchat.kicad_tools.footprints.read import (
     DEFAULT_LIST_LIMIT,
+    MAX_ALLOW_UNMATCHED,
+    MAX_COORD_MM,
+    MAX_DRILL_MM,
+    MAX_EXPECTED_PADS,
     MAX_LIB_ID_CHARS,
     MAX_LIST_LIMIT,
+    MAX_PAD_NUMBER_CHARS,
     MAX_QUERY_CHARS,
+    MAX_SIZE_MM,
+    MAX_SYMBOL_CHARS,
+    MAX_TOLERANCE_MM,
+    MIN_TOLERANCE_MM,
+    fp_check,
     fp_get,
     fp_list_local,
 )
@@ -30,6 +41,68 @@ _LIB_ID = {
     "maxLength": MAX_LIB_ID_CHARS,
     "description": "<library nickname>:<footprint name>, e.g. 'Inductor_SMD:L_Bourns-SRN4018'.",
 }
+
+_PAD_NUMBER = {"type": "string", "minLength": 1, "maxLength": MAX_PAD_NUMBER_CHARS}
+
+
+def _size(description: str) -> dict[str, Any]:
+    return {
+        "type": "number",
+        "exclusiveMinimum": 0,
+        "maximum": MAX_SIZE_MM,
+        "description": description,
+    }
+
+
+def _xy(item: dict[str, Any], description: str) -> dict[str, Any]:
+    return {
+        "type": "array",
+        "items": item,
+        "minItems": 2,
+        "maxItems": 2,
+        "description": description,
+    }
+
+
+_COORD = {"type": "number", "minimum": -MAX_COORD_MM, "maximum": MAX_COORD_MM}
+_SIZE_ITEM = {"type": "number", "exclusiveMinimum": 0, "maximum": MAX_SIZE_MM}
+
+_EXPECTED_PAD = _obj(
+    {
+        "number": _PAD_NUMBER,
+        "at": _xy(_COORD, "Pad centre [x, y] in mm, footprint origin, y down."),
+        "size": _xy(_SIZE_ITEM, "Pad size [w, h] in mm, in board axes."),
+        "drill": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": MAX_DRILL_MM,
+            "description": "Drill diameter in mm (THT pads).",
+        },
+    },
+    ["number", "at", "size"],
+)
+
+_EXPECTED = _obj(
+    {
+        "pads": {
+            "type": "array",
+            "items": _EXPECTED_PAD,
+            "maxItems": MAX_EXPECTED_PADS,
+            "description": "The datasheet's land pattern, one entry per pad.",
+        },
+        "pitch": _size("Pad pitch in mm."),
+        "courtyard": _xy(_SIZE_ITEM, "Courtyard size [w, h] in mm."),
+        "body": _xy(_SIZE_ITEM, "Body (F.Fab outline) size [w, h] in mm."),
+        "tolerance_mm": {
+            "type": "number",
+            "minimum": MIN_TOLERANCE_MM,
+            "maximum": MAX_TOLERANCE_MM,
+            "default": DEFAULT_TOLERANCE,
+            "description": f"Allowed deviation in mm (default {DEFAULT_TOLERANCE}).",
+        },
+    },
+    ["pads"],
+)
 
 TOOL_SPECS: list[ToolSpec] = [
     ToolSpec(
@@ -80,5 +153,39 @@ TOOL_SPECS: list[ToolSpec] = [
             [],
         ),
         fp_list_local,
+    ),
+    ToolSpec(
+        "fp_check",
+        "Check one footprint (local, project or stock) against KiCad-library-style rules: "
+        "courtyard, fab and silk outlines, pad sizes and gaps, silk on pads, drills and "
+        "annular rings, mask/paste layers, pin 1 marking, fields and review state. "
+        "With `symbol` (a library symbol id like 'Device:L' or a placed reference like "
+        "'L201') the symbol's pin numbers are matched against the pad numbers; with "
+        "`expected` (the datasheet's land pattern) every pad position/size, the pitch, "
+        "courtyard and body are compared within tolerance_mm. Returns passed (no "
+        "errors), exact counts and findings (rule, severity, message, pads, at, "
+        "measured, expected; capped per rule). Read-only.",
+        _obj(
+            {
+                "lib_id": _LIB_ID,
+                "symbol": {
+                    "type": "string",
+                    "minLength": 2,
+                    "maxLength": MAX_SYMBOL_CHARS,
+                    "description": "Pins to compare: a library symbol id '<nickname>:<name>' "
+                    "or the reference of a placed symbol (e.g. 'U202'); all units.",
+                },
+                "expected": _EXPECTED,
+                "allow_unmatched_pads": {
+                    "type": "array",
+                    "items": _PAD_NUMBER,
+                    "maxItems": MAX_ALLOW_UNMATCHED,
+                    "description": "Pad numbers without a symbol pin that are intended "
+                    "(e.g. shell pads); their warning becomes info.",
+                },
+            },
+            ["lib_id"],
+        ),
+        fp_check,
     ),
 ]
