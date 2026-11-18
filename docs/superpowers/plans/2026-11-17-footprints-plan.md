@@ -609,7 +609,8 @@ phase file, with the reason.)
   SVG must be UTF-8 (a UTF-16 file would hide the markers from the byte check) — spec
   intent is "no DTD/entity processing", which the exact match keeps.
 - **Render, cairosvg API:** cairosvg 2.9.1 `svg2png` has no `url_fetcher` parameter, so the
-  PNG comes from `cairosvg.surface.PNGSurface.convert(url_fetcher=_refuse, unsafe=False)`.
+  PNG comes from `cairosvg.surface.PNGSurface.convert(url_fetcher=refuse, unsafe=False)`
+  (in `views/_raster_worker.py`, see the rasteriser process below).
 - **FP-C5 additions:** `render_footprint(..., *, notes=None)` (library-loading notes pass
   through to the tool result); `RenderOutput` gains `origin_mm` and `grid_mm` (the
   effective grid, also when auto-picked); the reported extent and the scale include the
@@ -693,16 +694,26 @@ phase file, with the reason.)
   part inside, so for a non-convex outline (`geom.is_convex`) every pad part's test
   segments (polygon edges, a circle's 16 chords, a stroke's centre line, or for a wide
   stroke its side lines and end octagons — all inside the part) and the fab lines are
-  swept against the outline's edges (`geom.cross_pairs`, gap 0); a proper crossing
-  (`geom.segments_cross`, touching is not crossing) puts the pad outside, the body at
-  the crossing point. Counted and charged before any test segment is made. Findings
-  are emitted in pad order, then the body. 2,923 stock courtyards are non-convex; none
-  gets a new finding.
+  swept against the outline's edges (`geom.cross_pairs`, gap 0). Verification pass:
+  every contact counts, not only a proper crossing — `geom.segment_contacts` gives the
+  parameters where a test segment crosses, touches (an end on the other segment, within
+  1 nm) or runs along an edge (both overlap ends); the segment is split there and the
+  middle of each piece tested with the containment test (a piece meets no edge, so it
+  is inside or outside as a whole; one unit per edge pair plus the containment cost per
+  piece, charged as before). So a pad flush in a notch (corners on its walls) and a fab
+  line from one notch wall to the other are outside; the body is reported where it
+  leaves the outline. `geom.is_convex` also needs the turns to sum to one full turn and
+  rejects turning back, so a self-intersecting star (every turn the same way) takes
+  the edge test. Counted and charged before any test segment is made. Findings are
+  emitted in pad order, then the body. 2,923 stock courtyards are non-convex; none gets
+  a new finding (round 5 and verification pass).
 - **Stock sweep (round 5)** — all 15,468 footprints, geometries dumped once from the
   base image (`GetItemsFromLibrary`), `run_checks` on 8671110 and on this round:
   findings identical on every footprint, none partial; costliest 291,699 units (p99
   93,121; the pad build added), so `WORK_BUDGET` stays 1 M (~3.4x headroom);
   `run_checks` max 0.125 s, p99 0.039 s (8671110 on the same run: 0.117 s / 0.033 s).
+  Verification pass (edge contacts, `is_convex`): findings identical to 3ca27be on all
+  15,468, none partial, the same costliest 291,699 units; max 0.128 s, p99 0.041 s.
 - **`fp_render` sanitiser allowlist:** only the elements KiCad's `fp export svg` writes
   (seen: svg, g, path, circle, text, title, desc) plus the other plain shapes of its SVG
   plotter (ellipse, rect, line, polyline, polygon, tspan) survive; anything else goes
@@ -736,7 +747,30 @@ phase file, with the reason.)
   maximum (Xilinx FLG1925) 1.0 s. None of the 15,468 stock exports is refused; a
   sample of the 20 largest (by bytes, elements, points, points per element and span)
   renders through `render_footprint` in the base image in 0.9-3.1 s each, kicad-cli
-  and the default layers included (the Xilinx BGAs ~3.1 s), none refused.
+  and the default layers included (the Xilinx BGAs ~3.1 s), none refused. These caps
+  are now cheap pre-filters only: three rounds of estimate caps were each bypassed by
+  another cost dimension (verification pass: 24 `fp_poly` of 1,990 points stroked
+  40 mm wide pass every cap and took 41-44 s in CairoSVG under the render lock).
+- **`fp_render` rasteriser process (verification pass):** CairoSVG runs in a process of
+  its own, `python -I -m copperchat.views._raster_worker <width> <height>`
+  (`create_subprocess_exec`, argv only, `RASTER_WORKER`): the wrapper SVG on stdin, the
+  PNG on stdout; on an error it exits 2 with only the exception class name on stderr.
+  The worker sets `RLIMIT_AS` 1.5 GB and `RLIMIT_CPU` 30 s (hard 32 s) itself before
+  CairoSVG is imported. Its environment is only `PATH`, `LANG=C.UTF-8`, `HOME` and
+  `XDG_CACHE_HOME` in a throw-away temp dir (no secret of the app's is inherited;
+  `-I` ignores `PYTHON*` variables; fontconfig uses the image's system cache), its own
+  session (`start_new_session`). The parent waits at most `RASTER_TIMEOUT_S` = 20 s
+  wall clock (stock maximum ~3 s, a cold font cache ~13 s), then kills (SIGKILL) and
+  reaps it: `render_failed` "render timed out". On every way out — timeout, error,
+  cancellation — the worker is killed and reaped and its pipes drained before
+  `_render_lock` is released (`_settle`, as for the threads). stdout is capped at
+  `MAX_PNG_BYTES` (a raw 2000 x 2000 RGBA image + 1 MiB; more is `render_failed`),
+  stderr is drained but only an identifier is quoted, and the output must start with
+  the PNG signature. Parse/sanitise/wrap stay in a worker thread (linear in the
+  4 MB-capped input). The thick-stroke attack now fails after 20.0 s instead of 44 s;
+  a small render costs ~0.3 s more (interpreter start). `scripts/app-image-tools.sh`
+  and `test_cairosvg_in_image` rasterise through the worker process (uid 1000 in the
+  app image; the base image in the kicad tests).
 - **Pin-1 heuristic:** a silk/fab piece marks pin 1 when it is within
   `max(pad1.size) + 1` mm of pad 1 and strictly nearer to pad 1 than to any other pad;
   pieces are whole shapes plus the single **diagonal** edges (not within 1° of x/y) of

@@ -7,6 +7,7 @@ import io
 import json
 import os
 import re
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -20,7 +21,7 @@ from copperchat.kicad_tools.footprints.read import fp_get
 from copperchat.kicad_tools.footprints.render import fp_render
 from copperchat.library.service import library_for
 from copperchat.tools.spec import ToolContext
-from copperchat.views.footprint_render import render_footprint
+from copperchat.views.footprint_render import rasterise, render_footprint
 
 pytestmark = pytest.mark.kicad
 
@@ -119,20 +120,23 @@ async def test_crtyd_extent_matches_geometry(blank_nopcb_session: KicadSession) 
     assert vx <= x0 and vy <= y0 and vx + vw >= x1 and vy + vh >= y1
 
 
-def test_cairosvg_in_image() -> None:
-    """CairoSVG >= 2.7.0 (CVE-2023-27586) with a working libcairo2 in the image."""
-    import cairosvg.surface  # type: ignore[import-untyped]
+async def test_cairosvg_in_image() -> None:
+    """CairoSVG >= 2.7.0 (CVE-2023-27586) with a working libcairo2 in the image, run the
+    way renders run it: in the rasteriser process (`python -I -m
+    copperchat.views._raster_worker`, rlimits, minimal environment), fast also with a
+    fresh HOME (fontconfig's system cache is used, none is rebuilt per render)."""
+    import cairosvg  # type: ignore[import-untyped]
 
     version = tuple(int(p) for p in cairosvg.__version__.split(".")[:2])
     assert version >= (2, 7), cairosvg.__version__
     svg = (
         b'<svg xmlns="http://www.w3.org/2000/svg" width="1mm" height="1mm" viewBox="0 0 1 1">'
-        b'<rect width="1" height="1" fill="#000"/></svg>'
+        b'<rect width="1" height="1" fill="#000"/>'
+        b'<text x="0.1" y="0.8" font-size="0.5" font-family="DejaVu Sans">1</text></svg>'
     )
-    png = cairosvg.surface.PNGSurface.convert(bytestring=svg, url_fetcher=_refuse, unsafe=False)
-    with Image.open(io.BytesIO(png)) as img:
-        assert img.format == "PNG" and img.size[0] >= 1 and img.size[1] >= 1
-
-
-def _refuse(url: str, resource_type: str) -> bytes:
-    raise ValueError(f"external resource refused: {url}")
+    for _ in range(2):
+        started = time.monotonic()
+        png, scale = await rasterise(svg, (1.0, 1.0))
+        assert time.monotonic() - started < 5
+        with Image.open(io.BytesIO(png)) as img:
+            assert img.format == "PNG" and img.size == (round(scale), round(scale))

@@ -458,3 +458,31 @@ def test_band_index_matches_point_in_polygon() -> None:
         ]
         for q in pts:
             assert index.contains(q) == geom.point_in_polygon(q, poly), (poly, q)
+
+
+# --- verification pass ------------------------------------------------------------------
+
+
+def test_is_convex_rejects_self_intersection() -> None:
+    square = [(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)]
+    assert geom.is_convex(square) and geom.is_convex(square[::-1])
+    assert geom.is_convex([(0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (2.0, 2.0), (2.0, 2.0), (0.0, 2.0)])
+    star = [(math.sin(a), -math.cos(a)) for a in (2 * math.pi * k / 5 for k in (0, 2, 4, 1, 3))]
+    assert not geom.is_convex(star)  # every turn the same way, but it winds twice
+    assert not geom.is_convex([(0.0, 0.0), (2.0, 0.0), (1.0, 0.0), (1.0, 1.0)])  # back-track
+    bow = [(0.0, 0.0), (2.0, 2.0), (2.0, 0.0), (0.0, 2.0)]
+    assert not geom.is_convex(bow)
+
+
+def test_segment_contacts() -> None:
+    a, b = (0.0, 0.0), (4.0, 0.0)
+    assert geom.segment_contacts(a, b, (2.0, -1.0), (2.0, 1.0)) == [0.5]  # crossing
+    assert geom.segment_contacts(a, b, (1.0, 0.0), (1.0, 1.0)) == [0.25]  # touching
+    assert geom.segment_contacts(a, b, (4.0, -1.0), (4.0, 1.0)) == [1.0]  # at an end
+    assert geom.segment_contacts(a, b, (1.0, 0.0), (3.0, 0.0)) == [0.25, 0.75]  # overlap
+    assert geom.segment_contacts(a, b, (3.0, 0.0), (9.0, 0.0)) == [0.75, 1.0]
+    assert geom.segment_contacts(a, b, (4.0, 0.0), (9.0, 0.0)) == [1.0]  # end to end
+    assert geom.segment_contacts(a, b, (5.0, 0.0), (9.0, 0.0)) == []  # collinear, apart
+    assert geom.segment_contacts(a, b, (1.0, 0.5), (3.0, 0.5)) == []  # parallel
+    assert geom.segment_contacts(a, b, (2.0, 0.1), (2.0, 1.0)) == []  # short of it
+    assert geom.segment_contacts(a, a, (0.0, -1.0), (0.0, 1.0)) == []  # a point

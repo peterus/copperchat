@@ -579,34 +579,64 @@ def distance(a: Geometry, b: Geometry) -> float:
 
 
 def is_convex(poly: Polygon) -> bool:
-    """True when every turn of the closed polygon goes the same way (collinear vertices
-    allowed): then a region whose points are all inside it lies inside it."""
-    n = len(poly)
+    """True when the closed polygon is convex and simple: every turn goes the same way
+    (collinear vertices and repeated points allowed, no turning back) and the turns sum
+    to one full turn (a self-intersecting star turns the same way at every vertex but
+    winds twice). Then a region whose points are all inside it lies inside it."""
+    pts = [p for i, p in enumerate(poly) if p != poly[i - 1]] or list(poly[:1])
+    n = len(pts)
+    if n < 3:
+        return True  # a point or a line: nothing can lie across it
     sign = 0
+    total = 0.0
     for i in range(n):
-        c = _cross(poly[i], poly[(i + 1) % n], poly[(i + 2) % n])
+        o, a, b = pts[i], pts[(i + 1) % n], pts[(i + 2) % n]
+        ux, uy, vx, vy = a[0] - o[0], a[1] - o[1], b[0] - a[0], b[1] - a[1]
+        c, d = ux * vy - uy * vx, ux * vx + uy * vy
         if abs(c) <= 1e-12:
+            if d < 0:
+                return False  # turning back along the same line
             continue
         if sign == 0:
             sign = 1 if c > 0 else -1
         elif (c > 0) != (sign > 0):
             return False
-    return True
+        total += math.atan2(c, d)
+    return abs(abs(total) - 2 * math.pi) < 1e-6
 
 
-def segments_cross(a: Point, b: Point, c: Point, d: Point) -> bool:
-    """True when a-b and c-d properly cross (each strictly separates the other's ends;
-    touching or collinear is not crossing)."""
-    d1, d2 = _cross(a, b, c), _cross(a, b, d)
-    d3, d4 = _cross(c, d, a), _cross(c, d, b)
-    return d1 * d2 < 0 and d3 * d4 < 0
+# the distance (mm) within which a point counts as on the other segment
+CONTACT_TOL = 1e-9
 
 
-def crossing_point(a: Point, b: Point, c: Point, d: Point) -> Point:
-    """Where the lines a-b and c-d meet (for segments that `segments_cross`)."""
-    d1, d2 = _cross(c, d, a), _cross(c, d, b)
-    t = d1 / (d1 - d2)
-    return (a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]))
+def segment_contacts(a: Point, b: Point, c: Point, d: Point) -> list[float]:
+    """Where a-b meets c-d, as parameters t in [0, 1] along a-b (a + t (b - a)): one for
+    a crossing or a touch (an end of either lying on the other), the two ends of the
+    overlap when they are collinear, none when they are apart (within `CONTACT_TOL`)."""
+    rx, ry, sx, sy = b[0] - a[0], b[1] - a[1], d[0] - c[0], d[1] - c[1]
+    rr = rx * rx + ry * ry
+    if rr == 0.0:
+        return []  # a point: its own containment test decides
+    qx, qy = c[0] - a[0], c[1] - a[1]
+    r_len, s_len = math.sqrt(rr), math.hypot(sx, sy)
+    denom = rx * sy - ry * sx
+    if abs(denom) <= 1e-12 * r_len * s_len or s_len == 0.0:
+        # parallel (or c-d a point): they meet only on a-b's line
+        if abs(qx * ry - qy * rx) > CONTACT_TOL * r_len:
+            return []
+        t0 = (qx * rx + qy * ry) / rr
+        t1 = ((d[0] - a[0]) * rx + (d[1] - a[1]) * ry) / rr
+        lo, hi = max(0.0, min(t0, t1)), min(1.0, max(t0, t1))
+        tol = CONTACT_TOL / r_len
+        if lo > hi + tol:
+            return []
+        return [lo, min(max(hi, lo), 1.0)] if hi > lo else [min(lo, 1.0)]
+    t = (qx * sy - qy * sx) / denom
+    u = (qx * ry - qy * rx) / denom
+    t_tol, u_tol = CONTACT_TOL / r_len, CONTACT_TOL / s_len
+    if -t_tol <= t <= 1.0 + t_tol and -u_tol <= u <= 1.0 + u_tol:
+        return [min(max(t, 0.0), 1.0)]
+    return []
 
 
 # --- outlines and pair search -------------------------------------------------------

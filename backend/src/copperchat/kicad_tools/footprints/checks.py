@@ -797,7 +797,9 @@ class _Run:
             complete = False
         if complete and not geom.is_convex(poly):
             # all points inside a notched outline: a part can still span a notch
-            done, crossed = self._crossings(poly, outside, fab_segs or [], body_out is None)
+            done, crossed = self._crossings(
+                poly, (inside, cost), outside, fab_segs or [], body_out is None
+            )
             complete = done
             body_out = body_out or crossed
         for i in sorted(outside):
@@ -822,15 +824,24 @@ class _Run:
             self._margin(poly, fab_segs)
 
     def _crossings(
-        self, poly: Polygon, outside: set[int], fab_segs: list[Seg], body: bool
+        self,
+        poly: Polygon,
+        test: tuple[Callable[[Point], bool], int],
+        outside: set[int],
+        fab_segs: list[Seg],
+        body: bool,
     ) -> tuple[bool, Point | None]:
-        """Pads (not yet in `outside`) and, with `body`, fab lines that cross an edge of
-        the non-convex outline `poly` although their points are inside: crossed pads go
-        to `outside`; the first crossing of the body is returned. Test segments lie
-        inside each part (polygon edges, a circle's chords, a stroke's centre line, side
-        lines and end octagons). Gives (complete, the body's first crossing or None);
-        not complete when the budget refused (noted)."""
+        """Pads (not yet in `outside`) and, with `body`, fab lines that leave the
+        non-convex outline `poly` (or a self-intersecting one) although their points are
+        inside: crossed pads go to `outside`; where the body first leaves it is returned.
+        Test segments lie inside each part (polygon edges, a circle's chords, a stroke's
+        centre line, side lines and end octagons). Each is split where it meets an edge
+        (crossing, touching or running along it: a pad flush in a notch touches it only)
+        and the middle of every piece is tested with `inside` (`cost` each): a piece
+        meets no edge, so it is inside or outside as a whole. Gives (complete, the
+        body's first exit or None); not complete when the budget refused (noted)."""
         rule = "courtyard_not_enclosing"
+        inside, cost = test
         owners = [i for i in range(len(self.g.pads)) if i not in outside]
         count = sum(_test_segment_count(x) for i in owners for x in self.parts[i])
         count += len(fab_segs) if body else 0
@@ -845,21 +856,37 @@ class _Run:
         edge_boxes = [_box(e) for e in edges]
         test_boxes = [_box((a, b)) for _, a, b in tests]
         afford = self.charger(rule)
-        hit: Point | None = None
+        contacts: dict[int, list[float]] = {}
         for e, t in geom.cross_pairs(edge_boxes, test_boxes, 0.0, afford):
-            owner, a, b = tests[t]
-            if (owner >= 0 and owner in outside) or (owner < 0 and hit is not None):
+            owner = tests[t][0]
+            if owner >= 0 and owner in outside:
                 continue
             if not afford(1):
                 return False, None
-            (c, d) = edges[e]
-            if geom.segments_cross(a, b, c, d):
-                if owner >= 0:
-                    outside.add(owner)
-                else:
-                    hit = geom.crossing_point(a, b, c, d)
+            (_, a, b), (c, d) = tests[t], edges[e]
+            found = geom.segment_contacts(a, b, c, d)
+            if found:
+                contacts.setdefault(t, []).extend(found)
         if rule in self.partial.get(_BUDGET, ()):
             return False, None  # the sweep stopped early
+        hit: Point | None = None
+        for t in sorted(contacts):
+            owner, a, b = tests[t]
+            if (owner >= 0 and owner in outside) or (owner < 0 and hit is not None):
+                continue
+            cuts = sorted({0.0, 1.0, *contacts[t]})
+            for t0, t1 in itertools.pairwise(cuts):
+                if t1 - t0 <= 1e-12:
+                    continue
+                if not afford(cost):
+                    return False, None
+                m = (t0 + t1) / 2
+                if not inside((a[0] + m * (b[0] - a[0]), a[1] + m * (b[1] - a[1]))):
+                    if owner >= 0:
+                        outside.add(owner)
+                    else:  # where it leaves the outline
+                        hit = (a[0] + t0 * (b[0] - a[0]), a[1] + t0 * (b[1] - a[1]))
+                    break
         return True, hit
 
     def _margin(self, poly: Polygon, fab_segs: list[Seg]) -> None:

@@ -5,12 +5,14 @@ labels) and rasterised to PNG with CairoSVG.
 Hardening (spec §7.5, C10):
 - one `kicad-cli fp export` at a time: the **whole** render (cli, parse, wrap,
   rasterise) runs under the module semaphore; a cancelled render keeps it until its
-  worker thread (wrap/rasterise) and the temp-dir removal have finished;
+  worker thread (parse/wrap), its rasteriser process (killed, then reaped) and the
+  temp-dir removal have finished;
 - argv list only, `--fp=<name>` one element; the library directory comes from the
   footprint table (absolute, existing, `*.pretty`), the name never holds a path;
 - KiCad's output must exist, be non-empty and stay under the rasterising caps (4 MB,
   10,000 elements, 50,000 points, 2,000 points in one element, lines 1,000 times the
-  drawing long: about 2-3x the largest stock export each); any `<!DOCTYPE` other than
+  drawing long: about 2-3x the largest stock export each; cheap pre-filters only, as
+  CairoSVG's cost has more dimensions, e.g. the stroke width); any `<!DOCTYPE` other than
   KiCad's own SVG 1.1 public prolog, and any `<!ENTITY`, is refused; it is re-serialised
   with `xml.etree` (never by string concatenation) keeping only the elements KiCad's
   `fp export svg` writes (`ALLOWED_TAGS`; anything else goes with its subtree, so no
@@ -21,7 +23,11 @@ Hardening (spec §7.5, C10):
   (`fill-opacity` / `stroke-opacity` stay), and an element KiCad hid with opacity 0 (its
   invisible REF** / name texts; also `0%`, `!important`, an unreadable value or a style
   with a backslash) goes with its subtree, decided before any value is filtered;
-- CairoSVG runs with a URL fetcher that refuses everything, never with `unsafe=True`.
+- CairoSVG runs in a process of its own (`_raster_worker`: argv only, `python -I`, a
+  minimal environment without the app's secrets, a throw-away HOME, 1.5 GB address
+  space and 30 s CPU rlimits), with a URL fetcher that refuses everything, never with
+  `unsafe=True`; after `RASTER_TIMEOUT_S` (20 s wall clock) it is killed and reaped and
+  the render is `render_failed` ("render timed out"); its PNG output is capped.
 
 Coordinates: mm in footprint space (origin = anchor, y down). KiCad's SVG `viewBox` is
 that space (spike Q8), so the wrapper draws in it directly and embeds KiCad's drawing as
@@ -33,16 +39,16 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import math
+import os
 import re
 import shutil
+import sys
 import tempfile
 import uuid
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
-import cairosvg.surface  # type: ignore[import-untyped]
 
 from copperchat.errors import StructuredToolError
 from copperchat.kicad_tools.cli import run_kicad_cli
@@ -76,6 +82,14 @@ CLI_TIMEOUT_S = 60.0
 MIN_PX_PER_MM = 40.0
 TARGET_PX = 1200.0  # longest side, unless 40 px/mm needs more
 MAX_SIDE_PX = 2000
+# The rasteriser process (`_raster_worker`, argv only, `-I`: no user site, no PYTHON*
+# variables, no cwd on sys.path). Its wall-clock limit: the largest stock footprint
+# rasterises in ~3 s (Xilinx FLG1925, a cold font cache ~13 s), an adversarial one (24
+# thick 1,990-point strokes: within every cap above) took 41 s under the render lock.
+RASTER_WORKER = (sys.executable, "-I", "-m", "copperchat.views._raster_worker")
+RASTER_TIMEOUT_S = 20.0
+# a PNG of at most 2000 x 2000 px: raw RGBA plus filter bytes, zlib and chunk overhead
+MAX_PNG_BYTES = 4 * MAX_SIDE_PX * MAX_SIDE_PX + 1024 * 1024
 MAX_GRID_LINES = 500  # per axis
 MAX_RAW_CHARS = 500  # KiCad output quoted in an error
 MAX_LABEL_NUMBER = 16
@@ -169,11 +183,6 @@ def _failed(
 
 def _invalid(what: str, why: str, suggestion: str) -> StructuredToolError:
     return StructuredToolError(what, why, suggestion, code="invalid_argument")
-
-
-def _refuse(url: str, resource_type: str) -> bytes:
-    """CairoSVG URL fetcher: the wrapper never needs an external resource."""
-    raise ValueError(f"external resource refused: {url[:100]}")
 
 
 # --- pure helpers ---------------------------------------------------------------------
@@ -547,27 +556,117 @@ def build_wrapper(
     return _build(kicad_svg, geometry, grid_mm, labels).svg
 
 
-def rasterise(svg: bytes, extent_mm: tuple[float, float]) -> tuple[bytes, float]:
-    """PNG of `svg` (whose viewBox is `extent_mm`) and its px/mm: at least 40 px/mm,
-    the longer side at most 2000 px. Blocking: call it in `asyncio.to_thread`."""
+def _raster_size(extent_mm: tuple[float, float]) -> tuple[int, int, float]:
     w, h = extent_mm
     longest = max(w, h)
     if not (math.isfinite(longest) and min(w, h) > 0):
         raise _failed("the drawing has no extent")
     scale = min(max(MIN_PX_PER_MM, TARGET_PX / longest), MAX_SIDE_PX / longest)
-    width, height = max(1, round(w * scale)), max(1, round(h * scale))
+    return max(1, round(w * scale)), max(1, round(h * scale)), scale
+
+
+def _worker_env(home: Path) -> dict[str, str]:
+    """The worker's whole environment: no secret of the app's (tokens, passwords) is
+    inherited; HOME (fontconfig's user cache) is a throw-away directory."""
+    return {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "LANG": "C.UTF-8",
+        "HOME": str(home),
+        "XDG_CACHE_HOME": str(home / ".cache"),
+    }
+
+
+async def _read_capped(stream: asyncio.StreamReader, cap: int, *, strict: bool) -> bytes:
+    """All of `stream`; over `cap` bytes `render_failed` (`strict`) or only the first
+    `cap` bytes kept (the rest is read and dropped, so the worker never blocks)."""
+    chunks: list[bytes] = []
+    size = 0
+    while chunk := await stream.read(65536):
+        if size + len(chunk) > cap:
+            if strict:
+                raise _failed("the rasteriser wrote more than a PNG of the drawing can hold")
+            chunk = chunk[: max(0, cap - size)]
+        size += len(chunk)
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def _feed(stdin: asyncio.StreamWriter, data: bytes) -> None:
     try:
-        png = cairosvg.surface.PNGSurface.convert(
-            bytestring=svg,
-            url_fetcher=_refuse,
-            unsafe=False,
-            output_width=width,
-            output_height=height,
+        stdin.write(data)
+        await stdin.drain()
+    except (BrokenPipeError, ConnectionResetError):
+        pass  # the worker died early: its exit code reports it
+    finally:
+        stdin.close()
+
+
+async def _run_worker(svg: bytes, width: int, height: int, home: Path) -> bytes:
+    """The PNG from the worker process, or `render_failed` (exit code, timeout,
+    oversized output). The worker is killed and reaped on every way out, a
+    cancellation included (which waits for the reaping, then propagates)."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *RASTER_WORKER,
+            str(width),
+            str(height),
+            cwd=home,
+            env=_worker_env(home),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,  # no terminal signals from the app's process group
         )
-    except Exception as exc:
-        raise _failed(f"the drawing could not be rasterised ({type(exc).__name__})") from None
-    if not isinstance(png, bytes):
-        raise _failed("the drawing could not be rasterised")
+    except OSError as exc:
+        raise _failed(f"the rasteriser could not be started ({type(exc).__name__})") from None
+    assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
+    out_task = asyncio.ensure_future(_read_capped(proc.stdout, MAX_PNG_BYTES, strict=True))
+    err_task = asyncio.ensure_future(_read_capped(proc.stderr, MAX_RAW_CHARS, strict=False))
+    exit_task = asyncio.ensure_future(proc.wait())
+    tasks = [asyncio.ensure_future(_feed(proc.stdin, svg)), out_task, err_task, exit_task]
+    try:
+        await asyncio.wait_for(asyncio.gather(*tasks), RASTER_TIMEOUT_S)
+        out, err, returncode = out_task.result(), err_task.result(), exit_task.result()
+    except TimeoutError:
+        raise _failed(
+            f"render timed out (rasterising took longer than {RASTER_TIMEOUT_S:.0f} s)",
+            "The drawing is too complex to render; use fp_get for its geometry.",
+        ) from None
+    finally:
+        if proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+        for task in tasks:  # no-op for the finished ones
+            task.cancel()
+        # the worker reaped (and its pipes drained) on every way out, also when this
+        # task was cancelled: the render lock is held until then
+        await _settle(
+            asyncio.ensure_future(asyncio.gather(proc.wait(), *tasks, return_exceptions=True))
+        )
+    if returncode != 0:
+        # the worker writes only an exception class name; anything else (a traceback of
+        # a failed start) is not quoted
+        name = err.decode("ascii", "replace").strip()
+        why = name if name.isidentifier() else f"exit code {returncode}"
+        raise _failed(f"the drawing could not be rasterised ({why[:80]})")
+    return out
+
+
+async def rasterise(svg: bytes, extent_mm: tuple[float, float]) -> tuple[bytes, float]:
+    """PNG of `svg` (whose viewBox is `extent_mm`) and its px/mm: at least 40 px/mm,
+    the longer side at most 2000 px. CairoSVG runs in a worker process
+    (`_raster_worker`: address-space and CPU rlimits, minimal environment) that is
+    killed after `RASTER_TIMEOUT_S` (`render_failed`, "render timed out")."""
+    width, height, scale = _raster_size(extent_mm)
+    home = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="cc-fp-raster-"))
+    try:
+        png = await _run_worker(svg, width, height, home)
+    finally:
+        await _settle(
+            asyncio.ensure_future(asyncio.to_thread(shutil.rmtree, home, ignore_errors=True))
+        )
+    if not png.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise _failed("the drawing could not be rasterised (no PNG)")
     return png, scale
 
 
@@ -661,19 +760,19 @@ def _wrap(
     return _build(load_kicad_svg(data), geometry, grid_mm, labels)
 
 
-def _post(
+def _prepare(
     tmp: Path, name: str, geometry: FootprintGeometry, grid_mm: float | None, labels: bool
-) -> tuple[_Wrapped, bytes, float]:
-    """The CPU part after kicad-cli (blocking): read, sanitise, wrap, rasterise."""
-    wrapped = _wrap(_output_svg(tmp, name), geometry, grid_mm, labels)
-    png, scale = rasterise(wrapped.svg, wrapped.extent_mm)
-    return wrapped, png, scale
+) -> _Wrapped:
+    """The CPU part after kicad-cli before rasterising (blocking, linear in the capped
+    input): read, sanitise, wrap."""
+    return _wrap(_output_svg(tmp, name), geometry, grid_mm, labels)
 
 
 async def _settle(fut: asyncio.Future[Any]) -> None:
-    """Wait until `fut` (a worker thread) has finished, also when this task is
-    cancelled meanwhile (a thread cannot be stopped; leaving it running would let the
-    next render start beside it). A cancellation that arrived is re-raised after."""
+    """Wait until `fut` (a worker thread, or the reaping of the rasteriser process) has
+    finished, also when this task is cancelled meanwhile (a thread cannot be stopped;
+    leaving it running would let the next render start beside it). A cancellation that
+    arrived is re-raised after."""
     cancelled = False
     while not fut.done():
         try:
@@ -738,13 +837,16 @@ async def render_footprint(
                     f"{_tail(result.stderr or result.stdout)}"
                 )
             work = asyncio.ensure_future(
-                asyncio.to_thread(_post, tmp, name, geometry, grid_mm, labels)
+                asyncio.to_thread(_prepare, tmp, name, geometry, grid_mm, labels)
             )
             try:
-                wrapped, png, scale = await asyncio.shield(work)
+                wrapped = await asyncio.shield(work)
             except asyncio.CancelledError:
                 await _settle(work)  # hold the semaphore until the thread has ended
                 raise
+            # a process of its own, killed after RASTER_TIMEOUT_S and reaped (also on
+            # cancellation) before the semaphore is released
+            png, scale = await rasterise(wrapped.svg, wrapped.extent_mm)
         finally:
             await _settle(
                 asyncio.ensure_future(asyncio.to_thread(shutil.rmtree, tmp, ignore_errors=True))

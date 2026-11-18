@@ -1134,3 +1134,76 @@ def test_notch_crossing_is_budgeted(
     assert made == []  # counted and refused before any test segment is made
     assert _skipped(report)["budget"][:2] == ["courtyard_not_enclosing", "courtyard_margin"]
     assert not of(report, "courtyard_not_enclosing")
+
+
+# --- verification pass: edges touched, not crossed -----------------------------------------
+
+
+def test_pad_flush_in_a_courtyard_notch_is_not_enclosed() -> None:
+    """A pad filling the notch from wall to wall: its corners lie on the notch's edges
+    (boundary = inside) and no edge is properly crossed, yet it is outside."""
+    inside = (P("1", (-2.0, 0.0), (0.5, 0.5)), P("2", (2.0, 0.0), (0.5, 0.5)))
+    flush = (*inside, P("3", (0.0, 0.5), (2.0, 1.0)))
+    report = check(_u(flush))
+    (f,) = of(report, "courtyard_not_enclosing")
+    assert f.pads == ("3",) and not of(report, "too_complex_partial_check")
+
+
+def test_pad_flush_with_the_outline_from_inside_is_enclosed() -> None:
+    """Touching or running along an edge from the inside is not leaving the outline."""
+    pads = (
+        P("1", (-2.0, 1.75), (0.5, 0.5)),  # on the bottom edge of the left arm
+        P("2", (1.25, 0.0), (0.5, 0.5)),  # on the notch's right wall
+        P("3", (0.0, -1.5), (1.0, 1.0)),  # the notch's top corners on its sides
+    )
+    report = check(_u(pads))
+    assert not of(report, "courtyard_not_enclosing")
+    assert not of(report, "too_complex_partial_check")
+
+
+def test_body_spanning_a_courtyard_notch_end_to_end() -> None:
+    """A fab line from one notch wall to the other: both ends on the outline, nothing
+    properly crossed; the body is outside where it leaves the outline."""
+    pads = (P("1", (-2.0, 0.0), (0.5, 0.5)), P("2", (2.0, 0.0), (0.5, 0.5)))
+    fab = [seg("F.Fab", (-1.0, 1.5), (1.0, 1.5), 0.1)]
+    (f,) = of(check(_u(pads, fab)), "courtyard_not_enclosing")
+    assert f.pads == ()
+    assert f.message == "the body (F.Fab) extends outside the courtyard at (-1.000, 1.500)"
+
+
+def _star() -> Shape:
+    """A pentagram drawn as one self-intersecting polygon (every turn the same way)."""
+    pts = tuple(
+        (round(3 * math.sin(2 * math.pi * k / 5), 6), round(-3 * math.cos(2 * math.pi * k / 5), 6))
+        for k in (0, 2, 4, 1, 3)
+    )
+    return Shape("polygon", "F.CrtYd", pts, None, None, 0.05, False)
+
+
+def test_self_intersecting_courtyard_uses_the_edge_test() -> None:
+    """A star courtyard turns the same way at every vertex but is not convex: a pad
+    stroke from one tip to the next (both ends inside the tips, its middle outside the
+    star) is found, not passed by the convex shortcut."""
+    star = _star()
+    assert not geom.is_convex(list(star.points))
+    (ax, ay), (bx, by) = (
+        (x * 0.75, y * 0.75)
+        for x, y in (star.points[0], star.points[3])  # neighbours
+    )
+    stroke = {"kind": "segment", "points": [(0.0, 0.0), (bx - ax, by - ay)], "width": 0.01}
+    extra = {"anchor": "rect", "primitives": (stroke,)}
+    pad = Pad(
+        "1",
+        "smd",
+        "custom",
+        (ax, ay),
+        0.0,
+        (0.1, 0.1),
+        None,
+        None,
+        SMD,
+        tuple(sorted(extra.items())),
+    )
+    report = check(geo((pad,), [star]))
+    assert [f.pads for f in of(report, "courtyard_not_enclosing")] == [("1",)]
+    assert not of(report, "too_complex_partial_check")

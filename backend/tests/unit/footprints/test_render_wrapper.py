@@ -7,7 +7,12 @@ from __future__ import annotations
 import asyncio
 import io
 import itertools
+import json
+import os
+import random
 import socket
+import sys
+import time
 import xml.etree.ElementTree as ET
 from collections.abc import Sequence
 from pathlib import Path
@@ -23,6 +28,7 @@ from copperchat.kicad_tools.cli import CliResult
 from copperchat.kicad_tools.footprints.model import FootprintGeometry, geometry_hash
 from copperchat.projects import Project
 from copperchat.tools import ToolContext
+from copperchat.views import _raster_worker as raster_worker
 from copperchat.views import footprint_render as fr
 from tests.unit.footprints.test_checks import P, geo, l201, rect
 
@@ -303,8 +309,10 @@ def test_kicad_like_sample_unchanged() -> None:
 
 
 def test_url_fetcher_refuses(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The worker's CairoSVG call (run in-process here) asks the refusing fetcher and
+    never opens a socket."""
     calls: list[str] = []
-    real = fr._refuse
+    real = raster_worker.refuse
 
     def spy(url: str, resource_type: str) -> bytes:
         calls.append(url)
@@ -313,15 +321,24 @@ def test_url_fetcher_refuses(monkeypatch: pytest.MonkeyPatch) -> None:
     def no_socket(*_a: Any, **_k: Any) -> Any:
         raise AssertionError("a socket was opened")
 
-    monkeypatch.setattr(fr, "_refuse", spy)
+    monkeypatch.setattr(raster_worker, "refuse", spy)
     monkeypatch.setattr(socket, "socket", no_socket)
     svg = kicad_svg('<image href="http://127.0.0.1:1/x.png" width="2" height="2"/>')
-    with pytest.raises(StructuredToolError) as exc:
-        fr.rasterise(svg, (4.0, 4.0))
-    assert _code(exc) == "render_failed"
+    with pytest.raises(ValueError):
+        raster_worker.convert(svg, 160, 160)
     assert calls == ["http://127.0.0.1:1/x.png"]
     with pytest.raises(ValueError):
         real("http://127.0.0.1:1/x.png", "image/*")
+
+
+async def test_worker_error_is_render_failed() -> None:
+    """An external resource (refused in the worker) or no SVG at all: the worker exits
+    non-zero and the render is `render_failed` naming only the exception class."""
+    svg = kicad_svg('<image href="http://127.0.0.1:1/x.png" width="2" height="2"/>')
+    for data in (svg, b"not svg"):
+        with pytest.raises(StructuredToolError) as exc:
+            await fr.rasterise(data, (4.0, 4.0))
+        assert _code(exc) == "render_failed" and "could not be rasterised" in exc.value.why
 
 
 def _png_size(png: bytes) -> tuple[int, int]:
@@ -330,13 +347,16 @@ def _png_size(png: bytes) -> tuple[int, int]:
         return img.size
 
 
-def test_raster_size() -> None:
-    png, scale = fr.rasterise(kicad_svg('<rect x="-1" y="-1" width="2" height="2"/>'), (4.0, 4.0))
+async def test_raster_size() -> None:
+    """The real worker process rasterises (no KiCad needed)."""
+    png, scale = await fr.rasterise(
+        kicad_svg('<rect x="-1" y="-1" width="2" height="2"/>'), (4.0, 4.0)
+    )
     w, h = _png_size(png)
     assert scale >= 40 and w >= 160 and h >= 160 and max(w, h) <= 2000
     assert w == round(4 * scale)
     wide = kicad_svg(view_box="0 0 100 10").replace(b'width="4mm" height="4mm"', b"")
-    png, scale = fr.rasterise(wide, (100.0, 10.0))
+    png, scale = await fr.rasterise(wide, (100.0, 10.0))
     assert _png_size(png) == (2000, 200)
     assert scale == pytest.approx(20.0)
 
@@ -755,9 +775,10 @@ async def test_one_render_at_a_time(
     monkeypatch.setattr(fr, "run_kicad_cli", cli)
     real = fr.rasterise
 
-    def raster(svg: bytes, extent: tuple[float, float]) -> tuple[bytes, float]:
+    async def raster(svg: bytes, extent: tuple[float, float]) -> tuple[bytes, float]:
+        out = await real(svg, extent)
         cli.events.append("raster")
-        return real(svg, extent)
+        return out
 
     monkeypatch.setattr(fr, "rasterise", raster)
     a, b = await asyncio.gather(
@@ -815,27 +836,27 @@ async def test_off_ladder_grid_refused(
 async def test_cancel_holds_lock_until_thread_ends(
     ctx: ToolContext, svc: FakeService, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A render cancelled while its worker thread rasterises keeps the semaphore until
-    that thread has finished: the next kicad-cli run starts only afterwards, and the
-    temp dir is removed."""
+    """A render cancelled while its worker thread parses and wraps keeps the semaphore
+    until that thread has finished: the next kicad-cli run starts only afterwards, and
+    the temp dir is removed."""
     import threading
 
     cli = FakeCli(kicad_svg())
     monkeypatch.setattr(fr, "run_kicad_cli", cli)
-    real = fr.rasterise
+    real = fr._prepare
     entered, release = threading.Event(), threading.Event()
     first = True
 
-    def raster(svg: bytes, extent: tuple[float, float]) -> tuple[bytes, float]:
+    def prepare(*args: Any) -> Any:
         nonlocal first
         if first:
             first = False
             entered.set()
             assert release.wait(5)
-        cli.events.append("raster-end")
-        return real(svg, extent)
+        cli.events.append("prepare-end")
+        return real(*args)
 
-    monkeypatch.setattr(fr, "rasterise", raster)
+    monkeypatch.setattr(fr, "_prepare", prepare)
     task = asyncio.create_task(fr.render_footprint(ctx, "Lib:R_1", None, None, True))
     assert await asyncio.to_thread(entered.wait, 5)
     task.cancel()
@@ -847,7 +868,7 @@ async def test_cancel_holds_lock_until_thread_ends(
     with pytest.raises(asyncio.CancelledError):
         await task
     await second
-    assert cli.events == ["start", "end", "raster-end", "start", "end", "raster-end"]
+    assert cli.events == ["start", "end", "prepare-end", "start", "end", "prepare-end"]
     assert not [p for p in _tmp_dirs(cli) if p.exists()]
 
 
@@ -934,3 +955,155 @@ def test_visible_opacity_values(attr: str) -> None:
     root = fr.load_kicad_svg(kicad_svg(f"<text {attr}>shown</text>"))
     assert [t.text for t in root.iter("text")] == ["shown"]
     assert not [k for el in root.iter() for k in el.attrib if k == "opacity"]
+
+
+# --- verification pass: the rasteriser process -------------------------------------------
+
+
+def _fake_worker(monkeypatch: pytest.MonkeyPatch, code: str) -> None:
+    monkeypatch.setattr(fr, "RASTER_WORKER", (sys.executable, "-c", code))
+
+
+def _gone(pid: int) -> bool:
+    """True when `pid` no longer exists: killed **and** reaped (a zombie still has one)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    return False
+
+
+async def _wait_for_file(path: Path) -> str:
+    for _ in range(200):
+        if path.is_file() and path.read_text():
+            return path.read_text()
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"{path} was not written")
+
+
+SLEEPER = """
+import json, os, signal, sys, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+with open({info!r} + ".tmp", "w") as f:
+    json.dump({{"pid": os.getpid(), "env": dict(os.environ), "argv": sys.argv[1:]}}, f)
+os.rename({info!r} + ".tmp", {info!r})
+time.sleep(60)
+"""
+
+
+async def test_slow_worker_times_out_and_is_reaped(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A worker that hangs (and ignores SIGTERM) is killed after RASTER_TIMEOUT_S and
+    reaped: `render_failed` "render timed out", no zombie, its HOME removed; it saw
+    only the minimal environment (no secret of the app's) and the PNG size in argv."""
+    info = tmp_path / "info.json"
+    _fake_worker(monkeypatch, SLEEPER.format(info=str(info)))
+    monkeypatch.setattr(fr, "RASTER_TIMEOUT_S", 1.0)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
+    started = time.monotonic()
+    with pytest.raises(StructuredToolError) as exc:
+        await fr.rasterise(kicad_svg(), (4.0, 4.0))
+    assert time.monotonic() - started < 5
+    assert _code(exc) == "render_failed" and "render timed out" in exc.value.why
+    seen = json.loads(info.read_text())
+    assert _gone(seen["pid"])
+    assert set(seen["env"]) <= {"PATH", "LANG", "HOME", "XDG_CACHE_HOME", "LC_CTYPE"}
+    assert "secret" not in json.dumps(seen["env"])
+    assert not Path(seen["env"]["HOME"]).exists()
+    assert seen["argv"] == ["1200", "1200"]  # TARGET_PX for a 4 mm drawing
+
+
+async def test_cancel_kills_and_reaps_worker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    info = tmp_path / "info.json"
+    _fake_worker(monkeypatch, SLEEPER.format(info=str(info)))
+    task = asyncio.create_task(fr.rasterise(kicad_svg(), (4.0, 4.0)))
+    pid = json.loads(await _wait_for_file(info))["pid"]
+    started = time.monotonic()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert time.monotonic() - started < 5
+    assert _gone(pid)
+
+
+async def test_cancelled_render_holds_lock_until_worker_reaped(
+    ctx: ToolContext, svc: FakeService, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A render cancelled while its rasteriser runs releases the semaphore only after
+    the worker was killed and reaped: the next kicad-cli run never sees it alive."""
+    info = tmp_path / "info.json"
+    code = (
+        f"import os, runpy\nif os.path.exists({str(info)!r}):\n"
+        "    runpy.run_module('copperchat.views._raster_worker', run_name='__main__')\n"
+        + SLEEPER.format(info=str(info))
+    )
+    _fake_worker(monkeypatch, code)
+    cli = FakeCli(kicad_svg())
+    alive_at_start: list[bool] = []
+
+    async def spy(*args: Any, **kwargs: Any) -> CliResult:
+        if info.is_file():
+            alive_at_start.append(not _gone(json.loads(info.read_text())["pid"]))
+        return await cli(*args, **kwargs)
+
+    monkeypatch.setattr(fr, "run_kicad_cli", spy)
+    task = asyncio.create_task(fr.render_footprint(ctx, "Lib:R_1", None, None, True))
+    pid = json.loads(await _wait_for_file(info))["pid"]
+    task.cancel()
+    second = asyncio.create_task(fr.render_footprint(ctx, "Lib:R_2", None, None, True))
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    out = await second
+    assert out.png.is_file() and _gone(pid)
+    assert alive_at_start == [False]
+    assert not [p for p in _tmp_dirs(cli) if p.exists()]
+
+
+async def test_worker_output_checked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """More stdout than a 2000 x 2000 PNG can hold, output that is no PNG, or a
+    non-zero exit (a long stderr is drained, never quoted): `render_failed`."""
+    monkeypatch.setattr(fr, "MAX_PNG_BYTES", 1000)
+    for code, why in (
+        (
+            "import sys; sys.stdout.buffer.write(b'\\x89PNG\\r\\n\\x1a\\n' * 1000)",
+            "more than a PNG",
+        ),
+        ("print('hello')", "no PNG"),
+        ("import sys; sys.exit(3)", "exit code 3"),
+        ("import sys; sys.stderr.write('Traceback ' * 10000); sys.exit(1)", "exit code 1"),
+    ):
+        _fake_worker(monkeypatch, code)
+        with pytest.raises(StructuredToolError) as exc:
+            await fr.rasterise(kicad_svg(), (4.0, 4.0))
+        assert _code(exc) == "render_failed" and why in exc.value.why, exc.value.why
+
+
+def _thick_strokes(paths: int = 24, points: int = 1990) -> bytes:
+    """The round-4/5 attack: fp_poly outlines of 1,990 points jittered in a 0.1 mm box,
+    stroked 40 mm wide; within every cap (points, elements, span)."""
+    rng = random.Random(5)
+    body = "".join(
+        '<path style="fill:none; stroke:#F2EDA1; stroke-width:40; stroke-linecap:round; '
+        'stroke-linejoin:round" d="M '
+        + " ".join(
+            f"{20 + rng.uniform(0, 0.1):.4f},{20 + rng.uniform(0, 0.1):.4f}" for _ in range(points)
+        )
+        + ' Z"/>'
+        for _ in range(paths)
+    )
+    return kicad_svg(body, view_box="0 0 40.0812 40.0812")
+
+
+async def test_thick_strokes_time_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    """24 thick strokes passed every cap and took ~41 s in CairoSVG under the render
+    lock; now the real worker is stopped at the timeout (shortened here)."""
+    monkeypatch.setattr(fr, "RASTER_TIMEOUT_S", 2.0)
+    wrapped = fr._build(fr.load_kicad_svg(_thick_strokes()), l201(), None, False)
+    started = time.monotonic()
+    with pytest.raises(StructuredToolError) as exc:
+        await fr.rasterise(wrapped.svg, wrapped.extent_mm)
+    assert time.monotonic() - started < 6
+    assert _code(exc) == "render_failed" and "render timed out" in exc.value.why
