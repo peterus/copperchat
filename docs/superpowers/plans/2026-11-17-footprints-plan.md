@@ -449,7 +449,8 @@ phase file, with the reason.)
   still changes it; nullable column `ctime_ns` in 0012);
   `DocumentHashRepo.replace` accepts `HashRow` or plain digests (stored without stats).
   Project files store their stats too but never reuse them; stats are dropped when they
-  change during hashing or `mtime` or `ctime` is within 2 s of now (`RACY_NS`).
+  change during hashing or `mtime` or `ctime` (each checked on its own, so a future
+  mtime cannot mask a fresh ctime) is within 2 s of now (`RACY_NS`).
 - **Presence rows** (`history/store.py`, `with_presence_rows`; added by
   `HistoryService.current_hashes` and, filtered to the written files,
   `on_library_changed`): with a library located the hashes carry a **library marker**
@@ -459,7 +460,10 @@ phase file, with the reason.)
   takes footprints / the table without a stored row as a silent baseline **only when the
   current marker is not stored** (library not tracked before). So the first footprint in
   an empty tracked library is an external change (also in restore's check), and a table
-  created externally takes the reload path. `_on_saved` never owns these rows;
+  created externally takes the reload path. Symmetrically, a stored marker that is no
+  longer current (the locator returns another dir or `None`) drops that library's stored
+  footprint rows silently, and with no current library the stored table row too (the
+  table is only tracked with a library); the rows are re-recorded. `_on_saved` never owns these rows;
   `on_library_changed` never writes the marker (an untracked library stays a baseline).
 - **`LibraryLocator`** type alias lives in `history/store.py`; `HistoryStore(db, project,
   locate_library=...)`; `HistoryService.store()` passes `self.locate_library`.
@@ -467,7 +471,9 @@ phase file, with the reason.)
   `library`/`table`) when the locator returns `None`. `BlobStore` refuses a symlinked
   `.kicad-agent` / `history-blobs` dir and GC only removes 64-hex blob names and
   `.tmp-*` files (a cloned repo could ship a link elsewhere). `BlobStore.put` opens the source once
-  (`O_NOFOLLOW`, fstat regular file, else `OSError`) and hashes/copies that fd; blob refs
+  (`O_NOFOLLOW|O_NONBLOCK|O_NOCTTY`, fstat regular file, else `OSError`; dir components are
+  lstat-checked by `tracked_files`) and hashes/copies that fd; after a snapshot's puts
+  `BlobStore.sync_dir()` fsyncs `history-blobs/` once if a blob was renamed in; blob refs
   are inserted with one `executemany`. The blob lock is held until
   the snapshot row and its `history_blob_refs` are committed.
 - **`FootprintWriteRepo`** returns `FootprintWrite` rows (frozen dataclass, every column);

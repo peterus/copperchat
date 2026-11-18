@@ -40,6 +40,11 @@ def _is_table_rel(rel: str) -> bool:
     return PurePosixPath(rel).name == "fp-lib-table"
 
 
+def _marker_of(rel: str) -> str:
+    """The marker rel of the library dir a footprint rel lies directly in."""
+    return PurePosixPath(rel).parent.as_posix() + "/"
+
+
 def changed_rels(stored: Mapping[str, str], now: Mapping[str, str]) -> list[str]:
     """Sorted file rels whose sha differs between the stored and the current hashes.
 
@@ -48,14 +53,25 @@ def changed_rels(stored: Mapping[str, str], now: Mapping[str, str]) -> list[str]
     no current marker is stored (the library was not tracked when the rows were
     recorded - the locator only started returning it), library footprints and the
     fp-lib-table without a stored row are recorded silently, not reported. Once it was
-    tracked, a first footprint in an empty library or a newly created table is a change."""
+    tracked, a first footprint in an empty library or a newly created table is a change.
+
+    Symmetrically, a stored marker that is not current any more (the locator returns
+    another dir or none) drops that library's stored footprint rows silently; with no
+    current library at all the stored table row is dropped silently too (the table is
+    only tracked together with a library). The caller re-records the current rows."""
     tracked = any(is_marker_rel(k) and k in stored for k in now)
+    gone = {k for k in stored if is_marker_rel(k) and k not in now}
+    any_library = any(is_marker_rel(k) for k in now)
     out: list[str] = []
     for k in stored.keys() | now.keys():
         if is_marker_rel(k) or stored.get(k, ABSENT) == now.get(k, ABSENT):
             continue
         if k not in stored and not tracked and (is_library_rel(k) or _is_table_rel(k)):
             continue  # baseline
+        if k not in now and is_library_rel(k) and _marker_of(k) in gone:
+            continue  # the library is no longer the located one
+        if k not in now and not any_library and _is_table_rel(k):
+            continue  # untracked table
         out.append(k)
     return sorted(out)
 

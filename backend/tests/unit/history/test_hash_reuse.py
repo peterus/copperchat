@@ -182,6 +182,19 @@ def test_racily_clean_ctime_not_stored(
     assert sorted(counted) == sorted(f.path for f in files)
 
 
+def test_future_mtime_does_not_hide_a_racy_ctime(
+    lib: Path, counted: list[Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A future mtime must not mask a ctime within RACY_NS of now: each stamp is
+    checked on its own, not their max."""
+    monkeypatch.setattr(store_mod, "_now_ns", time.time_ns)
+    files = _files(lib)
+    future = time.time_ns() + 3600 * 1_000_000_000
+    os.utime(lib / "A.kicad_mod", ns=(future, future))  # ctime = now
+    rows = compute_tracked_hashes(files, {})
+    assert rows[files[0].rel] == HashRow(sha256_file(lib / "A.kicad_mod"))
+
+
 def test_null_stats_rehash(lib: Path, counted: list[Path]) -> None:
     """Rows from before migration 0012 carry no stats: never reused."""
     files = _files(lib)

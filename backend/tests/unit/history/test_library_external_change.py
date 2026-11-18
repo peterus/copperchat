@@ -448,3 +448,55 @@ async def test_library_appearing_later_is_a_baseline(env: Env) -> None:
     await hooks.on_turn_start(turn("run-3"))
     assert env.engine.notices[-1][0] == "Footprints changed outside this project: B, D"
     assert external == []
+
+
+async def test_locator_returning_a_different_dir_is_a_baseline(opened_lib: Lib) -> None:
+    """The locator switches X.pretty -> Y.pretty: the old library's rows (footprints and
+    marker) are dropped silently and the new library is baselined - nothing reported."""
+    lib = opened_lib
+    env = lib.env
+    session = env.sessions.current()
+    y_dir = env.settings.projects_root / "footprints" / "Y.pretty"
+    y_dir.mkdir(parents=True)
+    for stem, src in zip("DE", _FOOTPRINTS, strict=False):
+        shutil.copyfile(src, y_dir / f"{stem}.kicad_mod")  # byte copies of KiCad files
+    y = LibraryLocation(
+        dir=y_dir, repo_root=lib.location.repo_root, table=lib.location.table, nickname="Y"
+    )
+
+    async def locate(p: Project) -> LibraryLocation | None:
+        return y
+
+    env.svc.locate_library = locate
+    await lib.hooks.on_turn_start(turn("run-2"))
+
+    assert env.sessions.current() is session and env.server.starts == 1
+    assert env.engine.notices == [] and lib.events == [] and lib.external == []
+    stored = await env.svc.hashes.get(lib.project.id)
+    assert not any(k.startswith("../footprints/X.pretty/") for k in stored)
+    assert stored["../footprints/Y.pretty/"] == "dir"
+    assert sorted(k for k in stored if k.endswith(".kicad_mod")) == [
+        "../footprints/Y.pretty/D.kicad_mod",
+        "../footprints/Y.pretty/E.kicad_mod",
+    ]
+
+
+async def test_locator_returning_none_while_the_table_exists(opened_lib: Lib) -> None:
+    """The locator flips to None (the table is no longer tracked, it still exists): the
+    library rows and the table row are dropped silently - no reload, no notice."""
+    lib = opened_lib
+    env = lib.env
+    session = env.sessions.current()
+    assert (lib.project.dir / "fp-lib-table").exists()
+
+    async def locate(p: Project) -> LibraryLocation | None:
+        return None
+
+    env.svc.locate_library = locate
+    await lib.hooks.on_turn_start(turn("run-2"))
+
+    assert env.sessions.current() is session and env.server.starts == 1
+    assert env.engine.notices == [] and lib.events == [] and lib.external == []
+    stored = await env.svc.hashes.get(lib.project.id)
+    assert "fp-lib-table" not in stored
+    assert not any(k.endswith((".kicad_mod", "/")) for k in stored)

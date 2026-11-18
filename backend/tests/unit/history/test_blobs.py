@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import Any
@@ -112,6 +113,22 @@ def test_put_refuses_symlink_source(blobs: BlobStore, lib: Path) -> None:
     with pytest.raises(OSError):
         blobs.put(link, None)
     assert not blobs.root.exists() or not any(blobs.root.iterdir())
+
+
+def test_put_opens_source_without_ctty(
+    blobs: BlobStore, lib: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    flags: list[int] = []
+    real = os.open
+
+    def recording(path: Any, f: int, *args: Any, **kwargs: Any) -> int:
+        if Path(path) == lib / "A.kicad_mod":
+            flags.append(f)
+        return real(path, f, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", recording)
+    blobs.put(lib / "A.kicad_mod", None)
+    assert flags and all(f & os.O_NOCTTY and f & os.O_NOFOLLOW for f in flags)
 
 
 def test_put_refuses_non_regular_source(blobs: BlobStore, lib: Path) -> None:

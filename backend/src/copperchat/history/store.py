@@ -283,8 +283,9 @@ def compute_tracked_hashes(
         except FileNotFoundError:  # vanished between listing and hashing
             continue
         stable = _stat_key(before) == _stat_key(after)
-        newest = max(after.st_mtime_ns, after.st_ctime_ns)
-        if stable and abs(_now_ns() - newest) >= RACY_NS:
+        now = _now_ns()
+        clean = all(abs(now - t) >= RACY_NS for t in (after.st_mtime_ns, after.st_ctime_ns))
+        if stable and clean:
             rows[f.rel] = HashRow(digest, *_stat_key(after))
         else:
             rows[f.rel] = HashRow(digest)
@@ -353,6 +354,7 @@ class HistoryStore:
             except FileNotFoundError:  # vanished between listing and copying
                 continue
             entries.append({"relPath": f.rel, "sha256": sha, "size": size})
+        self.blobs.sync_dir()  # durable dir entries before the refs are committed
         return {
             "dir": repo_rel(location.dir, location.repo_root),
             "existed": exists,

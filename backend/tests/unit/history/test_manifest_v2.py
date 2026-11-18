@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
+import stat
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -197,6 +199,30 @@ async def test_dedup_across_snapshots(
     sha = _sha(lib_dir / "A.kicad_mod")
     assert _blob_names(project) == [sha]
     assert await _refs(db) == sorted([(one.id, sha), (two.id, sha)])
+
+
+async def test_blob_dir_fsynced_once_per_snapshot_with_new_blobs(
+    db: Database, repo: Path, project: Project, lib_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The renamed blobs' directory entries are made durable (one fsync of the blob dir)
+    before their refs are committed; a snapshot that adds no blob syncs nothing."""
+    store = HistoryStore(db, project, locate_library=_locator(repo, lib_dir))
+    synced: list[tuple[int, int]] = []
+    real = os.fsync
+
+    def recording(fd: int) -> None:
+        st = os.fstat(fd)
+        if stat.S_ISDIR(st.st_mode):
+            synced.append((st.st_dev, st.st_ino))
+        real(fd)
+
+    monkeypatch.setattr(os, "fsync", recording)
+    await store.snapshot("run-1", "one")
+    root = (agent_dir(project) / "history-blobs").stat()
+    assert synced.count((root.st_dev, root.st_ino)) == 1
+    synced.clear()
+    await store.snapshot("run-2", "two")  # every blob exists: nothing renamed
+    assert (root.st_dev, root.st_ino) not in synced
 
 
 async def test_blob_written_before_manifest(
