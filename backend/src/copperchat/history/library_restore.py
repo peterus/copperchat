@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from copperchat.db.repos.footprints import ABSENT, FootprintWrite
-from copperchat.history.store import CorruptSnapshot, LibraryLocation, sha256_file
+from copperchat.history.store import CorruptSnapshot, LibraryLocation
 
 _SHA_RE = re.compile(r"[0-9a-f]{64}")
 _SUFFIX = ".kicad_mod"
@@ -147,14 +147,15 @@ def validate_copy_target(path: Path, location: LibraryLocation) -> None:
 
 
 def verify_blob(path: Path, sha: str) -> None:
-    """The blob must be a regular file whose content hashes to its name."""
+    """The blob name must be a sha and the blob a regular file. Its content is checked
+    against the name while it is copied (`_copy_hashed`), before any target is replaced."""
     if not isinstance(sha, str) or _SHA_RE.fullmatch(sha) is None:
         raise CorruptSnapshot(f"invalid blob sha: {sha!r}")
     try:
         regular = stat.S_ISREG(path.lstat().st_mode)
     except OSError:
         regular = False
-    if not regular or sha256_file(path) != sha:
+    if not regular:
         raise CorruptSnapshot(f"library blob {sha} is missing or corrupted")
 
 
@@ -372,10 +373,11 @@ def apply_library_plan(
     location: LibraryLocation,
     project_dir: Path,
 ) -> list[str]:
-    """Blocking: copies first (every blob re-hashed against its name before any target
-    is replaced; a bad blob raises CorruptSnapshot and changes nothing), then deletes,
-    the table file and the rmdir. Every path is re-validated. Returns notes for the
-    restore notice (deletes that became unsafe or failed, a dir that is not empty)."""
+    """Blocking: copies first (every blob hashed against its name while it is staged,
+    before any target is replaced; a bad blob raises CorruptSnapshot and changes
+    nothing; a failed replace leaves no temp file), then deletes, the table file and
+    the rmdir. Every path is re-validated. Returns notes for the restore notice
+    (deletes that became unsafe or failed, a dir that is not empty)."""
     notes: list[str] = []
     staged: list[tuple[Path, Path]] = []
     created_dirs: list[Path] = []
@@ -397,8 +399,14 @@ def apply_library_plan(
             with contextlib.suppress(OSError):
                 d.rmdir()
         raise
-    for tmp, target in staged:
-        os.replace(tmp, target)
+    moved = 0
+    try:
+        for tmp, target in staged:
+            os.replace(tmp, target)
+            moved += 1
+    finally:  # a failed replace never leaves temp files in the shared library dir
+        for tmp, _ in staged[moved:]:
+            tmp.unlink(missing_ok=True)
 
     for path in plan.delete:
         try:

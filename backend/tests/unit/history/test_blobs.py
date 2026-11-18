@@ -67,6 +67,43 @@ def test_put_with_unknown_known_sha_hashes(blobs: BlobStore, lib: Path) -> None:
     assert not (blobs.root / stale).exists()
 
 
+def test_put_existing_blob_never_copies(
+    blobs: BlobStore, lib: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Content already stored: hashed first, no temp file, no copy, no fsync."""
+    from copperchat.history import blobs as blobs_mod
+
+    sha, size = blobs.put(lib / "A.kicad_mod", None)
+
+    def no_fsync(fd: int) -> None:
+        raise AssertionError("an existing blob is never copied again")
+
+    monkeypatch.setattr(blobs_mod.os, "fsync", no_fsync)
+    monkeypatch.setattr(blobs_mod.uuid, "uuid4", lambda: pytest.fail("no temp file"))
+    assert blobs.put(lib / "A.kicad_mod", None) == (sha, size)
+    assert sorted(p.name for p in blobs.root.iterdir()) == [sha]
+
+
+def test_put_names_blob_after_copied_bytes(
+    blobs: BlobStore, lib: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The source changed between the pre-hash and the copy: the copy's hash wins."""
+    from copperchat.history import blobs as blobs_mod
+
+    src = lib / "A.kicad_mod"
+    real = blobs_mod.sha256_file
+
+    def then_change(path: Path) -> str:
+        digest = real(path)
+        shutil.copyfile(lib / "B.kicad_mod", src)  # a concurrent KiCad save
+        return digest
+
+    monkeypatch.setattr(blobs_mod, "sha256_file", then_change)
+    sha, _ = blobs.put(src, None)
+    assert sha == _sha(lib / "B.kicad_mod")
+    assert blobs.path(sha).read_bytes() == (lib / "B.kicad_mod").read_bytes()
+
+
 @pytest.mark.parametrize(
     "bad", ["../../x", "", "A" * 64, "0" * 63, "0" * 65, "0" * 64 + "\n", ".tmp-x", "/etc/passwd"]
 )

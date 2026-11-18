@@ -7,7 +7,6 @@ never parses or edits their content; it only copies bytes and hashes them.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import os
 import re
@@ -26,6 +25,7 @@ from copperchat.db.repos.footprints import FootprintWriteRepo
 from copperchat.errors import CopperChatError
 from copperchat.history.blobs import BlobStore, blob_lock
 from copperchat.history.blobs import CorruptSnapshot as CorruptSnapshot
+from copperchat.history.blobs import sha256_file as sha256_file
 from copperchat.history.library_lock import library_lock
 from copperchat.plans.repo import PlanRepo
 from copperchat.projects import SKIP_DIRS, Project, agent_dir
@@ -188,14 +188,6 @@ def repo_rel(path: Path, repo_root: Path) -> str:
     raise ValueError(f"{path} is outside the repo root {repo_root}")
 
 
-def sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 16), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def compute_hashes(project: Project) -> dict[str, str]:
     """rel posix path -> sha256 of every document file (blocking; see compute_hashes_async)."""
     return {p.relative_to(project.dir).as_posix(): sha256_file(p) for p in document_files(project)}
@@ -218,23 +210,25 @@ class HashRow:
     size: int | None = None
     mtime_ns: int | None = None
     inode: int | None = None
+    ctime_ns: int | None = None
 
 
-def _stat_key(st: os.stat_result) -> tuple[int, int, int]:
-    return (st.st_size, st.st_mtime_ns, st.st_ino)
+def _stat_key(st: os.stat_result) -> tuple[int, int, int, int]:
+    return (st.st_size, st.st_mtime_ns, st.st_ino, st.st_ctime_ns)
 
 
 def _reusable(row: HashRow | None, st: os.stat_result) -> bool:
-    if row is None or row.size is None or row.mtime_ns is None or row.inode is None:
+    if row is None:
         return False
-    return (row.size, row.mtime_ns, row.inode) == _stat_key(st)
+    key = (row.size, row.mtime_ns, row.inode, row.ctime_ns)
+    return None not in key and key == _stat_key(st)
 
 
 def compute_tracked_hashes(
     files: list[TrackedFile], previous: dict[str, HashRow]
 ) -> dict[str, HashRow]:
     """rel -> HashRow for every file still present (blocking; FP-C7). A library file
-    whose lstat (size, mtime_ns, inode) equals its previous row's reuses that sha
+    whose lstat (size, mtime_ns, inode, ctime_ns) equals its previous row's reuses that sha
     without reading the file; project files are always hashed. A row gets stats only
     if they did not change while hashing and the mtime is not within RACY_NS of now."""
     rows: dict[str, HashRow] = {}
@@ -305,7 +299,7 @@ class HistoryStore:
     ) -> dict[str, Any]:
         """The manifest's `library` part; puts every library file into the blob store
         (blocking; the caller holds the library and blob locks). A stored hash whose
-        (size, mtime_ns, inode) still matches names the blob without reading the file."""
+        (size, mtime_ns, inode, ctime_ns) still matches names the blob without reading the file."""
         exists = _library_dir(location) is not None
         entries: list[dict[str, Any]] = []
         for f in tracked_files(self.project, location):
@@ -364,7 +358,8 @@ class HistoryStore:
         dest = self.snapshot_dir(sid)
         tmp = self.root / f".tmp-{sid}"
         label = label[:LABEL_MAX]
-        journal_max_id = await FootprintWriteRepo(self._db).max_id()
+        journal = FootprintWriteRepo(self._db)
+        journal_max_id: int | None = None
         library: dict[str, Any] | None = None
         blobs_lock = blob_lock(self.project.id)
         blobs_held = False
@@ -376,9 +371,14 @@ class HistoryStore:
                 # The blob lock stays held until the refs are committed, so a GC
                 # never removes a blob that is about to be referenced.
                 async with library_lock(location.dir):
+                    # Under the library lock: no other project's write lands between
+                    # the journal mark and the library files stored below.
+                    journal_max_id = await journal.max_id()
                     await blobs_lock.acquire()
                     blobs_held = True
                     library = await asyncio.to_thread(self._store_library, location, previous)
+            else:
+                journal_max_id = await journal.max_id()
             entries = await asyncio.to_thread(self._copy_documents, tmp)
             created = utcnow_iso()
             if preview_png is not None:
@@ -579,13 +579,25 @@ class DocumentHashRepo:
 
     async def get_rows(self, project_id: str) -> dict[str, HashRow]:
         rows = await self._db.fetchall(
-            "SELECT rel_path, sha256, size, mtime_ns, inode FROM document_hashes"
+            "SELECT rel_path, sha256, size, mtime_ns, inode, ctime_ns FROM document_hashes"
             " WHERE project_id = ?",
             (project_id,),
         )
         return {
-            r["rel_path"]: HashRow(r["sha256"], r["size"], r["mtime_ns"], r["inode"]) for r in rows
+            r["rel_path"]: HashRow(r["sha256"], r["size"], r["mtime_ns"], r["inode"], r["ctime_ns"])
+            for r in rows
         }
+
+    async def _insert(self, project_id: str, hashes: Mapping[str, HashRow | str]) -> None:
+        def params(rel: str, value: HashRow | str) -> tuple[Any, ...]:
+            row = HashRow(value) if isinstance(value, str) else value
+            return (project_id, rel, row.sha256, row.size, row.mtime_ns, row.inode, row.ctime_ns)
+
+        await self._db.executemany(
+            "INSERT OR REPLACE INTO document_hashes(project_id, rel_path, sha256, size,"
+            " mtime_ns, inode, ctime_ns) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [params(rel, value) for rel, value in sorted(hashes.items())],
+        )
 
     async def replace(self, project_id: str, hashes: Mapping[str, HashRow | str]) -> None:
         """Replace every stored row; a plain digest is stored without stats."""
@@ -593,10 +605,20 @@ class DocumentHashRepo:
             await self._db.execute(
                 "DELETE FROM document_hashes WHERE project_id = ?", (project_id,)
             )
-            for rel, value in sorted(hashes.items()):
-                row = HashRow(value) if isinstance(value, str) else value
-                await self._db.execute(
-                    "INSERT INTO document_hashes(project_id, rel_path, sha256, size, mtime_ns,"
-                    " inode) VALUES (?, ?, ?, ?, ?, ?)",
-                    (project_id, rel, row.sha256, row.size, row.mtime_ns, row.inode),
-                )
+            await self._insert(project_id, hashes)
+
+    async def upsert(
+        self,
+        project_id: str,
+        rows: Mapping[str, HashRow | str],
+        delete: Iterable[str] = (),
+    ) -> None:
+        """Write `rows` and remove the rows of `delete`, in one transaction; every other
+        row of the project stays as it is (no read-modify-write of the whole set)."""
+        gone = sorted(set(delete) - rows.keys())
+        async with self._db.transaction():
+            await self._db.executemany(
+                "DELETE FROM document_hashes WHERE project_id = ? AND rel_path = ?",
+                [(project_id, rel) for rel in gone],
+            )
+            await self._insert(project_id, rows)

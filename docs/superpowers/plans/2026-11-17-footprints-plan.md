@@ -359,6 +359,7 @@ spec §10).
 ALTER TABLE document_hashes ADD COLUMN size INTEGER;      -- NULL = never reused
 ALTER TABLE document_hashes ADD COLUMN mtime_ns INTEGER;
 ALTER TABLE document_hashes ADD COLUMN inode INTEGER;
+ALTER TABLE document_hashes ADD COLUMN ctime_ns INTEGER;
 CREATE TABLE history_blob_refs (
   project_id TEXT NOT NULL, snapshot_id TEXT NOT NULL, sha256 TEXT NOT NULL,
   PRIMARY KEY (snapshot_id, sha256));
@@ -443,7 +444,9 @@ phase file, with the reason.)
 
 - **`CorruptSnapshot`** now lives in `history/blobs.py` (import cycle); `history/store.py`
   re-exports it, so existing imports are unchanged.
-- **`HashRow`** (`sha256, size, mtime_ns, inode`) in `history/store.py`;
+- **`HashRow`** (`sha256, size, mtime_ns, inode, ctime_ns`) in `history/store.py`; the
+  reuse key includes `ctime_ns` (an in-place same-size rewrite that restores the mtime
+  still changes it; nullable column `ctime_ns` in 0012);
   `DocumentHashRepo.replace` accepts `HashRow` or plain digests (stored without stats).
   Project files store their stats too but never reuse them; stats are dropped when they
   change during hashing or `mtime` is within 2 s of now (`RACY_NS`).

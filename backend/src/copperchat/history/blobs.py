@@ -31,6 +31,14 @@ class CorruptSnapshot(CopperChatError):
     http_status = 422
 
 
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 _LOCKS: dict[str, asyncio.Lock] = {}
 
 
@@ -62,14 +70,17 @@ class BlobStore:
 
     def put(self, src: Path, known_sha: str | None) -> tuple[str, int]:
         """Store `src` (blocking); returns (sha256, size). A `known_sha` whose blob
-        exists is reused without reading `src`; otherwise the file is hashed while it is
-        copied, so the blob name always equals the hash of the stored bytes."""
-        if known_sha is not None:
-            existing = self.path(known_sha)
-            try:
-                return known_sha, existing.stat().st_size
-            except FileNotFoundError:
-                pass
+        exists is reused without reading `src`. Otherwise `src` is hashed first and an
+        existing blob of that content is reused without copying; only new content is
+        copied (hashed again while copying, so the blob name always equals the hash of
+        the stored bytes, also when `src` changed in between)."""
+        sha = known_sha
+        if sha is None or not self.path(sha).exists():
+            sha = sha256_file(src)
+        try:
+            return sha, self.path(sha).stat().st_size
+        except FileNotFoundError:
+            pass
         self.root.mkdir(parents=True, exist_ok=True)
         if not self._root_is_real():
             raise CorruptSnapshot(f"{self.root} is not a real directory (symlink?)")

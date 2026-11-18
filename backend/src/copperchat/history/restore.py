@@ -21,12 +21,13 @@ import logging
 import os
 import shutil
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from copperchat.db.repos.footprints import ABSENT, FootprintWriteRepo
 from copperchat.errors import CopperChatError, ReadOnlyProject
 from copperchat.history.blobs import blob_lock
+from copperchat.history.hooks import changed_rels, is_library_rel
 from copperchat.history.library_lock import library_lock
 from copperchat.history.library_restore import (
     LibraryRestorePlan,
@@ -288,7 +289,9 @@ async def restore_snapshot(
                     svc, project, store, manifest, location, table_rows
                 )
             await asyncio.to_thread(_copy_back, plan)
-            await svc.hashes.replace(project.id, await svc.current_hashes(project))
+            stored = await svc.hashes.get(project.id)
+            current = await svc.current_hashes(project)
+            await svc.hashes.replace(project.id, current)
         except BaseException:
             if session is not None:  # never leave the closed session as the current one
                 await _reload(svc, project, engine, conversation_id)
@@ -301,6 +304,15 @@ async def restore_snapshot(
         extras: list[str] = []
         if library is not None and location is not None:
             extras = await _finish_library(svc, project, library, location, fresh)
+        # Re-recording every library hash above must not absorb a change another project
+        # made since the last turn start to a footprint this restore left alone.
+        touched = set() if library is None else {_rel(p, project) for p in library.changed}
+        now = {k: r.sha256 for k, r in current.items()}
+        external = [k for k in changed_rels(stored, now) if is_library_rel(k) and k not in touched]
+        if external:
+            stems = ", ".join(sorted({PurePosixPath(k).stem for k in external}))
+            extras.append(f"Footprints changed outside this project: {stems}")
+            await svc.notify_library(project, external, "external")
         if engine is not None and conversation_id is not None:
             text = f"Restored the design to the snapshot from {snap.created_at} ({snap.label})."
             if extras:

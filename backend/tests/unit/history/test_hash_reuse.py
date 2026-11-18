@@ -103,6 +103,32 @@ def test_inode_change_rehashes(lib: Path, counted: list[Path]) -> None:
     assert second[files[0].rel].inode == a.stat().st_ino
 
 
+def test_ctime_change_rehashes(lib: Path, counted: list[Path]) -> None:
+    """An in-place same-size rewrite that restores the mtime: only the ctime tells."""
+    files = _files(lib)
+    first = compute_tracked_hashes(files, {})
+    a = lib / "A.kicad_mod"
+    st = a.stat()
+    data = bytearray(a.read_bytes())
+    data[-2] = ord("X") if data[-2] != ord("X") else ord("Y")  # same size, other bytes
+    time.sleep(0.05)  # the ctime clock is coarse (kernel tick)
+    with a.open("r+b") as fh:  # in place: same inode
+        fh.write(bytes(data))
+    os.utime(a, ns=(st.st_atime_ns, st.st_mtime_ns))
+    after = a.stat()
+    assert (after.st_size, after.st_mtime_ns, after.st_ino) == (
+        st.st_size,
+        st.st_mtime_ns,
+        st.st_ino,
+    )
+    assert after.st_ctime_ns != st.st_ctime_ns
+    counted.clear()
+    second = compute_tracked_hashes(files, first)
+    assert counted == [a]
+    assert second[files[0].rel].sha256 == sha256_file(a) != first[files[0].rel].sha256
+    assert second[files[0].rel].ctime_ns == after.st_ctime_ns
+
+
 def test_stat_changes_during_hash_not_stored(lib: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     files = _files(lib)
     a = lib / "A.kicad_mod"
@@ -115,7 +141,7 @@ def test_stat_changes_during_hash_not_stored(lib: Path, monkeypatch: pytest.Monk
 
     monkeypatch.setattr(store_mod, "sha256_file", touching)
     rows = compute_tracked_hashes(files, {})
-    assert rows[files[0].rel] == HashRow(sha256_file(a), None, None, None)
+    assert rows[files[0].rel] == HashRow(sha256_file(a))
     assert rows[files[1].rel].size is not None
 
 
@@ -171,7 +197,7 @@ def test_vanished_file_skipped(lib: Path, monkeypatch: pytest.MonkeyPatch) -> No
 async def test_repo_rows_round_trip(env: Env) -> None:
     repo = DocumentHashRepo(env.svc.db)
     rows = {
-        "a.kicad_sch": HashRow("1" * 64, 10, 123456789, 42),
+        "a.kicad_sch": HashRow("1" * 64, 10, 123456789, 42, 987654321),
         "../lib/X.pretty/A.kicad_mod": HashRow("2" * 64, None, None, None),
     }
     await repo.replace("p1", rows)
@@ -179,6 +205,28 @@ async def test_repo_rows_round_trip(env: Env) -> None:
     assert await repo.get("p1") == {k: v.sha256 for k, v in rows.items()}
     await repo.replace("p1", {"b": "3" * 64})  # plain digests still accepted
     assert await repo.get_rows("p1") == {"b": HashRow("3" * 64, None, None, None)}
+
+
+async def test_repo_upsert_touches_only_given_rows(env: Env) -> None:
+    repo = DocumentHashRepo(env.svc.db)
+    await repo.replace("p1", {"a": "1" * 64, "b": "2" * 64, "c": "3" * 64})
+    await repo.replace("p2", {"a": "4" * 64})
+    await repo.upsert("p1", {"b": HashRow("5" * 64, 1, 2, 3, 4), "d": "6" * 64}, delete=["c"])
+    assert await repo.get_rows("p1") == {
+        "a": HashRow("1" * 64),
+        "b": HashRow("5" * 64, 1, 2, 3, 4),
+        "d": HashRow("6" * 64),
+    }
+    assert await repo.get("p2") == {"a": "4" * 64}
+    await repo.upsert("p1", {}, delete=["a", "b", "d"])
+    assert await repo.get("p1") == {}
+
+
+async def test_repo_replace_many_rows(env: Env) -> None:
+    repo = DocumentHashRepo(env.svc.db)
+    rows = {f"f{i:05}.kicad_mod": HashRow(f"{i:064x}", i, i, i, i) for i in range(3000)}
+    await repo.replace("p1", rows)
+    assert await repo.get_rows("p1") == rows
 
 
 async def test_current_hashes_includes_library(env: Env, counted: list[Path]) -> None:

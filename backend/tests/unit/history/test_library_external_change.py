@@ -3,6 +3,7 @@ reload nor pause (F3 Task 8). Library files are copies of KiCad-saved footprints
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
@@ -259,3 +260,107 @@ async def test_no_change_does_nothing(opened_lib: Lib) -> None:
     assert lib.env.engine.notices == [] and lib.env.engine.notes == []
     assert lib.external == [] and lib.events == []
     assert lib.env.sessions.current() is session and lib.env.server.starts == 1
+
+
+async def test_rerecord_keeps_rows_written_meanwhile(
+    lib: Lib, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """on_library_changed / _on_saved write only their own rows: a row another path
+    stored while they were hashing (or between their read and write) survives."""
+    from copperchat.history import service as service_mod
+
+    env, project = lib.env, lib.project
+    loop = asyncio.get_running_loop()
+    injected: list[str] = []
+
+    async def other_path(rel: str) -> None:
+        injected.append(rel)
+        await env.svc.db.execute(
+            "INSERT OR REPLACE INTO document_hashes(project_id, rel_path, sha256) VALUES (?, ?, ?)",
+            (project.id, rel, "7" * 64),
+        )
+
+    real_compute = service_mod.compute_tracked_hashes
+
+    def computing(files: Any, previous: Any) -> Any:
+        rows = real_compute(files, previous)
+        rel = f"meanwhile-{len(injected)}.kicad_sch"
+        asyncio.run_coroutine_threadsafe(other_path(rel), loop).result()
+        return rows
+
+    real_get_rows = env.svc.hashes.get_rows
+
+    async def get_rows(project_id: str) -> Any:
+        rows = await real_get_rows(project_id)
+        await other_path(f"between-{len(injected)}.kicad_sch")
+        return rows
+
+    monkeypatch.setattr(service_mod, "compute_tracked_hashes", computing)
+    monkeypatch.setattr(env.svc.hashes, "get_rows", get_rows)
+    lib.change("A")
+    await env.svc.on_library_changed(project, [lib.file("A")])
+    await env.svc._on_saved(project, "pcb")
+
+    stored = await env.svc.hashes.get(project.id)
+    assert injected and all(stored.get(rel) == "7" * 64 for rel in injected)
+    monkeypatch.setattr(service_mod, "compute_tracked_hashes", real_compute)
+    current = await env.svc.current_hashes(project)
+    assert stored[lib.rel(lib.file("A"))] == current[lib.rel(lib.file("A"))].sha256
+
+
+async def test_library_appearing_later_is_a_baseline(env: Env) -> None:
+    """A project whose rows were recorded without a library: when the locator starts
+    returning one, its table and footprints are recorded silently - no reload, no plan
+    pause, no notice. Changes after that are reported as usual."""
+    project = env.project()
+    await env.sessions.open(project)
+    hooks = env.svc.hooks_factory(project, env.engine)  # type: ignore[arg-type]
+    await hooks.on_engine_start()  # default locator: no library
+    stored = await env.svc.hashes.get(project.id)
+    assert "fp-lib-table" not in stored and not any(k.endswith(".kicad_mod") for k in stored)
+
+    lib_dir = env.settings.projects_root / "footprints" / "X.pretty"
+    lib_dir.mkdir(parents=True)
+    for stem, src in zip("ABC", _FOOTPRINTS, strict=False):
+        shutil.copyfile(src, lib_dir / f"{stem}.kicad_mod")  # byte copies of KiCad files
+    location = LibraryLocation(
+        dir=lib_dir,
+        repo_root=env.settings.projects_root,
+        table=project.dir / "fp-lib-table",
+        nickname="X",
+    )
+
+    async def locate(p: Project) -> LibraryLocation | None:
+        return location
+
+    env.svc.locate_library = locate
+    events: list[tuple[list[str], str]] = []
+    external: list[list[str]] = []
+
+    async def listener(p: Project, rels: list[str], reason: str) -> None:
+        if p.id == project.id:
+            events.append((rels, reason))
+
+    async def paused(p: Project, rels: list[str]) -> None:
+        if p.id == project.id:
+            external.append(rels)
+
+    env.svc.library_listeners.append(listener)
+    env.svc.on_external_change.append(paused)
+    session = env.sessions.current()
+    notices = len(env.engine.notices)
+
+    await hooks.on_turn_start(turn("run-2"))
+
+    assert env.sessions.current() is session
+    assert len(env.engine.notices) == notices and events == [] and external == []
+    stored = await env.svc.hashes.get(project.id)
+    assert "fp-lib-table" in stored
+    assert sum(k.endswith(".kicad_mod") for k in stored) == 3
+
+    b = lib_dir / "B.kicad_mod"
+    replace_with_kicad_file(b, next(f for f in _FOOTPRINTS if f.read_bytes() != b.read_bytes()))
+    shutil.copyfile(_FOOTPRINTS[0], lib_dir / "D.kicad_mod")  # a new footprint is reported
+    await hooks.on_turn_start(turn("run-3"))
+    assert env.engine.notices[-1][0] == "Footprints changed outside this project: B, D"
+    assert external == []

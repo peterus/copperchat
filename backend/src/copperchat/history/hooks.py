@@ -5,6 +5,7 @@ that changed documents, crash recovery."""
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -32,6 +33,25 @@ def is_library_rel(rel: str) -> bool:
     dir the locator no longer returns; no path-prefix rule ("../", the library dir rel)
     is needed, which would break for a project at the repo root."""
     return rel.endswith(".kicad_mod")
+
+
+def _category(rel: str) -> str:
+    if is_library_rel(rel):
+        return "library"
+    return "table" if PurePosixPath(rel).name == "fp-lib-table" else "project"
+
+
+def changed_rels(stored: Mapping[str, str], now: Mapping[str, str]) -> list[str]:
+    """Sorted rels whose sha differs between the stored and the current hashes. A
+    current file without a stored row is a baseline, not a change, when its category
+    (library footprints / the fp-lib-table) has no stored row at all: the locator only
+    started returning a library (or the table appeared) since the rows were recorded."""
+    recorded = {_category(k) for k in stored}
+    return sorted(
+        k
+        for k in stored.keys() | now.keys()
+        if stored.get(k) != now.get(k) and (k in stored or _category(k) in recorded)
+    )
 
 
 class HistoryHooks(RunHooks):
@@ -63,8 +83,10 @@ class HistoryHooks(RunHooks):
                 await self.svc.hashes.replace(self.project.id, rows)
                 return
             now = {k: r.sha256 for k, r in rows.items()}
-            changed = sorted(k for k in stored.keys() | now.keys() if stored.get(k) != now.get(k))
+            changed = changed_rels(stored, now)
             if not changed:
+                if now.keys() != stored.keys():  # a baseline: record it silently
+                    await self.svc.hashes.replace(self.project.id, rows)
                 return
             library = [k for k in changed if is_library_rel(k)]
             library_only = len(library) == len(changed)

@@ -3,6 +3,7 @@
 ALTER TABLE document_hashes ADD COLUMN size INTEGER;      -- NULL = never reused
 ALTER TABLE document_hashes ADD COLUMN mtime_ns INTEGER;
 ALTER TABLE document_hashes ADD COLUMN inode INTEGER;
+ALTER TABLE document_hashes ADD COLUMN ctime_ns INTEGER;
 CREATE TABLE history_blob_refs (
   project_id TEXT NOT NULL, snapshot_id TEXT NOT NULL, sha256 TEXT NOT NULL,
   PRIMARY KEY (snapshot_id, sha256));

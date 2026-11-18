@@ -446,3 +446,26 @@ async def test_v1_snapshot_restore_unchanged_behaviour(env: Env, lib: Lib) -> No
     assert (lib.dir / "C.kicad_mod").exists()
     assert lib.reads == [] and lib.removed == [] and lib.calls == []
     assert _notice(env).endswith("(turn).")
+
+
+async def test_restore_reports_foreign_library_change_it_did_not_touch(env: Env, lib: Lib) -> None:
+    """Re-recording every library hash after a restore must not absorb another project's
+    change to a footprint the restore left alone: it is reported as external."""
+    project = lib.project
+    await env.svc.hashes.replace(project.id, await env.svc.current_hashes(project))  # turn start
+    snap = await env.svc.store(project).snapshot("run-1", "turn")
+    await lib.write("A.kicad_mod", "replace", lib.put("A.kicad_mod", 2))
+    await env.svc.on_library_changed(project, [lib.dir / "A.kicad_mod"])
+    lib.calls.clear()
+    lib.put("B.kicad_mod", 3)  # meanwhile another project saved B
+
+    await restore_snapshot(env.svc, project, snap.id, conversation_id=TEST_CID)
+
+    a, b = "../footprints/X.pretty/A.kicad_mod", "../footprints/X.pretty/B.kicad_mod"
+    assert sorted(lib.calls, key=lambda c: c[2]) == [
+        (project, [b], "external"),
+        (project, [a], "restore"),
+    ]
+    assert "- Footprints changed outside this project: B" in _notice(env)
+    stored = await env.svc.hashes.get(project.id)
+    assert stored[b] == sha256_file(lib.dir / "B.kicad_mod")

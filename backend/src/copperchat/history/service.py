@@ -120,28 +120,29 @@ class HistoryService:
             return compute_tracked_hashes(files, {})
 
         now = await asyncio.to_thread(owned_hashes)
-        stored = await self.hashes.get_rows(project.id)
-        merged = {k: v for k, v in stored.items() if not owned(k)}
-        merged |= now
-        await self.hashes.replace(project.id, merged)
+        # Only the owned rows are written (one transaction): a row another path stored
+        # meanwhile is never overwritten with a stale copy.
+        stored = await self.hashes.get(project.id)
+        await self.hashes.upsert(project.id, now, delete=[k for k in stored if owned(k)])
 
     async def on_library_changed(self, project: Project, files: Iterable[Path]) -> None:
         """CopperChat itself wrote `files` (footprints, the project's fp-lib-table; FP-C6):
-        re-record only their rows (fresh hash + stats), merged into the stored rows like
-        `_on_saved`, so the next turn start does not take the own write for an external
-        change while changes other projects made to the rest of the library still show.
+        re-record only their rows (fresh hash + stats), leaving every other row as it
+        is like `_on_saved`, so the next turn start does not take the own write for an
+        external change while changes other projects made to the rest of the library
+        still show.
         A file that no longer exists, or is not tracked (no library located, a symlink),
         loses its row. Then the library listeners get reason "own" (errors logged).
 
         Never takes `HistoryService.lock` (FP-C6 lock rule): it runs in the `finally` of
         a tool call, and `svc.lock` is always taken first (restore, step checkpoints:
         `svc.lock` -> library lock -> ...), so a holder of `svc.lock` may be waiting for
-        this very call; waiting for it here could deadlock. Safe without it: it is a
-        read-modify-write of the rows of `files` only (sha computed from the file as it
-        is now), and the turn-start check, snapshot and restore hash the tracked files
-        themselves. The worst a race with them can cause is one extra or one missed
-        report of exactly these files at the next turn start, never a stale row for
-        another file."""
+        this very call; waiting for it here could deadlock. Safe without it: it writes
+        the rows of `files` only, in one transaction (`DocumentHashRepo.upsert`; sha
+        computed from the file as it is now), and the turn-start check, snapshot and
+        restore hash the tracked files themselves. The worst a race with them can cause
+        is one extra or one missed report of exactly these files at the next turn start,
+        never a stale row for another file."""
         targets = {Path(os.path.relpath(f, project.dir)).as_posix() for f in files}
         if not targets:
             return
@@ -152,10 +153,7 @@ class HistoryService:
             return compute_tracked_hashes(tracked, {})
 
         now = await asyncio.to_thread(compute)
-        stored = await self.hashes.get_rows(project.id)
-        merged = {k: v for k, v in stored.items() if k not in targets}
-        merged |= now
-        await self.hashes.replace(project.id, merged)
+        await self.hashes.upsert(project.id, now, delete=targets)
         await self.notify_library(project, sorted(targets), "own")
 
     async def notify_library(self, project: Project, rels: list[str], reason: str) -> None:

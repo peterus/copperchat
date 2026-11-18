@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -50,6 +50,14 @@ class Database:
         async with self._lock:
             cur = await self._conn.execute(sql, params)
             return cur.lastrowid or 0
+
+    async def executemany(self, sql: str, rows: Iterable[Params]) -> None:
+        """One statement for many parameter sets (a single call into the connection)."""
+        if self._in_own_transaction():
+            await self._conn.executemany(sql, rows)
+            return
+        async with self._lock:
+            await self._conn.executemany(sql, rows)
 
     async def executescript(self, script: str) -> None:
         async with self._lock:

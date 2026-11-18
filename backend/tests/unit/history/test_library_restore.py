@@ -544,10 +544,9 @@ def test_tampered_blob_refused(repo: Repo) -> None:
     plan = repo.plan(manifest, [row(11, repo.lib_file_rel("A.kicad_mod"), "replace", post=own)])
     assert plan.copy == [(sha_a, repo.lib / "A.kicad_mod")]
     with pytest.raises(CorruptSnapshot):
-        verify_blob(repo.blob_path(sha_a), sha_a)
-    with pytest.raises(CorruptSnapshot):
         apply_library_plan(plan, repo.blob_path, location=repo.location, project_dir=repo.project)
     assert fresh(repo.lib / "A.kicad_mod") == own
+    assert sorted(p.name for p in repo.lib.iterdir()) == ["A.kicad_mod"]  # no temp left
     with pytest.raises(CorruptSnapshot):
         verify_blob(repo.blob_path(sha_a), "../../x")
 
@@ -703,3 +702,53 @@ def test_apply_copy_creates_lib_dir_non_recursively(repo: Repo) -> None:
     apply_library_plan(plan, repo.blob_path, location=repo.location, project_dir=repo.project)
     assert fresh(repo.lib / "A.kicad_mod") == sha_a
     assert sorted(p.name for p in repo.lib.iterdir()) == ["A.kicad_mod"]
+
+
+def test_apply_hashes_each_blob_once(repo: Repo, monkeypatch: pytest.MonkeyPatch) -> None:
+    """verify_blob only checks the file type; the copy's hash is the content check."""
+    sha_a = repo.put("A.kicad_mod", 0)
+    repo.blob("A.kicad_mod")
+    repo.put("A.kicad_mod", 3)
+    real_open = Path.open
+    reads: list[Path] = []
+
+    def counting_open(self: Path, *args: Any, **kwargs: Any) -> Any:
+        if self == repo.blob_path(sha_a):
+            reads.append(self)
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", counting_open)
+    plan = LibraryRestorePlan(copy=[(sha_a, repo.lib / "A.kicad_mod")])
+    apply_library_plan(plan, repo.blob_path, location=repo.location, project_dir=repo.project)
+    monkeypatch.undo()
+    assert reads == [repo.blob_path(sha_a)]
+    assert fresh(repo.lib / "A.kicad_mod") == sha_a
+
+
+def test_failed_replace_removes_remaining_temps(
+    repo: Repo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from copperchat.history import library_restore as lr
+
+    names = ["A.kicad_mod", "B.kicad_mod", "C.kicad_mod"]
+    shas = [repo.put(n, i) for i, n in enumerate(names)]
+    for n in names:
+        repo.blob(n)
+        repo.put(n, 4)  # changed since the snapshot
+    plan = LibraryRestorePlan(
+        copy=[(sha, repo.lib / n) for sha, n in zip(shas, names, strict=True)]
+    )
+    real = os.replace
+    calls: list[str] = []
+
+    def failing(src: Path, dst: Path) -> None:
+        calls.append(Path(dst).name)
+        if len(calls) == 2:
+            raise OSError("disk full")
+        real(src, dst)
+
+    monkeypatch.setattr(lr.os, "replace", failing)
+    with pytest.raises(OSError, match="disk full"):
+        apply_library_plan(plan, repo.blob_path, location=repo.location, project_dir=repo.project)
+    assert sorted(p.name for p in repo.lib.iterdir()) == names  # no `.restore-*` temp left
+    assert fresh(repo.lib / "A.kicad_mod") == shas[0]

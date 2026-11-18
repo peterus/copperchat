@@ -291,3 +291,23 @@ async def test_service_store_passes_locator(env: Env, tmp_path: Path) -> None:
 
 def test_gitignore_has_blobs() -> None:
     assert "history-blobs/" in GITIGNORE_LINES
+
+
+async def test_journal_max_id_read_under_library_lock(
+    db: Database, repo: Path, project: Project, lib_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """journalMaxId and the library files are read under one library lock: a write of
+    another project can never land between the two."""
+    from copperchat.history.library_lock import library_lock
+
+    real = FootprintWriteRepo.max_id
+    held: list[bool] = []
+
+    async def checked(self: FootprintWriteRepo) -> int:
+        held.append(library_lock(lib_dir).locked())
+        return await real(self)
+
+    monkeypatch.setattr(FootprintWriteRepo, "max_id", checked)
+    await HistoryStore(db, project, locate_library=_locator(repo, lib_dir)).snapshot("r", "l")
+    await HistoryStore(db, project, locate_library=_none).snapshot("r", "l")
+    assert held == [True, False]
