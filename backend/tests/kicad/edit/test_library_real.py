@@ -177,7 +177,7 @@ def _loaded(nickname: str):  # type: ignore[no-untyped-def]
 
 async def test_footprint_lazy_load(ecc83_session: KicadSession) -> None:
     svc = library_for(ecc83_session)
-    assert svc.footprints_available()
+    assert svc.footprint_libraries_ready()
     assert not await ecc83_session.call(_loaded("Resistor_SMD"))
     fp = await svc.footprint("Resistor_SMD:R_0805_2012Metric")
     assert fp is not None
@@ -212,7 +212,7 @@ async def test_search_without_library_suggests_libraries(ecc83_session: KicadSes
 
 async def test_no_board_footprints_unavailable(boardless_session: KicadSession) -> None:
     svc = library_for(boardless_session)
-    assert not svc.footprints_available()
+    assert not svc.footprint_libraries_ready()
     for call in (
         svc.search_footprints("0805"),
         svc.footprint("Resistor_SMD:R_0805_2012Metric"),
@@ -230,7 +230,7 @@ async def test_no_board_package_check_from_name(boardless_session: KicadSession)
     """Owner decision 3: without a board the package check still runs from the name."""
     svc = library_for(boardless_session)
     prefs = preferences_from_raw({"passives_package": "0805"})
-    footprint = None if not svc.footprints_available() else await svc.footprint("x:y")
+    footprint = None if not svc.footprint_libraries_ready() else await svc.footprint("x:y")
     notes = preference_notes(prefs, "Device:R", "Resistor_SMD:R_0603_1608Metric", footprint)
     assert [n["kind"] for n in notes] == ["preference_deviation"]
     assert notes[0]["expected"] == "0805" and notes[0]["actual"] == "0603"

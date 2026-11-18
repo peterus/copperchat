@@ -30,6 +30,14 @@ redistributed under the same terms, compatible with CopperChat's GPL-3.0-only.
 `kicad-cli/*.json` are `kicad-cli sch erc` / `pcb drc --format json` outputs
 recorded by `scripts/regen-golden.py`. All three scripts run inside the base image.
 
+`footprints/*.pb` are KiCad API protobuf output (not KiCad files), recorded by
+`backend/scripts/record-fp-fixtures.py` inside the base image (`cd backend && uv run python
+scripts/record-fp-fixtures.py`): `<name>.pb` is the `GetItemsFromLibrary` response
+(`GetItemsResponse`, one `Footprint`), `<name>.instance.pb` the footprint document's
+`GetItemsById` response (one `FootprintInstance`). Stock footprints: the seed
+`Inductor_SMD:L_Bourns-SRN4018`, a THT pin header, a QFN with exposed pad and a
+custom-shape-pad solder jumper.
+
 `repo_context.py` is not a fixture tree but a builder: `build_fixture_repo(tmp_path)`
 writes a small project repository (README, `docs/spec.md`, an OpenSCAD enclosure, a
 binary `.stl`, an `.env`, a symlink out of the repo, a nested KiCad project) and

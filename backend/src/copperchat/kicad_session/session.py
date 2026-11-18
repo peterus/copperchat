@@ -6,22 +6,31 @@ import logging
 import os
 import shutil
 import stat
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
+from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KipyConnectionError
 
 from copperchat.config import Settings
 from copperchat.db import utcnow_iso
-from copperchat.errors import CopperChatError, DocumentNotOpen, ReadOnlyProject
+from copperchat.errors import (
+    CopperChatError,
+    DocumentNotOpen,
+    ReadOnlyProject,
+    StructuredToolError,
+)
+from copperchat.kicad_session import footprint_doc
 from copperchat.kicad_session.errors import (
     DocumentModified,
     KicadCallTimeout,
     KicadUnavailable,
     LibrariesLoading,
 )
+from copperchat.kicad_session.footprint_doc import FootprintDocument
 from copperchat.kicad_session.launcher import ServerLauncher
 from copperchat.projects import (
     LockStatus,
@@ -206,6 +215,12 @@ class KicadSession:
         self._libraries_lock = asyncio.Lock()
         self._libraries_ready_generation: int | None = None
         self._libraries_kicked_generation: int | None = None
+        # Footprints (F1, FP-C2): one footprint document per api-server at a time.
+        self._fp_lock = asyncio.Lock()
+        self._footprints_generation: int | None = None  # server start that loaded them
+        # A footprint document could not be closed: the server holds a stale one. F4a
+        # restarts the server at the turn end when this is set; a (re)start clears it.
+        self.restart_pending = False
 
     @property
     def settings(self) -> Settings:
@@ -227,6 +242,14 @@ class KicadSession:
     @property
     def closed(self) -> bool:
         return self._closed
+
+    @property
+    def footprints_active(self) -> bool:
+        """The current api-server has loaded the footprint libraries (a footprint
+        document was opened since it started); False again after every restart."""
+        return self._footprints_generation is not None and (
+            self._footprints_generation == self._generation
+        )
 
     def _documents(self) -> list[tuple[DocKind, Path]]:
         docs: list[tuple[DocKind, Path]] = []
@@ -307,9 +330,11 @@ class KicadSession:
         self._kicad = client
         self._open_docs = frozenset(opened)
         self._generation += 1
-        # A fresh server loaded the files on disk: nothing unsaved, jobs current.
+        # A fresh server loaded the files on disk: nothing unsaved, jobs current, no
+        # footprint document left open.
         self.jobs_stale = False
         self.modified = False
+        self.restart_pending = False
         await self._kick_off_symbol_libraries(client, deadline - loop.time())
         self.server_token = read_lock_token(lock_file_for(self.project.pro_file))
         if self.on_started is not None:
@@ -374,6 +399,7 @@ class KicadSession:
         proc, self.process = self.process, None
         client, self._kicad = self._kicad, None
         self._open_docs = frozenset()
+        self._footprints_generation = None  # the libraries die with the server
         _close_client(client)
         if proc is None or proc.returncode is not None:
             return
@@ -684,6 +710,147 @@ class KicadSession:
         if sheet_files:
             await asyncio.to_thread(self._copy_sub_sheets, sheet_files, dest.parent)
         return dest
+
+    # -- footprints (F1, FP-C2) -----------------------------------------------------
+    def _check_footprint_tools(self) -> None:
+        if not self._settings.footprint_tools:
+            raise StructuredToolError(
+                "footprint tools are unavailable",
+                "COPPERCHAT_FOOTPRINT_TOOLS is off on this CopperChat instance",
+                "work without footprint tools, or ask the administrator to enable them",
+                code="footprint_tools_disabled",
+            )
+
+    def _server_rss(self) -> str:
+        """The api-server's resident memory (VmRSS of /proc/<pid>/status), for logs."""
+        proc = self.process
+        if proc is None:
+            return "unknown"
+        try:
+            with open(f"/proc/{proc.pid}/status", encoding="ascii") as fh:
+                for line in fh:
+                    if line.startswith("VmRSS:"):
+                        return " ".join(line.split()[1:])
+        except OSError:
+            pass
+        return "unknown"
+
+    async def activate_footprints(self) -> float | None:
+        """Load the footprint libraries by opening and closing the seed footprint (the
+        first footprint document of a server loads every library in the tables, spike
+        3A Q5). Returns the seconds spent, or None when the current server has them.
+
+        Takes `_fp_lock`: must not be called while holding `_fp_lock`, `_commit_lock` or
+        `_apply_lock` (none is re-entrant). Known exception: a footprint read nested in
+        the caller's own open schematic commit (`_commit_lock` → `_fp_lock`) is safe only
+        while nothing holding `_fp_lock` waits on `_commit_lock` (plan "As built")."""
+        self._check_footprint_tools()
+        if self.footprints_active:
+            return None
+        async with self._fp_lock:
+            if self.footprints_active:
+                return None
+            lib_id = footprint_doc.SEED_LIB_ID
+            rss_before = self._server_rss()
+            started = time.monotonic()
+            try:
+                async with self._footprint_document_locked(lib_id):
+                    pass
+            except ApiError as exc:
+                if "not found" in str(exc).lower():  # "Footprint not found: <lib_id>"
+                    raise StructuredToolError(
+                        f"could not load the footprint libraries (seed {lib_id})",
+                        f"KiCad could not find the seed footprint {lib_id}: {exc}",
+                        "check that the KiCad stock footprint libraries are installed",
+                        code="seed_missing",
+                        details={"lib_id": lib_id},
+                    ) from exc
+                raise StructuredToolError(
+                    "could not load the footprint libraries",
+                    f"KiCad refused to open the seed footprint {lib_id}: {exc}",
+                    "retry later; if it keeps failing, check the KiCad api-server log",
+                    code="library_error",
+                    details={"lib_id": lib_id},
+                ) from exc
+            seconds = time.monotonic() - started
+            log.info(
+                "footprint libraries loaded in %.2f s (api-server RSS %s -> %s)",
+                seconds,
+                rss_before,
+                self._server_rss(),
+            )
+            return seconds
+
+    @contextlib.asynccontextmanager
+    async def footprint_document(self, lib_id: str) -> AsyncIterator[FootprintDocument]:
+        """Open `lib_id` ("Lib:Name") as the server's single footprint document, under
+        the footprint lock; it is closed on exit, also on an exception or cancellation.
+        A failed close sets `restart_pending`. Never save the project inside it."""
+        self._check_footprint_tools()
+        async with self._fp_lock, self._footprint_document_locked(lib_id) as doc:
+            yield doc
+
+    @contextlib.asynccontextmanager
+    async def _footprint_document_locked(self, lib_id: str) -> AsyncIterator[FootprintDocument]:
+        # The open runs to completion even on a cancel, so its handle is never lost (a
+        # footprint document left open breaks the next open/close, spike 3A Q4).
+        # Only the open that loads the footprint libraries needs the long timeout; a
+        # later hung open must not hold off a restart or a Stop for minutes.
+        timeout = None if self.footprints_active else footprint_doc.OPEN_TIMEOUT_S
+        spec, cancelled = await _finish(
+            self.call(lambda h: footprint_doc.open_footprint(h, lib_id), timeout=timeout)
+        )
+        generation = self._generation  # read after the call: a lazy start bumps it
+        self._footprints_generation = generation
+        doc = FootprintDocument(self, spec, lib_id)
+        try:
+            if cancelled:
+                raise asyncio.CancelledError
+            yield doc
+        finally:
+            await self._close_footprint(doc, generation)
+
+    async def _close_footprint(self, doc: FootprintDocument, generation: int) -> None:
+        """Close `doc`, shielded; a failure only logs and sets `restart_pending` (the
+        caller's own outcome wins). Never closes the schematic: closing the last open
+        document can unload the project (spike 3A Q4)."""
+
+        def gone() -> bool:
+            return self._kicad is None or generation != self._generation
+
+        if gone():
+            return  # the server that held the document is gone, and the document with it
+
+        async def close() -> None:
+            if doc.open_commit:
+                with contextlib.suppress(Exception):
+                    await doc.drop()
+            await self.call(lambda h: footprint_doc.close_footprint(h, doc.document))
+
+        try:
+            _, cancelled = await _finish(close())
+        except asyncio.CancelledError as exc:
+            if exc.__cause__ is not None:
+                self._footprint_close_failed(doc, exc.__cause__, gone())
+            raise
+        except Exception as exc:
+            self._footprint_close_failed(doc, exc, gone())
+            return
+        if cancelled:
+            raise asyncio.CancelledError
+
+    def _footprint_close_failed(
+        self, doc: FootprintDocument, exc: BaseException, server_gone: bool
+    ) -> None:
+        if server_gone:  # the failed call restarted the server: nothing is left open
+            log.warning("closing footprint %s failed (%s); server restarted", doc.lib_id, exc)
+            return
+        self.restart_pending = True
+        log.warning(
+            "closing footprint %s failed (%s); the api-server restarts at the turn end",
+            doc.lib_id,
+            exc,
+        )
 
     def _copy_sub_sheets(self, sheet_files: list[str], dest_dir: Path) -> None:
         root_name = self.project.sch_file.name if self.project.sch_file else None

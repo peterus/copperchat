@@ -68,6 +68,11 @@ TODAY = READ_KICAD | LIBRARY | PARTS | GIT | SCH_WRITES | PLAN_TOOLS
 REPO_TOOLS = frozenset({"repo_list", "repo_grep", "repo_read"})
 # Read-only Mouser lookups (price, stock, lifecycle), in every profile (mouser-api spec §4).
 MOUSER_TOOLS = frozenset({"mouser_search", "mouser_part"})
+# Read-only footprint tools, in every profile (footprints spec §13.1); fp_check and
+# fp_render join as their phases land.
+FP_READ = frozenset({"fp_get", "fp_list_local"})
+# Every footprint tool starts with it; COPPERCHAT_FOOTPRINT_TOOLS=off drops them all.
+FP_PREFIX = "fp_"
 
 PROFILES: dict[str, frozenset[str]] = {
     "requirements": DOC_TOOLS
@@ -76,11 +81,13 @@ PROFILES: dict[str, frozenset[str]] = {
     | (READ_KICAD - {"sch_find_space", "sch_changes"})
     | GIT
     | REPO_TOOLS
-    | MOUSER_TOOLS,
+    | MOUSER_TOOLS
+    | FP_READ,
     "schematic": TODAY
     | {"doc_list", "doc_read", "doc_append", "doc_patch_section"}
     | REPO_TOOLS
-    | MOUSER_TOOLS,
+    | MOUSER_TOOLS
+    | FP_READ,
     # SP4 (hidden): the read, ERC/DRC, git, library and parts tools; later the pcb_* writes.
     "board": READ_KICAD
     | LIBRARY
@@ -88,21 +95,28 @@ PROFILES: dict[str, frozenset[str]] = {
     | GIT
     | {"doc_list", "doc_read", "doc_append"}
     | REPO_TOOLS
-    | MOUSER_TOOLS,
-    "free": TODAY | DOC_TOOLS | REPO_TOOLS | MOUSER_TOOLS,
+    | MOUSER_TOOLS
+    | FP_READ,
+    "free": TODAY | DOC_TOOLS | REPO_TOOLS | MOUSER_TOOLS | FP_READ,
 }
 
 
-def profile_specs(conversation_type: str, specs: Sequence[ToolSpec]) -> list[ToolSpec]:
+def profile_specs(
+    conversation_type: str, specs: Sequence[ToolSpec], *, footprint_tools: bool = True
+) -> list[ToolSpec]:
     """The specs a session of ``conversation_type`` may use, in registry order. Free gets
     every registered tool (also one added after this file was written); an unknown type
-    raises (fail closed)."""
-    if conversation_type == "free":
-        return list(specs)
+    raises (fail closed). ``footprint_tools=False`` (COPPERCHAT_FOOTPRINT_TOOLS=off)
+    removes every ``fp_*`` tool from every profile, Free included."""
     allowed = PROFILES.get(conversation_type)
     if allowed is None:
         raise ValueError(f"unknown session type: {conversation_type!r}")
-    return [s for s in specs if s.name in allowed]
+    return [
+        s
+        for s in specs
+        if (conversation_type == "free" or s.name in allowed)
+        and (footprint_tools or not s.name.startswith(FP_PREFIX))
+    ]
 
 
 def bind_conversation(ctx: ToolContext, conversation: ConversationRow | None) -> ToolContext:

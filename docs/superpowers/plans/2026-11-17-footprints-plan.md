@@ -431,7 +431,11 @@ server-death case) and the error is re-raised.
 `document_inconsistent`, `approval_not_allowed`, `in_use`. Notes (`notes[].kind`):
 `footprint_libraries_loaded` (`seconds`), `footprint_needs_review`,
 `footprint_review_unknown`, `footprint_unverified`, `possibly_in_use_elsewhere`,
-`model_missing`, `pending_cleaned`, `pending_leftover`.
+`model_missing`, `pending_cleaned`, `pending_leftover`,
+`footprint_attributes_unavailable` (`lib_id`; added in F1 Task 4, see "As built"),
+`no_local_library`, `library_conflict`, `footprint_unreadable` (`count`, `lib_ids`;
+all three added in F1 Task 6, see "As built"), `strings_truncated` (`fp_list_local`
+rows whose description or source was cut at 500 chars; added in the F1 review loop).
 
 ---
 
@@ -511,6 +515,91 @@ phase file, with the reason.)
   `library_listeners` (cache invalidation / `ReloadLibrary`), journal writes, the
   restart-on-`restart_pending` at turn end (FP-C2).
 - `tests/kicad/test_history_real.py` unchanged; covered by the CI kicad job.
+
+### As built (F1)
+
+- **F1 Task 1 probe (author call 9):** `GetLibraryTable(LT_FOOTPRINT, LTS_GLOBAL)` answers on a boardless api-server before any footprint document is opened (155 rows incl. `Inductor_SMD`, KiCad 52b43fb8 + patches 0001–0004), so `global_footprint_nicknames()` uses the API table; the stock-dir fallback is not implemented. `tests/kicad/footprints/test_activation.py::test_global_table_before_activation` pins this branch.
+- **FP-C1 `NAME_RE`:** ends in `\Z` instead of `$` so a trailing newline is rejected.
+- **FP-C1 `footprint_geometry` read path (controller ruling, F1 Task 4):** at the pinned
+  KiCad, `GetItemsFromLibrary` (`FOOTPRINT::SerializeDefinition`) omits the
+  Reference/Value fields and their text geometry, the mounting attributes, the
+  exclude/DNP flags and the footprint-level overrides, so its geometry hash differs from
+  a document read. Therefore a footprint of the **local** library (row present with the
+  local URI) is read through the footprint document (`FootprintInstance` incl.
+  `definition.items`; complete data, authoritative §9.4 hash), and the libraries are
+  activated first **also on a board server** — `fp_get` on a local footprint costs the
+  activation (+1.7 GB) even with a board open. Every other library is read with batched
+  `GetItemsFromLibrary` (activation only on a boardless server); that geometry is flagged
+  incomplete: `mounting` is `"unspecified"` and the call appends the new note kind
+  `footprint_attributes_unavailable` (FP-C9) on every read, also from the LRU. Spec §6.2
+  ("open a document only for data that is not in the library response; the spike found
+  none") is superseded for the local library. `footprint_geometry` must not be called
+  while the caller holds `_fp_lock`.
+- **FP-C1 `LocalLibraryInfo.row_present`:** true only for a project row with the local
+  nickname **and** the local URI; a same-nickname row with another URI is reported in
+  `row_conflict` (both URIs), as is a row under another nickname whose substituted URI is
+  the local directory (asks to rename or remove it). `local_library()` derives from
+  `repo_policy(...).project_dir`/`.root` (resolved paths).
+- **FP-C1 `footprint_geometry` cache and transient root (Task 4 review):** a cached
+  local footprint keeps the lstat validator (`st_ino`, `st_size`, `st_mtime_ns`, taken
+  before the read) of its `.kicad_mod`; every hit re-lstats it and re-reads on a
+  mismatch or a missing file (then `None`). While `repo_policy` is transient the local
+  nickname cannot be derived (the fallback root is the project dir), so any nickname
+  that is **not in the global table** raises `repo_root_unknown` (the local library is
+  never a global nickname); global libraries still read, and nothing read in that state
+  is cached.
+- **FP-C1 `local_footprint_file_safe`:** also raises `invalid_argument` for a name
+  outside `NAME_RE` (no path outside the library directory). It checks only the file:
+  it is meaningful after `local_library_dir_safe`. F4a must call **both** under the
+  library lock immediately before S1.
+- **Lock order, nested reads (F1 Task 5 review):** fp reads nested inside an open
+  schematic commit take `_commit_lock` → `_fp_lock`; safe only because nothing holding
+  `_fp_lock` waits on `_commit_lock` — F4a must keep it that way or never read inside a
+  commit (`tests/kicad/footprints/test_fp_get.py::test_coexistence_with_open_commit`).
+- **FP-C1 local reads accept GUI names (F1 Task 5 review):** `footprint_geometry` gates
+  local names only for path safety (non-empty, not `.`/`..`, no `/`, `\`, NUL), so a
+  footprint saved from the KiCad GUI (e.g. `My FP`) is readable; `fp_list_local` lists
+  every name KiCad returns (it opens no file by path), and only `footprint_geometry`
+  applies the path-safety gate. `NAME_RE` stays the rule for names CopperChat writes.
+- **`fp_list_local` notes and errors (F1 Task 6 review, controller ruling):** while the
+  repo root is unknown (`repo_policy` transient) it raises `repo_root_unknown` like
+  `fp_get` (new keyword `LibraryService.local_library(require_root=True)`: the error
+  without the `for_write` checks). Without a usable row it returns `library: null` and
+  one note, and activates nothing: `no_local_library` (no project row; counts any
+  `*.kicad_mod` already in the repo's library directory) or `library_conflict` (the
+  `row_conflict` text; reads keep working through KiCad, a write refuses later with the
+  error `library_conflict`). With the row it reads `GetLibraryItems` + batched
+  `GetItemsFromLibrary` (`LibraryService.local_footprints`; library reads carry the
+  custom fields, so review state and source need no document), which on a boardless
+  server needs the activation first (probe: both requests answer "no handler available"
+  before it) and appends `footprint_libraries_loaded`. Names KiCad lists but does not
+  load are left out with one `footprint_unreadable` note (`count`, up to 50 `lib_ids`);
+  a batch where KiCad loads none ("none of the requested items were found") is empty,
+  so one bad footprint never fails the listing (also for the per-library footprint
+  index).
+- **FP-C3 hash, `Group` items:** the opaque digest of a `Group` drops its member `items`
+  (per-load KIIDs) as well as `id`/`parent`.
+
+- **Residuals for later phases (F1):**
+  - F4a wires `LibraryService.invalidate_footprints` into `HistoryService.library_listeners`
+    (F3) and after every footprint stage; F1 has no caller yet (the local cache entries are
+    also lstat-validated, other libraries rely on invalidation).
+  - `fp_get`/`fp_list_local` pass `review_state(..., pending=False)`; F4a feeds `pending`
+    from `FootprintWriteRepo.pending`.
+  - `FootprintDocument.begin/push/drop` run footprint-document commits without
+    `_commit_lock`/`_active_scope`; the F4a engine decides (lock order `_fp_lock →
+    _commit_lock`, see the nested-read bullet above).
+  - After the last footprint document is closed, `GetOpenDocuments(DOCTYPE_FOOTPRINT)`
+    answers "no handler available"; treat that as "none open".
+  - Measured activation in the kicad-base image: 5.7 s, api-server RSS 227 MB → 3.2 GB
+    (spike: ~3 s, +1.7 GB) — README/D4 RAM note in F5 should use the higher figure.
+  - Not hashed: pad secondary drills, post-machining, `zone_layer_overrides`; footprint
+    zones/points/other items are hashed opaquely (type + sha256 of the proto without ids).
+  - While git is unavailable (transient `repo_policy`, also permanently without git),
+    every non-global nickname raises `repo_root_unknown` in `fp_get` (could be narrowed to
+    the candidate local nicknames).
+  - Skills (`copperchat-tools`, `session-schematic`) do not list `fp_get`/`fp_list_local`
+    yet (F5).
 
 ## Residuals
 
