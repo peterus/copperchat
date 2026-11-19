@@ -50,8 +50,10 @@ user what differs and by how much, and let them choose.
    `description`, `mounting` (`smd` / `tht`), `pads` (number, type, shape
    rect/roundrect/circle/oval, `at`, `size`, `drill` for THT), `body` (F.Fab outline,
    required), optional `courtyard`, `silkscreen`, `pin1_marker`, `keywords`, `fields`,
-   `model` (a 3D model link only), the **mandatory** `source` (`document` = repo-relative
-   path such as `docs/parts/<MPN>/datasheet.pdf` or an http(s) URL; `location` = page,
+   `model` (a 3D model link only), the **mandatory** `source` (`document` = path relative
+   to the **repository root**, e.g. `hardware/main/docs/parts/<MPN>/datasheet.pdf` when
+   the project lives in `hardware/main` — part notes sit under `<project
+   dir>/docs/parts/<MPN>/`; list files with `repo_list` — or an http(s) URL; `location` = page,
    figure or table) and `symbol` (`Device:L` or a placed reference) so the pins are
    checked. Extra `fields` must not be named Reference, Value, Footprint source,
    needs_user_review or User review (set by the tool) or `Description` (KiCad's
@@ -100,7 +102,8 @@ user what differs and by how much, and let them choose.
   `fp_create`/`replace`, the current turn was started by a message the user typed
   after both, `user_quote` is in it, no plan is running and the check has no error.
   Result: `approved`, `review`, `geometry_hash`, `user_review`. Counts 1 change.
-- `fp_delete(lib_id)`: local footprints only. Refused with `in_use` (`details.refs`)
+- `fp_delete(lib_id)`: only when the user's current message asks for it. Local
+  footprints only (any of them, also ones the user saved by hand; History undo restores). Refused with `in_use` (`details.refs`)
   while a symbol of the open schematic names it: reassign those first. Result: `deleted`,
   `file`, `notes`. `in_use_on_board` (this project's board places it) and
   `possibly_in_use_elsewhere` (another project of the repo names it, or the search was
@@ -161,8 +164,11 @@ about 3 GB of server memory, once per server. The result then carries the note
 - `already_exists`: choose another name, or `replace: true` after the user's OK.
 - `check_failed`: fix every error in `details.findings` before calling again.
 - `render_failed`: say the render failed and describe the footprint from `fp_get`.
-- `verification_failed`: KiCad's read-back differs or the footprint changed meanwhile;
-  nothing was written. Read it again, then retry once.
+- `verification_failed`: KiCad's read-back differs or the footprint changed meanwhile.
+  Follow the error's suggestion: after `fp_create`, read the footprint again and retry
+  once; after `fp_delete` of a footprint that changed, ask the user before deleting it;
+  if `fp_delete` or `fp_approve` could not be confirmed, tell the user and do not retry
+  in this turn.
 - `document_inconsistent`: a failed write could not be undone completely; stop and
   tell the user what is left over (the message says it). Undoing the turn in History
   restores the earlier state; never delete a footprint the message calls the user's.

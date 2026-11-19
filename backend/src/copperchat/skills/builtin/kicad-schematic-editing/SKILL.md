@@ -248,7 +248,8 @@ pin, then `sch_connect` again). Pins stay
 Never invent a `lib_id`, a pin name or a footprint. If no library symbol fits, tell the
 user, offer the closest matches from `lib_search_symbols` (lib_id + why it is close) and
 ask how to proceed.
-Creating footprints: see the `kicad-footprints` skill; symbols cannot be created.
+Creating footprints: see the `kicad-footprints` skill (when no `fp_*` tool is in your
+tool list, the footprint tools are off: stock footprints only); symbols cannot be created.
 
 ## Self-check
 

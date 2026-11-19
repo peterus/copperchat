@@ -59,7 +59,8 @@ affiliated with or endorsed by Anthropic.
   checks it against the symbol's pins and the datasheet's land pattern (`fp_check`) and
   draws it with a mm grid (`fp_render`) in every session type. In Schematic and Free
   sessions it can also create footprints from a cited datasheet (`fp_create`), approve
-  them after you said ok in the chat (`fp_approve`) and delete its own (`fp_delete`) —
+  them after you said ok in the chat (`fp_approve`) and delete local footprints the open schematic does not use (`fp_delete`, on request;
+  History undo restores them) —
   only through KiCad's API.
   - One local library per repository at the repo root, `footprints/<repo>.pretty`
     (`_local` appended if a stock library has that name), referenced from each project's
