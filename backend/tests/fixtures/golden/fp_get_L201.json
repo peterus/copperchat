@@ -1,0 +1,256 @@
+{
+  "bbox": [
+    -2.0,
+    -2.0,
+    2.0,
+    2.0
+  ],
+  "description": "Bourns SRN3012BTA shielded power inductor, 3.0x3.0 mm",
+  "dnp": false,
+  "exclude_from_bom": false,
+  "exclude_from_pos": false,
+  "fields": {
+    "Datasheet": "",
+    "Footprint source": "docs/parts/SRN3012BTA-2R2M/datasheet.pdf, p.2, 'Recommended layout'",
+    "Reference": "REF**",
+    "Value": "L_Bourns_SRN3012BTA",
+    "needs_user_review": "yes"
+  },
+  "geometry_hash": "6305b845fb64dfaace0418da079eb106f275519d28979a53b7351c3bc222f72e",
+  "graphics": {
+    "F.CrtYd": {
+      "bbox": [
+        -2.0,
+        -2.0,
+        2.0,
+        2.0
+      ],
+      "closed": true,
+      "items": 1
+    },
+    "F.Fab": {
+      "bbox": [
+        -1.5,
+        -1.5,
+        1.5,
+        1.5
+      ],
+      "closed": true,
+      "items": 1
+    },
+    "F.SilkS": {
+      "bbox": [
+        -1.93,
+        -1.5,
+        0.19,
+        1.5
+      ],
+      "closed": false,
+      "items": 3
+    }
+  },
+  "keywords": "inductor shielded power Bourns SRN3012BTA",
+  "lib_id": "OpenDriveHub:L_Bourns_SRN3012BTA",
+  "models": [],
+  "mounting": "smd",
+  "notes": [],
+  "pad_count": 2,
+  "pads": [
+    {
+      "at": [
+        1.1,
+        0.0
+      ],
+      "drill": null,
+      "layers": [
+        "F.Cu",
+        "F.Mask",
+        "F.Paste"
+      ],
+      "number": "2",
+      "rotation": 0.0,
+      "roundrect_ratio": null,
+      "shape": "rect",
+      "size": [
+        1.3,
+        3.5
+      ],
+      "type": "smd"
+    },
+    {
+      "at": [
+        -1.1,
+        0.0
+      ],
+      "drill": null,
+      "layers": [
+        "F.Cu",
+        "F.Mask",
+        "F.Paste"
+      ],
+      "number": "1",
+      "rotation": 0.0,
+      "roundrect_ratio": null,
+      "shape": "rect",
+      "size": [
+        1.3,
+        3.5
+      ],
+      "type": "smd"
+    }
+  ],
+  "review": "needs_user_review",
+  "scope": "local",
+  "shapes": [
+    {
+      "closed": false,
+      "filled": false,
+      "kind": "segment",
+      "layer": "F.SilkS",
+      "points": [
+        [
+          -1.93,
+          -0.875
+        ],
+        [
+          -1.93,
+          0.875
+        ]
+      ],
+      "width": 0.12
+    },
+    {
+      "closed": false,
+      "filled": false,
+      "kind": "segment",
+      "layer": "F.SilkS",
+      "points": [
+        [
+          -0.19,
+          1.5
+        ],
+        [
+          0.19,
+          1.5
+        ]
+      ],
+      "width": 0.12
+    },
+    {
+      "closed": false,
+      "filled": false,
+      "kind": "segment",
+      "layer": "F.SilkS",
+      "points": [
+        [
+          -0.19,
+          -1.5
+        ],
+        [
+          0.19,
+          -1.5
+        ]
+      ],
+      "width": 0.12
+    },
+    {
+      "closed": true,
+      "filled": false,
+      "kind": "polygon",
+      "layer": "F.Fab",
+      "points": [
+        [
+          -1.5,
+          -0.75
+        ],
+        [
+          -0.75,
+          -1.5
+        ],
+        [
+          1.5,
+          -1.5
+        ],
+        [
+          1.5,
+          1.5
+        ],
+        [
+          -1.5,
+          1.5
+        ]
+      ],
+      "width": 0.1
+    },
+    {
+      "center": [
+        0.0,
+        0.0
+      ],
+      "closed": true,
+      "filled": false,
+      "kind": "rect",
+      "layer": "F.CrtYd",
+      "points": [
+        [
+          -2.0,
+          -2.0
+        ],
+        [
+          2.0,
+          2.0
+        ]
+      ],
+      "size": [
+        4.0,
+        4.0
+      ],
+      "width": 0.05
+    }
+  ],
+  "source": "docs/parts/SRN3012BTA-2R2M/datasheet.pdf, p.2, 'Recommended layout'",
+  "texts": [
+    {
+      "at": [
+        0.0,
+        -3.0
+      ],
+      "kind": "reference",
+      "layer": "F.SilkS",
+      "rotation": 0.0,
+      "size": [
+        1.0,
+        1.0
+      ],
+      "value": "REF**"
+    },
+    {
+      "at": [
+        0.0,
+        3.0
+      ],
+      "kind": "value",
+      "layer": "F.Fab",
+      "rotation": 0.0,
+      "size": [
+        1.0,
+        1.0
+      ],
+      "value": "L_Bourns_SRN3012BTA"
+    },
+    {
+      "at": [
+        0.0,
+        0.0
+      ],
+      "kind": "user",
+      "layer": "F.Fab",
+      "rotation": 0.0,
+      "size": [
+        1.0,
+        1.0
+      ],
+      "value": "${REFERENCE}"
+    }
+  ]
+}

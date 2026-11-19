@@ -236,8 +236,12 @@ def _footprint_users(nickname: str) -> Any:
     return footprint_users
 
 
-def _no_library(notes: list[dict[str, Any]], kind: str, message: str) -> ToolResult:
-    notes.append({"kind": kind, "message": message})
+# names of another project's footprints listed in the no_local_library note
+_ON_DISK_NAMES = 50
+
+
+def _no_library(notes: list[dict[str, Any]], kind: str, message: str, **extra: Any) -> ToolResult:
+    notes.append({"kind": kind, "message": message, **extra})
     return ToolResult(data={"library": None, "footprints": [], "truncated": False, "notes": notes})
 
 
@@ -255,7 +259,8 @@ async def fp_list_local(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     if info.row_conflict:
         return _no_library(notes, "library_conflict", info.row_conflict)
     if not info.row_present:
-        on_disk = len(await asyncio.to_thread(svc.local_names_on_disk, lib))
+        names = await asyncio.to_thread(svc.local_names_on_disk, lib)
+        on_disk = len(names)
         message = (
             f"This project has no local footprint library yet ({lib.nickname}); the "
             "first fp_create adds it."
@@ -263,8 +268,15 @@ async def fp_list_local(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         if on_disk:
             message += (
                 f" The repo's library directory already holds {on_disk} footprint(s) "
-                "from another project; they become usable here once a footprint tool "
-                "adds the row."
+                "from another project; assign one with sch_set_fields to add the row and "
+                "use it here (do not recreate it)."
+            )
+            return _no_library(
+                notes,
+                "no_local_library",
+                message,
+                names=names[:_ON_DISK_NAMES],
+                names_truncated=on_disk > _ON_DISK_NAMES,
             )
         return _no_library(notes, "no_local_library", message)
     geometries = await svc.local_footprints(lib, notes)

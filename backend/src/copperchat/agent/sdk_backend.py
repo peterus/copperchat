@@ -102,9 +102,15 @@ coordinates in millimetres.
 message. Never push.
 - Lines starting with "[CopperChat notice]" come from the application, not from the user."""
 
+# Dropped when COPPERCHAT_FOOTPRINT_TOOLS=off: the profiles then carry no fp_* tool.
+_FOOTPRINTS = """
+- Footprints are read and checked with the fp_* tools and can be created in the \
+repository's local footprint library; load the kicad-footprints skill before you create, \
+approve or delete one."""
+
 _EDITING = """- You can edit the schematic with the sch_* tools; load the kicad-schematic-editing \
 skill before your first edit. The board (PCB) is read-only: if asked to change it, explain \
-what you would change and that board editing is not available yet.
+what you would change and that board editing is not available yet.{footprints}
 - Use render_view to look at the design when spatial reasoning matters, and run_erc / run_drc \
 to check it."""
 
@@ -130,10 +136,13 @@ read and changed with the doc_* tools; load the design-docs skill before changin
 }
 
 
-def system_prompt(project_name: str, conversation_type: str = "free") -> str:
-    return SYSTEM_PROMPT.format(
-        project_name=project_name, session_paragraph=SESSION_PARAGRAPHS[conversation_type]
+def system_prompt(
+    project_name: str, conversation_type: str = "free", *, footprint_tools: bool = True
+) -> str:
+    paragraph = SESSION_PARAGRAPHS[conversation_type].replace(
+        "{footprints}", _FOOTPRINTS if footprint_tools else ""
     )
+    return SYSTEM_PROMPT.format(project_name=project_name, session_paragraph=paragraph)
 
 
 # terminal_reason values of a turn cancelled by ClaudeSDKClient.interrupt() (spike 1A (b)).
@@ -197,7 +206,9 @@ def build_options(
         tools=[],  # no built-in file/shell/web tools; init list = mcp__copperchat__* only
         allowed_tools=[],
         mcp_servers={SERVER_NAME: mcp_server},
-        system_prompt=system_prompt(project.name, conversation_type),
+        system_prompt=system_prompt(
+            project.name, conversation_type, footprint_tools=settings.footprint_tools
+        ),
         permission_mode="default",
         can_use_tool=make_main_guard(guarded, repo=repo, on_allowed=on_tool_allowed),
         # Defence in depth (spec §7.5): the same guard as a PreToolUse hook, so a built-in

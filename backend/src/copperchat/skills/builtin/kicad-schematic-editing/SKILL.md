@@ -218,8 +218,14 @@ pin, then `sch_connect` again). Pins stay
 ## Results and errors
 
 - Read `connectivity_verified`, `nets_touched` and `notes` in every result.
-- `notes` with `footprint_unverified` (footprint libraries not loaded: no board, no
-  footprint tool used; footprint existence is not checked) → tell the user the footprint is **unverified**. `preference_deviation`
+- `notes` with `footprint_unverified` (footprint libraries are not loaded: no board, no
+  footprint tool used; footprint existence is not checked) → tell the user the footprint
+  is **unverified**. `footprint_needs_review` → the assigned footprint of the local
+  library is not approved by the user yet; the assignment stands, show it with
+  `fp_render` and ask (`kicad-footprints` skill). `footprint_review_unknown` → the edit
+  added the local library's row, so the review state was not readable; check it with
+  `fp_get`. `footprint_libraries_loaded` → this call loaded the footprint libraries
+  (`seconds`; only worth mentioning when the user waited). `preference_deviation`
   (e.g. a passive not in 0805) → justify it to the user or fix it with `sch_set_fields`.
   `active_part_without_notes` → you skipped the research; do it.
 - An `overlap` error carries the nearest free position: use it, or `sch_find_space`.
@@ -241,7 +247,9 @@ pin, then `sch_connect` again). Pins stay
 
 Never invent a `lib_id`, a pin name or a footprint. If no library symbol fits, tell the
 user, offer the closest matches from `lib_search_symbols` (lib_id + why it is close) and
-ask how to proceed; creating library symbols or footprints is not something you can do.
+ask how to proceed.
+Creating footprints: see the `kicad-footprints` skill (when no `fp_*` tool is in your
+tool list, the footprint tools are off: stock footprints only); symbols cannot be created.
 
 ## Self-check
 

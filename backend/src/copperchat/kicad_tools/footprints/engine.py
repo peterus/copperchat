@@ -459,8 +459,9 @@ async def _recheck_name(ctx: ToolContext, lib: LocalLibrary, name: str) -> None:
             f"a footprint named {name!r} appeared {where} the local library after the "
             "call was planned (the KiCad GUI or another project of this repository may "
             "have created it)",
-            "Pick another name, or pass replace=true to rebuild it (needs the user's OK). "
-            "Nothing was written.",
+            "Nothing was written. If another project of this repository made it, reuse it: "
+            "assign it with sch_set_fields and check it with fp_get / fp_check. Otherwise "
+            "pick another name, or pass replace=true to rebuild it (needs the user's OK).",
             code="already_exists",
         )
 

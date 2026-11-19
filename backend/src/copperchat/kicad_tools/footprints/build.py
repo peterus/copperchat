@@ -195,7 +195,8 @@ def source_error() -> StructuredToolError:
         "source.document must be the relative path of an existing regular file in this "
         "repository (not a blocked file) or an http(s) URL, and source.location must say "
         "where the land pattern is (page, figure or table)",
-        "e.g. {'document': 'docs/parts/SRN3012BTA/datasheet.pdf', 'location': 'p.2, "
+        "e.g. {'document': '<project dir>/docs/parts/SRN3012BTA/datasheet.pdf' (relative to "
+        "the repository root), 'location': 'p.2, "
         "Recommended layout'}; list repo files with repo_list.",
     )
 

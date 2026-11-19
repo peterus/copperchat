@@ -37,6 +37,9 @@ RESEARCHER_AGENT = "part-researcher"
 _ALLOWED_KEYS = ("name", "description")
 
 
+FOOTPRINT_SKILL = "kicad-footprints"
+
+
 def sdk_skill_name(name: str) -> str:
     return f"{PLUGIN_NAME}:{name}"
 
@@ -106,6 +109,8 @@ async def assemble_skills(
     for skill in effective_skills(SkillLayers.for_project(settings, project)):
         if skill.name in disabled:
             continue
+        if skill.name == FOOTPRINT_SKILL and not settings.footprint_tools:
+            continue  # COPPERCHAT_FOOTPRINT_TOOLS=off: the profiles carry no fp_* tool
         # A trusted (built-in/user) restriction holds even when a project-layer copy of
         # the skill drops the key.
         trusted_sessions = trusted[skill.name].sessions if skill.name in trusted else None

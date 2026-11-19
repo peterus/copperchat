@@ -55,6 +55,30 @@ affiliated with or endorsed by Anthropic.
   price, stock, lead-time and lifecycle questions from Mouser's Search API, and the part
   researcher adds a dated "Sourcing (Mouser)" section to the part notes.
 
+- **Footprints** (unreleased): the agent reads any footprint (`fp_get`, `fp_list_local`),
+  checks it against the symbol's pins and the datasheet's land pattern (`fp_check`) and
+  draws it with a mm grid (`fp_render`) in every session type. In Schematic and Free
+  sessions it can also create footprints from a cited datasheet (`fp_create`), approve
+  them after you said ok in the chat (`fp_approve`) and delete local footprints the open schematic does not use (`fp_delete`, on request;
+  History undo restores them) —
+  only through KiCad's API.
+  - One local library per repository at the repo root, `footprints/<repo>.pretty`
+    (`_local` appended if a stock library has that name), referenced from each project's
+    `fp-lib-table` as `${KIPRJMOD}`-relative row; other libraries stay read-only.
+  - A new footprint carries `needs_user_review = yes` and its `Footprint source` until you
+    approve it: the agent shows the render and every check, stops, and approves only in a
+    later turn quoting your words. Assigning an unreviewed footprint is flagged.
+  - Undo and history cover the library files and `fp-lib-table`, also across projects of
+    the same repository.
+  - Memory and time: the first footprint tool call in a session loads all footprint
+    libraries into that project's api-server — measured about 5.7 s, and the server grows
+    from about 230 MB to about 3.2 GB (plan for about 3 GB extra, 4 GB peak, per project
+    that uses footprint tools). A render adds about 0.3–0.5 s. Sessions that never call a
+    footprint tool do not pay this.
+  - `COPPERCHAT_FOOTPRINT_TOOLS=off` removes the footprint tools from every session. Writes
+    of a footprint call that crashed stay flagged (`needs review`) until the tools are on
+    again (the next writing call cleans them up) or the turn is undone.
+
 Boards (PCB) stay read-only.
 
 ## Quick start
@@ -156,6 +180,7 @@ notifications in Settings › Notifications.
 | `VAPID_SUBJECT` | push contact, e.g. `mailto:you@example.com` |
 | `MOUSER_API_KEY` | optional Mouser Search API key: price, stock and lifecycle lookups (`mouser_search` / `mouser_part`) |
 | `COPPERCHAT_GIT_NAME`, `COPPERCHAT_GIT_EMAIL` | optional fallback author/committer identity for `git_commit`; used only when the repository (or git config) has no `user.name` / `user.email` |
+| `COPPERCHAT_FOOTPRINT_TOOLS` | `on` (default) or `off`: footprint tools (`fp_*`); `off` saves the ~3 GB per api-server they need |
 | `CLOUDFLARE_TUNNEL_TOKEN` | optional `cloudflared` service (`--profile tunnel`) |
 | `FORWARDED_ALLOW_IPS` | trusted reverse-proxy addresses (default: the compose `cloudflared`) |
 | `COOKIE_SECURE=false` | only for plain-http LAN use |

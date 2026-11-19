@@ -7,6 +7,26 @@ All notable changes to CopperChat are documented in this file. The format follow
 
 ## [Unreleased]
 
+### Added
+
+- Footprint tools, through KiCad's API only: `fp_get` (any footprint, no board needed),
+  `fp_list_local`, `fp_check` (pads against the symbol's pins and an expected land pattern,
+  spacing, courtyard, silkscreen, mask, minimum sizes), `fp_render` (SVG/PNG with a mm grid)
+  in every session type; `fp_create` (explicit pads from a cited source, checked before
+  writing), `fp_approve` (only after the user's ok in a later turn) and `fp_delete` (own
+  library only, refused while in use) in Schematic and Free sessions.
+- One local footprint library per repository (`footprints/<repo>.pretty` at the repo root,
+  `${KIPRJMOD}`-relative row in each project's `fp-lib-table`); new footprints carry
+  `Footprint source` and `needs_user_review` until approved. `sch_set_fields` checks local
+  footprints and adds the project's library row when needed.
+- Undo and history cover the local library and `fp-lib-table` (also across projects of one
+  repository); a change by another project is reloaded at the next turn start.
+- `kicad-footprints` skill (library order, no invented dimensions, approval in chat); part
+  notes get an optional `## Land pattern` section that the part researcher fills when no stock
+  footprint matches.
+- `COPPERCHAT_FOOTPRINT_TOOLS` (`on`/`off`). The first footprint call of a session loads all
+  footprint libraries into that project's api-server: about 5.7 s and about 3 GB extra RAM.
+
 ## [0.11.0] - 2026-11-17
 
 ### Added
