@@ -81,10 +81,13 @@ FpStageKind = Literal["ensure_library", "copy_seed", "rebuild", "approve", "dele
 @dataclass(frozen=True)
 class LibraryRowStage:
     """Add the project's row for the local library (S1 / the `library_row` pre-stage);
-    nickname, URI and directory come from `library`."""
+    nickname, URI and directory come from `library`. `footprint` (the pre-stage of
+    `sch_set_fields` / `sch_place_symbol`) is the lib id that must exist once the row is
+    there (`run_library_row(verify=...)`)."""
 
     library: LocalLibrary
     create_library: bool
+    footprint: str | None = None
 
 
 @dataclass(frozen=True)

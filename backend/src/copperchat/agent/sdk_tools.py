@@ -168,16 +168,26 @@ async def _two_phase_steps(spec: ToolSpec, ctx: ToolContext, args: dict[str, Any
 
 async def _apply(spec: ToolSpec, ctx: ToolContext, cs: Any) -> ToolResult:
     """`spec.apply`; a footprint change set runs under its library's lock (FP-C6: taken
-    once, here, after the turn snapshot released it; the engine only asserts it)."""
-    assert spec.apply is not None
+    once, here, after the turn snapshot released it; the engine only asserts it). An
+    edit with a `library_row` stage (spec §7.9) adds the local library's project row
+    first, under the same single lock, and removes it again when `apply` fails."""
+    apply = spec.apply
+    assert apply is not None
+    from copperchat.history.library_lock import library_lock
     from copperchat.kicad_tools.footprints.engine import FootprintChangeSet
 
     if isinstance(cs, FootprintChangeSet) and cs.library is not None:
-        from copperchat.history.library_lock import library_lock
-
+        if cs.library_row is not None:
+            raise TypeError("a footprint change set plans its row as a stage of its own")
         async with library_lock(cs.library.dir):
-            return await spec.apply(ctx, cs)
-    return await spec.apply(ctx, cs)
+            return await apply(ctx, cs)
+    stage = getattr(cs, "library_row", None)
+    if stage is not None:
+        from copperchat.kicad_tools.footprints.library_row import apply_with_library_row
+
+        async with library_lock(stage.library.dir):
+            return await apply_with_library_row(ctx, cs, lambda: apply(ctx, cs))
+    return await apply(ctx, cs)
 
 
 async def _save_edit(spec: ToolSpec, ctx: ToolContext, result: ToolResult) -> None:

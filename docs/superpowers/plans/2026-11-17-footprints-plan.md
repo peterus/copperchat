@@ -885,6 +885,32 @@ phase file, with the reason.)
   - A second cancel while hashing the S3 save turns this call's file into a `leftover`
     (safe side).
 
+### As built (F4b)
+
+- **Task 3, `LibraryRowStage`:** gains `footprint: str | None = None`, the lib id the
+  pre-stage verifies after adding the row (the base `ChangeSet` carries only the stage).
+  `LibraryService.derived_local_library()` (new) derives the local nickname without the
+  project-table read, so stock nicknames cost no extra API call.
+- **Task 3, `footprint_notes`:** row missing + tools on also activates the footprint
+  libraries in prepare when they are not loaded (the row read-back and the existence check
+  need them on a boardless server); a same-nickname row with another URI (`row_conflict`)
+  refuses with `library_conflict` before the stage. A library default (`explicit=False`)
+  that is not on disk is a `footprint_not_found` note, no stage. Unknown names on disk get
+  `closest` from `difflib` over `local_names_on_disk`.
+- **Task 3, pre-stage (`kicad_tools/footprints/library_row.py`,
+  `apply_with_library_row`):** `KicadUnavailable` during the row or `spec.apply` skips the
+  row removal (journal row stays `pending` resp. `done`; History undo removes it); a cancel
+  removes it to completion (`_uncancellable`). A failed removal is `leftover` and raises
+  `DocumentInconsistent(leftovers=["row <nick>"], footprint_only=True)` from the cause (a
+  schematic `DocumentInconsistent` gets the leftover appended instead). A row that was
+  there already (same URI) is journalled `compensated` and never removed.
+- **Task 3, result shape:** edit results already carry `side_effects` as a list of
+  change dicts, so the row is reported as `{"uuid": nick, "op": "add", "kind":
+  "fp_lib_table_row_added", "before": null, "after": {"uri": …}}` instead of a bare
+  string; the change-log row (ref = nickname, after.uri, like F4a) is flagged
+  `side_effect = true`. `library_changed` gets the nickname (the result still has
+  `changed_docs`, so the generation check stays).
+
 ## Residuals
 
 (Filled by F5.) Known before the start:

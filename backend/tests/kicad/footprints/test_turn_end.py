@@ -10,8 +10,9 @@ budget, the fifth is refused before any write; the change log lists the writes."
 
 from __future__ import annotations
 
+import contextlib
 import json
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
@@ -110,14 +111,22 @@ class Rig:
         eng.notes.clear()
 
 
-@pytest.fixture
-async def rig(make_settings: Callable[..., Settings], tmp_path: Path) -> AsyncIterator[Rig]:
-    settings = real_settings(make_settings)
+@contextlib.asynccontextmanager
+async def open_rig(
+    settings: Settings,
+    db_path: Path,
+    name: str = "main",
+    before: Callable[[KicadSessionManager, Path], Awaitable[None]] | None = None,
+) -> AsyncIterator[Rig]:
+    """The rig on project `hardware/<name>` of a fresh repo; `before(sessions, root)` runs
+    first (e.g. another project's footprint work), its server is closed afterwards."""
     root = make_repo(settings)
-    main = (root / "hardware" / "main").resolve()
-    project = next(p for p in discover_projects(settings.projects_root) if p.dir.resolve() == main)
+    project_dir = (root / "hardware" / name).resolve()
+    project = next(
+        p for p in discover_projects(settings.projects_root) if p.dir.resolve() == project_dir
+    )
     sessions = KicadSessionManager(settings)
-    db = await Database.open(tmp_path / "db.sqlite")
+    db = await Database.open(db_path)
     await ensure_test_conversation(db)
     runtime = Runtime()
     history = HistoryService(
@@ -139,6 +148,9 @@ async def rig(make_settings: Callable[..., Settings], tmp_path: Path) -> AsyncIt
     editing.plans = plans
     history.on_external_change.append(plans.on_external_change)  # as install_plans
     try:
+        if before is not None:
+            await before(sessions, root)
+            await sessions.close_all()
         session = await sessions.open(project)
         hooks = HistoryHooks(history, project, cast(Any, runtime.engine))
         await hooks.on_engine_start()
@@ -146,6 +158,12 @@ async def rig(make_settings: Callable[..., Settings], tmp_path: Path) -> AsyncIt
     finally:
         await sessions.close_all()
         await db.close()
+
+
+@pytest.fixture
+async def rig(make_settings: Callable[..., Settings], tmp_path: Path) -> AsyncIterator[Rig]:
+    async with open_rig(real_settings(make_settings), tmp_path / "db.sqlite") as r:
+        yield r
 
 
 def _step(expected: int) -> dict[str, Any]:

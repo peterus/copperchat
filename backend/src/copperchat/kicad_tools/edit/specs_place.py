@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import math
 from dataclasses import dataclass
 from functools import partial
@@ -67,13 +68,21 @@ from copperchat.kicad_tools.edit.scene import (
 from copperchat.kicad_tools.edit.space import find_space, pin_corridor
 from copperchat.kicad_tools.edit.specs_core import apply_change
 from copperchat.kicad_tools.filtering import natural_key
+from copperchat.kicad_tools.footprints.engine import LibraryRowStage
+from copperchat.kicad_tools.footprints.model import review_state
+from copperchat.library.local import LocalLibrary
 from copperchat.library.prefs import (
     active_part_note,
     effective_preferences,
     is_passive,
     preference_notes,
 )
-from copperchat.library.service import LibraryService, closest_footprints, library_for
+from copperchat.library.service import (
+    LibraryService,
+    closest_footprints,
+    library_for,
+    local_library_dir_safe,
+)
 from copperchat.library.specs import READY_WAIT_S
 from copperchat.library.symbols import SymbolDetail
 from copperchat.tools.spec import ToolContext, ToolResult, ToolSpec, edit_spec
@@ -191,10 +200,14 @@ async def _annotation_block(ctx: ToolContext) -> Block:
 
 async def footprint_notes(
     ctx: ToolContext, svc: LibraryService, lib_id: str, footprint: str, *, explicit: bool
-) -> list[dict[str, Any]]:
-    """Existence (with a board) and part-preference checks of a footprint name. An
-    explicit unknown footprint is refused (closest matches); without a board the
-    footprint is `unverified` (owner decision 3) and only the name is checked."""
+) -> tuple[list[dict[str, Any]], LibraryRowStage | None]:
+    """Existence and part-preference checks of a footprint name (spec §7.9), plus the
+    `library_row` stage the edit needs first (or None).
+
+    A footprint of the repo's **local** library is checked by `_local_footprint`. Any
+    other: with the footprint libraries loaded (a board, or a footprint tool used) an
+    explicit unknown footprint is refused (closest matches); otherwise it is
+    `unverified` (owner decision 3) and only the name is checked. Writes nothing."""
     notes: list[dict[str, Any]] = []
     prefs = effective_preferences(ctx.settings, ctx.project)
     if not footprint:
@@ -207,7 +220,7 @@ async def footprint_notes(
                     f"for {prefs.passives_package} passives.",
                 }
             )
-        return notes
+        return notes, None
     nickname, _, name = footprint.partition(":")
     if not nickname or not name:
         raise _bad(
@@ -216,38 +229,147 @@ async def footprint_notes(
             "e.g. Resistor_SMD:R_0805_2012Metric",
         )
     detail = None
-    if svc.footprint_libraries_ready():
+    stage: LibraryRowStage | None = None
+    local = await svc.derived_local_library()
+    if local is not None and nickname == local.nickname:
+        stage = await _local_footprint(ctx, svc, local, footprint, name, explicit, notes)
+    elif svc.footprint_libraries_ready():
         detail = await svc.footprint(footprint)
         if detail is None:
             close = await closest_footprints(svc, nickname, name)
-            if explicit:
-                raise StructuredToolError(
-                    f"Footprint {footprint!r} is not in the libraries",
-                    "unknown footprint (format <library nickname>:<footprint name>)",
-                    f"Closest matches: {close}" if close else "Use lib_search_footprints.",
-                    code="not_found",
-                    details={"closest": close},
-                )
-            notes.append(
-                {
-                    "kind": "footprint_not_found",
-                    "footprint": footprint,
-                    "closest": close,
-                    "message": f"The library default footprint {footprint} was not "
-                    "found; set one with sch_set_fields.",
-                }
-            )
+            _unknown_footprint(footprint, close, explicit, notes)
     else:
         notes.append(
-            {
-                "kind": "footprint_unverified",
-                "footprint": footprint,
-                "message": f"{footprint} is unverified: footprint libraries are not "
-                "loaded (no board, no footprint tool used). Tell the user.",
-            }
+            _unverified(
+                footprint, "footprint libraries are not loaded (no board, no footprint tool used)"
+            )
         )
     notes += preference_notes(prefs, lib_id, footprint, detail)
-    return notes
+    return notes, stage
+
+
+def _unverified(footprint: str, why: str) -> dict[str, Any]:
+    return {
+        "kind": "footprint_unverified",
+        "footprint": footprint,
+        "message": f"{footprint} is unverified: {why}. Tell the user.",
+    }
+
+
+def _unknown_footprint(
+    footprint: str, close: list[str], explicit: bool, notes: list[dict[str, Any]]
+) -> None:
+    """An explicit unknown footprint is refused (`not_found` with the closest lib ids);
+    a library default only gets a note."""
+    if explicit:
+        raise StructuredToolError(
+            f"Footprint {footprint!r} is not in the libraries",
+            "unknown footprint (format <library nickname>:<footprint name>)",
+            f"Closest matches: {close}" if close else "Use lib_search_footprints.",
+            code="not_found",
+            details={"closest": close},
+        )
+    notes.append(
+        {
+            "kind": "footprint_not_found",
+            "footprint": footprint,
+            "closest": close,
+            "message": f"The library default footprint {footprint} was not "
+            "found; set one with sch_set_fields.",
+        }
+    )
+
+
+async def _on_disk(
+    svc: LibraryService,
+    lib: LocalLibrary,
+    footprint: str,
+    name: str,
+    explicit: bool,
+    notes: list[dict[str, Any]],
+) -> bool:
+    """Existence by file name in the local library directory (no API, nothing opened)."""
+    names = await asyncio.to_thread(svc.local_names_on_disk, lib)
+    if name in names:
+        return True
+    close = difflib.get_close_matches(name, names, n=5, cutoff=0.5)
+    _unknown_footprint(footprint, [f"{lib.nickname}:{n}" for n in close], explicit, notes)
+    return False
+
+
+async def _local_footprint(
+    ctx: ToolContext,
+    svc: LibraryService,
+    lib: LocalLibrary,
+    footprint: str,
+    name: str,
+    explicit: bool,
+    notes: list[dict[str, Any]],
+) -> LibraryRowStage | None:
+    """Spec §7.9 for the local library. Footprint tools off: the disk check and
+    `footprint_unverified` only (no activation, no API, no row). Row present: activate,
+    check through the API (`not_found` with the closest local names) and note
+    `footprint_needs_review` unless the footprint is approved (a `pending` journal row
+    counts as unreviewed). Row missing: `library_conflict` for an unsafe library path or
+    table, the disk check, then the `library_row` stage (the edit adds the row) and
+    `footprint_review_unknown`. Read-only: no journal row, no file written."""
+    if not ctx.settings.footprint_tools:
+        if await _on_disk(svc, lib, footprint, name, explicit, notes):
+            notes.append(
+                _unverified(
+                    footprint,
+                    "footprint tools are off (COPPERCHAT_FOOTPRINT_TOOLS), "
+                    "only its file in the local library was checked",
+                )
+            )
+        return None
+    info = await svc.local_library()
+    if info is None:  # the repo root became unknown meanwhile
+        notes.append(_unverified(footprint, "the repository root is unknown right now"))
+        return None
+    if info.row_present:
+        await svc.activate_footprints(notes)
+        geometry = await svc.footprint_geometry(footprint, notes)
+        if geometry is None:
+            close = await closest_footprints(svc, lib.nickname, name)
+            _unknown_footprint(footprint, close, explicit, notes)
+            return None
+        from copperchat.kicad_tools.footprints.read import pending_lib_ids
+
+        state = review_state(geometry, pending=geometry.lib_id in await pending_lib_ids(ctx))
+        if state != "approved":
+            notes.append(
+                {
+                    "kind": "footprint_needs_review",
+                    "footprint": footprint,
+                    "review": state,
+                    "message": f"{footprint} is not approved by the user yet ({state}). The "
+                    "assignment stands; show it with fp_render and ask the user to review it.",
+                }
+            )
+        return None
+    if info.row_conflict is not None:
+        raise StructuredToolError(
+            "The local footprint library is not safe to write",
+            info.row_conflict,
+            "Ask the user to fix the project's footprint library table; nothing was written.",
+            code="library_conflict",
+        )
+    await asyncio.to_thread(local_library_dir_safe, lib)
+    if not await _on_disk(svc, lib, footprint, name, explicit, notes):
+        return None
+    if not svc.footprint_libraries_ready():
+        await svc.activate_footprints(notes)  # the row stage reads the library back
+    notes.append(
+        {
+            "kind": "footprint_review_unknown",
+            "footprint": footprint,
+            "message": f"{footprint} is in the repo's footprint library, which this project "
+            f"does not list yet: the edit adds the library row {lib.nickname}. Its review "
+            "state cannot be read before that; check it with fp_get afterwards.",
+        }
+    )
+    return LibraryRowStage(library=lib, create_library=False, footprint=footprint)
 
 
 def _structured(cs: ChangeSet) -> list[dict[str, Any]]:
@@ -515,7 +637,9 @@ async def prepare_place(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
         footprint = field_values(sibling.item)["Footprint"]
     else:
         footprint = detail.footprint
-    extra = await footprint_notes(ctx, svc, lib_id, footprint, explicit="Footprint" in fields)
+    extra, library_row = await footprint_notes(
+        ctx, svc, lib_id, footprint, explicit="Footprint" in fields
+    )
     template = await probe_symbol(ctx, lib_id, unit)
     block = await _annotation_block(ctx)
     at = snap_point(raw_at)
@@ -542,6 +666,7 @@ async def prepare_place(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
     cs = build_change_set(plan, "sch_place_symbol", {"sheet": plan.sheet.human_path})
     cs.notes = notes
     cs.extra_notes = extra
+    cs.library_row = library_row
     return cs
 
 
@@ -642,9 +767,12 @@ async def prepare_set_fields(ctx: ToolContext, args: dict[str, Any]) -> ChangeSe
     units, shared = await ctx.session.call(partial(_units_of, ref=ref))
     lib_id = units[0].lib_id
     extra: list[dict[str, Any]] = []
+    library_row = None
     if "Footprint" in fields:
         svc = await _library(ctx)
-        extra += await footprint_notes(ctx, svc, lib_id, fields["Footprint"], explicit=True)
+        extra, library_row = await footprint_notes(
+            ctx, svc, lib_id, fields["Footprint"], explicit=True
+        )
     items: dict[str, tuple[Any, list[Any]]] = {}
     changed: dict[str, dict[str, Any]] = {}
     for u in units:  # units may be out of sync (2A Q2): compare each one
@@ -685,6 +813,7 @@ async def prepare_set_fields(ctx: ToolContext, args: dict[str, Any]) -> ChangeSe
         summary={"ref": ref, "units": len(units), "changed": changed},
         notes=notes,
         extra_notes=extra,
+        library_row=library_row,
     )
 
 

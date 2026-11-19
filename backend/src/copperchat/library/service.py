@@ -837,6 +837,13 @@ class LibraryService:
             await asyncio.to_thread(local_library_dir_safe, lib)
         return await self._local_info(lib)
 
+    async def derived_local_library(self) -> LocalLibrary | None:
+        """The repo's local library as derived (nickname, paths), None while the repo
+        root is unknown; no project-table read (`footprint_notes`: is a nickname the
+        local one?)."""
+        lib, _ = await self._derive_local()
+        return lib
+
     async def _derive_local(self) -> tuple[LocalLibrary | None, str]:
         """The derived local library, or (None, reason) while `repo_policy` is
         transient. No API call besides the cached global nicknames."""
