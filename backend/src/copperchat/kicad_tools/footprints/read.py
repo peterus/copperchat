@@ -263,8 +263,8 @@ async def fp_list_local(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         if on_disk:
             message += (
                 f" The repo's library directory already holds {on_disk} footprint(s) "
-                "from another project; they become usable here once a footprint tool "
-                "adds the row."
+                "from another project; assign one with sch_set_fields to add the row and "
+                "use it here (do not recreate it)."
             )
         return _no_library(notes, "no_local_library", message)
     geometries = await svc.local_footprints(lib, notes)

@@ -15,6 +15,12 @@ coordinates: origin = anchor, x right, **y down**; angles in degrees. A `lib_id`
 appended if a stock library has that name); every other library is read-only. The first
 `fp_create` adds the project's library row (`library_created: true`).
 
+**Shared library:** all projects of the repo share it, but a project sees it only once its
+own row exists. A footprint another project created (`fp_list_local` / `fp_get` note
+`no_local_library` with an on-disk count, or `already_exists` "on disk") is **reused, never
+recreated or replaced**: assign it with `sch_set_fields` (`footprint: "<nick>:<name>"`),
+which adds this project's row, then check it with `fp_get` / `fp_check`.
+
 ## Library rule
 
 Take a footprint from the first source that has one, in this order:
@@ -161,7 +167,9 @@ about 3 GB of server memory, once per server. The result then carries the note
 - `library_conflict`: a library-table row clashes with the local library; tell the user
   which row (from the message) to rename or remove.
 - `not_local`: only the local library can be written; pick a stock or local footprint.
-- `already_exists`: choose another name, or `replace: true` after the user's OK.
+- `already_exists`: if the message says "on disk" (made by another project of the
+  repo), reuse it as described under "Shared library"; otherwise choose another name,
+  or `replace: true` after the user's OK.
 - `check_failed`: fix every error in `details.findings` before calling again.
 - `render_failed`: say the render failed and describe the footprint from `fp_get`.
 - `verification_failed`: KiCad's read-back differs or the footprint changed meanwhile.
