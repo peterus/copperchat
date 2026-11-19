@@ -367,6 +367,31 @@ async def test_apply_row_changed_refused(rig: Rig, rows: dict[str, str]) -> None
     assert await FootprintWriteRepo(rig.db).after_id(PID, 0) == []
 
 
+async def test_apply_row_changed_refused_before_the_cleanup(rig: Rig) -> None:
+    """The FP-C8 re-checks run before `cleanup_pending`: with a re-pointed row the
+    refusal comes first, so an untouched seed copy of an earlier call the server died
+    in is not deleted (the cleanup would delete it) and its row stays pending."""
+    import hashlib
+
+    ctx = rig.ctx()
+    cs = await prepare_delete(ctx, {"lib_id": LIB_ID})
+    copy = rig.lib().dir / "Seed.kicad_mod"
+    copy.write_bytes(b"seed copy")
+    repo = FootprintWriteRepo(rig.db)
+    wid = await repo.insert_pending(
+        PID, "run-dead", f"{REPO}:Seed", f"footprints/{REPO}.pretty/Seed.kicad_mod",
+        "create", "absent",
+    )  # fmt: skip
+    await repo.set_post_s2(wid, hashlib.sha256(b"seed copy").hexdigest())
+    session(rig).rows = {REPO: "${KIPRJMOD}/elsewhere.pretty"}
+    with pytest.raises(StructuredToolError) as err:
+        await _apply(ctx, cs)
+    assert err.value.code == "library_conflict"
+    assert session(rig).deleted == [] and copy.read_bytes() == b"seed copy"
+    rows = await repo.after_id(PID, 0)
+    assert [(r.op, r.state) for r in rows] == [("create", "pending")]
+
+
 async def test_apply_library_moved_refused(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
     """`_recheck_row`'s "library moved" branch: the local library derived under the lock
     differs from the planned one (e.g. the repo root changed) -> `library_conflict`,

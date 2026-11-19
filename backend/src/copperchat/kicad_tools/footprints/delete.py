@@ -9,8 +9,8 @@ are in `details.refs`). The other projects of the repo are byte-searched
 project's board is byte-searched too (`usage.scan_own_boards`); a hit is an
 `in_use_on_board` note.
 
-`apply` (under the library lock the adapter takes): `cleanup_pending`, the path and
-project-row checks again, journal `delete` (pre = the file's hash), `DeleteLibraryItem`,
+`apply` (under the library lock the adapter takes): the path and project-row checks
+again, `cleanup_pending`, journal `delete` (pre = the file's hash), `DeleteLibraryItem`,
 read back that the footprint is gone (KiCad's listing and the file), finalise `done`
 with `absent`.
 `Logical(1)`, never counted as a deleted symbol (spec §12)."""
@@ -264,10 +264,8 @@ async def _delete_footprint(ctx: ToolContext, lib: LocalLibrary, lib_id: str, di
                 "write pending"
             )
 
-    # FP-C8: path, project table, its row and the file checked again under the
-    # library lock (nothing is written before)
-    await asyncio.to_thread(_file_checks, lib, name)
-    await _recheck_row(ctx, lib)
+    # FP-C8: path, project table, its row and the file were checked again under the
+    # library lock by the caller, before the cleanup (`_recheck`)
     pre = await sha_of(file, lib.repo_root)
     if pre == ABSENT:
         raise _not_found(
@@ -336,9 +334,17 @@ async def _delete_footprint(ctx: ToolContext, lib: LocalLibrary, lib_id: str, di
     return rel
 
 
+async def _recheck(ctx: ToolContext, lib: LocalLibrary, lib_id: str) -> None:
+    """FP-C8 under the library lock, before `cleanup_pending` (which may already delete
+    a file): the library path, the project table, its row and the target file are
+    checked again - `library_conflict` otherwise, nothing written."""
+    await asyncio.to_thread(_file_checks, lib, lib_id.split(":", 1)[1])
+    await _recheck_row(ctx, lib)
+
+
 async def apply_delete(ctx: ToolContext, cs: Any) -> ToolResult:
     """`fp_delete.apply` inside `session.applying()`, the adapter holding the library
-    lock: `cleanup_pending` first, then the delete stage; change log
+    lock: the FP-C8 re-checks, `cleanup_pending`, then the delete stage; change log
     `footprint_deleted` (before = the geometry hash prepare read)."""
     if not isinstance(cs, FootprintChangeSet) or cs.library is None or cs.tool != TOOL:
         raise TypeError("apply_delete needs a planned fp_delete change set")
@@ -347,6 +353,7 @@ async def apply_delete(ctx: ToolContext, cs: Any) -> ToolResult:
     lib_id: str = cs.summary["lib_id"]
     digest: str = cs.summary["geometry_hash"]
     async with ctx.session.applying():
+        await _recheck(ctx, lib, lib_id)  # before the cleanup writes anything
         cleaned = await cleanup_pending(ctx, lib)
         try:
             rel = await _delete_footprint(ctx, lib, lib_id, digest)

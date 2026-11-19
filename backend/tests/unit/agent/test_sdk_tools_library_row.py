@@ -7,7 +7,9 @@ does not list removes the row again. The row costs no budget. Fake KiCad of
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from collections.abc import AsyncIterator, Callable
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -163,10 +165,9 @@ async def test_row_mismatch_raises_not_found_and_removes_row(
     assert [(op, state) for op, state, *_ in await rig.journal()] == [("row_add", "compensated")]
 
 
-async def test_row_there_already_adds_nothing(make_rig: Callable[..., Rig]) -> None:
-    """The row appeared between prepare and apply (same URI): nothing added, nothing to
-    undo, no side effect; the journal row is `compensated`."""
-    rig = make_rig()
+def _row_exists_already(rig: Rig) -> None:
+    """The row appeared between prepare and apply (same URI): KiCad answers
+    `AddLibraryTableEntry` with LCS_ALREADY_EXISTS."""
     rig.session.kicad.rows[rig.lib.nickname] = rig.lib.uri
     real_add = rig.session.kicad.add_library_table_entry
 
@@ -178,6 +179,101 @@ async def test_row_there_already_adds_nothing(make_rig: Callable[..., Rig]) -> N
         raise LibraryCommandError("exists", code=LibraryCommandStatus.Code.LCS_ALREADY_EXISTS)
 
     rig.session.kicad.add_library_table_entry = exists  # type: ignore[method-assign]
+
+
+async def test_not_found_with_existing_row_says_nothing_removed(
+    make_rig: Callable[..., Rig],
+) -> None:
+    """The row was there already and the footprint is not listed: `not_found` without
+    claiming a row was removed (none was added, none removed)."""
+    rig = make_rig(listed=False)
+    _row_exists_already(rig)
+    with pytest.raises(StructuredToolError) as err:
+        await _run_two_phase(rig.spec(), rig.ctx, {})
+    assert err.value.code == "not_found"
+    assert "removed" not in err.value.why and "is there" in err.value.why
+    assert rig.session.kicad.calls == ["add_row"]
+    assert rig.session.kicad.rows == {rig.lib.nickname: rig.lib.uri}
+    assert [(op, state) for op, state, *_ in await rig.journal()] == [("row_add", "compensated")]
+
+
+def _dies_during_add_row(rig: Rig, error: BaseException, *, restart: bool) -> None:
+    """`AddLibraryTableEntry` writes the row, then the server dies before the call
+    returns (a Stop killed it): `error` is raised, `row.added` never set. `restart`
+    bumps the generation (a restarted server), else the process is dead."""
+    real_call = rig.session.call
+
+    async def call(fn: Any, *, timeout: float | None = None) -> Any:
+        if getattr(getattr(fn, "func", fn), "__name__", "") == "_add_row":
+            await real_call(fn, timeout=timeout)
+            if restart:
+                rig.session.generation += 1
+            else:
+                rig.session.process = SimpleNamespace(returncode=-9)
+            raise error
+        return await real_call(fn, timeout=timeout)
+
+    rig.session.call = call  # type: ignore[method-assign]
+
+
+@pytest.mark.parametrize("restart", [False, True], ids=["dead", "restarted"])
+async def test_stop_killing_the_server_in_add_row_keeps_pending(
+    make_rig: Callable[..., Rig], restart: bool
+) -> None:
+    """A cancel while the server dies mid `AddLibraryTableEntry`: no removal (it
+    could cold-start KiCad, and `row.added` is unknown), the journal row stays
+    `pending` for the cleanup / History, the cancel propagates."""
+    rig = make_rig()
+    _dies_during_add_row(rig, asyncio.CancelledError(), restart=restart)
+    with pytest.raises(asyncio.CancelledError):
+        await _run_two_phase(rig.spec(), rig.ctx, {})
+    assert rig.applied == 0
+    assert rig.session.kicad.calls == ["add_row"]  # never delete_row
+    assert rig.session.kicad.rows == {rig.lib.nickname: rig.lib.uri}
+    assert [(op, state) for op, state, *_ in await rig.journal()] == [("row_add", "pending")]
+
+
+@pytest.mark.parametrize("restart", [False, True], ids=["dead", "restarted"])
+async def test_error_after_server_death_in_add_row_is_unavailable(
+    make_rig: Callable[..., Rig], restart: bool
+) -> None:
+    """An error (not `KicadUnavailable`) after the server died or restarted in the row
+    stage becomes `KicadUnavailable`; nothing removed, the journal row stays pending."""
+    rig = make_rig()
+    boom = RuntimeError("connection reset")
+    _dies_during_add_row(rig, boom, restart=restart)
+    with pytest.raises(KicadUnavailable) as err:
+        await _run_two_phase(rig.spec(), rig.ctx, {})
+    assert err.value.__cause__ is boom
+    assert rig.session.kicad.calls == ["add_row"]
+    assert [(op, state) for op, state, *_ in await rig.journal()] == [("row_add", "pending")]
+
+
+async def test_apply_failing_after_a_restart_keeps_the_row(make_rig: Callable[..., Rig]) -> None:
+    """`spec.apply` fails after the server restarted: the row is not removed (the
+    restarted server reads it from disk; History undo removes it), the error passes."""
+    rig = make_rig()
+    boom = StructuredToolError("set fields failed", "why", "fix", code="verification_failed")
+    spec = rig.spec(boom)
+    real_apply = spec.apply
+
+    async def apply(ctx: ToolContext, cs: ChangeSet) -> ToolResult:
+        rig.session.generation += 1
+        return await real_apply(ctx, cs)
+
+    spec = dataclasses.replace(spec, apply=apply)
+    with pytest.raises(StructuredToolError) as err:
+        await _run_two_phase(spec, rig.ctx, {})
+    assert err.value is boom
+    assert rig.session.kicad.calls == ["add_row"]
+    assert [(op, state) for op, state, *_ in await rig.journal()] == [("row_add", "done")]
+
+
+async def test_row_there_already_adds_nothing(make_rig: Callable[..., Rig]) -> None:
+    """The row appeared between prepare and apply (same URI): nothing added, nothing to
+    undo, no side effect; the journal row is `compensated`."""
+    rig = make_rig()
+    _row_exists_already(rig)
     result = await _run_two_phase(rig.spec(), rig.ctx, {})
     assert result.data is not None and result.data["side_effects"] == []
     assert result.library_changed == set()

@@ -1212,6 +1212,21 @@ def _leftover_note(row: FootprintWrite) -> dict[str, Any]:
             f"The library row {row.lib_id} added by an earlier call {died} is kept: the "
             "cleanup never removes library rows. Undoing that turn in History removes it."
         )
+    elif row.op == "approve":
+        name = row.lib_id
+        message = (
+            f"An earlier fp_approve of {row.lib_id} {died} may or may not have recorded "
+            "the approval. The footprint is the user's: never delete it. Check its review "
+            "state with fp_get and tell the user; undoing that turn in History restores "
+            "the earlier state."
+        )
+    elif row.op == "delete":
+        name = row.lib_id
+        message = (
+            f"An earlier fp_delete of {row.lib_id} {died} may or may not have deleted it. "
+            "Check with fp_list_local and tell the user; undoing that turn in History "
+            "restores it."
+        )
     else:
         name = row.lib_id
         if row.op == "create":

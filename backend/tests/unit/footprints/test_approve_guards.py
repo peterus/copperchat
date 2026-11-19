@@ -346,6 +346,54 @@ async def test_equal_timestamp_refused(rig: Rig) -> None:
     assert await _guard(rig) == 4
 
 
+async def _written(
+    rig: Rig, op: str, state: str, created: str, finalised: str | None, project: str = PID
+) -> None:
+    """A journalled write of the footprint with explicit timestamps."""
+    repo = FootprintWriteRepo(rig.db)
+    wid = await repo.insert_pending(
+        project, RUN2, LIB_ID, f"footprints/{REPO}.pretty/{NAME}.kicad_mod", op, "x"
+    )
+    if state != "pending":
+        await repo.finalise(wid, state, "y")
+    await rig.db.execute(
+        "UPDATE footprint_writes SET created_at = ?, finalised_at = ? WHERE id = ?",
+        (created, finalised, wid),
+    )
+
+
+async def test_rewritten_after_message_refused(rig: Rig) -> None:
+    """The attack: the user saw G earlier (first stamps kept), said something about G',
+    and in the approval turn the agent writes G back and approves it with that quote.
+    The write after the user's message refuses with guard 4 - in any project, also
+    when only its finalisation is later, and on a tie."""
+    await rig.shown()
+    await rig.said()  # T_LATER
+    T_AFTER = "2026-11-19T10:06:00.000Z"
+    await _written(rig, "replace", "done", T_AFTER, T_AFTER, project="f" * 12)
+    err = await _refused(rig)
+    assert err.details == {"guard": 4} and "written" in err.why
+    await rig.db.execute("DELETE FROM footprint_writes")
+    await _written(rig, "create", "leftover", T_EARLY, T_AFTER)
+    assert await _guard(rig) == 4
+    await rig.db.execute("DELETE FROM footprint_writes")
+    await _written(rig, "replace", "done", T_CHECK, T_LATER)  # tie
+    assert await _guard(rig) == 4
+
+
+async def test_write_before_message_or_compensated_ok(rig: Rig) -> None:
+    """Writes before the user's message, a compensated write (the file kept its bytes),
+    and approve / delete / other footprints' rows do not refuse."""
+    await rig.shown()
+    await rig.said()
+    T_AFTER = "2026-11-19T10:06:00.000Z"
+    await _written(rig, "create", "done", T_EARLY, T_EARLY)
+    await _written(rig, "replace", "compensated", T_AFTER, T_AFTER)
+    await _written(rig, "approve", "done", T_AFTER, T_AFTER)
+    cs = await prepare_approve(rig.ctx(), _args(rig))
+    assert cs.summary["lib_id"] == LIB_ID
+
+
 async def test_message_of_another_run_does_not_count(rig: Rig) -> None:
     await rig.shown()
     await rig.said(run_id="run-other")

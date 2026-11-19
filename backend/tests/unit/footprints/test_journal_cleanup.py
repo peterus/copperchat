@@ -521,8 +521,8 @@ async def test_stop_during_a_cleanup_delete_still_finalises(
     [
         ("create", f"{REPO}:X", "changed since then or cannot be matched"),
         ("replace", f"{REPO}:X", "It is not a create, so it is kept"),
-        ("approve", f"{REPO}:X", "It is not a create, so it is kept"),
-        ("delete", f"{REPO}:X", "It is not a create, so it is kept"),
+        ("approve", f"{REPO}:X", "may or may not have recorded the approval"),
+        ("delete", f"{REPO}:X", "may or may not have deleted it"),
         ("row_add", REPO, "never removes library rows"),
     ],
 )
@@ -531,5 +531,46 @@ def test_leftover_note_wording(op: str, lib_id: str, expected: str) -> None:
     assert note["kind"] == "pending_leftover" and note["op"] == op
     assert expected in note["message"]
     assert note["lib_id"] == (f"row {REPO}" if op == "row_add" else lib_id)
-    if op != "row_add":
+    if op in ("create", "replace"):
         assert lib_id in note["message"] and "fp_delete" in note["message"]
+    if op in ("approve", "delete"):  # the user's footprint: never "half-built" or deleted
+        assert lib_id in note["message"] and "History" in note["message"]
+        assert "half-built" not in note["message"]
+        assert "fp_delete removes" not in note["message"]
+        assert "fp_delete," not in note["message"]
+
+
+async def test_cleanup_pending_approve_and_delete_rows(
+    make_settings: Callable[..., Settings], editing: EditingService
+) -> None:
+    """A server that died mid fp_approve / fp_delete leaves a `pending` row; the next
+    write's cleanup keeps the file (`leftover`, never deleted) and its note says what
+    may have happened and that History undo restores it."""
+    settings = make_settings()
+    ctx, session, cs = _engine_setup(settings.projects_root, settings, editing)
+    lib = cs.library
+    assert lib is not None
+    session.kicad.rows = {lib.nickname: lib.uri}
+    approved = await _pending_copy(editing, lib, "A", op="approve")
+    deleted = await _pending_copy(editing, lib, "D", op="delete")
+
+    async with library_lock(lib.dir):
+        notes = await cleanup_pending(ctx, lib)
+
+    assert session.kicad.calls == []
+    assert approved.exists() and deleted.exists()
+    assert [(r.op, r.state) for r in await _journal(editing)] == [
+        ("approve", "leftover"),
+        ("delete", "leftover"),
+    ]
+    assert [(n["kind"], n["lib_id"], n["op"]) for n in notes] == [
+        ("pending_leftover", f"{lib.nickname}:A", "approve"),
+        ("pending_leftover", f"{lib.nickname}:D", "delete"),
+    ]
+    approve_msg, delete_msg = (n["message"] for n in notes)
+    assert "may or may not have recorded the approval" in approve_msg
+    assert "never delete it" in approve_msg and "History restores" in approve_msg
+    assert "may or may not have deleted it" in delete_msg
+    assert "History restores it" in delete_msg
+    for msg in (approve_msg, delete_msg):
+        assert "half-built" not in msg and "fp_delete removes" not in msg

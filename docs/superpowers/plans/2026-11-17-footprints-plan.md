@@ -894,7 +894,12 @@ phase file, with the reason.)
   sighting under guard 4). `fp_check` records through `read.record_review`.
 - **Task 1, guards:** guard 4 counts only `role = user` messages of `ctx.conversation_id`
   and `ctx.run_id` with `metadata.origin == "user"` (`MessageRepo.run_user_messages`,
-  `USER_ORIGIN`); equal timestamps are refused. A context without a conversation or
+  `USER_ORIGIN`); equal timestamps are refused. Because the review stamps keep the
+  first sighting, guard 4 also needs the message to be later than the latest journalled
+  `create` / `replace` of the lib id (`FootprintWriteRepo.last_geometry_write_at`: any
+  project, `created_at` or `finalised_at`, every state but `compensated`; ties refuse) -
+  otherwise a geometry the user rejected earlier could be written back in the approval
+  turn and approved with a quote about another one. A context without a conversation or
   database is refused with guard 3. A non-local `lib_id`, a missing project row and
   "already approved" are all guard 1 (not `not_local`); a missing footprint or a
   cleanable seed copy is `not_found`. A `pending` journal row for the lib id refuses with
@@ -918,8 +923,12 @@ phase file, with the reason.)
   only (`read._footprint_users`, spec §7.8), not board footprints, and only in prepare; the
   own project's board is byte-searched (`usage.scan_own_boards`) for an `in_use_on_board`
   note. A project without the local row gets `not_local`. `fp_approve` and `fp_delete`
-  re-read the project row under the library lock before writing (`engine._recheck_row`:
-  gone or another URI -> `library_conflict`, nothing written). A leftover is reported with
+  re-read the path, the file and the project row under the library lock before
+  `cleanup_pending` (`_recheck` -> `engine._file_checks` + `engine._recheck_row`: gone or
+  another URI -> `library_conflict`, nothing written, no cleanup). A `pending` `approve` /
+  `delete` row the cleanup finalises `leftover` gets its own note (`_leftover_note`: the
+  approval / delete may or may not have happened, History undo restores the earlier
+  state; never "half-built", never "fp_delete removes it"). A leftover is reported with
   `replaced=[lib_id]`; `errors.leftover_advice` now says "<id> is an existing footprint of
   the user" (covers replace, approve, delete) and dropped "once that tool is available".
   Note/error texts name at most 20 refs/files ("and N more"); `details.refs`/`files` are
@@ -944,7 +953,13 @@ phase file, with the reason.)
 - **Task 3, pre-stage (`kicad_tools/footprints/library_row.py`,
   `apply_with_library_row`):** `KicadUnavailable` during the row or `spec.apply` skips the
   row removal (journal row stays `pending` resp. `done`; History undo removes it); a cancel
-  removes it to completion (`_uncancellable`). A failed removal is `leftover` and raises
+  removes it to completion (`_uncancellable`). Like `engine._apply_create`, the stage
+  captures `session.generation` before `_ensure_row`: a failure or cancel after the
+  server died or restarted removes nothing (no cold start in the uncancellable section;
+  `row.added` may be wrong), the row stage's journal row stays `pending` and a non-cancel
+  error becomes `KicadUnavailable`; after `spec.apply` the error passes unchanged and the
+  journal row stays `done`. A `not_found` read-back says "was removed again" only for a
+  row this call added. A failed removal is `leftover` and raises
   `DocumentInconsistent(leftovers=["row <nick>"], footprint_only=True)` from the cause (a
   schematic `DocumentInconsistent` gets the leftover appended instead). A row that was
   there already (same URI) is journalled `compensated` and never removed.
@@ -961,8 +976,9 @@ phase file, with the reason.)
   - `user_quote` is a substring proof, not intent detection (a quote cut from "looks good,
     but not yet" passes guard 5); guards 3/4/6 carry the weight. The SP4 approve button
     (D1) replaces it.
-  - A cancel between `AddLibraryTableEntry` and its return can journal an added row
-    `compensated` without removing it (same gap as F4a S1); History undo covers it.
+  - A cancel between `AddLibraryTableEntry` and its return on a server that stays alive
+    can journal an added row `compensated` without removing it (same gap as F4a S1);
+    History undo covers it. (A server that died or restarted leaves it `pending`.)
   - `footprint_notes` with the row present reads through the footprint document (activation
     also on a board server, like `fp_get` in F1).
   - F5: skills/README list `fp_approve` (flow: render + check, show the user, approve in a

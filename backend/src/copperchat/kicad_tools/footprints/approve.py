@@ -8,13 +8,16 @@ local footprint, but only with server-side evidence that they saw the current ge
 2. `geometry_hash` is the current read-back hash;
 3. this conversation rendered **and** checked that geometry (`footprint_reviews`);
 4. the current run processed a message the user typed (`metadata.origin == "user"`,
-   stamped only by the WebSocket submit) created after both;
+   stamped only by the WebSocket submit) created after both **and** after the latest
+   journalled `create` / `replace` of the lib id (any project; ties refuse) - so a
+   geometry shown earlier and written back in the approval turn does not count;
 5. `user_quote` is in that message (whitespace-normalised, on word boundaries, at least
    2 words and 8 non-space characters - or the whole message when that is shorter);
 6. no plan of this conversation is `running`;
 7. `fp_check` of the current read-back has no error.
 
-`apply` (under the library lock the adapter takes) cleans up pending journal rows,
+`apply` (under the library lock the adapter takes) re-checks the library path, the
+project row and the file (FP-C8), cleans up pending journal rows,
 journals `approve`, re-reads the geometry in the open document (guard 2 again, TOCTOU),
 then one commit (`needs_user_review = no`, a new `User review` field) + save, and reads
 it back (the hash must not change). The quote goes to the change log only.
@@ -30,7 +33,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from copperchat.changes.repo import ChangeEntry
-from copperchat.db.repos.footprints import FootprintReviewRepo
+from copperchat.db.repos.footprints import FootprintReviewRepo, FootprintWriteRepo
 from copperchat.db.repos.messages import USER_ORIGIN, MessageRepo, MessageRow
 from copperchat.errors import DocumentInconsistent, StructuredToolError, attach_tool_notes
 from copperchat.history.library_lock import assert_library_locked
@@ -195,16 +198,29 @@ async def check_evidence(ctx: ToolContext, lib_id: str, digest: str, quote: str)
             "user, and wait for their answer in a later message.",
         )
     shown_at = max(review.rendered_at, review.checked_at)
+    # The review stamps keep the FIRST render / check of a geometry; a write of the
+    # footprint after the user's message (e.g. back to a geometry they rejected
+    # earlier) means the message cannot be about what the file holds now.
+    written_at = await FootprintWriteRepo(db).last_geometry_write_at(lib_id)
     human = await _human_messages(ctx)
-    later = [m for m in human if m.created_at > shown_at]
+    after_shown = [m for m in human if m.created_at > shown_at]
+    later = [m for m in after_shown if written_at is None or m.created_at > written_at]
     if not later:
-        why = (
-            "this turn was not started by a message the user typed (plan execution, a "
-            "session prompt or a notice do not count)"
-            if not human
-            else "the user's message of this turn was sent before the render and the check "
-            "of this geometry, so they cannot have seen it"
-        )
+        if not human:
+            why = (
+                "this turn was not started by a message the user typed (plan execution, a "
+                "session prompt or a notice do not count)"
+            )
+        elif not after_shown:
+            why = (
+                "the user's message of this turn was sent before the render and the check "
+                "of this geometry, so they cannot have seen it"
+            )
+        else:
+            why = (
+                f"{lib_id} was written (fp_create) after the user's message of this turn, so "
+                "the message is not about the footprint as it is now"
+            )
         raise refused(
             4,
             f"{lib_id} cannot be approved in this turn",
@@ -419,10 +435,8 @@ async def _write_approval(
                 "write pending"
             )
 
-    # FP-C8: path, project table, its row and the file checked again under the
-    # library lock (nothing is written before)
-    await asyncio.to_thread(_file_checks, lib, name)
-    await _recheck_row(ctx, lib)
+    # FP-C8: path, project table, its row and the file were checked again under the
+    # library lock by the caller, before the cleanup (`_recheck`)
     pre = await sha_of(file, lib.repo_root)
     if pre == ABSENT:
         raise StructuredToolError(
@@ -517,10 +531,19 @@ async def _write_approval(
     return readback
 
 
+async def _recheck(ctx: ToolContext, lib: LocalLibrary, lib_id: str) -> None:
+    """FP-C8 under the library lock, before `cleanup_pending` (which may already delete
+    a file): the library path, the project table, its row and the target file are
+    checked again - `library_conflict` otherwise, nothing written."""
+    await asyncio.to_thread(_file_checks, lib, lib_id.split(":", 1)[1])
+    await _recheck_row(ctx, lib)
+
+
 async def apply_approve(ctx: ToolContext, cs: Any) -> ToolResult:
     """`fp_approve.apply` inside `session.applying()`, the adapter holding the library
-    lock: `cleanup_pending` first, then the approval stage; the result names the new
-    review state; the change log gets `footprint_approved` with the quote."""
+    lock: the FP-C8 re-checks, `cleanup_pending`, then the approval stage; the result
+    names the new review state; the change log gets `footprint_approved` with the
+    quote."""
     if not isinstance(cs, FootprintChangeSet) or cs.library is None or cs.tool != TOOL:
         raise TypeError("apply_approve needs a planned fp_approve change set")
     lib = cs.library
@@ -529,6 +552,7 @@ async def apply_approve(ctx: ToolContext, cs: Any) -> ToolResult:
     digest: str = cs.summary["geometry_hash"]
     value = approval_text(cs.summary["conversation_id"], digest)
     async with ctx.session.applying():
+        await _recheck(ctx, lib, lib_id)  # before the cleanup writes anything
         cleaned = await cleanup_pending(ctx, lib)
         try:
             readback = await _write_approval(ctx, lib, lib_id, digest, value)

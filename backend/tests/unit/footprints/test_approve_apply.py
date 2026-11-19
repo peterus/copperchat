@@ -283,6 +283,25 @@ async def test_row_changed_refused(rig: Rig, rows: dict[str, str]) -> None:
     assert await _journal(rig) == []
 
 
+async def test_row_changed_refused_before_the_cleanup(rig: Rig) -> None:
+    """The FP-C8 re-checks run before `cleanup_pending`: with a re-pointed row the
+    refusal comes first, so a pending row of an earlier call is not touched (the
+    cleanup could otherwise already delete a file)."""
+    ctx, cs = await _planned(rig)
+    other = rig.lib().dir / "Other.kicad_mod"
+    other.write_bytes(b"other")
+    await FootprintWriteRepo(rig.db).insert_pending(
+        PID, "run-dead", f"{REPO}:Other", f"footprints/{REPO}.pretty/Other.kicad_mod",
+        "replace", "x",
+    )  # fmt: skip
+    session(rig).rows = {REPO: "${KIPRJMOD}/elsewhere.pretty"}
+    with pytest.raises(StructuredToolError) as err:
+        await _apply(ctx, cs)
+    assert err.value.code == "library_conflict"
+    assert await _journal(rig) == [("replace", "pending")]  # the cleanup never ran
+    assert session(rig).steps == [] and other.read_bytes() == b"other"
+
+
 # -- review loop round 2 -------------------------------------------------------------------
 
 

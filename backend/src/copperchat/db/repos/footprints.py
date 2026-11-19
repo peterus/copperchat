@@ -109,6 +109,18 @@ class FootprintWriteRepo:
         )
         return {str(r[0]) for r in rows}
 
+    async def last_geometry_write_at(self, lib_id: str) -> str | None:
+        """The latest time (``created_at`` or ``finalised_at``) any project journalled a
+        ``create`` / ``replace`` of ``lib_id`` that may have changed its file (every
+        state but ``compensated``), or None (`fp_approve` guard 4)."""
+        r = await self._db.fetchone(
+            "SELECT MAX(MAX(created_at, COALESCE(finalised_at, created_at))) "
+            "FROM footprint_writes WHERE lib_id = ? AND op IN ('create', 'replace') "
+            "AND state != 'compensated'",
+            (lib_id,),
+        )
+        return None if r is None or r[0] is None else str(r[0])
+
     async def max_id(self) -> int:
         r = await self._db.fetchone("SELECT COALESCE(MAX(id), 0) FROM footprint_writes")
         return 0 if r is None else int(r[0])

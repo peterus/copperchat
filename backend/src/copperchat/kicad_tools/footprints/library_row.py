@@ -51,8 +51,11 @@ async def apply_with_library_row(
     read-back -> the footprint must exist, else the row is removed and `not_found`
     raised -> journal finalised), then `apply()`. A failing `apply()` (or a cancel)
     removes the row again (`DeleteLibraryTableEntry`, run to completion) and re-raises;
-    `KicadUnavailable` skips that (the restarted server reads the table from disk; the
-    journal row lets History undo it). A row that was there already (same URI) adds
+    `KicadUnavailable` - or any failure after the server's generation changed or it died
+    (like `engine._apply_create`) - skips that (the restarted server reads the table
+    from disk; the journal row, left `pending` when the row stage itself was hit, lets
+    cleanup / History decide). Such a failure in the row stage becomes
+    `KicadUnavailable` (a cancel stays a cancel). A row that was there already (same URI) adds
     nothing and is never removed. The caller holds the library lock (asserted)."""
     stage = cs.library_row
     assert stage is not None
@@ -66,26 +69,51 @@ async def apply_with_library_row(
     # prepare): a same-nickname row with another URI, a row aliasing the library dir or
     # a moved library refuse with `library_conflict` before anything is journalled.
     await _recheck_row(ctx, lib, require_row=False)
+    if not svc.footprint_libraries_ready():  # fallback: a server restart since the
+        await svc.activate_footprints()  # adapter activated them before the lock
     journal = Journal(ctx)
     row = _RowProgress()
     row.journal_id = await journal.pending(
         "row_add", lib.nickname, table_rel(lib), await sha_of(lib.table, lib.repo_root)
     )
+    generation = session.generation  # the row is written on this server
+
+    def same_server() -> bool:
+        return session.generation == generation and session.server_alive
+
     try:
-        if not svc.footprint_libraries_ready():  # fallback: a server restart since the
-            await svc.activate_footprints()  # adapter activated them before the lock
         await _ensure_row(ctx, stage, row)
         if stage.footprint is not None and not await svc.has_footprint(stage.footprint):
+            if row.added:
+                why = (
+                    f"the library row {lib.nickname} was added, but KiCad does not list "
+                    f"{stage.footprint}; the row was removed again"
+                )
+            else:
+                why = (
+                    f"the library row {lib.nickname} is there, but KiCad does not list "
+                    f"{stage.footprint}"
+                )
             raise StructuredToolError(
                 f"Footprint {stage.footprint} not found",
-                f"the library row {lib.nickname} was added, but KiCad does not list "
-                f"{stage.footprint}; the row was removed again",
+                why,
                 "Check the name with fp_list_local.",
                 code="not_found",
             )
     except KicadUnavailable:
         raise  # the journal row stays pending (cleanup / History decide)
     except BaseException as exc:
+        if not same_server():
+            # The server died or restarted meanwhile (e.g. a Stop killed it during
+            # `AddLibraryTableEntry`): `row.added` may be False although the row was
+            # written, and a removal could cold-start KiCad. Undo nothing; the journal
+            # row stays pending (cleanup / History decide).
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            raise KicadUnavailable(
+                "the KiCad api-server restarted while adding the library row "
+                f"{lib.nickname}; the journal keeps the write pending"
+            ) from exc
         await _undo(ctx, cs, lib, row, journal, exc)
         raise
     await journal.finalise(
@@ -97,6 +125,8 @@ async def apply_with_library_row(
     except KicadUnavailable:
         raise
     except BaseException as exc:
+        if not same_server():
+            raise  # nothing removed on a dead / restarted server (History undo does it)
         await _undo(ctx, cs, lib, row, journal, exc)
         raise
     if row.added:
