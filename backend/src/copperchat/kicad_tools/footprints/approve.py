@@ -7,10 +7,11 @@ local footprint, but only with server-side evidence that they saw the current ge
 1. the footprint is local and `needs_user_review` (no unfinished journal row);
 2. `geometry_hash` is the current read-back hash;
 3. this conversation rendered **and** checked that geometry (`footprint_reviews`);
-4. the current run processed a message the user typed (`metadata.origin == "user"`,
-   stamped only by the WebSocket submit) created after both **and** after the latest
-   journalled `create` / `replace` of the lib id (any project; ties refuse) - so a
-   geometry shown earlier and written back in the approval turn does not count;
+4. the render and the check are later than the latest journalled `create` / `replace`
+   of the footprint file (any project; ties refuse), and the current run processed a
+   message the user typed (`metadata.origin == "user"`, stamped only by the WebSocket
+   submit) created after both - so a geometry shown earlier and written back later
+   (in the approval turn or before it) does not count;
 5. `user_quote` is in that message (whitespace-normalised, on word boundaries, at least
    2 words and 8 non-space characters - or the whole message when that is shorter);
 6. no plan of this conversation is `running`;
@@ -167,8 +168,11 @@ def quote_in_message(quote: str, message: str) -> bool:
 # -- guards 3 to 6: the evidence in the database ---------------------------------------
 
 
-async def check_evidence(ctx: ToolContext, lib_id: str, digest: str, quote: str) -> None:
-    """Guards 3-6 (spec §7.7) from the database; raises `approval_not_allowed`."""
+async def check_evidence(
+    ctx: ToolContext, lib_id: str, file_rel: str, digest: str, quote: str
+) -> None:
+    """Guards 3-6 (spec §7.7) from the database; raises `approval_not_allowed`.
+    `file_rel` is the footprint's repo-relative file (`journal.footprint_rel`)."""
     if ctx.editing is None or ctx.conversation_id is None:
         raise refused(
             3,
@@ -197,29 +201,32 @@ async def check_evidence(ctx: ToolContext, lib_id: str, digest: str, quote: str)
             "Call fp_render and fp_check, show the render, the check and the source to the "
             "user, and wait for their answer in a later message.",
         )
+    # The review stamps keep the first render / check since the latest write of the
+    # file; one older than that write (e.g. of a geometry the user rejected, written
+    # back later without a new render) is not what the file holds now.
+    written_at = await FootprintWriteRepo(db).last_geometry_write_at(file_rel)
+    if written_at is not None and min(review.rendered_at, review.checked_at) <= written_at:
+        raise refused(
+            4,
+            f"{lib_id} cannot be approved in this turn",
+            f"{lib_id} was written (fp_create) after its fp_render or fp_check in this "
+            "session, so the user has not seen the footprint as it is now",
+            "Call fp_render and fp_check again, show them to the user and end the turn; "
+            "approve only after the user answers with an explicit OK in their next message.",
+        )
     shown_at = max(review.rendered_at, review.checked_at)
-    # The review stamps keep the FIRST render / check of a geometry; a write of the
-    # footprint after the user's message (e.g. back to a geometry they rejected
-    # earlier) means the message cannot be about what the file holds now.
-    written_at = await FootprintWriteRepo(db).last_geometry_write_at(lib_id)
     human = await _human_messages(ctx)
-    after_shown = [m for m in human if m.created_at > shown_at]
-    later = [m for m in after_shown if written_at is None or m.created_at > written_at]
+    later = [m for m in human if m.created_at > shown_at]
     if not later:
         if not human:
             why = (
                 "this turn was not started by a message the user typed (plan execution, a "
                 "session prompt or a notice do not count)"
             )
-        elif not after_shown:
+        else:
             why = (
                 "the user's message of this turn was sent before the render and the check "
                 "of this geometry, so they cannot have seen it"
-            )
-        else:
-            why = (
-                f"{lib_id} was written (fp_create) after the user's message of this turn, so "
-                "the message is not about the footprint as it is now"
             )
         raise refused(
             4,
@@ -330,7 +337,7 @@ async def prepare_approve(ctx: ToolContext, args: dict[str, Any]) -> FootprintCh
             f"its current geometry is {digest[:8]}, the approval names {parsed.geometry_hash[:8]}",
             "Render and check the current footprint, show it to the user and ask again.",
         )
-    await check_evidence(ctx, lib_id, digest, parsed.user_quote)
+    await check_evidence(ctx, lib_id, footprint_rel(lib, name), digest, parsed.user_quote)
     report = await asyncio.to_thread(
         run_checks, CheckInput(geometry=geometry, local=True, pending=False)
     )

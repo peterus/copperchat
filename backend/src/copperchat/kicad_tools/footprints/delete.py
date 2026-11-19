@@ -10,9 +10,10 @@ project's board is byte-searched too (`usage.scan_own_boards`); a hit is an
 `in_use_on_board` note.
 
 `apply` (under the library lock the adapter takes): the path and project-row checks
-again, `cleanup_pending`, journal `delete` (pre = the file's hash), `DeleteLibraryItem`,
-read back that the footprint is gone (KiCad's listing and the file), finalise `done`
-with `absent`.
+again, `cleanup_pending`, the geometry hash again (changed since prepare ->
+`verification_failed`, nothing written), journal `delete` (pre = the file's hash),
+`DeleteLibraryItem`, read back that the footprint is gone (KiCad's listing and the
+file), finalise `done` with `absent`.
 `Logical(1)`, never counted as a deleted symbol (spec §12)."""
 
 from __future__ import annotations
@@ -272,6 +273,20 @@ async def _delete_footprint(ctx: ToolContext, lib: LocalLibrary, lib_id: str, di
             lib_id,
             f"{lib_id} was removed after the call was planned",
             "List the local footprints with fp_list_local; nothing was written.",
+        )
+    # the geometry the call was planned for (and the change log names): re-read under the
+    # lock, after the cleanup, so a footprint changed meanwhile (KiCad GUI, another
+    # project of the repo) is not deleted unseen
+    svc.invalidate_footprints(lib.nickname)
+    current = await svc.footprint_geometry(lib_id)
+    ensure_same_server()
+    if current is None or geometry_hash(current) != digest:
+        raise _error(
+            f"{lib_id} changed since the call was planned",
+            "its geometry is not the one fp_delete planned to delete (the KiCad GUI or "
+            "another project of this repository edited it); nothing was written",
+            "Look at the footprint again (fp_get / fp_render) and ask the user before deleting it.",
+            "verification_failed",
         )
     row = await journal.pending("delete", lib_id, rel, pre, digest)
 

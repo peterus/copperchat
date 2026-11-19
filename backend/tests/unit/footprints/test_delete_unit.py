@@ -25,7 +25,7 @@ from copperchat.kicad_tools.edit.changeset import Logical
 from copperchat.kicad_tools.footprints import engine as engine_mod
 from copperchat.kicad_tools.footprints.delete import apply_delete, prepare_delete
 from copperchat.kicad_tools.footprints.engine import FootprintChangeSet
-from copperchat.kicad_tools.footprints.model import FootprintGeometry
+from copperchat.kicad_tools.footprints.model import FootprintGeometry, geometry_hash
 from copperchat.kicad_tools.footprints.specs import TOOL_SPECS
 from copperchat.library import service as service_mod
 from copperchat.tools import ToolContext
@@ -338,6 +338,21 @@ async def test_apply_file_gone_before_apply_not_found(rig: Rig) -> None:
     assert err.value.code == "not_found"
     assert session(rig).deleted == []
     assert await FootprintWriteRepo(rig.db).after_id(PID, 0) == []
+
+
+async def test_apply_geometry_changed_since_prepare_refused(rig: Rig) -> None:
+    """The footprint changed between prepare and apply (KiCad GUI, another project):
+    re-read under the lock, refused before the journal and the KiCad call."""
+    ctx = rig.ctx()
+    cs = await prepare_delete(ctx, {"lib_id": LIB_ID})
+    rig.geometry = _target(body={"rect": [3.2, 3.2]})
+    assert geometry_hash(rig.geometry) != cs.summary["geometry_hash"]
+    with pytest.raises(StructuredToolError) as err:
+        await _apply(ctx, cs)
+    assert err.value.code == "verification_failed" and "nothing was written" in err.value.why
+    assert session(rig).deleted == []
+    assert await FootprintWriteRepo(rig.db).after_id(PID, 0) == []
+    assert (rig.lib().dir / f"{NAME}.kicad_mod").read_bytes() == FILE_BYTES
 
 
 async def test_apply_symlink_swapped_in_refused(rig: Rig, tmp_path: Path) -> None:

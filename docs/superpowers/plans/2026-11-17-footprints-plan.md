@@ -889,17 +889,27 @@ phase file, with the reason.)
 ### As built (F4b)
 
 - **Task 1, `FootprintReviewRepo.record`:** keeps the first `rendered_at`/`checked_at` of
-  a (conversation, lib id, hash) row; `run_id` and `check_errors` take the latest value
-  (a re-render or re-check in the approval turn must not void the user's earlier
-  sighting under guard 4). `fp_check` records through `read.record_review`.
+  a (conversation, lib id, hash) row **since the latest geometry write of the file**
+  (`written_at`, looked up by `read.record_review` for a local footprint); an older stamp
+  is replaced by the current time, so a sighting before a write-back no longer counts
+  (review round 5). `run_id` and `check_errors` take the latest value (a re-render or
+  re-check in the approval turn must not void the user's earlier sighting under guard 4).
+  The caller records after the write it follows (`fp_create` finalises its journal row
+  in the engine, then records its read-back check), so a stamp that would tie the write
+  (same millisecond, `utcnow_iso` resolution) is stored as the write + 1 ms. `fp_check`
+  records through `read.record_review`. No new migration (table from 0012).
 - **Task 1, guards:** guard 4 counts only `role = user` messages of `ctx.conversation_id`
   and `ctx.run_id` with `metadata.origin == "user"` (`MessageRepo.run_user_messages`,
   `USER_ORIGIN`); equal timestamps are refused. Because the review stamps keep the
-  first sighting, guard 4 also needs the message to be later than the latest journalled
-  `create` / `replace` of the lib id (`FootprintWriteRepo.last_geometry_write_at`: any
-  project, `created_at` or `finalised_at`, every state but `compensated`; ties refuse) -
-  otherwise a geometry the user rejected earlier could be written back in the approval
-  turn and approved with a quote about another one. A context without a conversation or
+  first sighting, guard 4 also needs the render **and** the check (and so the message)
+  to be strictly later than the latest journalled `create` / `replace` of the footprint
+  file (`FootprintWriteRepo.last_geometry_write_at(file_rel)`, filtered on `file_rel`
+  through the `footprint_writes_file` index: any project, every state but
+  `compensated`; `pending`/`done` count the later of `created_at` and `finalised_at`,
+  `leftover` only `created_at` because its `finalised_at` may be the cleanup's time;
+  ties refuse) - otherwise a geometry the user rejected earlier could be written back
+  (in the approval turn or a turn before it, without a new render) and approved with a
+  quote about another one. A context without a conversation or
   database is refused with guard 3. A non-local `lib_id`, a missing project row and
   "already approved" are all guard 1 (not `not_local`); a missing footprint or a
   cleanable seed copy is `not_found`. A `pending` journal row for the lib id refuses with
@@ -925,7 +935,11 @@ phase file, with the reason.)
   note. A project without the local row gets `not_local`. `fp_approve` and `fp_delete`
   re-read the path, the file and the project row under the library lock before
   `cleanup_pending` (`_recheck` -> `engine._file_checks` + `engine._recheck_row`: gone or
-  another URI -> `library_conflict`, nothing written, no cleanup). A `pending` `approve` /
+  another URI -> `library_conflict`, nothing written, no cleanup). `fp_delete` also
+  re-reads the geometry under the lock after the cleanup (`footprint_geometry` after
+  `invalidate_footprints`) and refuses a hash other than prepare's with
+  `verification_failed` ("changed since the call was planned", nothing written, no
+  journal row) - the change log's `before.geometry_hash` is then the deleted geometry. A `pending` `approve` /
   `delete` row the cleanup finalises `leftover` gets its own note (`_leftover_note`: the
   approval / delete may or may not have happened, History undo restores the earlier
   state; never "half-built", never "fp_delete removes it"). A leftover is reported with
@@ -981,6 +995,11 @@ phase file, with the reason.)
     History undo covers it. (A server that died or restarted leaves it `pending`.)
   - `footprint_notes` with the row present reads through the footprint document (activation
     also on a board server, like `fp_get` in F1).
+  - A History restore that rewrites a footprint file journals no `create` / `replace`
+    row, so `last_geometry_write_at` (guard 4) does not see it: a user restore between
+    the render and the approval could let an older sighting count. Guard 2 (hash of the
+    current file) still has to match the approved geometry, so only a restore back to a
+    geometry the conversation saw is affected; needs the user's own concurrent restore.
   - F5: skills/README list `fp_approve` (flow: render + check, show the user, approve in a
     later turn with their quote) and `fp_delete` (`in_use`, `possibly_in_use_elsewhere`).
 

@@ -5,6 +5,7 @@ repo-root-relative so projects of one repo name the same file the same way."""
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from copperchat.db import Database, utcnow_iso
@@ -109,15 +110,19 @@ class FootprintWriteRepo:
         )
         return {str(r[0]) for r in rows}
 
-    async def last_geometry_write_at(self, lib_id: str) -> str | None:
-        """The latest time (``created_at`` or ``finalised_at``) any project journalled a
-        ``create`` / ``replace`` of ``lib_id`` that may have changed its file (every
-        state but ``compensated``), or None (`fp_approve` guard 4)."""
+    async def last_geometry_write_at(self, file_rel: str) -> str | None:
+        """The latest time any project journalled a ``create`` / ``replace`` of the
+        footprint file ``file_rel`` that may have changed it (every state but
+        ``compensated``), or None (`fp_approve` guard 4). ``pending`` / ``done``: the later
+        of ``created_at`` and ``finalised_at``; ``leftover``: ``created_at`` only (its
+        ``finalised_at`` may be the cleanup's time, long after the write). Filters on
+        ``file_rel`` (index ``footprint_writes_file``)."""
         r = await self._db.fetchone(
-            "SELECT MAX(MAX(created_at, COALESCE(finalised_at, created_at))) "
-            "FROM footprint_writes WHERE lib_id = ? AND op IN ('create', 'replace') "
+            "SELECT MAX(CASE WHEN state = 'leftover' THEN created_at "
+            "ELSE MAX(created_at, COALESCE(finalised_at, created_at)) END) "
+            "FROM footprint_writes WHERE file_rel = ? AND op IN ('create', 'replace') "
             "AND state != 'compensated'",
-            (lib_id,),
+            (file_rel,),
         )
         return None if r is None or r[0] is None else str(r[0])
 
@@ -136,8 +141,9 @@ class FootprintWriteRepo:
 @dataclass(frozen=True)
 class FootprintReview:
     """What CopperChat showed in one conversation for one footprint geometry (FP-C7,
-    spec §7.7 guard 3): when it was first rendered and first checked (`fp_render`,
-    `fp_check`, `fp_create`'s read-back check) and the error count of the latest check."""
+    spec §7.7 guard 3): when it was first rendered and first checked since the latest
+    write of the footprint file (`fp_render`, `fp_check`, `fp_create`'s read-back check)
+    and the error count of the latest check."""
 
     conversation_id: str
     lib_id: str
@@ -151,6 +157,12 @@ class FootprintReview:
 _REVIEW_COLUMNS = (
     "conversation_id, lib_id, geometry_hash, run_id, rendered_at, checked_at, check_errors"
 )
+
+
+def _plus_one_ms(stamp: str) -> str:
+    """`utcnow_iso` format, one millisecond after `stamp`."""
+    t = datetime.fromisoformat(stamp.replace("Z", "+00:00")) + timedelta(milliseconds=1)
+    return t.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 class FootprintReviewRepo:
@@ -169,18 +181,30 @@ class FootprintReviewRepo:
         rendered: bool = False,
         checked: bool = False,
         check_errors: int | None = None,
+        written_at: str | None = None,
     ) -> None:
         """Upsert the row: `rendered` / `checked` stamp `rendered_at` / `checked_at` with
-        the current time unless already stamped (the first time this geometry was shown
-        counts, so a re-render or re-check in the approval turn keeps the evidence);
-        `run_id` and `check_errors` take the latest value."""
+        the current time unless already stamped later than `written_at` (the latest
+        geometry write of the footprint file, `FootprintWriteRepo.last_geometry_write_at`):
+        the first sighting since the last write counts, so a re-render or re-check in the
+        approval turn keeps the evidence, while a sighting before a write (e.g. of a
+        geometry written back later) is replaced. The caller records after the write it
+        follows (`fp_create` after finalising its journal row), so a stamp that would not
+        be later than `written_at` (same millisecond) is `written_at` + 1 ms. `run_id` and
+        `check_errors` take the latest value."""
         now = utcnow_iso()
+        if written_at is not None and now <= written_at:
+            now = _plus_one_ms(written_at)
         await self._db.execute(
             f"INSERT INTO footprint_reviews({_REVIEW_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(conversation_id, lib_id, geometry_hash) DO UPDATE SET "
             "run_id = COALESCE(excluded.run_id, footprint_reviews.run_id), "
-            "rendered_at = COALESCE(footprint_reviews.rendered_at, excluded.rendered_at), "
-            "checked_at = COALESCE(footprint_reviews.checked_at, excluded.checked_at), "
+            "rendered_at = CASE WHEN excluded.rendered_at IS NOT NULL AND "
+            "(footprint_reviews.rendered_at IS NULL OR footprint_reviews.rendered_at <= ?) "
+            "THEN excluded.rendered_at ELSE footprint_reviews.rendered_at END, "
+            "checked_at = CASE WHEN excluded.checked_at IS NOT NULL AND "
+            "(footprint_reviews.checked_at IS NULL OR footprint_reviews.checked_at <= ?) "
+            "THEN excluded.checked_at ELSE footprint_reviews.checked_at END, "
             "check_errors = COALESCE(excluded.check_errors, footprint_reviews.check_errors)",
             (
                 conversation_id,
@@ -190,6 +214,8 @@ class FootprintReviewRepo:
                 now if rendered else None,
                 now if checked else None,
                 check_errors,
+                written_at,
+                written_at,
             ),
         )
 

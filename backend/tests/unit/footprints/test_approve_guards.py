@@ -48,6 +48,7 @@ from tests.unit.library.test_service import LOCAL_URI, REPO, _policy
 PID = "a1b2c3d4e5f6"
 RUN1, RUN2 = "run-1", "run-2"
 LIB_ID = f"{REPO}:{NAME}"
+FILE_REL = f"footprints/{REPO}.pretty/{NAME}.kicad_mod"
 T_RENDER = "2026-11-19T10:00:00.000Z"
 T_CHECK = "2026-11-19T10:00:01.000Z"
 T_EARLY = "2026-11-19T09:59:00.000Z"
@@ -289,6 +290,11 @@ async def test_create_counts_as_check(rig: Rig, monkeypatch: pytest.MonkeyPatch)
     lib = rig.lib()
 
     async def engine(ctx: ToolContext, cs: Any) -> FootprintApplied:
+        # the engine journals and finalises the create before apply_footprint_create
+        # records its read-back check: that check must count as later than the write
+        repo = FootprintWriteRepo(rig.db)
+        wid = await repo.insert_pending(PID, RUN1, LIB_ID, FILE_REL, "create", "absent")
+        await repo.finalise(wid, "done", "y")
         return FootprintApplied(
             lib_ids=[LIB_ID],
             files=[f"footprints/{REPO}.pretty/{NAME}.kicad_mod"],
@@ -303,7 +309,11 @@ async def test_create_counts_as_check(rig: Rig, monkeypatch: pytest.MonkeyPatch)
     review = await FootprintReviewRepo(rig.db).get(TEST_CID, LIB_ID, rig.digest)
     assert review is not None and review.checked_at and review.rendered_at is None
     assert review.check_errors == 0 and review.run_id == RUN1
-    await FootprintReviewRepo(rig.db).record(TEST_CID, LIB_ID, rig.digest, RUN1, rendered=True)
+    written = await FootprintWriteRepo(rig.db).last_geometry_write_at(FILE_REL)
+    assert written is not None and review.checked_at > written
+    await FootprintReviewRepo(rig.db).record(
+        TEST_CID, LIB_ID, rig.digest, RUN1, rendered=True, written_at=written
+    )
     await rig.said(at="2999-01-01T00:00:00.000Z")  # after both stamps of "now"
     cs2 = await prepare_approve(rig.ctx(), _args(rig))
     assert cs2.summary["lib_id"] == LIB_ID
@@ -330,6 +340,27 @@ async def test_record_keeps_first_stamp(rig: Rig) -> None:
     assert (got.rendered_at, got.checked_at, got.run_id) == (T_RENDER, T_CHECK, RUN2)
 
 
+async def test_record_restamps_a_sighting_before_the_latest_write(rig: Rig) -> None:
+    """A render / check older than the latest write of the file is replaced by the new
+    one (fp_check through `record_review` looks the write up itself); one newer than
+    the write is kept; a stamp that would tie the write is the write + 1 ms."""
+    repo = FootprintReviewRepo(rig.db)
+    await rig.shown()  # T_RENDER, T_CHECK
+    T_WRITE = "2026-11-19T10:00:30.000Z"
+    await _written(rig, "replace", "done", T_WRITE, T_WRITE)
+    await repo.record(TEST_CID, LIB_ID, rig.digest, RUN2, rendered=True, written_at=T_EARLY)
+    got = await repo.get(TEST_CID, LIB_ID, rig.digest)
+    assert got is not None and got.rendered_at == T_RENDER  # newer than that write: kept
+    await fp_check(rig.ctx(RUN2), {"lib_id": LIB_ID})
+    got = await repo.get(TEST_CID, LIB_ID, rig.digest)
+    assert got is not None and got.rendered_at == T_RENDER
+    assert got.checked_at is not None and got.checked_at > T_WRITE
+    future = "2999-01-01T00:00:00.999Z"
+    await repo.record(TEST_CID, LIB_ID, rig.digest, RUN2, rendered=True, written_at=future)
+    got = await repo.get(TEST_CID, LIB_ID, rig.digest)
+    assert got is not None and got.rendered_at == "2999-01-01T00:00:01.000Z"
+
+
 # -- guards 4 and 6 -----------------------------------------------------------------------
 
 
@@ -351,9 +382,7 @@ async def _written(
 ) -> None:
     """A journalled write of the footprint with explicit timestamps."""
     repo = FootprintWriteRepo(rig.db)
-    wid = await repo.insert_pending(
-        project, RUN2, LIB_ID, f"footprints/{REPO}.pretty/{NAME}.kicad_mod", op, "x"
-    )
+    wid = await repo.insert_pending(project, RUN2, LIB_ID, FILE_REL, op, "x")
     if state != "pending":
         await repo.finalise(wid, state, "y")
     await rig.db.execute(
@@ -365,8 +394,9 @@ async def _written(
 async def test_rewritten_after_message_refused(rig: Rig) -> None:
     """The attack: the user saw G earlier (first stamps kept), said something about G',
     and in the approval turn the agent writes G back and approves it with that quote.
-    The write after the user's message refuses with guard 4 - in any project, also
-    when only its finalisation is later, and on a tie."""
+    The write after the render / check refuses with guard 4 - in any project, also when
+    only its finalisation is later, and on a tie. A `leftover` row counts with its
+    `created_at` only (its `finalised_at` may be the later cleanup)."""
     await rig.shown()
     await rig.said()  # T_LATER
     T_AFTER = "2026-11-19T10:06:00.000Z"
@@ -374,11 +404,36 @@ async def test_rewritten_after_message_refused(rig: Rig) -> None:
     err = await _refused(rig)
     assert err.details == {"guard": 4} and "written" in err.why
     await rig.db.execute("DELETE FROM footprint_writes")
-    await _written(rig, "create", "leftover", T_EARLY, T_AFTER)
+    await _written(rig, "replace", "done", T_EARLY, T_AFTER)
+    assert await _guard(rig) == 4  # done (and pending): the later of both stamps
+    await rig.db.execute("DELETE FROM footprint_writes")
+    await _written(rig, "create", "leftover", T_AFTER, T_AFTER)
     assert await _guard(rig) == 4
     await rig.db.execute("DELETE FROM footprint_writes")
-    await _written(rig, "replace", "done", T_CHECK, T_LATER)  # tie
+    await _written(rig, "replace", "done", T_CHECK, T_CHECK)  # tie with the check
     assert await _guard(rig) == 4
+
+
+async def test_leftover_counts_its_write_time_not_its_cleanup(rig: Rig) -> None:
+    """A `leftover` row written before the render, finalised by a cleanup after the
+    user's message: not a write after the sighting."""
+    await rig.shown()
+    await rig.said()
+    await _written(rig, "create", "leftover", T_EARLY, "2026-11-19T10:06:00.000Z")
+    cs = await prepare_approve(rig.ctx(), _args(rig))
+    assert cs.summary["lib_id"] == LIB_ID
+
+
+async def test_written_back_before_the_message_refused(rig: Rig) -> None:
+    """Turn A: G rendered and checked, the user rejects it. Turn B: replaced by G', then
+    written back to G without a new render. Turn C: the user OKs (they saw G'): the
+    sighting of G predates its latest write, so guard 4 refuses."""
+    await rig.shown()  # turn A
+    await _written(rig, "replace", "done", "2026-11-19T10:01:00.000Z", "2026-11-19T10:01:01.000Z")
+    await _written(rig, "replace", "done", "2026-11-19T10:02:00.000Z", "2026-11-19T10:02:01.000Z")
+    await rig.said()  # turn C, T_LATER
+    err = await _refused(rig)
+    assert err.details == {"guard": 4} and "written" in err.why
 
 
 async def test_write_before_message_or_compensated_ok(rig: Rig) -> None:

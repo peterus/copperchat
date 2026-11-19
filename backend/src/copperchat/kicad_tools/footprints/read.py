@@ -24,6 +24,7 @@ from copperchat.kicad_tools.footprints.checks import (
     run_checks,
     to_result,
 )
+from copperchat.kicad_tools.footprints.journal import footprint_rel
 from copperchat.kicad_tools.footprints.model import (
     MAX_TEXT_CHARS,
     SOURCE_FIELD,
@@ -99,6 +100,17 @@ async def pending_lib_ids(ctx: ToolContext) -> frozenset[str]:
     return frozenset(r.lib_id for r in rows)
 
 
+async def _last_geometry_write(ctx: ToolContext, lib_id: str) -> str | None:
+    """`FootprintWriteRepo.last_geometry_write_at` of `lib_id`'s file in the repo's
+    local library; None for another library (never written by CopperChat)."""
+    assert ctx.editing is not None
+    nickname, _, name = lib_id.partition(":")
+    lib = await library_for(ctx.session).derived_local_library()
+    if lib is None or nickname != lib.nickname:
+        return None
+    return await FootprintWriteRepo(ctx.editing.db).last_geometry_write_at(footprint_rel(lib, name))
+
+
 async def record_review(
     ctx: ToolContext,
     lib_id: str,
@@ -110,11 +122,14 @@ async def record_review(
 ) -> None:
     """Record that this conversation was shown a render or a check of `lib_id` at
     geometry `digest` (`footprint_reviews`, spec §7.7 guard 3; local and stock footprints
-    alike). Needs the conversation and the database (the run engine's contexts); a
-    failure is logged, never fails the read tool (`fp_approve` then refuses, guard 3)."""
+    alike), after the latest journalled write of a local footprint's file (a sighting
+    before that write is replaced, `FootprintReviewRepo.record`). Needs the conversation
+    and the database (the run engine's contexts); a failure is logged, never fails the
+    read tool (`fp_approve` then refuses, guard 3)."""
     if ctx.conversation_id is None or ctx.editing is None:
         return
     try:
+        written_at = await _last_geometry_write(ctx, lib_id)
         await FootprintReviewRepo(ctx.editing.db).record(
             ctx.conversation_id,
             lib_id,
@@ -123,6 +138,7 @@ async def record_review(
             rendered=rendered,
             checked=checked,
             check_errors=check_errors,
+            written_at=written_at,
         )
     except Exception:
         log.exception("recording the review of %s failed", lib_id)
