@@ -218,6 +218,19 @@ def check_notes(text: str, *, structure_only: bool = False, mpn: str | None = No
             land is not None and all(_CITE.search(" ".join(r)) for r in land[1:]),
             f"{LAND_PATTERN}: every pad row needs a datasheet page reference like [D1 p.12]",
         )
+        for label in ("Courtyard", "Body"):
+            line = next(
+                (
+                    ln
+                    for ln in sections[LAND_PATTERN].splitlines()
+                    if ln.lstrip("-* ").startswith(f"{label}:")
+                ),
+                None,
+            )
+            check(
+                line is not None and bool(_CITE.search(line)),
+                f"{LAND_PATTERN}: a cited '- {label}: … [D1 p.N]' line is missing",
+            )
     check("[D1]" in sections.get("Sources", ""), "Sources: [D1] datasheet entry missing")
     for name in CITED_SECTIONS:
         check(

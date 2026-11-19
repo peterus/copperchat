@@ -71,9 +71,10 @@ notes alone.
     x right, y **down**), copper size W × H in mm and the drill (`-` for SMD
     pads), then the courtyard and the body size, every row and line cited
     `[D1 p.<n>]`. The design agent builds the footprint from exactly these
-    numbers. If the datasheet has no land pattern, write
-    `not specified [D1]` instead of deriving pads from the package size. With an
-    exact stock match, leave the section out.
+    numbers. If the datasheet has no land pattern, leave the section out and
+    write `no land pattern in the datasheet` into the `KiCad footprint` cell of
+    the package table; never derive pads from the package size. With an exact
+    stock match, leave the section out too.
 12. **Validate:** after writing, call `check_notes` with the MPN and fix every
     issue it reports, then call it again until it reports none.
 

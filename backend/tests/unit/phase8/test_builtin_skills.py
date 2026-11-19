@@ -321,6 +321,14 @@ def test_main_prompt_points_editing_sessions_to_the_footprints_skill() -> None:
     assert "kicad-footprints" not in system_prompt("demo", "requirements")
 
 
+def test_main_prompt_drops_footprints_when_the_tools_are_off() -> None:
+    for kind in ("schematic", "free"):
+        prompt = system_prompt("demo", kind, footprint_tools=False)
+        assert "kicad-footprints" not in prompt and "fp_*" not in prompt, kind
+        assert "{footprints}" not in prompt, kind
+        assert "kicad-schematic-editing" in prompt, kind
+
+
 GOOD_NOTES = (Path(__file__).parents[2] / "fixtures/parts/CC1234/notes.md").read_text()
 LAND_PATTERN = """## Land pattern
 
@@ -344,6 +352,21 @@ def test_part_notes_land_pattern_is_optional() -> None:
     assert check_notes(with_lp, mpn="CC1234").issues == []
     broken = with_lp.replace("| Pad | X (mm) |", "| Pin | X (mm) |")
     assert any("Land pattern" in i for i in check_notes(broken, mpn="CC1234").issues)
+    uncited = with_lp.replace("| - | [D1 p.18] |\n| 2", "| - | |\n| 2")
+    assert uncited != with_lp
+    assert any("page reference" in i for i in check_notes(uncited, mpn="CC1234").issues)
+    header_only = with_lp.replace(
+        "| 1 | -0.95 | 1.1 | 0.6 | 1.0 | - | [D1 p.18] |\n"
+        "| 2 | 0 | 1.1 | 0.6 | 1.0 | - | [D1 p.18] |\n",
+        "",
+    )
+    assert header_only != with_lp
+    assert any("one row per pad" in i for i in check_notes(header_only, mpn="CC1234").issues)
+    for label in ("Courtyard", "Body"):
+        no_cite = re.sub(rf"(- {label}: [^\n]*?) \[D1 p\.\d+\]", r"\1", with_lp)
+        assert no_cite != with_lp, label
+        issues = check_notes(no_cite, mpn="CC1234").issues
+        assert any(f"'- {label}:" in i for i in issues), (label, issues)
 
 
 def test_part_notes_skill_describes_the_land_pattern() -> None:

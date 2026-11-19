@@ -178,8 +178,13 @@ async def test_l201_end_to_end(rig: Rig) -> None:
     out, err = await call_tool(io_ctx, "sch_set_fields", ref=ref, fields={"footprint": LIB_ID})
     if err:
         pytest.fail(json.dumps(out, indent=1))
-    assert "footprint_needs_review" not in kinds(out)
+    # io has no library row yet: the edit adds it, so the review state is unknown here
+    # (specs_place: footprint_review_unknown) and is read with fp_get afterwards
+    assert "footprint_review_unknown" in kinds(out), out
     assert f'"{LIB_ID}"' in (io_dir / "blank.kicad_sch").read_text()
+    in_io, err = await call_tool(io_ctx, "fp_get", lib_id=LIB_ID)
+    assert not err, in_io
+    assert in_io["review"] == "approved" and in_io["geometry_hash"] == got["geometry_hash"]
     erc, err = await call_tool(io_ctx, "run_erc", type="footprint_link_issues")
     assert not err, erc
     assert erc["total"] == 0, erc["violations"]

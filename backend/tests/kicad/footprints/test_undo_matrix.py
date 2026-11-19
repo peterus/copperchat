@@ -326,7 +326,11 @@ class RecordingLock(asyncio.Lock):
         self.events.append(("acquire", who))
         if who == "create" and not self.first_create.is_set():
             self.first_create.set()
-            await asyncio.wait_for(self.restore_waits.wait(), 120)
+            try:
+                await asyncio.wait_for(self.restore_waits.wait(), 30)
+            except BaseException:
+                self.release()  # never leak the held lock on a handshake timeout
+                raise
         return True
 
     def release(self) -> None:
