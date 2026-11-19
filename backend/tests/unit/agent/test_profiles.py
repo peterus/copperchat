@@ -132,6 +132,16 @@ def test_fp_read_in_every_profile() -> None:
         assert set(FP_READ) <= names, kind
 
 
+def test_fp_writes_only_in_schematic_and_free() -> None:
+    assert {"fp_create", "fp_approve", "fp_delete"} == FP_WRITES
+    for kind in ("schematic", "free"):
+        assert set(FP_WRITES) <= PROFILES[kind], kind
+    for kind in ("board", "requirements"):
+        assert not set(FP_WRITES) & PROFILES[kind], kind
+        names = {s.name for s in profile_specs(kind, registry.all_specs())}
+        assert not set(FP_WRITES) & names, kind
+
+
 def test_footprint_tools_off_removes_every_fp_tool() -> None:
     # future fp_* tools (F2/F4) are covered by the prefix filter, also in Free
     specs = [*registry.all_specs(), _spec("fp_future_write")]

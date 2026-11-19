@@ -46,6 +46,7 @@ from copperchat.agent.protocol import (
     dump_frame,
 )
 from copperchat.db.repos.conversations import ConversationRepo
+from copperchat.db.repos.messages import USER_ORIGIN
 from copperchat.errors import CopperChatError
 from copperchat.projects import get_project
 from copperchat.web import auth
@@ -280,8 +281,15 @@ class _Connection:
         elif isinstance(frame, SendFrame):
             engine = await self.engine(frame.project_id)
             await self.owned(frame.project_id, frame.conversation_id)
-            await engine.submit(
-                frame.conversation_id, frame.client_message_id, frame.text, list(frame.attachments)
+            # Typed by the user: the only origin `fp_approve` accepts as a human message
+            # (allow-list, footprints spec §7.7 guard 4); server-generated prompts never
+            # carry it.
+            await engine.submit_ex(
+                frame.conversation_id,
+                frame.client_message_id,
+                frame.text,
+                list(frame.attachments),
+                {"origin": USER_ORIGIN},
             )
         elif isinstance(frame, InterruptFrame):
             engine = await self.engine(frame.project_id)

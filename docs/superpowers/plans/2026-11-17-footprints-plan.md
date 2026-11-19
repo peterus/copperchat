@@ -431,7 +431,8 @@ server-death case) and the error is re-raised.
 `document_inconsistent`, `approval_not_allowed`, `in_use`. Notes (`notes[].kind`):
 `footprint_libraries_loaded` (`seconds`), `footprint_needs_review`,
 `footprint_review_unknown`, `footprint_unverified`, `possibly_in_use_elsewhere`,
-`model_missing`, `pending_cleaned`, `pending_leftover`,
+`in_use_on_board` (`files`, `complete`; `fp_delete`'s byte scan of the own board, added
+in the F4b review loop), `model_missing`, `pending_cleaned`, `pending_leftover`,
 `footprint_attributes_unavailable` (`lib_id`; added in F1 Task 4, see "As built"),
 `no_local_library`, `library_conflict`, `footprint_unreadable` (`count`, `lib_ids`;
 all three added in F1 Task 6, see "As built"), `strings_truncated` (`fp_list_local`
@@ -884,6 +885,123 @@ phase file, with the reason.)
     footprint file and journal stay correct.
   - A second cancel while hashing the S3 save turns this call's file into a `leftover`
     (safe side).
+
+### As built (F4b)
+
+- **Task 1, `FootprintReviewRepo.record`:** keeps the first `rendered_at`/`checked_at` of
+  a (conversation, lib id, hash) row **since the latest geometry write of the file**
+  (`written_at`, looked up by `read.record_review` for a local footprint); an older stamp
+  is replaced by the current time, so a sighting before a write-back no longer counts
+  (review round 5). `run_id` and `check_errors` take the latest value (a re-render or
+  re-check in the approval turn must not void the user's earlier sighting under guard 4).
+  The caller records after the write it follows (`fp_create` finalises its journal row
+  in the engine, then records its read-back check), so a stamp that would tie the write
+  (same millisecond, `utcnow_iso` resolution) is stored as the write + 1 ms. `fp_check`
+  records through `read.record_review`. No new migration (table from 0012).
+- **Task 1, guards:** guard 4 counts only `role = user` messages of `ctx.conversation_id`
+  and `ctx.run_id` with `metadata.origin == "user"` (`MessageRepo.run_user_messages`,
+  `USER_ORIGIN`); equal timestamps are refused. Because the review stamps keep the
+  first sighting, guard 4 also needs the render **and** the check (and so the message)
+  to be strictly later than the latest journalled `create` / `replace` of the footprint
+  file (`FootprintWriteRepo.last_geometry_write_at(file_rel)`, filtered on `file_rel`
+  through the `footprint_writes_file` index: any project, every state but
+  `compensated`; `pending`/`done` count the later of `created_at` and `finalised_at`,
+  `leftover` only `created_at` because its `finalised_at` may be the cleanup's time;
+  ties refuse) - otherwise a geometry the user rejected earlier could be written back
+  (in the approval turn or a turn before it, without a new render) and approved with a
+  quote about another one. A context without a conversation or
+  database is refused with guard 3. A non-local `lib_id`, a missing project row and
+  "already approved" are all guard 1 (not `not_local`); a missing footprint or a
+  cleanable seed copy is `not_found`. A `pending` journal row for the lib id refuses with
+  guard 1 (stricter than §9.3 "validate after cleanup": a possibly half-built footprint is
+  never approved; the next footprint write cleans it up). Guard 7 refusals carry the
+  check in `details.check`. Plan exemption: `PLAN_EXEMPT_TOOLS = {"fp_approve"}` in
+  `editing/gate.py` and `plans/gate.py`; guard 6 uses `PlanRepo.running_in_conversation`.
+- **Task 1, apply:** re-checks the hash (guard 2) **and** the review state (guard 1) in the
+  open document before `begin()`; the read-back checks hash, `needs_user_review = no` and
+  the `User review` text. No field-revert compensation: nothing saved or the file
+  unchanged → journal `compensated`; file changed but not verified → `leftover` and
+  `DocumentInconsistent(leftovers=[lib_id], replaced=[lib_id], footprint_only=True)`
+  (`replaced` makes the advice say "do not delete; History undo restores it"). Change log
+  `footprint_approved`: `before`/`after` hold review state, geometry hash, `user_review`
+  and `user_quote`.
+- **Task 1, WebSocket:** user submits go through `RunEngine.submit_ex(...,
+  metadata={"origin": "user"})`; the plan-execute submit carries no origin
+  (`test_routes_plans.py`). The KiCad tests insert the human message with
+  `MessageRepo.insert(metadata={"origin": "user"})`.
+- **Task 2, `fp_delete`:** `in_use` checks the open schematic's symbol Footprint fields
+  only (`read._footprint_users`, spec §7.8), not board footprints, and only in prepare; the
+  own project's board is byte-searched (`usage.scan_own_boards`) for an `in_use_on_board`
+  note. A project without the local row gets `not_local`. `fp_approve` and `fp_delete`
+  re-read the path, the file and the project row under the library lock before
+  `cleanup_pending` (`_recheck` -> `engine._file_checks` + `engine._recheck_row`: gone or
+  another URI -> `library_conflict`, nothing written, no cleanup). `fp_delete` also
+  re-reads the geometry under the lock after the cleanup (`footprint_geometry` after
+  `invalidate_footprints`) and refuses a hash other than prepare's with
+  `verification_failed` ("changed since the call was planned", nothing written, no
+  journal row) - the change log's `before.geometry_hash` is then the deleted geometry. A `pending` `approve` /
+  `delete` row the cleanup finalises `leftover` gets its own note (`_leftover_note`: the
+  approval / delete may or may not have happened, History undo restores the earlier
+  state; never "half-built", never "fp_delete removes it"). A leftover is reported with
+  `replaced=[lib_id]`; `errors.leftover_advice` now says "<id> is an existing footprint of
+  the user" (covers replace, approve, delete) and dropped "once that tool is available".
+  Note/error texts name at most 20 refs/files ("and N more"); `details.refs`/`files` are
+  complete.
+- **Task 2, `scan_other_projects`:** walks the whole repo root (also `.kicad_sch` /
+  `.kicad_pcb` outside any project dir); caps are module constants (`MAX_FILES`,
+  `MAX_FILE_BYTES`, `MAX_TOTAL_BYTES`, `MAX_DIRS`, `CHUNK_BYTES`); the file cap counts files
+  opened, the total cap bytes actually read (a growing file is caught); hits are
+  repo-relative POSIX paths. KiCad autosave / backup names (`_autosave-*`, `~*`) are skipped
+  like `document_files` skips them.
+- **Task 3, `LibraryRowStage`:** gains `footprint: str | None = None`, the lib id the
+  pre-stage verifies after adding the row (the base `ChangeSet` carries only the stage).
+  `LibraryService.derived_local_library()` (new) derives the local nickname without the
+  project-table read, so stock nicknames cost no extra API call.
+- **Task 3, `footprint_notes`:** row missing + tools on checks the name on disk only and
+  does not activate the footprint libraries in prepare (the adapter, `sdk_tools._apply`,
+  activates them before it takes the library lock; the pre-stage only re-activates under
+  the lock as a fallback after a server restart); a same-nickname row with another URI (`row_conflict`)
+  refuses with `library_conflict` before the stage. A library default (`explicit=False`)
+  that is not on disk is a `footprint_not_found` note, no stage. Unknown names on disk get
+  `closest` from `difflib` over `local_names_on_disk`.
+- **Task 3, pre-stage (`kicad_tools/footprints/library_row.py`,
+  `apply_with_library_row`):** `KicadUnavailable` during the row or `spec.apply` skips the
+  row removal (journal row stays `pending` resp. `done`; History undo removes it); a cancel
+  removes it to completion (`_uncancellable`). Like `engine._apply_create`, the stage
+  captures `session.generation` before `_ensure_row`: a failure or cancel after the
+  server died or restarted removes nothing (no cold start in the uncancellable section;
+  `row.added` may be wrong), the row stage's journal row stays `pending` and a non-cancel
+  error becomes `KicadUnavailable`; after `spec.apply` the error passes unchanged and the
+  journal row stays `done`. A `not_found` read-back says "was removed again" only for a
+  row this call added. A failed removal is `leftover` and raises
+  `DocumentInconsistent(leftovers=["row <nick>"], footprint_only=True)` from the cause (a
+  schematic `DocumentInconsistent` gets the leftover appended instead). A row that was
+  there already (same URI) is journalled `compensated` and never removed.
+- **Task 3, result shape:** edit results already carry `side_effects` as a list of
+  change dicts, so the row is reported as `{"uuid": nick, "op": "add", "kind":
+  "fp_lib_table_row_added", "before": null, "after": {"uri": …}}` instead of a bare
+  string; the change-log row (ref = nickname, after.uri, like F4a) is flagged
+  `side_effect = true`. `library_changed` gets the nickname (the result still has
+  `changed_docs`, so the generation check stays).
+
+- **Residuals for later phases (F4b):**
+  - `fp_approve`/`fp_delete` refuse footprint names outside `NAME_RE` (GUI-saved names)
+    with `invalid_argument` (`local_footprint_file_safe`).
+  - `user_quote` is a substring proof, not intent detection (a quote cut from "looks good,
+    but not yet" passes guard 5); guards 3/4/6 carry the weight. The SP4 approve button
+    (D1) replaces it.
+  - A cancel between `AddLibraryTableEntry` and its return on a server that stays alive
+    can journal an added row `compensated` without removing it (same gap as F4a S1);
+    History undo covers it. (A server that died or restarted leaves it `pending`.)
+  - `footprint_notes` with the row present reads through the footprint document (activation
+    also on a board server, like `fp_get` in F1).
+  - A History restore that rewrites a footprint file journals no `create` / `replace`
+    row, so `last_geometry_write_at` (guard 4) does not see it: a user restore between
+    the render and the approval could let an older sighting count. Guard 2 (hash of the
+    current file) still has to match the approved geometry, so only a restore back to a
+    geometry the conversation saw is affected; needs the user's own concurrent restore.
+  - F5: skills/README list `fp_approve` (flow: render + check, show the user, approve in a
+    later turn with their quote) and `fp_delete` (`in_use`, `possibly_in_use_elsewhere`).
 
 ## Residuals
 

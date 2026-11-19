@@ -121,6 +121,8 @@ def test_approve_enqueues_message_once(ctx: Ctx) -> None:
         msg["content"] == f"The user approved plan {plan.id} (revision 1). Execute it step by step."
     )
     assert msg["metadata"]["planId"] == plan.id and msg["metadata"]["event"] == "approve"
+    # server-generated: never stamped as typed by the user (fp_approve guard 4)
+    assert "origin" not in msg["metadata"]
     # A retried click: refused by the state check, no second message.
     again = ctx.client.post(ctx.url(plan.id, "approve"))
     assert again.status_code == 409 and again.json()["error"]["code"] == "plan_state"

@@ -12,7 +12,7 @@ import math
 from typing import Any
 
 from copperchat.errors import StructuredToolError
-from copperchat.kicad_tools.footprints.read import parse_lib_id, require_enabled
+from copperchat.kicad_tools.footprints.read import parse_lib_id, record_review, require_enabled
 from copperchat.tools.spec import ImageBlock, ToolContext, ToolResult
 from copperchat.views.footprint_render import (
     GRID_LADDER,
@@ -99,6 +99,7 @@ async def fp_render(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     out = await render_footprint(ctx, lib_id, layers, grid_mm, labels, notes=notes)
     png = await asyncio.to_thread(out.png.read_bytes)
     await asyncio.to_thread(_write_sidecar, out, nickname, name)
+    await record_review(ctx, lib_id, out.geometry_hash, rendered=True)
     data: dict[str, Any] = {
         "lib_id": lib_id,
         "image": out.png.name,

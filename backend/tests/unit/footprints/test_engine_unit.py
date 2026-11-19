@@ -1046,18 +1046,34 @@ def _async_cm(value: Any) -> Any:
 
 
 def test_leftover_advice_per_kind() -> None:
-    """A new footprint / row goes with History undo (fp_delete once available); a
+    """A new footprint / row goes with History undo (a footprint also with fp_delete); a
     replaced footprint gets its earlier version back and must never be deleted."""
     from copperchat.errors import leftover_advice
 
     created = leftover_advice(["L:A", "row L"], [])
-    assert "removes L:A, row L" in created and "fp_delete once that tool is available" in created
+    assert "removes L:A, row L" in created and "removed with fp_delete." in created
+    assert "once that tool" not in created
     assert "earlier version" not in created
     replaced = leftover_advice(["L:B"], ["L:B"])
     assert "earlier version" in replaced and "Do not delete it" in replaced
     assert "fp_delete" not in replaced
     both = leftover_advice(["L:A", "L:B"], ["L:B"])
-    assert "removes L:A;" in both and "L:B replaced" in both
+    assert "removes L:A;" in both and "L:B is an existing footprint" in both
+    several = leftover_advice(["L:B", "L:C"], ["L:B", "L:C"])
+    assert "L:B, L:C are existing footprints of the user" in several
+    assert "brings back their earlier versions" in several
+    assert "Do not delete them" in several and "the user's footprints." in several
+    from copperchat.errors import deleted_unconfirmed, leftover_state
+
+    gone = deleted_unconfirmed("L:D")
+    deleted = leftover_advice([gone], [gone])
+    assert deleted == "Undoing this turn in History restores L:D; do not try to delete it again."
+    state = leftover_state(["L:A", gone])
+    assert "These remain in the local footprint library: L:A." in state
+    assert (
+        "L:D was deleted from the local footprint library, but the deletion could not "
+        "be confirmed." in state
+    )
 
 
 # -- review fixes (PR #92, round 1) -----------------------------------------------------------

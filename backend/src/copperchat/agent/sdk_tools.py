@@ -13,7 +13,12 @@ from typing import Any
 from claude_agent_sdk import McpSdkServerConfig, SdkMcpTool, create_sdk_mcp_server
 
 from copperchat.agent.events import ToolResultEvt
-from copperchat.errors import DocumentInconsistent, leftover_advice, tool_notes
+from copperchat.errors import (
+    DocumentInconsistent,
+    leftover_advice,
+    leftover_state,
+    tool_notes,
+)
 from copperchat.kicad_session import KicadUnavailable
 from copperchat.kicad_tools.edit.engine import save_after_edit
 from copperchat.tools import ImageBlock, StructuredToolError, ToolContext, ToolResult, ToolSpec
@@ -168,16 +173,34 @@ async def _two_phase_steps(spec: ToolSpec, ctx: ToolContext, args: dict[str, Any
 
 async def _apply(spec: ToolSpec, ctx: ToolContext, cs: Any) -> ToolResult:
     """`spec.apply`; a footprint change set runs under its library's lock (FP-C6: taken
-    once, here, after the turn snapshot released it; the engine only asserts it)."""
-    assert spec.apply is not None
+    once, here, after the turn snapshot released it; the engine only asserts it). An
+    edit with a `library_row` stage (spec §7.9) adds the local library's project row
+    first, under the same single lock, and removes it again when `apply` fails; the
+    footprint libraries it needs are activated before that lock is taken."""
+    apply = spec.apply
+    assert apply is not None
+    from copperchat.history.library_lock import library_lock
     from copperchat.kicad_tools.footprints.engine import FootprintChangeSet
 
     if isinstance(cs, FootprintChangeSet) and cs.library is not None:
-        from copperchat.history.library_lock import library_lock
-
+        if cs.library_row is not None:
+            raise TypeError("a footprint change set plans its row as a stage of its own")
         async with library_lock(cs.library.dir):
-            return await spec.apply(ctx, cs)
-    return await spec.apply(ctx, cs)
+            return await apply(ctx, cs)
+    stage = getattr(cs, "library_row", None)
+    if stage is not None:
+        from copperchat.kicad_tools.footprints.library_row import apply_with_library_row
+        from copperchat.library.service import library_for
+
+        # Activating the footprint libraries (seconds, ~2 GB) takes `_fp_lock` only:
+        # done here, before the library lock, so other writers of the repo's library
+        # never wait for it. The stage re-checks under the lock (a restart meanwhile).
+        svc = library_for(ctx.session)
+        if not svc.footprint_libraries_ready():
+            await svc.activate_footprints()
+        async with library_lock(stage.library.dir):
+            return await apply_with_library_row(ctx, cs, lambda: apply(ctx, cs))
+    return await apply(ctx, cs)
 
 
 async def _save_edit(spec: ToolSpec, ctx: ToolContext, result: ToolResult) -> None:
@@ -228,27 +251,13 @@ def _target(args: dict[str, Any]) -> str:
 def _inconsistent_error(tool: str, args: dict[str, Any], exc: Exception) -> StructuredToolError:
     """Plain words for the agent to pass on (#6b, spec §5.4): what failed, what the
     design is reloaded to, that earlier edits are kept; the internal reason in details.
-    A failed footprint compensation names what it left behind (spec §9.3)."""
+    A failed footprint compensation names what it left behind, worded by outcome (spec
+    §9.3); a schematic failure with such leftovers (a `library_row` pre-stage whose row
+    removal failed too) keeps the schematic wording and adds the leftovers."""
     target = _target(args)
     edit = f"{tool} {target}" if target else tool
     leftovers: list[str] = list(getattr(exc, "leftovers", None) or [])
-    if leftovers:
-        named = ", ".join(leftovers)
-        where = (
-            "the local footprint library; the schematic is not affected"
-            if getattr(exc, "footprint_only", False)
-            else "the local footprint library"
-        )
-        return StructuredToolError(
-            f"{edit} failed and could not be undone completely",
-            f"Rolling it back failed, so these remain in {where}: {named}. They were "
-            "not verified; do not use them.",
-            "Stop editing and tell the user exactly what was left behind ("
-            f"{named}). {leftover_advice(leftovers, getattr(exc, 'replaced', None) or [])} "
-            "Do not retry in this turn.",
-            code="document_inconsistent",
-            details={"detail": str(exc), "leftovers": leftovers},
-        )
+    footprint_only = bool(leftovers) and bool(getattr(exc, "footprint_only", False))
     if getattr(exc, "last_save_partial", False):
         why = (
             "Undoing it did not bring the design back exactly. When this turn ends, "
@@ -263,13 +272,32 @@ def _inconsistent_error(tool: str, args: dict[str, Any], exc: Exception) -> Stru
             "this edit."
         )
         kept = "Only this edit is lost; the earlier edits of this turn are saved and kept."
+    if not leftovers:
+        return StructuredToolError(
+            f"{edit} failed and could not be undone exactly",
+            why,
+            f"{kept} Stop editing, explain this to the user (what you tried, that it was "
+            "rolled back, what is kept) and do not retry in this turn.",
+            code="document_inconsistent",
+            details={"detail": str(exc)},
+        )
+    named = ", ".join(leftovers)
+    state = f"Rolling it back failed. {leftover_state(leftovers)}"
+    advice = leftover_advice(leftovers, getattr(exc, "replaced", None) or [])
+    if footprint_only:
+        why, kept = (
+            f"{state} Only the footprint library changed; the schematic is not affected.",
+            "",
+        )
+    else:
+        why, kept = f"{why} {state}", f"{kept} "
     return StructuredToolError(
-        f"{edit} failed and could not be undone exactly",
+        f"{edit} failed and could not be undone completely",
         why,
-        f"{kept} Stop editing, explain this to the user (what you tried, that it was "
-        "rolled back, what is kept) and do not retry in this turn.",
+        f"{kept}Stop editing and tell the user exactly what was left behind ({named}). "
+        f"{advice} Do not retry in this turn.",
         code="document_inconsistent",
-        details={"detail": str(exc)},
+        details={"detail": str(exc), "leftovers": leftovers},
     )
 
 

@@ -11,6 +11,7 @@ import pytest
 
 from copperchat.agent.engine import TurnOutcome
 from copperchat.changes.checkpoints import take_step_checkpoint
+from copperchat.errors import deleted_unconfirmed
 from copperchat.history.store import compute_hashes
 from copperchat.kicad_session import KicadSession, KicadUnavailable
 from tests.support.history import other_board, replace_with_kicad_file
@@ -230,6 +231,29 @@ async def test_footprint_only_inconsistency_skips_reopen(
     assert meta == {"action": "recovered", "leftovers": ["OpenDriveHub:L_X", "row OpenDriveHub"]}
     assert not any("is back at" in text for text in texts)
     assert env.engine.notices[-1][1] == {"action": "restore", "snapshotId": snap.id}
+
+
+async def test_deleted_unconfirmed_notice_wording(opened: Opened) -> None:
+    """An fp_delete whose read-back failed after the file was gone: the turn-end notice
+    says the deletion could not be confirmed and that History restores it - never
+    "remain ... do not use"."""
+    env = opened.env
+    t = await _mutating_turn(opened, "run-fp3")
+    gone = deleted_unconfirmed("L:X")
+    outcome = TurnOutcome(
+        reason="error",
+        mutated=True,
+        document_inconsistent=True,
+        leftovers=(gone,),
+        replaced_leftovers=(gone,),
+        footprint_only=True,
+    )
+    await opened.hooks.on_turn_end(t, outcome)
+    (text, _meta) = next(n for n in env.engine.notices if n[1].get("leftovers"))
+    assert "could not be confirmed" in text
+    assert "restores L:X" in text
+    assert "do not use" not in text.lower()
+    assert "remain" not in text
 
 
 async def test_mixed_inconsistency_reopens_and_names_leftovers(

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from copperchat.editing.gate import BudgetGate
+from copperchat.editing.gate import PLAN_EXEMPT_TOOLS, BudgetGate
 from copperchat.errors import StructuredToolError
 from copperchat.plans.model import EDIT_BLOCKING
 from copperchat.plans.service import step_limit
@@ -56,6 +56,8 @@ class PlanGate(BudgetGate):
             # The step's plan is no longer running (paused/closed meanwhile): the step
             # state is stale and must never exempt a call from the turn budget.
             self.plans.clear_step(state)
+        if tool in PLAN_EXEMPT_TOOLS:
+            return
         if open_ is None:
             await super().before_prepare(ctx, tool)
             return

@@ -81,10 +81,13 @@ FpStageKind = Literal["ensure_library", "copy_seed", "rebuild", "approve", "dele
 @dataclass(frozen=True)
 class LibraryRowStage:
     """Add the project's row for the local library (S1 / the `library_row` pre-stage);
-    nickname, URI and directory come from `library`."""
+    nickname, URI and directory come from `library`. `footprint` (the pre-stage of
+    `sch_set_fields` / `sch_place_symbol`) is the lib id that must exist once the row is
+    there (`run_library_row(verify=...)`)."""
 
     library: LocalLibrary
     create_library: bool
+    footprint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -414,6 +417,32 @@ def _file_checks(lib: LocalLibrary, name: str) -> None:
     file (no symlink, regular file) - `library_conflict` otherwise."""
     local_library_dir_safe(lib)
     local_footprint_file_safe(lib, name)
+
+
+async def _recheck_row(ctx: ToolContext, lib: LocalLibrary, *, require_row: bool = True) -> None:
+    """FP-C8 under the library lock, right before `fp_approve` / `fp_delete` write: the
+    project table must still hold the local library's row with its URI (the KiCad GUI
+    may have edited the table since prepare) - `library_conflict` otherwise, nothing
+    written. The `library_row` pre-stage passes `require_row=False`: a missing row is
+    what it adds; a conflicting row or a moved library still refuse."""
+    info = await library_for(ctx.session).local_library(for_write=True)
+    assert info is not None  # for_write raises repo_root_unknown instead
+    why = info.row_conflict
+    if why is None and info.lib != lib:
+        why = "the repository's local footprint library moved after the call was planned"
+    if why is None and require_row and not info.row_present:
+        why = (
+            f"the project footprint table no longer has the row {lib.nickname!r} -> "
+            f"{lib.uri!r} it had when the call was planned"
+        )
+    if why is not None:
+        raise StructuredToolError(
+            "The project's footprint library table changed after the call was planned",
+            why,
+            "Ask the user to check the project's fp-lib-table (see fp_list_local); nothing "
+            "was written.",
+            code="library_conflict",
+        )
 
 
 async def _recheck_name(ctx: ToolContext, lib: LocalLibrary, name: str) -> None:
@@ -1182,6 +1211,21 @@ def _leftover_note(row: FootprintWrite) -> dict[str, Any]:
         message = (
             f"The library row {row.lib_id} added by an earlier call {died} is kept: the "
             "cleanup never removes library rows. Undoing that turn in History removes it."
+        )
+    elif row.op == "approve":
+        name = row.lib_id
+        message = (
+            f"An earlier fp_approve of {row.lib_id} {died} may or may not have recorded "
+            "the approval. The footprint is the user's: never delete it. Check its review "
+            "state with fp_get and tell the user; undoing that turn in History restores "
+            "the earlier state."
+        )
+    elif row.op == "delete":
+        name = row.lib_id
+        message = (
+            f"An earlier fp_delete of {row.lib_id} {died} may or may not have deleted it. "
+            "Check with fp_list_local and tell the user; undoing that turn in History "
+            "restores it."
         )
     else:
         name = row.lib_id

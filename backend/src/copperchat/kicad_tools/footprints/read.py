@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import logging
 import math
 import re
 from dataclasses import dataclass
 from functools import partial
 from typing import Any, Literal, cast
 
-from copperchat.db.repos.footprints import FootprintWriteRepo
+from copperchat.db.repos.footprints import FootprintReviewRepo, FootprintWriteRepo
 from copperchat.errors import DocumentNotOpen, StructuredToolError
 from copperchat.kicad_session import KicadHandle
 from copperchat.kicad_tools import access
@@ -23,6 +24,7 @@ from copperchat.kicad_tools.footprints.checks import (
     run_checks,
     to_result,
 )
+from copperchat.kicad_tools.footprints.journal import footprint_rel
 from copperchat.kicad_tools.footprints.model import (
     MAX_TEXT_CHARS,
     SOURCE_FIELD,
@@ -32,6 +34,8 @@ from copperchat.kicad_tools.footprints.model import (
 )
 from copperchat.library.service import closest_footprints, library_for
 from copperchat.tools.spec import ToolContext, ToolResult
+
+log = logging.getLogger(__name__)
 
 MAX_LIB_ID_CHARS = 256
 DETAILS = ("summary", "full")
@@ -94,6 +98,50 @@ async def pending_lib_ids(ctx: ToolContext) -> frozenset[str]:
         return frozenset()
     rows = await FootprintWriteRepo(ctx.editing.db).pending(ctx.project.id)
     return frozenset(r.lib_id for r in rows)
+
+
+async def _last_geometry_write(ctx: ToolContext, lib_id: str) -> str | None:
+    """`FootprintWriteRepo.last_geometry_write_at` of `lib_id`'s file in the repo's
+    local library; None for another library (never written by CopperChat)."""
+    assert ctx.editing is not None
+    nickname, _, name = lib_id.partition(":")
+    lib = await library_for(ctx.session).derived_local_library()
+    if lib is None or nickname != lib.nickname:
+        return None
+    return await FootprintWriteRepo(ctx.editing.db).last_geometry_write_at(footprint_rel(lib, name))
+
+
+async def record_review(
+    ctx: ToolContext,
+    lib_id: str,
+    digest: str,
+    *,
+    rendered: bool = False,
+    checked: bool = False,
+    check_errors: int | None = None,
+) -> None:
+    """Record that this conversation was shown a render or a check of `lib_id` at
+    geometry `digest` (`footprint_reviews`, spec §7.7 guard 3; local and stock footprints
+    alike), after the latest journalled write of a local footprint's file (a sighting
+    before that write is replaced, `FootprintReviewRepo.record`). Needs the conversation
+    and the database (the run engine's contexts); a failure is logged, never fails the
+    read tool (`fp_approve` then refuses, guard 3)."""
+    if ctx.conversation_id is None or ctx.editing is None:
+        return
+    try:
+        written_at = await _last_geometry_write(ctx, lib_id)
+        await FootprintReviewRepo(ctx.editing.db).record(
+            ctx.conversation_id,
+            lib_id,
+            digest,
+            ctx.run_id,
+            rendered=rendered,
+            checked=checked,
+            check_errors=check_errors,
+            written_at=written_at,
+        )
+    except Exception:
+        log.exception("recording the review of %s failed", lib_id)
 
 
 async def _geometry(
@@ -535,4 +583,11 @@ async def fp_check(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         pending=local and geometry.lib_id in await pending_lib_ids(ctx),
     )
     report = await asyncio.to_thread(run_checks, inp)
+    await record_review(
+        ctx,
+        geometry.lib_id,
+        report.geometry_hash,
+        checked=True,
+        check_errors=report.counts["error"],
+    )
     return ToolResult(data={"lib_id": geometry.lib_id, **to_result(report), "notes": notes})

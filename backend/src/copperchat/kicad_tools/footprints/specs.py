@@ -5,8 +5,14 @@ from __future__ import annotations
 from typing import Any
 
 from copperchat.kicad_tools.footprints import build as b
+from copperchat.kicad_tools.footprints.approve import (
+    MAX_QUOTE_CHARS,
+    apply_approve,
+    prepare_approve,
+)
 from copperchat.kicad_tools.footprints.checks import DEFAULT_TOLERANCE
 from copperchat.kicad_tools.footprints.create import apply_footprint_create, prepare_create
+from copperchat.kicad_tools.footprints.delete import apply_delete, prepare_delete
 from copperchat.kicad_tools.footprints.read import (
     DEFAULT_LIST_LIMIT,
     MAX_ALLOW_UNMATCHED,
@@ -265,6 +271,62 @@ def fp_create_spec(apply: ApplyFn) -> ToolSpec:
     return edit_spec("fp_create", FP_CREATE_DESCRIPTION, FP_CREATE_SCHEMA, prepare_create, apply)
 
 
+# -- fp_approve (spec §7.7) --------------------------------------------------------------
+
+FP_APPROVE_SCHEMA = _obj(
+    {
+        "lib_id": _LIB_ID,
+        "geometry_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "geometry_hash of the fp_render / fp_check result the user saw.",
+        },
+        "user_quote": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": MAX_QUOTE_CHARS,
+            "description": "The user's own words of approval, copied verbatim from their "
+            "message of this turn (at least 2 words, or their whole message).",
+        },
+    },
+    ["lib_id", "geometry_hash", "user_quote"],
+)
+
+FP_APPROVE_DESCRIPTION = (
+    "Record the user's approval of a local footprint (needs_user_review -> no, a 'User "
+    "review' field). Only after the user saw fp_render and fp_check of exactly this "
+    "geometry in this session and then approved it in their own next message: never in "
+    "the turn that rendered it, never during plan execution. user_quote = their words, "
+    "verbatim. Refused (approval_not_allowed, details.guard) otherwise. Counts 1 change."
+)
+
+
+def fp_approve_spec(apply: ApplyFn = apply_approve) -> ToolSpec:
+    """The two-phase `fp_approve` spec (spec §7.7)."""
+    return edit_spec(
+        "fp_approve", FP_APPROVE_DESCRIPTION, FP_APPROVE_SCHEMA, prepare_approve, apply
+    )
+
+
+# -- fp_delete (spec §7.8) ---------------------------------------------------------------
+
+FP_DELETE_SCHEMA = _obj({"lib_id": _LIB_ID}, ["lib_id"])
+
+FP_DELETE_DESCRIPTION = (
+    "Delete a footprint of this repository's local library (other libraries are "
+    "read-only). Refused (in_use, details.refs) while a symbol of this project names it "
+    "in its Footprint field. The project's own board is searched too (in_use_on_board "
+    "note: tell the user), and other projects of the repository: a hit gives a "
+    "possibly_in_use_elsewhere note: tell the user. History undo brings it back. "
+    "Counts 1 change."
+)
+
+
+def fp_delete_spec(apply: ApplyFn = apply_delete) -> ToolSpec:
+    """The two-phase `fp_delete` spec (spec §7.8)."""
+    return edit_spec("fp_delete", FP_DELETE_DESCRIPTION, FP_DELETE_SCHEMA, prepare_delete, apply)
+
+
 TOOL_SPECS: list[ToolSpec] = [
     ToolSpec(
         "fp_get",
@@ -387,4 +449,6 @@ TOOL_SPECS: list[ToolSpec] = [
         fp_render,
     ),
     fp_create_spec(apply_footprint_create),
+    fp_approve_spec(),
+    fp_delete_spec(),
 ]
