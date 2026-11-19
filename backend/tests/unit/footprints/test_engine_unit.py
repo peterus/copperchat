@@ -1046,18 +1046,19 @@ def _async_cm(value: Any) -> Any:
 
 
 def test_leftover_advice_per_kind() -> None:
-    """A new footprint / row goes with History undo (fp_delete once available); a
+    """A new footprint / row goes with History undo (a footprint also with fp_delete); a
     replaced footprint gets its earlier version back and must never be deleted."""
     from copperchat.errors import leftover_advice
 
     created = leftover_advice(["L:A", "row L"], [])
-    assert "removes L:A, row L" in created and "fp_delete once that tool is available" in created
+    assert "removes L:A, row L" in created and "removed with fp_delete." in created
+    assert "once that tool" not in created
     assert "earlier version" not in created
     replaced = leftover_advice(["L:B"], ["L:B"])
     assert "earlier version" in replaced and "Do not delete it" in replaced
     assert "fp_delete" not in replaced
     both = leftover_advice(["L:A", "L:B"], ["L:B"])
-    assert "removes L:A;" in both and "L:B replaced" in both
+    assert "removes L:A;" in both and "L:B is an existing footprint" in both
 
 
 # -- review fixes (PR #92, round 1) -----------------------------------------------------------

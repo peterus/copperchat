@@ -228,7 +228,7 @@ async def test_footprint_leftovers_reach_the_agent(ctx_factory):
     assert "the schematic is not affected" in err["why"]
     assert "L:A, L:B, row L" in err["why"]
     assert "removes L:A, row L" in err["suggestion"]
-    assert "L:B replaced an existing footprint" in err["suggestion"]
+    assert "L:B is an existing footprint of the user" in err["suggestion"]
     assert "Do not delete" in err["suggestion"]
     assert "fp_create L:A" in err["what"]
     assert len(seen) == 1 and isinstance(seen[0], DocumentInconsistent)

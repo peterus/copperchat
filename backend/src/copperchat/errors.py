@@ -125,9 +125,9 @@ class DocumentInconsistent(CopperChatError):
 def leftover_advice(leftovers: list[str] | tuple[str, ...], replaced: Iterable[str]) -> str:
     """What the user can do about the leftovers of a failed footprint compensation (spec
     §9.3, §9.5), per kind: a new footprint or library row goes with a History undo (a
-    footprint also with fp_delete, once that tool exists); a `replace` target is an
-    existing footprint of the user - History undo brings its earlier version back, and
-    it must never be deleted."""
+    footprint also with fp_delete); an existing footprint of the user (the target of a
+    `replace`, `fp_approve` or `fp_delete`) - History undo brings its earlier version
+    back, and it must never be deleted."""
     kept = set(replaced)
     removable = [x for x in leftovers if x not in kept]
     restorable = [x for x in leftovers if x in kept]
@@ -135,11 +135,11 @@ def leftover_advice(leftovers: list[str] | tuple[str, ...], replaced: Iterable[s
     if removable:
         parts.append(
             f"Undoing this turn in History removes {', '.join(removable)}; a footprint "
-            "left behind can also be removed with fp_delete once that tool is available."
+            "left behind can also be removed with fp_delete."
         )
     if restorable:
         parts.append(
-            f"{', '.join(restorable)} replaced an existing footprint: undoing this turn in "
+            f"{', '.join(restorable)} is an existing footprint of the user: undoing this turn in "
             "History brings back its earlier version. Do not delete it - that would lose "
             "the user's footprint."
         )

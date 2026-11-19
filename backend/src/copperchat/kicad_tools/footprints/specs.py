@@ -12,6 +12,7 @@ from copperchat.kicad_tools.footprints.approve import (
 )
 from copperchat.kicad_tools.footprints.checks import DEFAULT_TOLERANCE
 from copperchat.kicad_tools.footprints.create import apply_footprint_create, prepare_create
+from copperchat.kicad_tools.footprints.delete import apply_delete, prepare_delete
 from copperchat.kicad_tools.footprints.read import (
     DEFAULT_LIST_LIMIT,
     MAX_ALLOW_UNMATCHED,
@@ -307,6 +308,24 @@ def fp_approve_spec(apply: ApplyFn = apply_approve) -> ToolSpec:
     )
 
 
+# -- fp_delete (spec §7.8) ---------------------------------------------------------------
+
+FP_DELETE_SCHEMA = _obj({"lib_id": _LIB_ID}, ["lib_id"])
+
+FP_DELETE_DESCRIPTION = (
+    "Delete a footprint of this repository's local library (other libraries are "
+    "read-only). Refused (in_use, details.refs) while a symbol of this project names it "
+    "in its Footprint field; other projects of the repository are searched and a hit "
+    "gives a possibly_in_use_elsewhere note: tell the user. History undo brings it "
+    "back. Counts 1 change."
+)
+
+
+def fp_delete_spec(apply: ApplyFn = apply_delete) -> ToolSpec:
+    """The two-phase `fp_delete` spec (spec §7.8)."""
+    return edit_spec("fp_delete", FP_DELETE_DESCRIPTION, FP_DELETE_SCHEMA, prepare_delete, apply)
+
+
 TOOL_SPECS: list[ToolSpec] = [
     ToolSpec(
         "fp_get",
@@ -430,4 +449,5 @@ TOOL_SPECS: list[ToolSpec] = [
     ),
     fp_create_spec(apply_footprint_create),
     fp_approve_spec(),
+    fp_delete_spec(),
 ]
