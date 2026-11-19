@@ -367,6 +367,21 @@ def test_part_notes_land_pattern_is_optional() -> None:
         assert no_cite != with_lp, label
         issues = check_notes(no_cite, mpn="CC1234").issues
         assert any(f"'- {label}:" in i for i in issues), (label, issues)
+    bold = with_lp.replace("- Courtyard:", "- **Courtyard**:").replace("- Body:", "- **Body:**")
+    assert check_notes(bold, mpn="CC1234").issues == []
+
+
+def test_part_notes_without_a_land_pattern_in_the_datasheet_validate() -> None:
+    """Rule 11: no land pattern in the datasheet → no section, a remark appended to the
+    rule-10 text of the KiCad footprint cell; check_notes must accept that."""
+    old = "| Package_TO_SOT_SMD:SOT-23-6 |"
+    assert old in GOOD_NOTES
+    notes = GOOD_NOTES.replace(
+        old,
+        "| no exact match — closest: Package_TO_SOT_SMD:SOT-23-6, differences: pad length; "
+        "no land pattern in the datasheet |",
+    )
+    assert check_notes(notes, mpn="CC1234").issues == []
 
 
 def test_part_notes_skill_describes_the_land_pattern() -> None:

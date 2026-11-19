@@ -40,4 +40,6 @@ A part without a fitting footprint gets one in this session: `fp_get`, `fp_list_
 `fp_check` and `fp_render` read and check footprints, `fp_create`, `fp_approve` and
 `fp_delete` write the repo's local library (writes only in Schematic and Free
 sessions). Follow the `kicad-footprints` skill: stock first, every number from the
-datasheet, and `fp_approve` only after the user's explicit OK in a later message.
+datasheet, and `fp_approve` only after the user's explicit OK in a later message. When
+the `fp_*` tools are not in your tool list (footprint tools switched off), use stock
+footprints only and tell the user a missing one cannot be created here.

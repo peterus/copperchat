@@ -106,7 +106,8 @@ library), `fp_check` (rules, symbol pins, datasheet land pattern) and `fp_render
 image on a mm grid) read any footprint library in every session type. Writing tools
 (fp_create, fp_approve, fp_delete) exist only in Schematic and Free sessions; load the
 `kicad-footprints` skill before using any of them. The first footprint tool of a
-project without a board takes a few seconds (note `footprint_libraries_loaded`).
+project without a board takes a few seconds (note `footprint_libraries_loaded`). When no
+`fp_*` tool is in your tool list, the footprint tools are switched off: use stock footprints.
 
 ## Sourcing (Mouser)
 

@@ -78,7 +78,7 @@ user what differs and by how much, and let them choose.
   (`unreviewed` / `needs_user_review` / `approved`). `detail: "full"` adds the shapes.
 - `fp_list_local(query, limit)`: `library` (nickname, uri, path_rel_repo; null with a
   `no_local_library` note before the first `fp_create`) and `footprints` (name, lib_id,
-  description, pad_count, review state, source, `used_by` = references in this project).
+  description, pad_count, `needs_user_review` (= the review state), source, `used_by` = references in this project).
 - `fp_check(lib_id, symbol, expected, allow_unmatched_pads)`: `passed` (no errors),
   `counts` (error / warning / info), `findings` (rule, severity, message, pads, at,
   measured, expected), `geometry_hash`. `expected` = `pads` [{number, at, size, drill}],
@@ -128,9 +128,11 @@ about 3 GB of server memory, once per server. The result then carries the note
 - `footprint_libraries_loaded`: the libraries were loaded by this call (`seconds`).
 - `footprint_attributes_unavailable`: a non-local footprint read from the library list:
   mounting shows `unspecified`, no Reference/Value texts or BOM/DNP flags.
-- `footprint_needs_review` / `footprint_review_unknown` (from `sch_set_fields` /
-  `sch_place_symbol`): the assigned local footprint is not approved yet / its state is
-  unknown until the edit adds the library row; show it with `fp_render` and ask.
+- `footprint_needs_review` (from `sch_set_fields` / `sch_place_symbol`): the assigned
+  local footprint is not approved yet; show it with `fp_render` and ask.
+- `footprint_review_unknown`: the edit added the library row, so the state could not be
+  read before; call `fp_get` afterwards and render and ask only if `review` is not
+  `approved`.
 - `footprint_unverified`: libraries not loaded, the name was not checked. Tell the user.
 - `model_missing`: the 3D model file is not there; the link is kept.
 - `no_local_library`, `library_conflict` (as a note of `fp_list_local`): no usable local

@@ -144,3 +144,15 @@ async def test_a_project_copy_cannot_drop_a_trusted_sessions_restriction(
     assert "kicad-schematic-editing" not in bundle.names
     free = await assemble_skills(settings, project, db, "free")
     assert "kicad-schematic-editing" in free.names
+
+
+async def test_footprint_skill_is_dropped_when_the_tools_are_off(
+    settings: Settings, project: Project, db: Any
+) -> None:
+    on = await assemble_skills(settings, project, db, "schematic")
+    assert "kicad-footprints" in on.names
+    off_settings = settings.model_copy(update={"footprint_tools": False})
+    off = await assemble_skills(off_settings, project, db, "schematic")
+    assert "kicad-footprints" not in off.names
+    assert not (off.plugin_dir / "skills" / "kicad-footprints").exists()
+    assert "session-schematic" in off.names
