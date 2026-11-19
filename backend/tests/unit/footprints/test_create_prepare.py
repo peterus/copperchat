@@ -161,6 +161,7 @@ async def test_name_taken_with_row(session: CreateSession) -> None:
     session.names = [NAME]
     err = await _refused(session, l201_args())
     assert err.code == "already_exists"
+    assert "replace=true" in err.suggestion
 
 
 async def test_name_taken_on_disk_without_row(session: CreateSession) -> None:
@@ -168,6 +169,7 @@ async def test_name_taken_on_disk_without_row(session: CreateSession) -> None:
     (_pretty(session) / f"{NAME}.kicad_mod").write_bytes(b"opaque")  # never parsed
     err = await _refused(session, l201_args())
     assert err.code == "already_exists"
+    assert "sch_set_fields" in err.suggestion and "replace=true" not in err.suggestion
     assert (_pretty(session) / f"{NAME}.kicad_mod").read_bytes() == b"opaque"
 
 

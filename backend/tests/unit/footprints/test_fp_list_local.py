@@ -109,6 +109,7 @@ async def test_no_row_counts_files_on_disk(session: ListSession) -> None:
     note = r.data["notes"][0]
     assert note["kind"] == "no_local_library"
     assert "already holds 2 footprint(s)" in note["message"]
+    assert note["names"] == ["A", "B"] and note["names_truncated"] is False
     assert session.activations == 0
 
 

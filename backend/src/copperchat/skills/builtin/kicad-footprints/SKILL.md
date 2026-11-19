@@ -17,7 +17,7 @@ appended if a stock library has that name); every other library is read-only. Th
 
 **Shared library:** all projects of the repo share it, but a project sees it only once its
 own row exists. A footprint another project created (`fp_list_local` note `no_local_library`
-with an on-disk count — `fp_get` answers `not_found` until the row exists — or
+with an on-disk count and their `names` — `fp_get` answers `not_found` until the row exists — or
 `already_exists` "on disk") is **reused, never recreated or replaced**: assign it with
 `sch_set_fields(ref, fields={"Footprint": "<nick>:<name>"})`, which adds this project's row, then check it with `fp_get` / `fp_check`.
 
