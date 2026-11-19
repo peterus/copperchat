@@ -281,3 +281,40 @@ async def test_row_changed_refused(rig: Rig, rows: dict[str, str]) -> None:
     assert session(rig).steps == []
     assert session(rig).file.read_bytes() == FILE_BYTES
     assert await _journal(rig) == []
+
+
+# -- review loop round 2 -------------------------------------------------------------------
+
+
+async def test_real_cancel_during_settle_completes_it(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real `task.cancel()` while `_settle` is blocked (after a failed save that changed
+    the file): the settling finishes (`leftover`), the turn hears of it through
+    `on_document_inconsistent`, and the CancelledError propagates."""
+    from kipy.errors import ApiError
+
+    session(rig).fail["save"] = ApiError("save failed")
+    entered, release = asyncio.Event(), asyncio.Event()
+    real_sha = approve_mod._sha_or_absent
+
+    async def blocked_sha(path: Path) -> str:
+        entered.set()
+        await release.wait()
+        return await real_sha(path)
+
+    monkeypatch.setattr(approve_mod, "_sha_or_absent", blocked_sha)
+    ctx, cs = await _planned(rig)
+    seen: list[Exception] = []
+    ctx.on_document_inconsistent = seen.append
+    task = asyncio.ensure_future(_apply(ctx, cs))
+    await entered.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()  # settling still runs
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    [failure] = seen
+    assert isinstance(failure, DocumentInconsistent) and failure.leftovers == [LIB_ID]
+    assert await _journal(rig) == [("approve", "leftover")]

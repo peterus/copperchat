@@ -20,13 +20,15 @@ from copperchat.db.repos.editing_settings import EditingSettingsRepo
 from copperchat.db.repos.footprints import FootprintWriteRepo
 from copperchat.editing.service import EditingService
 from copperchat.errors import DocumentInconsistent
-from copperchat.history.library_lock import assert_library_locked
+from copperchat.history.library_lock import assert_library_locked, library_lock
 from copperchat.kicad_session import KicadUnavailable
 from copperchat.kicad_tools.edit.changeset import ChangeSet, Logical, NetIntent, SheetRef
 from copperchat.kicad_tools.footprints.engine import LibraryRowStage
+from copperchat.kicad_tools.footprints.library_row import apply_with_library_row
 from copperchat.library import service as service_mod
+from copperchat.repo_context.paths import RepoPolicy
 from copperchat.tools import StructuredToolError, ToolContext, ToolResult, edit_spec
-from tests.unit.footprints.test_engine_unit import PID, _engine_setup
+from tests.unit.footprints.test_engine_unit import PID, REPO, _engine_setup
 
 SHEET = SheetRef(path="/root", page="1", file="io.kicad_sch", name="io")
 NAME = "L_Bourns_SRN3012BTA"
@@ -102,7 +104,15 @@ def make_rig(
         async def has_footprint(self: Any, lib_id: str) -> bool:
             return rig.listed and lib_id == rig.lib_id
 
+        async def policy(project: Any, projects_root: Any) -> RepoPolicy:
+            return RepoPolicy(projects_root / REPO, project.dir, True, projects_root)
+
+        async def no_globals(self: Any) -> frozenset[str]:
+            return frozenset()
+
         monkeypatch.setattr(service_mod.LibraryService, "has_footprint", has_footprint)
+        monkeypatch.setattr(service_mod, "repo_policy", policy)  # the stage re-reads rows
+        monkeypatch.setattr(service_mod.LibraryService, "global_footprint_nicknames", no_globals)
         return rig
 
     return make
@@ -188,21 +198,99 @@ def _failing_delete_row(rig: Rig) -> None:
     rig.session.kicad.delete_library_table_entry = refuse  # type: ignore[method-assign]
 
 
-async def test_apply_activates_before_the_row(
+async def test_apply_activates_before_the_lock(
     make_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Prepare does not activate the footprint libraries (row-missing path); the stage
-    does, before it adds and reads back the row."""
+    """Prepare does not activate the footprint libraries (row-missing path); the
+    adapter does, before it takes the repo-wide library lock (activation takes
+    seconds), then the stage adds and reads back the row."""
     rig = make_rig()
     rig.session.footprints_active = False
 
     async def activate(self: Any, notes: Any = None) -> None:
+        assert not library_lock(rig.lib.dir).locked()  # other writers never wait for it
         rig.session.kicad.calls.append("activate")
         rig.session.footprints_active = True
 
     monkeypatch.setattr(service_mod.LibraryService, "activate_footprints", activate)
     await _run_two_phase(rig.spec(), rig.ctx, {})
     assert rig.session.kicad.calls == ["activate", "add_row"]
+
+
+async def test_stage_activates_under_the_lock_as_fallback(
+    make_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not ready when the stage runs (a server restart after the adapter's activation):
+    the stage activates inside the lock before the row."""
+    rig = make_rig()
+    rig.session.footprints_active = False
+
+    async def activate(self: Any, notes: Any = None) -> None:
+        assert_library_locked(rig.lib.dir)
+        rig.session.kicad.calls.append("activate")
+        rig.session.footprints_active = True
+
+    monkeypatch.setattr(service_mod.LibraryService, "activate_footprints", activate)
+
+    async def apply() -> ToolResult:
+        return ToolResult(data={}, changed_docs={"sch"})
+
+    cs = await rig.spec().prepare(rig.ctx, {})
+    async with library_lock(rig.lib.dir):
+        await apply_with_library_row(rig.ctx, cs, apply)
+    assert rig.session.kicad.calls == ["activate", "add_row"]
+
+
+@pytest.mark.parametrize("alias", [False, True])
+async def test_row_conflict_under_the_lock_refused(
+    make_rig: Callable[..., Rig], alias: bool
+) -> None:
+    """The project rows are re-read under the lock (like `fp_approve` / `fp_delete`):
+    the GUI added a same-nickname row with another URI, or a row of another nickname
+    aliasing the library dir, since prepare -> `library_conflict` before anything is
+    journalled; no row added, `spec.apply` never runs."""
+    rig = make_rig()
+    if alias:
+        rig.session.kicad.rows["Alias"] = str(rig.lib.dir)  # the fake does not substitute
+    else:
+        rig.session.kicad.rows[rig.lib.nickname] = "${KIPRJMOD}/elsewhere.pretty"
+    before = dict(rig.session.kicad.rows)
+    with pytest.raises(StructuredToolError) as err:
+        await _run_two_phase(rig.spec(), rig.ctx, {})
+    assert err.value.code == "library_conflict"
+    assert rig.applied == 0
+    assert rig.session.kicad.calls == [] and rig.session.kicad.rows == before
+    assert await rig.journal() == []
+
+
+async def test_real_cancel_during_row_removal_completes_it(
+    make_rig: Callable[..., Rig],
+) -> None:
+    """A real `task.cancel()` while the row removal (after a failed apply) is blocked:
+    the removal still finishes (`_uncancellable`), then CancelledError propagates."""
+    rig = make_rig()
+    entered, release = asyncio.Event(), asyncio.Event()
+    real_call = rig.session.call
+
+    async def call(fn: Any, *, timeout: float | None = None) -> Any:
+        if getattr(getattr(fn, "func", fn), "__name__", "") == "_delete_row":
+            entered.set()
+            await release.wait()
+        return await real_call(fn, timeout=timeout)
+
+    rig.session.call = call  # type: ignore[method-assign]
+    boom = StructuredToolError("set fields failed", "why", "fix", code="verification_failed")
+    task = asyncio.ensure_future(_run_two_phase(rig.spec(boom), rig.ctx, {}))
+    await entered.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()  # the removal is still running
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert rig.session.kicad.calls == ["add_row", "delete_row"]
+    assert rig.session.kicad.rows == {}
+    assert [(op, state) for op, state, *_ in await rig.journal()] == [("row_add", "compensated")]
 
 
 async def test_failed_row_removal_is_leftover(make_rig: Callable[..., Rig]) -> None:

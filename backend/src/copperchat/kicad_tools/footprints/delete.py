@@ -23,7 +23,12 @@ from functools import partial
 from typing import Any
 
 from copperchat.changes.repo import ChangeEntry
-from copperchat.errors import DocumentInconsistent, StructuredToolError, attach_tool_notes
+from copperchat.errors import (
+    DocumentInconsistent,
+    StructuredToolError,
+    attach_tool_notes,
+    deleted_unconfirmed,
+)
 from copperchat.history.library_lock import assert_library_locked
 from copperchat.kicad_session import KicadUnavailable
 from copperchat.kicad_session.session import _uncancellable
@@ -215,17 +220,21 @@ async def _settle(
     """After a failure: the file still holds its earlier bytes -> nothing was deleted,
     `compensated`; anything else (gone without a verified read-back, changed) ->
     `leftover` and `DocumentInconsistent` (footprint only; History undo restores the
-    footprint, so it is reported like a replaced one: never to be deleted again)."""
+    footprint, so it is reported like a replaced one: never to be deleted again). A file
+    that is gone is labelled `deleted_unconfirmed(lib_id)`, so the agent and the notice
+    say "deleted, not confirmed" instead of "remains"."""
     file = lib.dir / f"{lib_id.split(':', 1)[1]}.kicad_mod"
     sha = await _sha_or_absent(file)
     if sha == pre:
         await _finalise(journal, row, "compensated", sha)
         return
     await _finalise(journal, row, "leftover", sha)
+    gone = not await asyncio.to_thread(_lexists, file)
+    label = deleted_unconfirmed(lib_id) if gone else lib_id
     raise DocumentInconsistent(
-        f"fp_delete of {lib_id} changed its file but could not verify it; left behind: {lib_id}",
-        leftovers=[lib_id],
-        replaced=[lib_id],
+        f"fp_delete of {lib_id} changed its file but could not verify it; left behind: {label}",
+        leftovers=[label],
+        replaced=[label],
         footprint_only=True,
     )
 

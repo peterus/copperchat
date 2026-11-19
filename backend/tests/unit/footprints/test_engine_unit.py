@@ -1063,6 +1063,17 @@ def test_leftover_advice_per_kind() -> None:
     assert "L:B, L:C are existing footprints of the user" in several
     assert "brings back their earlier versions" in several
     assert "Do not delete them" in several and "the user's footprints." in several
+    from copperchat.errors import deleted_unconfirmed, leftover_state
+
+    gone = deleted_unconfirmed("L:D")
+    deleted = leftover_advice([gone], [gone])
+    assert deleted == "Undoing this turn in History restores L:D; do not try to delete it again."
+    state = leftover_state(["L:A", gone])
+    assert "These remain in the local footprint library: L:A." in state
+    assert (
+        "L:D was deleted from the local footprint library, but the deletion could not "
+        "be confirmed." in state
+    )
 
 
 # -- review fixes (PR #92, round 1) -----------------------------------------------------------

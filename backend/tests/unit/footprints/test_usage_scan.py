@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -227,3 +228,42 @@ def test_own_board_too_large_incomplete(repo: Path, monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(usage, "MAX_FILE_BYTES", 4)
     own = project(repo, "hardware/main", {"main.kicad_pcb": HIT})
     assert scan_own_boards(repo, own, LIB_ID) == ScanResult(hits=[], complete=False)
+
+
+# -- review loop round 2 -------------------------------------------------------------------
+
+
+def test_own_tree_walked_once(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The own documents are recognised inside the one capped repo walk: neither scan
+    walks the own project tree separately (`scan_own_boards` walks nothing)."""
+    own = project(
+        repo,
+        "hardware/main",
+        {"main.kicad_sch": HIT, "main.kicad_pcb": HIT, "stray.kicad_pcb": HIT},
+    )
+    (own / "sheets").mkdir()
+    (own / "sheets" / "power.kicad_sch").write_bytes(HIT)  # an own sheet
+    project(own, "sub", {"sub.kicad_sch": HIT})  # a nested sibling inside the own dir
+    walks: list[str] = []
+    real_walk = os.walk
+
+    def walk(top: Any, *args: Any, **kw: Any) -> Any:
+        walks.append(str(top))
+        return real_walk(top, *args, **kw)
+
+    monkeypatch.setattr(usage.os, "walk", walk)
+    assert scan_own_boards(repo, own, LIB_ID).hits == ["hardware/main/main.kicad_pcb"]
+    assert walks == []
+    assert scan_other_projects(repo, own, LIB_ID).hits == [
+        "hardware/main/stray.kicad_pcb",
+        "hardware/main/sub/sub.kicad_sch",
+    ]
+    assert walks == [str(repo.resolve())]
+
+
+def test_own_tree_counts_against_the_dir_cap(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(usage, "MAX_DIRS", 2)
+    own = project(repo, "main", {"main.kicad_sch": MISS})
+    for i in range(3):
+        (own / f"d{i}").mkdir()
+    assert scan_other_projects(repo, own, LIB_ID).complete is False

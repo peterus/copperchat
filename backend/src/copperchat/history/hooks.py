@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 from copperchat.agent.engine import RunHooks, TurnInfo, TurnOutcome
 from copperchat.db.repos.footprints import ABSENT
-from copperchat.errors import leftover_advice
+from copperchat.errors import leftover_advice, leftover_state
 from copperchat.history.store import Snapshot, ensure_gitignore, is_marker_rel
 from copperchat.kicad_session import DocKind, KicadUnavailable
 from copperchat.projects import Project
@@ -414,15 +414,14 @@ class HistoryHooks(RunHooks):
     async def _leftovers_notice(self, outcome: TurnOutcome, conversation_id: str) -> None:
         """A failed footprint compensation (spec §9.3): name every leftover; this is the
         one case where a tool error leaves something behind, and it is never silent."""
-        named = ", ".join(outcome.leftovers)
         affected = (
             "The design itself was not affected and is not reloaded."
             if outcome.footprint_only
             else ""
         )
         text = (
-            "A failed footprint write could not be undone completely. Left in the local "
-            f"footprint library: {named}. They were not verified; do not use them. "
+            "A failed footprint write could not be undone completely. "
+            f"{leftover_state(outcome.leftovers)} "
             f"{affected} {leftover_advice(outcome.leftovers, outcome.replaced_leftovers)}"
         )
         await self.engine.post_notice(

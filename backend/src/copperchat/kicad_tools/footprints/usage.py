@@ -7,10 +7,15 @@ Blocking: run it with `asyncio.to_thread`. The walk prunes hidden dirs, `SKIP_DI
 symlinks like `document_files`, but **descends** into dirs with their own `*.kicad_pro`
 (those are the siblings it must search); it skips only the own project's document files,
 not its subtree (a project at the repo root would otherwise hide every nested sibling).
+The own documents are recognised during that one walk (the `document_files` rules: the
+own dir and its sub-dirs without a `*.kicad_pro`, `*.kicad_sch` there, plus the board
+beside each own `*.kicad_pro`), so the own tree is never walked separately and the walk's
+`MAX_DIRS` cap covers it.
 Only regular files are opened (`lstat` + `S_ISREG`, then `O_NOFOLLOW|O_NONBLOCK` and an
 `fstat` re-check), and every cap marks the result incomplete. KiCad autosave and
 backup names (`_autosave-*`, `~*`) are skipped like `document_files` skips them.
-`scan_own_boards` searches the own project's board the same way."""
+`scan_own_boards` searches the own project's board(s) the same way (`os.listdir` of the
+project dir only, no walk)."""
 
 from __future__ import annotations
 
@@ -20,8 +25,7 @@ import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from copperchat.history.store import document_files
-from copperchat.projects import SKIP_DIRS, Project
+from copperchat.projects import SKIP_DIRS
 
 log = logging.getLogger(__name__)
 
@@ -51,9 +55,11 @@ class ScanResult:
     complete: bool = True
 
 
-def _own_documents(own_project_dir: Path) -> set[Path]:
-    """`document_files` of every project file in the own project's directory."""
-    out: set[Path] = set()
+def _own_boards(own_project_dir: Path) -> list[Path]:
+    """`<stem>.kicad_pcb` beside every non-hidden, non-symlink `*.kicad_pro` of the own
+    project directory (the board `document_files` names), if it is a regular file. One
+    `os.listdir`, no walk."""
+    out: list[Path] = []
     try:
         names = sorted(os.listdir(own_project_dir))
     except OSError:
@@ -63,16 +69,8 @@ def _own_documents(own_project_dir: Path) -> set[Path]:
         if not name.endswith(".kicad_pro") or name.startswith(".") or pro.is_symlink():
             continue
         pcb = pro.with_suffix(".kicad_pcb")
-        project = Project(
-            id="",
-            name=pro.stem,
-            rel_path="",
-            dir=own_project_dir,
-            pro_file=pro,
-            sch_file=None,
-            pcb_file=pcb if pcb.is_file() and not pcb.is_symlink() else None,
-        )
-        out.update(document_files(project))
+        if pcb.is_file() and not pcb.is_symlink():
+            out.append(pcb)
     return out
 
 
@@ -127,11 +125,10 @@ def scan_own_boards(repo_root: Path, own_project_dir: Path, lib_id: str) -> Scan
     schematic. Same open rules and caps as `scan_other_projects`; hits are repo-relative
     POSIX paths."""
     root = repo_root.resolve()
-    own = _own_documents(own_project_dir.resolve())
     needle = _needle(lib_id)
     budget = _Budget()
     hits: list[str] = []
-    for path in sorted(p for p in own if p.name.endswith(".kicad_pcb")):
+    for path in _own_boards(own_project_dir.resolve()):
         try:
             st = path.lstat()
         except OSError:
@@ -151,7 +148,9 @@ def scan_other_projects(repo_root: Path, own_project_dir: Path, lib_id: str) -> 
     board footprint carries. Caps: `MAX_FILES` files, `MAX_FILE_BYTES` per file,
     `MAX_TOTAL_BYTES` in total, `MAX_DIRS` directories; any of them -> `complete=False`."""
     root = repo_root.resolve()
-    own = _own_documents(own_project_dir.resolve())
+    own_dir = own_project_dir.resolve()
+    own_boards = set(_own_boards(own_dir))
+    own_dirs: set[Path] = set()  # the own project's dirs (`document_files` walks these)
     needle = _needle(lib_id)
     budget = _Budget()
     hits: list[str] = []
@@ -162,6 +161,10 @@ def scan_other_projects(repo_root: Path, own_project_dir: Path, lib_id: str) -> 
             budget.complete = False
             break
         base = Path(here)
+        if base == own_dir or (
+            base.parent in own_dirs and not any(n.endswith(".kicad_pro") for n in (*dirs, *names))
+        ):
+            own_dirs.add(base)
         dirs[:] = sorted(
             d
             for d in dirs
@@ -171,8 +174,8 @@ def scan_other_projects(repo_root: Path, own_project_dir: Path, lib_id: str) -> 
             if not name.endswith(SUFFIXES) or name.startswith(_NOT_DOCUMENTS):
                 continue
             path = base / name
-            if path in own:
-                continue
+            if path in own_boards or (base in own_dirs and name.endswith(".kicad_sch")):
+                continue  # an own document (autosave / backup names were skipped above)
             try:
                 st = path.lstat()
             except OSError:

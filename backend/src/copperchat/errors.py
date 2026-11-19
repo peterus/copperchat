@@ -122,16 +122,64 @@ class DocumentInconsistent(CopperChatError):
         super().__init__(message)
 
 
+# Suffix of a leftover footprint whose file is gone but whose deletion was not confirmed
+# (a failed `fp_delete` read-back): it does not "remain", History undo restores it.
+DELETED_UNCONFIRMED = " (deleted, not confirmed)"
+
+
+def deleted_unconfirmed(lib_id: str) -> str:
+    """The leftover label of a footprint deleted without a confirming read-back."""
+    return f"{lib_id}{DELETED_UNCONFIRMED}"
+
+
+def _split_deleted(leftovers: Iterable[str]) -> tuple[list[str], list[str]]:
+    """(leftovers still in the library, lib ids deleted without confirmation)."""
+    items = list(leftovers)
+    deleted = [
+        x.removesuffix(DELETED_UNCONFIRMED) for x in items if x.endswith(DELETED_UNCONFIRMED)
+    ]
+    return [x for x in items if not x.endswith(DELETED_UNCONFIRMED)], deleted
+
+
+def leftover_state(leftovers: list[str] | tuple[str, ...]) -> str:
+    """What a failed footprint compensation left in the local footprint library, worded
+    by outcome: what remains unverified, and what was deleted without confirmation."""
+    remain, deleted = _split_deleted(leftovers)
+    parts: list[str] = []
+    if remain:
+        parts.append(
+            f"These remain in the local footprint library: {', '.join(remain)}. They were "
+            "not verified; do not use them."
+        )
+    if deleted:
+        verb = "was" if len(deleted) == 1 else "were"
+        parts.append(
+            f"{', '.join(deleted)} {verb} deleted from the local footprint library, but the "
+            "deletion could not be confirmed."
+        )
+    return " ".join(parts)
+
+
 def leftover_advice(leftovers: list[str] | tuple[str, ...], replaced: Iterable[str]) -> str:
     """What the user can do about the leftovers of a failed footprint compensation (spec
     §9.3, §9.5), per kind: a new footprint or library row goes with a History undo (a
     footprint also with fp_delete); an existing footprint of the user (the target of a
     `replace`, `fp_approve` or `fp_delete`) - History undo brings its earlier version
-    back, and it must never be deleted."""
+    back, and it must never be deleted; a footprint deleted without confirmation
+    (`deleted_unconfirmed`) - History undo restores it."""
     kept = set(replaced)
-    removable = [x for x in leftovers if x not in kept]
-    restorable = [x for x in leftovers if x in kept]
+    present, deleted = _split_deleted(leftovers)
+    removable = [x for x in present if x not in kept]
+    restorable = [x for x in present if x in kept]
     parts: list[str] = []
+    if deleted:
+        parts.append(
+            f"Undoing this turn in History restores {', '.join(deleted)}; do not try to "
+            "delete it again."
+            if len(deleted) == 1
+            else f"Undoing this turn in History restores {', '.join(deleted)}; do not try "
+            "to delete them again."
+        )
     if removable:
         parts.append(
             f"Undoing this turn in History removes {', '.join(removable)}; a footprint "

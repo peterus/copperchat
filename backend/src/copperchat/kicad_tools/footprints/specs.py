@@ -315,9 +315,10 @@ FP_DELETE_SCHEMA = _obj({"lib_id": _LIB_ID}, ["lib_id"])
 FP_DELETE_DESCRIPTION = (
     "Delete a footprint of this repository's local library (other libraries are "
     "read-only). Refused (in_use, details.refs) while a symbol of this project names it "
-    "in its Footprint field; other projects of the repository are searched and a hit "
-    "gives a possibly_in_use_elsewhere note: tell the user. History undo brings it "
-    "back. Counts 1 change."
+    "in its Footprint field. The project's own board is searched too (in_use_on_board "
+    "note: tell the user), and other projects of the repository: a hit gives a "
+    "possibly_in_use_elsewhere note: tell the user. History undo brings it back. "
+    "Counts 1 change."
 )
 
 

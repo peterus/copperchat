@@ -419,17 +419,18 @@ def _file_checks(lib: LocalLibrary, name: str) -> None:
     local_footprint_file_safe(lib, name)
 
 
-async def _recheck_row(ctx: ToolContext, lib: LocalLibrary) -> None:
+async def _recheck_row(ctx: ToolContext, lib: LocalLibrary, *, require_row: bool = True) -> None:
     """FP-C8 under the library lock, right before `fp_approve` / `fp_delete` write: the
     project table must still hold the local library's row with its URI (the KiCad GUI
     may have edited the table since prepare) - `library_conflict` otherwise, nothing
-    written."""
+    written. The `library_row` pre-stage passes `require_row=False`: a missing row is
+    what it adds; a conflicting row or a moved library still refuse."""
     info = await library_for(ctx.session).local_library(for_write=True)
     assert info is not None  # for_write raises repo_root_unknown instead
     why = info.row_conflict
     if why is None and info.lib != lib:
         why = "the repository's local footprint library moved after the call was planned"
-    if why is None and not info.row_present:
+    if why is None and require_row and not info.row_present:
         why = (
             f"the project footprint table no longer has the row {lib.nickname!r} -> "
             f"{lib.uri!r} it had when the call was planned"

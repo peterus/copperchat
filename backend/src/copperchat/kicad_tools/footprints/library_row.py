@@ -27,6 +27,7 @@ from copperchat.kicad_tools.footprints.engine import (
     _delete_row,
     _ensure_row,
     _finalise,
+    _recheck_row,
     _report,
     _RowProgress,
     _sha_or_absent,
@@ -44,7 +45,9 @@ ROW_ADDED = "fp_lib_table_row_added"
 async def apply_with_library_row(
     ctx: ToolContext, cs: ChangeSet, apply: Callable[[], Awaitable[ToolResult]]
 ) -> ToolResult:
-    """Add `cs.library_row`'s row (journal `row_add` pending -> `AddLibraryTableEntry` ->
+    """Re-read the project rows (`library_conflict` on a conflicting row or a moved
+    library, nothing journalled), then add `cs.library_row`'s row (journal `row_add`
+    pending -> `AddLibraryTableEntry` ->
     read-back -> the footprint must exist, else the row is removed and `not_found`
     raised -> journal finalised), then `apply()`. A failing `apply()` (or a cancel)
     removes the row again (`DeleteLibraryTableEntry`, run to completion) and re-raises;
@@ -59,14 +62,18 @@ async def apply_with_library_row(
     assert_library_locked(lib.dir)
     session = ctx.session
     svc = library_for(session)
+    # The project rows as of now (the KiCad GUI may have edited the table since
+    # prepare): a same-nickname row with another URI, a row aliasing the library dir or
+    # a moved library refuse with `library_conflict` before anything is journalled.
+    await _recheck_row(ctx, lib, require_row=False)
     journal = Journal(ctx)
     row = _RowProgress()
     row.journal_id = await journal.pending(
         "row_add", lib.nickname, table_rel(lib), await sha_of(lib.table, lib.repo_root)
     )
     try:
-        if not svc.footprint_libraries_ready():  # e.g. a server restart since prepare
-            await svc.activate_footprints()
+        if not svc.footprint_libraries_ready():  # fallback: a server restart since the
+            await svc.activate_footprints()  # adapter activated them before the lock
         await _ensure_row(ctx, stage, row)
         if stage.footprint is not None and not await svc.has_footprint(stage.footprint):
             raise StructuredToolError(

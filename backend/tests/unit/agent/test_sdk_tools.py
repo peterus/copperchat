@@ -232,3 +232,31 @@ async def test_footprint_leftovers_reach_the_agent(ctx_factory):
     assert "Do not delete" in err["suggestion"]
     assert "fp_create L:A" in err["what"]
     assert len(seen) == 1 and isinstance(seen[0], DocumentInconsistent)
+
+
+@pytest.mark.parametrize("partial", [False, True])
+async def test_schematic_inconsistent_with_row_leftover_keeps_schematic_text(
+    ctx_factory, partial: bool
+):
+    """A schematic `DocumentInconsistent` that got a `library_row` leftover appended
+    (the row removal failed too): the agent still hears that the design is reloaded from
+    its last save (and the `last_save_partial` variant), plus what was left behind."""
+    from copperchat.errors import DocumentInconsistent
+
+    async def handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
+        raise DocumentInconsistent(
+            "the edit could not be undone", last_save_partial=partial, leftovers=["row L"]
+        )
+
+    raw = await _tool(_spec(handler, name="sch_set_fields"), ctx_factory).handler({"ref": "R1"})
+    err = json.loads(raw["content"][0]["text"])["error"]
+    assert err["code"] == "document_inconsistent"
+    assert "reloads the design from its last save" in err["why"]
+    assert ("may still contain part of this edit" in err["why"]) is partial
+    assert "These remain in the local footprint library: row L." in err["why"]
+    assert "schematic is not affected" not in err["why"]
+    kept = "check this edit's part" if partial else "Only this edit is lost"
+    assert kept in err["suggestion"]
+    assert "left behind (row L)" in err["suggestion"]
+    assert "Undoing this turn in History removes row L" in err["suggestion"]
+    assert err["details"]["leftovers"] == ["row L"]

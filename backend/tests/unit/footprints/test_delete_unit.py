@@ -6,6 +6,8 @@ sibling files are opaque bytes too."""
 
 from __future__ import annotations
 
+import asyncio
+import dataclasses
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -363,6 +365,115 @@ async def test_apply_row_changed_refused(rig: Rig, rows: dict[str, str]) -> None
     assert session(rig).deleted == []
     assert (rig.lib().dir / f"{NAME}.kicad_mod").read_bytes() == FILE_BYTES
     assert await FootprintWriteRepo(rig.db).after_id(PID, 0) == []
+
+
+async def test_apply_library_moved_refused(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_recheck_row`'s "library moved" branch: the local library derived under the lock
+    differs from the planned one (e.g. the repo root changed) -> `library_conflict`,
+    nothing deleted, nothing journalled."""
+    ctx = rig.ctx()
+    cs = await prepare_delete(ctx, {"lib_id": LIB_ID})
+    real = service_mod.LibraryService.local_library
+
+    async def moved(self: Any, **kw: Any) -> Any:
+        info = await real(self, **kw)
+        lib = dataclasses.replace(info.lib, dir=info.lib.dir.parent / "Moved.pretty")
+        return dataclasses.replace(info, lib=lib)
+
+    monkeypatch.setattr(service_mod.LibraryService, "local_library", moved)
+    with pytest.raises(StructuredToolError) as err:
+        await _apply(ctx, cs)
+    assert err.value.code == "library_conflict"
+    assert "moved" in err.value.why
+    assert session(rig).deleted == []
+    assert (rig.lib().dir / f"{NAME}.kicad_mod").read_bytes() == FILE_BYTES
+    assert await FootprintWriteRepo(rig.db).after_id(PID, 0) == []
+
+
+def _listed_after_delete(s: DeleteSession) -> None:
+    """KiCad deletes the file but still lists the name: the read-back fails."""
+    real_call = s.call
+
+    async def call(fn: Any) -> Any:
+        out = await real_call(fn)
+        if getattr(fn, "func", None) is engine_mod._delete_item:
+            s.names.append(NAME)
+        return out
+
+    s.call = call  # type: ignore[method-assign]
+
+
+async def test_apply_deleted_unconfirmed_worded_by_outcome(rig: Rig) -> None:
+    """The file is gone but the read-back failed: the leftover is labelled "deleted, not
+    confirmed" (never "remains ... do not use"), and History undo restores it."""
+    from copperchat.agent.sdk_tools import _inconsistent_error
+    from copperchat.errors import deleted_unconfirmed
+
+    _listed_after_delete(session(rig))
+    ctx = rig.ctx()
+    cs = await prepare_delete(ctx, {"lib_id": LIB_ID})
+    with pytest.raises(DocumentInconsistent) as err:
+        await _apply(ctx, cs)
+    label = deleted_unconfirmed(LIB_ID)
+    assert err.value.leftovers == [label] and err.value.replaced == [label]
+    assert not (rig.lib().dir / f"{NAME}.kicad_mod").exists()
+    rows = await FootprintWriteRepo(rig.db).after_id(PID, 0)
+    assert [(r.op, r.state) for r in rows] == [("delete", "leftover")]
+    text = _inconsistent_error("fp_delete", {"lib_id": LIB_ID}, err.value)
+    assert (
+        f"{LIB_ID} was deleted from the local footprint library, but the deletion "
+        "could not be confirmed" in text.why
+    )
+    assert "remain" not in text.why and "do not use" not in text.why
+    assert f"Undoing this turn in History restores {LIB_ID}" in text.suggestion
+    assert "existing footprint" not in text.suggestion
+    assert text.details is not None and text.details["leftovers"] == [label]
+
+
+@pytest.mark.parametrize("gone", [False, True])
+async def test_real_cancel_during_settle_completes_it(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, gone: bool
+) -> None:
+    """A real `task.cancel()` while `_settle` is blocked: the settling finishes, the
+    CancelledError propagates; a leftover is reported through `on_document_inconsistent`."""
+    from kipy.errors import ApiError
+
+    from copperchat.kicad_tools.footprints import delete as delete_mod
+
+    s = session(rig)
+    if gone:
+        _listed_after_delete(s)
+    else:
+        s.delete_error = ApiError("cannot delete")
+    entered, release = asyncio.Event(), asyncio.Event()
+    real_sha = delete_mod._sha_or_absent
+
+    async def blocked_sha(path: Path) -> str:
+        entered.set()
+        await release.wait()
+        return await real_sha(path)
+
+    monkeypatch.setattr(delete_mod, "_sha_or_absent", blocked_sha)
+    ctx = rig.ctx()
+    seen: list[Exception] = []
+    ctx.on_document_inconsistent = seen.append
+    cs = await prepare_delete(ctx, {"lib_id": LIB_ID})
+    task = asyncio.ensure_future(_apply(ctx, cs))
+    await entered.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()  # settling still runs
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    rows = await FootprintWriteRepo(rig.db).after_id(PID, 0)
+    assert [(r.op, r.state) for r in rows] == [("delete", "leftover" if gone else "compensated")]
+    if gone:
+        [failure] = seen
+        assert isinstance(failure, DocumentInconsistent)
+        assert failure.leftovers == [f"{LIB_ID} (deleted, not confirmed)"]
+    else:
+        assert seen == []
 
 
 # -- registration ------------------------------------------------------------------------
