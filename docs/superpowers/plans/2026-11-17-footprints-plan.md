@@ -935,8 +935,9 @@ phase file, with the reason.)
   `LibraryService.derived_local_library()` (new) derives the local nickname without the
   project-table read, so stock nicknames cost no extra API call.
 - **Task 3, `footprint_notes`:** row missing + tools on checks the name on disk only and
-  does not activate the footprint libraries in prepare (the pre-stage activates them in
-  apply before the row read-back and the existence check); a same-nickname row with another URI (`row_conflict`)
+  does not activate the footprint libraries in prepare (the adapter, `sdk_tools._apply`,
+  activates them before it takes the library lock; the pre-stage only re-activates under
+  the lock as a fallback after a server restart); a same-nickname row with another URI (`row_conflict`)
   refuses with `library_conflict` before the stage. A library default (`explicit=False`)
   that is not on disk is a `footprint_not_found` note, no stage. Unknown names on disk get
   `closest` from `difflib` over `local_names_on_disk`.
