@@ -30,11 +30,11 @@ are in `docs/superpowers/plans/`.
 | Module | Role |
 |---|---|
 | `config` | `Settings` from env/.env; startup fails without model credentials (`claude setup-token` hint) unless `DEV_FAKE_AGENT` |
-| `db` | SQLite (WAL) + numbered migrations `0001`–`0007` (`schema_migrations`) |
+| `db` | SQLite (WAL) + numbered migrations `0001`–`0012` (`schema_migrations`) |
 | `projects` | discovery of `*.kicad_pro`, ids, KiCad lock detection |
 | `kicad_session` | one `kicad-cli api-server` per open project, restart on hang/crash |
 | `tools`, `kicad_tools`, `views` | agent tools (structured JSON, full UUIDs, mm), ERC/DRC, agent views and KiCanvas snapshots; `kicad_tools/edit` holds the schematic editing tools (see "Schematic editing") |
-| `library` | symbol/footprint library index and `lib_*` tools, part preferences, `parts_get_notes` |
+| `library` | symbol/footprint library index and `lib_*` tools, the repository's local footprint library (`local`, `service`), part preferences, `parts_get_notes` |
 | `editing`, `plans`, `changes` | per-turn editing state and change budget, the plan service and gate, change log, ERC baseline/delta, step checkpoints, `kicad-cli sch diff` |
 | `agent` | run engine per project: gated streaming input, queue, interrupt, resume, rate-limit parking, message persistence, WebSocket protocol, tool guard |
 | `history`, `git_tools` | per-turn snapshots/undo, autosave, external-change detection, crash recovery, git status/diff/commit |
@@ -124,6 +124,32 @@ Design: `docs/superpowers/specs/2026-10-21-repo-context-design.md`; user view:
 - **Tests**: real-KiCad tool tests in `backend/tests/kicad/edit/`, golden scenarios
   (`test_scenarios.py`, role-based checker `golden.py`) and undo (`test_undo.py`); the opt-in
   live eval `tests/live/test_editing_eval.py` runs the real model on the same circuits.
+
+## Footprints
+
+- **Library.** One local library per repository, `<repo>/footprints/<nick>.pretty`
+  (`library/local.py`), referenced by a `${KIPRJMOD}`-relative row in each project's
+  `fp-lib-table` (project scope). Rows, footprint files and deletes go through KiCad's API
+  (patches in `docker/kicad-base/patches/`); CopperChat never writes a `.kicad_mod` or
+  `fp-lib-table` itself.
+- **Read** (`kicad_tools/footprints/read.py`, `library/service.py`): the first footprint
+  call activates the api-server's footprint libraries (all of them; ~5.7 s, RSS ~230 MB →
+  ~3.2 GB). Local footprints are read through a footprint document, others through batched
+  `GetItemsFromLibrary`. One footprint document per server, always closed before the next.
+- **Check and render** (`checks.py`, `geom.py`, `render.py`): pure checks with a shared work
+  budget; renders via `kicad-cli fp export svg` → allowlist sanitiser → CairoSVG in a
+  sandboxed subprocess.
+- **Write** (`engine.py`, `create.py`, `approve.py`, `delete.py`): staged — table row, seed
+  copy (`SaveCopyOfDocument`), rebuild in one commit, read-back to 1 µm — under the per-library
+  lock, journalled in `footprint_writes` (migration 0012) with compensation and
+  cleanup of pending rows. `fp_approve` is guarded (fresh render + check, a later user
+  message, quoted, no running plan); approvals and reviews live in `footprint_reviews`.
+- **History** (`history/`): snapshots also cover the library files and `fp-lib-table`
+  (manifest v2, shared blobs); a restore touches only this project's own writes, skips files
+  another project changed since, and holds the library lock only around the file part.
+- **Tests**: `backend/tests/kicad/footprints/` (L201 golden `test_l201_golden.py`, undo and
+  cross-project matrix `test_undo_matrix.py`); the `kicad-footprints` skill carries the
+  agent's procedure.
 
 ## Frontend (`frontend/src`)
 

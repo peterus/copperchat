@@ -1003,18 +1003,110 @@ phase file, with the reason.)
   - F5: skills/README list `fp_approve` (flow: render + check, show the user, approve in a
     later turn with their quote) and `fp_delete` (`in_use`, `possibly_in_use_elsewhere`).
 
+### As built (F5)
+
+- **Skill** `skills/builtin/kicad-footprints/SKILL.md` (`sessions: schematic, free`): the six
+  binding sections of spec §13.2 plus "The tools as built" (all seven `fp_*` tools with their
+  result fields and notes) and "Notes". `copperchat-tools` (loaded in every session type)
+  names the write tools without backticks, so the profile test, which now recognises
+  `fp_*` names, does not flag them for Requirements sessions. `fp_create`'s own check is
+  recorded as a review (`record_review`, write time + 1 ms), so only `fp_render` is needed
+  before asking for approval; the skill says so. Refused extra fields (from `build.py`):
+  Reference, Value, Footprint source, needs_user_review, User review and `Description`.
+- **Part notes:** the `## Land pattern` table has a seventh `Source` column for the
+  `[D1 p.N]` citation; `research/notes.py` validates the section only when present
+  (columns, ≥ 1 pad row, each row cited) — `REQUIRED_SECTIONS` unchanged. The research
+  prompt fills it when no stock footprint matches. The main `SYSTEM_PROMPT` never said
+  footprints cannot be created; it got one line pointing to the skill.
+- **L201 golden** (`tests/kicad/footprints/test_l201_golden.py`): uses the run-engine rig of
+  `test_turn_end.py` instead of bare `repo_session` (`fp_approve` needs the conversation, the
+  user message and the review stamps). Golden env var is the repo's `UPDATE_GOLDENS=1`
+  (the phase file named `COPPERCHAT_UPDATE_GOLDEN`, which does not exist; corrected). The
+  golden is `fp_get(detail="full")` with sorted keys; the only volatile value
+  (`footprint_libraries_loaded.seconds`) is normalised in the test; `geometry_hash` is pinned
+  on purpose (drifts on a KiCad bump). Symbol `Device:L`: the pinned KiCad has no `Inductor`
+  library (the test asserts both, so a bump that adds it fails loudly). The 4.0 × 4.0
+  courtyard is measured from the SVG KiCad drew (method of `test_fp_render`), not from
+  `extent_mm` (which includes the margins). The call passes `keywords` so that `(tags …)`
+  exists.
+- **Undo matrix** (`test_undo_matrix.py`, 7 tests): `test_cross_project` runs two variants
+  (`io` approves A → A skipped; `io` only creates B → A removed); both assert exactly one
+  `library-external-change` notice and a real `ReloadLibrary` at `main`'s next turn start,
+  with no plan pause. The concurrent restore/create test swaps the entry in
+  `history.library_lock._LOCKS` for a recording lock (ContextVar holder) and forces
+  contention; observed order create (snapshot) → restore waits → create releases → restore
+  → create (apply); no `io` KiCad call ran while the restore held the lock. No product bug
+  found; no source change.
+- **Docs:** README feature section + `COPPERCHAT_FOOTPRINT_TOOLS` row, `.env.example` entry
+  (it was not there despite the phase file), CHANGELOG `[Unreleased]`, `docs/architecture.md`
+  "Footprints" section (and migration range `0001`–`0012`). RAM figure uses the F1
+  measurement (api-server 227 MB → 3.2 GB, activation ~5.7 s).
+
 ## Residuals
 
-(Filled by F5.) Known before the start:
+Open after F5 (collected from every phase's "As built"; nothing here blocks the release).
 
-- Flaky `test_streamed_text_is_persisted_by_size_and_by_time` (timing) and kicad-shard
-  submodule fetch errors: rerun the failed job (`gh run rerun --failed`), do not
-  "fix" in a footprint PR.
+**Process / CI**
+- Flaky `test_streamed_text_is_persisted_by_size_and_by_time` (timing), e2e
+  `sessions.spec.ts:125`, kicad-shard submodule / kipy git install fetch errors from
+  gitlab.com: rerun the failed job (`gh run rerun --failed`). The `< 2 s` check timing tests
+  are wall-clock (CI noise).
+- The L201 golden pins `geometry_hash`: regenerate with `UPDATE_GOLDENS=1` on a KiCad bump,
+  with an explanation in the PR.
+- Owner's manual acceptance (spec §16.3) is still open: L201 in OpenDriveHub with approval in
+  chat, GUI opens the footprint, J402/U202 checks explained.
+
+**Product follow-ups (decided later)**
+- Board sessions get `FP_WRITES` with SP4; the "Approve" button with the SP4 frontend work
+  (D1) — until then `user_quote` is only a substring proof (a quote cut from "looks good, but
+  not yet" passes guard 5; guards 3/4/6 carry the weight).
+- `fp_import` for vendor libraries (D2); lazy single-library load as a fifth KiCad patch only
+  if PROD memory gets tight (D4); IPC-7351 generation and real 3D models later.
+- Upstream: kipy #147 fork pin and the four KiCad API patches stay until the owner submits
+  the MRs (packages under `~/copperchat-kipy-mr`, `~/copperchat-kicad-mr`).
 - Footprint renders (`.png`, `.svg`, `.svg.json`) in `.kicad-agent/renders/` are not pruned,
-  like `render_view` output today.
-- Board sessions get `FP_WRITES` with SP4; the "Approve" button with the SP4 frontend
-  work (D1); `fp_import` for vendor libraries later (D2); lazy-load KiCad patch only if
-  PROD memory gets tight (D4); IPC-7351 generation and real 3D models later.
+  like `render_view` output.
+
+**Footprint read/check (F1, F2)**
+- Not hashed: pad secondary drills, post-machining, `zone_layer_overrides`; zones/points/other
+  footprint items are hashed opaquely.
+- Without git (transient or permanent `repo_policy`) every non-global nickname raises
+  `repo_root_unknown` in `fp_get` (could be narrowed to the candidate local nicknames).
+- `fp_check` input passes outside the work budget are linear and uncapped: reading the
+  footprint and `geometry_hash` (~1 s for 50,000 custom-pad primitives, ~3 s for 100,000
+  pads); a size cap on the read would bound them.
+- Polygon arc nodes are flattened by `model._polyline` without a marker; filled shapes are
+  measured as outlines, a bezier by its control polygon.
+- `fp_check` can return `libraries_loading`, which is not listed in FP-C9.
+- `checks.py` (~1,200 lines) is a split candidate.
+
+**Write path (F4a, F4b)**
+- `library/service.py` `_conflict` / `_kicad_errors` messages name host paths;
+  `library_lock` calls `Path.resolve()` on the event loop; the S1 outer timeout is ~120 s.
+- A turn-end restart after a failed autosave drops unsaved in-memory edits (rare; the user
+  sees "autosave failed").
+- The `replace` geometry/fields re-check branch is only unit-covered; cleanup queries
+  `later_foreign` per candidate row (`foreign_after` would batch it).
+- A Stop during the change-log write can lose that row; a second cancel while hashing the S3
+  save turns the call's file into a `leftover` (safe side).
+- A cancel between `AddLibraryTableEntry` and its return on a live server can journal an
+  added row `compensated` without removing it (F4a S1 and F4b library-row stage); History
+  undo covers it.
+- `fp_approve` / `fp_delete` refuse footprint names outside `NAME_RE` (GUI-saved names) with
+  `invalid_argument`.
+- `fp_delete`'s `in_use` covers only the open schematic; the own board is a byte scan
+  (`in_use_on_board` note), other projects only `possibly_in_use_elsewhere`.
+- `footprint_notes` with the row present reads through the footprint document, so it
+  activates the libraries also on a board server.
+
+**History (F3, F4b)**
+- `rmdir` of a library dir created after the snapshot cannot see another project adding its
+  own row to that empty dir in between.
+- A History restore that rewrites a footprint file journals no `create` / `replace` row, so
+  `fp_approve` guard 4 does not see it (guard 2 still pins the geometry; needs the user's own
+  concurrent restore).
+- `test_undo_first_create` does not assert whether the parent `footprints/` directory
+  survives the undo (only the `.pretty` directory is required to go).
 
 ---
 
