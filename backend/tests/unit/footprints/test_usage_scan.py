@@ -12,7 +12,11 @@ from pathlib import Path
 import pytest
 
 from copperchat.kicad_tools.footprints import usage
-from copperchat.kicad_tools.footprints.usage import ScanResult, scan_other_projects
+from copperchat.kicad_tools.footprints.usage import (
+    ScanResult,
+    scan_other_projects,
+    scan_own_boards,
+)
 
 LIB_ID = "X:L1"
 HIT = b'opaque bytes ("X:L1") more bytes\n'
@@ -185,3 +189,41 @@ def test_hits_sorted_and_once_per_file(repo: Path) -> None:
         "a/io/io.kicad_sch",
         "b/io/io.kicad_sch",
     ]
+
+
+# -- review loop round 1 -------------------------------------------------------------------
+
+
+def test_autosave_and_backup_names_skipped(repo: Path) -> None:
+    """KiCad autosaves and backup / lock names (own project or sibling) are no
+    documents: never reported as other projects."""
+    own = project(
+        repo,
+        "hardware/main",
+        {"_autosave-main.kicad_sch": HIT, "~main.kicad_sch": HIT, "_autosave-main.kicad_pcb": HIT},
+    )
+    project(repo, "hardware/io", {"~io.kicad_pcb": HIT, "io.kicad_sch": MISS})
+    assert own.is_dir()
+    assert scan_other_projects(repo, own, LIB_ID) == ScanResult(hits=[], complete=True)
+
+
+def test_own_board_found(repo: Path) -> None:
+    own = project(repo, "hardware/main", {"main.kicad_sch": HIT, "main.kicad_pcb": HIT})
+    project(repo, "hardware/io", {"io.kicad_pcb": HIT})
+    assert scan_own_boards(repo, own, LIB_ID) == ScanResult(
+        hits=["hardware/main/main.kicad_pcb"], complete=True
+    )
+    assert scan_own_boards(repo, own, "X:L2") == ScanResult(hits=[], complete=True)
+
+
+def test_own_board_symlink_not_followed(repo: Path, tmp_path: Path) -> None:
+    own = project(repo, "hardware/main")
+    (tmp_path / "board.kicad_pcb").write_bytes(HIT)
+    (own / "main.kicad_pcb").symlink_to(tmp_path / "board.kicad_pcb")
+    assert scan_own_boards(repo, own, LIB_ID) == ScanResult(hits=[], complete=True)
+
+
+def test_own_board_too_large_incomplete(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(usage, "MAX_FILE_BYTES", 4)
+    own = project(repo, "hardware/main", {"main.kicad_pcb": HIT})
+    assert scan_own_boards(repo, own, LIB_ID) == ScanResult(hits=[], complete=False)

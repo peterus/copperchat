@@ -1059,6 +1059,10 @@ def test_leftover_advice_per_kind() -> None:
     assert "fp_delete" not in replaced
     both = leftover_advice(["L:A", "L:B"], ["L:B"])
     assert "removes L:A;" in both and "L:B is an existing footprint" in both
+    several = leftover_advice(["L:B", "L:C"], ["L:B", "L:C"])
+    assert "L:B, L:C are existing footprints of the user" in several
+    assert "brings back their earlier versions" in several
+    assert "Do not delete them" in several and "the user's footprints." in several
 
 
 # -- review fixes (PR #92, round 1) -----------------------------------------------------------

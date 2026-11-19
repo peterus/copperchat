@@ -358,8 +358,8 @@ async def _local_footprint(
     await asyncio.to_thread(local_library_dir_safe, lib)
     if not await _on_disk(svc, lib, footprint, name, explicit, notes):
         return None
-    if not svc.footprint_libraries_ready():
-        await svc.activate_footprints(notes)  # the row stage reads the library back
+    # no activation here: the row stage (`apply_with_library_row`) activates the
+    # footprint libraries before its read-back
     notes.append(
         {
             "kind": "footprint_review_unknown",

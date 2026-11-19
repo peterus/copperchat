@@ -242,6 +242,29 @@ async def test_incomplete_scan_noted(rig: Rig, monkeypatch: pytest.MonkeyPatch) 
     assert note["files"] == [] and note["complete"] is False
 
 
+async def test_own_board_in_use_note(rig: Rig) -> None:
+    """`in_use` reads only the open schematic: the own board placing the footprint is an
+    `in_use_on_board` note (no refusal); its autosave is not searched."""
+    project_dir = rig.session.project.dir
+    (project_dir / "main.kicad_pro").write_bytes(b"")
+    (project_dir / "main.kicad_pcb").write_bytes(b'opaque "' + LIB_ID.encode() + b'" bytes')
+    (project_dir / "_autosave-main.kicad_pcb").write_bytes(b'"' + LIB_ID.encode() + b'"')
+    cs = await prepare_delete(rig.ctx(), {"lib_id": LIB_ID})
+    [note] = cs.summary["notes"]
+    assert note["kind"] == "in_use_on_board" and note["complete"] is True
+    assert note["files"] == ["hw/main/main.kicad_pcb"]
+    assert "main.kicad_pcb" in note["message"]
+    assert str(rig.session.root) not in str(note)
+
+
+async def test_own_board_without_footprint_no_note(rig: Rig) -> None:
+    project_dir = rig.session.project.dir
+    (project_dir / "main.kicad_pro").write_bytes(b"")
+    (project_dir / "main.kicad_pcb").write_bytes(b"opaque bytes")
+    cs = await prepare_delete(rig.ctx(), {"lib_id": LIB_ID})
+    assert cs.summary["notes"] == []
+
+
 # -- apply -------------------------------------------------------------------------------
 
 
@@ -325,6 +348,21 @@ async def test_apply_symlink_swapped_in_refused(rig: Rig, tmp_path: Path) -> Non
         await _apply(ctx, cs)
     assert err.value.code == "library_conflict"
     assert session(rig).deleted == []
+
+
+@pytest.mark.parametrize("rows", [{}, {REPO: "${KIPRJMOD}/elsewhere.pretty"}])
+async def test_apply_row_changed_refused(rig: Rig, rows: dict[str, str]) -> None:
+    """The row is read again under the library lock: gone or another URI ->
+    `library_conflict`, nothing deleted, nothing journalled."""
+    ctx = rig.ctx()
+    cs = await prepare_delete(ctx, {"lib_id": LIB_ID})
+    session(rig).rows = rows
+    with pytest.raises(StructuredToolError) as err:
+        await _apply(ctx, cs)
+    assert err.value.code == "library_conflict"
+    assert session(rig).deleted == []
+    assert (rig.lib().dir / f"{NAME}.kicad_mod").read_bytes() == FILE_BYTES
+    assert await FootprintWriteRepo(rig.db).after_id(PID, 0) == []
 
 
 # -- registration ------------------------------------------------------------------------

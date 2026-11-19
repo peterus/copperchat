@@ -5,11 +5,14 @@ library through KiCad (`DeleteLibraryItem`, patch 0003).
 removes), `not_local` (another library, or this project has no row for the local one)
 and `in_use` (a symbol of the open schematic names it in its Footprint field; the refs
 are in `details.refs`). The other projects of the repo are byte-searched
-(`usage.scan_other_projects`); a hit is only a `possibly_in_use_elsewhere` note.
+(`usage.scan_other_projects`); a hit is only a `possibly_in_use_elsewhere` note. The own
+project's board is byte-searched too (`usage.scan_own_boards`); a hit is an
+`in_use_on_board` note.
 
-`apply` (under the library lock the adapter takes): `cleanup_pending`, the path checks
-again, journal `delete` (pre = the file's hash), `DeleteLibraryItem`, read back that the
-footprint is gone (KiCad's listing and the file), finalise `done` with `absent`.
+`apply` (under the library lock the adapter takes): `cleanup_pending`, the path and
+project-row checks again, journal `delete` (pre = the file's hash), `DeleteLibraryItem`,
+read back that the footprint is gone (KiCad's listing and the file), finalise `done`
+with `absent`.
 `Logical(1)`, never counted as a deleted symbol (spec §12)."""
 
 from __future__ import annotations
@@ -34,6 +37,7 @@ from copperchat.kicad_tools.footprints.engine import (
     _finalise,
     _lexists,
     _library_error,
+    _recheck_row,
     _report,
     _sha_or_absent,
     cleanable_copy,
@@ -46,7 +50,7 @@ from copperchat.kicad_tools.footprints.read import (
     parse_lib_id,
     require_enabled,
 )
-from copperchat.kicad_tools.footprints.usage import scan_other_projects
+from copperchat.kicad_tools.footprints.usage import scan_other_projects, scan_own_boards
 from copperchat.library.local import LocalLibrary
 from copperchat.library.service import library_for, local_footprint_file_safe
 from copperchat.tools.spec import ToolContext, ToolResult
@@ -110,6 +114,26 @@ def _elsewhere_note(hits: list[str], complete: bool) -> dict[str, Any] | None:
     }
 
 
+def _board_note(hits: list[str], complete: bool) -> dict[str, Any] | None:
+    """The `in_use_on_board` note of the own board scan: `in_use` reads only the open
+    schematic, so a footprint the board places (e.g. one assigned on the board only) is
+    a warning, never a refusal."""
+    if not hits and complete:
+        return None
+    if hits:
+        message = (
+            f"This project's board {_listed(hits)} places this footprint; its footprints "
+            "keep their own copy, but lose their library source (updating them from the "
+            "library fails). Tell the user."
+        )
+    else:
+        message = (
+            "The search of this project's board was incomplete (the file is too large), "
+            "so it may still place this footprint."
+        )
+    return {"kind": "in_use_on_board", "files": hits, "complete": complete, "message": message}
+
+
 async def prepare_delete(ctx: ToolContext, args: dict[str, Any]) -> FootprintChangeSet:
     """Plan an `fp_delete` (spec §7.8); refuses with a structured error, writes
     nothing. The library comes from `local_library(for_write=True)`
@@ -165,10 +189,14 @@ async def prepare_delete(ctx: ToolContext, args: dict[str, Any]) -> FootprintCha
             "in_use",
             details={"refs": refs},
         )
+    board = await asyncio.to_thread(scan_own_boards, lib.repo_root, ctx.project.dir, lib_id)
     scan = await asyncio.to_thread(scan_other_projects, lib.repo_root, ctx.project.dir, lib_id)
-    note = _elsewhere_note(scan.hits, scan.complete)
-    if note is not None:
-        notes.append(note)
+    for note in (
+        _board_note(board.hits, board.complete),
+        _elsewhere_note(scan.hits, scan.complete),
+    ):
+        if note is not None:
+            notes.append(note)
     return FootprintChangeSet(
         tool=TOOL,
         logical=Logical(LOGICAL_CHANGES),
@@ -227,8 +255,10 @@ async def _delete_footprint(ctx: ToolContext, lib: LocalLibrary, lib_id: str, di
                 "write pending"
             )
 
-    # FP-C8: path, project table and file checked again under the library lock
+    # FP-C8: path, project table, its row and the file checked again under the
+    # library lock (nothing is written before)
     await asyncio.to_thread(_file_checks, lib, name)
+    await _recheck_row(ctx, lib)
     pre = await sha_of(file, lib.repo_root)
     if pre == ABSENT:
         raise _not_found(

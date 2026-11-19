@@ -47,6 +47,7 @@ from copperchat.kicad_tools.footprints.engine import (
     _file_checks,
     _finalise,
     _library_error,
+    _recheck_row,
     _report,
     _sha_or_absent,
     cleanable_copy,
@@ -418,8 +419,10 @@ async def _write_approval(
                 "write pending"
             )
 
-    # FP-C8: path, project table and file checked again under the library lock
+    # FP-C8: path, project table, its row and the file checked again under the
+    # library lock (nothing is written before)
     await asyncio.to_thread(_file_checks, lib, name)
+    await _recheck_row(ctx, lib)
     pre = await sha_of(file, lib.repo_root)
     if pre == ABSENT:
         raise StructuredToolError(

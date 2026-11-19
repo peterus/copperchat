@@ -419,6 +419,31 @@ def _file_checks(lib: LocalLibrary, name: str) -> None:
     local_footprint_file_safe(lib, name)
 
 
+async def _recheck_row(ctx: ToolContext, lib: LocalLibrary) -> None:
+    """FP-C8 under the library lock, right before `fp_approve` / `fp_delete` write: the
+    project table must still hold the local library's row with its URI (the KiCad GUI
+    may have edited the table since prepare) - `library_conflict` otherwise, nothing
+    written."""
+    info = await library_for(ctx.session).local_library(for_write=True)
+    assert info is not None  # for_write raises repo_root_unknown instead
+    why = info.row_conflict
+    if why is None and info.lib != lib:
+        why = "the repository's local footprint library moved after the call was planned"
+    if why is None and not info.row_present:
+        why = (
+            f"the project footprint table no longer has the row {lib.nickname!r} -> "
+            f"{lib.uri!r} it had when the call was planned"
+        )
+    if why is not None:
+        raise StructuredToolError(
+            "The project's footprint library table changed after the call was planned",
+            why,
+            "Ask the user to check the project's fp-lib-table (see fp_list_local); nothing "
+            "was written.",
+            code="library_conflict",
+        )
+
+
 async def _recheck_name(ctx: ToolContext, lib: LocalLibrary, name: str) -> None:
     """Before S2 (spec §9.3, author call): the name must still be free - neither in the
     API listing (the row exists now) nor as `<dir>/<name>.kicad_mod` on disk

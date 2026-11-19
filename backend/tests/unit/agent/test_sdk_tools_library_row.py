@@ -6,6 +6,7 @@ does not list removes the row again. The row costs no budget. Fake KiCad of
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
@@ -18,7 +19,9 @@ from copperchat.db import Database
 from copperchat.db.repos.editing_settings import EditingSettingsRepo
 from copperchat.db.repos.footprints import FootprintWriteRepo
 from copperchat.editing.service import EditingService
+from copperchat.errors import DocumentInconsistent
 from copperchat.history.library_lock import assert_library_locked
+from copperchat.kicad_session import KicadUnavailable
 from copperchat.kicad_tools.edit.changeset import ChangeSet, Logical, NetIntent, SheetRef
 from copperchat.kicad_tools.footprints.engine import LibraryRowStage
 from copperchat.library import service as service_mod
@@ -169,3 +172,113 @@ async def test_row_there_already_adds_nothing(make_rig: Callable[..., Rig]) -> N
     assert result.data is not None and result.data["side_effects"] == []
     assert result.library_changed == set()
     assert [(op, state) for op, state, *_ in await rig.journal()] == [("row_add", "compensated")]
+
+
+# -- error paths (review loop round 1) -----------------------------------------------------
+
+
+def _failing_delete_row(rig: Rig) -> None:
+    """KiCad refuses `DeleteLibraryTableEntry` (the row stays)."""
+    from kipy.errors import ApiError
+
+    def refuse(type: Any, scope: Any, nickname: str) -> None:
+        rig.session.kicad.calls.append("delete_row")
+        raise ApiError("cannot remove the row")
+
+    rig.session.kicad.delete_library_table_entry = refuse  # type: ignore[method-assign]
+
+
+async def test_apply_activates_before_the_row(
+    make_rig: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Prepare does not activate the footprint libraries (row-missing path); the stage
+    does, before it adds and reads back the row."""
+    rig = make_rig()
+    rig.session.footprints_active = False
+
+    async def activate(self: Any, notes: Any = None) -> None:
+        rig.session.kicad.calls.append("activate")
+        rig.session.footprints_active = True
+
+    monkeypatch.setattr(service_mod.LibraryService, "activate_footprints", activate)
+    await _run_two_phase(rig.spec(), rig.ctx, {})
+    assert rig.session.kicad.calls == ["activate", "add_row"]
+
+
+async def test_failed_row_removal_is_leftover(make_rig: Callable[..., Rig]) -> None:
+    rig = make_rig()
+    _failing_delete_row(rig)
+    boom = StructuredToolError("set fields failed", "why", "fix", code="verification_failed")
+    with pytest.raises(DocumentInconsistent) as err:
+        await _run_two_phase(rig.spec(boom), rig.ctx, {})
+    assert err.value.leftovers == [f"row {rig.lib.nickname}"]
+    assert err.value.footprint_only and err.value.replaced == []
+    assert err.value.__cause__ is boom
+    assert rig.session.kicad.rows == {rig.lib.nickname: rig.lib.uri}  # still there
+    assert [(op, state) for op, state, *_ in await rig.journal()] == [("row_add", "leftover")]
+
+
+async def test_apply_kicad_unavailable_keeps_the_row(make_rig: Callable[..., Rig]) -> None:
+    """A server death in `spec.apply` skips the removal: the restarted server reads the
+    table from disk, the journal row stays `done` (History undo removes the row)."""
+    rig = make_rig()
+    dead = KicadUnavailable("the KiCad api-server had stopped")
+    with pytest.raises(KicadUnavailable) as err:
+        await _run_two_phase(rig.spec(dead), rig.ctx, {})
+    assert err.value is dead
+    assert rig.session.kicad.calls == ["add_row"]
+    assert rig.session.kicad.rows == {rig.lib.nickname: rig.lib.uri}
+    assert [(op, state) for op, state, *_ in await rig.journal()] == [("row_add", "done")]
+
+
+async def test_schematic_inconsistent_row_removed(make_rig: Callable[..., Rig]) -> None:
+    """A schematic `DocumentInconsistent` from `spec.apply`: the row is removed and the
+    original error re-raised unchanged."""
+    rig = make_rig()
+    broken = DocumentInconsistent("the edit could not be undone")
+    with pytest.raises(DocumentInconsistent) as err:
+        await _run_two_phase(rig.spec(broken), rig.ctx, {})
+    assert err.value is broken and broken.leftovers == [] and not broken.footprint_only
+    assert rig.session.kicad.calls == ["add_row", "delete_row"]
+    assert rig.session.kicad.rows == {}
+    assert [(op, state) for op, state, *_ in await rig.journal()] == [("row_add", "compensated")]
+
+
+async def test_schematic_inconsistent_gets_the_row_leftover(
+    make_rig: Callable[..., Rig],
+) -> None:
+    """... and when the removal fails too, the row is added to its leftovers (still the
+    schematic error: the turn end reopens the schematic)."""
+    rig = make_rig()
+    _failing_delete_row(rig)
+    broken = DocumentInconsistent("the edit could not be undone", leftovers=["L:X"])
+    with pytest.raises(DocumentInconsistent) as err:
+        await _run_two_phase(rig.spec(broken), rig.ctx, {})
+    assert err.value is broken
+    assert broken.leftovers == ["L:X", f"row {rig.lib.nickname}"]
+    assert not broken.footprint_only
+    assert [(op, state) for op, state, *_ in await rig.journal()] == [("row_add", "leftover")]
+
+
+async def test_cancel_in_apply_removes_the_row(make_rig: Callable[..., Rig]) -> None:
+    rig = make_rig()
+    with pytest.raises(asyncio.CancelledError):
+        await _run_two_phase(rig.spec(asyncio.CancelledError()), rig.ctx, {})
+    assert rig.session.kicad.calls == ["add_row", "delete_row"]
+    assert rig.session.kicad.rows == {}
+    assert [(op, state) for op, state, *_ in await rig.journal()] == [("row_add", "compensated")]
+
+
+async def test_cancel_with_failed_removal_reports_it(make_rig: Callable[..., Rig]) -> None:
+    """Under a cancel a failed removal goes to the turn (`on_document_inconsistent`);
+    the cancel still propagates."""
+    rig = make_rig()
+    _failing_delete_row(rig)
+    seen: list[Exception] = []
+    rig.ctx.on_document_inconsistent = seen.append
+    with pytest.raises(asyncio.CancelledError):
+        await _run_two_phase(rig.spec(asyncio.CancelledError()), rig.ctx, {})
+    [failure] = seen
+    assert isinstance(failure, DocumentInconsistent)
+    assert failure.leftovers == [f"row {rig.lib.nickname}"] and failure.footprint_only
+    assert [(op, state) for op, state, *_ in await rig.journal()] == [("row_add", "leftover")]

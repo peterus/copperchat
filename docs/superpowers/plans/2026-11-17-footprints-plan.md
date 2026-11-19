@@ -431,7 +431,8 @@ server-death case) and the error is re-raised.
 `document_inconsistent`, `approval_not_allowed`, `in_use`. Notes (`notes[].kind`):
 `footprint_libraries_loaded` (`seconds`), `footprint_needs_review`,
 `footprint_review_unknown`, `footprint_unverified`, `possibly_in_use_elsewhere`,
-`model_missing`, `pending_cleaned`, `pending_leftover`,
+`in_use_on_board` (`files`, `complete`; `fp_delete`'s byte scan of the own board, added
+in the F4b review loop), `model_missing`, `pending_cleaned`, `pending_leftover`,
 `footprint_attributes_unavailable` (`lib_id`; added in F1 Task 4, see "As built"),
 `no_local_library`, `library_conflict`, `footprint_unreadable` (`count`, `lib_ids`;
 all three added in F1 Task 6, see "As built"), `strings_truncated` (`fp_list_local`
@@ -914,8 +915,11 @@ phase file, with the reason.)
   (`test_routes_plans.py`). The KiCad tests insert the human message with
   `MessageRepo.insert(metadata={"origin": "user"})`.
 - **Task 2, `fp_delete`:** `in_use` checks the open schematic's symbol Footprint fields
-  only (`read._footprint_users`, spec §7.8), not board footprints, and only in prepare. A
-  project without the local row gets `not_local`. A leftover is reported with
+  only (`read._footprint_users`, spec §7.8), not board footprints, and only in prepare; the
+  own project's board is byte-searched (`usage.scan_own_boards`) for an `in_use_on_board`
+  note. A project without the local row gets `not_local`. `fp_approve` and `fp_delete`
+  re-read the project row under the library lock before writing (`engine._recheck_row`:
+  gone or another URI -> `library_conflict`, nothing written). A leftover is reported with
   `replaced=[lib_id]`; `errors.leftover_advice` now says "<id> is an existing footprint of
   the user" (covers replace, approve, delete) and dropped "once that tool is available".
   Note/error texts name at most 20 refs/files ("and N more"); `details.refs`/`files` are
@@ -924,14 +928,15 @@ phase file, with the reason.)
   `.kicad_pcb` outside any project dir); caps are module constants (`MAX_FILES`,
   `MAX_FILE_BYTES`, `MAX_TOTAL_BYTES`, `MAX_DIRS`, `CHUNK_BYTES`); the file cap counts files
   opened, the total cap bytes actually read (a growing file is caught); hits are
-  repo-relative POSIX paths.
+  repo-relative POSIX paths. KiCad autosave / backup names (`_autosave-*`, `~*`) are skipped
+  like `document_files` skips them.
 - **Task 3, `LibraryRowStage`:** gains `footprint: str | None = None`, the lib id the
   pre-stage verifies after adding the row (the base `ChangeSet` carries only the stage).
   `LibraryService.derived_local_library()` (new) derives the local nickname without the
   project-table read, so stock nicknames cost no extra API call.
-- **Task 3, `footprint_notes`:** row missing + tools on also activates the footprint
-  libraries in prepare when they are not loaded (the row read-back and the existence check
-  need them on a boardless server); a same-nickname row with another URI (`row_conflict`)
+- **Task 3, `footprint_notes`:** row missing + tools on checks the name on disk only and
+  does not activate the footprint libraries in prepare (the pre-stage activates them in
+  apply before the row read-back and the existence check); a same-nickname row with another URI (`row_conflict`)
   refuses with `library_conflict` before the stage. A library default (`explicit=False`)
   that is not on disk is a `footprint_not_found` note, no stage. Unknown names on disk get
   `closest` from `difflib` over `local_names_on_disk`.

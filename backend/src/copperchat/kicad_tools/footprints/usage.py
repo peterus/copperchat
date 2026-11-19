@@ -8,7 +8,9 @@ symlinks like `document_files`, but **descends** into dirs with their own `*.kic
 (those are the siblings it must search); it skips only the own project's document files,
 not its subtree (a project at the repo root would otherwise hide every nested sibling).
 Only regular files are opened (`lstat` + `S_ISREG`, then `O_NOFOLLOW|O_NONBLOCK` and an
-`fstat` re-check), and every cap marks the result incomplete."""
+`fstat` re-check), and every cap marks the result incomplete. KiCad autosave and
+backup names (`_autosave-*`, `~*`) are skipped like `document_files` skips them.
+`scan_own_boards` searches the own project's board the same way."""
 
 from __future__ import annotations
 
@@ -33,6 +35,11 @@ MAX_DIRS = 20_000  # directories visited
 _OPEN_FLAGS = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)) | getattr(
     os, "O_NOCTTY", 0
 )
+
+
+# KiCad GUI autosaves, lock/backup names and hidden files are not documents (as in
+# `history.store._is_document_name`): never searched, never reported.
+_NOT_DOCUMENTS = ("_autosave-", "~", ".")
 
 
 @dataclass(frozen=True)
@@ -110,6 +117,34 @@ def _contains(path: Path, needle: bytes, budget: _Budget) -> bool:
             tail = data[-overlap:]
 
 
+def _needle(lib_id: str) -> bytes:
+    return b'"' + lib_id.encode("utf-8") + b'"'
+
+
+def scan_own_boards(repo_root: Path, own_project_dir: Path, lib_id: str) -> ScanResult:
+    """Search the own project's board(s) (`<project>.kicad_pcb` beside each of its
+    `*.kicad_pro`) for `"<lib_id>"`: `fp_delete`'s `in_use` refusal reads only the open
+    schematic. Same open rules and caps as `scan_other_projects`; hits are repo-relative
+    POSIX paths."""
+    root = repo_root.resolve()
+    own = _own_documents(own_project_dir.resolve())
+    needle = _needle(lib_id)
+    budget = _Budget()
+    hits: list[str] = []
+    for path in sorted(p for p in own if p.name.endswith(".kicad_pcb")):
+        try:
+            st = path.lstat()
+        except OSError:
+            continue
+        if not stat.S_ISREG(st.st_mode):
+            continue
+        budget.files += 1
+        if _contains(path, needle, budget):
+            rel = path.relative_to(root) if path.is_relative_to(root) else Path(path.name)
+            hits.append(rel.as_posix())
+    return ScanResult(sorted(hits), budget.complete)
+
+
 def scan_other_projects(repo_root: Path, own_project_dir: Path, lib_id: str) -> ScanResult:
     """Search the repo's `*.kicad_sch` / `*.kicad_pcb` files (except the own project's
     documents) for `"<lib_id>"`, the exact quoted string a symbol's Footprint field or a
@@ -117,7 +152,7 @@ def scan_other_projects(repo_root: Path, own_project_dir: Path, lib_id: str) -> 
     `MAX_TOTAL_BYTES` in total, `MAX_DIRS` directories; any of them -> `complete=False`."""
     root = repo_root.resolve()
     own = _own_documents(own_project_dir.resolve())
-    needle = b'"' + lib_id.encode("utf-8") + b'"'
+    needle = _needle(lib_id)
     budget = _Budget()
     hits: list[str] = []
     dirs_seen = 0
@@ -133,7 +168,7 @@ def scan_other_projects(repo_root: Path, own_project_dir: Path, lib_id: str) -> 
             if not d.startswith(".") and d not in SKIP_DIRS and not (base / d).is_symlink()
         )
         for name in sorted(names):
-            if not name.endswith(SUFFIXES):
+            if not name.endswith(SUFFIXES) or name.startswith(_NOT_DOCUMENTS):
                 continue
             path = base / name
             if path in own:

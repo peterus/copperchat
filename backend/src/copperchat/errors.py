@@ -138,11 +138,19 @@ def leftover_advice(leftovers: list[str] | tuple[str, ...], replaced: Iterable[s
             "left behind can also be removed with fp_delete."
         )
     if restorable:
-        parts.append(
-            f"{', '.join(restorable)} is an existing footprint of the user: undoing this turn in "
-            "History brings back its earlier version. Do not delete it - that would lose "
-            "the user's footprint."
-        )
+        names = ", ".join(restorable)
+        if len(restorable) == 1:
+            parts.append(
+                f"{names} is an existing footprint of the user: undoing this turn in History "
+                "brings back its earlier version. Do not delete it - that would lose the "
+                "user's footprint."
+            )
+        else:
+            parts.append(
+                f"{names} are existing footprints of the user: undoing this turn in History "
+                "brings back their earlier versions. Do not delete them - that would lose "
+                "the user's footprints."
+            )
     return " ".join(parts)
 
 

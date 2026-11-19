@@ -213,6 +213,7 @@ async def test_row_missing_disk_path_and_stage(setup: Any, db: Database) -> None
     assert stage == LibraryRowStage(library=svc.lib, create_library=False, footprint=LIB_ID)
     assert "footprint_review_unknown" in _kinds(notes)
     assert "disk" in svc.calls and "api" not in svc.calls
+    assert "activate" not in svc.calls  # the row stage activates in apply
     # a prepare-only call writes nothing: journal and files unchanged
     assert await _journal(db) == rows
     assert _hashes(ctx.settings.projects_root) == files
