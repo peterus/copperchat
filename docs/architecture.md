@@ -143,7 +143,8 @@ Design: `docs/superpowers/specs/2026-10-21-repo-context-design.md`; user view:
   copy (`SaveCopyOfDocument`), rebuild in one commit, read-back to 1 µm — under the per-library
   lock, journalled in `footprint_writes` (migration 0012) with compensation and
   cleanup of pending rows. `fp_approve` is guarded (fresh render + check, a later user
-  message, quoted, no running plan); approvals and reviews live in `footprint_reviews`.
+  message, quoted, no running plan); the approval is written into the footprint (`User review`,
+  `needs_user_review = no`) and journalled; render/check sightings live in `footprint_reviews`.
 - **History** (`history/`): snapshots also cover the library files and `fp-lib-table`
   (manifest v2, shared blobs); a restore touches only this project's own writes, skips files
   another project changed since, and holds the library lock only around the file part.

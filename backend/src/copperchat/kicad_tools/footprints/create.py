@@ -263,7 +263,10 @@ async def prepare_create(
             f"Footprint {lib_id} already exists",
             f"a footprint named {name!r} is {where} (another project of this repository may "
             "have created it)",
-            "Pick another name, or pass replace=true to rebuild it (needs the user's OK).",
+            "Pick another name, or pass replace=true to rebuild it (needs the user's OK)."
+            if info.row_present
+            else "Do not recreate it: assign it with sch_set_fields (that adds this project's "
+            "library row), then check it with fp_get / fp_check.",
             "already_exists",
         )
     source = await _check_source(ctx, parsed.source)

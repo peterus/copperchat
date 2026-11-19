@@ -16,10 +16,10 @@ appended if a stock library has that name); every other library is read-only. Th
 `fp_create` adds the project's library row (`library_created: true`).
 
 **Shared library:** all projects of the repo share it, but a project sees it only once its
-own row exists. A footprint another project created (`fp_list_local` / `fp_get` note
-`no_local_library` with an on-disk count, or `already_exists` "on disk") is **reused, never
-recreated or replaced**: assign it with `sch_set_fields` (`footprint: "<nick>:<name>"`),
-which adds this project's row, then check it with `fp_get` / `fp_check`.
+own row exists. A footprint another project created (`fp_list_local` note `no_local_library`
+with an on-disk count — `fp_get` answers `not_found` until the row exists — or
+`already_exists` "on disk") is **reused, never recreated or replaced**: assign it with
+`sch_set_fields(ref, fields={"Footprint": "<nick>:<name>"})`, which adds this project's row, then check it with `fp_get` / `fp_check`.
 
 ## Library rule
 
@@ -155,7 +155,9 @@ about 3 GB of server memory, once per server. The result then carries the note
 
 ## Errors
 
-- `not_found`: wrong lib_id; use `details.closest` or `lib_search_footprints`.
+- `not_found`: for a `<nick>:` of the local library, call `fp_list_local` first (no row
+  yet → see "Shared library"); otherwise a wrong lib_id: use `details.closest` or
+  `lib_search_footprints`.
 - `invalid_argument`: fix the argument named in the error (name, field, source path).
 - `library_error`: KiCad refused the library request; try another library or ask the
   user to check the library tables.
@@ -173,8 +175,9 @@ about 3 GB of server memory, once per server. The result then carries the note
 - `check_failed`: fix every error in `details.findings` before calling again.
 - `render_failed`: say the render failed and describe the footprint from `fp_get`.
 - `verification_failed`: KiCad's read-back differs or the footprint changed meanwhile.
-  Follow the error's suggestion: after `fp_create`, read the footprint again and retry
-  once; after `fp_delete` of a footprint that changed, ask the user before deleting it;
+  Follow the error's suggestion: after `fp_create` with `details.diffs` (read-back
+  differs), check your input against them and retry once; any other `fp_create` case,
+  tell the user and do not retry; after `fp_delete` of a footprint that changed, ask the user before deleting it;
   if `fp_delete` or `fp_approve` could not be confirmed, tell the user and do not retry
   in this turn.
 - `document_inconsistent`: a failed write could not be undone completely; stop and
