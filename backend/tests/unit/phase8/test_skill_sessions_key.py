@@ -25,6 +25,7 @@ MAPPING: dict[str, frozenset[str] | None] = {
     "kicad-review-discipline": frozenset({"schematic", "board", "free"}),
     "kicad-schematic-editing": frozenset({"schematic", "free"}),
     "kicad-schematic-style": frozenset({"schematic", "free"}),
+    "kicad-footprints": frozenset({"schematic", "free"}),
     "session-requirements": frozenset({"requirements"}),
     "session-schematic": frozenset({"schematic"}),
 }

@@ -61,8 +61,20 @@ notes alone.
     `Package_DFN_QFN:VQFN-16-1EP_3x3mm_P0.5mm_EP1.68x1.68mm`) when the standard
     KiCad libraries contain a match. Compare pad count, pitch, body and
     exposed-pad size with the datasheet land pattern. Otherwise write
-    `no exact match — closest: <Library:Name>, differences: <…>`.
-11. **Validate:** after writing, call `check_notes` with the MPN and fix every
+    `no exact match — closest: <Library:Name>, differences: <…>`. A footprint of
+    the repository's own library (made with CopperChat's footprint tools) is
+    written `<repo-nick>:<name>`, the same form.
+11. **Land pattern:** when there is no exact stock match, fill the optional
+    `## Land pattern` section from the datasheet's **recommended land pattern**
+    (not the package drawing): one table row per pad with its centre X/Y in mm
+    (footprint origin = package centre unless the datasheet says otherwise,
+    x right, y **down**), copper size W × H in mm and the drill (`-` for SMD
+    pads), then the courtyard and the body size, every row and line cited
+    `[D1 p.<n>]`. The design agent builds the footprint from exactly these
+    numbers. If the datasheet has no land pattern, write
+    `not specified [D1]` instead of deriving pads from the package size. With an
+    exact stock match, leave the section out.
+12. **Validate:** after writing, call `check_notes` with the MPN and fix every
     issue it reports, then call it again until it reports none.
 
 ## Template
@@ -138,6 +150,17 @@ point the values are for.>
 
 <Land-pattern notes: paste reduction on the thermal pad, solder mask, pin-1
 mark, differences between the KiCad footprint and the datasheet land pattern.>
+
+## Land pattern
+
+<Only without an exact stock footprint; otherwise delete this section.>
+
+| Pad | X (mm) | Y (mm) | W (mm) | H (mm) | Drill (mm) | Source |
+|---|---|---|---|---|---|---|
+| <1> | <x> | <y> | <w> | <h> | <drill or -> | [D1 p.<n>] |
+
+- Courtyard: <w × h mm, or not specified> [D1 p.<n>]
+- Body: <w × h mm> [D1 p.<n>]
 
 ## Errata and pitfalls
 

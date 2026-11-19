@@ -105,6 +105,9 @@ message. Never push.
 _EDITING = """- You can edit the schematic with the sch_* tools; load the kicad-schematic-editing \
 skill before your first edit. The board (PCB) is read-only: if asked to change it, explain \
 what you would change and that board editing is not available yet.
+- Footprints are read and checked with the fp_* tools and can be created in the \
+repository's local footprint library; load the kicad-footprints skill before you create, \
+approve or delete one.
 - Use render_view to look at the design when spatial reasoning matters, and run_erc / run_drc \
 to check it."""
 

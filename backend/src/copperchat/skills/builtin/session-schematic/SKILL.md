@@ -33,3 +33,11 @@ tool rules.
 - When a key part is in the schematic, set its status in the `Key parts` table of
   `parts.md` to `placed` with `doc_patch_section` on `Key parts`.
 - New questions for the user go into `Open points` of the doc they belong to.
+
+## Footprints
+
+A part without a fitting footprint gets one in this session: `fp_get`, `fp_list_local`,
+`fp_check` and `fp_render` read and check footprints, `fp_create`, `fp_approve` and
+`fp_delete` write the repo's local library (writes only in Schematic and Free
+sessions). Follow the `kicad-footprints` skill: stock first, every number from the
+datasheet, and `fp_approve` only after the user's explicit OK in a later message.

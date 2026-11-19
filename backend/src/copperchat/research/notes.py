@@ -40,6 +40,10 @@ TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
         "KiCad footprint",
     ),
 }
+# Optional section (footprints spec §13.2): checked only when present, so it never
+# joins REQUIRED_SECTIONS and existing notes stay valid.
+LAND_PATTERN = "Land pattern"
+LAND_PATTERN_COLUMNS = ("Pad", "X (mm)", "Y (mm)", "W (mm)", "H (mm)", "Drill (mm)")
 CITED_SECTIONS = (
     "Packages and pinout",
     "Absolute maximum ratings",
@@ -203,6 +207,17 @@ def check_notes(text: str, *, structure_only: bool = False, mpn: str | None = No
         )
     else:
         check(False, "Package and footprint: table has no rows")
+    if LAND_PATTERN in sections:
+        land = _table_with(sections[LAND_PATTERN], LAND_PATTERN_COLUMNS)
+        check(
+            land is not None and len(land) > 1,
+            f"{LAND_PATTERN}: table needs columns {' | '.join(LAND_PATTERN_COLUMNS)} and "
+            "one row per pad",
+        )
+        check(
+            land is not None and all(_CITE.search(" ".join(r)) for r in land[1:]),
+            f"{LAND_PATTERN}: every pad row needs a datasheet page reference like [D1 p.12]",
+        )
     check("[D1]" in sections.get("Sources", ""), "Sources: [D1] datasheet entry missing")
     for name in CITED_SECTIONS:
         check(

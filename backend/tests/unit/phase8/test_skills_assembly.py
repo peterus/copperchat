@@ -15,6 +15,7 @@ MAIN = {
     "kicad-schematic-style",
     "kicad-schematic-editing",
     "kicad-review-discipline",
+    "kicad-footprints",
     "copperchat-tools",
     "part-preferences",
     "design-docs",

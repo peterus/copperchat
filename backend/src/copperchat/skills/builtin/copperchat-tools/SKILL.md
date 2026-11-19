@@ -99,6 +99,15 @@ In Schematic and Free sessions the schematic is edited with the `sch_*` tools; l
 `kicad-schematic-editing` skill before the first edit. Look up part knowledge with
 `parts_get_notes` first, and call `research_part` when a part has no notes yet.
 
+## Footprints
+
+`fp_get` (geometry, fields, review state), `fp_list_local` (the repo's own footprint
+library), `fp_check` (rules, symbol pins, datasheet land pattern) and `fp_render` (an
+image on a mm grid) read any footprint library in every session type. Writing tools
+(fp_create, fp_approve, fp_delete) exist only in Schematic and Free sessions; load the
+`kicad-footprints` skill before using any of them. The first footprint tool of a
+project without a board takes a few seconds (note `footprint_libraries_loaded`).
+
 ## Sourcing (Mouser)
 
 - `mouser_part(mpns)`: price breaks, stock, lead time, lifecycle (Active / NRND / End of
