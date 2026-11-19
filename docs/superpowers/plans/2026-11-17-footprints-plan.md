@@ -887,6 +887,44 @@ phase file, with the reason.)
 
 ### As built (F4b)
 
+- **Task 1, `FootprintReviewRepo.record`:** keeps the first `rendered_at`/`checked_at` of
+  a (conversation, lib id, hash) row; `run_id` and `check_errors` take the latest value
+  (a re-render or re-check in the approval turn must not void the user's earlier
+  sighting under guard 4). `fp_check` records through `read.record_review`.
+- **Task 1, guards:** guard 4 counts only `role = user` messages of `ctx.conversation_id`
+  and `ctx.run_id` with `metadata.origin == "user"` (`MessageRepo.run_user_messages`,
+  `USER_ORIGIN`); equal timestamps are refused. A context without a conversation or
+  database is refused with guard 3. A non-local `lib_id`, a missing project row and
+  "already approved" are all guard 1 (not `not_local`); a missing footprint or a
+  cleanable seed copy is `not_found`. A `pending` journal row for the lib id refuses with
+  guard 1 (stricter than §9.3 "validate after cleanup": a possibly half-built footprint is
+  never approved; the next footprint write cleans it up). Guard 7 refusals carry the
+  check in `details.check`. Plan exemption: `PLAN_EXEMPT_TOOLS = {"fp_approve"}` in
+  `editing/gate.py` and `plans/gate.py`; guard 6 uses `PlanRepo.running_in_conversation`.
+- **Task 1, apply:** re-checks the hash (guard 2) **and** the review state (guard 1) in the
+  open document before `begin()`; the read-back checks hash, `needs_user_review = no` and
+  the `User review` text. No field-revert compensation: nothing saved or the file
+  unchanged → journal `compensated`; file changed but not verified → `leftover` and
+  `DocumentInconsistent(leftovers=[lib_id], replaced=[lib_id], footprint_only=True)`
+  (`replaced` makes the advice say "do not delete; History undo restores it"). Change log
+  `footprint_approved`: `before`/`after` hold review state, geometry hash, `user_review`
+  and `user_quote`.
+- **Task 1, WebSocket:** user submits go through `RunEngine.submit_ex(...,
+  metadata={"origin": "user"})`; the plan-execute submit carries no origin
+  (`test_routes_plans.py`). The KiCad tests insert the human message with
+  `MessageRepo.insert(metadata={"origin": "user"})`.
+- **Task 2, `fp_delete`:** `in_use` checks the open schematic's symbol Footprint fields
+  only (`read._footprint_users`, spec §7.8), not board footprints, and only in prepare. A
+  project without the local row gets `not_local`. A leftover is reported with
+  `replaced=[lib_id]`; `errors.leftover_advice` now says "<id> is an existing footprint of
+  the user" (covers replace, approve, delete) and dropped "once that tool is available".
+  Note/error texts name at most 20 refs/files ("and N more"); `details.refs`/`files` are
+  complete.
+- **Task 2, `scan_other_projects`:** walks the whole repo root (also `.kicad_sch` /
+  `.kicad_pcb` outside any project dir); caps are module constants (`MAX_FILES`,
+  `MAX_FILE_BYTES`, `MAX_TOTAL_BYTES`, `MAX_DIRS`, `CHUNK_BYTES`); the file cap counts files
+  opened, the total cap bytes actually read (a growing file is caught); hits are
+  repo-relative POSIX paths.
 - **Task 3, `LibraryRowStage`:** gains `footprint: str | None = None`, the lib id the
   pre-stage verifies after adding the row (the base `ChangeSet` carries only the stage).
   `LibraryService.derived_local_library()` (new) derives the local nickname without the
@@ -910,6 +948,19 @@ phase file, with the reason.)
   string; the change-log row (ref = nickname, after.uri, like F4a) is flagged
   `side_effect = true`. `library_changed` gets the nickname (the result still has
   `changed_docs`, so the generation check stays).
+
+- **Residuals for later phases (F4b):**
+  - `fp_approve`/`fp_delete` refuse footprint names outside `NAME_RE` (GUI-saved names)
+    with `invalid_argument` (`local_footprint_file_safe`).
+  - `user_quote` is a substring proof, not intent detection (a quote cut from "looks good,
+    but not yet" passes guard 5); guards 3/4/6 carry the weight. The SP4 approve button
+    (D1) replaces it.
+  - A cancel between `AddLibraryTableEntry` and its return can journal an added row
+    `compensated` without removing it (same gap as F4a S1); History undo covers it.
+  - `footprint_notes` with the row present reads through the footprint document (activation
+    also on a board server, like `fp_get` in F1).
+  - F5: skills/README list `fp_approve` (flow: render + check, show the user, approve in a
+    later turn with their quote) and `fp_delete` (`in_use`, `possibly_in_use_elsewhere`).
 
 ## Residuals
 
