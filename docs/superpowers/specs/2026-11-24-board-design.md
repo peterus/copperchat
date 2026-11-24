@@ -3,8 +3,8 @@
 Date: 2026-11-24
 Status: **draft, waiting for the owner's approval.** The owner decided the main points in chat on
 2026-11-23 and 2026-11-24; §15.1 lists them. Every decision the author made alone is marked
-**(spec call)** and is listed again in §15.2. Open questions that only the owner can answer are in
-§15.3.
+**(spec call)** and is listed again in §15.2. The owner's answers to the draft's open questions
+(2026-11-24) are in §15.3.
 
 Inputs:
 
@@ -101,7 +101,7 @@ nobody lays out the OpenDriveHub board by hand or by script during SP4.
   files are written, but "JLC assembly" is not validated in v1 (spec call; the acceptance target
   is self-assembled).
 - Mechanical import from DXF/STEP and an automatic case-fit check against a 3D model. The agent
-  reads the outline numbers from the repo docs or asks the user. See G7 (§16) and question Q3 (§15.3).
+  reads the outline numbers from the repo docs or asks the user. See G7 (§16) and owner decision D3 (§15.3).
 - A full own autorouter (approach C). The design keeps the door open: the own router can take over
   more nets later.
 - An "Approve" button in the chat UI. Approval stays a chat message, as for footprints (later
@@ -115,7 +115,7 @@ nobody lays out the OpenDriveHub board by hand or by script during SP4.
   used only to export (netlist, DSN, SVG, 3D, fab files). The Specctra session (`.ses`) from
   Freerouting enters the board only through KiCad's `ImportSpecctraSession`. (The DSN/SES files
   are Freerouting interchange files, not KiCad documents; whether CopperChat may edit the
-  exported DSN text is owner question Q4.) File-system
+  exported DSN text: only as a last-resort fallback, owner decision D4.) File-system
   operations on KiCad data are limited to history snapshot and restore.
 - **A silent design decision.** The agent picks a board size, layer count, connector edge,
   assembly side or fab without telling the user. It proposes, explains and asks (§8.2); the answer
@@ -695,9 +695,8 @@ From the spike prototype (`router.py`: 15/15 short nets clean), extended:
   to "power" in the board setup before the DSN export, so KiCad's Specctra export marks them as
   plane layers and Freerouting does not route signals there — whether the layer type is settable
   through the API is probed in P2. Fallback: Freerouting CLI options; last resort: editing the
-  exported DSN text (owner question Q4). The default 4-layer proposal and which inner layer may
-  carry signals is owner question Q1; this spec is written for **Sig / GND / Sig+Power / Sig**
-  (In1 solid GND plane, In2 routable with power pours), the author's recommendation.
+  exported DSN text (owner decision D4). The default 4-layer proposal is **Sig / GND / Sig+Power /
+  Sig** (owner decision D1): In1 solid GND plane, In2 routable with power pours.
 
 ### 10.4 Why not chamfer-only (rejection rule)
 
@@ -709,7 +708,7 @@ a board that is "fixed" piece by piece into a mess.
 ## 11. Planes, pours, fanout, stitching
 
 - **GND planes:** for 4 layers, In1.Cu = solid GND (spec call), In2.Cu = signals + power pours in
-  the default stack (Q1) or a plane per the stack the user approved; for 2 layers, GND pour on B.Cu with as few cuts as possible.
+  the default stack (D1) or a plane per the stack the user approved; for 2 layers, GND pour on B.Cu with as few cuts as possible.
 - **Outer pours:** GND on F.Cu/B.Cu in free areas, priority below planes, thermal reliefs from the
   rules.
 - **Fanout** (`pcb_fanout`, spike `fanout.py`): each SMD pad of a plane net gets a short stub
@@ -854,7 +853,7 @@ Listed in order of appearance; each is marked "(spec call)" in the text.
 26. Spike-proven fill flow (route all incl. GND, then delete GND copper) and the completion ladder.
 27. Chamfer parameters; acute/non-octilinear/micro-jogs → rip and re-route.
 28. Fill rejection when > 20 % of connections need rip-and-reroute.
-29. 4-layer default stack proposal Sig/GND/GND-or-Power/Sig, signals on outer layers.
+29. Default stack Sig/GND/Sig+Pwr/Sig (confirmed by the owner, D1).
 30. No via-in-pad; fine-pitch GND pads via the outer pour.
 31. Stitching pitch 5 mm.
 32. All metric thresholds in §12 (hard ones change only with owner OK).
@@ -880,32 +879,23 @@ Listed in order of appearance; each is marked "(spec call)" in the text.
 49. Stackup preset ids; Freerouting/JRE sources (amd64); `fab/` committed, 3D in `fab/3d/`.
 50. Board-specific SVG limits.
 
-### 15.3 Questions for the owner
+### 15.3 Owner decisions on the open questions (2026-11-24)
 
-Ranked by impact. The author's recommendation is listed first and is what this draft assumes.
+The owner answered all five open questions of the draft as recommended:
 
-- **Q1 — Default 4-layer stack and inner-layer signals** (changes routability and the fill flow).
-  (a) **Sig / GND / Sig+Power / Sig**: In1 solid GND, In2 carries signals and power pours —
-  *recommended*: the spike showed that 76 parts on 80 × 60 mm need more than two signal layers for
-  full completion, and In2 next to the In1 GND plane still has a good return path;
-  (b) Sig / GND / GND / Sig: signals only outside — cleanest, highest risk of open connections on
-  dense boards; (c) Sig / GND / Power plane / Sig. In every case the agent proposes it to the
-  user; this only sets the default proposal and what the tools must support.
-- **Q2 — Hard thresholds** (§12; they block "done" and the fab export): approve as written
-  (M4 ±0.5°; M5 fail > 2.0 and > 5 mm extra; M7 any micro-jog; M8 > 5 mm; M14 JLC preset) —
-  *recommended* — or adjust before the plan.
-- **Q3 — Case fit / 3D models for the release** (G7): (a) **defer to optional P10**, case fit is
-  the owner's review against the repo CAD, the agent takes outline numbers from the docs or the
-  user — *recommended*; (b) include P10 in the SP4 release (models cache, STEP with parts; extra
-  phase, image/volume size).
-- **Q4 — May CopperChat edit the exported DSN text** (Freerouting interchange file, never
-  imported into KiCad directly) as a last resort to steer the fill (layers, via cost, excluded
-  nets)? (a) **yes, as a fallback only** — *recommended*; (b) no, KiCad layer type + Freerouting
-  CLI options only.
-- **Q5 — PROD memory**: ≈ 4.5–5 GB per active board project (board server + footprint libraries
-  + Freerouting). (a) **accept and document as a host requirement** — *recommended*; (b) keep
-  `FP_WRITES` out of board sessions to save ≈ 1.8 GB (footprint fixes then need a schematic or
-  free session).
+- **D1 — Default 4-layer stack: Sig / GND / Sig+Power / Sig.** In1 is a solid GND plane, In2
+  carries signals and power pours. The agent still proposes the stack to the user per board; this
+  sets the default proposal and what the tools must support.
+- **D2 — Hard thresholds approved as written** (§12): M4 ±0.5°, no 90° and no acute bends; M5 fail
+  when a signal connection's detour is > 2.0 and > 5 mm extra; M7 no micro-jogs; M8 decoupling
+  > 5 mm fails; M14 the JLCPCB preset. They change only with the owner's OK.
+- **D3 — 3D models / STEP case fit deferred to the optional phase P10.** Case fit is the owner's
+  review against the repo's CAD; the agent takes the outline numbers from the docs or the user.
+- **D4 — Editing the exported DSN text is allowed only as a last-resort fallback**, after the
+  KiCad layer type and Freerouting's CLI options. The DSN is a Freerouting interchange file and
+  never enters KiCad except through the SES import.
+- **D5 — PROD memory of ≈ 4.5–5 GB per active board project is accepted** and documented as a
+  host requirement (README, P9). `FP_WRITES` stays in board sessions.
 
 ## 16. Gaps from spike 4A and how they are handled
 
@@ -917,7 +907,7 @@ Ranked by impact. The author's recommendation is listed first and is what this d
 | G4 no routing command headless | **Deferred upstream** (needs a feature request by the owner). Own router replaces it. | spec call |
 | G5 kipy wrappers missing | **Workaround:** raw protobuf in `kicad_tools/board/api.py`. | spec call |
 | G6 Freerouting native CLI broken, Java 25 | **In scope:** JAR + JRE 25 in the app image (≈ +190 MB), pinned + SHA-256; `ignore_net_classes` not used (delete GND copper instead). No upstream report by agents. | spec call |
-| G7 no 3D models in the image | **Deferred to an optional last phase (P10)**: fetch the KiCad 3D models for the footprints in use on demand into a cache volume (pinned to the KiCad library version) so STEP exports carry parts. v1 STEP/3D renders are bare boards and say so. The case-fit check stays an owner review against the repo's CAD (question Q3). | spec call |
+| G7 no 3D models in the image | **Deferred to an optional last phase (P10)**: fetch the KiCad 3D models for the footprints in use on demand into a cache volume (pinned to the KiCad library version) so STEP exports carry parts. v1 STEP/3D renders are bare boards and say so. The case-fit check stays an owner review against the repo's CAD (owner decision D3). | owner (D3) |
 | G8 live board view at turn end only | **In scope** (§6.6). | spec call |
 | G9 no rasteriser | **Solved already:** CairoSVG from the footprint feature (§13). | spec call |
 | G10 footprint-level DFM exceptions | **In scope:** custom rules per footprint with a reason (`pcb_set_rules.custom_rules`), surfaced in every check report (§12). | spec call |
@@ -1024,7 +1014,7 @@ In PROD, a board session on the OpenDriveHub transmitter main board, driven only
 | Freerouting changes behaviour between releases; third-party Java process | pinned version + checksum; post-processor and metrics judge its output; fill can be disabled |
 | Own router grows into a full autorouter (scope creep) | v1 scope fixed in §10.2; the critical set is bounded |
 | Tool calls that run minutes (fill, fanout) hit SDK/tool timeouts or block the turn | timeouts per tool (§10.3); the plan checks the SDK tool-call limit and progress notices |
-| Memory in PROD: ≈ 1.9 GB board server; opening a footprint document (FP_WRITES in board sessions) can add ≈ 1.8 GB (up to 4 GB seen, footprints spec C4); Freerouting ≤ 1 GB heap → ≈ 4.5–5 GB per active board project | one session per server (existing); Freerouting heap capped; measured in P1/P9 and documented as a host requirement (owner question Q5) |
+| Memory in PROD: ≈ 1.9 GB board server; opening a footprint document (FP_WRITES in board sessions) can add ≈ 1.8 GB (up to 4 GB seen, footprints spec C4); Freerouting ≤ 1 GB heap → ≈ 4.5–5 GB per active board project | one session per server (existing); Freerouting heap capped; measured in P1/P9 and documented as a host requirement (owner decision D5) |
 | The fill holds the edit lock for minutes, blocking other writes and the live view | read tools do not take the edit lock; the fill publishes once at the end; budget ≤ 600 s |
 | Token cost of image-heavy step reports | ≤ 3 images per report; per-layer images only on request |
 | Upstream KiCad patch 0005 needs owner time | stackup is optional for v1 (default stackup works for 1.6 mm JLC boards); patch phase independent |
