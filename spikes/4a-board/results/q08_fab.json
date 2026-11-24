@@ -1,0 +1,49 @@
+{
+  "question": "q08_fab",
+  "checks": [
+    {
+      "name": "ecc83.gerbers_drill",
+      "ok": true,
+      "evidence": "1.15s files=['ecc83-pp-B_Cu.gbl', 'ecc83-pp-B_Mask.gbs', 'ecc83-pp-B_Paste.gbp', 'ecc83-pp-B_Silkscreen.gbo', 'ecc83-pp-Edge_Cuts.gm1', 'ecc83-pp-F_Cu.gtl', 'ecc83-pp-F_Mask.gts', 'ecc83-pp-F_Paste.gtp', 'ecc83-pp-F_Silkscreen.gto', 'ecc83-pp-NPTH-drl_map.gbr', 'ecc83-pp-NPTH.drl', 'ecc83-pp-PTH-drl_map.gbr', 'ecc83-pp-PTH.drl', 'ecc83-pp-job.gbrjob']"
+    },
+    {
+      "name": "ecc83.paste_layers",
+      "ok": true,
+      "evidence": "['ecc83-pp-B_Paste.gbp', 'ecc83-pp-F_Paste.gtp']"
+    },
+    {
+      "name": "ecc83.cpl",
+      "ok": true,
+      "evidence": "15 placements, columns=['Ref', 'Val', 'Package', 'PosX', 'PosY', 'Rot', 'Side']; JLC CPL rows=15"
+    },
+    {
+      "name": "ecc83.bom",
+      "ok": true,
+      "evidence": "10 lines; with LCSC=0; err=''"
+    },
+    {
+      "name": "odh.gerbers_drill",
+      "ok": true,
+      "evidence": "1.22s files=['main-B_Cu.gbl', 'main-B_Mask.gbs', 'main-B_Paste.gbp', 'main-B_Silkscreen.gbo', 'main-Edge_Cuts.gm1', 'main-F_Cu.gtl', 'main-F_Mask.gts', 'main-F_Paste.gtp', 'main-F_Silkscreen.gto', 'main-In1_Cu.g1', 'main-In2_Cu.g2', 'main-NPTH-drl_map.gbr', 'main-NPTH.drl', 'main-PTH-drl_map.gbr', 'main-PTH.drl', 'main-job.gbrjob']"
+    },
+    {
+      "name": "odh.paste_layers",
+      "ok": true,
+      "evidence": "['main-B_Paste.gbp', 'main-F_Paste.gtp']"
+    },
+    {
+      "name": "odh.cpl",
+      "ok": true,
+      "evidence": "76 placements, columns=['Ref', 'Val', 'Package', 'PosX', 'PosY', 'Rot', 'Side']; JLC CPL rows=76"
+    },
+    {
+      "name": "odh.bom",
+      "ok": true,
+      "evidence": "41 lines; with LCSC=0; err=''"
+    }
+  ],
+  "notes": {
+    "ecc83.zip": "q08_ecc83_gerbers.zip 26361 bytes, 14 files",
+    "odh.zip": "q08_odh_gerbers.zip 69175 bytes, 16 files"
+  }
+}

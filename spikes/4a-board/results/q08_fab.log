@@ -1,0 +1,11 @@
+PASS q08_fab.ecc83.gerbers_drill: 1.15s files=['ecc83-pp-B_Cu.gbl', 'ecc83-pp-B_Mask.gbs', 'ecc83-pp-B_Paste.gbp', 'ecc83-pp-B_Silkscreen.gbo', 'ecc83-pp-Edge_Cuts.gm1', 'ecc83-pp-F_Cu.gtl', 'ecc83-pp-F_Mask.gts', 'ecc83-pp-F_Paste.gtp', 'ecc83-pp-F_Silkscreen.gto', 'ecc83-pp-NPTH-drl_map.gbr', 'ecc83-pp-NPTH.drl', 'ecc83-pp-PTH-drl_map.gbr', 'ecc83-pp-PTH.drl', 'ecc83-pp-job.gbrjob']
+PASS q08_fab.ecc83.paste_layers: ['ecc83-pp-B_Paste.gbp', 'ecc83-pp-F_Paste.gtp']
+PASS q08_fab.ecc83.cpl: 15 placements, columns=['Ref', 'Val', 'Package', 'PosX', 'PosY', 'Rot', 'Side']; JLC CPL rows=15
+PASS q08_fab.ecc83.bom: 10 lines; with LCSC=0; err=''
+NOTE q08_fab.ecc83.zip: q08_ecc83_gerbers.zip 26361 bytes, 14 files
+PASS q08_fab.odh.gerbers_drill: 1.22s files=['main-B_Cu.gbl', 'main-B_Mask.gbs', 'main-B_Paste.gbp', 'main-B_Silkscreen.gbo', 'main-Edge_Cuts.gm1', 'main-F_Cu.gtl', 'main-F_Mask.gts', 'main-F_Paste.gtp', 'main-F_Silkscreen.gto', 'main-In1_Cu.g1', 'main-In2_Cu.g2', 'main-NPTH-drl_map.gbr', 'main-NPTH.drl', 'main-PTH-drl_map.gbr', 'main-PTH.drl', 'main-job.gbrjob']
+PASS q08_fab.odh.paste_layers: ['main-B_Paste.gbp', 'main-F_Paste.gtp']
+PASS q08_fab.odh.cpl: 76 placements, columns=['Ref', 'Val', 'Package', 'PosX', 'PosY', 'Rot', 'Side']; JLC CPL rows=76
+PASS q08_fab.odh.bom: 41 lines; with LCSC=0; err=''
+NOTE q08_fab.odh.zip: q08_odh_gerbers.zip 69175 bytes, 16 files
+DONE q08_fab: 8 pass, 0 fail

@@ -1,0 +1,272 @@
+{
+  "question": "q04_route",
+  "checks": [
+    {
+      "name": "interactive_router_headless",
+      "ok": true,
+      "evidence": "KiCad returned error: RunAction is not available in headless mode"
+    },
+    {
+      "name": "track_connects_pads",
+      "ok": true,
+      "evidence": "net Net-(U1B-K): 2 segments [(139.75, 118.85), (133.3, 125.3), (133.3, 125.47)]; connected items=4"
+    },
+    {
+      "name": "drc_unconnected_drops",
+      "ok": true,
+      "evidence": "unconnected 20 -> 19; 0.05s"
+    },
+    {
+      "name": "drc_marker_names_item",
+      "ok": true,
+      "evidence": "[('DRCET_CLEARANCE', \"Clearance violation (netclass 'Default' clearance 0.4000 mm; actual 0.2814 mm)\", 2), ('DRCET_DANGLING_TRACK', 'Track has unconnected end', 1)]"
+    },
+    {
+      "name": "via_arc_created",
+      "ok": true,
+      "evidence": "['Via', 'ArcTrack', 'Track']"
+    },
+    {
+      "name": "netless_track_on_pad_gets_pad_net",
+      "ok": true,
+      "evidence": "net after create='Net-(U1B-K)' (created without a net, starting on a Net-(U1B-K) pad)"
+    },
+    {
+      "name": "ecc83.freerouting_ran",
+      "ok": true,
+      "evidence": "{'rc': 0, 'seconds': 3.7, 'ses': True, 'log': [\"Auto-routing pass #1 on board '76f4248b316c65ffc482dab68c5ec0ed' was completed in 0.46 seconds with score 1000.00 (0 unrouted and 0 violations).\", \"Auto-routing pass #2 on board '7c002257769773b7e4fc43665c46b314' was completed in 0.03 seconds with score 1000.00 (0 unrouted and 0 violations).\", 'Auto-routing stage completed: started with 20 unrouted nets, completed in 0.84 seconds, final score: 1000.00 (0 unrouted and 0 violations), using 0.00 total CPU seconds, 0.00 GB total allocated, and 0.0 MB peak heap usage.', 'Skipping optimization stage: the board has no vias to eliminate and trace length (274.97 mm) is within 5% of theoretical minimum (309.96 mm).', \"Job 'DD4B0A\\\\31CF72' finished with state: COMPLETED (elapsed: 1.02 seconds, finished at UTC: 2026-11-24T18:49:40.504622231Z).\"]}"
+    },
+    {
+      "name": "ecc83.import_ses",
+      "ok": true,
+      "evidence": "0.01s skipped=0 report=''"
+    },
+    {
+      "name": "ecc83.routed_complete",
+      "ok": true,
+      "evidence": "unconnected=0"
+    },
+    {
+      "name": "ecc83.drc_copper_clean",
+      "ok": true,
+      "evidence": "{'clearance': 0, 'shorting_items': 0, 'tracks_crossing': 0, 'hole_clearance': 0}"
+    },
+    {
+      "name": "odh.freerouting_ran",
+      "ok": true,
+      "evidence": "{'rc': 0, 'seconds': 64.2, 'ses': True, 'log': [\"Auto-routing pass #3 on board 'd93b296f6495c697b0a665afe1377ea5' was completed in 0.11 seconds with score 1000.00 (0 unrouted and 0 violations), using 13.75 CPU seconds and the job allocated 7.68 GB of memory so far.\", 'Auto-routing stage completed: started with 225 unrouted nets, completed in 14.26 seconds, final score: 1000.00 (0 unrouted and 0 violations), using 13.75 total CPU seconds, 7.68 GB total allocated, and 331.2 MB peak heap usage.', \"Optimization stage started on board '124d60bfee05e98a1390ad95e27c5c0b'. Baseline router score: 1000.00, optimizer score: 749.15, incomplete connections: 0, clearance violations: 0.\", \"Optimizer pass #1 on board 'e9271327ce0e423a65ec48f3579cf8f2' was completed in 45.50 seconds with the score of 758.72 (0 unrouted and 0 violations).\", 'Optimization stage completed:. Baseline router score: 1000.00, baseline optimizer score: 749.15, final router score: 1000.00, final optimizer score: 758.72, completed in 46.11 seconds, using 165.51 total CPU seconds, 77.77 GB total allocated, and 1156.0 MB peak heap usage.', \"Job '6D314E\\\\2CEB11' finished with state: COMPLETED (elapsed: 1 minute 0.95 seconds, finished at UTC: 2026-11-24T18:50:59.450408081Z).\"]}"
+    },
+    {
+      "name": "odh.import_ses",
+      "ok": true,
+      "evidence": "0.06s skipped=0 report=''"
+    },
+    {
+      "name": "odh.routed_complete",
+      "ok": true,
+      "evidence": "unconnected=0"
+    },
+    {
+      "name": "odh.drc_copper_clean",
+      "ok": true,
+      "evidence": "{'clearance': 0, 'shorting_items': 0, 'tracks_crossing': 0, 'hole_clearance': 4}"
+    }
+  ],
+  "notes": {
+    "api_drc_placed": {
+      "seconds": 0.07,
+      "DRCET_UNCONNECTED_ITEMS": 20,
+      "DRCET_EDGE_CLEARANCE": 4,
+      "DRCET_SILK_CLEARANCE": 3
+    },
+    "create_tracks_s": 0.011,
+    "api_drc_after_track": {
+      "DRCET_UNCONNECTED_ITEMS": 19,
+      "DRCET_EDGE_CLEARANCE": 4,
+      "DRCET_SILK_CLEARANCE": 3
+    },
+    "api_drc_after_track_again": {
+      "DRCET_UNCONNECTED_ITEMS": 19,
+      "DRCET_EDGE_CLEARANCE": 4,
+      "DRCET_SILK_CLEARANCE": 3
+    },
+    "drc_after_netless_track": {
+      "DRCET_UNCONNECTED_ITEMS": 19,
+      "DRCET_EDGE_CLEARANCE": 4,
+      "DRCET_DRILLED_HOLES_TOO_CLOSE": 1,
+      "DRCET_SILK_CLEARANCE": 3,
+      "DRCET_DANGLING_TRACK": 2,
+      "DRCET_DANGLING_VIA": 1
+    },
+    "ecc83.dsn_cli_s": 0.44,
+    "ecc83.dsn_api_job": "status=1 live_board=True",
+    "ecc83.metrics": {
+      "segments": 53,
+      "arcs": 0,
+      "vias": 0,
+      "track_length_mm": 275.0,
+      "non_45_segments": 0,
+      "non_45_examples": [],
+      "bend_histogram": {
+        "0": 3,
+        "45": 32,
+        "90": 1
+      },
+      "acute_bends": 0,
+      "dangling_ends": 0,
+      "detour_median": 1.07,
+      "detour_worst": [
+        [
+          "Net-(P4-P1)",
+          1.25
+        ],
+        [
+          "Net-(P1-PM)",
+          1.21
+        ],
+        [
+          "Net-(P4-PM)",
+          1.07
+        ],
+        [
+          "Net-(U1A-G)",
+          1.07
+        ],
+        [
+          "Net-(U1A-K)",
+          1.06
+        ],
+        [
+          "Net-(P2-P1)",
+          1.04
+        ],
+        [
+          "Net-(P3-P1)",
+          1.03
+        ],
+        [
+          "Net-(U1B-K)",
+          1.01
+        ]
+      ],
+      "longest_signal_nets_mm": [
+        [
+          "Net-(P2-P1)",
+          55.4
+        ],
+        [
+          "Net-(P4-P1)",
+          26.3
+        ],
+        [
+          "Net-(U1A-G)",
+          20.7
+        ],
+        [
+          "Net-(P1-PM)",
+          20.3
+        ],
+        [
+          "Net-(U1A-K)",
+          19.6
+        ]
+      ],
+      "vias_per_net_max": null
+    },
+    "ecc83.drc": {
+      "seconds": 3.1,
+      "copper_edge_clearance": 4,
+      "silk_overlap": 3,
+      "unconnected_items": 0
+    },
+    "odh.dsn_cli_s": 0.51,
+    "odh.dsn_api_job": "status=1 live_board=True",
+    "odh.metrics": {
+      "segments": 823,
+      "arcs": 0,
+      "vias": 80,
+      "track_length_mm": 1816.7,
+      "non_45_segments": 0,
+      "non_45_examples": [],
+      "bend_histogram": {
+        "0": 48,
+        "45": 444,
+        "90": 51,
+        "135": 5
+      },
+      "acute_bends": 5,
+      "dangling_ends": 0,
+      "detour_median": 1.16,
+      "detour_worst": [
+        [
+          "/Power/BQ_TS",
+          1.82
+        ],
+        [
+          "/Power/BQ_TMR",
+          1.66
+        ],
+        [
+          "/Power/PWR_EN",
+          1.65
+        ],
+        [
+          "Net-(U203-Pad1)",
+          1.59
+        ],
+        [
+          "Net-(U203A-+)",
+          1.57
+        ],
+        [
+          "/MCU/USB_DM_C",
+          1.43
+        ],
+        [
+          "/Power/VBAT_PROT",
+          1.42
+        ],
+        [
+          "/MCU/USB_DP",
+          1.4
+        ]
+      ],
+      "longest_signal_nets_mm": [
+        [
+          "/Display_SD_RTC/I2C_LOC_SDA",
+          58.8
+        ],
+        [
+          "/Display_SD_RTC/I2C_LOC_SCL",
+          58.0
+        ],
+        [
+          "/Display_SD_RTC/SPI_SCK",
+          53.9
+        ],
+        [
+          "/Display_SD_RTC/SPI_MOSI",
+          48.3
+        ],
+        [
+          "/Display_SD_RTC/SPI_MISO",
+          46.6
+        ]
+      ],
+      "vias_per_net_max": [
+        "+3V3",
+        9
+      ]
+    },
+    "odh.drc": {
+      "seconds": 3.2,
+      "hole_clearance": 4,
+      "drill_out_of_range": 16,
+      "silk_edge_clearance": 2,
+      "lib_footprint_mismatch": 1,
+      "silk_overlap": 63,
+      "silk_over_copper": 65,
+      "unconnected_items": 0
+    }
+  }
+}

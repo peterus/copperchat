@@ -1,0 +1,10 @@
+PASS q07_show.save_document_to_string: 98696 chars in 0.025s
+PASS q07_show.svg_layers_and_composite: 4 svgs, [0.57, 0.54, 0.57, 0.55] s each
+PASS q07_show.render_3d_top: 1.11s rc=0
+PASS q07_show.render_3d_iso_high: 8.54s rc=0
+PASS q07_show.step_export: 0.55s 66217 bytes; missing-model lines=22 e.g. ['Could not add 3D model for C2.', 'File not found: ${KICAD10_3DMODEL_DIR}/Capacitor_THT.3dshapes/C_Disc_D4.7mm_W2.5mm_P5.00mm.step']
+NOTE q07_show.models_in_image: no /usr/share/kicad/3dmodels: component bodies missing in STEP and 3D render
+PASS q07_show.glb_export: 0.59s 119684 bytes
+PASS q07_show.odh_3d: svg 0.62s, 3d 1.19s
+PASS q07_show.odh_step: 0.65s 118220 bytes
+DONE q07_show: 8 pass, 0 fail
