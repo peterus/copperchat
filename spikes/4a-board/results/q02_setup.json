@@ -1,0 +1,164 @@
+{
+  "question": "q02_setup",
+  "checks": [
+    {
+      "name": "outline_rounded_rect",
+      "ok": true,
+      "evidence": "edge shapes=1 radius=3000000"
+    },
+    {
+      "name": "place_from_library_without_load",
+      "ok": true,
+      "evidence": "worked without load_all_libraries"
+    },
+    {
+      "name": "mounting_holes_placed",
+      "ok": true,
+      "evidence": "4 holes, pads=[1, 1, 1, 1], refs=['H4', 'H3', 'H2', 'H1']"
+    },
+    {
+      "name": "set_4_layers",
+      "ok": true,
+      "evidence": "count=4 in1=True 0.03s"
+    },
+    {
+      "name": "update_stackup_no_handler",
+      "ok": true,
+      "evidence": "KiCad returned error: no handler available for request of type kiapi.board.commands.UpdateBoardStackup"
+    },
+    {
+      "name": "set_design_rules",
+      "ok": true,
+      "evidence": "clearance=127000 tracks=[200000, 300000, 500000, 800000] errors=[]"
+    },
+    {
+      "name": "project_path_mismatch",
+      "ok": true,
+      "evidence": "KiCad returned error: the requested project ecc83-pp is not open at path /tmp/q02-gzuf623z/ecc83"
+    },
+    {
+      "name": "set_net_classes",
+      "ok": true,
+      "evidence": "['Default', 'Power']"
+    },
+    {
+      "name": "net_class_assignment_applies",
+      "ok": true,
+      "evidence": "{'GND': ('Effective for net: GND', ['Power', 'Default'], 500000)}"
+    },
+    {
+      "name": "custom_rules",
+      "ok": true,
+      "evidence": "status=CRS_VALID err='' n=1"
+    },
+    {
+      "name": "keepout_rule_area",
+      "ok": true,
+      "evidence": "rule areas=1 name=ANT_KEEPOUT"
+    },
+    {
+      "name": "file_has_4_cu_layers",
+      "ok": true,
+      "evidence": "In1/In2 in (layers)"
+    },
+    {
+      "name": "stackup_not_persisted",
+      "ok": true,
+      "evidence": "no (stackup ...) section in the saved board"
+    },
+    {
+      "name": "project_has_rules_and_netclass",
+      "ok": true,
+      "evidence": "rules.min_clearance=0.127 classes=['Default', 'Power'] patterns=[{'netclass': 'Power', 'pattern': 'GND'}]"
+    },
+    {
+      "name": "custom_rules_file",
+      "ok": true,
+      "evidence": "(version 2)\n\n(rule \"pwr_width\"\n\t(condition \"A.NetClass == 'Power'\")\n\t(constraint track_width (min 0.4mm))\n)\n"
+    },
+    {
+      "name": "set_2_layers",
+      "ok": true,
+      "evidence": "2"
+    },
+    {
+      "name": "drc_runs_with_outline",
+      "ok": true,
+      "evidence": "violations={'courtyards_overlap': 1, 'hole_to_hole': 1, 'silk_overlap': 1, 'npth_inside_courtyard': 2, 'silk_edge_clearance': 3, 'copper_outside_board': 33} parity=['Extra footprint'] unconnected=20 parity=5"
+    }
+  ],
+  "notes": {
+    "board_bbox": "box {\n  position {\n    x_nm: 99975000\n    y_nm: 99975000\n  }\n  size {\n    x_nm: 60050000\n    y_nm: 40050000\n  }\n}\n modes=['BBBM_UNKNOWN', 'BBBM_ALL_ITEMS', 'BBBM_PHYSICAL_LAYERS_ONLY', 'BBBM_BOARD_EDGES_ONLY']",
+    "lazy_lib_load_s": 0.07,
+    "copper_before": 2,
+    "stackup_after_4": [
+      [
+        "BL_F_SilkS",
+        0.0,
+        ""
+      ],
+      [
+        "BL_F_Paste",
+        0.0,
+        ""
+      ],
+      [
+        "BL_F_Mask",
+        10.0,
+        ""
+      ],
+      [
+        "BL_F_Cu",
+        35.0,
+        "copper"
+      ],
+      [
+        "BL_UNDEFINED",
+        480.0,
+        ""
+      ],
+      [
+        "BL_In1_Cu",
+        35.0,
+        "copper"
+      ],
+      [
+        "BL_UNDEFINED",
+        480.0,
+        ""
+      ],
+      [
+        "BL_In2_Cu",
+        35.0,
+        "copper"
+      ],
+      [
+        "BL_UNDEFINED",
+        480.0,
+        ""
+      ],
+      [
+        "BL_B_Cu",
+        35.0,
+        "copper"
+      ],
+      [
+        "BL_B_Mask",
+        10.0,
+        ""
+      ],
+      [
+        "BL_B_Paste",
+        0.0,
+        ""
+      ],
+      [
+        "BL_B_SilkS",
+        0.0,
+        ""
+      ]
+    ],
+    "design_rules_before": "rules {\n  constraints {\n    min_clearance {\n    }\n    min_groove_width {\n    }\n    min_connection_width {\n    }\n    min_track_width {\n      value_nm: 200000\n    }\n    min_via_annular_width {\n      value_nm: 50000\n    }\n    min_via_size {\n      value_nm: 400000\n    }\n    min_through_drill {\n      value_nm: 300000\n    }\n    min_microvia_size {\n      value_nm: 200000\n    }\n    min_microvia_drill {\n      value_nm: 100000\n    }\n    copper_edge_clearance {\n      value_nm: 10000\n    }\n    hole_clearance {\n    }\n    hole_to_hole_min {\n      value_nm: 250000\n    }\n    silk_clearance {\n    }\n    min_resolved_spokes: 2\n    min_silk_text_height {\n      value_nm: 800000\n    }\n    min_silk_text_thickness {\n      value_nm: 120000\n    }\n  }\n  predefined_sizes {\n  }\n  solder_mask_paste {\n    mask_expansion",
+    "project_spec_from_board": "name='ecc83-pp' path='/tmp/q02-gzuf623z/ecc83'"
+  }
+}

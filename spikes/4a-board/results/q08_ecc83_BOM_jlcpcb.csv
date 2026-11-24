@@ -1,0 +1,11 @@
+Comment,Designator,Footprint,JLCPCB Part #
+10uF,C1,CP_Radial_D10.0mm_P5.00mm,
+680nF,C2,C_Disc_D4.7mm_W2.5mm_P5.00mm,
+IN,P1,Altech_AK300_1x02_P5.00mm_45-Degree,
+OUT,P2,Altech_AK300_1x02_P5.00mm_45-Degree,
+POWER,P3,Altech_AK300_1x02_P5.00mm_45-Degree,
+CONN_2,P4,Altech_AK300_1x02_P5.00mm_45-Degree,
+1.5K,"R1,R2",R_Axial_DIN0207_L6.3mm_D2.5mm_P7.62mm_Horizontal,
+100K,R3,R_Axial_DIN0207_L6.3mm_D2.5mm_P7.62mm_Horizontal,
+47K,R4,R_Axial_DIN0207_L6.3mm_D2.5mm_P7.62mm_Horizontal,
+ECC83,U1,Valve_ECC-83-1,

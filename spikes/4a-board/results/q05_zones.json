@@ -1,0 +1,251 @@
+{
+  "question": "q05_zones",
+  "checks": [
+    {
+      "name": "hybrid.freerouting",
+      "ok": true,
+      "evidence": "{'rc': 0, 'seconds': 61.2, 'ses': True, 'log': [\"Auto-routing pass #3 on board 'f4f5cd23ca31f6d82f2be047ede791fa' was completed in 0.11 seconds with score 1000.00 (0 unrouted and 0 violations), using 13.73 CPU seconds and the job allocated 7.79 GB of memory so far.\", 'Auto-routing stage completed: started with 225 unrouted nets, completed in 14.31 seconds, final score: 1000.00 (0 unrouted and 0 violations), using 13.73 total CPU seconds, 7.79 GB total allocated, and 259.4 MB peak heap usage.', \"Optimization stage started on board '8d38be9a594d6bd2924d31f415654ae4'. Baseline router score: 1000.00, optimizer score: 760.07, incomplete connections: 0, clearance violations: 0.\", \"Optimizer pass #1 on board '744a27b8de8e7d8417389c1de7418003' was completed in 42.57 seconds with the score of 772.26 (0 unrouted and 0 violations).\", 'Optimization stage completed:. Baseline router score: 1000.00, baseline optimizer score: 760.07, final router score: 1000.00, final optimizer score: 772.26, completed in 43.16 seconds, using 162.49 total CPU seconds, 78.97 GB total allocated, and 647.6 MB peak heap usage.', \"Job '56EF83\\\\024253' finished with state: COMPLETED (elapsed: 58.04 seconds, finished at UTC: 2026-11-24T18:55:07.930285516Z).\"]}"
+    },
+    {
+      "name": "hybrid.gnd_fanout",
+      "ok": false,
+      "evidence": "{'smd_pads': 64, 'fanned_out': 48, 'failed': 16, 'drc_rounds': 16, 'seconds': 13.8}"
+    },
+    {
+      "name": "hybrid.complete",
+      "ok": false,
+      "evidence": "unconnected=2 dangling_vias=0"
+    },
+    {
+      "name": "inner_planes_filled",
+      "ok": true,
+      "evidence": "{'GND_In1': 1, 'GND_In2': 1}"
+    },
+    {
+      "name": "freerouting_with_planes",
+      "ok": true,
+      "evidence": "{'rc': 0, 'seconds': 194.1, 'ses': True, 'log': [\"Auto-routing pass #16 on board '337d984488270a0fee9087f7e8c32780' was completed in 0.00 seconds with score 936.51 (11 unrouted and 0 violations), using 170.49 CPU seconds and the job allocated 119.09 GB of memory so far.\", \"Auto-routing pass #17 on board '337d984488270a0fee9087f7e8c32780' was completed in 6.57 seconds with score 480.52 (90 unrouted and 0 violations), using 177.40 CPU seconds and the job allocated 124.46 GB of memory so far.\", \"Auto-routing pass #18 on board '42974c0e40699aee65338cdf6b2218ca' was completed in 10.85 seconds with score 486.29 (89 unrouted and 0 violations), using 188.32 CPU seconds and the job allocated 132.39 GB of memory so far.\", 'Auto-routing stage completed: started with 227 unrouted nets, completed in 190.48 seconds, final score: 936.51 (11 unrouted and 0 violations), using 188.32 total CPU seconds, 132.39 GB total allocated, and 550.0 MB peak heap usage.', 'Skipping optimization stage: the board has 11 unrouted connection(s) (optimizer only runs on completely routed boards).', \"Job '8ED06D\\\\3B1674' finished with state: COMPLETED (elapsed: 3 minutes 10.85 seconds, finished at UTC: 2026-11-24T18:58:50.679411453Z).\"]}"
+    },
+    {
+      "name": "planes_in_dsn_leave_unrouted",
+      "ok": true,
+      "evidence": "cli unconnected=7 api=7"
+    },
+    {
+      "name": "drc_reports_courtyard_and_silk",
+      "ok": true,
+      "evidence": "{'silk_edge_clearance': 2, 'silk_overlap': 63, 'silk_over_copper': 65}"
+    },
+    {
+      "name": "api_vs_cli_same_unconnected",
+      "ok": true,
+      "evidence": "(7, 7)"
+    },
+    {
+      "name": "stitching_vias_legalised_by_drc",
+      "ok": true,
+      "evidence": "192 candidates, 66 rejected by DRC, 126 kept, 2.0s; after: {'DRCET_UNCONNECTED_ITEMS': 7, 'DRCET_HOLE_CLEARANCE': 4, 'DRCET_DRILL_OUT_OF_RANGE': 16, 'DRCET_TRACK_WIDTH': 2, 'DRCET_DANGLING_VIA': 10, 'DRCET_SILK_EDGE_CLEARANCE': 2, 'DRCET_LIB_FOOTPRINT_MISMATCH': 1, 'DRCET_SILK_CLEARANCE': 63, 'DRCET_SILK_MASK_CLEARANCE': 65}"
+    }
+  ],
+  "notes": {
+    "hybrid.gnd_items_removed": 239,
+    "hybrid.metrics": {
+      "segments": 614,
+      "arcs": 0,
+      "vias": 123,
+      "track_length_mm": 1473.8,
+      "non_45_segments": 0,
+      "non_45_examples": [],
+      "bend_histogram": {
+        "0": 24,
+        "45": 314,
+        "90": 31,
+        "135": 3
+      },
+      "acute_bends": 3,
+      "dangling_ends": 0,
+      "detour_median": 1.14,
+      "detour_worst": [
+        [
+          "/Power/BQ_TS",
+          3.85
+        ],
+        [
+          "/MCU/USB_DM_C",
+          1.66
+        ],
+        [
+          "/Power/BQ_TMR",
+          1.63
+        ],
+        [
+          "Net-(U301-EN)",
+          1.59
+        ],
+        [
+          "/MCU/PWR_HOLD",
+          1.52
+        ],
+        [
+          "/MCU/USB_DM",
+          1.4
+        ],
+        [
+          "/MCU/USB_DP",
+          1.4
+        ],
+        [
+          "/IO_INT",
+          1.37
+        ]
+      ],
+      "longest_signal_nets_mm": [
+        [
+          "/Display_SD_RTC/I2C_LOC_SDA",
+          60.2
+        ],
+        [
+          "/Display_SD_RTC/I2C_LOC_SCL",
+          58.1
+        ],
+        [
+          "/Display_SD_RTC/SPI_SCK",
+          53.5
+        ],
+        [
+          "/Display_SD_RTC/SPI_MISO",
+          53.2
+        ],
+        [
+          "/MCU/USB_DM_C",
+          48.2
+        ]
+      ],
+      "vias_per_net_max": [
+        "GND",
+        48
+      ]
+    },
+    "hybrid.api_drc": {
+      "seconds": 0.21,
+      "DRCET_UNCONNECTED_ITEMS": 2,
+      "DRCET_HOLE_CLEARANCE": 4,
+      "DRCET_DRILL_OUT_OF_RANGE": 16,
+      "DRCET_TRACK_WIDTH": 2,
+      "DRCET_SILK_EDGE_CLEARANCE": 2,
+      "DRCET_LIB_FOOTPRINT_MISMATCH": 1,
+      "DRCET_SILK_CLEARANCE": 63,
+      "DRCET_SILK_MASK_CLEARANCE": 65
+    },
+    "power_class_nets": [
+      "+3V3",
+      "/Power/VSYS",
+      "/VBUS"
+    ],
+    "refill_inner_s": 0.56,
+    "dsn_zone_export": "protect wires=2 layers=['(type signal)', '(type signal)', '(type signal)', '(type signal)']",
+    "refill_all_s": 0.73,
+    "metrics_with_planes": {
+      "segments": 777,
+      "arcs": 0,
+      "vias": 89,
+      "track_length_mm": 1671.4,
+      "non_45_segments": 0,
+      "non_45_examples": [],
+      "bend_histogram": {
+        "0": 59,
+        "45": 392,
+        "90": 53,
+        "135": 1
+      },
+      "acute_bends": 1,
+      "dangling_ends": 0,
+      "detour_median": 1.11,
+      "detour_worst": [
+        [
+          "/Power/BQ_TS",
+          1.89
+        ],
+        [
+          "Net-(U203A-+)",
+          1.57
+        ],
+        [
+          "/Power/CHG_N",
+          1.4
+        ],
+        [
+          "/MCU/USB_DP",
+          1.4
+        ],
+        [
+          "/MCU/USB_DM",
+          1.39
+        ],
+        [
+          "/I2C_IO_SDA",
+          1.37
+        ],
+        [
+          "Net-(U202-L2)",
+          1.36
+        ],
+        [
+          "/MCU/VBAT_ADC",
+          1.34
+        ]
+      ],
+      "longest_signal_nets_mm": [
+        [
+          "/Display_SD_RTC/I2C_LOC_SDA",
+          59.6
+        ],
+        [
+          "/Display_SD_RTC/SPI_MISO",
+          49.6
+        ],
+        [
+          "/Display_SD_RTC/I2C_LOC_SCL",
+          47.1
+        ],
+        [
+          "/Display_SD_RTC/SPI_MOSI",
+          46.7
+        ],
+        [
+          "/Power/BTN",
+          43.4
+        ]
+      ],
+      "vias_per_net_max": [
+        "GND",
+        13
+      ]
+    },
+    "api_drc": {
+      "seconds": 0.22,
+      "DRCET_UNCONNECTED_ITEMS": 7,
+      "DRCET_HOLE_CLEARANCE": 4,
+      "DRCET_DRILL_OUT_OF_RANGE": 16,
+      "DRCET_TRACK_WIDTH": 2,
+      "DRCET_DANGLING_VIA": 10,
+      "DRCET_SILK_EDGE_CLEARANCE": 2,
+      "DRCET_LIB_FOOTPRINT_MISMATCH": 1,
+      "DRCET_SILK_CLEARANCE": 63,
+      "DRCET_SILK_MASK_CLEARANCE": 65
+    },
+    "cli_drc": {
+      "seconds": 7.07,
+      "hole_clearance": 4,
+      "drill_out_of_range": 16,
+      "track_width": 2,
+      "via_dangling": 10,
+      "silk_edge_clearance": 2,
+      "lib_footprint_mismatch": 1,
+      "silk_overlap": 63,
+      "silk_over_copper": 65,
+      "unconnected_items": 7,
+      "schematic_parity": 4
+    }
+  }
+}

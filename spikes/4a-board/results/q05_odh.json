@@ -1,0 +1,116 @@
+{
+  "freerouting": {
+    "rc": 0,
+    "seconds": 194.1,
+    "ses": true,
+    "log": [
+      "Auto-routing pass #16 on board '337d984488270a0fee9087f7e8c32780' was completed in 0.00 seconds with score 936.51 (11 unrouted and 0 violations), using 170.49 CPU seconds and the job allocated 119.09 GB of memory so far.",
+      "Auto-routing pass #17 on board '337d984488270a0fee9087f7e8c32780' was completed in 6.57 seconds with score 480.52 (90 unrouted and 0 violations), using 177.40 CPU seconds and the job allocated 124.46 GB of memory so far.",
+      "Auto-routing pass #18 on board '42974c0e40699aee65338cdf6b2218ca' was completed in 10.85 seconds with score 486.29 (89 unrouted and 0 violations), using 188.32 CPU seconds and the job allocated 132.39 GB of memory so far.",
+      "Auto-routing stage completed: started with 227 unrouted nets, completed in 190.48 seconds, final score: 936.51 (11 unrouted and 0 violations), using 188.32 total CPU seconds, 132.39 GB total allocated, and 550.0 MB peak heap usage.",
+      "Skipping optimization stage: the board has 11 unrouted connection(s) (optimizer only runs on completely routed boards).",
+      "Job '8ED06D\\3B1674' finished with state: COMPLETED (elapsed: 3 minutes 10.85 seconds, finished at UTC: 2026-11-24T18:58:50.679411453Z)."
+    ]
+  },
+  "metrics": {
+    "segments": 777,
+    "arcs": 0,
+    "vias": 89,
+    "track_length_mm": 1671.4,
+    "non_45_segments": 0,
+    "non_45_examples": [],
+    "bend_histogram": {
+      "0": 59,
+      "45": 392,
+      "90": 53,
+      "135": 1
+    },
+    "acute_bends": 1,
+    "dangling_ends": 0,
+    "detour_median": 1.11,
+    "detour_worst": [
+      [
+        "/Power/BQ_TS",
+        1.89
+      ],
+      [
+        "Net-(U203A-+)",
+        1.57
+      ],
+      [
+        "/Power/CHG_N",
+        1.4
+      ],
+      [
+        "/MCU/USB_DP",
+        1.4
+      ],
+      [
+        "/MCU/USB_DM",
+        1.39
+      ],
+      [
+        "/I2C_IO_SDA",
+        1.37
+      ],
+      [
+        "Net-(U202-L2)",
+        1.36
+      ],
+      [
+        "/MCU/VBAT_ADC",
+        1.34
+      ]
+    ],
+    "longest_signal_nets_mm": [
+      [
+        "/Display_SD_RTC/I2C_LOC_SDA",
+        59.6
+      ],
+      [
+        "/Display_SD_RTC/SPI_MISO",
+        49.6
+      ],
+      [
+        "/Display_SD_RTC/I2C_LOC_SCL",
+        47.1
+      ],
+      [
+        "/Display_SD_RTC/SPI_MOSI",
+        46.7
+      ],
+      [
+        "/Power/BTN",
+        43.4
+      ]
+    ],
+    "vias_per_net_max": [
+      "GND",
+      13
+    ]
+  },
+  "api_drc": {
+    "DRCET_UNCONNECTED_ITEMS": 7,
+    "DRCET_HOLE_CLEARANCE": 4,
+    "DRCET_DRILL_OUT_OF_RANGE": 16,
+    "DRCET_TRACK_WIDTH": 2,
+    "DRCET_DANGLING_VIA": 10,
+    "DRCET_SILK_EDGE_CLEARANCE": 2,
+    "DRCET_LIB_FOOTPRINT_MISMATCH": 1,
+    "DRCET_SILK_CLEARANCE": 63,
+    "DRCET_SILK_MASK_CLEARANCE": 65
+  },
+  "cli_drc": {
+    "hole_clearance": 4,
+    "drill_out_of_range": 16,
+    "track_width": 2,
+    "via_dangling": 10,
+    "silk_edge_clearance": 2,
+    "lib_footprint_mismatch": 1,
+    "silk_overlap": 63,
+    "silk_over_copper": 65,
+    "unconnected_items": 7,
+    "schematic_parity": 4
+  },
+  "import": ""
+}

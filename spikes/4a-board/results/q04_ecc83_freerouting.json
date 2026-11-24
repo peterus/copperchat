@@ -1,0 +1,92 @@
+{
+  "freerouting": {
+    "rc": 0,
+    "seconds": 3.7,
+    "ses": true,
+    "log": [
+      "Auto-routing pass #1 on board '76f4248b316c65ffc482dab68c5ec0ed' was completed in 0.46 seconds with score 1000.00 (0 unrouted and 0 violations).",
+      "Auto-routing pass #2 on board '7c002257769773b7e4fc43665c46b314' was completed in 0.03 seconds with score 1000.00 (0 unrouted and 0 violations).",
+      "Auto-routing stage completed: started with 20 unrouted nets, completed in 0.84 seconds, final score: 1000.00 (0 unrouted and 0 violations), using 0.00 total CPU seconds, 0.00 GB total allocated, and 0.0 MB peak heap usage.",
+      "Skipping optimization stage: the board has no vias to eliminate and trace length (274.97 mm) is within 5% of theoretical minimum (309.96 mm).",
+      "Job 'DD4B0A\\31CF72' finished with state: COMPLETED (elapsed: 1.02 seconds, finished at UTC: 2026-11-24T18:49:40.504622231Z)."
+    ]
+  },
+  "metrics": {
+    "segments": 53,
+    "arcs": 0,
+    "vias": 0,
+    "track_length_mm": 275.0,
+    "non_45_segments": 0,
+    "non_45_examples": [],
+    "bend_histogram": {
+      "0": 3,
+      "45": 32,
+      "90": 1
+    },
+    "acute_bends": 0,
+    "dangling_ends": 0,
+    "detour_median": 1.07,
+    "detour_worst": [
+      [
+        "Net-(P4-P1)",
+        1.25
+      ],
+      [
+        "Net-(P1-PM)",
+        1.21
+      ],
+      [
+        "Net-(P4-PM)",
+        1.07
+      ],
+      [
+        "Net-(U1A-G)",
+        1.07
+      ],
+      [
+        "Net-(U1A-K)",
+        1.06
+      ],
+      [
+        "Net-(P2-P1)",
+        1.04
+      ],
+      [
+        "Net-(P3-P1)",
+        1.03
+      ],
+      [
+        "Net-(U1B-K)",
+        1.01
+      ]
+    ],
+    "longest_signal_nets_mm": [
+      [
+        "Net-(P2-P1)",
+        55.4
+      ],
+      [
+        "Net-(P4-P1)",
+        26.3
+      ],
+      [
+        "Net-(U1A-G)",
+        20.7
+      ],
+      [
+        "Net-(P1-PM)",
+        20.3
+      ],
+      [
+        "Net-(U1A-K)",
+        19.6
+      ]
+    ],
+    "vias_per_net_max": null
+  },
+  "drc": {
+    "copper_edge_clearance": 4,
+    "silk_overlap": 3,
+    "unconnected_items": 0
+  }
+}

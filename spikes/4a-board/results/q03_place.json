@@ -1,0 +1,234 @@
+{
+  "question": "q03_place",
+  "checks": [
+    {
+      "name": "ecc83.courtyards_present",
+      "ok": true,
+      "evidence": "15/15 footprints have F/B.CrtYd shapes; bboxes=15"
+    },
+    {
+      "name": "ecc83.placement_legal_by_boxes",
+      "ok": true,
+      "evidence": "overlaps=[] outside=[]"
+    },
+    {
+      "name": "ecc83.airwire_improved",
+      "ok": true,
+      "evidence": "323 -> 252 mm"
+    },
+    {
+      "name": "ecc83.groups_via_api",
+      "ok": true,
+      "evidence": "created 1 groups, read back 1, 0.02s; first=blk_U1 n_items=11"
+    },
+    {
+      "name": "ecc83.drc_no_courtyard_overlap",
+      "ok": true,
+      "evidence": "{'copper_edge_clearance': 4, 'silk_overlap': 3, 'unconnected_items': 20}"
+    },
+    {
+      "name": "odh.courtyards_present",
+      "ok": true,
+      "evidence": "80/80 footprints have F/B.CrtYd shapes; bboxes=80"
+    },
+    {
+      "name": "odh.placement_legal_by_boxes",
+      "ok": true,
+      "evidence": "overlaps=[] outside=[]"
+    },
+    {
+      "name": "odh.airwire_improved",
+      "ok": true,
+      "evidence": "2667 -> 1466 mm"
+    },
+    {
+      "name": "odh.groups_via_api",
+      "ok": true,
+      "evidence": "created 10 groups, read back 10, 0.02s; first=blk_J402 n_items=3"
+    },
+    {
+      "name": "odh.drc_no_courtyard_overlap",
+      "ok": true,
+      "evidence": "{'hole_clearance': 4, 'drill_out_of_range': 16, 'silk_edge_clearance': 2, 'lib_footprint_mismatch': 1, 'silk_overlap': 63, 'silk_over_copper': 65, 'unconnected_items': 209}"
+    }
+  ],
+  "notes": {
+    "ecc83_ref.airwire_mm": 237.5,
+    "ecc83_ref.hpwl_mm": 243.0,
+    "ecc83_ref.parts_extent_mm": [
+      51.6,
+      47.0
+    ],
+    "ecc83.import_positions_airwire_mm": 322.5,
+    "ecc83.bbox_all_s": 0.004,
+    "ecc83.timing": {
+      "read_s": 0.037,
+      "blocks": {
+        "split": [],
+        "evaluated": 48
+      },
+      "place_blocks_s": 0.32,
+      "refine_moves": 12,
+      "place_s": 0.583,
+      "apply_s": 0.024,
+      "overlaps": [],
+      "outside": []
+    },
+    "ecc83.clusters": {
+      "U1": [
+        "U1",
+        "C1",
+        "C2",
+        "P4",
+        "P3",
+        "P1",
+        "R4",
+        "R2",
+        "R1",
+        "P2",
+        "R3"
+      ]
+    },
+    "ecc83.global_nets": [
+      "GND"
+    ],
+    "ecc83.placed_airwire_mm": 252.4,
+    "ecc83.placed_hpwl_mm": 289.1,
+    "ecc83.drc_s": 3.14,
+    "ecc83.render_s": 0.57,
+    "odh.import_positions_airwire_mm": 2666.9,
+    "odh.bbox_all_s": 0.012,
+    "odh.timing": {
+      "read_s": 0.046,
+      "blocks": {
+        "split": [],
+        "evaluated": 117952
+      },
+      "place_blocks_s": 1.04,
+      "refine_moves": 50,
+      "place_s": 3.073,
+      "apply_s": 0.086,
+      "overlaps": [
+        [
+          "J301",
+          "U301"
+        ],
+        [
+          "Q203",
+          "R205"
+        ]
+      ],
+      "outside": []
+    },
+    "odh.clusters": {
+      "J402": [
+        "J402",
+        "C401",
+        "C402"
+      ],
+      "J501": [
+        "J501",
+        "R503",
+        "R502",
+        "R501"
+      ],
+      "J401": [
+        "J401",
+        "R402",
+        "R401"
+      ],
+      "J302": [
+        "J302",
+        "R303",
+        "R302"
+      ],
+      "U201": [
+        "U201",
+        "C213",
+        "C212",
+        "C202",
+        "C204",
+        "C203",
+        "C206",
+        "D203",
+        "Q203",
+        "Q201",
+        "R203",
+        "R215",
+        "R208",
+        "R207",
+        "R206",
+        "R205",
+        "R204",
+        "J201",
+        "R222"
+      ],
+      "U203": [
+        "U203",
+        "C211",
+        "R220",
+        "R219",
+        "R217",
+        "R218"
+      ],
+      "U401": [
+        "U401",
+        "BT401",
+        "C403",
+        "Y401"
+      ],
+      "U202": [
+        "U202",
+        "C210",
+        "C209",
+        "C208",
+        "C207",
+        "C205",
+        "D201",
+        "D202",
+        "L201",
+        "R212",
+        "R211",
+        "R210",
+        "R209",
+        "J202",
+        "R213"
+      ],
+      "U302": [
+        "U302"
+      ],
+      "U204": [
+        "U204",
+        "Q205",
+        "R221"
+      ],
+      "U301": [
+        "U301",
+        "SW301",
+        "SW302",
+        "C201",
+        "C301",
+        "C302",
+        "C303",
+        "J301",
+        "Q202",
+        "Q204",
+        "R201",
+        "R202",
+        "R301",
+        "R216",
+        "R214"
+      ]
+    },
+    "odh.global_nets": [
+      "+3V3",
+      "/Power/VSYS",
+      "/VBUS",
+      "GND"
+    ],
+    "odh.placed_airwire_mm": 1465.9,
+    "odh.placed_hpwl_mm": 1322.2,
+    "odh.drc_s": 3.15,
+    "odh.render_s": 0.59
+  }
+}
