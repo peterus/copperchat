@@ -932,6 +932,9 @@ M13's "overhanging it" uses the same clip. Both switch settings are tested.
 - `read.py` `net_class_of` takes KiCad's combined class name ("Effective for net: +3V3") for a
   net with a pattern-assigned class instead of the class itself (KiCad's own lookup shows the
   class). **P3a (M12) / P5b** should map it to the constituent class (P1a file, not changed here).
+- The tool-hole mark is the footprint description: a tool hole duplicated in pcbnew carries it
+  (and is replaced by the next `pcb_set_outline {holes}`), and "update footprint from library"
+  resets it (the hole then counts as hand-placed and is kept, so a re-run adds another).
 - `test_parity_clean_after_set_outline` passes, but `sp4_synth`'s parity report was empty
   before the outline too; that a hole without the attributes would raise a parity item is
   unverified.

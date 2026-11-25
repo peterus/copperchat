@@ -160,6 +160,9 @@ def parse_outline_args(args: dict[str, Any]) -> OutlineArgs:
         holes = HolesArgs(str(ha.get("footprint", DEFAULT_HOLE)), inset, positions)
     keepouts = tuple(_keepout(k) for k in args.get("keepouts", ()))
     names = [k.name for k in keepouts]
+    bad = [n for n in names if not RULE_NAME.fullmatch(n)]
+    if bad:  # the schema pattern's "$" also admits a trailing newline
+        raise _invalid(f"keepout name {bad[0]!r} is not allowed", f"Use {RULE_NAME.pattern}.")
     if len(set(names)) != len(names):
         raise _invalid("two keepouts have the same name", "Give every keepout its own name.")
     return OutlineArgs(x, y, w, h, r, holes, keepouts)
@@ -557,7 +560,7 @@ MAX_REFUSED_ITEMS = 20
 RULE_TOL_MM = 0.0005  # read-back tolerance of every rule value
 # Names of rules and net classes: specs_setup.NAME_PATTERN (plan call 6; a copy, because
 # specs_setup imports this module).
-RULE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.+-]{0,63}$")
+RULE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.+-]{0,63}$")  # used with fullmatch
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 # FabPreset minimum -> KiCad board design rule (`MinimumConstraints` field), B-C8.
@@ -678,7 +681,7 @@ def _dru_text(value: Any, name: str, lo: int, hi: int) -> str:
 
 
 def _rules_name(value: Any, name: str) -> str:
-    if not isinstance(value, str) or not RULE_NAME.match(value):
+    if not isinstance(value, str) or not RULE_NAME.fullmatch(value):
         raise _rules_invalid(f"{name} must match {RULE_NAME.pattern}")
     return value
 
@@ -783,8 +786,9 @@ def _custom_rule(i: int, value: Any) -> CustomRuleArgs:
 
 
 def parse_rules_args(args: Any) -> RulesArgs:
-    """The arguments of `pcb_set_rules`, checked completely (the adapter does not
-    validate the schema): bounds, closed objects, names, at least one field; plus what
+    """The arguments of `pcb_set_rules`, checked completely (the SDK validates the
+    schema before the handler; this re-check is defence in depth): bounds, closed
+    objects, names, at least one field; plus what
     JSON Schema cannot express (unique names, via drill < diameter, min <= max, a
     meaningful reason, no control characters in KiCad rule text). `invalid_argument`
     otherwise. The preset-floor check of `overrides` needs the board's layer count:
@@ -817,6 +821,7 @@ def parse_rules_args(args: Any) -> RulesArgs:
         )
     )
     _unique([c.name for c in classes], "net classes")
+    _unique([p for c in classes for p in c.patterns], "net class patterns")
     rules = tuple(
         _custom_rule(i, r)
         for i, r in enumerate(
@@ -885,7 +890,8 @@ def removed_layers(current: int, target: int) -> set[str]:
 
 
 def _items_on(h: KicadHandle, layers: set[str]) -> list[dict[str, str]]:
-    """Tracks, arcs, zones, graphics and texts on any of `layers` (kind, KIID, layer)."""
+    """Tracks, arcs, vias (drill start/end), zones, graphics and texts on any of `layers`
+    (kind, KIID, layer). A through via starts/ends on F.Cu/B.Cu and is never listed."""
     board = h.board()
     out: list[dict[str, str]] = []
 
@@ -896,6 +902,11 @@ def _items_on(h: KicadHandle, layers: set[str]) -> list[dict[str, str]]:
 
     for t in board.get_tracks():
         add("arc" if isinstance(t, ArcTrack) else "track", t, [str(canonical_name(t.layer))])
+    for v in board.get_vias():  # a blind/buried via ending on a removed layer
+        drill = v.padstack.drill
+        add(
+            "via", v, [str(canonical_name(drill.start_layer)), str(canonical_name(drill.end_layer))]
+        )
     for z in board.get_zones():
         add("zone", z, [str(canonical_name(x)) for x in z.layers])
     for s in board.get_shapes():
@@ -1098,14 +1109,16 @@ async def _undo_custom_rules(sctx: BoardStageContext, state: dict[str, Any]) -> 
     """The pre-call rules back in KiCad; a `.kicad_dru` this call created is removed
     (`remove_created`: a regular file only, never through a symlink) whether or not
     the rules write itself needs undoing."""
-    if "custom" in state:
-        pre = state["custom"]
-        await sctx.call(
-            lambda h: h.board().set_custom_design_rules([CustomRule(proto=p) for p in pre])
-        )
-    if state.get("dru_created"):
-        project = sctx.ctx.project
-        await asyncio.to_thread(remove_created, project.pro_file.parent, [_dru_rel(project)])
+    try:
+        if "custom" in state:
+            pre = state["custom"]
+            await sctx.call(
+                lambda h: h.board().set_custom_design_rules([CustomRule(proto=p) for p in pre])
+            )
+    finally:
+        if state.get("dru_created"):
+            project = sctx.ctx.project
+            await asyncio.to_thread(remove_created, project.pro_file.parent, [_dru_rel(project)])
 
 
 _RULE_HEAD = r'\(rule\s+(?:"{0}"|{0})[\s)]'
@@ -1144,8 +1157,14 @@ def _verify_rules(
                     f"{sorted(have.patterns)}, expected {sorted(c.patterns)}"
                 )
         for r in req.custom_rules:
-            if not re.search(_RULE_HEAD.format(re.escape(r.name)), m.dru_text):
+            head = re.search(_RULE_HEAD.format(re.escape(r.name)), m.dru_text)
+            if not head:
                 problems.append(f"custom rule {r.name!r} missing from the rules file")
+                continue
+            nxt = re.search(r"\(rule\s", m.dru_text[head.end() :])
+            block = m.dru_text[head.start() : head.end() + nxt.start() if nxt else None]
+            if r.condition not in block:
+                problems.append(f"custom rule {r.name!r} reads back with another condition")
         after = board_hash(m)
         report["layers"] = len(m.copper_layers)
         report["board_hash"] = {"before": before_hash, "after": after}

@@ -167,8 +167,9 @@ PCB_SET_OUTLINE_DESCRIPTION = (
     "(default the 4 corners inset by `inset`) and locked; holes placed by an earlier call "
     "are replaced, and the remaining positions get new locked holes that are not in the "
     "schematic and excluded from BOM and position files. Without `holes` no hole is "
-    "touched. `keepouts` creates rule areas (same name = replaced). Returns outline, holes "
-    "{moved, placed, removed}, keepouts, unplaced and the placement_hash change; an "
+    "touched; symbol-less holes the user placed by hand are never removed (listed in "
+    "holes.kept). `keepouts` creates rule areas (same name = replaced). Returns outline, "
+    "holes {moved, placed, removed, kept}, keepouts, unplaced and the placement_hash change; an "
     "unknown hole footprint is not_found with the closest ids. Next step pcb_set_rules."
 )
 
@@ -293,7 +294,9 @@ PCB_SET_RULES_SCHEMA = _obj(
 PCB_SET_RULES_DESCRIPTION = (
     "Set up the board's rules: copper layer count (`layers`, the only way to change it), "
     "the JLCPCB fab preset's minimum rules (`preset`, plus tighter `overrides`), net "
-    "classes with net name patterns, and custom rules for reasoned exceptions (each with "
+    "classes with net name patterns (a pattern belongs to one class: giving it to a class "
+    "takes it from its previous one, listed in patterns_moved), and custom rules for "
+    "reasoned exceptions (each with "
     "a `reason`). At least one field. Every part is undone if a later one fails. Returns "
     "the rules table, the net classes, the custom rules with their reasons, notes (e.g. a "
     "preset for another layer count), the board_hash change; next step pcb_analyze. "

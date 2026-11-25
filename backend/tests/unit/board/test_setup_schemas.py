@@ -493,3 +493,64 @@ def test_custom_rules_undo_armed_when_the_write_raises(tmp_path: Path) -> None:
     with pytest.raises(StructuredToolError):
         _set_custom_rules(h, project, (rule,), state)  # type: ignore[arg-type]
     assert "custom" not in state
+
+
+def test_names_with_trailing_newline_refused() -> None:
+    from copperchat.kicad_tools.board.setup import parse_outline_args
+
+    args = _rules_ok()
+    args["net_classes"][0]["name"] = "Power\n"
+    _rules_refused(args)
+    keepout = {"name": "k\n", "rect": {"x": 1, "y": 1, "w": 2, "h": 2}, "layers": ["F.Cu"],
+               "no": ["tracks"]}  # fmt: skip
+    with pytest.raises(StructuredToolError):
+        parse_outline_args({"shape": "rect", "width": 50, "height": 40, "keepouts": [keepout]})
+
+
+def test_same_pattern_in_two_classes_refused() -> None:
+    args = _rules_ok()
+    twin = dict(args["net_classes"][0], name="Other")
+    args["net_classes"] = [args["net_classes"][0], twin]
+    _rules_refused(args)
+
+
+def test_verify_rules_flags_changed_condition() -> None:
+    from copperchat.kicad_tools.board.setup import _verify_rules, parse_rules_args
+    from tests.unit.board.builders import board
+
+    rule = {
+        "name": "r1",
+        "condition": "A.NetClass == 'Power'",
+        "constraint": "clearance",
+        "min": 0.3,
+        "reason": "power needs more room",
+    }
+    verify = _verify_rules(parse_rules_args({"custom_rules": [rule]}), {}, "h")
+    good = "(version 1)\n(rule r1\n\t(condition \"A.NetClass == 'Power'\")\n)\n(rule r2\n)"
+    stale = (
+        "(version 1)\n(rule r1\n\t(condition \"A.NetClass == 'Old'\")\n)\n"
+        "(rule r2\n\t(condition \"A.NetClass == 'Power'\"))"
+    )
+    assert verify(board(dru_text=good), {}) == []
+    assert any("condition" in p for p in verify(board(dru_text=stale), {}))
+
+
+async def test_undo_removes_created_dru_when_restore_raises(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from copperchat.kicad_tools.board.setup import _undo_custom_rules
+
+    pro = tmp_path / "p.kicad_pro"
+    pro.write_text("{}")
+    dru = tmp_path / "p.kicad_dru"
+    dru.write_text("(version 1)")
+
+    async def call(fn: Any, **kw: Any) -> Any:
+        raise TimeoutError("restore timed out")
+
+    sctx: Any = SimpleNamespace(
+        call=call, ctx=SimpleNamespace(project=SimpleNamespace(pro_file=pro))
+    )
+    with pytest.raises(TimeoutError):
+        await _undo_custom_rules(sctx, {"custom": [], "dru_created": True})
+    assert not dru.exists()
