@@ -199,14 +199,15 @@ def test_strips_xml_illegal_characters() -> None:
 
 def test_highlight_follows_view_layers() -> None:
     """A view highlights only the copper it shows: tracks / arcs on its layers, SMD pads
-    of its side; vias and through-hole pads always (review round 2)."""
+    of its side (also undrilled edge-connector pads); vias and through-hole pads always
+    (review rounds 2 and 3)."""
     from copperchat.board.model import ArcTrack, Pad
     from copperchat.views.board_render import highlight_layers
     from tests.unit.board.builders import via
 
-    def pad(number: str, layers: set[str], smd: bool) -> Pad:
+    def pad(number: str, layers: set[str], smd: bool, drill: float | None = None) -> Pad:
         return Pad(
-            "U1", number, "GND", 1.0, 1.0, 1.0, 1.0, 0.0, "rect", frozenset(layers), smd, None
+            "U1", number, "GND", 1.0, 1.0, 1.0, 1.0, 0.0, "rect", frozenset(layers), smd, drill
         )
 
     m = model(
@@ -216,7 +217,8 @@ def test_highlight_follows_view_layers() -> None:
                 pads=(
                     pad("1", {"F.Cu", "F.Paste", "F.Mask"}, True),
                     pad("2", {"B.Cu", "B.Paste", "B.Mask"}, True),
-                    pad("3", {"*.Cu", "F.Cu", "B.Cu", "F.Mask", "B.Mask"}, False),
+                    pad("3", {"*.Cu", "F.Cu", "B.Cu", "F.Mask", "B.Mask"}, False, 0.8),
+                    pad("4", {"B.Cu", "B.Mask"}, False),  # edge connector: undrilled, not SMD
                 ),
             ),
         ),
@@ -237,7 +239,7 @@ def test_highlight_follows_view_layers() -> None:
         )
 
     assert counts("top") == (1, 3)  # F.Cu track; via, top SMD pad, THT pad
-    assert counts("bottom") == (2, 3)  # B.Cu track + arc; via, bottom SMD pad, THT pad
-    assert counts("placement") == (3, 4)  # both outer layers
+    assert counts("bottom") == (2, 4)  # B.Cu track + arc; via, bottom SMD + edge pads, THT pad
+    assert counts("placement") == (3, 5)  # both outer layers
     assert counts("layer", "In1.Cu") == (1, 2)  # inner track; via, THT pad
-    assert len(highlight_shapes(m, ["GND"])) == 8  # no layers given: everything
+    assert len(highlight_shapes(m, ["GND"])) == 9  # no layers given: everything

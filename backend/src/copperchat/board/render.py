@@ -96,9 +96,9 @@ def highlight_shapes(
 ) -> list[HighlightShape]:
     """The copper of `nets` from the model: tracks and arcs as thick strokes, pads and
     vias as discs. With `layers` (the view's copper layers) only what the view shows:
-    tracks and arcs on one of `layers`, SMD pads with a layer in `layers` (so a top view
-    skips bottom-side SMD pads); vias and through-hole pads span the board and are always
-    kept. `None`: every layer."""
+    tracks and arcs on one of `layers`, undrilled pads (SMD, edge connectors) with a layer
+    in `layers` (so a top view skips bottom-side pads); vias and drilled pads span the
+    board and are always kept. `None`: every layer."""
     wanted = set(nets)
 
     def shown(layer: str) -> bool:
@@ -124,7 +124,11 @@ def highlight_shapes(
         for pad in p.pads:
             if pad.net not in wanted:
                 continue
-            if pad.smd and layers is not None and not any(lay in layers for lay in pad.layers):
+            if (
+                pad.drill is None
+                and layers is not None
+                and not any(lay in layers for lay in pad.layers)
+            ):
                 continue
             size = max(pad.w, pad.h) + HIGHLIGHT_MARGIN_MM
             out.append(HighlightShape(pad.net, "disc", ((pad.x, pad.y),), size))
