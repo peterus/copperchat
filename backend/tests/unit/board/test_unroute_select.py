@@ -3,6 +3,8 @@ connection components; locked components skipped unless asked; zones never selec
 
 from __future__ import annotations
 
+import time
+
 from copperchat.board.model import Rect
 from copperchat.kicad_tools.board.unroute_ops import attached, select_copper
 
@@ -95,3 +97,49 @@ def test_layer_matters() -> None:
     """A B.Cu track end on an F.Cu-only SMD pad is not attached."""
     m = _board(tracks=(track("SIG", "B.Cu", (10.0, 10.0), (12.0, 12.0), kiid="b1"),))
     assert attached(m, ["U1"]) == {}
+
+
+def test_via_in_the_middle_of_a_track_joins() -> None:
+    """A via on a same-net track (not at its end) joins it: the B.Cu leg starting in the
+    via belongs to the U1 → C1 connection."""
+    through = track("SIG", "F.Cu", (10.0, 10.0), (29.5, 10.0), kiid="t1")
+    leg = track("SIG", "B.Cu", (15.0, 10.0), (15.0, 20.0), kiid="b1")
+    m = _board(tracks=(through, leg), vias=(SIG_VIA,))
+    sel = select_copper(m, pads_of=["U1"])
+    assert sel.track_kiids == {"t1", "b1"} and sel.via_kiids == {"v1"}
+    # the via off the track's centre line (beyond half the width) does not join it
+    off = via("SIG", (15.0, 10.5), kiid="v2")
+    leg2 = track("SIG", "B.Cu", (15.0, 10.5), (15.0, 20.0), kiid="b2")
+    m = _board(tracks=(through, leg2), vias=(off,))
+    sel = select_copper(m, pads_of=["U1"])
+    assert sel.track_kiids == {"t1"} and sel.via_kiids == set()
+
+
+def test_select_large_board_is_fast() -> None:
+    """10k tracks on 500 nets, 692 pads: pads seed through the spatial buckets, not by
+    testing every item against every pad (was ~9 s)."""
+    parts = [
+        cap(f"C{i}", f"N{i % 500}", "GND", (2.0 + (i % 40) * 5.0, 2.0 + (i // 40) * 5.0))
+        for i in range(346)
+    ]
+    tracks = [
+        track(
+            f"N{n}",
+            "F.Cu",
+            (k * 2.0, 100.0 + n * 0.5),
+            ((k + 1) * 2.0, 100.0 + n * 0.5),
+            kiid=f"t{n}-{k}",
+        )
+        for n in range(500)
+        for k in range(20)
+    ]
+    m = circuit(*parts, tracks=tuple(tracks))
+    assert sum(len(p.pads) for p in m.parts) == 692
+    t0 = time.perf_counter()
+    sel = select_copper(m, pads_of=[p.ref for p in m.parts], include_locked=True)
+    assert time.perf_counter() - t0 < 2.0
+    assert sel.empty  # no track touches a pad
+    t0 = time.perf_counter()
+    sel = select_copper(m, nets=["N7"])
+    assert time.perf_counter() - t0 < 2.0
+    assert len(sel.track_kiids) == 20

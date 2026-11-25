@@ -64,6 +64,7 @@ EDGE_SNAP_MM = 0.5  # an assigned connector this close to its edge (beyond the m
 EDGE_MISS = 1000.0
 FACING_MM = 5.0  # a connector whose mouth does not face its edge costs like this far away
 MOUTH_MIN_MM = 0.5  # pad centroid this far off the courtyard centre gives the connector a mouth
+FULL_SCAN_MAX_SPOTS = 20_000  # a full scan coarsens its grid beyond this many spots
 _EDGE_NORMAL: Mapping[str, Point] = {
     "left": (-1.0, 0.0),
     "right": (1.0, 0.0),
@@ -71,6 +72,29 @@ _EDGE_NORMAL: Mapping[str, Point] = {
     "bottom": (0.0, 1.0),
 }
 _EPS = 1e-9
+
+
+class _Boxes:
+    """Obstacle boxes bucketed on a uniform grid (near-neighbour queries)."""
+
+    CELL = 10.0
+
+    def __init__(self, boxes: Sequence[Box]) -> None:
+        self.cells: dict[tuple[int, int], list[Box]] = defaultdict(list)
+        for b in boxes:
+            for k in self._keys(b, 0.0):
+                self.cells[k].append(b)
+
+    def _keys(self, b: Box, grow: float) -> list[tuple[int, int]]:
+        c = self.CELL
+        return [
+            (i, j)
+            for i in range(math.floor((b[0] - grow) / c), math.floor((b[2] + grow) / c) + 1)
+            for j in range(math.floor((b[1] - grow) / c), math.floor((b[3] + grow) / c) + 1)
+        ]
+
+    def near(self, b: Box, grow: float) -> set[Box]:
+        return {ob for k in self._keys(b, grow) for ob in self.cells.get(k, ())}
 
 
 @dataclass(frozen=True)
@@ -239,6 +263,7 @@ def place_block(
         and len(p.courtyard) + len(p.pads) > 0
         and (on_board(base, p) or p.ref in fixed_refs or p.locked)
     ]
+    obs_index = _Boxes(obstacles)
     reg: Box = (region.x, region.y, region.x + region.w, region.y + region.h)
     allowed = (
         max(reg[0], outline.inner[0]),
@@ -270,6 +295,9 @@ def place_block(
 
     if not members:
         return PlaceResult(tuple(fixed), score_placement(base, cls, doc))
+    # nothing can fit when the members alone need more than the free area
+    if sum(_area(box_of(known[r])) for r in members) > does_not_fit().available_mm2 + _EPS:
+        return does_not_fit()
     local = block_layout(base, cls, members, keep_channels=kc)
     # connectors pulled to an edge: assigned ones and those anchoring a cluster (a header
     # that serves an MCU follows the MCU instead of dragging its block to an edge)
@@ -310,7 +338,7 @@ def place_block(
             outline.contains((b[0] + x, b[1] + y, b[2] + x, b[3] + y)) for b in v.boxes
         ):
             return False
-        near = [ob for ob in obstacles if boxes_hit(bb, ob, kc)]
+        near = [ob for ob in obs_index.near(bb, kc) if boxes_hit(bb, ob, kc)]
         for b in v.boxes:
             mb = (b[0] + x, b[1] + y, b[2] + x, b[3] + y)
             if any(boxes_hit(mb, ob, kc) for ob in near):
@@ -371,8 +399,11 @@ def place_block(
     fine: list[Found] = []
     for vi in range(len(variants)):
         coarse = sorted(scan(vi, COARSE_GRID_MM, None))
-        if not coarse:  # nothing on the coarse grid: scan this rotation fully
-            fine.extend(scan(vi, PLACE_GRID_MM, None))
+        if not coarse:  # nothing on the coarse grid: scan this rotation fully (bounded)
+            step = PLACE_GRID_MM
+            while len(positions(variants[vi], step)) > FULL_SCAN_MAX_SPOTS:
+                step *= 2
+            fine.extend(scan(vi, step, None))
             continue
         d = COARSE_GRID_MM
         wins = [(x - d, y - d, x + d, y + d) for _, y, x, _ in coarse[:REFINE_KEEP]]

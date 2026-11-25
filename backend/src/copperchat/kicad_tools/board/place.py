@@ -15,6 +15,8 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import difflib
+import functools
+import logging
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -36,7 +38,7 @@ from copperchat.board.placer import (
     edge_margin,
     keepout_polys,
 )
-from copperchat.board.staging import natural_key
+from copperchat.board.staging import natural_key, part_box
 from copperchat.board.worker import run_cpu
 from copperchat.errors import StructuredToolError
 from copperchat.kicad_session import KicadHandle
@@ -77,6 +79,8 @@ POS_TOL_MM = 0.001  # read-back tolerance of positions
 ROT_TOL_DEG = 0.01  # read-back tolerance of rotations
 NO_BLOCK_CLASSES = frozenset({"mounting_hole", "fiducial"})
 NEXT_METRICS = "pcb_metrics, then pcb_render view placement"
+
+log = logging.getLogger(__name__)
 
 
 # -- arguments -----------------------------------------------------------------------------
@@ -401,10 +405,12 @@ def _remove_groups(h: KicadHandle, kiids: Sequence[str]) -> None:
 
 
 def _verify_blocks(
-    blocks: Sequence[BlockArgs], replace: bool, no_block: frozenset[str]
+    blocks: Sequence[BlockArgs], replace: bool, no_block: frozenset[str], parts: int
 ) -> Callable[[BoardModel, dict[str, Any]], list[str]]:
     def verify(m: BoardModel, report: dict[str, Any]) -> list[str]:
         problems: list[str] = []
+        if len(m.parts) != parts:  # e.g. a group deletion that took its members along
+            problems.append(f"{len(m.parts)} footprints on the board, expected {parts}")
         names = [n for n, _ in m.groups]
         for b in blocks:
             name = BLOCK_PREFIX + b.name
@@ -448,6 +454,8 @@ async def prepare_define_blocks(ctx: ToolContext, args: dict[str, Any]) -> Chang
     doc = await read_board_doc(ctx)
     refs = [r for b in blocks for r in b.refs]
     parts = _parts_by_ref(model, refs)
+    # classify is fast (about 0.02 s for 500 parts) and needs no process isolation or
+    # timeout: a thread keeps it off the event loop without pickling the model to run_cpu
     cls = await asyncio.to_thread(classify, model, doc)
     banned = sorted((r for r in refs if cls.part_class.get(r) in NO_BLOCK_CLASSES), key=natural_key)
     if banned:
@@ -492,7 +500,7 @@ async def prepare_define_blocks(ctx: ToolContext, args: dict[str, Any]) -> Chang
         logical=Logical(1),
         kind="board_define_blocks",
         board_stages=stages,
-        verify=_verify_blocks(blocks, replace, no_block),
+        verify=_verify_blocks(blocks, replace, no_block, len(model.parts)),
         report=report,
     )
 
@@ -579,12 +587,22 @@ def _score_dict(s: PlacementScore | None) -> dict[str, Any] | None:
     return None if s is None else dataclasses.asdict(s)
 
 
+def _on_board(m: BoardModel, p: Part) -> bool:
+    """`m.placed`, but a part without a courtyard (< 3 points) is tested by its pad box
+    (`part_box`), else it would count as unplaced forever."""
+    if len(p.courtyard) >= 3:
+        return m.placed(p)
+    x0, y0, x1, y1 = part_box(dataclasses.replace(p, courtyard=()))
+    box = ((x0, y0), (x1, y0), (x1, y1), (x0, y1))
+    return m.placed(dataclasses.replace(p, courtyard=box))
+
+
 def _unplaced_blocks(m: BoardModel) -> list[str]:
     by_ref = {p.ref: p for p in m.parts}
     return sorted(
         name
         for name, refs in _blocks(m).items()
-        if any(r in by_ref and not m.placed(by_ref[r]) for r in refs)
+        if any(r in by_ref and not _on_board(m, by_ref[r]) for r in refs)
     )
 
 
@@ -682,7 +700,12 @@ async def plan_moves(
     if att and not unroute:
         raise _routed_error(att)
     before_hash = await asyncio.to_thread(placement_hash, model)
-    before = await _score(model, doc)
+    try:
+        before: PlacementScore | None = await _score(model, doc)
+    except StructuredToolError as exc:
+        if exc.code != "board_compute_timeout":
+            raise
+        before = None  # the move does not depend on the score
     report.update(
         {
             "moved": shifted[:MAX_LISTED],
@@ -713,7 +736,9 @@ async def plan_moves(
         return cs
     removed: frozenset[str] = frozenset()
     if att:
-        sel = select_copper(model, pads_of=moving, include_locked=True)
+        sel = await asyncio.to_thread(
+            functools.partial(select_copper, model, pads_of=moving, include_locked=True)
+        )
         removed = sel.track_kiids | sel.via_kiids
         cs.board_stages.append(unroute_stage(sel))
         cs.unrouted_by_call = list(sel.nets)
@@ -736,7 +761,7 @@ async def plan_moves(
 
 async def apply_placement(ctx: ToolContext, cs: ChangeSet) -> ToolResult:
     """Apply a placement change set, then score the read-back model (`score.after`; null
-    when the computation timed out — the write itself succeeded)."""
+    when the computation failed — the write itself succeeded)."""
     assert isinstance(cs, PlacementChangeSet)
     if not cs.board_stages:
         return ToolResult(data=dict(cs.report))  # nothing to move: nothing written, cost 0
@@ -745,9 +770,8 @@ async def apply_placement(ctx: ToolContext, cs: ChangeSet) -> ToolResult:
         try:
             after = await _score(cs.read_back[0], cs.doc)
             result.data["score"]["after"] = _score_dict(after)
-        except StructuredToolError as exc:
-            if exc.code != "board_compute_timeout":
-                raise
+        except Exception:  # the commit already happened: report it without the score
+            log.warning("%s: after-score failed", cs.tool, exc_info=True)
             result.data["score"]["after"] = None
     return result
 

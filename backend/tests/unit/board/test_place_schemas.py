@@ -13,6 +13,7 @@ from copperchat.kicad_tools.board import place
 from copperchat.kicad_tools.board.specs import TOOL_SPECS
 from copperchat.kicad_tools.board.specs_place import PLACE_SPECS
 
+from .builders_circuit import cap, circuit
 from .test_schema_bounds import unbounded
 
 NAMES = ("pcb_define_blocks", "pcb_place_block", "pcb_move", "pcb_legalize")
@@ -171,3 +172,13 @@ def test_plan_blocks() -> None:
     plan = place.plan_blocks(rows, blocks, kiid_of, fps, replace=True)
     assert set(plan.deletes) == {"g2", "g3", "g5", "g6"}
     assert plan.leaves == (("g4", ("k7",)),)
+
+
+def test_unplaced_blocks_without_courtyard_uses_pads() -> None:
+    """A block member without a courtyard counts as placed when its pads lie inside the
+    outline (else the block would stay "unplaced" forever)."""
+    inside = cap("C1", "A", "B", (50.0, 40.0), courtyard=())
+    outside = cap("C2", "A", "B", (150.0, 40.0), courtyard=())
+    groups = (("blk:in", ("C1",)), ("blk:out", ("C2",)))
+    m = circuit(inside, outside, groups=groups)
+    assert place._unplaced_blocks(m) == ["out"]

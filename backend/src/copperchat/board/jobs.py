@@ -24,10 +24,12 @@ from copperchat.board.placer import (
     PlacementScore,
     PlaceResult,
     block_extent,
+    edge_margin,
     legalize,
     place_block,
     score_placement,
 )
+from copperchat.board.placer.pack import PLACE_GRID_MM
 from copperchat.board.presets import FabPreset
 
 if TYPE_CHECKING:
@@ -180,11 +182,17 @@ def edge_strip(
     offset: float | None,
 ) -> tuple[Rect, Point]:
     """The region and target of `pcb_place_block`'s edge form: a strip along `edge` of the
-    outline's box, as deep as the block's largest layout extent + 2 x `keep_channels`;
+    outline's box, as deep as the block's largest layout extent + 2 x `keep_channels` + the
+    edge margin + one placement grid step (the block's reference point sits on that grid);
     the target lies on the strip's centre line `offset` mm along the edge from its top /
     left end (default: the middle of the edge). Needs an outline."""
     o = model.outline
-    depth = block_extent(model, cls, refs, keep_channels=keep_channels) + 2 * keep_channels
+    depth = (
+        block_extent(model, cls, refs, keep_channels=keep_channels)
+        + 2 * keep_channels
+        + edge_margin(model)
+        + PLACE_GRID_MM
+    )
     along = o.h if edge in ("left", "right") else o.w
     depth = min(depth, o.w if edge in ("left", "right") else o.h)
     t = along / 2 if offset is None else offset

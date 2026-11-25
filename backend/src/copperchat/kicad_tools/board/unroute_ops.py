@@ -4,11 +4,11 @@
 `select_copper` picks tracks, arcs and vias by seed (nets, a region, the pads of parts) and
 extends every seed to its whole **connection component**: the same-net graph of tracks,
 arcs and vias joined where they meet (shared end points, a track end on another track of
-the same layer, a track end inside a via). Pads are the terminals of a component: copper
-is never joined *through* a pad, so moving one part removes the copper of its own
-connections only and never the routes between other parts; nothing removed leaves a
-dangling end behind (what stays was connected to the removed copper only through a pad,
-which stays). Zones are never selected. Pure except `unroute_stage` (one board commit)."""
+the same layer, a track end inside a via, a via on a track). Pads are the terminals of a
+component: copper is never joined *through* a pad, so moving one part removes the copper
+of its own connections only and never the routes between other parts; nothing removed
+leaves a dangling end behind (what stays was connected to the removed copper only through
+a pad, which stays). Zones are never selected. Pure except `unroute_stage` (one board commit)."""
 
 from __future__ import annotations
 
@@ -178,6 +178,11 @@ def _components(items: list[_Seg | Via]) -> list[int]:
         grid.add(k, _bbox(it))
     for k, it in enumerate(items):
         if isinstance(it, Via):
+            # a via in the middle of a same-net track (not at one of its ends) joins it too
+            for j in grid.near(it.at, JOIN_TOL_MM):
+                other = items[j]
+                if not isinstance(other, Via) and _on_track(it.at, other):
+                    union(k, j)
             continue
         for e in _ends(it):
             for j in grid.near(e, JOIN_TOL_MM):
@@ -224,27 +229,32 @@ def select_copper(
     intersecting it) and `pads_of` (items touching a pad of those parts), each extended to
     its whole connection component (module docstring). With `include_locked=False` a
     component holding a locked item is skipped entirely and counted in `locked`."""
-    by_net: dict[str, list[_Seg | Via]] = defaultdict(list)
     every: list[_Seg | Via] = [*model.tracks, *model.arcs, *model.vias]
-    for it in every:
-        by_net[it.net].append(it)
     net_seeds = set(nets)
+    seeded: set[int] = {k for k, it in enumerate(every) if it.net in net_seeds}
+    if region is not None:
+        seeded.update(k for k, it in enumerate(every) if _in_region(it, region))
     pads = _pads_of(model, pads_of)
+    if pads:
+        grid = _Buckets()  # pads only see nearby copper (like `attached`)
+        for k, it in enumerate(every):
+            grid.add(k, _bbox(it))
+        for q in pads:
+            for k in grid.near((q.x, q.y), math.hypot(q.w, q.h) / 2 + JOIN_TOL_MM):
+                if _touches(every[k], q):
+                    seeded.add(k)
+    by_net: dict[str, list[int]] = defaultdict(list)
+    for k, it in enumerate(every):
+        by_net[it.net].append(k)
+    seed_nets = {every[k].net for k in seeded}
     tracks: set[str] = set()
     vias: set[str] = set()
     picked_nets: set[str] = set()
     skipped = 0
-    for net in sorted(by_net):
-        items = by_net[net]
-        seeds = [
-            k
-            for k, it in enumerate(items)
-            if net in net_seeds
-            or (region is not None and _in_region(it, region))
-            or any(_touches(it, q) for q in pads)
-        ]
-        if not seeds:
-            continue
+    for net in sorted(seed_nets):
+        idx = by_net[net]
+        items = [every[k] for k in idx]
+        seeds = [i for i, k in enumerate(idx) if k in seeded]
         roots = _components(items)
         members: dict[int, list[int]] = defaultdict(list)
         for k, r in enumerate(roots):

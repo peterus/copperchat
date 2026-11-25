@@ -73,9 +73,15 @@ async def test_replace_false_keeps_others(synth_setup: SynthSetup, setup_db: Dat
 async def test_replace_true(synth_setup: SynthSetup, setup_db: Database) -> None:
     ctx = synth_setup.turn(setup_db, "run-d3")
     await _define(ctx, blocks=[{"name": "a", "refs": ["R1"]}, {"name": "b", "refs": ["R2"]}])
+    before = await board_model(ctx)
     out = await _define(ctx, blocks=[{"name": "only", "refs": ["R1", "C1"]}], replace=True)
-    assert _blocks(await board_model(ctx)) == {"only": {"R1", "C1"}}
+    m = await board_model(ctx)
+    assert _blocks(m) == {"only": {"R1", "C1"}}
     assert "a" in out["removed"] and "b" in out["removed"]
+    # deleting a group never takes its members along
+    assert sorted(p.ref for p in m.parts) == sorted(p.ref for p in before.parts)
+    assert not (m.part("R2").group or "").startswith("blk:")
+    assert placement_hash(m) == placement_hash(before)
 
 
 async def test_ref_moves_between_blocks(synth_setup: SynthSetup, setup_db: Database) -> None:

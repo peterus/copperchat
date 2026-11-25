@@ -204,9 +204,12 @@ def test_shift_within_max_shift() -> None:
 
 
 def test_grid_snap_005() -> None:
+    """A part that moves lands on the 0.05 mm grid; one left alone keeps its exact place."""
     bad = []
     for c, res, _ in legal_cases():
         for mv in res:
+            if math.dist(c.start[mv.ref], (mv.x, mv.y)) < 1e-5:
+                continue
             for v in (mv.x, mv.y):
                 if abs(v / GRID - round(v / GRID)) * GRID > 1e-6:
                     bad.append((c.seed, mv))

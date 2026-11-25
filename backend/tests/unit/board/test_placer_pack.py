@@ -11,7 +11,14 @@ import pytest
 from copperchat.board.boardmd import BoardDoc, EdgeRow
 from copperchat.board.classify import classify
 from copperchat.board.model import BoardModel, Part, Rect, Side
-from copperchat.board.placer import DoesNotFit, Move, PlaceResult, apply_moves, place_block
+from copperchat.board.placer import (
+    DoesNotFit,
+    Move,
+    PlaceResult,
+    apply_moves,
+    place_block,
+    score_placement,
+)
 from copperchat.board.placer.layout import box_of
 
 from .builders import part
@@ -206,3 +213,19 @@ def test_bottom_side_refused() -> None:
     )
     assert isinstance(r, PlaceResult)
     assert all(mv.side == "bottom" for mv in r.moves)
+    # the bottom placement is as legal and as good as the top one
+    after = apply_moves(m, r.moves)
+    boxes = _boxes(after, _refs(parts))
+    for ref, b in boxes.items():
+        assert after.part(ref).side == "bottom", ref
+        assert WHOLE.x - 1e-6 <= b[0] and b[2] <= WHOLE.x + WHOLE.w + 1e-6, ref
+        assert WHOLE.y - 1e-6 <= b[1] and b[3] <= WHOLE.y + WHOLE.h + 1e-6, ref
+    for (ra, a), (rb, b) in itertools.combinations(boxes.items(), 2):
+        assert _gap(a, b) >= 0.0 - 1e-9, (ra, rb)
+    doc = BoardDoc(allowed_sides=BOTH)
+    bottom = score_placement(after, classify(after), doc)
+    top_after = apply_moves(m, _place(m, _refs(parts)).moves)
+    top = score_placement(top_after, classify(top_after), doc)
+    assert bottom.m1_violations == 0  # no courtyard overlap, all inside the outline
+    assert top.m8_worst_mm is not None and bottom.m8_worst_mm is not None
+    assert bottom.m8_worst_mm <= top.m8_worst_mm + 1e-6  # mirrored: the same distances

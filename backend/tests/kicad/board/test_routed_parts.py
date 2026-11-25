@@ -259,7 +259,10 @@ async def test_legalize_routed_refused(placed: SynthSetup, setup_db: Database) -
     """A locked part dropped onto the routed U1: legalising must move U1 → refused."""
     ctx = placed.turn(setup_db, "run-r5")
     m = await board_model(ctx)
-    assert m.tracks, "the copper of the previous test is still there"
+    if not m.tracks:  # CI shards may run this test without the previous one
+        await add_copper(ctx)
+        m = await board_model(ctx)
+    assert m.tracks
     u1, r1 = m.part("U1"), m.part("R1")
     await setup_call(ctx, "pcb_move", items=[{"ref": "R1", "x": u1.x, "y": u1.y, "locked": True}])
     before = await _hashes(ctx)

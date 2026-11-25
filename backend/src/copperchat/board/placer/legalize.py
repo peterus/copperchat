@@ -12,7 +12,10 @@ rings, within `max_shift`, else 20 mm).
 
 from __future__ import annotations
 
+import functools
 import math
+import time
+from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -32,6 +35,8 @@ from copperchat.board.staging import natural_key
 
 MAX_ROUNDS = 200
 FALLBACK_STEP_MM = 0.25  # ring pitch of the nearest-free-spot fallback
+FALLBACK_CELL_MM = 10.0  # bucket size of the fallback's box index
+FALLBACK_BUDGET_S = 10.0  # the fallback's whole time budget per call
 FALLBACK_RADIUS_MM = 20.0  # its reach without a max_shift
 DEFAULT_EDGE_MARGIN_MM = 0.3
 _EPS = 1e-9
@@ -164,7 +169,41 @@ def _hits_keepout(b: Box, keepouts: Sequence[tuple[Point, ...]]) -> tuple[Point,
     return None
 
 
-def _spiral(radius: float) -> list[tuple[float, float]]:
+class _BoxIndex:
+    """Refs bucketed by their boxes (uniform grid) for near-neighbour queries."""
+
+    def __init__(self, cell: float) -> None:
+        self.cell = cell
+        self.cells: dict[tuple[int, int], set[str]] = defaultdict(set)
+        self.where: dict[str, list[tuple[int, int]]] = {}
+
+    def _keys(self, b: Box, grow: float = 0.0) -> list[tuple[int, int]]:
+        c = self.cell
+        return [
+            (i, j)
+            for i in range(math.floor((b[0] - grow) / c), math.floor((b[2] + grow) / c) + 1)
+            for j in range(math.floor((b[1] - grow) / c), math.floor((b[3] + grow) / c) + 1)
+        ]
+
+    def add(self, r: str, b: Box) -> None:
+        keys = self._keys(b)
+        self.where[r] = keys
+        for k in keys:
+            self.cells[k].add(r)
+
+    def remove(self, r: str) -> None:
+        for k in self.where.pop(r, []):
+            self.cells[k].discard(r)
+
+    def near(self, b: Box, grow: float) -> set[str]:
+        out: set[str] = set()
+        for k in self._keys(b, grow):
+            out |= self.cells.get(k, set())
+        return out
+
+
+@functools.cache
+def _spiral(radius: float) -> tuple[tuple[float, float], ...]:
     """Offsets on the 0.25 mm grid within `radius`, nearest first (ties: y, x)."""
     n = int(radius / FALLBACK_STEP_MM)
     pts = [
@@ -174,7 +213,7 @@ def _spiral(radius: float) -> list[tuple[float, float]]:
         if math.hypot(i, j) * FALLBACK_STEP_MM <= radius + 1e-9
     ]
     pts.sort(key=lambda p: (math.hypot(*p), p[1], p[0]))
-    return pts
+    return tuple(pts)
 
 
 def _step(v: float) -> float:
@@ -203,15 +242,22 @@ def legalize(
     mov = {p.ref for p in parts if p.ref in movable and not p.locked}
     sep = courtyard_clearance(m)
     outline = Outline(m, edge_margin)
-    # box relative to the origin; positions start on the grid
+    # box relative to the origin; a part keeps its exact position until it has to move,
+    # then it goes onto the 0.05 mm grid first (`touch`): a legal part is never rewritten
     rel: dict[str, Box] = {}
     pos: dict[str, list[float]] = {}
     for p in parts:
         b = box_of(p)
-        x, y = (snap(p.x), snap(p.y)) if p.ref in mov else (p.x, p.y)
         rel[p.ref] = (b[0] - p.x, b[1] - p.y, b[2] - p.x, b[3] - p.y)
-        pos[p.ref] = [x, y]
+        pos[p.ref] = [p.x, p.y]
     start = {r: tuple(pos[r]) for r in mov}
+    touched: set[str] = set()
+
+    def touch(r: str) -> None:
+        if r not in touched:
+            touched.add(r)
+            pos[r] = [snap(pos[r][0]), snap(pos[r][1])]
+
     side = {p.ref: p.side for p in parts}
     rot = {p.ref: p.rot for p in parts}
 
@@ -226,10 +272,15 @@ def legalize(
         if b[2] - b[0] > i[2] - i[0] or b[3] - b[1] > i[3] - i[1]:
             return False  # cannot fit at all; reported below
         if abs(dx) > _EPS or abs(dy) > _EPS:
+            touch(r)
+            b = bx(r)
+            dx = (i[0] - b[0] if b[0] < i[0] else 0.0) + (i[2] - b[2] if b[2] > i[2] else 0.0)
+            dy = (i[1] - b[1] if b[1] < i[1] else 0.0) + (i[3] - b[3] if b[3] > i[3] else 0.0)
             pos[r][0] += _step(dx)
             pos[r][1] += _step(dy)
             return True
         if outline.poly is not None and not outline.contains(b):
+            touch(r)
             cx, cy = outline.centre()
             mx, my = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
             pos[r][0] += math.copysign(GRID_MM, cx - mx) if abs(cx - mx) > _EPS else 0.0
@@ -250,6 +301,7 @@ def legalize(
             (kb[3] - b[1] + sep, (0.0, 1.0)),
         ]
         d, (ux, uy) = min(opts, key=lambda o: o[0])
+        touch(r)
         pos[r][0] += ux * snap_up(d)
         pos[r][1] += uy * snap_up(d)
         return True
@@ -266,6 +318,12 @@ def legalize(
         ca = ((ba[0] + ba[2]) / 2, (ba[1] + ba[3]) / 2)
         cb = ((bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2)
         axis = 0 if px <= py else 1
+        for r in (a, b):
+            if r in mov:
+                touch(r)
+        ba, bb = bx(a), bx(b)
+        px = min(ba[2] - bb[0], bb[2] - ba[0]) + sep
+        py = min(ba[3] - bb[1], bb[3] - ba[1]) + sep
         pen = px if axis == 0 else py
         sign = 1.0 if (ca[axis], a) > (cb[axis], b) else -1.0  # a moves this way
         if ma and mb:
@@ -297,25 +355,39 @@ def legalize(
         if not changed:
             break
 
+    index = _BoxIndex(FALLBACK_CELL_MM)
+    for r in order:
+        index.add(r, bx(r))
+
     def conflict(r: str) -> bool:
         b = bx(r)
         if not outline.contains(b) or _hits_keepout(b, keepouts) is not None:
             return True
-        return any(o != r and side[o] == side[r] and boxes_hit(b, bx(o), sep) for o in order)
+        return any(
+            o != r and side[o] == side[r] and boxes_hit(b, bx(o), sep) for o in index.near(b, sep)
+        )
 
     # the push-apart can get stuck (a part squeezed between fixed ones along one axis):
-    # move each part still in conflict to the nearest free spot around its start
+    # move each part still in conflict to the nearest free spot around its start, within
+    # FALLBACK_BUDGET_S overall (then the rest is reported as does_not_fit)
     radius = max_shift if max_shift is not None else FALLBACK_RADIUS_MM
+    deadline = time.monotonic() + FALLBACK_BUDGET_S
+    spiral = _spiral(radius)
     for r in sorted(mov, key=natural_key):
+        if time.monotonic() > deadline:
+            break
         if not conflict(r):
             continue
-        sx, sy = start[r]
-        for dx, dy in _spiral(radius):
+        index.remove(r)
+        sx, sy = snap(start[r][0]), snap(start[r][1])
+        for dx, dy in spiral:
             pos[r] = [round(sx + dx, 6), round(sy + dy, 6)]
             if not conflict(r):
+                touched.add(r)
                 break
         else:
             pos[r] = [sx, sy]
+        index.add(r, bx(r))
 
     bad: set[str] = set()
     for r in mov:
