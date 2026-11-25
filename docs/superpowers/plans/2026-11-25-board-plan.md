@@ -867,6 +867,70 @@ M13's "overhanging it" uses the same clip. Both switch settings are tested.
 - M9 measures in-cap VIN pad → IC VIN pin only (spec also names the GND pins).
 - Silk text rotation is not modelled (needs a `TextItem` angle; P7 `pcb_tidy_silk`).
 
+### As built (P2)
+
+**Probes / measured** (`tests/kicad/board/test_{sync,outline,rules}.py`)
+- **Rules persistence (spec §6.2): persisted by the board save.** After `pcb_set_rules` and the
+  adapter's `save("pcb")`, `.kicad_pro` has `board.design_settings.rules.min_clearance == 0.127`
+  and the net class + pattern in `net_settings` (`test_rules_persist_to_kicad_pro`).
+  `BoardChangeSet.saves_project` stays `False`; the engine has no project save.
+- **Copper layer type (spec §10.3, call 9a): not settable** at the pin (`BoardStackupLayer.type`
+  knows copper/dielectric/silk/mask/paste only; no command carries signal/power/mixed/jumper) —
+  `test_probe_layer_type_power`, `record_property("layer_type_settable", False)`. **P6b uses the
+  spec's fallbacks** (Freerouting CLI options, then DSN text only as the owner-D4 last resort).
+- **`import_netlist(delete_extra_footprints=True)` spares the tool holes** (`not_in_schematic`,
+  `MountingHole*`): after a re-sync they keep KIIDs and positions (`test_resync_keeps_tool_holes`);
+  no snapshot/re-create path in the sync.
+- Sync runtime on `sp4_synth` (board creation + dry run + import + staging, 26 parts): ≈ 8 s.
+
+**Contract deviations / additions**
+- `require_board_tools(ctx)` (`board_tools_disabled`) lives in `cc/kicad_tools/board/setup.py`;
+  later board writes import it from there. `staging.py` also exports `natural_key` and
+  `part_box` (courtyard box, else pads, else origin).
+- `pcb_sync_from_schematic {dry_run: true}`: `prepare` returns a stage-less change set with
+  `Logical(0)` and the report; `apply_sync` returns it as data with `changed_docs` empty (no
+  engine run, no change-log row; the adapter's turn snapshot is still taken). Without a board
+  the dry run lists the netlist's refs (`creates_board: true`).
+- Only footprints whose **ref** is new go to the staging area: a footprint KiCad exchanges
+  (changed `lib_id`, new KIID, same ref) keeps its place.
+- Pad/pin mismatches: KiCad reports none as a warning, and the exported netlist already drops
+  symbol pins without a pad. The only signal is the existing-board dry run's
+  `Disconnect <ref> pin <n>.` info lines; the report lists them as warnings with the
+  `fp_check` suggestion (deduplicated with the real import's warning lines). On a board created
+  by the same call there is no such signal. KiCad also marks such a footprint "Do not place".
+- `pcb_set_outline`: every deletion (older Edge.Cuts shapes, older tool holes, same-named rule
+  areas) sits in a last stage "remove replaced items", after all additions were pushed — a
+  failure before it leaves only additions (compensated), a failure in it drops its commit
+  (`test_rerun_fail_after_restores`). The holes stage is `commit=False` with two own commits: a
+  footprint placed with `place_footprint_from_library` cannot be updated in the same commit
+  (`ISC_NONEXISTENT`), so ref/locked/attributes are set after the push. Extra
+  `invalid_argument` checks: one of polygon/rect per keepout, unique keepout names,
+  `2 × inset < min(w, h)`, hole positions inside the outline, keepout layers enabled
+  (`all_copper` expanded). `verify` also fills `unplaced` and `placement_hash {before, after,
+  changed}`.
+- `pcb_set_rules`: all four stages are `commit=False` (rules, classes, layer count, custom rules
+  are no board items), each with an `undo`. Input is checked in `parse_rules_args` (unique
+  names, via drill < diameter, min ≤ max, no control characters); `overrides` without `preset`
+  are checked against the JLCPCB preset of the target layer count and only the overrides are
+  written; an existing `.kicad_dru` KiCad cannot parse is refused (`invalid_argument`), never
+  overwritten. `setup.RULE_NAME` mirrors `specs_setup.NAME_PATTERN` (import cycle; a unit test
+  keeps them equal). `stackup` → `stackup_unavailable` in a separate `plan_stackup` (P2b's hook).
+- Test rig: `synth_rig` / `SynthRig` in `tests/kicad/board/conftest.py` (sp4_synth through a
+  manager with board tools on, test conversation, a `HistoryService` with `restore_turn(ctx)`).
+  `tests/unit/agent/test_profiles.py`: the Free "everything" assertions pass
+  `board_tools=True` (the first registered `PCB_WRITES` tool is dropped by the default flag).
+
+**Residuals for later phases**
+- A failure of `pcb_set_outline`'s read-back `verify` (after the last stage pushed the
+  deletions) raises `DocumentInconsistent`: compensation re-creates tracks/vias only
+  (`"full"`), not graphics, footprints or zones. Never seen; undo via History.
+- `read.py` `net_class_of` takes KiCad's combined class name ("Effective for net: +3V3") for a
+  net with a pattern-assigned class instead of the class itself (KiCad's own lookup shows the
+  class). **P3a (M12) / P5b** should map it to the constituent class (P1a file, not changed here).
+- `test_parity_clean_after_set_outline` passes, but `sp4_synth`'s parity report was empty
+  before the outline too; that a hole without the attributes would raise a parity item is
+  unverified.
+
 ### As built (P1c)
 
 **Measured / recorded** (`tests/kicad/board/test_render.py`, `record_property`; ecc83 only — P9a
