@@ -122,7 +122,7 @@ nobody lays out the OpenDriveHub board by hand or by script during SP4.
   is recorded in `board.md`.
 - **A 90° corner or an acute angle** on any routed track in a board the agent calls finished, or
   a fab package exported from such a board.
-- **A board called "done" with open connections, DRC errors or unexplained DRC warnings.**
+- **A board called "done" with open connections, DRC errors or DRC warnings the user has not accepted.**
 - **Silent approval.** Routing starts on a placement the user never saw, or the fab package is
   written from a board the user never approved (§8.3).
 - **Design-specific code.** A reference designator, MPN or OpenDriveHub net name in tools, metrics
@@ -165,10 +165,10 @@ From spike 4A, the KiCad AI policy and the existing system:
 | C10 | Memory: ≈ 1.9 GB RSS per api-server with a board loaded; Freerouting peaks at 0.4–0.6 GB heap. | spike Q1, Q4 |
 | C11 | History snapshots cover `.kicad_pro`, `*.kicad_sch` and the project's `.kicad_pcb` (`history/store.document_files`), **not** `.kicad_dru` / `.kicad_prl`. | `history/store.py` |
 | C12 | The schematic edit engine refuses `FootprintChangeSet` explicitly (`edit/engine.py`); the footprint feature runs its own engine from `spec.apply`, and `sdk_tools._apply` has only an `isinstance` branch that takes the library lock. `KicadSession.commit` and the modified-state tracking are schematic-only today (`DocKind = Literal["sch","pcb"]`, `commit` calls `h.schematic().begin_commit()`). | `kicad_tools/edit/engine.py`, `footprints/engine.py`, `kicad_session/session.py` |
-| C16 | `Project` is a frozen dataclass whose `pcb_file` is set at discovery only when the file exists; the session opens only existing documents; history and `docs_of` skip a missing board; restore never deletes files missing from a manifest. | `projects.py`, `session.py`, `history/` |
 | C13 | One KiCad session per CopperChat server; the per-project edit lock serialises writers. | `kicad_session/session.py` |
 | C14 | **KiCad AI policy:** AI-assisted code is allowed with a human in the loop (trailer `Assisted-by: Claude`); every human-readable upstream text (commit message, MR/issue text, comments) is written by the owner; agents never act on KiCad's GitLab, mailing list or Discord; an MR needs an open issue assigned to its author; a feature needs a core-dev-approved feature request first. New KiCad patches are carried in `docker/kicad-base/patches/` with placeholder messages ("TODO-owner-write-message"), as patches 0001–0004 are. The same applies to the kipy fork. | coordinator brief |
 | C15 | Freerouting is GPL-3; CopperChat is GPL-3. It runs as a separate, unmodified process. | `LICENSE`, spike |
+| C16 | `Project` is a frozen dataclass whose `pcb_file` is set at discovery only when the file exists; the session opens only existing documents; history and `docs_of` skip a missing board; restore never deletes files missing from a manifest. | `projects.py`, `session.py`, `history/` |
 
 ## 5. Approaches considered
 
@@ -319,8 +319,9 @@ loop generators (fanout, stitching: add → refill → DRC → remove rejects), 
   (sections "Stack-up", "Constraints") are migrated by the skill through patches.
 - **Feature flag** `COPPERCHAT_BOARD_TOOLS` like `COPPERCHAT_FOOTPRINT_TOOLS` (spec call):
   **default off during P1–P8**, switched to default on in P9. Off removes `PCB_WRITES` from every
-  profile including Free (the filter works by tool-name prefix list, like the `fp_` filter) and
-  hides the Board session type (`POST type=board` stays 400, the dialog option disabled).
+  profile including Free. The filter uses the **explicit `PCB_WRITES` name set**, not a `pcb_`
+  prefix (the prefix is shared with the read tools, old and new); `PCB_READ` and the existing
+  read tools stay available with the flag off. It also hides the Board session type (`POST type=board` stays 400, the dialog option disabled).
   `COPPERCHAT_FREEROUTING` (default on when the JRE is present) disables only `pcb_route_fill`.
 
 ### 6.6 Live board view (G8)
@@ -331,8 +332,10 @@ scope). Three backend paths need a `pcb` branch: `hooks.on_documents_changed` (s
 catch-up (`publish_disk_view` / `copy_disk_schematic`). After a board write the publisher
 debounces 2 s, writes a board snapshot with `SaveCopyOfDocument` (existing `save_copy` path) and
 sends a `ViewUpdatedFrame{docs:["pcb"], live:true}`. The frontend already accepts live `pcb`
-frames (`stores/view.ts`). Long tools (`pcb_route_fill`, `pcb_fanout`) publish once at the end,
-not per internal stage.
+frames (`stores/view.ts`). Board publishes are triggered **by the adapter after `apply`
+returns** (one per tool call), not by the per-commit document hook, so multi-stage tools
+(`pcb_route`, `pcb_route_fill`, `pcb_fanout`, `pcb_stitch`) never show half states; the hook
+ignores `pcb` changes while a board tool is applying (spec call).
 
 ## 7. Tools
 
@@ -355,7 +358,7 @@ grouping; the plan may refine fields, not semantics).
 | `pcb_analyze` | `{scope?: "parts"\|"nets"\|"blocks"\|"all"}` | the classification of §9.1: part classes, net classes (ground, supply, switch node, diff pair, high-current guess, critical), proposed functional blocks (from sheets + clusters) and any overrides from `board.md`. Read-only proposal; nothing is written. |
 | `pcb_render` | `{view: "top"\|"bottom"\|"layer"\|"placement"\|"3d", layer?, region?: {x,y,w,h}, highlight_nets?: [..≤20], markers?: bool, angle?: "top"\|"bottom"\|"iso"}` | PNG image(s) + the SVG link (§13). |
 | `pcb_metrics` | `{only?: [metric ids]}` | M1–M14 values, thresholds, verdict per metric (pass / review / fail), worst offenders with refs/nets/positions. ≈ 0.1–0.5 s. |
-| `pcb_check` | `{level: "quick"\|"full"}` | quick = API DRC task + metrics; full = + `kicad-cli pcb drc --schematic-parity` + fab-rule checks (§12 M14). Result: errors, warnings (each with an `excluded`/`explained` state), metrics, overall verdict, and a `board_hash`. Records the result for the checkpoint guard (§8.3). |
+| `pcb_check` | `{level: "quick"\|"full"}` | quick = API DRC task + metrics; full = + `kicad-cli pcb drc --schematic-parity` + fab-rule checks (§12 M14). Result: errors, warnings (each marked `accepted` when it matches a row of `board.md` → Checks, §12), metrics, overall verdict, and a `board_hash`. Records the result for the checkpoint guard (§8.3). |
 
 ### 7.2 Write tools (`PCB_WRITES`)
 
@@ -371,7 +374,10 @@ grouping; the plan may refine fields, not semantics).
   - New footprints are moved into a **staging area** (spec call), so "unplaced" is unambiguous:
     a grid to the right of the outline, or — before an outline exists (S1 runs before S2) — to the
     right of the bounding box of the already placed footprints, or of `(0,0)` on an empty board.
-    The staging area's box is stored in the group `cc:staging`.
+    No group or stored box is needed (spec call): a footprint counts as **unplaced** when its
+    courtyard is not fully inside the outline; before an outline exists every footprint is
+    unplaced and M1 is not evaluated. (KiCad items belong to at most one group, so groups are
+    reserved for functional blocks `blk:<name>`.)
   - Cost 3.
 
 **Setup**
@@ -379,8 +385,8 @@ grouping; the plan may refine fields, not semantics).
 - `pcb_set_outline {shape: "rect", width, height, corner_radius?, origin?: {x,y}, holes?:
   {footprint: lib_id, inset, positions?: [{x,y}]}, keepouts?: [{name, polygon|rect, layers,
   no: ["tracks","vias","copper","footprints"]}]}` — replaces the outline (one `BoardRectangle` on
-  Edge.Cuts) and the holes the tool placed before (recognised by the group `cc:holes`, spec
-  call). v1 shapes: rectangle with rounded corners
+  Edge.Cuts) and the holes the tool placed before (recognised as `MountingHole*` footprints
+  **without a schematic link** (`symbol_path` empty), spec call; they never join a block group). v1 shapes: rectangle with rounded corners
   (spec call; polygon outlines later). Mounting holes from the library via
   `place_footprint_from_library`, default `MountingHole:MountingHole_2.2mm_M2` only if the user
   chose M2; schematic mounting holes are moved instead of duplicated. Cost 2.
@@ -409,6 +415,10 @@ grouping; the plan may refine fields, not semantics).
   `ceil(n/10)`.
 - `pcb_legalize {scope: "all"|"block", block?, max_shift?: mm}` — removes courtyard overlaps and
   outline/keepout violations with minimal displacement; locked parts never move. Cost 1.
+- **Moves on a routed board** (`pcb_move`, `pcb_legalize`, `pcb_place_block`; spec call): a part
+  with tracks or vias attached is refused (`part_routed`) unless `unroute: true` is passed; then
+  the tool first removes the copper of the affected connections (as `pcb_unroute`) and reports
+  them as unrouted. No dangling tracks are left.
 
 **Routing** (§10)
 
@@ -527,8 +537,11 @@ would be expensive; the others are enforced by the skill (the agent stops and as
   needed moves, show them, and get a new ok. (A tolerance rule — "up to 3 parts by < 1 mm keep the
   approval" — was considered and rejected: it would make the hash check fuzzy.)
 - **Storage:** new table `board_checkpoints(project_id, board_file, stage, hash, conversation_id,
-  run_id, user_quote, approved_at)` plus `board_reviews(conversation_id, stage, hash, rendered_at,
-  checked_at)` in a new migration (`0013_board.sql`). Approvals are per project and board file,
+  run_id, user_quote, approved_at)` plus `board_reviews(conversation_id, stage, hash, run_id, kind,
+  detail, created_at)` in a new migration (`0013_board.sql`): one row per piece of evidence, `kind`
+  ∈ {`render`, `check`}, `detail` = the render view (`placement`, `top`, `bottom`, …) or the check
+  level + verdict (`quick`/`full`, `hard_failures`, M1 verdict). "The last `pcb_check full` for
+  that hash" = the newest `check` row with level `full` for (project, board file, hash). Approvals are per project and board file,
   so they survive a new session on the same board (spec call); hashes make them expire
   automatically.
 
@@ -643,7 +656,9 @@ From the spike prototype (`router.py`: 15/15 short nets clean), extended:
 - Grid A* on a 0.05 mm grid (configurable), state = (cell, layer, direction).
 - **Allowed direction changes: 0° and 45° only** (owner rule). A 90° turn is made of two 45° turns
   with a straight piece of at least `max(1.0 × width, 0.25 mm)` between them (spec call); 90° and
-  135° turns at one vertex are forbidden in the search.
+  135° turns at one vertex are forbidden in the search. Two **opposite-sense** 45° bends (an
+  S-offset) need a straight piece of at least `2 × width` between them, so router output never
+  contains an M7 micro-jog (spec call); a property test asserts M4 = M7 = 0 on router output.
 - **Layer changes by vias** (spec call: v1 supports vias, not only single-layer routes as in the
   spike) with a via cost; preferred layer per net class (power on outer layers).
 - **Pad entry/exit:** first segment leaves along the pad's long axis or at 45°, never from a pad
@@ -665,8 +680,14 @@ From the spike prototype (`router.py`: 15/15 short nets clean), extended:
 
 - **Runtime (G6):** Freerouting **2.5.0 JAR** + **Java 25 JRE** in the **app image** (not
   kicad-base, spec call: no KiCad rebuild needed), pinned by version + SHA-256, run with
-  `--gui.enabled=false`, `-Xmx1g`, a wall-clock timeout (default 300 s, max 600 s), in a subprocess
-  with rlimits, cancelled when the turn is stopped. Sources: the Freerouting GitHub release JAR
+  `--gui.enabled=false`, `-Xmx1g`, a wall-clock timeout (default 300 s, max 600 s), in a subprocess,
+  cancelled when the turn is stopped. Limits (spec call): `-Xmx1g -XX:MaxMetaspaceSize=256m`,
+  `RLIMIT_CPU` = timeout + margin, `RLIMIT_NOFILE`, no `RLIMIT_AS` (the JVM reserves far more
+  virtual memory than its heap and would not start); P6 has a start-up test under these limits.
+  **No network:** analytics/telemetry and update checks are switched off with the pinned
+  version's options (verified in P6), and the process runs without network access (own network
+  namespace, e.g. `unshare -n`, when the container allows it; else the options plus a test that
+  no connection is attempted). Designs never leave the host (§5 E). Sources: the Freerouting GitHub release JAR
   and the Eclipse Temurin 25 JRE tarball (linux x64; the app image is amd64-only today), both
   pinned by SHA-256 in one fetch script shared by the Dockerfile and CI; licence notices
   (Freerouting GPL-3, Temurin GPL-2 + Classpath Exception) in the image.
@@ -675,7 +696,9 @@ From the spike prototype (`router.py`: 15/15 short nets clean), extended:
   2. locked critical routes go in as protected wiring;
   3. run Freerouting on all remaining connections, including ground (C7: it cannot skip GND);
   4. import the SES (`ImportSpecctraSession`);
-  5. delete the imported ground copper (planes + fanout connect ground, §11);
+  5. delete the imported ground copper — only ground items whose KIIDs are **not** in the
+     pre-import snapshot (§6.3), so locked stubs, fanout and stitching vias from earlier steps
+     survive a re-fill (planes + fanout connect ground, §11); a P6 test covers fill-after-fanout;
   6. post-process (below), then metrics.
 - **Ladder when completion < 100 %** (spec call): (a) re-run with more passes; (b) unlock the
   critical routes next to the unrouted connections and re-run; (c) route the rest with the own
@@ -730,7 +753,7 @@ synthetic fixtures, but **hard thresholds change only with owner OK**.
 |---|---|---|---|---|
 | M1 | Placement completeness | footprints inside the outline (courtyard), not in the staging area, 0 courtyard overlaps, SMD on allowed sides | any violation | — |
 | M2 | Routing completeness | unconnected items (DRC task) | > 0 | — |
-| M3 | DRC + parity | errors; warnings not excluded with a reason; schematic parity issues (full check) | errors > 0, unexplained warnings > 0 | each excluded warning listed |
+| M3 | DRC + parity | errors; warnings not accepted (§12 notes); schematic parity issues (full check) | errors > 0, warnings not accepted > 0 | each accepted warning listed |
 | M4 | Angles (owner) | segments not at 0/45/90/135/… (±0.5°); direction change at a 2-track vertex of the same net and layer ∉ {0°, 45°}; off-pad T-junction where a branch meets at 90° | any | — |
 | M5 | Detour | per connection: routed length / octilinear shortest distance (pad to pad, same layer, ignoring obstacles) | any signal connection > 2.0 and > 5 mm extra | median > 1.15; any > 1.5 (critical nets > 1.25) |
 | M6 | Long connections | routed length of a connection > 50 % of the board diagonal | — | each listed with a reason or fixed |
@@ -746,6 +769,12 @@ synthetic fixtures, but **hard thresholds change only with owner OK**.
 Notes:
 
 - M4 is the owner's corrected rule: **no 90° corners**. Pad entries are not bends.
+- **M8/M9 per stage** (spec call): before routing (S4, placement approval) the distances are
+  **estimates** = octilinear pad-to-pad distance; after routing they are the routed path length.
+  The hard gate (M8 > 5 mm) uses the routed length at S8; at S4 the estimate must be within the
+  review threshold (≤ 3 mm) or the exception is shown to the user, so a passing placement does
+  not first fail at S8 by surprise (routing adds detour; the estimate uses the review threshold
+  for that margin).
 - **Definitions** (spec call). A *connection* is a pad pair of the net's ratsnest (octilinear
   MST over its pads); its routed length is the shortest path between the two pads through the
   net's track/via graph (vias count their layer distance as 0). A *chamfer* is a pair of
@@ -767,7 +796,9 @@ Notes:
 
 - **`pcb_render`** saves a board copy (`SaveCopyOfDocument`, C9), runs `kicad-cli pcb export svg`
   for the view's layers, wraps the SVG (mm scale bar, origin, board size label, optional block
-  hulls with names, optional violation markers with ids that match the report), and rasterises
+  hulls with names, optional violation markers with ids that match the report; every injected string is
+  XML-escaped, and the result goes through the same sanitiser allow-list as footprint renders,
+  with the board limits below), and rasterises
   with the existing CairoSVG worker (`views/_raster_worker.py`, G9: no new dependency). The SVG
   link uses the existing renders route (`png|svg`, CSP) from the footprints feature.
 - **Views:** `top` (F.Cu, F.Silk, F.Mask outline, Edge.Cuts), `bottom` (mirrored), `layer`
@@ -784,7 +815,10 @@ Notes:
 
 `pcb_fab_export {preset:"jlcpcb"}`:
 
-- output dir `<project dir>/fab/jlcpcb/` (spec call), replaced on every export:
+- output dir `<project dir>/fab/jlcpcb/` (spec call), replaced on every export. The path is
+  resolved and refused if `fab/` or `fab/jlcpcb/` is a symlink or resolves outside the project
+  directory (as `projects.py` refuses symlinks); the export is written to a temp dir next to it
+  and swapped in by rename, so a failed export leaves the old package intact. Contents:
   - `gerbers/`: all copper layers, F/B mask, F/B silk, **F/B paste** (stencil), Edge.Cuts,
     `.gbrjob` (`--subtract-soldermask --check-zones`);
   - drill: Excellon, PTH and NPTH separate, mm, drill map;
@@ -872,12 +906,20 @@ Listed in order of appearance; each is marked "(spec call)" in the text.
 43. `COPPERCHAT_BOARD_TOOLS` default off until P9, hiding the Board session type.
 44. Fill snapshot of full copper data before `ImportSpecctraSession`; shielded compensation on
     cancel.
-45. Staging-area placement before an outline exists; groups `cc:staging`, `cc:holes`.
+45. Staging-area placement before an outline exists; unplaced = courtyard not inside the outline; tool-placed holes recognised by having no schematic link; groups only for blocks.
 46. Only the latest approval per stage counts; approval evidence per stage; `board_hash` content.
 47. Connection / chamfer / micro-jog definitions; accepted DRC warnings as a `board.md` table.
 48. Plane layers kept out of the fill via the KiCad layer type (probe in P2).
 49. Stackup preset ids; Freerouting/JRE sources (amd64); `fab/` committed, 3D in `fab/3d/`.
 50. Board-specific SVG limits.
+51. Flag filter by explicit `PCB_WRITES` names; read tools stay with the flag off.
+52. Board view publishes once per tool call from the adapter.
+53. Moves of routed parts refused unless `unroute: true`.
+54. `board_reviews` rows per evidence (render view / check level + verdict).
+55. Router: ≥ 2 × width between opposite-sense bends.
+56. Freerouting limits (no `RLIMIT_AS`) and no network access; GND deletion scoped to new KIIDs.
+57. Fab export refuses symlinks / outside paths and swaps atomically.
+58. M8/M9 estimates before routing, routed lengths after.
 
 ### 15.3 Owner decisions on the open questions (2026-11-24)
 
@@ -997,7 +1039,7 @@ In PROD, a board session on the OpenDriveHub transmitter main board, driven only
    connector edges, mounting holes) and records the answers in `board.md`.
 2. Every step ends with images and a check report; the agent waits after placement and before fab.
 3. Final `pcb_check full`: **all hard gates pass** — M1 complete, M2 0 unconnected, M3 0 errors and
-   0 unexplained warnings, parity clean, M4 0 non-45° bends / 0 acute / 0 non-octilinear,
+   0 warnings that the user has not accepted, parity clean, M4 0 non-45° bends / 0 acute / 0 non-octilinear,
    M7 0 micro-jogs, M12 widths, M13 edges/keepouts, M14 JLC rules.
 4. Review metrics: detour median ≤ 1.15, every decoupling cap ≤ 3 mm, switcher loop metrics
    within limits, block ratio ≤ 3.0 — or each exception explained to and accepted by the owner.
