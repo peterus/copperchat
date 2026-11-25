@@ -434,7 +434,7 @@ grouping; the plan may refine fields, not semantics).
 - `pcb_route_fill {timeout_s?: ≤600, passes?: ≤100}` — Freerouting for all unrouted
   connections, then the post-processor (§10.3). Report: completion, rejected connections, metrics.
   Cost 5.
-- `pcb_unroute {nets?: [..], region?: {x,y,w,h}, include_locked?: bool=false}` — deletes tracks
+- `pcb_unroute {nets?: [..], region?: {x,y,w,h}, include_locked?: bool=false, unlock_only?: bool=false}` — deletes tracks (or, with `unlock_only`, only clears their `locked` flag)
   and vias. Cost 1.
 
 **Copper**
@@ -456,7 +456,9 @@ grouping; the plan may refine fields, not semantics).
 - `pcb_fab_export {preset: "jlcpcb"}` — §14. Refused (`not_approved`) unless the `board`
   checkpoint is valid. Cost 0 (writes no KiCad data).
 - `pcb_export_3d {format: "step"|"glb"}` — exports the 3D board to `<project>/fab/3d/`
-  (without part models until G7 is solved, the result says so). Cost 0.
+  (without part models until G7 is solved, the result says so). Same path handling as
+  `pcb_fab_export` (one shared helper): `fab/` and `fab/3d/` resolved, refused if a symlink or
+  outside the project, written to a temp file and renamed; tested with a symlinked `fab/`. Cost 0.
 
 `fab/` is a normal repo directory: not gitignored, committed when the user accepts the git commit
 offered at S9 (spec call).
@@ -716,7 +718,10 @@ From the spike prototype (`router.py`: 15/15 short nets clean), extended:
      via positions (planes + fanout connect ground, §11);
   6. post-process (below), then metrics.
 - **Ladder when completion < 100 %** (spec call): (a) re-run with more passes; (b) unlock the
-  critical routes next to the unrouted connections and re-run; (c) route the rest with the own
+  critical routes next to the unrouted connections and re-run — `pcb_unroute` gets an
+  `unlock_only: true` option that clears the `locked` flag of the selected tracks/vias without
+  deleting them (the `session-board` skill names it for this step; the affected nets are re-locked
+  by the post-processor if they still pass M4/M7); (c) route the rest with the own
   router (with vias); (d) report the open connections with positions and ask (placement change,
   more layers, larger board). The agent never calls the board done with open connections.
 - **Post-processor** (`router/chamfer.py`, spec call for the parameters):
@@ -949,6 +954,7 @@ Listed in order of appearance; each is marked "(spec call)" in the text.
 64. Two-step directory swap for the fab export.
 65. Both hashes returned by status/render/check, stored in `board_reviews`; `pcb_approve` takes the stage's hash.
 66. Moves with `unroute: true` remove locked copper of the affected connections too.
+67. `pcb_unroute unlock_only` for ladder step (b); shared fab path helper for the 3D export.
 
 ### 15.3 Owner decisions on the open questions (2026-11-24)
 
