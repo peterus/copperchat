@@ -54,6 +54,7 @@ PART_CLASSES: frozenset[str] = frozenset(get_args(PartClass))
 EDGES: frozenset[str] = frozenset(get_args(Edge))
 MAX_BYTES = 256 * 1024
 MAX_ERRORS = 50
+MAX_REF_CHARS = 32  # a ref longer than this is no KiCad reference (refs maxLength 32)
 
 _COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)
 _TABLE_SEP = re.compile(r"^:?-+:?$")
@@ -131,6 +132,22 @@ def _split_list(cell: str) -> tuple[str, ...]:
     return tuple(p for p in _LIST_SPLIT.split(cell) if p)
 
 
+def _ref_list(cell: str, notes: list[str]) -> tuple[str, ...]:
+    """The refs of a list cell; refs over MAX_REF_CHARS are dropped with a note each."""
+    refs = _split_list(cell)
+    for r in refs:
+        if len(r) > MAX_REF_CHARS:
+            notes.append(f"ref longer than {MAX_REF_CHARS} characters dropped: {r!r}")
+    return tuple(r for r in refs if len(r) <= MAX_REF_CHARS)
+
+
+def _ref(cell: str) -> str:
+    ref = _required(cell, "ref")
+    if len(ref) > MAX_REF_CHARS:
+        raise _RowError(f"ref longer than {MAX_REF_CHARS} characters: {ref!r}")
+    return ref
+
+
 def _number(cell: str, what: str) -> float | None:
     if cell in _NONE_CELLS:
         return None
@@ -146,29 +163,28 @@ def _required(cell: str, what: str) -> str:
     return cell
 
 
-def _edge_row(c: dict[str, str]) -> EdgeRow:
+def _edge_row(c: dict[str, str], notes: list[str]) -> EdgeRow:
     position = c["edge/position"]
     m = _FIRST_WORD.match(position.casefold())
     word = m.group(0) if m else ""
     edge: Edge | None = word if word in EDGES else None  # type: ignore[assignment]
-    return EdgeRow(_required(c["ref"], "ref"), edge, position, c["reason"])
+    return EdgeRow(_ref(c["ref"]), edge, position, c["reason"])
 
 
-def _block_row(c: dict[str, str]) -> BlockRow:
-    return BlockRow(
-        _required(c["block"], "block name"), _split_list(c["parts"]), c["region"], c["notes"]
-    )
+def _block_row(c: dict[str, str], notes: list[str]) -> BlockRow:
+    name = _required(c["block"], "block name")
+    return BlockRow(name, _ref_list(c["parts"], notes), c["region"], c["notes"])
 
 
-def _class_override(c: dict[str, str]) -> ClassOverride:
-    ref = _required(c["ref"], "ref")
+def _class_override(c: dict[str, str], notes: list[str]) -> ClassOverride:
+    ref = _ref(c["ref"])
     part_class = re.sub(r"[\s\-]+", "_", c["class"].casefold())
     if part_class not in PART_CLASSES:
         raise _RowError(f"unknown class {part_class!r}")
     return ClassOverride(ref, part_class, c["reason"])  # type: ignore[arg-type]
 
 
-def _net_class_row(c: dict[str, str]) -> NetClassRow:
+def _net_class_row(c: dict[str, str], notes: list[str]) -> NetClassRow:
     return NetClassRow(
         _required(c["class"], "class name"),
         _number(c["width"], "width"),
@@ -178,16 +194,18 @@ def _net_class_row(c: dict[str, str]) -> NetClassRow:
     )
 
 
-def _accepted(c: dict[str, str]) -> AcceptedWarning:
+def _accepted(c: dict[str, str], notes: list[str]) -> AcceptedWarning:
     drc_type = re.sub(r"\s+", "_", _required(c["drc type"], "DRC type").casefold())
     drc_type = drc_type.removeprefix("drce_")
     if not drc_type:
         raise _RowError("empty DRC type")
-    return AcceptedWarning(drc_type, _split_list(c["items/refs"]), c["reason"], c["accepted by"])
+    items = _ref_list(c["items/refs"], notes)
+    return AcceptedWarning(drc_type, items, c["reason"], c["accepted by"])
 
 
 _Row = EdgeRow | BlockRow | ClassOverride | NetClassRow | AcceptedWarning
-_RowParser = Callable[[dict[str, str]], _Row]
+# (cells by header, notes) -> row; a note is an error line for a row that is still kept
+_RowParser = Callable[[dict[str, str], list[str]], _Row]
 _TABLES: dict[frozenset[str], _RowParser] = {
     frozenset({"ref", "edge/position", "reason"}): _edge_row,
     frozenset({"block", "parts", "region", "notes"}): _block_row,
@@ -258,7 +276,9 @@ def parse_board_md(text: str) -> BoardDoc:
         try:
             if len(cells) != len(header):
                 raise _RowError(f"{len(cells)} cells, expected {len(header)}")
-            rows.append(parse(dict(zip(header, cells, strict=True))))
+            notes: list[str] = []
+            rows.append(parse(dict(zip(header, cells, strict=True)), notes))
+            errors += [f"{section} row {n}: {note}" for note in notes]
         except _RowError as exc:
             errors.append(f"{section} row {n}: {exc}")
 

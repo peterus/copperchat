@@ -786,6 +786,12 @@ M13's "overhanging it" uses the same clip. Both switch settings are tested.
 - `board.md` parser: errors capped at 50 + one "<k> more errors omitted" line; tables are
   recognised by their header set in any section; `Preset:` / `Assembly: …; sides:` only in
   `## Summary`.
+- `board.md` ref length: a Ref cell longer than 32 characters (refs `maxLength` 32) rejects the
+  row with an error; Blocks Parts / Checks Items entries over 32 are dropped with an error each.
+- M11 fill per layer counts the union: when ≥ 2 zones with polygons exactly on the layer have
+  overlapping bboxes, their fill is the exact union area (`_union_area`, vertical slab sweep
+  incl. edge crossings), else the plain sum; ratio clamped ≤ 1.0. `_PlaneVoids.void_at` and
+  M14 `_excepted` (condition token set, regex fallback for non-word refs) are bucketed/indexed.
 - Switcher bootstrap refinement (call 15) as planned: a 2-pad cap between SW and a net holding
   only the IC and that cap is tolerated; out caps by sheet, else strictly nearer (part-centre
   `octi_dist`) to the switcher than to the rival anchor.

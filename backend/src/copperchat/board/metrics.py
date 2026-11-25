@@ -213,6 +213,10 @@ def _bbox(pts: Iterable[Point], grow: float = 0.0) -> BBox:
     return (min(xs) - grow, min(ys) - grow, max(xs) + grow, max(ys) + grow)
 
 
+def _grow(b: BBox, d: float) -> BBox:
+    return (b[0] - d, b[1] - d, b[2] + d, b[3] + d)
+
+
 def _bbox_hit(a: BBox, b: BBox) -> bool:
     return a[0] <= b[2] and b[0] <= a[2] and a[1] <= b[3] and b[1] <= a[3]
 
@@ -1100,6 +1104,69 @@ def _hit_params(a: Point, b: Point, c: Point, d: Point) -> list[float]:
     return [(qx * rx + qy * ry) / rr, ((d[0] - a[0]) * rx + (d[1] - a[1]) * ry) / rr]
 
 
+_Edge = tuple[float, float, float, float, int]  # x0 < x1: (x0, y0, x1, y1, polygon id)
+
+
+def _edge_y(e: _Edge, x: float) -> float:
+    return e[1] + (e[3] - e[1]) * (x - e[0]) / (e[2] - e[0])
+
+
+def _covered(active: Sequence[_Edge], x: float) -> float:
+    """Length of the vertical line at `x` inside the union of the polygons whose (non-vertical)
+    edges are `active`: even-odd intervals per polygon (outer minus holes), merged."""
+    ys: dict[int, list[float]] = defaultdict(list)
+    for e in active:
+        ys[e[4]].append(_edge_y(e, x))
+    spans: list[tuple[float, float]] = []
+    for v in ys.values():
+        v.sort()
+        spans += zip(v[::2], v[1::2], strict=False)
+    total, reach = 0.0, -math.inf
+    for lo, hi in sorted(spans):
+        if hi > reach:
+            total += hi - max(lo, reach)
+            reach = hi
+    return total
+
+
+def _union_area(polys: Sequence[tuple[Sequence[Point], Sequence[Sequence[Point]]]]) -> float:
+    """Exact area of the union of polygons with holes (outer ring minus its holes), by a
+    vertical slab sweep: between consecutive vertex x-coordinates and the x of every edge
+    crossing inside a slab the covered length is linear in x, so it is the width times the
+    covered length at the mid-line."""
+    edges: list[_Edge] = []
+    for pid, (outer, holes) in enumerate(polys):
+        for ring in (outer, *holes):
+            if len(ring) < 3:
+                continue
+            for a, b in _ring_edges(ring):
+                if a[0] != b[0]:  # a vertical edge covers no slab interior
+                    lo, hi = (a, b) if a[0] < b[0] else (b, a)
+                    edges.append((lo[0], lo[1], hi[0], hi[1], pid))
+    edges.sort()
+    xs = sorted({e[0] for e in edges} | {e[2] for e in edges})
+    area, k = 0.0, 0
+    active: list[_Edge] = []
+    for xa, xb in itertools.pairwise(xs):
+        while k < len(edges) and edges[k][0] <= xa:
+            active.append(edges[k])
+            k += 1
+        active = [e for e in active if e[2] > xa]  # every end is in xs: e spans [xa, xb]
+        if not active:
+            continue
+        ends = [(_edge_y(e, xa), _edge_y(e, xb)) for e in active]
+        cuts = {xa, xb}
+        rights = [ends[i][1] for i in sorted(range(len(active)), key=ends.__getitem__)]
+        if any(r0 > r1 for r0, r1 in itertools.pairwise(rights)):  # edges cross in the slab
+            for i, j in itertools.combinations(range(len(active)), 2):
+                d0, d1 = ends[i][0] - ends[j][0], ends[i][1] - ends[j][1]
+                if active[i][4] != active[j][4] and d0 * d1 < 0:
+                    cuts.add(xa + (xb - xa) * d0 / (d0 - d1))
+        for x0, x1 in itertools.pairwise(sorted(cuts)):
+            area += (x1 - x0) * _covered(active, (x0 + x1) / 2)
+    return area
+
+
 class _PlaneVoids:
     """The voids of one plane layer, from every filled ground polygon on it: the region
     inside the outline outside every filled polygon ("outer") and every hole that is not
@@ -1144,16 +1211,27 @@ class _PlaneVoids:
         self.grid = _Grid()
         for k, (a, b) in enumerate(self.edges):
             self.grid.add(k, _bbox((a, b)))
+        # fill polygons (coarse cells: they are large) and void rings bucketed by bbox
+        self.poly_grid = _Grid(max(BUCKET_MM, 10.0))
+        self.void_grid = _Grid()
+        self.void_list: list[tuple[int, str, _Ring]] = []
+        for i, (fill, rings) in enumerate(self.polys):
+            self.poly_grid.add(i, _grow(fill.bbox, _EPS))  # Ring.contains allows _EPS
+            for vid, void in rings:
+                self.void_grid.add(len(self.void_list), _grow(void.bbox, _EPS))
+                self.void_list.append((i, vid, void))
 
     def void_at(self, p: Point) -> str | None:
         """The void id containing `p`, None when `p` is covered or outside the outline."""
         if not self.outline.contains(p):
             return None
+        box = (p[0], p[1], p[0], p[1])
+        near = [self.void_list[k] for k in self.void_grid.query(box)]  # in polygon order
         hole: str | None = None
-        for outer, voids in self.polys:
-            if not outer.contains(p):
+        for i in self.poly_grid.query(box):
+            if not self.polys[i][0].contains(p):
                 continue
-            hit = next((vid for vid, ring in voids if ring.contains(p)), None)
+            hit = next((vid for j, vid, ring in near if j == i and ring.contains(p)), None)
             if hit is None:
                 return None
             hole = hole or hit
@@ -1201,6 +1279,9 @@ def _m11(c: _Ctx) -> Metric:
         nets = tuple(sorted({z.net for z in on_layer}, key=natural_key))
         filled: list[tuple[str, Sequence[Point], Sequence[Sequence[Point]]]] = []
         area = 0.0
+        # zones whose polygons are exactly this layer's fill: (bbox, area, polygons)
+        exact: list[tuple[BBox, float, list[tuple[Sequence[Point], Sequence[Sequence[Point]]]]]]
+        exact = []
         for z in on_layer:
             holes = list(z.filled_holes) + [()] * (len(z.filled) - len(z.filled_holes))
             per_layer = len(z.filled_layers) == len(z.filled) > 0
@@ -1218,10 +1299,20 @@ def _m11(c: _Ctx) -> Metric:
                 zarea = sum(polygon_area(p) - sum(polygon_area(h) for h in hs) for _, p, hs in mine)
             else:
                 zarea = z.filled_area_mm2
-            # without per-layer polygons the zone's total is shared evenly by its copper layers
-            area += zarea / (1 if per_layer else max(1, sum(1 for la in z.layers if la in layers)))
             filled += mine
-        ratio = area / board_area if board_area > 0 else 0.0
+            n_cu = sum(1 for la in z.layers if la in layers)
+            if mine and (per_layer or n_cu == 1):
+                box = _bbox(pt for _, p, _ in mine for pt in p)
+                exact.append((box, zarea, [(p, hs) for _, p, hs in mine]))
+                continue
+            # without per-layer polygons the zone's total is shared evenly by its copper layers
+            area += zarea / (1 if per_layer else max(1, n_cu))
+        overlap = any(_bbox_hit(a[0], b[0]) for a, b in itertools.combinations(exact, 2))
+        if overlap:  # overlapping zones (same or other ground net): count shared copper once
+            area += _union_area([poly for e in exact for poly in e[2]])
+        else:
+            area += sum(e[1] for e in exact)
+        ratio = min(1.0, area / board_area) if board_area > 0 else 0.0
         worst = ratio if worst is None else min(worst, ratio)
         if ratio < REVIEW["M11_fill"]:
             off.append(Offender(f"fill {layer}: {ratio:.3f}", (), nets, None, _r(ratio)))
@@ -1611,12 +1702,37 @@ class _Fab:
                     self.add("paste_missing", detail, (q.x, q.y), None, (p.ref,), (q.net,))
 
 
-def _excepted(o: Offender, conditions: Sequence[str]) -> bool:
+_WORD = re.compile(r"\w+")
+
+
+class _Conditions:
+    """The custom rule conditions of the `.kicad_dru`, indexed once: a ref is named in one
+    when it occurs there not preceded by a word character or `.` and not followed by a word
+    character. For an all-word ref that is exactly a maximal word run not after a `.` (the
+    token set); other refs fall back to the regex (memoised)."""
+
+    def __init__(self, conditions: Sequence[str]) -> None:
+        self.conditions = tuple(conditions)
+        self.tokens = {
+            m.group()
+            for cond in self.conditions
+            for m in _WORD.finditer(cond)
+            if m.start() == 0 or cond[m.start() - 1] != "."
+        }
+        self.other: dict[str, bool] = {}
+
+    def names(self, ref: str) -> bool:
+        if _WORD.fullmatch(ref):
+            return ref in self.tokens
+        if ref not in self.other:
+            pat = re.compile(rf"(?<![\w.]){re.escape(ref)}(?!\w)")
+            self.other[ref] = any(pat.search(cond) for cond in self.conditions)
+        return self.other[ref]
+
+
+def _excepted(o: Offender, conditions: _Conditions) -> bool:
     """Every ref of `o` is named in some custom rule condition of the `.kicad_dru`."""
-    return bool(o.refs) and all(
-        any(re.search(rf"(?<![\w.]){re.escape(r)}(?!\w)", cond) for cond in conditions)
-        for r in o.refs
-    )
+    return bool(o.refs) and all(conditions.names(r) for r in o.refs)
 
 
 def _m14(c: _Ctx) -> Metric:
@@ -1628,7 +1744,7 @@ def _m14(c: _Ctx) -> Metric:
     fab.edges()
     fab.silk()
     fab.paste()
-    conditions = _CONDITION.findall(c.m.dru_text)
+    conditions = _Conditions(_CONDITION.findall(c.m.dru_text))
     off: list[Offender] = []
     count = exceptions = 0
     for o in fab.raw:

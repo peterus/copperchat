@@ -271,6 +271,51 @@ def test_m14_custom_rule_exception() -> None:
     assert get(run(replace(m, dru_text=other), preset=JLC4), "M14").verdict == "fail"
 
 
+def _excepted_regex(refs: tuple[str, ...], conditions: list[str]) -> bool:
+    """The original per-ref regex matching that `_excepted` must keep."""
+    import re
+
+    return bool(refs) and all(
+        any(re.search(rf"(?<![\w.]){re.escape(r)}(?!\w)", c) for c in conditions) for r in refs
+    )
+
+
+def test_m14_excepted_matches_regex_semantics() -> None:
+    conds = [
+        "A.Reference == 'U6'",
+        "A.U7 == 'x'",  # preceded by '.': not a ref mention
+        "A.Reference == 'R1' || B.Reference == 'C10_2'",
+        "B.Reference == 'Ü1'",
+        "A.Reference == '#PWR01' && x",
+        "A.Reference == 'R-3'",
+    ]
+    cases = ["U6", "U7", "R1", "R10", "C10", "C10_2", "Ü1", "#PWR01", "PWR01", "R-3", "R", "", "6"]
+    c = metrics._Conditions(conds)
+    for ref in cases:
+        o = metrics.Offender("x", (ref,), (), None, None)
+        assert metrics._excepted(o, c) == _excepted_regex((ref,), conds), ref
+    o = metrics.Offender("x", ("U6", "R1"), (), None, None)
+    assert metrics._excepted(o, c)
+    assert not metrics._excepted(metrics.Offender("x", ("U6", "U7"), (), None, None), c)
+    assert not metrics._excepted(metrics.Offender("x", (), (), None, None), c)
+
+
+def test_m14_excepted_timing_10k_offenders_1000_conditions() -> None:
+    import time
+
+    conds = [f"A.Reference == 'U{k}' && B.NetClass == 'P{k}'" for k in range(1000)]
+    offs = [metrics.Offender("x", (f"U{k}", f"C{k}"), (), None, None) for k in range(10_000)]
+    t0 = time.perf_counter()
+    c = metrics._Conditions(conds)
+    got = [metrics._excepted(o, c) for o in offs]
+    elapsed = time.perf_counter() - t0
+    assert not any(got)
+    assert [metrics._excepted(replace(o, refs=o.refs[:1]), c) for o in offs[995:1005]] == [
+        k < 1000 for k in range(995, 1005)
+    ]
+    assert elapsed < 0.5, elapsed
+
+
 def test_m14_paste_exempt_fiducials_and_test_points() -> None:
     """KiCad TestPoint_Pad_* and fiducial pads have no paste by design."""
     for ref, lib in (("TP1", "Lib:FP"), ("X7", "TestPoint:TestPoint_Pad_D1.0mm"), ("FID1", "")):

@@ -14,6 +14,9 @@ from copperchat.board.geom import rect_poly
 from copperchat.board.metrics import (
     Metric,
     MetricsReport,
+    _PlaneVoids,
+    _Ring,
+    _union_area,
     compute_metrics,
     connections,
     routed_length,
@@ -351,6 +354,54 @@ def test_m11_fallback_area_and_na() -> None:
     assert m11.value == pytest.approx(0.9)
     assert m11.verdict == "pass"
     assert get(run(board()), "M11").verdict == "n/a"
+
+
+def test_m11_overlapping_zones_union_fill() -> None:
+    """Two overlapping GND zones on one layer: the fill is their union, not the sum."""
+    a = replace(_plane((tuple(rect_poly(0, 0, 60, 80)),)), name="GNDA", kiid="za")
+    b = replace(_plane((tuple(rect_poly(0, 0, 40, 80)),)), name="GNDB", kiid="zb")
+    m = replace(_m11_board(a), zones=(a, b))
+    m11 = get(run(m), "M11")
+    assert m11.value == pytest.approx(0.6, abs=1e-9)
+    assert m11.verdict == "review"
+    # rect 0..50 (3,900: minus hole 10..20 x 10..20) and the triangle y >= 0.8 x (4,000);
+    # the diagonal crosses the hole's bottom edge inside a slab (x = 12.5)
+    # rect ∩ tri = 3,000 - (hole ∩ tri = 77.5) -> union 3,900 + 4,000 - 2,922.5 = 4,977.5
+    tri: tuple[Point, ...] = ((0.0, 0.0), (100.0, 80.0), (0.0, 80.0))
+    c = _plane((tuple(rect_poly(0, 0, 50, 80)),), ((tuple(rect_poly(10, 10, 10, 10)),),))
+    d = replace(_plane((tri,)), name="GNDD", kiid="zd")
+    m11 = get(run(replace(_m11_board(c), zones=(c, d))), "M11")
+    assert m11.value == pytest.approx(round(4977.5 / 8000, 4))
+    polys = [(p, hs) for z in (c, d) for p, hs in zip(z.filled, z.filled_holes, strict=True)]
+    assert _union_area(polys) == pytest.approx(4977.5, abs=1e-9)
+    # zones that do not overlap keep the plain sum, clamped at 1.0
+    e = replace(_plane((tuple(rect_poly(0, 0, 50, 80)),)), name="GNDE", kiid="ze")
+    f = replace(_plane((tuple(rect_poly(50, 0, 50, 80)),)), name="GNDF", kiid="zf")
+    assert get(run(replace(_m11_board(e), zones=(e, f))), "M11").value == pytest.approx(1.0)
+
+
+def test_plane_voids_timing_2000_holes_20k_segments() -> None:
+    """`_PlaneVoids.crossed` on a plane with 2,000 voids, 20,000 segments: bound 2 s."""
+    import random
+
+    holes = [
+        tuple(rect_poly(1 + 2.4 * i, 1 + 1.55 * j, 0.6, 0.6)) for i in range(40) for j in range(50)
+    ]
+    plane = tuple(rect_poly(0, 0, 100, 80))
+    voids = _PlaneVoids([("GND 0", plane, holes)], [], _Ring(rect_poly(0, 0, 100, 80)))
+    rnd = random.Random(5)
+    segs = []
+    for _ in range(20_000):
+        x, y = rnd.uniform(1, 98), rnd.uniform(1, 78)
+        segs.append(((x, y), (x + rnd.uniform(-1, 1), y + rnd.uniform(-1, 1))))
+    t0 = time.perf_counter()
+    hits = sum(len(voids.crossed(a, b)) for a, b in segs)
+    elapsed = time.perf_counter() - t0
+    assert hits > 0
+    assert voids.void_at((1.3, 1.3)) == "GND 0 hole 0"
+    assert voids.void_at((2, 2)) is None
+    assert voids.void_at((50, 90)) is None
+    assert elapsed < 2.0, elapsed
 
 
 def test_m11_unfilled_zone_review() -> None:

@@ -120,6 +120,45 @@ def test_empty_ref_and_cell_count_errors() -> None:
     assert [e.split(":")[0] for e in doc.errors] == ["placement row 1", "placement row 2"]
 
 
+def test_ref_longer_than_32_rejected() -> None:
+    long = "R" * 33
+    text = (
+        "## Placement\n"
+        "| Ref | Edge/position | Reason |\n"
+        "|---|---|---|\n"
+        f"| {long} | left | x |\n"
+        f"| {'J' * 32} | right | ok |\n"
+        "## Part classes\n"
+        "| Ref | Class | Reason |\n"
+        "|---|---|---|\n"
+        f"| {long} | other | x |\n"
+    )
+    doc = parse_board_md(text)
+    assert doc.edges == (EdgeRow("J" * 32, "right", "right", "ok"),)
+    assert doc.class_overrides == ()
+    assert [e.split(":")[0] for e in doc.errors] == ["placement row 1", "part classes row 1"]
+    assert all("32" in e and repr(long) in e for e in doc.errors)
+
+
+def test_block_parts_and_accepted_items_longer_than_32_dropped() -> None:
+    long = "C" * 33
+    text = (
+        "## Placement\n"
+        "| Block | Parts | Region | Notes |\n"
+        "|---|---|---|---|\n"
+        f"| MCU | U1, {long} C2 | centre | tight |\n"
+        "## Checks\n"
+        "| DRC type | Items/refs | Reason | Accepted by |\n"
+        "|---|---|---|---|\n"
+        f"| silk_overlap | {long}, J1 | cosmetic | user |\n"
+    )
+    doc = parse_board_md(text)
+    assert doc.blocks == (BlockRow("MCU", ("U1", "C2"), "centre", "tight"),)
+    assert doc.accepted == (AcceptedWarning("silk_overlap", ("J1",), "cosmetic", "user"),)
+    assert [e.split(":")[0] for e in doc.errors] == ["placement row 1", "checks row 1"]
+    assert all(repr(long) in e for e in doc.errors)
+
+
 def test_net_class_numbers() -> None:
     text = (
         "## Stack-up and rules\n"
