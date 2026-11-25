@@ -14,6 +14,7 @@ the rounds goes to the nearest free spot around its start (0.25 mm rings, within
 
 from __future__ import annotations
 
+import heapq
 import math
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
@@ -205,18 +206,21 @@ class _BoxIndex:
 
 
 def _rings(radius: float) -> Iterator[tuple[float, float]]:
-    """Offsets on the 0.25 mm grid within `radius`, ring by ring (Chebyshev rings, inside a
-    ring nearest first; ties y, x) — generated lazily, nothing cached."""
+    """Offsets on the 0.25 mm grid within `radius`, nearest first (ties y, x), generated
+    lazily: Chebyshev ring k only holds points at least k steps away, so after ring k every
+    buffered point closer than k + 1 steps is final."""
     n = int(radius / FALLBACK_STEP_MM)
+    heap: list[tuple[float, int, int]] = []
     for k in range(n + 1):
-        ring = [
-            (i, j)
-            for i in range(-k, k + 1)
-            for j in range(-k, k + 1)
-            if max(abs(i), abs(j)) == k and math.hypot(i, j) * FALLBACK_STEP_MM <= radius + 1e-9
-        ]
-        ring.sort(key=lambda t: (math.hypot(*t), t[1], t[0]))
-        for i, j in ring:
+        for i in range(-k, k + 1):
+            for j in range(-k, k + 1):
+                if (
+                    max(abs(i), abs(j)) == k
+                    and math.hypot(i, j) * FALLBACK_STEP_MM <= radius + 1e-9
+                ):
+                    heapq.heappush(heap, (math.hypot(i, j), j, i))
+        while heap and (heap[0][0] < k + 1 or k == n):
+            _, j, i = heapq.heappop(heap)
             yield (i * FALLBACK_STEP_MM, j * FALLBACK_STEP_MM)
 
 
@@ -408,9 +412,13 @@ def legalize(
         # the grid snap of a moved part may add up to SNAP_SLACK_MM to its shift
         if max_shift is not None and math.dist(start[r], pos[r]) > max_shift + SNAP_SLACK_MM + 1e-6:
             bad.add(r)
-    for i, ra in enumerate(order):
-        for rb in order[i + 1 :]:
-            if (ra in mov or rb in mov) and side[ra] == side[rb] and boxes_hit(bx(ra), bx(rb), sep):
+    final = _BoxIndex(FALLBACK_CELL_MM)
+    for r in order:
+        final.add(r, bx(r))
+    for ra in order:
+        for rb in final.near(bx(ra), sep):
+            pair = ra < rb and (ra in mov or rb in mov) and side[ra] == side[rb]
+            if pair and boxes_hit(bx(ra), bx(rb), sep):
                 bad.update(r for r in (ra, rb) if r in mov)
     if bad:
         needed = sum(_area(bx(r)) for r in mov)

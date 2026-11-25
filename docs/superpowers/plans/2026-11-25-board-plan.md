@@ -832,8 +832,11 @@ name as planned; owner facts `docs/kicad-patches/0005-board-stackup-FACTS.md`)
   fallback spots), so a huge infeasible board answers `does_not_fit`, not a timeout.
 - Packing search (review round 2): per-net nearest index for the airwire cost; the coarse
   grid widens beyond 4,000 spots; a rotation without a coarse hit gets an exact sweep (every
-  0.5 mm spot where the block box touches a region end or an obstacle), not a full scan;
-  `does_not_fit` areas use the union of the obstacles. A connector keeps its own cluster (never absorbed
+  0.5 mm spot where the block box touches a region end, an obstacle, a keepout or an
+  outline vertex), not a full scan; `does_not_fit` areas use the union of the obstacles.
+  Round 3: the coarse grid also keeps coarse spots x block pads within 400k (≥ 400 spots), a
+  wide coarse grid is refined on 2 mm before 0.5 mm, the nearest index sizes its cells per net.
+  Measured: a 100-pad block on a 600 x 400 mm board with 1,000 outside parts ≈ 10 s. A connector keeps its own cluster (never absorbed
   as a satellite). An assigned edge (board.md row or the `edge` argument) is nearly hard:
   a connector farther than 0.5 mm beyond the edge margin costs `EDGE_MISS` 1000.
 

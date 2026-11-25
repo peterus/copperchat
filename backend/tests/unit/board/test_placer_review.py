@@ -200,3 +200,70 @@ def test_nearest_index_matches_brute_force() -> None:
         for _ in range(50):
             q = (rnd.uniform(-300, 400), rnd.uniform(-300, 400))
             assert abs(idx.dist(q) - min(octi_dist(q, p) for p in pts)) < 1e-9
+
+
+def test_slot_between_keepouts_found() -> None:
+    # round 3: the exact sweep must try the spots next to footprint keepouts
+    from copperchat.board.geom import rect_poly
+
+    from .builders import zone
+
+    keep = frozenset({"footprints"})
+    zones = (
+        zone(
+            "K1", "", poly=tuple(rect_poly(0, 0, 7.3, 20)), rule_area=True, keepout=keep, kiid="k1"
+        ),
+        zone(
+            "K2",
+            "",
+            poly=tuple(rect_poly(10.8, 0, 9.2, 20)),
+            rule_area=True,
+            keepout=keep,
+            kiid="k2",
+        ),
+    )
+    u = part("U1", 500.0, 500.0, half=1.5)
+    m = circuit(u, outline=outline(0, 0, 20, 20), zones=zones)
+    r = place_block(
+        m,
+        classify(m),
+        ["U1"],
+        Rect(0, 0, 20, 20),
+        side="top",
+        rotation=None,
+        allowed_sides=TOP,
+    )
+    assert not isinstance(r, DoesNotFit), r
+    mv = r.moves[0]
+    assert 7.3 + 1.5 <= mv.x <= 10.8 - 1.5
+
+
+def test_rings_nearest_first() -> None:
+    import math
+
+    from copperchat.board.placer.legalize import _rings
+
+    d = [math.hypot(*p) for p in _rings(3.0)]
+    assert d == sorted(d) and len(d) > 400
+
+
+def test_large_board_block_within_budget() -> None:
+    from .builders_circuit import cap, ic
+
+    outside = [
+        cap(f"C{i + 1}", f"N{i % 50}", "+3V3", at=(10 + (i % 40) * 12, 10 + (i // 40) * 12))
+        for i in range(1000)
+    ]
+    u = ic("U1", {str(n + 1): f"N{n % 50}" for n in range(100)}, at=(900.0, 900.0), pitch=0.5)
+    m = circuit(*outside, u, outline=outline(0, 0, 600, 400))
+    t = time.monotonic()
+    place_block(
+        m,
+        classify(m),
+        ["U1"],
+        Rect(0, 0, 600, 400),
+        side="top",
+        rotation=None,
+        allowed_sides=TOP,
+    )
+    assert time.monotonic() - t < 20.0
