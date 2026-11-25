@@ -14,10 +14,20 @@ import dataclasses
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal
 
-from copperchat.board.boardmd import BoardDoc
-from copperchat.board.classify import classify
+from copperchat.board.boardmd import BoardDoc, Edge
+from copperchat.board.classify import Classification, classify
 from copperchat.board.metrics import MetricsReport, compute_metrics
-from copperchat.board.model import BoardModel
+from copperchat.board.model import BoardModel, Point, Rect, Side
+from copperchat.board.placer import (
+    DoesNotFit,
+    Move,
+    PlacementScore,
+    PlaceResult,
+    block_extent,
+    legalize,
+    place_block,
+    score_placement,
+)
 from copperchat.board.presets import FabPreset
 
 if TYPE_CHECKING:
@@ -30,7 +40,11 @@ __all__ = [
     "SCOPE_KEYS",
     "Scope",
     "analyse_job",
+    "edge_strip",
+    "legalize_job",
     "metrics_job",
+    "place_block_job",
+    "score_job",
     "strip_fills",
 ]
 
@@ -152,3 +166,97 @@ def metrics_job(
     return compute_metrics(
         model, classify(model, doc), doc, drc=drc, parity=parity, preset=preset, only=only
     )
+
+
+# ---- placement (P4, B-C11) -----------------------------------------------------------------
+
+
+def edge_strip(
+    model: BoardModel,
+    cls: Classification,
+    refs: Sequence[str],
+    edge: Edge,
+    keep_channels: float,
+    offset: float | None,
+) -> tuple[Rect, Point]:
+    """The region and target of `pcb_place_block`'s edge form: a strip along `edge` of the
+    outline's box, as deep as the block's largest layout extent + 2 x `keep_channels`;
+    the target lies on the strip's centre line `offset` mm along the edge from its top /
+    left end (default: the middle of the edge). Needs an outline."""
+    o = model.outline
+    depth = block_extent(model, cls, refs, keep_channels=keep_channels) + 2 * keep_channels
+    along = o.h if edge in ("left", "right") else o.w
+    depth = min(depth, o.w if edge in ("left", "right") else o.h)
+    t = along / 2 if offset is None else offset
+    if edge == "left":
+        return Rect(o.x, o.y, depth, o.h), (o.x + depth / 2, o.y + t)
+    if edge == "right":
+        return Rect(o.x + o.w - depth, o.y, depth, o.h), (o.x + o.w - depth / 2, o.y + t)
+    if edge == "top":
+        return Rect(o.x, o.y, o.w, depth), (o.x + t, o.y + depth / 2)
+    return Rect(o.x, o.y + o.h - depth, o.w, depth), (o.x + t, o.y + o.h - depth / 2)
+
+
+def place_block_job(
+    model: BoardModel,
+    doc: BoardDoc,
+    refs: tuple[str, ...],
+    region: Rect | None,
+    *,
+    side: Side,
+    rotation: int | None,
+    keep_channels: float,
+    fixed: tuple[Move, ...],
+    allowed_sides: frozenset[Side],
+    edge: Edge | None,
+    offset: float | None,
+) -> tuple[PlaceResult | DoesNotFit, Rect]:
+    """`place_block` of `pcb_place_block` (B-C11), classified here in the worker. Without a
+    `region` the block goes into the strip along `edge` (`edge_strip`). Returns the result
+    and the region used."""
+    cls = classify(model, doc)
+    target: Point | None = None
+    if region is None:
+        if edge is None:
+            raise ValueError("place_block_job needs a region or an edge")
+        region, target = edge_strip(model, cls, refs, edge, keep_channels, offset)
+    result = place_block(
+        model,
+        cls,
+        refs,
+        region,
+        side=side,
+        rotation=rotation,
+        keep_channels=keep_channels,
+        fixed=fixed,
+        allowed_sides=allowed_sides,
+        edge=edge,
+        target=target,
+        doc=doc,
+    )
+    return result, region
+
+
+def legalize_job(
+    model: BoardModel,
+    moves: tuple[Move, ...],
+    movable: frozenset[str],
+    max_shift: float | None,
+    keepouts: tuple[tuple[Point, ...], ...],
+    edge_margin: float,
+) -> tuple[Move, ...] | DoesNotFit:
+    """`legalize` (B-C11) for `pcb_move {legalize: true}` and `pcb_legalize`."""
+    return legalize(
+        model,
+        moves,
+        movable=movable,
+        max_shift=max_shift,
+        keepouts=keepouts,
+        edge_margin=edge_margin,
+    )
+
+
+def score_job(model: BoardModel, doc: BoardDoc) -> PlacementScore:
+    """The placement score (B-C11) of `model`, classified here: the before / after score of
+    the placement tools."""
+    return score_placement(model, classify(model, doc), doc)

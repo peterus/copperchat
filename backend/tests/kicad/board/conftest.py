@@ -411,3 +411,25 @@ async def user_says(db: Database, project_id: str, run_id: str, text: str) -> No
         metadata={"origin": "user"},
     )
     await asyncio.sleep(0.01)
+
+
+# -- block helpers (SP4 P4; reused by place_synth and P5b's rigs) --------------------------
+
+NO_BLOCK_CLASSES = frozenset({"mounting_hole", "fiducial"})
+
+
+async def analyzed_blocks(ctx: ToolContext) -> list[dict[str, Any]]:
+    """`pcb_analyze`'s block proposals as `pcb_define_blocks` blocks: mounting holes and
+    fiducials dropped (they cannot be in a block), blocks left empty dropped."""
+    out = await setup_call(ctx, "pcb_analyze", scope="all")
+    classes: dict[str, str] = out["parts"]
+    blocks = []
+    for b in out["blocks"]:
+        refs = [r for r in b["refs"] if classes.get(r) not in NO_BLOCK_CLASSES]
+        if not refs:
+            continue
+        block: dict[str, Any] = {"name": b["name"], "refs": refs}
+        if b["anchor"] in refs:
+            block["anchor"] = b["anchor"]
+        blocks.append(block)
+    return blocks
