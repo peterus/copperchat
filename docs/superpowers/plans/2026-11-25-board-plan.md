@@ -999,6 +999,14 @@ exact obstacle cores, each with its required centre-line distance), `outline`, `
 - Tests: `random_map` ends every other request on the bottom layer (vias in the property
   tests); the pair property test checks each path against the partner's pads.
 
+**Verification pass (PR #105)**
+- Every snapped tail (single 45° piece or stub) keeps the straight-piece rules for both
+  senses **without** the pad exemption and has no segment shorter than 0.1 µm
+  (`simplify._tail_ok`); otherwise `SnapError` and the search tries another goal state.
+- Deadline checks in the pad / own-net / via loops of `build_grid`, every polygon row and
+  every 256 polygon edges in `_Marker.shape`; a coupled centreline wider than 100 mm is
+  not attempted (the fallback routes the nets alone).
+
 **Residuals for later phases**
 - P5b: `route` returns `None` for a connection whose pad is boxed in by earlier copper
   along its axis; such a failure can take up to the full expansion budget (≈ 10–25 s per

@@ -108,14 +108,28 @@ def _single_piece(pts: list[Point], target: Point) -> list[Point] | None:
     return list(merge_collinear([*pts[:-1], gp, target]))
 
 
-def _short_same_sense(pts: Sequence[Point], k0: int, width: float) -> bool:
-    """A same-sense bend pair at pts[k0], pts[k0 + 1] closer than CHAMFER_MIN (a 90° corner
-    with a tiny chamfer)."""
-    if k0 < 1 or k0 + 2 > len(pts) - 1:
+_MIN_PIECE = 1e-4  # mm: a snapped tail never gets a shorter segment
+
+
+def _tail_ok(pts: Sequence[Point], first_new: int, width: float) -> bool:
+    """The changed tail (vertices from `first_new - 1` on) keeps the straight-piece rules for
+    both senses and has no segment shorter than _MIN_PIECE — no exemption, also inside the
+    pad, so a snap never adds a micro-jog or a tiny chamfer."""
+    lo = max(1, first_new - 1)
+    if any(math.dist(pts[k], pts[k + 1]) < _MIN_PIECE for k in range(lo - 1, len(pts) - 1)):
         return False
-    s1 = _sense(_sub(pts[k0], pts[k0 - 1]), _sub(pts[k0 + 1], pts[k0]))
-    s2 = _sense(_sub(pts[k0 + 1], pts[k0]), _sub(pts[k0 + 2], pts[k0 + 1]))
-    return s1 != 0 and s1 == s2 and math.dist(pts[k0], pts[k0 + 1]) + 1e-9 < CHAMFER_MIN(width)
+    bends = [
+        (k, _sense(_sub(pts[k], pts[k - 1]), _sub(pts[k + 1], pts[k])))
+        for k in range(1, len(pts) - 1)
+    ]
+    bends = [(k, sense) for k, sense in bends if sense != 0]
+    for (k0, s0), (k1, s1) in itertools.pairwise(bends):
+        if k1 < lo:
+            continue
+        piece = sum(math.dist(pts[k], pts[k + 1]) for k in range(k0, k1))
+        if piece + 1e-9 < _piece_rule(s0 == s1, width):
+            return False
+    return True
 
 
 def _stubs(pts: list[Point], target: Point) -> list[list[Point]]:
@@ -152,14 +166,12 @@ def _snap_tail(points: Sequence[Point], target: Point, width: float) -> list[Poi
     moved = _move_last_bend(pts, target, width)
     if moved is not None and _turns_ok(moved):
         return moved
+    n0 = len(pts) - 1  # index of the grid end G (the first changed vertex)
     single = _single_piece(pts, target)
-    if single is not None and _turns_ok(single):
+    if single is not None and _turns_ok(single) and _tail_ok(single, n0, width):
         return single
-    n0 = len(pts) - 1  # index of G in the candidates (before any collinear merge)
     for cand in _stubs(pts, target):
-        if _turns_ok(cand) and not any(
-            _short_same_sense(cand, k, width) for k in range(max(1, n0 - 1), len(cand) - 2)
-        ):
+        if _turns_ok(cand) and _tail_ok(cand, n0, width):
             return cand
     raise SnapError(f"no octilinear approach from {pts[-1]} to {target}")
 

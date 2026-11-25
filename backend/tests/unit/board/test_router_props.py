@@ -130,7 +130,9 @@ def test_pairs_property(seed: int) -> None:
         for layer, s0, s1 in path.segments:
             for q in (other.a, other.b):
                 if layer in q.layers:
-                    assert seg_poly_dist(s0, s1, pad_corners(q)) >= r.clearance + r.width / 2 - 1e-6, seed
+                    assert (
+                        seg_poly_dist(s0, s1, pad_corners(q)) >= r.clearance + r.width / 2 - 1e-6
+                    ), seed
     for la, a0, a1 in pp.segments:
         for lb, b0, b1 in pn.segments:
             if la == lb:
@@ -146,3 +148,19 @@ def _without(m: BoardModel, nets: tuple[str, str]) -> tuple:
     """The parts with the pair's own pads removed (the partner keeps the pair clearance,
     checked separately)."""
     return tuple(replace(pt, pads=tuple(q for q in pt.pads if q.net not in nets)) for pt in m.parts)
+
+
+@pytest.mark.parametrize("seed", [13, 33, 265])
+def test_review_seeds_have_no_tail_artefacts(seed: int) -> None:
+    """Seeds where earlier snaps left a tiny chamfer / micro-jog at the pad: the snapped tail
+    keeps the straight-piece rules even inside the pad (no end exemption)."""
+    from copperchat.board.geom import analyse_bends
+
+    m, reqs = random_map(random.Random(seed))
+    for r in reqs:
+        path = _route(m, r)
+        if path is None:
+            continue
+        for _layer, pts in layer_runs(path):
+            b = analyse_bends(pts[-4:], r.width, pad_ends=(True, False))
+            assert not (b.short_chamfers or b.micro_jogs), (seed, r.net, pts)

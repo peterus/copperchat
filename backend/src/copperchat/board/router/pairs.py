@@ -250,6 +250,8 @@ def _coupled(
     clear = max(p.clearance, n.clearance)
     pc = _pair_clearance(p, n, gap)
     cw = 2 * w + pc
+    if cw > MAX_SIZE_MM:  # no centreline that wide; the fallback routes the nets alone
+        return None
     ma = ((p.a.x + n.a.x) / 2, (p.a.y + n.a.y) / 2)
     mb = ((p.b.x + n.b.x) / 2, (p.b.y + n.b.y) / 2)
     ua, ub = _lead(p.a, n.a, mb), _lead(p.b, n.b, ma)

@@ -260,3 +260,33 @@ def test_segment_clear_exact() -> None:
     assert g.segment_clear(0, (8.0, 9.2), (12.0, 9.2))
     assert not g.segment_clear(0, (8.0, 9.21), (12.0, 9.21))
     assert not g.segment_clear(0, (0.2, 5.0), (3.0, 5.0))  # inside the edge inset
+
+
+def test_build_grid_deadline_with_many_via_obstacles() -> None:
+    import time
+
+    from copperchat.board.router.grid import DeadlineExpired
+
+    pads = tuple(
+        Pad(
+            f"U{k}",
+            "1",
+            f"N{k}",
+            5.0 + (k % 200) * 0.1,
+            5.0 + (k // 200) * 0.05,
+            0.05,
+            0.05,
+            0.0,
+            "rect",
+            frozenset({"B.Cu"}),
+            True,
+            None,
+        )
+        for k in range(40_000)
+    )
+    m = board(parts=(part("U", 10, 10, pads=pads),), outline=outline(0, 0, 30, 20))
+    r = req(a=(5.0, 3.0), b=(25.0, 3.0), layers=("F.Cu", "B.Cu"), allow_vias=True)
+    t = time.monotonic()
+    with pytest.raises(DeadlineExpired):
+        build_grid(m, r, deadline=time.monotonic() + 0.2)
+    assert time.monotonic() - t < 3.0

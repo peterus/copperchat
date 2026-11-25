@@ -55,15 +55,15 @@ def test_snap_head_and_tail() -> None:
 
 
 def test_snap_stub_when_parallel() -> None:
-    # a single straight segment: no bend to move -> stub from the grid end to the centre
+    # a single straight segment: no bend to move -> the end backs off and one 45° piece
+    # (or a stub) reaches the centre; everything new stays inside a 0.5 mm pad
     target = (5.02, 0.013)
     out = snap_ends([(0.0, 0.0), (5.0, 0.0)], None, target, 0.2)
     assert out[-1] == target
     assert len(out) >= 3
     assert all(_octilinear(p, q) for p, q in itertools.pairwise(out))
     _clean(out)
-    # the stub stays inside a 0.5 mm pad around the centre
-    for p in out[out.index((5.0, 0.0)) :]:
+    for p in out[1:]:
         assert abs(p[0] - target[0]) <= 0.25 and abs(p[1] - target[1]) <= 0.25
 
 
@@ -133,3 +133,15 @@ def test_stub_never_makes_a_tiny_chamfer() -> None:
     assert out[-1] == (7.606301, 20.339722)
     r = analyse_bends(out, 0.25, pad_ends=(False, False))
     assert not (r.short_chamfers or r.ninety or r.acute or r.off_angle), (out, r)
+
+
+def test_single_piece_never_makes_a_tiny_chamfer() -> None:
+    # verify-pass repro: backing off the end must not leave a 90° with a 0.07 mm chamfer
+    pts = [(-3.0, -3.0), (0.0, 0.0), (0.3, 0.0), (1.3, 1.0)]
+    try:
+        out = snap_ends(pts, None, (0.35, 0.9), 0.2)
+    except SnapError:
+        return  # refusing is fine: the search tries another goal state
+    r = analyse_bends(out, 0.2, pad_ends=(False, False))
+    assert not (r.short_chamfers or r.micro_jogs or r.ninety or r.acute or r.off_angle), (out, r)
+    assert all(math.dist(p, q) >= 1e-4 for p, q in itertools.pairwise(out))

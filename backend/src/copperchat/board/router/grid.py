@@ -471,8 +471,9 @@ class _Marker:
         """Mark every node within `t` of the core of `s`."""
         kind = s[0]
         _x0, y0, _x1, y1 = _shape_bbox(s)
+        poly = kind == "p"
         for j in self.rows(y0 - t, y1 + t):
-            if not j % 64:
+            if poly or not j % 16:  # a polygon row costs O(vertices)
                 check_deadline(self.deadline)
             y = self.y(j)
             if kind == "d":
@@ -488,7 +489,9 @@ class _Marker:
             if iv is not None:
                 self.fill(buf, j, iv[0], iv[1], value)
         if kind == "p":
-            for (ax, ay), (bx, by) in _edges(s[1]):
+            for e, ((ax, ay), (bx, by)) in enumerate(_edges(s[1])):
+                if not e % 256:
+                    check_deadline(self.deadline)
                 for j in self.rows(min(ay, by) - t, max(ay, by) + t):
                     iv = _capsule_row(ax, ay, bx, by, t, self.y(j))
                     if iv is not None:
@@ -598,7 +601,9 @@ def build_grid(
     via_own: list[Shape] = []  # own SMD pads: no via in a pad (reflow), keep via_r
     via_keepouts: list[Shape] = []
 
-    for pad in pads:
+    for count, pad in enumerate(pads):
+        if not count % 4096:
+            check_deadline(deadline)
         on = [k for k, name in enumerate(layers) if _pad_on_layer(pad, name)]
         anywhere = any(_pad_on_layer(pad, name) for name in copper) or bool(on)
         mine = pad.net == req.net and pad.net != ""
@@ -676,7 +681,9 @@ def build_grid(
     check_deadline(deadline)
     cells = tuple(bytearray(cells_n) for _ in layers)
     for k in range(len(layers)):
-        for s in own[k]:
+        for count, s in enumerate(own[k]):
+            if not count % 256:
+                check_deadline(deadline)
             mk.shape(cells[k], s, _shape_need(s), OWN)
         for count, s in enumerate(shapes[k]):
             if not count % 256:
@@ -699,7 +706,9 @@ def build_grid(
     via_blocked = bytearray(cells_n)
     via_obstacles = tuple(via_shapes + via_own + via_keepouts + list(extra_vias))
     if req.allow_vias:
-        for s in via_obstacles:
+        for count, s in enumerate(via_obstacles):
+            if not count % 256:
+                check_deadline(deadline)
             mk.shape(via_blocked, s, _shape_need(s), 1)
         if len(poly) >= 3:
             mk.outside(via_blocked, poly, edge_clearance(model) + via_r + margin, 1)
