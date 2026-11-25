@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from copperchat.changes.erc import copy_snapshot_files
-from copperchat.changes.repo import FOOTPRINT_KINDS, ChangeEntry
+from copperchat.changes.repo import BOARD_KINDS, FOOTPRINT_KINDS, ChangeEntry
 from copperchat.errors import StructuredToolError
 from copperchat.history.store import Snapshot
 from copperchat.kicad_session import KicadUnavailable
@@ -60,10 +60,11 @@ def _properties(change: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _logged(entries: Iterable[ChangeEntry]) -> dict[str, set[str]]:
     """item UUID -> the diff kinds the tools logged for it as their own change.
-    Footprint library rows (FOOTPRINT_KINDS) are no schematic items: never counted."""
+    Footprint library rows (FOOTPRINT_KINDS) and board rows (BOARD_KINDS) are no
+    schematic items: never counted."""
     out: dict[str, set[str]] = {}
     for e in entries:
-        if e.kind in FOOTPRINT_KINDS:
+        if e.kind in FOOTPRINT_KINDS or e.kind in BOARD_KINDS:
             continue
         kinds = out.setdefault(e.uuid, set())
         if not e.side_effect:

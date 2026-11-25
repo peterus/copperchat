@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     # every profile and makes footprint activation raise footprint_tools_disabled.
     footprint_tools: bool = Field(default=True, validation_alias="COPPERCHAT_FOOTPRINT_TOOLS")
 
+    # COPPERCHAT_BOARD_TOOLS = off (default until P9b) | on; off removes the board write
+    # tools from every profile and hides the Board session type.
+    board_tools: bool = Field(default=False, validation_alias="COPPERCHAT_BOARD_TOOLS")
+
     @field_validator("git_name", "git_email")
     @classmethod
     def _git_identity(cls, value: str | None, info: ValidationInfo) -> str | None:

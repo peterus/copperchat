@@ -17,8 +17,28 @@ export const FOOTPRINT_KINDS: ReadonlySet<string> = new Set([
   'fp_lib_table_row_added',
 ]);
 
-/** An entry that names a schematic item on a sheet (footprint library rows have no sheet). */
-export const isSchematicEntry = (e: ChangeEntry): boolean => e.sheetPath !== '' && !FOOTPRINT_KINDS.has(e.kind);
+/** Change kinds of the board tools (backend `BOARD_KINDS`, `cc/changes/repo.py`): no schematic item. */
+export const BOARD_KINDS: ReadonlySet<string> = new Set([
+  'board_sync_from_schematic',
+  'board_set_outline',
+  'board_set_rules',
+  'board_define_blocks',
+  'board_place_block',
+  'board_move',
+  'board_legalize',
+  'board_route',
+  'board_route_fill',
+  'board_unroute',
+  'board_zones',
+  'board_fanout',
+  'board_stitch',
+  'board_tidy_silk',
+  'board_approve',
+]);
+
+/** An entry that names a schematic item on a sheet (footprint library and board rows have none). */
+export const isSchematicEntry = (e: ChangeEntry): boolean =>
+  e.sheetPath !== '' && !FOOTPRINT_KINDS.has(e.kind) && !BOARD_KINDS.has(e.kind);
 
 /** The diff box of an item on a sheet instance, if the diff has one. */
 export function diffBox(diff: ChangesDiff | null | undefined, sheetPath: string, uuid: string): HighlightBox | null {

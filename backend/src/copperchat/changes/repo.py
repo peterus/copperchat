@@ -29,6 +29,29 @@ FOOTPRINT_KINDS = frozenset(
     }
 )
 
+# Change kinds of the board tools (`board_` + tool name without `pcb_`, plus
+# `board_approve`): listed like every row, never a schematic item (sheet_path = "").
+# Mirrored by `BOARD_KINDS` in frontend/src/components/changes/highlight.ts.
+BOARD_KINDS = frozenset(
+    {
+        "board_sync_from_schematic",
+        "board_set_outline",
+        "board_set_rules",
+        "board_define_blocks",
+        "board_place_block",
+        "board_move",
+        "board_legalize",
+        "board_route",
+        "board_route_fill",
+        "board_unroute",
+        "board_zones",
+        "board_fanout",
+        "board_stitch",
+        "board_tidy_silk",
+        "board_approve",
+    }
+)
+
 
 @dataclass
 class ChangeEntry:
