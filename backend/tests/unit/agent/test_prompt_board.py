@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from copperchat.agent.sdk_backend import SESSION_PARAGRAPHS, SYSTEM_PROMPT, system_prompt
+from copperchat.agent.sdk_backend import SYSTEM_PROMPT, system_prompt
 
 # The pre-P1c session paragraphs (footprint tools on), kept verbatim: flag off must not
 # change a byte.
@@ -27,7 +27,11 @@ PRE_P1C = {
     "free": _EDITING_OFF + "- The design documents under docs/design/ (requirements, "
     "architecture, parts, decisions) are read and changed with the doc_* tools; load the "
     "design-docs skill before changing one.",
-    "requirements": SESSION_PARAGRAPHS["requirements"],
+    "requirements": "- This is a requirements session. You work on the design documents under "
+    "docs/design/ with the doc_* tools; you cannot change the schematic or board in this "
+    "session. Load the session-requirements and design-docs skills first.\n"
+    "- You may look at an existing design with render_view, run_erc / run_drc and the read "
+    "tools for context.",
 }
 
 
