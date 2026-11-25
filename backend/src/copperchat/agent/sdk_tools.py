@@ -150,6 +150,11 @@ async def _two_phase_steps(spec: ToolSpec, ctx: ToolContext, args: dict[str, Any
         await ctx.on_mutation()  # the turn snapshot takes the library lock itself
     generation = getattr(ctx.session, "generation", None)
     result = await _apply(spec, ctx, cs)
+    if ctx.reloaded_generation is not None:
+        # The call replaced the session (board creation, B-C4): its restart check runs
+        # against the new session's generation as captured at reload time, so a restart
+        # in a later stage or during the save below is still detected.
+        generation = ctx.reloaded_generation
     if gate is not None:
         try:  # the change is applied and verified: bookkeeping never fails the call
             await gate.record(ctx, cs)

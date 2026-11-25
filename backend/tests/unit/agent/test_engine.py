@@ -645,3 +645,38 @@ async def test_on_project_changed_failing_hook_is_logged_not_raised(make_engine,
     engine2, _ = await make_engine(hooks=Boom())  # a single (unchained) hook
     engine2.refresh_project(fresh)
     assert engine2.project is fresh
+
+
+async def test_make_ctx_reload_project(make_engine, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """SP4 P1a Task 7: `reload_project` re-discovers the project, reopens the session on
+    it, captures the new session's generation at once and refreshes the engine."""
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    import copperchat.agent.engine as engine_mod
+
+    engine, _ = await make_engine(with_session=True)
+    fresh = replace(engine.project, pcb_file=engine.project.dir / "demo.kicad_pcb")
+    asked: list[tuple[Any, str]] = []
+
+    def get_project(root: Any, pid: str) -> Project:
+        asked.append((root, pid))
+        return fresh
+
+    new = SimpleNamespace(project=fresh, closed=False, generation=7)
+    reopened: list[Project] = []
+
+    async def reopen(project: Project) -> Any:
+        reopened.append(project)
+        return new
+
+    old = engine._sessions.current()
+    engine._sessions = SimpleNamespace(current=lambda: old, reopen=reopen)
+    monkeypatch.setattr(engine_mod, "get_project", get_project)
+    ctx = engine._make_ctx()
+    assert ctx.reload_project is not None and ctx.reloaded_generation is None
+    project, session, generation = await ctx.reload_project()
+    new.generation = 8  # a later restart does not change the captured value
+    assert (project, session, generation) == (fresh, new, 7)
+    assert reopened == [fresh] and asked == [(engine._settings.projects_root, engine.pid)]
+    assert engine.project is fresh

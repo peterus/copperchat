@@ -668,11 +668,15 @@ async def apply_change_set(
 
     `_verify` / `_before_compensate` are test seams (force a mismatch, inject a
     compensation failure). A `FootprintChangeSet` is refused (`TypeError`): it belongs
-    to `apply_footprint_change_set` (FP-C8)."""
+    to `apply_footprint_change_set` (FP-C8), a `BoardChangeSet` likewise (it belongs to
+    `apply_board_change_set`, B-C4)."""
+    from copperchat.kicad_tools.board.engine import BoardChangeSet
     from copperchat.kicad_tools.footprints.engine import FootprintChangeSet
 
     if isinstance(cs, FootprintChangeSet):
         raise TypeError("apply_change_set got a FootprintChangeSet; use the footprint engine")
+    if isinstance(cs, BoardChangeSet):
+        raise TypeError("apply_change_set got a BoardChangeSet; use apply_board_change_set")
     async with ctx.session.applying():
         return await _apply(
             ctx, cs, _verify=_verify, _before_compensate=_before_compensate, record=record
