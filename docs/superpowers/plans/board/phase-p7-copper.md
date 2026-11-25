@@ -26,27 +26,36 @@ failure, with M11 plane metrics in its report.
   P5b's shared `routed_synth` — no own copy of the setup sequence)
 
 **Long KiCad calls** (index Global Constraints / B-C4 — `session.call`'s 30 s default
-restarts the api-server on expiry): every `refill_zones` in this phase (`pcb_zones` stage 2,
-fanout `round_i_refill`, stitch stages 2 and 4, every `undo` that refills) runs as
-`session.call(lambda h: h.board().refill_zones(block=True, max_poll_seconds=REFILL_TIMEOUT_S),
-timeout=REFILL_TIMEOUT_S + 15)` with `REFILL_TIMEOUT_S = 60` (module constant in
-`zones.py`, shared by `fanout.py` / `stitch.py`; fanout and stitch further bound it by
-their deadline's remaining time, below); every DRC goes through `sctx.drc(...)`
-(which passes `drc_call_timeout`, P1a) — never a bare `session.call(run_drc_task)`.
-Test (`test_zones.py`): `test_refill_passes_explicit_timeout` (spy on `session.call`: each
-refill call has `timeout == REFILL_TIMEOUT_S + 15 == 75` while ≥ 60 s of a deadline remain,
-each DRC call `timeout == drc_call_timeout(t)`, none `None`).
+restarts the api-server on expiry): every zone refill in this phase (`pcb_zones` stage 2,
+fanout `round_i_refill` and final refill, stitch stages 2 and 4, every `undo` that refills)
+runs as `sctx.refill(timeout_s=t)` = `session.call(lambda h: api.refill(h, timeout_s=t),
+timeout=refill_call_timeout(t))` (B-C3/B-C4, P1a) — never a bare `refill_zones`, whose
+`max_poll_seconds` returns silently while KiCad may still be filling; `api.refill` waits ≤ 30 s
+for KiCad to become idle, else `RefillTimeout`. `t = REFILL_TIMEOUT_S` (60 s, imported from
+`api`, one definition shared with P6b); fanout and stitch further bound it by their
+deadline's remaining time (below); every DRC goes through `sctx.drc(...)` (which passes
+`drc_call_timeout`, P1a) — never a bare `session.call(run_drc_task)`. A `RefillTimeout` in a
+refill that is not deadline-bound (`pcb_zones` stage 2, the cleanup/final refill, an `undo`)
+fails the call with `refill_timeout` (B-C14) and the engine compensates (its first call waits
+for KiCad to become idle, B-C3 `refill_busy`).
+Test (`test_zones.py`): `test_refill_passes_explicit_timeout` (spy on `api.refill` and
+`session.call`: each refill goes through `api.refill` with `timeout_s == REFILL_TIMEOUT_S`
+and call `timeout == refill_call_timeout(REFILL_TIMEOUT_S) == 105` while ≥ 60 s of a deadline
+remain, each DRC call `timeout == drc_call_timeout(t)`, none `None`, no direct
+`refill_zones`); `test_zones_refill_timeout` (`api.refill` patched to raise `RefillTimeout`
+in stage 2 → error `refill_timeout`, KIID sets and `board_hash` equal pre-call).
 
 **Overall deadlines** (index Global Constraints): `pcb_fanout` has `FANOUT_DEADLINE_S = 300`,
 `pcb_stitch` `STITCH_DEADLINE_S = 180` (module constants; `deadline = monotonic() + …` set
 when the tool starts). The deadline is checked before each round (fanout) / stage (stitch);
-inside, every refill is bounded by the remaining time — `refill_zones(block=True,
-max_poll_seconds=min(REFILL_TIMEOUT_S, remaining))` in `session.call(...,
-timeout=min(REFILL_TIMEOUT_S, remaining) + 15)` — and every DRC by `sctx.drc(timeout_s=min(60,
-remaining))`; a bounded call whose remaining time is ≤ 0 is not started (treated as timed
-out). Items left unchecked by a timed-out refill/DRC are removed, then one **cleanup refill**
-runs with the full `REFILL_TIMEOUT_S` (the pours must not keep fills shaped by removed vias)
-— the single permitted overrun: worst case = deadline + one cleanup refill (≤ 75 s).
+inside, every refill is bounded by the remaining time — `sctx.refill(timeout_s=min(REFILL_TIMEOUT_S,
+remaining))` (call timeout `refill_call_timeout(…)`) — and every DRC by `sctx.drc(timeout_s=min(60,
+remaining))`. A refill is not started when remaining < `REFILL_MIN_S` (20 s, B-C3 — no
+too-short refill), a DRC when remaining ≤ 0; both count as timed out, as does a
+`RefillTimeout`. Items left unchecked by a timed-out or skipped refill/DRC are removed, then
+one **cleanup refill** runs with the full `REFILL_TIMEOUT_S` (the pours must not keep fills
+shaped by removed vias) — the single permitted overrun: worst case = deadline + one cleanup
+refill (≤ `refill_call_timeout(60)` = 105 s; index table "Tool worst-case durations").
 
 **Test board (`copper_rig`):** `synth_session` + `board_ctx` → P5b's shared
 **`routed_synth(rig)`**: sync → `pcb_set_outline` (60 × 45 mm, r = 1, 4 holes) →
@@ -119,7 +128,7 @@ placement approval (spec §8.3). Refusals: unknown net/layer/zone → `not_found
 `closest`; `add` of an existing name → `invalid_argument` ("use update"); `outline: "board"`
 with `outline.kind != "rect"` → `invalid_argument`. Stages: (1) create/update/delete in one
 commit, `undo` restores the updated/deleted zones from their stored pre-call data; (2) refill
-(`refill_zones`, blocking, `commit=False`); a refill after a compensation is done by stage 1's
+(`sctx.refill(timeout_s=REFILL_TIMEOUT_S)`, `commit=False`); a refill after a compensation is done by stage 1's
 `undo`. Report: per zone `{name, kiid, layers, priority, filled_area_mm2}`, M11 (`run_cpu(metrics_job,
 model, doc, None, None, only=frozenset({"M11"}), timeout_s=30)` — the model keeps its fills,
 M11 needs them; never a direct `compute_metrics`: fill ratio per plane layer, crossings), `next: "pcb_fanout"`.
@@ -153,18 +162,22 @@ Candidates are generated once, before the first stage, off the event loop:
 `run_cpu(fanout_candidates_job, jobs.strip_fills(model), net, via=…, width=…, clearance=…,
 max_stub=…, timeout_s=30)` (`fanout_candidates_job` appended to `cc/board/jobs.py`; it calls
 `planes.fanout_candidates`). Algorithm (spike Q5, DRC-legalised rounds), three stages per
-round i = 1…16 (a round with no open pad is a no-op): `round_i_add` (commit: for every open
+round i = 1…`MAX_ROUNDS` (16, module constant; a round with no open pad is a no-op): `round_i_add` (commit: for every open
 pad create its next candidate's stub + via, **both `locked=True`**), `round_i_refill`
-(`commit=True`, its own **pushed** commit: `refill_zones`, blocking), `round_i_check`
+(`commit=True`, its own **pushed** commit: `sctx.refill`), `round_i_check`
 (commit: `sctx.drc()` → remove the items of every candidate whose KIIDs appear in a marker
 other than unconnected-items; a via in a `DANGLING_VIA` marker is rejected too; open pads
 advance to their next candidate). The DRC therefore only ever sees pushed state — nothing
 relies on DRC seeing an open commit (P1a probe).
 Deadline: `FANOUT_DEADLINE_S` (above) is checked before each round; when it has passed, no
 further round starts, and the round in progress bounds its refill and DRC by the remaining
-time (a refill or DRC that times out → that round's not-yet-checked stubs and vias are
-removed, then the cleanup refill above). Pads without any candidate: when a pour of `net` on the pad's layer exists and,
-after the last refill, no unconnected marker names the pad → `via_pour`; else `unconnected`
+time (a refill or DRC that times out or is skipped → that round's not-yet-checked stubs and
+vias are removed, then the cleanup refill above). **Final refill:** whenever the last
+`round_i_check` removed items and no later refill follows (the deadline stopped further
+rounds, or round `MAX_ROUNDS` was the last), one more full refill `sctx.refill(timeout_s=REFILL_TIMEOUT_S)`
+runs in its own pushed commit (as the cleanup refill, within the same ≤ 105 s overrun — at
+most one of the two runs). Pads without any candidate: when a pour of `net` on the pad's layer exists and,
+after the last round's refill, no unconnected marker names the pad → `via_pour`; else `unconnected`
 with reason (`no_candidate` = fine-pitch/QFN, `all_rejected`, or `timeout` = still open when
 the deadline stopped the rounds). Report: `smd_pads`, `fanned_out`,
 `via_pour`, `unconnected` [{ref, pad, reason}], `rounds`, `drc_seconds`, M11, `next:
@@ -185,9 +198,19 @@ the deadline stopped the rounds). Report: `smd_pads`, `fanned_out`,
   `test_fanout_requires_approval`; `test_fanout_cost_2`; `test_fanout_unknown_net`
   (`not_found`, `closest`); `test_m11_in_report`; `test_fanout_deadline` (patched `monotonic`
   clock advancing past `FANOUT_DEADLINE_S` after round 1's check → no round 2, open pads in
-  `unconnected` with reason `timeout`, round 1's stubs kept); `test_fanout_deadline_bounds_calls`
-  (patched clock with 20 s remaining before a round → spy: that refill's `max_poll_seconds ==
-  20` and call `timeout == 35`, the DRC's `timeout_s == 20`).
+  `unconnected` with reason `timeout`, round 1's stubs kept; round 1's DRC result patched
+  to add a marker on one created via, so the check removes it → spy on `api.refill`: exactly
+  one more refill with `timeout_s == REFILL_TIMEOUT_S` after round 1's check, and it is the
+  call's last API write); `test_fanout_final_refill_after_round_16` (`MAX_ROUNDS`
+  monkeypatched to 1, same patched marker → one final refill after round 1's check; without a
+  removal → no final refill); `test_fanout_deadline_bounds_calls`
+  (patched clock with 20 s remaining before a round → spy: that refill's `api.refill`
+  `timeout_s == 20` and call `timeout == refill_call_timeout(20) == 65`, the DRC's
+  `timeout_s == 20`; with 19 s remaining → no refill in that round, its stubs and vias
+  removed, their pads `timeout`, then one cleanup refill with `timeout_s ==
+  REFILL_TIMEOUT_S`); `test_fanout_refill_timeout_in_round` (`api.refill` raises
+  `RefillTimeout` in round 1 → round 1's items removed, cleanup refill runs, the call
+  succeeds with pads `timeout`).
 - [ ] **Step 2: Run** `uv run pytest -m kicad tests/kicad/board/test_fanout.py` — FAIL.
   **Step 3: Implement.** **Step 4: Run** — PASS; record pads/rounds/seconds on `sp4_synth`.
 - [ ] **Step 5: Commit** `feat(board): pcb_fanout with locked DRC-legalised stubs and vias`.
@@ -202,11 +225,12 @@ edge_ring=…, timeout_s=30)` (`stitch_candidates_job` appended to `cc/board/job
 `MAX_STITCH_VIAS = 2000`: more candidates → `invalid_argument` with `details = {candidates:
 <would-be count>, max: 2000}` and a suggestion (larger `pitch`, no `edge_ring`), before any
 stage runs (board untouched). Stages: (1) add every candidate via `locked=True` (commit);
-(2) `refill` (`commit=True`, its own **pushed** commit: `refill_zones`); (3) DRC → remove
+(2) `refill` (`commit=True`, its own **pushed** commit: `sctx.refill`); (3) DRC → remove
 vias in any marker other than unconnected-items, and vias in `DANGLING_VIA` markers (spike:
 grid vias where no pour exists dangle) (commit) — the DRC sees only pushed state; (4)
 refill (commit). Deadline: `STITCH_DEADLINE_S` (above) is checked before each stage; stage 2
-and 4 refills are bounded by `min(REFILL_TIMEOUT_S, remaining)`, stage 3's DRC by `min(60,
+and 4 refills are bounded by `min(REFILL_TIMEOUT_S, remaining)` (floor `REFILL_MIN_S`: less
+remaining → stage 2 skipped, counted as timed out), stage 3's DRC by `min(60,
 remaining)`; the deadline passing before stage 3's DRC completes → every via added in stage 1
 that the DRC has not cleared is removed and counted in `rejected_timeout` (reason `timeout`),
 and stage 4 is the cleanup refill above. Report: `candidates`, `kept`,
@@ -227,8 +251,11 @@ and stage 4 is the cleanup refill above. Report: `candidates`, `kept`,
   `test_stitch_candidates_via_run_cpu` (spy: one `run_cpu(stitch_candidates_job, …)`);
   `test_stitch_deadline` (patched `monotonic` clock past `STITCH_DEADLINE_S` before stage 3 →
   no DRC started, all stage-1 vias removed, `rejected_timeout` equals their count, board KIID
-  set equals the pre-call one; spy: stage 4's cleanup refill has `max_poll_seconds ==
-  REFILL_TIMEOUT_S` and call `timeout == 75`, never `None`).
+  set equals the pre-call one; spy: stage 4's cleanup refill calls `api.refill` with
+  `timeout_s == REFILL_TIMEOUT_S` and call `timeout == refill_call_timeout(60) == 105`, never
+  `None`); `test_stitch_refill_floor` (patched clock with 19 s remaining before stage 2 → no
+  refill started in stage 2, no DRC, all stage-1 vias removed as `rejected_timeout`, stage 4's
+  cleanup refill runs with `REFILL_TIMEOUT_S`).
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS.
 - [ ] **Step 5: Commit** `feat(board): pcb_stitch with locked vias and dangling-via removal`.
 
@@ -270,8 +297,8 @@ reason}], `silk_markers_before`, `silk_markers_after`, `board_hash` changed.
 
 - [ ] Index "As built (P7)": the 6-layer
   plane default, `pcb_metrics` seconds on the plane-filled rig (budget 5 s), fanout and stitch counts/seconds on `sp4_synth`, the DRC marker types used
-  (exact `DrcErrorType` names for dangling via and silk), whether `refill_zones` inside a
-  stage needed its own commit, In1.Cu fill ratio. CHANGELOG `[Unreleased]`: "Board copper
+  (exact `DrcErrorType` names for dangling via and silk), whether `api.refill` inside a
+  stage needed its own commit, whether any refill hit `RefillTimeout` on `sp4_synth`, In1.Cu fill ratio. CHANGELOG `[Unreleased]`: "Board copper
   tools `pcb_zones`, `pcb_fanout`, `pcb_stitch`, `pcb_tidy_silk` — behind
   COPPERCHAT_BOARD_TOOLS."
 - [ ] Run `uv run pytest -m "not kicad"`, `uv run ruff check .`, `uv run ruff format --check .`,

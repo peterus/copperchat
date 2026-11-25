@@ -211,7 +211,7 @@ png_url, placement_hash, board_hash, markers: [...]}`; failures → `render_fail
   `closest`); `test_render_highlight_and_markers` (plus a spy on `session.call`: the markers
   DRC call has `timeout == drc_call_timeout(60)`, never `None`); `test_render_boardless` (`no_board`);
   `test_render_zone_filled` (add a GND zone over the whole outline on F.Cu and B.Cu through the
-  API, `refill_zones`, render top → passes `BOARD_SVG_LIMITS`; record bytes, elements,
+  API, `api.refill(h, timeout_s=60)` (B-C3), render top → passes `BOARD_SVG_LIMITS`; record bytes, elements,
   coords, max element coords, span, raster seconds and the raster worker's peak RSS —
   `ru_maxrss` of `resource.getrusage(RUSAGE_CHILDREN)` delta — with `record_property`);
   `test_board_cli_serialised` (two concurrent `pcb_render` calls, `run_kicad_cli` wrapped to

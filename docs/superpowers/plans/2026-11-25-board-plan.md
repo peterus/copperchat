@@ -183,7 +183,8 @@ Constraints). Values are copied from the spec.
 - Flags: `COPPERCHAT_BOARD_TOOLS` (`Settings.board_tools`, **default off until P9b**) removes the
   explicit `PCB_WRITES` name set from every profile incl. Free and hides the Board session type
   (`POST type=board` → 400 `session_type_unavailable`); `PCB_READ` and the old read tools stay.
-  `COPPERCHAT_FREEROUTING` (`Settings.freerouting`, default on) removes only `pcb_route_fill`;
+  `COPPERCHAT_FREEROUTING` (`Settings.freerouting`, default on) removes only `pcb_route_fill`
+  (so does a CLI tool-call limit below 495 s, P6b `FILL_ALLOWED`, startup log line);
   a missing JRE/JAR makes `pcb_route_fill` refuse `freerouting_unavailable` and its tests skip
   with a reason **locally only — never in CI**.
 - Freerouting: 2.5.0 JAR + Temurin 25 JRE (linux x64) in the **app image** only, both pinned by
@@ -201,15 +202,32 @@ Constraints). Values are copied from the spec.
   `min(60, remaining)`; worst case = deadline + one DRC (≤ 60 s). `pcb_route_fill`'s whole
   sum: `timeout_s` (≤ 600) + round-trip I/O 60 (`IO_BUDGET_S`, DSN export + SES import only,
   an `io_spent` accumulator timed around those two calls — Freerouting's runtime never counts)
-  + stage-4 refill 75 (own budget `REFILL_TIMEOUT_S` 60 + 15) + post 120 + DRC 60 + final
-  metrics 60 (fixed `timeout_s=30, wait_s=30`; timeout → `metrics: null`, not an error) =
-  `FILL_WORST_CASE_S` 975 s (P6b); if the CLI's tool-call limit `L` is lower,
-  `MCP_TOOL_TIMEOUT` ≥ 1,035,000 ms (975 s + 60 s margin), else `timeout_s` capped at
-  `L − 375`. `pcb_fanout`: overall `FANOUT_DEADLINE_S = 300`, `pcb_stitch`:
-  `STITCH_DEADLINE_S = 180` (P7) — checked before each round/stage; each refill bounded by
-  `min(REFILL_TIMEOUT_S, remaining)`, each DRC `min(60, remaining)`; pads/vias left at the
-  deadline → reported with reason `timeout`; worst case = deadline + one cleanup refill
-  (≤ 75 s).
+  + stage-4 refill 105 (own budget: `refill_call_timeout(REFILL_TIMEOUT_S)` = 60 + 30 + 15)
+  + post 120 + DRC 60 + final metrics 60 (fixed `timeout_s=30, wait_s=30`; timeout →
+  `metrics: null`, not an error) = `FILL_WORST_CASE_S` 1005 s (P6b). `pcb_fanout`: overall
+  `FANOUT_DEADLINE_S = 300`, `pcb_stitch`: `STITCH_DEADLINE_S = 180` (P7) — checked before
+  each round/stage; each refill bounded by `min(REFILL_TIMEOUT_S, remaining)` (floor
+  `REFILL_MIN_S` 20 s: less remaining → refill step skipped, reported `timeout`), each DRC
+  `min(60, remaining)`; pads/vias left at the deadline → reported with reason `timeout`;
+  worst case = deadline + one cleanup refill (≤ 105 s).
+- **Tool worst-case durations** (from the constants above; P6b Step 2 compares each with the
+  CLI's tool-call limit `L`):
+
+  | Tool | Worst case | Sum |
+  |---|---|---|
+  | `pcb_route_fill` | 1005 s | `timeout_s` 600 + `FILL_FIXED_S` 405 (I/O 60 + refill 105 + post 120 + DRC 60 + metrics 60) |
+  | `pcb_fanout` | 405 s | `FANOUT_DEADLINE_S` 300 + cleanup refill 105 |
+  | `pcb_route` | 360 s | `ROUTE_DEADLINE_S` 300 + one DRC 60 |
+  | `pcb_stitch` | 285 s | `STITCH_DEADLINE_S` 180 + cleanup refill 105 |
+
+  If `L` is lower than a worst case + 60 s, set `MCP_TOOL_TIMEOUT` (≥ 1,065,000 ms = 1005 s
+  + 60 s); if that does not lift it, scale down: every deadline is capped so its tool's
+  worst case ≤ `L − 60` (`timeout_s` max = `L − 465`, `ROUTE_DEADLINE_S` = `L − 120`,
+  `FANOUT_DEADLINE_S` / `STITCH_DEADLINE_S` = `L − 165`, each `min` with its nominal value);
+  if the capped `timeout_s` max falls below its schema minimum 30 (`L` < 495 s),
+  `pcb_route_fill` is disabled — removed from the profiles exactly like
+  `COPPERCHAT_FREEROUTING=off`, with one startup log line — and reported to the coordinator as
+  an owner decision. `L` and every cap are recorded in "As built (P6b)".
 - Renders: PNG ≤ 1600 px long side; ≤ 3 images per step report; SVG through the footprint
   sanitiser with board limits (B-C9); every injected string XML-escaped. Retention: board PNGs
   kept; board SVGs (+ `.svg.json` sidecars) beyond the newest 20 per project pruned at each
@@ -222,8 +240,11 @@ Constraints). Values are copied from the spec.
   the per-commit hook while a board tool is applying.
 - **Every long KiCad call passes an explicit timeout** (B-C4): `session.call`'s default
   (`kicad_api_timeout_s`, 30 s) restarts the api-server on expiry, so DRC calls pass
-  `timeout=drc_call_timeout(t)` (= `t + 30 + 15`) and `refill_zones` calls pass
-  `timeout=refill_timeout_s + 15` (precedent `cc/kicad_tools/checks.py`, `* 4`).
+  `timeout=drc_call_timeout(t)` (= `t + 30 + 15`) and every zone refill goes through
+  `api.refill(h, timeout_s=t)` with `timeout=refill_call_timeout(t)` (= `t + 30 + 15`; B-C3:
+  kipy's `refill_zones` returns silently at `max_poll_seconds` while KiCad may still be
+  filling, so `refill` probes busy state and waits ≤ 30 s, else `refill_timeout`; no other API
+  call is sent while KiCad is busy) (precedent `cc/kicad_tools/checks.py`, `* 4`).
 - Long commands always with `timeout`; KiCad tests in `ghcr.io/peterus/copperchat-kicad-base`
   as in the footprints plan's Phase Conventions.
 
@@ -370,6 +391,10 @@ def drc_call_timeout(timeout_s: float) -> float                              # t
 # The timed-out task lives on the SESSION, not the handle (session.call builds a fresh KicadHandle per call):
 # KicadSession.pending_drc: tuple[int, str] | None = (generation, task id); KicadHandle(kicad, open_docs, *, generation=0, drc_slot=None)
 # exposes it as h.drc_slot.get()/set(); _kill()/start clear it; run_drc_task ignores an entry from another generation (P1a)
+REFILL_BUSY_GRACE_S = 30.0; REFILL_MIN_S = 20.0; REFILL_TIMEOUT_S = 60.0   # (REFILL_TIMEOUT_S moved here from P6b/P7: one definition)
+def refill(h: KicadHandle, *, timeout_s: float) -> None                      # THE only zone refill (P1a): board.refill_zones(block=True, max_poll_seconds=timeout_s), then busy probe h.kicad.ping() (kipy Ping → Empty): returns = idle; ApiError code AS_BUSY or kipy ConnectionError = busy → poll ping every 0.5 s ≤ REFILL_BUSY_GRACE_S; still busy → RefillTimeout. Sends nothing but Ping while busy
+class RefillTimeout(StructuredToolError): ...                                # code "refill_timeout"; details {timeout_s, grace_s}; sets the session's busy slot (generation) so the next session.call first waits for idle (P1a)
+def refill_call_timeout(timeout_s: float) -> float                           # timeout_s + REFILL_BUSY_GRACE_S + 15: the session.call timeout around refill (B-C4 rule)
 def export_specctra_dsn(h: KicadHandle, dest: Path) -> None                  # RunBoardJobExportSpecctraDsn (live board)
 def import_specctra_session(h: KicadHandle, ses: Path) -> None               # ImportSpecctraSession
 def save_document_to_string(h: KicadHandle) -> str                           # SaveDocumentToString
@@ -392,6 +417,7 @@ BOARD_SHEET = SheetRef(path="", page="", file="", name="<board>")
     ctx: ToolContext; report: dict[str, Any]; created: set[str]   # KIIDs created by this call
     async def call(self, fn: Callable[[KicadHandle], T]) -> T: ...  # session.call
     async def drc(self, *, timeout_s: float = 60.0) -> DrcResult: ... # session.call(lambda h: api.run_drc_task(h, timeout_s=timeout_s), timeout=drc_call_timeout(timeout_s)); deadline-bound callers pass min(60, remaining)
+    async def refill(self, *, timeout_s: float = REFILL_TIMEOUT_S) -> None: ...  # session.call(lambda h: api.refill(h, timeout_s=timeout_s), timeout=refill_call_timeout(timeout_s)); the only way stages refill zones
     async def model(self) -> BoardModel: ...
 @dataclass(kw_only=True) class BoardChangeSet(ChangeSet):          # base fields defaulted: sheet=BOARD_SHEET, stages=[], pre_images={}, intent=NetIntent()
     kind: str                         # change-log kind, member of BOARD_KINDS
@@ -416,8 +442,11 @@ async def apply_board_change_set(ctx: ToolContext, cs: BoardChangeSet) -> ToolRe
 passes `timeout=` explicitly (precedent: `cc/kicad_tools/checks.py` passes
 `kicad_api_timeout_s * 4`): DRC (`BoardStageContext.drc`, every direct `run_drc_task`) →
 `drc_call_timeout(timeout_s)` = `timeout_s + 30 + 15` (incl. the 30 s stale-task grace);
-`refill_zones` (P6b, P7) → `refill_timeout_s + 15`. P1a tests that `drc` passes the larger
-timeout.
+every zone refill (P6b, P7) goes through `api.refill(h, timeout_s=t)` (never a bare
+`refill_zones`) → `refill_call_timeout(t)` = `t + 30 + 15` (incl. the 30 s busy grace).
+Deadline-bound refills use `t = min(REFILL_TIMEOUT_S, remaining)` with a floor: remaining <
+`REFILL_MIN_S` (20 s) → the refill step is skipped and reported as `timeout` instead of
+starting a too-short refill. P1a tests that `drc` and `refill` pass the larger timeouts.
 
 `cc/kicad_tools/edit/engine.py::apply_change_set` refuses `BoardChangeSet` with `TypeError` (as it
 refuses `FootprintChangeSet`). Two-phase board tools use `edit_spec(..., prepare, apply)` where
@@ -683,7 +712,8 @@ async def run_freerouting(rt: FreeroutingRuntime, dsn: Path, ses: Path, *, timeo
 `part_routed`, `placement_not_approved`, `not_approved` (`details.reason` ∈ {`missing`,
 `stale`, `check_failed`, `changed_during_export`}), `approval_not_allowed`
 (`details.guard` 1–7, B-C10), `freerouting_unavailable`, `fill_not_acceptable` (`details.reason` ∈ {`rip_ratio`,
-`timeout`, `freerouting_error`}), `board_compute_timeout`,
+`timeout`, `freerouting_error`, `io_timeout`}), `board_compute_timeout`, `refill_timeout`
+(`RefillTimeout`, B-C3: KiCad still busy filling after `timeout_s` + 30 s grace),
 `drc_rejected`, `drc_timeout` (`DrcTimeout`, B-C3; deadline-bound callers map it per
 connection/stage instead of failing the call — P5b, P6b), `verification_failed` (existing, `cc/kicad_tools/edit/engine.py`), `output_path_unsafe`, `render_failed`, `export_failed`,
 `session_type_unavailable` (HTTP 400), and the existing `document_inconsistent`, `read_only`,

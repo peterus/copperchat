@@ -1,7 +1,7 @@
 # Phase P1a — Board model, hashes and the compensated board write path
 
 > Index contracts: B-C1 (`board_tools`), B-C2, B-C3, B-C4, B-C8 (`FabPreset`, `PRESETS`),
-> B-C14 (`BOARD_KINDS`); index calls 4, 8, 10, 13. Spec §4 (C1–C6, C11, C12, C16), §6.1–§6.4, §8.3 (hash coverage), §16 (G3, G5),
+> B-C14 (`BOARD_KINDS`, `drc_timeout`, `refill_timeout`); index calls 4, 8, 10, 13. Spec §4 (C1–C6, C11, C12, C16), §6.1–§6.4, §8.3 (hash coverage), §16 (G3, G5),
 > §17 P1, §18.1–§18.2. Spike 4A Q1, Q2, Q4, Q7 (`spikes/4a-board/{boards,drc,freerouting}.py`,
 > port, never import). **Wave 1, parallel to P1b** — stay inside the P1a row of the index's
 > file-ownership table.
@@ -17,7 +17,7 @@ user-visible tool yet (everything behind `COPPERCHAT_BOARD_TOOLS`, default off).
 - Create: `cc/board/{__init__,model,geom,worker,presets,_selftest}.py`,
   `cc/kicad_tools/board/{__init__,read,api,engine,compensate}.py`
 - Modify: `cc/config.py` (`board_tools`), `cc/kicad_session/session.py` (per-`DocKind`
-  commit, `modified_docs`, `pending_drc` slot), `cc/history/{store,restore,service}.py` (`.kicad_dru`, `absent`
+  commit, `modified_docs`, `pending_drc` and `refill_busy` slots), `cc/history/{store,restore,service}.py` (`.kicad_dru`, `absent`
   manifest entries, restore re-discovery), `cc/history/hooks.py` (`HistoryHooks.on_project_changed`
   only), `cc/agent/engine.py` (`RunHooks.on_project_changed`,
   `RunEngine.refresh_project`, `_make_ctx` wires `reload_project`), `cc/tools/spec.py`
@@ -25,7 +25,7 @@ user-visible tool yet (everything behind `COPPERCHAT_BOARD_TOOLS`, default off).
   re-baseline only, Task 7), `cc/kicad_tools/edit/engine.py` (refuse `BoardChangeSet`),
   `cc/changes/{repo,diff}.py` (`BOARD_KINDS`), `frontend/src/components/changes/highlight.ts`,
   `.env.example` (commented `COPPERCHAT_BOARD_TOOLS=off`)
-- Tests: `backend/tests/unit/board/{__init__,builders,test_model,test_hashes,test_geom,test_presets,test_worker,test_engine_unit,test_read_dru}.py`,
+- Tests: `backend/tests/unit/board/{__init__,builders,test_model,test_hashes,test_geom,test_presets,test_worker,test_engine_unit,test_read_dru,test_refill}.py`,
   `backend/tests/unit/agent/test_sdk_tools_reload.py`,
   `backend/tests/unit/history/test_absent_entries.py`, `backend/tests/unit/test_config.py`,
   `backend/tests/unit/test_session_doc_commit.py`, `backend/tests/unit/changes/test_board_kinds.py`,
@@ -197,6 +197,30 @@ that call's budget, so every caller's bound still holds); still running after th
 call raises `DrcTimeout` too without starting a second task (two DRC tasks never overlap).
 If a later pin adds a cancel request, the executor sends it on timeout instead and records
 that in "As built (P1a)".
+**`refill(h, *, timeout_s)`** — the only zone-refill entry point (P6b, P7 never call
+`refill_zones` directly). Verified in kipy `e0c9c8e` `kipy/board.py` `refill_zones`
+(L1858–1872): with `block=True` it sends `RefillZones`, then polls `Ping` every
+`poll_interval_seconds` (0.5 s) while `monotonic() < deadline`, `continue`s on `ApiError`
+`AS_BUSY` and on kipy `ConnectionError` (transport timeout), and simply **returns at the
+deadline without raising** — KiCad may still be filling, and the next API call would then fail
+with `AS_BUSY`. So `refill` calls `h.board().refill_zones(block=True,
+max_poll_seconds=timeout_s)` and then probes with `h.kicad.ping()` (kipy `KiCad.ping()` sends
+`commands.Ping` and expects `Empty`; `kipy/kicad.py` L273): it returns → idle, done;
+`ApiError` with `code == ApiStatusCode.AS_BUSY` or kipy `ConnectionError` → busy; any other
+`ApiError` → re-raised. While busy it sleeps 0.5 s and pings again, at most
+`REFILL_BUSY_GRACE_S = 30.0` (monotonic); still busy → **`RefillTimeout(StructuredToolError)`**
+(code `refill_timeout`, B-C14; `details = {timeout_s, grace_s}`). Nothing but `Ping` is sent
+while KiCad is busy. Because the fill may still be running after `RefillTimeout`, the
+session remembers it like `pending_drc`: `KicadSession.refill_busy: int | None` (server
+generation), exposed on the handle as `h.busy_slot` (same `get()`/`set()` view as
+`drc_slot`); `RefillTimeout` sets it, `_kill()` / every start clears it, and `session.call`
+— before running any callable whose handle generation matches — pings until idle within
+that call's own `timeout` (clears the slot), so a following call (e.g. the engine's
+compensation) never meets `AS_BUSY`; the existing timeout → restart path is the backstop.
+`refill_call_timeout(t) = t + REFILL_BUSY_GRACE_S + 15` is the `session.call` timeout every
+refill passes. `REFILL_TIMEOUT_S = 60.0` (default budget) and `REFILL_MIN_S = 20.0` (floor
+for deadline-bound refills: less remaining → the caller skips the refill step and reports
+`timeout`) are defined here once; P6b and P7 import them.
 `board_project` appends the trailing `/` (G3). `require_board` raises `no_board` with
 suggestion "run pcb_sync_from_schematic".
 
@@ -225,6 +249,19 @@ suggestion "run pcb_sync_from_schematic".
   `StartDrcTask` count); `test_pending_drc_cleared_on_restart` (time out once → `pending_drc`
   set; `session.restart()` → `pending_drc is None` and the next `run_drc_task` starts a task
   at once without polling the old token);
+  `test_refill_no_busy_leak` (ecc83 plus GND zones over the whole outline on F.Cu and B.Cu
+  created through the API in one pushed commit — a zone-heavy fill — then
+  `session.call(lambda h: api.refill(h, timeout_s=0.01), timeout=refill_call_timeout(0.01))`:
+  it either returns or raises `RefillTimeout`; the immediately following `session.call`
+  (`board().get_zones()`) never raises `ApiError` with `AS_BUSY`; spy on the client's `send`:
+  between `RefillZones` and the end of `refill` only `Ping` is sent); unit tests
+  (`tests/unit/board/test_refill.py`, fake kicad): `test_refill_waits_until_idle` (`Ping`
+  raises `AS_BUSY` 3× then succeeds → returns, 4 pings, `refill_zones` got
+  `max_poll_seconds == timeout_s`); `test_refill_connection_error_is_busy`;
+  `test_refill_timeout_after_grace` (always `AS_BUSY`, patched clock → `RefillTimeout`,
+  `code == "refill_timeout"`, `session.refill_busy` set, the next fake `session.call` pings
+  until idle before its callable runs); `test_refill_other_api_error_raises`;
+  `test_refill_call_timeout` (`refill_call_timeout(60) == 105`);
   `test_save_document_to_string` (starts with `(kicad_pcb`); `test_specctra_export_live`
   (`RunBoardJobExportSpecctraDsn` → file starts with `(pcb`);
   `test_import_specctra_session_missing_file` (a missing `.ses` path → `ApiError` carrying
@@ -410,7 +447,10 @@ timeout_s=t), timeout=t + DRC_STALE_GRACE_S + 15)` (stale-task grace + 15 s marg
 `run_drc_task` caller outside a stage (P1c `pcb_status`, P1c `pcb_render` `markers: true`,
 P3a `pcb_metrics`, P3b `pcb_check`, P8) uses the
 helper `api.drc_call_timeout(t) -> float` (= `t + 30 + 15`) for its `session.call`.
-`refill_zones` (P6b, P7) likewise passes `timeout=refill_timeout_s + 15`.
+Every zone refill (P6b, P7) runs as `session.call(lambda h: api.refill(h, timeout_s=t),
+timeout=api.refill_call_timeout(t))` (= `t + 30 + 15`, incl. the busy grace); deadline-bound
+callers use `t = min(REFILL_TIMEOUT_S, remaining)` and skip the step when remaining <
+`REFILL_MIN_S`. Stages use `BoardStageContext.refill(timeout_s=t)`, which does exactly that.
 
 `compensate`: removes tracks/arcs/vias/zones/groups/graphics/footprints whose KIID is not in
 the snapshot (`remove_items` in one board commit), restores `(x, y, rot, side, locked)` of
@@ -430,7 +470,10 @@ recreates missing tracks/vias from the stored data; returns what still differs.
   a dir registered in `cs.temp_dirs` → gone after success, after `fail_after=1` and after a
   cancel during stage 2); `test_stage_drc_passes_long_timeout`
   (`BoardStageContext.drc(timeout_s=60)` → the spied fake `session.call` receives
-  `timeout=60 + 30 + 15 == 105`, never `None` / the 30 s default; `drc(timeout_s=5)` → 50).
+  `timeout=60 + 30 + 15 == 105`, never `None` / the 30 s default; `drc(timeout_s=5)` → 50);
+  `test_stage_refill_passes_long_timeout` (`BoardStageContext.refill(timeout_s=60)` → the
+  spied `session.call` receives `timeout == refill_call_timeout(60) == 105` and the callable
+  calls `api.refill(h, timeout_s=60)`).
   `test_sdk_tools_reload.py::test_session_replaced_rebaselines` (fake old session
   `generation=2`; the fake `apply` swaps `ctx.session` for a new fake with `generation=1` and
   sets `ctx.reloaded_generation = 1` → no `KicadUnavailable`, `_save_edit` saved on the new
@@ -488,3 +531,5 @@ recreates missing tracks/vias from the stored data; returns what still differs.
   `docs_of == {"sch"}` after undoing a created board.
 - [ ] `test_timeout_kills_and_replaces` passes; no `pcb_*` tool is registered yet.
 - [ ] DRC-in-open-commit probe result recorded in the index.
+- [ ] `test_refill_no_busy_leak` passes on the real server (no `AS_BUSY` after a
+  deadline-cut refill).
