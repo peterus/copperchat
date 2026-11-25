@@ -194,8 +194,8 @@ vias join layers at 0 cost). Constants (spec §12 verbatim; hard ones never tune
 "M9_sw_copper_mm": 5.0, "M10_ratio": 3.0, "M11_fill": 0.85, "M12_mismatch_mm": 1.0}`.
 `stage = "routed"` when any track exists on a non-ground net. Definitions per metric:
 M1 = not placed + courtyard overlaps (same side, `polygons_overlap`) + SMD parts on a side
-∉ `doc.allowed_sides` + parts without courtyard (module constant `M1_EDGE_OVERHANG = False`:
-when the owner enables it (index "Provisional" 2), a part listed in `board.md` → Placement
+∉ `doc.allowed_sides` + parts without courtyard (module constant `M1_EDGE_OVERHANG = True`:
+enabled by the owner 2026-11-25 (index "Provisional" 2, resolved), a part listed in `board.md` → Placement
 edges may overhang its assigned edge only; test both settings); `n/a` when `outline.kind == "none"`. M2 =
 `drc.unconnected` (`n/a` without DRC). M3 = error markers (except unconnected) of the API
 `DrcResult` + parity markers (CLI, full check only; holes placed by `pcb_set_outline` carry

@@ -510,13 +510,18 @@ def _keepout(z: KipyZone) -> frozenset[str]:
 
 def _zone(z: KipyZone) -> Zone:
     filled: list[tuple[Point, ...]] = []
+    holes: list[tuple[tuple[Point, ...], ...]] = []
+    filled_layers: list[str] = []
     area = 0.0
-    for polys in z.filled_polygons.values():
+    for layer, polys in z.filled_polygons.items():
         for poly in polys:
             outline = _polyline(poly.outline)
             filled.append(tuple(outline))
+            filled_layers.append(_layer(layer))
+            poly_holes = tuple(tuple(_polyline(hole)) for hole in poly.holes)
+            holes.append(poly_holes)
             area += abs(polygon_area(outline))
-            area -= sum(abs(polygon_area(_polyline(hole))) for hole in poly.holes)
+            area -= sum(abs(polygon_area(hole)) for hole in poly_holes)
     net = z.net
     return Zone(
         kiid=str(z.id.value),
@@ -530,6 +535,8 @@ def _zone(z: KipyZone) -> Zone:
         settings=_zone_settings(z),
         filled_area_mm2=round(area, 4),
         filled=tuple(filled),
+        filled_holes=tuple(holes),
+        filled_layers=tuple(filled_layers),
     )
 
 

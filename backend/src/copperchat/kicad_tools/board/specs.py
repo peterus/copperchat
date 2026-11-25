@@ -91,3 +91,8 @@ TOOL_SPECS: list[ToolSpec] = [
     ToolSpec("pcb_status", PCB_STATUS_DESCRIPTION, _obj({}, []), pcb_status),
     ToolSpec("pcb_render", PCB_RENDER_DESCRIPTION, PCB_RENDER_SCHEMA, pcb_render),
 ]
+
+# P3a: the analysis read tools (pcb_analyze; pcb_metrics joins ANALYSIS_SPECS)
+from copperchat.kicad_tools.board.specs_analysis import ANALYSIS_SPECS  # noqa: E402
+
+TOOL_SPECS += ANALYSIS_SPECS

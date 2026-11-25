@@ -11,6 +11,8 @@ All notable changes to CopperChat are documented in this file. The format follow
 
 - Board sessions with `pcb_status` / `pcb_render` and a live board view — behind
   COPPERCHAT_BOARD_TOOLS.
+- Board analysis and quality metrics (`pcb_analyze`, `pcb_metrics`) — behind
+  COPPERCHAT_BOARD_TOOLS.
 
 ## [0.12.0] - 2026-11-22
 
