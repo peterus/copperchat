@@ -19,6 +19,7 @@ from __future__ import annotations
 import heapq
 import math
 import re
+from dataclasses import replace
 from collections.abc import Iterable, Iterator
 
 from copperchat.board.geom import CHAMFER_MIN, JOG_MIN, _in_pad, _pad_on_layer, analyse_bends
@@ -34,7 +35,7 @@ from copperchat.board.router.grid import (
 )
 from copperchat.board.router.simplify import SnapError, layer_runs, to_path
 
-TURN_COST = 0.3  # mm-equivalent per 45° bend
+TURN_COST = 1.0  # mm-equivalent per 45° bend (0.3 planned; 1.0 measured: fewer bends, same speed)
 VIA_COST = 2.0  # mm-equivalent per via
 LAYER_FACTOR = 1.2  # step cost on every layer but the request's first
 PAIR_BAND_FACTOR = 0.8  # step cost inside a grid's `cheap` band (pair fallback)
@@ -280,10 +281,11 @@ def coarse_distances(
 def route(grid: ObstacleGrid, req: RouteRequest, *, max_expansions: int = 2_000_000) -> RoutePath | None:
     """The cheapest octilinear path from `req.a` to `req.b` on `grid` that passes the final
     checks, or None (no path in the window, `max_expansions` exhausted, or too many goal
-    states rejected). One search; never rebuilds or widens the grid."""
+    states rejected). One search (after two cheap feasibility checks); never rebuilds or
+    widens the grid."""
     nl = len(grid.layers)
     a_layers = [k for k, name in enumerate(grid.layers) if _pad_on_layer(req.a, name)]
-    b_layers = frozenset(k for k, name in enumerate(grid.layers) if _pad_on_layer(req.b, name))
+    b_layers = [k for k, name in enumerate(grid.layers) if _pad_on_layer(req.b, name)]
     if not a_layers or not b_layers:
         return None
     si, sj = grid.cell(req.a.x, req.a.y)
@@ -291,12 +293,46 @@ def route(grid: ObstacleGrid, req: RouteRequest, *, max_expansions: int = 2_000_
     if not (grid.inside(si, sj) and grid.inside(gi, gj)):
         return None
     w = grid.w
-    pitch = grid.pitch
     start_n, goal_n = sj * w + si, gj * w + gi
-    if not reachable(grid, start_n, goal_n, a_layers, b_layers, req.allow_vias and nl > 1):
+    if not reachable(grid, start_n, goal_n, a_layers, frozenset(b_layers), req.allow_vias and nl > 1):
         return None
-    start_dirs = sorted(pad_dirs(req.a))
     goal_dirs = pad_dirs(req.b)
+    goal_layers = frozenset(b_layers)
+
+    def at_goal(n: int, li: int, d: int) -> bool:
+        return n == goal_n and li in goal_layers and d in goal_dirs
+
+    found = _search(
+        grid, req, req.a, start_n, a_layers, goal_n, at_goal, (gi, gj), max_expansions
+    )
+    return found
+
+
+def reverse_path(path: RoutePath) -> RoutePath:
+    """The same copper walked from the other end."""
+    segs = tuple((layer, q, p) for layer, p, q in reversed(path.segments))
+    return RoutePath(segments=segs, vias=tuple(reversed(path.vias)), length=path.length)
+
+
+def _search(  # noqa: C901, PLR0912, PLR0915 - the hot loop stays in one function
+    grid: ObstacleGrid,
+    req: RouteRequest,
+    start_pad: Pad,
+    start_n: int,
+    start_layers: list[int],
+    goal_n: int,
+    at_goal,  # type: ignore[no-untyped-def]
+    target: tuple[int, int] | None,
+    max_expansions: int,
+) -> RoutePath | None:
+    """The A* core. `at_goal(node, layer, dir)` marks goal states; with `build` a goal state
+    is accepted only when its snapped path passes `valid_path` (→ the RoutePath), else any
+    goal state → True. `target` = goal node (i, j) for the heuristic (None → Dijkstra).
+    Budget spent or no goal → None (`_escapes`: budget spent → True)."""
+    nl = len(grid.layers)
+    w = grid.w
+    pitch = grid.pitch
+    start_dirs = sorted(pad_dirs(start_pad))
     cells = grid.cells
     via_blocked = grid.via_blocked
     cheap = grid.cheap
@@ -328,13 +364,16 @@ def route(grid: ObstacleGrid, req: RouteRequest, *, max_expansions: int = 2_000_
     hf = HEURISTIC_WEIGHT * (PAIR_BAND_FACTOR if cheap else 1.0)
     diag = math.sqrt(2.0) - 1.0
 
-    use_coarse = USE_COARSE
+    use_coarse = USE_COARSE and target is not None
+    gi, gj = target if target is not None else (0, 0)
     cf, cw, cdist = coarse_distances(grid, gi, gj, (start_n, goal_n)) if use_coarse else (1, 1, [])
     cstep = cf * pitch
     slack = 2.0 * cstep * math.sqrt(2.0)
     inf = math.inf
 
     def h(n: int) -> float:
+        if target is None:
+            return 0.0
         i, j = n % w, n // w
         dx = abs(i - gi)
         dy = abs(j - gj)
@@ -353,12 +392,14 @@ def route(grid: ObstacleGrid, req: RouteRequest, *, max_expansions: int = 2_000_
         x //= kk * 3 * _ND
         return x // nl, x % nl  # node, layer
 
+    sd = 3 * kk
+    hc: dict[int, float] = {}  # heuristic per node (shared by its states)
     best: dict[int, float] = {}
     parent: dict[int, int] = {}
     closed: set[int] = set()
     heap: list[tuple[float, float, int, float, int, int, int, int, int]] = []
     counter = 0
-    for li in a_layers:
+    for li in start_layers:
         k0 = key(start_n, li, _START_D, 0, 0)
         best[k0] = 0.0
         parent[k0] = -1
@@ -373,11 +414,11 @@ def route(grid: ObstacleGrid, req: RouteRequest, *, max_expansions: int = 2_000_
 
     while heap:
         _f, _ng, _c, g, n, li, d, s, k = pop(heap)
-        here = key(n, li, d, s, k)
+        here = (((n) * nl + li) * _ND + d) * sd + (s) * kk + k
         if here in closed or g > best.get(here, math.inf):
             continue
         closed.add(here)  # weighted A* without re-opening: bounded by HEURISTIC_WEIGHT
-        if n == goal_n and li in b_layers and d in goal_dirs:
+        if at_goal(n, li, d):
             path = _build(here, parent, decode, grid, req)
             if path is not None and valid_path(path, grid, req):
                 return path
@@ -400,9 +441,11 @@ def route(grid: ObstacleGrid, req: RouteRequest, *, max_expansions: int = 2_000_
                 if band is not None and band[m]:
                     c *= PAIR_BAND_FACTOR
                 ng = g + c
-                nk = key(m, li, nd, 0, 0)
+                nk = (((m) * nl + li) * _ND + nd) * sd + (0) * kk + 0
                 if ng < best.get(nk, inf) and nk not in closed:
-                    hm = h(m)
+                    hm = hc.get(m)
+                    if hm is None:
+                        hm = hc[m] = h(m)
                     if hm == inf:
                         continue
                     best[nk] = ng
@@ -420,13 +463,15 @@ def route(grid: ObstacleGrid, req: RouteRequest, *, max_expansions: int = 2_000_
                 if s2 == 0 or k2 >= cap[d] or k2 * step[d] + _EPS >= need_max:
                     s2, k2 = 0, 0
                 ng = g + c
-                nk = key(m, li, d, s2, k2)
+                nk = (((m) * nl + li) * _ND + d) * sd + (s2) * kk + k2
                 if (
                     ng < best.get(nk, inf)
                     and nk not in closed
-                    and not (s2 and best.get(key(m, li, d, 0, 0), inf) <= ng)
+                    and not (s2 and best.get((((m) * nl + li) * _ND + d) * sd + (0) * kk + 0, inf) <= ng)
                 ):
-                    hm = h(m)
+                    hm = hc.get(m)
+                    if hm is None:
+                        hm = hc[m] = h(m)
                     if hm != inf:
                         best[nk] = ng
                         parent[nk] = here
@@ -451,9 +496,11 @@ def route(grid: ObstacleGrid, req: RouteRequest, *, max_expansions: int = 2_000_
                     if k2 >= cap[nd] or k2 * st + _EPS >= need_max:
                         s2, k2 = 0, 0
                     ng = g + c
-                    nk = key(m, li, nd, s2, k2)
+                    nk = (((m) * nl + li) * _ND + nd) * sd + (s2) * kk + k2
                     if ng < best.get(nk, inf) and nk not in closed:
-                        hm = h(m)
+                        hm = hc.get(m)
+                        if hm is None:
+                            hm = hc[m] = h(m)
                         if hm != inf:
                             best[nk] = ng
                             parent[nk] = here
@@ -464,13 +511,15 @@ def route(grid: ObstacleGrid, req: RouteRequest, *, max_expansions: int = 2_000_
                 for l2 in range(nl):
                     if l2 == li or cells[l2][n] == blocked:
                         continue
-                    nk = key(n, l2, _VIA_D, 0, 0)
+                    nk = (((n) * nl + l2) * _ND + _VIA_D) * sd + (0) * kk + 0
                     if ng < best.get(nk, math.inf):
                         best[nk] = ng
                         parent[nk] = here
                         push(heap, (ng + h(n), -ng, counter, ng, n, l2, _VIA_D, 0, 0))
                         counter += 1
     return None
+
+
 
 
 def _build(here: int, parent: dict[int, int], decode, grid: ObstacleGrid, req: RouteRequest) -> RoutePath | None:  # type: ignore[no-untyped-def]
@@ -487,13 +536,21 @@ def _build(here: int, parent: dict[int, int], decode, grid: ObstacleGrid, req: R
         return None
 
 
+FIRST_TRY_EXPANSIONS = 500_000  # budget of solve's first (default-window) search
+
+
 def solve(
     model: BoardModel, req: RouteRequest, *, margin: float = 0.0, max_expansions: int = 2_000_000
 ) -> RoutePath | None:
     """`run_cpu` entry point (B-C12): route on the default window, then exactly once on the
-    doubled window. `RouteTooLarge` from either window propagates."""
-    path = route(build_grid(model, req, margin=margin), req, max_expansions=max_expansions)
+    doubled window. The retry runs from pad `b` (its lattice aligned to `b`, the result
+    reversed): a tight squeeze that one lattice misses, the other often fits. The first
+    search gets at most FIRST_TRY_EXPANSIONS. `RouteTooLarge` from either window propagates."""
+    grid = build_grid(model, req, margin=margin)
+    path = route(grid, req, max_expansions=min(max_expansions, FIRST_TRY_EXPANSIONS))
     if path is not None:
         return path
-    grid = build_grid(model, req, margin=margin, window_mm=2 * WINDOW_MM)
-    return route(grid, req, max_expansions=max_expansions)
+    rev = replace(req, a=req.b, b=req.a)
+    grid = build_grid(model, rev, margin=margin, window_mm=2 * WINDOW_MM)
+    back = route(grid, rev, max_expansions=max_expansions)
+    return reverse_path(back) if back is not None else None

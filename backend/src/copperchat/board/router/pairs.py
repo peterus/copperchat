@@ -19,6 +19,7 @@ from dataclasses import replace
 from copperchat.board.geom import JOG_MIN, _pad_on_layer
 from copperchat.board.model import BoardModel, Pad, Point
 from copperchat.board.router.astar import valid_path
+from copperchat.board.router.astar import FIRST_TRY_EXPANSIONS, reverse_path
 from copperchat.board.router.astar import route as _route
 from copperchat.board.router.grid import (
     WINDOW_MM,
@@ -188,14 +189,17 @@ def _coupled(
 def _solo(
     model: BoardModel, req: RouteRequest, margin: float, retry: bool, extra=(), band=None
 ) -> RoutePath | None:  # type: ignore[no-untyped-def]
-    windows = (None, 2 * WINDOW_MM) if retry else (None,)
-    for window in windows:
-        grid = build_grid(model, req, margin=margin, window_mm=window, extra=extra)
+    # like `solve`: the retry runs from pad b on the doubled window
+    tries = [(req, None, FIRST_TRY_EXPANSIONS)]
+    if retry:
+        tries.append((replace(req, a=req.b, b=req.a), 2 * WINDOW_MM, 2_000_000))
+    for k, (r, window, budget) in enumerate(tries):
+        grid = build_grid(model, r, margin=margin, window_mm=window, extra=extra)
         if band is not None:
             grid.cheap = band(grid)
-        path = _route(grid, req)
+        path = _route(grid, r, max_expansions=budget)
         if path is not None:
-            return path
+            return path if k == 0 else reverse_path(path)
     return None
 
 
