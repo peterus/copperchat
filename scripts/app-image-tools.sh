@@ -14,6 +14,8 @@ timeout 120 docker run --rm --user 1000:1000 --entrypoint bash "$image" -euc '
   test -r /usr/share/doc/copperchat/LICENSES/freerouting.md \
     || { echo "FAIL: LICENSES/freerouting.md missing"; exit 1; }
   command -v prlimit || { echo "FAIL: prlimit not on PATH"; exit 1; }
+  python -c "from copperchat.board.freerouting import find_runtime; from copperchat.config import Settings; assert find_runtime(Settings())" \
+    || { echo "FAIL: find_runtime(Settings()) found no Freerouting runtime"; exit 1; }
   pdftoppm -v
   cd "$(mktemp -d)"
   python -c "from PIL import Image; Image.new(\"RGB\", (200, 100), \"white\").save(\"sample.pdf\")"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Any, cast
 import pytest
 import pytest_asyncio
 
+from copperchat.board.freerouting import FreeroutingRuntime, find_runtime
 from copperchat.config import Settings
 from copperchat.db import Database
 from copperchat.history.service import HistoryService
@@ -266,3 +268,17 @@ async def synth_rig(
     finally:
         await manager.close_all()
         await db.close()
+# -- freerouting_rt (SP4 P6a; reused by P6b and P9a) --------------------------------------
+
+
+@pytest.fixture(scope="session")
+def freerouting_rt() -> FreeroutingRuntime:
+    """The fetched Freerouting runtime (`scripts/fetch-freerouting.sh`). Missing → the
+    test fails in CI (the kicad job fetches it) and skips locally."""
+    rt = find_runtime(Settings(_env_file=None))  # type: ignore[call-arg]
+    if rt is not None:
+        return rt
+    if os.environ.get("CI") == "true":
+        pytest.fail("Freerouting runtime missing in CI: run scripts/fetch-freerouting.sh")
+    home = Settings(_env_file=None).freerouting_home  # type: ignore[call-arg]
+    pytest.skip(f"Freerouting runtime missing locally (COPPERCHAT_FREEROUTING_HOME={home})")
