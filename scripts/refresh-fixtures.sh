@@ -46,5 +46,8 @@ find "$DEST" "$REF" \( -name '*-backups' -o -name '*.lck' -o -name '*.kicad_prl'
   -exec rm -rf {} +
 # `blank`: created by KiCad itself through the API (the rm -rf above removed it).
 "${PYTHON:-/opt/venv/bin/python}" "$ROOT/scripts/make-blank-fixture.py" "$DEST"
+# `sp4_synth` (board phases): built through CopperChat's schematic tools on a real
+# KiCad; needs `uv` and the backend environment (backend/uv.lock), like the CI kicad job.
+python3 "$ROOT/scripts/make-sp4-synth.py" "$DEST"
 echo "$COMMIT" > "$DEST/KICAD_COMMIT"
 echo "fixtures refreshed from KiCad $COMMIT"

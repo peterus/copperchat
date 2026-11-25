@@ -22,7 +22,8 @@ import tempfile
 import time
 import xml.etree.ElementTree as ET
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,7 @@ import pytest
 from copperchat.config import Settings
 from copperchat.db import Database
 from copperchat.kicad_session import KicadSessionManager
+from copperchat.kicad_session.launcher import kicad_cli_env
 from copperchat.projects import discover_projects
 from tests.kicad.board.sp4_synth_steps import EXPECTED_PARTS, POWER_STEPS, ROOT_STEPS
 from tests.support.kicad_cli import cli_netlist
@@ -91,10 +93,11 @@ def erc_summary(report: dict[str, Any]) -> dict[str, Any]:
 def cli_erc(kicad_cli: str, root_sch: Path, out_dir: Path) -> dict[str, Any]:
     """`kicad-cli sch erc --format json` (errors and warnings) of the whole hierarchy."""
     out = out_dir / f"{root_sch.stem}-erc.json"
+    env = kicad_cli_env(kicad_cli, out_dir / "kicad-config")  # never the user's config
     subprocess.run(
         [kicad_cli, "sch", "erc", "--format", "json", "--severity-error",
          "--severity-warning", "-o", str(out), str(root_sch)],
-        check=True, capture_output=True, timeout=120,
+        check=True, capture_output=True, timeout=120, env=env,
     )  # fmt: skip
     report: dict[str, Any] = json.loads(out.read_text(encoding="utf-8"))
     return report
@@ -117,11 +120,36 @@ def _wait_for_server(proc: subprocess.Popen[bytes], url: str, timeout_s: float) 
             raise RuntimeError(f"api-server exited with code {proc.returncode}")
         try:
             client = KiCad(socket_path=url, client_name="make-sp4-synth", timeout_ms=60_000)
-            client.ping()
+            client.ping()  # type: ignore[no-untyped-call]
             return client
         except Exception:  # not ready yet
             time.sleep(0.2)
     raise RuntimeError(f"api-server not ready after {timeout_s:.0f}s")
+
+
+@contextmanager
+def standalone_server(kicad_cli: str = KICAD_CLI) -> Iterator[Any]:
+    """A kipy client of a private `kicad-cli api-server` (own socket, own config home
+    seeded with the stock library tables as CopperChat's sessions), terminated on exit."""
+    with tempfile.TemporaryDirectory(prefix="cc-sp4-") as tmp:
+        socket = Path(tmp) / "api.sock"
+        env = kicad_cli_env(kicad_cli, Path(tmp) / "config")  # stock library tables
+        proc = subprocess.Popen(
+            [kicad_cli, "api-server", "--socket", str(socket)],
+            cwd=tmp,
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            yield _wait_for_server(proc, f"ipc://{socket}", 60)
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
 
 
 def create_empty_project(root: Path, name: str, kicad_cli: str = KICAD_CLI) -> Path:
@@ -132,27 +160,9 @@ def create_empty_project(root: Path, name: str, kicad_cli: str = KICAD_CLI) -> P
 
     dest = root / name
     dest.mkdir(parents=True)
-    with tempfile.TemporaryDirectory(prefix="cc-sp4-") as tmp:
-        socket = Path(tmp) / "api.sock"
-        env = dict(os.environ, LANG="C", LC_ALL="C", KICAD_CONFIG_HOME=str(Path(tmp) / "config"))
-        proc = subprocess.Popen(
-            [kicad_cli, "api-server", "--socket", str(socket)],
-            cwd=tmp,
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        try:
-            client = _wait_for_server(proc, f"ipc://{socket}", 60)
-            client.create_document(str(dest / f"{name}.kicad_sch"), DocumentType.DOCTYPE_SCHEMATIC)
-            client.get_schematic().save()
-        finally:
-            proc.terminate()
-            try:
-                proc.wait(10)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
+    with standalone_server(kicad_cli) as client:
+        client.create_document(str(dest / f"{name}.kicad_sch"), DocumentType.DOCTYPE_SCHEMATIC)
+        client.get_schematic().save()
     shutil.copyfile(TEMPLATE, dest / f"{name}.kicad_pro")
     for junk in (*dest.glob("*.lck"), *dest.glob("*.kicad_prl")):
         junk.unlink()
