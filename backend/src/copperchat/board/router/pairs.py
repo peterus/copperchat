@@ -13,19 +13,19 @@ from __future__ import annotations
 
 import itertools
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 
 from copperchat.board.geom import JOG_MIN, _pad_on_layer
 from copperchat.board.model import BoardModel, Pad, Point
-from copperchat.board.router.astar import valid_path
-from copperchat.board.router.astar import FIRST_TRY_EXPANSIONS, reverse_path
+from copperchat.board.router.astar import FIRST_TRY_EXPANSIONS, reverse_path, valid_path
 from copperchat.board.router.astar import route as _route
 from copperchat.board.router.grid import (
     WINDOW_MM,
     ObstacleGrid,
     RoutePath,
     RouteRequest,
+    Shape,
     _pad_shape,
     band_cells,
     build_grid,
@@ -41,17 +41,21 @@ def _pair_clearance(p: RouteRequest, n: RouteRequest, gap: float) -> float:
 
 
 def coupled_eligible(p: RouteRequest, n: RouteRequest, gap: float) -> bool:
-    """Both pad pairs within `2 × (w + gap) + max pad size` of each other."""
+    """Both pad pairs within `2 x (w + gap) + max pad size` of each other."""
     w = max(p.width, n.width)
     size = max(max(q.w, q.h) for q in (p.a, p.b, n.a, n.b))
     lim = 2 * (w + gap) + size
-    return math.dist((p.a.x, p.a.y), (n.a.x, n.a.y)) <= lim and math.dist((p.b.x, p.b.y), (n.b.x, n.b.y)) <= lim
+    return (
+        math.dist((p.a.x, p.a.y), (n.a.x, n.a.y)) <= lim
+        and math.dist((p.b.x, p.b.y), (n.b.x, n.b.y)) <= lim
+    )
 
 
 def _merge_nets(model: BoardModel, old: str, new: str) -> BoardModel:
     """`model` with net `old` renamed to `new` (the centreline treats both as own copper)."""
     parts = tuple(
-        replace(pt, pads=tuple(replace(q, net=new) if q.net == old else q for q in pt.pads)) for pt in model.parts
+        replace(pt, pads=tuple(replace(q, net=new) if q.net == old else q for q in pt.pads))
+        for pt in model.parts
     )
     return replace(
         model,
@@ -81,7 +85,7 @@ def _point_pad(net: str, at: Point, size: float, number: str) -> Pad:
 
 def offset_polyline(points: Sequence[Point], o: float) -> tuple[Point, ...]:
     """`points` shifted by `o` to the left of the travel direction (on screen with y down:
-    left = (u.y, −u.x)), mitred at every vertex (a 45° bend keeps both offsets octilinear)."""
+    left = (u.y, -u.x)), mitred at every vertex (a 45° bend keeps both offsets octilinear)."""
     pts = list(merge_collinear(points))
     normals = []
     for p, q in itertools.pairwise(pts):
@@ -103,19 +107,30 @@ def _as_path(layer: str, pts: Sequence[Point]) -> RoutePath:
     return RoutePath(segments=segs, vias=(), length=sum(math.dist(p, q) for _l, p, q in segs))
 
 
-def _partner(path: RoutePath, need: float) -> list[tuple[str, tuple]]:
+def _partner(path: RoutePath, need: float) -> list[tuple[str, Shape]]:
     return [(layer, ("s", *p, *q, need)) for layer, p, q in path.segments]
 
 
 def _check(
-    model: BoardModel, req: RouteRequest, path: RoutePath, other: RouteRequest, partner: RoutePath, pc: float, margin: float
+    model: BoardModel,
+    req: RouteRequest,
+    path: RoutePath,
+    other: RouteRequest,
+    partner: RoutePath,
+    pc: float,
+    margin: float,
 ) -> bool:
     """`path` passes the B-C5 bends and exact clearance; `margin` applies to all other-net
     copper except the partner's (its pads and path keep the pair clearance `pc`)."""
     need = pc + req.width / 2
     extra = _partner(partner, need + other.width / 2)
     pads = [q for pt in model.parts for q in pt.pads if q.net == other.net]
-    extra += [(layer, _pad_shape(q, need)) for q in pads for layer in req.layers if _pad_on_layer(q, layer)]
+    extra += [
+        (layer, _pad_shape(q, need))
+        for q in pads
+        for layer in req.layers
+        if _pad_on_layer(q, layer)
+    ]
     grid = build_grid(_merge_nets(model, other.net, req.net), req, margin=margin, extra=extra)
     return valid_path(path, grid, req)
 
@@ -187,10 +202,15 @@ def _coupled(
 
 
 def _solo(
-    model: BoardModel, req: RouteRequest, margin: float, retry: bool, extra=(), band=None
-) -> RoutePath | None:  # type: ignore[no-untyped-def]
+    model: BoardModel,
+    req: RouteRequest,
+    margin: float,
+    retry: bool,
+    extra: Sequence[tuple[str, Shape]] = (),
+    band: Callable[[ObstacleGrid], tuple[bytearray, ...]] | None = None,
+) -> RoutePath | None:
     # like `solve`: the retry runs from pad b on the doubled window
-    tries = [(req, None, FIRST_TRY_EXPANSIONS)]
+    tries: list[tuple[RouteRequest, float | None, int]] = [(req, None, FIRST_TRY_EXPANSIONS)]
     if retry:
         tries.append((replace(req, a=req.b, b=req.a), 2 * WINDOW_MM, 2_000_000))
     for k, (r, window, budget) in enumerate(tries):

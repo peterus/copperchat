@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import math
 
 import pytest
@@ -9,7 +10,13 @@ import pytest
 from copperchat.board.geom import analyse_bends
 from copperchat.board.model import Pad
 from copperchat.board.router import RouteRequest, build_grid
-from copperchat.board.router.simplify import SnapError, layer_runs, merge_collinear, snap_ends, to_path
+from copperchat.board.router.simplify import (
+    SnapError,
+    layer_runs,
+    merge_collinear,
+    snap_ends,
+    to_path,
+)
 
 from .builders import board, outline
 
@@ -35,7 +42,7 @@ def test_snap_moves_last_bend() -> None:
     pts = [(0.0, 0.0), (5.0, 0.0), (6.0, -1.0)]
     out = snap_ends(pts, (0.0, 0.0), (6.013, -1.0), 0.2)
     assert out == ((0.0, 0.0), (5.013, 0.0), (6.013, -1.0))
-    assert all(_octilinear(p, q) for p, q in zip(out, out[1:], strict=False))
+    assert all(_octilinear(p, q) for p, q in itertools.pairwise(out))
     _clean(out)
 
 
@@ -43,7 +50,7 @@ def test_snap_head_and_tail() -> None:
     pts = [(0.0, 0.0), (3.0, 0.0), (4.0, 1.0), (8.0, 1.0)]
     out = snap_ends(pts, (0.0, 0.021), (8.0, 0.987), 0.2)
     assert out[0] == (0.0, 0.021) and out[-1] == (8.0, 0.987)
-    assert all(_octilinear(p, q) for p, q in zip(out, out[1:], strict=False))
+    assert all(_octilinear(p, q) for p, q in itertools.pairwise(out))
     _clean(out)
 
 
@@ -53,7 +60,7 @@ def test_snap_stub_when_parallel() -> None:
     out = snap_ends([(0.0, 0.0), (5.0, 0.0)], None, target, 0.2)
     assert out[-1] == target
     assert len(out) >= 3
-    assert all(_octilinear(p, q) for p, q in zip(out, out[1:], strict=False))
+    assert all(_octilinear(p, q) for p, q in itertools.pairwise(out))
     _clean(out)
     # the stub stays inside a 0.5 mm pad around the centre
     for p in out[out.index((5.0, 0.0)) :]:
@@ -67,7 +74,7 @@ def test_snap_never_creates_short_chamfer() -> None:
     out = snap_ends(pts, None, (2.17, -3.01), 0.2)
     assert out[:3] == ((0.0, 0.0), (2.0, 0.0), (2.2, -0.2))
     assert out[-1] == (2.17, -3.01)
-    assert all(_octilinear(p, q) for p, q in zip(out, out[1:], strict=False))
+    assert all(_octilinear(p, q) for p, q in itertools.pairwise(out))
     _clean(out)
 
 

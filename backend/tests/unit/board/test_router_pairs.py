@@ -32,10 +32,14 @@ from .router_maps import exact_clearance_ok, perf_board, random_map, seg_dist
 
 
 def pad(net: str, x: float, y: float, size: float = 0.2, ref: str = "J1", number: str = "1") -> Pad:
-    return Pad(ref, number, net, x, y, size, size, 0.0, "rect", frozenset({"F.Cu", "F.Paste"}), True, None)
+    return Pad(
+        ref, number, net, x, y, size, size, 0.0, "rect", frozenset({"F.Cu", "F.Paste"}), True, None
+    )
 
 
-def req(net: str, a: Pad, b: Pad, *, width: float = 0.2, clearance: float = 0.2, layers=("F.Cu",)) -> RouteRequest:
+def req(
+    net: str, a: Pad, b: Pad, *, width: float = 0.2, clearance: float = 0.2, layers=("F.Cu",)
+) -> RouteRequest:
     return RouteRequest(net, a, b, width, clearance, layers, len(layers) > 1, (0.6, 0.3))
 
 
@@ -48,7 +52,14 @@ def clean(path: RoutePath, width: float) -> None:
     runs = layer_runs(path)
     for k, (_l, pts) in enumerate(runs):
         r = analyse_bends(pts, width, pad_ends=(k == 0, k == len(runs) - 1))
-        assert not (r.non_octilinear or r.ninety or r.acute or r.off_angle or r.micro_jogs or r.short_chamfers), r
+        assert not (
+            r.non_octilinear
+            or r.ninety
+            or r.acute
+            or r.off_angle
+            or r.micro_jogs
+            or r.short_chamfers
+        ), r
 
 
 def min_dist(a: RoutePath, b: RoutePath) -> float:
@@ -89,7 +100,7 @@ def test_coupled_one_bend() -> None:
     bent = [pts for _l, pts in layer_runs(pp) if len(pts) >= 3]
     assert bent, pp  # the pair bends
     c = pair_coupling(pp, pn)
-    assert 0.4 - 1e-6 <= c["gap_min"] and c["gap_max"] <= 0.41
+    assert c["gap_min"] >= 0.4 - 1e-6 and c["gap_max"] <= 0.41
     assert min_dist(pp, pn) >= 0.4 - 1e-6  # clearance + w between the centre lines
     assert exact_clearance_ok(m, pp, p) and exact_clearance_ok(m, pn, n)
 
@@ -190,7 +201,10 @@ def test_window_doubles_once(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_solve_pair_fallback_window_doubles_once(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _spy(monkeypatch)
     pa, na = pad("DP", 10, 10, 0.5, number="1"), pad("DN", 10, 20, 0.5, number="2")
-    pb, nb = pad("DP", 14, 10, 0.5, ref="U1", number="1"), pad("DN", 14, 20, 0.5, ref="U1", number="2")
+    pb, nb = (
+        pad("DP", 14, 10, 0.5, ref="U1", number="1"),
+        pad("DN", 14, 20, 0.5, ref="U1", number="2"),
+    )
     wall = track("W", "F.Cu", (12.0, -1.0), (12.0, 31.0), 0.2)
     m = pair_board([pa, pb, na, nb], tracks=(wall,), w=30, h=30)
     p, n = req("DP", pa, pb), req("DN", na, nb)
@@ -204,7 +218,9 @@ def test_solve_pair_margin() -> None:
     base = solve_pair(m, p, n, 0.2)
     got = solve_pair(m, p, n, 0.2, margin=0.1)
     assert base is not None and got is not None
-    assert pair_coupling(*got)["gap_min"] == pytest.approx(pair_coupling(*base)["gap_min"], abs=1e-6)
+    assert pair_coupling(*got)["gap_min"] == pytest.approx(
+        pair_coupling(*base)["gap_min"], abs=1e-6
+    )
     # every segment keeps clearance + 0.1 from the other copper (the partner keeps the gap)
     only_obstacle = replace(m, parts=())
     for path, r in zip(got, (p, n), strict=True):
@@ -222,7 +238,9 @@ def test_prune_model_same_result(seed: int) -> None:
 
 
 def test_prune_model_drops_far_items() -> None:
-    m, reqs = perf_board(random.Random(777), size=100, n_parts=80, n_nets=5, layers=("F.Cu", "B.Cu"), net_len=(5, 10))
+    m, reqs = perf_board(
+        random.Random(777), size=100, n_parts=80, n_nets=5, layers=("F.Cu", "B.Cu"), net_len=(5, 10)
+    )
     r = reqs[0]
     pruned = prune_model(m, r)
     n_pads = sum(len(p.pads) for p in m.parts)

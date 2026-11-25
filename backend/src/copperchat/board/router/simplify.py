@@ -108,7 +108,8 @@ def _stubs(pts: list[Point], target: Point) -> list[list[Point]]:
 
 def _turns_ok(pts: Sequence[Point]) -> bool:
     return all(
-        _turn_deg(_sub(b, a), _sub(c, b)) <= 45.0 + 1e-6 for a, b, c in zip(pts, pts[1:], pts[2:], strict=False)
+        _turn_deg(_sub(b, a), _sub(c, b)) <= 45.0 + 1e-6
+        for a, b, c in zip(pts, pts[1:], pts[2:], strict=False)
     )
 
 
@@ -139,7 +140,9 @@ def snap_ends(
     return merge_collinear([(round(x, _ROUND), round(y, _ROUND)) for x, y in pts])
 
 
-def to_path(states: Sequence[tuple[int, int, int]], grid: ObstacleGrid, req: RouteRequest) -> RoutePath:
+def to_path(
+    states: Sequence[tuple[int, int, int]], grid: ObstacleGrid, req: RouteRequest
+) -> RoutePath:
     """`states` = the searched nodes (layer index, i, j) from pad `a` to pad `b`: per-layer
     runs (split at layer changes = vias), collinear runs merged, the ends snapped to the
     exact pad centres. Raises `SnapError` like `snap_ends`."""

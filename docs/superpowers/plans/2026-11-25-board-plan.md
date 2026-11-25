@@ -679,10 +679,10 @@ Determinism: same input → same output (no unseeded randomness, stable sort key
 MAX_CELLS_PER_LAYER = 4_000_000
 class RouteTooLarge(Exception): cells: int   # build_grid refuses a larger window; the caller reports the connection failed "too_large"
 def build_grid(model: BoardModel, req: RouteRequest, *, pitch: float = 0.05, margin: float = 0.0,
-               window_mm: float | None = None) -> ObstacleGrid   # None → WINDOW_MM (6.0); solve/solve_pair retry once with 2 × WINDOW_MM
+               window_mm: float | None = None, extra=()) -> ObstacleGrid   # None → WINDOW_MM (6.0); solve/solve_pair retry once with 2 × WINDOW_MM (the retry from pad b, As built P5a); lattice aligned to req.a
 def route(grid: ObstacleGrid, req: RouteRequest, *, max_expansions: int = 2_000_000) -> RoutePath | None
 def route_pair(model, p: RouteRequest, n: RouteRequest, gap: float) -> tuple[RoutePath, RoutePath] | None
-def solve(model: BoardModel, req: RouteRequest, *, margin: float = 0.0, max_expansions: int = 2_000_000) -> RoutePath | None   # run_cpu entry point; owns the one window-doubling retry (route never retries)
+def solve(model: BoardModel, req: RouteRequest, *, margin: float = 0.0, max_expansions: int = 2_000_000) -> RoutePath | None   # run_cpu entry point; owns the one window-doubling retry (route never retries); first try ≤ FIRST_TRY_EXPANSIONS, retry from pad b (As built P5a)
 def solve_pair(model, p, n, gap, *, margin: float = 0.0) -> tuple[RoutePath, RoutePath] | None                                 # run_cpu entry point
 def pair_coupling(a: RoutePath, b: RoutePath) -> dict[str, float]   # keys length_mismatch, gap_min, gap_max (centre-to-centre over the coupled stretch; M12 reporting)
 def prune_model(model: BoardModel, req: RouteRequest | tuple[RouteRequest, RouteRequest]) -> BoardModel   # only items intersecting the retry window; callers pass it to solve/solve_pair
@@ -871,6 +871,85 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
   the control) and `NO_NETWORK_OPTIONS` names (`Unknown settings property` guard).
 - `postprocess` relies on private helpers of `geom` / `metrics` / `classify`; a refactor there
   must keep them or move them public.
+### As built (P5a)
+
+**Measured / recorded** (local, pure Python 3.13, no other load than a parallel phase child;
+CI records the same `record_property` values)
+- `test_15_short_nets_budget` (30 × 30 mm, 2 layers, 20 parts, seed 4242): **1.9 s** for 15/15
+  nets (bound 10 s; slowest net 0.6 s). `test_large_board_budget` (100 × 100 mm, 4 layers,
+  80 parts, 40 nets of 5–40 mm, each `run_cpu(solve, prune_model(m, req), req,
+  timeout_s=60)`): **38.6 s, 40/40 routed**, worker peak RSS (`VmHWM`) **385 MB**
+  (limit 3 GiB); slowest single connection ≈ 7 s.
+- Property tests (`test_router_props.py`, 250 seeded maps, 493 requests, one search each
+  with `max_expansions=100_000`): ≈ 95 % routed, every returned path M4 = M7 = 0 and exact
+  clearance; runtime ≈ 40–56 s for the routing fixture + ≈ 14 s determinism (every tenth
+  map re-routed) + 3 s open maps. Whole router test set ≈ 2 min (CI `backend` job; still
+  below the kicad shards' critical path).
+- Per expansion ≈ 4–10 µs (pure Python); search effort, not grid building, dominates.
+
+**Cost constants** (`astar.py`): `TURN_COST = 1.0` (plan: 0.3; 1.0 gives ≈ 10–15 % fewer
+bends at equal speed on both perf boards), `VIA_COST = 2.0`, `LAYER_FACTOR = 1.2`,
+`PAIR_BAND_FACTOR = 0.8`, `HEURISTIC_WEIGHT = 1.5`, `MAX_GOAL_REJECTS = 64`,
+`FIRST_TRY_EXPANSIONS = 500_000`, `COARSE_MM = 0.5`; `grid.py`: `WINDOW_MM = 6.0`,
+`MAX_CELLS_PER_LAYER = 4_000_000`, `EDGE_MIN_MM = 0.3`, `PRUNE_HALO_MM = 3.0`.
+
+**`ObstacleGrid`** (picklable): `pitch, x0, y0, w, h` (node counts), `layers`, `cells`
+(per layer, 0 free / 1 own net / 2 blocked), `via_blocked`, plus `shapes` (per layer the
+exact obstacle cores, each with its required centre-line distance), `outline`, `inset`
+(exact check `segment_clear` / `path_clear`) and `cheap` (pair-fallback band).
+
+**Contract deviations / additions (B-C12 updated where binding)**
+- The lattice is aligned to `req.a`'s centre (exact start); only the `b` end is snapped.
+  Node count = `floor(extent / pitch) + 1` per axis (the plan's `ceil(w / pitch)` ± 1);
+  `RouteTooLarge` is raised before any allocation.
+- A node is blocked when its distance to an obstacle core is ≤ need + `chord_slack` (the
+  sagitta of one diagonal step, ≈ 0.002–0.004 mm), so straight runs between free nodes keep
+  the exact need. The plan's `test_pad_inflation_exact` text said 0.4 mm for clearance 0.2 /
+  width 0.2; the B-C12 formula gives 0.3 mm, which the test asserts.
+- Vias are checked against other-net copper on **every** copper layer (a through via
+  touches all), not only `req.layers`; no via in an own SMD pad (reflow); a `vias`
+  keepout needs the via disc outside it. Copper zones (non rule areas) are not obstacles
+  (routing runs before pours; `prune_model` drops fills). Footprint-embedded keepouts
+  (`Part.rule_areas`) are not obstacles (no layer/keepout type in the model) — residual.
+- Copper graphics: segments/arcs as strokes, circles/rects/polygons as filled, beziers as
+  their control-point hull.
+- Search: weighted A* (`HEURISTIC_WEIGHT` 1.5, no re-opening) on an obstacle-aware coarse
+  distance field (0.5 mm cells linked where a fine move crosses their boundary) instead of
+  the plain octilinear heuristic — a 4 mm detour went from 2.3 s to 0.3 s. Before the
+  search a union-find over free runs (`reachable`) rejects disconnected requests at once.
+  A 45° turn advances straight for the shortest legal piece in one move (no bend can follow
+  sooner), which halves the state space; the goal may be reached mid-move.
+- A goal state is accepted only when the snapped path passes `analyse_bends` (pad ends at
+  pads, not at vias) on every layer run and the exact clearance check; otherwise the
+  search continues (≤ `MAX_GOAL_REJECTS`). `snap_ends(points, a, b, width)` takes `None`
+  for an end that stays (vias) and raises `SnapError` when no ≤ 45° approach exists.
+- `solve`: first search on the default window with at most `FIRST_TRY_EXPANSIONS`; the one
+  retry (doubled window, `max_expansions`) runs **from pad `b`** (lattice aligned to `b`,
+  path reversed) — on the large board a connection that the `a`-aligned lattice could not
+  fit (2 M expansions, 26 s) routed in 1.5 s that way. Still exactly two `build_grid`
+  calls (`[None, 12.0]`).
+- `build_grid(..., extra=())`: extra `(layer, shape)` obstacles (the pair partner).
+- Pairs: the coupled centreline gets straight leads (`JOG_MIN(2w + pc)`) at right angles
+  out of each pad pair (pad pairs must sit on an octilinear axis ± 1°), so the offsets meet
+  the pads; the pair keeps `pc = max(gap, clearance_p, clearance_n)` between its two nets
+  and `margin` does not apply between them (`test_solve_pair_margin`). The fallback's
+  partner obstacle uses `pc`; its preferred band is `gap + w ± pitch` (cost × 0.8). Each
+  fallback net gets `solve`'s retry (default window, then doubled from pad `b`).
+- `pair_coupling` counts a sample only where the nearest partner segment is parallel and
+  the sample projects onto it.
+- `prune_model` keeps items intersecting the retry window grown by `PRUNE_HALO_MM`;
+  `solve(prune_model(m, req), req) == solve(m, req)` on the seeded maps and the 100 mm board.
+
+**Residuals for later phases**
+- P5b: `route` returns `None` for a connection whose pad is boxed in by earlier copper
+  along its axis; such a failure can take up to the full expansion budget (≈ 10–25 s per
+  search) — the `run_cpu` timeout (≤ 30 s) bounds it; reporting it `no_path` / `timeout`
+  is P5b's call. Order connections so short/critical ones route first.
+- Footprint keepouts (`Part.rule_areas`, antenna) are not router obstacles yet (needs their
+  layer/keepout type in `BoardModel`).
+- The router never produces vias inside SMD pads and never two vias at one node; hole-to-hole
+  spacing between vias of the same path is not checked separately (VIA_COST makes close
+  via pairs unlikely; DRC in P5b is the oracle).
 
 ### As built (P3a)
 

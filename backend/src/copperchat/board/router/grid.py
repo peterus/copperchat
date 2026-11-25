@@ -20,6 +20,7 @@ import itertools
 import math
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
+from typing import Any
 
 from copperchat.board.geom import _Grid, _pad_on_layer, convex_hull, point_in_polygon
 from copperchat.board.model import ArcTrack, BoardModel, GraphicItem, Pad, Point
@@ -52,7 +53,7 @@ class RoutePath:
     length: float
 
 
-class RouteTooLarge(Exception):  # noqa: N818 - contract name (B-C12)
+class RouteTooLarge(Exception):
     """The routing window would exceed `MAX_CELLS_PER_LAYER`; nothing was allocated."""
 
     def __init__(self, cells: int) -> None:
@@ -71,7 +72,7 @@ class RouteTooLarge(Exception):  # noqa: N818 - contract name (B-C12)
 #   ("s", ax, ay, bx, by, need)          segment (zero thickness; widths are in `need`)
 #   ("r", x0, y0, x1, y1, need)          axis-parallel rectangle
 #   ("p", points, need)                  filled polygon
-Shape = tuple
+Shape = tuple[Any, ...]
 
 
 def _pt_seg(p: Point, a: Point, b: Point) -> float:
@@ -101,7 +102,7 @@ def seg_seg(a: Point, b: Point, c: Point, d: Point) -> float:
 
 
 def _in_rect(p: Point, r: Shape) -> bool:
-    return r[1] <= p[0] <= r[3] and r[2] <= p[1] <= r[4]
+    return bool(r[1] <= p[0] <= r[3] and r[2] <= p[1] <= r[4])
 
 
 def _edges(pts: Sequence[Point]) -> Iterator[tuple[Point, Point]]:
@@ -114,7 +115,7 @@ def seg_shape(p: Point, q: Point, s: Shape) -> float:
     """Distance from segment pq to the core of shape `s` (0 when they overlap)."""
     kind = s[0]
     if kind == "d":
-        return max(0.0, _pt_seg((s[1], s[2]), p, q) - s[3])
+        return max(0.0, _pt_seg((s[1], s[2]), p, q) - float(s[3]))
     if kind == "s":
         return seg_seg(p, q, (s[1], s[2]), (s[3], s[4]))
     if kind == "r":
@@ -166,7 +167,9 @@ def _linear(c1: float, c0: float, lo: float, hi: float) -> tuple[float, float] |
     return (min(x1, x2), max(x1, x2))
 
 
-def _cap(a: tuple[float, float] | None, b: tuple[float, float] | None) -> tuple[float, float] | None:
+def _cap(
+    a: tuple[float, float] | None, b: tuple[float, float] | None
+) -> tuple[float, float] | None:
     if a is None or b is None:
         return None
     lo, hi = max(a[0], b[0]), min(a[1], b[1])
@@ -347,8 +350,12 @@ def _arc_points(a: ArcTrack) -> tuple[list[Point], float]:
     d = 2 * (x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2))
     if abs(d) < 1e-12:
         return [a.start, a.end], 0.0
-    ux = ((x1**2 + y1**2) * (y2 - y3) + (x2**2 + y2**2) * (y3 - y1) + (x3**2 + y3**2) * (y1 - y2)) / d
-    uy = ((x1**2 + y1**2) * (x3 - x2) + (x2**2 + y2**2) * (x1 - x3) + (x3**2 + y3**2) * (x2 - x1)) / d
+    ux = (
+        (x1**2 + y1**2) * (y2 - y3) + (x2**2 + y2**2) * (y3 - y1) + (x3**2 + y3**2) * (y1 - y2)
+    ) / d
+    uy = (
+        (x1**2 + y1**2) * (x3 - x2) + (x2**2 + y2**2) * (x1 - x3) + (x3**2 + y3**2) * (x2 - x1)
+    ) / d
     r = math.hypot(x1 - ux, y1 - uy)
     t1 = math.atan2(y1 - uy, x1 - ux)
     t2 = math.atan2(y2 - uy, x2 - ux)
@@ -357,7 +364,10 @@ def _arc_points(a: ArcTrack) -> tuple[list[Point], float]:
     if (t2 - t1) % (2 * math.pi) > span:  # the mid point is on the other way round
         span -= 2 * math.pi
     n = max(2, math.ceil(abs(span) / 0.1))
-    pts = [(ux + r * math.cos(t1 + span * k / n), uy + r * math.sin(t1 + span * k / n)) for k in range(n + 1)]
+    pts = [
+        (ux + r * math.cos(t1 + span * k / n), uy + r * math.sin(t1 + span * k / n))
+        for k in range(n + 1)
+    ]
     sag = r * (1 - math.cos(abs(span) / n / 2))
     return pts, sag
 
@@ -419,7 +429,7 @@ class _Marker:
     def shape(self, buf: bytearray, s: Shape, t: float, value: int) -> None:
         """Mark every node within `t` of the core of `s`."""
         kind = s[0]
-        x0, y0, x1, y1 = _shape_bbox(s)
+        _x0, y0, _x1, y1 = _shape_bbox(s)
         for j in self.rows(y0 - t, y1 + t):
             y = self.y(j)
             if kind == "d":
@@ -509,7 +519,9 @@ def build_grid(
     bx1, by1 = x0 + nx * pitch + 5.0, y0 + ny * pitch + 5.0
 
     def near(box: tuple[float, float, float, float], grow: float) -> bool:
-        return not (box[2] + grow < bx0 or box[0] - grow > bx1 or box[3] + grow < by0 or box[1] - grow > by1)
+        return not (
+            box[2] + grow < bx0 or box[0] - grow > bx1 or box[3] + grow < by0 or box[1] - grow > by1
+        )
 
     copper = list(model.copper_layers)
     pads = [pad for part in model.parts for pad in part.pads]
@@ -634,7 +646,9 @@ def build_grid(
     )
 
 
-def extra_shapes(extra: Sequence[tuple[str, Shape]], layers: Sequence[str]) -> list[tuple[int, Shape]]:
+def extra_shapes(
+    extra: Sequence[tuple[str, Shape]], layers: Sequence[str]
+) -> list[tuple[int, Shape]]:
     return [(list(layers).index(name), s) for name, s in extra if name in layers]
 
 
@@ -660,7 +674,9 @@ def band_cells(
 PRUNE_HALO_MM = 3.0  # beyond any obstacle's reach (clearance + widths + via radius)
 
 
-def _bbox_hits(box: tuple[float, float, float, float], win: tuple[float, float, float, float]) -> bool:
+def _bbox_hits(
+    box: tuple[float, float, float, float], win: tuple[float, float, float, float]
+) -> bool:
     return not (box[2] < win[0] or box[0] > win[2] or box[3] < win[1] or box[1] > win[3])
 
 
@@ -673,10 +689,12 @@ def _pts_box(pts: Iterable[Point]) -> tuple[float, float, float, float]:
     return (min(xs), min(ys), max(xs), max(ys))
 
 
-def prune_model(model: BoardModel, req: RouteRequest | tuple[RouteRequest, RouteRequest]) -> BoardModel:
+def prune_model(
+    model: BoardModel, req: RouteRequest | tuple[RouteRequest, RouteRequest]
+) -> BoardModel:
     """`model` reduced to what can matter for `req` (or a pair): outline, rules, net classes
     and layers stay; pads (parts with at least one), tracks, arcs, vias, zones (outline only,
-    no fills) and graphics only when they intersect the retry window (2 × WINDOW_MM around
+    no fills) and graphics only when they intersect the retry window (2 x WINDOW_MM around
     the requests' pads) grown by PRUNE_HALO_MM. Pure; the result routes exactly like the
     full model."""
     reqs = list(req) if isinstance(req, tuple) else [req]
@@ -695,8 +713,16 @@ def prune_model(model: BoardModel, req: RouteRequest | tuple[RouteRequest, Route
         pads = tuple(p for p in part.pads if pad_hits(p))
         if pads:
             parts.append(replace(part, pads=pads))
-    tracks = tuple(t for t in model.tracks if _bbox_hits(_grow(_pts_box((t.start, t.end)), t.width / 2), win))
-    arcs = tuple(a for a in model.arcs if _bbox_hits(_grow(_pts_box((a.start, a.mid, a.end)), a.width / 2 + math.dist(a.start, a.end)), win))
+    tracks = tuple(
+        t for t in model.tracks if _bbox_hits(_grow(_pts_box((t.start, t.end)), t.width / 2), win)
+    )
+    arcs = tuple(
+        a
+        for a in model.arcs
+        if _bbox_hits(
+            _grow(_pts_box((a.start, a.mid, a.end)), a.width / 2 + math.dist(a.start, a.end)), win
+        )
+    )
     vias = tuple(v for v in model.vias if _bbox_hits(_grow(_pts_box((v.at,)), v.diameter / 2), win))
     zones = tuple(
         replace(z, filled=(), filled_holes=(), filled_layers=())
@@ -708,7 +734,15 @@ def prune_model(model: BoardModel, req: RouteRequest | tuple[RouteRequest, Route
         for g in model.graphics
         if _bbox_hits(_grow(_pts_box(g.points), g.width / 2 + _circle_reach(g)), win)
     )
-    return replace(model, parts=tuple(parts), tracks=tracks, arcs=arcs, vias=vias, zones=zones, graphics=graphics)
+    return replace(
+        model,
+        parts=tuple(parts),
+        tracks=tracks,
+        arcs=arcs,
+        vias=vias,
+        zones=zones,
+        graphics=graphics,
+    )
 
 
 def _grow(b: tuple[float, float, float, float], d: float) -> tuple[float, float, float, float]:

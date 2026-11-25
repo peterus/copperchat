@@ -3,6 +3,7 @@ approach, coupled pairs and the `run_cpu` entry points. No kipy import."""
 
 from __future__ import annotations
 
+from copperchat.board.router.astar import route, solve
 from copperchat.board.router.grid import (
     MAX_CELLS_PER_LAYER,
     WINDOW_MM,
@@ -13,7 +14,6 @@ from copperchat.board.router.grid import (
     build_grid,
     prune_model,
 )
-from copperchat.board.router.astar import route, solve
 from copperchat.board.router.pairs import pair_coupling, route_pair, solve_pair
 
 __all__ = [

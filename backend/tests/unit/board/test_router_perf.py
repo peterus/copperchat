@@ -29,7 +29,12 @@ async def _clean_worker() -> AsyncIterator[None]:
 
 def test_15_short_nets_budget(record_property: RecordProperty) -> None:
     m, reqs = perf_board(
-        random.Random(4242), size=30, n_parts=20, n_nets=15, layers=("F.Cu", "B.Cu"), net_len=(3, 10)
+        random.Random(4242),
+        size=30,
+        n_parts=20,
+        n_nets=15,
+        layers=("F.Cu", "B.Cu"),
+        net_len=(3, 10),
     )
     assert len(reqs) == 15
     per_net: list[float] = []
@@ -50,7 +55,9 @@ def test_15_short_nets_budget(record_property: RecordProperty) -> None:
 @pytest.mark.usefixtures("_clean_worker")
 async def test_large_board_budget(record_property: RecordProperty) -> None:
     layers = ("F.Cu", "B.Cu", "In1.Cu", "In2.Cu")
-    m, reqs = perf_board(random.Random(777), size=100, n_parts=80, n_nets=40, layers=layers, net_len=(5, 40))
+    m, reqs = perf_board(
+        random.Random(777), size=100, n_parts=80, n_nets=40, layers=layers, net_len=(5, 40)
+    )
     assert len(m.parts) == 80 and len(reqs) == 40
     routed = 0
     t0 = time.monotonic()

@@ -67,8 +67,14 @@ def rq(
 
 
 def go(req: RouteRequest, tracks=(), *, w: float = 30, h: float = 20, **kw) -> RoutePath | None:
-    m = board(parts=(part("A", req.a.x, req.a.y, pads=(req.a,)), part("B", req.b.x, req.b.y, pads=(req.b,))),
-              outline=outline(0, 0, w, h), tracks=tuple(tracks))
+    m = board(
+        parts=(
+            part("A", req.a.x, req.a.y, pads=(req.a,)),
+            part("B", req.b.x, req.b.y, pads=(req.b,)),
+        ),
+        outline=outline(0, 0, w, h),
+        tracks=tuple(tracks),
+    )
     return route(build_grid(m, req), req, **kw)
 
 

@@ -19,8 +19,8 @@ from __future__ import annotations
 import heapq
 import math
 import re
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import replace
-from collections.abc import Iterable, Iterator
 
 from copperchat.board.geom import CHAMFER_MIN, JOG_MIN, _in_pad, _pad_on_layer, analyse_bends
 from copperchat.board.model import BoardModel, Pad
@@ -46,7 +46,16 @@ MAX_GOAL_REJECTS = 64  # goal states whose snapped path failed the final check
 HEURISTIC_WEIGHT = 1.5
 
 # board coordinates, y down; k = 0..7 counter-clockwise on screen from +x
-DIRS: tuple[tuple[int, int], ...] = ((1, 0), (1, -1), (0, -1), (-1, -1), (-1, 0), (-1, 1), (0, 1), (1, 1))
+DIRS: tuple[tuple[int, int], ...] = (
+    (1, 0),
+    (1, -1),
+    (0, -1),
+    (-1, -1),
+    (-1, 0),
+    (-1, 1),
+    (0, 1),
+    (1, 1),
+)
 _VIA_D = 8  # direction "none" after a via
 _START_D = 9  # direction "none" at the start pad
 _ND = 10
@@ -90,7 +99,14 @@ def valid_path(path: RoutePath, grid: ObstacleGrid, req: RouteRequest) -> bool:
         return False
     for k, (_layer, pts) in enumerate(runs):
         r = analyse_bends(pts, req.width, pad_ends=(k == 0, k == len(runs) - 1))
-        if r.non_octilinear or r.ninety or r.acute or r.off_angle or r.micro_jogs or r.short_chamfers:
+        if (
+            r.non_octilinear
+            or r.ninety
+            or r.acute
+            or r.off_angle
+            or r.micro_jogs
+            or r.short_chamfers
+        ):
             return False
     return path_clear(grid, path)
 
@@ -278,7 +294,9 @@ def coarse_distances(
     return cf, cw, dist
 
 
-def route(grid: ObstacleGrid, req: RouteRequest, *, max_expansions: int = 2_000_000) -> RoutePath | None:
+def route(
+    grid: ObstacleGrid, req: RouteRequest, *, max_expansions: int = 2_000_000
+) -> RoutePath | None:
     """The cheapest octilinear path from `req.a` to `req.b` on `grid` that passes the final
     checks, or None (no path in the window, `max_expansions` exhausted, or too many goal
     states rejected). One search (after two cheap feasibility checks); never rebuilds or
@@ -294,7 +312,9 @@ def route(grid: ObstacleGrid, req: RouteRequest, *, max_expansions: int = 2_000_
         return None
     w = grid.w
     start_n, goal_n = sj * w + si, gj * w + gi
-    if not reachable(grid, start_n, goal_n, a_layers, frozenset(b_layers), req.allow_vias and nl > 1):
+    if not reachable(
+        grid, start_n, goal_n, a_layers, frozenset(b_layers), req.allow_vias and nl > 1
+    ):
         return None
     goal_dirs = pad_dirs(req.b)
     goal_layers = frozenset(b_layers)
@@ -302,9 +322,7 @@ def route(grid: ObstacleGrid, req: RouteRequest, *, max_expansions: int = 2_000_
     def at_goal(n: int, li: int, d: int) -> bool:
         return n == goal_n and li in goal_layers and d in goal_dirs
 
-    found = _search(
-        grid, req, req.a, start_n, a_layers, goal_n, at_goal, (gi, gj), max_expansions
-    )
+    found = _search(grid, req, req.a, start_n, a_layers, goal_n, at_goal, (gi, gj), max_expansions)
     return found
 
 
@@ -314,14 +332,14 @@ def reverse_path(path: RoutePath) -> RoutePath:
     return RoutePath(segments=segs, vias=tuple(reversed(path.vias)), length=path.length)
 
 
-def _search(  # noqa: C901, PLR0912, PLR0915 - the hot loop stays in one function
+def _search(
     grid: ObstacleGrid,
     req: RouteRequest,
     start_pad: Pad,
     start_n: int,
     start_layers: list[int],
     goal_n: int,
-    at_goal,  # type: ignore[no-untyped-def]
+    at_goal: Callable[[int, int, int], bool],
     target: tuple[int, int] | None,
     max_expansions: int,
 ) -> RoutePath | None:
@@ -346,7 +364,7 @@ def _search(  # noqa: C901, PLR0912, PLR0915 - the hot loop stays in one functio
     cap = [max(1, math.ceil(need_max / s - _EPS)) for s in step]
     kk = max(cap) + 1
     kmin = [max(1, math.ceil(min(c_min, j_min) / st - _EPS)) for st in step]
-    # may[d][s][k][ns]: a turn of sense ns (1 = +45°, 2 = −45°) after k steps in direction d
+    # may[d][s][k][ns]: a turn of sense ns (1 = +45°, 2 = -45°) after k steps in direction d
     may = [
         [
             [
@@ -467,7 +485,9 @@ def _search(  # noqa: C901, PLR0912, PLR0915 - the hot loop stays in one functio
                 if (
                     ng < best.get(nk, inf)
                     and nk not in closed
-                    and not (s2 and best.get((((m) * nl + li) * _ND + d) * sd + (0) * kk + 0, inf) <= ng)
+                    and not (
+                        s2 and best.get((((m) * nl + li) * _ND + d) * sd + (0) * kk + 0, inf) <= ng
+                    )
                 ):
                     hm = hc.get(m)
                     if hm is None:
@@ -520,9 +540,13 @@ def _search(  # noqa: C901, PLR0912, PLR0915 - the hot loop stays in one functio
     return None
 
 
-
-
-def _build(here: int, parent: dict[int, int], decode, grid: ObstacleGrid, req: RouteRequest) -> RoutePath | None:  # type: ignore[no-untyped-def]
+def _build(
+    here: int,
+    parent: dict[int, int],
+    decode: Callable[[int], tuple[int, int]],
+    grid: ObstacleGrid,
+    req: RouteRequest,
+) -> RoutePath | None:
     states: list[tuple[int, int, int]] = []
     x = here
     while x != -1:
