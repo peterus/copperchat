@@ -35,7 +35,9 @@ from copperchat.projects import Project
 from copperchat.views import render_view, write_kicanvas_snapshot
 from copperchat.views.snapshot import (
     VIEW_SUFFIXES,
+    copy_disk_board,
     copy_disk_schematic,
+    snapshot_path,
     view_file_hashes,
     view_file_list,
     write_view_snapshots,
@@ -250,13 +252,16 @@ class HistoryService:
         async with self.view_lock(project):
             return await self._publish_locked(project, session, docs, write, live=live)
 
-    async def publish_disk_view(self, project: Project) -> int | None:
-        """The turn end's catch-up after live frames: the schematic view files become
-        byte copies of the project's files ON DISK (the last save - what the recovery
-        notices say the design is back at), without KiCad (no call, no restart, never a
-        save), then ONE non-live frame like `publish_view`. No open session (no version
-        source): nothing is written or sent, returns None."""
-        if project.sch_file is None:
+    async def publish_disk_view(
+        self, project: Project, docs: Iterable[DocKind] = ("sch",)
+    ) -> int | None:
+        """The turn end's catch-up after live frames: the view files of `docs` (those a
+        live frame showed) become byte copies of the project's files ON DISK (the last
+        save - what the recovery notices say the design is back at), without KiCad (no
+        call, no restart, never a save), then ONE non-live frame like `publish_view`. No
+        open session (no version source): nothing is written or sent, returns None."""
+        kinds = set(docs) & self.docs_of(project)
+        if not kinds:
             return None
         async with self.view_lock(project):
             session = self.open_session(project)
@@ -264,9 +269,12 @@ class HistoryService:
                 return None
 
             async def write() -> None:
-                await asyncio.to_thread(copy_disk_schematic, project)
+                if "sch" in kinds:
+                    await asyncio.to_thread(copy_disk_schematic, project)
+                if "pcb" in kinds:
+                    await asyncio.to_thread(copy_disk_board, project, snapshot_path(project, "pcb"))
 
-            return await self._publish_locked(project, session, {"sch"}, write, live=False)
+            return await self._publish_locked(project, session, kinds, write, live=False)
 
     async def _publish_locked(
         self,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -63,7 +63,7 @@ class Rig:
     time: FakeTime
     live: LiveViewPublisher
     calls: list[tuple[float, set[DocKind], bool]] = field(default_factory=list)
-    disk: int = 0  # publish_disk_view calls (also recorded in `calls` as ({"sch"}, False))
+    disk: int = 0  # publish_disk_view calls (also recorded in `calls` as (docs, False))
     gate: asyncio.Event | None = None  # set: publish_view waits for it
     error: Exception | None = None
 
@@ -72,7 +72,7 @@ class Rig:
         return [t for t, _, _ in self.calls]
 
     def schedule(self) -> None:
-        self.live.schedule(self.opened.project)
+        self.live.schedule(self.opened.project, {"sch"})
 
 
 def make_rig(opened: Opened, **kw: Any) -> Rig:
@@ -103,14 +103,14 @@ def make_rig(opened: Opened, **kw: Any) -> Rig:
         session.view_version += 1  # a live frame was sent
         return session.view_version
 
-    real_disk: Callable[[Project], Awaitable[int | None]] = svc.publish_disk_view
+    real_disk: Callable[..., Awaitable[int | None]] = svc.publish_disk_view
 
-    async def recording_disk(project: Project) -> int | None:
-        rig.calls.append((t.now, {"sch"}, False))
+    async def recording_disk(project: Project, docs: Iterable[DocKind] = ("sch",)) -> int | None:
+        rig.calls.append((t.now, set(docs), False))
         rig.disk += 1
         if rig.error is not None:
             raise rig.error
-        return await real_disk(project)
+        return await real_disk(project, docs)
 
     svc.publish_view = recording  # type: ignore[method-assign]
     svc.publish_disk_view = recording_disk  # type: ignore[method-assign]
@@ -284,14 +284,14 @@ async def test_session_replaced_while_waiting_for_the_lock_skips(rig: Rig) -> No
 # ---- HistoryHooks wiring
 
 
-async def test_hooks_schedule_only_schematic_changes(rig: Rig) -> None:
+async def test_hooks_schedule_schematic_and_board_changes(rig: Rig) -> None:
     hooks = rig.opened.hooks
-    hooks.on_documents_changed(turn(), {"pcb"})
+    hooks.on_documents_changed(turn(), {"sch"})
     await rig.time.advance(10)
-    assert rig.calls == []
+    assert rig.calls == [(2.0, {"sch"}, True)]
     hooks.on_documents_changed(turn(), {"sch", "pcb"})
     await rig.time.advance(10)
-    assert rig.calls == [(2.0 + 10, {"sch"}, True)]
+    assert rig.calls[1:] == [(2.0 + 10, {"pcb", "sch"}, True)]
 
 
 async def test_turn_end_finishes_the_live_publisher_before_the_autosave(rig: Rig) -> None:
@@ -299,9 +299,9 @@ async def test_turn_end_finishes_the_live_publisher_before_the_autosave(rig: Rig
     svc = rig.opened.env.svc
     real_finish, real_publish = rig.live.finish, svc.publish_view
 
-    async def finish(project: Project) -> None:
+    async def finish(project: Project) -> set[DocKind]:
         order.append("finish")
-        await real_finish(project)
+        return await real_finish(project)
 
     async def publish(project: Project, session: KicadSession, docs: Any, **kw: Any) -> int:
         order.append(f"publish:{kw.get('live', False)}")
@@ -338,10 +338,10 @@ async def test_finish_reports_whether_a_live_frame_was_sent(rig: Rig) -> None:
     project = rig.opened.project
     rig.schedule()
     await rig.time.advance(1.0)
-    assert await rig.live.finish(project) is False  # cancelled before publishing
+    assert await rig.live.finish(project) == set()  # cancelled before publishing
     rig.schedule()
     await rig.time.advance(2.0)
-    assert await rig.live.finish(project) is True
+    assert await rig.live.finish(project) == {"sch"}
 
 
 async def test_unchanged_live_publish_counts_as_not_sent(rig: Rig) -> None:
@@ -355,7 +355,7 @@ async def test_unchanged_live_publish_counts_as_not_sent(rig: Rig) -> None:
     rig.opened.env.svc.publish_view = unchanged  # type: ignore[method-assign]
     rig.schedule()
     await rig.time.advance(2.0)
-    assert await rig.live.finish(rig.opened.project) is False
+    assert await rig.live.finish(rig.opened.project) == set()
 
 
 async def test_success_after_live_frames_sends_exactly_one_turn_end_frame(rig: Rig) -> None:
@@ -518,7 +518,7 @@ async def test_live_publish_of_a_modified_schematic_is_skipped(
     t, live = real_rig(opened)
     env.server.modified = True
     with caplog.at_level(logging.INFO, logger="copperchat.history.live"):
-        live.schedule(project)
+        live.schedule(project, {"sch"})
         task = live._states[project.id].task
         assert task is not None
         await t.advance(2.0)
@@ -558,11 +558,11 @@ def kicad_calls_during_catch_up(
     hooks, server = opened.hooks, opened.env.server
     real_catch_up = hooks._catch_up_view
 
-    async def catch_up() -> None:
+    async def catch_up(docs: set[DocKind]) -> None:
         nonlocal inside
         inside, before = True, server.starts
         try:
-            await real_catch_up()
+            await real_catch_up(docs)
         finally:
             inside = False
             starts.append(server.starts - before)
@@ -654,9 +654,9 @@ async def test_autosave_publish_failure_after_live_frames_catches_up_once(
             raise RuntimeError("SaveCopy failed")
         return await recording(p, session, docs, **kw)
 
-    async def disk(p: Project) -> int | None:
+    async def disk(p: Project, docs: Iterable[DocKind] = ("sch",)) -> int | None:
         locked.append(svc.lock(p).locked())
-        return await recording_disk(p)
+        return await recording_disk(p, docs)
 
     svc.publish_view = failing_once  # type: ignore[method-assign]
     svc.publish_disk_view = disk  # type: ignore[method-assign]

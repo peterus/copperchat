@@ -1,15 +1,19 @@
-"""Near-live schematic view: debounced `publish_view(..., live=True)` while a turn edits.
+"""Near-live design view: debounced `publish_view(..., live=True)` while a turn edits.
 
-Every schematic change of a turn (engine `on_documents_changed`) schedules a publish:
+Every schematic or board change of a turn (engine `on_documents_changed`) schedules a
+publish of the changed documents (pending ones accumulate, one frame for all of them):
 trailing debounce, at most one live publish per min interval, and at most max wait after
 the first unpublished change (continuous edits still refresh the viewer). The publish
 runs under `HistoryService.lock`, so it never overlaps a restore, the turn-start check or
 the turn-end autosave. The turn end (`finish`) stops it before the autosave; its own
 publish is the guaranteed final state: after live frames, every turn end (also a failed
-one) sends a non-live schematic frame if a session is open. A failed live publish only
-lets the viewer lag. The board stays turn-end only. A schematic with unsaved edits (a
+one) sends a non-live frame of every document a live frame showed if a session is open.
+A failed live publish only lets the viewer lag. A board change is reported once per tool
+call, by the tool adapter after `apply` returned (G8), and its copy (`save_copy`) waits
+for `applying()`: a half-applied board is never shown. A schematic with unsaved edits (a
 failed partial edit, which the turn end reloads from disk) is never saved for a live
-publish: that publish is skipped.
+publish: that publish is skipped. A project without the document (a boardless one)
+ignores its changes.
 """
 
 from __future__ import annotations
@@ -19,10 +23,10 @@ import logging
 import math
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from copperchat.kicad_session import DocumentModified
+from copperchat.kicad_session import DocKind, DocumentModified
 from copperchat.projects import Project
 
 if TYPE_CHECKING:
@@ -39,15 +43,17 @@ LIVE_VIEW_MAX_WAIT_S = 6.0  # after the first unpublished change, even if edits 
 class _State:
     first: float | None = None  # first unpublished change (None: nothing pending)
     last: float = 0.0  # last change
+    docs: set[DocKind] = field(default_factory=set)  # changed since the last publish
     last_publish: float = -math.inf
     publishing: bool = False
-    sent: bool = False  # a live frame went out this turn (the turn end must catch up)
+    # Documents a live frame showed this turn (the turn end must catch them up).
+    sent: set[DocKind] = field(default_factory=set)
     stopped: bool = False  # finish/close: the task must not publish (again)
     task: asyncio.Task[None] | None = None
 
 
 class LiveViewPublisher:
-    """One per HistoryService; per-project state lives from the first schematic change
+    """One per HistoryService; per-project state lives from the first document change
     of a turn until `finish` (turn end) or `close` (engine close)."""
 
     def __init__(
@@ -68,10 +74,13 @@ class LiveViewPublisher:
         self._sleep = sleep
         self._states: dict[str, _State] = {}
 
-    def schedule(self, project: Project) -> None:
-        """A tool call changed the schematic (sync: never waits for the publish)."""
+    def schedule(self, project: Project, docs: set[DocKind]) -> None:
+        """A tool call changed `docs` (sync: never waits for the publish)."""
+        if not docs:
+            return
         now = self._clock()
         st = self._states.setdefault(project.id, _State())
+        st.docs |= docs
         st.last = now
         if st.first is None:
             st.first = now
@@ -91,44 +100,46 @@ class LiveViewPublisher:
             while (delay := self._deadline(st) - self._clock()) > 0:
                 await self._sleep(delay)
             st.first = None
+            docs, st.docs = st.docs, set()
             st.publishing = True
             try:
-                if await self._publish(project):
-                    st.sent = True
+                st.sent |= await self._publish(project, docs)
             finally:
                 st.publishing = False
                 st.last_publish = self._clock()
 
-    async def _publish(self, project: Project) -> bool:
-        """True if a live frame was sent (a publish that changed nothing sends none)."""
+    async def _publish(self, project: Project, pending: set[DocKind]) -> set[DocKind]:
+        """The documents a live frame showed (none if the publish changed nothing)."""
         svc = self.svc
         try:
             session = svc.open_session(project)
-            if session is None or session.read_only or "sch" not in svc.docs_of(project):
-                return False
+            docs = pending & svc.docs_of(project)  # a boardless project ignores pcb
+            if session is None or session.read_only or not docs:
+                return set()
             async with svc.lock(project):
                 if svc.open_session(project) is not session:
-                    return False  # restored / reloaded meanwhile: that path published itself
+                    return set()  # restored / reloaded meanwhile: that path published itself
                 before = session.view_version
                 # Only a sent frame bumps the version; the lock keeps others out.
-                return await svc.publish_view(project, session, {"sch"}, live=True) != before
+                if await svc.publish_view(project, session, docs, live=True) != before:
+                    return docs
         except DocumentModified:  # a failed partial edit: never saved, the turn end reloads
             log.info("live view publish for %s skipped: unsaved edits", project.rel_path)
         except Exception:  # only the viewer lags; the turn and its turn-end publish go on
             log.warning("live view publish for %s failed", project.rel_path, exc_info=True)
-        return False
+        return set()
 
-    async def finish(self, project: Project) -> bool:
+    async def finish(self, project: Project) -> set[DocKind]:
         """Turn end (every outcome): afterwards nothing of the turn publishes any more.
         A sleeping task is cancelled; a running publish is awaited, never cancelled (a
         KiCad call cancelled mid-way can restart the api-server). If the caller itself is
         cancelled meanwhile, the task is cancelled too: its state is gone, so no later
-        `close` could reach it. Returns whether a live frame was sent this turn: then the
-        turn end owes the clients a non-live schematic frame (Live-off clients and the
+        `close` could reach it. Returns the documents live frames showed this turn: the
+        turn end owes the clients a non-live frame of them (Live-off clients and the
         agent view only follow those)."""
         st = self._states.pop(project.id, None)
         if st is None or st.task is None:
-            return False
+            return set()
         st.stopped = True
         if not st.publishing:
             st.task.cancel()

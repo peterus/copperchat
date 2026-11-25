@@ -1,12 +1,12 @@
 """KiCanvas sources: copies of the open documents as the api-server holds them (the
-turn end's catch-up after live frames copies the schematic files on disk instead,
-`copy_disk_schematic`, without KiCad).
+turn end's catch-up after live frames copies the files on disk instead,
+`copy_disk_schematic` / `copy_disk_board`, without KiCad).
 
 Written to `<project>/.kicad-agent/view/` under the documents' real file names
 (hierarchical sub-sheets keep their relative paths), so KiCanvas resolves sheet
 references between them (X3). Writing a snapshot never bumps
 `KicadSession.view_version`; only `HistoryService.publish_view` (X2: the turn-end,
-external-change, restore and the debounced live schematic publishes) and
+external-change, restore and the debounced live schematic/board publishes) and
 `HistoryService.publish_disk_view` (the turn end's catch-up after live frames) do;
 their frames list the view files per doc as the directory holds them after the write
 (`view_file_list`).
@@ -244,6 +244,39 @@ def copy_disk_schematic(project: Project) -> list[str]:
             continue
         copied.append(name)
     return copied
+
+
+def copy_disk_board(project: Project, dest: Path) -> bool:
+    """Byte copy of the project's board file as it is ON DISK (the last save) to `dest`
+    (the board's view snapshot), without KiCad - the board half of the turn end's
+    catch-up, like `copy_disk_schematic`. Refused (logged, False): a symlinked
+    `.kicad-agent` or `dest` directory, a `dest` directory resolving outside the project
+    directory, and a board that is a symlink or no regular file. A board missing on disk
+    leaves the view copy (False). Blocking: call it in a thread."""
+    if project.pcb_file is None:
+        return False
+    parent = dest.parent
+    if agent_dir(project).is_symlink() or parent.is_symlink():
+        log.warning("board view copy from disk refused: symlinked view directory %s", parent)
+        return False
+    parent.mkdir(parents=True, exist_ok=True)
+    if not parent.resolve().is_relative_to(project.dir.resolve()):
+        log.warning("board view copy from disk refused: %s is outside the project", parent)
+        return False
+    try:
+        fh = _open_regular(project.pcb_file)
+        if fh is None:
+            log.warning("board view copy from disk refused for %s (no regular file)", dest.name)
+            return False
+        with fh:
+            data = fh.read()
+        atomic_write_bytes(dest, data)  # replaces a symlink at dest, never writes through
+    except FileNotFoundError:
+        return False  # no board on disk (yet): the view copy stays
+    except OSError:
+        log.warning("board view copy from disk failed for %s", dest.name, exc_info=True)
+        return False
+    return True
 
 
 def _remove_stale_sheets(project: Project, current: list[str]) -> None:
