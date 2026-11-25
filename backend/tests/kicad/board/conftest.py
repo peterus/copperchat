@@ -284,3 +284,130 @@ def freerouting_rt() -> FreeroutingRuntime:
         pytest.fail("Freerouting runtime missing in CI: run scripts/fetch-freerouting.sh")
     home = Settings(_env_file=None).freerouting_home  # type: ignore[call-arg]
     pytest.skip(f"Freerouting runtime missing locally (COPPERCHAT_FREEROUTING_HOME={home})")
+
+
+# -- synth_setup (SP4 P3b; checks, checkpoints and approvals on a set-up sp4_synth) -------
+
+SETUP_OUTLINE: dict[str, Any] = {
+    "shape": "rect",
+    "width": 60,
+    "height": 45,
+    "corner_radius": 1,
+    "holes": {"inset": 3},
+}
+SETUP_RULES: dict[str, Any] = {"layers": 4, "preset": "jlcpcb-4l"}
+
+
+@dataclass
+class SynthSetup:
+    """`sp4_synth` with its board set up through the real two-phase adapter
+    (`pcb_sync_from_schematic`, `pcb_set_outline` SETUP_OUTLINE, `pcb_set_rules`
+    SETUP_RULES) for a whole test module, board tools on. The board persists across the
+    module's tests; each test brings its own database (`turn(db, run_id)`)."""
+
+    sessions: KicadSessionManager
+    settings: Settings
+
+    @property
+    def session(self) -> KicadSession:
+        current = self.sessions.current()
+        assert current is not None
+        return current
+
+    def turn(self, db: Database, run_id: str) -> ToolContext:
+        """The run engine's context of turn `run_id` in the test conversation (a fresh
+        EditingService: the turn's budget starts at 0)."""
+        import dataclasses
+
+        from tests.support.conversations import TEST_CID
+
+        ctx = board_ctx(self.session, db, self.sessions)
+        return dataclasses.replace(ctx, run_id=run_id, conversation_id=TEST_CID)
+
+
+async def setup_call(ctx: ToolContext, name: str, **args: Any) -> dict[str, Any]:
+    """One tool call through the real adapter (turn snapshot first, as the run engine
+    takes it once per turn); fails the test on an error payload."""
+    import json
+
+    from tests.support.edit import call_tool
+
+    if ctx.on_mutation is not None:
+        await ctx.on_mutation()
+    out, err = await call_tool(ctx, name, **args)
+    if err:
+        pytest.fail(json.dumps(out, indent=1))
+    return out
+
+
+async def open_setup_db(path: Path, project_id: str) -> Database:
+    from tests.support.conversations import ensure_test_conversation
+
+    db = await Database.open(path)
+    await ensure_test_conversation(db, project_id)
+    return db
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def synth_setup(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterator[SynthSetup]:
+    tmp: Path = tmp_path_factory.mktemp("synth-setup")
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=None,
+        projects_root=tmp / "projects",
+        data_dir=tmp / "data",
+        admin_password="test-password",
+        claude_code_oauth_token="test-token",
+        cookie_secure=False,
+        frontend_dist=tmp / "no-frontend",
+        kicad_cli=KICAD_CLI,
+        kicad_api_timeout_s=30.0,
+        kicad_start_timeout_s=60.0,
+        board_tools=True,
+    )
+    settings.projects_root.mkdir(parents=True)
+    copy_fixture("sp4_synth", settings.projects_root)
+    project = next(p for p in discover_projects(settings.projects_root) if p.name == "sp4_synth")
+    manager = KicadSessionManager(settings)
+    db = await open_setup_db(tmp / "setup.db", project.id)
+    try:
+        await manager.open(project)
+        rig = SynthSetup(manager, settings)
+        await setup_call(rig.turn(db, "run-setup-1"), "pcb_sync_from_schematic")
+        await setup_call(rig.turn(db, "run-setup-2"), "pcb_set_outline", **SETUP_OUTLINE)
+        await setup_call(rig.turn(db, "run-setup-3"), "pcb_set_rules", **SETUP_RULES)
+        yield rig
+    finally:
+        await manager.close_all()
+        await db.close()
+
+
+@pytest_asyncio.fixture(loop_scope="module")
+async def setup_db(synth_setup: SynthSetup, tmp_path: Path) -> AsyncIterator[Database]:
+    """A fresh database (with the test conversation) for one `synth_setup` test."""
+    db = await open_setup_db(tmp_path / "p3b.db", synth_setup.session.project.id)
+    try:
+        yield db
+    finally:
+        await db.close()
+
+
+async def user_says(db: Database, project_id: str, run_id: str, text: str) -> None:
+    """The message that starts turn `run_id`, typed by the user (stored with
+    `metadata.origin = "user"`, as the WebSocket submit stores it; later than every
+    render and check before it: the clock has millisecond resolution)."""
+    import asyncio
+
+    from copperchat.db.repos.messages import MessageRepo
+    from tests.support.conversations import TEST_CID
+
+    await asyncio.sleep(0.01)
+    await MessageRepo(db).insert(
+        project_id,
+        TEST_CID,
+        role="user",
+        kind="text",
+        content=text,
+        run_id=run_id,
+        metadata={"origin": "user"},
+    )
+    await asyncio.sleep(0.01)

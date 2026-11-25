@@ -98,3 +98,8 @@ TOOL_SPECS: list[ToolSpec] = [
 from copperchat.kicad_tools.board.specs_analysis import ANALYSIS_SPECS  # noqa: E402
 
 TOOL_SPECS += ANALYSIS_SPECS
+
+# P3b: checks and approvals (pcb_check; pcb_approve joins CHECK_SPECS)
+from copperchat.kicad_tools.board.specs_check import CHECK_SPECS  # noqa: E402
+
+TOOL_SPECS += CHECK_SPECS
