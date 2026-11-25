@@ -66,7 +66,7 @@ async def test_restart_after_autosave(
     await opened.hooks.on_turn_start(t)
     async with session.footprint_document(SEED_LIB_ID):
         pass
-    session.modified = True
+    session.modified_docs.add("sch")
     await opened.hooks.on_turn_end(t, done("sch"))
     assert order == [["sch"]]  # restarted once, after the autosave
     assert not session.restart_pending

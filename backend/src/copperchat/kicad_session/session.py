@@ -112,6 +112,7 @@ class CommitScope:
     commit: Any
     generation: int  # server start the commit belongs to; a restart discards it
     pushed: bool = False  # push_commit completed (also when the caller is cancelled after)
+    doc: DocKind = "sch"  # the document the commit is open on (begin/push/drop)
 
 
 async def _finish[R](coro: Coroutine[Any, Any, R]) -> tuple[R, bool]:
@@ -140,6 +141,10 @@ async def _finish[R](coro: Coroutine[Any, Any, R]) -> tuple[R, bool]:
             if cancelled:
                 raise asyncio.CancelledError from exc
             raise
+
+
+def _commit_document(h: KicadHandle, doc: DocKind) -> Any:
+    return h.schematic() if doc == "sch" else h.board()
 
 
 async def _uncancellable[R](coro: Coroutine[Any, Any, R]) -> R:
@@ -200,11 +205,12 @@ class KicadSession:
         self.on_started: Callable[[], None] | None = None
         # Token in `~STEM.kicad_pro.lck` after our server started (spike 1C, Q7).
         self.server_token: str | None = None
-        # Editing (SP2, E-C1). A pushed commit makes the export jobs (PNG, netlist)
-        # stale - they keep their own copy of the schematic until close + reopen
-        # (spike 2A, Q3) - and the documents unsaved.
+        # Editing (SP2, E-C1; per document since SP4 P1a). A pushed schematic commit
+        # makes the export jobs (PNG, netlist) stale - they keep their own copy of the
+        # schematic until close + reopen (spike 2A, Q3); a pushed commit on `doc` leaves
+        # `doc` unsaved (in `modified_docs`) until `save(doc)`.
         self.jobs_stale = False
-        self.modified = False
+        self.modified_docs: set[DocKind] = set()
         self.last_saved_at: str | None = None
         self._save_listeners = save_listeners if save_listeners is not None else []
         self._commit_lock = asyncio.Lock()
@@ -333,7 +339,7 @@ class KicadSession:
         # A fresh server loaded the files on disk: nothing unsaved, jobs current, no
         # footprint document left open.
         self.jobs_stale = False
-        self.modified = False
+        self.modified_docs.clear()
         self.restart_pending = False
         await self._kick_off_symbol_libraries(client, deadline - loop.time())
         self.server_token = read_lock_token(lock_file_for(self.project.pro_file))
@@ -527,20 +533,35 @@ class KicadSession:
         async with self._apply_lock:
             yield
 
+    @property
+    def modified(self) -> bool:
+        """The schematic has pushed commits not saved yet (read-only; see `modified_docs`)."""
+        return "sch" in self.modified_docs
+
     @contextlib.asynccontextmanager
-    async def commit(self, label: str, *, dry_run: bool = False) -> AsyncIterator[CommitScope]:
-        """Group the schematic writes made inside the scope into one KiCad commit.
+    async def commit(
+        self, label: str, *, doc: DocKind = "sch", dry_run: bool = False
+    ) -> AsyncIterator[CommitScope]:
+        """Group the writes to `doc` (schematic or board) made inside the scope into one
+        KiCad commit.
 
         Normal exit pushes it (`dry_run`: drops it); any exception, cancellation
         included, drops it, shielded - a commit left open on the server silently
         captures every later write of the same client (spike 2A, Q6). A failing drop
         restarts the server. `save`, `save_copy` and `refresh_jobs` wait for the scope.
-        The lock is not re-entrant: never call them from inside a scope.
+        The lock is not re-entrant: never call them from inside a scope. A pushed commit
+        adds `doc` to `modified_docs`; only a schematic one makes the jobs stale. A board
+        commit without a board raises `DocumentNotOpen` before waiting for the lock.
         """
         if self.read_only:
             raise ReadOnlyProject(
                 "project is open in KiCad (lock file present) - close it there first"
             )
+        if doc == "pcb" and (
+            self.project.pcb_file is None
+            or (self._kicad is not None and "pcb" not in self._open_docs)
+        ):
+            raise DocumentNotOpen("the project has no board open in the api-server")
         self._check_not_in_commit()
         async with self._commit_lock:
             self._commit_owner = asyncio.current_task()
@@ -548,9 +569,11 @@ class KicadSession:
                 # begin/push run to completion even on a cancel: a cancel landing right
                 # after KiCad opened the commit would otherwise lose its handle (the
                 # commit stays open), one after the push would drop an applied commit.
-                handle, cancelled = await _finish(self.call(lambda h: h.schematic().begin_commit()))
+                handle, cancelled = await _finish(
+                    self.call(lambda h: _commit_document(h, doc).begin_commit())
+                )
                 # Read after the call: a lazy (re)start inside call() bumps it first.
-                scope = CommitScope(label, handle, self._generation)
+                scope = CommitScope(label, handle, self._generation, doc=doc)
                 self._active_scope = scope
                 if cancelled:
                     await _uncancellable(self._drop(scope, asyncio.CancelledError()))
@@ -563,19 +586,20 @@ class KicadSession:
                 try:
                     if dry_run:
                         _, cancelled = await _finish(
-                            self.call(lambda h: h.schematic().drop_commit(handle))
+                            self.call(lambda h: _commit_document(h, doc).drop_commit(handle))
                         )
                     else:
                         _, cancelled = await _finish(
-                            self.call(lambda h: h.schematic().push_commit(handle, label))
+                            self.call(lambda h: _commit_document(h, doc).push_commit(handle, label))
                         )
                 except BaseException as exc:
                     await _uncancellable(self._drop(scope, exc))
                     raise
                 if not dry_run:
                     scope.pushed = True
-                    self.jobs_stale = True
-                    self.modified = True
+                    self.modified_docs.add(doc)
+                    if doc == "sch":
+                        self.jobs_stale = True
                 if cancelled:
                     raise asyncio.CancelledError
             finally:
@@ -586,7 +610,7 @@ class KicadSession:
         if self._kicad is None or scope.generation != self._generation:
             return  # the server that held the commit is gone, and its staged items with it
         try:
-            await self.call(lambda h: h.schematic().drop_commit(scope.commit))
+            await self.call(lambda h: _commit_document(h, scope.doc).drop_commit(scope.commit))
         except Exception as exc:
             if self._kicad is None or scope.generation != self._generation:
                 return  # the failed drop already restarted the server
@@ -620,8 +644,7 @@ class KicadSession:
             (h.schematic() if doc == "sch" else h.board()).save()  # type: ignore[no-untyped-call]
 
         await self.call(_save)
-        if doc == "sch":
-            self.modified = False
+        self.modified_docs.discard(doc)
         self.last_saved_at = utcnow_iso()
         # Listeners run under the commit lock: mark the task, so a listener calling
         # save/save_copy/refresh_jobs/commit fails instead of deadlocking.

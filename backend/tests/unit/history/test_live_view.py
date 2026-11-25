@@ -366,7 +366,7 @@ async def test_success_after_live_frames_sends_exactly_one_turn_end_frame(rig: R
 
 async def test_board_only_save_after_live_frames_carries_the_schematic(rig: Rig) -> None:
     await live_frame_sent(rig)
-    rig.opened.session.modified = True
+    rig.opened.session.modified_docs.add("sch")
     rig.opened.env.save_error, rig.opened.env.save_error_doc = RuntimeError("full"), "sch"
     await rig.opened.hooks.on_turn_end(turn(), done("pcb"))  # e.g. sch edits saved, then pcb
     # pcb saved, sch holds unsaved edits: one frame for the board, one of the
@@ -405,7 +405,7 @@ async def test_autosave_failure_after_live_frames_announces_the_disk_state(
 ) -> None:
     env = rig.opened.env
     await live_frame_sent(rig)
-    rig.opened.session.modified = True  # the turn's last edit could not save itself
+    rig.opened.session.modified_docs.add("sch")  # the turn's last edit could not save itself
     env.save_error = RuntimeError("disk full")
     written = list(env.written)
     await rig.opened.hooks.on_turn_end(turn(), done("sch"))
@@ -604,7 +604,7 @@ async def test_catch_up_announces_the_last_save_from_disk(
     project.sch_file.write_bytes(b"(kicad_sch E2)")  # E2 saved itself ...
     (project.dir / sub).write_bytes(b"(sub E2)")
     opened.hooks.on_documents_changed(turn(), {"sch"})  # ... its live publish is pending
-    session.modified = True  # E3 could not save itself
+    session.modified_docs.add("sch")  # E3 could not save itself
     env.save_error = RuntimeError("disk full")  # nor can the autosave
     calls, starts = kicad_calls_during_catch_up(opened, monkeypatch)
     await opened.hooks.on_turn_end(turn(), done("sch"))

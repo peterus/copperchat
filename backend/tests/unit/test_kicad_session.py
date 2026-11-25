@@ -385,7 +385,7 @@ async def test_save_calls_listeners_after_save(
     manager.add_save_listener(listener)
     project = make_project(make_settings().projects_root)
     session = await manager.open(project)
-    session.modified = True
+    session.modified_docs.add("sch")
     assert session.last_saved_at is None
     await session.save("sch")
     assert seen == [(project.id, ["demo.kicad_sch"])]
@@ -499,7 +499,8 @@ async def test_restart_resets_editing_flags(
     manager: KicadSessionManager, make_settings: Callable[..., Settings]
 ) -> None:
     session = await manager.open(make_project(make_settings().projects_root))
-    session.jobs_stale = session.modified = True
+    session.jobs_stale = True
+    session.modified_docs.add("sch")
     await session.restart()
     assert session.jobs_stale is False and session.modified is False
 
