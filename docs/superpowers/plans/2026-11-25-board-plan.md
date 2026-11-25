@@ -788,7 +788,7 @@ summary), inserts the checkpoint row and the `board_approve` change row
 - `pcb_check full` copy dir: `.kicad-agent/board/check/<uuid>/` with `save_copy("sch", …,
   save_modified=False)` (an unsaved schematic → `schematic_unsaved`, never a save), the
   board copy, byte copies of `.kicad_pro`, `fp-lib-table`, `sym-lib-table` (regular files
-  only, `O_NOFOLLOW`, ≤ 16 MiB); the JSON report is read only as a regular file ≤ 32 MiB;
+  only, `O_NOFOLLOW`, ≤ 16 MiB); the JSON report is read only as a regular file ≤ 8 MiB;
   timeout, no report, a bad report or a copy failure → `drc_rejected`. Without a schematic →
   `drc_rejected`.
 - Review round 3: `0013_board.sql` adds a fourth index `board_reviews_conversation
@@ -828,6 +828,10 @@ summary), inserts the checkpoint row and the `board_approve` change row
   board-stage evidence and `require_board_approved` do not see such a schematic restore at
   an unchanged `board_hash` (only edits are seen). A marker row from `restore_snapshot` would
   close it (history code, not P3b's); later phases / P9b.
+- `board.md` edits (preset, Checks rows, allowed sides) log no change row, so they do not make
+  board evidence or the board approval stale although a full check's `hard_failures` depend on
+  them. The board itself is unchanged; **P8** should re-run (or compare a stored `board.md`
+  hash with) the full check at export time.
 - **P5b/P6b/P7** call `require_placement_approved(ctx, model)`, **P8** `require_board_approved`
   (both async, fail closed without a database).
 

@@ -245,11 +245,18 @@ async def test_check_stale_records_nothing(
     from copperchat.kicad_tools.board import checkpoints
 
     ctx = synth_setup.turn(setup_db, "run-s1")
-    monkeypatch.setattr(
-        checkpoints, "board_written_since", lambda db, pid, since, **kw: asyncio.sleep(0, True)
-    )
+    seen: list[bool] = []
+
+    def written(db: Any, pid: str, since: str, *, any_kind: bool = False) -> Any:
+        seen.append(any_kind)
+        return asyncio.sleep(0, True)
+
+    monkeypatch.setattr(checkpoints, "board_written_since", written)
     out = await _tool(ctx, "pcb_check", level="quick")
     assert out["stale"] is True
+    full = await _tool(ctx, "pcb_check", level="full")
+    assert full["stale"] is True
+    assert seen == [False, True]  # a full check counts any change (schematic too)
     assert await _rows(setup_db, ctx) == []
 
 
