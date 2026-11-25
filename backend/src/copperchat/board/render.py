@@ -24,6 +24,9 @@ from copperchat.board.model import BoardModel, Point, Rect
 SVG_NS = "http://www.w3.org/2000/svg"
 BLOCK_PREFIX = "blk:"
 SIMPLIFY_MIN_POINTS = 200  # paths with more points than this are simplified
+# Point-distance evaluations one simplify_paths call may spend (RDP is O(n^2) on adversarial
+# input; the sanitiser allows 2,000,000 coordinates). Past it the rest stays unsimplified.
+SIMPLIFY_BUDGET = 5_000_000
 SCALE_STEPS = (10.0, 5.0, 2.0, 1.0)
 MAX_SCALE_COUNT = 10
 HIGHLIGHT_MARGIN_MM = 0.3  # added to a highlighted track's width / pad radius
@@ -118,8 +121,16 @@ def highlight_shapes(m: BoardModel, nets: Sequence[str]) -> list[HighlightShape]
 # --- path simplification ----------------------------------------------------------------
 
 
-def _rdp(pts: list[Point], tol: float) -> list[Point]:
-    """Ramer-Douglas-Peucker of an open polyline (iterative: no recursion limit)."""
+class _Budget:
+    """Work left for one simplify_paths call (point-distance evaluations)."""
+
+    def __init__(self, left: int) -> None:
+        self.left = left
+
+
+def _rdp(pts: list[Point], tol: float, budget: _Budget | None = None) -> list[Point]:
+    """Ramer-Douglas-Peucker of an open polyline (iterative: no recursion limit). Once
+    `budget` is spent, every point of the intervals still pending is kept (shape exact)."""
     if len(pts) < 3:
         return pts
     keep = [False] * len(pts)
@@ -127,6 +138,13 @@ def _rdp(pts: list[Point], tol: float) -> list[Point]:
     stack = [(0, len(pts) - 1)]
     while stack:
         i, j = stack.pop()
+        if budget is not None:
+            if budget.left < j - i:
+                for k in range(i + 1, j):
+                    keep[k] = True
+                budget.left = 0
+                continue
+            budget.left -= j - i
         (ax, ay), (bx, by) = pts[i], pts[j]
         dx, dy = bx - ax, by - ay
         norm = math.hypot(dx, dy)
@@ -145,7 +163,7 @@ def _rdp(pts: list[Point], tol: float) -> list[Point]:
     return [p for p, k in zip(pts, keep, strict=True) if k]
 
 
-def _simplify_ring(pts: list[Point], tol: float) -> list[Point]:
+def _simplify_ring(pts: list[Point], tol: float, budget: _Budget | None = None) -> list[Point]:
     """A closed ring: split at the point farthest from the first, simplify both halves."""
     if len(pts) < 4:
         return pts
@@ -153,8 +171,8 @@ def _simplify_ring(pts: list[Point], tol: float) -> list[Point]:
     far = max(range(len(pts)), key=lambda k: math.hypot(pts[k][0] - x0, pts[k][1] - y0))
     if far == 0:
         return pts[:1]
-    first = _rdp(pts[: far + 1], tol)
-    second = _rdp([*pts[far:], pts[0]], tol)
+    first = _rdp(pts[: far + 1], tol, budget)
+    second = _rdp([*pts[far:], pts[0]], tol, budget)
     return first[:-1] + second[:-1]
 
 
@@ -203,11 +221,13 @@ def _fmt(v: float) -> str:
     return "0" if text in ("-0", "") else text
 
 
-def simplify_paths(root: ET.Element, tol_mm: float = 0.02) -> int:
+def simplify_paths(root: ET.Element, tol_mm: float = 0.02, *, budget: int = SIMPLIFY_BUDGET) -> int:
     """Simplify every `path` (in place) whose data is absolute `M`/`L`/`Z` only with more
     than 200 points (KiCad's zone fills), within `tol_mm` (Ramer-Douglas-Peucker; closed
-    subpaths stay closed). Curves, relative commands and short paths are untouched.
+    subpaths stay closed). Curves, relative commands and short paths are untouched. At
+    most `budget` point-distance evaluations are spent; what is left stays as it is.
     Returns the number of points removed."""
+    work = _Budget(budget)
     removed = 0
     for el in root.iter():
         if not isinstance(el.tag, str) or el.tag.rsplit("}", 1)[-1] != "path":
@@ -220,7 +240,7 @@ def simplify_paths(root: ET.Element, tol_mm: float = 0.02) -> int:
             continue
         parts: list[str] = []
         for pts, closed in subs:
-            simple = _simplify_ring(pts, tol_mm) if closed else _rdp(pts, tol_mm)
+            simple = _simplify_ring(pts, tol_mm, work) if closed else _rdp(pts, tol_mm, work)
             removed += len(pts) - len(simple)
             if not simple:
                 continue

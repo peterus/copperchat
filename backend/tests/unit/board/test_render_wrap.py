@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import math
 import re
+import time
 import xml.etree.ElementTree as ET
 from dataclasses import replace
 
@@ -158,3 +159,19 @@ def test_markers_and_highlight_drawn() -> None:
     assert marks is not None and [t.text for t in marks.iter(f"{NS}text")] == ["3"]
     hl = root.find(f".//{NS}g[@id='highlight']")
     assert hl is not None and len(list(hl)) == 1
+
+
+def test_simplify_work_is_bounded() -> None:
+    # A zig-zag where every point is kept costs RDP O(n^2); the budget stops it and the
+    # rest of the path stays exactly as it was.
+    n = 4000
+    zigzag = [(i * 0.01, 1.0 if i % 2 else 0.0) for i in range(n)]
+    d = "M " + "\n".join(f"{x:.4f},{y:.4f}" for x, y in zigzag)
+    root = ET.fromstring(f'<svg viewBox="0 0 100 100"><path d="{d}"/></svg>')
+    start = time.monotonic()
+    removed = simplify_paths(root, tol_mm=0.02, budget=10_000)
+    assert time.monotonic() - start < 1.0
+    nums = [float(v) for v in re.findall(r"-?\d+(?:\.\d+)?", root[0].get("d", ""))]
+    pts = list(zip(nums[0::2], nums[1::2], strict=True))
+    assert removed == 0
+    assert pts == [(round(x, 4), y) for x, y in zigzag]
