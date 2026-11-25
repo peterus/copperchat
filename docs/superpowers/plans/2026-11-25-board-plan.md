@@ -658,7 +658,7 @@ written_at` check in `cc/kicad_tools/footprints/approve.py`), 5 a later human me
 def place_block(model, cls, block_refs, region: Rect, *, side: Side, rotation: int | None,
                 keep_channels: float = 0.5, fixed: Sequence[Move] = (),
                 allowed_sides: frozenset[Side], edge: Literal["top","bottom","left","right"] | None = None,
-                target: Point | None = None) -> PlaceResult | DoesNotFit
+                target: Point | None = None, doc: BoardDoc | None = None) -> PlaceResult | DoesNotFit   # As built (P4): doc kwarg; moves = fixed first, then members
 def legalize(model, moves: Sequence[Move], *, movable: frozenset[str], max_shift: float | None,
              keepouts: Sequence[tuple[Point, ...]], edge_margin: float) -> tuple[Move, ...] | DoesNotFit
 def score_placement(model, cls, doc) -> PlacementScore   # M1/M8/M9/M10 + airwire + max pin density per 5×5 mm cell
@@ -731,6 +731,93 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
 ## As built
 
 (Each phase adds its section here in its own PR.)
+
+### As built (P4)
+
+**Placer design (`cc/board/placer/`, pure)**
+- Satellites go to a *host* (decoupling cap → its IC pin; load cap → its crystal; otherwise
+  the placed part sharing the most signal, then supply, then ground nets; ties fewer pads,
+  placed earlier), on the host side the connected pin points to (an elongated pin pad only
+  allows the two sides along its long axis; the neighbouring sides cost `SIDE_PENALTY_MM`
+  1.5), **flush** at the courtyard gap with the connected pad aligned to the pin; the spot
+  is found exactly by interval search over rings (`ALIGN_WEIGHT` 0.5 per mm slid, physical
+  pad-to-pin distance as the cost). 2-pad parts radial, connected pad facing the host.
+- Order inside a cluster (deviation from Task 1's "decoupling caps first"): crystals, the
+  first decoupling cap of every supply pin, load caps, switcher passives, the rest by shared
+  nets, bulk decoupling caps last (each takes the IC supply pin of its net with the most
+  room). Caps of one IC + net are spread round-robin over its pins, smallest value first.
+- Gaps: decoupling caps and crystals keep `gap` (courtyard clearance + 0.05); every other
+  satellite `gap + 0.3` (routing room between neighbours).
+- `build_clusters`: a smaller anchor sharing signal nets with a bigger anchor of the same
+  block becomes its satellite (ESD array next to its connector; P3a residual).
+- Packing: `PULL_WEIGHT` 0.1 (plan 0.5: the region pull dominated connectivity on
+  `sp4_synth`), coarse 2 mm grid + region ends, refine 0.5 mm, full 0.5 mm scan per rotation
+  with no coarse hit. Connector edge term only for connectors with a `board.md` edge, the
+  `edge` argument, or anchoring their own cluster (deviation: a debug header in an MCU block
+  dragged the whole block into a corner); a connector's mouth (courtyard side away from its
+  pads) must face its edge (`FACING_MM` 5).
+- `place_block(..., doc=None)` keyword added (board.md edges + allowed sides for the score).
+- `PlaceResult.moves` = `fixed` moves first, then the members.
+- Legaliser: after the push rounds a part still in conflict moves to the nearest free spot
+  around its start (0.25 mm rings within `max_shift`, else 20 mm) — the pure push-apart got
+  stuck on ~1/4 of sparse random boards. A connector keeps its own cluster (never absorbed
+  as a satellite). An assigned edge (board.md row or the `edge` argument) is nearly hard:
+  a connector farther than 0.5 mm beyond the edge margin costs `EDGE_MISS` 1000.
+
+**Measured / recorded**
+- `sp4_synth` placed by `place_synth` (`tests/kicad/board/test_place_synth.py`, local
+  kicad-base image; outline 60 x 45, `jlcpcb-4l`, channels 1.5 mm): M1 pass, 0 DRC
+  `overlapping_footprints`, 0 unplaced, airwire 176.9 mm, M8 worst 4.23 mm (review: the
+  3225 crystal's far diagonal pad; every decoupling cap within 3 mm), M9 0 reviews, M10
+  worst 1.86, max 12 pads per 5 x 5 mm cell, three `pcb_place_block` calls 2.6 s total;
+  a second placement from the same unplaced state gives identical positions.
+- `place_block` on a synthetic 252-part / 12-block board: 0.15-3 s per block (pure).
+- Property tests (`test_placer_props.py`, `test_legalize_props.py`, seeds 0..249): ~21-26 s.
+- **`MAX_CELL_PINS` stays 30 (untuned, deviation from Task 5 Step 3):** on `sp4_synth` one
+  footprint dominates (the USB-C receptacle alone puts 12 pads in one cell; the placed board
+  max is 12) and every denser test placement we could build (legaliser-packed into 28 x 28
+  mm, blocks with `keep_channels: 0`) also measured 12, while all synth blocks with
+  `keep_channels: 0` do not fit 20-25 mm squares at all. The metric cannot separate good
+  from crammed on this fixture; **P9a** re-measures on OpenDriveHub (~160 parts) and tunes.
+
+**Tools (`cc/kicad_tools/board/{place,unroute_ops,specs_place}.py`)**
+- `pcb_define_blocks` may use two stages: stage 1 (one commit) takes members out of other
+  `blk:*` groups, reuses a same-named group (keeps its KIID) and creates new ones, with an
+  `undo` that restores every touched pre-existing group (KiCad moves a member silently);
+  a last stage "remove replaced blocks" deletes groups (`replace`, duplicates, emptied
+  `blk:*` groups) — compensation cannot re-create a deleted group. `anchor` is validated and
+  reported, not stored (a KiCad group has no field for it).
+- Probes: flip + position/orientation in one commit works (`flip_items` refreshes the
+  items, one `update_items` follows); group membership moves silently; empty groups stay.
+- API DRC type names are `overlapping_footprints`, `dangling_track`, `dangling_via`
+  (`courtyards_overlap` / `track_dangling` / `via_dangling` are kicad-cli names); P4 tests use
+  the API names. **Residual:** `tests/kicad/board/test_sync.py:91` asserts on
+  `courtyards_overlap` and therefore checks nothing (P2 file).
+- `unroute_ops` (for **P5b**): `CopperSelection(track_kiids (tracks + arcs), via_kiids, nets,
+  locked)` + `.empty`; `locked` counts skipped *components*. Components join at shared ends,
+  track end on a same-layer track (T) and track end in a via — **never through pads** (else
+  moving one decoupling cap would unroute all of GND); copper continuing through another
+  part's pad stays. `attached`: a track/arc end inside a copper pad on its layer, a via
+  centre in a copper pad. Region seeds use track width / via radius; zones never selected.
+  `unroute_stage(sel)` = one commit, `remove_items_by_id`.
+- Errors: `not_found` for refs has `details {refs, closest: {ref: [..]}}`; `unknown_block`
+  `details.closest: [..]`. `score.after` is computed after the apply (`run_cpu(score_job)`;
+  a timeout gives `null`, the tool still succeeds). A call that changes nothing writes
+  nothing and costs 0. `pcb_move` may move a locked part (explicit), `pcb_legalize` never;
+  the side policy is checked for `pcb_move` only on a side change. The `region` schema is one
+  object with all six fields optional (no `oneOf`); the code requires `{x,y,w,h}` or
+  `{edge, offset?}`. `cc/board/jobs.py` gains `place_block_job` (returns `(result, region
+  used)`; edge strip depth capped at the outline), `legalize_job`, `score_job`, `edge_strip`.
+- `place_synth(rig, db, run)` (`tests/kicad/board/conftest.py`): blocks from `pcb_analyze`,
+  the ESD part's block merged into the USB connector's, order connector block (`edge: left`)
+  → MCU block (right half) → power block (left half), `keep_channels` 1.5; plus
+  `analyzed_blocks(ctx)`. P5b's `placed_synth` builds on it.
+
+**Residuals for later phases**
+- The board-layout skill (P9b) should tell the agent: protection parts join their
+  connector's block; place edge blocks first, then blocks by connectivity to what is placed;
+  wider `keep_channels` when the board has room.
+- Silk reference texts overlap after placement (P7 `pcb_tidy_silk`).
 
 ### As built (P3b)
 

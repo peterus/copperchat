@@ -49,7 +49,7 @@ __all__ = [
 Box = tuple[float, float, float, float]  # x0, y0, x1, y1
 
 GRID_MM = 0.05
-SATELLITE_EXTRA_MM = 0.2  # extra courtyard gap for satellites that are not decoupling caps
+SATELLITE_EXTRA_MM = 0.3  # extra courtyard gap for satellites that are not decoupling caps
 RADIAL_WEIGHT = 1.5  # unconnected satellites: one mm outwards costs 1.5 mm along a row
 ALIGN_WEIGHT = 0.5  # connected satellites: cost per mm slid away from the aligned spot
 SIDE_PENALTY_MM = 1.5  # a host side next to the one the connected pin points to
