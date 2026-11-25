@@ -79,6 +79,9 @@ class HistoryService:
         self.broadcaster = broadcaster
         self.runtime = runtime
         self.hashes = DocumentHashRepo(db)
+        # Settings.projects_root (install_history); restore re-discovers the project
+        # below it. None: derived from the project itself (tests).
+        self.projects_root: Path | None = None
         # The project's local footprint library, tracked with the documents (FP-C6);
         # replaced once the footprint tools are wired (F4a).
         self.locate_library: LibraryLocator = _no_library
@@ -108,11 +111,12 @@ class HistoryService:
         the other document's stored hashes stay, so an external change to it is still
         reported at the next turn start. Library, table and presence rows are never
         owned (no document suffix), so they stay as they are."""
-        suffix = ".kicad_sch" if doc == "sch" else ".kicad_pcb"
+        # A board save also owns the board's custom rules file (KiCad writes it).
+        suffixes = (".kicad_sch",) if doc == "sch" else (".kicad_pcb", ".kicad_dru")
         pro = project.pro_file.relative_to(project.dir).as_posix()
 
         def owned(rel: str) -> bool:
-            return rel == pro or rel.endswith(suffix)
+            return rel == pro or rel.endswith(suffixes)
 
         def owned_hashes() -> dict[str, HashRow]:
             files = [
@@ -354,6 +358,7 @@ def install_history(app: FastAPI) -> HistoryService:
     )
     # The local footprint library (F1 <-> F3 wiring, FP-C6): locator and listener.
     settings = app.state.settings
+    svc.projects_root = settings.projects_root
     svc.locate_library = make_library_locator(settings, app.state.sessions)
     svc.library_listeners.append(make_library_listener(settings, app.state.sessions))
     runtime.hooks_factory = svc.hooks_factory

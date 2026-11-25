@@ -84,6 +84,9 @@ class HistoryHooks(RunHooks):
         self.project = project
         self.engine = engine
 
+    def on_project_changed(self, project: Project) -> None:
+        self.project = project
+
     async def _record_hashes(self) -> None:
         await self.svc.hashes.replace(self.project.id, await self.svc.current_hashes(self.project))
 

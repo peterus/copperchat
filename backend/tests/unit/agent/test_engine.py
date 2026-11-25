@@ -598,3 +598,24 @@ async def test_failed_first_mutation_hook_is_retried_by_the_next_mutating_call(m
     await until(lambda: len(outcomes) == 1)
     assert len(calls) == 2 and len(set(calls)) == 1  # retried once, then marked
     assert ran == [True, True] and outcomes[0].mutated is True
+
+
+async def test_refresh_project_updates_engine_and_hooks(make_engine) -> None:  # type: ignore[no-untyped-def]
+    """SP4 P1a Task 5: a re-discovered project (board created / restored away) replaces
+    the engine's and the hooks' copy; the default hook is a no-op."""
+    from dataclasses import replace
+
+    from copperchat.agent.engine import ChainedHooks
+
+    seen: list[Project] = []
+
+    class Rec(RunHooks):
+        def on_project_changed(self, project: Project) -> None:
+            seen.append(project)
+
+    engine, _ = await make_engine(hooks=ChainedHooks([RunHooks(), Rec()]))
+    fresh = replace(engine.project, pcb_file=None)
+    engine.refresh_project(fresh)
+    assert engine.project is fresh
+    assert seen == [fresh]
+    assert RunHooks().on_project_changed(fresh) is None

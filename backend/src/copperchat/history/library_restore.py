@@ -215,7 +215,7 @@ def plan_library_restore(
     version = manifest.get("version")
     if version is None or version == 1:
         return plan  # v1 snapshots never touch the library or the table
-    if version != 2:
+    if version not in (2, 3):  # v3 adds `absent` only (restore.absent_plan)
         raise CorruptSnapshot(f"unsupported snapshot manifest version: {version!r}")
     library = manifest.get("library")
     if library is None:

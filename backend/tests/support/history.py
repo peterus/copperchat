@@ -55,6 +55,7 @@ class FakeEngine:
         self.error_conversations: list[str] = []
         self.note_conversations: list[str | None] = []
         self.submitted: list[tuple[str, str]] = []  # (client message id, text)
+        self.refreshed: list[Project] = []  # projects passed to refresh_project
 
     async def post_notice(
         self, conversation_id: str, text: str, metadata: dict[str, Any] | None = None
@@ -71,6 +72,9 @@ class FakeEngine:
     def add_agent_note(self, text: str, conversation_id: str | None = None) -> None:
         self.notes.append(text)
         self.note_conversations.append(conversation_id)
+
+    def refresh_project(self, project: Project) -> None:
+        self.refreshed.append(project)
 
     async def submit_ex(
         self, conversation_id: str, client_id: str, text: str, atts: Any, meta: Any = None

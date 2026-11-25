@@ -38,7 +38,10 @@ STEP_KEEP = 100
 SNAPSHOT_KINDS = ("turn", "step")
 # CopperChat's caches inside `.kicad-agent/`; kept out of the user's git repository.
 GITIGNORE_LINES = ("history/", "history-blobs/", "view/", "renders/", "uploads/", "images/")
-MANIFEST_VERSION = 2
+MANIFEST_VERSION = 3
+# The board-side files a snapshot records as `absent` when they are not there (v3,
+# spec §6.4): restoring the snapshot deletes them again (undo of a created board).
+ABSENT_SUFFIXES = (".kicad_pcb", ".kicad_dru")
 LABEL_MAX = 200
 _ID_RE = re.compile(r"[0-9a-f]{32}")
 
@@ -78,7 +81,9 @@ def _is_document_name(name: str) -> bool:
 
 
 def document_files(project: Project) -> list[Path]:
-    """The project file, every schematic sheet below the project dir, and the board.
+    """The project file, every schematic sheet below the project dir, the board, and
+    the board's custom rules file `<stem>.kicad_dru` (KiCad writes it on
+    SetCustomDesignRules) when it is a regular file (lstat: never a symlink).
 
     Pruned from the walk, never descended into: hidden directories (`.git`,
     `.kicad-agent` with its snapshots and view copies), the discovery skip list, and
@@ -101,9 +106,30 @@ def document_files(project: Project) -> list[Path]:
             if _is_document_name(name) and path.is_file() and not path.is_symlink():
                 sheets.append(path)
     files.extend(sorted(sheets))
-    if project.pcb_file is not None and project.pcb_file.is_file():
+    # lstat (never followed): a board swapped for a symlink is neither copied nor
+    # deleted - it is recorded `absent` and a restore skips it with a warning.
+    if project.pcb_file is not None and _regular_file(project.pcb_file):
         files.append(project.pcb_file)
+    dru = project.pro_file.with_suffix(".kicad_dru")
+    if _regular_file(dru):
+        files.append(dru)
     return files
+
+
+def absent_files(project: Project) -> list[str]:
+    """Project-relative POSIX names of `<stem>.kicad_pcb` / `<stem>.kicad_dru` that do
+    not exist, or are symlinks, right now (the manifest's `absent`, v3)."""
+    out: list[str] = []
+    for suffix in ABSENT_SUFFIXES:
+        path = project.pro_file.with_suffix(suffix)
+        try:
+            st = path.lstat()
+        except FileNotFoundError:
+            out.append(path.relative_to(project.dir).as_posix())
+            continue
+        if stat.S_ISLNK(st.st_mode):
+            out.append(path.relative_to(project.dir).as_posix())
+    return out
 
 
 @dataclass(frozen=True)
@@ -429,6 +455,7 @@ class HistoryStore:
             else:
                 journal_max_id = await journal.max_id()
             entries = await asyncio.to_thread(self._copy_documents, tmp)
+            absent = await asyncio.to_thread(absent_files, self.project)
             created = utcnow_iso()
             if preview_png is not None:
                 (tmp / "preview.png").write_bytes(preview_png)
@@ -446,6 +473,7 @@ class HistoryStore:
                 ),
                 "journalMaxId": journal_max_id,
                 "files": entries,
+                "absent": absent,
                 "library": library,
                 "table": None if location is None else {"existed": _regular_file(location.table)},
             }

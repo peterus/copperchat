@@ -165,6 +165,11 @@ class RunHooks:
         """The engine closes (shutdown): stop background work started by the hooks."""
         return None
 
+    def on_project_changed(self, project: Project) -> None:
+        """The engine's project was re-discovered (a board created or restored away
+        changes `pcb_file`): hooks that keep the project replace their copy. Sync."""
+        return None
+
     async def before_model_input(self, turn: TurnInfo) -> list[str]:
         """Extra notices for the model input of this turn (C5 context injection). Each
         entry is one notice: it gets exactly one ``[CopperChat notice]`` prefix at its
@@ -231,6 +236,10 @@ class ChainedHooks(RunHooks):
                 await h.on_engine_close()
             except Exception:
                 log.exception("on_engine_close hook failed")
+
+    def on_project_changed(self, project: Project) -> None:
+        for h in self.hooks:
+            h.on_project_changed(project)
 
     async def before_model_input(self, turn: TurnInfo) -> list[str]:
         out: list[str] = []
@@ -378,6 +387,12 @@ class RunEngine:
     @property
     def pid(self) -> str:
         return self.project.id
+
+    def refresh_project(self, project: Project) -> None:
+        """Take the re-discovered `project` (same id; restore, board creation) for every
+        later tool context, and tell the hooks."""
+        self.project = project
+        self.hooks.on_project_changed(project)
 
     @property
     def is_busy(self) -> bool:
