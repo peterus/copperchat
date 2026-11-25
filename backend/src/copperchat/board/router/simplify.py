@@ -92,6 +92,32 @@ def _move_last_bend(pts: list[Point], target: Point, width: float) -> list[Point
     return [*pts[:-2], x, target]
 
 
+def _single_piece(pts: list[Point], target: Point) -> list[Point] | None:
+    """...P, G -> ...P, G', target with G' on the last segment and G'->target one piece at
+    45° to it (no two-bend stub, so no tiny chamfer between two bends)."""
+    if len(pts) < 2:
+        return None
+    p, g = pts[-2], pts[-1]
+    d = _unit(_sub(g, p))
+    rel = _sub(target, g)
+    lam = _cross(d, rel)
+    t = abs(lam) - _dot(d, rel)  # G' = G - t d makes target - G' a 45° vector
+    if abs(lam) < _TINY or t < -_TINY or t >= math.dist(p, g) - _TINY:
+        return None
+    gp = (g[0] - max(t, 0.0) * d[0], g[1] - max(t, 0.0) * d[1])
+    return list(merge_collinear([*pts[:-1], gp, target]))
+
+
+def _short_same_sense(pts: Sequence[Point], k0: int, width: float) -> bool:
+    """A same-sense bend pair at pts[k0], pts[k0 + 1] closer than CHAMFER_MIN (a 90° corner
+    with a tiny chamfer)."""
+    if k0 < 1 or k0 + 2 > len(pts) - 1:
+        return False
+    s1 = _sense(_sub(pts[k0], pts[k0 - 1]), _sub(pts[k0 + 1], pts[k0]))
+    s2 = _sense(_sub(pts[k0 + 1], pts[k0]), _sub(pts[k0 + 2], pts[k0 + 1]))
+    return s1 != 0 and s1 == s2 and math.dist(pts[k0], pts[k0 + 1]) + 1e-9 < CHAMFER_MIN(width)
+
+
 def _stubs(pts: list[Point], target: Point) -> list[list[Point]]:
     """...G -> ...G, Q, target: one 45° piece and one axis-parallel piece (either order)."""
     g = pts[-1]
@@ -126,8 +152,14 @@ def _snap_tail(points: Sequence[Point], target: Point, width: float) -> list[Poi
     moved = _move_last_bend(pts, target, width)
     if moved is not None and _turns_ok(moved):
         return moved
+    single = _single_piece(pts, target)
+    if single is not None and _turns_ok(single):
+        return single
+    n0 = len(pts) - 1  # index of G in the candidates (before any collinear merge)
     for cand in _stubs(pts, target):
-        if _turns_ok(cand):
+        if _turns_ok(cand) and not any(
+            _short_same_sense(cand, k, width) for k in range(max(1, n0 - 1), len(cand) - 2)
+        ):
             return cand
     raise SnapError(f"no octilinear approach from {pts[-1]} to {target}")
 

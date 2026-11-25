@@ -403,3 +403,12 @@ def test_fallback_grid_builds_honour_the_deadline(monkeypatch: pytest.MonkeyPatc
     m, p, _n = straight_pair()
     with pytest.raises(DeadlineExpired):
         pairs_mod._solo(m, p, 0.0, True, deadline=time.monotonic() - 1.0)
+
+
+@pytest.mark.parametrize("gap", [float("nan"), float("inf"), -0.1, 1000.0])
+def test_gap_validated(gap: float) -> None:
+    m, p, n = straight_pair()
+    with pytest.raises(ValueError):
+        route_pair(m, p, n, gap)
+    with pytest.raises(ValueError):
+        solve_pair(m, p, n, gap)

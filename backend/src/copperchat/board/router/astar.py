@@ -420,7 +420,9 @@ def route(
                     continue
                 if direct.segments and valid_path(direct, grid, req):
                     return direct
-        return None
+        if goal_layers & set(a_layers):
+            return None
+        # stacked pads on different layers: search (a via may join them)
 
     def at_goal(n: int, li: int, d: int) -> bool:
         return n == goal_n and li in goal_layers and d in goal_dirs
@@ -544,6 +546,8 @@ def _search(
             continue
         closed.add(here)  # weighted A* without re-opening: bounded by HEURISTIC_WEIGHT
         if at_goal(n, li, d):
+            if deadline is not None and time.monotonic() > deadline:
+                return None
             path = _build(here, parent, decode, grid, req)
             if path is not None and valid_path(path, grid, req) and pad_exits_ok(path, req):
                 return path

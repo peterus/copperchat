@@ -988,6 +988,17 @@ exact obstacle cores, each with its required centre-line distance), `outline`, `
 - The exact-check shape index clips each obstacle's bbox to the window; `build_grid`
   refuses width / clearance / margin / via diameter above `MAX_SIZE_MM = 100`.
 
+**Review rounds 4–5 (PR #105)**
+- Every grid build of the pair fallback, the own-net / via marking (`_Marker` checks the
+  deadline every 64 rows) and each goal validation honour the time limit.
+- `snap_ends`: before a two-piece stub, the end point backs off along the last segment so
+  one 45° piece reaches the centre; a stub that would form a 90° with a chamfer shorter
+  than `CHAMFER_MIN` is refused (`SnapError`, the search goes on).
+- `route_pair` / `solve_pair` refuse a non-finite gap or one outside 0..100 mm; stacked pads
+  on two layers at one node fall through to the search (a via joins them).
+- Tests: `random_map` ends every other request on the bottom layer (vias in the property
+  tests); the pair property test checks each path against the partner's pads.
+
 **Residuals for later phases**
 - P5b: `route` returns `None` for a connection whose pad is boxed in by earlier copper
   along its axis; such a failure can take up to the full expansion budget (≈ 10–25 s per

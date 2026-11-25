@@ -237,7 +237,9 @@ def random_map(rng: random.Random) -> tuple[BoardModel, list[RouteRequest]]:
                 x = rng.uniform(1 + pw, w - 1 - pw)
                 y = rng.uniform(1 + ph, h - 1 - ph)
                 rot = rng.choice((0.0, 0.0, 90.0, 45.0))
-                p = smd_pad(f"R{r}{'AB'[e]}", "1", net, x, y, pw, ph, rot, layers[0])
+                # on 2-layer maps every other request ends on the bottom (needs a via)
+                layer = layers[-1] if e == 1 and r % 2 == 1 else layers[0]
+                p = smd_pad(f"R{r}{'AB'[e]}", "1", net, x, y, pw, ph, rot, layer)
                 inside_keepout = any(
                     seg_poly_dist((p.x, p.y), (p.x, p.y), z.outline) < math.hypot(pw, ph) + 0.5
                     for z in zones

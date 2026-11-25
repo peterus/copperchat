@@ -22,6 +22,7 @@ from copperchat.board.model import BoardModel, Pad, Point
 from copperchat.board.router.astar import SOLVE_TIME_LIMIT_S, pad_exits_ok, reverse_path, valid_path
 from copperchat.board.router.astar import route as _route
 from copperchat.board.router.grid import (
+    MAX_SIZE_MM,
     WINDOW_MM,
     DeadlineExpired,
     ObstacleGrid,
@@ -47,6 +48,11 @@ _PAD_PAIR = "~pair"
 
 def _pair_clearance(p: RouteRequest, n: RouteRequest, gap: float) -> float:
     return max(gap, p.clearance, n.clearance)
+
+
+def _check_gap(gap: float) -> None:
+    if not (math.isfinite(gap) and 0.0 <= gap <= MAX_SIZE_MM):
+        raise ValueError(f"gap must be finite and within 0..{MAX_SIZE_MM} mm")
 
 
 def coupled_eligible(p: RouteRequest, n: RouteRequest, gap: float) -> bool:
@@ -364,6 +370,7 @@ def route_pair(
 ) -> tuple[RoutePath, RoutePath] | None:
     """Coupled pair when the pads allow it, else the fallback (B-C12); default windows only;
     stops after SOLVE_TIME_LIMIT_S (→ None)."""
+    _check_gap(gap)
     deadline = time.monotonic() + SOLVE_TIME_LIMIT_S
     try:
         if coupled_eligible(p, n, gap):
@@ -381,6 +388,7 @@ def solve_pair(
     """`run_cpu` entry point (B-C12): the coupled attempt, then the fallback where each net
     gets the default window and exactly one doubled-window retry (like `solve`); all of it
     stops after SOLVE_TIME_LIMIT_S (→ None)."""
+    _check_gap(gap)
     deadline = time.monotonic() + SOLVE_TIME_LIMIT_S
     try:
         if coupled_eligible(p, n, gap):

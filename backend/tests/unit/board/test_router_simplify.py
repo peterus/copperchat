@@ -124,3 +124,12 @@ def test_length_sum() -> None:
     assert path.length == pytest.approx(sum(math.dist(p, q) for _l, p, q in path.segments))
     assert path.length == pytest.approx(3.0 + 2 * 0.5 * math.sqrt(2))
     assert path.segments[0][1] == (5.0, 10.0) and path.segments[-1][2] == (9.0, 10.0)
+
+
+def test_stub_never_makes_a_tiny_chamfer() -> None:
+    # review repro: a stub would put a 2 um axis piece between two same-sense 45° pieces
+    pts = [(3.375284, 16.068592), (7.075284, 19.768592), (7.625284, 20.318592)]
+    out = snap_ends(pts, None, (7.606301, 20.339722), 0.25)
+    assert out[-1] == (7.606301, 20.339722)
+    r = analyse_bends(out, 0.25, pad_ends=(False, False))
+    assert not (r.short_chamfers or r.ninety or r.acute or r.off_angle), (out, r)

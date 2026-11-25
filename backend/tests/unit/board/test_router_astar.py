@@ -420,3 +420,11 @@ def test_huge_sizes_refused() -> None:
     m = board(parts=(), outline=outline(0, 0, 30, 20))
     with pytest.raises(ValueError):
         build_grid(m, replace(rq(pad("S", 5, 5), pad("S", 9, 5, ref="B")), width=1000.0))
+
+
+def test_stacked_pads_on_two_layers_use_a_via() -> None:
+    a = pad("SIG", 10, 10, 0.3, 0.3, layer="F.Cu")
+    b = pad("SIG", 10.02, 10, 0.3, 0.3, layer="B.Cu", ref="B")
+    path = go(rq(a, b, layers=("F.Cu", "B.Cu"), allow_vias=True))
+    assert path is not None
+    assert len(path.vias) == 1

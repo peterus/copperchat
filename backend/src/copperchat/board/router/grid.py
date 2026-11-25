@@ -444,8 +444,11 @@ def _layers_of(names: Iterable[str], copper: Sequence[str]) -> set[str]:
 class _Marker:
     """Row-interval marking of one window (all layers share the lattice)."""
 
-    def __init__(self, x0: float, y0: float, w: int, h: int, pitch: float) -> None:
+    def __init__(
+        self, x0: float, y0: float, w: int, h: int, pitch: float, deadline: float | None = None
+    ) -> None:
         self.x0, self.y0, self.w, self.h, self.p = x0, y0, w, h, pitch
+        self.deadline = deadline
 
     def rows(self, ylo: float, yhi: float) -> range:
         j0 = max(0, math.ceil((ylo - self.y0) / self.p - 1e-9))
@@ -469,6 +472,8 @@ class _Marker:
         kind = s[0]
         _x0, y0, _x1, y1 = _shape_bbox(s)
         for j in self.rows(y0 - t, y1 + t):
+            if not j % 64:
+                check_deadline(self.deadline)
             y = self.y(j)
             if kind == "d":
                 iv = _disc_row(s[1], s[2], s[3] + t, y)
@@ -573,7 +578,7 @@ def build_grid(
         raise RouteTooLarge(cells_n)
 
     layers = tuple(req.layers)
-    mk = _Marker(x0, y0, nx, ny, pitch)
+    mk = _Marker(x0, y0, nx, ny, pitch, deadline)
     r = req.clearance + margin + req.width / 2
     via_r = req.via[0] / 2
     via_need = via_r + req.clearance + margin
