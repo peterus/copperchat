@@ -791,6 +791,15 @@ summary), inserts the checkpoint row and the `board_approve` change row
   only, `O_NOFOLLOW`, ≤ 16 MiB); the JSON report is read only as a regular file ≤ 32 MiB;
   timeout, no report, a bad report or a copy failure → `drc_rejected`. Without a schematic →
   `drc_rejected`.
+- Review round 3: `0013_board.sql` adds a fourth index `board_reviews_conversation
+  (project_id, board_file, conversation_id, id)` (B-C10 SQL otherwise verbatim). The board
+  stage also treats a **schematic (or any non-approval) edit** after the evidence as a write:
+  guard 4 for `stage = board` and `require_board_approved` (after the newest full check →
+  `reason = stale`) use `board_written_since(..., any_kind=True)` — the parity evidence
+  depends on the schematic, which `board_hash` does not cover. `pcb_check` reads the model
+  and runs the API DRC under `session.applying()` (a write undone by compensation logs no
+  change row); the full-check copy dir refuses a symlinked `.kicad-agent`/`board`/`check`
+  (`output_path_unsafe`) and sweeps copy dirs older than 1 h.
 - `pcb_approve` also calls `require_board_tools` (`board_tools_disabled`) and `require_board`.
 - `cc/editing/gate.py`: `PLAN_EXEMPT_TOOLS = frozenset({"fp_approve", "pcb_approve"})`.
 

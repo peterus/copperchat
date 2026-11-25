@@ -62,9 +62,19 @@ async def checkpoint_state(
     return out
 
 
-async def board_written_since(db: Database, project_id: str, since_iso: str) -> bool:
+async def board_written_since(
+    db: Database, project_id: str, since_iso: str, *, any_kind: bool = False
+) -> bool:
     """Whether the change log holds a board write (`WRITE_KINDS`) of the project at or
-    after `since_iso` (ties count as later: fail closed)."""
+    after `since_iso` (ties count as later: fail closed). `any_kind`: any change but an
+    approval (schematic and library edits too: the board stage's parity evidence depends
+    on the schematic, which `board_hash` does not cover)."""
+    if any_kind:
+        row = await db.fetchone(
+            "SELECT 1 FROM changes WHERE project_id = ? AND created_at >= ? AND kind != ? LIMIT 1",
+            (project_id, since_iso, "board_approve"),
+        )
+        return row is not None
     marks = ", ".join("?" for _ in WRITE_KINDS)
     row = await db.fetchone(
         f"SELECT 1 FROM changes WHERE project_id = ? AND created_at >= ? AND kind IN ({marks}) "
@@ -128,12 +138,18 @@ async def require_board_approved(ctx: ToolContext, model: BoardModel) -> None:
             reason = "stale"
         else:
             check = await BoardReviewRepo(db).last_full_check(ctx.project.id, rel, current)
-            reason = None if check is not None and check.hard_failures == 0 else "check_failed"
+            if check is None or check.hard_failures != 0:
+                reason = "check_failed"
+            elif await board_written_since(db, ctx.project.id, check.created_at, any_kind=True):
+                reason = "stale"  # e.g. a schematic edit: the parity evidence is outdated
+            else:
+                reason = None
     if reason is None:
         return
     why = {
         "missing": "the user has not approved this board for manufacturing",
-        "stale": "the board changed after the user approved it",
+        "stale": "the board (or the schematic it was checked against) changed after the "
+        "user approved it",
         "check_failed": "the last pcb_check full of this board has hard failures (or none ran)",
     }[reason]
     raise StructuredToolError(

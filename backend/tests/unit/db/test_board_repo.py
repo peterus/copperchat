@@ -58,6 +58,7 @@ async def test_migration_0013_applies(tmp_path: Path) -> None:
         names = await _tables(fresh)
         assert {"board_checkpoints", "board_reviews", "board_checkpoints_latest"} <= names
         assert {"board_reviews_placement", "board_reviews_board"} <= names
+        assert "board_reviews_conversation" in names
     finally:
         await fresh.close()
     old = await _raw(tmp_path / "old.db")

@@ -203,3 +203,73 @@ async def test_record_unless_written(db: Database) -> None:
     assert await record_unless_written(db, PID, since, record) is False
     assert calls == [1]
     assert not await board_written_since(db, "f" * 12, since)
+
+
+async def test_require_board_stale_after_schematic_edit(
+    db: Database, project: Project, make_settings: Callable[..., Settings]
+) -> None:
+    m = board()
+    await _approve(db, "board", board_hash(m))
+    await _full_check(db, m, hard=0)
+    ctx = _ctx(project, db, make_settings())
+    await require_board_approved(ctx, m)
+    await ChangeRepo(db).add_many(
+        [ChangeEntry(PID, "r", None, 0, "sch_place_symbol", "add", "symbol", "u", "/")]
+    )
+    with pytest.raises(StructuredToolError) as err:
+        await require_board_approved(ctx, m)
+    assert err.value.details is not None and err.value.details["reason"] == "stale"
+    await require_placement_approved_after(ctx, db, m)
+
+
+async def require_placement_approved_after(ctx: ToolContext, db: Database, m: BoardModel) -> None:
+    """A schematic edit never touches the placement checkpoint."""
+    await _approve(db, "placement", placement_hash(m))
+    await require_placement_approved(ctx, m)
+
+
+async def test_board_written_since_any_kind(db: Database) -> None:
+    since = "2026-11-25T10:00:00.000Z"
+    await ChangeRepo(db).add_many(
+        [ChangeEntry(PID, "r", None, 0, "t", "add", "symbol", "u", "/", created_at=since)]
+    )
+    assert not await board_written_since(db, PID, since)
+    assert await board_written_since(db, PID, since, any_kind=True)
+    await db.execute("DELETE FROM changes")
+    await ChangeRepo(db).add_many(
+        [ChangeEntry(PID, "r", None, 0, "t", "add", "board_approve", "u", "", created_at=since)]
+    )
+    assert not await board_written_since(db, PID, since, any_kind=True)
+
+
+def test_check_dir_refuses_symlinks_and_sweeps(tmp_path: Path) -> None:
+    import os
+    import time as time_mod
+
+    from copperchat.kicad_tools.board.check import STALE_CHECK_S, _check_dir
+
+    project = Project(
+        id=PID, name="main", rel_path="main", dir=tmp_path / "p",
+        pro_file=tmp_path / "p/m.kicad_pro", sch_file=tmp_path / "p/m.kicad_sch",
+        pcb_file=tmp_path / "p" / BOARD,
+    )  # fmt: skip
+    project.dir.mkdir()
+    ctx: Any = SimpleNamespace(project=project)
+    first = _check_dir(ctx)
+    old = first.parent / "old-left-over"
+    old.mkdir()
+    past = time_mod.time() - STALE_CHECK_S - 10
+    os.utime(old, (past, past))
+    second = _check_dir(ctx)
+    assert second.exists() and first.exists() and not old.exists()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    board_dir = project.dir / ".kicad-agent" / "board"
+    import shutil
+
+    shutil.rmtree(board_dir)
+    board_dir.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(StructuredToolError) as err:
+        _check_dir(ctx)
+    assert err.value.code == "output_path_unsafe"
+    assert list(outside.iterdir()) == []

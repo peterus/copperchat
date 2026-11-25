@@ -598,3 +598,13 @@ async def test_placement_with_full_check_ok(rig: Rig) -> None:
     await rig.said()
     data = await _approve(rig, "placement", PA)
     assert data["stage"] == "placement"
+
+
+async def test_board_schematic_write_after_evidence_refused(rig: Rig) -> None:
+    """The board stage's parity evidence depends on the schematic: a schematic edit after
+    the evidence refuses (guard 4); for the placement stage it does not count."""
+    await rig.board_shown()
+    await rig.wrote("2026-11-25T10:03:00.000Z", kind="symbol")
+    await rig.said("Board looks great, approve the board for manufacturing.")
+    err = await _refused(rig, stage="board", digest=BA, quote="approve the board for manufacturing")
+    assert _guard(err) == 4

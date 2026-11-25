@@ -12,3 +12,5 @@ CREATE TABLE board_reviews (id INTEGER PRIMARY KEY, project_id TEXT NOT NULL, bo
   hard_failures INTEGER, m1_pass INTEGER, created_at TEXT NOT NULL);
 CREATE INDEX board_reviews_placement ON board_reviews(project_id, board_file, placement_hash);
 CREATE INDEX board_reviews_board ON board_reviews(project_id, board_file, board_hash);
+-- P3b review: pcb_status' last check and pcb_approve's evidence filter by conversation.
+CREATE INDEX board_reviews_conversation ON board_reviews(project_id, board_file, conversation_id, id);

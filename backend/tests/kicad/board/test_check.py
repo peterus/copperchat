@@ -306,6 +306,45 @@ async def test_full_bad_cli_output_rejected(
     assert _check_dirs(ctx) == [] and await _rows(setup_db, ctx) == []
 
 
+async def test_stale_without_conversation(
+    synth_setup: SynthSetup, setup_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from copperchat.kicad_tools.board import checkpoints
+
+    ctx = dataclasses.replace(synth_setup.turn(setup_db, "run-s3"), conversation_id=None)
+    monkeypatch.setattr(
+        checkpoints, "board_written_since", lambda db, pid, since: asyncio.sleep(0, True)
+    )
+    monkeypatch.setattr(check, "board_written_since", checkpoints.board_written_since)
+    out = await _tool(ctx, "pcb_check", level="quick")
+    assert out["stale"] is True
+
+
+async def test_model_and_drc_read_under_apply_lock(
+    synth_setup: SynthSetup, setup_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No write can be half pushed or compensated while the checked state is read."""
+    from copperchat.kicad_tools.board.read import board_model
+
+    ctx = synth_setup.turn(setup_db, "run-s4")
+    held: list[bool] = []
+
+    async def spy(c: ToolContext) -> Any:
+        held.append(c.session._apply_lock.locked())
+        return await board_model(c)
+
+    real_drc = api.run_drc_task
+
+    def drc_spy(h: Any, *, timeout_s: float = 60.0) -> DrcResult:
+        held.append(ctx.session._apply_lock.locked())
+        return real_drc(h, timeout_s=timeout_s)
+
+    monkeypatch.setattr(check, "board_model", spy)
+    monkeypatch.setattr(api, "run_drc_task", drc_spy)
+    await _tool(ctx, "pcb_check", level="quick")
+    assert held[:2] == [True, True] and held[2] is False  # the after-read is outside
+
+
 @pytest.mark.asyncio(loop_scope="function")
 async def test_check_boardless(synth_session: Any) -> None:
     from tests.support.edit import edit_ctx

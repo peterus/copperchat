@@ -321,14 +321,47 @@ async def _copy_project(ctx: ToolContext, work: Path) -> Path:
     return board
 
 
+STALE_CHECK_S = 3600.0  # a check/<uuid> dir older than this is left over from a killed call
+
+
+def _check_dir(ctx: ToolContext) -> Path:
+    """A fresh copy dir `.kicad-agent/board/check/<uuid>`; a symlinked `.kicad-agent`,
+    `board` or `check` dir is refused (never written through), and copy dirs a killed
+    call left behind are swept."""
+    agent = agent_dir(ctx.project)
+    base = agent / "board" / "check"
+    for d in (agent, agent / "board", base):
+        if d.is_symlink():
+            raise StructuredToolError(
+                "The full board check could not run",
+                f"{d.relative_to(ctx.project.dir)} is a symlink",
+                "Ask the user to replace it with a plain directory, then retry.",
+                code="output_path_unsafe",
+            )
+    base.mkdir(parents=True, exist_ok=True)
+    now = time.time()
+    for old in base.iterdir():
+        try:
+            st = old.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISDIR(st.st_mode) and now - st.st_mtime > STALE_CHECK_S:
+            shutil.rmtree(old, ignore_errors=True)
+    work = base / uuid.uuid4().hex
+    work.mkdir()
+    return work
+
+
 async def cli_parity(ctx: ToolContext) -> tuple[tuple[DrcMarker, ...], tuple[DrcMarker, ...]]:
     """(violations, parity) of `kicad-cli pcb drc --schematic-parity` on a copy of the
     live board under `.kicad-agent/board/check/<uuid>/` (removed in `finally`), run inside
     `BOARD_CLI_LOCK` with BOARD_PARITY_TIMEOUT_S; a timeout or a failed run without a
     report → `drc_rejected`."""
-    work = agent_dir(ctx.project) / "board" / "check" / uuid.uuid4().hex
     try:
-        await asyncio.to_thread(work.mkdir, parents=True)
+        work = await asyncio.to_thread(_check_dir, ctx)
+    except OSError as exc:
+        raise _rejected(f"the copy directory could not be made ({type(exc).__name__})") from None
+    try:
         board = await _copy_project(ctx, work)
         out = work / "drc.json"
         args = ["pcb", "drc", "--format", "json", "--severity-all", "--schematic-parity",
@@ -382,13 +415,16 @@ async def pcb_check(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     level = parse_level(args)
     require_board(ctx)
     since = utcnow_iso()
-    model = await board_model(ctx)
-    before = await asyncio.to_thread(_hashes, model)
     doc = await read_board_doc(ctx)
-    drc = await ctx.session.call(
-        lambda h: api.run_drc_task(h, timeout_s=CHECK_DRC_TIMEOUT_S),
-        timeout=api.drc_call_timeout(CHECK_DRC_TIMEOUT_S),
-    )
+    # Model and DRC under the apply lock: no write is half pushed or being compensated
+    # while they are read (a write undone by compensation logs no change row).
+    async with ctx.session.applying():
+        model = await board_model(ctx)
+        drc = await ctx.session.call(
+            lambda h: api.run_drc_task(h, timeout_s=CHECK_DRC_TIMEOUT_S),
+            timeout=api.drc_call_timeout(CHECK_DRC_TIMEOUT_S),
+        )
+    before = await asyncio.to_thread(_hashes, model)
     parity: tuple[DrcMarker, ...] | None = None
     cross: dict[str, int] | None = None
     if level == "full":

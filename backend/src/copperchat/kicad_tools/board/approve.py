@@ -216,7 +216,9 @@ async def guard_evidence(ctx: ToolContext, a: ApproveArgs) -> list[Review]:
 async def guard_no_write_after(ctx: ToolContext, a: ApproveArgs, since: str) -> None:
     """Guard 4."""
     assert ctx.editing is not None
-    if await board_written_since(ctx.editing.db, ctx.project.id, since):
+    # the board stage's parity evidence also depends on the schematic: any edit counts
+    any_kind = a.stage == "board"
+    if await board_written_since(ctx.editing.db, ctx.project.id, since, any_kind=any_kind):
         raise refused(
             4,
             f"The {a.stage} cannot be approved in this turn",
