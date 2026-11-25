@@ -362,9 +362,10 @@ def test_coupled_avoids_partner_net_copper() -> None:
     # existing DN copper across DP's straight line: no short with it
     dn_stub = track("DN", "F.Cu", (10.0, 7.0), (10.0, 10.05), 0.2, kiid="dn-stub")
     m, p, n = straight_pair(tracks=(dn_stub,))
+    # the merged-net centreline runs straight through the stub; the check must reject it
+    assert pairs_mod._coupled(m, p, n, 0.2, 0.0) is None
     for got in (route_pair(m, p, n, 0.2), solve_pair(m, p, n, 0.2)):
-        if got is None:
-            continue
+        assert got is not None
         pp, _pn = got
         for layer, s, e in pp.segments:
             if layer == "F.Cu":
@@ -390,3 +391,15 @@ def test_solve_pair_time_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     m, p, n = straight_pair()
     assert solve_pair(m, p, n, 0.2) is None
     assert route_pair(m, p, n, 0.2) is None
+
+
+def test_fallback_grid_builds_honour_the_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    import time
+
+    from copperchat.board.router.grid import DeadlineExpired
+
+    # skip the pre-build check: the build itself must stop at the passed deadline
+    monkeypatch.setattr(pairs_mod, "check_deadline", lambda _d: None)
+    m, p, _n = straight_pair()
+    with pytest.raises(DeadlineExpired):
+        pairs_mod._solo(m, p, 0.0, True, deadline=time.monotonic() - 1.0)

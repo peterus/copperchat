@@ -318,7 +318,13 @@ def _solo(
     for k, (r, window, budget) in enumerate(tries):
         check_deadline(deadline)
         grid = build_grid(
-            model, r, margin=margin, window_mm=window, extra=extra, extra_vias=extra_vias
+            model,
+            r,
+            margin=margin,
+            window_mm=window,
+            extra=extra,
+            extra_vias=extra_vias,
+            deadline=deadline,
         )
         if band is not None:
             grid.cheap = band(grid)
