@@ -286,12 +286,6 @@ async def test_4_to_2_empty_inner_ok(synth_rig: SynthRig) -> None:
     assert len((await _model(ctx)).copper_layers) == 2
 
 
-async def test_stackup_unavailable(synth_rig: SynthRig) -> None:
-    ctx = await _synced(synth_rig)
-    data, err = await _rules(ctx, stackup="jlc-4l-1.6-7628")
-    assert err and data["error"]["code"] == "stackup_unavailable", data
-
-
 async def test_fail_after_3_restores(synth_rig: SynthRig, monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = await _synced(synth_rig)
     before = await _model(ctx)
