@@ -156,6 +156,17 @@ async def test_hand_placed_hole_kept(synth_rig: SynthRig) -> None:
 
     async with ctx.session.commit("test: user hole", doc="pcb"):
         kiid = await ctx.session.call(place, timeout=120)
+
+    def mark(h: KicadHandle) -> None:  # users tick "not in schematic" to silence DRC
+        board = h.board()
+        fp = next(f for f in board.get_footprints() if str(f.id.value) == kiid)
+        fp.attributes.not_in_schematic = True
+        fp.attributes.exclude_from_bill_of_materials = True
+        fp.attributes.exclude_from_position_files = True
+        board.update_items(fp)
+
+    async with ctx.session.commit("test: user hole attributes", doc="pcb"):
+        await ctx.session.call(mark, timeout=60)
     data, err = await _outline(synth_rig.ctx(), holes={})
     assert not err, data
     data, err = await _outline(synth_rig.ctx(), holes={"inset": 4})

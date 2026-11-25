@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -428,3 +429,67 @@ def test_custom_rule_head_matches_exact_name() -> None:
     assert not re.search(_RULE_HEAD.format(re.escape("a")), text)
     assert re.search(_RULE_HEAD.format(re.escape("a b")), text)
     assert re.search(_RULE_HEAD.format(re.escape("c")), text)
+
+
+def test_verify_rules_flags_pattern_mismatch() -> None:
+    from copperchat.kicad_tools.board.setup import _verify_rules, parse_rules_args
+    from tests.unit.board.builders import board, net_class
+
+    req = parse_rules_args(
+        {
+            "net_classes": [
+                {
+                    "name": "Power",
+                    "track_width": 0.2,
+                    "clearance": 0.2,
+                    "via_diameter": 0.6,
+                    "via_drill": 0.3,
+                    "patterns": ["+3V3"],
+                }
+            ]
+        }
+    )
+    verify = _verify_rules(req, {}, "h")
+    ok = board(net_classes=(net_class("Power", patterns=("+3V3",)),))
+    wrong = board(net_classes=(net_class("Power", patterns=("VBUS",)),))
+    assert verify(ok, {}) == []
+    assert any("patterns" in p for p in verify(wrong, {}))
+
+
+def test_custom_rules_undo_armed_when_the_write_raises(tmp_path: Path) -> None:
+    """A rules write that raises (timeout, ApiError) keeps the undo armed; an explicit
+    rejection disarms it."""
+    from types import SimpleNamespace
+
+    from kipy.proto.board.board_commands_pb2 import CustomRulesStatus
+
+    from copperchat.kicad_tools.board.setup import CustomRuleArgs, _set_custom_rules
+
+    pro = tmp_path / "p.kicad_pro"
+    pro.write_text("{}")
+    project = SimpleNamespace(pro_file=pro)
+    rule = CustomRuleArgs("r1", "A.NetClass == 'x'", "clearance", 0.3, None, "a good reason")
+
+    class Board:
+        def __init__(self, outcome: Any) -> None:
+            self.outcome = outcome
+
+        def get_custom_design_rules(self) -> Any:
+            return SimpleNamespace(status=CustomRulesStatus.CRS_VALID, rules=[], error_text="")
+
+        def set_custom_design_rules(self, rules: Any) -> Any:
+            if isinstance(self.outcome, Exception):
+                raise self.outcome
+            return SimpleNamespace(status=self.outcome, error_text="bad")
+
+    state: dict[str, Any] = {}
+    h: Any = SimpleNamespace(board=lambda: Board(TimeoutError("slow")))
+    with pytest.raises(TimeoutError):
+        _set_custom_rules(h, project, (rule,), state)  # type: ignore[arg-type]
+    assert state["custom"] == [] and state["dru_created"] is True
+
+    state = {}
+    h = SimpleNamespace(board=lambda: Board(CustomRulesStatus.CRS_INVALID))
+    with pytest.raises(StructuredToolError):
+        _set_custom_rules(h, project, (rule,), state)  # type: ignore[arg-type]
+    assert "custom" not in state

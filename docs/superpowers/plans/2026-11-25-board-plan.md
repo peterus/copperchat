@@ -907,12 +907,17 @@ M13's "overhanging it" uses the same clip. Both switch settings are tested.
   `invalid_argument` checks: one of polygon/rect per keepout, unique keepout names,
   `2 × inset < min(w, h)`, hole positions inside the outline, keepout layers enabled
   (`all_copper` expanded). `verify` also fills `unplaced` and `placement_hash {before, after,
-  changed}`.
+  changed}`. Tool-placed holes carry the description `copperchat:tool_hole` (plus the three
+  attributes): the attributes alone cannot tell them from a hand-placed hole (stock
+  MountingHole footprints already exclude BOM/position files, users tick "not in schematic"), so
+  only marked holes are replaced; other symbol-less holes are kept and reported as `holes.kept`.
 - `pcb_set_rules`: all four stages are `commit=False` (rules, classes, layer count, custom rules
   are no board items), each with an `undo`. Input is checked in `parse_rules_args` (unique
   names, via drill < diameter, min ≤ max, no control characters); `overrides` without `preset`
   are checked against the JLCPCB preset of the target layer count and only the overrides are
-  written; an existing `.kicad_dru` KiCad cannot parse is refused (`invalid_argument`), never
+  written; a pattern belongs to one class, so giving it to a named class takes it from its
+  previous class (also an unnamed one) — listed in `patterns_moved`; an existing `.kicad_dru`
+  KiCad cannot parse is refused (`invalid_argument`), never
   overwritten. `setup.RULE_NAME` mirrors `specs_setup.NAME_PATTERN` (import cycle; a unit test
   keeps them equal). `stackup` → `stackup_unavailable` in a separate `plan_stackup` (P2b's hook).
 - Test rig: `synth_rig` / `SynthRig` in `tests/kicad/board/conftest.py` (sp4_synth through a

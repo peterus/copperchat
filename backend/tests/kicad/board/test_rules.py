@@ -206,6 +206,12 @@ async def test_net_class_pattern_replaced_and_moved(synth_rig: SynthRig) -> None
     classes = {c.name: c for c in (await _model(ctx)).net_classes}
     assert set(classes["Power"].patterns) == {"+3V3"}
     assert set(classes["Usb"].patterns) == {"VBUS"}
+    # a pattern given to a new class leaves the unnamed class that had it: reported
+    data, err = await _rules(ctx, net_classes=[dict(POWER, name="Rail", patterns=["+3V3"])])
+    assert not err, data
+    assert data["patterns_moved"] == [{"pattern": "+3V3", "from": "Power", "to": "Rail"}]
+    classes = {c.name: c for c in (await _model(ctx)).net_classes}
+    assert set(classes["Power"].patterns) == set() and set(classes["Rail"].patterns) == {"+3V3"}
 
 
 async def _set_4(ctx: ToolContext) -> None:

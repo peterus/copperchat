@@ -195,16 +195,19 @@ def _has_symbol(fp: FootprintInstance) -> bool:
     return len(fp.proto.symbol_path.path) > 0
 
 
+# The description `_mark_tool_holes` gives a tool-placed hole. The attributes alone do
+# not identify one: the stock MountingHole footprints already exclude BOM and position
+# files, and users tick "not in schematic" to silence DRC on a hand-placed hole.
+TOOL_HOLE_MARK = "copperchat:tool_hole"
+
+
 def _is_tool_hole(fp: FootprintInstance) -> bool:
-    """A hole an earlier `pcb_set_outline` placed: no symbol and the three attributes
-    `_mark_tool_holes` sets. A hole the user added by hand lacks them and is kept."""
-    a = fp.attributes
+    """A hole an earlier `pcb_set_outline` placed (no symbol, the tool's description
+    mark). Any other symbol-less hole was placed by the user and is kept."""
     return (
         _is_hole(fp)
         and not _has_symbol(fp)
-        and a.not_in_schematic
-        and a.exclude_from_bill_of_materials
-        and a.exclude_from_position_files
+        and str(fp.description_field.text.value) == TOOL_HOLE_MARK
     )
 
 
@@ -290,6 +293,7 @@ def _mark_tool_holes(h: KicadHandle, created: dict[str, str]) -> None:
             continue
         fp.reference_field.text.value = ref
         fp.locked = True
+        fp.description_field.text.value = TOOL_HOLE_MARK
         attrs = fp.attributes
         attrs.not_in_schematic = True
         attrs.exclude_from_bill_of_materials = True
@@ -953,10 +957,16 @@ def _undo_design_rules(h: KicadHandle, state: dict[str, Any]) -> None:
 
 
 def _set_net_classes(
-    h: KicadHandle, classes: tuple[NetClassArgs, ...], state: dict[str, Any]
+    h: KicadHandle,
+    classes: tuple[NetClassArgs, ...],
+    state: dict[str, Any],
+    report: dict[str, Any],
 ) -> None:
     """Stage: the given net classes (merged: classes not named are kept, `Default` only
-    changes when given) and their patterns (a given class's other patterns removed)."""
+    changes when given) and their patterns (a given class's other patterns removed). A
+    pattern belongs to one class: giving it to a named class takes it from the class
+    that had it - also an unnamed one; `report["patterns_moved"]` lists every such
+    move."""
     project = api.board_project(h)
     pre = [copy.deepcopy(nc.proto) for nc in project.get_net_classes()]
     pre_assign = project.get_net_class_assignments()
@@ -980,6 +990,13 @@ def _set_net_classes(
         out.append(nc)
     project.set_net_classes(out, MapMergeMode.MMM_MERGE)
     named = {c.name: set(c.patterns) for c in classes}
+    owner = {p.pattern: p.netclass for p in pre_assign.pattern_assignments}
+    report["patterns_moved"] = [
+        {"pattern": p, "from": owner[p], "to": c.name}
+        for c in classes
+        for p in c.patterns
+        if owner.get(p) not in (None, "", c.name)
+    ]
     patterns = [
         NetClassPatternAssignment(
             project_settings_pb2.NetClassPatternAssignment(pattern=p.pattern, netclass="")
@@ -1030,7 +1047,7 @@ def dru_exists(project: Project) -> bool:
     raise StructuredToolError(
         "Cannot write the custom rules",
         f"{rel} in the project directory is not the project's rules file (a symlink, a "
-        "directory or an unknown file)",
+        "directory or another non-regular file)",
         "Nothing was changed. Ask the user to move it away, then retry.",
         code="output_path_unsafe",
         details={"path": rel},
@@ -1064,12 +1081,13 @@ def _set_custom_rules(
     given = {r.name: _custom_rule_proto(r) for r in rules}
     merged = [given.pop(p.name, p) for p in pre]
     merged += given.values()
+    # The undo restores `pre` unless KiCad explicitly rejected the write (then nothing
+    # was written, and re-writing the old rules would re-serialise an untouched
+    # .kicad_dru); a call that raises keeps the undo armed.
+    state["custom"] = pre
     res = board.set_custom_design_rules([CustomRule(proto=p) for p in merged])
-    if res.status == CustomRulesStatus.CRS_VALID:
-        # Only an accepted write needs the undo: re-writing the old rules after a
-        # rejected one would make KiCad re-serialise an untouched .kicad_dru.
-        state["custom"] = pre
-    else:
+    if res.status != CustomRulesStatus.CRS_VALID:
+        del state["custom"]
         raise _rules_invalid(
             f"KiCad rejects the custom rules: {res.error_text or 'invalid'}",
             "Fix the condition (KiCad custom rule syntax, e.g. A.NetClass == 'Power').",
@@ -1078,11 +1096,13 @@ def _set_custom_rules(
 
 async def _undo_custom_rules(sctx: BoardStageContext, state: dict[str, Any]) -> None:
     """The pre-call rules back in KiCad; a `.kicad_dru` this call created is removed
-    (`remove_created`: a regular file only, never through a symlink)."""
-    if "custom" not in state:
-        return
-    pre = state["custom"]
-    await sctx.call(lambda h: h.board().set_custom_design_rules([CustomRule(proto=p) for p in pre]))
+    (`remove_created`: a regular file only, never through a symlink) whether or not
+    the rules write itself needs undoing."""
+    if "custom" in state:
+        pre = state["custom"]
+        await sctx.call(
+            lambda h: h.board().set_custom_design_rules([CustomRule(proto=p) for p in pre])
+        )
     if state.get("dru_created"):
         project = sctx.ctx.project
         await asyncio.to_thread(remove_created, project.pro_file.parent, [_dru_rel(project)])
@@ -1259,7 +1279,7 @@ def _plan_rules(
         stages.append(
             staged(
                 "net classes",
-                lambda h: _set_net_classes(h, req.net_classes, state),
+                lambda h: _set_net_classes(h, req.net_classes, state, report),
                 undo_with(_undo_net_classes),
             )
         )
