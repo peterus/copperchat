@@ -349,7 +349,7 @@ def _drop_and_merge(
             k = parent[k]
         return k
 
-    joints: set[Point] = set()  # merged joint points (snapped)
+    joints: set[tuple[str, str, Point]] = set()  # merged joints: (net, layer, snapped point)
     snapped: dict[str, tuple[Point, Point]] = {}  # touched kiid -> its snapped (start, end)
     near: dict[str, _Near] = {}  # layer -> every pad on it and every via
     for (_net, layer), tracks in sorted(by_nl.items()):
@@ -393,7 +393,7 @@ def _drop_and_merge(
             if items.at_via(p) or items.in_pad(p):
                 continue
             parent[find(t1.kiid)] = find(t2.kiid)
-            joints.add(p)
+            joints.add((t1.net, t1.layer, p))
     groups: dict[str, list[Track]] = defaultdict(list)
     for t in live:
         groups[find(t.kiid)].append(t)
@@ -401,13 +401,14 @@ def _drop_and_merge(
     for chain in groups.values():
         if len(chain) < 2:
             continue
-        # the chain's outer ends: the track ends that are no merge joint (joints are
-        # snapped nodes of the same net/layer, so compare the ends' snapped nodes)
+        # the chain's outer ends: the track ends that are no merge joint of the chain's own
+        # net/layer (joints are snapped nodes of that group, so compare the snapped nodes;
+        # another net's or layer's joint at the same place is not one)
         outer = [
             q
             for t in chain
             for q, sq in zip((t.start, t.end), snapped[t.kiid], strict=True)
-            if sq not in joints
+            if (t.net, t.layer, sq) not in joints
         ]
         a, b = min(outer), max(outer)
         first = next(t for t in chain if a in (t.start, t.end))
@@ -522,8 +523,9 @@ class _Chamferer:
             self.cgrid.add(i, (q[0], q[1], q[0], q[1]))
         # polylines() only reads the net's own tracks, pads and vias
         sub = replace(self.model, tracks=tuple(tracks), parts=tuple(parts))
+        near = _Near(pads, ())  # the net's pads on the layer, bucketed once per net/layer
         for pts, width in polylines(sub, net, layer):
-            ends = (any(_in_pad(pts[0], q) for q in pads), any(_in_pad(pts[-1], q) for q in pads))
+            ends = (near.in_pad(pts[0]), near.in_pad(pts[-1]))
             r = analyse_bends(pts, width, pad_ends=ends)
             if not r.ninety or any(getattr(r, f) for f in _OTHER_FAILS):
                 continue
@@ -896,11 +898,14 @@ def postprocess(model: BoardModel, kiids: frozenset[str]) -> PostResult:
         rest = tuple(wt[i] for i in ids if i not in mine)
         base = analyse_tracks(replace(work, tracks=rest, arcs=()), index=index) if rest else None
         for field, why in _REASON.items():
-            old = getattr(base, field) if base is not None else ()
+            old: Sequence[Point] = getattr(base, field) if base is not None else ()
+            old_grid = _Grid()  # the baseline's failing points of this kind, bucketed
+            for k, o in enumerate(old):
+                old_grid.add(k, (o[0], o[1], o[0], o[1]))
             for p in getattr(rep, field):
-                if any(math.dist(p, q) <= _ON_TRACK_TOL for q in old):
-                    continue
                 box = (p[0] - tol, p[1] - tol, p[0] + tol, p[1] + tol)
+                if any(math.dist(p, old[k]) <= tol for k in old_grid.query(box)):
+                    continue
                 tids = {
                     i
                     for i in near_grid.query(box)

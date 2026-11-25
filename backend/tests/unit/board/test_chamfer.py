@@ -285,6 +285,48 @@ def test_merge_collinear() -> None:
     assert (merged.kiid, merged.width, merged.locked) == ("", 0.2, False)
 
 
+def _xnet_board(*, both_ends: bool) -> BoardModel:
+    """N1 F.Cu split at (5, 0); N2 B.Cu split at (5, 5) with its ends at (5, 0) and (5, 10)
+    - on another net/layer than N1's joint (and N3's joint at (5, 10) when `both_ends`)."""
+    tracks = [
+        track("N1", "F.Cu", (0.0, 0.0), (5.0, 0.0), 0.2, kiid="a0"),
+        track("N1", "F.Cu", (5.0, 0.0), (10.0, 0.0), 0.2, kiid="a1"),
+        track("N2", "B.Cu", (5.0, 0.0), (5.0, 5.0), 0.2, kiid="b0"),
+        track("N2", "B.Cu", (5.0, 5.0), (5.0, 10.0), 0.2, kiid="b1"),
+    ]
+    parts = [pad_part("J1", 0.0, 0.0), pad_part("J2", 10.0, 0.0)]
+    if both_ends:
+        tracks += [
+            track("N3", "F.Cu", (0.0, 10.0), (5.0, 10.0), 0.2, kiid="c0"),
+            track("N3", "F.Cu", (5.0, 10.0), (10.0, 10.0), 0.2, kiid="c1"),
+        ]
+        parts += [pad_part("K1", 0.0, 10.0, net="N3"), pad_part("K2", 10.0, 10.0, net="N3")]
+    return board(
+        parts=tuple(parts),
+        tracks=tuple(tracks),
+        net_class_of=(("N1", "Default"), ("N2", "Default"), ("N3", "Default")),
+    )
+
+
+@pytest.mark.parametrize("both_ends", [False, True])
+def test_merge_joints_per_net_and_layer(both_ends: bool) -> None:
+    # another net's/layer's merge joint at a chain's outer end must not drop that end
+    m = _xnet_board(both_ends=both_ends)
+    r = postprocess(m, frozenset(t.kiid for t in m.tracks))
+    assert r.rip == ()
+    rep = dict(r.replace)
+    assert rep["a1"] == () and rep["b1"] == ()
+    (a,) = rep["a0"]
+    (b,) = rep["b0"]
+    assert (a.net, a.layer, a.start, a.end) == ("N1", "F.Cu", (0.0, 0.0), (10.0, 0.0))
+    assert (b.net, b.layer, b.start, b.end) == ("N2", "B.Cu", (5.0, 0.0), (5.0, 10.0))
+    if both_ends:
+        assert rep["c1"] == ()
+        (c,) = rep["c0"]
+        assert (c.net, c.layer, c.start, c.end) == ("N3", "F.Cu", (0.0, 10.0), (10.0, 10.0))
+    assert r.merged == (3 if both_ends else 2)
+
+
 def test_merge_stops_at_via() -> None:
     pts = [(10.0, 10.0), (15.0, 10.0), (20.0, 10.0)]
     m = routed(pts, vias=(via("N1", (15.0, 10.0)),))
@@ -586,6 +628,61 @@ def test_timing_merge_long_chain() -> None:
     assert elapsed < 1.0, elapsed
 
 
+def test_timing_pad_comb(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A 1600-pad GND comb (spine + one stub per pad, all touched): the polyline pad-end
+    check must not test every polyline end against every pad of the net."""
+    calls = 0
+    in_pad = chamfer._in_pad
+
+    def counted(p: Point, q: Pad) -> bool:
+        nonlocal calls
+        calls += 1
+        return in_pad(p, q)
+
+    monkeypatch.setattr(chamfer, "_in_pad", counted)
+    xs = [1.0 + 0.5 * k for k in range(1600)]
+    spine = [
+        track("GND", "F.Cu", (a, 5.0), (b, 5.0), 0.2, kiid=f"s{k}")
+        for k, (a, b) in enumerate(itertools.pairwise(xs))
+    ]
+    stubs = [track("GND", "F.Cu", (x, 5.0), (x, 6.0), 0.2, kiid=f"p{k}") for k, x in enumerate(xs)]
+    parts = [
+        part(f"R{k}", x, 6.0, half=0.2, pads=(pad(f"R{k}", x, 6.0, net="GND", size=0.2),))
+        for k, x in enumerate(xs)
+    ]
+    m = board(parts=tuple(parts), tracks=(*spine, *stubs), net_class_of=(("GND", "Default"),))
+    t0 = time.perf_counter()
+    r = postprocess(m, frozenset(t.kiid for t in m.tracks))
+    elapsed = time.perf_counter() - t0
+    assert r.merged == 0
+    print(f"postprocess 1600-pad comb: {elapsed:.3f} s, {calls} _in_pad calls")
+    assert calls < 100_000, calls  # was 2.56 M (every polyline end x every pad)
+    assert elapsed < 3.0, elapsed
+
+
+def test_timing_step3_large_baseline() -> None:
+    """An untouched staircase with 4000 90-degree corners plus one touched track on the same
+    net/layer: suppressing the baseline defects must not compare every new defect with
+    every pre-existing one."""
+    pts = [(1.0, 1.0)]
+    for k in range(4001):
+        x, y = pts[-1]
+        pts.append((x + 0.5, y) if k % 2 == 0 else (x, y + 0.5))
+    stair = path_tracks(pts, prefix="u")
+    m = board(
+        parts=(pad_part("J1", 0.0, 0.0), pad_part("J2", 20.0, 0.0)),
+        tracks=(*stair, track("N1", "F.Cu", (0.0, 0.0), (20.0, 0.0), 0.2, kiid="t0")),
+        net_class_of=(("N1", "Default"),),
+    )
+    assert len(analyse_tracks(m).ninety) == 4000
+    t0 = time.perf_counter()
+    r = postprocess(m, kiids(m))
+    elapsed = time.perf_counter() - t0
+    assert r.rip == ()
+    print(f"postprocess 4000 baseline defects: {elapsed:.3f} s")
+    assert elapsed < 1.0, elapsed
+
+
 # ---- property test ------------------------------------------------------------------------
 
 _DIRS = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)]
@@ -627,11 +724,55 @@ def _case(seed: int) -> tuple[BoardModel, frozenset[str], list[Point], float]:
             d = rng.uniform(0.4, 1.5)
             x, y = c[0] + d * math.cos(ang), c[1] + d * math.sin(ang)
             obst.append(pad_part(f"U{j + 10}", nm(x), nm(y), net="N2", size=size))
-    m = routed(pts, width, extra_parts=obst)
-    ks = kiids(m)
-    if len(m.tracks) > 1 and rng.random() < 0.25:  # one track stays untouched copper
-        ks = ks - {rng.choice(sorted(ks))}
+    # a separate stream, so the polylines / obstacles of every seed stay as they were
+    rng2 = random.Random(seed + 1_000_000)
+    split = _split_legs(rng2, pts)
+    xnet = _xnet_tracks(rng2, split, width)
+    m = routed(split, width, extra_parts=obst, extra_tracks=xnet)
+    ks = kiids(m) | kiids(m, "n3-")
+    n1 = sorted(k for k in ks if k.startswith("t"))
+    if len(n1) > 1 and rng.random() < 0.25:  # one track stays untouched copper
+        ks = ks - {rng.choice(n1)}
     return m, ks, pts, width
+
+
+def _nm_ints(p: Point) -> tuple[int, int]:
+    return (round(p[0] * 1e6), round(p[1] * 1e6))
+
+
+def _split_legs(rng: random.Random, pts: Sequence[Point]) -> list[Point]:
+    """`pts` with some straight legs split into 2-3 collinear touched pieces (nm grid)."""
+    out = [pts[0]]
+    for a, b in itertools.pairwise(pts):
+        (ax, ay), (bx, by) = _nm_ints(a), _nm_ints(b)
+        steps = max(abs(bx - ax), abs(by - ay))
+        if steps >= 4 and rng.random() < 0.4:
+            dx, dy = (bx > ax) - (bx < ax), (by > ay) - (by < ay)
+            for k in sorted(rng.sample(range(1, steps), rng.choice((1, 2)))):
+                out.append(((ax + dx * k) / 1e6, (ay + dy * k) / 1e6))
+        out.append(b)
+    return out
+
+
+def _xnet_tracks(rng: random.Random, pts: Sequence[Point], width: float) -> list[Track]:
+    """Sometimes a split straight N3 run on B.Cu with its end or its joint on a vertex /
+    split point of N1 (another net and layer sharing coordinates)."""
+    if rng.random() < 0.5:
+        return []
+    ax, ay = _nm_ints(rng.choice(list(pts)))
+    dx, dy = _DIRS[rng.randrange(8)]
+    k1 = rng.randint(200, 3000) * 1000  # nm steps
+    k2 = rng.randint(200, 3000) * 1000
+    if rng.random() < 0.5:  # the anchor is N3's outer end
+        run = [(ax, ay), (ax + dx * k1, ay + dy * k1), (ax + dx * (k1 + k2), ay + dy * (k1 + k2))]
+    else:  # the anchor is N3's joint
+        run = [(ax - dx * k1, ay - dy * k1), (ax, ay), (ax + dx * k2, ay + dy * k2)]
+    return [
+        track(
+            "N3", "B.Cu", (a[0] / 1e6, a[1] / 1e6), (b[0] / 1e6, b[1] / 1e6), width, kiid=f"n3-{i}"
+        )
+        for i, (a, b) in enumerate(itertools.pairwise(run))
+    ]
 
 
 def test_output_passes_analyse_bends() -> None:
@@ -644,6 +785,11 @@ def test_output_passes_analyse_bends() -> None:
         for t in (t for _, new in r.replace for t in new):
             assert on_nm_grid(t), msg
         out = nm_model(apply(m, r))
+        n3_in = [t for t in m.tracks if t.net == "N3"]
+        if n3_in:  # N3 (no pads, nothing at its joint): one merged track, same outer ends
+            (n3,) = [t for t in out.tracks if t.net == "N3"]
+            assert {n3.start, n3.end} == {n3_in[0].start, n3_in[-1].end}, msg
+            assert not any(k.startswith("N3") for k in r.rip), msg
         if routed_length(m, *_pads(m)) is not None and routed_length(out, *_pads(out)) is None:
             assert KEY in r.rip, msg
         if KEY in r.rip:
