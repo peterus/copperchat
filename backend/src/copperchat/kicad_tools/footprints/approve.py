@@ -33,9 +33,16 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from copperchat.approvals import (
+    MIN_QUOTE_CHARS,
+    MIN_QUOTE_WORDS,
+    human_messages_after,
+    normalise,
+    plan_running,
+    quote_in_message,
+)
 from copperchat.changes.repo import ChangeEntry
 from copperchat.db.repos.footprints import FootprintReviewRepo, FootprintWriteRepo
-from copperchat.db.repos.messages import USER_ORIGIN, MessageRepo, MessageRow
 from copperchat.errors import DocumentInconsistent, StructuredToolError, attach_tool_notes
 from copperchat.history.library_lock import assert_library_locked
 from copperchat.kicad_session import KicadUnavailable
@@ -69,7 +76,6 @@ from copperchat.kicad_tools.footprints.model import (
 from copperchat.kicad_tools.footprints.read import parse_lib_id, pending_lib_ids, require_enabled
 from copperchat.library.local import LocalLibrary
 from copperchat.library.service import library_for, local_footprint_file_safe
-from copperchat.plans.repo import PlanRepo
 from copperchat.tools.spec import ToolContext, ToolResult
 
 if TYPE_CHECKING:
@@ -82,8 +88,8 @@ LOGICAL_CHANGES = 1  # spec §12
 APPROVE_KEYS = frozenset({"lib_id", "geometry_hash", "user_quote"})
 HASH_RE = re.compile(r"^[0-9a-f]{64}\Z")
 MAX_QUOTE_CHARS = 300
-MIN_QUOTE_WORDS = 2  # index author call 15
-MIN_QUOTE_CHARS = 8  # non-space characters
+# re-exported (existing imports): the quote rule lives in `copperchat.approvals`
+__all__ = ["MIN_QUOTE_CHARS", "MIN_QUOTE_WORDS", "normalise", "quote_in_message"]
 
 
 @dataclass(frozen=True)
@@ -129,40 +135,7 @@ def refused(guard: int, what: str, why: str, suggestion: str) -> StructuredToolE
     )
 
 
-# -- guard 5: the quote ----------------------------------------------------------------
-
-
-def normalise(text: str) -> str:
-    """Whitespace runs -> one space, trimmed (case and punctuation kept)."""
-    return " ".join(text.split())
-
-
-def _word(ch: str) -> bool:
-    return ch.isalnum() or ch == "_"
-
-
-def quote_in_message(quote: str, message: str) -> bool:
-    """Guard 5 (spec §7.7, index author call 15): after whitespace normalisation the
-    quote equals the whole message, or it holds at least 2 words and 8 non-space
-    characters and occurs in the message starting and ending on word boundaries
-    (case-sensitive). So "ok" in a longer message and "ok go" inside "look good" do
-    not count, while a whole message "ok!" quoted as "ok!" does."""
-    q, m = normalise(quote), normalise(message)
-    if not q:
-        return False
-    if q == m:
-        return True
-    if len(q.split()) < MIN_QUOTE_WORDS or len(q.replace(" ", "")) < MIN_QUOTE_CHARS:
-        return False
-    start = m.find(q)
-    while start >= 0:
-        end = start + len(q)
-        before_ok = start == 0 or not (_word(m[start - 1]) and _word(q[0]))
-        after_ok = end == len(m) or not (_word(m[end]) and _word(q[-1]))
-        if before_ok and after_ok:
-            return True
-        start = m.find(q, start + 1)
-    return False
+# -- guard 5: the quote (`copperchat.approvals`: normalise, quote_in_message) ------------
 
 
 # -- guards 3 to 6: the evidence in the database ---------------------------------------
@@ -215,7 +188,7 @@ async def check_evidence(
             "approve only after the user answers with an explicit OK in their next message.",
         )
     shown_at = max(review.rendered_at, review.checked_at)
-    human = await _human_messages(ctx)
+    human = await human_messages_after(ctx, None)
     later = [m for m in human if m.created_at > shown_at]
     if not later:
         if not human:
@@ -244,7 +217,7 @@ async def check_evidence(
             "boundaries, or their whole message)",
             "Quote the user's approval verbatim; if they did not approve clearly, ask them.",
         )
-    if await PlanRepo(db).running_in_conversation(cid):
+    if await plan_running(ctx):
         raise refused(
             6,
             f"{lib_id} cannot be approved while a plan runs",
@@ -252,14 +225,6 @@ async def check_evidence(
             "user's answer",
             "Finish the plan first, then ask the user for the approval.",
         )
-
-
-async def _human_messages(ctx: ToolContext) -> list[MessageRow]:
-    """The messages the user typed that the current run processed (guard 4)."""
-    if ctx.run_id is None or ctx.editing is None or ctx.conversation_id is None:
-        return []
-    rows = await MessageRepo(ctx.editing.db).run_user_messages(ctx.conversation_id, ctx.run_id)
-    return [m for m in rows if m.metadata.get("origin") == USER_ORIGIN]
 
 
 # -- prepare ---------------------------------------------------------------------------
