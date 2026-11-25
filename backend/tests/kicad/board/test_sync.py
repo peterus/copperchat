@@ -166,3 +166,113 @@ async def test_symlinked_pcb_refused(synth_rig: SynthRig, tmp_path: Path) -> Non
     assert not target.exists() and list(outside.iterdir()) == []
     assert os.path.islink(pcb)
     assert HistoryService.docs_of(ctx.project) == {"sch"}
+
+
+async def _synced(rig: SynthRig) -> ToolContext:
+    data, err = await _sync(rig.ctx())
+    assert not err, data
+    return rig.ctx()
+
+
+def _positions(m: BoardModel, refs: list[str]) -> dict[str, tuple[float, float]]:
+    return {p.ref: (p.x, p.y) for p in m.parts if p.ref in refs}
+
+
+async def test_resync_keeps_placement(synth_rig: SynthRig) -> None:
+    from kipy.geometry import Vector2
+
+    ctx = await _synced(synth_rig)
+
+    def move(h: KicadHandle) -> None:
+        board = h.board()
+        fps = {f.reference_field.text.value: f for f in board.get_footprints()}
+        fps["U1"].position = Vector2.from_xy(30 * MM, 30 * MM)
+        fps["C1"].position = Vector2.from_xy(40 * MM, 32 * MM)
+        board.update_items([fps["U1"], fps["C1"]])
+
+    async with ctx.session.commit("test: place U1, C1", doc="pcb"):
+        await ctx.session.call(move)
+    await ctx.session.save("pcb")
+    placed = _positions(await _model(ctx), ["U1", "C1"])
+    data, err = await call_tool(ctx, "sch_set_fields", ref="R4", fields={"value": "22k"})
+    assert not err, data
+    ctx = synth_rig.ctx()
+    data, err = await _sync(ctx)
+    assert not err, data
+    assert data["changed"] == ["R4"] and data["added"] == [] and data["removed"] == []
+    m = await _model(ctx)
+    for ref, (x, y) in _positions(m, ["U1", "C1"]).items():
+        assert abs(x - placed[ref][0]) <= 0.001 and abs(y - placed[ref][1]) <= 0.001, ref
+    assert m.part("R4").value == "22k"
+
+
+async def test_delete_extra(synth_rig: SynthRig) -> None:
+    ctx = await _synced(synth_rig)
+    data, err = await call_tool(ctx, "sch_delete", items=["R1"])
+    assert not err, data
+    ctx = synth_rig.ctx()
+    data, err = await _sync(ctx, delete_extra=False)
+    assert not err, data
+    assert data["removed"] == [] and "R1" in {p.ref for p in (await _model(ctx)).parts}
+    data, err = await _sync(ctx)
+    assert not err, data
+    assert data["removed"] == ["R1"]
+    assert "R1" not in {p.ref for p in (await _model(ctx)).parts}
+
+
+async def test_pad_warning_suggests_fp_check(synth_rig: SynthRig) -> None:
+    ctx = await _synced(synth_rig)
+    data, err = await call_tool(
+        ctx, "sch_set_fields", ref="U3", fields={"footprint": "Package_TO_SOT_SMD:SOT-23"}
+    )
+    assert not err, data
+    ctx = synth_rig.ctx()
+    data, err = await _sync(ctx)
+    assert not err, data
+    print("sync warnings:", data["warnings"])
+    rows = [w for w in data["warnings"] if w.get("ref") == "U3"]
+    assert rows, data["warnings"]
+    assert rows[0]["suggestion"] == "check the footprint of U3 with fp_check"
+    assert data["changed"] == ["U3"]
+
+
+async def test_failure_after_clean_dry_run(
+    synth_rig: SynthRig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from copperchat.kicad_tools.board import compensate, engine
+
+    ctx = await _synced(synth_rig)
+    real_import = sync._import
+    calls: list[bool] = []
+
+    def failing_import(h: KicadHandle, netlist: Path, *, dry_run: bool, delete_extra: bool) -> Any:
+        calls.append(dry_run)
+        if not dry_run:
+            raise RuntimeError("import exploded")
+        return real_import(h, netlist, dry_run=dry_run, delete_extra=delete_extra)
+
+    restored: list[Any] = []
+    monkeypatch.setattr(sync, "_import", failing_import)
+    monkeypatch.setattr(engine, "restore", lambda *a: restored.append(a) or {})
+    monkeypatch.setattr(compensate, "restore", lambda *a: restored.append(a) or {})
+    data, err = await _sync(ctx)
+    assert err and data["error"]["code"] == "sync_failed", data
+    assert "History panel" in data["error"]["suggestion"]
+    assert calls == [True, False] and restored == []
+
+
+async def test_failure_on_created_board_dry_run(
+    synth_rig: SynthRig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = synth_rig.ctx()
+
+    def dirty_dry_run(h: KicadHandle, netlist: Path, *, dry_run: bool, delete_extra: bool) -> Any:
+        assert dry_run, "the real import must not run"
+        return {"errors": 1, "warnings": 0, "new": 0, "report": "Error: something is off\n"}
+
+    monkeypatch.setattr(sync, "_import", dirty_dry_run)
+    data, err = await _sync(ctx)
+    assert err and data["error"]["code"] == "sync_failed", data
+    assert "something is off" in data["error"]["why"]
+    assert not ctx.project.pro_file.with_suffix(".kicad_pcb").exists()
+    assert HistoryService.docs_of(synth_rig.session.project) == {"sch"}

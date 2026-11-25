@@ -114,3 +114,23 @@ def test_part_without_courtyard_gets_a_cell() -> None:
 
 def test_unknown_refs_ignored() -> None:
     assert staging_positions(board(), ["R9"]) == ()
+
+
+def test_warning_rows_pad_lines() -> None:
+    from copperchat.kicad_tools.board.sync import warning_rows
+
+    report = (
+        "Processing symbol 'U3:Package_TO_SOT_SMD:SOT-23'.\n"
+        "Disconnect U3 pin 5.\n"
+        "Warning: No pad found for pin 7 in footprint R10.\n"
+        "Warning: something else entirely.\n"
+        "Add U3 'Do not place' fabrication attribute.\n"
+    )
+    rows = warning_rows(report, {"U3", "R10"})
+    assert [r["text"] for r in rows] == [
+        "Disconnect U3 pin 5.",
+        "Warning: No pad found for pin 7 in footprint R10.",
+        "Warning: something else entirely.",
+    ]
+    assert rows[0]["suggestion"] == "check the footprint of U3 with fp_check"
+    assert rows[1]["ref"] == "R10" and "suggestion" not in rows[2]

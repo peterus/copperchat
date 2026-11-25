@@ -50,7 +50,10 @@ SYNC_COST = 3
 # -- report ----------------------------------------------------------------------------
 
 _PAD_LINE = re.compile(r"\bpad\b|\bpin\b", re.I)
-_REF_IN_LINE = re.compile(r"\b([A-Z]+[A-Za-z_]*\d+)\b")
+# KiCad reports a footprint pad whose pin the symbol does not have as an info line
+# ("Disconnect U3 pin 5."), not as a warning: listed with the warnings.
+_DISCONNECT = re.compile(r"^disconnect\s+\S+\s+pin\s+\S+", re.I)
+_TOKEN = re.compile(r"[^\s'\"(),:]+")
 
 
 def _severity_lines(report: str, word: str) -> list[str]:
@@ -58,19 +61,32 @@ def _severity_lines(report: str, word: str) -> list[str]:
 
 
 def warning_rows(report: str, refs: set[str]) -> list[dict[str, Any]]:
-    """KiCad's warning lines of an import report; a line about a pad or pin that names a
-    footprint of the board gets the fp_check suggestion (a footprint that does not fit
-    its symbol)."""
+    """KiCad's warning lines of an import report plus its "Disconnect <ref> pin <n>"
+    lines; a line about a pad or pin that names a footprint of the board gets the
+    fp_check suggestion (a footprint that does not fit its symbol)."""
     rows: list[dict[str, Any]] = []
-    for line in _severity_lines(report, "warning"):
+    for raw in report.splitlines():
+        line = raw.strip()
+        if not (line.lower().startswith("warning") or _DISCONNECT.match(line)):
+            continue
         row: dict[str, Any] = {"text": line}
         if _PAD_LINE.search(line):
-            named = [r for r in _REF_IN_LINE.findall(line) if r in refs]
+            named = [t.rstrip(".") for t in _TOKEN.findall(line) if t.rstrip(".") in refs]
             if named:
                 row["ref"] = named[0]
                 row["suggestion"] = f"check the footprint of {named[0]} with fp_check"
         rows.append(row)
     return rows
+
+
+def _dedupe(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    out = []
+    for row in rows:
+        if row["text"] not in seen:
+            seen.add(row["text"])
+            out.append(row)
+    return out[:MAX_WARNINGS]
 
 
 def _nets(m: BoardModel | None) -> set[str]:
@@ -256,7 +272,7 @@ async def prepare_sync(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
     except BaseException:
         await asyncio.to_thread(shutil.rmtree, work, True)
         raise
-    return _plan(ctx, netlist, work, before, delete_extra)
+    return _plan(ctx, netlist, work, before, delete_extra, dry)
 
 
 async def _dry_run_report(
@@ -278,16 +294,24 @@ async def _dry_run_report(
         "new_footprints": dry["new"],
         "error_count": dry["errors"],
         "warning_count": dry["warnings"],
-        "warnings": warning_rows(dry["report"], refs)[:MAX_WARNINGS],
+        "warnings": _dedupe(warning_rows(dry["report"], refs)),
         "report": dry["report"].splitlines()[:200],
     }
 
 
 def _plan(
-    ctx: ToolContext, netlist: Path, work: Path, before: BoardModel | None, delete_extra: bool
+    ctx: ToolContext,
+    netlist: Path,
+    work: Path,
+    before: BoardModel | None,
+    delete_extra: bool,
+    dry: dict[str, Any] | None,
 ) -> BoardChangeSet:
     creates = ctx.project.pcb_file is None
     pre_kiids = {p.kiid for p in before.parts} if before is not None else set()
+    # A footprint KiCad exchanged (new KIID, same ref) keeps its place: only refs new
+    # to the board go to the staging area.
+    pre_refs = {p.ref for p in before.parts} if before is not None else set()
     state: dict[str, Any] = {}
 
     async def dry_run_new_board(sctx: BoardStageContext) -> None:
@@ -302,7 +326,7 @@ def _plan(
 
     async def stage_new(sctx: BoardStageContext) -> None:
         model = await sctx.model()
-        new = {p.kiid for p in model.parts} - pre_kiids
+        new = {p.kiid for p in model.parts if p.ref not in pre_refs} - pre_kiids
         refs = [p.ref for p in model.parts if p.kiid in new]
         moves = staging_positions(model, refs)
         by_ref = {mv.ref: mv for mv in moves}
@@ -313,12 +337,16 @@ def _plan(
                 )
         after = await sctx.model()
         imp = state.get("import", {"report": ""})
+        refs_after = {p.ref for p in after.parts}
+        # A footprint that lost pins shows only in the dry run against the old board
+        # ("Disconnect U3 pin 5."): the exported netlist already drops pins without a
+        # pad, and the real import exchanges the footprint silently.
+        rows = warning_rows(dry["report"], refs_after) if dry is not None else []
+        rows += warning_rows(imp["report"], refs_after)
         sctx.report.update(diff_report(before, after))
         sctx.report.update(
             {
-                "warnings": warning_rows(imp["report"], {p.ref for p in after.parts})[
-                    :MAX_WARNINGS
-                ],
+                "warnings": _dedupe(rows),
                 "footprints": len(after.parts),
                 "unplaced": sum(1 for p in after.parts if not after.placed(p)),
                 "staging_box": staging_box(model, moves),
