@@ -40,10 +40,12 @@ def _hashes(model: BoardModel) -> dict[str, str]:
 
 
 async def checkpoint_state(
-    db: Database, project: Project, model: BoardModel
+    db: Database, project: Project, model: BoardModel, *, current: dict[str, str] | None = None
 ) -> dict[str, CheckpointState]:
-    """`{"placement": ..., "board": ...}` for the project's board (B-C10)."""
-    current = await asyncio.to_thread(_hashes, model)
+    """`{"placement": ..., "board": ...}` for the project's board (B-C10); `current` = the
+    model's hashes when the caller has them already (else computed here)."""
+    if current is None:
+        current = await asyncio.to_thread(_hashes, model)
     repo = BoardCheckpointRepo(db)
     out: dict[str, CheckpointState] = {}
     for stage in STAGES:

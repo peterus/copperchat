@@ -161,3 +161,103 @@ def test_crosscheck_counts_differences() -> None:
 
 def test_max_listed() -> None:
     assert MAX_LISTED == 50
+
+
+def test_excluded_parity_dropped(tmp_path: Any) -> None:
+    from copperchat.kicad_tools.board.check import _read_and_parse
+
+    report = json.loads(CLI_REPORT)
+    report["schematic_parity"].append(
+        {"type": "extra_footprint", "severity": "exclusion", "description": "x", "items": []}
+    )
+    path = tmp_path / "drc.json"
+    path.write_text(json.dumps(report))
+    parsed = _read_and_parse(path)
+    assert parsed is not None
+    violations, parity = parsed
+    assert len(violations) == 2 and [p.type for p in parity] == ["missing_footprint"]
+    assert _read_and_parse(tmp_path / "missing.json") is None
+
+
+class _CopySession:
+    """save_copy of a session whose schematic has unsaved edits (or is fine)."""
+
+    def __init__(self, modified: bool) -> None:
+        self.modified = modified
+        self.copies: list[str] = []
+
+    async def save_copy(self, doc: str, dest: Any, *, save_modified: bool = True) -> Any:
+        from copperchat.kicad_session.errors import DocumentModified
+
+        assert save_modified is False or doc == "pcb"
+        if doc == "sch" and self.modified:
+            raise DocumentModified("the schematic has unsaved edits")
+        self.copies.append(doc)
+        return dest
+
+
+def _project(tmp_path: Any, sch: bool) -> Any:
+    from copperchat.projects import Project
+
+    return Project(
+        id="p" * 12, name="p", rel_path="p", dir=tmp_path, pro_file=tmp_path / "p.kicad_pro",
+        sch_file=tmp_path / "p.kicad_sch" if sch else None, pcb_file=tmp_path / "p.kicad_pcb",
+    )  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("sch", "modified", "code"),
+    [(False, False, "drc_rejected"), (True, True, "schematic_unsaved")],
+)
+async def test_cli_parity_refusals(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch, sch: bool, modified: bool, code: str
+) -> None:
+    """No schematic → drc_rejected; an unsaved schematic → schematic_unsaved (never a
+    save); kicad-cli never runs and the copy dir is removed."""
+    from types import SimpleNamespace
+
+    from copperchat.kicad_tools.board import check as check_mod
+    from copperchat.projects import agent_dir
+
+    async def no_cli(*a: Any, **k: Any) -> Any:
+        raise AssertionError("kicad-cli must not run")
+
+    monkeypatch.setattr(check_mod, "run_kicad_cli", no_cli)
+    session = _CopySession(modified)
+    ctx: Any = SimpleNamespace(project=_project(tmp_path, sch), session=session, settings=None)
+    with pytest.raises(StructuredToolError) as err:
+        await check_mod.cli_parity(ctx)
+    assert err.value.code == code
+    assert session.copies == []
+    root = agent_dir(ctx.project) / "board" / "check"
+    assert not root.exists() or list(root.iterdir()) == []
+
+
+async def test_render_evidence_skipped_after_write(tmp_path: Any) -> None:
+    """pcb_render records no evidence when a board write was logged since its model
+    read; with none it records one row."""
+    from types import SimpleNamespace
+
+    from copperchat.changes.repo import ChangeEntry, ChangeRepo
+    from copperchat.db import Database
+    from copperchat.kicad_tools.board.views import _record_evidence
+
+    db = await Database.open(tmp_path / "r.db")
+    try:
+        project = _project(tmp_path, True)
+        ctx: Any = SimpleNamespace(
+            project=project, editing=SimpleNamespace(db=db), conversation_id="c" * 32,
+            run_id="run-1",
+        )  # fmt: skip
+        out: Any = SimpleNamespace(placement_hash="a" * 64, board_hash="b" * 64)
+        since = "2026-11-25T10:00:00.000Z"
+        await _record_evidence(ctx, "top", out, since)
+        await ChangeRepo(db).add_many(
+            [ChangeEntry(project.id, "run-1", None, 0, "pcb_move", "modify", "board_move", "",
+                         "", created_at="2026-11-25T10:00:01.000Z")]
+        )  # fmt: skip
+        await _record_evidence(ctx, "bottom", out, since)
+        rows = await db.fetchall("SELECT view FROM board_reviews ORDER BY id")
+        assert [r[0] for r in rows] == ["top"]
+    finally:
+        await db.close()

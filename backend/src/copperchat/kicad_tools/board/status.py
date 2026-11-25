@@ -91,7 +91,8 @@ async def _review_fields(
     if ctx.editing is None:
         return None, None
     db = ctx.editing.db
-    checkpoints = dict(await checkpoint_state(db, ctx.project, model))
+    current = {"placement": data["placement_hash"], "board": data["board_hash"]}
+    checkpoints = dict(await checkpoint_state(db, ctx.project, model, current=current))
     if ctx.conversation_id is None:
         return checkpoints, None
     row = await BoardReviewRepo(db).last_check(

@@ -275,6 +275,18 @@ def _read_report(path: Path) -> dict[str, Any] | None:
     return doc
 
 
+def _read_and_parse(
+    path: Path,
+) -> tuple[tuple[DrcMarker, ...], tuple[DrcMarker, ...]] | None:
+    """(violations, parity) of the report at `path` (None when there is none); excluded
+    parity markers are dropped, as the API task's exclusions are."""
+    report = _read_report(path)
+    if report is None:
+        return None
+    violations, parity, _ = parse_cli_drc(report)
+    return violations, tuple(mk for mk in parity if mk.severity != "exclusion")
+
+
 def _tail(text: str) -> str:
     lines = [ln for ln in text.strip().splitlines() if ln.strip()]
     return (lines[-1] if lines else "no output")[:200]
@@ -330,14 +342,13 @@ async def cli_parity(ctx: ToolContext) -> tuple[tuple[DrcMarker, ...], tuple[Drc
                 ) from None
             except OSError as exc:
                 raise _rejected(f"kicad-cli could not be started ({type(exc).__name__})") from None
-        report = await asyncio.to_thread(_read_report, out)
-        if report is None:
+        parsed = await asyncio.to_thread(_read_and_parse, out)  # big reports: off the loop
+        if parsed is None:
             raise _rejected(
                 f"kicad-cli pcb drc exited with {result.returncode} and wrote no report: "
                 f"{_tail(result.stderr or result.stdout)}"
             )
-        violations, parity, _ = parse_cli_drc(report)
-        return violations, parity
+        return parsed
     except OSError as exc:  # the copy directory or a copy could not be written
         raise _rejected(f"the board copy could not be written ({type(exc).__name__})") from None
     finally:
@@ -373,7 +384,7 @@ async def pcb_check(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     cross: dict[str, int] | None = None
     if level == "full":
         cli_violations, parity = await cli_parity(ctx)
-        cross = crosscheck(cli_violations, drc.markers)
+        cross = await asyncio.to_thread(crosscheck, cli_violations, drc.markers)
         if cross["only_cli"] or cross["only_api"]:
             log.info("pcb_check full: CLI/API DRC differ %s", cross)
     after = await asyncio.to_thread(_hashes, await board_model(ctx))
