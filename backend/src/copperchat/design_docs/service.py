@@ -130,9 +130,15 @@ class WritePolicy:
                 "'Open points' sections and the 'Key parts' section of parts.md"
             )
         if self.name == "board":
-            if op == "append" and section is None and path in (DECISIONS, BOARD):
+            # board.md is the board session's doc (board spec §8.4): any section is patched
+            # (also created), appended to; decisions.md takes entries. No doc_write.
+            if path == BOARD and op in ("patch", "append"):
                 return
-            raise scope_refused("board sessions may only append to decisions.md and board.md")
+            if path == DECISIONS and op == "append" and section is None:
+                return
+            raise scope_refused(
+                "board sessions may only update the sections of board.md and append to decisions.md"
+            )
         raise scope_refused(f"unknown session type {self.name!r}")
 
     def check_create(self, doc: DocPath, exists: bool) -> None:
