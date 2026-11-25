@@ -55,7 +55,7 @@ from copperchat.db.repos.conversations import ConversationRepo, ConversationRow
 from copperchat.db.repos.messages import MessageRepo, MessageRow
 from copperchat.errors import ConversationClosed, ConversationNotFound, CopperChatError
 from copperchat.kicad_session import DocKind, KicadSessionManager, KicadUnavailable
-from copperchat.projects import Project, agent_dir
+from copperchat.projects import Project, agent_dir, get_project
 from copperchat.tools import ImageBlock, ToolContext
 
 if TYPE_CHECKING:
@@ -165,6 +165,11 @@ class RunHooks:
         """The engine closes (shutdown): stop background work started by the hooks."""
         return None
 
+    def on_project_changed(self, project: Project) -> None:
+        """The engine's project was re-discovered (a board created or restored away
+        changes `pcb_file`): hooks that keep the project replace their copy. Sync."""
+        return None
+
     async def before_model_input(self, turn: TurnInfo) -> list[str]:
         """Extra notices for the model input of this turn (C5 context injection). Each
         entry is one notice: it gets exactly one ``[CopperChat notice]`` prefix at its
@@ -231,6 +236,13 @@ class ChainedHooks(RunHooks):
                 await h.on_engine_close()
             except Exception:
                 log.exception("on_engine_close hook failed")
+
+    def on_project_changed(self, project: Project) -> None:
+        for h in self.hooks:
+            try:
+                h.on_project_changed(project)
+            except Exception:
+                log.exception("on_project_changed hook failed")
 
     async def before_model_input(self, turn: TurnInfo) -> list[str]:
         out: list[str] = []
@@ -378,6 +390,15 @@ class RunEngine:
     @property
     def pid(self) -> str:
         return self.project.id
+
+    def refresh_project(self, project: Project) -> None:
+        """Take the re-discovered `project` (same id; restore, board creation) for every
+        later tool context, and tell the hooks."""
+        self.project = project
+        try:
+            self.hooks.on_project_changed(project)
+        except Exception:  # the engine has the new project; never fail the caller
+            log.exception("on_project_changed hook failed")
 
     @property
     def is_busy(self) -> bool:
@@ -1320,7 +1341,19 @@ class RunEngine:
             on_save_failed=self._on_save_failed,
             library_touched=[],
             on_library_changed=self.hooks.on_library_changed,
+            reload_project=self._reload_project,
         )
+
+    async def _reload_project(self) -> tuple[Project, KicadSession, int]:
+        """`ToolContext.reload_project` (B-C4 board creation): re-discover the project,
+        reopen its session (KiCad loads the new board), read the new session's
+        generation at once - the adapter's restart baseline from then on - and refresh
+        the engine (and its hooks) to the new project."""
+        fresh = await asyncio.to_thread(get_project, self._settings.projects_root, self.pid)
+        session = await self._sessions.reopen(fresh)
+        generation = session.generation
+        self.refresh_project(fresh)
+        return fresh, session, generation
 
     async def _post_doc_notice(self, notice: DocNotice) -> None:
         """A doc tool changed a doc (S-C5): the conversation's own change updates its

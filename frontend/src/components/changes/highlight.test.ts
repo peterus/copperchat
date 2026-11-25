@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ChangeEntry } from '@/api/changes';
-import { entriesHighlight, isSchematicEntry } from './highlight';
+import { BOARD_KINDS, entriesHighlight, isSchematicEntry } from './highlight';
 
 const ROOT = '/5b9623a5-6d01-41fc-9865-e1bc779418c8';
 const entry = (id: number, over: Partial<ChangeEntry> = {}): ChangeEntry => ({
@@ -26,5 +26,22 @@ describe('footprint library rows', () => {
 
   it('only footprint rows highlight nothing and keep the page', () => {
     expect(entriesHighlight([footprint(1)])).toEqual({ refs: [], boxes: [], sheetPath: null });
+  });
+});
+
+describe('board rows', () => {
+  it('are no schematic entries, even with a sheet path', () => {
+    expect(isSchematicEntry(entry(1, { tool: 'pcb_move', kind: 'board_move', sheetPath: '/' }))).toBe(false);
+    expect(isSchematicEntry(entry(2, { tool: 'pcb_move', kind: 'board_move', sheetPath: '' }))).toBe(false);
+  });
+
+  it('BOARD_KINDS equals the backend list (cc/changes/repo.py)', () => {
+    expect([...BOARD_KINDS].sort()).toEqual(
+      [
+        'board_sync_from_schematic', 'board_set_outline', 'board_set_rules', 'board_define_blocks',
+        'board_place_block', 'board_move', 'board_legalize', 'board_route', 'board_route_fill',
+        'board_unroute', 'board_zones', 'board_fanout', 'board_stitch', 'board_tidy_silk', 'board_approve',
+      ].sort(),
+    );
   });
 });

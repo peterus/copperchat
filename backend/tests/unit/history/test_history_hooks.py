@@ -127,7 +127,7 @@ async def test_turn_end_autosaves_changed_docs_and_publishes_view(opened: Opened
 
 async def test_interrupted_and_rate_limited_turns_still_autosave(opened: Opened) -> None:
     env = opened.env
-    opened.session.modified = True  # e.g. Stop between an edit and its own save
+    opened.session.modified_docs.add("sch")  # e.g. Stop between an edit and its own save
     await opened.hooks.on_turn_end(turn("a"), done("sch", reason="interrupted"))
     await opened.hooks.on_turn_end(turn("b"), done("pcb", reason="rate_limited"))
     assert env.saved == ["sch", "pcb"]
@@ -156,7 +156,7 @@ async def test_mid_turn_saves_are_not_external_changes(opened: Opened) -> None:
     # Two edits, each saved at once (the fake's save leaves the file alone: swap in other
     # KiCad-written content, as a real save would rewrite it).
     for content in (FIXTURES / "blank" / "blank.kicad_sch", HIERARCHY / "ampli_ht.kicad_sch"):
-        opened.session.modified = True
+        opened.session.modified_docs.add("sch")
         replace_with_kicad_file(opened.project.sch_file, content)
         await opened.session.save("sch")
     await opened.hooks.on_turn_end(t, done("sch"))
@@ -197,7 +197,7 @@ async def test_failed_autosave_posts_one_error_and_offers_restore(opened: Opened
 async def test_partial_autosave_records_hashes_and_publishes_saved_docs(opened: Opened) -> None:
     env = opened.env
     env.save_error, env.save_error_doc = KicadUnavailable("save timed out"), "sch"
-    opened.session.modified = True
+    opened.session.modified_docs.add("sch")
     await opened.hooks.on_turn_end(turn(), done("pcb", "sch"))
     assert env.saved == ["pcb"]
     [(text, meta)] = env.engine.errors

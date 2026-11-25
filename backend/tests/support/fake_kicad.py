@@ -59,6 +59,8 @@ class FakeServer:
     open_commits: set[int] = field(default_factory=set)
     pushed: list[tuple[int, str]] = field(default_factory=list)
     dropped: list[int] = field(default_factory=list)
+    # (operation, document file name) per begin/push/drop, e.g. ("drop", "demo.kicad_pcb").
+    commit_ops: list[tuple[str, str]] = field(default_factory=list)
     next_commit: int = 0
     fail_push: bool = False
     fail_drop: bool = False
@@ -127,6 +129,7 @@ class FakeDocument:
             raise ApiError("KiCad returned error: client already has a commit in progress")
         self._server.next_commit += 1
         self._server.open_commits.add(self._server.next_commit)
+        self._server.commit_ops.append(("begin", self._path.name))
         return SimpleNamespace(id=self._server.next_commit)
 
     def push_commit(self, commit: SimpleNamespace, message: str = "") -> None:
@@ -137,6 +140,7 @@ class FakeDocument:
             raise ApiError("KiCad returned error: no such commit")
         self._server.open_commits.discard(commit.id)
         self._server.pushed.append((commit.id, message))
+        self._server.commit_ops.append(("push", self._path.name))
         self._server.modified = True
 
     def drop_commit(self, commit: SimpleNamespace) -> None:
@@ -147,6 +151,7 @@ class FakeDocument:
             raise ApiError("KiCad returned error: no such commit")
         self._server.open_commits.discard(commit.id)
         self._server.dropped.append(commit.id)
+        self._server.commit_ops.append(("drop", self._path.name))
 
     def save_as(self, filename: str, overwrite: bool = False, include_project: bool = True) -> None:
         # The real api-server writes the document; the fake copies the source file.

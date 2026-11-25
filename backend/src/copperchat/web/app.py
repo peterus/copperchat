@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 
 from copperchat.agent.broadcaster import Broadcaster
 from copperchat.agent.runtime import AgentRuntime
+from copperchat.board.worker import shutdown_worker
 from copperchat.config import Settings, check_model_credentials
 from copperchat.db import Database
 from copperchat.design_docs import install_design_docs
@@ -153,6 +154,10 @@ def create_app(
                 await runtime.close_all()
             await sessions.close_all()
             await db.close()
+            try:
+                shutdown_worker()  # the board CPU worker process
+            except Exception as exc:  # never let it break the shutdown
+                log.warning("could not stop the board worker: %s", exc)
 
     app = FastAPI(title="CopperChat", lifespan=lifespan)
     install_error_handlers(app)

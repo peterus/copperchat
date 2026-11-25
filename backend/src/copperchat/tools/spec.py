@@ -97,6 +97,14 @@ class ToolContext:
     # failed calls alike, after the library lock and _apply_lock are released; it never
     # takes HistoryService.lock.
     on_library_changed: Callable[[list[Path]], Awaitable[None]] | None = None
+    # Board creation (B-C4 `creates_board`): re-discovers the project, reopens its KiCad
+    # session (the new board is loaded) and returns (project, session, the new session's
+    # generation read at once). Wired by the run engine; None in plain tests.
+    reload_project: Callable[[], Awaitable[tuple[Project, KicadSession, int]]] | None = None
+    # Set by the board engine when this call replaced `project` / `session` through
+    # `reload_project`: the generation captured at reload time, the baseline of the
+    # adapter's restart check from then on (`_two_phase_steps`).
+    reloaded_generation: int | None = None
 
 
 ToolHandler = Callable[[ToolContext, dict[str, Any]], Awaitable[ToolResult]]

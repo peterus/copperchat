@@ -108,7 +108,7 @@ async def test_v2_shape(db: Database, repo: Path, project: Project, lib_dir: Pat
     store = HistoryStore(db, project, locate_library=_locator(repo, lib_dir))
     snap = await store.snapshot("run-1", "label")
     m = _manifest(store, snap.id)
-    assert m["version"] == 2
+    assert m["version"] == 3
     assert m["repoRootRel"] == "hardware/ecc83"
     assert m["journalMaxId"] == last
     files = m["files"]
@@ -166,7 +166,7 @@ async def test_v2_library_null_when_transient(
         store = HistoryStore(db, project)
     snap = await store.snapshot("run-1", "label")
     m = _manifest(store, snap.id)
-    assert m["version"] == 2
+    assert m["version"] == 3
     assert m["library"] is None
     assert m["table"] is None
     assert m["repoRootRel"] is None

@@ -212,6 +212,9 @@ class SessionHooks(RunHooks):
         self.project = project
         self.engine = engine
 
+    def on_project_changed(self, project: Project) -> None:
+        self.project = project  # re-discovered (board created / restored away)
+
     async def before_model_input(self, turn: TurnInfo) -> list[str]:
         svc = self.service
         if svc.docs is None:

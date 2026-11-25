@@ -7,10 +7,10 @@ import os
 import shutil
 import stat
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar
 
 from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KipyConnectionError
@@ -112,6 +112,7 @@ class CommitScope:
     commit: Any
     generation: int  # server start the commit belongs to; a restart discards it
     pushed: bool = False  # push_commit completed (also when the caller is cancelled after)
+    doc: DocKind = "sch"  # the document the commit is open on (begin/push/drop)
 
 
 async def _finish[R](coro: Coroutine[Any, Any, R]) -> tuple[R, bool]:
@@ -142,6 +143,10 @@ async def _finish[R](coro: Coroutine[Any, Any, R]) -> tuple[R, bool]:
             raise
 
 
+def _commit_document(h: KicadHandle, doc: DocKind) -> Any:
+    return h.schematic() if doc == "sch" else h.board()
+
+
 async def _uncancellable[R](coro: Coroutine[Any, Any, R]) -> R:
     """`_finish`, re-raising a cancellation that arrived meanwhile afterwards."""
     result, cancelled = await _finish(coro)
@@ -150,12 +155,214 @@ async def _uncancellable[R](coro: Coroutine[Any, Any, R]) -> R:
     return result
 
 
-class KicadHandle:
-    """What callables passed to KicadSession.call receive. Runs in a worker thread."""
+# How often `call` pings a server still busy with a cut-short zone refill (B-C3).
+BUSY_POLL_S = 0.5
+# A ping may block for the client's transport timeout (kipy `timeout_ms`, which the
+# session sets from `kicad_api_timeout_s`); this is assumed when the client does not
+# expose it (fakes). `call`'s busy wait keeps this margin before its own timeout.
+DEFAULT_TRANSPORT_TIMEOUT_S = 30.0
+IDLE_WAIT_MARGIN_S = 1.0
 
-    def __init__(self, kicad: Any, open_docs: frozenset[DocKind] = frozenset()) -> None:
+
+def _clock() -> float:  # module-level so tests can drive the busy wait with a fake clock
+    return time.monotonic()
+
+
+def _sleep(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+def transport_timeout_s(kicad: Any) -> float:
+    """How long one request (e.g. a Ping) can block: the kipy client's `timeout_ms`
+    (`KiCad._client._timeout_ms`, the value the session's client factory passed), else
+    DEFAULT_TRANSPORT_TIMEOUT_S."""
+    ms = getattr(getattr(kicad, "_client", None), "_timeout_ms", None)
+    if isinstance(ms, int | float) and not isinstance(ms, bool) and ms > 0:
+        return ms / 1000
+    return DEFAULT_TRANSPORT_TIMEOUT_S
+
+
+class Slot[S](Protocol):
+    """A get/set view onto one value (B-C3): lets a callable running in the worker
+    thread read and write session state that outlives its `KicadHandle`."""
+
+    def get(self) -> S: ...
+
+    def set(self, value: S) -> None: ...
+
+
+class LocalSlot[S]:
+    """A slot holding its own value (a handle built without a session, e.g. in tests)."""
+
+    def __init__(self, value: S) -> None:
+        self._value = value
+
+    def get(self) -> S:
+        return self._value
+
+    def set(self, value: S) -> None:
+        self._value = value
+
+
+class _AttrSlot[S]:
+    """A slot onto `getattr(owner, name)` - the session's `pending_drc` / `refill_busy`.
+    Only callables inside `session.call` use it; the session lock serialises them."""
+
+    def __init__(self, owner: Any, name: str) -> None:
+        self._owner = owner
+        self._name = name
+
+    def get(self) -> S:
+        value: S = getattr(self._owner, self._name)
+        return value
+
+    def set(self, value: S) -> None:
+        setattr(self._owner, self._name, value)
+
+
+DrcSlot = Slot[tuple[int, str] | None]  # (server generation, DRC task id)
+BusySlot = Slot[int | None]  # server generation still busy with a zone refill
+
+
+# Busy probes (B-C3) wait at most this long for a Ping reply, so a bounded wait can
+# afford several of them. Set on the kipy client's socket only for the probe.
+PROBE_PING_TIMEOUT_S = 2.0
+
+
+def _probe_client(kicad: Any) -> Any:
+    """kipy's `KiCadClient` behind `kicad` if it has the private parts `request_timeout`
+    needs (kipy pin e0c9c8e: `KiCad._client`, `KiCadClient._connect()` /
+    `._connected` / `._conn`, a pynng `Req0` with `recv_timeout` / `send_timeout` in
+    ms), else None."""
+    client = getattr(kicad, "_client", None)
+    if client is None or not all(hasattr(client, a) for a in ("_connect", "_connected")):
+        return None
+    return client
+
+
+def probe_timeout_s(kicad: Any) -> float:
+    """How long one busy probe can block: PROBE_PING_TIMEOUT_S when the short timeout
+    can be applied, else the client's normal transport timeout."""
+    return PROBE_PING_TIMEOUT_S if _probe_client(kicad) is not None else transport_timeout_s(kicad)
+
+
+@contextlib.contextmanager
+def request_timeout(kicad: Any, seconds: float) -> Iterator[None]:
+    """Temporarily give the kipy client's socket a `seconds` send/receive timeout: short
+    for busy probes, long for single big requests (a board read's SaveDocumentToString).
+
+    Only inside `KicadSession.call` (its lock serialises every use of the client). A
+    timed-out request leaves kipy's client disconnected (kipy reconnects with its normal
+    timeout on the next request, but never closes that socket): the old socket is closed
+    here; otherwise the previous timeouts are restored. Without the private attributes
+    the probe runs with the normal timeout (logged)."""
+    client = _probe_client(kicad)
+    if client is None:
+        log.info("request timeout unchanged: the kipy client lacks the private parts")
+        yield
+        return
+    if not client._connected:
+        client._connect()  # kipy would connect on the probe's send anyway
+    conn = getattr(client, "_conn", None)
+    if conn is None or not hasattr(conn, "recv_timeout"):
+        log.info("request timeout unchanged: no pynng socket on the kipy client")
+        yield
+        return
+    old = (conn.recv_timeout, conn.send_timeout)
+    ms = max(1, round(seconds * 1000))
+    conn.recv_timeout = conn.send_timeout = ms
+    try:
+        yield
+    finally:
+        if client._connected and client._conn is conn:
+            conn.recv_timeout, conn.send_timeout = old
+        else:
+            with contextlib.suppress(Exception):
+                conn.close()
+
+
+def kicad_busy(kicad: Any) -> bool:
+    """One busy probe: a `Ping` with a receive timeout of PROBE_PING_TIMEOUT_S. False =
+    idle; True = busy (`AS_BUSY`, or no reply in time while KiCad blocks on a long
+    operation). Any other `ApiError` is raised."""
+    from kipy.proto.common import ApiStatusCode
+
+    try:
+        with request_timeout(kicad, PROBE_PING_TIMEOUT_S):
+            kicad.ping()
+    except KipyConnectionError:
+        return True
+    except ApiError as exc:
+        if exc.code == ApiStatusCode.AS_BUSY:
+            return True
+        raise
+    return False
+
+
+class _IdleWait:
+    """How long `_after_idle` waited (`_clock` seconds) before `fn` started; None until
+    then. `call` extends its deadline by it, so `fn` keeps its full budget."""
+
+    spent: float | None = None
+
+
+def _after_idle[R](
+    fn: Callable[[KicadHandle], R],
+    deadline: float,
+    limit: float,
+    waited: _IdleWait | None = None,
+) -> Callable[[KicadHandle], R]:
+    """`fn`, preceded by pinging until KiCad is idle again (a refill cut short by
+    `RefillTimeout` may still be running, B-C3). Runs in the call's worker thread. A
+    Ping is only sent while it fits before `deadline` even if it blocks for the whole
+    transport timeout, so the wait never runs into the call's own timeout (no restart);
+    still busy then → `refill_timeout` without running `fn`, the busy slot kept. The
+    time waited is recorded in `waited` right before `fn` runs."""
+
+    def run(h: KicadHandle) -> R:
+        start = _clock()
+        while True:
+            if _clock() + probe_timeout_s(h.kicad) > deadline:
+                raise StructuredToolError(
+                    "KiCad is still filling zones",
+                    "an earlier zone refill had not finished, and this call's "
+                    f"{limit:g} s budget cannot wait for it",
+                    "retry in a moment, or with more time (e.g. a refill or DRC step)",
+                    code="refill_timeout",
+                    details={"timeout_s": limit},
+                )
+            if not kicad_busy(h.kicad):
+                break
+            _sleep(BUSY_POLL_S)
+        h.busy_slot.set(None)
+        if waited is not None:
+            waited.spent = max(0.0, _clock() - start)
+        return fn(h)
+
+    return run
+
+
+class KicadHandle:
+    """What callables passed to KicadSession.call receive. Runs in a worker thread.
+
+    `generation` is the server start the call runs against; `drc_slot` / `busy_slot`
+    view the session's `pending_drc` / `refill_busy` (B-C3) - a handle built without
+    them (unit tests) gets private slots."""
+
+    def __init__(
+        self,
+        kicad: Any,
+        open_docs: frozenset[DocKind] = frozenset(),
+        *,
+        generation: int = 0,
+        drc_slot: DrcSlot | None = None,
+        busy_slot: BusySlot | None = None,
+    ) -> None:
         self.kicad = kicad
         self._open_docs = open_docs
+        self.generation = generation
+        self.drc_slot: DrcSlot = drc_slot if drc_slot is not None else LocalSlot(None)
+        self.busy_slot: BusySlot = busy_slot if busy_slot is not None else LocalSlot(None)
 
     def board(self) -> kipy.board.Board:
         if "pcb" not in self._open_docs:
@@ -200,11 +407,12 @@ class KicadSession:
         self.on_started: Callable[[], None] | None = None
         # Token in `~STEM.kicad_pro.lck` after our server started (spike 1C, Q7).
         self.server_token: str | None = None
-        # Editing (SP2, E-C1). A pushed commit makes the export jobs (PNG, netlist)
-        # stale - they keep their own copy of the schematic until close + reopen
-        # (spike 2A, Q3) - and the documents unsaved.
+        # Editing (SP2, E-C1; per document since SP4 P1a). A pushed schematic commit
+        # makes the export jobs (PNG, netlist) stale - they keep their own copy of the
+        # schematic until close + reopen (spike 2A, Q3); a pushed commit on `doc` leaves
+        # `doc` unsaved (in `modified_docs`) until `save(doc)`.
         self.jobs_stale = False
-        self.modified = False
+        self.modified_docs: set[DocKind] = set()
         self.last_saved_at: str | None = None
         self._save_listeners = save_listeners if save_listeners is not None else []
         self._commit_lock = asyncio.Lock()
@@ -212,6 +420,10 @@ class KicadSession:
         self._commit_owner: asyncio.Task[Any] | None = None
         self._active_scope: CommitScope | None = None
         self._generation = 0  # counts successful server starts
+        # Board API state that outlives a call (B-C3); both die with the server, so
+        # `_kill()` and every start clear them. Written only by callables inside `call`.
+        self.pending_drc: tuple[int, str] | None = None  # timed-out DRC task (generation, id)
+        self.refill_busy: int | None = None  # generation still filling zones (RefillTimeout)
         self._libraries_lock = asyncio.Lock()
         self._libraries_ready_generation: int | None = None
         self._libraries_kicked_generation: int | None = None
@@ -330,10 +542,12 @@ class KicadSession:
         self._kicad = client
         self._open_docs = frozenset(opened)
         self._generation += 1
+        self.pending_drc = None
+        self.refill_busy = None
         # A fresh server loaded the files on disk: nothing unsaved, jobs current, no
         # footprint document left open.
         self.jobs_stale = False
-        self.modified = False
+        self.modified_docs.clear()
         self.restart_pending = False
         await self._kick_off_symbol_libraries(client, deadline - loop.time())
         self.server_token = read_lock_token(lock_file_for(self.project.pro_file))
@@ -400,6 +614,8 @@ class KicadSession:
         client, self._kicad = self._kicad, None
         self._open_docs = frozenset()
         self._footprints_generation = None  # the libraries die with the server
+        self.pending_drc = None  # a DRC task or zone fill dies with the server too
+        self.refill_busy = None
         _close_client(client)
         if proc is None or proc.returncode is not None:
             return
@@ -458,13 +674,33 @@ class KicadSession:
                 raise KicadUnavailable(
                     "the KiCad api-server had stopped; it was restarted with the last saved state"
                 )
-            work = asyncio.ensure_future(
-                asyncio.to_thread(fn, KicadHandle(self._kicad, self._open_docs))
+            handle = KicadHandle(
+                self._kicad,
+                self._open_docs,
+                generation=self._generation,
+                drc_slot=_AttrSlot(self, "pending_drc"),
+                busy_slot=_AttrSlot(self, "refill_busy"),
             )
+            target = fn
+            waited: _IdleWait | None = None
+            if self.refill_busy is not None and self.refill_busy == self._generation:
+                # A refill cut short by RefillTimeout may still run: ping until idle
+                # first, bounded inside this call's own timeout (B-C3), so the callable
+                # never meets AS_BUSY. The callable then still gets its full `limit`:
+                # the deadline is extended by the time the idle wait took.
+                waited = _IdleWait()
+                target = _after_idle(fn, _clock() + limit - IDLE_WAIT_MARGIN_S, limit, waited)
+            work = asyncio.ensure_future(asyncio.to_thread(target, handle))
             died = asyncio.ensure_future(proc.wait()) if proc is not None else None
             try:
                 waiting = {work} if died is None else {work, died}
-                await asyncio.wait(waiting, timeout=limit, return_when=asyncio.FIRST_COMPLETED)
+                done, _ = await asyncio.wait(
+                    waiting, timeout=limit, return_when=asyncio.FIRST_COMPLETED
+                )
+                if not done and waited is not None and waited.spent:
+                    await asyncio.wait(
+                        waiting, timeout=waited.spent, return_when=asyncio.FIRST_COMPLETED
+                    )
             except asyncio.CancelledError:
                 # The caller gave up (e.g. an interrupted turn). The worker thread
                 # cannot be stopped and must not share the client with later calls,
@@ -527,20 +763,35 @@ class KicadSession:
         async with self._apply_lock:
             yield
 
+    @property
+    def modified(self) -> bool:
+        """The schematic has pushed commits not saved yet (read-only; see `modified_docs`)."""
+        return "sch" in self.modified_docs
+
     @contextlib.asynccontextmanager
-    async def commit(self, label: str, *, dry_run: bool = False) -> AsyncIterator[CommitScope]:
-        """Group the schematic writes made inside the scope into one KiCad commit.
+    async def commit(
+        self, label: str, *, doc: DocKind = "sch", dry_run: bool = False
+    ) -> AsyncIterator[CommitScope]:
+        """Group the writes to `doc` (schematic or board) made inside the scope into one
+        KiCad commit.
 
         Normal exit pushes it (`dry_run`: drops it); any exception, cancellation
         included, drops it, shielded - a commit left open on the server silently
         captures every later write of the same client (spike 2A, Q6). A failing drop
         restarts the server. `save`, `save_copy` and `refresh_jobs` wait for the scope.
-        The lock is not re-entrant: never call them from inside a scope.
+        The lock is not re-entrant: never call them from inside a scope. A pushed commit
+        adds `doc` to `modified_docs`; only a schematic one makes the jobs stale. A board
+        commit without a board raises `DocumentNotOpen` before waiting for the lock.
         """
         if self.read_only:
             raise ReadOnlyProject(
                 "project is open in KiCad (lock file present) - close it there first"
             )
+        if doc == "pcb" and (
+            self.project.pcb_file is None
+            or (self._kicad is not None and "pcb" not in self._open_docs)
+        ):
+            raise DocumentNotOpen("the project has no board open in the api-server")
         self._check_not_in_commit()
         async with self._commit_lock:
             self._commit_owner = asyncio.current_task()
@@ -548,9 +799,11 @@ class KicadSession:
                 # begin/push run to completion even on a cancel: a cancel landing right
                 # after KiCad opened the commit would otherwise lose its handle (the
                 # commit stays open), one after the push would drop an applied commit.
-                handle, cancelled = await _finish(self.call(lambda h: h.schematic().begin_commit()))
+                handle, cancelled = await _finish(
+                    self.call(lambda h: _commit_document(h, doc).begin_commit())
+                )
                 # Read after the call: a lazy (re)start inside call() bumps it first.
-                scope = CommitScope(label, handle, self._generation)
+                scope = CommitScope(label, handle, self._generation, doc=doc)
                 self._active_scope = scope
                 if cancelled:
                     await _uncancellable(self._drop(scope, asyncio.CancelledError()))
@@ -563,19 +816,20 @@ class KicadSession:
                 try:
                     if dry_run:
                         _, cancelled = await _finish(
-                            self.call(lambda h: h.schematic().drop_commit(handle))
+                            self.call(lambda h: _commit_document(h, doc).drop_commit(handle))
                         )
                     else:
                         _, cancelled = await _finish(
-                            self.call(lambda h: h.schematic().push_commit(handle, label))
+                            self.call(lambda h: _commit_document(h, doc).push_commit(handle, label))
                         )
                 except BaseException as exc:
                     await _uncancellable(self._drop(scope, exc))
                     raise
                 if not dry_run:
                     scope.pushed = True
-                    self.jobs_stale = True
-                    self.modified = True
+                    self.modified_docs.add(doc)
+                    if doc == "sch":
+                        self.jobs_stale = True
                 if cancelled:
                     raise asyncio.CancelledError
             finally:
@@ -586,7 +840,7 @@ class KicadSession:
         if self._kicad is None or scope.generation != self._generation:
             return  # the server that held the commit is gone, and its staged items with it
         try:
-            await self.call(lambda h: h.schematic().drop_commit(scope.commit))
+            await self.call(lambda h: _commit_document(h, scope.doc).drop_commit(scope.commit))
         except Exception as exc:
             if self._kicad is None or scope.generation != self._generation:
                 return  # the failed drop already restarted the server
@@ -620,8 +874,7 @@ class KicadSession:
             (h.schematic() if doc == "sch" else h.board()).save()  # type: ignore[no-untyped-call]
 
         await self.call(_save)
-        if doc == "sch":
-            self.modified = False
+        self.modified_docs.discard(doc)
         self.last_saved_at = utcnow_iso()
         # Listeners run under the commit lock: mark the task, so a listener calling
         # save/save_copy/refresh_jobs/commit fails instead of deadlocking.

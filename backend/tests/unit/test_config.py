@@ -77,3 +77,14 @@ def test_footprint_tools_env(monkeypatch: pytest.MonkeyPatch, value: str, expect
 def test_footprint_tools_default_on(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("COPPERCHAT_FOOTPRINT_TOOLS", raising=False)
     assert Settings(_env_file=None).footprint_tools is True  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize(("value", "expected"), [("on", True), ("true", True), ("off", False)])
+def test_board_tools_env(monkeypatch: pytest.MonkeyPatch, value: str, expected: bool) -> None:
+    monkeypatch.setenv("COPPERCHAT_BOARD_TOOLS", value)
+    assert Settings(_env_file=None).board_tools is expected  # type: ignore[call-arg]
+
+
+def test_board_tools_default_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("COPPERCHAT_BOARD_TOOLS", raising=False)
+    assert Settings(_env_file=None).board_tools is False  # type: ignore[call-arg]

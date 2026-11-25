@@ -412,8 +412,10 @@ of the new session in any later stage (or during the save) is still detected as
 stage with `compensable=False` has run, a later failure skips the KIID compensation and
 raises `StructuredToolError(code="sync_failed", suggestion="Undo this turn from the History
 panel; the board import cannot be reverted item by item.")` (spec §6.3, the one documented
-exception); otherwise compensation runs the `undo` of every completed stage in reverse order
-after the KIID diff (rules, classes, layer count and stackup are not items).
+exception); otherwise compensation runs, after the KIID diff, the `undo` of the stage that
+started and raised (first; undo restores pre-call values, so a partially run stage is safe)
+and of every completed stage, in reverse order (rules, classes, layer count and stackup are
+not items).
 
 Algorithm of `apply_board_change_set`:
 1. `creates_board` and `ctx.project.pcb_file is None`: first `os.lstat` of the unresolved
@@ -466,7 +468,8 @@ recreates missing tracks/vias from the stored data; returns what still differs.
   `test_non_compensable_stage_skips_compensation` (stage 1 `compensable=False`, stage 2
   raises → `sync_failed` naming the History panel, `compensate` spy not called);
   `test_undo_runs_reverse_order` (three stages with `undo` recorders, `fail_after=3` → undo
-  calls 3, 2, 1 after `compensate`); `test_temp_dirs_removed_on_all_paths` (a stage creates
+  calls 3, 2, 1 after `compensate`; `test_undo_runs_for_failing_stage_then_completed`: a
+  raising stage 2 → undo 2, then 1); `test_temp_dirs_removed_on_all_paths` (a stage creates
   a dir registered in `cs.temp_dirs` → gone after success, after `fail_after=1` and after a
   cancel during stage 2); `test_stage_drc_passes_long_timeout`
   (`BoardStageContext.drc(timeout_s=60)` → the spied fake `session.call` receives
