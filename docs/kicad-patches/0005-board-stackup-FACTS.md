@@ -117,7 +117,7 @@ here is meant to be pasted upstream; KiCad's tool-generated-content policy appli
     (shared with other builds); incremental rebuild after the patch 92 s.
 - CopperChat integration tests (`backend/tests/kicad/board/test_stackup_patch.py`, Python/kipy
   over the IPC API against `kicad-cli api-server`, image
-  `copperchat-kicad-base:52b43fb8…-r0f2b8cc78711f52b` built by the PR): set/get round trip,
+  `copperchat-kicad-base:52b43fb8…-rdc93f47200b08f97 (first runs: -r0f2b8cc78711f52b)` built by the PR): set/get round trip,
   saved `.kicad_pcb` contains the stackup, copper-count mismatch and zero dielectric refused,
   `pcb_set_rules {stackup}` end to end incl. compensation after a later failure. All 7 pass on
   the patched image; on the unpatched published image 5 fail (no handler) as expected.

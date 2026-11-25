@@ -748,7 +748,7 @@ name as planned; owner facts `docs/kicad-patches/0005-board-stackup-FACTS.md`)
   `ApiHandlerPcb` on the 4-copper `issue5830` board; no board e2e file exists, no CMake change),
   not a new `test_api_e2e_board_stackup.cpp`. 7 failures before the handler, all pass after
   (FACTS file: command, runtimes).
-- Recipe tag built by the PR: `52b43fb8fc8e11fdab5d683eaefc91a49f9cbcd7-r2507c72760cd9874`
+- Recipe tag built by the PR: `52b43fb8fc8e11fdab5d683eaefc91a49f9cbcd7-rdc93f47200b08f97`
   (kicad-base.yml on the PR, ≈ 8 min with CI's ccache); `kicad-base.yml` on `main` publishes it after merge — **a release
   needs that tag first** (CHANGELOG release note). No kipy change (no proto message change).
 
