@@ -27,7 +27,7 @@ from kipy.proto.common.types import KIID
 
 from copperchat.board.model import ArcTrack, Side, Track, Via
 from copperchat.kicad_session import KicadHandle
-from copperchat.kicad_tools.board.read import _layer
+from copperchat.kicad_tools.board.read import _layer, long_requests
 
 NM_PER_MM = 1_000_000
 ROT_EPS = 1e-6
@@ -119,6 +119,7 @@ def _via(v: Any) -> Via:
     )
 
 
+@long_requests
 def take_snapshot(h: KicadHandle, mode: Literal["ids", "full"]) -> CopperSnapshot:
     """The compensation snapshot of the live board (one read per item kind)."""
     items = _items(h.board())
@@ -202,6 +203,7 @@ def _data_differs(snap: CopperSnapshot, now: dict[str, dict[str, Any]]) -> list[
     return out
 
 
+@long_requests
 def restore(h: KicadHandle, snap: CopperSnapshot) -> dict[str, str]:
     """The writes of `compensate`, planned from ONE read of the live board: inside an
     open commit KiCad stages every change until the push (reads still show the
@@ -257,6 +259,7 @@ def compensate(h: KicadHandle, snap: CopperSnapshot) -> list[str]:
     return leftovers(h, snap, restore(h, snap))
 
 
+@long_requests
 def leftovers(
     h: KicadHandle, snap: CopperSnapshot, renamed: dict[str, str] | None = None
 ) -> list[str]:

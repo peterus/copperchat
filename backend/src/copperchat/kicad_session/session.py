@@ -230,7 +230,7 @@ PROBE_PING_TIMEOUT_S = 2.0
 
 
 def _probe_client(kicad: Any) -> Any:
-    """kipy's `KiCadClient` behind `kicad` if it has the private parts `_short_timeout`
+    """kipy's `KiCadClient` behind `kicad` if it has the private parts `request_timeout`
     needs (kipy pin e0c9c8e: `KiCad._client`, `KiCadClient._connect()` /
     `._connected` / `._conn`, a pynng `Req0` with `recv_timeout` / `send_timeout` in
     ms), else None."""
@@ -247,8 +247,9 @@ def probe_timeout_s(kicad: Any) -> float:
 
 
 @contextlib.contextmanager
-def _short_timeout(kicad: Any, seconds: float) -> Iterator[None]:
-    """Temporarily give the kipy client's socket a `seconds` send/receive timeout.
+def request_timeout(kicad: Any, seconds: float) -> Iterator[None]:
+    """Temporarily give the kipy client's socket a `seconds` send/receive timeout: short
+    for busy probes, long for single big requests (a board read's SaveDocumentToString).
 
     Only inside `KicadSession.call` (its lock serialises every use of the client). A
     timed-out request leaves kipy's client disconnected (kipy reconnects with its normal
@@ -257,14 +258,14 @@ def _short_timeout(kicad: Any, seconds: float) -> Iterator[None]:
     the probe runs with the normal timeout (logged)."""
     client = _probe_client(kicad)
     if client is None:
-        log.info("busy probe without a short timeout: the kipy client lacks the private parts")
+        log.info("request timeout unchanged: the kipy client lacks the private parts")
         yield
         return
     if not client._connected:
         client._connect()  # kipy would connect on the probe's send anyway
     conn = getattr(client, "_conn", None)
     if conn is None or not hasattr(conn, "recv_timeout"):
-        log.info("busy probe without a short timeout: no pynng socket on the kipy client")
+        log.info("request timeout unchanged: no pynng socket on the kipy client")
         yield
         return
     old = (conn.recv_timeout, conn.send_timeout)
@@ -287,7 +288,7 @@ def kicad_busy(kicad: Any) -> bool:
     from kipy.proto.common import ApiStatusCode
 
     try:
-        with _short_timeout(kicad, PROBE_PING_TIMEOUT_S):
+        with request_timeout(kicad, PROBE_PING_TIMEOUT_S):
             kicad.ping()
     except KipyConnectionError:
         return True

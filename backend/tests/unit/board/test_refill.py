@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import kipy.board
@@ -69,7 +70,7 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> Clock:
 
 
 class FakeConn:
-    """A pynng `Req0` stand-in: the timeouts kipy and `_short_timeout` set (ms)."""
+    """A pynng `Req0` stand-in: the timeouts kipy and `request_timeout` set (ms)."""
 
     def __init__(self, timeout_ms: int) -> None:
         self.recv_timeout = self.send_timeout = timeout_ms
@@ -443,3 +444,31 @@ async def test_busy_wait_does_not_eat_the_callables_budget(
     assert await session.call(slow, timeout=1.0) == "done"
     assert log == ["Ping"] * 4
     assert session.restart_count == restarts and session.refill_busy is None
+
+
+def test_board_reads_raise_the_per_request_timeout(clock: Clock) -> None:
+    """A board-wide read/compensation (`long_requests`) lifts kipy's per-request timeout
+    to BOARD_REQUEST_TIMEOUT_S - the outer session.call timeout alone would not - and
+    restores the normal one afterwards."""
+    from copperchat.kicad_tools.board import compensate, read
+
+    kicad = _kicad(clock, iter([None, None]), timeout_ms=30_000)
+    seen: list[int] = []
+
+    @read.long_requests
+    def body(h: Any) -> str:
+        seen.append(h.kicad._client._conn.recv_timeout)
+        return "ok"
+
+    h = SimpleNamespace(kicad=kicad)
+    assert body(h) == "ok"
+    assert seen == [round(read.BOARD_REQUEST_TIMEOUT_S * 1000)]
+    assert read.BOARD_REQUEST_TIMEOUT_S < read.BOARD_READ_TIMEOUT_S
+    _sockets_clean(kicad._client)
+    for fn in (
+        read.load_board_model,
+        compensate.take_snapshot,
+        compensate.restore,
+        compensate.leftovers,
+    ):
+        assert getattr(fn, "__wrapped__", None) is not None, fn

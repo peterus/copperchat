@@ -9,12 +9,14 @@ unrotated - verified on the pinned server) and are transformed here.
 
 from __future__ import annotations
 
+import functools
 import math
 import os
 import re
 import stat
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Concatenate
 
 from kipy.board_types import ArcTrack as KipyArcTrack
 from kipy.board_types import (
@@ -53,6 +55,7 @@ from copperchat.board.model import (
 )
 from copperchat.errors import StructuredToolError
 from copperchat.kicad_session import KicadHandle
+from copperchat.kicad_session.session import request_timeout
 from copperchat.kicad_tools.access import sheet_path_key
 from copperchat.kicad_tools.board.api import board_project, save_document_to_string
 from copperchat.kicad_tools.units import nm_to_mm
@@ -65,6 +68,24 @@ if TYPE_CHECKING:
 # the layer types): seconds on a big board, so every such `session.call` passes this
 # explicitly instead of the 30 s default (B-C4).
 BOARD_READ_TIMEOUT_S = 120.0
+# kipy bounds every single request by the client's transport timeout (30 s), whatever the
+# outer `session.call` timeout is: a board-wide read or compensation raises it for its
+# own requests (`request_timeout`), leaving 10 s of the call's budget as margin.
+BOARD_REQUEST_TIMEOUT_S = BOARD_READ_TIMEOUT_S - 10.0
+
+
+def long_requests[**P, R](
+    fn: Callable[Concatenate[KicadHandle, P], R],
+) -> Callable[Concatenate[KicadHandle, P], R]:
+    """Run `fn(h, ...)` with kipy's per-request timeout raised to BOARD_REQUEST_TIMEOUT_S."""
+
+    @functools.wraps(fn)
+    def wrapper(h: KicadHandle, /, *args: P.args, **kwargs: P.kwargs) -> R:
+        with request_timeout(h.kicad, BOARD_REQUEST_TIMEOUT_S):
+            return fn(h, *args, **kwargs)
+
+    return wrapper
+
 
 # -- .kicad_dru --------------------------------------------------------------------------
 
@@ -601,6 +622,7 @@ def _net_classes(
 # -- loader --------------------------------------------------------------------------------
 
 
+@long_requests
 def load_board_model(h: KicadHandle, project: Project) -> BoardModel:
     """The live board as a `BoardModel` (run inside one `session.call`)."""
     board = h.board()
