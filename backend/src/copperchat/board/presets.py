@@ -89,3 +89,84 @@ PRESETS: Mapping[str, FabPreset] = MappingProxyType(
         ),
     }
 )
+
+
+@dataclass(frozen=True)
+class StackupLayer:
+    kind: Literal["copper", "prepreg", "core"]
+    thickness: float  # mm
+    material: str
+    epsilon_r: float | None = None  # dielectrics only
+
+
+@dataclass(frozen=True)
+class StackupPreset:
+    """A fab's layer build-up, top to bottom (copper and dielectric alternate). The
+    solder mask is not part of it: KiCad keeps its own mask layers."""
+
+    id: str
+    copper_layers: int
+    jlc_name: str | None
+    layers: tuple[StackupLayer, ...]
+
+    @property
+    def total_mm(self) -> float:
+        return sum(layer.thickness for layer in self.layers)
+
+
+def _cu(thickness: float) -> StackupLayer:
+    return StackupLayer("copper", thickness, "copper")
+
+
+# Thicknesses and dielectric constants from jlcpcb.com/impedance (read 2026-11-25):
+# prepreg 7628 Er 4.4, 3313 Er 4.1, 2116 Er 4.16, core Er 4.6. JLC publishes no loss
+# tangent, so KiCad's value stays. The 2-layer build-up is not published by JLC: 1 oz
+# copper on a 1.53 mm FR-4 core (1.6 mm board), Er 4.5 (jlcpcb.com/capabilities,
+# "4.5 (2-Layer PCB)").
+_P7628 = StackupLayer("prepreg", 0.2104, "7628", 4.4)
+_P3313 = StackupLayer("prepreg", 0.0994, "3313", 4.1)
+_P2116 = StackupLayer("prepreg", 0.1088, "2116", 4.16)
+_CORE_055 = StackupLayer("core", 0.55, "FR4", 4.6)
+
+STACKUPS: Mapping[str, StackupPreset] = MappingProxyType(
+    {
+        "jlc-2l-1.6": StackupPreset(
+            "jlc-2l-1.6",
+            2,
+            None,
+            (_cu(0.035), StackupLayer("core", 1.53, "FR4", 4.5), _cu(0.035)),
+        ),
+        "jlc-4l-1.6-7628": StackupPreset(
+            "jlc-4l-1.6-7628",
+            4,
+            "JLC04161H-7628",
+            (
+                _cu(0.035),
+                _P7628,
+                _cu(0.0152),
+                StackupLayer("core", 1.065, "FR4", 4.6),
+                _cu(0.0152),
+                _P7628,
+                _cu(0.035),
+            ),
+        ),
+        "jlc-6l-1.6": StackupPreset(
+            "jlc-6l-1.6",
+            6,
+            "JLC06161H-3313",
+            (
+                _cu(0.035),
+                _P3313,
+                _cu(0.0152),
+                _CORE_055,
+                _cu(0.0152),
+                _P2116,
+                _cu(0.0152),
+                _CORE_055,
+                _cu(0.0152),
+                _P3313,
+                _cu(0.035),
+            ),
+        ),
+    }
+)

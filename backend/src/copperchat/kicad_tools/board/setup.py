@@ -23,7 +23,7 @@ from kipy.board_types import ArcTrack, BoardRectangle, FootprintInstance, Zone
 from kipy.errors import ApiError
 from kipy.geometry import PolygonWithHoles, PolyLine, PolyLineNode, Vector2
 from kipy.project_types import NetClass, NetClassAssignments, NetClassPatternAssignment
-from kipy.proto.board import board_rules_pb2
+from kipy.proto.board import board_commands_pb2, board_pb2, board_rules_pb2
 from kipy.proto.board.board_commands_pb2 import CustomRulesStatus
 from kipy.proto.board.board_types_pb2 import BoardLayer, ZoneType
 from kipy.proto.common.types import project_settings_pb2
@@ -31,7 +31,7 @@ from kipy.proto.common.types.base_types_pb2 import MapMergeMode
 from kipy.util.board_layer import canonical_name, layer_from_canonical_name
 
 from copperchat.board.model import BoardModel, Point, board_hash, placement_hash
-from copperchat.board.presets import PRESETS, FabPreset
+from copperchat.board.presets import PRESETS, STACKUPS, FabPreset, StackupPreset
 from copperchat.board.staging import natural_key
 from copperchat.errors import StructuredToolError
 from copperchat.history.restore import remove_created
@@ -45,7 +45,7 @@ from copperchat.kicad_tools.board.engine import (
 )
 from copperchat.kicad_tools.board.read import BOARD_READ_TIMEOUT_S, board_model, require_board
 from copperchat.kicad_tools.edit.changeset import ChangeSet, Logical
-from copperchat.kicad_tools.units import mm_to_nm
+from copperchat.kicad_tools.units import mm_to_nm, nm_to_mm
 from copperchat.projects import Project
 from copperchat.tools.spec import ToolContext, ToolResult
 
@@ -843,18 +843,130 @@ def parse_rules_args(args: Any) -> RulesArgs:
     return RulesArgs(layers, preset, overrides, classes, rules, stackup)
 
 
-def plan_stackup(req: RulesArgs) -> None:
-    """The stackup branch. P2: KiCad at the pin has no UpdateBoardStackup handler (spike
-    G1), so a stackup is always refused; P2b adds the stackup presets here."""
+def plan_stackup(req: RulesArgs, copper_layers: int) -> StackupPreset | None:
+    """The stackup branch: the preset for `stackup`, whose copper layer count must be the
+    one the board has after this call (`layers`, else the current count). `prepare` never
+    writes, so it does not probe for patch 0005; the stage maps KiCad's missing handler
+    to `stackup_unavailable`."""
     if req.stackup is None:
-        return
-    raise StructuredToolError(
+        return None
+    preset = STACKUPS.get(req.stackup)
+    if preset is None:
+        raise _rules_invalid(
+            f"unknown stackup {req.stackup!r}", f"Use one of {', '.join(sorted(STACKUPS))}."
+        )
+    target = req.layers or copper_layers
+    if preset.copper_layers != target:
+        raise _rules_invalid(
+            f"stackup {preset.id} has {preset.copper_layers} copper layers, the board has {target}",
+            f"Pass layers: {preset.copper_layers} with it, or a stackup for {target} layers.",
+        )
+    return preset
+
+
+STACKUP_TOL_MM = 0.0005  # read-back tolerance of every stackup thickness
+_NO_STACKUP_HANDLER = "no handler available for request of type " + (
+    board_commands_pb2.UpdateBoardStackup.DESCRIPTOR.full_name
+)
+
+
+def _copper_and_dielectrics(stackup: board_pb2.BoardStackup) -> list[board_pb2.BoardStackupLayer]:
+    return [
+        layer
+        for layer in stackup.layers
+        if layer.type in (board_pb2.BSLT_COPPER, board_pb2.BSLT_DIELECTRIC)
+    ]
+
+
+def stackup_thicknesses(stackup: board_pb2.BoardStackup) -> list[float]:
+    """Copper and dielectric thicknesses (mm), top to bottom."""
+    return [
+        round(nm_to_mm(layer.thickness.value_nm), 6) for layer in _copper_and_dielectrics(stackup)
+    ]
+
+
+def stackup_request(
+    current: board_pb2.BoardStackup, preset: StackupPreset
+) -> board_pb2.BoardStackup:
+    """`current` (KiCad's stackup of the board) with the preset's copper and dielectric
+    layers: thickness, and for a dielectric its type, material and Er, as one sub-layer
+    (the loss tangent stays KiCad's: JLC publishes none). Mask, silk, paste, finish and
+    edge settings are kept."""
+    out = board_pb2.BoardStackup()
+    out.CopyFrom(current)
+    layers = _copper_and_dielectrics(out)
+    if [la.type == board_pb2.BSLT_COPPER for la in layers] != [
+        p.kind == "copper" for p in preset.layers
+    ]:
+        raise _rules_invalid(
+            f"stackup {preset.id} does not match the board's {len(layers)} copper and "
+            "dielectric layers",
+            f"Set layers: {preset.copper_layers} first.",
+        )
+    for layer, p in zip(layers, preset.layers, strict=True):
+        nm = mm_to_nm(p.thickness)
+        layer.thickness.value_nm = nm
+        if p.kind == "copper":
+            continue
+        d = layer.dielectric
+        d.type = board_pb2.BSDT_CORE if p.kind == "core" else board_pb2.BSDT_PREPREG
+        first = board_pb2.BoardStackupDielectricProperties()
+        if d.layer:
+            first.CopyFrom(d.layer[0])
+        del d.layer[:]
+        first.thickness.value_nm = nm
+        first.material_name = p.material
+        first.epsilon_r = p.epsilon_r or first.epsilon_r
+        d.layer.append(first)
+    return out
+
+
+def get_stackup(h: KicadHandle) -> board_pb2.BoardStackup:
+    out = board_pb2.BoardStackup()
+    out.CopyFrom(h.board().get_stackup().proto)
+    return out
+
+
+def update_stackup(h: KicadHandle, stackup: board_pb2.BoardStackup) -> board_pb2.BoardStackup:
+    """UpdateBoardStackup (KiCad patch 0005; kipy has the messages, no wrapper)."""
+    board = h.board()
+    cmd = board_commands_pb2.UpdateBoardStackup(board=board.document, stackup=stackup)
+    response = board.client.send(cmd, board_commands_pb2.BoardStackupResponse)
+    out = board_pb2.BoardStackup()
+    out.CopyFrom(response.stackup)
+    return out
+
+
+def _stackup_unavailable() -> StructuredToolError:
+    return StructuredToolError(
         "Cannot set the stackup",
-        "setting a stackup needs the patched KiCad base image (phase P2b); this server "
-        "uses KiCad's default stackup",
-        "Leave stackup out; the board keeps KiCad's default stackup for its layer count.",
+        "this KiCad server has no UpdateBoardStackup handler (KiCad patch 0005 missing); "
+        "nothing of this call stays applied",
+        "the default stackup stays; the KiCad base image with patch 0005 is needed. Retry "
+        "without stackup to set the other rules.",
         code="stackup_unavailable",
     )
+
+
+def _set_stackup(h: KicadHandle, preset: StackupPreset, state: dict[str, Any]) -> None:
+    """Stage: the preset's build-up. The undo snapshot is the stackup right before the
+    write (the layer count already applied); the layer count's undo restores the
+    pre-call stackup after it (`_undo_layers`)."""
+    pre = get_stackup(h)
+    req = stackup_request(pre, preset)
+    state["stackup"] = pre  # armed before the send: a timeout leaves KiCad's state unknown
+    try:
+        update_stackup(h, req)
+    except ApiError as exc:
+        del state["stackup"]  # KiCad refused: nothing was written
+        if _NO_STACKUP_HANDLER in str(exc):
+            raise _stackup_unavailable() from exc
+        raise _rules_invalid(f"KiCad rejects the stackup: {exc.raw_message or exc}") from exc
+
+
+def _undo_stackup(h: KicadHandle, state: dict[str, Any]) -> None:
+    if "stackup" in state:
+        update_stackup(h, state["stackup"])
 
 
 def design_rule_values(
@@ -948,13 +1060,24 @@ def _set_layers(h: KicadHandle, target: int, state: dict[str, Any]) -> None:
         if items:
             raise _layers_refused(target, items)
     state["layers"] = (current, non_copper)
+    state["layers_stackup"] = get_stackup(h)
     board.set_enabled_layers(target, non_copper)
 
 
 def _undo_layers(h: KicadHandle, state: dict[str, Any]) -> None:
+    """The pre-call layer count, then the pre-call stackup when it differs (a stackup
+    stage of this call, or KiCad re-synchronising an explicit stackup with the layers).
+    Equal stackups are never written, so an unpatched server is never asked."""
     if "layers" in state:
         count, non_copper = state["layers"]
         h.board().set_enabled_layers(count, non_copper)
+        pre = state.get("layers_stackup")
+        if pre is not None and get_stackup(h) != pre:
+            try:
+                update_stackup(h, pre)
+            except ApiError as exc:  # unpatched: nothing of ours to restore
+                if _NO_STACKUP_HANDLER not in str(exc):
+                    raise
 
 
 def _set_design_rules(h: KicadHandle, values: dict[str, float], state: dict[str, Any]) -> None:
@@ -1133,11 +1256,35 @@ async def _undo_custom_rules(sctx: BoardStageContext, state: dict[str, Any]) -> 
 _RULE_HEAD = r'\(rule\s+(?:"{0}"|{0})[\s)]'
 
 
+def model_stackup_thicknesses(m: BoardModel) -> list[float]:
+    """Copper and dielectric thicknesses (mm) of the model's stackup, top to bottom."""
+    out: list[float] = []
+    for name, value in m.stackup:
+        if name.endswith(".Cu") or name.startswith("dielectric "):
+            out.append(float(value.split("/", 1)[0]))
+    return out
+
+
+def _verify_stackup(m: BoardModel, preset: StackupPreset) -> list[str]:
+    got = model_stackup_thicknesses(m)
+    want = [layer.thickness for layer in preset.layers]
+    if len(got) != len(want) or any(
+        abs(a - b) > STACKUP_TOL_MM for a, b in zip(got, want, strict=True)
+    ):
+        return [f"stackup reads back as {got} mm, expected {want} ({preset.id})"]
+    return []
+
+
 def _verify_rules(
-    req: RulesArgs, values: dict[str, float], before_hash: str
+    req: RulesArgs,
+    values: dict[str, float],
+    before_hash: str,
+    stackup: StackupPreset | None = None,
 ) -> Callable[[BoardModel, dict[str, Any]], list[str]]:
     def verify(m: BoardModel, report: dict[str, Any]) -> list[str]:
         problems: list[str] = []
+        if stackup is not None:
+            problems += _verify_stackup(m, stackup)
         if req.layers is not None and len(m.copper_layers) != req.layers:
             problems.append(f"{len(m.copper_layers)} copper layers, expected {req.layers}")
         rules = dict(m.rules)
@@ -1241,10 +1388,10 @@ async def prepare_rules(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
     pre-call value; compensation runs them in reverse."""
     require_board_tools(ctx)
     req = parse_rules_args(args)
-    plan_stackup(req)
     require_board(ctx)
     before = await board_model(ctx)
     copper = len(before.copper_layers)
+    stackup = plan_stackup(req, copper)
     preset, values = design_rule_values(req, copper)
     target = req.layers
     if target is not None and target < copper:
@@ -1256,7 +1403,7 @@ async def prepare_rules(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
             raise _layers_refused(target, items)
     if req.custom_rules:
         dru_exists(ctx.project)
-    return _plan_rules(req, preset, values, copper, board_hash(before))
+    return _plan_rules(req, preset, values, copper, board_hash(before), stackup)
 
 
 def _plan_rules(
@@ -1265,6 +1412,7 @@ def _plan_rules(
     values: dict[str, float],
     copper: int,
     before_hash: str,
+    stackup: StackupPreset | None = None,
 ) -> BoardChangeSet:
     state: dict[str, Any] = {}
 
@@ -1295,6 +1443,15 @@ def _plan_rules(
         stages.append(
             staged("layer count", lambda h: _set_layers(h, target, state), undo_with(_undo_layers))
         )
+    if stackup is not None:
+        chosen = stackup
+        stages.append(
+            staged(
+                "stackup",
+                lambda h: _set_stackup(h, chosen, state),
+                undo_with(_undo_stackup),
+            )
+        )
     if values:
         stages.append(
             staged(
@@ -1312,6 +1469,12 @@ def _plan_rules(
             )
         )
     report = _rules_report(req, preset, values, copper)
+    if stackup is not None:
+        report["stackup"] = {
+            "id": stackup.id,
+            "jlc_name": stackup.jlc_name,
+            "total_mm": round(stackup.total_mm, 4),
+        }
     if req.custom_rules:
 
         async def custom(sctx: BoardStageContext) -> None:
@@ -1332,7 +1495,7 @@ def _plan_rules(
         logical=Logical(RULES_COST if stages else 0),
         kind="board_set_rules",
         board_stages=stages,
-        verify=_verify_rules(req, values, before_hash),
+        verify=_verify_rules(req, values, before_hash, stackup),
         report=report,
     )
 

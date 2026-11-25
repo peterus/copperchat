@@ -18,6 +18,10 @@ All notable changes to CopperChat are documented in this file. The format follow
 - Board sync, outline and rules tools (`pcb_sync_from_schematic`, `pcb_set_outline`,
   `pcb_set_rules` with JLCPCB presets) — behind COPPERCHAT_BOARD_TOOLS.
 - Board checks and approvals (`pcb_check`, `pcb_approve`) — behind COPPERCHAT_BOARD_TOOLS.
+- JLC stackup presets for board rules (`pcb_set_rules {stackup}`: jlc-2l-1.6,
+  jlc-4l-1.6-7628, jlc-6l-1.6), through KiCad patch 0005 (`UpdateBoardStackup`) — behind
+  COPPERCHAT_BOARD_TOOLS. **Release note:** PROD needs the new kicad-base tag;
+  `kicad-base.yml` on `main` must have published this recipe before a release is cut.
 
 ## [0.12.0] - 2026-11-22
 
