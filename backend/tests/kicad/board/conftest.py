@@ -240,7 +240,9 @@ class SynthRig:
 
 
 @pytest_asyncio.fixture
-async def synth_rig(make_settings: Callable[..., Settings], tmp_path: Path) -> AsyncIterator[SynthRig]:
+async def synth_rig(
+    make_settings: Callable[..., Settings], tmp_path: Path
+) -> AsyncIterator[SynthRig]:
     from tests.support.conversations import ensure_test_conversation
     from tests.support.history import FakeEngine, FakeRuntime, RecordingBroadcaster
 
