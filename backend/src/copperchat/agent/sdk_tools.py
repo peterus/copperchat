@@ -13,6 +13,7 @@ from typing import Any
 from claude_agent_sdk import McpSdkServerConfig, SdkMcpTool, create_sdk_mcp_server
 
 from copperchat.agent.events import ToolResultEvt
+from copperchat.agent.profiles import PCB_WRITES
 from copperchat.errors import (
     DocumentInconsistent,
     leftover_advice,
@@ -253,12 +254,33 @@ def _target(args: dict[str, Any]) -> str:
     return text if len(text) <= 80 else text[:77] + "..."
 
 
+_BOARD_FILES = (".kicad_pcb", ".kicad_dru")
+
+
+def _board_leftovers(leftovers: list[str]) -> tuple[str, str]:
+    """What a failed board compensation left (board engine: "extra track <kiid>", "moved
+    footprint <kiid>", ..., or the board file the call created) and what undoes it."""
+    files = [x for x in leftovers if x.endswith(_BOARD_FILES)]
+    items = [x for x in leftovers if not x.endswith(_BOARD_FILES)]
+    state, advice = ["Rolling it back failed."], []
+    if items:
+        state.append(
+            f"These board items differ from the state before this edit: {', '.join(items)}."
+        )
+        advice.append("Undoing this turn in History brings back the board of the turn's start.")
+    if files:
+        state.append(f"The board file this call created is still there: {', '.join(files)}.")
+        advice.append(f"Undoing this turn in History removes {', '.join(files)}.")
+    return " ".join(state), " ".join(advice)
+
+
 def _inconsistent_error(tool: str, args: dict[str, Any], exc: Exception) -> StructuredToolError:
     """Plain words for the agent to pass on (#6b, spec §5.4): what failed, what the
     design is reloaded to, that earlier edits are kept; the internal reason in details.
     A failed footprint compensation names what it left behind, worded by outcome (spec
     §9.3); a schematic failure with such leftovers (a `library_row` pre-stage whose row
-    removal failed too) keeps the schematic wording and adds the leftovers."""
+    removal failed too) keeps the schematic wording and adds the leftovers. A board write
+    (``PCB_WRITES``) names its leftovers as board items."""
     target = _target(args)
     edit = f"{tool} {target}" if target else tool
     leftovers: list[str] = list(getattr(exc, "leftovers", None) or [])
@@ -287,8 +309,11 @@ def _inconsistent_error(tool: str, args: dict[str, Any], exc: Exception) -> Stru
             details={"detail": str(exc)},
         )
     named = ", ".join(leftovers)
-    state = f"Rolling it back failed. {leftover_state(leftovers)}"
-    advice = leftover_advice(leftovers, getattr(exc, "replaced", None) or [])
+    if tool in PCB_WRITES:
+        state, advice = _board_leftovers(leftovers)
+    else:
+        state = f"Rolling it back failed. {leftover_state(leftovers)}"
+        advice = leftover_advice(leftovers, getattr(exc, "replaced", None) or [])
     if footprint_only:
         why, kept = (
             f"{state} Only the footprint library changed; the schematic is not affected.",
