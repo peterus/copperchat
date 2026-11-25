@@ -1013,12 +1013,16 @@ def _nm_track(t: Track) -> Track:
     )
 
 
-def _touches(mids: _Grid, mid_pts: Sequence[Point], line: Sequence[Point]) -> bool:
-    """Some point of `mid_pts` (the touched tracks' midpoints, bucketed in `mids`) lies on
-    the polyline `line` (within the on-track tolerance)."""
+def _touches(grid: _Grid, segs: Sequence[tuple[Point, Point]], line: Sequence[Point]) -> bool:
+    """Some segment of the polyline `line` overlaps touched copper: its midpoint lies on one
+    of `segs` (the touched tracks, bucketed by bbox in `grid`) within the on-track
+    tolerance. Per segment, not per track midpoint: `polylines` T-splits a track where
+    another ends on its interior, so the pieces of one touched track can land on
+    polylines that hold none of the touched tracks' midpoints."""
     for a, b in itertools.pairwise(line):
-        for k in mids.query(_grow((a, b), _ON_TRACK_TOL)):
-            if _pt_seg(mid_pts[k], a, b) <= _ON_TRACK_TOL:
+        m = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+        for k in grid.query((m[0], m[1], m[0], m[1])):
+            if _pt_seg(m, *segs[k]) <= _ON_TRACK_TOL:
                 return True
     return False
 
@@ -1146,13 +1150,12 @@ def postprocess(model: BoardModel, kiids: frozenset[str]) -> PostResult:
         pads = index.layer(layer)[1].get(net, [])
         vias = index.vias_of.get(net, [])
         rounded = [_nm_track(wt[i]) for i in ids]
-        mids = _Grid()
-        mid_pts: list[Point] = []
+        own_grid = _Grid()  # the touched (rounded) tracks by bbox, grown by the tolerance
+        own_segs: list[tuple[Point, Point]] = []
         for i, t in zip(ids, rounded, strict=True):
             if i in mine:
-                m = ((t.start[0] + t.end[0]) / 2, (t.start[1] + t.end[1]) / 2)
-                mids.add(len(mid_pts), (m[0], m[1], m[0], m[1]))
-                mid_pts.append(m)
+                own_grid.add(len(own_segs), _grow((t.start, t.end), _ON_TRACK_TOL))
+                own_segs.append((t.start, t.end))
 
         # ends within the join tolerance of each other but not on one point (a piece or
         # gap step 1 could not close): `polylines` snaps them into nodes in track order, so
@@ -1181,7 +1184,7 @@ def postprocess(model: BoardModel, kiids: frozenset[str]) -> PostResult:
             ):
                 continue
             rip(net, layer, owners, "non_octilinear")
-        got = _bend_fails(rounded, pads, vias, partial(_touches, mids, mid_pts))
+        got = _bend_fails(rounded, pads, vias, partial(_touches, own_grid, own_segs))
         base_rest = [t for i, t in zip(ids, rounded, strict=True) if i not in mine]
         has_fails = any(got.values())
         old_fails = _bend_fails(base_rest, pads, vias, None) if base_rest and has_fails else {}

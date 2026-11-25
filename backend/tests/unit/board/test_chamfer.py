@@ -911,6 +911,143 @@ def test_output_passes_analyse_bends() -> None:
     assert 0 < ripped < PROPERTY_SEEDS
 
 
+# ---- T-split pieces: the step-3 polyline check selects polylines by touched copper ----------
+
+
+def _in_any_pad(p: Point, m: BoardModel, net: str) -> bool:
+    return any(
+        abs(p[0] - q.x) <= q.w / 2 + 0.002 and abs(p[1] - q.y) <= q.h / 2 + 0.002
+        for part_ in m.parts
+        for q in part_.pads
+        if q.net == net
+    )
+
+
+def _touched_lines_clean_or_ripped(m: BoardModel, ks: frozenset[str], r: PostResult) -> None:
+    """Every nm-rounded output polyline holding touched copper (a segment whose midpoint
+    lies on a touched output track) passes `analyse_bends`, or its net was ripped."""
+    rep = dict(r.replace)
+    touched = [
+        nm_model(replace(m, tracks=(t,))).tracks[0]
+        for k in sorted(ks)
+        for t in rep.get(k, [tt for tt in m.tracks if tt.kiid == k])
+    ]
+    out = nm_model(apply(m, r))
+    for net, layer in sorted({(t.net, t.layer) for t in touched}):
+        if any(k.startswith(f"{net}:") for k in r.rip):
+            continue
+        mine = [t for t in touched if (t.net, t.layer) == (net, layer)]
+        for line, w in polylines(out, net, layer):
+            if not any(
+                chamfer._pt_seg(((a[0] + b[0]) / 2, (a[1] + b[1]) / 2), t.start, t.end) <= 0.003
+                for a, b in itertools.pairwise(line)
+                for t in mine
+            ):
+                continue
+            ends = (_in_any_pad(line[0], m, net), _in_any_pad(line[-1], m, net))
+            assert fails(analyse_bends(line, w, pad_ends=ends)) == {}, (line, r)
+
+
+def _t_split_board(
+    t0: tuple[Point, Point], t1: tuple[Point, Point], pads: Sequence[Point]
+) -> BoardModel:
+    return board(
+        parts=tuple(pad_part(f"J{i + 1}", *p) for i, p in enumerate(pads)),
+        tracks=(
+            track("N1", "F.Cu", *t0, 0.2, kiid="t0"),
+            track("N1", "F.Cu", *t1, 0.2, kiid="t1"),
+        ),
+        net_class_of=(("N1", "Default"),),
+    )
+
+
+def test_t_split_piece_without_touched_midpoint_rips() -> None:
+    # t1 ends 0.0003 mm off t0's interior (a T): geom T-splits t0 there, so its 0.0024 mm
+    # overshoot is a polyline of its own holding no touched track's midpoint - and it is
+    # non-octilinear after nm rounding
+    m = _t_split_board(
+        ((10.0, 10.0), (13.0024, 10.0)),
+        ((13.0, 10.0003), (15.0, 12.0003)),
+        [(10, 10), (15, 12.0003)],
+    )
+    r = postprocess(m, kiids(m))
+    assert KEY in r.rip
+    _touched_lines_clean_or_ripped(m, kiids(m), r)
+
+
+def test_t_split_piece_inside_pad_rips() -> None:
+    # the same T inside pad J2 (both ends of the overshoot piece are pad ends)
+    m = _t_split_board(
+        ((10.0, 10.0), (15.0024, 10.0)),
+        ((15.0, 10.0003), (17.0, 12.0003)),
+        [(10, 10), (15, 10), (17, 12.0003)],
+    )
+    r = postprocess(m, kiids(m))
+    assert r.rip
+    _touched_lines_clean_or_ripped(m, kiids(m), r)
+
+
+def _perturbed_case(seed: int) -> tuple[BoardModel, frozenset[str]]:
+    """A random octilinear N1 route (all touched) whose joints get sub-2.5 um defects: a
+    tiny piece, a gap, or a T (one track overshoots the joint, the next starts beside it)."""
+    rng = random.Random(seed)
+    pts = _random_pts(rng)
+    width = rng.choice((0.1, 0.15, 0.2, 0.25, 0.3))
+
+    def jitter() -> tuple[int, int]:
+        return (rng.randint(-2500, 2500), rng.randint(-2500, 2500))
+
+    ints = [_nm_ints(p) for p in pts]
+    segs: list[tuple[tuple[int, int], tuple[int, int]]] = []
+    start = ints[0]
+    for i in range(1, len(ints)):
+        v = ints[i]
+        if i == len(ints) - 1 or rng.random() < 0.4:
+            segs.append((start, v))
+            start = v
+            continue
+        kind = rng.choice(("piece", "gap", "t"))
+        dx, dy = jitter()
+        if kind == "piece":
+            segs.append((start, v))
+            segs.append((v, (v[0] + dx, v[1] + dy)))
+            start = (v[0] + dx, v[1] + dy)
+        elif kind == "gap":
+            segs.append((start, v))
+            start = (v[0] + dx, v[1] + dy)
+        else:  # overshoot along the leg, the next leg starts just off the joint
+            ux, uy = (v[0] > start[0]) - (v[0] < start[0]), (v[1] > start[1]) - (v[1] < start[1])
+            over = rng.randint(1, 2500)
+            segs.append((start, (v[0] + ux * over, v[1] + uy * over)))
+            off = rng.randint(-500, 500)
+            start = (v[0] - uy * off, v[1] + ux * off)
+    tracks = tuple(
+        track("N1", "F.Cu", (a[0] / 1e6, a[1] / 1e6), (b[0] / 1e6, b[1] / 1e6), width, kiid=f"t{k}")
+        for k, (a, b) in enumerate(segs)
+        if a != b
+    )
+    m = board(
+        parts=(pad_part("J1", *pts[0]), pad_part("J2", *pts[-1])),
+        tracks=tracks,
+        net_class_of=(("N1", "Default"),),
+    )
+    return m, kiids(m)
+
+
+PERTURBED_SEEDS = 1000
+
+
+def test_perturbed_joints_clean_or_ripped() -> None:
+    t0 = time.perf_counter()
+    ripped = 0
+    for seed in range(PERTURBED_SEEDS):
+        m, ks = _perturbed_case(seed)
+        r = postprocess(m, ks)
+        ripped += bool(r.rip)
+        _touched_lines_clean_or_ripped(m, ks, r)
+    print(f"{PERTURBED_SEEDS} perturbed seeds: {time.perf_counter() - t0:.1f} s, {ripped} ripped")
+
+
 def test_deterministic() -> None:
     pts = [(10.0, 10.0), (15.0, 10.0), (17.0, 10.0), (17.0, 15.0), (22.0, 15.0)]
     m = routed(pts)
