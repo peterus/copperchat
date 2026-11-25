@@ -1,7 +1,7 @@
 # CopperChat — Board layout (SP4 design)
 
 Date: 2026-11-24
-Status: **draft, waiting for the owner's approval.** The owner decided the main points in chat on
+Status: **Approved by owner 2026-11-25** (including the spec calls). The owner decided the main points in chat on
 2026-11-23 and 2026-11-24; §15.1 lists them. Every decision the author made alone is marked
 **(spec call)** and is listed again in §15.2. The owner's answers to the draft's open questions
 (2026-11-24) are in §15.3.
