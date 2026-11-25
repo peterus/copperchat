@@ -79,7 +79,9 @@ conversation). `board_file(project) -> str` in `board.py`: `pcb_file` relative t
 `unconnected_items`, `schematic_parity`); `verdict(report: MetricsReport) -> Literal["pass",
 "review","fail"]`. Schema `_obj({"level": {"enum": ["quick","full"]}}, ["level"])`, read tool
 (no edit lock, cost 0). **quick:** `board_model` → `run_drc_task` → `read_board_doc` →
-`compute_metrics(..., drc, parity=None, preset=None)` in `run_cpu` (M14 `n/a`). **full:**
+`run_cpu(metrics_job, model, doc, drc, None, None, parity=None, timeout_s=30)` (P3a's job:
+builds the classification and calls `compute_metrics` in the worker; preset `None` → M14
+`n/a`). **full:**
 additionally a copy dir `agent_dir(project)/"board"/"check"/<uuid>/` with
 `session.save_copy("sch", dir/<stem>.kicad_sch)` (copies sub-sheets),
 `session.save_copy("pcb", dir/<stem>.kicad_pcb)` (copies `.kicad_dru`) and byte copies of
@@ -87,8 +89,10 @@ additionally a copy dir `agent_dir(project)/"board"/"check"/<uuid>/` with
 in the project is written); `run_kicad_cli(settings, ["pcb", "drc", "--format", "json",
 "--severity-all", "--schematic-parity", "-o", <dir>/drc.json, <copy>], timeout=300)`;
 non-zero exit with no JSON → `StructuredToolError(code="drc_rejected")`; the copy dir is
-removed in `finally`. In full mode M3 uses the CLI violations + parity, M2 the API task, M14
-`preset_for(model, doc)` (P3a). Hashes are read before the DRC and again after; when they differ
+removed in `finally`. In full mode the metrics come from `run_cpu(metrics_job, model, doc,
+drc, preset_for(model, doc), None, parity=<CLI parity>, timeout_s=30)` — never a direct
+`compute_metrics` in `run_cpu`: M3 uses the CLI violations + parity, M2 the API task, M14
+the preset (P3a). Hashes are read before the DRC and again after; when they differ
 the result says `"stale": true` and **no row is recorded**. Result: `level`, `errors` (≤ 50
 + omitted), `warnings` (each with `accepted: bool`, ≤ 50 + omitted), `parity` (≤ 50),
 `metrics`, `hard_failures`, `verdict`, `placement_hash`, `board_hash`, `seconds`. Recording
@@ -151,9 +155,11 @@ Guards (all → `approval_not_allowed` with `details.guard`, evaluated in this o
 3. the evidence passes: placement — the newest check row for the hash has `m1_pass = 1`;
    board — the newest full check for the hash has `hard_failures = 0`;
 4. **no write after evidence** (ABA guard, mirrors `fp_approve`'s `last_geometry_write_at`
-   check, `cc/kicad_tools/footprints/approve.py` guard 4): `ChangeRepo.since(project.id,
-   newest evidence created_at)` (the newest of the render/check rows used by guards 2–3) holds
-   no entry whose `kind ∈ BOARD_KINDS − {"board_approve"}` (one board per project; board
+   check, `cc/kicad_tools/footprints/approve.py` guard 4, which refuses when
+   `min(rendered_at, checked_at) <= written_at`): `ChangeRepo.since(project.id, oldest
+   evidence created_at)` — the **oldest** of the evidence rows used by guards 2–3 (per required
+   kind the newest row for the hash; then the minimum over them: placement = min(placement
+   render, check); board = min(full check, `top` render, `bottom` render)) — holds no entry whose `kind ∈ BOARD_KINDS − {"board_approve"}` (one board per project; board
    entries carry `sheet_path == ""`) — a move away and back to the same hash, in the approving
    turn or after the evidence in an earlier turn, means the user never saw the board as it is
    now; suggestion: render + check again, show them, end the turn;
@@ -173,7 +179,10 @@ Guards (all → `approval_not_allowed` with `details.guard`, evaluated in this o
   `test_aba_in_approving_turn_refused` (evidence rows for hash A; user message; then two
   `board_move` change entries newer than the evidence — away and back, current hash A again
   → 4); `test_write_before_evidence_ok` (a `board_move` entry older than the evidence → no
-  guard 4); `test_approve_entry_does_not_count` (an older approval's `board_approve` entry
+  guard 4); `test_write_between_render_and_check_refused` (placement render row for hash
+  A, then a `board_move` entry, then the check row for hash A (moved back) → the write is
+  newer than the render, older than the check → 4; same for the board stage with the write
+  between the `top` render and the full check); `test_approve_entry_does_not_count` (an older approval's `board_approve` entry
   newer than the evidence → not 4);
   `test_no_placement_render` (2); `test_evidence_other_conversation` (2);
   `test_m1_failing` (3); `test_full_check_with_hard_failures` (3);

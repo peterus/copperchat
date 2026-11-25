@@ -95,11 +95,11 @@ means the file is shared and the phase only adds lines (rebase on `main` and kee
 
 | Area | Owner (wave) | Others |
 |---|---|---|
-| `cc/board/{__init__,model,geom,worker,presets,_selftest}.py` (`presets.py`: `FabPreset` + `PRESETS`, pure data), `cc/kicad_tools/board/{__init__,read,api,engine,compensate}.py` (engine incl. `BoardStage.compensable` / `undo`), `cc/kicad_session/session.py`, `cc/history/{store,restore,service}.py`, `cc/changes/{repo,diff}.py`, `frontend/src/components/changes/highlight.ts`, `cc/config.py` (`board_tools`), `cc/tools/spec.py` + `cc/agent/{engine,sdk_backend,fake}.py` + `cc/history/hooks.py` (`ToolContext.reload_project`, `refresh_project`, `on_project_changed` only), `cc/agent/sdk_tools.py` (`_two_phase_steps` generation re-baseline after a session replacement only), `cc/kicad_tools/edit/engine.py` (refusal) | P1a (1) | P1b none |
+| `cc/board/{__init__,model,geom,worker,presets,_selftest}.py` (`presets.py`: `FabPreset` + `PRESETS`, pure data), `cc/kicad_tools/board/{__init__,read,api,engine,compensate}.py` (engine incl. `BoardStage.compensable` / `undo`), `cc/kicad_session/session.py`, `cc/history/{store,restore,service}.py`, `cc/changes/{repo,diff}.py`, `frontend/src/components/changes/highlight.ts`, `cc/config.py` (`board_tools`), `cc/tools/spec.py` + `cc/agent/{engine,sdk_backend,fake}.py` + `cc/history/hooks.py` (`ToolContext.reload_project` + `ToolContext.reloaded_generation`, `refresh_project`, `on_project_changed` only), `cc/agent/sdk_tools.py` (`_two_phase_steps` generation re-baseline after a session replacement only), `cc/kicad_tools/edit/engine.py` (refusal) | P1a (1) | P1b none |
 | `backend/tests/fixtures/projects/sp4_synth/**`, `scripts/make-sp4-synth.py`, `scripts/refresh-fixtures.sh`, `backend/tests/support/kicad_project.py` (`synth_session`), `backend/tests/kicad/board/goldens/sp4_synth_summary.json` | P1b (1) | P1a none |
 | `cc/agent/{profiles,sdk_backend,fake}.py`, `cc/agent/sdk_tools.py` (board publish), `cc/history/{live,hooks}.py`, `cc/views/{snapshot,footprint_render,_raster_worker}.py` (`_raster_worker`: CPU/memory limits from argv), new `cc/views/board_render.py`, `cc/board/render.py`, `cc/web/routes_conversations.py`, `frontend/src/components/sessions/NewSessionDialog.tsx`, `cc/design_docs/service.py`, `cc/skills/builtin/design-docs/templates/board.md`, new `cc/skills/builtin/session-board/`, `cc/kicad_tools/board/{specs,status,views}.py`, `cc/tools/registry.py`, `cc/web/app.py` (`/api/features` registration), new `frontend/src/api/features.ts`, `cc/history/service.py` (pcb branch of the turn-end view refresh) | P1c (2) | — |
 | `cc/kicad_tools/board/{sync,setup}.py`, `cc/kicad_tools/board/specs_setup.py`, `cc/board/staging.py` (consumes P1a's `presets.py`) | P2 (3) | `board/specs.py` append |
-| `cc/board/{classify,boardmd,metrics}.py`, `cc/board/jobs.py` (the one module of `run_cpu` job functions: `analyse_job`, `metrics_job`), `cc/board/geom.py` (bend analysis, append), `cc/kicad_tools/board/{analysis,specs_analysis}.py` | P3a (3) | `board/specs.py` append; `cc/board/jobs.py` append (P4 `place_block_job` / `legalize_job`, P5b/P6b if needed) |
+| `cc/board/{classify,boardmd,metrics}.py`, `cc/board/jobs.py` (the one module of `run_cpu` job functions: `analyse_job`, `metrics_job(model, doc, drc, preset, only, parity=None)` — builds the `Classification` itself and passes `parity` to `compute_metrics`; P3b's `pcb_check` calls it, never `compute_metrics` directly — plus `strip_fills`), `cc/board/geom.py` (bend analysis, append), `cc/kicad_tools/board/{analysis,specs_analysis}.py` | P3a (3) | `board/specs.py` append; `cc/board/jobs.py` append (P4 `place_block_job` / `legalize_job`, P5b/P6b if needed) |
 | `cc/db/migrations/0013_board.sql`, `cc/db/repos/board.py`, new `cc/approvals.py`, `cc/kicad_tools/footprints/approve.py` (refactor to `cc/approvals.py`), `cc/editing/gate.py` (`PLAN_EXEMPT_TOOLS`), `cc/kicad_tools/board/{check,approve,checkpoints,specs_check}.py`, `board/status.py` + `board/views.py` (evidence/checkpoint fields) | P3b (4) | `board/specs.py` append |
 | `cc/board/router/{__init__,grid,astar,simplify,pairs}.py` — **only P5a creates `cc/board/router/__init__.py`** | P5a (4) | P6a must not create or edit `__init__.py` (it adds `chamfer.py`, imported by full path); if P5a is not merged yet, P6a creates an empty `__init__.py` only if absent and keeps P5a's version on rebase |
 | `scripts/fetch-freerouting.sh`, `docker/freerouting.lock`, `docker/app/Dockerfile`, `.github/workflows/ci.yml` (kicad job cache + fetch step), `cc/board/freerouting.py`, `cc/board/router/chamfer.py`, `cc/config.py` (freerouting settings, append), `LICENSES/` notices, `scripts/app-image-tools.sh`, `.gitignore` | P6a (4) | — |
@@ -195,11 +195,18 @@ Constraints). Values are copied from the spec.
   not sent by us count as `timed_out`; timeout default 300 s, max 600 s; no network
   (`unshare -n` when permitted, else options + a no-connection test); killed on turn stop.
   `pcb_route_fill`: Freerouting gets `timeout_s`; post-processing + rip-and-reroute get a
-  separate 120 s deadline. `pcb_route`: total deadline 300 s.
+  separate 120 s deadline. `pcb_route`: total deadline 300 s. Deadline-bound loops check the
+  deadline before **every** margin attempt and bound each step by the remaining time: each
+  `run_cpu` gets `timeout_s = min(30, remaining)` and `wait_s = remaining`, each DRC
+  `min(60, remaining)`; worst case = deadline + one DRC (≤ 60 s).
 - Renders: PNG ≤ 1600 px long side; ≤ 3 images per step report; SVG through the footprint
-  sanitiser with board limits (B-C9); every injected string XML-escaped.
+  sanitiser with board limits (B-C9); every injected string XML-escaped. Retention: board PNGs
+  kept; board SVGs (+ `.svg.json` sidecars) beyond the newest 20 per project pruned at each
+  `pcb_render` (P1c).
 - Fab: `<project>/fab/jlcpcb/` and `<project>/fab/3d/`, refused if `fab/` or the target is a
-  symlink or resolves outside the project; written to a temp dir and swapped in two steps.
+  symlink or resolves outside the project (validated **before** the stale-leftover sweep, which
+  only ever runs in the validated `fab/`); written to a temp dir and swapped in two steps; BOM/CPL
+  text cells starting with `=`, `+`, `-`, `@`, tab or CR get a leading `'` (P8).
 - Live view: board publishes **once per tool call from the adapter after `apply`**, never from
   the per-commit hook while a board tool is applying.
 - Long commands always with `timeout`; KiCad tests in `ghcr.io/peterus/copperchat-kicad-base`
@@ -360,7 +367,7 @@ BOARD_SHEET = SheetRef(path="", page="", file="", name="<board>")
 @dataclass class BoardStageContext:
     ctx: ToolContext; report: dict[str, Any]; created: set[str]   # KIIDs created by this call
     async def call(self, fn: Callable[[KicadHandle], T]) -> T: ...  # session.call
-    async def drc(self) -> DrcResult: ...                           # api.run_drc_task
+    async def drc(self, *, timeout_s: float = 60.0) -> DrcResult: ... # api.run_drc_task(h, timeout_s=…); deadline-bound callers pass min(60, remaining)
     async def model(self) -> BoardModel: ...
 @dataclass(kw_only=True) class BoardChangeSet(ChangeSet):          # base fields defaulted: sheet=BOARD_SHEET, stages=[], pre_images={}, intent=NetIntent()
     kind: str                         # change-log kind, member of BOARD_KINDS
@@ -371,6 +378,7 @@ BOARD_SHEET = SheetRef(path="", page="", file="", name="<board>")
     saves_project: bool = False       # rules/net classes: explicit project save if a board save does not persist them (P2 verifies)
     unrouted_by_call: list[str] = field(default_factory=list)  # nets this call unrouted (moves with unroute: true)
     fail_after: int | None = None     # test hook: raise after stage n (1-based)
+    temp_dirs: list[Path] = field(default_factory=list)   # scratch dirs owned by this change set (P6b fill-<uuid>); the engine rmtree's every one still present in its finally (shielded), on success, failure and cancel
 async def apply_board_change_set(ctx: ToolContext, cs: BoardChangeSet) -> ToolResult
 # runs inside ctx.session.applying(); takes the compensation snapshot first; one commit per
 # stage with commit=True (commit=False stages open their own commits); drop_commit on error
@@ -381,6 +389,10 @@ async def apply_board_change_set(ctx: ToolContext, cs: BoardChangeSet) -> ToolRe
 `cc/kicad_tools/edit/engine.py::apply_change_set` refuses `BoardChangeSet` with `TypeError` (as it
 refuses `FootprintChangeSet`). Two-phase board tools use `edit_spec(..., prepare, apply)` where
 `apply = lambda ctx, cs: apply_board_change_set(ctx, cs)`; `sdk_tools._apply` gets no new branch.
+Board creation (`creates_board`) calls `ctx.reload_project() -> tuple[Project, KicadSession,
+int]` (the `int` = the new session's `generation` captured at reload time) and records it in
+`ctx.reloaded_generation: int | None`; `_two_phase_steps` re-baselines its restart check to
+that value (call 13).
 
 `cc/kicad_tools/board/compensate.py` (P1a):
 
@@ -399,7 +411,9 @@ def compensate(h: KicadHandle, snap: CopperSnapshot) -> list[str]   # removes it
 `modified` becomes a property `"sch" in self.modified_docs`.
 
 `cc/board/worker.py` (P1a): `async def run_cpu(fn: Callable[..., T], *args: Any, timeout_s: float,
-**kwargs: Any) -> T` (keyword arguments pass through to `fn`) — `ProcessPoolExecutor(max_workers=1,
+wait_s: float | None = None, **kwargs: Any) -> T` (keyword arguments other than `timeout_s` /
+`wait_s` pass through to `fn`; `wait_s` = maximum time queued for the lock, exceeded →
+`board_compute_timeout` without submitting; deadline-bound callers pass their remaining time) — `ProcessPoolExecutor(max_workers=1,
 mp_context=spawn, initializer=…)` per server process, created lazily; the initializer sets
 `RLIMIT_AS` (3 GiB, as `cc/views/_raster_worker.py` does; measured peak recorded); jobs are
 **serialised** by an `asyncio.Lock` and `timeout_s` starts when the caller's own job starts
@@ -557,8 +571,9 @@ async def require_board_approved(ctx: ToolContext, model: BoardModel) -> None   
 `pcb_approve` guards (P3b, each `approval_not_allowed` with its own `details.guard`): 1 hash
 of the stage, 2 evidence in this conversation for the hash, 3 evidence passes, **4 no write
 after evidence** (no change-log entry of a `BOARD_KINDS` kind other than `board_approve` for
-this project newer than the newest evidence row used — the ABA guard, mirroring
-`fp_approve`'s `last_geometry_write_at` check), 5 a later human message, 6 the quote in it,
+this project newer than the **oldest** evidence row used (min over the required render/check
+timestamps) — the ABA guard, mirroring `fp_approve`'s `min(rendered_at, checked_at) <=
+written_at` check in `cc/kicad_tools/footprints/approve.py`), 5 a later human message, 6 the quote in it,
 7 no plan running.
 
 ### B-C11. Placer — `cc/board/placer/` (P4)
@@ -591,16 +606,17 @@ Determinism: same input → same output (no unseeded randomness, stable sort key
                                          vias: tuple[Point, ...]; length: float
 MAX_CELLS_PER_LAYER = 4_000_000
 class RouteTooLarge(Exception): cells: int   # build_grid refuses a larger window; the caller reports the connection failed "too_large"
-def build_grid(model: BoardModel, req: RouteRequest, *, pitch: float = 0.05, margin: float = 0.0) -> ObstacleGrid
+def build_grid(model: BoardModel, req: RouteRequest, *, pitch: float = 0.05, margin: float = 0.0,
+               window_mm: float | None = None) -> ObstacleGrid   # None → WINDOW_MM (6.0); solve/solve_pair retry once with 2 × WINDOW_MM
 def route(grid: ObstacleGrid, req: RouteRequest, *, max_expansions: int = 2_000_000) -> RoutePath | None
 def route_pair(model, p: RouteRequest, n: RouteRequest, gap: float) -> tuple[RoutePath, RoutePath] | None
-def solve(model: BoardModel, req: RouteRequest, *, margin: float = 0.0, max_expansions: int = 2_000_000) -> RoutePath | None   # run_cpu entry point
+def solve(model: BoardModel, req: RouteRequest, *, margin: float = 0.0, max_expansions: int = 2_000_000) -> RoutePath | None   # run_cpu entry point; owns the one window-doubling retry (route never retries)
 def solve_pair(model, p, n, gap, *, margin: float = 0.0) -> tuple[RoutePath, RoutePath] | None                                 # run_cpu entry point
 def pair_coupling(a: RoutePath, b: RoutePath) -> dict[str, float]   # keys length_mismatch, gap_min, gap_max (centre-to-centre over the coupled stretch; M12 reporting)
 def prune_model(model: BoardModel, req: RouteRequest | tuple[RouteRequest, RouteRequest]) -> BoardModel   # only items intersecting the retry window; callers pass it to solve/solve_pair
 # cc/kicad_tools/board/route.py (P5b), reused by P6b rip-and-reroute and ladder rung (c):
 async def route_connections(sctx: BoardStageContext, plans: Sequence[ConnPlan], *, lock: bool,
-                            deadline: float | None = None) -> RouteOutcome   # deadline = time.monotonic() value; connections not started by then → failed "timeout"
+                            deadline: float | None = None) -> RouteOutcome   # deadline = time.monotonic() value; checked before every margin attempt; connections not started by then → failed "timeout"; each run_cpu gets timeout_s=min(30, remaining), wait_s=remaining, each DRC min(60, remaining); worst case deadline + one DRC (≤ 60 s)
 #   RouteOutcome(routed: tuple[str, ...], failed: tuple[tuple[str, str], ...]); connection key "{net}:{refA}.{padA}-{refB}.{padB}"
 #   failure reasons: no_path, too_large, timeout, drc_rejected: <text>
 # chamfer.py (P6a)
@@ -734,15 +750,19 @@ Each is pinned by a test or a task in the named phase.
 11. **Freerouting lock file** `docker/freerouting.lock` (shell `KEY=value`: `FREEROUTING_VERSION`,
     `FREEROUTING_URL`, `FREEROUTING_SHA256`, `TEMURIN_URL`, `TEMURIN_SHA256`) read by
     `scripts/fetch-freerouting.sh <dest>`; the Dockerfile and the CI kicad job call it; CI caches
-    `<dest>` with `actions/cache` keyed on the lock file hash.
+    `<dest>` with `actions/cache` (SHA-pinned with a version comment, like the pins in `kicad-base.yml`) keyed on the lock file hash.
 12. **`kicad_e2e` marker** registered in `backend/pyproject.toml`; the 8 `kicad` shards run
     `-m "kicad and not kicad_e2e"`; a new `kicad-e2e` CI job runs `-m kicad_e2e` on the pinned
     base image only.
 13. **Restore re-discovery**: `restore._reload` calls `get_project(root, project.id)` after the
     file operations and passes the fresh `Project` to `sessions.reopen` and `publish_view`; the
     tool-side equivalent after board creation is `ctx.reload_project() -> tuple[Project,
-    KicadSession]` (new `ToolContext` callback, P1a; reopening replaces the session), and the
-    engine assigns both onto `ctx` for the rest of the call. `RunEngine.project` and
+    KicadSession, int]` (new `ToolContext` callback, P1a; reopening replaces the session; the
+    `int` is the new session's `generation` captured at reload time), and the engine assigns
+    project and session onto `ctx` for the rest of the call and records the captured value in
+    `ctx.reloaded_generation`; `_two_phase_steps` re-baselines its restart check to that value
+    (not to the generation after apply), so a restart of the new session in a later stage
+    still raises `KicadUnavailable`. `RunEngine.project` and
     `HistoryHooks.project` are fixed at creation (`cc/agent/engine.py`, `cc/history/hooks.py`), so
     P1a adds `RunEngine.refresh_project(project)` and a hooks `on_project_changed(project)`, called
     by both paths.

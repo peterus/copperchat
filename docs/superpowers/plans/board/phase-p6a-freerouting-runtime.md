@@ -125,7 +125,10 @@ import find_runtime; from copperchat.config import Settings; assert find_runtime
 `ci.yml` kicad job (a **container** job: `${{ github.workspace }}` is the host path, not the
 path inside the container), before `uv run pytest`: a step `- run: echo
 "COPPERCHAT_FREEROUTING_HOME=$GITHUB_WORKSPACE/.cache/freerouting" >> "$GITHUB_ENV"` (shell
-variable evaluated inside the container); `- uses: actions/cache@v4` with the same
+variable evaluated inside the container); `- uses:
+actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0` (pinned by commit SHA with a
+version comment, the same SHA as the `actions/cache/restore` / `actions/cache/save` pins in
+`.github/workflows/kicad-base.yml`) with the same
 **relative** path (`path: .cache/freerouting`, `key: freerouting-${{
 hashFiles('docker/freerouting.lock') }}`); `- run: bash scripts/fetch-freerouting.sh
 "$COPPERCHAT_FREEROUTING_HOME"` with `working-directory: .` (always runs; on a cache hit it

@@ -213,9 +213,13 @@ M10 per block (`blk:*` groups, else `cls.blocks`): convex hull area / Σ courtya
 M11 per inner layer with a ground zone: fill ratio = area of the zone's `Zone.filled`
 polygons (B-C2, `polygon_area` sum; `filled_area_mm2` as fallback when `filled == ()`) /
 outline area (< 0.85 review); **void crossings** = signal track segments on an adjacent
-layer that cross a void of that plane (a point of the segment inside the outline but in no
-filled polygon of the zone — sampled every 0.25 mm and at both ends), one offender per
-(net, void); `n/a` without plane zones; an unfilled plane zone (`filled == ()` and
+layer that cross a void of that plane (a part of the segment inside the outline but in no
+filled polygon of the zone), one offender per (net, void). Computed exactly, without point
+sampling: the edges of the zone's filled polygons go into a uniform grid of buckets (cell
+2 mm, keyed by edge bbox); a segment first takes a bbox prefilter against each polygon, then
+a segment–polygon test — a crossing exists when the segment intersects a polygon edge (taken
+from the buckets its bbox touches) or an endpoint lies inside the outline and outside every
+filled polygon (point-in-polygon only for the two endpoints); `n/a` without plane zones; an unfilled plane zone (`filled == ()` and
 `filled_area_mm2 == 0`) → review "zone not filled". M12 width < class `track_width` −
 0.001 → fail; pair length mismatch > 1 mm → review. M13 every `EdgeRow` ref with an edge:
 courtyard within 0.5 mm of that outline edge or overhanging it, else fail; tracks/vias inside
@@ -229,9 +233,15 @@ visible silk text height/line below `silk_min_height`/`silk_min_line`, **silk ov
 a visible silk text (bbox from `at`, `size` and character count, rotated) or a silk graphic
 (`model.graphics` on `F/B.SilkS`, segment inflated by `width/2`) overlapping the mask
 opening of a pad on the same side (pad rectangle of a pad whose `layers` contain
-`F.Mask`/`B.Mask`), SMD pads without `F.Paste`/`B.Paste`; an offender whose refs all appear in a custom rule condition of
+`F.Mask`/`B.Mask`) — pads are bucketed in a uniform grid (cell 2 mm, keyed by mask-opening
+bbox) per side; each silk item is tested only against the pads of the buckets its bbox
+touches, by exact polygon/segment-vs-rectangle intersection (no sampling), SMD pads without `F.Paste`/`B.Paste`; an offender whose refs all appear in a custom rule condition of
 `dru_text` → exception (review, listed). Offenders sorted by value desc then text, capped at
 20 + `omitted`. Verdict per metric: fail > review > pass; `n/a` when inputs are missing.
+`Zone.filled` polygons are used **only** by M11: when M11 is not requested, the caller strips
+them before the job is pickled (`jobs.strip_fills(model)` = zones with `filled=()`, run
+in-process before `run_cpu`), so `metrics_job` never ships or reads fill geometry it does
+not need.
 
 - [ ] **Step 1: Failing unit tests**, one hand-made geometry with a known answer per metric:
   `test_metrics_placement.py`: `test_m1_outside_by_001` (1), `test_m1_overlap_same_side_only`
@@ -241,7 +251,11 @@ opening of a pad on the same side (pad rectangle of a pad whose `layers` contain
   `test_m10_ratio_and_intrusion` (block hull 30 mm² over 9 mm² courtyards → 3.33 review; a
   foreign part inside → 1 intrusion); `test_stage_detection`.
   `test_metrics_routed.py`: `test_connections_mst` (4 pads on a line → 3 connections);
-  `test_routed_length_via_zero`; `test_m4_counts` (one 90° + one 0.6° segment → 2);
+  `test_routed_length_via_zero`; `test_m4_counts` — each case an isolated polyline on its
+  own net, far from the others, pads at both ends: (a) two octilinear segments meeting at
+  90° → M4 == 1; (b) one single straight segment 0.6° off the x axis → M4 == 1 (one
+  non-octilinear segment, no vertex); (c) a clean octilinear 45° polyline → M4 == 0; all
+  three together on one board → M4 == 2 exactly;
   `test_m5_fail_needs_both` (ratio 2.5 with 4 mm extra → not fail; 2.1 with 6 mm → fail);
   `test_m5_median_review`; `test_m6_long`; `test_m7_counts_and_bends_per_10mm`;
   `test_m8_routed_5_1_fails`; `test_m11_fill_and_crossing` (zone with `filled` polygons
@@ -254,11 +268,13 @@ opening of a pad on the same side (pad rectangle of a pad whose `layers` contain
   accepted by a `board.md` row → M3 value 2, accepted listed); `test_m3_parity_counts`;
   `test_m13_edge_row` (0.4 mm from edge pass, 0.6 fail, overhang pass);
   `test_m14_each_rule` (parametrised: track 0.12 on `jlcpcb-4l`, via 0.25 drill, annular
-  0.14, NPTH 0.4, track 0.25 mm from the edge, via 0.3 drill whose hole edge is 0.25 mm from
-  the edge (`hole_to_edge`), PTH pad hole 0.2 mm from the edge, silk 0.8 mm text, silk text
-  over an SMD pad's `F.Mask` opening (`silk_over_pad`), silk line crossing a pad, SMD pad
-  without paste) → fail; `test_m14_silk_beside_pad_ok` (silk 0.1 mm clear of the mask
-  opening → pass); `test_m14_hole_edge_at_0_3_ok` (hole edge exactly 0.3 mm → pass); `test_m14_custom_rule_exception` (offender ref named in a `dru_text` rule → review);
+  0.14, NPTH 0.4, track 0.25 mm from the edge, an **NPTH** hole (pad with drill 1.0 and no
+  copper layer, so no copper-to-edge rule applies) whose hole edge is 0.25 mm from the edge →
+  the offender's `what` names `hole_to_edge`, silk 0.8 mm text, silk text over an SMD pad's
+  `F.Mask` opening (`silk_over_pad`), silk line crossing a pad, SMD pad without paste) → fail;
+  `test_m14_silk_beside_pad_ok` (silk 0.1 mm clear of the mask opening → pass);
+  `test_m14_hole_edge_at_0_3_ok` (the same NPTH hole with its hole edge 0.3 mm and 0.35 mm
+  from the edge → pass, no offender whose `what` names `hole_to_edge`); `test_m14_custom_rule_exception` (offender ref named in a `dru_text` rule → review);
   `test_m14_na_without_preset`; `test_offender_cap_20` (25 offenders → 20 + `omitted == 5`);
   `test_only_subset`; `test_hard_thresholds_verbatim` (the `HARD` dict equals the literal
   above).
@@ -272,8 +288,11 @@ opening of a pad on the same side (pad rectangle of a pad whose `layers` contain
 pcb_metrics(ctx, args) -> ToolResult`, `preset_for(model, doc) -> FabPreset | None` (B-C6:
 `PRESETS[doc.preset]` when it names a known preset, else
 `PRESETS.get(f"jlcpcb-{len(model.copper_layers)}l")`; P1a's `cc/board/presets.py`). The
-worker functions `analyse_job(model, doc)` / `metrics_job(model, doc, drc, preset, only)`
-live in the new module **`cc/board/jobs.py`** (module-level, so `run_cpu`'s
+worker functions `analyse_job(model, doc)` / `metrics_job(model, doc, drc, preset, only,
+parity=None)` live in the new module **`cc/board/jobs.py`** (`metrics_job` builds the
+`Classification` itself — `classify(model, doc)` in the worker — and passes `parity`
+through to `compute_metrics`; no caller runs `compute_metrics` directly in `run_cpu`; plus
+the in-process helper `strip_fills(model)`) (module-level, so `run_cpu`'s
 `copperchat.board.` check and spawn pickling hold; P4 appends `place_block_job` /
 `legalize_job`, P5b/P6b may append) and run through `run_cpu(..., timeout_s=30)`. Specs in `specs_analysis.py`, appended to
 `board/specs.py`'s `TOOL_SPECS` (read tools: `mutating=False`, never take the edit lock, cost
@@ -291,7 +310,10 @@ Both: `require_board` → `no_board`.
   `PCB_READ`, schemas `additionalProperties: false`, `only` rejects `"M15"`);
   `test_preset_for_doc_then_layers` (`doc.preset == "jlcpcb-6l"` on a 4-layer model → 6l;
   no doc preset → 4l; unknown id → by layer count); `test_jobs_module_level`
-  (`analyse_job.__module__ == "copperchat.board.jobs"`).
+  (`analyse_job.__module__ == "copperchat.board.jobs"`); `test_metrics_job_parity_passthrough`
+  (called in-process with one parity marker → M3 counts it; with `parity=None` → not);
+  `test_strip_fills` (zones keep everything but `filled == ()`; M11-free metrics equal on the
+  stripped and the original model).
 - [ ] **Step 2: Failing kicad tests** (`test_analysis_synth.py`, `synth_board`):
   `test_classification_matches_circuit`: U2 `switching_regulator` with inductor L1, `sw_net`
   ending in `SW`, `in_caps == ("C7",)`, `out_caps == ("C8","C9")`, `fb_parts == ("R5","R6")`;

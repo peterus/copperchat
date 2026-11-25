@@ -97,7 +97,12 @@ pre-import snapshot). Stages (the engine took the full snapshot first, B-C4):
    if Step 2's probe shows the API cannot clear a fill — the plane zones are removed and their
    full data kept for stage 4 and for `undo` (recreate with the stored outline, net, layers,
    priority and settings).
-2. `freerouting` (`commit=False`): `api.export_specctra_dsn(h, <agent_dir>/board/fill-<uuid>/board.dsn)`;
+The scratch dir `workdir = <agent_dir>/board/fill-<uuid>/` is **owned by the change set**:
+`prepare` registers it in `cs.temp_dirs` (B-C4) and stage 2 creates it as its first action
+(before the export); stage 3 removes it after a successful import; on every failure or
+cancel path the engine's `finally` removes it (shielded, B-C4/P1a step 6) — no stage-local
+`finally` that a cancel could skip.
+2. `freerouting` (`commit=False`): `api.export_specctra_dsn(h, <workdir>/board.dsn)`;
    plane layers kept out of the fill by the first mechanism that Step 2 proves (index call 9a,
    P2 recorded the layer type as not settable): (a) a Freerouting 2.5.0 option passed through
    `run_freerouting(..., extra_args=…)`, (b) **last resort, owner D4** — rewrite the plane
@@ -105,9 +110,9 @@ pre-import snapshot). Stages (the engine took the full snapshot first, B-C4):
    `run_freerouting(rt, dsn, ses, timeout_s=args.timeout_s, passes=…, workdir=…)` (Freerouting
    alone gets the user's `timeout_s`); `timed_out` or a missing
    `.ses` → `fill_not_acceptable` with `details.reason ∈ {"timeout", "freerouting_error"}` and
-   `log_tail`. The temp dir is removed in a `finally`.
+   `log_tail`.
 3. `import` (`commit=False`; Step 2 records whether `ImportSpecctraSession` makes its own
-   undo entry): `api.import_specctra_session(h, ses)`.
+   undo entry): `api.import_specctra_session(h, ses)`; on success `rmtree(workdir)`.
 4. `cleanup` (`commit=True`): remove `new_ground_items` (spec §10.3 step 5); if
    `placement_hash(model) ≠` the pre-call hash → restore positions from the snapshot
    (`update_items`) and report `positions_restored`; re-assert the hash (still different →
@@ -166,13 +171,17 @@ locked)` rounded to 0.001 mm.
     do) → the tool error is returned, `copper(model)` equals the pre-call value (the unlocked
     track included, even if the import deleted it), zones and `board_hash` equal; parametrised
     also over `fail_after=4` and `fail_after=1`.
+  - `test_no_fill_dir_left` — no `<agent_dir>/board/fill-*` dir exists after a successful
+    fill, after `fail_after=1` and `fail_after=3`, and after the cancel of
+    `test_fill_cancel_compensates`.
   - `test_fill_cancel_compensates` — start the tool as a task, wait until
     `<workdir>/freerouting.log` exists (the JVM runs), cancel → `CancelledError` propagates,
     the JVM PID (read from the run's log line or the process table filtered to children of
     the test process) has no `/proc` entry, `copper(model)` and `board_hash` equal pre-call,
     `session.modified_docs` holds no stale state (a following `pcb_status` works).
   - `test_rejected_fill_restores` — a post-processor patched (test-only) to rip every
-    connection → `fill_not_acceptable`, copper equal pre-call (covers Task 4's rule path).
+    connection → `fill_not_acceptable` with `details.reason == "rip_ratio"`, copper equal
+    pre-call (covers Task 4's rule path).
 - [ ] **Step 2: Run** `uv run pytest -m kicad tests/kicad/board/test_fill_compensation.py` —
   FAIL. **Step 3: Implement** (whatever the probes of Task 2 require: zone undo, position
   restore). **Step 4: Run** — PASS.
@@ -183,20 +192,25 @@ locked)` rounded to 0.001 mm.
 **Interfaces:** stages 5–7 appended to `fill_stages`. **Separate post-processing deadline:**
 when stage 5 starts, `post_deadline = monotonic() + POST_DEADLINE_S` (120 s, module constant,
 independent of `timeout_s`); stage 5's `run_cpu(postprocess, …)` gets `timeout_s =
-min(60, remaining)`, stage 6 passes `deadline=post_deadline` to `route_connections` (B-C12),
-so ripped connections not started by then are reported in `rejected` with reason `timeout`
-(their fill copper is already removed; they stay open and the ladder's `next` names them);
-stage 7 always runs (cheap). The call's worst case is thus `timeout_s` + 120 s + import/DRC.
+min(60, remaining)` and `wait_s = remaining`, its DRC task `min(60, remaining)`; stage 6
+passes `deadline=post_deadline` to `route_connections` (B-C12: deadline checked before every
+margin attempt, each `run_cpu` `min(30, remaining)` with `wait_s = remaining`, each DRC
+`min(60, remaining)`), so ripped connections not started by then are reported in `rejected`
+with reason `timeout` (their fill copper is already removed; they stay open and the ladder's
+`next` names them); stage 7 always runs (cheap). The post-processing phase thus ends no later
+than `post_deadline` + one DRC (≤ 60 s); the call's worst case is `timeout_s` + export/import
++ 120 s + one DRC (≤ 60 s).
 5. `postprocess` (`commit=True`): `run_cpu(postprocess, model, frozenset(new non-ground
-   KIIDs), timeout_s=60)`. **Rejection rule (spec §10.4):** fill connections = non-ground
-   connections unrouted before and routed after the import; `len(distinct rip keys ∩ fill
-   connections) / len(fill connections) > 0.20` → `fill_not_acceptable` with `details =
-   {fill_connections, rip, ratio, reasons: {reason: n}, worst_areas: [≤ 5 {x, y, w, h,
-   count}]}` (10 × 10 mm cells with the most rip defects; the suggestion names `pcb_render
+   KIIDs), timeout_s=min(60, remaining), wait_s=remaining)`. **Rejection rule (spec §10.4):**
+   fill connections = non-ground connections unrouted before and routed after the import;
+   `len(distinct rip keys ∩ fill connections) / len(fill connections) > 0.20` →
+   `fill_not_acceptable` with `details = {reason: "rip_ratio", fill_connections, rip, ratio,
+   reasons: {reason: n}, worst_areas: [≤ 5 {x, y, w, h, count}]}` (10 × 10 mm cells with the most rip defects; the suggestion names `pcb_render
    {region, markers: true}` after improving channels or the critical routing) → the engine
    restores the pre-fill board. Else apply `replace` (remove old KIIDs, create new tracks),
-   run the DRC task; a replacement whose new KIIDs appear in a non-`unconnected` marker is
-   reverted and its connection added to the rip list.
+   run the DRC task (`sctx.drc(timeout_s=min(60, remaining))`); a replacement whose new
+   KIIDs appear in a non-`unconnected` marker is reverted and its connection added to the rip
+   list.
 6. `reroute` (`commit=False`; P5b's `route_connections(sctx, plans, lock=False,
    deadline=post_deadline)` commits per
    connection as `pcb_route` does): remove the fill's tracks/vias of every ripped connection, re-route each
@@ -228,7 +242,10 @@ summary, and `next` per ladder rung (spec §10.3: (a) more passes, (b) `pcb_unro
   `invalid_argument`); `test_post_deadline_reports_remaining_rips` (post-processor patched to
   rip 4 connections, `POST_DEADLINE_S` monkeypatched so the deadline passes after the first
   re-route (patched `monotonic`) → `rerouted == 1`, the other 3 in `rejected` with reason
-  `timeout`, the call succeeds, M4/M7 = 0 on what was kept); `test_freerouting_gets_timeout_s`
+  `timeout`, the call succeeds, M4/M7 = 0 on what was kept); `test_post_overrun_bounded`
+  (`POST_DEADLINE_S` monkeypatched to 2.0, the post-processor and every re-route `run_cpu`
+  patched to sleep their full `timeout_s` → stages 5–7 together finish within 2.0 s + 60 s,
+  and every spied `run_cpu` / `drc` got `timeout_s ≤ remaining`); `test_freerouting_gets_timeout_s`
   (spy on `run_freerouting`: `timeout_s` equals the argument, not the post deadline).
 - [ ] **Step 2: SDK tool-call limit check** (spec §20): claude-agent-sdk 0.2.168's Python side
   has no per-tool-call timeout (only hook-matcher timeouts and the initialize timeout read from

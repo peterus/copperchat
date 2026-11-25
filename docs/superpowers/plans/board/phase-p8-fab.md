@@ -49,7 +49,10 @@ def swap_in(new: Path, target: Path, call_id: str) -> None
     # 3. rmtree(old); a failing rmtree is logged and reported, the export still succeeds
 def replace_file(new: Path, target: Path) -> None          # os.replace inside the same dir (3D)
 def sweep_stale(fab_dir: Path, target_name: str) -> list[str]
-    # at export start: removes leftovers of crashed earlier exports in fab/ — only entries whose
+    # fab_dir = safe_output_dir(...).parent — called only AFTER safe_output_dir validated it
+    # (os.lstat(fab_dir): a symlink or a non-directory → output_path_unsafe; resolved fab_dir
+    # inside project_dir.resolve()); as defence in depth it re-lstats fab_dir itself and raises
+    # output_path_unsafe for a symlink / non-directory instead of sweeping. At export start: removes leftovers of crashed earlier exports in fab/ — only entries whose
     # name matches ^\.<target_name>\.tmp-[0-9a-f]{12}$ or ^<target_name>\.old-[0-9a-f]{12}$, only
     # when os.lstat says regular directory (a symlink or file of that name is skipped and logged,
     # never followed); rmtree each; returns the removed names (reported)
@@ -72,7 +75,10 @@ crash or kill mid-export (a normal failure cleans up); the exports run under the
   `fab/jlcpcb.old-0123456789ab/` with files → both removed, returned names);
   `test_sweep_skips_symlink_and_others` (`fab/jlcpcb.old-aaaaaaaaaaaa` → a symlink to a dir
   outside: link skipped and the target's files survive; `fab/jlcpcb.old-notes` and a regular
-  file with a matching name untouched).
+  file with a matching name untouched); `test_symlinked_fab_not_swept` (`fab` → a dir outside
+  the project containing `jlcpcb.old-0123456789ab/` with a file: `safe_output_dir(project,
+  "fab/jlcpcb")` raises `output_path_unsafe` and a direct `sweep_stale(project/"fab", "jlcpcb")`
+  raises it too; the outside `jlcpcb.old-*` dir and its file survive).
 - [ ] **Step 2: Run** `uv run pytest tests/unit/board/test_paths.py -q` — FAIL. **Step 3:
   Implement.** **Step 4: Run** — PASS.
 - [ ] **Step 5: Commit** `feat(board): safe fab output path with two-step swap`.
@@ -103,6 +109,12 @@ def fab_report(model: BoardModel, *, board_hash: str, date: str, preset: FabPres
   `Designator,Mid X,Mid Y,Layer,Rotation` with `Top`/`Bottom`, numbers as `"%.4fmm"`, rotation
   `"%.1f"` — CSVs stay clean for upload; "not validated for JLC assembly" (spec §2) is stated
   in `fab-report.md` and in the tool result.
+- **CSV formula-injection guard** (BOM and CPL): every cell written by `bom_rows` / `cpl_rows`
+  that starts with `=`, `+`, `-`, `@`, a tab or a carriage return gets a leading `'` (values
+  come from user-editable symbol/footprint fields: Comment, Designator, Footprint, LCSC Part #,
+  Layer). The numeric CPL columns `Mid X`, `Mid Y`, `Rotation` are formatted by `cpl_rows`
+  from parsed floats (never copied text), so a negative coordinate stays `-1.2000mm` for the
+  JLC upload.
 - `fab_report` (Markdown): board file + `board_hash`, date (UTC ISO), layer count, stackup
   (`model.stackup` or "KiCad default stackup"), outline size, preset id (the `jlcpcb-<n>l`
   preset whose layer count matches; `None` → "custom rules"), metrics table (id, value,
@@ -117,7 +129,9 @@ def fab_report(model: BoardModel, *, board_hash: str, date: str, preset: FabPres
   `kicad-cli` in Task 3 are **not** stored; unit tests use CSV text built in the test from
   rows): `test_gerber_layers_4l` (In1.Cu/In2.Cu present, paste both sides, `--check-zones`,
   `--subtract-soldermask`); `test_drill_separate_mm_map`; `test_bom_lcsc_then_mpn`;
-  `test_bom_header`; `test_cpl_header_and_layer_names`; `test_report_sections` (hash, date,
+  `test_bom_header`; `test_cpl_header_and_layer_names`; `test_csv_formula_injection_guard`
+  (Values `=HYPERLINK("x")`, `+1`, `-5V`, `@SUM(A1)`, `"\tx"`, `"\rx"` → each cell starts with
+  `'`; `10k` and `C1` unchanged; a CPL row at x = -1.2 keeps `Mid X == "-1.2000mm"`); `test_report_sections` (hash, date,
   size, preset, metrics, order notes, "not validated for JLC assembly");
   `test_report_escapes` (a custom-rule reason with `|` and a newline stays one table cell);
   `test_enig_for_fine_pitch`; `test_stencil_sides`.
@@ -135,8 +149,10 @@ budget record, `cc/agent/sdk_tools.py::_run_two_phase_locked`), so no board writ
 between the approval check and the copy: `model = await board_model(ctx)`; `await
 require_board_approved(ctx, model)` (refused `not_approved` unless the latest `board`
 checkpoint's hash equals `board_hash(model)` and the last `pcb_check full` row for that hash
-has `hard_failures == 0`); `swept = sweep_stale(fab_dir, "jlcpcb")`; `target =
-safe_output_dir(project.dir, "fab/jlcpcb")`; `tmp = staging_dir(target, id)`;
+has `hard_failures == 0`); `target = safe_output_dir(project.dir, "fab/jlcpcb")` **first**
+(lstat of `fab/` itself — symlink or not a directory → `output_path_unsafe` — plus the
+resolve-inside-project check), **then** `swept = sweep_stale(target.parent, "jlcpcb")` in the
+validated parent only; `tmp = staging_dir(target, id)`;
 `session.save_copy("pcb", tmp/"src"/<board>.kicad_pcb)` (the copy only — never the live
 file; `save_modified=False`); **re-check**: the `board_hash` of the model read right after
 `save_copy` returned (the copied state — still under the lock) must equal the approved hash,
@@ -170,7 +186,9 @@ next: "offer a git commit of fab/ (spec §7.2: fab/ is a normal repo directory)"
   and in `fab-report.md`); `test_reexport_replaces` (second clean export → new
   `fab-report.md` date, no leftovers); `test_symlinked_fab_refused` (`fab` → a dir in
   `tmp_path` outside the project → `output_path_unsafe`, link target empty);
-  `test_symlinked_target_refused`; `test_not_approved_refused` (no checkpoint → `not_approved`);
+  `test_symlinked_fab_with_leftover_refused` (`fab` → an outside dir containing
+`jlcpcb.old-0123456789ab/` → `output_path_unsafe`, the outside dir and its contents survive);
+`test_symlinked_target_refused`; `test_not_approved_refused` (no checkpoint → `not_approved`);
   `test_stale_approval_refused` (`pcb_move {items: [{ref, x: x + 1}], unroute: true}` of one
   part after approving — the part may carry critical copper — succeeds, then `not_approved`);
   `test_concurrent_move_blocks_or_refuses` (export started as a task with the first
@@ -190,8 +208,9 @@ next: "offer a git commit of fab/ (spec §7.2: fab/ is a normal repo directory)"
 
 **Interfaces:** plain `ToolSpec("pcb_export_3d", …, mutating=True, changes_documents=False)`,
 schema `{format: "step"|"glb"}` (required), cost 0, no approval needed. Handler:
-under `ctx.editing.edit_lock(ctx.project.id)` (when set) like Task 3, `sweep_stale(fab_dir,
-"3d")`, `safe_output_dir(project.dir, "fab/3d")` (mkdir), `save_copy("pcb", …)` into a staging dir
+under `ctx.editing.edit_lock(ctx.project.id)` (when set) like Task 3, `target =
+safe_output_dir(project.dir, "fab/3d")` (validates `fab/` first, mkdir), then
+`sweep_stale(target.parent, "3d")` in the validated parent only, `save_copy("pcb", …)` into a staging dir
 next to it, `kicad-cli pcb export step|glb --force -o <staging>/<board>.<ext> <copy>`
 (timeout 180), `replace_file` into `fab/3d/<board>.<ext>`, staging removed. 3D needs no
 approval, so the post-copy re-check compares the copy's `board_hash` with the hash read at
@@ -203,7 +222,7 @@ part models (gap G7; optional phase P10 adds them)" — the text is a constant
 
 - [ ] **Step 1: Failing kicad tests** (`test_export_3d.py`): `test_step` (file starts with
   `ISO-10303-21`, note present); `test_glb` (first 4 bytes `glTF`); `test_symlinked_fab_refused`
-  (`output_path_unsafe`); `test_failure_leaves_old_file` (an existing `fab/3d/<board>.step`,
+  (`output_path_unsafe`; an outside `3d.old-0123456789ab/` in the link target survives); `test_failure_leaves_old_file` (an existing `fab/3d/<board>.step`,
   `kicad-cli` patched to fail → `export_failed`, old file byte-identical, no staging left);
   `test_kicad_data_untouched`; `test_export_3d_holds_edit_lock` (a concurrent `pcb_move` waits
   until the export returned).

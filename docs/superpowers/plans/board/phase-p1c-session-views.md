@@ -136,12 +136,13 @@ else `{"exists": true, "outline": {kind, x, y, w, h, corner_radius} | null,
 max_bytes, max_elements, max_coords, max_element_coords, max_span` (B-C9);
 `FOOTPRINT_SVG_LIMITS` = today's constants; `load_kicad_svg(data, *,
 limits=FOOTPRINT_SVG_LIMITS)`; `rasterise(svg, extent_mm, *, max_side_px=MAX_SIDE_PX,
-min_px_per_mm=MIN_PX_PER_MM, timeout_s=RASTER_TIMEOUT_S, memory_bytes=None)`. `rasterise`
-also passes the worker's **CPU and memory limits** as two extra argv elements
-(`<width_px> <height_px> <cpu_s> <memory_bytes>`, integers, validated like the first two):
-CPU = `ceil(timeout_s)` (hard limit + 2 s, as today), memory = `memory_bytes` or the
-worker's `MEMORY_LIMIT_BYTES`. `cc/views/_raster_worker.py::main` accepts 2 or 4 argv items
-(2 → today's constants, so the footprint path is byte-identical) and `limit_resources(cpu_s,
+min_px_per_mm=MIN_PX_PER_MM, timeout_s=RASTER_TIMEOUT_S, memory_bytes=None)`. **Only on the
+board path** (`memory_bytes is not None`) `rasterise` passes the worker's **CPU and memory
+limits** as two extra argv elements (`<width_px> <height_px> <cpu_s> <memory_bytes>`,
+integers, validated like the first two): CPU = `ceil(timeout_s)` (hard limit + 2 s, as
+today), memory = `memory_bytes`. Footprint calls (all defaults) build exactly today's argv
+(`*RASTER_WORKER, str(width), str(height)`) — byte-identical, no extra items.
+`cc/views/_raster_worker.py::main` accepts 2 or 4 argv items (2 → today's constants) and `limit_resources(cpu_s,
 memory_bytes)` never raises a limit above today's file-size cap or the inherited hard limit.
 The board path calls `rasterise(max_side_px=1600, timeout_s=BOARD_RASTER_TIMEOUT_S,
 memory_bytes=BOARD_RASTER_MEMORY_BYTES)`; the board memory cap is set in Step 4 from the
@@ -160,7 +161,14 @@ svg --mode-single --page-size-mode 2 --exclude-drawing-sheet --layers <list>` (b
 View layers (spec §13): top = `F.Cu,F.Mask,F.SilkS,Edge.Cuts`; bottom =
 `B.Cu,B.Mask,B.SilkS,Edge.Cuts` mirrored; layer = `<layer>,Edge.Cuts`; placement =
 `F.CrtYd,B.CrtYd,F.Fab,F.SilkS,Edge.Cuts` + hulls. Files land in `agent_dir(project)/
-"renders"` with a uuid name; the tmp board copy is deleted. `pcb_render` schema: `view`
+"renders"` with a uuid name (the renders route only serves `<32 hex>.(png|svg)`); the tmp
+board copy is deleted. **Retention:** every board PNG is kept (conversation images link
+them). Board SVGs are pruned at each `pcb_render`: `renders/board-svgs.json` lists the
+board render uuids oldest first (appended after each successful render; footprint renders
+are never listed, so `fp_render` files are never touched); entries beyond the newest 20 are
+removed from the list and their `<uuid>.svg` and `<uuid>.svg.json` sidecar (if any) deleted
+— only regular files (`os.lstat`) whose name matches the uuid pattern inside
+`renders/`; a missing file is skipped. `pcb_render` schema: `view`
 enum, `layer` (maxLength 32, must be an enabled copper layer → `not_found` with
 `details.closest`), `region {x,y,w,h}` (|x|,|y| ≤ 1000, 0 < w,h ≤ 1000), `highlight_nets`
 (≤ 20, maxLength 256, unknown → `not_found` + closest), `markers: bool` (true → run the DRC
@@ -177,10 +185,16 @@ png_url, placement_hash, board_hash, markers: [...]}`; failures → `render_fail
   (a 1000-point circle → < 200 points, max deviation ≤ 0.02 mm), `test_region_viewbox`;
   `test_raster_limits.py`: `test_rasterise_passes_cpu_and_memory` (spy on
   `create_subprocess_exec`: `timeout_s=7.2, memory_bytes=2**30` → argv ends with `"8"`,
-  `str(2**30)`), `test_worker_two_args_uses_defaults` and `test_worker_four_args_sets_limits`
+  `str(2**30)`), `test_footprint_argv_unchanged` (spy: a default `rasterise` call — the
+  footprint path — passes exactly `(*RASTER_WORKER, str(w), str(h))`, two items after the
+  worker command, nothing else), `test_worker_two_args_uses_defaults` and `test_worker_four_args_sets_limits`
   (call `_raster_worker.limit_resources` in a `spawn` subprocess, read
   `resource.getrlimit(RLIMIT_CPU/RLIMIT_AS)` back), `test_worker_rejects_bad_limits`
-  (non-integer or ≤ 0 → non-zero exit).
+  (non-integer or ≤ 0 → non-zero exit); `test_board_svg_retention` (`tmp_path` renders
+  dir, 25 board renders recorded through the pruning helper plus one footprint
+  `<uuid>.svg` + `.svg.json` not in the list → the 20 newest board SVGs remain, the 5
+  oldest board SVGs and their sidecars are gone, all 25 board PNGs and the footprint files
+  remain).
 - [ ] **Step 2: Failing kicad tests** (`test_render.py`, module-scoped `ecc83` server):
   `test_render_each_view` (top, bottom, layer `B.Cu`, placement, 3d iso: PNG long side ≤ 1600,
   hashes equal `pcb_status`'s); `test_render_unknown_layer` (`In5.Cu` → `not_found` with
@@ -201,9 +215,11 @@ png_url, placement_hash, board_hash, markers: [...]}`; failures → `render_fail
 **Interfaces:** none new — a guard test over the registry (plan call 6, Global Constraints).
 
 - [ ] **Step 1: Failing unit test** (`test_schema_bounds.py::test_every_board_schema_bounded`):
-  iterate every registered `ToolSpec` whose name starts with `pcb_` (from
-  `cc/tools/registry.py`, the real providers — so specs registered by later phases are
-  covered automatically) and walk its `input_schema` recursively (incl. `items`,
+  iterate the `TOOL_SPECS` of the provider `copperchat.kicad_tools.board.specs` only
+  (imported through `cc/tools/registry.py`'s `_PROVIDERS`, so specs later phases append to
+  `board/specs.py` are covered automatically). The existing pre-SP4 read tools
+  `pcb_list_footprints`, `pcb_get_footprint`, `pcb_get_net` in `cc/kicad_tools/specs.py`
+  are **out of scope** (another provider; not iterated) and walk its `input_schema` recursively (incl. `items`,
   `properties`, `anyOf`/`oneOf`): every `array` has `maxItems`; every `string` has
   `maxLength` or `enum` or `pattern`; every `number`/`integer` has `minimum` (or
   `exclusiveMinimum`) and `maximum` (or `exclusiveMaximum`); every `object` has
@@ -211,7 +227,7 @@ png_url, placement_hash, board_hash, markers: [...]}`; failures → `render_fail
   covers `pcb_status` and `pcb_render`.
 - [ ] **Step 2: Run** — FAIL (until both schemas comply). **Step 3: Fix the schemas.**
   **Step 4: Run** — PASS.
-- [ ] **Step 5: Commit** `test(board): every pcb_* schema is bounded`.
+- [ ] **Step 5: Commit** `test(board): every board tool schema is bounded`.
 
 ### Task 6: `session-board` skill skeleton
 

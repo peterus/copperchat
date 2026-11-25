@@ -37,8 +37,9 @@ not the `SUPPORTED_COMMITS` matrix), `options: --user root`, env `COPPERCHAT_REQ
 "1"`, `LANG: C`, `timeout-minutes: 30`, steps = checkout, setup-uv, `uv python install 3.13`,
 `uv sync --locked`, then exactly P6a's three Freerouting steps — `echo
 "COPPERCHAT_FREEROUTING_HOME=$GITHUB_WORKSPACE/.cache/freerouting" >> "$GITHUB_ENV"` (a
-container job: never `${{ github.workspace }}`, which is the host path), `actions/cache` with
-`path: .cache/freerouting`, the always-running `scripts/fetch-freerouting.sh` — and `uv run
+container job: never `${{ github.workspace }}`, which is the host path),
+`actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0` (SHA-pinned exactly as in
+P6a) with `path: .cache/freerouting`, the always-running `scripts/fetch-freerouting.sh` — and `uv run
 pytest -m kicad_e2e -v`.
 
 - [ ] **Step 1: Failing unit tests** (`test_sharding.py`): `_ci_shards()` also asserts the
@@ -134,18 +135,24 @@ regions from the answers or the edge table). Output in `--out` (default
 final metrics table with verdicts; fill completion and ripped counts; open connections; fab
 file list; total runtime), the renders, `metrics.json`. Memory: the api-server's peak RSS =
 `VmHWM` of `/proc/<session.process.pid>/status` at the end (before and after
-`session.activate_footprints()` — FP_WRITES in board sessions, spec §20); the JVM's peak =
-`resource.getrusage(RUSAGE_CHILDREN).ru_maxrss` read right after the fill (the JVM is the only
-child that has exited by then; the api-server is still running) cross-checked by sampling the
-JVM's `VmRSS` every 0.5 s; the CopperChat process peak = `RUSAGE_SELF.ru_maxrss`. The report
-sums them as "per active board project" and compares with the D5 figure (≈ 4.5–5 GB).
+`session.activate_footprints()` — FP_WRITES in board sessions, spec §20); the CPU worker's
+peak = `VmHWM` read from `/proc/<worker pid>/status` (the `ProcessPoolExecutor`'s process,
+P1a `cc/board/worker.py`) at the end of the run, plus each replaced worker's last value if a
+timeout replaced it; the JVM's peak = the maximum of its `VmRSS` sampled every 0.5 s **by
+PID** (`/proc/<jvm pid>/status`, the PID found as the child of this process whose cmdline
+names the Freerouting jar, sampling from start to exit; no `RUSAGE_CHILDREN`); the
+CopperChat process peak = `RUSAGE_SELF.ru_maxrss`. The report records each of the four
+separately (api-server, CPU worker, JVM, CopperChat) plus their sum as "per active board
+project" and compares the sum with the D5 figure (≈ 4.5–5 GB).
 
 - [ ] **Step 1: Failing unit tests** (`backend/tests/unit/test_odh_dry_run.py`, imports the
   script with `importlib` from its path): `test_refuses_out_inside_repo`;
   `test_copy_skips_git` (`tmp_path` fake checkout with `.git/` and a `.kicad_pro` → the copy
   has no `.git`); `test_answers_schema` (missing `outline` → usage error naming the field);
   `test_report_has_memory_section` (report builder on a fake `FlowResult` + fake memory numbers
-  → headings "Metrics", "Memory", "Runtime" and the D5 comparison line).
+  → headings "Metrics", "Memory", "Runtime", one line each for api-server, CPU worker, JVM and
+  CopperChat, the sum, and the D5 comparison line); `test_jvm_sampler_by_pid` (a sampler on a
+  `python -c` child allocating 200 MB then sleeping → peak ≥ 200 MB read via its PID).
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS. **Step 5:
   Dry run** on the owner's ODH checkout (path from the coordinator; `timeout 3600`); paste
   `report.md` (and up to 3 renders) into the PR description; if a hard gate fails on ODH,

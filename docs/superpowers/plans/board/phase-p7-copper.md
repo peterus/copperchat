@@ -109,7 +109,11 @@ only={"M11"})`: fill ratio per plane layer, crossings), `next: "pcb_fanout"`.
   <a part with critical copper>, x: <x + 0.5>}], unroute: true}` → the approval is stale →
   `pcb_zones` refuses `placement_not_approved`; History undo restores the rig); `test_cost_per_zone` (3 zones → 3); `test_fail_after_1_restores`
   (an `update` + `delete` call with `fail_after=1` → zone set, settings and `board_hash` equal
-  pre-call).
+  pre-call); `test_metrics_budget_plane_filled` (after `test_default_stack_4l`'s zones are
+  filled on the routed rig: `pcb_metrics {}` — all of M1–M14, incl. M11 on the filled
+  `In1.Cu` plane and M14 silk-over-pads — returns within **5 s** wall time on CI; the
+  measured seconds and the `seconds` field are recorded with `record_property` and in "As
+  built (P7)"; this pins P3a's bucketed M11/M14 geometry).
 - [ ] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS.
 - [ ] **Step 6: Commit** `feat(board): pcb_zones with the default GND plane stack`.
 
@@ -197,8 +201,8 @@ reason}], `silk_markers_before`, `silk_markers_after`, `board_hash` changed.
 
 ### Task 6: Docs + index as built, checks, PR
 
-- [ ] Index "As built (P7)": `cc/board/silk.py` added to the P7 ownership row, the 6-layer
-  plane default, fanout and stitch counts/seconds on `sp4_synth`, the DRC marker types used
+- [ ] Index "As built (P7)": the 6-layer
+  plane default, `pcb_metrics` seconds on the plane-filled rig (budget 5 s), fanout and stitch counts/seconds on `sp4_synth`, the DRC marker types used
   (exact `DrcErrorType` names for dangling via and silk), whether `refill_zones` inside a
   stage needed its own commit, In1.Cu fill ratio. CHANGELOG `[Unreleased]`: "Board copper
   tools `pcb_zones`, `pcb_fanout`, `pcb_stitch`, `pcb_tidy_silk` — behind

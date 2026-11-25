@@ -89,13 +89,18 @@ unrouted connection are reported as `already_routed`. **Total deadline:** the ca
 `deadline = monotonic() + ROUTE_DEADLINE_S` (300 s, module constant) at the start of apply
 and passes it to every `route_connections` call; nets whose connections were not started by
 then are reported with status `failed`, reason `timeout` (the routed ones stay — the call
-succeeds with a partial report, never runs past the deadline by more than one connection's
-`run_cpu` timeout). Cost `Logical(ceil(n/5))`, kind
+succeeds with a partial report). `route_connections` checks the deadline **before every
+margin attempt** (not only per connection) and bounds each step by `remaining = deadline −
+monotonic()`: `run_cpu(..., timeout_s=min(30, remaining), wait_s=remaining)` and
+`sctx.drc(timeout_s=min(60, remaining))`; `remaining ≤ 0` before an attempt → the connection
+is failed `timeout`. **Worst case:** the call ends no later than deadline + one DRC (≤ 60 s)
+— the one DRC/reject commit already in flight when the deadline passes. Cost `Logical(ceil(n/5))`, kind
 `board_route`, `snapshot="ids"` (the call only adds and removes its own items). One
 `BoardStage` per requested net (`commit=False`; the stage opens its own commits), stage run:
 for each `ConnPlan` of the net (pairs: `solve_pair(pruned, p, n, gap, margin=m)`, then
 `pair_coupling(pp, pn)` reported as `{length_mismatch, gap_min, gap_max}`):
-1. `path = await run_cpu(solve, prune_model(model, req), req, margin=m, timeout_s=30)`
+1. `path = await run_cpu(solve, prune_model(model, req), req, margin=m, timeout_s=min(30,
+   remaining), wait_s=remaining)` (`timeout_s=30`, `wait_s=None` when `deadline is None`)
    (B-C12 pruned model; keyword passed through per B-C4) with `m` = 0.0, then 0.05, then
    0.10 (`MARGINS`); `None` → next margin, after the last → failed `no_path`;
    `RouteTooLarge` → failed `too_large` (no retry); `board_compute_timeout` → failed
@@ -103,7 +108,7 @@ for each `ConnPlan` of the net (pairs: `solve_pair(pruned, p, n, gap, margin=m)`
 2. one commit (`ctx.session.commit("copperchat: pcb_route", doc="pcb")`) creating the tracks
    (`req.width`, layer, net) and vias (`req.via`), `locked = args.lock`; their KIIDs go into
    `sctx.created`;
-3. after the push, `sctx.drc()`; markers (except `unconnected_items`) whose KIIDs intersect
+3. after the push, `sctx.drc(timeout_s=min(60, remaining))` (60 without a deadline); markers (except `unconnected_items`) whose KIIDs intersect
    the new items → reject: remove the new items in one commit, retry with the next margin;
    after the last margin → failed `drc_rejected: <first marker text>`;
 4. accepted → the in-memory model gets the new copper (re-read with `sctx.model()` once per
@@ -125,7 +130,14 @@ after the call, `next` (`pcb_render` with `highlight_nets`, then `pcb_route_fill
   (fake `run_cpu` raises `RouteTooLarge` → failed `too_large`, no further margin tried);
   `test_solve_gets_pruned_model` (the fake `run_cpu` receives a model without the far-away
   parts); `test_pcb_route_total_deadline` (`ROUTE_DEADLINE_S` monkeypatched to 0.0 → every
-  net `failed`/`timeout`, nothing created, the call succeeds).
+  net `failed`/`timeout`, nothing created, the call succeeds);
+  `test_deadline_checked_per_margin` (fake `run_cpu` returns `None` for margin 0.0 and the
+  clock passes the deadline during it → margins 0.05/0.10 never tried, failed `timeout`);
+  `test_steps_bounded_by_remaining` (deadline 10 s ahead on a fake clock advanced by each
+  fake call: every `run_cpu` got `timeout_s ≤ min(30, remaining)` and `wait_s == remaining`,
+  every `drc` got `timeout_s ≤ min(60, remaining)`); `test_overrun_bounded` (real clock,
+  `ROUTE_DEADLINE_S = 1.0`, fake `run_cpu` / `drc` sleep their full `timeout_s` → the call
+  returns within 1.0 s + 0.5 s slack, i.e. far below deadline + 60 s).
 - [ ] **Step 1: Failing kicad tests** (`test_route.py`, `synth_placed`):
   `test_route_critical_set` — `pcb_analyze.critical_nets` (ground excluded by P3a) routed in
   chunks of ≤ 50 → every planned connection `routed`; DRC task: 0 errors other than

@@ -19,7 +19,7 @@ user-visible tool yet (everything behind `COPPERCHAT_BOARD_TOOLS`, default off).
 - Modify: `cc/config.py` (`board_tools`), `cc/kicad_session/session.py` (per-`DocKind`
   commit, `modified_docs`), `cc/history/{store,restore,service}.py` (`.kicad_dru`, `absent`
   manifest entries, restore re-discovery), `cc/history/hooks.py` (`HistoryHooks.on_project_changed`
-  only, see "Index gaps" in the PR), `cc/agent/engine.py` (`RunHooks.on_project_changed`,
+  only), `cc/agent/engine.py` (`RunHooks.on_project_changed`,
   `RunEngine.refresh_project`, `_make_ctx` wires `reload_project`), `cc/tools/spec.py`
   (`ToolContext.reload_project`), `cc/agent/sdk_tools.py` (`_two_phase_steps` generation
   re-baseline only, Task 7), `cc/kicad_tools/edit/engine.py` (refuse `BoardChangeSet`),
@@ -205,16 +205,20 @@ file. `HistoryStore.snapshot` writes manifest key `absent: list[str]` = the proj
 POSIX names of `pro_file.with_suffix(".kicad_pcb")` and `pro_file.with_suffix(".kicad_dru")`
 that do not exist (or are symlinks) at snapshot time; `MANIFEST_VERSION = 3`; readers treat
 a missing `absent` (versions 1–2) as `[]`. `restore.absent_plan(manifest, project_dir) ->
-list[Path]`: only the two allowed suffixes, only entries that resolve inside `project_dir`
-(`_inside`), never a symlink; anything else → `CorruptSnapshot`. `restore_snapshot` deletes
-them after `_copy_back` (`unlink(missing_ok=True)`), then `_reload` re-discovers:
+list[Path]` validates names only, on the **unresolved** rel path: `os.path.normpath` of
+`project_dir / rel` must stay inside `project_dir` (no `..` escape) and the suffix must be
+`.kicad_pcb` or `.kicad_dru`; a rel failing either check → `CorruptSnapshot`. It never calls
+`resolve()` or `_inside` and never looks at the file — whether a path is a symlink or not a
+regular file is decided only in the deletion step below (skip + warn; the restore still
+succeeds). `restore_snapshot` deletes the planned paths after `_copy_back` (deletion step
+below), then `_reload` re-discovers:
 `fresh = get_project(settings.projects_root, project.id)` and passes `fresh` to
 `sessions.reopen`, `publish_view` and `docs_of`, and calls
 `svc.runtime.get(project.id).refresh_project(fresh)` when an engine exists.
 `RunHooks.on_project_changed(project) -> None` (default no-op);
 `HistoryHooks.on_project_changed` sets `self.project`; `RunEngine.refresh_project(project)`
 sets `self.project` and calls the hook. A shared helper `remove_created(project_dir,
-rels) -> None` (same checks as `absent_plan`) is what both restore and the engine's
+rels) -> None` (same name checks as `absent_plan`) is what both restore and the engine's
 board-creation compensation (Task 7) call — the only non-restore file deletion, scoped to a
 file this call created. Both `absent_plan` deletion and `remove_created` work on the
 **unresolved** path `project_dir / rel`: a rel that (after `os.path.normpath`) leaves the
@@ -252,8 +256,12 @@ swapped-in symlink can never redirect the deletion).
 
 ### Task 6: CPU worker
 
-**Interfaces:** B-C4 `async def run_cpu(fn, *args, timeout_s: float, **kwargs) -> T`
-(keyword arguments are passed through to `fn`, e.g. `solve(model, req, margin=0.1)`). Lazily
+**Interfaces:** B-C4 `async def run_cpu(fn, *args, timeout_s: float, wait_s: float | None =
+None, **kwargs) -> T` (keyword arguments other than `timeout_s` / `wait_s` are passed through
+to `fn`, e.g. `solve(model, req, margin=0.1)`). `wait_s` (keyword-only) bounds the time spent
+queued for the lock: not acquired within `wait_s` → `StructuredToolError(code=
+"board_compute_timeout")` without submitting (the running job is untouched); `None` = wait
+indefinitely. Deadline-bound callers (P5b, P6b) pass their remaining time. Lazily
 created `ProcessPoolExecutor(max_workers=1, mp_context=get_context("spawn"),
 initializer=_limit_worker)`; `_limit_worker` sets `RLIMIT_AS` to `WORKER_MEMORY_LIMIT_BYTES`
 (3 GiB; same `_limit` pattern as `cc/views/_raster_worker.py::limit_resources`, never above
@@ -272,7 +280,8 @@ shutdown.
 
 - [ ] **Step 1: Failing unit tests** (`test_worker.py`; helper functions live in
   `cc/board/_selftest.py`, tiny module-level `square(x)`, `scaled(x, *, factor)`,
-  `spin(seconds)`, `rlimit_as()` and `peak_rss()` (the worker's own `VmHWM` in bytes from
+  `spin(seconds) -> tuple[float, float]` (its `time.monotonic()` start/end), `rlimit_as()` and
+  `peak_rss()` (the worker's own `VmHWM` in bytes from
   `/proc/self/status`; P5a's large-board test reads it)):
   `test_runs_in_other_process` (returns `os.getpid()` ≠ own); `test_timeout_kills_and_replaces`
   (`spin(30)` with `timeout_s=0.5` → `board_compute_timeout` within 3 s, the old PID is gone
@@ -280,13 +289,18 @@ shutdown.
   `test_cancel_kills`; `test_rejects_foreign_function` (`os.getpid` → `TypeError`);
   `test_exception_propagates` (`ValueError` from the worker re-raised);
   `test_kwargs_passed_through` (`run_cpu(_selftest.scaled, 3, timeout_s=5, factor=2) == 6`);
-  `test_concurrent_calls_serialised` (two `asyncio.gather`ed `spin(0.5)` calls with
-  `timeout_s=0.8` each → both succeed although together they take > 0.8 s: the second waited
-  and its timeout started with its own job); `test_timeout_does_not_break_queued`
+  `test_concurrent_calls_serialised` (the pool is warmed first with a no-op job
+  (`square(0)`), so spawn start-up never counts; then two `asyncio.gather`ed `spin(0.5)`
+  calls with `timeout_s=2` each — `spin` returns its `(start, end)` `time.monotonic()`
+  stamps — → both succeed, the second's `start` ≥ the first's `end` (ordering: no overlap),
+  and the gather's wall time ≥ 1.0 s (the sum of both jobs); no tight upper bound); `test_timeout_does_not_break_queued`
   (`spin(30)` with `timeout_s=0.5` and a queued `square(4)` → the first raises
   `board_compute_timeout`, the second returns 16 in the replacement process);
   `test_cancel_while_queued_keeps_running_job` (cancel the queued caller → the running job's
-  PID is still alive and its result arrives); `test_worker_rlimit_as` (a worker job returns
+  PID is still alive and its result arrives); `test_wait_s_bounds_queue_wait` (a running
+  `spin(2)` and a queued `square(5)` with `wait_s=0.3` → the second raises
+  `board_compute_timeout` within 1 s, the first still returns; a later `square(5)` with
+  `wait_s=None` returns 25); `test_worker_rlimit_as` (a worker job returns
   `resource.getrlimit(RLIMIT_AS)[0] == WORKER_MEMORY_LIMIT_BYTES`, or the inherited hard
   limit when lower).
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS.
@@ -297,17 +311,20 @@ shutdown.
 **Interfaces:** B-C4 (`BOARD_SHEET`, `BoardStage`, `BoardStageContext`, `BoardChangeSet`,
 `apply_board_change_set`) and `compensate.py` (`CopperSnapshot`, `take_snapshot`,
 `compensate`). `ToolContext.reload_project: Callable[[], Awaitable[tuple[Project,
-KicadSession]]] | None` — wired in `RunEngine._make_ctx`: re-discover
-(`get_project`), `sessions.reopen(fresh)`, `refresh_project(fresh)`, return both; the engine
-assigns `ctx.project, ctx.session` in place (the adapter's later `_save_edit` then saves on
-the new session). `apply_change_set` raises `TypeError` for a `BoardChangeSet`.
+KicadSession, int]]] | None` — wired in `RunEngine._make_ctx`: re-discover
+(`get_project`), `sessions.reopen(fresh)`, read `session.generation` of the new session
+**immediately** (captured at reload time, before any later stage runs),
+`refresh_project(fresh)`, return all three; the engine assigns `ctx.project, ctx.session` in
+place and records the captured value in the new field `ToolContext.reloaded_generation: int |
+None = None` (the adapter's later `_save_edit` then saves on the new session).
+`apply_change_set` raises `TypeError` for a `BoardChangeSet`.
 
-Adapter re-baseline (`cc/agent/sdk_tools.py::_two_phase_steps`, the only change there): it
-keeps `session_before = ctx.session` next to `generation`; after `_apply`, when
-`ctx.session is not session_before` (the call replaced the session through
-`reload_project`), it sets `generation = ctx.session.generation` (the new session's value)
-before `_save_edit`, so the restart check compares the new session with itself and a
-restart **after** the reload is still detected.
+Adapter re-baseline (`cc/agent/sdk_tools.py::_two_phase_steps`, the only change there): after
+`_apply`, when `ctx.reloaded_generation is not None` (the call replaced the session through
+`reload_project`), it sets `generation = ctx.reloaded_generation` — the value captured at
+reload time, **not** `ctx.session.generation` after apply — before `_save_edit`, so a restart
+of the new session in any later stage (or during the save) is still detected as
+`KicadUnavailable`.
 
 `BoardStage.compensable` / `BoardStage.undo` (B-C4) are implemented here, not in P2: once a
 stage with `compensable=False` has run, a later failure skips the KIID compensation and
@@ -317,8 +334,12 @@ exception); otherwise compensation runs the `undo` of every completed stage in r
 after the KIID diff (rules, classes, layer count and stackup are not items).
 
 Algorithm of `apply_board_change_set`:
-1. `creates_board` and `ctx.project.pcb_file is None`: `create_board_document` (inside
-   `session.call`), then `reload_project`; failure of any later step removes the created
+1. `creates_board` and `ctx.project.pcb_file is None`: first `os.lstat` of the unresolved
+   target `project_dir / <stem>.kicad_pcb` — anything there (a symlink, a directory, a
+   regular file the project does not know, since `pcb_file is None`) → refuse
+   `StructuredToolError(code="output_path_unsafe", details={"path": rel})` before any write;
+   only a missing path proceeds to `create_board_document` (inside `session.call`), then
+   `reload_project`; failure of any later step removes the created
    file with `remove_created` (Task 5) and reloads again (`docs_of == {"sch"}` afterwards).
 2. `async with ctx.session.applying()`: `take_snapshot(cs.snapshot)`; for each stage:
    `commit=True` → `async with session.commit(f"copperchat: {cs.tool}", doc="pcb")`, else
@@ -331,6 +352,9 @@ Algorithm of `apply_board_change_set`:
    `DocumentInconsistent(leftovers=...)`; else re-raise the original.
 5. Success: `ToolResult(data=cs.report | {"step_report": ...}, changed_docs={"pcb"})`, one
    change-log entry (`kind=cs.kind`, `sheet_path=""`, `after` = counts) via `record_applied`.
+6. `finally` (every path — success, failure, cancel): each `cs.temp_dirs` entry that still
+   exists is removed with `shutil.rmtree(..., ignore_errors=True)` under `_uncancellable`
+   (after compensation; a stage may already have removed its dir on success).
 
 `compensate`: removes tracks/arcs/vias/zones/groups/graphics/footprints whose KIID is not in
 the snapshot (`remove_items` in one board commit), restores `(x, y, rot, side, locked)` of
@@ -346,12 +370,17 @@ recreates missing tracks/vias from the stored data; returns what still differs.
   `test_non_compensable_stage_skips_compensation` (stage 1 `compensable=False`, stage 2
   raises → `sync_failed` naming the History panel, `compensate` spy not called);
   `test_undo_runs_reverse_order` (three stages with `undo` recorders, `fail_after=3` → undo
-  calls 3, 2, 1 after `compensate`).
+  calls 3, 2, 1 after `compensate`); `test_temp_dirs_removed_on_all_paths` (a stage creates
+  a dir registered in `cs.temp_dirs` → gone after success, after `fail_after=1` and after a
+  cancel during stage 2).
   `test_sdk_tools_reload.py::test_session_replaced_rebaselines` (fake old session
-  `generation=2`; the fake `apply` swaps `ctx.session` for a new fake with `generation=1` →
-  no `KicadUnavailable`, `_save_edit` saved on the new session);
-  `test_restart_after_reload_still_detected` (the new session's generation changes during
-  `_save_edit` → `KicadUnavailable`).
+  `generation=2`; the fake `apply` swaps `ctx.session` for a new fake with `generation=1` and
+  sets `ctx.reloaded_generation = 1` → no `KicadUnavailable`, `_save_edit` saved on the new
+  session); `test_restart_after_reload_still_detected` (the new session's generation changes
+  during `_save_edit` → `KicadUnavailable`); `test_restart_in_later_stage_detected` (the
+  fake `apply` reloads (`reloaded_generation = 1`), then a later fake stage bumps the new
+  session's generation to 2 before `_apply` returns → `KicadUnavailable`, proving the
+  baseline is the reload-time value, not the post-apply one).
 - [ ] **Step 2: Failing kicad tests** (`test_engine.py`, `ecc83_session`, a 3-stage test
   change set built in the test: stage 1 adds a track, stage 2 adds a via and moves a footprint
   2 mm, stage 3 adds a zone): `test_fail_after_2_restores_hashes` (`fail_after=2` →
@@ -369,7 +398,12 @@ recreates missing tracks/vias from the stored data; returns what still differs.
   `ctx.session` is the new open session with `"pcb"` open) and
   `test_creates_board_failure_removes_it` (`fail_after=1` → no `.kicad_pcb`,
   `docs_of(ctx.project) == {"sch"}`; record whether KiCad rewrote `.kicad_pro` bytes during
-  the creation — "As built"; a changed `.kicad_pro` is restored by History, not by the engine).
+  the creation — "As built"; a changed `.kicad_pro` is restored by History, not by the engine);
+  `test_creates_board_symlinked_pcb_refused` (`p.kicad_pcb` is a symlink to
+  `tmp_path/outside/x.kicad_pcb` (absent target, and a second case with an existing target) →
+  `output_path_unsafe`, `create_board_document` never called, nothing written outside — the
+  outside dir's listing and bytes unchanged) and `test_creates_board_dir_in_the_way_refused`
+  (a directory named `p.kicad_pcb` → `output_path_unsafe`).
 - [ ] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS.
 - [ ] **Step 6: Commit** `feat(board): BoardChangeSet engine with stage commits and KIID compensation`.
 

@@ -46,7 +46,9 @@ cost `Logical(3)`, kind `board_sync_from_schematic`, `creates_board = project.pc
   delete_extra_footprints=…)` → `error_count > 0` → `sync_failed` listing the report's error
   lines (nothing written). `dry_run: true` → return the dry-run report as a read-only result
   (`changed_docs` empty, cost 0).
-- **apply stages:** (0, engine) create board + reopen when boardless; (1) dry run on the new
+- **apply stages:** (0, engine) create board + reopen when boardless (the engine first
+  `lstat`s `<stem>.kicad_pcb` and refuses `output_path_unsafe` when anything is in the way —
+  P1a Task 7 step 1); (1) dry run on the new
   board when it was created now (`commit=False`; errors → `sync_failed`, the engine removes the
   created file); (2) real `import_netlist(delete_extra_footprints=delete_extra)` —
   `commit=False`, `compensable=False`; (3) move every footprint that is new since the
@@ -85,6 +87,9 @@ cost `Logical(3)`, kind `board_sync_from_schematic`, `creates_board = project.pc
     `compensate` is not called).
   - `test_failure_on_created_board_dry_run`: patch the stage-1 dry run to report an error →
     `sync_failed`, no `.kicad_pcb` left, `docs_of == {"sch"}`.
+  - `test_symlinked_pcb_refused`: boardless fixture with `<stem>.kicad_pcb` a symlink to a
+    path in `tmp_path/outside/` → `output_path_unsafe`, nothing created or written outside,
+    `docs_of == {"sch"}`.
   - `test_budget_cost_3`.
 - [ ] **Step 3: Run** `uv run pytest tests/unit/board/test_staging.py` and
   `uv run pytest -m kicad tests/kicad/board/test_sync.py` — FAIL. **Step 4: Implement**
@@ -159,8 +164,12 @@ caller that wants 4 layers passes `layers: 4` explicitly; going down refuses wit
 graphic sits on a removed inner layer (plan call: refuse, never delete); (2) design
 rules from preset + overrides; (3) net classes via `board_project(h).set_net_classes` +
 pattern assignments (classes not named are kept; `Default` only changed when given);
-(4) custom rules: `GetCustomDesignRules`, replace same-named rules, append new ones with
-`comments = reason`, `SetCustomDesignRules`; status ≠ `CRS_VALID` → `invalid_argument` with
+(4) custom rules: before the first `SetCustomDesignRules` of the call, `os.lstat` of the
+unresolved `project_dir / <stem>.kicad_dru` — missing → this call creates it (the `undo`
+removes it); a regular file that `document_files(project)` already lists → proceed; anything
+else (a symlink, a directory, a file the project does not know) → refuse
+`output_path_unsafe` before any rules write; then `GetCustomDesignRules`, replace same-named
+rules, append new ones with `comments = reason`, `SetCustomDesignRules`; status ≠ `CRS_VALID` → `invalid_argument` with
 KiCad's error text; a `.kicad_dru` created by this call is removed by the stage's `undo`
 (`remove_created`). Read-back verify: layer count, every set rule value (±0.0005 mm), class
 names + widths, custom rule names. Report: rules table, classes, custom rules with reasons,
@@ -185,7 +194,11 @@ names + widths, custom rule names. Report: rules table, classes, custom rules wi
   still 4); `test_4_to_2_empty_inner_ok`; `test_stackup_unavailable`;
   `test_fail_after_3_restores` (`fail_after=3` → rules, classes, layer count, `board_hash`
   equal pre-call); `test_undo_first_dru_via_history` (no `.kicad_dru` before; call with one
-  custom rule; History restore → `.kicad_dru` deleted).
+  custom rule; History restore → `.kicad_dru` deleted); `test_symlinked_dru_refused`
+  (`<stem>.kicad_dru` is a symlink to a file in `tmp_path/outside/` → `output_path_unsafe`,
+  `SetCustomDesignRules` never called, the outside file byte-identical, nothing new outside);
+  `test_dru_dir_in_the_way_refused` (a directory named `<stem>.kicad_dru` →
+  `output_path_unsafe`).
 - [ ] **Step 3: Probe** `test_probe_layer_type_power` (spec §10.3): assert that the pinned
   proto offers no settable copper layer type (no field naming signal/power on
   `BoardStackupLayer`, no command in `board_commands_pb2` setting a layer type) and

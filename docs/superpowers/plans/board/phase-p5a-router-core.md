@@ -29,8 +29,9 @@ obstacle.
 `h`, `layers: tuple[str, ...]`, `cells: tuple[bytearray, ...]` per layer with 0 = free,
 1 = own net, 2 = blocked; `via_blocked: bytearray`); methods `cell(x, y) -> tuple[int, int]`
 (nearest), `xy(i, j) -> Point`, `free(li, i, j) -> bool`, `via_ok(i, j) -> bool`. B-C12
-`build_grid(model, req, *, pitch=0.05, margin=0.0)`: window = bbox of `req.a`/`req.b`
-grown by `WINDOW_MM = 6.0` (the router doubles it on failure, Task 2), clipped to the outline
+`build_grid(model, req, *, pitch=0.05, margin=0.0, window_mm: float | None = None)`: window =
+bbox of `req.a`/`req.b` grown by `window_mm` (`None` → `WINDOW_MM = 6.0`; `solve` /
+`solve_pair` pass `2 × WINDOW_MM` for their one retry, Task 2/4), clipped to the outline
 bbox. **Memory cap:** a window with more than `MAX_CELLS_PER_LAYER = 4_000_000` cells
 (`ceil(w / pitch) × ceil(h / pitch)`) is never allocated — `build_grid` raises
 `RouteTooLarge(cells)` (B-C12) and the caller reports the connection as failed with reason
@@ -77,8 +78,11 @@ cell nearest the pad centre inside the pad; the first move from a pad uses the p
 axis (both ways) or ±45° to it — 6 of 8 directions; square pads allow all 8; a pad rotated by
 a non-multiple of 45° uses its axis rounded to the nearest 45°. Heuristic = octilinear
 distance (admissible); ties broken by an insertion counter (determinism). Exhausting
-`max_expansions` → `None`; no path in the window → retry once with the window doubled (new
-grid via `build_grid`; `RouteTooLarge` from the retry window propagates), then `None`.
+`max_expansions` → `None`; `route` itself never rebuilds the grid. The **window-doubling
+retry lives in `solve` / `solve_pair`** (Task 4): `route(build_grid(model, req,
+margin=margin), req)` → `None` → exactly one retry `route(build_grid(model, req,
+margin=margin, window_mm=2 * WINDOW_MM), req)` (`RouteTooLarge` from the retry window
+propagates), then `None`.
 
 - [ ] **Step 1: Failing unit tests** (`test_router_astar.py`): `test_straight_line`;
   `test_diagonal`; `test_ninety_needs_chamfer` (goal forces a 90° turn: the path has two
@@ -89,7 +93,8 @@ grid via `build_grid`; `RouteTooLarge` from the retry window propagates), then `
   `test_no_via_when_disallowed` (→ `None`); `test_pad_exit_long_axis` (first segment parallel
   to the pad's long axis or at 45° to it); `test_prefers_first_layer`;
   `test_max_expansions_none` (`max_expansions=100` on a 20 mm route → `None`);
-  `test_window_doubles_once`.
+  `test_route_does_not_retry` (`route` on a grid whose window has no path → `None`, one
+  search only). (`test_window_doubles_once` targets `solve`, Task 4.)
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS.
 - [ ] **Step 5: Commit** `feat(board): octilinear A* with straight-piece rules and vias`.
 
@@ -142,12 +147,18 @@ the pruned model to `solve`/`solve_pair`, so the pickled job stays small on larg
 - [ ] **Step 1: Failing unit tests** (`test_router_pairs.py`): `test_coupled_straight`
   (10 mm pair, gap 0.2, w 0.2 → `pair_coupling(...)["gap_max"] ≤ 0.41`, both paths
   octilinear, M4 = M7 = 0 by `analyse_bends`); `test_coupled_one_bend` (offset kept through a 45° bend);
-  `test_fallback_when_far_apart` (pads 6 mm apart → two routes, centre distance ≥ `gap + w`
-  everywhere); `test_pair_none_when_blocked`; `test_solve_picklable` (`pickle.dumps` of
+  `test_fallback_when_far_apart` (pads 6 mm apart → both `p` and `n` routed, and
+  no clearance violation between the two paths (exact segment-to-segment distance between
+  `p`'s and `n`'s same-layer segments ≥ clearance + w, tolerance 1e-6); no `gap_min` bound
+  asserted); `test_pair_none_when_blocked`; `test_solve_picklable` (`pickle.dumps` of
   a `BoardModel` + `RouteRequest` round-trips; `solve` equals `route(build_grid(...))`);
   `test_pair_coupling_keys` (keys exactly `{"length_mismatch","gap_min","gap_max"}`; coupled
   straight pair → `gap_max − gap_min ≤ 0.02`, `|gap_min − (gap + w)| ≤ 0.01`,
-  `length_mismatch < 0.1`; far-apart fallback → `gap_min > gap + w + 0.5`);
+  `length_mismatch < 0.1`);
+  `test_window_doubles_once` (spy on `build_grid`: an obstacle wall forcing a detour outside
+  the 6 mm window → `solve` calls `build_grid` twice, the second with `window_mm == 12.0`,
+  and returns a path; a map without any path → still exactly two calls, `None`; same for
+  `solve_pair`'s fallback);
   `test_solve_pair_margin` (`margin=0.1` → `gap_min` unchanged, every
   segment ≥ clearance + 0.1 from other-net copper); `test_prune_model_same_result` (seeded maps:
   `solve(prune_model(m, req), req) == solve(m, req)`; pruned model has ≤ the items of the
