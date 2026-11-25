@@ -244,6 +244,40 @@ async def test_4_to_2_refused_with_inner_copper(synth_rig: SynthRig) -> None:
     assert len(m.copper_layers) == 4 and kiid in {t.kiid for t in m.tracks}
 
 
+async def test_4_to_2_refused_with_blind_via(synth_rig: SynthRig) -> None:
+    """A blind via F.Cu-In1.Cu blocks the drop to 2 layers (KiCad would delete it); a
+    through via does not."""
+    from kipy.board_types import Via
+    from kipy.proto.board.board_types_pb2 import ViaType
+
+    ctx = await _synced(synth_rig)
+    await _set_4(ctx)
+
+    def add_vias(h: KicadHandle) -> tuple[str, str]:
+        made = []
+        for kind, x in ((ViaType.VT_THROUGH, 10), (ViaType.VT_BLIND_BURIED, 20)):
+            v = Via()
+            v.position = Vector2.from_xy(x * MM, 10 * MM)
+            v.type = kind
+            if kind == ViaType.VT_BLIND_BURIED:
+                v.padstack.drill.start_layer = BoardLayer.BL_F_Cu
+                v.padstack.drill.end_layer = BoardLayer.BL_In1_Cu
+            v.diameter = 600_000
+            v.drill_diameter = 300_000
+            made.append(str(h.board().create_items([v])[0].id.value))
+        return made[0], made[1]
+
+    async with ctx.session.commit("test: vias", doc="pcb"):
+        through, blind = await ctx.session.call(add_vias)
+    data, err = await _rules(ctx, layers=2)
+    assert err and data["error"]["code"] == "invalid_argument", data
+    items = data["error"]["details"]["items"]
+    assert {"kind": "via", "kiid": blind, "layer": "In1.Cu"} in items, items
+    assert not [i for i in items if i["kiid"] == through], items
+    m = await _model(ctx)
+    assert len(m.copper_layers) == 4 and {through, blind} <= {v.kiid for v in m.vias}
+
+
 async def test_4_to_2_empty_inner_ok(synth_rig: SynthRig) -> None:
     ctx = await _synced(synth_rig)
     await _set_4(ctx)

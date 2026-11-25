@@ -932,6 +932,13 @@ M13's "overhanging it" uses the same clip. Both switch settings are tested.
 - `read.py` `net_class_of` takes KiCad's combined class name ("Effective for net: +3V3") for a
   net with a pattern-assigned class instead of the class itself (KiCad's own lookup shows the
   class). **P3a (M12) / P5b** should map it to the constituent class (P1a file, not changed here).
+- `pcb_set_rules` read-back of a custom rule checks its name and `(condition "…")` only, not
+  the constraint type or min/max values KiCad wrote.
+- A custom-rules undo whose restore raises makes the engine raise `DocumentInconsistent` before
+  the earlier stages' undos (net classes, design rules, layer count) ran (engine order, P1a);
+  the turn ends and the last save is reopened. Never seen; the restore has a 120 s timeout.
+- The staging area wraps into a new band below once a column would pass x = 2000 mm (KiCad's
+  int32-nm range is ±2147 mm).
 - The tool-hole mark is the footprint description: a tool hole duplicated in pcbnew carries it
   (and is replaced by the next `pcb_set_outline {holes}`), and "update footprint from library"
   resets it (the hole then counts as hand-placed and is kept, so a re-run adds another).

@@ -736,7 +736,7 @@ def _net_class(i: int, value: Any) -> NetClassArgs:
         diff_pair_width=opt("diff_pair_width"),
         diff_pair_gap=opt("diff_pair_gap"),
         patterns=tuple(
-            dict.fromkeys(
+            dict.fromkeys(  # a repeat within one class is harmless: dropped
                 _rules_text(p, f"{at}.patterns[]", 1, MAX_PATTERN_CHARS)
                 for p in _rules_list(c.get("patterns", []), f"{at}.patterns", 1, MAX_PATTERNS)
             )
@@ -821,7 +821,15 @@ def parse_rules_args(args: Any) -> RulesArgs:
         )
     )
     _unique([c.name for c in classes], "net classes")
-    _unique([p for c in classes for p in c.patterns], "net class patterns")
+    seen: dict[str, str] = {}
+    for c in classes:
+        for pat in c.patterns:
+            if seen.get(pat, c.name) != c.name:
+                raise _rules_invalid(
+                    f"pattern {pat!r} is given to both {seen[pat]!r} and {c.name!r}",
+                    "A pattern belongs to one net class; give it to one of them.",
+                )
+            seen[pat] = c.name
     rules = tuple(
         _custom_rule(i, r)
         for i, r in enumerate(
@@ -1113,7 +1121,8 @@ async def _undo_custom_rules(sctx: BoardStageContext, state: dict[str, Any]) -> 
         if "custom" in state:
             pre = state["custom"]
             await sctx.call(
-                lambda h: h.board().set_custom_design_rules([CustomRule(proto=p) for p in pre])
+                lambda h: h.board().set_custom_design_rules([CustomRule(proto=p) for p in pre]),
+                timeout=BOARD_READ_TIMEOUT_S,
             )
     finally:
         if state.get("dru_created"):
@@ -1163,7 +1172,7 @@ def _verify_rules(
                 continue
             nxt = re.search(r"\(rule\s", m.dru_text[head.end() :])
             block = m.dru_text[head.start() : head.end() + nxt.start() if nxt else None]
-            if r.condition not in block:
+            if f'(condition "{r.condition}")' not in block:
                 problems.append(f"custom rule {r.name!r} reads back with another condition")
         after = board_hash(m)
         report["layers"] = len(m.copper_layers)

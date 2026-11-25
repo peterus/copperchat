@@ -17,6 +17,9 @@ from copperchat.board.model import BoardModel, Pad, Part, Point, Side
 STAGING_GAP_MM = 5.0  # distance of the staging area from the outline / the other parts
 CELL_GAP_MM = 1.0  # added to every part's courtyard box
 COLUMN_HEIGHT_MM = 100.0  # column height without an outline
+# KiCad stores coordinates as int32 nm (±2147 mm): the columns wrap into a new band below
+# before they pass this x.
+MAX_STAGING_X_MM = 2000.0
 
 
 @dataclass(frozen=True)
@@ -85,13 +88,17 @@ def staging_positions(model: BoardModel, refs: Sequence[str]) -> tuple[Move, ...
     )
     x0, top, height = _origin(model, wanted)
     moves: list[Move] = []
-    col_x, y, col_w = x0, top, 0.0
+    col_x, y, col_w, band_h = x0, top, 0.0, 0.0
     for p in parts:
         bx0, by0, bx1, by1 = part_box(p)
         w, h = bx1 - bx0 + CELL_GAP_MM, by1 - by0 + CELL_GAP_MM
         if y > top and y + h - CELL_GAP_MM > top + height:
             col_x, y, col_w = col_x + col_w, top, 0.0
+            if col_x > x0 and col_x + w > MAX_STAGING_X_MM:  # next band, below this one
+                top += max(height, band_h) + STAGING_GAP_MM
+                col_x, y, band_h = x0, top, 0.0
         moves.append(Move(p.ref, col_x + (p.x - bx0), y + (p.y - by0), p.rot, p.side))
         y += h
         col_w = max(col_w, w)
+        band_h = max(band_h, y - top)
     return tuple(moves)

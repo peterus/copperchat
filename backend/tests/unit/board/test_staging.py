@@ -202,3 +202,17 @@ def test_netlist_dir_sweeps_stale_scratch(tmp_path: Any, monkeypatch: Any) -> No
     os.utime(stale, (old, old))
     d = sync._netlist_dir(_ctx_for(tmp_path))
     assert not stale.exists() and fresh.exists() and d.is_dir()
+
+
+def test_staging_stays_in_kicad_range() -> None:
+    from copperchat.board.staging import MAX_STAGING_X_MM
+
+    parts = tuple(part(f"R{i}", half=2) for i in range(1, 401))
+    m = board(parts=parts, outline=outline(1000, 0, 500, 5))
+    moves = staging_positions(m, [p.ref for p in parts])
+    boxes = _moved(m, moves)
+    assert max(b[2] for b in boxes) <= MAX_STAGING_X_MM
+    assert max(b[3] for b in boxes) < 2147
+    for i, a in enumerate(boxes):
+        for b in boxes[i + 1 :]:
+            assert not polygons_overlap(_box_poly(a), _box_poly(b))
