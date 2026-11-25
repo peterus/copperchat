@@ -64,8 +64,10 @@ class BoardStageContext:
     report: dict[str, Any]
     created: set[str] = field(default_factory=set)  # KIIDs created by this call
 
-    async def call(self, fn: Callable[[KicadHandle], T]) -> T:
-        return await self.ctx.session.call(fn)
+    async def call(self, fn: Callable[[KicadHandle], T], *, timeout: float | None = None) -> T:
+        """`session.call`; a long call passes its own `timeout` (B-C4: every long KiCad
+        call passes an explicit timeout, e.g. a DSN export or a SES import)."""
+        return await self.ctx.session.call(fn, timeout=timeout)
 
     async def drc(self, *, timeout_s: float = 60.0) -> DrcResult:
         """DRC with the long `session.call` timeout (B-C4): never the 30 s default,
@@ -137,7 +139,7 @@ async def apply_board_change_set(ctx: ToolContext, cs: BoardChangeSet) -> ToolRe
             return await _apply(ctx, cs)
         except BaseException as exc:
             if created is not None:
-                await _uncancellable(_remove_board(ctx, created, exc))
+                await _cleanup_board(ctx, created, exc)
             raise
     finally:
         await _uncancellable(_remove_temp_dirs(cs.temp_dirs))
@@ -193,7 +195,7 @@ async def _create_board(ctx: ToolContext) -> str:
             raise RuntimeError(f"the board KiCad created ({rel}) was not found afterwards")
     except BaseException as exc:
         # The path was absent before the call: whatever is there now is this call's.
-        await _uncancellable(_remove_board(ctx, rel, exc))
+        await _cleanup_board(ctx, rel, exc)
         raise
     return rel
 
@@ -205,10 +207,27 @@ async def _reload(ctx: ToolContext) -> None:
     ctx.reloaded_generation = generation
 
 
+async def _cleanup_board(ctx: ToolContext, rel: str, cause: BaseException) -> None:
+    """`_remove_board` shielded, for an `except` block that re-raises `cause`. When
+    `cause` is a cancellation (Stop), a failed removal never replaces it: it is
+    reported to the turn (`on_document_inconsistent`) and the cancel propagates."""
+    try:
+        await _uncancellable(_remove_board(ctx, rel, cause))
+    except asyncio.CancelledError as again:
+        if isinstance(again.__cause__, Exception):
+            _report(ctx, again.__cause__)
+        raise
+    except Exception as failed:
+        if not isinstance(cause, asyncio.CancelledError):
+            raise
+        _report(ctx, failed)
+
+
 async def _remove_board(ctx: ToolContext, rel: str, cause: BaseException) -> None:
     """Compensation of a board creation: delete the file this call created
     (`remove_created`: a regular file only, never through a symlink) and reload, so
-    the session is a schematic-only one again."""
+    the session is a schematic-only one again. Anything still at the path afterwards
+    (`remove_created` skips non-regular files) is a leftover."""
     project_dir = ctx.project.pro_file.parent
     try:
         await asyncio.to_thread(remove_created, project_dir, [rel])
@@ -217,6 +236,12 @@ async def _remove_board(ctx: ToolContext, rel: str, cause: BaseException) -> Non
         log.warning("removing the board created by a failed call failed: %s", exc)
         raise DocumentInconsistent(
             f"the board this call created ({rel}) could not be removed again",
+            leftovers=[rel],
+        ) from cause
+    if os.path.lexists(project_dir / rel):
+        log.warning("the board created by a failed call is still there: %s", rel)
+        raise DocumentInconsistent(
+            f"the board this call created ({rel}) is still in the project directory",
             leftovers=[rel],
         ) from cause
 
@@ -264,12 +289,14 @@ async def _apply(ctx: ToolContext, cs: BoardChangeSet) -> ToolResult:
                         code="verification_failed",
                         details={"found": problems},
                     )
+            # The change-log counts: inside the protected region, so a cancel or an
+            # error here still compensates (nothing written on any tool error).
+            after = await session.call(lambda h: take_snapshot(h, "ids"))
         except BaseException as exc:
             if not started:
                 raise
             await _after_failure(ctx, cs, sctx, snap, started, completed, exc, same_server)
             raise
-        after = await session.call(lambda h: take_snapshot(h, "ids"))
     await record_applied(ctx, cs.tool, [_entry(ctx, cs, counts(snap, after))])
     return ToolResult(data=cs.report | {"step_report": step_report}, changed_docs={"pcb"})
 
@@ -297,6 +324,17 @@ async def _after_failure(
         ) from exc
     if not all(s.compensable for s in started):
         if cancelled:
+            # The Stop wins, but the turn must learn that the board is half-synced:
+            # the DocumentInconsistent path ends the turn without autosave and reopens
+            # the last save (the state before this call); the text names the History
+            # panel like sync_failed.
+            _report(
+                ctx,
+                DocumentInconsistent(
+                    f"{cs.tool} was stopped after a step that cannot be reverted item by "
+                    f"item. {SYNC_FAILED_SUGGESTION}"
+                ),
+            )
             return
         raise StructuredToolError(
             f"{cs.tool} failed after a step that cannot be reverted item by item",

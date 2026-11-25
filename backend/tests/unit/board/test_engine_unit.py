@@ -460,3 +460,137 @@ async def test_creates_board_path_in_the_way_refused(tmp_path: Path, log: list[s
     assert info.value.code == "output_path_unsafe"
     assert info.value.details == {"path": "demo.kicad_pcb"}
     assert session.timeouts == [] and log == []
+
+
+# -- fix round 1 ----------------------------------------------------------------------------
+
+
+class CreationRig:
+    """A boardless context with a fake create (writes the file like KiCad would) and a
+    fake reload (re-discovers by looking at the disk)."""
+
+    def __init__(self, tmp_path: Path, log: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
+        self.session = FakeSession(log)
+        self.ctx = _ctx(tmp_path, self.session)
+        self.ctx.project = replace(self.ctx.project, pcb_file=None)
+        self.pcb = tmp_path / "demo.kicad_pcb"
+        self.reloads = 0
+        self.removed: list[list[str]] = []
+        self.reported: list[Exception] = []
+        self.ctx.on_document_inconsistent = self.reported.append
+
+        def create(h: Any, path: Path) -> None:
+            path.write_text("(kicad_pcb)")
+
+        async def reload() -> Any:
+            self.reloads += 1
+            pcb = self.pcb if self.pcb.exists() else None
+            return replace(self.ctx.project, pcb_file=pcb), self.session, 5
+
+        real_remove = board_engine.remove_created
+
+        def remove(project_dir: Path, rels: Any) -> None:
+            self.removed.append(list(rels))
+            real_remove(project_dir, rels)
+
+        monkeypatch.setattr(api, "create_board_document", create)
+        monkeypatch.setattr(board_engine, "remove_created", remove)
+        self.ctx.reload_project = reload
+
+
+async def test_creation_failure_removes_board_and_reloads_twice(
+    tmp_path: Path, log: list[str], spy: Spy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = CreationRig(tmp_path, log, monkeypatch)
+    with pytest.raises(RuntimeError, match="fail_after"):
+        await apply_board_change_set(
+            rig.ctx, _cs([_stage(log, 1)], creates_board=True, fail_after=1)
+        )
+    assert rig.removed == [["demo.kicad_pcb"]]
+    assert rig.reloads == 2
+    assert not rig.pcb.exists() and rig.ctx.project.pcb_file is None
+    assert rig.ctx.reloaded_generation == 5
+
+
+async def test_cancel_with_failing_board_cleanup_keeps_cancel(
+    tmp_path: Path, log: list[str], spy: Spy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = CreationRig(tmp_path, log, monkeypatch)
+
+    def broken(project_dir: Path, rels: Any) -> None:
+        raise ValueError("cannot remove")
+
+    monkeypatch.setattr(board_engine, "remove_created", broken)
+    entered = asyncio.Event()
+
+    async def hang(sctx: BoardStageContext) -> None:
+        entered.set()
+        await asyncio.Event().wait()
+
+    cs = _cs([BoardStage("hang", hang)], creates_board=True)
+    task = asyncio.ensure_future(apply_board_change_set(rig.ctx, cs))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert len(rig.reported) == 1 and isinstance(rig.reported[0], DocumentInconsistent)
+    assert rig.reported[0].leftovers == ["demo.kicad_pcb"]
+
+
+async def test_board_left_after_removal_is_a_leftover(
+    tmp_path: Path, log: list[str], spy: Spy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = CreationRig(tmp_path, log, monkeypatch)
+    monkeypatch.setattr(board_engine, "remove_created", lambda d, rels: None)  # skipped
+    cs = _cs([_stage(log, 1)], creates_board=True, fail_after=1)
+    with pytest.raises(DocumentInconsistent) as info:
+        await apply_board_change_set(rig.ctx, cs)
+    assert info.value.leftovers == ["demo.kicad_pcb"]
+
+
+async def test_failing_result_read_compensates(
+    tmp_path: Path, log: list[str], spy: Spy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = 0
+
+    def snapshot(h: Any, mode: str) -> CopperSnapshot:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise ValueError("read failed")
+        return _snap()
+
+    monkeypatch.setattr(board_engine, "take_snapshot", snapshot)
+    with pytest.raises(ValueError, match="read failed"):
+        await apply_board_change_set(_ctx(tmp_path, FakeSession(log)), _cs([_stage(log, 1)]))
+    assert spy.compensations == 1
+
+
+async def test_cancel_after_non_compensable_stage_is_reported(
+    tmp_path: Path, log: list[str], spy: Spy
+) -> None:
+    reported: list[Exception] = []
+    entered = asyncio.Event()
+
+    async def hang(sctx: BoardStageContext) -> None:
+        entered.set()
+        await asyncio.Event().wait()
+
+    ctx = _ctx(tmp_path, FakeSession(log), on_document_inconsistent=reported.append)
+    cs = _cs([_stage(log, 1, compensable=False), BoardStage("hang", hang)])
+    task = asyncio.ensure_future(apply_board_change_set(ctx, cs))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert spy.compensations == 0
+    assert len(reported) == 1 and isinstance(reported[0], DocumentInconsistent)
+    assert "History panel" in str(reported[0])
+
+
+async def test_stage_call_passes_timeout(tmp_path: Path, log: list[str]) -> None:
+    session = FakeSession(log)
+    sctx = BoardStageContext(_ctx(tmp_path, session), {})
+    assert await sctx.call(lambda h: 1) == 1
+    assert await sctx.call(lambda h: 2, timeout=240) == 2
+    assert session.timeouts == [None, 240]

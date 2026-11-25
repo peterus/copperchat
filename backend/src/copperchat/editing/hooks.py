@@ -38,6 +38,9 @@ class EditingHooks(RunHooks):
         self.project = project
         self.engine = engine
 
+    def on_project_changed(self, project: Project) -> None:
+        self.project = project  # re-discovered (board created / restored away)
+
     async def on_turn_end(self, turn: TurnInfo, outcome: TurnOutcome) -> None:
         # Runs after HistoryHooks (ChainedHooks): the turn's changes are autosaved.
         state = self.svc.peek_turn(self.project.id, turn.run_id)
