@@ -11,7 +11,10 @@ from copperchat.board.router.grid import (
     RouteRequest,
     RouteTooLarge,
     build_grid,
+    prune_model,
 )
+from copperchat.board.router.astar import route, solve
+from copperchat.board.router.pairs import pair_coupling, route_pair, solve_pair
 
 __all__ = [
     "MAX_CELLS_PER_LAYER",
@@ -21,4 +24,10 @@ __all__ = [
     "RouteRequest",
     "RouteTooLarge",
     "build_grid",
+    "pair_coupling",
+    "prune_model",
+    "route",
+    "route_pair",
+    "solve",
+    "solve_pair",
 ]

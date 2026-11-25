@@ -1,0 +1,499 @@
+"""Octilinear grid A* (B-C12, P5a Task 2).
+
+State = (node, layer, direction, sense of the last 45° bend, straight steps since it). The
+only moves are: one step straight on, one step after a ±45° turn, and a via to another layer
+at the same node. A turn is allowed when there is no earlier bend to respect (start, after a
+via, or the straight piece since the last bend already covers both minimums), or when the
+straight piece since the last bend covers `CHAMFER_MIN(width)` (same sense: two halves of a
+90°) or `JOG_MIN(width)` (opposite sense: an S-offset). Turns of 90° or more at one vertex
+are not moves at all, so the search cannot produce them.
+
+The first move from pad `a` and the last move into pad `b` follow the pad's long axis or run
+at 45° to it (square and round pads: any direction). A goal state is accepted only when the
+snapped path (`simplify.to_path`) passes `analyse_bends` (B-C5) on every layer run and the
+exact clearance check (`ObstacleGrid.segment_clear`); otherwise the search goes on.
+"""
+
+from __future__ import annotations
+
+import heapq
+import math
+import re
+from collections.abc import Iterable, Iterator
+
+from copperchat.board.geom import CHAMFER_MIN, JOG_MIN, _in_pad, _pad_on_layer, analyse_bends
+from copperchat.board.model import BoardModel, Pad
+from copperchat.board.router.grid import (
+    BLOCKED,
+    WINDOW_MM,
+    ObstacleGrid,
+    RoutePath,
+    RouteRequest,
+    build_grid,
+    path_clear,
+)
+from copperchat.board.router.simplify import SnapError, layer_runs, to_path
+
+TURN_COST = 0.3  # mm-equivalent per 45° bend
+VIA_COST = 2.0  # mm-equivalent per via
+LAYER_FACTOR = 1.2  # step cost on every layer but the request's first
+PAIR_BAND_FACTOR = 0.8  # step cost inside a grid's `cheap` band (pair fallback)
+MAX_GOAL_REJECTS = 64  # goal states whose snapped path failed the final check
+# f = g + HEURISTIC_WEIGHT * h (weighted A*): a detour around an obstacle otherwise expands
+# the whole ellipse of nodes with g + h below the detour's cost (> 1M states for a 4 mm
+# detour at 0.05 mm). Paths stay within this factor of the cheapest.
+HEURISTIC_WEIGHT = 1.5
+
+# board coordinates, y down; k = 0..7 counter-clockwise on screen from +x
+DIRS: tuple[tuple[int, int], ...] = ((1, 0), (1, -1), (0, -1), (-1, -1), (-1, 0), (-1, 1), (0, 1), (1, 1))
+_VIA_D = 8  # direction "none" after a via
+_START_D = 9  # direction "none" at the start pad
+_ND = 10
+_EPS = 1e-9
+
+
+def pad_dirs(pad: Pad) -> frozenset[int]:
+    """Directions a track may leave (or enter) `pad` in: the long axis both ways and ±45°
+    to it — 6 of 8; square and round pads: all 8. The axis is the pad's rotation rounded to
+    the nearest 45°."""
+    if pad.shape == "circle" or abs(pad.w - pad.h) <= 1e-9:
+        return frozenset(range(8))
+    k = round((pad.rot % 360.0) / 45.0) % 8
+    if pad.h > pad.w:
+        k = (k + 2) % 8
+    return frozenset((k + o) % 8 for o in (-1, 0, 1, 3, 4, 5))
+
+
+def _goal_node(grid: ObstacleGrid, pad: Pad) -> tuple[int, int]:
+    """The node nearest the pad centre that lies inside the pad (nearest overall if none)."""
+    ci, cj = grid.cell(pad.x, pad.y)
+    best: tuple[float, int, int] | None = None
+    for i in range(ci - 1, ci + 2):
+        for j in range(cj - 1, cj + 2):
+            if not grid.inside(i, j):
+                continue
+            p = grid.xy(i, j)
+            if not _in_pad(p, pad):
+                continue
+            d = math.dist(p, (pad.x, pad.y))
+            if best is None or d < best[0] - _EPS:
+                best = (d, i, j)
+    return (best[1], best[2]) if best else (ci, cj)
+
+
+def valid_path(path: RoutePath, grid: ObstacleGrid, req: RouteRequest) -> bool:
+    """`analyse_bends` (pad ends at the pads, not at vias) has no failure on any layer run,
+    and every segment keeps its exact clearance."""
+    runs = layer_runs(path)
+    if not runs:
+        return False
+    for k, (_layer, pts) in enumerate(runs):
+        r = analyse_bends(pts, req.width, pad_ends=(k == 0, k == len(runs) - 1))
+        if r.non_octilinear or r.ninety or r.acute or r.off_angle or r.micro_jogs or r.short_chamfers:
+            return False
+    return path_clear(grid, path)
+
+
+_FREE_RUN = re.compile(rb"[\x00\x01]+")
+_VIA_RUN = re.compile(rb"\x00+")
+
+
+def reachable(
+    grid: ObstacleGrid,
+    start_n: int,
+    goal_n: int,
+    a_layers: list[int],
+    b_layers: frozenset[int],
+    vias: bool,
+) -> bool:
+    """Cheap relaxation of the search: are the start and goal nodes in one 8-connected
+    component of free nodes (layers joined at via-capable nodes)? No → no path exists.
+    Runs of free nodes per row are joined by a union-find."""
+    w, h, nl = grid.w, grid.h, len(grid.layers)
+    parent: list[int] = []
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(x: int, y: int) -> None:
+        rx, ry = find(x), find(y)
+        if rx != ry:
+            parent[max(rx, ry)] = min(rx, ry)
+
+    forced = {start_n, goal_n}
+    runs: list[list[list[tuple[int, int, int]]]] = []  # [layer][row] -> (i0, i1, id)
+    for li in range(nl):
+        cells = grid.cells[li]
+        rows: list[list[tuple[int, int, int]]] = []
+        for j in range(h):
+            row = bytearray(cells[j * w : (j + 1) * w])
+            for n in forced:
+                if n // w == j:
+                    row[n % w] = 0
+            here: list[tuple[int, int, int]] = []
+            for mt in _FREE_RUN.finditer(row):
+                rid = len(parent)
+                parent.append(rid)
+                i0, i1 = mt.start(), mt.end() - 1
+                here.append((i0, i1, rid))
+                if rows:
+                    for p0, p1, pid in rows[-1]:
+                        if p0 <= i1 + 1 and i0 <= p1 + 1:
+                            union(rid, pid)
+            rows.append(here)
+        runs.append(rows)
+    if vias and nl > 1:
+        for j in range(h):
+            for mt in _VIA_RUN.finditer(grid.via_blocked, j * w, (j + 1) * w):
+                v0, v1 = mt.start() - j * w, mt.end() - 1 - j * w
+                for l1 in range(nl):
+                    for l2 in range(l1 + 1, nl):
+                        for a0, a1, ra in runs[l1][j]:
+                            for b0, b1, rb in runs[l2][j]:
+                                # a node free on both layers where a via fits
+                                if max(a0, b0, v0) <= min(a1, b1, v1):
+                                    union(ra, rb)
+
+    def comp(n: int, layers: Iterable[int]) -> set[int]:
+        j, i = n // w, n % w
+        return {find(rid) for li in layers for i0, i1, rid in runs[li][j] if i0 <= i <= i1}
+
+    return bool(comp(start_n, a_layers) & comp(goal_n, b_layers))
+
+
+USE_COARSE = True
+COARSE_MM = 0.5  # cell of the coarse distance field behind the heuristic
+
+
+_FREE_TABLE = bytes(0 if v == BLOCKED else 1 for v in range(256))
+
+
+def _band_edges(
+    x_same: bytes, x_next: bytes, x_prev: bytes, cf: int, nb: int
+) -> Iterator[tuple[int, int]]:
+    """Coarse links across one boundary: `x_same[t]` = a fine move from position t on the
+    near side to t on the far side, `x_next[t]` to t + 1, `x_prev[t]` to t - 1 (bytes 0/1).
+    Yields (near band, far band) pairs (bands of `cf` positions)."""
+    for b in range(nb):
+        lo, hi = b * cf, min((b + 1) * cf, len(x_same))
+        if 1 in x_same[lo:hi] or 1 in x_next[lo : hi - 1] or 1 in x_prev[lo + 1 : hi]:
+            yield b, b
+        if hi < len(x_same) and x_next[hi - 1]:
+            yield b, b + 1
+        if lo > 0 and x_prev[lo]:
+            yield b, b - 1
+
+
+def _links(a: bytes, b: bytes) -> tuple[bytes, bytes, bytes]:
+    n = len(a)
+    ia, ib = int.from_bytes(a, "big"), int.from_bytes(b, "big")
+    same = (ia & ib).to_bytes(n, "big")
+    nxt = (ia & (ib << 8)).to_bytes(n + 1, "big")[1:]  # a[t] & b[t + 1]
+    prv = (ia & (ib >> 8)).to_bytes(n, "big")  # a[t] & b[t - 1]
+    return same, nxt, prv
+
+
+def coarse_distances(
+    grid: ObstacleGrid, gi: int, gj: int, forced: Iterable[int]
+) -> tuple[int, int, list[float]]:
+    """(factor, coarse width, distance to the goal per coarse cell). Coarse cells are
+    COARSE_MM squares; two neighbouring cells are linked when a fine move (on any layer)
+    joins a free node of one to a free node of the other, and a diagonal neighbour also
+    through either side cell. Every real path maps to a linked cell sequence, so
+    `distance - slack` (two cell diagonals) stays a near lower bound; cells the goal cannot
+    be reached from are `inf`."""
+    w, h = grid.w, grid.h
+    cf = max(1, round(COARSE_MM / grid.pitch))
+    cw, ch = -(-w // cf), -(-h // cf)
+    forced = list(forced)
+    # free masks of the boundary columns / rows, OR over the layers
+    cols: dict[int, bytearray] = {}
+    rows: dict[int, bytearray] = {}
+    for ci in range(1, cw):
+        for i in (ci * cf - 1, ci * cf):
+            cols[i] = bytearray(h)
+    for cj in range(1, ch):
+        for j in (cj * cf - 1, cj * cf):
+            rows[j] = bytearray(w)
+    for lay in grid.cells:
+        for i, acc in cols.items():
+            col = lay[i::w].translate(_FREE_TABLE)
+            acc[:] = (int.from_bytes(acc, "big") | int.from_bytes(col, "big")).to_bytes(h, "big")
+        for j, acc in rows.items():
+            row = lay[j * w : (j + 1) * w].translate(_FREE_TABLE)
+            acc[:] = (int.from_bytes(acc, "big") | int.from_bytes(row, "big")).to_bytes(w, "big")
+    for n in forced:
+        i, j = n % w, n // w
+        if i in cols:
+            cols[i][j] = 1
+        if j in rows:
+            rows[j][i] = 1
+    adj: list[set[int]] = [set() for _ in range(cw * ch)]
+    for ci in range(1, cw):
+        same, nxt, prv = _links(bytes(cols[ci * cf - 1]), bytes(cols[ci * cf]))
+        for b0, b1 in _band_edges(same, nxt, prv, cf, ch):
+            c0, c1 = b0 * cw + ci - 1, b1 * cw + ci
+            adj[c0].add(c1)
+            adj[c1].add(c0)
+    for cj in range(1, ch):
+        same, nxt, prv = _links(bytes(rows[cj * cf - 1]), bytes(rows[cj * cf]))
+        for b0, b1 in _band_edges(same, nxt, prv, cf, cw):
+            c0, c1 = (cj - 1) * cw + b0, cj * cw + b1
+            adj[c0].add(c1)
+            adj[c1].add(c0)
+    dist = [math.inf] * (cw * ch)
+    goal = (gj // cf) * cw + gi // cf
+    dist[goal] = 0.0
+    heap = [(0.0, goal)]
+    cs = cf * grid.pitch
+    cd = cs * math.sqrt(2.0)
+    while heap:
+        d, c = heapq.heappop(heap)
+        if d > dist[c]:
+            continue
+        links = adj[c]
+        ci, cj = c % cw, c // cw
+        for m in links:
+            mi, mj = m % cw, m // cw
+            nd = d + (cd if mi != ci and mj != cj else cs)
+            if nd < dist[m]:
+                dist[m] = nd
+                heapq.heappush(heap, (nd, m))
+        for di in (-1, 1):  # diagonal through a side cell
+            for dj in (-1, 1):
+                mi, mj = ci + di, cj + dj
+                if not (0 <= mi < cw and 0 <= mj < ch):
+                    continue
+                m = mj * cw + mi
+                s1, s2 = cj * cw + mi, mj * cw + ci
+                if (s1 in links and m in adj[s1]) or (s2 in links and m in adj[s2]):
+                    nd = d + cd
+                    if nd < dist[m]:
+                        dist[m] = nd
+                        heapq.heappush(heap, (nd, m))
+    return cf, cw, dist
+
+
+def route(grid: ObstacleGrid, req: RouteRequest, *, max_expansions: int = 2_000_000) -> RoutePath | None:
+    """The cheapest octilinear path from `req.a` to `req.b` on `grid` that passes the final
+    checks, or None (no path in the window, `max_expansions` exhausted, or too many goal
+    states rejected). One search; never rebuilds or widens the grid."""
+    nl = len(grid.layers)
+    a_layers = [k for k, name in enumerate(grid.layers) if _pad_on_layer(req.a, name)]
+    b_layers = frozenset(k for k, name in enumerate(grid.layers) if _pad_on_layer(req.b, name))
+    if not a_layers or not b_layers:
+        return None
+    si, sj = grid.cell(req.a.x, req.a.y)
+    gi, gj = _goal_node(grid, req.b)
+    if not (grid.inside(si, sj) and grid.inside(gi, gj)):
+        return None
+    w = grid.w
+    pitch = grid.pitch
+    start_n, goal_n = sj * w + si, gj * w + gi
+    if not reachable(grid, start_n, goal_n, a_layers, b_layers, req.allow_vias and nl > 1):
+        return None
+    start_dirs = sorted(pad_dirs(req.a))
+    goal_dirs = pad_dirs(req.b)
+    cells = grid.cells
+    via_blocked = grid.via_blocked
+    cheap = grid.cheap
+    allow_vias = req.allow_vias and nl > 1
+
+    off = [di + dj * w for di, dj in DIRS]
+    step = [pitch * (math.sqrt(2.0) if di and dj else 1.0) for di, dj in DIRS]
+    lf = [1.0 if k == 0 else LAYER_FACTOR for k in range(nl)]
+    c_min, j_min = CHAMFER_MIN(req.width), JOG_MIN(req.width)
+    need_max = max(c_min, j_min)
+    cap = [max(1, math.ceil(need_max / s - _EPS)) for s in step]
+    kk = max(cap) + 1
+    kmin = [max(1, math.ceil(min(c_min, j_min) / st - _EPS)) for st in step]
+    # may[d][s][k][ns]: a turn of sense ns (1 = +45°, 2 = −45°) after k steps in direction d
+    may = [
+        [
+            [
+                [
+                    True,
+                    s == 0 or k * step[d] + _EPS >= (c_min if s == 1 else j_min),
+                    s == 0 or k * step[d] + _EPS >= (c_min if s == 2 else j_min),
+                ]
+                for k in range(kk)
+            ]
+            for s in range(3)
+        ]
+        for d in range(8)
+    ]
+    hf = HEURISTIC_WEIGHT * (PAIR_BAND_FACTOR if cheap else 1.0)
+    diag = math.sqrt(2.0) - 1.0
+
+    use_coarse = USE_COARSE
+    cf, cw, cdist = coarse_distances(grid, gi, gj, (start_n, goal_n)) if use_coarse else (1, 1, [])
+    cstep = cf * pitch
+    slack = 2.0 * cstep * math.sqrt(2.0)
+    inf = math.inf
+
+    def h(n: int) -> float:
+        i, j = n % w, n // w
+        dx = abs(i - gi)
+        dy = abs(j - gj)
+        octile = pitch * (max(dx, dy) + diag * min(dx, dy))
+        if not use_coarse:
+            return hf * octile
+        c = cdist[(j // cf) * cw + i // cf]
+        if c == inf:
+            return inf
+        return hf * max(octile, c - slack)
+
+    def key(n: int, li: int, d: int, s: int, k: int) -> int:
+        return (((n * nl + li) * _ND + d) * 3 + s) * kk + k
+
+    def decode(x: int) -> tuple[int, int]:
+        x //= kk * 3 * _ND
+        return x // nl, x % nl  # node, layer
+
+    best: dict[int, float] = {}
+    parent: dict[int, int] = {}
+    closed: set[int] = set()
+    heap: list[tuple[float, float, int, float, int, int, int, int, int]] = []
+    counter = 0
+    for li in a_layers:
+        k0 = key(start_n, li, _START_D, 0, 0)
+        best[k0] = 0.0
+        parent[k0] = -1
+        heap.append((h(start_n), 0.0, counter, 0.0, start_n, li, _START_D, 0, 0))
+        counter += 1
+    heapq.heapify(heap)
+    expansions = 0
+    rejects = 0
+    push = heapq.heappush
+    pop = heapq.heappop
+    blocked = BLOCKED
+
+    while heap:
+        _f, _ng, _c, g, n, li, d, s, k = pop(heap)
+        here = key(n, li, d, s, k)
+        if here in closed or g > best.get(here, math.inf):
+            continue
+        closed.add(here)  # weighted A* without re-opening: bounded by HEURISTIC_WEIGHT
+        if n == goal_n and li in b_layers and d in goal_dirs:
+            path = _build(here, parent, decode, grid, req)
+            if path is not None and valid_path(path, grid, req):
+                return path
+            rejects += 1
+            if rejects > MAX_GOAL_REJECTS:
+                return None
+        expansions += 1
+        if expansions > max_expansions:
+            return None
+        lay = cells[li]
+        band = cheap[li] if cheap else None
+        factor = lf[li]
+        if d >= 8:
+            moves = start_dirs if d == _START_D else range(8)
+            for nd in moves:
+                m = n + off[nd]
+                if lay[m] == blocked and m != goal_n:
+                    continue
+                c = step[nd] * factor
+                if band is not None and band[m]:
+                    c *= PAIR_BAND_FACTOR
+                ng = g + c
+                nk = key(m, li, nd, 0, 0)
+                if ng < best.get(nk, inf) and nk not in closed:
+                    hm = h(m)
+                    if hm == inf:
+                        continue
+                    best[nk] = ng
+                    parent[nk] = here
+                    push(heap, (ng + hm, -ng, counter, ng, m, li, nd, 0, 0))
+                    counter += 1
+        else:
+            # straight on
+            m = n + off[d]
+            if lay[m] != blocked or m == goal_n:
+                c = step[d] * factor
+                if band is not None and band[m]:
+                    c *= PAIR_BAND_FACTOR
+                s2, k2 = s, k + 1
+                if s2 == 0 or k2 >= cap[d] or k2 * step[d] + _EPS >= need_max:
+                    s2, k2 = 0, 0
+                ng = g + c
+                nk = key(m, li, d, s2, k2)
+                if (
+                    ng < best.get(nk, inf)
+                    and nk not in closed
+                    and not (s2 and best.get(key(m, li, d, 0, 0), inf) <= ng)
+                ):
+                    hm = h(m)
+                    if hm != inf:
+                        best[nk] = ng
+                        parent[nk] = here
+                        push(heap, (ng + hm, -ng, counter, ng, m, li, d, s2, k2))
+                        counter += 1
+            # a 45° bend here, then straight on for the shortest legal piece in one move
+            # (no bend can follow sooner; the goal may be reached on the way)
+            for nd, ns in (((d + 1) & 7, 1), ((d - 1) & 7, 2)):
+                if not may[d][s][k][ns]:
+                    continue
+                o, st = off[nd], step[nd]
+                c = TURN_COST
+                m = n
+                for t in range(1, kmin[nd] + 1):
+                    m += o
+                    if lay[m] == blocked and m != goal_n:
+                        break
+                    c += st * factor * (PAIR_BAND_FACTOR if band is not None and band[m] else 1.0)
+                    if t < kmin[nd] and m != goal_n:
+                        continue
+                    s2, k2 = ns, t
+                    if k2 >= cap[nd] or k2 * st + _EPS >= need_max:
+                        s2, k2 = 0, 0
+                    ng = g + c
+                    nk = key(m, li, nd, s2, k2)
+                    if ng < best.get(nk, inf) and nk not in closed:
+                        hm = h(m)
+                        if hm != inf:
+                            best[nk] = ng
+                            parent[nk] = here
+                            push(heap, (ng + hm, -ng, counter, ng, m, li, nd, s2, k2))
+                            counter += 1
+            if allow_vias and not via_blocked[n]:
+                ng = g + VIA_COST
+                for l2 in range(nl):
+                    if l2 == li or cells[l2][n] == blocked:
+                        continue
+                    nk = key(n, l2, _VIA_D, 0, 0)
+                    if ng < best.get(nk, math.inf):
+                        best[nk] = ng
+                        parent[nk] = here
+                        push(heap, (ng + h(n), -ng, counter, ng, n, l2, _VIA_D, 0, 0))
+                        counter += 1
+    return None
+
+
+def _build(here: int, parent: dict[int, int], decode, grid: ObstacleGrid, req: RouteRequest) -> RoutePath | None:  # type: ignore[no-untyped-def]
+    states: list[tuple[int, int, int]] = []
+    x = here
+    while x != -1:
+        n, li = decode(x)
+        states.append((li, n % grid.w, n // grid.w))
+        x = parent[x]
+    states.reverse()
+    try:
+        return to_path(states, grid, req)
+    except SnapError:
+        return None
+
+
+def solve(
+    model: BoardModel, req: RouteRequest, *, margin: float = 0.0, max_expansions: int = 2_000_000
+) -> RoutePath | None:
+    """`run_cpu` entry point (B-C12): route on the default window, then exactly once on the
+    doubled window. `RouteTooLarge` from either window propagates."""
+    path = route(build_grid(model, req, margin=margin), req, max_expansions=max_expansions)
+    if path is not None:
+        return path
+    grid = build_grid(model, req, margin=margin, window_mm=2 * WINDOW_MM)
+    return route(grid, req, max_expansions=max_expansions)

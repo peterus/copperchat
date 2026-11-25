@@ -19,10 +19,10 @@ from __future__ import annotations
 import itertools
 import math
 from collections.abc import Iterable, Iterator, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from copperchat.board.geom import _Grid, _pad_on_layer, convex_hull, point_in_polygon
-from copperchat.board.model import ArcTrack, BoardModel, Pad, Point
+from copperchat.board.model import ArcTrack, BoardModel, GraphicItem, Pad, Point
 
 WINDOW_MM = 6.0
 MAX_CELLS_PER_LAYER = 4_000_000
@@ -636,3 +636,86 @@ def build_grid(
 
 def extra_shapes(extra: Sequence[tuple[str, Shape]], layers: Sequence[str]) -> list[tuple[int, Shape]]:
     return [(list(layers).index(name), s) for name, s in extra if name in layers]
+
+
+def band_cells(
+    grid: ObstacleGrid, segments: Sequence[tuple[str, Point, Point]], lo: float, hi: float
+) -> tuple[bytearray, ...]:
+    """Per layer of `grid`: 1 at the nodes whose distance to one of `segments` on that layer
+    lies in [lo, hi] (the pair fallback's preferred band), else 0."""
+    mk = _Marker(grid.x0, grid.y0, grid.w, grid.h, grid.pitch)
+    out = []
+    for name in grid.layers:
+        buf = bytearray(grid.w * grid.h)
+        mine = [(p, q) for layer, p, q in segments if layer == name]
+        for p, q in mine:
+            mk.shape(buf, ("s", *p, *q, 0.0), hi, 1)
+        for p, q in mine:
+            if lo > 0:
+                mk.shape(buf, ("s", *p, *q, 0.0), lo - 1e-9, 0)
+        out.append(buf)
+    return tuple(out)
+
+
+PRUNE_HALO_MM = 3.0  # beyond any obstacle's reach (clearance + widths + via radius)
+
+
+def _bbox_hits(box: tuple[float, float, float, float], win: tuple[float, float, float, float]) -> bool:
+    return not (box[2] < win[0] or box[0] > win[2] or box[3] < win[1] or box[1] > win[3])
+
+
+def _pts_box(pts: Iterable[Point]) -> tuple[float, float, float, float]:
+    pts = list(pts)
+    if not pts:
+        return (math.inf, math.inf, -math.inf, -math.inf)
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def prune_model(model: BoardModel, req: RouteRequest | tuple[RouteRequest, RouteRequest]) -> BoardModel:
+    """`model` reduced to what can matter for `req` (or a pair): outline, rules, net classes
+    and layers stay; pads (parts with at least one), tracks, arcs, vias, zones (outline only,
+    no fills) and graphics only when they intersect the retry window (2 × WINDOW_MM around
+    the requests' pads) grown by PRUNE_HALO_MM. Pure; the result routes exactly like the
+    full model."""
+    reqs = list(req) if isinstance(req, tuple) else [req]
+    x0, y0, x1, y1 = window_bounds(model, reqs, 2 * WINDOW_MM)
+    for r in reqs:  # build_grid keeps off-outline pads inside the window
+        for p in (r.a, r.b):
+            x0, y0, x1, y1 = min(x0, p.x), min(y0, p.y), max(x1, p.x), max(y1, p.y)
+    win = (x0 - PRUNE_HALO_MM, y0 - PRUNE_HALO_MM, x1 + PRUNE_HALO_MM, y1 + PRUNE_HALO_MM)
+
+    def pad_hits(p: Pad) -> bool:
+        r = math.hypot(p.w, p.h) / 2
+        return _bbox_hits((p.x - r, p.y - r, p.x + r, p.y + r), win)
+
+    parts = []
+    for part in model.parts:
+        pads = tuple(p for p in part.pads if pad_hits(p))
+        if pads:
+            parts.append(replace(part, pads=pads))
+    tracks = tuple(t for t in model.tracks if _bbox_hits(_grow(_pts_box((t.start, t.end)), t.width / 2), win))
+    arcs = tuple(a for a in model.arcs if _bbox_hits(_grow(_pts_box((a.start, a.mid, a.end)), a.width / 2 + math.dist(a.start, a.end)), win))
+    vias = tuple(v for v in model.vias if _bbox_hits(_grow(_pts_box((v.at,)), v.diameter / 2), win))
+    zones = tuple(
+        replace(z, filled=(), filled_holes=(), filled_layers=())
+        for z in model.zones
+        if _bbox_hits(_pts_box(z.outline), win)
+    )
+    graphics = tuple(
+        g
+        for g in model.graphics
+        if _bbox_hits(_grow(_pts_box(g.points), g.width / 2 + _circle_reach(g)), win)
+    )
+    return replace(model, parts=tuple(parts), tracks=tracks, arcs=arcs, vias=vias, zones=zones, graphics=graphics)
+
+
+def _grow(b: tuple[float, float, float, float], d: float) -> tuple[float, float, float, float]:
+    return (b[0] - d, b[1] - d, b[2] + d, b[3] + d)
+
+
+def _circle_reach(g: GraphicItem) -> float:
+    if g.kind == "circle" and len(g.points) == 2:
+        return math.dist(g.points[0], g.points[1])
+    return 0.0
