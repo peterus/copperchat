@@ -9,6 +9,9 @@
 #   git -C <kicad clone> archive <KICAD_COMMIT> demos/ecc83 demos/complex_hierarchy \
 #     demos/simulation/subsheets | tar -x -C /tmp/kicad-src
 #   scripts/refresh-fixtures.sh /tmp/kicad-src/demos
+# `sp4_synth` is built by the backend test suite: the image needs `uv` and the backend
+# environment (backend/uv.lock), like the CI kicad job. After a KiCad bump that changes
+# its netlist/ERC summary, run with UPDATE_GOLDENS=1 (the fixture is written either way).
 set -euo pipefail
 DEMOS="${1:-/usr/share/kicad/demos}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -18,6 +21,8 @@ REF="$ROOT/backend/tests/fixtures/reference"
 [ -d "$DEMOS/ecc83" ] && [ -d "$DEMOS/complex_hierarchy" ] \
   && [ -f "$DEMOS/simulation/subsheets/mainsheet.kicad_sch" ] || {
   echo "no KiCad demos (ecc83, complex_hierarchy, simulation/subsheets) in $DEMOS" >&2; exit 1; }
+command -v uv >/dev/null || {
+  echo "uv not found: needed for the sp4_synth fixture (scripts/make-sp4-synth.py)" >&2; exit 1; }
 
 rm -rf "$DEST" "$REF"
 mkdir -p "$DEST/ecc83" "$DEST/complex_hierarchy" "$REF"

@@ -213,6 +213,6 @@ async def test_build_sp4_synth(make_settings: Callable[..., Settings], tmp_path:
     assert sorted(p.name for p in project_dir.glob("*.kicad_sch")) == sorted(FIXTURE_FILES[1:])
     summary = summarize(settings.kicad_cli, project_dir / f"{NAME}.kicad_sch", tmp_path / "cli")
     assert summary["erc"] == {"errors": 0, "warnings": {}}, summary["erc"]
+    if out := os.environ.get(OUT_ENV):  # before the golden: a drift still fails below,
+        copy_out(project_dir, Path(out))  # but never leaves a refresh without the fixture
     check_golden(summary)
-    if out := os.environ.get(OUT_ENV):
-        copy_out(project_dir, Path(out))
