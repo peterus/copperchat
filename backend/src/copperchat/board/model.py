@@ -123,6 +123,9 @@ class Zone:
     settings: tuple[tuple[str, str], ...]
     filled_area_mm2: float
     filled: tuple[tuple[Point, ...], ...] = ()
+    # holes of each filled polygon, index-aligned with `filled` (P3a, M11 plane voids);
+    # like `filled`, excluded from board_hash
+    filled_holes: tuple[tuple[tuple[Point, ...], ...], ...] = ()
 
 
 @dataclass(frozen=True)
