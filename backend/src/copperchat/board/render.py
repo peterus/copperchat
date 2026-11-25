@@ -14,7 +14,7 @@ from __future__ import annotations
 import math
 import re
 import xml.etree.ElementTree as ET
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from typing import Literal
 from xml.sax.saxutils import escape
@@ -91,18 +91,27 @@ def block_hulls(m: BoardModel) -> list[Hull]:
     return hulls
 
 
-def highlight_shapes(m: BoardModel, nets: Sequence[str]) -> list[HighlightShape]:
+def highlight_shapes(
+    m: BoardModel, nets: Sequence[str], layers: Collection[str] | None = None
+) -> list[HighlightShape]:
     """The copper of `nets` from the model: tracks and arcs as thick strokes, pads and
-    vias as discs."""
+    vias as discs. With `layers` (the view's copper layers) only what the view shows:
+    tracks and arcs on one of `layers`, SMD pads with a layer in `layers` (so a top view
+    skips bottom-side SMD pads); vias and through-hole pads span the board and are always
+    kept. `None`: every layer."""
     wanted = set(nets)
+
+    def shown(layer: str) -> bool:
+        return layers is None or layer in layers
+
     out: list[HighlightShape] = []
     for t in m.tracks:
-        if t.net in wanted:
+        if t.net in wanted and shown(t.layer):
             out.append(
                 HighlightShape(t.net, "line", (t.start, t.end), t.width + HIGHLIGHT_MARGIN_MM)
             )
     for a in m.arcs:
-        if a.net in wanted:
+        if a.net in wanted and shown(a.layer):
             out.append(
                 HighlightShape(
                     a.net, "line", (a.start, a.mid, a.end), a.width + HIGHLIGHT_MARGIN_MM
@@ -113,9 +122,12 @@ def highlight_shapes(m: BoardModel, nets: Sequence[str]) -> list[HighlightShape]
             out.append(HighlightShape(v.net, "disc", (v.at,), v.diameter + HIGHLIGHT_MARGIN_MM))
     for p in m.parts:
         for pad in p.pads:
-            if pad.net in wanted:
-                size = max(pad.w, pad.h) + HIGHLIGHT_MARGIN_MM
-                out.append(HighlightShape(pad.net, "disc", ((pad.x, pad.y),), size))
+            if pad.net not in wanted:
+                continue
+            if pad.smd and layers is not None and not any(lay in layers for lay in pad.layers):
+                continue
+            size = max(pad.w, pad.h) + HIGHLIGHT_MARGIN_MM
+            out.append(HighlightShape(pad.net, "disc", ((pad.x, pad.y),), size))
     return out
 
 

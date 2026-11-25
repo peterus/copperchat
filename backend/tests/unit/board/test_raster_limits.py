@@ -220,3 +220,146 @@ async def test_worker_file_io_off_the_event_loop(monkeypatch: pytest.MonkeyPatch
     assert png.startswith(b"\x89PNG")
     assert len(threads) == 2
     assert threading.main_thread().name not in threads
+
+
+def _open_fds() -> int:
+    return len(os.listdir("/proc/self/fd"))
+
+
+@pytest.mark.parametrize("blocked", ["_write_all", "_read_fd"])
+async def test_worker_cancel_in_thread_step(monkeypatch: pytest.MonkeyPatch, blocked: str) -> None:
+    """Cancelled while the input write (setup) or the PNG read runs in its thread: the
+    cancellation waits for the thread, then propagates; no fd stays open and the
+    worker's temp home is removed (review round 2)."""
+    import tempfile
+    import threading
+
+    entered, release = threading.Event(), threading.Event()
+    real = getattr(fr, blocked)
+
+    def blocking(*args: Any) -> Any:
+        entered.set()
+        assert release.wait(30)
+        return real(*args)
+
+    homes: list[str] = []
+    mkdtemp = tempfile.mkdtemp
+
+    def spy_mkdtemp(*args: Any, **kwargs: Any) -> str:
+        homes.append(mkdtemp(*args, **kwargs))
+        return homes[-1]
+
+    monkeypatch.setattr(fr, blocked, blocking)
+    monkeypatch.setattr(fr.tempfile, "mkdtemp", spy_mkdtemp)
+    release.set()
+    await fr.rasterise(SVG, (4.0, 4.0))  # warm-up: lazily opened loop / watcher fds
+    release.clear()
+    entered.clear()
+    homes.clear()
+    before = _open_fds()
+    task = asyncio.create_task(fr.rasterise(SVG, (4.0, 4.0)))
+    assert await asyncio.to_thread(entered.wait, 30)
+    task.cancel()
+    await asyncio.sleep(0.05)
+    assert not task.done()  # held until the thread is done with its fds
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert _open_fds() == before
+    assert len(homes) == 1 and not os.path.exists(homes[0])
+
+
+class _Session:
+    def __init__(self, fail: bool = False) -> None:
+        self.fail = fail
+
+    async def save_copy(self, kind: str, path: Path) -> None:
+        if self.fail:
+            raise PermissionError("read-only")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("(kicad_pcb)")
+
+
+def _board_ctx(tmp_path: Path, session: _Session) -> Any:
+    from types import SimpleNamespace
+
+    project = SimpleNamespace(pcb_file=tmp_path / "b.kicad_pcb", dir=tmp_path, name="p")
+    return SimpleNamespace(project=project, session=session, settings=None)
+
+
+async def test_board_raster_oserror_not_blamed_on_board_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An OSError of the raster step (here the rasteriser's mkdtemp) is reported as such,
+    not as an unwritable board copy; a failing board copy still is (review round 2)."""
+    import tempfile
+
+    from copperchat.views import board_render as br
+    from tests.unit.board.builders import board
+
+    async def no_cli(*args: Any) -> None:
+        return None
+
+    def no_tmp(*args: Any, **kwargs: Any) -> str:
+        raise PermissionError("no temp dir")
+
+    monkeypatch.setattr(br, "_cli", no_cli)
+    monkeypatch.setattr(br, "_prepare", lambda out, ov: (SVG, (4.0, 4.0)))
+    monkeypatch.setattr(tempfile, "mkdtemp", no_tmp)
+    with pytest.raises(StructuredToolError) as err:
+        await br.render_board(_board_ctx(tmp_path, _Session()), "top", model=board())
+    assert err.value.code == "render_failed"
+    assert "board copy" not in err.value.why
+    assert "temporary files could not be written (PermissionError)" in err.value.why
+
+    with pytest.raises(StructuredToolError) as err:
+        await br.render_board(_board_ctx(tmp_path, _Session(fail=True)), "top", model=board())
+    assert "the board copy could not be written (PermissionError)" in err.value.why
+
+
+async def test_board_hashes_off_the_event_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """render_board and pcb_status hash the board in a thread (review round 2)."""
+    import threading
+    from types import SimpleNamespace
+
+    from copperchat.board import model as bm
+    from copperchat.kicad_tools.board import status
+    from copperchat.views import board_render as br
+    from tests.unit.board.builders import board
+
+    threads: list[str] = []
+
+    def spy(real: Any) -> Any:
+        def hashed(m: Any) -> str:
+            threads.append(threading.current_thread().name)
+            return str(real(m))
+
+        return hashed
+
+    for mod in (br, status):
+        monkeypatch.setattr(mod, "placement_hash", spy(bm.placement_hash))
+        monkeypatch.setattr(mod, "board_hash", spy(bm.board_hash))
+
+    async def fake_2d(*args: Any) -> tuple[bytes, bytes]:
+        return b"<svg/>", b"\x89PNG\r\n\x1a\n"
+
+    monkeypatch.setattr(br, "_render_2d", fake_2d)
+    m = board()
+    out = await br.render_board(_board_ctx(tmp_path, _Session()), "top", model=m)
+    assert (out.placement_hash, out.board_hash) == (bm.placement_hash(m), bm.board_hash(m))
+
+    async def fake_model(ctx: Any) -> Any:
+        return m
+
+    async def fake_call(fn: Any, timeout: float) -> Any:
+        return SimpleNamespace(unconnected=0)
+
+    monkeypatch.setattr(status, "board_model", fake_model)
+    ctx = _board_ctx(tmp_path, _Session())
+    ctx.session.call = fake_call
+    res = await status.pcb_status(ctx, {})
+    assert res.data["board_hash"] == bm.board_hash(m)
+    assert len(threads) == 4
+    assert threading.main_thread().name not in threads

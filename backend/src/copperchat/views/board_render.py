@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import json
 import logging
+import math
 import os
 import re
 import stat
@@ -83,6 +85,7 @@ BOARD_SVG_LIMITS = SvgLimits(
     max_element_coords=50_000,
     max_span=20_000.0,
 )
+_WRAPPER_LIMITS = dataclasses.replace(BOARD_SVG_LIMITS, max_span=math.inf)
 BOARD_MAX_SIDE_PX = 1600
 BOARD_3D_SIZE = (1600, 1200)
 # The rasteriser worker on the board path (measured on the same boards: at most 0.71 s
@@ -101,6 +104,14 @@ VIEW_LAYERS: dict[str, tuple[str, ...]] = {
     "top": ("F.Cu", "F.Mask", "F.SilkS", "Edge.Cuts"),
     "bottom": ("B.Cu", "B.Mask", "B.SilkS", "Edge.Cuts"),
     "placement": ("F.CrtYd", "B.CrtYd", "F.Fab", "F.SilkS", "Edge.Cuts"),
+}
+# The copper layers a view's highlight is drawn on (`board.render.highlight_shapes`; vias
+# and through-hole pads always). The placement view shows both sides, so both outer
+# layers; inner-layer copper only in the `layer` view of that layer.
+HIGHLIGHT_LAYERS: dict[str, tuple[str, ...]] = {
+    "top": ("F.Cu",),
+    "bottom": ("B.Cu",),
+    "placement": ("F.Cu", "B.Cu"),
 }
 _STEM = re.compile(r"^[0-9a-f]{32}$")
 _list_lock = threading.Lock()  # read-modify-write of board-svgs.json
@@ -143,6 +154,13 @@ def view_layers(view: BoardView, layer: str | None = None) -> list[str]:
             raise ValueError("the layer view needs a layer")
         return [layer, "Edge.Cuts"]
     return list(VIEW_LAYERS[view])
+
+
+def highlight_layers(view: BoardView, layer: str | None = None) -> tuple[str, ...]:
+    """The copper layers whose tracks and SMD pads a 2D view highlights."""
+    if view == "layer":
+        return (layer,) if layer else ()
+    return HIGHLIGHT_LAYERS[view]
 
 
 def svg_export_args(view: BoardView, layer: str | None, board: Path, out: Path) -> list[str]:
@@ -290,6 +308,7 @@ class _Overlay:
     model: BoardModel
     hulls: bool
     highlight_nets: tuple[str, ...]
+    highlight_layers: tuple[str, ...]
     markers: tuple[Marker, ...]
     title: str
 
@@ -310,12 +329,23 @@ def _prepare(path: Path, ov: _Overlay) -> tuple[bytes, tuple[float, float]]:
         mirror=ov.mirror,
         hulls=block_hulls(m) if ov.hulls else (),
         markers=ov.markers,
-        highlight=highlight_shapes(m, ov.highlight_nets) if ov.highlight_nets else (),
+        highlight=(
+            highlight_shapes(m, ov.highlight_nets, ov.highlight_layers) if ov.highlight_nets else ()
+        ),
         highlight_nets=ov.highlight_nets,
         title=ov.title,
         board_size=(outline.w, outline.h) if outline.kind != "none" else None,
     )
-    final = load_kicad_svg(wrapped.encode("utf-8"), limits=BOARD_SVG_LIMITS)
+    # The wrapper is sanitised with every cap but the span: its viewBox is the region,
+    # so a zoom would divide KiCad's line length by a smaller extent (25x zoom = 25x the
+    # span). The span of KiCad's drawing was enforced above, on its own extent.
+    try:
+        final = load_kicad_svg(wrapped.encode("utf-8"), limits=_WRAPPER_LIMITS)
+    except StructuredToolError as exc:
+        if exc.code != "render_failed":
+            raise
+        why = exc.why.replace("kicad-cli wrote ", "").replace("kicad-cli's ", "")
+        raise _failed(f"the board drawing with its overlays was rejected ({why})") from None
     final.set("xmlns", SVG_NS)
     _, _, w, h = (float(v) for v in (final.get("viewBox") or "").split())
     # depth is bounded by the sanitiser's MAX_DEPTH, so the recursive serialiser is safe
@@ -401,7 +431,12 @@ async def render_board(
     svg: bytes | None = None
     try:
         with _board_wording():
-            await ctx.session.save_copy("pcb", board)
+            try:
+                await ctx.session.save_copy("pcb", board)
+            except OSError as exc:  # the tmp dir or the board copy could not be written
+                raise _failed(
+                    f"the board copy could not be written ({type(exc).__name__})"
+                ) from None
             if view == "3d":
                 png = await _render_3d(ctx, angle, board)
             else:
@@ -411,12 +446,15 @@ async def render_board(
                     model=m,
                     hulls=view == "placement",
                     highlight_nets=tuple(highlight_nets),
+                    highlight_layers=highlight_layers(view, layer),
                     markers=tuple(markers),
                     title=f"{ctx.project.name} board, {view}" + (f" {layer}" if layer else ""),
                 )
                 svg, png = await _render_2d(ctx, view, layer, board, ov)
-    except OSError as exc:  # the tmp dir or the board copy could not be written
-        raise _failed(f"the board copy could not be written ({type(exc).__name__})") from None
+    except OSError as exc:  # e.g. the rasteriser's temp directory (mkdtemp)
+        raise _failed(
+            f"the render's temporary files could not be written ({type(exc).__name__})"
+        ) from None
     finally:
         await _settle(asyncio.ensure_future(asyncio.to_thread(_remove_tmp, board.parent, stem)))
     png_path = renders / f"{stem}.png"
@@ -443,4 +481,6 @@ async def render_board(
                 log.warning("board renders: retention list not updated (%s)", exc)
 
     await asyncio.to_thread(write)
-    return BoardRender(png_path, svg_path, placement_hash(m), board_hash(m))
+    # the hashes serialise the whole board: in a thread, not on the event loop
+    p_hash, b_hash = await asyncio.to_thread(lambda: (placement_hash(m), board_hash(m)))
+    return BoardRender(png_path, svg_path, p_hash, b_hash)

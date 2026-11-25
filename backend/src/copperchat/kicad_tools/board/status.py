@@ -4,6 +4,7 @@ the edit lock, nothing written. Checkpoint and last-check fields come with P3b."
 
 from __future__ import annotations
 
+import asyncio
 from collections import Counter
 from typing import Any
 
@@ -71,4 +72,5 @@ async def pcb_status(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         lambda h: api.run_drc_task(h, timeout_s=STATUS_DRC_TIMEOUT_S),
         timeout=api.drc_call_timeout(STATUS_DRC_TIMEOUT_S),
     )
-    return ToolResult(data=status_data(model, drc.unconnected))
+    # the hashes serialise the whole board: in a thread, not on the event loop
+    return ToolResult(data=await asyncio.to_thread(status_data, model, drc.unconnected))

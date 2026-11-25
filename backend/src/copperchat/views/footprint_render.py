@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import itertools
 import math
 import os
 import re
@@ -51,6 +52,7 @@ import sys
 import tempfile
 import uuid
 import xml.etree.ElementTree as ET
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -324,11 +326,18 @@ class _Tally:
             )
 
 
-def _path_cost(value: str) -> tuple[int, float]:
+def _path_cost(value: str, max_coords: int | None = None) -> tuple[int, float]:
     """(coordinate pairs, length) of a `d` / `points` value: its numbers taken as
     consecutive points (KiCad writes absolute M/L paths; an arc's 7 numbers count as
-    3.5 points and add a little length: an over-estimate is fine)."""
-    nums = [float(t) for t in _NUMBER.findall(value)]
+    3.5 points and add a little length: an over-estimate is fine). With `max_coords` the
+    scan stops past that many pairs: (`max_coords + 1`, 0.0), over the cap whatever the
+    rest holds (a huge path is rejected without being parsed whole)."""
+    found: Iterator[re.Match[str]] = _NUMBER.finditer(value)
+    if max_coords is not None:
+        found = itertools.islice(found, 2 * max_coords + 1)
+    nums = [float(t.group()) for t in found]
+    if max_coords is not None and len(nums) > 2 * max_coords:
+        return max_coords + 1, 0.0
     pts = list(zip(nums[0::2], nums[1::2], strict=False))
     length = sum(math.dist(pts[i], pts[i + 1]) for i in range(len(pts) - 1))
     return (len(nums) + 1) // 2, length if math.isfinite(length) else math.inf
@@ -387,7 +396,7 @@ def _clean(src: ET.Element, depth: int, tally: _Tally) -> ET.Element | None:
     coords, length = _shape_cost(local, out.attrib)
     for key in ("d", "points"):
         if key in out.attrib:
-            c, n = _path_cost(out.attrib[key])
+            c, n = _path_cost(out.attrib[key], tally.limits.max_element_coords)
             coords, length = coords + c, length + n
     if local in ("text", "tspan"):  # glyphs CairoSVG lays out
         coords += len(src.text or "") + len(src.tail or "")

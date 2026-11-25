@@ -195,3 +195,49 @@ def test_strips_xml_illegal_characters() -> None:
     texts = [t.text or "" for t in root.iter(f"{NS}text")]
     assert sum("NET\tX" in t for t in texts) >= 2  # hull label and net legend
     assert not any(c in out for c in "\x0b\x00\x1f￾")
+
+
+def test_highlight_follows_view_layers() -> None:
+    """A view highlights only the copper it shows: tracks / arcs on its layers, SMD pads
+    of its side; vias and through-hole pads always (review round 2)."""
+    from copperchat.board.model import ArcTrack, Pad
+    from copperchat.views.board_render import highlight_layers
+    from tests.unit.board.builders import via
+
+    def pad(number: str, layers: set[str], smd: bool) -> Pad:
+        return Pad(
+            "U1", number, "GND", 1.0, 1.0, 1.0, 1.0, 0.0, "rect", frozenset(layers), smd, None
+        )
+
+    m = model(
+        parts=(
+            part(
+                "U1",
+                pads=(
+                    pad("1", {"F.Cu", "F.Paste", "F.Mask"}, True),
+                    pad("2", {"B.Cu", "B.Paste", "B.Mask"}, True),
+                    pad("3", {"*.Cu", "F.Cu", "B.Cu", "F.Mask", "B.Mask"}, False),
+                ),
+            ),
+        ),
+        tracks=(
+            track(net="GND", layer="F.Cu", kiid="tf"),
+            track(net="GND", layer="B.Cu", kiid="tb"),
+            track(net="GND", layer="In1.Cu", kiid="ti"),
+        ),
+        arcs=(ArcTrack("ab", "GND", "B.Cu", (0, 0), (1, 1), (2, 0), 0.2, False),),
+        vias=(via(net="GND"),),
+    )
+
+    def counts(view: str, layer: str | None = None) -> tuple[int, int]:
+        shapes = highlight_shapes(m, ["GND"], highlight_layers(view, layer))  # type: ignore[arg-type]
+        return (
+            sum(s.kind == "line" for s in shapes),
+            sum(s.kind == "disc" for s in shapes),
+        )
+
+    assert counts("top") == (1, 3)  # F.Cu track; via, top SMD pad, THT pad
+    assert counts("bottom") == (2, 3)  # B.Cu track + arc; via, bottom SMD pad, THT pad
+    assert counts("placement") == (3, 4)  # both outer layers
+    assert counts("layer", "In1.Cu") == (1, 2)  # inner track; via, THT pad
+    assert len(highlight_shapes(m, ["GND"])) == 8  # no layers given: everything
