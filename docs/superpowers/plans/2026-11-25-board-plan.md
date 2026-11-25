@@ -732,6 +732,72 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
 
 (Each phase adds its section here in its own PR.)
 
+### As built (P2b)
+
+**Patch 0005** (`docker/kicad-base/patches/0005-TODO-owner-write-message-board-stackup-handler.patch`,
+name as planned; owner facts `docs/kicad-patches/0005-board-stackup-FACTS.md`)
+- `BOARD_STACKUP::Deserialize` existed at the pin as a stub (`return false`); the patch
+  implements it and adds `API_HANDLER_PCB::handleUpdateBoardStackup` (copper layers must be the
+  enabled ones in order, alternating with dielectrics; thickness > 0, ≤ 10 mm per (sub-)layer,
+  ≤ 100 mm in total, ≤ 32 sub-layers; finite material values; known enum values; colour names kept when the RGBA value is unchanged; normalised response).
+- **Addition:** `SetBoardEnabledLayers` re-synchronises an explicit stackup (`m_HasStackup`)
+  with the new layer set (KiCad's `SynchronizeWithBoard`) — otherwise a layer count change left
+  `GetBoardStackup` and the saved file describing the old copper layers (also true for any
+  loaded board with a `(stackup …)` section, unpatched).
+- QA tests went into `qa/tests/api/test_api_handler_pcb.cpp` (in-process handler suite
+  `ApiHandlerPcb` on the 4-copper `issue5830` board; no board e2e file exists, no CMake change),
+  not a new `test_api_e2e_board_stackup.cpp`. 7 failures before the handler, all pass after
+  (FACTS file: command, runtimes).
+- Recipe tag built by the PR: `52b43fb8fc8e11fdab5d683eaefc91a49f9cbcd7-rdc93f47200b08f97`
+  (kicad-base.yml on the PR, ≈ 8 min with CI's ccache); `kicad-base.yml` on `main` publishes it after merge — **a release
+  needs that tag first** (CHANGELOG release note). No kipy change (no proto message change).
+
+**CopperChat**
+- `StackupLayer` gained `epsilon_r` (dielectrics; `None` for copper). Values (mm, εr) from
+  jlcpcb.com/impedance read 2026-11-25: prepreg 7628 4.4, 3313 4.1, 2116 4.16, core 4.6; JLC
+  publishes **no loss tangent** (KiCad's value stays) and **no 2-layer build-up**: `jlc-2l-1.6`
+  = 1 oz / 1.53 mm FR-4 core / 1 oz with Er 4.5 ("FR-4 Dielectric Constants 4.5 (2-Layer PCB)",
+  jlcpcb.com/capabilities/pcb-capabilities). Core material string `FR4`, prepregs `7628` /
+  `3313` / `2116`. Sums (mask excluded): 2l 1.6000, 4l 1.5862, 6l 1.5384 mm.
+- `pcb_set_rules`: `plan_stackup(req, copper)` runs after the board read (needs the current
+  count); unknown id / copper mismatch → `invalid_argument`. Stage `stackup` right after
+  `layer count`: `GetBoardStackup` → `stackup_request` (current stackup with the preset's
+  thicknesses, dielectric type/material/εr as one sub-layer; mask, finish, edge kept) →
+  `UpdateBoardStackup` (raw `client.send`, `setup.update_stackup`). The KiCad "no handler"
+  `ApiError` → `stackup_unavailable` (confirmed against the unpatched image end to end); any
+  other refusal → `invalid_argument`. Read-back in `verify` from `BoardModel.stackup`
+  (±0.0005 mm). Report `stackup {id, jlc_name, total_mm, board_mm}` (`total_mm` = the preset's
+  copper + dielectric; `board_mm` = KiCad's board thickness, solder mask included). A busy /
+  internal `ApiError` is re-raised (undo armed), only `AS_BAD_REQUEST` is `invalid_argument`. A
+  board stackup the API could not write back (disabled or zero-thickness copper/dielectric, or a
+  stale stackup for another copper count — KiCad accepts those from files) is refused before the
+  write by both the stackup stage and the layer-count stage (its undo writes the pre-call
+  stackup back); `_unrestorable` mirrors every check of the patch (copper ids = the enabled
+  ones in stack order, alternation, enabled / positive copper and dielectrics, technical layers
+  enabled + unique + on their side, 0–10 mm per layer, 100 mm total, 32 sub-layers, finite
+  non-negative material values). Only when such a refusal is due,
+  `has_stackup_handler` probes for patch 0005 with an empty stackup (refused, never written): an
+  unpatched server never writes a stackup back, so it gets `stackup_unavailable` for `stackup`
+  and no refusal for a plain layer change. A layer count change without
+  `stackup` adds a note (an existing fab stackup keeps its matching layers, KiCad adds defaults).
+- **Compensation:** the stackup stage's undo restores the stackup it found (layer count already
+  applied); the `layer count` stage now also snapshots the pre-call stackup and its undo writes
+  it back after restoring the count when it differs (P2 file, minimal change). Equal stackups are
+  never written, so an unpatched server is never asked; a "no handler" there is ignored.
+- P2's `test_stackup_unavailable` (kicad) and `test_stackup_unavailable_in_p2` (unit) removed:
+  superseded by `tests/kicad/board/test_stackup_patch.py` / `tests/unit/board/test_stackups.py`.
+
+**Residuals for later phases**
+- Restoring a stackup writes it explicitly: a board that had no `(stackup …)` section before a
+  failed/undone call keeps one afterwards (same values; `board_hash` equal). History undo
+  restores the file and is unaffected.
+- `UpdateBoardStackup` has no KiCad undo entry; CopperChat's History is the undo.
+- A colour changed through the API is stored as `#RRGGBBAA`, not as a KiCad colour name.
+- Rollback after a layer shrink (4 → 2 → undo): the dielectrics KiCad dropped come back with
+  their RGBA colour, so a named colour KiCad cannot parse ("FR4 natural") becomes explicit black
+  on those dielectrics (cosmetic: 3D view / board characteristics; History undo restores the
+  file exactly).
+
 ### As built (P4)
 
 **Placer design (`cc/board/placer/`, pure)**
@@ -1721,7 +1787,7 @@ in P3a's PR):
    overhang **its assigned edge only**; everything else fully inside. P3a implements it as
    `M1_EDGE_OVERHANG = True` (`cc/board/metrics.py`, tested with both settings).
 3. **P2b start** (call 2): **resolved** — patch 0005 is carried with the placeholder subject
-   right after P2 merges; the owner writes the upstream text later.
+   right after P2 merges; the owner writes the upstream text later. Done in P2b (#106).
 
 ---
 

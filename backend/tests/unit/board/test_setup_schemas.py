@@ -323,17 +323,6 @@ def test_rules_need_one_field() -> None:
     _rules_refused({})
 
 
-def test_stackup_unavailable_in_p2() -> None:
-    from copperchat.kicad_tools.board.setup import parse_rules_args, plan_stackup
-
-    req = parse_rules_args({"stackup": "jlc-4l-1.6-7628"})
-    with pytest.raises(StructuredToolError) as info:
-        plan_stackup(req)
-    assert info.value.code == "stackup_unavailable"
-    assert "P2b" in f"{info.value.why} {info.value.suggestion}"
-    plan_stackup(parse_rules_args({"layers": 2}))  # no stackup: nothing to refuse
-
-
 @pytest.mark.parametrize(
     ("path", "value"),
     [

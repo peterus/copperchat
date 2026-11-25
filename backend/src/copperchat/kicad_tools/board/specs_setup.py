@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from copperchat.board.presets import STACKUPS
 from copperchat.kicad_tools.board.setup import (
     apply_outline,
     apply_rules,
@@ -283,9 +284,11 @@ PCB_SET_RULES_SCHEMA = _obj(
         },
         "stackup": {
             "type": "string",
-            "maxLength": 64,
-            "description": "Stackup preset id; not available on this server yet "
-            "(stackup_unavailable).",
+            "enum": sorted(STACKUPS),
+            "description": "JLCPCB stackup preset (jlc-2l-1.6, jlc-4l-1.6-7628 = "
+            "JLC04161H-7628, jlc-6l-1.6 = JLC06161H-3313); its copper layer count must "
+            "match `layers` (else the board's). stackup_unavailable on a KiCad without "
+            "patch 0005.",
         },
     },
     [],
@@ -300,7 +303,9 @@ PCB_SET_RULES_DESCRIPTION = (
     "a `reason`). At least one field. Every part is undone if a later one fails. Returns "
     "the rules table, the net classes, the custom rules with their reasons, notes (e.g. a "
     "preset for another layer count), the board_hash change; next step pcb_analyze. "
-    "`stackup` is not available yet (stackup_unavailable)."
+    "`stackup` writes a JLCPCB layer build-up (thicknesses, materials, Er) into the "
+    "board; report `stackup {id, jlc_name, total_mm, board_mm}` (total_mm = the preset's "
+    "copper + dielectric, board_mm = KiCad's board thickness incl. solder mask)."
 )
 
 SETUP_SPECS: list[ToolSpec] = [
