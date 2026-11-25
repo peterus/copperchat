@@ -525,4 +525,5 @@ def test_registered_and_in_fp_writes() -> None:
     assert "fp_delete" in {s.name for s in TOOL_SPECS}
     assert "fp_delete" in FP_WRITES
     assert "fp_delete" in PROFILES["schematic"] and "fp_delete" in PROFILES["free"]
-    assert "fp_delete" not in PROFILES["board"] | PROFILES["requirements"]
+    assert "fp_delete" in PROFILES["board"]  # SP4 P1c: board += FP_WRITES
+    assert "fp_delete" not in PROFILES["requirements"]

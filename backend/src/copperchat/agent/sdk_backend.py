@@ -559,7 +559,12 @@ class SdkStreamingBackend:
         """One burst of ``conversation``: its type selects the tool profile, the skills and
         the system prompt (spec §8)."""
         kind = conversation.type
-        specs = profile_specs(kind, self._specs, footprint_tools=self._settings.footprint_tools)
+        specs = profile_specs(
+            kind,
+            self._specs,
+            footprint_tools=self._settings.footprint_tools,
+            board_tools=self._settings.board_tools,
+        )
         skills = (
             await assemble_skills(self._settings, project, self._db, kind) if self._db else None
         )
