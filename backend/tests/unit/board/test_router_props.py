@@ -6,16 +6,25 @@ every tenth map again."""
 
 from __future__ import annotations
 
+import math
 import random
+from dataclasses import replace
 
 import pytest
 
 from copperchat.board.geom import analyse_bends
 from copperchat.board.model import BoardModel
-from copperchat.board.router import RoutePath, RouteRequest, build_grid, route
+from copperchat.board.router import RoutePath, RouteRequest, build_grid, route, route_pair
 from copperchat.board.router.simplify import layer_runs
 
-from .router_maps import exact_clearance_ok, open_map, random_map
+from .router_maps import (
+    exact_clearance_ok,
+    open_map,
+    pair_map,
+    random_map,
+    seg_dist,
+    strict_bends_ok,
+)
 
 SEEDS = range(250)
 BUDGET = 100_000  # expansions per request: the properties concern returned paths
@@ -83,3 +92,46 @@ def test_deterministic(routed: list[Result]) -> None:
         m, reqs = random_map(random.Random(seed))
         again = {q.net: _route(m, q) for q in reqs}
         assert again[r.net] == path, f"seed {seed} {r.net}"
+
+
+def test_output_strict_independent(routed: list[Result]) -> None:
+    """An independent checker (no geom.analyse_bends) agrees on every layer run."""
+    for seed, _m, r, path in routed:
+        if path is None:
+            continue
+        for _layer, pts in layer_runs(path):
+            assert strict_bends_ok(pts, r.width), f"seed {seed} {r.net}: {pts}"
+
+
+@pytest.mark.parametrize("seed", range(0, 60, 2))
+def test_pairs_property(seed: int) -> None:
+    try:
+        m, p, n, gap = pair_map(random.Random(1000 + seed))
+    except RuntimeError:  # no free spot for the pair on this map
+        return
+    got = route_pair(m, p, n, gap)
+    if got is None:
+        return
+    pp, pn = got
+    pc = max(gap, p.clearance, n.clearance)
+    for path, r in ((pp, p), (pn, n)):
+        assert exact_clearance_ok(replace(m, parts=_without(m, (p.net, n.net))), path, r), seed
+        for _layer, pts in layer_runs(path):
+            assert strict_bends_ok(pts, r.width), (seed, pts)
+        assert path.segments[0][1] == (round(r.a.x, 6), round(r.a.y, 6))
+        assert path.segments[-1][2] == (round(r.b.x, 6), round(r.b.y, 6))
+    for la, a0, a1 in pp.segments:
+        for lb, b0, b1 in pn.segments:
+            if la == lb:
+                assert seg_dist(a0, a1, b0, b1) >= pc + (p.width + n.width) / 2 - 1e-6, seed
+    for v in pp.vias:
+        assert all(
+            seg_dist(v, v, s, e) >= pc + 0.3 + n.width / 2 - 1e-6 for _l, s, e in pn.segments
+        )
+        assert all(math.dist(v, u) >= pc + 0.6 - 1e-6 for u in pn.vias)
+
+
+def _without(m: BoardModel, nets: tuple[str, str]) -> tuple:
+    """The parts with the pair's own pads removed (the partner keeps the pair clearance,
+    checked separately)."""
+    return tuple(replace(pt, pads=tuple(q for q in pt.pads if q.net not in nets)) for pt in m.parts)

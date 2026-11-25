@@ -940,6 +940,29 @@ exact obstacle cores, each with its required centre-line distance), `outline`, `
 - `prune_model` keeps items intersecting the retry window grown by `PRUNE_HALO_MM`;
   `solve(prune_model(m, req), req) == solve(m, req)` on the seeded maps and the 100 mm board.
 
+**Review round 1 (PR #105)**
+- Pad exit: the first move out of pad `a` follows `pad_dirs` all the way out of the pad
+  outline (one macro move); a goal is accepted only if the segment that enters pad `b`
+  does too (`pad_exits_ok`). `valid_path` also requires the first run on a layer of pad
+  `a` and the last on one of pad `b`; `path_clear` checks vias exactly (`via_clear`).
+- `reachable`: two-pointer sweeps over sorted run lists (row joins and via joins) instead
+  of all-pairs loops — a 4-layer board with 204 parallel tracks went from 90 s to ≈ 1 s.
+- `build_grid`: refuses empty/duplicate/unknown layers (`ValueError`); a `vias` keepout on
+  any copper layer blocks vias; the outline is rasterised once; `extra_vias` (via
+  obstacles) next to `extra`; `ObstacleGrid.via_shapes` / `via_inset` for the exact via check.
+- Pairs: the coupled centreline runs on the first layer that all four pads are on (else no
+  coupled attempt); a reversing centreline is rejected before offsetting; an offset end that
+  does not meet its pad (pad pitch ≠ gap + w, e.g. 0.5 / 0.65 mm) gets a 45° fan-in jog;
+  the fallback treats the partner's vias as obstacles (tracks and vias of the second net).
+  Budgets: centreline 250 k, per net 250 k + 750 k on the retry (`PAIR_*_EXPANSIONS`; worst
+  case 2.25 M expansions per `solve_pair`).
+- Two nodes at one lattice point (start = goal) give the direct snapped connection or None.
+- Tests: an independent bend checker (`router_maps.strict_bends_ok`, angle tolerance
+  1 nm / length for the 1 nm rounding) on all property-test output; 30 seeded pair maps
+  (exact clearance incl. vias, pair spacing, bends). Router test set ≈ 2.5 min.
+- Not changed: the chord slack (≈ 0.002–0.004 mm) also applies along flat pad sides, so a
+  gap exactly equal to the need (to the µm) is refused — conservative by design.
+
 **Residuals for later phases**
 - P5b: `route` returns `None` for a connection whose pad is boxed in by earlier copper
   along its axis; such a failure can take up to the full expansion budget (≈ 10–25 s per

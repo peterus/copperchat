@@ -395,3 +395,86 @@ def perf_board(
         layer_types=tuple((name, "signal") for name in layers),
     )
     return m, reqs
+
+
+# --- independent bend check (does not use geom.analyse_bends) ------------------------------
+
+
+def strict_bends_ok(pts: Sequence[Point], width: float) -> bool:
+    """Every segment at a multiple of 45° (1e-3°), every vertex a 45° turn exactly, and
+    between two consecutive bends at least max(w, 0.25) (same sense) / 2 w (opposite
+    sense) — except at the polyline's first and last vertex (pad entries)."""
+    if len(pts) < 2:
+        return False
+    heads = []
+    for p, q in itertools.pairwise(pts):
+        if math.dist(p, q) < 1e-9:
+            return False
+        ang = math.degrees(math.atan2(q[1] - p[1], q[0] - p[0])) % 360.0
+        k = round(ang / 45.0)
+        # output is rounded to 1 nm: allow that much angle error on short pieces
+        if abs(ang - 45.0 * k) > max(1e-3, math.degrees(2e-6 / math.dist(p, q))):
+            return False
+        heads.append(k % 8)
+    bends: list[tuple[int, int]] = []  # (vertex index, sense)
+    for i in range(1, len(pts) - 1):
+        turn = (heads[i] - heads[i - 1]) % 8
+        if turn == 0:
+            continue
+        if turn not in (1, 7):
+            return False
+        bends.append((i, 1 if turn == 1 else -1))
+    last = len(bends) - 1
+    for k in range(1, len(bends)):
+        if k - 1 == 0 or k == last:
+            continue  # a pair touching the first or last vertex (pad entry)
+        (i0, s0), (i1, s1) = bends[k - 1], bends[k]
+        piece = sum(math.dist(pts[j], pts[j + 1]) for j in range(i0, i1))
+        need = max(width, 0.25) if s0 == s1 else 2.0 * width
+        if piece + 1e-9 < need:
+            return False
+    return True
+
+
+def pair_map(rng: random.Random) -> tuple[BoardModel, RouteRequest, RouteRequest, float]:
+    """A random map plus one differential pair: pad pairs on an octilinear axis with a
+    pitch of 0.4-0.8 mm, 4-15 mm apart."""
+    m, _reqs = random_map(rng)
+    w, gap = round(rng.uniform(0.15, 0.25), 3), round(rng.uniform(0.15, 0.25), 3)
+    clearance = round(rng.uniform(0.1, gap), 3)
+    layers = m.copper_layers
+    ow, oh = m.outline.w, m.outline.h
+    for _try in range(200):
+        pitch = rng.uniform(gap + w, 0.8)
+        axis = rng.choice((0.0, 90.0, 45.0))
+        ux, uy = math.cos(math.radians(axis)), math.sin(math.radians(axis))
+        a = (rng.uniform(2, ow - 2), rng.uniform(2, oh - 2))
+        b = (rng.uniform(2, ow - 2), rng.uniform(2, oh - 2))
+        if not 4.0 <= math.dist(a, b) <= 15.0:
+            continue
+        size = min(0.3, pitch - clearance - 0.05)
+        pads = [
+            smd_pad("PA", "1", "DP", a[0], a[1], size, size, 0.0, layers[0]),
+            smd_pad(
+                "PA", "2", "DN", a[0] + pitch * ux, a[1] + pitch * uy, size, size, 0.0, layers[0]
+            ),
+            smd_pad("PB", "1", "DP", b[0], b[1], size, size, 0.0, layers[0]),
+            smd_pad(
+                "PB", "2", "DN", b[0] + pitch * ux, b[1] + pitch * uy, size, size, 0.0, layers[0]
+            ),
+        ]
+        others = [q for pt in m.parts for q in pt.pads]
+        if not all(
+            _pad_free(q, others, list(m.tracks), list(m.vias), 0.3 + w + clearance) for q in pads
+        ):
+            continue
+        parts = (
+            *m.parts,
+            part("PA", *a, pads=tuple(pads[:2])),
+            part("PB", *b, pads=tuple(pads[2:])),
+        )
+        m = replace(m, parts=parts)
+        p = RouteRequest("DP", pads[0], pads[2], w, clearance, layers, len(layers) > 1, (0.6, 0.3))
+        n = RouteRequest("DN", pads[1], pads[3], w, clearance, layers, len(layers) > 1, (0.6, 0.3))
+        return m, p, n, gap
+    raise RuntimeError("no free spot for the pair")

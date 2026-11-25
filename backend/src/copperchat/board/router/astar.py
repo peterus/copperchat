@@ -17,13 +17,14 @@ exact clearance check (`ObstacleGrid.segment_clear`); otherwise the search goes 
 from __future__ import annotations
 
 import heapq
+import itertools
 import math
 import re
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import replace
 
 from copperchat.board.geom import CHAMFER_MIN, JOG_MIN, _in_pad, _pad_on_layer, analyse_bends
-from copperchat.board.model import BoardModel, Pad
+from copperchat.board.model import BoardModel, Pad, Point
 from copperchat.board.router.grid import (
     BLOCKED,
     WINDOW_MM,
@@ -91,11 +92,38 @@ def _goal_node(grid: ObstacleGrid, pad: Pad) -> tuple[int, int]:
     return (best[1], best[2]) if best else (ci, cj)
 
 
-def valid_path(path: RoutePath, grid: ObstacleGrid, req: RouteRequest) -> bool:
-    """`analyse_bends` (pad ends at the pads, not at vias) has no failure on any layer run,
-    and every segment keeps its exact clearance."""
+def _dir_index(p: Point, q: Point) -> int:
+    ang = math.degrees(math.atan2(-(q[1] - p[1]), q[0] - p[0])) % 360.0
+    return round(ang / 45.0) % 8
+
+
+def _crossing_dir(pts: Sequence[Point], pad: Pad) -> int | None:
+    """Direction of the segment on which `pts` (starting in `pad`) leaves the pad."""
+    for p, q in itertools.pairwise(pts):
+        if not _in_pad(q, pad):
+            return _dir_index(p, q)
+    return None
+
+
+def pad_exits_ok(path: RoutePath, req: RouteRequest) -> bool:
+    """The segment that leaves pad `a` and the one that enters pad `b` run along the pad's
+    long axis or at 45° to it (`pad_dirs`, either way)."""
     runs = layer_runs(path)
     if not runs:
+        return False
+    first = _crossing_dir(runs[0][1], req.a)
+    last = _crossing_dir(runs[-1][1][::-1], req.b)
+    return (first is None or first in pad_dirs(req.a)) and (last is None or last in pad_dirs(req.b))
+
+
+def valid_path(path: RoutePath, grid: ObstacleGrid, req: RouteRequest) -> bool:
+    """The path starts on a layer of pad `a` and ends on one of pad `b`; `analyse_bends`
+    (pad ends at the pads, not at vias) has no failure on any layer run; every segment and
+    via keeps its exact clearance."""
+    runs = layer_runs(path)
+    if not runs:
+        return False
+    if not (_pad_on_layer(req.a, runs[0][0]) and _pad_on_layer(req.b, runs[-1][0])):
         return False
     for k, (_layer, pts) in enumerate(runs):
         r = analyse_bends(pts, req.width, pad_ends=(k == 0, k == len(runs) - 1))
@@ -113,6 +141,33 @@ def valid_path(path: RoutePath, grid: ObstacleGrid, req: RouteRequest) -> bool:
 
 _FREE_RUN = re.compile(rb"[\x00\x01]+")
 _VIA_RUN = re.compile(rb"\x00+")
+
+
+def _pairs(
+    a: list[tuple[int, int, int]], b: list[tuple[int, int, int]]
+) -> Iterator[tuple[int, int, int, int, int, int]]:
+    """Overlapping pairs of two sorted lists of disjoint intervals (two-pointer sweep):
+    (id a, id b, a0, a1, b0, b1)."""
+    i = k = 0
+    while i < len(a) and k < len(b):
+        a0, a1, ra = a[i]
+        b0, b1, rb = b[k]
+        if a0 <= b1 and b0 <= a1:
+            yield ra, rb, a0, a1, b0, b1
+        if a1 < b1:
+            i += 1
+        else:
+            k += 1
+
+
+def _overlaps(
+    a: list[tuple[int, int, int]], b: list[tuple[int, int, int]], slack: int
+) -> Iterator[tuple[int, int]]:
+    """Ids of the overlapping pairs of two sorted disjoint interval lists, intervals grown
+    by `slack` (linear, unlike the all-pairs loop)."""
+    grown = [(b0 - slack, b1 + slack, rb) for b0, b1, rb in b]
+    for ra, rb, *_ in _pairs(a, grown):
+        yield ra, rb
 
 
 def reachable(
@@ -156,23 +211,32 @@ def reachable(
                 parent.append(rid)
                 i0, i1 = mt.start(), mt.end() - 1
                 here.append((i0, i1, rid))
-                if rows:
-                    for p0, p1, pid in rows[-1]:
-                        if p0 <= i1 + 1 and i0 <= p1 + 1:
-                            union(rid, pid)
+            if rows:  # 8-connected: runs overlapping with one node of slack
+                for x, y in _overlaps(here, rows[-1], 1):
+                    union(x, y)
             rows.append(here)
         runs.append(rows)
     if vias and nl > 1:
         for j in range(h):
-            for mt in _VIA_RUN.finditer(grid.via_blocked, j * w, (j + 1) * w):
-                v0, v1 = mt.start() - j * w, mt.end() - 1 - j * w
-                for l1 in range(nl):
-                    for l2 in range(l1 + 1, nl):
-                        for a0, a1, ra in runs[l1][j]:
-                            for b0, b1, rb in runs[l2][j]:
-                                # a node free on both layers where a via fits
-                                if max(a0, b0, v0) <= min(a1, b1, v1):
-                                    union(ra, rb)
+            vruns = [
+                (mt.start() - j * w, mt.end() - 1 - j * w, -1)
+                for mt in _VIA_RUN.finditer(grid.via_blocked, j * w, (j + 1) * w)
+            ]
+            if not vruns:
+                continue
+            # per layer the parts of its free runs where a via fits, then join the layers
+            # whose via-capable parts overlap (a node free on both layers)
+            capable = [
+                [
+                    (max(a0, v0), min(a1, v1), ra)
+                    for ra, _v, a0, a1, v0, v1 in _pairs(runs[li][j], vruns)
+                ]
+                for li in range(nl)
+            ]
+            for l1 in range(nl):
+                for l2 in range(l1 + 1, nl):
+                    for x, y in _overlaps(capable[l1], capable[l2], 0):
+                        union(x, y)
 
     def comp(n: int, layers: Iterable[int]) -> set[int]:
         j, i = n // w, n % w
@@ -318,6 +382,16 @@ def route(
         return None
     goal_dirs = pad_dirs(req.b)
     goal_layers = frozenset(b_layers)
+    if start_n == goal_n:  # both pads at one node: the direct (snapped) connection
+        for li in a_layers:
+            if li in goal_layers:
+                try:
+                    direct = to_path([(li, si, sj)], grid, req)
+                except SnapError:
+                    continue
+                if direct.segments and valid_path(direct, grid, req):
+                    return direct
+        return None
 
     def at_goal(n: int, li: int, d: int) -> bool:
         return n == goal_n and li in goal_layers and d in goal_dirs
@@ -411,6 +485,7 @@ def _search(
         return x // nl, x % nl  # node, layer
 
     sd = 3 * kk
+    exit_cap = max(1, math.ceil(math.hypot(start_pad.w, start_pad.h) / pitch) + 2)
     hc: dict[int, float] = {}  # heuristic per node (shared by its states)
     best: dict[int, float] = {}
     parent: dict[int, int] = {}
@@ -438,7 +513,7 @@ def _search(
         closed.add(here)  # weighted A* without re-opening: bounded by HEURISTIC_WEIGHT
         if at_goal(n, li, d):
             path = _build(here, parent, decode, grid, req)
-            if path is not None and valid_path(path, grid, req):
+            if path is not None and valid_path(path, grid, req) and pad_exits_ok(path, req):
                 return path
             rejects += 1
             if rejects > MAX_GOAL_REJECTS:
@@ -450,14 +525,30 @@ def _search(
         band = cheap[li] if cheap else None
         factor = lf[li]
         if d >= 8:
+            # leaving the start pad: straight along an allowed direction until outside
+            # the pad outline (pad_dirs holds for the whole way out); after a via: any
             moves = start_dirs if d == _START_D else range(8)
             for nd in moves:
-                m = n + off[nd]
-                if lay[m] == blocked and m != goal_n:
+                m = n
+                c = 0.0
+                for _t in range(exit_cap if d == _START_D else 1):
+                    m += off[nd]
+                    if lay[m] == blocked and m != goal_n:
+                        m = -1
+                        break
+                    c += (
+                        step[nd]
+                        * factor
+                        * (PAIR_BAND_FACTOR if band is not None and band[m] else 1.0)
+                    )
+                    if (
+                        d != _START_D
+                        or m == goal_n
+                        or not _in_pad(grid.xy(m % w, m // w), start_pad)
+                    ):
+                        break
+                if m < 0:
                     continue
-                c = step[nd] * factor
-                if band is not None and band[m]:
-                    c *= PAIR_BAND_FACTOR
                 ng = g + c
                 nk = (((m) * nl + li) * _ND + nd) * sd + (0) * kk + 0
                 if ng < best.get(nk, inf) and nk not in closed:

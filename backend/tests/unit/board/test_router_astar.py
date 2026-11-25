@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import math
 
 import pytest
@@ -283,3 +284,78 @@ def test_exact_pad_centres_off_grid() -> None:
     assert path.segments[0][1] == (5.013, 10.027)
     assert path.segments[-1][2] == (15.031, 12.008)
     assert_clean(path, 0.2)
+
+
+def test_pad_exit_axis_until_outside_the_pad() -> None:
+    # a long 2.0 x 0.4 pad and a target straight below: the segment that leaves the pad
+    # still runs along the axis or at 45 degrees to it, never out of the long side
+    a = pad("SIG", 10, 5, 2.0, 0.4)
+    path = go(rq(a, pad("SIG", 10, 11, ref="B")))
+    assert path is not None
+    pts = layer_runs(path)[0][1]
+    from copperchat.board.geom import _in_pad
+
+    crossing = next((p, q) for p, q in itertools.pairwise(pts) if not _in_pad(q, a))
+    assert dir_of(*crossing) in pad_dirs(a)
+
+
+def test_same_node_pads_no_loop() -> None:
+    req = rq(pad("SIG", 10, 10), pad("SIG", 10.02, 10.0, ref="B"))
+    path = go(req)
+    assert path is None or path.length <= 0.1
+
+
+def test_layers_validated() -> None:
+    m = board(parts=(), outline=outline(0, 0, 30, 20))
+    with pytest.raises(ValueError):
+        build_grid(m, rq(pad("S", 5, 5), pad("S", 9, 5, ref="B"), layers=("F.Cu", "F.Cu")))
+    with pytest.raises(ValueError):
+        build_grid(m, rq(pad("S", 5, 5), pad("S", 9, 5, ref="B"), layers=("X.Cu",)))
+
+
+def test_vias_keepout_on_unrouted_layer_blocks_vias() -> None:
+    from .builders import zone
+
+    poly = ((9.0, 9.0), (11.0, 9.0), (11.0, 11.0), (9.0, 11.0))
+    k = zone("K", "", ("In1.Cu",), poly, rule_area=True, keepout=frozenset({"vias"}))
+    m = board(
+        parts=(),
+        outline=outline(0, 0, 30, 20),
+        zones=(k,),
+        copper_layers=("F.Cu", "In1.Cu", "B.Cu"),
+    )
+    g = build_grid(
+        m, rq(pad("S", 5, 10), pad("S", 15, 10, ref="B"), layers=("F.Cu", "B.Cu"), allow_vias=True)
+    )
+    assert not g.via_ok(*g.cell(10.0, 10.0))
+
+
+def test_reachable_fast_on_dense_multilayer_board() -> None:
+    import time
+
+    layers = ("F.Cu", "In1.Cu", "In2.Cu", "B.Cu")
+    tracks = [
+        track(
+            f"T{k}",
+            layer,
+            (20.0 + 0.6 * k, 30.0),
+            (20.0 + 0.6 * k, 70.0),
+            0.15,
+            kiid=f"t{k}{layer}",
+        )
+        for k in range(51)
+        for layer in layers
+    ]
+    m = board(parts=(), outline=outline(0, 0, 100, 100), tracks=tuple(tracks), copper_layers=layers)
+    from copperchat.board.router import solve
+
+    # walled in on every layer (the way round is outside both windows): fast None
+    req = rq(pad("S", 10, 50), pad("S", 60, 50, ref="B"), layers=layers, allow_vias=True)
+    t = time.monotonic()
+    assert solve(m, req) is None
+    assert time.monotonic() - t < 20.0
+    # alongside the dense field: routes
+    req = rq(pad("S", 15, 27), pad("S", 55, 27, ref="B"), layers=layers, allow_vias=True)
+    t = time.monotonic()
+    assert solve(m, req) is not None
+    assert time.monotonic() - t < 20.0

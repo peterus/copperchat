@@ -248,3 +248,77 @@ def test_prune_model_drops_far_items() -> None:
     assert solve(pruned, r) == solve(m, r)
     pair = prune_model(m, (reqs[0], reqs[1]))
     assert sum(len(p.pads) for p in pair.parts) >= sum(len(p.pads) for p in pruned.parts)
+
+
+def _pad_on(net: str, x: float, y: float, layer: str, ref: str = "J1", number: str = "1") -> Pad:
+    return Pad(ref, number, net, x, y, 0.2, 0.2, 0.0, "rect", frozenset({layer}), True, None)
+
+
+def test_coupled_on_the_pads_layer() -> None:
+    pads = [
+        _pad_on("DP", 5, 10, "B.Cu", number="1"),
+        _pad_on("DP", 15, 10, "B.Cu", "U1", "1"),
+        _pad_on("DN", 5, 10.4, "B.Cu", number="2"),
+        _pad_on("DN", 15, 10.4, "B.Cu", "U1", "2"),
+    ]
+    m = pair_board(pads)
+    p = req("DP", pads[0], pads[1], layers=("F.Cu", "B.Cu"))
+    n = req("DN", pads[2], pads[3], layers=("F.Cu", "B.Cu"))
+    got = route_pair(m, p, n, 0.2)
+    assert got is not None
+    for path in got:
+        assert path.segments[0][0] == "B.Cu" and path.segments[-1][0] == "B.Cu"
+
+
+def test_fallback_partner_vias_keep_clear() -> None:
+    # a full-height F.Cu wall: both nets need vias; their vias must not touch
+    pa, na = pad("DP", 5, 5.0, 0.3, number="1"), pad("DN", 5, 5.6, 0.3, number="2")
+    pb, nb = (
+        pad("DP", 17, 5.0, 0.3, ref="U1", number="1"),
+        pad("DN", 17, 5.6, 0.3, ref="U1", number="2"),
+    )
+    wall = track("W", "F.Cu", (11.0, -1.0), (11.0, 21.0), 0.2)
+    m = pair_board([pa, pb, na, nb], tracks=(wall,))
+    p = req("DP", pa, pb, layers=("F.Cu", "B.Cu"))
+    n = req("DN", na, nb, layers=("F.Cu", "B.Cu"))
+    got = solve_pair(m, p, n, 0.2)
+    assert got is not None
+    pp, pn = got
+    assert pp.vias and pn.vias
+    for v in pp.vias:
+        for u in pn.vias:
+            assert math.dist(v, u) >= 0.6 + 0.2 - 1e-6  # two via radii + pair clearance
+        for layer, s, e in pn.segments:
+            assert seg_dist(v, v, s, e) >= 0.3 + 0.2 + 0.1 - 1e-6, layer
+    assert min_dist(pp, pn) >= 0.4 - 1e-6
+
+
+@pytest.mark.parametrize("xb", [10.5, 11.0, 12.0])
+def test_coupled_reversal_does_not_crash(xb: float) -> None:
+    pa, na = pad("DP", 10, 10, number="1"), pad("DN", 10, 10.4, number="2")
+    pb, nb = pad("DP", xb, 10, ref="U1", number="1"), pad("DN", xb, 10.4, ref="U1", number="2")
+    m = pair_board([pa, pb, na, nb])
+    got = route_pair(m, req("DP", pa, pb), req("DN", na, nb), 0.2)
+    if got is not None:
+        clean(got[0], 0.2)
+        clean(got[1], 0.2)
+
+
+@pytest.mark.parametrize("pitch", [0.5, 0.65])
+def test_coupled_with_pad_pitch_wider_than_pair(pitch: float) -> None:
+    pa, na = pad("DP", 5, 10, number="1"), pad("DN", 5, 10 + pitch, number="2")
+    pb, nb = (
+        pad("DP", 15, 10, ref="U1", number="1"),
+        pad("DN", 15, 10 + pitch, ref="U1", number="2"),
+    )
+    m = pair_board([pa, pb, na, nb])
+    p, n = req("DP", pa, pb), req("DN", na, nb)
+    got = route_pair(m, p, n, 0.2)
+    assert got is not None
+    pp, pn = got
+    clean(pp, 0.2)
+    clean(pn, 0.2)
+    c = pair_coupling(pp, pn)
+    assert c["gap_min"] == pytest.approx(0.4, abs=1e-6)  # coupled at gap + w in the middle
+    assert exact_clearance_ok(m, pp, p) and exact_clearance_ok(m, pn, n)
+    assert min_dist(pp, pn) >= 0.4 - 1e-6

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import itertools
 import math
+import re
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -249,6 +250,9 @@ class ObstacleGrid:
     inset: float = 0.0  # required track-centre distance from the outline
     # optional per-layer preference band (pair fallback): 1 = cost x PAIR_BAND_FACTOR
     cheap: tuple[bytearray, ...] = ()
+    # exact via obstacles (need = distance from a via centre) and the via's edge inset
+    via_shapes: tuple[Shape, ...] = ()
+    via_inset: float = 0.0
     _index: list[_Grid] | None = field(default=None, repr=False)
 
     def cell(self, x: float, y: float) -> tuple[int, int]:
@@ -300,10 +304,27 @@ class ObstacleGrid:
         return True
 
 
+def via_clear(grid: ObstacleGrid, at: Point, *, tol: float = 1e-7) -> bool:
+    """A via at `at` keeps every via obstacle's need and the outline's via inset."""
+    for s in grid.via_shapes:
+        if seg_shape(at, at, s) < _shape_need(s) - tol:
+            return False
+    if grid.outline:
+        if not point_in_polygon(at, grid.outline):
+            return False
+        return all(_pt_seg(at, c, d) >= grid.via_inset - tol for c, d in _edges(grid.outline))
+    return True
+
+
 def path_clear(grid: ObstacleGrid, path: RoutePath) -> bool:
-    """Every segment of `path` passes `grid.segment_clear` on its layer."""
+    """Every segment of `path` passes `grid.segment_clear` on its layer and every via
+    `via_clear`."""
     li_of = {name: k for k, name in enumerate(grid.layers)}
-    return all(grid.segment_clear(li_of[layer], p, q) for layer, p, q in path.segments)
+    if any(layer not in li_of for layer, _p, _q in path.segments):
+        return False
+    if not all(grid.segment_clear(li_of[layer], p, q) for layer, p, q in path.segments):
+        return False
+    return all(via_clear(grid, v) for v in path.vias)
 
 
 def _rule(model: BoardModel, name: str, default: float) -> float:
@@ -491,12 +512,18 @@ def build_grid(
     margin: float = 0.0,
     window_mm: float | None = None,
     extra: Sequence[tuple[str, Shape]] = (),
+    extra_vias: Sequence[Shape] = (),
 ) -> ObstacleGrid:
-    """The obstacle grid for `req` (B-C12). `extra` = additional (layer, shape) obstacles
-    (the pair fallback's partner path). Raises `RouteTooLarge` before allocating when the
-    window exceeds `MAX_CELLS_PER_LAYER`."""
+    """The obstacle grid for `req` (B-C12). `extra` = additional (layer, shape) track
+    obstacles and `extra_vias` additional via obstacles (need = via-centre distance) — the
+    pair fallback's partner. Raises `RouteTooLarge` before allocating when the window
+    exceeds `MAX_CELLS_PER_LAYER`; `ValueError` for an empty, duplicate or unknown layer."""
     if not (pitch > 0 and math.isfinite(pitch)):
         raise ValueError("pitch must be positive")
+    if not req.layers or len(set(req.layers)) != len(req.layers):
+        raise ValueError("request layers must be non-empty and unique")
+    if model.copper_layers and not set(req.layers) <= set(model.copper_layers):
+        raise ValueError(f"unknown copper layer in {req.layers}")
     win = WINDOW_MM if window_mm is None else window_mm
     wx0, wy0, wx1, wy1 = window_bounds(model, [req], win)
     # a pad outside the outline bbox (edge overhang) stays two nodes inside the window
@@ -600,7 +627,7 @@ def build_grid(
             for k, name in enumerate(layers):
                 if name in zl:
                     shapes[k].append(("p", tuple(z.outline), req.width / 2 + margin))
-        if "vias" in z.keepout and zl & set(layers):
+        if "vias" in z.keepout and zl & (set(copper) | set(layers)):  # through vias
             via_keepouts.append(("p", tuple(z.outline), via_r + margin))
 
     for s in extra_shapes(extra, layers):
@@ -615,15 +642,20 @@ def build_grid(
             mk.shape(cells[k], s, need + chord_slack(need, pitch), BLOCKED)
     poly = tuple(model.outline.polygon) if model.outline.kind != "none" else ()
     inset = edge_clearance(model) + req.width / 2 + margin
-    if len(poly) >= 3:
+    if len(poly) >= 3:  # rasterised once, copied into every layer
+        outside = bytearray(cells_n)
+        mk.outside(outside, poly, inset + chord_slack(inset, pitch), BLOCKED)
+        runs = [(m.start(), m.end()) for m in re.finditer(rb"\x02+", outside)]
         for k in range(len(layers)):
-            mk.outside(cells[k], poly, inset + chord_slack(inset, pitch), BLOCKED)
+            for lo, hi in runs:
+                cells[k][lo:hi] = outside[lo:hi]
     for k in range(len(layers)):
         mk.frame(cells[k], BLOCKED)
 
     via_blocked = bytearray(cells_n)
+    via_obstacles = tuple(via_shapes + via_own + via_keepouts + list(extra_vias))
     if req.allow_vias:
-        for s in via_shapes + via_own + via_keepouts:
+        for s in via_obstacles:
             mk.shape(via_blocked, s, _shape_need(s), 1)
         if len(poly) >= 3:
             mk.outside(via_blocked, poly, edge_clearance(model) + via_r + margin, 1)
@@ -643,6 +675,8 @@ def build_grid(
         shapes=tuple(tuple(s) for s in shapes),
         outline=poly if len(poly) >= 3 else (),
         inset=inset,
+        via_shapes=via_obstacles if req.allow_vias else (),
+        via_inset=edge_clearance(model) + via_r + margin,
     )
 
 
