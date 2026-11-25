@@ -949,11 +949,17 @@ def _stackup_unavailable() -> StructuredToolError:
     )
 
 
+# Patch 0005's limits (BOARD_STACKUP::Deserialize): per (sub-)layer, in total, sub-layers
+MAX_LAYER_NM = 10_000_000
+MAX_TOTAL_NM = 100_000_000
+MAX_SUBLAYERS = 32
+
+
 def _unrestorable(stackup: board_pb2.BoardStackup, copper_layers: int) -> str | None:
     """Why patch 0005 would refuse to write `stackup` back onto a board with
     `copper_layers` copper layers (KiCad accepts such stackups from files: a disabled or
-    zero-thickness copper / dielectric layer, or a stale explicit stackup for another
-    layer count), else None."""
+    zero-thickness copper / dielectric layer, values beyond the patch's limits, or a stale
+    explicit stackup for another layer count), else None."""
     copper = sum(1 for la in stackup.layers if la.type == board_pb2.BSLT_COPPER)
     if copper != copper_layers:
         return f"it describes {copper} copper layers, the board has {copper_layers}"
@@ -964,7 +970,37 @@ def _unrestorable(stackup: board_pb2.BoardStackup, copper_layers: int) -> str | 
         subs = list(layer.dielectric.layer) if layer.type == board_pb2.BSLT_DIELECTRIC else []
         if any(t <= 0 for t in [s.thickness.value_nm for s in subs] or [layer.thickness.value_nm]):
             return f"{name} has no thickness"
+    total = 0
+    for layer in stackup.layers:
+        subs = list(layer.dielectric.layer) if layer.type == board_pb2.BSLT_DIELECTRIC else []
+        if len(subs) > MAX_SUBLAYERS:
+            return f"a dielectric has more than {MAX_SUBLAYERS} sub-layers"
+        values = [layer.soldermask.epsilon_r, layer.soldermask.loss_tangent]
+        for sub in subs:
+            values += [sub.epsilon_r, sub.loss_tangent, sub.spec_frequency]
+        if any(not math.isfinite(v) or v < 0 for v in values):
+            return "a material value is not a finite, non-negative number"
+        for nm in [s.thickness.value_nm for s in subs] or [layer.thickness.value_nm]:
+            if nm > MAX_LAYER_NM:
+                return "a layer is thicker than 10 mm"
+            total += nm
+    if total > MAX_TOTAL_NM:
+        return "the stackup is thicker than 100 mm"
     return None
+
+
+def has_stackup_handler(h: KicadHandle) -> bool:
+    """Probe for patch 0005 without writing: an empty stackup never matches the board's
+    copper layers, so a patched KiCad refuses it (AS_BAD_REQUEST)."""
+    try:
+        update_stackup(h, board_pb2.BoardStackup())
+    except ApiError as exc:
+        if _NO_STACKUP_HANDLER in str(exc):
+            return False
+        if exc.code == ApiStatusCode.AS_BAD_REQUEST:
+            return True
+        raise
+    raise RuntimeError("UpdateBoardStackup accepted an empty stackup")
 
 
 def _unrestorable_error(why: str) -> StructuredToolError:
@@ -1002,6 +1038,8 @@ def _set_stackup(
     pre = get_stackup(h)
     why = _unrestorable(pre, preset.copper_layers)
     if why:
+        if not has_stackup_handler(h):
+            raise _stackup_unavailable()
         raise _unrestorable_error(why)
     req = stackup_request(pre, preset)
     state["stackup"] = pre  # armed before the send: a timeout leaves KiCad's state unknown
@@ -1115,7 +1153,9 @@ def _set_layers(h: KicadHandle, target: int, state: dict[str, Any]) -> None:
             raise _layers_refused(target, items)
     pre = get_stackup(h)
     why = _unrestorable(pre, current)
-    if why:  # the layer count's undo could not write it back (patch 0005 refuses it)
+    # The layer count's undo could not write it back (patch 0005 refuses it); without the
+    # patch it never writes a stackup, so nothing to refuse
+    if why and has_stackup_handler(h):
         raise _unrestorable_error(why)
     state["layers"] = (current, non_copper)
     state["layers_stackup"] = pre

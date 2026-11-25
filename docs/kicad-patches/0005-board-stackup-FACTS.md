@@ -57,7 +57,8 @@ here is meant to be pasted upstream; KiCad's tool-generated-content policy appli
      proto comment's "content on removed layers is deleted" case is never reached;
    - every copper and dielectric (sub-)layer thickness > 0, others ≥ 0; `Deserialize` already
      refuses thicknesses outside 0…10 mm per (sub-)layer or above 100 mm in total (they are
-     stored and summed as `int`), more than 32 sub-layers in one dielectric, non-finite or
+     stored and summed as `int`), more than 32 sub-layers in one dielectric, more layers than a board can have
+     (2 × `PCB_LAYER_ID_COUNT`, checked before anything is allocated), non-finite or
      negative Er / loss tangent / spec frequency, and proto enum values KiCad does not know
      (board layer, edge connector type);
    - mask/paste/silk layers must be enabled on the board, appear once, front ones above the
@@ -96,7 +97,7 @@ here is meant to be pasted upstream; KiCad's tool-generated-content policy appli
   mask on a copper layer, a disabled copper layer; stackup unchanged),
   `UpdateBoardStackupInvalidValuesRejected` (thickness beyond `int` and 10 mm + 1 nm, 11 × 10 mm
   sub-layers > 100 mm, 33 sub-layers, NaN Er on a dielectric and on the mask, negative loss
-  tangent, infinite spec frequency, unknown edge connector enum; stackup unchanged; exactly
+  tangent, infinite spec frequency, unknown edge connector / board layer / layer type enum, too many layers; stackup unchanged; exactly
   10 mm accepted), `UpdateBoardStackupKeepsColorNames` ("Green" mask and
   "FR4 natural" dielectric survive get → update), `SetBoardEnabledLayersKeepsStackupInSync`
   (4 → 6), `SetBoardEnabledLayersShrinksStackup` (4 → 2: F.Cu, first dielectric, B.Cu keep their

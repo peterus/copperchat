@@ -1,4 +1,4 @@
-From a61b7fab6a0ad6df270eafdd1704a358b9064c91 Mon Sep 17 00:00:00 2001
+From ecf08b0164d4f7dd53861ec3466cea4fe2ff10da Mon Sep 17 00:00:00 2001
 From: Peter Buchegger <peter.buchegger7@gmail.com>
 Date: Wed, 25 Nov 2026 19:23:29 +0100
 Subject: [PATCH] TODO(owner): write message (board stackup handler)
@@ -8,9 +8,9 @@ Assisted-by: Claude
  api/proto/board/board_commands.proto          |   5 +-
  pcbnew/api/api_handler_pcb.cpp                | 147 +++++
  pcbnew/api/api_handler_pcb.h                  |   3 +
- .../board_stackup_manager/board_stackup.cpp   | 190 +++++-
- qa/tests/api/test_api_handler_pcb.cpp         | 544 ++++++++++++++++++
- 5 files changed, 884 insertions(+), 5 deletions(-)
+ .../board_stackup_manager/board_stackup.cpp   | 194 +++++-
+ qa/tests/api/test_api_handler_pcb.cpp         | 552 ++++++++++++++++++
+ 5 files changed, 896 insertions(+), 5 deletions(-)
 
 diff --git a/api/proto/board/board_commands.proto b/api/proto/board/board_commands.proto
 index 06b75fe6..08e19ad0 100644
@@ -222,7 +222,7 @@ index 15e5ba6b..f214a48a 100644
              const HANDLER_CONTEXT<GetBoardDesignRules>& aCtx );
  
 diff --git a/pcbnew/board_stackup_manager/board_stackup.cpp b/pcbnew/board_stackup_manager/board_stackup.cpp
-index 96df23b4..24c0a90f 100644
+index 96df23b4..6969a6d7 100644
 --- a/pcbnew/board_stackup_manager/board_stackup.cpp
 +++ b/pcbnew/board_stackup_manager/board_stackup.cpp
 @@ -21,6 +21,7 @@
@@ -241,7 +241,7 @@ index 96df23b4..24c0a90f 100644
      kiapi::board::BoardStackup stackup;
  
      if( !aContainer.UnpackTo( &stackup ) )
-@@ -591,8 +591,192 @@ bool BOARD_STACKUP::Deserialize( const google::protobuf::Any& aContainer )
+@@ -591,8 +591,196 @@ bool BOARD_STACKUP::Deserialize( const google::protobuf::Any& aContainer )
  
  bool BOARD_STACKUP::Deserialize( const kiapi::board::BoardStackup& aInput )
  {
@@ -268,6 +268,10 @@ index 96df23b4..24c0a90f 100644
 +            {
 +                return std::isfinite( aValue ) && aValue >= 0.0;
 +            };
++
++    // A stackup has at most one item per board layer plus the dielectrics between them
++    if( aInput.layers_size() > 2 * PCB_LAYER_ID_COUNT )
++        return false;
 +
 +    for( const BoardStackupLayer& layer : aInput.layers() )
 +    {
@@ -437,7 +441,7 @@ index 96df23b4..24c0a90f 100644
  
  
 diff --git a/qa/tests/api/test_api_handler_pcb.cpp b/qa/tests/api/test_api_handler_pcb.cpp
-index 70dfa5f7..b7e307a0 100644
+index 70dfa5f7..5e5543c4 100644
 --- a/qa/tests/api/test_api_handler_pcb.cpp
 +++ b/qa/tests/api/test_api_handler_pcb.cpp
 @@ -17,7 +17,11 @@
@@ -592,7 +596,7 @@ index 70dfa5f7..b7e307a0 100644
  } // namespace
  
  
-@@ -817,4 +947,418 @@ BOOST_AUTO_TEST_CASE( DrcExclusionDropsMarkerReportFields )
+@@ -817,4 +947,426 @@ BOOST_AUTO_TEST_CASE( DrcExclusionDropsMarkerReportFields )
  }
  
  
@@ -872,8 +876,16 @@ index 70dfa5f7..b7e307a0 100644
 +                    layer.mutable_soldermask()->set_epsilon_r( std::nan( "" ) );
 +            }
 +        },
-+        // A proto enum value KiCad does not know
++        // Proto enum values KiCad does not know: edge connector, board layer, layer type
 +        [&]( BoardStackup& s ) { s.mutable_edge()->mutable_connector()->set_type( static_cast<BoardEdgeConnectorType>( 99 ) ); },
++        [&]( BoardStackup& s ) { s.mutable_layers( 0 )->set_layer( static_cast<kiapi::board::types::BoardLayer>( 999 ) ); },
++        [&]( BoardStackup& s ) { s.mutable_layers( 0 )->set_type( static_cast<BoardStackupLayerType>( 99 ) ); },
++        // More layers than a board can have
++        [&]( BoardStackup& s )
++        {
++            while( s.layers_size() <= 2 * PCB_LAYER_ID_COUNT )
++                *s.add_layers() = s.layers( 0 );
++        },
 +    };
 +
 +    for( const auto& edit : edits )

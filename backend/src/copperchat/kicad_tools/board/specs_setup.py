@@ -304,7 +304,8 @@ PCB_SET_RULES_DESCRIPTION = (
     "the rules table, the net classes, the custom rules with their reasons, notes (e.g. a "
     "preset for another layer count), the board_hash change; next step pcb_analyze. "
     "`stackup` writes a JLCPCB layer build-up (thicknesses, materials, Er) into the "
-    "board; report `stackup {id, jlc_name, total_mm}`."
+    "board; report `stackup {id, jlc_name, total_mm, board_mm}` (total_mm = the preset's "
+    "copper + dielectric, board_mm = KiCad's board thickness incl. solder mask)."
 )
 
 SETUP_SPECS: list[ToolSpec] = [

@@ -772,7 +772,11 @@ name as planned; owner facts `docs/kicad-patches/0005-board-stackup-FACTS.md`)
   board stackup the API could not write back (disabled or zero-thickness copper/dielectric, or a
   stale stackup for another copper count — KiCad accepts those from files) is refused before the
   write by both the stackup stage and the layer-count stage (its undo writes the pre-call
-  stackup back). A layer count change without
+  stackup back); `_unrestorable` mirrors the patch's limits (10 mm per layer, 100 mm total, 32
+  sub-layers, finite non-negative material values). Only when such a refusal is due,
+  `has_stackup_handler` probes for patch 0005 with an empty stackup (refused, never written): an
+  unpatched server never writes a stackup back, so it gets `stackup_unavailable` for `stackup`
+  and no refusal for a plain layer change. A layer count change without
   `stackup` adds a note (an existing fab stackup keeps its matching layers, KiCad adds defaults).
 - **Compensation:** the stackup stage's undo restores the stackup it found (layer count already
   applied); the `layer count` stage now also snapshots the pre-call stackup and its undo writes
@@ -787,6 +791,10 @@ name as planned; owner facts `docs/kicad-patches/0005-board-stackup-FACTS.md`)
   restores the file and is unaffected.
 - `UpdateBoardStackup` has no KiCad undo entry; CopperChat's History is the undo.
 - A colour changed through the API is stored as `#RRGGBBAA`, not as a KiCad colour name.
+- Rollback after a layer shrink (4 → 2 → undo): the dielectrics KiCad dropped come back with
+  their RGBA colour, so a named colour KiCad cannot parse ("FR4 natural") becomes explicit black
+  on those dielectrics (cosmetic: 3D view / board characteristics; History undo restores the
+  file exactly).
 
 ### As built (P3b)
 

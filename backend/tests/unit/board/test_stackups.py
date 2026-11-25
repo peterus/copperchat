@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -244,6 +245,9 @@ class FakeBoard:
         self.log.append("update stackup")
         if self.error is not None:
             raise self.error
+        copper = sum(1 for la in cmd.stackup.layers if la.type == board_pb2.BSLT_COPPER)
+        if copper != self.copper:  # like patch 0005 (also answers the empty-stackup probe)
+            raise ApiError("KiCad returned error: copper", code=ApiStatusCode.AS_BAD_REQUEST)
         self.stored = board_pb2.BoardStackup()
         self.stored.CopyFrom(cmd.stackup)
         return board_commands_pb2.BoardStackupResponse(stackup=cmd.stackup)
@@ -294,13 +298,14 @@ async def test_unrestorable_board_stackup_refused(tmp_path: Path, log: list[str]
     board = FakeBoard(log)
     board.copper = 4
     board.disabled_dielectric = True  # valid in a KiCad file, refused by patch 0005
+    board.error = None  # patched
     req = parse_rules_args({"stackup": "jlc-4l-1.6-7628"})
     cs = setup._plan_rules(req, None, {}, 4, "hash", plan_stackup(req, 4))
     with pytest.raises(StructuredToolError) as info:
         await apply_board_change_set(_engine(tmp_path, log, board), cs)
     assert info.value.code == "invalid_argument"
     assert "cannot be restored" in str(info.value.why)
-    assert "update stackup" not in log  # refused before any write
+    assert log.count("update stackup") == 1 and board.stored is None  # only the probe
 
 
 async def test_busy_is_not_invalid_argument(tmp_path: Path, log: list[str], spy: Spy) -> None:
@@ -374,7 +379,8 @@ async def test_unrestorable_stackup_refuses_layer_change(
         await apply_board_change_set(_engine(tmp_path, log, board), cs)
     assert info.value.code == "invalid_argument"
     assert "cannot be restored" in str(info.value.why)
-    assert not [e for e in log if e.startswith(("layers", "update"))]  # nothing written
+    assert not [e for e in log if e.startswith("layers")]  # nothing written
+    assert log.count("update stackup") == 1  # only the probe for patch 0005
 
 
 async def test_stale_stackup_refused(tmp_path: Path, log: list[str], spy: Spy) -> None:
@@ -398,3 +404,68 @@ async def test_bad_request_is_invalid_argument(tmp_path: Path, log: list[str], s
         await apply_board_change_set(_engine(tmp_path, log, board), cs)
     assert info.value.code == "invalid_argument"
     assert log.count("update stackup") == 1  # refused: nothing to restore
+
+
+async def test_unpatched_stale_stackup_allows_layer_change(
+    tmp_path: Path, log: list[str], spy: Spy
+) -> None:
+    """Without patch 0005 no stackup is ever written back, so a stale stackup (KiCad
+    without the patch does not re-sync it) does not block a layer change."""
+    board = _jlc_board(log)
+    board.error = FakeBoard(log).error  # no handler
+    board.copper = 2  # the stored stackup still describes 4 copper layers
+    cs = setup._plan_rules(parse_rules_args({"layers": 4}), None, {}, 2, "hash")
+    cs.verify = None
+    await apply_board_change_set(_engine(tmp_path, log, board), cs)
+    assert "layers 4" in log
+
+
+async def test_unpatched_stale_stackup_is_unavailable(
+    tmp_path: Path, log: list[str], spy: Spy
+) -> None:
+    board = _jlc_board(log)
+    board.error = FakeBoard(log).error  # no handler
+    board.copper = 2
+    req = parse_rules_args({"stackup": "jlc-2l-1.6"})
+    cs = setup._plan_rules(req, None, {}, 2, "hash", plan_stackup(req, 2))
+    with pytest.raises(StructuredToolError) as info:
+        await apply_board_change_set(_engine(tmp_path, log, board), cs)
+    assert info.value.code == "stackup_unavailable"
+
+
+@pytest.mark.parametrize(
+    ("edit", "why"),
+    [
+        (
+            lambda s: [
+                s.layers[2].dielectric.layer.add(thickness={"value_nm": 1000}) for _ in range(32)
+            ],
+            "sub-layers",
+        ),
+        (lambda s: setattr(s.layers[2].dielectric.layer[0], "epsilon_r", math.nan), "material"),
+        (lambda s: setattr(s.layers[2].dielectric.layer[0], "loss_tangent", -1.0), "material"),
+        (lambda s: setattr(s.layers[0].soldermask, "epsilon_r", math.inf), "material"),
+        (
+            lambda s: s.layers[4].dielectric.layer[0].thickness.__setattr__("value_nm", 10_000_001),
+            "10 mm",
+        ),
+        (
+            lambda s: (
+                [
+                    s.layers[i].dielectric.layer[0].thickness.__setattr__("value_nm", 9_000_000)
+                    for i in (2, 4, 6)
+                ]
+                and [
+                    s.layers[2].dielectric.layer.add(thickness={"value_nm": 9_000_000})
+                    for _ in range(10)
+                ]
+            ),
+            "100 mm",
+        ),
+    ],
+)
+def test_unrestorable_limits(edit: Any, why: str) -> None:
+    s = _default_4l()
+    assert setup._unrestorable(s, 4) is None
+    edit(s)
+    assert why in (setup._unrestorable(s, 4) or "")
