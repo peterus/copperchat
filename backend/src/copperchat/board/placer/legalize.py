@@ -37,6 +37,7 @@ from copperchat.board.staging import natural_key
 MAX_ROUNDS = 200
 FALLBACK_STEP_MM = 0.25  # ring pitch of the nearest-free-spot fallback
 FALLBACK_CELL_MM = 10.0  # bucket size of the fallback's box index
+INSIDE_CELL_MM = 2.0  # cell size of the polygon outline's memoised inside test
 FALLBACK_TRIES = 200_000  # spots the fallback may test per call (deterministic budget)
 PUSH_PAIR_BUDGET = 100_000  # push rounds = min(MAX_ROUNDS, max(20, this // parts))
 SNAP_SLACK_MM = GRID_MM * math.sqrt(2) / 2  # snapping onto the grid may add this to a shift
@@ -103,6 +104,7 @@ class Outline:
         else:
             self.poly = list(o.polygon) if len(o.polygon) >= 3 else None
             self._r = math.inf
+        self._cells: dict[tuple[int, int], bool] = {}
         b = (o.x, o.y, o.x + o.w, o.y + o.h)
         r = min(self._r, o.w / 2, o.h / 2) if self.poly is not None else 0.0
         # boxes inside one of these need no polygon test (rounded rect only)
@@ -125,10 +127,30 @@ class Outline:
             for c in self._cross
         ):
             return True
+        if self.kind != "rect" and self._cells_inside(b):
+            return True
+        return self._exact(b)
+
+    def _exact(self, b: Box) -> bool:
+        assert self.poly is not None
         m = self.margin
         return polygon_inside(
             rect_poly(b[0] - m, b[1] - m, b[2] - b[0] + 2 * m, b[3] - b[1] + 2 * m), self.poly
         )
+
+    def _cells_inside(self, b: Box) -> bool:
+        """Polygon outlines: `b` lies in grid cells that are each fully inside (the exact
+        test once per cell, memoised) — the boundary band falls back to the exact test."""
+        c = INSIDE_CELL_MM
+        for i in range(math.floor(b[0] / c), math.floor(b[2] / c) + 1):
+            for j in range(math.floor(b[1] / c), math.floor(b[3] / c) + 1):
+                hit = self._cells.get((i, j))
+                if hit is None:
+                    hit = self._exact((i * c, j * c, (i + 1) * c, (j + 1) * c))
+                    self._cells[(i, j)] = hit
+                if not hit:
+                    return False
+        return True
 
     def area(self) -> float:
         return _area(self.inner) if self.kind != "none" else math.inf
@@ -370,12 +392,12 @@ def legalize(
         index.add(r, bx(r))
 
     def conflict(r: str) -> bool:
-        b = bx(r)
-        if not outline.contains(b) or _hits_keepout(b, keepouts) is not None:
-            return True
-        return any(
+        b = bx(r)  # cheapest test first: neighbours, keepouts, then the outline
+        if any(
             o != r and side[o] == side[r] and boxes_hit(b, bx(o), sep) for o in index.near(b, sep)
-        )
+        ):
+            return True
+        return _hits_keepout(b, keepouts) is not None or not outline.contains(b)
 
     # the push-apart can get stuck (a part squeezed between fixed ones along one axis):
     # move each part still in conflict to the nearest free spot around its start, within

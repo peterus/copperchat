@@ -67,6 +67,7 @@ EDGE_MISS = 1000.0
 FACING_MM = 5.0  # a connector whose mouth does not face its edge costs like this far away
 MOUTH_MIN_MM = 0.5  # pad centroid this far off the courtyard centre gives the connector a mouth
 COARSE_MAX_SPOTS = 4_000  # the coarse grid widens (in 2 mm steps) beyond this many spots
+SLANT_SCAN_MAX_SPOTS = 40_000  # the slanted-outline fallback scan widens beyond this
 COARSE_MIN_SPOTS = 400  # ... and never below this many (the pad budget's floor)
 SPOT_PAD_BUDGET = 400_000  # coarse spots x block pads with outside partners
 _EDGE_NORMAL: Mapping[str, Point] = {
@@ -412,19 +413,16 @@ def place_block(
     n = len(members)
 
     def legal(v: _Variant, x: float, y: float) -> bool:
+        """Cheapest test first: obstacles, keepouts, then the outline."""
         bb = (v.box[0] + x, v.box[1] + y, v.box[2] + x, v.box[3] + y)
-        if not outline.contains(bb) and not all(
-            outline.contains((b[0] + x, b[1] + y, b[2] + x, b[3] + y)) for b in v.boxes
-        ):
-            return False
         near = [ob for ob in obs_index.near(bb, kc) if boxes_hit(bb, ob, kc)]
-        for b in v.boxes:
-            mb = (b[0] + x, b[1] + y, b[2] + x, b[3] + y)
+        moved = [(b[0] + x, b[1] + y, b[2] + x, b[3] + y) for b in v.boxes]
+        for mb in moved:
             if any(boxes_hit(mb, ob, kc) for ob in near):
                 return False
             if keepouts and _hits_keepout(mb, keepouts) is not None:
                 return False
-        return True
+        return outline.contains(bb) or all(outline.contains(mb) for mb in moved)
 
     def cost(v: _Variant, x: float, y: float) -> float:
         c = 0.0
@@ -481,6 +479,9 @@ def place_block(
     if outline.poly is not None:
         seeds.extend((x - margin, y - margin, x + margin, y + margin) for x, y in outline.poly)
 
+    # a non-rectangular outline or keepout: its slanted edges seed no sweep spot
+    slanted = (o.kind == "other") or any(len(k) != 4 for k in keepouts)
+
     def sweep(vi: int) -> list[Found]:
         """Every spot on the 0.5 mm grid where the block box touches the region end or an
         obstacle (one per free interval of each such column): the exact search for a tight
@@ -536,7 +537,13 @@ def place_block(
             step += COARSE_GRID_MM
         coarse = scan(vi, step, None)
         if not coarse:  # nothing on the coarse grid: the exact sweep for tight fits
-            fine.extend(sweep(vi))
+            found = sweep(vi)
+            if not found and slanted:  # slanted edges seed no sweep spot: bounded scan
+                g = PLACE_GRID_MM
+                while len(positions(variants[vi], g)) > SLANT_SCAN_MAX_SPOTS:
+                    g += PLACE_GRID_MM
+                found = scan(vi, g, None)
+            fine.extend(found)
             continue
         if step > COARSE_GRID_MM:  # a wide coarse grid: refine on 2 mm first
             coarse = scan(vi, COARSE_GRID_MM, windows(coarse, step)) or coarse

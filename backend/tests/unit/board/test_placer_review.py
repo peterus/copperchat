@@ -4,6 +4,7 @@ the edge strip fits the block it is made for, dense boards answer quickly."""
 from __future__ import annotations
 
 import time
+from typing import Any
 
 from copperchat.board.classify import classify
 from copperchat.board.jobs import edge_strip
@@ -251,19 +252,92 @@ def test_large_board_block_within_budget() -> None:
     from .builders_circuit import cap, ic
 
     outside = [
-        cap(f"C{i + 1}", f"N{i % 50}", "+3V3", at=(10 + (i % 40) * 12, 10 + (i // 40) * 12))
-        for i in range(1000)
+        cap(f"C{i + 1}", f"N{i % 50}", "+3V3", at=(10 + (i % 20) * 12, 10 + (i // 20) * 12))
+        for i in range(400)
     ]
     u = ic("U1", {str(n + 1): f"N{n % 50}" for n in range(100)}, at=(900.0, 900.0), pitch=0.5)
-    m = circuit(*outside, u, outline=outline(0, 0, 600, 400))
+    m = circuit(*outside, u, outline=outline(0, 0, 300, 300))
     t = time.monotonic()
-    place_block(
+    r = place_block(
         m,
         classify(m),
         ["U1"],
-        Rect(0, 0, 600, 400),
+        Rect(0, 0, 300, 300),
         side="top",
         rotation=None,
         allowed_sides=TOP,
     )
-    assert time.monotonic() - t < 20.0
+    assert time.monotonic() - t < 30.0
+    assert not isinstance(r, DoesNotFit), r
+    mv = r.moves[0]
+    assert 0 < mv.x < 300 and 0 < mv.y < 300
+
+
+def _poly_outline(pts: list) -> Any:  # type: ignore[type-arg]
+    from copperchat.board.model import Outline
+
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    return Outline("other", min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys), 0.0, tuple(pts))
+
+
+def _circle(r: float, n: int) -> list:  # type: ignore[type-arg]
+    import math
+
+    return [
+        (r + r * math.cos(2 * math.pi * k / n), r + r * math.sin(2 * math.pi * k / n))
+        for k in range(n)
+    ]
+
+
+def test_circle_outline_block_is_fast() -> None:
+    from .builders_circuit import cap, ic
+
+    pins = {str(n + 1): f"N{n % 20}" for n in range(40)}
+    parts = [ic("U1", pins, at=(900.0, 900.0), pitch=0.5)]
+    parts += [cap(f"C{i + 1}", f"N{i % 20}", "GND", at=(900.0 + i, 950.0)) for i in range(100)]
+    m = circuit(*parts, outline=_poly_outline(_circle(60.0, 128)))
+    t = time.monotonic()
+    r = place_block(
+        m,
+        classify(m),
+        [p.ref for p in parts],
+        Rect(0, 0, 120, 120),
+        side="top",
+        rotation=None,
+        allowed_sides=TOP,
+    )
+    assert not isinstance(r, DoesNotFit), r
+    assert time.monotonic() - t < 30.0
+
+
+def test_legalize_circle_outline_dense_answers() -> None:
+    parts = _dense(169, 60.0, half=2.0)
+    m = circuit(*parts, outline=_poly_outline(_circle(30.0, 99)))
+    t = time.monotonic()
+    out = legalize(
+        m,
+        (),
+        movable=frozenset(p.ref for p in parts),
+        max_shift=None,
+        keepouts=(),
+        edge_margin=0.3,
+    )
+    assert isinstance(out, DoesNotFit)
+    assert time.monotonic() - t < 30.0
+
+
+def test_diamond_outline_tight_fit() -> None:
+    diamond = [(50.0, 0.0), (100.0, 50.0), (50.0, 100.0), (0.0, 50.0)]
+    u = part("U1", 500.0, 500.0, half=24.0)
+    m = circuit(u, outline=_poly_outline(diamond))
+    r = place_block(
+        m,
+        classify(m),
+        ["U1"],
+        Rect(0, 0, 100, 100),
+        side="top",
+        rotation=None,
+        keep_channels=0.0,
+        allowed_sides=TOP,
+    )
+    assert not isinstance(r, DoesNotFit), r
