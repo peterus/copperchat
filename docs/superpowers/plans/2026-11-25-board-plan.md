@@ -979,6 +979,15 @@ exact obstacle cores, each with its required centre-line distance), `outline`, `
 - Not changed: outline rasterisation is O(rows × edges) — v1 outlines are rounded
   rectangles (≈ 40 edges, spec §2 non-goal: polygon outlines); revisit with polygon outlines.
 
+**Review round 3 (PR #105)**
+- Coupled check: the partner net's **existing** tracks, arcs and vias are obstacles at the
+  pair clearance (the centreline merges both nets, so they were invisible before).
+- `SOLVE_TIME_LIMIT_S` also covers grid building and the reachability pre-check
+  (`build_grid(..., deadline=)`, `reachable(..., deadline=)` raise the internal
+  `DeadlineExpired`; every entry point returns None) and no retry starts after it.
+- The exact-check shape index clips each obstacle's bbox to the window; `build_grid`
+  refuses width / clearance / margin / via diameter above `MAX_SIZE_MM = 100`.
+
 **Residuals for later phases**
 - P5b: `route` returns `None` for a connection whose pad is boxed in by earlier copper
   along its axis; such a failure can take up to the full expansion budget (≈ 10–25 s per

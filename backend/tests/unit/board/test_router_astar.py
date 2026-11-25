@@ -403,3 +403,20 @@ def test_request_numbers_validated(change: dict) -> None:
     m = board(parts=(), outline=outline(0, 0, 30, 20))
     with pytest.raises(ValueError):
         build_grid(m, replace(rq(pad("S", 5, 5), pad("S", 9, 5, ref="B")), **change))
+
+
+def test_solve_time_limit_covers_grid_building(monkeypatch: pytest.MonkeyPatch) -> None:
+    from copperchat.board.router import solve
+
+    monkeypatch.setattr(astar_mod, "SOLVE_TIME_LIMIT_S", -1.0)
+    req = rq(pad("SIG", 5, 10), pad("SIG", 15, 10, ref="B"))
+    m = board(parts=(), outline=outline(0, 0, 30, 20))
+    assert solve(m, req) is None
+
+
+def test_huge_sizes_refused() -> None:
+    from dataclasses import replace
+
+    m = board(parts=(), outline=outline(0, 0, 30, 20))
+    with pytest.raises(ValueError):
+        build_grid(m, replace(rq(pad("S", 5, 5), pad("S", 9, 5, ref="B")), width=1000.0))

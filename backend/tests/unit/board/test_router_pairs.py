@@ -356,3 +356,37 @@ def test_fan_in_never_leaves_a_short_chamfer() -> None:
     if got is not None:
         _strict(got[0], p)
         _strict(got[1], n)
+
+
+def test_coupled_avoids_partner_net_copper() -> None:
+    # existing DN copper across DP's straight line: no short with it
+    dn_stub = track("DN", "F.Cu", (10.0, 7.0), (10.0, 10.05), 0.2, kiid="dn-stub")
+    m, p, n = straight_pair(tracks=(dn_stub,))
+    for got in (route_pair(m, p, n, 0.2), solve_pair(m, p, n, 0.2)):
+        if got is None:
+            continue
+        pp, _pn = got
+        for layer, s, e in pp.segments:
+            if layer == "F.Cu":
+                assert seg_dist(s, e, dn_stub.start, dn_stub.end) >= 0.2 + 0.2 - 1e-6
+
+
+def test_coupled_rejected_when_pad_exits_fail() -> None:
+    # tiny 0.18 x 0.1 pads whose long axis runs along the pair: the leads would leave
+    # through the long side, so the coupled attempt must give up
+    def tiny(net: str, x: float, y: float, ref: str, number: str) -> Pad:
+        return Pad(ref, number, net, x, y, 0.18, 0.1, 0.0, "rect", frozenset({"F.Cu"}), True, None)
+
+    pa, na = tiny("DP", 5, 10, "J1", "1"), tiny("DN", 5.4, 10, "J1", "2")
+    pb, nb = tiny("DP", 5, 16, "U1", "1"), tiny("DN", 5.4, 16, "U1", "2")
+    m = pair_board([pa, pb, na, nb])
+    p = req("DP", pa, pb, clearance=0.1)
+    n = req("DN", na, nb, clearance=0.1)
+    assert pairs_mod._coupled(m, p, n, 0.2, 0.0) is None
+
+
+def test_solve_pair_time_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(pairs_mod, "SOLVE_TIME_LIMIT_S", -1.0)
+    m, p, n = straight_pair()
+    assert solve_pair(m, p, n, 0.2) is None
+    assert route_pair(m, p, n, 0.2) is None

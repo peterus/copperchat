@@ -23,13 +23,16 @@ from copperchat.board.router.astar import SOLVE_TIME_LIMIT_S, pad_exits_ok, reve
 from copperchat.board.router.astar import route as _route
 from copperchat.board.router.grid import (
     WINDOW_MM,
+    DeadlineExpired,
     ObstacleGrid,
     RoutePath,
     RouteRequest,
     Shape,
+    _arc_points,
     _pad_shape,
     band_cells,
     build_grid,
+    check_deadline,
 )
 from copperchat.board.router.simplify import SnapError, _snap_tail, layer_runs, merge_collinear
 
@@ -142,19 +145,32 @@ def _check(
     partner: RoutePath,
     pc: float,
     margin: float,
+    deadline: float | None = None,
 ) -> bool:
-    """`path` passes the B-C5 bends and exact clearance; `margin` applies to all other-net
-    copper except the partner's (its pads and path keep the pair clearance `pc`)."""
+    """`path` passes the B-C5 bends, pad exits and exact clearance; `margin` applies to all
+    other-net copper except the partner net's (its pads, existing copper and new path keep
+    the pair clearance `pc`)."""
     need = pc + req.width / 2
     extra = _partner(partner, need + other.width / 2)
-    pads = [q for pt in model.parts for q in pt.pads if q.net == other.net]
+    for q in (q for pt in model.parts for q in pt.pads if q.net == other.net):
+        extra += [(layer, _pad_shape(q, need)) for layer in req.layers if _pad_on_layer(q, layer)]
+    # the partner net's existing copper (merged away below, so add it back exactly)
     extra += [
-        (layer, _pad_shape(q, need))
-        for q in pads
-        for layer in req.layers
-        if _pad_on_layer(q, layer)
+        (t.layer, ("s", *t.start, *t.end, need + t.width / 2))
+        for t in model.tracks
+        if t.net == other.net
     ]
-    grid = build_grid(_merge_nets(model, other.net, req.net), req, margin=margin, extra=extra)
+    for a in (a for a in model.arcs if a.net == other.net):
+        chords, sag = _arc_points(a)
+        extra += [
+            (a.layer, ("s", *p, *q, need + a.width / 2 + sag))
+            for p, q in itertools.pairwise(chords)
+        ]
+    for v in (v for v in model.vias if v.net == other.net):
+        extra += [(layer, ("d", *v.at, v.diameter / 2, need)) for layer in req.layers]
+    grid = build_grid(
+        _merge_nets(model, other.net, req.net), req, margin=margin, extra=extra, deadline=deadline
+    )
     return valid_path(path, grid, req) and pad_exits_ok(path, req)
 
 
@@ -258,7 +274,7 @@ def _coupled(
         via=p.via,
     )
     path = _route(
-        build_grid(merged, centre, margin=margin),
+        build_grid(merged, centre, margin=margin, deadline=deadline),
         centre,
         max_expansions=PAIR_CENTRE_EXPANSIONS,
         deadline=deadline,
@@ -278,7 +294,9 @@ def _coupled(
     except (SnapError, ValueError):
         return None
     rp, rn = _as_path(layer, pp), _as_path(layer, nn)
-    if not _check(model, p, rp, n, rn, pc, margin) or not _check(model, n, rn, p, rp, pc, margin):
+    if not _check(model, p, rp, n, rn, pc, margin, deadline) or not _check(
+        model, n, rn, p, rp, pc, margin, deadline
+    ):
         return None
     return rp, rn
 
@@ -298,6 +316,7 @@ def _solo(
     if retry:
         tries.append((replace(req, a=req.b, b=req.a), 2 * WINDOW_MM, PAIR_RETRY_EXPANSIONS))
     for k, (r, window, budget) in enumerate(tries):
+        check_deadline(deadline)
         grid = build_grid(
             model, r, margin=margin, window_mm=window, extra=extra, extra_vias=extra_vias
         )
@@ -340,11 +359,14 @@ def route_pair(
     """Coupled pair when the pads allow it, else the fallback (B-C12); default windows only;
     stops after SOLVE_TIME_LIMIT_S (→ None)."""
     deadline = time.monotonic() + SOLVE_TIME_LIMIT_S
-    if coupled_eligible(p, n, gap):
-        got = _coupled(model, p, n, gap, 0.0, deadline)
-        if got is not None:
-            return got
-    return _fallback(model, p, n, gap, 0.0, retry=False, deadline=deadline)
+    try:
+        if coupled_eligible(p, n, gap):
+            got = _coupled(model, p, n, gap, 0.0, deadline)
+            if got is not None:
+                return got
+        return _fallback(model, p, n, gap, 0.0, retry=False, deadline=deadline)
+    except DeadlineExpired:
+        return None
 
 
 def solve_pair(
@@ -354,11 +376,14 @@ def solve_pair(
     gets the default window and exactly one doubled-window retry (like `solve`); all of it
     stops after SOLVE_TIME_LIMIT_S (→ None)."""
     deadline = time.monotonic() + SOLVE_TIME_LIMIT_S
-    if coupled_eligible(p, n, gap):
-        got = _coupled(model, p, n, gap, margin, deadline)
-        if got is not None:
-            return got
-    return _fallback(model, p, n, gap, margin, retry=True, deadline=deadline)
+    try:
+        if coupled_eligible(p, n, gap):
+            got = _coupled(model, p, n, gap, margin, deadline)
+            if got is not None:
+                return got
+        return _fallback(model, p, n, gap, margin, retry=True, deadline=deadline)
+    except DeadlineExpired:
+        return None
 
 
 def _pt_seg(p: Point, a: Point, b: Point) -> tuple[float, float]:

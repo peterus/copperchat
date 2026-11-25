@@ -19,6 +19,7 @@ from __future__ import annotations
 import itertools
 import math
 import re
+import time
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -29,6 +30,7 @@ from copperchat.board.model import ArcTrack, BoardModel, GraphicItem, Pad, Point
 WINDOW_MM = 6.0
 MAX_CELLS_PER_LAYER = 4_000_000
 EDGE_MIN_MM = 0.3  # board edge clearance floor (spec §10.2)
+MAX_SIZE_MM = 100.0  # sizes are bounded like every tool input (plan call 6)
 
 FREE, OWN, BLOCKED = 0, 1, 2
 
@@ -52,6 +54,16 @@ class RoutePath:
     segments: tuple[tuple[str, Point, Point], ...]  # (layer, start, end)
     vias: tuple[Point, ...]
     length: float
+
+
+class DeadlineExpired(Exception):
+    """A routing deadline passed while building a grid or checking reachability; the
+    entry points (`solve`, `route_pair`, `solve_pair`, `route`) turn it into None."""
+
+
+def check_deadline(deadline: float | None) -> None:
+    if deadline is not None and time.monotonic() > deadline:
+        raise DeadlineExpired
 
 
 class RouteTooLarge(Exception):
@@ -277,10 +289,15 @@ class ObstacleGrid:
             index: list[_Grid] = []
             for shapes in self.shapes:
                 g = _Grid(cell=2.0)
+                # clipped to the window: a huge item only fills the buckets it can reach
+                wx0, wy0 = self.x0 - 1.0, self.y0 - 1.0
+                wx1, wy1 = self.x0 + self.w * self.pitch + 1.0, self.y0 + self.h * self.pitch + 1.0
                 for k, s in enumerate(shapes):
                     x0, y0, x1, y1 = _shape_bbox(s)
                     n = _shape_need(s)
-                    g.add(k, (x0 - n, y0 - n, x1 + n, y1 + n))
+                    box = (max(x0 - n, wx0), max(y0 - n, wy0), min(x1 + n, wx1), min(y1 + n, wy1))
+                    if box[0] <= box[2] and box[1] <= box[3]:
+                        g.add(k, box)
                 index.append(g)
             self._index = index
         return self._index
@@ -513,6 +530,7 @@ def build_grid(
     window_mm: float | None = None,
     extra: Sequence[tuple[str, Shape]] = (),
     extra_vias: Sequence[Shape] = (),
+    deadline: float | None = None,
 ) -> ObstacleGrid:
     """The obstacle grid for `req` (B-C12). `extra` = additional (layer, shape) track
     obstacles and `extra_vias` additional via obstacles (need = via-centre distance) — the
@@ -535,6 +553,8 @@ def build_grid(
         raise ValueError("request numbers must be finite")
     if req.width <= 0 or req.clearance < 0 or margin < 0 or not req.via[0] > req.via[1] > 0:
         raise ValueError("width > 0, clearance >= 0, margin >= 0, via diameter > drill > 0")
+    if max(req.width, req.clearance, margin, req.via[0]) > MAX_SIZE_MM:
+        raise ValueError(f"width, clearance, margin and via diameter must be <= {MAX_SIZE_MM} mm")
     if not req.layers or len(set(req.layers)) != len(req.layers):
         raise ValueError("request layers must be non-empty and unique")
     if model.copper_layers and not set(req.layers) <= set(model.copper_layers):
@@ -648,11 +668,14 @@ def build_grid(
     for s in extra_shapes(extra, layers):
         shapes[s[0]].append(s[1])
 
+    check_deadline(deadline)
     cells = tuple(bytearray(cells_n) for _ in layers)
     for k in range(len(layers)):
         for s in own[k]:
             mk.shape(cells[k], s, _shape_need(s), OWN)
-        for s in shapes[k]:
+        for count, s in enumerate(shapes[k]):
+            if not count % 256:
+                check_deadline(deadline)
             need = _shape_need(s)
             mk.shape(cells[k], s, need + chord_slack(need, pitch), BLOCKED)
     poly = tuple(model.outline.polygon) if model.outline.kind != "none" else ()
@@ -667,6 +690,7 @@ def build_grid(
     for k in range(len(layers)):
         mk.frame(cells[k], BLOCKED)
 
+    check_deadline(deadline)
     via_blocked = bytearray(cells_n)
     via_obstacles = tuple(via_shapes + via_own + via_keepouts + list(extra_vias))
     if req.allow_vias:

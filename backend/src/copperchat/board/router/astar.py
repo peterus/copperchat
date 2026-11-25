@@ -29,10 +29,12 @@ from copperchat.board.model import BoardModel, Pad, Point
 from copperchat.board.router.grid import (
     BLOCKED,
     WINDOW_MM,
+    DeadlineExpired,
     ObstacleGrid,
     RoutePath,
     RouteRequest,
     build_grid,
+    check_deadline,
     path_clear,
 )
 from copperchat.board.router.simplify import SnapError, layer_runs, merge_collinear, to_path
@@ -186,6 +188,8 @@ def reachable(
     a_layers: list[int],
     b_layers: frozenset[int],
     vias: bool,
+    *,
+    deadline: float | None = None,
 ) -> bool:
     """Cheap relaxation of the search: are the start and goal nodes in one 8-connected
     component of free nodes (layers joined at via-capable nodes)? No → no path exists.
@@ -210,6 +214,8 @@ def reachable(
         cells = grid.cells[li]
         rows: list[list[tuple[int, int, int]]] = []
         for j in range(h):
+            if not j % 64:
+                check_deadline(deadline)
             row = bytearray(cells[j * w : (j + 1) * w])
             for n in forced:
                 if n // w == j:
@@ -389,9 +395,19 @@ def route(
         return None
     w = grid.w
     start_n, goal_n = sj * w + si, gj * w + gi
-    if not reachable(
-        grid, start_n, goal_n, a_layers, frozenset(b_layers), req.allow_vias and nl > 1
-    ):
+    try:
+        ok = reachable(
+            grid,
+            start_n,
+            goal_n,
+            a_layers,
+            frozenset(b_layers),
+            req.allow_vias and nl > 1,
+            deadline=deadline,
+        )
+    except DeadlineExpired:
+        return None
+    if not ok:
         return None
     goal_dirs = pad_dirs(req.b)
     goal_layers = frozenset(b_layers)
@@ -683,13 +699,17 @@ def solve(
     search gets at most FIRST_TRY_EXPANSIONS; both together stop after SOLVE_TIME_LIMIT_S
     (→ None). `RouteTooLarge` from either window propagates."""
     deadline = time.monotonic() + SOLVE_TIME_LIMIT_S
-    grid = build_grid(model, req, margin=margin)
-    path = route(
-        grid, req, max_expansions=min(max_expansions, FIRST_TRY_EXPANSIONS), deadline=deadline
-    )
-    if path is not None:
-        return path
-    rev = replace(req, a=req.b, b=req.a)
-    grid = build_grid(model, rev, margin=margin, window_mm=2 * WINDOW_MM)
-    back = route(grid, rev, max_expansions=max_expansions, deadline=deadline)
+    try:
+        grid = build_grid(model, req, margin=margin, deadline=deadline)
+        path = route(
+            grid, req, max_expansions=min(max_expansions, FIRST_TRY_EXPANSIONS), deadline=deadline
+        )
+        if path is not None:
+            return path
+        check_deadline(deadline)
+        rev = replace(req, a=req.b, b=req.a)
+        grid = build_grid(model, rev, margin=margin, window_mm=2 * WINDOW_MM, deadline=deadline)
+        back = route(grid, rev, max_expansions=max_expansions, deadline=deadline)
+    except DeadlineExpired:
+        return None
     return reverse_path(back) if back is not None else None
