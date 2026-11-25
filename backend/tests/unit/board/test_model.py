@@ -6,6 +6,7 @@ from dataclasses import replace
 
 import pytest
 
+from copperchat.board.geom import rect_poly
 from copperchat.board.model import Outline
 
 from .builders import board, outline, part
@@ -56,3 +57,11 @@ def test_placed_other_outline_uses_polygon() -> None:
     assert m.placed(part("A", 5, 5)) is True
     assert m.placed(part("A", 5, 15)) is False  # in the notch
     assert outline().kind == "rect"
+
+
+def test_placed_rounded_rect_outline() -> None:
+    sq = tuple(rect_poly(0, 0, 100, 80))
+    o = Outline(kind="rect", x=0, y=0, w=100, h=80, corner_radius=10.0, polygon=sq)
+    m = replace(board(), outline=o)
+    assert m.placed(part("A", 50, 40)) is True
+    assert m.placed(part("A", 2.5, 2.5)) is False  # corner cut by the radius

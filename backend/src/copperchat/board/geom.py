@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import math
 from collections.abc import Sequence
 
@@ -134,14 +135,41 @@ def polygons_overlap(a: Poly, b: Poly) -> bool:
         return _sat_overlap(a, b)
     if _any_proper_cross(a, b):
         return True
-    probes_a = [*a, *_midpoints(a)]
-    probes_b = [*b, *_midpoints(b)]
-    if any(_strictly_inside(p, b) for p in probes_a):
-        return True
-    if any(_strictly_inside(p, a) for p in probes_b):
-        return True
-    # identical or boundary-congruent polygons
-    return all(point_in_polygon(p, b) for p in a) and all(point_in_polygon(p, a) for p in b)
+    # No proper crossings: the interiors intersect iff some boundary piece of one polygon,
+    # probed a hair to its own interior side, lies strictly inside the other.
+    return _boundary_enters(a, b) or _boundary_enters(b, a)
+
+
+def _signed_area(pts: Poly) -> float:
+    return sum(
+        pts[i][0] * pts[(i + 1) % len(pts)][1] - pts[(i + 1) % len(pts)][0] * pts[i][1]
+        for i in range(len(pts))
+    )
+
+
+def _boundary_enters(a: Poly, b: Poly) -> bool:
+    sign = 1.0 if _signed_area(a) > 0 else -1.0
+    for p, q in _edges(a):
+        length = math.dist(p, q)
+        if length < _EPS:
+            continue
+        # split the edge at b's vertices lying on it
+        ts = {0.0, 1.0}
+        for v in b:
+            if _on_segment(v, p, q):
+                ts.add(math.dist(p, v) / length)
+        cuts = sorted(ts)
+        nx, ny = -(q[1] - p[1]) / length * sign, (q[0] - p[0]) / length * sign
+        eps = 1e-6
+        for t0, t1 in itertools.pairwise(cuts):
+            if (t1 - t0) * length < 1e-7:
+                continue
+            tm = (t0 + t1) / 2
+            m = (p[0] + (q[0] - p[0]) * tm, p[1] + (q[1] - p[1]) * tm)
+            probe = (m[0] + nx * eps, m[1] + ny * eps)
+            if _strictly_inside(probe, a) and _strictly_inside(probe, b):
+                return True
+    return False
 
 
 def convex_hull(pts: Poly) -> list[Point]:

@@ -191,3 +191,18 @@ def test_hash_is_sha256_hex() -> None:
 
 def test_text_item_importable() -> None:
     assert TextItem("reference", "R1", "F.SilkS", (0.0, 0.0), (1.0, 1.0), 0.15, True).visible
+
+
+def test_rotation_normalised_after_rounding() -> None:
+    m = board()
+    ref = placement_hash(with_part(m, "R1", rot=0.0))
+    assert placement_hash(with_part(m, "R1", rot=359.99999)) == ref
+    assert placement_hash(with_part(m, "R1", rot=-1e-9)) == ref
+    assert board_hash(with_part(m, "R1", rot=359.99999)) == board_hash(with_part(m, "R1", rot=0.0))
+    assert board_hash(with_part(m, "R1", rot=-1e-9)) == board_hash(with_part(m, "R1", rot=0.0))
+
+
+def test_negative_zero_coordinates() -> None:
+    m = board()
+    assert placement_hash(with_part(m, "R1", x=-0.001)) == placement_hash(with_part(m, "R1", x=0.0))
+    assert board_hash(with_part(m, "R1", y=-0.0001)) == board_hash(with_part(m, "R1", y=0.0))

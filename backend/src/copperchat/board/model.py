@@ -8,7 +8,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from copperchat.board.geom import polygon_inside
+from copperchat.board.geom import polygon_inside, rect_poly
 
 Point = tuple[float, float]
 Side = Literal["top", "bottom"]
@@ -180,6 +180,9 @@ class BoardModel:
         o = self.outline
         if o.kind == "none" or len(part.courtyard) < 3:
             return False
+        if o.kind == "rect" and o.corner_radius > 0:
+            rounded = rect_poly(o.x, o.y, o.w, o.h, o.corner_radius)
+            return polygon_inside(part.courtyard, rounded)
         if o.kind == "rect":
             return all(
                 o.x <= px <= o.x + o.w and o.y <= py <= o.y + o.h for px, py in part.courtyard
@@ -192,6 +195,10 @@ class BoardModel:
 
 def _r(v: float, nd: int) -> float:
     return round(v, nd) + 0.0  # "+ 0.0" folds -0.0 into 0.0
+
+
+def _rot(v: float, nd: int) -> float:
+    return round(v, nd) % 360 + 0.0  # round first: 359.99999 and -1e-9 both become 0.0
 
 
 def _pt(p: Point, nd: int) -> list[float]:
@@ -226,7 +233,7 @@ def placement_hash(m: BoardModel) -> str:
     """sha256 of the placement: parts (ref, x, y, rot, side, locked), outline and rule areas."""
     o = m.outline
     parts = [
-        [p.ref, _r(p.x, 2), _r(p.y, 2), _r(p.rot % 360, 1), p.side, p.locked]
+        [p.ref, _r(p.x, 2), _r(p.y, 2), _rot(p.rot, 1), p.side, p.locked]
         for p in sorted(m.parts, key=lambda p: p.ref)
     ]
     outline = [
@@ -254,7 +261,7 @@ def _pad(p: Pad) -> list[Any]:
         _r(p.y, 3),
         _r(p.w, 3),
         _r(p.h, 3),
-        _r(p.rot % 360, 1),
+        _rot(p.rot, 1),
         p.shape,
         sorted(p.layers),
         p.smd,
@@ -276,7 +283,7 @@ def board_hash(m: BoardModel) -> str:
             p.value,
             _r(p.x, 3),
             _r(p.y, 3),
-            _r(p.rot % 360, 3),
+            _rot(p.rot, 3),
             p.side,
             p.locked,
             _poly(p.courtyard, 3),

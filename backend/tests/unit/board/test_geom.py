@@ -78,6 +78,18 @@ def test_polygons_overlap_convex_and_concave() -> None:
     assert polygons_overlap(L_SHAPE, rect_poly(-1, 1, 12, 1))
 
 
+def test_polygons_overlap_shared_boundaries() -> None:
+    assert polygons_overlap(L_SHAPE, rect_poly(0, 0, 10, 4))  # arm shares boundary
+    assert polygons_overlap(rect_poly(0, 0, 10, 4), L_SHAPE)
+    assert polygons_overlap(L_SHAPE, list(L_SHAPE))  # identical concave
+    assert polygons_overlap(U_SHAPE, [(0.5, 0.5), (2.5, 0.5), (2.5, 8.0), (0.5, 8.0)])
+    big = [(x * 3 - 5, y * 3 - 5) for x, y in L_SHAPE]
+    assert polygons_overlap(big, L_SHAPE)  # concave inside concave
+    assert polygons_overlap(L_SHAPE, big)
+    assert not polygons_overlap(L_SHAPE, rect_poly(10, 0, 3, 4))  # touching edge only
+    assert not polygons_overlap(L_SHAPE, rect_poly(4, 4, 6, 6))  # notch, touching corner/edges
+
+
 def test_convex_hull() -> None:
     pts = [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (2.0, 2.0)]
     hull = convex_hull(pts)
