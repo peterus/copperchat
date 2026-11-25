@@ -86,13 +86,20 @@ additionally a copy dir `agent_dir(project)/"board"/"check"/<uuid>/` with
 `session.save_copy("sch", dir/<stem>.kicad_sch)` (copies sub-sheets),
 `session.save_copy("pcb", dir/<stem>.kicad_pcb)` (copies `.kicad_dru`) and byte copies of
 `<stem>.kicad_pro`, `fp-lib-table`, `sym-lib-table` when present (read-only inputs; nothing
-in the project is written); `run_kicad_cli(settings, ["pcb", "drc", "--format", "json",
-"--severity-all", "--schematic-parity", "-o", <dir>/drc.json, <copy>], timeout=300)`;
-non-zero exit with no JSON → `StructuredToolError(code="drc_rejected")`; the copy dir is
+in the project is written); `async with BOARD_CLI_LOCK:` (P1c, process-wide, shared with
+`pcb_render`) `run_kicad_cli(settings, ["pcb", "drc", "--format", "json",
+"--severity-all", "--schematic-parity", "-o", <dir>/drc.json, <copy>],
+timeout=BOARD_PARITY_TIMEOUT_S)` (120 s); `TimeoutError` or a non-zero exit with no JSON →
+`StructuredToolError(code="drc_rejected")` (timeout named in the message); the copy dir is
 removed in `finally`. In full mode the metrics come from `run_cpu(metrics_job, model, doc,
 drc, preset_for(model, doc), None, parity=<CLI parity>, timeout_s=30)` — never a direct
-`compute_metrics` in `run_cpu`: M3 uses the CLI violations + parity, M2 the API task, M14
-the preset (P3a). Hashes are read before the DRC and again after; when they differ
+`compute_metrics` in `run_cpu`. **One source per M3 term:** errors and warnings come only
+from the API DRC task result (`DrcResult`, also M2); parity markers come only from the CLI
+JSON's `schematic_parity`; the CLI's non-parity `violations` are **not** counted (no
+double count) — they are only cross-checked against the API markers by `(type, KIID set)`
+and the mismatch count is logged and reported as `cli_crosscheck {only_cli, only_api}`
+(informational, never in a metric). M14 uses the preset (P3a). Tool-placed holes carry
+`not_in_schematic` (P2), so they raise no parity marker. Hashes are read before the DRC and again after; when they differ
 the result says `"stale": true` and **no row is recorded**. Result: `level`, `errors` (≤ 50
 + omitted), `warnings` (each with `accepted: bool`, ≤ 50 + omitted), `parity` (≤ 50),
 `metrics`, `hard_failures`, `verdict`, `placement_hash`, `board_hash`, `seconds`. Recording
@@ -112,9 +119,15 @@ else "board", both hashes)`. `views.py` (P1c's `pcb_render`): after a successful
   (write a `board.md` Checks row for a warning type present on the board through
   `ctx.docs.patch_section` → that warning `accepted: true`, M3 no longer counts it);
   `test_full_hard_failures_recorded` (`hard_failures` equals the report's count);
+  `test_full_check_m3_sources` (monkeypatch `run_kicad_cli` to write a JSON with 2
+  non-parity violations and 1 parity marker, the API `DrcResult` stubbed with 1 error and 0
+  warnings → M3 value == 2 (1 API error + 1 parity), the CLI violations appear only in
+  `cli_crosscheck`, not in `errors`);
   `test_render_records_evidence` (`pcb_render view=placement` → one `render` row with the
   view and both hashes); `test_no_conversation_no_rows` (`conversation_id=None` → table
-  empty); `test_copy_dir_removed`; `test_check_boardless` (`no_board`).
+  empty); `test_copy_dir_removed`; `test_full_parity_uses_board_cli_lock` (spy: the parity
+  DRC runs inside `BOARD_CLI_LOCK` with `timeout=120`; a patched `TimeoutError` →
+  `drc_rejected`, copy dir removed); `test_check_boardless` (`no_board`).
 - [ ] **Step 3: Run** — FAIL. **Step 4: Implement**; register `pcb_check` in
   `specs_check.py` → `board/specs.py`. **Step 5: Run** — PASS.
 - [ ] **Step 6: Commit** `feat(board): pcb_check quick/full with recorded evidence`.
@@ -137,12 +150,17 @@ ToolResult`, registered with `edit_spec("pcb_approve", …, prepare, apply)`; sc
 required). `cc/editing/gate.py`: `PLAN_EXEMPT_TOOLS = frozenset({"fp_approve",
 "pcb_approve"})` (spec §7.3). Change set: `BoardChangeSet(tool="pcb_approve",
 kind="board_approve", board_stages=[], logical=Logical(1))`; apply does **not** call
-`apply_board_change_set` (index call 7): it reloads the model, re-checks guard 1 (TOCTOU),
-inserts the checkpoint row, writes one change entry (`kind="board_approve"`, `op="add"`,
-`uuid=f"board-checkpoint-{id}"`, `sheet_path=""`, `after={stage, hash, user_quote}`) via
-`record_applied`, re-checks guard 4 (a write may have landed between prepare and apply), and
-returns `ToolResult(data={stage, hash, approved_at, next}, changed_docs=
-set())`.
+`apply_board_change_set` (index call 7): it reloads the model, then inside **one**
+`async with db.transaction():` (`cc/db/__init__.py`, `BEGIN IMMEDIATE`; repo `execute` calls
+in the owning task join it) re-checks guard 1 (TOCTOU) and guard 4 (a write may have landed
+between prepare and apply) **before** any insert, then inserts the checkpoint row and the one
+change entry (`kind="board_approve"`, `op="add"`, `uuid=f"board-checkpoint-{id}"`,
+`sheet_path=""`, `after={stage, hash, user_quote}`) through `ctx.editing.changes.add_many`
+— not `record_applied`, which swallows errors and would let the checkpoint row survive a
+failed change entry. A refused guard or any exception rolls both back. After the commit
+the `on_changes_recorded` listeners are notified (as `EditingService.record_changes` does,
+failures logged), and apply returns `ToolResult(data={stage, hash, approved_at, next},
+changed_docs=set())`.
 
 Guards (all → `approval_not_allowed` with `details.guard`, evaluated in this order):
 1. `hash` equals the current hash of `stage` (`placement_hash` / `board_hash`); a
@@ -191,6 +209,10 @@ Guards (all → `approval_not_allowed` with `details.guard`, evaluated in this o
   `board_approve`, `Logical(1)`, `changed_docs == set()`);
   `test_hash_changed_between_prepare_and_apply` (1); `test_write_between_prepare_and_apply`
   (a `board_move` entry inserted after prepare → apply refuses with 4, no row written);
+  `test_apply_guard_refusal_leaves_no_rows` (guard 1 and, separately, guard 4 failing at
+  apply → `board_checkpoints` and `changes` row counts unchanged);
+  `test_apply_change_entry_failure_rolls_back` (monkeypatch `changes.add_many` to raise →
+  the error propagates, no checkpoint row stays);
   `test_plan_policy_always_allowed`
   (`PlanGate`/`BudgetGate.before_prepare` pass `pcb_approve` without an active step).
   `test_checkpoints.py`: `test_state_missing`, `test_state_stale`, `test_only_latest_counts`

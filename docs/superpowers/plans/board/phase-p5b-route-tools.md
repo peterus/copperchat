@@ -110,7 +110,12 @@ for each `ConnPlan` of the net (pairs: `solve_pair(pruned, p, n, gap, margin=m)`
    `sctx.created`;
 3. after the push, `sctx.drc(timeout_s=min(60, remaining))` (60 without a deadline); markers (except `unconnected_items`) whose KIIDs intersect
    the new items → reject: remove the new items in one commit, retry with the next margin;
-   after the last margin → failed `drc_rejected: <first marker text>`;
+   after the last margin → failed `drc_rejected: <first marker text>`; a **`DrcTimeout`**
+   (B-C14 `drc_timeout`, P1a: the DRC hit its deadline-bounded `timeout_s`) does **not**
+   abort the call — this connection's new items are removed in one commit (they are
+   unverified, never kept locked), it is failed with reason `timeout` (no further margin),
+   and the already accepted connections and nets stay; the next connection's DRC first waits
+   out the pending task within its own budget (P1a);
 4. accepted → the in-memory model gets the new copper (re-read with `sctx.model()` once per
    net) so later connections see it.
 Never relies on DRC seeing an open commit (P1a probe). B-C4 compensates after the first stage
@@ -137,7 +142,10 @@ after the call, `next` (`pcb_render` with `highlight_nets`, then `pcb_route_fill
   fake call: every `run_cpu` got `timeout_s ≤ min(30, remaining)` and `wait_s == remaining`,
   every `drc` got `timeout_s ≤ min(60, remaining)`); `test_overrun_bounded` (real clock,
   `ROUTE_DEADLINE_S = 1.0`, fake `run_cpu` / `drc` sleep their full `timeout_s` → the call
-  returns within 1.0 s + 0.5 s slack, i.e. far below deadline + 60 s).
+  returns within 1.0 s + 0.5 s slack, i.e. far below deadline + 60 s);
+  `test_drc_timeout_fails_only_that_connection` (fake `drc` raises `DrcTimeout` for the 2nd
+  of 3 connections → the call succeeds, connection 2 failed `timeout` with its new items
+  removed, connections 1 and 3 `routed` and kept, margins 0.05/0.10 not tried for 2).
 - [ ] **Step 1: Failing kicad tests** (`test_route.py`, `synth_placed`):
   `test_route_critical_set` — `pcb_analyze.critical_nets` (ground excluded by P3a) routed in
   chunks of ≤ 50 → every planned connection `routed`; DRC task: 0 errors other than

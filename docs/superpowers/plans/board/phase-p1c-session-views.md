@@ -158,6 +158,14 @@ svg --mode-single --page-size-mode 2 --exclude-drawing-sheet --layers <list>` (b
 `--mirror`) → `load_kicad_svg(limits=BOARD_SVG_LIMITS)` → `simplify_paths` → `wrap_svg` →
 `rasterise(max_side_px=1600)`; `3d`: `kicad-cli pcb render --width 1600 --height 1200
 --quality basic` with `--side top|bottom` or `--rotate -45,0,45 --perspective` (`iso`).
+**Board kicad-cli concurrency + timeouts:** `cc/views/board_render.py` owns the process-wide
+`BOARD_CLI_LOCK = asyncio.Semaphore(1)` (same pattern as `_render_lock` in
+`cc/views/footprint_render.py` L157); every board kicad-cli call — the SVG export and the 3D
+render here, `pcb_check full`'s parity DRC in P3b — runs `async with BOARD_CLI_LOCK:` around
+`run_kicad_cli(settings, …, timeout=…)` with explicit module constants
+`BOARD_SVG_TIMEOUT_S = 60`, `BOARD_3D_TIMEOUT_S = 120` (here) and `BOARD_PARITY_TIMEOUT_S =
+120` (P3b); `TimeoutError` → `render_failed` (here) / `drc_rejected` (P3b) naming the
+timeout. The kicad-cli peak RSS of each kind is measured in P9a's memory report (D5).
 View layers (spec §13): top = `F.Cu,F.Mask,F.SilkS,Edge.Cuts`; bottom =
 `B.Cu,B.Mask,B.SilkS,Edge.Cuts` mirrored; layer = `<layer>,Edge.Cuts`; placement =
 `F.CrtYd,B.CrtYd,F.Fab,F.SilkS,Edge.Cuts` + hulls. Files land in `agent_dir(project)/
@@ -202,7 +210,11 @@ png_url, placement_hash, board_hash, markers: [...]}`; failures → `render_fail
   `test_render_zone_filled` (add a GND zone over the whole outline on F.Cu and B.Cu through the
   API, `refill_zones`, render top → passes `BOARD_SVG_LIMITS`; record bytes, elements,
   coords, max element coords, span, raster seconds and the raster worker's peak RSS —
-  `ru_maxrss` of `resource.getrusage(RUSAGE_CHILDREN)` delta — with `record_property`).
+  `ru_maxrss` of `resource.getrusage(RUSAGE_CHILDREN)` delta — with `record_property`);
+  `test_board_cli_serialised` (two concurrent `pcb_render` calls, `run_kicad_cli` wrapped to
+  record enter/exit times → the intervals never overlap; every call got `timeout=60` for
+  `export svg`, `timeout=120` for `render`); `test_render_cli_timeout` (`run_kicad_cli`
+  patched to raise `TimeoutError` → `render_failed`, tmp board copy deleted, lock released).
 - [ ] **Step 3: Run** — FAIL. **Step 4: Implement**; set `BOARD_SVG_LIMITS` to ≥ 4× the
   largest measured value of each field (ecc83 and the zone-filled board) and the board raster
   timeout to ≥ 3× the measured seconds, capped at 60 s, and `BOARD_RASTER_MEMORY_BYTES` to

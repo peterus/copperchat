@@ -178,8 +178,9 @@ width / 2` from other-net copper (tolerance 1e-6) and stays inside the edge inse
 
 - [ ] **Step 1: Failing property tests** (`test_router_props.py`, seeds 0..249, seed printed
   on failure): for every request with a returned path: `analyse_bends` per layer polyline
-  (pad ends `True` at the pads, `False` at vias) has `ninety == acute == off_angle ==
-  micro_jogs == short_chamfers == len(non_octilinear) == 0` (`test_output_m4_m7_zero`);
+  (pad ends `True` at the pads, `False` at vias) has `len(r.ninety) == len(r.acute) ==
+  len(r.off_angle) == len(r.micro_jogs) == len(r.short_chamfers) == len(r.non_octilinear)
+  == 0` (`r` = the `BendReport`; its failure fields are tuples) (`test_output_m4_m7_zero`);
   `exact_clearance_ok` (`test_no_obstacle_hit`); the path starts and ends at the exact pad
   centres (`test_exact_pad_centres`); `test_open_maps_always_route` (maps without obstacles →
   a path for every request); `test_deterministic` (each map routed twice → identical

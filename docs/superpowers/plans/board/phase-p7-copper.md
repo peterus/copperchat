@@ -1,7 +1,8 @@
 # Phase P7 — Planes, fanout, stitching, silk: `pcb_zones`, `pcb_fanout`, `pcb_stitch`, `pcb_tidy_silk`
 
 > Index contracts: B-C2, B-C4 (multi-stage, `BoardStage.undo`, `fail_after`), B-C6
-> (`classify` → ground net), B-C7 (`compute_metrics(only={"M11"})`), B-C8 (`FabPreset`
+> (`classify` → ground net), B-C7 (`compute_metrics(only={"M11"})` via
+> `run_cpu(metrics_job, …)`), B-C8 (`FabPreset`
 > silk values), B-C10 (`require_placement_approved`), B-C14; index calls 6, 8. Spec §7.2
 > "Copper", §8.3 (placement checkpoint), §10.3 step 5 (fanout/stitch **locked**), §11, §15.3
 > D1, §18.2. Spike 4A Q5 (`spikes/4a-board/fanout.py`, port, never import). **Wave 7: starts
@@ -17,7 +18,8 @@ failure, with M11 plane metrics in its report.
 **Files:**
 - Create: `cc/board/planes.py`, `cc/board/silk.py` (pure reference placement),
   `cc/kicad_tools/board/{zones,fanout,stitch,silk,specs_copper}.py`
-- Modify: `cc/kicad_tools/board/specs.py` (append four specs)
+- Modify: `cc/kicad_tools/board/specs.py` (append four specs), `cc/board/jobs.py` (append
+  `fanout_candidates_job`, `stitch_candidates_job`)
 - Tests: `backend/tests/unit/board/{test_planes,test_silk_plan,test_copper_schemas}.py`,
   `backend/tests/kicad/board/{test_zones,test_fanout,test_stitch,test_tidy_silk}.py`
   (+ append a module-scoped `copper_rig` fixture to `tests/kicad/board/conftest.py` that calls
@@ -95,8 +97,9 @@ placement approval (spec §8.3). Refusals: unknown net/layer/zone → `not_found
 with `outline.kind != "rect"` → `invalid_argument`. Stages: (1) create/update/delete in one
 commit, `undo` restores the updated/deleted zones from their stored pre-call data; (2) refill
 (`refill_zones`, blocking, `commit=False`); a refill after a compensation is done by stage 1's
-`undo`. Report: per zone `{name, kiid, layers, priority, filled_area_mm2}`, M11 (`compute_metrics(...,
-only={"M11"})`: fill ratio per plane layer, crossings), `next: "pcb_fanout"`.
+`undo`. Report: per zone `{name, kiid, layers, priority, filled_area_mm2}`, M11 (`run_cpu(metrics_job,
+model, doc, None, None, only=frozenset({"M11"}), timeout_s=30)` — the model keeps its fills,
+M11 needs them; never a direct `compute_metrics`: fill ratio per plane layer, crossings), `next: "pcb_fanout"`.
 
 - [ ] **Step 1: Failing unit tests** (`test_copper_schemas.py`): bounds and `additionalProperties`
   at every level for all four tools (zones: 257-point polygon, priority 101, `thermal.gap: 0`;
@@ -105,7 +108,8 @@ only={"M11"})`: fill ratio per plane layer, crossings), `next: "pcb_fanout"`.
   (three zones named as Task 1, In1.Cu filled area > 0, report M11 fill ratio for In1.Cu
   ≥ 0.85 recorded); `test_add_update_delete` (polygon zone added, its clearance updated 0.2 →
   0.3 and read back, deleted); `test_add_existing_name_refused`; `test_unknown_net`
-  (`not_found`, `closest`); `test_requires_placement_approval` (`pcb_move {items: [{ref:
+  (`not_found`, `closest`); `test_zones_m11_via_run_cpu` (spy: one `run_cpu(metrics_job,
+  …, only=frozenset({"M11"}))`, model with fills); `test_requires_placement_approval` (`pcb_move {items: [{ref:
   <a part with critical copper>, x: <x + 0.5>}], unroute: true}` → the approval is stale →
   `pcb_zones` refuses `placement_not_approved`; History undo restores the rig); `test_cost_per_zone` (3 zones → 3); `test_fail_after_1_restores`
   (an `update` + `delete` call with `fail_after=1` → zone set, settings and `board_hash` equal
@@ -122,11 +126,17 @@ only={"M11"})`: fill ratio per plane layer, crossings), `next: "pcb_fanout"`.
 **Interfaces:** schema `{net (required), via?: {diameter (0 < v ≤ 2), drill (0 < v ≤ 1)},
 max_stub? (0.1–3, default 1.0)}`; via default = the net's class via, stub width = the net's
 class track width. Cost `Logical(2)`, kind `board_fanout`; placement approval required.
-Algorithm (spike Q5, DRC-legalised rounds): stages `round_i_add` (commit: for every open pad
-create its next candidate's stub + via, **both `locked=True`**) and `round_i_check` (commit:
-`refill_zones` → `run_drc_task` → remove the items of every candidate whose KIIDs appear in a
-marker other than unconnected-items; a via in a `DANGLING_VIA` marker is rejected too; open
-pads advance to their next candidate) for i = 1…16 (a round with no open pad is a no-op).
+Candidates are generated once, before the first stage, off the event loop:
+`run_cpu(fanout_candidates_job, jobs.strip_fills(model), net, via=…, width=…, clearance=…,
+max_stub=…, timeout_s=30)` (`fanout_candidates_job` appended to `cc/board/jobs.py`; it calls
+`planes.fanout_candidates`). Algorithm (spike Q5, DRC-legalised rounds), three stages per
+round i = 1…16 (a round with no open pad is a no-op): `round_i_add` (commit: for every open
+pad create its next candidate's stub + via, **both `locked=True`**), `round_i_refill`
+(`commit=True`, its own **pushed** commit: `refill_zones`, blocking), `round_i_check`
+(commit: `run_drc_task` → remove the items of every candidate whose KIIDs appear in a marker
+other than unconnected-items; a via in a `DANGLING_VIA` marker is rejected too; open pads
+advance to their next candidate). The DRC therefore only ever sees pushed state — nothing
+relies on DRC seeing an open commit (P1a probe).
 Pads without any candidate: when a pour of `net` on the pad's layer exists and, after the last
 refill, no unconnected marker names the pad → `via_pour`; else `unconnected` with reason
 (`no_candidate` = fine-pitch/QFN, or `all_rejected`). Report: `smd_pads`, `fanned_out`,
@@ -139,7 +149,12 @@ refill, no unconnected marker names the pad → `via_pour`; else `unconnected` w
   (`analyse_bends` on each stub, pad entry exempt) and their outside-pad length ≤ 1.0 mm; DRC
   task: no marker other than unconnected-items references a created KIID;
   `test_no_via_in_pad` (no created via overlaps any pad polygon); `test_fanout_fail_after_mid`
-  (`fail_after=3`, i.e. after round 2's add → KIID sets and `board_hash` equal pre-call);
+  (`fail_after=4`, i.e. after round 2's add — stages are add, refill, check per round → KIID
+  sets and `board_hash` equal pre-call); `test_fanout_fail_after_refill` (`fail_after=2`,
+  after round 1's pushed refill → same equality); `test_fanout_refill_pushed_before_drc`
+  (spy on `session.commit` / `run_drc_task`: every DRC call happens after the refill commit
+  of its round was pushed, never inside an open commit); `test_fanout_candidates_via_run_cpu`
+  (spy: `fanout_candidates_job` runs through `run_cpu` once, with a fill-stripped model);
   `test_fanout_requires_approval`; `test_fanout_cost_2`; `test_fanout_unknown_net`
   (`not_found`, `closest`); `test_m11_in_report`.
 - [ ] **Step 2: Run** `uv run pytest -m kicad tests/kicad/board/test_fanout.py` — FAIL.
@@ -149,10 +164,17 @@ refill, no unconnected marker names the pad → `via_pour`; else `unconnected` w
 ### Task 4: `pcb_stitch`
 
 **Interfaces:** schema `{net (required), pitch? (1–50, default 5.0), edge_ring? (default false),
-via?}`. Cost `Logical(2)`, kind `board_stitch`; placement approval required. Stages: (1) add
-every `stitch_candidates` via `locked=True` (commit); (2) `refill_zones` → DRC → remove vias in
-any marker other than unconnected-items, and vias in `DANGLING_VIA` markers (spike: grid vias
-where no pour exists dangle) (commit); (3) refill. Report: `candidates`, `kept`,
+via?}`. Cost `Logical(2)`, kind `board_stitch`; placement approval required. Candidates:
+`run_cpu(stitch_candidates_job, jobs.strip_fills(model), net, via=…, clearance=…, pitch=…,
+edge_ring=…, timeout_s=30)` (`stitch_candidates_job` appended to `cc/board/jobs.py`, calls
+`planes.stitch_candidates`; the zone outlines it needs are not fill polygons). Module constant
+`MAX_STITCH_VIAS = 2000`: more candidates → `invalid_argument` with `details = {candidates:
+<would-be count>, max: 2000}` and a suggestion (larger `pitch`, no `edge_ring`), before any
+stage runs (board untouched). Stages: (1) add every candidate via `locked=True` (commit);
+(2) `refill` (`commit=True`, its own **pushed** commit: `refill_zones`); (3) DRC → remove
+vias in any marker other than unconnected-items, and vias in `DANGLING_VIA` markers (spike:
+grid vias where no pour exists dangle) (commit) — the DRC sees only pushed state; (4)
+refill (commit). Report: `candidates`, `kept`,
 `rejected_drc`, `removed_dangling`, `edge_ring` count, M11, `next: "pcb_tidy_silk"`.
 
 - [ ] **Step 1: Failing kicad tests** (`test_stitch.py`, `copper_rig` + default zones +
@@ -160,8 +182,14 @@ where no pour exists dangle) (commit); (3) refill. Report: `candidates`, `kept`,
   no `DANGLING_VIA` and no clearance marker on a created KIID); `test_edge_ring` (with
   `edge_ring: true` more vias than without, ring vias within 0.5 mm of the inset outline);
   `test_stitch_without_two_zone_layers` (only In1.Cu zone → `kept == 0`, report explains);
-  `test_stitch_fail_after_1`, `test_stitch_fail_after_2` (KIID sets, `board_hash` equal
-  pre-call); `test_stitch_cost_2`.
+  `test_stitch_fail_after_1`, `test_stitch_fail_after_2` (after the pushed refill),
+  `test_stitch_fail_after_3` (after DRC + remove) (KIID sets, `board_hash` equal pre-call);
+  `test_stitch_refill_pushed_before_drc` (spy as for fanout); `test_stitch_cost_2`;
+  `test_stitch_too_many_vias` (`pitch: 1` on the 60 × 45 mm rig with `edge_ring: true` →
+  candidate count > 2000 → `invalid_argument`, `details.candidates` equals the
+  `stitch_candidates` count, `details.max == 2000`, `board_hash` unchanged; or
+  `MAX_STITCH_VIAS` monkeypatched to 5 if the rig yields fewer);
+  `test_stitch_candidates_via_run_cpu` (spy: one `run_cpu(stitch_candidates_job, …)`).
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS.
 - [ ] **Step 5: Commit** `feat(board): pcb_stitch with locked vias and dangling-via removal`.
 
@@ -220,6 +248,6 @@ reason}], `silk_markers_before`, `silk_markers_after`, `board_hash` changed.
   `test_tidy_silk_synth` pass on `sp4_synth`.
 - [ ] Every multi-stage tool has `fail_after` tests with KIID sets and `board_hash` equal to
   the pre-call state (`test_fanout_fail_after_mid`, `test_fail_after_1_restores`,
-  `test_stitch_fail_after_1/2`, `test_tidy_silk_fail_after_1/2`).
+  `test_fanout_fail_after_refill`, `test_stitch_fail_after_1/2/3`, `test_tidy_silk_fail_after_1/2`).
 - [ ] All fanout/stitching copper is created `locked` (P6b's re-fill keeps it).
 - [ ] M11 values and fanout/stitch counts recorded in the index.

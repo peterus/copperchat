@@ -90,26 +90,28 @@ rectangle); **T-junctions**: a branch node (degree ≥ 3) outside every pad and 
 incident segments meet at 90° ± 0.5°; arcs (`ArcTrack`) are reported as `non_octilinear`
 (owner: straight segments only).
 
-- [ ] **Step 1: Failing unit tests** (`test_bends.py`, plain point lists and `builders`):
+- [ ] **Step 1: Failing unit tests** (`test_bends.py`, plain point lists and `builders`; `report`
+  = the returned `BendReport` — its failure fields are tuples of points, compared by `len`;
+  `bends` is an int):
   `test_constants` (`CHAMFER_MIN(0.1) == 0.25`, `CHAMFER_MIN(0.4) == 0.4`, `JOG_MIN(0.2) == 0.4`);
-  `test_straight_ok`; `test_ninety_fails` (L shape → `ninety == 1`); `test_valid_chamfer_passes`
+  `test_straight_ok`; `test_ninety_fails` (L shape → `len(report.ninety) == 1`); `test_valid_chamfer_passes`
   (w 0.2: two same-sense 45° bends with a 0.25 mm piece → 0 short chamfers, `bends == 2`; w 0.4:
-  0.40 passes); `test_short_chamfer_fails` (w 0.2, piece 0.10 mm → `short_chamfers == 1`;
+  0.40 passes); `test_short_chamfer_fails` (w 0.2, piece 0.10 mm → `len(report.short_chamfers) == 1`;
   w 0.4, piece 0.39 → 1); `test_micro_jog_fails` (w 0.2, opposite-sense pair 0.30 mm apart →
-  `micro_jogs == 1`; 0.40 → 0); `test_valid_chamfer_never_micro_jog`;
-  `test_acute_135_fails` (δ = 135° → `acute == 1`); `test_reversal_is_acute` (180°);
-  `test_vertex_90_8_fails` (δ = 90.8° → `off_angle == 1`, `ninety == 0`);
-  `test_vertex_60_fails` (δ = 60° → `off_angle == 1`); `test_vertex_46_fails` (δ = 46° →
-  `off_angle == 1`, `bends == 0`); `test_vertex_45_4_is_bend` (δ = 45.4° → 45° bend, no
+  `len(report.micro_jogs) == 1`; 0.40 → 0); `test_valid_chamfer_never_micro_jog`;
+  `test_acute_135_fails` (δ = 135° → `len(report.acute) == 1`); `test_reversal_is_acute` (180°);
+  `test_vertex_90_8_fails` (δ = 90.8° → `len(report.off_angle) == 1`, `len(report.ninety) == 0`);
+  `test_vertex_60_fails` (δ = 60° → `len(report.off_angle) == 1`); `test_vertex_46_fails` (δ = 46° →
+  `len(report.off_angle) == 1`, `bends == 0`); `test_vertex_45_4_is_bend` (δ = 45.4° → 45° bend, no
   failure);
-  `test_off_by_0_6_deg_fails` (segment at 45.6° → `non_octilinear == 1`) and
+  `test_off_by_0_6_deg_fails` (segment at 45.6° → `len(report.non_octilinear) == 1`) and
   `test_off_by_0_4_deg_passes` (45.4° → 0); `test_t_junction_90_fails` (a branch ending on the
-  interior of a straight same-net track at 90°, no pad there → `t_junctions == 1` via
+  interior of a straight same-net track at 90°, no pad there → `len(report.t_junctions) == 1` via
   `analyse_tracks`); `test_t_junction_45_ok`; `test_t_junction_inside_pad_ok`;
   `test_pad_entry_only_exempt_at_pad`: pad → 0.10 mm stub → 45° → 0.10 mm → opposite 45° →
-  2 mm: `pad_ends=(True, False)` → `micro_jogs == 0`, `bends == 1`; the same points with
-  `(False, False)` → `micro_jogs == 1`; a 90° at the first vertex with `(True, False)` →
-  `ninety == 1`; a short chamfer at vertices 2–3 from a pad end → `short_chamfers == 1`;
+  2 mm: `pad_ends=(True, False)` → `len(report.micro_jogs) == 0`, `bends == 1`; the same points with
+  `(False, False)` → `len(report.micro_jogs) == 1`; a 90° at the first vertex with `(True, False)` →
+  `len(report.ninety) == 1`; a short chamfer at vertices 2–3 from a pad end → `len(report.short_chamfers) == 1`;
   `test_polylines_join_split` (two collinear segments → one polyline of 2 points; split at a
   via); `test_arc_reported`.
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS.
@@ -195,8 +197,9 @@ M1 = not placed + courtyard overlaps (same side, `polygons_overlap`) + SMD parts
 ∉ `doc.allowed_sides` + parts without courtyard (module constant `M1_EDGE_OVERHANG = False`:
 when the owner enables it (index "Provisional" 2), a part listed in `board.md` → Placement
 edges may overhang its assigned edge only; test both settings); `n/a` when `outline.kind == "none"`. M2 =
-`drc.unconnected` (`n/a` without DRC). M3 = error markers (except unconnected) + parity
-markers + warnings not accepted; a warning is accepted when its normalised type equals a row's
+`drc.unconnected` (`n/a` without DRC). M3 = error markers (except unconnected) of the API
+`DrcResult` + parity markers (CLI, full check only; holes placed by `pcb_set_outline` carry
+`not_in_schematic` and produce none) + API warnings not accepted; a warning is accepted when its normalised type equals a row's
 `drc_type` and the refs of its KIIDs ⊆ the row's `items` (non-empty); accepted ones →
 `review` and listed. M4 = `analyse_tracks` non-octilinear + ninety + acute + off_angle +
 T-junctions.

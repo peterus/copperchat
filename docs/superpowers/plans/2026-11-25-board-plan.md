@@ -99,7 +99,7 @@ means the file is shared and the phase only adds lines (rebase on `main` and kee
 | `backend/tests/fixtures/projects/sp4_synth/**`, `scripts/make-sp4-synth.py`, `scripts/refresh-fixtures.sh`, `backend/tests/support/kicad_project.py` (`synth_session`), `backend/tests/kicad/board/goldens/sp4_synth_summary.json` | P1b (1) | P1a none |
 | `cc/agent/{profiles,sdk_backend,fake}.py`, `cc/agent/sdk_tools.py` (board publish), `cc/history/{live,hooks}.py`, `cc/views/{snapshot,footprint_render,_raster_worker}.py` (`_raster_worker`: CPU/memory limits from argv), new `cc/views/board_render.py`, `cc/board/render.py`, `cc/web/routes_conversations.py`, `frontend/src/components/sessions/NewSessionDialog.tsx`, `cc/design_docs/service.py`, `cc/skills/builtin/design-docs/templates/board.md`, new `cc/skills/builtin/session-board/`, `cc/kicad_tools/board/{specs,status,views}.py`, `cc/tools/registry.py`, `cc/web/app.py` (`/api/features` registration), new `frontend/src/api/features.ts`, `cc/history/service.py` (pcb branch of the turn-end view refresh) | P1c (2) | — |
 | `cc/kicad_tools/board/{sync,setup}.py`, `cc/kicad_tools/board/specs_setup.py`, `cc/board/staging.py` (consumes P1a's `presets.py`) | P2 (3) | `board/specs.py` append |
-| `cc/board/{classify,boardmd,metrics}.py`, `cc/board/jobs.py` (the one module of `run_cpu` job functions: `analyse_job`, `metrics_job(model, doc, drc, preset, only, parity=None)` — builds the `Classification` itself and passes `parity` to `compute_metrics`; P3b's `pcb_check` calls it, never `compute_metrics` directly — plus `strip_fills`), `cc/board/geom.py` (bend analysis, append), `cc/kicad_tools/board/{analysis,specs_analysis}.py` | P3a (3) | `board/specs.py` append; `cc/board/jobs.py` append (P4 `place_block_job` / `legalize_job`, P5b/P6b if needed) |
+| `cc/board/{classify,boardmd,metrics}.py`, `cc/board/jobs.py` (the one module of `run_cpu` job functions: `analyse_job`, `metrics_job(model, doc, drc, preset, only, parity=None)` — builds the `Classification` itself and passes `parity` to `compute_metrics`; every metrics computation (P3b `pcb_check`, P6b fill report, P7 `pcb_zones`, P8 fab report) is `run_cpu(metrics_job, …, only=…)`, never `compute_metrics` directly — plus `strip_fills`), `cc/board/geom.py` (bend analysis, append), `cc/kicad_tools/board/{analysis,specs_analysis}.py` | P3a (3) | `board/specs.py` append; `cc/board/jobs.py` append (P4 `place_block_job` / `legalize_job`, P5b/P6b if needed, P7 `fanout_candidates_job` / `stitch_candidates_job`) |
 | `cc/db/migrations/0013_board.sql`, `cc/db/repos/board.py`, new `cc/approvals.py`, `cc/kicad_tools/footprints/approve.py` (refactor to `cc/approvals.py`), `cc/editing/gate.py` (`PLAN_EXEMPT_TOOLS`), `cc/kicad_tools/board/{check,approve,checkpoints,specs_check}.py`, `board/status.py` + `board/views.py` (evidence/checkpoint fields) | P3b (4) | `board/specs.py` append |
 | `cc/board/router/{__init__,grid,astar,simplify,pairs}.py` — **only P5a creates `cc/board/router/__init__.py`** | P5a (4) | P6a must not create or edit `__init__.py` (it adds `chamfer.py`, imported by full path); if P5a is not merged yet, P6a creates an empty `__init__.py` only if absent and keeps P5a's version on rebase |
 | `scripts/fetch-freerouting.sh`, `docker/freerouting.lock`, `docker/app/Dockerfile`, `.github/workflows/ci.yml` (kicad job cache + fetch step), `cc/board/freerouting.py`, `cc/board/router/chamfer.py`, `cc/config.py` (freerouting settings, append), `LICENSES/` notices, `scripts/app-image-tools.sh`, `.gitignore` | P6a (4) | — |
@@ -107,7 +107,7 @@ means the file is shared and the phase only adds lines (rebase on `main` and kee
 | `cc/board/placer/**`, `cc/kicad_tools/board/{place,unroute_ops,specs_place}.py` | P4 (5) | — |
 | `cc/kicad_tools/board/{route,specs_route}.py` | P5b (6) | — |
 | `cc/kicad_tools/board/{fill,specs_fill}.py`, `cc/agent/profiles.py` + `cc/agent/{sdk_backend,fake}.py` (freerouting filter + call sites) | P6b (7) | — |
-| `cc/board/{planes,silk}.py`, `cc/kicad_tools/board/{zones,fanout,stitch,silk,specs_copper}.py` | P7 (7) | — |
+| `cc/board/{planes,silk}.py`, `cc/kicad_tools/board/{zones,fanout,stitch,silk,specs_copper}.py` | P7 (7) | `cc/board/jobs.py` append (`fanout_candidates_job`, `stitch_candidates_job`) |
 | `cc/board/{fab,paths}.py`, `cc/kicad_tools/board/{fab,specs_fab}.py` | P8 (8) | — |
 | `backend/tests/kicad_e2e/**`, `backend/pyproject.toml` (marker), `backend/tests/support/sharding.py` / `tests/unit/test_sharding.py`, `ci.yml` (`kicad-e2e` job), `scripts/odh-dry-run.py`, `scripts/update-goldens.sh` | P9a (9) | — |
 | `cc/skills/builtin/{session-board,board-layout,copperchat-tools}/`, `cc/agent/sdk_backend.py` (prompt), `cc/config.py` (default on), README, `docs/architecture.md`, `.env.example`, `backend/tests/live/test_board_eval.py` | P9b (10) | — |
@@ -319,11 +319,13 @@ Side = Literal["top", "bottom"]
     net_class_of: tuple[tuple[str, str], ...]   # (net, class)
     groups: tuple[tuple[str, tuple[str, ...]], ...]  # (group name, refs)
     dru_text: str; stackup: tuple[tuple[str, str], ...]
+    dru_marker: str = ""                         # "" normally; "oversize:<st_size>:<st_mtime_ns>" when .kicad_dru > 1 MiB (dru_text then "") — in board_hash
+    warnings: tuple[str, ...] = ()               # load warnings (e.g. .kicad_dru not a regular file / oversize); in no hash
     def part(self, ref: str) -> Part: ...           # KeyError if missing
     def placed(self, part: Part) -> bool: ...       # courtyard fully inside outline; False if outline.kind == "none"
 
 def placement_hash(m: BoardModel) -> str   # sha256 hex of canonical JSON: sorted (ref, round(x,2), round(y,2), round(rot % 360,1), side, locked) + outline (rounded 0.01) + rule areas (name, layers, keepout, outline rounded 0.01)
-def board_hash(m: BoardModel) -> str       # sha256 hex: parts incl. lib_id/value/texts, tracks, arcs, vias (rounded 0.001, widths, locked), zones minus fill (outline, net, layers, priority, settings), graphics, rules, net classes + assignments, dru_text (newlines normalised), copper_layers, layer_types, stackup. KIID-independent.
+def board_hash(m: BoardModel) -> str       # sha256 hex: parts incl. lib_id/value/texts, tracks, arcs, vias (rounded 0.001, widths, locked), zones minus fill (outline, net, layers, priority, settings), graphics, rules, net classes + assignments, dru_text (newlines normalised), dru_marker, copper_layers, layer_types, stackup. KIID-independent.
 ```
 
 `TextItem(kind, text, layer, at, size, thickness, visible)` and `GraphicItem(layer, kind, points,
@@ -336,7 +338,8 @@ width)` are pure too. `cc/board/geom.py` (P1a): `octi_dist(a, b) -> float`,
 
 ```python
 # read.py
-def load_board_model(h: KicadHandle, project: Project) -> BoardModel   # sync; run via session.call; one API read; dru_text read from <project>.kicad_dru if present
+def load_board_model(h: KicadHandle, project: Project) -> BoardModel   # sync; run via session.call; one API read; dru_text read from <project>.kicad_dru if present: lstat → regular file only (symlink/FIFO/dir → absent + model warning), os.open(O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_NOCTTY) + fstat regular (as cc/design_docs/paths.py _READ_FLAGS), cap DRU_MAX_BYTES = 1 MiB (bigger → dru_text "", dru_marker set, warning)
+def read_dru(path: Path) -> tuple[str, str, tuple[str, ...]]           # (dru_text, dru_marker, warnings); pure, no kipy (P1a)
 async def board_model(ctx: ToolContext) -> BoardModel                   # session.call(lambda h: load_board_model(h, ctx.project))
 def require_board(ctx: ToolContext) -> None                             # raises StructuredToolError(code="no_board") when "pcb" not open
 
@@ -346,6 +349,7 @@ def require_board(ctx: ToolContext) -> None                             # raises
 @dataclass(frozen=True) class DrcResult: markers: tuple[DrcMarker, ...]; unconnected: int; seconds: float
                                          # unconnected = number of unconnected-items markers (DrcTaskResult has no count at the pin)
 def run_drc_task(h: KicadHandle, *, timeout_s: float = 60.0) -> DrcResult    # StartDrcTask → GetTaskStatus → GetDrcTaskResult
+class DrcTimeout(StructuredToolError): ...                                   # code "drc_timeout"; still TS_RUNNING at timeout_s (no cancel at the pin: the next call waits ≤ 30 s for it within its own budget, P1a)
 def export_specctra_dsn(h: KicadHandle, dest: Path) -> None                  # RunBoardJobExportSpecctraDsn (live board)
 def import_specctra_session(h: KicadHandle, ses: Path) -> None               # ImportSpecctraSession
 def save_document_to_string(h: KicadHandle) -> str                           # SaveDocumentToString
@@ -530,6 +534,7 @@ BoardView = Literal["top","bottom","layer","placement","3d"]
 async def render_board(ctx: ToolContext, view: BoardView, *, layer: str | None = None,
                        region: Rect | None = None, highlight_nets: Sequence[str] = (),
                        markers: Sequence[Marker] = (), angle: str = "top") -> BoardRender
+BOARD_CLI_LOCK = asyncio.Semaphore(1)   # process-wide; every board kicad-cli call (svg 60 s, 3d render 120 s, P3b parity DRC 120 s) runs inside it, like footprint_render._render_lock
 # cc/board/render.py (pure): wrap_svg(svg_text, *, extent, scale_bar=True, hulls, markers, title) -> str
 BOARD_SVG_LIMITS = SvgLimits(max_bytes=24 MiB, max_elements=200_000, max_coords=2_000_000,
                              max_element_coords=50_000, max_span=…)   # P1c measures on fixtures, may tune
@@ -616,7 +621,7 @@ def pair_coupling(a: RoutePath, b: RoutePath) -> dict[str, float]   # keys lengt
 def prune_model(model: BoardModel, req: RouteRequest | tuple[RouteRequest, RouteRequest]) -> BoardModel   # only items intersecting the retry window; callers pass it to solve/solve_pair
 # cc/kicad_tools/board/route.py (P5b), reused by P6b rip-and-reroute and ladder rung (c):
 async def route_connections(sctx: BoardStageContext, plans: Sequence[ConnPlan], *, lock: bool,
-                            deadline: float | None = None) -> RouteOutcome   # deadline = time.monotonic() value; checked before every margin attempt; connections not started by then → failed "timeout"; each run_cpu gets timeout_s=min(30, remaining), wait_s=remaining, each DRC min(60, remaining); worst case deadline + one DRC (≤ 60 s)
+                            deadline: float | None = None) -> RouteOutcome   # deadline = time.monotonic() value; checked before every margin attempt; connections not started by then → failed "timeout"; each run_cpu gets timeout_s=min(30, remaining), wait_s=remaining, each DRC min(60, remaining); DrcTimeout → that connection failed "timeout" (its items removed), others kept; worst case deadline + one DRC (≤ 60 s)
 #   RouteOutcome(routed: tuple[str, ...], failed: tuple[tuple[str, str], ...]); connection key "{net}:{refA}.{padA}-{refB}.{padB}"
 #   failure reasons: no_path, too_large, timeout, drc_rejected: <text>
 # chamfer.py (P6a)
@@ -646,7 +651,8 @@ async def run_freerouting(rt: FreeroutingRuntime, dsn: Path, ses: Path, *, timeo
 `stale`, `check_failed`, `changed_during_export`}), `approval_not_allowed`
 (`details.guard` 1–7, B-C10), `freerouting_unavailable`, `fill_not_acceptable` (`details.reason` ∈ {`rip_ratio`,
 `timeout`, `freerouting_error`}), `board_compute_timeout`,
-`drc_rejected`, `verification_failed` (existing, `cc/kicad_tools/edit/engine.py`), `output_path_unsafe`, `render_failed`, `export_failed`,
+`drc_rejected`, `drc_timeout` (`DrcTimeout`, B-C3; deadline-bound callers map it per
+connection/stage instead of failing the call — P5b, P6b), `verification_failed` (existing, `cc/kicad_tools/edit/engine.py`), `output_path_unsafe`, `render_failed`, `export_failed`,
 `session_type_unavailable` (HTTP 400), and the existing `document_inconsistent`, `read_only`,
 `save_failed`, `plan_required`, `plan_step_required`. Change-log kinds (`BOARD_KINDS`,
 `cc/changes/repo.py` + `highlight.ts`): `board_` + tool name without `pcb_`, for every

@@ -1,6 +1,7 @@
 # Phase P8 — JLCPCB fab package and 3D export
 
-> Index contracts: B-C2 (`board_hash`), B-C3 (`require_board`), B-C7 (`compute_metrics` for
+> Index contracts: B-C2 (`board_hash`), B-C3 (`require_board`), B-C7 (`compute_metrics` via
+> `run_cpu(metrics_job, …)` for
 > the report), B-C8 (`FabPreset`), B-C10 (`require_board_approved`), B-C14
 > (`output_path_unsafe`, `export_failed`, `not_approved`); index call 7 (plain `ToolSpec`s,
 > cost 0, no change entry), Global Constraints "Fab". Spec §6.4 (fab outputs not snapshotted),
@@ -160,8 +161,10 @@ else `rmtree(tmp)` and `not_approved` (`details.reason == "changed_during_export
 swapped; run each `FabCommand` with `run_kicad_cli(settings, args,
 timeout=120, cwd=tmp)` (non-zero → `export_failed` with the stderr tail); zip `gerbers/` +
 `drill/` into `<board>-jlcpcb.zip` (`zipfile`, deflated, sorted names, fixed timestamps);
-write `bom-jlcpcb.csv`, `cpl-jlcpcb.csv`, `fab-report.md` (metrics from `compute_metrics` on
-the model with a fresh `run_drc_task`; a "Swept leftovers" line lists `swept` when non-empty);
+write `bom-jlcpcb.csv`, `cpl-jlcpcb.csv`, `fab-report.md` (metrics from `run_cpu(metrics_job,
+model, doc, drc, preset_for(model, doc), only=None, timeout_s=30)` — all of M1–M14, so the
+model keeps its fills (M11) — with `drc` = a fresh `run_drc_task`; never a direct
+`compute_metrics`; a "Swept leftovers" line lists `swept` when non-empty);
 remove `src/`; `swap_in(tmp, target, id)`; any error
 → `rmtree(tmp)` and re-raise (old package untouched). Result `data = {dir: "fab/jlcpcb",
 files: [{path, bytes}], board_hash, swept, notes: ["BOM/CPL not validated for JLC assembly"],
@@ -179,6 +182,8 @@ next: "offer a git commit of fab/ (spec §7.2: fab/ is a normal repo directory)"
   row per non-DNP footprint; `fab-report.md` contains the `board_hash`);
   `test_kicad_data_untouched` (`.kicad_pcb`, `.kicad_pro`, `.kicad_dru` sha256 and
   `session.modified_docs` unchanged; no change-log entry; budget not charged);
+  `test_report_metrics_via_run_cpu` (spy: the report's metrics come from one
+  `run_cpu(metrics_job, …, only=None)` call; `compute_metrics` is never called in-process);
   `test_reexport_keeps_old_on_failure` (first export OK; second export with the zip step patched
   to raise → `export_failed`, the first package byte-identical, no `.jlcpcb.tmp-*` /
   `jlcpcb.old-*` left); `test_leftover_swept` (a `fab/.jlcpcb.tmp-0123456789ab/` and a

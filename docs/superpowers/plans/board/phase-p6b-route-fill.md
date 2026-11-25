@@ -198,10 +198,13 @@ margin attempt, each `run_cpu` `min(30, remaining)` with `wait_s = remaining`, e
 `min(60, remaining)`), so ripped connections not started by then are reported in `rejected`
 with reason `timeout` (their fill copper is already removed; they stay open and the ladder's
 `next` names them); stage 7 always runs (cheap). The post-processing phase thus ends no later
-than `post_deadline` + one DRC (≤ 60 s); the call's worst case is `timeout_s` + export/import
-+ 120 s + one DRC (≤ 60 s).
-5. `postprocess` (`commit=True`): `run_cpu(postprocess, model, frozenset(new non-ground
-   KIIDs), timeout_s=min(60, remaining), wait_s=remaining)`. **Rejection rule (spec §10.4):**
+than `post_deadline` + one DRC (≤ 60 s); the call's worst case is `timeout_s` (≤ 600 s) +
+DSN export/SES import (≤ 60 s together — the budget the executor records as built on
+`sp4_synth`) + `POST_DEADLINE_S` (120 s) + one DRC (≤ 60 s) ≈ **840 s** (`FILL_WORST_CASE_S
+= 840`, module constant; Step 2's threshold).
+5. `postprocess` (`commit=True`): `run_cpu(postprocess, jobs.strip_fills(model), frozenset(new
+   non-ground KIIDs), timeout_s=min(60, remaining), wait_s=remaining)` (the zone fill
+   polygons are never pickled to the worker, as for every board `run_cpu` job). **Rejection rule (spec §10.4):**
    fill connections = non-ground connections unrouted before and routed after the import;
    `len(distinct rip keys ∩ fill connections) / len(fill connections) > 0.20` →
    `fill_not_acceptable` with `details = {reason: "rip_ratio", fill_connections, rip, ratio,
@@ -210,7 +213,11 @@ than `post_deadline` + one DRC (≤ 60 s); the call's worst case is `timeout_s` 
    restores the pre-fill board. Else apply `replace` (remove old KIIDs, create new tracks),
    run the DRC task (`sctx.drc(timeout_s=min(60, remaining))`); a replacement whose new
    KIIDs appear in a non-`unconnected` marker is reverted and its connection added to the rip
-   list.
+   list. A `DrcTimeout` (B-C14 `drc_timeout`, P1a) here does **not** abort the call: every
+   replacement of this stage is kept unverified-by-DRC, reported in `drc_skipped: true`, and
+   the stage-7/final `metrics` still run (the user's next `pcb_check` re-verifies); stage 6's
+   own DRC timeouts are handled per connection by `route_connections` (P5b: that connection
+   fails with reason `timeout`, the others are kept).
 6. `reroute` (`commit=False`; P5b's `route_connections(sctx, plans, lock=False,
    deadline=post_deadline)` commits per
    connection as `pcb_route` does): remove the fill's tracks/vias of every ripped connection, re-route each
@@ -221,8 +228,9 @@ than `post_deadline` + one DRC (≤ 60 s); the call's worst case is `timeout_s` 
    `relock_failed`.
 Report adds `chamfered`, `merged`, `ripped`, `rerouted`, `rejected` (per connection with
 reason and position), `relocked`, `relock_failed`, `completion` (non-ground routed / all
-non-ground connections), `metrics` = `compute_metrics(..., only={"M4","M5","M7","M12"})`
-summary, and `next` per ladder rung (spec §10.3: (a) more passes, (b) `pcb_unroute
+non-ground connections), `metrics` = `run_cpu(metrics_job, jobs.strip_fills(model), doc,
+None, None, only=frozenset({"M4","M5","M7","M12"}), timeout_s=min(30, remaining))` summary
+(never a direct `compute_metrics`; index jobs.py ownership row), and `next` per ladder rung (spec §10.3: (a) more passes, (b) `pcb_unroute
 {nets: […critical signal nets next to open connections], unlock_only: true}` then
 `relock_nets`, (c) `pcb_route`, (d) ask the user — never "done" with open connections).
 
@@ -246,7 +254,15 @@ summary, and `next` per ladder rung (spec §10.3: (a) more passes, (b) `pcb_unro
   (`POST_DEADLINE_S` monkeypatched to 2.0, the post-processor and every re-route `run_cpu`
   patched to sleep their full `timeout_s` → stages 5–7 together finish within 2.0 s + 60 s,
   and every spied `run_cpu` / `drc` got `timeout_s ≤ remaining`); `test_freerouting_gets_timeout_s`
-  (spy on `run_freerouting`: `timeout_s` equals the argument, not the post deadline).
+  (spy on `run_freerouting`: `timeout_s` equals the argument, not the post deadline);
+  `test_postprocess_job_gets_stripped_model` (spy on `run_cpu`: the `postprocess` job's model
+  argument has no zone fill polygons — `jobs.strip_fills` applied);
+  `test_postprocess_drc_timeout_keeps_call` (stage 5's DRC patched to raise `DrcTimeout` →
+  the call succeeds, `drc_skipped: true`, replacements kept, no `drc_timeout` error);
+  `test_reroute_drc_timeout_per_connection` (stage 6's DRC patched to raise `DrcTimeout` for
+  the second of 2 ripped connections → `rerouted == 1`, the second in `rejected` with reason
+  `timeout`, the first's tracks kept); `test_fill_metrics_via_run_cpu` (spy: the report's
+  metrics come from one `run_cpu(metrics_job, …, only=…)` call).
 - [ ] **Step 2: SDK tool-call limit check** (spec §20): claude-agent-sdk 0.2.168's Python side
   has no per-tool-call timeout (only hook-matcher timeouts and the initialize timeout read from
   `CLAUDE_CODE_STREAM_CLOSE_TIMEOUT`; verified while planning in the package's `client.py` /
@@ -254,11 +270,14 @@ summary, and `next` per ladder rung (spec §10.3: (a) more passes, (b) `pcb_unro
   MCP tool timeout (`MCP_TOOL_TIMEOUT`). The executor reads the bundled CLI's handling for
   `type: "sdk"` servers and its default, and measures it with a `live_sdk` probe
   (`tests/live/test_tool_duration_live.py`: a test-only tool that sleeps 700 s is called once;
-  the result arrives or the CLI's error text is recorded). Outcome → "As built": if the limit
-  is < 720 s, set `env["MCP_TOOL_TIMEOUT"] = "900000"` in `build_options`
+  the result arrives or the CLI's error text is recorded; the probe sleeps 900 s when the
+  700 s call succeeds, so a limit between 700 and 900 s is still seen). Outcome → "As built":
+  the threshold is the call's worst case `FILL_WORST_CASE_S` = 840 s (above). If the limit
+  `L` is < 840 s, set `env["MCP_TOOL_TIMEOUT"] = "900000"` in `build_options`
   (`cc/agent/sdk_backend.py`, unit test `test_mcp_tool_timeout_env`); if that does not lift it,
-  lower `timeout_s`'s schema maximum to `limit − 120` s and update the index Global
-  Constraints with the owner-visible reason.
+  cap `timeout_s`'s schema maximum at `L − 240` s (240 = export/import 60 + post 120 + DRC
+  60), record `L` and the cap in "As built (P6b)" and update the index Global Constraints
+  with the owner-visible reason.
 - [ ] **Step 3: Run** `uv run pytest -m kicad tests/kicad/board/test_fill_postprocess.py` —
   FAIL. **Step 4: Implement.** **Step 5: Run** — PASS; record fill seconds, ripped/rerouted
   counts and the completion on `sp4_synth`.

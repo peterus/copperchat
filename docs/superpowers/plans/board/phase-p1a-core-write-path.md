@@ -25,7 +25,7 @@ user-visible tool yet (everything behind `COPPERCHAT_BOARD_TOOLS`, default off).
   re-baseline only, Task 7), `cc/kicad_tools/edit/engine.py` (refuse `BoardChangeSet`),
   `cc/changes/{repo,diff}.py` (`BOARD_KINDS`), `frontend/src/components/changes/highlight.ts`,
   `.env.example` (commented `COPPERCHAT_BOARD_TOOLS=off`)
-- Tests: `backend/tests/unit/board/{__init__,builders,test_model,test_hashes,test_geom,test_presets,test_worker,test_engine_unit}.py`,
+- Tests: `backend/tests/unit/board/{__init__,builders,test_model,test_hashes,test_geom,test_presets,test_worker,test_engine_unit,test_read_dru}.py`,
   `backend/tests/unit/agent/test_sdk_tools_reload.py`,
   `backend/tests/unit/history/test_absent_entries.py`, `backend/tests/unit/test_config.py`,
   `backend/tests/unit/test_session_doc_commit.py`, `backend/tests/unit/changes/test_board_kinds.py`,
@@ -161,11 +161,31 @@ areas incl. keepout flags; `filled_area_mm2` from filled polygons), Edge.Cuts gr
 shape set, `"none"` if no Edge.Cuts item), enabled copper layers, design rules (name →
 mm), net classes + effective class per net (`get_netclass_for_nets`, project via
 `board_project`), groups (name → member refs), `dru_text` from
-`<project>.kicad_dru` (UTF-8, `""` if absent), stackup `(layer, thickness/material)` pairs.
+`<project>.kicad_dru` (UTF-8, `""` if absent) — read defensively, like
+`cc/design_docs/paths.py` (`_READ_FLAGS`, L49): `os.lstat` first, only a **regular file** is
+read (symlink, FIFO, directory, device → treated as absent, `dru_text = ""`, and a model
+warning `".kicad_dru ignored: not a regular file"` in `BoardModel.warnings`); then
+`os.open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_NOCTTY)` + `fstat` must again show a
+regular file (a swap between lstat and open → same handling); size cap `DRU_MAX_BYTES = 1 MiB`
+(read at most cap + 1 bytes): bigger → `dru_text = ""`, warning `".kicad_dru ignored: larger
+than 1 MiB"`, and `dru_marker = f"oversize:{st_size}:{st_mtime_ns}"` (in `board_hash`, so a
+change of the oversized file still changes the hash); stackup `(layer, thickness/material)` pairs.
 `run_drc_task`: `StartDrcTask(report_all_track_errors=True)` → poll `GetTaskStatus` every
 0.05 s until not `TS_RUNNING` or `timeout_s` → `GetDrcTaskResult`; `unconnected` = number of
 markers whose type name contains `UNCONNECTED`; a non-`TS_COMPLETED` state raises
-`StructuredToolError(code="drc_rejected")` with the task's error text.
+`StructuredToolError(code="drc_rejected")` with the task's error text. Reaching `timeout_s`
+while the task is still `TS_RUNNING` raises **`DrcTimeout(StructuredToolError)`** (code
+`drc_timeout`, B-C14; `details = {timeout_s}`) — a distinct class so deadline-bound callers
+can treat it as "this connection/stage not verified" instead of aborting the call (P5b, P6b).
+The pinned API has no task cancel (`kicad/api/proto/common/tasks.proto` at kipy `e0c9c8e`
+has `GetTaskStatus` and the state `TS_CANCELLED`, but no cancel request; verified while
+planning), so the timed-out `TaskToken` is remembered on the handle (`h.pending_drc`); the
+next `run_drc_task` on that handle first polls it until it leaves `TS_RUNNING`, for at most
+`DRC_STALE_GRACE_S = 30.0` and never longer than its own `timeout_s` (the grace is spent from
+that call's budget, so every caller's bound still holds); still running after that → the next
+call raises `DrcTimeout` too without starting a second task (two DRC tasks never overlap).
+If a later pin adds a cancel request, the executor sends it on timeout instead and records
+that in "As built (P1a)".
 `board_project` appends the trailing `/` (G3). `require_board` raises `no_board` with
 suggestion "run pcb_sync_from_schematic".
 
@@ -176,10 +196,20 @@ suggestion "run pcb_sync_from_schematic".
   `symbol_path`; the counts are pinned as constants after the first green run; `test_hashes_stable_across_reads` (two loads → equal
   hashes); `test_move_changes_placement_hash` (move one footprint 0.01 mm inside a commit,
   reload); `test_dru_text_read` (write a custom rule through `SetCustomDesignRules`, save →
-  `dru_text` contains the rule name).
+  `dru_text` contains the rule name); unit tests in `tests/unit/board/test_read_dru.py`
+  (the read helper `read.read_dru(path) -> tuple[str, str, tuple[str, ...]]` (text, marker, warnings) is pure and
+  tested without KiCad): `test_dru_symlink_ignored` (`.kicad_dru` a symlink to a real rules
+  file → `""`, warning, no read through the link), `test_dru_fifo_ignored` (`os.mkfifo` →
+  returns at once, `""`, warning), `test_dru_dir_ignored`, `test_dru_oversize` (1 MiB + 1
+  byte → `""`, warning, marker set; appending one byte changes the marker and therefore
+  `board_hash` of an otherwise equal model), `test_dru_absent` (`""`, no warning, marker `""`).
 - [ ] **Step 2: Failing kicad tests** (`test_api.py`, `ecc83_session`):
   `test_drc_task_on_ecc83` (`seconds < 5`, markers carry KIIDs, `unconnected` equals
   `kicad-cli pcb drc --format json` unconnected count of a `save_copy`);
+  `test_drc_timeout_distinct` (`timeout_s=0.001` on ecc83 → raises `DrcTimeout`, which is a
+  `StructuredToolError` with `code == "drc_timeout"`, not `drc_rejected`; the immediately
+  following `run_drc_task(timeout_s=60)` waits out the pending task (≤ 30 s), then succeeds,
+  and only one task ran at a time — spy on `StartDrcTask` count);
   `test_save_document_to_string` (starts with `(kicad_pcb`); `test_specctra_export_live`
   (`RunBoardJobExportSpecctraDsn` → file starts with `(pcb`);
   `test_import_specctra_session_missing_file` (a missing `.ses` path → `ApiError` carrying

@@ -111,8 +111,12 @@ targets = `positions` or the 4 corners inset by `inset`; existing `MountingHole*
 **with** a `symbol_path` (schematic holes) are moved to the first targets (natural ref
 order) and locked; tool-placed holes (`MountingHole*` lib, empty `symbol_path`) are removed;
 remaining targets get `place_footprint_from_library(footprint)` after a lazy
-`get_library_footprint`, ref `H<n>` (next free), locked, never in a `blk:` group; unknown
-footprint → `not_found` with `closest`; (3) keepouts: rule areas (`ZT_RULE_AREA`) with the
+`get_library_footprint`, ref `H<n>` (next free), locked, never in a `blk:` group, and with
+the footprint attributes "not in schematic", "exclude from BOM" and "exclude from position
+files" set (kipy rev `e0c9c8e`: `FootprintInstance.attributes` → `FootprintAttributes
+.not_in_schematic / .exclude_from_bill_of_materials / .exclude_from_position_files = True`,
+verified in `kipy/board_types.py`), so a tool hole raises no schematic-parity marker (M3) and
+never appears in BOM/CPL; unknown footprint → `not_found` with `closest`; (3) keepouts: rule areas (`ZT_RULE_AREA`) with the
 given names are replaced, other rule areas kept. Read-back verify: one Edge.Cuts rectangle
 with the requested geometry (0.001 mm), hole count == targets, keepout names present.
 Report: outline, `holes {moved, placed, removed}`, `keepouts`, `unplaced` (now meaningful),
@@ -127,6 +131,17 @@ Report: outline, `holes {moved, placed, removed}`, `keepouts`, `unplaced` (now m
   2 new tool holes placed, 4 holes total, H1/H2 keep their `symbol_path`);
   `test_rerun_replaces_tool_holes` (second call with `inset: 4` → still 4 holes, tool holes
   replaced, schematic holes moved again); `test_no_holes_arg_keeps_holes`;
+  `test_tool_hole_attributes` (every tool-placed hole reads back `not_in_schematic`,
+  `exclude_from_bill_of_materials`, `exclude_from_position_files` all `True`; schematic holes
+  H1/H2 keep theirs unchanged);
+  `test_parity_clean_after_set_outline` (after the call, `kicad-cli pcb drc
+  --schematic-parity --format json` on the saved board → 0 parity issues referencing a hole);
+  `test_resync_keeps_tool_holes` (after `pcb_set_outline`, re-run `pcb_sync_from_schematic`
+  with default `delete_extra: true` → the tool holes are still present at their positions;
+  they are not netlist footprints. If the pinned KiCad's `import_netlist
+  (delete_extra_footprints=True)` does remove them, the sync tool snapshots tool holes
+  (`not_in_schematic` + `MountingHole*` lib) before the import and re-creates them in the
+  same staged commit — the test pins the outcome, not the mechanism);
   `test_keepout_rule_area` (`keepout_tracks/vias/copper` set, layers read back);
   `test_outline_changes_placement_hash`; `test_unknown_hole_footprint` (`not_found`,
   `closest` non-empty, board unchanged); compensation `test_fail_after_1`, `test_fail_after_2`
@@ -211,7 +226,8 @@ names + widths, custom rule names. Report: rules table, classes, custom rules wi
 ### Task 4: Docs + index as built, checks, PR
 
 - [ ] Index "As built (P2)": `.kicad_pro` persistence result (and `saves_project`), layer-type
-  probe result, sync runtimes on `sp4_synth`. CHANGELOG
+  probe result, whether `delete_extra_footprints` spares `not_in_schematic` tool holes (or the
+snapshot/re-create path was needed), sync runtimes on `sp4_synth`. CHANGELOG
   `[Unreleased]`: "Board sync, outline and rules tools — behind COPPERCHAT_BOARD_TOOLS."
 - [ ] Run `uv run pytest -m "not kicad"`, `uv run ruff check .`, `uv run ruff format --check .`,
   `uv run mypy src`, `uv run pytest -m kicad tests/kicad/board` in the kicad-base image (with
@@ -222,7 +238,8 @@ names + widths, custom rule names. Report: rules table, classes, custom rules wi
 
 - [ ] CI `backend` and all 8 `kicad (…, i/8)` shards green.
 - [ ] `test_sync_create_then_undo`, `test_resync_keeps_placement`, `test_delete_extra`,
-  `test_schematic_holes_moved_not_duplicated`, `test_rules_persist_to_kicad_pro`,
+  `test_schematic_holes_moved_not_duplicated`, `test_parity_clean_after_set_outline`,
+  `test_resync_keeps_tool_holes`, `test_rules_persist_to_kicad_pro`,
   `test_undo_first_dru_via_history` pass.
 - [ ] Every multi-stage tool has a `fail_after` test with hashes equal to the pre-call state
   (sync: documented History exception tested instead).
