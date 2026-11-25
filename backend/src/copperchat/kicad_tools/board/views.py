@@ -1,7 +1,8 @@
 """`pcb_render` (spec §7.1, §13): the board as a PNG for the model plus a zoomable SVG
 link for the user. The pipeline lives in `views.board_render`; this module validates the
 input against the live board (layer, nets), runs the DRC task for markers and shapes the
-result. Read-only: nothing on the board changes."""
+result. Read-only: nothing on the board changes; in a conversation the render is recorded
+as approval evidence (`board_reviews`, P3b)."""
 
 from __future__ import annotations
 
@@ -10,12 +11,16 @@ import difflib
 import json
 import logging
 import math
+from collections.abc import Awaitable
 from typing import Any
 
 from copperchat.board.model import BoardModel, Rect
 from copperchat.board.render import Marker
+from copperchat.db import utcnow_iso
+from copperchat.db.repos.board import BoardReviewRepo, board_file
 from copperchat.errors import StructuredToolError
 from copperchat.kicad_tools.board import api
+from copperchat.kicad_tools.board.checkpoints import record_unless_written
 from copperchat.kicad_tools.board.read import board_model, require_board
 from copperchat.tools.spec import ImageBlock, ToolContext, ToolResult
 from copperchat.views.board_render import ANGLES, BOARD_VIEWS, BoardRender, render_board
@@ -129,6 +134,29 @@ def _write_sidecar(out: BoardRender, name: str) -> None:
         log.warning("pcb_render: no download-name sidecar for %s (%s)", out.svg.name, exc)
 
 
+async def _record_evidence(ctx: ToolContext, view: str, out: BoardRender, since: str) -> None:
+    """The render as evidence for `pcb_approve` (P3b, index call 14): with a conversation
+    and a database, one `render` row with both hashes of the rendered state - unless a
+    board write was logged since the model was read (the image may show a newer state)."""
+    if ctx.conversation_id is None or ctx.editing is None:
+        return
+    db, cid = ctx.editing.db, ctx.conversation_id
+
+    def record() -> Awaitable[int]:
+        return BoardReviewRepo(db).record_render(
+            ctx.project.id,
+            board_file(ctx.project),
+            cid,
+            ctx.run_id,
+            view=view,
+            placement_hash=out.placement_hash,
+            board_hash=out.board_hash,
+        )
+
+    if not await record_unless_written(db, ctx.project.id, since, record):
+        log.info("pcb_render: board written during the render; no evidence recorded")
+
+
 async def pcb_render(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     """One PNG ImageBlock and `{view, svg_url, png_url, placement_hash, board_hash,
     markers}` (+ `markers_omitted` above 100 markers); read-only."""
@@ -154,6 +182,7 @@ async def pcb_render(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
             "Unexpected argument", "markers, highlight_nets and region are only used with 2D views"
         )
     require_board(ctx)
+    since = utcnow_iso()
     m = await board_model(ctx)
     if layer is not None and layer not in m.copper_layers:
         raise _not_found("Layer", layer, set(m.copper_layers), "use a layer pcb_status counts")
@@ -195,4 +224,6 @@ async def pcb_render(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     }
     if omitted:
         data["markers_omitted"] = omitted
+    if region is None:  # a zoomed render shows only part of the board: no evidence
+        await _record_evidence(ctx, view, out, since)
     return ToolResult(data=data, images=[ImageBlock(mime="image/png", data=png, path=out.png)])

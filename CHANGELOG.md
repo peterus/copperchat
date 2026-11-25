@@ -17,6 +17,7 @@ All notable changes to CopperChat are documented in this file. The format follow
   disk) for the upcoming board fill routing (checksum-pinned, sandboxed, no network).
 - Board sync, outline and rules tools (`pcb_sync_from_schematic`, `pcb_set_outline`,
   `pcb_set_rules` with JLCPCB presets) — behind COPPERCHAT_BOARD_TOOLS.
+- Board checks and approvals (`pcb_check`, `pcb_approve`) — behind COPPERCHAT_BOARD_TOOLS.
 
 ## [0.12.0] - 2026-11-22
 

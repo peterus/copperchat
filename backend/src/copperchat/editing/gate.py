@@ -20,9 +20,10 @@ if TYPE_CHECKING:
 MAX_PREEXISTING_SYMBOL_DELETES = 3
 
 # Tools that record a user decision, not a design edit: exempt from the plan refusals of
-# `before_prepare` (both gates; footprints index author call 13). `fp_approve` refuses
-# itself while a plan of its conversation is running (spec §7.7 guard 6).
-PLAN_EXEMPT_TOOLS = frozenset({"fp_approve"})
+# `before_prepare` (both gates; footprints index author call 13, board spec §7.3). Both
+# refuse themselves while a plan of their conversation is running (`fp_approve` guard 6,
+# `pcb_approve` guard 7).
+PLAN_EXEMPT_TOOLS = frozenset({"fp_approve", "pcb_approve"})
 
 
 class EditGate(Protocol):

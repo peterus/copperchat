@@ -114,30 +114,39 @@ class ChangeRepo:
         items = list(entries)
         if not items:
             return 0
-        now = utcnow_iso()
         async with self._db.transaction():
-            for e in items:
-                await self._db.execute(
-                    f"INSERT INTO changes({_COLUMNS}) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        e.project_id,
-                        e.run_id,
-                        e.plan_step_id,
-                        e.call_seq,
-                        e.tool,
-                        e.op,
-                        e.kind,
-                        e.uuid,
-                        e.sheet_path,
-                        e.ref,
-                        e.net,
-                        _dump(e.before),
-                        _dump(e.after),
-                        1 if e.side_effect else 0,
-                        e.created_at or now,
-                    ),
-                )
+            return await self.add_many_in_transaction(items)
+
+    async def add_many_in_transaction(self, entries: Iterable[ChangeEntry]) -> int:
+        """Insert all entries inside the transaction the calling task holds open (e.g.
+        `pcb_approve`, whose checkpoint row and change row commit or roll back together);
+        `RuntimeError` without one. Returns how many were written."""
+        if not self._db._in_own_transaction():
+            raise RuntimeError("add_many_in_transaction needs the caller's open transaction")
+        items = list(entries)
+        now = utcnow_iso()
+        for e in items:
+            await self._db.execute(
+                f"INSERT INTO changes({_COLUMNS}) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    e.project_id,
+                    e.run_id,
+                    e.plan_step_id,
+                    e.call_seq,
+                    e.tool,
+                    e.op,
+                    e.kind,
+                    e.uuid,
+                    e.sheet_path,
+                    e.ref,
+                    e.net,
+                    _dump(e.before),
+                    _dump(e.after),
+                    1 if e.side_effect else 0,
+                    e.created_at or now,
+                ),
+            )
         return len(items)
 
     async def for_run(
