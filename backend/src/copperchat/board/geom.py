@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import itertools
 import math
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from copperchat.board.model import BoardModel, Pad
 
 Point = tuple[float, float]
 Poly = Sequence[Point]
@@ -208,3 +213,322 @@ def rect_poly(x: float, y: float, w: float, h: float, r: float = 0.0) -> list[Po
             a = math.radians(a0 + 90.0 * i / 8)
             out.append((cx + r * math.cos(a), cy + r * math.sin(a)))
     return out
+
+
+# --- B-C5: the one bend definition (M4/M7) ------------------------------------------------
+
+ANGLE_TOL_DEG = 0.5
+_JOIN_TOL = 0.002  # mm: endpoints closer than this are one node
+_ZERO_LEN = 1e-6  # mm: shorter segments are dropped
+
+
+def CHAMFER_MIN(w: float) -> float:
+    """Shortest straight piece between two same-sense 45-degree bends."""
+    return max(1.0 * w, 0.25)
+
+
+def JOG_MIN(w: float) -> float:
+    """Shortest straight piece between two opposite-sense 45-degree bends."""
+    return 2.0 * w
+
+
+@dataclass(frozen=True)
+class BendReport:
+    non_octilinear: tuple[Point, ...]  # segment midpoints off 0/45/90/... by > 0.5 deg
+    ninety: tuple[Point, ...]  # vertices with a 90 (+- 0.5) deg direction change
+    acute: tuple[Point, ...]  # vertices with a change >= 134.5 deg
+    off_angle: tuple[Point, ...]  # every other failing vertex (e.g. 46, 60, 90.8 deg)
+    t_junctions: tuple[Point, ...]  # off-pad branch meeting at 90 deg
+    micro_jogs: tuple[Point, ...]
+    short_chamfers: tuple[Point, ...]
+    bends: int  # 45-degree bends (pad entries excluded)
+
+
+def _heading(a: Point, b: Point) -> float:
+    return math.degrees(math.atan2(b[1] - a[1], b[0] - a[0]))
+
+
+def _turn(a: Point, b: Point, c: Point) -> tuple[float, float]:
+    """Direction change at `b` in [0, 180] degrees and the cross product's sign."""
+    ux, uy = b[0] - a[0], b[1] - a[1]
+    vx, vy = c[0] - b[0], c[1] - b[1]
+    cross = ux * vy - uy * vx
+    dot = ux * vx + uy * vy
+    return math.degrees(math.atan2(abs(cross), dot)), (1.0 if cross > 0 else -1.0)
+
+
+def _mid(a: Point, b: Point) -> Point:
+    return ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+
+
+def _off_octilinear(a: Point, b: Point) -> bool:
+    h = _heading(a, b) % 45.0
+    return min(h, 45.0 - h) > ANGLE_TOL_DEG
+
+
+def analyse_bends(
+    points: Sequence[Point], width: float, *, pad_ends: tuple[bool, bool]
+) -> BendReport:
+    """Classify every segment and vertex of one polyline (B-C5; no gaps)."""
+    pts: list[Point] = []
+    for p in points:
+        if not pts or math.dist(pts[-1], p) >= _ZERO_LEN:
+            pts.append(p)
+    non_octi = [_mid(a, b) for a, b in itertools.pairwise(pts) if _off_octilinear(a, b)]
+    ninety: list[Point] = []
+    acute: list[Point] = []
+    off: list[Point] = []
+    # non-collinear vertices in path order: (index, kind, sense); kind "bend" or "fail"
+    verts: list[tuple[int, str, float]] = []
+    for i in range(1, len(pts) - 1):
+        delta, sense = _turn(pts[i - 1], pts[i], pts[i + 1])
+        if delta <= ANGLE_TOL_DEG:
+            continue
+        if abs(delta - 45.0) <= ANGLE_TOL_DEG:
+            verts.append((i, "bend", sense))
+            continue
+        if abs(delta - 90.0) <= ANGLE_TOL_DEG:
+            ninety.append(pts[i])
+        elif delta >= 135.0 - ANGLE_TOL_DEG:
+            acute.append(pts[i])
+        else:
+            off.append(pts[i])
+        verts.append((i, "fail", sense))
+    exempt: set[int] = set()
+    if verts and pad_ends[0]:
+        exempt.add(verts[0][0])
+    if verts and pad_ends[1]:
+        exempt.add(verts[-1][0])
+    bends = sum(1 for i, kind, _ in verts if kind == "bend" and i not in exempt)
+    jogs: list[Point] = []
+    chamfers: list[Point] = []
+    cum = [0.0]
+    for a, b in itertools.pairwise(pts):
+        cum.append(cum[-1] + math.dist(a, b))
+    for (i, ki, si), (j, kj, sj) in itertools.pairwise(verts):
+        if ki != "bend" or kj != "bend" or i in exempt or j in exempt:
+            continue
+        piece = cum[j] - cum[i] + _EPS  # float noise only: exactly the minimum passes
+        if si == sj and piece < CHAMFER_MIN(width):
+            chamfers.append(_mid(pts[i], pts[j]))
+        elif si != sj and piece < JOG_MIN(width):
+            jogs.append(_mid(pts[i], pts[j]))
+    return BendReport(
+        non_octilinear=tuple(non_octi),
+        ninety=tuple(ninety),
+        acute=tuple(acute),
+        off_angle=tuple(off),
+        t_junctions=(),
+        micro_jogs=tuple(jogs),
+        short_chamfers=tuple(chamfers),
+        bends=bends,
+    )
+
+
+def _pad_on_layer(pad: Pad, layer: str) -> bool:
+    if layer in pad.layers or "*.Cu" in pad.layers:
+        return True
+    # a plated through-hole spans every copper layer even if only the outer ones are listed
+    return pad.drill is not None and not pad.smd and any(n.endswith(".Cu") for n in pad.layers)
+
+
+def _in_pad(p: Point, pad: Pad) -> bool:
+    """`p` inside the pad rectangle (w x h about its centre, rotated by `rot` degrees,
+    counter-clockwise on screen with y down); boundary inclusive within the join tolerance."""
+    dx, dy = p[0] - pad.x, p[1] - pad.y
+    t = math.radians(pad.rot)
+    c, s = math.cos(t), math.sin(t)
+    lx, ly = dx * c - dy * s, dx * s + dy * c
+    return abs(lx) <= pad.w / 2 + _JOIN_TOL and abs(ly) <= pad.h / 2 + _JOIN_TOL
+
+
+def _layer_pads(model: BoardModel, layer: str) -> list[Pad]:
+    return [pad for part in model.parts for pad in part.pads if _pad_on_layer(pad, layer)]
+
+
+class _Nodes:
+    """Snaps points to canonical nodes within the join tolerance (grid hashed)."""
+
+    def __init__(self) -> None:
+        self._grid: dict[tuple[int, int], list[Point]] = {}
+
+    def _key(self, p: Point) -> tuple[int, int]:
+        return (math.floor(p[0] / _JOIN_TOL), math.floor(p[1] / _JOIN_TOL))
+
+    def find(self, p: Point) -> Point | None:
+        kx, ky = self._key(p)
+        best: Point | None = None
+        for gx in (kx - 1, kx, kx + 1):
+            for gy in (ky - 1, ky, ky + 1):
+                for q in self._grid.get((gx, gy), ()):
+                    if math.dist(p, q) <= _JOIN_TOL and (best is None or q < best):
+                        best = q
+        return best
+
+    def snap(self, p: Point) -> Point:
+        q = self.find(p)
+        if q is not None:
+            return q
+        self._grid.setdefault(self._key(p), []).append(p)
+        return p
+
+
+def _interior_t(p: Point, a: Point, b: Point) -> float | None:
+    """Parameter of `p` on the interior of segment ab (within the join tolerance)."""
+    vx, vy = b[0] - a[0], b[1] - a[1]
+    length = math.hypot(vx, vy)
+    t = ((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / (length * length)
+    if t * length <= _JOIN_TOL or (1.0 - t) * length <= _JOIN_TOL:
+        return None
+    proj = (a[0] + t * vx, a[1] + t * vy)
+    return t if math.dist(proj, p) <= _JOIN_TOL else None
+
+
+_Seg = tuple[Point, Point, float]
+
+
+def _graph(model: BoardModel, net: str, layer: str) -> tuple[list[_Seg], dict[Point, list[int]]]:
+    """Snapped segments of one net/layer, split where an endpoint, via centre or pad centre
+    of the net lies on a segment's interior (a T), and node -> incident segment ids."""
+    nodes = _Nodes()
+    raw: list[_Seg] = []
+    for t in model.tracks:
+        if t.net != net or t.layer != layer or math.dist(t.start, t.end) < _ZERO_LEN:
+            continue
+        a, b = nodes.snap(t.start), nodes.snap(t.end)
+        if a != b:
+            raw.append((a, b, t.width))
+    centres = [v.at for v in model.vias if v.net == net]
+    centres += [(p.x, p.y) for p in _layer_pads(model, layer) if p.net == net]
+    splitters = sorted({nodes.snap(c) for c in centres} | {p for a, b, _ in raw for p in (a, b)})
+    segs: list[_Seg] = []
+    for a, b, w in raw:
+        cuts = sorted((tp, p) for p in splitters if (tp := _interior_t(p, a, b)) is not None)
+        chain = [a, *(p for _, p in cuts), b]
+        segs.extend((p, q, w) for p, q in itertools.pairwise(chain) if p != q)
+    segs = sorted({(min(a, b), max(a, b), w) for a, b, w in segs})
+    adj: dict[Point, list[int]] = {}
+    for i, (a, b, _) in enumerate(segs):
+        adj.setdefault(a, []).append(i)
+        adj.setdefault(b, []).append(i)
+    return segs, adj
+
+
+def _drop_collinear(pts: list[Point]) -> list[Point]:
+    out: list[Point] = []
+    for p in pts:
+        if out and math.dist(out[-1], p) < _ZERO_LEN:
+            continue
+        while len(out) >= 2 and _turn(out[-2], out[-1], p)[0] <= ANGLE_TOL_DEG:
+            out.pop()
+        out.append(p)
+    return out
+
+
+def polylines(model: BoardModel, net: str, layer: str) -> list[tuple[tuple[Point, ...], float]]:
+    """(points, width) of the straight tracks of `net` on `layer`: segments joined at
+    coincident endpoints (0.002 mm), T-split, split at nodes of degree != 2, at vias, inside
+    same-net pads and where the width changes; collinear interior vertices dropped."""
+    segs, adj = _graph(model, net, layer)
+    vias = [v for v in model.vias if v.net == net]
+    pads = [p for p in _layer_pads(model, layer) if p.net == net]
+
+    def terminal(n: Point) -> bool:
+        inc = adj[n]
+        if len(inc) != 2 or segs[inc[0]][2] != segs[inc[1]][2]:
+            return True
+        if any(math.dist(n, v.at) <= max(v.diameter / 2, _JOIN_TOL) for v in vias):
+            return True
+        return any(_in_pad(n, p) for p in pads)
+
+    used: set[int] = set()
+    out: list[tuple[tuple[Point, ...], float]] = []
+
+    def walk(start: Point, first: int) -> None:
+        chain = [start]
+        node, seg = start, first
+        while True:
+            used.add(seg)
+            a, b, _ = segs[seg]
+            node = b if node == a else a
+            chain.append(node)
+            if node == start or terminal(node):
+                break
+            nxt = [i for i in adj[node] if i not in used]
+            if not nxt:
+                break
+            seg = nxt[0]
+        pts = _drop_collinear(chain)
+        if pts[-1] < pts[0]:
+            pts.reverse()
+        out.append((tuple(pts), segs[first][2]))
+
+    for n in sorted(adj):
+        if terminal(n):
+            for i in adj[n]:
+                if i not in used:
+                    walk(n, i)
+    for n in sorted(adj):  # closed loops without a terminal node
+        for i in adj[n]:
+            if i not in used:
+                walk(n, i)
+    return sorted(out)
+
+
+def _sorted(points: Iterable[Point]) -> tuple[Point, ...]:
+    return tuple(sorted(points))
+
+
+def analyse_tracks(model: BoardModel) -> BendReport:
+    """`analyse_bends` over every polyline of every net/layer (pad entries where a polyline
+    end lies in a same-net pad on that layer), plus T-junctions and arcs (non-octilinear)."""
+    acc: dict[str, list[Point]] = {
+        k: []
+        for k in (
+            "non_octilinear",
+            "ninety",
+            "acute",
+            "off_angle",
+            "t_junctions",
+            "micro_jogs",
+            "short_chamfers",
+        )
+    }
+    bends = 0
+    for net, layer in sorted({(t.net, t.layer) for t in model.tracks}):
+        layer_pads = _layer_pads(model, layer)
+        pads = [p for p in layer_pads if p.net == net]
+        for pts, width in polylines(model, net, layer):
+            ends = (any(_in_pad(pts[0], p) for p in pads), any(_in_pad(pts[-1], p) for p in pads))
+            r = analyse_bends(pts, width, pad_ends=ends)
+            for k in acc:
+                acc[k].extend(getattr(r, k))
+            bends += r.bends
+        segs, adj = _graph(model, net, layer)
+        for node, inc in adj.items():
+            if len(inc) < 3:
+                continue
+            if any(_in_pad(node, p) for p in layer_pads) or any(
+                math.dist(node, v.at) <= max(v.diameter / 2, _JOIN_TOL) for v in model.vias
+            ):
+                continue
+            heads = []
+            for i in inc:
+                a, b, _ = segs[i]
+                heads.append(_heading(node, b if node == a else a))
+            for h1, h2 in itertools.combinations(heads, 2):
+                d = abs(h1 - h2) % 360.0
+                if abs(min(d, 360.0 - d) - 90.0) <= ANGLE_TOL_DEG:
+                    acc["t_junctions"].append(node)
+                    break
+    acc["non_octilinear"].extend(a.mid for a in model.arcs)
+    return BendReport(
+        non_octilinear=_sorted(acc["non_octilinear"]),
+        ninety=_sorted(acc["ninety"]),
+        acute=_sorted(acc["acute"]),
+        off_angle=_sorted(acc["off_angle"]),
+        t_junctions=_sorted(acc["t_junctions"]),
+        micro_jogs=_sorted(acc["micro_jogs"]),
+        short_chamfers=_sorted(acc["short_chamfers"]),
+        bends=bends,
+    )
