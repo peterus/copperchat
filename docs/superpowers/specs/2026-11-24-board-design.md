@@ -720,7 +720,10 @@ From the spike prototype (`router.py`: 15/15 short nets clean), extended:
 - **Ladder when completion < 100 %** (spec call): (a) re-run with more passes; (b) unlock the
   critical routes next to the unrouted connections and re-run — `pcb_unroute` gets an
   `unlock_only: true` option that clears the `locked` flag of the selected tracks/vias without
-  deleting them (the `session-board` skill names it for this step; the affected nets are re-locked
+  deleting them. Step (b) selects **by net, critical signal nets only**; ground/plane-net items
+  (fanout stubs, stitching vias) are never unlocked by it, and `unlock_only` with a `region`
+  skips plane-net items unless they are named in `nets` — otherwise the re-fill's SES import
+  could re-create them with new KIIDs and step 5 would delete them (the `session-board` skill names it for this step; the affected nets are re-locked
   by the post-processor if they still pass M4/M7); (c) route the rest with the own
   router (with vias); (d) report the open connections with positions and ask (placement change,
   more layers, larger board). The agent never calls the board done with open connections.
@@ -954,7 +957,7 @@ Listed in order of appearance; each is marked "(spec call)" in the text.
 64. Two-step directory swap for the fab export.
 65. Both hashes returned by status/render/check, stored in `board_reviews`; `pcb_approve` takes the stage's hash.
 66. Moves with `unroute: true` remove locked copper of the affected connections too.
-67. `pcb_unroute unlock_only` for ladder step (b); shared fab path helper for the 3D export.
+67. `pcb_unroute unlock_only` for ladder step (b) (critical signal nets only, never plane-net items); shared fab path helper for the 3D export.
 
 ### 15.3 Owner decisions on the open questions (2026-11-24)
 
