@@ -318,11 +318,11 @@ Both: `require_board` → `no_board`.
   `test_strip_fills` (zones keep everything but `filled == ()`; M11-free metrics equal on the
   stripped and the original model).
 - [ ] **Step 2: Failing kicad tests** (`test_analysis_synth.py`, `synth_board`):
-  `test_classification_matches_circuit`: U2 `switching_regulator` with inductor L1, `sw_net`
+  `test_classification_matches_circuit`: U3 `switching_regulator` with inductor L1, `sw_net`
   ending in `SW`, `in_caps == ("C7",)`, `out_caps == ("C8","C9")`, `fb_parts == ("R5","R6")`;
   Y1 crystal with `ic == "U1"` and load caps C4, C5; one pair whose nets end in `USB_DP` /
   `USB_DN`; C1, C2, C3 decoupling to U1 on `+3V3`-ending nets; J1 `connector`; H1, H2
-  `mounting_hole`; GND `ground`, VBUS and +3V3 `supply`; blocks for U1 and U2 on sheets
+  `mounting_hole`; GND `ground`, VBUS and +3V3 `supply`; blocks for U1 and U3 on sheets
   `root` / `power`; `test_classification_golden` (full `pcb_analyze` result minus hashes ==
   `goldens/sp4_synth_classification.json`, `UPDATE_GOLDENS=1` writes it);
   `test_analyze_boardless` (`no_board`). `test_metrics_tool.py`: `test_metrics_on_synth`

@@ -727,6 +727,40 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
 
 (Each phase adds its section here in its own PR.)
 
+### As built (P1b)
+
+- **Fixture** `backend/tests/fixtures/projects/sp4_synth/` (`sp4_synth.kicad_pro`,
+  `sp4_synth.kicad_sch`, `power.kicad_sch`; no `.kicad_pcb`), written only by
+  `scripts/make-sp4-synth.py` (runs `tests/kicad/board/test_sp4_synth_build.py`): KiCad's empty
+  project → `ROOT_STEPS` + `POWER_STEPS` (`tests/kicad/board/sp4_synth_steps.py`) through the
+  real schematic tools → save → files copied verbatim. **26 parts** (18 on `/`, 8 on `/Power/`),
+  **28 nets** (10 of them single-node `unconnected-(…)` nets of no-connect pins), ERC **0 errors,
+  0 warnings** (accepted ERC items: none), dry-run netlist import into a new board: 0 errors,
+  0 warnings, 26 new footprints. Golden `tests/kicad/board/goldens/sp4_synth_summary.json`
+  (parts, nets, sheets, ERC counts; no UUIDs/positions). Generator runtime ≈ 60 s per run
+  (two runs: 60 s and 59 s wall, both matching the golden; the files differ only in UUIDs and
+  the UUID-driven item order).
+- **References follow placement order, not the phase table:** the ESD part
+  (`Power_Protection:USBLC6-2SC6`) is **U2**, the buck (`Regulator_Switching:TPS563200`, on
+  `/Power/`) is **U3** (`sch_place_symbol` assigns the next free reference project-wide and
+  refuses explicit references for single-unit parts). P3a's plan text was updated in this PR
+  (`test_classification_matches_circuit`: U3 `switching_regulator`, blocks U1/U3). All other
+  references are as in the table (C1–C6, R1–R4, Y1, J1, J2, D1, H1, H2 on `/`; L1, C7–C10, R5,
+  R6 on `/Power/`).
+- **Extra named nets:** besides `USB_DP`, `USB_DN`, `SWDIO`, `SWCLK`, `OSC_IN`, `OSC_OUT` (root)
+  and `SW`, `FB` (`/Power/`), the root sheet labels `CC1`, `CC2`, `NRST`, `BOOT0` (labels keep
+  the sheet readable; wires only for PA4 → R4 → D1, VDDA → VDD, R6 → R5 and VBST → C10).
+  Local label nets carry the sheet prefix in netlists (`/USB_DP`, `/Power/SW`); rails `+3V3`,
+  `GND`, `VBUS` are global. Unnamed nets: `Net-(D1-A)`, `Net-(U1-PA4)`, `Net-(U3-VBST)`.
+- **One fixture `synth_session`** (schematic only; `tests/support/kicad_project.py`, registered
+  in `tests/conftest.py` like the other session fixtures); no `synth_nopcb_session`. Tests that
+  need a board create it (P2's sync, or P3a's `synth_board`).
+- `test_sp4_synth_build.py` also exports `summarize(kicad_cli, root_sch, work)`,
+  `create_empty_project(root, name)` and `standalone_server(kicad_cli)` (a private api-server
+  with the stock library tables seeded via `kicad_cli_env`) — reusable for P3a's `synth_board`.
+- `scripts/refresh-fixtures.sh` now calls `make-sp4-synth.py` after `make-blank-fixture.py`; it
+  needs `uv` and the backend environment (like the CI kicad job), not only `/opt/venv`.
+
 ## Residuals
 
 Open after P9b (collected from every phase's "As built"; nothing here blocks the release).

@@ -68,3 +68,11 @@ async def blank_nopcb_session(
     """The blank project copied without its .kicad_pcb."""
     async for session in _open(real_settings(make_settings), "blank", "blank", drop_board=True):
         yield session
+
+
+@pytest.fixture
+async def synth_session(make_settings: Callable[..., Settings]) -> AsyncIterator[KicadSession]:
+    """The board phases' `sp4_synth` project (scripts/make-sp4-synth.py), schematic only:
+    no board is committed; P2's sync creates it."""
+    async for session in _open(real_settings(make_settings), "sp4_synth", "sp4_synth"):
+        yield session
