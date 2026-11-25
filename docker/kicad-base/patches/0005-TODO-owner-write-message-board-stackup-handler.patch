@@ -1,4 +1,4 @@
-From b45f0cc949444ccf2094d3cac9e5158904d7c501 Mon Sep 17 00:00:00 2001
+From 77b31d9dca3089af6bac4246cd995b8c9035e063 Mon Sep 17 00:00:00 2001
 From: Peter Buchegger <peter.buchegger7@gmail.com>
 Date: Wed, 25 Nov 2026 19:23:29 +0100
 Subject: [PATCH] TODO(owner): write message (board stackup handler)
@@ -330,7 +330,7 @@ index 96df23b4..fbbf63ea 100644
  
  
 diff --git a/qa/tests/api/test_api_handler_pcb.cpp b/qa/tests/api/test_api_handler_pcb.cpp
-index 70dfa5f7..d583e946 100644
+index 70dfa5f7..fa5aa3e5 100644
 --- a/qa/tests/api/test_api_handler_pcb.cpp
 +++ b/qa/tests/api/test_api_handler_pcb.cpp
 @@ -47,6 +47,8 @@
@@ -494,7 +494,7 @@ index 70dfa5f7..d583e946 100644
 +                                                           << result.error().error_message() );
 +    }
 +
-+    commands::BoardStackupResponse response;
++    kiapi::board::commands::BoardStackupResponse response;
 +    BOOST_REQUIRE( result->message().UnpackTo( &response ) );
 +    BOOST_CHECK( thicknesses( response.stackup(), BSLT_COPPER ) == JLC_4L_COPPER );
 +    BOOST_CHECK( thicknesses( response.stackup(), BSLT_DIELECTRIC ) == JLC_4L_DIELECTRIC );
@@ -538,7 +538,7 @@ index 70dfa5f7..d583e946 100644
 +
 +    for( const BoardStackupLayer& layer : before.layers() )
 +    {
-+        if( layer.type() == BSLT_COPPER && layer.layer() != types::BL_F_Cu && layer.layer() != types::BL_B_Cu )
++        if( layer.type() == BSLT_COPPER && layer.layer() != kiapi::board::types::BL_F_Cu && layer.layer() != kiapi::board::types::BL_B_Cu )
 +            continue;
 +
 +        if( layer.type() == BSLT_DIELECTRIC && dielectrics++ > 0 )
@@ -623,8 +623,8 @@ index 70dfa5f7..d583e946 100644
 +
 +    for( BoardStackupLayer& layer : *wrongLayer.mutable_layers() )
 +    {
-+        if( layer.layer() == types::BL_In2_Cu )
-+            layer.set_layer( types::BL_In3_Cu );
++        if( layer.layer() == kiapi::board::types::BL_In2_Cu )
++            layer.set_layer( kiapi::board::types::BL_In3_Cu );
 +    }
 +
 +    for( const BoardStackup& bad : { noDielectric, wrongLayer } )
