@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from copperchat.kicad_tools.board.specs_setup import SETUP_SPECS
 from copperchat.kicad_tools.board.status import pcb_status
 from copperchat.kicad_tools.board.views import (
     MAX_COORD_MM,
@@ -90,6 +91,7 @@ PCB_RENDER_DESCRIPTION = (
 TOOL_SPECS: list[ToolSpec] = [
     ToolSpec("pcb_status", PCB_STATUS_DESCRIPTION, _obj({}, []), pcb_status),
     ToolSpec("pcb_render", PCB_RENDER_DESCRIPTION, PCB_RENDER_SCHEMA, pcb_render),
+    *SETUP_SPECS,  # P2
 ]
 
 # P3a: the analysis read tools (pcb_analyze; pcb_metrics joins ANALYSIS_SPECS)

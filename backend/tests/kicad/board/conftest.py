@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -200,3 +201,68 @@ async def synth_board(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterator
         yield await manager.open(project)
     finally:
         await manager.close_all()
+
+
+# -- synth_rig (SP4 P2; sync / outline / rules on sp4_synth) ------------------------------
+
+
+@dataclass
+class SynthRig:
+    """`sp4_synth` (schematic only) opened through a manager, with board tools on, a
+    database with the test conversation and a HistoryService that can restore and
+    reopen (`restore_turn`). `ctx()` builds a fresh board tool context on the current
+    session (`board_ctx` with `sessions=`, so board creation reloads)."""
+
+    sessions: KicadSessionManager
+    db: Database
+    history: HistoryService
+    engine: Any
+    settings: Settings
+
+    @property
+    def session(self) -> KicadSession:
+        current = self.sessions.current()
+        assert current is not None
+        return current
+
+    def ctx(self) -> ToolContext:
+        return board_ctx(self.session, self.db, self.sessions)
+
+    async def restore_turn(self, ctx: ToolContext) -> None:
+        """History restore of the turn snapshot `ctx.on_mutation` took."""
+        from copperchat.history.restore import restore_snapshot
+        from tests.support.conversations import TEST_CID
+
+        project = self.session.project
+        snap = await self.history.store(project).latest_for_run(ctx.run_id or "run")
+        assert snap is not None, "no turn snapshot"
+        await restore_snapshot(self.history, project, snap.id, conversation_id=TEST_CID)
+
+
+@pytest_asyncio.fixture
+async def synth_rig(
+    make_settings: Callable[..., Settings], tmp_path: Path
+) -> AsyncIterator[SynthRig]:
+    from tests.support.conversations import ensure_test_conversation
+    from tests.support.history import FakeEngine, FakeRuntime, RecordingBroadcaster
+
+    settings = make_settings(
+        kicad_cli=KICAD_CLI, kicad_api_timeout_s=30.0, kicad_start_timeout_s=60.0, board_tools=True
+    )
+    copy_fixture("sp4_synth", settings.projects_root)
+    project = next(p for p in discover_projects(settings.projects_root) if p.name == "sp4_synth")
+    assert project.pcb_file is None
+    manager = KicadSessionManager(settings)
+    db = await Database.open(tmp_path / "synth.db")
+    await ensure_test_conversation(db)
+    engine = FakeEngine()
+    svc = HistoryService(
+        db=db, sessions=manager, broadcaster=RecordingBroadcaster(), runtime=FakeRuntime(engine)
+    )
+    svc.projects_root = settings.projects_root
+    try:
+        await manager.open(project)
+        yield SynthRig(manager, db, svc, engine, settings)
+    finally:
+        await manager.close_all()
+        await db.close()
