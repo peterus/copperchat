@@ -792,6 +792,10 @@ re-measures on a large 4-layer board)
   that turn anyway).
 - Render limits and raster cost measured on ecc83 only (P9a: large 4-layer board, D5 memory).
 - Comments in `cc/agent/engine.py` still say "live schematic view" (P9b docs pass).
+- Review round 1 (deferred): kicad-cli 3D render has only the 120 s wall clock and the lock, no
+  rlimits (P9a measures kicad-cli peak RSS per kind, D5); up to three ElementTree parses of a
+  ≤ 24 MiB board SVG in the render thread (measured SVGs 50–80 KB; P9a re-measures); a process
+  crash mid-render can leave one uuid-named board copy in `renders/tmp/` (no startup sweep).
 
 ### As built (P1b)
 
