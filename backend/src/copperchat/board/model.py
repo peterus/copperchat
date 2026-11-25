@@ -167,6 +167,7 @@ class BoardModel:
     stackup: tuple[tuple[str, str], ...]
     dru_marker: str = ""
     warnings: tuple[str, ...] = ()
+    texts: tuple[TextItem, ...] = ()  # board-level texts and text boxes (not footprints')
 
     def part(self, ref: str) -> Part:
         for p in self.parts:
@@ -232,10 +233,11 @@ def _rule_areas(m: BoardModel) -> list[Any]:
 def placement_hash(m: BoardModel) -> str:
     """sha256 of the placement: parts (ref, x, y, rot, side, locked), outline and rule areas."""
     o = m.outline
-    parts = [
-        [p.ref, _r(p.x, 2), _r(p.y, 2), _rot(p.rot, 1), p.side, p.locked]
-        for p in sorted(m.parts, key=lambda p: p.ref)
-    ]
+    # The full rows are sorted (not by ref alone): parts sharing a ref (REF**) hash the
+    # same in any API order.
+    parts = _canon(
+        [[p.ref, _r(p.x, 2), _r(p.y, 2), _rot(p.rot, 1), p.side, p.locked] for p in m.parts]
+    )
     outline = [
         o.kind,
         _r(o.x, 2),
@@ -294,7 +296,7 @@ def board_hash(m: BoardModel) -> str:
             p.group,
             _canon([_poly(ra, 3) for ra in p.rule_areas]),
         ]
-        for p in sorted(m.parts, key=lambda p: p.ref)
+        for p in m.parts
     ]
     tracks = [
         [t.net, t.layer, _pt(t.start, 3), _pt(t.end, 3), _r(t.width, 3), t.locked] for t in m.tracks
@@ -334,7 +336,8 @@ def board_hash(m: BoardModel) -> str:
     dru = m.dru_text.replace("\r\n", "\n").replace("\r", "\n")
     return _digest(
         {
-            "parts": parts,
+            "parts": _canon(parts),  # full rows: duplicate refs hash order-free
+            "texts": _canon([_text(t) for t in m.texts]),
             "tracks": _canon(tracks),
             "arcs": _canon(arcs),
             "vias": _canon(vias),

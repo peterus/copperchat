@@ -303,3 +303,18 @@ async def test_failing_engine_refresh_still_reloads(env: Env) -> None:
     await restore_snapshot(env.svc, project, snap.id, conversation_id=TEST_CID)
     current = env.sessions.current()
     assert current is not None and not current.closed and env.server.starts == 2
+
+
+async def test_snapshot_absent_never_names_a_copied_file(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`files` and `absent` are separate passes: a board appearing/vanishing between
+    them must not be both copied and listed absent (a restore would delete it)."""
+    from copperchat.history import store as store_mod
+
+    project = env.project()
+    monkeypatch.setattr(store_mod, "absent_files", lambda p: [PCB, DRU])  # the race
+    snap = await env.svc.store(project).snapshot("run-1", "turn")
+    m = _manifest(env, project, snap.id)
+    assert PCB in {f["relPath"] for f in m["files"]}
+    assert m["absent"] == [DRU]

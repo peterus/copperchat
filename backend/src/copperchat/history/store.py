@@ -455,7 +455,14 @@ class HistoryStore:
             else:
                 journal_max_id = await journal.max_id()
             entries = await asyncio.to_thread(self._copy_documents, tmp)
-            absent = await asyncio.to_thread(absent_files, self.project)
+            # A separate pass: a file created between the two is copied AND would be
+            # listed absent (a restore would then delete it). A copied file wins.
+            copied = {e["relPath"] for e in entries}
+            absent = [
+                rel
+                for rel in await asyncio.to_thread(absent_files, self.project)
+                if rel not in copied
+            ]
             created = utcnow_iso()
             if preview_png is not None:
                 (tmp / "preview.png").write_bytes(preview_png)

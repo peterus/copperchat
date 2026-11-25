@@ -420,3 +420,26 @@ def test_handle_without_slots_gets_private_ones() -> None:
     h.drc_slot.set((0, "t"))
     assert h.drc_slot.get() == (0, "t")
     assert KicadHandle(object()).drc_slot.get() is None
+
+
+async def test_busy_wait_does_not_eat_the_callables_budget(
+    session: KicadSession, clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The idle wait (0.6 s on the fake clock) extends the call's deadline: a callable
+    taking 1.25 s of a 1 s budget still finishes - no timeout, no restart."""
+    import time
+
+    monkeypatch.setattr(session_mod, "DEFAULT_TRANSPORT_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(session_mod, "IDLE_WAIT_MARGIN_S", 0.05)
+    log: list[str] = []
+    _script_ping(session, iter([HANG, HANG, HANG, None]), log, clock)
+    session.refill_busy = session.generation
+    restarts = session.restart_count
+
+    def slow(h: KicadHandle) -> str:
+        time.sleep(1.25)
+        return "done"
+
+    assert await session.call(slow, timeout=1.0) == "done"
+    assert log == ["Ping"] * 4
+    assert session.restart_count == restarts and session.refill_busy is None

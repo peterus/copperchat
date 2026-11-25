@@ -298,16 +298,28 @@ def kicad_busy(kicad: Any) -> bool:
     return False
 
 
+class _IdleWait:
+    """How long `_after_idle` waited (`_clock` seconds) before `fn` started; None until
+    then. `call` extends its deadline by it, so `fn` keeps its full budget."""
+
+    spent: float | None = None
+
+
 def _after_idle[R](
-    fn: Callable[[KicadHandle], R], deadline: float, limit: float
+    fn: Callable[[KicadHandle], R],
+    deadline: float,
+    limit: float,
+    waited: _IdleWait | None = None,
 ) -> Callable[[KicadHandle], R]:
     """`fn`, preceded by pinging until KiCad is idle again (a refill cut short by
     `RefillTimeout` may still be running, B-C3). Runs in the call's worker thread. A
     Ping is only sent while it fits before `deadline` even if it blocks for the whole
     transport timeout, so the wait never runs into the call's own timeout (no restart);
-    still busy then → `refill_timeout` without running `fn`, the busy slot kept."""
+    still busy then → `refill_timeout` without running `fn`, the busy slot kept. The
+    time waited is recorded in `waited` right before `fn` runs."""
 
     def run(h: KicadHandle) -> R:
+        start = _clock()
         while True:
             if _clock() + probe_timeout_s(h.kicad) > deadline:
                 raise StructuredToolError(
@@ -322,6 +334,8 @@ def _after_idle[R](
                 break
             _sleep(BUSY_POLL_S)
         h.busy_slot.set(None)
+        if waited is not None:
+            waited.spent = max(0.0, _clock() - start)
         return fn(h)
 
     return run
@@ -667,16 +681,25 @@ class KicadSession:
                 busy_slot=_AttrSlot(self, "refill_busy"),
             )
             target = fn
+            waited: _IdleWait | None = None
             if self.refill_busy is not None and self.refill_busy == self._generation:
                 # A refill cut short by RefillTimeout may still run: ping until idle
                 # first, bounded inside this call's own timeout (B-C3), so the callable
-                # never meets AS_BUSY.
-                target = _after_idle(fn, _clock() + limit - IDLE_WAIT_MARGIN_S, limit)
+                # never meets AS_BUSY. The callable then still gets its full `limit`:
+                # the deadline is extended by the time the idle wait took.
+                waited = _IdleWait()
+                target = _after_idle(fn, _clock() + limit - IDLE_WAIT_MARGIN_S, limit, waited)
             work = asyncio.ensure_future(asyncio.to_thread(target, handle))
             died = asyncio.ensure_future(proc.wait()) if proc is not None else None
             try:
                 waiting = {work} if died is None else {work, died}
-                await asyncio.wait(waiting, timeout=limit, return_when=asyncio.FIRST_COMPLETED)
+                done, _ = await asyncio.wait(
+                    waiting, timeout=limit, return_when=asyncio.FIRST_COMPLETED
+                )
+                if not done and waited is not None and waited.spent:
+                    await asyncio.wait(
+                        waiting, timeout=waited.spent, return_when=asyncio.FIRST_COMPLETED
+                    )
             except asyncio.CancelledError:
                 # The caller gave up (e.g. an interrupted turn). The worker thread
                 # cannot be stopped and must not share the client with later calls,

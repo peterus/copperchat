@@ -334,17 +334,26 @@ async def test_undo_runs_reverse_order(tmp_path: Path, log: list[str], spy: Spy)
     assert [x for x in log[i:] if x.startswith("undo")] == ["undo 3", "undo 2", "undo 1"]
 
 
-async def test_undo_only_completed_stages(tmp_path: Path, log: list[str], spy: Spy) -> None:
+async def test_undo_runs_for_failing_stage_then_completed(
+    tmp_path: Path, log: list[str], spy: Spy
+) -> None:
+    """The stage that started and raised is undone too (undo restores pre-call values,
+    so it is safe for a partially run stage): after compensate, failing stage first."""
+
     async def boom(sctx: BoardStageContext) -> None:
         raise ValueError("broke")
 
-    async def undo(sctx: BoardStageContext) -> None:
-        log.append("undo")
+    def undo(n: int) -> Callable[[BoardStageContext], Any]:
+        async def run(sctx: BoardStageContext) -> None:
+            log.append(f"undo {n}")
 
-    cs = _cs([_stage(log, 1, undo=undo), BoardStage("s2", boom, undo=undo)])
+        return run
+
+    cs = _cs([_stage(log, 1, undo=undo(1)), BoardStage("s2", boom, undo=undo(2))])
     with pytest.raises(ValueError):
         await apply_board_change_set(_ctx(tmp_path, FakeSession(log)), cs)
-    assert log.count("undo") == 1
+    i = log.index("compensate")
+    assert [x for x in log[i:] if x.startswith("undo")] == ["undo 2", "undo 1"]
 
 
 async def test_restart_during_stages_skips_compensation(
@@ -594,3 +603,48 @@ async def test_stage_call_passes_timeout(tmp_path: Path, log: list[str]) -> None
     assert await sctx.call(lambda h: 1) == 1
     assert await sctx.call(lambda h: 2, timeout=240) == 2
     assert session.timeouts == [None, 240]
+
+
+async def test_board_reads_pass_the_board_read_timeout(
+    tmp_path: Path, log: list[str], spy: Spy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The snapshots (before, after, compensation) and `board_model` serialise the
+    whole board: each passes BOARD_READ_TIMEOUT_S, never the 30 s default."""
+    from copperchat.kicad_tools.board import read
+
+    session = FakeSession(log)
+    await apply_board_change_set(_ctx(tmp_path, session), _cs([_stage(log, 1)]))
+    assert session.timeouts == [read.BOARD_READ_TIMEOUT_S] * 2
+
+    session = FakeSession(log)
+    with pytest.raises(RuntimeError):
+        await apply_board_change_set(_ctx(tmp_path, session), _cs([_stage(log, 1)], fail_after=1))
+    assert session.timeouts == [read.BOARD_READ_TIMEOUT_S] * 3  # snapshot, restore, leftovers
+
+    session = FakeSession(log)
+    monkeypatch.setattr(read, "load_board_model", lambda h, project: "model")
+    assert await read.board_model(_ctx(tmp_path, session)) == "model"
+    assert session.timeouts == [read.BOARD_READ_TIMEOUT_S]
+
+
+async def test_board_creation_rechecks_the_path_under_the_lock(
+    tmp_path: Path, log: list[str], spy: Spy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Something appearing at the board path between the first check and the session
+    call is refused inside the call, before CreateDocument; nothing is removed."""
+    rig = CreationRig(tmp_path, log, monkeypatch)
+    created: list[Path] = []
+    monkeypatch.setattr(api, "create_board_document", lambda h, path: created.append(path))
+    real_call = rig.session.call
+
+    async def call(fn: Callable[[Any], Any], *, timeout: float | None = None) -> Any:
+        if not rig.pcb.is_symlink():
+            rig.pcb.symlink_to(tmp_path / "elsewhere.kicad_pcb")
+        return await real_call(fn, timeout=timeout)
+
+    monkeypatch.setattr(rig.session, "call", call)
+    with pytest.raises(StructuredToolError) as info:
+        await apply_board_change_set(rig.ctx, _cs([_stage(log, 1)], creates_board=True))
+    assert info.value.code == "output_path_unsafe"
+    assert created == [] and rig.removed == [] and rig.reloads == 0
+    assert rig.pcb.is_symlink()

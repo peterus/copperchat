@@ -109,6 +109,32 @@ async def test_move_changes_placement_hash(ecc83_module_session: KicadSession) -
     assert board_hash(after) != board_hash(before)
 
 
+async def test_board_text_in_model_and_hash(ecc83_module_session: KicadSession) -> None:
+    """A board-level text (not a footprint's) is loaded into `texts` and changes the
+    board hash, not the placement hash."""
+    from kipy.board_types import BoardText
+    from kipy.proto.board.board_types_pb2 import BoardLayer
+
+    s = ecc83_module_session
+    before = await _model(s)
+
+    def add(h: KicadHandle) -> None:
+        t = BoardText()
+        t.value = "CC PROBE"
+        t.layer = BoardLayer.BL_F_SilkS
+        t.position = Vector2.from_xy(5_000_000, 5_000_000)
+        h.board().create_items([t])
+
+    async with s.commit("text", doc="pcb"):
+        await s.call(add)
+    after = await _model(s)
+    added = [t for t in after.texts if t.text == "CC PROBE"]
+    assert len(added) == 1 and added[0].layer == "F.SilkS"
+    assert added[0].at == pytest.approx((5.0, 5.0))
+    assert board_hash(after) != board_hash(before)
+    assert placement_hash(after) == placement_hash(before)
+
+
 async def test_dru_text_read(ecc83_module_session: KicadSession) -> None:
     s = ecc83_module_session
 

@@ -514,3 +514,13 @@ def test_deleted_but_located_library_is_reported() -> None:
     stored = {"a.kicad_pro": "1", "../lib/": "dir", "../lib/x.kicad_mod": "s"}
     now = {"a.kicad_pro": "1", "../lib/": ABSENT}
     assert changed_rels(stored, now) == ["../lib/x.kicad_mod"]
+
+
+def test_custom_rules_file_without_stored_row_is_a_silent_baseline() -> None:
+    # Rows recorded before `<stem>.kicad_dru` was tracked lack it: no false notice.
+    stored = {"a.kicad_pro": "1", "a.kicad_pcb": "2"}
+    now = {"a.kicad_pro": "1", "a.kicad_pcb": "2", "a.kicad_dru": "r"}
+    assert changed_rels(stored, now) == []
+    # Once recorded, a change (or removal) of the rules file is reported.
+    assert changed_rels({**now}, {**now, "a.kicad_dru": "r2"}) == ["a.kicad_dru"]
+    assert changed_rels({**now}, stored) == ["a.kicad_dru"]

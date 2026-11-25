@@ -206,3 +206,26 @@ def test_negative_zero_coordinates() -> None:
     m = board()
     assert placement_hash(with_part(m, "R1", x=-0.001)) == placement_hash(with_part(m, "R1", x=0.0))
     assert board_hash(with_part(m, "R1", y=-0.0001)) == board_hash(with_part(m, "R1", y=0.0))
+
+
+def test_duplicate_refs_order_independent() -> None:
+    """Parts sharing a ref (REF**) hash the same in any API order."""
+    a, b = part("REF**", 10, 10), part("REF**", 20, 20, kiid="other")
+    m1, m2 = board(parts=(a, b)), board(parts=(b, a))
+    assert placement_hash(m1) == placement_hash(m2)
+    assert board_hash(m1) == board_hash(m2)
+
+
+def _board_text(x: float = 10.0, text: str = "REV A") -> TextItem:
+    return TextItem("text", text, "F.SilkS", (x, 5.0), (1.0, 1.0), 0.15, True)
+
+
+def test_bh_board_text() -> None:
+    m = board()
+    with_text = replace(m, texts=(_board_text(),))
+    assert board_hash(m) != board_hash(with_text)
+    assert board_hash(with_text) != board_hash(replace(m, texts=(_board_text(x=10.01),)))
+    assert board_hash(with_text) != board_hash(replace(m, texts=(_board_text(text="REV B"),)))
+    two = (_board_text(), _board_text(x=20.0))
+    assert board_hash(replace(m, texts=two)) == board_hash(replace(m, texts=two[::-1]))
+    assert placement_hash(m) == placement_hash(with_text)

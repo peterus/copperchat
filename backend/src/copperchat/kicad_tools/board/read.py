@@ -61,6 +61,11 @@ if TYPE_CHECKING:
     from copperchat.projects import Project
     from copperchat.tools.spec import ToolContext
 
+# A board model or snapshot read serialises the whole board (SaveDocumentToString for
+# the layer types): seconds on a big board, so every such `session.call` passes this
+# explicitly instead of the 30 s default (B-C4).
+BOARD_READ_TIMEOUT_S = 120.0
+
 # -- .kicad_dru --------------------------------------------------------------------------
 
 DRU_MAX_BYTES = 1024 * 1024
@@ -217,12 +222,24 @@ def _stroke(shape: BoardShape) -> float:
     return nm_to_mm(shape.proto.shape.attributes.stroke.width.value_nm)
 
 
+_CLOSE_MM = 1e-3
+
+
 def _close(a: Point, b: Point) -> bool:
-    return abs(a[0] - b[0]) < 1e-3 and abs(a[1] - b[1]) < 1e-3
+    return abs(a[0] - b[0]) < _CLOSE_MM and abs(a[1] - b[1]) < _CLOSE_MM
+
+
+def _cell(p: Point) -> tuple[int, int]:
+    return (math.floor(p[0] / _CLOSE_MM), math.floor(p[1] / _CLOSE_MM))
 
 
 def _loops(shapes: list[BoardShape]) -> list[list[Point]]:
-    """Closed loops from closed shapes and from open pieces chained end to end."""
+    """Closed loops from closed shapes and from open pieces chained end to end.
+
+    Open pieces are chained in input order: each chain starts at the first unused
+    piece and takes the lowest-index unused piece whose start (else end) is `_close`
+    to its tail. An endpoint index on a `_CLOSE_MM` grid (two close points lie in the
+    same or a neighbouring cell) keeps this near-linear on big outlines."""
     loops: list[list[Point]] = []
     pieces: list[list[Point]] = []
     for sh in shapes:
@@ -231,21 +248,39 @@ def _loops(shapes: list[BoardShape]) -> list[list[Point]]:
             loops.append(pts)
         elif len(pts) >= 2:
             pieces.append(pts)
-    while pieces:
-        chain = pieces.pop(0)
-        progress = True
-        while progress and not (len(chain) > 2 and _close(chain[0], chain[-1])):
-            progress = False
-            for i, piece in enumerate(pieces):
-                if _close(chain[-1], piece[0]):
-                    chain += piece[1:]
-                elif _close(chain[-1], piece[-1]):
-                    chain += piece[-2::-1]
-                else:
+    index: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    for i, piece in enumerate(pieces):
+        for end, p in ((0, piece[0]), (1, piece[-1])):
+            index.setdefault(_cell(p), []).append((i, end))
+    used = [False] * len(pieces)
+
+    def match(tail: Point) -> tuple[int, int] | None:
+        cx, cy = _cell(tail)
+        best: tuple[int, int] | None = None
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                found = index.get((cx + dx, cy + dy))
+                if not found:
                     continue
-                pieces.pop(i)
-                progress = True
+                found[:] = [e for e in found if not used[e[0]]]  # drop used entries
+                for i, end in found:
+                    p = pieces[i][-1] if end else pieces[i][0]
+                    if (best is None or (i, end) < best) and _close(tail, p):
+                        best = (i, end)
+        return best
+
+    for first in range(len(pieces)):
+        if used[first]:
+            continue
+        used[first] = True
+        chain = list(pieces[first])
+        while not (len(chain) > 2 and _close(chain[0], chain[-1])):
+            found = match(chain[-1])
+            if found is None:
                 break
+            i, end = found
+            used[i] = True
+            chain += pieces[i][-2::-1] if end else pieces[i][1:]
         if len(chain) > 2 and _close(chain[0], chain[-1]):
             loops.append(chain[:-1])
     return loops
@@ -307,19 +342,29 @@ def _texts(fp: FootprintInstance) -> tuple[TextItem, ...]:
         elif isinstance(item, BoardText):
             out.append(_text("text", item, True))  # free texts: always visible at the pin
         elif isinstance(item, BoardTextBox):
-            attrs = item.attributes
-            out.append(
-                TextItem(
-                    kind="textbox",
-                    text=str(item.value),
-                    layer=_layer(item.layer),
-                    at=_pt(item.top_left),
-                    size=_pt(attrs.size),
-                    thickness=nm_to_mm(attrs.stroke_width),
-                    visible=True,
-                )
-            )
+            out.append(_textbox(item))
     return tuple(out)
+
+
+def _textbox(item: BoardTextBox) -> TextItem:
+    attrs = item.attributes
+    return TextItem(
+        kind="textbox",
+        text=str(item.value),
+        layer=_layer(item.layer),
+        at=_pt(item.top_left),
+        size=_pt(attrs.size),
+        thickness=nm_to_mm(attrs.stroke_width),
+        visible=True,
+    )
+
+
+def _board_texts(board: Any) -> tuple[TextItem, ...]:
+    """Board-level texts and text boxes (footprint texts are the parts' own)."""
+    return tuple(
+        _textbox(t) if isinstance(t, BoardTextBox) else _text("text", t, True)
+        for t in board.get_text()
+    )
 
 
 _DRILLED = (board_types_pb2.PT_PTH, board_types_pb2.PT_NPTH)
@@ -623,6 +668,7 @@ def load_board_model(h: KicadHandle, project: Project) -> BoardModel:
         stackup=_stackup(board),
         dru_marker=dru_marker,
         warnings=warnings,
+        texts=_board_texts(board),
     )
 
 
@@ -641,5 +687,7 @@ async def board_model(ctx: ToolContext) -> BoardModel:
     """The live board of the tool call's project as a `BoardModel`."""
     require_board(ctx)
     project = ctx.project
-    model: BoardModel = await ctx.session.call(lambda h: load_board_model(h, project))
+    model: BoardModel = await ctx.session.call(
+        lambda h: load_board_model(h, project), timeout=BOARD_READ_TIMEOUT_S
+    )
     return model

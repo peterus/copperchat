@@ -3,7 +3,9 @@ stage, one board commit per stage, inside `session.applying()`.
 
 A tool error leaves nothing written: any failure after the first stage started
 (cancellation included) runs the KIID-diff compensation (`compensate.py`) under
-`_uncancellable`, then the `undo` of every completed stage in reverse; what cannot be
+`_uncancellable`, then the `undo` of the stage that raised and of every completed
+stage, in reverse (undo restores pre-call values, so it is safe for a partially run
+stage); what cannot be
 brought back raises `DocumentInconsistent`. The one exception is a stage with
 `compensable=False` (a real netlist import): a later failure raises `sync_failed`
 ("undo the turn from the History panel"). `creates_board` lets KiCad create the board
@@ -36,7 +38,7 @@ from copperchat.kicad_tools.board.compensate import (
     restore,
     take_snapshot,
 )
-from copperchat.kicad_tools.board.read import board_model
+from copperchat.kicad_tools.board.read import BOARD_READ_TIMEOUT_S, board_model
 from copperchat.kicad_tools.edit.changeset import ChangeSet, NetIntent, SheetRef, Stage
 from copperchat.kicad_tools.edit.engine import record_applied
 from copperchat.tools.spec import ToolContext, ToolResult
@@ -173,31 +175,47 @@ async def _create_board(ctx: ToolContext) -> str:
     project_dir = ctx.project.pro_file.parent
     rel = _board_rel(ctx)
     target = project_dir / rel
+    _refuse_occupied(target, rel)
+
+    def create(h: KicadHandle) -> None:
+        # Again under the session lock, right before CreateDocument: something that
+        # appeared since the first check is refused, never overwritten or removed.
+        _refuse_occupied(target, rel)
+        api.create_board_document(h, target)
+
     try:
-        os.lstat(target)  # the unresolved path: a symlink is never followed
-    except FileNotFoundError:
-        pass
-    else:
-        raise StructuredToolError(
-            "Cannot create the board",
-            f"{rel} already exists in the project directory but is not the project's board "
-            "(a symlink, a directory or an unknown file)",
-            "Ask the user to move it away, then retry.",
-            code="output_path_unsafe",
-            details={"path": rel},
-        )
-    try:
-        await ctx.session.call(
-            lambda h: api.create_board_document(h, target), timeout=CREATE_BOARD_TIMEOUT_S
-        )
+        await ctx.session.call(create, timeout=CREATE_BOARD_TIMEOUT_S)
         await _reload(ctx)
         if ctx.project.pcb_file is None:
             raise RuntimeError(f"the board KiCad created ({rel}) was not found afterwards")
+    except _PathOccupied:
+        raise  # refused before CreateDocument: nothing there is this call's
     except BaseException as exc:
         # The path was absent before the call: whatever is there now is this call's.
         await _cleanup_board(ctx, rel, exc)
         raise
     return rel
+
+
+class _PathOccupied(StructuredToolError):
+    pass
+
+
+def _refuse_occupied(target: Path, rel: str) -> None:
+    """`output_path_unsafe` when anything (a symlink, a directory, a file the project
+    does not know) is at the board path; lstat, never followed."""
+    try:
+        os.lstat(target)
+    except FileNotFoundError:
+        return
+    raise _PathOccupied(
+        "Cannot create the board",
+        f"{rel} already exists in the project directory but is not the project's board "
+        "(a symlink, a directory or an unknown file)",
+        "Ask the user to move it away, then retry.",
+        code="output_path_unsafe",
+        details={"path": rel},
+    )
 
 
 async def _reload(ctx: ToolContext) -> None:
@@ -253,11 +271,12 @@ async def _apply(ctx: ToolContext, cs: BoardChangeSet) -> ToolResult:
     session = ctx.session
     async with session.applying():
         generation = session.generation
-        snap: CopperSnapshot = await session.call(lambda h: take_snapshot(h, cs.snapshot))
+        snap: CopperSnapshot = await session.call(
+            lambda h: take_snapshot(h, cs.snapshot), timeout=BOARD_READ_TIMEOUT_S
+        )
         sctx = BoardStageContext(ctx, cs.report)
         step_report: list[dict[str, Any]] = []
         started: list[BoardStage] = []
-        completed: list[BoardStage] = []
 
         def same_server() -> bool:
             return session.generation == generation and session.server_alive
@@ -270,7 +289,6 @@ async def _apply(ctx: ToolContext, cs: BoardChangeSet) -> ToolResult:
                         await stage.run(sctx)
                 else:
                     await stage.run(sctx)
-                completed.append(stage)
                 step_report.append({"stage": stage.label, "status": "done"})
                 if cs.fail_after == n:
                     raise RuntimeError("fail_after")
@@ -291,11 +309,13 @@ async def _apply(ctx: ToolContext, cs: BoardChangeSet) -> ToolResult:
                     )
             # The change-log counts: inside the protected region, so a cancel or an
             # error here still compensates (nothing written on any tool error).
-            after = await session.call(lambda h: take_snapshot(h, "ids"))
+            after = await session.call(
+                lambda h: take_snapshot(h, "ids"), timeout=BOARD_READ_TIMEOUT_S
+            )
         except BaseException as exc:
             if not started:
                 raise
-            await _after_failure(ctx, cs, sctx, snap, started, completed, exc, same_server)
+            await _after_failure(ctx, cs, sctx, snap, started, exc, same_server)
             raise
     await record_applied(ctx, cs.tool, [_entry(ctx, cs, counts(snap, after))])
     return ToolResult(data=cs.report | {"step_report": step_report}, changed_docs={"pcb"})
@@ -307,7 +327,6 @@ async def _after_failure(
     sctx: BoardStageContext,
     snap: CopperSnapshot,
     started: list[BoardStage],
-    completed: list[BoardStage],
     exc: BaseException,
     same_server: Callable[[], bool],
 ) -> None:
@@ -343,7 +362,7 @@ async def _after_failure(
             code="sync_failed",
         ) from exc
     try:
-        await _uncancellable(_compensate(ctx, cs, sctx, snap, completed))
+        await _uncancellable(_compensate(ctx, cs, sctx, snap, started))
     except asyncio.CancelledError as again:
         if isinstance(again.__cause__, Exception):
             _report(ctx, again.__cause__)
@@ -359,16 +378,21 @@ async def _compensate(
     cs: BoardChangeSet,
     sctx: BoardStageContext,
     snap: CopperSnapshot,
-    completed: list[BoardStage],
+    started: list[BoardStage],
 ) -> None:
     session = ctx.session
     try:
         # One board commit; KiCad stages its changes until the push, so the read-back
         # (`leftovers`) runs after it.
         async with session.commit(f"copperchat: {cs.tool}: undo", doc="pcb"):
-            renamed = await session.call(lambda h: restore(h, snap))
-        left: list[str] = await session.call(lambda h: leftovers(h, snap, renamed))
-        for stage in reversed(completed):
+            renamed = await session.call(lambda h: restore(h, snap), timeout=BOARD_READ_TIMEOUT_S)
+        left: list[str] = await session.call(
+            lambda h: leftovers(h, snap, renamed), timeout=BOARD_READ_TIMEOUT_S
+        )
+        # `started` = the completed stages plus, on a failure inside a stage, the one
+        # that raised: its undo runs first (it restores pre-call values, so a partial
+        # run is fine), then the completed ones in reverse.
+        for stage in reversed(started):
             if stage.undo is not None:
                 await stage.undo(sctx)
     except (asyncio.CancelledError, KicadUnavailable):

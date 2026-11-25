@@ -49,3 +49,15 @@ def test_frontend_served_when_dist_exists(
 def test_no_frontend_returns_404_on_root(make_settings: Callable[..., Settings]) -> None:
     with TestClient(create_app(make_settings())) as client:
         assert client.get("/").status_code == 404
+
+
+def test_shutdown_stops_the_board_worker(
+    make_settings: Callable[..., Settings], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from copperchat.web import app as app_mod
+
+    stopped: list[bool] = []
+    monkeypatch.setattr(app_mod, "shutdown_worker", lambda: stopped.append(True))
+    with TestClient(create_app(make_settings())):
+        assert stopped == []
+    assert stopped == [True]

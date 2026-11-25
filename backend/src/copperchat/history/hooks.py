@@ -61,7 +61,11 @@ def changed_rels(stored: Mapping[str, str], now: Mapping[str, str]) -> list[str]
     without a marker) is dropped silently; a deleted but still located library keeps
     its ABSENT marker, so its footprints are reported; with no
     current library at all the stored table row is dropped silently too (the table is
-    only tracked together with a library). The caller re-records the current rows."""
+    only tracked together with a library). A board rules file (`.kicad_dru`, tracked by
+    `document_files` since P1a) without a stored row is a baseline as well: rows
+    recorded before it was tracked lack it (so a rules file first created outside
+    CopperChat is not reported; once recorded, its changes and removal are). The
+    caller re-records the current rows."""
     tracked = any(is_marker_rel(k) and k in stored for k in now)
     any_library = any(is_marker_rel(k) for k in now)
     out: list[str] = []
@@ -70,6 +74,8 @@ def changed_rels(stored: Mapping[str, str], now: Mapping[str, str]) -> list[str]
             continue
         if k not in stored and not tracked and (is_library_rel(k) or _is_table_rel(k)):
             continue  # baseline
+        if k not in stored and k.endswith(".kicad_dru"):
+            continue  # baseline: rows recorded before the rules file was tracked
         if k not in now and is_library_rel(k) and _marker_of(k) not in now:
             continue  # its library is no longer the located one (or was never marked)
         if k not in now and not any_library and _is_table_rel(k):

@@ -357,6 +357,7 @@ Side = Literal["top", "bottom"]
     dru_text: str; stackup: tuple[tuple[str, str], ...]
     dru_marker: str = ""                         # "" normally; "oversize:<st_size>:<st_mtime_ns>" when .kicad_dru > 1 MiB (dru_text then "") — in board_hash
     warnings: tuple[str, ...] = ()               # load warnings (e.g. .kicad_dru not a regular file / oversize); in no hash
+    texts: tuple[TextItem, ...] = ()             # board-level texts/text boxes (As built P1a); in board_hash (sorted, KIID-free)
     def part(self, ref: str) -> Part: ...           # KeyError if missing
     def placed(self, part: Part) -> bool: ...       # courtyard fully inside outline; False if outline.kind == "none"
 
@@ -810,12 +811,13 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
   tracks/vias, not only missing ones; re-created items keep their KIIDs. Compensation runs as `restore` (one pcb
   commit) + `leftovers` (read after the push); `compensate()` = both. `BoardStageContext.call(fn, *, timeout=None)`.
   A cancel after a non-compensable stage started is reported like `sync_failed` (undo via History).
+- B-C2 `BoardModel.texts` (board-level texts and text boxes, kind `"text"` / `"textbox"`) is in `board_hash`;
+  both hashes sort the full canonical part rows, so duplicate refs (`REF**`) hash independent of API order.
 - Test rig: `board_ctx(session, db, sessions=None)` in `tests/kicad/board/conftest.py` (reload needs the real
   `KicadSessionManager`); fixtures `blank_nopcb_sessions`, `board_db`.
 
 **Residuals for later phases**
 - `sdk_tools._inconsistent_error` words leftovers as "local footprint library"; board wording needed (P1c).
-- `shutdown_worker()` is not wired into app shutdown yet (first `run_cpu` user, P3a, or P1c).
 - The real-server path where a 2 s probe times out (socket closed, kipy reconnects) is covered by fakes only.
 - Removing a group the call created leaves its member footprints (members are compensated separately).
 
