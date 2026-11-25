@@ -168,7 +168,8 @@ def find_runtime(settings: Settings) -> FreeroutingRuntime | None:
     probe is retried after `FAILURE_TTL_S`."""
     if not settings.freerouting:
         return None
-    home = settings.freerouting_home
+    # absolute: the probe runs in our cwd, but every run uses cwd=workdir
+    home = settings.freerouting_home.absolute()
     java = home / "jre" / "bin" / "java"
     jar = home / JAR_NAME
     try:
@@ -375,6 +376,8 @@ async def run_freerouting(
     re-raises."""
     timeout_s = clamp_timeout(timeout_s)
     passes = clamp_passes(passes)
+    # the JVM runs with cwd=workdir: relative paths must mean what they mean to us
+    dsn, ses, workdir = dsn.absolute(), ses.absolute(), workdir.absolute()
     start = time.monotonic()
     deadline = start + timeout_s
     unshare = await asyncio.to_thread(unshare_path)
@@ -401,6 +404,8 @@ async def run_freerouting(
             timed_out=True,
         )
     try:
+        # a stale .ses from an earlier run must not pass for this run's result
+        ses.unlink(missing_ok=True)
         return await _run(rt, cmd, workdir, timeout_s, deadline, start)
     finally:
         slots.release()

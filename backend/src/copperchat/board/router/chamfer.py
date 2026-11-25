@@ -21,12 +21,13 @@ obstacle only. Steps:
    polyline vertices, no other same-net copper end (another track's or an arc's - arcs are
    invisible to `polylines`) lies on the cut-away corner (so a vertex where an arc ends is
    never moved; a 90-degree corner there is ripped `ninety_unfixable`), the diagonal
-   inflated by w / 2 + clearance (max of the net's class clearance and
-   `rules["min_clearance"]`) overlaps no pad, track, arc or via of another net (diagonals
-   placed earlier included), and `analyse_bends` of the changed stretch reports no
-   failure. Adjacent corners share a leg: their offsets are chosen jointly (depth-first
-   over each run of adjacent corners, larger c preferred from the run's start), so the
-   straight piece left between them satisfies the chamfer/jog rules. The whole new
+   inflated by w / 2 + clearance (per obstacle, as KiCad: the max of the net's class
+   clearance, the obstacle net's class clearance and `rules["min_clearance"]`) overlaps no
+   pad, track, arc or via of another net (diagonals placed earlier included), and
+   `analyse_bends` of the changed stretch reports no failure. Adjacent corners share a
+   leg: their offsets are chosen jointly (depth-first over each run of adjacent corners,
+   larger c preferred from the run's start), so the straight piece left between them
+   satisfies the chamfer/jog rules. The whole new
    polyline is re-checked by `analyse_bends`; a polyline with any unfixable corner (or any
    other failure, e.g. a corner with only one leg touched) is left unchanged and ripped in
    step 3 - never partly chamfered.
@@ -237,13 +238,17 @@ def _clearance(model: BoardModel, net: str) -> float:
 
 
 class _Obstacles:
-    """Other-net copper of one layer (pads, tracks, arcs, vias; diagonals placed so far).
-    Polygons are built lazily, only for items whose bounding box is hit."""
+    """Other-net copper of one layer (pads, tracks, arcs, vias; diagonals placed so far),
+    each with its net's clearance (`_clearance`). Polygons are built lazily, only for items
+    whose bounding box is hit."""
 
     def __init__(self, model: BoardModel, tracks: Sequence[Track], layer: str) -> None:
+        self.model = model
         self.grid = _Grid()
-        self.items: list[tuple[str, Callable[[], list[Point]]]] = []
+        self.items: list[tuple[str, float, Callable[[], list[Point]]]] = []
         self.polys: dict[int, list[Point]] = {}
+        self.clr: dict[str, float] = {}
+        self.max_clr = 0.0
         for part in model.parts:
             for q in part.pads:
                 if _pad_on_layer(q, layer):
@@ -268,21 +273,37 @@ class _Obstacles:
                 partial(_octagon, v.at, v.diameter / 2),
             )
 
+    def clearance(self, net: str) -> float:
+        c = self.clr.get(net)
+        if c is None:
+            c = self.clr[net] = _clearance(self.model, net)
+        return c
+
     def _add(
         self, net: str, box: tuple[float, float, float, float], make: Callable[[], list[Point]]
     ) -> None:
+        c = self.clearance(net)
+        self.max_clr = max(self.max_clr, c)
         self.grid.add(len(self.items), box)
-        self.items.append((net, make))
+        self.items.append((net, c, make))
 
     def add(self, net: str, poly: list[Point]) -> None:
         self.polys[len(self.items)] = poly
         self._add(net, _bbox(poly), lambda: poly)
 
-    def blocked(self, net: str, poly: list[Point]) -> bool:
-        for i in self.grid.query(_bbox(poly)):
-            other, make = self.items[i]
+    def blocked(self, net: str, ends: tuple[Point, Point], half: float) -> bool:
+        """The segment `ends` (half width `half`) of `net`, inflated per obstacle by the
+        larger of both nets' clearances, overlaps some other-net item."""
+        own = self.clearance(net)
+        caps: dict[float, list[Point]] = {}
+        for i in self.grid.query(_grow(ends, (half + max(own, self.max_clr)) / _OCT)):
+            other, oc, make = self.items[i]
             if other == net:
                 continue
+            r = half + max(own, oc)
+            poly = caps.get(r)
+            if poly is None:
+                poly = caps[r] = _capsule(ends, r)
             opoly = self.polys.get(i)
             if opoly is None:
                 opoly = self.polys[i] = make()
@@ -328,7 +349,8 @@ def _drop_and_merge(
             k = parent[k]
         return k
 
-    joints: dict[str, list[Point]] = defaultdict(list)  # kiid -> merged joint points
+    joints: set[Point] = set()  # merged joint points (snapped)
+    snapped: dict[str, tuple[Point, Point]] = {}  # touched kiid -> its snapped (start, end)
     near: dict[str, _Near] = {}  # layer -> every pad on it and every via
     for (_net, layer), tracks in sorted(by_nl.items()):
         if not any(id(t) in touched_ids for t in tracks):
@@ -341,8 +363,11 @@ def _drop_and_merge(
         ends: dict[Point, list[Track]] = defaultdict(list)
         grid = _Grid()
         for i, t in enumerate(tracks):
-            ends[nodes.snap(t.start)].append(t)
-            ends[nodes.snap(t.end)].append(t)
+            sa, sb = nodes.snap(t.start), nodes.snap(t.end)
+            ends[sa].append(t)
+            ends[sb].append(t)
+            if id(t) in touched_ids:
+                snapped[t.kiid] = (sa, sb)
             grid.add(i, _bbox((t.start, t.end)))
         for p in sorted(ends):
             pair = ends[p]
@@ -368,8 +393,7 @@ def _drop_and_merge(
             if items.at_via(p) or items.in_pad(p):
                 continue
             parent[find(t1.kiid)] = find(t2.kiid)
-            joints[t1.kiid].append(p)
-            joints[t2.kiid].append(p)
+            joints.add(p)
     groups: dict[str, list[Track]] = defaultdict(list)
     for t in live:
         groups[find(t.kiid)].append(t)
@@ -377,8 +401,14 @@ def _drop_and_merge(
     for chain in groups.values():
         if len(chain) < 2:
             continue
-        pts = [q for t in chain for q in (t.start, t.end)]
-        outer = [q for q in pts if not any(_near(q, j) for t in chain for j in joints[t.kiid])]
+        # the chain's outer ends: the track ends that are no merge joint (joints are
+        # snapped nodes of the same net/layer, so compare the ends' snapped nodes)
+        outer = [
+            q
+            for t in chain
+            for q, sq in zip((t.start, t.end), snapped[t.kiid], strict=True)
+            if sq not in joints
+        ]
         a, b = min(outer), max(outer)
         first = next(t for t in chain if a in (t.start, t.end))
         new = Track(
@@ -482,7 +512,6 @@ class _Chamferer:
         tracks = self.by_nl[(net, layer)]
         parts = self.parts_of.get(net, [])
         pads = [q for p in parts for q in p.pads if q.net == net and _pad_on_layer(q, layer)]
-        clr = _clearance(self.model, net)
         self.ends = _Grid()
         for i, t in enumerate(tracks):
             for e in (t.start, t.end):
@@ -498,7 +527,7 @@ class _Chamferer:
             r = analyse_bends(pts, width, pad_ends=ends)
             if not r.ninety or any(getattr(r, f) for f in _OTHER_FAILS):
                 continue
-            self._polyline(list(pts), width, ends, r, tracks, net, layer, clr)
+            self._polyline(list(pts), width, ends, r, tracks, net, layer)
 
     def _strands(self, s: Point, p: Point, e: Point, legs: tuple[int, int]) -> bool:
         """Some copper end other than the two corner tracks' lies on the cut-away corner."""
@@ -533,7 +562,6 @@ class _Chamferer:
         tracks: Sequence[Track],
         net: str,
         layer: str,
-        clr: float,
     ) -> None:
         ninety = set(r.ninety)
         n = len(pts)
@@ -580,7 +608,7 @@ class _Chamferer:
                     math.dist(q, s) <= min(_len(t_in), math.dist(p, pts[i - 1])) - ZERO_LEN
                     and math.dist(q, e) <= min(_len(t_out), math.dist(p, pts[i + 1])) - ZERO_LEN
                     and not self._strands(s, q, e, (id(t_in), id(t_out)))
-                    and not obst.blocked(net, _capsule((s, e), width / 2 + clr))
+                    and not obst.blocked(net, (s, e), width / 2)
                     and _window_ok(pts, {i: (s, e)}, lo, hi, width, ends, all_pending - {p})
                 ):
                     out = (s, e)
@@ -857,8 +885,12 @@ def postprocess(model: BoardModel, kiids: frozenset[str]) -> PostResult:
     by_nl: dict[tuple[str, str], list[int]] = defaultdict(list)
     for i, t in enumerate(wt):
         by_nl[(t.net, t.layer)].append(i)
+    tol = _ON_TRACK_TOL
     for net, layer in sorted({(wt[i].net, wt[i].layer) for i in mine}):
         ids = by_nl[(net, layer)]
+        near_grid = _Grid()  # the net/layer's tracks by bbox: which may pass near a defect
+        for i in ids:
+            near_grid.add(i, _bbox((wt[i].start, wt[i].end)))
         rep = analyse_tracks(replace(work, tracks=tuple(wt[i] for i in ids), arcs=()), index=index)
         # the same net/layer without the touched copper: a defect found there too is not ours
         rest = tuple(wt[i] for i in ids if i not in mine)
@@ -868,7 +900,12 @@ def postprocess(model: BoardModel, kiids: frozenset[str]) -> PostResult:
             for p in getattr(rep, field):
                 if any(math.dist(p, q) <= _ON_TRACK_TOL for q in old):
                     continue
-                tids = {i for i in ids if _pt_seg(p, wt[i].start, wt[i].end) <= _ON_TRACK_TOL}
+                box = (p[0] - tol, p[1] - tol, p[0] + tol, p[1] + tol)
+                tids = {
+                    i
+                    for i in near_grid.query(box)
+                    if _pt_seg(p, wt[i].start, wt[i].end) <= _ON_TRACK_TOL
+                }
                 rip(net, layer, tids, why)
 
     outline = outline_polygon(model)

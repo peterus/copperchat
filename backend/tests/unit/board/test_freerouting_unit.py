@@ -365,6 +365,41 @@ async def test_normal_nonzero_exit_not_timed_out(
     assert "routing failed" in run.log_tail
 
 
+_WRITE_SES = 'while [ $# -gt 0 ]; do [ "$1" = "-do" ] && echo routed > "$2"; shift; done; exit 0'
+
+
+async def test_relative_paths_resolved(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Relative workdir/dsn/ses resolve against our cwd, not the JVM's cwd (workdir)."""
+    _no_unshare(monkeypatch)
+    spy = _Spy(monkeypatch)
+    rt = _rt(tmp_path, _WRITE_SES)
+    monkeypatch.chdir(tmp_path)
+    run = await run_freerouting(
+        rt, Path("b.dsn"), Path("b.ses"), timeout_s=20, passes=3, workdir=Path("work")
+    )
+    assert run.returncode == 0
+    assert (tmp_path / "b.ses").read_text() == "routed\n"
+    assert not (tmp_path / "work" / "b.ses").exists()
+    argv = list(spy.argv)
+    assert argv[argv.index("-de") + 1] == str(tmp_path / "b.dsn")
+    assert argv[argv.index("-do") + 1] == str(tmp_path / "b.ses")
+    assert spy.kwargs["cwd"] == tmp_path / "work"
+
+
+async def test_stale_ses_removed_before_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _no_unshare(monkeypatch)
+    rt = _rt(tmp_path, "exit 0")
+    ses = tmp_path / "b.ses"
+    ses.write_text("stale")
+    run = await run_freerouting(
+        rt, tmp_path / "b.dsn", ses, timeout_s=20, passes=3, workdir=tmp_path / "w"
+    )
+    assert run.returncode == 0
+    assert not ses.exists()
+
+
 async def test_wall_timeout_kills_group(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _no_unshare(monkeypatch)
     spy = _Spy(monkeypatch)
@@ -470,7 +505,8 @@ def test_find_runtime_flag_off(tmp_path: Path) -> None:
     assert find_runtime(_settings(_home(tmp_path), on=False)) is None
 
 
-def test_find_runtime_wrong_java(tmp_path: Path) -> None:
+def test_find_runtime_wrong_java(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(fr.shutil, "which", lambda name: f"/usr/bin/{name}")
     assert find_runtime(_settings(_home(tmp_path, "21.0.2"))) is None
 
 
@@ -490,10 +526,26 @@ def test_find_runtime_needs_manifest(tmp_path: Path) -> None:
     assert find_runtime(_settings(_home(tmp_path, manifest=False))) is None
 
 
-def test_find_runtime_needs_executable_java(tmp_path: Path) -> None:
+def test_find_runtime_needs_executable_java(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(fr.shutil, "which", lambda name: f"/usr/bin/{name}")
     home = _home(tmp_path)
     (home / "jre" / "bin" / "java").chmod(0o644)
     assert find_runtime(_settings(home)) is None
+
+
+def test_find_runtime_relative_home_made_absolute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(fr.shutil, "which", lambda name: f"/usr/bin/{name}")
+    _home(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    rt = find_runtime(_settings(Path("home")))
+    assert rt is not None
+    assert rt.java == tmp_path / "home" / "jre" / "bin" / "java"
+    assert rt.jar == tmp_path / "home" / fr.JAR_NAME
+    assert rt.java.is_absolute() and rt.jar.is_absolute()
 
 
 def test_find_runtime_needs_prlimit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

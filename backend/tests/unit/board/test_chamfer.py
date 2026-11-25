@@ -7,6 +7,7 @@ import math
 import random
 import subprocess
 import sys
+import time
 from collections.abc import Sequence
 from dataclasses import replace
 
@@ -24,7 +25,7 @@ from copperchat.board.metrics import routed_length
 from copperchat.board.model import ArcTrack, BoardModel, Pad, Track
 from copperchat.board.router import chamfer
 from copperchat.board.router.chamfer import PostResult, postprocess
-from tests.unit.board.builders import board, part, track, via
+from tests.unit.board.builders import board, net_class, part, track, via
 
 S2 = math.sqrt(2.0)
 FAILS = ("non_octilinear", "ninety", "acute", "off_angle", "micro_jogs", "short_chamfers")
@@ -525,6 +526,64 @@ def test_cross_net_diagonals_keep_clearance() -> None:
             if t.net != d.net:
                 gap = _seg_dist(d.start, d.end, t.start, t.end) - 0.2
                 assert gap >= 0.2 - 1e-6, (d, t, gap)
+
+
+def test_chamfer_keeps_obstacle_net_class_clearance() -> None:
+    # N2 (class "Wide", clearance 0.45 > N1's 0.2) has a pad whose nearest corner lies on
+    # the corner bisector 0.8 mm from the vertex: c = 0.6 would leave an edge gap of
+    # 0.8 - 0.3 - 0.1 = 0.4 mm (fine for 0.2, not for 0.45) - KiCad uses max(own, other)
+    d = 0.8 / S2
+    cx, cy = 15.0 - d - 0.25, 10.0 + d + 0.25
+    m = routed(L_PTS, extra_parts=(pad_part("U9", cx, cy, net="N2"),))
+    m = replace(
+        m,
+        net_classes=(*m.net_classes, net_class("Wide", clearance=0.45)),
+        net_class_of=(("N1", "Default"), ("N2", "Wide")),
+    )
+    r = postprocess(m, kiids(m))
+    assert r.rip == ()
+    assert r.chamfered == 1
+    (q,) = [q for p in m.parts for q in p.pads if q.net == "N2"]
+    (diag,) = diagonals(r)
+    assert math.dist(diag.start, diag.end) < 0.6
+    assert _rect_dist(diag.start, diag.end, q) - 0.1 >= 0.45 - 1e-6
+
+
+def test_timing_step3_many_defects() -> None:
+    """4000 touched non-octilinear tracks on one net (each a defect): step-3 attribution
+    must not scan every track per defect."""
+    tracks = tuple(
+        track("N1", "F.Cu", (x, y), (x + 0.3, y + 0.1), 0.2, kiid=f"t{k}")
+        for k, (x, y) in enumerate(
+            (1.0 + 0.5 * (k % 80), 1.0 + 0.5 * (k // 80)) for k in range(4000)
+        )
+    )
+    m = board(
+        parts=(pad_part("J1", 0.0, 0.0), pad_part("J2", 50.0, 30.0)),
+        tracks=tracks,
+        net_class_of=(("N1", "Default"),),
+    )
+    t0 = time.perf_counter()
+    r = postprocess(m, kiids(m))
+    elapsed = time.perf_counter() - t0
+    assert (KEY, "non_octilinear") in r.reasons
+    print(f"postprocess 4000 defects: {elapsed:.3f} s")
+    assert elapsed < 3.0, elapsed
+
+
+def test_timing_merge_long_chain() -> None:
+    """2000 collinear touched pieces merge into one track; finding the chain's outer ends
+    must not compare every endpoint with every joint."""
+    pts = [(1.0 + 0.01 * k, 10.0) for k in range(2001)]
+    m = routed(pts, pads=False)  # end pads would stop the merge at the joints they cover
+    t0 = time.perf_counter()
+    r = postprocess(m, kiids(m))
+    elapsed = time.perf_counter() - t0
+    assert r.merged == 1999
+    (merged,) = dict(r.replace)["t0"]
+    assert (merged.start, merged.end) == (pts[0], pts[-1])
+    print(f"postprocess 2000-piece chain: {elapsed:.3f} s")
+    assert elapsed < 1.0, elapsed
 
 
 # ---- property test ------------------------------------------------------------------------
