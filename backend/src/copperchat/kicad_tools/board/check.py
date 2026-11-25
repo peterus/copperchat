@@ -58,7 +58,9 @@ MAX_TEXT = 500  # characters of one marker text
 CHECK_DRC_TIMEOUT_S = 60.0  # the API DRC task (B-C4: explicit, longer call timeout)
 CHECK_METRICS_TIMEOUT_S = 30.0  # run_cpu budget of the metrics job
 BOARD_PARITY_TIMEOUT_S = 120.0  # kicad-cli pcb drc --schematic-parity (B-C9)
-MAX_REPORT_BYTES = 32 * 1024 * 1024  # kicad-cli's JSON report
+MAX_REPORT_BYTES = 8 * 1024 * 1024  # kicad-cli's JSON report (synth: a few KB)
+# kicad-cli exits 0 with an empty schematic_parity when it cannot build the netlist
+PARITY_FAILED = "failed to fetch schematic netlist"
 MAX_COPY_BYTES = 16 * 1024 * 1024  # each byte-copied project file (.kicad_pro, lib tables)
 _SIDE_FILES = ("fp-lib-table", "sym-lib-table")
 
@@ -342,6 +344,13 @@ async def cli_parity(ctx: ToolContext) -> tuple[tuple[DrcMarker, ...], tuple[Drc
                 ) from None
             except OSError as exc:
                 raise _rejected(f"kicad-cli could not be started ({type(exc).__name__})") from None
+        if PARITY_FAILED in f"{result.stdout}\n{result.stderr}".casefold():
+            # an empty parity list would read as "in sync": never fail open
+            raise _rejected(
+                "kicad-cli could not build the schematic netlist for the parity check "
+                f"({_tail(result.stderr or result.stdout)}); check the schematic (ERC, "
+                "annotation) first"
+            )
         parsed = await asyncio.to_thread(_read_and_parse, out)  # big reports: off the loop
         if parsed is None:
             raise _rejected(

@@ -4,6 +4,7 @@ overall verdict, the schema and the result rows."""
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import jsonschema
@@ -261,3 +262,27 @@ async def test_render_evidence_skipped_after_write(tmp_path: Any) -> None:
         assert [r[0] for r in rows] == ["top"]
     finally:
         await db.close()
+
+
+async def test_cli_parity_netlist_failure_rejected(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """kicad-cli exits 0 with an empty parity list when it cannot build the schematic
+    netlist: that must not read as "in sync"."""
+    from types import SimpleNamespace
+
+    from copperchat.kicad_tools.board import check as check_mod
+    from copperchat.kicad_tools.cli import CliResult
+
+    async def cli(settings: Any, args: list[str], *, timeout: float, cwd: Any) -> CliResult:
+        out = args[args.index("-o") + 1]
+        Path(out).write_text(json.dumps({"violations": [], "schematic_parity": []}))
+        return CliResult(0, "", "Failed to fetch schematic netlist for parity tests.\n")
+
+    monkeypatch.setattr(check_mod, "run_kicad_cli", cli)
+    ctx: Any = SimpleNamespace(
+        project=_project(tmp_path, True), session=_CopySession(False), settings=None
+    )
+    with pytest.raises(StructuredToolError) as err:
+        await check_mod.cli_parity(ctx)
+    assert err.value.code == "drc_rejected" and "netlist" in err.value.why

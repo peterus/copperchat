@@ -806,6 +806,13 @@ summary), inserts the checkpoint row and the `board_approve` change row
 - Board writes log their change row through `record_applied`, which swallows insert errors
   (P1a engine): a write whose change row failed is invisible to guard 4 (the hash guard still
   applies). Never seen; inherited.
+- Guard 4 and the evidence recorders order events by wall-clock `created_at` (ms, UTC);
+  a backward clock step between the evidence and a later write could hide that write from
+  guard 4 (the hash guard 1 still applies). Comparing change-log ids instead would need an
+  extra column; left as is.
+- `pcb_check full` refuses (`drc_rejected`) when kicad-cli reports "Failed to fetch
+  schematic netlist" (it exits 0 with an empty parity list then); the JSON report is capped
+  at 8 MiB.
 - **P5b/P6b/P7** call `require_placement_approved(ctx, model)`, **P8** `require_board_approved`
   (both async, fail closed without a database).
 

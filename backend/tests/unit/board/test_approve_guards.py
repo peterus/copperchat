@@ -564,3 +564,37 @@ async def test_plan_policy_always_allowed(rig: Rig) -> None:
 
 async def _none(project_id: str) -> None:
     return None
+
+
+@pytest.mark.parametrize("stage", ["placement", "board"])
+async def test_message_between_evidence_rows_refused(rig: Rig, stage: str) -> None:
+    """Guard 5 is bounded by the NEWEST evidence row: a user message after the first row
+    but before the last one does not count."""
+    if stage == "placement":
+        await rig.render("placement", T_RENDER)
+        await rig.said(at=T_MID)
+        await rig.check("quick", T_CHECK)
+    else:
+        await rig.render("top", T_RENDER)
+        await rig.check("full", T_CHECK)
+        await rig.said(at="2026-11-25T10:02:10.000Z")
+        await rig.render("bottom", T_BOTTOM)
+    digest = PA if stage == "placement" else BA
+    assert _guard(await _refused(rig, stage=stage, digest=digest)) == 5
+
+
+async def test_board_newest_full_check_counts(rig: Rig) -> None:
+    await rig.render("top", T_RENDER)
+    await rig.check("full", T_CHECK)
+    await rig.check("full", "2026-11-25T10:02:10.000Z", hard=1)
+    await rig.render("bottom", T_BOTTOM)
+    await rig.said()
+    assert _guard(await _refused(rig, stage="board", digest=BA)) == 3
+
+
+async def test_placement_with_full_check_ok(rig: Rig) -> None:
+    await rig.render("placement", T_RENDER)
+    await rig.check("full", T_CHECK)
+    await rig.said()
+    data = await _approve(rig, "placement", PA)
+    assert data["stage"] == "placement"

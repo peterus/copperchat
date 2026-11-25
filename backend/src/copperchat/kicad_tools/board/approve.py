@@ -193,7 +193,8 @@ async def guard_evidence(ctx: ToolContext, a: ApproveArgs) -> list[Review]:
             missing=missing,
         )
     used = [r for r in need.values() if r is not None]
-    check = used[0] if a.stage == "board" else used[1]
+    check = need["pcb_check level=full" if a.stage == "board" else "pcb_check"]
+    assert check is not None  # not missing
     if a.stage == "placement" and check.m1_pass != 1:
         raise refused(
             3,
