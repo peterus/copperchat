@@ -341,6 +341,7 @@ Side = Literal["top", "bottom"]
                                          filled_area_mm2: float
                                          filled: tuple[tuple[Point, ...], ...] = ()   # filled polygons' outer outlines (M11 plane voids); excluded from board_hash
                                          filled_holes: tuple[tuple[tuple[Point, ...], ...], ...] = ()   # P3a: holes per filled polygon, index-aligned with filled; excluded from board_hash
+                                         filled_layers: tuple[str, ...] = ()   # P3a: copper layer of each filled polygon, index-aligned with filled; excluded from board_hash
 @dataclass(frozen=True) class Outline:  kind: Literal["rect", "other", "none"]
                                          x: float; y: float; w: float; h: float; corner_radius: float
                                          polygon: tuple[Point, ...]
@@ -739,7 +740,11 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
   local kicad-base image; `test_metrics_budget` records `pcb_metrics_s` (bound 2.0 s).
 - `compute_metrics` in-process on a seeded 200-part board (1,791 segments, 282 vias, In1.Cu
   GND plane with an antipad per via, `jlcpcb-4l`): 0.32–0.33 s (bends ≈ 0.15 s, M10 0.08–0.2 s).
-  `classify` on a 200-part / ~284-net random circuit ≈ 7 ms.
+  On 2,400 two-pad nets / 19,200 segments / 600 vias (`test_timing_2400_nets_19k_segments`,
+  bound 3 s): 1.36 s (was 4.4 s before per-net grouping of tracks/arcs/vias and the bucketed
+  part/via lookup for the bends sub-models).
+  `classify` on a 200-part / ~284-net random circuit ≈ 7 ms; 1,000 decoupling caps × 4,000
+  anchor supply pins 0.06 s (was 7.9 s; keys precomputed, grid ring search).
 - No review threshold tuned; `HARD` / `REVIEW` are the spec §12 values (`test_hard_thresholds_verbatim`).
 
 **Owner decisions applied (2026-11-25)** — "Provisional" items 1–3 marked resolved above.
@@ -750,10 +755,12 @@ M13's "overhanging it" uses the same clip. Both switch settings are tested.
 
 **Contract deviations / additions**
 - B-C2 (P1a files, minimal): `Zone.filled_holes` (holes per filled polygon, index-aligned with
-  `filled`, read in `read.py::_zone`; not hashed) — the P1a residual "M11 needs holes".
+  `filled`, read in `read.py::_zone`; not hashed) — the P1a residual "M11 needs holes" — and
+  `Zone.filled_layers` (the copper layer of each filled polygon, index-aligned with `filled`,
+  same `_layer()` names as `layers`; not hashed).
 - `cc/board/jobs.py`: `analyse_job(model, doc, scope="all")` (scope filtered in the worker),
   `metrics_job(model, doc, drc, preset, only, parity=None) -> MetricsReport`, `strip_fills`
-  (also clears `filled_holes`). Result serialisation in `analysis.py::metrics_data`.
+  (also clears `filled_holes` / `filled_layers`). Result serialisation in `analysis.py::metrics_data`.
 - `preset_for(model, doc)` in `cc/kicad_tools/board/analysis.py` (B-C6 rule).
 - `pcb_analyze` result: each list/mapping `K` ≤ 500 entries plus an int `K_omitted` (always
   present); scopes parts / nets / blocks / all; `board_md_errors` in every scope.
@@ -774,15 +781,23 @@ M13's "overhanging it" uses the same clip. Both switch settings are tested.
   neighbours (found on `sp4_synth`: D1 in the PA4 → R4 → D1 chain went to J1's block by a
   GND-count tie), then the "most shared nets" fallback.
 - `primary_ground(cls, model)`: ground net with most pads, ties by name, None without one.
+- M4 / B-C5: the direction change at a degree-2 node where polylines are split (width change
+  / neck-down, same-layer via, closed-loop start) is classified too (90° / acute / off-angle
+  fail, 45° counts as a bend) unless the node lies in a same-net pad; non-octilinear is
+  tested per raw `Track` (before the ≤ 0.5° collinear merge), arcs as before.
 - M4 counts each failing item: a 60° vertex between octilinear legs is impossible, so such a
   vertex also brings one non-octilinear leg → `test_m4_off_angle_counts` asserts value **2**
   (one `off_angle` + one `non_octilinear` offender), verdict fail (plan text said 1).
-- M11: a hole lying wholly within `ANTIPAD_MARGIN_MM` (1.0 mm) of one via (radius) or one
-  plated pad (half-diagonal) is that item's antipad / thermal-relief gap, not a void; holes
-  over ≥ 2 items (merged antipad slots), empty holes and the band between the outline and the
-  fill are voids. A multi-layer plane zone's fill area is divided by its layer count.
+- M11: a hole whose boundary lies within the union of the discs (centre, via radius / plated
+  pad half-diagonal + `ANTIPAD_MARGIN_MM` 1.0 mm) of the vias / plated pads near it is their
+  antipad (incl. merged antipads of close vias) / thermal-relief gap, not a void; a slot
+  reaching beyond those discs (e.g. between two vias 6 mm apart), empty holes and the band
+  between the outline and the fill are voids. Each plane layer uses only its own polygons
+  (`Zone.filled_layers`); without per-layer data the zone's polygons are all used and its
+  fill area is divided by its layer count.
 - M14: silk text bbox is axis-aligned (`TextItem` has no angle): `len × size_x` wide, `lines ×
-  size_y` high; fiducials are exempt from "paste on every SMD pad"; board rules compared to the
+  size_y` high; fiducials and test points (KiCad `TestPoint_Pad_*` have no paste by design) are exempt from
+  "paste on every SMD pad"; board rules compared to the
   preset with a 1e-4 mm tolerance; a custom-rule exception needs every offender ref named in a
   `(condition …)` of `.kicad_dru`.
 - M3 parity: `not_in_schematic` / `extra_footprint` markers whose refs are all mounting holes
@@ -800,8 +815,6 @@ M13's "overhanging it" uses the same clip. Both switch settings are tested.
 - On `sp4_synth` the ESD part U2 (6 pads) is an anchor with its own block, and the USB pair's
   anchor is J1 (most pads). The agent edits blocks (S3); P4 may want "protection next to its
   connector".
-- `Zone.filled` / `filled_holes` are not per layer: a multi-layer plane zone's voids are
-  merged across its layers (single-layer planes, the P7 default, are exact).
 - M9 measures in-cap VIN pad → IC VIN pin only (spec also names the GND pins).
 - Silk text rotation is not modelled (needs a `TextItem` angle; P7 `pcb_tidy_silk`).
 

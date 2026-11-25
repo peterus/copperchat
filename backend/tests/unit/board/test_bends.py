@@ -299,3 +299,85 @@ def test_random_octilinear_45_only_passes() -> None:
         r = analyse_bends(pts, w, pad_ends=pad_ends)
         assert failures(r) == {}, f"seed={seed} case={case} w={w} pts={pts}"
         assert r.bends <= len(steps) - 1, f"seed={seed} case={case}"
+
+
+def _tracks(*pts_widths: tuple[Point, Point, float]) -> tuple[object, ...]:
+    return tuple(
+        track(start=a, end=b, width=w, kiid=f"t{i}") for i, (a, b, w) in enumerate(pts_widths)
+    )
+
+
+def test_corner_at_width_change_checked() -> None:
+    """A polyline split by a width change (neck-down) still has its corner checked."""
+    m = board(tracks=_tracks(((0, 0), (10, 0), 0.2), ((10, 0), (10, 10), 0.3)))
+    r = analyse_tracks(m)
+    assert failures(r) == {"ninety": 1}
+    assert r.ninety == ((10.0, 0.0),)
+    acute = board(tracks=_tracks(((0, 0), (10, 0), 0.2), ((10, 0), (5, 5), 0.3)))
+    assert failures(analyse_tracks(acute)) == {"acute": 1}
+    off = board(tracks=_tracks(((0, 0), (10, 0), 0.2), ((10, 0), (15, 3), 0.3)))
+    assert failures(analyse_tracks(off)) == {"off_angle": 1, "non_octilinear": 1}
+    # a 45-degree neck-down is fine and counts as a bend
+    ok = board(tracks=_tracks(((0, 0), (10, 0), 0.2), ((10, 0), (15, 5), 0.3)))
+    r = analyse_tracks(ok)
+    assert failures(r) == {}
+    assert r.bends == 1
+    # straight neck-down: no bend
+    assert (
+        analyse_tracks(board(tracks=_tracks(((0, 0), (10, 0), 0.2), ((10, 0), (20, 0), 0.3)))).bends
+        == 0
+    )
+
+
+def test_corner_at_same_layer_via_checked() -> None:
+    m = board(
+        tracks=_tracks(((0, 0), (10, 0), 0.2), ((10, 0), (10, 10), 0.2)),
+        vias=(via(at=(10.0, 0.0)),),
+    )
+    r = analyse_tracks(m)
+    assert failures(r) == {"ninety": 1}
+    # the corner inside a same-net pad is a pad entry: not checked
+    pad = _pad(10.0, 0.0)
+    m = board(
+        parts=(part("U1", 50, 50, pads=(pad,)),),
+        tracks=_tracks(((0, 0), (10, 0), 0.2), ((10, 0), (10, 10), 0.3)),
+    )
+    assert failures(analyse_tracks(m)) == {}
+
+
+def test_off_grid_raw_segments_reported() -> None:
+    """Segments 0.3 deg then 0.7 deg off: the 0.4 deg vertex merges them for bend analysis,
+    but the 0.7 deg raw segment is still non-octilinear (once)."""
+    pts = walk((0, 0), 0.3, [(0, 20), (0.4, 3)])
+    r = analyse_bends(pts, 0.2, pad_ends=NO_PAD)
+    assert failures(r) == {"non_octilinear": 1}
+    tracks = tuple(
+        track(start=a, end=b, kiid=f"t{i}") for i, (a, b) in enumerate(itertools.pairwise(pts))
+    )
+    r = analyse_tracks(board(tracks=tracks))
+    assert failures(r) == {"non_octilinear": 1}
+    assert r.non_octilinear == (((pts[1][0] + pts[2][0]) / 2, (pts[1][1] + pts[2][1]) / 2),)
+    # two raw segments each off by 0.7 deg: both reported, no double count
+    pts = walk((0, 0), 0.7, [(0, 5), (0, 5)])
+    tracks = tuple(
+        track(start=a, end=b, kiid=f"t{i}") for i, (a, b) in enumerate(itertools.pairwise(pts))
+    )
+    assert failures(analyse_tracks(board(tracks=tracks))) == {"non_octilinear": 2}
+
+
+def test_closed_loop_every_corner_checked() -> None:
+    sq = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0), (0.0, 0.0)]
+    tracks = tuple(
+        track(start=a, end=b, kiid=f"t{i}") for i, (a, b) in enumerate(itertools.pairwise(sq))
+    )
+    r = analyse_tracks(board(tracks=tracks))
+    assert failures(r) == {"ninety": 4}
+    # an octagon closes with eight 45-degree bends and no failure
+    octo = walk((0, 0), 0, [(0, 4), *[(45, 4)] * 7])
+    octo[-1] = octo[0]
+    tracks = tuple(
+        track(start=a, end=b, kiid=f"t{i}") for i, (a, b) in enumerate(itertools.pairwise(octo))
+    )
+    r = analyse_tracks(board(tracks=tracks))
+    assert failures(r) == {}
+    assert r.bends == 8

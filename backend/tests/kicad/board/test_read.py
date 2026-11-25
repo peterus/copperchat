@@ -71,6 +71,9 @@ async def test_load_ecc83(ecc83_module_session: KicadSession) -> None:
     assert nets and nets <= {n for n, _ in m.net_class_of}
     assert dict(m.layer_types)["F.Cu"] == "signal"
     assert m.rules and m.stackup
+    for z in m.zones:  # the layer of each filled polygon, index-aligned (M11)
+        assert len(z.filled_layers) == len(z.filled), z.name
+        assert set(z.filled_layers) <= set(z.layers), z.name
 
 
 async def test_api_server_rss(ecc83_module_session: KicadSession, record_property) -> None:  # type: ignore[no-untyped-def]

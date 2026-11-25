@@ -478,3 +478,43 @@ def test_timing_200_parts() -> None:
     elapsed = time.perf_counter() - t0
     assert len(cls.part_class) == 200
     assert elapsed < 0.5, elapsed
+
+
+def test_decoupling_timing_1000_caps_4000_pins() -> None:
+    """1000 decoupling caps x 4000 anchor supply pins: < 1 s, the served pin unchanged
+    (nearest, ties by natural ref then pin number)."""
+    from copperchat.board.geom import octi_dist
+    from copperchat.kicad_tools.filtering import natural_key
+
+    ics = []
+    for k in range(40):
+        pins = {str(n): "VDD" for n in range(1, 101)}
+        pins["101"] = "GND"
+        ics.append(ic(f"U{k + 1}", pins, (0.0, 10.0 * k), pitch=1.0))
+    rng = random.Random(3)
+    caps = [
+        cap(f"C{i + 1}", "VDD", "GND", (rng.randrange(0, 100) + 0.5, rng.randrange(0, 400) + 2.0))
+        for i in range(1000)
+    ]
+    m = circuit(*ics, *caps)
+    t0 = time.perf_counter()
+    cls = classify(m)
+    elapsed = time.perf_counter() - t0
+    print(f"classify 1000 caps x 4000 pins: {elapsed:.3f} s")
+    pins = [q for p in ics for q in p.pads if q.net == "VDD"]
+    want = []
+    for c in caps[::10]:  # brute force on every 10th cap (the reference itself is slow)
+        sp = c.pads[0]
+        best = min(
+            pins,
+            key=lambda q: (
+                octi_dist((sp.x, sp.y), (q.x, q.y)),
+                natural_key(q.ref),
+                natural_key(q.number),
+            ),
+        )
+        want.append(Decoupling(c.ref, best.ref, best.number, "VDD", "GND"))
+    got = {d.cap: d for d in cls.decoupling}
+    assert len(got) == 1000
+    assert {d.cap: got[d.cap] for d in want} == {d.cap: d for d in want}
+    assert elapsed < 1.0, elapsed

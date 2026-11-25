@@ -271,6 +271,16 @@ def test_m14_custom_rule_exception() -> None:
     assert get(run(replace(m, dru_text=other), preset=JLC4), "M14").verdict == "fail"
 
 
+def test_m14_paste_exempt_fiducials_and_test_points() -> None:
+    """KiCad TestPoint_Pad_* and fiducial pads have no paste by design."""
+    for ref, lib in (("TP1", "Lib:FP"), ("X7", "TestPoint:TestPoint_Pad_D1.0mm"), ("FID1", "")):
+        p = replace(smd(ref, (60, 20), "F.Cu", "F.Mask"), lib_id=lib or "Lib:FP")
+        m = _add(_m14_base(), parts=(p,))
+        assert classify(m).part_class[ref] in ("test_point", "fiducial")
+        m14 = get(run(m, preset=JLC4), "M14")
+        assert not [o for o in m14.offenders if o.what.startswith("paste_missing")], ref
+
+
 def test_m14_na_without_preset() -> None:
     m14 = get(run(_m14_base()), "M14")
     assert m14.verdict == "n/a"

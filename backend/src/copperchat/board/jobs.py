@@ -103,9 +103,11 @@ def analyse_job(model: BoardModel, doc: BoardDoc, scope: Scope = "all") -> dict[
 
 
 def strip_fills(model: BoardModel) -> BoardModel:
-    """`model` without filled-zone geometry: every zone with `filled == ()` and
-    `filled_holes == ()`; everything else (incl. `filled_area_mm2`) kept. In-process."""
-    zones = tuple(dataclasses.replace(z, filled=(), filled_holes=()) for z in model.zones)
+    """`model` without filled-zone geometry: every zone with `filled`, `filled_holes` and
+    `filled_layers` `()`; everything else (incl. `filled_area_mm2`) kept. In-process."""
+    zones = tuple(
+        dataclasses.replace(z, filled=(), filled_holes=(), filled_layers=()) for z in model.zones
+    )
     return dataclasses.replace(model, zones=zones)
 
 

@@ -7,6 +7,7 @@ Output is deterministic: refs are natural-sorted, nets sorted, mappings built in
 
 from __future__ import annotations
 
+import math
 import re
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
@@ -411,6 +412,7 @@ def _decoupling(
     excluded: set[str],
 ) -> list[Decoupling]:
     out = []
+    nearest: dict[str, _Nearest] = {}
     for ref, p in c.parts.items():
         if pre[ref] is not None or ref in excluded or not _is_cap(p):
             continue
@@ -421,19 +423,67 @@ def _decoupling(
             sp, gp = b, a
         else:
             continue
-        cands = [pad for pad in c.pads_on[sp.net] if pad.ref in anchors]
-        if not cands:
+        near = nearest.get(sp.net)
+        if near is None:
+            cands = [pad for pad in c.pads_on[sp.net] if pad.ref in anchors]
+            near = nearest[sp.net] = _Nearest(cands)
+        pin = near.query((sp.x, sp.y))
+        if pin is None:
             continue
-        pin = min(
-            cands,
-            key=lambda q: (
-                octi_dist((sp.x, sp.y), (q.x, q.y)),
-                natural_key(q.ref),
-                natural_key(q.number),
-            ),
-        )
         out.append(Decoupling(ref, pin.ref, pin.number, sp.net, gp.net))
     return out
+
+
+class _Nearest:
+    """The pad nearest a point by octilinear distance, ties by natural ref, then pin number,
+    then input order (keys computed once; grid ring search, cell `cell` mm)."""
+
+    def __init__(self, pads: list[Pad], cell: float = 2.0) -> None:
+        self.cell = cell
+        self.cells: dict[tuple[int, int], list[tuple[Pad, tuple[object, ...]]]] = defaultdict(list)
+        for i, q in enumerate(pads):
+            key = (natural_key(q.ref), natural_key(q.number), i)
+            self.cells[self._key(q.x, q.y)].append((q, key))
+        ks = list(self.cells)
+        self.bounds = (
+            (
+                min(k[0] for k in ks),
+                min(k[1] for k in ks),
+                max(k[0] for k in ks),
+                max(k[1] for k in ks),
+            )
+            if ks
+            else None
+        )
+
+    def _key(self, x: float, y: float) -> tuple[int, int]:
+        return (math.floor(x / self.cell), math.floor(y / self.cell))
+
+    def _ring(self, cx: int, cy: int, r: int) -> list[tuple[int, int]]:
+        if r == 0:
+            return [(cx, cy)]
+        out = [(gx, gy) for gx in range(cx - r, cx + r + 1) for gy in (cy - r, cy + r)]
+        out += [(gx, gy) for gy in range(cy - r + 1, cy + r) for gx in (cx - r, cx + r)]
+        return out
+
+    def query(self, p: tuple[float, float]) -> Pad | None:
+        if self.bounds is None:
+            return None
+        cx, cy = self._key(*p)
+        x0, y0, x1, y1 = self.bounds
+        r_max = max(cx - x0, x1 - cx, cy - y0, y1 - cy, 0)
+        best: tuple[float, tuple[object, ...]] | None = None
+        pin: Pad | None = None
+        for r in range(r_max + 1):
+            for k in self._ring(cx, cy, r):
+                for q, key in self.cells.get(k, ()):
+                    cand = (octi_dist(p, (q.x, q.y)), key)
+                    if best is None or cand < best:
+                        best, pin = cand, q
+            # every pad beyond ring r is at least r * cell away (octi >= Chebyshev distance)
+            if best is not None and best[0] < r * self.cell:
+                break
+        return pin
 
 
 def _crystals(

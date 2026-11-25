@@ -266,6 +266,19 @@ def _off_octilinear(a: Point, b: Point) -> bool:
     return min(h, 45.0 - h) > ANGLE_TOL_DEG
 
 
+def _vertex_kind(delta: float) -> str | None:
+    """None (collinear), "bend" (45 deg) or the failure field of a direction change."""
+    if delta <= ANGLE_TOL_DEG:
+        return None
+    if abs(delta - 45.0) <= ANGLE_TOL_DEG:
+        return "bend"
+    if abs(delta - 90.0) <= ANGLE_TOL_DEG:
+        return "ninety"
+    if delta >= 135.0 - ANGLE_TOL_DEG:
+        return "acute"
+    return "off_angle"
+
+
 def analyse_bends(
     points: Sequence[Point], width: float, *, pad_ends: tuple[bool, bool]
 ) -> BendReport:
@@ -280,19 +293,16 @@ def analyse_bends(
     off: list[Point] = []
     # non-collinear vertices in path order: (index, kind, sense); kind "bend" or "fail"
     verts: list[tuple[int, str, float]] = []
+    fails = {"ninety": ninety, "acute": acute, "off_angle": off}
     for i in range(1, len(pts) - 1):
         delta, sense = _turn(pts[i - 1], pts[i], pts[i + 1])
-        if delta <= ANGLE_TOL_DEG:
+        kind = _vertex_kind(delta)
+        if kind is None:
             continue
-        if abs(delta - 45.0) <= ANGLE_TOL_DEG:
+        if kind == "bend":
             verts.append((i, "bend", sense))
             continue
-        if abs(delta - 90.0) <= ANGLE_TOL_DEG:
-            ninety.append(pts[i])
-        elif delta >= 135.0 - ANGLE_TOL_DEG:
-            acute.append(pts[i])
-        else:
-            off.append(pts[i])
+        fails[kind].append(pts[i])
         verts.append((i, "fail", sense))
     exempt: set[int] = set()
     if verts and pad_ends[0]:
@@ -481,7 +491,10 @@ def _sorted(points: Iterable[Point]) -> tuple[Point, ...]:
 
 def analyse_tracks(model: BoardModel) -> BendReport:
     """`analyse_bends` over every polyline of every net/layer (pad entries where a polyline
-    end lies in a same-net pad on that layer), plus T-junctions and arcs (non-octilinear)."""
+    end lies in a same-net pad on that layer), plus T-junctions and arcs (non-octilinear).
+    Non-octilinear is tested per raw track (before collinear merging); the direction change
+    at a degree-2 node where polylines end (width change, same-layer via, closed-loop start)
+    is classified too unless the node lies in a same-net pad."""
     acc: dict[str, list[Point]] = {
         k: []
         for k in (
@@ -498,13 +511,26 @@ def analyse_tracks(model: BoardModel) -> BendReport:
     for net, layer in sorted({(t.net, t.layer) for t in model.tracks}):
         layer_pads = _layer_pads(model, layer)
         pads = [p for p in layer_pads if p.net == net]
+        line_ends: set[Point] = set()
         for pts, width in polylines(model, net, layer):
             ends = (any(_in_pad(pts[0], p) for p in pads), any(_in_pad(pts[-1], p) for p in pads))
             r = analyse_bends(pts, width, pad_ends=ends)
             for k in acc:
-                acc[k].extend(getattr(r, k))
+                if k != "non_octilinear":  # tested per raw track below
+                    acc[k].extend(getattr(r, k))
             bends += r.bends
+            line_ends.update((pts[0], pts[-1]))
         segs, adj = _graph(model, net, layer)
+        for node in sorted(line_ends):
+            inc = adj.get(node, [])
+            if len(inc) != 2 or any(_in_pad(node, p) for p in pads):
+                continue
+            far = [b if node == a else a for a, b, _ in (segs[i] for i in inc)]
+            kind = _vertex_kind(_turn(far[0], node, far[1])[0])
+            if kind == "bend":
+                bends += 1
+            elif kind is not None:
+                acc[kind].append(node)
         for node, inc in adj.items():
             if len(inc) < 3:
                 continue
@@ -521,6 +547,11 @@ def analyse_tracks(model: BoardModel) -> BendReport:
                 if abs(min(d, 360.0 - d) - 90.0) <= ANGLE_TOL_DEG:
                     acc["t_junctions"].append(node)
                     break
+    acc["non_octilinear"].extend(
+        _mid(t.start, t.end)
+        for t in model.tracks
+        if math.dist(t.start, t.end) >= _ZERO_LEN and _off_octilinear(t.start, t.end)
+    )
     acc["non_octilinear"].extend(a.mid for a in model.arcs)
     return BendReport(
         non_octilinear=_sorted(acc["non_octilinear"]),

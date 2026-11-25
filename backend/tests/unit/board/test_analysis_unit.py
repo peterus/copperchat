@@ -175,11 +175,16 @@ def test_analyse_job_caps_entries() -> None:
 def test_strip_fills() -> None:
     poly = tuple(rect_poly(0, 0, 10, 10))
     hole = tuple(rect_poly(2, 2, 1, 1))
-    filled = replace(zone(filled_area_mm2=99.0), filled=(poly,), filled_holes=((hole,),))
+    filled = replace(
+        zone(filled_area_mm2=99.0),
+        filled=(poly,),
+        filled_holes=((hole,),),
+        filled_layers=("F.Cu",),
+    )
     keepout = zone("K", "", rule_area=True, keepout=frozenset({"tracks"}), kiid="k2")
     m = circuit(res("R1", "A", "B"), zones=(filled, keepout))
     out = strip_fills(m)
-    assert out.zones == (replace(filled, filled=(), filled_holes=()), keepout)
+    assert out.zones == (replace(filled, filled=(), filled_holes=(), filled_layers=()), keepout)
     assert out.zones[0].filled_area_mm2 == 99.0
     assert replace(out, zones=m.zones) == m  # everything else kept
     assert strip_fills(out) == out

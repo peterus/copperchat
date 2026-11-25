@@ -126,6 +126,9 @@ class Zone:
     # holes of each filled polygon, index-aligned with `filled` (P3a, M11 plane voids);
     # like `filled`, excluded from board_hash
     filled_holes: tuple[tuple[tuple[Point, ...], ...], ...] = ()
+    # copper layer of each filled polygon, index-aligned with `filled`; excluded from
+    # board_hash like `filled`. Empty (old models / tests): layer unknown
+    filled_layers: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

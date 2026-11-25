@@ -382,7 +382,42 @@ def test_timing_200_parts_2000_segments() -> None:
     assert rep.stage == "routed"
     assert len(rep.metrics) == 14
     assert get(rep, "M11").verdict != "n/a"
+    print(f"compute_metrics 200 parts: {elapsed:.3f} s")
     assert elapsed < 2.0, elapsed
+
+
+def test_timing_2400_nets_19k_segments() -> None:
+    """2400 two-pad nets on a 300 x 160 mm board, each routed by 8 octilinear segments
+    (19200 in all), every 4th net with a via: all checks incl. the JLC preset, budget 3 s."""
+    from .builders import outline
+
+    parts: list[Part] = []
+    tracks: list[object] = []
+    vias = []
+    zig = [(0, 0), (0.5, 0), (1, 0.5), (1.5, 0.5), (2, 1), (2.5, 1), (3, 1.5), (3.5, 1.5), (4, 2)]
+    for k in range(2400):
+        x, y = 5.0 + 5.0 * (k % 60), 5.0 + 4.0 * (k // 60)
+        net = f"N{k}"
+        pts = [(x + dx, y + dy) for dx, dy in zig]
+        parts.append(ends(f"R{k}", net, pts[0], pts[-1]))
+        tracks += route(net, pts)
+        if k % 4 == 0:
+            vias.append(via(net, pts[0], kiid=f"v{k}"))
+    m = board(
+        parts=tuple(parts),
+        tracks=tuple(tracks),
+        vias=tuple(vias),
+        outline=outline(0, 0, 310, 170),
+    )
+    assert len(tracks) >= 15000
+    cls = classify(m)
+    t0 = time.perf_counter()
+    rep = compute_metrics(m, cls, BoardDoc(), drc=None, parity=None, preset=PRESETS["jlcpcb-4l"])
+    elapsed = time.perf_counter() - t0
+    print(f"compute_metrics 2400 nets / {len(tracks)} segments: {elapsed:.3f} s")
+    assert rep.stage == "routed"
+    assert get(rep, "M4").value == 0
+    assert elapsed < 3.0, elapsed
 
 
 def test_m11_thermal_gaps_and_antipad_slot() -> None:
@@ -417,3 +452,40 @@ def test_m11_thermal_gaps_and_antipad_slot() -> None:
     vias = (via("S2", (40, 50), kiid="v1"), via("S2", (46, 50), kiid="v2"))
     m = _m11_board(_plane((full,), ((slot,),)), route("S1", [(43, 40), (43, 60)]), vias=vias)
     assert len([o for o in get(run(m), "M11").offenders if "void" in o.what]) == 1
+
+
+def test_m11_merged_antipads_of_close_vias() -> None:
+    """A hole whose boundary lies within the discs of two vias 1 mm apart (merged antipads)
+    is not a void; one whose middle leaves every disc is, even with all vertices covered."""
+    full = tuple(rect_poly(0, 0, 100, 80))
+    vias = (via("S2", (40, 50), kiid="v1"), via("S2", (41, 50), kiid="v2"))  # reach 1.3
+    merged = tuple(rect_poly(39.2, 49.4, 2.6, 1.2))
+    m = _m11_board(_plane((full,), ((merged,),)), route("S1", [(40.5, 40), (40.5, 60)]), vias=vias)
+    assert not [o for o in get(run(m), "M11").offenders if "void" in o.what]
+    far = (via("S2", (40, 50), kiid="v1"), via("S2", (46, 50), kiid="v2"))
+    long = tuple(rect_poly(39.2, 49.4, 7.6, 1.2))  # every vertex within 1.3 of a via
+    m = _m11_board(_plane((full,), ((long,),)), route("S1", [(43, 40), (43, 60)]), vias=far)
+    assert len([o for o in get(run(m), "M11").offenders if "void" in o.what]) == 1
+
+
+def test_m11_two_layer_zone_per_layer_fill() -> None:
+    """One zone on In1.Cu (slotted) and In2.Cu (solid): each layer uses its own polygons."""
+    full = tuple(rect_poly(0, 0, 100, 80))
+    slot = tuple(rect_poly(30, 30, 20, 2))  # 40 mm2, far from every via / pad
+    z = replace(
+        zone("GNDP", "GND", ("In1.Cu", "In2.Cu"), full),
+        filled=(full, full),
+        filled_holes=((slot,), ()),
+        filled_layers=("In1.Cu", "In2.Cu"),
+    )
+    over = route("S1", [(40, 20), (40, 40)])  # F.Cu, next to In1.Cu: crosses the slot
+    m11 = get(run(_m11_board(z, over)), "M11")
+    cross = [o for o in m11.offenders if "void" in o.what]
+    assert len(cross) == 1 and "In1.Cu" in cross[0].what
+    assert m11.value == pytest.approx((8000 - 40) / 8000, abs=1e-3)
+    under = route("S1", [(40, 20), (40, 40)], layer="B.Cu")  # next to In2.Cu: solid
+    assert not [o for o in get(run(_m11_board(z, under)), "M11").offenders if "void" in o.what]
+    # no per-layer data (old models): all polygons, area divided by the layer count
+    old = replace(z, filled_layers=())
+    m11 = get(run(_m11_board(old, under)), "M11")
+    assert m11.value == pytest.approx((16000 - 40) / 2 / 8000, abs=1e-3)
