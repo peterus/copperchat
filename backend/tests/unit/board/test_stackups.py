@@ -205,9 +205,17 @@ class FakeBoard:
             NO_HANDLER, raw_message=NO_HANDLER[len("KiCad returned error: ") :]
         )
         self.disabled_dielectric = False
+        # An explicit stackup (patched KiCad): a layer change keeps the copper but resets the
+        # dielectrics to defaults (lossy, like SynchronizeWithBoard after a shrink + regrow)
+        self.stored: board_pb2.BoardStackup | None = None
 
     def get_copper_layer_count(self) -> int:
         return self.copper
+
+    def _none(self) -> list[Any]:  # no tracks, vias, zones, shapes or texts
+        return []
+
+    get_tracks = get_vias = get_zones = get_shapes = get_text = _none
 
     def get_enabled_layers(self) -> list[int]:
         return [BoardLayer.BL_F_Cu, BoardLayer.BL_B_Cu, BoardLayer.BL_Edge_Cuts]
@@ -215,8 +223,15 @@ class FakeBoard:
     def set_enabled_layers(self, count: int, layers: list[int]) -> None:
         self.log.append(f"layers {count}")
         self.copper = count
+        if self.stored is not None:
+            self.stored = None
+            self.stored = self.get_stackup().proto
 
     def get_stackup(self) -> Any:
+        if self.stored is not None:
+            out = board_pb2.BoardStackup()
+            out.CopyFrom(self.stored)
+            return SimpleNamespace(proto=out)
         s = _default_4l()
         if self.copper == 2:
             del s.layers[3:7]
@@ -229,6 +244,8 @@ class FakeBoard:
         self.log.append("update stackup")
         if self.error is not None:
             raise self.error
+        self.stored = board_pb2.BoardStackup()
+        self.stored.CopyFrom(cmd.stackup)
         return board_commands_pb2.BoardStackupResponse(stackup=cmd.stackup)
 
 
@@ -318,3 +335,66 @@ def test_layer_change_without_stackup_notes() -> None:
         STACKUPS["jlc-4l-1.6-7628"],
     )
     assert not any("without stackup" in n for n in cs.report["notes"])
+
+
+def _jlc_board(log: list[str]) -> FakeBoard:
+    """A patched 4-layer board that already carries the JLC stackup."""
+    board = FakeBoard(log)
+    board.copper = 4
+    board.error = None
+    board.stored = stackup_request(_default_4l(), STACKUPS["jlc-4l-1.6-7628"])
+    return board
+
+
+async def test_layer_undo_restores_lossy_stackup(tmp_path: Path, log: list[str], spy: Spy) -> None:
+    board = _jlc_board(log)
+    pre = board.get_stackup().proto
+    req = parse_rules_args({"layers": 2})
+    cs = setup._plan_rules(req, None, {}, 4, "hash")
+    cs.fail_after = 1
+    with pytest.raises(RuntimeError, match="fail_after"):
+        await apply_board_change_set(_engine(tmp_path, log, board), cs)
+    # 4 -> 2 -> 4 lost the dielectrics; the undo wrote the pre-call stackup back
+    assert [e for e in log if e.startswith(("layers", "update"))] == [
+        "layers 2",
+        "layers 4",
+        "update stackup",
+    ]
+    assert board.get_stackup().proto == pre
+
+
+async def test_unrestorable_stackup_refuses_layer_change(
+    tmp_path: Path, log: list[str], spy: Spy
+) -> None:
+    board = _jlc_board(log)
+    assert board.stored is not None
+    board.stored.layers[2].enabled = False  # a disabled dielectric, from a KiCad file
+    cs = setup._plan_rules(parse_rules_args({"layers": 2}), None, {}, 4, "hash")
+    with pytest.raises(StructuredToolError) as info:
+        await apply_board_change_set(_engine(tmp_path, log, board), cs)
+    assert info.value.code == "invalid_argument"
+    assert "cannot be restored" in str(info.value.why)
+    assert not [e for e in log if e.startswith(("layers", "update"))]  # nothing written
+
+
+async def test_stale_stackup_refused(tmp_path: Path, log: list[str], spy: Spy) -> None:
+    board = _jlc_board(log)
+    board.copper = 2  # the stored stackup still describes 4 copper layers (unpatched sync)
+    cs = setup._plan_rules(parse_rules_args({"layers": 4}), None, {}, 2, "hash")
+    with pytest.raises(StructuredToolError) as info:
+        await apply_board_change_set(_engine(tmp_path, log, board), cs)
+    assert "4 copper layers, the board has 2" in str(info.value.why)
+
+
+async def test_bad_request_is_invalid_argument(tmp_path: Path, log: list[str], spy: Spy) -> None:
+    board = FakeBoard(log)
+    board.copper = 4
+    board.error = ApiError(
+        "KiCad returned error: no", raw_message="no", code=ApiStatusCode.AS_BAD_REQUEST
+    )
+    req = parse_rules_args({"stackup": "jlc-4l-1.6-7628"})
+    cs = setup._plan_rules(req, None, {}, 4, "hash", plan_stackup(req, 4))
+    with pytest.raises(StructuredToolError) as info:
+        await apply_board_change_set(_engine(tmp_path, log, board), cs)
+    assert info.value.code == "invalid_argument"
+    assert log.count("update stackup") == 1  # refused: nothing to restore

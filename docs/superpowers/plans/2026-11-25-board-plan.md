@@ -738,8 +738,8 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
 name as planned; owner facts `docs/kicad-patches/0005-board-stackup-FACTS.md`)
 - `BOARD_STACKUP::Deserialize` existed at the pin as a stub (`return false`); the patch
   implements it and adds `API_HANDLER_PCB::handleUpdateBoardStackup` (copper layers must be the
-  enabled ones in order, alternating with dielectrics; thickness > 0 and ≤ 10 mm; finite
-  material values; colour names kept when the RGBA value is unchanged; normalised response).
+  enabled ones in order, alternating with dielectrics; thickness > 0, ≤ 10 mm per (sub-)layer,
+  ≤ 100 mm in total, ≤ 32 sub-layers; finite material values; known enum values; colour names kept when the RGBA value is unchanged; normalised response).
 - **Addition:** `SetBoardEnabledLayers` re-synchronises an explicit stackup (`m_HasStackup`)
   with the new layer set (KiCad's `SynchronizeWithBoard`) — otherwise a layer count change left
   `GetBoardStackup` and the saved file describing the old copper layers (also true for any
@@ -769,8 +769,10 @@ name as planned; owner facts `docs/kicad-patches/0005-board-stackup-FACTS.md`)
   (±0.0005 mm). Report `stackup {id, jlc_name, total_mm, board_mm}` (`total_mm` = the preset's
   copper + dielectric; `board_mm` = KiCad's board thickness, solder mask included). A busy /
   internal `ApiError` is re-raised (undo armed), only `AS_BAD_REQUEST` is `invalid_argument`. A
-  board stackup the API could not write back (disabled or zero-thickness copper/dielectric —
-  KiCad accepts that from files) is refused before the write. A layer count change without
+  board stackup the API could not write back (disabled or zero-thickness copper/dielectric, or a
+  stale stackup for another copper count — KiCad accepts those from files) is refused before the
+  write by both the stackup stage and the layer-count stage (its undo writes the pre-call
+  stackup back). A layer count change without
   `stackup` adds a note (an existing fab stackup keeps its matching layers, KiCad adds defaults).
 - **Compensation:** the stackup stage's undo restores the stackup it found (layer count already
   applied); the `layer count` stage now also snapshots the pre-call stackup and its undo writes

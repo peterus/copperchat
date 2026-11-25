@@ -56,13 +56,18 @@ here is meant to be pasted upstream; KiCad's tool-generated-content policy appli
      (else `AS_BAD_REQUEST`, "change the layer count with SetBoardEnabledLayers first"), so the
      proto comment's "content on removed layers is deleted" case is never reached;
    - every copper and dielectric (sub-)layer thickness > 0, others ≥ 0; `Deserialize` already
-     refuses thicknesses outside 0…10 mm (they are stored as `int`; 10 mm keeps any stackup
-     sum far below `INT_MAX`) and non-finite or negative Er / loss tangent / spec frequency;
+     refuses thicknesses outside 0…10 mm per (sub-)layer or above 100 mm in total (they are
+     stored and summed as `int`), more than 32 sub-layers in one dielectric, non-finite or
+     negative Er / loss tangent / spec frequency, and proto enum values KiCad does not know
+     (board layer, edge connector type);
    - mask/paste/silk layers must be enabled on the board, appear once, front ones above the
      copper, back ones below;
    - colour names: where the request carries exactly the RGBA value `GetBoardStackup` returned
      for an existing item's named colour (e.g. "Green", "FR4 natural"), the name is kept, so a
-     get → update round trip does not rewrite colours (the API only transports RGBA);
+     get → update round trip does not rewrite colours (the API only transports RGBA, and only
+     for the first sub-layer: further dielectric sub-layers keep their stored colours). Names
+     wx cannot parse (e.g. "FR4 natural") serialise as black, so an explicit black sent for
+     such an item keeps the name;
    - then: the design settings' stackup descriptor is replaced, `m_HasStackup = true`, board
      thickness = `BuildBoardThicknessFromStackup()`, `onModified()` (same as
      `handleSetBoardDesignRules`); no undo entry (board settings changes through the API have
@@ -89,8 +94,10 @@ here is meant to be pasted upstream; KiCad's tool-generated-content policy appli
   dielectric, zero copper), `UpdateBoardStackupLayerOrderRejected` (two coppers in a row, a
   copper layer the board lacks, In1/In2 swapped, F.Mask below the copper, a duplicate layer,
   mask on a copper layer, a disabled copper layer; stackup unchanged),
-  `UpdateBoardStackupInvalidValuesRejected` (thickness beyond `int`, NaN Er, negative loss
-  tangent, infinite spec frequency), `UpdateBoardStackupKeepsColorNames` ("Green" mask and
+  `UpdateBoardStackupInvalidValuesRejected` (thickness beyond `int` and 10 mm + 1 nm, 11 × 10 mm
+  sub-layers > 100 mm, 33 sub-layers, NaN Er on a dielectric and on the mask, negative loss
+  tangent, infinite spec frequency, unknown edge connector enum; stackup unchanged; exactly
+  10 mm accepted), `UpdateBoardStackupKeepsColorNames` ("Green" mask and
   "FR4 natural" dielectric survive get → update), `SetBoardEnabledLayersKeepsStackupInSync`
   (4 → 6), `SetBoardEnabledLayersShrinksStackup` (4 → 2: F.Cu, first dielectric, B.Cu keep their
   values), `SetBoardEnabledLayersWithoutStackupUnchanged` (no explicit stackup → stays implicit).

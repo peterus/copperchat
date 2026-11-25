@@ -1,4 +1,4 @@
-From 422ae85cd155aecf718037a9371fc91e24ac0997 Mon Sep 17 00:00:00 2001
+From a61b7fab6a0ad6df270eafdd1704a358b9064c91 Mon Sep 17 00:00:00 2001
 From: Peter Buchegger <peter.buchegger7@gmail.com>
 Date: Wed, 25 Nov 2026 19:23:29 +0100
 Subject: [PATCH] TODO(owner): write message (board stackup handler)
@@ -6,11 +6,11 @@ Subject: [PATCH] TODO(owner): write message (board stackup handler)
 Assisted-by: Claude
 ---
  api/proto/board/board_commands.proto          |   5 +-
- pcbnew/api/api_handler_pcb.cpp                | 141 +++++
+ pcbnew/api/api_handler_pcb.cpp                | 147 +++++
  pcbnew/api/api_handler_pcb.h                  |   3 +
- .../board_stackup_manager/board_stackup.cpp   | 168 +++++-
- qa/tests/api/test_api_handler_pcb.cpp         | 494 ++++++++++++++++++
- 5 files changed, 806 insertions(+), 5 deletions(-)
+ .../board_stackup_manager/board_stackup.cpp   | 190 +++++-
+ qa/tests/api/test_api_handler_pcb.cpp         | 544 ++++++++++++++++++
+ 5 files changed, 884 insertions(+), 5 deletions(-)
 
 diff --git a/api/proto/board/board_commands.proto b/api/proto/board/board_commands.proto
 index 06b75fe6..08e19ad0 100644
@@ -29,7 +29,7 @@ index 06b75fe6..08e19ad0 100644
  message UpdateBoardStackup
  {
 diff --git a/pcbnew/api/api_handler_pcb.cpp b/pcbnew/api/api_handler_pcb.cpp
-index ec99a8f7..cdf28e87 100644
+index ec99a8f7..b7a506db 100644
 --- a/pcbnew/api/api_handler_pcb.cpp
 +++ b/pcbnew/api/api_handler_pcb.cpp
 @@ -38,6 +38,7 @@
@@ -64,7 +64,7 @@ index ec99a8f7..cdf28e87 100644
      if( enabled != previousEnabled || modified )
          onModified();
  
-@@ -694,6 +705,136 @@ HANDLER_RESULT<BoardEnabledLayersResponse> API_HANDLER_PCB::handleSetBoardEnable
+@@ -694,6 +705,142 @@ HANDLER_RESULT<BoardEnabledLayersResponse> API_HANDLER_PCB::handleSetBoardEnable
  }
  
  
@@ -83,7 +83,11 @@ index ec99a8f7..cdf28e87 100644
 +    BOARD_STACKUP stackup;
 +
 +    if( !stackup.Deserialize( aCtx.Request.stackup() ) )
-+        return badRequest( "the stackup contains a layer of unknown type or a layer that does not match its type" );
++    {
++        return badRequest( "invalid stackup: a layer of unknown type or not matching its type, a thickness "
++                           "outside 0-10 mm (100 mm in total), too many dielectric sub-layers, or a "
++                           "non-finite or negative material value" );
++    }
 +
 +    BOARD* board = this->board();
 +
@@ -102,12 +106,14 @@ index ec99a8f7..cdf28e87 100644
 +                continue;
 +            }
 +
++            // Only the first sub-layer's colour is transported; the others keep theirs
 +            for( int i = 0; i < std::min( item->GetSublayersCount(), old->GetSublayersCount() ); ++i )
 +            {
 +                const wxString& oldColor = old->GetColor( i );
 +
-+                if( IsPrmSpecified( oldColor ) && IsPrmSpecified( item->GetColor( i ) )
-+                    && KIGFX::COLOR4D( oldColor ).ToHexString() == item->GetColor( i ) )
++                if( i > 0
++                    || ( IsPrmSpecified( oldColor ) && IsPrmSpecified( item->GetColor( i ) )
++                         && KIGFX::COLOR4D( oldColor ).ToHexString() == item->GetColor( i ) ) )
 +                {
 +                    item->SetColor( oldColor, i );
 +                }
@@ -216,7 +222,7 @@ index 15e5ba6b..f214a48a 100644
              const HANDLER_CONTEXT<GetBoardDesignRules>& aCtx );
  
 diff --git a/pcbnew/board_stackup_manager/board_stackup.cpp b/pcbnew/board_stackup_manager/board_stackup.cpp
-index 96df23b4..1c8a4098 100644
+index 96df23b4..24c0a90f 100644
 --- a/pcbnew/board_stackup_manager/board_stackup.cpp
 +++ b/pcbnew/board_stackup_manager/board_stackup.cpp
 @@ -21,6 +21,7 @@
@@ -235,7 +241,7 @@ index 96df23b4..1c8a4098 100644
      kiapi::board::BoardStackup stackup;
  
      if( !aContainer.UnpackTo( &stackup ) )
-@@ -591,8 +591,170 @@ bool BOARD_STACKUP::Deserialize( const google::protobuf::Any& aContainer )
+@@ -591,8 +591,192 @@ bool BOARD_STACKUP::Deserialize( const google::protobuf::Any& aContainer )
  
  bool BOARD_STACKUP::Deserialize( const kiapi::board::BoardStackup& aInput )
  {
@@ -246,8 +252,10 @@ index 96df23b4..1c8a4098 100644
 +    BOARD_STACKUP stackup;
 +    int           dielectricId = 0;
 +
-+    // Per-layer thicknesses are stored as int; 10 mm keeps any stackup sum far below INT_MAX
++    // Thicknesses are stored and summed as int: at most 10 mm per (sub-)layer, 100 mm in total
 +    constexpr int64_t maxThickness = 10000000;
++    constexpr int64_t maxTotalThickness = 100000000;
++    constexpr int     maxSublayers = 32;
 +
 +    auto validThickness =
 +            []( const kiapi::common::types::Distance& aDistance )
@@ -280,6 +288,9 @@ index 96df23b4..1c8a4098 100644
 +
 +        if( type != BS_ITEM_TYPE_DIELECTRIC )
 +        {
++            if( !kiapi::board::types::BoardLayer_IsValid( layer.layer() ) )
++                return false;
++
 +            layerId = FromProtoEnum<PCB_LAYER_ID>( layer.layer() );
 +
 +            bool typeMatches = false;
@@ -328,6 +339,9 @@ index 96df23b4..1c8a4098 100644
 +                item->SetThickness( layer.thickness().value_nm() );
 +                break;
 +            }
++
++            if( dielectric.layer_size() > maxSublayers )
++                return false;
 +
 +            for( int i = 0; i < dielectric.layer_size(); ++i )
 +            {
@@ -398,10 +412,24 @@ index 96df23b4..1c8a4098 100644
 +
 +    BoardEdgeConnectorType connector = aInput.edge().connector().type();
 +
++    if( !BoardEdgeConnectorType_IsValid( connector ) )
++        return false;
++
 +    if( connector != BoardEdgeConnectorType::BECT_UNKNOWN )
 +        stackup.m_EdgeConnectorConstraints = FromProtoEnum<BS_EDGE_CONNECTOR_CONSTRAINTS>( connector );
 +
 +    stackup.m_EdgePlating = aInput.edge().plating().has_edge_plating();
++
++    int64_t total = 0;
++
++    for( const BOARD_STACKUP_ITEM* item : stackup.GetList() )
++    {
++        for( int i = 0; i < item->GetSublayersCount(); ++i )
++            total += item->GetThickness( i );
++    }
++
++    if( total > maxTotalThickness )
++        return false;
 +
 +    *this = stackup;
 +    return true;
@@ -409,10 +437,10 @@ index 96df23b4..1c8a4098 100644
  
  
 diff --git a/qa/tests/api/test_api_handler_pcb.cpp b/qa/tests/api/test_api_handler_pcb.cpp
-index 70dfa5f7..c5404ca0 100644
+index 70dfa5f7..b7e307a0 100644
 --- a/qa/tests/api/test_api_handler_pcb.cpp
 +++ b/qa/tests/api/test_api_handler_pcb.cpp
-@@ -17,6 +17,9 @@
+@@ -17,7 +17,11 @@
   * along with this program.  If not, see <https://www.gnu.org/licenses/>.
   */
  
@@ -420,9 +448,11 @@ index 70dfa5f7..c5404ca0 100644
 +#include <functional>
 +#include <limits>
  #include <memory>
++#include <stdexcept>
  #include <vector>
  
-@@ -47,6 +50,8 @@
+ #include <boost/test/unit_test.hpp>
+@@ -47,6 +51,8 @@
  #include <api/common/envelope.pb.h>
  #include <api/common/tasks.pb.h>
  #include <api/common/types/base_types.pb.h>
@@ -431,7 +461,7 @@ index 70dfa5f7..c5404ca0 100644
  #include <jobs/job_export_pcb_odb.h>
  
  
-@@ -200,6 +205,130 @@ kiapi::common::ApiRequest makeGetDrcTaskResultRequest( const std::string& aToken
+@@ -200,6 +206,130 @@ kiapi::common::ApiRequest makeGetDrcTaskResultRequest( const std::string& aToken
      return request;
  }
  
@@ -562,7 +592,7 @@ index 70dfa5f7..c5404ca0 100644
  } // namespace
  
  
-@@ -817,4 +946,369 @@ BOOST_AUTO_TEST_CASE( DrcExclusionDropsMarkerReportFields )
+@@ -817,4 +947,418 @@ BOOST_AUTO_TEST_CASE( DrcExclusionDropsMarkerReportFields )
  }
  
  
@@ -787,35 +817,84 @@ index 70dfa5f7..c5404ca0 100644
 +    API_HANDLER_PCB handler( m_context );
 +    BoardStackup    before = getStackup( handler, *board );
 +
-+    // Thickness beyond the int range, NaN / negative dielectric constants
-+    std::vector<std::function<void( BoardStackupDielectricProperties& )>> edits = {
-+        []( BoardStackupDielectricProperties& p ) { p.mutable_thickness()->set_value_nm( ( int64_t( 1 ) << 32 ) + 35000 ); },
-+        []( BoardStackupDielectricProperties& p ) { p.set_epsilon_r( std::nan( "" ) ); },
-+        []( BoardStackupDielectricProperties& p ) { p.set_loss_tangent( -0.02 ); },
-+        []( BoardStackupDielectricProperties& p ) { p.set_spec_frequency( std::numeric_limits<double>::infinity() ); },
++    auto firstDielectric =
++            []( BoardStackup& aStackup ) -> BoardStackupLayer&
++            {
++                for( BoardStackupLayer& layer : *aStackup.mutable_layers() )
++                {
++                    if( layer.type() == BSLT_DIELECTRIC )
++                        return layer;
++                }
++
++                throw std::runtime_error( "no dielectric" );
++            };
++
++    auto send =
++            [&]( const BoardStackup& aStackup )
++            {
++                kiapi::common::ApiRequest request = makeUpdateStackupRequest( *board, aStackup );
++                return handler.Handle( request );
++            };
++
++    std::vector<std::function<void( BoardStackup& )>> edits = {
++        // Thickness beyond the int range, just above the 10 mm limit
++        [&]( BoardStackup& s ) { firstDielectric( s ).mutable_dielectric()->mutable_layer( 0 )->mutable_thickness()->set_value_nm( ( int64_t( 1 ) << 32 ) + 35000 ); },
++        [&]( BoardStackup& s ) { firstDielectric( s ).mutable_dielectric()->mutable_layer( 0 )->mutable_thickness()->set_value_nm( 10000001 ); },
++        // 11 sub-layers of 10 mm: each allowed, the total above 100 mm
++        [&]( BoardStackup& s )
++        {
++            BoardStackupDielectricLayer* d = firstDielectric( s ).mutable_dielectric();
++
++            for( int i = 0; i < 11; ++i )
++            {
++                BoardStackupDielectricProperties* p = i == 0 ? d->mutable_layer( 0 ) : d->add_layer();
++                *p = d->layer( 0 );
++                p->mutable_thickness()->set_value_nm( 10000000 );
++            }
++        },
++        // Too many sub-layers
++        [&]( BoardStackup& s )
++        {
++            BoardStackupDielectricLayer* d = firstDielectric( s ).mutable_dielectric();
++
++            while( d->layer_size() <= 32 )
++                *d->add_layer() = d->layer( 0 );
++        },
++        // NaN / negative / infinite material values, on a dielectric and on the solder mask
++        [&]( BoardStackup& s ) { firstDielectric( s ).mutable_dielectric()->mutable_layer( 0 )->set_epsilon_r( std::nan( "" ) ); },
++        [&]( BoardStackup& s ) { firstDielectric( s ).mutable_dielectric()->mutable_layer( 0 )->set_loss_tangent( -0.02 ); },
++        [&]( BoardStackup& s ) { firstDielectric( s ).mutable_dielectric()->mutable_layer( 0 )->set_spec_frequency( std::numeric_limits<double>::infinity() ); },
++        [&]( BoardStackup& s )
++        {
++            for( BoardStackupLayer& layer : *s.mutable_layers() )
++            {
++                if( layer.type() == BSLT_SOLDERMASK )
++                    layer.mutable_soldermask()->set_epsilon_r( std::nan( "" ) );
++            }
++        },
++        // A proto enum value KiCad does not know
++        [&]( BoardStackup& s ) { s.mutable_edge()->mutable_connector()->set_type( static_cast<BoardEdgeConnectorType>( 99 ) ); },
 +    };
 +
 +    for( const auto& edit : edits )
 +    {
 +        BoardStackup bad = makeJlc4LayerStackup( before );
++        edit( bad );
 +
-+        for( BoardStackupLayer& layer : *bad.mutable_layers() )
-+        {
-+            if( layer.type() == BSLT_DIELECTRIC )
-+            {
-+                edit( *layer.mutable_dielectric()->mutable_layer( 0 ) );
-+                break;
-+            }
-+        }
-+
-+        kiapi::common::ApiRequest request = makeUpdateStackupRequest( *board, bad );
-+        API_RESULT                result = handler.Handle( request );
-+
++        API_RESULT result = send( bad );
 +        BOOST_REQUIRE( !result.has_value() );
 +        BOOST_CHECK_EQUAL( result.error().status(), kiapi::common::ApiStatusCode::AS_BAD_REQUEST );
 +    }
 +
 +    BOOST_CHECK( !board->GetDesignSettings().m_HasStackup );
++    BOOST_CHECK( getStackup( handler, *board ).SerializeAsString() == before.SerializeAsString() );
++
++    // Exactly 10 mm is allowed
++    BoardStackup thick = makeJlc4LayerStackup( before );
++    BoardStackupLayer& d = firstDielectric( thick );
++    d.mutable_thickness()->set_value_nm( 10000000 );
++    d.mutable_dielectric()->mutable_layer( 0 )->mutable_thickness()->set_value_nm( 10000000 );
++    BOOST_CHECK( send( thick ).has_value() );
 +}
 +
 +

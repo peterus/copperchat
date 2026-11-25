@@ -949,9 +949,14 @@ def _stackup_unavailable() -> StructuredToolError:
     )
 
 
-def _unrestorable(stackup: board_pb2.BoardStackup) -> str | None:
-    """Why patch 0005 would refuse to write `stackup` back (KiCad accepts such stackups
-    from files: a disabled or zero-thickness copper / dielectric layer), else None."""
+def _unrestorable(stackup: board_pb2.BoardStackup, copper_layers: int) -> str | None:
+    """Why patch 0005 would refuse to write `stackup` back onto a board with
+    `copper_layers` copper layers (KiCad accepts such stackups from files: a disabled or
+    zero-thickness copper / dielectric layer, or a stale explicit stackup for another
+    layer count), else None."""
+    copper = sum(1 for la in stackup.layers if la.type == board_pb2.BSLT_COPPER)
+    if copper != copper_layers:
+        return f"it describes {copper} copper layers, the board has {copper_layers}"
     for layer in _copper_and_dielectrics(stackup):
         name = "a dielectric" if layer.type == board_pb2.BSLT_DIELECTRIC else "a copper layer"
         if not layer.enabled:
@@ -960,6 +965,13 @@ def _unrestorable(stackup: board_pb2.BoardStackup) -> str | None:
         if any(t <= 0 for t in [s.thickness.value_nm for s in subs] or [layer.thickness.value_nm]):
             return f"{name} has no thickness"
     return None
+
+
+def _unrestorable_error(why: str) -> StructuredToolError:
+    return _rules_invalid(
+        f"the board's current stackup cannot be restored through KiCad's API ({why})",
+        "Nothing was changed. Fix the stackup in KiCad's Board Setup (Physical Stackup) first.",
+    )
 
 
 def board_thickness_mm(stackup: board_pb2.BoardStackup) -> float:
@@ -988,14 +1000,9 @@ def _set_stackup(
     pre-call stackup after it (`_undo_layers`). A board stackup the API could not write
     back (so no undo) is refused before the write."""
     pre = get_stackup(h)
-    for snapshot in (pre, state.get("layers_stackup")):
-        why = _unrestorable(snapshot) if snapshot is not None else None
-        if why:
-            raise _rules_invalid(
-                f"the board's current stackup cannot be restored through KiCad's API ({why})",
-                "Nothing of this call stays applied. Fix the stackup in KiCad's Board Setup "
-                "(Physical Stackup) first, or leave stackup out.",
-            )
+    why = _unrestorable(pre, preset.copper_layers)
+    if why:
+        raise _unrestorable_error(why)
     req = stackup_request(pre, preset)
     state["stackup"] = pre  # armed before the send: a timeout leaves KiCad's state unknown
     try:
@@ -1106,8 +1113,12 @@ def _set_layers(h: KicadHandle, target: int, state: dict[str, Any]) -> None:
         items = _items_on(h, removed_layers(current, target))
         if items:
             raise _layers_refused(target, items)
+    pre = get_stackup(h)
+    why = _unrestorable(pre, current)
+    if why:  # the layer count's undo could not write it back (patch 0005 refuses it)
+        raise _unrestorable_error(why)
     state["layers"] = (current, non_copper)
-    state["layers_stackup"] = get_stackup(h)
+    state["layers_stackup"] = pre
     board.set_enabled_layers(target, non_copper)
 
 
