@@ -160,7 +160,7 @@ async def export_netlist(ctx: ToolContext, dest: Path) -> None:
 
 
 def _netlist_refs(path: Path) -> list[str]:
-    refs = set(re.findall(r'\(comp \(ref "([^"]+)"\)', path.read_text(errors="replace")))
+    refs = set(re.findall(r'\(comp\s+\(ref\s+"([^"]+)"\)', path.read_text(errors="replace")))
     return sorted(refs, key=natural_key)
 
 
