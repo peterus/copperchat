@@ -18,10 +18,12 @@ with the user's own words after they saw it; later tools can refuse on a stale c
   `cc/kicad_tools/board/{check,approve,checkpoints,specs_check}.py`
 - Modify: `cc/kicad_tools/footprints/approve.py` (use `cc/approvals.py`, re-export
   `normalise`, `quote_in_message`), `cc/editing/gate.py` (`PLAN_EXEMPT_TOOLS`),
-  `cc/kicad_tools/board/{status,views,specs}.py`
+  `cc/kicad_tools/board/{status,views,specs}.py`, `cc/changes/repo.py` (add the
+  in-transaction helper `ChangeRepo.add_many_in_transaction` only; `add_many` reuses it)
 - Tests: `backend/tests/unit/db/test_board_repo.py`, `backend/tests/unit/test_approvals.py`,
   `backend/tests/unit/board/{test_check_parse,test_approve_guards,test_checkpoints}.py`,
-  `backend/tests/kicad/board/{test_check,test_approve,test_status_checkpoints}.py`
+  `backend/tests/kicad/board/{test_check,test_approve,test_status_checkpoints}.py`,
+  `backend/tests/unit/changes/test_change_repo_tx.py`
 
 **Shared kicad setup** (`tests/kicad/board/conftest.py`, append): module-scoped
 `synth_setup` = `synth_session` + P1a's `board_ctx` + through the real two-phase adapter:
@@ -78,7 +80,7 @@ conversation). `board_file(project) -> str` in `board.py`: `pcb_file` relative t
 `violations[].{type, severity, description, items[].uuid, items[].pos}`,
 `unconnected_items`, `schematic_parity`); `verdict(report: MetricsReport) -> Literal["pass",
 "review","fail"]`. Schema `_obj({"level": {"enum": ["quick","full"]}}, ["level"])`, read tool
-(no edit lock, cost 0). **quick:** `board_model` → `run_drc_task` → `read_board_doc` →
+(no edit lock, cost 0). **quick:** `board_model` → `run_drc_task` (`session.call(..., timeout=drc_call_timeout(60))`, B-C4) → `read_board_doc` →
 `run_cpu(metrics_job, model, doc, drc, None, None, parity=None, timeout_s=30)` (P3a's job:
 builds the classification and calls `compute_metrics` in the worker; preset `None` → M14
 `n/a`). **full:**
@@ -155,9 +157,18 @@ kind="board_approve", board_stages=[], logical=Logical(1))`; apply does **not** 
 in the owning task join it) re-checks guard 1 (TOCTOU) and guard 4 (a write may have landed
 between prepare and apply) **before** any insert, then inserts the checkpoint row and the one
 change entry (`kind="board_approve"`, `op="add"`, `uuid=f"board-checkpoint-{id}"`,
-`sheet_path=""`, `after={stage, hash, user_quote}`) through `ctx.editing.changes.add_many`
-— not `record_applied`, which swallows errors and would let the checkpoint row survive a
-failed change entry. A refused guard or any exception rolls both back. After the commit
+`sheet_path=""`, `after={stage, hash, user_quote}`) through
+`ctx.editing.changes.add_many_in_transaction` — not `add_many`, which opens its own
+`db.transaction()` (`cc/changes/repo.py`) and would raise `RuntimeError("nested transactions
+are not supported")` (`cc/db/__init__.py` `_transaction`), and not `record_applied`, which
+swallows errors and would let the checkpoint row survive a failed change entry. A refused
+guard or any exception rolls both back.
+`cc/changes/repo.py` (this phase adds only this helper): `async def
+add_many_in_transaction(self, entries) -> int` holds the existing insert loop (same SQL, same
+`created_at or now` default) and raises `RuntimeError` unless the calling task owns the open
+transaction (`self._db._in_own_transaction()`); `add_many` becomes `async with
+self._db.transaction(): return await self.add_many_in_transaction(items)` (empty input still
+returns 0 without opening a transaction) — no behaviour change for existing callers. After the commit
 the `on_changes_recorded` listeners are notified (as `EditingService.record_changes` does,
 failures logged), and apply returns `ToolResult(data={stage, hash, approved_at, next},
 changed_docs=set())`.
@@ -211,8 +222,14 @@ Guards (all → `approval_not_allowed` with `details.guard`, evaluated in this o
   (a `board_move` entry inserted after prepare → apply refuses with 4, no row written);
   `test_apply_guard_refusal_leaves_no_rows` (guard 1 and, separately, guard 4 failing at
   apply → `board_checkpoints` and `changes` row counts unchanged);
-  `test_apply_change_entry_failure_rolls_back` (monkeypatch `changes.add_many` to raise →
-  the error propagates, no checkpoint row stays);
+  `test_apply_real_path_commits_both` (no monkeypatch of the change repo: a real temp DB,
+  apply runs through `add_many_in_transaction` inside its one `db.transaction()` → no
+  `RuntimeError`, one checkpoint row and one `board_approve` change row committed);
+  `test_apply_change_entry_failure_rolls_back` (failure injected **after** the change
+  insert: wrap the real `add_many_in_transaction` so it inserts, then raises → the error
+  propagates, neither the checkpoint row nor the change row stays);
+  `test_add_many_in_transaction_requires_open_tx` (`tests/unit/changes/test_change_repo_tx.py`: outside a
+  transaction → `RuntimeError`; `add_many` still writes in its own transaction);
   `test_plan_policy_always_allowed`
   (`PlanGate`/`BudgetGate.before_prepare` pass `pcb_approve` without an active step).
   `test_checkpoints.py`: `test_state_missing`, `test_state_stale`, `test_only_latest_counts`

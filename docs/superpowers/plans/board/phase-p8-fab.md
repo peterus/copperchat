@@ -88,7 +88,8 @@ crash or kill mid-export (a normal failure cleans up); the exports run under the
 
 **Interfaces:**
 ```python
-@dataclass(frozen=True) class FabCommand: args: tuple[str, ...]; out: str      # kicad-cli args, relative output
+@dataclass(frozen=True) class FabCommand: args: tuple[str, ...]; out: str; timeout_s: float   # kicad-cli args, relative output, explicit timeout
+FAB_TIMEOUTS_S = {"gerbers": 120, "drill": 60, "pos": 60, "bom": 60}   # per subcommand; 3D export: EXPORT_3D_TIMEOUT_S = 180
 def fab_commands(model: BoardModel, board_file: str) -> tuple[FabCommand, ...]
 def bom_rows(kicad_bom_csv: str) -> list[tuple[str, str, str, str]]   # (Comment, Designator, Footprint, LCSC Part #)
 def cpl_rows(kicad_pos_csv: str) -> list[tuple[str, str, str, str, str]]   # (Designator, Mid X, Mid Y, Layer, Rotation)
@@ -158,12 +159,16 @@ validated parent only; `tmp = staging_dir(target, id)`;
 file; `save_modified=False`); **re-check**: the `board_hash` of the model read right after
 `save_copy` returned (the copied state — still under the lock) must equal the approved hash,
 else `rmtree(tmp)` and `not_approved` (`details.reason == "changed_during_export"`), nothing
-swapped; run each `FabCommand` with `run_kicad_cli(settings, args,
-timeout=120, cwd=tmp)` (non-zero → `export_failed` with the stderr tail); zip `gerbers/` +
+swapped; run each `FabCommand` as `async with BOARD_CLI_LOCK: await run_kicad_cli(settings,
+cmd.args, timeout=cmd.timeout_s, cwd=tmp)` — the process-wide board kicad-cli lock
+(`cc/views/board_render.py`, P1c / index B-C9), taken **per command** so a render queued
+behind an export waits at most one command; explicit timeouts gerbers 120 s, drill 60 s,
+pos 60 s, bom 60 s (`FAB_TIMEOUTS_S`; non-zero exit or `TimeoutError` → `export_failed` with
+the stderr tail / the timeout); zip `gerbers/` +
 `drill/` into `<board>-jlcpcb.zip` (`zipfile`, deflated, sorted names, fixed timestamps);
 write `bom-jlcpcb.csv`, `cpl-jlcpcb.csv`, `fab-report.md` (metrics from `run_cpu(metrics_job,
 model, doc, drc, preset_for(model, doc), only=None, timeout_s=30)` — all of M1–M14, so the
-model keeps its fills (M11) — with `drc` = a fresh `run_drc_task`; never a direct
+model keeps its fills (M11) — with `drc` = a fresh `run_drc_task` (`session.call(..., timeout=drc_call_timeout(60))`, B-C4); never a direct
 `compute_metrics`; a "Swept leftovers" line lists `swept` when non-empty);
 remove `src/`; `swap_in(tmp, target, id)`; any error
 → `rmtree(tmp)` and re-raise (old package untouched). Result `data = {dir: "fab/jlcpcb",
@@ -178,8 +183,15 @@ next: "offer a git commit of fab/ (spec §7.2: fab/ is a normal repo directory)"
   `board_hash` — DB setup only, P3b tests the guards): `test_file_set` (gerbers: one file per
   copper layer (4), F/B mask, F/B silk, F/B paste, Edge.Cuts, one `.gbrjob`; drill: separate
   PTH and NPTH Excellon files in mm (`METRIC` in the header), a map; the zip holds exactly
-  the gerber + drill files; `bom-jlcpcb.csv` and `cpl-jlcpcb.csv` headers as Task 2, one CPL
-  row per non-DNP footprint; `fab-report.md` contains the `board_hash`);
+  the gerber + drill files; `bom-jlcpcb.csv` and `cpl-jlcpcb.csv` headers as Task 2; the CPL
+  designators equal exactly the set of footprints that are **not** DNP **and** do not have
+  `exclude_from_position_files` set (read from the model/kipy attributes); the tool-placed
+  mounting holes (P2 `pcb_set_outline`, `exclude_from_position_files = True`, refs
+  `H1`–`H4`) are asserted **absent** from the CPL; `fab-report.md` contains the `board_hash`);
+  `test_fab_cli_under_lock` (`run_kicad_cli` wrapped to record `BOARD_CLI_LOCK.locked()` and
+  its `timeout` per call → every fab command ran with the lock held, timeouts gerbers 120,
+  drill 60, pos 60, bom 60; a concurrent `pcb_render` started while the gerbers command is
+  patched to wait on an event does not reach `run_kicad_cli` until it is released);
   `test_kicad_data_untouched` (`.kicad_pcb`, `.kicad_pro`, `.kicad_dru` sha256 and
   `session.modified_docs` unchanged; no change-log entry; budget not charged);
   `test_report_metrics_via_run_cpu` (spy: the report's metrics come from one
@@ -217,7 +229,8 @@ under `ctx.editing.edit_lock(ctx.project.id)` (when set) like Task 3, `target =
 safe_output_dir(project.dir, "fab/3d")` (validates `fab/` first, mkdir), then
 `sweep_stale(target.parent, "3d")` in the validated parent only, `save_copy("pcb", …)` into a staging dir
 next to it, `kicad-cli pcb export step|glb --force -o <staging>/<board>.<ext> <copy>`
-(timeout 180), `replace_file` into `fab/3d/<board>.<ext>`, staging removed. 3D needs no
+inside `async with BOARD_CLI_LOCK:` with `timeout=EXPORT_3D_TIMEOUT_S` (180 s; `TimeoutError`
+→ `export_failed`), `replace_file` into `fab/3d/<board>.<ext>`, staging removed. 3D needs no
 approval, so the post-copy re-check compares the copy's `board_hash` with the hash read at
 the start of the call (mismatch → `export_failed`, nothing replaced); the result's
 `board_hash` is the copy's. Result `data =
@@ -230,7 +243,8 @@ part models (gap G7; optional phase P10 adds them)" — the text is a constant
   (`output_path_unsafe`; an outside `3d.old-0123456789ab/` in the link target survives); `test_failure_leaves_old_file` (an existing `fab/3d/<board>.step`,
   `kicad-cli` patched to fail → `export_failed`, old file byte-identical, no staging left);
   `test_kicad_data_untouched`; `test_export_3d_holds_edit_lock` (a concurrent `pcb_move` waits
-  until the export returned).
+  until the export returned); `test_export_3d_under_cli_lock` (spy: the `kicad-cli pcb export
+  step` call runs with `BOARD_CLI_LOCK` held and `timeout=180`).
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS.
 - [ ] **Step 5: Commit** `feat(board): pcb_export_3d through the shared safe path helper`.
 

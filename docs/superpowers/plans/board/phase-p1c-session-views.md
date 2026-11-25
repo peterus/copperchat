@@ -118,7 +118,7 @@ else `{"exists": true, "outline": {kind, x, y, w, h, corner_radius} | null,
 "copper_layers": n, "footprints": n, "placed": n, "unplaced": n, "unplaced_refs": [≤ 50] +
 "unplaced_omitted", "connections": n, "routed": n, "unrouted": n, "zones": n,
 "placement_hash": …, "board_hash": …}`. `connections` = Σ over nets with ≥ 2 pads of
-(pads − 1); `unrouted` = `run_drc_task().unconnected`; `routed = connections − unrouted`
+(pads − 1); `unrouted` = `run_drc_task().unconnected` (in `session.call(..., timeout=drc_call_timeout(60))`, B-C4 — never the 30 s default); `routed = connections − unrouted`
 (floored at 0). Checkpoint and last-check fields are added by P3b.
 
 - [ ] **Step 1: Failing kicad tests** (`test_status.py`): `test_status_boardless`
@@ -161,10 +161,11 @@ svg --mode-single --page-size-mode 2 --exclude-drawing-sheet --layers <list>` (b
 **Board kicad-cli concurrency + timeouts:** `cc/views/board_render.py` owns the process-wide
 `BOARD_CLI_LOCK = asyncio.Semaphore(1)` (same pattern as `_render_lock` in
 `cc/views/footprint_render.py` L157); every board kicad-cli call — the SVG export and the 3D
-render here, `pcb_check full`'s parity DRC in P3b — runs `async with BOARD_CLI_LOCK:` around
-`run_kicad_cli(settings, …, timeout=…)` with explicit module constants
-`BOARD_SVG_TIMEOUT_S = 60`, `BOARD_3D_TIMEOUT_S = 120` (here) and `BOARD_PARITY_TIMEOUT_S =
-120` (P3b); `TimeoutError` → `render_failed` (here) / `drc_rejected` (P3b) naming the
+render here, `pcb_check full`'s parity DRC in P3b, the fab exports in P8 (gerbers, drill, pos,
+bom, step/glb) and P10's model-substituted step/glb export — runs `async with BOARD_CLI_LOCK:`
+around `run_kicad_cli(settings, …, timeout=…)` with explicit module constants
+`BOARD_SVG_TIMEOUT_S = 60`, `BOARD_3D_TIMEOUT_S = 120` (here), `BOARD_PARITY_TIMEOUT_S =
+120` (P3b), gerbers 120 / drill 60 / pos 60 / bom 60 / step|glb 180 (P8, P10); `TimeoutError` → `render_failed` (here) / `drc_rejected` (P3b) naming the
 timeout. The kicad-cli peak RSS of each kind is measured in P9a's memory report (D5).
 View layers (spec §13): top = `F.Cu,F.Mask,F.SilkS,Edge.Cuts`; bottom =
 `B.Cu,B.Mask,B.SilkS,Edge.Cuts` mirrored; layer = `<layer>,Edge.Cuts`; placement =

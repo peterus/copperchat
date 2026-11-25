@@ -100,7 +100,7 @@ means the file is shared and the phase only adds lines (rebase on `main` and kee
 | `cc/agent/{profiles,sdk_backend,fake}.py`, `cc/agent/sdk_tools.py` (board publish), `cc/history/{live,hooks}.py`, `cc/views/{snapshot,footprint_render,_raster_worker}.py` (`_raster_worker`: CPU/memory limits from argv), new `cc/views/board_render.py`, `cc/board/render.py`, `cc/web/routes_conversations.py`, `frontend/src/components/sessions/NewSessionDialog.tsx`, `cc/design_docs/service.py`, `cc/skills/builtin/design-docs/templates/board.md`, new `cc/skills/builtin/session-board/`, `cc/kicad_tools/board/{specs,status,views}.py`, `cc/tools/registry.py`, `cc/web/app.py` (`/api/features` registration), new `frontend/src/api/features.ts`, `cc/history/service.py` (pcb branch of the turn-end view refresh) | P1c (2) | — |
 | `cc/kicad_tools/board/{sync,setup}.py`, `cc/kicad_tools/board/specs_setup.py`, `cc/board/staging.py` (consumes P1a's `presets.py`) | P2 (3) | `board/specs.py` append |
 | `cc/board/{classify,boardmd,metrics}.py`, `cc/board/jobs.py` (the one module of `run_cpu` job functions: `analyse_job`, `metrics_job(model, doc, drc, preset, only, parity=None)` — builds the `Classification` itself and passes `parity` to `compute_metrics`; every metrics computation (P3b `pcb_check`, P6b fill report, P7 `pcb_zones`, P8 fab report) is `run_cpu(metrics_job, …, only=…)`, never `compute_metrics` directly — plus `strip_fills`), `cc/board/geom.py` (bend analysis, append), `cc/kicad_tools/board/{analysis,specs_analysis}.py` | P3a (3) | `board/specs.py` append; `cc/board/jobs.py` append (P4 `place_block_job` / `legalize_job`, P5b/P6b if needed, P7 `fanout_candidates_job` / `stitch_candidates_job`) |
-| `cc/db/migrations/0013_board.sql`, `cc/db/repos/board.py`, new `cc/approvals.py`, `cc/kicad_tools/footprints/approve.py` (refactor to `cc/approvals.py`), `cc/editing/gate.py` (`PLAN_EXEMPT_TOOLS`), `cc/kicad_tools/board/{check,approve,checkpoints,specs_check}.py`, `board/status.py` + `board/views.py` (evidence/checkpoint fields) | P3b (4) | `board/specs.py` append |
+| `cc/db/migrations/0013_board.sql`, `cc/db/repos/board.py`, new `cc/approvals.py`, `cc/kicad_tools/footprints/approve.py` (refactor to `cc/approvals.py`), `cc/editing/gate.py` (`PLAN_EXEMPT_TOOLS`), `cc/kicad_tools/board/{check,approve,checkpoints,specs_check}.py`, `board/status.py` + `board/views.py` (evidence/checkpoint fields), `cc/changes/repo.py` (add in-transaction helper `ChangeRepo.add_many_in_transaction` only) | P3b (4) | `board/specs.py` append |
 | `cc/board/router/{__init__,grid,astar,simplify,pairs}.py` — **only P5a creates `cc/board/router/__init__.py`** | P5a (4) | P6a must not create or edit `__init__.py` (it adds `chamfer.py`, imported by full path); if P5a is not merged yet, P6a creates an empty `__init__.py` only if absent and keeps P5a's version on rebase |
 | `scripts/fetch-freerouting.sh`, `docker/freerouting.lock`, `docker/app/Dockerfile`, `.github/workflows/ci.yml` (kicad job cache + fetch step), `cc/board/freerouting.py`, `cc/board/router/chamfer.py`, `cc/config.py` (freerouting settings, append), `LICENSES/` notices, `scripts/app-image-tools.sh`, `.gitignore` | P6a (4) | — |
 | `docker/kicad-base/patches/0005-*.patch`, `docker/kicad-base/patches/README.md`, `cc/kicad_tools/board/setup.py` (stackup branch), `cc/kicad_tools/board/specs_setup.py` (stackup enum), `cc/board/presets.py` (append `StackupPreset`, `STACKUPS`), `docs/kicad-patches/0005-board-stackup-FACTS.md` | P2b (4) | runs after P2 merged |
@@ -198,7 +198,10 @@ Constraints). Values are copied from the spec.
   separate 120 s deadline. `pcb_route`: total deadline 300 s. Deadline-bound loops check the
   deadline before **every** margin attempt and bound each step by the remaining time: each
   `run_cpu` gets `timeout_s = min(30, remaining)` and `wait_s = remaining`, each DRC
-  `min(60, remaining)`; worst case = deadline + one DRC (≤ 60 s).
+  `min(60, remaining)`; worst case = deadline + one DRC (≤ 60 s). `pcb_route_fill`'s whole
+  sum: `timeout_s` (≤ 600) + round-trip I/O incl. stage-4 refill 60 + post 120 + DRC 60 +
+  final metrics 60 (fixed `timeout_s=30, wait_s=30`; timeout → `metrics: null`, not an
+  error) = `FILL_WORST_CASE_S` 900 s (P6b).
 - Renders: PNG ≤ 1600 px long side; ≤ 3 images per step report; SVG through the footprint
   sanitiser with board limits (B-C9); every injected string XML-escaped. Retention: board PNGs
   kept; board SVGs (+ `.svg.json` sidecars) beyond the newest 20 per project pruned at each
@@ -209,6 +212,10 @@ Constraints). Values are copied from the spec.
   text cells starting with `=`, `+`, `-`, `@`, tab or CR get a leading `'` (P8).
 - Live view: board publishes **once per tool call from the adapter after `apply`**, never from
   the per-commit hook while a board tool is applying.
+- **Every long KiCad call passes an explicit timeout** (B-C4): `session.call`'s default
+  (`kicad_api_timeout_s`, 30 s) restarts the api-server on expiry, so DRC calls pass
+  `timeout=drc_call_timeout(t)` (= `t + 30 + 15`) and `refill_zones` calls pass
+  `timeout=refill_timeout_s + 15` (precedent `cc/kicad_tools/checks.py`, `* 4`).
 - Long commands always with `timeout`; KiCad tests in `ghcr.io/peterus/copperchat-kicad-base`
   as in the footprints plan's Phase Conventions.
 
@@ -350,6 +357,11 @@ def require_board(ctx: ToolContext) -> None                             # raises
                                          # unconnected = number of unconnected-items markers (DrcTaskResult has no count at the pin)
 def run_drc_task(h: KicadHandle, *, timeout_s: float = 60.0) -> DrcResult    # StartDrcTask → GetTaskStatus → GetDrcTaskResult
 class DrcTimeout(StructuredToolError): ...                                   # code "drc_timeout"; still TS_RUNNING at timeout_s (no cancel at the pin: the next call waits ≤ 30 s for it within its own budget, P1a)
+DRC_STALE_GRACE_S = 30.0
+def drc_call_timeout(timeout_s: float) -> float                              # timeout_s + DRC_STALE_GRACE_S + 15: the session.call timeout around run_drc_task (B-C4 rule)
+# The timed-out task lives on the SESSION, not the handle (session.call builds a fresh KicadHandle per call):
+# KicadSession.pending_drc: tuple[int, str] | None = (generation, task id); KicadHandle(kicad, open_docs, *, generation=0, drc_slot=None)
+# exposes it as h.drc_slot.get()/set(); _kill()/start clear it; run_drc_task ignores an entry from another generation (P1a)
 def export_specctra_dsn(h: KicadHandle, dest: Path) -> None                  # RunBoardJobExportSpecctraDsn (live board)
 def import_specctra_session(h: KicadHandle, ses: Path) -> None               # ImportSpecctraSession
 def save_document_to_string(h: KicadHandle) -> str                           # SaveDocumentToString
@@ -371,7 +383,7 @@ BOARD_SHEET = SheetRef(path="", page="", file="", name="<board>")
 @dataclass class BoardStageContext:
     ctx: ToolContext; report: dict[str, Any]; created: set[str]   # KIIDs created by this call
     async def call(self, fn: Callable[[KicadHandle], T]) -> T: ...  # session.call
-    async def drc(self, *, timeout_s: float = 60.0) -> DrcResult: ... # api.run_drc_task(h, timeout_s=…); deadline-bound callers pass min(60, remaining)
+    async def drc(self, *, timeout_s: float = 60.0) -> DrcResult: ... # session.call(lambda h: api.run_drc_task(h, timeout_s=timeout_s), timeout=drc_call_timeout(timeout_s)); deadline-bound callers pass min(60, remaining)
     async def model(self) -> BoardModel: ...
 @dataclass(kw_only=True) class BoardChangeSet(ChangeSet):          # base fields defaulted: sheet=BOARD_SHEET, stages=[], pre_images={}, intent=NetIntent()
     kind: str                         # change-log kind, member of BOARD_KINDS
@@ -389,6 +401,15 @@ async def apply_board_change_set(ctx: ToolContext, cs: BoardChangeSet) -> ToolRe
 # inside a stage; on any error after the first stage STARTED → compensate() (+ stage undo); verify after the last stage; result changed_docs={"pcb"}, data =
 # cs.report + {"step_report": ...}; records one change-log entry (kind, sheet_path="", counts).
 ```
+
+**Every long KiCad call passes an explicit timeout.** `session.call` without `timeout=` uses
+`settings.kicad_api_timeout_s` (30 s, `cc/config.py`) and restarts the api-server on expiry
+(`cc/kicad_session/session.py` `call`). So every board `session.call` that can exceed it
+passes `timeout=` explicitly (precedent: `cc/kicad_tools/checks.py` passes
+`kicad_api_timeout_s * 4`): DRC (`BoardStageContext.drc`, every direct `run_drc_task`) →
+`drc_call_timeout(timeout_s)` = `timeout_s + 30 + 15` (incl. the 30 s stale-task grace);
+`refill_zones` (P6b, P7) → `refill_timeout_s + 15`. P1a tests that `drc` passes the larger
+timeout.
 
 `cc/kicad_tools/edit/engine.py::apply_change_set` refuses `BoardChangeSet` with `TypeError` (as it
 refuses `FootprintChangeSet`). Two-phase board tools use `edit_spec(..., prepare, apply)` where
@@ -412,7 +433,9 @@ def compensate(h: KicadHandle, snap: CopperSnapshot) -> list[str]   # removes it
 
 `cc/kicad_session/session.py` (P1a): `commit(self, label, *, doc: DocKind = "sch", dry_run=False)`;
 `self.modified_docs: set[DocKind]` (pushed commit adds `doc`, save of `doc` removes it); the old
-`modified` becomes a property `"sch" in self.modified_docs`.
+`modified` becomes a property `"sch" in self.modified_docs`; `self.pending_drc: tuple[int, str] |
+None` (the timed-out DRC task, B-C3; cleared by `_kill()` / every start) reaches the worker
+thread through `KicadHandle(..., generation=, drc_slot=)`.
 
 `cc/board/worker.py` (P1a): `async def run_cpu(fn: Callable[..., T], *args: Any, timeout_s: float,
 wait_s: float | None = None, **kwargs: Any) -> T` (keyword arguments other than `timeout_s` /
@@ -534,7 +557,9 @@ BoardView = Literal["top","bottom","layer","placement","3d"]
 async def render_board(ctx: ToolContext, view: BoardView, *, layer: str | None = None,
                        region: Rect | None = None, highlight_nets: Sequence[str] = (),
                        markers: Sequence[Marker] = (), angle: str = "top") -> BoardRender
-BOARD_CLI_LOCK = asyncio.Semaphore(1)   # process-wide; every board kicad-cli call (svg 60 s, 3d render 120 s, P3b parity DRC 120 s) runs inside it, like footprint_render._render_lock
+BOARD_CLI_LOCK = asyncio.Semaphore(1)   # process-wide; every board kicad-cli call runs inside it with an explicit timeout, like footprint_render._render_lock:
+                                        # svg 60 s, 3d render 120 s (P1c), parity DRC 120 s (P3b), fab gerbers 120 s / drill 60 s / pos 60 s / bom 60 s (P8, lock per command),
+                                        # step/glb export 180 s (P8 pcb_export_3d, P10 with models)
 # cc/board/render.py (pure): wrap_svg(svg_text, *, extent, scale_bar=True, hulls, markers, title) -> str
 BOARD_SVG_LIMITS = SvgLimits(max_bytes=24 MiB, max_elements=200_000, max_coords=2_000_000,
                              max_element_coords=50_000, max_span=…)   # P1c measures on fixtures, may tune

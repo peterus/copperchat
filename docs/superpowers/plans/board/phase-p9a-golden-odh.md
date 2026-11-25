@@ -142,7 +142,8 @@ timeout replaced it; the JVM's peak = the maximum of its `VmRSS` sampled every 0
 PID** (`/proc/<jvm pid>/status`, the PID found as the child of this process whose cmdline
 names the Freerouting jar, sampling from start to exit; no `RUSAGE_CHILDREN`); the
 CopperChat process peak = `RUSAGE_SELF.ru_maxrss`; the board kicad-cli peaks (P1c
-`BOARD_CLI_LOCK`: SVG export, 3D render, `pcb_check full`'s parity DRC; fab exports too) =
+`BOARD_CLI_LOCK`: SVG export, 3D render, `pcb_check full`'s parity DRC, and the P8/P10
+exports — gerbers, drill, pos, bom, step/glb) =
 the maximum `VmRSS` per kind, sampled every 0.5 s by PID like the JVM (child whose argv[0] is
 `settings.kicad_cli`, kind from its subcommand). The report records each of the five
 separately (api-server, CPU worker, JVM, kicad-cli per kind, CopperChat) plus their sum (the

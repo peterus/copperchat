@@ -25,6 +25,17 @@ failure, with M11 plane metrics in its report.
   (+ append a module-scoped `copper_rig` fixture to `tests/kicad/board/conftest.py` that calls
   P5b's shared `routed_synth` — no own copy of the setup sequence)
 
+**Long KiCad calls** (index Global Constraints / B-C4 — `session.call`'s 30 s default
+restarts the api-server on expiry): every `refill_zones` in this phase (`pcb_zones` stage 2,
+fanout `round_i_refill`, stitch stages 2 and 4, every `undo` that refills) runs as
+`session.call(lambda h: h.board().refill_zones(block=True, max_poll_seconds=REFILL_TIMEOUT_S),
+timeout=REFILL_TIMEOUT_S + 15)` with `REFILL_TIMEOUT_S = 60` (module constant in
+`zones.py`, shared by `fanout.py` / `stitch.py`); every DRC goes through `sctx.drc(...)`
+(which passes `drc_call_timeout`, P1a) — never a bare `session.call(run_drc_task)`.
+Test (`test_zones.py`): `test_refill_passes_explicit_timeout` (spy on `session.call`: each
+refill call has `timeout == REFILL_TIMEOUT_S + 15 == 75`, each DRC call `timeout ==
+drc_call_timeout(t)`, none `None`).
+
 **Test board (`copper_rig`):** `synth_session` + `board_ctx` → P5b's shared
 **`routed_synth(rig)`**: sync → `pcb_set_outline` (60 × 45 mm, r = 1, 4 holes) →
 `pcb_set_rules {layers: 4, preset: "jlcpcb-4l", net_classes: [Power]}` (4 copper layers
@@ -133,7 +144,7 @@ max_stub=…, timeout_s=30)` (`fanout_candidates_job` appended to `cc/board/jobs
 round i = 1…16 (a round with no open pad is a no-op): `round_i_add` (commit: for every open
 pad create its next candidate's stub + via, **both `locked=True`**), `round_i_refill`
 (`commit=True`, its own **pushed** commit: `refill_zones`, blocking), `round_i_check`
-(commit: `run_drc_task` → remove the items of every candidate whose KIIDs appear in a marker
+(commit: `sctx.drc()` → remove the items of every candidate whose KIIDs appear in a marker
 other than unconnected-items; a via in a `DANGLING_VIA` marker is rejected too; open pads
 advance to their next candidate). The DRC therefore only ever sees pushed state — nothing
 relies on DRC seeing an open commit (P1a probe).

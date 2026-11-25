@@ -17,7 +17,7 @@ user-visible tool yet (everything behind `COPPERCHAT_BOARD_TOOLS`, default off).
 - Create: `cc/board/{__init__,model,geom,worker,presets,_selftest}.py`,
   `cc/kicad_tools/board/{__init__,read,api,engine,compensate}.py`
 - Modify: `cc/config.py` (`board_tools`), `cc/kicad_session/session.py` (per-`DocKind`
-  commit, `modified_docs`), `cc/history/{store,restore,service}.py` (`.kicad_dru`, `absent`
+  commit, `modified_docs`, `pending_drc` slot), `cc/history/{store,restore,service}.py` (`.kicad_dru`, `absent`
   manifest entries, restore re-discovery), `cc/history/hooks.py` (`HistoryHooks.on_project_changed`
   only), `cc/agent/engine.py` (`RunHooks.on_project_changed`,
   `RunEngine.refresh_project`, `_make_ctx` wires `reload_project`), `cc/tools/spec.py`
@@ -179,8 +179,19 @@ while the task is still `TS_RUNNING` raises **`DrcTimeout(StructuredToolError)`*
 can treat it as "this connection/stage not verified" instead of aborting the call (P5b, P6b).
 The pinned API has no task cancel (`kicad/api/proto/common/tasks.proto` at kipy `e0c9c8e`
 has `GetTaskStatus` and the state `TS_CANCELLED`, but no cancel request; verified while
-planning), so the timed-out `TaskToken` is remembered on the handle (`h.pending_drc`); the
-next `run_drc_task` on that handle first polls it until it leaves `TS_RUNNING`, for at most
+planning), so the timed-out task is remembered **on the session**, not on the handle:
+`session.call` builds a fresh `KicadHandle` per call (`cc/kicad_session/session.py`
+`call`: `KicadHandle(self._kicad, self._open_docs)`), so a handle attribute would be lost
+before the next call. `KicadSession.pending_drc: tuple[int, str] | None` = (server
+`generation`, task id of the timed-out `TaskToken`), read and written only by the callable
+running inside `session.call` (the session lock serialises them); `session.call` passes it
+through the handle: `KicadHandle(kicad, open_docs, *, generation: int = 0, drc_slot:
+DrcSlot | None = None)`, where `DrcSlot` is a two-method view (`get()` / `set(value)`) onto
+`session.pending_drc` (a handle built without a slot — unit tests — gets a private one).
+`_kill()` and every (re)start set `pending_drc = None` (the task died with the server), and
+`run_drc_task` ignores an entry whose generation differs from `h.generation`. The
+next `run_drc_task` in **any** later `session.call` first polls that task until it leaves
+`TS_RUNNING`, for at most
 `DRC_STALE_GRACE_S = 30.0` and never longer than its own `timeout_s` (the grace is spent from
 that call's budget, so every caller's bound still holds); still running after that → the next
 call raises `DrcTimeout` too without starting a second task (two DRC tasks never overlap).
@@ -208,8 +219,12 @@ suggestion "run pcb_sync_from_schematic".
   `kicad-cli pcb drc --format json` unconnected count of a `save_copy`);
   `test_drc_timeout_distinct` (`timeout_s=0.001` on ecc83 → raises `DrcTimeout`, which is a
   `StructuredToolError` with `code == "drc_timeout"`, not `drc_rejected`; the immediately
-  following `run_drc_task(timeout_s=60)` waits out the pending task (≤ 30 s), then succeeds,
-  and only one task ran at a time — spy on `StartDrcTask` count);
+  following `run_drc_task(timeout_s=60)` — in a **separate** `session.call`, i.e. on a fresh
+  handle — waits out the pending task (≤ 30 s, `session.pending_drc` set between the calls),
+  then succeeds and clears `session.pending_drc`, and only one task ran at a time — spy on
+  `StartDrcTask` count); `test_pending_drc_cleared_on_restart` (time out once → `pending_drc`
+  set; `session.restart()` → `pending_drc is None` and the next `run_drc_task` starts a task
+  at once without polling the old token);
   `test_save_document_to_string` (starts with `(kicad_pcb`); `test_specctra_export_live`
   (`RunBoardJobExportSpecctraDsn` → file starts with `(pcb`);
   `test_import_specctra_session_missing_file` (a missing `.ses` path → `ApiError` carrying
@@ -386,6 +401,16 @@ Algorithm of `apply_board_change_set`:
    exists is removed with `shutil.rmtree(..., ignore_errors=True)` under `_uncancellable`
    (after compensation; a stage may already have removed its dir on success).
 
+Long KiCad calls (Global Constraints "every long KiCad call passes an explicit timeout"):
+`session.call` defaults to `settings.kicad_api_timeout_s` (30 s, `cc/config.py`) and
+**restarts the api-server** when it expires (`cc/kicad_session/session.py` `call`), so
+`BoardStageContext.drc(timeout_s=t)` calls `session.call(lambda h: run_drc_task(h,
+timeout_s=t), timeout=t + DRC_STALE_GRACE_S + 15)` (stale-task grace + 15 s margin; as
+`cc/kicad_tools/checks.py` passes `kicad_api_timeout_s * 4` for ERC), and every
+`run_drc_task` caller outside a stage (P1c `pcb_status`, P3b `pcb_check`, P8) uses the
+helper `api.drc_call_timeout(t) -> float` (= `t + 30 + 15`) for its `session.call`.
+`refill_zones` (P6b, P7) likewise passes `timeout=refill_timeout_s + 15`.
+
 `compensate`: removes tracks/arcs/vias/zones/groups/graphics/footprints whose KIID is not in
 the snapshot (`remove_items` in one board commit), restores `(x, y, rot, side, locked)` of
 moved footprints (`update_items`, `flip_items` for a side change), and in `"full"` mode
@@ -402,7 +427,9 @@ recreates missing tracks/vias from the stored data; returns what still differs.
   `test_undo_runs_reverse_order` (three stages with `undo` recorders, `fail_after=3` → undo
   calls 3, 2, 1 after `compensate`); `test_temp_dirs_removed_on_all_paths` (a stage creates
   a dir registered in `cs.temp_dirs` → gone after success, after `fail_after=1` and after a
-  cancel during stage 2).
+  cancel during stage 2); `test_stage_drc_passes_long_timeout`
+  (`BoardStageContext.drc(timeout_s=60)` → the spied fake `session.call` receives
+  `timeout=60 + 30 + 15 == 105`, never `None` / the 30 s default; `drc(timeout_s=5)` → 50).
   `test_sdk_tools_reload.py::test_session_replaced_rebaselines` (fake old session
   `generation=2`; the fake `apply` swaps `ctx.session` for a new fake with `generation=1` and
   sets `ctx.reloaded_generation = 1` → no `KicadUnavailable`, `_save_edit` saved on the new

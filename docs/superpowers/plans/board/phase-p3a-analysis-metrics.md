@@ -304,7 +304,7 @@ the in-process helper `strip_fills(model)`) (module-level, so `run_cpu`'s
 `crystals`, `pairs`, `blocks`, `critical_nets`, `overrides_applied`, `board_md_errors`; each
 list ≤ 500 entries + `omitted`. `pcb_metrics` schema `{"only": {"type": "array", "items":
 {"enum": ["M1",…,"M14"]}, "maxItems": 14, "uniqueItems": true}}`; it runs `run_drc_task`
-(`session.call`) unless `only` excludes M2 and M3; parity is `None` (full check only, P3b);
+(`session.call(..., timeout=drc_call_timeout(60))`, B-C4) unless `only` excludes M2 and M3; parity is `None` (full check only, P3b);
 preset from `preset_for`; result: `stage`, `metrics` (id, value, verdict, hard, review,
 offenders, omitted), `hard_failures`, `reviews`, `placement_hash`, `board_hash`, `seconds`.
 Both: `require_board` → `no_board`.
