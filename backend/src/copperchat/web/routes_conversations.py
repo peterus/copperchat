@@ -26,6 +26,7 @@ from copperchat.projects import Project, get_project
 from copperchat.web.auth import CurrentUser
 
 router = APIRouter(prefix="/api/projects", tags=["conversations"])
+features_router = APIRouter(prefix="/api", tags=["features"])
 
 
 def _title(value: str) -> str:
@@ -97,10 +98,16 @@ async def create_conversation(
     project_id: str, body: CreateConversation, request: Request, _: CurrentUser
 ) -> dict[str, Any]:
     project = _project(request, project_id)
-    if body.type == "board":
-        raise SessionTypeUnavailable("Board sessions come with sub-project 4")
+    if body.type == "board" and not request.app.state.settings.board_tools:
+        raise SessionTypeUnavailable("Board sessions need COPPERCHAT_BOARD_TOOLS")
     row = await _repo(request).create(project.id, body.type, body.title)
     return await _published(request, row)
+
+
+@features_router.get("/features")
+async def get_features(request: Request, _: CurrentUser) -> dict[str, bool]:
+    """The feature flags the frontend needs (the Board session card)."""
+    return {"boardTools": request.app.state.settings.board_tools}
 
 
 @router.patch("/{project_id}/conversations/{cid}")
