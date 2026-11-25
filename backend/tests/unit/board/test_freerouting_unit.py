@@ -8,6 +8,7 @@ import os
 import shutil
 import signal
 import stat
+import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -35,15 +36,17 @@ PRLIMIT = shutil.which("prlimit")
 needs_prlimit = pytest.mark.skipif(PRLIMIT is None, reason="util-linux prlimit not on PATH")
 
 
-_clear_ns_probe = fr.network_namespace_available.cache_clear
+_clear_ns_probe = fr.unshare_path.cache_clear
 
 
 @pytest.fixture(autouse=True)
 def _fresh_caches() -> Iterator[None]:
     fr._RUNTIME_CACHE.clear()
+    fr._SLOTS.clear()
     _clear_ns_probe()
     yield
     fr._RUNTIME_CACHE.clear()
+    fr._SLOTS.clear()
     _clear_ns_probe()
 
 
@@ -77,7 +80,7 @@ def _settings(home: Path, *, on: bool = True) -> Settings:
 
 
 def _no_unshare(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(fr, "network_namespace_available", lambda: False)
+    monkeypatch.setattr(fr, "unshare_path", lambda: None)
 
 
 class _Spy:
@@ -131,18 +134,19 @@ def test_command_shape(tmp_path: Path) -> None:
         passes=7,
         workdir=Path("/w"),
         extra_args=("--x=1",),
-        unshare=False,
+        unshare=None,
         timeout_s=300,
     )
-    assert cmd[:5] == [
+    assert cmd[:6] == [
         "/p",
         "--cpu=630:635",
         "--nofile=256:256",
         "--fsize=536870912:536870912",
+        "--core=0:0",
         "--",
     ]
-    assert cmd[5] == "/fr/jre/bin/java"
-    i = 6
+    assert cmd[6] == "/fr/jre/bin/java"
+    i = 7
     assert tuple(cmd[i : i + len(JAVA_OPTS)]) == JAVA_OPTS
     i += len(JAVA_OPTS)
     assert tuple(cmd[i : i + len(PROXY_BLACKHOLE)]) == PROXY_BLACKHOLE
@@ -158,11 +162,12 @@ def test_command_shape(tmp_path: Path) -> None:
         "-do",
         "/w/b.ses",
         "--router.autorouter.max_passes=7",
+        "--x=1",
         "--gui.enabled=false",
         *NO_NETWORK_OPTIONS,
-        "--x=1",
     ]
     assert "-XX:ActiveProcessorCount=2" in cmd and "-Xmx1g" in cmd
+    assert "-XX:-CreateCoredumpOnCrash" in JAVA_OPTS
     assert not any(a.startswith("-Xms") for a in cmd)
     assert not any(a.startswith("--as") for a in cmd)
     assert cpu_limit_s(300) == 630
@@ -180,11 +185,56 @@ def test_command_with_unshare() -> None:
         passes=1,
         workdir=Path("/w"),
         extra_args=(),
-        unshare=True,
+        unshare=Path("/usr/bin/unshare"),
         timeout_s=10,
     )
     k = cmd.index("--")
-    assert cmd[k + 1 : k + 6] == ["unshare", "-r", "-n", "--", "/j"]
+    assert cmd[k + 1 : k + 6] == ["/usr/bin/unshare", "-r", "-n", "--", "/j"]
+
+
+@pytest.mark.parametrize(
+    "arg",
+    [
+        "--gui.enabled=true",
+        "--api_server.enabled=true",
+        "--mcp_server.enabled",
+        "--profile.allow_telemetry=true",
+        "--profile.allow_contact=true",
+        "--usage_and_diagnostic_data.disable_analytics=false",
+    ],
+)
+def test_extra_args_cannot_override_no_network(arg: str) -> None:
+    rt = FreeroutingRuntime(Path("/j"), Path("/x.jar"), "2.5.0", Path("/p"))
+    with pytest.raises(ValueError, match="extra_args"):
+        build_command(
+            rt,
+            Path("/d"),
+            Path("/s"),
+            passes=1,
+            workdir=Path("/w"),
+            extra_args=("--x=1", arg),
+            unshare=None,
+            timeout_s=10,
+        )
+
+
+async def test_run_rejects_override_before_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _no_unshare(monkeypatch)
+    spy = _Spy(monkeypatch)
+    rt = _rt(tmp_path, "exit 0")
+    with pytest.raises(ValueError):
+        await run_freerouting(
+            rt,
+            tmp_path / "b.dsn",
+            tmp_path / "b.ses",
+            timeout_s=20,
+            passes=3,
+            workdir=tmp_path / "w",
+            extra_args=("--api_server.enabled=true",),
+        )
+    assert spy.proc is None
 
 
 def test_proxy_port_parameter() -> None:
@@ -196,7 +246,7 @@ def test_proxy_port_parameter() -> None:
         passes=1,
         workdir=Path("/w"),
         extra_args=(),
-        unshare=False,
+        unshare=None,
         timeout_s=10,
         proxy_port=4711,
     )
@@ -214,7 +264,7 @@ def test_command_without_prlimit_starts_with_java() -> None:
         passes=1,
         workdir=Path("/w"),
         extra_args=(),
-        unshare=False,
+        unshare=None,
         timeout_s=10,
     )
     assert cmd[0] == "/j"
@@ -249,6 +299,7 @@ async def test_limits_applied(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
         assert limits["Max cpu time"] == str(cpu_limit_s(40))
         assert limits["Max open files"] == "256"
         assert limits["Max file size"] == "536870912"
+        assert limits["Max core file size"] == "0"
         assert limits["Max address space"] == mine["Max address space"]
     finally:
         task.cancel()
@@ -401,6 +452,7 @@ async def test_fallback_limits_without_prlimit(
         limits = _limits(pid)
         assert limits["Max cpu time"] == str(cpu_limit_s(40))
         assert limits["Max open files"] == "256"
+        assert limits["Max core file size"] == "0"
     finally:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -463,18 +515,196 @@ def test_find_runtime_cached_until_java_changes(tmp_path: Path) -> None:
     assert find_runtime(_settings(home)) is None
 
 
-def test_network_namespace_probe_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("rc", [0, 1])
+def test_network_namespace_probe_cached(monkeypatch: pytest.MonkeyPatch, rc: int) -> None:
     calls: list[list[str]] = []
 
     class Done:
-        returncode = 1
+        returncode = rc
 
     def fake_run(argv: list[str], **_kw: Any) -> Done:
         calls.append(argv)
         return Done()
 
-    monkeypatch.setattr(fr.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(fr.shutil, "which", lambda name: f"/opt/ul/bin/{name}")
     monkeypatch.setattr(fr.subprocess, "run", fake_run)
-    assert fr.network_namespace_available() is False
-    assert fr.network_namespace_available() is False
-    assert calls == [["/usr/bin/unshare", "-r", "-n", "--", "true"]]
+    want = Path("/opt/ul/bin/unshare") if rc == 0 else None
+    assert fr.unshare_path() == want
+    assert fr.unshare_path() == want
+    assert fr.network_namespace_available() is (rc == 0)
+    assert calls == [["/opt/ul/bin/unshare", "-r", "-n", "--", "true"]]
+
+
+async def test_run_uses_probed_unshare_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The probe runs off the event loop and the command uses the probed absolute path."""
+    probe_threads: list[threading.Thread] = []
+
+    def probe() -> Path:
+        probe_threads.append(threading.current_thread())
+        return Path("/opt/ul/bin/unshare")
+
+    seen: dict[str, Any] = {}
+    real = fr.build_command
+
+    def spy(*args: Any, **kwargs: Any) -> list[str]:
+        seen.update(kwargs)
+        return real(*args, **{**kwargs, "unshare": None})
+
+    monkeypatch.setattr(fr, "unshare_path", probe)
+    monkeypatch.setattr(fr, "build_command", spy)
+    rt = _rt(tmp_path, "exit 0")
+    run = await run_freerouting(
+        rt, tmp_path / "b.dsn", tmp_path / "b.ses", timeout_s=20, passes=3, workdir=tmp_path
+    )
+    assert run.returncode == 0
+    assert seen["unshare"] == Path("/opt/ul/bin/unshare")
+    assert probe_threads and probe_threads[0] is not threading.main_thread()
+
+
+def test_failed_probe_cached_only_briefly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = _home(tmp_path)
+    monkeypatch.setattr(fr.shutil, "which", lambda name: f"/usr/bin/{name}")
+    calls: list[int] = []
+    results: list[FreeroutingRuntime | None] = [None, None, rt := _rt(tmp_path, "exit 0")]
+
+    def probe(*_a: Any) -> FreeroutingRuntime | None:
+        calls.append(1)
+        return results[len(calls) - 1]
+
+    now = [1000.0]
+    monkeypatch.setattr(fr, "_probe", probe)
+    monkeypatch.setattr(fr, "_monotonic", lambda: now[0])
+    assert find_runtime(_settings(home)) is None
+    now[0] += fr.FAILURE_TTL_S - 1
+    assert find_runtime(_settings(home)) is None
+    assert len(calls) == 1  # still cached
+    now[0] += 2
+    assert find_runtime(_settings(home)) is None
+    assert len(calls) == 2  # expired: probed again
+    now[0] += fr.FAILURE_TTL_S + 1
+    assert find_runtime(_settings(home)) is rt
+    now[0] += 10 * fr.FAILURE_TTL_S
+    assert find_runtime(_settings(home)) is rt
+    assert len(calls) == 3  # a success stays cached
+
+
+# -- concurrency slots ---------------------------------------------------------------------
+
+
+async def test_second_run_times_out_waiting_for_slot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _no_unshare(monkeypatch)
+    monkeypatch.setattr(fr, "MAX_CONCURRENT_RUNS", 1)
+    spy = _Spy(monkeypatch)
+    slow = _rt(tmp_path / "slow", "exec sleep 30")
+    first = asyncio.create_task(
+        run_freerouting(
+            slow,
+            tmp_path / "b.dsn",
+            tmp_path / "b.ses",
+            timeout_s=40,
+            passes=3,
+            workdir=tmp_path / "a",
+        )
+    )
+    try:
+        await spy.pid("sleep")
+        started = spy.proc
+        run = await run_freerouting(
+            _rt(tmp_path / "fast", "exit 0"),
+            tmp_path / "b.dsn",
+            tmp_path / "b.ses",
+            timeout_s=1,
+            passes=3,
+            workdir=tmp_path / "b",
+        )
+        assert spy.proc is started  # no second process
+        assert run.returncode == -1
+        assert run.timed_out is True
+        assert 0.9 <= run.seconds < 3
+        assert "free Freerouting slot" in run.log_tail and "MAX_CONCURRENT_RUNS=1" in run.log_tail
+    finally:
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+
+
+async def test_second_run_waits_and_uses_remaining_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _no_unshare(monkeypatch)
+    monkeypatch.setattr(fr, "MAX_CONCURRENT_RUNS", 1)
+    first = asyncio.create_task(
+        run_freerouting(
+            _rt(tmp_path / "s", "sleep 1.5; exit 0"),
+            tmp_path / "b.dsn",
+            tmp_path / "b.ses",
+            timeout_s=20,
+            passes=3,
+            workdir=tmp_path / "a",
+        )
+    )
+    await asyncio.sleep(0.2)
+    # waits ≈ 1.3 s for the slot, then its JVM gets only the remaining ≈ 1.7 s
+    second = await run_freerouting(
+        _rt(tmp_path / "l", "exec sleep 30"),
+        tmp_path / "b.dsn",
+        tmp_path / "b.ses",
+        timeout_s=3,
+        passes=3,
+        workdir=tmp_path / "b",
+    )
+    assert (await first).returncode == 0
+    assert second.timed_out is True
+    assert second.returncode == -signal.SIGKILL
+    assert 2.5 <= second.seconds < 4.5
+
+
+async def test_slot_released_after_cancel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _no_unshare(monkeypatch)
+    monkeypatch.setattr(fr, "MAX_CONCURRENT_RUNS", 1)
+    spy = _Spy(monkeypatch)
+    slow = _rt(tmp_path / "slow", "exec sleep 30")
+    holder = asyncio.create_task(
+        run_freerouting(
+            slow,
+            tmp_path / "b.dsn",
+            tmp_path / "b.ses",
+            timeout_s=40,
+            passes=3,
+            workdir=tmp_path / "a",
+        )
+    )
+    await spy.pid("sleep")
+    waiter = asyncio.create_task(
+        run_freerouting(
+            slow,
+            tmp_path / "b.dsn",
+            tmp_path / "b.ses",
+            timeout_s=40,
+            passes=3,
+            workdir=tmp_path / "b",
+        )
+    )
+    await asyncio.sleep(0.2)
+    waiter.cancel()  # cancelled while waiting for the slot
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    holder.cancel()  # cancelled while running
+    with pytest.raises(asyncio.CancelledError):
+        await holder
+    run = await asyncio.wait_for(
+        run_freerouting(
+            _rt(tmp_path / "fast", "exit 0"),
+            tmp_path / "b.dsn",
+            tmp_path / "b.ses",
+            timeout_s=5,
+            passes=3,
+            workdir=tmp_path / "c",
+        ),
+        5,
+    )
+    assert run.returncode == 0 and not run.timed_out

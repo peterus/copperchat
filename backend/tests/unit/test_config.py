@@ -144,7 +144,8 @@ def test_ci_kicad_job_fetches_freerouting() -> None:
         r"actions/cache/(?:restore|save)@([0-9a-f]{40})", KICAD_BASE_YML.read_text()
     )
     assert pinned and set(pinned) == {re.findall(r"actions/cache@([0-9a-f]{40})", steps[cache])[0]}
-    assert re.search(r"^\s+path: \.cache/freerouting\s*$", steps[cache], re.M)
+    # only the hash-verified downloads are cached; the installed tree is always re-extracted
+    assert re.search(r"^\s+path: \.cache/freerouting/\.dl\s*$", steps[cache], re.M)
     assert re.search(
         r"^\s+key: freerouting-\$\{\{ hashFiles\('docker/freerouting\.lock'\) \}\}\s*$",
         steps[cache],

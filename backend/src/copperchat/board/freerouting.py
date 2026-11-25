@@ -6,8 +6,9 @@ Temurin 25 JRE, both installed by `scripts/fetch-freerouting.sh` under
 
 - resource limits set by util-linux `prlimit` *before* `exec` (never `preexec_fn`, which
   is unsafe with threads in the server process): CPU seconds `cpu_limit_s(timeout_s)`,
-  256 open files, 512 MiB largest written file, no address-space limit (the JVM
-  reserves address space far above its heap);
+  256 open files, 512 MiB largest written file, no core dumps (and the JVM writes
+  none on a crash), no address-space limit (the JVM reserves address space far above
+  its heap);
 - no network: `unshare -r -n` when user namespaces are permitted (not under Docker's
   default seccomp profile), and always: Freerouting's own switches (telemetry, analytics,
   API and MCP servers off — on the command line and in a pre-seeded settings file); an
@@ -15,7 +16,9 @@ Temurin 25 JRE, both installed by `scripts/fetch-freerouting.sh` under
   Freerouting 2.5.0 starts an unconditional version check against api.github.com that
   no setting switches off, and it now fails before a socket exists; Java proxy
   properties naming an unresolvable host, so a proxied request fails the same way;
-- its own process group, killed on timeout and on cancellation (turn stop).
+- its own process group, killed on timeout and on cancellation (turn stop);
+- at most `MAX_CONCURRENT_RUNS` JVMs at once per event loop; waiting for a slot counts
+  against the run's timeout.
 """
 
 from __future__ import annotations
@@ -32,6 +35,7 @@ import shutil
 import signal
 import subprocess
 import time
+import weakref
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,6 +57,8 @@ JAVA_OPTS = (
     # no /tmp/hsperfdata_<user> files; a JVM out of heap exits instead of limping on
     "-XX:-UsePerfData",
     "-XX:+ExitOnOutOfMemoryError",
+    # no core file on a JVM crash (RLIMIT_CORE is 0 as well)
+    "-XX:-CreateCoredumpOnCrash",
 )
 TIMEOUT_DEFAULT_S = 300
 TIMEOUT_MAX_S = 600
@@ -63,6 +69,9 @@ PASSES_MIN = 1
 PASSES_MAX = 100
 LOG_TAIL_BYTES = 4096
 JAVA_VERSION_TIMEOUT_S = 15.0
+# a failed `java -version` probe is retried after this long; a successful one is kept
+FAILURE_TTL_S = 60.0
+MAX_CONCURRENT_RUNS = 2
 UNSHARE_PROBE_TIMEOUT_S = 5.0
 # Freerouting 2.5.0 settings that open connections when on (names checked against the
 # JAR: an unknown name makes Freerouting log "Unknown settings property: <name>").
@@ -72,6 +81,11 @@ NO_NETWORK_OPTIONS: tuple[str, ...] = (
     "--usage_and_diagnostic_data.disable_analytics=true",
     "--api_server.enabled=false",
     "--mcp_server.enabled=false",
+)
+# Option names `extra_args` may not set: the switches above and the GUI switch.
+LOCKED_OPTION_KEYS: tuple[str, ...] = (
+    *(opt.split("=", 1)[0] for opt in NO_NETWORK_OPTIONS),
+    "--gui.enabled",
 )
 # The same switches in the settings file Freerouting reads first and re-saves on start
 # ($HOME/.config/freerouting/freerouting.json; HOME is the work dir). Freerouting keeps a
@@ -139,11 +153,19 @@ class FreeroutingRun:
     timed_out: bool
 
 
-_RUNTIME_CACHE: dict[tuple[Path, int, int, str | None], FreeroutingRuntime | None] = {}
+# key -> (runtime or None, monotonic expiry; None = kept until the key changes)
+_RUNTIME_CACHE: dict[
+    tuple[Path, int, int, str | None], tuple[FreeroutingRuntime | None, float | None]
+] = {}
+_monotonic = time.monotonic  # patched by tests
 
 
 def find_runtime(settings: Settings) -> FreeroutingRuntime | None:
-    """The installed runtime, or None when switched off, incomplete or the wrong Java."""
+    """The installed runtime, or None when switched off, incomplete or the wrong Java.
+
+    Synchronous (B-C13): async callers should call it via `asyncio.to_thread`, since it
+    may run `java -version` (up to `JAVA_VERSION_TIMEOUT_S`) once per install; a failed
+    probe is retried after `FAILURE_TTL_S`."""
     if not settings.freerouting:
         return None
     home = settings.freerouting_home
@@ -163,9 +185,12 @@ def find_runtime(settings: Settings) -> FreeroutingRuntime | None:
         log.warning("freerouting: util-linux prlimit not on PATH; runtime unavailable")
         return None
     key = (home, java_st.st_mtime_ns, jar_st.st_mtime_ns, prlimit)
-    if key not in _RUNTIME_CACHE:
-        _RUNTIME_CACHE[key] = _probe(java, jar, prlimit)
-    return _RUNTIME_CACHE[key]
+    cached = _RUNTIME_CACHE.get(key)
+    if cached is not None and (cached[1] is None or _monotonic() < cached[1]):
+        return cached[0]
+    rt = _probe(java, jar, prlimit)
+    _RUNTIME_CACHE[key] = (rt, None if rt is not None else _monotonic() + FAILURE_TTL_S)
+    return rt
 
 
 def _probe(java: Path, jar: Path, prlimit: str | None) -> FreeroutingRuntime | None:
@@ -193,11 +218,12 @@ def _probe(java: Path, jar: Path, prlimit: str | None) -> FreeroutingRuntime | N
 
 
 @functools.cache
-def network_namespace_available() -> bool:
-    """Whether `unshare -r -n` works here (not under Docker's default seccomp profile)."""
+def unshare_path() -> Path | None:
+    """The absolute path of an `unshare` for which `unshare -r -n` works here (not under
+    Docker's default seccomp profile), else None. Probed once; blocking (≤ 5 s)."""
     unshare = shutil.which("unshare")
     if unshare is None:
-        return False
+        return None
     try:
         done = subprocess.run(
             [unshare, "-r", "-n", "--", "true"],
@@ -207,8 +233,13 @@ def network_namespace_available() -> bool:
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return False
-    return done.returncode == 0
+        return None
+    return Path(unshare).absolute() if done.returncode == 0 else None
+
+
+def network_namespace_available() -> bool:
+    """Whether the runner isolates the JVM in its own network namespace."""
+    return unshare_path() is not None
 
 
 def build_command(
@@ -219,11 +250,18 @@ def build_command(
     passes: int,
     workdir: Path,
     extra_args: Sequence[str],
-    unshare: bool,
+    unshare: Path | None,
     timeout_s: float,
     proxy_port: int = PROXY_PORT,
 ) -> list[str]:
-    """The full argv (pure): `prlimit … -- [unshare -r -n --] java … -jar …`."""
+    """The full argv (pure): `prlimit … -- [<unshare> -r -n --] java … -jar …`.
+
+    `unshare` is the probed absolute path (None: no network namespace). The no-network
+    switches come after `extra_args` (Freerouting keeps the last value), and an extra
+    argument naming one of them raises ValueError."""
+    for arg in extra_args:
+        if arg.startswith(LOCKED_OPTION_KEYS):
+            raise ValueError(f"extra_args may not set {arg.split('=', 1)[0]!r}: {arg!r}")
     cpu = cpu_limit_s(timeout_s)
     cmd: list[str] = []
     if rt.prlimit is not None:
@@ -232,10 +270,11 @@ def build_command(
             f"--cpu={cpu}:{cpu + 5}",
             f"--nofile={NOFILE}:{NOFILE}",
             f"--fsize={FSIZE_BYTES}:{FSIZE_BYTES}",
+            "--core=0:0",
             "--",
         ]
-    if unshare:
-        cmd += ["unshare", "-r", "-n", "--"]
+    if unshare is not None:
+        cmd += [str(unshare), "-r", "-n", "--"]
     cmd += [
         str(rt.java),
         *JAVA_OPTS,
@@ -250,9 +289,9 @@ def build_command(
         "-do",
         str(ses),
         f"--router.autorouter.max_passes={passes}",
+        *extra_args,
         "--gui.enabled=false",
         *NO_NETWORK_OPTIONS,
-        *extra_args,
     ]
     return cmd
 
@@ -286,8 +325,23 @@ def _fallback_limits(pid: int, timeout_s: float) -> None:
         (resource.RLIMIT_CPU, (cpu, cpu + 5)),
         (resource.RLIMIT_NOFILE, (NOFILE, NOFILE)),
         (resource.RLIMIT_FSIZE, (FSIZE_BYTES, FSIZE_BYTES)),
+        (resource.RLIMIT_CORE, (0, 0)),
     ):
         resource.prlimit(pid, res, value)
+
+
+_SLOTS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _slots() -> asyncio.Semaphore:
+    """The running loop's run slots (a Semaphore is bound to one loop)."""
+    loop = asyncio.get_running_loop()
+    slots = _SLOTS.get(loop)
+    if slots is None:
+        slots = _SLOTS[loop] = asyncio.Semaphore(MAX_CONCURRENT_RUNS)
+    return slots
 
 
 def _tail(path: Path) -> str:
@@ -315,14 +369,15 @@ async def run_freerouting(
     """Route `dsn` into `ses`; returns on any exit code (the caller decides).
 
     `timed_out` is True when our wall-clock timeout fired or the process died by a
-    SIGXCPU/SIGKILL we did not send (the CPU limit). A cancellation kills the process
-    group, reaps it and re-raises."""
+    SIGXCPU/SIGKILL we did not send (the CPU limit). At most `MAX_CONCURRENT_RUNS` run at
+    once; the wait for a slot counts against `timeout_s` (no slot in time: returncode -1,
+    timed out, no process started). A cancellation kills the process group, reaps it and
+    re-raises."""
     timeout_s = clamp_timeout(timeout_s)
     passes = clamp_passes(passes)
-    workdir.mkdir(parents=True, exist_ok=True)
-    seed_settings(workdir)
-    (workdir / HOSTS_FILE).write_bytes(b"")
-    log_path = workdir / "freerouting.log"
+    start = time.monotonic()
+    deadline = start + timeout_s
+    unshare = await asyncio.to_thread(unshare_path)
     cmd = build_command(
         rt,
         dsn,
@@ -330,12 +385,41 @@ async def run_freerouting(
         passes=passes,
         workdir=workdir,
         extra_args=extra_args,
-        unshare=network_namespace_available(),
+        unshare=unshare,
         timeout_s=timeout_s,
         proxy_port=proxy_port,
     )
+    slots = _slots()
+    try:
+        await asyncio.wait_for(slots.acquire(), max(0.0, deadline - time.monotonic()))
+    except TimeoutError:
+        return FreeroutingRun(
+            returncode=-1,
+            seconds=time.monotonic() - start,
+            log_tail="timed out waiting for a free Freerouting slot "
+            f"(MAX_CONCURRENT_RUNS={MAX_CONCURRENT_RUNS})",
+            timed_out=True,
+        )
+    try:
+        return await _run(rt, cmd, workdir, timeout_s, deadline, start)
+    finally:
+        slots.release()
+
+
+async def _run(
+    rt: FreeroutingRuntime,
+    cmd: list[str],
+    workdir: Path,
+    timeout_s: float,
+    deadline: float,
+    start: float,
+) -> FreeroutingRun:
+    """One JVM run holding a slot; `timeout_s` sets the CPU limit, `deadline` the wait."""
+    workdir.mkdir(parents=True, exist_ok=True)
+    seed_settings(workdir)
+    (workdir / HOSTS_FILE).write_bytes(b"")
+    log_path = workdir / "freerouting.log"
     env = {"HOME": str(workdir), "PATH": "/usr/bin:/bin", "LANG": "C"}
-    start = time.monotonic()
     with log_path.open("wb") as log_fh:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -351,7 +435,7 @@ async def run_freerouting(
         if rt.prlimit is None:
             _fallback_limits(proc.pid, timeout_s)
         try:
-            await asyncio.wait_for(proc.wait(), timeout_s)
+            await asyncio.wait_for(proc.wait(), max(0.0, deadline - time.monotonic()))
         except TimeoutError:
             killed = True
             _kill_group(proc.pid)

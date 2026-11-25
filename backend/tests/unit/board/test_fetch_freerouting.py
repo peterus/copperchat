@@ -213,6 +213,38 @@ def test_extra_file_in_tree_reinstalled(fx: Fixture) -> None:
     assert not planted.exists()
 
 
+@pytest.mark.parametrize(
+    "tmp_name", [".lock.tmp", ".manifest.sha256.tmp", f".{JAR_NAME}.tmp", ".dl.tmp", ".jre.tmp"]
+)
+def test_temp_symlink_not_followed(fx: Fixture, tmp_name: str) -> None:
+    outside = fx.tmp / "outside.txt"
+    outside.write_bytes(b"keep me")
+    fx.dest.mkdir()
+    (fx.dest / tmp_name).symlink_to(outside)
+    _ok(fx.run())
+    assert outside.read_bytes() == b"keep me"
+    assert not (fx.dest / tmp_name).is_symlink()
+    assert (fx.dest / ".lock").read_bytes() == fx.lock.read_bytes()
+    assert (fx.dest / JAR_NAME).read_bytes() == fx.jar
+    assert (fx.dest / "jre" / "bin" / "java").read_bytes() == JAVA
+    for name in (".lock", ".manifest.sha256", JAR_NAME):
+        assert not (fx.dest / name).is_symlink()
+
+
+@pytest.mark.parametrize("name", [".lock", ".manifest.sha256", JAR_NAME, "jre"])
+def test_symlinked_install_reinstalled(fx: Fixture, name: str) -> None:
+    _ok(fx.run())
+    real = fx.dest / name
+    moved = fx.tmp / f"moved-{name}"
+    real.rename(moved)
+    real.symlink_to(moved)  # same content, but the tree must not point outside DEST
+    r = fx.run()
+    _ok(r)
+    assert "up to date" not in r.stdout
+    assert not real.is_symlink()
+    assert "up to date" in fx.run().stdout
+
+
 def test_unsafe_tar_member_refused(fx: Fixture) -> None:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:

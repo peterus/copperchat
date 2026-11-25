@@ -10,6 +10,8 @@ import sys
 from collections.abc import Sequence
 from dataclasses import replace
 
+import pytest
+
 from copperchat.board.geom import (
     CHAMFER_MIN,
     BendReport,
@@ -18,7 +20,9 @@ from copperchat.board.geom import (
     analyse_tracks,
     polylines,
 )
-from copperchat.board.model import BoardModel, Pad, Track
+from copperchat.board.metrics import routed_length
+from copperchat.board.model import ArcTrack, BoardModel, Pad, Track
+from copperchat.board.router import chamfer
 from copperchat.board.router.chamfer import PostResult, postprocess
 from tests.unit.board.builders import board, part, track, via
 
@@ -103,6 +107,31 @@ def walk(start: Point, heading: float, steps: Sequence[tuple[float, float]]) -> 
     return pts
 
 
+def nm(v: float) -> float:
+    """`v` mm rounded to KiCad's integer nanometres."""
+    return round(v * 1e6) / 1e6
+
+
+def nm_pt(p: Point) -> Point:
+    return (nm(p[0]), nm(p[1]))
+
+
+def nm_model(m: BoardModel) -> BoardModel:
+    """`m` with every track endpoint rounded to nanometres (as KiCad stores it)."""
+    return replace(
+        m, tracks=tuple(replace(t, start=nm_pt(t.start), end=nm_pt(t.end)) for t in m.tracks)
+    )
+
+
+def on_nm_grid(t: Track) -> bool:
+    return all(abs(v * 1e6 - round(v * 1e6)) < 1e-6 for p in (t.start, t.end) for v in p)
+
+
+def chamfers(r: PostResult) -> list[Track]:
+    """The chamfers `r` adds (each follows the shortened track in its replace entry)."""
+    return [t for _, new in r.replace for t in new[1:]]
+
+
 def diagonals(r: PostResult) -> list[Track]:
     return [
         t
@@ -121,14 +150,15 @@ def test_ninety_corner_chamfered() -> None:
     assert r.chamfered == 1
     assert r.rip == ()
     rep = dict(r.replace)
-    a = 0.6 / S2
+    a = math.ceil(0.6 / S2 * 1e6) / 1e6  # the offset, rounded up to whole nanometres
     (t_in,) = rep["t0"]
     t_out, diag = rep["t1"]
     assert t_in.start == (10.0, 10.0)
-    assert math.dist(t_in.end, (15.0 - a, 10.0)) < 1e-9
-    assert math.dist(t_out.start, (15.0, 10.0 + a)) < 1e-9
+    assert math.dist(t_in.end, (15.0 - a, 10.0)) < 1e-12
+    assert math.dist(t_out.start, (15.0, 10.0 + a)) < 1e-12
     assert t_out.end == (15.0, 15.0)
-    assert math.isclose(math.dist(diag.start, diag.end), 0.6, abs_tol=1e-6)
+    assert 0.6 <= math.dist(diag.start, diag.end) <= 0.6 + 2e-6
+    assert on_nm_grid(diag)
     assert {diag.start, diag.end} == {t_in.end, t_out.start}
     for t in (t_in, t_out, diag):
         assert (t.kiid, t.net, t.layer, t.width, t.locked) == ("", "N1", "F.Cu", 0.2, False)
@@ -157,14 +187,14 @@ def test_chamfer_shrinks_near_obstacle() -> None:
     r = postprocess(m, kiids(m))
     assert r.rip == ()
     assert r.chamfered == 1
-    assert math.isclose(_corner_c(r), 0.4, abs_tol=1e-9)
+    assert 0.4 <= _corner_c(r) <= 0.4 + 2e-6
 
 
 def test_chamfer_min_when_3w_too_small() -> None:
     m = routed(L_PTS, width=0.05)
     r = postprocess(m, kiids(m))
     assert r.chamfered == 1
-    assert math.isclose(_corner_c(r), 0.25, abs_tol=1e-9)
+    assert 0.25 <= _corner_c(r) <= 0.25 + 2e-6
     assert CHAMFER_MIN(0.05) == 0.25
 
 
@@ -314,17 +344,211 @@ def test_pad_entry_not_chamfered() -> None:
     assert r == PostResult(replace=(), rip=(), reasons=(), merged=0, chamfered=0)
 
 
+# ---- KiCad nanometre grid (finding: chamfer at c = CHAMFER_MIN rounded below the minimum) --
+
+ZIG: list[Point] = [(10.0, 10.0), (15.0, 10.0), (15.0, 15.0), (20.0, 15.0), (20.0, 20.0)]
+
+
+def _clean_after_nm(m: BoardModel, r: PostResult) -> BoardModel:
+    out = nm_model(apply(m, r))
+    for line, w in polylines(out, "N1", "F.Cu"):
+        ends = (_in_end_pad(line[0], ZIG), _in_end_pad(line[-1], ZIG))
+        assert fails(analyse_bends(line, w, pad_ends=ends)) == {}, line
+    whole = analyse_tracks(out)
+    assert fails(whole) == {} and whole.t_junctions == ()
+    return out
+
+
+@pytest.mark.parametrize("width", [0.3, 0.4, 0.25, 0.127, 0.2, 0.15])
+@pytest.mark.parametrize("blocked", [False, True])
+def test_nm_rounded_output_clean(width: float, blocked: bool) -> None:
+    # middle corner (15, 15) of a zig-zag (its chamfer lies between two non-exempt bends);
+    # an N2 pad on the corner bisector forces c = CHAMFER_MIN(w) there when `blocked`
+    extra: tuple[object, ...] = ()
+    lo = CHAMFER_MIN(width)
+    higher = [f * width for f in (1.5, 2.0, 2.5, 3.0) if f * width > lo]
+    if blocked:
+        d = (lo + min(higher)) / 4 + width / 2 + 0.2  # between the two inflated reaches
+        size = 0.3
+        cx, cy = 15.0 + d / S2 + size / 2, 15.0 - d / S2 - size / 2
+        extra = (pad_part("U9", cx, cy, net="N2", size=size),)
+    m = routed(ZIG, width, extra_parts=extra)
+    r = postprocess(m, kiids(m))
+    assert r.rip == ()
+    assert r.chamfered == 3
+    for t in (t for _, new in r.replace for t in new):
+        assert on_nm_grid(t), t
+    for d in diagonals(r):
+        assert math.dist(d.start, d.end) >= lo
+    if blocked:
+        mid = [d for d in diagonals(r) if math.dist(nm_pt(d.start), (15.0, 15.0)) < 1.0]
+        (d,) = mid
+        assert lo <= math.dist(d.start, d.end) <= lo + 2e-6
+    _clean_after_nm(m, r)
+
+
+# ---- rip attribution (finding: defect point on untouched copper next to touched) ----------
+
+
+def test_defect_on_untouched_piece_attributed() -> None:
+    # the micro-jog's straight piece is an untouched stub; both bends are on touched tracks
+    stub = track("N1", "F.Cu", (17.0, 12.0), (17.15, 12.0), 0.2, kiid="u-stub")
+    t = path_tracks([(10.0, 10.0), (15.0, 10.0), (17.0, 12.0)])
+    t2 = path_tracks([(17.15, 12.0), (19.15, 14.0), (24.15, 14.0)], prefix="s")
+    m = board(
+        parts=(pad_part("J1", 10.0, 10.0), pad_part("J2", 24.15, 14.0)),
+        tracks=(*t, stub, *t2),
+        net_class_of=(("N1", "Default"),),
+    )
+    ks = frozenset(x.kiid for x in m.tracks if not x.kiid.startswith("u"))
+    assert analyse_tracks(m).micro_jogs == ((17.075, 12.0),)
+    r = postprocess(m, ks)
+    assert r.rip == (KEY,)
+    assert (KEY, "micro_jog") in r.reasons
+
+
+def test_untouched_defect_not_attributed() -> None:
+    # an untouched 90-degree corner elsewhere on the same net stays not ours
+    corner = path_tracks([(30.0, 30.0), (35.0, 30.0), (35.0, 35.0)], prefix="u")
+    m = routed([(10.0, 10.0), (20.0, 10.0)], extra_tracks=corner)
+    r = postprocess(m, kiids(m))
+    assert r.rip == ()
+
+
+# ---- untouched copper ends at a corner (finding: arc end left off copper) -----------------
+
+
+def _arc(start: Point, mid: Point, end: Point, net: str = "N1") -> ArcTrack:
+    return ArcTrack(
+        kiid="arc", net=net, layer="F.Cu", start=start, mid=mid, end=end, width=0.2, locked=False
+    )
+
+
+def test_arc_end_at_corner_not_moved() -> None:
+    m = routed(L_PTS)
+    m = replace(m, arcs=(_arc((15.0, 10.0), (16.0, 9.0), (17.0, 10.0)),))
+    r = postprocess(m, kiids(m))
+    assert r.replace == ()
+    assert r.rip == (KEY,)
+    assert (KEY, "ninety_unfixable") in r.reasons
+
+
+def test_arc_end_on_leg_limits_chamfer() -> None:
+    # an arc ends on the incoming leg 0.3 mm before the corner: the offset must stay below it
+    m = routed(L_PTS)
+    m = replace(m, arcs=(_arc((14.7, 10.0), (14.2, 9.5), (13.7, 10.0)),))
+    r = postprocess(m, kiids(m))
+    assert r.rip == ()
+    assert 0.4 <= _corner_c(r) <= 0.4 + 2e-6
+    out = apply(m, r)
+    assert any(_seg_dist((14.7, 10.0), (14.7, 10.0), t.start, t.end) < 1e-9 for t in out.tracks)
+
+
+def test_lost_connectivity_rips(monkeypatch: pytest.MonkeyPatch) -> None:
+    # J2 hangs off the corner by an arc only; with the corner guard disabled the chamfer
+    # strands the arc - the connectivity safety net must still rip the connection
+    m = board(
+        parts=(pad_part("J1", 10.0, 10.0), pad_part("J2", 17.0, 10.0)),
+        tracks=path_tracks(L_PTS),
+        arcs=(_arc((15.0, 10.0), (16.0, 9.0), (17.0, 10.0)),),
+        net_class_of=(("N1", "Default"),),
+    )
+    assert routed_length(m, *_pads(m)) is not None
+    monkeypatch.setattr(chamfer, "_copper_ends", lambda *_a, **_k: [])
+    r = postprocess(m, kiids(m))
+    assert r.chamfered == 1
+    assert routed_length(apply(m, r), *_pads(m)) is None
+    assert (KEY, "disconnected") in r.reasons
+
+
+def _pads(m: BoardModel) -> tuple[Pad, Pad]:
+    a, b = (q for p in m.parts for q in p.pads if q.net == "N1")
+    return a, b
+
+
+def test_half_touched_corner_rips() -> None:
+    m = routed(L_PTS)
+    m = replace(m, tracks=tuple(replace(t, kiid="u1") if t.kiid == "t1" else t for t in m.tracks))
+    r = postprocess(m, kiids(m))
+    assert r.replace == ()
+    assert r.rip == (KEY,)
+    assert (KEY, "ninety_unfixable") in r.reasons
+
+
+def _seg_dist(a: Point, b: Point, c: Point, d: Point) -> float:
+    def pt(p: Point, s: Point, e: Point) -> float:
+        vx, vy = e[0] - s[0], e[1] - s[1]
+        ll = vx * vx + vy * vy
+        t = 0.0 if ll == 0 else max(0.0, min(1.0, ((p[0] - s[0]) * vx + (p[1] - s[1]) * vy) / ll))
+        return math.dist(p, (s[0] + t * vx, s[1] + t * vy))
+
+    def cross(o: Point, p: Point, q: Point) -> float:
+        return (p[0] - o[0]) * (q[1] - o[1]) - (p[1] - o[1]) * (q[0] - o[0])
+
+    if (cross(a, b, c) > 0) != (cross(a, b, d) > 0) and (cross(c, d, a) > 0) != (
+        cross(c, d, b) > 0
+    ):
+        return 0.0
+    return min(pt(a, c, d), pt(b, c, d), pt(c, a, b), pt(d, a, b))
+
+
+def _rect_dist(a: Point, b: Point, q: Pad) -> float:
+    x0, x1, y0, y1 = q.x - q.w / 2, q.x + q.w / 2, q.y - q.h / 2, q.y + q.h / 2
+    if any(x0 <= p[0] <= x1 and y0 <= p[1] <= y1 for p in (a, b)):
+        return 0.0
+    corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+    return min(_seg_dist(a, b, p, q2) for p, q2 in itertools.pairwise([*corners, corners[0]]))
+
+
+def test_cross_net_diagonals_keep_clearance() -> None:
+    # an N2 L wrapped around the N1 L, 0.45 mm apart (edge gap 0.25 >= 0.2 clearance): the
+    # outer corner's chamfer cuts toward the inner one and must shrink to keep clearance
+    outer = [(10.0, 9.55), (15.45, 9.55), (15.45, 15.0)]
+    n2 = tuple(
+        track("N2", "F.Cu", a, b, 0.2, kiid=f"v{i}")
+        for i, (a, b) in enumerate(itertools.pairwise(outer))
+    )
+    m = routed(
+        L_PTS,
+        extra_tracks=n2,
+        extra_parts=(pad_part("K1", *outer[0], net="N2"), pad_part("K2", *outer[-1], net="N2")),
+    )
+    r = postprocess(m, kiids(m) | kiids(m, "v"))
+    assert r.rip == ()
+    assert r.chamfered == 2
+    by_net = {d.net: math.dist(d.start, d.end) for d in chamfers(r)}
+    assert by_net["N1"] >= 0.6
+    assert by_net["N2"] < 0.6  # shrunk by the N1 copper
+    out = nm_model(apply(m, r))
+    for d in chamfers(r):
+        for t in out.tracks:
+            if t.net != d.net:
+                gap = _seg_dist(d.start, d.end, t.start, t.end) - 0.2
+                assert gap >= 0.2 - 1e-6, (d, t, gap)
+
+
+# ---- property test ------------------------------------------------------------------------
+
+_DIRS = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)]
+
+
 def _random_pts(rng: random.Random) -> list[Point]:
-    pts: list[Point] = [(rng.uniform(20, 30), rng.uniform(20, 30))]
-    heading = rng.choice((0, 90, 180, 270))
+    """A random polyline on the nm grid with 90-degree turns: axis legs, or (rotated by 45
+    degrees) exact diagonal legs."""
+    p = (round(rng.uniform(20, 30) * 1e6), round(rng.uniform(20, 30) * 1e6))
+    pts = [p]
+    k = rng.choice((0, 2, 4, 6)) + rng.choice((0, 0, 1))  # odd -> diagonal legs
     for i in range(rng.randint(1, 7)):
         if i:
-            heading += rng.choice((90, -90))
-        length = rng.choice((0.1, 0.2, 0.3, 0.45, 0.6, 1.0, 2.0, 3.0, rng.uniform(0.05, 6.0)))
-        x, y = pts[-1]
-        h = math.radians(heading)
-        pts.append((round(x + length * math.cos(h), 6), round(y + length * math.sin(h), 6)))
-    return pts
+            k = (k + rng.choice((2, -2))) % 8
+        length = rng.choice(
+            (0.1, 0.2, 0.3, 0.45, 0.6, 1.0, 1.0, 2.0, 2.0, 3.0, rng.uniform(0.05, 6.0))
+        )
+        dx, dy = _DIRS[k]
+        step = round(length * 1e6 / (S2 if dx and dy else 1.0))
+        p = (p[0] + dx * step, p[1] + dy * step)
+        pts.append(p)
+    return [(x / 1e6, y / 1e6) for x, y in pts]
 
 
 def _in_end_pad(p: Point, pts: Sequence[Point]) -> bool:
@@ -332,25 +556,53 @@ def _in_end_pad(p: Point, pts: Sequence[Point]) -> bool:
     return any(abs(p[0] - c[0]) <= 0.252 and abs(p[1] - c[1]) <= 0.252 for c in (pts[0], pts[-1]))
 
 
+def _case(seed: int) -> tuple[BoardModel, frozenset[str], list[Point], float]:
+    rng = random.Random(seed)
+    pts = _random_pts(rng)
+    width = rng.choice((0.05, 0.1, 0.127, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5))
+    obst = []
+    for j, c in enumerate(pts[1:-1]):
+        if rng.random() < 0.3:  # an N2 pad somewhere near the corner
+            size = rng.choice((0.2, 0.3, 0.5))
+            ang = rng.uniform(0, 2 * math.pi)
+            d = rng.uniform(0.4, 1.5)
+            x, y = c[0] + d * math.cos(ang), c[1] + d * math.sin(ang)
+            obst.append(pad_part(f"U{j + 10}", nm(x), nm(y), net="N2", size=size))
+    m = routed(pts, width, extra_parts=obst)
+    ks = kiids(m)
+    if len(m.tracks) > 1 and rng.random() < 0.25:  # one track stays untouched copper
+        ks = ks - {rng.choice(sorted(ks))}
+    return m, ks, pts, width
+
+
 def test_output_passes_analyse_bends() -> None:
     ripped = 0
-    for seed in range(200):
-        rng = random.Random(seed)
-        pts = _random_pts(rng)
-        width = rng.choice((0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.5))
-        m = routed(pts, width)
-        r = postprocess(m, kiids(m))
+    n = 500
+    for seed in range(n):
+        m, ks, pts, width = _case(seed)
+        msg = f"seed={seed} pts={pts} width={width} kiids={sorted(ks)}"
+        r = postprocess(m, ks)
+        for t in (t for _, new in r.replace for t in new):
+            assert on_nm_grid(t), msg
+        out = nm_model(apply(m, r))
+        if routed_length(m, *_pads(m)) is not None and routed_length(out, *_pads(out)) is None:
+            assert KEY in r.rip, msg
         if KEY in r.rip:
             ripped += 1
             continue
-        out = apply(m, r)
         for line, w in polylines(out, "N1", "F.Cu"):
             ends = (_in_end_pad(line[0], pts), _in_end_pad(line[-1], pts))
             rb = analyse_bends(line, w, pad_ends=ends)
-            assert fails(rb) == {}, f"seed={seed} pts={pts} width={width} line={line}"
+            assert fails(rb) == {}, f"{msg} line={line}"
         whole = analyse_tracks(out)
-        assert fails(whole) == {} and whole.t_junctions == (), f"seed={seed} pts={pts}"
-    assert 0 < ripped < 200
+        assert fails(whole) == {} and whole.t_junctions == (), msg
+        assert routed_length(out, *_pads(out)) is not None, msg
+        n2 = [q for p in m.parts for q in p.pads if q.net == "N2"]
+        for d in chamfers(r):
+            for q in n2:
+                gap = _rect_dist(d.start, d.end, q) - width / 2
+                assert gap >= 0.2 - 1e-6, f"{msg} diag={d} pad={q}"
+    assert 0 < ripped < n
 
 
 def test_deterministic() -> None:

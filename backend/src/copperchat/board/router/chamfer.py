@@ -9,40 +9,57 @@ obstacle only. Steps:
    merge collinear same-net/layer/width touched tracks that share an endpoint with no third
    item at it (another track end or interior on that net/layer, a via, a pad on the layer).
 2. Every 90-degree vertex of a polyline (`geom.polylines`) whose two corner tracks are
-   touched is chamfered by one 45-degree diagonal of length c from `(3w, 2.5w, 2w, 1.5w,
-   CHAMFER_MIN(w))` (only c >= CHAMFER_MIN(w); first feasible wins). c is feasible when the
-   offset a = c / sqrt 2 leaves >= 0.001 mm of both corner tracks, the diagonal inflated by
-   w / 2 + clearance (max of the net's class clearance and `rules["min_clearance"]`)
-   overlaps no pad, track, arc or via of another net (diagonals placed earlier included),
-   and `analyse_bends` of the changed stretch reports no failure. Adjacent corners share a
-   leg: their offsets are chosen jointly (depth-first over each run of adjacent corners,
-   larger c preferred from the run's start), so the straight piece left between them
-   satisfies the chamfer/jog rules. The whole new polyline is re-checked by
-   `analyse_bends`; a polyline with any unfixable corner (or any other
-   failure) is left unchanged and ripped in step 3 - never partly chamfered.
-3. `analyse_tracks` on the result, per net and layer: every failing point (non-octilinear,
-   90-degree, acute, off-angle, off-pad T-junction, micro-jog, too-short chamfer) that lies
-   on a touched track rips connections with the reason `non_octilinear`, `ninety_unfixable`
-   (90-degree corners and T-junctions), `acute`, `off_angle`, `micro_jog`,
-   `short_chamfer`. Failures on untouched copper only are not ours and are ignored.
-4. Per connection of a touched non-ground net (octilinear distance >= `M5_MIN_MM`, as M5):
+   touched is chamfered by one diagonal of length >= c from `(3w, 2.5w, 2w, 1.5w,
+   CHAMFER_MIN(w))` (only c >= CHAMFER_MIN(w); first feasible wins). KiCad stores integer
+   nanometres, so the new endpoints are computed on that grid: the corner vertex rounded
+   to 1 nm, each leg's offset a = c / sqrt 2 taken along the leg's octilinear direction with
+   every axis step rounded UP to whole nm (equal on both axes of a diagonal leg). The
+   diagonal of two axis legs then has |dx| == |dy| (exactly 45 degrees), the chamfer of two
+   diagonal legs is exactly axis-aligned, and its length is >= c - nothing changes when
+   KiCad rounds. Every check below runs on these snapped points. c is feasible when the
+   offset stays >= 0.001 mm inside both corner tracks and short of the neighbouring
+   polyline vertices, no other same-net copper end (another track's or an arc's - arcs are
+   invisible to `polylines`) lies on the cut-away corner (so a vertex where an arc ends is
+   never moved; a 90-degree corner there is ripped `ninety_unfixable`), the diagonal
+   inflated by w / 2 + clearance (max of the net's class clearance and
+   `rules["min_clearance"]`) overlaps no pad, track, arc or via of another net (diagonals
+   placed earlier included), and `analyse_bends` of the changed stretch reports no
+   failure. Adjacent corners share a leg: their offsets are chosen jointly (depth-first
+   over each run of adjacent corners, larger c preferred from the run's start), so the
+   straight piece left between them satisfies the chamfer/jog rules. The whole new
+   polyline is re-checked by `analyse_bends`; a polyline with any unfixable corner (or any
+   other failure, e.g. a corner with only one leg touched) is left unchanged and ripped in
+   step 3 - never partly chamfered.
+3. `analyse_tracks` on the result, per touched net and layer, against the same analysis of
+   that net/layer's untouched tracks alone: every failing point (non-octilinear, 90-degree,
+   acute, off-angle, off-pad T-junction, micro-jog, too-short chamfer) not also found
+   (within 0.003 mm, same kind) without the touched copper is ours - even when the point
+   itself lies on untouched copper (e.g. a micro-jog whose short piece is an untouched
+   stub between two touched diagonals) - and rips connections with the reason
+   `non_octilinear`, `ninety_unfixable` (90-degree corners and T-junctions), `acute`,
+   `off_angle`, `micro_jog`, `short_chamfer`. Failures of the untouched copper alone are
+   not ours and are ignored.
+4. Per connection of a touched net: routed (pad to pad through copper) before but not
+   after -> `disconnected` (safety net; the checks above should make it unreachable). Per
+   connection of a touched non-ground net (octilinear distance >= `M5_MIN_MM`, as M5):
    ratio > 2.0 and extra > 5 mm -> `detour`; routed length > 50 % of the outline's bbox
    diagonal and ratio > 1.5 -> `long_detour` (M6 alone never rips).
 
-Rip attribution: a defect lying on touched tracks rips every connection (`metrics.
-connections`, pads ordered by natural (ref, number)) whose shortest routed path (the M5
-copper graph: track ends snapped, T-splits, vias and pads at 0 mm) uses one of those
-tracks. When none does (e.g. a dangling stub), every connection of that net whose path
-uses that layer is ripped; when none does either, every connection of the net. A net with
-fewer than two pads has no connection and therefore no rip key.
+Rip attribution: a defect rips every connection (`metrics.connections`, pads ordered by
+natural (ref, number)) whose shortest routed path (the M5 copper graph: track ends snapped,
+T-splits, vias and pads at 0 mm) uses a track (touched or not) within 0.003 mm of the
+defect point. When none does (e.g. a dangling stub), every connection of that net whose
+path uses that layer is ripped; when none does either, every connection of the net. A net
+with fewer than two pads has no connection and therefore no rip key.
 
 `replace` semantics: merging N tracks emits `(first kiid, (merged,))` (first = the chain
 track at its lexicographically smaller end) and `(other kiid, ())`; a chamfer emits
 `(kiid_in, (shortened_in,))` and `(kiid_out, (shortened_out, diagonal))` in polyline
 order (a track between two corners: its kiid -> (shortened at both ends, the diagonal of
 the corner it starts at)); zero-length and duplicate tracks `(kiid, ())`. Every new or
-changed `Track` has `kiid=""`, the corner's net, layer and width and `locked=False`. Only
-changed KIIDs appear.
+changed `Track` has `kiid=""`, the corner's net, layer and width and `locked=False`; every
+endpoint a chamfer creates lies on the 1 nm grid (the far ends of shortened tracks keep
+their input coordinates). Only changed KIIDs appear.
 """
 
 from __future__ import annotations
@@ -92,8 +109,10 @@ __all__ = ["CHAMFER_FACTORS", "ZERO_LEN", "PostResult", "postprocess"]
 ZERO_LEN = 0.001  # mm: shorter tracks are dropped; every remaining piece is at least this
 CHAMFER_FACTORS = (3.0, 2.5, 2.0, 1.5)  # x width, then CHAMFER_MIN(w)
 _COLLINEAR_TOL = 1e-6  # mm: a joint this close to the line through the far ends merges
-_ON_TRACK_TOL = 0.003  # mm: a defect point this close to a touched track belongs to it
+_ON_TRACK_TOL = 0.003  # mm: a defect point / baseline point this close is the same place
 _OCT = math.cos(math.pi / 8)
+_NM = 1_000_000  # KiCad stores coordinates in integer nanometres
+_DIRS = ((1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1))
 
 _REASON = {
     "non_octilinear": "non_octilinear",
@@ -141,10 +160,6 @@ def _unit(a: Point, b: Point) -> Point:
     return ((b[0] - a[0]) / d, (b[1] - a[1]) / d)
 
 
-def _along(p: Point, u: Point, d: float) -> Point:
-    return (p[0] + u[0] * d, p[1] + u[1] * d)
-
-
 def _pt_seg(p: Point, a: Point, b: Point) -> float:
     vx, vy = b[0] - a[0], b[1] - a[1]
     ll = vx * vx + vy * vy
@@ -152,6 +167,25 @@ def _pt_seg(p: Point, a: Point, b: Point) -> float:
         return math.dist(p, a)
     t = max(0.0, min(1.0, ((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / ll))
     return math.dist(p, (a[0] + t * vx, a[1] + t * vy))
+
+
+def _nm(p: Point) -> tuple[int, int]:
+    return (round(p[0] * _NM), round(p[1] * _NM))
+
+
+def _octi_dir(a: Point, b: Point) -> tuple[int, int]:
+    """The 0/45/90/... degree direction nearest to a -> b as an integer step."""
+    k = round(math.atan2(b[1] - a[1], b[0] - a[0]) / (math.pi / 4)) % 8
+    return _DIRS[k]
+
+
+def _offset_nm(p: tuple[int, int], d: tuple[int, int], a: float) -> Point:
+    """The point at least `a` mm from the nm-grid point `p` along the octilinear direction
+    `d`, on the nm grid: each axis step rounded up to whole nanometres (equal on both axes
+    of a diagonal), so a chamfer between two such points is exactly octilinear after
+    KiCad's rounding and never shorter than asked."""
+    step = math.ceil((a / math.sqrt(2.0) if d[0] and d[1] else a) * _NM - 1e-6)
+    return ((p[0] + d[0] * step) / _NM, (p[1] + d[1] * step) / _NM)
 
 
 def _octagon(c: Point, r: float) -> list[Point]:
@@ -401,6 +435,22 @@ def _window_ok(
     return all(p in pending for p in r.ninety)
 
 
+def _copper_ends(
+    model: BoardModel, net: str, layer: str, tracks: Sequence[Track]
+) -> list[tuple[Point, int]]:
+    """Every end of same-net copper on `layer` as (point, id of its track or 0): the
+    net/layer's tracks and arcs. `polylines` sees no arcs, so an arc end at a corner or on a
+    leg is invisible to it; a chamfer must never cut copper away from under such an end."""
+    out = [(q, id(t)) for t in tracks for q in (t.start, t.end)]
+    out.extend(
+        (q, 0)
+        for arc in model.arcs
+        if arc.net == net and arc.layer == layer
+        for q in (arc.start, arc.end)
+    )
+    return out
+
+
 class _Chamferer:
     def __init__(
         self, model: BoardModel, work: Sequence[Track], slots: dict[str, list[Track]]
@@ -411,6 +461,8 @@ class _Chamferer:
         self.slot_of = {id(s[0]): k for k, s in slots.items() if s}
         self.obstacles: dict[str, _Obstacles] = {}
         self.ends = _Grid()  # the current net/layer's track ends (indices into its tracks)
+        self.cends: list[tuple[Point, int]] = []  # the net/layer's copper ends (_copper_ends)
+        self.cgrid = _Grid()
         self.count = 0
         self.by_nl: dict[tuple[str, str], list[Track]] = defaultdict(list)
         for t in work:
@@ -435,6 +487,10 @@ class _Chamferer:
         for i, t in enumerate(tracks):
             for e in (t.start, t.end):
                 self.ends.add(i, (e[0], e[1], e[0], e[1]))
+        self.cends = _copper_ends(self.model, net, layer, tracks)
+        self.cgrid = _Grid()
+        for i, (q, _) in enumerate(self.cends):
+            self.cgrid.add(i, (q[0], q[1], q[0], q[1]))
         # polylines() only reads the net's own tracks, pads and vias
         sub = replace(self.model, tracks=tuple(tracks), parts=tuple(parts))
         for pts, width in polylines(sub, net, layer):
@@ -443,6 +499,17 @@ class _Chamferer:
             if not r.ninety or any(getattr(r, f) for f in _OTHER_FAILS):
                 continue
             self._polyline(list(pts), width, ends, r, tracks, net, layer, clr)
+
+    def _strands(self, s: Point, p: Point, e: Point, legs: tuple[int, int]) -> bool:
+        """Some copper end other than the two corner tracks' lies on the cut-away corner."""
+        box = _grow((s, p, e), _JOIN_TOL)
+        for i in self.cgrid.query(box):
+            q, owner = self.cends[i]
+            if owner in legs:
+                continue
+            if _pt_seg(q, s, p) <= _JOIN_TOL or _pt_seg(q, p, e) <= _JOIN_TOL:
+                return True
+        return False
 
     def _leg(self, tracks: Sequence[Track], p: Point, toward: Point) -> list[Track]:
         u = _unit(p, toward)
@@ -500,17 +567,23 @@ class _Chamferer:
             if key not in opts:
                 i, k_in, k_out = raw[k]
                 p = pts[i]
+                t_in, t_out = self.slots[k_in][0], self.slots[k_out][0]
+                # on the nm grid, offsets rounded up (B-C12 step 2): all checks on these
+                pn = _nm(p)
+                q = (pn[0] / _NM, pn[1] / _NM)
                 a = cands[j] / math.sqrt(2.0)
-                room = min(_len(self.slots[k_in][0]), _len(self.slots[k_out][0])) - ZERO_LEN
+                s = _offset_nm(pn, _octi_dir(p, pts[i - 1]), a)
+                e = _offset_nm(pn, _octi_dir(p, pts[i + 1]), a)
                 out: tuple[Point, Point] | None = None
-                if a <= room:
-                    s = _along(p, _unit(p, pts[i - 1]), a)
-                    e = _along(p, _unit(p, pts[i + 1]), a)
-                    lo, hi = max(0, i - 2), min(n - 1, i + 2)
-                    if not obst.blocked(net, _capsule((s, e), width / 2 + clr)) and _window_ok(
-                        pts, {i: (s, e)}, lo, hi, width, ends, all_pending - {p}
-                    ):
-                        out = (s, e)
+                lo, hi = max(0, i - 2), min(n - 1, i + 2)
+                if (
+                    math.dist(q, s) <= min(_len(t_in), math.dist(p, pts[i - 1])) - ZERO_LEN
+                    and math.dist(q, e) <= min(_len(t_out), math.dist(p, pts[i + 1])) - ZERO_LEN
+                    and not self._strands(s, q, e, (id(t_in), id(t_out)))
+                    and not obst.blocked(net, _capsule((s, e), width / 2 + clr))
+                    and _window_ok(pts, {i: (s, e)}, lo, hi, width, ends, all_pending - {p})
+                ):
+                    out = (s, e)
                 opts[key] = out
             return opts[key]
 
@@ -746,12 +819,20 @@ def postprocess(model: BoardModel, kiids: frozenset[str]) -> PostResult:
     for i, t in enumerate(wt):
         by_net[t.net].append((i, t))
     conns: dict[str, list[_Conn]] = {}
+    reasons: set[tuple[str, str]] = set()
     for net in nets:
         pads = sorted(pads_of.get(net, []), key=_pad_key)  # = metrics.connections(work, net)
         graph = _Paths(work, by_net[net], pads)
+        before: _Paths | None = None
         out = []
         for a, b in _mst(pads):
             hit = graph.path(a, b)
+            if hit is None:  # safety net: copper we changed must not cut a routed connection
+                if before is None:
+                    own = [(i, t) for i, t in enumerate(model.tracks) if t.net == net]
+                    before = _Paths(model, own, pads)
+                if before.path(a, b) is not None:
+                    reasons.add((_conn_key(net, a, b), "disconnected"))
             out.append(
                 _Conn(
                     _conn_key(net, a, b),
@@ -762,8 +843,6 @@ def postprocess(model: BoardModel, kiids: frozenset[str]) -> PostResult:
                 )
             )
         conns[net] = out
-
-    reasons: set[tuple[str, str]] = set()
 
     def rip(net: str, layer: str, tids: set[int], why: str) -> None:
         cs = conns.get(net, [])
@@ -781,12 +860,16 @@ def postprocess(model: BoardModel, kiids: frozenset[str]) -> PostResult:
     for net, layer in sorted({(wt[i].net, wt[i].layer) for i in mine}):
         ids = by_nl[(net, layer)]
         rep = analyse_tracks(replace(work, tracks=tuple(wt[i] for i in ids), arcs=()), index=index)
-        own = [i for i in ids if i in mine]
+        # the same net/layer without the touched copper: a defect found there too is not ours
+        rest = tuple(wt[i] for i in ids if i not in mine)
+        base = analyse_tracks(replace(work, tracks=rest, arcs=()), index=index) if rest else None
         for field, why in _REASON.items():
+            old = getattr(base, field) if base is not None else ()
             for p in getattr(rep, field):
-                tids = {i for i in own if _pt_seg(p, wt[i].start, wt[i].end) <= _ON_TRACK_TOL}
-                if tids:
-                    rip(net, layer, tids, why)
+                if any(math.dist(p, q) <= _ON_TRACK_TOL for q in old):
+                    continue
+                tids = {i for i in ids if _pt_seg(p, wt[i].start, wt[i].end) <= _ON_TRACK_TOL}
+                rip(net, layer, tids, why)
 
     outline = outline_polygon(model)
     diag = None

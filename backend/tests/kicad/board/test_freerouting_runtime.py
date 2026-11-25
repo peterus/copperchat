@@ -116,6 +116,7 @@ async def test_jvm_starts_under_limits(
     assert limits["Max cpu time"] == str(cpu_limit_s(120))
     assert limits["Max open files"] == "256"
     assert limits["Max file size"] == "536870912"
+    assert limits["Max core file size"] == "0"
     assert limits["Max address space"] == _limits("self")["Max address space"]
     assert run.returncode == 0, run.log_tail
     assert not run.timed_out
@@ -226,11 +227,13 @@ async def test_no_network_attempt(
     assert accepted == 0
     assert inet_seen == set()
     mode = "unshare" if fr.network_namespace_available() else "options+no-dns"
-    if fr.network_namespace_available():
+    unshare = fr.unshare_path()
+    if unshare is not None:
+        assert unshare.is_absolute()
         k = spy.argv.index("--")
-        assert spy.argv[k + 1] == "unshare"
+        assert spy.argv[k + 1] == str(unshare)
     else:
-        assert "unshare" not in spy.argv
+        assert not any(a == "unshare" or a.endswith("/unshare") for a in spy.argv)
     print(f"freerouting network mode: {mode}")
     record_property("freerouting_network_mode", mode)
 
@@ -277,7 +280,7 @@ async def test_detector_sees_unhardened_version_check(
             passes=1,
             workdir=work,
             extra_args=(),
-            unshare=False,
+            unshare=None,
             timeout_s=60,
             proxy_port=port,
         )

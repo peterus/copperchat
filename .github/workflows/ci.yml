@@ -98,11 +98,14 @@ jobs:
       - run: uv sync --locked
       # Freerouting JRE + JAR (P6a). A container job: $GITHUB_WORKSPACE is evaluated inside the
       # container (${{ github.workspace }} would be the host path). The fetch always runs: on a
-      # cache hit it re-verifies the cached downloads and the installed tree against the lock.
+      # cache hit it re-verifies the cached downloads against the lock. Only the downloads
+      # (.dl/) are cached, never the installed jre/ tree: its manifest lives in the same cache
+      # entry, so a poisoned cache could carry a trojan java that passes as "up to date".
+      # Without it the tree is always re-extracted from the hash-verified tarball.
       - run: echo "COPPERCHAT_FREEROUTING_HOME=$GITHUB_WORKSPACE/.cache/freerouting" >> "$GITHUB_ENV"
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: .cache/freerouting
+          path: .cache/freerouting/.dl
           key: freerouting-${{ hashFiles('docker/freerouting.lock') }}
       - run: bash scripts/fetch-freerouting.sh "$COPPERCHAT_FREEROUTING_HOME"
         working-directory: .

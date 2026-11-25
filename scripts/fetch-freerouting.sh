@@ -2,7 +2,7 @@
 # scripts/fetch-freerouting.sh DEST — install the checksum-pinned Freerouting JAR and Temurin JRE
 # from docker/freerouting.lock (FREEROUTING_LOCK overrides the lock path) into DEST:
 #   DEST/jre/bin/java, DEST/freerouting-<version>.jar, DEST/.lock, DEST/.manifest.sha256.
-# Used by docker/app/Dockerfile and the CI kicad job (whose actions/cache restores DEST).
+# Used by docker/app/Dockerfile and the CI kicad job (whose actions/cache restores DEST/.dl/).
 # Nothing found in DEST is trusted: the kept downloads (DEST/.dl/) are re-verified against the
 # lock on every run (a mismatch is deleted and downloaded again; a fresh download that mismatches
 # fails the run), and the installed tree is re-installed from them unless it matches the
@@ -57,9 +57,15 @@ dl_tmp="$dest/.dl.tmp"
 jre_tmp="$dest/.jre.tmp"
 manifest="$dest/.manifest.sha256"
 
+# Temp paths inside DEST. Removed before use as well as on exit, so a pre-existing entry
+# (e.g. a symlink planted in a restored cache) is never written through.
+clear_tmp() {
+  rm -rf -- "$dl_tmp" "$jre_tmp" "$dest/.$jar_name.tmp" "$manifest.tmp" "$dest/.lock.tmp"
+}
+
 cleanup() {
   local rc=$?
-  rm -rf -- "$dl_tmp" "$jre_tmp" "$dest/.$jar_name.tmp" "$manifest.tmp" "$dest/.lock.tmp"
+  clear_tmp
   if [ "$rc" -ne 0 ]; then
     rm -f -- "$manifest"
     rmdir -- "$dl" 2>/dev/null || true
@@ -84,7 +90,8 @@ with urllib.request.urlopen(url, timeout=min(limit, 60.0)) as r, open(out, "xb")
 }
 
 # 1. Verified downloads in .dl/ (kept: the CI cache restores them).
-rm -rf -- "$dl_tmp"
+clear_tmp
+if [ -L "$dl" ]; then rm -f -- "$dl"; fi
 mkdir -p -- "$dl"
 find "$dl" -mindepth 1 -maxdepth 1 ! -name "$jar_name" ! -name "$jre_name" -exec rm -rf -- {} +
 
@@ -114,10 +121,15 @@ ensure_download "Temurin JRE" "$jre_name" "$TEMURIN_URL" "$TEMURIN_SHA256"
 rmdir -- "$dl_tmp" 2>/dev/null || true
 
 # 2. Installed tree: up to date only if .lock equals the lock and the manifest matches exactly.
+# A symlink at any of the top-level entries counts as not installed (re-installed in place).
 tree_ok() {
+  local entry
+  for entry in "$manifest" "$dest/.lock" "$dest/$jar_name" "$dest/jre"; do
+    [ ! -L "$entry" ] || return 1
+  done
   [ -f "$manifest" ] && [ -f "$dest/.lock" ] && cmp -s -- "$lock" "$dest/.lock" || return 1
   grep -qxF -- "$FREEROUTING_SHA256  $jar_name" "$manifest" || return 1
-  [ -d "$dest/jre" ] && [ ! -L "$dest/jre" ] || return 1
+  [ -d "$dest/jre" ] || return 1
   (cd -- "$dest" && sha256sum -c --quiet --strict .manifest.sha256 >/dev/null 2>&1) || return 1
   # no file under jre/ that the manifest does not list
   diff -q <(cd -- "$dest" && { find jre -type f; echo "$jar_name"; } | LC_ALL=C sort) \

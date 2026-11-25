@@ -695,7 +695,7 @@ async def route_connections(sctx: BoardStageContext, plans: Sequence[ConnPlan], 
 @dataclass(frozen=True) class PostResult: replace: tuple[tuple[str, tuple[Track, ...]], ...]  # (old kiid, new tracks)
                                           # (kiid, ()) = delete (merges / duplicates)
                                           rip: tuple[str, ...]   # connection keys "{net}:{refA}.{padA}-{refB}.{padB}"
-                                          reasons: tuple[tuple[str, str], ...] = ()   # (key, reason)
+                                          reasons: tuple[tuple[str, str], ...] = ()   # (key, reason); P6a adds reason "disconnected" (safety net)
                                           merged: int = 0; chamfered: int = 0
 def postprocess(model: BoardModel, kiids: frozenset[str]) -> PostResult
 ```
@@ -823,6 +823,29 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
   `analyse_bends`); `test_chamfer_shrinks_near_obstacle` asserts c = 0.4 (= 2w) for a 0.5 × 0.5 mm
   other-net pad 0.52 mm from the vertex.
 - `cc/board/router/__init__.py` created empty (P5a not merged yet); on rebase P5a's version wins.
+
+**Review round 1 (PR #104) changes**
+- Chamfer output is on the KiCad 1 nm grid: the corner vertex is rounded to nm, each axis step
+  of the offset rounded **up** to whole nm (diagonal exactly 45°, length ≥ c); every feasibility
+  and `analyse_bends` check runs on the snapped points (before: c = CHAMFER_MIN could become a
+  too-short chamfer after KiCad's rounding). Property test: 500 seeded cases incl. diagonal legs,
+  other-net pads near corners, untouched tracks, output rounded to nm.
+- Step-3 attribution diffs against `analyse_tracks` of the untouched copper alone (a defect whose
+  reported midpoint lies on an untouched track is still ours). Same-net arc ends and other track
+  ends are never moved (a 90° there → `ninety_unfixable`); a connection routed before and not
+  after `postprocess` is ripped with the new reason **`disconnected`** (B-C12 reason list).
+- Runner: `prlimit … --core=0:0` (+ `RLIMIT_CORE` in the fallback) and `-XX:-CreateCoredumpOnCrash`;
+  `extra_args` come before `--gui.enabled=false` + `NO_NETWORK_OPTIONS`, and an extra arg with one
+  of those keys (`LOCKED_OPTION_KEYS`) raises `ValueError`; `MAX_CONCURRENT_RUNS = 2` (one
+  semaphore per event loop; the slot wait counts against `timeout_s`, no slot in time →
+  `returncode -1, timed_out`); `unshare_path()` (absolute path, probed via `asyncio.to_thread`);
+  a failed `find_runtime` probe is cached 60 s only (`FAILURE_TTL_S`). `find_runtime` stays sync:
+  async callers (P6b) call it via `asyncio.to_thread`. An external SIGKILL still counts as
+  `timed_out` (plan rule; an OOM kill is reported as a timeout).
+- CI caches only `.cache/freerouting/.dl` (the hash-verified downloads); the installed tree is
+  re-extracted on every CI run, so a poisoned cache cannot carry a modified JVM. The fetch script
+  clears its temp paths before use (never writes through a pre-existing symlink) and treats a
+  symlinked `.lock` / manifest / JAR / `jre` as not installed.
 
 **Residuals for later phases**
 - `analyse_bends` (B-C5) exempts the first and last bend of a pad-ended polyline from the
