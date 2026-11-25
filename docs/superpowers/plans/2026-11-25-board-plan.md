@@ -695,7 +695,7 @@ async def route_connections(sctx: BoardStageContext, plans: Sequence[ConnPlan], 
 @dataclass(frozen=True) class PostResult: replace: tuple[tuple[str, tuple[Track, ...]], ...]  # (old kiid, new tracks)
                                           # (kiid, ()) = delete (merges / duplicates)
                                           rip: tuple[str, ...]   # connection keys "{net}:{refA}.{padA}-{refB}.{padB}"
-                                          reasons: tuple[tuple[str, str], ...] = ()   # (key, reason)
+                                          reasons: tuple[tuple[str, str], ...] = ()   # (key, reason); P6a adds reason "disconnected" (safety net)
                                           merged: int = 0; chamfered: int = 0
 def postprocess(model: BoardModel, kiids: frozenset[str]) -> PostResult
 ```
@@ -731,6 +731,146 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
 ## As built
 
 (Each phase adds its section here in its own PR.)
+
+### As built (P6a)
+
+**Lock values** (`docker/freerouting.lock`, checked 2026-11-25)
+- Freerouting 2.5.0 JAR: `https://github.com/freerouting/freerouting/releases/download/v2.5.0/freerouting-2.5.0.jar`,
+  SHA-256 `f6f51bb02245e8e717f9359bd260cc9c5c0b1bc0acc8b7cb2cd5b8ffeb5de3c7`, 64,599,107 B.
+  Freerouting publishes no checksum file for the JAR: the hash was computed from a download (it
+  equals GitHub's release-asset digest).
+- Temurin **25.0.5.1+2** JRE (newest 25.0.x GA, linux x64 hotspot):
+  `https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5.1%2B2/OpenJDK25U-jre_x64_linux_hotspot_25.0.5.1_2.tar.gz`,
+  SHA-256 `2edef9e4f81ec5ee426d023336d4cfbd7b4644e99884e7a73a6a867b70b17acf`, 61,751,939 B (the
+  release's `.sha256.txt` and a recomputed hash agree). `java -version`: `openjdk version "25.0.5.1" 2026-11-17 LTS`.
+- Installed tree: `jre/` 200,078,669 B + JAR; manifest 123 entries; real HTTPS fetch ≈ 10 s, second run `up to date`.
+
+**Measured / recorded**
+- App image size (`docker image inspect .Size`, same base and context; this Docker host uses the
+  containerd snapshotter, so `.Size` is the compressed content size): 600,684,570 B → 723,458,259 B,
+  **+122.8 MB** compressed; `/opt/freerouting` in the image is 264.7 MB uncompressed (spec G6
+  expected ≈ +190 MB).
+- `prlimit` (`/usr/bin/prlimit`) and `unshare` (`/usr/bin/unshare`) exist in kicad-base and the app
+  image; `unshare -r -n -- true` as uid 1000 under default `docker run` fails ("Operation not
+  permitted") → CI and the default PROD container run in mode **options+no-dns** (the runtime test
+  prints and records `freerouting_network_mode`).
+- ecc83 DSN (API export), `passes=5`: ≈ 6–10 s wall (JVM start + DSN load ≈ 1.7 s before routing
+  starts, so `test_timeout_kills` with `timeout_s=1` always kills a live JVM). Same run inside
+  `copperchat:p6a` as uid 1000 through `find_runtime(Settings())`: rc 0, 10.0 s.
+- Passes option confirmed: `--router.autorouter.max_passes=<n>` (`-mp` / `--router.max_passes` are
+  deprecated aliases in 2.5.0). Every option we pass is a known 2.5.0 settings name — an unknown
+  one makes Freerouting log `Unknown settings property: <name>`, which `test_jvm_starts_under_limits`
+  asserts is absent.
+
+**No-network design (deviation: stronger than planned)**
+- Freerouting 2.5.0 starts an **unconditional version check** (`app.freerouting.util.VersionChecker`
+  → `https://api.github.com/repos/freerouting/freerouting/releases/latest`, started in
+  `Freerouting.main` with no setting to switch it off); with analytics left on it also contacts
+  `api.freerouting.app`. The planned proxy blackhole at 127.0.0.1:9 would still have opened a local
+  TCP socket for it, which the planned fd-scan test rejects (found by that test: 2 CONNECTs to
+  `api.github.com` at the listener).
+- Built: `-Djdk.net.hosts.file=<workdir>/.hosts-empty` (an empty file: the JVM's only name source,
+  so no host name resolves and no DNS query is sent) and `PROXY_BLACKHOLE` with host
+  `proxy.invalid` (RFC 2606, never resolves) and port 9 (`proxy_blackhole(port)` helper, the
+  runner's `proxy_port` keyword for the test). Result: the version check fails before any socket
+  exists; `test_no_network_attempt` (listener on the proxy port + fd scan of every thread every
+  50 ms): 0 connections, no inet socket. New control `test_detector_sees_unhardened_version_check`
+  (same argv without the hosts file, proxy at a local listener) proves the method sees the version
+  check's `CONNECT api.github.com:443`.
+- `NO_NETWORK_OPTIONS` (exact): `--profile.allow_telemetry=false`, `--profile.allow_contact=false`,
+  `--usage_and_diagnostic_data.disable_analytics=true`, `--api_server.enabled=false`,
+  `--mcp_server.enabled=false` (plus `--gui.enabled=false`). Freerouting does **not** persist CLI
+  options into its settings file, so the runner also pre-seeds it: `<workdir>/.config/freerouting/freerouting.json`
+  (`$HOME/.config/freerouting/`, HOME = workdir; `SETTINGS_SEED` with `version: "2.5.0"` and a nil
+  profile id — a file without `version` is reset to defaults, an invalid id crashes) — the file
+  `test_settings_file_has_analytics_off` reads. Freerouting's own log goes to
+  `<workdir>/.local/state/freerouting/logs/freerouting.log` besides our `<workdir>/freerouting.log`.
+
+**Contract deviations / additions**
+- B-C13: `FreeroutingRuntime.prlimit: Path | None = None` (the `prlimit` path from `shutil.which`
+  at `find_runtime` time; `None` only with `ALLOW_PRLIMIT_FALLBACK = True`, default False — the
+  `resource.prlimit` fallback is implemented and unit-tested but never active); `run_freerouting(...,
+  proxy_port=PROXY_PORT)` keyword (tests only). `find_runtime` caches per (home, java mtime, jar
+  mtime, prlimit path). `timeout_s` ≤ 0 / NaN / inf → `ValueError` (P6b validates its schema first);
+  > 600 → 600; `passes` clamped 1..100.
+- `JAVA_OPTS` gains `-XX:-UsePerfData` (no `/tmp/hsperfdata_*`) and `-XX:+ExitOnOutOfMemoryError`;
+  the command adds `-Djava.io.tmpdir=<workdir>` next to `-Duser.home`; `stdin` is `/dev/null`.
+- A non-`CancelledError` exception while waiting (e.g. the fallback `prlimit` failing) also kills and
+  reaps the group before re-raising.
+- Fetch script: the lock file is **parsed**, not `source`d (only the five keys; values validated:
+  version, `https://`/`file://` URL, 64-hex hashes, no shell metacharacters), so `FREEROUTING_LOCK`
+  cannot inject code; the Dockerfile stage sets `FREEROUTING_LOCK=/tmp/fr/freerouting.lock`. The
+  JRE is extracted with Python `tarfile` (`filter="data"`, single top directory stripped; absolute
+  paths, `..` and links leaving the tree refused). The tree check also refuses regular files under
+  `jre/` not in the manifest and requires the manifest's JAR line to equal the lock hash. Extra
+  tests `test_extra_file_in_tree_reinstalled`, `test_unsafe_tar_member_refused`. `.dockerignore`
+  gains `.cache` (a local CI-style cache is not sent as build context).
+- `postprocess` (B-C12) as specified; module docstring documents it. Rip attribution: a defect on
+  touched tracks rips every connection whose shortest routed path (the M5 copper graph) uses one of
+  those tracks; none → every connection of the net using that layer; none → every connection of the
+  net. Off-pad T-junctions rip with reason `ninety_unfixable` (the reason list has no
+  `t_junction`). Connections shorter than `M5_MIN_MM` skip the detour checks (as M5); ground nets
+  via `classify._ground_nets`. A polyline with any unfixable corner is left unchanged and ripped —
+  never partly chamfered; adjacent corners sharing a leg are solved jointly; a corner with only one
+  leg in `kiids` is ripped. Diagonals placed earlier count as obstacles. `postprocess` imports
+  private helpers of `geom` / `metrics` / `classify` (no change to those files). 1,500 nets / 6,000
+  tracks / 4,500 corners ≈ 2.75 s. Property test: 200 seeded random rectilinear polylines → every
+  non-ripped polyline has M4 = M7 = 0 (`analyse_bends`, incl. `off_angle`).
+- Chamfer test geometry adjusted where the plan's literal shape did not exercise the rule:
+  `test_short_leg_rips` uses 0.15 mm legs and Z/U shapes with a 0.2 mm middle leg (a plain 0.2 mm L
+  at w = 0.2 is chamferable with c = 0.25); the micro-jog / short-chamfer / valid-chamfer tests put
+  the 45° pair between two other bends (a pair at both pad ends is exempt as pad entries in
+  `analyse_bends`); `test_chamfer_shrinks_near_obstacle` asserts c = 0.4 (= 2w) for a 0.5 × 0.5 mm
+  other-net pad 0.52 mm from the vertex.
+- `cc/board/router/__init__.py` created empty (P5a not merged yet); on rebase P5a's version wins.
+
+**Review round 1 (PR #104) changes**
+- Chamfer output is on the KiCad 1 nm grid: the corner vertex is rounded to nm, each axis step
+  of the offset rounded **up** to whole nm (diagonal exactly 45°, length ≥ c); every feasibility
+  and `analyse_bends` check runs on the snapped points (before: c = CHAMFER_MIN could become a
+  too-short chamfer after KiCad's rounding). Property test: 500 seeded cases incl. diagonal legs,
+  other-net pads near corners, untouched tracks, output rounded to nm.
+- Step-3 attribution diffs against `analyse_tracks` of the untouched copper alone (a defect whose
+  reported midpoint lies on an untouched track is still ours). Same-net arc ends and other track
+  ends are never moved (a 90° there → `ninety_unfixable`); a connection routed before and not
+  after `postprocess` is ripped with the new reason **`disconnected`** (B-C12 reason list).
+- Runner: `prlimit … --core=0:0` (+ `RLIMIT_CORE` in the fallback) and `-XX:-CreateCoredumpOnCrash`;
+  `extra_args` come before `--gui.enabled=false` + `NO_NETWORK_OPTIONS`, and an extra arg with one
+  of those keys (`LOCKED_OPTION_KEYS`) raises `ValueError`; `MAX_CONCURRENT_RUNS = 2` (one
+  semaphore per event loop; the slot wait counts against `timeout_s`, no slot in time →
+  `returncode -1, timed_out`); `unshare_path()` (absolute path, probed via `asyncio.to_thread`);
+  a failed `find_runtime` probe is cached 60 s only (`FAILURE_TTL_S`). `find_runtime` stays sync:
+  async callers (P6b) call it via `asyncio.to_thread`. An external SIGKILL still counts as
+  `timed_out` (plan rule; an OOM kill is reported as a timeout).
+- CI caches only `.cache/freerouting/.dl` (the hash-verified downloads); the installed tree is
+  re-extracted on every CI run, so a poisoned cache cannot carry a modified JVM. The fetch script
+  clears its temp paths before use (never writes through a pre-existing symlink) and treats a
+  symlinked `.lock` / manifest / JAR / `jre` as not installed.
+
+**Review rounds 2–4 (PR #104) changes**
+- Chamfer clearance per obstacle: `max(own net clearance, obstacle net's class clearance,
+  min_clearance)`. Runner makes `freerouting_home`, `workdir`, `dsn`, `ses` absolute and removes a
+  stale `.ses` before a run.
+- `postprocess` performance: step-3 attribution, baseline suppression, merge outer ends and pad-end
+  lookups bucketed (`geom._Grid` / `_Near`); merge joints keyed per (net, layer). 4,000 defective
+  tracks ≈ 1.1 s, 1,600-pad comb ≈ 1.5 s (rest is `metrics._mst`, all pad pairs — P6b/P9a may
+  bucket it).
+- Sub-`_JOIN_TOL` (2 µm) touched pieces / gaps are closed at one nm point in step 1 (untouched,
+  arc and via ends never move). **Safety net (owner rule):** step 3 runs `analyse_bends` on every
+  nm-rounded output polyline that contains touched copper and rips every failure not in the
+  untouched baseline; touched ends within 2 µm of another end but not on it rip `non_octilinear`.
+  A float straight piece of exactly 0.25 mm between a same-sense pair rips `short_chamfer` (it falls
+  below the minimum after nm rounding). Property test: 4,000 seeds in the suite; a one-off
+  10,000-seed run had 0 failures.
+
+**Residuals for later phases**
+- `analyse_bends` (B-C5) exempts the first and last bend of a pad-ended polyline from the
+  micro-jog / short-chamfer checks, so a defective 45° pair directly at both pads is never
+  flagged by M7 nor by `postprocess` (P6b / owner: decide whether pad-entry pairs need a check).
+- A Freerouting version bump must re-check the network behaviour (`test_no_network_attempt` +
+  the control) and `NO_NETWORK_OPTIONS` names (`Unknown settings property` guard).
+- `postprocess` relies on private helpers of `geom` / `metrics` / `classify`; a refactor there
+  must keep them or move them public.
 
 ### As built (P3a)
 

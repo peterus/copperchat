@@ -13,6 +13,8 @@ All notable changes to CopperChat are documented in this file. The format follow
   COPPERCHAT_BOARD_TOOLS.
 - Board analysis and quality metrics (`pcb_analyze`, `pcb_metrics`) — behind
   COPPERCHAT_BOARD_TOOLS.
+- App image ships Freerouting 2.5.0 + Temurin 25 JRE (≈ +123 MB compressed, 265 MB on
+  disk) for the upcoming board fill routing (checksum-pinned, sandboxed, no network).
 - Board sync, outline and rules tools (`pcb_sync_from_schematic`, `pcb_set_outline`,
   `pcb_set_rules` with JLCPCB presets) — behind COPPERCHAT_BOARD_TOOLS.
 

@@ -1,0 +1,5 @@
+FREEROUTING_VERSION=2.5.0
+FREEROUTING_URL=https://github.com/freerouting/freerouting/releases/download/v2.5.0/freerouting-2.5.0.jar
+FREEROUTING_SHA256=f6f51bb02245e8e717f9359bd260cc9c5c0b1bc0acc8b7cb2cd5b8ffeb5de3c7
+TEMURIN_URL=https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5.1%2B2/OpenJDK25U-jre_x64_linux_hotspot_25.0.5.1_2.tar.gz
+TEMURIN_SHA256=2edef9e4f81ec5ee426d023336d4cfbd7b4644e99884e7a73a6a867b70b17acf
