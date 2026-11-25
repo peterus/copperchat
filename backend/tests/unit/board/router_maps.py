@@ -400,10 +400,16 @@ def perf_board(
 # --- independent bend check (does not use geom.analyse_bends) ------------------------------
 
 
-def strict_bends_ok(pts: Sequence[Point], width: float) -> bool:
+def _inside(p: Point, pad: Pad | None) -> bool:
+    return pad is not None and seg_poly_dist(p, p, pad_corners(pad)) <= 1e-6
+
+
+def strict_bends_ok(
+    pts: Sequence[Point], width: float, pads: tuple[Pad | None, Pad | None] = (None, None)
+) -> bool:
     """Every segment at a multiple of 45° (1e-3°), every vertex a 45° turn exactly, and
     between two consecutive bends at least max(w, 0.25) (same sense) / 2 w (opposite
-    sense) — except at the polyline's first and last vertex (pad entries)."""
+    sense) — except for a first / last bend that lies inside the pad at that end (`pads`)."""
     if len(pts) < 2:
         return False
     heads = []
@@ -426,8 +432,10 @@ def strict_bends_ok(pts: Sequence[Point], width: float) -> bool:
         bends.append((i, 1 if turn == 1 else -1))
     last = len(bends) - 1
     for k in range(1, len(bends)):
-        if k - 1 == 0 or k == last:
-            continue  # a pair touching the first or last vertex (pad entry)
+        if (k - 1 == 0 and _inside(pts[bends[0][0]], pads[0])) or (
+            k == last and _inside(pts[bends[last][0]], pads[1])
+        ):
+            continue  # a pair touching an end bend inside its pad (pad entry)
         (i0, s0), (i1, s1) = bends[k - 1], bends[k]
         piece = sum(math.dist(pts[j], pts[j + 1]) for j in range(i0, i1))
         need = max(width, 0.25) if s0 == s1 else 2.0 * width

@@ -322,3 +322,37 @@ def test_coupled_with_pad_pitch_wider_than_pair(pitch: float) -> None:
     assert c["gap_min"] == pytest.approx(0.4, abs=1e-6)  # coupled at gap + w in the middle
     assert exact_clearance_ok(m, pp, p) and exact_clearance_ok(m, pn, n)
     assert min_dist(pp, pn) >= 0.4 - 1e-6
+
+
+def _strict(path: RoutePath, r: RouteRequest) -> None:
+    from .router_maps import strict_bends_ok
+
+    runs = layer_runs(path)
+    for k, (_l, pts) in enumerate(runs):
+        pads = (r.a if k == 0 else None, r.b if k == len(runs) - 1 else None)
+        assert strict_bends_ok(pts, r.width, pads), pts
+
+
+def test_coupled_no_micro_jog_outside_the_pads() -> None:
+    # b pads 0.1 mm off the a pads' line: no 45-degree jog shorter than JOG_MIN outside a pad
+    pa, na = pad("DP", 5, 10, number="1"), pad("DN", 5, 10.4, number="2")
+    pb, nb = pad("DP", 15, 9.9, ref="U1", number="1"), pad("DN", 15, 10.3, ref="U1", number="2")
+    m = pair_board([pa, pb, na, nb])
+    p, n = req("DP", pa, pb), req("DN", na, nb)
+    got = route_pair(m, p, n, 0.2)
+    assert got is not None
+    _strict(got[0], p)
+    _strict(got[1], n)
+
+
+def test_fan_in_never_leaves_a_short_chamfer() -> None:
+    pa = pad("DP", 5, 10, 1.905, number="1")
+    na = pad("DN", 5, 12.54, 1.905, number="2")
+    pb = pad("DP", 8, 10.27, 1.905, ref="U1", number="1")
+    nb = pad("DN", 8, 12.81, 1.905, ref="U1", number="2")
+    m = pair_board([pa, pb, na, nb])
+    p, n = req("DP", pa, pb), req("DN", na, nb)
+    got = route_pair(m, p, n, 0.2)
+    if got is not None:
+        _strict(got[0], p)
+        _strict(got[1], n)

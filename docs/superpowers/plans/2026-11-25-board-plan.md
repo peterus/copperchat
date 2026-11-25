@@ -963,6 +963,22 @@ exact obstacle cores, each with its required centre-line distance), `outline`, `
 - Not changed: the chord slack (≈ 0.002–0.004 mm) also applies along flat pad sides, so a
   gap exactly equal to the need (to the µm) is refused — conservative by design.
 
+**Review round 2 (PR #105)**
+- `valid_path` exempts a run's first / last bend only when that bend lies **inside** its
+  pad (the board metric exempts every pad-end bend; the router is stricter), so fan-in
+  jogs, coupled leads and snaps can no longer hide a micro-jog or short chamfer near a pad;
+  coupled results also pass `pad_exits_ok`. The test checker `strict_bends_ok` takes the
+  end pads and applies the same rule.
+- `snap_ends`: a centre on the last segment's line moves the end point (a goal node just
+  past the centre no longer yields a 4-bend bump or loop).
+- Time: `solve`, `route_pair` and `solve_pair` stop after `SOLVE_TIME_LIMIT_S = 25 s`
+  (`route(..., deadline=)`, checked every 4,096 expansions) → `None`, below `run_cpu`'s 30 s.
+- `reachable`'s via joins: one sorted sweep over all layers' via-capable intervals per row.
+- `build_grid` refuses non-finite numbers, width ≤ 0, clearance / margin < 0 and via
+  diameter ≤ drill (`ValueError`).
+- Not changed: outline rasterisation is O(rows × edges) — v1 outlines are rounded
+  rectangles (≈ 40 edges, spec §2 non-goal: polygon outlines); revisit with polygon outlines.
+
 **Residuals for later phases**
 - P5b: `route` returns `None` for a connection whose pad is boxed in by earlier copper
   along its axis; such a failure can take up to the full expansion budget (≈ 10–25 s per

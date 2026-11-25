@@ -99,8 +99,10 @@ def test_output_strict_independent(routed: list[Result]) -> None:
     for seed, _m, r, path in routed:
         if path is None:
             continue
-        for _layer, pts in layer_runs(path):
-            assert strict_bends_ok(pts, r.width), f"seed {seed} {r.net}: {pts}"
+        runs = layer_runs(path)
+        for k, (_layer, pts) in enumerate(runs):
+            pads = (r.a if k == 0 else None, r.b if k == len(runs) - 1 else None)
+            assert strict_bends_ok(pts, r.width, pads), f"seed {seed} {r.net}: {pts}"
 
 
 @pytest.mark.parametrize("seed", range(0, 60, 2))
@@ -116,8 +118,10 @@ def test_pairs_property(seed: int) -> None:
     pc = max(gap, p.clearance, n.clearance)
     for path, r in ((pp, p), (pn, n)):
         assert exact_clearance_ok(replace(m, parts=_without(m, (p.net, n.net))), path, r), seed
-        for _layer, pts in layer_runs(path):
-            assert strict_bends_ok(pts, r.width), (seed, pts)
+        runs = layer_runs(path)
+        for k, (_layer, pts) in enumerate(runs):
+            pads = (r.a if k == 0 else None, r.b if k == len(runs) - 1 else None)
+            assert strict_bends_ok(pts, r.width, pads), (seed, pts)
         assert path.segments[0][1] == (round(r.a.x, 6), round(r.a.y, 6))
         assert path.segments[-1][2] == (round(r.b.x, 6), round(r.b.y, 6))
     for la, a0, a1 in pp.segments:

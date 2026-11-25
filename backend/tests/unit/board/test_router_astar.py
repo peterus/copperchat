@@ -359,3 +359,47 @@ def test_reachable_fast_on_dense_multilayer_board() -> None:
     t = time.monotonic()
     assert solve(m, req) is not None
     assert time.monotonic() - t < 20.0
+
+
+@pytest.mark.parametrize("dx", [0.02, 0.03, 0.07, 0.13, 0.31, 0.53, 0.6, 5.03, 5.01])
+def test_straight_connection_stays_straight(dx: float) -> None:
+    req = rq(pad("SIG", 10, 10), pad("SIG", 10 + dx, 10, ref="B"))
+    path = go(req)
+    if dx <= 0.25:  # the pads overlap: a direct connection or nothing
+        assert path is None or path.length <= dx + 0.01
+    else:
+        assert path is not None
+        assert path.length == pytest.approx(dx, abs=1e-6)
+        assert len(path.segments) == 1
+
+
+def test_deadline_stops_the_search() -> None:
+    import time
+
+    req = rq(pad("SIG", 5, 10), pad("SIG", 25, 10, ref="B"))
+    m = board(
+        parts=(),
+        outline=outline(0, 0, 30, 20),
+        tracks=(track("W", "F.Cu", (15.0, 7.0), (15.0, 13.0), 0.2),),
+    )
+    grid = build_grid(m, req)
+    assert route(grid, req, deadline=time.monotonic() - 1.0) is None
+    assert route(grid, req) is not None
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"clearance": -1.0},
+        {"width": float("nan")},
+        {"width": 0.0},
+        {"via": (0.3, 0.3)},
+        {"width": float("inf")},
+    ],
+)
+def test_request_numbers_validated(change: dict) -> None:
+    from dataclasses import replace
+
+    m = board(parts=(), outline=outline(0, 0, 30, 20))
+    with pytest.raises(ValueError):
+        build_grid(m, replace(rq(pad("S", 5, 5), pad("S", 9, 5, ref="B")), **change))

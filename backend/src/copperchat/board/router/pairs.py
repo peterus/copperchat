@@ -13,12 +13,13 @@ from __future__ import annotations
 
 import itertools
 import math
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 
 from copperchat.board.geom import JOG_MIN, _pad_on_layer
 from copperchat.board.model import BoardModel, Pad, Point
-from copperchat.board.router.astar import reverse_path, valid_path
+from copperchat.board.router.astar import SOLVE_TIME_LIMIT_S, pad_exits_ok, reverse_path, valid_path
 from copperchat.board.router.astar import route as _route
 from copperchat.board.router.grid import (
     WINDOW_MM,
@@ -154,7 +155,7 @@ def _check(
         if _pad_on_layer(q, layer)
     ]
     grid = build_grid(_merge_nets(model, other.net, req.net), req, margin=margin, extra=extra)
-    return valid_path(path, grid, req)
+    return valid_path(path, grid, req) and pad_exits_ok(path, req)
 
 
 def _jog_tail(pts: list[Point], target: Point) -> list[Point]:
@@ -216,7 +217,12 @@ def _lead(p_pad: Pad, n_pad: Pad, towards: Point) -> Point | None:
 
 
 def _coupled(
-    model: BoardModel, p: RouteRequest, n: RouteRequest, gap: float, margin: float
+    model: BoardModel,
+    p: RouteRequest,
+    n: RouteRequest,
+    gap: float,
+    margin: float,
+    deadline: float | None = None,
 ) -> tuple[RoutePath, RoutePath] | None:
     w = max(p.width, n.width)
     clear = max(p.clearance, n.clearance)
@@ -252,7 +258,10 @@ def _coupled(
         via=p.via,
     )
     path = _route(
-        build_grid(merged, centre, margin=margin), centre, max_expansions=PAIR_CENTRE_EXPANSIONS
+        build_grid(merged, centre, margin=margin),
+        centre,
+        max_expansions=PAIR_CENTRE_EXPANSIONS,
+        deadline=deadline,
     )
     if path is None or len(layer_runs(path)) != 1:
         return None
@@ -282,6 +291,7 @@ def _solo(
     extra: Sequence[tuple[str, Shape]] = (),
     band: Callable[[ObstacleGrid], tuple[bytearray, ...]] | None = None,
     extra_vias: Sequence[Shape] = (),
+    deadline: float | None = None,
 ) -> RoutePath | None:
     # like `solve`: the retry runs from pad b on the doubled window
     tries: list[tuple[RouteRequest, float | None, int]] = [(req, None, PAIR_FIRST_EXPANSIONS)]
@@ -293,16 +303,22 @@ def _solo(
         )
         if band is not None:
             grid.cheap = band(grid)
-        path = _route(grid, r, max_expansions=budget)
+        path = _route(grid, r, max_expansions=budget, deadline=deadline)
         if path is not None:
             return path if k == 0 else reverse_path(path)
     return None
 
 
 def _fallback(
-    model: BoardModel, p: RouteRequest, n: RouteRequest, gap: float, margin: float, retry: bool
+    model: BoardModel,
+    p: RouteRequest,
+    n: RouteRequest,
+    gap: float,
+    margin: float,
+    retry: bool,
+    deadline: float | None = None,
 ) -> tuple[RoutePath, RoutePath] | None:
-    pp = _solo(model, p, margin, retry)
+    pp = _solo(model, p, margin, retry, deadline=deadline)
     if pp is None:
         return None
     pc = _pair_clearance(p, n, gap)  # the pair keeps its own spacing (no margin)
@@ -312,7 +328,7 @@ def _fallback(
     def band(grid: ObstacleGrid) -> tuple[bytearray, ...]:
         return band_cells(grid, pp.segments, target - grid.pitch, target + grid.pitch)
 
-    pn = _solo(model, n, margin, retry, extra=tracks, band=band, extra_vias=vias)
+    pn = _solo(model, n, margin, retry, extra=tracks, band=band, extra_vias=vias, deadline=deadline)
     if pn is None:
         return None
     return pp, pn
@@ -321,24 +337,28 @@ def _fallback(
 def route_pair(
     model: BoardModel, p: RouteRequest, n: RouteRequest, gap: float
 ) -> tuple[RoutePath, RoutePath] | None:
-    """Coupled pair when the pads allow it, else the fallback (B-C12); default windows only."""
+    """Coupled pair when the pads allow it, else the fallback (B-C12); default windows only;
+    stops after SOLVE_TIME_LIMIT_S (→ None)."""
+    deadline = time.monotonic() + SOLVE_TIME_LIMIT_S
     if coupled_eligible(p, n, gap):
-        got = _coupled(model, p, n, gap, 0.0)
+        got = _coupled(model, p, n, gap, 0.0, deadline)
         if got is not None:
             return got
-    return _fallback(model, p, n, gap, 0.0, retry=False)
+    return _fallback(model, p, n, gap, 0.0, retry=False, deadline=deadline)
 
 
 def solve_pair(
     model: BoardModel, p: RouteRequest, n: RouteRequest, gap: float, *, margin: float = 0.0
 ) -> tuple[RoutePath, RoutePath] | None:
     """`run_cpu` entry point (B-C12): the coupled attempt, then the fallback where each net
-    gets the default window and exactly one doubled-window retry (like `solve`)."""
+    gets the default window and exactly one doubled-window retry (like `solve`); all of it
+    stops after SOLVE_TIME_LIMIT_S (→ None)."""
+    deadline = time.monotonic() + SOLVE_TIME_LIMIT_S
     if coupled_eligible(p, n, gap):
-        got = _coupled(model, p, n, gap, margin)
+        got = _coupled(model, p, n, gap, margin, deadline)
         if got is not None:
             return got
-    return _fallback(model, p, n, gap, margin, retry=True)
+    return _fallback(model, p, n, gap, margin, retry=True, deadline=deadline)
 
 
 def _pt_seg(p: Point, a: Point, b: Point) -> tuple[float, float]:

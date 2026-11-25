@@ -520,6 +520,21 @@ def build_grid(
     exceeds `MAX_CELLS_PER_LAYER`; `ValueError` for an empty, duplicate or unknown layer."""
     if not (pitch > 0 and math.isfinite(pitch)):
         raise ValueError("pitch must be positive")
+    nums = (
+        req.width,
+        req.clearance,
+        margin,
+        req.via[0],
+        req.via[1],
+        req.a.x,
+        req.a.y,
+        req.b.x,
+        req.b.y,
+    )
+    if not all(math.isfinite(v) for v in nums):
+        raise ValueError("request numbers must be finite")
+    if req.width <= 0 or req.clearance < 0 or margin < 0 or not req.via[0] > req.via[1] > 0:
+        raise ValueError("width > 0, clearance >= 0, margin >= 0, via diameter > drill > 0")
     if not req.layers or len(set(req.layers)) != len(req.layers):
         raise ValueError("request layers must be non-empty and unique")
     if model.copper_layers and not set(req.layers) <= set(model.copper_layers):

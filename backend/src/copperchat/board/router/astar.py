@@ -20,6 +20,7 @@ import heapq
 import itertools
 import math
 import re
+import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import replace
 
@@ -34,7 +35,7 @@ from copperchat.board.router.grid import (
     build_grid,
     path_clear,
 )
-from copperchat.board.router.simplify import SnapError, layer_runs, to_path
+from copperchat.board.router.simplify import SnapError, layer_runs, merge_collinear, to_path
 
 TURN_COST = 1.0  # mm-equivalent per 45° bend (0.3 planned; 1.0 measured: fewer bends, same speed)
 VIA_COST = 2.0  # mm-equivalent per via
@@ -117,16 +118,24 @@ def pad_exits_ok(path: RoutePath, req: RouteRequest) -> bool:
 
 
 def valid_path(path: RoutePath, grid: ObstacleGrid, req: RouteRequest) -> bool:
-    """The path starts on a layer of pad `a` and ends on one of pad `b`; `analyse_bends`
-    (pad ends at the pads, not at vias) has no failure on any layer run; every segment and
+    """The path starts on a layer of pad `a` and ends on one of pad `b`; `analyse_bends` has
+    no failure on any layer run (the end-bend exemption only for a bend inside its pad —
+    stricter than the board metric, which exempts every pad-end bend); every segment and
     via keeps its exact clearance."""
     runs = layer_runs(path)
     if not runs:
         return False
     if not (_pad_on_layer(req.a, runs[0][0]) and _pad_on_layer(req.b, runs[-1][0])):
         return False
-    for k, (_layer, pts) in enumerate(runs):
-        r = analyse_bends(pts, req.width, pad_ends=(k == 0, k == len(runs) - 1))
+    last = len(runs) - 1
+    for k, (_layer, raw) in enumerate(runs):
+        pts = merge_collinear(raw)
+        # the pad-entry exemption only for an end bend that lies inside its pad
+        ends = (
+            k == 0 and len(pts) >= 3 and _in_pad(pts[1], req.a),
+            k == last and len(pts) >= 3 and _in_pad(pts[-2], req.b),
+        )
+        r = analyse_bends(pts, req.width, pad_ends=ends)
         if (
             r.non_octilinear
             or r.ninety
@@ -224,19 +233,19 @@ def reachable(
             ]
             if not vruns:
                 continue
-            # per layer the parts of its free runs where a via fits, then join the layers
-            # whose via-capable parts overlap (a node free on both layers)
-            capable = [
-                [
-                    (max(a0, v0), min(a1, v1), ra)
-                    for ra, _v, a0, a1, v0, v1 in _pairs(runs[li][j], vruns)
-                ]
+            # per layer the parts of its free runs where a via fits; parts of different
+            # layers that overlap share a node free on both -> one sweep over all of them
+            capable = sorted(
+                (max(a0, v0), min(a1, v1), ra)
                 for li in range(nl)
-            ]
-            for l1 in range(nl):
-                for l2 in range(l1 + 1, nl):
-                    for x, y in _overlaps(capable[l1], capable[l2], 0):
-                        union(x, y)
+                for ra, _v, a0, a1, v0, v1 in _pairs(runs[li][j], vruns)
+            )
+            reach_end, reach_id = -1, -1
+            for c0, c1, cid in capable:
+                if c0 <= reach_end:
+                    union(cid, reach_id)
+                if c1 > reach_end:
+                    reach_end, reach_id = c1, cid
 
     def comp(n: int, layers: Iterable[int]) -> set[int]:
         j, i = n // w, n % w
@@ -359,7 +368,11 @@ def coarse_distances(
 
 
 def route(
-    grid: ObstacleGrid, req: RouteRequest, *, max_expansions: int = 2_000_000
+    grid: ObstacleGrid,
+    req: RouteRequest,
+    *,
+    max_expansions: int = 2_000_000,
+    deadline: float | None = None,
 ) -> RoutePath | None:
     """The cheapest octilinear path from `req.a` to `req.b` on `grid` that passes the final
     checks, or None (no path in the window, `max_expansions` exhausted, or too many goal
@@ -396,7 +409,9 @@ def route(
     def at_goal(n: int, li: int, d: int) -> bool:
         return n == goal_n and li in goal_layers and d in goal_dirs
 
-    found = _search(grid, req, req.a, start_n, a_layers, goal_n, at_goal, (gi, gj), max_expansions)
+    found = _search(
+        grid, req, req.a, start_n, a_layers, goal_n, at_goal, (gi, gj), max_expansions, deadline
+    )
     return found
 
 
@@ -416,6 +431,7 @@ def _search(
     at_goal: Callable[[int, int, int], bool],
     target: tuple[int, int] | None,
     max_expansions: int,
+    deadline: float | None = None,
 ) -> RoutePath | None:
     """The A* core. `at_goal(node, layer, dir)` marks goal states; with `build` a goal state
     is accepted only when its snapped path passes `valid_path` (→ the RoutePath), else any
@@ -520,6 +536,8 @@ def _search(
                 return None
         expansions += 1
         if expansions > max_expansions:
+            return None
+        if deadline is not None and not expansions & 4095 and time.monotonic() > deadline:
             return None
         lay = cells[li]
         band = cheap[li] if cheap else None
@@ -652,6 +670,8 @@ def _build(
 
 
 FIRST_TRY_EXPANSIONS = 500_000  # budget of solve's first (default-window) search
+# wall-clock cap of one solve / solve_pair (both searches together), below run_cpu's 30 s
+SOLVE_TIME_LIMIT_S = 25.0
 
 
 def solve(
@@ -660,12 +680,16 @@ def solve(
     """`run_cpu` entry point (B-C12): route on the default window, then exactly once on the
     doubled window. The retry runs from pad `b` (its lattice aligned to `b`, the result
     reversed): a tight squeeze that one lattice misses, the other often fits. The first
-    search gets at most FIRST_TRY_EXPANSIONS. `RouteTooLarge` from either window propagates."""
+    search gets at most FIRST_TRY_EXPANSIONS; both together stop after SOLVE_TIME_LIMIT_S
+    (→ None). `RouteTooLarge` from either window propagates."""
+    deadline = time.monotonic() + SOLVE_TIME_LIMIT_S
     grid = build_grid(model, req, margin=margin)
-    path = route(grid, req, max_expansions=min(max_expansions, FIRST_TRY_EXPANSIONS))
+    path = route(
+        grid, req, max_expansions=min(max_expansions, FIRST_TRY_EXPANSIONS), deadline=deadline
+    )
     if path is not None:
         return path
     rev = replace(req, a=req.b, b=req.a)
     grid = build_grid(model, rev, margin=margin, window_mm=2 * WINDOW_MM)
-    back = route(grid, rev, max_expansions=max_expansions)
+    back = route(grid, rev, max_expansions=max_expansions, deadline=deadline)
     return reverse_path(back) if back is not None else None

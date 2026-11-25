@@ -79,9 +79,16 @@ def test_snap_never_creates_short_chamfer() -> None:
 
 
 def test_snap_impossible_raises() -> None:
-    # the centre lies straight behind the grid end: any approach turns by 135 or 180 degrees
+    # the centre lies behind the segment's start: any approach turns by 180 degrees
     with pytest.raises(SnapError):
-        snap_ends([(0.0, 0.0), (5.0, 0.0)], None, (4.98, 0.0), 0.2)
+        snap_ends([(0.0, 0.0), (5.0, 0.0)], None, (-0.02, 0.0), 0.2)
+
+
+def test_snap_collinear_target_moves_end_point() -> None:
+    # the goal node lies past the centre on the same line: shorten, no bump
+    assert snap_ends([(0.0, 0.0), (5.05, 0.0)], None, (5.03, 0.0), 0.2) == ((0.0, 0.0), (5.03, 0.0))
+    out = snap_ends([(0.0, 0.0), (3.0, 0.0), (4.0, -1.0)], None, (3.98, -0.98), 0.2)
+    assert out == ((0.0, 0.0), (3.0, 0.0), (3.98, -0.98))
 
 
 def _req(layers=("F.Cu", "B.Cu")) -> RouteRequest:

@@ -117,6 +117,12 @@ def _snap_tail(points: Sequence[Point], target: Point, width: float) -> list[Poi
     pts = list(merge_collinear(points))
     if math.dist(pts[-1], target) < _TINY:
         return [*pts[:-1], target]
+    if len(pts) >= 2:  # the centre lies on the last segment's line: move the end point
+        p = pts[-2]
+        d = _unit(_sub(pts[-1], p))
+        rel = _sub(target, p)
+        if abs(_cross(d, rel)) < 1e-9 and _dot(d, rel) > _TINY:
+            return [*pts[:-1], target]
     moved = _move_last_bend(pts, target, width)
     if moved is not None and _turns_ok(moved):
         return moved
