@@ -133,7 +133,10 @@ validation_alias="COPPERCHAT_BOARD_TOOLS")`. `sdk_backend.py`: the board entry o
 board is laid out step by step with the `pcb_*` tools; load `session-board` first and
 `board-layout` before placing or routing; stop after every step and wait; two server-enforced
 approvals (placement before routing, board before fab); the schematic stays read-only. The
-flag-off text stays exactly P1c's.
+flag-off text stays exactly P1c's. **Memory gate (D5):** before flipping the default, read
+P9a's measured five-part memory sum from the index "As built (P9a)"; if it exceeds 5 GB,
+report it to the coordinator as an owner-acceptance item (breakdown vs. accepted ≈ 4.5–5 GB)
+and flip only after the owner accepts it (Task 5 README).
 
 - [ ] **Step 1: Failing unit tests:** `test_config.py::test_board_tools_env` → unset `True`,
   `COPPERCHAT_BOARD_TOOLS=off` → `False`; `test_board_prompt_final.py`:
@@ -177,8 +180,12 @@ Writes `tests/live/results/<date>-board.json` (tool calls, tokens, cost, verdict
   `COPPERCHAT_BOARD_TOOLS` (`on` default / `off` removes the board write tools and the Board
   session type), `COPPERCHAT_FREEROUTING` (`on` default / `off` removes only
   `pcb_route_fill`), `COPPERCHAT_FREEROUTING_HOME` (default `/opt/freerouting`, the image ships
-  it); host memory: **≈ 4.5–5 GB per active board project** (owner D5) with P9a's measured
-  breakdown (api-server with board, footprint libraries, Freerouting heap ≤ 1 GB).
+  it); host memory per active board project written from P9a's **measured** breakdown in
+  the index "As built (P9a)" — api-server RSS, JVM RSS (not heap), CPU worker VmHWM, raster
+  worker peak, kicad-cli peak — and their sum (owner D5 accepted ≈ 4.5–5 GB). If the
+  measured sum exceeds 5 GB, do **not** document it silently: report it to the coordinator
+  as an owner-acceptance item (measured breakdown vs. accepted D5) and wait for the owner's
+  answer before Task 3's flag flip is merged; the README states the accepted figure.
 - [ ] **`.env.example`:** `# COPPERCHAT_BOARD_TOOLS=on` (replacing P1a's commented `off`),
   `# COPPERCHAT_FREEROUTING=on`, `# COPPERCHAT_FREEROUTING_HOME=/opt/freerouting`.
 - [ ] **`docs/architecture.md`:** db row `0001`–`0013`; new `## Board` section (pure core
@@ -216,5 +223,7 @@ Writes `tests/live/results/<date>-board.json` (tool calls, tokens, cost, verdict
   `COPPERCHAT_BOARD_TOOLS=off` restores the pre-SP4 surface.
 - [ ] Live eval run once, results and cost in the PR (asks S0 questions, stops after placement,
   no routing before approval).
-- [ ] README documents the three variables and ≈ 4.5–5 GB per active board project (D5).
+- [ ] README documents the three variables and the measured per-project memory (P9a's five
+  parts + sum, D5 ≈ 4.5–5 GB); a sum > 5 GB was reported to the coordinator and accepted by
+  the owner before the flag flip.
 - [ ] Release not cut here — handed to the coordinator's release step.

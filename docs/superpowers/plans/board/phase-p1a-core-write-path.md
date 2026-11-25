@@ -407,7 +407,8 @@ Long KiCad calls (Global Constraints "every long KiCad call passes an explicit t
 `BoardStageContext.drc(timeout_s=t)` calls `session.call(lambda h: run_drc_task(h,
 timeout_s=t), timeout=t + DRC_STALE_GRACE_S + 15)` (stale-task grace + 15 s margin; as
 `cc/kicad_tools/checks.py` passes `kicad_api_timeout_s * 4` for ERC), and every
-`run_drc_task` caller outside a stage (P1c `pcb_status`, P3b `pcb_check`, P8) uses the
+`run_drc_task` caller outside a stage (P1c `pcb_status`, P1c `pcb_render` `markers: true`,
+P3a `pcb_metrics`, P3b `pcb_check`, P8) uses the
 helper `api.drc_call_timeout(t) -> float` (= `t + 30 + 15`) for its `session.call`.
 `refill_zones` (P6b, P7) likewise passes `timeout=refill_timeout_s + 15`.
 

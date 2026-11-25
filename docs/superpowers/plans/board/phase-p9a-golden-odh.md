@@ -140,24 +140,27 @@ peak = `VmHWM` read from `/proc/<worker pid>/status` (the `ProcessPoolExecutor`'
 P1a `cc/board/worker.py`) at the end of the run, plus each replaced worker's last value if a
 timeout replaced it; the JVM's peak = the maximum of its `VmRSS` sampled every 0.5 s **by
 PID** (`/proc/<jvm pid>/status`, the PID found as the child of this process whose cmdline
-names the Freerouting jar, sampling from start to exit; no `RUSAGE_CHILDREN`); the
-CopperChat process peak = `RUSAGE_SELF.ru_maxrss`; the board kicad-cli peaks (P1c
-`BOARD_CLI_LOCK`: SVG export, 3D render, `pcb_check full`'s parity DRC, and the P8/P10
-exports — gerbers, drill, pos, bom, step/glb) =
-the maximum `VmRSS` per kind, sampled every 0.5 s by PID like the JVM (child whose argv[0] is
-`settings.kicad_cli`, kind from its subcommand). The report records each of the five
-separately (api-server, CPU worker, JVM, kicad-cli per kind, CopperChat) plus their sum (the
-kicad-cli term = the largest kind — the lock serialises them) as "per active board project"
-and compares the sum with the D5 figure (≈ 4.5–5 GB).
+names the Freerouting jar, sampling from start to exit; no `RUSAGE_CHILDREN`) — the JVM's
+**RSS**, not its configured heap; the raster worker's peak = the maximum `VmRSS` of each
+`cc/views/_raster_worker.py` child (P1c board path), sampled every 0.5 s by PID like the JVM;
+the board kicad-cli peaks (P1c `BOARD_CLI_LOCK`: SVG export, 3D render, `pcb_check full`'s
+parity DRC, and the P8/P10 exports — gerbers, drill, pos, bom, step/glb) = the maximum
+`VmRSS` per kind, sampled every 0.5 s by PID like the JVM (child whose argv[0] is
+`settings.kicad_cli`, kind from its subcommand). The report's D5 breakdown has **exactly
+these five parts**: (1) api-server RSS (peak `VmHWM`; the before/after-footprints values as
+detail), (2) JVM RSS (not heap), (3) CPU worker `VmHWM`, (4) raster worker peak, (5)
+kicad-cli peak (= the largest kind — the lock serialises them; per-kind values as detail),
+plus their sum as "per active board project", compared with the D5 figure (≈ 4.5–5 GB).
 
 - [ ] **Step 1: Failing unit tests** (`backend/tests/unit/test_odh_dry_run.py`, imports the
   script with `importlib` from its path): `test_refuses_out_inside_repo`;
   `test_copy_skips_git` (`tmp_path` fake checkout with `.git/` and a `.kicad_pro` → the copy
   has no `.git`); `test_answers_schema` (missing `outline` → usage error naming the field);
   `test_report_has_memory_section` (report builder on a fake `FlowResult` + fake memory numbers
-  → headings "Metrics", "Memory", "Runtime", one line each for api-server, CPU worker, JVM,
-  kicad-cli (svg / 3d render / parity DRC) and CopperChat, the sum, and the D5 comparison
-  line); `test_jvm_sampler_by_pid` (a sampler on a
+  → headings "Metrics", "Memory", "Runtime", exactly five breakdown lines — api-server RSS,
+  JVM RSS, CPU worker VmHWM, raster worker peak, kicad-cli peak (per-kind detail svg / 3d
+  render / parity DRC below it) — the sum, and the D5 comparison line);
+  `test_jvm_sampler_by_pid` (a sampler on a
   `python -c` child allocating 200 MB then sleeping → peak ≥ 200 MB read via its PID).
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS. **Step 5:
   Dry run** on the owner's ODH checkout (path from the coordinator; `timeout 3600`); paste
@@ -170,8 +173,9 @@ and compares the sum with the D5 figure (≈ 4.5–5 GB).
 
 - [ ] Index "As built (P9a)": e2e runtime on CI, golden values, any tool fixes made in other
   phases' files (with PR links), the `kicad-e2e` job, ODH dry-run summary (completion, hard-gate result, runtime) and the measured
-  memory per active board project (api-server peak with/without footprints, JVM peak,
-  kicad-cli peaks per kind, CopperChat process) — **this is the D5 number P9b writes into the README**. No CHANGELOG
+  memory per active board project as the five-part breakdown (api-server RSS, JVM RSS (not
+  heap), CPU worker VmHWM, raster worker peak, kicad-cli peak) and their sum — **this is the
+  D5 number P9b writes into the README**. No CHANGELOG
   entry (tests/CI only).
 - [ ] Run `uv run pytest -m "not kicad"`, `uv run ruff check .`, `uv run ruff format --check .`,
   `uv run mypy src`, `uv run pytest -m "kicad and not kicad_e2e" tests/kicad/board` and `uv
@@ -185,5 +189,5 @@ and compares the sum with the D5 figure (≈ 4.5–5 GB).
   and the new `kicad-e2e` job green; `test_sharding.py` proves the shards exclude the e2e test.
 - [ ] `test_full_flow_hard_gates` passes with M2 = 0 and all hard gates, in ≤ 180 s.
 - [ ] `test_metrics_golden`, `test_approvals_bound_to_hashes`, `test_undo_to_placement` pass.
-- [ ] ODH dry-run report (metrics, renders, runtime, peak RSS of api-server + JVM) in the PR.
-- [ ] Memory per active board project recorded in the index for P9b (D5).
+- [ ] ODH dry-run report (metrics, renders, runtime, the five-part memory breakdown) in the PR.
+- [ ] Memory per active board project (five parts + sum) recorded in the index for P9b (D5).

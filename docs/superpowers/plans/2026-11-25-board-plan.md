@@ -199,9 +199,17 @@ Constraints). Values are copied from the spec.
   deadline before **every** margin attempt and bound each step by the remaining time: each
   `run_cpu` gets `timeout_s = min(30, remaining)` and `wait_s = remaining`, each DRC
   `min(60, remaining)`; worst case = deadline + one DRC (≤ 60 s). `pcb_route_fill`'s whole
-  sum: `timeout_s` (≤ 600) + round-trip I/O incl. stage-4 refill 60 + post 120 + DRC 60 +
-  final metrics 60 (fixed `timeout_s=30, wait_s=30`; timeout → `metrics: null`, not an
-  error) = `FILL_WORST_CASE_S` 900 s (P6b).
+  sum: `timeout_s` (≤ 600) + round-trip I/O 60 (`IO_BUDGET_S`, DSN export + SES import only,
+  an `io_spent` accumulator timed around those two calls — Freerouting's runtime never counts)
+  + stage-4 refill 75 (own budget `REFILL_TIMEOUT_S` 60 + 15) + post 120 + DRC 60 + final
+  metrics 60 (fixed `timeout_s=30, wait_s=30`; timeout → `metrics: null`, not an error) =
+  `FILL_WORST_CASE_S` 975 s (P6b); if the CLI's tool-call limit `L` is lower,
+  `MCP_TOOL_TIMEOUT` ≥ 1,035,000 ms (975 s + 60 s margin), else `timeout_s` capped at
+  `L − 375`. `pcb_fanout`: overall `FANOUT_DEADLINE_S = 300`, `pcb_stitch`:
+  `STITCH_DEADLINE_S = 180` (P7) — checked before each round/stage; each refill bounded by
+  `min(REFILL_TIMEOUT_S, remaining)`, each DRC `min(60, remaining)`; pads/vias left at the
+  deadline → reported with reason `timeout`; worst case = deadline + one cleanup refill
+  (≤ 75 s).
 - Renders: PNG ≤ 1600 px long side; ≤ 3 images per step report; SVG through the footprint
   sanitiser with board limits (B-C9); every injected string XML-escaped. Retention: board PNGs
   kept; board SVGs (+ `.svg.json` sidecars) beyond the newest 20 per project pruned at each

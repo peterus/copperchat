@@ -181,7 +181,8 @@ removed from the list and their `<uuid>.svg` and `<uuid>.svg.json` sidecar (if a
 enum, `layer` (maxLength 32, must be an enabled copper layer → `not_found` with
 `details.closest`), `region {x,y,w,h}` (|x|,|y| ≤ 1000, 0 < w,h ≤ 1000), `highlight_nets`
 (≤ 20, maxLength 256, unknown → `not_found` + closest), `markers: bool` (true → run the DRC
-task and mark its markers), `angle` enum; result: 1 PNG image, `data = {view, svg_url,
+task — `session.call(lambda h: api.run_drc_task(h, timeout_s=60),
+timeout=drc_call_timeout(60))`, B-C4, never the 30 s default — and mark its markers), `angle` enum; result: 1 PNG image, `data = {view, svg_url,
 png_url, placement_hash, board_hash, markers: [...]}`; failures → `render_failed`.
 `BOARD_SVG_LIMITS` per B-C9, then tuned in Step 3.
 
@@ -207,7 +208,8 @@ png_url, placement_hash, board_hash, markers: [...]}`; failures → `render_fail
 - [ ] **Step 2: Failing kicad tests** (`test_render.py`, module-scoped `ecc83` server):
   `test_render_each_view` (top, bottom, layer `B.Cu`, placement, 3d iso: PNG long side ≤ 1600,
   hashes equal `pcb_status`'s); `test_render_unknown_layer` (`In5.Cu` → `not_found` with
-  `closest`); `test_render_highlight_and_markers`; `test_render_boardless` (`no_board`);
+  `closest`); `test_render_highlight_and_markers` (plus a spy on `session.call`: the markers
+  DRC call has `timeout == drc_call_timeout(60)`, never `None`); `test_render_boardless` (`no_board`);
   `test_render_zone_filled` (add a GND zone over the whole outline on F.Cu and B.Cu through the
   API, `refill_zones`, render top → passes `BOARD_SVG_LIMITS`; record bytes, elements,
   coords, max element coords, span, raster seconds and the raster worker's peak RSS —

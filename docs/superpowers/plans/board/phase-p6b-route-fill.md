@@ -117,16 +117,21 @@ cancel path the engine's `finally` removes it (shielded, B-C4/P1a step 6) — no
    `placement_hash(model) ≠` the pre-call hash → restore positions from the snapshot
    (`update_items`) and report `positions_restored`; re-assert the hash (still different →
    `verification_failed`); refill the plane zones (or recreate them, stage 1's mechanism).
-**Round-trip I/O budget** (`IO_BUDGET_S = 60`, module constant): the DSN export (stage 2),
-the SES import (stage 3) and the stage-4 refill share one `io_deadline = monotonic() +
-IO_BUDGET_S` set before the export; each is a `session.call(..., timeout=io_remaining)`
-with an explicit timeout (index Global Constraints, B-C4 — never the 30 s
-`kicad_api_timeout_s` default, which restarts the api-server), the refill as
-`refill_zones(block=True, max_poll_seconds=io_remaining − 15)` inside
-`session.call(..., timeout=io_remaining)` (= the B-C4 rule `refill_timeout_s + 15`).
-Freerouting's own run (stage 2) is not part of this budget (it has `timeout_s`). A
-budget already spent → `fill_not_acceptable` with `details.reason = "io_timeout"`, the
-engine restores the pre-fill board.
+**Round-trip I/O budget** (`IO_BUDGET_S = 60`, module constant) covers the DSN export
+(stage 2) and the SES import (stage 3) only. It is an `io_spent` accumulator, **not** a
+monotonic deadline: each of the two I/O calls is timed (`monotonic()` before/after the call
+alone) and adds its duration to `io_spent`; Freerouting's run between them (it has its own
+`timeout_s`) is never counted. Each I/O call is a `session.call(..., timeout=IO_BUDGET_S −
+io_spent)` with an explicit timeout (index Global Constraints, B-C4 — never the 30 s
+`kicad_api_timeout_s` default, which restarts the api-server); a remaining budget ≤ 0
+before a call (or that call timing out) → `fill_not_acceptable` with `details.reason =
+"io_timeout"`, the engine restores the pre-fill board. The **stage-4 refill has its own
+budget**, P7's `REFILL_TIMEOUT_S` = 60 s (P6b and P7 run in parallel in wave 7, so
+`fill.py` declares `REFILL_TIMEOUT_S = 60` with P7's value; whichever lands second imports
+the other's instead of keeping a copy): `refill_zones(block=True, max_poll_seconds=REFILL_TIMEOUT_S)` inside
+`session.call(..., timeout=REFILL_TIMEOUT_S + 15)` (= 75 s, the B-C4 rule
+`refill_timeout_s + 15`); its timeout → `fill_not_acceptable`, `details.reason =
+"io_timeout"`, pre-fill board restored.
 Freerouting routes all connections including ground (C7); locked items go into the DSN as
 protected wiring (KiCad's exporter, asserted below).
 
@@ -211,10 +216,11 @@ with reason `timeout` (their fill copper is already removed; they stay open and 
 than `post_deadline` + one DRC (≤ 60 s). The final report metrics (below) run **after**
 that with a fixed `timeout_s=30, wait_s=30`, independent of `post_deadline`. The call's
 worst case, summed explicitly: `timeout_s` (Freerouting, ≤ 600 s) + `IO_BUDGET_S` (DSN
-export + SES import + stage-4 refill, ≤ 60 s together — the executor records the measured
-split on `sp4_synth` as built) + `POST_DEADLINE_S` (120 s) + one DRC overrun (≤ 60 s) +
-final metrics (≤ 30 s queue wait + 30 s run) = 600 + 60 + 120 + 60 + 60 = **900 s** (`FILL_WORST_CASE_S = 900`,
-module constant; Step 2's threshold).
+export + SES import, ≤ 60 s together — the executor records the measured split on
+`sp4_synth` as built) + stage-4 refill (`REFILL_TIMEOUT_S + 15` = 75 s, own budget) +
+`POST_DEADLINE_S` (120 s) + one DRC overrun (≤ 60 s) + final metrics (≤ 30 s queue wait +
+30 s run) = 600 + 60 + 75 + 120 + 60 + 60 = **975 s** (`FILL_WORST_CASE_S = 975`, module
+constant; Step 2's threshold).
 5. `postprocess` (`commit=True`): `run_cpu(postprocess, jobs.strip_fills(model), frozenset(new
    non-ground KIIDs), timeout_s=min(60, remaining), wait_s=remaining)` (the zone fill
    polygons are never pickled to the worker, as for every board `run_cpu` job). **Rejection rule (spec §10.4):**
@@ -283,9 +289,15 @@ pcb_check"]`; and `next` per ladder rung (spec §10.3: (a) more passes, (b) `pcb
   wait_s=30` even when `post_deadline` has passed — `POST_DEADLINE_S` monkeypatched to 0);
   `test_fill_metrics_timeout_reports_null` (that `run_cpu` patched to raise
   `board_compute_timeout` → the call succeeds, fill kept, `metrics is None`, the note
-  present); `test_fill_io_calls_pass_timeout` (spy on `session.call`: the export, import and
-  refill calls each get an explicit `timeout ≤ IO_BUDGET_S`, never `None`; the refill's
-  `max_poll_seconds` equals its call timeout − 15).
+  present); `test_fill_io_calls_pass_timeout` (spy on `session.call`: the export and import
+  calls each get an explicit `timeout == IO_BUDGET_S − io_spent` (≤ `IO_BUDGET_S`), never
+  `None`; the stage-4 refill call gets `timeout == REFILL_TIMEOUT_S + 15 == 75` and
+  `max_poll_seconds == REFILL_TIMEOUT_S`); `test_fill_io_budget_excludes_freerouting`
+  (patched `monotonic` clock, fake `run_freerouting` that advances it by 90 s, export and
+  import each advancing it 5 s → no `io_timeout`, the import's timeout is 55 s);
+  `test_fill_io_budget_spent` (export advancing the patched clock by 61 s →
+  `fill_not_acceptable`, `reason == "io_timeout"`, import never called, pre-fill board
+  restored).
 - [ ] **Step 2: SDK tool-call limit check** (spec §20): claude-agent-sdk 0.2.168's Python side
   has no per-tool-call timeout (only hook-matcher timeouts and the initialize timeout read from
   `CLAUDE_CODE_STREAM_CLOSE_TIMEOUT`; verified while planning in the package's `client.py` /
@@ -293,14 +305,16 @@ pcb_check"]`; and `next` per ladder rung (spec §10.3: (a) more passes, (b) `pcb
   MCP tool timeout (`MCP_TOOL_TIMEOUT`). The executor reads the bundled CLI's handling for
   `type: "sdk"` servers and its default, and measures it with a `live_sdk` probe
   (`tests/live/test_tool_duration_live.py`: a test-only tool that sleeps 700 s is called once;
-  the result arrives or the CLI's error text is recorded; the probe sleeps 960 s when the
-  700 s call succeeds, so a limit between 700 and 960 s is still seen). Outcome → "As built":
-  the threshold is the call's worst case `FILL_WORST_CASE_S` = 900 s (above). If the limit
-  `L` is < 900 s, set `env["MCP_TOOL_TIMEOUT"] = "960000"` in `build_options`
-  (`cc/agent/sdk_backend.py`, unit test `test_mcp_tool_timeout_env`); if that does not lift it,
-  cap `timeout_s`'s schema maximum at `L − 300` s (300 = `FILL_WORST_CASE_S` − 600 = I/O
-  60 (export + import + stage-4 refill) + post 120 + DRC 60 + metrics 60 incl. queue wait), record `L` and the cap in "As built (P6b)" and update the index Global Constraints
-  with the owner-visible reason.
+  the result arrives or the CLI's error text is recorded; the probe sleeps 1,040 s when the
+  700 s call succeeds, so a limit between 700 and 1,040 s — beyond the 975 s worst case — is
+  still seen). Outcome → "As built": the threshold is the call's worst case
+  `FILL_WORST_CASE_S` = 975 s (above). If the limit `L` is < 975 s, set
+  `env["MCP_TOOL_TIMEOUT"] = "1035000"` (975 s + 60 s margin, in ms; any value ≥ 1,035,000)
+  in `build_options` (`cc/agent/sdk_backend.py`, unit test `test_mcp_tool_timeout_env`); if
+  that does not lift it, cap `timeout_s`'s schema maximum at `L − 375` s (375 =
+  `FILL_WORST_CASE_S` − 600 = I/O 60 (export + import) + stage-4 refill 75 + post 120 + DRC
+  60 + metrics 60 incl. queue wait), record `L` and the cap in "As built (P6b)" and update
+  the index Global Constraints with the owner-visible reason.
 - [ ] **Step 3: Run** `uv run pytest -m kicad tests/kicad/board/test_fill_postprocess.py` —
   FAIL. **Step 4: Implement.** **Step 5: Run** — PASS; record fill seconds, ripped/rerouted
   counts and the completion on `sp4_synth`.
