@@ -10,7 +10,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar
 
 from kipy.errors import ApiError
 from kipy.errors import ConnectionError as KipyConnectionError
@@ -155,12 +155,105 @@ async def _uncancellable[R](coro: Coroutine[Any, Any, R]) -> R:
     return result
 
 
-class KicadHandle:
-    """What callables passed to KicadSession.call receive. Runs in a worker thread."""
+# How often `call` pings a server still busy with a cut-short zone refill (B-C3).
+BUSY_POLL_S = 0.5
 
-    def __init__(self, kicad: Any, open_docs: frozenset[DocKind] = frozenset()) -> None:
+
+class Slot[S](Protocol):
+    """A get/set view onto one value (B-C3): lets a callable running in the worker
+    thread read and write session state that outlives its `KicadHandle`."""
+
+    def get(self) -> S: ...
+
+    def set(self, value: S) -> None: ...
+
+
+class LocalSlot[S]:
+    """A slot holding its own value (a handle built without a session, e.g. in tests)."""
+
+    def __init__(self, value: S) -> None:
+        self._value = value
+
+    def get(self) -> S:
+        return self._value
+
+    def set(self, value: S) -> None:
+        self._value = value
+
+
+class _AttrSlot[S]:
+    """A slot onto `getattr(owner, name)` - the session's `pending_drc` / `refill_busy`.
+    Only callables inside `session.call` use it; the session lock serialises them."""
+
+    def __init__(self, owner: Any, name: str) -> None:
+        self._owner = owner
+        self._name = name
+
+    def get(self) -> S:
+        value: S = getattr(self._owner, self._name)
+        return value
+
+    def set(self, value: S) -> None:
+        setattr(self._owner, self._name, value)
+
+
+DrcSlot = Slot[tuple[int, str] | None]  # (server generation, DRC task id)
+BusySlot = Slot[int | None]  # server generation still busy with a zone refill
+
+
+def kicad_busy(kicad: Any) -> bool:
+    """One `Ping`: False = idle; True = busy (`AS_BUSY`, or a kipy transport timeout
+    while KiCad blocks on a long operation). Any other `ApiError` is raised."""
+    from kipy.proto.common import ApiStatusCode
+
+    try:
+        kicad.ping()
+    except KipyConnectionError:
+        return True
+    except ApiError as exc:
+        if exc.code == ApiStatusCode.AS_BUSY:
+            return True
+        raise
+    return False
+
+
+def _after_idle[R](fn: Callable[[KicadHandle], R], deadline: float) -> Callable[[KicadHandle], R]:
+    """`fn`, preceded by pinging until KiCad is idle again (a refill cut short by
+    `RefillTimeout` may still be running, B-C3). Runs in the call's worker thread, so
+    the wait counts against the call's own timeout; past it the thread gives up."""
+
+    def run(h: KicadHandle) -> R:
+        while kicad_busy(h.kicad):
+            if time.monotonic() >= deadline:
+                raise KicadUnavailable("the KiCad api-server stayed busy with a zone refill")
+            time.sleep(BUSY_POLL_S)
+        h.busy_slot.set(None)
+        return fn(h)
+
+    return run
+
+
+class KicadHandle:
+    """What callables passed to KicadSession.call receive. Runs in a worker thread.
+
+    `generation` is the server start the call runs against; `drc_slot` / `busy_slot`
+    view the session's `pending_drc` / `refill_busy` (B-C3) - a handle built without
+    them (unit tests) gets private slots."""
+
+    def __init__(
+        self,
+        kicad: Any,
+        open_docs: frozenset[DocKind] = frozenset(),
+        *,
+        generation: int = 0,
+        drc_slot: DrcSlot | None = None,
+        busy_slot: BusySlot | None = None,
+    ) -> None:
         self.kicad = kicad
         self._open_docs = open_docs
+        self.generation = generation
+        self.drc_slot: DrcSlot = drc_slot if drc_slot is not None else LocalSlot(None)
+        self.busy_slot: BusySlot = busy_slot if busy_slot is not None else LocalSlot(None)
 
     def board(self) -> kipy.board.Board:
         if "pcb" not in self._open_docs:
@@ -218,6 +311,10 @@ class KicadSession:
         self._commit_owner: asyncio.Task[Any] | None = None
         self._active_scope: CommitScope | None = None
         self._generation = 0  # counts successful server starts
+        # Board API state that outlives a call (B-C3); both die with the server, so
+        # `_kill()` and every start clear them. Written only by callables inside `call`.
+        self.pending_drc: tuple[int, str] | None = None  # timed-out DRC task (generation, id)
+        self.refill_busy: int | None = None  # generation still filling zones (RefillTimeout)
         self._libraries_lock = asyncio.Lock()
         self._libraries_ready_generation: int | None = None
         self._libraries_kicked_generation: int | None = None
@@ -336,6 +433,8 @@ class KicadSession:
         self._kicad = client
         self._open_docs = frozenset(opened)
         self._generation += 1
+        self.pending_drc = None
+        self.refill_busy = None
         # A fresh server loaded the files on disk: nothing unsaved, jobs current, no
         # footprint document left open.
         self.jobs_stale = False
@@ -406,6 +505,8 @@ class KicadSession:
         client, self._kicad = self._kicad, None
         self._open_docs = frozenset()
         self._footprints_generation = None  # the libraries die with the server
+        self.pending_drc = None  # a DRC task or zone fill dies with the server too
+        self.refill_busy = None
         _close_client(client)
         if proc is None or proc.returncode is not None:
             return
@@ -464,9 +565,20 @@ class KicadSession:
                 raise KicadUnavailable(
                     "the KiCad api-server had stopped; it was restarted with the last saved state"
                 )
-            work = asyncio.ensure_future(
-                asyncio.to_thread(fn, KicadHandle(self._kicad, self._open_docs))
+            handle = KicadHandle(
+                self._kicad,
+                self._open_docs,
+                generation=self._generation,
+                drc_slot=_AttrSlot(self, "pending_drc"),
+                busy_slot=_AttrSlot(self, "refill_busy"),
             )
+            target = fn
+            if self.refill_busy is not None and self.refill_busy == self._generation:
+                # A refill cut short by RefillTimeout may still run: ping until idle
+                # first, within this call's own timeout (the timeout restart is the
+                # backstop), so the callable never meets AS_BUSY (B-C3).
+                target = _after_idle(fn, time.monotonic() + limit)
+            work = asyncio.ensure_future(asyncio.to_thread(target, handle))
             died = asyncio.ensure_future(proc.wait()) if proc is not None else None
             try:
                 waiting = {work} if died is None else {work, died}
