@@ -52,6 +52,7 @@ from copperchat.board.classify import Classification
 from copperchat.board.geom import (
     _JOIN_TOL,
     BendReport,
+    TrackIndex,
     _Grid,
     _in_pad,
     _interior_t,
@@ -69,6 +70,7 @@ from copperchat.board.geom import (
 from copperchat.board.model import (
     ArcTrack,
     BoardModel,
+    NetClassInfo,
     Pad,
     Part,
     Point,
@@ -335,6 +337,45 @@ def outline_polygon(model: BoardModel) -> list[Point] | None:
     return None
 
 
+def _placer(model: BoardModel) -> Callable[[Part], bool]:
+    """`BoardModel.placed` with the outline polygon built once (a rounded rect would be
+    rebuilt per call there); identical results."""
+    o = model.outline
+    if o.kind == "none":
+        return lambda part: False
+    if o.kind == "rect" and o.corner_radius > 0:
+        rounded = rect_poly(o.x, o.y, o.w, o.h, o.corner_radius)
+        # the rounded rect is convex and contains the two "cross" rectangles; a courtyard
+        # strictly inside one of them (1 um margin, far above the 1e-9 tolerances) is inside
+        # by `polygon_inside` too, so only the rest pays for the full test
+        r = min(o.corner_radius, o.w / 2, o.h / 2)
+        m = 1e-6
+        cross = (
+            (o.x + r + m, o.y + m, o.x + o.w - r - m, o.y + o.h - m),
+            (o.x + m, o.y + r + m, o.x + o.w - m, o.y + o.h - r - m),
+        )
+
+        def rounded_placed(part: Part) -> bool:
+            if len(part.courtyard) < 3:
+                return False
+            x0, y0, x1, y1 = _bbox(part.courtyard)
+            if any(a < x0 and b < y0 and x1 < c and y1 < d for a, b, c, d in cross):
+                return True
+            return polygon_inside(part.courtyard, rounded)
+
+        return rounded_placed
+    if o.kind == "rect":
+        x0, y0, x1, y1 = o.x, o.y, o.x + o.w, o.y + o.h
+        return lambda part: (
+            len(part.courtyard) >= 3
+            and all(x0 <= px <= x1 and y0 <= py <= y1 for px, py in part.courtyard)
+        )
+    poly = o.polygon
+    return lambda part: (
+        len(part.courtyard) >= 3 and len(poly) >= 3 and polygon_inside(part.courtyard, poly)
+    )
+
+
 def _clip_half(pts: Sequence[Point], axis: int, bound: float, keep_ge: bool) -> list[Point]:
     """Sutherland-Hodgman clip of `pts` to the half-plane `p[axis] >= bound` (or `<=`)."""
 
@@ -589,6 +630,16 @@ class _Ctx:
         self._graphs: dict[str, _NetGraph] = {}
         self._bends: dict[str, BendReport] | None = None
         self._conns: list[_Conn] | None = None
+        self._placer = _placer(model)
+        self._placed: dict[int, bool] = {}  # id(part) -> placed (parts live as long as `m`)
+
+    def placed(self, part: Part) -> bool:
+        """`BoardModel.placed`, computed once per part (shared by M1 and M10)."""
+        key = id(part)
+        hit = self._placed.get(key)
+        if hit is None:
+            hit = self._placed[key] = self._placer(part)
+        return hit
 
     def kind(self, net: str) -> str:
         return self.cls.net_kind.get(net, "signal")
@@ -618,41 +669,17 @@ class _Ctx:
         return est, False
 
     def bends(self) -> dict[str, BendReport]:
-        """`analyse_tracks` per net, each on a sub-model holding only the net's tracks/arcs and
-        the parts/vias near them (the sum equals `analyse_tracks(model)`; pad and via tests
-        only ever look at points of the net's own tracks)."""
+        """`analyse_tracks` per net, each on the board restricted to the net's tracks/arcs,
+        with one pad/via index of the whole board shared by every net (the sum equals
+        `analyse_tracks(model)`)."""
         if self._bends is not None:
             return self._bends
         tracks, arcs = self.tracks_by_net, self.arcs_by_net
-        # bounding boxes once, bucketed: each net only looks at the parts / vias near it
-        parts = [p for p in self.m.parts if p.pads]
-        part_boxes = [
-            _bbox(((q.x, q.y) for q in p.pads), max(math.hypot(q.w, q.h) for q in p.pads))
-            for p in parts
-        ]
-        via_boxes = [_bbox((v.at,), max(v.diameter, _JOIN_TOL)) for v in self.m.vias]
-        part_grid, via_grid = _Grid(), _Grid()
-        for i, b in enumerate(part_boxes):
-            part_grid.add(i, b)
-        for i, b in enumerate(via_boxes):
-            via_grid.add(i, b)
+        index = TrackIndex(self.m)
         out: dict[str, BendReport] = {}
         for net in sorted(set(tracks) | set(arcs)):
-            pts = [pt for t in tracks.get(net, ()) for pt in (t.start, t.end)]
-            pts += [pt for a in arcs.get(net, ()) for pt in (a.start, a.mid, a.end)]
-            box = _bbox(pts, 2 * _JOIN_TOL)
-            sub = replace(
-                self.m,
-                tracks=tuple(tracks.get(net, ())),
-                arcs=tuple(arcs.get(net, ())),
-                parts=tuple(
-                    parts[i] for i in part_grid.query(box) if _bbox_hit(part_boxes[i], box)
-                ),
-                vias=tuple(
-                    self.m.vias[i] for i in via_grid.query(box) if _bbox_hit(via_boxes[i], box)
-                ),
-            )
-            out[net] = analyse_tracks(sub)
+            sub = replace(self.m, tracks=tuple(tracks.get(net, ())), arcs=tuple(arcs.get(net, ())))
+            out[net] = analyse_tracks(sub, index=index)
         self._bends = out
         return out
 
@@ -734,7 +761,7 @@ def _m1(c: _Ctx) -> Metric:
             off.append(Offender(f"no_courtyard: {p.ref}", (p.ref,), (), at, None))
             continue
         with_cy.append(p)
-        placed = c.m.placed(p)
+        placed = c.placed(p)
         edge = edges.get(p.ref)
         if not placed and M1_EDGE_OVERHANG and edge is not None:
             placed = placed_with_overhang(c.m, p, edge)
@@ -1049,7 +1076,7 @@ def _m10(c: _Ctx) -> Metric:
             p = others[i]
             if p.ref in inside or p.side != side:
                 continue
-            if _bbox_hit(boxes[i], hb) and c.m.placed(p) and polygons_overlap(p.courtyard, hull):
+            if _bbox_hit(boxes[i], hb) and c.placed(p) and polygons_overlap(p.courtyard, hull):
                 off.append(Offender(f"intrusion {name}: {p.ref}", (p.ref,), (), (p.x, p.y), None))
     if worst is None:
         return _metric("M10", None, "n/a")
@@ -1343,19 +1370,33 @@ def _m11(c: _Ctx) -> Metric:
 # ---- M12 widths and pairs ------------------------------------------------------------------
 
 
+def _class_width(classes: dict[str, NetClassInfo], name: str) -> float | None:
+    """The minimum track width of net class `name`. A composite effective class ("Default,
+    Power", as KiCad stores a net in several classes) takes the widest track_width among its
+    known constituents: KiCad's effective class takes each field from the highest-priority
+    constituent, and the widest is the conservative choice for a minimum-width check.
+    Unknown constituents are ignored; None when none is known."""
+    widths = [classes[n].track_width for n in (s.strip() for s in name.split(",")) if n in classes]
+    return max(widths) if widths else None
+
+
 def _m12(c: _Ctx) -> Metric:
     classes = {nc.name: nc for nc in c.m.net_classes}
     class_of = dict(c.m.net_class_of)
+    need: dict[str, float | None] = {}
     off: list[Offender] = []
     items = [(t.net, t.width, t.start, t.end) for t in c.m.tracks]
     items += [(a.net, a.width, a.start, a.mid) for a in c.m.arcs]
     for net, width, p, q in items:
-        nc = classes.get(class_of.get(net, "Default"))
-        if nc is None or width >= nc.track_width - M12_WIDTH_TOL - 1e-9:
+        name = class_of.get(net, "Default")
+        if name not in need:
+            need[name] = _class_width(classes, name)
+        tw = need[name]
+        if tw is None or width >= tw - M12_WIDTH_TOL - 1e-9:
             continue
         mid = ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2)
-        what = f"track_width {net}: {width:g} < {nc.track_width:g} ({nc.name})"
-        off.append(Offender(what, (), (net,), mid, _r(nc.track_width - width)))
+        what = f"track_width {net}: {width:g} < {tw:g} ({name})"
+        off.append(Offender(what, (), (net,), mid, _r(tw - width)))
     widths = len(off)
     review = False
     for pair in c.cls.pairs:
@@ -1693,13 +1734,37 @@ class _Fab:
                 self.add("silk_over_pad", detail, (q.x, q.y), None, (q.ref,), (q.net,))
 
     def paste(self) -> None:
+        """Every copper SMD pad has paste: on the pad itself or from a paste-only pad (no
+        copper layer) of the same part whose centre lies inside it (KiCad's QFN/DFN exposed
+        pads get their paste from such sub-pads). Fiducials, test points and solder jumpers
+        (ref `JPn` or a `Jumper*` library, with no pasted pad at all) are paste-free by design."""
         for p, q in self.pads:
             if not q.smd or self.c.cls.part_class.get(p.ref) in ("fiducial", "test_point"):
                 continue
+            if _solder_jumper(p):
+                continue
             for cu, paste in (("F.Cu", "F.Paste"), ("B.Cu", "B.Paste")):
-                if cu in q.layers and paste not in q.layers:
+                if cu in q.layers and paste not in q.layers and not _sub_pasted(p, q, paste):
                     detail = f"{_pin(q)} has no {paste}"
                     self.add("paste_missing", detail, (q.x, q.y), None, (p.ref,), (q.net,))
+
+
+_PASTE = ("F.Paste", "B.Paste")
+_JUMPER_REF = re.compile(r"JP\d")
+
+
+def _solder_jumper(p: Part) -> bool:
+    """A solder jumper (ref `JPn` or library nickname `Jumper*`, case-insensitive) none of
+    whose pads has paste: KiCad's SolderJumper pads are intentionally paste-free."""
+    nick = p.lib_id.partition(":")[0]
+    named = bool(_JUMPER_REF.match(p.ref)) or nick.casefold().startswith("jumper")
+    return named and not any(layer in q.layers for q in p.pads for layer in _PASTE)
+
+
+def _sub_pasted(p: Part, q: Pad, paste: str) -> bool:
+    """A paste-only pad (`paste` among its layers, no copper) of part `p` has its centre
+    inside pad `q`."""
+    return any(paste in s.layers and not _copper(s) and _in_pad((s.x, s.y), q) for s in p.pads)
 
 
 _WORD = re.compile(r"\w+")

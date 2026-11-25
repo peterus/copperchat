@@ -10,10 +10,11 @@ import pytest
 
 from copperchat.board.boardmd import BoardDoc
 from copperchat.board.classify import Classification, Decoupling, DiffPair, classify
-from copperchat.board.geom import rect_poly
+from copperchat.board.geom import BendReport, analyse_tracks, rect_poly
 from copperchat.board.metrics import (
     Metric,
     MetricsReport,
+    _Ctx,
     _PlaneVoids,
     _Ring,
     _union_area,
@@ -430,6 +431,26 @@ def test_m12_width_and_mismatch() -> None:
     assert get(run(exact, cls), "M12").value == 0
 
 
+def test_m12_composite_net_class_uses_widest_known() -> None:
+    """KiCad stores a multi-class net as "Default,Power": the widest track_width among the
+    known constituents applies (conservative for a minimum-width check), unknown ones are
+    ignored, and a net with no known constituent is skipped."""
+    classes = (net_class("Default", 0.2), net_class("Power", 0.5))
+    tracks = (
+        *route("P1", [(10, 60), (20, 60)], width=0.3),  # Default,Power: 0.3 < 0.5
+        *route("P2", [(10, 65), (20, 65)], width=0.5),  # Default,Power: ok
+        *route("P3", [(10, 70), (20, 70)], width=0.3),  # Default,Nope: 0.3 >= 0.2
+        *route("P4", [(10, 75), (20, 75)], width=0.1),  # Nope,Other: skipped
+    )
+    of = (("P1", "Default,Power"), ("P2", "Power,Default"), ("P3", "Default,Nope"))
+    m = board(tracks=tracks, net_classes=classes, net_class_of=(*of, ("P4", "Nope,Other")))
+    m12 = get(run(m), "M12")
+    assert m12.value == 1, m12.offenders
+    assert m12.verdict == "fail"
+    assert [o.nets for o in m12.offenders] == [("P1",)]
+    assert "0.3 < 0.5 (Default,Power)" in m12.offenders[0].what
+
+
 def test_m13_track_in_module_rule_area() -> None:
     mod = part("U1", 15, 15, half=6, rule_areas=(tuple(rect_poly(10, 10, 10, 10)),))
     m = board(parts=(mod,), tracks=route("S1", [(12, 15), (18, 15)]))
@@ -588,15 +609,14 @@ def test_m11_two_layer_zone_per_layer_fill() -> None:
     assert m11.value == pytest.approx((16000 - 40) / 2 / 8000, abs=1e-3)
 
 
-def test_timing_gnd_stubs_4000_segments_m4_m7() -> None:
-    """2000 caps, each GND pad with a 2-segment F.Cu stub (x run, 45 degree) to a GND via:
-    4000 GND segments on one layer plus 4000 pads; M4 + M7 only, budget 2 s."""
+def _gnd_stubs_board(n: int = 2000) -> BoardModel:
+    """`n` caps, each GND pad with a 2-segment F.Cu stub (x run, 45 degree) to a GND via."""
     from .builders import outline
 
     parts: list[Part] = []
     tracks: list[object] = []
     vias = []
-    for k in range(2000):
+    for k in range(n):
         x, y = 5.0 + 5.0 * (k % 50), 5.0 + 4.0 * (k // 50)
         c = cap(f"C{k}", f"S{k}", "GND", (x, y))  # GND pad at (x + 0.5, y)
         parts.append(c)
@@ -604,12 +624,18 @@ def test_timing_gnd_stubs_4000_segments_m4_m7() -> None:
         pts = [g, (g[0] + 1.0, g[1]), (g[0] + 2.0, g[1] + 1.0)]
         tracks += route("GND", pts)
         vias.append(via("GND", pts[-1], kiid=f"v{k}"))
-    m = board(
+    return board(
         parts=tuple(parts),
         tracks=tuple(tracks),
         vias=tuple(vias),
-        outline=outline(0, 0, 260, 170),
+        outline=outline(0, 0, 260, 4.0 * (n // 50) + 10),
     )
+
+
+def test_timing_gnd_stubs_4000_segments_m4_m7() -> None:
+    """2000 caps, each GND pad with a 2-segment F.Cu stub (x run, 45 degree) to a GND via:
+    4000 GND segments on one layer plus 4000 pads; M4 + M7 only, budget 2 s."""
+    m = _gnd_stubs_board()
     assert sum(1 for t in m.tracks if t.net == "GND" and t.layer == "F.Cu") >= 4000
     cls = classify(m)
     t0 = time.perf_counter()
@@ -671,3 +697,51 @@ def test_m11_via_ring_around_removed_island_is_a_void() -> None:
     m = _m11_board(_plane((full,), ((hole,),)), route("S1", [(45, 20), (45, 60)]), vias=vias)
     cross = [o for o in get(run(m), "M11").offenders if "void" in o.what]
     assert len(cross) == 1
+
+
+def _bends_reference(m: BoardModel) -> dict[str, BendReport]:
+    """The per-net semantics of `_Ctx.bends`: `analyse_tracks` on the whole board restricted
+    to one net's tracks and arcs."""
+    nets = sorted({t.net for t in m.tracks} | {a.net for a in m.arcs})
+    return {
+        n: analyse_tracks(
+            replace(
+                m,
+                tracks=tuple(t for t in m.tracks if t.net == n),
+                arcs=tuple(a for a in m.arcs if a.net == n),
+            )
+        )
+        for n in nets
+    }
+
+
+def test_bends_per_net_equal_whole_board_semantics() -> None:
+    for m in (routed_board(11), routed_board(5), _gnd_stubs_board(300)):
+        got = _Ctx(m, classify(m), BoardDoc(), None).bends()
+        assert got == _bends_reference(m)
+
+
+def test_bends_timing_5000_parts_long_nets() -> None:
+    """5000 caps (10000 pads) on a 300 x 160 mm board: each cap's S net is a 2-segment stub,
+    and 250 long bus nets run an L (a full-width x run, then down to the bottom edge), so
+    their bounding boxes cover most of the board. `bends()` budget 3 s."""
+    from .builders import outline
+
+    parts: list[Part] = []
+    tracks: list[object] = []
+    for k in range(5000):
+        x, y = 4.0 + 3.0 * (k % 100), 4.0 + 3.0 * (k // 100)
+        parts.append(cap(f"C{k}", f"S{k}", "GND", (x, y)))  # S pad at (x - 0.5, y)
+        s = (x - 0.5, y)
+        tracks += route(f"S{k}", [s, (s[0] - 0.5, s[1] + 0.5), (s[0] - 0.5, s[1] + 1.0)])
+    for j in range(250):
+        y = 2.0 + 0.6 * j
+        tracks += route(f"B{j}", [(1.0, y), (305.0 - j * 0.02, y), (305.0 - j * 0.02, 158.0)])
+    m = board(parts=tuple(parts), tracks=tuple(tracks), outline=outline(0, 0, 310, 160))
+    c = _Ctx(m, classify(m), BoardDoc(), None)
+    t0 = time.perf_counter()
+    out = c.bends()
+    elapsed = time.perf_counter() - t0
+    print(f"bends 5000 parts / {len(m.tracks)} segments: {elapsed:.3f} s")
+    assert len(out) == 5250
+    assert elapsed < 3.0, elapsed

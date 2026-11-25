@@ -122,6 +122,52 @@ def test_placed_with_overhang_rounded_outline() -> None:
     assert not metrics.placed_with_overhang(m, m.part("J2"), "left")
 
 
+def test_placer_matches_board_model_placed() -> None:
+    """The cached placement test (outline polygon built once) equals `BoardModel.placed` on
+    rounded, sharp, polygon and missing outlines, near corners and edges."""
+    outlines = (
+        Outline("rect", 0, 0, 100, 80, 3.0, tuple(rect_poly(0, 0, 100, 80, 3.0))),
+        Outline("rect", 0, 0, 100, 80, 0.0, tuple(rect_poly(0, 0, 100, 80))),
+        Outline("other", 0, 0, 0, 0, 0.0, ((0, 0), (100, 0), (50, 80))),
+        Outline("other", 0, 0, 0, 0, 0.0, ()),
+        Outline("none", 0, 0, 0, 0, 0.0, ()),
+    )
+    spots = [
+        (x, y)
+        for x in (1.0, 2.0, 2.5, 3.0, 3.5, 50.0, 97.5, 99.0)
+        for y in (1.0, 2.5, 3.5, 40.0, 79.0)
+    ]
+    parts = [part(f"R{k}", x, y, half=h) for k, (x, y) in enumerate(spots) for h in (0.5, 1.0, 2.0)]
+    parts.append(part("NC", 50, 40, courtyard=()))
+    for o in outlines:
+        m = board(outline=o, parts=tuple(parts))
+        placed = metrics._placer(m)
+        assert [placed(p) for p in m.parts] == [m.placed(p) for p in m.parts], o
+
+
+def test_m1_m10_timing_5000_parts_rounded_outline() -> None:
+    """5000 parts on a rounded (r = 3) outline, 500 two-part blocks over 30 x 30 mm each:
+    M1 + M10 only, budget 3 s (the outline polygon is built once, placement cached)."""
+    import time
+
+    from copperchat.board.classify import BlockProposal
+
+    o = Outline("rect", 0, 0, 310, 160, 3.0, tuple(rect_poly(0, 0, 310, 160, 3.0)))
+    parts = [
+        _box(f"R{k}", 4.0 + 3.0 * (k % 100), 4.0 + 3.0 * (k // 100), 1, 1) for k in range(5000)
+    ]
+    blocks = [BlockProposal(f"blk{k}", f"R{k}", (f"R{k}", f"R{k + 1010}"), "") for k in range(500)]
+    m = board(parts=tuple(parts), outline=o)
+    cls = replace(classify(board(parts=())), blocks=tuple(blocks))
+    t0 = time.perf_counter()
+    rep = run(m, cls, only=frozenset({"M1", "M10"}))
+    elapsed = time.perf_counter() - t0
+    print(f"M1 + M10 5000 parts, rounded outline: {elapsed:.3f} s")
+    assert get(rep, "M1").value == 0
+    assert get(rep, "M10").verdict == "review"
+    assert elapsed < 3.0, elapsed
+
+
 # ---- M8 ------------------------------------------------------------------------------------
 
 _U1_PINS = {"1": "+3V3", "2": "GND", "3": "XI", "4": "XO", "5": "SIG"}

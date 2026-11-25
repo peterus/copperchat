@@ -326,6 +326,71 @@ def test_m14_paste_exempt_fiducials_and_test_points() -> None:
         assert not [o for o in m14.offenders if o.what.startswith("paste_missing")], ref
 
 
+def _qfn(ref: str, at: tuple[float, float], *, sub_pads: bool) -> Part:
+    """A QFN-like part: two pasted signal pads plus a 3 x 3 mm exposed pad on F.Cu + F.Mask
+    whose paste comes (optionally) from four F.Paste-only sub-pads, as KiCad's
+    Package_DFN_QFN footprints do."""
+    x, y = at
+    pads = [
+        with_layers(pad(ref, "1", "S1", (x - 2.0, y)), *GOOD_PAD),
+        with_layers(pad(ref, "2", "S2", (x + 2.0, y)), *GOOD_PAD),
+        with_layers(pad(ref, "3", "GND", (x, y), w=3.0, h=3.0), "F.Cu", "F.Mask"),
+    ]
+    if sub_pads:
+        pads += [
+            with_layers(pad(ref, "", "", (x + dx, y + dy), w=1.2, h=1.2), "F.Paste")
+            for dx in (-0.75, 0.75)
+            for dy in (-0.75, 0.75)
+        ]
+    return part(ref, x, y, half=3.0, pads=tuple(pads), texts=(), lib_id="Package_DFN_QFN:QFN")
+
+
+def _paste_missing(m: BoardModel) -> list[str]:
+    m14 = get(run(m, preset=JLC4), "M14")
+    return [o.what for o in m14.offenders if o.what.startswith("paste_missing")]
+
+
+def test_m14_paste_from_paste_only_sub_pads() -> None:
+    """A QFN exposed pad pasted through F.Paste-only sub-pads of the same part passes; the
+    same pad without sub-pads (or with another part's sub-pads) fails."""
+    assert _paste_missing(_add(_m14_base(), parts=(_qfn("U7", (60, 20), sub_pads=True),))) == []
+    bare = _paste_missing(_add(_m14_base(), parts=(_qfn("U7", (60, 20), sub_pads=False),)))
+    assert bare == ["paste_missing: U7.3 has no F.Paste"]
+    # sub-pads of another part over U7's EP do not count
+    donor = _qfn("U8", (60, 20), sub_pads=True)
+    donor = replace(donor, pads=tuple(q for q in donor.pads if q.number == ""))
+    other = _add(_m14_base(), parts=(_qfn("U7", (60, 20), sub_pads=False), donor))
+    assert _paste_missing(other) == ["paste_missing: U7.3 has no F.Paste"]
+
+
+def test_m14_solder_jumper_exempt_from_paste() -> None:
+    """KiCad SolderJumper pads are paste-free by design: a JPn part or a Jumper-library part
+    with no pasted pad is exempt; a resistor missing paste still fails."""
+    for ref, lib in (("JP1", "Lib:FP"), ("X3", "jumper:SolderJumper-2_P1.3mm_Open_Pad1.0x1.5mm")):
+        jp = replace(
+            part(ref, 60, 20, texts=()),
+            lib_id=lib,
+            pads=(
+                with_layers(pad(ref, "1", "A", (59.5, 20)), "F.Cu", "F.Mask"),
+                with_layers(pad(ref, "2", "B", (60.5, 20)), "F.Cu", "F.Mask"),
+            ),
+        )
+        assert _paste_missing(_add(_m14_base(), parts=(jp,))) == [], ref
+    # a jumper with one pasted pad is a normal part again
+    half = replace(
+        part("JP2", 60, 20, texts=()),
+        pads=(
+            with_layers(pad("JP2", "1", "A", (59.5, 20)), *GOOD_PAD),
+            with_layers(pad("JP2", "2", "B", (60.5, 20)), "F.Cu", "F.Mask"),
+        ),
+    )
+    assert _paste_missing(_add(_m14_base(), parts=(half,))) == [
+        "paste_missing: JP2.2 has no F.Paste"
+    ]
+    r = replace(smd("R9", (60, 20), "F.Cu", "F.Mask"), lib_id="Resistor_SMD:R_0603")
+    assert _paste_missing(_add(_m14_base(), parts=(r,))) == ["paste_missing: R9.1 has no F.Paste"]
+
+
 def test_m14_na_without_preset() -> None:
     m14 = get(run(_m14_base()), "M14")
     assert m14.verdict == "n/a"

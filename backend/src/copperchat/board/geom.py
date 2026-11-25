@@ -565,12 +565,39 @@ def _sorted(points: Iterable[Point]) -> tuple[Point, ...]:
     return tuple(sorted(points))
 
 
-def analyse_tracks(model: BoardModel) -> BendReport:
+class TrackIndex:
+    """The pads and vias of a board indexed once for `analyse_tracks`: per copper layer every
+    pad on it and every via (`_Near`, built lazily) plus the layer's pads by net, and the vias
+    by net. Share one across `analyse_tracks` calls on sub-models that keep the board's parts
+    and vias (e.g. one net's tracks at a time) instead of re-indexing per call."""
+
+    def __init__(self, model: BoardModel) -> None:
+        self._model = model
+        self._layers: dict[str, tuple[_Near, dict[str, list[Pad]]]] = {}
+        self.vias_of: dict[str, list[Via]] = {}
+        for v in model.vias:
+            self.vias_of.setdefault(v.net, []).append(v)
+
+    def layer(self, layer: str) -> tuple[_Near, dict[str, list[Pad]]]:
+        """(every pad on `layer` and every via, the layer's pads by net)."""
+        hit = self._layers.get(layer)
+        if hit is None:
+            layer_pads = _layer_pads(self._model, layer)
+            pads_of: dict[str, list[Pad]] = {}
+            for q in layer_pads:
+                pads_of.setdefault(q.net, []).append(q)
+            hit = self._layers[layer] = (_Near(layer_pads, self._model.vias), pads_of)
+        return hit
+
+
+def analyse_tracks(model: BoardModel, *, index: TrackIndex | None = None) -> BendReport:
     """`analyse_bends` over every polyline of every net/layer (pad entries where a polyline
     end lies in a same-net pad on that layer), plus T-junctions and arcs (non-octilinear).
     Non-octilinear is tested per raw track (before collinear merging); the direction change
     at a degree-2 node where polylines end (width change, same-layer via, closed-loop start)
-    is classified too unless the node lies in a same-net pad."""
+    is classified too unless the node lies in a same-net pad. `index` (default: built from
+    `model`) supplies the pads and vias; pass one built from the full board when `model` is
+    that board restricted to some nets' tracks/arcs."""
     acc: dict[str, list[Point]] = {
         k: []
         for k in (
@@ -587,19 +614,11 @@ def analyse_tracks(model: BoardModel) -> BendReport:
     by_net_layer: dict[tuple[str, str], list[Track]] = {}
     for t in model.tracks:
         by_net_layer.setdefault((t.net, t.layer), []).append(t)
-    vias_of: dict[str, list[Via]] = {}
-    for v in model.vias:
-        vias_of.setdefault(v.net, []).append(v)
-    layer_near: dict[str, tuple[_Near, dict[str, list[Pad]]]] = {}
+    if index is None:
+        index = TrackIndex(model)
     for net, layer in sorted(by_net_layer):
-        if layer not in layer_near:
-            layer_pads = _layer_pads(model, layer)
-            pads_of: dict[str, list[Pad]] = {}
-            for q in layer_pads:
-                pads_of.setdefault(q.net, []).append(q)
-            layer_near[layer] = (_Near(layer_pads, model.vias), pads_of)
-        every, pads_of = layer_near[layer]  # every pad on the layer, every via
-        pads, vias = pads_of.get(net, []), vias_of.get(net, [])
+        every, pads_of = index.layer(layer)  # every pad on the layer, every via
+        pads, vias = pads_of.get(net, []), index.vias_of.get(net, [])
         near = _Near(pads, vias)  # the net's own
         g = _graph(by_net_layer[(net, layer)], _centres(vias, pads))
         segs, adj = g

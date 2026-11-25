@@ -753,6 +753,14 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
   `metrics`) and is built once per (net, layer) for both polylines and the node checks. M10 on
   200 blocks / 3,801 parts 0.012 s (was 0.86 s; courtyard bboxes bucketed once).
 - No review threshold tuned; `HARD` / `REVIEW` are the spec §12 values (`test_hard_thresholds_verbatim`).
+- Review round 4 (5,000 parts): M1/M10 share one `placed` per part (`_Ctx.placed`, outline
+  polygon built once in `_placer`, identical to `BoardModel.placed`; a courtyard strictly inside
+  the rounded rect's two inner rectangles short-cuts the polygon test): 5,000 parts on an r = 3
+  outline, M1 + M10 (`test_m1_m10_timing_5000_parts_rounded_outline`, bound 3 s) 1.6 s (was
+  34 s). `bends()` shares one pad/via index of the whole board (`geom.TrackIndex`, optional
+  `analyse_tracks(model, index=...)`) across the per-net runs, results equal to the per-net
+  whole-board semantics (`test_bends_per_net_equal_whole_board_semantics`): 5,000 parts +
+  250 board-spanning nets (`test_bends_timing_5000_parts_long_nets`, bound 3 s) 0.49 s (was 3.5 s).
 
 **Owner decisions applied (2026-11-25)** — "Provisional" items 1–3 marked resolved above.
 `M1_EDGE_OVERHANG = True`: `placed_with_overhang(model, part, edge)` clips the courtyard to the
@@ -795,6 +803,15 @@ M13's "overhanging it" uses the same clip. Both switch settings are tested.
 - Switcher bootstrap refinement (call 15) as planned: a 2-pad cap between SW and a net holding
   only the IC and that cap is tolerated; out caps by sheet, else strictly nearer (part-centre
   `octi_dist`) to the switcher than to the rival anchor.
+- M14 `paste_missing`: a copper SMD pad also counts as pasted when a paste-only pad (F.Paste /
+  B.Paste on that side, no copper layer) of the same part has its centre inside it (KiCad
+  `Package_DFN_QFN` exposed pads get their paste from such sub-pads). Solder jumpers — ref
+  `JPn` or library nickname `Jumper*` (case-insensitive) with no pasted pad at all — are exempt
+  (KiCad SolderJumper pads are paste-free by design); everything else unchanged.
+- M12 composite effective net classes ("Default,Power", as read stores a net in several
+  classes): the widest `track_width` among the known constituents applies (KiCad takes each
+  field from the highest-priority constituent; widest is the conservative choice for a
+  minimum-width check); unknown constituents ignored, none known → skipped as before.
 - Blocks: a leftover part first joins the block that already owns one of its signal-net
   neighbours (found on `sp4_synth`: D1 in the PA4 → R4 → D1 chain went to J1's block by a
   GND-count tie), then the "most shared nets" fallback.
