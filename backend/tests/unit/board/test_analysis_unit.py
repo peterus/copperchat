@@ -1,8 +1,9 @@
-"""`pcb_analyze` without KiCad (SP4 P3a Task 5): registration, `preset_for`, the job module
-and its result shape, `strip_fills`."""
+"""`pcb_analyze` / `pcb_metrics` without KiCad (SP4 P3a Task 5): registration, `preset_for`,
+the job module and its result shapes, `strip_fills`."""
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from typing import Any
 
@@ -13,9 +14,10 @@ from copperchat.agent.profiles import PCB_READ, PROFILES, profile_specs
 from copperchat.board import jobs
 from copperchat.board.boardmd import BoardDoc, ClassOverride
 from copperchat.board.geom import rect_poly
-from copperchat.board.jobs import MAX_ENTRIES, analyse_job, strip_fills
+from copperchat.board.jobs import MAX_ENTRIES, analyse_job, metrics_job, strip_fills
 from copperchat.board.presets import PRESETS
-from copperchat.kicad_tools.board.analysis import pcb_analyze, preset_for
+from copperchat.kicad_tools.board.analysis import metrics_data, pcb_analyze, pcb_metrics, preset_for
+from copperchat.kicad_tools.board.api import DrcMarker, DrcResult
 from copperchat.kicad_tools.board.specs import TOOL_SPECS
 from copperchat.tools.registry import all_specs
 
@@ -181,3 +183,88 @@ def test_strip_fills() -> None:
     assert out.zones[0].filled_area_mm2 == 99.0
     assert replace(out, zones=m.zones) == m  # everything else kept
     assert strip_fills(out) == out
+
+
+# ---- pcb_metrics (registration, metrics_job, strip_fills equality) -------------------------
+
+
+def test_metrics_spec_registered() -> None:
+    spec = next(s for s in all_specs() if s.name == "pcb_metrics")
+    assert spec in TOOL_SPECS
+    assert spec.handler is pcb_metrics
+    assert not spec.mutating and not spec.changes_documents
+    assert "pcb_metrics" in PCB_READ
+    schema = spec.input_schema
+    assert schema["additionalProperties"] is False
+    Draft202012Validator.check_schema(schema)
+    v = Draft202012Validator(schema)
+    for ok in ({}, {"only": ["M4"]}, {"only": [f"M{i}" for i in range(1, 15)]}):
+        v.validate(ok)
+    for bad in ({"only": ["M15"]}, {"only": ["M4", "M4"]}, {"only": "M4"}, {"x": 1}):
+        with pytest.raises(ValidationError):
+            v.validate(bad)
+    assert "Read-only" in spec.description
+
+
+def test_metrics_job_module_level() -> None:
+    assert metrics_job.__module__ == "copperchat.board.jobs"
+
+
+def _m3(report: Any) -> Any:
+    return next(m for m in report.metrics if m.id == "M3")
+
+
+def test_metrics_job_parity_passthrough() -> None:
+    m = _board()
+    drc = DrcResult(markers=(), unconnected=0, seconds=0.1)
+    marker = DrcMarker("missing_footprint", "error", "U9 missing", (), None)
+    only = frozenset({"M3"})
+    with_parity = metrics_job(m, BoardDoc(), drc, None, only, (marker,))
+    assert _m3(with_parity).value == 1
+    assert _m3(with_parity).verdict == "fail"
+    without = metrics_job(m, BoardDoc(), drc, None, only, None)
+    assert _m3(without).value == 0
+    assert [x.id for x in without.metrics] == ["M3"]
+
+
+def test_strip_fills_keeps_m11_free_metrics() -> None:
+    poly = tuple(rect_poly(0, 0, 100, 80))
+    hole = tuple(rect_poly(40, 40, 5, 5))
+    plane = replace(
+        zone("P", "GND", ("In1.Cu",), poly, filled_area_mm2=7975.0),
+        filled=(poly,),
+        filled_holes=((hole,),),
+    )
+    m = replace(_board(), zones=(plane,), copper_layers=("F.Cu", "In1.Cu", "In2.Cu", "B.Cu"))
+    drc = DrcResult(markers=(), unconnected=2, seconds=0.1)
+    only = frozenset(f"M{i}" for i in range(1, 15) if i != 11)
+    preset = PRESETS["jlcpcb-4l"]
+    full = metrics_job(m, BoardDoc(), drc, preset, only)
+    stripped = metrics_job(strip_fills(m), BoardDoc(), drc, preset, only)
+    assert full == stripped
+    assert "M11" not in {x.id for x in full.metrics}
+
+
+def test_metrics_data_shape() -> None:
+    m = _board()
+    report = metrics_job(m, BoardDoc(), None, None, frozenset({"M1", "M4"}))
+    data = metrics_data(report, m)
+    assert set(data) == {
+        "stage",
+        "metrics",
+        "hard_failures",
+        "reviews",
+        "placement_hash",
+        "board_hash",
+    }
+    assert [x["id"] for x in data["metrics"]] == ["M1", "M4"]
+    assert set(data["metrics"][0]) == {
+        "id",
+        "value",
+        "verdict",
+        "hard",
+        "review",
+        "offenders",
+        "omitted",
+    }
+    json.dumps(data)  # plain JSON

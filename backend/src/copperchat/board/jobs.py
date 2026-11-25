@@ -12,13 +12,18 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from copperchat.board.boardmd import BoardDoc
 from copperchat.board.classify import classify
+from copperchat.board.metrics import MetricsReport, compute_metrics
 from copperchat.board.model import BoardModel
+from copperchat.board.presets import FabPreset
 
-__all__ = ["MAX_ENTRIES", "SCOPE_KEYS", "Scope", "analyse_job", "strip_fills"]
+if TYPE_CHECKING:
+    from copperchat.kicad_tools.board.api import DrcMarker, DrcResult
+
+__all__ = ["MAX_ENTRIES", "SCOPE_KEYS", "Scope", "analyse_job", "metrics_job", "strip_fills"]
 
 Scope = Literal["parts", "nets", "blocks", "all"]
 # Every list / mapping of the `pcb_analyze` result keeps at most this many entries.
@@ -105,3 +110,20 @@ def strip_fills(model: BoardModel) -> BoardModel:
 
 
 # ---- metrics (P3a, B-C7) -------------------------------------------------------------------
+
+
+def metrics_job(
+    model: BoardModel,
+    doc: BoardDoc,
+    drc: DrcResult | None,
+    preset: FabPreset | None,
+    only: frozenset[str] | None,
+    parity: tuple[DrcMarker, ...] | None = None,
+) -> MetricsReport:
+    """Metrics M1-M14 (B-C7) of `model`: classifies it here, in the worker, and passes
+    `parity` (full check only, P3b) through. Every metrics computation runs as
+    `run_cpu(metrics_job, ...)`; callers strip fills (`strip_fills`) when M11 is not
+    requested."""
+    return compute_metrics(
+        model, classify(model, doc), doc, drc=drc, parity=parity, preset=preset, only=only
+    )
