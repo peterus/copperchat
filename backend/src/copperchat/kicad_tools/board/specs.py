@@ -34,7 +34,11 @@ PCB_STATUS_DESCRIPTION = (
     "null without Edge.Cuts), copper layer count, footprints placed/unplaced (unplaced = "
     "courtyard not fully inside the outline; up to 50 refs listed), connections (pad pairs a "
     "fully routed board has), routed and unrouted connections (KiCad's DRC), copper zone "
-    "count, and the placement_hash / board_hash of the current state. Read-only."
+    "count, the placement_hash / board_hash of the current state, checkpoints (placement "
+    "and board: approved, stale = changed since the approval, hash, approved_at, "
+    "conversation_id) and last_check (the newest pcb_check of this session: level, "
+    "hard_failures, m1_pass, created_at, for_current = it checked the current state; "
+    "null if none). Read-only."
 )
 
 _COORD = {"type": "number", "minimum": -MAX_COORD_MM, "maximum": MAX_COORD_MM}

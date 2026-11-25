@@ -1,6 +1,7 @@
 """`pcb_status` (spec §7.1): the cheap board summary the agent reads at the start of every
 turn. A read tool: one board-model read plus one DRC task (for the unrouted count), never
-the edit lock, nothing written. Checkpoint and last-check fields come with P3b."""
+the edit lock, nothing written. With a database it adds the checkpoint states (P3b,
+B-C10) and the newest check of this conversation."""
 
 from __future__ import annotations
 
@@ -9,7 +10,9 @@ from collections import Counter
 from typing import Any
 
 from copperchat.board.model import BoardModel, board_hash, placement_hash
+from copperchat.db.repos.board import BoardReviewRepo, board_file
 from copperchat.kicad_tools.board import api
+from copperchat.kicad_tools.board.checkpoints import checkpoint_state
 from copperchat.kicad_tools.board.read import board_model
 from copperchat.kicad_tools.filtering import natural_key
 from copperchat.tools.spec import ToolContext, ToolResult
@@ -73,4 +76,35 @@ async def pcb_status(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         timeout=api.drc_call_timeout(STATUS_DRC_TIMEOUT_S),
     )
     # the hashes serialise the whole board: in a thread, not on the event loop
-    return ToolResult(data=await asyncio.to_thread(status_data, model, drc.unconnected))
+    data = await asyncio.to_thread(status_data, model, drc.unconnected)
+    data["checkpoints"], data["last_check"] = await _review_fields(ctx, model, data)
+    return ToolResult(data=data)
+
+
+async def _review_fields(
+    ctx: ToolContext, model: BoardModel, data: dict[str, Any]
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """(`checkpoints`, `last_check`): both stages' checkpoint state with stale flags, and
+    the newest `pcb_check` of this board in this conversation (`for_current`: it checked
+    the current state); None without a database (and `last_check` without a
+    conversation)."""
+    if ctx.editing is None:
+        return None, None
+    db = ctx.editing.db
+    checkpoints = dict(await checkpoint_state(db, ctx.project, model))
+    if ctx.conversation_id is None:
+        return checkpoints, None
+    row = await BoardReviewRepo(db).last_check(
+        ctx.project.id, board_file(ctx.project), ctx.conversation_id
+    )
+    if row is None:
+        return checkpoints, None
+    last = {
+        "level": row.check_level,
+        "hard_failures": row.hard_failures,
+        "m1_pass": row.m1_pass == 1,
+        "created_at": row.created_at,
+        "for_current": row.placement_hash == data["placement_hash"]
+        and row.board_hash == data["board_hash"],
+    }
+    return checkpoints, last
