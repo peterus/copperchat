@@ -431,7 +431,7 @@ grouping; the plan may refine fields, not semantics).
 - `pcb_route {nets: [..≤50], layers?: [..], width_from?: "netclass", lock?: bool=true,
   allow_vias?: bool=true}` — own octilinear router, per connection; each result checked by the DRC
   task before it is kept. Report per net: routed/failed with the reason. Cost `ceil(n/5)`.
-- `pcb_route_fill {timeout_s?: ≤600, passes?: ≤100}` — Freerouting for all unrouted
+- `pcb_route_fill {timeout_s?: ≤600, passes?: ≤100, relock_nets?: [..≤50]}` — Freerouting for all unrouted
   connections, then the post-processor (§10.3). Report: completion, rejected connections, metrics.
   Cost 5.
 - `pcb_unroute {nets?: [..], region?: {x,y,w,h}, include_locked?: bool=false, unlock_only?: bool=false}` — deletes tracks
@@ -723,8 +723,9 @@ From the spike prototype (`router.py`: 15/15 short nets clean), extended:
   deleting them. Step (b) selects **by net, critical signal nets only**; ground/plane-net items
   (fanout stubs, stitching vias) are never unlocked by it, and `unlock_only` with a `region`
   skips plane-net items unless they are named in `nets` — otherwise the re-fill's SES import
-  could re-create them with new KIIDs and step 5 would delete them (the `session-board` skill names it for this step; the affected nets are re-locked
-  by the post-processor if they still pass M4/M7); (c) route the rest with the own
+  could re-create them with new KIIDs and step 5 would delete them (the `session-board` skill names it for this step; the unlocked nets are returned
+  by `pcb_unroute` and passed to `pcb_route_fill {relock_nets: [...]}`, whose post-processor
+  re-locks them if they still pass M4/M7; a P6 test covers unlock → fill → re-lock); (c) route the rest with the own
   router (with vias); (d) report the open connections with positions and ask (placement change,
   more layers, larger board). The agent never calls the board done with open connections.
 - **Post-processor** (`router/chamfer.py`, spec call for the parameters):
