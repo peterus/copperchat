@@ -1,4 +1,4 @@
-From ecf08b0164d4f7dd53861ec3466cea4fe2ff10da Mon Sep 17 00:00:00 2001
+From 950891d060329042fe78170619b6addd02e52fc6 Mon Sep 17 00:00:00 2001
 From: Peter Buchegger <peter.buchegger7@gmail.com>
 Date: Wed, 25 Nov 2026 19:23:29 +0100
 Subject: [PATCH] TODO(owner): write message (board stackup handler)
@@ -6,11 +6,11 @@ Subject: [PATCH] TODO(owner): write message (board stackup handler)
 Assisted-by: Claude
 ---
  api/proto/board/board_commands.proto          |   5 +-
- pcbnew/api/api_handler_pcb.cpp                | 147 +++++
+ pcbnew/api/api_handler_pcb.cpp                | 151 +++++
  pcbnew/api/api_handler_pcb.h                  |   3 +
  .../board_stackup_manager/board_stackup.cpp   | 194 +++++-
- qa/tests/api/test_api_handler_pcb.cpp         | 552 ++++++++++++++++++
- 5 files changed, 896 insertions(+), 5 deletions(-)
+ qa/tests/api/test_api_handler_pcb.cpp         | 570 ++++++++++++++++++
+ 5 files changed, 918 insertions(+), 5 deletions(-)
 
 diff --git a/api/proto/board/board_commands.proto b/api/proto/board/board_commands.proto
 index 06b75fe6..08e19ad0 100644
@@ -29,7 +29,7 @@ index 06b75fe6..08e19ad0 100644
  message UpdateBoardStackup
  {
 diff --git a/pcbnew/api/api_handler_pcb.cpp b/pcbnew/api/api_handler_pcb.cpp
-index ec99a8f7..b7a506db 100644
+index ec99a8f7..25265e6b 100644
 --- a/pcbnew/api/api_handler_pcb.cpp
 +++ b/pcbnew/api/api_handler_pcb.cpp
 @@ -38,6 +38,7 @@
@@ -64,7 +64,7 @@ index ec99a8f7..b7a506db 100644
      if( enabled != previousEnabled || modified )
          onModified();
  
-@@ -694,6 +705,142 @@ HANDLER_RESULT<BoardEnabledLayersResponse> API_HANDLER_PCB::handleSetBoardEnable
+@@ -694,6 +705,146 @@ HANDLER_RESULT<BoardEnabledLayersResponse> API_HANDLER_PCB::handleSetBoardEnable
  }
  
  
@@ -73,6 +73,10 @@ index ec99a8f7..b7a506db 100644
 +{
 +    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() ); !documentValidation )
 +        return tl::unexpected( documentValidation.error() );
++
++    // An open Board Setup dialog would write its own stackup copy back over this one
++    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
++        return tl::unexpected( *busy );
 +
 +    auto badRequest =
 +            []( const std::string& aMessage ) -> HANDLER_RESULT<BoardStackupResponse>
@@ -441,7 +445,7 @@ index 96df23b4..6969a6d7 100644
  
  
 diff --git a/qa/tests/api/test_api_handler_pcb.cpp b/qa/tests/api/test_api_handler_pcb.cpp
-index 70dfa5f7..5e5543c4 100644
+index 70dfa5f7..4675f35a 100644
 --- a/qa/tests/api/test_api_handler_pcb.cpp
 +++ b/qa/tests/api/test_api_handler_pcb.cpp
 @@ -17,7 +17,11 @@
@@ -596,7 +600,7 @@ index 70dfa5f7..5e5543c4 100644
  } // namespace
  
  
-@@ -817,4 +947,426 @@ BOOST_AUTO_TEST_CASE( DrcExclusionDropsMarkerReportFields )
+@@ -817,4 +947,444 @@ BOOST_AUTO_TEST_CASE( DrcExclusionDropsMarkerReportFields )
  }
  
  
@@ -896,6 +900,9 @@ index 70dfa5f7..5e5543c4 100644
 +        API_RESULT result = send( bad );
 +        BOOST_REQUIRE( !result.has_value() );
 +        BOOST_CHECK_EQUAL( result.error().status(), kiapi::common::ApiStatusCode::AS_BAD_REQUEST );
++
++        // Refused by Deserialize itself, not by a later structural check
++        BOOST_CHECK( result.error().error_message().starts_with( "invalid stackup" ) );
 +    }
 +
 +    BOOST_CHECK( !board->GetDesignSettings().m_HasStackup );
@@ -907,6 +914,21 @@ index 70dfa5f7..5e5543c4 100644
 +    d.mutable_thickness()->set_value_nm( 10000000 );
 +    d.mutable_dielectric()->mutable_layer( 0 )->mutable_thickness()->set_value_nm( 10000000 );
 +    BOOST_CHECK( send( thick ).has_value() );
++}
++
++
++BOOST_AUTO_TEST_CASE( UpdateBoardStackupEmptyRejected )
++{
++    BOARD* board = loadBoard( wxS( "issue5830" ) );
++
++    API_HANDLER_PCB           handler( m_context );
++    kiapi::common::ApiRequest request = makeUpdateStackupRequest( *board, kiapi::board::BoardStackup() );
++    API_RESULT                result = handler.Handle( request );
++
++    // An empty stackup never matches the board's copper layers: refused, nothing stored
++    BOOST_REQUIRE( !result.has_value() );
++    BOOST_CHECK_EQUAL( result.error().status(), kiapi::common::ApiStatusCode::AS_BAD_REQUEST );
++    BOOST_CHECK( !board->GetDesignSettings().m_HasStackup );
 +}
 +
 +

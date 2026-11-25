@@ -13,7 +13,7 @@ import math
 import os
 import re
 import stat
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Any
@@ -955,14 +955,25 @@ MAX_TOTAL_NM = 100_000_000
 MAX_SUBLAYERS = 32
 
 
-def _unrestorable(stackup: board_pb2.BoardStackup, copper_layers: int) -> str | None:
-    """Why patch 0005 would refuse to write `stackup` back onto a board with
-    `copper_layers` copper layers (KiCad accepts such stackups from files: a disabled or
-    zero-thickness copper / dielectric layer, values beyond the patch's limits, or a stale
-    explicit stackup for another layer count), else None."""
-    copper = sum(1 for la in stackup.layers if la.type == board_pb2.BSLT_COPPER)
-    if copper != copper_layers:
-        return f"it describes {copper} copper layers, the board has {copper_layers}"
+_FRONT_TECH = frozenset({BoardLayer.BL_F_Mask, BoardLayer.BL_F_Paste, BoardLayer.BL_F_SilkS})
+_COPPER_IDS = range(BoardLayer.BL_F_Cu, BoardLayer.BL_B_Cu + 1)  # F.Cu, In1..In30, B.Cu
+
+
+def _unrestorable(stackup: board_pb2.BoardStackup, enabled: Collection[int]) -> str | None:
+    """Why patch 0005 would refuse to write `stackup` back onto a board with the `enabled`
+    layers (KiCad accepts such stackups from files: a disabled or zero-thickness copper /
+    dielectric layer, values beyond the patch's limits, technical layers that are not
+    enabled, duplicated or on the wrong side, or a stale explicit stackup for other copper
+    layers), else None. Mirrors `handleUpdateBoardStackup` / `BOARD_STACKUP::Deserialize`."""
+    copper = [la.layer for la in stackup.layers if la.type == board_pb2.BSLT_COPPER]
+    want = sorted(x for x in enabled if x in _COPPER_IDS)  # proto ids follow the stack order
+    if len(copper) != len(want):
+        return f"it describes {len(copper)} copper layers, the board has {len(want)}"
+    if copper != want:
+        return "its copper layers are not the board's, in stack order"
+    kinds = [la.type == board_pb2.BSLT_COPPER for la in _copper_and_dielectrics(stackup)]
+    if kinds != [i % 2 == 0 for i in range(len(kinds))] or kinds[-1:] != [True]:
+        return "its copper and dielectric layers do not alternate"
     for layer in _copper_and_dielectrics(stackup):
         name = "a dielectric" if layer.type == board_pb2.BSLT_DIELECTRIC else "a copper layer"
         if not layer.enabled:
@@ -971,7 +982,17 @@ def _unrestorable(stackup: board_pb2.BoardStackup, copper_layers: int) -> str | 
         if any(t <= 0 for t in [s.thickness.value_nm for s in subs] or [layer.thickness.value_nm]):
             return f"{name} has no thickness"
     total = 0
+    seen: set[int] = set()
+    copper_seen = 0
     for layer in stackup.layers:
+        if layer.type == board_pb2.BSLT_COPPER:
+            copper_seen += 1
+        elif layer.type != board_pb2.BSLT_DIELECTRIC:
+            if layer.layer not in enabled or layer.layer in seen:
+                return "a technical layer is not enabled on the board or appears twice"
+            if copper_seen != (0 if layer.layer in _FRONT_TECH else len(want)):
+                return "a technical layer is on the wrong side of the copper"
+            seen.add(layer.layer)
         subs = list(layer.dielectric.layer) if layer.type == board_pb2.BSLT_DIELECTRIC else []
         if len(subs) > MAX_SUBLAYERS:
             return f"a dielectric has more than {MAX_SUBLAYERS} sub-layers"
@@ -980,13 +1001,17 @@ def _unrestorable(stackup: board_pb2.BoardStackup, copper_layers: int) -> str | 
             values += [sub.epsilon_r, sub.loss_tangent, sub.spec_frequency]
         if any(not math.isfinite(v) or v < 0 for v in values):
             return "a material value is not a finite, non-negative number"
-        for nm in [s.thickness.value_nm for s in subs] or [layer.thickness.value_nm]:
-            if nm > MAX_LAYER_NM:
-                return "a layer is thicker than 10 mm"
-            total += nm
+        for nm in [layer.thickness.value_nm, *(s.thickness.value_nm for s in subs)]:
+            if nm < 0 or nm > MAX_LAYER_NM:
+                return "a layer thickness is negative or above 10 mm"
+        total += sum(s.thickness.value_nm for s in subs) if subs else layer.thickness.value_nm
     if total > MAX_TOTAL_NM:
         return "the stackup is thicker than 100 mm"
     return None
+
+
+def _enabled(h: KicadHandle) -> list[int]:
+    return [int(x) for x in h.board().get_enabled_layers()]
 
 
 def has_stackup_handler(h: KicadHandle) -> bool:
@@ -1036,7 +1061,7 @@ def _set_stackup(
     pre-call stackup after it (`_undo_layers`). A board stackup the API could not write
     back (so no undo) is refused before the write."""
     pre = get_stackup(h)
-    why = _unrestorable(pre, preset.copper_layers)
+    why = _unrestorable(pre, _enabled(h))
     if why:
         if not has_stackup_handler(h):
             raise _stackup_unavailable()
@@ -1152,7 +1177,7 @@ def _set_layers(h: KicadHandle, target: int, state: dict[str, Any]) -> None:
         if items:
             raise _layers_refused(target, items)
     pre = get_stackup(h)
-    why = _unrestorable(pre, current)
+    why = _unrestorable(pre, _enabled(h))
     # The layer count's undo could not write it back (patch 0005 refuses it); without the
     # patch it never writes a stackup, so nothing to refuse
     if why and has_stackup_handler(h):

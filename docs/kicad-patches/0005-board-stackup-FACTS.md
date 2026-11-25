@@ -50,7 +50,9 @@ here is meant to be pasted upstream; KiCad's tool-generated-content policy appli
    thickness only when no sub-layer is given).
 2. `pcbnew/api/api_handler_pcb.{h,cpp}`: `handleUpdateBoardStackup`, registered next to
    `SetBoardEnabledLayers`. After `validateDocument`:
-   - `Deserialize` fails → `AS_BAD_REQUEST`;
+   - `checkForBusy()` (an open Board Setup dialog would write its own stackup copy back over
+     the API's on OK; the upstream `SetBoardEnabledLayers` does not check this either);
+   - `Deserialize` fails → `AS_BAD_REQUEST` ("invalid stackup: …");
    - copper and dielectric layers must be enabled, alternate, start and end with copper;
    - the copper layers must be exactly the board's enabled copper layers in stack order
      (else `AS_BAD_REQUEST`, "change the layer count with SetBoardEnabledLayers first"), so the
@@ -98,7 +100,8 @@ here is meant to be pasted upstream; KiCad's tool-generated-content policy appli
   `UpdateBoardStackupInvalidValuesRejected` (thickness beyond `int` and 10 mm + 1 nm, 11 × 10 mm
   sub-layers > 100 mm, 33 sub-layers, NaN Er on a dielectric and on the mask, negative loss
   tangent, infinite spec frequency, unknown edge connector / board layer / layer type enum, too many layers; stackup unchanged; exactly
-  10 mm accepted), `UpdateBoardStackupKeepsColorNames` ("Green" mask and
+  10 mm accepted), `UpdateBoardStackupEmptyRejected` (empty message → `AS_BAD_REQUEST`, nothing stored; CopperChat
+  uses this as its patch probe), `UpdateBoardStackupKeepsColorNames` ("Green" mask and
   "FR4 natural" dielectric survive get → update), `SetBoardEnabledLayersKeepsStackupInSync`
   (4 → 6), `SetBoardEnabledLayersShrinksStackup` (4 → 2: F.Cu, first dielectric, B.Cu keep their
   values), `SetBoardEnabledLayersWithoutStackupUnchanged` (no explicit stackup → stays implicit).

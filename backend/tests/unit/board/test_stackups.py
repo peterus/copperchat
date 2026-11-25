@@ -144,6 +144,21 @@ def _copper(layer: BoardLayer.ValueType, t_nm: int = 35_000) -> board_pb2.BoardS
     return out
 
 
+def _enabled(copper: int) -> list[int]:
+    inner = [BoardLayer.BL_In1_Cu + i for i in range(copper - 2)]
+    return [
+        BoardLayer.BL_F_Cu,
+        *inner,
+        BoardLayer.BL_B_Cu,
+        BoardLayer.BL_Edge_Cuts,
+        BoardLayer.BL_F_Mask,
+        BoardLayer.BL_B_Mask,
+    ]
+
+
+ENABLED_4L = _enabled(4)
+
+
 def _default_4l() -> board_pb2.BoardStackup:
     """KiCad's default-like 4-layer stackup (mask and silk around the copper)."""
     s = board_pb2.BoardStackup()
@@ -219,7 +234,7 @@ class FakeBoard:
     get_tracks = get_vias = get_zones = get_shapes = get_text = _none
 
     def get_enabled_layers(self) -> list[int]:
-        return [BoardLayer.BL_F_Cu, BoardLayer.BL_B_Cu, BoardLayer.BL_Edge_Cuts]
+        return _enabled(self.copper)
 
     def set_enabled_layers(self, count: int, layers: list[int]) -> None:
         self.log.append(f"layers {count}")
@@ -466,6 +481,49 @@ async def test_unpatched_stale_stackup_is_unavailable(
 )
 def test_unrestorable_limits(edit: Any, why: str) -> None:
     s = _default_4l()
-    assert setup._unrestorable(s, 4) is None
+    assert setup._unrestorable(s, ENABLED_4L) is None
     edit(s)
-    assert why in (setup._unrestorable(s, 4) or "")
+    assert why in (setup._unrestorable(s, ENABLED_4L) or "")
+
+
+def _subs(layer: Any, sizes: list[int]) -> None:
+    """Dielectric sub-layers of `sizes` nm; the layer-level thickness is the first one's
+    (as KiCad serialises it)."""
+    del layer.dielectric.layer[:]
+    for nm in sizes:
+        layer.dielectric.layer.add(thickness={"value_nm": nm}, epsilon_r=4.5)
+    layer.thickness.value_nm = sizes[0]
+
+
+def test_unrestorable_limits_inclusive() -> None:
+    s = _default_4l()
+    _subs(s.layers[4], [10_000_000])  # exactly 10 mm
+    _subs(s.layers[2], [1000] * 32)  # exactly 32 sub-layers
+    assert setup._unrestorable(s, ENABLED_4L) is None
+    # exactly 100 mm in total
+    fixed = (
+        sum(la.thickness.value_nm for la in s.layers if la.type != board_pb2.BSLT_DIELECTRIC)
+        + 32 * 1000
+        + 480_000
+    )
+    rest = 100_000_000 - fixed
+    _subs(s.layers[4], [10_000_000] * (rest // 10_000_000) + [rest % 10_000_000])
+    assert setup._unrestorable(s, ENABLED_4L) is None
+    s.layers[4].dielectric.layer[-1].thickness.value_nm += 1
+    assert "100 mm" in (setup._unrestorable(s, ENABLED_4L) or "")
+
+
+@pytest.mark.parametrize(
+    ("edit", "why"),
+    [
+        (lambda s: s.layers.add().CopyFrom(s.layers[0]), "appears twice"),  # F.Mask again
+        (lambda s: setattr(s.layers[0], "layer", BoardLayer.BL_F_Paste), "not enabled"),
+        (lambda s: s.layers.append(s.layers.pop(0)), "wrong side"),  # F.Mask below B.Cu
+        (lambda s: setattr(s.layers[5], "layer", BoardLayer.BL_In3_Cu), "copper layers"),
+        (lambda s: setattr(s.layers[0].thickness, "value_nm", -1), "negative"),
+    ],
+)
+def test_unrestorable_structure(edit: Any, why: str) -> None:
+    s = _default_4l()
+    edit(s)
+    assert why in (setup._unrestorable(s, ENABLED_4L) or "")

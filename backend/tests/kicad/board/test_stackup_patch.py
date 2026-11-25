@@ -20,6 +20,7 @@ from copperchat.kicad_tools.board.engine import BoardChangeSet
 from copperchat.kicad_tools.board.read import load_board_model
 from copperchat.kicad_tools.board.setup import (
     get_stackup,
+    has_stackup_handler,
     stackup_request,
     stackup_thicknesses,
     update_stackup,
@@ -111,6 +112,14 @@ async def test_zero_dielectric_rejected(ecc83_session: KicadSession) -> None:
     with pytest.raises(ApiError) as info:
         await s.call(lambda h: update_stackup(h, bad))
     assert info.value.code == ApiStatusCode.AS_BAD_REQUEST
+    assert await s.call(get_stackup) == pre
+
+
+async def test_probe_finds_patch_without_writing(ecc83_session: KicadSession) -> None:
+    """`has_stackup_handler`'s empty-stackup probe: refused by patch 0005, nothing stored."""
+    s = ecc83_session
+    pre: board_pb2.BoardStackup = await s.call(get_stackup)
+    assert await s.call(has_stackup_handler) is True
     assert await s.call(get_stackup) == pre
 
 

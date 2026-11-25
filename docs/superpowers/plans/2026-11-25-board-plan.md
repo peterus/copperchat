@@ -772,8 +772,10 @@ name as planned; owner facts `docs/kicad-patches/0005-board-stackup-FACTS.md`)
   board stackup the API could not write back (disabled or zero-thickness copper/dielectric, or a
   stale stackup for another copper count — KiCad accepts those from files) is refused before the
   write by both the stackup stage and the layer-count stage (its undo writes the pre-call
-  stackup back); `_unrestorable` mirrors the patch's limits (10 mm per layer, 100 mm total, 32
-  sub-layers, finite non-negative material values). Only when such a refusal is due,
+  stackup back); `_unrestorable` mirrors every check of the patch (copper ids = the enabled
+  ones in stack order, alternation, enabled / positive copper and dielectrics, technical layers
+  enabled + unique + on their side, 0–10 mm per layer, 100 mm total, 32 sub-layers, finite
+  non-negative material values). Only when such a refusal is due,
   `has_stackup_handler` probes for patch 0005 with an empty stackup (refused, never written): an
   unpatched server never writes a stackup back, so it gets `stackup_unavailable` for `stackup`
   and no refusal for a plain layer change. A layer count change without
