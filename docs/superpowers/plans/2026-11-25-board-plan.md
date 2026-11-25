@@ -732,6 +732,83 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
 
 (Each phase adds its section here in its own PR.)
 
+### As built (P3b)
+
+**Measured / recorded** (`tests/kicad/board/test_check.py::test_full_runs_parity_and_m14`,
+`record_property`; `sp4_synth` after sync, outline 60 × 45 mm, rules `jlcpcb-4l`, 26 parts in
+the staging area, unrouted, local kicad-base image)
+- `pcb_check quick` ≈ 0.50 s, `pcb_check full` ≈ 9.0 s (copy + `kicad-cli pcb drc
+  --schematic-parity` under `BOARD_CLI_LOCK`, 120 s limit).
+
+**Guards** (`cc/kicad_tools/board/approve.py`, each `approval_not_allowed` with `details.guard`,
+evaluated in this order): 1 hash of the stage (`details.other_stage = true` for the other
+stage's current hash); 2 evidence in this conversation for the hash (`details.missing` lists
+the missing pieces; also refused without a conversation or database); 3 evidence passes
+(placement: newest check for the hash has `m1_pass = 1`; board: newest full check
+`hard_failures = 0`); **4 no write after evidence** (no change-log row of a `BOARD_KINDS` kind
+other than `board_approve` for the project with `created_at >=` the OLDEST evidence row used;
+ties refuse); 5 a user-typed message of this run later than the NEWEST evidence row; 6 the
+quote in one of them; 7 no running plan. `apply` re-reads the board, then inside one
+`db.transaction()` re-checks guards 1 and 4 (`evidence_since` carried in the change set
+summary), inserts the checkpoint row and the `board_approve` change row
+(`ChangeRepo.add_many_in_transaction`), then notifies `on_changes_recorded`.
+
+**Contract deviations / additions**
+- `checkpoint_state` is **async** (`await checkpoint_state(db, project, model)`; the DB is
+  async). `CheckpointState` fields: `approved`, `stale`, `hash`, `approved_at`,
+  `conversation_id`. `require_*_approved` details: `placement_not_approved {stale,
+  placement_hash}`, `not_approved {reason ∈ missing|stale|check_failed, board_hash}`.
+- `cc/approvals.py`: `human_messages_after(ctx, since_iso: str | None) -> list[MessageRow]`
+  (`created_at > since_iso`), `plan_running(ctx) -> bool`, `normalise`, `quote_in_message`,
+  `MIN_QUOTE_WORDS`/`MIN_QUOTE_CHARS`; `footprints/approve.py` imports them (re-exports
+  `normalise`, `quote_in_message`); footprint tests unchanged.
+- `cc/kicad_tools/board/checkpoints.py` also exports `board_written_since(db, project_id,
+  since_iso) -> bool` (one bounded SQL query over `changes`, kinds `WRITE_KINDS = BOARD_KINDS −
+  {board_approve}`) — guard 4 and the evidence recorders use it instead of loading
+  `ChangeRepo.since` rows.
+- `BoardReviewRepo.last_check(project_id, board_file, conversation_id)` (for `pcb_status`).
+- `record_unless_written(db, project_id, since_iso, record)` (checkpoints.py): the evidence
+  recorders run "no board write logged since the model read" and the insert in ONE
+  transaction, so a write logged afterwards always has `created_at >=` the evidence row
+  (ChangeRepo now stamps `created_at` inside the transaction) and guard 4 sees it.
+- `require_board_approved` uses the NEWEST full check of the board hash (must have 0 hard
+  failures), like guard 3 — stricter than "a passing full check exists".
+- Evidence recording: `pcb_render` records a `render` row only for a whole-board render
+  (`region` absent: a zoomed render shows part of the board) and only when no board write was
+  logged since its model read; `pcb_check` records nothing when the hashes before/after differ
+  **or** a board write was logged meanwhile (`stale: true` in the result).
+- `pcb_check` result: `level`, `errors` / `warnings` (each `{type, severity, text, refs, x,
+  y}`, warnings + `accepted`; ≤ 50 + `<key>_omitted`), `parity` (null for quick), the
+  `pcb_metrics` fields (`stage`, `metrics`, `hard_failures`, `reviews`, both hashes),
+  `verdict`, `stale`, `seconds`, full adds `cli_crosscheck {only_cli, only_api}`.
+- **`cli_crosscheck` compares per normalised DRC type (count difference), not by KIID set:**
+  pad KIIDs differ between the live board and the copy kicad-cli reads (probe on synth: 162
+  identical non-unconnected violations, all pad-KIID sets different), so a KIID comparison
+  was pure noise.
+- `pcb_check full` copy dir: `.kicad-agent/board/check/<uuid>/` with `save_copy("sch", …,
+  save_modified=False)` (an unsaved schematic → `schematic_unsaved`, never a save), the
+  board copy, byte copies of `.kicad_pro`, `fp-lib-table`, `sym-lib-table` (regular files
+  only, `O_NOFOLLOW`, ≤ 16 MiB); the JSON report is read only as a regular file ≤ 32 MiB;
+  timeout, no report, a bad report or a copy failure → `drc_rejected`. Without a schematic →
+  `drc_rejected`.
+- `pcb_approve` also calls `require_board_tools` (`board_tools_disabled`) and `require_board`.
+- `cc/editing/gate.py`: `PLAN_EXEMPT_TOOLS = frozenset({"fp_approve", "pcb_approve"})`.
+
+**Residuals for later phases**
+- M3 acceptance maps marker KIIDs to refs via **part** KIIDs only (P3a): on `sp4_synth` every
+  warning names pads or footprint fields (`copper_outside_board`, `silk_edge_clearance`), so
+  such warnings can never be `accepted` through `board.md`. `test_accepted_warning_marked`
+  therefore adds one part-level warning to the real DRC result. **P7 (`pcb_tidy_silk`) / P9a**
+  should map pad and field KIIDs to their footprint (needs pad/text KIIDs in the model, P1a
+  file).
+- The board approval is tested with evidence rows recorded through the repository (a full
+  check without hard failures needs a routed board; P9a's golden run covers the real path).
+- Board writes log their change row through `record_applied`, which swallows insert errors
+  (P1a engine): a write whose change row failed is invisible to guard 4 (the hash guard still
+  applies). Never seen; inherited.
+- **P5b/P6b/P7** call `require_placement_approved(ctx, model)`, **P8** `require_board_approved`
+  (both async, fail closed without a database).
+
 ### As built (P6a)
 
 **Lock values** (`docker/freerouting.lock`, checked 2026-11-25)

@@ -11,6 +11,7 @@ import difflib
 import json
 import logging
 import math
+from collections.abc import Awaitable
 from typing import Any
 
 from copperchat.board.model import BoardModel, Rect
@@ -19,7 +20,7 @@ from copperchat.db import utcnow_iso
 from copperchat.db.repos.board import BoardReviewRepo, board_file
 from copperchat.errors import StructuredToolError
 from copperchat.kicad_tools.board import api
-from copperchat.kicad_tools.board.checkpoints import board_written_since
+from copperchat.kicad_tools.board.checkpoints import record_unless_written
 from copperchat.kicad_tools.board.read import board_model, require_board
 from copperchat.tools.spec import ImageBlock, ToolContext, ToolResult
 from copperchat.views.board_render import ANGLES, BOARD_VIEWS, BoardRender, render_board
@@ -139,19 +140,21 @@ async def _record_evidence(ctx: ToolContext, view: str, out: BoardRender, since:
     board write was logged since the model was read (the image may show a newer state)."""
     if ctx.conversation_id is None or ctx.editing is None:
         return
-    db = ctx.editing.db
-    if await board_written_since(db, ctx.project.id, since):
+    db, cid = ctx.editing.db, ctx.conversation_id
+
+    def record() -> Awaitable[int]:
+        return BoardReviewRepo(db).record_render(
+            ctx.project.id,
+            board_file(ctx.project),
+            cid,
+            ctx.run_id,
+            view=view,
+            placement_hash=out.placement_hash,
+            board_hash=out.board_hash,
+        )
+
+    if not await record_unless_written(db, ctx.project.id, since, record):
         log.info("pcb_render: board written during the render; no evidence recorded")
-        return
-    await BoardReviewRepo(db).record_render(
-        ctx.project.id,
-        board_file(ctx.project),
-        ctx.conversation_id,
-        ctx.run_id,
-        view=view,
-        placement_hash=out.placement_hash,
-        board_hash=out.board_hash,
-    )
 
 
 async def pcb_render(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:

@@ -11,12 +11,15 @@ from typing import Any, cast
 import pytest
 
 from copperchat.board.model import BoardModel, board_hash, placement_hash
+from copperchat.changes.repo import ChangeEntry, ChangeRepo
 from copperchat.config import Settings
 from copperchat.db import Database
 from copperchat.db.repos.board import BoardCheckpointRepo, BoardReviewRepo
 from copperchat.errors import StructuredToolError
 from copperchat.kicad_tools.board.checkpoints import (
+    board_written_since,
     checkpoint_state,
+    record_unless_written,
     require_board_approved,
     require_placement_approved,
 )
@@ -174,3 +177,29 @@ async def test_other_board_file_does_not_count(
     )
     with pytest.raises(StructuredToolError):
         await require_placement_approved(_ctx(project, db, make_settings()), m)
+
+
+async def test_record_unless_written(db: Database) -> None:
+    since = "2026-11-25T10:00:00.000Z"
+
+    async def write(kind: str, at: str) -> None:
+        await ChangeRepo(db).add_many(
+            [ChangeEntry(PID, "r", None, 0, "t", "modify", kind, "", "", created_at=at)]
+        )
+
+    calls: list[int] = []
+
+    async def record() -> int:
+        calls.append(1)
+        return 1
+
+    await write("board_move", "2026-11-25T09:59:59.999Z")  # before: ignored
+    await write("board_approve", since)  # an approval is no write
+    await write("symbol", since)  # a schematic edit is no board write
+    assert not await board_written_since(db, PID, since)
+    assert await record_unless_written(db, PID, since, record) is True
+    await write("board_set_rules", since)  # a tie counts (fail closed)
+    assert await board_written_since(db, PID, since)
+    assert await record_unless_written(db, PID, since, record) is False
+    assert calls == [1]
+    assert not await board_written_since(db, "f" * 12, since)

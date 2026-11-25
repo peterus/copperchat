@@ -9,6 +9,7 @@ the fab export (P8). Both fail closed without a database."""
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, TypedDict
 
 from copperchat.board.model import BoardModel, board_hash, placement_hash
@@ -69,6 +70,20 @@ async def board_written_since(db: Database, project_id: str, since_iso: str) -> 
         (project_id, since_iso, *sorted(WRITE_KINDS)),
     )
     return row is not None
+
+
+async def record_unless_written(
+    db: Database, project_id: str, since_iso: str, record: Callable[[], Awaitable[int]]
+) -> bool:
+    """Record a piece of evidence (`record`) unless a board write was logged since
+    `since_iso` (the moment its model was read), atomically: the check and the insert share
+    one transaction, so a write logged later has a `created_at` at or after the evidence
+    row's and `pcb_approve` guard 4 sees it. Returns whether the row was written."""
+    async with db.transaction():
+        if await board_written_since(db, project_id, since_iso):
+            return False
+        await record()
+        return True
 
 
 async def require_placement_approved(ctx: ToolContext, model: BoardModel) -> None:

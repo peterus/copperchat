@@ -242,15 +242,68 @@ async def test_check_stale_records_nothing(
     synth_setup: SynthSetup, setup_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A board write logged while the check ran → stale, no row."""
-    from copperchat.kicad_tools.board import check as check_mod
+    from copperchat.kicad_tools.board import checkpoints
 
     ctx = synth_setup.turn(setup_db, "run-s1")
     monkeypatch.setattr(
-        check_mod, "board_written_since", lambda db, pid, since: asyncio.sleep(0, True)
+        checkpoints, "board_written_since", lambda db, pid, since: asyncio.sleep(0, True)
     )
     out = await _tool(ctx, "pcb_check", level="quick")
     assert out["stale"] is True
     assert await _rows(setup_db, ctx) == []
+
+
+async def test_check_hash_change_records_nothing(
+    synth_setup: SynthSetup, setup_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The board read after the DRC differs (a change no tool logged) → stale, no row."""
+    from copperchat.kicad_tools.board.read import board_model
+
+    ctx = synth_setup.turn(setup_db, "run-s2")
+    reads: list[int] = []
+
+    async def changing(c: ToolContext) -> Any:
+        m = await board_model(c)
+        reads.append(1)
+        if len(reads) == 1:
+            return m
+        moved = dataclasses.replace(m.parts[0], x=m.parts[0].x + 1.0)
+        return dataclasses.replace(m, parts=(moved, *m.parts[1:]))
+
+    monkeypatch.setattr(check, "board_model", changing)
+    out = await _tool(ctx, "pcb_check", level="quick")
+    assert len(reads) == 2 and out["stale"] is True
+    assert await _rows(setup_db, ctx) == []
+
+
+@pytest.mark.parametrize(
+    ("report", "code", "why"),
+    [
+        (None, 1, "wrote no report"),
+        ("not json", 0, "not valid JSON"),
+        ("[1, 2]", 0, "not a JSON object"),
+    ],
+)
+async def test_full_bad_cli_output_rejected(
+    synth_setup: SynthSetup,
+    setup_db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    report: str | None,
+    code: int,
+    why: str,
+) -> None:
+    ctx = synth_setup.turn(setup_db, "run-b1")
+
+    async def fake_cli(settings: Any, args: list[str], *, timeout: float, cwd: Path) -> CliResult:
+        if report is not None:
+            Path(args[args.index("-o") + 1]).write_text(report)
+        return CliResult(code, "", "Error: could not load board")
+
+    monkeypatch.setattr(check, "run_kicad_cli", fake_cli)
+    out, err = await call_tool(ctx, "pcb_check", level="full")
+    assert err and out["error"]["code"] == "drc_rejected", out
+    assert why in out["error"]["why"]
+    assert _check_dirs(ctx) == [] and await _rows(setup_db, ctx) == []
 
 
 @pytest.mark.asyncio(loop_scope="function")

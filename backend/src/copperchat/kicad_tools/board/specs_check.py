@@ -67,9 +67,10 @@ PCB_APPROVE_SCHEMA = {
 
 PCB_APPROVE_DESCRIPTION = (
     "Record the user's approval of the placement or of the final board. Only after you "
-    "showed the evidence and ended the turn: placement = pcb_render view=placement + "
-    "pcb_check (M1 passing) of this placement_hash; board = pcb_check full without hard "
-    "failures + pcb_render top and bottom of this board_hash. Then, in the turn started by "
+    "showed the evidence and ended the turn: placement = a pcb_render of the placement view "
+    "+ a pcb_check (M1 passing) of this placement_hash; board = a full pcb_check without hard "
+    "failures + pcb_render of the top and bottom views of this board_hash. Then, in the turn "
+    "started by "
     "the user's answer, call it with the stage's hash and the user's words (at least 2 words "
     "/ 8 characters, or their whole message). Refused (approval_not_allowed, details.guard "
     "1-7) for another hash, missing or failing evidence, a board change after the evidence, "

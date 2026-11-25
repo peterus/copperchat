@@ -332,7 +332,8 @@ async def apply_approve(ctx: ToolContext, cs: Any) -> ToolResult:
             a.user_quote,
         )  # fmt: skip
         row = await repo.latest(ctx.project.id, rel, a.stage)
-        assert row is not None and row.id == cp_id
+        if row is None or row.id != cp_id:  # never: the insert is in this transaction
+            raise RuntimeError("the board checkpoint row could not be read back")
         await editing.changes.add_many_in_transaction([_entry(ctx, cp_id, s)])
     step = editing.turn(ctx.project.id, ctx.run_id).active_step_id
     for cb in list(editing.on_changes_recorded):

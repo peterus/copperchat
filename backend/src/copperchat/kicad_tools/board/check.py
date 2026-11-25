@@ -25,6 +25,7 @@ import stat
 import time
 import uuid
 from collections import Counter
+from collections.abc import Awaitable
 from pathlib import Path
 from typing import Any, Literal
 
@@ -40,7 +41,7 @@ from copperchat.kicad_session.errors import DocumentModified
 from copperchat.kicad_tools.board import api
 from copperchat.kicad_tools.board.analysis import metrics_data, preset_for
 from copperchat.kicad_tools.board.api import DrcMarker, DrcResult
-from copperchat.kicad_tools.board.checkpoints import board_written_since
+from copperchat.kicad_tools.board.checkpoints import board_written_since, record_unless_written
 from copperchat.kicad_tools.board.read import board_model, require_board
 from copperchat.kicad_tools.cli import run_kicad_cli
 from copperchat.projects import agent_dir
@@ -393,22 +394,27 @@ async def pcb_check(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     if cross is not None:
         data["cli_crosscheck"] = cross
     stale = before != after
-    if ctx.editing is not None and not stale:
+    if not stale and ctx.conversation_id is not None and ctx.editing is not None:
+        m1 = next((m for m in report.metrics if m.id == "M1"), None)
+        db, cid = ctx.editing.db, ctx.conversation_id
+
+        def record() -> Awaitable[int]:
+            return BoardReviewRepo(db).record_check(
+                ctx.project.id,
+                board_file(ctx.project),
+                cid,
+                ctx.run_id,
+                level=level,
+                hard_failures=report.hard_failures,
+                m1_pass=m1 is not None and m1.verdict == "pass",
+                placement_hash=before[0],
+                board_hash=before[1],
+                stage="placement" if level == "quick" else "board",
+            )
+
+        stale = not await record_unless_written(db, ctx.project.id, since, record)
+    elif not stale and ctx.editing is not None:
         stale = await board_written_since(ctx.editing.db, ctx.project.id, since)
     data["stale"] = stale
     data["seconds"] = round(time.monotonic() - start, 3)
-    if ctx.conversation_id is not None and ctx.editing is not None and not stale:
-        m1 = next((m for m in report.metrics if m.id == "M1"), None)
-        await BoardReviewRepo(ctx.editing.db).record_check(
-            ctx.project.id,
-            board_file(ctx.project),
-            ctx.conversation_id,
-            ctx.run_id,
-            level=level,
-            hard_failures=report.hard_failures,
-            m1_pass=m1 is not None and m1.verdict == "pass",
-            placement_hash=before[0],
-            board_hash=before[1],
-            stage="placement" if level == "quick" else "board",
-        )
     return ToolResult(data=data)

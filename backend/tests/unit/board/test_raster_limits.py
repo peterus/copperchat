@@ -284,7 +284,14 @@ def _board_ctx(tmp_path: Path, session: _Session) -> Any:
     from types import SimpleNamespace
 
     project = SimpleNamespace(pcb_file=tmp_path / "b.kicad_pcb", dir=tmp_path, name="p")
-    return SimpleNamespace(project=project, session=session, settings=None)
+    return SimpleNamespace(
+        project=project,
+        session=session,
+        settings=None,
+        editing=None,
+        conversation_id=None,
+        run_id=None,
+    )
 
 
 async def test_board_raster_oserror_not_blamed_on_board_copy(
