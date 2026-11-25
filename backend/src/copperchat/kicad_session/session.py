@@ -7,7 +7,7 @@ import os
 import shutil
 import stat
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar
@@ -224,13 +224,71 @@ DrcSlot = Slot[tuple[int, str] | None]  # (server generation, DRC task id)
 BusySlot = Slot[int | None]  # server generation still busy with a zone refill
 
 
+# Busy probes (B-C3) wait at most this long for a Ping reply, so a bounded wait can
+# afford several of them. Set on the kipy client's socket only for the probe.
+PROBE_PING_TIMEOUT_S = 2.0
+
+
+def _probe_client(kicad: Any) -> Any:
+    """kipy's `KiCadClient` behind `kicad` if it has the private parts `_short_timeout`
+    needs (kipy pin e0c9c8e: `KiCad._client`, `KiCadClient._connect()` /
+    `._connected` / `._conn`, a pynng `Req0` with `recv_timeout` / `send_timeout` in
+    ms), else None."""
+    client = getattr(kicad, "_client", None)
+    if client is None or not all(hasattr(client, a) for a in ("_connect", "_connected")):
+        return None
+    return client
+
+
+def probe_timeout_s(kicad: Any) -> float:
+    """How long one busy probe can block: PROBE_PING_TIMEOUT_S when the short timeout
+    can be applied, else the client's normal transport timeout."""
+    return PROBE_PING_TIMEOUT_S if _probe_client(kicad) is not None else transport_timeout_s(kicad)
+
+
+@contextlib.contextmanager
+def _short_timeout(kicad: Any, seconds: float) -> Iterator[None]:
+    """Temporarily give the kipy client's socket a `seconds` send/receive timeout.
+
+    Only inside `KicadSession.call` (its lock serialises every use of the client). A
+    timed-out request leaves kipy's client disconnected (kipy reconnects with its normal
+    timeout on the next request, but never closes that socket): the old socket is closed
+    here; otherwise the previous timeouts are restored. Without the private attributes
+    the probe runs with the normal timeout (logged)."""
+    client = _probe_client(kicad)
+    if client is None:
+        log.info("busy probe without a short timeout: the kipy client lacks the private parts")
+        yield
+        return
+    if not client._connected:
+        client._connect()  # kipy would connect on the probe's send anyway
+    conn = getattr(client, "_conn", None)
+    if conn is None or not hasattr(conn, "recv_timeout"):
+        log.info("busy probe without a short timeout: no pynng socket on the kipy client")
+        yield
+        return
+    old = (conn.recv_timeout, conn.send_timeout)
+    ms = max(1, round(seconds * 1000))
+    conn.recv_timeout = conn.send_timeout = ms
+    try:
+        yield
+    finally:
+        if client._connected and client._conn is conn:
+            conn.recv_timeout, conn.send_timeout = old
+        else:
+            with contextlib.suppress(Exception):
+                conn.close()
+
+
 def kicad_busy(kicad: Any) -> bool:
-    """One `Ping`: False = idle; True = busy (`AS_BUSY`, or a kipy transport timeout
-    while KiCad blocks on a long operation). Any other `ApiError` is raised."""
+    """One busy probe: a `Ping` with a receive timeout of PROBE_PING_TIMEOUT_S. False =
+    idle; True = busy (`AS_BUSY`, or no reply in time while KiCad blocks on a long
+    operation). Any other `ApiError` is raised."""
     from kipy.proto.common import ApiStatusCode
 
     try:
-        kicad.ping()
+        with _short_timeout(kicad, PROBE_PING_TIMEOUT_S):
+            kicad.ping()
     except KipyConnectionError:
         return True
     except ApiError as exc:
@@ -250,9 +308,8 @@ def _after_idle[R](
     still busy then → `refill_timeout` without running `fn`, the busy slot kept."""
 
     def run(h: KicadHandle) -> R:
-        transport = transport_timeout_s(h.kicad)
         while True:
-            if _clock() + transport > deadline:
+            if _clock() + probe_timeout_s(h.kicad) > deadline:
                 raise StructuredToolError(
                     "KiCad is still filling zones",
                     "an earlier zone refill had not finished, and this call's "

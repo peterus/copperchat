@@ -68,23 +68,48 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> Clock:
     return c
 
 
+class FakeConn:
+    """A pynng `Req0` stand-in: the timeouts kipy and `_short_timeout` set (ms)."""
+
+    def __init__(self, timeout_ms: int) -> None:
+        self.recv_timeout = self.send_timeout = timeout_ms
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class FakeClient:
-    """A kipy `KiCadClient`: RefillZones is answered at once, each Ping follows `script`
-    (None = answered, an exception = raised, HANG = clock += transport timeout, then a
-    transport error)."""
+    """A kipy `KiCadClient` (same private parts: `_timeout_ms`, `_connected`, `_conn`,
+    `_connect`): RefillZones is answered at once, each Ping follows `script` (None =
+    answered, an exception = raised, HANG = the clock advances by the socket's receive
+    timeout, the client disconnects and raises a transport error - as kipy does)."""
 
     def __init__(self, clock: Clock, script: Iterator[Any], timeout_ms: int) -> None:
         self.clock = clock
         self.script = script
         self._timeout_ms = timeout_ms
+        self.conns: list[FakeConn] = []
+        self._connected = False
+        self._connect()
         self.log: list[str] = []
+        self.ping_timeouts: list[int] = []
+
+    def _connect(self) -> None:
+        self._conn = FakeConn(self._timeout_ms)
+        self.conns.append(self._conn)
+        self._connected = True
 
     def send(self, command: Any, response_type: Any) -> Any:
+        if not self._connected:
+            self._connect()
         self.log.append(type(command).__name__)
         if isinstance(command, Ping):
+            self.ping_timeouts.append(self._conn.recv_timeout)
             outcome = next(self.script)
             if outcome is HANG:
-                self.clock.now += self._timeout_ms / 1000
+                self.clock.now += self._conn.recv_timeout / 1000
+                self._connected = False
                 raise KipyConnectionError("Error receiving reply from KiCad: timed out")
             if outcome is not None:
                 raise outcome
@@ -173,11 +198,18 @@ def test_refill_timeout_sets_busy_slot(clock: Clock) -> None:
     assert 3 + REFILL_BUSY_GRACE_S - 2.5 <= clock.now - start <= 3 + REFILL_BUSY_GRACE_S
 
 
+def _sockets_clean(client: FakeClient) -> None:
+    """Every socket is back at the normal timeouts or closed (no short timeout leaks)."""
+    for conn in client.conns:
+        assert conn.closed or (conn.recv_timeout, conn.send_timeout) == (30_000, 30_000)
+
+
 @pytest.mark.parametrize("timeout_s", [0.01, 20.0, 60.0])
 def test_refill_hanging_pings_stay_inside_the_call_budget(clock: Clock, timeout_s: float) -> None:
-    """Every Ping blocks for the 30 s transport timeout: kipy overruns its deadline by one
-    hung Ping, no further Ping is sent that could end after start + t + 30, so `refill`
-    ends within t + 30.5 s - inside `refill_call_timeout(t)` = t + 45 s."""
+    """Every Ping blocks for its socket's receive timeout: kipy's own Pings (normal
+    30 s) overrun its deadline by one, the 2 s probes are only sent while they end before
+    start + t + 30, so `refill` ends within t + 30.5 s - inside `refill_call_timeout(t)`
+    = t + 45 s."""
     kicad = _kicad(clock, _always(HANG), timeout_ms=30_000)
     h = _handle(kicad, generation=3)
     start = clock.now
@@ -186,6 +218,54 @@ def test_refill_hanging_pings_stay_inside_the_call_budget(clock: Clock, timeout_
     elapsed = clock.now - start
     assert elapsed <= timeout_s + 30.5 < refill_call_timeout(timeout_s)
     assert h.busy_slot.get() == 3
+    _sockets_clean(kicad._client)
+
+
+def test_refill_probes_use_the_short_timeout(clock: Clock) -> None:
+    """kipy's Pings get AS_BUSY at once; afterwards the probes (2 s each) hang - the
+    grace is spent on them up to D, never past it."""
+    script = iter([_busy()] * 120 + [HANG] * 100)  # 60 s of kipy polls, then hangs
+    kicad = _kicad(clock, script, timeout_ms=30_000)
+    start = clock.now
+    with pytest.raises(RefillTimeout):
+        refill(_handle(kicad), timeout_s=60)
+    timeouts = kicad._client.ping_timeouts
+    probes = timeouts[120:]
+    assert set(timeouts[:120]) == {30_000} and probes and set(probes) == {2_000}
+    assert 60 + REFILL_BUSY_GRACE_S - 2.5 <= clock.now - start <= 60 + REFILL_BUSY_GRACE_S
+    _sockets_clean(kicad._client)
+
+
+def test_short_timeout_restored_after_a_probe(clock: Clock) -> None:
+    kicad = _kicad(clock, iter([None, None]), timeout_ms=30_000)
+    assert session_mod.probe_timeout_s(kicad) == session_mod.PROBE_PING_TIMEOUT_S
+    assert session_mod.kicad_busy(kicad) is False
+    assert kicad._client.ping_timeouts == [2_000]
+    assert len(kicad._client.conns) == 1
+    _sockets_clean(kicad._client)
+    kicad.ping()  # a normal request afterwards: normal timeout, same socket
+    assert kicad._client.ping_timeouts == [2_000, 30_000]
+
+
+def test_timed_out_probe_closes_its_socket(clock: Clock) -> None:
+    kicad = _kicad(clock, iter([HANG, None]), timeout_ms=30_000)
+    start = clock.now
+    assert session_mod.kicad_busy(kicad) is True
+    assert clock.now - start == pytest.approx(2.0)
+    first = kicad._client.conns[0]
+    assert first.closed
+    kicad.ping()  # kipy reconnects with its normal timeout
+    assert kicad._client.ping_timeouts[-1] == 30_000
+    _sockets_clean(kicad._client)
+
+
+def test_probe_without_private_parts_uses_normal_timeout() -> None:
+    class Plain:
+        def ping(self) -> None:
+            pass
+
+    assert session_mod.probe_timeout_s(Plain()) == session_mod.DEFAULT_TRANSPORT_TIMEOUT_S
+    assert session_mod.kicad_busy(Plain()) is False
 
 
 def test_refill_call_timeout() -> None:
@@ -284,6 +364,23 @@ async def test_busy_wait_bounded_by_call_budget(session: KicadSession, clock: Cl
         await session.call(lambda h: log.append("fn"))
     assert info.value.code == "refill_timeout" and log == []
     assert session.refill_busy == session.generation and session.restart_count == restarts
+
+
+async def test_busy_wait_short_probes(session: KicadSession, clock: Clock) -> None:
+    """With the kipy client's private parts present the probes block ≤ 2 s each, so a
+    10 s call can afford several: 4 hung probes (ending at +8 ≤ +9), then
+    `refill_timeout`; every socket restored or closed."""
+    client = FakeClient(clock, _always(HANG), timeout_ms=30_000)
+    session._kicad._client = client
+    session._kicad.ping = lambda: client.send(Ping(), Empty)
+    session.refill_busy = session.generation
+    start = clock.now
+    with pytest.raises(StructuredToolError) as info:
+        await session.call(lambda h: None, timeout=10)
+    assert info.value.code == "refill_timeout"
+    assert client.ping_timeouts == [2_000] * 4
+    assert clock.now - start == pytest.approx(8.0)
+    _sockets_clean(client)
 
 
 async def test_busy_slot_of_older_generation_is_ignored(session: KicadSession) -> None:

@@ -21,7 +21,7 @@ from kipy.proto.common.types import DocumentType, base_types_pb2, jobs_pb2
 
 from copperchat.board.model import Point
 from copperchat.errors import StructuredToolError
-from copperchat.kicad_session.session import KicadHandle, kicad_busy, transport_timeout_s
+from copperchat.kicad_session.session import KicadHandle, kicad_busy, probe_timeout_s
 from copperchat.kicad_tools.units import nm_to_mm
 
 if TYPE_CHECKING:
@@ -206,15 +206,17 @@ def refill(h: KicadHandle, *, timeout_s: float) -> None:
     kipy's blocking `refill_zones` (RefillZones, then a Ping every 0.5 s until one is
     answered or `max_poll_seconds` passed) returns silently at its deadline while KiCad
     may still be filling - the next request would then fail with AS_BUSY. Its last Ping
-    is watched: answered → idle, done. Otherwise this probes with `Ping` - and sends
-    nothing else - but only while a Ping blocking for the whole transport timeout T
-    (`transport_timeout_s`) still ends before D = start + `timeout_s` +
-    REFILL_BUSY_GRACE_S; no idle answer by then → RefillTimeout, busy slot set.
+    is watched: answered → idle, done. Otherwise this sends busy probes (`kicad_busy`:
+    a Ping with a PROBE_PING_TIMEOUT_S = 2 s receive timeout) - and nothing else - but
+    only while one probe blocking for its whole timeout T (`probe_timeout_s`; the normal
+    transport timeout if the short one cannot be applied) still ends before D = start +
+    `timeout_s` + REFILL_BUSY_GRACE_S; no idle answer by then → RefillTimeout, busy slot
+    set.
 
     Worst case (RefillZones answered at once, as kipy documents for the call): kipy's
-    loop ends ≤ `timeout_s` + 0.5 + T (its last Ping started before its deadline), the
-    probe loop never sends a Ping that can end after D = start + `timeout_s` + 30; so
-    with T = 30 s (the session's `kicad_api_timeout_s`) `refill` returns or raises
+    own Pings use the client's normal 30 s timeout, so its loop ends ≤ `timeout_s` +
+    0.5 + 30 (its last Ping started before its deadline); the probe loop never sends a
+    Ping that can end after D = start + `timeout_s` + 30. So `refill` returns or raises
     within `timeout_s` + 30.5 s < `refill_call_timeout` = `timeout_s` + 45 s, and the
     session never restarts the server for it."""
     start = monotonic()
@@ -223,9 +225,8 @@ def refill(h: KicadHandle, *, timeout_s: float) -> None:
     watch = _PingWatch(board.client)
     Board(watch, board.document).refill_zones(block=True, max_poll_seconds=timeout_s)  # type: ignore[arg-type]
     idle = watch.idle is True
-    transport = transport_timeout_s(h.kicad)
     while not idle:
-        if monotonic() + transport > deadline:
+        if monotonic() + probe_timeout_s(h.kicad) > deadline:
             h.busy_slot.set(h.generation)
             raise RefillTimeout(timeout_s)
         idle = not kicad_busy(h.kicad)

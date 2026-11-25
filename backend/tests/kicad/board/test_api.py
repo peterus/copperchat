@@ -20,6 +20,11 @@ from kipy.proto.common.commands.editor_commands_pb2 import GetOpenDocuments
 
 from copperchat.board.model import board_hash
 from copperchat.kicad_session import KicadHandle, KicadSession
+from copperchat.kicad_session.session import (
+    PROBE_PING_TIMEOUT_S,
+    kicad_busy,
+    probe_timeout_s,
+)
 from copperchat.kicad_tools.board.api import (
     DrcTimeout,
     RefillTimeout,
@@ -286,3 +291,23 @@ async def test_probe_drc_sees_open_commit(ecc83_session: KicadSession, record_pr
     seen_pushed = any(kiid in m.kiids for m in pushed.markers)
     record_property("drc_sees_pushed_commit", seen_pushed)
     print(f"drc_sees_pushed_commit = {seen_pushed}")
+
+
+async def test_busy_probe_restores_the_normal_timeout(ecc83_session: KicadSession) -> None:
+    """A busy probe sets the 2 s timeout on kipy's socket only for its Ping; the next
+    normal request runs with the client's normal timeout again."""
+    s = ecc83_session
+
+    def probe(h: KicadHandle) -> tuple[bool, int, int, int]:
+        conn = h.kicad._client._conn
+        assert probe_timeout_s(h.kicad) == PROBE_PING_TIMEOUT_S  # private parts present
+        busy = kicad_busy(h.kicad)
+        zones = len(h.board().get_zones())
+        return busy, conn.recv_timeout, conn.send_timeout, zones
+
+    busy, recv_ms, send_ms, zones = await s.call(probe)
+    assert busy is False
+    timeout_ms = round(s.settings.kicad_api_timeout_s * 1000)
+    assert (recv_ms, send_ms) == (timeout_ms, timeout_ms)
+    assert zones == 1
+    assert await s.call(lambda h: len(h.board().get_footprints())) == 15
