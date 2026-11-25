@@ -267,9 +267,16 @@ def test_short_chamfer_detected() -> None:
 
 
 def test_valid_chamfer_untouched() -> None:
-    m = routed(walk((10, 10), 0, _pair_steps(0.25)))
+    m = routed(walk((10, 10), 0, _pair_steps(0.251)))
     r = postprocess(m, kiids(m))
     assert r == PostResult(replace=(), rip=(), reasons=(), merged=0, chamfered=0)
+
+
+def test_short_chamfer_after_nm_rounding_rips() -> None:
+    # a piece of exactly CHAMFER_MIN in floats is shorter once KiCad rounds it to nanometres
+    m = routed(walk((10, 10), 0, _pair_steps(0.25)))
+    r = postprocess(m, kiids(m))
+    assert r.reasons == ((KEY, "short_chamfer"),)
 
 
 def test_merge_collinear() -> None:
@@ -347,6 +354,67 @@ def test_zero_length_and_duplicate_dropped() -> None:
     assert dict(r.replace) == {"tz": (), "tdup": ()}
     assert r.rip == ()
     assert r.merged == 0
+
+
+# ---- sub-join-tolerance pieces and gaps (finding: a hidden 90-degree corner) --------------
+
+
+def _tiny_corner(piece: float) -> BoardModel:
+    """L corner at (15, 10) whose first leg ends `piece` mm short of it, the rest a touched
+    piece of that length on the leg (dropped when < ZERO_LEN, leaving a gap)."""
+    x = 15.0 - piece
+    return routed([(10.0, 10.0), (x, 10.0), (15.0, 10.0), (15.0, 15.0)])
+
+
+@pytest.mark.parametrize("piece", [0.0015, 0.0019, 0.0005])
+def test_tiny_corner_piece_dropped_and_chamfered(piece: float) -> None:
+    m = _tiny_corner(piece)
+    r = postprocess(m, kiids(m))
+    rep = dict(r.replace)
+    assert rep["t1"] == ()
+    assert r.rip == ()
+    assert r.chamfered == 1
+    out = nm_model(apply(m, r))
+    for line, w in polylines(out, "N1", "F.Cu"):
+        ends = (_in_end_pad(line[0], L_PTS), _in_end_pad(line[-1], L_PTS))
+        assert fails(analyse_bends(line, w, pad_ends=ends)) == {}, line
+    assert routed_length(out, *_pads(out)) is not None
+
+
+def test_tiny_diagonal_corner_piece_dropped() -> None:
+    # 45-degree legs; a 0.0011 mm piece continues the first leg up to the corner
+    c = (20.0, 20.0)
+    a = (c[0] - 3.0, c[1] + 3.0)
+    s = (c[0] - 0.000778, c[1] + 0.000778)
+    b = (c[0] + 3.0, c[1] + 3.0)
+    m = routed([a, s, c, b])
+    r = postprocess(m, kiids(m))
+    assert dict(r.replace)["t1"] == ()
+    assert r.rip == () and r.chamfered == 1
+
+
+def test_tiny_piece_at_untouched_end_rips() -> None:
+    # the untouched stub ends 0.0015 mm short of the corner: closing the gap would move
+    # untouched copper, so the piece stays and the hidden corner must be ripped
+    stub = track("N1", "F.Cu", (12.0, 10.0), (14.9985, 10.0), 0.2, kiid="u0")
+    head = track("N1", "F.Cu", (10.0, 10.0), (12.0, 10.0), 0.2, kiid="t9")
+    rest = path_tracks([(14.9985, 10.0), (15.0, 10.0), (15.0, 10.1), (20.0, 10.1)])
+    m = board(
+        parts=(pad_part("J1", 10.0, 10.0), pad_part("J2", 20.0, 10.1)),
+        tracks=(head, stub, *rest),
+        net_class_of=(("N1", "Default"),),
+    )
+    r = postprocess(m, kiids(m))
+    assert "t0" not in dict(r.replace)
+    assert KEY in r.rip
+
+
+def test_tiny_piece_safety_net_without_repair(monkeypatch: pytest.MonkeyPatch) -> None:
+    # step 3 alone: the polyline walked across the 0.0015 mm piece is checked as a whole
+    monkeypatch.setattr(chamfer, "_close_gaps", lambda _m, _u, live, _s: live)
+    m = routed([(10.0, 10.0), (14.9985, 10.0), (15.0, 10.0), (15.0, 10.1), (20.0, 10.1)])
+    r = postprocess(m, kiids(m))
+    assert KEY in r.rip
 
 
 def test_detour_rips() -> None:
@@ -775,39 +843,72 @@ def _xnet_tracks(rng: random.Random, pts: Sequence[Point], width: float) -> list
     ]
 
 
+def _check_case(seed: int) -> bool:
+    """postprocess the property case `seed`; assert its output is clean (nm grid, N3 merged,
+    no silent disconnection, every non-ripped N1 polyline passes `analyse_bends` (M4 / M7)
+    after nm rounding, clearance kept). Returns whether the N1 connection was ripped."""
+    m, ks, pts, width = _case(seed)
+    msg = f"seed={seed} pts={pts} width={width} kiids={sorted(ks)}"
+    r = postprocess(m, ks)
+    for t in (t for _, new in r.replace for t in new):
+        assert on_nm_grid(t), msg
+    out = nm_model(apply(m, r))
+    n3_in = [t for t in m.tracks if t.net == "N3"]
+    if n3_in:  # N3 (no pads, nothing at its joint): one merged track, same outer ends
+        (n3,) = [t for t in out.tracks if t.net == "N3"]
+        assert {n3.start, n3.end} == {n3_in[0].start, n3_in[-1].end}, msg
+        assert not any(k.startswith("N3") for k in r.rip), msg
+    if routed_length(m, *_pads(m)) is not None and routed_length(out, *_pads(out)) is None:
+        assert KEY in r.rip, msg
+    if KEY in r.rip:
+        return True
+    for line, w in polylines(out, "N1", "F.Cu"):
+        ends = (_in_end_pad(line[0], pts), _in_end_pad(line[-1], pts))
+        rb = analyse_bends(line, w, pad_ends=ends)
+        assert fails(rb) == {}, f"{msg} line={line}"
+    whole = analyse_tracks(out)
+    assert fails(whole) == {} and whole.t_junctions == (), msg
+    assert routed_length(out, *_pads(out)) is not None, msg
+    n2 = [q for p in m.parts for q in p.pads if q.net == "N2"]
+    for d in chamfers(r):
+        for q in n2:
+            gap = _rect_dist(d.start, d.end, q) - width / 2
+            assert gap >= 0.2 - 1e-6, f"{msg} diag={d} pad={q}"
+    return False
+
+
+# seeds whose sub-join-tolerance pieces / gaps hid a 90-degree corner (finding: a polyline
+# walked across a < 0.002 mm piece was non-octilinear and slipped through unripped)
+TINY_SEEDS = (1670, 2650, 3077, 3369, 4757, 4879, 5190)
+
+
+@pytest.mark.parametrize("seed", TINY_SEEDS)
+def test_tiny_piece_seeds_clean_or_ripped(seed: int) -> None:
+    _check_case(seed)
+
+
+@pytest.mark.parametrize("seed", TINY_SEEDS)
+def test_polyline_safety_net_rips(seed: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    # without the step-1 repair the step-3 polyline check alone must still catch the defect
+    monkeypatch.setattr(chamfer, "_close_gaps", lambda _m, _u, live, _s: live)
+    _check_case(seed)
+
+
+@pytest.mark.parametrize("seed", (2595, 4816))
+def test_harmless_sub_tolerance_gap_not_ripped(seed: int) -> None:
+    # an untouched < 0.001 mm piece next to touched ends: a collinear gap / one node that
+    # turns no track noticeably in any track order - not a defect
+    assert _check_case(seed) is False
+
+
+PROPERTY_SEEDS = 4000  # ~9 s; a one-off 10000-seed run passed too
+
+
 def test_output_passes_analyse_bends() -> None:
-    ripped = 0
-    n = 500
-    for seed in range(n):
-        m, ks, pts, width = _case(seed)
-        msg = f"seed={seed} pts={pts} width={width} kiids={sorted(ks)}"
-        r = postprocess(m, ks)
-        for t in (t for _, new in r.replace for t in new):
-            assert on_nm_grid(t), msg
-        out = nm_model(apply(m, r))
-        n3_in = [t for t in m.tracks if t.net == "N3"]
-        if n3_in:  # N3 (no pads, nothing at its joint): one merged track, same outer ends
-            (n3,) = [t for t in out.tracks if t.net == "N3"]
-            assert {n3.start, n3.end} == {n3_in[0].start, n3_in[-1].end}, msg
-            assert not any(k.startswith("N3") for k in r.rip), msg
-        if routed_length(m, *_pads(m)) is not None and routed_length(out, *_pads(out)) is None:
-            assert KEY in r.rip, msg
-        if KEY in r.rip:
-            ripped += 1
-            continue
-        for line, w in polylines(out, "N1", "F.Cu"):
-            ends = (_in_end_pad(line[0], pts), _in_end_pad(line[-1], pts))
-            rb = analyse_bends(line, w, pad_ends=ends)
-            assert fails(rb) == {}, f"{msg} line={line}"
-        whole = analyse_tracks(out)
-        assert fails(whole) == {} and whole.t_junctions == (), msg
-        assert routed_length(out, *_pads(out)) is not None, msg
-        n2 = [q for p in m.parts for q in p.pads if q.net == "N2"]
-        for d in chamfers(r):
-            for q in n2:
-                gap = _rect_dist(d.start, d.end, q) - width / 2
-                assert gap >= 0.2 - 1e-6, f"{msg} diag={d} pad={q}"
-    assert 0 < ripped < n
+    t0 = time.perf_counter()
+    ripped = sum(_check_case(seed) for seed in range(PROPERTY_SEEDS))
+    print(f"{PROPERTY_SEEDS} seeds: {time.perf_counter() - t0:.1f} s, {ripped} ripped")
+    assert 0 < ripped < PROPERTY_SEEDS
 
 
 def test_deterministic() -> None:

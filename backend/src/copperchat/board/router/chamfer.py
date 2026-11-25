@@ -5,8 +5,12 @@ Only the tracks whose KIIDs are given ("touched") change; every other copper ite
 obstacle only. Steps:
 
 1. Drop zero-length touched tracks (< 0.001 mm) and exact duplicates (same net, layer,
-   width, endpoints in either order; an untouched twin wins, else the smallest KIID), then
-   merge collinear same-net/layer/width touched tracks that share an endpoint with no third
+   width, endpoints in either order; an untouched twin wins, else the smallest KIID). A
+   touched piece shorter than the join tolerance (0.002 mm, below which `geom.polylines`
+   snaps ends into one node) is dropped too and the tracks around it - or around a gap that
+   short - get one shared nm-grid end, each moved along its own line (`_close_gaps`);
+   untouched track, arc and via ends never move (such a piece stays and step 3 judges it).
+   Then merge collinear same-net/layer/width touched tracks that share an endpoint with no third
    item at it (another track end or interior on that net/layer, a via, a pad on the layer).
 2. Every 90-degree vertex of a polyline (`geom.polylines`) whose two corner tracks are
    touched is chamfered by one diagonal of length >= c from `(3w, 2.5w, 2w, 1.5w,
@@ -39,7 +43,13 @@ obstacle only. Steps:
    stub between two touched diagonals) - and rips connections with the reason
    `non_octilinear`, `ninety_unfixable` (90-degree corners and T-junctions), `acute`,
    `off_angle`, `micro_jog`, `short_chamfer`. Failures of the untouched copper alone are
-   not ours and are ignored.
+   not ours and are ignored. Safety net (M4 / M7 as KiCad stores the copper): on the
+   nm-rounded result, every `geom.polylines` polyline containing touched copper is
+   `analyse_bends`-checked as a whole (pad ends as M4 / M7) against the untouched-only
+   polylines the same way, and a cluster of distinct ends within the join tolerance that
+   holds a touched end (whose walked geometry depends on track order) rips
+   `non_octilinear` unless it is a collinear gap or one node turning no track by more
+   than a quarter of the angle tolerance.
 4. Per connection of a touched net: routed (pad to pad through copper) before but not
    after -> `disconnected` (safety net; the checks above should make it unreachable). Per
    connection of a touched non-ground net (octilinear distance >= `M5_MIN_MM`, as M5):
@@ -57,9 +67,10 @@ with fewer than two pads has no connection and therefore no rip key.
 track at its lexicographically smaller end) and `(other kiid, ())`; a chamfer emits
 `(kiid_in, (shortened_in,))` and `(kiid_out, (shortened_out, diagonal))` in polyline
 order (a track between two corners: its kiid -> (shortened at both ends, the diagonal of
-the corner it starts at)); zero-length and duplicate tracks `(kiid, ())`. Every new or
-changed `Track` has `kiid=""`, the corner's net, layer and width and `locked=False`; every
-endpoint a chamfer creates lies on the 1 nm grid (the far ends of shortened tracks keep
+the corner it starts at)); zero-length, duplicate and sub-join-tolerance tracks
+`(kiid, ())`; a track whose end step 1 moved `(kiid, (moved,))`. Every new or changed
+`Track` has `kiid=""`, the corner's net, layer and width and `locked=False`; every endpoint
+a chamfer or step 1 creates lies on the 1 nm grid (the far ends of shortened tracks keep
 their input coordinates). Only changed KIIDs appear.
 """
 
@@ -76,15 +87,19 @@ from functools import partial
 from copperchat.board.classify import _ground_nets
 from copperchat.board.geom import (
     _JOIN_TOL,
+    ANGLE_TOL_DEG,
     CHAMFER_MIN,
     BendReport,
     TrackIndex,
+    _centres,
+    _graph,
     _Grid,
     _in_pad,
     _interior_t,
     _Near,
     _Nodes,
     _pad_on_layer,
+    _walk_polylines,
     analyse_bends,
     analyse_tracks,
     convex_hull,
@@ -102,7 +117,7 @@ from copperchat.board.metrics import (
     _pad_poly,
     outline_polygon,
 )
-from copperchat.board.model import BoardModel, Pad, Part, Point, Track
+from copperchat.board.model import BoardModel, Pad, Part, Point, Track, Via
 from copperchat.kicad_tools.filtering import natural_key
 
 __all__ = ["CHAMFER_FACTORS", "ZERO_LEN", "PostResult", "postprocess"]
@@ -168,6 +183,12 @@ def _pt_seg(p: Point, a: Point, b: Point) -> float:
         return math.dist(p, a)
     t = max(0.0, min(1.0, ((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / ll))
     return math.dist(p, (a[0] + t * vx, a[1] + t * vy))
+
+
+def _pt_line(p: Point, a: Point, b: Point) -> float:
+    """Distance of `p` from the line through a and b (a != b)."""
+    d = math.dist(a, b)
+    return abs((b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])) / d
 
 
 def _nm(p: Point) -> tuple[int, int]:
@@ -320,6 +341,168 @@ def _grow(pts: Sequence[Point], r: float) -> tuple[float, float, float, float]:
 # ---- step 1: drop and merge ----------------------------------------------------------------
 
 
+def _line_cross(a: Point, b: Point, c: Point, d: Point) -> Point | None:
+    """Intersection of the lines ab and cd (None when (nearly) parallel)."""
+    rx, ry = b[0] - a[0], b[1] - a[1]
+    sx, sy = d[0] - c[0], d[1] - c[1]
+    den = rx * sy - ry * sx
+    if abs(den) <= 1e-9 * math.hypot(rx, ry) * math.hypot(sx, sy):
+        return None
+    t = ((c[0] - a[0]) * sy - (c[1] - a[1]) * sx) / den
+    return (a[0] + t * rx, a[1] + t * ry)
+
+
+def _on_line(x: Point, far: Point, near: Point) -> bool:
+    """`x` continues the track far -> near: within 1 nm of its line, on near's side of far
+    and at least the join tolerance from far (so the track keeps its direction)."""
+    d = math.dist(far, near)
+    ux, uy = (near[0] - far[0]) / d, (near[1] - far[1]) / d
+    vx, vy = x[0] - far[0], x[1] - far[1]
+    return abs(ux * vy - uy * vx) <= 1e-6 and ux * vx + uy * vy >= _JOIN_TOL
+
+
+def _end_clusters(pts: Sequence[Point]) -> list[list[int]]:
+    """Indices of `pts` grouped by chains of points within the join tolerance of each other
+    (the points `geom.polylines` may snap into one node, depending on track order)."""
+    root = list(range(len(pts)))
+
+    def find(i: int) -> int:
+        while root[i] != i:
+            root[i] = root[root[i]]
+            i = root[i]
+        return i
+
+    cells: dict[tuple[int, int], list[int]] = defaultdict(list)
+    for i, q in enumerate(pts):
+        kx, ky = math.floor(q[0] / _JOIN_TOL), math.floor(q[1] / _JOIN_TOL)
+        for gx in (kx - 1, kx, kx + 1):
+            for gy in (ky - 1, ky, ky + 1):
+                for j in cells.get((gx, gy), ()):
+                    if math.dist(q, pts[j]) <= _JOIN_TOL:
+                        root[find(i)] = find(j)
+        cells[(kx, ky)].append(i)
+    out: dict[int, list[int]] = defaultdict(list)
+    for i in range(len(pts)):
+        out[find(i)].append(i)
+    return list(out.values())
+
+
+def _close_gaps(
+    model: BoardModel,
+    untouched: Sequence[Track],
+    live: list[Track],
+    slots: dict[str, list[Track]],
+) -> list[Track]:
+    """Touched tracks shorter than the join tolerance are dropped like zero-length ones,
+    and every cluster of track ends within the join tolerance of each other (chained) that
+    such a piece or a gap left by a dropped track spreads over is closed: the touched
+    tracks ending there get one shared end X on the nm grid, each moved along its own line
+    (its direction unchanged). X is the cluster's untouched track end if it has one, else
+    the first (sorted) neighbour end or pairwise intersection of the neighbours' lines that
+    every neighbour's line passes through, within 2 x the join tolerance of the cluster and
+    inside every same-net pad the cluster touches. A cluster at a via or an arc end, on a
+    track's interior, with two distinct untouched ends or without such an X is left as it
+    is (step 3 judges it). Returns the remaining touched tracks (moved ones replaced)."""
+    by_nl: dict[tuple[str, str], list[Track]] = defaultdict(list)
+    for t in (*untouched, *live):
+        if _len(t) >= ZERO_LEN:
+            by_nl[(t.net, t.layer)].append(t)
+    live_ids = {id(t) for t in live}
+    cur: dict[int, Track] = {}  # id(live track) -> its moved version
+    drop: set[int] = set()
+    pads_of: dict[str, dict[str, list[Pad]]] = {}  # layer -> net -> its pads on the layer
+    for (net, layer), tracks in sorted(by_nl.items()):
+        if not any(id(t) in live_ids for t in tracks):
+            continue
+        ends = [(q, k) for k, t in enumerate(tracks) for q in (t.start, t.end)]
+        clusters = _end_clusters([q for q, _ in ends])
+        todo = []
+        for members in clusters:
+            pts = {ends[i][0] for i in members}
+            ks = sorted({ends[i][1] for i in members})
+            if not any(id(tracks[k]) in live_ids for k in ks):
+                continue
+            tiny = [k for k in ks if id(tracks[k]) in live_ids and _len(tracks[k]) < _JOIN_TOL]
+            if len(pts) > 1 or tiny:
+                todo.append((members, pts, tiny))
+        if not todo:
+            continue
+        if layer not in pads_of:
+            pads_of[layer] = defaultdict(list)
+            for p in model.parts:
+                for q in p.pads:
+                    if _pad_on_layer(q, layer):
+                        pads_of[layer][q.net].append(q)
+        near = _Near(pads_of[layer].get(net, []), [v for v in model.vias if v.net == net])
+        arc_ends = [
+            q for a in model.arcs if a.net == net and a.layer == layer for q in (a.start, a.end)
+        ]
+        grid = _Grid()
+        for k, t in enumerate(tracks):
+            grid.add(k, _bbox((t.start, t.end)))
+        for members, pts, tiny in todo:
+            box = _grow(list(pts), _JOIN_TOL)
+            if any(near.at_via(q) for q in pts):
+                continue
+            if any(math.dist(a, q) <= _JOIN_TOL for a in arc_ends for q in pts):
+                continue
+            if any(
+                _interior_t(q, tracks[k].start, tracks[k].end) is not None
+                for k in grid.query(box)
+                for q in pts
+            ):
+                continue
+            fixed = {ends[i][0] for i in members if id(tracks[ends[i][1]]) not in live_ids}
+            moving = [
+                (ends[i][1], i % 2)
+                for i in members
+                if id(tracks[ends[i][1]]) in live_ids and ends[i][1] not in tiny
+            ]
+            if len(fixed) > 1 or len({k for k, _ in moving}) != len(moving):
+                continue
+            lines = []
+            for k, side in moving:
+                t = cur.get(id(tracks[k]), tracks[k])
+                near_end, far = (t.start, t.end) if side == 0 else (t.end, t.start)
+                lines.append((far, near_end))
+            if fixed:
+                cands = sorted(fixed)
+            else:
+                raw = [n for _, n in lines]
+                for (f1, n1), (f2, n2) in itertools.combinations(lines, 2):
+                    x = _line_cross(f1, n1, f2, n2)
+                    if x is not None:
+                        raw.append(x)
+                cands = sorted({(round(x[0] * _NM) / _NM, round(x[1] * _NM) / _NM) for x in raw})
+            pads = [q for q in near.pads if any(_in_pad(p, q) for p in pts)]
+            pick = next(
+                (
+                    x
+                    for x in cands
+                    if all(math.dist(x, p) <= 2 * _JOIN_TOL for p in pts)
+                    and all(_in_pad(x, q) for q in pads)
+                    and all(_on_line(x, f, n) for f, n in lines)
+                ),
+                None,
+            )
+            if pick is None:
+                continue  # left as it is: step 3 rips it if the polyline fails
+            drop.update(id(tracks[k]) for k in tiny)
+            for k, side in moving:
+                t = cur.get(id(tracks[k]), tracks[k])
+                cur[id(tracks[k])] = replace(t, start=pick) if side == 0 else replace(t, end=pick)
+    out = []
+    for t in live:
+        if id(t) in drop:
+            slots[t.kiid] = []
+            continue
+        moved = cur.get(id(t), t)
+        if moved != t:
+            slots[t.kiid] = [replace(moved, kiid="", locked=False)]
+        out.append(moved)
+    return out
+
+
 def _drop_and_merge(
     model: BoardModel,
     untouched: Sequence[Track],
@@ -335,6 +518,7 @@ def _drop_and_merge(
             continue
         seen.add(k)
         live.append(t)
+    live = _close_gaps(model, untouched, live, slots)
     # endpoints of every track per (net, layer), snapped
     by_nl: dict[tuple[str, str], list[Track]] = defaultdict(list)
     for t in (*untouched, *live):
@@ -816,6 +1000,49 @@ class _Conn:
     used: frozenset[int]
 
 
+# ---- step 3: whole-polyline check ----------------------------------------------------------
+
+_BEND_FIELDS = ("non_octilinear", "ninety", "acute", "off_angle", "micro_jogs", "short_chamfers")
+
+
+def _nm_track(t: Track) -> Track:
+    return replace(
+        t,
+        start=(round(t.start[0] * _NM) / _NM, round(t.start[1] * _NM) / _NM),
+        end=(round(t.end[0] * _NM) / _NM, round(t.end[1] * _NM) / _NM),
+    )
+
+
+def _touches(mids: _Grid, mid_pts: Sequence[Point], line: Sequence[Point]) -> bool:
+    """Some point of `mid_pts` (the touched tracks' midpoints, bucketed in `mids`) lies on
+    the polyline `line` (within the on-track tolerance)."""
+    for a, b in itertools.pairwise(line):
+        for k in mids.query(_grow((a, b), _ON_TRACK_TOL)):
+            if _pt_seg(mid_pts[k], a, b) <= _ON_TRACK_TOL:
+                return True
+    return False
+
+
+def _bend_fails(
+    tracks: Sequence[Track],
+    pads: Sequence[Pad],
+    vias: Sequence[Via],
+    keep: Callable[[Sequence[Point]], bool] | None,
+) -> dict[str, list[Point]]:
+    """Failing points per `analyse_bends` field over the polylines of one net/layer's
+    `tracks` (`geom.polylines`; pad ends as M4 / M7: an end in a same-net pad on the layer),
+    only the polylines `keep` accepts (all when None)."""
+    near = _Near(pads, vias)
+    out: dict[str, list[Point]] = defaultdict(list)
+    for pts, width in _walk_polylines(_graph(tracks, _centres(vias, pads)), near):
+        if keep is not None and not keep(pts):
+            continue
+        r = analyse_bends(pts, width, pad_ends=(near.in_pad(pts[0]), near.in_pad(pts[-1])))
+        for f in _BEND_FIELDS:
+            out[f].extend(getattr(r, f))
+    return out
+
+
 # ---- entry point ---------------------------------------------------------------------------
 
 
@@ -912,6 +1139,67 @@ def postprocess(model: BoardModel, kiids: frozenset[str]) -> PostResult:
                     if _pt_seg(p, wt[i].start, wt[i].end) <= _ON_TRACK_TOL
                 }
                 rip(net, layer, tids, why)
+        # safety net (M4 / M7 as KiCad stores it): every polyline of the nm-rounded result
+        # that contains touched copper, analysed as a whole - a piece or gap below the join
+        # tolerance can make the walked polyline differ from its raw tracks (e.g. hide a
+        # 90-degree vertex in a slightly non-octilinear segment)
+        pads = index.layer(layer)[1].get(net, [])
+        vias = index.vias_of.get(net, [])
+        rounded = [_nm_track(wt[i]) for i in ids]
+        mids = _Grid()
+        mid_pts: list[Point] = []
+        for i, t in zip(ids, rounded, strict=True):
+            if i in mine:
+                m = ((t.start[0] + t.end[0]) / 2, (t.start[1] + t.end[1]) / 2)
+                mids.add(len(mid_pts), (m[0], m[1], m[0], m[1]))
+                mid_pts.append(m)
+
+        # ends within the join tolerance of each other but not on one point (a piece or
+        # gap step 1 could not close): `polylines` snaps them into nodes in track order, so
+        # the walked geometry depends on that order - a defect unless it cannot matter:
+        # every cluster point on the line of every track (>= the join tolerance) ending
+        # there (a collinear gap), or the cluster one node in any order (diameter <= the
+        # join tolerance) that turns none of those tracks by more than a quarter of the
+        # angle tolerance (so the polylines checked below hold in every order)
+        by_id = dict(zip(ids, rounded, strict=True))
+        end_pts = [(q, i) for i, t in by_id.items() for q in (t.start, t.end)]
+        for members in _end_clusters([q for q, _ in end_pts]):
+            spread = {end_pts[k][0] for k in members}
+            owners = {end_pts[k][1] for k in members}
+            if len(spread) < 2 or not owners & mine:
+                continue
+            lines = [by_id[i] for i in owners if _len(by_id[i]) >= _JOIN_TOL]
+            if all(_pt_line(q, t.start, t.end) <= 1e-6 for t in lines for q in spread):
+                continue
+            turn = math.radians(ANGLE_TOL_DEG / 4)
+            if all(
+                math.dist(u, v) <= _JOIN_TOL for u, v in itertools.combinations(spread, 2)
+            ) and all(
+                _pt_line(q, t.start, t.end) <= math.tan(turn) * (_len(t) - _JOIN_TOL)
+                for t in lines
+                for q in spread
+            ):
+                continue
+            rip(net, layer, owners, "non_octilinear")
+        got = _bend_fails(rounded, pads, vias, partial(_touches, mids, mid_pts))
+        base_rest = [t for i, t in zip(ids, rounded, strict=True) if i not in mine]
+        has_fails = any(got.values())
+        old_fails = _bend_fails(base_rest, pads, vias, None) if base_rest and has_fails else {}
+        for field, pts_new in got.items():
+            old = old_fails.get(field, [])
+            old_grid = _Grid()
+            for k, o in enumerate(old):
+                old_grid.add(k, (o[0], o[1], o[0], o[1]))
+            for pt in pts_new:
+                box = (pt[0] - tol, pt[1] - tol, pt[0] + tol, pt[1] + tol)
+                if any(math.dist(pt, old[k]) <= tol for k in old_grid.query(box)):
+                    continue
+                tids = {
+                    i
+                    for i in near_grid.query(box)
+                    if _pt_seg(pt, wt[i].start, wt[i].end) <= _ON_TRACK_TOL
+                }
+                rip(net, layer, tids, _REASON[field])
 
     outline = outline_polygon(model)
     diag = None
