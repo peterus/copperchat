@@ -339,7 +339,8 @@ Side = Literal["top", "bottom"]
                                          rule_area: bool; keepout: frozenset[str]   # {"tracks","vias","copper","footprints"}
                                          settings: tuple[tuple[str, str], ...]      # clearance, thermal, fill mode
                                          filled_area_mm2: float
-                                         filled: tuple[tuple[Point, ...], ...] = ()   # filled polygons (M11 plane voids); excluded from board_hash
+                                         filled: tuple[tuple[Point, ...], ...] = ()   # filled polygons' outer outlines (M11 plane voids); excluded from board_hash
+                                         filled_holes: tuple[tuple[tuple[Point, ...], ...], ...] = ()   # P3a: holes per filled polygon, index-aligned with filled; excluded from board_hash
 @dataclass(frozen=True) class Outline:  kind: Literal["rect", "other", "none"]
                                          x: float; y: float; w: float; h: float; corner_radius: float
                                          polygon: tuple[Point, ...]
@@ -730,6 +731,80 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
 
 (Each phase adds its section here in its own PR.)
 
+### As built (P3a)
+
+**Measured / recorded**
+- `pcb_metrics` on `sp4_synth` (`synth_board`, 26 parts, no outline, unrouted; includes the
+  API DRC task): **median 0.273 s warm** (5 calls: 0.256 / 0.252 / 0.273 / 0.327 / 0.303 s),
+  local kicad-base image; `test_metrics_budget` records `pcb_metrics_s` (bound 2.0 s).
+- `compute_metrics` in-process on a seeded 200-part board (1,791 segments, 282 vias, In1.Cu
+  GND plane with an antipad per via, `jlcpcb-4l`): 0.32–0.33 s (bends ≈ 0.15 s, M10 0.08–0.2 s).
+  `classify` on a 200-part / ~284-net random circuit ≈ 7 ms.
+- No review threshold tuned; `HARD` / `REVIEW` are the spec §12 values (`test_hard_thresholds_verbatim`).
+
+**Owner decisions applied (2026-11-25)** — "Provisional" items 1–3 marked resolved above.
+`M1_EDGE_OVERHANG = True`: `placed_with_overhang(model, part, edge)` clips the courtyard to the
+inner side of the assigned edge (outline bbox line; one-half-plane Sutherland–Hodgman) and
+requires the rest inside the outline (rounded rect via `rect_poly`, "other" via the polygon).
+M13's "overhanging it" uses the same clip. Both switch settings are tested.
+
+**Contract deviations / additions**
+- B-C2 (P1a files, minimal): `Zone.filled_holes` (holes per filled polygon, index-aligned with
+  `filled`, read in `read.py::_zone`; not hashed) — the P1a residual "M11 needs holes".
+- `cc/board/jobs.py`: `analyse_job(model, doc, scope="all")` (scope filtered in the worker),
+  `metrics_job(model, doc, drc, preset, only, parity=None) -> MetricsReport`, `strip_fills`
+  (also clears `filled_holes`). Result serialisation in `analysis.py::metrics_data`.
+- `preset_for(model, doc)` in `cc/kicad_tools/board/analysis.py` (B-C6 rule).
+- `pcb_analyze` result: each list/mapping `K` ≤ 500 entries plus an int `K_omitted` (always
+  present); scopes parts / nets / blocks / all; `board_md_errors` in every scope.
+- `pcb_metrics` result: `stage, metrics[{id, value, verdict, hard, review, offenders[{what,
+  refs, nets, at, value}], omitted}], hard_failures, reviews, placement_hash, board_hash,
+  seconds`. The DRC task runs only when `only` includes M2 or M3 (or `only` is absent).
+- DRC type normalisation (M3 ↔ `board.md` Checks): casefold, `drce_` prefix stripped, spaces →
+  `_`, so API enum names (`DRCE_SILK_OVERLAP`, P1a lower-cases without `DRCET_`) and CLI JSON
+  types (`silk_overlap`) match the same row. KIID → ref via part KIIDs only; a warning whose
+  KIIDs resolve to no ref is never accepted.
+- `board.md` parser: errors capped at 50 + one "<k> more errors omitted" line; tables are
+  recognised by their header set in any section; `Preset:` / `Assembly: …; sides:` only in
+  `## Summary`.
+- Switcher bootstrap refinement (call 15) as planned: a 2-pad cap between SW and a net holding
+  only the IC and that cap is tolerated; out caps by sheet, else strictly nearer (part-centre
+  `octi_dist`) to the switcher than to the rival anchor.
+- Blocks: a leftover part first joins the block that already owns one of its signal-net
+  neighbours (found on `sp4_synth`: D1 in the PA4 → R4 → D1 chain went to J1's block by a
+  GND-count tie), then the "most shared nets" fallback.
+- `primary_ground(cls, model)`: ground net with most pads, ties by name, None without one.
+- M4 counts each failing item: a 60° vertex between octilinear legs is impossible, so such a
+  vertex also brings one non-octilinear leg → `test_m4_off_angle_counts` asserts value **2**
+  (one `off_angle` + one `non_octilinear` offender), verdict fail (plan text said 1).
+- M11: a hole lying wholly within `ANTIPAD_MARGIN_MM` (1.0 mm) of one via (radius) or one
+  plated pad (half-diagonal) is that item's antipad / thermal-relief gap, not a void; holes
+  over ≥ 2 items (merged antipad slots), empty holes and the band between the outline and the
+  fill are voids. A multi-layer plane zone's fill area is divided by its layer count.
+- M14: silk text bbox is axis-aligned (`TextItem` has no angle): `len × size_x` wide, `lines ×
+  size_y` high; fiducials are exempt from "paste on every SMD pad"; board rules compared to the
+  preset with a 1e-4 mm tolerance; a custom-rule exception needs every offender ref named in a
+  `(condition …)` of `.kicad_dru`.
+- M3 parity: `not_in_schematic` / `extra_footprint` markers whose refs are all mounting holes
+  produce no count (holes placed by `pcb_set_outline`).
+- `NetKind` `high_current` is never assigned (no generic rule yet).
+- Test rig: `synth_board` (module scope, `loop_scope="module"`) yields a `KicadSession` on a
+  copy of `sp4_synth` with a board built through the API (kicad-cli netlist → create → reopen
+  → `import_netlist` → save); tests build `edit_ctx(synth_board)` / `board_ctx(...)`.
+
+**Residuals for later phases**
+- Golden `sp4_synth_classification.json` depends on where KiCad's import puts footprints
+  (`Net-(U3-VBST)` is critical by the ≤ 10 mm two-pad rule; C1–C3 all serve U1 pin 5, the
+  nearest of the two `+3V3` pins); stable over 3 runs. P2's sync may move parts → refresh with
+  `UPDATE_GOLDENS=1` if its placement differs.
+- On `sp4_synth` the ESD part U2 (6 pads) is an anchor with its own block, and the USB pair's
+  anchor is J1 (most pads). The agent edits blocks (S3); P4 may want "protection next to its
+  connector".
+- `Zone.filled` / `filled_holes` are not per layer: a multi-layer plane zone's voids are
+  merged across its layers (single-layer planes, the P7 default, are exact).
+- M9 measures in-cap VIN pad → IC VIN pin only (spec also names the GND pins).
+- Silk text rotation is not modelled (needs a `TextItem` angle; P7 `pcb_tidy_silk`).
+
 ### As built (P1c)
 
 **Measured / recorded** (`tests/kicad/board/test_render.py`, `record_property`; ecc83 only — P9a
@@ -1010,21 +1085,19 @@ Each is pinned by a test or a task in the named phase.
 17. **BOM header** (P8): `Comment, Designator, Footprint, LCSC Part #` — the fourth column falls
     back to the MPN field when no LCSC field exists.
 
-## Provisional — needs owner confirmation
+## Provisional — resolved by the owner (2026-11-25)
 
-1. **JLC preset tightening** (call 8): annular ring 0.15 / 0.18 mm and silk text height 1.0 mm
-   instead of the spec's 0.13 mm / 0.8 mm, to match JLC's current published minimums. Stricter
-   only. Until the owner answers, P1a implements the stricter values (a looser M14 could pass a
-   board JLC rejects).
-2. **M1 vs. edge connectors** (spec contradiction): M1 (hard) requires every courtyard fully
-   inside the outline, but §9.3/M13 let a connector (and a module antenna) sit "on or
-   overhanging the outline as the footprint requires". A USB-C footprint whose courtyard must
-   overhang would fail M1. Recommended: a part listed in `board.md` → Placement edges may
-   overhang **its assigned edge only** (M13 then checks that edge); everything else as
-   written. Until the owner answers, P3a implements M1 exactly as written (stricter) behind a
-   one-line switch `M1_EDGE_OVERHANG = False` so the change is small.
-3. **P2b start** (call 2): carry patch 0005 with the placeholder subject as soon as P2 is
-   merged (recommended), or wait for the owner's commit text.
+All three items were answered "as recommended" by the owner on 2026-11-25 (binding; recorded
+in P3a's PR):
+
+1. **JLC preset tightening** (call 8): **resolved** — the stricter values stay (annular ring
+   0.15 / 0.18 mm, silk text height 1.0 mm, 2-layer min via diameter 0.66 mm); P1a already
+   pins them in `presets.py`.
+2. **M1 vs. edge connectors**: **resolved** — a part listed in `board.md` → Placement edges may
+   overhang **its assigned edge only**; everything else fully inside. P3a implements it as
+   `M1_EDGE_OVERHANG = True` (`cc/board/metrics.py`, tested with both settings).
+3. **P2b start** (call 2): **resolved** — patch 0005 is carried with the placeholder subject
+   right after P2 merges; the owner writes the upstream text later.
 
 ---
 
