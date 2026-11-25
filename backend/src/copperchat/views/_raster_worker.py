@@ -1,14 +1,16 @@
 """Rasterising worker of the footprint render (spec §7.5): one SVG to one PNG with
 CairoSVG, in a process of its own.
 
-Run as `python -I -m copperchat.views._raster_worker <width_px> <height_px>` by
-`footprint_render.rasterise`: the wrapper SVG on stdin, the PNG on stdout, exit 0; any
-error exits non-zero with only the exception's class name on stderr. All three are
-files in the per-render temp dir (opened by the parent), never pipes. CairoSVG's cost is
-not bounded by any cheap estimate of the SVG (stroke width, self-crossing paths, ...), so
-the parent kills this process after a wall-clock timeout; this process also caps its own
-address space, CPU time and file size first (`resource.setrlimit`), so a runaway render
-can neither exhaust the machine's memory or disk nor outlive a dead parent for long.
+Run as `python -I -m copperchat.views._raster_worker <width_px> <height_px>
+[<cpu_s> <memory_bytes>]` by `footprint_render.rasterise` (the two limits only for board
+renders, B-C9; without them the constants below apply): the wrapper SVG on stdin, the
+PNG on stdout, exit 0; any error exits non-zero with only the exception's class name on
+stderr. All three are files in the per-render temp dir (opened by the parent), never
+pipes. CairoSVG's cost is not bounded by any cheap estimate of the SVG (stroke width,
+self-crossing paths, ...), so the parent kills this process after a wall-clock timeout;
+this process also caps its own address space, CPU time and file size first
+(`resource.setrlimit`), so a runaway render can neither exhaust the machine's memory or
+disk nor outlive a dead parent for long.
 """
 
 from __future__ import annotations
@@ -37,10 +39,33 @@ def _limit(which: int, value: int, hard: int) -> None:
     resource.setrlimit(which, (value, hard))
 
 
-def limit_resources() -> None:
-    _limit(resource.RLIMIT_AS, MEMORY_LIMIT_BYTES, MEMORY_LIMIT_BYTES)
-    _limit(resource.RLIMIT_CPU, CPU_LIMIT_S, CPU_LIMIT_S + 2)
+# Bounds of the optional argv limits (board renders): the parent's board raster timeout
+# is at most 60 s and its memory cap at most 3 GiB (plan B-C9).
+MAX_CPU_LIMIT_S = 120
+MAX_MEMORY_LIMIT_BYTES = 3 * 1024 * 1024 * 1024
+
+
+def limit_resources(cpu_s: int = CPU_LIMIT_S, memory_bytes: int = MEMORY_LIMIT_BYTES) -> None:
+    """Address space `memory_bytes`, CPU `cpu_s` (hard + 2 s) and the fixed file-size
+    cap; never above a hard limit this process inherited."""
+    _limit(resource.RLIMIT_AS, memory_bytes, memory_bytes)
+    _limit(resource.RLIMIT_CPU, cpu_s, cpu_s + 2)
     _limit(resource.RLIMIT_FSIZE, FILE_LIMIT_BYTES, FILE_LIMIT_BYTES)
+
+
+def parse_args(argv: list[str]) -> tuple[int, int, int, int]:
+    """(width, height, cpu_s, memory_bytes) from 2 or 4 integer argv items (2 → the
+    constants); ValueError for anything else or a value out of range."""
+    if len(argv) not in (2, 4):
+        raise ValueError("expected 2 or 4 arguments")
+    values = [int(a) for a in argv]
+    width, height = values[:2]
+    cpu_s, memory = values[2:] if len(values) == 4 else (CPU_LIMIT_S, MEMORY_LIMIT_BYTES)
+    if not (0 < width <= MAX_SIDE_PX and 0 < height <= MAX_SIDE_PX):
+        raise ValueError("size out of range")
+    if not (0 < cpu_s <= MAX_CPU_LIMIT_S and 0 < memory <= MAX_MEMORY_LIMIT_BYTES):
+        raise ValueError("limit out of range")
+    return width, height, cpu_s, memory
 
 
 def refuse(url: str, resource_type: str) -> bytes:
@@ -66,11 +91,15 @@ def convert(svg: bytes, width: int, height: int) -> bytes:
 
 
 def main(argv: list[str]) -> int:
-    limit_resources()
     try:
-        width, height = (int(a) for a in argv)
-        if not (0 < width <= MAX_SIDE_PX and 0 < height <= MAX_SIDE_PX):
-            raise ValueError("size out of range")
+        # the limits come from argv, so it is read first (a few ints; nothing else runs
+        # before the limits are set)
+        width, height, cpu_s, memory = parse_args(argv)
+    except ValueError as exc:
+        sys.stderr.write(type(exc).__name__)
+        return 2
+    limit_resources(cpu_s, memory)
+    try:
         png = convert(sys.stdin.buffer.read(), width, height)
     except BaseException as exc:  # MemoryError, RecursionError, ...: class name only
         sys.stderr.write(type(exc).__name__[:80])

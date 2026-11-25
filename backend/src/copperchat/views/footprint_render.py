@@ -79,6 +79,27 @@ MAX_ELEMENTS = 10_000
 MAX_COORDS = 50_000
 MAX_ELEMENT_COORDS = 2_000
 MAX_SPAN = 1_000.0
+
+
+@dataclass(frozen=True)
+class SvgLimits:
+    """The rasterising caps `load_kicad_svg` enforces (board renders bring their own,
+    `views.board_render.BOARD_SVG_LIMITS`, B-C9)."""
+
+    max_bytes: int
+    max_elements: int
+    max_coords: int
+    max_element_coords: int
+    max_span: float  # summed line length, in drawing extents
+
+
+FOOTPRINT_SVG_LIMITS = SvgLimits(
+    max_bytes=MAX_SVG_BYTES,
+    max_elements=MAX_ELEMENTS,
+    max_coords=MAX_COORDS,
+    max_element_coords=MAX_ELEMENT_COORDS,
+    max_span=MAX_SPAN,
+)
 # coordinate pairs charged per plain shape (its outline is a few Bezier curves)
 SHAPE_COORDS = {"circle": 4, "ellipse": 4, "rect": 4, "line": 2}
 MAX_DEPTH = 64  # KiCad's SVG nests 2-3 levels
@@ -273,29 +294,33 @@ def _without_opacity(style: str) -> tuple[str, bool]:
 
 @dataclass
 class _Tally:
-    """What the kept elements will cost CairoSVG, against the `MAX_*` caps."""
+    """What the kept elements will cost CairoSVG, against the caps of `limits`."""
 
     extent: float  # the drawing's longer side (viewBox), the unit of `span`
+    limits: SvgLimits = FOOTPRINT_SVG_LIMITS
     elements: int = 0
     coords: int = 0
     span: float = 0.0
+    peak: int = 0  # the most coordinate pairs of one element
 
     def add(self, coords: int, length: float) -> None:
+        lim = self.limits
         self.elements += 1
         self.coords += coords
         self.span += length / self.extent
-        if coords > MAX_ELEMENT_COORDS:
+        self.peak = max(self.peak, coords)
+        if coords > lim.max_element_coords:
             raise _failed(
-                f"kicad-cli wrote an SVG element of more than {MAX_ELEMENT_COORDS} points"
+                f"kicad-cli wrote an SVG element of more than {lim.max_element_coords} points"
             )
-        if self.elements > MAX_ELEMENTS:
-            raise _failed(f"kicad-cli wrote an SVG of more than {MAX_ELEMENTS} elements")
-        if self.coords > MAX_COORDS:
-            raise _failed(f"kicad-cli wrote an SVG of more than {MAX_COORDS} points")
-        if self.span > MAX_SPAN:
+        if self.elements > lim.max_elements:
+            raise _failed(f"kicad-cli wrote an SVG of more than {lim.max_elements} elements")
+        if self.coords > lim.max_coords:
+            raise _failed(f"kicad-cli wrote an SVG of more than {lim.max_coords} points")
+        if self.span > lim.max_span:
             raise _failed(
-                f"kicad-cli wrote an SVG whose lines are longer than {MAX_SPAN:.0f} times "
-                "the drawing"
+                f"kicad-cli wrote an SVG whose lines are longer than {lim.max_span:.0f} "
+                "times the drawing"
             )
 
 
@@ -376,13 +401,13 @@ def _clean(src: ET.Element, depth: int, tally: _Tally) -> ET.Element | None:
     return out
 
 
-def load_kicad_svg(data: bytes) -> ET.Element:
+def load_kicad_svg(data: bytes, *, limits: SvgLimits = FOOTPRINT_SVG_LIMITS) -> ET.Element:
     """KiCad's SVG, parsed and sanitised (an un-namespaced `svg` element tree), or
-    `render_failed` for output over a `MAX_*` cap (bytes, elements, points, line
+    `render_failed` for output over a cap of `limits` (bytes, elements, points, line
     length), a hidden root, a foreign DOCTYPE, an ENTITY declaration or markup
     `xml.etree` cannot parse."""
-    if len(data) > MAX_SVG_BYTES:
-        raise _failed(f"kicad-cli wrote more than {MAX_SVG_BYTES} bytes of SVG")
+    if len(data) > limits.max_bytes:
+        raise _failed(f"kicad-cli wrote more than {limits.max_bytes} bytes of SVG")
     # UTF-8 only (a BOM is dropped): the checks below run on the decoded text and expat
     # parses that text, so a declared or BOM-signalled other encoding (UTF-16 hiding a
     # DOCTYPE from a byte search) can never change what is checked.
@@ -404,7 +429,7 @@ def load_kicad_svg(data: bytes) -> ET.Element:
     if root.tag != f"{{{SVG_NS}}}svg":
         raise _failed("kicad-cli's output is not an SVG document")
     extent = max(_view_box(root)[2:])
-    cleaned = _clean(root, 0, _Tally(extent))
+    cleaned = _clean(root, 0, _Tally(extent, limits))
     if cleaned is None:  # the root itself hidden (opacity 0): nothing to show
         raise _failed("kicad-cli's SVG is hidden as a whole (opacity 0)")
     return cleaned
@@ -562,12 +587,16 @@ def build_wrapper(
     return _build(kicad_svg, geometry, grid_mm, labels).svg
 
 
-def _raster_size(extent_mm: tuple[float, float]) -> tuple[int, int, float]:
+def _raster_size(
+    extent_mm: tuple[float, float],
+    max_side_px: int = MAX_SIDE_PX,
+    min_px_per_mm: float = MIN_PX_PER_MM,
+) -> tuple[int, int, float]:
     w, h = extent_mm
     longest = max(w, h)
     if not (math.isfinite(longest) and min(w, h) > 0):
         raise _failed("the drawing has no extent")
-    scale = min(max(MIN_PX_PER_MM, TARGET_PX / longest), MAX_SIDE_PX / longest)
+    scale = min(max(min_px_per_mm, TARGET_PX / longest), max_side_px / longest)
     return max(1, round(w * scale)), max(1, round(h * scale)), scale
 
 
@@ -614,12 +643,21 @@ def _kill_group(proc: asyncio.subprocess.Process) -> None:
             os.killpg(proc.pid, signal.SIGKILL)
 
 
-async def _run_worker(svg: bytes, width: int, height: int, home: Path) -> bytes:
-    """The PNG from the worker process, or `render_failed` (exit code, timeout,
-    oversized output). Its stdin, stdout and stderr are files in `home` (no pipe, so
-    the worker never blocks on the parent and the parent only waits for its exit). The
-    worker is killed and reaped on every way out, a cancellation included (which waits
-    for the reaping, then propagates)."""
+async def _run_worker(
+    svg: bytes,
+    width: int,
+    height: int,
+    home: Path,
+    *,
+    timeout_s: float,
+    limits: tuple[str, ...] = (),
+) -> bytes:
+    """The PNG from the worker process, or `render_failed` (exit code, timeout after
+    `timeout_s`, oversized output). `limits`: the worker's optional CPU and memory argv
+    items (board renders only; footprint renders pass none). Its stdin, stdout and
+    stderr are files in `home` (no pipe, so the worker never blocks on the parent and
+    the parent only waits for its exit). The worker is killed and reaped on every way
+    out, a cancellation included (which waits for the reaping, then propagates)."""
     fds: list[int] = []
     try:
         fds.append(_io_file(home, "worker-in.svg", os.O_WRONLY))
@@ -639,6 +677,7 @@ async def _run_worker(svg: bytes, width: int, height: int, home: Path) -> bytes:
                 *RASTER_WORKER,
                 str(width),
                 str(height),
+                *limits,
                 cwd=home,
                 env=_worker_env(home),
                 stdin=in_fd,
@@ -649,10 +688,10 @@ async def _run_worker(svg: bytes, width: int, height: int, home: Path) -> bytes:
         except OSError as exc:
             raise _failed(f"the rasteriser could not be started ({type(exc).__name__})") from None
         try:
-            returncode = await asyncio.wait_for(proc.wait(), RASTER_TIMEOUT_S)
+            returncode = await asyncio.wait_for(proc.wait(), timeout_s)
         except TimeoutError:
             raise _failed(
-                f"render timed out (rasterising took longer than {RASTER_TIMEOUT_S:.0f} s)",
+                f"render timed out (rasterising took longer than {timeout_s:.0f} s)",
                 "The drawing is too complex to render; use fp_get for its geometry.",
             ) from None
         finally:
@@ -675,16 +714,34 @@ async def _run_worker(svg: bytes, width: int, height: int, home: Path) -> bytes:
             os.close(fd)
 
 
-async def rasterise(svg: bytes, extent_mm: tuple[float, float]) -> tuple[bytes, float]:
-    """PNG of `svg` (whose viewBox is `extent_mm`) and its px/mm: at least 40 px/mm,
-    the longer side at most 2000 px. CairoSVG runs in a worker process
-    (`_raster_worker`: address-space, CPU and file-size (RLIMIT_FSIZE) rlimits, minimal
-    environment; its stdin/stdout/stderr are temp files, not pipes) that is
-    killed after `RASTER_TIMEOUT_S` (`render_failed`, "render timed out")."""
-    width, height, scale = _raster_size(extent_mm)
+async def rasterise(
+    svg: bytes,
+    extent_mm: tuple[float, float],
+    *,
+    max_side_px: int = MAX_SIDE_PX,
+    min_px_per_mm: float = MIN_PX_PER_MM,
+    timeout_s: float | None = None,
+    memory_bytes: int | None = None,
+) -> tuple[bytes, float]:
+    """PNG of `svg` (whose viewBox is `extent_mm`) and its px/mm: at least
+    `min_px_per_mm` (40), the longer side at most `max_side_px` (2000). CairoSVG runs in
+    a worker process (`_raster_worker`: address-space, CPU and file-size (RLIMIT_FSIZE)
+    rlimits, minimal environment; its stdin/stdout/stderr are temp files, not pipes)
+    that is killed after `timeout_s` (default `RASTER_TIMEOUT_S`, read at call time;
+    `render_failed`, "render timed out").
+
+    Only with `memory_bytes` (the board path, B-C9) the worker gets its CPU limit
+    (`ceil(timeout_s)` s) and address-space limit (`memory_bytes`) as two extra argv
+    items; without it the argv is exactly the footprint one (width, height) and the
+    worker keeps its own constants."""
+    width, height, scale = _raster_size(extent_mm, max_side_px, min_px_per_mm)
+    wall = RASTER_TIMEOUT_S if timeout_s is None else timeout_s
+    limits: tuple[str, ...] = ()
+    if memory_bytes is not None:
+        limits = (str(math.ceil(wall)), str(memory_bytes))
     home = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="cc-fp-raster-"))
     try:
-        png = await _run_worker(svg, width, height, home)
+        png = await _run_worker(svg, width, height, home, timeout_s=wall, limits=limits)
     finally:
         await _settle(
             asyncio.ensure_future(asyncio.to_thread(shutil.rmtree, home, ignore_errors=True))
