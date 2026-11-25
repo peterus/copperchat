@@ -11,16 +11,18 @@ of their net + `PULL_WEIGHT` x n x octilinear distance of the block centre to `t
 (else the region centre) + `EDGE_WEIGHT` x each connector's distance to its edge
 (`board.md` Placement edges, else `edge`; without either only a connector that anchors its
 own cluster is pulled, to the nearest outline edge), its mouth (the courtyard side away
-from its pads) facing that edge. The search runs on a 2 mm grid first (plus the region's
-ends) and refines the best spots on the 0.5 mm grid (a full 0.5 mm scan of a rotation the
-coarse grid finds nothing legal for)."""
+from its pads) facing that edge. The search runs on a 2 mm grid first (wider on big boards,
+at most `COARSE_MAX_SPOTS`; plus the region's ends) and refines the best spots on the 0.5 mm
+grid; a rotation the coarse grid finds nothing legal for gets the exact sweep (every 0.5 mm
+spot where the block touches a region end or an obstacle)."""
 
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import math
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -64,7 +66,7 @@ EDGE_SNAP_MM = 0.5  # an assigned connector this close to its edge (beyond the m
 EDGE_MISS = 1000.0
 FACING_MM = 5.0  # a connector whose mouth does not face its edge costs like this far away
 MOUTH_MIN_MM = 0.5  # pad centroid this far off the courtyard centre gives the connector a mouth
-FULL_SCAN_MAX_SPOTS = 20_000  # a full scan coarsens its grid beyond this many spots
+COARSE_MAX_SPOTS = 4_000  # the coarse grid widens (in 2 mm steps) beyond this many spots
 _EDGE_NORMAL: Mapping[str, Point] = {
     "left": (-1.0, 0.0),
     "right": (1.0, 0.0),
@@ -95,6 +97,75 @@ class _Boxes:
 
     def near(self, b: Box, grow: float) -> set[Box]:
         return {ob for k in self._keys(b, grow) for ob in self.cells.get(k, ())}
+
+
+def _union_area(boxes: Sequence[Box], clip: Box) -> float:
+    """Area of the union of `boxes` clipped to `clip` (x slabs, merged y intervals)."""
+    cut = [
+        (max(b[0], clip[0]), max(b[1], clip[1]), min(b[2], clip[2]), min(b[3], clip[3]))
+        for b in boxes
+    ]
+    cut = [b for b in cut if b[2] > b[0] and b[3] > b[1]]
+    xs = sorted({v for b in cut for v in (b[0], b[2])})
+    total = 0.0
+    for x0, x1 in itertools.pairwise(xs):
+        spans = sorted((b[1], b[3]) for b in cut if b[0] <= x0 and b[2] >= x1)
+        covered, end = 0.0, -math.inf
+        for y0, y1 in spans:
+            if y1 > end:
+                covered += y1 - max(y0, end)
+                end = y1
+        total += covered * (x1 - x0)
+    return total
+
+
+class _Nearest:
+    """Octilinear nearest-point queries on a uniform grid (ring search)."""
+
+    CELL = 5.0
+
+    SMALL = 32  # up to this many points: a plain scan
+
+    def __init__(self, pts: Sequence[Point]) -> None:
+        self.small: list[Point] | None = list(pts) if len(pts) <= self.SMALL else None
+        self.cells: dict[tuple[int, int], list[Point]] = defaultdict(list)
+        for p in pts:
+            self.cells[self._key(p)].append(p)
+        keys = list(self.cells)
+        self.bounds = (
+            min(k[0] for k in keys),
+            min(k[1] for k in keys),
+            max(k[0] for k in keys),
+            max(k[1] for k in keys),
+        )
+
+    def _key(self, p: Point) -> tuple[int, int]:
+        return (math.floor(p[0] / self.CELL), math.floor(p[1] / self.CELL))
+
+    def dist(self, p: Point) -> float:
+        if self.small is not None:
+            return min(octi_dist(p, q) for q in self.small)
+        ci, cj = self._key(p)
+        i0, j0, i1, j1 = self.bounds
+        best = math.inf
+        # start at the ring that first touches the occupied cells
+        k0 = max(i0 - ci, ci - i1, j0 - cj, cj - j1, 0)
+        reach = max(abs(ci - i0), abs(ci - i1), abs(cj - j0), abs(cj - j1))
+        for k in range(k0, reach + 1):
+            # every point in ring k is at least (k - 1) cells away (octi >= max(|dx|,|dy|))
+            if best <= (k - 1) * self.CELL:
+                break
+            for i in range(max(ci - k, i0), min(ci + k, i1) + 1):
+                if abs(i - ci) == k:
+                    js: Iterable[int] = range(max(cj - k, j0), min(cj + k, j1) + 1)
+                else:
+                    js = [j for j in (cj - k, cj + k) if j0 <= j <= j1]
+                for j in js:
+                    for q in self.cells.get((i, j), ()):
+                        d = octi_dist(p, q)
+                        if d < best:
+                            best = d
+        return best
 
 
 @dataclass(frozen=True)
@@ -276,17 +347,7 @@ def place_block(
         needed = sum(
             (b[2] - b[0] + kc) * (b[3] - b[1] + kc) for b in (box_of(known[r]) for r in members)
         )
-        taken = sum(
-            _area(
-                (
-                    max(b[0], allowed[0]),
-                    max(b[1], allowed[1]),
-                    min(b[2], allowed[2]),
-                    min(b[3], allowed[3]),
-                )
-            )
-            for b in obstacles
-        )
+        taken = _union_area(obstacles, allowed)
         return DoesNotFit(
             needed_mm2=round(needed, 3),
             available_mm2=round(max(_area(allowed) - taken, 0.0), 3),
@@ -311,6 +372,7 @@ def place_block(
         for q in p.pads:
             if q.net and cls.net_kind.get(q.net) != "ground":
                 outside[q.net].append((q.x, q.y))
+    nearest = {net: _Nearest(pts) for net, pts in outside.items()}
     edges = {row.ref: row.edge for row in doc.edges if row.edge is not None}
     o = base.outline
     obox: Box = (o.x, o.y, o.x + o.w, o.y + o.h) if o.kind != "none" else reg
@@ -350,7 +412,7 @@ def place_block(
     def cost(v: _Variant, x: float, y: float) -> float:
         c = 0.0
         for net, (px, py) in v.pads:
-            c += min(octi_dist((px + x, py + y), q) for q in outside[net])
+            c += nearest[net].dist((px + x, py + y))
         bc = ((v.box[0] + v.box[2]) / 2 + x, (v.box[1] + v.box[3]) / 2 + y)
         c += PULL_WEIGHT * n * octi_dist(bc, centre)
         for b, mouth, e in v.conns:
@@ -396,17 +458,51 @@ def place_block(
                         spots.append(spot)
         return [(cost(v, x, y), y, x, vi) for x, y in spots if legal(v, x, y)]
 
+    def sweep(vi: int) -> list[Found]:
+        """Every spot on the 0.5 mm grid where the block box touches the region end or an
+        obstacle (one per free interval of each such column): the exact search for a tight
+        fit, linear in the obstacles near each column."""
+        v = variants[vi]
+        g = PLACE_GRID_MM
+        lo_x, hi_x = allowed[0] - v.box[0], allowed[2] - v.box[2]
+        lo_y, hi_y = allowed[1] - v.box[1], allowed[3] - v.box[3]
+        if lo_x > hi_x + _EPS or lo_y > hi_y + _EPS:
+            return []
+        lo_x, lo_y = math.ceil(lo_x / g - 1e-9) * g, math.ceil(lo_y / g - 1e-9) * g
+        hi_x, hi_y = math.floor(hi_x / g + 1e-9) * g, math.floor(hi_y / g + 1e-9) * g
+        xs = {lo_x, hi_x}
+        for ob in obstacles:
+            xs.add(math.ceil((ob[2] + kc - v.box[0]) / g - 1e-9) * g)
+            xs.add(math.floor((ob[0] - kc - v.box[2]) / g + 1e-9) * g)
+        out: list[Found] = []
+        for x in sorted(round(v_, 6) for v_ in xs if lo_x - _EPS <= v_ <= hi_x + _EPS):
+            col = (v.box[0] + x, allowed[1] - kc, v.box[2] + x, allowed[3] + kc)
+            blocked = [
+                (ob[1] - kc - v.box[3], ob[3] + kc - v.box[1])
+                for ob in obs_index.near(col, kc)
+                if ob[0] < col[2] + kc - _EPS and col[0] < ob[2] + kc - _EPS
+            ]
+            ys = {lo_y, hi_y}
+            for b0, b1 in blocked:
+                ys.add(math.ceil(b1 / g - 1e-9) * g)
+                ys.add(math.floor(b0 / g + 1e-9) * g)
+            for y in sorted(round(v_, 6) for v_ in ys if lo_y - _EPS <= v_ <= hi_y + _EPS):
+                if any(b0 + _EPS < y < b1 - _EPS for b0, b1 in blocked):
+                    continue
+                if legal(v, x, y):
+                    out.append((cost(v, x, y), y, x, vi))
+        return out
+
     fine: list[Found] = []
     for vi in range(len(variants)):
-        coarse = sorted(scan(vi, COARSE_GRID_MM, None))
-        if not coarse:  # nothing on the coarse grid: scan this rotation fully (bounded)
-            step = PLACE_GRID_MM
-            while len(positions(variants[vi], step)) > FULL_SCAN_MAX_SPOTS:
-                step *= 2
-            fine.extend(scan(vi, step, None))
+        step = COARSE_GRID_MM
+        while len(positions(variants[vi], step)) > COARSE_MAX_SPOTS:
+            step += COARSE_GRID_MM
+        coarse = sorted(scan(vi, step, None))
+        if not coarse:  # nothing on the coarse grid: the exact sweep for tight fits
+            fine.extend(sweep(vi))
             continue
-        d = COARSE_GRID_MM
-        wins = [(x - d, y - d, x + d, y + d) for _, y, x, _ in coarse[:REFINE_KEEP]]
+        wins = [(x - step, y - step, x + step, y + step) for _, y, x, _ in coarse[:REFINE_KEEP]]
         fine.extend(scan(vi, PLACE_GRID_MM, wins))
     if not fine:
         return does_not_fit()

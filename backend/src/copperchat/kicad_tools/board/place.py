@@ -696,7 +696,7 @@ async def plan_moves(
     ]
     moving = [w.move.ref for w in writes if moves_part(by_ref[w.move.ref], w.move)]
     shifted = [w.move.ref for w in writes if _differs(by_ref[w.move.ref], w.move)]
-    att = attached(model, moving)
+    att = await asyncio.to_thread(attached, model, moving)
     if att and not unroute:
         raise _routed_error(att)
     before_hash = await asyncio.to_thread(placement_hash, model)

@@ -4,19 +4,19 @@ violations with small shifts; locked and non-movable parts never move. Pure, det
 Overlap = two courtyard boxes on the same side closer than the board's courtyard clearance
 (`courtyard_clearance` rule, 0 when unset). Each round: clamp every movable part into the
 outline minus `edge_margin`, push it out of keepouts, then push every overlapping pair
-apart along the axis of the smaller penetration (both movable: half each). Shifts are whole
-0.05 mm grid steps rounded up, so positions stay on the grid and gaps never shrink. A part
-still in conflict after the rounds goes to the nearest free spot around its start (0.25 mm
-rings, within `max_shift`, else 20 mm).
+apart along the axis of the smaller penetration (both movable: half each). A legal part
+keeps its exact position; a part that has to move is snapped onto the 0.05 mm grid first and
+shifted in whole grid steps rounded up, so gaps never shrink. A part still in conflict after
+the rounds goes to the nearest free spot around its start (0.25 mm rings, within
+`max_shift`, else 20 mm). Both phases have deterministic work budgets (`push_rounds`,
+`FALLBACK_TRIES`): what is left in conflict is reported as `DoesNotFit`.
 """
 
 from __future__ import annotations
 
-import functools
 import math
-import time
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 
 from copperchat.board.geom import polygon_inside, polygons_overlap, rect_poly
@@ -36,7 +36,9 @@ from copperchat.board.staging import natural_key
 MAX_ROUNDS = 200
 FALLBACK_STEP_MM = 0.25  # ring pitch of the nearest-free-spot fallback
 FALLBACK_CELL_MM = 10.0  # bucket size of the fallback's box index
-FALLBACK_BUDGET_S = 10.0  # the fallback's whole time budget per call
+FALLBACK_TRIES = 200_000  # spots the fallback may test per call (deterministic budget)
+PUSH_PAIR_BUDGET = 100_000  # push rounds = min(MAX_ROUNDS, max(20, this // parts))
+SNAP_SLACK_MM = GRID_MM * math.sqrt(2) / 2  # snapping onto the grid may add this to a shift
 FALLBACK_RADIUS_MM = 20.0  # its reach without a max_shift
 DEFAULT_EDGE_MARGIN_MM = 0.3
 _EPS = 1e-9
@@ -202,18 +204,20 @@ class _BoxIndex:
         return out
 
 
-@functools.cache
-def _spiral(radius: float) -> tuple[tuple[float, float], ...]:
-    """Offsets on the 0.25 mm grid within `radius`, nearest first (ties: y, x)."""
+def _rings(radius: float) -> Iterator[tuple[float, float]]:
+    """Offsets on the 0.25 mm grid within `radius`, ring by ring (Chebyshev rings, inside a
+    ring nearest first; ties y, x) — generated lazily, nothing cached."""
     n = int(radius / FALLBACK_STEP_MM)
-    pts = [
-        (i * FALLBACK_STEP_MM, j * FALLBACK_STEP_MM)
-        for i in range(-n, n + 1)
-        for j in range(-n, n + 1)
-        if math.hypot(i, j) * FALLBACK_STEP_MM <= radius + 1e-9
-    ]
-    pts.sort(key=lambda p: (math.hypot(*p), p[1], p[0]))
-    return tuple(pts)
+    for k in range(n + 1):
+        ring = [
+            (i, j)
+            for i in range(-k, k + 1)
+            for j in range(-k, k + 1)
+            if max(abs(i), abs(j)) == k and math.hypot(i, j) * FALLBACK_STEP_MM <= radius + 1e-9
+        ]
+        ring.sort(key=lambda t: (math.hypot(*t), t[1], t[0]))
+        for i, j in ring:
+            yield (i * FALLBACK_STEP_MM, j * FALLBACK_STEP_MM)
 
 
 def _step(v: float) -> float:
@@ -232,8 +236,9 @@ def legalize(
 ) -> tuple[Move, ...] | DoesNotFit:
     """Legal positions for every movable part (natural ref order; position from `moves`,
     else the board): no courtyard overlap with any part on the board, inside the outline
-    minus `edge_margin`, outside `keepouts`, on the 0.05 mm grid. A part that would shift
-    more than `max_shift` from its start, or overlaps left after `MAX_ROUNDS` →
+    minus `edge_margin`, outside `keepouts`; a part that moves lands on the 0.05 mm grid, a
+    legal one keeps its exact position. A part that would shift more than `max_shift` (+ the
+    grid snap, `SNAP_SLACK_MM`) from its start, or conflicts left after the budgets →
     `DoesNotFit`."""
     m = apply_moves(model, moves)
     moved = {mv.ref for mv in moves}
@@ -337,7 +342,8 @@ def legalize(
         return True
 
     order = [p.ref for p in parts]
-    for _ in range(MAX_ROUNDS):
+    push_rounds = min(MAX_ROUNDS, max(20, PUSH_PAIR_BUDGET // max(len(order), 1)))
+    for _ in range(push_rounds):
         changed = False
         for r in order:
             if r in mov:
@@ -369,19 +375,24 @@ def legalize(
 
     # the push-apart can get stuck (a part squeezed between fixed ones along one axis):
     # move each part still in conflict to the nearest free spot around its start, within
-    # FALLBACK_BUDGET_S overall (then the rest is reported as does_not_fit)
+    # FALLBACK_TRIES spots overall (then the rest is reported as does_not_fit)
     radius = max_shift if max_shift is not None else FALLBACK_RADIUS_MM
-    deadline = time.monotonic() + FALLBACK_BUDGET_S
-    spiral = _spiral(radius)
+    tries = FALLBACK_TRIES
     for r in sorted(mov, key=natural_key):
-        if time.monotonic() > deadline:
+        if tries <= 0:
             break
         if not conflict(r):
             continue
         index.remove(r)
         sx, sy = snap(start[r][0]), snap(start[r][1])
-        for dx, dy in spiral:
-            pos[r] = [round(sx + dx, 6), round(sy + dy, 6)]
+        for dx, dy in _rings(radius):
+            tries -= 1
+            if tries < 0:
+                break
+            cand = (round(sx + dx, 6), round(sy + dy, 6))
+            if math.dist(start[r], cand) > radius + SNAP_SLACK_MM:
+                continue
+            pos[r] = [cand[0], cand[1]]
             if not conflict(r):
                 touched.add(r)
                 break
@@ -394,7 +405,8 @@ def legalize(
         b = bx(r)
         if not outline.contains(b) or _hits_keepout(b, keepouts) is not None:
             bad.add(r)
-        if max_shift is not None and math.dist(start[r], pos[r]) > max_shift + 1e-6:
+        # the grid snap of a moved part may add up to SNAP_SLACK_MM to its shift
+        if max_shift is not None and math.dist(start[r], pos[r]) > max_shift + SNAP_SLACK_MM + 1e-6:
             bad.add(r)
     for i, ra in enumerate(order):
         for rb in order[i + 1 :]:

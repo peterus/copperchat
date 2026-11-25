@@ -3,9 +3,10 @@ connection components; locked components skipped unless asked; zones never selec
 
 from __future__ import annotations
 
+import math
 import time
 
-from copperchat.board.model import Rect
+from copperchat.board.model import ArcTrack, Rect
 from copperchat.kicad_tools.board.unroute_ops import attached, select_copper
 
 from .builders import track, via, zone
@@ -143,3 +144,73 @@ def test_select_large_board_is_fast() -> None:
     sel = select_copper(m, nets=["N7"])
     assert time.perf_counter() - t0 < 2.0
     assert len(sel.track_kiids) == 20
+
+
+def _arc(kiid: str, r: float, a0: float, a1: float, c=(40.0, 40.0)) -> ArcTrack:  # type: ignore[no-untyped-def]
+    """An F.Cu SIG arc of radius r around c from angle a0 to a1 (degrees, through the mean)."""
+
+    def at(a: float) -> tuple[float, float]:
+        return (c[0] + r * math.cos(math.radians(a)), c[1] + r * math.sin(math.radians(a)))
+
+    return ArcTrack(kiid, "SIG", "F.Cu", at(a0), at((a0 + a1) / 2), at(a1), 0.2, False)
+
+
+def _via_at(r: float, a: float, c=(40.0, 40.0)):  # type: ignore[no-untyped-def]
+    """A 0.3 mm SIG via at angle a (degrees) on the circle of radius r around c."""
+    p = (c[0] + r * math.cos(math.radians(a)), c[1] + r * math.sin(math.radians(a)))
+    return via("SIG", p, 0.3, 0.15, kiid="va")
+
+
+def test_via_on_an_arc_joins() -> None:
+    """The via at 22.5° on a 0-90° r=5 arc sits ~0.38 mm off the start-mid chord, but on
+    the arc (reach 0.1 + 0.15): it joins it (the region seed on the arc pulls the via in)."""
+    arc = _arc("a1", 5.0, 0.0, 90.0)
+    m = _board(arcs=(arc,), vias=(_via_at(5.0, 22.5),))
+    sel = select_copper(m, region=Rect(39.0, 44.0, 2.0, 2.0))  # touches the arc end
+    assert sel.track_kiids == {"a1"} and sel.via_kiids == {"va"}
+
+
+def test_via_off_an_arc_does_not_join() -> None:
+    arc = _arc("a1", 5.0, 0.0, 90.0)
+    region = Rect(39.0, 44.0, 2.0, 2.0)
+    for v in (_via_at(5.6, 45.0), _via_at(4.4, 45.0), _via_at(5.0, 180.0)):
+        sel = select_copper(_board(arcs=(arc,), vias=(v,)), region=region)
+        assert sel.track_kiids == {"a1"} and sel.via_kiids == set(), v
+
+
+def test_via_on_a_reflex_arc() -> None:
+    """A 270° arc (0 → 270 through 135): joined at 200° (outside the start-mid-end chords),
+    not at 315° (on the circle, outside the span); clockwise arcs alike."""
+    region = Rect(44.0, 39.0, 2.0, 2.0)  # touches the arc start (45, 40)
+    for arc in (_arc("a1", 5.0, 0.0, 270.0), _arc("a1", 5.0, 270.0, 0.0)):
+        on = select_copper(_board(arcs=(arc,), vias=(_via_at(5.0, 200.0),)), region=region)
+        assert on.via_kiids == {"va"}
+        off = select_copper(_board(arcs=(arc,), vias=(_via_at(5.0, 315.0),)), region=region)
+        assert off.via_kiids == set()
+    cw = _arc("a1", 5.0, 0.0, -90.0)  # clockwise through 315
+    on = select_copper(_board(arcs=(cw,), vias=(_via_at(5.0, 315.0),)), region=region)
+    assert on.via_kiids == {"va"}
+    off = select_copper(_board(arcs=(cw,), vias=(_via_at(5.0, 200.0),)), region=region)
+    assert off.via_kiids == set()
+
+
+def test_long_diagonal_tracks_are_fast() -> None:
+    """10k 150 mm diagonal tracks: bucketing walks each segment's cells instead of filling
+    its whole bbox (was ~5.9 s for `attached`)."""
+    parts = [cap(f"C{i}", f"N{i}", "GND", (5.0 + i * 5.0, 5.0)) for i in range(20)]
+    tracks = [
+        track(
+            f"N{k % 500}",
+            "F.Cu",
+            (k * 0.01, 0.0),
+            (k * 0.01 + 106.0, 106.0),
+            kiid=f"d{k}",
+        )
+        for k in range(10_000)
+    ]
+    m = circuit(*parts, tracks=tuple(tracks))
+    t0 = time.perf_counter()
+    attached(m, [p.ref for p in m.parts])
+    select_copper(m, pads_of=[p.ref for p in m.parts], include_locked=True)
+    select_copper(m, nets=["N7"])
+    assert time.perf_counter() - t0 < 3.0

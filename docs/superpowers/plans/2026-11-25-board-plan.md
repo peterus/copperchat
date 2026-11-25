@@ -760,7 +760,14 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
 - `PlaceResult.moves` = `fixed` moves first, then the members.
 - Legaliser: after the push rounds a part still in conflict moves to the nearest free spot
   around its start (0.25 mm rings within `max_shift`, else 20 mm) — the pure push-apart got
-  stuck on ~1/4 of sparse random boards. A connector keeps its own cluster (never absorbed
+  stuck on ~1/4 of sparse random boards. A legal part keeps its exact (possibly off-grid)
+  position; only moved parts are snapped (`max_shift` allows the snap, + 0.035 mm). Both
+  phases have deterministic work budgets (push rounds scale with the part count, 200k
+  fallback spots), so a huge infeasible board answers `does_not_fit`, not a timeout.
+- Packing search (review round 2): per-net nearest index for the airwire cost; the coarse
+  grid widens beyond 4,000 spots; a rotation without a coarse hit gets an exact sweep (every
+  0.5 mm spot where the block box touches a region end or an obstacle), not a full scan;
+  `does_not_fit` areas use the union of the obstacles. A connector keeps its own cluster (never absorbed
   as a satellite). An assigned edge (board.md row or the `edge` argument) is nearly hard:
   a connector farther than 0.5 mm beyond the edge margin costs `EDGE_MISS` 1000.
 

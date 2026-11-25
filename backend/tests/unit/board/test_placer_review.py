@@ -27,10 +27,31 @@ def test_legal_off_grid_board_unchanged() -> None:
 
 
 def test_max_shift_from_true_start() -> None:
-    # an overlapping pair; the shift is measured from the unsnapped start
-    m = circuit(part("R1", 10.01, 10.0, half=1.0), part("R2", 11.0, 10.0, half=1.0))
+    # R1 overlaps the fixed R2 by 0.12 mm: more than max_shift 0.01 + the grid snap
+    m = circuit(part("R1", 10.02, 10.0, half=1.0), part("R2", 11.9, 10.0, half=1.0))
+    out = legalize(m, (), movable=frozenset({"R1"}), max_shift=0.01, keepouts=(), edge_margin=0.3)
+    assert isinstance(out, DoesNotFit)
+
+
+def test_conflict_leaves_legal_neighbours_exact() -> None:
+    m = circuit(
+        part("R1", 10.02, 10.0, half=1.0),
+        part("R2", 11.5, 10.0, half=1.0),
+        part("R3", 30.013, 20.007, half=1.0),
+    )
+    out = legalize(
+        m, (), movable=frozenset({"R1", "R2", "R3"}), max_shift=None, keepouts=(), edge_margin=0.3
+    )
+    assert not isinstance(out, DoesNotFit)
+    r3 = next(mv for mv in out if mv.ref == "R3")
+    assert (r3.x, r3.y) == (30.013, 20.007)
+
+
+def test_shift_of_exactly_max_shift_allowed() -> None:
+    # R1 must move 0.5 mm (+ the grid snap of its 10.02 start): allowed with max_shift 0.5
+    m = circuit(part("R1", 10.02, 10.0, half=1.0), part("R2", 10.02, 11.5, half=1.0))
     out = legalize(m, (), movable=frozenset({"R1"}), max_shift=0.5, keepouts=(), edge_margin=0.3)
-    assert isinstance(out, DoesNotFit)  # R1 must move ~1 mm > 0.5
+    assert not isinstance(out, DoesNotFit)
 
 
 def test_edge_strip_fits_a_single_big_part() -> None:
@@ -99,3 +120,83 @@ def test_place_block_does_not_fit_quickly() -> None:
     )
     assert isinstance(r, DoesNotFit)
     assert time.monotonic() - t < 15.0
+
+
+def test_tight_hole_found_on_a_big_board() -> None:
+    # a 5 x 5 mm hole (one 4 x 4 part + 2 x 0.5 channel) in an otherwise full 100 mm board
+    obstacles = []
+    k = 0
+    for i in range(20):
+        for j in range(20):
+            x0, y0 = 1.0 + i * 4.9, 1.0 + j * 4.9
+            if (i, j) == (8, 8):
+                continue
+            k += 1
+            obstacles.append(part(f"R{k}", x0 + 2.2, y0 + 2.2, half=2.2))
+    big = part("U1", 500.0, 500.0, half=2.0)
+    m = circuit(*obstacles, big, outline=outline(0, 0, 100, 100))
+    r = place_block(
+        m,
+        classify(m),
+        ["U1"],
+        Rect(0, 0, 100, 100),
+        side="top",
+        rotation=None,
+        keep_channels=0.25,
+        allowed_sides=TOP,
+    )
+    assert not isinstance(r, DoesNotFit), r
+
+
+def test_block_with_many_outside_pads_is_fast() -> None:
+    # 200 outside parts with pads on the block's nets: the cost uses a nearest index
+    from .builders_circuit import cap, ic
+
+    outside = [
+        cap(f"C{i + 1}", f"N{i % 20}", "+3V3", at=(5 + (i % 20) * 7, 5 + (i // 20) * 9))
+        for i in range(200)
+    ]
+    u = ic("U1", {str(n + 1): f"N{n % 20}" for n in range(40)}, at=(500.0, 500.0), pitch=0.5)
+    m = circuit(*outside, u, outline=outline(0, 0, 150, 150))
+    t = time.monotonic()
+    place_block(
+        m,
+        classify(m),
+        ["U1"],
+        Rect(0, 0, 150, 150),
+        side="top",
+        rotation=None,
+        allowed_sides=TOP,
+    )
+    assert time.monotonic() - t < 15.0
+
+
+def test_stacked_obstacles_counted_once() -> None:
+    stack = [part(f"R{i + 1}", 5.0, 5.0, half=2.0) for i in range(12)]  # all on one spot
+    big = part("U1", 500.0, 500.0, half=2.0)
+    m = circuit(*stack, big, outline=outline(0, 0, 14, 14))
+    r = place_block(
+        m,
+        classify(m),
+        ["U1"],
+        Rect(0, 0, 14, 14),
+        side="top",
+        rotation=None,
+        allowed_sides=TOP,
+    )
+    assert not isinstance(r, DoesNotFit), r
+
+
+def test_nearest_index_matches_brute_force() -> None:
+    import random
+
+    from copperchat.board.geom import octi_dist
+    from copperchat.board.placer.pack import _Nearest
+
+    rnd = random.Random(7)
+    for _ in range(20):
+        pts = [(rnd.uniform(-50, 150), rnd.uniform(-50, 150)) for _ in range(rnd.randint(33, 300))]
+        idx = _Nearest(pts)
+        for _ in range(50):
+            q = (rnd.uniform(-300, 400), rnd.uniform(-300, 400))
+            assert abs(idx.dist(q) - min(octi_dist(q, p) for p in pts)) < 1e-9
