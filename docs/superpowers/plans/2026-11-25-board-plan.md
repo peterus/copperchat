@@ -415,7 +415,7 @@ BOARD_SHEET = SheetRef(path="", page="", file="", name="<board>")
     undo: Callable[[BoardStageContext], Awaitable[None]] | None = None   # non-item state (rules, net classes, layer count, stackup): restores the pre-call values
 @dataclass class BoardStageContext:
     ctx: ToolContext; report: dict[str, Any]; created: set[str]   # KIIDs created by this call
-    async def call(self, fn: Callable[[KicadHandle], T]) -> T: ...  # session.call
+    async def call(self, fn: Callable[[KicadHandle], T], *, timeout: float | None = None) -> T: ...  # session.call (As built P1a: timeout passed through)
     async def drc(self, *, timeout_s: float = 60.0) -> DrcResult: ... # session.call(lambda h: api.run_drc_task(h, timeout_s=timeout_s), timeout=drc_call_timeout(timeout_s)); deadline-bound callers pass min(60, remaining)
     async def refill(self, *, timeout_s: float = REFILL_TIMEOUT_S) -> None: ...  # session.call(lambda h: api.refill(h, timeout_s=timeout_s), timeout=refill_call_timeout(timeout_s)); the only way stages refill zones
     async def model(self) -> BoardModel: ...
@@ -428,6 +428,7 @@ BOARD_SHEET = SheetRef(path="", page="", file="", name="<board>")
     saves_project: bool = False       # rules/net classes: explicit project save if a board save does not persist them (P2 verifies)
     unrouted_by_call: list[str] = field(default_factory=list)  # nets this call unrouted (moves with unroute: true)
     fail_after: int | None = None     # test hook: raise after stage n (1-based)
+    report: dict[str, Any] = field(default_factory=dict)   # As built (P1a): stages fill it; returned as data (+ step_report)
     temp_dirs: list[Path] = field(default_factory=list)   # scratch dirs owned by this change set (P6b fill-<uuid>); the engine rmtree's every one still present in its finally (shielded), on success, failure and cancel
 async def apply_board_change_set(ctx: ToolContext, cs: BoardChangeSet) -> ToolResult
 # runs inside ctx.session.applying(); takes the compensation snapshot first; one commit per
@@ -464,6 +465,7 @@ that value (call 13).
     footprint_ids: frozenset[str]; group_ids: frozenset[str]; graphic_ids: frozenset[str]
     positions: tuple[tuple[str, float, float, float, Side, bool], ...]   # (kiid, x, y, rot, side, locked)
     tracks: tuple[Track | ArcTrack, ...] = (); vias: tuple[Via, ...] = ()
+    raw: ... = ()   # As built (P1a): stored protobufs ("full"), so re-created vias keep padstack/type; re-created items keep their KIIDs
 def take_snapshot(h: KicadHandle, mode: Literal["ids", "full"]) -> CopperSnapshot
 def compensate(h: KicadHandle, snap: CopperSnapshot) -> list[str]   # removes items not in snap, restores positions; "full" also recreates missing tracks/vias (data equal); returns leftovers (empty = clean)
 ```
@@ -760,6 +762,62 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
   with the stock library tables seeded via `kicad_cli_env`) — reusable for P3a's `synth_board`.
 - `scripts/refresh-fixtures.sh` now calls `make-sp4-synth.py` after `make-blank-fixture.py`; it
   needs `uv` and the backend environment (like the CI kicad job), not only `/opt/venv`.
+
+### As built (P1a)
+
+**Measured / recorded**
+- api-server `VmRSS` with the ecc83 board open: ≈ 490–515 MB (`test_api.py`, printed + `record_property`).
+- DRC-in-open-commit probe (`test_probe_drc_sees_open_commit`): **`drc_sees_open_commit = False`** — a DRC task
+  run inside an open board commit does not see the uncommitted track; the same check after the push does. No
+  code depends on it (spec §6.2).
+- Reads inside an open board commit return the **pre-commit** board (same root cause): a stage cannot read back its
+  own writes inside its own commit. Later phases that need a read-back split the work into two stages (or use
+  `commit=False` and push their own commits).
+- ecc83 counts pinned in `tests/kicad/board/test_read.py`: 15 parts, 59 tracks, 0 vias, 1 zone, copper layers
+  `F.Cu`/`B.Cu`, outline kind `"other"`, net classes `("Default",)`; DRC: 17 markers, 0 unconnected (matches
+  `kicad-cli pcb drc` on a `save_copy`).
+- `MANIFEST_VERSION = 3` (`absent` list; versions 1–2 read as `[]`; `library_restore` accepts 2 and 3).
+- CPU worker: `WORKER_MEMORY_LIMIT_BYTES` = 3 GiB; peak RSS of the P1a selftest job ≈ 26 MiB (`VmHWM`); P5a adds
+  the large-board value.
+- KiCad rewrites `.kicad_pro` when a board document is created; after a failed creating call the engine removes
+  the created `.kicad_pcb` (`remove_created`) but the `.kicad_pro` rewrite stays until the History undo restores it.
+
+**Contract deviations / additions (B-C2–B-C4 updated in place where binding)**
+- B-C3 `layer_types`: the pinned API cannot return copper layer types; `load_board_model` parses them from the
+  `(layers …)` header of `SaveDocumentToString` (read-only; one extra request per load).
+- B-C2 `Zone.filled` holds the outer outlines of the filled polygons only (holes dropped; `filled_area_mm2`
+  subtracts them). P3a M11 needs holes → extend the model then.
+- Footprint keepouts (`Part.rule_areas`) come from the API footprint-relative and unrotated; the loader transforms
+  them (verified at 0°/30°/90°); mirroring on flipped footprints is unverified for asymmetric keepouts.
+- `run_drc_task` checks its deadline before every status poll (also the first).
+- Busy probes (`refill` after kipy's `refill_zones`, and `session.call`'s wait while the busy slot is set) are
+  Pings with a 2 s receive timeout (`PROBE_PING_TIMEOUT_S`, set temporarily on kipy's private pynng socket —
+  helper `_short_timeout` in `session.py`; falls back to the normal timeout with a log line if kipy's internals
+  change). `refill` never sends a probe that could end after `start + timeout_s + REFILL_BUSY_GRACE_S`, so it
+  returns or raises within `timeout_s + 30.5 s < refill_call_timeout`. `session.call` with the busy slot set
+  probes within its own budget (−1 s) and otherwise raises `refill_timeout` **without** running the callable or
+  restarting (slot kept).
+- `KicadSession.commit(..., doc="pcb")` refuses with `DocumentNotOpen` when the project has no `pcb_file`, or a
+  running server has no board open (while the server is down the next call's restart decides).
+- History: `absent_plan` / `remove_created` accept only **direct children** of the project dir (stricter than
+  "inside"; no symlinked parent can redirect an unlink). A board save also records the `.kicad_dru` hash (else
+  KiCad's own rules file would read as an external change). `HistoryService.projects_root` (set by
+  `install_history`) is used for re-discovery. `ChainedHooks.on_project_changed`, `RunEngine.refresh_project`
+  and restore's refresh guard each hook (log and continue); `EditingHooks` / `SessionHooks` follow
+  `on_project_changed` too.
+- B-C4: `BoardChangeSet.report: dict` (the stages' report, returned as `data`); `CopperSnapshot.raw` (stored
+  protobufs, so a re-created via keeps padstack/type); `"full"` compensation also restores **changed**
+  tracks/vias, not only missing ones; re-created items keep their KIIDs. Compensation runs as `restore` (one pcb
+  commit) + `leftovers` (read after the push); `compensate()` = both. `BoardStageContext.call(fn, *, timeout=None)`.
+  A cancel after a non-compensable stage started is reported like `sync_failed` (undo via History).
+- Test rig: `board_ctx(session, db, sessions=None)` in `tests/kicad/board/conftest.py` (reload needs the real
+  `KicadSessionManager`); fixtures `blank_nopcb_sessions`, `board_db`.
+
+**Residuals for later phases**
+- `sdk_tools._inconsistent_error` words leftovers as "local footprint library"; board wording needed (P1c).
+- `shutdown_worker()` is not wired into app shutdown yet (first `run_cpu` user, P3a, or P1c).
+- The real-server path where a 2 s probe times out (socket closed, kipy reconnects) is covered by fakes only.
+- Removing a group the call created leaves its member footprints (members are compensated separately).
 
 ## Residuals
 
