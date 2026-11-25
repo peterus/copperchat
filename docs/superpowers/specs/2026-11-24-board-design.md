@@ -434,8 +434,8 @@ grouping; the plan may refine fields, not semantics).
 - `pcb_route_fill {timeout_s?: ≤600, passes?: ≤100}` — Freerouting for all unrouted
   connections, then the post-processor (§10.3). Report: completion, rejected connections, metrics.
   Cost 5.
-- `pcb_unroute {nets?: [..], region?: {x,y,w,h}, include_locked?: bool=false, unlock_only?: bool=false}` — deletes tracks (or, with `unlock_only`, only clears their `locked` flag)
-  and vias. Cost 1.
+- `pcb_unroute {nets?: [..], region?: {x,y,w,h}, include_locked?: bool=false, unlock_only?: bool=false}` — deletes tracks
+  and vias (with `unlock_only`: only clears their `locked` flag). Cost 1.
 
 **Copper**
 
