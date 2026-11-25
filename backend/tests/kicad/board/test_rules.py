@@ -176,6 +176,38 @@ async def test_invalid_condition(synth_rig: SynthRig) -> None:
     assert not os.path.lexists(_dru(ctx))
 
 
+async def test_invalid_condition_keeps_existing_dru_bytes(synth_rig: SynthRig) -> None:
+    """A rejected rule on a project that already has a .kicad_dru: the file is not
+    re-written (KiCad would re-serialise it), the board hash is unchanged."""
+    ctx = await _synced(synth_rig)
+    data, err = await _rules(ctx, net_classes=[POWER], custom_rules=[RULE])
+    assert not err, data
+    ctx = synth_rig.ctx()
+    raw = _dru(ctx).read_bytes()
+    before = board_hash(await _model(ctx))
+    bad = dict(RULE, name="other_rule", condition="A.NetClass ==== (")
+    data, err = await _rules(ctx, custom_rules=[bad])
+    assert err and data["error"]["code"] == "invalid_argument", data
+    assert _dru(ctx).read_bytes() == raw
+    assert board_hash(await _model(ctx)) == before
+
+
+async def test_net_class_pattern_replaced_and_moved(synth_rig: SynthRig) -> None:
+    ctx = await _synced(synth_rig)
+    data, err = await _rules(ctx, net_classes=[POWER])
+    assert not err, data
+    data, err = await _rules(ctx, net_classes=[dict(POWER, patterns=["VBUS"])])
+    assert not err, data
+    classes = {c.name: c for c in (await _model(ctx)).net_classes}
+    assert set(classes["Power"].patterns) == {"VBUS"}
+    other = dict(POWER, name="Usb", patterns=["VBUS"])
+    data, err = await _rules(ctx, net_classes=[dict(POWER, patterns=["+3V3"]), other])
+    assert not err, data
+    classes = {c.name: c for c in (await _model(ctx)).net_classes}
+    assert set(classes["Power"].patterns) == {"+3V3"}
+    assert set(classes["Usb"].patterns) == {"VBUS"}
+
+
 async def _set_4(ctx: ToolContext) -> None:
     data, err = await _rules(ctx, layers=4)
     assert not err, data

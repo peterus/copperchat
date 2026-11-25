@@ -14,6 +14,8 @@ from __future__ import annotations
 import asyncio
 import re
 import shutil
+import stat
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -135,10 +137,33 @@ def staging_box(model: BoardModel, moves: tuple[Move, ...]) -> dict[str, float] 
 # -- netlist ---------------------------------------------------------------------------
 
 
+STALE_SCRATCH_S = 3600.0  # a sync-* dir older than this is left over from a stopped call
+
+
 def _netlist_dir(ctx: ToolContext) -> Path:
-    """A fresh scratch dir for this call's netlist (removed by the engine / prepare)."""
-    base = agent_dir(ctx.project) / "board"
+    """A fresh scratch dir for this call's netlist under `.kicad-agent/board` (removed
+    by the engine, or by prepare on a dry run / failure). A symlinked `.kicad-agent` or
+    `board` dir is refused (never written through, never rmtree'd). Scratch dirs a
+    stopped call left behind (between prepare and apply) are swept here."""
+    agent = agent_dir(ctx.project)
+    base = agent / "board"
+    for d in (agent, base):
+        if d.is_symlink():
+            raise StructuredToolError(
+                "Cannot sync the board",
+                f"{d.relative_to(ctx.project.dir)} is a symlink",
+                "Ask the user to replace it with a plain directory, then retry.",
+                code="output_path_unsafe",
+            )
     base.mkdir(parents=True, exist_ok=True)
+    now = time.time()
+    for old in base.glob("sync-*"):
+        try:
+            st = old.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISDIR(st.st_mode) and now - st.st_mtime > STALE_SCRATCH_S:
+            shutil.rmtree(old, ignore_errors=True)
     d = base / f"sync-{uuid.uuid4().hex}"
     d.mkdir()
     return d
@@ -335,7 +360,7 @@ def _plan(
                 await sctx.call(
                     lambda h: _move_footprints(h, by_ref, new), timeout=BOARD_READ_TIMEOUT_S
                 )
-        after = await sctx.model()
+        after = await sctx.model() if moves else model
         imp = state.get("import", {"report": ""})
         refs_after = {p.ref for p in after.parts}
         # A footprint that lost pins shows only in the dry run against the old board

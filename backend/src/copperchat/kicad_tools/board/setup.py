@@ -35,7 +35,6 @@ from copperchat.board.presets import PRESETS, FabPreset
 from copperchat.board.staging import natural_key
 from copperchat.errors import StructuredToolError
 from copperchat.history.restore import remove_created
-from copperchat.history.store import document_files
 from copperchat.kicad_session import KicadHandle
 from copperchat.kicad_tools.board import api
 from copperchat.kicad_tools.board.engine import (
@@ -196,6 +195,19 @@ def _has_symbol(fp: FootprintInstance) -> bool:
     return len(fp.proto.symbol_path.path) > 0
 
 
+def _is_tool_hole(fp: FootprintInstance) -> bool:
+    """A hole an earlier `pcb_set_outline` placed: no symbol and the three attributes
+    `_mark_tool_holes` sets. A hole the user added by hand lacks them and is kept."""
+    a = fp.attributes
+    return (
+        _is_hole(fp)
+        and not _has_symbol(fp)
+        and a.not_in_schematic
+        and a.exclude_from_bill_of_materials
+        and a.exclude_from_position_files
+    )
+
+
 def _ref(fp: FootprintInstance) -> str:
     return str(fp.reference_field.text.value)
 
@@ -234,8 +246,10 @@ def _write_holes(h: KicadHandle, holes: HolesArgs, targets: list[Point]) -> dict
     schematic = sorted(
         (fp for fp in holes_now if _has_symbol(fp)), key=lambda f: natural_key(_ref(f))
     )
-    tool = sorted(
-        (fp for fp in holes_now if not _has_symbol(fp)), key=lambda f: natural_key(_ref(f))
+    tool = sorted((fp for fp in holes_now if _is_tool_hole(fp)), key=lambda f: natural_key(_ref(f)))
+    foreign = sorted(
+        (_ref(fp) for fp in holes_now if not _has_symbol(fp) and not _is_tool_hole(fp)),
+        key=natural_key,
     )
     moved = []
     for fp, target in zip(schematic, targets, strict=False):
@@ -259,6 +273,7 @@ def _write_holes(h: KicadHandle, holes: HolesArgs, targets: list[Point]) -> dict
         "moved": [_ref(fp) for fp in moved],
         "placed": list(created.values()),
         "removed": [_ref(fp) for fp in tool],
+        "kept": foreign,  # symbol-less holes the user placed: never touched
         "created": created,
     }
 
@@ -330,7 +345,7 @@ def _remove_replaced(h: KicadHandle, o: OutlineArgs, created: set[str]) -> None:
         doomed += [
             fp
             for fp in board.get_footprints()
-            if _is_hole(fp) and not _has_symbol(fp) and str(fp.id.value) not in created
+            if _is_tool_hole(fp) and str(fp.id.value) not in created
         ]
     doomed += [
         z
@@ -646,6 +661,18 @@ def _rules_text(value: Any, name: str, lo: int, hi: int) -> str:
     return value
 
 
+def _dru_text(value: Any, name: str, lo: int, hi: int) -> str:
+    """Text KiCad writes into a `.kicad_dru` s-expression string (condition, reason):
+    no double quote or backslash, so nothing can end the string early."""
+    text = _rules_text(value, name, lo, hi)
+    if '"' in text or "\\" in text:
+        raise _rules_invalid(
+            f"{name} must not contain double quotes or backslashes",
+            "Use single quotes in conditions, e.g. A.NetClass == 'Power'.",
+        )
+    return text
+
+
 def _rules_name(value: Any, name: str) -> str:
     if not isinstance(value, str) or not RULE_NAME.match(value):
         raise _rules_invalid(f"{name} must match {RULE_NAME.pattern}")
@@ -736,14 +763,14 @@ def _custom_rule(i: int, value: Any) -> CustomRuleArgs:
         raise _rules_invalid(f"{at} needs min or max (mm)")
     if lo is not None and hi is not None and lo > hi:
         raise _rules_invalid(f"{at}: min {lo:g} mm is above max {hi:g} mm")
-    reason = _rules_text(r["reason"], f"{at}.reason", MIN_REASON_CHARS, MAX_REASON_CHARS)
+    reason = _dru_text(r["reason"], f"{at}.reason", MIN_REASON_CHARS, MAX_REASON_CHARS)
     if len(reason.strip()) < MIN_REASON_CHARS:
         raise _rules_invalid(
             f"{at}.reason must say why the exception is needed ({MIN_REASON_CHARS}+ characters)"
         )
     return CustomRuleArgs(
         name=_rules_name(r["name"], f"{at}.name"),
-        condition=_rules_text(r["condition"], f"{at}.condition", 1, MAX_CONDITION_CHARS),
+        condition=_dru_text(r["condition"], f"{at}.condition", 1, MAX_CONDITION_CHARS),
         constraint=constraint,
         min=lo,
         max=hi,
@@ -765,8 +792,12 @@ def parse_rules_args(args: Any) -> RulesArgs:
             f"Give at least one of {', '.join(RULES_KEYS)}.",
         )
     layers = a.get("layers")
-    if layers is not None and (isinstance(layers, bool) or layers not in LAYER_COUNTS):
+    if layers is not None and (
+        isinstance(layers, bool) or layers not in LAYER_COUNTS or int(layers) != layers
+    ):
         raise _rules_invalid("layers must be 2, 4 or 6")
+    if layers is not None:
+        layers = int(layers)  # JSON Schema "integer" also admits 4.0
     preset = a.get("preset")
     if preset is not None and preset not in PRESETS:
         raise _rules_invalid(f"preset must be one of {', '.join(PRESETS)}")
@@ -984,16 +1015,17 @@ def _dru_rel(project: Project) -> str:
 
 def dru_exists(project: Project) -> bool:
     """Whether `<stem>.kicad_dru` exists as the project's own rules file (lstat of the
-    unresolved path): missing -> False (this call creates it); a regular file the
-    project lists (`document_files`) -> True; anything else (a symlink, a directory, a
-    file the project does not know) -> `output_path_unsafe`, before any rules write."""
+    unresolved path): missing -> False (this call creates it); a regular file -> True
+    (exactly what `document_files` lists as the rules file, without its tree walk);
+    anything else (a symlink, a directory, a FIFO) -> `output_path_unsafe`, before any
+    rules write."""
     rel = _dru_rel(project)
     path = project.pro_file.parent / rel
     try:
         st = os.lstat(path)
     except FileNotFoundError:
         return False
-    if stat.S_ISREG(st.st_mode) and path in document_files(project):
+    if stat.S_ISREG(st.st_mode):  # what document_files lists as the rules file
         return True
     raise StructuredToolError(
         "Cannot write the custom rules",
@@ -1029,12 +1061,15 @@ def _set_custom_rules(
             "Nothing was changed. Ask the user to fix the rules file in KiCad first.",
         )
     pre = [copy.deepcopy(r.proto) for r in current.rules]
-    state["custom"] = pre
     given = {r.name: _custom_rule_proto(r) for r in rules}
     merged = [given.pop(p.name, p) for p in pre]
     merged += given.values()
     res = board.set_custom_design_rules([CustomRule(proto=p) for p in merged])
-    if res.status != CustomRulesStatus.CRS_VALID:
+    if res.status == CustomRulesStatus.CRS_VALID:
+        # Only an accepted write needs the undo: re-writing the old rules after a
+        # rejected one would make KiCad re-serialise an untouched .kicad_dru.
+        state["custom"] = pre
+    else:
         raise _rules_invalid(
             f"KiCad rejects the custom rules: {res.error_text or 'invalid'}",
             "Fix the condition (KiCad custom rule syntax, e.g. A.NetClass == 'Power').",
@@ -1053,7 +1088,7 @@ async def _undo_custom_rules(sctx: BoardStageContext, state: dict[str, Any]) -> 
         await asyncio.to_thread(remove_created, project.pro_file.parent, [_dru_rel(project)])
 
 
-_RULE_HEAD = r'\(rule\s+"?{}"?[\s)]'
+_RULE_HEAD = r'\(rule\s+(?:"{0}"|{0})[\s)]'
 
 
 def _verify_rules(
@@ -1083,6 +1118,11 @@ def _verify_rules(
                 )
             ):
                 problems.append(f"net class {c.name!r} reads back with other sizes")
+            elif set(have.patterns) != set(c.patterns):
+                problems.append(
+                    f"net class {c.name!r} reads back with patterns "
+                    f"{sorted(have.patterns)}, expected {sorted(c.patterns)}"
+                )
         for r in req.custom_rules:
             if not re.search(_RULE_HEAD.format(re.escape(r.name)), m.dru_text):
                 problems.append(f"custom rule {r.name!r} missing from the rules file")

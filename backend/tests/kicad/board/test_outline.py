@@ -109,7 +109,12 @@ async def test_schematic_holes_moved_not_duplicated(synth_rig: SynthRig) -> None
     assert tool == ["H3", "H4"]
     assert {(round(holes[r].x, 3), round(holes[r].y, 3)) for r in tool} == set(targets[2:])
     assert all(holes[r].group is None for r in tool)
-    assert data["holes"] == {"moved": ["H1", "H2"], "placed": ["H3", "H4"], "removed": []}
+    assert data["holes"] == {
+        "moved": ["H1", "H2"],
+        "placed": ["H3", "H4"],
+        "removed": [],
+        "kept": [],
+    }
 
 
 async def test_rerun_replaces_tool_holes(synth_rig: SynthRig) -> None:
@@ -126,7 +131,38 @@ async def test_rerun_replaces_tool_holes(synth_rig: SynthRig) -> None:
         assert _at(holes[ref], targets[i]), ref
     assert holes["H1"].kiid == first["H1"].kiid and holes["H2"].kiid == first["H2"].kiid
     assert {holes[r].kiid for r in ("H3", "H4")}.isdisjoint({first[r].kiid for r in ("H3", "H4")})
-    assert data["holes"] == {"moved": ["H1", "H2"], "placed": ["H3", "H4"], "removed": ["H3", "H4"]}
+    assert data["holes"] == {
+        "moved": ["H1", "H2"],
+        "placed": ["H3", "H4"],
+        "removed": ["H3", "H4"],
+        "kept": [],
+    }
+
+
+async def test_hand_placed_hole_kept(synth_rig: SynthRig) -> None:
+    """A symbol-less hole without the tool's attributes (placed by the user) is never
+    removed by a re-run."""
+    from kipy.geometry import Vector2
+
+    ctx = await _synced(synth_rig)
+
+    def place(h: KicadHandle) -> str:
+        board = h.board()
+        h.kicad.get_library_footprint(setup.DEFAULT_HOLE, board.document)
+        fp = board.place_footprint_from_library(
+            setup.DEFAULT_HOLE, Vector2.from_xy(130_000_000, 120_000_000)
+        )
+        return str(fp.id.value)
+
+    async with ctx.session.commit("test: user hole", doc="pcb"):
+        kiid = await ctx.session.call(place, timeout=120)
+    data, err = await _outline(synth_rig.ctx(), holes={})
+    assert not err, data
+    data, err = await _outline(synth_rig.ctx(), holes={"inset": 4})
+    assert not err, data
+    kiids = {p.kiid for p in (await _model(ctx)).parts}
+    assert kiid in kiids
+    assert len(data["holes"]["kept"]) == 1, data["holes"]
 
 
 async def test_no_holes_arg_keeps_holes(synth_rig: SynthRig) -> None:

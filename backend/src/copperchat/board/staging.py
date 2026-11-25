@@ -7,11 +7,12 @@ placer re-exports `Move`. Pure: no kipy, deterministic.
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from copperchat.board.model import BoardModel, Part, Side
+from copperchat.board.model import BoardModel, Pad, Part, Point, Side
 
 STAGING_GAP_MM = 5.0  # distance of the staging area from the outline / the other parts
 CELL_GAP_MM = 1.0  # added to every part's courtyard box
@@ -37,11 +38,17 @@ def natural_key(ref: str) -> tuple[tuple[int, int | str], ...]:
     )
 
 
+def _pad_corners(q: Pad) -> list[Point]:
+    """The bounding-box corners of a (rotated) pad: `w`/`h` are the unrotated sizes."""
+    t = math.radians(q.rot)
+    c, s = abs(math.cos(t)), abs(math.sin(t))
+    hx, hy = q.w / 2 * c + q.h / 2 * s, q.w / 2 * s + q.h / 2 * c
+    return [(q.x - hx, q.y - hy), (q.x + hx, q.y + hy)]
+
+
 def part_box(p: Part) -> Box:
     """The courtyard's bounding box; without a courtyard the pads', else the origin."""
-    pts = list(p.courtyard) or [
-        (q.x + sx * q.w / 2, q.y + sy * q.h / 2) for q in p.pads for sx in (-1, 1) for sy in (-1, 1)
-    ]
+    pts = list(p.courtyard) or [c for q in p.pads for c in _pad_corners(q)]
     if not pts:
         return (p.x, p.y, p.x, p.y)
     xs, ys = [q[0] for q in pts], [q[1] for q in pts]
@@ -49,11 +56,15 @@ def part_box(p: Part) -> Box:
 
 
 def _origin(model: BoardModel, staged: set[str]) -> tuple[float, float, float]:
-    """(x, y, column height) of the staging area's top-left corner."""
+    """(x, y, column height) of the staging area's top-left corner: right of the outline
+    and of every part already waiting right of it (staged by an earlier sync), else
+    right of the other parts, else (0, 0)."""
     o = model.outline
-    if o.kind != "none":
-        return (o.x + o.w + STAGING_GAP_MM, o.y, o.h)
     others = [part_box(p) for p in model.parts if p.ref not in staged]
+    if o.kind != "none":
+        right = o.x + o.w
+        waiting = [b[2] for b in others if b[0] >= right]
+        return (max([right, *waiting]) + STAGING_GAP_MM, o.y, o.h)
     if others:
         return (
             max(b[2] for b in others) + STAGING_GAP_MM,

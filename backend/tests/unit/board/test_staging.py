@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import replace
+from typing import Any
 
 from copperchat.board.geom import polygons_overlap, rect_poly
 from copperchat.board.model import BoardModel, Outline, Part
@@ -134,3 +135,70 @@ def test_warning_rows_pad_lines() -> None:
     ]
     assert rows[0]["suggestion"] == "check the footprint of U3 with fp_check"
     assert rows[1]["ref"] == "R10" and "suggestion" not in rows[2]
+
+
+def test_second_sync_stages_right_of_earlier_staged_parts() -> None:
+    m = board(outline=outline(0, 0, 30, 20), parts=tuple(part(f"R{i}") for i in range(1, 6)))
+    first = staging_positions(m, ["R1", "R2"])
+    by = {mv.ref: mv for mv in first}
+    m2 = board(
+        outline=outline(0, 0, 30, 20),
+        parts=tuple(
+            part(r, by[r].x, by[r].y) if r in by else part(r) for r in ("R1", "R2", "R3", "R4")
+        ),
+    )
+    second = staging_positions(m2, ["R3", "R4"])
+    old = _moved(m2, tuple(Move(r, by[r].x, by[r].y, 0.0, "top") for r in by))
+    for a in _moved(m2, second):
+        for b in old:
+            assert not polygons_overlap(_box_poly(a), _box_poly(b))
+
+
+def test_pad_box_respects_rotation() -> None:
+    from copperchat.board.model import Pad
+    from copperchat.board.staging import part_box
+
+    pad = Pad("R1", "1", "N", 10.0, 10.0, 4.0, 1.0, 90.0, "rect", frozenset({"F.Cu"}), True, None)
+    x0, y0, x1, y1 = part_box(part("R1", 10, 10, courtyard=(), pads=(pad,)))
+    assert abs((x1 - x0) - 1.0) < 1e-9 and abs((y1 - y0) - 4.0) < 1e-9
+
+
+def _ctx_for(tmp: Any) -> Any:
+    from types import SimpleNamespace
+
+    return SimpleNamespace(project=SimpleNamespace(dir=tmp, name="p"))
+
+
+def test_netlist_dir_refuses_symlinked_agent_dir(tmp_path: Any, monkeypatch: Any) -> None:
+    import pytest
+
+    from copperchat.errors import StructuredToolError
+    from copperchat.kicad_tools.board import sync
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".kicad-agent").symlink_to(outside)
+    monkeypatch.setattr(sync, "agent_dir", lambda p: p.dir / ".kicad-agent")
+    with pytest.raises(StructuredToolError) as err:
+        sync._netlist_dir(_ctx_for(proj))
+    assert err.value.code == "output_path_unsafe"
+    assert list(outside.iterdir()) == []
+
+
+def test_netlist_dir_sweeps_stale_scratch(tmp_path: Any, monkeypatch: Any) -> None:
+    import os
+    import time
+
+    from copperchat.kicad_tools.board import sync
+
+    monkeypatch.setattr(sync, "agent_dir", lambda p: p.dir / ".kicad-agent")
+    base = tmp_path / ".kicad-agent" / "board"
+    stale, fresh = base / "sync-old", base / "sync-new"
+    stale.mkdir(parents=True)
+    fresh.mkdir()
+    old = time.time() - 2 * sync.STALE_SCRATCH_S
+    os.utime(stale, (old, old))
+    d = sync._netlist_dir(_ctx_for(tmp_path))
+    assert not stale.exists() and fresh.exists() and d.is_dir()

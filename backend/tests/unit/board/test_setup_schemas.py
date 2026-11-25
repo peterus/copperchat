@@ -376,6 +376,9 @@ def test_rules_bounds_rejected(path: list[Any], value: Any) -> None:
         (["net_classes", 0, "via_drill"], 0.8),  # drill not smaller than the via
         (["net_classes"], [_rules_ok()["net_classes"][0]] * 2),  # duplicate name
         (["custom_rules"], [_rules_ok()["custom_rules"][0]] * 2),  # duplicate name
+        (["custom_rules", 0, "condition"], 'A.NetClass == "x") (severity ignore'),
+        (["custom_rules", 0, "reason"], "a reason with a \\ backslash"),
+        (["custom_rules", 0, "reason"], 'a "quoted" reason here'),
     ],
 )
 def test_rules_semantic_refused(path: list[Any], value: Any) -> None:
@@ -406,3 +409,22 @@ def test_rules_name_pattern_is_the_shared_one() -> None:
     from copperchat.kicad_tools.board.specs_setup import NAME_PATTERN
 
     assert RULE_NAME.pattern == NAME_PATTERN
+
+
+def test_rules_layers_float_normalised() -> None:
+    from copperchat.kicad_tools.board.setup import parse_rules_args
+
+    req = parse_rules_args({"layers": 4.0})
+    assert req.layers == 4 and isinstance(req.layers, int)
+    _rules_refused({"layers": 4.5})
+
+
+def test_custom_rule_head_matches_exact_name() -> None:
+    import re
+
+    from copperchat.kicad_tools.board.setup import _RULE_HEAD
+
+    text = '(version 1)\n(rule "a b"\n\t(constraint clearance (min 0.3mm)))\n(rule c\n)'
+    assert not re.search(_RULE_HEAD.format(re.escape("a")), text)
+    assert re.search(_RULE_HEAD.format(re.escape("a b")), text)
+    assert re.search(_RULE_HEAD.format(re.escape("c")), text)
