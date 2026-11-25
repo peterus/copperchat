@@ -157,6 +157,29 @@ async def _uncancellable[R](coro: Coroutine[Any, Any, R]) -> R:
 
 # How often `call` pings a server still busy with a cut-short zone refill (B-C3).
 BUSY_POLL_S = 0.5
+# A ping may block for the client's transport timeout (kipy `timeout_ms`, which the
+# session sets from `kicad_api_timeout_s`); this is assumed when the client does not
+# expose it (fakes). `call`'s busy wait keeps this margin before its own timeout.
+DEFAULT_TRANSPORT_TIMEOUT_S = 30.0
+IDLE_WAIT_MARGIN_S = 1.0
+
+
+def _clock() -> float:  # module-level so tests can drive the busy wait with a fake clock
+    return time.monotonic()
+
+
+def _sleep(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+def transport_timeout_s(kicad: Any) -> float:
+    """How long one request (e.g. a Ping) can block: the kipy client's `timeout_ms`
+    (`KiCad._client._timeout_ms`, the value the session's client factory passed), else
+    DEFAULT_TRANSPORT_TIMEOUT_S."""
+    ms = getattr(getattr(kicad, "_client", None), "_timeout_ms", None)
+    if isinstance(ms, int | float) and not isinstance(ms, bool) and ms > 0:
+        return ms / 1000
+    return DEFAULT_TRANSPORT_TIMEOUT_S
 
 
 class Slot[S](Protocol):
@@ -217,16 +240,30 @@ def kicad_busy(kicad: Any) -> bool:
     return False
 
 
-def _after_idle[R](fn: Callable[[KicadHandle], R], deadline: float) -> Callable[[KicadHandle], R]:
+def _after_idle[R](
+    fn: Callable[[KicadHandle], R], deadline: float, limit: float
+) -> Callable[[KicadHandle], R]:
     """`fn`, preceded by pinging until KiCad is idle again (a refill cut short by
-    `RefillTimeout` may still be running, B-C3). Runs in the call's worker thread, so
-    the wait counts against the call's own timeout; past it the thread gives up."""
+    `RefillTimeout` may still be running, B-C3). Runs in the call's worker thread. A
+    Ping is only sent while it fits before `deadline` even if it blocks for the whole
+    transport timeout, so the wait never runs into the call's own timeout (no restart);
+    still busy then → `refill_timeout` without running `fn`, the busy slot kept."""
 
     def run(h: KicadHandle) -> R:
-        while kicad_busy(h.kicad):
-            if time.monotonic() >= deadline:
-                raise KicadUnavailable("the KiCad api-server stayed busy with a zone refill")
-            time.sleep(BUSY_POLL_S)
+        transport = transport_timeout_s(h.kicad)
+        while True:
+            if _clock() + transport > deadline:
+                raise StructuredToolError(
+                    "KiCad is still filling zones",
+                    "an earlier zone refill had not finished, and this call's "
+                    f"{limit:g} s budget cannot wait for it",
+                    "retry in a moment, or with more time (e.g. a refill or DRC step)",
+                    code="refill_timeout",
+                    details={"timeout_s": limit},
+                )
+            if not kicad_busy(h.kicad):
+                break
+            _sleep(BUSY_POLL_S)
         h.busy_slot.set(None)
         return fn(h)
 
@@ -575,9 +612,9 @@ class KicadSession:
             target = fn
             if self.refill_busy is not None and self.refill_busy == self._generation:
                 # A refill cut short by RefillTimeout may still run: ping until idle
-                # first, within this call's own timeout (the timeout restart is the
-                # backstop), so the callable never meets AS_BUSY (B-C3).
-                target = _after_idle(fn, time.monotonic() + limit)
+                # first, bounded inside this call's own timeout (B-C3), so the callable
+                # never meets AS_BUSY.
+                target = _after_idle(fn, _clock() + limit - IDLE_WAIT_MARGIN_S, limit)
             work = asyncio.ensure_future(asyncio.to_thread(target, handle))
             died = asyncio.ensure_future(proc.wait()) if proc is not None else None
             try:

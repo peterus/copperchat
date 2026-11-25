@@ -13,14 +13,15 @@ from pathlib import Path
 from time import monotonic, sleep
 from typing import TYPE_CHECKING, Any, Literal
 
+from kipy.board import Board
 from kipy.proto.board import board_commands_pb2, board_jobs_pb2, board_rules_pb2, board_tasks_pb2
 from kipy.proto.common import tasks_pb2
-from kipy.proto.common.commands import editor_commands_pb2
+from kipy.proto.common.commands import Ping, editor_commands_pb2
 from kipy.proto.common.types import DocumentType, base_types_pb2, jobs_pb2
 
 from copperchat.board.model import Point
 from copperchat.errors import StructuredToolError
-from copperchat.kicad_session.session import KicadHandle, kicad_busy
+from copperchat.kicad_session.session import KicadHandle, kicad_busy, transport_timeout_s
 from copperchat.kicad_tools.units import nm_to_mm
 
 if TYPE_CHECKING:
@@ -158,14 +159,14 @@ REFILL_POLL_S = 0.5
 
 
 class RefillTimeout(StructuredToolError):
-    """KiCad was still filling zones `timeout_s` + REFILL_BUSY_GRACE_S after the refill
-    started (B-C14 `refill_timeout`). The session's busy slot is set, so its next call
-    pings until KiCad is idle before running anything."""
+    """KiCad could not be seen idle within `timeout_s` + REFILL_BUSY_GRACE_S after the
+    refill started (B-C14 `refill_timeout`). The session's busy slot is set, so its next
+    call pings until KiCad is idle before running anything."""
 
     def __init__(self, timeout_s: float) -> None:
         super().__init__(
             "Zone refill did not finish",
-            f"KiCad was still filling zones {timeout_s:g} s + {REFILL_BUSY_GRACE_S:g} s "
+            f"KiCad was not seen idle {timeout_s:g} s + {REFILL_BUSY_GRACE_S:g} s "
             "after the refill started",
             "simplify the zones (fewer or smaller pours) or retry",
             code="refill_timeout",
@@ -178,20 +179,58 @@ def refill_call_timeout(timeout_s: float) -> float:
     return timeout_s + REFILL_BUSY_GRACE_S + 15
 
 
+class _PingWatch:
+    """A kipy client stand-in for `Board.refill_zones`: passes every request through and
+    remembers whether the last Ping was answered (idle) or failed (AS_BUSY / transport
+    timeout) - kipy returns silently either way."""
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+        self.idle: bool | None = None  # None: kipy sent no Ping
+
+    def send(self, command: Any, response_type: Any) -> Any:
+        if not isinstance(command, Ping):
+            return self._client.send(command, response_type)
+        try:
+            reply = self._client.send(command, response_type)
+        except BaseException:
+            self.idle = False
+            raise
+        self.idle = True
+        return reply
+
+
 def refill(h: KicadHandle, *, timeout_s: float) -> None:
     """THE zone refill (P6b, P7 never call `refill_zones` directly).
 
-    kipy's blocking `refill_zones` returns silently at `max_poll_seconds` while KiCad may
-    still be filling (the next request would then fail with AS_BUSY), so afterwards this
-    probes with `Ping` - and sends nothing else - until idle, at most
-    REFILL_BUSY_GRACE_S; still busy → RefillTimeout with the session's busy slot set."""
-    h.board().refill_zones(block=True, max_poll_seconds=timeout_s)
-    grace_end = monotonic() + REFILL_BUSY_GRACE_S
-    while kicad_busy(h.kicad):
-        if monotonic() >= grace_end:
+    kipy's blocking `refill_zones` (RefillZones, then a Ping every 0.5 s until one is
+    answered or `max_poll_seconds` passed) returns silently at its deadline while KiCad
+    may still be filling - the next request would then fail with AS_BUSY. Its last Ping
+    is watched: answered → idle, done. Otherwise this probes with `Ping` - and sends
+    nothing else - but only while a Ping blocking for the whole transport timeout T
+    (`transport_timeout_s`) still ends before D = start + `timeout_s` +
+    REFILL_BUSY_GRACE_S; no idle answer by then → RefillTimeout, busy slot set.
+
+    Worst case (RefillZones answered at once, as kipy documents for the call): kipy's
+    loop ends ≤ `timeout_s` + 0.5 + T (its last Ping started before its deadline), the
+    probe loop never sends a Ping that can end after D = start + `timeout_s` + 30; so
+    with T = 30 s (the session's `kicad_api_timeout_s`) `refill` returns or raises
+    within `timeout_s` + 30.5 s < `refill_call_timeout` = `timeout_s` + 45 s, and the
+    session never restarts the server for it."""
+    start = monotonic()
+    deadline = start + timeout_s + REFILL_BUSY_GRACE_S
+    board = h.board()
+    watch = _PingWatch(board.client)
+    Board(watch, board.document).refill_zones(block=True, max_poll_seconds=timeout_s)  # type: ignore[arg-type]
+    idle = watch.idle is True
+    transport = transport_timeout_s(h.kicad)
+    while not idle:
+        if monotonic() + transport > deadline:
             h.busy_slot.set(h.generation)
             raise RefillTimeout(timeout_s)
-        sleep(REFILL_POLL_S)
+        idle = not kicad_busy(h.kicad)
+        if not idle:
+            sleep(REFILL_POLL_S)
     h.busy_slot.set(None)
 
 
