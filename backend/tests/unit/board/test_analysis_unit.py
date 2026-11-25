@@ -172,6 +172,27 @@ def test_analyse_job_caps_entries() -> None:
     assert len(data["nets"]) == MAX_ENTRIES and data["nets_omitted"] == n + 1 - MAX_ENTRIES
 
 
+def test_analyse_job_caps_block_refs_and_error_length() -> None:
+    """A block lists at most MAX_BLOCK_REFS refs (+ refs_omitted on every block); each
+    board.md error is cut to MAX_ERROR_CHARS characters."""
+    n = jobs.MAX_BLOCK_REFS + 5
+    pins = {str(k): f"N{k}" for k in range(1, n + 1)}
+    parts = [ic("U1", pins, (0.0, 0.0), pitch=0.5)]
+    parts += [
+        res(f"R{k}", f"N{k}", "GND", (float(k % 40), 10.0 + k // 40)) for k in range(1, n + 1)
+    ]
+    long_error = "Placement row 4: bad cell " + repr("x" * 5000)
+    data = analyse_job(circuit(*parts), BoardDoc(errors=(long_error, "short")), scope="all")
+    u1 = next(b for b in data["blocks"] if b["anchor"] == "U1")
+    assert len(u1["refs"]) == jobs.MAX_BLOCK_REFS
+    assert u1["refs_omitted"] == n + 1 - jobs.MAX_BLOCK_REFS
+    assert all(b["refs_omitted"] == 0 for b in data["blocks"] if b is not u1)
+    first, second = data["board_md_errors"]
+    assert len(first) == jobs.MAX_ERROR_CHARS and first.startswith("Placement row 4")
+    assert first.endswith("...")
+    assert second == "short"
+
+
 def test_strip_fills() -> None:
     poly = tuple(rect_poly(0, 0, 10, 10))
     hole = tuple(rect_poly(2, 2, 1, 1))
@@ -273,3 +294,48 @@ def test_metrics_data_shape() -> None:
         "omitted",
     }
     json.dumps(data)  # plain JSON
+
+
+# ---- argument validation (before require_board) --------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "args",
+    [{"scope": "everything"}, {"scope": 3}, {"scope": None}],
+)
+async def test_pcb_analyze_invalid_scope(args: dict[str, Any]) -> None:
+    from types import SimpleNamespace
+
+    from copperchat.errors import StructuredToolError
+
+    # no project at all: validation runs before require_board
+    with pytest.raises(StructuredToolError) as e:
+        await pcb_analyze(SimpleNamespace(), args)  # type: ignore[arg-type]
+    assert e.value.code == "invalid_argument"
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"only": []},
+        {"only": ["M15"]},
+        {"only": "M4"},
+        {"only": ["M4", 4]},
+        {"only": ["M4", "M4"]},
+    ],
+)
+async def test_pcb_metrics_invalid_only(args: dict[str, Any]) -> None:
+    from types import SimpleNamespace
+
+    from copperchat.errors import StructuredToolError
+
+    with pytest.raises(StructuredToolError) as e:
+        await pcb_metrics(SimpleNamespace(), args)  # type: ignore[arg-type]
+    assert e.value.code == "invalid_argument"
+
+
+def test_metrics_schema_only_min_items() -> None:
+    spec = next(s for s in all_specs() if s.name == "pcb_metrics")
+    assert spec.input_schema["properties"]["only"]["minItems"] == 1
+    with pytest.raises(ValidationError):
+        Draft202012Validator(spec.input_schema).validate({"only": []})

@@ -23,11 +23,24 @@ from copperchat.board.presets import FabPreset
 if TYPE_CHECKING:
     from copperchat.kicad_tools.board.api import DrcMarker, DrcResult
 
-__all__ = ["MAX_ENTRIES", "SCOPE_KEYS", "Scope", "analyse_job", "metrics_job", "strip_fills"]
+__all__ = [
+    "MAX_BLOCK_REFS",
+    "MAX_ENTRIES",
+    "MAX_ERROR_CHARS",
+    "SCOPE_KEYS",
+    "Scope",
+    "analyse_job",
+    "metrics_job",
+    "strip_fills",
+]
 
 Scope = Literal["parts", "nets", "blocks", "all"]
 # Every list / mapping of the `pcb_analyze` result keeps at most this many entries.
 MAX_ENTRIES = 500
+# Each block lists at most this many refs (+ `refs_omitted`); each board.md error string is
+# cut to this many characters (boardmd quotes offending cells): the result stays bounded.
+MAX_BLOCK_REFS = 200
+MAX_ERROR_CHARS = 200
 _ALL_KEYS = (
     "parts",
     "nets",
@@ -82,7 +95,9 @@ def analyse_job(model: BoardModel, doc: BoardDoc, scope: Scope = "all") -> dict[
     """The `pcb_analyze` result (spec §7.1, B-C6): `classify(model, doc)` as JSON-ready data,
     restricted to the keys of `scope` (`SCOPE_KEYS`). Each key K holds a list (records as
     dicts, tuples as lists) or a mapping (`parts`: ref → class, `nets`: net → kind) of at
-    most MAX_ENTRIES entries in classification order, plus `K_omitted` (entries dropped)."""
+    most MAX_ENTRIES entries in classification order, plus `K_omitted` (entries dropped).
+    Each block keeps at most MAX_BLOCK_REFS refs plus `refs_omitted`; each board.md error is
+    cut to MAX_ERROR_CHARS characters."""
     c = classify(model, doc)
     full: dict[str, Mapping[str, str] | Sequence[Any]] = {
         "parts": c.part_class,
@@ -99,6 +114,14 @@ def analyse_job(model: BoardModel, doc: BoardDoc, scope: Scope = "all") -> dict[
     data: dict[str, Any] = {}
     for key in SCOPE_KEYS[scope]:
         _capped(data, key, full[key])
+    for block in data.get("blocks", ()):
+        refs = block["refs"]
+        block["refs"] = refs[:MAX_BLOCK_REFS]
+        block["refs_omitted"] = max(0, len(refs) - MAX_BLOCK_REFS)
+    data["board_md_errors"] = [
+        e if len(e) <= MAX_ERROR_CHARS else e[: MAX_ERROR_CHARS - 3] + "..."
+        for e in data["board_md_errors"]
+    ]
     return data
 
 

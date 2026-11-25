@@ -162,6 +162,26 @@ def test_m8_other_side_fails() -> None:
     assert "side" in m8.offenders[0].what
 
 
+def test_m8_duplicate_pad_numbers_use_nearest_supply_pad() -> None:
+    """Two U1 pads numbered "1" (both +3V3) plus one "1" on GND nearer still: M8 measures
+    from the cap to the same-number pad on the supply net nearest the cap (as classify)."""
+    from .builders_circuit import pad
+
+    pads = (
+        pad("U1", "1", "+3V3", (40.0, 40.0)),
+        pad("U1", "1", "GND", (60.0, 41.0)),
+        pad("U1", "1", "+3V3", (60.0, 40.0)),
+        pad("U1", "2", "GND", (61.0, 40.0)),
+    )
+    u1 = part("U1", 50, 40, pads=pads, courtyard=tuple(rect_poly(39, 39, 23, 3)))
+    c1 = cap("C1", "+3V3", "GND", (60.5, 41.5))  # +3V3 pad at (60, 41.5)
+    m = circuit(u1, c1)
+    cls = replace(classify(m), decoupling=(Decoupling("C1", "U1", "1", "+3V3", "GND"),))
+    m8 = get(run(m, cls), "M8")
+    assert m8.value == pytest.approx(1.5)
+    assert m8.verdict == "pass"
+
+
 def test_m8_crystal() -> None:
     u1 = ic("U1", _U1_PINS, (50, 40))  # XI pin 3 at (52, 40), XO pin 4 at (53, 40)
     y1 = xtal("Y1", "XI", "XO", (52.5, 44.0))  # XI pad (52, 44): 4 mm; XO pad (53, 44): 4 mm
@@ -245,3 +265,49 @@ def test_stage_detection() -> None:
     assert run(gnd).stage == "placement"
     sig = replace(m, tracks=(track("SIG", "F.Cu", (1, 1), (5, 1)),))
     assert run(sig).stage == "routed"
+
+
+def test_m10_fallback_skips_misc_block() -> None:
+    """Without `blk:*` groups M10 uses the classification's blocks; the `misc` block (no
+    anchor, e.g. four corner mounting holes) is no functional group and is skipped."""
+    holes = [
+        part(f"H{k + 1}", x, y, lib_id="MountingHole:MountingHole_3.2mm")
+        for k, (x, y) in enumerate(((4, 4), (96, 4), (4, 76), (96, 76)))
+    ]
+    u1 = ic("U1", {"1": "+3V3", "2": "GND", "3": "A"}, (50, 40))
+    m = circuit(u1, cap("C1", "+3V3", "GND", (50.5, 42)), *holes)
+    cls = classify(m)
+    misc = [b for b in cls.blocks if b.anchor is None]
+    assert misc and {"H1", "H2", "H3", "H4"} <= set(misc[0].refs)
+    m10 = get(run(m, cls), "M10")
+    assert m10.verdict != "review", m10.offenders
+
+
+def test_m10_intrusion_timing_200_blocks_3800_parts() -> None:
+    """200 anchored blocks (anchor + 1 cap each) and 3400 loose parts elsewhere on a large
+    board: M10 only, budget 1 s; the one planted intruder is found."""
+    import time
+
+    from copperchat.board.classify import BlockProposal
+
+    from .builders import outline
+
+    parts: list[Part] = []
+    blocks = []
+    for k in range(200):
+        x, y = 5.0 + 10.0 * (k % 20), 5.0 + 10.0 * (k // 20)
+        a, b = _box(f"U{k}", x, y, 3, 3), _box(f"C{k}", x + 3, y, 1, 1)
+        parts += [a, b]
+        blocks.append(BlockProposal(f"blk{k}", f"U{k}", (f"U{k}", f"C{k}"), ""))
+    for k in range(3400):
+        parts.append(_box(f"R{k}", 5.0 + 3.0 * (k % 60), 120.0 + 3.0 * (k // 60), 1, 1))
+    parts.append(_box("RX", 7.0, 5.5, 0.5, 0.5))  # inside U0 + C0's hull
+    m = board(parts=tuple(parts), outline=outline(0, 0, 220, 300))
+    assert len(m.parts) >= 3800
+    cls = replace(classify(board(parts=())), blocks=tuple(blocks))
+    t0 = time.perf_counter()
+    m10 = get(run(m, cls, only=frozenset({"M10"})), "M10")
+    elapsed = time.perf_counter() - t0
+    print(f"M10 200 blocks / {len(m.parts)} parts: {elapsed:.3f} s")
+    assert [o.refs for o in m10.offenders if "intrusion" in o.what] == [("RX",)]
+    assert elapsed < 1.0, elapsed

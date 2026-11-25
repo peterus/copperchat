@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from copperchat.board.jobs import MAX_ENTRIES, SCOPE_KEYS
+from copperchat.board.jobs import MAX_BLOCK_REFS, MAX_ENTRIES, MAX_ERROR_CHARS, SCOPE_KEYS
 from copperchat.board.metrics import MAX_OFFENDERS, METRIC_IDS
 from copperchat.kicad_tools.board.analysis import pcb_analyze, pcb_metrics
 from copperchat.tools.spec import ToolSpec
@@ -30,12 +30,14 @@ PCB_ANALYZE_DESCRIPTION = (
     "switch_node, diff_pair, crystal, signal), decoupling ({cap, ic, pin, supply_net, "
     "ground_net}), switchers ({ic, inductor, sw_net, vin_net, in_caps, out_caps, "
     "fb_parts}), crystals ({ref, ic, load_caps, nets}), pairs ({p, n, anchor}), blocks "
-    "(proposed placement blocks {name, anchor, refs, sheet}), critical_nets, "
-    "overrides_applied, board_md_errors (unparseable board.md rows). scope: parts = parts, "
+    f"(proposed placement blocks {{name, anchor, refs (at most {MAX_BLOCK_REFS}), "
+    "refs_omitted, sheet}), critical_nets, overrides_applied, board_md_errors (unparseable "
+    f"board.md rows, each cut to {MAX_ERROR_CHARS} characters). scope: parts = parts, "
     "decoupling, switchers, crystals, overrides_applied; nets = nets, pairs, critical_nets; "
     "blocks = blocks; all (default) = everything; board_md_errors is always included. "
     f"Every list or mapping K holds at most {MAX_ENTRIES} entries and comes with K_omitted "
-    "(entries left out). No board -> no_board. Read-only."
+    "(entries left out). Unknown scope -> invalid_argument. No board -> no_board. "
+    "Read-only."
 )
 
 PCB_METRICS_SCHEMA = {
@@ -44,6 +46,7 @@ PCB_METRICS_SCHEMA = {
         "only": {
             "type": "array",
             "items": {"type": "string", "enum": list(METRIC_IDS)},
+            "minItems": 1,
             "maxItems": len(METRIC_IDS),
             "uniqueItems": True,
             "description": "Compute only these metrics (default all). Without M2 and M3 "
@@ -65,7 +68,7 @@ PCB_METRICS_DESCRIPTION = (
     "(pass | review | fail | n/a), hard, review (thresholds), offenders [{what, refs, nets, "
     f"at, value}}] (at most {MAX_OFFENDERS}), omitted}}], hard_failures, reviews, "
     "placement_hash, board_hash, seconds. Hard thresholds are the owner's and never "
-    "relaxed. No board -> no_board. Read-only."
+    "relaxed. Empty or unknown only -> invalid_argument. No board -> no_board. Read-only."
 )
 
 ANALYSIS_SPECS: list[ToolSpec] = [

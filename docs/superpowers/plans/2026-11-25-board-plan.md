@@ -744,7 +744,14 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
   bound 3 s): 1.36 s (was 4.4 s before per-net grouping of tracks/arcs/vias and the bucketed
   part/via lookup for the bends sub-models).
   `classify` on a 200-part / ~284-net random circuit ≈ 7 ms; 1,000 decoupling caps × 4,000
-  anchor supply pins 0.06 s (was 7.9 s; keys precomputed, grid ring search).
+  anchor supply pins 0.06 s (was 7.9 s; keys precomputed, grid ring search). `_Nearest`
+  starts the ring search at the pads' cell bounds and visits only in-bounds cells (≤ 64 pads:
+  linear scan): 100 queries ~1,000 mm from every pad 0.016 s (was 11.8 s).
+- Review round 2 (bucketed geometry): M4/M7 on 2,000 GND stubs (4,000 F.Cu GND segments, 4,000
+  pads, 2,000 vias; `test_timing_gnd_stubs_4000_segments_m4_m7`, bound 2 s) 0.15 s (was ≈ 23 s):
+  `geom._graph` buckets its splitters, pads and vias in a uniform grid (`geom._Grid`, reused by
+  `metrics`) and is built once per (net, layer) for both polylines and the node checks. M10 on
+  200 blocks / 3,801 parts 0.012 s (was 0.86 s; courtyard bboxes bucketed once).
 - No review threshold tuned; `HARD` / `REVIEW` are the spec §12 values (`test_hard_thresholds_verbatim`).
 
 **Owner decisions applied (2026-11-25)** — "Provisional" items 1–3 marked resolved above.
@@ -763,7 +770,12 @@ M13's "overhanging it" uses the same clip. Both switch settings are tested.
   (also clears `filled_holes` / `filled_layers`). Result serialisation in `analysis.py::metrics_data`.
 - `preset_for(model, doc)` in `cc/kicad_tools/board/analysis.py` (B-C6 rule).
 - `pcb_analyze` result: each list/mapping `K` ≤ 500 entries plus an int `K_omitted` (always
-  present); scopes parts / nets / blocks / all; `board_md_errors` in every scope.
+  present); scopes parts / nets / blocks / all; `board_md_errors` in every scope. Each block
+  lists ≤ `MAX_BLOCK_REFS` (200) refs plus `refs_omitted` (always present); each
+  `board_md_errors` string is cut to `MAX_ERROR_CHARS` (200) characters (boardmd quotes cells).
+- Argument validation before `require_board`: an unknown / non-string `scope` (`pcb_analyze`)
+  and an empty, non-list, unknown-id or duplicate `only` (`pcb_metrics`; schema `minItems: 1`)
+  raise `StructuredToolError` code `invalid_argument`.
 - `pcb_metrics` result: `stage, metrics[{id, value, verdict, hard, review, offenders[{what,
   refs, nets, at, value}], omitted}], hard_failures, reviews, placement_hash, board_hash,
   seconds`. The DRC task runs only when `only` includes M2 or M3 (or `only` is absent).
@@ -788,13 +800,27 @@ M13's "overhanging it" uses the same clip. Both switch settings are tested.
 - M4 counts each failing item: a 60° vertex between octilinear legs is impossible, so such a
   vertex also brings one non-octilinear leg → `test_m4_off_angle_counts` asserts value **2**
   (one `off_angle` + one `non_octilinear` offender), verdict fail (plan text said 1).
-- M11: a hole whose boundary lies within the union of the discs (centre, via radius / plated
-  pad half-diagonal + `ANTIPAD_MARGIN_MM` 1.0 mm) of the vias / plated pads near it is their
-  antipad (incl. merged antipads of close vias) / thermal-relief gap, not a void; a slot
-  reaching beyond those discs (e.g. between two vias 6 mm apart), empty holes and the band
-  between the outline and the fill are voids. Each plane layer uses only its own polygons
-  (`Zone.filled_layers`); without per-layer data the zone's polygons are all used and its
-  fill area is divided by its layer count.
+- M11 is per plane **layer** (spec §12), not per zone: the fill ratio sums the filled area of
+  every ground zone on the layer, and one void structure is built from all their polygons on
+  it (two touching zones are one plane: a track over the seam crosses no void; segments are
+  cut at every fill / void boundary and each piece located). Offenders: `fill <layer>`,
+  `void crossing: <net> over <layer> <zone> <i> hole <j>` / `outer`, `zone not filled`.
+- M11 antipads: a hole whose boundary lies within the union of the discs (centre, via radius
+  / plated pad half-diagonal + `ANTIPAD_MARGIN_MM` 1.0 mm) of the vias / plated pads near it
+  **and whose area is at most those discs' total area** is their antipad (incl. merged
+  antipads of close vias) / thermal-relief gap, not a void; a slot reaching beyond those
+  discs (e.g. between two vias 6 mm apart), a removed island ringed by vias (area rule),
+  empty holes and the band between the outline and the fills are voids. Each plane layer
+  uses only its own polygons (`Zone.filled_layers`); without per-layer data a zone's polygons
+  are all used and its fill area is divided by its layer count.
+- Routed length graph (`_NetGraph`): tracks are also split at same-net pad centres on their
+  layer (a track through several pads), and a via whose centre lies in a same-net copper pad
+  joins it (via-in-pad).
+- M8 with duplicate pad numbers: the same-number pad on the decoupling's supply net nearest
+  the cap's supply pad (classify's choice). M10 without `blk:*` groups skips the anchor-less
+  `misc` block.
+- Supply-name rule (`_SUPPLY`) accepts decimal voltages (`+3.3V`, `1.8V`, `-2.5V`; `1V8` as
+  before). The ground rule keeps `*GND*` (spec §9.1).
 - M14: silk text bbox is axis-aligned (`TextItem` has no angle): `len × size_x` wide, `lines ×
   size_y` high; fiducials and test points (KiCad `TestPoint_Pad_*` have no paste by design) are exempt from
   "paste on every SMD pad"; board rules compared to the

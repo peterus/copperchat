@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import itertools
 import math
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from copperchat.board.model import BoardModel, Pad
+    from copperchat.board.model import BoardModel, Pad, Track, Via
 
 Point = tuple[float, float]
 Poly = Sequence[Point]
@@ -356,6 +356,59 @@ def _layer_pads(model: BoardModel, layer: str) -> list[Pad]:
     return [pad for part in model.parts for pad in part.pads if _pad_on_layer(pad, layer)]
 
 
+BBox = tuple[float, float, float, float]  # x0, y0, x1, y1
+
+
+class _Grid:
+    """Uniform bucket grid (cell `cell` mm) of item ids keyed by their bounding boxes."""
+
+    def __init__(self, cell: float = 2.0) -> None:
+        self.cell = cell
+        self.cells: dict[tuple[int, int], list[int]] = {}
+
+    def _keys(self, b: BBox) -> Iterator[tuple[int, int]]:
+        c = self.cell
+        for gx in range(math.floor(b[0] / c), math.floor(b[2] / c) + 1):
+            for gy in range(math.floor(b[1] / c), math.floor(b[3] / c) + 1):
+                yield gx, gy
+
+    def add(self, item: int, b: BBox) -> None:
+        for k in self._keys(b):
+            self.cells.setdefault(k, []).append(item)
+
+    def query(self, b: BBox) -> list[int]:
+        seen: set[int] = set()
+        for k in self._keys(b):
+            seen.update(self.cells.get(k, ()))
+        return sorted(seen)
+
+
+class _Near:
+    """Pads and vias bucketed by their reach: which pads contain a point (`_in_pad`), and
+    whether a point lies on a via (within its radius, at least the join tolerance)."""
+
+    def __init__(self, pads: Sequence[Pad], vias: Sequence[Via]) -> None:
+        self.pads, self.vias = list(pads), list(vias)
+        self.pad_grid, self.via_grid = _Grid(), _Grid()
+        for i, q in enumerate(self.pads):
+            r = math.hypot(q.w, q.h) / 2 + _JOIN_TOL
+            self.pad_grid.add(i, (q.x - r, q.y - r, q.x + r, q.y + r))
+        for i, v in enumerate(self.vias):
+            r = max(v.diameter / 2, _JOIN_TOL)
+            self.via_grid.add(i, (v.at[0] - r, v.at[1] - r, v.at[0] + r, v.at[1] + r))
+
+    def in_pad(self, p: Point) -> bool:
+        box = (p[0], p[1], p[0], p[1])
+        return any(_in_pad(p, self.pads[i]) for i in self.pad_grid.query(box))
+
+    def at_via(self, p: Point) -> bool:
+        box = (p[0], p[1], p[0], p[1])
+        return any(
+            math.dist(p, (v := self.vias[i]).at) <= max(v.diameter / 2, _JOIN_TOL)
+            for i in self.via_grid.query(box)
+        )
+
+
 class _Nodes:
     """Snaps points to canonical nodes within the join tolerance (grid hashed)."""
 
@@ -395,25 +448,39 @@ def _interior_t(p: Point, a: Point, b: Point) -> float | None:
 
 
 _Seg = tuple[Point, Point, float]
+_Graph = tuple[list[_Seg], dict[Point, list[int]]]
 
 
-def _graph(model: BoardModel, net: str, layer: str) -> tuple[list[_Seg], dict[Point, list[int]]]:
-    """Snapped segments of one net/layer, split where an endpoint, via centre or pad centre
-    of the net lies on a segment's interior (a T), and node -> incident segment ids."""
+def _graph(tracks: Iterable[Track], centres: Iterable[Point]) -> _Graph:
+    """Snapped segments of one net/layer (`tracks` are that net/layer's), split where an
+    endpoint or one of `centres` (the net's via centres and pad centres on the layer) lies on
+    a segment's interior (a T), and node -> incident segment ids. Splitters are bucketed:
+    each segment only tests the points near it."""
     nodes = _Nodes()
     raw: list[_Seg] = []
-    for t in model.tracks:
-        if t.net != net or t.layer != layer or math.dist(t.start, t.end) < _ZERO_LEN:
+    for t in tracks:
+        if math.dist(t.start, t.end) < _ZERO_LEN:
             continue
         a, b = nodes.snap(t.start), nodes.snap(t.end)
         if a != b:
             raw.append((a, b, t.width))
-    centres = [v.at for v in model.vias if v.net == net]
-    centres += [(p.x, p.y) for p in _layer_pads(model, layer) if p.net == net]
     splitters = sorted({nodes.snap(c) for c in centres} | {p for a, b, _ in raw for p in (a, b)})
+    grid = _Grid()
+    for i, p in enumerate(splitters):
+        grid.add(i, (p[0], p[1], p[0], p[1]))
     segs: list[_Seg] = []
     for a, b, w in raw:
-        cuts = sorted((tp, p) for p in splitters if (tp := _interior_t(p, a, b)) is not None)
+        box = (
+            min(a[0], b[0]) - _JOIN_TOL,
+            min(a[1], b[1]) - _JOIN_TOL,
+            max(a[0], b[0]) + _JOIN_TOL,
+            max(a[1], b[1]) + _JOIN_TOL,
+        )
+        cuts = sorted(
+            (tp, splitters[i])
+            for i in grid.query(box)
+            if (tp := _interior_t(splitters[i], a, b)) is not None
+        )
         chain = [a, *(p for _, p in cuts), b]
         segs.extend((p, q, w) for p, q in itertools.pairwise(chain) if p != q)
     segs = sorted({(min(a, b), max(a, b), w) for a, b, w in segs})
@@ -435,21 +502,16 @@ def _drop_collinear(pts: list[Point]) -> list[Point]:
     return out
 
 
-def polylines(model: BoardModel, net: str, layer: str) -> list[tuple[tuple[Point, ...], float]]:
-    """(points, width) of the straight tracks of `net` on `layer`: segments joined at
-    coincident endpoints (0.002 mm), T-split, split at nodes of degree != 2, at vias, inside
-    same-net pads and where the width changes; collinear interior vertices dropped."""
-    segs, adj = _graph(model, net, layer)
-    vias = [v for v in model.vias if v.net == net]
-    pads = [p for p in _layer_pads(model, layer) if p.net == net]
+def _walk_polylines(g: _Graph, near: _Near) -> list[tuple[tuple[Point, ...], float]]:
+    """The polylines of one net/layer graph; `near` holds the net's vias and its pads on
+    the layer (polyline ends)."""
+    segs, adj = g
 
     def terminal(n: Point) -> bool:
         inc = adj[n]
         if len(inc) != 2 or segs[inc[0]][2] != segs[inc[1]][2]:
             return True
-        if any(math.dist(n, v.at) <= max(v.diameter / 2, _JOIN_TOL) for v in vias):
-            return True
-        return any(_in_pad(n, p) for p in pads)
+        return near.at_via(n) or near.in_pad(n)
 
     used: set[int] = set()
     out: list[tuple[tuple[Point, ...], float]] = []
@@ -485,6 +547,20 @@ def polylines(model: BoardModel, net: str, layer: str) -> list[tuple[tuple[Point
     return sorted(out)
 
 
+def _centres(vias: Iterable[Via], pads: Iterable[Pad]) -> list[Point]:
+    return [v.at for v in vias] + [(p.x, p.y) for p in pads]
+
+
+def polylines(model: BoardModel, net: str, layer: str) -> list[tuple[tuple[Point, ...], float]]:
+    """(points, width) of the straight tracks of `net` on `layer`: segments joined at
+    coincident endpoints (0.002 mm), T-split, split at nodes of degree != 2, at vias, inside
+    same-net pads and where the width changes; collinear interior vertices dropped."""
+    vias = [v for v in model.vias if v.net == net]
+    pads = [p for p in _layer_pads(model, layer) if p.net == net]
+    tracks = [t for t in model.tracks if t.net == net and t.layer == layer]
+    return _walk_polylines(_graph(tracks, _centres(vias, pads)), _Near(pads, vias))
+
+
 def _sorted(points: Iterable[Point]) -> tuple[Point, ...]:
     return tuple(sorted(points))
 
@@ -508,22 +584,37 @@ def analyse_tracks(model: BoardModel) -> BendReport:
         )
     }
     bends = 0
-    for net, layer in sorted({(t.net, t.layer) for t in model.tracks}):
-        layer_pads = _layer_pads(model, layer)
-        pads = [p for p in layer_pads if p.net == net]
+    by_net_layer: dict[tuple[str, str], list[Track]] = {}
+    for t in model.tracks:
+        by_net_layer.setdefault((t.net, t.layer), []).append(t)
+    vias_of: dict[str, list[Via]] = {}
+    for v in model.vias:
+        vias_of.setdefault(v.net, []).append(v)
+    layer_near: dict[str, tuple[_Near, dict[str, list[Pad]]]] = {}
+    for net, layer in sorted(by_net_layer):
+        if layer not in layer_near:
+            layer_pads = _layer_pads(model, layer)
+            pads_of: dict[str, list[Pad]] = {}
+            for q in layer_pads:
+                pads_of.setdefault(q.net, []).append(q)
+            layer_near[layer] = (_Near(layer_pads, model.vias), pads_of)
+        every, pads_of = layer_near[layer]  # every pad on the layer, every via
+        pads, vias = pads_of.get(net, []), vias_of.get(net, [])
+        near = _Near(pads, vias)  # the net's own
+        g = _graph(by_net_layer[(net, layer)], _centres(vias, pads))
+        segs, adj = g
         line_ends: set[Point] = set()
-        for pts, width in polylines(model, net, layer):
-            ends = (any(_in_pad(pts[0], p) for p in pads), any(_in_pad(pts[-1], p) for p in pads))
+        for pts, width in _walk_polylines(g, near):
+            ends = (near.in_pad(pts[0]), near.in_pad(pts[-1]))
             r = analyse_bends(pts, width, pad_ends=ends)
             for k in acc:
                 if k != "non_octilinear":  # tested per raw track below
                     acc[k].extend(getattr(r, k))
             bends += r.bends
             line_ends.update((pts[0], pts[-1]))
-        segs, adj = _graph(model, net, layer)
         for node in sorted(line_ends):
             inc = adj.get(node, [])
-            if len(inc) != 2 or any(_in_pad(node, p) for p in pads):
+            if len(inc) != 2 or near.in_pad(node):
                 continue
             far = [b if node == a else a for a, b, _ in (segs[i] for i in inc)]
             kind = _vertex_kind(_turn(far[0], node, far[1])[0])
@@ -534,9 +625,7 @@ def analyse_tracks(model: BoardModel) -> BendReport:
         for node, inc in adj.items():
             if len(inc) < 3:
                 continue
-            if any(_in_pad(node, p) for p in layer_pads) or any(
-                math.dist(node, v.at) <= max(v.diameter / 2, _JOIN_TOL) for v in model.vias
-            ):
+            if every.in_pad(node) or every.at_via(node):
                 continue
             heads = []
             for i in inc:

@@ -97,7 +97,9 @@ class Classification:
 # ---- patterns ------------------------------------------------------------------------------
 
 _GROUND = re.compile(r"^(GND|AGND|DGND|PGND|VSS)$", re.IGNORECASE)
-_SUPPLY = re.compile(r"^(VCC\w*|VDD\w*|VBUS|VBAT|VSYS|[+-]?\d+V\d*|\+?\d+V\d+)$", re.IGNORECASE)
+_SUPPLY = re.compile(
+    r"^(VCC\w*|VDD\w*|VBUS|VBAT|VSYS|[+-]?\d+(?:\.\d+)?V\d*|\+?\d+V\d+)$", re.IGNORECASE
+)
 _CAP_REF = re.compile(r"^C\d")
 _RES_REF = re.compile(r"^R\d")
 _IND_REF = re.compile(r"^L\d")
@@ -436,13 +438,20 @@ def _decoupling(
 
 class _Nearest:
     """The pad nearest a point by octilinear distance, ties by natural ref, then pin number,
-    then input order (keys computed once; grid ring search, cell `cell` mm)."""
+    then input order (keys computed once). Up to `LINEAR` pads: a linear scan; more: a grid
+    ring search (cell `cell` mm) that starts at the ring reaching the pads' cell bounds and
+    visits only cells inside those bounds (a query far from every pad costs no more than
+    one near them)."""
+
+    LINEAR = 64
 
     def __init__(self, pads: list[Pad], cell: float = 2.0) -> None:
         self.cell = cell
+        self.items: list[tuple[Pad, tuple[object, ...]]] = [
+            (q, (natural_key(q.ref), natural_key(q.number), i)) for i, q in enumerate(pads)
+        ]
         self.cells: dict[tuple[int, int], list[tuple[Pad, tuple[object, ...]]]] = defaultdict(list)
-        for i, q in enumerate(pads):
-            key = (natural_key(q.ref), natural_key(q.number), i)
+        for q, key in self.items:
             self.cells[self._key(q.x, q.y)].append((q, key))
         ks = list(self.cells)
         self.bounds = (
@@ -460,21 +469,36 @@ class _Nearest:
         return (math.floor(x / self.cell), math.floor(y / self.cell))
 
     def _ring(self, cx: int, cy: int, r: int) -> list[tuple[int, int]]:
+        """The cells at Chebyshev cell distance `r` from (cx, cy) inside the bounds."""
+        assert self.bounds is not None
+        x0, y0, x1, y1 = self.bounds
         if r == 0:
-            return [(cx, cy)]
-        out = [(gx, gy) for gx in range(cx - r, cx + r + 1) for gy in (cy - r, cy + r)]
-        out += [(gx, gy) for gy in range(cy - r + 1, cy + r) for gx in (cx - r, cx + r)]
+            return [(cx, cy)] if x0 <= cx <= x1 and y0 <= cy <= y1 else []
+        out: list[tuple[int, int]] = []
+        for gy in (cy - r, cy + r):
+            if y0 <= gy <= y1:
+                out += [(gx, gy) for gx in range(max(cx - r, x0), min(cx + r, x1) + 1)]
+        for gx in (cx - r, cx + r):
+            if x0 <= gx <= x1:
+                out += [(gx, gy) for gy in range(max(cy - r + 1, y0), min(cy + r - 1, y1) + 1)]
         return out
 
     def query(self, p: tuple[float, float]) -> Pad | None:
         if self.bounds is None:
             return None
-        cx, cy = self._key(*p)
-        x0, y0, x1, y1 = self.bounds
-        r_max = max(cx - x0, x1 - cx, cy - y0, y1 - cy, 0)
         best: tuple[float, tuple[object, ...]] | None = None
         pin: Pad | None = None
-        for r in range(r_max + 1):
+        if len(self.items) <= self.LINEAR:
+            for q, key in self.items:
+                cand = (octi_dist(p, (q.x, q.y)), key)
+                if best is None or cand < best:
+                    best, pin = cand, q
+            return pin
+        cx, cy = self._key(*p)
+        x0, y0, x1, y1 = self.bounds
+        r_min = max(x0 - cx, cx - x1, y0 - cy, cy - y1, 0)  # no pad in a nearer ring
+        r_max = max(cx - x0, x1 - cx, cy - y0, y1 - cy, 0)
+        for r in range(r_min, r_max + 1):
             for k in self._ring(cx, cy, r):
                 for q, key in self.cells.get(k, ()):
                     cand = (octi_dist(p, (q.x, q.y)), key)

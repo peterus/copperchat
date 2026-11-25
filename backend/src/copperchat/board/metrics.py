@@ -17,14 +17,17 @@ Interpretation notes (where the plan leaves a choice):
   normalised type equals a `board.md` Checks row's type and the refs of its KIIDs (part
   KIIDs) are non-empty and a subset of the row's items.
 * M5/M6 use the connections (`connections`) of nets that are neither ground nor supply.
-* M11: a hole of a filled polygon whose boundary lies within the union of the discs
-  (centre, via radius / pad half-diagonal + `ANTIPAD_MARGIN_MM`) of the vias / plated pads
-  near it is their antipad (also merged antipads of close vias) or thermal-relief gap, not
-  a void; other holes and the region between the outline and the fill's outer boundary are
-  voids. Each plane layer uses only its own filled polygons (`Zone.filled_layers`); without
-  per-layer data (old models) all polygons are used and the fill area is divided by the
-  zone's layer count. Adjacent layers = the copper layers next to the plane layer in
-  `model.copper_layers` order.
+* M11 is per plane LAYER (spec §12): fill ratio = the filled area of every ground zone on
+  the layer / board area, and one void structure from all their polygons on that layer (a
+  seam between two touching fills is no void). A hole of a filled polygon whose boundary
+  lies within the union of the discs (centre, via radius / pad half-diagonal +
+  `ANTIPAD_MARGIN_MM`) of the vias / plated pads near it, and whose area is at most those
+  discs' total area, is their antipad (also merged antipads of close vias) or
+  thermal-relief gap, not a void; other holes (e.g. a removed island ringed by vias) and
+  the region between the outline and the fills are voids. Each layer uses only its own
+  filled polygons (`Zone.filled_layers`); without per-layer data (old models) all of a
+  zone's polygons are used and its fill area is divided by its layer count. Adjacent
+  layers = the copper layers next to the plane layer in `model.copper_layers` order.
 * M14 silk text bbox: axis-aligned (TextItem has no angle), `len(line) x size_x x
   SILK_CHAR_WIDTH` wide and `lines x size_y` high, centred on `at` (top-left for text
   boxes). Fiducials and test points are exempt from the paste rule (they are never pasted;
@@ -39,7 +42,7 @@ import math
 import re
 import statistics
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, get_args
@@ -49,6 +52,7 @@ from copperchat.board.classify import Classification
 from copperchat.board.geom import (
     _JOIN_TOL,
     BendReport,
+    _Grid,
     _in_pad,
     _interior_t,
     _Nodes,
@@ -286,30 +290,6 @@ def _copper(p: Pad) -> bool:
     return any(layer.endswith(".Cu") for layer in p.layers)
 
 
-class _Grid:
-    """Uniform bucket grid (cell `BUCKET_MM`) of item ids keyed by their bounding boxes."""
-
-    def __init__(self, cell: float = BUCKET_MM) -> None:
-        self.cell = cell
-        self.cells: dict[tuple[int, int], list[int]] = defaultdict(list)
-
-    def _keys(self, b: BBox) -> Iterator[tuple[int, int]]:
-        c = self.cell
-        for gx in range(math.floor(b[0] / c), math.floor(b[2] / c) + 1):
-            for gy in range(math.floor(b[1] / c), math.floor(b[3] / c) + 1):
-                yield gx, gy
-
-    def add(self, item: int, b: BBox) -> None:
-        for k in self._keys(b):
-            self.cells[k].append(item)
-
-    def query(self, b: BBox) -> list[int]:
-        seen: set[int] = set()
-        for k in self._keys(b):
-            seen.update(self.cells.get(k, ()))
-        return sorted(seen)
-
-
 class _Ring:
     """A closed ring with a y-band index for fast even-odd point tests."""
 
@@ -442,8 +422,9 @@ _Node = tuple[object, ...]
 
 class _NetGraph:
     """The copper graph of one net: track ends snapped per layer (0.002 mm), tracks split
-    where another end lies on their interior (T), vias join every layer at 0 cost, a pad
-    joins every track end inside it at 0 cost."""
+    where another end, a via centre or a pad centre (pad on that layer) lies on their
+    interior (T), vias join every layer at 0 cost, a pad joins every track end inside it and
+    every via whose centre lies in it (via-in-pad) at 0 cost."""
 
     def __init__(
         self,
@@ -471,6 +452,7 @@ class _NetGraph:
             # track ends and via centres split a straight track they lie on (a T)
             pts = {p for a, b, _, _ in segs for p in (a, b)}
             pts |= {nodes[layer].snap(v) for v in via_at}
+            pts |= {nodes[layer].snap((q.x, q.y)) for q in pads if _pad_on_layer(q, layer)}
             ends[layer] = pts
             grid = _Grid()
             plist = sorted(pts)
@@ -498,12 +480,18 @@ class _NetGraph:
                 layer, p = all_nodes[i]
                 if math.dist(p, v.at) <= r:
                     self._edge(("v", k), ("t", layer, p), 0.0)
-        for pad in pads:
+        pad_grid = _Grid()
+        for j, pad in enumerate(pads):
             r = math.hypot(pad.w, pad.h) / 2 + _JOIN_TOL
+            pad_grid.add(j, _bbox(((pad.x, pad.y),), r))
             for i in grid.query(_bbox(((pad.x, pad.y),), r)):
                 layer, p = all_nodes[i]
                 if _pad_on_layer(pad, layer) and _in_pad(p, pad):
                     self._edge(self.pad_node(pad), ("t", layer, p), 0.0)
+        for k, v in enumerate(vias):  # via-in-pad: a via spans every layer of the pad
+            for j in pad_grid.query(_bbox((v.at,))):
+                if _copper(pads[j]) and _in_pad(v.at, pads[j]):
+                    self._edge(("v", k), self.pad_node(pads[j]), 0.0)
 
     @staticmethod
     def pad_node(p: Pad) -> _Node:
@@ -935,9 +923,14 @@ def _m8(c: _Ctx) -> Metric:
     for d in c.cls.decoupling:
         cap, chip = c.parts.get(d.cap), c.parts.get(d.ic)
         sup = _pads_on(cap, d.supply_net)
-        pin = [q for q in (chip.pads if chip else ()) if q.number == d.pin]
+        # duplicate pad numbers: the same-number pad on the supply net nearest the cap (the
+        # pad classify chose), else the nearest same-number pad
+        same = sorted((q for q in (chip.pads if chip else ()) if q.number == d.pin), key=_pad_key)
+        pin = [q for q in same if q.net == d.supply_net] or same
         if cap is not None and chip is not None and sup and pin:
-            items.append(("decoupling", cap, chip, sup[0], pin[0]))
+            s0 = sup[0]
+            best = min(pin, key=lambda q: octi_dist((s0.x, s0.y), (q.x, q.y)))
+            items.append(("decoupling", cap, chip, s0, best))
     for x in c.cls.crystals:
         xt, chip = c.parts.get(x.ref), c.parts.get(x.ic)
         for net in x.nets:
@@ -1019,9 +1012,16 @@ def _m9(c: _Ctx) -> Metric:
 def _m10(c: _Ctx) -> Metric:
     blocks = [(n, refs) for n, refs in c.m.groups if n.startswith("blk:")]
     if not blocks:
-        blocks = [(b.name, b.refs) for b in c.cls.blocks]
+        # the `misc` block (no anchor) collects unrelated leftovers: not a group
+        blocks = [(b.name, b.refs) for b in c.cls.blocks if b.anchor is not None]
     off: list[Offender] = []
     worst: float | None = None
+    # courtyard bounding boxes once, bucketed: each block only tests the parts near its hull
+    others = [p for p in c.m.parts if len(p.courtyard) >= 3]
+    boxes = [_bbox(p.courtyard) for p in others]
+    grid = _Grid(max(BUCKET_MM, 10.0))
+    for i, b in enumerate(boxes):
+        grid.add(i, b)
     for name, refs in blocks:
         members = [c.parts[r] for r in refs if r in c.parts and len(c.parts[r].courtyard) >= 3]
         if len(members) < 2:
@@ -1041,14 +1041,11 @@ def _m10(c: _Ctx) -> Metric:
         side = "top" if tops * 2 >= len(members) else "bottom"
         hb = _bbox(hull)
         inside = set(refs)
-        for p in c.m.parts:
-            if p.ref in inside or p.side != side or len(p.courtyard) < 3:
+        for i in grid.query(hb):
+            p = others[i]
+            if p.ref in inside or p.side != side:
                 continue
-            if (
-                _bbox_hit(_bbox(p.courtyard), hb)
-                and c.m.placed(p)
-                and polygons_overlap(p.courtyard, hull)
-            ):
+            if _bbox_hit(boxes[i], hb) and c.m.placed(p) and polygons_overlap(p.courtyard, hull):
                 off.append(Offender(f"intrusion {name}: {p.ref}", (p.ref,), (), (p.x, p.y), None))
     if worst is None:
         return _metric("M10", None, "n/a")
@@ -1085,14 +1082,33 @@ def _disc_covers(a: Point, b: Point, discs: Sequence[tuple[Point, float]]) -> bo
     return False
 
 
+def _hit_params(a: Point, b: Point, c: Point, d: Point) -> list[float]:
+    """Parameters on ab (0..1) where segment cd meets it: the crossing point, or the
+    projections of c and d when the segments are collinear."""
+    rx, ry = b[0] - a[0], b[1] - a[1]
+    sx, sy = d[0] - c[0], d[1] - c[1]
+    qx, qy = c[0] - a[0], c[1] - a[1]
+    den = rx * sy - ry * sx
+    rr = rx * rx + ry * ry
+    if rr <= _EPS * _EPS:
+        return []
+    if abs(den) > 1e-12 * max(1.0, rr):
+        t, u = (qx * sy - qy * sx) / den, (qx * ry - qy * rx) / den
+        return [t] if -_EPS <= t <= 1 + _EPS and -_EPS <= u <= 1 + _EPS else []
+    if abs(qx * ry - qy * rx) > _EPS * math.sqrt(rr):
+        return []  # parallel, not collinear
+    return [(qx * rx + qy * ry) / rr, ((d[0] - a[0]) * rx + (d[1] - a[1]) * ry) / rr]
+
+
 class _PlaneVoids:
-    """The voids of one filled plane zone on one layer: the region inside the outline outside
-    every filled polygon ("outer") and every hole that is not antipads / thermal gaps (its
-    boundary lies within the union of the discs of the vias / plated pads near it)."""
+    """The voids of one plane layer, from every filled ground polygon on it: the region
+    inside the outline outside every filled polygon ("outer") and every hole that is not
+    antipads / thermal gaps (its boundary lies within the union of the discs of the vias /
+    plated pads near it and its area is at most those discs' total area)."""
 
     def __init__(
         self,
-        filled: Sequence[tuple[int, Sequence[Point], Sequence[Sequence[Point]]]],
+        filled: Sequence[tuple[str, Sequence[Point], Sequence[Sequence[Point]]]],
         items: Sequence[tuple[Point, float]],
         outline: _Ring,
     ) -> None:
@@ -1101,8 +1117,8 @@ class _PlaneVoids:
         for i, ((x, y), reach) in enumerate(items):
             igrid.add(i, (x - reach, y - reach, x + reach, y + reach))
         self.polys: list[tuple[_Ring, list[tuple[str, _Ring]]]] = []
-        self.edges: list[tuple[Point, Point, str]] = []
-        for i, outer, holes in filled:
+        self.edges: list[tuple[Point, Point]] = []
+        for label, outer, holes in filled:
             if len(outer) < 3:
                 continue
             voids: list[tuple[str, _Ring]] = []
@@ -1110,15 +1126,23 @@ class _PlaneVoids:
                 if len(hole) < 3:
                     continue
                 ring = _Ring(hole)
-                discs = [items[k] for k in igrid.query(ring.bbox)]
-                if discs and all(_disc_covers(a, b, discs) for a, b in _ring_edges(hole)):
+                discs = [
+                    items[k]
+                    for k in igrid.query(ring.bbox)
+                    if _bbox_hit(_bbox((items[k][0],), items[k][1]), ring.bbox)
+                ]
+                if (
+                    discs
+                    and polygon_area(hole) <= sum(math.pi * r * r for _, r in discs) + _EPS
+                    and all(_disc_covers(a, b, discs) for a, b in _ring_edges(hole))
+                ):
                     continue  # via / plated pad antipads (merged) or thermal-relief gaps
-                voids.append((f"hole {i}.{j}", ring))
-                self.edges += [(a, b, f"hole {i}.{j}") for a, b in _ring_edges(hole)]
+                voids.append((f"{label} hole {j}", ring))
+                self.edges += _ring_edges(hole)
             self.polys.append((_Ring(outer), voids))
-            self.edges += [(a, b, "outer") for a, b in _ring_edges(outer)]
+            self.edges += _ring_edges(outer)
         self.grid = _Grid()
-        for k, (a, b, _) in enumerate(self.edges):
+        for k, (a, b) in enumerate(self.edges):
             self.grid.add(k, _bbox((a, b)))
 
     def void_at(self, p: Point) -> str | None:
@@ -1136,13 +1160,17 @@ class _PlaneVoids:
         return hole or "outer"
 
     def crossed(self, a: Point, b: Point) -> set[str]:
-        out = {
-            self.edges[k][2]
-            for k in self.grid.query(_bbox((a, b)))
-            if _seg_hit(a, b, self.edges[k][0], self.edges[k][1])
-        }
-        for p in (a, b):
-            vid = self.void_at(p)
+        """The voids segment ab enters: ab is cut at every void / fill boundary it meets and
+        its ends and the middle of every piece are located (a seam between two fills that
+        touch is no void)."""
+        ts = {0.0, 1.0}
+        for k in self.grid.query(_bbox((a, b))):
+            ts.update(min(1.0, max(0.0, t)) for t in _hit_params(a, b, *self.edges[k]))
+        cuts = sorted(ts)
+        probes = [0.0, 1.0] + [(t0 + t1) / 2 for t0, t1 in itertools.pairwise(cuts)]
+        out: set[str] = set()
+        for t in probes:
+            vid = self.void_at((a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])))
             if vid is not None:
                 out.add(vid)
         return out
@@ -1150,14 +1178,10 @@ class _PlaneVoids:
 
 def _m11(c: _Ctx) -> Metric:
     inner = c.m.copper_layers[1:-1]
-    planes = [
-        (z, layer)
-        for z in c.m.zones
-        if not z.rule_area and z.net and c.kind(z.net) == "ground"
-        for layer in z.layers
-        if layer in inner
-    ]
-    if not planes or c.outline is None:
+    zones = [z for z in c.m.zones if not z.rule_area and z.net and c.kind(z.net) == "ground"]
+    # spec §12: fill ratio and voids per plane LAYER, over every ground zone on it
+    plane_layers = [la for la in inner if any(la in z.layers for z in zones)]
+    if not plane_layers or c.outline is None:
         return _metric("M11", None, "n/a")
     board_area = polygon_area(c.outline)
     outline = _Ring(c.outline)
@@ -1172,29 +1196,35 @@ def _m11(c: _Ctx) -> Metric:
     off: list[Offender] = []
     worst: float | None = None
     layers = list(c.m.copper_layers)
-    for z, layer in planes:
-        holes = list(z.filled_holes) + [()] * (len(z.filled) - len(z.filled_holes))
-        per_layer = len(z.filled_layers) == len(z.filled) > 0
-        filled = [
-            (i, poly, holes[i])
-            for i, poly in enumerate(z.filled)
-            if not per_layer or z.filled_layers[i] == layer
-        ]
-        if not filled and (per_layer or z.filled_area_mm2 <= 0):
-            off.append(Offender(f"zone not filled: {z.name} on {layer}", (), (z.net,), None, None))
-            continue
-        if filled:
-            area = sum(polygon_area(p) - sum(polygon_area(h) for h in hs) for _, p, hs in filled)
-        else:
-            area = z.filled_area_mm2
-        # without per-layer polygons the zone's total is shared evenly by its copper layers
-        n_layers = 1 if per_layer else max(1, sum(1 for la in z.layers if la in layers))
-        ratio = area / n_layers / board_area if board_area > 0 else 0.0
+    for layer in plane_layers:
+        on_layer = [z for z in zones if layer in z.layers]
+        nets = tuple(sorted({z.net for z in on_layer}, key=natural_key))
+        filled: list[tuple[str, Sequence[Point], Sequence[Sequence[Point]]]] = []
+        area = 0.0
+        for z in on_layer:
+            holes = list(z.filled_holes) + [()] * (len(z.filled) - len(z.filled_holes))
+            per_layer = len(z.filled_layers) == len(z.filled) > 0
+            mine = [
+                (f"{z.name} {i}", poly, holes[i])
+                for i, poly in enumerate(z.filled)
+                if not per_layer or z.filled_layers[i] == layer
+            ]
+            if not mine and (per_layer or z.filled_area_mm2 <= 0):
+                off.append(
+                    Offender(f"zone not filled: {z.name} on {layer}", (), (z.net,), None, None)
+                )
+                continue
+            if mine:
+                zarea = sum(polygon_area(p) - sum(polygon_area(h) for h in hs) for _, p, hs in mine)
+            else:
+                zarea = z.filled_area_mm2
+            # without per-layer polygons the zone's total is shared evenly by its copper layers
+            area += zarea / (1 if per_layer else max(1, sum(1 for la in z.layers if la in layers)))
+            filled += mine
+        ratio = area / board_area if board_area > 0 else 0.0
         worst = ratio if worst is None else min(worst, ratio)
         if ratio < REVIEW["M11_fill"]:
-            off.append(
-                Offender(f"fill {z.name} on {layer}: {ratio:.3f}", (), (z.net,), None, _r(ratio))
-            )
+            off.append(Offender(f"fill {layer}: {ratio:.3f}", (), nets, None, _r(ratio)))
         if not filled:
             continue
         voids = _PlaneVoids(filled, items, outline)
@@ -1213,7 +1243,7 @@ def _m11(c: _Ctx) -> Metric:
                     continue
                 seen.add((net, vid))
                 mid = ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2)
-                what = f"void crossing: {net} over {z.name} {layer} {vid}"
+                what = f"void crossing: {net} over {layer} {vid}"
                 off.append(Offender(what, (), (net,), mid, None))
     value = None if worst is None else _r(worst)
     return _metric("M11", value, _verdict(False, bool(off)), off)

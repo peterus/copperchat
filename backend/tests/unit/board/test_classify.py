@@ -22,7 +22,7 @@ from copperchat.board.geom import rect_poly
 from copperchat.board.model import BoardModel, Part, Point
 
 from .builders import zone
-from .builders_circuit import cap, circuit, conn, ic, ind, res, two_pad, xtal
+from .builders_circuit import cap, circuit, conn, ic, ind, pad, res, two_pad, xtal
 
 
 def test_no_kipy_import() -> None:
@@ -518,3 +518,52 @@ def test_decoupling_timing_1000_caps_4000_pins() -> None:
     assert len(got) == 1000
     assert {d.cap: got[d.cap] for d in want} == {d.cap: d for d in want}
     assert elapsed < 1.0, elapsed
+
+
+def test_nearest_far_queries_fast_and_exact() -> None:
+    """Pads clustered near the origin, 100 queries ~1000 mm away (incl. both sides and
+    diagonals): < 0.5 s, every answer equal to brute force (octilinear distance, ties by
+    natural ref, pin number, input order)."""
+    from copperchat.board.classify import _Nearest
+    from copperchat.board.geom import octi_dist
+    from copperchat.kicad_tools.filtering import natural_key
+
+    rng = random.Random(5)
+    pads = [
+        pad(f"U{k % 7 + 1}", str(k), "VDD", (rng.uniform(0, 30), rng.uniform(0, 30)))
+        for k in range(300)
+    ]
+    near = _Nearest(pads)
+    queries = [(rng.uniform(-1000, 1000), rng.uniform(-1000, 1000)) for _ in range(90)]
+    queries += [(1000.0, 15.0 + k) for k in range(5)] + [(-1000.0, -1000.0 + k) for k in range(5)]
+    t0 = time.perf_counter()
+    got = [near.query(q) for q in queries]
+    elapsed = time.perf_counter() - t0
+    print(f"_Nearest 100 far queries: {elapsed:.3f} s")
+    for q, g in zip(queries, got, strict=True):
+        want = min(
+            enumerate(pads),
+            key=lambda ip: (
+                octi_dist(q, (ip[1].x, ip[1].y)),
+                natural_key(ip[1].ref),
+                natural_key(ip[1].number),
+                ip[0],
+            ),
+        )[1]
+        assert g is want
+    assert elapsed < 0.5, elapsed
+    assert _Nearest([]).query((0.0, 0.0)) is None
+
+
+def test_supply_patterns_decimal_voltages() -> None:
+    m = circuit(
+        res("R1", "+3.3V", "+1.8V"),
+        res("R2", "3.3V", "1V8"),
+        res("R3", "-2.5V", "/sub/+0.9V"),
+        res("R4", "3.3X", "V1.8"),
+    )
+    kinds = classify(m).net_kind
+    for net in ("+3.3V", "+1.8V", "3.3V", "1V8", "-2.5V", "/sub/+0.9V"):
+        assert kinds[net] == "supply", net
+    assert kinds["3.3X"] == "signal"
+    assert kinds["V1.8"] == "signal"

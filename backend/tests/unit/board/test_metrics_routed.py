@@ -105,6 +105,35 @@ def test_routed_length_arc_and_via_on_track() -> None:
     assert routed_length(m, *q.pads) == pytest.approx(20.0)
 
 
+def test_routed_length_track_through_pad_centres() -> None:
+    """One track through three same-net pads at x = 0 / 5 / 10: split at the middle pad's
+    centre, so A-B and B-C are routed (5 mm each)."""
+    pa, pb, pc = (pad(r, "1", "N1", (x, 10.0)) for r, x in (("RA", 0.0), ("RB", 5.0), ("RC", 10.0)))
+    parts = tuple(part(q.ref, q.x, q.y, pads=(q,)) for q in (pa, pb, pc))
+    m = board(parts=parts, tracks=route("N1", [(0, 10), (10, 10)]))
+    assert routed_length(m, pa, pb) == pytest.approx(5.0)
+    assert routed_length(m, pb, pc) == pytest.approx(5.0)
+    assert routed_length(m, pa, pc) == pytest.approx(10.0)
+
+
+def test_routed_length_via_in_pad() -> None:
+    """A via inside an F.Cu SMD pad joins the pad: the B.Cu track from the via reaches a
+    B.Cu pad."""
+    pa = pad("RA", "1", "N1", (10.0, 10.0), w=1.0, h=1.0)
+    pb = with_layers(pad("RB", "1", "N1", (20.0, 10.0)), "B.Cu")
+    parts = (part("RA", 10, 10, pads=(pa,)), part("RB", 20, 10, pads=(pb,)))
+    m = board(
+        parts=parts,
+        tracks=route("N1", [(10.2, 10), (20, 10)], layer="B.Cu"),
+        vias=(via("N1", (10.2, 10.0), kiid="v1"),),
+    )
+    assert routed_length(m, pa, pb) == pytest.approx(9.8)
+    # a via outside the pad does not join it
+    far = replace(m, vias=(via("N1", (11.0, 10.0), kiid="v1"),))
+    far = replace(far, tracks=route("N1", [(11, 10), (20, 10)], layer="B.Cu"))
+    assert routed_length(far, pa, pb) is None
+
+
 # ---- M4 ------------------------------------------------------------------------------------
 
 
@@ -182,6 +211,23 @@ def test_m5_median_review() -> None:
     assert m5.value == pytest.approx(1.2)
     straight = [_detour(f"S{i}", 10, 10 + 5 * i, 10.0, 0.0) for i in range(3)]
     assert get(run(_m4_board(*straight)), "M5").verdict == "pass"
+
+
+def test_m5_critical_net_review_at_1_25() -> None:
+    """A critical net is reviewed above ratio 1.25 (others only above 1.5); the median of
+    the straight connections keeps the board median at 1.0."""
+    straight = [_detour(f"S{i}", 10, 10 + 5 * i, 10.0, 0.0) for i in range(4)]
+    m = _m4_board(*straight, _detour("S9", 10, 40, 10.0, 1.5))  # ratio 1.3
+    plain = get(run(m, replace(classify(m), critical_nets=())), "M5")
+    assert plain.verdict == "pass"
+    critical = replace(classify(m), critical_nets=("S9",))
+    m5 = get(run(m, critical), "M5")
+    assert m5.verdict == "review"
+    assert m5.value == pytest.approx(1.0)
+    assert [o.nets for o in m5.offenders] == [("S9",)]
+    assert m5.offenders[0].value == pytest.approx(1.3)
+    below = _m4_board(*straight, _detour("S9", 10, 40, 10.0, 1.2))  # ratio 1.24
+    assert get(run(below, replace(classify(below), critical_nets=("S9",))), "M5").verdict == "pass"
 
 
 def test_m5_ignores_supply_and_short() -> None:
@@ -489,3 +535,88 @@ def test_m11_two_layer_zone_per_layer_fill() -> None:
     old = replace(z, filled_layers=())
     m11 = get(run(_m11_board(old, under)), "M11")
     assert m11.value == pytest.approx((16000 - 40) / 2 / 8000, abs=1e-3)
+
+
+def test_timing_gnd_stubs_4000_segments_m4_m7() -> None:
+    """2000 caps, each GND pad with a 2-segment F.Cu stub (x run, 45 degree) to a GND via:
+    4000 GND segments on one layer plus 4000 pads; M4 + M7 only, budget 2 s."""
+    from .builders import outline
+
+    parts: list[Part] = []
+    tracks: list[object] = []
+    vias = []
+    for k in range(2000):
+        x, y = 5.0 + 5.0 * (k % 50), 5.0 + 4.0 * (k // 50)
+        c = cap(f"C{k}", f"S{k}", "GND", (x, y))  # GND pad at (x + 0.5, y)
+        parts.append(c)
+        g = (x + 0.5, y)
+        pts = [g, (g[0] + 1.0, g[1]), (g[0] + 2.0, g[1] + 1.0)]
+        tracks += route("GND", pts)
+        vias.append(via("GND", pts[-1], kiid=f"v{k}"))
+    m = board(
+        parts=tuple(parts),
+        tracks=tuple(tracks),
+        vias=tuple(vias),
+        outline=outline(0, 0, 260, 170),
+    )
+    assert sum(1 for t in m.tracks if t.net == "GND" and t.layer == "F.Cu") >= 4000
+    cls = classify(m)
+    t0 = time.perf_counter()
+    rep = run(m, cls, only=frozenset({"M4", "M7"}))
+    elapsed = time.perf_counter() - t0
+    print(f"compute_metrics GND stubs M4/M7: {elapsed:.3f} s")
+    assert get(rep, "M4").value == 0
+    assert get(rep, "M7").value == 0
+    assert elapsed < 2.0, elapsed
+
+
+def test_m11_two_gnd_zones_one_layer_are_one_plane() -> None:
+    """Two GND zones A (x 0-50) and B (x 50-100) on In1.Cu: the layer is fully filled
+    (fill per plane layer, summed over its ground zones) and a track crossing the seam
+    crosses no void (one void structure from every ground polygon on the layer)."""
+    a_poly = tuple(rect_poly(0, 0, 50, 80))
+    b_poly = tuple(rect_poly(50, 0, 50, 80))
+    za = replace(
+        zone("GNDA", "GND", ("In1.Cu",), a_poly, kiid="za"),
+        filled=(a_poly,),
+        filled_holes=((),),
+        filled_layers=("In1.Cu",),
+    )
+    zb = replace(
+        zone("GNDB", "GND", ("In1.Cu",), b_poly, kiid="zb"),
+        filled=(b_poly,),
+        filled_holes=((),),
+        filled_layers=("In1.Cu",),
+    )
+    seam = route("S1", [(40, 20), (60, 20)])
+    m = board(
+        copper_layers=_FOUR,
+        zones=(za, zb),
+        tracks=seam,
+        parts=(part("R1", 30, 30, pads=(pad("R1", "1", "GND", (30, 30)),)),),
+    )
+    m11 = get(run(m), "M11")
+    assert m11.value == pytest.approx(1.0, abs=1e-3)
+    assert not [o for o in m11.offenders if "void" in o.what]
+    assert m11.verdict == "pass", m11.offenders
+    # B unfilled: half the layer is a void, the seam track crosses it
+    zb_empty = replace(zb, filled=(), filled_holes=(), filled_layers=())
+    m11 = get(run(replace(m, zones=(za, zb_empty))), "M11")
+    assert m11.value == pytest.approx(0.5, abs=1e-3)
+    assert len([o for o in m11.offenders if "void" in o.what]) == 1
+
+
+def test_m11_via_ring_around_removed_island_is_a_void() -> None:
+    """A 20 x 20 mm hole (removed island) ringed by 40 vias 2 mm apart: its boundary lies
+    within the via discs, but its area (400 mm2) exceeds the discs' total (40 x pi x 1.3^2
+    = 212 mm2), so it is a void, not merged antipads."""
+    full = tuple(rect_poly(0, 0, 100, 80))
+    hole = tuple(rect_poly(40, 30, 20, 20))
+    ring: list[Point] = []
+    for k in range(10):
+        ring += [(40 + 2 * k, 30), (60, 30 + 2 * k), (60 - 2 * k, 50), (40, 50 - 2 * k)]
+    vias = tuple(via("GND", p, kiid=f"v{k}") for k, p in enumerate(ring))
+    assert len(vias) == 40
+    m = _m11_board(_plane((full,), ((hole,),)), route("S1", [(45, 20), (45, 60)]), vias=vias)
+    cross = [o for o in get(run(m), "M11").offenders if "void" in o.what]
+    assert len(cross) == 1

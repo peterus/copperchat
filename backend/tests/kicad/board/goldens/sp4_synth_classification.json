@@ -13,6 +13,7 @@
         "R6",
         "U3"
       ],
+      "refs_omitted": 0,
       "sheet": "Power"
     },
     {
@@ -23,6 +24,7 @@
         "R2",
         "R3"
       ],
+      "refs_omitted": 0,
       "sheet": "root"
     },
     {
@@ -42,6 +44,7 @@
         "U1",
         "Y1"
       ],
+      "refs_omitted": 0,
       "sheet": "root"
     },
     {
@@ -50,6 +53,7 @@
       "refs": [
         "U2"
       ],
+      "refs_omitted": 0,
       "sheet": "root"
     },
     {
@@ -59,6 +63,7 @@
         "H1",
         "H2"
       ],
+      "refs_omitted": 0,
       "sheet": ""
     }
   ],
