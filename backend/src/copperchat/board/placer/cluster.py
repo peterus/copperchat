@@ -78,6 +78,9 @@ def build_clusters(
     # a smaller anchor serving a bigger one (signal nets) joins it
     heads: list[str] = []
     for a in anchors:
+        if cls.part_class.get(a) == "connector":  # a connector keeps its own cluster (edges)
+            heads.append(a)
+            continue
         bigger = [h for h in heads if len(model.part(h).pads) > len(model.part(a).pads)]
         h = _best(a, bigger, ns.signal, model)
         if h is not None:

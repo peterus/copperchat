@@ -3,15 +3,17 @@ and shelf-packed, then placed as a whole at the cheapest legal spot of a region.
 deterministic (no randomness; ties by (y, x, rotation)).
 
 Candidates: the block's reference point (its first anchor's origin) on every 0.5 mm grid
-position x the four block rotations (only `rotation` when given), the block box inside
-`region and (outline - edge margin)`. Legal: no member courtyard closer than `keep_channels`
-to a part already on the board, a locked member or a `fixed` part, none in a footprint
-keepout. Cost: airwire of the block's non-ground pads to the nearest placed pad of their net
-+ `PULL_WEIGHT` x n x octilinear distance of the block centre to `target` (else the region
-centre) + `EDGE_WEIGHT` x each connector's distance to its edge (`board.md` Placement edges,
-else `edge`, else the nearest outline edge), its mouth (the courtyard side away from its
-pads) facing that edge. The search runs on a 2 mm grid first and refines the best spots on
-the 0.5 mm grid (full 0.5 mm scan when the coarse grid finds nothing legal)."""
+position x the four block rotations (only `rotation` when given), the block box inside the
+region and the outline minus the edge margin. Legal: no member courtyard closer than
+`keep_channels` to a part already on the board, a locked member or a `fixed` part, none in
+a footprint keepout. Cost: airwire of the block's non-ground pads to the nearest placed pad
+of their net + `PULL_WEIGHT` x n x octilinear distance of the block centre to `target`
+(else the region centre) + `EDGE_WEIGHT` x each connector's distance to its edge
+(`board.md` Placement edges, else `edge`; without either only a connector that anchors its
+own cluster is pulled, to the nearest outline edge), its mouth (the courtyard side away
+from its pads) facing that edge. The search runs on a 2 mm grid first (plus the region's
+ends) and refines the best spots on the 0.5 mm grid (a full 0.5 mm scan of a rotation the
+coarse grid finds nothing legal for)."""
 
 from __future__ import annotations
 
@@ -56,8 +58,10 @@ Edge = Literal["top", "bottom", "left", "right"]
 PLACE_GRID_MM = 0.5
 COARSE_GRID_MM = 2.0
 REFINE_KEEP = 6  # best coarse spots per rotation refined on the fine grid
-PULL_WEIGHT = 0.5
+PULL_WEIGHT = 0.1  # per member and mm; connectivity (airwire) dominates inside the region
 EDGE_WEIGHT = 3.0
+EDGE_SNAP_MM = 0.5  # an assigned connector this close to its edge (beyond the margin) is on it
+EDGE_MISS = 1000.0
 FACING_MM = 5.0  # a connector whose mouth does not face its edge costs like this far away
 MOUTH_MIN_MM = 0.5  # pad centroid this far off the courtyard centre gives the connector a mouth
 _EDGE_NORMAL: Mapping[str, Point] = {
@@ -171,12 +175,16 @@ def _mouth(p: Part) -> Point | None:
     return (dx / n, dy / n)
 
 
-def _edge_cost(b: Box, mouth: Point | None, edge: str | None, ob: Box) -> float:
+def _edge_cost(b: Box, mouth: Point | None, edge: str | None, ob: Box, margin: float) -> float:
     """Distance of a connector box `b` to `edge` of the outline box `ob` (nearest edge when
-    None), plus `FACING_MM` x how far its mouth turns away from that edge."""
+    None), plus `FACING_MM` x how far its mouth turns away from that edge. An assigned edge
+    is nearly hard: farther than `EDGE_SNAP_MM` beyond the edge margin costs `EDGE_MISS`
+    (only spots where no candidate reaches the edge fall back to the distance)."""
     d = {"left": b[0] - ob[0], "right": ob[2] - b[2], "top": b[1] - ob[1], "bottom": ob[3] - b[3]}
     e = edge if edge in d else min(d, key=lambda k: (d[k], list(d).index(k)))
     cost = max(d[e], 0.0)
+    if edge in d and d[e] > margin + EDGE_SNAP_MM + _EPS:
+        cost += EDGE_MISS
     if mouth is not None:
         n = _EDGE_NORMAL[e]
         cost += FACING_MM * (1.0 - (mouth[0] * n[0] + mouth[1] * n[1])) / 2.0
@@ -263,6 +271,9 @@ def place_block(
     if not members:
         return PlaceResult(tuple(fixed), score_placement(base, cls, doc))
     local = block_layout(base, cls, members, keep_channels=kc)
+    # connectors pulled to an edge: assigned ones and those anchoring a cluster (a header
+    # that serves an MCU follows the MCU instead of dragging its block to an edge)
+    heads = {c.members[0] for c in build_clusters(base, cls, members)}
 
     # outside pads per net (parts on the board that are not members)
     outside: dict[str, list[Point]] = defaultdict(list)
@@ -286,6 +297,7 @@ def place_block(
             (box_of(p), _mouth(p), edges.get(p.ref, edge))
             for p in parts
             if cls.part_class.get(p.ref) == "connector"
+            and (p.ref in edges or edge is not None or p.ref in heads)
         ]
         variants.append(_Variant(theta % 360, mv, boxes, _union_box(boxes), pads, conns))
 
@@ -314,8 +326,23 @@ def place_block(
         bc = ((v.box[0] + v.box[2]) / 2 + x, (v.box[1] + v.box[3]) / 2 + y)
         c += PULL_WEIGHT * n * octi_dist(bc, centre)
         for b, mouth, e in v.conns:
-            c += EDGE_WEIGHT * _edge_cost((b[0] + x, b[1] + y, b[2] + x, b[3] + y), mouth, e, obox)
+            c += EDGE_WEIGHT * _edge_cost(
+                (b[0] + x, b[1] + y, b[2] + x, b[3] + y), mouth, e, obox, margin
+            )
         return round(c, 6)
+
+    def axis(lo: float, hi: float, step: float) -> list[float]:
+        """Multiples of `step` in [lo, hi], plus both ends on the 0.5 mm grid (a tight
+        fit between two obstacles is never skipped by the coarse grid)."""
+        if lo > hi + _EPS:
+            return []
+        out = {
+            i * step for i in range(math.ceil(lo / step - 1e-9), math.floor(hi / step + 1e-9) + 1)
+        }
+        g = PLACE_GRID_MM
+        first, last = math.ceil(lo / g - 1e-9) * g, math.floor(hi / g + 1e-9) * g
+        out.update(v for v in (first, last) if lo - _EPS <= v <= hi + _EPS)
+        return sorted(round(v, 6) for v in out)
 
     def positions(v: _Variant, step: float, window: Box | None = None) -> list[tuple[float, float]]:
         lo_x, hi_x = allowed[0] - v.box[0], allowed[2] - v.box[2]
@@ -323,54 +350,36 @@ def place_block(
         if window is not None:
             lo_x, lo_y = max(lo_x, window[0]), max(lo_y, window[1])
             hi_x, hi_y = min(hi_x, window[2]), min(hi_y, window[3])
-        if lo_x > hi_x + _EPS or lo_y > hi_y + _EPS:
-            return []
-        xs = [
-            i * step
-            for i in range(math.ceil(lo_x / step - 1e-9), math.floor(hi_x / step + 1e-9) + 1)
-        ]
-        ys = [
-            j * step
-            for j in range(math.ceil(lo_y / step - 1e-9), math.floor(hi_y / step + 1e-9) + 1)
-        ]
-        return [(round(x, 6), round(y, 6)) for y in ys for x in xs]
+        return [(x, y) for y in axis(lo_y, hi_y, step) for x in axis(lo_x, hi_x, step)]
 
-    def search(
-        step: float, windows: Mapping[int, list[Box]] | None
-    ) -> list[tuple[float, float, float, int, int]]:
-        found: list[tuple[float, float, float, int, int]] = []  # cost, y, x, theta index, -
-        for vi, v in enumerate(variants):
-            spots: list[tuple[float, float]] = []
-            if windows is None:
-                spots = positions(v, step)
-            else:
-                seen: set[tuple[float, float]] = set()
-                for w in windows.get(vi, []):
-                    for s in positions(v, step, w):
-                        if s not in seen:
-                            seen.add(s)
-                            spots.append(s)
-            for x, y in spots:
-                if legal(v, x, y):
-                    found.append((cost(v, x, y), y, x, vi, 0))
-        return found
+    Found = tuple[float, float, float, int]  # cost, y, x, variant index
 
-    coarse = search(COARSE_GRID_MM, None)
-    if coarse:
-        windows: dict[int, list[Box]] = defaultdict(list)
-        per: dict[int, list[tuple[float, float, float, int, int]]] = defaultdict(list)
-        for f in sorted(coarse):
-            per[f[3]].append(f)
-        for vi, fs in per.items():
-            for _, y, x, _, _ in fs[:REFINE_KEEP]:
-                d = COARSE_GRID_MM
-                windows[vi].append((x - d, y - d, x + d, y + d))
-        fine = search(PLACE_GRID_MM, windows)
-    else:
-        fine = search(PLACE_GRID_MM, None)
+    def scan(vi: int, step: float, windows: Sequence[Box] | None) -> list[Found]:
+        v = variants[vi]
+        spots: list[tuple[float, float]] = []
+        if windows is None:
+            spots = positions(v, step)
+        else:
+            seen: set[tuple[float, float]] = set()
+            for w in windows:
+                for spot in positions(v, step, w):
+                    if spot not in seen:
+                        seen.add(spot)
+                        spots.append(spot)
+        return [(cost(v, x, y), y, x, vi) for x, y in spots if legal(v, x, y)]
+
+    fine: list[Found] = []
+    for vi in range(len(variants)):
+        coarse = sorted(scan(vi, COARSE_GRID_MM, None))
+        if not coarse:  # nothing on the coarse grid: scan this rotation fully
+            fine.extend(scan(vi, PLACE_GRID_MM, None))
+            continue
+        d = COARSE_GRID_MM
+        wins = [(x - d, y - d, x + d, y + d) for _, y, x, _ in coarse[:REFINE_KEEP]]
+        fine.extend(scan(vi, PLACE_GRID_MM, wins))
     if not fine:
         return does_not_fit()
-    _, y, x, vi, _ = min(fine)
+    _, y, x, vi = min(fine)
     v = variants[vi]
     moves = [Move(m.ref, round(m.x + x, 6), round(m.y + y, 6), m.rot, m.side) for m in v.moves]
     legal_moves = legalize(

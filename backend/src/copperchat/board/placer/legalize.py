@@ -5,7 +5,9 @@ Overlap = two courtyard boxes on the same side closer than the board's courtyard
 (`courtyard_clearance` rule, 0 when unset). Each round: clamp every movable part into the
 outline minus `edge_margin`, push it out of keepouts, then push every overlapping pair
 apart along the axis of the smaller penetration (both movable: half each). Shifts are whole
-0.05 mm grid steps rounded up, so positions stay on the grid and gaps never shrink.
+0.05 mm grid steps rounded up, so positions stay on the grid and gaps never shrink. A part
+still in conflict after the rounds goes to the nearest free spot around its start (0.25 mm
+rings, within `max_shift`, else 20 mm).
 """
 
 from __future__ import annotations
@@ -29,6 +31,8 @@ from copperchat.board.placer.layout import (
 from copperchat.board.staging import natural_key
 
 MAX_ROUNDS = 200
+FALLBACK_STEP_MM = 0.25  # ring pitch of the nearest-free-spot fallback
+FALLBACK_RADIUS_MM = 20.0  # its reach without a max_shift
 DEFAULT_EDGE_MARGIN_MM = 0.3
 _EPS = 1e-9
 
@@ -160,6 +164,19 @@ def _hits_keepout(b: Box, keepouts: Sequence[tuple[Point, ...]]) -> tuple[Point,
     return None
 
 
+def _spiral(radius: float) -> list[tuple[float, float]]:
+    """Offsets on the 0.25 mm grid within `radius`, nearest first (ties: y, x)."""
+    n = int(radius / FALLBACK_STEP_MM)
+    pts = [
+        (i * FALLBACK_STEP_MM, j * FALLBACK_STEP_MM)
+        for i in range(-n, n + 1)
+        for j in range(-n, n + 1)
+        if math.hypot(i, j) * FALLBACK_STEP_MM <= radius + 1e-9
+    ]
+    pts.sort(key=lambda p: (math.hypot(*p), p[1], p[0]))
+    return pts
+
+
 def _step(v: float) -> float:
     """A shift of at least |v|, in whole grid steps, sign kept."""
     return math.copysign(snap_up(abs(v)), v) if abs(v) > _EPS else 0.0
@@ -279,6 +296,26 @@ def legalize(
                     box_a = bx(ra)
         if not changed:
             break
+
+    def conflict(r: str) -> bool:
+        b = bx(r)
+        if not outline.contains(b) or _hits_keepout(b, keepouts) is not None:
+            return True
+        return any(o != r and side[o] == side[r] and boxes_hit(b, bx(o), sep) for o in order)
+
+    # the push-apart can get stuck (a part squeezed between fixed ones along one axis):
+    # move each part still in conflict to the nearest free spot around its start
+    radius = max_shift if max_shift is not None else FALLBACK_RADIUS_MM
+    for r in sorted(mov, key=natural_key):
+        if not conflict(r):
+            continue
+        sx, sy = start[r]
+        for dx, dy in _spiral(radius):
+            pos[r] = [round(sx + dx, 6), round(sy + dy, 6)]
+            if not conflict(r):
+                break
+        else:
+            pos[r] = [sx, sy]
 
     bad: set[str] = set()
     for r in mov:

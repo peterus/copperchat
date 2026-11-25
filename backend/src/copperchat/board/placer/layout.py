@@ -12,7 +12,7 @@
   the host (decoupling caps: supply pad towards the served pin, ground pad outwards);
 * when that spot is taken it slides along the row first and steps outwards (ring 2, …)
   only when that is cheaper (`RADIAL_WEIGHT`), so rows stay aligned;
-* decoupling caps keep the minimum courtyard gap `gap`; every other satellite keeps
+* decoupling caps and crystals keep the minimum courtyard gap `gap`; every other satellite keeps
   `gap + SATELLITE_EXTRA_MM` (routing room between neighbours);
 * decoupling caps of one IC and supply net are spread over the IC's pins of that net, the
   smallest value at each pin first (spec §9.3 "the smallest value closest").
@@ -50,7 +50,9 @@ Box = tuple[float, float, float, float]  # x0, y0, x1, y1
 
 GRID_MM = 0.05
 SATELLITE_EXTRA_MM = 0.2  # extra courtyard gap for satellites that are not decoupling caps
-RADIAL_WEIGHT = 1.5  # stepping one mm outwards costs as much as sliding 1.5 mm along a row
+RADIAL_WEIGHT = 1.5  # unconnected satellites: one mm outwards costs 1.5 mm along a row
+ALIGN_WEIGHT = 0.5  # connected satellites: cost per mm slid away from the aligned spot
+SIDE_PENALTY_MM = 1.5  # a host side next to the one the connected pin points to
 NEAR_TARGET_MM = 3.0  # host pads of the satellite's nets this close to the first form a target
 _EPS = 1e-9
 
@@ -201,14 +203,35 @@ _SIDES: Mapping[str, tuple[int, int]] = {
 }
 
 
-def _side_of(b: Box, t: Point) -> str:
+PAD_AXIS_RATIO = 1.3  # a pad this much longer than wide leaves its part along its long axis
+
+
+def _pad_axis(q: Pad) -> int | None:
+    """0 when the (rotated) pad is long in x, 1 when long in y, None when about square."""
+    c, s = _cs(q.rot)
+    w = abs(q.w * c) + abs(q.h * s)
+    h = abs(q.w * s) + abs(q.h * c)
+    if w >= PAD_AXIS_RATIO * h:
+        return 0
+    if h >= PAD_AXIS_RATIO * w:
+        return 1
+    return None
+
+
+def _side_of(b: Box, pads: Sequence[Pad]) -> str:
+    """The host side a satellite of `pads` goes to: the nearest box edge to their centre;
+    an elongated pin pad (SOIC, connector row) only allows the two edges along its long
+    axis — a pin leaves the part where the pad points."""
+    t = _mean([(q.x, q.y) for q in pads])
     d = {
         "left": t[0] - b[0],
         "right": b[2] - t[0],
         "top": t[1] - b[1],
         "bottom": b[3] - t[1],
     }
-    return min(_SIDES, key=lambda s: (d[s], list(_SIDES).index(s)))
+    axis = _pad_axis(pads[0])
+    sides = [s for s in _SIDES if axis is None or _SIDES[s][0] == axis]
+    return min(sides, key=lambda s: (d[s], list(_SIDES).index(s)))
 
 
 def _mean(pts: Sequence[Point]) -> Point:
@@ -226,6 +249,8 @@ class _Layout:
         self.placed: dict[str, Part] = {}
         self.order: list[str] = []
         self.decap_round: dict[str, int] = {}
+        self.shared_sig: dict[str, int] = defaultdict(int)
+        self.shared_all: dict[str, int] = defaultdict(int)
         self.decap_pin = self._assign_decaps()
         self.priority = self._priorities()
 
@@ -259,20 +284,27 @@ class _Layout:
         return out
 
     def _priorities(self) -> dict[str, tuple[object, ...]]:
+        """Placement order: crystals (big, pinned to two IC pins), the first decoupling cap
+        of every supply pin, load caps, switcher passives, then everything else by
+        connectivity (see `_next`), bulk decoupling caps last (they take the supply pin
+        with the most room). Small parts slide around the big ones placed before them."""
         pr: dict[str, tuple[object, ...]] = {}
-        for cap, (ic, pin) in self.decap_pin.items():
-            pr[cap] = (0, self.decap_round[cap], natural_key(ic), natural_key(pin))
         for x in self.cls.crystals:
             if x.ref in self.members:
-                pr.setdefault(x.ref, (1, 0))
+                pr.setdefault(x.ref, (0,))
                 for r in x.load_caps:
-                    pr.setdefault(r, (1, 1))
+                    pr.setdefault(r, (2,))
+        for cap, (ic, pin) in self.decap_pin.items():
+            rnd = self.decap_round[cap]
+            pr[cap] = (
+                (1, natural_key(ic), natural_key(pin)) if rnd == 0 else (5, rnd, natural_key(ic))
+            )
         for s in self.cls.switchers:
             if s.ic not in self.members:
                 continue
             for i, refs in enumerate(((s.inductor,), s.in_caps, s.out_caps, s.fb_parts)):
                 for r in refs:
-                    pr.setdefault(r, (2, i))
+                    pr.setdefault(r, (3, i))
         return pr
 
     def _host_needed(self, ref: str) -> str | None:
@@ -292,26 +324,21 @@ class _Layout:
         return None
 
     def _next(self, todo: list[str]) -> str:
-        def shared(ref: str) -> tuple[int, int]:
-            sig = sum(len(self.ns.signal[ref] & self.ns.signal[p]) for p in self.placed)
-            alln = sum(len(self.ns.all[ref] & self.ns.all[p]) for p in self.placed)
-            return sig, alln
-
         def key(ref: str) -> tuple[object, ...]:
             if ref in self.priority:
                 return (*self.priority[ref], natural_key(ref))
-            sig, alln = shared(ref)
-            return (3, -sig, -alln, natural_key(ref))
+            return (4, -self.shared_sig[ref], -self.shared_all[ref], natural_key(ref))
 
         ready = [r for r in todo if (h := self._host_needed(r)) is None or h in self.placed]
         return min(ready or todo, key=key)
 
     # -- geometry of one satellite --
 
-    def _want(self, ref: str) -> _Want | None:
+    def _want(self, ref: str, pin_override: str | None = None) -> _Want | None:
         part = self.model.part(ref)
         if ref in self.decap_pin:
             ic, pin = self.decap_pin[ref]
+            pin = pin_override or pin
             host = self.placed[ic]
             d = next(d for d in self.cls.decoupling if d.cap == ref)
             pads = tuple(q for q in host.pads if q.number == pin and q.net == d.supply_net)
@@ -372,12 +399,18 @@ class _Layout:
         return out or rots
 
     def _gap_for(self, ref: str) -> float:
-        return self.gap if ref in self.decap_pin else self.gap + SATELLITE_EXTRA_MM
+        """Decoupling caps and crystals (spec §9.3 distance rules) keep the minimum gap."""
+        critical = ref in self.decap_pin or any(x.ref == ref for x in self.cls.crystals)
+        return self.gap if critical else self.gap + SATELLITE_EXTRA_MM
 
     def _fit(
         self, part: Part, rot: float, host: Part, side: str, want: _Want | None
     ) -> tuple[float, Move]:
-        """(cost, move) of the best free spot for `part` at `rot` on `side` of `host`."""
+        """(cost, move) of the best free spot for `part` at `rot` on `side` of `host`.
+
+        Connected satellites cost the octilinear distance of their connected pads to the
+        target pads plus `ALIGN_WEIGHT` x the slide along the row away from the aligned
+        spot; unconnected ones the slide plus `RADIAL_WEIGHT` x the step outwards."""
         g = self._gap_for(part.ref)
         axis, sign = _SIDES[side]
         local = moved_part(part, Move(part.ref, 0.0, 0.0, rot, "top"))
@@ -392,6 +425,7 @@ class _Layout:
         s_r0, s_r1, s_t0, s_t1 = frame(sb)
         _, h_r1, h_t0, h_t1 = frame(box_of(host))
         u0 = snap_up(h_r1 + g - s_r0)
+        own: list[Pad] = []
         if want is not None:
             own = [q for q in local.pads if q.net in want.own_nets] or list(local.pads)
             tgt = _mean([(q.x, q.y) for q in want.target])
@@ -399,11 +433,29 @@ class _Layout:
             t_star = snap(tgt[1 - axis] - mine[1 - axis])
         else:
             t_star = snap((h_t0 + h_t1) / 2 - (s_t0 + s_t1) / 2)
+
+        def at(u: float, t: float) -> tuple[float, float]:
+            pos = [0.0, 0.0]
+            pos[axis] = u * sign
+            pos[1 - axis] = t
+            return snap(pos[0]), snap(pos[1])
+
+        def cost_of(u: float, t: float) -> float:
+            if want is None:
+                return abs(t - t_star) + RADIAL_WEIGHT * (u - u0)
+            x, y = at(u, t)
+            dist = sum(
+                min(octi_dist((q.x + x, q.y + y), (p.x, p.y)) for p in want.target) for q in own
+            ) / len(own)
+            return dist + ALIGN_WEIGHT * abs(t - t_star)
+
         obstacles = [frame(box_of(p)) for p in self.placed.values()]
         us = sorted({u0, *(snap_up(o[1] + g - s_r0) for o in obstacles if o[1] + g - s_r0 > u0)})
         best: tuple[float, float, float] | None = None  # cost, u, t
+        floor = cost_of(u0, t_star)
         for u in us:
-            if best is not None and RADIAL_WEIGHT * (u - u0) >= best[0]:
+            # every cost at this depth is at least the step outwards over the ideal spot
+            if best is not None and floor + (u - u0) >= best[0]:
                 break
             blocked = [
                 (o[2] - g - s_t1, o[3] + g - s_t0)
@@ -414,47 +466,59 @@ class _Layout:
             for lo, hi in blocked:
                 cands.add(snap_down(lo))
                 cands.add(snap_up(hi))
-            free = [t for t in cands if not any(lo + _EPS < t < hi - _EPS for lo, hi in blocked)]
-            if not free:
-                continue
-            t = min(free, key=lambda v: (abs(v - t_star), v))
-            cost = abs(t - t_star) + RADIAL_WEIGHT * (u - u0)
-            if best is None or cost < best[0] - _EPS:
-                best = (cost, u, t)
+            for t in sorted(cands):
+                if any(lo + _EPS < t < hi - _EPS for lo, hi in blocked):
+                    continue
+                cost = cost_of(u, t)
+                if best is None or cost < best[0] - _EPS:
+                    best = (cost, u, t)
         assert best is not None  # the last u clears every obstacle radially
         cost, u, t = best
-        pos = [0.0, 0.0]
-        pos[axis] = u * sign
-        pos[1 - axis] = t
-        mv = Move(part.ref, snap(pos[0]), snap(pos[1]), rot, "top")
-        if want is not None:
-            moved = moved_part(part, mv)
-            for q in moved.pads:
-                if q.net in want.own_nets:
-                    cost += 0.1 * min(octi_dist((q.x, q.y), (p.x, p.y)) for p in want.target)
-        return cost, mv
+        x, y = at(u, t)
+        return cost, Move(part.ref, x, y, rot, "top")
 
     def place(self, ref: str) -> None:
+        if self.decap_round.get(ref, 0) > 0:
+            # a bulk cap: the supply pin of its net with the most room
+            ic, _ = self.decap_pin[ref]
+            net = next(d.supply_net for d in self.cls.decoupling if d.cap == ref)
+            pins = sorted({q.number for q in self.placed[ic].pads if q.net == net}, key=natural_key)
+            options = [self._best(ref, self._want(ref, pin)) for pin in pins]
+            self._commit(min(options, key=lambda o: o[0])[1])
+            return
+        self._commit(self._best(ref, self._want(ref))[1])
+
+    def _best(self, ref: str, want: _Want | None) -> tuple[float, Move]:
         part = self.model.part(ref)
-        want = self._want(ref)
+        sides: list[tuple[str, float]]
         if want is None:
             host = self.placed[self.anchor]
-            sides = list(_SIDES)
+            sides = [(s, 0.0) for s in _SIDES]
         else:
             host = self.placed[want.host]
-            sides = [_side_of(box_of(host), _mean([(q.x, q.y) for q in want.target]))]
+            first = _side_of(box_of(host), want.target)
+            # the two neighbouring sides too (a pin at a corner), never the opposite one
+            sides = [(first, 0.0)] + [
+                (s, SIDE_PENALTY_MM) for s in _SIDES if _SIDES[s][0] != _SIDES[first][0]
+            ]
         best: tuple[float, Move] | None = None
-        for side in sides:
+        for side, penalty in sides:
             for rot in self._rotations(part, want, side):
                 cost, mv = self._fit(part, rot, host, side, want)
+                cost += penalty
                 if best is None or cost < best[0] - _EPS:
                     best = (cost, mv)
         assert best is not None
-        self._commit(best[1])
+        return best
 
     def _commit(self, mv: Move) -> None:
         self.placed[mv.ref] = moved_part(self.model.part(mv.ref), mv)
         self.order.append(mv.ref)
+        # nets shared with what is placed (the order of the satellites without a rule)
+        for r in self.members:
+            if r not in self.placed:
+                self.shared_sig[r] += len(self.ns.signal[r] & self.ns.signal[mv.ref])
+                self.shared_all[r] += len(self.ns.all[r] & self.ns.all[mv.ref])
 
     def run(self) -> tuple[Move, ...]:
         self._commit(Move(self.anchor, 0.0, 0.0, 0.0, "top"))
