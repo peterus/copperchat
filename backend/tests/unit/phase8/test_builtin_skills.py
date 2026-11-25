@@ -1,7 +1,7 @@
 import re
 from pathlib import Path
 
-from copperchat.agent.profiles import FP_READ, FP_WRITES, PROFILES
+from copperchat.agent.profiles import FP_READ, FP_WRITES, PCB_READ, PCB_WRITES, PROFILES
 from copperchat.agent.sdk_backend import system_prompt
 from copperchat.research.agent import RESEARCHER_PROMPT
 from copperchat.research.notes import REQUIRED_SECTIONS, check_notes, template_from_skill
@@ -84,6 +84,13 @@ EXPECTED = {
         "placed",
         "Key parts",
     ],
+    "session-board": [
+        "board.md",
+        "decisions.md",
+        "doc_patch_section",
+        "pcb_approve",
+        "never edit the schematic",
+    ],
 }
 
 
@@ -152,7 +159,9 @@ def test_skill_tool_names_exist_in_every_profile_they_apply_to() -> None:
             continue  # the researcher's skill: not the main agent's tools
         body = (skill.dir / "SKILL.md").read_text()
         mentioned = set(TOOL_NAME.findall(body)) - NOT_TOOLS
-        assert mentioned <= known, (skill.name, sorted(mentioned - known))
+        # the board tools are registered phase by phase (SP4 P1c to P10)
+        unknown = mentioned - known - PCB_READ - PCB_WRITES
+        assert not unknown, (skill.name, sorted(unknown))
         types = ACTIVE_TYPES if skill.sessions is None else sorted(skill.sessions)
         for kind in types:
             if kind not in ACTIVE_TYPES:
@@ -391,3 +400,32 @@ def test_part_notes_skill_describes_the_land_pattern() -> None:
     assert "| Pad | X (mm) | Y (mm) | W (mm) | H (mm) | Drill (mm) |" in template
     assert "<repo-nick>:<name>" in skill
     assert "## Land pattern" in RESEARCHER_PROMPT
+
+
+BOARD_STEPS = [
+    "S0 Intake",
+    "S1 Board from schematic",
+    "S2 Outline, holes, rules",
+    "S3 Blocks",
+    "S4 Placement",
+    "S5 Critical routing",
+    "S6 Fill routing",
+    "S7 Planes and pours",
+    "S8 Final check",
+    "S9 Fab",
+]
+
+
+def test_session_board_skeleton() -> None:
+    text = (BUILTIN_ROOT / "session-board" / "SKILL.md").read_text()
+    meta, body = parse_front_matter(text)
+    assert meta["name"] == "session-board"
+    assert meta["description"].startswith(
+        "Use in a Board session: drives the step-by-step board flow S0\u2013S9"
+    )
+    headings = [line[3:] for line in body.splitlines() if line.startswith("## ")]
+    assert [h for h in headings if h[:1] == "S"] == BOARD_STEPS
+    assert "Approve this placement?" in body
+    assert "Approve this board for manufacturing?" in body
+    assert "stop the turn and wait for the user's ok" in body.lower()
+    assert body.count("Full content: P9b.") == len(BOARD_STEPS)

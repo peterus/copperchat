@@ -75,6 +75,31 @@ FP_WRITES: frozenset[str] = frozenset({"fp_create", "fp_approve", "fp_delete"})
 # Every footprint tool starts with it; COPPERCHAT_FOOTPRINT_TOOLS=off drops them all
 # (FP_READ and FP_WRITES), Free included.
 FP_PREFIX = "fp_"
+# Board read tools (board spec §7.1): requirements, schematic, board and Free, flag or not.
+PCB_READ = frozenset({"pcb_status", "pcb_analyze", "pcb_render", "pcb_metrics", "pcb_check"})
+# The 17 board write tools (board spec §7.2): board and Free only. COPPERCHAT_BOARD_TOOLS=off
+# drops exactly these names from every profile, Free included.
+PCB_WRITES = frozenset(
+    {
+        "pcb_sync_from_schematic",
+        "pcb_set_outline",
+        "pcb_set_rules",
+        "pcb_define_blocks",
+        "pcb_place_block",
+        "pcb_move",
+        "pcb_legalize",
+        "pcb_route",
+        "pcb_route_fill",
+        "pcb_unroute",
+        "pcb_zones",
+        "pcb_fanout",
+        "pcb_stitch",
+        "pcb_tidy_silk",
+        "pcb_approve",
+        "pcb_fab_export",
+        "pcb_export_3d",
+    }
+)
 
 PROFILES: dict[str, frozenset[str]] = {
     "requirements": DOC_TOOLS
@@ -84,33 +109,55 @@ PROFILES: dict[str, frozenset[str]] = {
     | GIT
     | REPO_TOOLS
     | MOUSER_TOOLS
-    | FP_READ,
+    | FP_READ
+    | PCB_READ,
     "schematic": TODAY
     | {"doc_list", "doc_read", "doc_append", "doc_patch_section"}
     | REPO_TOOLS
     | MOUSER_TOOLS
     | FP_READ
-    | FP_WRITES,
-    # SP4 (hidden): the read, ERC/DRC, git, library and parts tools; later the pcb_* writes.
+    | FP_WRITES
+    | PCB_READ,
+    # SP4: the read, ERC/DRC, git, library and parts tools plus the board writes, plans and
+    # footprint writes; the schematic is read-only here (no SCH_WRITES).
     "board": READ_KICAD
     | LIBRARY
     | PARTS
     | GIT
-    | {"doc_list", "doc_read", "doc_append"}
+    | {"doc_list", "doc_read", "doc_append", "doc_patch_section"}
     | REPO_TOOLS
     | MOUSER_TOOLS
-    | FP_READ,
-    "free": TODAY | DOC_TOOLS | REPO_TOOLS | MOUSER_TOOLS | FP_READ | FP_WRITES,
+    | FP_READ
+    | FP_WRITES
+    | PCB_READ
+    | PCB_WRITES
+    | PLAN_TOOLS,
+    "free": TODAY
+    | DOC_TOOLS
+    | REPO_TOOLS
+    | MOUSER_TOOLS
+    | FP_READ
+    | FP_WRITES
+    | PCB_READ
+    | PCB_WRITES,
 }
 
 
 def profile_specs(
-    conversation_type: str, specs: Sequence[ToolSpec], *, footprint_tools: bool = True
+    conversation_type: str,
+    specs: Sequence[ToolSpec],
+    *,
+    footprint_tools: bool = True,
+    board_tools: bool = False,
+    freerouting: bool = True,
 ) -> list[ToolSpec]:
     """The specs a session of ``conversation_type`` may use, in registry order. Free gets
     every registered tool (also one added after this file was written); an unknown type
     raises (fail closed). ``footprint_tools=False`` (COPPERCHAT_FOOTPRINT_TOOLS=off)
-    removes every ``fp_*`` tool from every profile, Free included."""
+    removes every ``fp_*`` tool from every profile, Free included; ``board_tools=False``
+    (COPPERCHAT_BOARD_TOOLS=off) removes every ``PCB_WRITES`` name likewise.
+    ``freerouting`` (COPPERCHAT_FREEROUTING) is accepted for the callers; board P6b adds
+    its filter."""
     allowed = PROFILES.get(conversation_type)
     if allowed is None:
         raise ValueError(f"unknown session type: {conversation_type!r}")
@@ -119,6 +166,7 @@ def profile_specs(
         for s in specs
         if (conversation_type == "free" or s.name in allowed)
         and (footprint_tools or not s.name.startswith(FP_PREFIX))
+        and (board_tools or s.name not in PCB_WRITES)
     ]
 
 

@@ -260,3 +260,36 @@ async def test_schematic_inconsistent_with_row_leftover_keeps_schematic_text(
     assert "left behind (row L)" in err["suggestion"]
     assert "Undoing this turn in History removes row L" in err["suggestion"]
     assert err["details"]["leftovers"] == ["row L"]
+
+
+async def test_board_leftovers_are_worded_as_board_items(ctx_factory):
+    """A failed board compensation (SP4 P1a residual): the leftovers are items on the
+    board, or the board file the call created - never the footprint library."""
+    from copperchat.errors import DocumentInconsistent
+
+    left = ["extra track 1111", "missing footprint 2222"]
+
+    async def handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
+        raise DocumentInconsistent("undoing the partial pcb_move change failed", leftovers=left)
+
+    raw = await _tool(_spec(handler, name="pcb_move"), ctx_factory).handler({})
+    err = json.loads(raw["content"][0]["text"])["error"]
+    assert err["code"] == "document_inconsistent"
+    assert "footprint library" not in err["why"] + err["suggestion"]
+    assert "reloads the design from its last save" in err["why"]
+    assert (
+        "These board items differ from the state before this edit: extra track 1111, "
+        "missing footprint 2222." in err["why"]
+    )
+    assert "left behind (extra track 1111, missing footprint 2222)" in err["suggestion"]
+    assert "fp_delete" not in err["suggestion"]
+    assert err["details"]["leftovers"] == left
+
+    async def created(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
+        raise DocumentInconsistent("the board could not be removed", leftovers=["demo.kicad_pcb"])
+
+    spec = _spec(created, name="pcb_sync_from_schematic")
+    err = json.loads((await _tool(spec, ctx_factory).handler({}))["content"][0]["text"])["error"]
+    assert "footprint library" not in err["why"] + err["suggestion"]
+    assert "The board file this call created is still there: demo.kicad_pcb." in err["why"]
+    assert "Undoing this turn in History removes demo.kicad_pcb" in err["suggestion"]

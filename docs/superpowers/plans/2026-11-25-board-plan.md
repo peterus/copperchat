@@ -730,6 +730,73 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
 
 (Each phase adds its section here in its own PR.)
 
+### As built (P1c)
+
+**Measured / recorded** (`tests/kicad/board/test_render.py`, `record_property`; ecc83 only — P9a
+re-measures on a large 4-layer board)
+
+| Board | SVG bytes | Elements | Coord pairs | Max per element | Span | Raster s | Raster peak RSS |
+|---|---|---|---|---|---|---|---|
+| ecc83 top | 49,243 | 877 | 1,928 | 4 | 46.5 | 0.71 | 73.5 MB |
+| ecc83 + GND pours (F.Cu, B.Cu), top | 77,674 | 878 | 3,519 | 1,591 | 65.5 | 0.71 | 73.7 MB |
+| ecc83 + GND pours, bottom | 55,017 | 338 | 2,752 | 1,834 | 42.9 | 0.64 | 72.1 MB |
+
+- `BOARD_SVG_LIMITS` keeps the B-C9 values (24 MiB, 200,000 elements, 2,000,000 coordinate pairs,
+  50,000 per element; all far above 4× the measurements), `max_span = 20,000`.
+- `BOARD_RASTER_TIMEOUT_S = 30` (≥ 3× measured, under the 60 s cap), `BOARD_RASTER_MEMORY_BYTES =
+  2 GiB` (`RLIMIT_AS` counts every mapping, so it stays well above the 74 MB RSS; footprint worker:
+  1.5 GiB). Other constants: `BOARD_SVG_TIMEOUT_S = 60`, `BOARD_3D_TIMEOUT_S = 120`,
+  `BOARD_MAX_SIDE_PX = 1600`, `KEEP_BOARD_SVGS = 20`, `SIMPLIFY_TOL_MM = 0.02`,
+  `SIMPLIFY_BUDGET = 5,000,000` point-distance evaluations per `simplify_paths` call (RDP is
+  O(n²) on adversarial input; past the budget the rest of the SVG stays unsimplified).
+- `pcb_render` wall time 1.4–2.1 s per view on ecc83; 3D iso PNG 1568 px long side.
+
+**Contract deviations / additions**
+- B-C1: `profile_specs(..., footprint_tools=True, board_tools=False, freerouting=True)`;
+  `freerouting` is accepted and unused — **P6b** passes `freerouting=settings.freerouting` at both
+  call sites (`sdk_backend.py`, `fake.py`) and adds the filter line. `PROFILES["free"]` also lists
+  `PCB_READ | PCB_WRITES` (Free still gets every registered tool; the flag still drops
+  `PCB_WRITES`). The profile/skill registry tests exempt not-yet-registered `PCB_READ | PCB_WRITES`
+  names; each later phase's registration makes them checked.
+- `session-board` skill is offered in Board sessions only (`sessions: board`); the flag-on prompt's
+  `_EDITING` line points board edits to a Board session. Whether Free also gets the skill (needs a
+  flag check in skill assembly) is left to **P9b**.
+- Board write policy: `board.md` patch (any section, `create=true`) and append; `decisions.md`
+  append only (`doc_write` → the existing `doc_append_only`).
+- `_inconsistent_error` (P1a residual, done): a `PCB_WRITES` tool's leftovers are worded as board
+  items ("These board items differ from the state before this edit: …"), a leftover created
+  `.kicad_pcb` / `.kicad_dru` as "The board file this call created is still there: …" plus the
+  History-undo hint; schematic/footprint wording unchanged.
+- B-C9: `rasterise(..., timeout_s=None)` (`None` → `RASTER_TIMEOUT_S` at call time, so tests that
+  patch the module constant still work); footprint argv byte-identical. The worker parses argv
+  before setting limits; bad argv → exit 2; CPU ≤ 120 s, memory ≤ 3 GiB accepted.
+  `wrap_svg(svg_text, *, extent: Rect | None, scale_bar_on, hulls, markers, title, mirror,
+  highlight, highlight_nets, board_size) -> str` with pure `Hull`, `Marker`, `HighlightShape`,
+  `block_hulls`, `highlight_shapes`; the wrapped SVG passes `load_kicad_svg` a second time. The
+  origin cross is drawn at the view's top-left corner, labelled with its board coordinates.
+  `render_board(..., model=None)` (avoids a second board read); the board copy is taken
+  **before** `BOARD_CLI_LOCK` (`save_copy` holds the edit lock), export/sanitise/raster run
+  inside it.
+- `pcb_render`: `layer` with a view other than `layer` → `invalid_argument`; markers capped at 100
+  (ids 1..n, `markers_omitted`); a `<uuid>.svg.json` download-name sidecar is written (pruned with
+  its SVG). `pcb_status.zones` counts copper zones only (rule areas excluded).
+- Live view (G8): `LiveViewPublisher.finish()` returns the `set[DocKind]` sent live (was `bool`);
+  `HistoryHooks._turn_end` catches up `live_sent − published` from disk (`publish_disk_view(project,
+  docs)` with the pcb branch `snapshot.copy_disk_board`); a board that went out live but failed to
+  save is caught up from disk, never copied from KiCad. `sdk_tools.py` unchanged: the adapter
+  already publishes once after `apply` (`test_board_tool_publishes_once` is a guard).
+
+**Residuals for later phases**
+- A live publish with both `sch` and `pcb` pending is skipped as a whole when the schematic has
+  unsaved edits (failed partial edit); the board then lags until the turn end (editing halts in
+  that turn anyway).
+- Render limits and raster cost measured on ecc83 only (P9a: large 4-layer board, D5 memory).
+- Comments in `cc/agent/engine.py` still say "live schematic view" (P9b docs pass).
+- Review round 1 (deferred): kicad-cli 3D render has only the 120 s wall clock and the lock, no
+  rlimits (P9a measures kicad-cli peak RSS per kind, D5); up to three ElementTree parses of a
+  ≤ 24 MiB board SVG in the render thread (measured SVGs 50–80 KB; P9a re-measures); a process
+  crash mid-render can leave one uuid-named board copy in `renders/tmp/` (no startup sweep).
+
 ### As built (P1b)
 
 - **Fixture** `backend/tests/fixtures/projects/sp4_synth/` (`sp4_synth.kicad_pro`,

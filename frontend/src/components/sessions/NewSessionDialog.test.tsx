@@ -2,6 +2,7 @@ import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DocIndexDTO, DocIndexEntry } from '@/api/docs';
 import { getDocIndex } from '@/api/docs';
+import { getFeatures } from '@/api/features';
 import { registerPanel } from '@/layouts/panels';
 import { useUi } from '@/stores/ui';
 import { conv } from '@/test/conv';
@@ -11,6 +12,8 @@ import { NewSessionDialog } from './NewSessionDialog';
 
 vi.mock('@/api/docs', () => ({ getDocIndex: vi.fn() }));
 const index = vi.mocked(getDocIndex);
+vi.mock('@/api/features', () => ({ getFeatures: vi.fn() }));
+const features = vi.mocked(getFeatures);
 
 const REQ = 'docs/design/requirements.md';
 const entry = (extra: Partial<DocIndexEntry>): DocIndexEntry => ({
@@ -42,6 +45,8 @@ beforeEach(async () => {
   await f.store.getState().load(PID);
   onClose = vi.fn<() => void>();
   useUi.getState().clearPanelRequest();
+  features.mockReset();
+  features.mockResolvedValue({ boardTools: false });
 });
 afterEach(() => {
   unregister?.();
@@ -138,6 +143,37 @@ describe('NewSessionDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Start session' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Title must be one line');
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('board card disabled when boardTools false', async () => {
+    index.mockResolvedValue(docs(entry({ exists: false })));
+    renderDialog();
+    await waitFor(() => expect(card(/^Requirements/)).toBeChecked());
+    await waitFor(() => expect(features).toHaveBeenCalledTimes(1));
+    expect(card(/^Board/)).toBeDisabled();
+    expect(screen.getByText(/coming with board editing/i)).toBeInTheDocument();
+  });
+
+  it('board card enabled and creates a board session when boardTools true', async () => {
+    index.mockResolvedValue(docs(entry({ exists: false })));
+    features.mockResolvedValue({ boardTools: true });
+    renderDialog();
+    await waitFor(() => expect(card(/^Board/)).toBeEnabled());
+    expect(screen.getByText(/asks before routing and before fab output/i)).toBeInTheDocument();
+    fireEvent.click(card(/^Board/));
+    expect(card(/^Board/)).toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: 'Start session' }));
+    await waitFor(() => expect(f.api.create).toHaveBeenCalledWith(PID, { type: 'board' }));
+    expect(features).toHaveBeenCalledTimes(1);
+  });
+
+  it('disabled when the request fails', async () => {
+    index.mockResolvedValue(docs(entry({ exists: false })));
+    features.mockRejectedValue(new Error('offline'));
+    renderDialog();
+    await waitFor(() => expect(card(/^Requirements/)).toBeChecked());
+    await waitFor(() => expect(features).toHaveBeenCalledTimes(1));
+    expect(card(/^Board/)).toBeDisabled();
   });
 
   it('Cancel and Escape close without creating', async () => {

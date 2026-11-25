@@ -454,15 +454,15 @@ async def test_install_history_wires_locator_and_listener(
 # -- profiles ------------------------------------------------------------------------------
 
 
-def test_fp_writes_in_schematic_and_free_only() -> None:
+def test_fp_writes_in_schematic_board_and_free() -> None:
     assert "fp_create" in FP_WRITES  # registered with the write engine (F4a Task 3)
     assert {s.name for s in registry.all_specs()} >= FP_WRITES
     assert not FP_WRITES & FP_READ
     assert all(n.startswith("fp_") for n in FP_WRITES)
-    for kind in ("schematic", "free"):
+    # board: SP4 P1c (the board session creates missing footprints, board spec §7)
+    for kind in ("schematic", "board", "free"):
         assert PROFILES[kind] >= FP_WRITES, kind
-    for kind in ("requirements", "board"):
-        assert not FP_WRITES & PROFILES[kind], kind
+    assert not FP_WRITES & PROFILES["requirements"]
 
 
 def test_tools_off_no_fp_tool_in_any_profile() -> None:

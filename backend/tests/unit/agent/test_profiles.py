@@ -17,6 +17,8 @@ from copperchat.agent.profiles import (
     FP_READ,
     FP_WRITES,
     MOUSER_TOOLS,
+    PCB_READ,
+    PCB_WRITES,
     PLAN_TOOLS,
     PROFILES,
     REPO_TOOLS,
@@ -61,24 +63,35 @@ SPEC_82 = {
     }
     | set(REPO_TOOLS)
     | set(MOUSER_TOOLS)
-    | set(FP_READ),
+    | set(FP_READ)
+    | set(PCB_READ),
     "schematic": set(TODAY)
     | {"doc_list", "doc_read", "doc_append", "doc_patch_section"}
     | set(REPO_TOOLS)
     | set(MOUSER_TOOLS)
     | set(FP_READ)
-    | set(FP_WRITES),
+    | set(FP_WRITES)
+    | set(PCB_READ),
     "free": set(TODAY)
     | set(DOC_TOOLS)
     | set(REPO_TOOLS)
     | set(MOUSER_TOOLS)
     | set(FP_READ)
-    | set(FP_WRITES),
+    | set(FP_WRITES)
+    | set(PCB_READ)
+    | set(PCB_WRITES),
 }
 # repo-context 2026-10-21: REPO_TOOLS (repo_list, repo_grep, repo_read) were deliberately
 # added to every profile (repo-context spec §5.4); likewise MOUSER_TOOLS (mouser-api
 # spec §4, 2026-11-04); FP_READ (footprints spec §13.1, 2026-11-17) to every profile,
-# FP_WRITES (fp_create, F4a) to schematic and free only.
+# FP_WRITES (fp_create, F4a) to schematic and free only; PCB_READ (board spec §7.1,
+# SP4 P1c) to requirements, schematic and board, PCB_WRITES to board and free.
+
+
+def _registered(expected: set[str]) -> set[str]:
+    """``expected`` as a burst with COPPERCHAT_BOARD_TOOLS off sees it: only registered
+    tools (the board tools arrive phase by phase), no board writes."""
+    return expected & {s.name for s in registry.all_specs()} - set(PCB_WRITES)
 
 
 @pytest.fixture
@@ -110,10 +123,12 @@ def test_profiles_match_spec_82_exactly(kind: str) -> None:
     assert set(PROFILES[kind]) == SPEC_82[kind]
 
 
-def test_board_profile_is_read_only_plus_doc_append() -> None:
+def test_board_profile_never_writes_the_schematic() -> None:
+    # SP4 P1c: board reads + writes, plans, footprint writes, doc_patch_section
     board = PROFILES["board"]
-    assert not board & (SCH_WRITES | PLAN_TOOLS)
-    assert board & DOC_TOOLS == {"doc_list", "doc_read", "doc_append"}
+    assert not board & SCH_WRITES
+    assert board >= PCB_READ | PCB_WRITES | PLAN_TOOLS | FP_WRITES
+    assert board & DOC_TOOLS == {"doc_list", "doc_read", "doc_append", "doc_patch_section"}
     assert {"run_erc", "run_drc", "git_commit", "research_part", "lib_get_symbol"} <= board
 
 
@@ -121,7 +136,9 @@ def test_free_covers_the_registry_and_every_name_exists() -> None:
     names = {s.name for s in registry.all_specs()}
     assert set(PROFILES["free"]) >= names, sorted(names - PROFILES["free"])
     for kind, tools in PROFILES.items():
-        assert tools <= names, (kind, sorted(tools - names))
+        # the board tools are registered phase by phase (SP4 P1c to P10)
+        pending = tools - names - PCB_READ - PCB_WRITES
+        assert not pending, (kind, sorted(pending))
 
 
 def test_fp_read_in_every_profile() -> None:
@@ -132,14 +149,14 @@ def test_fp_read_in_every_profile() -> None:
         assert set(FP_READ) <= names, kind
 
 
-def test_fp_writes_only_in_schematic_and_free() -> None:
+def test_fp_writes_in_schematic_board_and_free() -> None:
     assert {"fp_create", "fp_approve", "fp_delete"} == FP_WRITES
     for kind in ("schematic", "free"):
         assert set(FP_WRITES) <= PROFILES[kind], kind
-    for kind in ("board", "requirements"):
-        assert not set(FP_WRITES) & PROFILES[kind], kind
-        names = {s.name for s in profile_specs(kind, registry.all_specs())}
-        assert not set(FP_WRITES) & names, kind
+    assert set(FP_WRITES) <= PROFILES["board"]  # SP4 P1c
+    assert not set(FP_WRITES) & PROFILES["requirements"]
+    names = {s.name for s in profile_specs("requirements", registry.all_specs())}
+    assert not set(FP_WRITES) & names
 
 
 def test_footprint_tools_off_removes_every_fp_tool() -> None:
@@ -252,7 +269,7 @@ async def test_requirements_burst_has_no_schematic_writes_or_plans(
     settings: Settings, project: Project, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     options, names = await _burst(settings, project, "requirements", monkeypatch)
-    assert set(names) == SPEC_82["requirements"]
+    assert set(names) == _registered(SPEC_82["requirements"])
     assert not set(names) & (SCH_WRITES | PLAN_TOOLS)
     connect = sdk_tool_name("sch_connect")
     assert not await _decision(options.can_use_tool, connect)
@@ -269,7 +286,7 @@ async def test_schematic_and_free_are_todays_tools_plus_their_doc_tools(
     settings: Settings, project: Project, monkeypatch: pytest.MonkeyPatch, kind: str
 ) -> None:
     options, names = await _burst(settings, project, kind, monkeypatch)
-    assert set(names) == SPEC_82[kind]
+    assert set(names) == _registered(SPEC_82[kind])
     assert await _decision(options.can_use_tool, sdk_tool_name("sch_connect"))
     writes = await _decision(options.can_use_tool, sdk_tool_name("doc_write"))
     assert writes is (kind == "free")
@@ -281,7 +298,7 @@ async def test_burst_without_footprint_tools(
 ) -> None:
     off = settings.model_copy(update={"footprint_tools": False})
     _, names = await _burst(off, project, kind, monkeypatch)
-    assert set(names) == SPEC_82[kind] - set(FP_READ) - set(FP_WRITES)
+    assert set(names) == _registered(SPEC_82[kind]) - set(FP_READ) - set(FP_WRITES)
     _, names = await _burst(settings, project, kind, monkeypatch)
     assert set(FP_READ) <= set(names)
 

@@ -108,9 +108,14 @@ _FOOTPRINTS = """
 repository's local footprint library; load the kicad-footprints skill before you create, \
 approve or delete one."""
 
+# The board sentence of _EDITING: read-only while COPPERCHAT_BOARD_TOOLS=off.
+_BOARD_READ_ONLY = """ The board (PCB) is read-only: if asked to change it, explain \
+what you would change and that board editing is not available yet."""
+_BOARD_EDITING = """ The board (PCB) is edited with the pcb_* tools in a Board session; \
+load the session-board skill before the first board write."""
+
 _EDITING = """- You can edit the schematic with the sch_* tools; load the kicad-schematic-editing \
-skill before your first edit. The board (PCB) is read-only: if asked to change it, explain \
-what you would change and that board editing is not available yet.{footprints}
+skill before your first edit.{board}{footprints}
 - Use render_view to look at the design when spatial reasoning matters, and run_erc / run_drc \
 to check it."""
 
@@ -135,13 +140,27 @@ doc_list and doc_read, and record decisions with doc_append on decisions.md.""",
 read and changed with the doc_* tools; load the design-docs skill before changing one.""",
 }
 
+# The board paragraph with COPPERCHAT_BOARD_TOOLS=on (board spec §8).
+_BOARD_PARAGRAPH = """- This is a board session. The schematic is read-only here; you edit \
+the board with the pcb_* tools. Load the session-board skill first and follow its steps: stop \
+after each step and wait for the user's ok. Record answers and decisions in board.md with \
+doc_patch_section and in decisions.md with doc_append."""
+
 
 def system_prompt(
-    project_name: str, conversation_type: str = "free", *, footprint_tools: bool = True
+    project_name: str,
+    conversation_type: str = "free",
+    *,
+    footprint_tools: bool = True,
+    board_tools: bool = False,
 ) -> str:
-    paragraph = SESSION_PARAGRAPHS[conversation_type].replace(
-        "{footprints}", _FOOTPRINTS if footprint_tools else ""
-    )
+    if conversation_type == "board" and board_tools:
+        paragraph = _BOARD_PARAGRAPH
+    else:
+        paragraph = SESSION_PARAGRAPHS[conversation_type]
+    paragraph = paragraph.replace(
+        "{board}", _BOARD_EDITING if board_tools else _BOARD_READ_ONLY
+    ).replace("{footprints}", _FOOTPRINTS if footprint_tools else "")
     return SYSTEM_PROMPT.format(project_name=project_name, session_paragraph=paragraph)
 
 
@@ -207,7 +226,10 @@ def build_options(
         allowed_tools=[],
         mcp_servers={SERVER_NAME: mcp_server},
         system_prompt=system_prompt(
-            project.name, conversation_type, footprint_tools=settings.footprint_tools
+            project.name,
+            conversation_type,
+            footprint_tools=settings.footprint_tools,
+            board_tools=settings.board_tools,
         ),
         permission_mode="default",
         can_use_tool=make_main_guard(guarded, repo=repo, on_allowed=on_tool_allowed),
@@ -559,7 +581,12 @@ class SdkStreamingBackend:
         """One burst of ``conversation``: its type selects the tool profile, the skills and
         the system prompt (spec §8)."""
         kind = conversation.type
-        specs = profile_specs(kind, self._specs, footprint_tools=self._settings.footprint_tools)
+        specs = profile_specs(
+            kind,
+            self._specs,
+            footprint_tools=self._settings.footprint_tools,
+            board_tools=self._settings.board_tools,
+        )
         skills = (
             await assemble_skills(self._settings, project, self._db, kind) if self._db else None
         )

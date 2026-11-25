@@ -1,6 +1,7 @@
 import { useEffect, useId, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getDocIndex, type DocIndexEntry } from '@/api/docs';
+import { getFeatures } from '@/api/features';
 import { usePanels } from '@/layouts/panels';
 import type { ConversationType } from '@/protocol/frames';
 import { useConversationsApi } from '@/stores/conversations';
@@ -11,12 +12,19 @@ import { TYPE_LABEL, TypeIcon } from './TypeIcon';
 
 export const REQUIREMENTS_PATH = 'docs/design/requirements.md';
 
-const CARDS: ReadonlyArray<{ type: ConversationType; text: string; disabled?: boolean }> = [
+type Card = { type: ConversationType; text: string; disabled?: boolean };
+
+const BASE_CARDS: ReadonlyArray<Card> = [
   { type: 'requirements', text: 'Works out the requirements with you and writes the design docs; reads the design, never edits it.' },
   { type: 'schematic', text: 'Edits the schematic from the requirements; records decisions and open points.' },
   { type: 'free', text: 'Every tool: questions, research and edits without a fixed phase.' },
-  { type: 'board', text: 'Coming with board editing.', disabled: true },
 ];
+const BOARD_CARD: Card = {
+  type: 'board',
+  text: 'Lays out the board from the schematic step by step; asks before routing and before fab output.',
+};
+// Shown while the flag is off, loading or unknown (request failed).
+const BOARD_CARD_DISABLED: Card = { type: 'board', text: 'Coming with board editing.', disabled: true };
 
 type Requirements = { state: 'loading' } | { state: 'failed' } | { state: 'known'; entry: DocIndexEntry | null };
 
@@ -45,6 +53,22 @@ export function NewSessionDialog({ projectId, onClose }: { projectId: string; on
   const [title, setTitle] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [boardTools, setBoardTools] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    getFeatures().then(
+      (f) => {
+        if (live) setBoardTools(f.boardTools);
+      },
+      () => {
+        if (live) setBoardTools(false);
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
 
   useEffect(() => {
     let live = true;
@@ -74,6 +98,7 @@ export function NewSessionDialog({ projectId, onClose }: { projectId: string; on
     return () => window.removeEventListener('keydown', onKey);
   }, [busy, onClose]);
 
+  const cards = [...BASE_CARDS, boardTools ? BOARD_CARD : BOARD_CARD_DISABLED];
   const warning = type === 'schematic' ? gateWarning(req) : null;
   const trimmed = title.trim() === '' ? undefined : normalizeTitle(title);
 
@@ -98,7 +123,7 @@ export function NewSessionDialog({ projectId, onClose }: { projectId: string; on
           New session
         </h2>
         <div role="radiogroup" aria-label="Session type" className="grid gap-2 sm:grid-cols-2">
-          {CARDS.map((c) => (
+          {cards.map((c) => (
             <label
               key={c.type}
               className={`flex cursor-pointer gap-2 rounded border p-2 text-sm ${type === c.type ? 'border-accent bg-accent/10' : 'border-border'} ${c.disabled ? 'cursor-not-allowed opacity-50' : ''}`}
