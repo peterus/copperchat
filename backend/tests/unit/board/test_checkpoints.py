@@ -273,3 +273,37 @@ def test_check_dir_refuses_symlinks_and_sweeps(tmp_path: Path) -> None:
         _check_dir(ctx)
     assert err.value.code == "output_path_unsafe"
     assert list(outside.iterdir()) == []
+
+
+async def test_new_passing_check_does_not_revive_board_approval(
+    db: Database, project: Project, make_settings: Callable[..., Settings]
+) -> None:
+    """Approve at H, a schematic edit, then a new passing full check at the same H: the
+    approval the user gave before the edit stays stale."""
+    import asyncio
+
+    m = board()
+    await _full_check(db, m, hard=0)
+    await _approve(db, "board", board_hash(m))
+    await asyncio.sleep(0.01)
+    await ChangeRepo(db).add_many(
+        [ChangeEntry(PID, "r", None, 0, "sch_place_symbol", "add", "symbol", "u", "/")]
+    )
+    await asyncio.sleep(0.01)
+    await _full_check(db, m, hard=0)
+    with pytest.raises(StructuredToolError) as err:
+        await require_board_approved(_ctx(project, db, make_settings()), m)
+    assert err.value.details is not None and err.value.details["reason"] == "stale"
+
+
+async def test_record_unless_written_any_kind(db: Database) -> None:
+    since = "2026-11-25T10:00:00.000Z"
+    await ChangeRepo(db).add_many(
+        [ChangeEntry(PID, "r", None, 0, "t", "add", "symbol", "u", "/", created_at=since)]
+    )
+
+    async def record() -> int:
+        return 1
+
+    assert await record_unless_written(db, PID, since, record) is True
+    assert await record_unless_written(db, PID, since, record, any_kind=True) is False

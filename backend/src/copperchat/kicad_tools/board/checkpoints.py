@@ -85,14 +85,20 @@ async def board_written_since(
 
 
 async def record_unless_written(
-    db: Database, project_id: str, since_iso: str, record: Callable[[], Awaitable[int]]
+    db: Database,
+    project_id: str,
+    since_iso: str,
+    record: Callable[[], Awaitable[int]],
+    *,
+    any_kind: bool = False,
 ) -> bool:
     """Record a piece of evidence (`record`) unless a board write was logged since
     `since_iso` (the moment its model was read), atomically: the check and the insert share
     one transaction, so a write logged later has a `created_at` at or after the evidence
-    row's and `pcb_approve` guard 4 sees it. Returns whether the row was written."""
+    row's and `pcb_approve` guard 4 sees it. `any_kind`: any change counts (the full
+    check, whose parity depends on the schematic). Returns whether the row was written."""
     async with db.transaction():
-        if await board_written_since(db, project_id, since_iso):
+        if await board_written_since(db, project_id, since_iso, any_kind=any_kind):
             return False
         await record()
         return True
@@ -140,7 +146,11 @@ async def require_board_approved(ctx: ToolContext, model: BoardModel) -> None:
             check = await BoardReviewRepo(db).last_full_check(ctx.project.id, rel, current)
             if check is None or check.hard_failures != 0:
                 reason = "check_failed"
-            elif await board_written_since(db, ctx.project.id, check.created_at, any_kind=True):
+            # from the older of the check and the approval: a newer passing check never
+            # revives an approval the user gave before a schematic edit
+            elif await board_written_since(
+                db, ctx.project.id, min(check.created_at, row.approved_at), any_kind=True
+            ):
                 reason = "stale"  # e.g. a schematic edit: the parity evidence is outdated
             else:
                 reason = None

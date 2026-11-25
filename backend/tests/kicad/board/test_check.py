@@ -246,7 +246,7 @@ async def test_check_stale_records_nothing(
 
     ctx = synth_setup.turn(setup_db, "run-s1")
     monkeypatch.setattr(
-        checkpoints, "board_written_since", lambda db, pid, since: asyncio.sleep(0, True)
+        checkpoints, "board_written_since", lambda db, pid, since, **kw: asyncio.sleep(0, True)
     )
     out = await _tool(ctx, "pcb_check", level="quick")
     assert out["stale"] is True
@@ -313,7 +313,7 @@ async def test_stale_without_conversation(
 
     ctx = dataclasses.replace(synth_setup.turn(setup_db, "run-s3"), conversation_id=None)
     monkeypatch.setattr(
-        checkpoints, "board_written_since", lambda db, pid, since: asyncio.sleep(0, True)
+        checkpoints, "board_written_since", lambda db, pid, since, **kw: asyncio.sleep(0, True)
     )
     monkeypatch.setattr(check, "board_written_since", checkpoints.board_written_since)
     out = await _tool(ctx, "pcb_check", level="quick")

@@ -468,9 +468,13 @@ async def pcb_check(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
                 stage="placement" if level == "quick" else "board",
             )
 
-        stale = not await record_unless_written(db, ctx.project.id, since, record)
+        stale = not await record_unless_written(
+            db, ctx.project.id, since, record, any_kind=level == "full"
+        )
     elif not stale and ctx.editing is not None:
-        stale = await board_written_since(ctx.editing.db, ctx.project.id, since)
+        stale = await board_written_since(
+            ctx.editing.db, ctx.project.id, since, any_kind=level == "full"
+        )
     data["stale"] = stale
     data["seconds"] = round(time.monotonic() - start, 3)
     return ToolResult(data=data)

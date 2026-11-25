@@ -795,7 +795,9 @@ summary), inserts the checkpoint row and the `board_approve` change row
   (project_id, board_file, conversation_id, id)` (B-C10 SQL otherwise verbatim). The board
   stage also treats a **schematic (or any non-approval) edit** after the evidence as a write:
   guard 4 for `stage = board` and `require_board_approved` (after the newest full check →
-  `reason = stale`) use `board_written_since(..., any_kind=True)` — the parity evidence
+  `reason = stale`, counted from the older of the newest full check and the approval, so a
+  new passing check never revives an older approval) use `board_written_since(...,
+  any_kind=True)`; a full check records nothing when any change was logged while it ran — the parity evidence
   depends on the schematic, which `board_hash` does not cover. `pcb_check` reads the model
   and runs the API DRC under `session.applying()` (a write undone by compensation logs no
   change row); the full-check copy dir refuses a symlinked `.kicad-agent`/`board`/`check`
@@ -822,6 +824,10 @@ summary), inserts the checkpoint row and the `board_approve` change row
 - `pcb_check full` refuses (`drc_rejected`) when kicad-cli reports "Failed to fetch
   schematic netlist" (it exits 0 with an empty parity list then); the JSON report is capped
   at 8 MiB.
+- A History restore / plan rollback rewrites the schematic without a change-log row: the
+  board-stage evidence and `require_board_approved` do not see such a schematic restore at
+  an unchanged `board_hash` (only edits are seen). A marker row from `restore_snapshot` would
+  close it (history code, not P3b's); later phases / P9b.
 - **P5b/P6b/P7** call `require_placement_approved(ctx, model)`, **P8** `require_board_approved`
   (both async, fail closed without a database).
 
