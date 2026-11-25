@@ -14,6 +14,7 @@ from tests.support.kicad_project import (
     blank_session,
     ecc83_session,
     hier_session,
+    synth_session,
 )
 
 # `--shard I/N` (CI splits the real-KiCad run into parallel jobs); pytester for its tests.
@@ -24,6 +25,7 @@ __all__ = [
     "blank_session",
     "ecc83_session",
     "hier_session",
+    "synth_session",
 ]  # real api-server fixtures (tests.support)
 
 # Every Settings field can be set from the environment; a host that exports e.g.
