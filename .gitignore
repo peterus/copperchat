@@ -10,3 +10,6 @@ __pycache__/
 /.env
 /data/
 /projects/
+
+# Freerouting runtime fetched by scripts/fetch-freerouting.sh (CI kicad job cache)
+/.cache/

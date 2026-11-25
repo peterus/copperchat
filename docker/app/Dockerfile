@@ -2,6 +2,7 @@
 #   docker build -f docker/app/Dockerfile \
 #     --build-arg KICAD_COMMIT=$(cat docker/kicad-base/KICAD_COMMIT) -t copperchat:dev .
 # Layers: KiCad base image (KiCad 11 from source, user copperchat uid 1000)
+#         + Freerouting JAR + Temurin JRE (/opt/freerouting)
 #         + Python backend (/app/backend/.venv, uv only at build time) + built frontend (/app/frontend/dist).
 ARG KICAD_COMMIT
 # The base image; CI overrides it with the recipe-pinned tag a pull request built
@@ -17,6 +18,14 @@ COPY frontend/ ./
 RUN npm run build
 
 FROM ghcr.io/astral-sh/uv:0.11 AS uv
+
+# Freerouting 2.5.0 JAR + Temurin 25 JRE, checksum-pinned in docker/freerouting.lock. Reuses the
+# already pulled base (python3, tar, sha256sum); the kept downloads (.dl) are dropped.
+FROM ${KICAD_BASE} AS freerouting
+USER root
+COPY docker/freerouting.lock scripts/fetch-freerouting.sh /tmp/fr/
+RUN FREEROUTING_LOCK=/tmp/fr/freerouting.lock bash /tmp/fr/fetch-freerouting.sh /opt/freerouting \
+ && rm -rf /opt/freerouting/.dl
 
 FROM ${KICAD_BASE}
 ARG KICAD_COMMIT
@@ -54,6 +63,10 @@ RUN --mount=from=uv,source=/uv,target=/usr/local/bin/uv \
     uv sync --locked --no-dev --no-editable \
  && python -c "import copperchat.web.app, kipy.schematic, claude_agent_sdk, pywebpush"
 COPY --from=frontend /src/frontend/dist /app/frontend/dist
+# Freerouting runtime (root-owned, world-readable; Settings.freerouting_home defaults to it)
+# and the third-party notices (GPL-3.0 Freerouting, GPL-2.0+CPE Temurin).
+COPY --from=freerouting /opt/freerouting /opt/freerouting
+COPY LICENSES/ /usr/share/doc/copperchat/LICENSES/
 # /app stays root-owned (the runtime user cannot alter code, venv or the service worker);
 # only the two mounts are the app's to write.
 RUN mkdir -p /data /projects \

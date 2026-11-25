@@ -61,6 +61,14 @@ class Settings(BaseSettings):
     # tools from every profile and hides the Board session type.
     board_tools: bool = Field(default=False, validation_alias="COPPERCHAT_BOARD_TOOLS")
 
+    # COPPERCHAT_FREEROUTING = on (default) | off; off removes only pcb_route_fill. The
+    # runtime (scripts/fetch-freerouting.sh) lives in freerouting_home: jre/bin/java,
+    # freerouting-<version>.jar and .manifest.sha256; the app image installs it there.
+    freerouting: bool = Field(default=True, validation_alias="COPPERCHAT_FREEROUTING")
+    freerouting_home: Path = Field(
+        default=Path("/opt/freerouting"), validation_alias="COPPERCHAT_FREEROUTING_HOME"
+    )
+
     @field_validator("git_name", "git_email")
     @classmethod
     def _git_identity(cls, value: str | None, info: ValidationInfo) -> str | None:
