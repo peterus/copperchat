@@ -19,7 +19,7 @@ on the owner's OpenDriveHub board with a manual dry-run script whose report goes
 - Modify: `backend/pyproject.toml` (marker), `backend/tests/unit/test_sharding.py`
   (`backend/tests/support/sharding.py` only if the marker expression needs it),
   `.github/workflows/ci.yml` (kicad shards' `-m`, new `kicad-e2e` job), `scripts/update-goldens.sh`
-  (one line for the e2e golden — not in the index's P9a row; reported)
+  (one line for the e2e golden)
 - Tests: as above
 
 ---
@@ -34,9 +34,11 @@ module sets `pytestmark = [pytest.mark.kicad, pytest.mark.kicad_e2e]` (so the ex
 matrix.shard }}/8`; new job `kicad-e2e` — `needs: kicad-commits`, `name: kicad-e2e`,
 `container: image: ${{ needs.kicad-commits.outputs.base }}` (the **pinned** base image only,
 not the `SUPPORTED_COMMITS` matrix), `options: --user root`, env `COPPERCHAT_REQUIRE_KICAD:
-"1"`, `LANG: C`, `COPPERCHAT_FREEROUTING_HOME: ${{ github.workspace }}/.cache/freerouting`,
-`timeout-minutes: 30`, steps = checkout, setup-uv, `uv python install 3.13`, `uv sync --locked`,
-the same `actions/cache` + `scripts/fetch-freerouting.sh` steps as P6a's kicad job, `uv run
+"1"`, `LANG: C`, `timeout-minutes: 30`, steps = checkout, setup-uv, `uv python install 3.13`,
+`uv sync --locked`, then exactly P6a's three Freerouting steps — `echo
+"COPPERCHAT_FREEROUTING_HOME=$GITHUB_WORKSPACE/.cache/freerouting" >> "$GITHUB_ENV"` (a
+container job: never `${{ github.workspace }}`, which is the host path), `actions/cache` with
+`path: .cache/freerouting`, the always-running `scripts/fetch-freerouting.sh` — and `uv run
 pytest -m kicad_e2e -v`.
 
 - [ ] **Step 1: Failing unit tests** (`test_sharding.py`): `_ci_shards()` also asserts the
@@ -47,8 +49,10 @@ pytest -m kicad_e2e -v`.
   shard expression with `--shard i/2` collects only the latter, `-m kicad_e2e` only the
   former); `test_e2e_tests_also_marked_kicad` (collect the real suite with `-m "kicad_e2e and
   not kicad"` → empty); `test_ci_e2e_job` (regex over `ci.yml`: a job
-  `kicad-e2e` whose container image is `needs.kicad-commits.outputs.base`, with the fetch step
-  and `-m kicad_e2e`).
+  `kicad-e2e` whose container image is `needs.kicad-commits.outputs.base`, with the
+  `$GITHUB_ENV` step writing `$GITHUB_WORKSPACE/.cache/freerouting`, the cache step with
+  `path: .cache/freerouting`, the fetch step, and `-m kicad_e2e`; no `${{ github.workspace }}`
+  anywhere in the job).
 - [ ] **Step 2: Run** `uv run pytest tests/unit/test_sharding.py -q` — FAIL. **Step 3:
   Implement** (marker, ci.yml). **Step 4: Run** — PASS.
 - [ ] **Step 5: Commit** `ci(board): kicad_e2e marker and job; kicad shards deselect it`.
@@ -60,7 +64,7 @@ pytest -m kicad_e2e -v`.
 @dataclass(frozen=True) class Answers:   # the fixed "user" answers of the S0/S2/S3 questions
     outline: dict[str, Any]; rules: dict[str, Any]; blocks: dict[str, dict[str, Any]] | None
     zones: dict[str, Any] | None; stitch: dict[str, Any]
-SYNTH_ANSWERS: Answers   # 60 × 45 mm, r 1, M2 holes inset 3; preset jlcpcb-4l; power class 0.4 mm for VBUS/+3V3; blocks = pcb_analyze's proposal with fixed regions
+SYNTH_ANSWERS: Answers   # 60 × 45 mm, r 1, M2 holes inset 3; rules {layers: 4, preset: "jlcpcb-4l"} (layers explicit — a preset alone keeps the layer count, P2); power class 0.4 mm for VBUS/+3V3; blocks = pcb_analyze's proposal with fixed regions
 @dataclass class FlowResult: steps: list[StepLog]; metrics: dict[str, Any]; seconds: float
                              renders: list[Path]; fab_files: list[str]; hashes: dict[str, str]
 async def run_flow(rig: Rig, answers: Answers, *, on_step: Callable[[StepLog], None] | None = None) -> FlowResult
@@ -70,7 +74,9 @@ async def run_flow(rig: Rig, answers: Answers, *, on_step: Callable[[StepLog], N
 `tests/kicad/footprints/test_fp_approve.py` (human message inserted through `MessageRepo.insert(...,
 metadata={"origin": "user"})` and `hooks.on_turn_start` for a new run). Every call goes through
 the two-phase adapter (`sdk_tools`' handler), so budget, gates, autosave and snapshots are the
-real ones. Turns (each a new `run_id`, budget 20 per turn):
+real ones. `run_flow` is the product flow turn by turn, so it does not call P5b's
+`routed_synth` test helper, but it uses the same order (placement approved before `pcb_route`,
+`layers: 4` explicit). Turns (each a new `run_id`, budget 20 per turn):
 1. `pcb_sync_from_schematic`, `pcb_set_outline`, `pcb_set_rules`.
 2. `pcb_analyze`, `pcb_define_blocks`, `pcb_place_block` per block, `pcb_legalize`,
    `pcb_check {level: "quick"}`, `pcb_render {view: "placement"}`.
@@ -98,7 +104,9 @@ scripted, logged, never silently.
     counts ± 10 %, `fill_seconds` not compared (recorded only); `UPDATE_GOLDENS=1` rewrites
     it and the PR explains every change (index Residuals: Freerouting version bump).
   - `test_approvals_bound_to_hashes` — after the flow, `pcb_status` shows both checkpoints
-    approved and not stale; one `pcb_move` of a passive by 0.5 mm makes both stale and
+    approved and not stale; one `pcb_move {items: [{ref: <a routed passive>, x: x + 0.5}],
+    unroute: true}` (the passive carries copper after the fill — without `unroute` it is
+    `part_routed`) succeeds and makes both stale; `pcb_status` shows `stale: true` for both and
     `pcb_fab_export` refuses `not_approved` (Review Focus 2 on the real flow).
   - `test_undo_to_placement` — History restore of the snapshot taken at turn 4's first
     mutation → `placement_hash` equals the approved one, no track/via on the board, the
@@ -148,8 +156,7 @@ sums them as "per active board project" and compares with the D5 figure (≈ 4.5
 ### Task 4: Docs + index as built, checks, PR
 
 - [ ] Index "As built (P9a)": e2e runtime on CI, golden values, any tool fixes made in other
-  phases' files (with PR links), the `kicad-e2e` job, `scripts/update-goldens.sh` in the P9a
-  ownership row, ODH dry-run summary (completion, hard-gate result, runtime) and the measured
+  phases' files (with PR links), the `kicad-e2e` job, ODH dry-run summary (completion, hard-gate result, runtime) and the measured
   memory per active board project (api-server peak with/without footprints, JVM peak,
   CopperChat process) — **this is the D5 number P9b writes into the README**. No CHANGELOG
   entry (tests/CI only).

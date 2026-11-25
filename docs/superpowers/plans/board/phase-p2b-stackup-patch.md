@@ -23,7 +23,7 @@ upstream text); nothing is posted on KiCad's GitLab, mailing list or Discord; no
 - Create: `docker/kicad-base/patches/0005-TODO-owner-write-message-board-stackup-handler.patch`,
   `docs/kicad-patches/0005-board-stackup-FACTS.md` (owner notes),
   `backend/tests/kicad/board/test_stackup_patch.py`, `backend/tests/unit/board/test_stackups.py`
-- Modify: `docker/kicad-base/patches/README.md` (table row "4A-G1"), `cc/board/presets.py`
+- Modify: `docker/kicad-base/patches/README.md` (table row "4A-G1"), `cc/board/presets.py` (P1a's file; append)
   (`StackupPreset`, `STACKUPS`), `cc/kicad_tools/board/setup.py` (stackup branch of
   `pcb_set_rules`), `cc/kicad_tools/board/specs_setup.py` (schema enum), `CHANGELOG.md`
 

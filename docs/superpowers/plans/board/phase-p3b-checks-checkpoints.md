@@ -4,8 +4,8 @@
 > `approval_not_allowed`); consumes B-C2, B-C3, B-C7, B-C8, B-C9. Index calls 7, 14. Spec §7.1
 > (`pcb_check`, `pcb_status` checkpoint fields), §7.2 (`pcb_approve`), §7.3, §8.3, §12 (M3
 > accepted warnings, M14). Footprints spec §7.7 / F4b Task 1 (guards). **Wave 4: starts when
-> P3a is merged**; its kicad tests also use P2's tools (`pcb_sync_from_schematic`,
-> `pcb_set_outline`, `pcb_set_rules`, wave 3 — index gap reported: add P2 to "Depends on").
+> P3a and P2 are merged** (index "Depends on"); its kicad tests use P2's tools
+> (`pcb_sync_from_schematic`, `pcb_set_outline`, `pcb_set_rules`).
 
 **Goal:** the server knows, per board file, which placement and which board the user approved
 on which evidence; `pcb_check` produces that evidence; `pcb_approve` records an approval only
@@ -88,7 +88,7 @@ in the project is written); `run_kicad_cli(settings, ["pcb", "drc", "--format", 
 "--severity-all", "--schematic-parity", "-o", <dir>/drc.json, <copy>], timeout=300)`;
 non-zero exit with no JSON → `StructuredToolError(code="drc_rejected")`; the copy dir is
 removed in `finally`. In full mode M3 uses the CLI violations + parity, M2 the API task, M14
-`preset_for(model)` (P3a). Hashes are read before the DRC and again after; when they differ
+`preset_for(model, doc)` (P3a). Hashes are read before the DRC and again after; when they differ
 the result says `"stale": true` and **no row is recorded**. Result: `level`, `errors` (≤ 50
 + omitted), `warnings` (each with `accepted: bool`, ≤ 50 + omitted), `parity` (≤ 50),
 `metrics`, `hard_failures`, `verdict`, `placement_hash`, `board_hash`, `seconds`. Recording
@@ -136,7 +136,8 @@ kind="board_approve", board_stages=[], logical=Logical(1))`; apply does **not** 
 `apply_board_change_set` (index call 7): it reloads the model, re-checks guard 1 (TOCTOU),
 inserts the checkpoint row, writes one change entry (`kind="board_approve"`, `op="add"`,
 `uuid=f"board-checkpoint-{id}"`, `sheet_path=""`, `after={stage, hash, user_quote}`) via
-`record_applied`, and returns `ToolResult(data={stage, hash, approved_at, next}, changed_docs=
+`record_applied`, re-checks guard 4 (a write may have landed between prepare and apply), and
+returns `ToolResult(data={stage, hash, approved_at, next}, changed_docs=
 set())`.
 
 Guards (all → `approval_not_allowed` with `details.guard`, evaluated in this order):
@@ -149,35 +150,54 @@ Guards (all → `approval_not_allowed` with `details.guard`, evaluated in this o
    `bottom` for the `board_hash`;
 3. the evidence passes: placement — the newest check row for the hash has `m1_pass = 1`;
    board — the newest full check for the hash has `hard_failures = 0`;
-4. `human_messages_after(ctx, newest evidence created_at)` is non-empty (a message the user
+4. **no write after evidence** (ABA guard, mirrors `fp_approve`'s `last_geometry_write_at`
+   check, `cc/kicad_tools/footprints/approve.py` guard 4): `ChangeRepo.since(project.id,
+   newest evidence created_at)` (the newest of the render/check rows used by guards 2–3) holds
+   no entry whose `kind ∈ BOARD_KINDS − {"board_approve"}` (one board per project; board
+   entries carry `sheet_path == ""`) — a move away and back to the same hash, in the approving
+   turn or after the evidence in an earlier turn, means the user never saw the board as it is
+   now; suggestion: render + check again, show them, end the turn;
+5. `human_messages_after(ctx, newest evidence created_at)` is non-empty (a message the user
    typed, processed by this run, later than the render and the check — so same-turn
    approvals and server-generated messages never count);
-5. `quote_in_message(user_quote, m.content)` for one of those messages;
-6. `not plan_running(ctx)`.
+6. `quote_in_message(user_quote, m.content)` for one of those messages;
+7. `not plan_running(ctx)`.
 
 - [ ] **Step 1: Failing unit tests** (`test_approve_guards.py`, temp DB, a fake model
   provider returning fixed hashes, rows inserted through the repos):
-  `test_same_turn_approval_refused` (render + check rows after the run's user message → 4);
+  `test_same_turn_approval_refused` (render + check rows after the run's user message → 5);
   `test_server_generated_message_does_not_count` (parametrised origins `plan`,
-  `close-session`, none → 4); `test_quote_not_substring` (5); `test_trivial_quote` (`"ok"`
-  inside a longer message → 5); `test_placement_with_board_hash_refused` (1,
-  `other_stage`); `test_wrong_hash` (1); `test_plan_running_refused` (6);
+  `close-session`, none → 5); `test_quote_not_substring` (6); `test_trivial_quote` (`"ok"`
+  inside a longer message → 6); `test_placement_with_board_hash_refused` (1,
+  `other_stage`); `test_wrong_hash` (1); `test_plan_running_refused` (7);
+  `test_aba_in_approving_turn_refused` (evidence rows for hash A; user message; then two
+  `board_move` change entries newer than the evidence — away and back, current hash A again
+  → 4); `test_write_before_evidence_ok` (a `board_move` entry older than the evidence → no
+  guard 4); `test_approve_entry_does_not_count` (an older approval's `board_approve` entry
+  newer than the evidence → not 4);
   `test_no_placement_render` (2); `test_evidence_other_conversation` (2);
   `test_m1_failing` (3); `test_full_check_with_hard_failures` (3);
   `test_missing_bottom_render` (2); `test_board_needs_full_not_quick` (2);
   `test_happy_placement`, `test_happy_board` (row written, change entry kind
   `board_approve`, `Logical(1)`, `changed_docs == set()`);
-  `test_hash_changed_between_prepare_and_apply` (1); `test_plan_policy_always_allowed`
+  `test_hash_changed_between_prepare_and_apply` (1); `test_write_between_prepare_and_apply`
+  (a `board_move` entry inserted after prepare → apply refuses with 4, no row written);
+  `test_plan_policy_always_allowed`
   (`PlanGate`/`BudgetGate.before_prepare` pass `pcb_approve` without an active step).
   `test_checkpoints.py`: `test_state_missing`, `test_state_stale`, `test_only_latest_counts`
   (rows A then B; current = A → stale), `test_require_board_check_failed`,
   `test_require_fails_closed_without_db`.
 - [ ] **Step 2: Failing kicad tests** (`test_approve.py`, `synth_setup`; turn 1 = tool calls,
-  turn 2 starts with `user_says`): `test_placement_approval_flow` (render placement + quick
-  check on a board whose parts the test moved inside the outline through one board commit —
-  a column grid of courtyard boxes with 1 mm gaps from the outline's top-left corner inset
-  1 mm, so M1 passes — → user says "looks good, approve placement" → `pcb_approve` →
-  `require_placement_approved` passes); `test_older_approval_not_revived` (approve at hash A;
+  turn 2 starts with `user_says`): `test_placement_approval_flow` (the test moves every part
+  except the locked mounting holes inside the outline through one board commit — a column
+  grid of courtyard boxes with 1 mm gaps inside the outline **inset 6 mm on every side**, so
+  it stays clear of the four corner hole courtyards (hole inset 3 mm, courtyard r ≈ 2.45 mm);
+  the test first asserts `pcb_metrics {only: ["M1"]}` → M1 verdict `pass` (value 0); then
+  render placement + quick check (its `m1_pass == 1`) → user says "looks good, approve
+  placement" → `pcb_approve` → `require_placement_approved` passes);
+  `test_aba_kicad_refused` (after the evidence, in turn 2, move one part 1 mm and back
+  through two board change sets → `pcb_approve` with the unchanged hash →
+  `approval_not_allowed`, `details.guard == 4`); `test_older_approval_not_revived` (approve at hash A;
   move one part 1 mm through a board commit → hash B; render + check + approve B; move the
   part back → hash A again → `require_placement_approved` raises `placement_not_approved`
   with `details.stale`, `checkpoint_state["placement"]["stale"] is True`);
@@ -206,9 +226,9 @@ without a DB both fields are `null`. Still a read tool.
 
 ### Task 5: Docs + index as built, checks, PR
 
-- [ ] Index "As built (P3b)": guard numbering (1–6 above), `checkpoint_state` field names,
-  `human_messages_after` signature, `pcb_check full` copy-dir approach and measured times
-  (quick, full) on synth, `PLAN_EXEMPT_TOOLS` change, P2 dependency of the kicad tests.
+- [ ] Index "As built (P3b)": guard numbering (1–7 above, 4 = no write after evidence),
+  `checkpoint_state` field names, `human_messages_after` signature, `pcb_check full` copy-dir
+  approach and measured times (quick, full) on synth, `PLAN_EXEMPT_TOOLS` change.
   CHANGELOG `[Unreleased]`: "Board checks and approvals (`pcb_check`, `pcb_approve`) — behind
   COPPERCHAT_BOARD_TOOLS."
 - [ ] Run `uv run pytest -m "not kicad"`, `uv run ruff check .`, `uv run ruff format --check .`,
@@ -224,6 +244,7 @@ without a DB both fields are `null`. Still a read tool.
 - [ ] `test_older_approval_not_revived`, `test_dru_change_invalidates_board`,
   `test_same_turn_approval_refused`, `test_server_generated_message_does_not_count`,
   `test_quote_not_substring`, `test_trivial_quote`, `test_placement_with_board_hash_refused`,
-  `test_plan_running_refused` and the four evidence-missing tests pass.
+  `test_plan_running_refused`, `test_aba_in_approving_turn_refused` and the four
+  evidence-missing tests pass.
 - [ ] `pcb_check full` on synth runs parity and M14; quick/full times recorded.
 - [ ] `pcb_status` shows both checkpoints with stale flags and the last check.

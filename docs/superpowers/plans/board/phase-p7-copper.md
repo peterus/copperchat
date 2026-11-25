@@ -15,20 +15,21 @@ failure, with M11 plane metrics in its report.
 `cc/` = `backend/src/copperchat/`.
 
 **Files:**
-- Create: `cc/board/planes.py`, `cc/board/silk.py` (pure reference placement — not in the
-  index's P7 ownership row, which lists only `planes.py`; reported),
+- Create: `cc/board/planes.py`, `cc/board/silk.py` (pure reference placement),
   `cc/kicad_tools/board/{zones,fanout,stitch,silk,specs_copper}.py`
 - Modify: `cc/kicad_tools/board/specs.py` (append four specs)
 - Tests: `backend/tests/unit/board/{test_planes,test_silk_plan,test_copper_schemas}.py`,
   `backend/tests/kicad/board/{test_zones,test_fanout,test_stitch,test_tidy_silk}.py`
-  (+ append a module-scoped `copper_rig` helper to `tests/kicad/board/conftest.py`)
+  (+ append a module-scoped `copper_rig` fixture to `tests/kicad/board/conftest.py` that calls
+  P5b's shared `routed_synth` — no own copy of the setup sequence)
 
-**Test board (`copper_rig`):** `synth_session` + `board_ctx`, through the real tools:
-sync → `pcb_set_outline` (60 × 45 mm, r = 1, 4 holes) → `pcb_set_rules {preset: "jlcpcb-4l"}`
-→ blocks + `pcb_place_block` per block → `pcb_legalize` → placement checkpoint row
-(`BoardCheckpointRepo.approve`, DB setup only) → `pcb_route` on the critical nets. Same
-sequence as P6b's `fill_rig` without the fill (both are appended to the conftest; whichever
-merges second reuses the first's helper instead of duplicating it). pytest-timeout counts
+**Test board (`copper_rig`):** `synth_session` + `board_ctx` → P5b's shared
+**`routed_synth(rig)`**: sync → `pcb_set_outline` (60 × 45 mm, r = 1, 4 holes) →
+`pcb_set_rules {layers: 4, preset: "jlcpcb-4l", net_classes: [Power]}` (4 copper layers
+explicit; In1.Cu must exist for the default plane stack) → blocks + `pcb_place_block` per
+block → `pcb_legalize` → render placement + `pcb_check quick` → placement approved through the
+real `pcb_approve` flow → `pcb_route` on the critical nets (the checkpoint exists before
+`pcb_route`). Same rig as P6b's `fill_rig` without the fill. pytest-timeout counts
 fixture setup against the first test (ini limit 180 s): modules using the rig mark their first
 test `@pytest.mark.timeout(480)` if the measured build time needs it (recorded).
 
@@ -104,8 +105,9 @@ only={"M11"})`: fill ratio per plane layer, crossings), `next: "pcb_fanout"`.
   (three zones named as Task 1, In1.Cu filled area > 0, report M11 fill ratio for In1.Cu
   ≥ 0.85 recorded); `test_add_update_delete` (polygon zone added, its clearance updated 0.2 →
   0.3 and read back, deleted); `test_add_existing_name_refused`; `test_unknown_net`
-  (`not_found`, `closest`); `test_requires_placement_approval` (stale after a `pcb_move` →
-  `placement_not_approved`); `test_cost_per_zone` (3 zones → 3); `test_fail_after_1_restores`
+  (`not_found`, `closest`); `test_requires_placement_approval` (`pcb_move {items: [{ref:
+  <a part with critical copper>, x: <x + 0.5>}], unroute: true}` → the approval is stale →
+  `pcb_zones` refuses `placement_not_approved`; History undo restores the rig); `test_cost_per_zone` (3 zones → 3); `test_fail_after_1_restores`
   (an `update` + `delete` call with `fail_after=1` → zone set, settings and `board_hash` equal
   pre-call).
 - [ ] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS.

@@ -1,7 +1,7 @@
 # Phase P3a — Classification, `board.md` parser, bend geometry, metrics M1–M14, `pcb_analyze`, `pcb_metrics`
 
-> Index contracts: B-C5, B-C6, B-C7 (produces); B-C2, B-C3, B-C4 `run_cpu`, B-C8 `FabPreset`
-> (consumes). Spec §7.1 (`pcb_analyze`, `pcb_metrics`), §8.4 (tables), §9.1, §10.1, §12,
+> Index contracts: B-C5, B-C6, B-C7 (produces); B-C2 (incl. `Part.rule_areas`,
+> `Zone.filled`), B-C3, B-C4 `run_cpu`, B-C8 `FabPreset` / `PRESETS` (consumes, from P1a). Spec §7.1 (`pcb_analyze`, `pcb_metrics`), §8.4 (tables), §9.1, §10.1, §12,
 > §18.1. Spike 4A Q6 (`spikes/4a-board/{metrics,place}.py`, port, never import). **Wave 3:
 > starts when P1b and P1c are merged**; parallel to P2 (shared `board/specs.py` append-only).
 
@@ -12,7 +12,8 @@ hard thresholds — exposed as two cheap read tools.
 `cc/` = `backend/src/copperchat/`.
 
 **Files:**
-- Create: `cc/board/{classify,boardmd,metrics}.py`, `cc/kicad_tools/board/{analysis,specs_analysis}.py`
+- Create: `cc/board/{classify,boardmd,metrics,jobs}.py`, `cc/kicad_tools/board/{analysis,specs_analysis}.py`
+  (`cc/board/jobs.py` = the one module of `run_cpu` job functions; later phases append)
 - Modify: `cc/board/geom.py` (append B-C5), `cc/kicad_tools/board/specs.py` (append the two specs),
   `backend/tests/kicad/board/conftest.py` (append `synth_board`)
 - Tests: `backend/tests/unit/board/{builders_circuit,test_boardmd,test_bends,test_classify,test_metrics_placement,test_metrics_routed,test_metrics_rules}.py`,
@@ -24,7 +25,7 @@ fixture `synth_board` (appended to `tests/kicad/board/conftest.py`) builds the b
 P1b's `test_netlist_imports_cleanly` does: `synth_session` copy → `kicad-cli sch export netlist
 --format kicadsexpr` → `api.create_board_document` → reopen → `Board.import_netlist(...,
 dry_run=False)` → `save("pcb")`. API only, no file edits; footprints stay where KiCad puts them.
-(Index gap reported: P2's sync is the product path; this helper is test setup only.)
+P2's sync is the product path; this helper is test setup only (index "File ownership" note).
 
 ---
 
@@ -69,9 +70,12 @@ an error. Input over 256 KiB → only the first 256 KiB parsed + error. Bad rows
 `ANGLE_TOL_DEG = 0.5`, `CHAMFER_MIN`, `JOG_MIN`), appended to `cc/board/geom.py`. Algorithm of
 `analyse_bends(points, width, *, pad_ends)`: drop zero-length segments (< 1e-6 mm); a segment
 is **non-octilinear** when its angle differs from the nearest multiple of 45° by more than
-0.5° (midpoint reported); at every interior vertex the direction change δ ∈ [0°, 180°]:
-δ ≤ 0.5° collinear (no vertex), |δ − 45°| ≤ 0.5° a 45° bend with sense = sign of the cross
-product, |δ − 90°| ≤ 0.5° → `ninety`, δ ≥ 134.5° → `acute`; consecutive 45° bends with
+0.5° (midpoint reported); at every interior vertex the direction change δ ∈ [0°, 180°] is
+classified **without gaps**: δ ≤ 0.5° collinear (no vertex); |δ − 45°| ≤ 0.5° a 45° bend with
+sense = sign of the cross product; **every other vertex fails**: |δ − 90°| ≤ 0.5° →
+`ninety`, δ ≥ 134.5° → `acute`, anything else (e.g. 30°, 46°, 60°, 90.8°, 120°) →
+`off_angle` (B-C5 field `off_angle: tuple[Point, ...]`, counted in M4 hard like `ninety`);
+consecutive 45° bends with
 straight piece L between them: same sense and L < `CHAMFER_MIN(w)` → `short_chamfers`
 (midpoint), opposite sense and L < `JOG_MIN(w)` → `micro_jogs`. **Pad-entry exemption (the
 only one):** when `pad_ends[k]` is true, the first vertex counted from that end is a pad
@@ -94,6 +98,10 @@ incident segments meet at 90° ± 0.5°; arcs (`ArcTrack`) are reported as `non_
   w 0.4, piece 0.39 → 1); `test_micro_jog_fails` (w 0.2, opposite-sense pair 0.30 mm apart →
   `micro_jogs == 1`; 0.40 → 0); `test_valid_chamfer_never_micro_jog`;
   `test_acute_135_fails` (δ = 135° → `acute == 1`); `test_reversal_is_acute` (180°);
+  `test_vertex_90_8_fails` (δ = 90.8° → `off_angle == 1`, `ninety == 0`);
+  `test_vertex_60_fails` (δ = 60° → `off_angle == 1`); `test_vertex_46_fails` (δ = 46° →
+  `off_angle == 1`, `bends == 0`); `test_vertex_45_4_is_bend` (δ = 45.4° → 45° bend, no
+  failure);
   `test_off_by_0_6_deg_fails` (segment at 45.6° → `non_octilinear == 1`) and
   `test_off_by_0_4_deg_passes` (45.4° → 0); `test_t_junction_90_fails` (a branch ending on the
   interior of a straight same-net track at 90°, no pad there → `t_junctions == 1` via
@@ -116,18 +124,18 @@ incident segments meet at 90° ± 0.5°; arcs (`ArcTrack`) are reported as `non_
 `^(VCC\w*|VDD\w*|VBUS|VBAT|VSYS|[+-]?\d+V\d*|\+?\d+V\d+)$` (case-insensitive) or ≥ 4 pads on
 ≥ 3 parts with at least one 2-pad capacitor to ground; **mounting_hole / fiducial /
 test_point** by library nickname (`MountingHole*`, `Fiducial*`, `TestPoint*`) or ref prefix
-(`H`, `FID`, `TP`); **module_with_antenna**: a rule area of `model.zones` with a keepout lies
-inside the part's courtyard (index gap reported: footprint rule areas) or a `board.md`
-override; **connector**: ref `^(J|P|CN|USB)\d` or library `Connector*`; **crystal**: ref
+(`H`, `FID`, `TP`); **module_with_antenna**: the part has a footprint-embedded keepout rule
+area (B-C2 `Part.rule_areas` non-empty — read by P1a's loader), or a board-level rule area
+of `model.zones` with a keepout lies inside the part's courtyard, or a `board.md` override; **connector**: ref `^(J|P|CN|USB)\d` or library `Connector*`; **crystal**: ref
 `^[YX]\d` or library `Crystal*`/`Oscillator*`; load caps = 2-pad caps between a crystal net
 and ground; `ic` = the anchor sharing most crystal nets; **switching_regulator**: an anchor
 pin net whose pads belong to that anchor and exactly one inductor (ref `L\d` or library
 `Inductor*` → class `inductor`) plus optionally 2-pad caps whose other net contains only
-that anchor's pads (bootstrap; plan refinement of the spec rule, reported); `vin_net` = the
+that anchor's pads (bootstrap; index call 15); `vin_net` = the
 anchor's supply net carrying a cap to ground that is not the inductor's other net;
 `in_caps`/`out_caps` = caps between `vin_net`/the inductor's other net and ground **on the
 switcher's schematic sheet** (when the net also feeds another anchor on the same sheet: only
-caps nearer, by `octi_dist`, to the switcher than to that anchor — plan refinement, reported);
+caps nearer, by `octi_dist`, to the switcher than to that anchor — index call 15);
 `fb_parts` = 2-pad resistors on a net that touches only the anchor and resistors;
 **decoupling_cap**: 2-pad cap between a supply and a ground net, not a switcher in/out cap,
 with an anchor on that supply net; served pin = the anchor pad on that net nearest
@@ -161,7 +169,11 @@ deterministic (refs natural-sorted, nets sorted).
   → `out_caps`, caps on `/` → MCU decoupling); `test_crystal_load_caps`;
   `test_diff_pair_suffixes` (parametrised over the four suffix pairs; `USB_DP`/`USB_DN` via
   `P/N`); `test_no_pair_without_common_anchor`; `test_connector_by_prefix_and_lib`;
-  `test_module_with_antenna_rule_area`; `test_holes_fiducials_testpoints`;
+  `test_module_with_antenna_rule_area` (a part built with `rule_areas=(antenna_poly,)` →
+  `module_with_antenna`); `test_module_board_keepout_in_courtyard` (no `rule_areas`, a
+  `model.zones` keepout inside the courtyard → `module_with_antenna`);
+  `test_no_rule_area_not_module` (same part without either → not `module_with_antenna`);
+  `test_holes_fiducials_testpoints`;
   `test_blocks_per_anchor_by_sheet` (two sheets, satellites follow their anchor, name
   `power-U7`); `test_leftover_joins_most_shared`; `test_critical_default` (2-pad net 9.9 mm →
   critical, 10.1 mm → not; GND never); `test_override_cap_to_other`;
@@ -186,7 +198,8 @@ edges may overhang its assigned edge only; test both settings); `n/a` when `outl
 `drc.unconnected` (`n/a` without DRC). M3 = error markers (except unconnected) + parity
 markers + warnings not accepted; a warning is accepted when its normalised type equals a row's
 `drc_type` and the refs of its KIIDs ⊆ the row's `items` (non-empty); accepted ones →
-`review` and listed. M4 = `analyse_tracks` non-octilinear + ninety + acute + T-junctions.
+`review` and listed. M4 = `analyse_tracks` non-octilinear + ninety + acute + off_angle +
+T-junctions.
 M5 per routed connection of a non-ground, non-supply net with `octi_dist` ≥ 0.5 mm: ratio
 and extra; fail when any ratio > 2.0 **and** extra > 5 mm. M6 routed length > 0.5 × board
 diagonal → review. M7 hard = micro-jogs + short chamfers; review = average bends per 10 mm
@@ -197,16 +210,26 @@ crystal (crystal pad → `ic` pad, each crystal net): placement stage = `octi_di
 inductor → SW pin, switch-node copper = track length on `sw_net` or the estimate) → review.
 M10 per block (`blk:*` groups, else `cls.blocks`): convex hull area / Σ courtyard areas
 (> 3.0 review), intrusions = other placed parts overlapping the hull on the same side.
-M11 per inner layer with a ground zone: `filled_area_mm2 / outline area` (< 0.85 review),
-crossings = tracks on adjacent layers leaving the zone outline inside the board (index gap:
-no fill polygons in B-C2); `n/a` without plane zones. M12 width < class `track_width` −
+M11 per inner layer with a ground zone: fill ratio = area of the zone's `Zone.filled`
+polygons (B-C2, `polygon_area` sum; `filled_area_mm2` as fallback when `filled == ()`) /
+outline area (< 0.85 review); **void crossings** = signal track segments on an adjacent
+layer that cross a void of that plane (a point of the segment inside the outline but in no
+filled polygon of the zone — sampled every 0.25 mm and at both ends), one offender per
+(net, void); `n/a` without plane zones; an unfilled plane zone (`filled == ()` and
+`filled_area_mm2 == 0`) → review "zone not filled". M12 width < class `track_width` −
 0.001 → fail; pair length mismatch > 1 mm → review. M13 every `EdgeRow` ref with an edge:
 courtyard within 0.5 mm of that outline edge or overhanging it, else fail; tracks/vias inside
-a module's keepout rule area → fail. M14 (`preset` given, else `n/a`): board rules below the
+a module's keepout rule area (`Part.rule_areas` of `module_with_antenna` parts, plus board
+keepouts inside their courtyard) → fail. M14 (`preset` given, else `n/a`): board rules below the
 preset, track width, via drill/diameter/annular, PTH drill < `min_drill`, NPTH (pad with drill
 and no copper layer) < `min_npth`, copper (track/via/pad) to outline < `copper_to_edge`,
-visible silk text height/line below `silk_min_height`/`silk_min_line`, SMD pads without
-`F.Paste`/`B.Paste`; an offender whose refs all appear in a custom rule condition of
+**hole to edge**: every via drill and pad hole, measured from the hole edge (centre
+distance to the outline − drill/2), < `copper_to_edge` (0.3 mm; no separate preset field),
+visible silk text height/line below `silk_min_height`/`silk_min_line`, **silk over pads**:
+a visible silk text (bbox from `at`, `size` and character count, rotated) or a silk graphic
+(`model.graphics` on `F/B.SilkS`, segment inflated by `width/2`) overlapping the mask
+opening of a pad on the same side (pad rectangle of a pad whose `layers` contain
+`F.Mask`/`B.Mask`), SMD pads without `F.Paste`/`B.Paste`; an offender whose refs all appear in a custom rule condition of
 `dru_text` → exception (review, listed). Offenders sorted by value desc then text, capped at
 20 + `omitted`. Verdict per metric: fail > review > pass; `n/a` when inputs are missing.
 
@@ -221,13 +244,21 @@ visible silk text height/line below `silk_min_height`/`silk_min_line`, SMD pads 
   `test_routed_length_via_zero`; `test_m4_counts` (one 90° + one 0.6° segment → 2);
   `test_m5_fail_needs_both` (ratio 2.5 with 4 mm extra → not fail; 2.1 with 6 mm → fail);
   `test_m5_median_review`; `test_m6_long`; `test_m7_counts_and_bends_per_10mm`;
-  `test_m8_routed_5_1_fails`; `test_m11_fill_and_crossing`; `test_m12_width_and_mismatch`.
+  `test_m8_routed_5_1_fails`; `test_m11_fill_and_crossing` (zone with `filled` polygons
+  covering 80 % of the outline → review 0.80; a signal track on `F.Cu` crossing a void of the
+  `In1.Cu` GND plane → 1 crossing offender; the same track over solid fill → 0);
+  `test_m11_unfilled_zone_review`; `test_m4_off_angle_counts` (one 60° vertex → M4 value 1,
+  verdict fail); `test_m12_width_and_mismatch`;
+  `test_m13_track_in_module_rule_area` (track inside a part's `rule_areas` polygon → fail).
   `test_metrics_rules.py`: `test_m2_m3_from_drc` (synthetic `DrcResult`: 1 error, 2 warnings, 1
   accepted by a `board.md` row → M3 value 2, accepted listed); `test_m3_parity_counts`;
   `test_m13_edge_row` (0.4 mm from edge pass, 0.6 fail, overhang pass);
   `test_m14_each_rule` (parametrised: track 0.12 on `jlcpcb-4l`, via 0.25 drill, annular
-  0.14, NPTH 0.4, track 0.25 mm from the edge, silk 0.8 mm text, SMD pad without paste) →
-  fail; `test_m14_custom_rule_exception` (offender ref named in a `dru_text` rule → review);
+  0.14, NPTH 0.4, track 0.25 mm from the edge, via 0.3 drill whose hole edge is 0.25 mm from
+  the edge (`hole_to_edge`), PTH pad hole 0.2 mm from the edge, silk 0.8 mm text, silk text
+  over an SMD pad's `F.Mask` opening (`silk_over_pad`), silk line crossing a pad, SMD pad
+  without paste) → fail; `test_m14_silk_beside_pad_ok` (silk 0.1 mm clear of the mask
+  opening → pass); `test_m14_hole_edge_at_0_3_ok` (hole edge exactly 0.3 mm → pass); `test_m14_custom_rule_exception` (offender ref named in a `dru_text` rule → review);
   `test_m14_na_without_preset`; `test_offender_cap_20` (25 offenders → 20 + `omitted == 5`);
   `test_only_subset`; `test_hard_thresholds_verbatim` (the `HARD` dict equals the literal
   above).
@@ -238,10 +269,13 @@ visible silk text height/line below `silk_min_height`/`silk_min_line`, SMD pads 
 ### Task 5: `pcb_analyze` and `pcb_metrics` (read tools)
 
 **Interfaces:** `analysis.py`: `async pcb_analyze(ctx, args) -> ToolResult`, `async
-pcb_metrics(ctx, args) -> ToolResult`, `preset_for(model) -> FabPreset | None`
-(`PRESETS.get(f"jlcpcb-{len(model.copper_layers)}l")`; index gap reported), and the module-level
-worker functions `analyse_job(model, doc)` / `metrics_job(model, doc, drc, preset, only)` run
-through `run_cpu(..., timeout_s=30)`. Specs in `specs_analysis.py`, appended to
+pcb_metrics(ctx, args) -> ToolResult`, `preset_for(model, doc) -> FabPreset | None` (B-C6:
+`PRESETS[doc.preset]` when it names a known preset, else
+`PRESETS.get(f"jlcpcb-{len(model.copper_layers)}l")`; P1a's `cc/board/presets.py`). The
+worker functions `analyse_job(model, doc)` / `metrics_job(model, doc, drc, preset, only)`
+live in the new module **`cc/board/jobs.py`** (module-level, so `run_cpu`'s
+`copperchat.board.` check and spawn pickling hold; P4 appends `place_block_job` /
+`legalize_job`, P5b/P6b may append) and run through `run_cpu(..., timeout_s=30)`. Specs in `specs_analysis.py`, appended to
 `board/specs.py`'s `TOOL_SPECS` (read tools: `mutating=False`, never take the edit lock, cost
 0). `pcb_analyze` schema `_obj({"scope": {"enum": ["parts","nets","blocks","all"]}})`, default
 `all`; result: `parts` (ref → class), `nets` (net → kind), `decoupling`, `switchers`,
@@ -254,7 +288,10 @@ offenders, omitted), `hard_failures`, `reviews`, `placement_hash`, `board_hash`,
 Both: `require_board` → `no_board`.
 
 - [ ] **Step 1: Failing unit test** `test_specs_registered` (both in the registry, in
-  `PCB_READ`, schemas `additionalProperties: false`, `only` rejects `"M15"`).
+  `PCB_READ`, schemas `additionalProperties: false`, `only` rejects `"M15"`);
+  `test_preset_for_doc_then_layers` (`doc.preset == "jlcpcb-6l"` on a 4-layer model → 6l;
+  no doc preset → 4l; unknown id → by layer count); `test_jobs_module_level`
+  (`analyse_job.__module__ == "copperchat.board.jobs"`).
 - [ ] **Step 2: Failing kicad tests** (`test_analysis_synth.py`, `synth_board`):
   `test_classification_matches_circuit`: U2 `switching_regulator` with inductor L1, `sw_net`
   ending in `SW`, `in_caps == ("C7",)`, `out_caps == ("C8","C9")`, `fb_parts == ("R5","R6")`;
@@ -278,7 +315,7 @@ Both: `require_board` → `no_board`.
 
 - [ ] Index "As built (P3a)": measured `pcb_metrics` time on synth (median, warm), the
   switcher bootstrap refinement, the DRC type normalisation (API enum name vs CLI JSON type),
-  `preset_for`, the `synth_board` helper, `primary_ground`, any review threshold tuned (none
+  `preset_for`, `cc/board/jobs.py`, the `synth_board` helper, `primary_ground`, any review threshold tuned (none
   planned). CHANGELOG `[Unreleased]`: "Board analysis and quality metrics (`pcb_analyze`,
   `pcb_metrics`) — behind COPPERCHAT_BOARD_TOOLS."
 - [ ] Run `uv run pytest -m "not kicad"`, `uv run ruff check .`, `uv run ruff format --check .`,
@@ -291,6 +328,7 @@ Both: `require_board` → `no_board`.
 - [ ] CI `backend` and all 8 `kicad (…, i/8)` shards green.
 - [ ] `test_t_junction_90_fails`, `test_short_chamfer_fails`, `test_pad_entry_only_exempt_at_pad`,
   `test_valid_chamfer_passes`, `test_micro_jog_fails`, `test_acute_135_fails`,
+  `test_vertex_90_8_fails`, `test_vertex_60_fails`, `test_vertex_46_fails`,
   `test_off_by_0_6_deg_fails` / `test_off_by_0_4_deg_passes` pass.
 - [ ] Every metric M1–M14 has at least one known-answer unit test; `HARD` equals the spec values.
 - [ ] `test_classification_matches_circuit` and the classification golden pass on `sp4_synth`.

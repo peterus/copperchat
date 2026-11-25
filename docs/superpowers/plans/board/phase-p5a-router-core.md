@@ -1,7 +1,7 @@
 # Phase P5a — Pure octilinear router
 
 > Index contracts: B-C12 (produces `RouteRequest`, `RoutePath`, `build_grid`, `route`,
-> `route_pair`; adds `solve`, see Task 4), B-C5 (consumes `analyse_bends`, `CHAMFER_MIN`,
+> `route_pair`, `solve`, `solve_pair`, `pair_coupling`, `prune_model`, `RouteTooLarge`), B-C5 (consumes `analyse_bends`, `CHAMFER_MIN`,
 > `JOG_MIN`), B-C2 (consumes). Index call 3. Spec §10.2, §12 notes (definitions), §15.2 calls
 > 24, 55, §18.1, §21 (router performance budget). Spike 4A Q4c (`spikes/4a-board/router.py`:
 > 15/15 short nets in 6.5 s incl. 4.2 s grid build at 0.1 mm and the DRC task; port ideas,
@@ -16,7 +16,8 @@ obstacle.
 `DIRS[k]`, k = 0..7 counter-clockwise from +x (board coordinates, y down).
 
 **Files:**
-- Create: `cc/board/router/{__init__,grid,astar,simplify,pairs}.py`
+- Create: `cc/board/router/{__init__,grid,astar,simplify,pairs}.py` (P5a is the only phase
+  that creates `cc/board/router/__init__.py`; P6a's `chamfer.py` never creates or edits it)
 - Tests: `backend/tests/unit/board/{router_maps,test_router_grid,test_router_astar,test_router_simplify,test_router_props,test_router_pairs,test_router_perf}.py`
   (`router_maps.py` = seeded random map generator shared by the property and performance tests)
 
@@ -30,7 +31,11 @@ obstacle.
 (nearest), `xy(i, j) -> Point`, `free(li, i, j) -> bool`, `via_ok(i, j) -> bool`. B-C12
 `build_grid(model, req, *, pitch=0.05, margin=0.0)`: window = bbox of `req.a`/`req.b`
 grown by `WINDOW_MM = 6.0` (the router doubles it on failure, Task 2), clipped to the outline
-bbox. Inflation for tracks `r = req.clearance + margin + req.width / 2`. Marked as blocked on
+bbox. **Memory cap:** a window with more than `MAX_CELLS_PER_LAYER = 4_000_000` cells
+(`ceil(w / pitch) × ceil(h / pitch)`) is never allocated — `build_grid` raises
+`RouteTooLarge(cells)` (B-C12) and the caller reports the connection as failed with reason
+`too_large` (P5b); the doubled retry window (Task 2) is subject to the same cap.
+Inflation for tracks `r = req.clearance + margin + req.width / 2`. Marked as blocked on
 each layer in `req.layers`: pads of other nets (rotated rectangle exactly when the rotation
 is a multiple of 90°, else its circumscribed circle; THT pads on every layer, SMD on their
 layer), tracks/arcs of other nets (capsule of half width + r), vias of other nets (all
@@ -46,7 +51,10 @@ would touch other-net copper on any layer of `req.layers`, a `vias` keepout, or 
   `test_own_net_passable`; `test_track_capsule`; `test_via_blocks_all_layers`;
   `test_keepout_tracks_vs_vias` (a `{"vias"}` keepout blocks vias only); `test_edge_inset`
   (cell 0.39 mm inside the edge blocked for width 0.2, edge 0.3; 0.41 free);
-  `test_window_clipped`; `test_grid_picklable`.
+  `test_window_clipped`; `test_grid_picklable`; `test_window_over_cap_raises` (a
+  corner-to-corner request on a 120 × 120 mm outline at pitch 0.05 → `RouteTooLarge`, nothing
+  allocated: `tracemalloc` peak < 50 MB); `test_window_at_cap_ok` (exactly 4,000,000 cells →
+  builds).
 - [ ] **Step 2: Run** `uv run pytest tests/unit/board/test_router_grid.py -q` — FAIL.
   **Step 3: Implement.** **Step 4: Run** — PASS.
 - [ ] **Step 5: Commit** `feat(board): router obstacle grid`.
@@ -70,7 +78,7 @@ axis (both ways) or ±45° to it — 6 of 8 directions; square pads allow all 8;
 a non-multiple of 45° uses its axis rounded to the nearest 45°. Heuristic = octilinear
 distance (admissible); ties broken by an insertion counter (determinism). Exhausting
 `max_expansions` → `None`; no path in the window → retry once with the window doubled (new
-grid via `build_grid`), then `None`.
+grid via `build_grid`; `RouteTooLarge` from the retry window propagates), then `None`.
 
 - [ ] **Step 1: Failing unit tests** (`test_router_astar.py`): `test_straight_line`;
   `test_diagonal`; `test_ninety_needs_chamfer` (goal forces a 90° turn: the path has two
@@ -115,19 +123,35 @@ midpoints with width `2w + gap` and the larger clearance on one layer (no vias),
 `±(gap + w) / 2` (mitred at 45° bends, so the offsets stay octilinear), and join each offset
 end to its pad with `route` on a small window; any failure → fallback: route `p`, then `n`
 with a gap cost (cells at distance `gap + w ± pitch` from `p`'s segments cost ×0.8, cells
-nearer than `gap + w` blocked); both failing → `None`. `pair_coupling(pp, pn, gap) -> float`
-= fraction of `pp`'s length whose parallel partner segment lies at `gap + w ± 0.01` mm.
-`__init__.py` exports B-C12 names plus **`solve(model: BoardModel, req: RouteRequest, *,
-margin: float = 0.0, max_expansions: int = 2_000_000) -> RoutePath | None`** and
-`solve_pair(model, p, n, gap) -> tuple[RoutePath, RoutePath] | None` — module-level,
-picklable arguments, for `run_cpu` (B-C4; index B-C12 addition, reported).
+nearer than `gap + w` blocked); both failing → `None`. B-C12 `pair_coupling(a: RoutePath, b:
+RoutePath) -> dict[str, float]` with keys `length_mismatch` (`|a.length − b.length|`),
+`gap_min`, `gap_max` (**centre-to-centre** distance from points sampled every 0.1 mm along
+`a` to the nearest segment of `b`, counted only where that nearest segment is parallel to
+`a`'s segment on the same layer — the coupled stretch; pad fan-in is skipped that way; no
+coupled stretch → both `inf`; a coupled pair's target is `gap + w`); M12 (P3a) reports
+`length_mismatch`, `pcb_route` (P5b) reports all three. `__init__.py` exports the
+B-C12 names: `solve(model: BoardModel, req: RouteRequest, *, margin: float = 0.0,
+max_expansions: int = 2_000_000) -> RoutePath | None` and `solve_pair(model, p, n, gap, *,
+margin: float = 0.0) -> tuple[RoutePath, RoutePath] | None` — module-level, picklable
+arguments, the `run_cpu` entry points (B-C4). `prune_model(model, req_or_pair) -> BoardModel`
+(pure): keeps the outline, rules, net classes and layers, and only the pads/parts, tracks,
+arcs, vias, zones (outline only, `filled = ()`) and graphics that intersect the **retry**
+window (the doubled window of Task 2, covering both requests of a pair) — the caller passes
+the pruned model to `solve`/`solve_pair`, so the pickled job stays small on large boards.
 
 - [ ] **Step 1: Failing unit tests** (`test_router_pairs.py`): `test_coupled_straight`
-  (10 mm pair, gap 0.2, w 0.2 → `pair_coupling ≥ 0.8`, both paths octilinear, M4 = M7 = 0 by
-  `analyse_bends`); `test_coupled_one_bend` (offset kept through a 45° bend);
-  `test_fallback_when_far_apart` (pads 6 mm apart → two routes, `pair_coupling < 0.8`, gap ≥
-  `gap` everywhere); `test_pair_none_when_blocked`; `test_solve_picklable` (`pickle.dumps` of
-  a `BoardModel` + `RouteRequest` round-trips; `solve` equals `route(build_grid(...))`).
+  (10 mm pair, gap 0.2, w 0.2 → `pair_coupling(...)["gap_max"] ≤ 0.41`, both paths
+  octilinear, M4 = M7 = 0 by `analyse_bends`); `test_coupled_one_bend` (offset kept through a 45° bend);
+  `test_fallback_when_far_apart` (pads 6 mm apart → two routes, centre distance ≥ `gap + w`
+  everywhere); `test_pair_none_when_blocked`; `test_solve_picklable` (`pickle.dumps` of
+  a `BoardModel` + `RouteRequest` round-trips; `solve` equals `route(build_grid(...))`);
+  `test_pair_coupling_keys` (keys exactly `{"length_mismatch","gap_min","gap_max"}`; coupled
+  straight pair → `gap_max − gap_min ≤ 0.02`, `|gap_min − (gap + w)| ≤ 0.01`,
+  `length_mismatch < 0.1`; far-apart fallback → `gap_min > gap + w + 0.5`);
+  `test_solve_pair_margin` (`margin=0.1` → `gap_min` unchanged, every
+  segment ≥ clearance + 0.1 from other-net copper); `test_prune_model_same_result` (seeded maps:
+  `solve(prune_model(m, req), req) == solve(m, req)`; pruned model has ≤ the items of the
+  original and keeps the outline).
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS.
 - [ ] **Step 5: Commit** `feat(board): coupled pair routing and worker entry points`.
 
@@ -143,8 +167,8 @@ width / 2` from other-net copper (tolerance 1e-6) and stays inside the edge inse
 
 - [ ] **Step 1: Failing property tests** (`test_router_props.py`, seeds 0..249, seed printed
   on failure): for every request with a returned path: `analyse_bends` per layer polyline
-  (pad ends `True` at the pads, `False` at vias) has `ninety == acute == micro_jogs ==
-  short_chamfers == len(non_octilinear) == 0` (`test_output_m4_m7_zero`);
+  (pad ends `True` at the pads, `False` at vias) has `ninety == acute == off_angle ==
+  micro_jogs == short_chamfers == len(non_octilinear) == 0` (`test_output_m4_m7_zero`);
   `exact_clearance_ok` (`test_no_obstacle_hit`); the path starts and ends at the exact pad
   centres (`test_exact_pad_centres`); `test_open_maps_always_route` (maps without obstacles →
   a path for every request); `test_deterministic` (each map routed twice → identical
@@ -156,6 +180,12 @@ width / 2` from other-net copper (tolerance 1e-6) and stays inside the edge inse
   nets incl. the DRC task and 4.2 s grid build at 0.1 mm; budget generous for CI),
   `record_property("router_15_nets_s", …)` and per-net expansions; the measured value goes
   into "As built".
+  `test_large_board_budget` (100 × 100 mm, 4 layers, `router_maps` seed 777 scaled up: 80
+  parts, 40 two-pin nets of 5–40 mm, each solved through `run_cpu(solve, prune_model(m, req),
+  req, timeout_s=60)` and added to the model): total wall time < 120 s, no
+  `board_compute_timeout`, no `RouteTooLarge` (every window fits the cap); afterwards `run_cpu(_selftest.peak_rss)` (P1a) returns the worker's `VmHWM` <
+  `WORKER_MEMORY_LIMIT_BYTES`; `record_property("router_large_s", …)` and
+  `record_property("router_worker_peak_rss_mb", …)` — both go into "As built".
 - [ ] **Step 3: Run** `uv run pytest tests/unit/board -k router -q` — FAIL. **Step 4:
   Implement/tune** (`TURN_COST`, `VIA_COST`, `WINDOW_MM` within the rules above; hard
   geometry rules are not tunable). **Step 5: Run** — PASS.
@@ -163,8 +193,8 @@ width / 2` from other-net copper (tolerance 1e-6) and stays inside the edge inse
 
 ### Task 6: Docs + index as built, checks, PR
 
-- [ ] Index "As built (P5a)": `solve`/`solve_pair` (add to B-C12 in place), `ObstacleGrid`
-  fields, cost constants, measured performance (15 nets: seconds, expansions), property-test
+- [ ] Index "As built (P5a)": `ObstacleGrid` fields, cost constants, measured performance
+  (15 nets: seconds, expansions; large board: seconds, worker peak RSS), property-test
   runtime. No CHANGELOG entry (no user-visible tool).
 - [ ] Run `uv run pytest -m "not kicad"`, `uv run ruff check .`, `uv run ruff format --check .`,
   `uv run mypy src` (all with `timeout`).
@@ -175,5 +205,6 @@ width / 2` from other-net copper (tolerance 1e-6) and stays inside the edge inse
 
 - [ ] CI `backend` green (P5a adds no kicad test).
 - [ ] `test_output_m4_m7_zero` and `test_no_obstacle_hit` pass for 250 seeded maps.
-- [ ] `test_15_short_nets_budget` < 10 s; measured time recorded in the index.
+- [ ] `test_15_short_nets_budget` < 10 s and `test_large_board_budget` < 120 s; measured times
+  and the worker's peak RSS recorded in the index.
 - [ ] `test_deterministic`, `test_max_expansions_none` pass; no kipy import in `cc/board/router/`.

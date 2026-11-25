@@ -12,15 +12,15 @@ groups, each block clustered around its anchor and packed legally into a region 
 plus exact moves and a legaliser — and a part that already has copper is only moved when the
 agent explicitly unroutes it.
 
-`cc/` = `backend/src/copperchat/`. `Rect` = the `(x, y, w, h)` type P1c introduced for render
-regions (index gap reported: B-C9/B-C11 use `Rect` without defining it; if P1c did not add it
-to `cc/board/model.py`, Task 1 adds `@dataclass(frozen=True) class Rect: x; y; w; h` there and
-records it).
+`cc/` = `backend/src/copperchat/`. `Rect` = B-C2's `Rect(x, y, w, h)` in `cc/board/model.py`
+(P1a).
 
 **Files:**
 - Create: `cc/board/placer/{__init__,cluster,layout,pack,legalize,score}.py`,
   `cc/kicad_tools/board/{place,unroute_ops,specs_place}.py`
-- Modify: `cc/kicad_tools/board/specs.py` (append four specs)
+- Modify: `cc/kicad_tools/board/specs.py` (append four specs), `cc/board/jobs.py` (P3a's
+  `run_cpu` job module, append `place_block_job`, `legalize_job`),
+  `backend/tests/kicad/board/conftest.py` (append `place_synth`)
 - Tests: `backend/tests/unit/board/{test_placer_cluster,test_placer_layout,test_placer_pack,test_placer_props,test_legalize_props,test_score,test_place_schemas,test_unroute_select}.py`,
   `backend/tests/kicad/board/{test_define_blocks,test_place_block,test_move_legalize,test_routed_parts,test_place_synth}.py`
 
@@ -55,7 +55,7 @@ radial. `Move` is re-exported from `cc/board/staging.py`.
 
 ### Task 2: Block packing, legaliser, score
 
-**Interfaces:** B-C11 with types made explicit (index gap reported):
+**Interfaces:** B-C11 exactly (incl. the `target` keyword):
 `place_block(model, cls, block_refs, region: Rect, *, side: Side, rotation: int | None,
 keep_channels: float = 0.5, fixed: Sequence[Move] = (), allowed_sides: frozenset[Side],
 edge: str | None = None, target: Point | None = None) -> PlaceResult | DoesNotFit`;
@@ -148,7 +148,9 @@ commit, `remove_items`). Tools (all two-phase, read `read_board_doc` for `allowe
   `unknown_block` with `closest`); edge form = a strip along that outline edge, depth = the
   block's largest layout extent + 2 × `keep_channels`, `target` = the point `offset` mm along
   the edge from its top/left end (default centre); computed in `run_cpu(place_block_job, …,
-  timeout_s=60)`; `DoesNotFit` → `does_not_fit` with `details {needed_mm2, available_mm2,
+  timeout_s=60)` (`place_block_job` / `legalize_job` are module-level functions appended to
+  `cc/board/jobs.py`, P3a's job module; `pcb_move {legalize: true}` and `pcb_legalize` use
+  `legalize_job`); `DoesNotFit` → `does_not_fit` with `details {needed_mm2, available_mm2,
   refs}`, nothing written; cost `Logical(1)`, kind `board_place_block`.
 - `pcb_move {items: [{ref, x?, y?, rot?, side?, locked?}] 1..200, legalize?: bool = false,
   unroute?: bool = false}`; each item needs a field besides `ref`; `legalize: true` runs
@@ -194,7 +196,8 @@ max cell pins), `next` (`pcb_place_block` for unplaced blocks, else `pcb_metrics
 ### Task 5: Synth placed block by block
 
 **Interfaces:** none new; a helper `place_synth(rig)` (appended to
-`tests/kicad/board/conftest.py`, reused by P5b): `pcb_analyze` → `pcb_define_blocks` from
+`tests/kicad/board/conftest.py`; P5b's shared `placed_synth` / `routed_synth` rig builds on
+it): `pcb_analyze` → `pcb_define_blocks` from
 its proposals → for each block in descending part count, `pcb_place_block` with a fixed
 floorplan in the test (connector blocks on `edge: left`, the power block in the left half,
 the MCU block in the right half, the rest `region` = whole outline).
@@ -211,8 +214,8 @@ the MCU block in the right half, the rest `region` = whole outline).
 
 ### Task 6: Docs + index as built, checks, PR
 
-- [ ] Index "As built (P4)": `Rect` location, explicit `place_block`/`legalize` keyword types
-  (update B-C11 in place), `unroute_ops` API (for P5b), `MAX_CELL_PINS` and the tuning
+- [ ] Index "As built (P4)": `unroute_ops` API (for P5b), the jobs appended to
+  `cc/board/jobs.py`, `MAX_CELL_PINS` and the tuning
   measurements, synth placement metrics and runtime, property-test runtime. CHANGELOG
   `[Unreleased]`: "Board placement tools — behind COPPERCHAT_BOARD_TOOLS."
 - [ ] Run `uv run pytest -m "not kicad"`, `uv run ruff check .`, `uv run ruff format --check .`,

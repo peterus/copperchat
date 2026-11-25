@@ -1,8 +1,8 @@
 # Phase P2 — Board from schematic, outline, rules
 
-> Index contracts: B-C4 (consumes; adds `BoardStage.compensable` and `BoardStage.undo`, see
-> Task 1/3), B-C8 (`FabPreset`, `PRESETS`), B-C11 (`staging_positions`), B-C14; index calls 6,
-> 8, 13. Spec §4 (C1–C4, C8), §6.2 (rules persistence), §6.3 (netlist exception), §6.4,
+> Index contracts: B-C4 (consumes, incl. `BoardStage.compensable` / `.undo` that P1a
+> implements), B-C8 (consumes P1a's `FabPreset`, `PRESETS`), B-C11 (`staging_positions`),
+> B-C14; index calls 6, 8, 13. Spec §4 (C1–C4, C8), §6.2 (rules persistence), §6.3 (netlist exception), §6.4,
 > §7.2 "Board from schematic" + "Setup", §10.3 (layer type probe), §16 (G2, G3, G10).
 > Spike 4A Q1, Q2 (`spikes/4a-board/{q01_netlist,q02_setup,boards}.py`). **Wave 3: starts
 > when P1b and P1c are merged**; parallel to P3a (shared `board/specs.py` append-only).
@@ -15,10 +15,10 @@ failure and undoable from History.
 `cc/` = `backend/src/copperchat/`.
 
 **Files:**
-- Create: `cc/kicad_tools/board/{sync,setup,specs_setup}.py`, `cc/board/{presets,staging}.py`
-- Modify: `cc/kicad_tools/board/specs.py` (append the three specs), `cc/kicad_tools/board/engine.py`
-  (`BoardStage.compensable`, `BoardStage.undo` — P1a file, wave 3, reported as a B-C4 change)
-- Tests: `backend/tests/unit/board/{test_staging,test_presets,test_setup_schemas}.py`,
+- Create: `cc/kicad_tools/board/{sync,setup,specs_setup}.py`, `cc/board/staging.py`
+- Modify: `cc/kicad_tools/board/specs.py` (append the three specs). Consumes P1a's
+  `cc/board/presets.py` (unchanged here) and P1a's `BoardStage.compensable` / `.undo`.
+- Tests: `backend/tests/unit/board/{test_staging,test_setup_schemas}.py`,
   `backend/tests/kicad/board/{test_sync,test_outline,test_rules}.py`
 
 ---
@@ -32,11 +32,9 @@ the outline (`outline.x + outline.w + 5`, top `outline.y`) — or, without an ou
 right of the bounding box of the board's other footprints — or `(0, 0)` on an empty board;
 cell = part courtyard bbox + 1 mm gap; a column ends at the outline height (100 mm without an
 outline); rotation and side unchanged. (Comment in `staging.py`: "B-C11, spec §7.2 staging
-area".) Engine addition: `BoardStage.compensable: bool = True`; once a stage with
-`compensable=False` has run, a later failure skips the KIID compensation and raises
-`StructuredToolError(code="sync_failed", suggestion="Undo this turn from the History panel;
-the board import cannot be reverted item by item.")` (spec §6.3, the one documented
-exception).
+area".) P1a implements compensable/undo per B-C4: the import stage below sets
+`compensable=False`, so a later failure raises `sync_failed` naming the History panel
+(spec §6.3, the one documented exception).
 
 Tool `pcb_sync_from_schematic {delete_extra?: bool = true, dry_run?: bool = false}` (two-phase,
 cost `Logical(3)`, kind `board_sync_from_schematic`, `creates_board = project.pcb_file is None`):
@@ -132,27 +130,16 @@ Report: outline, `holes {moved, placed, removed}`, `keepouts`, `unplaced` (now m
 - [ ] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS.
 - [ ] **Step 6: Commit** `feat(board): pcb_set_outline with holes and keepouts`.
 
-### Task 3: Presets and `pcb_set_rules` (no stackup) + probes
+### Task 3: `pcb_set_rules` (no stackup) + probes
 
-**Interfaces:** B-C8 `FabPreset`, `PRESETS` with index call 8 values (mm):
-
-| id | layers | min_track | min_space | pref_track | min_via_drill | min_via_diameter | min_drill | min_npth | min_annular | copper_to_edge | hole_to_hole | silk h / line | thickness | outer oz |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `jlcpcb-2l` | 2 | 0.127 | 0.127 | 0.15 | 0.3 | **0.66** | 0.3 | 0.5 | 0.18 | 0.3 | 0.45 | 1.0 / 0.15 | 1.6 | 1 |
-| `jlcpcb-4l` | 4 | 0.127 | 0.127 | 0.15 | 0.3 | 0.6 | 0.3 | 0.5 | 0.15 | 0.3 | 0.45 | 1.0 / 0.15 | 1.6 | 1 |
-| `jlcpcb-6l` | 6 | 0.127 | 0.127 | 0.15 | 0.3 | 0.6 | 0.3 | 0.5 | 0.15 | 0.3 | 0.45 | 1.0 / 0.15 | 1.6 | 1 |
-
-(2-layer via diameter 0.66 = drill 0.3 + 2 × annular 0.18 — the index's 0.6 contradicts its
-own 0.18 annular for 2 layers; reported. `hole_to_hole` 0.45 is the stricter pad value of
-call 8, applied globally because KiCad has one `hole_to_hole_min`; the 0.2 mm via value is
-then implied.) Mapping to `SetBoardDesignRules` constraints: `min_clearance`←min_space,
+**Interfaces:** B-C8 `FabPreset`, `PRESETS` from P1a (`cc/board/presets.py`, index call 8
+values: 2-layer via diameter 0.66 per call 8, global `hole_to_hole` 0.45). Mapping to
+`SetBoardDesignRules` constraints: `min_clearance`←min_space,
 `min_track_width`←min_track, `min_via_size`←min_via_diameter, `min_through_drill`←min_drill,
 `min_via_annular_width`←min_annular, `copper_edge_clearance`←copper_to_edge,
 `hole_to_hole_min`←hole_to_hole, `min_silk_text_height`←silk height,
-`min_silk_text_thickness`←silk line. Engine addition: `BoardStage.undo:
-Callable[[BoardStageContext], Awaitable[None]] | None = None` — compensation runs the
-`undo` of every completed stage in reverse order after the KIID diff (rules, classes and
-layers are not items).
+`min_silk_text_thickness`←silk line. Every stage below carries a P1a `BoardStage.undo`
+(compensation runs them in reverse order after the KIID diff).
 
 Tool `pcb_set_rules` (cost `Logical(2)`, kind `board_set_rules`): `layers?: 2|4|6`, `preset?`,
 `overrides?: {<FabPreset min field>: number}` (0 < v ≤ 10; a value **below** the preset
@@ -164,7 +151,10 @@ hole_to_hole, hole_clearance, edge_clearance, annular_width, courtyard_clearance
 silk_clearance, text_height, diff_pair_gap}, min?, max?, reason (8–300 chars)}] ≤ 32`,
 `stackup?: string` → always `stackup_unavailable` in P2 ("needs the patched KiCad base image,
 phase P2b"). At least one field required. Stages, each with `undo` restoring the pre-call
-value: (1) layers via `set_enabled_layers(n, non_copper)`; going down refuses with
+value: (1) layers via `set_enabled_layers(n, non_copper)` — **only when `layers` is given**:
+`preset` alone never changes the layer count (a `jlcpcb-4l` preset on a 2-layer board sets
+the 4-layer rule values and leaves 2 copper layers; the report notes the mismatch), so every
+caller that wants 4 layers passes `layers: 4` explicitly; going down refuses with
 `invalid_argument` listing up to 20 items (kind, KIID, layer) when any track, arc, zone or
 graphic sits on a removed inner layer (plan call: refuse, never delete); (2) design
 rules from preset + overrides; (3) net classes via `board_project(h).set_net_classes` +
@@ -176,12 +166,14 @@ KiCad's error text; a `.kicad_dru` created by this call is removed by the stage'
 names + widths, custom rule names. Report: rules table, classes, custom rules with reasons,
 `board_hash` changed, `next: "pcb_analyze"`.
 
-- [ ] **Step 1: Failing unit tests** (`test_presets.py`): the table above verbatim;
-  `test_2l_via_annular_consistent` (`(min_via_diameter − min_via_drill)/2 ≥ min_annular`
-  for every preset); `test_setup_schemas.py`: `test_override_below_preset_refused`,
+- [ ] **Step 1: Failing unit tests** (`test_setup_schemas.py`; the preset values are pinned
+  by P1a's `test_presets.py`): `test_override_below_preset_refused`,
   `test_custom_rule_needs_reason`, bounds and `additionalProperties`.
 - [ ] **Step 2: Failing kicad tests** (`test_rules.py`, synth after sync + outline):
-  `test_preset_4l_roundtrip` (layer count 4, `get_design_rules` values equal the table);
+  `test_preset_4l_roundtrip` (`{layers: 4, preset: "jlcpcb-4l"}` → layer count 4,
+  `get_design_rules` values equal P1a's `PRESETS["jlcpcb-4l"]`);
+  `test_preset_without_layers_keeps_layer_count` (fresh 2-layer board, `{preset:
+  "jlcpcb-4l"}` only → still 2 copper layers, rule values set, report names the mismatch);
   `test_rules_persist_to_kicad_pro` (**probe, spec §6.2**): after the call and the adapter's
   `save("pcb")`, `.kicad_pro` JSON `board.design_settings.rules.min_clearance == 0.127` and the
   net class + pattern are in `net_settings` — spike Q2 observed this; if the assertion fails at
@@ -206,8 +198,7 @@ names + widths, custom rule names. Report: rules table, classes, custom rules wi
 ### Task 4: Docs + index as built, checks, PR
 
 - [ ] Index "As built (P2)": `.kicad_pro` persistence result (and `saves_project`), layer-type
-  probe result, `BoardStage.compensable` / `.undo` (update B-C4 in place), 2-layer via 0.66 and
-  global hole-to-hole 0.45 (update call 8 / B-C8), sync runtimes on `sp4_synth`. CHANGELOG
+  probe result, sync runtimes on `sp4_synth`. CHANGELOG
   `[Unreleased]`: "Board sync, outline and rules tools — behind COPPERCHAT_BOARD_TOOLS."
 - [ ] Run `uv run pytest -m "not kicad"`, `uv run ruff check .`, `uv run ruff format --check .`,
   `uv run mypy src`, `uv run pytest -m kicad tests/kicad/board` in the kicad-base image (with

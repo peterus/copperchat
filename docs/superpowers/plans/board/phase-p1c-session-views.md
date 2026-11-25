@@ -16,15 +16,15 @@ the board tools of its profile, reads the board state cheaply (`pcb_status`) and
   `cc/board/render.py`, `cc/skills/builtin/session-board/SKILL.md`,
   `frontend/src/api/features.ts`
 - Modify: `cc/web/routes_conversations.py` (board gate, `features_router`), `cc/web/app.py`
-  (include `features_router`, one line — not in the index ownership table, reported),
+  (include `features_router`, one line),
   `frontend/src/components/sessions/NewSessionDialog.tsx`, `cc/agent/{profiles,sdk_backend,fake}.py`,
   `cc/design_docs/service.py`, `cc/skills/builtin/design-docs/templates/board.md`,
-  `cc/tools/registry.py`, `cc/views/{footprint_render,snapshot}.py`, `cc/history/{live,hooks,service}.py`
+  `cc/tools/registry.py`, `cc/views/{footprint_render,snapshot,_raster_worker}.py`, `cc/history/{live,hooks,service}.py`
   (`service.py`: `publish_disk_view` pcb branch only), `cc/agent/sdk_tools.py` (only if Task 7's
   test shows a second publish path)
 - Tests: `backend/tests/unit/web/test_features.py`, `backend/tests/unit/web/test_conversations_board.py`,
   `backend/tests/unit/agent/test_profiles_board.py`, `backend/tests/unit/agent/test_prompt_board.py`,
-  `backend/tests/unit/design_docs/test_board_policy.py`, `backend/tests/unit/board/{test_render_wrap,test_svg_limits}.py`,
+  `backend/tests/unit/design_docs/test_board_policy.py`, `backend/tests/unit/board/{test_render_wrap,test_svg_limits,test_raster_limits,test_schema_bounds}.py`,
   `backend/tests/unit/history/test_live_board.py`, `frontend/src/components/sessions/NewSessionDialog.test.tsx`,
   `backend/tests/kicad/board/{test_status,test_render,test_live_board}.py`
 
@@ -133,11 +133,19 @@ else `{"exists": true, "outline": {kind, x, y, w, h, corner_radius} | null,
 ### Task 5: SVG limits, board wrapper and `pcb_render`
 
 **Interfaces:** `footprint_render.py`: `@dataclass(frozen=True) class SvgLimits:
-max_bytes, max_elements, max_coords, max_element_coords, max_span` (the existing
-`MAX_SPAN` is a fifth limit — index B-C9 lists four, reported); `FOOTPRINT_SVG_LIMITS` =
-today's constants; `load_kicad_svg(data, *, limits=FOOTPRINT_SVG_LIMITS)`; `rasterise(svg,
-extent_mm, *, max_side_px=MAX_SIDE_PX, min_px_per_mm=MIN_PX_PER_MM,
-timeout_s=RASTER_TIMEOUT_S)`. `cc/board/render.py` (pure): `simplify_paths(root, tol_mm=0.02)`
+max_bytes, max_elements, max_coords, max_element_coords, max_span` (B-C9);
+`FOOTPRINT_SVG_LIMITS` = today's constants; `load_kicad_svg(data, *,
+limits=FOOTPRINT_SVG_LIMITS)`; `rasterise(svg, extent_mm, *, max_side_px=MAX_SIDE_PX,
+min_px_per_mm=MIN_PX_PER_MM, timeout_s=RASTER_TIMEOUT_S, memory_bytes=None)`. `rasterise`
+also passes the worker's **CPU and memory limits** as two extra argv elements
+(`<width_px> <height_px> <cpu_s> <memory_bytes>`, integers, validated like the first two):
+CPU = `ceil(timeout_s)` (hard limit + 2 s, as today), memory = `memory_bytes` or the
+worker's `MEMORY_LIMIT_BYTES`. `cc/views/_raster_worker.py::main` accepts 2 or 4 argv items
+(2 → today's constants, so the footprint path is byte-identical) and `limit_resources(cpu_s,
+memory_bytes)` never raises a limit above today's file-size cap or the inherited hard limit.
+The board path calls `rasterise(max_side_px=1600, timeout_s=BOARD_RASTER_TIMEOUT_S,
+memory_bytes=BOARD_RASTER_MEMORY_BYTES)`; the board memory cap is set in Step 4 from the
+measured peak RSS of the worker (≥ 2× the peak, ≤ 3 GiB). `cc/board/render.py` (pure): `simplify_paths(root, tol_mm=0.02)`
 (Ramer–Douglas–Peucker on `M`/`L`-only path data with > 200 points; curves untouched) and B-C9
 `wrap_svg(...)`: scale bar (1/2/5/10 mm step chosen so it spans 10–25 % of the width),
 origin cross, `"<w> × <h> mm"` label, block hulls (convex hull of the member courtyards of
@@ -166,19 +174,44 @@ png_url, placement_hash, board_hash, markers: [...]}`; failures → `render_fail
   fails footprint limits); `test_render_wrap.py`: `test_escapes_injected_text` (net
   `<script>&"` appears only escaped), `test_scale_bar_step`, `test_hull_per_group`
   (`blk:power` with 3 parts → one hull polygon labelled `power`), `test_simplify_keeps_shape`
-  (a 1000-point circle → < 200 points, max deviation ≤ 0.02 mm), `test_region_viewbox`.
+  (a 1000-point circle → < 200 points, max deviation ≤ 0.02 mm), `test_region_viewbox`;
+  `test_raster_limits.py`: `test_rasterise_passes_cpu_and_memory` (spy on
+  `create_subprocess_exec`: `timeout_s=7.2, memory_bytes=2**30` → argv ends with `"8"`,
+  `str(2**30)`), `test_worker_two_args_uses_defaults` and `test_worker_four_args_sets_limits`
+  (call `_raster_worker.limit_resources` in a `spawn` subprocess, read
+  `resource.getrlimit(RLIMIT_CPU/RLIMIT_AS)` back), `test_worker_rejects_bad_limits`
+  (non-integer or ≤ 0 → non-zero exit).
 - [ ] **Step 2: Failing kicad tests** (`test_render.py`, module-scoped `ecc83` server):
   `test_render_each_view` (top, bottom, layer `B.Cu`, placement, 3d iso: PNG long side ≤ 1600,
   hashes equal `pcb_status`'s); `test_render_unknown_layer` (`In5.Cu` → `not_found` with
   `closest`); `test_render_highlight_and_markers`; `test_render_boardless` (`no_board`);
   `test_render_zone_filled` (add a GND zone over the whole outline on F.Cu and B.Cu through the
   API, `refill_zones`, render top → passes `BOARD_SVG_LIMITS`; record bytes, elements,
-  coords, max element coords, span and raster seconds with `record_property`).
+  coords, max element coords, span, raster seconds and the raster worker's peak RSS —
+  `ru_maxrss` of `resource.getrusage(RUSAGE_CHILDREN)` delta — with `record_property`).
 - [ ] **Step 3: Run** — FAIL. **Step 4: Implement**; set `BOARD_SVG_LIMITS` to ≥ 4× the
   largest measured value of each field (ecc83 and the zone-filled board) and the board raster
-  timeout to ≥ 3× the measured seconds, capped at 60 s; record both in "As built (P1c)".
+  timeout to ≥ 3× the measured seconds, capped at 60 s, and `BOARD_RASTER_MEMORY_BYTES` to
+  ≥ 2× the measured peak RSS (≤ 3 GiB); record all three in "As built (P1c)".
   **Step 5: Run** — PASS.
 - [ ] **Step 6: Commit** `feat(board): pcb_render with board SVG limits`.
+
+### Task 5b: Every board schema is bounded
+
+**Interfaces:** none new — a guard test over the registry (plan call 6, Global Constraints).
+
+- [ ] **Step 1: Failing unit test** (`test_schema_bounds.py::test_every_board_schema_bounded`):
+  iterate every registered `ToolSpec` whose name starts with `pcb_` (from
+  `cc/tools/registry.py`, the real providers — so specs registered by later phases are
+  covered automatically) and walk its `input_schema` recursively (incl. `items`,
+  `properties`, `anyOf`/`oneOf`): every `array` has `maxItems`; every `string` has
+  `maxLength` or `enum` or `pattern`; every `number`/`integer` has `minimum` (or
+  `exclusiveMinimum`) and `maximum` (or `exclusiveMaximum`); every `object` has
+  `additionalProperties: false`. A failure names the tool and the JSON path. In P1c it
+  covers `pcb_status` and `pcb_render`.
+- [ ] **Step 2: Run** — FAIL (until both schemas comply). **Step 3: Fix the schemas.**
+  **Step 4: Run** — PASS.
+- [ ] **Step 5: Commit** `test(board): every pcb_* schema is bounded`.
 
 ### Task 6: `session-board` skill skeleton
 
@@ -223,9 +256,8 @@ adapter after `apply` (once per tool call, `sdk_tools.py` success path and the
 
 ### Task 8: Docs + index as built, checks, PR
 
-- [ ] Index "As built (P1c)": measured board SVG limits and raster timeout, `SvgLimits` has
-  `max_span` (update B-C9), `features_router` in `app.py` (update the ownership row),
-  `freerouting=` passed from P6b (B-C1 note). CHANGELOG `[Unreleased]`: "Board sessions with
+- [ ] Index "As built (P1c)": measured board SVG limits, raster timeout and raster memory cap
+  (peak RSS), `freerouting=` passed from P6b (B-C1 note). CHANGELOG `[Unreleased]`: "Board sessions with
   `pcb_status` / `pcb_render` and a live board view — behind COPPERCHAT_BOARD_TOOLS."
 - [ ] Run `uv run pytest -m "not kicad"`, `uv run ruff check .`, `uv run ruff format --check .`,
   `uv run mypy src`; `npm run lint`, `npx vitest run`, `npm run typecheck`; `uv run pytest -m
@@ -243,3 +275,4 @@ adapter after `apply` (once per tool call, `sdk_tools.py` success path and the
 - [ ] `pcb_render` produces all five views on ecc83 with PNG ≤ 1600 px; the zone-filled board
   passes `BOARD_SVG_LIMITS`; measurements recorded.
 - [ ] `test_board_tool_publishes_once` and the kicad live-frame test pass.
+- [ ] `test_every_board_schema_bounded` passes (and keeps guarding every later phase).

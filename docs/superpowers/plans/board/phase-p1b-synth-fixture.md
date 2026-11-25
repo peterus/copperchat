@@ -23,7 +23,7 @@ netlist that CI regenerates and compares.
 - Tests: as above (`-m kicad`), plus `backend/tests/unit/test_sp4_synth_summary.py` (pure
   summary builder on a recorded netlist string)
 
-**Decision (index fix, reported):** no board is committed, so there is exactly one fixture,
+**Decision:** no board is committed, so there is exactly one fixture,
 `synth_session` = the schematic-only `sp4_synth` project (`pcb_file is None`). The index's
 `synth_nopcb_session` is dropped; tests that need a board create it with P2's sync.
 

@@ -43,10 +43,10 @@ Spike: `docs/spikes/4a-board.md`.
 
 | # | Phase file | Goal (one line) | Depends on | Wave |
 |---|---|---|---|---|
-| P1a | `board/phase-p1a-core-write-path.md` | `BoardModel` + hashes + geometry, `kicad_tools/board/{read,api}.py` (G3/G5), `BoardChangeSet` engine (stages, read-back, KIID compensation, board creation), per-`DocKind` commit/modified, CPU worker, history `.kicad_dru` + absent entries + restore re-discovery, `COPPERCHAT_BOARD_TOOLS`, `BOARD_KINDS`, DRC-in-open-commit probe | — | 1 |
+| P1a | `board/phase-p1a-core-write-path.md` | `BoardModel` + hashes + geometry, `kicad_tools/board/{read,api}.py` (G3/G5), `BoardChangeSet` engine (stages, read-back, KIID compensation, board creation), per-`DocKind` commit/modified, serialised CPU worker, JLC `FabPreset` data, history `.kicad_dru` + absent entries + restore re-discovery, `COPPERCHAT_BOARD_TOOLS`, `BOARD_KINDS`, DRC-in-open-commit probe | — | 1 |
 | P1b | `board/phase-p1b-synth-fixture.md` | `sp4_synth` fixture (≈ 25 SMD parts, 2 sheets) generated through CopperChat's schematic engine + KiCad API, generator script, `refresh-fixtures.sh`, `synth_session` fixture | — | 1 |
 | P1c | `board/phase-p1c-session-views.md` | Board session type behind the flag, `/api/features`, profiles (`PCB_READ`, `PCB_WRITES`, `PLAN_TOOLS`, `FP_WRITES`, `doc_patch_section`), prompt, `board.md` v2 + write policy, `pcb_status`, `pcb_render` (+ board SVG limits), live board view (G8), `session-board` skeleton | P1a | 2 |
-| P2 | `board/phase-p2-sync-setup.md` | `pcb_sync_from_schematic` (create + reopen, staging area), `pcb_set_outline`, `pcb_set_rules` (no stackup), JLC presets, layer-type probe | P1b, P1c | 3 |
+| P2 | `board/phase-p2-sync-setup.md` | `pcb_sync_from_schematic` (create + reopen, staging area), `pcb_set_outline`, `pcb_set_rules` (no stackup; applies P1a's JLC presets), layer-type probe | P1b, P1c | 3 |
 | P2b | `board/phase-p2b-stackup-patch.md` | KiCad patch 0005 `UpdateBoardStackup` handler (G1) + QA test, kicad-base rebuild, `pcb_set_rules.stackup` presets | P2 | 4 (any time after P2) |
 | P3a | `board/phase-p3a-analysis-metrics.md` | `classify.py`, `boardmd.py` parser, bend geometry (one M4/M7 definition), `metrics.py` M1–M14, `pcb_analyze`, `pcb_metrics` | P1b, P1c | 3 |
 | P3b | `board/phase-p3b-checks-checkpoints.md` | `pcb_check`, migration `0013_board.sql`, `board_reviews` evidence, `pcb_approve` + shared approval guards, checkpoint guards for later tools, `pcb_status` checkpoint fields | P3a, P2 | 4 |
@@ -95,30 +95,34 @@ means the file is shared and the phase only adds lines (rebase on `main` and kee
 
 | Area | Owner (wave) | Others |
 |---|---|---|
-| `cc/board/{__init__,model,geom,worker}.py`, `cc/kicad_tools/board/{__init__,read,api,engine,compensate}.py`, `cc/kicad_session/session.py`, `cc/history/{store,restore,service}.py`, `cc/changes/{repo,diff}.py`, `frontend/src/components/changes/highlight.ts`, `cc/config.py` (`board_tools`), `cc/tools/spec.py` + `cc/agent/{engine,sdk_backend,fake}.py` + `cc/history/hooks.py` (`ToolContext.reload_project`, `refresh_project`, `on_project_changed` only), `cc/kicad_tools/edit/engine.py` (refusal) | P1a (1) | P1b none |
+| `cc/board/{__init__,model,geom,worker,presets,_selftest}.py` (`presets.py`: `FabPreset` + `PRESETS`, pure data), `cc/kicad_tools/board/{__init__,read,api,engine,compensate}.py` (engine incl. `BoardStage.compensable` / `undo`), `cc/kicad_session/session.py`, `cc/history/{store,restore,service}.py`, `cc/changes/{repo,diff}.py`, `frontend/src/components/changes/highlight.ts`, `cc/config.py` (`board_tools`), `cc/tools/spec.py` + `cc/agent/{engine,sdk_backend,fake}.py` + `cc/history/hooks.py` (`ToolContext.reload_project`, `refresh_project`, `on_project_changed` only), `cc/agent/sdk_tools.py` (`_two_phase_steps` generation re-baseline after a session replacement only), `cc/kicad_tools/edit/engine.py` (refusal) | P1a (1) | P1b none |
 | `backend/tests/fixtures/projects/sp4_synth/**`, `scripts/make-sp4-synth.py`, `scripts/refresh-fixtures.sh`, `backend/tests/support/kicad_project.py` (`synth_session`), `backend/tests/kicad/board/goldens/sp4_synth_summary.json` | P1b (1) | P1a none |
-| `cc/agent/{profiles,sdk_backend,fake}.py`, `cc/agent/sdk_tools.py` (board publish), `cc/history/{live,hooks}.py`, `cc/views/{snapshot,footprint_render}.py`, new `cc/views/board_render.py`, `cc/board/render.py`, `cc/web/routes_conversations.py`, `frontend/src/components/sessions/NewSessionDialog.tsx`, `cc/design_docs/service.py`, `cc/skills/builtin/design-docs/templates/board.md`, new `cc/skills/builtin/session-board/`, `cc/kicad_tools/board/{specs,status,views}.py`, `cc/tools/registry.py`, `cc/web/app.py` (`/api/features` registration), new `frontend/src/api/features.ts`, `cc/history/service.py` (pcb branch of the turn-end view refresh) | P1c (2) | — |
-| `cc/kicad_tools/board/{sync,setup}.py`, `cc/kicad_tools/board/specs_setup.py`, `cc/board/{presets,staging}.py`, `cc/kicad_tools/board/engine.py` (`compensable` / `undo` stage handling) | P2 (3) | `board/specs.py` append |
-| `cc/board/{classify,boardmd,metrics}.py`, `cc/board/geom.py` (bend analysis, append), `cc/kicad_tools/board/{analysis,specs_analysis}.py` | P3a (3) | `board/specs.py` append |
+| `cc/agent/{profiles,sdk_backend,fake}.py`, `cc/agent/sdk_tools.py` (board publish), `cc/history/{live,hooks}.py`, `cc/views/{snapshot,footprint_render,_raster_worker}.py` (`_raster_worker`: CPU/memory limits from argv), new `cc/views/board_render.py`, `cc/board/render.py`, `cc/web/routes_conversations.py`, `frontend/src/components/sessions/NewSessionDialog.tsx`, `cc/design_docs/service.py`, `cc/skills/builtin/design-docs/templates/board.md`, new `cc/skills/builtin/session-board/`, `cc/kicad_tools/board/{specs,status,views}.py`, `cc/tools/registry.py`, `cc/web/app.py` (`/api/features` registration), new `frontend/src/api/features.ts`, `cc/history/service.py` (pcb branch of the turn-end view refresh) | P1c (2) | — |
+| `cc/kicad_tools/board/{sync,setup}.py`, `cc/kicad_tools/board/specs_setup.py`, `cc/board/staging.py` (consumes P1a's `presets.py`) | P2 (3) | `board/specs.py` append |
+| `cc/board/{classify,boardmd,metrics}.py`, `cc/board/jobs.py` (the one module of `run_cpu` job functions: `analyse_job`, `metrics_job`), `cc/board/geom.py` (bend analysis, append), `cc/kicad_tools/board/{analysis,specs_analysis}.py` | P3a (3) | `board/specs.py` append; `cc/board/jobs.py` append (P4 `place_block_job` / `legalize_job`, P5b/P6b if needed) |
 | `cc/db/migrations/0013_board.sql`, `cc/db/repos/board.py`, new `cc/approvals.py`, `cc/kicad_tools/footprints/approve.py` (refactor to `cc/approvals.py`), `cc/editing/gate.py` (`PLAN_EXEMPT_TOOLS`), `cc/kicad_tools/board/{check,approve,checkpoints,specs_check}.py`, `board/status.py` + `board/views.py` (evidence/checkpoint fields) | P3b (4) | `board/specs.py` append |
-| `cc/board/router/{__init__,grid,astar,simplify,pairs}.py` | P5a (4) | — |
+| `cc/board/router/{__init__,grid,astar,simplify,pairs}.py` — **only P5a creates `cc/board/router/__init__.py`** | P5a (4) | P6a must not create or edit `__init__.py` (it adds `chamfer.py`, imported by full path); if P5a is not merged yet, P6a creates an empty `__init__.py` only if absent and keeps P5a's version on rebase |
 | `scripts/fetch-freerouting.sh`, `docker/freerouting.lock`, `docker/app/Dockerfile`, `.github/workflows/ci.yml` (kicad job cache + fetch step), `cc/board/freerouting.py`, `cc/board/router/chamfer.py`, `cc/config.py` (freerouting settings, append), `LICENSES/` notices, `scripts/app-image-tools.sh`, `.gitignore` | P6a (4) | — |
-| `docker/kicad-base/patches/0005-*.patch`, `docker/kicad-base/patches/README.md`, `cc/kicad_tools/board/setup.py` (stackup branch), `cc/kicad_tools/board/specs_setup.py` (stackup enum), `cc/board/presets.py` (stackups), `docs/kicad-patches/0005-board-stackup-FACTS.md`, `CHANGELOG.md` | P2b (4) | runs after P2 merged |
+| `docker/kicad-base/patches/0005-*.patch`, `docker/kicad-base/patches/README.md`, `cc/kicad_tools/board/setup.py` (stackup branch), `cc/kicad_tools/board/specs_setup.py` (stackup enum), `cc/board/presets.py` (append `StackupPreset`, `STACKUPS`), `docs/kicad-patches/0005-board-stackup-FACTS.md` | P2b (4) | runs after P2 merged |
 | `cc/board/placer/**`, `cc/kicad_tools/board/{place,unroute_ops,specs_place}.py` | P4 (5) | — |
 | `cc/kicad_tools/board/{route,specs_route}.py` | P5b (6) | — |
 | `cc/kicad_tools/board/{fill,specs_fill}.py`, `cc/agent/profiles.py` + `cc/agent/{sdk_backend,fake}.py` (freerouting filter + call sites) | P6b (7) | — |
 | `cc/board/{planes,silk}.py`, `cc/kicad_tools/board/{zones,fanout,stitch,silk,specs_copper}.py` | P7 (7) | — |
 | `cc/board/{fab,paths}.py`, `cc/kicad_tools/board/{fab,specs_fab}.py` | P8 (8) | — |
 | `backend/tests/kicad_e2e/**`, `backend/pyproject.toml` (marker), `backend/tests/support/sharding.py` / `tests/unit/test_sharding.py`, `ci.yml` (`kicad-e2e` job), `scripts/odh-dry-run.py`, `scripts/update-goldens.sh` | P9a (9) | — |
-| `cc/skills/builtin/{session-board,board-layout,copperchat-tools}/`, `cc/agent/sdk_backend.py` (prompt), `cc/config.py` (default on), README, CHANGELOG, `docs/architecture.md`, `.env.example`, `backend/tests/live/test_board_eval.py` | P9b (10) | — |
+| `cc/skills/builtin/{session-board,board-layout,copperchat-tools}/`, `cc/agent/sdk_backend.py` (prompt), `cc/config.py` (default on), README, `docs/architecture.md`, `.env.example`, `backend/tests/live/test_board_eval.py` | P9b (10) | — |
+| **Shared, append-only (all phases):** `CHANGELOG.md` (`[Unreleased]` lines), this index's "As built" section (one `### As built (P#)` per phase), `backend/tests/kicad/board/conftest.py` (P1a creates it with `board_ctx`; P3a `synth_board`, P3b `synth_setup`, P4 `place_synth`, **P5b the shared rigs `placed_synth` / `routed_synth`** that P6b, P7, P8 build on), `backend/tests/unit/board/conftest.py` | every phase | add lines only; on rebase keep both sides; never rewrite another phase's helper |
 
 P3a's kicad tests need a board on `sp4_synth` before P2 exists: they use a test-only
 `synth_board` helper in `backend/tests/kicad/board/conftest.py` (kicad-cli netlist →
 `create_board_document` → `import_netlist`), which later phases may reuse.
 Every phase may add new files under `backend/tests/unit/board/` and `backend/tests/kicad/board/`
 with phase-specific names (`test_<module>.py`); conftest additions in those two directories are
-append-only. **Each phase updates this index in its own PR**: section "As built (P#)" and any
-contract deviation in place.
+append-only (row "Shared, append-only" above). Kicad rigs from P5b on use **one** setup
+sequence — P5b's `placed_synth` / `routed_synth`: sync → outline → `pcb_set_rules {layers: 4,
+preset: "jlcpcb-4l", …}` → blocks/place → legalize → render placement + `pcb_check quick` →
+placement approved through `pcb_approve` → `pcb_route` critical. **Each phase updates this
+index in its own PR**: section "As built (P#)" and any contract deviation in place.
 
 ---
 
@@ -135,7 +139,9 @@ Constraints). Values are copied from the spec.
   CLI options. File operations on KiCad data: history snapshot/restore only (incl. deleting the
   `.kicad_pcb` / `.kicad_dru` recorded **absent** in a manifest, §6.4), plus `remove_created`
   (P1a): a failed tool call deletes a `.kicad_pcb` / `.kicad_dru` that **the same call** created,
-  with restore's checks (regular file, inside the project dir, no symlink).
+  with restore's checks (`lstat` of the **unresolved** path inside the project dir: only a
+  regular file is unlinked — through the unresolved path; symlinks and non-regular files are
+  skipped and logged, never followed).
 - **Fixtures are KiCad-generated** (KiCad demos, API/engine-created projects, KiCad-saved
   files). Never hand-edited, also not in tests. Goldens are CopperChat JSON output.
 - **Nothing on KiCad's GitLab, mailing list or Discord, nor on Freerouting's GitHub.** KiCad AI
@@ -182,9 +188,14 @@ Constraints). Values are copied from the spec.
   with a reason **locally only — never in CI**.
 - Freerouting: 2.5.0 JAR + Temurin 25 JRE (linux x64) in the **app image** only, both pinned by
   SHA-256 in `docker/freerouting.lock`, fetched by one script for Dockerfile and CI;
-  `--gui.enabled=false`, `-Xmx1g -XX:MaxMetaspaceSize=256m`, `RLIMIT_CPU` = timeout + 30 s,
-  `RLIMIT_NOFILE` 256, **no `RLIMIT_AS`**; timeout default 300 s, max 600 s; no network
+  `--gui.enabled=false`, `-Xmx1g -XX:MaxMetaspaceSize=256m -XX:ActiveProcessorCount=2`;
+  limits set by util-linux `prlimit` before `exec` (no `preexec_fn`): `RLIMIT_CPU` = 2 ×
+  timeout + 30 s (two active processors for the whole timeout + margin — the spec's "timeout +
+  margin"), `RLIMIT_NOFILE` 256, `RLIMIT_FSIZE` 512 MiB, **no `RLIMIT_AS`**; SIGXCPU/SIGKILL
+  not sent by us count as `timed_out`; timeout default 300 s, max 600 s; no network
   (`unshare -n` when permitted, else options + a no-connection test); killed on turn stop.
+  `pcb_route_fill`: Freerouting gets `timeout_s`; post-processing + rip-and-reroute get a
+  separate 120 s deadline. `pcb_route`: total deadline 300 s.
 - Renders: PNG ≤ 1600 px long side; ≤ 3 images per step report; SVG through the footprint
   sanitiser with board limits (B-C9); every injected string XML-escaped.
 - Fab: `<project>/fab/jlcpcb/` and `<project>/fab/3d/`, refused if `fab/` or the target is a
@@ -207,9 +218,11 @@ phase/task that pins it.
    `test_fill_keeps_placement_hash`, `test_fill_failure_restores_full_copper`,
    `test_fill_cancel_compensates`).
 2. **An approval that survives a change** — outline edited, a part locked/unlocked, silk tidied,
-   a custom rule added, or an undo back to an older approved state. Expected: the checkpoint is
-   stale, `pcb_route` / `pcb_fab_export` refuse. Tests: P1a Task 1 (hash coverage),
-   P3b Task 3 (`test_older_approval_not_revived`, `test_dru_change_invalidates_board`).
+   a custom rule added, an undo back to an older approved state, a move away and back after
+   the evidence (ABA), or a move during the fab export. Expected: the checkpoint is stale or
+   the approval refused, `pcb_route` / `pcb_fab_export` refuse. Tests: P1a Task 1 (hash
+   coverage), P3b Task 3 (`test_older_approval_not_revived`, `test_dru_change_invalidates_board`,
+   `test_aba_in_approving_turn_refused`), P8 Task 3 (`test_concurrent_move_blocks_or_refuses`).
 3. **A 90° corner that slips through** — an off-pad T-junction, a chamfer of 0.1 mm on a 0.2 mm
    track, a corner hidden by a pad-entry exemption, Freerouting's non-octilinear tail.
    Expected: M4/M7 fail, the post-processor rips and re-routes. Tests: P3a Task 2
@@ -220,8 +233,16 @@ phase/task that pins it.
    Expected: session starts, `docs_of == {"sch"}`, no "could not open" error. Tests: P1a
    Task 5 (unit), P2 Task 1 (`test_sync_create_then_undo`).
 5. **A forged placement/board approval** — approval in the same turn, from a server-generated
-   message, with a quote the user never wrote, with the other stage's hash, or while a plan
-   runs. Expected: `approval_not_allowed` with `details.guard`. Tests: P3b Task 3.
+   message, with a quote the user never wrote, with the other stage's hash, after a board
+   write that followed the evidence, or while a plan runs. Expected: `approval_not_allowed`
+   with `details.guard`. Tests: P3b Task 3.
+6. **A runaway job** — a huge routing window, a CPU-bound JVM, a raster bomb or two jobs at
+   once. Expected: router windows over 4,000,000 cells/layer fail `too_large`, the CPU worker
+   is serialised and capped by `RLIMIT_AS`, the JVM by `prlimit`, the raster worker by CPU and
+   memory limits. Tests: P1a Task 6 (`test_concurrent_calls_serialised`), P5a Task 1/5
+   (`test_window_over_cap_raises`, `test_large_board_budget`), P6a Task 3
+   (`test_limits_applied`, `test_cpu_limit_maps_to_timed_out`), P1c Task 5
+   (`test_rasterise_passes_cpu_and_memory`).
 
 ---
 
@@ -377,19 +398,25 @@ def compensate(h: KicadHandle, snap: CopperSnapshot) -> list[str]   # removes it
 `self.modified_docs: set[DocKind]` (pushed commit adds `doc`, save of `doc` removes it); the old
 `modified` becomes a property `"sch" in self.modified_docs`.
 
-`cc/board/worker.py` (P1a): `async def run_cpu(fn: Callable[..., T], *args: Any, timeout_s: float)
--> T` — `ProcessPoolExecutor(max_workers=1, mp_context=spawn)` per server process, created
-lazily; on timeout the worker is killed and replaced, raising
-`StructuredToolError(code="board_compute_timeout")`; `fn` must be a module-level function of
-`cc/board/**` with picklable (frozen dataclass) arguments.
+`cc/board/worker.py` (P1a): `async def run_cpu(fn: Callable[..., T], *args: Any, timeout_s: float,
+**kwargs: Any) -> T` (keyword arguments pass through to `fn`) — `ProcessPoolExecutor(max_workers=1,
+mp_context=spawn, initializer=…)` per server process, created lazily; the initializer sets
+`RLIMIT_AS` (3 GiB, as `cc/views/_raster_worker.py` does; measured peak recorded); jobs are
+**serialised** by an `asyncio.Lock` and `timeout_s` starts when the caller's own job starts
+(never while queued); on timeout the worker is killed and replaced, raising
+`StructuredToolError(code="board_compute_timeout")`; a cancel kills the worker only while the
+caller's own job runs; `fn` must be a module-level function of `cc/board/**` (job functions
+live in `cc/board/jobs.py`, P3a, or are B-C12 entry points) with picklable (frozen dataclass)
+arguments.
 
 ### B-C5. Bend geometry — `cc/board/geom.py` (P3a, append)
 
 ```python
 @dataclass(frozen=True) class BendReport:
     non_octilinear: tuple[Point, ...]   # segment midpoints off 0/45/90/… by > 0.5°
-    ninety: tuple[Point, ...]           # vertices with a 90° direction change
-    acute: tuple[Point, ...]            # vertices with a 135° change (or sharper)
+    ninety: tuple[Point, ...]           # vertices with a 90° (± 0.5°) direction change
+    acute: tuple[Point, ...]            # vertices with a change ≥ 134.5° (135° or sharper)
+    off_angle: tuple[Point, ...]        # every other failing vertex: δ > 0.5° and |δ − 45°| > 0.5° and not ninety/acute (e.g. 46°, 60°, 90.8°)
     t_junctions: tuple[Point, ...]      # off-pad branch meeting at 90°
     micro_jogs: tuple[Point, ...]
     short_chamfers: tuple[Point, ...]
@@ -400,7 +427,11 @@ def analyse_tracks(model: BoardModel) -> BendReport         # all nets/layers, a
 ANGLE_TOL_DEG = 0.5; CHAMFER_MIN = lambda w: max(1.0 * w, 0.25); JOG_MIN = lambda w: 2.0 * w
 ```
 
-Router (P5a) and post-processor (P6a) import `analyse_bends`; nothing else defines these terms.
+Vertex classification has no gaps: δ ≤ 0.5° collinear, |δ − 45°| ≤ 0.5° a 45° bend, every
+other vertex fails as `ninety`, `acute` or `off_angle`; M4 hard = non-octilinear + ninety +
+acute + off_angle + T-junctions. Router (P5a) and post-processor (P6a) import `analyse_bends`;
+their property tests assert every failing field is empty (incl. `off_angle`); nothing else
+defines these terms.
 
 ### B-C6. Classification and `board.md` — `cc/board/{classify,boardmd}.py` (P3a)
 
@@ -458,7 +489,7 @@ octilinear estimates at placement stage, routed lengths after; spec §12 notes).
 are module constants `HARD` / `REVIEW` with the spec §12 values; review thresholds may be tuned
 on fixtures (recorded in "As built"), hard ones never.
 
-### B-C8. Presets — `cc/board/presets.py` (P2; stackups P2b)
+### B-C8. Presets — `cc/board/presets.py` (P1a; stackups P2b)
 
 ```python
 @dataclass(frozen=True) class FabPreset:
@@ -472,7 +503,10 @@ STACKUPS: Mapping[str, StackupPreset]   # P2b: "jlc-2l-1.6", "jlc-4l-1.6-7628", 
 ```
 
 Values: see "Calls made by the plan author", call 8 (verified 2026-11-25 against
-jlcpcb.com/capabilities/pcb-capabilities). `FabPreset` is what M14 checks.
+jlcpcb.com/capabilities/pcb-capabilities); P1a pins them in `test_presets.py`. `FabPreset` is
+what M14 checks (hole-to-edge uses `copper_to_edge`, measured from the hole edge); P2 applies
+it in `pcb_set_rules {preset}` (a preset never changes the layer count — callers pass
+`layers`).
 
 ### B-C9. Renders — `cc/views/board_render.py` + `cc/board/render.py` (P1c)
 
@@ -485,7 +519,8 @@ async def render_board(ctx: ToolContext, view: BoardView, *, layer: str | None =
 # cc/board/render.py (pure): wrap_svg(svg_text, *, extent, scale_bar=True, hulls, markers, title) -> str
 BOARD_SVG_LIMITS = SvgLimits(max_bytes=24 MiB, max_elements=200_000, max_coords=2_000_000,
                              max_element_coords=50_000, max_span=…)   # P1c measures on fixtures, may tune
-# footprint_render.rasterise gains max_side_px / timeout_s keyword arguments (defaults = today's)
+# footprint_render.rasterise gains max_side_px / timeout_s / memory_bytes keyword arguments (defaults = today's);
+# it passes CPU (= ceil(timeout_s)) and memory limits to _raster_worker as two extra argv items
 ```
 
 `cc/views/footprint_render.py` gains a `SvgLimits` dataclass (default = today's constants incl. `MAX_SPAN`) passed
@@ -519,6 +554,12 @@ async def require_board_approved(ctx: ToolContext, model: BoardModel) -> None   
 (project, board_file, stage) counts. `cc/approvals.py` (P3b) holds the guards shared with
 `fp_approve`: `normalise(text)`, `quote_in_message(quote, message) -> bool`,
 `human_messages_after(ctx, since_iso) -> list[Message]`, `plan_running(ctx) -> bool`.
+`pcb_approve` guards (P3b, each `approval_not_allowed` with its own `details.guard`): 1 hash
+of the stage, 2 evidence in this conversation for the hash, 3 evidence passes, **4 no write
+after evidence** (no change-log entry of a `BOARD_KINDS` kind other than `board_approve` for
+this project newer than the newest evidence row used — the ABA guard, mirroring
+`fp_approve`'s `last_geometry_write_at` check), 5 a later human message, 6 the quote in it,
+7 no plan running.
 
 ### B-C11. Placer — `cc/board/placer/` (P4)
 
@@ -529,7 +570,8 @@ async def require_board_approved(ctx: ToolContext, model: BoardModel) -> None   
 @dataclass(frozen=True) class DoesNotFit: needed_mm2: float; available_mm2: float; refs: tuple[str, ...]
 def place_block(model, cls, block_refs, region: Rect, *, side: Side, rotation: int | None,
                 keep_channels: float = 0.5, fixed: Sequence[Move] = (),
-                allowed_sides: frozenset[Side], edge: Literal["top","bottom","left","right"] | None = None) -> PlaceResult | DoesNotFit
+                allowed_sides: frozenset[Side], edge: Literal["top","bottom","left","right"] | None = None,
+                target: Point | None = None) -> PlaceResult | DoesNotFit
 def legalize(model, moves: Sequence[Move], *, movable: frozenset[str], max_shift: float | None,
              keepouts: Sequence[tuple[Point, ...]], edge_margin: float) -> tuple[Move, ...] | DoesNotFit
 def score_placement(model, cls, doc) -> PlacementScore   # M1/M8/M9/M10 + airwire + max pin density per 5×5 mm cell
@@ -547,15 +589,20 @@ Determinism: same input → same output (no unseeded randomness, stable sort key
                                             layers: tuple[str, ...]; allow_vias: bool; via: tuple[float, float]  # (diameter, drill)
 @dataclass(frozen=True) class RoutePath: segments: tuple[tuple[str, Point, Point], ...]   # (layer, start, end)
                                          vias: tuple[Point, ...]; length: float
+MAX_CELLS_PER_LAYER = 4_000_000
+class RouteTooLarge(Exception): cells: int   # build_grid refuses a larger window; the caller reports the connection failed "too_large"
 def build_grid(model: BoardModel, req: RouteRequest, *, pitch: float = 0.05, margin: float = 0.0) -> ObstacleGrid
 def route(grid: ObstacleGrid, req: RouteRequest, *, max_expansions: int = 2_000_000) -> RoutePath | None
 def route_pair(model, p: RouteRequest, n: RouteRequest, gap: float) -> tuple[RoutePath, RoutePath] | None
 def solve(model: BoardModel, req: RouteRequest, *, margin: float = 0.0, max_expansions: int = 2_000_000) -> RoutePath | None   # run_cpu entry point
 def solve_pair(model, p, n, gap, *, margin: float = 0.0) -> tuple[RoutePath, RoutePath] | None                                 # run_cpu entry point
-def pair_coupling(a: RoutePath, b: RoutePath) -> dict[str, float]   # length mismatch, gap variation (M12 reporting)
+def pair_coupling(a: RoutePath, b: RoutePath) -> dict[str, float]   # keys length_mismatch, gap_min, gap_max (centre-to-centre over the coupled stretch; M12 reporting)
+def prune_model(model: BoardModel, req: RouteRequest | tuple[RouteRequest, RouteRequest]) -> BoardModel   # only items intersecting the retry window; callers pass it to solve/solve_pair
 # cc/kicad_tools/board/route.py (P5b), reused by P6b rip-and-reroute and ladder rung (c):
-async def route_connections(sctx: BoardStageContext, plans: Sequence[ConnPlan], *, lock: bool) -> RouteOutcome
-#   RouteOutcome(routed: tuple[str, ...], failed: tuple[tuple[str, str], ...]); connection key "{net}:{refA}.{padA}-{refB}.{padB}" 
+async def route_connections(sctx: BoardStageContext, plans: Sequence[ConnPlan], *, lock: bool,
+                            deadline: float | None = None) -> RouteOutcome   # deadline = time.monotonic() value; connections not started by then → failed "timeout"
+#   RouteOutcome(routed: tuple[str, ...], failed: tuple[tuple[str, str], ...]); connection key "{net}:{refA}.{padA}-{refB}.{padB}"
+#   failure reasons: no_path, too_large, timeout, drc_rejected: <text>
 # chamfer.py (P6a)
 @dataclass(frozen=True) class PostResult: replace: tuple[tuple[str, tuple[Track, ...]], ...]  # (old kiid, new tracks)
                                           # (kiid, ()) = delete (merges / duplicates)
@@ -579,8 +626,9 @@ async def run_freerouting(rt: FreeroutingRuntime, dsn: Path, ses: Path, *, timeo
 
 `board_tools_disabled`, `no_board`, `schematic_unsaved`, `sync_failed`, `invalid_argument`,
 `not_found` (ref/net/block), `unknown_block`, `stackup_unavailable`, `does_not_fit`,
-`part_routed`, `placement_not_approved`, `not_approved`, `approval_not_allowed`
-(`details.guard`), `freerouting_unavailable`, `fill_not_acceptable` (`details.reason` ∈ {`rip_ratio`,
+`part_routed`, `placement_not_approved`, `not_approved` (`details.reason` ∈ {`missing`,
+`stale`, `check_failed`, `changed_during_export`}), `approval_not_allowed`
+(`details.guard` 1–7, B-C10), `freerouting_unavailable`, `fill_not_acceptable` (`details.reason` ∈ {`rip_ratio`,
 `timeout`, `freerouting_error`}), `board_compute_timeout`,
 `drc_rejected`, `verification_failed` (existing, `cc/kicad_tools/edit/engine.py`), `output_path_unsafe`, `render_failed`, `export_failed`,
 `session_type_unavailable` (HTTP 400), and the existing `document_inconsistent`, `read_only`,
@@ -716,7 +764,7 @@ Each is pinned by a test or a task in the named phase.
 
 1. **JLC preset tightening** (call 8): annular ring 0.15 / 0.18 mm and silk text height 1.0 mm
    instead of the spec's 0.13 mm / 0.8 mm, to match JLC's current published minimums. Stricter
-   only. Until the owner answers, P2 implements the stricter values (a looser M14 could pass a
+   only. Until the owner answers, P1a implements the stricter values (a looser M14 could pass a
    board JLC rejects).
 2. **M1 vs. edge connectors** (spec contradiction): M1 (hard) requires every courtyard fully
    inside the outline, but §9.3/M13 let a connector (and a module antenna) sit "on or

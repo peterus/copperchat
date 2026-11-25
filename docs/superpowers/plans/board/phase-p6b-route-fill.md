@@ -21,22 +21,24 @@ full pre-fill copper.
 - Create: `cc/kicad_tools/board/{fill,specs_fill}.py`
 - Modify: `cc/kicad_tools/board/specs.py` (append), `cc/agent/profiles.py` (`freerouting`
   argument + one filter line), `cc/agent/sdk_backend.py` and `cc/agent/fake.py` (pass
-  `settings.freerouting` at the two `profile_specs` call sites — B-C1 says so, the index's
-  P6b ownership row lists only `profiles.py`; reported); `cc/agent/sdk_backend.py` env line
-  only if Task 4's SDK check requires it
+  `settings.freerouting` at the two `profile_specs` call sites, B-C1); `cc/agent/sdk_backend.py`
+  env line only if Task 4's SDK check requires it
 - Tests: `backend/tests/unit/agent/test_profiles_freerouting.py`,
   `backend/tests/unit/board/{test_fill_schema,test_fill_plan}.py`,
   `backend/tests/kicad/board/{test_fill_roundtrip,test_fill_compensation,test_fill_postprocess}.py`
-  (+ append a module-scoped `fill_rig` helper to `tests/kicad/board/conftest.py`)
+  (+ append a module-scoped `fill_rig` fixture to `tests/kicad/board/conftest.py` that calls
+  P5b's shared `routed_synth` — no own copy of the setup sequence)
 
 **Test board (`fill_rig`, built once per module through the real tools via the adapter):**
-`synth_session` + `board_ctx` → `pcb_sync_from_schematic` → `pcb_set_outline {shape: "rect",
-width: 60, height: 45, corner_radius: 1, holes: {inset: 3}}` → `pcb_set_rules {preset:
-"jlcpcb-4l"}` → `pcb_define_blocks` from `pcb_analyze`'s proposal → `pcb_place_block` per block
-→ `pcb_legalize {scope: "all"}` → `pcb_route` on `pcb_analyze`'s critical nets → a placement
-checkpoint row for the current `placement_hash` written with `BoardCheckpointRepo.approve`
-(DB setup only; the approval guards are P3b's tests). Board size and order pinned in the
-helper; if a later run changes them, the change is explained in the PR. Freerouting via the
+`synth_session` + `board_ctx` → P5b's shared **`routed_synth(rig)`** (`tests/kicad/board/conftest.py`),
+i.e. in this order: `pcb_sync_from_schematic` → `pcb_set_outline {shape: "rect", width: 60,
+height: 45, corner_radius: 1, holes: {inset: 3}}` → `pcb_set_rules {layers: 4, preset:
+"jlcpcb-4l", net_classes: [Power]}` (4 copper layers explicit — a preset alone keeps the layer
+count, P2) → `pcb_define_blocks` + `pcb_place_block` per block → `pcb_legalize {scope: "all"}`
+→ `pcb_render view=placement` + `pcb_check quick` → **placement approved through the real
+`pcb_approve` flow** (turn 2, `user_says`) → `pcb_route` on `pcb_analyze`'s critical nets.
+The placement checkpoint exists **before** `pcb_route` (which requires it). Board size and
+order are pinned in P5b's helper; a change there is explained in that PR. Freerouting via the
 `freerouting_rt` fixture (P6a: fails under `CI=true`, skips locally only). The ini default
 per-test limit is 180 s (`backend/pyproject.toml`): fill tests call with `timeout_s=120` and
 carry `@pytest.mark.timeout(480)`; the rig is module-scoped so the server and placement are
@@ -71,8 +73,11 @@ non-ground connection → `invalid_argument` ("nothing to fill"). It returns the
 - [ ] **Step 2: Failing kicad tests** (`test_fill_roundtrip.py`, `fill_rig`):
   `test_runtime_missing_refused` (settings with `freerouting_home=tmp_path` →
   `freerouting_unavailable`, nothing written, budget not charged);
-  `test_no_placement_approval_refused` and `test_stale_approval_refused` (a `pcb_move` of one
-  part after the approval) → `placement_not_approved`; `test_unknown_relock_net` (`not_found`,
+  `test_no_placement_approval_refused` (fresh P3b `synth_setup` + P4 `place_synth`, no
+  approval → `placement_not_approved`) and `test_stale_approval_refused` (on the routed rig,
+  `pcb_move {items: [{ref: <a part with critical copper>, x: <x + 0.5>}], unroute: true}` — a
+  routed part needs `unroute: true`, else `part_routed` — succeeds, then `pcb_route_fill` →
+  `placement_not_approved` with `details.stale == True`; History undo restores the rig); `test_unknown_relock_net` (`not_found`,
   `closest` non-empty). All refusals happen in `prepare`, so no stage runs.
 - [ ] **Step 3: Run** `uv run pytest tests/unit/agent/test_profiles_freerouting.py
   tests/unit/board/test_fill_schema.py -q` and `uv run pytest -m kicad
@@ -97,7 +102,8 @@ pre-import snapshot). Stages (the engine took the full snapshot first, B-C4):
    P2 recorded the layer type as not settable): (a) a Freerouting 2.5.0 option passed through
    `run_freerouting(..., extra_args=…)`, (b) **last resort, owner D4** — rewrite the plane
    layers' `(type signal)` to `(type power)` in the exported DSN text, nothing else;
-   `run_freerouting(rt, dsn, ses, timeout_s=…, passes=…, workdir=…)`; `timed_out` or a missing
+   `run_freerouting(rt, dsn, ses, timeout_s=args.timeout_s, passes=…, workdir=…)` (Freerouting
+   alone gets the user's `timeout_s`); `timed_out` or a missing
    `.ses` → `fill_not_acceptable` with `details.reason ∈ {"timeout", "freerouting_error"}` and
    `log_tail`. The temp dir is removed in a `finally`.
 3. `import` (`commit=False`; Step 2 records whether `ImportSpecctraSession` makes its own
@@ -174,7 +180,13 @@ locked)` rounded to 0.001 mm.
 
 ### Task 4: Post-processing, rip-and-reroute, 20 % rule, ladder, SDK limit
 
-**Interfaces:** stages 5–7 appended to `fill_stages`:
+**Interfaces:** stages 5–7 appended to `fill_stages`. **Separate post-processing deadline:**
+when stage 5 starts, `post_deadline = monotonic() + POST_DEADLINE_S` (120 s, module constant,
+independent of `timeout_s`); stage 5's `run_cpu(postprocess, …)` gets `timeout_s =
+min(60, remaining)`, stage 6 passes `deadline=post_deadline` to `route_connections` (B-C12),
+so ripped connections not started by then are reported in `rejected` with reason `timeout`
+(their fill copper is already removed; they stay open and the ladder's `next` names them);
+stage 7 always runs (cheap). The call's worst case is thus `timeout_s` + 120 s + import/DRC.
 5. `postprocess` (`commit=True`): `run_cpu(postprocess, model, frozenset(new non-ground
    KIIDs), timeout_s=60)`. **Rejection rule (spec §10.4):** fill connections = non-ground
    connections unrouted before and routed after the import; `len(distinct rip keys ∩ fill
@@ -185,7 +197,8 @@ locked)` rounded to 0.001 mm.
    restores the pre-fill board. Else apply `replace` (remove old KIIDs, create new tracks),
    run the DRC task; a replacement whose new KIIDs appear in a non-`unconnected` marker is
    reverted and its connection added to the rip list.
-6. `reroute` (`commit=False`; P5b's `route_connections(sctx, plans, lock=False)` commits per
+6. `reroute` (`commit=False`; P5b's `route_connections(sctx, plans, lock=False,
+   deadline=post_deadline)` commits per
    connection as `pcb_route` does): remove the fill's tracks/vias of every ripped connection, re-route each
    with the own router (vias allowed, net-class width, DRC-verified, `lock=False`); failures
    are reported as `rejected` with the reason.
@@ -201,7 +214,8 @@ summary, and `next` per ladder rung (spec §10.3: (a) more passes, (b) `pcb_unro
 
 - [ ] **Step 1: Failing kicad tests** (`test_fill_postprocess.py`, `fill_rig`):
   `test_fill_synth_m4_m7_zero` — after the fill, `pcb_metrics {only: ["M4","M7"]}` → M4 = 0
-  and M7 hard = 0 (no non-octilinear, 90°, acute, off-pad T, micro-jog, short chamfer);
+  and M7 hard = 0 (no non-octilinear, 90°, acute, off-angle, off-pad T, micro-jog, short
+  chamfer);
   `test_fill_synth_complete_non_ground` — `report.completion == 1.0` and every non-ground
   connection has a `routed_length` (M2 is **not** asserted: the fill deletes its ground copper,
   spec §17; P9a asserts M2 after P7's planes); `test_chamfers_drc_clean` (DRC task: no
@@ -211,7 +225,11 @@ summary, and `next` per ladder rung (spec §10.3: (a) more passes, (b) `pcb_unro
   `pcb_route` (locked), `pcb_unroute {nets: [n], unlock_only: true}` → its tracks unlocked
   with the same KIIDs, `pcb_route_fill {relock_nets: [n]}` → `n` in `relocked`, its tracks
   `locked` again and M4/M7 = 0 on it; `test_plane_net_never_relocked` (GND in `relock_nets` →
-  `invalid_argument`).
+  `invalid_argument`); `test_post_deadline_reports_remaining_rips` (post-processor patched to
+  rip 4 connections, `POST_DEADLINE_S` monkeypatched so the deadline passes after the first
+  re-route (patched `monotonic`) → `rerouted == 1`, the other 3 in `rejected` with reason
+  `timeout`, the call succeeds, M4/M7 = 0 on what was kept); `test_freerouting_gets_timeout_s`
+  (spy on `run_freerouting`: `timeout_s` equals the argument, not the post deadline).
 - [ ] **Step 2: SDK tool-call limit check** (spec §20): claude-agent-sdk 0.2.168's Python side
   has no per-tool-call timeout (only hook-matcher timeouts and the initialize timeout read from
   `CLAUDE_CODE_STREAM_CLOSE_TIMEOUT`; verified while planning in the package's `client.py` /
@@ -235,8 +253,7 @@ summary, and `next` per ladder rung (spec §10.3: (a) more passes, (b) `pcb_unro
   footprints? own undo entry?), zone-fill mechanism (clear vs remove/recreate), plane-layer
   mechanism ((a) option name or (b) DSN rewrite — D4 last resort, say why (a) failed),
   6-layer plane default, the SDK limit result and what was changed, fill runtime and counts on
-  `sp4_synth`, the ownership-row fix (`sdk_backend.py`, `fake.py` call sites), the P5b routine
-  name used for re-routing. CHANGELOG `[Unreleased]`: "`pcb_route_fill` (Freerouting fill +
+  `sp4_synth`, `POST_DEADLINE_S`, the P5b routine name used for re-routing. CHANGELOG `[Unreleased]`: "`pcb_route_fill` (Freerouting fill +
   post-processing) — behind COPPERCHAT_BOARD_TOOLS; `COPPERCHAT_FREEROUTING=off` removes it."
 - [ ] Run `uv run pytest -m "not kicad"`, `uv run ruff check .`, `uv run ruff format --check .`,
   `uv run mypy src`, `uv run pytest -m kicad tests/kicad/board` in the kicad-base image with

@@ -49,8 +49,9 @@ for the user's ok or corrections. Content per spec:
   top|top+bottom` in Summary (index call 9; hot plate → top); 4 edges; 5 mounting holes;
   6 keepouts/height limits; 7 supply currents (at S2); 8 special nets (at S3 after
   `pcb_analyze`)); ERC-clean and every symbol with a footprint (local footprints approved).
-- **S1–S3:** sync report with warnings explained (`fp_check` hint); outline + rules table;
-  blocks + floorplan render.
+- **S1–S3:** sync report with warnings explained (`fp_check` hint); outline + rules table
+  (`pcb_set_rules` always with the agreed `layers` **and** the matching `preset` — a preset
+  alone never changes the layer count); blocks + floorplan render.
 - **S4 Placement (hard checkpoint):** connectors/fixed parts first (`pcb_move` + `locked`),
   then `pcb_place_block` per block, `pcb_legalize`, `pcb_metrics` until M1/M8/M9/M10 pass or
   each exception is shown; `does_not_fit` → ask (bigger board, bottom side), never overlap;
