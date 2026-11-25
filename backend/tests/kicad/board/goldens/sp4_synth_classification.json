@@ -1,0 +1,208 @@
+{
+  "blocks": [
+    {
+      "anchor": "U3",
+      "name": "Power-U3",
+      "refs": [
+        "C7",
+        "C8",
+        "C9",
+        "C10",
+        "L1",
+        "R5",
+        "R6",
+        "U3"
+      ],
+      "sheet": "Power"
+    },
+    {
+      "anchor": "J1",
+      "name": "root-J1",
+      "refs": [
+        "J1",
+        "R2",
+        "R3"
+      ],
+      "sheet": "root"
+    },
+    {
+      "anchor": "U1",
+      "name": "root-U1",
+      "refs": [
+        "C1",
+        "C2",
+        "C3",
+        "C4",
+        "C5",
+        "C6",
+        "D1",
+        "J2",
+        "R1",
+        "R4",
+        "U1",
+        "Y1"
+      ],
+      "sheet": "root"
+    },
+    {
+      "anchor": "U2",
+      "name": "root-U2",
+      "refs": [
+        "U2"
+      ],
+      "sheet": "root"
+    },
+    {
+      "anchor": null,
+      "name": "misc",
+      "refs": [
+        "H1",
+        "H2"
+      ],
+      "sheet": ""
+    }
+  ],
+  "blocks_omitted": 0,
+  "board_md_errors": [],
+  "board_md_errors_omitted": 0,
+  "critical_nets": [
+    "+3V3",
+    "/OSC_IN",
+    "/OSC_OUT",
+    "/Power/SW",
+    "/USB_DN",
+    "/USB_DP",
+    "Net-(U3-VBST)",
+    "VBUS"
+  ],
+  "critical_nets_omitted": 0,
+  "crystals": [
+    {
+      "ic": "U1",
+      "load_caps": [
+        "C4",
+        "C5"
+      ],
+      "nets": [
+        "/OSC_IN",
+        "/OSC_OUT"
+      ],
+      "ref": "Y1"
+    }
+  ],
+  "crystals_omitted": 0,
+  "decoupling": [
+    {
+      "cap": "C1",
+      "ground_net": "GND",
+      "ic": "U1",
+      "pin": "5",
+      "supply_net": "+3V3"
+    },
+    {
+      "cap": "C2",
+      "ground_net": "GND",
+      "ic": "U1",
+      "pin": "5",
+      "supply_net": "+3V3"
+    },
+    {
+      "cap": "C3",
+      "ground_net": "GND",
+      "ic": "U1",
+      "pin": "5",
+      "supply_net": "+3V3"
+    }
+  ],
+  "decoupling_omitted": 0,
+  "nets": {
+    "+3V3": "supply",
+    "/BOOT0": "signal",
+    "/CC1": "signal",
+    "/CC2": "signal",
+    "/NRST": "signal",
+    "/OSC_IN": "crystal",
+    "/OSC_OUT": "crystal",
+    "/Power/FB": "signal",
+    "/Power/SW": "switch_node",
+    "/SWCLK": "signal",
+    "/SWDIO": "signal",
+    "/USB_DN": "diff_pair",
+    "/USB_DP": "diff_pair",
+    "GND": "ground",
+    "Net-(D1-A)": "signal",
+    "Net-(U1-PA4)": "signal",
+    "Net-(U3-VBST)": "signal",
+    "VBUS": "supply",
+    "unconnected-(J1-SBU1-PadA8)": "signal",
+    "unconnected-(J1-SBU2-PadB8)": "signal",
+    "unconnected-(U1-PA0-Pad6)": "signal",
+    "unconnected-(U1-PA1-Pad7)": "signal",
+    "unconnected-(U1-PA2-Pad8)": "signal",
+    "unconnected-(U1-PA3-Pad9)": "signal",
+    "unconnected-(U1-PA5-Pad11)": "signal",
+    "unconnected-(U1-PA6-Pad12)": "signal",
+    "unconnected-(U1-PA7-Pad13)": "signal",
+    "unconnected-(U1-PB1-Pad14)": "signal"
+  },
+  "nets_omitted": 0,
+  "overrides_applied": [],
+  "overrides_applied_omitted": 0,
+  "pairs": [
+    {
+      "anchor": "J1",
+      "n": "/USB_DN",
+      "p": "/USB_DP"
+    }
+  ],
+  "pairs_omitted": 0,
+  "parts": {
+    "C1": "decoupling_cap",
+    "C10": "other",
+    "C2": "decoupling_cap",
+    "C3": "decoupling_cap",
+    "C4": "other",
+    "C5": "other",
+    "C6": "other",
+    "C7": "other",
+    "C8": "other",
+    "C9": "other",
+    "D1": "other",
+    "H1": "mounting_hole",
+    "H2": "mounting_hole",
+    "J1": "connector",
+    "J2": "connector",
+    "L1": "inductor",
+    "R1": "other",
+    "R2": "other",
+    "R3": "other",
+    "R4": "other",
+    "R5": "other",
+    "R6": "other",
+    "U1": "anchor",
+    "U2": "anchor",
+    "U3": "switching_regulator",
+    "Y1": "crystal"
+  },
+  "parts_omitted": 0,
+  "switchers": [
+    {
+      "fb_parts": [
+        "R5",
+        "R6"
+      ],
+      "ic": "U3",
+      "in_caps": [
+        "C7"
+      ],
+      "inductor": "L1",
+      "out_caps": [
+        "C8",
+        "C9"
+      ],
+      "sw_net": "/Power/SW",
+      "vin_net": "VBUS"
+    }
+  ],
+  "switchers_omitted": 0
+}

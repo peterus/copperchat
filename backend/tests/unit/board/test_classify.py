@@ -22,7 +22,7 @@ from copperchat.board.geom import rect_poly
 from copperchat.board.model import BoardModel, Part, Point
 
 from .builders import zone
-from .builders_circuit import cap, circuit, conn, ic, ind, res, xtal
+from .builders_circuit import cap, circuit, conn, ic, ind, res, two_pad, xtal
 
 
 def test_no_kipy_import() -> None:
@@ -334,6 +334,20 @@ def test_leftover_joins_most_shared() -> None:
     assert blocks["b-U2"].refs == ("R3", "R5", "U2")
     assert blocks["root-U1"].refs == ("U1",)
     assert blocks["misc"] == BlockProposal("misc", None, ("R9",), "")
+
+
+def test_leftover_follows_signal_neighbour() -> None:
+    """An LED behind a series resistor (U1 PA4 → R4 → D1 → GND, sp4_synth) joins the block
+    its resistor joined, not whichever anchor sorts first among those on GND."""
+    m = circuit(
+        conn("J1", {"1": "VBUS", "2": "DP", "3": "DN", "4": "GND", "5": "CC"}, (10.0, 10.0)),
+        ic("U1", {"1": "+3V3", "2": "GND", "3": "PA4", "4": "DP", "5": "DN"}, (60.0, 10.0)),
+        res("R4", "PA4", "LED_A", (70.0, 20.0)),
+        two_pad("D1", "GND", "LED_A", (72.0, 20.0), "Device:LED"),
+    )
+    blocks = {b.anchor: b for b in classify(m).blocks}
+    assert blocks["U1"].refs == ("D1", "R4", "U1")
+    assert blocks["J1"].refs == ("J1",)
 
 
 def test_critical_default() -> None:

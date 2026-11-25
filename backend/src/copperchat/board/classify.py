@@ -548,6 +548,17 @@ def _blocks(
     for ref in rest:
         if ref in owner:
             continue
+        # a chain behind an owned part (U1 → R4 → D1 → GND): follow the signal neighbour
+        # before counting anchors on every net (ground / supply nets touch most anchors)
+        via: dict[str, int] = defaultdict(int)
+        for n in c.nets_of[ref]:
+            if net_kind[n] not in ("ground", "supply"):
+                for r in c.refs_on[n]:
+                    if r != ref and r in owner:
+                        via[owner[r]] += 1
+        if via:
+            owner[ref] = min(via, key=lambda h: (-via[h], natural_key(h)))
+            continue
         h = best(ref, c.nets_of[ref])
         if h is None:
             misc.append(ref)

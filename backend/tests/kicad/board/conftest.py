@@ -134,3 +134,69 @@ async def blank_nopcb_sessions(
         yield manager
     finally:
         await manager.close_all()
+
+
+# -- synth_board (SP4 P3a; reused by later phases) -----------------------------------------
+
+
+def _build_synth_board(projects_root: Path) -> Path:
+    """`sp4_synth` copied to `projects_root` with a board made by KiCad (P1b's
+    `test_netlist_imports_cleanly`, not dry): kicad-cli netlist → CreateDocument(PCB) +
+    save → reopen → `import_netlist(dry_run=False)` → save. API only; footprints stay where
+    KiCad puts them. Returns the project directory."""
+    import subprocess
+
+    from kipy.proto.common.types import DocumentType
+
+    from tests.kicad.board.test_sp4_synth_build import NAME, standalone_server
+
+    work = copy_fixture(NAME, projects_root)
+    netlist = projects_root.parent / f"{NAME}.net"
+    subprocess.run(
+        [KICAD_CLI, "sch", "export", "netlist", "--format", "kicadsexpr", "-o", str(netlist),
+         str(work / f"{NAME}.kicad_sch")],
+        check=True, capture_output=True, timeout=120,
+    )  # fmt: skip
+    pcb = work / f"{NAME}.kicad_pcb"
+    with standalone_server(KICAD_CLI) as client:
+        client.create_document(str(pcb), DocumentType.DOCTYPE_PCB)
+        client.get_board().save()
+        for doc in client.get_open_documents(DocumentType.DOCTYPE_PCB):
+            client.close_document(doc)
+        client.open_document(str(pcb), DocumentType.DOCTYPE_PCB)
+        board = client.get_board()
+        result = board.import_netlist(str(netlist), dry_run=False)
+        assert result.error_count == 0, result.report
+        board.save()
+    return work
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def synth_board(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterator[KicadSession]:
+    """The `sp4_synth` project with its netlist imported into a new board
+    (`_build_synth_board`), opened as a normal CopperChat session (project with `pcb_file`)
+    for a whole test module. Tests run on the module event loop
+    (`pytest.mark.asyncio(loop_scope="module")`) and build their context per test:
+    `edit_ctx(synth_board)` (read tools) or `board_ctx(synth_board, db)` (writes)."""
+    tmp: Path = tmp_path_factory.mktemp("synth-board")
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=None,
+        projects_root=tmp / "projects",
+        data_dir=tmp / "data",
+        admin_password="test-password",
+        claude_code_oauth_token="test-token",
+        cookie_secure=False,
+        frontend_dist=tmp / "no-frontend",
+        kicad_cli=KICAD_CLI,
+        kicad_api_timeout_s=30.0,
+        kicad_start_timeout_s=60.0,
+    )
+    settings.projects_root.mkdir(parents=True)
+    _build_synth_board(settings.projects_root)
+    project = next(p for p in discover_projects(settings.projects_root) if p.name == "sp4_synth")
+    assert project.pcb_file is not None
+    manager = KicadSessionManager(settings)
+    try:
+        yield await manager.open(project)
+    finally:
+        await manager.close_all()
