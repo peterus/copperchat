@@ -287,6 +287,10 @@ loop generators (fanout, stitching: add → refill → DRC → remove rejects), 
   restoring such a snapshot deletes exactly those two files (only them, only inside the project
   directory). After creating a board the tool re-discovers the project and reopens the session
   (`sessions.reopen`, as restore does), so `Project.pcb_file` and the open documents are current.
+  **Restore re-discovers too** (spec call): today `restore._reload` reopens with the pre-restore
+  frozen `Project`; after the file operations it must re-discover the project before `reopen`,
+  so a restore that deleted the board does not try to open a missing `.kicad_pcb`. Test:
+  sync creates the board → undo → the session starts and `docs_of` is `{sch}`.
 - Restore closes the session, copies files back and reopens it (existing behaviour); after a board
   restore the checkpoint hashes (§8.3) usually no longer match, and only the **latest** approval
   per stage counts (§8.3), so approvals must be given again. That is intended.
@@ -354,7 +358,7 @@ grouping; the plan may refine fields, not semantics).
 
 | Tool | Input | Output |
 |---|---|---|
-| `pcb_status` | `{}` | board exists?, outline, layer count, footprint count, placed/unplaced (outside outline or still at import position), routed/unrouted connections, zone count, checkpoint states (§8.3) with stale flags, last check summary. Cheap; the agent calls it at the start of every turn. |
+| `pcb_status` | `{}` | board exists?, outline, layer count, footprint count, placed/unplaced (unplaced = courtyard not fully inside the outline, §7.2), routed/unrouted connections, zone count, checkpoint states (§8.3) with stale flags, last check summary. Cheap; the agent calls it at the start of every turn. |
 | `pcb_analyze` | `{scope?: "parts"\|"nets"\|"blocks"\|"all"}` | the classification of §9.1: part classes, net classes (ground, supply, switch node, diff pair, high-current guess, critical), proposed functional blocks (from sheets + clusters) and any overrides from `board.md`. Read-only proposal; nothing is written. |
 | `pcb_render` | `{view: "top"\|"bottom"\|"layer"\|"placement"\|"3d", layer?, region?: {x,y,w,h}, highlight_nets?: [..≤20], markers?: bool, angle?: "top"\|"bottom"\|"iso"}` | PNG image(s) + the SVG link (§13). |
 | `pcb_metrics` | `{only?: [metric ids]}` | M1–M14 values, thresholds, verdict per metric (pass / review / fail), worst offenders with refs/nets/positions. ≈ 0.1–0.5 s. |
@@ -516,8 +520,9 @@ would be expensive; the others are enforced by the skill (the agent stops and as
 
 - **Placement checkpoint.** `pcb_route`, `pcb_route_fill`, `pcb_zones`, `pcb_fanout` and
   `pcb_stitch` are refused (`placement_not_approved`) unless a `placement` approval exists whose
-  `placement_hash` equals the current one. `placement_hash` = hash of (ref, x, y, rotation, side)
-  of all footprints, rounded to 0.01 mm / 0.1°.
+  `placement_hash` equals the current one. `placement_hash` = hash of (ref, x, y, rotation, side,
+  locked) of all footprints, rounded to 0.01 mm / 0.1°, **plus the outline and the rule areas
+  (keepouts)**, so `pcb_set_outline` after approval also invalidates it (spec call).
 - **Board checkpoint.** `pcb_fab_export` is refused unless a `board` approval exists whose
   `board_hash` equals the current one and the last `pcb_check full` for that hash had no hard
   failure. `board_hash` covers footprints (incl. their texts and silk), tracks, vias, zone
@@ -537,10 +542,11 @@ would be expensive; the others are enforced by the skill (the agent stops and as
   needed moves, show them, and get a new ok. (A tolerance rule — "up to 3 parts by < 1 mm keep the
   approval" — was considered and rejected: it would make the hash check fuzzy.)
 - **Storage:** new table `board_checkpoints(project_id, board_file, stage, hash, conversation_id,
-  run_id, user_quote, approved_at)` plus `board_reviews(conversation_id, stage, hash, run_id, kind,
-  detail, created_at)` in a new migration (`0013_board.sql`): one row per piece of evidence, `kind`
-  ∈ {`render`, `check`}, `detail` = the render view (`placement`, `top`, `bottom`, …) or the check
-  level + verdict (`quick`/`full`, `hard_failures`, M1 verdict). "The last `pcb_check full` for
+  run_id, user_quote, approved_at)` plus `board_reviews(project_id, board_file, conversation_id, stage,
+  hash, run_id, kind, view, check_level, hard_failures, m1_pass, created_at)` (index on
+  project_id, board_file, hash) in a new migration (`0013_board.sql`): one row per piece of
+  evidence, `kind` ∈ {`render`, `check`}; `view` is set for renders (`placement`, `top`,
+  `bottom`, …), `check_level` (`quick`/`full`), `hard_failures` (count) and `m1_pass` for checks. "The last `pcb_check full` for
   that hash" = the newest `check` row with level `full` for (project, board file, hash). Approvals are per project and board file,
   so they survive a new session on the same board (spec call); hashes make them expire
   automatically.
@@ -697,8 +703,13 @@ From the spike prototype (`router.py`: 15/15 short nets clean), extended:
   3. run Freerouting on all remaining connections, including ground (C7: it cannot skip GND);
   4. import the SES (`ImportSpecctraSession`);
   5. delete the imported ground copper — only ground items whose KIIDs are **not** in the
-     pre-import snapshot (§6.3), so locked stubs, fanout and stitching vias from earlier steps
-     survive a re-fill (planes + fanout connect ground, §11); a P6 test covers fill-after-fanout;
+     pre-import snapshot (§6.3). Because the SES import may delete and re-create unlocked
+     items, `pcb_fanout` and `pcb_stitch` create their stubs and vias **locked** (exported as
+     protected wiring), so they keep their KIIDs and survive a re-fill; on a re-fill after S7
+     the zone fills are cleared before the DSN export and refilled after the import (whether
+     the API can clear fills is probed in P6; else the plane zones are removed and recreated
+     from the pre-import snapshot). A P6 test asserts that fill-after-fanout keeps the same
+     via positions (planes + fanout connect ground, §11);
   6. post-process (below), then metrics.
 - **Ladder when completion < 100 %** (spec call): (a) re-run with more passes; (b) unlock the
   critical routes next to the unrouted connections and re-run; (c) route the rest with the own
@@ -710,7 +721,7 @@ From the spike prototype (`router.py`: 15/15 short nets clean), extended:
     `c = max(1.0 × width, 0.25 mm)` up to `3 × width`, the largest that passes DRC;
   - **acute (135° change) and non-octilinear segments**: rip the connection and re-route it with
     the own router;
-  - **micro-jogs** (two bends closer than `2 × width`, not part of a chamfer) and detours over the
+  - **micro-jogs** and too-short chamfers (§12 definitions) and detours over the
     M5/M6 thresholds: rip and re-route with the own router;
   - every change is checked by the DRC task; what cannot be fixed is reported per connection.
 - **Layers during the fill.** The planes are only poured at S7, so the fill must be told which
@@ -751,13 +762,13 @@ synthetic fixtures, but **hard thresholds change only with owner OK**.
 
 | # | Metric | Definition | Hard (fail) | Review |
 |---|---|---|---|---|
-| M1 | Placement completeness | footprints inside the outline (courtyard), not in the staging area, 0 courtyard overlaps, SMD on allowed sides | any violation | — |
+| M1 | Placement completeness | every footprint's courtyard fully inside the outline (= placed, §7.2), 0 courtyard overlaps, SMD on allowed sides | any violation | — |
 | M2 | Routing completeness | unconnected items (DRC task) | > 0 | — |
 | M3 | DRC + parity | errors; warnings not accepted (§12 notes); schematic parity issues (full check) | errors > 0, warnings not accepted > 0 | each accepted warning listed |
 | M4 | Angles (owner) | segments not at 0/45/90/135/… (±0.5°); direction change at a 2-track vertex of the same net and layer ∉ {0°, 45°}; off-pad T-junction where a branch meets at 90° | any | — |
 | M5 | Detour | per connection: routed length / octilinear shortest distance (pad to pad, same layer, ignoring obstacles) | any signal connection > 2.0 and > 5 mm extra | median > 1.15; any > 1.5 (critical nets > 1.25) |
 | M6 | Long connections | routed length of a connection > 50 % of the board diagonal | — | each listed with a reason or fixed |
-| M7 | Straightness | micro-jogs (two bends closer than 2 × width, chamfers excluded); bends per 10 mm per connection | micro-jogs > 0 | bends/10 mm > 1.0 average |
+| M7 | Straightness | micro-jogs and too-short chamfers (definitions in the notes below); bends per 10 mm per connection | micro-jogs > 0 | bends/10 mm > 1.0 average |
 | M8 | Decoupling / crystal | path length decoupling pad → served pin; crystal → MCU pins; side | > 5 mm or other side | > 3 mm |
 | M9 | Switcher hot loop | input cap → VIN/GND pins, inductor → SW pin, switch-node copper length | — | > 3 mm / > 3 mm / > 5 mm |
 | M10 | Grouping | per block: hull area / sum of courtyards; foreign parts inside a block hull | — | ratio > 3.0; intrusions > 0 |
@@ -779,8 +790,12 @@ Notes:
   MST over its pads); its routed length is the shortest path between the two pads through the
   net's track/via graph (vias count their layer distance as 0). A *chamfer* is a pair of
   same-sense 45° bends (net 90° change) with a straight piece ≥ max(1 × width, 0.25 mm) between
-  them; a *micro-jog* (M7) is a pair of **opposite-sense** bends closer than 2 × width. Chamfers
-  are never micro-jogs.
+  them; a *micro-jog* is a pair of **opposite-sense** bends closer than 2 × width; a *too-short
+  chamfer* is a same-sense pair whose straight piece is shorter than max(1 × width, 0.25 mm).
+  These are the **only** definitions: M7's hard count = micro-jogs + too-short chamfers, used
+  identically by the metric, the router (§10.2) and the post-processor (§10.3). A valid chamfer
+  is never a micro-jog. Metric tests cover a short same-sense pair (fails) and a valid chamfer
+  (passes).
 - **Accepted warnings** (M3): stored as a machine-readable table in `board.md` → Checks
   (`| DRC type | Items/refs | Reason | Accepted by |`), matched per check run (spec call); the agent
   adds a row only after the user accepted it. KiCad exclusions are not used.
@@ -818,7 +833,9 @@ Notes:
 - output dir `<project dir>/fab/jlcpcb/` (spec call), replaced on every export. The path is
   resolved and refused if `fab/` or `fab/jlcpcb/` is a symlink or resolves outside the project
   directory (as `projects.py` refuses symlinks); the export is written to a temp dir next to it
-  and swapped in by rename, so a failed export leaves the old package intact. Contents:
+  and swapped in two steps (old dir → `jlcpcb.old-<id>`, new dir → `jlcpcb`, then the old one is
+  removed; if the second rename fails the old one is renamed back), so a failed export leaves the
+  old package intact; a test covers re-export over an existing package. Contents:
   - `gerbers/`: all copper layers, F/B mask, F/B silk, **F/B paste** (stencil), Edge.Cuts,
     `.gbrjob` (`--subtract-soldermask --check-zones`);
   - drill: Excellon, PTH and NPTH separate, mm, drill map;
@@ -920,6 +937,12 @@ Listed in order of appearance; each is marked "(spec call)" in the text.
 56. Freerouting limits (no `RLIMIT_AS`) and no network access; GND deletion scoped to new KIIDs.
 57. Fab export refuses symlinks / outside paths and swaps atomically.
 58. M8/M9 estimates before routing, routed lengths after.
+59. Restore re-discovers the project before reopening.
+60. `placement_hash` includes lock flags, outline and keepouts.
+61. Fanout/stitching vias created locked; zone fills cleared around a re-fill.
+62. One M7 definition (micro-jog + too-short chamfer).
+63. `board_reviews` with project/board columns and structured check fields.
+64. Two-step directory swap for the fab export.
 
 ### 15.3 Owner decisions on the open questions (2026-11-24)
 
