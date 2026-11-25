@@ -738,7 +738,8 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
 name as planned; owner facts `docs/kicad-patches/0005-board-stackup-FACTS.md`)
 - `BOARD_STACKUP::Deserialize` existed at the pin as a stub (`return false`); the patch
   implements it and adds `API_HANDLER_PCB::handleUpdateBoardStackup` (copper layers must be the
-  enabled ones in order, alternating with dielectrics; thickness > 0; normalised response).
+  enabled ones in order, alternating with dielectrics; thickness > 0 and ≤ 10 mm; finite
+  material values; colour names kept when the RGBA value is unchanged; normalised response).
 - **Addition:** `SetBoardEnabledLayers` re-synchronises an explicit stackup (`m_HasStackup`)
   with the new layer set (KiCad's `SynchronizeWithBoard`) — otherwise a layer count change left
   `GetBoardStackup` and the saved file describing the old copper layers (also true for any
@@ -765,7 +766,12 @@ name as planned; owner facts `docs/kicad-patches/0005-board-stackup-FACTS.md`)
   `UpdateBoardStackup` (raw `client.send`, `setup.update_stackup`). The KiCad "no handler"
   `ApiError` → `stackup_unavailable` (confirmed against the unpatched image end to end); any
   other refusal → `invalid_argument`. Read-back in `verify` from `BoardModel.stackup`
-  (±0.0005 mm). Report `stackup {id, jlc_name, total_mm}`.
+  (±0.0005 mm). Report `stackup {id, jlc_name, total_mm, board_mm}` (`total_mm` = the preset's
+  copper + dielectric; `board_mm` = KiCad's board thickness, solder mask included). A busy /
+  internal `ApiError` is re-raised (undo armed), only `AS_BAD_REQUEST` is `invalid_argument`. A
+  board stackup the API could not write back (disabled or zero-thickness copper/dielectric —
+  KiCad accepts that from files) is refused before the write. A layer count change without
+  `stackup` adds a note (an existing fab stackup keeps its matching layers, KiCad adds defaults).
 - **Compensation:** the stackup stage's undo restores the stackup it found (layer count already
   applied); the `layer count` stage now also snapshots the pre-call stackup and its undo writes
   it back after restoring the count when it differs (P2 file, minimal change). Equal stackups are
@@ -778,7 +784,7 @@ name as planned; owner facts `docs/kicad-patches/0005-board-stackup-FACTS.md`)
   failed/undone call keeps one afterwards (same values; `board_hash` equal). History undo
   restores the file and is unaffected.
 - `UpdateBoardStackup` has no KiCad undo entry; CopperChat's History is the undo.
-- Colours round-trip as hex (`#RRGGBBAA`), not KiCad's standard colour names.
+- A colour changed through the API is stored as `#RRGGBBAA`, not as a KiCad colour name.
 
 ### As built (P3b)
 

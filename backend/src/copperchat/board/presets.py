@@ -121,8 +121,9 @@ def _cu(thickness: float) -> StackupLayer:
 # Thicknesses and dielectric constants from jlcpcb.com/impedance (read 2026-11-25):
 # prepreg 7628 Er 4.4, 3313 Er 4.1, 2116 Er 4.16, core Er 4.6. JLC publishes no loss
 # tangent, so KiCad's value stays. The 2-layer build-up is not published by JLC: 1 oz
-# copper on a 1.53 mm FR-4 core (1.6 mm board), Er 4.5 (jlcpcb.com/capabilities,
-# "4.5 (2-Layer PCB)").
+# copper on a 1.53 mm FR-4 core (1.6 mm copper + dielectric), Er 4.5
+# (jlcpcb.com/capabilities, "4.5 (2-Layer PCB)"). KiCad's board thickness adds its solder
+# mask layers on top of `total_mm`.
 _P7628 = StackupLayer("prepreg", 0.2104, "7628", 4.4)
 _P3313 = StackupLayer("prepreg", 0.0994, "3313", 4.1)
 _P2116 = StackupLayer("prepreg", 0.1088, "2116", 4.16)

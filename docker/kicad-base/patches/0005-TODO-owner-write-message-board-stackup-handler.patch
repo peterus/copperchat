@@ -1,4 +1,4 @@
-From 77b31d9dca3089af6bac4246cd995b8c9035e063 Mon Sep 17 00:00:00 2001
+From 422ae85cd155aecf718037a9371fc91e24ac0997 Mon Sep 17 00:00:00 2001
 From: Peter Buchegger <peter.buchegger7@gmail.com>
 Date: Wed, 25 Nov 2026 19:23:29 +0100
 Subject: [PATCH] TODO(owner): write message (board stackup handler)
@@ -6,11 +6,11 @@ Subject: [PATCH] TODO(owner): write message (board stackup handler)
 Assisted-by: Claude
 ---
  api/proto/board/board_commands.proto          |   5 +-
- pcbnew/api/api_handler_pcb.cpp                | 109 ++++++
+ pcbnew/api/api_handler_pcb.cpp                | 141 +++++
  pcbnew/api/api_handler_pcb.h                  |   3 +
- .../board_stackup_manager/board_stackup.cpp   | 135 +++++++-
- qa/tests/api/test_api_handler_pcb.cpp         | 316 ++++++++++++++++++
- 5 files changed, 563 insertions(+), 5 deletions(-)
+ .../board_stackup_manager/board_stackup.cpp   | 168 +++++-
+ qa/tests/api/test_api_handler_pcb.cpp         | 494 ++++++++++++++++++
+ 5 files changed, 806 insertions(+), 5 deletions(-)
 
 diff --git a/api/proto/board/board_commands.proto b/api/proto/board/board_commands.proto
 index 06b75fe6..08e19ad0 100644
@@ -29,10 +29,18 @@ index 06b75fe6..08e19ad0 100644
  message UpdateBoardStackup
  {
 diff --git a/pcbnew/api/api_handler_pcb.cpp b/pcbnew/api/api_handler_pcb.cpp
-index ec99a8f7..f51f372d 100644
+index ec99a8f7..cdf28e87 100644
 --- a/pcbnew/api/api_handler_pcb.cpp
 +++ b/pcbnew/api/api_handler_pcb.cpp
-@@ -136,6 +136,7 @@ API_HANDLER_PCB::API_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext, PCB_EDI
+@@ -38,6 +38,7 @@
+ #include <board_commit.h>
+ #include <board_connected_item.h>
+ #include <board_design_settings.h>
++#include <board_stackup_manager/stackup_predefined_prms.h>
+ #include <core/kicad_algo.h>
+ #include <footprint.h>
+ #include <footprint_library_adapter.h>
+@@ -136,6 +137,7 @@ API_HANDLER_PCB::API_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext, PCB_EDI
      registerHandler<GetItems, GetItemsResponse>( &API_HANDLER_PCB::handleGetItems );
  
      registerHandler<SetBoardEnabledLayers, BoardEnabledLayersResponse>( &API_HANDLER_PCB::handleSetBoardEnabledLayers );
@@ -40,7 +48,7 @@ index ec99a8f7..f51f372d 100644
      registerHandler<GetBoardDesignRules, BoardDesignRulesResponse>( &API_HANDLER_PCB::handleGetBoardDesignRules );
      registerHandler<SetBoardDesignRules, BoardDesignRulesResponse>( &API_HANDLER_PCB::handleSetBoardDesignRules );
      registerHandler<GetCustomDesignRules, CustomRulesResponse>( &API_HANDLER_PCB::handleGetCustomDesignRules );
-@@ -682,6 +683,15 @@ HANDLER_RESULT<BoardEnabledLayersResponse> API_HANDLER_PCB::handleSetBoardEnable
+@@ -682,6 +684,15 @@ HANDLER_RESULT<BoardEnabledLayersResponse> API_HANDLER_PCB::handleSetBoardEnable
              modified |= board->RemoveAllItemsOnLayer( layer_id );
      }
  
@@ -56,7 +64,7 @@ index ec99a8f7..f51f372d 100644
      if( enabled != previousEnabled || modified )
          onModified();
  
-@@ -694,6 +704,105 @@ HANDLER_RESULT<BoardEnabledLayersResponse> API_HANDLER_PCB::handleSetBoardEnable
+@@ -694,6 +705,136 @@ HANDLER_RESULT<BoardEnabledLayersResponse> API_HANDLER_PCB::handleSetBoardEnable
  }
  
  
@@ -78,6 +86,37 @@ index ec99a8f7..f51f372d 100644
 +        return badRequest( "the stackup contains a layer of unknown type or a layer that does not match its type" );
 +
 +    BOARD* board = this->board();
++
++    // Keep the board's colour names (e.g. "Green", "FR4 natural") where the request carries the
++    // colour GetBoardStackup returned for them; the API only transports RGBA values
++    BOARD_STACKUP current = board->GetStackupOrDefault();
++
++    for( BOARD_STACKUP_ITEM* item : stackup.GetList() )
++    {
++        for( const BOARD_STACKUP_ITEM* old : current.GetList() )
++        {
++            if( old->GetType() != item->GetType() || old->GetBrdLayerId() != item->GetBrdLayerId()
++                || ( item->GetType() == BS_ITEM_TYPE_DIELECTRIC
++                     && old->GetDielectricLayerId() != item->GetDielectricLayerId() ) )
++            {
++                continue;
++            }
++
++            for( int i = 0; i < std::min( item->GetSublayersCount(), old->GetSublayersCount() ); ++i )
++            {
++                const wxString& oldColor = old->GetColor( i );
++
++                if( IsPrmSpecified( oldColor ) && IsPrmSpecified( item->GetColor( i ) )
++                    && KIGFX::COLOR4D( oldColor ).ToHexString() == item->GetColor( i ) )
++                {
++                    item->SetColor( oldColor, i );
++                }
++            }
++
++            break;
++        }
++    }
++
 +    LSET   enabled = board->GetEnabledLayers();
 +    LSEQ   copperStack = enabled.CuStack();
 +    LSET   seen;
@@ -177,10 +216,18 @@ index 15e5ba6b..f214a48a 100644
              const HANDLER_CONTEXT<GetBoardDesignRules>& aCtx );
  
 diff --git a/pcbnew/board_stackup_manager/board_stackup.cpp b/pcbnew/board_stackup_manager/board_stackup.cpp
-index 96df23b4..fbbf63ea 100644
+index 96df23b4..1c8a4098 100644
 --- a/pcbnew/board_stackup_manager/board_stackup.cpp
 +++ b/pcbnew/board_stackup_manager/board_stackup.cpp
-@@ -579,7 +579,6 @@ void BOARD_STACKUP::Serialize( google::protobuf::Any& aContainer ) const
+@@ -21,6 +21,7 @@
+ 
+ #include "board_stackup.h"
+ #include <algorithm>
++#include <cmath>
+ #include <base_units.h>
+ #include <string_utils.h>
+ #include <layer_ids.h>
+@@ -579,7 +580,6 @@ void BOARD_STACKUP::Serialize( google::protobuf::Any& aContainer ) const
  
  bool BOARD_STACKUP::Deserialize( const google::protobuf::Any& aContainer )
  {
@@ -188,7 +235,7 @@ index 96df23b4..fbbf63ea 100644
      kiapi::board::BoardStackup stackup;
  
      if( !aContainer.UnpackTo( &stackup ) )
-@@ -591,8 +590,138 @@ bool BOARD_STACKUP::Deserialize( const google::protobuf::Any& aContainer )
+@@ -591,8 +591,170 @@ bool BOARD_STACKUP::Deserialize( const google::protobuf::Any& aContainer )
  
  bool BOARD_STACKUP::Deserialize( const kiapi::board::BoardStackup& aInput )
  {
@@ -199,8 +246,26 @@ index 96df23b4..fbbf63ea 100644
 +    BOARD_STACKUP stackup;
 +    int           dielectricId = 0;
 +
++    // Per-layer thicknesses are stored as int; 10 mm keeps any stackup sum far below INT_MAX
++    constexpr int64_t maxThickness = 10000000;
++
++    auto validThickness =
++            []( const kiapi::common::types::Distance& aDistance )
++            {
++                return aDistance.value_nm() >= 0 && aDistance.value_nm() <= maxThickness;
++            };
++
++    auto validMaterialValue =
++            []( double aValue )
++            {
++                return std::isfinite( aValue ) && aValue >= 0.0;
++            };
++
 +    for( const BoardStackupLayer& layer : aInput.layers() )
 +    {
++        if( !validThickness( layer.thickness() ) )
++            return false;
++
 +        if( layer.type() != BoardStackupLayerType::BSLT_COPPER
 +            && layer.type() != BoardStackupLayerType::BSLT_DIELECTRIC
 +            && layer.type() != BoardStackupLayerType::BSLT_SOLDERMASK
@@ -268,6 +333,13 @@ index 96df23b4..fbbf63ea 100644
 +            {
 +                const BoardStackupDielectricProperties& props = dielectric.layer( i );
 +
++                if( !validThickness( props.thickness() ) || !validMaterialValue( props.epsilon_r() )
++                    || !validMaterialValue( props.loss_tangent() )
++                    || !validMaterialValue( props.has_spec_frequency() ? props.spec_frequency() : 0.0 ) )
++                {
++                    return false;
++                }
++
 +                if( i > 0 )
 +                    item->AddDielectricPrms( i );
 +
@@ -290,6 +362,13 @@ index 96df23b4..fbbf63ea 100644
 +        case BS_ITEM_TYPE_SOLDERMASK:
 +        {
 +            const BoardStackupSoldermaskLayer& soldermask = layer.soldermask();
++
++            if( !validThickness( soldermask.thickness() ) || !validMaterialValue( soldermask.epsilon_r() )
++                || !validMaterialValue( soldermask.loss_tangent() ) )
++            {
++                return false;
++            }
++
 +            item->SetTypeName( layerId == F_Mask ? _HKI( "Top Solder Mask" ) : _HKI( "Bottom Solder Mask" ) );
 +            item->SetThickness( soldermask.thickness().value_nm() );
 +            item->SetMaterial( wxString::FromUTF8( soldermask.material_name() ) );
@@ -330,10 +409,20 @@ index 96df23b4..fbbf63ea 100644
  
  
 diff --git a/qa/tests/api/test_api_handler_pcb.cpp b/qa/tests/api/test_api_handler_pcb.cpp
-index 70dfa5f7..fa5aa3e5 100644
+index 70dfa5f7..c5404ca0 100644
 --- a/qa/tests/api/test_api_handler_pcb.cpp
 +++ b/qa/tests/api/test_api_handler_pcb.cpp
-@@ -47,6 +47,8 @@
+@@ -17,6 +17,9 @@
+  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+  */
+ 
++#include <cmath>
++#include <functional>
++#include <limits>
+ #include <memory>
+ #include <vector>
+ 
+@@ -47,6 +50,8 @@
  #include <api/common/envelope.pb.h>
  #include <api/common/tasks.pb.h>
  #include <api/common/types/base_types.pb.h>
@@ -342,7 +431,7 @@ index 70dfa5f7..fa5aa3e5 100644
  #include <jobs/job_export_pcb_odb.h>
  
  
-@@ -200,6 +202,130 @@ kiapi::common::ApiRequest makeGetDrcTaskResultRequest( const std::string& aToken
+@@ -200,6 +205,130 @@ kiapi::common::ApiRequest makeGetDrcTaskResultRequest( const std::string& aToken
      return request;
  }
  
@@ -473,7 +562,7 @@ index 70dfa5f7..fa5aa3e5 100644
  } // namespace
  
  
-@@ -817,4 +943,194 @@ BOOST_AUTO_TEST_CASE( DrcExclusionDropsMarkerReportFields )
+@@ -817,4 +946,369 @@ BOOST_AUTO_TEST_CASE( DrcExclusionDropsMarkerReportFields )
  }
  
  
@@ -600,9 +689,25 @@ index 70dfa5f7..fa5aa3e5 100644
 +    BOARD* board = loadBoard( wxS( "issue5830" ) );
 +
 +    API_HANDLER_PCB handler( m_context );
-+    BoardStackup    good = makeJlc4LayerStackup( getStackup( handler, *board ) );
++    BoardStackup    before = getStackup( handler, *board );
++    BoardStackup    good = makeJlc4LayerStackup( before );
 +
-+    // Two copper layers in a row (a dielectric removed, one added at the end)
++    auto indexOf =
++            [&]( const BoardStackup& aStackup, kiapi::board::types::BoardLayer aLayer )
++            {
++                for( int i = 0; i < aStackup.layers_size(); ++i )
++                {
++                    if( aStackup.layers( i ).layer() == aLayer )
++                        return i;
++                }
++
++                BOOST_FAIL( "layer not in stackup" );
++                return -1;
++            };
++
++    std::vector<BoardStackup> bad;
++
++    // Two copper layers in a row (the first dielectric removed)
 +    BoardStackup noDielectric = good;
 +    noDielectric.clear_layers();
 +    bool dropped = false;
@@ -618,17 +723,91 @@ index 70dfa5f7..fa5aa3e5 100644
 +        *noDielectric.add_layers() = layer;
 +    }
 +
++    bad.push_back( noDielectric );
++
 +    // A copper layer the board does not have (In3.Cu instead of In2.Cu)
 +    BoardStackup wrongLayer = good;
++    wrongLayer.mutable_layers( indexOf( good, kiapi::board::types::BL_In2_Cu ) )->set_layer( kiapi::board::types::BL_In3_Cu );
++    bad.push_back( wrongLayer );
 +
-+    for( BoardStackupLayer& layer : *wrongLayer.mutable_layers() )
++    // Enabled copper layers out of stack order (In1.Cu and In2.Cu swapped)
++    BoardStackup swapped = good;
++    swapped.mutable_layers( indexOf( good, kiapi::board::types::BL_In1_Cu ) )->set_layer( kiapi::board::types::BL_In2_Cu );
++    swapped.mutable_layers( indexOf( good, kiapi::board::types::BL_In2_Cu ) )->set_layer( kiapi::board::types::BL_In1_Cu );
++    bad.push_back( swapped );
++
++    // A front technical layer below the copper layers
++    BoardStackup maskBelow = good;
++    maskBelow.clear_layers();
++    BoardStackupLayer frontMask = good.layers( indexOf( good, kiapi::board::types::BL_F_Mask ) );
++
++    for( const BoardStackupLayer& layer : good.layers() )
 +    {
-+        if( layer.layer() == kiapi::board::types::BL_In2_Cu )
-+            layer.set_layer( kiapi::board::types::BL_In3_Cu );
++        if( layer.layer() != kiapi::board::types::BL_F_Mask )
++            *maskBelow.add_layers() = layer;
 +    }
 +
-+    for( const BoardStackup& bad : { noDielectric, wrongLayer } )
++    *maskBelow.add_layers() = frontMask;
++    bad.push_back( maskBelow );
++
++    // A layer twice
++    BoardStackup duplicate = good;
++    *duplicate.add_layers() = good.layers( indexOf( good, kiapi::board::types::BL_B_Mask ) );
++    bad.push_back( duplicate );
++
++    // A layer that does not match its type (solder mask on a copper layer)
++    BoardStackup typeMismatch = good;
++    typeMismatch.mutable_layers( indexOf( good, kiapi::board::types::BL_F_Mask ) )->set_layer( kiapi::board::types::BL_F_Cu );
++    bad.push_back( typeMismatch );
++
++    // A disabled copper layer
++    BoardStackup disabled = good;
++    disabled.mutable_layers( indexOf( good, kiapi::board::types::BL_In1_Cu ) )->set_enabled( false );
++    bad.push_back( disabled );
++
++    for( const BoardStackup& stackup : bad )
 +    {
++        kiapi::common::ApiRequest request = makeUpdateStackupRequest( *board, stackup );
++        API_RESULT                result = handler.Handle( request );
++
++        BOOST_REQUIRE( !result.has_value() );
++        BOOST_CHECK_EQUAL( result.error().status(), kiapi::common::ApiStatusCode::AS_BAD_REQUEST );
++    }
++
++    BOOST_CHECK( !board->GetDesignSettings().m_HasStackup );
++    BOOST_CHECK( getStackup( handler, *board ).SerializeAsString() == before.SerializeAsString() );
++}
++
++
++BOOST_AUTO_TEST_CASE( UpdateBoardStackupInvalidValuesRejected )
++{
++    using namespace kiapi::board;
++    BOARD* board = loadBoard( wxS( "issue5830" ) );
++
++    API_HANDLER_PCB handler( m_context );
++    BoardStackup    before = getStackup( handler, *board );
++
++    // Thickness beyond the int range, NaN / negative dielectric constants
++    std::vector<std::function<void( BoardStackupDielectricProperties& )>> edits = {
++        []( BoardStackupDielectricProperties& p ) { p.mutable_thickness()->set_value_nm( ( int64_t( 1 ) << 32 ) + 35000 ); },
++        []( BoardStackupDielectricProperties& p ) { p.set_epsilon_r( std::nan( "" ) ); },
++        []( BoardStackupDielectricProperties& p ) { p.set_loss_tangent( -0.02 ); },
++        []( BoardStackupDielectricProperties& p ) { p.set_spec_frequency( std::numeric_limits<double>::infinity() ); },
++    };
++
++    for( const auto& edit : edits )
++    {
++        BoardStackup bad = makeJlc4LayerStackup( before );
++
++        for( BoardStackupLayer& layer : *bad.mutable_layers() )
++        {
++            if( layer.type() == BSLT_DIELECTRIC )
++            {
++                edit( *layer.mutable_dielectric()->mutable_layer( 0 ) );
++                break;
++            }
++        }
++
 +        kiapi::common::ApiRequest request = makeUpdateStackupRequest( *board, bad );
 +        API_RESULT                result = handler.Handle( request );
 +
@@ -637,6 +816,50 @@ index 70dfa5f7..fa5aa3e5 100644
 +    }
 +
 +    BOOST_CHECK( !board->GetDesignSettings().m_HasStackup );
++}
++
++
++BOOST_AUTO_TEST_CASE( UpdateBoardStackupKeepsColorNames )
++{
++    using namespace kiapi::board;
++    BOARD* board = loadBoard( wxS( "issue5830" ) );
++
++    // A stored stackup with KiCad's colour names, as the board setup dialog writes them
++    BOARD_DESIGN_SETTINGS& bds = board->GetDesignSettings();
++    BOARD_STACKUP          stored = board->GetStackupOrDefault();
++
++    for( BOARD_STACKUP_ITEM* item : stored.GetList() )
++    {
++        if( item->GetBrdLayerId() == F_Mask )
++            item->SetColor( wxS( "Green" ) );
++        else if( item->GetType() == BS_ITEM_TYPE_DIELECTRIC && item->GetDielectricLayerId() == 1 )
++            item->SetColor( wxS( "FR4 natural" ) );
++    }
++
++    bds.GetStackupDescriptor() = stored;
++    bds.m_HasStackup = true;
++
++    API_HANDLER_PCB           handler( m_context );
++    kiapi::common::ApiRequest request = makeUpdateStackupRequest( *board, getStackup( handler, *board ) );
++    BOOST_REQUIRE( handler.Handle( request ).has_value() );
++
++    int checked = 0;
++
++    for( const BOARD_STACKUP_ITEM* item : bds.GetStackupDescriptor().GetList() )
++    {
++        if( item->GetBrdLayerId() == F_Mask )
++        {
++            BOOST_CHECK_EQUAL( item->GetColor(), wxString( wxS( "Green" ) ) );
++            checked++;
++        }
++        else if( item->GetType() == BS_ITEM_TYPE_DIELECTRIC && item->GetDielectricLayerId() == 1 )
++        {
++            BOOST_CHECK_EQUAL( item->GetColor(), wxString( wxS( "FR4 natural" ) ) );
++            checked++;
++        }
++    }
++
++    BOOST_CHECK_EQUAL( checked, 2 );
 +}
 +
 +
@@ -664,6 +887,47 @@ index 70dfa5f7..fa5aa3e5 100644
 +
 +    const BOARD_DESIGN_SETTINGS& bds = board->GetDesignSettings();
 +    BOOST_CHECK_EQUAL( bds.GetBoardThickness(), bds.GetStackupDescriptor().BuildBoardThicknessFromStackup() );
++}
++
++
++BOOST_AUTO_TEST_CASE( SetBoardEnabledLayersShrinksStackup )
++{
++    using namespace kiapi::board;
++    BOARD* board = loadBoard( wxS( "issue5830" ) );
++
++    API_HANDLER_PCB handler( m_context );
++    BoardStackup    wanted = makeJlc4LayerStackup( getStackup( handler, *board ) );
++
++    kiapi::common::ApiRequest update = makeUpdateStackupRequest( *board, wanted );
++    BOOST_REQUIRE( handler.Handle( update ).has_value() );
++
++    kiapi::common::ApiRequest two = makeSetEnabledLayersRequest( *board, 2 );
++    BOOST_REQUIRE( handler.Handle( two ).has_value() );
++
++    // F.Cu, the first dielectric and B.Cu keep their values
++    BoardStackup readBack = getStackup( handler, *board );
++    BOOST_CHECK( thicknesses( readBack, BSLT_COPPER ) == std::vector<int64_t>( { 35000, 35000 } ) );
++    BOOST_CHECK( thicknesses( readBack, BSLT_DIELECTRIC ) == std::vector<int64_t>( { JLC_4L_DIELECTRIC.front() } ) );
++
++    const BOARD_DESIGN_SETTINGS& bds = board->GetDesignSettings();
++    BOOST_CHECK( bds.m_HasStackup );
++    BOOST_CHECK_EQUAL( bds.GetBoardThickness(), bds.GetStackupDescriptor().BuildBoardThicknessFromStackup() );
++}
++
++
++BOOST_AUTO_TEST_CASE( SetBoardEnabledLayersWithoutStackupUnchanged )
++{
++    BOARD* board = loadBoard( wxS( "issue5830" ) );
++    int    thickness = board->GetDesignSettings().GetBoardThickness();
++
++    API_HANDLER_PCB           handler( m_context );
++    kiapi::common::ApiRequest six = makeSetEnabledLayersRequest( *board, 6 );
++    BOOST_REQUIRE( handler.Handle( six ).has_value() );
++
++    // A board without an explicit stackup keeps none; the default follows the layer count
++    BOOST_CHECK( !board->GetDesignSettings().m_HasStackup );
++    BOOST_CHECK_EQUAL( board->GetDesignSettings().GetBoardThickness(), thickness );
++    BOOST_CHECK_EQUAL( thicknesses( getStackup( handler, *board ), kiapi::board::BSLT_COPPER ).size(), 6u );
 +}
 +
 +

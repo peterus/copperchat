@@ -39,7 +39,7 @@ here is meant to be pasted upstream; KiCad's tool-generated-content policy appli
 1. `pcbnew/board_stackup_manager/board_stackup.cpp`: `BOARD_STACKUP::Deserialize` implemented.
    Builds the item list from the message: per layer the type (copper, dielectric, solder mask,
    solder paste, silkscreen — unknown/undefined types refused), board layer (must match the
-   type: copper layer for copper, F/B.Mask for mask, …), enabled flag, colour (stored as hex),
+   type: copper layer for copper, F/B.Mask for mask, …), enabled flag, colour (as `#RRGGBBAA`; see the handler for names),
    thickness; dielectrics get core/prepreg from the dielectric type (`BSDT_PREPREG` → prepreg,
    anything else → core), sequential dielectric ids and every sub-layer (thickness, locked
    flag, material, Er, loss tangent, spec frequency — absent = 0 —, dielectric model); solder
@@ -55,9 +55,14 @@ here is meant to be pasted upstream; KiCad's tool-generated-content policy appli
    - the copper layers must be exactly the board's enabled copper layers in stack order
      (else `AS_BAD_REQUEST`, "change the layer count with SetBoardEnabledLayers first"), so the
      proto comment's "content on removed layers is deleted" case is never reached;
-   - every copper and dielectric (sub-)layer thickness > 0, others ≥ 0;
+   - every copper and dielectric (sub-)layer thickness > 0, others ≥ 0; `Deserialize` already
+     refuses thicknesses outside 0…10 mm (they are stored as `int`; 10 mm keeps any stackup
+     sum far below `INT_MAX`) and non-finite or negative Er / loss tangent / spec frequency;
    - mask/paste/silk layers must be enabled on the board, appear once, front ones above the
      copper, back ones below;
+   - colour names: where the request carries exactly the RGBA value `GetBoardStackup` returned
+     for an existing item's named colour (e.g. "Green", "FR4 natural"), the name is kept, so a
+     get → update round trip does not rewrite colours (the API only transports RGBA);
    - then: the design settings' stackup descriptor is replaced, `m_HasStackup = true`, board
      thickness = `BuildBoardThicknessFromStackup()`, `onModified()` (same as
      `handleSetBoardDesignRules`); no undo entry (board settings changes through the API have
@@ -81,10 +86,15 @@ here is meant to be pasted upstream; KiCad's tool-generated-content policy appli
   `GetBoardStackup` equal to the nm; material/Er read back; `m_HasStackup`; board thickness =
   stackup sum), `UpdateBoardStackupCopperCountMismatchRejected` (2-copper message →
   `AS_BAD_REQUEST`, stackup unchanged), `UpdateBoardStackupInvalidThicknessRejected` (zero
-  dielectric, zero copper), `UpdateBoardStackupLayerOrderRejected` (two coppers in a row; a
-  copper layer the board lacks), `SetBoardEnabledLayersKeepsStackupInSync` (4 → 6 layers after a
-  stackup update: 6 copper / 5 dielectric, F.Cu thickness kept).
-  - Before the handler (test only): 7 failures (status 5 = `AS_UNHANDLED`, no handler).
+  dielectric, zero copper), `UpdateBoardStackupLayerOrderRejected` (two coppers in a row, a
+  copper layer the board lacks, In1/In2 swapped, F.Mask below the copper, a duplicate layer,
+  mask on a copper layer, a disabled copper layer; stackup unchanged),
+  `UpdateBoardStackupInvalidValuesRejected` (thickness beyond `int`, NaN Er, negative loss
+  tangent, infinite spec frequency), `UpdateBoardStackupKeepsColorNames` ("Green" mask and
+  "FR4 natural" dielectric survive get → update), `SetBoardEnabledLayersKeepsStackupInSync`
+  (4 → 6), `SetBoardEnabledLayersShrinksStackup` (4 → 2: F.Cu, first dielectric, B.Cu keep their
+  values), `SetBoardEnabledLayersWithoutStackupUnchanged` (no explicit stackup → stays implicit).
+  - Before the handler (first five cases only): 7 failures (status 5 = `AS_UNHANDLED`, no handler).
   - With the patch: all `ApiHandlerPcb` cases pass ("No errors detected", 2026-11-25).
   - Full `qa_api` in this partial build: the `ApiHandlerPcb` suite passes; 20 failures in
     `ApiE2E` / `ApiJobs` (api-server e2e: schematic open fails, `nng_recv` timeouts) because
@@ -111,5 +121,5 @@ here is meant to be pasted upstream; KiCad's tool-generated-content policy appli
   `qa_api --run_test=ApiHandlerPcb`).
 - Possible upstream questions: whether `UpdateBoardStackup` should also change the copper layer
   count (the proto comment originally implied it; this patch refuses it), whether an undo/commit
-  entry is wanted, and whether standard colour names should survive a round trip (the patch
-  stores colours as hex).
+  entry is wanted, and whether colours should be transported as names (the patch keeps a name
+  only when the RGBA value is unchanged; a changed colour is stored as `#RRGGBBAA`).

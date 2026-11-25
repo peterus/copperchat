@@ -10,6 +10,7 @@ import pytest
 from kipy.errors import ApiError
 from kipy.proto.board import board_commands_pb2, board_pb2
 from kipy.proto.board.board_types_pb2 import BoardLayer
+from kipy.proto.common import ApiStatusCode
 from kipy.proto.common.types.base_types_pb2 import DocumentSpecifier, DocumentType
 
 from copperchat.board.presets import STACKUPS, StackupLayer
@@ -18,6 +19,7 @@ from copperchat.kicad_tools.board import engine as board_engine
 from copperchat.kicad_tools.board import setup
 from copperchat.kicad_tools.board.engine import apply_board_change_set
 from copperchat.kicad_tools.board.setup import (
+    board_thickness_mm,
     parse_rules_args,
     plan_stackup,
     stackup_request,
@@ -199,6 +201,10 @@ class FakeBoard:
         self.copper = 2
         self.document = DocumentSpecifier(type=DocumentType.DOCTYPE_PCB)
         self.client = SimpleNamespace(send=self._send)
+        self.error: ApiError | None = ApiError(
+            NO_HANDLER, raw_message=NO_HANDLER[len("KiCad returned error: ") :]
+        )
+        self.disabled_dielectric = False
 
     def get_copper_layer_count(self) -> int:
         return self.copper
@@ -214,12 +220,16 @@ class FakeBoard:
         s = _default_4l()
         if self.copper == 2:
             del s.layers[3:7]
+        if self.disabled_dielectric:
+            s.layers[2].enabled = False
         return SimpleNamespace(proto=s)
 
     def _send(self, cmd: Any, response_type: Any) -> Any:
         assert isinstance(cmd, board_commands_pb2.UpdateBoardStackup)
         self.log.append("update stackup")
-        raise ApiError(NO_HANDLER, raw_message=NO_HANDLER[len("KiCad returned error: ") :])
+        if self.error is not None:
+            raise self.error
+        return board_commands_pb2.BoardStackupResponse(stackup=cmd.stackup)
 
 
 @pytest.fixture
@@ -254,3 +264,57 @@ async def test_unpatched_detected(tmp_path: Path, log: list[str], spy: Spy) -> N
         "layers 2",
     ]
     assert spy.compensations == 1 and board.copper == 2
+
+
+def _engine(tmp_path: Path, log: list[str], board: FakeBoard) -> Any:
+    session = FakeSession(log)
+    session.handle = SimpleNamespace(board=lambda: board)
+    session.modified_docs = set()  # type: ignore[attr-defined]
+    return _ctx(tmp_path, session)
+
+
+async def test_unrestorable_board_stackup_refused(tmp_path: Path, log: list[str], spy: Spy) -> None:
+    board = FakeBoard(log)
+    board.copper = 4
+    board.disabled_dielectric = True  # valid in a KiCad file, refused by patch 0005
+    req = parse_rules_args({"stackup": "jlc-4l-1.6-7628"})
+    cs = setup._plan_rules(req, None, {}, 4, "hash", plan_stackup(req, 4))
+    with pytest.raises(StructuredToolError) as info:
+        await apply_board_change_set(_engine(tmp_path, log, board), cs)
+    assert info.value.code == "invalid_argument"
+    assert "cannot be restored" in str(info.value.why)
+    assert "update stackup" not in log  # refused before any write
+
+
+async def test_busy_is_not_invalid_argument(tmp_path: Path, log: list[str], spy: Spy) -> None:
+    board = FakeBoard(log)
+    board.copper = 4
+    board.error = ApiError("KiCad returned error: busy", code=ApiStatusCode.AS_BUSY)
+    req = parse_rules_args({"stackup": "jlc-4l-1.6-7628"})
+    cs = setup._plan_rules(req, None, {}, 4, "hash", plan_stackup(req, 4))
+    with pytest.raises(Exception) as info:
+        await apply_board_change_set(_engine(tmp_path, log, board), cs)
+    assert not (
+        isinstance(info.value, StructuredToolError) and info.value.code == "invalid_argument"
+    )
+    # The write's outcome is unknown: the undo stays armed and writes the snapshot back
+    assert log.count("update stackup") == 2
+
+
+def test_board_thickness_includes_mask() -> None:
+    req = stackup_request(_default_4l(), STACKUPS["jlc-4l-1.6-7628"])
+    assert board_thickness_mm(req) == round(1.5862 + 0.01, 4)  # F.Mask 0.01, B.Mask 0
+
+
+def test_layer_change_without_stackup_notes() -> None:
+    cs = setup._plan_rules(parse_rules_args({"layers": 4}), None, {}, 2, "hash")
+    assert any("stackup: jlc-4l-1.6-7628" in n for n in cs.report["notes"])
+    cs = setup._plan_rules(
+        parse_rules_args({"layers": 4, "stackup": "jlc-4l-1.6-7628"}),
+        None,
+        {},
+        2,
+        "hash",
+        STACKUPS["jlc-4l-1.6-7628"],
+    )
+    assert not any("without stackup" in n for n in cs.report["notes"])

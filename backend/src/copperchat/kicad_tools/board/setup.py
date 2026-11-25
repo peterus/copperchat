@@ -26,6 +26,7 @@ from kipy.project_types import NetClass, NetClassAssignments, NetClassPatternAss
 from kipy.proto.board import board_commands_pb2, board_pb2, board_rules_pb2
 from kipy.proto.board.board_commands_pb2 import CustomRulesStatus
 from kipy.proto.board.board_types_pb2 import BoardLayer, ZoneType
+from kipy.proto.common import ApiStatusCode
 from kipy.proto.common.types import project_settings_pb2
 from kipy.proto.common.types.base_types_pb2 import MapMergeMode
 from kipy.util.board_layer import canonical_name, layer_from_canonical_name
@@ -948,20 +949,66 @@ def _stackup_unavailable() -> StructuredToolError:
     )
 
 
-def _set_stackup(h: KicadHandle, preset: StackupPreset, state: dict[str, Any]) -> None:
+def _unrestorable(stackup: board_pb2.BoardStackup) -> str | None:
+    """Why patch 0005 would refuse to write `stackup` back (KiCad accepts such stackups
+    from files: a disabled or zero-thickness copper / dielectric layer), else None."""
+    for layer in _copper_and_dielectrics(stackup):
+        name = "a dielectric" if layer.type == board_pb2.BSLT_DIELECTRIC else "a copper layer"
+        if not layer.enabled:
+            return f"{name} is disabled"
+        subs = list(layer.dielectric.layer) if layer.type == board_pb2.BSLT_DIELECTRIC else []
+        if any(t <= 0 for t in [s.thickness.value_nm for s in subs] or [layer.thickness.value_nm]):
+            return f"{name} has no thickness"
+    return None
+
+
+def board_thickness_mm(stackup: board_pb2.BoardStackup) -> float:
+    """What KiCad stores as the board thickness: enabled copper, dielectric (every
+    sub-layer) and solder mask layers."""
+    nm = 0
+    for layer in stackup.layers:
+        if not layer.enabled:
+            continue
+        if layer.type == board_pb2.BSLT_DIELECTRIC and layer.dielectric.layer:
+            nm += sum(s.thickness.value_nm for s in layer.dielectric.layer)
+        elif layer.type in (
+            board_pb2.BSLT_COPPER,
+            board_pb2.BSLT_DIELECTRIC,
+            board_pb2.BSLT_SOLDERMASK,
+        ):
+            nm += layer.thickness.value_nm
+    return round(nm_to_mm(nm), 4)
+
+
+def _set_stackup(
+    h: KicadHandle, preset: StackupPreset, state: dict[str, Any], report: dict[str, Any]
+) -> None:
     """Stage: the preset's build-up. The undo snapshot is the stackup right before the
     write (the layer count already applied); the layer count's undo restores the
-    pre-call stackup after it (`_undo_layers`)."""
+    pre-call stackup after it (`_undo_layers`). A board stackup the API could not write
+    back (so no undo) is refused before the write."""
     pre = get_stackup(h)
+    for snapshot in (pre, state.get("layers_stackup")):
+        why = _unrestorable(snapshot) if snapshot is not None else None
+        if why:
+            raise _rules_invalid(
+                f"the board's current stackup cannot be restored through KiCad's API ({why})",
+                "Nothing of this call stays applied. Fix the stackup in KiCad's Board Setup "
+                "(Physical Stackup) first, or leave stackup out.",
+            )
     req = stackup_request(pre, preset)
     state["stackup"] = pre  # armed before the send: a timeout leaves KiCad's state unknown
     try:
-        update_stackup(h, req)
+        got = update_stackup(h, req)
     except ApiError as exc:
-        del state["stackup"]  # KiCad refused: nothing was written
         if _NO_STACKUP_HANDLER in str(exc):
+            del state["stackup"]  # nothing was written
             raise _stackup_unavailable() from exc
+        if exc.code != ApiStatusCode.AS_BAD_REQUEST:
+            raise  # busy / internal: the undo stays armed
+        del state["stackup"]  # KiCad refused the request: nothing was written
         raise _rules_invalid(f"KiCad rejects the stackup: {exc.raw_message or exc}") from exc
+    report.setdefault("stackup", {})["board_mm"] = board_thickness_mm(got)
 
 
 def _undo_stackup(h: KicadHandle, state: dict[str, Any]) -> None:
@@ -1340,6 +1387,13 @@ def _rules_report(
             f"preset {preset.id} is for {preset.layers} copper layers; the board keeps "
             f"{target} layers (pass layers: {preset.layers} to change the layer count)"
         )
+    if req.layers is not None and req.layers != copper and req.stackup is None:
+        fitting = sorted(k for k, p in STACKUPS.items() if p.copper_layers == target)
+        notes.append(
+            "the layer count changed without stackup: a fab stackup already on the board "
+            "keeps its matching layers and KiCad adds default ones for the others"
+            + (f"; pass stackup: {fitting[0]} to set the fab build-up" if fitting else "")
+        )
     by_rule = {v: k for k, v in RULE_FIELDS.items()}
     return {
         "preset": req.preset,
@@ -1448,7 +1502,7 @@ def _plan_rules(
         stages.append(
             staged(
                 "stackup",
-                lambda h: _set_stackup(h, chosen, state),
+                lambda h: _set_stackup(h, chosen, state, report),
                 undo_with(_undo_stackup),
             )
         )
@@ -1470,6 +1524,8 @@ def _plan_rules(
         )
     report = _rules_report(req, preset, values, copper)
     if stackup is not None:
+        # total_mm: copper + dielectric (the preset); board_mm (set by the stage): what
+        # KiCad stores as the board thickness, solder mask included
         report["stackup"] = {
             "id": stackup.id,
             "jlc_name": stackup.jlc_name,

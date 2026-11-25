@@ -136,11 +136,14 @@ async def test_set_rules_stackup_4l(synth_rig: SynthRig) -> None:
         ctx, "pcb_set_rules", layers=4, preset="jlcpcb-4l", stackup="jlc-4l-1.6-7628"
     )
     assert not err, data
-    assert data["stackup"] == {
+    stackup = data["stackup"]
+    assert {k: stackup[k] for k in ("id", "jlc_name", "total_mm")} == {
         "id": "jlc-4l-1.6-7628",
         "jlc_name": "JLC04161H-7628",
         "total_mm": 1.5862,
     }
+    # KiCad's board thickness adds the solder mask layers (0.01 mm each by default)
+    assert 1.5862 < stackup["board_mm"] <= 1.5862 + 0.1
     got: board_pb2.BoardStackup = await ctx.session.call(get_stackup)
     assert _close(stackup_thicknesses(got), JLC_4L_MM)
     assert board_hash(await _model(ctx)) != before

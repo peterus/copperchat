@@ -22,6 +22,6 @@ The proto changes of 0001 and 0003 are also carried by the kipy fork
 classes match; `KIPY_COMMIT` pins that commit. Integration tests:
 `backend/tests/kicad/test_kicad_api_patches.py`, `backend/tests/kicad/board/test_stackup_patch.py`
 (0005); KiCad QA tests: `qa/tests/api/test_api_e2e_libraries.cpp` (added by the patches) and the
-`UpdateBoardStackup*` / `SetBoardEnabledLayersKeepsStackupInSync` cases in
+`UpdateBoardStackup*` / `SetBoardEnabledLayers*Stackup*` cases in
 `qa/tests/api/test_api_handler_pcb.cpp` (0005). 0005 changes no proto message (only the
 comment of `UpdateBoardStackup`), so the kipy fork needs no change for it.
