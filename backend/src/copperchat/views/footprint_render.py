@@ -633,6 +633,24 @@ def _read_fd(fd: int, size: int) -> bytes:
     return b"".join(chunks)
 
 
+def _open_worker_io(home: Path, svg: bytes) -> tuple[int, int, int]:
+    """Blocking: `svg` written to the worker's stdin file; (stdin, stdout, stderr) fds,
+    or `render_failed` with every fd closed."""
+    fds: list[int] = []
+    try:
+        fds.append(_io_file(home, "worker-in.svg", os.O_WRONLY))
+        _write_all(fds[0], svg)
+        fds.append(os.open(home / "worker-in.svg", os.O_RDONLY | os.O_NOFOLLOW))
+        fds.append(_io_file(home, "worker-out.png", os.O_RDWR))
+        fds.append(_io_file(home, "worker-err.txt", os.O_RDWR))
+        os.close(fds.pop(0))
+    except OSError as exc:
+        for fd in fds:
+            os.close(fd)
+        raise _failed(f"the rasteriser input could not be written ({type(exc).__name__})") from None
+    return fds[0], fds[1], fds[2]
+
+
 def _kill_group(proc: asyncio.subprocess.Process) -> None:
     """SIGKILL the worker's process group (its own session: pgid == pid) while it has
     not been reaped, so the pid is not normally reused (strictly guaranteed only with
@@ -658,20 +676,18 @@ async def _run_worker(
     stderr are files in `home` (no pipe, so the worker never blocks on the parent and
     the parent only waits for its exit). The worker is killed and reaped on every way
     out, a cancellation included (which waits for the reaping, then propagates)."""
-    fds: list[int] = []
+    # file I/O of up to a board SVG (24 MiB) / a PNG (~17 MB): in a thread, not on the loop
+    setup = asyncio.ensure_future(asyncio.to_thread(_open_worker_io, home, svg))
     try:
-        fds.append(_io_file(home, "worker-in.svg", os.O_WRONLY))
-        _write_all(fds[0], svg)
-        fds.append(os.open(home / "worker-in.svg", os.O_RDONLY | os.O_NOFOLLOW))
-        fds.append(_io_file(home, "worker-out.png", os.O_RDWR))
-        fds.append(_io_file(home, "worker-err.txt", os.O_RDWR))
-    except OSError as exc:
-        for fd in fds:
-            os.close(fd)
-        raise _failed(f"the rasteriser input could not be written ({type(exc).__name__})") from None
-    in_fd, out_fd, err_fd = fds[1], fds[2], fds[3]
+        in_fd, out_fd, err_fd = await asyncio.shield(setup)
+    except asyncio.CancelledError:
+        with contextlib.suppress(asyncio.CancelledError):
+            await _settle(setup)
+        if not setup.cancelled() and setup.exception() is None:
+            for fd in setup.result():
+                os.close(fd)
+        raise
     try:
-        os.close(fds[0])
         try:
             proc = await asyncio.create_subprocess_exec(
                 *RASTER_WORKER,
@@ -708,7 +724,12 @@ async def _run_worker(
         size = os.fstat(out_fd).st_size
         if size > MAX_PNG_BYTES:
             raise _failed("the rasteriser wrote more than a PNG of the drawing can hold")
-        return _read_fd(out_fd, size)
+        read = asyncio.ensure_future(asyncio.to_thread(_read_fd, out_fd, size))
+        try:
+            return await asyncio.shield(read)
+        except asyncio.CancelledError:
+            await _settle(read)  # the fd stays open until the thread is done with it
+            raise
     finally:
         for fd in (in_fd, out_fd, err_fd):
             os.close(fd)

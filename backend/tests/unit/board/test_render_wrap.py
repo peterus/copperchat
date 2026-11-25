@@ -175,3 +175,23 @@ def test_simplify_work_is_bounded() -> None:
     pts = list(zip(nums[0::2], nums[1::2], strict=True))
     assert removed == 0
     assert pts == [(round(x, 4), y) for x, y in zigzag]
+
+
+def test_strips_xml_illegal_characters() -> None:
+    """A control character in a net, group or title would make the wrapper unparseable
+    (the final `load_kicad_svg` fails): every injected string drops it, keeps tab/newline."""
+    bad = "N\x0bE\x00T\x1f￾\tX"
+    m = model(parts=(part("R1", 20, 30),), tracks=(track(net=bad, start=(12, 25), end=(40, 25)),))
+    out = wrap_svg(
+        KICAD,
+        hulls=[Hull(name=bad, points=((12, 22), (40, 22), (40, 50)))],
+        highlight=highlight_shapes(m, [bad]),
+        highlight_nets=[bad],
+        title=bad,
+        board_size=(50.0, 40.0),
+    )
+    root = ET.fromstring(out)  # well-formed XML 1.0
+    assert root.find(f"{NS}title").text == "NET\tX"  # type: ignore[union-attr]
+    texts = [t.text or "" for t in root.iter(f"{NS}text")]
+    assert sum("NET\tX" in t for t in texts) >= 2  # hull label and net legend
+    assert not any(c in out for c in "\x0b\x00\x1f￾")

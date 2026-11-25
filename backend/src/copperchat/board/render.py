@@ -4,7 +4,8 @@ wrapper SVG around KiCad's (sanitised) board drawing.
 The wrapper draws in KiCad's own coordinates: `kicad-cli pcb export svg --page-size-mode
 2` writes board millimetres as its viewBox (bottom view, `--mirror`: x negated), so
 overlays only map board x to -x when mirrored. Every string the wrapper injects (titles,
-block names, net names, numbers) goes through `xml.sax.saxutils.escape`; attribute values
+block names, net names, numbers) goes through `_xml_text` (characters XML 1.0 forbids
+dropped, then `xml.sax.saxutils.escape`); attribute values
 are numbers or constants. No kipy, no I/O.
 """
 
@@ -301,10 +302,20 @@ class _Frame:
         return -x if self.mirror else x
 
 
+# characters outside XML 1.0's Char production (C0 controls but \t \n \r, surrogates,
+# U+FFFE/U+FFFF): one in a net or group name would make the wrapper unparseable
+_XML_ILLEGAL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
+
+
+def _xml_text(text: str) -> str:
+    """`text` as XML character data: illegal characters dropped, then escaped."""
+    return escape(_XML_ILLEGAL.sub("", text))
+
+
 def _text(x: float, y: float, size: float, text: str, anchor: str = "start") -> str:
     return (
         f'<text x="{_n(x)}" y="{_n(y)}" font-size="{_n(size)}" text-anchor="{anchor}">'
-        f"{escape(text)}</text>"
+        f"{_xml_text(text)}</text>"
     )
 
 
@@ -361,7 +372,7 @@ def wrap_svg(
         f'viewBox="{_n(ox)} {_n(oy)} {_n(ow)} {_n(oh)}">',
     ]
     if title:
-        out.append(f"<title>{escape(title)}</title>")
+        out.append(f"<title>{_xml_text(title)}</title>")
     out.append(f'<rect x="{_n(ox)}" y="{_n(oy)}" width="{_n(ow)}" height="{_n(oh)}" fill="{BG}"/>')
     out.append(drawing)
 

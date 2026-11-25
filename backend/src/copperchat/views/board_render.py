@@ -270,12 +270,17 @@ def _read_output(path: Path, max_bytes: int, what: str) -> bytes:
         st = os.lstat(path)
     except FileNotFoundError:
         raise _failed(f"kicad-cli wrote no {what}") from None
+    except OSError as exc:
+        raise _failed(f"kicad-cli's {what} could not be read ({type(exc).__name__})") from None
     if not stat.S_ISREG(st.st_mode) or st.st_size == 0:
         raise _failed(f"kicad-cli wrote no usable {what}")
     if st.st_size > max_bytes:
         raise _failed(f"kicad-cli wrote more than {max_bytes} bytes of {what}")
-    with path.open("rb") as fh:
-        return fh.read(max_bytes + 1)
+    try:
+        with path.open("rb") as fh:
+            return fh.read(max_bytes + 1)
+    except OSError as exc:
+        raise _failed(f"kicad-cli's {what} could not be read ({type(exc).__name__})") from None
 
 
 @dataclass(frozen=True)
@@ -323,6 +328,8 @@ async def _cli(ctx: ToolContext, args: list[str], timeout_s: float, cwd: Path, w
         result = await run_kicad_cli(ctx.settings, args, timeout=timeout_s, cwd=cwd)
     except TimeoutError:
         raise _failed(f"kicad-cli {what} took longer than {timeout_s:.0f} s") from None
+    except OSError as exc:  # no kicad-cli binary, not executable, ...
+        raise _failed(f"kicad-cli could not be started ({type(exc).__name__})") from None
     if result.returncode != 0:
         raise _failed(
             f"kicad-cli {what} exited with {result.returncode}: "

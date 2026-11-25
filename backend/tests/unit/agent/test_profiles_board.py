@@ -96,3 +96,12 @@ def test_every_board_write_has_a_kind() -> None:
     for spec in registry.all_specs():
         if spec.prepare is not None and spec.name in PCB_WRITES:
             assert "board_" + spec.name.removeprefix("pcb_") in BOARD_KINDS, spec.name
+
+
+def test_every_registered_pcb_write_is_flagged() -> None:
+    """A future mutating `pcb_*` tool missing from PCB_WRITES would slip past the flag."""
+    pcb = [s for s in registry.all_specs() if s.name.startswith("pcb_")]
+    assert {"pcb_list_footprints", "pcb_get_footprint", "pcb_get_net"} <= {s.name for s in pcb}
+    for spec in pcb:
+        if spec.mutating or spec.changes_documents or spec.prepare is not None:
+            assert spec.name in PCB_WRITES, spec.name

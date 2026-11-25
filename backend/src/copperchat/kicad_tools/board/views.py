@@ -149,6 +149,10 @@ async def pcb_render(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     want_markers = args.get("markers", False)
     if not isinstance(want_markers, bool):
         raise _invalid("Invalid markers", "markers must be true or false")
+    if view == "3d" and (region is not None or nets or want_markers):
+        raise _invalid(
+            "Unexpected argument", "markers, highlight_nets and region are only used with 2D views"
+        )
     require_board(ctx)
     m = await board_model(ctx)
     if layer is not None and layer not in m.copper_layers:

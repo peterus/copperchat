@@ -97,15 +97,33 @@ def test_worker_four_args_sets_limits() -> None:
         ("10", "10", "8", str(4 * 2**30)),
     ],
 )
-def test_worker_rejects_bad_limits(argv: tuple[str, ...]) -> None:
-    out = subprocess.run(
-        [sys.executable, "-I", "-m", "copperchat.views._raster_worker", *argv],
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        timeout=60,
-    )
-    assert out.returncode != 0
+def test_worker_rejects_bad_limits(argv: tuple[str, ...], tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        worker.parse_args(list(argv))
+    # a valid SVG on stdin: a worker that accepted the argv would render it (exit 0)
+    out = _run_worker(tmp_path, *argv)
+    assert out.returncode == 2
     assert out.stdout == b""
+    assert out.stderr == b"ValueError"
+
+
+def test_worker_renders_with_good_limits(tmp_path: Path) -> None:
+    """The control of the test above: the same stdin with valid argv renders a PNG."""
+    out = _run_worker(tmp_path, "10", "10", "8", str(2**30))
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.startswith(b"\x89PNG")
+
+
+def _run_worker(tmp_path: Path, *argv: str) -> subprocess.CompletedProcess[bytes]:
+    svg = tmp_path / "in.svg"
+    svg.write_bytes(SVG)
+    with svg.open("rb") as stdin:
+        return subprocess.run(
+            [sys.executable, "-I", "-m", "copperchat.views._raster_worker", *argv],
+            stdin=stdin,
+            capture_output=True,
+            timeout=60,
+        )
 
 
 def test_board_svg_retention(tmp_path: Path) -> None:
@@ -150,3 +168,55 @@ def test_board_svg_retention_skips_links_and_bad_entries(tmp_path: Path) -> None
     assert victim.read_bytes() == b"keep me"
     assert (renders / f"{linked}.svg").is_symlink()
     assert len(json.loads((renders / BOARD_SVGS_FILE).read_text())) == KEEP_BOARD_SVGS
+
+
+async def test_board_cli_not_started_is_named(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing kicad-cli is reported as such, not as an unwritable board copy."""
+    from types import SimpleNamespace
+
+    from copperchat.views import board_render as br
+
+    async def missing(*args: Any, **kwargs: Any) -> Any:
+        raise FileNotFoundError("kicad-cli")
+
+    monkeypatch.setattr(br, "run_kicad_cli", missing)
+    ctx: Any = SimpleNamespace(settings=None)
+    with pytest.raises(StructuredToolError) as err:
+        await br._cli(ctx, [], 1.0, Path("."), "pcb render")
+    assert err.value.code == "render_failed"
+    assert "kicad-cli could not be started (FileNotFoundError)" in err.value.why
+
+
+def test_board_output_unreadable_is_named(tmp_path: Path) -> None:
+    from copperchat.views import board_render as br
+
+    out = tmp_path / "x.svg"
+    out.mkdir()
+    (out / "y").write_bytes(b"")
+    with pytest.raises(StructuredToolError) as err:
+        br._read_output(out / "y" / "z", 10, "SVG")  # ENOTDIR on lstat
+    assert err.value.code == "render_failed"
+    assert "kicad-cli's SVG could not be read (NotADirectoryError)" in err.value.why
+
+
+async def test_worker_file_io_off_the_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The input write and the PNG read (up to 24 MiB / ~17 MB) run in a thread."""
+    import threading
+
+    threads: list[str] = []
+    write_all, read_fd = fr._write_all, fr._read_fd
+
+    def spy_write(fd: int, data: bytes) -> None:
+        threads.append(threading.current_thread().name)
+        write_all(fd, data)
+
+    def spy_read(fd: int, size: int) -> bytes:
+        threads.append(threading.current_thread().name)
+        return read_fd(fd, size)
+
+    monkeypatch.setattr(fr, "_write_all", spy_write)
+    monkeypatch.setattr(fr, "_read_fd", spy_read)
+    png, _ = await fr.rasterise(SVG, (4.0, 4.0))
+    assert png.startswith(b"\x89PNG")
+    assert len(threads) == 2
+    assert threading.main_thread().name not in threads
