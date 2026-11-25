@@ -847,6 +847,22 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
   clears its temp paths before use (never writes through a pre-existing symlink) and treats a
   symlinked `.lock` / manifest / JAR / `jre` as not installed.
 
+**Review rounds 2–4 (PR #104) changes**
+- Chamfer clearance per obstacle: `max(own net clearance, obstacle net's class clearance,
+  min_clearance)`. Runner makes `freerouting_home`, `workdir`, `dsn`, `ses` absolute and removes a
+  stale `.ses` before a run.
+- `postprocess` performance: step-3 attribution, baseline suppression, merge outer ends and pad-end
+  lookups bucketed (`geom._Grid` / `_Near`); merge joints keyed per (net, layer). 4,000 defective
+  tracks ≈ 1.1 s, 1,600-pad comb ≈ 1.5 s (rest is `metrics._mst`, all pad pairs — P6b/P9a may
+  bucket it).
+- Sub-`_JOIN_TOL` (2 µm) touched pieces / gaps are closed at one nm point in step 1 (untouched,
+  arc and via ends never move). **Safety net (owner rule):** step 3 runs `analyse_bends` on every
+  nm-rounded output polyline that contains touched copper and rips every failure not in the
+  untouched baseline; touched ends within 2 µm of another end but not on it rip `non_octilinear`.
+  A float straight piece of exactly 0.25 mm between a same-sense pair rips `short_chamfer` (it falls
+  below the minimum after nm rounding). Property test: 4,000 seeds in the suite; a one-off
+  10,000-seed run had 0 failures.
+
 **Residuals for later phases**
 - `analyse_bends` (B-C5) exempts the first and last bend of a pad-ended polyline from the
   micro-jog / short-chamfer checks, so a defective 45° pair directly at both pads is never
