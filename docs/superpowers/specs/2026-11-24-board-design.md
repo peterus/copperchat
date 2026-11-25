@@ -358,11 +358,11 @@ grouping; the plan may refine fields, not semantics).
 
 | Tool | Input | Output |
 |---|---|---|
-| `pcb_status` | `{}` | board exists?, outline, layer count, footprint count, placed/unplaced (unplaced = courtyard not fully inside the outline, §7.2), routed/unrouted connections, zone count, checkpoint states (§8.3) with stale flags, last check summary. Cheap; the agent calls it at the start of every turn. |
+| `pcb_status` | `{}` | board exists?, outline, layer count, footprint count, placed/unplaced (unplaced = courtyard not fully inside the outline, §7.2), routed/unrouted connections, zone count, checkpoint states (§8.3) with stale flags, the current `placement_hash` and `board_hash`, last check summary. Cheap; the agent calls it at the start of every turn. |
 | `pcb_analyze` | `{scope?: "parts"\|"nets"\|"blocks"\|"all"}` | the classification of §9.1: part classes, net classes (ground, supply, switch node, diff pair, high-current guess, critical), proposed functional blocks (from sheets + clusters) and any overrides from `board.md`. Read-only proposal; nothing is written. |
-| `pcb_render` | `{view: "top"\|"bottom"\|"layer"\|"placement"\|"3d", layer?, region?: {x,y,w,h}, highlight_nets?: [..≤20], markers?: bool, angle?: "top"\|"bottom"\|"iso"}` | PNG image(s) + the SVG link (§13). |
+| `pcb_render` | `{view: "top"\|"bottom"\|"layer"\|"placement"\|"3d", layer?, region?: {x,y,w,h}, highlight_nets?: [..≤20], markers?: bool, angle?: "top"\|"bottom"\|"iso"}` | PNG image(s) + the SVG link (§13), plus the `placement_hash` and `board_hash` of the rendered state (recorded as render evidence, §8.3). |
 | `pcb_metrics` | `{only?: [metric ids]}` | M1–M14 values, thresholds, verdict per metric (pass / review / fail), worst offenders with refs/nets/positions. ≈ 0.1–0.5 s. |
-| `pcb_check` | `{level: "quick"\|"full"}` | quick = API DRC task + metrics; full = + `kicad-cli pcb drc --schematic-parity` + fab-rule checks (§12 M14). Result: errors, warnings (each marked `accepted` when it matches a row of `board.md` → Checks, §12), metrics, overall verdict, and a `board_hash`. Records the result for the checkpoint guard (§8.3). |
+| `pcb_check` | `{level: "quick"\|"full"}` | quick = API DRC task + metrics; full = + `kicad-cli pcb drc --schematic-parity` + fab-rule checks (§12 M14). Result: errors, warnings (each marked `accepted` when it matches a row of `board.md` → Checks, §12), metrics, overall verdict, and both `placement_hash` and `board_hash`. Records the result for the checkpoint guard (§8.3). |
 
 ### 7.2 Write tools (`PCB_WRITES`)
 
@@ -421,8 +421,10 @@ grouping; the plan may refine fields, not semantics).
   outline/keepout violations with minimal displacement; locked parts never move. Cost 1.
 - **Moves on a routed board** (`pcb_move`, `pcb_legalize`, `pcb_place_block`; spec call): a part
   with tracks or vias attached is refused (`part_routed`) unless `unroute: true` is passed; then
-  the tool first removes the copper of the affected connections (as `pcb_unroute`) and reports
-  them as unrouted. No dangling tracks are left.
+  the tool first removes **all** copper of the affected connections, **locked items included**
+  (critical routes, fanout and stitching vias on the moved part's pads; i.e. `pcb_unroute` with
+  `include_locked: true` scoped to those connections), and reports them as unrouted, so locked
+  routes must be re-done. A test covers a move with a locked route and a fanout via. No dangling tracks are left.
 
 **Routing** (§10)
 
@@ -449,7 +451,7 @@ grouping; the plan may refine fields, not semantics).
 
 **Checkpoints and output**
 
-- `pcb_approve {stage: "placement"|"board", board_hash, user_quote}` — records an approval (§8.3).
+- `pcb_approve {stage: "placement"|"board", hash, user_quote}` — records an approval (§8.3); `hash` is the stage's hash (`placement_hash` for `placement`, `board_hash` for `board`); a placement approval with a `board_hash` is refused (guard test).
   Cost 1.
 - `pcb_fab_export {preset: "jlcpcb"}` — §14. Refused (`not_approved`) unless the `board`
   checkpoint is valid. Cost 0 (writes no KiCad data).
@@ -543,11 +545,13 @@ would be expensive; the others are enforced by the skill (the agent stops and as
   approval" — was considered and rejected: it would make the hash check fuzzy.)
 - **Storage:** new table `board_checkpoints(project_id, board_file, stage, hash, conversation_id,
   run_id, user_quote, approved_at)` plus `board_reviews(project_id, board_file, conversation_id, stage,
-  hash, run_id, kind, view, check_level, hard_failures, m1_pass, created_at)` (index on
-  project_id, board_file, hash) in a new migration (`0013_board.sql`): one row per piece of
+  placement_hash, board_hash, run_id, kind, view, check_level, hard_failures, m1_pass,
+  created_at)` (indexes on (project_id, board_file, placement_hash) and (project_id, board_file,
+  board_hash); both hashes of the state the evidence was produced for — the placement guard
+  matches `placement_hash`, the board guard `board_hash`) in a new migration (`0013_board.sql`): one row per piece of
   evidence, `kind` ∈ {`render`, `check`}; `view` is set for renders (`placement`, `top`,
   `bottom`, …), `check_level` (`quick`/`full`), `hard_failures` (count) and `m1_pass` for checks. "The last `pcb_check full` for
-  that hash" = the newest `check` row with level `full` for (project, board file, hash). Approvals are per project and board file,
+  that hash" = the newest `check` row with level `full` for (project, board file, board_hash). Approvals are per project and board file,
   so they survive a new session on the same board (spec call); hashes make them expire
   automatically.
 
@@ -768,7 +772,7 @@ synthetic fixtures, but **hard thresholds change only with owner OK**.
 | M4 | Angles (owner) | segments not at 0/45/90/135/… (±0.5°); direction change at a 2-track vertex of the same net and layer ∉ {0°, 45°}; off-pad T-junction where a branch meets at 90° | any | — |
 | M5 | Detour | per connection: routed length / octilinear shortest distance (pad to pad, same layer, ignoring obstacles) | any signal connection > 2.0 and > 5 mm extra | median > 1.15; any > 1.5 (critical nets > 1.25) |
 | M6 | Long connections | routed length of a connection > 50 % of the board diagonal | — | each listed with a reason or fixed |
-| M7 | Straightness | micro-jogs and too-short chamfers (definitions in the notes below); bends per 10 mm per connection | micro-jogs > 0 | bends/10 mm > 1.0 average |
+| M7 | Straightness | micro-jogs and too-short chamfers (definitions in the notes below); bends per 10 mm per connection | micro-jogs + too-short chamfers > 0 | bends/10 mm > 1.0 average |
 | M8 | Decoupling / crystal | path length decoupling pad → served pin; crystal → MCU pins; side | > 5 mm or other side | > 3 mm |
 | M9 | Switcher hot loop | input cap → VIN/GND pins, inductor → SW pin, switch-node copper length | — | > 3 mm / > 3 mm / > 5 mm |
 | M10 | Grouping | per block: hull area / sum of courtyards; foreign parts inside a block hull | — | ratio > 3.0; intrusions > 0 |
@@ -943,6 +947,8 @@ Listed in order of appearance; each is marked "(spec call)" in the text.
 62. One M7 definition (micro-jog + too-short chamfer).
 63. `board_reviews` with project/board columns and structured check fields.
 64. Two-step directory swap for the fab export.
+65. Both hashes returned by status/render/check, stored in `board_reviews`; `pcb_approve` takes the stage's hash.
+66. Moves with `unroute: true` remove locked copper of the affected connections too.
 
 ### 15.3 Owner decisions on the open questions (2026-11-24)
 
@@ -1063,7 +1069,7 @@ In PROD, a board session on the OpenDriveHub transmitter main board, driven only
 2. Every step ends with images and a check report; the agent waits after placement and before fab.
 3. Final `pcb_check full`: **all hard gates pass** — M1 complete, M2 0 unconnected, M3 0 errors and
    0 warnings that the user has not accepted, parity clean, M4 0 non-45° bends / 0 acute / 0 non-octilinear,
-   M7 0 micro-jogs, M12 widths, M13 edges/keepouts, M14 JLC rules.
+   M7 0 micro-jogs and 0 too-short chamfers, M12 widths, M13 edges/keepouts, M14 JLC rules.
 4. Review metrics: detour median ≤ 1.15, every decoupling cap ≤ 3 mm, switcher loop metrics
    within limits, block ratio ≤ 3.0 — or each exception explained to and accepted by the owner.
 5. The owner's visual review of the renders and of the board in KiCad's GUI: logical grouping,
