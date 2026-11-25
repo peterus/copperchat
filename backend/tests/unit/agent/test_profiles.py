@@ -165,9 +165,11 @@ def test_footprint_tools_off_removes_every_fp_tool() -> None:
     for kind in ("requirements", "schematic", "board", "free"):
         names = {s.name for s in profile_specs(kind, specs, footprint_tools=False)}
         assert not {n for n in names if n.startswith("fp_")}, kind
-    free_on = {s.name for s in profile_specs("free", specs, footprint_tools=True)}
+    free_on = {s.name for s in profile_specs("free", specs, footprint_tools=True, board_tools=True)}
     assert free_on == {s.name for s in specs}
-    free_off = {s.name for s in profile_specs("free", specs, footprint_tools=False)}
+    free_off = {
+        s.name for s in profile_specs("free", specs, footprint_tools=False, board_tools=True)
+    }
     assert free_off == {s.name for s in specs if not s.name.startswith("fp_")}
 
 
