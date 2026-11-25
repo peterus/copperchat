@@ -239,7 +239,10 @@ class ChainedHooks(RunHooks):
 
     def on_project_changed(self, project: Project) -> None:
         for h in self.hooks:
-            h.on_project_changed(project)
+            try:
+                h.on_project_changed(project)
+            except Exception:
+                log.exception("on_project_changed hook failed")
 
     async def before_model_input(self, turn: TurnInfo) -> list[str]:
         out: list[str] = []
@@ -392,7 +395,10 @@ class RunEngine:
         """Take the re-discovered `project` (same id; restore, board creation) for every
         later tool context, and tell the hooks."""
         self.project = project
-        self.hooks.on_project_changed(project)
+        try:
+            self.hooks.on_project_changed(project)
+        except Exception:  # the engine has the new project; never fail the caller
+            log.exception("on_project_changed hook failed")
 
     @property
     def is_busy(self) -> bool:

@@ -236,7 +236,10 @@ async def _refresh(svc: HistoryService, project: Project, engine: Any) -> Projec
     """Re-discover the project from disk and hand it to the engine (and its hooks)."""
     fresh = await asyncio.to_thread(_rediscover, svc, project)
     if engine is not None:
-        engine.refresh_project(fresh)
+        try:
+            engine.refresh_project(fresh)
+        except Exception:  # never skip the reload that follows (restore's failure path)
+            log.exception("refreshing the engine's project after restore failed")
     return fresh
 
 

@@ -619,3 +619,29 @@ async def test_refresh_project_updates_engine_and_hooks(make_engine) -> None:  #
     assert engine.project is fresh
     assert seen == [fresh]
     assert RunHooks().on_project_changed(fresh) is None
+
+
+async def test_on_project_changed_failing_hook_is_logged_not_raised(make_engine, caplog) -> None:  # type: ignore[no-untyped-def]
+    from dataclasses import replace
+
+    from copperchat.agent.engine import ChainedHooks
+
+    seen: list[Project] = []
+
+    class Boom(RunHooks):
+        def on_project_changed(self, project: Project) -> None:
+            raise RuntimeError("boom")
+
+    class Rec(RunHooks):
+        def on_project_changed(self, project: Project) -> None:
+            seen.append(project)
+
+    engine, _ = await make_engine(hooks=ChainedHooks([Boom(), Rec()]))
+    fresh = replace(engine.project, pcb_file=None)
+    engine.refresh_project(fresh)
+    assert engine.project is fresh and seen == [fresh]  # the later hook still ran
+    assert "on_project_changed hook failed" in caplog.text
+
+    engine2, _ = await make_engine(hooks=Boom())  # a single (unchained) hook
+    engine2.refresh_project(fresh)
+    assert engine2.project is fresh

@@ -289,3 +289,17 @@ async def test_own_board_save_records_the_rules_file(env: Env) -> None:
     shutil.copyfile(_kicad_bytes(), project.dir / DRU)
     await session.save("pcb")
     assert (await env.svc.hashes.get(project.id))[DRU] == compute_hashes(project)[DRU]
+
+
+async def test_failing_engine_refresh_still_reloads(env: Env) -> None:
+    project = _boardless(env)
+    await env.sessions.open(project)
+    snap = await env.svc.store(project).snapshot("run-1", "turn")
+
+    def boom(p: Project) -> None:
+        raise RuntimeError("boom")
+
+    env.engine.refresh_project = boom  # type: ignore[method-assign]
+    await restore_snapshot(env.svc, project, snap.id, conversation_id=TEST_CID)
+    current = env.sessions.current()
+    assert current is not None and not current.closed and env.server.starts == 2
