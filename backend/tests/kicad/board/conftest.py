@@ -268,6 +268,8 @@ async def synth_rig(
     finally:
         await manager.close_all()
         await db.close()
+
+
 # -- freerouting_rt (SP4 P6a; reused by P6b and P9a) --------------------------------------
 
 
