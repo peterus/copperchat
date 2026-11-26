@@ -328,6 +328,8 @@ Side = Literal["top", "bottom"]
                                          pads: tuple[Pad, ...]; sheet: str; symbol_path: str
                                          texts: tuple[TextItem, ...]; group: str | None
                                          rule_areas: tuple[tuple[Point, ...], ...] = ()   # footprint-embedded keepouts (antenna detection)
+                                         item_kiids: tuple[tuple[str, str], ...] = ()     # P7: footprint item KIID -> role ("pad:<n>", "reference", "value", "field:<name>", "text", "textbox", "shape"); not hashed
+                                         silk: tuple[GraphicItem, ...] = ()               # P7: footprint F/B.SilkS graphics (board coords); not hashed
 @dataclass(frozen=True) class Track:    kiid: str; net: str; layer: str; start: Point; end: Point
                                          width: float; locked: bool
 @dataclass(frozen=True) class ArcTrack: kiid: str; net: str; layer: str; start: Point; mid: Point
@@ -367,7 +369,8 @@ def placement_hash(m: BoardModel) -> str   # sha256 hex of canonical JSON: sorte
 def board_hash(m: BoardModel) -> str       # sha256 hex: parts incl. lib_id/value/texts, tracks, arcs, vias (rounded 0.001, widths, locked), zones minus fill (outline, net, layers, priority, settings), graphics, rules, net classes + assignments, dru_text (newlines normalised), dru_marker, copper_layers, layer_types, stackup. KIID-independent.
 ```
 
-`TextItem(kind, text, layer, at, size, thickness, visible)` and `GraphicItem(layer, kind, points,
+`TextItem(kind, text, layer, at, size, thickness, visible, angle=0.0)` (P7: `angle` in degrees,
+board frame; in `board_hash` for footprint fields only) and `GraphicItem(layer, kind, points,
 width)` are pure too. `cc/board/geom.py` (P1a): `octi_dist(a, b) -> float`,
 `polygon_area(pts)`, `point_in_polygon(p, pts)`, `polygon_inside(inner, outer) -> bool`,
 `polygons_overlap(a, b) -> bool` (SAT for convex, edge test otherwise), `convex_hull(pts)`,
@@ -436,7 +439,8 @@ BOARD_SHEET = SheetRef(path="", page="", file="", name="<board>")
 async def apply_board_change_set(ctx: ToolContext, cs: BoardChangeSet) -> ToolResult
 # runs inside ctx.session.applying(); takes the compensation snapshot first; one commit per
 # stage with commit=True (commit=False stages open their own commits); drop_commit on error
-# inside a stage; on any error after the first stage STARTED → compensate() (+ stage undo); verify after the last stage; result changed_docs={"pcb"}, data =
+# inside a stage; on any error after the first stage STARTED → compensate() (+ stage undo; P7: restore, then
+# the stage undos, then the leftover read-back); verify after the last stage; result changed_docs={"pcb"}, data =
 # cs.report + {"step_report": ...}; records one change-log entry (kind, sheet_path="", counts).
 ```
 
@@ -738,6 +742,100 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
 ## As built
 
 (Each phase adds its section here in its own PR.)
+
+### As built (P7)
+
+**Measured / recorded** (`tests/kicad/board/test_{zones,fanout,stitch,tidy_silk}.py`, local
+kicad-base image `52b43fb8…` recipe `dc93f472…`, `record_property`; `sp4_synth` after
+`routed_synth`: 60 × 45 mm, `jlcpcb-4l`, 16 critical nets routed and locked)
+- **Default stack** (`pcb_zones {action: add}`): `GND_In1` (In1.Cu, 10) + `GND_F` / `GND_B`
+  (1), net GND, solid fill. **In1.Cu fill ratio 0.958** (filled area / rounded-outline
+  area; bound 0.85); M11 value 0.958, verdict `review` (see residuals). 6 layers:
+  `GND_In1` + `GND_In4` (10) + the two outer pours; 2 layers: `GND_B` (10) + `GND_F` (1).
+- **`pcb_metrics {}` on the plane-filled routed rig: 0.39 s wall** (`seconds` 0.376; budget
+  5 s) - P3a's bucketed M11/M14 hold.
+- **`pcb_fanout {net: GND}`: 23 SMD pads, 19 fanned out, 4 `via_pour` (J1.B1, U1.15, Y1.2,
+  Y1.4: no legal via spot, connected by the F.Cu pour), 0 unconnected, 1 round, 1.3 s**
+  (DRC 0.09 s). Every stub/via locked, stubs exactly octilinear, ≤ 1 mm outside the pad, no
+  DRC marker on new items.
+- **`pcb_stitch {net: GND}` (pitch 5): 87 candidates, 87 kept, 0 DRC-rejected, 0 dangling,
+  1.3 s.**
+- **`pcb_tidy_silk {}`: 27 references moved, 1 hidden (U3: no free spot in the dense power
+  block), silk markers 94 → 66** (the rest name footprint silk / fab texts, none a
+  visible reference); M14 pass afterwards.
+- **Refills:** a refill needs **no commit** - KiCad applies `RefillZones` at once (read-back
+  and the next DRC see the fills), so every refill stage is `commit=False` and the DRC runs
+  after it outside any open commit. No `RefillTimeout` on `sp4_synth`.
+- **DRC types used (API names):** `dangling_via` (stitching: counted as
+  `removed_dangling`), silk: `silk_clearance` (kicad-cli `silk_overlap`),
+  `silk_edge_clearance`, `silk_mask_clearance`, `text_height`, `text_thickness`,
+  `mirrored_text_on_front_layer`, `nonmirrored_text_on_back_layer`; everything except
+  `unconnected_items` (and exclusions) rejects a new fanout/stitching item.
+- Render of the finished synth (top + In1.Cu after zones/fanout/stitch/tidy) handed to the
+  owner (P7 done report; `P7_RENDER_DIR` keeps them on local runs).
+
+**Contract deviations / additions** (B-C2 / B-C4 updated in place)
+- **P1a files (minimal):** `TextItem.angle` (degrees; read from the text attributes) - in
+  `board_hash` **for footprint fields only**: KiCad reports a footprint's free text
+  (`${REFERENCE}` on F.Fab) at the footprint rotation on the live board but at 0° after a
+  reload (found by `test_outline.py::test_undo_via_history`). `Part.item_kiids` (pad /
+  field / text / shape KIID → role) and `Part.silk` (footprint silk graphics), both not
+  hashed. Engine: the stage `undo`s now run **between** `restore` and the leftover read-back
+  (a `pcb_zones` undo re-creates a deleted zone with its KIID; the old order reported it
+  missing → `DocumentInconsistent`).
+- **P3a file (minimal):** M3 maps marker KIIDs through `item_kiids` too - **closes the P3b
+  residual** (pad / field warnings such as `silk_edge_clearance` can be accepted in
+  `board.md`); M14 swaps the text box of 90°/270° texts (**closes P3a's rotation residual**).
+- `copper_rig` is **session-scoped** (one `routed_synth` server per CI shard for all four P7
+  modules, ≈ 75 s + 55 s once instead of four times; the plan said module-scoped). Each
+  module brings the board into its state with the idempotent `ensure_default_zones` /
+  `ensure_fanout` / `ensure_stitch` (`conftest.py`); tests restore what they change. P8 /
+  P9a may reuse it.
+- `planes.py`: repeated pad numbers of one part are keyed `(ref, "<n>#2")` (as P5b's
+  connection keys); `fanout_pads` skips pads that already have own-net copper (a track end
+  or a via in the pad: `already_connected`); obstacles bucketed (2 mm cells); pads as their
+  rotated rectangle, arcs as two chords; `edge_ring_points`, `vias_spaced`, `pad_key`
+  public for the tools.
+- `pcb_zones`: update/delete store the zones' pre-call protobufs and the undo writes them
+  back (re-created zones keep their KIIDs - probe) and refills; a name that matches several
+  zones is refused; `outline: "board"` = the rounded-rect polygon; `thermal` switches the
+  zone to thermal reliefs (else KiCad's "inherited"); default clearance = the net class
+  clearance. Report `zones [{name, action, kiid, net, layers, priority,
+  filled_area_mm2}]`, `m11`, `next`. Shared helpers for the other copper tools live in
+  `zones.py` (`invalid`, `keys`, `number`, `check_net`, `m11_report`).
+- `pcb_fanout`: a pad's candidate that clashes with a via kept or picked in the same round
+  (spacing `max(via_d + clearance, drill + hole_to_hole)`) is skipped; reason `no_candidate`
+  also when every candidate clashed before reaching the DRC (`all_rejected` = the DRC
+  rejected at least one). The 16 rounds × 3 stages are static stages (no-op once no pad is
+  open; `fail_after` numbering as planned); the report's `step_report` lists only the
+  rounds that ran. Nothing to fan out → no write, cost 0.
+- `pcb_stitch`: stage 4 refills only when stage 3 (or a timeout) removed vias, always with
+  the full `REFILL_TIMEOUT_S`; report adds `edge_ring_kept`, `drc_seconds`, `seconds`;
+  nothing to place → no write, cost 0 and a `note`.
+- `pcb_tidy_silk`: text box `len × height + line` wide (M14's estimate, a superset of the
+  plan's `len × 0.9 × height + line`); among free spots one off other parts' courtyards is
+  preferred (a reference under a part body is unreadable); unresolved refs are hidden in
+  stage 1 already; `RefPlacement.candidate` + `plan_refs(exclude=…)` for the stage-2
+  re-plan; one `undo` (stage 1) writes back every touched reference field (stored
+  protobufs). A read-only DRC in `prepare` gives `silk_markers_before`.
+- `test_requires_placement_approval` moves a mounting hole 0.5 mm and back (as P5b) instead
+  of `pcb_move … unroute: true` + History undo; `test_fanout_requires_approval` uses a
+  fresh database.
+
+**Residuals for later phases**
+- M11 on the stacked synth stays `review`: "void crossing … over In1.Cu outer" offenders sit
+  at the critical nets' own signal vias (the track piece inside the via's antipad is
+  located outside every fill polygon) - the plane itself is solid (render). Looks like a
+  P3a metric artefact; P9a should confirm on ODH and, if so, exempt a track's piece inside
+  its own via's antipad.
+- U3's reference is hidden on `sp4_synth` (dense power block, P4 channels 1.5 mm); P9b's
+  skill: wider channels or a manual `pcb_move` before `pcb_tidy_silk`.
+- `pcb_tidy_silk` moves references only (values / user silk texts stay); the angle of a
+  footprint's free silk text is unreliable (see above), so M14's box for such texts may be
+  rotated wrongly.
+- Fanout candidates are the spike's 8 × 2: fine-pitch / QFN ground pads usually end as
+  `via_pour` (needs a pour on the pad's layer) or `unconnected` - no via-in-pad by owner
+  rule (JLC cost).
 
 ### As built (P5b)
 

@@ -403,16 +403,13 @@ def _final_stage(st: _Fanout) -> BoardStage:
 # -- report ----------------------------------------------------------------------------------
 
 
-def _pad_kiids(model: BoardModel) -> dict[tuple[str, str], str]:
-    """(ref, key number) -> pad KIID (repeated numbers keyed as `pad_key` does)."""
-    out: dict[tuple[str, str], str] = {}
+def _pad_kiids(model: BoardModel) -> dict[tuple[str, str, float, float], str]:
+    """(ref, number, x, y) -> pad KIID (`item_kiids` lists the pads in model order)."""
+    out: dict[tuple[str, str, float, float], str] = {}
     for part in model.parts:
         ids = [k for k, role in part.item_kiids if role.startswith("pad:")]
-        seen: dict[tuple[str, str], object] = {}
         for q, kiid in zip(part.pads, ids, strict=False):
-            key = pad_key(q, seen)
-            seen[key] = True
-            out[key] = kiid
+            out[(q.ref, q.number, q.x, q.y)] = kiid
     return out
 
 
@@ -443,7 +440,8 @@ def _report(st: _Fanout, model: BoardModel) -> dict[str, Any]:
             reason != "timeout"
             and st.last_drc is not None
             and _pour_on(model, st.net, p.layer)
-            and pad_ids.get(p.key, "") not in unconnected_kiids
+            and (kid := pad_ids.get((p.pad.ref, p.pad.number, p.pad.x, p.pad.y))) is not None
+            and kid not in unconnected_kiids
         ):
             pour.append({"ref": p.key[0], "pad": p.key[1]})
         else:
