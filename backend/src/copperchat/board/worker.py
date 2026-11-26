@@ -3,7 +3,9 @@
 Jobs run one at a time in a lazily created, spawn-started single-process pool. A job's
 `timeout_s` starts when it is submitted (time queued for the lock never counts); on timeout
 or cancel of the running job the pool's own process is SIGKILLed and the pool replaced
-before the lock is released, so the next job always gets a live pool.
+before the lock is released, so the next job always gets a live pool. A job that leaves the
+worker above `WORKER_RECYCLE_MB` resident (Linux `/proc`) recycles it the same way, still
+under the lock, so a queued job never starts on a worker that is about to be killed (R6).
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import logging
 import os
 import resource
 import signal
@@ -21,7 +24,10 @@ from typing import Any
 
 from copperchat.errors import StructuredToolError
 
+log = logging.getLogger(__name__)
+
 WORKER_MEMORY_LIMIT_BYTES = 3 * 1024**3
+WORKER_RECYCLE_MB = 512  # resident size after a job above which the worker is replaced
 _JOB_MODULE_PREFIX = "copperchat.board."
 
 _executor: ProcessPoolExecutor | None = None
@@ -67,6 +73,41 @@ def _kill_and_replace() -> None:
         with contextlib.suppress(ProcessLookupError):
             os.kill(pid, signal.SIGKILL)
     ex.shutdown(wait=False, cancel_futures=True)
+
+
+def _worker_rss_mb() -> float | None:
+    """The worker process's `VmRSS` in MB; None without a worker or `/proc` (non-Linux)."""
+    ex = _executor
+    for pid in list(getattr(ex, "_processes", None) or {}):
+        try:
+            with open(f"/proc/{pid}/status", encoding="ascii") as f:
+                for line in f:
+                    if line.startswith("VmRSS:"):
+                        return int(line.split()[1]) / 1024
+        except (OSError, ValueError):
+            return None
+    return None
+
+
+def _recycle_if_large() -> None:
+    rss = _worker_rss_mb()
+    if rss is not None and rss > WORKER_RECYCLE_MB:
+        log.info("board CPU worker recycled: %.0f MB resident > %d MB", rss, WORKER_RECYCLE_MB)
+        _kill_and_replace()
+
+
+async def wait_idle(timeout_s: float) -> bool:
+    """True once no job runs or waits ahead of us (the job lock was free for a moment);
+    False after `timeout_s`. Never keeps the lock (R6: a parity DRC waits for the running
+    job, but does not block the next one)."""
+    lock = _get_lock()
+    try:
+        async with asyncio.timeout(max(0.0, timeout_s)):
+            await lock.acquire()
+    except TimeoutError:
+        return False
+    lock.release()
+    return True
 
 
 def shutdown_worker() -> None:
@@ -124,10 +165,14 @@ async def run_cpu[T](
                 f"The computation did not finish within {timeout_s:.1f}s.",
             )
         try:
-            return af.result()
+            result = af.result()
         except BaseException as exc:
             if type(exc).__name__ == "BrokenProcessPool":
                 _kill_and_replace()
+            else:  # the job itself raised: the worker is alive, maybe big
+                _recycle_if_large()
             raise
+        _recycle_if_large()
+        return result
     finally:
         lock.release()
