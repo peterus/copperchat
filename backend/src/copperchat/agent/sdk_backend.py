@@ -586,6 +586,7 @@ class SdkStreamingBackend:
             self._specs,
             footprint_tools=self._settings.footprint_tools,
             board_tools=self._settings.board_tools,
+            freerouting=self._settings.freerouting,
         )
         skills = (
             await assemble_skills(self._settings, project, self._db, kind) if self._db else None
