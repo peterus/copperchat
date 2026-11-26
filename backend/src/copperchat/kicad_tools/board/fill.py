@@ -504,7 +504,7 @@ async def _refill(sctx: BoardStageContext) -> None:
         await sctx.refill(timeout_s=REFILL_TIMEOUT_S)
     except RefillTimeout as exc:
         raise _not_acceptable(
-            f"the zone refill after the import did not finish ({exc.why})", "io_timeout"
+            f"the zone refill on the filled copper did not finish ({exc.why})", "io_timeout"
         ) from exc
 
 
@@ -1006,8 +1006,8 @@ def fill_stages(st: _FillState) -> list[BoardStage]:
 
     async def refill(sctx: BoardStageContext) -> None:
         # Last: the zones see the final copper (stages 5 and 6 change it after the import).
-        m = await sctx.model()
-        if any(not z.rule_area for z in m.zones):
+        # The fill never adds or removes zones, so the pre-call model says whether any exist.
+        if any(not z.rule_area for z in st.pre.zones):
             await _refill(sctx)
 
     return [
