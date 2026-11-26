@@ -275,6 +275,10 @@ async def prepare_stitch(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
         report={"logical_changes": cost, "budget": None},
         state=st,
     )
+    if a.edge_ring and model.outline.kind != "rect":
+        cs.report["edge_ring_note"] = (
+            "no edge ring: it needs a rectangular board outline (pcb_set_outline)"
+        )
     if not cands:
         cs.report.update(_report(st))
         cs.report["note"] = (

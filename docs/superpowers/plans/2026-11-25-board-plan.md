@@ -219,6 +219,7 @@ Constraints). Values are copied from the spec.
   | `pcb_fanout` | 405 s | `FANOUT_DEADLINE_S` 300 + cleanup refill 105 |
   | `pcb_route` | 360 s | `ROUTE_DEADLINE_S` 300 + one DRC 60 |
   | `pcb_stitch` | 285 s | `STITCH_DEADLINE_S` 180 + cleanup refill 105 |
+  | `pcb_tidy_silk` | 480 s | P7, no deadline: ≤ 4 DRCs × `drc_call_timeout(60)` 105 + 2 plans × `run_cpu` 30 (sp4_synth: < 2 s) |
 
   If `L` is lower than a worst case + 60 s, set `MCP_TOOL_TIMEOUT` (≥ 1,065,000 ms = 1005 s
   + 60 s); if that does not lift it, scale down: every deadline is capped so its tool's
@@ -818,6 +819,12 @@ kicad-base image `52b43fb8…` recipe `dc93f472…`, `record_property`; `sp4_syn
   stage 1 already; `RefPlacement.candidate` + `plan_refs(exclude=…)` for the stage-2
   re-plan; one `undo` (stage 1) writes back every touched reference field (stored
   protobufs). A read-only DRC in `prepare` gives `silk_markers_before`.
+- Review round 1: `pcb_fanout` reports `via_pour` only on a DRC of the final copper
+  (`drc_fresh`; one more DRC after a removal or the final refill, skipped when the
+  deadline stopped the call → those pads stay `unconnected`); `_pick` and `fanout_pads`
+  bucketed; the reference planner bucketed (`_Index`) and run as `run_cpu(silk_plan_job,
+  …, timeout_s=30)`; `pcb_tidy_silk`'s verify checks the reference angle; `pcb_stitch
+  {edge_ring}` on a non-rectangular outline reports `edge_ring_note`.
 - `test_requires_placement_approval` moves a mounting hole 0.5 mm and back (as P5b) instead
   of `pcb_move … unroute: true` + History undo; `test_fanout_requires_approval` uses a
   fresh database.

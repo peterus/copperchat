@@ -22,6 +22,7 @@ pad's layer connects them (no unconnected-items marker names the pad), else
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -272,6 +273,7 @@ class _Fanout:
     last_drc: DrcResult | None = None
     stopped: bool = False  # the deadline stopped the rounds
     refills: int = 0
+    drc_fresh: bool = False  # last_drc saw the current copper (no removal / refill since)
 
     def pending(self) -> list[_PadState]:
         return [p for p in self.pads if p.status == "pending"]
@@ -280,24 +282,41 @@ class _Fanout:
 def _pick(st: _Fanout) -> list[_PadState]:
     """Each open pad's next candidate that keeps clear of the vias kept or picked this
     round (same net: spacing and the hole rule); a pad with none left is exhausted."""
-    taken: list[Point] = [p.at for p in st.pads if p.status == "fanned" and p.at is not None]
+    reach = max(st.via[0] + st.clearance, st.via[1] + st.h2h)
+    taken: list[Point] = []
+    grid: dict[tuple[int, int], list[Point]] = {}  # taken vias bucketed by `reach`
+
+    def cell(p: Point) -> tuple[int, int]:
+        return math.floor(p[0] / reach), math.floor(p[1] / reach)
+
+    def take(p: Point) -> None:
+        taken.append(p)
+        grid.setdefault(cell(p), []).append(p)
+
+    def clear(p: Point) -> bool:
+        cx, cy = cell(p)
+        return all(
+            vias_spaced(p, t, via=st.via, clearance=st.clearance, h2h=st.h2h)
+            for dx in (-1, 0, 1)
+            for dy in (-1, 0, 1)
+            for t in grid.get((cx + dx, cy + dy), ())
+        )
+
+    for p in st.pads:
+        if p.status == "fanned" and p.at is not None:
+            take(p.at)
     picked: list[_PadState] = []
     for ps in st.pads:
         if ps.status != "open":
             continue
-        while ps.next < len(ps.cands):
-            c = ps.cands[ps.next]
-            if all(
-                vias_spaced(c.at, t, via=st.via, clearance=st.clearance, h2h=st.h2h) for t in taken
-            ):
-                break
+        while ps.next < len(ps.cands) and not clear(ps.cands[ps.next].at):
             ps.next += 1
         if ps.next >= len(ps.cands):
             ps.status = "exhausted"
             continue
         c = ps.cands[ps.next]
         ps.at = c.at
-        taken.append(c.at)
+        take(c.at)
         picked.append(ps)
     return picked
 
@@ -306,6 +325,7 @@ async def _time_out_pending(sctx: BoardStageContext, st: _Fanout) -> None:
     """A skipped or timed-out refill / DRC: this round's unchecked items go, their pads
     are reported `timeout`; the cleanup refill follows at the end."""
     pend = st.pending()
+    st.drc_fresh = False
     await remove_copper(sctx, "pcb_fanout", [k for p in pend for k in p.kiids])
     for p in pend:
         p.status, p.kiids, p.at = "timeout", [], None
@@ -336,6 +356,7 @@ def _round_stages(st: _Fanout, i: int) -> list[BoardStage]:
         for p, ids in zip(picked, made, strict=True):
             p.status, p.kiids = "pending", ids
         st.rounds += 1
+        st.drc_fresh = False
 
     async def refill(sctx: BoardStageContext) -> None:
         if not st.pending():
@@ -379,6 +400,7 @@ def _round_stages(st: _Fanout, i: int) -> list[BoardStage]:
                 p.status = "fanned"
         if rejected:
             st.need_refill = True
+        st.drc_fresh = not rejected
 
     return [
         BoardStage(f"round_{i}_add", add, commit=False),
@@ -396,6 +418,20 @@ def _final_stage(st: _Fanout) -> BoardStage:
             await sctx.refill(timeout_s=REFILL_TIMEOUT_S)
             st.refills += 1
             st.need_refill = False
+            st.drc_fresh = False
+        # `via_pour` needs a DRC of the final copper: the last check's DRC may predate a
+        # removal (a rejected stub/via) or the cleanup refill. Without time left the
+        # pads stay `unconnected` (`_report` trusts only a fresh DRC).
+        # A deadline-stopped call spends no more time: its pads stay `unconnected`.
+        if not st.stopped and not st.drc_fresh and any(p.status == "exhausted" for p in st.pads):
+            left = remaining(st.deadline)
+            if left > 0:
+                try:
+                    st.last_drc = await sctx.drc(timeout_s=min(DRC_TIMEOUT_S, left))
+                    st.drc_seconds += st.last_drc.seconds
+                    st.drc_fresh = True
+                except DrcTimeout:
+                    pass
 
     return BoardStage("final_refill", final, commit=False)
 
@@ -439,6 +475,7 @@ def _report(st: _Fanout, model: BoardModel) -> dict[str, Any]:
         if (
             reason != "timeout"
             and st.last_drc is not None
+            and st.drc_fresh
             and _pour_on(model, st.net, p.layer)
             and (kid := pad_ids.get((p.pad.ref, p.pad.number, p.pad.x, p.pad.y))) is not None
             and kid not in unconnected_kiids

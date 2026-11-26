@@ -21,7 +21,12 @@ from copperchat.board.model import BoardModel, board_hash
 from copperchat.board.planes import _point_pad, fanout_pads
 from copperchat.kicad_tools.board import api, fanout
 from copperchat.kicad_tools.board.read import board_model
-from tests.kicad.board.conftest import PlacedSynth, ensure_default_zones, setup_call
+from tests.kicad.board.conftest import (
+    PlacedSynth,
+    ensure_default_zones,
+    ensure_fanout,
+    setup_call,
+)
 from tests.support.edit import call_tool
 
 pytestmark = [
@@ -127,10 +132,8 @@ async def test_fanout_gnd(copper_rig: PlacedSynth, record_property: Any) -> None
 
 async def test_no_via_in_pad(copper_rig: PlacedSynth) -> None:
     rig = copper_rig
-    m = await _model(rig, "run-vip-0")
-    if not any(v.net == NET for v in m.vias):
-        await setup_call(rig.turn("run-vip-1"), "pcb_fanout", net=NET)
-        m = await _model(rig, "run-vip-2")
+    await ensure_fanout(rig, NET)  # zones first: without them every via dangles
+    m = await _model(rig, "run-vip-2")
     vias = [v for v in m.vias if v.net == NET]
     assert vias
     for v in vias:
@@ -329,7 +332,7 @@ async def test_fanout_deadline(copper_rig: PlacedSynth, monkeypatch: pytest.Monk
     assert out["rounds"] == 1 and out["stopped_by_deadline"] is True
     assert out["fanned_out"] >= 1  # round 1's stubs kept
     assert any(u["reason"] == "timeout" for u in out["unconnected"])
-    drc_at = max(i for i, e in enumerate(log) if e[0] == "drc")
+    drc_at = min(i for i, e in enumerate(log) if e[0] == "drc")  # round 1's check
     after = [e for e in log[drc_at + 1 :] if e[0] in ("refill", "commit")]
     assert [e for e in after if e[0] == "refill"] == [("refill", api.REFILL_TIMEOUT_S)]
     assert after[-1] == ("refill", api.REFILL_TIMEOUT_S)  # the call's last API write
@@ -350,7 +353,7 @@ async def test_fanout_final_refill_after_last_round(
     log = _spy_writes(monkeypatch, rig.session)
     await _apply(rig, f"run-fin{remove}-go")
     monkeypatch.undo()
-    drc_at = max(i for i, e in enumerate(log) if e[0] == "drc")
+    drc_at = min(i for i, e in enumerate(log) if e[0] == "drc")  # round 1's check
     refills = [e for e in log[drc_at + 1 :] if e[0] == "refill"]
     if remove:
         assert refills == [("refill", api.REFILL_TIMEOUT_S)]
@@ -428,7 +431,5 @@ async def test_fanout_refill_timeout_in_round(
 async def test_zz_fanout_leaves_board_fanned(copper_rig: PlacedSynth) -> None:
     """Last in the module: the board is fanned out again for the later P7 modules."""
     rig = copper_rig
-    m = await _model(rig, "run-final")
-    if not any(v.net == NET for v in m.vias):
-        await setup_call(rig.turn("run-final-go"), "pcb_fanout", net=NET)
+    await ensure_fanout(rig, NET)
     assert any(v.net == NET for v in (await _model(rig, "run-final-2")).vias)

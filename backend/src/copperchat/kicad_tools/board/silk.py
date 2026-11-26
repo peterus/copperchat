@@ -12,7 +12,6 @@ makes a board approval stale (`board_hash`)."""
 
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -24,8 +23,10 @@ from kipy.proto.common.types import enums_pb2
 from kipy.util.board_layer import layer_from_canonical_name
 
 from copperchat.board.boardmd import read_board_doc
+from copperchat.board.jobs import silk_plan_job, strip_fills
 from copperchat.board.model import BoardModel, Part, TextItem, board_hash
-from copperchat.board.silk import RefPlacement, plan_refs
+from copperchat.board.silk import RefPlacement
+from copperchat.board.worker import run_cpu
 from copperchat.kicad_session import KicadHandle
 from copperchat.kicad_tools.board import api
 from copperchat.kicad_tools.board.analysis import preset_for
@@ -59,6 +60,7 @@ SILK_TYPES = frozenset(
     }
 )
 DRC_TIMEOUT_S = 60.0
+PLAN_TIMEOUT_S = 30.0  # run_cpu budget of one reference plan
 DEFAULT_HEIGHT_MM, DEFAULT_LINE_MM = 1.0, 0.15  # JLC preset values (no preset known)
 MAX_LISTED = 50
 
@@ -205,13 +207,14 @@ def _stages(st: _Silk, model: BoardModel) -> list[BoardStage]:
         exclude = {r: frozenset({st.current[r].candidate}) for r in named}
         keep = frozenset(st.current) - frozenset(named)
         base = _with_refs(model, st)
-        plan, unresolved = await asyncio.to_thread(
-            plan_refs,
-            base,
+        plan, unresolved = await run_cpu(
+            silk_plan_job,
+            strip_fills(base),
             height=st.height,
             line=st.line,
             skip=keep | frozenset(st.hidden),
             exclude=exclude,
+            timeout_s=PLAN_TIMEOUT_S,
         )
         plan = tuple(pl for pl in plan if pl.ref in named)
         hide = [r for r in unresolved if r in named]
@@ -287,7 +290,9 @@ async def prepare_tidy_silk(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet
     preset = preset_for(model, doc)
     height = preset.silk_min_height if preset is not None else DEFAULT_HEIGHT_MM
     line = preset.silk_min_line if preset is not None else DEFAULT_LINE_MM
-    plan, unresolved = await asyncio.to_thread(plan_refs, model, height=height, line=line)
+    plan, unresolved = await run_cpu(
+        silk_plan_job, strip_fills(model), height=height, line=line, timeout_s=PLAN_TIMEOUT_S
+    )
     drc = await ctx.session.call(
         lambda h: api.run_drc_task(h, timeout_s=DRC_TIMEOUT_S),
         timeout=api.drc_call_timeout(DRC_TIMEOUT_S),
@@ -313,6 +318,8 @@ async def prepare_tidy_silk(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet
             pl = st.current[p.ref]
             if abs(t.at[0] - pl.at[0]) > 1e-3 or abs(t.at[1] - pl.at[1]) > 1e-3:
                 problems.append(f"{p.ref}'s reference is at {t.at}, planned {pl.at}")
+            if abs((t.angle - pl.rot + 180) % 360 - 180) > 0.1:
+                problems.append(f"{p.ref}'s reference is at {t.angle:g}°, planned {pl.rot:g}°")
             if not t.visible or t.layer != pl.layer:
                 problems.append(f"{p.ref}'s reference is on {t.layer} (visible={t.visible})")
         for r in st.hidden:

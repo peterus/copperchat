@@ -32,6 +32,7 @@ from copperchat.board.placer import (
 from copperchat.board.placer.pack import PLACE_GRID_MM
 from copperchat.board.planes import ViaCandidate, fanout_candidates, stitch_candidates
 from copperchat.board.presets import FabPreset
+from copperchat.board.silk import RefPlacement, plan_refs
 
 if TYPE_CHECKING:
     from copperchat.kicad_tools.board.api import DrcMarker, DrcResult
@@ -49,6 +50,7 @@ __all__ = [
     "metrics_job",
     "place_block_job",
     "score_job",
+    "silk_plan_job",
     "stitch_candidates_job",
     "strip_fills",
 ]
@@ -305,3 +307,15 @@ def stitch_candidates_job(
     return stitch_candidates(
         model, net, via=via, clearance=clearance, pitch=pitch, edge_ring=edge_ring
     )
+
+
+def silk_plan_job(
+    model: BoardModel,
+    *,
+    height: float,
+    line: float,
+    skip: frozenset[str] = frozenset(),
+    exclude: Mapping[str, frozenset[int]] | None = None,
+) -> tuple[tuple[RefPlacement, ...], tuple[str, ...]]:
+    """`silk.plan_refs` for `pcb_tidy_silk` (callers pass a fill-stripped model)."""
+    return plan_refs(model, height=height, line=line, skip=skip, exclude=exclude)

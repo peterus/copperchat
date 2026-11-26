@@ -18,6 +18,7 @@ Deterministic."""
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
@@ -36,6 +37,7 @@ __all__ = [
 ]
 
 GAP_MM = 0.2  # text box to courtyard
+CELL_MM = 2.0  # obstacle bucket size
 PAD_MARGIN_MM = 0.1  # text box to any pad
 _SILK = {"top": "F.SilkS", "bottom": "B.SilkS"}
 
@@ -129,21 +131,57 @@ def _seg_hits_box(a: Point, b: Point, box: Box, r: float) -> bool:
     return True
 
 
+class _Index[T]:
+    """Items bucketed by bounding box (`CELL_MM` cells): `near(box)` returns the items
+    whose box may overlap `box` (each once)."""
+
+    def __init__(self) -> None:
+        self.items: list[tuple[Box, T]] = []
+        self.cells: dict[tuple[int, int], list[int]] = {}
+
+    def _keys(self, b: Box) -> list[tuple[int, int]]:
+        x0, y0 = math.floor(b[0] / CELL_MM), math.floor(b[1] / CELL_MM)
+        x1, y1 = math.floor(b[2] / CELL_MM), math.floor(b[3] / CELL_MM)
+        return [(x, y) for x in range(x0, x1 + 1) for y in range(y0, y1 + 1)]
+
+    def add(self, b: Box, item: T) -> None:
+        self.items.append((b, item))
+        for k in self._keys(b):
+            self.cells.setdefault(k, []).append(len(self.items) - 1)
+
+    def near(self, b: Box) -> list[tuple[Box, T]]:
+        seen: set[int] = set()
+        for k in self._keys(b):
+            seen.update(self.cells.get(k, ()))
+        return [self.items[i] for i in sorted(seen)]
+
+
 class _Board:
-    """The fixed obstacles per silk layer."""
+    """The fixed obstacles per silk layer, bucketed."""
 
     def __init__(self, model: BoardModel, moving: set[str]) -> None:
-        self.pads = [
-            (_bbox(poly), poly) for p in model.parts for q in p.pads for poly in [_pad_poly(q)]
-        ]
-        self.courts = [(p.ref, _bbox(p.courtyard)) for p in model.parts if len(p.courtyard) >= 3]
-        self.segs: dict[str, list[tuple[Point, Point, float]]] = {"F.SilkS": [], "B.SilkS": []}
+        self.pads: _Index[list[Point]] = _Index()
+        for p in model.parts:
+            for q in p.pads:
+                poly = _pad_poly(q)
+                self.pads.add(_bbox(poly), poly)
+        self.courts: _Index[str] = _Index()
+        for p in model.parts:
+            if len(p.courtyard) >= 3:
+                self.courts.add(_bbox(p.courtyard), p.ref)
+        self.segs: dict[str, _Index[tuple[Point, Point, float]]] = {
+            "F.SilkS": _Index(),
+            "B.SilkS": _Index(),
+        }
         graphics = [*model.graphics, *(g for p in model.parts for g in p.silk)]
         for g in graphics:
             if g.layer in self.segs:
+                r = g.width / 2
                 for a, b in _graphic_segments(g.kind, g.points):
-                    self.segs[g.layer].append((a, b, g.width / 2))
-        self.texts: dict[str, list[Box]] = {"F.SilkS": [], "B.SilkS": []}
+                    x0, x1 = sorted((a[0], b[0]))
+                    y0, y1 = sorted((a[1], b[1]))
+                    self.segs[g.layer].add((x0 - r, y0 - r, x1 + r, y1 + r), (a, b, r))
+        self.texts: dict[str, _Index[None]] = {"F.SilkS": _Index(), "B.SilkS": _Index()}
         others = [(p.ref, t) for p in model.parts for t in p.texts]
         others += [("", t) for t in model.texts]
         for ref, t in others:
@@ -151,7 +189,8 @@ class _Board:
                 continue
             if t.kind == "reference" and ref in moving:
                 continue  # placed by this plan
-            self.texts[t.layer].append(_bbox(_text_poly(t)))
+            self.texts[t.layer].add(_bbox(_text_poly(t)), None)
+        self.placed: dict[str, _Index[None]] = {"F.SilkS": _Index(), "B.SilkS": _Index()}
         o = model.outline
         if o.kind == "rect":
             self.outline: list[Point] | None = rect_poly(o.x, o.y, o.w, o.h, o.corner_radius)
@@ -160,7 +199,7 @@ class _Board:
         else:
             self.outline = None
 
-    def free(self, box: Box, layer: str, placed: Sequence[Box]) -> bool:
+    def free(self, box: Box, layer: str) -> bool:
         if self.outline is not None and not all(
             point_in_polygon(c, self.outline) for c in _poly(box)
         ):
@@ -172,17 +211,20 @@ class _Board:
             box[3] + PAD_MARGIN_MM,
         )
         gp = _poly(grown)
-        for bb, poly in self.pads:
+        for bb, poly in self.pads.near(grown):
             if _boxes_overlap(grown, bb) and polygons_overlap(gp, poly):
                 return False
-        if any(_seg_hits_box(a, b, box, r) for a, b, r in self.segs[layer]):
+        if any(_seg_hits_box(a, b, box, r) for _, (a, b, r) in self.segs[layer].near(box)):
             return False
-        if any(_boxes_overlap(box, t) for t in self.texts[layer]):
+        if any(_boxes_overlap(box, t) for t, _ in self.texts[layer].near(box)):
             return False
-        return not any(_boxes_overlap(box, t) for t in placed)
+        return not any(_boxes_overlap(box, t) for t, _ in self.placed[layer].near(box))
+
+    def place(self, box: Box, layer: str) -> None:
+        self.placed[layer].add(box, None)
 
     def off_courtyards(self, box: Box, ref: str) -> bool:
-        return not any(r != ref and _boxes_overlap(box, b) for r, b in self.courts)
+        return not any(r != ref and _boxes_overlap(box, b) for b, r in self.courts.near(box))
 
 
 def _reference(p: Part) -> str | None:
@@ -207,7 +249,6 @@ def plan_refs(
         key=lambda p: natural_key(p.ref),
     )
     board = _Board(model, {p.ref for p in parts})
-    placed: dict[str, list[Box]] = {"F.SilkS": [], "B.SilkS": []}
     out: list[RefPlacement] = []
     unresolved: list[str] = []
     for p in parts:
@@ -221,7 +262,7 @@ def plan_refs(
             if i in banned:
                 continue
             box = _box(at, w, h)
-            if not board.free(box, layer, placed[layer]):
+            if not board.free(box, layer):
                 continue
             if board.off_courtyards(box, p.ref):
                 best = (i, at, box)
@@ -232,6 +273,6 @@ def plan_refs(
             unresolved.append(p.ref)
             continue
         i, at, box = best
-        placed[layer].append(box)
+        board.place(box, layer)
         out.append(RefPlacement(p.ref, at, rot, layer, i))
     return tuple(out), tuple(unresolved)

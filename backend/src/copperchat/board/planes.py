@@ -415,9 +415,12 @@ def fanout_pads(model: BoardModel, net: str) -> tuple[list[Pad], list[Pad]]:
     """(to fan out, already connected) SMD copper pads of `net`, natural order. A pad is
     already connected when a same-net track ends in it or a same-net via lies in it (an
     earlier fanout, a route); THT pads reach the planes through their hole."""
-    ends = [pt for t in model.tracks if t.net == net for pt in (t.start, t.end)]
-    ends += [pt for a in model.arcs if a.net == net for pt in (a.start, a.end)]
-    via_at = [v.at for v in model.vias if v.net == net]
+    points = [pt for t in model.tracks if t.net == net for pt in (t.start, t.end)]
+    points += [pt for a in model.arcs if a.net == net for pt in (a.start, a.end)]
+    points += [v.at for v in model.vias if v.net == net]
+    bucket = _Bucket()
+    for i, (x, y) in enumerate(points):
+        bucket.add(i, x, y, x, y)
     todo: list[Pad] = []
     done: list[Pad] = []
     for part in sorted(model.parts, key=lambda p: natural_key(p.ref)):
@@ -425,7 +428,8 @@ def fanout_pads(model: BoardModel, net: str) -> tuple[list[Pad], list[Pad]]:
             if q.net != net or not q.smd or pad_layer(q) is None:
                 continue
             reach = math.hypot(q.w, q.h) / 2
-            near = [p for p in (*ends, *via_at) if math.dist(p, (q.x, q.y)) <= reach]
+            ids = bucket.near(q.x - reach, q.y - reach, q.x + reach, q.y + reach)
+            near = [points[i] for i in ids]
             if any(_point_pad(p, q) <= 1e-6 for p in near):
                 done.append(q)
             else:

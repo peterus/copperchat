@@ -92,6 +92,8 @@ async def test_tidy_silk_synth(copper_rig: PlacedSynth, record_property: Any) ->
         assert abs(t.size[0] - 1.0) < 1e-6 and abs(t.size[1] - 1.0) < 1e-6, (p.ref, t)
         assert abs(t.thickness - 0.15) < 1e-6, (p.ref, t)
         assert t.layer == ("F.SilkS" if p.side == "top" else "B.SilkS"), (p.ref, t)
+        upright = 90.0 if round(p.rot) % 180 == 90 else 0.0
+        assert abs((t.angle - upright + 180) % 360 - 180) < 0.1, (p.ref, p.rot, t)
     drc = await _drc(rig)
     named = [
         (m_.type, by_kiid[k])
