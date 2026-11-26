@@ -15,6 +15,7 @@ from copperchat.board.placer import (
     DoesNotFit,
     Move,
     PlaceResult,
+    SidePolicyError,
     apply_moves,
     place_block,
     score_placement,
@@ -191,7 +192,7 @@ def test_deterministic() -> None:
 def test_bottom_side_refused() -> None:
     parts = _mcu_block()
     m = circuit(*parts)
-    with pytest.raises(ValueError):
+    with pytest.raises(SidePolicyError):
         place_block(
             m,
             classify(m),

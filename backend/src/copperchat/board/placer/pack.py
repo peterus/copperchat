@@ -46,6 +46,7 @@ from copperchat.board.placer.legalize import (
     DoesNotFit,
     Outline,
     _hits_keepout,
+    _keepout_box,
     courtyard_clearance,
     edge_margin,
     keepout_polys,
@@ -429,10 +430,11 @@ def place_block(
         bb = (v.box[0] + x, v.box[1] + y, v.box[2] + x, v.box[3] + y)
         near = [ob for ob in obs_index.near(bb, kc) if boxes_hit(bb, ob, kc)]
         moved = [(b[0] + x, b[1] + y, b[2] + x, b[3] + y) for b in v.boxes]
+        near_k = [k for k in keepouts if boxes_hit(bb, _keepout_box(k))] if keepouts else []
         for mb in moved:
             if any(boxes_hit(mb, ob, kc) for ob in near):
                 return False
-            if keepouts and _hits_keepout(mb, keepouts) is not None:
+            if near_k and _hits_keepout(mb, near_k) is not None:
                 return False
         return outline.contains(bb) or all(outline.contains(mb) for mb in moved)
 
@@ -488,12 +490,14 @@ def place_block(
     # boxes whose edges seed the sweep besides the obstacles: keepouts and, for a polygon
     # or rounded outline, every outline vertex (as a point box, inset by the margin)
     seeds: list[Box] = [_bbox_of(k) for k in keepouts]
+    seeds.extend((x, y, x, y) for k in keepouts for x, y in k)  # every keepout vertex
     if outline.poly is not None:
         seeds.extend((x - margin, y - margin, x + margin, y + margin) for x, y in outline.poly)
 
     # a non-rectangular outline or keepout: its slanted edges seed no sweep spot
-    slanted = any(
-        _has_slant(poly) for poly in [*keepouts, *([o.polygon] if o.kind == "other" else [])]
+    # (a concave axis-aligned keepout, e.g. a U, has notch walls no seed reaches either)
+    slanted = any(_has_slant(k) or len(k) != 4 for k in keepouts) or (
+        o.kind == "other" and _has_slant(o.polygon)
     )
 
     def sweep(vi: int) -> list[Found]:

@@ -7,6 +7,7 @@ import time
 from typing import Any
 
 from copperchat.board.classify import classify
+from copperchat.board.geom import rect_poly
 from copperchat.board.jobs import edge_strip
 from copperchat.board.model import Rect
 from copperchat.board.placer import DoesNotFit, legalize, place_block
@@ -371,7 +372,7 @@ def test_diamond_keepouts_need_the_scan_fallback() -> None:
 
 
 def test_concave_outline_does_not_fit_answers() -> None:
-    # a cross-shaped outline and 200 caps that cannot all fit: does_not_fit, not a timeout
+    # a cross-shaped outline and 300 caps that cannot all fit: does_not_fit, not a timeout
     from .builders_circuit import cap
 
     a, w = 100.0, 15.0
@@ -389,10 +390,19 @@ def test_concave_outline_does_not_fit_answers() -> None:
         (0, a - w),
         (a - w, a - w),
     ]
-    caps = [cap(f"C{i + 1}", f"N{i}", "GND", at=(900.0 + i * 3, 900.0)) for i in range(200)]
+    caps = [
+        cap(
+            f"C{i + 1}",
+            f"N{i}",
+            "GND",
+            at=(900.0 + i * 3, 900.0),
+            courtyard=tuple(rect_poly(900.0 + i * 3 - 3, 897.0, 6, 6)),
+        )
+        for i in range(300)
+    ]
     m = circuit(*caps, outline=_poly_outline(cross))
     t = time.monotonic()
-    place_block(
+    r = place_block(
         m,
         classify(m),
         [c.ref for c in caps],
@@ -401,4 +411,73 @@ def test_concave_outline_does_not_fit_answers() -> None:
         rotation=None,
         allowed_sides=TOP,
     )
+    assert isinstance(r, DoesNotFit)  # 300 x 36 mm² > the cross's 11,100 mm²
     assert time.monotonic() - t < 40.0
+
+
+def test_outline_contains_matches_exact() -> None:
+    import random
+
+    from copperchat.board.placer.legalize import Outline
+
+    l_shape = [(0, 0), (40, 0), (40, 10), (10, 10), (10, 40), (0, 40)]
+    rnd = random.Random(3)
+    for margin in (0.0, 0.3, 1.0):
+        out = Outline(circuit(outline=_poly_outline(l_shape)), margin)
+        for _ in range(3000):
+            x, y = rnd.uniform(-5, 45), rnd.uniform(-5, 45)
+            b = (x, y, x + rnd.uniform(0.5, 12), y + rnd.uniform(0.5, 12))
+            inner = out.inner
+            if b[0] < inner[0] or b[1] < inner[1] or b[2] > inner[2] or b[3] > inner[3]:
+                continue
+            assert out.contains(b) == out._exact(b), (margin, b)
+
+
+def test_pocket_between_u_keepouts() -> None:
+    # verify pass: concave axis-aligned keepouts (U shapes) around a 10.6 mm pocket
+    from .builders import zone
+
+    keep = frozenset({"footprints"})
+    x0, y0, wp = 30.6, 12.1, 10.6
+    upper = (
+        (x0 - 10, 0),
+        (x0 + wp + 10, 0),
+        (x0 + wp + 10, 20),
+        (x0 + wp, 20),
+        (x0 + wp, y0),
+        (x0, y0),
+        (x0, 20),
+        (x0 - 10, 20),
+    )
+    lower = (
+        (x0 - 10, 20),
+        (x0, 20),
+        (x0, y0 + wp),
+        (x0 + wp, y0 + wp),
+        (x0 + wp, 20),
+        (x0 + wp + 10, 20),
+        (x0 + wp + 10, 40),
+        (x0 - 10, 40),
+    )
+    zones = (
+        zone("K1", "", poly=upper, rule_area=True, keepout=keep, kiid="k1"),
+        zone("K2", "", poly=lower, rule_area=True, keepout=keep, kiid="k2"),
+    )
+    blockers = [
+        part("R1", 10.0, 20.0, half=9.0),
+        part("R2", 70.0, 20.0, half=9.0),
+        part("R3", 90.0, 20.0, half=9.0),
+    ]
+    u = part("U1", 500.0, 500.0, half=5.0)
+    m = circuit(*blockers, u, outline=outline(0, 0, 100, 40), zones=zones)
+    r = place_block(
+        m,
+        classify(m),
+        ["U1"],
+        Rect(x0 - 5, 0, wp + 10, 40),
+        side="top",
+        rotation=None,
+        keep_channels=0.0,
+        allowed_sides=TOP,
+    )
+    assert not isinstance(r, DoesNotFit), r

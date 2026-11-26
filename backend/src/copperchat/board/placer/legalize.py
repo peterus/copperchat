@@ -14,6 +14,7 @@ the rounds goes to the nearest free spot around its start (0.25 mm rings, within
 
 from __future__ import annotations
 
+import functools
 import heapq
 import math
 from collections import defaultdict
@@ -150,7 +151,7 @@ class Outline:
             box = (i * c, j * c, (i + 1) * c, (j + 1) * c)
             if self._exact(box):
                 state = "in"
-            elif not polygons_overlap(
+            elif m > 0 and not polygons_overlap(
                 rect_poly(box[0] - m, box[1] - m, c + 2 * m, c + 2 * m), self.poly
             ):
                 state = "out"
@@ -200,18 +201,22 @@ def keepout_polys(model: BoardModel) -> list[tuple[Point, ...]]:
     ]
 
 
+@functools.lru_cache(maxsize=1024)
+def _keepout_box(k: tuple[Point, ...]) -> Box:
+    return _bbox(k)
+
+
 def _hits_keepout(b: Box, keepouts: Sequence[tuple[Point, ...]]) -> tuple[Point, ...] | None:
-    poly = rect_poly(b[0], b[1], b[2] - b[0], b[3] - b[1])
+    """The first keepout `b` overlaps (bbox prefilter, cached per keepout; the box polygon
+    is built only after a bbox hit)."""
+    poly: list[Point] | None = None
     for k in keepouts:
-        kb = _bbox(k)
-        if (
-            b[0] < kb[2]
-            and kb[0] < b[2]
-            and b[1] < kb[3]
-            and kb[1] < b[3]
-            and polygons_overlap(poly, k)
-        ):
-            return k
+        kb = _keepout_box(k)
+        if b[0] < kb[2] and kb[0] < b[2] and b[1] < kb[3] and kb[1] < b[3]:
+            if poly is None:
+                poly = rect_poly(b[0], b[1], b[2] - b[0], b[3] - b[1])
+            if polygons_overlap(poly, k):
+                return k
     return None
 
 
