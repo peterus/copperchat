@@ -330,6 +330,7 @@ def build_report(
     error: str | None = None,
     seconds: float = 0.0,
     renders: Mapping[str, Mapping[str, int]] | None = None,
+    after_failure: list[dict[str, Any]] | None = None,
 ) -> str:
     """`report.md`: steps, metrics, fill, open connections, fab files, renders, runtime,
     memory."""
@@ -362,6 +363,26 @@ def build_report(
             )
     else:
         lines.append("No full check reached.")
+    if after_failure:
+        lines += ["", "## After the failure (measurement only)", ""]
+        for row in after_failure:
+            state = "ok" if row["ok"] else f"error {_cell(row.get('error'))}"
+            lines.append(f"- {row['tool']} {_cell(row['args'])}: {row['seconds']} s, {state}")
+        full = next((r.get("metrics") for r in after_failure if r.get("metrics")), None)
+        if full:
+            lines += [
+                "",
+                f"Full check of the partial board: hard failures {full.get('hard_failures')}, "
+                f"verdict {full.get('verdict')}",
+                "",
+                "| Metric | Value | Verdict | Offenders (first 3) |",
+                "|---|---|---|---|",
+            ]
+            for m in full.get("metrics", []):
+                offs = "; ".join(str(o.get("what", "")) for o in (m.get("offenders") or [])[:3])
+                lines.append(
+                    f"| {m['id']} | {_cell(m.get('value'))} | {m['verdict']} | {_cell(offs)} |"
+                )
     fill = getattr(result, "fill", {}) or {}
     lines += ["", "## Fill", ""]
     if fill:
@@ -410,21 +431,45 @@ def build_report(
 # ---- main ---------------------------------------------------------------------------------
 
 
-async def _failure_render(rig: Any, result: Any) -> None:
-    """Best effort: a top render of the board as the failed flow left it (the report's
-    picture of where it stopped). Never fails the run."""
+AFTER_FAILURE = (  # read-only / approval-free calls: the kicad-cli kinds the flow missed
+    ("pcb_check", {"level": "full"}),
+    ("pcb_render", {"view": "top"}),
+    ("pcb_render", {"view": "3d", "angle": "iso"}),
+    ("pcb_export_3d", {"format": "step"}),
+    ("pcb_export_3d", {"format": "glb"}),
+)
+
+
+async def after_failure(rig: Any, result: Any) -> list[dict[str, Any]]:
+    """Best effort after a failed flow: the AFTER_FAILURE calls on the board as the flow
+    left it - the full check (parity DRC) for the report, a top and a 3D render, the
+    STEP / GLB export - so the memory report covers those kicad-cli kinds too. Returns
+    one row per call; never raises."""
+    from copperchat.projects import agent_dir
     from tests.kicad_e2e.flow import call
 
-    try:
-        data, err = await call(rig, "run-dry-run-failure", "pcb_render", view="top")
-    except Exception as exc:  # a render problem must not hide the flow's failure
-        print(f"failure render skipped: {exc}", file=sys.stderr)
-        return
-    if not err and data.get("png_url") and result is not None:
-        from copperchat.projects import agent_dir
-
-        name = str(data["png_url"]).rsplit("/", 1)[1]
-        result.renders.append(agent_dir(rig.project) / "renders" / name)
+    rows: list[dict[str, Any]] = []
+    for name, args in AFTER_FAILURE:
+        t0 = time.monotonic()
+        try:
+            data, err = await call(rig, "run-dry-run-after-failure", name, **args)
+        except Exception as exc:  # a measurement problem must not hide the flow's failure
+            data, err = {"exception": repr(exc)}, True
+        row: dict[str, Any] = {
+            "tool": name,
+            "args": args,
+            "seconds": round(time.monotonic() - t0, 1),
+            "ok": not err,
+        }
+        if err:
+            row["error"] = data
+        elif name == "pcb_check":
+            row["metrics"] = data
+        elif name == "pcb_render" and data.get("png_url") and result is not None:
+            png = agent_dir(rig.project) / "renders" / str(data["png_url"]).rsplit("/", 1)[1]
+            result.renders.append(png)
+        rows.append(row)
+    return rows
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -469,6 +514,7 @@ async def _run(args: argparse.Namespace, out: Path) -> int:
     ).start()
     api: dict[str, int] = {}
     error: str | None = None
+    extra: list[dict[str, Any]] = []
     start = time.monotonic()
 
     def step(s: Any) -> None:
@@ -484,7 +530,7 @@ async def _run(args: argparse.Namespace, out: Path) -> int:
                 result = await run_flow(rig, answers, on_step=step)
             except FlowError as exc:
                 result, error = exc.result, str(exc)
-                await _failure_render(rig, result)
+                extra = await after_failure(rig, result)
             seconds = time.monotonic() - start
             proc = rig.session.process
             if proc is not None:
@@ -506,11 +552,18 @@ async def _run(args: argparse.Namespace, out: Path) -> int:
                     renders.append(dst.name)
                     stats[dst.name] = svg_stats(png.with_suffix(".svg"))
             report = build_report(
-                result, memory, project=args.project, error=error, seconds=seconds, renders=stats
+                result,
+                memory,
+                project=args.project,
+                error=error,
+                seconds=seconds,
+                renders=stats,
+                after_failure=extra,
             )
             (out / "report.md").write_text(report)
             data = as_jsonable(result) if result is not None else {}
             data |= {"error": error, "memory": dataclasses.asdict(memory), "renders_out": renders}
+            data["after_failure"] = extra
             (out / "metrics.json").write_text(json.dumps(data, indent=1, default=str))
     finally:
         sampler.stop()

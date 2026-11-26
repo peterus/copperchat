@@ -197,3 +197,18 @@ def test_svg_stats_and_renders_section(tmp_path: Path) -> None:
         _fake_result(), odh.Memory(), project="p", renders={"01-a.png": odh.svg_stats(svg)}
     )
     assert "## Renders" in text and "| 01-a.png |" in text
+
+
+def test_report_lists_the_after_failure_calls() -> None:
+    rows = [
+        {"tool": "pcb_check", "args": {"level": "full"}, "seconds": 9.1, "ok": True,
+         "metrics": {"hard_failures": 2, "verdict": "fail", "metrics": [
+             {"id": "M2", "value": 5, "verdict": "fail", "offenders": [{"what": "open"}]}]}},
+        {"tool": "pcb_export_3d", "args": {"format": "glb"}, "seconds": 1.0, "ok": False,
+         "error": {"error": {"what": "x"}}},
+    ]  # fmt: skip
+    text = odh.build_report(None, odh.Memory(), project="p", error="boom", after_failure=rows)
+    part = text.split("## After the failure (measurement only)", 1)[1]
+    assert '- pcb_check {"level": "full"}: 9.1 s, ok' in part
+    assert "pcb_export_3d" in part and "error" in part
+    assert "hard failures 2" in part and "| M2 | 5 | fail | open |" in part
