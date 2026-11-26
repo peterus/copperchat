@@ -809,11 +809,14 @@ tool defect, thresholds untouched)**
   skips every move perpendicular to existing own-net copper at a node outside own pads / vias
   (`junction_masks`, a per-layer node → direction bitmask), and `valid_path` checks the snapped
   path the same way (`junctions_ok`: path vertices, own track ends on the path, proper
-  crossings; M4's 2 µm join tolerance; own pads of the layer, own and new vias exempt). A
+  crossings; M4's 2 µm join tolerance; own pads of the layer and vias exempt). A
   same-net 90° X-crossing is refused too - stricter than M4, which does not split crossings.
   Masks are cached per grid, each segment is clipped to the window and checks only the spots
   near it, with deadline checks. A goal-only check made `pcb_route` take 196 s and fail (A*
-  kept reaching the goal through the same T prefix).
+  kept reaching the goal through the same T prefix). The move masks exempt only existing own
+  pads / vias: a new via dropped on an own track with a 90° leg is pruned during the search
+  (stricter than M4 and than `valid_path`'s final check, which exempts the path's own vias) -
+  never wrong copper, at most a detour.
 - **P3a M12 (`metrics.py`):** a net whose class KiCad names "Effective for net: <net>" now takes
   the classes whose patterns match the net + Default (widest), like `route.class_params`; such
   nets were skipped (closes the P2/P5b/P6b residual).
