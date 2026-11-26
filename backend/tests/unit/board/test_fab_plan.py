@@ -288,7 +288,10 @@ def test_stencil_sides() -> None:
         part("U2", side="bottom"),
         pads=(replace(_pad("U2", "1", 20, 20), layers=frozenset({"B.Cu", "B.Paste", "B.Mask"})),),
     )
-    tht = replace(part("J1", side="bottom"), pads=(_pad("J1", "1", 30, 30, smd=False),))
+    tht_pad = replace(
+        _pad("J1", "1", 30, 30, smd=False), layers=frozenset({"F.Cu", "B.Cu", "F.Mask", "B.Mask"})
+    )
+    tht = replace(part("J1", side="bottom"), pads=(tht_pad,))
     assert stencil_sides(board(parts=(top, tht))) == "top only"
     fiducial = replace(
         part("FID1", side="bottom"),
