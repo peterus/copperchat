@@ -977,6 +977,44 @@ def _net_entry(net: str, results: Sequence[ConnResult], lock: bool) -> dict[str,
     return entry
 
 
+PAIR_MISMATCH_MM = 1.0  # M12's pair length tolerance
+
+
+def _pairs_report(
+    cls: Classification, nets: Sequence[str], results: Mapping[str, Sequence[ConnResult]]
+) -> list[dict[str, Any]]:
+    """Per differential pair with both nets requested: how many of its connections were
+    routed coupled / alone, the worst length mismatch and the gap range of the coupled
+    ones, and a warning for the agent when a connection is uncoupled or the mismatch
+    exceeds PAIR_MISMATCH_MM."""
+    out: list[dict[str, Any]] = []
+    for pair in cls.pairs:
+        if pair.p not in nets or pair.n not in nets:
+            continue
+        routed = [r for n in (pair.p, pair.n) for r in results.get(n, ()) if r.status == "routed"]
+        coupled = [r.coupling for r in routed if r.coupling is not None and r.net == pair.p]
+        alone = sum(1 for r in routed if r.coupling is None)
+        entry: dict[str, Any] = {
+            "p": pair.p,
+            "n": pair.n,
+            "coupled_connections": len(coupled),
+            "uncoupled_connections": alone,
+        }
+        if coupled:
+            entry["length_mismatch"] = round(max(c["length_mismatch"] for c in coupled), 4)
+            entry["gap_min"] = round(min(c["gap_min"] for c in coupled), 4)
+            entry["gap_max"] = round(max(c["gap_max"] for c in coupled), 4)
+        notes = []
+        if alone:
+            notes.append(f"{alone} connection(s) routed uncoupled")
+        if entry.get("length_mismatch", 0.0) > PAIR_MISMATCH_MM:
+            notes.append(f"length mismatch {entry['length_mismatch']:g} mm > {PAIR_MISMATCH_MM:g}")
+        if notes:
+            entry["warning"] = "; ".join(notes)
+        out.append(entry)
+    return out
+
+
 def _bends(model: BoardModel, kiids: frozenset[str]) -> dict[str, int]:
     """M4 / M7 counts over the call's new copper (B-C5 `analyse_tracks`, pads and vias
     of the whole board)."""
@@ -1068,6 +1106,7 @@ async def prepare_route(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
             else:
                 entries.append(_net_entry(n, results[n], lock))
         rep["nets"] = entries
+        rep["pairs"] = _pairs_report(cls, nets, results)
         return problems
 
     cs = RouteChangeSet(
@@ -1081,6 +1120,7 @@ async def prepare_route(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
     )
     if not plans:
         report["nets"] = [{"net": n, "status": "already_routed", "connections": 0} for n in nets]
+        report["pairs"] = []
         report.update(_totals(report["nets"]))
         report["next"] = "pcb_route_fill for the remaining connections"
     return cs

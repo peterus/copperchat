@@ -105,7 +105,8 @@ PCB_ROUTE_DESCRIPTION = (
     f"connect ground). Stops after {ROUTE_DEADLINE_S:g} s with the rest failed 'timeout' "
     "(what was routed stays). Returns per net status routed | partial | failed | "
     "already_routed, connections, routed, failed [{a, b, reason: no_path | too_large | "
-    "timeout | drc_rejected: …}], length_mm, vias, locked, coupling; totals; bends (M4, M7 "
+    "timeout | drc_rejected: …}], length_mm, vias, locked, coupling; pairs (coupled / "
+    "uncoupled connections, length_mismatch, gap_min/max, warning); totals; bends (M4, M7 "
     "of the new copper, expected 0); drc_errors; next. Cost ceil(nets / 5)."
 )
 

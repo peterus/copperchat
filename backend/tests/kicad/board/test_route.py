@@ -108,10 +108,11 @@ async def test_pair_routed_coupled(synth_routed: PlacedSynth) -> None:
     layers = [{t.layer for t in model.tracks if t.net == n} for n in PAIR]
     assert layers[0] == layers[1], layers
     mismatch = entries[PAIR[0]]["coupling"]["length_mismatch"]
-    metrics = await setup_call(synth_routed.turn("run-pair-m"), "pcb_metrics", only=["M12"])
-    (m12,) = metrics["metrics"]
-    listed = any("USB" in o["what"] for o in m12["offenders"])
-    assert mismatch <= 1.0 or listed, (mismatch, m12)
+    (pair,) = [p for chunk in synth_routed.info["routed"] for p in chunk["pairs"]]
+    print(pair)
+    assert (pair["p"], pair["n"]) == PAIR
+    # over 1 mm (M12's pair tolerance) the report lists it with a warning for the agent
+    assert mismatch <= 1.0 or "warning" in pair, pair
 
 
 # -- options ---------------------------------------------------------------------------
@@ -155,8 +156,8 @@ async def test_placement_not_approved_refusal(synth_routed: PlacedSynth, tmp_pat
     try:
         ctx = synth_routed.rig.turn(fresh, "run-na-1")
         out, err = await call_tool(ctx, "pcb_route", nets=list(SIGNALS[:1]))
-        assert err and out["code"] == "placement_not_approved", out
-        assert out["details"]["stale"] is False
+        assert err and out["error"]["code"] == "placement_not_approved", out
+        assert out["error"]["details"]["stale"] is False
     finally:
         await fresh.close()
     model = await _model(synth_routed, "run-na-2")
@@ -165,7 +166,11 @@ async def test_placement_not_approved_refusal(synth_routed: PlacedSynth, tmp_pat
         synth_routed.turn("run-na-3"), "pcb_move", items=[{"ref": hole.ref, "x": hole.x + 0.5}]
     )
     out, err = await call_tool(synth_routed.turn("run-na-4"), "pcb_route", nets=[SIGNALS[0]])
-    assert err and out["code"] == "placement_not_approved" and out["details"]["stale"] is True
+    assert (
+        err
+        and out["error"]["code"] == "placement_not_approved"
+        and out["error"]["details"]["stale"] is True
+    )
     await setup_call(
         synth_routed.turn("run-na-5"), "pcb_move", items=[{"ref": hole.ref, "x": hole.x}]
     )
@@ -177,20 +182,20 @@ async def test_placement_not_approved_refusal(synth_routed: PlacedSynth, tmp_pat
 
 async def test_unknown_net_closest(synth_routed: PlacedSynth) -> None:
     out, err = await call_tool(synth_routed.turn("run-unk"), "pcb_route", nets=["/USB_DQ"])
-    assert err and out["code"] == "not_found", out
-    assert "/USB_DP" in out["details"]["closest"]["/USB_DQ"]
+    assert err and out["error"]["code"] == "not_found", out
+    assert "/USB_DP" in out["error"]["details"]["closest"]["/USB_DQ"]
 
 
 async def test_unknown_layer(synth_routed: PlacedSynth) -> None:
     out, err = await call_tool(
         synth_routed.turn("run-unk-l"), "pcb_route", nets=[SIGNALS[0]], layers=["In7.Cu"]
     )
-    assert err and out["code"] == "not_found", out
+    assert err and out["error"]["code"] == "not_found", out
 
 
 async def test_ground_net_refused(synth_routed: PlacedSynth) -> None:
     out, err = await call_tool(synth_routed.turn("run-gnd"), "pcb_route", nets=["GND"])
-    assert err and out["code"] == "invalid_argument", out
+    assert err and out["error"]["code"] == "invalid_argument", out
 
 
 async def test_already_routed_reported(synth_routed: PlacedSynth) -> None:
@@ -205,8 +210,9 @@ async def test_budget_cost(synth_routed: PlacedSynth) -> None:
     model = await _model(synth_routed, "run-cost-0")
     pads = sorted({q.net for p in model.parts for q in p.pads if q.net})
     routed = {t.net for t in model.tracks}
-    nets = [n for n in pads if n not in routed and "GND" not in n and "unconnected" not in n][:6]
-    assert len(nets) == 6, nets
+    unrouted = [n for n in pads if n not in routed and "GND" not in n and "unconnected" not in n]
+    nets = (unrouted + synth_routed.info["critical_nets"])[:6]  # routed ones cost the same
+    assert len(nets) == 6 and unrouted, nets
     cs = await route.prepare_route(synth_routed.turn("run-cost"), {"nets": nets})
     assert cs.logical.changes == 2
 
