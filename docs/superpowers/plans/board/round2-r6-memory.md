@@ -5,8 +5,11 @@
 > Read first: the index (incl. "Round 2", "As built (P6a)", "As built (P3b)", "As built (P9a)"
 > → Memory), spec §15.3 D5 and **§22.2 decision 3 / §22.6**. **Wave R-1: no dependency.**
 
-**Goal:** the parity DRC (`kicad-cli pcb drc --schematic-parity`, ≈ 2.6 GB) never runs while
-Freerouting or a CPU-worker job runs (owner decision 3), the CPU worker does not keep ≈ 1 GB
+**Goal:** the parity DRC (`kicad-cli pcb drc --schematic-parity`, ≈ 2.6 GB) **starts only after**
+the running Freerouting JVM and the running CPU-worker job have finished (owner decision 3:
+"run it only after the other heavy processes finish"); a CPU job that starts *during* the DRC is
+not blocked (blocking it would starve `pcb_route` / the fill for up to 240 s), its memory is part
+of the measured concurrent peak, the CPU worker does not keep ≈ 1 GB
 after a big job, and the dry-run script reports the **concurrent** peak next to the sum of
 per-process peaks; re-measure on ODH and report the number honestly against the ≈ 5 GB target.
 
@@ -26,8 +29,9 @@ starts; `run_cpu` takes only the worker lock). `run_freerouting` holds the gate 
 A parity DRC holds the gate, **waits until the CPU worker is idle** (acquires
 `worker._get_lock()` and releases it at once — it never holds the worker lock during the DRC, so
 route solves, fill post-processing and metrics jobs are never starved by a 120 s parity run;
-a job that starts during the DRC is short (`run_cpu` ≤ 30 s) and the worker is kept small by
-recycling), then takes `BOARD_CLI_LOCK`; every wait is bounded. `run_cpu` recycles
+a job that starts during the DRC is bounded by its own `run_cpu` timeout — ≤ 60 s
+(`PLACE_TIMEOUT_S`), most ≤ 30 s — and the worker is kept small by recycling; R6 Task 3 measures
+whether such overlap moves the concurrent peak and reports it), then takes `BOARD_CLI_LOCK`; every wait is bounded. `run_cpu` recycles
 the worker **while it still holds the worker lock**, so a queued job never starts on a worker
 that is about to be killed.
 

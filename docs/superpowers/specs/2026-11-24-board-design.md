@@ -1151,8 +1151,9 @@ C5/C1). Round 2 fixes this before P9b. P9b (skills, flag on) and P10 stay after 
 2. **JLC preset minimum hole = 0.2 mm** (all three presets, plated holes: `min_drill`); the
    fab report notes that holes below 0.3 mm may cost a JLC surcharge and lists them. The via
    drill minimum the agent's own vias use stays 0.3 mm (`min_via_drill`, unchanged).
-3. **Memory (D5):** the `kicad-cli` parity DRC (≈ 2.6 GB) runs only when no other heavy
-   process (Freerouting JVM, a CPU-worker job) runs — both parity paths (`pcb_check full` and the
+3. **Memory (D5):** the `kicad-cli` parity DRC (≈ 2.6 GB) starts only after the running heavy
+   processes (Freerouting JVM, a CPU-worker job) have finished; a short CPU job may start during
+   it (blocking it would starve routing), and the measured concurrent peak includes that — both parity paths (`pcb_check full` and the
    older `run_drc` check) are gated; the other `kicad-cli` calls (netlist, exports, renders) are lighter and stay ungated; target
    ≈ 5 GB concurrent per active board project, re-measured on ODH (§22.6).
 4. **Improvement round before P9b**, targeted at the OpenDriveHub main board (this amendment).

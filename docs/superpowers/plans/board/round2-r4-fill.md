@@ -60,8 +60,10 @@ the nets scope (`SCOPE_KEYS`, `jobs.py:87`) gains `critical_reasons {net: "class
 `backend/tests/kicad/board/test_analysis_synth.py`.
 
 **Interfaces:** `extra_critical(model, cls, blocks: Mapping[str, tuple[str, ...]]) ->
-dict[str, str]` — `blocks` = the board's defined `blk:` groups (`place._blocks(model)`,
-`place.py:181`) when any exist, else `{b.name: b.refs for b in cls.blocks}` (proposals); adds
+dict[str, str]` — `blocks` = the board's defined `blk:` groups when any exist — read by a
+new pure `critical.defined_blocks(model)`: the logic of `place._blocks` (`place.py:181`) and
+`BLOCK_PREFIX` move to `cc/board/critical.py` and `place.py` imports them from there (a minimal
+touch of R2's/P4's file; `jobs.py` must not import `place.py`, which imports `jobs` → cycle) — else `{b.name: b.refs for b in cls.blocks}` (proposals); adds
 (1) every non-ground net whose pads all belong to one block, ≤ `CRITICAL_INTRA_MAX_PADS = 8`
 pads → `"intra_block"`; (2) every non-ground net with an MST connection that has a
 `geom.straight_corridor` → `"corridor"` (so all rule-b pairs are own-routed straight and locked

@@ -2393,7 +2393,7 @@ above (owner edits freely; "append" = add lines only, keep both sides on rebase)
 | new `cc/board/heavy.py`, `cc/board/worker.py` (recycling), `cc/board/freerouting.py` (gate around the run only), `cc/kicad_tools/board/check.py` (`cli_parity` gate only), `scripts/odh-dry-run.py` (memory sampler), `backend/tests/unit/test_odh_dry_run.py` | R6 (R-1) | R2 (answer loading only, if needed) and R7 edit both afterwards |
 | `cc/board/placer/**` (new `floorplan.py` incl. the `align_pairs` pass), `cc/kicad_tools/board/{place,specs_place}.py`, `cc/agent/profiles.py` (`PCB_READ` / `PCB_WRITES` names), `cc/changes/repo.py` + `frontend/src/components/changes/highlight.ts` (`board_place_blocks` kind), `cc/views/board_render.py` (`render_board(hulls=…)` only, after R5), `backend/tests/kicad_e2e/flow.py` | R2 (R-2) | `cc/board/jobs.py` append (`floorplan_job`, `place_blocks_job`) |
 | `cc/board/router/{grid,astar,simplify,pairs}.py`, `cc/kicad_tools/board/route.py` | R3 (R-2) | — |
-| `cc/kicad_tools/board/{fill,specs_fill}.py`, `cc/board/router/chamfer.py`, `cc/board/freerouting.py` (settings arguments; R6's gate stays), new `cc/board/critical.py`, `cc/kicad_tools/board/specs_analysis.py` (description, after R1), `backend/tests/kicad_e2e/flow.py` (corridor nets first, after R2) | R4 (R-3) | `cc/board/jobs.py` append-only edit inside `analyse_job` (critical-set extension) |
+| `cc/kicad_tools/board/{fill,specs_fill}.py`, `cc/board/router/chamfer.py`, `cc/board/freerouting.py` (settings arguments; R6's gate stays), new `cc/board/critical.py`, `cc/kicad_tools/board/specs_analysis.py` (description, after R1), `backend/tests/kicad_e2e/flow.py` (corridor nets first, after R2) | R4 (R-3) | `cc/board/jobs.py` append-only edit inside `analyse_job` (critical-set extension); `cc/kicad_tools/board/place.py` (import `defined_blocks` / `BLOCK_PREFIX` from `critical.py` only) |
 | `scripts/odh-dry-run.py`, `backend/tests/kicad_e2e/**` (flow answers), any owning file of a defect found on ODH (minimal fix, recorded in "As built (R7)") | R7 (R-4) | — |
 | **Shared, append-only (all round-2 phases):** `CHANGELOG.md` `[Unreleased]`, this index ("As built (R#)" sections, contract edits in place), `backend/tests/{unit,kicad}/board/conftest.py`. **`backend/tests/kicad_e2e/goldens/sp4_synth_metrics.json`**: every phase whose change moves a golden value regenerates it with `UPDATE_GOLDENS=1` **after rebasing on the latest `main`** and explains each change in the PR body; never hand-merged. | every phase | — |
 
@@ -2531,7 +2531,9 @@ heavy gate is not free within `HEAVY_WAIT_S`.
    a non-ground net whose pads all lie in one defined block (≤ 8 pads), and every net with a
    straight-corridor pair, is routed by the own router before the fill, so Freerouting only
    routes the rest through the reserved channels.
-9. **Parity DRC is gated, not replaced** (owner decision 3). P9a's numbers suggest api-server
+9. **Parity DRC is gated, not replaced** (owner decision 3): it *starts* only after the running
+   Freerouting run and CPU job finish; a CPU job started during it is not blocked (else routing
+   starves) — the measured concurrent peak shows whether that matters. P9a's numbers suggest api-server
    (≈ 3.1 GB) + parity `kicad-cli` (≈ 2.6 GB) ≈ 5.7 GB concurrent even when serialised; R6
    measures it. If it stays > 5 GB, replacing the parity DRC by an own parity check on the
    `kicad-cli` netlist (≈ 0.6 GB) is an **owner decision**, not part of round 2.
