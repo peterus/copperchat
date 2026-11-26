@@ -747,6 +747,139 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
 
 (Each phase adds its section here in its own PR.)
 
+### As built (P9a)
+
+**End-to-end golden on `sp4_synth`** (`backend/tests/kicad_e2e/`, marker `kicad_e2e`, CI job `kicad-e2e`)
+- `flow.run_flow(rig, answers)` drives the product flow turn by turn through the real adapter
+  (`agent.sdk_tools`): the `Rig` is the run engine's wiring without a model - `HistoryService` +
+  `HistoryHooks` (turn start, first-mutation snapshot, turn-end autosave), `EditingService` with
+  the plan gate, `DesignDocs`, a **Board** conversation (`conversation_type="board"`, the doc write
+  scope), `reload_project` after board creation. Turns: 1 sync / outline / rules; 2 `pcb_analyze`
+  → `pcb_define_blocks` → `pcb_place_block` per block → `pcb_legalize` → `pcb_check quick` +
+  `pcb_render placement`; 3 the user's message + `pcb_approve placement`; 4 `pcb_route` (critical
+  nets, locked) + `pcb_route_fill` with the scripted ladder; 5 zones / fanout / stitch / tidy silk /
+  `pcb_check full` (+ the user's accepted warnings, then a second full check) / renders top +
+  bottom; 6 the user's message + `pcb_approve board` + `pcb_fab_export` - **without P8's
+  `metrics_pass` seam** (the real export-time gate: 0 hard failures). A call that would pass the
+  turn budget (20) starts a new turn. Any tool error → `FlowError(step, tool, error)` carrying the
+  partial `FlowResult`.
+- **Scripted ladder (spec §10.3)**: a fill refused by the 20 % rule → rung (c) `pcb_route` on the
+  nets it would have ripped, then the fill again (≤ 3 fills); "nothing to fill" ends the rung; a
+  Freerouting timeout → the tool's suggestion, once: `timeout_s 600, passes 10`; connections open
+  after the last rung → `FlowError` (rung (d) = the user). On `sp4_synth` the first fill is refused
+  (`/Power/FB` detour, 1 of 2), rung (c) routes it, the second fill fills the rest.
+- **Accepted warnings (`Answers.accept_warnings`)**: KiCad 11 applies the board's
+  `min_silk_text_thickness` (JLC preset 0.15 mm) to footprint silk **lines** too - every KiCad
+  library footprint draws 0.12 mm silk (KLC), so `text_thickness` warnings make M3 fail on any
+  stock-footprint board. The scripted user accepts that type: the flow writes a `board.md` →
+  Checks row (`doc_patch_section`, `create: true`; Board sessions may not `doc_write`) naming every
+  part, then checks again. No threshold changed (M3 counts accepted warnings by design, spec §12).
+  **Owner decision (open):** keep it as a per-board acceptance (P9b skill: the agent asks), or map
+  only the text stroke (spec: "silk text ≥ … / 0.15 mm line") and not the KiCad constraint that
+  also covers silk lines.
+- `sp4_synth` answers (`SYNTH_ANSWERS`): 60 × 45 mm, r 1, holes inset 3; 4 layers `jlcpcb-4l` +
+  Power class 0.4 mm (`*VBUS`, `*+3V3`, `*SW`); blocks keyed by anchor: J1 `edge: left` (absorbs
+  the ESD part U2's block), U1 right half, U3 left half; channels 1.5 mm; default zones; fanout
+  and stitching on GND.
+- **Measured:** the flow ≈ 110–120 s locally (`pcb_route` critical 27–56 s, the fill ≈ 11–15 s,
+  sync ≈ 9 s, full check ≈ 5.7 s each), the module ≈ 120 s, CI job `kicad-e2e` 3 min 12 s;
+  `test_full_flow_hard_gates` asserts ≤ 180 s. Two consecutive local runs identical (golden).
+- **Golden** `goldens/sp4_synth_metrics.json` (CopperChat output, `UPDATE_GOLDENS=1`): hard
+  metrics M1 0, M2 0, M4 0, M7 0, M12 0, M13 0, M14 0 (pass); M3 0 (review: accepted warnings);
+  M5 1.11 (review: USB pair fan-in, `/Power/FB`), M8 **4.97 mm** (review; crystal Y1.1 → U1.2 -
+  0.03 mm under the hard limit), M9 3, M11 0.959 (review, see residuals); 174 tracks, 124 vias,
+  239.3 mm; `fill_seconds` 12.3 (recorded only).
+- `test_approvals_bound_to_hashes`: both checkpoints current after the flow; `pcb_move` of a
+  routed passive (+0.5 mm, `unroute: true`) makes both stale and `pcb_fab_export` refuses
+  `not_approved`. `test_undo_to_placement`: History restore of turn 4's first-mutation snapshot →
+  the approved `placement_hash`, no track/via, `pcb_status` answers.
+
+**Tool fixes made here (owning phases' files; every hard gate that failed on `sp4_synth` was a
+tool defect, thresholds untouched)**
+- **P4 placer (`placer/layout.py`):** a satellite's pads are measured to the host pads **of their
+  own net** (the crystal sat crossed: its OSC_IN pad at the OSC_OUT pin → M5 3.40 / M8 8.6 mm);
+  crystals keep `CRYSTAL_STANDOFF_MM` **0.3** more than the courtyard gap (flush, the crystal
+  boxed in the reset pin → M2). The value sits in a **narrow window** on `sp4_synth`: 0.2 mm left
+  the supply pin's decap path 5.40 mm, 0.4 mm made the far crystal pad's path 5.07 mm (M8 hard
+  5 mm). Tried and rejected: decaps before the crystal (crystal path 6.1 mm), load caps right
+  after the crystal (decap 6.05 mm), supply nets routed before crystal nets (no change).
+- **P5a/P5b router (`router/astar.py`, `router/grid.py`):** two connections of one TSSOP pin shared
+  the exit stub and turned NW / SW 0.16 mm outside the pad - an off-pad 90° T (M4 hard fail).
+  `ObstacleGrid.own_segments` / `own_spots` (own-net tracks per layer, own pads + vias); the search
+  skips every move perpendicular to existing own-net copper at a node outside own pads / vias
+  (`junction_masks`, a per-layer node → direction bitmask), and `valid_path` checks the snapped
+  path the same way (`junctions_ok`, incl. proper crossings). A goal-only check made `pcb_route`
+  take 196 s and fail (A* kept reaching the goal through the same T prefix).
+- **P3a M12 (`metrics.py`):** a net whose class KiCad names "Effective for net: <net>" now takes
+  the classes whose patterns match the net + Default (widest), like `route.class_params`; such
+  nets were skipped (closes the P2/P5b/P6b residual).
+- **P3b `pcb_check` rows (`check.py`):** warning/error rows map marker KIIDs through the
+  footprints' `item_kiids` too (pads, fields, texts, shapes), so their `refs` / `accepted` agree
+  with M3 (closes the P3b residual).
+- **P2 test (`test_sync.py`):** asserts the API DRC name `overlapping_footprints` (closes the P4
+  residual).
+
+**ODH dry run** (`scripts/odh-dry-run.py`, copy of `OpenDriveHub@2e17ac5` + the uncommitted PROD
+working tree, transmitter main board, 76 parts; answers outside the repo; local kicad-base image)
+- **80 × 60 mm** (brief size): placement fails - `pcb_place_block` `does_not_fit` for the 4th/6th
+  block although > 3,000 mm² are free: block-by-block packing fragments the board (render handed
+  to the coordinator). With per-block regions as answers (MCU right half first, RTC, charger,
+  buck-boost left) it still left no contiguous spot for the SD-card block.
+- **80 × 100 mm** (spec size; Power class 0.5 mm): sync 7–9 s, 12 blocks placed in 14 s, M1 pass,
+  M8 worst 3.65 mm (placement), max 19 pins per 5 × 5 mm cell, placement approved. `pcb_route`
+  critical (≈ 40 nets) **105 s, 13 connections `no_path`** - all on power nets at the 0.5 mm-pitch
+  QFN charger / buck-boost (adjacent same-net pins, VSYS / VBAT / VBUS / switch node): a 0.5 mm
+  class track cannot enter 0.25 mm pads and the own router has **no neck-down at pads**. Fill:
+  30 passes did not finish in 300 s (≈ 24 s per pass, stalled at ≈ 31 unrouted / 24 violations);
+  10 passes / 600 s twice refused by the 20 % rule (15/60 then 11/35: `ninety_unfixable` 11 / 6,
+  `drc_rejected` 4, detour 3, micro-jog 1, acute 1); rung (c) routed the refused signal nets each
+  time; flow stopped after ≈ 1,000 s with the ladder exhausted. Full check of the partial board:
+  M2 118 open, **M3 347 (incl. `drill_out_of_range` errors: 0.2 mm holes in a footprint vs the
+  JLC preset's 0.3 mm), M14 90 `pth_drill` U202 0.2 < 0.3**, M8 5.47 mm (C201 → U301 routed).
+- **80 × 100 mm, Power class 0.3 mm** (third run): `pcb_route` critical 223 s, **2 `no_path`**
+  left; fill 30 passes refused at once (25/58 = 43 %: `ninety_unfixable` 20, micro-jog 3, detour
+  2), after rung (c) a 300 s timeout, then 10 passes / 600 s refused again (5/18: `ninety_unfixable`
+  4); ladder exhausted after ≈ 1,020 s; partial board: M2 93 open, M5 hard fail (`detour_fail`
+  ratio 4.0, +8.6 mm), M3 / M14 the 0.2 mm holes, M8 4.07 mm (review). **The ODH flow does not
+  reach a routed board** - the acceptance finding for the owner: Freerouting's output on the
+  dense ODH placement is mostly unchamferable (90° corners in tight spots), so the owner's 45°
+  rule plus the 20 % rejection rule stop the fill.
+- **Memory (D5) — the number P9b writes into the README**, per active board project, five parts
+  (80 × 100 run): (1) api-server RSS (peak VmHWM) **3,118 MB** (unchanged by
+  `activate_footprints()`), (2) Freerouting JVM RSS **649 MB** (683 MB in the first run),
+  (3) CPU worker VmHWM **613 MB**, (4) raster worker peak **106 MB**, (5) kicad-cli peak
+  **2,616 MB = the parity DRC of `pcb_check full`** (others: netlist 590, 3D render 339, glb 129,
+  step 123, dsn 73, svg export 70 MB; gerbers / drill / pos not reached). **Sum 7,102 MB ≈ 6.9 GB
+  - above the D5 figure of 4.5–5 GB** (without the parity DRC: 4.98 GB). Owner decision needed
+  for P9b's README / PROD sizing. Third run (0.3 mm class): api-server 3,157, JVM 596, CPU
+  worker **1,017**, raster 106, kicad-cli (parity DRC) 2,531 → **7,406 MB ≈ 7.2 GB**.
+- Render limits on a large 4-layer board (P1c residual): placement view SVG 786 KB / 14,465
+  elements, top view 475 KB / 5,680 elements, raster ≤ 106 MB RSS, `pcb_render` 2–5 s - far below
+  `BOARD_SVG_LIMITS`. **Render extent finding:** the ODH views include an item at (7, 0.5) mm far
+  outside the outline (the board occupies a third of the image) - P1c `render_board` extent / P9b.
+
+**Residuals for P9b / later**
+- M8 on the golden is 0.03 mm under the hard limit; a Freerouting / router change can flip it -
+  the golden then fails loudly (good), but the placer's crystal window is narrow. A placer that
+  reserves escape room per pin (or routes crystal + decap together) would be sturdier.
+- Own router: neck-down into fine-pitch pads for wide classes (ODH power nets), or the skill tells
+  the agent to give power classes ≤ the pad width at QFN pitch. Freerouting on ODH: ≈ 24 s per
+  pass, many unchamferable corners - more room between blocks (P9b skill: channels ≥ 2–3 mm when
+  the board has room) before the fill.
+- `pcb_place_block` packing fragments small boards (ODH 80 × 60): place the biggest blocks first
+  and/or a whole-board packing pass; P9b skill: order blocks by area, give regions.
+- `MAX_CELL_PINS` stays 30: ODH's dense placement measured 19 pins per cell, `routability_ok`, yet
+  routing failed for the width reason above - no evidence for a tighter value.
+- M11 "void crossing … outer" offenders at the critical nets' own signal vias stay `review` on the
+  golden (P7 residual confirmed on `sp4_synth`; ODH never reached zones) - exempt a track's piece
+  inside its own via's antipad (P3a file) in a later phase.
+- Freerouting's "unrouted" reading of locked pad-to-via links (P6b residual): not isolated on ODH
+  (the fill never completed there).
+- JLC preset vs real footprints: 0.2 mm holes (QFN thermal vias / module) fail M3/M14 against the
+  conservative 0.3 mm minimum (JLC allows 0.15–0.25 mm): owner decision (custom rule exception per
+  board, or preset value).
+- P8 residual (holes in BOM/CPL) unchanged - P9b skill.
+
 ### As built (P6b)
 
 **Probes** (`tests/kicad/board/test_fill_roundtrip.py`, `record_property`; local kicad-base `52b43fb8…` recipe
