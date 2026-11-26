@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import math
 import time
 import types
 from collections.abc import AsyncIterator, Callable, Sequence
@@ -259,11 +260,11 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
     return c
 
 
-def _three() -> BoardModel:
-    """Three nets of one connection each (N1, N2, N3)."""
+def _three(pitch: float = 10.0) -> BoardModel:
+    """Three nets of one connection each (N1, N2, N3), `pitch` mm apart."""
     parts = []
     for i, net in enumerate(("N1", "N2", "N3")):
-        y = 10.0 + 10 * i
+        y = 10.0 + pitch * i
         parts += [
             res(f"R{2 * i + 1}", net, f"A{i}", (10.0, y)),
             res(f"R{2 * i + 2}", net, f"B{i}", (20.0, y)),
@@ -271,8 +272,8 @@ def _three() -> BoardModel:
     return circuit(*parts)
 
 
-def _plans3() -> list[route.ConnPlan]:
-    return _plan(_three(), ["N1", "N2", "N3"])
+def _plans3(pitch: float = 10.0) -> list[route.ConnPlan]:
+    return _plan(_three(pitch), ["N1", "N2", "N3"])
 
 
 class FakeCpu:
@@ -534,6 +535,67 @@ async def test_pair_routed_together(board: Board, monkeypatch: pytest.MonkeyPatc
     assert coupling is not None and set(coupling) == {"length_mismatch", "gap_min", "gap_max"}
 
 
+async def test_pair_falls_back_to_single_nets(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spec §10.2: a pair that cannot be routed coupled is routed net by net."""
+    m = _pair_board()
+    plans = route.plan_connections(m, _pair_cls(m), ["DP", "DN"], layers=None, allow_vias=True)
+
+    def answer(fn: Any, args: Any, kw: Any, t: float) -> Any:
+        return None if fn is route.solve_pair else _straight(args[1])
+
+    cpu = FakeCpu(answer)
+    monkeypatch.setattr(route, "run_cpu", cpu)
+    out = await route.route_connections(FakeSctx(m), plans, lock=True)  # type: ignore[arg-type]
+    assert set(out.routed) == {"DP:J1.1-U1.1", "DN:J1.2-U1.2"}
+    assert [c["fn"] for c in cpu.calls] == [route.solve_pair] * 3 + [route.solve] * 2
+    assert all(r.coupling is None for r in out.results)
+
+
+def _blocked_by_n1(fn: Any, args: Any, kw: Any, t: float) -> RoutePath | None:
+    """N2 finds no path while N1's copper is on the board."""
+    model, req = args[0], args[1]
+    if req.net == "N2" and any(tr.net == "N1" for tr in model.tracks):
+        return None
+    return _straight(req)
+
+
+async def test_rip_up_retry(board: Board, monkeypatch: pytest.MonkeyPatch) -> None:
+    """N2 is blocked by N1 (routed first): N1 is taken out, N2 routed, N1 routed again."""
+    cpu = FakeCpu(_blocked_by_n1)
+    monkeypatch.setattr(route, "run_cpu", cpu)
+    sctx = FakeSctx(_three(1.5))
+    out = await route.route_connections(sctx, _plans3(1.5), lock=True)  # type: ignore[arg-type]
+    assert out.failed == () and len(out.routed) == 3
+    assert out.routed == ("N1:R1.1-R2.1", "N2:R3.1-R4.1", "N3:R5.1-R6.1")  # plan order
+    assert set(board.items) == sctx.created
+    assert sorted(net for net, _ in board.items.values()) == ["N1", "N2", "N3"]
+    nets = [c["args"][1].net for c in cpu.calls]
+    assert nets == ["N1", "N2", "N2", "N2", "N2", "N1", "N3"]
+
+
+async def test_rip_up_restores_blocker(board: Board, monkeypatch: pytest.MonkeyPatch) -> None:
+    """N2 needs N1 gone, but N1 cannot come back while N2 is there: N2's copper goes,
+    N1's old path is put back exactly, N2 is reported failed."""
+
+    def answer(fn: Any, args: Any, kw: Any, t: float) -> RoutePath | None:
+        model, req = args[0], args[1]
+        if req.net == "N1" and any(tr.net == "N2" for tr in model.tracks):
+            return None
+        return _blocked_by_n1(fn, args, kw, t)
+
+    monkeypatch.setattr(route, "run_cpu", FakeCpu(answer))
+    sctx = FakeSctx(_three(1.5))
+    out = await route.route_connections(sctx, _plans3(1.5), lock=True)  # type: ignore[arg-type]
+    assert dict(out.failed) == {"N2:R3.1-R4.1": "no_path"}
+    assert set(out.routed) == {"N1:R1.1-R2.1", "N3:R5.1-R6.1"}
+    assert sorted(net for net, _ in board.items.values()) == ["N1", "N3"]
+    assert set(board.items) == sctx.created
+    n1 = next(r for r in out.results if r.net == "N1")
+    assert set(n1.kiids) <= set(board.items)
+
+
 # -- pcb_route's total deadline ------------------------------------------------------------
 
 
@@ -561,7 +623,7 @@ async def test_pcb_route_total_deadline(board: Board, monkeypatch: pytest.Monkey
     monkeypatch.setattr(route, "run_cpu", cpu)
     cs = await route.prepare_route(object(), {"nets": ["N1", "N2", "N3"]})  # type: ignore[arg-type]
     assert isinstance(cs, route.RouteChangeSet)
-    assert cs.logical.changes == 1 and len(cs.board_stages) == 3
+    assert cs.logical.changes == 1 and len(cs.board_stages) == 1
     sctx = FakeSctx(m)
     for stage in cs.board_stages:
         assert not stage.commit
@@ -598,3 +660,59 @@ async def test_pcb_route_budget_and_already_routed(monkeypatch: pytest.MonkeyPat
     with pytest.raises(StructuredToolError) as err:
         await route.prepare_route(object(), {"nets": ["N1"], "layers": ["In1.Cu"]})  # type: ignore[arg-type]
     assert err.value.code == "not_found"
+
+
+def test_hole_spacing_keeps_new_vias_off_existing_ones() -> None:
+    """A via keepout octagon around every existing via (any net) so a new via keeps the
+    hole-to-hole rule; the real router then places no via within it."""
+    from copperchat.board.router import build_grid
+
+    from .builders import via
+
+    m = _two_res(
+        vias=(via("N1", (15.0, 10.0), kiid="v-own"), via("OTHER", (15.0, 12.0), kiid="v-x")),
+        rules=(("min_clearance", 0.2), ("hole_to_hole_min", 0.45)),
+    )
+    (p,) = _plan(m, ["N1"])
+    zones = route.with_hole_spacing(m, p.req).zones
+    assert len(zones) == 2 and all(z.keepout == {"vias"} and z.rule_area for z in zones)
+    need = 0.15 + 0.15 + 0.45  # drill/2 + drill/2 + hole-to-hole
+    grid = build_grid(route.router_model(m, p.req), p.req)
+    plain = build_grid(m, p.req)
+    for v in m.vias:
+        for dx, dy in ((1, 0), (0, 1), (-0.7071, 0.7071)):
+            near = grid.cell(v.at[0] + dx * (need - 0.06), v.at[1] + dy * (need - 0.06))
+            far = grid.cell(v.at[0] + dx * (need / math.cos(math.pi / 8) + 0.06),
+                            v.at[1] + dy * (need / math.cos(math.pi / 8) + 0.06))  # fmt: skip
+            assert not grid.via_ok(*near), (v.kiid, dx, dy)
+            assert grid.via_ok(*far), (v.kiid, dx, dy)
+    own = plain.cell(15.0 + need - 0.06, 10.0)
+    assert plain.via_ok(*own)  # without it the router could drop a via next to an own one
+    no_vias = dataclasses.replace(p.req, allow_vias=False)
+    assert route.with_hole_spacing(m, no_vias) is m
+
+
+def test_router_rejects_close_via_pair() -> None:
+    """P5a `valid_path` (minimal P5b fix): two vias of one path closer than via diameter +
+    clearance are refused — a via, a 0.05 mm hop on the other layer and a via faked a
+    135° turn on sp4_synth."""
+    from copperchat.board.router import build_grid
+    from copperchat.board.router.astar import valid_path
+
+    from .builders import part
+
+    m = circuit(
+        part("P1", 10.0, 10.0, pads=(pad("P1", "1", "N1", (10.0, 10.0)),)),
+        part("P2", 20.0, 10.0, pads=(pad("P2", "1", "N1", (20.0, 10.0)),)),
+    )
+    (p,) = _plan(m, ["N1"])
+    grid = build_grid(m, p.req)
+    a, b = (p.a.x, p.a.y), (p.b.x, p.b.y)
+
+    def path(v1: tuple[float, float], v2: tuple[float, float]) -> RoutePath:
+        segs = (("F.Cu", a, v1), ("B.Cu", v1, v2), ("F.Cu", v2, b))
+        return RoutePath(segs, (v1, v2), 10.0)
+
+    assert valid_path(path((12.0, 10.0), (16.0, 10.0)), grid, p.req)
+    assert not valid_path(path((12.0, 10.0), (12.05, 10.0)), grid, p.req)
+    assert not valid_path(path((12.0, 10.0), (12.79, 10.0)), grid, p.req)  # < 0.6 + 0.2

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
@@ -483,3 +484,135 @@ async def place_synth(rig: SynthSetup, db: Database, run: str = "run-place") -> 
             keep_channels=SYNTH_CHANNELS_MM,
         )
     return {"blocks": blocks, "results": results, "seconds": time.monotonic() - start}
+
+
+# -- placed_synth / routed_synth (SP4 P5b; P6b, P7, P8 and P9a build on them) -------------
+
+PLACED_RULES: dict[str, Any] = {
+    "layers": 4,  # explicit: a preset alone never changes the layer count (P2)
+    "preset": "jlcpcb-4l",
+    "net_classes": [
+        {
+            "name": "Power",
+            "track_width": 0.4,
+            "clearance": 0.2,
+            "via_diameter": 0.6,
+            "via_drill": 0.3,
+            "patterns": ["*VBUS", "*+3V3", "*SW"],
+        }
+    ],
+}
+PLACEMENT_OK = "placement looks good, go ahead"
+PLACEMENT_QUOTE = "placement looks good"
+ROUTE_CHUNK = 50  # pcb_route takes at most 50 nets per call
+
+
+@dataclass
+class PlacedSynth:
+    """`sp4_synth` set up, placed and placement-approved (`placed_synth`) on its own
+    api-server for a whole test module; `db` holds the approval (later tools check it),
+    `info` is `placed_synth`'s result. `turn(run_id)` = a fresh turn context on `db`."""
+
+    rig: SynthSetup
+    db: Database
+    info: dict[str, Any]
+
+    @property
+    def session(self) -> KicadSession:
+        return self.rig.session
+
+    def turn(self, run_id: str) -> ToolContext:
+        return self.rig.turn(self.db, run_id)
+
+
+async def placed_synth(rig: SynthSetup, db: Database, run: str = "run-placed") -> dict[str, Any]:
+    """The one setup sequence of the later board phases, through the real two-phase
+    adapter: (1) `pcb_sync_from_schematic`; (2) `pcb_set_outline` SETUP_OUTLINE; (3)
+    `pcb_set_rules` PLACED_RULES (4 layers, `jlcpcb-4l`, the Power class); (4)
+    `place_synth`; (5) `pcb_legalize {scope: all}`; (6) turn 1: `pcb_render view=placement`
+    + `pcb_check quick` (M1 must pass); (7) turn 2: the user's OK + `pcb_approve
+    {stage: placement}` — the placement checkpoint exists before any routing. Returns
+    `{placement_hash, critical_nets}`."""
+    await setup_call(rig.turn(db, f"{run}-sync"), "pcb_sync_from_schematic")
+    await setup_call(rig.turn(db, f"{run}-outline"), "pcb_set_outline", **SETUP_OUTLINE)
+    await setup_call(rig.turn(db, f"{run}-rules"), "pcb_set_rules", **PLACED_RULES)
+    await place_synth(rig, db, f"{run}-place")
+    await setup_call(rig.turn(db, f"{run}-legalize"), "pcb_legalize", scope="all")
+    show = rig.turn(db, f"{run}-show")
+    render = await setup_call(show, "pcb_render", view="placement")
+    check = await setup_call(show, "pcb_check", level="quick")
+    assert render["placement_hash"] == check["placement_hash"]
+    m1 = next(m for m in check["metrics"] if m["id"] == "M1")
+    assert m1["verdict"] == "pass", m1
+    digest: str = check["placement_hash"]
+    await user_says(db, rig.session.project.id, f"{run}-ok", PLACEMENT_OK)
+    await setup_call(
+        rig.turn(db, f"{run}-ok"),
+        "pcb_approve",
+        stage="placement",
+        hash=digest,
+        user_quote=PLACEMENT_QUOTE,
+    )
+    analysis = await setup_call(rig.turn(db, f"{run}-analyze"), "pcb_analyze", scope="nets")
+    return {"placement_hash": digest, "critical_nets": list(analysis["critical_nets"])}
+
+
+async def routed_synth(rig: SynthSetup, db: Database, run: str = "run-routed") -> dict[str, Any]:
+    """`placed_synth` + (8) `pcb_route {nets: critical_nets}` in chunks of at most 50
+    (`lock: true`). Returns `placed_synth`'s dict + `{routed: [pcb_route data per chunk],
+    board_hash}`."""
+    out = await placed_synth(rig, db, run)
+    nets = out["critical_nets"]
+    routed = []
+    for i in range(0, len(nets), ROUTE_CHUNK):
+        chunk = nets[i : i + ROUTE_CHUNK]
+        routed.append(
+            await setup_call(rig.turn(db, f"{run}-route-{i}"), "pcb_route", nets=chunk, lock=True)
+        )
+    status = await setup_call(rig.turn(db, f"{run}-status"), "pcb_status")
+    return out | {"routed": routed, "board_hash": status["board_hash"]}
+
+
+@contextlib.asynccontextmanager
+async def _synth_rig(tmp: Path) -> AsyncIterator[tuple[SynthSetup, Database]]:
+    """A fresh `sp4_synth` (schematic only) on its own api-server with board tools on, and a
+    database with the test conversation."""
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=None,
+        projects_root=tmp / "projects",
+        data_dir=tmp / "data",
+        admin_password="test-password",
+        claude_code_oauth_token="test-token",
+        cookie_secure=False,
+        frontend_dist=tmp / "no-frontend",
+        kicad_cli=KICAD_CLI,
+        kicad_api_timeout_s=30.0,
+        kicad_start_timeout_s=60.0,
+        board_tools=True,
+    )
+    settings.projects_root.mkdir(parents=True)
+    copy_fixture("sp4_synth", settings.projects_root)
+    project = next(p for p in discover_projects(settings.projects_root) if p.name == "sp4_synth")
+    manager = KicadSessionManager(settings)
+    db = await open_setup_db(tmp / "placed.db", project.id)
+    try:
+        await manager.open(project)
+        yield SynthSetup(manager, settings), db
+    finally:
+        await manager.close_all()
+        await db.close()
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def synth_placed(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterator[PlacedSynth]:
+    """`placed_synth` on a fresh `sp4_synth` server for a whole test module (tests run on
+    the module loop: `pytest.mark.asyncio(loop_scope="module")`)."""
+    async with _synth_rig(tmp_path_factory.mktemp("synth-placed")) as (rig, db):
+        yield PlacedSynth(rig, db, await placed_synth(rig, db))
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def synth_routed(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterator[PlacedSynth]:
+    """`routed_synth` on a fresh `sp4_synth` server for a whole test module."""
+    async with _synth_rig(tmp_path_factory.mktemp("synth-routed")) as (rig, db):
+        yield PlacedSynth(rig, db, await routed_synth(rig, db))

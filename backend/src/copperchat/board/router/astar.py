@@ -123,7 +123,7 @@ def valid_path(path: RoutePath, grid: ObstacleGrid, req: RouteRequest) -> bool:
     """The path starts on a layer of pad `a` and ends on one of pad `b`; `analyse_bends` has
     no failure on any layer run (the end-bend exemption only for a bend inside its pad —
     stricter than the board metric, which exempts every pad-end bend); every segment and
-    via keeps its exact clearance."""
+    via keeps its exact clearance, also between the path's own vias."""
     runs = layer_runs(path)
     if not runs:
         return False
@@ -147,6 +147,11 @@ def valid_path(path: RoutePath, grid: ObstacleGrid, req: RouteRequest) -> bool:
             or r.short_chamfers
         ):
             return False
+    # two vias of one path keep copper clearance between them (P5b: a via pair 0.05 mm
+    # apart faked a 135° turn; KiCad's DRC rejected the overlapping holes)
+    gap = req.via[0] + req.clearance - 1e-6
+    if any(math.dist(p, q) < gap for p, q in itertools.combinations(path.vias, 2)):
+        return False
     return path_clear(grid, path)
 
 

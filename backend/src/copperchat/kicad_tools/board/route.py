@@ -24,6 +24,7 @@ import math
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from fnmatch import fnmatchcase
 from typing import Any
 
 from kipy.board_types import Track as KipyTrack
@@ -35,7 +36,14 @@ from kipy.util.board_layer import layer_from_canonical_name
 
 from copperchat.board.boardmd import read_board_doc
 from copperchat.board.classify import Classification, classify
-from copperchat.board.geom import TrackIndex, analyse_tracks, octi_dist, point_in_polygon
+from copperchat.board.geom import (
+    TrackIndex,
+    _in_pad,
+    _pad_on_layer,
+    analyse_tracks,
+    octi_dist,
+    point_in_polygon,
+)
 from copperchat.board.metrics import connections, routed_length
 from copperchat.board.model import BoardModel, NetClassInfo, Pad, Point, Rect, Track, Via, Zone
 from copperchat.board.router import (
@@ -93,6 +101,8 @@ MAX_COORD_MM = 1000.0
 NETS_PER_COST = 5  # pcb_route costs ceil(nets / 5)
 POWER_KINDS = frozenset({"supply", "switch_node", "high_current"})
 PAIR_MATCH_MM = 3.0  # pads of two pair connections this close (each end) route as a pair
+RIP_MAX = 6  # nearby connections a blocked one may take out, one at a time
+RIP_HALO_MM = 2.0  # how far around a blocked connection's pads a blocker may lie
 IGNORED_DRC = frozenset({"unconnected_items"})  # the connection's other airwires
 MAX_LISTED = 50
 NEXT_ROUTE = (
@@ -125,6 +135,7 @@ class ConnResult:
     vias: int
     kiids: tuple[str, ...]
     coupling: dict[str, float] | None = None
+    seconds: float = 0.0  # solve time spent on it
 
 
 @dataclass(frozen=True)
@@ -147,14 +158,18 @@ def conn_key(net: str, a: Pad, b: Pad) -> str:
 
 
 def _classes_of(model: BoardModel, net: str) -> list[NetClassInfo]:
-    """The net's class(es): KiCad names a pattern-assigned net's effective class by its
-    constituents ("Default,Power", P2 residual); unknown names are ignored, none known →
-    Default."""
+    """The net's class(es). KiCad names a pattern-assigned net's effective class by its
+    constituents ("Default,Power") or as "Effective for net: <net>" (P2 residual): known
+    constituent names are used; else the classes whose patterns match the net (KiCad
+    wildcards, case-sensitive) plus Default; none → Default."""
     by_name = {c.name: c for c in model.net_classes}
     name = dict(model.net_class_of).get(net, "Default")
     found = [by_name[n.strip()] for n in name.split(",") if n.strip() in by_name]
-    if not found and "Default" in by_name:
-        found = [by_name["Default"]]
+    if found:
+        return found
+    found = [c for c in model.net_classes if any(fnmatchcase(net, p) for p in c.patterns)]
+    if "Default" in by_name:
+        found.append(by_name["Default"])
     return found
 
 
@@ -221,8 +236,20 @@ def _pair_partner(cls: Classification, net: str) -> str | None:
     return None
 
 
+def _joined(a: Pad, b: Pad) -> bool:
+    """Pads of one net that overlap on a shared copper layer (e.g. USB-C's stacked VBUS
+    pads A9/B4) are connected without copper: one centre lies inside the other pad."""
+    names = {n for n in a.layers | b.layers if n.endswith(".Cu")} | {"F.Cu", "B.Cu"}
+    shared = any(_pad_on_layer(a, n) and _pad_on_layer(b, n) for n in names)
+    return shared and (_in_pad((a.x, a.y), b) or _in_pad((b.x, b.y), a))
+
+
 def _unrouted(model: BoardModel, net: str) -> list[tuple[Pad, Pad]]:
-    conns = [(a, b) for a, b in connections(model, net) if routed_length(model, a, b) is None]
+    conns = [
+        (a, b)
+        for a, b in connections(model, net)
+        if not _joined(a, b) and routed_length(model, a, b) is None
+    ]
     return sorted(conns, key=lambda ab: octi_dist((ab[0].x, ab[0].y), (ab[1].x, ab[1].y)))
 
 
@@ -256,6 +283,25 @@ def _match(
         used_n.add(j)
         out.append((i, j, swapped))
     return sorted(out)
+
+
+KIND_PRIORITY = {"diff_pair": 0, "crystal": 1, "switch_node": 2, "supply": 3, "high_current": 3}
+OTHER_PRIORITY = 4  # signal nets
+
+
+def routing_order(model: BoardModel, cls: Classification, nets: Sequence[str]) -> list[str]:
+    """The order `pcb_route` routes the requested nets in (the report keeps the request
+    order): the most constrained first — differential pairs, crystal, switch node, then
+    supply (decoupling paths short, M8), then signals; within a kind the net with the
+    shortest unrouted connection first (P5a: short connections before long ones)."""
+
+    def key(item: tuple[int, str]) -> tuple[int, float, int]:
+        i, net = item
+        conns = _unrouted(model, net)
+        shortest = min((octi_dist((a.x, a.y), (b.x, b.y)) for a, b in conns), default=math.inf)
+        return (KIND_PRIORITY.get(cls.net_kind.get(net, "signal"), OTHER_PRIORITY), shortest, i)
+
+    return [net for _, net in sorted(enumerate(dict.fromkeys(nets)), key=key)]
 
 
 def plan_connections(
@@ -354,6 +400,56 @@ def with_footprint_keepouts(model: BoardModel, req: RouteRequest) -> BoardModel:
     return dataclasses.replace(model, zones=model.zones + extra) if extra else model
 
 
+HOLE_TO_HOLE_DEFAULT_MM = 0.25  # KiCad's default when the board has no rule
+
+
+def _octagon(c: Point, apothem: float) -> tuple[Point, ...]:
+    """A regular octagon around `c` that contains the circle of radius `apothem`."""
+    r = apothem / math.cos(math.pi / 8)
+    return tuple(
+        (c[0] + r * math.cos(math.pi / 8 + k * math.pi / 4),
+         c[1] + r * math.sin(math.pi / 8 + k * math.pi / 4))
+        for k in range(8)
+    )  # fmt: skip
+
+
+def with_hole_spacing(model: BoardModel, req: RouteRequest) -> BoardModel:
+    """`model` plus a via keepout around every existing via, so a new via keeps the
+    board's hole-to-hole rule from it (P5a residual: the router checks copper clearance
+    only; an own-net via is no obstacle at all, and KiCad's DRC rejected new vias placed
+    on top of one). Pads with holes need no extra keepout: their copper keeps a via
+    farther away than the hole rule."""
+    if not req.allow_vias or not model.vias:
+        return model
+    h2h = dict(model.rules).get("hole_to_hole_min", HOLE_TO_HOLE_DEFAULT_MM) or 0.0
+    extra = []
+    for v in model.vias:
+        # the new via's centre keeps via_r from the octagon (build_grid's via keepout)
+        apothem = v.drill / 2 + req.via[1] / 2 + h2h - req.via[0] / 2
+        if apothem <= 0:
+            continue  # copper clearance already keeps the holes apart
+        extra.append(
+            Zone(
+                kiid=f"hole-spacing:{v.kiid}",
+                name="hole spacing",
+                net="",
+                layers=("*.Cu",),
+                outline=_octagon(v.at, apothem),
+                priority=0,
+                rule_area=True,
+                keepout=frozenset({"vias"}),
+                settings=(),
+                filled_area_mm2=0.0,
+            )
+        )
+    return dataclasses.replace(model, zones=model.zones + tuple(extra)) if extra else model
+
+
+def router_model(model: BoardModel, req: RouteRequest) -> BoardModel:
+    """What the router sees for `req`: footprint keepouts and hole spacing added."""
+    return with_hole_spacing(with_footprint_keepouts(model, req), req)
+
+
 # -- KiCad writes ----------------------------------------------------------------------------
 
 
@@ -442,7 +538,7 @@ async def _solve(
     timeout = SOLVE_TIMEOUT_S if remaining is None else min(SOLVE_TIMEOUT_S, remaining)
     if len(group) == 2:
         p, n = group[0].req, group[1].req
-        m = with_footprint_keepouts(with_footprint_keepouts(model, p), n)
+        m = with_footprint_keepouts(router_model(model, p), n)
         gap = pair_gap(model, p.net, n.net)
         got = await run_cpu(
             solve_pair,
@@ -456,7 +552,7 @@ async def _solve(
         )
         return None if got is None else [got[0], got[1]]
     req = group[0].req
-    m = with_footprint_keepouts(model, req)
+    m = router_model(model, req)
     path = await run_cpu(
         solve, prune_model(m, req), req, margin=margin, timeout_s=timeout, wait_s=remaining
     )
@@ -490,78 +586,202 @@ def _rejecting(drc: DrcResult, made: Sequence[str]) -> list[str]:
 
 
 @dataclass
+class _Kept:
+    """Copper this loop accepted: one connection or one coupled pair."""
+
+    group: list[ConnPlan]
+    paths: list[RoutePath]
+    kiids: list[str]  # every item of the group, in creation order
+
+
+@dataclass
 class _Loop:
     model: BoardModel
     lock: bool
     deadline: float | None
-    results: list[ConnResult] = field(default_factory=list)
+    results: dict[str, ConnResult] = field(default_factory=dict)  # key -> result
+    kept: list[_Kept] = field(default_factory=list)
     drc: DrcResult | None = None
+    started: dict[str, float] = field(default_factory=dict)  # key -> seconds spent
 
 
-def _failed(group: Sequence[ConnPlan], reason: str) -> list[ConnResult]:
-    return [
-        ConnResult(
-            conn_key(p.net, p.a, p.b), p.net, _pad_name(p.a), _pad_name(p.b), "failed", reason,
-            0.0, 0, (),
-        )
-        for p in group
-    ]  # fmt: skip
+def _key(p: ConnPlan) -> str:
+    return conn_key(p.net, p.a, p.b)
 
 
-async def _route_group(sctx: BoardStageContext, st: _Loop, group: Sequence[ConnPlan]) -> None:
-    """One connection (or one coupled pair): margins in order, each solve → push → DRC."""
+def _fail(st: _Loop, group: Sequence[ConnPlan], reason: str) -> None:
+    for p in group:
+        st.results[_key(p)] = ConnResult(
+            _key(p), p.net, _pad_name(p.a), _pad_name(p.b), "failed", reason, 0.0, 0, (),
+            seconds=round(st.started.get(_key(p), 0.0), 2),
+        )  # fmt: skip
+
+
+def _record(st: _Loop, kept: _Kept) -> None:
+    coupling = pair_coupling(kept.paths[0], kept.paths[1]) if len(kept.paths) == 2 else None
+    it = iter(kept.kiids)
+    for p, path in zip(kept.group, kept.paths, strict=True):
+        own = tuple(next(it) for _ in range(len(path.segments) + len(path.vias)))
+        st.results[_key(p)] = ConnResult(
+            _key(p), p.net, _pad_name(p.a), _pad_name(p.b), "routed", None, path.length,
+            len(path.vias), own, coupling, round(st.started.get(_key(p), 0.0), 2),
+        )  # fmt: skip
+
+
+def _timed_out(st: _Loop) -> bool:
+    remaining = _remaining(st.deadline)
+    return remaining is not None and remaining <= 0
+
+
+async def _place(
+    sctx: BoardStageContext, st: _Loop, group: Sequence[ConnPlan], paths: list[RoutePath]
+) -> str | None:
+    """Push `paths`, run the DRC task, keep them when no marker names their items.
+    None = kept (model, `kept` and results updated); else the failure reason
+    ("timeout" for a DRC timeout, else "drc_rejected: …"); rejected copper is removed."""
+    items = [(p.req, path) for p, path in zip(group, paths, strict=True)]
+    made = await _push(sctx, items, st.lock)
+    remaining = _remaining(st.deadline)
+    drc_s = DRC_TIMEOUT_S if remaining is None else max(0.0, min(DRC_TIMEOUT_S, remaining))
+    try:
+        drc = await sctx.drc(timeout_s=drc_s)
+    except DrcTimeout:
+        await _drop(sctx, made)  # unverified: never kept
+        return "timeout"
+    st.drc = drc
+    bad = _rejecting(drc, made)
+    if bad:
+        await _drop(sctx, made)
+        return f"drc_rejected: {bad[0]}"
+    tracks, vias = _model_items(items, made, st.lock)
+    st.model = dataclasses.replace(
+        st.model, tracks=st.model.tracks + tuple(tracks), vias=st.model.vias + tuple(vias)
+    )
+    kept = _Kept(list(group), list(paths), list(made))
+    st.kept.append(kept)
+    _record(st, kept)
+    return None
+
+
+async def _attempt(sctx: BoardStageContext, st: _Loop, group: Sequence[ConnPlan]) -> str | None:
+    """Margins in order, each solve → push → DRC (the deadline checked before every
+    margin). None = routed; else the failure reason (not recorded)."""
     reason = "no_path"
     for margin in MARGINS:
         remaining = _remaining(st.deadline)
         if remaining is not None and remaining <= 0:
-            st.results += _failed(group, "timeout")
-            return
+            return "timeout"
+        t0 = time.monotonic()
         try:
             paths = await _solve(st.model, group, margin, remaining)
         except RouteTooLarge:
-            st.results += _failed(group, "too_large")
-            return
+            return "too_large"
         except StructuredToolError as exc:
             if exc.code != "board_compute_timeout":
                 raise
-            st.results += _failed(group, "timeout")
-            return
+            return "timeout"
+        finally:
+            for p in group:
+                st.started[_key(p)] = st.started.get(_key(p), 0.0) + time.monotonic() - t0
         if paths is None:
-            reason = "no_path"
-            continue
-        items = [(p.req, path) for p, path in zip(group, paths, strict=True)]
-        made = await _push(sctx, items, st.lock)
-        remaining = _remaining(st.deadline)
-        drc_s = DRC_TIMEOUT_S if remaining is None else max(0.0, min(DRC_TIMEOUT_S, remaining))
-        try:
-            drc = await sctx.drc(timeout_s=drc_s)
-        except DrcTimeout:
-            await _drop(sctx, made)  # unverified: never kept
-            st.results += _failed(group, "timeout")
-            return
-        st.drc = drc
-        bad = _rejecting(drc, made)
-        if bad:
-            await _drop(sctx, made)
-            reason = f"drc_rejected: {bad[0]}"
-            continue
-        tracks, vias = _model_items(items, made, st.lock)
-        st.model = dataclasses.replace(
-            st.model, tracks=st.model.tracks + tuple(tracks), vias=st.model.vias + tuple(vias)
+            continue  # a DRC rejection of an earlier margin stays the reason
+        got = await _place(sctx, st, group, paths)
+        if got is None:
+            return None
+        if got == "timeout":
+            return got
+        reason = got
+    return reason
+
+
+async def _unkeep(sctx: BoardStageContext, st: _Loop, kept: _Kept) -> None:
+    """Remove a kept group's copper again (one commit) and forget it."""
+    await _drop(sctx, kept.kiids)
+    gone = set(kept.kiids)
+    st.model = dataclasses.replace(
+        st.model,
+        tracks=tuple(t for t in st.model.tracks if t.kiid not in gone),
+        vias=tuple(v for v in st.model.vias if v.kiid not in gone),
+    )
+    st.kept.remove(kept)
+    for p in kept.group:
+        st.results.pop(_key(p), None)
+
+
+def _blockers(st: _Loop, group: Sequence[ConnPlan]) -> list[_Kept]:
+    """Kept groups of other nets whose copper passes within RIP_HALO_MM of the box around
+    the group's pads, nearest first (at most RIP_MAX)."""
+    nets = {p.net for p in group}
+    pts = [(q.x, q.y) for p in group for q in (p.a, p.b)]
+    x0 = min(x for x, _ in pts) - RIP_HALO_MM
+    y0 = min(y for _, y in pts) - RIP_HALO_MM
+    x1 = max(x for x, _ in pts) + RIP_HALO_MM
+    y1 = max(y for _, y in pts) + RIP_HALO_MM
+
+    def inside(q: Point) -> bool:
+        return x0 <= q[0] <= x1 and y0 <= q[1] <= y1
+
+    def dist(k: _Kept) -> float:
+        best = math.inf
+        for path in k.paths:
+            for _, a, b in path.segments:
+                for q in (a, b, ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)):
+                    best = min(best, min(math.dist(q, c) for c in pts))
+        return best
+
+    near = [
+        k
+        for k in st.kept
+        if not nets & {p.net for p in k.group}
+        and any(
+            inside(q)
+            for path in k.paths
+            for _, a, b in path.segments
+            for q in (a, b, ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2))
         )
-        coupling = pair_coupling(paths[0], paths[1]) if len(paths) == 2 else None
-        it = iter(made)
-        for p, path in zip(group, paths, strict=True):
-            n = len(path.segments) + len(path.vias)
-            own = tuple(next(it) for _ in range(n))
-            st.results.append(
-                ConnResult(
-                    conn_key(p.net, p.a, p.b), p.net, _pad_name(p.a), _pad_name(p.b), "routed",
-                    None, path.length, len(path.vias), own, coupling,
-                )
-            )  # fmt: skip
+    ]
+    return sorted(near, key=dist)[:RIP_MAX]
+
+
+async def _rip_and_retry(sctx: BoardStageContext, st: _Loop, group: Sequence[ConnPlan]) -> bool:
+    """A blocked connection: take one nearby connection of this loop out, route the blocked
+    one, then the removed one again; when that fails, the blocked one's copper goes and the
+    removed one is put back exactly (same path, DRC-checked). True = both routed."""
+    for cand in _blockers(st, group):
+        if _timed_out(st):
+            return False
+        old_group, old_paths = cand.group, cand.paths
+        await _unkeep(sctx, st, cand)
+        if await _attempt(sctx, st, group) is None:
+            if await _attempt(sctx, st, old_group) is None:
+                return True
+            mine = next(k for k in st.kept if k.group == list(group))
+            await _unkeep(sctx, st, mine)
+        if await _place(sctx, st, old_group, old_paths) is not None:
+            # the old path is not accepted again (never seen; the board state is the same
+            # as when it was accepted): route it anew, else report it failed
+            reason = await _attempt(sctx, st, old_group)
+            if reason is not None:
+                _fail(st, old_group, reason)
+    return False
+
+
+async def _route_group(sctx: BoardStageContext, st: _Loop, group: Sequence[ConnPlan]) -> None:
+    """One connection or one coupled pair: the margins; a pair that fails coupled is
+    routed net by net; a blocked connection gets the rip-up retry."""
+    reason = await _attempt(sctx, st, group)
+    if reason is None:
         return
-    st.results += _failed(group, reason)
+    if reason in ("timeout", "too_large"):
+        _fail(st, group, reason)
+        return
+    if len(group) == 2:  # spec §10.2: when coupling fails, route the nets alone
+        for p in group:
+            await _route_group(sctx, st, [p])
+        return
+    if await _rip_and_retry(sctx, st, group):
+        return
+    _fail(st, group, reason if not _timed_out(st) else "timeout")
 
 
 def _groups(plans: Sequence[ConnPlan]) -> list[list[ConnPlan]]:
@@ -591,14 +811,35 @@ async def route_connections(
     a connection not started before it is failed `timeout` and never solved; each
     `run_cpu` gets `timeout_s=min(30, remaining)` and `wait_s=remaining`, each DRC
     `min(60, remaining)`. A `DrcTimeout` fails only its connection (its items removed).
+    A coupled pair that cannot be routed is routed net by net; a connection that stays
+    blocked may take out one nearby connection of this call at a time (at most RIP_MAX
+    tries), route first and re-route the other — never copper the call did not create.
     Never relies on DRC seeing an open commit (P1a probe): the DRC runs after the push."""
     st = _Loop(await sctx.model(), lock, deadline)
-    for group in _groups(plans):
+    groups = _groups(plans)
+    for group in groups:
         await _route_group(sctx, st, group)
+    # one more round for what stayed blocked: the board around it changed since
+    for group in groups:
+        if _timed_out(st):
+            break
+        failed = [
+            p
+            for p in group
+            if st.results[_key(p)].status == "failed"
+            and st.results[_key(p)].reason not in ("timeout", "too_large")
+        ]
+        if not failed:
+            continue
+        reason = st.results[_key(failed[0])].reason or "no_path"
+        if not await _rip_and_retry(sctx, st, failed):
+            _fail(st, failed, reason if not _timed_out(st) else "timeout")
+    order = {_key(p): i for i, p in enumerate(plans)}
+    results = sorted(st.results.values(), key=lambda r: order.get(r.key, len(order)))
     return RouteOutcome(
-        routed=tuple(r.key for r in st.results if r.status == "routed"),
-        failed=tuple((r.key, r.reason or "") for r in st.results if r.status == "failed"),
-        results=tuple(st.results),
+        routed=tuple(r.key for r in results if r.status == "routed"),
+        failed=tuple((r.key, r.reason or "") for r in results if r.status == "failed"),
+        results=tuple(results),
         drc=st.drc,
     )
 
@@ -724,6 +965,7 @@ def _net_entry(net: str, results: Sequence[ConnResult], lock: bool) -> dict[str,
         "length_mm": round(sum(r.length_mm for r in routed), 3),
         "vias": sum(r.vias for r in routed),
         "locked": lock,
+        "seconds": round(sum(r.seconds for r in results), 2),
     }
     coupling = [r.coupling for r in routed if r.coupling is not None]
     if coupling:
@@ -780,25 +1022,15 @@ async def prepare_route(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
             f"{', '.join(ground[:10])} {'is a ground net' if len(ground) == 1 else 'are ground nets'}",  # noqa: E501
             "Ground connects through planes and pcb_fanout (spec §10.1); route the other nets.",
         )
-    plans = await asyncio.to_thread(
-        functools.partial(
-            plan_connections,
-            model,
-            cls,
-            nets,
-            layers=tuple(layers) if layers is not None else None,
-            allow_vias=allow_vias,
-        )
-    )
+    route_layers = tuple(layers) if layers is not None else None
+
+    def plan() -> list[ConnPlan]:
+        order = routing_order(model, cls, nets)
+        return plan_connections(model, cls, order, layers=route_layers, allow_vias=allow_vias)
+
+    plans = await asyncio.to_thread(plan)
     cost = math.ceil(len(nets) / NETS_PER_COST)
     state = _RouteState()
-    by_net: dict[str, list[ConnPlan]] = {n: [] for n in nets}
-    owner: dict[str, str] = {}  # pair partner -> the net whose stage routes the pair
-    for p in plans:
-        stage_net = owner.get(p.net, p.net) if p.pair is not None else p.net
-        if p.pair is not None and p.pair in by_net and p.net not in owner:
-            owner[p.pair] = p.net
-        by_net[stage_net].append(p)
     results: dict[str, list[ConnResult]] = {n: [] for n in nets}
     report: dict[str, Any] = {
         "nets": [],
@@ -807,21 +1039,18 @@ async def prepare_route(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
     }
     already = [n for n in nets if not any(p.net == n for p in plans)]
 
-    def stage_for(net: str, mine: list[ConnPlan]) -> BoardStage:
-        async def run(sctx: BoardStageContext) -> None:
-            if state.deadline is None:
-                state.deadline = time.monotonic() + ROUTE_DEADLINE_S
-            out = await route_connections(sctx, mine, lock=lock, deadline=state.deadline)
-            for r in out.results:
-                results[r.net].append(r)
-                for k in r.kiids:
-                    state.accepted[k] = lock
-            if out.drc is not None:
-                state.drc = out.drc
+    async def run(sctx: BoardStageContext) -> None:
+        state.deadline = time.monotonic() + ROUTE_DEADLINE_S
+        out = await route_connections(sctx, plans, lock=lock, deadline=state.deadline)
+        for r in out.results:
+            results[r.net].append(r)
+            for k in r.kiids:
+                state.accepted[k] = lock
+        state.drc = out.drc
 
-        return BoardStage(f"route {net}", run, commit=False)
-
-    stages = [stage_for(n, by_net[n]) for n in nets if by_net[n]]
+    # One stage (it pushes its own commits): a blocked connection may take out and re-route
+    # a connection of another net routed earlier in the call (`route_connections`).
+    stages = [BoardStage("route", run, commit=False)] if plans else []
 
     def finish(m: BoardModel, rep: dict[str, Any]) -> list[str]:
         problems: list[str] = []
@@ -875,11 +1104,13 @@ async def apply_route(ctx: ToolContext, cs: ChangeSet) -> ToolResult:
     and the DRC errors of the last check (other than unconnected items)."""
     assert isinstance(cs, RouteChangeSet)
     if not cs.board_stages:
-        return ToolResult(data=dict(cs.report))  # nothing to route: nothing written, cost 0
+        return ToolResult(data=dict(cs.report) | {"seconds": 0.0})  # nothing written, cost 0
+    t0 = time.monotonic()
     result = await apply_board_change_set(ctx, cs)
     state = cs.state
     data = result.data if isinstance(result.data, dict) else {}
     data.update(_totals(data.get("nets", ())))
+    data["seconds"] = round(time.monotonic() - t0, 2)
     if cs.read_back:
         data["bends"] = await asyncio.to_thread(_bends, cs.read_back[0], frozenset(state.accepted))
     drc = state.drc
