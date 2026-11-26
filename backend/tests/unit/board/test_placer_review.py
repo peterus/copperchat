@@ -341,3 +341,64 @@ def test_diamond_outline_tight_fit() -> None:
         allowed_sides=TOP,
     )
     assert not isinstance(r, DoesNotFit), r
+
+
+def test_diamond_keepouts_need_the_scan_fallback() -> None:
+    # round 5: 4-vertex diamond keepouts; only the bounded 0.5 mm scan finds the gap
+    from .builders import zone
+
+    def diamond(cx: float, cy: float, r: float) -> tuple:  # type: ignore[type-arg]
+        return ((cx, cy - r), (cx + r, cy), (cx, cy + r), (cx - r, cy))
+
+    keep = frozenset({"footprints"})
+    zones = (
+        zone("K1", "", poly=diamond(20, 25, 35), rule_area=True, keepout=keep, kiid="k1"),
+        zone("K2", "", poly=diamond(71.4, 25, 35), rule_area=True, keepout=keep, kiid="k2"),
+    )
+    u = part("U1", 500.0, 500.0, half=5.0)
+    m = circuit(u, outline=outline(0, 0, 100, 40), zones=zones)
+    r = place_block(
+        m,
+        classify(m),
+        ["U1"],
+        Rect(0, 0, 100, 40),
+        side="top",
+        rotation=None,
+        keep_channels=0.0,
+        allowed_sides=TOP,
+    )
+    assert not isinstance(r, DoesNotFit), r
+
+
+def test_concave_outline_does_not_fit_answers() -> None:
+    # a cross-shaped outline and 200 caps that cannot all fit: does_not_fit, not a timeout
+    from .builders_circuit import cap
+
+    a, w = 100.0, 15.0
+    cross = [
+        (a - w, 0),
+        (a + w, 0),
+        (a + w, a - w),
+        (2 * a, a - w),
+        (2 * a, a + w),
+        (a + w, a + w),
+        (a + w, 2 * a),
+        (a - w, 2 * a),
+        (a - w, a + w),
+        (0, a + w),
+        (0, a - w),
+        (a - w, a - w),
+    ]
+    caps = [cap(f"C{i + 1}", f"N{i}", "GND", at=(900.0 + i * 3, 900.0)) for i in range(200)]
+    m = circuit(*caps, outline=_poly_outline(cross))
+    t = time.monotonic()
+    place_block(
+        m,
+        classify(m),
+        [c.ref for c in caps],
+        Rect(0, 0, 2 * a, 2 * a),
+        side="top",
+        rotation=None,
+        allowed_sides=TOP,
+    )
+    assert time.monotonic() - t < 40.0

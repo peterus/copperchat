@@ -104,7 +104,7 @@ class Outline:
         else:
             self.poly = list(o.polygon) if len(o.polygon) >= 3 else None
             self._r = math.inf
-        self._cells: dict[tuple[int, int], bool] = {}
+        self._cells: dict[tuple[int, int], str] = {}
         b = (o.x, o.y, o.x + o.w, o.y + o.h)
         r = min(self._r, o.w / 2, o.h / 2) if self.poly is not None else 0.0
         # boxes inside one of these need no polygon test (rounded rect only)
@@ -127,8 +127,10 @@ class Outline:
             for c in self._cross
         ):
             return True
-        if self.kind != "rect" and self._cells_inside(b):
-            return True
+        if self.kind != "rect":
+            verdict = self._cells_verdict(b)
+            if verdict is not None:
+                return verdict
         return self._exact(b)
 
     def _exact(self, b: Box) -> bool:
@@ -138,19 +140,38 @@ class Outline:
             rect_poly(b[0] - m, b[1] - m, b[2] - b[0] + 2 * m, b[3] - b[1] + 2 * m), self.poly
         )
 
-    def _cells_inside(self, b: Box) -> bool:
-        """Polygon outlines: `b` lies in grid cells that are each fully inside (the exact
-        test once per cell, memoised) — the boundary band falls back to the exact test."""
+    def _cell(self, i: int, j: int) -> str:
+        """'in' (cell fully inside the outline minus margin), 'out' (the cell grown by the
+        margin misses the outline polygon) or 'band' — the exact tests once per cell."""
+        state = self._cells.get((i, j))
+        if state is None:
+            assert self.poly is not None
+            c, m = INSIDE_CELL_MM, self.margin
+            box = (i * c, j * c, (i + 1) * c, (j + 1) * c)
+            if self._exact(box):
+                state = "in"
+            elif not polygons_overlap(
+                rect_poly(box[0] - m, box[1] - m, c + 2 * m, c + 2 * m), self.poly
+            ):
+                state = "out"
+            else:
+                state = "band"
+            self._cells[(i, j)] = state
+        return state
+
+    def _cells_verdict(self, b: Box) -> bool | None:
+        """Polygon outlines: True when `b` lies in cells that are all inside, False when one
+        of its cells lies outside, None (exact test needed) otherwise."""
         c = INSIDE_CELL_MM
+        verdict: bool | None = True
         for i in range(math.floor(b[0] / c), math.floor(b[2] / c) + 1):
             for j in range(math.floor(b[1] / c), math.floor(b[3] / c) + 1):
-                hit = self._cells.get((i, j))
-                if hit is None:
-                    hit = self._exact((i * c, j * c, (i + 1) * c, (j + 1) * c))
-                    self._cells[(i, j)] = hit
-                if not hit:
+                state = self._cell(i, j)
+                if state == "out":
                     return False
-        return True
+                if state == "band":
+                    verdict = None
+        return verdict
 
     def area(self) -> float:
         return _area(self.inner) if self.kind != "none" else math.inf

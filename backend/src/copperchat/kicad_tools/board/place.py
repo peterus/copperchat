@@ -35,6 +35,7 @@ from copperchat.board.placer import (
     DoesNotFit,
     Move,
     PlacementScore,
+    SidePolicyError,
     edge_margin,
     keepout_polys,
 )
@@ -924,7 +925,7 @@ async def prepare_place_block(ctx: ToolContext, args: dict[str, Any]) -> ChangeS
             offset=offset,
             timeout_s=PLACE_TIMEOUT_S,
         )
-    except ValueError as exc:  # the placer's own side-policy check
+    except SidePolicyError as exc:  # the placer's own side-policy check
         raise _invalid(str(exc)) from exc
     if isinstance(result, DoesNotFit):
         raise _does_not_fit(result, f"Block {block!r}")

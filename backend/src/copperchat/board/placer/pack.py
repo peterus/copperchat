@@ -79,6 +79,10 @@ _EDGE_NORMAL: Mapping[str, Point] = {
 _EPS = 1e-9
 
 
+class SidePolicyError(ValueError):
+    """An SMD member would land on a side the board's assembly does not allow."""
+
+
 class _Boxes:
     """Obstacle boxes bucketed on a uniform grid (near-neighbour queries)."""
 
@@ -100,6 +104,14 @@ class _Boxes:
 
     def near(self, b: Box, grow: float) -> set[Box]:
         return {ob for k in self._keys(b, grow) for ob in self.cells.get(k, ())}
+
+
+def _has_slant(poly: Sequence[Point]) -> bool:
+    """A polygon edge that is neither horizontal nor vertical."""
+    return any(
+        abs(a[0] - b[0]) > 1e-6 and abs(a[1] - b[1]) > 1e-6
+        for a, b in zip(poly, [*poly[1:], *poly[:1]], strict=True)
+    )
 
 
 def _bbox_of(pts: Sequence[Point]) -> Box:
@@ -337,10 +349,10 @@ def place_block(
         key=natural_key,
     )
     if side not in allowed_sides and any(q.smd for r in members for q in known[r].pads):
-        raise ValueError(f"SMD parts on the {side} side are not allowed")
+        raise SidePolicyError(f"SMD parts on the {side} side are not allowed")
     for m in fixed:
         if m.side not in allowed_sides and m.ref in known and any(q.smd for q in known[m.ref].pads):
-            raise ValueError(f"SMD parts on the {m.side} side are not allowed")
+            raise SidePolicyError(f"SMD parts on the {m.side} side are not allowed")
     base = apply_moves(model, fixed)
     kc = keep_channels
     margin = edge_margin(base)
@@ -480,7 +492,9 @@ def place_block(
         seeds.extend((x - margin, y - margin, x + margin, y + margin) for x, y in outline.poly)
 
     # a non-rectangular outline or keepout: its slanted edges seed no sweep spot
-    slanted = (o.kind == "other") or any(len(k) != 4 for k in keepouts)
+    slanted = any(
+        _has_slant(poly) for poly in [*keepouts, *([o.polygon] if o.kind == "other" else [])]
+    )
 
     def sweep(vi: int) -> list[Found]:
         """Every spot on the 0.5 mm grid where the block box touches the region end or an
