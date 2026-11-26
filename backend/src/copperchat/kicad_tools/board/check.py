@@ -178,7 +178,11 @@ def verdict(report: MetricsReport) -> Literal["pass", "review", "fail"]:
 
 
 def _refs(model: BoardModel) -> dict[str, str]:
-    return {p.kiid: p.ref for p in model.parts}
+    """Marker KIID -> ref: the footprints and their own items (pads, fields, texts,
+    shapes; P7 `item_kiids`), as M3 maps them, so the rows agree with the metric."""
+    out = {k: p.ref for p in model.parts for k, _ in p.item_kiids}
+    out.update({p.kiid: p.ref for p in model.parts})
+    return out
 
 
 def _accepted(mk: DrcMarker, refs: tuple[str, ...], doc: BoardDoc) -> bool:

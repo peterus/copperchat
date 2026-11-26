@@ -286,3 +286,30 @@ async def test_cli_parity_netlist_failure_rejected(
     with pytest.raises(StructuredToolError) as err:
         await check_mod.cli_parity(ctx)
     assert err.value.code == "drc_rejected" and "netlist" in err.value.why
+
+
+def test_rows_map_footprint_item_kiids_to_their_part() -> None:
+    """A warning naming a footprint's pad / field / silk shape (not the footprint itself)
+    lists that part's ref and is `accepted` by a matching board.md row — the same mapping
+    M3 uses (P7), so the listed rows and the metric agree (P3b residual, P9a)."""
+    from copperchat.board.boardmd import AcceptedWarning, BoardDoc
+    from copperchat.kicad_tools.board.api import DrcResult
+    from copperchat.kicad_tools.board.check import check_rows
+    from tests.unit.board.builders import board, part
+
+    c1 = part("C1", 30, 30, kiid="fp-c1", item_kiids=(("shape-1", "shape"), ("pad-1", "pad:1")))
+    model = board(parts=(c1, part("R2", 60, 50, kiid="fp-r2")))
+    drc = DrcResult(
+        markers=(
+            DrcMarker("text_thickness", "warning", "Line width out of range", ("shape-1",), None),
+            DrcMarker("silk_clearance", "warning", "Silk overlap", ("pad-1", "fp-r2"), None),
+        ),
+        unconnected=0,
+        seconds=0.1,
+    )
+    doc = BoardDoc(accepted=(AcceptedWarning("text_thickness", ("C1",), "stock silk", "user"),))
+    rows = check_rows(model, doc, drc, None)["warnings"]
+    assert [(r["refs"], r["accepted"]) for r in rows] == [
+        (["C1"], True),
+        (["C1", "R2"], False),
+    ]
