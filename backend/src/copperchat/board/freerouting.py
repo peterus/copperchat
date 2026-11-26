@@ -153,6 +153,7 @@ class FreeroutingRun:
     seconds: float
     log_tail: str
     timed_out: bool
+    started: bool = True  # False: timed out waiting for the heavy gate / a slot (no JVM ran)
 
 
 # key -> (runtime or None, monotonic expiry; None = kept until the key changes)
@@ -409,6 +410,7 @@ async def run_freerouting(
                 log_tail="timed out waiting for the heavy-process gate "
                 f"({(exc.details or {}).get('waiting_for')} still running)",
                 timed_out=True,
+                started=False,
             )
         slots = _slots()
         try:
@@ -420,6 +422,7 @@ async def run_freerouting(
                 log_tail="timed out waiting for a free Freerouting slot "
                 f"(MAX_CONCURRENT_RUNS={MAX_CONCURRENT_RUNS})",
                 timed_out=True,
+                started=False,
             )
         try:
             # a stale .ses from an earlier run must not pass for this run's result

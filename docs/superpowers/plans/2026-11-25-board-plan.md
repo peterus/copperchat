@@ -832,7 +832,15 @@ wait_s=…, waiting_for=…)` with the rest of the `HEAVY_WAIT_S` budget.
   `doc == "pcb" and parity` (ERC / DRC without parity ungated); it takes no `BOARD_CLI_LOCK`
   (unchanged). `run_drc` returns `board_compute_timeout`; the board render's markers
   (`views/render.py` `_agent_board`, **one small edit outside R6's file list**) degrade to
-  none on exactly that code (logged), any other check error still fails the render as before.
+  none on exactly that code (logged), any other check error still fails the render as before;
+  the marker DRC waits only `checks.MARKER_GATE_WAIT_S` (5 s, `heavy_wait_s` threaded through
+  `check_violations` / `run_kicad_check` / `run_kicad_check_on_dir`) so the live view's HTTP
+  request never stalls ≈ 120 s behind a fill (review round 1; not cached, the next render
+  retries). `FreeroutingRun` gains `started: bool = True` (False for a gate / slot timeout);
+  `fill.py` (R4's file, minimal edit) words that refusal "Freerouting did not start: another
+  heavy board process … was still running" with `details.started: false` and suggestion
+  "Retry the same call once it has finished" instead of "raise timeout_s" (reason stays
+  `timeout`).
   `pcb_check`'s metrics `run_cpu` now has `wait_s=HEAVY_WAIT_S` (was unbounded).
 - Worst case: row `pcb_check (full)` 495 s added to the Global Constraints table; `run_drc`
   gains ≤ `HEAVY_WAIT_S`; a render gains ≤ `HEAVY_WAIT_S` when it has to run the marker DRC.

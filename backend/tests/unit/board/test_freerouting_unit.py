@@ -685,7 +685,7 @@ async def test_second_run_times_out_waiting_for_slot(
         )
         assert spy.proc is started  # no second process
         assert run.returncode == -1
-        assert run.timed_out is True
+        assert run.timed_out is True and run.started is False
         assert 0.9 <= run.seconds < 3
         assert "free Freerouting slot" in run.log_tail and "MAX_CONCURRENT_RUNS=1" in run.log_tail
     finally:
@@ -813,6 +813,19 @@ async def test_freerouting_gate_timeout_is_timed_out_run(
             workdir=tmp_path / "w",
         )
     assert spy.proc is None
-    assert run.returncode == -1 and run.timed_out is True
+    assert run.returncode == -1 and run.timed_out is True and run.started is False
     assert 0.15 <= run.seconds < 2
     assert "heavy-process gate (parity still running)" in run.log_tail
+
+
+def test_fill_timeout_why_for_a_run_that_never_started() -> None:
+    """A gate/slot timeout is not reported as "did not finish within timeout_s" (which
+    would tell the agent to raise timeout_s)."""
+    from copperchat.kicad_tools.board.fill import timeout_why
+
+    ran = fr.FreeroutingRun(returncode=-9, seconds=300, log_tail="", timed_out=True)
+    waited = fr.FreeroutingRun(
+        returncode=-1, seconds=120, log_tail="", timed_out=True, started=False
+    )
+    assert timeout_why(ran, 300) == "Freerouting did not finish within 300 s"
+    assert timeout_why(waited, 300).startswith("Freerouting did not start")

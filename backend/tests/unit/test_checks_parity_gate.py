@@ -65,3 +65,46 @@ async def test_run_kicad_check_parity_gate_timeout(
                 parity=True,
             )
     assert ei.value.code == "board_compute_timeout"
+
+
+async def test_marker_check_waits_only_briefly(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The render markers' DRC waits at most MARKER_GATE_WAIT_S for the gate (the live
+    view's HTTP request must not stall for HEAVY_WAIT_S during a fill); a timeout is not
+    cached, the next render tries again."""
+    waits: list[float] = []
+
+    async def fake_check(session: Any, doc: str, *, heavy_wait_s: float) -> list[Any]:
+        waits.append(heavy_wait_s)
+        raise heavy.heavy_timeout("freerouting", heavy_wait_s)
+
+    class _Session:
+        view_version = 1
+        restart_count = 0
+
+    monkeypatch.setattr(checks, "check_violations", fake_check)
+    session = _Session()
+    for _ in range(2):
+        with pytest.raises(StructuredToolError):
+            await checks.cached_violations(session, "pcb")  # type: ignore[arg-type]
+    assert waits == [checks.MARKER_GATE_WAIT_S] * 2
+    assert checks.MARKER_GATE_WAIT_S < checks.HEAVY_WAIT_S
+
+
+async def test_check_wait_passed_to_the_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_cli(*a: Any, **kw: Any) -> Any:
+        pytest.fail("kicad-cli started without the gate")
+
+    monkeypatch.setattr(checks, "run_kicad_cli", fake_cli)
+    async with heavy_slot("freerouting", wait_s=1):
+        with pytest.raises(StructuredToolError) as ei:
+            await checks.run_kicad_check_on_dir(
+                SimpleNamespace(kicad_api_timeout_s=1.0),  # type: ignore[arg-type]
+                SimpleNamespace(dir=tmp_path),  # type: ignore[arg-type]
+                tmp_path / "x.kicad_pcb",
+                "pcb",
+                parity=True,
+                heavy_wait_s=0.05,
+            )
+    assert ei.value.code == "board_compute_timeout"

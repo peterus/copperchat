@@ -87,7 +87,9 @@ async def _save_copies(session: KicadSession, dest: Path, doc: DocKind) -> dict[
     return copies
 
 
-async def run_kicad_check(session: KicadSession, doc: DocKind, settings: Settings) -> str:
+async def run_kicad_check(
+    session: KicadSession, doc: DocKind, settings: Settings, *, heavy_wait_s: float = HEAVY_WAIT_S
+) -> str:
     """Saves a copy via the API, runs kicad-cli ERC/DRC on it, returns the JSON text."""
     name = _check_name(doc)
     if (session.project.sch_file if doc == "sch" else session.project.pcb_file) is None:
@@ -99,12 +101,23 @@ async def run_kicad_check(session: KicadSession, doc: DocKind, settings: Setting
     with tempfile.TemporaryDirectory(prefix="cc-check-") as tmp:
         copies = await _save_copies(session, Path(tmp), doc)
         return await run_kicad_check_on_dir(
-            settings, session.project, copies[doc], doc, parity="sch" in copies
+            settings,
+            session.project,
+            copies[doc],
+            doc,
+            parity="sch" in copies,
+            heavy_wait_s=heavy_wait_s,
         )
 
 
 async def run_kicad_check_on_dir(
-    settings: Settings, project: Project, doc_path: Path, doc: DocKind, *, parity: bool = False
+    settings: Settings,
+    project: Project,
+    doc_path: Path,
+    doc: DocKind,
+    *,
+    parity: bool = False,
+    heavy_wait_s: float = HEAVY_WAIT_S,
 ) -> str:
     """kicad-cli ERC/DRC on `doc_path`, a document inside a temporary copy of the
     project directory (with every sheet and the project files); returns the JSON text.
@@ -113,7 +126,7 @@ async def run_kicad_check_on_dir(
     The copy lives in a temporary directory, so `${KIPRJMOD}` is pointed back at
     the project directory: project-relative libraries resolve exactly as in KiCad.
     `parity`: DRC with `--schematic-parity` (the schematic copy lies next to it), run
-    inside the heavy-process gate (R6); not free within HEAVY_WAIT_S →
+    inside the heavy-process gate (R6); not free within `heavy_wait_s` →
     `board_compute_timeout`.
     """
     name = _check_name(doc)
@@ -126,7 +139,7 @@ async def run_kicad_check_on_dir(
     try:
         async with contextlib.AsyncExitStack() as stack:
             if heavy:  # R6: a parity DRC (≈ 2.6 GB) only after the other heavy processes
-                await stack.enter_async_context(heavy_slot("parity", wait_s=HEAVY_WAIT_S))
+                await stack.enter_async_context(heavy_slot("parity", wait_s=heavy_wait_s))
             res = await run_kicad_cli(
                 settings,
                 [
@@ -161,6 +174,8 @@ async def run_kicad_check_on_dir(
     return report.read_text(encoding="utf-8")
 
 
+MARKER_GATE_WAIT_S = 5.0  # render markers: max wait for the heavy gate, then no markers
+
 # Markers for renders: one check per document state, one kicad-cli run at a time.
 # Keyed by the session (a restart or reopen is a new state) and its view version,
 # which the turn-end publish bumps whenever a document changed (X2).
@@ -179,7 +194,9 @@ async def cached_violations(session: KicadSession, doc: DocKind) -> list[dict[st
         if key not in cache:
             for stale in [k for k in cache if k[1:] != key[1:]]:
                 del cache[stale]
-            cache[key] = await check_violations(session, doc)
+            # a busy heavy gate (a fill, a full check) costs the markers after a short wait,
+            # never a long one: the live view's HTTP request must not stall (R6)
+            cache[key] = await check_violations(session, doc, heavy_wait_s=MARKER_GATE_WAIT_S)
         return cache[key]
 
 
@@ -197,8 +214,12 @@ def seed_marker_cache(
     cache[key] = violations
 
 
-async def check_violations(session: KicadSession, doc: DocKind) -> list[dict[str, Any]]:
-    return parse_report(await run_kicad_check(session, doc, session.settings), doc)
+async def check_violations(
+    session: KicadSession, doc: DocKind, *, heavy_wait_s: float = HEAVY_WAIT_S
+) -> list[dict[str, Any]]:
+    return parse_report(
+        await run_kicad_check(session, doc, session.settings, heavy_wait_s=heavy_wait_s), doc
+    )
 
 
 def parse_report(raw: str, doc: DocKind) -> list[dict[str, Any]]:
