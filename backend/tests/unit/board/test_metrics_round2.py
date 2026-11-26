@@ -3,6 +3,7 @@ the T clause, M15 Y-junctions, M16 doglegs / pad-entry loops and jogs."""
 
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 
 import pytest
@@ -12,7 +13,7 @@ from copperchat.board.boardmd import BoardDoc
 from copperchat.board.classify import classify
 from copperchat.board.geom import rect_poly
 from copperchat.board.metrics import Metric, MetricsReport, compute_metrics
-from copperchat.board.model import BoardModel, Pad, Part, Point, Zone
+from copperchat.board.model import ArcTrack, BoardModel, Pad, Part, Point, Zone
 from copperchat.board.presets import FabPreset
 from copperchat.kicad_tools.board.api import DrcMarker, DrcResult
 
@@ -78,6 +79,45 @@ def test_m12_neck_below_min_fails() -> None:
     assert len(_m12_widths(m)) == 1
     m = _qfn_board(track("P1", start=(50, 40), end=(51.5, 40), width=0.127), pad_w=0.1)
     assert _m12_widths(m) == []
+
+
+def test_m12_neck_needs_pad_on_the_track_layer() -> None:
+    # a narrow B.Cu piece under the F.Cu-only fine-pitch part is no neck-down
+    m = _qfn_board(track("P1", "B.Cu", start=(50, 40), end=(51.5, 40), width=0.25))
+    assert len(_m12_widths(m)) == 1
+
+
+def test_m12_many_parts_and_narrow_tracks_fast() -> None:
+    import time
+
+    parts = tuple(
+        part(
+            f"C{i}",
+            2 + (i % 40) * 2.4,
+            2 + (i // 40) * 5.0,
+            half=1.0,
+            pads=(pad(f"C{i}", "1", "P1", (2 + (i % 40) * 2.4, 2 + (i // 40) * 5.0)),),
+        )
+        for i in range(500)
+    )
+    tracks = tuple(
+        track(
+            "P1", start=(1.0 + k * 0.04, 79.0), end=(1.0 + k * 0.04, 79.5), width=0.2, kiid=f"t{k}"
+        )
+        for k in range(2000)
+    )
+    m = board(
+        parts=parts,
+        tracks=tracks,
+        net_classes=(net_class(), net_class("Power", 0.5)),
+        net_class_of=(("P1", "Power"),),
+    )
+    t0 = time.perf_counter()
+    rep = compute_metrics(
+        m, classify(m), BoardDoc(), drc=None, parity=None, preset=None, only=frozenset({"M12"})
+    )
+    assert time.perf_counter() - t0 < 1.0
+    assert get(rep, "M12").value == 2000
 
 
 def test_m12_neck_needs_own_net_pad() -> None:
@@ -412,6 +452,50 @@ def test_m16_loop() -> None:
     assert m16.offenders[0].refs == ("U1",)
 
 
+def test_m16_loop_counted_once_per_pad() -> None:
+    # U2 and U3 lie far apart and both nearest to U1: the MST joins U1-U2 and U1-U3, and
+    # both paths leave U1 through the same looping entry piece
+    pts = _walk((50, 50), 0, [(0, 0.8), (45, 0.4), (45, 0.4), (45, 0.4), (0, 6.0)])
+    hub = pts[-1]
+    tracks = (
+        *route("N2", pts),
+        *route("N2", [hub, (30.0, 60.0)]),
+        *route("N2", [hub, (70.0, 60.0)]),
+    )
+    m = board(
+        parts=(
+            _far_pad("U1", "N2", (50, 50)),
+            _far_pad("U2", "N2", (30.0, 60.0)),
+            _far_pad("U3", "N2", (70.0, 60.0)),
+        ),
+        tracks=tracks,
+    )
+    pairs = {tuple(sorted((a.ref, b.ref))) for a, b in metrics.connections(m, "N2")}
+    assert pairs == {("U1", "U2"), ("U1", "U3")}
+    m16 = _m16(m)
+    assert _whats(m16) == ["pad_loop"]
+    assert m16.value == 1
+
+
+def test_m16_loop_at_b_end_uses_b_width() -> None:
+    # the loop sits at the far pad; the path changes width on the way (0.2 -> 0.5): b's
+    # entry zone is sized by the 0.5 piece (pad edge + 1.5 mm = 2.0 from the centre), so
+    # the loop 1.7-1.9 mm out is inside it (a 0.2-sized zone ends at 1.5 mm)
+    loop = _walk((60, 50), 180, [(0, 1.7), (45, 0.25), (45, 0.25), (45, 0.25), (0, 3.0)])
+    a_end = loop[-1]
+    tracks = (
+        *route("N2", [(a_end[0] - 6.0, a_end[1]), a_end], width=0.2),
+        *route("N2", list(reversed(loop)), width=0.5),
+    )
+    m = board(
+        parts=(_far_pad("U1", "N2", (a_end[0] - 6.0, a_end[1])), _far_pad("U2", "N2", (60, 50))),
+        tracks=tracks,
+    )
+    m16 = _m16(m)
+    assert "pad_loop" in _whats(m16)
+    assert next(o for o in m16.offenders if o.what.startswith("pad_loop")).refs == ("U2",)
+
+
 def test_m16_jog_review_only(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(metrics, "M16_HARD", True)
     pts = _walk((50, 50), 0, [(0, 0.6), (45, 0.4), (-45, 6.0)])
@@ -441,3 +525,43 @@ def test_m16_alignable_placement_stage() -> None:
     assert _m16(_pair(0.5)).offenders == ()  # a corridor already exists
     assert _m16(_pair(3.0)).offenders == ()  # needs 1.9 mm > 1 mm
     assert _m16(_pair(1.2, d_x=36.0)).offenders == ()  # gap 4 mm: not adjacent
+
+
+# ---- routed_path ---------------------------------------------------------------------------
+
+
+def _two_pads(a: Point, b: Point, net: str = "N1") -> tuple[Part, Part]:
+    return _far_pad("U1", net, a), _far_pad("U2", net, b)
+
+
+def test_routed_path_straight_and_order() -> None:
+    u1, u2 = _two_pads((10, 10), (20, 10))
+    m = board(parts=(u1, u2), tracks=route("N1", [(20, 10), (15, 10), (10, 10)]))
+    got = metrics.routed_path(m, u1.pads[0], u2.pads[0])
+    assert got == (("F.Cu", (10, 10), (15, 10)), ("F.Cu", (15, 10), (20, 10)))
+    back = metrics.routed_path(m, u2.pads[0], u1.pads[0])
+    assert back == (("F.Cu", (20, 10), (15, 10)), ("F.Cu", (15, 10), (10, 10)))
+    assert sum(math.dist(p, q) for _, p, q in got or ()) == metrics.routed_length(
+        m, u1.pads[0], u2.pads[0]
+    )
+
+
+def test_routed_path_via_skipped_and_unconnected() -> None:
+    u1, u2 = _two_pads((10, 10), (20, 10))
+    u2 = replace(u2, pads=(replace(u2.pads[0], layers=frozenset({"B.Cu"})),))
+    tracks = (*route("N1", [(10, 10), (15, 10)]), *route("N1", [(15, 10), (20, 10)], layer="B.Cu"))
+    m = board(parts=(u1, u2), tracks=tracks, vias=(via("N1", (15, 10)),))
+    got = metrics.routed_path(m, u1.pads[0], u2.pads[0])
+    assert got == (("F.Cu", (10, 10), (15, 10)), ("B.Cu", (15, 10), (20, 10)))
+    m = board(parts=(u1, u2), tracks=tracks)  # no via: not connected
+    assert metrics.routed_path(m, u1.pads[0], u2.pads[0]) is None
+    other = _far_pad("U3", "N9", (30, 10))
+    assert metrics.routed_path(m, u1.pads[0], other.pads[0]) is None
+
+
+def test_routed_path_arc_as_two_chords() -> None:
+    u1, u2 = _two_pads((10, 10), (20, 10))
+    arc = ArcTrack("arc", "N1", "F.Cu", (10, 10), (15, 15), (20, 10), 0.2, False)
+    m = board(parts=(u1, u2), arcs=(arc,))
+    got = metrics.routed_path(m, u1.pads[0], u2.pads[0])
+    assert got == (("F.Cu", (10, 10), (15, 15)), ("F.Cu", (15, 15), (20, 10)))

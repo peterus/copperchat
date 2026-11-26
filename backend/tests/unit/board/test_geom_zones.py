@@ -78,13 +78,26 @@ def test_entry_zone_rotated() -> None:
 
 def test_pad_rect_matches_in_pad() -> None:
     q = pad(3, 4, 2.0, 0.6, rot=30.0)
-    z = entry_zone(q, 0.1)  # grown by 1.0 mm
-    for p in z:
+    # the grow-0 corners are the pad's own corners: on its boundary (inside, inclusive)
+    tiny = entry_zone(q, 0.0)  # grown by entry_zone_width(0) = 1.0
+    for p in tiny:
         assert not _in_pad(p, q)
-    centre_shift = [(3 + 0.9 * math.cos(math.radians(-30)), 4 + 0.9 * math.sin(math.radians(-30)))]
-    for p in centre_shift:  # 0.9 mm along the pad's long local axis: inside the pad
-        assert _in_pad(p, q)
-        assert point_in_polygon(p, z)
+    # 0.9 mm along the long local axis lies inside only with _in_pad's rotation sense
+    # (local x maps to heading -30° on the board); the mirrored sense (+30°) is outside
+    good = (3 + 0.9 * math.cos(math.radians(-30)), 4 + 0.9 * math.sin(math.radians(-30)))
+    bad = (3 + 0.9 * math.cos(math.radians(30)), 4 + 0.9 * math.sin(math.radians(30)))
+    assert _in_pad(good, q) and not _in_pad(bad, q)
+    z = entry_zone(q, 0.1)
+    assert point_in_polygon(good, z)
+    # the zone's corners sit 1.0 mm beyond the pad corners along both local axes
+    lx, ly = 1.0 + 1.0, 0.3 + 1.0
+    c, s_ = math.cos(math.radians(30)), math.sin(math.radians(30))
+    corners = {
+        (round(3 + x * c + y * s_, 6), round(4 - x * s_ + y * c, 6))
+        for x in (-lx, lx)
+        for y in (-ly, ly)
+    }
+    assert {(round(p[0], 6), round(p[1], 6)) for p in z} == corners
 
 
 def test_corridor_aligned_pads() -> None:

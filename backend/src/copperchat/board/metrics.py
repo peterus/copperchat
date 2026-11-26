@@ -516,6 +516,8 @@ class _NetGraph:
         # round 2: track width and (arcs) mid point of every copper edge, for `routed_path`
         self.width: dict[frozenset[_Node], float] = {}
         self.arc_mid: dict[frozenset[_Node], Point] = {}
+        # `_search` results per (pad, pad): M5/M6 (`conns`) and M16 ask for the same pairs
+        self._memo: dict[tuple[_Node, _Node], tuple[float, list[_Node]] | None] = {}
         by_layer: dict[str, list[tuple[Point, Point, float, bool, float, Point | None]]]
         by_layer = defaultdict(list)
         nodes: dict[str, _Nodes] = defaultdict(_Nodes)
@@ -593,6 +595,12 @@ class _NetGraph:
         """Dijkstra from pad `a` to pad `b`: (length, node sequence a..b), None when not
         connected. `length` and `path` share it."""
         src, dst = self.pad_node(a), self.pad_node(b)
+        key = (src, dst)
+        if key not in self._memo:
+            self._memo[key] = self._dijkstra(src, dst)
+        return self._memo[key]
+
+    def _dijkstra(self, src: _Node, dst: _Node) -> tuple[float, list[_Node]] | None:
         if src == dst:
             return 0.0, [src]
         if src not in self.adj or dst not in self.adj:
@@ -670,7 +678,10 @@ def routed_length(model: BoardModel, a: Pad, b: Pad) -> float | None:
 def routed_path(model: BoardModel, a: Pad, b: Pad) -> tuple[tuple[str, Point, Point], ...] | None:
     """The copper segments (layer, start, end) of `routed_length`'s shortest path from pad
     `a` to pad `b`, in path order (via / pad joins skipped; an arc as its two chords); None
-    when they are not connected (or on different nets)."""
+    when they are not connected (or on different nets). Builds the net's graph per call
+    (like `routed_length`); `compute_metrics` reuses one graph per net. A straight track and
+    an arc with the same two ends share one graph edge, and the edge is then reported as the
+    arc's chords (a corner case no router produces)."""
     if a.net != b.net or not a.net:
         return None
     g = _net_graph(model, a.net)
@@ -732,6 +743,7 @@ class _Ctx:
         routed = any(n and self.kind(n) != "ground" for n in self.track_len)
         self.stage: Literal["placement", "routed"] = "routed" if routed else "placement"
         self._graphs: dict[str, _NetGraph] = {}
+        self._zones: dict[str, tuple[_Grid, list[tuple[tuple[Point, ...], Part]]]] = {}
         self._bends: dict[str, BendReport] | None = None
         self._conns: list[_Conn] | None = None
         self._placer = _placer(model)
@@ -744,6 +756,22 @@ class _Ctx:
         if hit is None:
             hit = self._placed[key] = self._placer(part)
         return hit
+
+    def escape_zones(self, net: str, box: BBox) -> list[tuple[tuple[Point, ...], Part]]:
+        """(escape zone, part) of the parts with a pad of `net` whose zone bbox meets `box`
+        (M12 neck-downs; one bucket grid per net, built on first use)."""
+        hit = self._zones.get(net)
+        if hit is None:
+            items: list[tuple[tuple[Point, ...], Part]] = []
+            grid = _Grid()
+            for part in self.parts_of_net.get(net, ()):
+                zone = escape_zone(part)
+                if zone:
+                    grid.add(len(items), _bbox(zone))
+                    items.append((zone, part))
+            hit = self._zones[net] = (grid, items)
+        grid, items = hit
+        return [items[i] for i in grid.query(box)]
 
     def kind(self, net: str) -> str:
         return self.cls.net_kind.get(net, "signal")
@@ -1570,17 +1598,22 @@ def _inside_box(pts: Iterable[Point], zone: Sequence[Point]) -> bool:
 
 
 def _necked(
-    c: _Ctx, net: str, width: float, class_w: float, pts: Sequence[Point], min_track: float
+    c: _Ctx,
+    net: str,
+    layer: str,
+    width: float,
+    class_w: float,
+    pts: Sequence[Point],
+    min_track: float,
 ) -> bool:
-    """Round 2 (§22.5 M12): a narrow piece of `net` is a neck-down when it lies entirely in
-    the escape zone of a part with a pad of `net` whose neck width is below the class width
-    and the piece is at least that neck width wide."""
-    for part in c.parts_of_net.get(net, ()):
-        zone = escape_zone(part)
-        if not zone or not _inside_box(pts, zone):
+    """Round 2 (§22.5 M12): a narrow piece of `net` on `layer` is a neck-down when it lies
+    entirely in the escape zone of a part with a pad of `net` on `layer` whose neck width
+    is below the class width and the piece is at least that neck width wide."""
+    for zone, part in c.escape_zones(net, _bbox(pts)):
+        if not _inside_box(pts, zone):
             continue
         for q in part.pads:
-            if q.net != net or not _copper(q):
+            if q.net != net or not _copper(q) or not _pad_on_layer(q, layer):
                 continue
             neck = neck_width(q, class_w, min_track)
             if neck < class_w - 1e-9 and width >= neck - M12_WIDTH_TOL - 1e-9:
@@ -1593,13 +1626,13 @@ def _m12(c: _Ctx) -> Metric:
     class_of = dict(c.m.net_class_of)
     need: dict[str, float | None] = {}
     off: list[Offender] = []
-    items: list[tuple[str, float, tuple[Point, ...]]] = [
-        (t.net, t.width, (t.start, t.end)) for t in c.m.tracks
+    items: list[tuple[str, str, float, tuple[Point, ...]]] = [
+        (t.net, t.layer, t.width, (t.start, t.end)) for t in c.m.tracks
     ]
-    items += [(a.net, a.width, (a.start, a.mid, a.end)) for a in c.m.arcs]
+    items += [(a.net, a.layer, a.width, (a.start, a.mid, a.end)) for a in c.m.arcs]
     patterned = [nc for nc in c.m.net_classes if nc.patterns]
     min_track = (c.preset or PRESETS["jlcpcb-4l"]).min_track
-    for net, width, pts in items:
+    for net, layer, width, pts in items:
         name = class_of.get(net, "Default")
         key = net if name.startswith(EFFECTIVE_PREFIX) or patterned else name
         if key not in need:
@@ -1607,7 +1640,7 @@ def _m12(c: _Ctx) -> Metric:
         tw = need[key]
         if tw is None or width >= tw - M12_WIDTH_TOL - 1e-9:
             continue
-        if _necked(c, net, width, tw, pts, min_track):
+        if _necked(c, net, layer, width, tw, pts, min_track):
             continue
         p, q = pts[0], pts[1]
         mid = ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2)
@@ -2126,15 +2159,19 @@ def _straight_link(
     return len(merged) == 1 and merged[0][0] in layers
 
 
-def _runs(segs: Sequence[tuple[str, Point, Point, float]]) -> list[tuple[list[Point], float]]:
-    """The path's same-layer, end-to-end runs as (points, width of the first piece)."""
-    out: list[tuple[list[Point], float]] = []
+def _runs(
+    segs: Sequence[tuple[str, Point, Point, float]],
+) -> list[tuple[list[Point], float, float]]:
+    """The path's same-layer, end-to-end runs as (points, width of the first piece, width of
+    the last piece)."""
+    out: list[tuple[list[Point], float, float]] = []
     layer = None
     for la, p, q, w in segs:
         if out and la == layer and math.dist(out[-1][0][-1], p) <= _JOIN_TOL:
             out[-1][0].append(q)
+            out[-1] = (out[-1][0], out[-1][1], w)
             continue
-        out.append(([p, q], w))
+        out.append(([p, q], w, w))
         layer = la
     return out
 
@@ -2152,6 +2189,7 @@ def _m16(c: _Ctx) -> Metric:
     blockers: _Blockers | None = None
     off: list[Offender] = []
     hard = 0
+    seen: set[tuple[object, ...]] = set()
     routed = c.stage == "routed"
     for net in sorted(n for n in c.pads_by_net if n and c.kind(n) != "ground"):
         pads = c.pads_by_net[net]
@@ -2189,19 +2227,23 @@ def _m16(c: _Ctx) -> Metric:
                     what = f"dogleg {_pair_text(net, a, b)}"
                     off.append(Offender(what, _refs(a, b), (net,), _mid_pt(s, e), None))
             runs = _runs(segs)
-            for end, (pts, width) in ((a, runs[0]), (b, (runs[-1][0][::-1], runs[-1][1]))):
+            first, last = runs[0], runs[-1]
+            for end, pts, width in ((a, first[0], first[1]), (b, last[0][::-1], last[2])):
                 if not _in_pad(pts[0], end):
                     continue
                 rep = analyse_entry(
                     pts, width, entry_zone(end, width), in_pad=functools.partial(_pad_has, end)
                 )
-                for pt in rep.loops:
-                    hard += 1
-                    what = f"pad_loop {_pin(end)} ({_pair_text(net, a, b)})"
-                    off.append(Offender(what, (end.ref,), (net,), pt, None))
-                for pt in rep.jogs:
-                    what = f"pad_jog {_pin(end)} ({_pair_text(net, a, b)})"
-                    off.append(Offender(what, (end.ref,), (net,), pt, None))
+                # a pad on several MST connections sharing its entry piece: report once
+                for kind, pts_at in (("pad_loop", rep.loops), ("pad_jog", rep.jogs)):
+                    for pt in pts_at:
+                        mark = (kind, _NetGraph.pad_node(end), round(pt[0], 4), round(pt[1], 4))
+                        if mark in seen:
+                            continue
+                        seen.add(mark)
+                        hard += kind == "pad_loop"
+                        what = f"{kind} {_pin(end)} ({_pair_text(net, a, b)})"
+                        off.append(Offender(what, (end.ref,), (net,), pt, None))
     return _metric("M16", hard, _verdict(M16_HARD and hard > 0, bool(off)), off)
 
 
