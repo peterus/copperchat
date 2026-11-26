@@ -225,6 +225,7 @@ Constraints). Values are copied from the spec.
   | `pcb_route` | 360 s | `ROUTE_DEADLINE_S` 300 + one DRC 60 |
   | `pcb_stitch` | 285 s | `STITCH_DEADLINE_S` 180 + cleanup refill 105 |
   | `pcb_tidy_silk` | 480 s | P7, no deadline: ≤ 4 DRCs × `drc_call_timeout(60)` 105 + 2 plans × `run_cpu` 30 (sp4_synth: < 2 s) |
+  | `pcb_check` (full) | 495 s | R6: API DRC `drc_call_timeout(60)` 105 + heavy gate / idle worker / `BOARD_CLI_LOCK` `HEAVY_WAIT_S` 120 + parity `BOARD_PARITY_TIMEOUT_S` 120 + metrics `run_cpu(timeout_s=30, wait_s=HEAVY_WAIT_S)` 150 |
 
   If `L` is lower than a worst case + 60 s, set `MCP_TOOL_TIMEOUT` (≥ 1,065,000 ms = 1005 s
   + 60 s); if that does not lift it, scale down: every deadline is capped so its tool's
