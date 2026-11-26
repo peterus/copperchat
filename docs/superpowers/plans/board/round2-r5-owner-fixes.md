@@ -38,8 +38,13 @@ when the caller gives no region.
 **Files:** Modify `cc/board/presets.py` (three presets, `min_drill = 0.2`),
 `backend/tests/unit/board/test_presets.py` (`test_preset_values_call_8` values + a comment
 "owner decision 2026-11-26"). Also check `pcb_set_rules` maps `min_drill → min_through_drill`
-(`cc/kicad_tools/board/setup.py`) — unchanged code; `tests/kicad/board/test_rules.py` value
-assertions updated if they pin 0.3.
+(`cc/kicad_tools/board/setup.py`) — unchanged code. Tests that pin the old value and must
+change in this task: `backend/tests/unit/board/test_metrics_rules.py:190` (the `pth` case uses a
+0.25 mm hole and expects `pth_drill` — use 0.15 mm so it still fails below 0.2),
+`backend/tests/unit/board/test_setup_schemas.py:293` (`min_through_drill: 0.3` → 0.2), and any
+`tests/kicad/board/test_rules.py` assertion of 0.3 (grep `min_through_drill`). Not affected:
+`backend/tests/fixtures/golden/project_info.json` (`min_through_drill_mm` of a fixture project's
+own rules, not a preset).
 
 - [ ] **Step 1:** update the test values → **Step 2:** run `uv run pytest tests/unit/board/test_presets.py -q` — FAIL
   → **Step 3:** change the data → **Step 4:** PASS → **Step 5:** commit `feat(board): JLC presets min hole 0.2 mm (owner)`.
@@ -61,6 +66,10 @@ smallest drill.
 
 - [ ] **Step 1: Failing tests:** `test_bom_drops_excluded_designators` (row `H1,H2` → gone;
   `C1,H9` → `C1`), `test_cpl_drops_excluded`, `test_fab_excluded_mounting_holes`,
+  `test_fab_excluded_by_attribute` (a non-hole part with `exclude_from_bom` / `exclude_from_pos`
+  set → dropped from BOM resp. CPL only), kicad `test_read_exclude_attributes` in
+  `backend/tests/kicad/board/test_read.py` if the `Part` fields are added (a footprint whose
+  attributes are set through the engine reads back `True`),
   `test_small_holes_lists_02` (a 0.2 mm pad drill → listed, 0.3 not), `test_report_sections`
   (report contains "Excluded from BOM/CPL" with the refs and "Small holes (possible JLC
   surcharge)" only when there are some; every string through `md`). Kicad:

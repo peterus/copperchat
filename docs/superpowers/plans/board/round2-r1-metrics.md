@@ -51,24 +51,33 @@ checks corridor, entry zone and loop/jog. M12, M11 and M3 get local exemptions.
 (new), `backend/tests/unit/board/test_bends.py` (update).
 
 **Interfaces:** Produces `junction_kind(headings) -> "t" | "x" | "y"` and
-`BendReport.y_junctions` (B-C5). `t_junctions` keeps nodes with a 90° pair that are not "y"
-(informational; P6a's `chamfer.postprocess` still rips them until R4 — do not touch chamfer).
+`BendReport.y_junctions` (B-C5). `t_junctions` keeps **exactly today's semantics** (every
+off-pad, off-via node with a 90° pair, Y-shaped ones included), so its consumers —
+`chamfer.postprocess` (`_REASON`, `chamfer.py:137`), `route.py` `_bends` (`:1065`), `fill.py`
+`_bends_of` (`:771`) — behave exactly as before until R3/R4 change them; do not touch them
+here. Only M4 stops reading `t_junctions` (Task 4).
 
 - [ ] **Step 1: Failing tests** — `test_junction_kind_table` (parametrised, headings in deg):
   `(0, 180, 90)` → `t`; `(0, 90, 180, 270)` → `x`; `(0, 180, 45)` → `y`; `(0, 180, 135)` → `y`;
   `(0, 90, 225)` → `y`; `(0, 45, 180)` → `y`; `(0, 180, 90.4)` → `t` (inside tolerance);
-  `(0, 180, 45.6)` → `y`. `test_junction_kind_orientation_free`: a board with a branch drawn
+  `(0, 180, 45.6)` → `y` (off-lattice pair: not within tol of a multiple of 90°);
+  `(0, 180, 89.6)` → `t`. `test_junction_kind_orientation_free`: a board with a branch drawn
   once as (node→out) and once as (out→node) gives the same `analyse_tracks` result.
   `test_y_junction_reported` (builder: through-track 0°, branch at 45° meeting off-pad) →
   `y_junctions == (node,)`, `t_junctions == ()`; `test_t_junction_not_y` (branch at 90°) →
-  `t_junctions == (node,)`, `y_junctions == ()`; `test_y_at_via_exempt`, `test_y_inside_pad_exempt`.
+  `t_junctions == (node,)`, `y_junctions == ()`; `test_y_at_via_exempt`, `test_y_inside_pad_exempt`;
+  `test_t_at_bend_vertex_is_y` (branch at 90° onto the vertex where the through-track bends 45°:
+  headings e.g. (0, 225, 90) → `y`); `test_branch_on_chamfer_is_y` (branch at 90° to the main
+  direction landing on a 45° chamfer piece → `y`).
   In `test_bends.py`: `test_t_junction_45_ok` becomes `test_t_junction_45_is_y`
   (asserts `y_junctions`); `test_t_junction_90_fails` becomes `test_t_junction_90_reported_not_m4`
-  (still in `t_junctions`; the M4 part moves to Task 4).
+  (still in `t_junctions`; the M4 part moves to Task 4); a Y-shaped node with a 90° pair, e.g.
+  (0, 90, 225), appears in **both** `t_junctions` (old semantics) and `y_junctions`.
 - [ ] **Step 2: Run** `uv run pytest tests/unit/board/test_geom_junctions.py tests/unit/board/test_bends.py -q` — FAIL.
 - [ ] **Step 3: Implement.** Headings = the direction from the node to the other end of each
-  incident segment (arcs: the tangent at the node). "y" if any pair's difference mod 180 is
-  45° ± tol (covers 45° and 135°); else "t" for 3, "x" for ≥ 4. Nodes keyed with `_JOIN_TOL`
+  incident segment (arcs: the tangent at the node). "y" if any pair's difference `d` has
+  `tol < (d mod 90) < 90 − tol` (every pair not on one 90° lattice — 45°/135° branches and
+  off-lattice ones alike); else "t" for 3, "x" for ≥ 4. Nodes keyed with `_JOIN_TOL`
   exactly as the existing T detection.
 - [ ] **Step 4: Run** — PASS. **Step 5: Commit** `feat(board): junction kinds and y_junctions`.
 
@@ -77,7 +86,7 @@ checks corridor, entry zone and loop/jog. M12, M11 and M3 get local exemptions.
 **Files:** Modify `cc/board/geom.py`; Test: `test_geom_junctions.py` (append) or new
 `test_geom_zones.py`.
 
-**Interfaces:** Produces `ADJ_GAP_MM`, `ESCAPE_HALO_MM`, `ENTRY_ZONE`, `LOOP_TURN_DEG`,
+**Interfaces:** Produces `ADJ_GAP_MM`, `ESCAPE_HALO_MM`, `entry_zone_width`, `LOOP_TURN_DEG`,
 `entry_zone`, `escape_zone`, `neck_width`, `straight_corridor`, `EntryReport`, `analyse_entry`
 exactly as B-C5 (round 2). R2 uses `straight_corridor`, R3 uses all of them, R4 uses
 `escape_zone` / `neck_width`.
@@ -91,8 +100,9 @@ exactly as B-C5 (round 2). R2 uses `straight_corridor`, R3 uses all of them, R4 
     corridor (overlap 0.8 ≥ width 0.25), centre line = overlap band centre; offset 1.2 → None;
     gap 3.5 → None.
   - `test_corridor_needs_shared_layer` (F.Cu SMD vs B.Cu SMD) → None.
-  - `test_entry_loop`: path leaving a pad east, then 45°, 45°, 45° (total 135°) inside the
-    zone → `loops == (vertex,)`; `test_entry_jog`: opposite-sense 45° pair inside the zone →
+  - `test_entry_loop`: path leaving a pad east, then 45°, 45°, 45° in one sense (signed
+    cumulative 135°) inside the zone → `loops == (vertex,)`; `test_entry_staircase_not_loop`:
+    +45°, −45°, +45° (signed cumulative never beyond 45°) → no loop (it is a jog); `test_entry_jog`: opposite-sense 45° pair inside the zone →
     `jogs`; `test_entry_plain_45_ok`: one 45° bend in the zone → empty; bends inside the pad
     itself (as `pad_entry_ends` defines) → ignored.
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement** (pure polygon helpers already in `geom.py`;
@@ -104,7 +114,8 @@ exactly as B-C5 (round 2). R2 uses `straight_corridor`, R3 uses all of them, R4 
 **Files:** Modify `cc/board/metrics.py` (`_m12`, `_PlaneVoids` / `_m11`, `_m3`); Test:
 `backend/tests/unit/board/test_metrics_round2.py` (new).
 
-**Interfaces:** Consumes `escape_zone`, `neck_width` (Task 2), the preset's `min_track`
+**Interfaces:** Consumes `escape_zone` (convex: the courtyard's axis-aligned bbox grown by
+`ESCAPE_HALO_MM`, so a segment lies entirely inside iff both ends do), `neck_width` (Task 2), the preset's `min_track`
 (`compute_metrics(..., preset=…)`; without a preset use `presets.PRESETS["jlcpcb-4l"].min_track`).
 
 - [ ] **Step 1: Failing tests:**
@@ -121,8 +132,8 @@ exactly as B-C5 (round 2). R2 uses `straight_corridor`, R3 uses all of them, R4 
     `silk_line_warning`, not counted as unaccepted; `test_m3_text_marker_stays_hard`: same
     marker type on a `reference` item → counts as before.
 - [ ] **Step 2: Run** — FAIL.
-- [ ] **Step 3: Implement.** M12: before reporting a narrow segment, accept it when both ends
-  lie in `escape_zone(part)` of one part that has a pad of this net with `neck_width(pad,
+- [ ] **Step 3: Implement.** M12: before reporting a narrow segment, accept it when the whole segment
+  lies in `escape_zone(part)` (both ends; the zone is convex) of one part that has a pad of this net with `neck_width(pad,
   class_w, min_track) < class_w` and `width ≥ that neck width − M12_WIDTH_TOL`. M11: a crossing
   test skips the piece of a track inside a disc (radius as `_PlaneVoids` uses for antipads)
   around a via or plated pad **of the track's own net**. M3: a `text_thickness` marker whose
@@ -134,16 +145,20 @@ exactly as B-C5 (round 2). R2 uses `straight_corridor`, R3 uses all of them, R4 
 
 **Files:** Modify `cc/board/metrics.py` (`MetricId` → `"M16"`, `_m4`, new `_m15`, `_m16`,
 `routed_path`, `M15_HARD`, `M16_HARD`, `REVIEW["M16_align_mm"] = 1.0`, `__all__`),
+`THRESHOLD_TEXT` (`metrics.py:178`, keyed by `MetricId` — add M15/M16 entries, M4's text
+without the T clause, else `_metric` raises `KeyError`),
 `cc/kicad_tools/board/specs_analysis.py` (description text: M4 without the T clause, M15, M16);
 Test: `test_metrics_round2.py`, `backend/tests/unit/board/test_metrics_routed.py` (update),
 `backend/tests/unit/board/test_specs.py` if it pins the metric count.
 
 **Interfaces:** Produces B-C7 (round 2). M15: one offender per `y_junctions` point,
-`what="y_junction"`, net. M16 per connection (`connections(model, net)` MST pairs): (a) `dogleg`
+`what="y_junction"`, net. M16 per connection of every **non-ground** net
+(`connections(model, net)` MST pairs; ground nets are plane-connected and excluded, like M5): (a) `dogleg`
 when `straight_corridor(a, b, w)` exists, its rectangle (segment ± w/2 + clearance) is free of
 other-net pads, vias and keepouts, and `routed_path(model, a, b)` is not exactly one straight
 segment on the corridor's layer outside the pads; (b) `pad_loop` / (c) `pad_jog` from
-`analyse_entry` on each end's entry zone; placement stage (no tracks): `alignable` (review) for
+`analyse_entry` on each end's entry zone (loop = the **signed** cumulative turn of the
+piece reaches ±`LOOP_TURN_DEG` at some vertex); placement stage (no tracks): `alignable` (review) for
 adjacent 2-pad pairs (edge gap ≤ `ADJ_GAP_MM`) without a corridor whose perpendicular offset
 could be removed by ≤ `REVIEW["M16_align_mm"]`. Verdict: `fail` when hard offenders exist and
 the switch is on, `review` when any offender exists otherwise.

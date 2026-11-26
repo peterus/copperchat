@@ -50,8 +50,10 @@ goal direction by > 90° inside the zone is forbidden.
 ### Task 1: Per-segment widths in `RoutePath` (contract change)
 
 **Files:** Modify `cc/board/router/{astar,simplify,pairs}.py` (`RoutePath.segments` 4-tuple),
+`cc/board/router/grid.py` (`path_clear`, `grid.py:354`, unpacks the segments),
 `cc/kicad_tools/board/route.py` (`_create` uses the segment width); Test: update
-`backend/tests/unit/board/test_router_{astar,simplify,pairs,props}.py`,
+`backend/tests/unit/board/test_router_{astar,simplify,pairs,props,grid}.py` and the shared
+helper `backend/tests/unit/board/router_maps.py`,
 `backend/tests/kicad/board/test_route.py` for the tuple shape.
 
 - [ ] **Step 1:** change the tests' expectations to `(layer, start, end, width)` — FAIL.
@@ -60,8 +62,9 @@ goal direction by > 90° inside the zone is forbidden.
 
 ### Task 2: Neck-down in escape zones
 
-**Files:** Modify `cc/board/router/grid.py` (second inflation map for the neck width, used for
-nodes inside a `req.neck` polygon), `cc/board/router/astar.py` (node validity by zone),
+**Files:** Modify `cc/board/router/grid.py` (second inflation map for the neck width, built
+**only over the bounding boxes of the `req.neck` zones** — a few mm² each — and used for nodes
+inside a zone; the cell cap `MAX_CELLS_PER_LAYER` applies to the sum of both maps), `cc/board/router/astar.py` (node validity by zone),
 `cc/board/router/simplify.py` (split runs at zone boundaries, width per piece),
 `cc/kicad_tools/board/route.py` (`plan_connections` fills `req.neck` for each end pad whose
 `neck_width < class width`); Test: `backend/tests/unit/board/test_router_neck.py` (new; builder:
@@ -73,13 +76,18 @@ QFN-like part, 0.5 mm pitch, 0.25 × 0.8 pads, courtyard), `backend/tests/unit/b
   `test_plan_sets_neck_for_fine_pitch_only`; metric cross-check: R1's M12 on the result → 0
   offenders.
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS; `test_router_perf.py`
-  budgets unchanged (if a budget grows, record and justify in As built).
+  budgets unchanged (if a budget grows, record and justify in As built);
+  `test_neck_map_bounded` (the neck map's cells ≤ Σ zone-bbox cells).
 - [ ] **Step 5: Commit** `feat(board): router neck-down at fine-pitch pads`.
 
 ### Task 3: T-junction branching, Y forbidden, tree goals
 
 **Files:** Modify `cc/board/router/astar.py` (`junction_masks`, `junctions_ok`, `valid_path`,
-goal set for `req.tree`), `cc/board/router/grid.py` (own-copper goal nodes),
+goal set for `req.tree` with a **multi-source heuristic** = min octilinear distance to the
+goal set's bounding boxes, the goal set capped at `TREE_GOALS_MAX = 2_000` nodes nearest to
+pad a; `FIRST_TRY_EXPANSIONS` / deadlines unchanged), `cc/board/router/grid.py` (own-copper
+goal nodes), `cc/kicad_tools/board/route.py` `_bends` (`route.py:1065`: count `y_junctions`,
+no longer `t_junctions` — the post-route M4 check must accept the T branches this task creates),
 `cc/kicad_tools/board/route.py` (`plan_connections`: `tree=True` for every connection whose
 net already has copper connected to pad b, except pairs); Test:
 `backend/tests/unit/board/test_router_astar.py` (rewrite the P9a junction tests),

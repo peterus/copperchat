@@ -74,21 +74,30 @@ re-tuned); Test: `backend/tests/kicad/board/test_fill_roundtrip.py` (probes, `re
   pad's DSN geometry (via at the pad centre vs. off-pad, the DSN `resolution`); a test that
   Freerouting's log reports 0 unrouted for a fully own-routed `sp4_synth` subset after the fix;
   if the fix needs DSN text editing, apply only per D4 and record.
-- [ ] **Step 4:** unit test pins `FREEROUTING_SETTINGS` reach the command line
-  (`test_settings_in_command`). **Step 5: Commit** `feat(board): Freerouting settings tuned on dense boards`.
+- [ ] **Step 4:** unit tests: `FREEROUTING_SETTINGS` reach the command line
+  (`test_settings_in_command`); `run_freerouting` refuses (`ValueError`, before any process
+  starts) an `extra_args` entry whose key is `--router.autorouter.max_passes` (clamped by
+  `PASSES_MIN`/`PASSES_MAX`) or any thread/processor-count option (the JVM is capped by
+  `-XX:ActiveProcessorCount=2` and `RLIMIT_CPU`) — extend the existing locked-key check
+  (`LOCKED_OPTION_KEYS`, network/GUI only today) (`test_settings_cannot_override_locked`). **Step 5: Commit** `feat(board): Freerouting settings tuned on dense boards`.
 
 ### Task 3: Post-processor Y → T; T kept; `_widen` keeps necks
 
-**Files:** Modify `cc/board/router/chamfer.py` (`postprocess`: stop ripping `t_junctions`;
-re-land `y_junctions`), `cc/kicad_tools/board/fill.py` (`_widen` skips a track that satisfies
-R1's M12 neck exemption; Y re-landing replacements DRC-checked like chamfers); Test:
+**Files:** Modify `cc/board/router/chamfer.py` (`postprocess`: `_REASON` drops
+`t_junctions` (`chamfer.py:137`) and gains `y_junctions → "y_junction"`; re-land `y_junctions`;
+rip connections with an M16 hard offender — `dogleg`, `pad_loop` — with those reasons, so the
+own router re-routes them straight-first (R3)), `cc/kicad_tools/board/fill.py` (`_widen` skips a
+track that satisfies R1's M12 neck exemption; `_bends_of` (`fill.py:771`) counts `y_junctions`
+instead of `t_junctions`; Y re-landing replacements DRC-checked like chamfers); Test:
 `backend/tests/unit/board/test_chamfer.py`, `backend/tests/unit/board/test_fill_plan.py`,
 `backend/tests/kicad/board/test_fill_postprocess.py`.
 
-**Interfaces:** B-C12 post-processor round-2 block; new reason `y_junction`
-(`PostResult.reasons`), counted in the fill report's `reasons`.
+**Interfaces:** B-C12 post-processor round-2 block; new reasons `y_junction`, `dogleg`,
+`pad_loop` (`PostResult.reasons`), counted in the fill report's `reasons` and in the 20 % rule
+like every other rip.
 
-- [ ] **Step 1: Failing tests:** `test_t_junction_kept`, `test_y_to_t_relands`,
+- [ ] **Step 1: Failing tests:** `test_t_junction_kept`, `test_dogleg_ripped`,
+  `test_pad_loop_ripped`, `test_y_to_t_relands`,
   `test_y_to_t_rejects_ninety_on_branch`, `test_y_to_t_projection_outside`,
   `test_y_unfixable_ripped_with_reason`, `test_widen_keeps_neck`, kicad: a fill on the routed
   rig → `analyse_tracks(model).y_junctions == ()` on the result.

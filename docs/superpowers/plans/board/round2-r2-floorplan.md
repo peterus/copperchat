@@ -15,7 +15,8 @@ On ODH: fits 80 × 60 mm if physically feasible (courtyard fill reported), else 
 
 **Architecture:** new pure `cc/board/placer/floorplan.py` (`floorplan`, `place_blocks`) on top
 of `pack.block_layout` / `pack.block_extent` / `pack.place_block` / `legalize.legalize`; a
-post-pass `align_pairs` in `layout.py` after `layout_cluster`. Tool layer: `place.py` adds the
+post-pass `align_pairs` in `floorplan.py`, run by `place_blocks` on board coordinates after
+the global legalise (so it sees every part, across clusters and blocks). Tool layer: `place.py` adds the
 handlers, `specs_place.py` the two specs, `jobs.py` the two `run_cpu` jobs.
 
 `cc/` = `backend/src/copperchat/`.
@@ -83,19 +84,19 @@ Test: `backend/tests/unit/board/test_placer_floorplan.py` (new; builders from
 
 ### Task 2: `place_blocks()`, `spread`, pair alignment
 
-**Files:** Modify `cc/board/placer/floorplan.py` (`place_blocks`), `cc/board/placer/layout.py`
-(`align_pairs`), `cc/board/placer/score.py` (`PlacementScore.spread`); Test:
-`test_placer_floorplan.py`, `backend/tests/unit/board/test_placer_layout.py`,
-`backend/tests/unit/board/test_score.py`.
+**Files:** Modify `cc/board/placer/floorplan.py` (`place_blocks`), `cc/board/placer/score.py` (`PlacementScore.spread`); Test:
+`test_placer_floorplan.py`, `backend/tests/unit/board/test_score.py`.
 
 **Interfaces:** `place_blocks` = `floorplan` → `place_block(…, region=leaf, target=leaf
 centre, keep_channels=…)` per block, largest first, earlier moves as `fixed` → one global
-`legalize(max_shift=None)` → `(PlaceResult, Floorplan)`; any `DoesNotFit` is returned with
-`courtyard_fill`. `align_pairs(model, cls, moves) -> tuple[Move, ...]`: for each pair (2-pad
+`legalize(max_shift=None)` → `align_pairs` → `(PlaceResult, Floorplan)`; any `DoesNotFit` is returned with
+`courtyard_fill`. `align_pairs(model, cls, moves, *, movable: frozenset[str]) -> tuple[Move, ...]`
+(in `floorplan.py`, board coordinates, after the legalise): for each pair (2-pad
 part ↔ 2-pad part on a shared non-ground net, or 2-pad satellite ↔ its anchor pin) with edge gap
-≤ `geom.ADJ_GAP_MM` and no `straight_corridor`, shift the satellite perpendicular by the offset
-(≤ `REVIEW["M16_align_mm"]`, 1.0 mm) when the shifted courtyard stays legal; called at the end
-of `layout_cluster`. `spread` = min(union-bbox width / usable width, height / usable height).
+≤ `geom.ADJ_GAP_MM` and no `straight_corridor`, shift the movable 2-pad part (never an anchor, never a locked part) perpendicular by the
+offset (≤ `REVIEW["M16_align_mm"]`, 1.0 mm) when the shifted courtyard stays inside the outline
+margin, overlaps no other courtyard or keepout and the part's pads stay on the same side;
+otherwise skip it. Deterministic order (natural ref order). `spread` = min(union-bbox width / usable width, height / usable height).
 
 - [ ] **Step 1: Failing tests:** `test_place_blocks_legal_and_spread` (builder board with 8
   blocks → M1 pass, `spread ≥ 0.75`), `test_place_blocks_deterministic`,
@@ -113,7 +114,9 @@ of `layout_cluster`. `spread` = min(union-bbox width / usable width, height / us
 (`PCB_READ` += `pcb_floorplan`, `PCB_WRITES` += `pcb_place_blocks`), `cc/changes/repo.py` +
 `frontend/src/components/changes/highlight.ts` (`board_place_blocks`); Test:
 `backend/tests/unit/board/test_place_schemas.py`, `backend/tests/kicad/board/test_place_blocks.py`
-(new), the P1c unit test that maps every `PCB_WRITES` tool to a kind.
+(new), `backend/tests/unit/changes/test_board_kinds.py` (pins `BOARD_KINDS` and the
+`PCB_WRITES` → kind mapping) and `backend/tests/unit/agent/test_profiles_board.py` (pins the
+`PCB_READ` / `PCB_WRITES` sets) — both updated for the two new names.
 
 **Interfaces:** schemas `_obj`, `additionalProperties: false`: `blocks` (array ≤ `MAX_BLOCKS`
 32 of block names, default all defined blocks), `keep_channels` (0–5, default

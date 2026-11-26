@@ -2391,7 +2391,7 @@ above (owner edits freely; "append" = add lines only, keep both sides on rebase)
 | `cc/board/geom.py` (junction / entry / neck / corridor additions), `cc/board/metrics.py`, `cc/kicad_tools/board/specs_analysis.py` (metric description text) | R1 (R-1) | R4 flips `M15_HARD` / `M16_HARD` in `metrics.py` (two lines) |
 | `cc/board/presets.py`, `cc/board/fab.py`, `cc/kicad_tools/board/fab.py`, `cc/board/render.py` (`default_extent`), `cc/views/board_render.py`, `cc/kicad_tools/board/views.py`; `cc/board/model.py` + `cc/kicad_tools/board/read.py` only to append the unhashed `Part.exclude_from_bom` / `exclude_from_pos` fields if missing | R5 (R-1) | — |
 | new `cc/board/heavy.py`, `cc/board/worker.py` (recycling), `cc/board/freerouting.py` (gate around the run only), `cc/kicad_tools/board/check.py` (`cli_parity` gate only), `scripts/odh-dry-run.py` (memory sampler), `backend/tests/unit/test_odh_dry_run.py` | R6 (R-1) | R2 (answer loading only, if needed) and R7 edit both afterwards |
-| `cc/board/placer/**` (new `floorplan.py`, `layout.py` alignment pass), `cc/kicad_tools/board/{place,specs_place}.py`, `cc/agent/profiles.py` (`PCB_READ` / `PCB_WRITES` names), `cc/changes/repo.py` + `frontend/src/components/changes/highlight.ts` (`board_place_blocks` kind), `backend/tests/kicad_e2e/flow.py` | R2 (R-2) | `cc/board/jobs.py` append (`floorplan_job`, `place_blocks_job`) |
+| `cc/board/placer/**` (new `floorplan.py` incl. the `align_pairs` pass), `cc/kicad_tools/board/{place,specs_place}.py`, `cc/agent/profiles.py` (`PCB_READ` / `PCB_WRITES` names), `cc/changes/repo.py` + `frontend/src/components/changes/highlight.ts` (`board_place_blocks` kind), `backend/tests/kicad_e2e/flow.py` | R2 (R-2) | `cc/board/jobs.py` append (`floorplan_job`, `place_blocks_job`) |
 | `cc/board/router/{grid,astar,simplify,pairs}.py`, `cc/kicad_tools/board/route.py` | R3 (R-2) | — |
 | `cc/kicad_tools/board/{fill,specs_fill}.py`, `cc/board/router/chamfer.py`, `cc/board/freerouting.py` (settings arguments; R6's gate stays), `cc/board/classify.py` (`_critical` only) + `backend/tests/kicad/board/goldens/sp4_synth_classification.json` | R4 (R-3) | — |
 | `scripts/odh-dry-run.py`, `backend/tests/kicad_e2e/**` (flow answers), any owning file of a defect found on ODH (minimal fix, recorded in "As built (R7)") | R7 (R-4) | — |
@@ -2405,28 +2405,30 @@ Binding like B-C1…B-C14; a phase that deviates updates this block and its "As 
 ```python
 JunctionKind = Literal["t", "x", "y"]
 def junction_kind(headings: Sequence[float]) -> JunctionKind   # ≥ 3 headings (deg) of track ends at one node:
-    # any two differ by 45° or 135° (± ANGLE_TOL_DEG) → "y"; else all on one 90° lattice → "t" (3) / "x" (≥ 4)
+    # any pair d with ANGLE_TOL_DEG < (d mod 90) < 90 − ANGLE_TOL_DEG → "y"; else all on one 90° lattice → "t" (3) / "x" (≥ 4)
 # BendReport gains  y_junctions: tuple[Point, ...]   (analyse_tracks: off-pad, off-via nodes of degree ≥ 3, kind "y")
-# t_junctions keeps the off-pad nodes with a 90° pair that are NOT "y" (informational from R1 on; M4 ignores it;
-#   chamfer.postprocess still rips them until R4)
-ADJ_GAP_MM = 3.0; ESCAPE_HALO_MM = 0.5; ENTRY_ZONE = lambda w: max(1.0, 3.0 * w); LOOP_TURN_DEG = 135.0
-def entry_zone(pad: Pad, width: float) -> tuple[Point, ...]          # pad rectangle (rotated) grown by ENTRY_ZONE(width)
-def escape_zone(part: Part) -> tuple[Point, ...]                    # courtyard bounding polygon grown by ESCAPE_HALO_MM
+# t_junctions keeps EXACTLY today's semantics (off-pad nodes with a 90° pair, Y-shaped ones included); M4 ignores it
+#   from R1 on; its other consumers (chamfer._REASON, route._bends, fill._bends_of) are switched to y_junctions in R3/R4
+ADJ_GAP_MM = 3.0; ESCAPE_HALO_MM = 0.5; LOOP_TURN_DEG = 135.0
+def entry_zone_width(width: float) -> float                         # max(1.0, 3.0 * width)  (a def, not a lambda: ruff E731)
+def entry_zone(pad: Pad, width: float) -> tuple[Point, ...]          # pad rectangle (rotated) grown by entry_zone_width(width)
+def escape_zone(part: Part) -> tuple[Point, ...]                    # courtyard's axis-aligned bbox grown by ESCAPE_HALO_MM (convex)
 def neck_width(pad: Pad, class_width: float, min_track: float) -> float   # min(class_width, min(pad.w, pad.h)), never < min_track
 def straight_corridor(a: Pad, b: Pad, width: float) -> tuple[str, Point, Point] | None
     # (layer, start, end) when a and b share a copper layer, their edge gap ≤ ADJ_GAP_MM and their extents overlap
     # across x or y by ≥ width: the axis-parallel segment through the overlap band's centre line, pad edge to pad edge
 @dataclass(frozen=True) class EntryReport: loops: tuple[Point, ...]; jogs: tuple[Point, ...]
 def analyse_entry(points: Sequence[Point], width: float, zone: Sequence[Point]) -> EntryReport
-    # the path's piece from its pad end until it first leaves `zone`: total |turn| ≥ LOOP_TURN_DEG → loop; an
+    # the path's piece from its pad end until it first leaves `zone`: |signed cumulative turn| ≥ LOOP_TURN_DEG → loop; an
     # opposite-sense 45° pair inside the zone → jog (pad-entry bends inside the pad itself excluded, geom.pad_entry_ends)
 ```
 
 **B-C7 (R1, `cc/board/metrics.py`)**: `MetricId` = `"M1"…"M16"` (`METRIC_IDS` follows, so
 `pcb_metrics.only`'s enum grows by itself); `M15_HARD = False`, `M16_HARD = False` (R4 sets both
 `True`); M15 offenders `"y_junction"`; M16 offenders `"dogleg"`, `"pad_loop"`, `"pad_jog"`,
-`"alignable"` (placement stage); `routed_path(model, a, b) -> tuple[tuple[str, Point, Point], ...] | None`
-(the segments of the shortest path `routed_length` already finds); M3 label `"silk_line_warning"`;
+`"alignable"` (placement stage); M16 covers every non-ground net; `routed_path(model, a, b) ->
+tuple[tuple[str, Point, Point], ...] | None` (new: `routed_length`'s Dijkstra (`metrics.py:549`)
+factored to keep predecessors, so both share one search; `routed_length` returns the same values); M3 label `"silk_line_warning"`;
 `REVIEW["M16_align_mm"] = 1.0`.
 
 **B-C11 (R2, `cc/board/placer/floorplan.py`)**
@@ -2456,7 +2458,10 @@ width) — every consumer (P5b `_create`, P6b re-route, pairs) is updated in R3.
 **B-C12 post-processor (R4, `chamfer.py`)**: `t_junctions` are no longer ripped; each
 `y_junctions` node is re-landed perpendicular (the branch's last segment replaced by the
 perpendicular from its previous vertex onto the through-track, when that vertex's turn stays
-0°/45° and DRC passes), else the branch's connection is ripped with reason `y_junction`.
+0°/45° and DRC passes), else the branch's connection is ripped with reason `y_junction`;
+connections with an M16 hard offender are ripped with reason `dogleg` / `pad_loop` and
+re-routed by the own router (straight-first). `run_freerouting` refuses `extra_args` that set
+the pass count or a thread/processor count.
 
 **B-C13 (R4)**: `run_freerouting(..., extra_args=…)` receives `FREEROUTING_SETTINGS` (a tuple of
 CLI options proven accepted by 2.5.0 in R4's probe; empty when none helps); DSN
@@ -2468,9 +2473,12 @@ exclude: frozenset[str] = frozenset())` / `cpl_rows(csv, *, exclude=…)` drop t
 `small_holes(model) -> tuple[tuple[str, float], ...]` (ref or `via`, plated drill < 0.3 mm),
 `fab_report(..., excluded: Sequence[str] = ())` adds the "Excluded from BOM/CPL" and "Small
 holes (possible JLC surcharge)" sections;
-`cc/board/render.py` `default_extent(model) -> Rect` (outline bbox ∪ courtyards ∪ markers);
+`cc/board/render.py` `default_extent(model, markers=()) -> Rect | None` (outline bbox ∪ courtyards
+∪ markers; `None` when all are empty);
 `cc/board/heavy.py` `heavy_slot(kind: str, *, wait_s: float) -> AsyncContextManager[None]`
-(process-wide `asyncio.Semaphore(1)`; kinds `freerouting`, `parity`), `HEAVY_WAIT_S = 120`;
+(one `asyncio.Semaphore(1)` per running event loop, like `freerouting._slots`; kinds
+`freerouting`, `parity` — `parity` also holds the CPU-worker lock; lock order heavy → worker →
+`BOARD_CLI_LOCK`), `HEAVY_WAIT_S = 120`;
 `worker.WORKER_RECYCLE_MB = 512`.
 
 **Error codes (B-C14 additions):** `does_not_fit.details.courtyard_fill`; `fill_not_acceptable`
@@ -2489,7 +2497,9 @@ heavy gate is not free within `HEAVY_WAIT_S`.
    R4 Task 3 (`test_widen_keeps_neck`).
 3. **A T that hides a Y or a 90° bend** — a degree-3 node with headings {0°, 90°, 225°}, a T
    at a bend vertex, a branch landing exactly on a through-track's 45° chamfer. Expected: M15
-   flags it, M4 still flags a degree-2 90° vertex. Tests: R1 Task 1 (`test_junction_kind_table`).
+   flags it, M4 still flags a degree-2 90° vertex. Tests: R1 Task 1 (`test_junction_kind_table`,
+   `test_t_at_bend_vertex_is_y`, `test_branch_on_chamfer_is_y`), R1 Task 4
+   (`test_m4_degree2_ninety_still_fails`).
 4. **A floorplan that silently drops or overlaps blocks** — more blocks than cuts, an edge
    block wider than its edge, a board that cannot hold the blocks. Expected: every block gets a
    region or the call fails `does_not_fit` with `courtyard_fill`; never overlaps (M1). Tests:

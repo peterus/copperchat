@@ -1152,7 +1152,8 @@ C5/C1). Round 2 fixes this before P9b. P9b (skills, flag on) and P10 stay after 
    fab report notes that holes below 0.3 mm may cost a JLC surcharge and lists them. The via
    drill minimum the agent's own vias use stays 0.3 mm (`min_via_drill`, unchanged).
 3. **Memory (D5):** the `kicad-cli` parity DRC (≈ 2.6 GB) runs only when no other heavy
-   process (Freerouting JVM, a CPU-worker job, another board `kicad-cli` call) runs; target
+   process (Freerouting JVM, a CPU-worker job) runs — both parity paths (`pcb_check full` and the
+   older `run_drc` check) are gated; other `kicad-cli` calls are already serialised by the board CLI lock; target
    ≈ 5 GB concurrent per active board project, re-measured on ODH (§22.6).
 4. **Improvement round before P9b**, targeted at the OpenDriveHub main board (this amendment).
 
@@ -1175,7 +1176,7 @@ single-block edits):
   and refuses `does_not_fit` with that number when the blocks cannot be packed; the agent then
   asks for a bigger board or the bottom side. On ODH the round's acceptance (§22.6) first tries
   80 × 60 mm and falls back to 80 × 100 mm, well spread.
-- **Alignment (rule b):** after the cluster layout, two adjacent 2-pad parts connected by a
+- **Alignment (rule b):** after the global legalisation, two adjacent 2-pad parts connected by a
   net, and a 2-pad part next to the IC pin it serves, are shifted (within their legal slack) so
   the connected pads are aligned on one axis and a straight segment is possible.
 - New write tool `pcb_place_blocks` (one change set, budget 1): floorplan + place the given
@@ -1191,7 +1192,8 @@ single-block edits):
 - **T-junction branching.** A connection to a net that already has copper may end on that
   copper (tree routing): the branch meets a straight own-net track perpendicularly. 45°
   branches are forbidden in the search; the post-processor turns Freerouting's Y-junctions into
-  T-junctions or rips the connection (reason `y_junction`).
+  T-junctions or rips the connection (reason `y_junction`), and rips connections with an M16
+  dogleg or pad loop (reasons `dogleg`, `pad_loop`) for the own router's straight-first re-route.
 - **Straight first.** For aligned adjacent pads (rule b) the router tries the single straight
   segment first and takes it when it is DRC-clean.
 - **Pad entry (rule c).** Bends inside a pad's entry zone are costed so the search leaves the
@@ -1210,8 +1212,8 @@ single-block edits):
 | M11 | A signal track's piece inside the antipad of its **own** via or plated pad is not a void crossing (fixes the P7/P9a artefact "void crossing … outer" at the critical nets' own vias). |
 | M12 | A track narrower than its class width passes when it lies entirely inside the escape zone of a pad of its own net whose neck width is below the class width, and its width ≥ that neck width (≥ the preset minimum track). |
 | M14 | `min_drill` 0.2 mm in the JLC presets (decision 2). |
-| **M15** (new) | **Y-junction:** an off-pad, off-via node of one net and layer with ≥ 3 incident track ends where any two incident headings differ by 45° or 135° (± 0.5°). **Hard** (rule a). A valid junction has all headings on one 90° lattice (T or X). |
-| **M16** (new) | **(a) Dogleg between adjacent pads:** two pads of one net, same layer, edge gap ≤ 3 mm, whose extents overlap across one orthogonal axis by ≥ the track width (a straight corridor exists) and whose corridor is free of other-net pads, vias and keepouts — but the routed connection between them is not one straight segment on that layer. **Hard.** **(b) Pad-entry loop:** inside a pad's entry zone (pad grown by `max(1.0 mm, 3 × width)`), the path turns by ≥ 135° in total. **Hard.** **(c) Pad-entry jog:** an opposite-sense bend pair inside the entry zone. **Review.** Placement stage: adjacent 2-pad pairs that could be aligned by ≤ 1 mm but are not → review. (Hard/review split and the numbers: plan call, owner may change.) |
+| **M15** (new) | **Y-junction:** an off-pad, off-via node of one net and layer with ≥ 3 incident track ends whose headings are not all on one 90° lattice (± 0.5°) — e.g. a branch at 45° or 135°. **Hard** (rule a). A valid junction has all headings on one 90° lattice (T or X). |
+| **M16** (new) | Applies to every non-ground net. **(a) Dogleg between adjacent pads:** two pads of one net, same layer, edge gap ≤ 3 mm, whose extents overlap across one orthogonal axis by ≥ the track width (a straight corridor exists) and whose corridor is free of other-net pads, vias and keepouts — but the routed connection between them is not one straight segment on that layer. **Hard.** **(b) Pad-entry loop:** inside a pad's entry zone (pad grown by `max(1.0 mm, 3 × width)`), the path's signed cumulative turn reaches ± 135° (a U-turn; a +45/−45/+45 staircase is a jog, not a loop). **Hard.** **(c) Pad-entry jog:** an opposite-sense bend pair inside the entry zone. **Review.** Placement stage: adjacent 2-pad pairs that could be aligned by ≤ 1 mm but are not → review. (Hard/review split and the numbers: plan call, owner may change.) |
 
 M15 and M16's hard parts ship first as **review** behind module switches (`M15_HARD`,
 `M16_HARD`, like `M1_EDGE_OVERHANG`) and are switched to hard in the round's fill phase once
