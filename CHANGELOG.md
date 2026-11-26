@@ -22,6 +22,8 @@ All notable changes to CopperChat are documented in this file. The format follow
   jlc-4l-1.6-7628, jlc-6l-1.6), through KiCad patch 0005 (`UpdateBoardStackup`) — behind
   COPPERCHAT_BOARD_TOOLS. **Release note:** PROD needs the new kicad-base tag;
   `kicad-base.yml` on `main` must have published this recipe before a release is cut.
+- Board placement tools (`pcb_define_blocks`, `pcb_place_block`, `pcb_move`,
+  `pcb_legalize`) — behind COPPERCHAT_BOARD_TOOLS.
 
 ## [0.12.0] - 2026-11-22
 

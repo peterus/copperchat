@@ -107,3 +107,8 @@ TOOL_SPECS += ANALYSIS_SPECS
 from copperchat.kicad_tools.board.specs_check import CHECK_SPECS  # noqa: E402
 
 TOOL_SPECS += CHECK_SPECS
+
+# P4: placement (pcb_define_blocks, pcb_place_block, pcb_move, pcb_legalize)
+from copperchat.kicad_tools.board.specs_place import PLACE_SPECS  # noqa: E402
+
+TOOL_SPECS += PLACE_SPECS

@@ -411,3 +411,75 @@ async def user_says(db: Database, project_id: str, run_id: str, text: str) -> No
         metadata={"origin": "user"},
     )
     await asyncio.sleep(0.01)
+
+
+# -- block helpers (SP4 P4; reused by place_synth and P5b's rigs) --------------------------
+
+NO_BLOCK_CLASSES = frozenset({"mounting_hole", "fiducial"})
+
+
+async def analyzed_blocks(ctx: ToolContext) -> list[dict[str, Any]]:
+    """`pcb_analyze`'s block proposals as `pcb_define_blocks` blocks: mounting holes and
+    fiducials dropped (they cannot be in a block), blocks left empty dropped."""
+    out = await setup_call(ctx, "pcb_analyze", scope="all")
+    classes: dict[str, str] = out["parts"]
+    blocks = []
+    for b in out["blocks"]:
+        refs = [r for r in b["refs"] if classes.get(r) not in NO_BLOCK_CLASSES]
+        if not refs:
+            continue
+        block: dict[str, Any] = {"name": b["name"], "refs": refs}
+        if b["anchor"] in refs:
+            block["anchor"] = b["anchor"]
+        blocks.append(block)
+    return blocks
+
+
+# -- place_synth (SP4 P4; P5b's placed_synth / routed_synth build on it) -----------------
+
+
+SYNTH_CHANNELS_MM = 1.5  # routing room between the blocks (the board has space for it)
+
+
+async def place_synth(rig: SynthSetup, db: Database, run: str = "run-place") -> dict[str, Any]:
+    """`sp4_synth` placed block by block through the real tools (needs `synth_setup`'s
+    outline + rules): `pcb_analyze` proposals → `pcb_define_blocks` (the ESD part's own
+    block joins the USB connector's block, as the board-layout skill tells the agent:
+    protection next to its connector) → `pcb_place_block` per block with a fixed
+    floorplan: the connector block on `edge: left`, the MCU block in the right half, the
+    power block in the left half, any other block anywhere. Returns
+    `{blocks, results: {block: tool data}, seconds}`."""
+    import time
+
+    o = (await setup_call(rig.turn(db, f"{run}-0"), "pcb_status"))["outline"]
+    blocks = await analyzed_blocks(rig.turn(db, f"{run}-1"))
+    by_anchor = {b.get("anchor"): b for b in blocks}
+    esd, usb = by_anchor.get("U2"), by_anchor.get("J1")
+    if esd is not None and usb is not None:
+        usb["refs"] = usb["refs"] + esd["refs"]
+        blocks.remove(esd)
+    await setup_call(rig.turn(db, f"{run}-2"), "pcb_define_blocks", blocks=blocks, replace=True)
+    half = o["w"] / 2
+
+    def region(b: dict[str, Any]) -> dict[str, Any]:
+        anchor = b.get("anchor")
+        if anchor == "J1":
+            return {"edge": "left"}
+        if anchor == "U1":
+            return {"x": o["x"] + half, "y": o["y"], "w": half, "h": o["h"]}
+        if anchor == "U3":
+            return {"x": o["x"], "y": o["y"], "w": half, "h": o["h"]}
+        return {"x": o["x"], "y": o["y"], "w": o["w"], "h": o["h"]}
+
+    order = {"J1": 0, "U1": 1, "U3": 2}
+    results: dict[str, Any] = {}
+    start = time.monotonic()
+    for i, b in enumerate(sorted(blocks, key=lambda b: (order.get(b.get("anchor"), 9), b["name"]))):
+        results[b["name"]] = await setup_call(
+            rig.turn(db, f"{run}-p{i}"),
+            "pcb_place_block",
+            block=b["name"],
+            region=region(b),
+            keep_channels=SYNTH_CHANNELS_MM,
+        )
+    return {"blocks": blocks, "results": results, "seconds": time.monotonic() - start}
