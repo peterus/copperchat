@@ -51,10 +51,13 @@ Box = tuple[float, float, float, float]  # x0, y0, x1, y1
 
 GRID_MM = 0.05
 SATELLITE_EXTRA_MM = 0.3  # extra courtyard gap for satellites that are not decoupling caps
-# a crystal keeps this much more than the minimum gap from its IC: the pins next to the
+# a crystal keeps this much more than the minimum courtyard gap: the IC pins next to the
 # oscillator pins (reset, supply) need one track (0.2 mm + 2 x 0.2 mm clearance) out
-# between the IC and the crystal (sp4_synth: a flush crystal boxed in the reset pin)
-CRYSTAL_STANDOFF_MM = 0.8
+# between the IC and the crystal; KiCad's courtyard margins already give ~0.5 mm of copper
+# gap. Measured on sp4_synth (P9a, TSSOP-20 + 3225 crystal): flush boxed in the reset pin;
+# 0.2 mm left the supply pin's decap path 5.40 mm; 0.4 mm made the far crystal pad's path
+# 5.07 mm (M8 hard limit 5 mm); 0.3 mm passes both (4.97 / 4.18 mm) - a narrow window.
+CRYSTAL_STANDOFF_MM = 0.3
 RADIAL_WEIGHT = 1.5  # unconnected satellites: one mm outwards costs 1.5 mm along a row
 ALIGN_WEIGHT = 0.5  # connected satellites: cost per mm slid away from the aligned spot
 SIDE_PENALTY_MM = 1.5  # a host side next to the one the connected pin points to
@@ -289,21 +292,20 @@ class _Layout:
         return out
 
     def _priorities(self) -> dict[str, tuple[object, ...]]:
-        """Placement order: the first decoupling cap of every supply pin (each aligned
-        with its pin), crystals (big, pinned to two IC pins: they slide beside those
-        caps), load caps, switcher passives, then everything else by connectivity (see
-        `_next`), bulk decoupling caps last (they take the supply pin with the most room).
-        Small parts slide around the big ones placed before them."""
+        """Placement order: crystals (big, pinned to two IC pins), the first decoupling cap
+        of every supply pin, load caps, switcher passives, then everything else by
+        connectivity (see `_next`), bulk decoupling caps last (they take the supply pin
+        with the most room). Small parts slide around the big ones placed before them."""
         pr: dict[str, tuple[object, ...]] = {}
         for x in self.cls.crystals:
             if x.ref in self.members:
-                pr.setdefault(x.ref, (1,))
+                pr.setdefault(x.ref, (0,))
                 for r in x.load_caps:
                     pr.setdefault(r, (2,))
         for cap, (ic, pin) in self.decap_pin.items():
             rnd = self.decap_round[cap]
             pr[cap] = (
-                (0, natural_key(ic), natural_key(pin)) if rnd == 0 else (5, rnd, natural_key(ic))
+                (1, natural_key(ic), natural_key(pin)) if rnd == 0 else (5, rnd, natural_key(ic))
             )
         for s in self.cls.switchers:
             if s.ic not in self.members:
