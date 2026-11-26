@@ -60,13 +60,18 @@ from copperchat.board.geom import (
     _Nodes,
     _pad_on_layer,
     _proper_cross,
+    analyse_entry,
     analyse_tracks,
     convex_hull,
+    entry_zone,
+    escape_zone,
+    neck_width,
     octi_dist,
     polygon_area,
     polygon_inside,
     polygons_overlap,
     rect_poly,
+    straight_corridor,
 )
 from copperchat.board.model import (
     ArcTrack,
@@ -79,7 +84,7 @@ from copperchat.board.model import (
     Track,
     Via,
 )
-from copperchat.board.presets import FabPreset
+from copperchat.board.presets import PRESETS, FabPreset
 from copperchat.kicad_tools.filtering import natural_key
 
 if TYPE_CHECKING:
@@ -610,9 +615,13 @@ class _Ctx:
         self.ref_of_kiid = {k: p.ref for p in model.parts for k, _ in p.item_kiids}
         self.ref_of_kiid.update({p.kiid: p.ref for p in model.parts})
         self.pads_by_net: dict[str, list[Pad]] = defaultdict(list)
+        self.parts_of_net: dict[str, list[Part]] = defaultdict(list)
         for p in model.parts:
             for q in p.pads:
                 self.pads_by_net[q.net].append(q)
+            for net in sorted({q.net for q in p.pads if q.net}):
+                self.parts_of_net[net].append(p)
+        self.role_of_kiid = {k: role for p in model.parts for k, role in p.item_kiids}
         for pads in self.pads_by_net.values():
             pads.sort(key=_pad_key)
         self.outline = outline_polygon(model)
@@ -811,12 +820,21 @@ def _m3(c: _Ctx, drc: DrcResult | None, parity: tuple[DrcMarker, ...] | None) ->
         return _metric("M3", None, "n/a")
     rows = [(_norm_type(r.drc_type), frozenset(r.items)) for r in c.doc.accepted if r.items]
     off: list[Offender] = []
-    count = accepted = 0
+    count = accepted = silk_lines = 0
     for mk in drc.markers if drc is not None else ():
         t = _norm_type(mk.type)
         if t.startswith("unconnected") or mk.severity not in ("error", "warning"):
             continue
         refs = c.refs(mk.kiids)
+        if t == "text_thickness" and mk.kiids and all(
+            c.role_of_kiid.get(k) == "shape" for k in mk.kiids
+        ):
+            # owner decision 1 (2026-11-26, spec §22.2): footprint silk LINES below the
+            # silk minimum are a warning only; silk text keeps the hard rule
+            silk_lines += 1
+            what = f"silk_line_warning: {mk.text} (warning only, owner 2026-11-26)"
+            off.append(Offender(what, refs, (), mk.pos, None))
+            continue
         if (
             mk.severity == "warning"
             and refs
@@ -838,7 +856,7 @@ def _m3(c: _Ctx, drc: DrcResult | None, parity: tuple[DrcMarker, ...] | None) ->
             continue
         count += 1
         off.append(Offender(f"parity {t}: {mk.text}", refs, (), mk.pos, None))
-    return _metric("M3", count, _verdict(count > 0, accepted > 0), off)
+    return _metric("M3", count, _verdict(count > 0, accepted + silk_lines > 0), off)
 
 
 # ---- M4 / M7 bends -------------------------------------------------------------------------
@@ -1117,6 +1135,41 @@ def _disc_covers(a: Point, b: Point, discs: Sequence[tuple[Point, float]]) -> bo
     return False
 
 
+def _outside_discs(
+    a: Point, b: Point, discs: Sequence[tuple[Point, float]]
+) -> list[tuple[Point, Point]]:
+    """The pieces of segment ab outside the union of the discs (centre, radius)."""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    aa = dx * dx + dy * dy
+    if aa <= _EPS:
+        inside = any(math.dist(a, cc) <= r for cc, r in discs)
+        return [] if inside else [(a, b)]
+    spans: list[tuple[float, float]] = []
+    for (cx, cy), r in discs:
+        fx, fy = a[0] - cx, a[1] - cy
+        bb = 2 * (fx * dx + fy * dy)
+        disc = bb * bb - 4 * aa * (fx * fx + fy * fy - r * r)
+        if disc <= 0:
+            continue
+        sq = math.sqrt(disc)
+        t0, t1 = max(0.0, (-bb - sq) / (2 * aa)), min(1.0, (-bb + sq) / (2 * aa))
+        if t1 > t0:
+            spans.append((t0, t1))
+    out: list[tuple[Point, Point]] = []
+    reach = 0.0
+
+    def at(t: float) -> Point:
+        return (a[0] + t * dx, a[1] + t * dy)
+
+    for t0, t1 in sorted(spans):
+        if t0 > reach + 1e-9:
+            out.append((at(reach), at(t0)))
+        reach = max(reach, t1)
+    if reach < 1.0 - 1e-9:
+        out.append((at(reach), b))
+    return out
+
+
 def _hit_params(a: Point, b: Point, c: Point, d: Point) -> list[float]:
     """Parameters on ab (0..1) where segment cd meets it: the crossing point, or the
     projections of c and d when the segments are collinear."""
@@ -1302,6 +1355,15 @@ def _m11(c: _Ctx) -> Metric:
         for q in p.pads
         if q.drill is not None and _copper(q)
     ]
+    # round 2 (§22.5 M11): a track's piece inside the antipad disc of its OWN net's via or
+    # plated pad is no void crossing (same reach as the antipad test above)
+    own: dict[str, list[tuple[Point, float]]] = defaultdict(list)
+    for v in c.m.vias:
+        own[v.net].append((v.at, v.diameter / 2 + ANTIPAD_MARGIN_MM))
+    for p in c.m.parts:
+        for q in p.pads:
+            if q.drill is not None and _copper(q):
+                own[q.net].append(((q.x, q.y), math.hypot(q.w, q.h) / 2 + ANTIPAD_MARGIN_MM))
     off: list[Offender] = []
     worst: float | None = None
     layers = list(c.m.copper_layers)
@@ -1360,7 +1422,12 @@ def _m11(c: _Ctx) -> Metric:
                 segs += [(a.net, a.start, a.mid), (a.net, a.mid, a.end)]
         seen: set[tuple[str, str]] = set()
         for net, p, q in segs:
-            for vid in sorted(voids.crossed(p, q)):
+            box = _bbox((p, q))
+            discs = [d for d in own.get(net, ()) if _bbox_hit(_bbox((d[0],), d[1]), box)]
+            crossed: set[str] = set()
+            for a, b in _outside_discs(p, q, discs) if discs else [(p, q)]:
+                crossed |= voids.crossed(a, b)
+            for vid in sorted(crossed):
                 if (net, vid) in seen:
                     continue
                 seen.add((net, vid))
@@ -1401,15 +1468,43 @@ def _class_width(
     return max(widths) if widths else None
 
 
+def _inside_box(pts: Iterable[Point], zone: Sequence[Point]) -> bool:
+    """Every point inside the axis-aligned box `zone` (an `escape_zone`; boundary inside)."""
+    x0, y0, x1, y1 = _bbox(zone)
+    return all(x0 - _EPS <= x <= x1 + _EPS and y0 - _EPS <= y <= y1 + _EPS for x, y in pts)
+
+
+def _necked(
+    c: _Ctx, net: str, width: float, class_w: float, pts: Sequence[Point], min_track: float
+) -> bool:
+    """Round 2 (§22.5 M12): a narrow piece of `net` is a neck-down when it lies entirely in
+    the escape zone of a part with a pad of `net` whose neck width is below the class width
+    and the piece is at least that neck width wide."""
+    for part in c.parts_of_net.get(net, ()):
+        zone = escape_zone(part)
+        if not zone or not _inside_box(pts, zone):
+            continue
+        for q in part.pads:
+            if q.net != net or not _copper(q):
+                continue
+            neck = neck_width(q, class_w, min_track)
+            if neck < class_w - 1e-9 and width >= neck - M12_WIDTH_TOL - 1e-9:
+                return True
+    return False
+
+
 def _m12(c: _Ctx) -> Metric:
     classes = {nc.name: nc for nc in c.m.net_classes}
     class_of = dict(c.m.net_class_of)
     need: dict[str, float | None] = {}
     off: list[Offender] = []
-    items = [(t.net, t.width, t.start, t.end) for t in c.m.tracks]
-    items += [(a.net, a.width, a.start, a.mid) for a in c.m.arcs]
+    items: list[tuple[str, float, tuple[Point, ...]]] = [
+        (t.net, t.width, (t.start, t.end)) for t in c.m.tracks
+    ]
+    items += [(a.net, a.width, (a.start, a.mid, a.end)) for a in c.m.arcs]
     patterned = [nc for nc in c.m.net_classes if nc.patterns]
-    for net, width, p, q in items:
+    min_track = (c.preset or PRESETS["jlcpcb-4l"]).min_track
+    for net, width, pts in items:
         name = class_of.get(net, "Default")
         key = net if name.startswith(EFFECTIVE_PREFIX) or patterned else name
         if key not in need:
@@ -1417,6 +1512,9 @@ def _m12(c: _Ctx) -> Metric:
         tw = need[key]
         if tw is None or width >= tw - M12_WIDTH_TOL - 1e-9:
             continue
+        if _necked(c, net, width, tw, pts, min_track):
+            continue
+        p, q = pts[0], pts[1]
         mid = ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2)
         what = f"track_width {net}: {width:g} < {tw:g} ({name})"
         off.append(Offender(what, (), (net,), mid, _r(tw - width)))
