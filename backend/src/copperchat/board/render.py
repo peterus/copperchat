@@ -31,6 +31,7 @@ SIMPLIFY_BUDGET = 5_000_000
 SCALE_STEPS = (10.0, 5.0, 2.0, 1.0)
 MAX_SCALE_COUNT = 10
 HIGHLIGHT_MARGIN_MM = 0.3  # added to a highlighted track's width / pad radius
+MIN_EXTENT_MM = 1.0  # a default view narrower than this (a lone marker) is grown around it
 
 # Colours (dark background, like KiCad's board editor).
 BG, TEXT, AXIS, HULL, MARK, HIGHLIGHT = (
@@ -337,6 +338,39 @@ def _text(x: float, y: float, size: float, text: str, anchor: str = "start") -> 
 
 def _points(pts: Sequence[Point]) -> str:
     return " ".join(f"{_n(x)},{_n(y)}" for x, y in pts)
+
+
+def default_extent(model: BoardModel, markers: Sequence[Marker] = ()) -> Rect | None:
+    """The default 2D view (spec §22.6, board mm): the outline's bounding box + every
+    footprint's courtyard (staging parts outside the outline included; a part without a
+    courtyard counts with its origin) + the marker points. Not KiCad's "board area", which
+    any stray drawing far off the board stretches. `None` when there is nothing (the
+    caller then keeps KiCad's whole drawing); a side below `MIN_EXTENT_MM` is grown
+    around its centre."""
+    xs: list[float] = []
+    ys: list[float] = []
+    o = model.outline
+    if o.kind != "none" and o.w > 0 and o.h > 0:
+        xs += [o.x, o.x + o.w]
+        ys += [o.y, o.y + o.h]
+    for p in model.parts:
+        pts = p.courtyard or ((p.x, p.y),)
+        xs += [q[0] for q in pts]
+        ys += [q[1] for q in pts]
+    xs += [mk.x for mk in markers]
+    ys += [mk.y for mk in markers]
+    pairs = [(x, y) for x, y in zip(xs, ys, strict=True) if math.isfinite(x) and math.isfinite(y)]
+    if not pairs:
+        return None
+    x0, x1 = min(x for x, _ in pairs), max(x for x, _ in pairs)
+    y0, y1 = min(y for _, y in pairs), max(y for _, y in pairs)
+    if x1 - x0 < MIN_EXTENT_MM:
+        c = (x0 + x1) / 2
+        x0, x1 = c - MIN_EXTENT_MM / 2, c + MIN_EXTENT_MM / 2
+    if y1 - y0 < MIN_EXTENT_MM:
+        c = (y0 + y1) / 2
+        y0, y1 = c - MIN_EXTENT_MM / 2, c + MIN_EXTENT_MM / 2
+    return Rect(x0, y0, x1 - x0, y1 - y0)
 
 
 def wrap_svg(

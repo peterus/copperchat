@@ -41,6 +41,7 @@ from copperchat.board.render import (
     SVG_NS,
     Marker,
     block_hulls,
+    default_extent,
     highlight_shapes,
     simplify_paths,
     wrap_svg,
@@ -409,6 +410,12 @@ async def _render_3d(ctx: ToolContext, angle: Angle, board: Path) -> bytes:
     return png
 
 
+def view_extent(model: BoardModel, region: Rect | None, markers: Sequence[Marker]) -> Rect | None:
+    """A 2D render's view: the caller's `region`, else `default_extent` (outline +
+    courtyards + markers; `None` = KiCad's whole drawing)."""
+    return region if region is not None else default_extent(model, markers)
+
+
 async def render_board(
     ctx: ToolContext,
     view: BoardView,
@@ -442,7 +449,7 @@ async def render_board(
             else:
                 ov = _Overlay(
                     mirror=view == "bottom",
-                    region=region,
+                    region=view_extent(m, region, markers),
                     model=m,
                     hulls=view == "placement",
                     highlight_nets=tuple(highlight_nets),
