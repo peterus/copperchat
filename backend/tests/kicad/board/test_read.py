@@ -138,6 +138,33 @@ async def test_board_text_in_model_and_hash(ecc83_module_session: KicadSession) 
     assert placement_hash(after) == placement_hash(before)
 
 
+async def test_read_exclude_attributes(ecc83_module_session: KicadSession) -> None:
+    """R5: a footprint's exclude-from-BOM / exclude-from-position-files attributes, set
+    through the API, read back into `Part`; neither changes the board hash."""
+    s = ecc83_module_session
+    before = await _model(s)
+    ref = sorted(p.ref for p in before.parts)[0]
+    assert not any(p.exclude_from_bom or p.exclude_from_pos for p in before.parts if p.ref == ref)
+
+    def flag(h: KicadHandle, on: bool) -> None:
+        board = h.board()
+        fp = next(f for f in board.get_footprints() if f.reference_field.text.value == ref)
+        fp.attributes.exclude_from_bill_of_materials = on
+        fp.attributes.exclude_from_position_files = on
+        board.update_items([fp])
+
+    async with s.commit("exclude", doc="pcb"):
+        await s.call(lambda h: flag(h, True))
+    after = await _model(s)
+    part = next(p for p in after.parts if p.ref == ref)
+    assert part.exclude_from_bom and part.exclude_from_pos
+    assert board_hash(after) == board_hash(before)
+    async with s.commit("exclude off", doc="pcb"):
+        await s.call(lambda h: flag(h, False))
+    restored = next(p for p in (await _model(s)).parts if p.ref == ref)
+    assert not restored.exclude_from_bom and not restored.exclude_from_pos
+
+
 async def test_dru_text_read(ecc83_module_session: KicadSession) -> None:
     s = ecc83_module_session
 

@@ -26,6 +26,7 @@ from typing import Any
 import pytest
 
 from copperchat.board import worker
+from copperchat.board.classify import classify
 from copperchat.board.jobs import metrics_job
 from copperchat.board.model import board_hash
 from copperchat.kicad_session import KicadHandle
@@ -129,6 +130,12 @@ async def _hole(rig: PlacedSynth) -> Any:
     return next(p for p in sorted(model.parts, key=lambda p: p.ref) if p.ref.startswith("H"))
 
 
+async def _mounting_holes(rig: PlacedSynth) -> set[str]:
+    model = await board_model(rig.turn("run-fab-classify"))
+    cls = classify(model)
+    return {ref for ref, kind in cls.part_class.items() if kind == "mounting_hole"}
+
+
 async def _move_hole(rig: PlacedSynth, ref: str, x: float, run: str) -> None:
     await setup_call(rig.turn(run), "pcb_move", items=[{"ref": ref, "x": x}])
 
@@ -170,12 +177,15 @@ async def test_file_set(
     assert cpl_text.splitlines()[0] == "Designator,Mid X,Mid Y,Layer,Rotation"
     cpl = list(csv.DictReader(io.StringIO(cpl_text)))
     attrs = await _attributes(fab_rig)
-    expected = {ref for ref, (dnp, no_pos) in attrs.items() if not dnp and not no_pos}
+    holes = await _mounting_holes(fab_rig)
+    expected = {
+        ref for ref, (dnp, no_pos) in attrs.items() if not dnp and not no_pos and ref not in holes
+    }
     assert {r["Designator"] for r in cpl} == expected
-    # every BOM part is placed (CPL) or a schematic hole/part without a position file entry
+    # every BOM part is placed (CPL) or a part without a position file entry; no DNP, no hole
     assert set(bom_refs) <= set(attrs) and not {r for r in bom_refs if attrs[r][0]}  # no DNP
     # the tool-placed mounting holes (P2 pcb_set_outline: excluded from position files) are
-    # absent; sp4_synth's own schematic holes (H1, H2) carry no such attribute and stay
+    # absent
     tool_holes = {ref for ref, (_, no_pos) in attrs.items() if ref.startswith("H") and no_pos}
     assert len(tool_holes) >= 2 and not tool_holes & {r["Designator"] for r in cpl}
     assert all(r["Mid X"].endswith("mm") and r["Layer"] in ("Top", "Bottom") for r in cpl)
@@ -195,6 +205,28 @@ async def test_file_set(
     record_property("fab_gerbers", ",".join(gerbers))
     record_property("fab_drill", ",".join(drill))
     print(f"fab export {seconds:.1f} s, zip {size} B, files {sorted(listed)}")
+
+
+async def test_fab_export_excludes_holes(fab_rig: PlacedSynth, metrics_pass: list[Any]) -> None:
+    """R5 (spec §22.6): every part classified `mounting_hole` - sp4_synth's schematic holes
+    without the exclude attributes included - is absent from the JLC BOM and CPL and listed
+    in the report's "Excluded from BOM/CPL" section."""
+    _clean_fab(fab_rig)
+    await approve_board(fab_rig)
+    _ok(*await _export(fab_rig, "run-fab-holes"))
+    holes = await _mounting_holes(fab_rig)
+    attrs = await _attributes(fab_rig)
+    schematic_holes = {h for h in holes if not attrs[h][1]}
+    assert len(holes) >= 4 and schematic_holes, (holes, attrs)
+    target = _target(fab_rig)
+    bom = list(csv.DictReader(io.StringIO((target / "bom-jlcpcb.csv").read_text())))
+    cpl = list(csv.DictReader(io.StringIO((target / "cpl-jlcpcb.csv").read_text())))
+    bom_refs = {r for row in bom for r in row["Designator"].split(",")}
+    assert not holes & bom_refs and bom_refs
+    assert not holes & {r["Designator"] for r in cpl} and cpl
+    report = (target / "fab-report.md").read_text()
+    section = report.split("## Excluded from BOM/CPL", 1)[1].split("\n## ", 1)[0]
+    assert all(h in section for h in holes), section
 
 
 async def test_report_metrics_via_run_cpu(

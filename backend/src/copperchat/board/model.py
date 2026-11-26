@@ -84,6 +84,10 @@ class Part:
     # P7: the footprint's silkscreen graphics (board coordinates; F/B.SilkS). Not hashed:
     # they come with the library footprint (lib_id is hashed).
     silk: tuple[GraphicItem, ...] = ()
+    # R5: the footprint's "exclude from BOM" / "exclude from position files" attributes (JLC
+    # BOM / CPL). Not hashed (spec §22.6; an attribute edit is no layout change).
+    exclude_from_bom: bool = False
+    exclude_from_pos: bool = False
 
 
 @dataclass(frozen=True)

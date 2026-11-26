@@ -484,6 +484,8 @@ def _part(fp: FootprintInstance, group: str | None) -> Part:
         rule_areas=rule_areas,
         item_kiids=_item_kiids(fp),
         silk=_silk(fp),
+        exclude_from_bom=bool(fp.attributes.exclude_from_bill_of_materials),
+        exclude_from_pos=bool(fp.attributes.exclude_from_position_files),
     )
 
 

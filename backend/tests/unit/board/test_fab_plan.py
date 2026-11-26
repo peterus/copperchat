@@ -9,6 +9,7 @@ import io
 from dataclasses import replace
 
 from copperchat.board.boardmd import AcceptedWarning
+from copperchat.board.classify import classify
 from copperchat.board.fab import (
     BOM_HEADER,
     CPL_HEADER,
@@ -18,14 +19,16 @@ from copperchat.board.fab import (
     csv_text,
     custom_rules,
     fab_commands,
+    fab_excluded,
     fab_report,
     min_pad_pitch,
+    small_holes,
     stencil_sides,
 )
 from copperchat.board.metrics import Metric, MetricsReport
 from copperchat.board.model import Pad
 from copperchat.board.presets import PRESETS
-from tests.unit.board.builders import board, part
+from tests.unit.board.builders import board, part, via
 
 LAYERS_4 = ("F.Cu", "In1.Cu", "In2.Cu", "B.Cu")
 
@@ -311,3 +314,75 @@ def test_stencil_sides() -> None:
     assert stencil_sides(board(parts=(bottom, tht))) == "bottom only"
     assert stencil_sides(board(parts=(top, bottom))) == "top + bottom"
     assert "Stencil: top + bottom" in _report(model=board(parts=(top, bottom)))
+
+
+# -- R5: BOM/CPL exclusion and the small-hole note (spec §22.2 / §22.6) ----------------------
+
+
+def _hole_part(ref: str, x: float, drill: float, *, plated: bool = True) -> object:
+    layers = frozenset({"F.Cu", "B.Cu", "F.Mask", "B.Mask"}) if plated else frozenset()
+    pad = replace(_pad(ref, "1", x, 10, smd=False), layers=layers, drill=drill)
+    return part(ref, x, 10, pads=(pad,))
+
+
+def test_bom_drops_excluded_designators() -> None:
+    text = _bom([["MountingHole", "H1,H2", "MountingHole:M2", "", ""],
+                 ["100n", "C1,H9", "C_0402", "C1525", ""],
+                 ["10k", "R1", "R_0402", "", ""]])  # fmt: skip
+    rows = bom_rows(text, exclude=frozenset({"H1", "H2", "H9"}))
+    assert [r[1] for r in rows] == ["C1", "R1"]
+    assert [r[1] for r in bom_rows(text)] == ["H1,H2", "C1,H9", "R1"]  # default: unchanged
+
+
+def test_cpl_drops_excluded() -> None:
+    text = _pos([["H1", "", "", "1", "2", "0", "top"], ["C1", "", "", "3", "4", "90", "top"]])
+    assert [r[0] for r in cpl_rows(text, exclude=frozenset({"H1"}))] == ["C1"]
+    assert [r[0] for r in cpl_rows(text)] == ["H1", "C1"]
+
+
+def test_fab_excluded_mounting_holes() -> None:
+    m = board(parts=(part("H1", 5, 5), part("H2", 95, 5), part("C1", 50, 40)))
+    cls = classify(m)
+    assert fab_excluded(m, cls) == ("H1", "H2")
+    assert fab_excluded(m, cls, "bom") == fab_excluded(m, cls, "cpl") == ("H1", "H2")
+
+
+def test_fab_excluded_by_attribute() -> None:
+    m = board(
+        parts=(
+            part("C1", 20, 40, exclude_from_bom=True),
+            part("C2", 40, 40, exclude_from_pos=True),
+            part("C3", 60, 40),
+        )
+    )
+    cls = classify(m)
+    assert fab_excluded(m, cls, "bom") == ("C1",)
+    assert fab_excluded(m, cls, "cpl") == ("C2",)
+    assert fab_excluded(m, cls) == ("C1", "C2")
+
+
+def test_small_holes_lists_02() -> None:
+    m = board(
+        parts=(
+            _hole_part("J1", 20, 0.2),
+            _hole_part("J2", 40, 0.3),  # not below 0.3
+            _hole_part("H1", 60, 0.15, plated=False),  # NPTH: no plated hole
+        ),
+        vias=(via("GND", (10, 10), 0.45, 0.25), via("GND", (12, 10), 0.6, 0.3)),
+    )
+    assert small_holes(m) == (("J1", 0.2), ("via", 0.25))
+    dup = board(parts=(part("J3", pads=(
+        replace(_pad("J3", "1", 1, 1, smd=False), drill=0.25),
+        replace(_pad("J3", "2", 3, 1, smd=False), drill=0.2),
+    )),))  # fmt: skip
+    assert small_holes(dup) == (("J3", 0.2),)  # one row per ref, the smallest drill
+
+
+def test_report_excluded_and_small_holes_sections() -> None:
+    plain = _report()
+    assert "Excluded from BOM/CPL" not in plain and "Small holes" not in plain
+    m = board(copper_layers=LAYERS_4, parts=(_hole_part("J`1", 20, 0.2),))
+    text = _report(model=m, excluded=("H1", "H|2"))
+    assert "## Excluded from BOM/CPL" in text and "H1, H\\|2" in text
+    assert "## Small holes (possible JLC surcharge)" in text
+    assert "| J\\`1 | 0.2 |" in text

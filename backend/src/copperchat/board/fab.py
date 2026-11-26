@@ -16,8 +16,10 @@ import math
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 from copperchat.board.boardmd import AcceptedWarning
+from copperchat.board.classify import Classification
 from copperchat.board.metrics import MetricsReport
 from copperchat.board.model import BoardModel
 from copperchat.board.presets import FabPreset
@@ -50,6 +52,7 @@ BOM_GROUP_BY = "Value,Footprint,LCSC,MPN"
 BOM_HEADER = ("Comment", "Designator", "Footprint", "LCSC Part #")  # JLC template (call 17)
 CPL_HEADER = ("Designator", "Mid X", "Mid Y", "Layer", "Rotation")
 ASSEMBLY_NOTE = "BOM/CPL not validated for JLC assembly (rotation offsets, LCSC numbers)"
+SMALL_HOLE_MM = 0.3  # plated holes below this may cost a JLC surcharge (owner, spec §22.2)
 FINE_PITCH_MM = 0.5  # a pad pitch below this → ENIG recommended (flat pads for fine pitch)
 STACKED_PAD_MM = 0.05  # pads closer than this are stacked (one position), not a pitch
 
@@ -117,17 +120,63 @@ def _designators(refs: str) -> str:
     return ",".join(r for r in re.split(r"[,\s]+", refs) if r)
 
 
-def bom_rows(kicad_bom_csv: str) -> list[tuple[str, str, str, str]]:
+def fab_excluded(
+    model: BoardModel, cls: Classification, only: Literal["bom", "cpl"] | None = None
+) -> tuple[str, ...]:
+    """Refs kept out of the JLC BOM / CPL (spec §22.6), sorted: every part classified
+    `mounting_hole`, plus the parts whose footprint attributes exclude them - from the BOM
+    (`only="bom"`: exclude-from-BOM), from the CPL (`only="cpl"`: exclude-from-position-files)
+    or from either (`None`, the union the fab report lists)."""
+    out: set[str] = set()
+    for p in model.parts:
+        attr = {
+            "bom": p.exclude_from_bom,
+            "cpl": p.exclude_from_pos,
+            None: p.exclude_from_bom or p.exclude_from_pos,
+        }[only]
+        if attr or cls.part_class.get(p.ref) == "mounting_hole":
+            out.add(p.ref)
+    return tuple(sorted(out))
+
+
+def small_holes(model: BoardModel) -> tuple[tuple[str, float], ...]:
+    """(ref or `via`, smallest drill) of every plated hole below `SMALL_HOLE_MM` - plated pad
+    drills (a pad with copper) and via drills - one row per ref, sorted by (drill, ref)."""
+    best: dict[str, float] = {}
+
+    def add(ref: str, drill: float) -> None:
+        if drill < SMALL_HOLE_MM and drill < best.get(ref, math.inf):
+            best[ref] = drill
+
+    for p in model.parts:
+        for q in p.pads:
+            if q.drill and any(layer.endswith(".Cu") for layer in q.layers):
+                add(p.ref, q.drill)
+    for v in model.vias:
+        add("via", v.drill)
+    return tuple(sorted(((r, round(d, 4)) for r, d in best.items()), key=lambda t: (t[1], t[0])))
+
+
+def bom_rows(
+    kicad_bom_csv: str, *, exclude: frozenset[str] = frozenset()
+) -> list[tuple[str, str, str, str]]:
     """JLC BOM rows (Comment, Designator, Footprint, LCSC Part #) from `kicad-cli pcb export
     bom` CSV with the labels of `BOM_FIELDS`: Comment = Value, Footprint without the library
-    prefix, the 4th column = LCSC if set, else MPN, else empty."""
+    prefix, the 4th column = LCSC if set, else MPN, else empty. Designators in `exclude` are
+    dropped from their grouped row; a row left without designators is dropped."""
     out: list[tuple[str, str, str, str]] = []
     for row in _rows(kicad_bom_csv):
+        refs = _designators(row.get("Reference", ""))
+        if exclude:
+            kept = [r for r in refs.split(",") if r and r not in exclude]
+            if not kept:
+                continue
+            refs = ",".join(kept)
         part_no = row.get("LCSC", "") or row.get("MPN", "")
         out.append(
             (
                 safe_cell(row.get("Value", "")),
-                safe_cell(_designators(row.get("Reference", ""))),
+                safe_cell(refs),
                 safe_cell(_footprint_name(row.get("Footprint", ""))),
                 safe_cell(part_no),
             )
@@ -148,13 +197,18 @@ def _number(text: str, what: str) -> float:
 _SIDES = {"top": "Top", "bottom": "Bottom"}
 
 
-def cpl_rows(kicad_pos_csv: str) -> list[tuple[str, str, str, str, str]]:
+def cpl_rows(
+    kicad_pos_csv: str, *, exclude: frozenset[str] = frozenset()
+) -> list[tuple[str, str, str, str, str]]:
     """JLC CPL rows (Designator, Mid X, Mid Y, Layer, Rotation) from `kicad-cli pcb export
     pos --format csv --units mm` (columns Ref, PosX, PosY, Rot, Side): numbers parsed and
     written as `"%.4fmm"` / `"%.1f"`, layer `Top` / `Bottom`. A non-number or an unknown
-    side raises `ValueError` (the export fails rather than writing a wrong CPL)."""
+    side raises `ValueError` (the export fails rather than writing a wrong CPL). Rows whose
+    Ref is in `exclude` are dropped."""
     out: list[tuple[str, str, str, str, str]] = []
     for row in _rows(kicad_pos_csv):
+        if row.get("Ref", "") in exclude:
+            continue
         side = _SIDES.get(row.get("Side", "").casefold())
         if side is None:
             raise ValueError(f"kicad-cli wrote an unknown side {row.get('Side', '')[:20]!r}")
@@ -285,9 +339,12 @@ def fab_report(
     custom_rules: Sequence[tuple[str, str]],
     files: Sequence[tuple[str, int]],
     swept: Sequence[str] = (),
+    excluded: Sequence[str] = (),
 ) -> str:
     """`fab-report.md`: what was exported from which board state, the checks it passed and
-    the order notes for JLCPCB. Every injected string is Markdown-escaped (`md`)."""
+    the order notes for JLCPCB. Every injected string is Markdown-escaped (`md`). The
+    "Excluded from BOM/CPL" (`excluded`) and "Small holes (possible JLC surcharge)"
+    (`small_holes`) sections appear only when there is something to list."""
     o = model.outline
     size = f"{o.w:.1f} x {o.h:.1f} mm" if o.kind != "none" else "no outline"
     thickness = preset.thickness if preset is not None else 1.6
@@ -346,6 +403,28 @@ def fab_report(
         f"- Stencil: {stencil_sides(model)}",
         "- Upload the zip (gerbers + drill); BOM and CPL are the two CSV files",
         f"- {ASSEMBLY_NOTE}",
+    ]
+    if excluded:
+        lines += [
+            "",
+            "## Excluded from BOM/CPL",
+            "",
+            "Mounting holes and parts whose footprint excludes them from the BOM or the "
+            f"position file: {md(', '.join(excluded))}",
+        ]
+    holes = small_holes(model)
+    if holes:
+        lines += [
+            "",
+            "## Small holes (possible JLC surcharge)",
+            "",
+            f"Plated holes below {SMALL_HOLE_MM:g} mm may cost a JLC surcharge.",
+            "",
+            "| Ref | Drill (mm) |",
+            "|---|---|",
+            *(f"| {md(ref)} | {drill:g} |" for ref, drill in holes),
+        ]
+    lines += [
         "",
         "## Files",
         "",
