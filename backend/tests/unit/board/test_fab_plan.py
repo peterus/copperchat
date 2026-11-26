@@ -284,8 +284,16 @@ def test_enig_for_fine_pitch() -> None:
 
 def test_stencil_sides() -> None:
     top = part("U1", pads=(_pad("U1", "1", 10, 10),))
-    bottom = replace(part("U2", side="bottom"), pads=(_pad("U2", "1", 20, 20),))
+    bottom = replace(
+        part("U2", side="bottom"),
+        pads=(replace(_pad("U2", "1", 20, 20), layers=frozenset({"B.Cu", "B.Paste", "B.Mask"})),),
+    )
     tht = replace(part("J1", side="bottom"), pads=(_pad("J1", "1", 30, 30, smd=False),))
     assert stencil_sides(board(parts=(top, tht))) == "top only"
+    fiducial = replace(
+        part("FID1", side="bottom"),
+        pads=(replace(_pad("FID1", "1", 40, 40), layers=frozenset({"B.Cu", "B.Mask"})),),
+    )
+    assert stencil_sides(board(parts=(top, fiducial))) == "top only"  # no paste: no stencil
     assert stencil_sides(board(parts=(top, bottom))) == "top + bottom"
     assert "Stencil: top + bottom" in _report(model=board(parts=(top, bottom)))

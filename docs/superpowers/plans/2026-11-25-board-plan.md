@@ -797,8 +797,8 @@ default GND stack, 60 × 45 mm, `jlcpcb-4l`)
   `custom_rules(model.dru_text)`: probed — KiCad writes a `pcb_set_rules` reason as a `#`
   comment line **inside** the rule, below its header (a block right before a rule is read
   too). Surface finish: ENIG when the finest SMD pad pitch of one part (stacked pads < 0.05 mm
-  apart excluded) is below 0.5 mm, else lead-free HASL; stencil `top only` unless an SMD part
-  sits on the bottom.
+  apart excluded) is below 0.5 mm, else lead-free HASL; stencil `top only` unless a pad
+  has bottom paste (`B.Paste`); paste-only aperture pads never count as a pitch.
 - Tool module: the whole export runs under `ctx.editing.edit_lock(project)` (plain `ToolSpec`
   handler; the adapter still takes the turn snapshot because `mutating=True`); model + DRC
   under `session.applying()` like `pcb_check`; `save_copy` into `fab/.jlcpcb.tmp-<id>/src/`,

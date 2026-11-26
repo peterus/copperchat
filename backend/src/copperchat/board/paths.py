@@ -209,7 +209,8 @@ def sweep_stale(fab_dir: Path, target_name: str) -> list[str]:
     `.<target>.tmp-<12 hex>` or `<target>.old-<12 hex>` that lstat as a plain directory are
     removed; a symlink or file of that name is skipped and logged, never followed. With the
     target missing, a single `<target>.old-<id>` is renamed back first (`_restore_orphan`).
-    Returns the handled names (sorted; a restored one as "<name> (restored)")."""
+    Returns the handled names: a restored one first (as "<name> (restored)"), then the
+    removed ones sorted."""
     if fab_dir.name != FAB_DIR:
         raise _unsafe(str(fab_dir), "outside")
     _check_dir(fab_dir, FAB_DIR, missing_ok=False)

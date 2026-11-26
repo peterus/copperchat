@@ -238,7 +238,7 @@ def min_pad_pitch(model: BoardModel) -> float | None:
 
 def stencil_sides(model: BoardModel) -> str:
     """ "top only" when every part with an SMD pad sits on top, else "top + bottom"."""
-    bottom = any(p.side == "bottom" and any(q.smd for q in p.pads) for p in model.parts)
+    bottom = any("B.Paste" in q.layers for p in model.parts for q in p.pads)
     return "top + bottom" if bottom else "top only"
 
 
