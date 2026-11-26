@@ -16,6 +16,7 @@ from copperchat.kicad_tools.board.fanout import (
     apply_fanout,
     prepare_fanout,
 )
+from copperchat.kicad_tools.board.silk import apply_tidy_silk, prepare_tidy_silk
 from copperchat.kicad_tools.board.specs_setup import NAME_PATTERN
 from copperchat.kicad_tools.board.stitch import (
     MAX_PITCH_MM,
@@ -212,6 +213,17 @@ PCB_STITCH_DESCRIPTION = (
     "place, with a note)."
 )
 
+PCB_TIDY_SILK_DESCRIPTION = (
+    "Tidy the reference designators: each next to its part (above, below, left, right, "
+    "then the corners), off pads, other silk and other references, upright (90° for parts "
+    "at 90°/270°), on the part's side (bottom mirrored), all in the fab preset's minimum "
+    "size (JLC 1.0 mm / 0.15 mm line). KiCad's DRC re-checks: a flagged reference is moved "
+    "once more, then hidden; every hidden reference has a report line. Call it after "
+    "placement and copper changes, before pcb_check full (it changes board_hash: a board "
+    "approval becomes stale). Returns moved, resized, replanned, hidden [{ref, reason}], "
+    "silk_markers_before/after, board_hash {before, after, changed}. Cost 1."
+)
+
 COPPER_SPECS: list[ToolSpec] = [
     edit_spec("pcb_zones", PCB_ZONES_DESCRIPTION, PCB_ZONES_SCHEMA, prepare_zones, apply_zones),
     edit_spec(
@@ -219,5 +231,12 @@ COPPER_SPECS: list[ToolSpec] = [
     ),
     edit_spec(
         "pcb_stitch", PCB_STITCH_DESCRIPTION, PCB_STITCH_SCHEMA, prepare_stitch, apply_stitch
+    ),
+    edit_spec(
+        "pcb_tidy_silk",
+        PCB_TIDY_SILK_DESCRIPTION,
+        _obj({}, []),
+        prepare_tidy_silk,
+        apply_tidy_silk,
     ),
 ]
