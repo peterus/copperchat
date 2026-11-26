@@ -20,7 +20,7 @@ from copperchat.board.model import ArcTrack, Pad
 from tests.unit.board.builders import board, part, track, via
 
 FAILURES = ("non_octilinear", "ninety", "acute", "off_angle", "t_junctions", "micro_jogs")
-ALL_FAILURES = (*FAILURES, "short_chamfers")
+ALL_FAILURES = (*FAILURES, "short_chamfers", "y_junctions")
 
 
 def walk(start: Point, heading: float, steps: list[tuple[float, float]]) -> list[Point]:
@@ -169,17 +169,34 @@ def _t_board(branch_end: Point, pads: tuple[Pad, ...] = ()) -> object:
     )
 
 
-def test_t_junction_90_fails() -> None:
+def test_t_junction_90_reported_not_m4() -> None:
+    # still in t_junctions (P3a semantics for chamfer/route/fill); M4 ignores it (R1)
     r = analyse_tracks(_t_board((15.0, 15.0)))  # type: ignore[arg-type]
     assert len(r.t_junctions) == 1
     assert r.t_junctions[0] == (15.0, 10.0)
+    assert r.y_junctions == ()
     assert len(r.ninety) == 0
 
 
-def test_t_junction_45_ok() -> None:
+def test_t_junction_45_is_y() -> None:
     r = analyse_tracks(_t_board((18.0, 13.0)))  # type: ignore[arg-type]
     assert len(r.t_junctions) == 0
-    assert failures(r) == {}
+    assert r.y_junctions == ((15.0, 10.0),)
+    assert failures(r) == {"y_junctions": 1}
+
+
+def test_y_with_ninety_pair_in_both() -> None:
+    # headings (0, 90, 225) from the node: a 90° pair (old T) and off the 90° lattice (Y)
+    m = board(
+        tracks=(
+            track(start=(15.0, 10.0), end=(20.0, 10.0), kiid="a"),
+            track(start=(15.0, 10.0), end=(15.0, 15.0), kiid="b"),
+            track(start=(15.0, 10.0), end=(12.0, 7.0), kiid="c"),
+        )
+    )
+    r = analyse_tracks(m)
+    assert r.t_junctions == ((15.0, 10.0),)
+    assert r.y_junctions == ((15.0, 10.0),)
 
 
 def test_t_junction_inside_pad_ok() -> None:

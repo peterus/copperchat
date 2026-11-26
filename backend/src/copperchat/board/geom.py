@@ -6,10 +6,10 @@ import itertools
 import math
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
-    from copperchat.board.model import BoardModel, Pad, Track, Via
+    from copperchat.board.model import BoardModel, Pad, Part, Track, Via
 
 Point = tuple[float, float]
 Poly = Sequence[Point]
@@ -242,6 +242,10 @@ class BendReport:
     micro_jogs: tuple[Point, ...]
     short_chamfers: tuple[Point, ...]
     bends: int  # 45-degree bends (pad entries excluded)
+    # round 2 (R1): off-pad, off-via nodes of degree >= 3 whose headings are not all on one
+    # 90-degree lattice (`junction_kind` "y"); M15. A Y with a 90-degree pair is also in
+    # `t_junctions` (that field keeps its P3a semantics for chamfer / route / fill)
+    y_junctions: tuple[Point, ...] = ()
 
 
 def _heading(a: Point, b: Point) -> float:
@@ -259,6 +263,24 @@ def _turn(a: Point, b: Point, c: Point) -> tuple[float, float]:
 
 def _mid(a: Point, b: Point) -> Point:
     return ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+
+
+JunctionKind = Literal["t", "x", "y"]
+
+
+def junction_kind(headings: Sequence[float]) -> JunctionKind:
+    """The kind of a node joining >= 3 track ends, from their headings (degrees, measured
+    from the node outward): "y" when any pair's difference is off one 90-degree lattice
+    (ANGLE_TOL_DEG < d mod 90 < 90 - ANGLE_TOL_DEG, e.g. a 45/135-degree branch), else "t"
+    (3 ends) or "x" (>= 4 ends)."""
+    hs = list(headings)
+    if len(hs) < 3:
+        raise ValueError(f"a junction needs >= 3 headings, got {len(hs)}")
+    for h1, h2 in itertools.combinations(hs, 2):
+        r = (h1 - h2) % 90.0
+        if ANGLE_TOL_DEG < r < 90.0 - ANGLE_TOL_DEG:
+            return "y"
+    return "t" if len(hs) == 3 else "x"
 
 
 def _off_octilinear(a: Point, b: Point) -> bool:
@@ -627,7 +649,9 @@ class TrackIndex:
 
 def analyse_tracks(model: BoardModel, *, index: TrackIndex | None = None) -> BendReport:
     """`analyse_bends` over every polyline of every net/layer (pad entries where a polyline
-    end lies in a same-net pad on that layer), plus T-junctions and arcs (non-octilinear).
+    end lies in a same-net pad on that layer), plus T-junctions, Y-junctions (`junction_kind`
+    of every off-pad, off-via node of degree >= 3; headings from the node outward) and arcs
+    (non-octilinear; arcs are not part of the junction graph).
     Non-octilinear is tested per raw track (before collinear merging); the direction change
     at a degree-2 node where polylines end (width change, same-layer via, closed-loop start)
     is classified too unless the node lies in a same-net pad. `index` (default: built from
@@ -641,6 +665,7 @@ def analyse_tracks(model: BoardModel, *, index: TrackIndex | None = None) -> Ben
             "acute",
             "off_angle",
             "t_junctions",
+            "y_junctions",
             "micro_jogs",
             "short_chamfers",
         )
@@ -692,6 +717,8 @@ def analyse_tracks(model: BoardModel, *, index: TrackIndex | None = None) -> Ben
                 if abs(min(d, 360.0 - d) - 90.0) <= ANGLE_TOL_DEG:
                     acc["t_junctions"].append(node)
                     break
+            if junction_kind(heads) == "y":
+                acc["y_junctions"].append(node)
     acc["non_octilinear"].extend(
         _mid(t.start, t.end)
         for t in model.tracks
@@ -707,4 +734,144 @@ def analyse_tracks(model: BoardModel, *, index: TrackIndex | None = None) -> Ben
         micro_jogs=_sorted(acc["micro_jogs"]),
         short_chamfers=_sorted(acc["short_chamfers"]),
         bends=bends,
+        y_junctions=_sorted(acc["y_junctions"]),
     )
+
+
+# --- B-C5 round 2 (R1): pad entry / escape zones, neck-down, straight corridors -------------
+
+ADJ_GAP_MM = 3.0  # adjacent pads: edge gap along the corridor axis at most this
+ESCAPE_HALO_MM = 0.5  # escape zone = courtyard bbox grown by this
+LOOP_TURN_DEG = 135.0  # |signed cumulative turn| inside an entry zone that is a loop
+
+
+def entry_zone_width(width: float) -> float:
+    """How far a pad's entry zone reaches beyond the pad for a track of `width`."""
+    return max(1.0, 3.0 * width)
+
+
+def _pad_rect(pad: Pad, grow: float = 0.0) -> list[Point]:
+    """The pad rectangle (w x h about its centre, rotated by `rot` like `_in_pad`) grown by
+    `grow` on every side, counter-clockwise in local coordinates."""
+    t = math.radians(pad.rot)
+    c, s = math.cos(t), math.sin(t)
+    hw, hh = pad.w / 2 + grow, pad.h / 2 + grow
+    out: list[Point] = []
+    for lx, ly in ((-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)):
+        # inverse of _in_pad's rotation: local (lx, ly) -> board offset
+        out.append((pad.x + lx * c + ly * s, pad.y - lx * s + ly * c))
+    return out
+
+
+def entry_zone(pad: Pad, width: float) -> tuple[Point, ...]:
+    """The pad rectangle (rotated) grown by `entry_zone_width(width)` (M16 b/c)."""
+    return tuple(_pad_rect(pad, entry_zone_width(width)))
+
+
+def _bbox_of(pts: Iterable[Point]) -> BBox:
+    xs, ys = zip(*pts, strict=True)
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def escape_zone(part: Part) -> tuple[Point, ...]:
+    """The part's courtyard's axis-aligned bbox grown by `ESCAPE_HALO_MM` (convex, so a
+    segment lies inside iff both its ends do). Without a courtyard: its pads' bbox."""
+    pts: list[Point] = list(part.courtyard)
+    if len(pts) < 3:
+        pts = [p for q in part.pads for p in _pad_rect(q)]
+    if not pts:
+        return ()
+    x0, y0, x1, y1 = _bbox_of(pts)
+    g = ESCAPE_HALO_MM
+    return ((x0 - g, y0 - g), (x1 + g, y0 - g), (x1 + g, y1 + g), (x0 - g, y1 + g))
+
+
+def neck_width(pad: Pad, class_width: float, min_track: float) -> float:
+    """The width a track of `class_width` narrows to at `pad`: the pad's minor side when
+    that is narrower, never below `min_track`."""
+    return max(min_track, min(class_width, pad.w, pad.h))
+
+
+def straight_corridor(
+    a: Pad,
+    b: Pad,
+    width: float,
+    *,
+    copper_layers: Sequence[str] = ("F.Cu", "B.Cu"),
+) -> tuple[tuple[str, ...], Point, Point] | None:
+    """(shared copper layers, start on a's edge, end on b's edge) of the axis-parallel
+    straight segment joining two adjacent pads, or None. Adjacent: they share >= 1 of
+    `copper_layers` (a plated through-hole is on all of them), their bboxes are apart by
+    0 < gap <= ADJ_GAP_MM along one axis and overlap across the other by >= `width`; the
+    segment runs along the overlap band's centre line."""
+    layers = tuple(la for la in copper_layers if _pad_on_layer(a, la) and _pad_on_layer(b, la))
+    if not layers:
+        return None
+    ba, bb = _bbox_of(_pad_rect(a)), _bbox_of(_pad_rect(b))
+    for ax in (0, 1):  # corridor along x (ax 0) or y (ax 1)
+        o = 1 - ax
+        lo, hi = max(ba[o], bb[o]), min(ba[o + 2], bb[o + 2])
+        if hi - lo < width - _EPS:
+            continue
+        if ba[ax + 2] < bb[ax]:
+            s, e = ba[ax + 2], bb[ax]
+        elif bb[ax + 2] < ba[ax]:
+            s, e = ba[ax], bb[ax + 2]
+        else:
+            continue
+        if abs(e - s) > ADJ_GAP_MM + _EPS:
+            continue
+        mid = (lo + hi) / 2
+        start: Point = (s, mid) if ax == 0 else (mid, s)
+        end: Point = (e, mid) if ax == 0 else (mid, e)
+        return layers, start, end
+    return None
+
+
+@dataclass(frozen=True)
+class EntryReport:
+    loops: tuple[Point, ...]
+    jogs: tuple[Point, ...]
+
+
+def analyse_entry(
+    points: Sequence[Point],
+    width: float,
+    zone: Sequence[Point],
+    *,
+    in_pad: Callable[[Point], bool] | None = None,
+) -> EntryReport:
+    """Loops and jogs of a path's piece from its pad end (`points[0]`) until it first
+    leaves `zone` (the pad's `entry_zone`). Loop: the signed cumulative direction change
+    reaches +-LOOP_TURN_DEG at a vertex (reported once, at that vertex). Jog: two
+    consecutive 45-degree bends of opposite sense (reported at the second). Vertices inside
+    the pad itself (`in_pad`, the pad-entry rule of `pad_entry_ends`) are ignored. `width`
+    is the track's (the zone's reach already follows it)."""
+    pts: list[Point] = []
+    for p in points:
+        if not pts or math.dist(pts[-1], p) >= _ZERO_LEN:
+            pts.append(p)
+    loops: list[Point] = []
+    jogs: list[Point] = []
+    cum = 0.0
+    prev: float | None = None  # sense of the previous counted 45-degree bend
+    for i in range(1, len(pts) - 1):
+        v = pts[i]
+        if not point_in_polygon(v, zone):
+            break
+        if in_pad is not None and in_pad(v):
+            continue
+        delta, sense = _turn(pts[i - 1], v, pts[i + 1])
+        kind = _vertex_kind(delta)
+        if kind is None:
+            continue
+        cum += sense * delta
+        if not loops and abs(cum) >= LOOP_TURN_DEG - ANGLE_TOL_DEG:
+            loops.append(v)
+        if kind == "bend":
+            if prev is not None and prev != sense:
+                jogs.append(v)
+            prev = sense
+        else:
+            prev = None
+    return EntryReport(loops=tuple(loops), jogs=tuple(jogs))
