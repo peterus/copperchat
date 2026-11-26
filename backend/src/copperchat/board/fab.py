@@ -176,7 +176,10 @@ def csv_text(header: Sequence[str], rows: Iterable[Sequence[str]]) -> str:
 
 # -- the report -----------------------------------------------------------------------------
 
-_RULE = re.compile(r'\(\s*rule\s+(?:"((?:[^"\\]|\\.)*)"|([^\s()"]+))', re.IGNORECASE)
+# a rule starts a line: "(rule x" inside a "#" reason comment is no rule
+_RULE = re.compile(
+    r'^[ \t]*\(\s*rule\s+(?:"((?:[^"\\]|\\.)*)"|([^\s()"]+))', re.IGNORECASE | re.MULTILINE
+)
 
 
 def _comment_lines(lines: Iterable[str]) -> list[str]:

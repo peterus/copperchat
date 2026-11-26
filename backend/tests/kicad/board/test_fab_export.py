@@ -230,10 +230,15 @@ async def test_fab_cli_under_lock(
     seen: list[tuple[str, bool, float]] = []
     gate = asyncio.Event()
     in_gerbers = asyncio.Event()
+    pro_copies: list[bool] = []
 
     async def spy(settings: Any, args: Any, *, timeout: float, cwd: Any = None) -> Any:
         seen.append((args[2], BOARD_CLI_LOCK.locked(), timeout))
         if args[2] == "gerbers":
+            # the copy's project file sits next to it (a --check-zones refill uses its rules)
+            pro = fab_rig.session.project.pro_file
+            copied = Path(cwd) / "src" / pro.name
+            pro_copies.append(copied.read_bytes() == pro.read_bytes())
             in_gerbers.set()
             await gate.wait()
         return await real(settings, args, timeout=timeout, cwd=cwd)
@@ -265,6 +270,7 @@ async def test_fab_cli_under_lock(
         ("gerbers", True), ("drill", True), ("pos", True), ("bom", True)
     ]  # fmt: skip
     assert [t for _, _, t in seen] == [120, 60, 60, 60]
+    assert pro_copies == [True]
 
 
 async def test_kicad_data_untouched(fab_rig: PlacedSynth, metrics_pass: list[Any]) -> None:

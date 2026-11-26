@@ -202,6 +202,8 @@ def test_custom_rules_with_reasons() -> None:
         ("bare", ""),
     ]
     assert custom_rules("") == []
+    tricky = '(rule "a"\n\t# see (rule usb_dm) and (rule of thumb\n\t(condition "x")\n)\n'
+    assert custom_rules(tricky) == [("a", "see (rule usb_dm) and (rule of thumb")]
 
 
 def _metrics(hard: int = 0) -> MetricsReport:
