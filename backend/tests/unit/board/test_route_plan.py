@@ -311,13 +311,13 @@ async def test_routes_all_without_deadline(board: Board, monkeypatch: pytest.Mon
 async def test_route_connections_deadline(
     board: Board, clock: FakeClock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def answer(fn: Any, args: Any, kw: Any, t: float) -> RoutePath:
-        clock.now += 20  # the first connection takes the clock past the deadline
-        return _straight(args[1])
+    def drc(t: float) -> DrcResult:
+        clock.now += 20  # the first connection's check takes the clock past the deadline
+        return DrcResult((), 0, 0.01)
 
-    cpu = FakeCpu(answer)
+    cpu = FakeCpu()
     monkeypatch.setattr(route, "run_cpu", cpu)
-    sctx = FakeSctx(_three())
+    sctx = FakeSctx(_three(), drc)
     out = await route.route_connections(  # type: ignore[arg-type]
         sctx, _plans3(), lock=True, deadline=clock.now + 10
     )
@@ -803,3 +803,22 @@ def test_hole_spacing_around_drilled_pads() -> None:
     assert min(math.dist((40.0, 10.0), q) for q in z.outline) == pytest.approx(
         apothem / math.cos(math.pi / 8)
     )
+
+
+async def test_no_push_after_deadline(
+    board: Board, clock: FakeClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A solve that ends past the deadline: nothing pushed, no DRC started."""
+    deadline = clock.now + 5.0
+
+    def answer(fn: Any, args: Any, kw: Any, t: float) -> RoutePath:
+        clock.now = deadline + 1
+        return _straight(args[1])
+
+    monkeypatch.setattr(route, "run_cpu", FakeCpu(answer))
+    sctx = FakeSctx(_three())
+    out = await route.route_connections(  # type: ignore[arg-type]
+        sctx, _plans3()[:1], lock=True, deadline=deadline
+    )
+    assert out.failed == (("N1:R1.1-R2.1", "timeout"),)
+    assert board.items == {} and sctx.drc_timeouts == [] and sctx.ctx.session.commits == []

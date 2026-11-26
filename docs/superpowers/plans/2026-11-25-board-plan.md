@@ -784,13 +784,16 @@ image `52b43fb8…` recipe `dc93f472…`, `record_property` per net and total)
 - **Router obstacles added in `route.py` (model transform, no P5a file):** footprint-embedded keepouts
   (`Part.rule_areas`, e.g. an antenna) become track + via keepout zones on every copper layer
   (conservative: the model has no keepout type / layer for them), except an area holding one of the
-  request's pads; every existing via (any net) gets a via-keepout octagon of the board's
-  `hole_to_hole_min`, so a new via keeps the hole rule (KiCad rejected new vias on top of own-net ones).
+  request's pads; every existing hole (vias and drilled pads, any net incl. the routed one) gets a
+  via-keepout octagon of the board's `hole_to_hole_min`, so a new via keeps the hole rule (KiCad
+  rejected new vias on top of own-net ones).
 - **P5a file touched (minimal):** `router/astar.py::valid_path` rejects a path whose own vias are
   closer than via diameter + clearance — the search used a via, a 0.05 mm hop on B.Cu and a via to fake
   a 135° turn (owner rule!) next to a TSSOP pin; KiCad's DRC rejected the overlapping holes.
 - Report extras: per net `seconds` (solve time), call `seconds`, `pairs`; `drc_errors` = errors of the
-  last DRC of the call other than unconnected items (null when nothing was pushed). A call with nothing
+  last DRC whose copper stayed, other than unconnected items (null when nothing was kept). A taken-out
+  connection is restored without a DRC gate (same board state as its accepted DRC); copper is never
+  pushed once the deadline has passed. A call with nothing
   to route (all `already_routed`) writes nothing and costs 0.
 - `pcb_unroute`: `skipped_locked` (components) plus `skipped_locked_nets`; nothing selected → nothing
   written, cost 0; `unlock_only` with nothing locked → cost 0. Plane nets = classify's ground nets +
@@ -819,8 +822,7 @@ image `52b43fb8…` recipe `dc93f472…`, `record_property` per net and total)
 - `solve_pair` reaches the 25 s limit on the 23 mm USB pair (fan-in from 1.9 mm pad pitch); the nets are
   then routed alone. A faster coupled search would help P6b/P9a timing.
 - Router grid limits remain (P5a): same-path via spacing is now checked at the goal only (a rejected
-  goal state costs search time); hole-to-hole of a new path's own vias vs. pads with holes relies on
-  copper clearance.
+  goal state costs search time).
 - `pair_coupling` reports `gap_max` up to 2.95 mm on fan-in stretches (it samples every parallel
   segment) — P6b/P9a may want "coupled stretch only" figures for M12.
 - Footprint keepouts block tracks and vias on all copper layers; a footprint rule area that only

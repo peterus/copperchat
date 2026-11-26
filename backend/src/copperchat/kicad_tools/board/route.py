@@ -647,6 +647,8 @@ async def _place(
     """Push `paths`, run the DRC task, keep them when no marker names their items.
     None = kept (model, `kept` and results updated); else the failure reason
     ("timeout" for a DRC timeout, else "drc_rejected: …"); rejected copper is removed."""
+    if _timed_out(st):
+        return "timeout"  # the solve used up the time: no push, no DRC that cannot finish
     items = [(p.req, path) for p, path in zip(group, paths, strict=True)]
     made = await _push(sctx, items, st.lock)
     remaining = _remaining(st.deadline)
