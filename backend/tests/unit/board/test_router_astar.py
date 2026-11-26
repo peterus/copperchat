@@ -607,3 +607,31 @@ def test_junction_masks_cost_bounded_and_deadline() -> None:
     fresh = build_grid(m2, req, window_mm=40.0)
     with pytest.raises(DeadlineExpired):
         junction_masks(fresh, deadline=_time.monotonic() - 1.0)
+
+
+@pytest.mark.parametrize("offset", [0.0, 0.025, 0.0125])
+def test_search_crosses_off_lattice_own_copper_at_45(offset: float) -> None:
+    """Own copper that does not lie on the request's lattice still masks the 90° steps
+    across it: the search crosses it diagonally at once instead of giving up after the
+    goal rejects (round-2 review: a track at y = 12.025 gave no masks, no path)."""
+    import time as _time
+    from dataclasses import replace
+
+    from copperchat.board.model import Track
+    from copperchat.board.router.astar import junctions_ok
+    from tests.unit.board.builders import part
+    from tests.unit.board.builders_circuit import circuit, pad
+
+    a = pad("U1", "1", "P", (10.0, 10.0), w=0.5, h=0.5)
+    b = pad("U2", "1", "P", (10.0, 14.0), w=0.5, h=0.5)
+    m = circuit(part("U1", 10.0, 10.0, pads=(a,)), part("U2", 10.0, 14.0, pads=(b,)))
+    y = 12.0 + offset
+    m = replace(m, tracks=(Track("t", "P", "F.Cu", (5.0, y), (15.0, y), 0.2, True),))
+    req = RouteRequest("P", a, b, 0.2, 0.2, ("F.Cu",), False, (0.6, 0.3))
+    t0 = _time.perf_counter()
+    path = route(build_grid(m, req), req)
+    assert path is not None
+    assert _time.perf_counter() - t0 < 0.5
+    own = {"F.Cu": [((5.0, y), (15.0, y))]}
+    pts = [path.segments[0][1], *(q for _, _, q in path.segments)]
+    assert junctions_ok([("F.Cu", pts)], own, lambda layer, p: False)

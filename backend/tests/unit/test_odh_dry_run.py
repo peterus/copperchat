@@ -249,3 +249,14 @@ def test_sampler_reclassifies_until_exec_and_uses_hwm() -> None:
     assert s.kinds[os.getpid()] == "jvm"  # classified once it has a kind
     s.peak_rss[os.getpid()] = 1
     assert s.peak("jvm") == s.hwm[os.getpid()] > 1
+
+
+def test_answer_fields_match_flow_answers() -> None:
+    """Every `flow.Answers` field can be given in the answers JSON (and nothing else)."""
+    import dataclasses
+
+    from tests.kicad_e2e.flow import Answers
+
+    assert set(odh.ANSWER_FIELDS) == {f.name for f in dataclasses.fields(Answers)}
+    a = odh.load_answers({"outline": {}, "rules": {}, "fill_retry": {"timeout_s": 600}})
+    assert a.fill_retry == {"timeout_s": 600}

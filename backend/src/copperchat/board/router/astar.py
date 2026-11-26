@@ -199,6 +199,21 @@ def junctions_ok(
     return True
 
 
+def _step_hit(p: Point, q: Point, a: Point, b: Point) -> Point | None:
+    """Where the lattice step pq meets segment ab (a proper crossing, or an end of either
+    within JUNCTION_TOL of the other), else None."""
+    x = _cross_point(p, q, a, b)
+    if x is not None:
+        return x
+    for pt in (p, q):
+        if _seg_dist(pt, a, b) <= JUNCTION_TOL:
+            return pt
+    for pt in (a, b):
+        if _seg_dist(pt, p, q) <= JUNCTION_TOL:
+            return pt
+    return None
+
+
 def junction_masks(grid: ObstacleGrid, deadline: float | None = None) -> list[dict[int, int]]:
     """Per layer: lattice node -> bitmask of the move directions (DIRS indices) that would
     meet existing own-net copper at 90° there (M4's off-pad T-junction); nodes in own pads
@@ -236,7 +251,6 @@ def junction_masks(grid: ObstacleGrid, deadline: float | None = None) -> list[di
             if t0 > t1:
                 continue
             h = _dir_index(a, b)
-            bits = (1 << ((h + 2) & 7)) | (1 << ((h + 6) & 7))
             bx0, bx1 = sorted((a[0], b[0]))
             by0, by1 = sorted((a[1], b[1]))
             near = [
@@ -248,20 +262,34 @@ def junction_masks(grid: ObstacleGrid, deadline: float | None = None) -> list[di
                 and bb[3] >= by0 - pitch
             ]
             steps = max(1, math.ceil(length * (t1 - t0) / (pitch / 2)))
+            perp = ((h + 2) & 7, (h + 6) & 7)
             seen: set[int] = set()
             for k in range(steps + 1):
                 samples += 1
                 if not samples % _MASK_DEADLINE_EVERY:
                     check_deadline(deadline)
                 t = t0 + (t1 - t0) * k / steps
-                i, j = grid.cell(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
-                if not grid.inside(i, j) or (n := j * w + i) in seen:
-                    continue
-                seen.add(n)
-                node = grid.xy(i, j)
-                if _seg_dist(node, a, b) > JUNCTION_TOL or grid.own_exempt(li, node, near):
-                    continue
-                masks[n] = masks.get(n, 0) | bits
+                ci, cj = grid.cell(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+                # every lattice step near the segment that meets it at 90° (crossing it,
+                # or touching it within the join tolerance): the segment need not lie on
+                # the request's lattice (round-2 review)
+                for j in range(cj - 1, cj + 2):
+                    for i in range(ci - 1, ci + 2):
+                        if not grid.inside(i, j) or (n := j * w + i) in seen:
+                            continue
+                        seen.add(n)
+                        p = grid.xy(i, j)
+                        for d in perp:
+                            di, dj = DIRS[d]
+                            if not grid.inside(i + di, j + dj):
+                                continue
+                            q = grid.xy(i + di, j + dj)
+                            hit = _step_hit(p, q, a, b)
+                            if hit is None or grid.own_exempt(li, hit, near):
+                                continue
+                            m = n + di + dj * w
+                            masks[n] = masks.get(n, 0) | (1 << d)
+                            masks[m] = masks.get(m, 0) | (1 << ((d + 4) & 7))
     grid._masks = out
     return out
 

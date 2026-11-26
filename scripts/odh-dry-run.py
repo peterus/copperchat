@@ -99,6 +99,8 @@ ANSWER_FIELDS = {
     "keep_channels": (int, float),
     "fanout": list,
     "accept_warnings": dict,
+    "fill": dict,
+    "fill_retry": dict,
 }
 REQUIRED_ANSWERS = ("outline", "rules")
 
