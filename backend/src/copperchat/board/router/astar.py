@@ -23,6 +23,7 @@ import re
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import replace
+from typing import Any
 
 from copperchat.board.geom import CHAMFER_MIN, JOG_MIN, _in_pad, _pad_on_layer, analyse_bends
 from copperchat.board.model import BoardModel, Pad, Point
@@ -37,6 +38,7 @@ from copperchat.board.router.grid import (
     build_grid,
     check_deadline,
     path_clear,
+    seg_shape,
 )
 from copperchat.board.router.simplify import SnapError, layer_runs, merge_collinear, to_path
 
@@ -232,6 +234,23 @@ def junction_masks(grid: ObstacleGrid, deadline: float | None = None) -> list[di
     for li, segs in enumerate(grid.own_segments):
         masks = out[li]
         spots = grid.own_spots[li] if grid.own_spots else ()
+        # the layer's exempt spots bucketed by their bboxes (1 mm cells), bbox precomputed
+        buckets: dict[tuple[int, int], list[tuple[tuple[float, float, float, float], Any]]] = {}
+        for sp in spots:
+            bb = _shape_bbox(sp)
+            for bj in range(math.floor(bb[1]), math.floor(bb[3]) + 1):
+                for bi in range(math.floor(bb[0]), math.floor(bb[2]) + 1):
+                    buckets.setdefault((bi, bj), []).append((bb, sp))
+
+        def exempt(pt: Point, buckets: Mapping[Any, Any] = buckets) -> bool:
+            for bb, sp in buckets.get((math.floor(pt[0]), math.floor(pt[1])), ()):
+                inside = (
+                    bb[0] - 1e-9 <= pt[0] <= bb[2] + 1e-9 and bb[1] - 1e-9 <= pt[1] <= bb[3] + 1e-9
+                )
+                if inside and seg_shape(pt, pt, sp) <= 1e-9:
+                    return True
+            return False
+
         for a, b in segs:
             length = math.dist(a, b)
             if length < JUNCTION_TOL:
@@ -251,17 +270,9 @@ def junction_masks(grid: ObstacleGrid, deadline: float | None = None) -> list[di
             if t0 > t1:
                 continue
             h = _dir_index(a, b)
-            bx0, bx1 = sorted((a[0], b[0]))
-            by0, by1 = sorted((a[1], b[1]))
-            near = [
-                s
-                for s in spots
-                if (bb := _shape_bbox(s))[0] <= bx1 + pitch
-                and bb[2] >= bx0 - pitch
-                and bb[1] <= by1 + pitch
-                and bb[3] >= by0 - pitch
-            ]
-            steps = max(1, math.ceil(length * (t1 - t0) / (pitch / 2)))
+            # one sample per pitch: the 3x3 nodes around each sample cover every node next to
+            # the segment
+            steps = max(1, math.ceil(length * (t1 - t0) / pitch))
             perp = ((h + 2) & 7, (h + 6) & 7)
             seen: set[int] = set()
             for k in range(steps + 1):
@@ -285,7 +296,7 @@ def junction_masks(grid: ObstacleGrid, deadline: float | None = None) -> list[di
                                 continue
                             q = grid.xy(i + di, j + dj)
                             hit = _step_hit(p, q, a, b)
-                            if hit is None or grid.own_exempt(li, hit, near):
+                            if hit is None or exempt(hit):
                                 continue
                             m = n + di + dj * w
                             masks[n] = masks.get(n, 0) | (1 << d)

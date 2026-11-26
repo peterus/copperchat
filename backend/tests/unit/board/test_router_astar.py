@@ -635,3 +635,44 @@ def test_search_crosses_off_lattice_own_copper_at_45(offset: float) -> None:
     own = {"F.Cu": [((5.0, y), (15.0, y))]}
     pts = [path.segments[0][1], *(q for _, _, q in path.segments)]
     assert junctions_ok([("F.Cu", pts)], own, lambda layer, p: False)
+
+
+def test_mask_never_blocks_the_step_arriving_next_to_own_copper() -> None:
+    """Only the step taken is checked against the masks (round 4): the node right before
+    a perpendicular own track can be entered head-on, so the short route survives
+    (1.25 mm; with the old one-step lookahead it detoured to 1.59 mm)."""
+    from dataclasses import replace
+
+    from copperchat.board.model import Track
+    from tests.unit.board.builders import part
+    from tests.unit.board.builders_circuit import circuit, pad
+
+    a = pad("U1", "1", "P", (10.0, 10.0), w=0.5, h=0.5)
+    b = pad("U2", "1", "P", (10.0, 11.0), w=0.5, h=0.5)
+    m = circuit(part("U1", 10.0, 10.0, pads=(a,)), part("U2", 10.0, 11.0, pads=(b,)))
+    m = replace(m, tracks=(Track("t", "P", "F.Cu", (5.0, 10.6), (15.0, 10.6), 0.2, True),))
+    req = RouteRequest("P", a, b, 0.2, 0.2, ("F.Cu",), False, (0.6, 0.3))
+    path = route(build_grid(m, req), req)
+    assert path is not None and path.length < 1.5, path
+
+
+def test_junction_masks_fast_with_long_diagonal_own_tracks() -> None:
+    """Long diagonal own tracks over many own pads: the exemption lookup is bucketed, so
+    the masks stay well below the router's time limit."""
+    import time as _time
+    from dataclasses import replace
+
+    from copperchat.board.model import Track
+    from copperchat.board.router.astar import junction_masks
+
+    m, pin, up, _down = _pin_rig(extra_pads=300)
+    tracks = tuple(
+        Track(f"d{k}", "P", "F.Cu", (5.0 + k * 0.5, 5.0), (45.0 + k * 0.5, 45.0), 0.2, True)
+        for k in range(60)
+    )
+    m2 = replace(m, tracks=tracks)
+    req = RouteRequest("P", pin, up, 0.2, 0.2, ("F.Cu",), False, (0.6, 0.3))
+    grid = build_grid(m2, req, window_mm=40.0)
+    t0 = _time.perf_counter()
+    junction_masks(grid)
+    assert _time.perf_counter() - t0 < 1.0
