@@ -765,13 +765,14 @@ def _search(
             # the pad outline (pad_dirs holds for the whole way out); after a via: any
             moves = start_dirs if d == _START_D else range(8)
             for nd in moves:
-                if tjl and (tjl.get(n, 0) >> nd) & 1:
-                    continue
                 m = n
                 c = 0.0
                 for _t in range(exit_cap if d == _START_D else 1):
+                    if tjl and (tjl.get(m, 0) >> nd) & 1:  # this step meets own copper at 90°
+                        m = -1
+                        break
                     m += off[nd]
-                    if (lay[m] == blocked and m != goal_n) or (tjl and (tjl.get(m, 0) >> nd) & 1):
+                    if lay[m] == blocked and m != goal_n:
                         m = -1
                         break
                     c += (
@@ -802,9 +803,7 @@ def _search(
         else:
             # straight on
             m = n + off[d]
-            if (lay[m] != blocked or m == goal_n) and not (
-                tjl and ((tjl.get(n, 0) | tjl.get(m, 0)) >> d) & 1
-            ):
+            if (lay[m] != blocked or m == goal_n) and not (tjl and (tjl.get(n, 0) >> d) & 1):
                 c = step[d] * factor
                 if band is not None and band[m]:
                     c *= PAIR_BAND_FACTOR
@@ -833,14 +832,14 @@ def _search(
             for nd, ns in (((d + 1) & 7, 1), ((d - 1) & 7, 2)):
                 if not may[d][s][k][ns]:
                     continue
-                if tjl and (tjl.get(n, 0) >> nd) & 1:
-                    continue
                 o, st = off[nd], step[nd]
                 c = TURN_COST
                 m = n
                 for t in range(1, kmin[nd] + 1):
+                    if tjl and (tjl.get(m, 0) >> nd) & 1:  # this step meets own copper at 90°
+                        break
                     m += o
-                    if (lay[m] == blocked and m != goal_n) or (tjl and (tjl.get(m, 0) >> nd) & 1):
+                    if lay[m] == blocked and m != goal_n:
                         break
                     c += st * factor * (PAIR_BAND_FACTOR if band is not None and band[m] else 1.0)
                     if t < kmin[nd] and m != goal_n:
