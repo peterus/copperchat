@@ -268,12 +268,22 @@ class ObstacleGrid:
     # P9a: existing own-net tracks per layer (index-aligned with `layers`) and the own-net
     # pads / vias where a branch is a pad or via joint (`astar.junctions_ok`, M4 T-junction)
     own_segments: tuple[tuple[tuple[Point, Point], ...], ...] = ()
-    own_spots: tuple[Shape, ...] = ()
+    own_spots: tuple[tuple[Shape, ...], ...] = ()  # per layer: own pads there + own vias
     _index: list[_Grid] | None = field(default=None, repr=False)
+    _masks: list[dict[int, int]] | None = field(default=None, repr=False)  # astar cache
 
-    def own_exempt(self, p: Point) -> bool:
-        """`p` lies in an own-net pad or via (a branch there is a joint, not a T)."""
-        return any(seg_shape(p, p, s) <= 1e-9 for s in self.own_spots)
+    def own_exempt(self, li: int, p: Point, spots: Sequence[Shape] | None = None) -> bool:
+        """`p` lies in an own-net pad on layer `li` or in an own via (a branch there is
+        a joint, not a T - M4 exempts the same: pads of the layer, vias). `spots`: a
+        pre-filtered subset of the layer's spots (bbox-near the caller's segment)."""
+        if not self.own_spots:
+            return False
+        for s in self.own_spots[li] if spots is None else spots:
+            x0, y0, x1, y1 = _shape_bbox(s)
+            inside_box = x0 - 1e-9 <= p[0] <= x1 + 1e-9 and y0 - 1e-9 <= p[1] <= y1 + 1e-9
+            if inside_box and seg_shape(p, p, s) <= 1e-9:
+                return True
+        return False
 
     def cell(self, x: float, y: float) -> tuple[int, int]:
         return (round((x - self.x0) / self.pitch), round((y - self.y0) / self.pitch))
@@ -606,7 +616,7 @@ def build_grid(
     shapes: list[list[Shape]] = [[] for _ in layers]
     own: list[list[Shape]] = [[] for _ in layers]
     own_segs: list[list[tuple[Point, Point]]] = [[] for _ in layers]
-    own_spots: list[Shape] = []  # own pads and vias (exact, need 0)
+    own_spots: list[list[Shape]] = [[] for _ in layers]  # own pads per layer + vias (need 0)
     via_shapes: list[Shape] = []  # cores a via must keep `via_need` from (any layer)
     via_own: list[Shape] = []  # own SMD pads: no via in a pad (reflow), keep via_r
     via_keepouts: list[Shape] = []
@@ -620,9 +630,9 @@ def build_grid(
         if mine:
             s = _pad_shape(pad, 0.0)
             if on and near(_shape_bbox(s), 0.0):
-                own_spots.append(s)
                 for k in on:
                     own[k].append(s)
+                    own_spots[k].append(s)
             if pad.smd and anywhere:
                 via_own.append(_pad_shape(pad, via_r))
             continue
@@ -663,9 +673,9 @@ def build_grid(
         if not near((v.at[0], v.at[1], v.at[0], v.at[1]), r + via_need + v.diameter):
             continue
         if v.net == req.net and v.net != "":
-            own_spots.append(("d", *v.at, v.diameter / 2, 0.0))
             for k in range(len(layers)):
                 own[k].append(("d", *v.at, v.diameter / 2, 0.0))
+                own_spots[k].append(("d", *v.at, v.diameter / 2, 0.0))
             continue
         for k in range(len(layers)):
             shapes[k].append(("d", *v.at, v.diameter / 2, r))
@@ -744,7 +754,7 @@ def build_grid(
         via_shapes=via_obstacles if req.allow_vias else (),
         via_inset=edge_clearance(model) + via_r + margin,
         own_segments=tuple(tuple(x) for x in own_segs),
-        own_spots=tuple(own_spots),
+        own_spots=tuple(tuple(x) for x in own_spots),
     )
 
 

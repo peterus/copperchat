@@ -49,6 +49,8 @@ PLACEMENT_OK = "The placement looks good, approved."
 PLACEMENT_QUOTE = "placement looks good"
 BOARD_OK = "Board approved for manufacturing."
 BOARD_QUOTE = "approved for manufacturing"
+FILL_RETRY_TIMEOUT_S = 600  # after a Freerouting timeout: the schema maximum ...
+FILL_RETRY_PASSES = 10  # ... and a third of the default 30 passes
 
 
 class FlowError(RuntimeError):
@@ -88,6 +90,12 @@ class Answers:
     keep_channels: float = 1.5
     fanout: tuple[str, ...] = ("GND",)
     accept_warnings: dict[str, str] = field(default_factory=dict)
+    # `pcb_route_fill` arguments of the first fill and of the retry after a Freerouting
+    # timeout (the tool's suggestion: a larger timeout_s, fewer passes)
+    fill: dict[str, Any] = field(default_factory=dict)
+    fill_retry: dict[str, Any] = field(
+        default_factory=lambda: {"timeout_s": FILL_RETRY_TIMEOUT_S, "passes": FILL_RETRY_PASSES}
+    )
 
 
 SYNTH_ANSWERS = Answers(
@@ -119,6 +127,10 @@ SYNTH_ANSWERS = Answers(
     },
     zones=None,
     stitch={"net": "GND"},
+    # the fill takes ≈ 12 s here: worst case first fill + retry stays inside the e2e
+    # test's 420 s limit with the routing (≈ 60 s) and the rest of the flow
+    fill={"timeout_s": 60},
+    fill_retry={"timeout_s": 120, "passes": 10},
     accept_warnings={
         "text_thickness": "KiCad library footprints draw silkscreen lines 0.12 mm wide "
         "(KLC), below the JLC preset's 0.15 mm; accepted for library footprints",
@@ -559,8 +571,6 @@ async def _accept_warnings(f: _Flow, answers: Answers, full: Mapping[str, Any]) 
 
 
 FILL_ATTEMPTS = 3  # fills tried; between two, ladder rung (c) routes the refused nets
-FILL_RETRY_TIMEOUT_S = 600  # after a Freerouting timeout: the schema maximum ...
-FILL_RETRY_PASSES = 10  # ... and a third of the default 30 passes
 
 
 def _fill_reason(error: Mapping[str, Any]) -> str | None:
@@ -576,7 +586,8 @@ async def _route(f: _Flow, critical: list[str]) -> dict[str, Any]:
     after the fill → rung (c) on their nets. Every rung is a logged tool call."""
     await _route_nets(f, critical)
     fill: dict[str, Any] = {}
-    fill_args: dict[str, Any] = {}
+    fill_args: dict[str, Any] = dict(f.answers.fill)
+    retried = False
     for _ in range(FILL_ATTEMPTS):
         data, err = await f.try_tool("pcb_route_fill", cost=5, **fill_args)
         if not err:
@@ -584,9 +595,9 @@ async def _route(f: _Flow, critical: list[str]) -> dict[str, Any]:
             break
         if _nothing_to_fill(data):
             return {"completion": 1.0, "nothing_to_fill": True}
-        if _fill_reason(data) == "timeout" and not fill_args:
+        if _fill_reason(data) == "timeout" and not retried:
             # the tool's own suggestion: a larger timeout_s or fewer passes
-            fill_args = {"timeout_s": FILL_RETRY_TIMEOUT_S, "passes": FILL_RETRY_PASSES}
+            fill_args, retried = {**fill_args, **f.answers.fill_retry}, True
             continue
         nets = _fill_error_nets(data)
         if not nets:
@@ -595,6 +606,13 @@ async def _route(f: _Flow, critical: list[str]) -> dict[str, Any]:
     else:
         raise FlowError(f"turn {f.turn_no} ({f.label})", "pcb_route_fill", data)
     if fill.get("completion", 1.0) < 1.0:
+        if fill.get("open_omitted"):
+            # the fill lists ≤ 50 open connections: the rest cannot be named for rung (c)
+            raise FlowError(
+                f"turn {f.turn_no} ({f.label})",
+                "pcb_route_fill",
+                {"why": "more open connections than the fill lists", "fill": _summary(fill)},
+            )
         await _route_nets(f, sorted({o["net"] for o in fill.get("open", [])}))
         failed = [
             x

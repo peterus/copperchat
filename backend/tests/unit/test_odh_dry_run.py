@@ -212,3 +212,40 @@ def test_report_lists_the_after_failure_calls() -> None:
     assert '- pcb_check {"level": "full"}: 9.1 s, ok' in part
     assert "pcb_export_3d" in part and "error" in part
     assert "hard failures 2" in part and "| M2 | 5 | fail | open |" in part
+
+
+def test_copy_follows_symlinks_out_of_the_checkout(tmp_path: Path) -> None:
+    """A symlink in the checkout is copied as its target: writes to the copy never reach
+    the original through it."""
+    import shutil
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "lib.kicad_sym").write_text("orig")
+    src = tmp_path / "checkout"
+    src.mkdir()
+    (src / "lib").symlink_to(outside)
+    copy = odh.copy_checkout(src)
+    try:
+        assert not (copy / "lib").is_symlink()
+        (copy / "lib" / "lib.kicad_sym").write_text("changed")
+        assert (outside / "lib.kicad_sym").read_text() == "orig"
+    finally:
+        shutil.rmtree(copy.parent)
+
+
+def test_sampler_reclassifies_until_exec_and_uses_hwm() -> None:
+    """A process first seen before its exec (kind None) is classified again on the next
+    sample; a kind's peak keeps VmHWM (a spike between two samples)."""
+    import os
+
+    kinds = iter([None, "jvm", "other"])
+    s = odh.PeakSampler(lambda: [os.getpid()], lambda pid: next(kinds))
+    s.sample()
+    assert s.kinds[os.getpid()] is None
+    s.sample()
+    assert s.kinds[os.getpid()] == "jvm"
+    s.sample()
+    assert s.kinds[os.getpid()] == "jvm"  # classified once it has a kind
+    s.peak_rss[os.getpid()] = 1
+    assert s.peak("jvm") == s.hwm[os.getpid()] > 1

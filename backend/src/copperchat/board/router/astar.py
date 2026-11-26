@@ -33,6 +33,7 @@ from copperchat.board.router.grid import (
     ObstacleGrid,
     RoutePath,
     RouteRequest,
+    _shape_bbox,
     build_grid,
     check_deadline,
     path_clear,
@@ -119,8 +120,9 @@ def pad_exits_ok(path: RoutePath, req: RouteRequest) -> bool:
     return (first is None or first in pad_dirs(req.a)) and (last is None or last in pad_dirs(req.b))
 
 
-JUNCTION_TOL = 1e-4  # mm: a path point this close to own-net copper touches it
+JUNCTION_TOL = 0.002  # mm: a point this close to own copper touches it (geom._JOIN_TOL)
 _RIGHT_TOL_DEG = 0.5  # M4's angle tolerance (geom.ANGLE_TOL_DEG)
+_MASK_DEADLINE_EVERY = 1024  # samples between deadline checks in junction_masks
 
 
 def _seg_dist(p: Point, a: Point, b: Point) -> float:
@@ -156,15 +158,22 @@ def _heads(node: Point, segs: Iterable[tuple[Point, Point]]) -> list[float]:
     return out
 
 
+def _right(h1: float, h2: float) -> bool:
+    diff = abs(h1 - h2) % 360.0
+    return abs(min(diff, 360.0 - diff) - 90.0) <= _RIGHT_TOL_DEG
+
+
 def junctions_ok(
     runs: Sequence[tuple[str, Sequence[Point]]],
     own: Mapping[str, Sequence[tuple[Point, Point]]],
-    exempt: Callable[[Point], bool],
+    exempt: Callable[[str, Point], bool],
 ) -> bool:
-    """No 90° branch between the path and EXISTING own-net copper outside `exempt`
-    (pads, vias): where a path vertex or crossing touches own-net tracks of its layer,
-    no path heading may meet an existing heading at 90° (± 0.5°) - M4's off-pad
-    T-junction (owner rule). `analyse_bends` only sees the path itself (P9a: two
+    """No 90° branch between the path and EXISTING own-net copper outside `exempt(layer,
+    point)` (own pads of the layer, vias): wherever the path touches own-net tracks of its
+    layer - a path vertex on them, an own track end on the path, a proper crossing - no
+    path heading may meet an existing heading at 90° (± 0.5°). M4's off-pad T-junction
+    (owner rule); a 90° X-crossing of same-net tracks is refused too (stricter than M4,
+    which does not split crossings). `analyse_bends` only sees the path itself (P9a: two
     connections of one TSSOP pin shared the exit stub and turned NW / SW just outside
     the pad)."""
     for layer, pts in runs:
@@ -178,55 +187,82 @@ def junctions_ok(
                 x = _cross_point(a, b, c, d)
                 if x is not None:
                     nodes.append(x)
+                for end in (c, d):  # an own track ending on the path's interior
+                    if _seg_dist(end, a, b) <= JUNCTION_TOL:
+                        nodes.append(end)
         for node in nodes:
             old = _heads(node, segs)
-            if not old or exempt(node):
+            if not old or exempt(layer, node):
                 continue
-            new = _heads(node, mine)
-            for h1 in new:
-                for h2 in old:
-                    diff = abs(h1 - h2) % 360.0
-                    if abs(min(diff, 360.0 - diff) - 90.0) <= _RIGHT_TOL_DEG:
-                        return False
+            if any(_right(h1, h2) for h1 in _heads(node, mine) for h2 in old):
+                return False
     return True
 
 
-def junction_masks(grid: ObstacleGrid) -> list[dict[int, int]]:
+def junction_masks(grid: ObstacleGrid, deadline: float | None = None) -> list[dict[int, int]]:
     """Per layer: lattice node -> bitmask of the move directions (DIRS indices) that would
     meet existing own-net copper at 90° there (M4's off-pad T-junction); nodes in own pads
-    or vias are free. The search skips such moves, so it finds a Y branch instead of
-    reaching the goal through a T prefix again and again (`junctions_ok` still checks the
-    snapped path)."""
+    of the layer or vias are free. The search skips such moves, so it finds a Y branch
+    instead of reaching the goal through a T prefix again and again (`junctions_ok` still
+    checks the snapped path). Computed once per grid (cached); each segment is clipped to
+    the window and checked against only the spots near it; `DeadlineExpired` past
+    `deadline`."""
+    if grid._masks is not None:
+        return grid._masks
     out: list[dict[int, int]] = [{} for _ in grid.layers]
-    if not grid.own_segments:
-        return out
     w, pitch = grid.w, grid.pitch
+    wx0, wy0 = grid.x0 - pitch, grid.y0 - pitch
+    wx1, wy1 = grid.x0 + grid.w * pitch, grid.y0 + grid.h * pitch
+    samples = 0
     for li, segs in enumerate(grid.own_segments):
         masks = out[li]
+        spots = grid.own_spots[li] if grid.own_spots else ()
         for a, b in segs:
             length = math.dist(a, b)
             if length < JUNCTION_TOL:
                 continue
-            steps = max(1, math.ceil(length / (pitch / 2)))
+            ang = math.degrees(math.atan2(b[1] - a[1], b[0] - a[0]))
+            if abs(ang / 45.0 - round(ang / 45.0)) * 45.0 > _RIGHT_TOL_DEG:
+                continue  # not octilinear: never parallel to a lattice move
+            # clip the segment to the window (parametric, both axes)
+            t0, t1 = 0.0, 1.0
+            for p0, d, lo, hi in ((a[0], b[0] - a[0], wx0, wx1), (a[1], b[1] - a[1], wy0, wy1)):
+                if abs(d) < 1e-12:
+                    if not lo <= p0 <= hi:
+                        t0, t1 = 1.0, 0.0
+                    continue
+                u0, u1 = sorted(((lo - p0) / d, (hi - p0) / d))
+                t0, t1 = max(t0, u0), min(t1, u1)
+            if t0 > t1:
+                continue
+            h = _dir_index(a, b)
+            bits = (1 << ((h + 2) & 7)) | (1 << ((h + 6) & 7))
+            bx0, bx1 = sorted((a[0], b[0]))
+            by0, by1 = sorted((a[1], b[1]))
+            near = [
+                s
+                for s in spots
+                if (bb := _shape_bbox(s))[0] <= bx1 + pitch
+                and bb[2] >= bx0 - pitch
+                and bb[1] <= by1 + pitch
+                and bb[3] >= by0 - pitch
+            ]
+            steps = max(1, math.ceil(length * (t1 - t0) / (pitch / 2)))
             seen: set[int] = set()
-            for t in range(steps + 1):
-                x = a[0] + (b[0] - a[0]) * t / steps
-                y = a[1] + (b[1] - a[1]) * t / steps
-                i, j = grid.cell(x, y)
+            for k in range(steps + 1):
+                samples += 1
+                if not samples % _MASK_DEADLINE_EVERY:
+                    check_deadline(deadline)
+                t = t0 + (t1 - t0) * k / steps
+                i, j = grid.cell(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
                 if not grid.inside(i, j) or (n := j * w + i) in seen:
                     continue
                 seen.add(n)
                 node = grid.xy(i, j)
-                if _seg_dist(node, a, b) > JUNCTION_TOL or grid.own_exempt(node):
+                if _seg_dist(node, a, b) > JUNCTION_TOL or grid.own_exempt(li, node, near):
                     continue
-                for end in (a, b):
-                    if math.dist(node, end) <= JUNCTION_TOL:
-                        continue
-                    ang = math.degrees(math.atan2(end[1] - node[1], end[0] - node[0]))
-                    if abs(ang / 45.0 - round(ang / 45.0)) * 45.0 > _RIGHT_TOL_DEG:
-                        continue  # not octilinear: never a lattice move
-                    h = _dir_index(node, end)
-                    masks[n] = masks.get(n, 0) | (1 << ((h + 2) & 7)) | (1 << ((h + 6) & 7))
+                masks[n] = masks.get(n, 0) | bits
+    grid._masks = out
     return out
 
 
@@ -265,9 +301,14 @@ def valid_path(path: RoutePath, grid: ObstacleGrid, req: RouteRequest) -> bool:
         return False
     if grid.own_segments:
         own = dict(zip(grid.layers, grid.own_segments, strict=True))
+        index = {name: k for k, name in enumerate(grid.layers)}
+        mine = list(path.vias)
 
-        def exempt(p: Point) -> bool:
-            return grid.own_exempt(p)
+        def exempt(layer: str, p: Point) -> bool:
+            # the path's own new vias are joints too (M4 exempts nodes at vias)
+            if any(math.dist(p, v) <= req.via[0] / 2 for v in mine):
+                return True
+            return grid.own_exempt(index[layer], p)
 
         if not junctions_ok([(lay, merge_collinear(raw)) for lay, raw in runs], own, exempt):
             return False
@@ -644,7 +685,10 @@ def _search(
 
     sd = 3 * kk
     exit_cap = max(1, math.ceil(math.hypot(start_pad.w, start_pad.h) / pitch) + 2)
-    tj = junction_masks(grid)  # per layer: node -> directions that make a T with own copper
+    try:  # per layer: node -> directions that make a T with own copper
+        tj = junction_masks(grid, deadline)
+    except DeadlineExpired:
+        return None
     hc: dict[int, float] = {}  # heuristic per node (shared by its states)
     best: dict[int, float] = {}
     parent: dict[int, int] = {}

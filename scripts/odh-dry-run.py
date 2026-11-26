@@ -11,7 +11,7 @@ state) into a fresh temp dir and only the copy is opened; the original is never 
 
 The flow is `tests/kicad_e2e/flow.run_flow` (the same turns as the sp4_synth golden) with
 the user's answers from the JSON file (`Answers` fields; `blocks: null` = `pcb_analyze`'s
-proposal). Output in `--out` (default `/tmp/odh-dry-run-<UTC date>`): `report.md` (per
+proposal). Output in `--out` (default a fresh `$TMPDIR/odh-dry-run-<UTC date>-*`): `report.md` (per
 step: tool, seconds, cost, result; final metrics with verdicts; fill completion; open
 connections; fab files; runtime; memory), the renders, `metrics.json`.
 
@@ -78,7 +78,15 @@ def copy_checkout(src: Path) -> Path:
         raise UsageError(f"--odh {src} is not a directory")
     tmp = Path(tempfile.mkdtemp(prefix="odh-dry-run-"))
     dst = tmp / src.resolve().name
-    shutil.copytree(src, dst, symlinks=True, ignore=shutil.ignore_patterns(*COPY_IGNORE))
+    # symlinks are copied as their targets: a link into the original checkout must never
+    # let the flow write through to it
+    shutil.copytree(
+        src,
+        dst,
+        symlinks=False,
+        ignore=shutil.ignore_patterns(*COPY_IGNORE),
+        ignore_dangling_symlinks=True,
+    )
     return dst
 
 
@@ -223,7 +231,7 @@ class PeakSampler:
             st = proc_status(pid)
             if not st:
                 continue
-            if pid not in self.kinds:
+            if self.kinds.get(pid) is None:  # again until exec'd (fork → exec)
                 self.kinds[pid] = self.classify(pid)
             rss = st.get("VmRSS", 0)
             self.peak_rss[pid] = max(self.peak_rss.get(pid, 0), rss)
@@ -250,7 +258,12 @@ class PeakSampler:
         return [p for p, k in self.kinds.items() if k == kind]
 
     def peak(self, kind: str) -> int:
-        return max((self.peak_rss.get(p, 0) for p in self.by_kind(kind)), default=0)
+        """Max over the kind's processes of max(sampled VmRSS, last VmHWM): VmHWM keeps a
+        spike between two samples."""
+        return max(
+            (max(self.peak_rss.get(p, 0), self.hwm.get(p, 0)) for p in self.by_kind(kind)),
+            default=0,
+        )
 
 
 @dataclass
@@ -489,7 +502,7 @@ async def _run(args: argparse.Namespace, out: Path) -> int:
     answers = load_answers(json.loads(args.answers.read_text()))
     copy = copy_checkout(args.odh)
     pro = (copy / args.project).resolve()
-    if not pro.is_relative_to(copy) or pro.suffix != ".kicad_pro" or not pro.is_file():
+    if not pro.is_relative_to(copy.resolve()) or pro.suffix != ".kicad_pro" or not pro.is_file():
         raise UsageError(f"--project {args.project}: no .kicad_pro at that path in the checkout")
     root = copy.parent
     settings = Settings(  # type: ignore[call-arg]
@@ -575,7 +588,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         args = parse_args(argv)
         stamp = datetime.now(UTC).strftime("%Y-%m-%d")
-        out = refuse_out_inside_repo(args.out or Path(f"/tmp/odh-dry-run-{stamp}"))
+        # no --out: a fresh private dir (a fixed /tmp name could be pre-created by others)
+        out = refuse_out_inside_repo(
+            args.out or Path(tempfile.mkdtemp(prefix=f"odh-dry-run-{stamp}-"))
+        )
         return asyncio.run(_run(args, out))
     except UsageError as exc:
         print(f"odh-dry-run: {exc}", file=sys.stderr)
