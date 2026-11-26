@@ -5,6 +5,9 @@ Status: **Approved by owner 2026-11-25** (including the spec calls). The owner d
 2026-11-23 and 2026-11-24; §15.1 lists them. Every decision the author made alone is marked
 **(spec call)** and is listed again in §15.2. The owner's answers to the draft's open questions
 (2026-11-24) are in §15.3.
+**Amended 2026-11-26 (round 2)** after the P9a acceptance finding: §22 (owner routing rules a–c,
+owner decisions 1–4, metrics M15/M16, changes to M3/M4/M11/M12/M14). Where §22 and an earlier
+section disagree, §22 wins.
 
 Inputs:
 
@@ -1111,3 +1114,125 @@ In PROD, a board session on the OpenDriveHub transmitter main board, driven only
 - How progress of long tools is shown (status notices) within the SDK limits.
 - The `sp4_synth` fixture design and generator script.
 - Migration numbering and the guard implementation shared with `fp_approve`.
+
+## 22. Amendment 2026-11-26 (round 2)
+
+**Why.** P9a (PR #113) proved the full flow on `sp4_synth`, but the OpenDriveHub dry run never
+reached a routed board (index "As built (P9a)"): at 80 × 60 mm block-by-block packing fragmented
+the board (`does_not_fit` with > 3,000 mm² free); at 80 × 100 mm all blocks were packed into one
+corner, the own router found no path into 0.5 mm-pitch QFN pads for 0.5 mm power tracks (no
+neck-down), and Freerouting's output on the dense placement was mostly unchamferable, so the
+20 % rule refused every fill. The owner also marked the golden render: Y-junctions, a dogleg
+between adjacent pads (D1–R4), and jogs/loops at pad entries (J1, R6/C7, C2/U1, U1 right side,
+C5/C1). Round 2 fixes this before P9b. P9b (skills, flag on) and P10 stay after round 2.
+
+### 22.1 Owner routing rules (2026-11-26, binding; hard-threshold changes approved by the owner)
+
+- **(a) No Y-junctions.** Where a track branches off another track of the **same net**, the
+  branch meets the straight through-track **perpendicularly (T-junction)**, never at 45°.
+  This **reverses** the M4 clause "off-pad T-junction where a branch meets at 90° → fail" (§12,
+  D2) and the router rule of P9a ("never branch off own-net copper at 90°"). The 90° ban stays
+  for **bends within a track path** (a vertex of degree 2): such a vertex is a 45° bend or
+  collinear, nothing else.
+- **(b) Adjacent connected pads get a straight connection.** Two adjacent pads of one net
+  (e.g. an LED and its resistor) are connected by one straight segment, not by a dogleg or a
+  curve. Placement aligns such pairs so the straight segment is possible; the router takes it
+  when it is free.
+- **(c) No unnecessary jogs, loops or detours near pads.** A pad is left along a direction
+  that leads toward the other end; no S-offsets or U-turns in the pad's entry zone.
+
+### 22.2 Owner decisions (2026-11-26, "alles wie empfohlen")
+
+1. **Footprint silk lines thinner than the preset's silk line minimum (0.15 mm) are a warning
+   only**, not a hard failure. KiCad applies `min_silk_text_thickness` to footprint silk lines
+   too; every KiCad library footprint draws 0.12 mm silk (KLC). M3 lists them as review
+   offenders ("silk line below 0.15 mm, warning only") and does not count them as unaccepted
+   warnings; silk **text** keeps the hard rule (M14 `silk_line_width`, M3 for text items).
+2. **JLC preset minimum hole = 0.2 mm** (all three presets, plated holes: `min_drill`); the
+   fab report notes that holes below 0.3 mm may cost a JLC surcharge and lists them. The via
+   drill minimum the agent's own vias use stays 0.3 mm (`min_via_drill`, unchanged).
+3. **Memory (D5):** the `kicad-cli` parity DRC (≈ 2.6 GB) runs only when no other heavy
+   process (Freerouting JVM, a CPU-worker job, another board `kicad-cli` call) runs; target
+   ≈ 5 GB concurrent per active board project, re-measured on ODH (§22.6).
+4. **Improvement round before P9b**, targeted at the OpenDriveHub main board (this amendment).
+
+### 22.3 Placement: whole-board floorplanning
+
+The block placer gains a **global floorplanning step before detailed placement** (replaces
+the per-block "region per call" packing as the default flow; `pcb_place_block` stays for
+single-block edits):
+
+- Every block is first reduced to its minimal box (its cluster layout incl. `keep_channels`).
+  Blocks with an assigned edge (`board.md` → Placement edges, or a Region row) are fixed
+  first, as strips along their edge. The free blocks are then distributed over the **whole**
+  usable area by recursive bisection on the block connectivity graph (minimum cut, area
+  balanced, cut across the longer side), so the slack of the board is spread between the blocks
+  and not left in one corner.
+- **Channel reservation:** every cut line reserves a routing channel whose width follows the
+  number of nets crossing it (bounded min/max, plan values); the block is placed into its
+  region minus the channel halves.
+- **Feasibility:** the tool reports the **courtyard fill** (Σ courtyard areas / usable area)
+  and refuses `does_not_fit` with that number when the blocks cannot be packed; the agent then
+  asks for a bigger board or the bottom side. On ODH the round's acceptance (§22.6) first tries
+  80 × 60 mm and falls back to 80 × 100 mm, well spread.
+- **Alignment (rule b):** after the cluster layout, two adjacent 2-pad parts connected by a
+  net, and a 2-pad part next to the IC pin it serves, are shifted (within their legal slack) so
+  the connected pads are aligned on one axis and a straight segment is possible.
+- New write tool `pcb_place_blocks` (one change set, budget 1): floorplan + place the given
+  blocks (default all) + legalise, deterministic; result carries the regions, the courtyard fill
+  and the placement score. A read tool `pcb_floorplan` previews the regions without writing.
+
+### 22.4 Routing
+
+- **Neck-down at fine-pitch pads.** A track whose net-class width is larger than a pad can take
+  is narrowed to the pad-limited width **only inside the pad's escape zone** (the footprint's
+  courtyard grown by a small halo, plan value); outside the zone it has the class width. The
+  neck width is never below the preset's minimum track. M12 accepts such pieces (§22.5).
+- **T-junction branching.** A connection to a net that already has copper may end on that
+  copper (tree routing): the branch meets a straight own-net track perpendicularly. 45°
+  branches are forbidden in the search; the post-processor turns Freerouting's Y-junctions into
+  T-junctions or rips the connection (reason `y_junction`).
+- **Straight first.** For aligned adjacent pads (rule b) the router tries the single straight
+  segment first and takes it when it is DRC-clean.
+- **Pad entry (rule c).** Bends inside a pad's entry zone are costed so the search leaves the
+  pad toward the other end; the result must pass M16.
+- **Fill.** Freerouting is tuned on ODH (passes vs. time per pass, settings the pinned version
+  accepts, more nets pre-routed by the own router: every net inside one block), its output is
+  post-processed for Y-junctions (above); the 20 % rejection rule (§10.4) is **unchanged** and
+  must pass on ODH.
+
+### 22.5 Metrics (changes to §12)
+
+| # | Change |
+|---|---|
+| M3 | `text_thickness` markers whose items are all footprint silk **shapes** (lines, not text) → review offenders "silk line below <min> mm (warning only, owner 2026-11-26)"; not counted as unaccepted warnings. |
+| M4 | The off-pad 90° T-junction clause is **removed** (rule a). M4 still fails segments off 0/45/90/… and any 90°/acute/off-angle direction change at a degree-2 vertex. |
+| M11 | A signal track's piece inside the antipad of its **own** via or plated pad is not a void crossing (fixes the P7/P9a artefact "void crossing … outer" at the critical nets' own vias). |
+| M12 | A track narrower than its class width passes when it lies entirely inside the escape zone of a pad of its own net whose neck width is below the class width, and its width ≥ that neck width (≥ the preset minimum track). |
+| M14 | `min_drill` 0.2 mm in the JLC presets (decision 2). |
+| **M15** (new) | **Y-junction:** an off-pad, off-via node of one net and layer with ≥ 3 incident track ends where any two incident headings differ by 45° or 135° (± 0.5°). **Hard** (rule a). A valid junction has all headings on one 90° lattice (T or X). |
+| **M16** (new) | **(a) Dogleg between adjacent pads:** two pads of one net, same layer, edge gap ≤ 3 mm, whose extents overlap across one orthogonal axis by ≥ the track width (a straight corridor exists) and whose corridor is free of other-net pads, vias and keepouts — but the routed connection between them is not one straight segment on that layer. **Hard.** **(b) Pad-entry loop:** inside a pad's entry zone (pad grown by `max(1.0 mm, 3 × width)`), the path turns by ≥ 135° in total. **Hard.** **(c) Pad-entry jog:** an opposite-sense bend pair inside the entry zone. **Review.** Placement stage: adjacent 2-pad pairs that could be aligned by ≤ 1 mm but are not → review. (Hard/review split and the numbers: plan call, owner may change.) |
+
+M15 and M16's hard parts ship first as **review** behind module switches (`M15_HARD`,
+`M16_HARD`, like `M1_EDGE_OVERHANG`) and are switched to hard in the round's fill phase once
+the router and the post-processor produce them clean on the golden; the golden then pins them
+as hard.
+
+### 22.6 Other fixes and the round's acceptance
+
+- **Render extent:** `pcb_render`'s default view = the outline's bounding box ∪ every
+  footprint's courtyard (staging area included) + markers, not KiCad's "board area" (which on
+  ODH contained an item at (7, 0.5) mm far outside the outline).
+- **BOM/CPL:** parts classified `mounting_hole` (and footprints with the exclude-from-BOM /
+  exclude-from-position attributes) never appear in the JLC BOM / CPL; the fab report lists
+  what was excluded.
+- **Memory:** the dry-run script reports the **concurrent** peak (largest sum of RSS over the
+  same sample), not the sum of per-process peaks; the parity DRC is serialised behind the
+  heavy processes (decision 3); the CPU worker is recycled after a job that leaves it above a
+  plan threshold.
+- **Acceptance of round 2:** the ODH dry run is repeated in the last round-2 phase and reported
+  honestly (pass or the exact remaining failures): placement fits 80 × 60 mm if physically
+  feasible (courtyard fill reported), else 80 × 100 mm well spread; critical routing with no
+  `no_path` caused by pad width; the fill passes the 20 % rule; the final full check's hard
+  gates (incl. M15/M16) — each remaining failure with its cause. The `sp4_synth` golden stays
+  green through every round-2 PR.
