@@ -53,6 +53,7 @@ from copperchat.db.repos.board import board_file
 from copperchat.errors import StructuredToolError
 from copperchat.kicad_tools.board import api
 from copperchat.kicad_tools.board.analysis import preset_for
+from copperchat.kicad_tools.board.check import _copy_side_file as copy_side_file
 from copperchat.kicad_tools.board.checkpoints import require_board_approved
 from copperchat.kicad_tools.board.read import board_model, require_board
 from copperchat.kicad_tools.board.setup import require_board_tools
@@ -231,9 +232,14 @@ def _os_failed(exc: OSError) -> StructuredToolError:
 
 
 async def _copy_board(ctx: ToolContext, dest: Path) -> BoardModel:
-    """`save_copy` of the live board to `dest` (the copy only, never a save) and the model
-    read right after it (the copied state: the edit lock is held)."""
+    """`save_copy` of the live board to `dest` (the copy only, never a save; KiCad puts the
+    `.kicad_dru` next to it) plus a byte copy of the `.kicad_pro` (net classes and
+    constraints: a `--check-zones` refill on the copy must use the board's rules, not
+    defaults), and the model read right after it (the copied state: the edit lock is
+    held)."""
     await ctx.session.save_copy("pcb", dest, save_modified=False)
+    pro = ctx.project.pro_file
+    await _off_loop(lambda: copy_side_file(pro, dest.with_suffix(".kicad_pro")))
     return await board_model(ctx)
 
 

@@ -265,3 +265,31 @@ def test_new_call_id() -> None:
     ids = {paths.new_call_id() for _ in range(50)}
     assert len(ids) == 50
     assert all(len(i) == 12 and int(i, 16) >= 0 for i in ids)
+
+
+def test_sweep_restores_orphaned_old_package(tmp_path: Path) -> None:
+    """A crash between the two renames left only `jlcpcb.old-<id>`: it is the only copy of
+    the previous package, so it is renamed back, never swept; with the target present (or
+    two candidates) nothing is restored."""
+    project = _project(tmp_path)
+    fab = project / "fab"
+    _package(fab / f"jlcpcb.old-{CALL}", "previous")
+    _package(fab / ".jlcpcb.tmp-aaaaaaaaaaaa", "half built")
+    assert sweep_stale(fab, "jlcpcb") == [
+        f"jlcpcb.old-{CALL} (restored)",
+        ".jlcpcb.tmp-aaaaaaaaaaaa",
+    ]
+    assert (fab / "jlcpcb" / "fab-report.md").read_text() == "previous"
+    assert sorted(p.name for p in fab.iterdir()) == ["jlcpcb"]
+    _package(fab / f"jlcpcb.old-{CALL}", "older")
+    assert sweep_stale(fab, "jlcpcb") == [f"jlcpcb.old-{CALL}"]  # target present: swept
+    assert (fab / "jlcpcb" / "fab-report.md").read_text() == "previous"
+
+
+def test_sweep_two_orphans_not_restored(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    fab = project / "fab"
+    _package(fab / "jlcpcb.old-aaaaaaaaaaaa", "a")
+    _package(fab / "jlcpcb.old-bbbbbbbbbbbb", "b")
+    assert sweep_stale(fab, "jlcpcb") == ["jlcpcb.old-aaaaaaaaaaaa", "jlcpcb.old-bbbbbbbbbbbb"]
+    assert not (fab / "jlcpcb").exists()

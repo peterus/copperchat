@@ -182,18 +182,40 @@ def _leftover_pattern(target_name: str) -> re.Pattern[str]:
     return re.compile(rf"^(?:\.{name}\.tmp-|{name}\.old-)[0-9a-f]{{12}}$")
 
 
+def _restore_orphan(fab_dir: Path, target_name: str, out: list[str]) -> None:
+    """A crash between the two renames of `swap_in` leaves no target but its
+    `<target>.old-<id>`: with the target absent and exactly one such plain dir, it is the
+    only copy of the previous package and is renamed back (reported as "<name> (restored)")
+    instead of being swept."""
+    if os.path.lexists(fab_dir / target_name):
+        return
+    old = re.compile(rf"^{re.escape(target_name)}\.old-[0-9a-f]{{12}}$")
+    found = [
+        e
+        for e in sorted(os.listdir(fab_dir))
+        if old.match(e) and stat.S_ISDIR(os.lstat(fab_dir / e).st_mode)
+    ]
+    if len(found) != 1:
+        return
+    _guard(fab_dir / found[0], fab_dir / target_name)
+    os.rename(fab_dir / found[0], fab_dir / target_name)
+    out.append(f"{found[0]} (restored)")
+
+
 def sweep_stale(fab_dir: Path, target_name: str) -> list[str]:
     """Remove leftovers of crashed earlier exports in `fab_dir` (call it only with the
     `fab/` that `safe_output_dir` validated; it re-checks that `fab_dir` is a real `fab`
     directory and raises `output_path_unsafe` otherwise). Only entries named
     `.<target>.tmp-<12 hex>` or `<target>.old-<12 hex>` that lstat as a plain directory are
-    removed; a symlink or file of that name is skipped and logged, never followed. Returns
-    the removed names (sorted)."""
+    removed; a symlink or file of that name is skipped and logged, never followed. With the
+    target missing, a single `<target>.old-<id>` is renamed back first (`_restore_orphan`).
+    Returns the handled names (sorted; a restored one as "<name> (restored)")."""
     if fab_dir.name != FAB_DIR:
         raise _unsafe(str(fab_dir), "outside")
     _check_dir(fab_dir, FAB_DIR, missing_ok=False)
     pattern = _leftover_pattern(target_name)
     removed: list[str] = []
+    _restore_orphan(fab_dir, target_name, removed)
     for entry in sorted(os.listdir(fab_dir)):
         if not pattern.match(entry):
             continue

@@ -216,12 +216,16 @@ def md(text: object) -> str:
     return re.sub(r"[\r\n]+", " ", s)
 
 
+_COPPER = frozenset({"F.Cu", "B.Cu"})  # SMD pads sit on an outer copper layer
+
+
 def min_pad_pitch(model: BoardModel) -> float | None:
-    """The smallest centre distance between two SMD pads of one part (stacked pads, closer
-    than `STACKED_PAD_MM`, excluded); None without such a pair."""
+    """The smallest centre distance between two copper SMD pads of one part (paste-only
+    aperture pads and stacked pads, closer than `STACKED_PAD_MM`, excluded); None without
+    such a pair."""
     best: float | None = None
     for p in model.parts:
-        pads = sorted((q for q in p.pads if q.smd), key=lambda q: q.x)
+        pads = sorted((q for q in p.pads if q.smd and _COPPER & q.layers), key=lambda q: q.x)
         for i, a in enumerate(pads):
             for b in pads[i + 1 :]:
                 if best is not None and b.x - a.x >= best:

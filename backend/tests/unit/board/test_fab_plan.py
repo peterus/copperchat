@@ -4,6 +4,7 @@ from kicad-cli CSV text (built here from rows, never stored), the fab report."""
 from __future__ import annotations
 
 import csv
+import dataclasses
 import io
 from dataclasses import replace
 
@@ -274,6 +275,9 @@ def test_enig_for_fine_pitch() -> None:
     assert min_pad_pitch(fine) == 0.4
     assert "ENIG" not in _report(model=coarse).split("Surface finish")[1].splitlines()[0]
     assert "ENIG" in _report(model=fine).split("Surface finish")[1].splitlines()[0]
+    paste_only = dataclasses.replace(_pad("U1", "9", 10.2, 10), layers=frozenset({"F.Paste"}))
+    ep = board(parts=(part("U1", pads=(*coarse.parts[0].pads, paste_only)),))
+    assert min_pad_pitch(ep) == 0.65  # paste-only aperture pads are no copper pitch
     stacked = board(parts=(part("J1", pads=(_pad("J1", "A9", 5, 5), _pad("J1", "B4", 5, 5))),))
     assert min_pad_pitch(stacked) is None  # stacked pads (same position) are no pitch
 

@@ -313,8 +313,9 @@ async def test_reexport_replaces(fab_rig: PlacedSynth, metrics_pass: list[Any]) 
 
 async def test_leftover_swept(fab_rig: PlacedSynth, metrics_pass: list[Any]) -> None:
     await approve_board(fab_rig)
+    if not _target(fab_rig).exists():  # with the target present the .old- dir is swept
+        _ok(*await _export(fab_rig, "run-fab-swept-0"))
     fab = _fab(fab_rig)
-    fab.mkdir(exist_ok=True)
     for name in (".jlcpcb.tmp-0123456789ab", "jlcpcb.old-0123456789ab"):
         (fab / name).mkdir()
         (fab / name / "crashed.txt").write_text("left by a killed export")
