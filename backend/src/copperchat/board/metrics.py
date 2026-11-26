@@ -1678,7 +1678,8 @@ class _Fab:
         for p, q in self.pads:
             if q.drill is None:
                 continue
-            kind, limit = ("pth_drill", pr.min_drill) if _copper(q) else ("npth_drill", pr.min_npth)
+            plated = _copper(q) and not q.npth  # KiCad lists *.Cu on NPTH pads too (R5)
+            kind, limit = ("pth_drill", pr.min_drill) if plated else ("npth_drill", pr.min_npth)
             self.below(kind, _pin(q), q.drill, limit, (q.x, q.y), (p.ref,), (q.net,))
 
     def edges(self) -> None:

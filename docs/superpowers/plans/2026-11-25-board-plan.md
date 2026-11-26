@@ -772,9 +772,10 @@ surcharge)" only when non-empty. `pcb_fab_export` classifies once through the CP
 (`run_cpu(fab_exclusions, model, doc, timeout_s=FAB_METRICS_TIMEOUT_S)` - review round 1; returns
 the `bom` / `cpl` / `all` tuples) and passes them to the CSV writer and the report. **`Pad`
 gained `npth: bool = False`** (not hashed, from `pad_type == PT_NPTH`): KiCad lists `*.Cu` on
-NPTH pads too, so `small_holes` cannot tell plated from layers alone. `metrics.py`'s M14
-`pth_drill` / `npth_drill` split still uses the `.Cu` heuristic (`_copper`) - an NPTH below
-`min_drill` is checked against `min_drill` instead of `min_npth`; R1 owns `metrics.py`.
+NPTH pads too, so `small_holes` cannot tell plated from layers alone. **Outside R5's files
+(review round 2, one line):** `metrics.py` M14 now splits `pth_drill` / `npth_drill` on
+`_copper(q) and not q.npth` - before, an NPTH pad with `*.Cu` was checked against `min_drill`
+(now 0.2) instead of `min_npth` (0.5); R1 owns `metrics.py` (keep both sides on rebase).
 **`Part` gained `exclude_from_bom` / `exclude_from_pos`** (default `False`, not hashed - an
 attribute edit is no layout change), filled in `read.py` from `fp.attributes`
 (`test_read_exclude_attributes`). P8's `test_file_set` expectation changed: `sp4_synth`'s

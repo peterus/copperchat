@@ -152,7 +152,8 @@ def fab_exclusions(model: BoardModel, doc: BoardDoc | None) -> dict[str, tuple[s
 
 def small_holes(model: BoardModel) -> tuple[tuple[str, float], ...]:
     """(ref or `via`, smallest drill) of every plated hole below `SMALL_HOLE_MM` - plated pad
-    drills (a drilled pad that is not NPTH and has copper) and via drills - one row per ref, sorted by (drill, ref)."""
+    drills (a drilled pad that is not NPTH and has copper) and via drills - one row per ref,
+    sorted by (drill, ref)."""
     best: dict[str, float] = {}
 
     def add(ref: str, drill: float) -> None:
