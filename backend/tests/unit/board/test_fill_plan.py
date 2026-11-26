@@ -213,3 +213,18 @@ def test_dsn_disable_layers_by_position() -> None:
     assert '(autoroute_settings (layer_rule "GND plane" (active off)))' in out
     with pytest.raises(ValueError):
         disable_layers(renamed, ["In1.Cu"], ("F.Cu", "In1.Cu", "In2.Cu", "B.Cu"))
+
+
+def test_plan_fill_treats_zone_nets_as_plane_nets() -> None:
+    """A net carrying a copper zone (a supply pour, P7) is a plane net: its connections
+    are not open for the fill, and its new copper is deleted like ground's."""
+    m = _board_ab((), net="+3V3", copper_layers=FOUR)
+    plan = plan_fill(m, classify(m, BoardDoc()), None)
+    assert [k for k, *_ in plan.open] == ["+3V3:R1.1-R2.1"]
+    poured = _board_ab(
+        (), net="+3V3", copper_layers=FOUR, zones=(zone(net="+3V3", layers=("In2.Cu",)),)
+    )
+    plan = plan_fill(poured, classify(poured, BoardDoc()), None)
+    assert plan.open == ()
+    assert "+3V3" in plan.ground_nets
+    assert plan.plane_layers == ("In1.Cu",)  # a small supply pour is no plane layer

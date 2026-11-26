@@ -42,6 +42,7 @@ import itertools
 import math
 import os
 import re
+import shutil
 import stat
 import time
 import uuid
@@ -97,6 +98,7 @@ from copperchat.kicad_tools.board.route import (
     class_params,
     conn_key,
     plan_connections,
+    plane_nets,
     route_connections,
 )
 from copperchat.kicad_tools.board.setup import require_board_tools
@@ -145,6 +147,7 @@ FILL_FIXED_S = int(
 )
 FILL_WORST_CASE_S = TIMEOUT_MAX_S + FILL_FIXED_S  # 1005 s
 RIP_RATIO_MAX = 0.20  # spec §10.4
+STALE_SCRATCH_S = 3600.0  # a fill-* dir older than this was left by a killed process
 PLANE_COVER_MIN = 0.80  # a ground zone covering this share of the outline is a plane
 CELL_MM = 10.0  # worst-area cells of a rejected fill
 MAX_WORST_AREAS = 5
@@ -170,7 +173,7 @@ class FillArgs:
 
 @dataclass(frozen=True)
 class FillPlan:
-    ground_nets: frozenset[str]
+    ground_nets: frozenset[str]  # the plane nets: ground + nets with a copper zone
     # unrouted non-ground connections before the fill: (key, net, a, b)
     open: tuple[tuple[str, str, Pad, Pad], ...]
     plane_layers: tuple[str, ...]
@@ -214,13 +217,23 @@ def ground_nets_of(cls: Classification) -> frozenset[str]:
     return frozenset(n for n, k in cls.net_kind.items() if k == "ground")
 
 
+def plane_nets_of(model: BoardModel, cls: Classification) -> frozenset[str]:
+    """Ground nets plus every net carrying a copper zone (`route.plane_nets`, as
+    `pcb_unroute` defines them): their pads connect through pours and fanout (P7), so
+    the fill neither counts their connections as open nor keeps Freerouting's copper on
+    them (it would duplicate the pour's connections with tracks)."""
+    return frozenset(plane_nets(model, cls))
+
+
 def plan_fill(
     model: BoardModel, cls: Classification, plane_layers: tuple[str, ...] | None
 ) -> FillPlan:
-    """Ground nets, unrouted non-ground connections (shortest first per net), the plane
-    layers (`default_plane_layers` when None) and the filled copper zones."""
+    """Plane nets (`plane_nets_of`), unrouted connections of the other nets (shortest first
+    per net), the plane layers (`default_plane_layers` of the ground nets when None) and
+    the filled copper zones."""
     ground = ground_nets_of(cls)
-    nets = sorted({q.net for p in model.parts for q in p.pads if q.net and q.net not in ground})
+    planes = plane_nets_of(model, cls)
+    nets = sorted({q.net for p in model.parts for q in p.pads if q.net and q.net not in planes})
     open_: list[tuple[str, str, Pad, Pad]] = []
     for net in nets:
         open_ += [(conn_key(net, a, b), net, a, b) for a, b in _unrouted(model, net)]
@@ -228,7 +241,7 @@ def plan_fill(
     zones = tuple(
         z.kiid for z in model.zones if not z.rule_area and (z.filled_area_mm2 > 0 or z.filled)
     )
-    return FillPlan(ground, tuple(open_), tuple(layers), zones)
+    return FillPlan(planes, tuple(open_), tuple(layers), zones)
 
 
 def new_ground_items(
@@ -252,9 +265,6 @@ def _copper(model: BoardModel) -> list[Track | ArcTrack | Via]:
 
 def _copper_ids(model: BoardModel) -> frozenset[str]:
     return frozenset(i.kiid for i in _copper(model))
-
-
-_LAYER_RE = r"\(layer\s+{name}\s*\n?\s*\(type\s+\w+\)"
 
 
 _DSN_LAYER_RE = re.compile(r'\(layer\s+("[^"]*"|[^\s()]+)\s*\(type\s+\w+\)')
@@ -359,7 +369,8 @@ def _unavailable() -> StructuredToolError:
 
 def _fill_dir(ctx: ToolContext) -> Path:
     """The scratch dir path `.kicad-agent/board/fill-<uuid>` (created by stage 2); a
-    symlinked `.kicad-agent` or `board` is refused."""
+    symlinked `.kicad-agent` or `board` is refused. Fill dirs a killed server process left
+    behind (the engine removes its own on every path) are swept after STALE_SCRATCH_S."""
     agent = agent_dir(ctx.project)
     base = agent / "board"
     for d in (agent, base):
@@ -370,6 +381,15 @@ def _fill_dir(ctx: ToolContext) -> Path:
                 "Ask the user to replace it with a plain directory, then retry.",
                 code="output_path_unsafe",
             )
+    if base.is_dir():
+        now = time.time()
+        for old in base.glob("fill-*"):
+            try:
+                st = old.lstat()
+            except FileNotFoundError:
+                continue
+            if stat.S_ISDIR(st.st_mode) and now - st.st_mtime > STALE_SCRATCH_S:
+                shutil.rmtree(old, ignore_errors=True)
     return base / f"fill-{uuid.uuid4().hex}"
 
 
@@ -864,8 +884,6 @@ def fill_stages(st: _FillState) -> list[BoardStage]:
         sctx.report["io_seconds"] = round(st.io_spent, 2)
 
     async def cleanup(sctx: BoardStageContext) -> None:
-        import shutil
-
         await asyncio.to_thread(shutil.rmtree, st.workdir, True)
         m = await sctx.model()
         ground = await asyncio.to_thread(new_ground_items, st.pre, m, st.plan.ground_nets)
@@ -1120,11 +1138,12 @@ async def prepare_fill(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
         _check_plane_layers(model, fargs.plane_layers)
     doc = await read_board_doc(ctx)
     cls = await asyncio.to_thread(classify, model, doc)
-    ground = ground_nets_of(cls)
-    bad = [n for n in fargs.relock_nets if n in ground]
+    planes = await asyncio.to_thread(plane_nets_of, model, cls)
+    bad = [n for n in fargs.relock_nets if n in planes]
     if bad:
         raise _invalid(
-            f"{', '.join(bad[:10])} {'is a ground net' if len(bad) == 1 else 'are ground nets'}",
+            f"{', '.join(bad[:10])} {'is a plane net' if len(bad) == 1 else 'are plane nets'}"
+            " (ground, or a net with a copper zone)",
             "Ground/plane nets are never relocked (their fanout stays locked); pass signal nets.",
         )
     plan = await asyncio.to_thread(plan_fill, model, cls, fargs.plane_layers)
