@@ -775,8 +775,11 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
   power)` rewrite has **no effect** in 2.5.0 (signals still routed on a "power" layer). `disable_layers` inserts
   exactly one line `(autoroute_settings (layer_rule In1.Cu (active off)))` before the structure's `boundary`;
   nothing else changes (`test_dsn_layer_rewrite`, `test_probe_plane_layer_mechanism`: 0 wires on In1.Cu).
-  Plane default: zones of ground nets covering ≥ 80 % of the outline, else 4 L `In1.Cu`, 6 L `In1.Cu` +
-  `In4.Cu`, 2 L none; outer layers refused as plane layers.
+  **Plane nets** (review rounds 4/5 + verify) = ground nets + nets whose copper zones cover ≥ 80 % of the
+  outline on one layer (summed per net and layer, so a split plane counts; a small local pour does not):
+  their connections are not open for the fill and Freerouting's copper on them is deleted. **Plane layers**
+  default = every layer of such a plane (ground or supply), plus the owner-D1 default (4 L `In1.Cu`, 6 L
+  `In1.Cu` + `In4.Cu`, 2 L none) while no ground plane exists yet; outer layers refused as plane layers.
 
 **SDK tool-call limit (Task 4 Step 2)**
 - Bundled CLI (claude-agent-sdk 0.2.168): an MCP tool call's timeout = per-server `timeout` ?? `MCP_TOOL_TIMEOUT`

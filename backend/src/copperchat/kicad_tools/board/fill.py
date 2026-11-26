@@ -194,22 +194,41 @@ def _outline_area(model: BoardModel) -> float:
     return max(model.outline.w, 0.0) * max(model.outline.h, 0.0)
 
 
-def default_plane_layers(model: BoardModel, ground_nets: frozenset[str]) -> tuple[str, ...]:
-    """The layers the fill keeps free: the layers of existing ground-net copper zones
-    that cover at least PLANE_COVER_MIN of the outline, else the owner-D1 default
-    (4 layers `In1.Cu`, 6 layers `In1.Cu` + `In4.Cu`, 2 layers none). Copper order."""
+def _plane_coverage(model: BoardModel, nets: frozenset[str] | None) -> dict[str, set[str]]:
+    """net -> copper layers on which the net's copper zones (summed per layer, so a split
+    plane counts as one) cover at least PLANE_COVER_MIN of the outline. `nets` None: any
+    net; else only those."""
     board = _outline_area(model)
-    found: set[str] = set()
-    if board > 0:
-        for z in model.zones:
-            if z.rule_area or z.net not in ground_nets:
-                continue
-            if _area(z.outline) >= PLANE_COVER_MIN * board:
-                found.update(n for n in z.layers if n in model.copper_layers)
-    if found:
-        return tuple(n for n in model.copper_layers if n in found)
-    default = PLANE_DEFAULT.get(len(model.copper_layers), ())
-    return tuple(n for n in default if n in model.copper_layers)
+    if board <= 0:
+        return {}
+    area: dict[tuple[str, str], float] = defaultdict(float)
+    for z in model.zones:
+        if z.rule_area or not z.net or (nets is not None and z.net not in nets):
+            continue
+        a = _area(z.outline)
+        for layer in z.layers:
+            if layer in model.copper_layers:
+                area[(z.net, layer)] += a
+    out: dict[str, set[str]] = defaultdict(set)
+    for (net, layer), a in area.items():
+        if a >= PLANE_COVER_MIN * board:
+            out[net].add(layer)
+    return dict(out)
+
+
+def default_plane_layers(
+    model: BoardModel, plane_nets: frozenset[str], ground_nets: frozenset[str] | None = None
+) -> tuple[str, ...]:
+    """The layers the fill keeps free: every layer where a plane net (`plane_nets_of`: ground
+    or a supply plane) has zones covering at least PLANE_COVER_MIN of the outline (summed
+    per net and layer), plus - while no ground plane exists yet - the owner-D1 default
+    (4 layers `In1.Cu`, 6 layers `In1.Cu` + `In4.Cu`, 2 layers none). Copper order."""
+    ground = plane_nets if ground_nets is None else ground_nets
+    cover = _plane_coverage(model, plane_nets)
+    found = {layer for layers in cover.values() for layer in layers}
+    if not any(net in ground for net in cover):  # no ground plane yet: the D1 default
+        found |= set(PLANE_DEFAULT.get(len(model.copper_layers), ()))
+    return tuple(n for n in model.copper_layers if n in found)
 
 
 def ground_nets_of(cls: Classification) -> frozenset[str]:
@@ -217,33 +236,28 @@ def ground_nets_of(cls: Classification) -> frozenset[str]:
 
 
 def plane_nets_of(model: BoardModel, cls: Classification) -> frozenset[str]:
-    """Ground nets plus every net with a copper zone covering at least PLANE_COVER_MIN of
-    the outline (a plane, e.g. a supply plane from `pcb_zones`): their pads connect through
-    the plane and fanout (P7), so the fill neither counts their connections as open nor
-    keeps Freerouting's copper on them (it would duplicate the plane's connections). A
-    small local pour does not make its net a plane net (its connections stay in the fill)."""
-    board = _outline_area(model)
-    planes = set(ground_nets_of(cls))
-    if board > 0:
-        for z in model.zones:
-            if not z.rule_area and z.net and _area(z.outline) >= PLANE_COVER_MIN * board:
-                planes.add(z.net)
-    return frozenset(planes)
+    """Ground nets plus every net whose copper zones cover at least PLANE_COVER_MIN of the
+    outline on one layer (summed per layer: a split plane counts) - a supply plane from
+    `pcb_zones`. Their pads connect through the plane and fanout (P7), so the fill neither
+    counts their connections as open nor keeps Freerouting's copper on them (it would
+    duplicate the plane's connections), and their plane layers stay free. A small local
+    pour does not make its net a plane net."""
+    return frozenset(ground_nets_of(cls) | set(_plane_coverage(model, None)))
 
 
 def plan_fill(
     model: BoardModel, cls: Classification, plane_layers: tuple[str, ...] | None
 ) -> FillPlan:
     """Plane nets (`plane_nets_of`), unrouted connections of the other nets (shortest first
-    per net), the plane layers (`default_plane_layers` of the ground nets when None) and
-    the filled copper zones."""
-    ground = ground_nets_of(cls)
+    per net), the plane layers (`default_plane_layers` when None) and the filled copper
+    zones."""
     planes = plane_nets_of(model, cls)
     nets = sorted({q.net for p in model.parts for q in p.pads if q.net and q.net not in planes})
     open_: list[tuple[str, str, Pad, Pad]] = []
     for net in nets:
         open_ += [(conn_key(net, a, b), net, a, b) for a, b in _unrouted(model, net)]
-    layers = default_plane_layers(model, ground) if plane_layers is None else plane_layers
+    ground = ground_nets_of(cls)
+    layers = default_plane_layers(model, planes, ground) if plane_layers is None else plane_layers
     zones = tuple(
         z.kiid for z in model.zones if not z.rule_area and (z.filled_area_mm2 > 0 or z.filled)
     )

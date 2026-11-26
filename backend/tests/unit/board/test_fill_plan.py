@@ -239,4 +239,18 @@ def test_plan_fill_treats_plane_zone_nets_as_plane_nets() -> None:
     plan = plan_fill(poured, classify(poured, BoardDoc()), None)
     assert plan.open == ()
     assert "+3V3" in plan.ground_nets
-    assert plan.plane_layers == ("In1.Cu",)  # plane-layer defaults follow ground zones only
+    # the supply plane's layer stays free too; In1.Cu (D1 default) while no ground plane
+    assert plan.plane_layers == ("In1.Cu", "In2.Cu")
+
+
+def test_plane_coverage_summed_per_net_and_layer() -> None:
+    """A split plane (two halves of one net on one layer) counts like one plane; with a
+    ground plane present the D1 default is not added."""
+    left = ((0.0, 0.0), (50.0, 0.0), (50.0, 80.0), (0.0, 80.0))
+    right = ((50.0, 0.0), (100.0, 0.0), (100.0, 80.0), (50.0, 80.0))
+    zones = (
+        zone(net="GND", layers=("In2.Cu",), poly=left, kiid="z1"),
+        zone(net="GND", layers=("In2.Cu",), poly=right, kiid="z2"),
+    )
+    m = board(copper_layers=FOUR, outline=outline(0, 0, 100, 80), zones=zones)
+    assert default_plane_layers(m, frozenset({"GND"})) == ("In2.Cu",)
