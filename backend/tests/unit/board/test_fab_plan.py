@@ -178,15 +178,28 @@ def test_cpl_rejects_non_numbers() -> None:
 
 
 def test_custom_rules_with_reasons() -> None:
+    # KiCad's own format (probed: pcb_set_rules writes the reason as a comment inside the rule)
     dru = (
-        "(version 1)\n"
-        "# power nets keep a wider gap\n"
+        "(version 2)\n\n"
         '(rule "power_clear"\n'
+        "\t# power nets keep a wider gap\n"
+        "\t# (two lines)\n"
+        "\t(condition \"A.NetClass == 'Power'\")\n"
         "\t(constraint clearance (min 0.3mm))\n"
-        "\t(condition \"A.NetClass == 'Power'\"))\n"
+        ")\n\n"
+        "# a comment block before a rule\n"
+        "# second line\n"
+        '(rule "with \\"quote\\""\n'
+        "\t(condition \"A.Type == 'Via'\")\n"
+        ")\n"
         "(rule bare (condition \"A.Type == 'Via'\") (constraint hole_size (min 0.2mm)))\n"
+        "# belongs to nothing\n"
     )
-    assert custom_rules(dru) == [("power_clear", "power nets keep a wider gap"), ("bare", "")]
+    assert custom_rules(dru) == [
+        ("power_clear", "power nets keep a wider gap (two lines)"),
+        ('with "quote"', "a comment block before a rule second line"),
+        ("bare", ""),
+    ]
     assert custom_rules("") == []
 
 

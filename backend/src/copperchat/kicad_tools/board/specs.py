@@ -122,3 +122,8 @@ TOOL_SPECS += ROUTE_SPECS
 from copperchat.kicad_tools.board.specs_copper import COPPER_SPECS  # noqa: E402
 
 TOOL_SPECS += COPPER_SPECS
+
+# P8: fab exports (pcb_fab_export, pcb_export_3d)
+from copperchat.kicad_tools.board.specs_fab import FAB_SPECS  # noqa: E402
+
+TOOL_SPECS += FAB_SPECS

@@ -179,22 +179,33 @@ def csv_text(header: Sequence[str], rows: Iterable[Sequence[str]]) -> str:
 _RULE = re.compile(r'\(\s*rule\s+(?:"((?:[^"\\]|\\.)*)"|([^\s()"]+))', re.IGNORECASE)
 
 
+def _comment_lines(lines: Iterable[str]) -> list[str]:
+    """The leading run of `#` comment lines (text after the `#`)."""
+    out: list[str] = []
+    for line in lines:
+        s = line.strip()
+        if not s.startswith("#"):
+            break
+        out.append(s.lstrip("#").strip())
+    return out
+
+
 def custom_rules(dru_text: str) -> list[tuple[str, str]]:
-    """(name, reason) of every custom rule of a `.kicad_dru`: the reason is the `#` comment
-    block right before the rule (where KiCad writes a rule's comments), else empty."""
+    """(name, reason) of every custom rule of a `.kicad_dru`. The reason is the `#` comment
+    block right below the rule's header line (where KiCad writes a rule's comments, i.e.
+    the `pcb_set_rules` reason) while the rule is still open, else the block right before
+    the rule, else empty."""
     out: list[tuple[str, str]] = []
     for m in _RULE.finditer(dru_text):
         name = m.group(1) if m.group(1) is not None else m.group(2)
-        before = dru_text[: m.start()].rstrip(" \t").split("\n")
-        if before and before[-1].strip() == "":
-            before = before[:-1]
-        comments: list[str] = []
-        for line in reversed(before):
-            s = line.strip()
-            if not s.startswith("#"):
-                break
-            comments.append(s.lstrip("#").strip())
-        out.append((name.replace('\\"', '"'), " ".join(reversed(comments)).strip()))
+        header_end = dru_text.find("\n", m.start())
+        header = dru_text[m.start() : header_end if header_end >= 0 else len(dru_text)]
+        inside: list[str] = []
+        if header_end >= 0 and header.count("(") > header.count(")"):  # rule still open
+            inside = _comment_lines(dru_text[header_end + 1 :].split("\n"))
+        before = dru_text[: m.start()].rstrip(" \t").split("\n")[:-1]
+        reason = inside or list(reversed(_comment_lines(reversed(before))))
+        out.append((name.replace('\\"', '"'), " ".join(reason).strip()))
     return out
 
 
