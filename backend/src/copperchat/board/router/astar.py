@@ -21,7 +21,7 @@ import itertools
 import math
 import re
 import time
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import replace
 
 from copperchat.board.geom import CHAMFER_MIN, JOG_MIN, _in_pad, _pad_on_layer, analyse_bends
@@ -158,7 +158,7 @@ def _heads(node: Point, segs: Iterable[tuple[Point, Point]]) -> list[float]:
 
 def junctions_ok(
     runs: Sequence[tuple[str, Sequence[Point]]],
-    own: dict[str, Sequence[tuple[Point, Point]]],
+    own: Mapping[str, Sequence[tuple[Point, Point]]],
     exempt: Callable[[Point], bool],
 ) -> bool:
     """No 90° branch between the path and EXISTING own-net copper outside `exempt`
