@@ -386,7 +386,7 @@ async def test_fanout_deadline_bounds_calls(
         assert refills[0] == ("refill", 20.0)
         i = log.index(refills[0])
         assert log[i + 1] == ("call", api.refill_call_timeout(20.0)) == ("call", 65.0)
-        assert [e for e in log if e[0] == "drc"][0] == ("drc", 20.0)
+        assert next(e for e in log if e[0] == "drc") == ("drc", 20.0)
     else:
         assert refills == [("refill", api.REFILL_TIMEOUT_S)]
         assert not [e for e in log if e[0] == "drc"]

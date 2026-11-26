@@ -221,7 +221,7 @@ async def test_zones_m11_via_run_cpu(
     monkeypatch.undo()
     m11 = [c for c in calls if c[0] is zones.metrics_job]
     assert len(m11) == 1
-    fn, args, kw = m11[0]
+    _fn, args, kw = m11[0]
     assert kw["only"] == frozenset({"M11"}) and kw["timeout_s"] == 30
     model = args[0]
     assert any(z.filled for z in model.zones if not z.rule_area)  # fills kept for M11
