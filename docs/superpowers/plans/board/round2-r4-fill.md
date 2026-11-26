@@ -88,7 +88,9 @@ re-tuned); Test: `backend/tests/kicad/board/test_fill_roundtrip.py` (probes, `re
 rip connections with an M16 hard offender — `dogleg`, `pad_loop` — with those reasons, so the
 own router re-routes them straight-first (R3)), `cc/kicad_tools/board/fill.py` (`_widen` skips a
 track that satisfies R1's M12 neck exemption; `_bends_of` (`fill.py:771`) counts `y_junctions`
-instead of `t_junctions`; Y re-landing replacements DRC-checked like chamfers); Test:
+instead of `t_junctions`, the relock check likewise, and the fill's re-route then calls
+`plan_connections(…, tree=True)` (R3 left it `False` for the fill); Y re-landing replacements
+DRC-checked like chamfers); Test:
 `backend/tests/unit/board/test_chamfer.py`, `backend/tests/unit/board/test_fill_plan.py`,
 `backend/tests/kicad/board/test_fill_postprocess.py`.
 

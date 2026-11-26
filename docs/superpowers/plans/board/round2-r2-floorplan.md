@@ -123,7 +123,10 @@ otherwise skip it. Deterministic order (natural ref order). `spread` = min(union
 `DEFAULT_KEEP_CHANNELS_MM`), `unroute` (write only). Result data: `regions [{block, x, y, w,
 h}]`, `channels [{x1, y1, x2, y2, width}]`, `courtyard_fill`, `usable_mm2`, `score` (incl.
 `spread`), `moved`, `placement_hash` before/after (write). `pcb_floorplan` returns one
-placement-view render with region rectangles as markers (B-C9 `markers`). Errors: `no_board`,
+placement-view render with the region rectangles drawn as **hulls** (`cc/board/render.py`
+`Hull(name=<block>, points=<4 corners>)`, already drawn with names by `wrap_svg`;
+`render_board` gains a `hulls: Sequence[Hull] = ()` keyword — `cc/views/board_render.py` is
+R5's in wave R-1, R2 edits it afterwards; add it to this task's Files). Errors: `no_board`,
 `unknown_block`, `does_not_fit` (`details.courtyard_fill`, `needed_mm2`, `available_mm2`),
 `part_routed`, `board_compute_timeout`.
 

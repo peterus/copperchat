@@ -88,9 +88,14 @@ goal set's bounding boxes, the goal set capped at `TREE_GOALS_MAX = 2_000` nodes
 pad a; `FIRST_TRY_EXPANSIONS` / deadlines unchanged), `cc/board/router/grid.py` (own-copper
 goal nodes), `cc/kicad_tools/board/route.py` `_bends` (`route.py:1065`: count `y_junctions`,
 no longer `t_junctions` — the post-route M4 check must accept the T branches this task creates),
-`cc/kicad_tools/board/route.py` (`plan_connections`: `tree=True` for every connection whose
-net already has copper connected to pad b, except pairs); Test:
-`backend/tests/unit/board/test_router_astar.py` (rewrite the P9a junction tests),
+`cc/kicad_tools/board/route.py` (`plan_connections(…, tree: bool = False)`: with `tree=True`,
+every connection whose net already has copper connected to pad b gets `req.tree`, except
+pairs; **`pcb_route` passes `tree=True`, the fill's re-route keeps the default `False`** until R4
+switches `fill._bends_of` / relock to `y_junctions` and turns it on). Tree goal nodes are only
+**interior points of straight own-net runs** — at least `width` away from every run end, never a
+node of degree ≠ 2 (existing junctions, free track ends, bend vertices, pads, vias); Test:
+`backend/tests/unit/board/test_router_astar.py` (rewrite the P9a junction tests; add
+`test_tree_goal_not_on_existing_junction`, `test_tree_goal_not_on_track_end`),
 `backend/tests/unit/board/test_router_props.py`.
 
 **Interfaces:** after this task the docstring and tests of `junction_masks` state: "at a node
@@ -111,9 +116,11 @@ nodes (path vertices or own track ends on the path) have `geom.junction_kind == 
 
 ### Task 4: Straight-first and pad-entry costs
 
-**Files:** Modify `cc/kicad_tools/board/route.py` (`route_connections`: for a plan with
-`geom.straight_corridor(a, b, w)`, create that one segment first, DRC it, keep on pass, else
-search), `cc/board/router/astar.py` (`ENTRY_TURN_COST = 4.0` per bend inside
+**Files:** Modify `cc/kicad_tools/board/route.py` (`route_connections`: **pass 0** — before any search
+in the call, every plan with a `geom.straight_corridor(a, b, w)` gets its one segment created and
+DRC-checked (kept on pass); the corridors of the plans whose segment failed only because of
+copper this call created are retried once at the end of pass 0; then the normal search for the
+rest. So a later search can never block an earlier-planned corridor), `cc/board/router/astar.py` (`ENTRY_TURN_COST = 4.0` per bend inside
 `geom.entry_zone`, the away-move ban), `cc/board/router/simplify.py` if snapping adds a jog;
 Test: `backend/tests/unit/board/test_router_entry.py` (new), `backend/tests/kicad/board/test_route.py`.
 

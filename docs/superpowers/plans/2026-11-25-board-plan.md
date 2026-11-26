@@ -2391,7 +2391,7 @@ above (owner edits freely; "append" = add lines only, keep both sides on rebase)
 | `cc/board/geom.py` (junction / entry / neck / corridor additions), `cc/board/metrics.py`, `cc/kicad_tools/board/specs_analysis.py` (metric description text) | R1 (R-1) | R4 flips `M15_HARD` / `M16_HARD` in `metrics.py` (two lines) |
 | `cc/board/presets.py`, `cc/board/fab.py`, `cc/kicad_tools/board/fab.py`, `cc/board/render.py` (`default_extent`), `cc/views/board_render.py`, `cc/kicad_tools/board/views.py`; `cc/board/model.py` + `cc/kicad_tools/board/read.py` only to append the unhashed `Part.exclude_from_bom` / `exclude_from_pos` fields if missing | R5 (R-1) | — |
 | new `cc/board/heavy.py`, `cc/board/worker.py` (recycling), `cc/board/freerouting.py` (gate around the run only), `cc/kicad_tools/board/check.py` (`cli_parity` gate only), `scripts/odh-dry-run.py` (memory sampler), `backend/tests/unit/test_odh_dry_run.py` | R6 (R-1) | R2 (answer loading only, if needed) and R7 edit both afterwards |
-| `cc/board/placer/**` (new `floorplan.py` incl. the `align_pairs` pass), `cc/kicad_tools/board/{place,specs_place}.py`, `cc/agent/profiles.py` (`PCB_READ` / `PCB_WRITES` names), `cc/changes/repo.py` + `frontend/src/components/changes/highlight.ts` (`board_place_blocks` kind), `backend/tests/kicad_e2e/flow.py` | R2 (R-2) | `cc/board/jobs.py` append (`floorplan_job`, `place_blocks_job`) |
+| `cc/board/placer/**` (new `floorplan.py` incl. the `align_pairs` pass), `cc/kicad_tools/board/{place,specs_place}.py`, `cc/agent/profiles.py` (`PCB_READ` / `PCB_WRITES` names), `cc/changes/repo.py` + `frontend/src/components/changes/highlight.ts` (`board_place_blocks` kind), `cc/views/board_render.py` (`render_board(hulls=…)` only, after R5), `backend/tests/kicad_e2e/flow.py` | R2 (R-2) | `cc/board/jobs.py` append (`floorplan_job`, `place_blocks_job`) |
 | `cc/board/router/{grid,astar,simplify,pairs}.py`, `cc/kicad_tools/board/route.py` | R3 (R-2) | — |
 | `cc/kicad_tools/board/{fill,specs_fill}.py`, `cc/board/router/chamfer.py`, `cc/board/freerouting.py` (settings arguments; R6's gate stays), `cc/board/classify.py` (`_critical` only) + `backend/tests/kicad/board/goldens/sp4_synth_classification.json` | R4 (R-3) | — |
 | `scripts/odh-dry-run.py`, `backend/tests/kicad_e2e/**` (flow answers), any owning file of a defect found on ODH (minimal fix, recorded in "As built (R7)") | R7 (R-4) | — |
@@ -2414,8 +2414,8 @@ def entry_zone_width(width: float) -> float                         # max(1.0, 3
 def entry_zone(pad: Pad, width: float) -> tuple[Point, ...]          # pad rectangle (rotated) grown by entry_zone_width(width)
 def escape_zone(part: Part) -> tuple[Point, ...]                    # courtyard's axis-aligned bbox grown by ESCAPE_HALO_MM (convex)
 def neck_width(pad: Pad, class_width: float, min_track: float) -> float   # min(class_width, min(pad.w, pad.h)), never < min_track
-def straight_corridor(a: Pad, b: Pad, width: float) -> tuple[str, Point, Point] | None
-    # (layer, start, end) when a and b share a copper layer, their edge gap ≤ ADJ_GAP_MM and their extents overlap
+def straight_corridor(a: Pad, b: Pad, width: float) -> tuple[tuple[str, ...], Point, Point] | None
+    # (shared copper layers, start, end) when a and b share ≥ 1 copper layer (THT pairs: all shared layers), their edge gap ≤ ADJ_GAP_MM and their extents overlap
     # across x or y by ≥ width: the axis-parallel segment through the overlap band's centre line, pad edge to pad edge
 @dataclass(frozen=True) class EntryReport: loops: tuple[Point, ...]; jogs: tuple[Point, ...]
 def analyse_entry(points: Sequence[Point], width: float, zone: Sequence[Point]) -> EntryReport

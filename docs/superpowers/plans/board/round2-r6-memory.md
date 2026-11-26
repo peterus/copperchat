@@ -40,8 +40,9 @@ that is about to be killed.
   `min(HEAVY_WAIT_S, timeout_s)` and subtracted from Freerouting's own timeout, so
   `FILL_WORST_CASE_S` (1005 s) does not grow. `pcb_check full` gains at most `HEAVY_WAIT_S`:
   add a row `pcb_check (full)` to the index's worst-case table (today's parity
-  `BOARD_PARITY_TIMEOUT_S` 120 + API DRC 60 + metrics 30 + `HEAVY_WAIT_S` 120 → 330 s) and
-  record it. The gate is process-wide (all projects); cross-project serialisation of parity
+  API DRC `drc_call_timeout(60)` = 105 + `HEAVY_WAIT_S` 120 + parity `BOARD_PARITY_TIMEOUT_S` 120 +
+  metrics `run_cpu(timeout_s=30, wait_s=30)` 60 — `check.py:440` passes no `wait_s` today, add
+  `wait_s=30` — → 405 s) and record it. The gate is process-wide (all projects); cross-project serialisation of parity
   DRCs is intended (memory is a host budget) — record it in "As built (R6)".
 
 ## Review Focus (this phase)
@@ -71,9 +72,16 @@ KiCad-level test today, `tests/kicad/edit/test_checks_real.py`).
 AsyncContextManager[None]` — for `"parity"` it also acquires the CPU-worker lock inside the
 same `wait_s` budget; raises `StructuredToolError(code="board_compute_timeout",
 details={"waiting_for": <"freerouting" | "parity" | "cpu_job">})` after `wait_s`.
-`HEAVY_WAIT_S = 120.0`.
+`HEAVY_WAIT_S = 120.0`. Failure modes per caller: `run_freerouting` maps a gate timeout to a
+`FreeroutingRun(timed_out=True)` exactly like its existing slot wait (`freerouting.py:369-375`),
+so the fill reports `fill_not_acceptable` / `timeout` as today; `pcb_check full` raises
+`board_compute_timeout`; the legacy path's callers: the existing DRC check tool returns
+`board_compute_timeout`, the board view's violation markers (`views/render.py:92`
+`cached_violations`) degrade to **no markers** (logged), never fail the render. Each adds at most
+`HEAVY_WAIT_S` to its call — record it.
 
-- [ ] **Step 1: Failing tests:** `test_slot_serialises` (two tasks, second enters after the
+- [ ] **Step 1: Failing tests:** `test_freerouting_gate_timeout_is_timed_out_run`,
+  `test_render_markers_degrade_on_gate_timeout`, `test_slot_serialises` (two tasks, second enters after the
   first exits), `test_slot_per_loop` (two `asyncio.run` calls in a row each get a working slot),
   `test_gate_released_on_cancel`, `test_parity_waits_then_times_out` (fake held slot,
   `wait_s=0.05` → `board_compute_timeout` with `waiting_for == "freerouting"`),

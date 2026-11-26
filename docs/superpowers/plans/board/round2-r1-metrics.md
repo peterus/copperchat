@@ -148,15 +148,18 @@ exactly as B-C5 (round 2). R2 uses `straight_corridor`, R3 uses all of them, R4 
 `THRESHOLD_TEXT` (`metrics.py:178`, keyed by `MetricId` — add M15/M16 entries, M4's text
 without the T clause, else `_metric` raises `KeyError`),
 `cc/kicad_tools/board/specs_analysis.py` (description text: M4 without the T clause, M15, M16);
-Test: `test_metrics_round2.py`, `backend/tests/unit/board/test_metrics_routed.py` (update),
-`backend/tests/unit/board/test_specs.py` if it pins the metric count.
+`cc/kicad_tools/board/specs_check.py:22` (the "M1-M14" text); Test: `test_metrics_round2.py`,
+`backend/tests/unit/board/test_metrics_routed.py` (update), and the tests that pin 14 metrics:
+`backend/tests/unit/board/test_metrics_rules.py:433`, `backend/tests/unit/board/test_analysis_unit.py:227`,
+`backend/tests/kicad/board/test_zones.py:137` (grep `M14` / `14` in `tests/` for any other).
 
 **Interfaces:** Produces B-C7 (round 2). M15: one offender per `y_junctions` point,
 `what="y_junction"`, net. M16 per connection of every **non-ground** net
 (`connections(model, net)` MST pairs; ground nets are plane-connected and excluded, like M5): (a) `dogleg`
 when `straight_corridor(a, b, w)` exists, its rectangle (segment ± w/2 + clearance) is free of
-other-net pads, vias and keepouts, and `routed_path(model, a, b)` is not exactly one straight
-segment on the corridor's layer outside the pads; (b) `pad_loop` / (c) `pad_jog` from
+other-net pads, vias and keepouts, and `routed_path(model, a, b)` is **not `None`** (an unrouted connection is M2's business,
+never a dogleg) and is not exactly one straight segment on one of the corridor's layers outside
+the pads; (b) `pad_loop` / (c) `pad_jog` from
 `analyse_entry` on each end's entry zone (loop = the **signed** cumulative turn of the
 piece reaches ±`LOOP_TURN_DEG` at some vertex); placement stage (no tracks): `alignable` (review) for
 adjacent 2-pad pairs (edge gap ≤ `ADJ_GAP_MM`) without a corridor whose perpendicular offset
@@ -167,6 +170,7 @@ the switch is on, `review` when any offender exists otherwise.
   `test_m4_degree2_ninety_still_fails`; `test_m15_y_review_when_switch_off`,
   `test_m15_y_fails_when_switch_on` (monkeypatch `metrics.M15_HARD = True`);
   `test_m16_dogleg` (aligned 0805 pair routed with two 45° bends → `dogleg`),
+  `test_m16_unrouted_pair_not_dogleg`, `test_m16_tht_pair_straight_on_bottom_ok`,
   `test_m16_straight_ok`, `test_m16_corridor_blocked_by_foreign_pad_not_dogleg`,
   `test_m16_loop`, `test_m16_jog_review_only` (jog never `fail`, also with the switch on),
   `test_m16_alignable_placement_stage`; `test_switches_default_review` (both module constants
