@@ -13,7 +13,7 @@ rule within `timeout_s` ≤ 600 s; Freerouting's Y-junctions become T-junctions 
 M16's hard parts are switched on and the golden pins them.
 
 **Architecture:** four levers, each measured on ODH and recorded: (1) **fewer fill nets** —
-intra-block nets join the critical set (`classify._critical`), so Freerouting routes only
+intra-block and straight-corridor nets join `pcb_analyze`'s critical set (`cc/board/critical.py`), so Freerouting routes only
 inter-block nets through R2's channels; (2) **Freerouting settings** — only options the pinned
 2.5.0 accepts (probed; P6b found that unknown properties are rejected and
 `--router.automatic_neckdown=false` had no effect); (3) **optimizer** — P6b found Freerouting
@@ -43,17 +43,32 @@ never runs; find the cause (DSN pad/via geometry or resolution) and fix it on ou
 
 ---
 
-### Task 1: Intra-block nets in the critical set
+### Task 1: Intra-block and corridor nets in the critical set
 
-**Files:** Modify `cc/board/classify.py` (`_critical` gains the blocks: a non-ground net whose
-pads all belong to one block's refs, ≤ `CRITICAL_INTRA_MAX_PADS = 8` pads); Test:
-`backend/tests/unit/board/test_classify.py`, `backend/tests/kicad/board/goldens/sp4_synth_classification.json`
-(regenerate, explain).
+`classify()` stays state-independent (its golden unchanged): the extension is computed where
+the board's **defined** blocks are known.
 
-- [ ] **Step 1: Failing tests:** `test_critical_includes_intra_block_net`,
-  `test_critical_excludes_inter_block_net`, `test_critical_excludes_ground`.
-- [ ] **Step 2–4:** FAIL → implement → PASS; `UPDATE_GOLDENS=1` for the classification golden
-  after rebase. **Step 5: Commit** `feat(board): intra-block nets join the critical set`.
+**Files:** Create `cc/board/critical.py` (pure); Modify `cc/kicad_tools/board/analysis.py`
+(`pcb_analyze`'s `critical_nets` = `cls.critical_nets` ∪ `extra_critical(…)`; nets scope
+reports `critical_reasons {net: "class" | "intra_block" | "corridor"}`),
+`cc/kicad_tools/board/specs_analysis.py` (description), `backend/tests/kicad_e2e/flow.py`
+(turn 4 calls `pcb_route` in batches of ≤ 50 nets — the schema's `maxItems`); Test:
+`backend/tests/unit/board/test_critical.py` (new), `backend/tests/kicad/board/test_analysis_synth.py`.
+
+**Interfaces:** `extra_critical(model, cls, blocks: Mapping[str, tuple[str, ...]]) ->
+dict[str, str]` — `blocks` = the board's defined `blk:` groups (`place._blocks(model)`,
+`place.py:181`) when any exist, else `{b.name: b.refs for b in cls.blocks}` (proposals); adds
+(1) every non-ground net whose pads all belong to one block, ≤ `CRITICAL_INTRA_MAX_PADS = 8`
+pads → `"intra_block"`; (2) every non-ground net with an MST connection that has a
+`geom.straight_corridor` → `"corridor"` (so all rule-b pairs are own-routed straight and locked
+before Freerouting runs, and no fill copper can sit in their corridors).
+
+- [ ] **Step 1: Failing tests:** `test_extra_critical_intra_block`,
+  `test_extra_critical_inter_block_excluded`, `test_extra_critical_ground_excluded`,
+  `test_extra_critical_uses_defined_groups` (an absorbed block — e.g. the ESD part's block
+  merged into its connector's — follows the defined groups, not the proposals),
+  `test_extra_critical_corridor_pair`.
+- [ ] **Step 2–4:** FAIL → implement → PASS. **Step 5: Commit** `feat(board): intra-block and corridor nets join the critical set`.
 
 ### Task 2: Freerouting settings probe and tuning
 

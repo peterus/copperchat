@@ -159,7 +159,8 @@ without the T clause, else `_metric` raises `KeyError`),
 when `straight_corridor(a, b, w)` exists, its rectangle (segment ± w/2 + clearance) is free of
 other-net pads, vias and keepouts, and `routed_path(model, a, b)` is **not `None`** (an unrouted connection is M2's business,
 never a dogleg) and is not exactly one straight segment on one of the corridor's layers outside
-the pads; (b) `pad_loop` / (c) `pad_jog` from
+the pads — after merging collinear, same-layer, touching edges of the path (an own-net T
+branch splits a straight track into two edges in the net graph); (b) `pad_loop` / (c) `pad_jog` from
 `analyse_entry` on each end's entry zone (loop = the **signed** cumulative turn of the
 piece reaches ±`LOOP_TURN_DEG` at some vertex); placement stage (no tracks): `alignable` (review) for
 adjacent 2-pad pairs (edge gap ≤ `ADJ_GAP_MM`) without a corridor whose perpendicular offset
@@ -170,7 +171,8 @@ the switch is on, `review` when any offender exists otherwise.
   `test_m4_degree2_ninety_still_fails`; `test_m15_y_review_when_switch_off`,
   `test_m15_y_fails_when_switch_on` (monkeypatch `metrics.M15_HARD = True`);
   `test_m16_dogleg` (aligned 0805 pair routed with two 45° bends → `dogleg`),
-  `test_m16_unrouted_pair_not_dogleg`, `test_m16_tht_pair_straight_on_bottom_ok`,
+  `test_m16_unrouted_pair_not_dogleg`, `test_m16_straight_with_t_branch_ok` (a T branch
+  splits the straight a–b track into two collinear graph edges → still straight), `test_m16_tht_pair_straight_on_bottom_ok`,
   `test_m16_straight_ok`, `test_m16_corridor_blocked_by_foreign_pad_not_dogleg`,
   `test_m16_loop`, `test_m16_jog_review_only` (jog never `fail`, also with the switch on),
   `test_m16_alignable_placement_stage`; `test_switches_default_review` (both module constants

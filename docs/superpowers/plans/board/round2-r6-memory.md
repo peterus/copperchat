@@ -41,8 +41,9 @@ that is about to be killed.
   `FILL_WORST_CASE_S` (1005 s) does not grow. `pcb_check full` gains at most `HEAVY_WAIT_S`:
   add a row `pcb_check (full)` to the index's worst-case table (today's parity
   API DRC `drc_call_timeout(60)` = 105 + `HEAVY_WAIT_S` 120 + parity `BOARD_PARITY_TIMEOUT_S` 120 +
-  metrics `run_cpu(timeout_s=30, wait_s=30)` 60 — `check.py:440` passes no `wait_s` today, add
-  `wait_s=30` — → 405 s) and record it. The gate is process-wide (all projects); cross-project serialisation of parity
+  metrics `run_cpu(timeout_s=30, wait_s=HEAVY_WAIT_S)` 150 — `check.py:440` passes no `wait_s`
+  today (unbounded); bound it by `HEAVY_WAIT_S` so a parity DRC holding the worker lock does not
+  time out a concurrent check — → 495 s; test `test_quick_check_survives_parity_holding_worker`) and record it. The gate is process-wide (all projects); cross-project serialisation of parity
   DRCs is intended (memory is a host budget) — record it in "As built (R6)".
 
 ## Review Focus (this phase)
