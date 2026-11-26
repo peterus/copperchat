@@ -616,3 +616,63 @@ async def synth_routed(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterato
     """`routed_synth` on a fresh `sp4_synth` server for a whole test module."""
     async with _synth_rig(tmp_path_factory.mktemp("synth-routed")) as (rig, db):
         yield PlacedSynth(rig, db, await routed_synth(rig, db))
+
+
+# -- copper_rig (SP4 P7; pcb_zones / pcb_fanout / pcb_stitch / pcb_tidy_silk) ---------------
+
+DEFAULT_ZONES = ("GND_In1", "GND_F", "GND_B")  # the 4-layer default stack (owner D1)
+
+
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
+async def copper_rig(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterator[PlacedSynth]:
+    """`routed_synth` on ONE fresh `sp4_synth` server per test session (not per module):
+    the four P7 test modules share it, so a CI shard builds it once (≈ 2.5 min) instead of
+    once per module. Each module brings the board into the state it needs with the
+    idempotent `ensure_*` helpers below; tests keep that state (compensation tests
+    restore it). Tests run on the session loop: `pytest.mark.asyncio(loop_scope="session")`."""
+    async with _synth_rig(tmp_path_factory.mktemp("copper")) as (rig, db):
+        yield PlacedSynth(rig, db, await routed_synth(rig, db, "run-copper"))
+
+
+async def _copper_model(placed: PlacedSynth, run: str) -> Any:
+    from copperchat.kicad_tools.board.read import board_model
+
+    return await board_model(placed.turn(run))
+
+
+async def ensure_default_zones(placed: PlacedSynth) -> dict[str, Any] | None:
+    """The default GND stack poured (`pcb_zones {action: add}`) unless all three zones exist;
+    returns the tool's data when it ran."""
+    model = await _copper_model(placed, "run-ensure-zones")
+    names = {z.name for z in model.zones if not z.rule_area}
+    if set(DEFAULT_ZONES) <= names:
+        return None
+    present = [n for n in DEFAULT_ZONES if n in names]
+    if present:
+        await setup_call(
+            placed.turn("run-ensure-zones-del"),
+            "pcb_zones",
+            action="delete",
+            zones=[{"name": n} for n in present],
+        )
+    return await setup_call(placed.turn("run-ensure-zones-add"), "pcb_zones", action="add")
+
+
+async def ensure_fanout(placed: PlacedSynth, net: str = "GND") -> dict[str, Any] | None:
+    """Default zones + `pcb_fanout {net}` unless the net already has vias."""
+    await ensure_default_zones(placed)
+    model = await _copper_model(placed, "run-ensure-fanout")
+    if any(v.net == net for v in model.vias):
+        return None
+    return await setup_call(placed.turn("run-ensure-fanout-go"), "pcb_fanout", net=net)
+
+
+async def ensure_stitch(placed: PlacedSynth, net: str = "GND") -> dict[str, Any] | None:
+    """Zones + fanout + `pcb_stitch {net}` unless the net has a via outside every pad's
+    fanout reach (a stitching via: no track ends at it)."""
+    await ensure_fanout(placed, net)
+    model = await _copper_model(placed, "run-ensure-stitch")
+    ends = {pt for t in model.tracks if t.net == net for pt in (t.start, t.end)}
+    if any(v.net == net and v.at not in ends for v in model.vias):
+        return None
+    return await setup_call(placed.turn("run-ensure-stitch-go"), "pcb_stitch", net=net)

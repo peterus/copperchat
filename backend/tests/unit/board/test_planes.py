@@ -336,3 +336,12 @@ def test_deterministic() -> None:
     assert stitch_candidates(s, "GND", via=VIA, clearance=0.2, edge_ring=True) == (
         stitch_candidates(s, "GND", via=VIA, clearance=0.2, edge_ring=True)
     )
+
+
+def test_fanout_repeated_pad_numbers_keyed_apart() -> None:
+    a = _pad("J1", "SH", "GND", (40, 40))
+    b = _pad("J1", "SH", "GND", (50, 40))
+    m = _board(part("J1", 45, 40, half=6.0, pads=(a, b)))
+    got = fanout_candidates(m, "GND", via=VIA, width=0.25, clearance=0.2)
+    assert list(got) == [("J1", "SH"), ("J1", "SH#2")]
+    assert all(c.pad == ("J1", "SH#2") for c in got[("J1", "SH#2")])

@@ -17,7 +17,7 @@ randomness."""
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 
 from copperchat.board.classify import Classification, primary_ground
@@ -35,6 +35,7 @@ __all__ = [
     "fanout_candidates",
     "fanout_pads",
     "hole_to_hole",
+    "pad_key",
     "pad_layer",
     "stitch_candidates",
     "vias_spaced",
@@ -497,11 +498,22 @@ def fanout_candidates(
                     continue
                 found.append(((step, round(score, 9), di), at, stub))
         found.sort(key=lambda f: f[0])
-        out[(q.ref, q.number)] = tuple(
-            ViaCandidate(at=at, stub=stub, pad=(q.ref, q.number), rank=i)
-            for i, (_, at, stub) in enumerate(found)
+        key = pad_key(q, out)
+        out[key] = tuple(
+            ViaCandidate(at=at, stub=stub, pad=key, rank=i) for i, (_, at, stub) in enumerate(found)
         )
     return out
+
+
+def pad_key(q: Pad, seen: Mapping[tuple[str, str], object]) -> tuple[str, str]:
+    """(ref, number) of `q`; a repeated number of the same part (shield / exposed pads)
+    gets "#2", "#3", ... in the order of `fanout_pads`."""
+    key = (q.ref, q.number)
+    n = 1
+    while key in seen:
+        n += 1
+        key = (q.ref, f"{q.number}#{n}")
+    return key
 
 
 def _own_area(model: BoardModel, q: Pad) -> str | None:
