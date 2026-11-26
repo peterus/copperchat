@@ -155,11 +155,21 @@ def swap_in(new: Path, target: Path, call_id: str) -> str | None:
     try:
         os.rename(new, target)
     except OSError as exc:
+        why = f"the new package could not be moved into place ({type(exc).__name__}: {exc})"
         if moved:
-            os.rename(old, target)
-        raise export_failed(
-            f"the new package could not be moved into place ({type(exc).__name__}: {exc})"
-        ) from None
+            try:
+                os.rename(old, target)
+            except OSError as back:
+                log.error("restoring the previous fab package %s failed: %s", old, back)
+                raise StructuredToolError(
+                    "The export failed",
+                    f"{why}; moving the previous package back failed too ({type(back).__name__})",
+                    f"The previous package is kept as {old.name}; the next export restores "
+                    "it before building. Tell the user.",
+                    code="export_failed",
+                    details={"kept_as": old.name},
+                ) from None
+        raise export_failed(why) from None
     if not moved:
         return None
     try:

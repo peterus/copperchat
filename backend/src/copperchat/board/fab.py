@@ -177,37 +177,44 @@ def csv_text(header: Sequence[str], rows: Iterable[Sequence[str]]) -> str:
 # -- the report -----------------------------------------------------------------------------
 
 # a rule starts a line: "(rule x" inside a "#" reason comment is no rule
-_RULE = re.compile(
-    r'^[ \t]*\(\s*rule\s+(?:"((?:[^"\\]|\\.)*)"|([^\s()"]+))', re.IGNORECASE | re.MULTILINE
-)
+_RULE = re.compile(r'^[ \t]*\(\s*rule\s+(?:"((?:[^"\\]|\\.)*)"|([^\s()"]+))', re.IGNORECASE)
 
 
-def _comment_lines(lines: Iterable[str]) -> list[str]:
-    """The leading run of `#` comment lines (text after the `#`)."""
+def _comment_lines(lines: Sequence[str], start: int, step: int) -> list[str]:
+    """The run of `#` comment lines (text after the `#`) from index `start` walking by
+    `step` (+1 down, -1 up), in file order."""
     out: list[str] = []
-    for line in lines:
-        s = line.strip()
+    i = start
+    while 0 <= i < len(lines):
+        s = lines[i].strip()
         if not s.startswith("#"):
             break
         out.append(s.lstrip("#").strip())
-    return out
+        i += step
+    return out if step > 0 else out[::-1]
 
 
 def custom_rules(dru_text: str) -> list[tuple[str, str]]:
-    """(name, reason) of every custom rule of a `.kicad_dru`. The reason is the `#` comment
-    block right below the rule's header line (where KiCad writes a rule's comments, i.e.
-    the `pcb_set_rules` reason) while the rule is still open, else the block right before
-    the rule, else empty."""
+    """(name, reason) of every custom rule of a `.kicad_dru` (one pass over its lines). The
+    reason is the `#` comment block right below the rule's header line (where KiCad writes
+    a rule's comments, i.e. the `pcb_set_rules` reason) while the rule is still open, else
+    the block right before the rule (blank lines in between allowed), else empty."""
+    lines = dru_text.split("\n")
     out: list[tuple[str, str]] = []
-    for m in _RULE.finditer(dru_text):
+    for i, line in enumerate(lines):
+        m = _RULE.match(line)
+        if m is None:
+            continue
         name = m.group(1) if m.group(1) is not None else m.group(2)
-        header_end = dru_text.find("\n", m.start())
-        header = dru_text[m.start() : header_end if header_end >= 0 else len(dru_text)]
-        inside: list[str] = []
-        if header_end >= 0 and header.count("(") > header.count(")"):  # rule still open
-            inside = _comment_lines(dru_text[header_end + 1 :].split("\n"))
-        before = dru_text[: m.start()].rstrip(" \t").split("\n")[:-1]
-        reason = inside or list(reversed(_comment_lines(reversed(before))))
+        header = line[m.start() :]
+        reason: list[str] = []
+        if header.count("(") > header.count(")"):  # the rule is still open
+            reason = _comment_lines(lines, i + 1, 1)
+        if not reason:
+            j = i - 1
+            while j >= 0 and not lines[j].strip():
+                j -= 1
+            reason = _comment_lines(lines, j, -1)
         out.append((name.replace('\\"', '"'), " ".join(reason).strip()))
     return out
 

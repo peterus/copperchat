@@ -161,12 +161,19 @@ async def test_file_set(
         assert all(i.date_time == (1980, 1, 1, 0, 0, 0) for i in zf.infolist())
     bom = (target / "bom-jlcpcb.csv").read_text()
     assert bom.splitlines()[0] == "Comment,Designator,Footprint,LCSC Part #"
+    bom_rows = list(csv.DictReader(io.StringIO(bom)))
+    bom_refs = [r for row in bom_rows for r in row["Designator"].split(",")]
+    assert len(bom_refs) == len(set(bom_refs)) and all(bom_refs)
+    assert not [r for r in bom_refs if "-" in r]  # no "C1-C3" ranges
+    assert all(":" not in row["Footprint"] for row in bom_rows)  # no library prefix
     cpl_text = (target / "cpl-jlcpcb.csv").read_text()
     assert cpl_text.splitlines()[0] == "Designator,Mid X,Mid Y,Layer,Rotation"
     cpl = list(csv.DictReader(io.StringIO(cpl_text)))
     attrs = await _attributes(fab_rig)
     expected = {ref for ref, (dnp, no_pos) in attrs.items() if not dnp and not no_pos}
     assert {r["Designator"] for r in cpl} == expected
+    # every BOM part is placed (CPL) or a schematic hole/part without a position file entry
+    assert set(bom_refs) <= set(attrs) and not {r for r in bom_refs if attrs[r][0]}  # no DNP
     # the tool-placed mounting holes (P2 pcb_set_outline: excluded from position files) are
     # absent; sp4_synth's own schematic holes (H1, H2) carry no such attribute and stay
     tool_holes = {ref for ref, (_, no_pos) in attrs.items() if ref.startswith("H") and no_pos}

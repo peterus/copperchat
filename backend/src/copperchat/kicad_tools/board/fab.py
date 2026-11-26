@@ -177,7 +177,8 @@ def zip_package(tmp: Path, zip_name: str) -> None:
             info = zipfile.ZipInfo(name, date_time=ZIP_DATE)
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = 0o644 << 16
-            zf.writestr(info, members[name].read_bytes())
+            with members[name].open("rb") as src, zf.open(info, "w") as dst:
+                shutil.copyfileobj(src, dst, 1024 * 1024)
 
 
 def _write_csvs(tmp: Path) -> None:
@@ -193,6 +194,30 @@ def _write_csvs(tmp: Path) -> None:
 
 def _file_list(d: Path) -> list[tuple[str, int]]:
     return [(p.relative_to(d).as_posix(), os.lstat(p).st_size) for p in _regular_files(d)]
+
+
+def _report_text(
+    model: BoardModel,
+    project: Any,
+    digest: str,
+    doc: Any,
+    report: MetricsReport,
+    files: list[tuple[str, int]],
+    swept: list[str],
+) -> str:
+    """`fab-report.md` (run off the loop: the custom-rule scan reads the whole .kicad_dru)."""
+    return plan.fab_report(
+        model,
+        board_file=board_file(project),
+        board_hash=digest,
+        date=utcnow_iso(),
+        preset=preset_for(model, doc),
+        metrics=report,
+        accepted=doc.accepted,
+        custom_rules=plan.custom_rules(model.dru_text),
+        files=files,
+        swept=swept,
+    )
 
 
 def _not_approved(reason: str, digest: str, why: str, **extra: Any) -> StructuredToolError:
@@ -268,8 +293,8 @@ async def _fab_export(ctx: ToolContext) -> ToolResult:
             failing=failing,
         )
     project = ctx.project
-    target = await asyncio.to_thread(safe_output_dir, project.dir, FAB_TARGET)
     try:
+        target = await asyncio.to_thread(safe_output_dir, project.dir, FAB_TARGET)
         swept = await _off_loop(lambda: sweep_stale(target.parent, target.name))
     except OSError as exc:
         raise _os_failed(exc) from None
@@ -306,17 +331,8 @@ async def _fab_export(ctx: ToolContext) -> ToolResult:
             raise export_failed(str(exc)) from None
         except OSError as exc:
             raise _os_failed(exc) from None
-        text = plan.fab_report(
-            model,
-            board_file=board_file(project),
-            board_hash=digest,
-            date=utcnow_iso(),
-            preset=preset_for(model, doc),
-            metrics=report,
-            accepted=doc.accepted,
-            custom_rules=plan.custom_rules(model.dru_text),
-            files=files,
-            swept=swept,
+        text = await _off_loop(
+            lambda: _report_text(model, project, digest, doc, report, files, swept)
         )
         try:
             await _off_loop(lambda: (tmp / plan.REPORT_FILE).write_text(text, encoding="utf-8"))

@@ -293,3 +293,34 @@ def test_sweep_two_orphans_not_restored(tmp_path: Path) -> None:
     _package(fab / "jlcpcb.old-bbbbbbbbbbbb", "b")
     assert sweep_stale(fab, "jlcpcb") == ["jlcpcb.old-aaaaaaaaaaaa", "jlcpcb.old-bbbbbbbbbbbb"]
     assert not (fab / "jlcpcb").exists()
+
+
+def test_failed_rollback_keeps_old_and_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both the swap-in and the rollback rename fail: `export_failed` names the kept
+    `.old-` dir (never a raw OSError), and the next sweep restores it."""
+    project = _project(tmp_path)
+    target = safe_output_dir(project, "fab/jlcpcb")
+    _package(target, "old")
+    new = _package(staging_dir(target, CALL), "new")
+    real = os.rename
+    calls: list[int] = []
+
+    def flaky(src: Any, dst: Any) -> None:
+        calls.append(1)
+        if len(calls) >= 2:
+            raise OSError(5, "I/O error")
+        real(src, dst)
+
+    monkeypatch.setattr(paths.os, "rename", flaky)
+    with pytest.raises(StructuredToolError) as exc:
+        swap_in(new, target, CALL)
+    assert exc.value.code == "export_failed"
+    assert exc.value.details == {"kept_as": f"jlcpcb.old-{CALL}"}
+    monkeypatch.setattr(paths.os, "rename", real)
+    import shutil
+
+    shutil.rmtree(new)
+    assert sweep_stale(project / "fab", "jlcpcb") == [f"jlcpcb.old-{CALL} (restored)"]
+    assert (target / "fab-report.md").read_text() == "old"

@@ -202,6 +202,13 @@ def test_custom_rules_with_reasons() -> None:
         ("bare", ""),
     ]
     assert custom_rules("") == []
+    many = "".join(f'(rule "r{i}"\n\t# reason {i}\n\t(condition "x")\n)\n' for i in range(8000))
+    import time
+
+    t0 = time.monotonic()
+    parsed = custom_rules(many)
+    assert len(parsed) == 8000 and parsed[-1] == ("r7999", "reason 7999")
+    assert time.monotonic() - t0 < 2.0  # one pass over the lines (was quadratic)
     tricky = '(rule "a"\n\t# see (rule usb_dm) and (rule of thumb\n\t(condition "x")\n)\n'
     assert custom_rules(tricky) == [("a", "see (rule usb_dm) and (rule of thumb")]
 
