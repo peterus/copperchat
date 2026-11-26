@@ -290,7 +290,7 @@ def test_preset_maps_every_rule() -> None:
         "min_clearance": 0.127,
         "min_track_width": 0.127,
         "min_via_size": 0.6,
-        "min_through_drill": 0.3,
+        "min_through_drill": 0.2,
         "min_via_annular_width": 0.15,
         "copper_edge_clearance": 0.3,
         "hole_to_hole_min": 0.45,
