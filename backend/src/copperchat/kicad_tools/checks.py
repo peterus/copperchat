@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import shutil
 import tempfile
@@ -9,6 +10,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from copperchat.board.heavy import HEAVY_WAIT_S, heavy_slot
 from copperchat.config import Settings
 from copperchat.errors import StructuredToolError
 from copperchat.kicad_session import DocKind, KicadSession
@@ -110,33 +112,39 @@ async def run_kicad_check_on_dir(
 
     The copy lives in a temporary directory, so `${KIPRJMOD}` is pointed back at
     the project directory: project-relative libraries resolve exactly as in KiCad.
-    `parity`: DRC with `--schematic-parity` (the schematic copy lies next to it).
+    `parity`: DRC with `--schematic-parity` (the schematic copy lies next to it), run
+    inside the heavy-process gate (R6); not free within HEAVY_WAIT_S →
+    `board_compute_timeout`.
     """
     name = _check_name(doc)
     workdir = doc_path.parent
     report = workdir / f"cc-{doc}-report.json"
     sub = ["sch", "erc"] if doc == "sch" else ["pcb", "drc"]
-    if doc == "pcb" and parity:
+    heavy = doc == "pcb" and parity
+    if heavy:
         sub.append("--schematic-parity")
     try:
-        res = await run_kicad_cli(
-            settings,
-            [
-                *sub,
-                "--format",
-                "json",
-                "--units",
-                "mm",
-                "--severity-all",
-                "--define-var",
-                f"KIPRJMOD={project.dir}",
-                "--output",
-                str(report),
-                str(doc_path),
-            ],
-            timeout=settings.kicad_api_timeout_s * 4,
-            cwd=workdir,
-        )
+        async with contextlib.AsyncExitStack() as stack:
+            if heavy:  # R6: a parity DRC (≈ 2.6 GB) only after the other heavy processes
+                await stack.enter_async_context(heavy_slot("parity", wait_s=HEAVY_WAIT_S))
+            res = await run_kicad_cli(
+                settings,
+                [
+                    *sub,
+                    "--format",
+                    "json",
+                    "--units",
+                    "mm",
+                    "--severity-all",
+                    "--define-var",
+                    f"KIPRJMOD={project.dir}",
+                    "--output",
+                    str(report),
+                    str(doc_path),
+                ],
+                timeout=settings.kicad_api_timeout_s * 4,
+                cwd=workdir,
+            )
     except TimeoutError:
         raise StructuredToolError(
             f"{name} timed out",

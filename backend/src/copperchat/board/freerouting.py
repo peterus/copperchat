@@ -40,7 +40,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from copperchat.board.heavy import HEAVY_WAIT_S, heavy_slot
 from copperchat.config import Settings
+from copperchat.errors import StructuredToolError
 from copperchat.kicad_session.session import _uncancellable
 
 log = logging.getLogger(__name__)
@@ -71,7 +73,7 @@ LOG_TAIL_BYTES = 4096
 JAVA_VERSION_TIMEOUT_S = 15.0
 # a failed `java -version` probe is retried after this long; a successful one is kept
 FAILURE_TTL_S = 60.0
-MAX_CONCURRENT_RUNS = 2
+MAX_CONCURRENT_RUNS = 2  # effectively 1 since R6: every run also holds the heavy gate
 UNSHARE_PROBE_TIMEOUT_S = 5.0
 # Freerouting 2.5.0 settings that open connections when on (names checked against the
 # JAR: an unknown name makes Freerouting log "Unknown settings property: <name>").
@@ -370,10 +372,11 @@ async def run_freerouting(
     """Route `dsn` into `ses`; returns on any exit code (the caller decides).
 
     `timed_out` is True when our wall-clock timeout fired or the process died by a
-    SIGXCPU/SIGKILL we did not send (the CPU limit). At most `MAX_CONCURRENT_RUNS` run at
-    once; the wait for a slot counts against `timeout_s` (no slot in time: returncode -1,
-    timed out, no process started). A cancellation kills the process group, reaps it and
-    re-raises."""
+    SIGXCPU/SIGKILL we did not send (the CPU limit). Each run holds the heavy-process gate
+    (R6, `heavy.heavy_slot`; its wait is bounded by min(HEAVY_WAIT_S, timeout_s)) and one of
+    `MAX_CONCURRENT_RUNS` slots; both waits count against `timeout_s` (not in time:
+    returncode -1, timed out, no process started). A cancellation kills the process group,
+    reaps it and re-raises."""
     timeout_s = clamp_timeout(timeout_s)
     passes = clamp_passes(passes)
     # the JVM runs with cwd=workdir: relative paths must mean what they mean to us
@@ -392,23 +395,38 @@ async def run_freerouting(
         timeout_s=timeout_s,
         proxy_port=proxy_port,
     )
-    slots = _slots()
-    try:
-        await asyncio.wait_for(slots.acquire(), max(0.0, deadline - time.monotonic()))
-    except TimeoutError:
-        return FreeroutingRun(
-            returncode=-1,
-            seconds=time.monotonic() - start,
-            log_tail="timed out waiting for a free Freerouting slot "
-            f"(MAX_CONCURRENT_RUNS={MAX_CONCURRENT_RUNS})",
-            timed_out=True,
-        )
-    try:
-        # a stale .ses from an earlier run must not pass for this run's result
-        ses.unlink(missing_ok=True)
-        return await _run(rt, cmd, workdir, timeout_s, deadline, start)
-    finally:
-        slots.release()
+    # R6: the heavy-process gate (one JVM or parity DRC at a time, process-wide), its wait
+    # bounded by min(HEAVY_WAIT_S, timeout_s) and counted against timeout_s
+    async with contextlib.AsyncExitStack() as stack:
+        try:
+            await stack.enter_async_context(
+                heavy_slot("freerouting", wait_s=min(HEAVY_WAIT_S, deadline - time.monotonic()))
+            )
+        except StructuredToolError as exc:
+            return FreeroutingRun(
+                returncode=-1,
+                seconds=time.monotonic() - start,
+                log_tail="timed out waiting for the heavy-process gate "
+                f"({(exc.details or {}).get('waiting_for')} still running)",
+                timed_out=True,
+            )
+        slots = _slots()
+        try:
+            await asyncio.wait_for(slots.acquire(), max(0.0, deadline - time.monotonic()))
+        except TimeoutError:
+            return FreeroutingRun(
+                returncode=-1,
+                seconds=time.monotonic() - start,
+                log_tail="timed out waiting for a free Freerouting slot "
+                f"(MAX_CONCURRENT_RUNS={MAX_CONCURRENT_RUNS})",
+                timed_out=True,
+            )
+        try:
+            # a stale .ses from an earlier run must not pass for this run's result
+            ses.unlink(missing_ok=True)
+            return await _run(rt, cmd, workdir, timeout_s, deadline, start)
+        finally:
+            slots.release()
 
 
 async def _run(

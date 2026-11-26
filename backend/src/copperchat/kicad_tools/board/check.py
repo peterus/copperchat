@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from copperchat.board.boardmd import BoardDoc, read_board_doc
+from copperchat.board.heavy import HEAVY_WAIT_S, bounded, heavy_slot
 from copperchat.board.jobs import metrics_job
 from copperchat.board.metrics import MetricsReport
 from copperchat.board.model import BoardModel, board_hash, placement_hash
@@ -359,8 +360,9 @@ def _check_dir(ctx: ToolContext) -> Path:
 async def cli_parity(ctx: ToolContext) -> tuple[tuple[DrcMarker, ...], tuple[DrcMarker, ...]]:
     """(violations, parity) of `kicad-cli pcb drc --schematic-parity` on a copy of the
     live board under `.kicad-agent/board/check/<uuid>/` (removed in `finally`), run inside
-    `BOARD_CLI_LOCK` with BOARD_PARITY_TIMEOUT_S; a timeout or a failed run without a
-    report → `drc_rejected`."""
+    the heavy-process gate and `BOARD_CLI_LOCK` with BOARD_PARITY_TIMEOUT_S; a timeout or a
+    failed run without a report → `drc_rejected`; neither lock free within HEAVY_WAIT_S →
+    `board_compute_timeout`."""
     try:
         work = await asyncio.to_thread(_check_dir, ctx)
     except OSError as exc:
@@ -370,17 +372,25 @@ async def cli_parity(ctx: ToolContext) -> tuple[tuple[DrcMarker, ...], tuple[Drc
         out = work / "drc.json"
         args = ["pcb", "drc", "--format", "json", "--severity-all", "--schematic-parity",
                 "-o", str(out), str(board)]  # fmt: skip
-        async with BOARD_CLI_LOCK:
-            try:
-                result = await run_kicad_cli(
-                    ctx.settings, args, timeout=BOARD_PARITY_TIMEOUT_S, cwd=work
-                )
-            except TimeoutError:
-                raise _rejected(
-                    f"kicad-cli pcb drc took longer than {BOARD_PARITY_TIMEOUT_S:.0f} s"
-                ) from None
-            except OSError as exc:
-                raise _rejected(f"kicad-cli could not be started ({type(exc).__name__})") from None
+        # R6: only after the copy (save_copy takes the apply lock without a timeout), the
+        # heavy gate (no Freerouting run, an idle CPU worker), then BOARD_CLI_LOCK, both
+        # waits together bounded by HEAVY_WAIT_S
+        waited = time.monotonic()
+        async with heavy_slot("parity", wait_s=HEAVY_WAIT_S):
+            left = HEAVY_WAIT_S - (time.monotonic() - waited)
+            async with bounded(BOARD_CLI_LOCK, wait_s=left, waiting_for="kicad_cli"):
+                try:
+                    result = await run_kicad_cli(
+                        ctx.settings, args, timeout=BOARD_PARITY_TIMEOUT_S, cwd=work
+                    )
+                except TimeoutError:
+                    raise _rejected(
+                        f"kicad-cli pcb drc took longer than {BOARD_PARITY_TIMEOUT_S:.0f} s"
+                    ) from None
+                except OSError as exc:
+                    raise _rejected(
+                        f"kicad-cli could not be started ({type(exc).__name__})"
+                    ) from None
         if PARITY_FAILED in f"{result.stdout}\n{result.stderr}".casefold():
             # an empty parity list would read as "in sync": never fail open
             raise _rejected(
@@ -446,6 +456,7 @@ async def pcb_check(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         None,
         parity,
         timeout_s=CHECK_METRICS_TIMEOUT_S,
+        wait_s=HEAVY_WAIT_S,  # bounded wait behind other CPU jobs (R6)
     )
     data: dict[str, Any] = {"level": level}
     data |= await asyncio.to_thread(check_rows, model, doc, drc, parity)

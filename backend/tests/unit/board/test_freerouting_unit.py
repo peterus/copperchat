@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -10,13 +11,14 @@ import signal
 import stat
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from copperchat.board import freerouting as fr
+from copperchat.board import heavy
 from copperchat.board.freerouting import (
     FSIZE_BYTES,
     JAVA_OPTS,
@@ -43,6 +45,7 @@ _clear_ns_probe = fr.unshare_path.cache_clear
 def _fresh_caches() -> Iterator[None]:
     fr._RUNTIME_CACHE.clear()
     fr._SLOTS.clear()
+    heavy._GATES.clear()
     _clear_ns_probe()
     yield
     fr._RUNTIME_CACHE.clear()
@@ -645,11 +648,18 @@ def test_failed_probe_cached_only_briefly(tmp_path: Path, monkeypatch: pytest.Mo
 # -- concurrency slots ---------------------------------------------------------------------
 
 
+@contextlib.asynccontextmanager
+async def _no_gate(kind: str, *, wait_s: float) -> AsyncIterator[None]:
+    yield
+
+
 async def test_second_run_times_out_waiting_for_slot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The slot wait itself (the heavy gate, which serialises runs first, taken out)."""
     _no_unshare(monkeypatch)
     monkeypatch.setattr(fr, "MAX_CONCURRENT_RUNS", 1)
+    monkeypatch.setattr(fr, "heavy_slot", _no_gate)
     spy = _Spy(monkeypatch)
     slow = _rt(tmp_path / "slow", "exec sleep 30")
     first = asyncio.create_task(
@@ -760,3 +770,49 @@ async def test_slot_released_after_cancel(tmp_path: Path, monkeypatch: pytest.Mo
         5,
     )
     assert run.returncode == 0 and not run.timed_out
+
+
+# -- R6: the heavy-process gate ---------------------------------------------------------
+
+
+async def test_freerouting_holds_slot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The gate is held while the JVM runs and free once it has exited."""
+    _no_unshare(monkeypatch)
+    spy = _Spy(monkeypatch)
+    run = asyncio.create_task(
+        run_freerouting(
+            _rt(tmp_path, "exec sleep 0.5"),
+            tmp_path / "b.dsn",
+            tmp_path / "b.ses",
+            timeout_s=20,
+            passes=3,
+            workdir=tmp_path / "w",
+        )
+    )
+    await spy.pid("sleep")
+    assert heavy.holder() == "freerouting"
+    assert (await run).returncode == 0
+    assert heavy.holder() is None
+
+
+async def test_freerouting_gate_timeout_is_timed_out_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A gate held by a parity DRC: the run waits min(HEAVY_WAIT_S, timeout_s), then
+    returns timed out without starting a process (the fill reports its timeout)."""
+    _no_unshare(monkeypatch)
+    spy = _Spy(monkeypatch)
+    monkeypatch.setattr(fr, "HEAVY_WAIT_S", 0.2)
+    async with heavy.heavy_slot("parity", wait_s=1):
+        run = await run_freerouting(
+            _rt(tmp_path, "exit 0"),
+            tmp_path / "b.dsn",
+            tmp_path / "b.ses",
+            timeout_s=20,
+            passes=3,
+            workdir=tmp_path / "w",
+        )
+    assert spy.proc is None
+    assert run.returncode == -1 and run.timed_out is True
+    assert 0.15 <= run.seconds < 2
+    assert "heavy-process gate (parity still running)" in run.log_tail
