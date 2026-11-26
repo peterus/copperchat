@@ -835,8 +835,10 @@ wait_s=…, waiting_for=…)` with the rest of the `HEAVY_WAIT_S` budget.
   none on exactly that code (logged), any other check error still fails the render as before;
   the marker DRC waits only `checks.MARKER_GATE_WAIT_S` (5 s, `heavy_wait_s` threaded through
   `check_violations` / `run_kicad_check` / `run_kicad_check_on_dir`) so the live view's HTTP
-  request never stalls ≈ 120 s behind a fill (review round 1; not cached, the next render
-  retries). `FreeroutingRun` gains `started: bool = True` (False for a gate / slot timeout);
+  request does not stall ≈ 120 s behind another project's fill or full check (review round 1;
+  not cached, the next render retries). Residual (pre-R6, review round 2): a render of the
+  project whose own fill is running still waits for it earlier, in `save_copy` on the apply
+  lock (only on a marker-cache miss). `FreeroutingRun` gains `started: bool = True` (False for a gate / slot timeout);
   `fill.py` (R4's file, minimal edit) words that refusal "Freerouting did not start: another
   heavy board process … was still running" with `details.started: false` and suggestion
   "Retry the same call once it has finished" instead of "raise timeout_s" (reason stays

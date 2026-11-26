@@ -194,8 +194,9 @@ async def cached_violations(session: KicadSession, doc: DocKind) -> list[dict[st
         if key not in cache:
             for stale in [k for k in cache if k[1:] != key[1:]]:
                 del cache[stale]
-            # a busy heavy gate (a fill, a full check) costs the markers after a short wait,
-            # never a long one: the live view's HTTP request must not stall (R6)
+            # a heavy gate held by another project's fill or full check costs the markers
+            # after a short wait, not HEAVY_WAIT_S (R6). A fill of this project still blocks
+            # earlier, in save_copy on the apply lock (pre-R6 behaviour, cache misses only).
             cache[key] = await check_violations(session, doc, heavy_wait_s=MARKER_GATE_WAIT_S)
         return cache[key]
 
