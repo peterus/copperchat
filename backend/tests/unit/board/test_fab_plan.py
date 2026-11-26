@@ -295,5 +295,7 @@ def test_stencil_sides() -> None:
         pads=(replace(_pad("FID1", "1", 40, 40), layers=frozenset({"B.Cu", "B.Mask"})),),
     )
     assert stencil_sides(board(parts=(top, fiducial))) == "top only"  # no paste: no stencil
+    assert stencil_sides(board(parts=(tht,))) == "none"
+    assert stencil_sides(board(parts=(bottom, tht))) == "bottom only"
     assert stencil_sides(board(parts=(top, bottom))) == "top + bottom"
     assert "Stencil: top + bottom" in _report(model=board(parts=(top, bottom)))
