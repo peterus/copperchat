@@ -30,7 +30,9 @@ from copperchat.board.placer import (
     score_placement,
 )
 from copperchat.board.placer.pack import PLACE_GRID_MM
+from copperchat.board.planes import ViaCandidate, fanout_candidates, stitch_candidates
 from copperchat.board.presets import FabPreset
+from copperchat.board.silk import RefPlacement, plan_refs
 
 if TYPE_CHECKING:
     from copperchat.kicad_tools.board.api import DrcMarker, DrcResult
@@ -43,10 +45,13 @@ __all__ = [
     "Scope",
     "analyse_job",
     "edge_strip",
+    "fanout_candidates_job",
     "legalize_job",
     "metrics_job",
     "place_block_job",
     "score_job",
+    "silk_plan_job",
+    "stitch_candidates_job",
     "strip_fills",
 ]
 
@@ -268,3 +273,49 @@ def score_job(model: BoardModel, doc: BoardDoc) -> PlacementScore:
     """The placement score (B-C11) of `model`, classified here: the before / after score of
     the placement tools."""
     return score_placement(model, classify(model, doc), doc)
+
+
+# ---- copper (P7) ---------------------------------------------------------------------------
+
+
+def fanout_candidates_job(
+    model: BoardModel,
+    net: str,
+    *,
+    via: tuple[float, float],
+    width: float,
+    clearance: float,
+    max_stub: float,
+) -> dict[tuple[str, str], tuple[ViaCandidate, ...]]:
+    """`planes.fanout_candidates` for `pcb_fanout` (callers pass a fill-stripped model)."""
+    return fanout_candidates(
+        model, net, via=via, width=width, clearance=clearance, max_stub=max_stub
+    )
+
+
+def stitch_candidates_job(
+    model: BoardModel,
+    net: str,
+    *,
+    via: tuple[float, float],
+    clearance: float,
+    pitch: float,
+    edge_ring: bool,
+) -> tuple[ViaCandidate, ...]:
+    """`planes.stitch_candidates` for `pcb_stitch` (zone outlines, not fills: callers pass
+    a fill-stripped model)."""
+    return stitch_candidates(
+        model, net, via=via, clearance=clearance, pitch=pitch, edge_ring=edge_ring
+    )
+
+
+def silk_plan_job(
+    model: BoardModel,
+    *,
+    height: float,
+    line: float,
+    skip: frozenset[str] = frozenset(),
+    exclude: Mapping[str, frozenset[int]] | None = None,
+) -> tuple[tuple[RefPlacement, ...], tuple[str, ...]]:
+    """`silk.plan_refs` for `pcb_tidy_silk` (callers pass a fill-stripped model)."""
+    return plan_refs(model, height=height, line=line, skip=skip, exclude=exclude)

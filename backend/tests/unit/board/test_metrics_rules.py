@@ -18,7 +18,7 @@ from copperchat.board.model import BoardModel, GraphicItem, Pad, Part, TextItem
 from copperchat.board.presets import PRESETS, FabPreset
 from copperchat.kicad_tools.board.api import DrcMarker, DrcResult
 
-from .builders import board, net_class, part, track, via
+from .builders import board, net_class, part, track, via, with_part
 from .builders_circuit import pad, with_layers
 
 
@@ -460,3 +460,26 @@ def test_hard_thresholds_verbatim() -> None:
         "M12_mismatch_mm": 1.0,
     }
     assert metrics.M1_EDGE_OVERHANG is True
+
+
+def test_m14_vertical_text_box() -> None:
+    """P7: a 90° text's box is vertical (TextItem.angle): beside the pad it passes, the
+    same text horizontal overlaps the pad."""
+    flat = replace(silk((43.3, 40), text="ABCDEF"), angle=0.0)
+    m14 = get(run(_add(_m14_base(), texts=(flat,)), preset=JLC4), "M14")
+    assert any(o.what.startswith("silk_over_pad") for o in m14.offenders)
+    up = replace(flat, angle=90.0)
+    m14 = get(run(_add(_m14_base(), texts=(up,)), preset=JLC4), "M14")
+    assert not [o for o in m14.offenders if o.what.startswith("silk_over_pad")]
+
+
+def test_m3_accepts_warning_on_a_pad_or_field_kiid() -> None:
+    """P7 (P3b residual): a warning naming a pad or a field KIID maps to its part."""
+    m = with_part(board(), "R1", item_kiids=(("pad-kiid", "pad:1"), ("ref-kiid", "reference")))
+    doc = BoardDoc(accepted=(AcceptedWarning("silk_edge_clearance", ("R1",), "edge", "owner"),))
+    for kiid in ("pad-kiid", "ref-kiid"):
+        drc = DrcResult(
+            markers=(marker("silk_edge_clearance", "warning", kiid),), unconnected=0, seconds=0.1
+        )
+        m3 = get(run(m, drc=drc, doc=doc), "M3")
+        assert m3.value == 0 and m3.verdict == "review", m3.offenders

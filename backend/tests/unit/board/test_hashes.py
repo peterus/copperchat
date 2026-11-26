@@ -229,3 +229,18 @@ def test_bh_board_text() -> None:
     two = (_board_text(), _board_text(x=20.0))
     assert board_hash(replace(m, texts=two)) == board_hash(replace(m, texts=two[::-1]))
     assert placement_hash(m) == placement_hash(with_text)
+
+
+def test_bh_silk_text_rotation() -> None:
+    """P7: a reference rotated in place changes board_hash (TextItem.angle)."""
+    m = board()
+    t = m.part("R1").texts[0]
+    turned = replace(t, angle=90.0)
+    assert board_hash(m) != board_hash(with_part(m, "R1", texts=(turned,)))
+    assert placement_hash(m) == placement_hash(with_part(m, "R1", texts=(turned,)))
+
+
+def test_item_kiids_and_silk_not_hashed() -> None:
+    m = board()
+    other = with_part(m, "R1", item_kiids=(("k", "pad:1"),))
+    assert board_hash(m) == board_hash(other)

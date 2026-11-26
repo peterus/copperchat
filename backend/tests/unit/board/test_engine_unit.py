@@ -648,3 +648,16 @@ async def test_board_creation_rechecks_the_path_under_the_lock(
     assert info.value.code == "output_path_unsafe"
     assert created == [] and rig.removed == [] and rig.reloads == 0
     assert rig.pcb.is_symlink()
+
+
+async def test_undo_runs_before_the_leftover_read(tmp_path: Path, log: list[str], spy: Spy) -> None:
+    """P7: the read-back of the compensation comes after every stage undo — an undo may
+    re-create an item a stage deleted (a zone with its KIID)."""
+
+    async def undo(sctx: BoardStageContext) -> None:
+        log.append("undo 1")
+
+    cs = _cs([_stage(log, 1, undo=undo)], fail_after=1)
+    with pytest.raises(RuntimeError):
+        await apply_board_change_set(_ctx(tmp_path, FakeSession(log)), cs)
+    assert log.index("compensate") < log.index("undo 1") < log.index("leftovers")

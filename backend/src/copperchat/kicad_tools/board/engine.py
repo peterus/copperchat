@@ -386,15 +386,16 @@ async def _compensate(
         # (`leftovers`) runs after it.
         async with session.commit(f"copperchat: {cs.tool}: undo", doc="pcb"):
             renamed = await session.call(lambda h: restore(h, snap), timeout=BOARD_READ_TIMEOUT_S)
-        left: list[str] = await session.call(
-            lambda h: leftovers(h, snap, renamed), timeout=BOARD_READ_TIMEOUT_S
-        )
         # `started` = the completed stages plus, on a failure inside a stage, the one
         # that raised: its undo runs first (it restores pre-call values, so a partial
-        # run is fine), then the completed ones in reverse.
+        # run is fine), then the completed ones in reverse. Before the read-back (P7):
+        # an undo may re-create an item a stage deleted (a zone, with its KIID).
         for stage in reversed(started):
             if stage.undo is not None:
                 await stage.undo(sctx)
+        left: list[str] = await session.call(
+            lambda h: leftovers(h, snap, renamed), timeout=BOARD_READ_TIMEOUT_S
+        )
     except (asyncio.CancelledError, KicadUnavailable):
         raise
     except Exception as exc:
