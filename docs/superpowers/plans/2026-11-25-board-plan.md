@@ -812,6 +812,77 @@ render extent is not in the golden).
   areas that do not intersect its courtyard's bbox, or report them as a footprint defect).
 - CPL rotation offsets for JLC assembly stay open (P8 residual, `ASSEMBLY_NOTE`).
 
+### As built (R6)
+
+**Heavy-process gate** (`cc/board/heavy.py`, as planned): `heavy_slot(kind, *, wait_s)` = one
+`asyncio.Semaphore(1)` per running loop (`_GATES`, a `WeakKeyDictionary` like
+`freerouting._SLOTS`) plus the holder kind; kinds `freerouting` / `parity`. `parity` then waits
+for an idle CPU worker through the new **`worker.wait_idle(timeout_s)`** (takes the worker lock
+and drops it at once — a cleaner seam than reaching into `worker._get_lock()`); a failed wait
+releases the gate. Timeouts raise `board_compute_timeout` with `details.waiting_for` ∈
+{`freerouting`, `parity`, `cpu_job`, **`kicad_cli`**} — the fourth value (deviation, additive)
+names the bounded `BOARD_CLI_LOCK` wait in `cli_parity`, done by the helper `heavy.bounded(sem,
+wait_s=…, waiting_for=…)` with the rest of the `HEAVY_WAIT_S` budget.
+- Users: `run_freerouting` takes the gate **before** its slot (`MAX_CONCURRENT_RUNS = 2` kept,
+  effectively 1), wait `min(HEAVY_WAIT_S, remaining timeout)`, counted against `timeout_s`; a
+  gate timeout → `FreeroutingRun(returncode=-1, timed_out=True, log_tail="timed out waiting
+  for the heavy-process gate (<kind> still running)")`, so the fill reports its usual
+  `fill_not_acceptable` / `timeout` and `FILL_WORST_CASE_S` stays 1005 s. `cli_parity`
+  enters the gate only after `_copy_project`. The legacy `run_kicad_check_on_dir` gates only
+  `doc == "pcb" and parity` (ERC / DRC without parity ungated); it takes no `BOARD_CLI_LOCK`
+  (unchanged). `run_drc` returns `board_compute_timeout`; the board render's markers
+  (`views/render.py` `_agent_board`, **one small edit outside R6's file list**) degrade to
+  none on exactly that code (logged), any other check error still fails the render as before.
+  `pcb_check`'s metrics `run_cpu` now has `wait_s=HEAVY_WAIT_S` (was unbounded).
+- Worst case: row `pcb_check (full)` 495 s added to the Global Constraints table; `run_drc`
+  gains ≤ `HEAVY_WAIT_S`; a render gains ≤ `HEAVY_WAIT_S` when it has to run the marker DRC.
+  The gate is process-wide (all projects): cross-project serialisation of parity DRCs and
+  Freerouting runs is intended (memory is a host budget).
+- Tests: `tests/unit/board/test_heavy.py`, `tests/unit/test_checks_parity_gate.py`,
+  `tests/unit/test_render_markers_gate.py`, additions in `test_freerouting_unit.py`
+  (`test_freerouting_holds_slot`, `test_freerouting_gate_timeout_is_timed_out_run`; the old
+  slot test now patches the gate out), `test_check_parse.py`
+  (`test_parity_gate_not_held_during_copy`, `test_cli_parity_bounded_waits`,
+  `test_quick_check_runs_during_parity`).
+
+**CPU-worker recycling** (`worker.py`): `WORKER_RECYCLE_MB = 512`; after a finished job (also
+one whose function raised — deviation: the worker is alive and may be big either way; not
+after a `BrokenProcessPool`, which already replaces it) the worker's `VmRSS` from
+`/proc/<pid>/status` is read and above the threshold the pool is killed and replaced **before
+the lock is released**; one `log.info` line per recycle. The next job pays the spawn start
+(≈ 1 s) inside its own `timeout_s`.
+
+**Concurrent peak in `odh-dry-run.py`**: `PeakSampler.samples` (per 0.5 s sample, Σ VmRSS by
+kind over every classified process), `mark(label)` from the flow's `on_step` and from each
+after-failure call, `step_at` / `labelled()`, pure `concurrent_peak(samples)`; `Memory` gains
+`concurrent_mb / _step / _parts`; the report prints "Concurrent peak (lower bound …)" with step
+and shares and "Sum of peaks (upper bound)" (replaces "Sum per active board project"), the D5
+line compares both.
+
+**ODH re-measurement** (2026-11-27, copy of the PROD checkout `OpenDriveHub@2e17ac5` mounted
+read-only, kicad-base `52b43fb8…` + fetched Freerouting 2.5.0, 80 × 100 mm, 4 layers
+`jlcpcb-4l`, Power class 0.3 mm, blocks = `pcb_analyze`'s proposal; answers outside the repo):
+flow failed in turn 4 as expected before R2–R4 (fill 39 % refused, retry routed 136/138, the
+final `pcb_route` left `no_path` on `/MCU/USB_DP_C` J302.A6–B6 and `/Power/VSYS` at U201);
+the after-failure calls (full check, renders, STEP, GLB) all ran. 546 s total.
+- **Concurrent peak (lower bound): 6,052 MB ≈ 5.91 GB**, in the after-failure `pcb_check
+  full`: api-server 3,150 MB + **parity DRC 2,599 MB** + the idle CPU worker 303 MB (no JVM,
+  no other kicad-cli at that moment — the gate worked; the flow is sequential, so no gate
+  waits were observed in this run).
+- **Sum of peaks (upper bound): 7,048 MB ≈ 6.88 GB** (api-server 3,154, JVM 624, CPU worker
+  VmHWM 569 — one worker, it never ended a job above 512 MB, so no recycle fired; P9a's
+  third run had 1,017 MB — raster 103, kicad-cli peak 2,599 = parity DRC; others: netlist
+  585, 3D render 338, svg 223, dsn 117, step 114, glb 112).
+- **D5 (≈ 5 GB): concurrent peak ABOVE by ≈ 0.9 GB.** Serialising cannot go lower: the
+  api-server (≈ 3.15 GB with footprints) and the parity DRC (≈ 2.6 GB) are both needed at the
+  same time. Without the idle worker it would still be ≈ 5.75 GB. → **owner decision**
+  (round-2 plan call 9): accept ≈ 6 GB per active board project, or a later own parity check
+  on the `kicad-cli` netlist (≈ 0.6 GB → ≈ 4 GB concurrent). Not implemented here.
+
+Residuals: R7 re-measures on the final round-2 flow; the idle worker (≈ 300 MB) could be
+shut down after an idle period (not planned); `MAX_CONCURRENT_RUNS` could go to 1 when
+someone touches `freerouting.py` again.
+
 ### As built (P9a)
 
 **End-to-end golden on `sp4_synth`** (`backend/tests/kicad_e2e/`, marker `kicad_e2e`, CI job `kicad-e2e`)
