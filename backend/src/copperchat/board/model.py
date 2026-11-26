@@ -31,6 +31,8 @@ class TextItem:
     size: Point
     thickness: float
     visible: bool
+    # P7: rotation in degrees (KiCad's, board frame); in board_hash for footprint fields
+    angle: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -75,6 +77,13 @@ class Part:
     texts: tuple[TextItem, ...]
     group: str | None
     rule_areas: tuple[tuple[Point, ...], ...] = ()
+    # P7: KIIDs of the footprint's own items -> role ("pad:<number>", "reference",
+    # "value", "field:<name>", "text", "textbox", "shape"), so DRC markers naming a pad
+    # or a field map to the part (M3 acceptance, pcb_tidy_silk). Not hashed (KIIDs).
+    item_kiids: tuple[tuple[str, str], ...] = ()
+    # P7: the footprint's silkscreen graphics (board coordinates; F/B.SilkS). Not hashed:
+    # they come with the library footprint (lib_id is hashed).
+    silk: tuple[GraphicItem, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -256,8 +265,17 @@ def placement_hash(m: BoardModel) -> str:
     return _digest({"parts": parts, "outline": outline, "rule_areas": _rule_areas(m)})
 
 
+_ANGLED = ("reference", "value", "field:")  # texts whose angle is hashed (P7)
+
+
 def _text(t: TextItem) -> list[Any]:
-    return [t.kind, t.text, t.layer, _pt(t.at, 3), _pt(t.size, 3), _r(t.thickness, 3), t.visible]
+    row = [t.kind, t.text, t.layer, _pt(t.at, 3), _pt(t.size, 3), _r(t.thickness, 3), t.visible]
+    # Only footprint fields: KiCad reports a footprint's free text at its footprint's
+    # rotation on the live board but at 0° after a reload of the saved file (probe, P7),
+    # so their angle would make a History restore look like a change.
+    if t.kind.startswith(_ANGLED):
+        row.append(_rot(t.angle, 1))
+    return row
 
 
 def _pad(p: Pad) -> list[Any]:
