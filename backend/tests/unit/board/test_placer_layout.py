@@ -12,7 +12,7 @@ from copperchat.board.placer import Cluster, Move, build_clusters, layout_cluste
 from copperchat.board.placer.layout import box_of
 
 from .builders import part
-from .builders_circuit import cap, circuit, pad, res
+from .builders_circuit import cap, circuit, pad, res, xtal
 
 
 def qfn(ref: str, pins: dict[str, str], at: tuple[float, float] = (50.0, 40.0)) -> Part:
@@ -168,3 +168,56 @@ def test_decaps_spread_over_supply_pins() -> None:
     assert served == {"C2": "2", "C1": "6"}
     assert box_of(placed["C2"])[2] < box_of(u)[0]
     assert box_of(placed["C1"])[0] > box_of(u)[2]
+
+
+# ---- P9a: a satellite's pads face the host pins of THEIR nets (no crossed crystal) --------
+
+
+def test_crystal_pads_face_their_own_pins() -> None:
+    """A crystal's two signal pads each go next to the IC pin of the same net: the pad of
+    OSC_IN at the OSC_IN pin, never crossed over to the OSC_OUT pin (found on sp4_synth,
+    where the crossed crystal made the routed OSC_IN path 8.6 mm long)."""
+    for a, b in (("OSC_IN", "OSC_OUT"), ("OSC_OUT", "OSC_IN")):
+        pins = {"1": a, "2": b, "3": "GND", "4": "S4", "5": "S5", "6": "+3V3", "7": "S7", "8": "S8"}
+        m = circuit(qfn("U1", pins), xtal("Y1", "OSC_IN", "OSC_OUT", (70.0, 60.0)))
+        placed = _placed(m, _layout(m, ["U1", "Y1"]))
+        u, y = placed["U1"], placed["Y1"]
+        for q in y.pads:
+            own = next(p for p in u.pads if p.net == q.net)
+            other = next(p for p in u.pads if p.net != q.net and p.net.startswith("OSC"))
+            assert math.dist((q.x, q.y), (own.x, own.y)) < math.dist(
+                (q.x, q.y), (other.x, other.y)
+            ), (a, q, own, other)
+
+
+def test_decap_keeps_its_pin_next_to_a_crystal() -> None:
+    """The first decoupling cap of a supply pin is placed before the crystal: on a row
+    OSC_IN, OSC_OUT, +3V3 the cap sits aligned with its pin, the crystal takes the room
+    beside it (sp4_synth: the crystal took the spot first, the cap's path became 6.4 mm)."""
+    pins = {"1": "S1", "2": "OSC_IN", "3": "OSC_OUT", "4": "+3V3", "5": "GND", "6": "S6"}
+    pins |= {"7": "S7", "8": "S8"}
+    m = circuit(
+        qfn("U1", pins),
+        xtal("Y1", "OSC_IN", "OSC_OUT", (70.0, 60.0)),
+        cap("C1", "+3V3", "GND", (60.0, 60.0), value="100nF"),
+    )
+    placed = _placed(m, _layout(m, ["U1", "Y1", "C1"]))
+    pin = next(q for q in placed["U1"].pads if q.number == "4")
+    supply = next(q for q in placed["C1"].pads if q.net == "+3V3")
+    assert abs(supply.y - pin.y) < 1e-6 and abs(supply.x - pin.x) < 3.0, (supply, pin)
+
+
+def test_crystal_keeps_an_escape_channel() -> None:
+    """A crystal stays CRYSTAL_STANDOFF_MM further from its IC than the minimum gap: the
+    IC pins next to the oscillator pins need a track out between them."""
+    from copperchat.board.placer.layout import CRYSTAL_STANDOFF_MM
+
+    pins = {"1": "S1", "2": "OSC_IN", "3": "OSC_OUT", "4": "S4", "5": "GND", "6": "S6"}
+    pins |= {"7": "S7", "8": "S8"}
+    m = circuit(qfn("U1", pins), xtal("Y1", "OSC_IN", "OSC_OUT", (70.0, 60.0)))
+    gap = 0.05
+    placed = _placed(m, _layout(m, ["U1", "Y1"], gap=gap))
+    assert CRYSTAL_STANDOFF_MM >= 0.6
+    got = _gap(box_of(placed["Y1"]), box_of(placed["U1"]))
+    assert got >= gap + CRYSTAL_STANDOFF_MM - 1e-6, got
+    assert got <= gap + CRYSTAL_STANDOFF_MM + 0.1, got

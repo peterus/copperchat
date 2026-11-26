@@ -12,7 +12,8 @@
   the host (decoupling caps: supply pad towards the served pin, ground pad outwards);
 * when that spot is taken it slides along the row first and steps outwards (ring 2, …)
   only when that is cheaper (`RADIAL_WEIGHT`), so rows stay aligned;
-* decoupling caps and crystals keep the minimum courtyard gap `gap`; every other satellite keeps
+* decoupling caps keep the minimum courtyard gap `gap`, crystals `gap + CRYSTAL_STANDOFF_MM`
+  (an escape channel for the neighbouring IC pins); every other satellite keeps
   `gap + SATELLITE_EXTRA_MM` (routing room between neighbours);
 * decoupling caps of one IC and supply net are spread over the IC's pins of that net, the
   smallest value at each pin first (spec §9.3 "the smallest value closest").
@@ -50,6 +51,10 @@ Box = tuple[float, float, float, float]  # x0, y0, x1, y1
 
 GRID_MM = 0.05
 SATELLITE_EXTRA_MM = 0.3  # extra courtyard gap for satellites that are not decoupling caps
+# a crystal keeps this much more than the minimum gap from its IC: the pins next to the
+# oscillator pins (reset, supply) need one track (0.2 mm + 2 x 0.2 mm clearance) out
+# between the IC and the crystal (sp4_synth: a flush crystal boxed in the reset pin)
+CRYSTAL_STANDOFF_MM = 0.8
 RADIAL_WEIGHT = 1.5  # unconnected satellites: one mm outwards costs 1.5 mm along a row
 ALIGN_WEIGHT = 0.5  # connected satellites: cost per mm slid away from the aligned spot
 SIDE_PENALTY_MM = 1.5  # a host side next to the one the connected pin points to
@@ -284,20 +289,21 @@ class _Layout:
         return out
 
     def _priorities(self) -> dict[str, tuple[object, ...]]:
-        """Placement order: crystals (big, pinned to two IC pins), the first decoupling cap
-        of every supply pin, load caps, switcher passives, then everything else by
-        connectivity (see `_next`), bulk decoupling caps last (they take the supply pin
-        with the most room). Small parts slide around the big ones placed before them."""
+        """Placement order: the first decoupling cap of every supply pin (each aligned
+        with its pin), crystals (big, pinned to two IC pins: they slide beside those
+        caps), load caps, switcher passives, then everything else by connectivity (see
+        `_next`), bulk decoupling caps last (they take the supply pin with the most room).
+        Small parts slide around the big ones placed before them."""
         pr: dict[str, tuple[object, ...]] = {}
         for x in self.cls.crystals:
             if x.ref in self.members:
-                pr.setdefault(x.ref, (0,))
+                pr.setdefault(x.ref, (1,))
                 for r in x.load_caps:
                     pr.setdefault(r, (2,))
         for cap, (ic, pin) in self.decap_pin.items():
             rnd = self.decap_round[cap]
             pr[cap] = (
-                (1, natural_key(ic), natural_key(pin)) if rnd == 0 else (5, rnd, natural_key(ic))
+                (0, natural_key(ic), natural_key(pin)) if rnd == 0 else (5, rnd, natural_key(ic))
             )
         for s in self.cls.switchers:
             if s.ic not in self.members:
@@ -399,9 +405,11 @@ class _Layout:
         return out or rots
 
     def _gap_for(self, ref: str) -> float:
-        """Decoupling caps and crystals (spec §9.3 distance rules) keep the minimum gap."""
-        critical = ref in self.decap_pin or any(x.ref == ref for x in self.cls.crystals)
-        return self.gap if critical else self.gap + SATELLITE_EXTRA_MM
+        """Decoupling caps (spec §9.3 distance rules) keep the minimum gap, a crystal
+        `CRYSTAL_STANDOFF_MM` more (its escape channel)."""
+        if any(x.ref == ref for x in self.cls.crystals):
+            return self.gap + CRYSTAL_STANDOFF_MM
+        return self.gap if ref in self.decap_pin else self.gap + SATELLITE_EXTRA_MM
 
     def _fit(
         self, part: Part, rot: float, host: Part, side: str, want: _Want | None
@@ -440,12 +448,20 @@ class _Layout:
             pos[1 - axis] = t
             return snap(pos[0]), snap(pos[1])
 
+        # each own pad is measured to the target pads of ITS net (else a crystal's OSC_IN
+        # pad could sit at the OSC_OUT pin: crossed connections cost the same)
+        goals = (
+            {id(q): [p for p in want.target if p.net == q.net] or list(want.target) for q in own}
+            if want is not None
+            else {}
+        )
+
         def cost_of(u: float, t: float) -> float:
             if want is None:
                 return abs(t - t_star) + RADIAL_WEIGHT * (u - u0)
             x, y = at(u, t)
             dist = sum(
-                min(octi_dist((q.x + x, q.y + y), (p.x, p.y)) for p in want.target) for q in own
+                min(octi_dist((q.x + x, q.y + y), (p.x, p.y)) for p in goals[id(q)]) for q in own
             ) / len(own)
             return dist + ALIGN_WEIGHT * abs(t - t_star)
 
