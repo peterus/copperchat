@@ -31,6 +31,7 @@ class TextItem:
     size: Point
     thickness: float
     visible: bool
+    angle: float = 0.0  # P7: text rotation in degrees (KiCad's, board frame); in board_hash
 
 
 @dataclass(frozen=True)
@@ -75,6 +76,13 @@ class Part:
     texts: tuple[TextItem, ...]
     group: str | None
     rule_areas: tuple[tuple[Point, ...], ...] = ()
+    # P7: KIIDs of the footprint's own items -> role ("pad:<number>", "reference",
+    # "value", "field:<name>", "text", "textbox", "shape"), so DRC markers naming a pad
+    # or a field map to the part (M3 acceptance, pcb_tidy_silk). Not hashed (KIIDs).
+    item_kiids: tuple[tuple[str, str], ...] = ()
+    # P7: the footprint's silkscreen graphics (board coordinates; F/B.SilkS). Not hashed:
+    # they come with the library footprint (lib_id is hashed).
+    silk: tuple[GraphicItem, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -257,7 +265,16 @@ def placement_hash(m: BoardModel) -> str:
 
 
 def _text(t: TextItem) -> list[Any]:
-    return [t.kind, t.text, t.layer, _pt(t.at, 3), _pt(t.size, 3), _r(t.thickness, 3), t.visible]
+    return [
+        t.kind,
+        t.text,
+        t.layer,
+        _pt(t.at, 3),
+        _pt(t.size, 3),
+        _r(t.thickness, 3),
+        t.visible,
+        _rot(t.angle, 1),
+    ]
 
 
 def _pad(p: Pad) -> list[Any]:

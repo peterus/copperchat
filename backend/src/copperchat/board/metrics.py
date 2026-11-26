@@ -28,7 +28,7 @@ Interpretation notes (where the plan leaves a choice):
   filled polygons (`Zone.filled_layers`); without per-layer data (old models) all of a
   zone's polygons are used and its fill area is divided by its layer count. Adjacent
   layers = the copper layers next to the plane layer in `model.copper_layers` order.
-* M14 silk text bbox: axis-aligned (TextItem has no angle), `len(line) x size_x x
+* M14 silk text bbox: axis-aligned (90°/270° texts swap width and height), `len(line) x size_x x
   SILK_CHAR_WIDTH` wide and `lines x size_y` high, centred on `at` (top-left for text
   boxes). Fiducials and test points are exempt from the paste rule (they are never pasted;
   KiCad's TestPoint_Pad_* have no paste by design).
@@ -604,7 +604,10 @@ class _Ctx:
         self.doc = doc
         self.preset = preset
         self.parts = {p.ref: p for p in model.parts}
-        self.ref_of_kiid = {p.kiid: p.ref for p in model.parts}
+        # P7: also the footprints' pad / field / text / shape KIIDs (DRC markers name
+        # those, e.g. silk_edge_clearance on a reference), so such warnings map to a ref
+        self.ref_of_kiid = {k: p.ref for p in model.parts for k, _ in p.item_kiids}
+        self.ref_of_kiid.update({p.kiid: p.ref for p in model.parts})
         self.pads_by_net: dict[str, list[Pad]] = defaultdict(list)
         for p in model.parts:
             for q in p.pads:
@@ -1503,6 +1506,8 @@ def _text_poly(t: TextItem) -> list[Point]:
     h = len(lines) * t.size[1]
     if t.kind == "textbox":
         return rect_poly(t.at[0], t.at[1], w, h)
+    if round(t.angle) % 180 == 90:  # P7: a vertical text (TextItem.angle)
+        w, h = h, w
     return rect_poly(t.at[0] - w / 2, t.at[1] - h / 2, w, h)
 
 

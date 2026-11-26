@@ -349,6 +349,7 @@ def _text(kind: str, t: BoardText, visible: bool) -> TextItem:
         size=_pt(attrs.size),
         thickness=nm_to_mm(attrs.stroke_width),
         visible=visible,
+        angle=float(attrs.angle) % 360,
     )
 
 
@@ -364,6 +365,36 @@ def _texts(fp: FootprintInstance) -> tuple[TextItem, ...]:
             out.append(_text("text", item, True))  # free texts: always visible at the pin
         elif isinstance(item, BoardTextBox):
             out.append(_textbox(item))
+    return tuple(out)
+
+
+def _item_kiids(fp: FootprintInstance) -> tuple[tuple[str, str], ...]:
+    """KIID -> role of the footprint's own items (P7): pads, fields, texts, shapes."""
+    out = [(str(p.id.value), f"pad:{p.number}") for p in fp.definition.pads]
+    out.append((str(fp.reference_field.text.id.value), "reference"))
+    out.append((str(fp.value_field.text.id.value), "value"))
+    for item in fp.definition.items:
+        if isinstance(item, Field):
+            out.append((str(item.text.id.value), f"field:{item.name}"))
+        elif isinstance(item, BoardText):
+            out.append((str(item.id.value), "text"))
+        elif isinstance(item, BoardTextBox):
+            out.append((str(item.id.value), "textbox"))
+    out += [(str(sh.id.value), "shape") for sh in fp.definition.shapes]
+    return tuple((k, role) for k, role in out if k)
+
+
+_SILK_LAYERS = {"F.SilkS", "B.SilkS"}
+
+
+def _silk(fp: FootprintInstance) -> tuple[GraphicItem, ...]:
+    """The footprint's silkscreen graphics (board coordinates, like its courtyard)."""
+    out = []
+    for sh in fp.definition.shapes:
+        layer = _layer(sh.layer)
+        if layer in _SILK_LAYERS:
+            kind, pts = _shape_kind_points(sh)
+            out.append(GraphicItem(layer=layer, kind=kind, points=pts, width=_stroke(sh)))
     return tuple(out)
 
 
@@ -451,6 +482,8 @@ def _part(fp: FootprintInstance, group: str | None) -> Part:
         texts=_texts(fp),
         group=group,
         rule_areas=rule_areas,
+        item_kiids=_item_kiids(fp),
+        silk=_silk(fp),
     )
 
 
