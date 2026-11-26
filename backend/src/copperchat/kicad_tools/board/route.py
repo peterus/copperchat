@@ -376,10 +376,10 @@ def pair_gap(model: BoardModel, p_net: str, n_net: str) -> float:
     return max(gaps) if gaps else max(pp.clearance, pn.clearance)
 
 
-def with_footprint_keepouts(model: BoardModel, req: RouteRequest) -> BoardModel:
+def with_footprint_keepouts(model: BoardModel, *reqs: RouteRequest) -> BoardModel:
     """`model` plus every footprint-embedded rule area as a track + via keepout zone on all
-    copper layers (module docstring), except areas holding one of the request's pads."""
-    pads = ((req.a.x, req.a.y), (req.b.x, req.b.y))
+    copper layers (module docstring), except areas holding a pad of one of the requests."""
+    pads = tuple((q.x, q.y) for r in reqs for q in (r.a, r.b))
     extra = tuple(
         Zone(
             kiid=f"fp-keepout:{p.ref}:{k}",
@@ -414,27 +414,34 @@ def _octagon(c: Point, apothem: float) -> tuple[Point, ...]:
 
 
 def with_hole_spacing(model: BoardModel, req: RouteRequest) -> BoardModel:
-    """`model` plus a via keepout around every existing via, so a new via keeps the
-    board's hole-to-hole rule from it (P5a residual: the router checks copper clearance
-    only; an own-net via is no obstacle at all, and KiCad's DRC rejected new vias placed
-    on top of one). Pads with holes need no extra keepout: their copper keeps a via
-    farther away than the hole rule."""
-    if not req.allow_vias or not model.vias:
+    """`model` plus a via keepout around every existing hole — vias and drilled pads of any
+    net — so a new via keeps the board's hole-to-hole rule from it (P5a residual: the
+    router checks copper clearance only; own-net vias and pads are no via obstacle at all,
+    and KiCad's DRC rejected new vias placed on top of own-net vias). For other-net
+    plated holes the copper clearance is already larger; the octagon is harmless there."""
+    if not req.allow_vias:
         return model
+    holes = [(f"v:{v.kiid}", v.at, v.drill) for v in model.vias]
+    holes += [
+        (f"p:{q.ref}.{q.number}", (q.x, q.y), q.drill)
+        for p in model.parts
+        for q in p.pads
+        if q.drill
+    ]
     h2h = dict(model.rules).get("hole_to_hole_min", HOLE_TO_HOLE_DEFAULT_MM) or 0.0
     extra = []
-    for v in model.vias:
+    for name, at, drill in holes:
         # the new via's centre keeps via_r from the octagon (build_grid's via keepout)
-        apothem = v.drill / 2 + req.via[1] / 2 + h2h - req.via[0] / 2
+        apothem = drill / 2 + req.via[1] / 2 + h2h - req.via[0] / 2
         if apothem <= 0:
             continue  # copper clearance already keeps the holes apart
         extra.append(
             Zone(
-                kiid=f"hole-spacing:{v.kiid}",
+                kiid=f"hole-spacing:{name}",
                 name="hole spacing",
                 net="",
                 layers=("*.Cu",),
-                outline=_octagon(v.at, apothem),
+                outline=_octagon(at, apothem),
                 priority=0,
                 rule_area=True,
                 keepout=frozenset({"vias"}),
@@ -445,9 +452,10 @@ def with_hole_spacing(model: BoardModel, req: RouteRequest) -> BoardModel:
     return dataclasses.replace(model, zones=model.zones + tuple(extra)) if extra else model
 
 
-def router_model(model: BoardModel, req: RouteRequest) -> BoardModel:
-    """What the router sees for `req`: footprint keepouts and hole spacing added."""
-    return with_hole_spacing(with_footprint_keepouts(model, req), req)
+def router_model(model: BoardModel, *reqs: RouteRequest) -> BoardModel:
+    """What the router sees for `reqs` (one request or a pair): footprint keepouts and
+    hole spacing added (one pass each)."""
+    return with_hole_spacing(with_footprint_keepouts(model, *reqs), reqs[0])
 
 
 # -- KiCad writes ----------------------------------------------------------------------------
@@ -538,7 +546,7 @@ async def _solve(
     timeout = SOLVE_TIMEOUT_S if remaining is None else min(SOLVE_TIMEOUT_S, remaining)
     if len(group) == 2:
         p, n = group[0].req, group[1].req
-        m = with_footprint_keepouts(router_model(model, p), n)
+        m = router_model(model, p, n)
         gap = pair_gap(model, p.net, n.net)
         got = await run_cpu(
             solve_pair,
@@ -648,11 +656,11 @@ async def _place(
     except DrcTimeout:
         await _drop(sctx, made)  # unverified: never kept
         return "timeout"
-    st.drc = drc
     bad = _rejecting(drc, made)
     if bad:
         await _drop(sctx, made)
         return f"drc_rejected: {bad[0]}"
+    st.drc = drc  # the last DRC whose copper stays (the report's drc_errors)
     tracks, vias = _model_items(items, made, st.lock)
     st.model = dataclasses.replace(
         st.model, tracks=st.model.tracks + tuple(tracks), vias=st.model.vias + tuple(vias)
@@ -692,6 +700,23 @@ async def _attempt(sctx: BoardStageContext, st: _Loop, group: Sequence[ConnPlan]
             return got
         reason = got
     return reason
+
+
+async def _restore(
+    sctx: BoardStageContext, st: _Loop, group: list[ConnPlan], paths: list[RoutePath]
+) -> None:
+    """Put a taken-out group back exactly: the board around it is again what its DRC
+    verified (everything added since was removed), so no DRC gate — which also keeps a
+    restore from failing on a deadline that ran out during the retry."""
+    items = [(p.req, path) for p, path in zip(group, paths, strict=True)]
+    made = await _push(sctx, items, st.lock)
+    tracks, vias = _model_items(items, made, st.lock)
+    st.model = dataclasses.replace(
+        st.model, tracks=st.model.tracks + tuple(tracks), vias=st.model.vias + tuple(vias)
+    )
+    kept = _Kept(list(group), list(paths), list(made))
+    st.kept.append(kept)
+    _record(st, kept)
 
 
 async def _unkeep(sctx: BoardStageContext, st: _Loop, kept: _Kept) -> None:
@@ -746,7 +771,7 @@ def _blockers(st: _Loop, group: Sequence[ConnPlan]) -> list[_Kept]:
 async def _rip_and_retry(sctx: BoardStageContext, st: _Loop, group: Sequence[ConnPlan]) -> bool:
     """A blocked connection: take one nearby connection of this loop out, route the blocked
     one, then the removed one again; when that fails, the blocked one's copper goes and the
-    removed one is put back exactly (same path, DRC-checked). True = both routed."""
+    removed one is put back exactly (same path, `_restore`). True = both routed."""
     for cand in _blockers(st, group):
         if _timed_out(st):
             return False
@@ -757,12 +782,7 @@ async def _rip_and_retry(sctx: BoardStageContext, st: _Loop, group: Sequence[Con
                 return True
             mine = next(k for k in st.kept if k.group == list(group))
             await _unkeep(sctx, st, mine)
-        if await _place(sctx, st, old_group, old_paths) is not None:
-            # the old path is not accepted again (never seen; the board state is the same
-            # as when it was accepted): route it anew, else report it failed
-            reason = await _attempt(sctx, st, old_group)
-            if reason is not None:
-                _fail(st, old_group, reason)
+        await _restore(sctx, st, old_group, old_paths)
     return False
 
 

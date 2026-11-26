@@ -27,7 +27,7 @@ from tests.support.edit import call_tool
 pytestmark = [pytest.mark.kicad, pytest.mark.asyncio(loop_scope="module")]
 
 PAIR = ("/USB_DP", "/USB_DN")
-SIGNALS = ("/SWDIO", "/SWCLK")  # non-critical signal nets of sp4_synth
+SIGNALS = ("/SWDIO", "/SWCLK")  # short 2-pin nets (critical on the placed board)
 
 
 async def _model(placed: PlacedSynth, run: str) -> BoardModel:
@@ -132,6 +132,7 @@ async def test_lock_false(synth_routed: PlacedSynth) -> None:
 
 
 async def test_no_vias_when_disallowed(synth_routed: PlacedSynth) -> None:
+    await _unroute(synth_routed, "run-novia-0", list(SIGNALS))  # each test alone on a shard
     nets = list(SIGNALS)
     out = await setup_call(
         synth_routed.turn("run-novia-1"), "pcb_route", nets=nets, allow_vias=False
@@ -221,6 +222,7 @@ async def test_budget_cost(synth_routed: PlacedSynth) -> None:
 
 
 async def test_route_fail_after_1(synth_routed: PlacedSynth) -> None:
+    await _unroute(synth_routed, "run-fail-0", list(SIGNALS))  # each test alone on a shard
     ctx = synth_routed.turn("run-fail")
     before = await board_model(ctx)
     cs = await route.prepare_route(ctx, {"nets": list(SIGNALS)})
@@ -238,6 +240,7 @@ async def test_route_fail_after_1(synth_routed: PlacedSynth) -> None:
 async def test_route_cancel_compensates(
     synth_routed: PlacedSynth, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    await _unroute(synth_routed, "run-cancel-0", list(SIGNALS))  # each test alone on a shard
     ctx = synth_routed.turn("run-cancel")
     before = await board_model(ctx)
     cs = await route.prepare_route(ctx, {"nets": list(SIGNALS)})
@@ -296,6 +299,7 @@ async def test_drc_reject_then_retry(
     """The first answer of `run_cpu` is a hand-made path shorting another net's pad (only
     CopperChat code is patched); the real DRC task rejects it, its items are removed, the
     retry (margin 0.05, the real router) is accepted, nothing of the rejected try is left."""
+    await _unroute(synth_routed, "run-rej-0", list(SIGNALS))  # each test alone on a shard
     net = SIGNALS[0]
     ctx = synth_routed.turn("run-rej")
     model = await board_model(ctx)

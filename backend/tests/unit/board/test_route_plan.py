@@ -716,3 +716,90 @@ def test_router_rejects_close_via_pair() -> None:
     assert valid_path(path((12.0, 10.0), (16.0, 10.0)), grid, p.req)
     assert not valid_path(path((12.0, 10.0), (12.05, 10.0)), grid, p.req)
     assert not valid_path(path((12.0, 10.0), (12.79, 10.0)), grid, p.req)  # < 0.6 + 0.2
+
+
+async def test_rip_up_restore_survives_deadline(
+    board: Board, clock: FakeClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The blocked connection's retry uses up the time: the taken-out connection is put
+    back exactly (no DRC gate that a spent deadline would turn into a removal)."""
+    deadline = clock.now + 100.0
+
+    def answer(fn: Any, args: Any, kw: Any, t: float) -> RoutePath | None:
+        model, req = args[0], args[1]
+        if req.net == "N1" and any(tr.net == "N2" for tr in model.tracks):
+            return None
+        if req.net == "N2" and not any(tr.net == "N1" for tr in model.tracks):
+            clock.now = deadline + 1  # the retry ends after the deadline
+        return _blocked_by_n1(fn, args, kw, t)
+
+    drcs: list[float] = []
+
+    def drc(t: float) -> DrcResult:
+        drcs.append(t)
+        return DrcResult((), 0, 0.01)
+
+    monkeypatch.setattr(route, "run_cpu", FakeCpu(answer))
+    sctx = FakeSctx(_three(1.5), drc)
+    out = await route.route_connections(  # type: ignore[arg-type]
+        sctx, _plans3(1.5)[:2], lock=True, deadline=deadline
+    )
+    n1 = next(r for r in out.results if r.net == "N1")
+    assert n1.status == "routed" and set(n1.kiids) <= set(board.items)
+    assert dict(out.failed) == {"N2:R3.1-R4.1": "timeout"}
+    assert sorted(net for net, _ in board.items.values()) == ["N1"]
+    assert set(board.items) == sctx.created
+
+
+async def test_drc_of_rejected_copper_not_reported(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`RouteOutcome.drc` is the last DRC whose copper stayed, never one of a rejection."""
+    monkeypatch.setattr(route, "run_cpu", FakeCpu())
+    n = {"drc": 0}
+    keep = DrcResult((), 0, 0.01)
+
+    def drc(t: float) -> DrcResult:
+        n["drc"] += 1
+        if n["drc"] == 1:
+            return keep
+        mine = tuple(sorted(board.items))[-1:]
+        return DrcResult((DrcMarker("clearance", "error", "x", mine, None),), 0, 0.01)
+
+    out = await route.route_connections(  # type: ignore[arg-type]
+        FakeSctx(_three(), drc), _plans3()[:2], lock=True
+    )
+    assert len(out.routed) == 1 and out.drc is keep
+
+
+def test_pair_keepouts_one_pass() -> None:
+    """A pair gets each footprint keepout once, exempt when it holds a pad of either net."""
+    m = _pair_board()
+    p, n = route.plan_connections(m, _pair_cls(m), ["DP", "DN"], layers=None, allow_vias=True)
+    around_n = ((10.3, 9.8), (10.7, 9.8), (10.7, 10.2), (10.3, 10.2))  # holds J1.2 (DN)
+    far = ((30.0, 30.0), (31.0, 30.0), (31.0, 31.0), (30.0, 31.0))
+    m2 = dataclasses.replace(
+        m, parts=(*m.parts, res("A1", "X", "Y", (60, 60), rule_areas=(around_n, far)))
+    )
+    zones = route.router_model(m2, p.req, n.req).zones
+    keepouts = [z for z in zones if z.keepout == {"tracks", "vias"}]
+    assert [z.outline for z in keepouts] == [far]
+
+
+def test_hole_spacing_around_drilled_pads() -> None:
+    """Drilled pads (any net, also the routed net's own) get the hole-spacing octagon."""
+    tht = dataclasses.replace(
+        pad("J9", "1", "N9", (40.0, 10.0), w=1.7, h=1.7),
+        drill=1.0,
+        smd=False,
+        layers=frozenset({"*.Cu"}),
+    )
+    from .builders import part
+
+    m = _two_res(part("J9", 40.0, 10.0, pads=(tht,)), rules=(("hole_to_hole_min", 0.45),))
+    (p,) = _plan(m, ["N1"])
+    (z,) = route.with_hole_spacing(m, p.req).zones
+    apothem = 0.5 + 0.15 + 0.45 - 0.3
+    assert min(math.dist((40.0, 10.0), q) for q in z.outline) == pytest.approx(
+        apothem / math.cos(math.pi / 8)
+    )
