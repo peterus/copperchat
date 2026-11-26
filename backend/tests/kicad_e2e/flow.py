@@ -559,6 +559,14 @@ async def _accept_warnings(f: _Flow, answers: Answers, full: Mapping[str, Any]) 
 
 
 FILL_ATTEMPTS = 3  # fills tried; between two, ladder rung (c) routes the refused nets
+FILL_RETRY_TIMEOUT_S = 600  # after a Freerouting timeout: the schema maximum ...
+FILL_RETRY_PASSES = 10  # ... and a third of the default 30 passes
+
+
+def _fill_reason(error: Mapping[str, Any]) -> str | None:
+    err = error.get("error", error)
+    details = err.get("details") or {}
+    return str(details.get("reason")) if "reason" in details else None
 
 
 async def _route(f: _Flow, critical: list[str]) -> dict[str, Any]:
@@ -568,13 +576,18 @@ async def _route(f: _Flow, critical: list[str]) -> dict[str, Any]:
     after the fill → rung (c) on their nets. Every rung is a logged tool call."""
     await _route_nets(f, critical)
     fill: dict[str, Any] = {}
+    fill_args: dict[str, Any] = {}
     for _ in range(FILL_ATTEMPTS):
-        data, err = await f.try_tool("pcb_route_fill", cost=5)
+        data, err = await f.try_tool("pcb_route_fill", cost=5, **fill_args)
         if not err:
             fill = data
             break
         if _nothing_to_fill(data):
             return {"completion": 1.0, "nothing_to_fill": True}
+        if _fill_reason(data) == "timeout" and not fill_args:
+            # the tool's own suggestion: a larger timeout_s or fewer passes
+            fill_args = {"timeout_s": FILL_RETRY_TIMEOUT_S, "passes": FILL_RETRY_PASSES}
+            continue
         nets = _fill_error_nets(data)
         if not nets:
             raise FlowError(f"turn {f.turn_no} ({f.label})", "pcb_route_fill", data)

@@ -310,10 +310,29 @@ def _cell(v: Any) -> str:
     return text.replace("|", "\\|").replace("\n", " ")[:300]
 
 
+def svg_stats(svg: Path) -> dict[str, int]:
+    """Bytes and element count of a board SVG (the render limits, P1c B-C9)."""
+    import xml.etree.ElementTree as ET
+
+    try:
+        size = svg.stat().st_size
+        elements = sum(1 for _ in ET.parse(svg).iter())
+    except (OSError, ET.ParseError):
+        return {}
+    return {"bytes": size, "elements": elements}
+
+
 def build_report(
-    result: Any, memory: Memory, *, project: str, error: str | None = None, seconds: float = 0.0
+    result: Any,
+    memory: Memory,
+    *,
+    project: str,
+    error: str | None = None,
+    seconds: float = 0.0,
+    renders: Mapping[str, Mapping[str, int]] | None = None,
 ) -> str:
-    """`report.md`: steps, metrics, fill, open connections, fab files, runtime, memory."""
+    """`report.md`: steps, metrics, fill, open connections, fab files, renders, runtime,
+    memory."""
     lines = [f"# Board flow dry run: {project}", ""]
     lines.append(f"Result: **{'FAILED' if error else 'completed'}**")
     if error:
@@ -359,6 +378,10 @@ def build_report(
     lines += ["", "## Fab files", ""]
     files = getattr(result, "fab_files", []) or []
     lines += [f"- {f}" for f in files] or ["None (export not reached)."]
+    if renders:
+        lines += ["", "## Renders", "", "| PNG | SVG bytes | SVG elements |", "|---|---|---|"]
+        for name, st in renders.items():
+            lines.append(f"| {name} | {st.get('bytes', '')} | {st.get('elements', '')} |")
     lines += ["", "## Runtime", "", f"Total: {seconds:.0f} s"]
     by_tool: dict[str, float] = {}
     for s in getattr(result, "steps", []) or []:
@@ -385,6 +408,23 @@ def build_report(
 
 
 # ---- main ---------------------------------------------------------------------------------
+
+
+async def _failure_render(rig: Any, result: Any) -> None:
+    """Best effort: a top render of the board as the failed flow left it (the report's
+    picture of where it stopped). Never fails the run."""
+    from tests.kicad_e2e.flow import call
+
+    try:
+        data, err = await call(rig, "run-dry-run-failure", "pcb_render", view="top")
+    except Exception as exc:  # a render problem must not hide the flow's failure
+        print(f"failure render skipped: {exc}", file=sys.stderr)
+        return
+    if not err and data.get("png_url") and result is not None:
+        from copperchat.projects import agent_dir
+
+        name = str(data["png_url"]).rsplit("/", 1)[1]
+        result.renders.append(agent_dir(rig.project) / "renders" / name)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -444,6 +484,7 @@ async def _run(args: argparse.Namespace, out: Path) -> int:
                 result = await run_flow(rig, answers, on_step=step)
             except FlowError as exc:
                 result, error = exc.result, str(exc)
+                await _failure_render(rig, result)
             seconds = time.monotonic() - start
             proc = rig.session.process
             if proc is not None:
@@ -456,14 +497,16 @@ async def _run(args: argparse.Namespace, out: Path) -> int:
             sampler.stop()
             memory = memory_from(sampler, api)
             out.mkdir(parents=True, exist_ok=True)
-            renders = []
+            renders: list[str] = []
+            stats: dict[str, dict[str, int]] = {}
             for png in getattr(result, "renders", []) or []:
                 if png.is_file():
                     dst = out / f"{len(renders) + 1:02d}-{png.name}"
                     shutil.copy2(png, dst)
                     renders.append(dst.name)
+                    stats[dst.name] = svg_stats(png.with_suffix(".svg"))
             report = build_report(
-                result, memory, project=args.project, error=error, seconds=seconds
+                result, memory, project=args.project, error=error, seconds=seconds, renders=stats
             )
             (out / "report.md").write_text(report)
             data = as_jsonable(result) if result is not None else {}

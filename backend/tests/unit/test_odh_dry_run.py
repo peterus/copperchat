@@ -186,3 +186,14 @@ def test_kind_of_classifies_processes() -> None:
     tracker = ["python3", "-c", "from multiprocessing.resource_tracker import main;main(5)"]
     assert odh.kind_of(tracker, cli) is None
     assert odh.kind_of(["bash"], cli) is None
+
+
+def test_svg_stats_and_renders_section(tmp_path: Path) -> None:
+    svg = tmp_path / "a.svg"
+    svg.write_text('<svg xmlns="http://www.w3.org/2000/svg"><g><path d="M0 0"/></g></svg>')
+    assert odh.svg_stats(svg) == {"bytes": svg.stat().st_size, "elements": 3}
+    assert odh.svg_stats(tmp_path / "missing.svg") == {}
+    text = odh.build_report(
+        _fake_result(), odh.Memory(), project="p", renders={"01-a.png": odh.svg_stats(svg)}
+    )
+    assert "## Renders" in text and "| 01-a.png |" in text
