@@ -109,7 +109,42 @@ jobs:
           key: freerouting-${{ hashFiles('docker/freerouting.lock') }}
       - run: bash scripts/fetch-freerouting.sh "$COPPERCHAT_FREEROUTING_HOME"
         working-directory: .
-      - run: uv run pytest -m kicad --shard ${{ matrix.shard }}/8
+      - run: uv run pytest -m "kicad and not kicad_e2e" --shard ${{ matrix.shard }}/8
+
+  kicad-e2e:
+    # The whole board flow on sp4_synth (sync → fab package with scripted approvals) and its
+    # metrics golden (tests/kicad_e2e, P9a). Only on the pinned base image: the flow pins
+    # Freerouting/router output, not KiCad compatibility (the kicad shards cover that).
+    needs: kicad-commits
+    name: kicad-e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      image: ${{ needs.kicad-commits.outputs.base }}
+      options: --user root
+    env:
+      COPPERCHAT_REQUIRE_KICAD: "1"
+      LANG: C
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - run: uv python install 3.13
+      - run: uv sync --locked
+      # Freerouting exactly as in the kicad job (only the hash-verified downloads are cached).
+      - run: echo "COPPERCHAT_FREEROUTING_HOME=$GITHUB_WORKSPACE/.cache/freerouting" >> "$GITHUB_ENV"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/freerouting/.dl
+          key: freerouting-${{ hashFiles('docker/freerouting.lock') }}
+      - run: bash scripts/fetch-freerouting.sh "$COPPERCHAT_FREEROUTING_HOME"
+        working-directory: .
+      - run: uv run pytest -m kicad_e2e -v
 
   frontend:
     runs-on: ubuntu-latest

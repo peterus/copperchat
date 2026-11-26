@@ -65,6 +65,7 @@ addopts = "-ra --strict-markers"
 timeout = 180
 markers = [
     "kicad: needs a real `kicad-cli api-server` (KiCad 11 master); run with -m kicad",
+    "kicad_e2e: full board flow on sp4_synth (needs KiCad + Freerouting); own CI job, run with -m kicad_e2e",
     "live_sdk: needs real model credentials (and web access); opt-in, run with -m live_sdk",
 ]
 

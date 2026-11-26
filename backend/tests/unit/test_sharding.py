@@ -13,6 +13,7 @@ from tests.support.sharding import parse_shard, shard_split
 
 BACKEND = Path(__file__).resolve().parents[2]
 CI_YML = BACKEND.parent / ".github" / "workflows" / "ci.yml"
+SHARD_MARKERS = "kicad and not kicad_e2e"  # the kicad shards; kicad_e2e has its own CI job
 
 
 def _ci_shards() -> int:
@@ -23,6 +24,9 @@ def _ci_shards() -> int:
     shards = [int(s) for s in listed[0].split(",")]
     assert shards == list(range(1, len(shards) + 1))
     assert f"--shard ${{{{ matrix.shard }}}}/{len(shards)}" in text
+    assert f'-m "{SHARD_MARKERS}" --shard ${{{{ matrix.shard }}}}/{len(shards)}' in text, (
+        "kicad shards must deselect the e2e flow"
+    )
     assert f"${{{{ matrix.shard }}}}/{len(shards)})" in text, "kicad job name: wrong /N"
     return len(shards)
 
@@ -83,7 +87,7 @@ def test_shard_option_deselects_after_marker_selection(pytester: pytest.Pytester
     )
 
 
-def _collect(*args: str) -> list[str]:
+def _collect(*args: str, empty_ok: bool = False) -> list[str]:
     # Collection only: never demand a real api-server here, even if the caller's env does.
     env = {k: v for k, v in os.environ.items() if k != "COPPERCHAT_REQUIRE_KICAD"}
     proc = subprocess.run(
@@ -94,17 +98,20 @@ def _collect(*args: str) -> list[str]:
         text=True,
         timeout=300,
     )
-    assert proc.returncode == 0, (
+    ok = (0, 5) if empty_ok else (0,)  # 5: no test collected
+    assert proc.returncode in ok, (
         f"{args}: exit {proc.returncode}\n{proc.stdout[-2000:]}\n{proc.stderr[-2000:]}"
     )
     return [line for line in proc.stdout.splitlines() if "::" in line]
 
 
 def test_ci_shards_cover_the_whole_kicad_selection() -> None:
-    """The CI matrix runs `-m kicad --shard I/N`; together the shards must be the full run."""
+    """The CI matrix runs `-m "kicad and not kicad_e2e" --shard I/N`; together the shards
+    must be the full run of that selection."""
     total = _ci_shards()
-    runs = [("-m", "kicad", "tests")] + [
-        ("-m", "kicad", "--shard", f"{index}/{total}", "tests") for index in range(1, total + 1)
+    runs = [("-m", SHARD_MARKERS, "tests")] + [
+        ("-m", SHARD_MARKERS, "--shard", f"{index}/{total}", "tests")
+        for index in range(1, total + 1)
     ]
     with ThreadPoolExecutor(max_workers=4) as pool:
         full, *shards = pool.map(lambda args: _collect(*args), runs)
@@ -112,3 +119,61 @@ def test_ci_shards_cover_the_whole_kicad_selection() -> None:
     union = [nodeid for shard in shards for nodeid in shard]
     assert sorted(union) == sorted(full)
     assert len(union) == len(set(union))
+
+
+def test_e2e_not_in_shards(pytester: pytest.Pytester) -> None:
+    """The shard expression never collects a `kicad_e2e` test; `-m kicad_e2e` only that one."""
+    pytester.makeini(
+        "[pytest]\nasyncio_default_fixture_loop_scope = function\nmarkers =\n"
+        "    kicad: kicad\n    kicad_e2e: e2e\n"
+    )
+    pytester.makepyfile(
+        "import pytest\n"
+        "@pytest.mark.kicad\n@pytest.mark.kicad_e2e\ndef test_flow(): pass\n"
+        "@pytest.mark.kicad\ndef test_tool(): pass\n"
+    )
+    pytester.makeconftest('pytest_plugins = ["tests.support.sharding"]\n')
+    pytester.syspathinsert(BACKEND)
+    shard_ran: list[str] = []
+    for index in (1, 2):
+        result = pytester.runpytest("-v", "-m", SHARD_MARKERS, "--shard", f"{index}/2")
+        shard_ran += [line.split()[0] for line in result.outlines if line.endswith("%]")]
+    assert [n.split("::")[1] for n in shard_ran] == ["test_tool"]
+    result = pytester.runpytest("-v", "-m", "kicad_e2e")
+    result.assert_outcomes(passed=1, deselected=1)
+    result.stdout.fnmatch_lines(["*::test_flow PASSED*"])
+
+
+def test_e2e_tests_also_marked_kicad() -> None:
+    """Every e2e test carries `kicad` too, so the kicad skip/require logic applies to it."""
+    assert _collect("-m", "kicad_e2e", "tests"), "no kicad_e2e tests collected"
+    assert _collect("-m", "kicad_e2e and not kicad", "tests", empty_ok=True) == []
+
+
+def _ci_job(name: str) -> str:
+    """The text of one top-level job of ci.yml (up to the next job)."""
+    text = CI_YML.read_text()
+    m = re.search(rf"^  {re.escape(name)}:\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)", text, re.M | re.S)
+    assert m, f"no job {name!r} in ci.yml"
+    return m.group(1)
+
+
+def test_ci_e2e_job() -> None:
+    job = _ci_job("kicad-e2e")
+    assert re.search(r"^    needs: kicad-commits$", job, re.M)
+    assert re.search(r"^    name: kicad-e2e$", job, re.M)
+    assert re.search(
+        r"^    container:\n      image: \$\{\{ needs\.kicad-commits\.outputs\.base \}\}$", job, re.M
+    ), "the e2e job runs on the pinned base image only"
+    assert "matrix" not in job
+    assert 'COPPERCHAT_REQUIRE_KICAD: "1"' in job
+    assert re.search(r"timeout-minutes: 30$", job, re.M)
+    assert (
+        'echo "COPPERCHAT_FREEROUTING_HOME=$GITHUB_WORKSPACE/.cache/freerouting" >> "$GITHUB_ENV"'
+        in job
+    )
+    assert re.search(r"path: \.cache/freerouting(/\.dl)?$", job, re.M)
+    assert "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0" in job
+    assert 'bash scripts/fetch-freerouting.sh "$COPPERCHAT_FREEROUTING_HOME"' in job
+    assert re.search(r"uv run pytest -m kicad_e2e\b", job)
+    assert "${{ github.workspace }}" not in job
