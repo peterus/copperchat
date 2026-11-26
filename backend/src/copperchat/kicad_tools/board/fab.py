@@ -35,7 +35,6 @@ from typing import Any
 
 from copperchat.board import fab as plan
 from copperchat.board.boardmd import read_board_doc
-from copperchat.board.classify import Classification, classify
 from copperchat.board.jobs import metrics_job
 from copperchat.board.metrics import MetricsReport
 from copperchat.board.model import BoardModel, board_hash
@@ -182,17 +181,17 @@ def zip_package(tmp: Path, zip_name: str) -> None:
                 shutil.copyfileobj(src, dst, 1024 * 1024)
 
 
-def _write_csvs(tmp: Path, model: BoardModel, cls: Classification) -> None:
+def _write_csvs(tmp: Path, excluded: dict[str, tuple[str, ...]]) -> None:
     """kicad-cli's pos / BOM CSV → `cpl-jlcpcb.csv` / `bom-jlcpcb.csv` without the
     `fab_excluded` refs (mounting holes, exclude attributes); the raw files are removed (they
     are not part of the package)."""
     cpl = plan.cpl_rows(
         _read_small(tmp / plan.POS_CSV),
-        exclude=frozenset(plan.fab_excluded(model, cls, "cpl")),
+        exclude=frozenset(excluded["cpl"]),
     )
     bom = plan.bom_rows(
         _read_small(tmp / plan.BOM_CSV),
-        exclude=frozenset(plan.fab_excluded(model, cls, "bom")),
+        exclude=frozenset(excluded["bom"]),
     )
     (tmp / plan.CPL_FILE).write_text(plan.csv_text(plan.CPL_HEADER, cpl), encoding="utf-8")
     (tmp / plan.BOM_FILE).write_text(plan.csv_text(plan.BOM_HEADER, bom), encoding="utf-8")
@@ -212,7 +211,7 @@ def _report_text(
     report: MetricsReport,
     files: list[tuple[str, int]],
     swept: list[str],
-    cls: Classification,
+    excluded: tuple[str, ...],
 ) -> str:
     """`fab-report.md` (run off the loop: the custom-rule scan reads the whole .kicad_dru)."""
     return plan.fab_report(
@@ -226,7 +225,7 @@ def _report_text(
         custom_rules=plan.custom_rules(model.dru_text),
         files=files,
         swept=swept,
-        excluded=plan.fab_excluded(model, cls),
+        excluded=excluded,
     )
 
 
@@ -332,10 +331,10 @@ async def _fab_export(ctx: ToolContext) -> ToolResult:
                 await asyncio.to_thread((tmp / cmd.out).mkdir)
             await _cli(ctx, cmd, tmp)
         zip_name = f"{stem}-jlcpcb.zip"
-        cls = await _off_loop(lambda: classify(model, doc))
+        excluded = await run_cpu(plan.fab_exclusions, model, doc, timeout_s=FAB_METRICS_TIMEOUT_S)
         try:
             await _off_loop(lambda: zip_package(tmp, zip_name))
-            await _off_loop(lambda: _write_csvs(tmp, model, cls))
+            await _off_loop(lambda: _write_csvs(tmp, excluded))
             await _off_loop(lambda: shutil.rmtree(tmp / "src"))
             files = await _off_loop(lambda: _file_list(tmp))
         except ValueError as exc:
@@ -343,7 +342,7 @@ async def _fab_export(ctx: ToolContext) -> ToolResult:
         except OSError as exc:
             raise _os_failed(exc) from None
         text = await _off_loop(
-            lambda: _report_text(model, project, digest, doc, report, files, swept, cls)
+            lambda: _report_text(model, project, digest, doc, report, files, swept, excluded["all"])
         )
         try:
             await _off_loop(lambda: (tmp / plan.REPORT_FILE).write_text(text, encoding="utf-8"))

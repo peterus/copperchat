@@ -768,16 +768,22 @@ exclude=)` drops excluded designators from grouped rows (a row left empty disapp
 `cpl_rows(csv, exclude=)` drops rows; `small_holes(model)` (plated pad drills and via drills
 < `SMALL_HOLE_MM` = 0.3, one row per ref with its smallest drill, sorted by drill then ref);
 `fab_report(..., excluded=)` adds "Excluded from BOM/CPL" and "Small holes (possible JLC
-surcharge)" only when non-empty. `pcb_fab_export` classifies once (`classify(model, doc)` in a
-thread, inside the staging `try`) and passes the result to the CSV writer and the report.
+surcharge)" only when non-empty. `pcb_fab_export` classifies once through the CPU worker
+(`run_cpu(fab_exclusions, model, doc, timeout_s=FAB_METRICS_TIMEOUT_S)` - review round 1; returns
+the `bom` / `cpl` / `all` tuples) and passes them to the CSV writer and the report. **`Pad`
+gained `npth: bool = False`** (not hashed, from `pad_type == PT_NPTH`): KiCad lists `*.Cu` on
+NPTH pads too, so `small_holes` cannot tell plated from layers alone. `metrics.py`'s M14
+`pth_drill` / `npth_drill` split still uses the `.Cu` heuristic (`_copper`) - an NPTH below
+`min_drill` is checked against `min_drill` instead of `min_npth`; R1 owns `metrics.py`.
 **`Part` gained `exclude_from_bom` / `exclude_from_pos`** (default `False`, not hashed - an
 attribute edit is no layout change), filled in `read.py` from `fp.attributes`
 (`test_read_exclude_attributes`). P8's `test_file_set` expectation changed: `sp4_synth`'s
 schematic holes (H1, H2, no exclude attribute) are now absent from the CPL and BOM.
 
 **Render extent (spec §22.6):** `cc/board/render.py` `default_extent(model, markers=())` =
-outline bbox + every courtyard (a part without a courtyard counts with its origin - not in the
-contract, so such a part is never cut off) + markers; `None` when all are empty; a side below
+outline bbox + every courtyard (a part without a courtyard counts with its origin and its pads'
+circumscribed extents - not in the contract, so such a part is never cut off; tracks, vias and
+zones off the outline are not included, they are DRC markers) + markers; `None` when all are empty; a side below
 `MIN_EXTENT_MM` = 1.0 is grown around its centre (a lone marker gives no zero-size view).
 `cc/views/board_render.py` `view_extent(model, region, markers)` (region wins) feeds `_Overlay.region`
 for every 2D view; 3D unchanged. `test_render_extent_ignores_far_drawing` adds a board text

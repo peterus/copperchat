@@ -20,6 +20,7 @@ from copperchat.board.fab import (
     custom_rules,
     fab_commands,
     fab_excluded,
+    fab_exclusions,
     fab_report,
     min_pad_pitch,
     small_holes,
@@ -320,8 +321,9 @@ def test_stencil_sides() -> None:
 
 
 def _hole_part(ref: str, x: float, drill: float, *, plated: bool = True) -> object:
-    layers = frozenset({"F.Cu", "B.Cu", "F.Mask", "B.Mask"}) if plated else frozenset()
-    pad = replace(_pad(ref, "1", x, 10, smd=False), layers=layers, drill=drill)
+    # KiCad lists `*.Cu` on NPTH pads too (MountingHole_*: np_thru_hole, layers *.Cu *.Mask)
+    layers = frozenset({"F.Cu", "B.Cu", "F.Mask", "B.Mask"})
+    pad = replace(_pad(ref, "1", x, 10, smd=False), layers=layers, drill=drill, npth=not plated)
     return part(ref, x, 10, pads=(pad,))
 
 
@@ -361,12 +363,19 @@ def test_fab_excluded_by_attribute() -> None:
     assert fab_excluded(m, cls) == ("C1", "C2")
 
 
+def test_fab_exclusions_job() -> None:
+    m = board(
+        parts=(part("H1", 5, 5), part("C1", 20, 40, exclude_from_bom=True), part("C2", 40, 40))
+    )
+    assert fab_exclusions(m, None) == {"bom": ("C1", "H1"), "cpl": ("H1",), "all": ("C1", "H1")}
+
+
 def test_small_holes_lists_02() -> None:
     m = board(
         parts=(
             _hole_part("J1", 20, 0.2),
             _hole_part("J2", 40, 0.3),  # not below 0.3
-            _hole_part("H1", 60, 0.15, plated=False),  # NPTH: no plated hole
+            _hole_part("H1", 60, 0.15, plated=False),  # NPTH with *.Cu layers: not plated
         ),
         vias=(via("GND", (10, 10), 0.45, 0.25), via("GND", (12, 10), 0.6, 0.3)),
     )

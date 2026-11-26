@@ -343,7 +343,9 @@ def _points(pts: Sequence[Point]) -> str:
 def default_extent(model: BoardModel, markers: Sequence[Marker] = ()) -> Rect | None:
     """The default 2D view (spec §22.6, board mm): the outline's bounding box + every
     footprint's courtyard (staging parts outside the outline included; a part without a
-    courtyard counts with its origin) + the marker points. Not KiCad's "board area", which
+    courtyard counts with its origin and its pads' circumscribed extents) + the marker
+    points. Tracks, vias and zones are not included: copper off the outline is a DRC
+    finding, shown with `markers`. Not KiCad's "board area", which
     any stray drawing far off the board stretches. `None` when there is nothing (the
     caller then keeps KiCad's whole drawing); a side below `MIN_EXTENT_MM` is grown
     around its centre."""
@@ -354,9 +356,16 @@ def default_extent(model: BoardModel, markers: Sequence[Marker] = ()) -> Rect | 
         xs += [o.x, o.x + o.w]
         ys += [o.y, o.y + o.h]
     for p in model.parts:
-        pts = p.courtyard or ((p.x, p.y),)
-        xs += [q[0] for q in pts]
-        ys += [q[1] for q in pts]
+        if p.courtyard:
+            xs += [q[0] for q in p.courtyard]
+            ys += [q[1] for q in p.courtyard]
+            continue
+        xs.append(p.x)
+        ys.append(p.y)
+        for q in p.pads:  # no courtyard: its pads' (axis-aligned, rotation-safe) extents
+            r = math.hypot(q.w, q.h) / 2
+            xs += [q.x - r, q.x + r]
+            ys += [q.y - r, q.y + r]
     xs += [mk.x for mk in markers]
     ys += [mk.y for mk in markers]
     pairs = [(x, y) for x, y in zip(xs, ys, strict=True) if math.isfinite(x) and math.isfinite(y)]

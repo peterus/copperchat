@@ -11,7 +11,7 @@ from dataclasses import replace
 
 import pytest
 
-from copperchat.board.model import Rect
+from copperchat.board.model import Pad, Rect
 from copperchat.board.render import (
     Hull,
     Marker,
@@ -266,6 +266,16 @@ def test_default_extent_without_outline() -> None:
     none = replace(outline(), kind="none", w=0.0, h=0.0)
     m = model(outline=none, parts=(part("U1", 10, 10), part("U2", 30, 20, half=1.0)))
     assert _box(default_extent(m)) == (8, 8, 23, 13)  # courtyards only: 8..31 x 8..21
+
+
+def test_default_extent_courtyardless_part_pads() -> None:
+    none = replace(outline(), kind="none", w=0.0, h=0.0)
+    pad = Pad("TP1", "1", "N1", 12.0, 10.0, 3.0, 4.0, 0.0, "rect", frozenset({"F.Cu"}), True, None)
+    tp = part("TP1", 10, 10, courtyard=(), pads=(pad,))
+    r = default_extent(model(outline=none, parts=(tp,)))
+    assert r is not None
+    assert r.x == pytest.approx(9.5) and r.x + r.w == pytest.approx(14.5)  # pad 12 -+ 2.5
+    assert r.y == pytest.approx(7.5) and r.y + r.h == pytest.approx(12.5)
 
 
 def test_default_extent_none_when_empty() -> None:

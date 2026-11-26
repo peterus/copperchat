@@ -18,8 +18,8 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from copperchat.board.boardmd import AcceptedWarning
-from copperchat.board.classify import Classification
+from copperchat.board.boardmd import AcceptedWarning, BoardDoc
+from copperchat.board.classify import Classification, classify
 from copperchat.board.metrics import MetricsReport
 from copperchat.board.model import BoardModel
 from copperchat.board.presets import FabPreset
@@ -139,9 +139,20 @@ def fab_excluded(
     return tuple(sorted(out))
 
 
+def fab_exclusions(model: BoardModel, doc: BoardDoc | None) -> dict[str, tuple[str, ...]]:
+    """`fab_excluded` for the BOM (`"bom"`), the CPL (`"cpl"`) and the report (`"all"`)
+    from one classification - a CPU job (`run_cpu`, timeout) for `pcb_fab_export`."""
+    cls = classify(model, doc)
+    return {
+        "bom": fab_excluded(model, cls, "bom"),
+        "cpl": fab_excluded(model, cls, "cpl"),
+        "all": fab_excluded(model, cls),
+    }
+
+
 def small_holes(model: BoardModel) -> tuple[tuple[str, float], ...]:
     """(ref or `via`, smallest drill) of every plated hole below `SMALL_HOLE_MM` - plated pad
-    drills (a pad with copper) and via drills - one row per ref, sorted by (drill, ref)."""
+    drills (a drilled pad that is not NPTH and has copper) and via drills - one row per ref, sorted by (drill, ref)."""
     best: dict[str, float] = {}
 
     def add(ref: str, drill: float) -> None:
@@ -150,7 +161,7 @@ def small_holes(model: BoardModel) -> tuple[tuple[str, float], ...]:
 
     for p in model.parts:
         for q in p.pads:
-            if q.drill and any(layer.endswith(".Cu") for layer in q.layers):
+            if q.drill and not q.npth and any(layer.endswith(".Cu") for layer in q.layers):
                 add(p.ref, q.drill)
     for v in model.vias:
         add("via", v.drill)

@@ -445,6 +445,7 @@ def _pad(ref: str, pad: KipyPad) -> Pad:
         layers=frozenset(_layer(layer) for layer in ps.layers),
         smd=pad.pad_type == board_types_pb2.PT_SMD,
         drill=drill,
+        npth=pad.pad_type == board_types_pb2.PT_NPTH,
     )
 
 

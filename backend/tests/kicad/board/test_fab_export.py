@@ -25,6 +25,7 @@ from typing import Any
 
 import pytest
 
+from copperchat.board import fab as fab_plan
 from copperchat.board import worker
 from copperchat.board.classify import classify
 from copperchat.board.jobs import metrics_job
@@ -214,6 +215,8 @@ async def test_fab_export_excludes_holes(fab_rig: PlacedSynth, metrics_pass: lis
     _clean_fab(fab_rig)
     await approve_board(fab_rig)
     _ok(*await _export(fab_rig, "run-fab-holes"))
+    jobs = [kw for fn, kw in metrics_pass if fn is fab_plan.fab_exclusions]
+    assert len(jobs) == 1 and jobs[0]["timeout_s"] == fab_tool.FAB_METRICS_TIMEOUT_S
     holes = await _mounting_holes(fab_rig)
     attrs = await _attributes(fab_rig)
     schematic_holes = {h for h in holes if not attrs[h][1]}

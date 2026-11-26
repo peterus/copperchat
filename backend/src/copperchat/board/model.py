@@ -57,6 +57,9 @@ class Pad:
     layers: frozenset[str]
     smd: bool
     drill: float | None
+    # R5: a non-plated hole (KiCad lists `*.Cu` on NPTH pads too). Not hashed: it comes
+    # with the library footprint (lib_id is hashed).
+    npth: bool = False
 
 
 @dataclass(frozen=True)
