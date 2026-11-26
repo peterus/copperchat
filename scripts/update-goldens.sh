@@ -34,3 +34,5 @@ asyncio.run(main())
 PY
 UPDATE_GOLDENS=1 uv run pytest tests/unit/test_agent_render.py -q
 find tests/fixtures/golden/png -name '*.actual.png' -delete
+# The sp4_synth end-to-end metrics golden (needs Freerouting: COPPERCHAT_FREEROUTING_HOME).
+UPDATE_GOLDENS=1 uv run pytest -m kicad_e2e tests/kicad_e2e -q
