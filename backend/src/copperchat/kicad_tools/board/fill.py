@@ -234,8 +234,9 @@ def new_ground_items(
     snap: CopperSnapshot | BoardModel, model: BoardModel, ground_nets: frozenset[str]
 ) -> list[str]:
     """KIIDs of tracks, arcs and vias on ground nets that are on `model` but not in the
-    pre-import state `snap` (a snapshot or the pre-call model): locked fanout stubs and
-    stitching vias - and any other ground copper from before - are never selected."""
+    pre-import state `snap` (a snapshot or the pre-call model): ground copper from before
+    keeps its KIID through the import (locked fanout/stitching; unlocked ground copper is
+    locked for the round trip, stage 1) and is never selected."""
     if isinstance(snap, CopperSnapshot):
         before = snap.track_ids | snap.via_ids
     else:
@@ -255,25 +256,40 @@ def _copper_ids(model: BoardModel) -> frozenset[str]:
 _LAYER_RE = r"\(layer\s+{name}\s*\n?\s*\(type\s+\w+\)"
 
 
-def disable_layers(text: str, layers: Sequence[str]) -> str:
+_DSN_LAYER_RE = re.compile(r'\(layer\s+("[^"]*"|[^\s()]+)\s*\(type\s+\w+\)')
+
+
+def disable_layers(
+    text: str, layers: Sequence[str], copper_layers: Sequence[str] | None = None
+) -> str:
     """The exported DSN with `layers` switched off for Freerouting's autorouter: ONE line
     `(autoroute_settings (layer_rule <layer> (active off)) …)` is inserted into the
     `structure` right before its `boundary`; nothing else changes. Owner D4's last resort:
     KiCad's layer type is not settable (P2), Freerouting 2.5.0 has no CLI option for a
     layer (`--router.layers…` paths are rejected), and a `(type power)` layer is still
-    routed by 2.5.0 (P6b probes). Refuses a DSN that already has autoroute settings, an
-    unknown layer or no structure boundary (`ValueError`)."""
+    routed by 2.5.0 (P6b probes). With `copper_layers` (the board's copper layers in stack
+    order, canonical names) a layer is found by its position - the DSN uses the layers'
+    user names. Refuses a DSN that already has autoroute settings, an unmatched layer or
+    no structure boundary (`ValueError`)."""
     if not layers:
         return text
     if "(autoroute_settings" in text:
         raise ValueError("the DSN already has autoroute settings")
+    names = [m.group(1) for m in _DSN_LAYER_RE.finditer(text)]
+    wanted: list[str] = []
     for name in layers:
-        if not re.search(_LAYER_RE.format(name=re.escape(name)), text):
+        if copper_layers is not None:
+            if name not in copper_layers or len(names) != len(copper_layers):
+                raise ValueError(f"layer {name!r} cannot be matched to the DSN's layers")
+            wanted.append(names[list(copper_layers).index(name)])
+        elif name in names:
+            wanted.append(name)
+        else:
             raise ValueError(f"layer {name!r} is not in the DSN structure")
     m = re.search(r"\n(\s*)\(boundary", text)
     if m is None:
         raise ValueError("the DSN has no structure boundary")
-    rules = " ".join(f"(layer_rule {n} (active off))" for n in layers)
+    rules = " ".join(f"(layer_rule {n} (active off))" for n in wanted)
     line = f"\n{m.group(1)}(autoroute_settings {rules})"
     return text[: m.start()] + line + text[m.start() :]
 
@@ -370,6 +386,7 @@ class _FillState:
     cls: Classification
     io_spent: float = 0.0
     cleared: list[str] = field(default_factory=list)
+    protected: list[str] = field(default_factory=list)  # unlocked ground copper, locked meanwhile
     run: FreeroutingRun | None = None
     post_deadline: float = 0.0
     rip: dict[str, str] = field(default_factory=dict)  # key -> reason
@@ -626,14 +643,17 @@ def _conns_using(model: BoardModel, net: str, kiids: set[str]) -> list[str]:
     return out
 
 
-def _rip_copper(model: BoardModel, keys: Sequence[str], pre_ids: frozenset[str]) -> list[str]:
+def _rip_copper(
+    model: BoardModel, keys: Sequence[str], pre_ids: frozenset[str]
+) -> tuple[list[str], set[str]]:
     """The fill copper of the ripped connections: every unlocked new track on the
     connection's shortest path, plus the unlocked new vias of those nets no remaining
-    track end reaches afterwards."""
+    track end reaches afterwards. Returns (KIIDs to remove, keys that lost copper)."""
     by_net: dict[str, set[str]] = defaultdict(set)
     for k in keys:
-        by_net[k.split(":", 1)[0]].add(k)
+        by_net[key_net(k)].add(k)
     gone: set[str] = set()
+    ripped: set[str] = set()
     for net, want in sorted(by_net.items()):
         tracks = [(i, t) for i, t in enumerate(model.tracks) if t.net == net]
         pads = sorted(
@@ -642,7 +662,8 @@ def _rip_copper(model: BoardModel, keys: Sequence[str], pre_ids: frozenset[str])
         )
         paths = _Paths(model, tracks, pads)
         for a, b in connections(model, net):
-            if conn_key(net, a, b) not in want:
+            key = conn_key(net, a, b)
+            if key not in want:
                 continue
             hit = paths.path(a, b)
             if hit is None:
@@ -651,8 +672,9 @@ def _rip_copper(model: BoardModel, keys: Sequence[str], pre_ids: frozenset[str])
                 t = model.tracks[i]
                 if not t.locked and t.kiid not in pre_ids:
                     gone.add(t.kiid)
+                    ripped.add(key)
     if not gone:
-        return []
+        return [], ripped
     left = [t for t in model.tracks if t.kiid not in gone]
     for v in model.vias:
         if v.locked or v.kiid in pre_ids or v.net not in by_net:
@@ -663,14 +685,39 @@ def _rip_copper(model: BoardModel, keys: Sequence[str], pre_ids: frozenset[str])
             for t in left
         ):
             gone.add(v.kiid)
-    return sorted(gone)
+    return sorted(gone), ripped
 
 
-def _bends_of(model: BoardModel, net: str) -> int:
+async def _check_ratio(
+    st: _FillState, model: BoardModel, rips: Mapping[str, str], nets: set[str]
+) -> None:
+    """The 20 % rule (spec §10.4) over the fill connections: `fill_not_acceptable` with the
+    ripped connections and the worst areas when more of them need a rip-and-reroute."""
+    fill_rip = sorted(set(rips) & st.fill_keys)
+    n_fill = len(st.fill_keys)
+    ratio = len(fill_rip) / n_fill if n_fill else 0.0
+    if ratio <= RIP_RATIO_MAX:
+        return
+    reasons = Counter(rips[k] for k in fill_rip)
+    pads = await asyncio.to_thread(_pads_by_key, model, nets)
+    raise _not_acceptable(
+        f"{len(fill_rip)} of {n_fill} fill connections ({ratio:.0%}) would need a "
+        f"rip-and-reroute (more than {RIP_RATIO_MAX:.0%})",
+        "rip_ratio",
+        fill_connections=n_fill,
+        rip=len(fill_rip),
+        ratio=round(ratio, 3),
+        reasons=dict(sorted(reasons.items())),
+        connections=[{"connection": k, "reason": rips[k]} for k in fill_rip[:MAX_LISTED]],
+        worst_areas=_worst_areas(fill_rip, pads),
+    )
+
+
+def _bends_of(model: BoardModel, net: str, index: TrackIndex | None = None) -> int:
     """M4 + M7 failures over `net`'s tracks (B-C5 `analyse_tracks`, the whole board's pads
     and vias)."""
     sub = dataclasses.replace(model, tracks=tuple(t for t in model.tracks if t.net == net), arcs=())
-    rep = analyse_tracks(sub, index=TrackIndex(model))
+    rep = analyse_tracks(sub, index=index if index is not None else TrackIndex(model))
     return (
         len(rep.non_octilinear)
         + len(rep.ninety)
@@ -718,11 +765,13 @@ def _widen(
     return out, count
 
 
-def _set_locked(h: KicadHandle, ids: Sequence[str]) -> None:
+def _set_locked(h: KicadHandle, ids: Sequence[str], *, locked: bool = True) -> None:
+    if not ids:
+        return
     board = h.board()
     items = list(board.get_items_by_id(_kiids(ids)))
     for it in items:
-        it.locked = True  # type: ignore[attr-defined]
+        it.locked = locked  # type: ignore[attr-defined]
     if items:
         board.update_items(items)
 
@@ -744,7 +793,17 @@ def fill_stages(st: _FillState) -> list[BoardStage]:
             st.cleared = await sctx.call(
                 lambda h: _clear_fills(h, ids), timeout=BOARD_READ_TIMEOUT_S
             )
+        # The SES import deletes unlocked copper and stage 4 deletes the fill's ground
+        # copper: unlocked ground copper from before the call (hand-routed, an unlocked
+        # stub) is locked for the round trip, so it keeps its KIIDs, and unlocked again in
+        # stage 4 (on failure the full snapshot restores the flag).
+        ground = st.plan.ground_nets
+        unlocked = [i.kiid for i in _copper(st.pre) if i.net in ground and not i.locked]
+        if unlocked:
+            await sctx.call(lambda h: _set_locked(h, unlocked), timeout=BOARD_READ_TIMEOUT_S)
+            st.protected = unlocked
         sctx.report["fills_cleared"] = len(st.cleared)
+        sctx.report["ground_protected"] = len(st.protected)
 
     async def refill_cleared(sctx: BoardStageContext) -> None:
         if st.cleared:
@@ -756,11 +815,22 @@ def fill_stages(st: _FillState) -> list[BoardStage]:
         await _export_dsn(sctx, st, dsn)
         layers = st.plan.plane_layers
         if layers:
+            copper = st.pre.copper_layers
 
             def rewrite() -> None:
-                dsn.write_text(disable_layers(dsn.read_text(encoding="utf-8"), layers), "utf-8")
+                text = dsn.read_text(encoding="utf-8")
+                dsn.write_text(disable_layers(text, layers, copper), "utf-8")
 
-            await asyncio.to_thread(rewrite)
+            try:
+                await asyncio.to_thread(rewrite)
+            except ValueError as exc:
+                raise StructuredToolError(
+                    "The plane layers could not be kept free",
+                    f"the exported DSN does not match the board's copper layers ({exc})",
+                    "Nothing was changed. Retry with plane_layers: [] or route the rest with "
+                    "pcb_route.",
+                    code="export_failed",
+                ) from exc
         run = await run_freerouting(
             st.rt,
             dsn,
@@ -797,16 +867,19 @@ def fill_stages(st: _FillState) -> list[BoardStage]:
 
         await asyncio.to_thread(shutil.rmtree, st.workdir, True)
         m = await sctx.model()
-        ground = new_ground_items(st.pre, m, st.plan.ground_nets)
-        redundant = _redundant(m, pre_ids, st.plan.ground_nets)
+        ground = await asyncio.to_thread(new_ground_items, st.pre, m, st.plan.ground_nets)
+        ground = [k for k in ground if k not in st.protected]
+        redundant = await asyncio.to_thread(_redundant, m, pre_ids, st.plan.ground_nets)
         moved = placement_hash(m) != st.pre_hash
         restored = 0
-        if ground or redundant or moved:
+        if ground or redundant or moved or st.protected:
             gone = [*ground, *redundant]
+            back = list(st.protected)
             async with sctx.ctx.session.commit("copperchat: pcb_route_fill", doc="pcb"):
 
                 def write(h: KicadHandle) -> int:
                     _remove(h, gone)
+                    _set_locked(h, back, locked=False)
                     return _restore_positions(h, st.pre.parts) if moved else 0
 
                 restored = await sctx.call(write, timeout=BOARD_READ_TIMEOUT_S)
@@ -833,33 +906,18 @@ def fill_stages(st: _FillState) -> list[BoardStage]:
         )
         before_open = {k for k, *_ in st.plan.open}
         nets = {net for _, net, _, _ in st.plan.open}
-        st.fill_keys = frozenset(before_open & _routed_keys(m, nets))
+        st.fill_keys = frozenset(before_open & await asyncio.to_thread(_routed_keys, m, nets))
         rem = max(_remaining(st.post_deadline), 0.0)
         res = await _run_postprocess(m, new_tracks, timeout_s=min(POST_JOB_MAX_S, rem), wait_s=rem)
         rips = {k: r for k, r in res.reasons}
         for k in res.rip:
             rips.setdefault(k, "rip")
-        rips = {k: r for k, r in rips.items() if k.split(":", 1)[0] not in st.plan.ground_nets}
-        fill_rip = sorted(set(rips) & st.fill_keys)
-        n_fill = len(st.fill_keys)
-        ratio = len(fill_rip) / n_fill if n_fill else 0.0
+        rips = {k: r for k, r in rips.items() if key_net(k) not in st.plan.ground_nets}
         sctx.report["chamfered"] = res.chamfered
         sctx.report["merged"] = res.merged
-        if ratio > RIP_RATIO_MAX:
-            reasons = Counter(rips[k] for k in fill_rip)
-            raise _not_acceptable(
-                f"{len(fill_rip)} of {n_fill} fill connections ({ratio:.0%}) would need a "
-                f"rip-and-reroute (more than {RIP_RATIO_MAX:.0%})",
-                "rip_ratio",
-                fill_connections=n_fill,
-                rip=len(fill_rip),
-                ratio=round(ratio, 3),
-                reasons=dict(sorted(reasons.items())),
-                connections=[{"connection": k, "reason": rips[k]} for k in fill_rip[:MAX_LISTED]],
-                worst_areas=_worst_areas(fill_rip, _pads_by_key(m, nets)),
-            )
+        await _check_ratio(st, m, rips, nets)
         st.rip = dict(rips)
-        replace, widened = _widen(m, res.replace, new_tracks)
+        replace, widened = await asyncio.to_thread(_widen, m, res.replace, new_tracks)
         sctx.report["widened"] = widened
         drc_skipped = False
         if replace:
@@ -875,8 +933,14 @@ def fill_stages(st: _FillState) -> list[BoardStage]:
                 drc = await sctx.drc(timeout_s=min(DRC_MAX_S, rem))
             except DrcTimeout:
                 drc_skipped = True
+                sctx.report.setdefault("notes", []).append(
+                    "the DRC of the chamfered/widened copper timed out: it is kept unverified; "
+                    "run pcb_check before relying on it"
+                )
             else:
                 await _revert_rejected(sctx, st, m, replace, made, drc)
+                # DRC-rejected replacements add rips: the 20 % rule counts them too
+                await _check_ratio(st, m, st.rip, nets)
         sctx.report["drc_skipped"] = drc_skipped
 
     async def reroute(sctx: BoardStageContext) -> None:
@@ -889,12 +953,12 @@ def fill_stages(st: _FillState) -> list[BoardStage]:
             sctx.report["rerouted"] = 0
             return
         m = await sctx.model()
-        gone = _rip_copper(m, keys, pre_ids)
+        gone, ripped_keys = await asyncio.to_thread(_rip_copper, m, keys, pre_ids)
         if gone:
             async with sctx.ctx.session.commit("copperchat: pcb_route_fill: rip", doc="pcb"):
                 await sctx.call(lambda h: _remove(h, gone), timeout=BOARD_READ_TIMEOUT_S)
         m = await sctx.model()
-        nets = sorted({k.split(":", 1)[0] for k in keys})
+        nets = sorted({key_net(k) for k in keys})
         layers = tuple(n for n in m.copper_layers if n not in st.plan.plane_layers)
         plans = await asyncio.to_thread(
             plan_connections, m, st.cls, nets, layers=layers, allow_vias=True
@@ -907,13 +971,17 @@ def fill_stages(st: _FillState) -> list[BoardStage]:
             got = by_key.get(k)
             if got is not None and got.status == "routed":
                 st.rerouted.append(k)
-            elif got is None:
-                # no plan: the connection is routed again by other copper (or joined)
-                st.rerouted.append(k)
+                continue
+            if got is not None:
+                reason = got.reason or "no_path"
+            elif k not in ripped_keys:
+                # its defective copper is locked or from before the call: nothing was ripped
+                reason = "not_ripped"
             else:
-                st.rejected.append(
-                    {"connection": k, "reason": got.reason or "no_path", **_where(m, k)}
-                )
+                # its copper was removed and other copper still connects it: nothing to route
+                st.rerouted.append(k)
+                continue
+            st.rejected.append({"connection": k, "reason": reason, **_where(m, k)})
         sctx.report["rerouted"] = len(st.rerouted)
 
     async def relock(sctx: BoardStageContext) -> None:
@@ -921,10 +989,11 @@ def fill_stages(st: _FillState) -> list[BoardStage]:
         failed: list[str] = []
         if st.args.relock_nets:
             m = await sctx.model()
+            index = await asyncio.to_thread(TrackIndex, m)
             ids: list[str] = []
             for net in st.args.relock_nets:
                 items = [i for i in _copper(m) if i.net == net and not isinstance(i, ArcTrack)]
-                if not items or await asyncio.to_thread(_bends_of, m, net) > 0:
+                if not items or await asyncio.to_thread(_bends_of, m, net, index) > 0:
                     failed.append(net)
                     continue
                 relocked.append(net)
@@ -945,8 +1014,14 @@ def fill_stages(st: _FillState) -> list[BoardStage]:
     ]
 
 
+def key_net(key: str) -> str:
+    """The net of a connection key `"{net}:{refA}.{padA}-{refB}.{padB}"` (a net name may
+    contain ':'; references and pad numbers do not)."""
+    return key.rsplit(":", 1)[0]
+
+
 def _where(model: BoardModel, key: str) -> dict[str, Any]:
-    net = key.split(":", 1)[0]
+    net = key_net(key)
     for a, b in connections(model, net):
         if conn_key(net, a, b) == key:
             return {"x": round((a.x + b.x) / 2, 3), "y": round((a.y + b.y) / 2, 3)}

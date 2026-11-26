@@ -550,3 +550,92 @@ async def test_fill_io_budget_spent(fill_rig: PlacedSynth, monkeypatch: pytest.M
     assert calls == []
     after, after_digest, _ = await state(fill_rig, "is-3")
     assert (after, after_digest) == (copper, digest)
+
+
+@TIMEOUT
+async def test_drc_rejected_replacement_reverted(
+    fill_rig: PlacedSynth, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stage 5's DRC names a replacement track → every replacement of that net is reverted
+    (`drc_reverted`), its connections are ripped (`drc_rejected`) and re-routed by the own
+    router; the board ends with M4 = M7 = 0."""
+    await unroute(fill_rig, "rv-0")
+    _one_replacement(monkeypatch)
+    made: list[str] = []
+    real_apply = fill._apply_replace
+
+    def spy(h: Any, replace: Any) -> list[list[str]]:
+        out = real_apply(h, replace)
+        made.extend(k for ks in out for k in ks)
+        return out
+
+    real_drc = engine.BoardStageContext.drc
+    calls = {"n": 0}
+
+    async def drc(self: Any, *, timeout_s: float = 60.0) -> api.DrcResult:
+        got = await real_drc(self, timeout_s=timeout_s)
+        calls["n"] += 1
+        if calls["n"] == 1 and made:  # the first DRC is stage 5's
+            fake = api.DrcMarker("clearance", "error", "test rejection", (made[-1],), None)
+            return dataclasses.replace(got, markers=(*got.markers, fake))
+        return got
+
+    allow_rips(monkeypatch)
+    monkeypatch.setattr(fill, "_apply_replace", spy)
+    monkeypatch.setattr(engine.BoardStageContext, "drc", drc)
+    out = await fill_ok(fill_rig, "rv-1")
+    assert out["drc_reverted"] >= 1
+    rejected = [r for r in out["ripped_connections"] if r["reason"] == "drc_rejected"]
+    assert rejected, out["ripped_connections"]
+    assert out["completion"] == 1.0, out["rejected"]
+    assert _bends(await model_of(fill_rig, "rv-2")) == {"M4": 0, "M7": 0}
+
+
+@TIMEOUT
+async def test_drc_rejected_rips_count_for_the_rule(
+    fill_rig: PlacedSynth, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The 20 % rule is checked again after DRC-rejected replacements added rips: a
+    rejected replacement on a fill net makes this small fill unacceptable, board restored."""
+    await unroute(fill_rig, "rr2-0")
+    copper, digest, _ = await state(fill_rig, "rr2-1")
+    _one_replacement(monkeypatch)
+    made: list[str] = []
+    real_apply = fill._apply_replace
+
+    def spy(h: Any, replace: Any) -> list[list[str]]:
+        out = real_apply(h, replace)
+        made.extend(k for ks in out for k in ks)
+        return out
+
+    real_drc = engine.BoardStageContext.drc
+
+    async def drc(self: Any, *, timeout_s: float = 60.0) -> api.DrcResult:
+        got = await real_drc(self, timeout_s=timeout_s)
+        fake = tuple(
+            api.DrcMarker("clearance", "error", "test rejection", (k,), None) for k in made
+        )
+        return dataclasses.replace(got, markers=(*got.markers, *fake))
+
+    monkeypatch.setattr(fill, "RIP_RATIO_MAX", 0.0)  # any counted rip refuses
+    monkeypatch.setattr(fill, "_apply_replace", spy)
+    monkeypatch.setattr(engine.BoardStageContext, "drc", drc)
+    monkeypatch.setattr(fill, "_check_ratio", _late_only(fill._check_ratio))
+    out, err = await run_fill(fill_rig, "rr2-2")
+    assert err and out["error"]["details"]["reason"] == "rip_ratio", out
+    assert any(c["reason"] == "drc_rejected" for c in out["error"]["details"]["connections"])
+    after, after_digest, _ = await state(fill_rig, "rr2-3")
+    assert (after, after_digest) == (copper, digest)
+
+
+def _late_only(real: Any) -> Any:
+    """`_check_ratio` that skips its first call (the post-processor's own rips), so only
+    the re-check after the DRC-rejected replacements can refuse."""
+    seen = {"n": 0}
+
+    async def check(*a: Any, **kw: Any) -> None:
+        seen["n"] += 1
+        if seen["n"] > 1:
+            await real(*a, **kw)
+
+    return check

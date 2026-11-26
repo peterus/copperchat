@@ -196,3 +196,17 @@ async def test_rejected_fill_restores(
     after_copper, after_digest, _ = await state(fill_rig, "rj-3")
     assert after_copper == copper
     assert after_digest == digest
+
+
+@TIMEOUT
+async def test_unlocked_ground_copper_survives(fill_rig: PlacedSynth) -> None:
+    """Unlocked ground copper from before the call (e.g. hand-routed) keeps its KIID, its
+    geometry and its unlocked state through a fill (locked for the round trip only)."""
+    await unroute(fill_rig, "ug-0")
+    kiid = await add_unlocked_track(fill_rig, "ug-1", net="GND")
+    before = {t.kiid: t for t in (await model_of(fill_rig, "ug-2")).tracks}[kiid]
+    out = await fill_ok(fill_rig, "ug-3")
+    assert out["ground_protected"] >= 1
+    after = {t.kiid: t for t in (await model_of(fill_rig, "ug-4")).tracks}.get(kiid)
+    assert after == before
+    await remove_items(fill_rig, [kiid])
