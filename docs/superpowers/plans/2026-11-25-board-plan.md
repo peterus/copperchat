@@ -694,7 +694,7 @@ async def route_connections(sctx: BoardStageContext, plans: Sequence[ConnPlan], 
 #   exactly); one more such round for what stayed blocked. Never touches copper the call did not create.
 #   RouteOutcome(routed: tuple[str, ...], failed: tuple[tuple[str, str], ...], results: tuple[ConnResult, ...] = (),
 #                drc: DrcResult | None = None); connection key "{net}:{refA}.{padA}-{refB}.{padB}" (pads in natural order,
-#                = chamfer's keys); ConnResult(key, net, a, b, status, reason, length_mm, vias, kiids, coupling, seconds)
+#                = chamfer's keys; a repeated key — duplicate pad numbers — gets "#2", "#3" in the outcome); ConnResult(key, net, a, b, status, reason, length_mm, vias, kiids, coupling, seconds)
 #   failure reasons: no_path, too_large, timeout, drc_rejected: <text> (a DRC rejection of an earlier margin stays the
 #   reason when later margins find no path)
 #   ConnPlan(net, a, b, req, pair): a matched pair connection = two ADJACENT plans (P, then N) with pair set

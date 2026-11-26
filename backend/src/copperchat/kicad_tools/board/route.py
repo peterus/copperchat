@@ -607,10 +607,12 @@ class _Loop:
     model: BoardModel
     lock: bool
     deadline: float | None
-    results: dict[str, ConnResult] = field(default_factory=dict)  # key -> result
+    # by plan, not by key: duplicate pad numbers (a SOT-223 tab, shield pads) give two
+    # connections of one net the same key
+    results: dict[ConnPlan, ConnResult] = field(default_factory=dict)
     kept: list[_Kept] = field(default_factory=list)
     drc: DrcResult | None = None
-    started: dict[str, float] = field(default_factory=dict)  # key -> seconds spent
+    started: dict[ConnPlan, float] = field(default_factory=dict)  # seconds spent solving
 
 
 def _key(p: ConnPlan) -> str:
@@ -619,9 +621,9 @@ def _key(p: ConnPlan) -> str:
 
 def _fail(st: _Loop, group: Sequence[ConnPlan], reason: str) -> None:
     for p in group:
-        st.results[_key(p)] = ConnResult(
+        st.results[p] = ConnResult(
             _key(p), p.net, _pad_name(p.a), _pad_name(p.b), "failed", reason, 0.0, 0, (),
-            seconds=round(st.started.get(_key(p), 0.0), 2),
+            seconds=round(st.started.get(p, 0.0), 2),
         )  # fmt: skip
 
 
@@ -630,9 +632,9 @@ def _record(st: _Loop, kept: _Kept) -> None:
     it = iter(kept.kiids)
     for p, path in zip(kept.group, kept.paths, strict=True):
         own = tuple(next(it) for _ in range(len(path.segments) + len(path.vias)))
-        st.results[_key(p)] = ConnResult(
+        st.results[p] = ConnResult(
             _key(p), p.net, _pad_name(p.a), _pad_name(p.b), "routed", None, path.length,
-            len(path.vias), own, coupling, round(st.started.get(_key(p), 0.0), 2),
+            len(path.vias), own, coupling, round(st.started.get(p, 0.0), 2),
         )  # fmt: skip
 
 
@@ -695,7 +697,7 @@ async def _attempt(sctx: BoardStageContext, st: _Loop, group: Sequence[ConnPlan]
             return "timeout"
         finally:
             for p in group:
-                st.started[_key(p)] = st.started.get(_key(p), 0.0) + time.monotonic() - t0
+                st.started[p] = st.started.get(p, 0.0) + time.monotonic() - t0
         if paths is None:
             continue  # a DRC rejection of an earlier margin stays the reason
         got = await _place(sctx, st, group, paths)
@@ -735,7 +737,7 @@ async def _unkeep(sctx: BoardStageContext, st: _Loop, kept: _Kept) -> None:
     )
     st.kept.remove(kept)
     for p in kept.group:
-        st.results.pop(_key(p), None)
+        st.results.pop(p, None)
 
 
 def _blockers(st: _Loop, group: Sequence[ConnPlan]) -> list[_Kept]:
@@ -851,18 +853,24 @@ async def route_connections(
         failed = [
             p
             for p in group
-            if st.results[_key(p)].status == "failed"
-            and st.results[_key(p)].reason not in ("timeout", "too_large")
+            if st.results[p].status == "failed"
+            and st.results[p].reason not in ("timeout", "too_large")
         ]
         for p in failed:  # one by one: a failed pair was already routed net by net
             if _timed_out(st):
                 _fail(st, [p], "timeout")
                 continue
-            reason = st.results[_key(p)].reason or "no_path"
+            reason = st.results[p].reason or "no_path"
             if not await _rip_and_retry(sctx, st, [p]):
                 _fail(st, [p], reason if not _timed_out(st) else "timeout")
-    order = {_key(p): i for i, p in enumerate(plans)}
-    results = sorted(st.results.values(), key=lambda r: order.get(r.key, len(order)))
+    order = {p: i for i, p in enumerate(plans)}
+    results: list[ConnResult] = []
+    seen: dict[str, int] = {}
+    for _, r in sorted(st.results.items(), key=lambda pr: order.get(pr[0], len(order))):
+        seen[r.key] = seen.get(r.key, 0) + 1
+        if seen[r.key] > 1:  # the same pad names twice: "<key>#2", "<key>#3", ...
+            r = dataclasses.replace(r, key=f"{r.key}#{seen[r.key]}")
+        results.append(r)
     return RouteOutcome(
         routed=tuple(r.key for r in results if r.status == "routed"),
         failed=tuple((r.key, r.reason or "") for r in results if r.status == "failed"),

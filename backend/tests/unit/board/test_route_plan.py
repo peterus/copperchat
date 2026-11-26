@@ -856,3 +856,27 @@ async def test_no_drc_when_push_used_up_the_time(
     )
     assert out.failed == (("N1:R1.1-R2.1", "timeout"),)
     assert board.items == {} and sctx.drc_timeouts == [] and sctx.created == set()
+
+
+async def test_duplicate_pad_numbers_kept_apart(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two connections with the same pad names (a part's pad "2" twice, e.g. a SOT-223
+    tab): both are routed and reported, the second key gets "#2"."""
+    from .builders import part
+
+    u5 = part(
+        "U5",
+        10.0,
+        15.0,
+        pads=(pad("U5", "2", "N1", (10.0, 10.0)), pad("U5", "2", "N1", (10.0, 20.0))),
+    )
+    r1 = part("R1", 12.0, 15.0, pads=(pad("R1", "1", "N1", (12.0, 15.0)),))
+    m = circuit(u5, r1)
+    plans = _plan(m, ["N1"])
+    assert len(plans) == 2 and len({route.conn_key(p.net, p.a, p.b) for p in plans}) == 1
+    monkeypatch.setattr(route, "run_cpu", FakeCpu())
+    out = await route.route_connections(FakeSctx(m), plans, lock=True)  # type: ignore[arg-type]
+    assert out.routed == ("N1:R1.1-U5.2", "N1:R1.1-U5.2#2")
+    assert len(out.results) == 2 and len({k for r in out.results for k in r.kiids}) == 2
+    assert set(board.items) == {k for r in out.results for k in r.kiids}
