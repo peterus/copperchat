@@ -24,6 +24,7 @@ All notable changes to CopperChat are documented in this file. The format follow
   `kicad-base.yml` on `main` must have published this recipe before a release is cut.
 - Board placement tools (`pcb_define_blocks`, `pcb_place_block`, `pcb_move`,
   `pcb_legalize`) — behind COPPERCHAT_BOARD_TOOLS.
+- Own octilinear router (`pcb_route`, `pcb_unroute`) — behind COPPERCHAT_BOARD_TOOLS.
 
 ## [0.12.0] - 2026-11-22
 

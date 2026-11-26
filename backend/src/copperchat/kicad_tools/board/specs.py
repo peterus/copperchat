@@ -112,3 +112,8 @@ TOOL_SPECS += CHECK_SPECS
 from copperchat.kicad_tools.board.specs_place import PLACE_SPECS  # noqa: E402
 
 TOOL_SPECS += PLACE_SPECS
+
+# P5b: own router (pcb_route, pcb_unroute)
+from copperchat.kicad_tools.board.specs_route import ROUTE_SPECS  # noqa: E402
+
+TOOL_SPECS += ROUTE_SPECS
