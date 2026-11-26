@@ -139,3 +139,22 @@ def test_stopped_call_runs_no_final_drc(monkeypatch: pytest.MonkeyPatch) -> None
     assert sctx.log == []
     assert rep["via_pour"] == 0
     assert {u["reason"] for u in rep["unconnected"]} == {"timeout"}  # never tried
+
+
+def test_pick_skips_candidates_too_close_to_taken_vias() -> None:
+    """`_pick` (bucketed): a candidate closer than max(via + clearance, drill + hole rule)
+    = 0.8 mm to a via kept or picked earlier is skipped - also across a bucket border."""
+    from copperchat.kicad_tools.board.fanout import _pick
+
+    def cand(key: str, at: tuple[float, float]) -> ViaCandidate:
+        return ViaCandidate(at, ((0, 0), at), ("U1", key), 0)
+
+    kept = _PadState(A, ("U1", "1"), "F.Cu", (cand("1", (0.79, 0.0)),))
+    kept.status, kept.at = "fanned", (0.79, 0.0)  # on the far side of a 0.8 mm cell border
+    near = _PadState(B, ("U1", "2"), "F.Cu", (cand("2", (1.2, 0.0)), cand("2", (2.0, 0.0))))
+    alone = _PadState(B, ("U1", "3"), "F.Cu", (cand("3", (1.21, 0.5)),))
+    st = _Fanout("GND", (0.6, 0.3), 0.2, 0.2, 0.25, [kept, near, alone], 0)
+    picked = _pick(st)
+    assert near.at == (2.0, 0.0) and near.next == 1  # 0.41 mm from the kept via: skipped
+    assert alone.status == "exhausted"  # 0.65 mm from the kept via (0.94 from near's)
+    assert picked == [near]
