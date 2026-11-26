@@ -157,3 +157,15 @@ def test_deterministic() -> None:
     assert plan_refs(m, height=H, line=LINE) == plan_refs(m, height=H, line=LINE)
     order = [p.ref for p in plan_refs(m, height=H, line=LINE)[0]]
     assert order == sorted(order, key=lambda r: int(r[1:]))
+
+
+def test_replan_ignores_refs_hidden_in_stage_1() -> None:
+    """`pcb_tidy_silk`'s re-plan model: a reference hidden in stage 1 is no obstacle."""
+    from copperchat.kicad_tools.board.silk import _Silk, _with_refs
+
+    m = board(parts=(_two_pad("R1", 30, 30), _two_pad("R2", 50, 30)))
+    st = _Silk(H, LINE, (), (), {}, {})
+    st.hidden["R2"] = "no free spot"
+    out = _with_refs(m, st)
+    assert not next(t for t in out.part("R2").texts if t.kind == "reference").visible
+    assert next(t for t in out.part("R1").texts if t.kind == "reference").visible

@@ -157,9 +157,16 @@ class _Silk:
 
 
 def _with_refs(model: BoardModel, st: _Silk) -> BoardModel:
-    """`model` with the references at their stage-1 placements (re-planning obstacles)."""
+    """`model` with the references at their stage-1 placements and the hidden ones
+    invisible (the re-planning obstacles)."""
 
     def moved(p: Part) -> Part:
+        if p.ref in st.hidden:  # hidden in stage 1: no obstacle any more
+            texts = tuple(
+                dataclasses.replace(t, visible=False) if t.kind == "reference" else t
+                for t in p.texts
+            )
+            return dataclasses.replace(p, texts=texts)
         pl = st.current.get(p.ref)
         if pl is None:
             return p
