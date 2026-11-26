@@ -822,3 +822,37 @@ async def test_no_push_after_deadline(
     )
     assert out.failed == (("N1:R1.1-R2.1", "timeout"),)
     assert board.items == {} and sctx.drc_timeouts == [] and sctx.ctx.session.commits == []
+
+
+async def test_second_round_retries_pair_nets_alone(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pair whose nets also failed alone is retried in the second round net by net
+    (never as the coupled pair again)."""
+    m = _pair_board()
+    plans = route.plan_connections(m, _pair_cls(m), ["DP", "DN"], layers=None, allow_vias=True)
+    cpu = FakeCpu(lambda fn, args, kw, t: None)
+    monkeypatch.setattr(route, "run_cpu", cpu)
+    out = await route.route_connections(FakeSctx(m), plans, lock=True)  # type: ignore[arg-type]
+    assert dict(out.failed) == {"DP:J1.1-U1.1": "no_path", "DN:J1.2-U1.2": "no_path"}
+    assert [c["fn"] for c in cpu.calls] == [route.solve_pair] * 3 + [route.solve] * 6
+
+
+async def test_no_drc_when_push_used_up_the_time(
+    board: Board, clock: FakeClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deadline = clock.now + 5.0
+    real_create = board.create
+
+    def slow_create(h: Any, items: Any, lock: bool) -> list[str]:
+        clock.now = deadline + 1  # the commit ends after the deadline
+        return real_create(h, items, lock)
+
+    monkeypatch.setattr(route, "_create", slow_create)
+    monkeypatch.setattr(route, "run_cpu", FakeCpu())
+    sctx = FakeSctx(_three())
+    out = await route.route_connections(  # type: ignore[arg-type]
+        sctx, _plans3()[:1], lock=True, deadline=deadline
+    )
+    assert out.failed == (("N1:R1.1-R2.1", "timeout"),)
+    assert board.items == {} and sctx.drc_timeouts == [] and sctx.created == set()

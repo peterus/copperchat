@@ -652,7 +652,10 @@ async def _place(
     items = [(p.req, path) for p, path in zip(group, paths, strict=True)]
     made = await _push(sctx, items, st.lock)
     remaining = _remaining(st.deadline)
-    drc_s = DRC_TIMEOUT_S if remaining is None else max(0.0, min(DRC_TIMEOUT_S, remaining))
+    drc_s = DRC_TIMEOUT_S if remaining is None else min(DRC_TIMEOUT_S, remaining)
+    if drc_s <= 0:  # the push used up the time: unverified copper never stays
+        await _drop(sctx, made)
+        return "timeout"
     try:
         drc = await sctx.drc(timeout_s=drc_s)
     except DrcTimeout:
@@ -851,11 +854,13 @@ async def route_connections(
             if st.results[_key(p)].status == "failed"
             and st.results[_key(p)].reason not in ("timeout", "too_large")
         ]
-        if not failed:
-            continue
-        reason = st.results[_key(failed[0])].reason or "no_path"
-        if not await _rip_and_retry(sctx, st, failed):
-            _fail(st, failed, reason if not _timed_out(st) else "timeout")
+        for p in failed:  # one by one: a failed pair was already routed net by net
+            if _timed_out(st):
+                _fail(st, [p], "timeout")
+                continue
+            reason = st.results[_key(p)].reason or "no_path"
+            if not await _rip_and_retry(sctx, st, [p]):
+                _fail(st, [p], reason if not _timed_out(st) else "timeout")
     order = {_key(p): i for i, p in enumerate(plans)}
     results = sorted(st.results.values(), key=lambda r: order.get(r.key, len(order)))
     return RouteOutcome(
