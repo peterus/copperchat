@@ -17,6 +17,14 @@ from copperchat.kicad_tools.board.fanout import (
     prepare_fanout,
 )
 from copperchat.kicad_tools.board.specs_setup import NAME_PATTERN
+from copperchat.kicad_tools.board.stitch import (
+    MAX_PITCH_MM,
+    MAX_STITCH_VIAS,
+    MIN_PITCH_MM,
+    STITCH_DEADLINE_S,
+    apply_stitch,
+    prepare_stitch,
+)
 from copperchat.kicad_tools.board.zones import (
     ACTIONS,
     MAX_CLEARANCE_MM,
@@ -178,9 +186,38 @@ PCB_FANOUT_DESCRIPTION = (
     "m11, next. Cost 2 (0 when no pad needs a via)."
 )
 
+PCB_STITCH_SCHEMA = _obj(
+    {
+        "net": _NET | {"description": "The plane net, e.g. 'GND'."},
+        "pitch": _num(MIN_PITCH_MM, MAX_PITCH_MM, "Grid pitch (mm, default 5).", lo_open=False),
+        "edge_ring": {
+            "type": "boolean",
+            "description": "Also a ring of vias along the board edge (default false).",
+        },
+        "via": _VIA,
+    },
+    ["net"],
+)
+
+PCB_STITCH_DESCRIPTION = (
+    "Stitching vias of a plane net (e.g. GND after pcb_zones and pcb_fanout): a grid at "
+    "`pitch` (default 5 mm), optionally an edge ring, only where zones of the net on two "
+    "layers connect them, clear of pads, courtyards and other copper; all locked. KiCad's "
+    "DRC legalises them (rejected and dangling vias removed). More than "
+    f"{MAX_STITCH_VIAS} vias → invalid_argument (details.candidates; use a larger pitch). "
+    "Needs the approved placement. Unknown net → not_found. Stops after "
+    f"{STITCH_DEADLINE_S:g} s (unchecked vias removed, rejected_timeout). Returns "
+    "candidates, kept, rejected_drc, removed_dangling, rejected_timeout, edge_ring, "
+    "edge_ring_kept, drc_seconds, seconds, m11, next. Cost 2 (0 when there is nothing to "
+    "place, with a note)."
+)
+
 COPPER_SPECS: list[ToolSpec] = [
     edit_spec("pcb_zones", PCB_ZONES_DESCRIPTION, PCB_ZONES_SCHEMA, prepare_zones, apply_zones),
     edit_spec(
         "pcb_fanout", PCB_FANOUT_DESCRIPTION, PCB_FANOUT_SCHEMA, prepare_fanout, apply_fanout
+    ),
+    edit_spec(
+        "pcb_stitch", PCB_STITCH_DESCRIPTION, PCB_STITCH_SCHEMA, prepare_stitch, apply_stitch
     ),
 ]

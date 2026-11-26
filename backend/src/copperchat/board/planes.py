@@ -32,6 +32,7 @@ __all__ = [
     "ZoneSpec",
     "default_planes",
     "edge_clearance",
+    "edge_ring_points",
     "fanout_candidates",
     "fanout_pads",
     "hole_to_hole",
@@ -568,6 +569,12 @@ def _ring_points(model: BoardModel, inset: float, pitch: float) -> list[Point]:
     return out
 
 
+def edge_ring_points(model: BoardModel, *, via: tuple[float, float], pitch: float) -> list[Point]:
+    """The raw edge-ring positions `stitch_candidates` uses (before any filter): every
+    `pitch` mm along the outline inset by copper-to-edge + via radius + 0.5 mm."""
+    return _ring_points(model, edge_clearance(model) + via[0] / 2 + RING_INSET_MM, pitch)
+
+
 def _covered(model: BoardModel, net: str, at: Point) -> bool:
     """At least two zones of `net` on different copper layers cover `at` (zone
     outlines, not fills: a via elsewhere would dangle)."""
@@ -620,10 +627,8 @@ def stitch_candidates(
             courts.add(i, min(xs) - r, min(ys) - r, max(xs) + r, max(ys) + r)
     raw: list[tuple[Point, float]] = []
     if edge_ring:
-        raw += [
-            (pt, edge + r + RING_INSET_MM - 1e-6)
-            for pt in _ring_points(model, edge + r + RING_INSET_MM, pitch)
-        ]
+        inset = edge + r + RING_INSET_MM - 1e-6
+        raw += [(pt, inset) for pt in edge_ring_points(model, via=via, pitch=pitch)]
     if o.kind == "rect":
         x0, y0, w, h = o.x, o.y, o.w, o.h
     else:
