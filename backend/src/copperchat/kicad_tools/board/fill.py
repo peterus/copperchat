@@ -147,6 +147,7 @@ FILL_FIXED_S = int(
 FILL_WORST_CASE_S = TIMEOUT_MAX_S + FILL_FIXED_S  # 1005 s
 RIP_RATIO_MAX = 0.20  # spec §10.4
 STALE_SCRATCH_S = 3600.0  # a fill-* dir older than this was left by a killed process
+OUTER_LAYERS = frozenset({"F.Cu", "B.Cu"})
 PLANE_COVER_MIN = 0.80  # a ground zone covering this share of the outline is a plane
 CELL_MM = 10.0  # worst-area cells of a rejected fill
 MAX_WORST_AREAS = 5
@@ -195,8 +196,8 @@ def _outline_area(model: BoardModel) -> float:
 
 
 def _plane_coverage(model: BoardModel, nets: frozenset[str] | None) -> dict[str, set[str]]:
-    """net -> copper layers on which the net's copper zones (summed per layer, so a split
-    plane counts as one) cover at least PLANE_COVER_MIN of the outline. `nets` None: any
+    """net -> inner copper layers on which the net's copper zones (summed per layer, so a
+    split plane counts as one) cover at least PLANE_COVER_MIN of the outline. `nets` None: any
     net; else only those."""
     board = _outline_area(model)
     if board <= 0:
@@ -207,7 +208,10 @@ def _plane_coverage(model: BoardModel, nets: frozenset[str] | None) -> dict[str,
             continue
         a = _area(z.outline)
         for layer in z.layers:
-            if layer in model.copper_layers:
+            # planes are inner layers (spec §11): an outer pour (P7's default stack pours GND
+            # on F.Cu and B.Cu too) is never a plane layer - else the fill would lose its
+            # routing layers (on 2 layers: all of them)
+            if layer in model.copper_layers and layer not in OUTER_LAYERS:
                 area[(z.net, layer)] += a
     out: dict[str, set[str]] = defaultdict(set)
     for (net, layer), a in area.items():
@@ -1132,7 +1136,7 @@ class FillChangeSet(BoardChangeSet):
 
 def _check_plane_layers(model: BoardModel, layers: Sequence[str]) -> None:
     _check_layers(model, layers)
-    outer = {"F.Cu", "B.Cu"} & set(layers)
+    outer = OUTER_LAYERS & set(layers)
     if outer:
         raise _invalid(
             f"{', '.join(sorted(outer))} cannot be a plane layer of the fill",

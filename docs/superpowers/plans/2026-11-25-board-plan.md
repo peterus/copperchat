@@ -776,7 +776,8 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
   exactly one line `(autoroute_settings (layer_rule In1.Cu (active off)))` before the structure's `boundary`;
   nothing else changes (`test_dsn_layer_rewrite`, `test_probe_plane_layer_mechanism`: 0 wires on In1.Cu).
   **Plane nets** (review rounds 4/5 + verify) = ground nets + nets whose copper zones cover ≥ 80 % of the
-  outline on one layer (summed per net and layer, so a split plane counts; a small local pour does not):
+  outline on one **inner** layer (summed per net and layer, so a split plane counts; a small local pour and
+  outer pours - P7's default stack pours GND on F.Cu/B.Cu too - do not):
   their connections are not open for the fill and Freerouting's copper on them is deleted. **Plane layers**
   default = every layer of such a plane (ground or supply), plus the owner-D1 default (4 L `In1.Cu`, 6 L
   `In1.Cu` + `In4.Cu`, 2 L none) while no ground plane exists yet; outer layers refused as plane layers.

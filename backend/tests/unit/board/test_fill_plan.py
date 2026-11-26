@@ -254,3 +254,18 @@ def test_plane_coverage_summed_per_net_and_layer() -> None:
     )
     m = board(copper_layers=FOUR, outline=outline(0, 0, 100, 80), zones=zones)
     assert default_plane_layers(m, frozenset({"GND"})) == ("In2.Cu",)
+
+
+def test_outer_pours_are_never_plane_layers() -> None:
+    """P7's default stack pours GND on F.Cu and B.Cu over the whole outline too: outer
+    layers never become plane layers (2 layers: none; 4 layers: In1.Cu)."""
+    full = ((0.0, 0.0), (100.0, 0.0), (100.0, 80.0), (0.0, 80.0))
+    outer = tuple(zone(net="GND", layers=(n,), poly=full, kiid=f"z-{n}") for n in ("F.Cu", "B.Cu"))
+    m2 = board(outline=outline(0, 0, 100, 80), zones=outer)
+    assert default_plane_layers(m2, frozenset({"GND"})) == ()
+    stack = (*outer, zone(net="GND", layers=("In1.Cu",), poly=full, kiid="z-in1"))
+    m4 = board(copper_layers=FOUR, outline=outline(0, 0, 100, 80), zones=stack)
+    assert default_plane_layers(m4, frozenset({"GND"})) == ("In1.Cu",)
+    # only outer pours: no ground plane yet -> the D1 default
+    m4o = board(copper_layers=FOUR, outline=outline(0, 0, 100, 80), zones=outer)
+    assert default_plane_layers(m4o, frozenset({"GND"})) == ("In1.Cu",)

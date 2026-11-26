@@ -56,8 +56,9 @@ PCB_ROUTE_FILL_SCHEMA: dict[str, Any] = {
             "maxItems": MAX_PLANE_LAYERS,
             "items": {"type": "string", "minLength": 1, "maxLength": 64},
             "description": "Inner copper layers the fill must keep free for the planes "
-            "(default: the layers of ground zones covering the board, else In1.Cu on 4 "
-            "layers, In1.Cu + In4.Cu on 6, none on 2).",
+            "(default: the inner layers where ground or supply zones cover the board, plus "
+            "In1.Cu on 4 layers / In1.Cu + In4.Cu on 6 while no ground plane exists; none "
+            "on 2).",
         },
     },
     "required": [],
