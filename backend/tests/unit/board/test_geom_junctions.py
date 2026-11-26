@@ -26,6 +26,9 @@ from tests.unit.board.builders import board, part, track, via
         ((0, 180, 89.6), "t"),
         ((-90, 90, 0), "t"),
         ((0, 180, -45), "y"),
+        ((45, 225, 135), "t"),  # a T rotated by 45°
+        ((45, 225, 135, 315), "x"),
+        ((45, 225, 90), "y"),
     ],
 )
 def test_junction_kind_table(headings: tuple[float, ...], kind: str) -> None:
@@ -69,6 +72,9 @@ def test_t_junction_not_y() -> None:
 
 
 def test_junction_kind_orientation_free() -> None:
+    # junction_kind is invariant under reversing a heading (h + 180 keeps h mod 90), so the
+    # inward/outward convention cannot change a kind; what must not depend on segment
+    # direction is analyse_tracks' node detection and reports, pinned here
     for heading in (45.0, 90.0, 135.0, -45.0):
         fwd = analyse_tracks(_branch_board(heading))
         rev = analyse_tracks(_branch_board(heading, reverse=True))

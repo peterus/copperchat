@@ -1487,6 +1487,11 @@ def _m11(c: _Ctx) -> Metric:
         for fq in fp.pads:
             if fq.drill is not None and _copper(fq):
                 own[fq.net].append(((fq.x, fq.y), math.hypot(fq.w, fq.h) / 2 + ANTIPAD_MARGIN_MM))
+    own_grid: dict[str, _Grid] = {}
+    for net, discs in own.items():
+        g = own_grid[net] = _Grid()
+        for k, (at, r) in enumerate(discs):
+            g.add(k, _bbox((at,), r))
     off: list[Offender] = []
     worst: float | None = None
     layers = list(c.m.copper_layers)
@@ -1545,8 +1550,8 @@ def _m11(c: _Ctx) -> Metric:
                 segs += [(a.net, a.start, a.mid), (a.net, a.mid, a.end)]
         seen: set[tuple[str, str]] = set()
         for net, p, q in segs:
-            box = _bbox((p, q))
-            discs = [d for d in own.get(net, ()) if _bbox_hit(_bbox((d[0],), d[1]), box)]
+            dg = own_grid.get(net)
+            discs = [own[net][k] for k in dg.query(_bbox((p, q)))] if dg is not None else []
             crossed: set[str] = set()
             for s0, s1 in _outside_discs(p, q, discs) if discs else [(p, q)]:
                 crossed |= voids.crossed(s0, s1)
@@ -1621,18 +1626,40 @@ def _necked(
     return False
 
 
+def _class_clearance(
+    classes: dict[str, NetClassInfo],
+    name: str,
+    net: str = "",
+    patterned: Sequence[NetClassInfo] = (),
+) -> float | None:
+    """The clearance of net class `name`, resolved like `_class_width`: the largest among
+    its known constituents, else the classes whose patterns match `net` plus Default."""
+    vals = [classes[n].clearance for n in (s.strip() for s in name.split(",")) if n in classes]
+    if vals:
+        return max(vals)
+    vals = [nc.clearance for nc in patterned if any(fnmatchcase(net, p) for p in nc.patterns)]
+    if (vals or name.startswith(EFFECTIVE_PREFIX)) and "Default" in classes:
+        vals.append(classes["Default"].clearance)
+    return max(vals) if vals else None
+
+
 def _m12(c: _Ctx) -> Metric:
     classes = {nc.name: nc for nc in c.m.net_classes}
     class_of = dict(c.m.net_class_of)
     need: dict[str, float | None] = {}
     off: list[Offender] = []
-    items: list[tuple[str, str, float, tuple[Point, ...]]] = [
-        (t.net, t.layer, t.width, (t.start, t.end)) for t in c.m.tracks
+    # (net, layer, width, offender anchor pair, points that must lie in an escape zone)
+    items: list[tuple[str, str, float, tuple[Point, Point], tuple[Point, ...]]] = [
+        (t.net, t.layer, t.width, (t.start, t.end), (t.start, t.end)) for t in c.m.tracks
     ]
-    items += [(a.net, a.layer, a.width, (a.start, a.mid, a.end)) for a in c.m.arcs]
+    # an arc as points along it: its bulge may leave an escape zone its ends lie in
+    items += [
+        (a.net, a.layer, a.width, (a.start, a.mid), tuple(_arc_points(a.start, a.mid, a.end)))
+        for a in c.m.arcs
+    ]
     patterned = [nc for nc in c.m.net_classes if nc.patterns]
     min_track = (c.preset or PRESETS["jlcpcb-4l"]).min_track
-    for net, layer, width, pts in items:
+    for net, layer, width, (p, q), pts in items:
         name = class_of.get(net, "Default")
         key = net if name.startswith(EFFECTIVE_PREFIX) or patterned else name
         if key not in need:
@@ -1642,7 +1669,6 @@ def _m12(c: _Ctx) -> Metric:
             continue
         if _necked(c, net, layer, width, tw, pts, min_track):
             continue
-        p, q = pts[0], pts[1]
         mid = ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2)
         what = f"track_width {net}: {width:g} < {tw:g} ({name})"
         off.append(Offender(what, (), (net,), mid, _r(tw - width)))
@@ -2197,10 +2223,7 @@ def _m16(c: _Ctx) -> Metric:
             continue
         name = class_of.get(net, "Default")
         class_w = _class_width(classes, name, net, patterned) or min_track
-        clear = next(
-            (classes[n].clearance for n in (x.strip() for x in name.split(",")) if n in classes),
-            default_clear,
-        )
+        clear = _class_clearance(classes, name, net, patterned) or default_clear
         for a, b in _mst(pads):
             w = min(neck_width(a, class_w, min_track), neck_width(b, class_w, min_track))
             if not routed:

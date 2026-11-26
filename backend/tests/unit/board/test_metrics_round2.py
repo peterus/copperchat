@@ -87,6 +87,15 @@ def test_m12_neck_needs_pad_on_the_track_layer() -> None:
     assert len(_m12_widths(m)) == 1
 
 
+def test_m12_neck_arc_bulging_out_of_zone_fails() -> None:
+    # ends and mid inside the zone (x >= 47.5), the bulge reaches x ~ 47.19
+    arc = ArcTrack("arc", "P1", "F.Cu", (47.6, 39.0), (47.6, 41.0), (49.6, 41.0), 0.25, False)
+    m = replace(_qfn_board(), arcs=(arc,))
+    assert len(_m12_widths(m)) == 1
+    inside = ArcTrack("arc", "P1", "F.Cu", (49.0, 39.0), (49.6, 39.6), (50.0, 40.6), 0.25, False)
+    assert _m12_widths(replace(_qfn_board(), arcs=(inside,))) == []
+
+
 def test_m12_many_parts_and_narrow_tracks_fast() -> None:
     import time
 
@@ -422,6 +431,22 @@ def test_m16_corridor_blocked_by_foreign_pad_not_dogleg() -> None:
     )
     m16 = _m16(_pair(0.5, tracks=(*_STAGE, *dog), zones=(ko,)))
     assert "dogleg" not in _whats(m16)
+
+
+def test_m16_corridor_clearance_from_pattern_class() -> None:
+    # a foreign pad 0.8 mm beside the corridor: free with the Default clearance 0.2
+    # (reach 0.1 + 0.2), blocked by the pattern-assigned class clearance 0.8 (reach 0.9)
+    x1 = part("X1", 32.5, 31.0, pads=(pad("X1", "1", "X", (32.5, 31.0), w=0.4, h=0.4),))
+    dog = route("N1", [(31, 30), (32, 30), (32.5, 30.5), (34, 30.5)])
+    base = _pair(0.0, x1, tracks=(*_STAGE, *dog))
+    assert "dogleg" in _whats(_m16(base))
+    wide = net_class("Wide", 0.2, clearance=0.8, patterns=("N*",))
+    m = replace(
+        base,
+        net_classes=(net_class(), wide),
+        net_class_of=(("N1", "Effective for net: N1"),),
+    )
+    assert "dogleg" not in _whats(_m16(m))
 
 
 def _far_pad(ref: str, net: str, at: Point) -> Part:

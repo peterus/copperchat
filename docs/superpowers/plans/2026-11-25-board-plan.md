@@ -973,8 +973,10 @@ someone touches `freerouting.py` again.
   `junction_kind`; corridor-first should call `straight_corridor(..., copper_layers=…)`. R4 —
   switch `M15_HARD` / `M16_HARD` (and `_recorded_only()` then pins M15/M16 automatically);
   `chamfer._REASON` still rips `t_junctions`. R2 — `alignable` counts are the placer's target.
-  Timing: M16 adds one Dijkstra per MST connection of every non-ground net; the 2 400-net
-  timing test stays inside its budget.
+  Timing: M16 adds one Dijkstra per MST connection of every non-ground net (memoised with
+  M5/M6's); the 2 400-net timing test stays inside its budget. A single supply net with
+  1 000–2 000 pads costs ≈ 1.3–3.2 s (O(P²) MST + per-pair search; review round 2) — fine
+  for real boards (ODH: 76 parts), revisit (one search per source pad) if a board needs it.
 
 ### As built (P9a)
 
