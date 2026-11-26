@@ -752,6 +752,58 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
 
 (Each phase adds its section here in its own PR.)
 
+### As built (R5)
+
+**Presets (owner decision 2, spec §22.2):** `min_drill` = 0.2 mm in `jlcpcb-2l/4l/6l`
+(`min_via_drill` stays 0.3 mm, plan call 5). `pcb_set_rules` maps it to KiCad's
+`min_through_drill` unchanged, so KiCad's own DRC also allows 0.2 mm via holes - the agent's vias
+still use 0.3 mm and M14 `via_drill` still checks `min_via_drill`. Tests that pinned 0.3 moved
+(`test_metrics_rules` `pth` case now a 0.15 mm hole, `test_preset_maps_every_rule`).
+
+**BOM/CPL (spec §22.6, P8 residual):** `cc/board/fab.py` `fab_excluded(model, cls, only=None)`
+- **deviation from B-C9:** a third argument `only: "bom" | "cpl" | None`, because the two
+attributes act per file: `"bom"` = mounting holes ∪ exclude-from-BOM, `"cpl"` = mounting holes ∪
+exclude-from-position-files, `None` = the union (what the report lists). `bom_rows(csv,
+exclude=)` drops excluded designators from grouped rows (a row left empty disappears),
+`cpl_rows(csv, exclude=)` drops rows; `small_holes(model)` (plated pad drills and via drills
+< `SMALL_HOLE_MM` = 0.3, one row per ref with its smallest drill, sorted by drill then ref);
+`fab_report(..., excluded=)` adds "Excluded from BOM/CPL" and "Small holes (possible JLC
+surcharge)" only when non-empty. `pcb_fab_export` classifies once (`classify(model, doc)` in a
+thread, inside the staging `try`) and passes the result to the CSV writer and the report.
+**`Part` gained `exclude_from_bom` / `exclude_from_pos`** (default `False`, not hashed - an
+attribute edit is no layout change), filled in `read.py` from `fp.attributes`
+(`test_read_exclude_attributes`). P8's `test_file_set` expectation changed: `sp4_synth`'s
+schematic holes (H1, H2, no exclude attribute) are now absent from the CPL and BOM.
+
+**Render extent (spec §22.6):** `cc/board/render.py` `default_extent(model, markers=())` =
+outline bbox + every courtyard (a part without a courtyard counts with its origin - not in the
+contract, so such a part is never cut off) + markers; `None` when all are empty; a side below
+`MIN_EXTENT_MM` = 1.0 is grown around its centre (a lone marker gives no zero-size view).
+`cc/views/board_render.py` `view_extent(model, region, markers)` (region wins) feeds `_Overlay.region`
+for every 2D view; 3D unchanged. `test_render_extent_ignores_far_drawing` adds a board text
+150 mm right of the outline through a `BoardChangeSet` on `synth_placed` (one more api-server
+for `test_render.py`'s shard) and checks the wrapper's viewBox; it fails with the old code.
+
+**Probe (ODH copy, sync + 80 × 100 outline + `_place` with P9a's answers):** KiCad's board area
+is `6.96 0.52 179.52 200.48` on every layer set. The item is **J402**,
+`Connector_Card:microSD_HC_Hirose_DM3AT-SF-PEJM5` from KiCad's library: its 5 F.Cu keepout
+rule areas lie ≈ 130 mm from the footprint origin (library defect: zone coordinates not
+footprint-relative), so its KiCad bounding box (and our `Part.rule_areas`) reaches
+(6.96, 0.52)-(19.7, 13) mm. Nothing in `BoardModel` outside the rule areas lies outside the
+outline after placement (KiCad's text bboxes of H1-H4, F.Fab values included, reach 6.5 mm past it; a
+view without them may clip such text at the 3 % padding). With R5 the
+default view is the outline (`Rect(100, 100, 80, 100)`).
+
+**Golden:** `sp4_synth_metrics.json` unchanged (`kicad_e2e` 4 passed; no 0.2-0.3 mm holes, the
+render extent is not in the golden).
+
+**Residuals for later phases (R7 / P9b):**
+- J402's misplaced library keepouts also make `classify` mark it `module_with_antenna`
+  (`_pre_class` checks `rule_areas` before the connector rule) and add keepout obstacles at
+  (7-20, 0.5-13) mm, outside the board. Fix-forward candidate for R7 (e.g. ignore a part's rule
+  areas that do not intersect its courtyard's bbox, or report them as a footprint defect).
+- CPL rotation offsets for JLC assembly stay open (P8 residual, `ASSEMBLY_NOTE`).
+
 ### As built (P9a)
 
 **End-to-end golden on `sp4_synth`** (`backend/tests/kicad_e2e/`, marker `kicad_e2e`, CI job `kicad-e2e`)
