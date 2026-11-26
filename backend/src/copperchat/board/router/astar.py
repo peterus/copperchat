@@ -119,6 +119,117 @@ def pad_exits_ok(path: RoutePath, req: RouteRequest) -> bool:
     return (first is None or first in pad_dirs(req.a)) and (last is None or last in pad_dirs(req.b))
 
 
+JUNCTION_TOL = 1e-4  # mm: a path point this close to own-net copper touches it
+_RIGHT_TOL_DEG = 0.5  # M4's angle tolerance (geom.ANGLE_TOL_DEG)
+
+
+def _seg_dist(p: Point, a: Point, b: Point) -> float:
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    n = dx * dx + dy * dy
+    t = 0.0 if n == 0 else max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / n))
+    return math.dist(p, (a[0] + t * dx, a[1] + t * dy))
+
+
+def _cross_point(a: Point, b: Point, c: Point, d: Point) -> Point | None:
+    """The proper crossing point of segments ab and cd (None when parallel or apart)."""
+    rx, ry = b[0] - a[0], b[1] - a[1]
+    sx, sy = d[0] - c[0], d[1] - c[1]
+    den = rx * sy - ry * sx
+    if abs(den) < 1e-12:
+        return None
+    t = ((c[0] - a[0]) * sy - (c[1] - a[1]) * sx) / den
+    u = ((c[0] - a[0]) * ry - (c[1] - a[1]) * rx) / den
+    if 0.0 < t < 1.0 and 0.0 < u < 1.0:
+        return (a[0] + t * rx, a[1] + t * ry)
+    return None
+
+
+def _heads(node: Point, segs: Iterable[tuple[Point, Point]]) -> list[float]:
+    """Headings (degrees) from `node` along every segment touching it."""
+    out = []
+    for a, b in segs:
+        if _seg_dist(node, a, b) > JUNCTION_TOL:
+            continue
+        for end in (a, b):
+            if math.dist(node, end) > JUNCTION_TOL:
+                out.append(math.degrees(math.atan2(end[1] - node[1], end[0] - node[0])))
+    return out
+
+
+def junctions_ok(
+    runs: Sequence[tuple[str, Sequence[Point]]],
+    own: dict[str, Sequence[tuple[Point, Point]]],
+    exempt: Callable[[Point], bool],
+) -> bool:
+    """No 90° branch between the path and EXISTING own-net copper outside `exempt`
+    (pads, vias): where a path vertex or crossing touches own-net tracks of its layer,
+    no path heading may meet an existing heading at 90° (± 0.5°) - M4's off-pad
+    T-junction (owner rule). `analyse_bends` only sees the path itself (P9a: two
+    connections of one TSSOP pin shared the exit stub and turned NW / SW just outside
+    the pad)."""
+    for layer, pts in runs:
+        segs = own.get(layer) or ()
+        if not segs:
+            continue
+        mine = list(itertools.pairwise(pts))
+        nodes = list(pts)
+        for a, b in mine:
+            for c, d in segs:
+                x = _cross_point(a, b, c, d)
+                if x is not None:
+                    nodes.append(x)
+        for node in nodes:
+            old = _heads(node, segs)
+            if not old or exempt(node):
+                continue
+            new = _heads(node, mine)
+            for h1 in new:
+                for h2 in old:
+                    diff = abs(h1 - h2) % 360.0
+                    if abs(min(diff, 360.0 - diff) - 90.0) <= _RIGHT_TOL_DEG:
+                        return False
+    return True
+
+
+def junction_masks(grid: ObstacleGrid) -> list[dict[int, int]]:
+    """Per layer: lattice node -> bitmask of the move directions (DIRS indices) that would
+    meet existing own-net copper at 90° there (M4's off-pad T-junction); nodes in own pads
+    or vias are free. The search skips such moves, so it finds a Y branch instead of
+    reaching the goal through a T prefix again and again (`junctions_ok` still checks the
+    snapped path)."""
+    out: list[dict[int, int]] = [{} for _ in grid.layers]
+    if not grid.own_segments:
+        return out
+    w, pitch = grid.w, grid.pitch
+    for li, segs in enumerate(grid.own_segments):
+        masks = out[li]
+        for a, b in segs:
+            length = math.dist(a, b)
+            if length < JUNCTION_TOL:
+                continue
+            steps = max(1, math.ceil(length / (pitch / 2)))
+            seen: set[int] = set()
+            for t in range(steps + 1):
+                x = a[0] + (b[0] - a[0]) * t / steps
+                y = a[1] + (b[1] - a[1]) * t / steps
+                i, j = grid.cell(x, y)
+                if not grid.inside(i, j) or (n := j * w + i) in seen:
+                    continue
+                seen.add(n)
+                node = grid.xy(i, j)
+                if _seg_dist(node, a, b) > JUNCTION_TOL or grid.own_exempt(node):
+                    continue
+                for end in (a, b):
+                    if math.dist(node, end) <= JUNCTION_TOL:
+                        continue
+                    ang = math.degrees(math.atan2(end[1] - node[1], end[0] - node[0]))
+                    if abs(ang / 45.0 - round(ang / 45.0)) * 45.0 > _RIGHT_TOL_DEG:
+                        continue  # not octilinear: never a lattice move
+                    h = _dir_index(node, end)
+                    masks[n] = masks.get(n, 0) | (1 << ((h + 2) & 7)) | (1 << ((h + 6) & 7))
+    return out
+
+
 def valid_path(path: RoutePath, grid: ObstacleGrid, req: RouteRequest) -> bool:
     """The path starts on a layer of pad `a` and ends on one of pad `b`; `analyse_bends` has
     no failure on any layer run (the end-bend exemption only for a bend inside its pad —
@@ -152,6 +263,14 @@ def valid_path(path: RoutePath, grid: ObstacleGrid, req: RouteRequest) -> bool:
     gap = req.via[0] + req.clearance - 1e-6
     if any(math.dist(p, q) < gap for p, q in itertools.combinations(path.vias, 2)):
         return False
+    if grid.own_segments:
+        own = dict(zip(grid.layers, grid.own_segments, strict=True))
+
+        def exempt(p: Point) -> bool:
+            return grid.own_exempt(p)
+
+        if not junctions_ok([(lay, merge_collinear(raw)) for lay, raw in runs], own, exempt):
+            return False
     return path_clear(grid, path)
 
 
@@ -525,6 +644,7 @@ def _search(
 
     sd = 3 * kk
     exit_cap = max(1, math.ceil(math.hypot(start_pad.w, start_pad.h) / pitch) + 2)
+    tj = junction_masks(grid)  # per layer: node -> directions that make a T with own copper
     hc: dict[int, float] = {}  # heuristic per node (shared by its states)
     best: dict[int, float] = {}
     parent: dict[int, int] = {}
@@ -567,16 +687,19 @@ def _search(
         lay = cells[li]
         band = cheap[li] if cheap else None
         factor = lf[li]
+        tjl = tj[li]
         if d >= 8:
             # leaving the start pad: straight along an allowed direction until outside
             # the pad outline (pad_dirs holds for the whole way out); after a via: any
             moves = start_dirs if d == _START_D else range(8)
             for nd in moves:
+                if tjl and (tjl.get(n, 0) >> nd) & 1:
+                    continue
                 m = n
                 c = 0.0
                 for _t in range(exit_cap if d == _START_D else 1):
                     m += off[nd]
-                    if lay[m] == blocked and m != goal_n:
+                    if (lay[m] == blocked and m != goal_n) or (tjl and (tjl.get(m, 0) >> nd) & 1):
                         m = -1
                         break
                     c += (
@@ -607,7 +730,9 @@ def _search(
         else:
             # straight on
             m = n + off[d]
-            if lay[m] != blocked or m == goal_n:
+            if (lay[m] != blocked or m == goal_n) and not (
+                tjl and ((tjl.get(n, 0) | tjl.get(m, 0)) >> d) & 1
+            ):
                 c = step[d] * factor
                 if band is not None and band[m]:
                     c *= PAIR_BAND_FACTOR
@@ -636,12 +761,14 @@ def _search(
             for nd, ns in (((d + 1) & 7, 1), ((d - 1) & 7, 2)):
                 if not may[d][s][k][ns]:
                     continue
+                if tjl and (tjl.get(n, 0) >> nd) & 1:
+                    continue
                 o, st = off[nd], step[nd]
                 c = TURN_COST
                 m = n
                 for t in range(1, kmin[nd] + 1):
                     m += o
-                    if lay[m] == blocked and m != goal_n:
+                    if (lay[m] == blocked and m != goal_n) or (tjl and (tjl.get(m, 0) >> nd) & 1):
                         break
                     c += st * factor * (PAIR_BAND_FACTOR if band is not None and band[m] else 1.0)
                     if t < kmin[nd] and m != goal_n:

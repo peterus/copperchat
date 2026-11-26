@@ -428,3 +428,64 @@ def test_stacked_pads_on_two_layers_use_a_via() -> None:
     path = go(rq(a, b, layers=("F.Cu", "B.Cu"), allow_vias=True))
     assert path is not None
     assert len(path.vias) == 1
+
+
+# ---- P9a: no 90° branch off existing own-net copper (owner rule, M4 t_junction) ----------
+
+
+def test_junctions_ok_rejects_ninety_branch_off_own_copper() -> None:
+    """sp4_synth: a second connection from a TSSOP pin shared the first one's exit stub
+    and turned SW where the first turned NW, 0.16 mm outside the pad: a 90° branch, which
+    M4 fails (off-pad T-junction). A Y branch (45° / 135°) and a branch inside a pad pass."""
+    from copperchat.board.router.astar import junctions_ok
+
+    stub_end = (136.7375, 120.325)
+    own = {"F.Cu": [((137.6375, 120.325), stub_end), (stub_end, (135.8875, 119.475))]}
+    in_pad = lambda p: abs(p[0] - 137.6375) <= 0.7375 and abs(p[1] - 120.325) <= 0.2  # noqa: E731
+    t = [("F.Cu", [(137.6375, 120.325), stub_end, (136.4375, 120.625), (136.4375, 121.425)])]
+    assert not junctions_ok(t, own, in_pad)
+    y = [("F.Cu", [(137.6375, 120.325), (136.4375, 120.325), (136.0375, 120.725)])]
+    assert junctions_ok(y, own, in_pad)
+    # crossing the existing NW branch at 90° in the middle of both segments
+    cross = [("F.Cu", [(136.0125, 120.2), (136.6125, 119.6)])]
+    assert not junctions_ok(cross, own, in_pad)
+    # the same crossing on another layer, or ending inside a pad, is fine
+    assert junctions_ok([("B.Cu", cross[0][1])], own, in_pad)
+    pad_branch = [("F.Cu", [(137.6375, 120.325), (137.2375, 120.725)])]
+    own_in_pad = {"F.Cu": [((137.6375, 120.325), (137.2375, 119.925))]}
+    assert junctions_ok(pad_branch, own_in_pad, in_pad)
+
+
+def test_search_branches_as_y_off_a_shared_stub() -> None:
+    """Two connections from one pin: the second may share the first one's exit stub, but
+    never branches off it at 90° (M4 off-pad T-junction) - the search finds a Y."""
+    from dataclasses import replace
+
+    from copperchat.board.geom import analyse_tracks
+    from copperchat.board.model import Track
+    from tests.unit.board.builders import part
+    from tests.unit.board.builders_circuit import circuit, pad
+
+    pin = pad("U1", "1", "P", (10.0, 10.0), w=1.4, h=0.4)
+    up = pad("C1", "1", "P", (7.4, 9.0), w=0.5, h=0.5)
+    down = pad("C2", "1", "P", (7.4, 11.0), w=0.5, h=0.5)
+    parts = (
+        part("U1", 10.0, 10.0, pads=(pin,)),
+        part("C1", 7.4, 9.0, pads=(up,)),
+        part("C2", 7.4, 11.0, pads=(down,)),
+    )
+    m = circuit(*parts)
+    req = RouteRequest("P", pin, up, 0.2, 0.2, ("F.Cu",), False, (0.6, 0.3))
+    first = route(build_grid(m, req), req)
+    assert first is not None
+    tracks = tuple(
+        Track(f"t{i}", "P", lay, a, b, 0.2, True) for i, (lay, a, b) in enumerate(first.segments)
+    )
+    m2 = replace(m, tracks=tracks)
+    req2 = RouteRequest("P", pin, down, 0.2, 0.2, ("F.Cu",), False, (0.6, 0.3))
+    second = route(build_grid(m2, req2), req2)
+    assert second is not None
+    both = tracks + tuple(
+        Track(f"u{i}", "P", lay, a, b, 0.2, True) for i, (lay, a, b) in enumerate(second.segments)
+    )
+    assert analyse_tracks(replace(m, tracks=both)).t_junctions == ()
