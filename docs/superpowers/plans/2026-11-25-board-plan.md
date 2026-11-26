@@ -689,8 +689,15 @@ def prune_model(model: BoardModel, req: RouteRequest | tuple[RouteRequest, Route
 # cc/kicad_tools/board/route.py (P5b), reused by P6b rip-and-reroute and ladder rung (c):
 async def route_connections(sctx: BoardStageContext, plans: Sequence[ConnPlan], *, lock: bool,
                             deadline: float | None = None) -> RouteOutcome   # deadline = time.monotonic() value; checked before every margin attempt; connections not started by then → failed "timeout"; each run_cpu gets timeout_s=min(30, remaining), wait_s=remaining, each DRC min(60, remaining); DrcTimeout → that connection failed "timeout" (its items removed), others kept; worst case deadline + one DRC (≤ 60 s)
-#   RouteOutcome(routed: tuple[str, ...], failed: tuple[tuple[str, str], ...]); connection key "{net}:{refA}.{padA}-{refB}.{padB}"
-#   failure reasons: no_path, too_large, timeout, drc_rejected: <text>
+#   As built (P5b): a coupled pair that fails is routed net by net; a blocked connection may take out one
+#   connection THIS call routed (≤ RIP_MAX = 6, nearest first), route, re-route the other (else put it back
+#   exactly); one more such round for what stayed blocked. Never touches copper the call did not create.
+#   RouteOutcome(routed: tuple[str, ...], failed: tuple[tuple[str, str], ...], results: tuple[ConnResult, ...] = (),
+#                drc: DrcResult | None = None); connection key "{net}:{refA}.{padA}-{refB}.{padB}" (pads in natural order,
+#                = chamfer's keys); ConnResult(key, net, a, b, status, reason, length_mm, vias, kiids, coupling, seconds)
+#   failure reasons: no_path, too_large, timeout, drc_rejected: <text> (a DRC rejection of an earlier margin stays the
+#   reason when later margins find no path)
+#   ConnPlan(net, a, b, req, pair): a matched pair connection = two ADJACENT plans (P, then N) with pair set
 # chamfer.py (P6a)
 @dataclass(frozen=True) class PostResult: replace: tuple[tuple[str, tuple[Track, ...]], ...]  # (old kiid, new tracks)
                                           # (kiid, ()) = delete (merges / duplicates)
@@ -731,6 +738,94 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
 ## As built
 
 (Each phase adds its section here in its own PR.)
+
+### As built (P5b)
+
+**Measured / recorded** (`tests/kicad/board/test_route.py::test_route_critical_set`, local kicad-base
+image `52b43fb8…` recipe `dc93f472…`, `record_property` per net and total)
+- Critical set of `sp4_synth` after `placed_synth` (P4 placement, 60 × 45 mm, `jlcpcb-4l`, Power class
+  0.4 mm): **16 nets / 37 connections, 37 routed, 0 failed**, 223.8 mm, 18 vias, DRC 0 errors (other than
+  unconnected items), M4 = M7 = 0 (`pcb_metrics` and the call's own `bends`), every new item locked,
+  `placement_hash` unchanged (approval still valid). **One `pcb_route` call 55.5 s.** Solve seconds per
+  net: USB_DN 32.4 / USB_DP 27.3 (the pair's coupled attempt hits the router's 25 s limit, then net by
+  net; a pair's solve time counts for both nets), NRST 5.0, +3V3 3.7 (9 connections), VBUS 2.8, OSC_IN
+  1.9, all others < 0.5. `placed_synth` setup ≈ 75 s (sync, outline, rules, placement, legalize, render,
+  check, approval). Render of the routed critical set handed to the owner (P5b done report).
+- Not all-routed before the fixes below: 31–36 of 37 (crossing crystal/MCU pins, the long USB pair, a
+  dense MCU block) — the order, the pair fallback, the rip-up retry and the via-pair fix each mattered.
+
+**Contract deviations / additions** (B-C12 updated in place)
+- **One stage** `"route"` (`commit=False`, one commit per attempt and per rejection) instead of one per
+  net: a blocked connection may take out a connection of *another* net routed earlier in the same call.
+  Compensation (B-C4) is unchanged; `test_route_fail_after_1` raises after that stage.
+- **Routing order:** `routing_order` routes the requested nets by kind — diff pairs, crystal, switch
+  node, supply (short decoupling paths, M8), then signals — each kind shortest unrouted connection
+  first; connections of a net shortest first. The report keeps the request order.
+- **Default layers exclude the plane layers** (owner D1, plan call 16): no `layers` → every copper
+  layer but `In1.Cu` (4 layers) / `In1.Cu` + `In4.Cu` (6 layers). `layer_order(model, kind)`: power
+  kinds (supply / switch node / high current) `F.Cu, B.Cu`, then inner layers; others board order.
+- **Net class lookup** (P2 residual): KiCad names a pattern-assigned net's class "Effective for net:
+  <net>" (not the constituents) — `class_params` maps known constituent names, else the classes whose
+  patterns match the net (`fnmatchcase`) + Default; a composite takes the largest width / clearance /
+  via. Never below the board's `min_track_width` / `min_clearance`. Before this, Power nets were routed
+  at 0.2 mm. (**P3a's M12 has the same lookup gap** — it skips "Effective for net: …" names; P6b/P9a.)
+- **Stacked pads** (USB-C VBUS A9/B4 share one position): a connection whose pads overlap on a shared
+  copper layer is connected without copper and never planned.
+- **Pairs:** a requested pair (`cls.pairs`, both nets requested) is matched connection by connection
+  (ends within `PAIR_MATCH_MM` 3 mm); gap = the class's diff-pair gap, else the larger clearance; width
+  = diff-pair width, else track width. A pair that fails coupled is routed net by net (spec §10.2). The
+  report has `pairs: [{p, n, coupled_connections, uncoupled_connections, length_mismatch, gap_min,
+  gap_max, warning?}]` — `warning` when a connection is uncoupled or the mismatch > 1 mm
+  (`PAIR_MISMATCH_MM`). On `sp4_synth`: 3 coupled + 2 uncoupled connections, mismatch 3.19 mm (USB FS:
+  harmless; listed with a warning). M12 (P3a) does not report pair mismatch.
+- **Rip-up retry** inside `route_connections` (B-C12 above): bounded (`RIP_MAX` 6 nearest kept
+  connections of other nets within `RIP_HALO_MM` 2 mm of the blocked pads' box, one at a time) and
+  exact restore; a second round for what stayed blocked.
+- **Router obstacles added in `route.py` (model transform, no P5a file):** footprint-embedded keepouts
+  (`Part.rule_areas`, e.g. an antenna) become track + via keepout zones on every copper layer
+  (conservative: the model has no keepout type / layer for them), except an area holding one of the
+  request's pads; every existing via (any net) gets a via-keepout octagon of the board's
+  `hole_to_hole_min`, so a new via keeps the hole rule (KiCad rejected new vias on top of own-net ones).
+- **P5a file touched (minimal):** `router/astar.py::valid_path` rejects a path whose own vias are
+  closer than via diameter + clearance — the search used a via, a 0.05 mm hop on B.Cu and a via to fake
+  a 135° turn (owner rule!) next to a TSSOP pin; KiCad's DRC rejected the overlapping holes.
+- Report extras: per net `seconds` (solve time), call `seconds`, `pairs`; `drc_errors` = errors of the
+  last DRC of the call other than unconnected items (null when nothing was pushed). A call with nothing
+  to route (all `already_routed`) writes nothing and costs 0.
+- `pcb_unroute`: `skipped_locked` (components) plus `skipped_locked_nets`; nothing selected → nothing
+  written, cost 0; `unlock_only` with nothing locked → cost 0. Plane nets = classify's ground nets +
+  nets carrying a copper zone. `unlock_stage(kiids)` = one commit of `update_items` (`locked = False`).
+  `"full"` snapshot only with `include_locked` (delete mode).
+- Not-approved test: a fresh database (no checkpoint → `stale: false`) and a 0.5 mm move of a mounting
+  hole on the routed module board (→ `stale: true`; moved back → approval valid) instead of a second
+  `synth_setup` server (saves ≈ 1.9 GB per shard).
+
+**Shared rig helpers** (`tests/kicad/board/conftest.py`, owned by P5b; later phases append only)
+- `placed_synth(rig, db, run) -> {placement_hash, critical_nets}` (sync → outline `SETUP_OUTLINE` →
+  rules `PLACED_RULES` (4 layers, `jlcpcb-4l`, Power class 0.4 mm `*VBUS`/`*+3V3`/`*SW`) → `place_synth`
+  → `pcb_legalize` → turn 1 render placement + `pcb_check quick` (M1 pass) → turn 2 `user_says` +
+  `pcb_approve`) and `routed_synth(...)` (+ `pcb_route` of the critical nets in chunks of ≤ 50, `lock:
+  true`; adds `{routed: [chunk data], board_hash}`). The critical set comes from `pcb_analyze scope=nets`
+  **after** placement (16 nets on the placed board; P3a's golden lists 8 for KiCad's import positions).
+- Module fixtures `synth_placed` / `synth_routed` → `PlacedSynth(rig, db, info)` with `turn(run_id)`;
+  each owns one fresh server (`_synth_rig`). The kicad tests share their module server: a test that
+  needs a net unrouted removes it with `pcb_unroute {include_locked: true}` (placement and approval
+  stay), so no History undo is needed.
+
+**Residuals for later phases**
+- The P4 placement of `sp4_synth` is very compact (all blocks in the middle of a mostly empty 60 × 45
+  board; the crystal's pins cross the MCU's OSC pins) — routing succeeds only through vias and the
+  rip-up retry. P9b's skill / P9a: wider channels, crystal orientation.
+- `solve_pair` reaches the 25 s limit on the 23 mm USB pair (fan-in from 1.9 mm pad pitch); the nets are
+  then routed alone. A faster coupled search would help P6b/P9a timing.
+- Router grid limits remain (P5a): same-path via spacing is now checked at the goal only (a rejected
+  goal state costs search time); hole-to-hole of a new path's own vias vs. pads with holes relies on
+  copper clearance.
+- `pair_coupling` reports `gap_max` up to 2.95 mm on fan-in stretches (it samples every parallel
+  segment) — P6b/P9a may want "coupled stretch only" figures for M12.
+- Footprint keepouts block tracks and vias on all copper layers; a footprint rule area that only
+  forbids e.g. footprints or a single layer is over-restrictive until `BoardModel` carries keepout type
+  and layers (P1a file).
 
 ### As built (P2b)
 
