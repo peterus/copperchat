@@ -1,5 +1,5 @@
 """Board analysis read tools (SP4 spec §7.1, P3a Task 5): `pcb_analyze` (part/net
-classification, B-C6), `pcb_metrics` (M1-M14, B-C7) and `preset_for` (B-C6 fab preset
+classification, B-C6), `pcb_metrics` (M1-M16, B-C7) and `preset_for` (B-C6 fab preset
 rule). Read tools: one board-model
 read, the `board.md` tables, the computation in the CPU worker (`run_cpu`, job functions in
 `copperchat.board.jobs`); never the edit lock, nothing written."""
@@ -110,7 +110,7 @@ def metrics_data(report: MetricsReport, model: BoardModel) -> dict[str, Any]:
 
 
 async def pcb_metrics(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
-    """Metrics M1-M14 of the live board (`metrics_job` in the CPU worker); the DRC task runs
+    """Metrics M1-M16 of the live board (`metrics_job` in the CPU worker); the DRC task runs
     only when M2 or M3 is requested; parity markers belong to the full check (P3b)."""
     start = time.monotonic()
     only = _only(args)

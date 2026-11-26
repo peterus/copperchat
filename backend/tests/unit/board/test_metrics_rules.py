@@ -442,7 +442,7 @@ def test_only_subset() -> None:
     assert rep.hard_failures == 1
     assert rep.reviews == 0
     full = run(m)
-    assert [x.id for x in full.metrics] == [f"M{i}" for i in range(1, 15)]
+    assert [x.id for x in full.metrics] == [f"M{i}" for i in range(1, 17)]
     assert full.hard_failures == sum(1 for x in full.metrics if x.verdict == "fail")
     assert full.reviews == sum(1 for x in full.metrics if x.verdict == "review")
 
@@ -470,6 +470,7 @@ def test_hard_thresholds_verbatim() -> None:
         "M10_ratio": 3.0,
         "M11_fill": 0.85,
         "M12_mismatch_mm": 1.0,
+        "M16_align_mm": 1.0,
     }
     assert metrics.M1_EDGE_OVERHANG is True
 

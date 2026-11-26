@@ -5,11 +5,14 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
+
+from copperchat.board import metrics
 from copperchat.board.boardmd import BoardDoc
 from copperchat.board.classify import classify
 from copperchat.board.geom import rect_poly
 from copperchat.board.metrics import Metric, MetricsReport, compute_metrics
-from copperchat.board.model import BoardModel, Pad, Point, Zone
+from copperchat.board.model import BoardModel, Pad, Part, Point, Zone
 from copperchat.board.presets import FabPreset
 from copperchat.kicad_tools.board.api import DrcMarker, DrcResult
 
@@ -173,3 +176,258 @@ def test_m3_text_marker_stays_hard() -> None:
     # the footprint's own KIID (no item role) is not a silk line either
     drc = DrcResult(markers=(_marker("kiid-R1"),), unconnected=0, seconds=0.1)
     assert get(run(_silk_board(), drc=drc), "M3").value == 1
+
+
+# ---- M4 without the T clause, M15 ----------------------------------------------------------
+
+
+def _t_board(branch_end: Point) -> BoardModel:
+    return board(
+        tracks=(
+            track("N1", start=(10.0, 10.0), end=(20.0, 10.0), kiid="a"),
+            track("N1", start=(15.0, 10.0), end=branch_end, kiid="b"),
+        )
+    )
+
+
+def test_m4_t_junction_not_hard() -> None:
+    rep = run(_t_board((15.0, 15.0)))
+    assert get(rep, "M4").verdict == "pass"
+    assert get(rep, "M15").verdict == "pass"
+
+
+def test_m4_degree2_ninety_still_fails() -> None:
+    m = board(
+        tracks=(
+            track("N1", start=(10.0, 10.0), end=(15.0, 10.0), kiid="a"),
+            track("N1", start=(15.0, 10.0), end=(15.0, 15.0), kiid="b"),
+        )
+    )
+    m4 = get(run(m), "M4")
+    assert m4.verdict == "fail"
+    assert [o.what for o in m4.offenders] == ["ninety"]
+
+
+def test_m15_y_review_when_switch_off() -> None:
+    rep = run(_t_board((18.0, 13.0)))
+    m15 = get(rep, "M15")
+    assert m15.verdict == "review"
+    assert m15.value == 1
+    assert [(o.what, o.nets, o.at) for o in m15.offenders] == [
+        ("y_junction", ("N1",), (15.0, 10.0))
+    ]
+    assert get(rep, "M4").verdict == "pass"
+
+
+def test_m15_y_fails_when_switch_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(metrics, "M15_HARD", True)
+    assert get(run(_t_board((18.0, 13.0))), "M15").verdict == "fail"
+    assert get(run(_t_board((15.0, 15.0))), "M15").verdict == "pass"
+
+
+def test_switches_default_review() -> None:
+    assert metrics.M15_HARD is False and metrics.M16_HARD is False
+    y = run(_t_board((18.0, 13.0)))
+    t = run(_t_board((15.0, 15.0)))
+    assert y.hard_failures == t.hard_failures
+    assert get(y, "M15").verdict == "review"
+
+
+def test_metric_ids_m1_to_m16() -> None:
+    assert tuple(f"M{i}" for i in range(1, 17)) == metrics.METRIC_IDS
+    rep = run(board())
+    assert [x.id for x in rep.metrics] == [f"M{i}" for i in range(1, 17)]
+    assert set(metrics.THRESHOLD_TEXT) == set(metrics.METRIC_IDS)
+
+
+# ---- M16 -----------------------------------------------------------------------------------
+
+
+def _pair(d_dy: float = 0.0, *extra: object, d_x: float = 34.0, **kw: object) -> BoardModel:
+    """R1 (pads 1.0 x 1.3 at (29, 30) on A and (31, 30) on N1) and D1 (pads at (d_x, 30 +
+    d_dy) on N1 and (d_x + 2, 30 + d_dy) on B): R1.2-D1.1 are adjacent (gap 2.0 mm)."""
+    r1 = part(
+        "R1",
+        30,
+        30,
+        pads=(
+            pad("R1", "1", "A", (29, 30), w=1.0, h=1.3),
+            pad("R1", "2", "N1", (31, 30), w=1.0, h=1.3),
+        ),
+    )
+    d1 = part(
+        "D1",
+        d_x + 1,
+        30 + d_dy,
+        pads=(
+            pad("D1", "1", "N1", (d_x, 30 + d_dy), w=1.0, h=1.3),
+            pad("D1", "2", "B", (d_x + 2, 30 + d_dy), w=1.0, h=1.3),
+        ),
+    )
+    parts = (r1, d1, *(p for p in extra if isinstance(p, Part)))
+    return board(parts=parts, **kw)
+
+
+# a routed track on net A elsewhere so the board is at the routed stage
+_STAGE = route("A", [(29, 30), (29, 20)])
+
+
+def _m16(m: BoardModel) -> Metric:
+    return get(run(m), "M16")
+
+
+def _whats(m16: Metric) -> list[str]:
+    return [o.what.split(" ")[0] for o in m16.offenders]
+
+
+def test_m16_dogleg() -> None:
+    dog = route("N1", [(31, 30), (32, 30), (32.5, 30.5), (34, 30.5)])
+    m16 = _m16(_pair(0.5, tracks=(*_STAGE, *dog)))
+    assert "dogleg" in _whats(m16)
+    assert m16.value >= 1
+    assert m16.verdict == "review"  # M16_HARD off
+    dog_o = next(o for o in m16.offenders if o.what.startswith("dogleg"))
+    assert dog_o.refs == ("D1", "R1") and dog_o.nets == ("N1",)
+
+
+def test_m16_dogleg_fails_when_switch_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(metrics, "M16_HARD", True)
+    dog = route("N1", [(31, 30), (32, 30), (32.5, 30.5), (34, 30.5)])
+    assert _m16(_pair(0.5, tracks=(*_STAGE, *dog))).verdict == "fail"
+
+
+def test_m16_straight_ok() -> None:
+    m16 = _m16(_pair(0.5, tracks=(*_STAGE, *route("N1", [(31, 30.25), (34, 30.25)]))))
+    assert m16.offenders == () and m16.verdict == "pass"
+    m16 = _m16(_pair(0.0, tracks=(*_STAGE, *route("N1", [(31, 30), (34, 30)]))))
+    assert m16.offenders == ()
+
+
+def test_m16_via_detour_is_dogleg() -> None:
+    # straight in x but dipping to B.Cu through two vias: not one segment on a shared
+    # layer; the vias sit in the corridor but are the net's own, so it stays free
+    tracks = (
+        *_STAGE,
+        *route("N1", [(31, 30), (32.0, 30)]),
+        *route("N1", [(32.0, 30), (33.0, 30)], layer="B.Cu"),
+        *route("N1", [(33.0, 30), (34, 30)]),
+    )
+    vias = (via("N1", (32.0, 30), kiid="v1"), via("N1", (33.0, 30), kiid="v2"))
+    assert "dogleg" in _whats(_m16(_pair(0.0, tracks=tracks, vias=vias)))
+    # a foreign via in the corridor blocks it
+    foreign = (via("X", (32.5, 30), kiid="vx"),)
+    m = _pair(0.5, tracks=(*_STAGE, *route("N1", [(31, 30), (32, 30), (32.5, 30.5), (34, 30.5)])))
+    assert "dogleg" not in _whats(_m16(replace(m, vias=foreign)))
+
+
+def test_m16_unrouted_pair_not_dogleg() -> None:
+    m16 = _m16(_pair(0.5, tracks=_STAGE))
+    assert m16.offenders == ()
+
+
+def test_m16_straight_with_t_branch_ok() -> None:
+    c1 = part(
+        "C1",
+        32.5,
+        36,
+        pads=(pad("C1", "1", "N1", (32.5, 35), w=1.0, h=1.0), pad("C1", "2", "GND", (32.5, 37))),
+    )
+    tracks = (
+        *_STAGE,
+        *route("N1", [(31, 30), (34, 30)]),
+        *route("N1", [(32.5, 30), (32.5, 35)]),
+    )
+    m16 = _m16(_pair(0.0, c1, tracks=tracks))
+    assert "dogleg" not in _whats(m16), m16.offenders
+    assert m16.verdict == "pass", m16.offenders
+
+
+def test_m16_tht_pair_straight_on_bottom_ok() -> None:
+    tht = frozenset({"*.Cu", "*.Mask"})
+
+    def tp(ref: str, at: Point, net: str) -> Pad:
+        return Pad(ref, "1", net, at[0], at[1], 1.7, 1.7, 0.0, "circle", tht, False, 1.0)
+
+    j1 = part("J1", 30, 50, pads=(tp("J1", (30, 50), "N1"),))
+    j2 = part("J2", 33, 50, pads=(tp("J2", (33, 50), "N1"),))
+    m = board(parts=(j1, j2), tracks=route("N1", [(30, 50), (33, 50)], layer="B.Cu"))
+    m16 = _m16(m)
+    assert m16.offenders == (), m16.offenders
+    # the same pair joined by a dogleg on B.Cu is one
+    dog = route("N1", [(30, 50), (31, 50), (31.5, 50.5), (32, 50.5), (32.5, 50), (33, 50)])
+    m = board(parts=(j1, j2), tracks=dog)
+    assert "dogleg" in _whats(_m16(m))
+
+
+def test_m16_corridor_blocked_by_foreign_pad_not_dogleg() -> None:
+    x1 = part("X1", 32.5, 30.25, pads=(pad("X1", "1", "X", (32.5, 30.25), w=0.4, h=0.4),))
+    dog = route("N1", [(31, 30), (32, 30), (32.5, 30.5), (34, 30.5)])
+    m16 = _m16(_pair(0.5, x1, tracks=(*_STAGE, *dog)))
+    assert "dogleg" not in _whats(m16)
+    # a track keepout over the corridor blocks it too
+    ko = replace(
+        zone("KO", "", ("F.Cu",), tuple(rect_poly(32, 29, 1, 3))),
+        rule_area=True,
+        keepout=frozenset({"tracks"}),
+    )
+    m16 = _m16(_pair(0.5, tracks=(*_STAGE, *dog), zones=(ko,)))
+    assert "dogleg" not in _whats(m16)
+
+
+def _far_pad(ref: str, net: str, at: Point) -> Part:
+    return part(ref, at[0], at[1], pads=(pad(ref, "1", net, at, w=1.0, h=1.0),))
+
+
+def _walk(start: Point, heading: float, steps: list[tuple[float, float]]) -> list[Point]:
+    import math
+
+    pts = [start]
+    h = heading
+    for turn, length in steps:
+        h += turn
+        x, y = pts[-1]
+        pts.append((x + length * math.cos(math.radians(h)), y + length * math.sin(math.radians(h))))
+    return [(round(x, 6), round(y, 6)) for x, y in pts]
+
+
+def test_m16_loop() -> None:
+    pts = _walk((50, 50), 0, [(0, 0.8), (45, 0.4), (45, 0.4), (45, 0.4), (0, 6.0)])
+    m = board(
+        parts=(_far_pad("U1", "N2", (50, 50)), _far_pad("U2", "N2", pts[-1])),
+        tracks=route("N2", pts),
+    )
+    m16 = _m16(m)
+    assert _whats(m16) == ["pad_loop"]
+    assert m16.value == 1 and m16.verdict == "review"
+    assert m16.offenders[0].refs == ("U1",)
+
+
+def test_m16_jog_review_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(metrics, "M16_HARD", True)
+    pts = _walk((50, 50), 0, [(0, 0.6), (45, 0.4), (-45, 6.0)])
+    m = board(
+        parts=(_far_pad("U1", "N2", (50, 50)), _far_pad("U2", "N2", pts[-1])),
+        tracks=route("N2", pts),
+    )
+    m16 = _m16(m)
+    assert _whats(m16) == ["pad_jog"]
+    assert m16.value == 0 and m16.verdict == "review"
+
+
+def test_m16_ground_nets_excluded() -> None:
+    pts = _walk((50, 50), 0, [(0, 0.6), (45, 0.4), (-45, 6.0)])
+    m = board(
+        parts=(_far_pad("U1", "GND", (50, 50)), _far_pad("U2", "GND", pts[-1])),
+        tracks=(*route("GND", pts), *route("N2", [(10, 10), (20, 10)])),
+    )
+    assert _m16(m).offenders == ()
+
+
+def test_m16_alignable_placement_stage() -> None:
+    m16 = _m16(_pair(1.2))  # y overlap 0.1 < 0.2: a 0.1 mm shift gives a corridor
+    assert _whats(m16) == ["alignable"]
+    assert m16.verdict == "review" and m16.value == 0
+    assert m16.offenders[0].value == pytest.approx(0.1)
+    assert _m16(_pair(0.5)).offenders == ()  # a corridor already exists
+    assert _m16(_pair(3.0)).offenders == ()  # needs 1.9 mm > 1 mm
+    assert _m16(_pair(1.2, d_x=36.0)).offenders == ()  # gap 4 mm: not adjacent

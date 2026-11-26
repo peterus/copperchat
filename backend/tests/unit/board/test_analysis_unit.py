@@ -224,9 +224,9 @@ def test_metrics_spec_registered() -> None:
     assert schema["additionalProperties"] is False
     Draft202012Validator.check_schema(schema)
     v = Draft202012Validator(schema)
-    for ok in ({}, {"only": ["M4"]}, {"only": [f"M{i}" for i in range(1, 15)]}):
+    for ok in ({}, {"only": ["M4"]}, {"only": [f"M{i}" for i in range(1, 17)]}):
         v.validate(ok)
-    for bad in ({"only": ["M15"]}, {"only": ["M4", "M4"]}, {"only": "M4"}, {"x": 1}):
+    for bad in ({"only": ["M17"]}, {"only": ["M4", "M4"]}, {"only": "M4"}, {"x": 1}):
         with pytest.raises(ValidationError):
             v.validate(bad)
     assert "Read-only" in spec.description
@@ -263,7 +263,7 @@ def test_strip_fills_keeps_m11_free_metrics() -> None:
     )
     m = replace(_board(), zones=(plane,), copper_layers=("F.Cu", "In1.Cu", "In2.Cu", "B.Cu"))
     drc = DrcResult(markers=(), unconnected=2, seconds=0.1)
-    only = frozenset(f"M{i}" for i in range(1, 15) if i != 11)
+    only = frozenset(f"M{i}" for i in range(1, 17) if i != 11)
     preset = PRESETS["jlcpcb-4l"]
     full = metrics_job(m, BoardDoc(), drc, preset, only)
     stripped = metrics_job(strip_fills(m), BoardDoc(), drc, preset, only)
@@ -318,7 +318,7 @@ async def test_pcb_analyze_invalid_scope(args: dict[str, Any]) -> None:
     "args",
     [
         {"only": []},
-        {"only": ["M15"]},
+        {"only": ["M17"]},
         {"only": "M4"},
         {"only": ["M4", 4]},
         {"only": ["M4", "M4"]},

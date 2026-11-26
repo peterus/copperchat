@@ -124,7 +124,7 @@ async def test_default_stack_4l(copper_rig: PlacedSynth, record_property: Any) -
 
 
 async def test_metrics_budget_plane_filled(copper_rig: PlacedSynth, record_property: Any) -> None:
-    """`pcb_metrics {}` (M1-M14 incl. M11 on the filled In1.Cu plane and M14 silk over
+    """`pcb_metrics {}` (M1-M16 incl. M11 on the filled In1.Cu plane and M14 silk over
     pads) on the plane-filled routed rig within 5 s (pins P3a's bucketed geometry)."""
     await ensure_default_zones(copper_rig)
     t0 = time.monotonic()
@@ -134,7 +134,7 @@ async def test_metrics_budget_plane_filled(copper_rig: PlacedSynth, record_prope
     record_property("pcb_metrics_seconds", out["seconds"])
     print("pcb_metrics", wall, out["seconds"])
     ids = [m["id"] for m in out["metrics"]]
-    assert ids == [f"M{i}" for i in range(1, 15)]
+    assert ids == [f"M{i}" for i in range(1, 17)]
     assert wall < 5.0
 
 

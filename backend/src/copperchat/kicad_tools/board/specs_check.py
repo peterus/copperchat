@@ -19,7 +19,7 @@ PCB_CHECK_SCHEMA = {
         "level": {
             "type": "string",
             "enum": list(LEVELS),
-            "description": "quick = KiCad's DRC + metrics M1-M14 (M14 n/a); full = also "
+            "description": "quick = KiCad's DRC + metrics M1-M16 (M14 n/a); full = also "
             "schematic parity (kicad-cli) and M14 against the fab preset.",
         },
     },
