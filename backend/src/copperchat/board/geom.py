@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import itertools
 import math
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -335,6 +335,31 @@ def analyse_bends(
     )
 
 
+def pad_entry_ends(
+    points: Sequence[Point], in_pad: Callable[[Point], bool]
+) -> tuple[bool, bool]:
+    """`analyse_bends`' `pad_ends` with the strict pad-entry rule (P6b, owner rule; the own
+    router's `valid_path` already applies it): an end counts as a pad entry - its first
+    bend exempt from the micro-jog / short-chamfer checks - only when the polyline ends in
+    a pad AND that first bend lies inside a pad too (hidden under the pad's copper). A 45°
+    pair right outside a pad is judged like any other pair."""
+    pts: list[Point] = []
+    for p in points:
+        if not pts or math.dist(pts[-1], p) >= _ZERO_LEN:
+            pts.append(p)
+    bends = [
+        pts[i]
+        for i in range(1, len(pts) - 1)
+        if _vertex_kind(_turn(pts[i - 1], pts[i], pts[i + 1])[0]) is not None
+    ]
+    if not bends:
+        return (in_pad(pts[0]), in_pad(pts[-1])) if pts else (False, False)
+    return (
+        in_pad(pts[0]) and in_pad(bends[0]),
+        in_pad(pts[-1]) and in_pad(bends[-1]),
+    )
+
+
 def _pad_on_layer(pad: Pad, layer: str) -> bool:
     if layer in pad.layers or "*.Cu" in pad.layers:
         return True
@@ -624,7 +649,7 @@ def analyse_tracks(model: BoardModel, *, index: TrackIndex | None = None) -> Ben
         segs, adj = g
         line_ends: set[Point] = set()
         for pts, width in _walk_polylines(g, near):
-            ends = (near.in_pad(pts[0]), near.in_pad(pts[-1]))
+            ends = pad_entry_ends(pts, near.in_pad)
             r = analyse_bends(pts, width, pad_ends=ends)
             for k in acc:
                 if k != "non_octilinear":  # tested per raw track below

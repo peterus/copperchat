@@ -117,3 +117,8 @@ TOOL_SPECS += PLACE_SPECS
 from copperchat.kicad_tools.board.specs_route import ROUTE_SPECS  # noqa: E402
 
 TOOL_SPECS += ROUTE_SPECS
+
+# P6b: Freerouting fill (pcb_route_fill)
+from copperchat.kicad_tools.board.specs_fill import FILL_SPECS  # noqa: E402
+
+TOOL_SPECS += FILL_SPECS

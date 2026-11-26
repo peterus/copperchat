@@ -25,6 +25,8 @@ All notable changes to CopperChat are documented in this file. The format follow
 - Board placement tools (`pcb_define_blocks`, `pcb_place_block`, `pcb_move`,
   `pcb_legalize`) — behind COPPERCHAT_BOARD_TOOLS.
 - Own octilinear router (`pcb_route`, `pcb_unroute`) — behind COPPERCHAT_BOARD_TOOLS.
+- `pcb_route_fill` (Freerouting fill + post-processing) — behind COPPERCHAT_BOARD_TOOLS;
+  `COPPERCHAT_FREEROUTING=off` removes it.
 
 ## [0.12.0] - 2026-11-22
 

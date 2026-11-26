@@ -616,3 +616,14 @@ async def synth_routed(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterato
     """`routed_synth` on a fresh `sp4_synth` server for a whole test module."""
     async with _synth_rig(tmp_path_factory.mktemp("synth-routed")) as (rig, db):
         yield PlacedSynth(rig, db, await routed_synth(rig, db))
+
+
+# -- fill_rig (SP4 P6b; the Freerouting fill on P5b's routed rig) --------------------------
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def fill_rig(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterator[PlacedSynth]:
+    """`routed_synth` (P5b's one setup sequence: placed, placement approved, critical nets
+    routed and locked) on a fresh `sp4_synth` server for a whole fill test module."""
+    async with _synth_rig(tmp_path_factory.mktemp("synth-fill")) as (rig, db):
+        yield PlacedSynth(rig, db, await routed_synth(rig, db))
