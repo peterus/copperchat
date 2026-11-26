@@ -61,6 +61,9 @@ Spike: `docs/spikes/4a-board.md`.
 | P9b | `board/phase-p9b-skills-release.md` | `session-board` full flow, `board-layout` skill, `copperchat-tools`, prompt, live agent eval, README/CHANGELOG/architecture, **flag default on** | P9a | 10 |
 | P10 | `board/phase-p10-3d-models.md` | optional (owner OK): on-demand 3D model cache, STEP with parts | P8 | — |
 
+**Round 2 (R1–R7, 2026-11-26) runs after P9a and before P9b** — section "Round 2" at the end of
+this index (spec §22).
+
 **Why the spec's phases were split** (plan call 1): the spec's P1 alone touches the session,
 history, the adapter, profiles, prompt, design docs, views, the live view, the frontend and a
 fixture — far more than a reviewer can clear in three rounds, so it is cut into the write-path
@@ -85,6 +88,7 @@ releasable (all write tools stay behind `COPPERCHAT_BOARD_TOOLS=off` until P9b).
 | 7 | P6b, P7 | P6b's "locked fanout survives a re-fill" test creates locked vias itself (no P7 import) |
 | 8 | P8 | |
 | 9 | P9a | |
+| R-1 … R-4 | R1 … R7 | round 2 (section "Round 2"), between P9a and P9b |
 | 10 | P9b | flag default on |
 | — | P10 | only with owner OK |
 
@@ -167,7 +171,8 @@ Constraints). Values are copied from the spec.
   import after a clean dry run → "undo the turn from the History panel".
 - **Owner hard thresholds (D2) — change only with the owner's OK:** M4 any segment off
   0/45/90/135/… by more than ±0.5°, any 90° or acute direction change, any off-pad 90°
-  T-junction → fail; M5 a signal connection with detour > 2.0 **and** > 5 mm extra → fail; M7
+  T-junction → fail (**superseded 2026-11-26, spec §22**: T-junctions are allowed, Y-junctions
+  fail M15, M16 added); M5 a signal connection with detour > 2.0 **and** > 5 mm extra → fail; M7
   any micro-jog or too-short chamfer → fail; M8 decoupling path > 5 mm or other side → fail;
   M1, M2 > 0, M3 errors / unaccepted warnings > 0, M12 width violation, M13 violation, M14
   JLCPCB preset violation without a recorded custom-rule exception → fail.
@@ -2347,3 +2352,198 @@ in P3a's PR):
   GitLab or Freerouting's GitHub, request Copilot, use background subagents, `pkill -f` /
   `killall` (only own PIDs).
 - **No placeholders** in merged code. Read tools never take the edit lock.
+
+---
+
+## Round 2 (2026-11-26) — OpenDriveHub improvement round
+
+**Why.** P9a's ODH dry run never reached a routed board and the owner marked Y-junctions, a
+dogleg and pad-entry jogs on the golden render (spec §22). **Goal of round 2:** the agent can
+lay out the OpenDriveHub transmitter main board (copy, 76 parts) to the owner's bar, and the
+`sp4_synth` golden stays green through every round-2 PR. **Spec:** §22 "Amendment 2026-11-26
+(round 2)" (owner rules a–c, owner decisions 1–4, M15/M16, changes to M3/M4/M11/M12/M14) — it
+wins over every earlier section and over every contract above that it contradicts.
+**P9b (skills, flag on) and P10 run after round 2**; P9b's phase file stays valid, plus the
+round-2 tools (`pcb_floorplan`, `pcb_place_blocks`) in its skill and tool list.
+
+### Round-2 phase overview
+
+| # | Phase file | Goal (one line) | Depends on | Wave |
+|---|---|---|---|---|
+| R1 | `board/round2-r1-metrics.md` | junction / entry-zone / neck / corridor geometry in `geom.py`; M4 without the T clause, **M15** Y-junction, **M16** dogleg + pad-entry loop/jog (both behind `M15_HARD` / `M16_HARD = False`), M12 neck-down exemption, M11 own-antipad fix, M3 silk-line warning-only | — | R-1 |
+| R5 | `board/round2-r5-owner-fixes.md` | JLC presets `min_drill` 0.2 + fab-report surcharge note, BOM/CPL without mounting holes / excluded parts, `pcb_render` default extent from outline ∪ courtyards | — | R-1 |
+| R6 | `board/round2-r6-memory.md` | heavy-process gate (parity DRC after Freerouting / CPU jobs / other board `kicad-cli`), CPU-worker recycling, concurrent-peak measurement in `odh-dry-run.py`, re-measure | — | R-1 |
+| R2 | `board/round2-r2-floorplan.md` | global block floorplanning (edge blocks, min-cut bisection over the whole board, channel reservation, courtyard fill), pair alignment (rule b), `pcb_floorplan` + `pcb_place_blocks`, golden flow on the new tool | R1 | R-2 |
+| R3 | `board/round2-r3-router.md` | own router: neck-down in escape zones, T-junction (tree) branching instead of the 90° ban, 45° branches forbidden, straight-first for aligned pads, pad-entry costs; router output M15 = M16 = 0 | R1 | R-2 |
+| R4 | `board/round2-r4-fill.md` | Freerouting tuning (probed settings, passes/timeouts), intra-block nets in the critical set, post-processor Y → T (else rip `y_junction`), T no longer ripped, `_widen` keeps neck-downs; **switch `M15_HARD` / `M16_HARD` on**; ODH fill passes the 20 % rule | R2, R3 | R-3 |
+| R7 | `board/round2-r7-odh-acceptance.md` | repeat the ODH dry run (80 × 60 first, else 80 × 100 well spread), honest report, memory re-measured, fix-forward of tool defects found, index "As built (R7)" | R1–R6 | R-4 |
+
+Waves (a phase starts once every phase it depends on is merged): **R-1** R1, R5, R6 (disjoint
+files) · **R-2** R2, R3 · **R-3** R4 · **R-4** R7. Then P9b, then the release (owner OK).
+
+### Round-2 file ownership
+
+`cc/` = `backend/src/copperchat/`. Same rules as "File ownership while phases run in parallel"
+above (owner edits freely; "append" = add lines only, keep both sides on rebase).
+
+| Area | Owner (wave) | Others |
+|---|---|---|
+| `cc/board/geom.py` (junction / entry / neck / corridor additions), `cc/board/metrics.py`, `cc/kicad_tools/board/specs_analysis.py` (metric description text) | R1 (R-1) | R4 flips `M15_HARD` / `M16_HARD` in `metrics.py` (two lines) |
+| `cc/board/presets.py`, `cc/board/fab.py`, `cc/kicad_tools/board/fab.py`, `cc/board/render.py` (`default_extent`), `cc/views/board_render.py`, `cc/kicad_tools/board/views.py`; `cc/board/model.py` + `cc/kicad_tools/board/read.py` only to append the unhashed `Part.exclude_from_bom` / `exclude_from_pos` fields if missing | R5 (R-1) | — |
+| new `cc/board/heavy.py`, `cc/board/worker.py` (recycling), `cc/board/freerouting.py` (gate around the run only), `cc/kicad_tools/board/check.py` (`cli_parity` gate only), `scripts/odh-dry-run.py` (memory sampler), `backend/tests/unit/test_odh_dry_run.py` | R6 (R-1) | R2 (answer loading only, if needed) and R7 edit both afterwards |
+| `cc/board/placer/**` (new `floorplan.py` incl. the `align_pairs` pass), `cc/kicad_tools/board/{place,specs_place}.py`, `cc/agent/profiles.py` (`PCB_READ` / `PCB_WRITES` names), `cc/changes/repo.py` + `frontend/src/components/changes/highlight.ts` (`board_place_blocks` kind), `cc/views/board_render.py` (`render_board(hulls=…)` only, after R5), `backend/tests/kicad_e2e/flow.py` | R2 (R-2) | `cc/board/jobs.py` append (`floorplan_job`, `place_blocks_job`) |
+| `cc/board/router/{grid,astar,simplify,pairs}.py`, `cc/kicad_tools/board/route.py` | R3 (R-2) | — |
+| `cc/kicad_tools/board/{fill,specs_fill}.py`, `cc/board/router/chamfer.py`, `cc/board/freerouting.py` (settings arguments; R6's gate stays), new `cc/board/critical.py`, `cc/kicad_tools/board/specs_analysis.py` (description, after R1), `backend/tests/kicad_e2e/flow.py` (corridor nets first, after R2) | R4 (R-3) | `cc/board/jobs.py` append-only edit inside `analyse_job` (critical-set extension); `cc/kicad_tools/board/place.py` (import `defined_blocks` / `BLOCK_PREFIX` from `critical.py` only) |
+| `scripts/odh-dry-run.py`, `backend/tests/kicad_e2e/**` (flow answers), any owning file of a defect found on ODH (minimal fix, recorded in "As built (R7)") | R7 (R-4) | — |
+| **Shared, append-only (all round-2 phases):** `CHANGELOG.md` `[Unreleased]`, this index ("As built (R#)" sections, contract edits in place), `backend/tests/{unit,kicad}/board/conftest.py`. **`backend/tests/kicad_e2e/goldens/sp4_synth_metrics.json`**: every phase whose change moves a golden value regenerates it with `UPDATE_GOLDENS=1` **after rebasing on the latest `main`** and explains each change in the PR body; never hand-merged. | every phase | — |
+
+### Round-2 contract changes
+
+Binding like B-C1…B-C14; a phase that deviates updates this block and its "As built (R#)".
+
+**B-C5 (R1, append to `cc/board/geom.py`)**
+```python
+JunctionKind = Literal["t", "x", "y"]
+def junction_kind(headings: Sequence[float]) -> JunctionKind   # ≥ 3 headings (deg) of track ends at one node:
+    # any pair d with ANGLE_TOL_DEG < (d mod 90) < 90 − ANGLE_TOL_DEG → "y"; else all on one 90° lattice → "t" (3) / "x" (≥ 4)
+# BendReport gains  y_junctions: tuple[Point, ...]   (analyse_tracks: off-pad, off-via nodes of degree ≥ 3, kind "y")
+# t_junctions keeps EXACTLY today's semantics (off-pad nodes with a 90° pair, Y-shaped ones included); M4 ignores it
+#   from R1 on; its other consumers (chamfer._REASON, route._bends, fill._bends_of) are switched to y_junctions in R3/R4
+ADJ_GAP_MM = 3.0; ESCAPE_HALO_MM = 0.5; LOOP_TURN_DEG = 135.0
+def entry_zone_width(width: float) -> float                         # max(1.0, 3.0 * width)  (a def, not a lambda: ruff E731)
+def entry_zone(pad: Pad, width: float) -> tuple[Point, ...]          # pad rectangle (rotated) grown by entry_zone_width(width)
+def escape_zone(part: Part) -> tuple[Point, ...]                    # courtyard's axis-aligned bbox grown by ESCAPE_HALO_MM (convex)
+def neck_width(pad: Pad, class_width: float, min_track: float) -> float   # min(class_width, min(pad.w, pad.h)), never < min_track
+def straight_corridor(a: Pad, b: Pad, width: float) -> tuple[tuple[str, ...], Point, Point] | None
+    # (shared copper layers, start, end) when a and b share ≥ 1 copper layer (THT pairs: all shared layers), their edge gap ≤ ADJ_GAP_MM and their extents overlap
+    # across x or y by ≥ width: the axis-parallel segment through the overlap band's centre line, pad edge to pad edge
+@dataclass(frozen=True) class EntryReport: loops: tuple[Point, ...]; jogs: tuple[Point, ...]
+def analyse_entry(points: Sequence[Point], width: float, zone: Sequence[Point]) -> EntryReport
+    # the path's piece from its pad end until it first leaves `zone`: |signed cumulative turn| ≥ LOOP_TURN_DEG → loop; an
+    # opposite-sense 45° pair inside the zone → jog (pad-entry bends inside the pad itself excluded, geom.pad_entry_ends)
+```
+
+**B-C7 (R1, `cc/board/metrics.py`)**: `MetricId` = `"M1"…"M16"` (`METRIC_IDS` follows, so
+`pcb_metrics.only`'s enum grows by itself); `M15_HARD = False`, `M16_HARD = False` (R4 sets both
+`True`); M15 offenders `"y_junction"`; M16 offenders `"dogleg"`, `"pad_loop"`, `"pad_jog"`,
+`"alignable"` (placement stage); M16 covers every non-ground net; `routed_path(model, a, b) ->
+tuple[tuple[str, Point, Point], ...] | None` (new: `routed_length`'s Dijkstra (`metrics.py:549`)
+factored to keep predecessors, so both share one search; `routed_length` returns the same values); M3 label `"silk_line_warning"`;
+`REVIEW["M16_align_mm"] = 1.0`.
+
+**B-C11 (R2, `cc/board/placer/floorplan.py`)**
+```python
+@dataclass(frozen=True) class BlockBox: name: str; refs: tuple[str, ...]; w: float; h: float; edge: Edge | None; region: Rect | None
+@dataclass(frozen=True) class Floorplan: regions: Mapping[str, Rect]; channels: tuple[tuple[Point, Point, float], ...]  # cut line + width
+                                         courtyard_fill: float; usable_mm2: float; courtyard_mm2: float
+def floorplan(model, cls, doc, blocks: Sequence[BlockProposal], *, keep_channels: float,
+              allowed_sides: frozenset[Side]) -> Floorplan | DoesNotFit     # DoesNotFit gains courtyard_fill: float | None = None
+def place_blocks(model, cls, doc, blocks, *, keep_channels: float, allowed_sides) -> tuple[PlaceResult, Floorplan] | DoesNotFit
+CHANNEL_MIN_MM = 1.0; CHANNEL_MAX_MM = 4.0; CHANNEL_PER_NET_MM = 0.3; PACK_MAX = 0.85; SPREAD_SPAN_MIN = 0.75
+```
+Tools: `pcb_floorplan {blocks?, keep_channels?}` (`PCB_READ`, cost 0, render with region
+rectangles) and `pcb_place_blocks {blocks?, keep_channels?, unroute?}` (`PCB_WRITES`, cost 1,
+change-log kind `board_place_blocks`). `PlacementScore` gains `spread: float` (union bbox of the
+courtyards / usable bbox, min over x and y).
+
+**B-C12 (R3, router)**: `RouteRequest` gains `neck: tuple[tuple[tuple[Point, ...], float], ...] = ()`
+(escape-zone polygon, neck width) and `tree: bool = False` (the goal is pad b **or** any
+own-net track already connected to b, entered perpendicularly). `ObstacleGrid` keeps one
+inflation per width. `junction_masks` inverts: moves at 45°/135° to existing own copper at an
+off-pad node are blocked, perpendicular moves are allowed (T). `route_connections` tries
+`straight_corridor` first for every plan whose pads have one. `RoutePath.segments` may carry
+per-segment widths: `segments: tuple[tuple[str, Point, Point, float], ...]` (layer, start, end,
+width) — every consumer (P5b `_create`, P6b re-route, pairs) is updated in R3.
+
+**B-C12 post-processor (R4, `chamfer.py`)**: `t_junctions` are no longer ripped; each
+`y_junctions` node is re-landed perpendicular (the branch's last segment replaced by the
+perpendicular from its previous vertex onto the through-track, when that vertex's turn stays
+0°/45° and DRC passes), else the branch's connection is ripped with reason `y_junction`;
+connections with an M16 hard offender are ripped with reason `dogleg` / `pad_loop` and
+re-routed by the own router (straight-first). `run_freerouting` refuses `extra_args` that set
+the pass count or a thread/processor count.
+
+**B-C13 (R4)**: `run_freerouting(..., extra_args=…)` receives `FREEROUTING_SETTINGS` (a tuple of
+CLI options proven accepted by 2.5.0 in R4's probe; empty when none helps); DSN
+`autoroute_settings` additions only under owner D4 (last resort) and recorded.
+
+**B-C1/B-C8/B-C9 (R5, R6)**: presets `min_drill = 0.2` (2/4/6 layers); `cc/board/fab.py`
+`fab_excluded(model, cls) -> tuple[str, ...]` (refs never in BOM/CPL), `bom_rows(csv, *,
+exclude: frozenset[str] = frozenset())` / `cpl_rows(csv, *, exclude=…)` drop those designators,
+`small_holes(model) -> tuple[tuple[str, float], ...]` (ref or `via`, plated drill < 0.3 mm),
+`fab_report(..., excluded: Sequence[str] = ())` adds the "Excluded from BOM/CPL" and "Small
+holes (possible JLC surcharge)" sections;
+`cc/board/render.py` `default_extent(model, markers=()) -> Rect | None` (outline bbox ∪ courtyards
+∪ markers; `None` when all are empty);
+`cc/board/heavy.py` `heavy_slot(kind: str, *, wait_s: float) -> AsyncContextManager[None]`
+(one `asyncio.Semaphore(1)` per running event loop, like `freerouting._slots`; kinds
+`freerouting`, `parity` — `parity` also waits for an idle CPU worker but never holds its lock;
+lock order heavy → (worker, momentarily) → `BOARD_CLI_LOCK`), `HEAVY_WAIT_S = 120`;
+`worker.WORKER_RECYCLE_MB = 512`.
+
+**Error codes (B-C14 additions):** `does_not_fit.details.courtyard_fill`; `fill_not_acceptable`
+reason list unchanged; post-processor reason `y_junction`; `board_compute_timeout` also when the
+heavy gate is not free within `HEAVY_WAIT_S`.
+
+### Round-2 Review Focus
+
+1. **A golden that turns red between phases** — R1 adds M15/M16 while the router still makes
+   Y-junctions. Expected: both stay `review` until R4 switches them; every PR regenerates the
+   golden after rebasing. Tests: R1 Task 4 (`test_switches_default_review`), R4 Task 5
+   (`test_golden_m15_m16_hard`).
+2. **A neck-down that leaks** — a narrow piece outside the escape zone, or a neck below the
+   preset minimum. Expected: M12 fails it; the router never emits it; `_widen` widens it back.
+   Tests: R1 Task 3 (`test_m12_neck_outside_zone_fails`), R3 Task 2 (`test_neck_only_in_zone`),
+   R4 Task 3 (`test_widen_keeps_neck`).
+3. **A T that hides a Y or a 90° bend** — a degree-3 node with headings {0°, 90°, 225°}, a T
+   at a bend vertex, a branch landing exactly on a through-track's 45° chamfer. Expected: M15
+   flags it, M4 still flags a degree-2 90° vertex. Tests: R1 Task 1 (`test_junction_kind_table`,
+   `test_t_at_bend_vertex_is_y`, `test_branch_on_chamfer_is_y`), R1 Task 4
+   (`test_m4_degree2_ninety_still_fails`).
+4. **A floorplan that silently drops or overlaps blocks** — more blocks than cuts, an edge
+   block wider than its edge, a board that cannot hold the blocks. Expected: every block gets a
+   region or the call fails `does_not_fit` with `courtyard_fill`; never overlaps (M1). Tests:
+   R2 Task 1 (`test_floorplan_property_legal`, `test_floorplan_does_not_fit_reports_fill`).
+5. **A parity DRC that never runs or deadlocks** — a fill holding the heavy gate for 600 s, a
+   cancelled turn holding it. Expected: the gate is released on cancel/error; `pcb_check full`
+   fails `board_compute_timeout` after 120 s instead of hanging. Tests: R6 Task 1
+   (`test_gate_released_on_cancel`, `test_parity_waits_then_times_out`).
+
+### Round-2 plan calls (made by the plan author; the coordinator relays them)
+
+1. **M16 hard/review split** (spec §22.5): dogleg (a) and pad loop (b, total turn ≥ 135° in the
+   entry zone) hard; pad jog (c) and placement-stage "alignable" review. Numbers: adjacent =
+   edge gap ≤ 3 mm, overlap ≥ track width, entry zone `max(1.0 mm, 3 × width)`, align fix ≤ 1 mm.
+2. **M15/M16 ship as review first** (`M15_HARD` / `M16_HARD = False`) and become hard in R4,
+   so `main` and the golden stay green at every merge.
+3. **X-junctions** (four headings on one 90° lattice) pass M15; the own router still never
+   creates one (P9a behaviour kept).
+4. **Escape zone = courtyard + 0.5 mm**; neck width = `min(class width, pad minor side)`,
+   never below the preset minimum track.
+5. **Via drill minimum stays 0.3 mm** (owner decision 2 lowers plated holes to 0.2 mm; the
+   agent's own vias keep 0.3/0.6 mm — no surcharge from our vias).
+6. **New tools `pcb_floorplan` (read) + `pcb_place_blocks` (write, cost 1)** rather than more
+   `pcb_place_block` arguments: one global decision needs one call; `pcb_place_block` stays for
+   single-block edits.
+7. **"Well spread"** = `PlacementScore.spread ≥ 0.75` (the courtyards' union bbox spans ≥ 75 %
+   of the usable width and height), reported, not a hard metric.
+8. **Intra-block and corridor nets join the critical set** (R4, `pcb_analyze`, not `classify`):
+   a non-ground net whose pads all lie in one defined block (≤ 8 pads), and every net with a
+   straight-corridor pair, is routed by the own router before the fill, so Freerouting only
+   routes the rest through the reserved channels.
+9. **Parity DRC is gated, not replaced** (owner decision 3): it *starts* only after the running
+   Freerouting run and CPU job finish; a CPU job started during it is not blocked (else routing
+   starves) — the measured concurrent peak shows whether that matters. P9a's numbers suggest api-server
+   (≈ 3.1 GB) + parity `kicad-cli` (≈ 2.6 GB) ≈ 5.7 GB concurrent even when serialised; R6
+   measures it. If it stays > 5 GB, replacing the parity DRC by an own parity check on the
+   `kicad-cli` netlist (≈ 0.6 GB) is an **owner decision**, not part of round 2.
+
+### Round-2 phase conventions
+
+As "Phase Conventions" above, with: PR title `board round 2 <R#>: <short goal>`;
+`kontor-recipes:review-loop --max-rounds 5 --dimensions bugs+tests,security+performance`
+(style nits deferred after round 2; cap hit with code changes → one `--review-only` verify
+pass); each phase adds `### As built (R#)` under "As built"; **thresholds are never relaxed**
+(owner D2 + §22): a hard gate that fails on `sp4_synth` or ODH is a tool defect. ODH runs use
+`scripts/odh-dry-run.py` on a copy outside the repo (answers JSON outside the repo, never
+committed; no OpenDriveHub name in tools, metrics or non-fixture tests).
