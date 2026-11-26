@@ -17,7 +17,8 @@ Stages (the engine takes the **full** copper snapshot first, B-C4):
    new copper of nets the old copper still connects completely (Freerouting re-routes
    pad-to-via links it misreads as open) are removed; moved footprints are put back; the
    zones are refilled (own budget).
-5. `postprocess`: `router/chamfer.postprocess` on the new tracks in the CPU worker; more
+5. `postprocess`: `router/chamfer.postprocess` on the new tracks in the CPU worker (plus
+   width fixes: fill tracks narrower than their net class are widened, `_widen`); more
    than 20 % of the fill's connections ripped → `fill_not_acceptable` (`rip_ratio`), the
    engine restores the pre-fill board. Otherwise the replacements are applied and checked
    by the DRC task; a net with a replacement the DRC rejects gets its originals back and
@@ -92,6 +93,7 @@ from copperchat.kicad_tools.board.route import (
     _kiids,
     _names,
     _unrouted,
+    class_params,
     conn_key,
     plan_connections,
     route_connections,
@@ -680,6 +682,42 @@ def _bends_of(model: BoardModel, net: str) -> int:
     )
 
 
+def _widen(
+    model: BoardModel,
+    replace: Sequence[tuple[str, tuple[Track, ...]]],
+    new_tracks: frozenset[str],
+) -> tuple[list[tuple[str, tuple[Track, ...]]], int]:
+    """The post-processor's replacements plus width fixes: every new track (and every
+    replacement track) narrower than its net's class width (`route.class_params`, never
+    below the board minimum) gets that width - Freerouting necks traces down at pins
+    (0.15 mm on a 0.2 mm class on `sp4_synth`). Returns (replacements, widened count); the
+    widened copper is DRC-checked with the rest (rejected → originals back, ripped)."""
+    widths: dict[str, float] = {}
+
+    def width(net: str) -> float:
+        if net not in widths:
+            widths[net] = class_params(model, net).width
+        return widths[net]
+
+    count = 0
+
+    def wide(t: Track) -> Track:
+        nonlocal count
+        w = width(t.net)
+        if t.width < w - 1e-9:
+            count += 1
+            return dataclasses.replace(t, width=w)
+        return t
+
+    out = [(old, tuple(wide(t) for t in tracks)) for old, tracks in replace]
+    done = {old for old, _ in replace}
+    for t in sorted(model.tracks, key=lambda t: t.kiid):
+        if t.kiid in new_tracks and t.kiid not in done and t.width < width(t.net) - 1e-9:
+            count += 1
+            out.append((t.kiid, (dataclasses.replace(t, kiid="", width=width(t.net)),)))
+    return out, count
+
+
 def _set_locked(h: KicadHandle, ids: Sequence[str]) -> None:
     board = h.board()
     items = list(board.get_items_by_id(_kiids(ids)))
@@ -724,7 +762,12 @@ def fill_stages(st: _FillState) -> list[BoardStage]:
 
             await asyncio.to_thread(rewrite)
         run = await run_freerouting(
-            st.rt, dsn, ses, timeout_s=st.args.timeout_s, passes=st.args.passes, workdir=st.workdir
+            st.rt,
+            dsn,
+            ses,
+            timeout_s=st.args.timeout_s,
+            passes=st.args.passes,
+            workdir=st.workdir,
         )
         st.run = run
         sctx.report["freerouting"] = {
@@ -816,7 +859,8 @@ def fill_stages(st: _FillState) -> list[BoardStage]:
                 worst_areas=_worst_areas(fill_rip, _pads_by_key(m, nets)),
             )
         st.rip = dict(rips)
-        replace = list(res.replace)
+        replace, widened = _widen(m, res.replace, new_tracks)
+        sctx.report["widened"] = widened
         drc_skipped = False
         if replace:
             async with sctx.ctx.session.commit("copperchat: pcb_route_fill: chamfer", doc="pcb"):
@@ -838,6 +882,9 @@ def fill_stages(st: _FillState) -> list[BoardStage]:
     async def reroute(sctx: BoardStageContext) -> None:
         keys = sorted(st.rip)
         sctx.report["ripped"] = len(keys)
+        sctx.report["ripped_connections"] = [
+            {"connection": k, "reason": st.rip[k]} for k in keys[:MAX_LISTED]
+        ]
         if not keys:
             sctx.report["rerouted"] = 0
             return

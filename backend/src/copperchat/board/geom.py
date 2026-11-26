@@ -280,9 +280,15 @@ def _vertex_kind(delta: float) -> str | None:
 
 
 def analyse_bends(
-    points: Sequence[Point], width: float, *, pad_ends: tuple[bool, bool]
+    points: Sequence[Point],
+    width: float,
+    *,
+    pad_ends: tuple[bool, bool],
+    count_ends: tuple[bool, bool] | None = None,
 ) -> BendReport:
-    """Classify every segment and vertex of one polyline (B-C5; no gaps)."""
+    """Classify every segment and vertex of one polyline (B-C5; no gaps). `pad_ends`
+    exempts the end bends from the micro-jog / short-chamfer checks; `count_ends` (default
+    `pad_ends`) leaves them out of `bends` (the density review)."""
     pts: list[Point] = []
     for p in points:
         if not pts or math.dist(pts[-1], p) >= _ZERO_LEN:
@@ -304,12 +310,18 @@ def analyse_bends(
             continue
         fails[kind].append(pts[i])
         verts.append((i, "fail", sense))
-    exempt: set[int] = set()
-    if verts and pad_ends[0]:
-        exempt.add(verts[0][0])
-    if verts and pad_ends[1]:
-        exempt.add(verts[-1][0])
-    bends = sum(1 for i, kind, _ in verts if kind == "bend" and i not in exempt)
+
+    def ends(flags: tuple[bool, bool]) -> set[int]:
+        out: set[int] = set()
+        if verts and flags[0]:
+            out.add(verts[0][0])
+        if verts and flags[1]:
+            out.add(verts[-1][0])
+        return out
+
+    exempt = ends(pad_ends)
+    uncounted = exempt if count_ends is None else ends(count_ends)
+    bends = sum(1 for i, kind, _ in verts if kind == "bend" and i not in uncounted)
     jogs: list[Point] = []
     chamfers: list[Point] = []
     cum = [0.0]
@@ -335,9 +347,7 @@ def analyse_bends(
     )
 
 
-def pad_entry_ends(
-    points: Sequence[Point], in_pad: Callable[[Point], bool]
-) -> tuple[bool, bool]:
+def pad_entry_ends(points: Sequence[Point], in_pad: Callable[[Point], bool]) -> tuple[bool, bool]:
     """`analyse_bends`' `pad_ends` with the strict pad-entry rule (P6b, owner rule; the own
     router's `valid_path` already applies it): an end counts as a pad entry - its first
     bend exempt from the micro-jog / short-chamfer checks - only when the polyline ends in
@@ -649,8 +659,10 @@ def analyse_tracks(model: BoardModel, *, index: TrackIndex | None = None) -> Ben
         segs, adj = g
         line_ends: set[Point] = set()
         for pts, width in _walk_polylines(g, near):
-            ends = pad_entry_ends(pts, near.in_pad)
-            r = analyse_bends(pts, width, pad_ends=ends)
+            at_pad = (near.in_pad(pts[0]), near.in_pad(pts[-1]))
+            r = analyse_bends(
+                pts, width, pad_ends=pad_entry_ends(pts, near.in_pad), count_ends=at_pad
+            )
             for k in acc:
                 if k != "non_octilinear":  # tested per raw track below
                     acc[k].extend(getattr(r, k))

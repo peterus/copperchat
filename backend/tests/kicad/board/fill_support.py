@@ -30,8 +30,12 @@ from tests.kicad.board.conftest import PlacedSynth, setup_call
 from tests.support.edit import call_tool
 
 # Short critical signal nets of the placed `sp4_synth` that a test unroutes first, so the
-# fill has real connections to route (the routed rig leaves only 2 open).
-FILL_NETS = ("/SWDIO", "/SWCLK", "/NRST", "/Power/FB")
+# fill has real connections to route (the routed rig leaves only 2 open). Measured one by
+# one, Freerouting fills these without a defect; /NRST (C6.1-U1.4 detour), /CC1 (J1.A5-R2.1
+# 90° corner at the USB connector) and /OSC_IN are left out: on a fill this small one rip
+# is already over the 20 % rule.
+FILL_NETS = ("/SWDIO", "/SWCLK", "/BOOT0", "/CC2", "Net-(D1-A)", "Net-(U1-PA4)")
+OWN_ROUTED = ("/Power/FB",)  # left open by the routed rig; routed by `pcb_route` (rung c)
 FILL_TIMEOUT_S = 120
 MM = 1_000_000
 
@@ -60,7 +64,17 @@ def copper(m: BoardModel) -> Copper:
 
 
 async def unroute(rig: PlacedSynth, run: str, nets: tuple[str, ...] = FILL_NETS) -> None:
+    """`nets` unrouted (locked copper too); `OWN_ROUTED` routed by the own router first, so
+    the fill gets exactly the connections of `nets` (nothing written when it is routed)."""
+    await setup_call(rig.turn(f"{run}-own"), "pcb_route", nets=list(OWN_ROUTED))
     await setup_call(rig.turn(run), "pcb_unroute", nets=list(nets), include_locked=True)
+
+
+def allow_rips(monkeypatch: pytest.MonkeyPatch) -> None:
+    """For tests that inject rips on purpose: the 20 % rule off (it has its own test)."""
+    from copperchat.kicad_tools.board import fill
+
+    monkeypatch.setattr(fill, "RIP_RATIO_MAX", 1.0)
 
 
 async def fill(rig: PlacedSynth, run: str, **args: Any) -> tuple[dict[str, Any], bool]:

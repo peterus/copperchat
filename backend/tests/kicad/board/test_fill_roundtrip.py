@@ -310,6 +310,16 @@ async def test_no_fill_copper_on_plane_layers(filled: dict[str, Any]) -> None:
     assert not [t for t in filled["after"].tracks if t.kiid not in old and t.layer == "In1.Cu"]
 
 
+async def test_fill_keeps_class_widths(filled: dict[str, Any]) -> None:
+    """No fill track below its net's class width (M12): Freerouting necks traces down at
+    pins; the post-processing stage widens them (`widened`)."""
+    old = _ids(filled["before"])
+    after: BoardModel = filled["after"]
+    new = [t for t in after.tracks if t.kiid not in old]
+    assert new
+    assert min(t.width for t in new) >= 0.2 - 1e-6, sorted({(t.net, t.width) for t in new})
+
+
 async def test_ground_copper_deleted(filled: dict[str, Any]) -> None:
     old = _ids(filled["before"])
     after: BoardModel = filled["after"]

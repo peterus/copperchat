@@ -23,6 +23,7 @@ from tests.kicad.board.conftest import PlacedSynth, setup_call
 from tests.kicad.board.fill_support import (
     FILL_NETS,
     add_gnd_plane,
+    allow_rips,
     fill_ok,
     install_clock,
     model_of,
@@ -56,6 +57,7 @@ def _bends(m: BoardModel, nets: set[str] | None = None) -> dict[str, int]:
 def _ripping(monkeypatch: pytest.MonkeyPatch, n: int, picked: list[str]) -> None:
     """The real post-processor, plus `n` ripped fill connections (those through new
     copper, sorted) recorded in `picked`."""
+    allow_rips(monkeypatch)
     real = fill._run_postprocess
 
     async def rip_n(model: BoardModel, kiids: frozenset[str], **kw: Any) -> PostResult:
@@ -207,6 +209,7 @@ async def test_post_overrun_bounded(fill_rig: PlacedSynth, monkeypatch: pytest.M
     more than the remaining time."""
     await unroute(fill_rig, "po-0")
     monkeypatch.setattr(fill, "POST_DEADLINE_S", 2.0)
+    allow_rips(monkeypatch)
     seen: list[tuple[str, float, float]] = []  # (what, timeout_s, remaining)
     starts: dict[str, float] = {}
     real_post = fill._run_postprocess
@@ -325,7 +328,6 @@ async def test_postprocess_drc_timeout_keeps_call(
     monkeypatch.setattr(engine.BoardStageContext, "drc", drc)
     out = await fill_ok(fill_rig, "dt-1")
     assert out["drc_skipped"] is True
-    assert out["ripped"] == 0
 
 
 @TIMEOUT

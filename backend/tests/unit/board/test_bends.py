@@ -262,13 +262,14 @@ def test_pad_end_rotated_and_wildcard_layer() -> None:
     th = _pad(-0.95, 0.0, 0.4, 2.0, rot=90.0, layers=frozenset({"*.Cu"}), smd=False, drill=0.3)
     r = analyse_tracks(board(parts=(part("U1", 50, 50, pads=(th,)),), tracks=tracks))
     assert len(r.micro_jogs) == 1
-    # starting 0.2 mm deeper, the first bend (x = -0.1) is under the pad copper: exempt
+    # starting 0.2 mm deeper, both bends lie under the pad copper: no jog (nodes inside a
+    # pad end the polylines, so the bends are not counted at all)
     inner = walk((-0.2, 0), 0, [(0, 0.10), (45, 0.10), (-45, 2)])
     deep = tuple(
         track(start=a, end=b, kiid=f"d{i}") for i, (a, b) in enumerate(itertools.pairwise(inner))
     )
     r = analyse_tracks(board(parts=(part("U1", 50, 50, pads=(th,)),), tracks=deep))
-    assert len(r.micro_jogs) == 0 and r.bends == 1
+    assert len(r.micro_jogs) == 0 and r.bends == 0
     # rotated it spans x -1.95..0.05; unrotated the 0.4 mm wide pad does not reach x = 0
     th0 = _pad(-0.95, 0.0, 0.4, 2.0, rot=0.0, layers=frozenset({"*.Cu"}), smd=False, drill=0.3)
     r = analyse_tracks(board(parts=(part("U1", 50, 50, pads=(th0,)),), tracks=tracks))

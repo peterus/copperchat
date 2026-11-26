@@ -228,6 +228,8 @@ Constraints). Values are copied from the spec.
   `pcb_route_fill` is disabled — removed from the profiles exactly like
   `COPPERCHAT_FREEROUTING=off`, with one startup log line — and reported to the coordinator as
   an owner decision. `L` and every cap are recorded in "As built (P6b)".
+  **Measured (P6b):** L ≥ 1070 s (CLI default 1e8 ms, no idle timeout for `sdk` servers) → no
+  caps, `pcb_route_fill` enabled.
 - Renders: PNG ≤ 1600 px long side; ≤ 3 images per step report; SVG through the footprint
   sanitiser with board limits (B-C9); every injected string XML-escaped. Retention: board PNGs
   kept; board SVGs (+ `.svg.json` sidecars) beyond the newest 20 per project pruned at each
@@ -738,6 +740,98 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
 ## As built
 
 (Each phase adds its section here in its own PR.)
+
+### As built (P6b)
+
+**Probes** (`tests/kicad/board/test_fill_roundtrip.py`, `record_property`; local kicad-base `52b43fb8…` recipe
+`dc93f472…`, Freerouting 2.5.0)
+- **SES import:** locked copper keeps its KIIDs; **unlocked copper is deleted and not re-created** (Freerouting's
+  re-route of it comes back with new KIIDs); no footprint moved (`positions_restored` = 0 on every run, the
+  position restore stays as a safety net). `ImportSpecctraSession` **is staged by an open board commit** (a
+  dropped commit leaves no trace) → stage 3 `import` runs with `commit=True` (plan: `commit=False`); "own undo
+  entry" is therefore moot.
+- **Zone fills are clearable** (`update_items` with `filled = False` and no fill polygons → `filled_area_mm2` 0):
+  stage 1 clears, its `undo` and stage 4 refill (`sctx.refill(REFILL_TIMEOUT_S)`); no zone is ever removed.
+- **The API DSN job is stale (new gap, like G2):** `RunBoardJobExportSpecctraDsn` returns the board of its
+  *first* run on every later export, also after a save (`test_probe_api_dsn_job_stale`). The fill therefore
+  writes a board copy into its scratch dir (`save_as(include_project=False)` under the session lock -
+  `KicadSession.save_copy` takes the apply lock and cannot run inside a stage), byte-copies `.kicad_pro` +
+  lib tables (P3b's `pcb_check full` precedent) and runs `kicad-cli pcb export specctra` on it (under
+  `BOARD_CLI_LOCK`). Copy + kicad-cli + SES import together share `IO_BUDGET_S` (measured ≈ 1-2 s on `sp4_synth`;
+  kicad-cli's own timeout = the remaining budget). `api.export_specctra_dsn` stays (unused by the fill).
+- **Locked copper is exported as `(type fix)`**, not `(type protect)` (plan); Freerouting keeps both
+  (`test_dsn_marks_locked_as_fixed`). KiCad's DSN job/CLI exports **no zones and no rule areas**.
+- **Plane-layer mechanism = (b') DSN `autoroute_settings` layer rule** (`PLANE_LAYER_MECHANISM =
+  "dsn_autoroute_settings"`, owner-D4 last resort): (a) Freerouting 2.5.0 has no CLI option for one layer -
+  `router.layers` is an array and indexed CLI paths (`--router.layers.1.routable=false`) are rejected
+  ("Unknown settings property"), a `-de` JSON is read as a board; (b) the plan's `(type signal)` → `(type
+  power)` rewrite has **no effect** in 2.5.0 (signals still routed on a "power" layer). `disable_layers` inserts
+  exactly one line `(autoroute_settings (layer_rule In1.Cu (active off)))` before the structure's `boundary`;
+  nothing else changes (`test_dsn_layer_rewrite`, `test_probe_plane_layer_mechanism`: 0 wires on In1.Cu).
+  Plane default: zones of ground nets covering ≥ 80 % of the outline, else 4 L `In1.Cu`, 6 L `In1.Cu` +
+  `In4.Cu`, 2 L none; outer layers refused as plane layers.
+
+**SDK tool-call limit (Task 4 Step 2)**
+- Bundled CLI (claude-agent-sdk 0.2.168): an MCP tool call's timeout = per-server `timeout` ?? `MCP_TOOL_TIMEOUT`
+  ?? **1e8 ms** (≈ 27.8 h); `sdk` servers have **no idle timeout**; a `tools/call` control request to the Python
+  SDK carries no control timeout (other MCP messages 70 s). Measured: a **1070 s** in-process tool call returned
+  normally (mock Messages API driving the real bundled CLI - no model credentials in the build environment;
+  `tests/live/test_tool_duration_live.py`, opt-in `COPPERCHAT_TOOL_LIMIT_PROBE=1`, also a real-model variant).
+- **L ≥ 1070 s ≥ 1005 s + 60 s → no `MCP_TOOL_TIMEOUT`, no `limits.py`, no capped deadlines; `pcb_route_fill`
+  stays enabled.** `FILL_WORST_CASE_S` 1005 / `FILL_FIXED_S` 405 as planned.
+
+**Measured on `sp4_synth`** (routed rig + 6 unrouted signal nets + `/Power/FB` own-routed): one call ≈ 10-13 s
+(Freerouting 8-11 s, 30 passes), completion 1.0, 6 fill connections, 0 ripped, ~70-110 new ground items and
+11-15 redundant items deleted, M4 = M7 = M12 = 0. Render: `/tmp/sp4-renders/sp4_synth_p6b_filled_{top,bottom}.png`.
+`POST_DEADLINE_S` 120, `IO_BUDGET_S` 60, re-routing through P5b's `route_connections(…, lock=False,
+deadline=post_deadline)` with `plan_connections` on the ripped nets (plane layers excluded).
+
+**Contract deviations / additions**
+- B-C1: `profiles.FILL_TOOL`; both call sites pass `freerouting=settings.freerouting` (fake: `True` without
+  settings).
+- **Redundant copper:** Freerouting reads pad-to-via links of locked work as open (its log: "N unrouted";
+  19-20 "pre-existing clearance violations" of fixed P5b copper) and routes them again. Stage 4 also deletes the
+  new copper of non-ground nets whose connections the old copper alone still connects (`redundant_items_deleted`).
+  Side effect: Freerouting's optimizer never runs on such boards ("only on completely routed boards").
+- **Width fix:** Freerouting necks traces down at pins (0.15 mm on a 0.2 mm class; `--router.automatic_neckdown
+  =false` is accepted but did not change it). Stage 5 widens every fill/replacement track below its net's class
+  width (`route.class_params`) as part of the replacements (DRC-checked; rejected → originals back + ripped);
+  report `widened`.
+- Rip keys come from `postprocess`; a DRC-rejected replacement reverts **every replacement of its net** (chamfer
+  pairs share legs) and rips that net's connections through the originals (`_conns_using`, chamfer's `_Paths`).
+  The fill copper of a ripped connection = the unlocked new tracks on its shortest path + new vias left without
+  a track end. The 20 % rule counts only fill connections (open before, routed after); rips of other nets
+  (relocked / re-created copper) are re-routed but not counted. `rip_ratio` details add `connections` (≤ 50);
+  the success report adds `ripped_connections`, `rejected` [{connection, reason, x, y}], `connections {routed,
+  total}`, `open_before`, `fill_connections_before`, `io_seconds`, `fills_cleared`.
+- A post-processor `run_cpu` timeout (`board_compute_timeout`) fails the call (fill restored), since unchecked
+  Freerouting copper must not stay. `test_fill_metrics_via_run_cpu` passes the post deadline right after the
+  post-processor (fake clock) instead of `POST_DEADLINE_S = 0` (which would time out the post-processor itself).
+- `relock_nets` with no open connection is a valid call (ladder rung (b)); "nothing to fill" only when nothing is
+  open and `relock_nets` is empty.
+- A `session.call` timeout of the copy/import restarts the api-server (B-C4) → `KicadUnavailable` (engine), not
+  `io_timeout`; only the measured budget and kicad-cli's timeout map to `io_timeout`.
+- **P6a residual decided (stricter):** the pad-entry exemption of M7 / the post-processor now applies only when
+  the end bend lies inside the pad (`geom.pad_entry_ends`, used by `analyse_tracks` and `chamfer.postprocess`;
+  the own router's `valid_path` already did this). Since `polylines` already end at nodes inside pads, a 45° pair
+  right outside a pad is now judged like any other pair. `analyse_bends(…, count_ends=…)` keeps the bend-density
+  count as before (else the review verdict changed). Normal pad entries are unaffected: P5b's critical set still
+  M4 = M7 = 0, verdict pass. **Minimal touch of P3a's `geom.py` and P6a's `chamfer.py`.**
+
+**Residuals for later phases**
+- **M5:** the remaining hard M5 failure on the filled `sp4_synth` is P5b's own critical routing
+  (`/OSC_IN Y1.1-U1.2` ratio 3.40, +6.07 mm) - the compact placement (P5b residual); P9a/P9b skill: channels.
+- On the compact synth placement Freerouting produces detours / unchamferable corners for `/NRST C6.1-U1.4`,
+  `/Power/FB R5.2-R6.1`, `/CC1 J1.A5-R2.1`, `/OSC_IN`: a small fill with one of them is refused by the 20 % rule
+  (by design; ladder rung (c) `pcb_route` handles it). The kicad tests use 6 nets Freerouting fills cleanly
+  (`fill_support.FILL_NETS`) and route `/Power/FB` with the own router first.
+- **M12** still skips KiCad's "Effective for net: …" class names (P5b residual, P3a file) - not fixed here; the
+  fill's own width fix uses `route.class_params`.
+- The DSN sees `.kicad_pro` as saved on disk (the adapter saves after every tool call, so same-turn rule changes
+  are included); the API DSN job staleness could be fixed upstream (KiCad patch, owner) - then the copy path could
+  go.
+- Freerouting's "unrouted" misreading of locked pad-to-via links (and the skipped optimizer) deserves a look in
+  P9a on OpenDriveHub (pad/via geometry or the DSN resolution).
 
 ### As built (P5b)
 
