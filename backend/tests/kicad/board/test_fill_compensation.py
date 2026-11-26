@@ -20,7 +20,7 @@ from copperchat.board import freerouting as fr
 from copperchat.board.metrics import connections
 from copperchat.board.model import BoardModel, placement_hash
 from copperchat.board.router.chamfer import PostResult
-from copperchat.kicad_tools.board import fill
+from copperchat.kicad_tools.board import api, fill
 from copperchat.kicad_tools.board.route import conn_key
 from tests.kicad.board.conftest import PlacedSynth, setup_call
 from tests.kicad.board.fill_support import (
@@ -70,6 +70,16 @@ async def test_refill_keeps_locked_vias(fill_rig: PlacedSynth, record_property: 
         z = next((z for z in m.zones if z.kiid == zone), None)
         record_property(f"zone_same_kiid_{i}", z is not None)
         assert z is not None and z.filled_area_mm2 > 0, i
+        # the refill ran on the final copper: no zone marker against the fill's tracks
+        drc = await fill_rig.session.call(
+            lambda h: api.run_drc_task(h, timeout_s=60), timeout=api.drc_call_timeout(60)
+        )
+        stale = [
+            mk
+            for mk in drc.markers
+            if mk.severity == "error" and mk.type != "unconnected_items" and zone in mk.kiids
+        ]
+        assert stale == [], stale
         assert out["fills_cleared"] >= 1
         assert out["ground_items_deleted"] >= 0
     await remove_items(fill_rig, [*ids, zone])

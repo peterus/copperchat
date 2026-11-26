@@ -751,7 +751,9 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
   dropped commit leaves no trace) → stage 3 `import` runs with `commit=True` (plan: `commit=False`); "own undo
   entry" is therefore moot.
 - **Zone fills are clearable** (`update_items` with `filled = False` and no fill polygons → `filled_area_mm2` 0):
-  stage 1 clears, its `undo` and stage 4 refill (`sctx.refill(REFILL_TIMEOUT_S)`); no zone is ever removed.
+  stage 1 clears, its `undo` and a last stage 8 `refill` (`sctx.refill(REFILL_TIMEOUT_S)`) refill; no zone is
+  ever removed. **Deviation:** the refill moved from stage 4 to the end (review round 2), so the zones see
+  the post-processed and re-routed copper; still one refill, the worst case is unchanged.
 - **The API DSN job is stale (new gap, like G2):** `RunBoardJobExportSpecctraDsn` returns the board of its
   *first* run on every later export, also after a save (`test_probe_api_dsn_job_stale`). The fill therefore
   writes a board copy into its scratch dir (`save_as(include_project=False)` under the session lock -

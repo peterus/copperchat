@@ -15,8 +15,8 @@ Stages (the engine takes the **full** copper snapshot first, B-C4):
    staged by the commit: a dropped commit leaves no trace), then the scratch dir goes.
 4. `cleanup`: the import's ground copper (KIIDs not on the board before the call) and the
    new copper of nets the old copper still connects completely (Freerouting re-routes
-   pad-to-via links it misreads as open) are removed; moved footprints are put back; the
-   zones are refilled (own budget).
+   pad-to-via links it misreads as open) are removed; moved footprints are put back;
+   unlocked ground copper locked in stage 1 is unlocked again.
 5. `postprocess`: `router/chamfer.postprocess` on the new tracks in the CPU worker (plus
    width fixes: fill tracks narrower than their net class are widened, `_widen`); more
    than 20 % of the fill's connections ripped → `fill_not_acceptable` (`rip_ratio`), the
@@ -26,6 +26,7 @@ Stages (the engine takes the **full** copper snapshot first, B-C4):
 6. `reroute`: the new copper of every ripped connection is removed and the connection is
    re-routed by the own router (`route_connections`, unlocked) within the post deadline.
 7. `relock`: `relock_nets` whose copper passes M4/M7 are locked again.
+8. `refill`: the zones are refilled once, on the final copper (own budget).
 
 The round trip's two KiCad I/O calls share `IO_BUDGET_S` (an accumulator of their measured
 durations; Freerouting's runtime never counts); post-processing and re-routing share
@@ -784,7 +785,7 @@ def _remaining(deadline: float) -> float:
 
 
 def fill_stages(st: _FillState) -> list[BoardStage]:
-    """The seven stages of one `pcb_route_fill` call (module docstring)."""
+    """The eight stages of one `pcb_route_fill` call (module docstring)."""
     pre_ids = _copper_ids(st.pre)
 
     async def clear_fills(sctx: BoardStageContext) -> None:
@@ -895,8 +896,6 @@ def fill_stages(st: _FillState) -> list[BoardStage]:
                     "Nothing was changed. Re-read the board (pcb_status) and retry.",
                     code="verification_failed",
                 )
-        if any(not z.rule_area for z in m.zones):
-            await _refill(sctx)
 
     async def post(sctx: BoardStageContext) -> None:
         st.post_deadline = time.monotonic() + POST_DEADLINE_S
@@ -981,7 +980,9 @@ def fill_stages(st: _FillState) -> list[BoardStage]:
                 # its copper was removed and other copper still connects it: nothing to route
                 st.rerouted.append(k)
                 continue
-            st.rejected.append({"connection": k, "reason": reason, **_where(m, k)})
+            st.rejected.append(
+                {"connection": k, "reason": reason, **await asyncio.to_thread(_where, m, k)}
+            )
         sctx.report["rerouted"] = len(st.rerouted)
 
     async def relock(sctx: BoardStageContext) -> None:
@@ -1003,6 +1004,12 @@ def fill_stages(st: _FillState) -> list[BoardStage]:
         sctx.report["relocked"] = relocked
         sctx.report["relock_failed"] = failed
 
+    async def refill(sctx: BoardStageContext) -> None:
+        # Last: the zones see the final copper (stages 5 and 6 change it after the import).
+        m = await sctx.model()
+        if any(not z.rule_area for z in m.zones):
+            await _refill(sctx)
+
     return [
         BoardStage("clear fills", clear_fills, undo=refill_cleared),
         BoardStage("freerouting", freerouting, commit=False),
@@ -1011,6 +1018,7 @@ def fill_stages(st: _FillState) -> list[BoardStage]:
         BoardStage("postprocess", post, commit=False),
         BoardStage("reroute", reroute, commit=False),
         BoardStage("relock", relock),
+        BoardStage("refill", refill, commit=False),
     ]
 
 
@@ -1069,7 +1077,7 @@ async def _revert_rejected(
     sctx.created.update(again)
     originals = {t.kiid for t in back}
     for net in sorted(nets):
-        for k in _conns_using(model, net, originals):
+        for k in await asyncio.to_thread(_conns_using, model, net, originals):
             st.rip.setdefault(k, "drc_rejected")
     sctx.report["drc_reverted"] = len(back)
 

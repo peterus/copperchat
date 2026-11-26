@@ -639,3 +639,34 @@ def _late_only(real: Any) -> Any:
             await real(*a, **kw)
 
     return check
+
+
+@TIMEOUT
+async def test_rip_of_locked_copper_not_ripped(
+    fill_rig: PlacedSynth, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rip key whose defective copper is locked work from before the call (here: a
+    critical net routed by `pcb_route`) has nothing removable: it is reported `rejected`
+    with reason `not_ripped`, never counted as rerouted, and the locked copper stays."""
+    await unroute(fill_rig, "nr-0")
+    m = await model_of(fill_rig, "nr-1")
+    net = "/OSC_OUT"
+    locked = {t.kiid for t in m.tracks if t.net == net and t.locked}
+    assert locked
+    key = next(k for k in fill._conns_using(m, net, locked))
+    allow_rips(monkeypatch)
+    real = fill._run_postprocess
+
+    async def rip_locked(model: BoardModel, kiids: frozenset[str], **kw: Any) -> PostResult:
+        res = await real(model, kiids, **kw)
+        return dataclasses.replace(res, rip=(*res.rip, key))
+
+    monkeypatch.setattr(fill, "_run_postprocess", rip_locked)
+    out = await fill_ok(fill_rig, "nr-2")
+    assert {"connection": key, "reason": "not_ripped"} == {
+        k: v
+        for k, v in next(r for r in out["rejected"] if r["connection"] == key).items()
+        if k in ("connection", "reason")
+    }
+    after = {t.kiid for t in (await model_of(fill_rig, "nr-3")).tracks if t.net == net}
+    assert locked <= after
