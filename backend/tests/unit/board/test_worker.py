@@ -115,6 +115,7 @@ async def test_wait_s_bounds_queue_wait() -> None:
     with pytest.raises(StructuredToolError) as ei:
         await run_cpu(_selftest.square, 5, timeout_s=10, wait_s=0.3)
     assert ei.value.code == "board_compute_timeout"
+    assert ei.value.details == {"waiting_for": "cpu_job"}  # the heavy gate's shape (R6)
     assert time.monotonic() - t0 < 1
     await running
     assert await run_cpu(_selftest.square, 5, timeout_s=10, wait_s=None) == 25

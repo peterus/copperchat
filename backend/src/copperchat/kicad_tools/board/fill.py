@@ -369,8 +369,8 @@ def timeout_why(run: FreeroutingRun, timeout_s: float) -> str:
     slot stayed busy) is not a reason to raise `timeout_s`."""
     if not run.started:
         return (
-            "Freerouting did not start: another heavy board process (a fill or the full "
-            "check's parity DRC) was still running"
+            "Freerouting did not start: another heavy board process (a fill, or a parity DRC "
+            "of pcb_check full, run_drc or the board view's markers) was still running"
         )
     return f"Freerouting did not finish within {timeout_s} s"
 

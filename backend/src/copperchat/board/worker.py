@@ -120,12 +120,15 @@ def _consume(fut: asyncio.Future[Any]) -> None:
         fut.exception()  # mark retrieved: a killed job's BrokenProcessPool is expected
 
 
-def _timeout_error(what: str, why: str) -> StructuredToolError:
+def _timeout_error(
+    what: str, why: str, details: dict[str, Any] | None = None
+) -> StructuredToolError:
     return StructuredToolError(
         what,
         why,
         "Retry with a smaller board or region, or try again later.",
         code="board_compute_timeout",
+        details=details,
     )
 
 
@@ -148,6 +151,7 @@ async def run_cpu[T](
             raise _timeout_error(
                 "Board computation not started",
                 f"Another board computation was still running after {wait_s:.1f}s.",
+                {"waiting_for": "cpu_job"},  # the same shape as the heavy gate's (R6)
             ) from None
     try:
         cf: Future[T] = _get_executor().submit(functools.partial(fn, *args, **kwargs))
