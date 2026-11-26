@@ -422,6 +422,10 @@ def test_outline_contains_matches_exact() -> None:
 
     l_shape = [(0, 0), (40, 0), (40, 10), (10, 10), (10, 40), (0, 40)]
     rnd = random.Random(3)
+    # boxes exactly on cell boundaries at margin 0 (touching is not overlap)
+    edge = Outline(circuit(outline=_poly_outline(l_shape)), 0.0)
+    for b in ((2, 15, 10, 20), (2, 15, 10, 30), (15, 2, 30, 10)):
+        assert edge.contains(b) == edge._exact(b) is True, b
     for margin in (0.0, 0.3, 1.0):
         out = Outline(circuit(outline=_poly_outline(l_shape)), margin)
         for _ in range(3000):

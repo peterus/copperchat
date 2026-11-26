@@ -490,7 +490,9 @@ def place_block(
     # boxes whose edges seed the sweep besides the obstacles: keepouts and, for a polygon
     # or rounded outline, every outline vertex (as a point box, inset by the margin)
     seeds: list[Box] = [_bbox_of(k) for k in keepouts]
-    seeds.extend((x, y, x, y) for k in keepouts for x, y in k)  # every keepout vertex
+    # the vertices of axis-aligned concave keepouts (U, L: notch walls); slanted ones get
+    # the scan fallback anyway
+    seeds.extend((x, y, x, y) for k in keepouts if len(k) > 4 and not _has_slant(k) for x, y in k)
     if outline.poly is not None:
         seeds.extend((x - margin, y - margin, x + margin, y + margin) for x, y in outline.poly)
 
