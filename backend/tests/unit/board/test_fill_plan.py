@@ -215,16 +215,28 @@ def test_dsn_disable_layers_by_position() -> None:
         disable_layers(renamed, ["In1.Cu"], ("F.Cu", "In1.Cu", "In2.Cu", "B.Cu"))
 
 
-def test_plan_fill_treats_zone_nets_as_plane_nets() -> None:
-    """A net carrying a copper zone (a supply pour, P7) is a plane net: its connections
-    are not open for the fill, and its new copper is deleted like ground's."""
+def test_plan_fill_treats_plane_zone_nets_as_plane_nets() -> None:
+    """A net whose copper zone covers >= 80 % of the outline (a supply plane, P7) is a plane
+    net: its connections are not open for the fill and its new copper is deleted like
+    ground's. A small local pour does not change anything."""
     m = _board_ab((), net="+3V3", copper_layers=FOUR)
     plan = plan_fill(m, classify(m, BoardDoc()), None)
     assert [k for k, *_ in plan.open] == ["+3V3:R1.1-R2.1"]
-    poured = _board_ab(
+    small = _board_ab(
         (), net="+3V3", copper_layers=FOUR, zones=(zone(net="+3V3", layers=("In2.Cu",)),)
+    )
+    plan = plan_fill(small, classify(small, BoardDoc()), None)
+    assert [k for k, *_ in plan.open] == ["+3V3:R1.1-R2.1"]
+    assert "+3V3" not in plan.ground_nets
+    full = ((0.0, 0.0), (100.0, 0.0), (100.0, 80.0), (0.0, 80.0))
+    poured = _board_ab(
+        (),
+        net="+3V3",
+        copper_layers=FOUR,
+        outline=outline(0, 0, 100, 80),
+        zones=(zone(net="+3V3", layers=("In2.Cu",), poly=full),),
     )
     plan = plan_fill(poured, classify(poured, BoardDoc()), None)
     assert plan.open == ()
     assert "+3V3" in plan.ground_nets
-    assert plan.plane_layers == ("In1.Cu",)  # a small supply pour is no plane layer
+    assert plan.plane_layers == ("In1.Cu",)  # plane-layer defaults follow ground zones only

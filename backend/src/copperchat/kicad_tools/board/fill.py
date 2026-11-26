@@ -98,7 +98,6 @@ from copperchat.kicad_tools.board.route import (
     class_params,
     conn_key,
     plan_connections,
-    plane_nets,
     route_connections,
 )
 from copperchat.kicad_tools.board.setup import require_board_tools
@@ -173,7 +172,7 @@ class FillArgs:
 
 @dataclass(frozen=True)
 class FillPlan:
-    ground_nets: frozenset[str]  # the plane nets: ground + nets with a copper zone
+    ground_nets: frozenset[str]  # the plane nets: ground + nets with a plane-sized zone
     # unrouted non-ground connections before the fill: (key, net, a, b)
     open: tuple[tuple[str, str, Pad, Pad], ...]
     plane_layers: tuple[str, ...]
@@ -218,11 +217,18 @@ def ground_nets_of(cls: Classification) -> frozenset[str]:
 
 
 def plane_nets_of(model: BoardModel, cls: Classification) -> frozenset[str]:
-    """Ground nets plus every net carrying a copper zone (`route.plane_nets`, as
-    `pcb_unroute` defines them): their pads connect through pours and fanout (P7), so
-    the fill neither counts their connections as open nor keeps Freerouting's copper on
-    them (it would duplicate the pour's connections with tracks)."""
-    return frozenset(plane_nets(model, cls))
+    """Ground nets plus every net with a copper zone covering at least PLANE_COVER_MIN of
+    the outline (a plane, e.g. a supply plane from `pcb_zones`): their pads connect through
+    the plane and fanout (P7), so the fill neither counts their connections as open nor
+    keeps Freerouting's copper on them (it would duplicate the plane's connections). A
+    small local pour does not make its net a plane net (its connections stay in the fill)."""
+    board = _outline_area(model)
+    planes = set(ground_nets_of(cls))
+    if board > 0:
+        for z in model.zones:
+            if not z.rule_area and z.net and _area(z.outline) >= PLANE_COVER_MIN * board:
+                planes.add(z.net)
+    return frozenset(planes)
 
 
 def plan_fill(
@@ -1143,7 +1149,7 @@ async def prepare_fill(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
     if bad:
         raise _invalid(
             f"{', '.join(bad[:10])} {'is a plane net' if len(bad) == 1 else 'are plane nets'}"
-            " (ground, or a net with a copper zone)",
+            " (ground, or a net with a plane zone)",
             "Ground/plane nets are never relocked (their fanout stays locked); pass signal nets.",
         )
     plan = await asyncio.to_thread(plan_fill, model, cls, fargs.plane_layers)
