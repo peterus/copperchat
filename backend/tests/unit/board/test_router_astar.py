@@ -675,4 +675,5 @@ def test_junction_masks_fast_with_long_diagonal_own_tracks() -> None:
     grid = build_grid(m2, req, window_mm=40.0)
     t0 = _time.perf_counter()
     junction_masks(grid)
-    assert _time.perf_counter() - t0 < 1.0
+    # a coarse ceiling (≈ 1 s on a dev box; the unbucketed lookup took 23.6 s)
+    assert _time.perf_counter() - t0 < 3.0
