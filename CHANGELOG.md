@@ -29,6 +29,8 @@ All notable changes to CopperChat are documented in this file. The format follow
   `COPPERCHAT_FREEROUTING=off` removes it.
 - Board copper tools `pcb_zones`, `pcb_fanout`, `pcb_stitch`, `pcb_tidy_silk` — behind
   COPPERCHAT_BOARD_TOOLS.
+- `pcb_fab_export` (JLCPCB gerbers, drill, zip, BOM, CPL, fab report) and `pcb_export_3d`
+  — behind COPPERCHAT_BOARD_TOOLS.
 
 ## [0.12.0] - 2026-11-22
 
