@@ -727,7 +727,8 @@ async def run_freerouting(rt: FreeroutingRuntime, dsn: Path, ses: Path, *, timeo
 `board_tools_disabled`, `no_board`, `schematic_unsaved`, `sync_failed`, `invalid_argument`,
 `not_found` (ref/net/block), `unknown_block`, `stackup_unavailable`, `does_not_fit`,
 `part_routed`, `placement_not_approved`, `not_approved` (`details.reason` ∈ {`missing`,
-`stale`, `check_failed`, `changed_during_export`}), `approval_not_allowed`
+`stale`, `check_failed`, `changed_during_export`}; P8: `check_failed` also when the
+export-time metrics have a hard failure), `approval_not_allowed`
 (`details.guard` 1–7, B-C10), `freerouting_unavailable`, `fill_not_acceptable` (`details.reason` ∈ {`rip_ratio`,
 `timeout`, `freerouting_error`, `io_timeout`}), `board_compute_timeout`, `refill_timeout`
 (`RefillTimeout`, B-C3: KiCad still busy filling after `timeout_s` + 30 s grace),
@@ -743,6 +744,88 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
 ## As built
 
 (Each phase adds its section here in its own PR.)
+
+### As built (P8)
+
+**Measured / recorded** (`tests/kicad/board/test_{fab_export,export_3d}.py`, local kicad-base
+image `52b43fb8…`, `record_property`; `fab_rig` = `copper_rig` (P5b `routed_synth`) + the
+default GND stack, 60 × 45 mm, `jlcpcb-4l`)
+- **`pcb_fab_export` on `sp4_synth`: 2.7 s wall**, package 404,430 B, upload zip 70,398 B.
+  STEP 52,288 B in 1.0 s, GLB 62,092 B.
+- **Files** (`fab/jlcpcb/`): `gerbers/sp4_synth-{F_Cu.gtl, In1_Cu.g1, In2_Cu.g2, B_Cu.gbl,
+  F_Mask.gts, B_Mask.gbs, F_Silkscreen.gto, B_Silkscreen.gbo, F_Paste.gtp, B_Paste.gbp,
+  Edge_Cuts.gm1, job.gbrjob}`, `drill/sp4_synth-{PTH,NPTH}.drl` (Excellon, `METRIC`) +
+  `-{PTH,NPTH}-drl_map.gbr`, `sp4_synth-jlcpcb.zip` (exactly the gerber + drill files, flat
+  names, sorted, fixed 1980 timestamps), `bom-jlcpcb.csv`, `cpl-jlcpcb.csv`, `fab-report.md`.
+  `fab/3d/sp4_synth.{step,glb}`.
+- `kicad-cli` accepts the KiCad layer names as given (`F.Cu,In1.Cu,In2.Cu,B.Cu,F.Mask,
+  B.Mask,F.SilkS,B.SilkS,F.Paste,B.Paste,Edge.Cuts`); file names use KiCad's Protel
+  extensions. **`--check-zones` refilled nothing** on the copy (no refill message: P7's
+  stages leave the fills current).
+- **Paste (stencil, owner: hot-plate reflow):** F.Paste has exactly one flash per board pad
+  with `F.Paste` (every top SMD pad, paste-only sub-pads included), B.Paste is empty
+  (`test_paste_layer_matches_smd_pads`; added, not in the plan).
+- BOM: header `Comment,Designator,Footprint,LCSC Part #` (call 17), grouped by
+  `Value,Footprint,LCSC,MPN`, designators `R1,R2` (`--ref-delimiter , --ref-range-delimiter ""`
+  — kicad-cli's default `-` would write `C1-C3`, which JLC cannot read), footprint without the
+  library prefix, 4th column LCSC → MPN → empty. CPL: `Designator,Mid X,Mid Y,Layer,Rotation`,
+  `%.4fmm` / `%.1f` from parsed floats (kicad-cli's pos file: y negated as KiCad writes it,
+  `Top`/`Bottom`); a non-number or unknown side fails the export (`export_failed`).
+
+**Contract deviations / additions**
+- **Export-time metrics gate (closes the P3b residual "board.md edits do not stale the
+  approval"):** after `require_board_approved` the export runs `run_cpu(metrics_job, model,
+  doc, drc, preset_for(model, doc), only=None, timeout_s=30)` with a fresh `run_drc_task`
+  (`drc_call_timeout(60)`) and the **current** `board.md` (no parity: the full check's parity
+  evidence is covered by `board_written_since(any_kind)`); any hard failure → `not_approved`
+  with `details {reason: "check_failed", hard_failures, failing: [metric ids]}`, before
+  anything is written. The same report fills `fab-report.md` (one `run_cpu`, as planned).
+- **`sp4_synth` cannot pass that gate before P6b/P9a** (only the critical nets are routed:
+  M2 etc. fail), so the happy-path kicad tests use a `metrics_pass` seam: the real
+  `run_cpu(metrics_job, …)` runs, its report comes back with `hard_failures = 0`;
+  `test_export_metrics_hard_failures_refused` checks the real gate on the rig. **P9a** should
+  export the fully routed golden without the seam.
+- `swap_in(...) -> str | None` (the warning when removing the old package failed; the result's
+  `notes` carry it) instead of `None`; `cc/board/paths.py` also exports `new_call_id()` and
+  `export_failed(why)`. `safe_output_dir` accepts only `fab/<name>` (anything else
+  `output_path_unsafe` reason `outside`), creates `fab/` only; `pcb_export_3d` creates
+  `fab/3d` itself and re-validates it. `staging_dir` refuses an existing dir. Every rename /
+  rmtree is preceded by a guard: the path lies in a real (lstat, non-symlink) `fab/` dir,
+  directly or one level below.
+- `fab_report(..., board_file, swept=())`: two keyword arguments more than planned (the report
+  names the board file; the "Swept leftovers" line). Custom rules come from
+  `custom_rules(model.dru_text)`: probed — KiCad writes a `pcb_set_rules` reason as a `#`
+  comment line **inside** the rule, below its header (a block right before a rule is read
+  too). Surface finish: ENIG when the finest SMD pad pitch of one part (stacked pads < 0.05 mm
+  apart excluded) is below 0.5 mm, else lead-free HASL; stencil `top only` / `bottom only` /
+  `top + bottom` / `none` from the pads with `F.Paste` / `B.Paste`; paste-only aperture pads never count as a pitch.
+- Tool module: the whole export runs under `ctx.editing.edit_lock(project)` (plain `ToolSpec`
+  handler; the adapter still takes the turn snapshot because `mutating=True`); model + DRC
+  under `session.applying()` like `pcb_check`; `save_copy` into `fab/.jlcpcb.tmp-<id>/src/`,
+  then the copy's `board_hash` re-read (`changed_during_export`); file work off the loop in
+  shielded threads; kicad-cli outputs read back as regular files ≤ 8 MiB (`O_NOFOLLOW`). The
+  3D export compares the copy's hash with the start hash (`export_failed`), checks the
+  output's magic bytes (`ISO-10303-21` / `glTF`) and replaces `fab/3d/<board>.<ext>`.
+- Result extras: `pcb_fab_export` adds `preset`, `hard_failures`, `reviews`, `seconds`;
+  `pcb_export_3d` adds `swept`, `seconds`.
+- Tests: `fab_rig` (session scope) reuses P7's `copper_rig` + `ensure_default_zones` instead
+  of a module-scoped `routed_synth` (one server per shard); `approve_board(placed, db,
+  hard_failures=)` writes the checkpoint + full-check rows (`conftest.py`, appended). The
+  stale-approval and concurrent-move tests move a **mounting hole** (no copper; moved back
+  exactly) instead of `pcb_move … unroute: true` of a routed part, which would strip the shared
+  rig's routing; the "write that bypassed the lock" moves it through a raw `update_items`
+  inside the patched `save_copy`.
+
+**Residuals for later phases**
+- `sp4_synth`'s schematic mounting holes **H1/H2** have no "exclude from position files"
+  attribute, so they are in the CPL (the export honours KiCad's attributes; only the
+  tool-placed holes are excluded). P9b's skill: tell the agent to check BOM/CPL for
+  hole/fiducial/test-point rows; JLC assembly itself stays unvalidated (spec §2).
+- The CPL is KiCad's pos data as is (no JLC rotation offsets, no origin shift); the BOM's 4th
+  column needs an `LCSC` (or `MPN`) symbol field — the fab report says so.
+- The export-time metrics run without parity: a schematic change between the full check and
+  the export is caught only through `board_written_since(any_kind)` (P3b), not by re-running
+  parity (≈ 9 s more per export).
 
 ### As built (P7)
 

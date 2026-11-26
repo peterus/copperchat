@@ -676,3 +676,54 @@ async def ensure_stitch(placed: PlacedSynth, net: str = "GND") -> dict[str, Any]
     if any(v.net == net and v.at not in ends for v in model.vias):
         return None
     return await setup_call(placed.turn("run-ensure-stitch-go"), "pcb_stitch", net=net)
+
+
+# -- fab_rig (SP4 P8; pcb_fab_export / pcb_export_3d) --------------------------------------
+
+
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
+async def fab_rig(copper_rig: PlacedSynth) -> PlacedSynth:
+    """P5b's `routed_synth` (the session-scoped `copper_rig`, shared with the P7 modules)
+    with the default GND stack poured: the board the fab tests export. Tests restore what
+    they change (a moved mounting hole goes back exactly)."""
+    await ensure_default_zones(copper_rig)
+    return copper_rig
+
+
+async def approve_board(
+    placed: PlacedSynth, db: Database | None = None, *, hard_failures: int = 0
+) -> str:
+    """The board approval of the CURRENT `board_hash`, written straight into `db` (default
+    the rig's): a `board` checkpoint (`BoardCheckpointRepo.approve`) and a full-check row
+    (`BoardReviewRepo.record_check`) - database setup only, P3b tests the guards. Both rows
+    are newer than every change row so far. Returns the hash."""
+    import asyncio
+
+    from copperchat.board.model import board_hash, placement_hash
+    from copperchat.db.repos.board import BoardCheckpointRepo, BoardReviewRepo, board_file
+    from copperchat.kicad_tools.board.read import board_model
+    from tests.support.conversations import TEST_CID
+
+    db = db if db is not None else placed.db
+    ctx = placed.rig.turn(db, "run-approve-board")
+    model = await board_model(ctx)
+    digest = board_hash(model)
+    rel = board_file(ctx.project)
+    await asyncio.sleep(0.01)  # millisecond timestamps: strictly after the last change row
+    await BoardReviewRepo(db).record_check(
+        ctx.project.id,
+        rel,
+        TEST_CID,
+        "run-approve-board",
+        level="full",
+        hard_failures=hard_failures,
+        m1_pass=True,
+        placement_hash=placement_hash(model),
+        board_hash=digest,
+        stage="board",
+    )
+    await BoardCheckpointRepo(db).approve(
+        ctx.project.id, rel, "board", digest, TEST_CID, "run-approve-board", "board ok"
+    )
+    await asyncio.sleep(0.01)
+    return digest
