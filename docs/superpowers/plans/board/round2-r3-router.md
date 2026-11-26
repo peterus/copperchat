@@ -120,7 +120,10 @@ nodes (path vertices or own track ends on the path) have `geom.junction_kind == 
 in the call, every plan with a `geom.straight_corridor(a, b, w)` gets its one segment created and
 DRC-checked (kept on pass); the corridors of the plans whose segment failed only because of
 copper this call created are retried once at the end of pass 0; then the normal search for the
-rest. So a later search can never block an earlier-planned corridor), `cc/board/router/astar.py` (`ENTRY_TURN_COST = 4.0` per bend inside
+rest. So a later search can never block an earlier-planned corridor. **Across calls:** the
+search also treats every still-free straight corridor of an **unrouted** non-ground connection
+on the board (not only this call's plans) as an obstacle for other nets, so routing in chunks
+cannot block a later chunk's corridor; test `test_corridor_reserved_across_calls`), `cc/board/router/astar.py` (`ENTRY_TURN_COST = 4.0` per bend inside
 `geom.entry_zone`, the away-move ban), `cc/board/router/simplify.py` if snapping adds a jog;
 Test: `backend/tests/unit/board/test_router_entry.py` (new), `backend/tests/kicad/board/test_route.py`.
 

@@ -48,12 +48,16 @@ never runs; find the cause (DSN pad/via geometry or resolution) and fix it on ou
 `classify()` stays state-independent (its golden unchanged): the extension is computed where
 the board's **defined** blocks are known.
 
-**Files:** Create `cc/board/critical.py` (pure); Modify `cc/kicad_tools/board/analysis.py`
-(`pcb_analyze`'s `critical_nets` = `cls.critical_nets` ∪ `extra_critical(…)`; nets scope
-reports `critical_reasons {net: "class" | "intra_block" | "corridor"}`),
-`cc/kicad_tools/board/specs_analysis.py` (description), `backend/tests/kicad_e2e/flow.py`
-(turn 4 calls `pcb_route` in batches of ≤ 50 nets — the schema's `maxItems`); Test:
-`backend/tests/unit/board/test_critical.py` (new), `backend/tests/kicad/board/test_analysis_synth.py`.
+**Files:** Create `cc/board/critical.py` (pure); Modify `cc/board/jobs.py` (`analyse_job`,
+`jobs.py:131`: `critical_nets` = `cls.critical_nets` ∪ `extra_critical(…)` computed **inside the
+job, before `_capped`**, so `MAX_ENTRIES` / `_omitted` apply and the geometry runs in the worker;
+the nets scope (`SCOPE_KEYS`, `jobs.py:87`) gains `critical_reasons {net: "class" |
+"intra_block" | "corridor"}`), `cc/kicad_tools/board/specs_analysis.py` (description),
+`backend/tests/kicad_e2e/flow.py` (turn 4 routes the `"corridor"` nets in the **first**
+`pcb_route` chunk — the flow already chunks by `ROUTE_CHUNK = 50`, `flow.py:46`); Test:
+`backend/tests/unit/board/test_critical.py` (new), `backend/tests/unit/board/test_analysis_unit.py`
+(the nets scope's exact key set, `:150-163`, gains `critical_reasons`),
+`backend/tests/kicad/board/test_analysis_synth.py`.
 
 **Interfaces:** `extra_critical(model, cls, blocks: Mapping[str, tuple[str, ...]]) ->
 dict[str, str]` — `blocks` = the board's defined `blk:` groups (`place._blocks(model)`,

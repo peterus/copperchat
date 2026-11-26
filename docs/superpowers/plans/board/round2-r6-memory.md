@@ -20,11 +20,14 @@ the existing `run_drc` tool and the board render's violation markers). The netli
 **Architecture:** new `cc/board/heavy.py`: one `asyncio.Semaphore(1)` **per running event loop**
 (a `weakref.WeakKeyDictionary` keyed by the loop, exactly like `freerouting._slots`,
 `freerouting.py:339`) behind `heavy_slot(kind, *, wait_s)`. Lock order, everywhere:
-**heavy gate → CPU-worker lock → `BOARD_CLI_LOCK`**; nothing acquires an earlier lock while
-holding a later one (the fill's DSN export releases `BOARD_CLI_LOCK` before Freerouting
+**heavy gate → (CPU-worker lock, momentarily) → `BOARD_CLI_LOCK`**; nothing acquires an
+earlier lock while holding a later one (the fill's DSN export releases `BOARD_CLI_LOCK` before Freerouting
 starts; `run_cpu` takes only the worker lock). `run_freerouting` holds the gate for the JVM run.
-A parity DRC holds the gate **and** the CPU-worker lock (`worker._get_lock()`, waits for a
-running job to finish), then takes `BOARD_CLI_LOCK`; every wait is bounded. `run_cpu` recycles
+A parity DRC holds the gate, **waits until the CPU worker is idle** (acquires
+`worker._get_lock()` and releases it at once — it never holds the worker lock during the DRC, so
+route solves, fill post-processing and metrics jobs are never starved by a 120 s parity run;
+a job that starts during the DRC is short (`run_cpu` ≤ 30 s) and the worker is kept small by
+recycling), then takes `BOARD_CLI_LOCK`; every wait is bounded. `run_cpu` recycles
 the worker **while it still holds the worker lock**, so a queued job never starts on a worker
 that is about to be killed.
 
@@ -42,8 +45,8 @@ that is about to be killed.
   add a row `pcb_check (full)` to the index's worst-case table (today's parity
   API DRC `drc_call_timeout(60)` = 105 + `HEAVY_WAIT_S` 120 + parity `BOARD_PARITY_TIMEOUT_S` 120 +
   metrics `run_cpu(timeout_s=30, wait_s=HEAVY_WAIT_S)` 150 — `check.py:440` passes no `wait_s`
-  today (unbounded); bound it by `HEAVY_WAIT_S` so a parity DRC holding the worker lock does not
-  time out a concurrent check — → 495 s; test `test_quick_check_survives_parity_holding_worker`) and record it. The gate is process-wide (all projects); cross-project serialisation of parity
+  today (unbounded); bound it by `HEAVY_WAIT_S` — parity never holds the worker lock, so this
+  only bounds waiting behind other CPU jobs — → 495 s; test `test_quick_check_runs_during_parity`) and record it. The gate is process-wide (all projects); cross-project serialisation of parity
   DRCs is intended (memory is a host budget) — record it in "As built (R6)".
 
 ## Review Focus (this phase)
@@ -70,8 +73,8 @@ new `backend/tests/unit/test_checks_parity_gate.py` (`cc/kicad_tools/checks.py` 
 KiCad-level test today, `tests/kicad/edit/test_checks_real.py`).
 
 **Interfaces:** `heavy_slot(kind: Literal["freerouting", "parity"], *, wait_s: float) ->
-AsyncContextManager[None]` — for `"parity"` it also acquires the CPU-worker lock inside the
-same `wait_s` budget; raises `StructuredToolError(code="board_compute_timeout",
+AsyncContextManager[None]` — for `"parity"` it also waits (same `wait_s` budget) until the
+CPU worker is idle, without holding its lock afterwards; raises `StructuredToolError(code="board_compute_timeout",
 details={"waiting_for": <"freerouting" | "parity" | "cpu_job">})` after `wait_s`.
 `HEAVY_WAIT_S = 120.0`. Failure modes per caller: `run_freerouting` maps a gate timeout to a
 `FreeroutingRun(timed_out=True)` exactly like its existing slot wait (`freerouting.py:369-375`),
@@ -88,6 +91,8 @@ so the fill reports `fill_not_acceptable` / `timeout` as today; `pcb_check full`
   `wait_s=0.05` → `board_compute_timeout` with `waiting_for == "freerouting"`),
   `test_parity_waits_for_cpu_job` (a running `run_cpu` job holds the worker lock → parity enters
   only after it; with `wait_s` shorter → `waiting_for == "cpu_job"`),
+  `test_cpu_job_runs_during_parity` (a `run_cpu` call started while the parity slot is held
+  completes without waiting for it),
   `test_freerouting_holds_slot` (fake runtime: slot busy during the subprocess, free after),
   `test_run_kicad_check_parity_gated` (fake `run_kicad_cli`: called inside the slot for a pcb
   parity check, outside it for `sch` ERC and pcb without parity).
