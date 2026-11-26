@@ -31,6 +31,7 @@ from copperchat.config import Settings
 from copperchat.db import Database
 from copperchat.db.repos.editing_settings import EditingSettingsRepo
 from copperchat.db.repos.messages import MessageRepo
+from copperchat.design_docs.service import DesignDocs
 from copperchat.editing.service import EditingService
 from copperchat.history.hooks import HistoryHooks
 from copperchat.history.service import HistoryService
@@ -164,6 +165,7 @@ class Rig:
     history: HistoryService
     editing: EditingService
     plans: PlanService
+    docs: DesignDocs
     hooks: HistoryHooks
     engine: FakeEngine
     db: Database
@@ -210,11 +212,15 @@ class Rig:
             settings=session.settings,
             run_id=run_id,
             conversation_id=TEST_CID,
+            conversation_type="board",  # a Board session (doc write scope, profiles)
+            conversation_seq=1000,
+            conversation_title="Board",
             on_mutation=on_mutation,
             editing=self.editing,
             library_touched=[],
             on_library_changed=self.hooks.on_library_changed,
             reload_project=reload_project,
+            docs=self.docs,
         )
 
     async def start_turn(self, run_id: str) -> None:
@@ -236,6 +242,7 @@ async def open_rig(settings: Settings, project: Project, db_path: Path) -> Async
     sessions = KicadSessionManager(settings)
     db = await Database.open(db_path)
     await ensure_test_conversation(db, project.id)
+    await db.execute("UPDATE conversations SET type = 'board' WHERE id = ?", (TEST_CID,))
     engine = FakeEngine()
     history = HistoryService(
         db=db, sessions=sessions, broadcaster=RecordingBroadcaster(), runtime=FakeRuntime(engine)
@@ -262,7 +269,8 @@ async def open_rig(settings: Settings, project: Project, db_path: Path) -> Async
         await sessions.open(project)
         hooks = HistoryHooks(history, project, cast(Any, engine))
         await hooks.on_engine_start()
-        yield Rig(sessions, history, editing, plans, hooks, engine, db, settings)
+        docs = DesignDocs(db, settings, None)
+        yield Rig(sessions, history, editing, plans, docs, hooks, engine, db, settings)
     finally:
         await sessions.close_all()
         await db.close()
@@ -339,6 +347,13 @@ def _summary(data: Mapping[str, Any]) -> dict[str, Any]:
         out[key] = len(v) if isinstance(v, list) and key not in ("failed", "open") else v
         if key in ("failed", "open") and isinstance(v, list):
             out[key] = v[:10]
+    nets = data.get("nets")
+    if isinstance(nets, list) and nets and isinstance(nets[0], dict) and "status" in nets[0]:
+        # pcb_route: per net status, solve seconds and failures (the report's step rows)
+        out["nets"] = [
+            {k: n.get(k) for k in ("net", "status", "seconds", "failed") if n.get(k)}
+            for n in nets[:50]
+        ]
     return out
 
 
@@ -530,15 +545,6 @@ async def _accept_warnings(f: _Flow, answers: Answers, full: Mapping[str, Any]) 
         ["| DRC type | Items/Refs | Reason | Accepted by |", "|---|---|---|---|", *rows]
     )
     doc = await f.tool("doc_read", path=BOARD_MD)
-    if not doc.get("exists"):
-        await f.tool(
-            "doc_write",
-            path=BOARD_MD,
-            body=str(doc.get("body") or "# Board\n"),
-            base_version=None,
-            summary="board.md from the template",
-        )
-        doc = await f.tool("doc_read", path=BOARD_MD)
     await f.tool(
         "doc_patch_section",
         path=BOARD_MD,

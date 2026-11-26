@@ -157,7 +157,7 @@ async def test_approvals_bound_to_hashes(synth_flow: SynthFlow) -> None:
     cps = (await _ok(synth_flow, "run-appr-3", "pcb_status"))["checkpoints"]
     assert cps["placement"]["stale"] and cps["board"]["stale"], cps
     data, err = await call(synth_flow.rig, "run-appr-3", "pcb_fab_export", preset="jlcpcb")
-    assert err and data.get("code") == "not_approved", data
+    assert err and data["error"]["code"] == "not_approved", data
 
 
 async def test_undo_to_placement(synth_flow: SynthFlow) -> None:
