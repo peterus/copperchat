@@ -104,6 +104,7 @@ from copperchat.board.geom import (
     analyse_tracks,
     convex_hull,
     octi_dist,
+    pad_entry_ends,
     polygons_overlap,
     polylines,
 )
@@ -709,7 +710,7 @@ class _Chamferer:
         sub = replace(self.model, tracks=tuple(tracks), parts=tuple(parts))
         near = _Near(pads, ())  # the net's pads on the layer, bucketed once per net/layer
         for pts, width in polylines(sub, net, layer):
-            ends = (near.in_pad(pts[0]), near.in_pad(pts[-1]))
+            ends = pad_entry_ends(pts, near.in_pad)
             r = analyse_bends(pts, width, pad_ends=ends)
             if not r.ninety or any(getattr(r, f) for f in _OTHER_FAILS):
                 continue
@@ -1041,7 +1042,7 @@ def _bend_fails(
     for pts, width in _walk_polylines(_graph(tracks, _centres(vias, pads)), near):
         if keep is not None and not keep(pts):
             continue
-        r = analyse_bends(pts, width, pad_ends=(near.in_pad(pts[0]), near.in_pad(pts[-1])))
+        r = analyse_bends(pts, width, pad_ends=pad_entry_ends(pts, near.in_pad))
         for f in _BEND_FIELDS:
             out[f].extend(getattr(r, f))
     return out

@@ -101,6 +101,8 @@ PCB_WRITES = frozenset(
     }
 )
 
+FILL_TOOL = "pcb_route_fill"  # the only tool COPPERCHAT_FREEROUTING=off removes
+
 PROFILES: dict[str, frozenset[str]] = {
     "requirements": DOC_TOOLS
     | PARTS
@@ -156,8 +158,7 @@ def profile_specs(
     raises (fail closed). ``footprint_tools=False`` (COPPERCHAT_FOOTPRINT_TOOLS=off)
     removes every ``fp_*`` tool from every profile, Free included; ``board_tools=False``
     (COPPERCHAT_BOARD_TOOLS=off) removes every ``PCB_WRITES`` name likewise.
-    ``freerouting`` (COPPERCHAT_FREEROUTING) is accepted for the callers; board P6b adds
-    its filter."""
+    ``freerouting=False`` (COPPERCHAT_FREEROUTING=off) removes only ``pcb_route_fill``."""
     allowed = PROFILES.get(conversation_type)
     if allowed is None:
         raise ValueError(f"unknown session type: {conversation_type!r}")
@@ -167,6 +168,7 @@ def profile_specs(
         if (conversation_type == "free" or s.name in allowed)
         and (footprint_tools or not s.name.startswith(FP_PREFIX))
         and (board_tools or s.name not in PCB_WRITES)
+        and (freerouting or s.name != FILL_TOOL)
     ]
 
 

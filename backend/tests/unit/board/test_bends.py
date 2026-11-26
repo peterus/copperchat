@@ -252,14 +252,24 @@ def test_polylines_split_on_width_change() -> None:
 
 
 def test_pad_end_rotated_and_wildcard_layer() -> None:
-    # 0.1 mm stub out of a pad, then a micro jog: exempt only when the end is in the pad
+    # a 0.1 mm stub, then a micro jog: exempt only when the end AND the first bend lie in
+    # the pad (strict pad-entry rule, P6b): here the bend at x = 0.1 is outside the rotated
+    # pad (x -1.95..0.05), so the jog is visible copper and reported
     pts = walk((0, 0), 0, [(0, 0.10), (45, 0.10), (-45, 2)])
     tracks = tuple(
         track(start=a, end=b, kiid=f"t{i}") for i, (a, b) in enumerate(itertools.pairwise(pts))
     )
     th = _pad(-0.95, 0.0, 0.4, 2.0, rot=90.0, layers=frozenset({"*.Cu"}), smd=False, drill=0.3)
     r = analyse_tracks(board(parts=(part("U1", 50, 50, pads=(th,)),), tracks=tracks))
-    assert len(r.micro_jogs) == 0 and r.bends == 1
+    assert len(r.micro_jogs) == 1
+    # starting 0.2 mm deeper, both bends lie under the pad copper: no jog (nodes inside a
+    # pad end the polylines, so the bends are not counted at all)
+    inner = walk((-0.2, 0), 0, [(0, 0.10), (45, 0.10), (-45, 2)])
+    deep = tuple(
+        track(start=a, end=b, kiid=f"d{i}") for i, (a, b) in enumerate(itertools.pairwise(inner))
+    )
+    r = analyse_tracks(board(parts=(part("U1", 50, 50, pads=(th,)),), tracks=deep))
+    assert len(r.micro_jogs) == 0 and r.bends == 0
     # rotated it spans x -1.95..0.05; unrotated the 0.4 mm wide pad does not reach x = 0
     th0 = _pad(-0.95, 0.0, 0.4, 2.0, rot=0.0, layers=frozenset({"*.Cu"}), smd=False, drill=0.3)
     r = analyse_tracks(board(parts=(part("U1", 50, 50, pads=(th0,)),), tracks=tracks))

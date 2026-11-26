@@ -118,6 +118,11 @@ from copperchat.kicad_tools.board.specs_route import ROUTE_SPECS  # noqa: E402
 
 TOOL_SPECS += ROUTE_SPECS
 
+# P6b: Freerouting fill (pcb_route_fill)
+from copperchat.kicad_tools.board.specs_fill import FILL_SPECS  # noqa: E402
+
+TOOL_SPECS += FILL_SPECS
+
 # P7: copper (pcb_zones, pcb_fanout, pcb_stitch, pcb_tidy_silk)
 from copperchat.kicad_tools.board.specs_copper import COPPER_SPECS  # noqa: E402
 

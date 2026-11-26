@@ -160,6 +160,7 @@ class FakeAgent:
             self._specs,
             footprint_tools=self._settings is None or self._settings.footprint_tools,
             board_tools=self._settings is not None and self._settings.board_tools,
+            freerouting=self._settings is None or self._settings.freerouting,
         )
         names = [s.name for s in self._burst_specs]
         record = FakeBurst(conversation.id, conversation.type, names)

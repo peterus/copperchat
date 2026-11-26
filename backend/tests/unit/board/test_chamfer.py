@@ -19,6 +19,7 @@ from copperchat.board.geom import (
     Point,
     analyse_bends,
     analyse_tracks,
+    pad_entry_ends,
     polylines,
 )
 from copperchat.board.metrics import routed_length
@@ -376,7 +377,7 @@ def test_tiny_corner_piece_dropped_and_chamfered(piece: float) -> None:
     assert r.chamfered == 1
     out = nm_model(apply(m, r))
     for line, w in polylines(out, "N1", "F.Cu"):
-        ends = (_in_end_pad(line[0], L_PTS), _in_end_pad(line[-1], L_PTS))
+        ends = pad_entry_ends(line, lambda p: _in_end_pad(p, L_PTS))
         assert fails(analyse_bends(line, w, pad_ends=ends)) == {}, line
     assert routed_length(out, *_pads(out)) is not None
 
@@ -463,7 +464,7 @@ ZIG: list[Point] = [(10.0, 10.0), (15.0, 10.0), (15.0, 15.0), (20.0, 15.0), (20.
 def _clean_after_nm(m: BoardModel, r: PostResult) -> BoardModel:
     out = nm_model(apply(m, r))
     for line, w in polylines(out, "N1", "F.Cu"):
-        ends = (_in_end_pad(line[0], ZIG), _in_end_pad(line[-1], ZIG))
+        ends = pad_entry_ends(line, lambda p: _in_end_pad(p, ZIG))
         assert fails(analyse_bends(line, w, pad_ends=ends)) == {}, line
     whole = analyse_tracks(out)
     assert fails(whole) == {} and whole.t_junctions == ()
@@ -863,7 +864,7 @@ def _check_case(seed: int) -> bool:
     if KEY in r.rip:
         return True
     for line, w in polylines(out, "N1", "F.Cu"):
-        ends = (_in_end_pad(line[0], pts), _in_end_pad(line[-1], pts))
+        ends = pad_entry_ends(line, lambda p: _in_end_pad(p, pts))
         rb = analyse_bends(line, w, pad_ends=ends)
         assert fails(rb) == {}, f"{msg} line={line}"
     whole = analyse_tracks(out)
@@ -944,7 +945,7 @@ def _touched_lines_clean_or_ripped(m: BoardModel, ks: frozenset[str], r: PostRes
                 for t in mine
             ):
                 continue
-            ends = (_in_any_pad(line[0], m, net), _in_any_pad(line[-1], m, net))
+            ends = pad_entry_ends(line, lambda p, net=net: _in_any_pad(p, m, net))
             assert fails(analyse_bends(line, w, pad_ends=ends)) == {}, (line, r)
 
 
