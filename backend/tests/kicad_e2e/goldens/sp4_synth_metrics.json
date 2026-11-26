@@ -1,0 +1,64 @@
+{
+  "fill_seconds": 12.25,
+  "metrics": {
+    "M1": {
+      "value": 0,
+      "verdict": "pass"
+    },
+    "M10": {
+      "value": 1.858,
+      "verdict": "pass"
+    },
+    "M11": {
+      "value": 0.9588,
+      "verdict": "review"
+    },
+    "M12": {
+      "value": 0,
+      "verdict": "pass"
+    },
+    "M13": {
+      "value": 0,
+      "verdict": "pass"
+    },
+    "M14": {
+      "value": 0,
+      "verdict": "pass"
+    },
+    "M2": {
+      "value": 0,
+      "verdict": "pass"
+    },
+    "M3": {
+      "value": 0,
+      "verdict": "review"
+    },
+    "M4": {
+      "value": 0,
+      "verdict": "pass"
+    },
+    "M5": {
+      "value": 1.1122,
+      "verdict": "review"
+    },
+    "M6": {
+      "value": 0,
+      "verdict": "pass"
+    },
+    "M7": {
+      "value": 0,
+      "verdict": "pass"
+    },
+    "M8": {
+      "value": 4.9671,
+      "verdict": "review"
+    },
+    "M9": {
+      "value": 3,
+      "verdict": "review"
+    }
+  },
+  "track_length_mm": 239.3,
+  "tracks": 174,
+  "vias": 124
+}

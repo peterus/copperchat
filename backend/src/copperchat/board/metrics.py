@@ -44,6 +44,7 @@ import statistics
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from fnmatch import fnmatchcase
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, get_args
 
@@ -1373,13 +1374,30 @@ def _m11(c: _Ctx) -> Metric:
 # ---- M12 widths and pairs ------------------------------------------------------------------
 
 
-def _class_width(classes: dict[str, NetClassInfo], name: str) -> float | None:
+EFFECTIVE_PREFIX = "Effective for net:"  # KiCad's name of a pattern-assigned net's class
+
+
+def _class_width(
+    classes: dict[str, NetClassInfo],
+    name: str,
+    net: str = "",
+    patterned: Sequence[NetClassInfo] = (),
+) -> float | None:
     """The minimum track width of net class `name`. A composite effective class ("Default,
     Power", as KiCad stores a net in several classes) takes the widest track_width among its
     known constituents: KiCad's effective class takes each field from the highest-priority
     constituent, and the widest is the conservative choice for a minimum-width check.
-    Unknown constituents are ignored; None when none is known."""
+    Unknown constituents are ignored. With none known, the classes whose patterns match
+    `net` (KiCad wildcards, case-sensitive) plus Default apply - KiCad names such a net's
+    class "Effective for net: <net>" (P2 residual; `pcb_route` sizes by the same rule);
+    an "Effective for net" name without a matching pattern means Default. None when
+    nothing applies."""
     widths = [classes[n].track_width for n in (s.strip() for s in name.split(",")) if n in classes]
+    if widths:
+        return max(widths)
+    widths = [nc.track_width for nc in patterned if any(fnmatchcase(net, p) for p in nc.patterns)]
+    if (widths or name.startswith(EFFECTIVE_PREFIX)) and "Default" in classes:
+        widths.append(classes["Default"].track_width)
     return max(widths) if widths else None
 
 
@@ -1390,11 +1408,13 @@ def _m12(c: _Ctx) -> Metric:
     off: list[Offender] = []
     items = [(t.net, t.width, t.start, t.end) for t in c.m.tracks]
     items += [(a.net, a.width, a.start, a.mid) for a in c.m.arcs]
+    patterned = [nc for nc in c.m.net_classes if nc.patterns]
     for net, width, p, q in items:
         name = class_of.get(net, "Default")
-        if name not in need:
-            need[name] = _class_width(classes, name)
-        tw = need[name]
+        key = net if name.startswith(EFFECTIVE_PREFIX) or patterned else name
+        if key not in need:
+            need[key] = _class_width(classes, name, net, patterned)
+        tw = need[key]
         if tw is None or width >= tw - M12_WIDTH_TOL - 1e-9:
             continue
         mid = ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2)

@@ -265,7 +265,25 @@ class ObstacleGrid:
     # exact via obstacles (need = distance from a via centre) and the via's edge inset
     via_shapes: tuple[Shape, ...] = ()
     via_inset: float = 0.0
+    # P9a: existing own-net tracks per layer (index-aligned with `layers`) and the own-net
+    # pads / vias where a branch is a pad or via joint (`astar.junctions_ok`, M4 T-junction)
+    own_segments: tuple[tuple[tuple[Point, Point], ...], ...] = ()
+    own_spots: tuple[tuple[Shape, ...], ...] = ()  # per layer: own pads there + own vias
     _index: list[_Grid] | None = field(default=None, repr=False)
+    _masks: list[dict[int, int]] | None = field(default=None, repr=False)  # astar cache
+
+    def own_exempt(self, li: int, p: Point, spots: Sequence[Shape] | None = None) -> bool:
+        """`p` lies in an own-net pad on layer `li` or in an own via (a branch there is
+        a joint, not a T - M4 exempts the same: pads of the layer, vias). `spots`: a
+        pre-filtered subset of the layer's spots (bbox-near the caller's segment)."""
+        if not self.own_spots:
+            return False
+        for s in self.own_spots[li] if spots is None else spots:
+            x0, y0, x1, y1 = _shape_bbox(s)
+            inside_box = x0 - 1e-9 <= p[0] <= x1 + 1e-9 and y0 - 1e-9 <= p[1] <= y1 + 1e-9
+            if inside_box and seg_shape(p, p, s) <= 1e-9:
+                return True
+        return False
 
     def cell(self, x: float, y: float) -> tuple[int, int]:
         return (round((x - self.x0) / self.pitch), round((y - self.y0) / self.pitch))
@@ -597,6 +615,8 @@ def build_grid(
     pads = [pad for part in model.parts for pad in part.pads]
     shapes: list[list[Shape]] = [[] for _ in layers]
     own: list[list[Shape]] = [[] for _ in layers]
+    own_segs: list[list[tuple[Point, Point]]] = [[] for _ in layers]
+    own_spots: list[list[Shape]] = [[] for _ in layers]  # own pads per layer + vias (need 0)
     via_shapes: list[Shape] = []  # cores a via must keep `via_need` from (any layer)
     via_own: list[Shape] = []  # own SMD pads: no via in a pad (reflow), keep via_r
     via_keepouts: list[Shape] = []
@@ -612,6 +632,7 @@ def build_grid(
             if on and near(_shape_bbox(s), 0.0):
                 for k in on:
                     own[k].append(s)
+                    own_spots[k].append(s)
             if pad.smd and anywhere:
                 via_own.append(_pad_shape(pad, via_r))
             continue
@@ -634,6 +655,7 @@ def build_grid(
         if t.net == req.net and t.net != "":
             if t.layer in layers:
                 own[layers.index(t.layer)].append(("s", *t.start, *t.end, t.width / 2))
+                own_segs[layers.index(t.layer)].append((t.start, t.end))
             continue
         if t.layer in layers:
             shapes[layers.index(t.layer)].append(("s", *t.start, *t.end, r + t.width / 2))
@@ -653,6 +675,7 @@ def build_grid(
         if v.net == req.net and v.net != "":
             for k in range(len(layers)):
                 own[k].append(("d", *v.at, v.diameter / 2, 0.0))
+                own_spots[k].append(("d", *v.at, v.diameter / 2, 0.0))
             continue
         for k in range(len(layers)):
             shapes[k].append(("d", *v.at, v.diameter / 2, r))
@@ -730,6 +753,8 @@ def build_grid(
         inset=inset,
         via_shapes=via_obstacles if req.allow_vias else (),
         via_inset=edge_clearance(model) + via_r + margin,
+        own_segments=tuple(tuple(x) for x in own_segs),
+        own_spots=tuple(tuple(x) for x in own_spots),
     )
 
 

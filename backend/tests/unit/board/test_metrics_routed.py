@@ -451,6 +451,25 @@ def test_m12_composite_net_class_uses_widest_known() -> None:
     assert "0.3 < 0.5 (Default,Power)" in m12.offenders[0].what
 
 
+def test_m12_effective_for_net_uses_pattern_classes() -> None:
+    """KiCad names a pattern-assigned net's class "Effective for net: <net>" (P2/P5b
+    residual): M12 then takes the classes whose patterns match the net (KiCad wildcards)
+    plus Default - widest wins, as `pcb_route` sizes the track. Before, such nets were
+    skipped and a 0.2 mm power track passed."""
+    classes = (net_class("Default", 0.2), net_class("Power", 0.4, patterns=("*VBUS", "+3V3")))
+    tracks = (
+        *route("/VBUS", [(10, 60), (20, 60)], width=0.2),  # Power by pattern: 0.2 < 0.4
+        *route("+3V3", [(10, 65), (20, 65)], width=0.4),  # Power: ok
+        *route("SIG", [(10, 70), (20, 70)], width=0.15),  # Default only: 0.15 < 0.2
+    )
+    of = tuple((n, f"Effective for net: {n}") for n in ("/VBUS", "+3V3", "SIG"))
+    m = board(tracks=tracks, net_classes=classes, net_class_of=of)
+    m12 = get(run(m), "M12")
+    assert m12.verdict == "fail"
+    assert sorted(o.nets for o in m12.offenders) == [("/VBUS",), ("SIG",)], m12.offenders
+    assert any("0.2 < 0.4" in o.what for o in m12.offenders)
+
+
 def test_m13_track_in_module_rule_area() -> None:
     mod = part("U1", 15, 15, half=6, rule_areas=(tuple(rect_poly(10, 10, 10, 10)),))
     m = board(parts=(mod,), tracks=route("S1", [(12, 15), (18, 15)]))

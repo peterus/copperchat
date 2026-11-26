@@ -88,7 +88,9 @@ async def test_sync_all_staged(synth_rig: SynthRig) -> None:
         for b in with_cy[i + 1 :]:
             assert not polygons_overlap(list(a.courtyard), list(b.courtyard)), (a.ref, b.ref)
     drc = await ctx.session.call(lambda h: api.run_drc_task(h), timeout=api.drc_call_timeout(60))
-    assert not [mk for mk in drc.markers if mk.type == "courtyards_overlap"]
+    # the API name (P4 probe) and the kicad-cli name, so a renamed type cannot slip through
+    overlaps = ("overlapping_footprints", "courtyards_overlap")
+    assert not [mk for mk in drc.markers if mk.type in overlaps]
     box = data["staging_box"]
     assert box["x"] >= 0 and box["y"] >= 0 and box["w"] > 0 and box["h"] > 0
 
