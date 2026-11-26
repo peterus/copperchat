@@ -819,6 +819,9 @@ def _metric(
     offenders: Iterable[Offender] = (),
 ) -> Metric:
     hard, review = THRESHOLD_TEXT[mid]
+    if (mid == "M15" and not M15_HARD) or (mid == "M16" and not M16_HARD):
+        # switched off (round 2 until R4): no hard threshold yet, the hard part is reviewed
+        hard, review = None, f"{hard} (hard from round 2 R4); {review}"
     ordered = sorted(offenders, key=_sort_key)
     return Metric(
         id=mid,

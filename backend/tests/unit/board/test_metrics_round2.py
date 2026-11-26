@@ -225,12 +225,22 @@ def test_m15_y_fails_when_switch_on(monkeypatch: pytest.MonkeyPatch) -> None:
     assert get(run(_t_board((15.0, 15.0))), "M15").verdict == "pass"
 
 
-def test_switches_default_review() -> None:
+def test_switches_default_review(monkeypatch: pytest.MonkeyPatch) -> None:
     assert metrics.M15_HARD is False and metrics.M16_HARD is False
     y = run(_t_board((18.0, 13.0)))
     t = run(_t_board((15.0, 15.0)))
     assert y.hard_failures == t.hard_failures
     assert get(y, "M15").verdict == "review"
+    # switched off: no hard threshold text (the e2e golden pins hard values exactly)
+    for mid in ("M15", "M16"):
+        x = get(y, mid)
+        assert x.hard is None
+        assert x.review is not None and "hard from round 2 R4" in x.review
+    monkeypatch.setattr(metrics, "M15_HARD", True)
+    monkeypatch.setattr(metrics, "M16_HARD", True)
+    on = run(_t_board((18.0, 13.0)))
+    assert get(on, "M15").hard == metrics.THRESHOLD_TEXT["M15"][0]
+    assert get(on, "M16").hard == metrics.THRESHOLD_TEXT["M16"][0]
 
 
 def test_metric_ids_m1_to_m16() -> None:
