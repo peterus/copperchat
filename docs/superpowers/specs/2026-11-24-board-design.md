@@ -1200,7 +1200,7 @@ single-block edits):
 - **Pad entry (rule c).** Bends inside a pad's entry zone are costed so the search leaves the
   pad toward the other end; the result must pass M16.
 - **Fill.** Freerouting is tuned on ODH (passes vs. time per pass, settings the pinned version
-  accepts, more nets pre-routed by the own router: every net inside one block and every net with an adjacent straight-corridor pair), its output is
+  accepts, more nets pre-routed by the own router: every net inside one block (≤ 8 pads, plan value) and every net with an adjacent straight-corridor pair), its output is
   post-processed for Y-junctions (above); the 20 % rejection rule (§10.4) is **unchanged** and
   must pass on ODH.
 

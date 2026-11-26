@@ -23,8 +23,11 @@ the existing `run_drc` tool and the board render's violation markers). The netli
 **Architecture:** new `cc/board/heavy.py`: one `asyncio.Semaphore(1)` **per running event loop**
 (a `weakref.WeakKeyDictionary` keyed by the loop, exactly like `freerouting._slots`,
 `freerouting.py:339`) behind `heavy_slot(kind, *, wait_s)`. Lock order, everywhere:
-**heavy gate → (CPU-worker lock, momentarily) → `BOARD_CLI_LOCK`**; nothing acquires an
-earlier lock while holding a later one (the fill's DSN export releases `BOARD_CLI_LOCK` before Freerouting
+**session apply lock (`ctx.session.applying()`) → heavy gate → (CPU-worker lock, momentarily) →
+`BOARD_CLI_LOCK`**; nothing acquires an earlier lock while holding a later one. In `cli_parity`
+the gate is entered **only after** `_copy_project` / `save_copy` (which takes the apply lock
+without a timeout) has finished — around the `BOARD_CLI_LOCK` + `kicad-cli` part only; test
+`test_parity_gate_not_held_during_copy` (the fill's DSN export releases `BOARD_CLI_LOCK` before Freerouting
 starts; `run_cpu` takes only the worker lock). `run_freerouting` holds the gate for the JVM run.
 A parity DRC holds the gate, **waits until the CPU worker is idle** (acquires
 `worker._get_lock()` and releases it at once — it never holds the worker lock during the DRC, so
