@@ -34,7 +34,7 @@ LIST_KEYS = (
     "overrides_applied",
     "board_md_errors",
 )
-ALL_KEYS = ("parts", "nets", *LIST_KEYS)
+ALL_KEYS = ("parts", "nets", "critical_reasons", *LIST_KEYS)
 
 
 def _board() -> Any:
@@ -151,7 +151,7 @@ def test_analyse_job_all() -> None:
     ("scope", "keys"),
     [
         ("parts", ("parts", "decoupling", "switchers", "crystals", "overrides_applied")),
-        ("nets", ("nets", "pairs", "critical_nets")),
+        ("nets", ("nets", "pairs", "critical_nets", "critical_reasons")),
         ("blocks", ("blocks",)),
         ("all", ALL_KEYS),
     ],

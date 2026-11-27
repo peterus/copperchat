@@ -705,7 +705,10 @@ async def _turns(f: _Flow, answers: Answers) -> None:
     )
     # 4: S4 - routing
     await f.new_turn("routing")
-    f.critical = list((await f.tool("pcb_analyze", scope="nets"))["critical_nets"])
+    nets = await f.tool("pcb_analyze", scope="nets")
+    reasons = nets.get("critical_reasons", {})
+    # R4: the straight-corridor nets (owner rule b) go into the first pcb_route chunk
+    f.critical = sorted(nets["critical_nets"], key=lambda n: reasons.get(n) != "corridor")
     f.fill = await _route(f, f.critical)
     # 5: S5/S6 - copper, silk, full check, renders
     await f.new_turn("copper")

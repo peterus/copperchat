@@ -29,6 +29,7 @@ from kipy.proto.common.types import KIID
 
 from copperchat.board.boardmd import BoardDoc, read_board_doc
 from copperchat.board.classify import BlockProposal, classify
+from copperchat.board.critical import BLOCK_PREFIX, defined_blocks
 from copperchat.board.jobs import (
     floorplan_job,
     legalize_job,
@@ -68,7 +69,6 @@ from copperchat.kicad_tools.units import mm_to_nm
 from copperchat.tools.spec import ImageBlock, ToolContext, ToolResult
 from copperchat.views.board_render import render_board
 
-BLOCK_PREFIX = "blk:"
 MAX_BLOCKS = 32
 MAX_BLOCK_REFS = 200
 MAX_ITEMS = 200  # pcb_move items, pcb_place_block fixed
@@ -192,17 +192,8 @@ def _parts_by_ref(model: BoardModel, refs: Sequence[str]) -> dict[str, Part]:
     return {r: by_ref[r] for r in refs}
 
 
-def _blocks(model: BoardModel) -> dict[str, tuple[str, ...]]:
-    """Block name (without `blk:`) → member refs, from the board's groups."""
-    out: dict[str, tuple[str, ...]] = {}
-    for name, refs in model.groups:
-        if name.startswith(BLOCK_PREFIX):
-            out.setdefault(name[len(BLOCK_PREFIX) :], refs)
-    return out
-
-
 def _block_refs(model: BoardModel, block: str) -> tuple[str, ...]:
-    blocks = _blocks(model)
+    blocks = defined_blocks(model)
     if block not in blocks:
         closest = _closest(block, list(blocks))
         raise StructuredToolError(
@@ -616,7 +607,7 @@ def _unplaced_blocks(m: BoardModel) -> list[str]:
     by_ref = {p.ref: p for p in m.parts}
     return sorted(
         name
-        for name, refs in _blocks(m).items()
+        for name, refs in defined_blocks(m).items()
         if any(r in by_ref and not _on_board(m, by_ref[r]) for r in refs)
     )
 
@@ -1152,7 +1143,7 @@ def _proposals(model: BoardModel, names: list[str] | None) -> tuple[BlockProposa
     for a name without a `blk:` group, `invalid_argument` without any block or outline."""
     if model.outline.kind == "none":
         raise _invalid("the floorplan needs a board outline", "Run pcb_set_outline first.")
-    defined = _blocks(model)
+    defined = defined_blocks(model)
     if not defined:
         raise _invalid("the board has no blocks", "Define them with pcb_define_blocks first.")
     chosen = sorted(defined, key=natural_key) if names is None else names
