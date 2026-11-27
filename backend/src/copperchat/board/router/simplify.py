@@ -13,9 +13,9 @@ import itertools
 import math
 from collections.abc import Sequence
 
-from copperchat.board.geom import CHAMFER_MIN, JOG_MIN
+from copperchat.board.geom import CHAMFER_MIN, JOG_MIN, point_in_polygon
 from copperchat.board.model import Point
-from copperchat.board.router.grid import ObstacleGrid, RoutePath, RouteRequest
+from copperchat.board.router.grid import ObstacleGrid, RoutePath, RouteRequest, neck_layers
 
 _TINY = 1e-9
 _ROUND = 6  # output rounded to 1 nm
@@ -191,11 +191,17 @@ def snap_ends(
 
 
 def to_path(
-    states: Sequence[tuple[int, int, int]], grid: ObstacleGrid, req: RouteRequest
+    states: Sequence[tuple[int, int, int]],
+    grid: ObstacleGrid,
+    req: RouteRequest,
+    *,
+    end: Point | None = None,
 ) -> RoutePath:
     """`states` = the searched nodes (layer index, i, j) from pad `a` to pad `b`: per-layer
     runs (split at layer changes = vias), collinear runs merged, the ends snapped to the
-    exact pad centres. Raises `SnapError` like `snap_ends`."""
+    exact pad centres. `end` (a tree goal's landing point on own copper, R3): the last
+    node is extended straight onto it instead of snapping to pad `b`. Raises `SnapError`
+    like `snap_ends`."""
     runs: list[tuple[int, list[Point]]] = []
     vias: list[Point] = []
     for li, i, j in states:
@@ -207,25 +213,95 @@ def to_path(
             runs[-1][1].append(p)
         else:
             runs.append((li, [p]))
-    segments: list[tuple[str, Point, Point]] = []
+    segments: list[tuple[str, Point, Point, float]] = []
     length = 0.0
     last = len(runs) - 1
+    if end is not None and runs:
+        runs[-1][1].append(end)
+    necks = [  # per layer: the neck zones that apply there (`grid.neck_layers`)
+        tuple(z for z in req.neck if li in neck_layers(z[2], grid.layers))
+        for li in range(len(grid.layers))
+    ]
     for k, (li, pts) in enumerate(runs):
         a = (req.a.x, req.a.y) if k == 0 else None
-        b = (req.b.x, req.b.y) if k == last else None
+        b = (req.b.x, req.b.y) if k == last and end is None else None
         if len(pts) == 1 and a is None and b is None:
             continue
         snapped = snap_ends(pts, a, b, req.width)
         for p, q in itertools.pairwise(snapped):
-            segments.append((grid.layers[li], p, q))
+            for s, e, w in neck_pieces(p, q, necks[li], req.width):
+                segments.append((grid.layers[li], s, e, w))
             length += math.dist(p, q)
     return RoutePath(segments=tuple(segments), vias=tuple(vias), length=length)
+
+
+NECK_MIN_PIECE_MM = 1e-3  # a split closer than this to a piece end is not made
+
+
+Neck = Sequence[tuple[Sequence[Point], float, Sequence[str]]]
+
+
+def _zone_width(p: Point, neck: Neck, width: float) -> float:
+    w = width
+    for poly, nw, _zl in neck:
+        if nw < w and point_in_polygon(p, list(poly)):
+            w = nw
+    return w
+
+
+def neck_pieces(p: Point, q: Point, neck: Neck, width: float) -> list[tuple[Point, Point, float]]:
+    """Segment pq split where it crosses a neck zone's boundary (R3, spec §22.4): pieces
+    inside a zone get its neck width (the narrowest of overlapping zones), the rest `width`.
+    Neighbouring pieces of one width are merged; a split within NECK_MIN_PIECE_MM of a piece
+    end is not made (that sliver takes its neighbour's width - the callers' zones are inset
+    by more than that)."""
+    if not neck:
+        return [(p, q, width)]
+    length = math.dist(p, q)
+    if length < _TINY:
+        return [(p, q, _zone_width(p, neck, width))]
+    ts = [0.0, 1.0]
+    for poly, _nw, _zl in neck:
+        n = len(poly)
+        for k in range(n):
+            c, d = poly[k], poly[(k + 1) % n]
+            r, s = _sub(q, p), _sub(d, c)
+            den = _cross(r, s)
+            if abs(den) < 1e-15:
+                continue
+            t = _cross(_sub(c, p), s) / den
+            u = _cross(_sub(c, p), r) / den
+            if 0.0 < t < 1.0 and -1e-12 <= u <= 1.0 + 1e-12:
+                ts.append(t)
+    ts.sort()
+    cuts = [0.0]
+    for t in ts[1:-1]:
+        far = (1.0 - t) * length >= NECK_MIN_PIECE_MM
+        if (t - cuts[-1]) * length >= NECK_MIN_PIECE_MM and far:
+            cuts.append(t)
+    cuts.append(1.0)
+
+    def at(t: float) -> Point:
+        if t <= 0.0:
+            return p
+        if t >= 1.0:
+            return q
+        return (round(p[0] + t * (q[0] - p[0]), _ROUND), round(p[1] + t * (q[1] - p[1]), _ROUND))
+
+    out: list[tuple[Point, Point, float]] = []
+    for t0, t1 in itertools.pairwise(cuts):
+        w = _zone_width(at((t0 + t1) / 2), neck, width)
+        if out and out[-1][2] == w:
+            out[-1] = (out[-1][0], at(t1), w)
+        else:
+            out.append((at(t0), at(t1), w))
+    return out
 
 
 def layer_runs(path: RoutePath) -> list[tuple[str, tuple[Point, ...]]]:
     """The path as per-layer polylines (a new run at every layer change)."""
     runs: list[tuple[str, list[Point]]] = []
-    for layer, p, q in path.segments:
+    for layer, p, q, _w in path.segments:
         if runs and runs[-1][0] == layer and runs[-1][1][-1] == p:
             runs[-1][1].append(q)
         else:

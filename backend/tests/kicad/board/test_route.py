@@ -67,6 +67,7 @@ async def test_route_critical_set(synth_routed: PlacedSynth, record_property: An
     for chunk in info["routed"]:
         print("totals", chunk["totals"], chunk["bends"], chunk["drc_errors"], chunk["seconds"])
         assert chunk["bends"]["M4"] == 0 and chunk["bends"]["M7"] == 0
+        assert chunk["bends"]["M15"] == 0
         record_property("route_seconds", chunk["seconds"])
     for e in entries:
         print(e["net"], e["status"], e["routed"], "/", e["connections"], e["seconds"], e["failed"])
@@ -87,6 +88,13 @@ async def test_route_critical_set(synth_routed: PlacedSynth, record_property: An
     metrics = await setup_call(placed.turn("run-crit-m"), "pcb_metrics", only=["M4", "M7"])
     for m in metrics["metrics"]:
         assert m["value"] == 0 and m["verdict"] == "pass", m
+    # R3: the own router's copper has no Y-junction (M15) and no dogleg (M16 a); a pad loop
+    # the placement forces (USB-C A7 - B7 around A6, no loop-free path) stays M16's report
+    r3 = await setup_call(placed.turn("run-crit-m16"), "pcb_metrics", only=["M15", "M16"])
+    by_id = {m["id"]: m for m in r3["metrics"]}
+    print({k: (m["value"], [o["what"] for o in m["offenders"]]) for k, m in by_id.items()})
+    assert by_id["M15"]["value"] == 0, by_id["M15"]
+    assert not [o for o in by_id["M16"]["offenders"] if o["what"].startswith("dogleg")]
     model = await _model(placed, "run-crit-model")
     mine = [t for t in model.tracks if t.net in nets] + [v for v in model.vias if v.net in nets]
     assert mine and all(it.locked for it in mine)
@@ -106,7 +114,9 @@ async def test_pair_routed_coupled(synth_routed: PlacedSynth) -> None:
         assert coupling is not None and set(coupling) == {"length_mismatch", "gap_min", "gap_max"}
     model = await _model(synth_routed, "run-pair")
     layers = [{t.layer for t in model.tracks if t.net == n} for n in PAIR]
-    assert layers[0] == layers[1], layers
+    # R3: the USB-C links A6 - B6 / A7 - B7 (same part, interleaved, never coupled) may change
+    # layer on one net alone; the coupled stretches share their layers
+    assert layers[0] & layers[1], layers
     mismatch = entries[PAIR[0]]["coupling"]["length_mismatch"]
     (pair,) = [p for chunk in synth_routed.info["routed"] for p in chunk["pairs"]]
     print(pair)
@@ -242,6 +252,7 @@ async def test_route_cancel_compensates(
 ) -> None:
     await _unroute(synth_routed, "run-cancel-0", list(SIGNALS))  # each test alone on a shard
     ctx = synth_routed.turn("run-cancel")
+    monkeypatch.setattr(route, "straight_path", lambda model, plan: None)  # search only
     before = await board_model(ctx)
     cs = await route.prepare_route(ctx, {"nets": list(SIGNALS)})
     second = SIGNALS[1]  # the first net's copper is pushed before this one solves
@@ -289,8 +300,10 @@ def _short_path(model: BoardModel, a: Pad) -> RoutePath:
             key=lambda q: abs(q.x - a.x) + abs(q.y - a.y),
         )
         mid = (other.x, a.y)
-        return RoutePath(((layer, (a.x, a.y), mid), (layer, mid, (other.x, other.y))), (), 0.0)
-    return RoutePath(((layer, (a.x, a.y), (other.x, other.y)),), (), abs(other.x - a.x))
+        return RoutePath(
+            ((layer, (a.x, a.y), mid, 0.25), (layer, mid, (other.x, other.y), 0.25)), (), 0.0
+        )
+    return RoutePath(((layer, (a.x, a.y), (other.x, other.y), 0.25),), (), abs(other.x - a.x))
 
 
 async def test_drc_reject_then_retry(
@@ -301,6 +314,7 @@ async def test_drc_reject_then_retry(
     retry (margin 0.05, the real router) is accepted, nothing of the rejected try is left."""
     await _unroute(synth_routed, "run-rej-0", list(SIGNALS))  # each test alone on a shard
     net = SIGNALS[0]
+    monkeypatch.setattr(route, "straight_path", lambda model, plan: None)  # search only
     ctx = synth_routed.turn("run-rej")
     model = await board_model(ctx)
     real = route.run_cpu

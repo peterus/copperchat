@@ -69,6 +69,7 @@ from copperchat.board.jobs import metrics_job, strip_fills
 from copperchat.board.metrics import MetricsReport, connections, outline_polygon
 from copperchat.board.model import ArcTrack, BoardModel, Pad, Part, Track, Via, placement_hash
 from copperchat.board.router.chamfer import PostResult, _Paths, postprocess
+from copperchat.board.router.chamfer import _fails as chamfer_fails
 from copperchat.board.worker import run_cpu
 from copperchat.errors import StructuredToolError
 from copperchat.kicad_session import KicadHandle
@@ -776,7 +777,8 @@ async def _check_ratio(
 
 def _bends_of(model: BoardModel, net: str, index: TrackIndex | None = None) -> int:
     """M4 + M7 failures over `net`'s tracks (B-C5 `analyse_tracks`, the whole board's pads
-    and vias)."""
+    and vias). A T-junction is no M4 failure (round 2, owner rule a); a Y-shaped one counts,
+    as the post-processor still rips it."""
     sub = dataclasses.replace(model, tracks=tuple(t for t in model.tracks if t.net == net), arcs=())
     rep = analyse_tracks(sub, index=index if index is not None else TrackIndex(model))
     return (
@@ -784,7 +786,7 @@ def _bends_of(model: BoardModel, net: str, index: TrackIndex | None = None) -> i
         + len(rep.ninety)
         + len(rep.acute)
         + len(rep.off_angle)
-        + len(rep.t_junctions)
+        + len(chamfer_fails(rep, "t_junctions"))  # a Y with a 90-degree pair (as the chamfer)
         + len(rep.micro_jogs)
         + len(rep.short_chamfers)
     )

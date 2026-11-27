@@ -1,5 +1,5 @@
 {
-  "fill_seconds": 11.98,
+  "fill_seconds": 19.53,
   "metrics": {
     "M1": {
       "value": 0,
@@ -10,12 +10,12 @@
       "verdict": "review"
     },
     "M11": {
-      "value": 0.9581,
+      "value": 0.9588,
       "verdict": "pass"
     },
     "M12": {
       "value": 0,
-      "verdict": "review"
+      "verdict": "pass"
     },
     "M13": {
       "value": 0,
@@ -26,11 +26,11 @@
       "verdict": "pass"
     },
     "M15": {
-      "value": 2,
-      "verdict": "review"
+      "value": 0,
+      "verdict": "pass"
     },
     "M16": {
-      "value": 19,
+      "value": 7,
       "verdict": "review"
     },
     "M2": {
@@ -46,7 +46,7 @@
       "verdict": "pass"
     },
     "M5": {
-      "value": 1.0915,
+      "value": 1.0,
       "verdict": "review"
     },
     "M6": {
@@ -55,10 +55,10 @@
     },
     "M7": {
       "value": 0,
-      "verdict": "pass"
+      "verdict": "review"
     },
     "M8": {
-      "value": 4.9671,
+      "value": 4.1985,
       "verdict": "review"
     },
     "M9": {
@@ -66,7 +66,7 @@
       "verdict": "review"
     }
   },
-  "track_length_mm": 224.4,
-  "tracks": 177,
-  "vias": 123
+  "track_length_mm": 210.8,
+  "tracks": 137,
+  "vias": 120
 }

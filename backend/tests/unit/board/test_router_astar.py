@@ -116,7 +116,7 @@ def test_straight_line() -> None:
     req = rq(pad("SIG", 5, 10), pad("SIG", 15, 10, ref="B"))
     path = go(req)
     assert path is not None
-    assert path.segments == (("F.Cu", (5.0, 10.0), (15.0, 10.0)),)
+    assert path.segments == (("F.Cu", (5.0, 10.0), (15.0, 10.0), 0.2),)
     assert path.length == pytest.approx(10.0)
     assert path.vias == ()
 
@@ -194,7 +194,7 @@ def test_detours_obstacle() -> None:
     assert path.length > 10.5
     assert_clean(path, 0.2)
     grid = build_grid(board(parts=(), outline=outline(0, 0, 30, 20), tracks=(wall,)), req)
-    assert all(grid.segment_clear(0, p, q) for _l, p, q in path.segments)
+    assert all(grid.segment_clear(0, p, q) for _l, p, q, _w in path.segments)
 
 
 def test_uses_via_when_blocked() -> None:
@@ -208,7 +208,7 @@ def test_uses_via_when_blocked() -> None:
     path = go(req, [wall])
     assert path is not None
     assert len(path.vias) == 1
-    assert {layer for layer, _p, _q in path.segments} == {"F.Cu", "B.Cu"}
+    assert {layer for layer, _p, _q, _w in path.segments} == {"F.Cu", "B.Cu"}
     assert path.vias[0][0] < 10.0
     assert_clean(path, 0.2)
 
@@ -230,7 +230,7 @@ def test_pad_exit_long_axis(rot: float) -> None:
     req = rq(a, pad("SIG", 10, 4, ref="B"))
     path = go(req)
     assert path is not None
-    first = dir_of(*path.segments[0][1:])
+    first = dir_of(*path.segments[0][1:3])
     axis = round(rot / 45) % 8
     assert first in {(axis + o) % 8 for o in (-1, 0, 1, 3, 4, 5)}
     assert first in pad_dirs(a)
@@ -244,6 +244,9 @@ def test_pad_dirs() -> None:
     assert pad_dirs(pad("S", 0, 0, 1.0, 0.4)) == frozenset({0, 1, 7, 4, 3, 5})
     assert pad_dirs(pad("S", 0, 0, 0.4, 1.0)) == frozenset({2, 1, 3, 6, 5, 7})
     assert pad_dirs(pad("S", 0, 0, 1.0, 0.4, rot=50.0)) == frozenset({1, 0, 2, 5, 4, 6})
+    # R3: an 0603-like pad (aspect < PAD_AXIS_RATIO) has no long axis
+    assert pad_dirs(pad("S", 0, 0, 0.8, 0.95)) == frozenset(range(8))
+    assert pad_dirs(pad("S", 0, 0, 0.6, 0.9)) == frozenset({2, 1, 3, 6, 5, 7})
     assert DIRS[1] == (1, -1)  # counter-clockwise on screen (y down)
 
 
@@ -256,7 +259,7 @@ def test_prefers_first_layer() -> None:
     )
     path = go(req)
     assert path is not None
-    assert {layer for layer, _p, _q in path.segments} == {"B.Cu"}
+    assert {layer for layer, _p, _q, _w in path.segments} == {"B.Cu"}
 
 
 def test_max_expansions_none() -> None:
@@ -431,13 +434,25 @@ def test_stacked_pads_on_two_layers_use_a_via() -> None:
     assert len(path.vias) == 1
 
 
-# ---- P9a: no 90° branch off existing own-net copper (owner rule, M4 t_junction) ----------
+# ---- R3 (owner rule a): T-junctions, never Y; no X; tree goals -------------------------
 
 
-def test_junctions_ok_rejects_ninety_branch_off_own_copper() -> None:
-    """sp4_synth: a second connection from a TSSOP pin shared the first one's exit stub
-    and turned SW where the first turned NW, 0.16 mm outside the pad: a 90° branch, which
-    M4 fails (off-pad T-junction). A Y branch (45° / 135°) and a branch inside a pad pass."""
+def test_junctions_ok_accepts_ninety_branch_off_own_copper() -> None:
+    """A branch that meets a straight own track perpendicularly is a T (allowed, owner rule
+    a, reverses P9a); crossing it is an X (refused, the router never makes one)."""
+    from copperchat.board.router.astar import junctions_ok
+
+    own = {"F.Cu": [((0.0, 5.0), (10.0, 5.0))]}
+    t = [("F.Cu", [(5.0, 0.0), (5.0, 5.0)])]
+    assert junctions_ok(t, own, lambda layer, p: False)
+    cross = [("F.Cu", [(5.0, 0.0), (5.0, 10.0)])]
+    assert not junctions_ok(cross, own, lambda layer, p: False)
+    assert junctions_ok([("B.Cu", cross[0][1])], own, lambda layer, p: False)
+
+
+def test_junctions_ok_rejects_45_branch() -> None:
+    """sp4_synth's shared exit stub: a second connection that shares the stub and branches
+    off it at 45° is a Y (M15) - refused; inside the pad any branch is a joint."""
     from copperchat.board.router.astar import junctions_ok
 
     stub_end = (136.7375, 120.325)
@@ -446,30 +461,27 @@ def test_junctions_ok_rejects_ninety_branch_off_own_copper() -> None:
     def in_pad(layer: str, p: tuple[float, float]) -> bool:
         return layer == "F.Cu" and abs(p[0] - 137.6375) <= 0.7375 and abs(p[1] - 120.325) <= 0.2
 
-    t = [("F.Cu", [(137.6375, 120.325), stub_end, (136.4375, 120.625), (136.4375, 121.425)])]
-    assert not junctions_ok(t, own, in_pad)
-    y = [("F.Cu", [(137.6375, 120.325), (136.4375, 120.325), (136.0375, 120.725)])]
-    assert junctions_ok(y, own, in_pad)
-    # crossing the existing NW branch at 90° in the middle of both segments
-    cross = [("F.Cu", [(136.0125, 120.2), (136.6125, 119.6)])]
-    assert not junctions_ok(cross, own, in_pad)
-    # the same crossing on another layer, or a branch inside a pad, is fine
-    assert junctions_ok([("B.Cu", cross[0][1])], own, in_pad)
+    y = [("F.Cu", [(137.6375, 120.325), stub_end, (136.4375, 120.625), (136.4375, 121.425)])]
+    assert not junctions_ok(y, own, in_pad)
+    y2 = [("F.Cu", [(137.6375, 120.325), (136.4375, 120.325), (136.0375, 120.725)])]
+    assert not junctions_ok(y2, own, in_pad)
+    ending = [("F.Cu", [(3.0, 1.0), (5.0, 3.0)])]  # a 45° branch ending on a track: a Y
+    assert not junctions_ok(ending, {"F.Cu": [((0.0, 3.0), (10.0, 3.0))]}, lambda la, p: False)
     pad_branch = [("F.Cu", [(137.6375, 120.325), (137.2375, 120.725)])]
     own_in_pad = {"F.Cu": [((137.6375, 120.325), (137.2375, 119.925))]}
     assert junctions_ok(pad_branch, own_in_pad, in_pad)
 
 
 def test_junctions_ok_own_track_ending_on_the_path() -> None:
-    """An existing own track that ends on the interior of a straight path segment at 90°
-    is a T (M4 splits the path there), within M4's 2 µm join tolerance."""
+    """An existing own track that ends on the interior of a straight path segment at 90° is
+    a T (allowed), within M4's 2 µm join tolerance; at 45° it is a Y."""
     from copperchat.board.router.astar import junctions_ok
 
     own = {"F.Cu": [((5.0, 3.0), (5.0, 4.9995))]}  # ends 0.5 µm above the path
     path = [("F.Cu", [(0.0, 5.0), (10.0, 5.0)])]
-    assert not junctions_ok(path, own, lambda layer, p: False)
-    diag = {"F.Cu": [((3.0, 3.0), (5.0, 5.0))]}  # a 45° branch ending on it: a Y
-    assert junctions_ok(path, diag, lambda layer, p: False)
+    assert junctions_ok(path, own, lambda layer, p: False)
+    diag = {"F.Cu": [((3.0, 3.0), (5.0, 5.0))]}
+    assert not junctions_ok(path, diag, lambda layer, p: False)
 
 
 def _pin_rig(*, extra_pads: int = 0) -> tuple[Any, Any, Any, Any]:
@@ -492,57 +504,64 @@ def _pin_rig(*, extra_pads: int = 0) -> tuple[Any, Any, Any, Any]:
     return circuit(*parts), pin, up, down
 
 
-def _second_route(m: Any, pin: Any, up: Any, down: Any) -> tuple[Any, Any]:
+def _with(m: Any, path: Any, tag: str) -> Any:
     from dataclasses import replace
 
     from copperchat.board.model import Track
 
+    tracks = tuple(
+        Track(f"{tag}{i}", "P", lay, a, b, w, True)
+        for i, (lay, a, b, w) in enumerate(path.segments)
+    )
+    return replace(m, tracks=m.tracks + tracks)
+
+
+def _second_route(m: Any, pin: Any, up: Any, down: Any, *, tree: bool = False) -> tuple[Any, Any]:
+    """The first connection pin -> up routed; the second request: pin -> down, or with
+    `tree` down -> pin (pad b = the pin, which has copper: a tree request)."""
     req = RouteRequest("P", pin, up, 0.2, 0.2, ("F.Cu",), False, (0.6, 0.3))
     first = route(build_grid(m, req), req)
     assert first is not None
-    tracks = tuple(
-        Track(f"t{i}", "P", lay, a, b, 0.2, True) for i, (lay, a, b) in enumerate(first.segments)
-    )
-    m2 = replace(m, tracks=tracks)
-    req2 = RouteRequest("P", pin, down, 0.2, 0.2, ("F.Cu",), False, (0.6, 0.3))
-    return m2, req2
+    m2 = _with(m, first, "t")
+    if tree:
+        return m2, RouteRequest("P", down, pin, 0.2, 0.2, ("F.Cu",), False, (0.6, 0.3), tree=True)
+    return m2, RouteRequest("P", pin, down, 0.2, 0.2, ("F.Cu",), False, (0.6, 0.3))
 
 
-def _t_junctions(m2: Any, second: Any) -> tuple[Any, ...]:
-    from dataclasses import replace
-
+def _report(m2: Any, second: Any) -> Any:
     from copperchat.board.geom import analyse_tracks
-    from copperchat.board.model import Track
 
-    both = m2.tracks + tuple(
-        Track(f"u{i}", "P", lay, a, b, 0.2, True) for i, (lay, a, b) in enumerate(second.segments)
-    )
-    return tuple(analyse_tracks(replace(m2, tracks=both)).t_junctions)
+    return analyse_tracks(_with(m2, second, "u"))
 
 
-def test_search_branches_as_y_off_a_shared_stub() -> None:
-    """Two connections from one pin: the second may share the first one's exit stub, but
-    never branches off it at 90° (M4 off-pad T-junction) - the search finds a Y."""
+@pytest.mark.parametrize("tree", [False, True])
+def test_search_branches_as_t_off_a_shared_stub(tree: bool) -> None:
+    """Two connections from one pin: the second never branches off the first at 45° (a Y,
+    M15) - it leaves the pad on its own or, as a tree request, lands on the first one's
+    straight piece as a T; no 90° corner either."""
     m, pin, up, down = _pin_rig()
-    m2, req2 = _second_route(m, pin, up, down)
+    m2, req2 = _second_route(m, pin, up, down, tree=tree)
     second = route(build_grid(m2, req2), req2)
     assert second is not None
-    assert _t_junctions(m2, second) == ()
+    rep = _report(m2, second)
+    assert rep.y_junctions == () and rep.ninety == () and rep.acute == (), rep
 
 
-def test_search_masks_alone_avoid_the_t(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_search_masks_alone_avoid_the_y(monkeypatch: pytest.MonkeyPatch) -> None:
     """The move masks steer the search by themselves (junctions_ok switched off)."""
     m, pin, up, down = _pin_rig()
     m2, req2 = _second_route(m, pin, up, down)
     monkeypatch.setattr(astar_mod, "junctions_ok", lambda *a, **k: True)
     second = route(build_grid(m2, req2), req2)
     assert second is not None
-    assert _t_junctions(m2, second) == ()
+    assert _report(m2, second).y_junctions == ()
 
 
 def test_junction_masks_direction_convention() -> None:
-    """A horizontal own track forbids the vertical moves (DIRS 2 = up, 6 = down) on its
-    nodes, nothing else; its nodes inside an own pad of the layer are free."""
+    """A horizontal own track: on its nodes the vertical moves (DIRS 2 = up, 6 = down:
+    leaving it sideways) and the four diagonals (a Y) are blocked; along it is free. A
+    node next to it may step onto it vertically (a T arrival) but not diagonally. Its
+    nodes inside an own pad of the layer are free."""
     from copperchat.board.router.astar import DIRS, junction_masks
 
     m, pin, up, down = _pin_rig()
@@ -550,21 +569,110 @@ def test_junction_masks_direction_convention() -> None:
     grid = build_grid(m2, req2)
     masks = junction_masks(grid)
     li = grid.layers.index("F.Cu")
-    vertical = {k for k, (di, dj) in enumerate(DIRS) if di == 0}
-    seen = 0
+    blocked_on = {k for k, (di, dj) in enumerate(DIRS) if di == 0 or dj != 0}
+    diagonal = {k for k, (di, dj) in enumerate(DIRS) if di and dj}
+    seen = above = 0
     for t in m2.tracks:
         if abs(t.start[1] - t.end[1]) > 1e-9:
             continue  # only the horizontal stub
+        lo, hi = min(t.start[0], t.end[0]) + 0.3, max(t.start[0], t.end[0]) - 0.3
         for n, bits in masks[li].items():
             x, y = grid.xy(n % grid.w, n // grid.w)
-            if abs(y - t.start[1]) < 1e-6 and min(t.start[0], t.end[0]) < x < max(
-                t.start[0], t.end[0]
-            ):
-                assert {k for k in range(8) if bits >> k & 1} == vertical
+            got = {k for k in range(8) if bits >> k & 1}
+            if abs(y - t.start[1]) < 1e-6 and lo < x < hi:
+                assert got == blocked_on
                 assert not grid.own_exempt(li, (x, y))
                 seen += 1
-    assert seen > 0
+            elif abs(y - (t.start[1] - grid.pitch)) < 1e-6 and lo < x < hi:
+                down_k = next(k for k, d in enumerate(DIRS) if d == (0, 1))
+                assert down_k not in got and got <= diagonal and got
+                above += 1
+    assert seen > 0 and above > 0
     assert junction_masks(grid) is masks  # cached on the grid
+
+
+def _tree_rig(own: Any) -> tuple[Any, Any]:
+    """Pad A at (10, 4) and pad B at (4, 10), net P; `own` = own tracks from B (connected
+    to it). Returns (model, tree request A -> B)."""
+    from dataclasses import replace
+
+    from copperchat.board.model import Track
+    from tests.unit.board.builders import part
+    from tests.unit.board.builders_circuit import circuit, pad
+
+    a = pad("U1", "1", "P", (10.0, 4.0), w=0.5, h=0.5)
+    b = pad("U2", "1", "P", (4.0, 10.0), w=0.5, h=0.5)
+    m = circuit(part("U1", 10.0, 4.0, pads=(a,)), part("U2", 4.0, 10.0, pads=(b,)))
+    tracks = tuple(Track(f"o{k}", "P", "F.Cu", s, e, 0.2, True) for k, (s, e) in enumerate(own))
+    m = replace(m, tracks=tracks)
+    return m, RouteRequest("P", a, b, 0.2, 0.2, ("F.Cu",), False, (0.6, 0.3), tree=True)
+
+
+def test_tree_goal_perpendicular() -> None:
+    """A tree request ends on the own track connected to pad b: perpendicular, the end
+    point exactly on the track, much shorter than going to pad b."""
+    from copperchat.board.geom import analyse_tracks
+
+    m, req = _tree_rig([((4.0, 10.0), (14.0, 10.0))])
+    path = route(build_grid(m, req), req)
+    assert path is not None
+    last = path.segments[-1]
+    assert abs(last[2][1] - 10.0) < 1e-6 and abs(last[1][0] - last[2][0]) < 1e-6  # vertical
+    assert path.length < 6.5  # 6 mm down; pad b is ~8.5 mm away
+    rep = analyse_tracks(_with(m, path, "n"))
+    assert rep.y_junctions == () and rep.ninety == ()
+
+
+def test_tree_goal_not_on_bend() -> None:
+    """No tree goal lands within `width` of a bend vertex of the own copper (a T there
+    would be a Y, M15) - nor on its free end."""
+    from copperchat.board.router.astar import tree_goals
+
+    bend = (8.0, 10.0)
+    m, req = _tree_rig([((4.0, 10.0), bend), (bend, (11.0, 7.0))])
+    grid = build_grid(m, req)
+    goals = tree_goals(grid, req)
+    lands = [land for layer in goals for _bits, land in layer.values()]
+    assert lands
+    assert all(math.dist(p, bend) >= req.width - 1e-9 for p in lands)
+    assert all(math.dist(p, (11.0, 7.0)) >= req.width - 1e-9 for p in lands)
+    path = route(grid, req)
+    assert path is not None and math.dist(path.segments[-1][2], bend) >= req.width - 1e-9
+
+
+def test_tree_goal_not_on_existing_junction() -> None:
+    from copperchat.board.router.astar import tree_goals
+
+    junction = (8.0, 10.0)
+    m, req = _tree_rig([((4.0, 10.0), (14.0, 10.0)), (junction, (8.0, 13.0))])
+    lands = [land for layer in tree_goals(build_grid(m, req), req) for _b, land in layer.values()]
+    assert lands and all(math.dist(p, junction) >= req.width - 1e-9 for p in lands)
+
+
+def test_tree_goal_not_on_track_end() -> None:
+    from copperchat.board.router.astar import tree_goals
+
+    m, req = _tree_rig([((4.0, 10.0), (9.0, 10.0))])
+    lands = [land for layer in tree_goals(build_grid(m, req), req) for _b, land in layer.values()]
+    assert lands and all(p[0] <= 9.0 - req.width + 1e-9 for p in lands)
+
+
+def test_tree_goals_only_on_copper_connected_to_b() -> None:
+    """Own copper that is not connected to pad b gives no goals (routing onto it would not
+    connect b)."""
+    from copperchat.board.router.astar import tree_goals
+
+    m, req = _tree_rig([((5.0, 7.0), (14.0, 7.0))])  # not touching pad b
+    assert all(not layer for layer in tree_goals(build_grid(m, req), req))
+
+
+def test_tree_goals_capped(monkeypatch: pytest.MonkeyPatch) -> None:
+    from copperchat.board.router.astar import tree_goals
+
+    monkeypatch.setattr(astar_mod, "TREE_GOALS_MAX", 5)
+    m, req = _tree_rig([((4.0, 10.0), (14.0, 10.0))])
+    got = tree_goals(build_grid(m, req), req)
+    assert sum(len(layer) for layer in got) == 5
 
 
 def test_own_exempt_is_per_layer() -> None:
@@ -610,13 +718,14 @@ def test_junction_masks_cost_bounded_and_deadline() -> None:
 
 
 @pytest.mark.parametrize("offset", [0.0, 0.025, 0.0125])
-def test_search_crosses_off_lattice_own_copper_at_45(offset: float) -> None:
-    """Own copper that does not lie on the request's lattice still masks the 90° steps
-    across it: the search crosses it diagonally at once instead of giving up after the
-    goal rejects (round-2 review: a track at y = 12.025 gave no masks, no path)."""
+def test_search_never_crosses_own_copper(offset: float) -> None:
+    """Own copper not connected to pad b - on the request's lattice or not - is never
+    crossed (an X, or at 45° a Y): the search goes around it; as a tree request (the track
+    connected to b) it lands on it as a T."""
     import time as _time
     from dataclasses import replace
 
+    from copperchat.board.geom import analyse_tracks
     from copperchat.board.model import Track
     from copperchat.board.router.astar import junctions_ok
     from tests.unit.board.builders import part
@@ -626,34 +735,28 @@ def test_search_crosses_off_lattice_own_copper_at_45(offset: float) -> None:
     b = pad("U2", "1", "P", (10.0, 14.0), w=0.5, h=0.5)
     m = circuit(part("U1", 10.0, 10.0, pads=(a,)), part("U2", 10.0, 14.0, pads=(b,)))
     y = 12.0 + offset
-    m = replace(m, tracks=(Track("t", "P", "F.Cu", (5.0, y), (15.0, y), 0.2, True),))
+    m = replace(m, tracks=(Track("t", "P", "F.Cu", (7.0, y), (13.0, y), 0.2, True),))
     req = RouteRequest("P", a, b, 0.2, 0.2, ("F.Cu",), False, (0.6, 0.3))
     t0 = _time.perf_counter()
     path = route(build_grid(m, req), req)
+    assert _time.perf_counter() - t0 < 2.0
     assert path is not None
-    assert _time.perf_counter() - t0 < 0.5
-    own = {"F.Cu": [((5.0, y), (15.0, y))]}
-    pts = [path.segments[0][1], *(q for _, _, q in path.segments)]
+    own = {"F.Cu": [((7.0, y), (13.0, y))]}
+    pts = [path.segments[0][1], *(q for _, _, q, _w in path.segments)]
     assert junctions_ok([("F.Cu", pts)], own, lambda layer, p: False)
-
-
-def test_mask_never_blocks_the_step_arriving_next_to_own_copper() -> None:
-    """Only the step taken is checked against the masks (round 4): the node right before
-    a perpendicular own track can be entered head-on, so the short route survives
-    (1.25 mm; with the old one-step lookahead it detoured to 1.59 mm)."""
-    from dataclasses import replace
-
-    from copperchat.board.model import Track
-    from tests.unit.board.builders import part
-    from tests.unit.board.builders_circuit import circuit, pad
-
-    a = pad("U1", "1", "P", (10.0, 10.0), w=0.5, h=0.5)
-    b = pad("U2", "1", "P", (10.0, 11.0), w=0.5, h=0.5)
-    m = circuit(part("U1", 10.0, 10.0, pads=(a,)), part("U2", 10.0, 11.0, pads=(b,)))
-    m = replace(m, tracks=(Track("t", "P", "F.Cu", (5.0, 10.6), (15.0, 10.6), 0.2, True),))
-    req = RouteRequest("P", a, b, 0.2, 0.2, ("F.Cu",), False, (0.6, 0.3))
-    path = route(build_grid(m, req), req)
-    assert path is not None and path.length < 1.5, path
+    assert analyse_tracks(_with(m, path, "n")).y_junctions == ()
+    # connected to b: a T onto it
+    m_t = replace(
+        m, tracks=(*m.tracks, Track("s", "P", "F.Cu", (10.0, 14.0), (10.0, 12.5), 0.2, True))
+    )
+    m_t = replace(
+        m_t, tracks=(Track("t", "P", "F.Cu", (7.0, 12.5), (13.0, 12.5), 0.2, True), m_t.tracks[1])
+    )
+    req_t = replace(req, tree=True)
+    path_t = route(build_grid(m_t, req_t), req_t)
+    assert path_t is not None and abs(path_t.segments[-1][2][1] - 12.5) < 1e-6
+    rep = analyse_tracks(_with(m_t, path_t, "n"))
+    assert rep.y_junctions == () and rep.ninety == ()
 
 
 def test_junction_masks_fast_with_long_diagonal_own_tracks() -> None:
@@ -677,3 +780,42 @@ def test_junction_masks_fast_with_long_diagonal_own_tracks() -> None:
     junction_masks(grid)
     # a coarse ceiling (≈ 1 s on a dev box; the unbucketed lookup took 23.6 s)
     assert _time.perf_counter() - t0 < 3.0
+
+
+@pytest.mark.parametrize("offset", [0.0, 0.0125, 0.03, -0.03])
+@pytest.mark.parametrize("from_above", [True, False])
+def test_tree_goal_off_lattice_both_sides(offset: float, from_above: bool) -> None:
+    """Verify-pass finding: a track off the request's lattice gets T goals from either side
+    (a node within one pitch on the arrival side), so the T is found from both sides."""
+    from copperchat.board.router.astar import tree_goals
+
+    y = 10.0 + offset
+    m, req = _tree_rig([((4.0, 10.0), (4.0, y)), ((4.0, y), (16.0, y))])
+    if not from_above:  # pad a below the track instead of above it
+        from dataclasses import replace
+
+        a = replace(req.a, y=16.0)
+        m = replace(m, parts=tuple(replace(p, pads=(a,)) if p.ref == "U1" else p for p in m.parts))
+        req = replace(req, a=a)
+    goals = tree_goals(build_grid(m, req), req)
+    lands = [land for layer in goals for _b, land in layer.values()]
+    assert lands and all(abs(p[1] - y) < 1e-6 for p in lands)
+    path = route(build_grid(m, req), req)
+    assert path is not None and abs(path.segments[-1][2][1] - y) < 1e-6, path
+
+
+def test_junctions_ok_ninety_at_via_refused_in_pad_allowed() -> None:
+    """Two tracks meeting at 90 degrees (degree 2) at an exempt node: refused at a via (M4
+    counts it), allowed inside a pad (`pad_at`); without `pad_at` every exempt node counts
+    as a pad (the old behaviour)."""
+    from copperchat.board.router.astar import junctions_ok
+
+    own = {"F.Cu": [((0.0, 5.0), (5.0, 5.0))]}  # an own track ending at (5, 5)
+    path = [("F.Cu", [(5.0, 10.0), (5.0, 5.0)])]  # arriving from below, ending there
+
+    def exempt(layer: str, p: tuple[float, float]) -> bool:
+        return abs(p[0] - 5.0) < 0.3 and abs(p[1] - 5.0) < 0.3
+
+    assert not junctions_ok(path, own, exempt, lambda la, p: False)  # a via there
+    assert junctions_ok(path, own, exempt, exempt)  # a pad there
+    assert junctions_ok(path, own, exempt)

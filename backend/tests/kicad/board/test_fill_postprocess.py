@@ -15,7 +15,7 @@ import pytest
 
 from copperchat.board.geom import TrackIndex, analyse_tracks
 from copperchat.board.model import BoardModel
-from copperchat.board.router.chamfer import PostResult
+from copperchat.board.router.chamfer import PostResult, _fails
 from copperchat.errors import StructuredToolError
 from copperchat.kicad_tools.board import api, engine, fill, route
 from copperchat.kicad_tools.board.api import DrcTimeout, RefillTimeout
@@ -49,7 +49,7 @@ def _bends(m: BoardModel, nets: set[str] | None = None) -> dict[str, int]:
         + len(rep.ninety)
         + len(rep.acute)
         + len(rep.off_angle)
-        + len(rep.t_junctions),
+        + len(_fails(rep, "t_junctions")),  # a Y-shaped T: the chamfer still rips it
         "M7": len(rep.micro_jogs) + len(rep.short_chamfers),
     }
 
@@ -180,8 +180,9 @@ async def test_post_deadline_reports_remaining_rips(
     fill_rig: PlacedSynth, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """4 ripped connections; the (fake) clock passes the post deadline right after the
-    first re-route is kept → that one is re-routed, the other 3 are `rejected` with
-    reason `timeout`, the call succeeds, and what was kept has M4 = M7 = 0."""
+    first re-route is kept → what was kept by then is re-routed (R3: pass 0 keeps all of
+    its DRC-verified straight segments together, so possibly more than one), the rest are
+    `rejected` with reason `timeout`, the call succeeds, and what was kept has M4 = M7 = 0."""
     await unroute(fill_rig, "pd-0")
     picked: list[str] = []
     _ripping(monkeypatch, 4, picked)
@@ -195,8 +196,8 @@ async def test_post_deadline_reports_remaining_rips(
     monkeypatch.setattr(route, "_record", record)
     out = await fill_ok(fill_rig, "pd-1")
     rejected = {r["connection"]: r["reason"] for r in out["rejected"]}
-    assert out["rerouted"] == 1, out
-    assert len(rejected) == 3 and set(rejected.values()) == {"timeout"}, rejected
+    assert 1 <= out["rerouted"] < 4, out
+    assert len(rejected) == 4 - out["rerouted"] and set(rejected.values()) == {"timeout"}, rejected
     assert all({"x", "y"} <= set(r) for r in out["rejected"])
     assert _bends(await model_of(fill_rig, "pd-2")) == {"M4": 0, "M7": 0}
     assert "pcb_route" in out["next"]

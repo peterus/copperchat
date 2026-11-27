@@ -25,7 +25,7 @@ from copperchat.board.geom import (
 from copperchat.board.metrics import routed_length
 from copperchat.board.model import ArcTrack, BoardModel, Pad, Track
 from copperchat.board.router import chamfer
-from copperchat.board.router.chamfer import PostResult, postprocess
+from copperchat.board.router.chamfer import PostResult, _fails, postprocess
 from tests.unit.board.builders import board, net_class, part, track, via
 
 S2 = math.sqrt(2.0)
@@ -467,7 +467,8 @@ def _clean_after_nm(m: BoardModel, r: PostResult) -> BoardModel:
         ends = pad_entry_ends(line, lambda p: _in_end_pad(p, ZIG))
         assert fails(analyse_bends(line, w, pad_ends=ends)) == {}, line
     whole = analyse_tracks(out)
-    assert fails(whole) == {} and whole.t_junctions == ()
+    # R3: a T is legal; a Y-shaped one is still ripped (chamfer._fails)
+    assert fails(whole) == {} and _fails(whole, "t_junctions") == ()
     return out
 
 
@@ -868,7 +869,8 @@ def _check_case(seed: int) -> bool:
         rb = analyse_bends(line, w, pad_ends=ends)
         assert fails(rb) == {}, f"{msg} line={line}"
     whole = analyse_tracks(out)
-    assert fails(whole) == {} and whole.t_junctions == (), msg
+    # R3: a T is legal; a Y-shaped one is still ripped (chamfer._fails)
+    assert fails(whole) == {} and _fails(whole, "t_junctions") == (), msg
     assert routed_length(out, *_pads(out)) is not None, msg
     n2 = [q for p in m.parts for q in p.pads if q.net == "N2"]
     for d in chamfers(r):
@@ -1064,3 +1066,23 @@ def test_no_kipy_import() -> None:
         "assert 'kipy' not in sys.modules, 'kipy imported'"
     )
     subprocess.run([sys.executable, "-c", code], check=True, timeout=60)
+
+
+# ---- R3 (owner rule a): a T-junction is legal; a Y with a 90-degree pair is still ripped ----
+
+
+def test_t_junction_kept_y_with_ninety_pair_ripped() -> None:
+    """A perpendicular branch off a straight N1 track (a T) is not ripped any more; a node
+    that has a 90-degree pair AND a 45-degree branch (a Y, M15) still is."""
+    branch = track("N1", "F.Cu", (15.0, 10.0), (15.0, 14.0), 0.2, kiid="t8")
+    m = routed(
+        [(10.0, 10.0), (15.0, 10.0), (20.0, 10.0)],
+        extra_parts=(pad_part("J3", 15.0, 14.0),),
+        extra_tracks=(branch,),
+    )
+    r = postprocess(m, kiids(m))
+    assert r.rip == () and r.reasons == ()
+    y = track("N1", "F.Cu", (15.0, 10.0), (17.0, 12.0), 0.2, kiid="t9")
+    m2 = replace(m, parts=(*m.parts, pad_part("J4", 17.0, 12.0)), tracks=(*m.tracks, y))
+    r2 = postprocess(m2, kiids(m2))
+    assert r2.rip and all(why == "ninety_unfixable" for _k, why in r2.reasons), r2

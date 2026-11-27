@@ -975,6 +975,147 @@ loop, so production behaviour is unchanged. `tests/unit/test_board_cli_lock.py` 
 - P9b skill: show `pcb_floorplan` before `pcb_place_blocks`; write the user's edges as
   Placement rows (any part ref, number = mm along the edge); prefer keep_channels 0.5-1.5.
 
+### As built (R3)
+
+**Router: neck-down, T-junctions, straight first, pad entry** (`cc/board/router/{grid,astar,
+simplify,pairs}.py`, `cc/kicad_tools/board/route.py`; B-C12 round 2). Pure Python + the
+existing KiCad write path.
+
+- **Contract (B-C12 round 2) as specified:** `RoutePath.segments` are `(layer, start, end,
+  width)`; `RouteRequest.neck` / `.tree` (defaults keep every old call). Additions:
+  `ObstacleGrid.width` (the width the needs were built for), `.neck_cells`, `.tree_segments`;
+  `segment_clear(..., shrink=)` (a narrower piece needs that much less; the outline inset stays
+  the class width's, conservative). `plan_connections(..., tree=False, min_track=None)`
+  (`min_track` default: the JLC preset of the layer count, else `jlcpcb-4l`, like M12 / M16);
+  `pcb_route` passes `tree=True` and `preset_for(model, doc).min_track`; the fill's re-route
+  keeps `tree=False` (R4). `route_connections(..., reserve=())`. `valid_path(..., loops_ok=)`,
+  `route(..., loops_ok=)`.
+- **Neck-down:** per neck zone a node map over the zone's node box only, copied into `cells`
+  for the nodes inside the zone (narrowest zone last) - the search itself is unchanged; the
+  cell cap counts window + Σ boxes (`test_neck_map_bounded`). Zones = `escape_zone(part)` of
+  each end pad with `neck_width < class width`, **inset by 2 µm** (`NECK_ZONE_INSET_MM`) so a
+  split point rounded to 1 nm stays inside the zone M12 checks; `simplify.neck_pieces` splits
+  at every boundary crossing and makes no sliver < 1 µm. Pairs keep their widths (no neck).
+- **T-junctions (owner rule a):** `junction_masks` blocks a step at 45° / 135° to own copper
+  it touches (both ways), a perpendicular step that LEAVES own copper sideways or crosses it
+  (X; round-2 plan call 3), and allows a perpendicular ARRIVAL (T). `junctions_ok` judges the
+  distinct headings of path + own copper at each meeting node: ≥ 3 → `junction_kind` must be
+  `t`; 2 → straight or a 45° bend. Own-pad joint spots are now the exact rotated rectangle
+  (a 45° pad's circumscribed disc exempted a Y outside the pad - found by the property test).
+  **Tree goals:** nodes within half a pitch of the interior of an own straight track
+  connected to pad b (union-find over the net's tracks / vias / pads when the grid is built;
+  arcs not followed), ≥ `req.width` from its ends, bend vertices, junctions, crossings, not in
+  own pads / vias / pad b, entered perpendicularly; the path is extended straight onto the
+  track. Heuristic: min(octile to pad b, Euclidean to the goal pieces); coarse field seeded at
+  every goal. **Deviation:** when the tree search finds nothing, a plain pad-b search follows
+  (tree alone routed 199 / 224 tree maps vs 215 plain at 100 k expansions; with the fallback
+  219). `req.tree` only means "T allowed": the grid finds the copper at solve time, so
+  `plan_connections(tree=True)` sets it on every non-pair plan.
+- **`_bends`:** M4 without T; new key `M15` (Y-junctions of the call's copper).
+- **Straight first (owner rule b):** pass 0 as planned (one push, one DRC; sibling-only
+  rejections retried alone). Additions: candidates are pre-filtered (`_corridor_free`: no
+  other-net pad / via / track / keepout in the way - USB-C A6–B6 straddle A7 and were DRC
+  shorts); **a pass-0 segment is never ripped** by rip-and-retry (`_Kept.straight`; re-routing
+  it through the search made the dogleg M16 flags); a matched pair routed straight on both
+  nets records its coupling. `straight_path` runs along the corridor's centre line from pad
+  a's centre coordinate to pad b's (both ends inside the pads), width = min(class, neck
+  widths) as M16 measures, split at the neck zones. Reservations: `corridor_reservations`
+  (every free straight corridor of an unrouted non-ground connection) passed by `pcb_route`;
+  other nets' searches see them as that net's copper.
+- **Pad entry (owner rule c) - deviation:** `ENTRY_TURN_COST = 4.0` only for a bend in an end
+  pad's entry zone (outside the pad) that follows another bend within the straight-piece
+  minimums (search state `s ≠ 0`: a jog or a loop forming). Charging every zone bend (the plan)
+  broke the golden: decoupling C1.1–U1.5 detoured via B.Cu to 7.35 mm (M8 hard), one open
+  connection, USB-C A6–B6 unroutable. No hard "away-move ban" (spec §22.4 asks for costs and
+  an M16 pass; a ban makes a QFN pad whose goal lies behind the IC unroutable); instead
+  `valid_path` refuses an M16 pad loop **and pad jog** (owner, 2026-11-27: a jog / S-offset
+  in the entry zone is an error like doglegs and loops). **`solve` order:** default window
+  clean → doubled window clean (≤ `RETRY_STRICT_EXPANSIONS` = 1 M) → default window with a
+  loop / jog allowed → doubled window likewise (`entry_ok`): a placement-forced one is
+  reported by M16 instead of costing 20 s per try and a rip-up cascade (sp4_synth USB-C
+  A6–B6: 6 × 20 s). Same-part links (USB-C A6–B6 around A7) are solved `entry_ok` from the
+  start: the clean search sent them on via detours that walled in the ESD's VBUS pin on R2's
+  placement (`VBUS:U2.5-U3.5` no_path).
+- **Review round 1:** a half of a matched pair keeps its straight pass-0 segment even when
+  its partner has none (tried "pairs only as a whole": J1.B7–U2.3 then doglegged and USB-C
+  A7–B7 became an M5 detour failure - owner rule b outranks coupling, a review); pass-0 retries are capped (`STRAIGHT_RETRY_MAX = 4`); the stored DRC
+  drops markers of copper removed again; reservations use the widest piece's width and are
+  pre-filtered cheaply (MST pairs with a corridor before `routed_length`); a routed path with
+  a pad-entry loop / jog is reported (`ConnResult.pad_entry`, net entry
+  `pad_entry_defects`); `fill._bends_of` counts the Y-shaped T the chamfer rips. Measured:
+  `ENTRY_TURN_COST` hardly ever decides a path (the second-bend condition rarely holds where
+  a cheaper alternative exists) - the guarantee is `valid_path`'s rejection; the cost stays
+  as the plan's steering term.
+- **After the rebase on R2b (`4d81119`)** the golden failed three ways, each fixed: (1) a
+  90-degree meeting of two paths at a via (M4 counts a degree-2 90-degree vertex at a via):
+  `junctions_ok` now exempts only pad nodes from that check (`grid.own_pad_at`); (2) M8
+  links are flagged `early` and routed before pass 0, crystals first, in plan order, never
+  as a T (`tree=False`): the shorter /OSC_OUT link and other nets' straight segments had
+  pushed Y1.1–U1.2 to 5.47 mm; an M8 link over the limit also tries a solve that allows a
+  pad-entry jog/loop and takes it only when that meets M8 (both owner-hard; the jog is
+  then reported); (3) rip-and-retry ripped a connection another path ended on as a T,
+  leaving it dangling (DRC `dangling_track`, M3): `_dependants` are now taken out with
+  their anchor, re-routed after it, and restored with it.
+- **M8 connections first:** `plan_connections` puts the connections M8 measures (decap
+  supply pad ↔ its IC pin, crystal ↔ IC) first, shortest first (`_m8_first`): with jogs
+  refused, the crystal nets (routed earlier) walled C1.1–U1.5 off to 9.4 mm (M8 hard).
+- **`PAD_AXIS_RATIO = 1.5`:** a pad whose long / short side is below 1.5 has no long axis (all
+  8 exit directions). An 0603 pad (0.8 × 0.95) could not be left straight towards its
+  neighbour - the D1–R4 dogleg the owner marked.
+- **Same-part connections** (both pads on one part) plan last in their net when unmatched, so
+  they can land on the net's other copper as a T; two crossing same-part connections (USB-C
+  A6–B6 / A7–B7 interleave) are not pair-matched; parallel ones (ESD pass-throughs) still are.
+- **Pairs:** the coupled centreline's grid carries no own-copper junction data (the centre is
+  no copper; the real P / N paths are still checked with the T / Y / X rules).
+- **Files of other phases (minimal, round-2 rule a needs them):** `cc/board/router/chamfer.py`
+  (R4): `_REASON` keeps `t_junctions` but `_fails` rips only the Y-shaped ones (a T is legal;
+  a Y with a 90° pair was ripped before and still is; pure Ys stay R4's). Without this the
+  fill ripped every fill connection touching a net with a router T (`ninety_unfixable`).
+  `cc/kicad_tools/board/fill.py` (R4) `_bends_of` without T (as M4). Tests:
+  `tests/kicad/board/test_fill_postprocess.py` (M4 helper without T),
+  `tests/unit/board/test_chamfer.py` (T allowed, Y-shaped T not).
+
+- **Neck layers:** a neck zone applies only on the layers of the end pad inside it
+  (`grid.neck_layers`): on ODH a via inside the escape zone took the neck to B.Cu, which M12
+  fails (the QFN pad is on F.Cu).
+- **sp4_synth critical routing (`test_route_critical_set`, main `972766a` → R3 before
+  rebase):** M15 2 → **0**; M16 hard 14 (10 doglegs D1.2–R4.2, R4.1–U1.10, U1.16–C2.1,
+  C8/C9–L1, C4–Y1, U3.2–L1, J2–U1 SWCLK, J1.B7–U2.3, C10–U3 VBST; 4 pad loops J1 A6/B6/A7/B7)
+  → **3** (0 doglegs; the forced loops J1.A7 / J1.B7 and U3.2 /Power/SW C10.2–U3.2); pad jogs
+  5 → 2; M4 = M7 = 0; 37 / 37 routed; `pcb_route` 55 s → 89 s.
+- **Golden (`sp4_synth_metrics.json`, regenerated on R2b's main `4d81119` + R3, idle host,
+  verified by a second run):** vs R2b's golden M15 2 → **0** (pass), M16 19 → **7**
+  (review: 1 dogleg /Power/FB R5.2–R6.1, pad loops J1.A6/B6/A7/B7 of the USB-C links, U3.2
+  SW and Y1.3), M8 4.97 → **4.20 mm**, M12 review → pass, M5 1.09 → 1.0, M7 pass → review
+  (value 0: bend density only); tracks 177 → 137, vias 123 → 120, 210.8 mm.
+- **ODH probe** (copy of the PROD checkout, 80 × 100 mm, P9a's answers with Power class
+  0.5 mm, R2's `pcb_place_blocks` flow, critical routing only; renders
+  `/tmp/sp4-renders/r3-odh-*`): 25 critical nets, `pcb_route` **50 s** (P9a: 105 s), M4 = M7
+  = **M12 = M15 = 0** (every neck-down accepted), M16 hard 3 (doglegs +3V3 C208.1–U202.1,
+  /Power/VSYS U202.5–C206.1; pad loop U203.8 /VBUS). **4 `no_path`** (P9a: 13, all from the
+  0.25 mm QFN pads): /Power/VSYS C203.1–U201.10 and U201.5–U201.10 (the neck gets into the
+  QFN pads; the 0.5 mm piece outside the escape zone does not fit between the placed
+  parts), /VBUS J302.A4–A9 (USB-C pins; the VBUS pads are wide enough, so M12 allows no neck,
+  but 0.5 mm does not pass the pin row), Net-(U202-L1) L201.1–U202.4 (Default 0.2 mm,
+  placement). The first three route at 0.2 mm: class width vs placement / connector pitch,
+  not the end pad's width. (Before the rebase, on P9a's per-block placement: 26 nets, 61 s,
+  1 `no_path`.)
+- **Residuals for R4 / R7:** (0) ODH's 0.5 mm Power class does not pass between R2's
+  placed parts next to U201 / through the USB-C pin row (above) - R7 / owner: a narrower
+  class, more room, or a neck rule for a part's pin row (M12 would have to accept it). (1) M16's dogleg corridor is measured at the narrower NECK width
+  along its whole length, but a straight link may only be that narrow inside the escape zone
+  (M12) - the ODH doglegs C208.1–U202.1 / U202.5–C206.1 have no legal straight segment at
+  class width; R4 (or an R1-file fix) should test the corridor at class width outside the
+  zones. (2) Placement-forced pad loops (USB-C A7–B7 around A6/B6, U3.2 SW) become hard with
+  `M16_HARD` - R2's alignment / R4's rip-and-re-route or an owner call; with jogs hard too
+  (owner 2026-11-27) the golden's J1.B5 /CC2 jog (USB-C pin row) joins them. (3) The fill
+  (Freerouting) leaves sp4_synth's `VBUS:C7.1-U2.5` open next to the ESD's straight
+  pass-throughs (the flow's ladder routes it); fill fixtures moved `VBUS` to `OWN_ROUTED`
+  and `/CC2` out of `FILL_NETS` (P6b files). (4) Pure Y-junctions from Freerouting are still
+  not ripped (R4); `fill`'s re-route keeps `tree=False` (R4 turns it on). (5) `pcb_route`
+  is ~35 s slower on sp4_synth (strict + fallback searches); `test_router_perf` budgets
+  unchanged and green.
+
 ### As built (R5)
 
 **Presets (owner decision 2, spec §22.2):** `min_drill` = 0.2 mm in `jlcpcb-2l/4l/6l`
@@ -2910,6 +3051,13 @@ off-pad node are blocked, perpendicular moves are allowed (T). `route_connection
 `straight_corridor` first for every plan whose pads have one. `RoutePath.segments` may carry
 per-segment widths: `segments: tuple[tuple[str, Point, Point, float], ...]` (layer, start, end,
 width) — every consumer (P5b `_create`, P6b re-route, pairs) is updated in R3.
+*As built (R3):* `RouteRequest.neck` entries are `(zone, neck width, layers)` - the
+copper layers of the pad the zone belongs to; the neck applies only there (review: a via
+or another part's pad inside the zone took it to B.Cu, M12). `tree` = "a T is allowed" (the grid finds the copper connected to b when the
+request is solved; a tree search that finds nothing is followed by a plain pad-b search);
+the pad-entry cost applies to a second bend in an entry zone only; `valid_path` refuses an
+M16 pad loop or jog and `solve` allows one only after both windows found no clean path;
+`route_connections(..., reserve=)` takes `corridor_reservations(model, cls)`.
 
 **B-C12 post-processor (R4, `chamfer.py`)**: `t_junctions` are no longer ripped; each
 `y_junctions` node is re-landed perpendicular (the branch's last segment replaced by the

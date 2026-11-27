@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import itertools
 import math
 import time
 import types
@@ -161,7 +162,7 @@ def test_router_avoids_footprint_keepout() -> None:
     (p,) = _plan(m, ["N1"])
     path = solve(route.with_footprint_keepouts(m, p.req), p.req)
     assert path is not None
-    for _, a, b in path.segments:
+    for _, a, b, _w in path.segments:
         for t in (0.0, 0.25, 0.5, 0.75, 1.0):
             x, y = a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])
             assert not (13.0 - 0.1 < x < 16.0 + 0.1 and 7.0 - 0.1 < y < 13.0 + 0.1), (x, y)
@@ -242,7 +243,7 @@ class Board:
 
 def _straight(req: Any) -> RoutePath:
     a, b = (req.a.x, req.a.y), (req.b.x, req.b.y)
-    return RoutePath(((req.layers[0], a, b),), (), abs(b[0] - a[0]) + abs(b[1] - a[1]))
+    return RoutePath(((req.layers[0], a, b, req.width),), (), abs(b[0] - a[0]) + abs(b[1] - a[1]))
 
 
 @pytest.fixture
@@ -710,7 +711,8 @@ def test_router_rejects_close_via_pair() -> None:
     a, b = (p.a.x, p.a.y), (p.b.x, p.b.y)
 
     def path(v1: tuple[float, float], v2: tuple[float, float]) -> RoutePath:
-        segs = (("F.Cu", a, v1), ("B.Cu", v1, v2), ("F.Cu", v2, b))
+        w = p.req.width
+        segs = (("F.Cu", a, v1, w), ("B.Cu", v1, v2, w), ("F.Cu", v2, b, w))
         return RoutePath(segs, (v1, v2), 10.0)
 
     assert valid_path(path((12.0, 10.0), (16.0, 10.0)), grid, p.req)
@@ -880,3 +882,458 @@ async def test_duplicate_pad_numbers_kept_apart(
     assert out.routed == ("N1:R1.1-U5.2", "N1:R1.1-U5.2#2")
     assert len(out.results) == 2 and len({k for r in out.results for k in r.kiids}) == 2
     assert set(board.items) == {k for r in out.results for k in r.kiids}
+
+
+# -- R3: straight first (owner rule b) -----------------------------------------------------
+
+
+def _adjacent() -> BoardModel:
+    """R1.2 (10.5, 10) and R2.1 (11.5, 10) on N1, aligned 0.4 mm apart (a corridor);
+    R3/R4 on N2 far apart (no corridor)."""
+    return circuit(
+        res("R1", "A", "N1", (10.0, 10.0)),
+        res("R2", "N1", "B", (12.0, 10.0)),
+        res("R3", "N2", "C", (10.0, 20.0)),
+        res("R4", "D", "N2", (20.0, 20.0)),
+    )
+
+
+def test_straight_path_of_aligned_pair() -> None:
+    m = _adjacent()
+    (p,) = _plan(m, ["N1"])
+    path = route.straight_path(m, p)
+    assert path is not None and path.vias == ()
+    assert path.segments == (("F.Cu", (10.5, 10.0), (11.5, 10.0), 0.2),)
+    (q,) = _plan(m, ["N2"])
+    assert route.straight_path(m, q) is None
+
+
+async def test_straight_first_aligned_pair(board: Board, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pass 0: the aligned pair gets its one segment (no search); the other net is searched."""
+    cpu = FakeCpu()
+    monkeypatch.setattr(route, "run_cpu", cpu)
+    m = _adjacent()
+    sctx = FakeSctx(m)
+    out = await route.route_connections(sctx, _plan(m, ["N1", "N2"]), lock=True)  # type: ignore[arg-type]
+    assert set(out.routed) == {"N1:R1.2-R2.1", "N2:R3.1-R4.2"}
+    assert [c["args"][1].net for c in cpu.calls] == ["N2"]
+    n1 = next(r for r in out.results if r.net == "N1")
+    assert len(n1.kiids) == 1 and n1.length_mm == pytest.approx(1.0)
+
+
+async def test_straight_first_falls_back(board: Board, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The straight segment is free in geometry but DRC-rejected (clearance to a zone): it is
+    removed and the search routes the connection, no error."""
+    cpu = FakeCpu()
+    monkeypatch.setattr(route, "run_cpu", cpu)
+    m = _adjacent()
+    first = {"done": False}
+
+    def drc(t: float) -> DrcResult:
+        if first["done"]:
+            return DrcResult((), 0, 0.01)
+        first["done"] = True
+        (k,) = list(board.items)
+        return DrcResult((DrcMarker("clearance", "error", "zone", (k, "zone-1"), None),), 0, 0.01)
+
+    sctx = FakeSctx(m, drc)
+    out = await route.route_connections(sctx, _plan(m, ["N1"]), lock=True)  # type: ignore[arg-type]
+    assert out.routed == ("N1:R1.2-R2.1",) and out.failed == ()
+    assert len(cpu.calls) == 1  # the search
+    assert set(board.items) == sctx.created and len(board.items) == 1
+
+
+async def test_straight_first_retries_after_sibling(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two pass-0 segments that clash only with each other are both removed; each is tried
+    again alone at the end of the pass (the second then clashes with the first one kept)."""
+    cpu = FakeCpu(lambda fn, args, kw, t: None)
+    monkeypatch.setattr(route, "run_cpu", cpu)
+    m = circuit(
+        res("R1", "A", "N1", (10.0, 10.0)),
+        res("R2", "N1", "B", (12.0, 10.0)),
+        res("R5", "E", "N3", (10.0, 14.0)),
+        res("R6", "N3", "F", (12.0, 14.0)),
+    )
+    calls = {"n": 0}
+
+    def drc(t: float) -> DrcResult:
+        calls["n"] += 1
+        ks = list(board.items)
+        if calls["n"] == 1:  # both pushed together: they "clash"
+            return DrcResult((DrcMarker("clearance", "error", "x", tuple(ks), None),), 0, 0.01)
+        if calls["n"] == 3:  # the second retry clashes with the first (kept) one
+            return DrcResult((DrcMarker("clearance", "error", "x", tuple(ks), None),), 0, 0.01)
+        return DrcResult((), 0, 0.01)
+
+    sctx = FakeSctx(m, drc)
+    out = await route.route_connections(sctx, _plan(m, ["N1", "N3"]), lock=True)  # type: ignore[arg-type]
+    assert out.routed == ("N1:R1.2-R2.1",)
+    assert [k for k, _ in out.failed] == ["N3:R5.2-R6.1"]  # its search found nothing
+    assert {c["args"][1].net for c in cpu.calls} == {"N3"}
+
+
+def test_corridor_reservations_free_only() -> None:
+    m = _adjacent()
+    res_all = route.corridor_reservations(m, classify(m))
+    assert [r.key for r in res_all] == ["N1:R1.2-R2.1"]
+    blocked = dataclasses.replace(m, tracks=(track("X", "F.Cu", (11.0, 9.0), (11.0, 11.0)),))
+    assert route.corridor_reservations(blocked, classify(blocked)) == ()
+
+
+async def test_corridor_reserved_across_calls(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Routing N2 alone (a chunk) while N1's corridor is still free: N2's search sees that
+    corridor as N1 copper; N1's own plans never see their reservation."""
+    cpu = FakeCpu()
+    monkeypatch.setattr(route, "run_cpu", cpu)
+    m = _adjacent()
+    reserve = route.corridor_reservations(m, classify(m))
+    sctx = FakeSctx(m)
+    await route.route_connections(sctx, _plan(m, ["N2"]), lock=True, reserve=reserve)  # type: ignore[arg-type]
+    (call,) = cpu.calls
+    fake = [t for t in call["args"][0].tracks if t.kiid.startswith("reserved:")]
+    assert [(t.net, t.start, t.end) for t in fake] == [("N1", (10.5, 10.0), (11.5, 10.0))]
+    cpu.calls.clear()
+    monkeypatch.setattr(route, "straight_path", lambda model, plan: None)
+    await route.route_connections(FakeSctx(m), _plan(m, ["N1"]), lock=True, reserve=reserve)  # type: ignore[arg-type]
+    (call,) = cpu.calls
+    assert not [t for t in call["args"][0].tracks if t.kiid.startswith("reserved:")]
+
+
+def test_straight_segments_never_ripped() -> None:
+    """A pass-0 straight segment is no rip-up candidate for a blocked connection (owner rule
+    b: re-routing it through the search would make a dogleg)."""
+    m = _adjacent()
+    (p,) = _plan(m, ["N1"])
+    (q,) = _plan(m, ["N2"])
+    path = route.straight_path(m, p)
+    assert path is not None
+    st = route._Loop(m, True, None)
+    st.kept.append(route._Kept([p], [path], ["k1"], straight=True))
+    near = dataclasses.replace(q, a=dataclasses.replace(q.a, x=11.0, y=10.5))
+    assert route._blockers(st, [near]) == []
+    st.kept[0].straight = False
+    assert route._blockers(st, [near]) == [st.kept[0]]
+
+
+def test_same_part_connections_plan_last() -> None:
+    """R3: a connection between two pads of one part (USB-C A6 - B6) comes after the net's
+    other connections, so it can land on their copper as a T; every non-pair plan may."""
+    from .builders import part as mk_part
+
+    j1 = mk_part(
+        "J1",
+        10.0,
+        10.0,
+        pads=(pad("J1", "A6", "N1", (10.0, 10.0)), pad("J1", "B6", "N1", (11.0, 10.0))),
+    )
+    m = circuit(j1, res("R1", "N1", "X", (16.0, 10.0)))
+    plans = _plan(m, ["N1"], tree=True)
+    assert [(p.a.ref, p.b.ref) for p in plans][-1] == ("J1", "J1")
+    assert all(p.req.tree for p in plans)
+    assert not any(p.req.tree for p in _plan(m, ["N1"]))
+
+
+def _usbc() -> BoardModel:
+    """USB-C-like row: B7 (DN) A6 (DP) A7 (DN) B6 (DP), 0.5 mm apart; and an ESD-like part
+    whose pass-throughs DP 1-6 and DN 3-4 run parallel."""
+    from .builders import part as mk_part
+
+    row = [("B7", "DN"), ("A6", "DP"), ("A7", "DN"), ("B6", "DP")]
+    j1 = mk_part(
+        "J1",
+        10.0,
+        10.0,
+        pads=tuple(
+            pad("J1", num, net, (9.25 + 0.5 * k, 10.0), w=0.3, h=1.0)
+            for k, (num, net) in enumerate(row)
+        ),
+    )
+    u2 = mk_part(
+        "U2",
+        20.0,
+        10.0,
+        pads=(
+            pad("U2", "1", "DP", (19.0, 9.0)),
+            pad("U2", "6", "DP", (19.0, 11.0)),
+            pad("U2", "3", "DN", (21.0, 9.0)),
+            pad("U2", "4", "DN", (21.0, 11.0)),
+        ),
+    )
+    return circuit(j1, u2)
+
+
+def test_pair_match_skips_crossing_same_part() -> None:
+    m = _usbc()
+    plans = route.plan_connections(
+        m, _pair_cls(m), ["DP", "DN"], layers=None, allow_vias=True, tree=True
+    )
+    pairs = {(p.a.ref, p.b.ref, p.a.number, p.b.number) for p in plans if p.pair is not None}
+    assert ("J1", "J1", "A6", "B6") not in pairs and ("J1", "J1", "B6", "A6") not in pairs
+    esd = {(p.net, p.pair) for p in plans if p.a.ref == p.b.ref == "U2"}
+    assert esd == {("DP", "DN"), ("DN", "DP")}  # parallel pass-throughs still couple
+
+
+async def test_straight_pair_records_coupling(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both connections of a matched pair routed by their straight segment: coupled."""
+    monkeypatch.setattr(route, "run_cpu", FakeCpu())
+    m = _usbc()
+    plans = [
+        p
+        for p in route.plan_connections(m, _pair_cls(m), ["DP", "DN"], layers=None, allow_vias=True)
+        if p.a.ref == p.b.ref == "U2"
+    ]
+    out = await route.route_connections(FakeSctx(m), plans, lock=True)  # type: ignore[arg-type]
+    assert len(out.routed) == 2
+    assert all(r.coupling is not None for r in out.results)
+
+
+def test_m8_connections_first() -> None:
+    """The connections M8 measures (a decoupling cap's supply pad to its IC pin) are
+    planned before every other one, so earlier nets cannot wall them off."""
+    from copperchat.board.classify import Decoupling
+
+    m = _two_res(res("C1", "N9", "GND", (40.0, 10.0)), res("R9", "N9", "Z", (43.0, 10.0)))
+    cls = dataclasses.replace(classify(m), decoupling=(Decoupling("C1", "R9", "1", "N9", "GND"),))
+    plans = route.plan_connections(m, cls, ["N1", "N9"], layers=None, allow_vias=True)
+    assert (plans[0].a.ref, plans[0].b.ref) in (("C1", "R9"), ("R9", "C1"))
+    assert [p.net for p in plans] == ["N9", "N1"]
+
+
+async def test_pass0_pair_half_straight_alone(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A half of a matched pair keeps its straight segment even when the other half's is
+    DRC-rejected (owner rule b outranks coupling); the other half is routed alone."""
+    cpu = FakeCpu()
+    monkeypatch.setattr(route, "run_cpu", cpu)
+    m = _usbc()
+    plans = [
+        p
+        for p in route.plan_connections(m, _pair_cls(m), ["DP", "DN"], layers=None, allow_vias=True)
+        if p.a.ref == p.b.ref == "U2"
+    ]
+    first = {"done": False}
+
+    def drc(t: float) -> DrcResult:
+        if first["done"]:
+            return DrcResult((), 0, 0.01)
+        first["done"] = True
+        k = next(iter(board.items))  # the first half's segment
+        return DrcResult((DrcMarker("clearance", "error", "x", (k, "zone"), None),), 0, 0.01)
+
+    out = await route.route_connections(FakeSctx(m, drc), plans, lock=True)  # type: ignore[arg-type]
+    assert len(out.routed) == 2
+    assert [c["fn"] for c in cpu.calls] == [route.solve]  # the rejected half, alone
+
+
+def test_entry_defect_reported() -> None:
+    """A routed path with a pad-entry loop is flagged (`pad_entry_defects`)."""
+    from copperchat.board.router import RoutePath
+
+    m = _two_res()
+    (p,) = _plan(m, ["N1"])
+    a = (p.a.x, p.a.y)
+    pts = [a, (a[0] + 0.3, a[1]), (a[0] + 0.6, a[1] - 0.3), (a[0] + 0.6, a[1] - 0.6)]
+    pts += [(a[0] + 0.3, a[1] - 0.9), (a[0] - 0.6, a[1] - 0.9)]
+    loop = RoutePath(tuple(("F.Cu", u, v, 0.2) for u, v in itertools.pairwise(pts)), (), 0.0)
+    assert route.entry_defect(loop, p.req)
+    straight = RoutePath((("F.Cu", a, (p.b.x, p.b.y), 0.2),), (), 0.0)
+    assert not route.entry_defect(straight, p.req)
+    r = route.ConnResult("k", "N1", "R1.1", "R2.1", "routed", None, 1.0, 0, (), pad_entry=True)
+    assert route._net_entry("N1", [r], True)["pad_entry_defects"] == ["R1.1-R2.1"]
+
+
+async def test_pass0_retries_capped_and_drc_filtered(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Six straight candidates that all clash only with each other: at most
+    STRAIGHT_RETRY_MAX retries (each its own DRC) follow the batch DRC, and the stored
+    DRC never names a segment that was dropped again."""
+    monkeypatch.setattr(route, "run_cpu", FakeCpu(lambda fn, args, kw, t: None))
+    parts = []
+    nets = []
+    for k in range(6):
+        y = 10.0 + 4.0 * k
+        parts += [res(f"R{2 * k + 1}", f"A{k}", f"N{k}", (10.0, y))]
+        parts += [res(f"R{2 * k + 2}", f"N{k}", f"B{k}", (12.0, y))]
+        nets.append(f"N{k}")
+    m = circuit(*parts)
+    calls = {"n": 0}
+
+    def drc(t: float) -> DrcResult:
+        calls["n"] += 1
+        ks = tuple(board.items)
+        if calls["n"] == 1:  # the batch: everything clashes with everything
+            return DrcResult((DrcMarker("clearance", "error", "x", ks, None),), 0, 0.01)
+        return DrcResult((DrcMarker("clearance", "error", "x", (ks[-1], "other"), None),), 0, 0.01)
+
+    sctx = FakeSctx(m, drc)
+    out = await route.route_connections(sctx, _plan(m, nets), lock=True)  # type: ignore[arg-type]
+    assert calls["n"] == 1 + route.STRAIGHT_RETRY_MAX
+    assert out.routed == ()
+    assert out.drc is None  # nothing kept: no verified DRC to report
+
+
+async def test_pass0_stored_drc_without_dropped_copper(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One pass-0 segment kept, two clashing ones dropped (and failing their retry): the
+    stored DRC keeps a marker of other copper but none naming a dropped segment."""
+    monkeypatch.setattr(route, "run_cpu", FakeCpu(lambda fn, args, kw, t: None))
+    parts, nets = [], []
+    for k in range(3):
+        y = 10.0 + 4.0 * k
+        parts += [res(f"R{2 * k + 1}", f"A{k}", f"N{k}", (10.0, y))]
+        parts += [res(f"R{2 * k + 2}", f"N{k}", f"B{k}", (12.0, y))]
+        nets.append(f"N{k}")
+    m = circuit(*parts)
+    other = DrcMarker("silk_overlap", "warning", "elsewhere", ("zone-9",), None)
+    calls = {"n": 0}
+
+    def drc(t: float) -> DrcResult:
+        calls["n"] += 1
+        ks = tuple(board.items)
+        if calls["n"] == 1:  # segments 2 and 3 clash with each other
+            clash = DrcMarker("clearance", "error", "x", (ks[1], ks[2]), None)
+            return DrcResult((clash, other), 0, 0.01)
+        return DrcResult((DrcMarker("clearance", "error", "x", (ks[-1], "z"), None),), 0, 0.01)
+
+    out = await route.route_connections(FakeSctx(m, drc), _plan(m, nets), lock=True)  # type: ignore[arg-type]
+    assert len(out.routed) == 1
+    assert out.drc is not None and out.drc.markers == (other,)
+
+
+def test_reservation_of_pair_net_uses_pair_width() -> None:
+    m = _usbc()
+    cls = _pair_cls(m)
+    nc = dataclasses.replace(net_class(track_width=0.2), diff_pair_width=0.35, diff_pair_gap=0.15)
+    m = dataclasses.replace(m, net_classes=(nc,))
+    got = {r.net: r.width for r in route.corridor_reservations(m, cls)}
+    assert got and all(w == pytest.approx(0.35) for w in got.values()), got
+
+
+def test_reservation_of_pair_net_falls_back_to_class_width() -> None:
+    """A pair net's connection whose pads are too narrow for the pair width (an unmatched
+    one, placed at the class width) is still reserved, at the class width."""
+    m = _usbc()
+    nc = dataclasses.replace(net_class(track_width=0.2), diff_pair_width=0.7, diff_pair_gap=0.15)
+    m = dataclasses.replace(m, net_classes=(nc,))
+    got = {r.net: r.width for r in route.corridor_reservations(m, _pair_cls(m))}
+    assert got and all(w == pytest.approx(0.2) for w in got.values()), got
+
+
+def test_reservation_width_per_connection() -> None:
+    """Round 3 regression: a fully necked first connection does not shrink the width of
+    the net's later ones (each is reserved at its own placed width)."""
+    from .builders import part as mk_part
+
+    fine = mk_part("U1", 10.0, 10.0, pads=(pad("U1", "1", "P", (10.0, 10.0), w=0.25, h=0.25),))
+    near = mk_part("U2", 10.6, 10.0, pads=(pad("U2", "1", "P", (10.6, 10.0), w=0.25, h=0.25),))
+    wide = mk_part("C1", 20.0, 10.0, pads=(pad("C1", "1", "P", (20.0, 10.0), w=1.0, h=1.0),))
+    wide2 = mk_part("C2", 21.5, 10.0, pads=(pad("C2", "1", "P", (21.5, 10.0), w=1.0, h=1.0),))
+    m = circuit(fine, near, wide, wide2, net_classes=(net_class(track_width=0.5),))
+    got = sorted(r.width for r in route.corridor_reservations(m, classify(m)))
+    assert got[-1] == pytest.approx(0.5), got
+
+
+def test_reservation_pair_width_below_track_width() -> None:
+    """A pair width below the track width is reserved as placed (pair_width, no max)."""
+    m = _usbc()
+    nc = dataclasses.replace(net_class(track_width=0.3), diff_pair_width=0.15, diff_pair_gap=0.15)
+    m = dataclasses.replace(m, net_classes=(nc,))
+    got = {r.net: r.width for r in route.corridor_reservations(m, _pair_cls(m))}
+    assert got and all(w == pytest.approx(0.15) for w in got.values()), got
+
+
+def test_reservation_falls_back_when_pair_corridor_blocked() -> None:
+    """The pair-width corridor exists but is blocked by another net's track that leaves
+    room for the narrower class width: the class-width option is reserved."""
+    m = _usbc()
+    nc = dataclasses.replace(net_class(track_width=0.1), diff_pair_width=0.5, diff_pair_gap=0.15)
+    # DP U2.1 (19, 9) - U2.6 (19, 11): a vertical corridor at x = 19
+    blocker = track("X", "F.Cu", (19.4, 9.5), (19.4, 10.5), 0.1)
+    m = dataclasses.replace(m, net_classes=(nc,), tracks=(blocker,))
+    got = {r.key: r.width for r in route.corridor_reservations(m, _pair_cls(m))}
+    dp = [w for k, w in got.items() if k.startswith("DP:")]
+    assert dp == [pytest.approx(0.127)], got  # the class width, floored at min_track_width
+
+
+def test_t_dependants_ripped_with_their_anchor() -> None:
+    """A kept path that ends as a T on a kept connection depends on it: `_dependants`
+    finds it (also transitively), so rip-and-retry takes it out and re-routes it with its
+    anchor (ripping the anchor alone left that T dangling on R2b's sp4_synth placement)."""
+    m = _three()
+    p1, _p2, _p3 = _plans3()
+    tree_plan = dataclasses.replace(p1, req=dataclasses.replace(p1.req, tree=True))
+    trunk = route._Kept(
+        [p1], [RoutePath((("F.Cu", (10.5, 10.0), (19.5, 10.0), 0.2),), (), 9.0)], ["k1"]
+    )
+    branch = route._Kept(
+        [tree_plan], [RoutePath((("F.Cu", (15.0, 14.0), (15.0, 10.0), 0.2),), (), 4.0)], ["k2"]
+    )
+    twig = route._Kept(
+        [tree_plan], [RoutePath((("F.Cu", (13.0, 12.0), (15.0, 12.0), 0.2),), (), 2.0)], ["k3"]
+    )
+    other = route._Kept(
+        [tree_plan], [RoutePath((("F.Cu", (15.0, 20.0), (15.0, 18.0), 0.2),), (), 2.0)], ["k4"]
+    )
+    st = route._Loop(m, True, None)
+    st.kept += [trunk, branch, twig, other]
+    assert route._dependants(st, trunk) == [branch, twig]
+    assert route._dependants(st, other) == []
+
+
+def test_m8_links_never_ripped() -> None:
+    m = _adjacent()
+    (p,) = _plan(m, ["N1"])
+    (q,) = _plan(m, ["N2"])
+    path = RoutePath((("F.Cu", (10.5, 10.0), (11.5, 10.0), 0.2),), (), 1.0)
+    st = route._Loop(m, True, None)
+    st.kept.append(route._Kept([dataclasses.replace(p, early=True)], [path], ["k1"]))
+    near = dataclasses.replace(q, a=dataclasses.replace(q.a, x=11.0, y=10.5))
+    assert route._blockers(st, [near]) == []
+
+
+async def test_rip_and_retry_undo_restores_anchor_and_dependants(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The blocked connection routes after the rip, but the ripped anchor's dependant
+    cannot be re-routed: everything routed in the try is removed again and the anchor and
+    its dependant are restored with their exact paths."""
+    m = _three()
+    p1, p2, _p3 = _plans3()
+    tree1 = dataclasses.replace(p1, req=dataclasses.replace(p1.req, tree=True))
+    trunk_path = RoutePath((("F.Cu", (10.5, 10.0), (19.5, 10.0), 0.2),), (), 9.0)
+    twig_path = RoutePath((("F.Cu", (15.0, 14.0), (15.0, 10.0), 0.2),), (), 4.0)
+    st = route._Loop(m, True, None)
+    st.kept += [
+        route._Kept([p1], [trunk_path], ["k1"]),
+        route._Kept([tree1], [twig_path], ["k2"]),
+    ]
+    board.items.update({"k1": ("N1", True), "k2": ("N1", True)})
+    sctx = FakeSctx(m)
+    calls: list[str] = []
+
+    async def attempt(sctx_: Any, st_: Any, group: Any) -> str | None:
+        calls.append(group[0].net + ("T" if group[0].req.tree else ""))
+        if group[0].req.tree:  # the dependant cannot come back
+            return "no_path"
+        path = RoutePath(
+            (("F.Cu", (group[0].a.x, group[0].a.y), (group[0].b.x, group[0].b.y), 0.2),), (), 1.0
+        )
+        await route._place(sctx_, st_, list(group), [path])
+        return None
+
+    monkeypatch.setattr(route, "_attempt", attempt)
+    blocked = dataclasses.replace(p2, a=dataclasses.replace(p2.a, x=15.0, y=11.0))
+    assert not await route._rip_and_retry(sctx, st, [blocked])  # type: ignore[arg-type]
+    assert calls == ["N2", "N1", "N1T"]
+    kept = sorted((k.group[0].req.tree, k.paths[0]) for k in st.kept)
+    assert kept == sorted([(False, trunk_path), (True, twig_path)])
+    assert {net for net, _ in board.items.values()} == {"N1"}

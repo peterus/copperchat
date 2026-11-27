@@ -24,6 +24,7 @@ from .router_maps import (
     random_map,
     seg_dist,
     strict_bends_ok,
+    tree_map,
 )
 
 SEEDS = range(250)
@@ -74,8 +75,30 @@ def test_exact_pad_centres(routed: list[Result]) -> None:
             continue
         assert path.segments[0][1] == (round(r.a.x, 6), round(r.a.y, 6)), f"seed {seed}"
         assert path.segments[-1][2] == (round(r.b.x, 6), round(r.b.y, 6)), f"seed {seed}"
-        for (_l1, _p, q), (_l2, p2, _q) in zip(path.segments, path.segments[1:], strict=False):
+        for (_l1, _p, q, _w1), (_l2, p2, _q, _w2) in zip(
+            path.segments, path.segments[1:], strict=False
+        ):
             assert q == p2, f"seed {seed}: path not continuous"
+
+
+def test_no_entry_loops(routed: list[Result]) -> None:
+    """R3 (owner rule c, M16 b / c): no routed path turns back or makes an S-offset inside
+    an end pad's entry zone (a jog is an error for the owner, 2026-11-27)."""
+    from copperchat.board.geom import _in_pad, analyse_entry, entry_zone
+
+    n = 0
+    for seed, _m, r, path in routed:
+        if path is None:
+            continue
+        runs = layer_runs(path)
+        for pts, end in ((runs[0][1], r.a), (runs[-1][1][::-1], r.b)):
+            rep = analyse_entry(
+                pts, r.width, entry_zone(end, r.width), in_pad=lambda q, e=end: _in_pad(q, e)
+            )
+            assert rep.loops == (), f"seed {seed} {r.net}: loop at {rep.loops}"
+            assert rep.jogs == (), f"seed {seed} {r.net}: jog at {rep.jogs}"
+            n += 1
+    assert n >= 400
 
 
 def test_open_maps_always_route() -> None:
@@ -127,19 +150,19 @@ def test_pairs_property(seed: int) -> None:
     from .router_maps import pad_corners, seg_poly_dist
 
     for path, r, other in ((pp, p, n), (pn, n, p)):  # each path vs the partner's pads
-        for layer, s0, s1 in path.segments:
+        for layer, s0, s1, _w in path.segments:
             for q in (other.a, other.b):
                 if layer in q.layers:
                     assert (
                         seg_poly_dist(s0, s1, pad_corners(q)) >= r.clearance + r.width / 2 - 1e-6
                     ), seed
-    for la, a0, a1 in pp.segments:
-        for lb, b0, b1 in pn.segments:
+    for la, a0, a1, _wa in pp.segments:
+        for lb, b0, b1, _wb in pn.segments:
             if la == lb:
                 assert seg_dist(a0, a1, b0, b1) >= pc + (p.width + n.width) / 2 - 1e-6, seed
     for v in pp.vias:
         assert all(
-            seg_dist(v, v, s, e) >= pc + 0.3 + n.width / 2 - 1e-6 for _l, s, e in pn.segments
+            seg_dist(v, v, s, e) >= pc + 0.3 + n.width / 2 - 1e-6 for _l, s, e, _w in pn.segments
         )
         assert all(math.dist(v, u) >= pc + 0.6 - 1e-6 for u in pn.vias)
 
@@ -164,3 +187,33 @@ def test_review_seeds_have_no_tail_artefacts(seed: int) -> None:
         for _layer, pts in layer_runs(path):
             b = analyse_bends(pts[-4:], r.width, pad_ends=(True, False))
             assert not (b.short_chamfers or b.micro_jogs), (seed, r.net, pts)
+
+
+def test_tree_branches_are_t_never_y() -> None:
+    """R3 (owner rule a): >= 200 seeded maps with pre-existing own copper (the first
+    request routed) and a tree request from a new pad: the result has no Y-junction, no
+    90° / acute / off-angle vertex and no micro-jog or short chamfer (M4 / M7 / M15)."""
+    from copperchat.board.geom import analyse_tracks
+
+    from .router_maps import add_path
+
+    tried = routed_n = t_ends = 0
+    for seed in range(230):
+        got = tree_map(random.Random(seed))
+        if got is None:
+            continue
+        m, r = got
+        tried += 1
+        path = _route(m, r)
+        if path is None:
+            continue
+        routed_n += 1
+        t_ends += not (abs(path.segments[-1][2][0] - r.b.x) < 1e-6)
+        both = add_path(m, r, path, "tree")
+        own = replace(both, tracks=tuple(t for t in both.tracks if t.net == r.net))
+        rep = analyse_tracks(own)
+        bad = (rep.y_junctions, rep.ninety, rep.acute, rep.off_angle, rep.non_octilinear)
+        assert all(x == () for x in bad), f"seed {seed}: {rep}"
+        assert rep.micro_jogs == () and rep.short_chamfers == (), f"seed {seed}: {rep}"
+    assert tried >= 200 and routed_n >= 0.9 * tried, (tried, routed_n)
+    assert t_ends > 0  # some of them do land on the copper as a T

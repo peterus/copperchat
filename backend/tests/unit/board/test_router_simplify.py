@@ -107,7 +107,10 @@ def test_vias_at_layer_changes() -> None:
     states += [(1, i0 + k, j0) for k in range(41, 81)]  # 7.05 .. 9.0 on B.Cu
     path = to_path(states, grid, req)
     assert path.vias == ((7.0, 10.0),)
-    assert path.segments == (("F.Cu", (5.0, 10.0), (7.0, 10.0)), ("B.Cu", (7.0, 10.0), (9.0, 10.0)))
+    assert path.segments == (
+        ("F.Cu", (5.0, 10.0), (7.0, 10.0), 0.2),
+        ("B.Cu", (7.0, 10.0), (9.0, 10.0), 0.2),
+    )
     assert [layer for layer, _pts in layer_runs(path)] == ["F.Cu", "B.Cu"]
 
 
@@ -121,7 +124,7 @@ def test_length_sum() -> None:
     states += [(0, i0 + 60 + k, j0 - 10 + k) for k in range(1, 11)]  # back down to 10.0
     states += [(0, i0 + 70 + k, j0) for k in range(1, 11)]  # to 9.0
     path = to_path(states, grid, req)
-    assert path.length == pytest.approx(sum(math.dist(p, q) for _l, p, q in path.segments))
+    assert path.length == pytest.approx(sum(math.dist(p, q) for _l, p, q, _w in path.segments))
     assert path.length == pytest.approx(3.0 + 2 * 0.5 * math.sqrt(2))
     assert path.segments[0][1] == (5.0, 10.0) and path.segments[-1][2] == (9.0, 10.0)
 

@@ -82,7 +82,7 @@ def exact_clearance_ok(
     other_pads = [p for pt in model.parts for p in pt.pads if p.net != req.net]
     edge = max(dict(model.rules).get("copper_edge_clearance", 0.0), EDGE) + req.width / 2 + margin
     poly = list(model.outline.polygon)
-    for layer, a, b in path.segments:
+    for layer, a, b, _w in path.segments:
         for p in other_pads:
             if _on(p, layer):
                 if p.shape == "circle":
@@ -288,8 +288,8 @@ def open_map(rng: random.Random) -> tuple[BoardModel, list[RouteRequest]]:
 def add_path(m: BoardModel, req: RouteRequest, path: RoutePath, tag: str) -> BoardModel:
     """`m` with the routed copper of `path` (as P5b will commit it)."""
     tracks = tuple(
-        Track(f"{tag}-t{k}", req.net, layer, a, b, req.width, True)
-        for k, (layer, a, b) in enumerate(path.segments)
+        Track(f"{tag}-t{k}", req.net, layer, a, b, width, True)
+        for k, (layer, a, b, width) in enumerate(path.segments)
     )
     vias = tuple(
         Via(f"{tag}-v{k}", req.net, at, req.via[0], req.via[1], True)
@@ -488,3 +488,30 @@ def pair_map(rng: random.Random) -> tuple[BoardModel, RouteRequest, RouteRequest
         n = RouteRequest("DN", pads[1], pads[3], w, clearance, layers, len(layers) > 1, (0.6, 0.3))
         return m, p, n, gap
     raise RuntimeError("no free spot for the pair")
+
+
+def tree_map(rng: random.Random) -> tuple[BoardModel, RouteRequest] | None:
+    """R3: a random map whose first request is routed (its copper added), plus a new pad of
+    that net placed freely; returns (model, tree request new pad -> the first request's pad
+    b) or None when the first request finds no path or the new pad has no room."""
+    from copperchat.board.router import build_grid, route
+
+    m, reqs = random_map(rng)
+    if not reqs:
+        return None
+    r = reqs[0]
+    first = route(build_grid(m, r), r, max_expansions=100_000)
+    if first is None:
+        return None
+    m = add_path(m, r, first, "first")
+    w = m.outline.w
+    h = m.outline.h
+    pads = [q for p in m.parts for q in p.pads]
+    for _try in range(200):
+        size = rng.uniform(max(r.width, 0.4), 1.0)
+        x, y = rng.uniform(1 + size, w - 1 - size), rng.uniform(1 + size, h - 1 - size)
+        c = smd_pad("RC", "1", r.net, x, y, size, size, 0.0, r.layers[0])
+        if _pad_free(c, pads, list(m.tracks), list(m.vias), 0.3 + r.width + r.clearance):
+            m = replace(m, parts=(*m.parts, part("RC", x, y, pads=(c,))))
+            return m, replace(r, a=c, b=r.b, tree=True)
+    return None
