@@ -1077,8 +1077,9 @@ async def _unkeep(sctx: BoardStageContext, st: _Loop, kept: _Kept) -> None:
 
 def _blockers(st: _Loop, group: Sequence[ConnPlan]) -> list[_Kept]:
     """Kept groups of other nets whose copper passes within RIP_HALO_MM of the box around
-    the group's pads, nearest first (at most RIP_MAX); never a pass-0 straight segment and
-    (`_rip_and_retry` takes the T paths that end on a ripped group out with it)."""
+    the group's pads, nearest first (at most RIP_MAX). Never a pass-0 straight segment
+    (owner rule b) nor an M8-measured link (`early`: a re-route could push it past the M8
+    limit). `_rip_and_retry` takes the T paths that end on a ripped group out with it."""
     nets = {p.net for p in group}
     pts = [(q.x, q.y) for p in group for q in (p.a, p.b)]
     x0 = min(x for x, _ in pts) - RIP_HALO_MM
@@ -1101,6 +1102,7 @@ def _blockers(st: _Loop, group: Sequence[ConnPlan]) -> list[_Kept]:
         k
         for k in st.kept
         if not k.straight
+        and not any(p.early for p in k.group)
         and not nets & {p.net for p in k.group}
         and any(
             inside(q)
@@ -1128,6 +1130,8 @@ async def _rip_and_retry(sctx: BoardStageContext, st: _Loop, group: Sequence[Con
     for cand in _blockers(st, group):
         if _timed_out(st):
             return False
+        if not any(k is cand for k in st.kept):
+            continue  # taken out and restored (as new copper) with an earlier try's anchor
         removed = [cand, *_dependants(st, cand)]
         saved = [(k.group, k.paths) for k in removed]
         for k in removed:

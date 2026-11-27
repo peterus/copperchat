@@ -802,3 +802,20 @@ def test_tree_goal_off_lattice_both_sides(offset: float, from_above: bool) -> No
     assert lands and all(abs(p[1] - y) < 1e-6 for p in lands)
     path = route(build_grid(m, req), req)
     assert path is not None and abs(path.segments[-1][2][1] - y) < 1e-6, path
+
+
+def test_junctions_ok_ninety_at_via_refused_in_pad_allowed() -> None:
+    """Two tracks meeting at 90 degrees (degree 2) at an exempt node: refused at a via (M4
+    counts it), allowed inside a pad (`pad_at`); without `pad_at` every exempt node counts
+    as a pad (the old behaviour)."""
+    from copperchat.board.router.astar import junctions_ok
+
+    own = {"F.Cu": [((0.0, 5.0), (5.0, 5.0))]}  # an own track ending at (5, 5)
+    path = [("F.Cu", [(5.0, 10.0), (5.0, 5.0)])]  # arriving from below, ending there
+
+    def exempt(layer: str, p: tuple[float, float]) -> bool:
+        return abs(p[0] - 5.0) < 0.3 and abs(p[1] - 5.0) < 0.3
+
+    assert not junctions_ok(path, own, exempt, lambda la, p: False)  # a via there
+    assert junctions_ok(path, own, exempt, exempt)  # a pad there
+    assert junctions_ok(path, own, exempt)

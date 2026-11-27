@@ -1287,3 +1287,53 @@ def test_t_dependants_ripped_with_their_anchor() -> None:
     st.kept += [trunk, branch, twig, other]
     assert route._dependants(st, trunk) == [branch, twig]
     assert route._dependants(st, other) == []
+
+
+def test_m8_links_never_ripped() -> None:
+    m = _adjacent()
+    (p,) = _plan(m, ["N1"])
+    (q,) = _plan(m, ["N2"])
+    path = RoutePath((("F.Cu", (10.5, 10.0), (11.5, 10.0), 0.2),), (), 1.0)
+    st = route._Loop(m, True, None)
+    st.kept.append(route._Kept([dataclasses.replace(p, early=True)], [path], ["k1"]))
+    near = dataclasses.replace(q, a=dataclasses.replace(q.a, x=11.0, y=10.5))
+    assert route._blockers(st, [near]) == []
+
+
+async def test_rip_and_retry_undo_restores_anchor_and_dependants(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The blocked connection routes after the rip, but the ripped anchor's dependant
+    cannot be re-routed: everything routed in the try is removed again and the anchor and
+    its dependant are restored with their exact paths."""
+    m = _three()
+    p1, p2, _p3 = _plans3()
+    tree1 = dataclasses.replace(p1, req=dataclasses.replace(p1.req, tree=True))
+    trunk_path = RoutePath((("F.Cu", (10.5, 10.0), (19.5, 10.0), 0.2),), (), 9.0)
+    twig_path = RoutePath((("F.Cu", (15.0, 14.0), (15.0, 10.0), 0.2),), (), 4.0)
+    st = route._Loop(m, True, None)
+    st.kept += [
+        route._Kept([p1], [trunk_path], ["k1"]),
+        route._Kept([tree1], [twig_path], ["k2"]),
+    ]
+    board.items.update({"k1": ("N1", True), "k2": ("N1", True)})
+    sctx = FakeSctx(m)
+    calls: list[str] = []
+
+    async def attempt(sctx_: Any, st_: Any, group: Any) -> str | None:
+        calls.append(group[0].net + ("T" if group[0].req.tree else ""))
+        if group[0].req.tree:  # the dependant cannot come back
+            return "no_path"
+        path = RoutePath(
+            (("F.Cu", (group[0].a.x, group[0].a.y), (group[0].b.x, group[0].b.y), 0.2),), (), 1.0
+        )
+        await route._place(sctx_, st_, list(group), [path])
+        return None
+
+    monkeypatch.setattr(route, "_attempt", attempt)
+    blocked = dataclasses.replace(p2, a=dataclasses.replace(p2.a, x=15.0, y=11.0))
+    assert not await route._rip_and_retry(sctx, st, [blocked])  # type: ignore[arg-type]
+    assert calls == ["N2", "N1", "N1T"]
+    kept = sorted((k.group[0].req.tree, k.paths[0]) for k in st.kept)
+    assert kept == sorted([(False, trunk_path), (True, twig_path)])
+    assert {net for net, _ in board.items.values()} == {"N1"}
