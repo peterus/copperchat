@@ -187,7 +187,19 @@ CASES: dict[str, tuple[Callable[[BoardModel], BoardModel], str]] = {
     "via_drill": (lambda m: _add(m, vias=(via("S1", (40, 60), 0.6, 0.25),)), "via_drill"),
     "annular": (lambda m: _add(m, vias=(via("S1", (40, 60), 0.6, 0.32),)), "annular_ring"),
     "npth": (lambda m: _add(m, parts=(hole("H1", (70, 60), 0.4),)), "npth_drill"),
-    "pth": (lambda m: _add(m, parts=(hole("H1", (70, 60), 0.25, "F.Cu", "B.Cu"),)), "pth_drill"),
+    "npth_with_cu": (  # KiCad lists *.Cu on NPTH pads: still checked against min_npth (R5)
+        lambda m: _add(
+            m,
+            parts=(
+                replace(
+                    hole("H1", (70, 60), 0.4, "F.Cu", "B.Cu"),
+                    pads=(replace(hole("H1", (70, 60), 0.4, "F.Cu", "B.Cu").pads[0], npth=True),),
+                ),
+            ),
+        ),
+        "npth_drill",
+    ),
+    "pth": (lambda m: _add(m, parts=(hole("H1", (70, 60), 0.15, "F.Cu", "B.Cu"),)), "pth_drill"),
     "copper_edge": (
         lambda m: _add(m, tracks=(track("S1", "F.Cu", (40, 0.35), (50, 0.35), 0.2),)),
         "copper_to_edge",

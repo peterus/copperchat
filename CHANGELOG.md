@@ -32,6 +32,14 @@ All notable changes to CopperChat are documented in this file. The format follow
 - `pcb_fab_export` (JLCPCB gerbers, drill, zip, BOM, CPL, fab report) and `pcb_export_3d`
   — behind COPPERCHAT_BOARD_TOOLS.
 
+### Changed
+
+- Board tools: the JLCPCB presets allow plated holes down to 0.2 mm (vias stay 0.3 mm) and
+  the fab report lists holes below 0.3 mm (possible JLC surcharge); mounting holes and
+  footprints excluded from BOM / position files are left out of the JLC BOM and CPL (listed
+  in the report); `pcb_render`'s default view is the outline and the parts' courtyards, not
+  KiCad's whole drawing area — behind COPPERCHAT_BOARD_TOOLS.
+
 ## [0.12.0] - 2026-11-22
 
 ### Added

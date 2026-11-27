@@ -31,13 +31,14 @@ from copperchat.board.model import BoardModel
 from copperchat.errors import StructuredToolError
 from copperchat.kicad_session import KicadHandle, KicadSession
 from copperchat.kicad_tools.board import api
-from copperchat.kicad_tools.board.read import load_board_model
+from copperchat.kicad_tools.board.read import board_model, load_board_model
 from copperchat.kicad_tools.board.status import pcb_status
 from copperchat.kicad_tools.board.views import pcb_render
 from copperchat.kicad_tools.cli import run_kicad_cli
 from copperchat.projects import agent_dir
 from copperchat.views import board_render as br
 from copperchat.views import footprint_render as fr
+from tests.kicad.board.conftest import PlacedSynth
 from tests.support.edit import edit_ctx
 
 pytestmark = pytest.mark.kicad
@@ -326,3 +327,58 @@ async def test_render_zone_filled(
         svg = agent_dir(s.project) / "renders" / data["svg_url"].rsplit("/", 1)[1]
         _record(record_property, f"zone_{view}_raster", _raster_cost(svg))
         _record(record_property, f"zone_{view}_wrapped", {"bytes": svg.stat().st_size})
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_render_extent_ignores_far_drawing(synth_placed: PlacedSynth) -> None:
+    """R5 (spec §22.6): a board text far outside the outline (through the engine) stretches
+    KiCad's drawing, not the default view: the wrapper's viewBox stays within outline +
+    courtyards + the wrapper's padding and band."""
+    from kipy.board_types import BoardText
+    from kipy.geometry import Vector2
+
+    from copperchat.kicad_tools.board.engine import (
+        BoardChangeSet,
+        BoardStage,
+        BoardStageContext,
+        apply_board_change_set,
+    )
+    from copperchat.kicad_tools.edit.changeset import Logical
+    from copperchat.kicad_tools.units import mm_to_nm
+
+    ctx = synth_placed.turn("run-render-extent")
+    before = await board_model(ctx)
+    o = before.outline
+    far = (o.x + o.w + 150.0, o.y - 120.0)
+
+    def add(h: KicadHandle) -> None:
+        t = BoardText()
+        t.value = "FAR AWAY"
+        t.layer = BoardLayer.BL_F_SilkS
+        t.position = Vector2.from_xy(mm_to_nm(far[0]), mm_to_nm(far[1]))
+        h.board().create_items([t])
+
+    async def stage(sc: BoardStageContext) -> None:
+        await sc.call(add, timeout=60)
+
+    cs = BoardChangeSet(
+        tool="pcb_tidy_silk",
+        kind="board_tidy_silk",
+        board_stages=[BoardStage("far text", stage)],
+        logical=Logical(1),
+    )
+    await apply_board_change_set(ctx, cs)
+    m = await board_model(ctx)
+    assert any(t.text == "FAR AWAY" for t in m.texts)
+    ext = br.default_extent(m)
+    assert ext is not None and ext.x + ext.w < far[0] and ext.y > far[1]
+    out = await br.render_board(ctx, "top", model=m)
+    assert out.svg is not None
+    root = ET.fromstring(out.svg.read_bytes())
+    vx, vy, vw, vh = (float(v) for v in (root.get("viewBox") or "").split())
+    size = max(ext.w, ext.h)
+    pad = 0.03 * size + 1e-6
+    assert vx >= ext.x - pad and vy >= ext.y - pad
+    assert vx + vw <= ext.x + ext.w + pad
+    assert vy + vh <= ext.y + ext.h + pad + 4 * 0.022 * size  # + the bottom band
+    assert not (vx <= far[0] <= vx + vw and vy <= far[1] <= vy + vh)

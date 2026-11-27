@@ -11,18 +11,19 @@ from dataclasses import replace
 
 import pytest
 
-from copperchat.board.model import Rect
+from copperchat.board.model import Pad, Rect
 from copperchat.board.render import (
     Hull,
     Marker,
     block_hulls,
+    default_extent,
     highlight_shapes,
     scale_bar,
     simplify_paths,
     wrap_svg,
 )
 from tests.unit.board.builders import board as model
-from tests.unit.board.builders import part, track
+from tests.unit.board.builders import outline, part, track
 
 NS = "{http://www.w3.org/2000/svg}"
 KICAD = (
@@ -243,3 +244,53 @@ def test_highlight_follows_view_layers() -> None:
     assert counts("placement") == (3, 5)  # both outer layers
     assert counts("layer", "In1.Cu") == (1, 2)  # inner track; via, THT pad
     assert len(highlight_shapes(m, ["GND"])) == 9  # no layers given: everything
+
+
+# -- R5: default extent = outline + courtyards + markers (spec §22.6) ------------------------
+
+
+def _box(r: Rect | None) -> tuple[float, float, float, float]:
+    assert r is not None
+    return (round(r.x, 6), round(r.y, 6), round(r.w, 6), round(r.h, 6))
+
+
+def test_default_extent_outline_and_courtyards() -> None:
+    inside = model(outline=outline(0, 0, 80, 60), parts=(part("U1", 40, 30),))
+    assert _box(default_extent(inside)) == (0, 0, 80, 60)
+    # a staging part right of the outline (courtyard 108..112) and a marker below it
+    staged = model(outline=outline(0, 0, 80, 60), parts=(part("U1", 40, 30), part("C1", 110, 30)))
+    assert _box(default_extent(staged, (Marker(1, 20, 70),))) == (0, 0, 112, 70)
+
+
+def test_default_extent_without_outline() -> None:
+    none = replace(outline(), kind="none", w=0.0, h=0.0)
+    m = model(outline=none, parts=(part("U1", 10, 10), part("U2", 30, 20, half=1.0)))
+    assert _box(default_extent(m)) == (8, 8, 23, 13)  # courtyards only: 8..31 x 8..21
+
+
+def test_default_extent_courtyardless_part_pads() -> None:
+    none = replace(outline(), kind="none", w=0.0, h=0.0)
+    pad = Pad("TP1", "1", "N1", 12.0, 10.0, 3.0, 4.0, 0.0, "rect", frozenset({"F.Cu"}), True, None)
+    tp = part("TP1", 10, 10, courtyard=(), pads=(pad,))
+    r = default_extent(model(outline=none, parts=(tp,)))
+    assert r is not None
+    assert r.x == pytest.approx(9.5) and r.x + r.w == pytest.approx(14.5)  # pad 12 -+ 2.5
+    assert r.y == pytest.approx(7.5) and r.y + r.h == pytest.approx(12.5)
+
+
+def test_default_extent_none_when_empty() -> None:
+    none = replace(outline(), kind="none", w=0.0, h=0.0)
+    assert default_extent(model(outline=none, parts=())) is None
+    # a lone marker is no zero-size view: grown to the minimum extent around it
+    r = default_extent(model(outline=none, parts=()), (Marker(1, 5, 5),))
+    assert r is not None and r.w > 0 and r.h > 0
+    assert r.x <= 5 <= r.x + r.w and r.y <= 5 <= r.y + r.h
+
+
+def test_region_overrides_extent() -> None:
+    from copperchat.views.board_render import view_extent
+
+    m = model(outline=outline(0, 0, 80, 60), parts=(part("U1", 40, 30),))
+    region = Rect(30.0, 25.0, 10.0, 5.0)
+    assert view_extent(m, region, ()) == region
+    assert _box(view_extent(m, None, ())) == (0, 0, 80, 60)

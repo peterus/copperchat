@@ -1,7 +1,9 @@
 """Fab presets (B-C8, pure data, mm). Values verified against the JLCPCB capabilities
 page (2026-11-25). `hole_to_hole` is the stricter pad value (0.45), applied globally because
 KiCad has one `hole_to_hole_min`; the 0.2 mm via value is then implied. Hole-to-edge checks
-use `copper_to_edge`."""
+use `copper_to_edge`. `min_drill` (plated holes) is 0.2 mm by owner decision 2026-11-26
+(spec §22.2: holes below 0.3 mm may cost a JLC surcharge, the fab report lists them);
+`min_via_drill` stays 0.3 mm."""
 
 from __future__ import annotations
 
@@ -41,7 +43,7 @@ PRESETS: Mapping[str, FabPreset] = MappingProxyType(
             0.15,
             0.3,
             0.66,
-            0.3,
+            0.2,
             0.5,
             0.18,
             0.3,
@@ -59,7 +61,7 @@ PRESETS: Mapping[str, FabPreset] = MappingProxyType(
             0.15,
             0.3,
             0.6,
-            0.3,
+            0.2,
             0.5,
             0.15,
             0.3,
@@ -77,7 +79,7 @@ PRESETS: Mapping[str, FabPreset] = MappingProxyType(
             0.15,
             0.3,
             0.6,
-            0.3,
+            0.2,
             0.5,
             0.15,
             0.3,

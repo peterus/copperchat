@@ -445,6 +445,7 @@ def _pad(ref: str, pad: KipyPad) -> Pad:
         layers=frozenset(_layer(layer) for layer in ps.layers),
         smd=pad.pad_type == board_types_pb2.PT_SMD,
         drill=drill,
+        npth=pad.pad_type == board_types_pb2.PT_NPTH,
     )
 
 
@@ -484,6 +485,8 @@ def _part(fp: FootprintInstance, group: str | None) -> Part:
         rule_areas=rule_areas,
         item_kiids=_item_kiids(fp),
         silk=_silk(fp),
+        exclude_from_bom=bool(fp.attributes.exclude_from_bill_of_materials),
+        exclude_from_pos=bool(fp.attributes.exclude_from_position_files),
     )
 
 
