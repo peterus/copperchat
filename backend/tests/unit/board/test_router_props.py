@@ -74,7 +74,9 @@ def test_exact_pad_centres(routed: list[Result]) -> None:
             continue
         assert path.segments[0][1] == (round(r.a.x, 6), round(r.a.y, 6)), f"seed {seed}"
         assert path.segments[-1][2] == (round(r.b.x, 6), round(r.b.y, 6)), f"seed {seed}"
-        for (_l1, _p, q), (_l2, p2, _q) in zip(path.segments, path.segments[1:], strict=False):
+        for (_l1, _p, q, _w1), (_l2, p2, _q, _w2) in zip(
+            path.segments, path.segments[1:], strict=False
+        ):
             assert q == p2, f"seed {seed}: path not continuous"
 
 
@@ -127,19 +129,19 @@ def test_pairs_property(seed: int) -> None:
     from .router_maps import pad_corners, seg_poly_dist
 
     for path, r, other in ((pp, p, n), (pn, n, p)):  # each path vs the partner's pads
-        for layer, s0, s1 in path.segments:
+        for layer, s0, s1, _w in path.segments:
             for q in (other.a, other.b):
                 if layer in q.layers:
                     assert (
                         seg_poly_dist(s0, s1, pad_corners(q)) >= r.clearance + r.width / 2 - 1e-6
                     ), seed
-    for la, a0, a1 in pp.segments:
-        for lb, b0, b1 in pn.segments:
+    for la, a0, a1, _wa in pp.segments:
+        for lb, b0, b1, _wb in pn.segments:
             if la == lb:
                 assert seg_dist(a0, a1, b0, b1) >= pc + (p.width + n.width) / 2 - 1e-6, seed
     for v in pp.vias:
         assert all(
-            seg_dist(v, v, s, e) >= pc + 0.3 + n.width / 2 - 1e-6 for _l, s, e in pn.segments
+            seg_dist(v, v, s, e) >= pc + 0.3 + n.width / 2 - 1e-6 for _l, s, e, _w in pn.segments
         )
         assert all(math.dist(v, u) >= pc + 0.6 - 1e-6 for u in pn.vias)
 

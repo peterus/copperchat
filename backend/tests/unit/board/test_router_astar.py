@@ -116,7 +116,7 @@ def test_straight_line() -> None:
     req = rq(pad("SIG", 5, 10), pad("SIG", 15, 10, ref="B"))
     path = go(req)
     assert path is not None
-    assert path.segments == (("F.Cu", (5.0, 10.0), (15.0, 10.0)),)
+    assert path.segments == (("F.Cu", (5.0, 10.0), (15.0, 10.0), 0.2),)
     assert path.length == pytest.approx(10.0)
     assert path.vias == ()
 
@@ -194,7 +194,7 @@ def test_detours_obstacle() -> None:
     assert path.length > 10.5
     assert_clean(path, 0.2)
     grid = build_grid(board(parts=(), outline=outline(0, 0, 30, 20), tracks=(wall,)), req)
-    assert all(grid.segment_clear(0, p, q) for _l, p, q in path.segments)
+    assert all(grid.segment_clear(0, p, q) for _l, p, q, _w in path.segments)
 
 
 def test_uses_via_when_blocked() -> None:
@@ -208,7 +208,7 @@ def test_uses_via_when_blocked() -> None:
     path = go(req, [wall])
     assert path is not None
     assert len(path.vias) == 1
-    assert {layer for layer, _p, _q in path.segments} == {"F.Cu", "B.Cu"}
+    assert {layer for layer, _p, _q, _w in path.segments} == {"F.Cu", "B.Cu"}
     assert path.vias[0][0] < 10.0
     assert_clean(path, 0.2)
 
@@ -230,7 +230,7 @@ def test_pad_exit_long_axis(rot: float) -> None:
     req = rq(a, pad("SIG", 10, 4, ref="B"))
     path = go(req)
     assert path is not None
-    first = dir_of(*path.segments[0][1:])
+    first = dir_of(*path.segments[0][1:3])
     axis = round(rot / 45) % 8
     assert first in {(axis + o) % 8 for o in (-1, 0, 1, 3, 4, 5)}
     assert first in pad_dirs(a)
@@ -256,7 +256,7 @@ def test_prefers_first_layer() -> None:
     )
     path = go(req)
     assert path is not None
-    assert {layer for layer, _p, _q in path.segments} == {"B.Cu"}
+    assert {layer for layer, _p, _q, _w in path.segments} == {"B.Cu"}
 
 
 def test_max_expansions_none() -> None:
@@ -501,7 +501,8 @@ def _second_route(m: Any, pin: Any, up: Any, down: Any) -> tuple[Any, Any]:
     first = route(build_grid(m, req), req)
     assert first is not None
     tracks = tuple(
-        Track(f"t{i}", "P", lay, a, b, 0.2, True) for i, (lay, a, b) in enumerate(first.segments)
+        Track(f"t{i}", "P", lay, a, b, 0.2, True)
+        for i, (lay, a, b, _w) in enumerate(first.segments)
     )
     m2 = replace(m, tracks=tracks)
     req2 = RouteRequest("P", pin, down, 0.2, 0.2, ("F.Cu",), False, (0.6, 0.3))
@@ -515,7 +516,8 @@ def _t_junctions(m2: Any, second: Any) -> tuple[Any, ...]:
     from copperchat.board.model import Track
 
     both = m2.tracks + tuple(
-        Track(f"u{i}", "P", lay, a, b, 0.2, True) for i, (lay, a, b) in enumerate(second.segments)
+        Track(f"u{i}", "P", lay, a, b, 0.2, True)
+        for i, (lay, a, b, _w) in enumerate(second.segments)
     )
     return tuple(analyse_tracks(replace(m2, tracks=both)).t_junctions)
 
@@ -633,7 +635,7 @@ def test_search_crosses_off_lattice_own_copper_at_45(offset: float) -> None:
     assert path is not None
     assert _time.perf_counter() - t0 < 0.5
     own = {"F.Cu": [((5.0, y), (15.0, y))]}
-    pts = [path.segments[0][1], *(q for _, _, q in path.segments)]
+    pts = [path.segments[0][1], *(q for _, _, q, _w in path.segments)]
     assert junctions_ok([("F.Cu", pts)], own, lambda layer, p: False)
 
 

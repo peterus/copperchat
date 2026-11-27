@@ -119,13 +119,13 @@ def offset_polyline(points: Sequence[Point], o: float) -> tuple[Point, ...]:
     return tuple(out)
 
 
-def _as_path(layer: str, pts: Sequence[Point]) -> RoutePath:
-    segs = tuple((layer, p, q) for p, q in itertools.pairwise(pts))
-    return RoutePath(segments=segs, vias=(), length=sum(math.dist(p, q) for _l, p, q in segs))
+def _as_path(layer: str, pts: Sequence[Point], width: float) -> RoutePath:
+    segs = tuple((layer, p, q, width) for p, q in itertools.pairwise(pts))
+    return RoutePath(segments=segs, vias=(), length=sum(math.dist(p, q) for _l, p, q, _w in segs))
 
 
 def _partner(path: RoutePath, need: float) -> list[tuple[str, Shape]]:
-    return [(layer, ("s", *p, *q, need)) for layer, p, q in path.segments]
+    return [(layer, ("s", *p, *q, need)) for layer, p, q, _w in path.segments]
 
 
 def _partner_obstacles(
@@ -138,7 +138,9 @@ def _partner_obstacles(
     tracks += [
         (layer, ("d", *v, other.via[0] / 2, pc + w2)) for v in partner.vias for layer in req.layers
     ]
-    vias: list[Shape] = [("s", *p, *q, pc + vr + other.width / 2) for _l, p, q in partner.segments]
+    vias: list[Shape] = [
+        ("s", *p, *q, pc + vr + other.width / 2) for _l, p, q, _w in partner.segments
+    ]
     vias += [("d", *v, other.via[0] / 2, pc + vr) for v in partner.vias]
     return tracks, vias
 
@@ -301,7 +303,7 @@ def _coupled(
         nn = _join(offset_polyline(pts, -side * o), (n.a.x, n.a.y), (n.b.x, n.b.y), n.width)
     except (SnapError, ValueError):
         return None
-    rp, rn = _as_path(layer, pp), _as_path(layer, nn)
+    rp, rn = _as_path(layer, pp, p.width), _as_path(layer, nn, n.width)
     if not _check(model, p, rp, n, rn, pc, margin, deadline) or not _check(
         model, n, rn, p, rp, pc, margin, deadline
     ):
@@ -417,12 +419,12 @@ def pair_coupling(a: RoutePath, b: RoutePath) -> dict[str, float]:
     `a`'s segment on the same layer and the point projects onto it (the coupled stretch);
     no coupled stretch → both `inf`."""
     gaps: list[float] = []
-    for layer, p, q in a.segments:
+    for layer, p, q, _w in a.segments:
         length = math.dist(p, q)
         if length <= 0:
             continue
         ux, uy = (q[0] - p[0]) / length, (q[1] - p[1]) / length
-        others = [(s, e) for lay, s, e in b.segments if lay == layer and math.dist(s, e) > 0]
+        others = [(s, e) for lay, s, e, _w in b.segments if lay == layer and math.dist(s, e) > 0]
         if not others:
             continue
         steps = max(1, math.ceil(length / COUPLE_SAMPLE_MM))

@@ -82,7 +82,7 @@ def exact_clearance_ok(
     other_pads = [p for pt in model.parts for p in pt.pads if p.net != req.net]
     edge = max(dict(model.rules).get("copper_edge_clearance", 0.0), EDGE) + req.width / 2 + margin
     poly = list(model.outline.polygon)
-    for layer, a, b in path.segments:
+    for layer, a, b, _w in path.segments:
         for p in other_pads:
             if _on(p, layer):
                 if p.shape == "circle":
@@ -288,8 +288,8 @@ def open_map(rng: random.Random) -> tuple[BoardModel, list[RouteRequest]]:
 def add_path(m: BoardModel, req: RouteRequest, path: RoutePath, tag: str) -> BoardModel:
     """`m` with the routed copper of `path` (as P5b will commit it)."""
     tracks = tuple(
-        Track(f"{tag}-t{k}", req.net, layer, a, b, req.width, True)
-        for k, (layer, a, b) in enumerate(path.segments)
+        Track(f"{tag}-t{k}", req.net, layer, a, b, width, True)
+        for k, (layer, a, b, width) in enumerate(path.segments)
     )
     vias = tuple(
         Via(f"{tag}-v{k}", req.net, at, req.via[0], req.via[1], True)

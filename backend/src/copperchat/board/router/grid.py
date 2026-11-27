@@ -51,7 +51,8 @@ class RouteRequest:
 
 @dataclass(frozen=True)
 class RoutePath:
-    segments: tuple[tuple[str, Point, Point], ...]  # (layer, start, end)
+    # (layer, start, end, width): a neck-down piece is narrower than the request (R3)
+    segments: tuple[tuple[str, Point, Point, float], ...]
     vias: tuple[Point, ...]
     length: float
 
@@ -265,6 +266,7 @@ class ObstacleGrid:
     # exact via obstacles (need = distance from a via centre) and the via's edge inset
     via_shapes: tuple[Shape, ...] = ()
     via_inset: float = 0.0
+    width: float = 0.0  # the track width the obstacle needs were built for (req.width)
     # P9a: existing own-net tracks per layer (index-aligned with `layers`) and the own-net
     # pads / vias where a branch is a pad or via joint (`astar.junctions_ok`, M4 T-junction)
     own_segments: tuple[tuple[tuple[Point, Point], ...], ...] = ()
@@ -320,15 +322,19 @@ class ObstacleGrid:
             self._index = index
         return self._index
 
-    def segment_clear(self, li: int, p: Point, q: Point, *, tol: float = 1e-7) -> bool:
+    def segment_clear(
+        self, li: int, p: Point, q: Point, *, shrink: float = 0.0, tol: float = 1e-7
+    ) -> bool:
         """Segment pq (a track centre line on layer `li`) keeps every obstacle's `need` and
-        stays inside the outline inset."""
+        stays inside the outline inset. `shrink`: how much narrower than the grid's width the
+        track is, per side (a neck-down piece needs that much less; the outline inset stays
+        the grid's, conservative)."""
         box = (min(p[0], q[0]), min(p[1], q[1]), max(p[0], q[0]), max(p[1], q[1]))
         shapes = self.shapes[li] if li < len(self.shapes) else ()
         if shapes:
             for k in self._shape_index()[li].query(box):
                 s = shapes[k]
-                if seg_shape(p, q, s) < _shape_need(s) - tol:
+                if seg_shape(p, q, s) < _shape_need(s) - shrink - tol:
                     return False
         if self.outline:
             if not (point_in_polygon(p, self.outline) and point_in_polygon(q, self.outline)):
@@ -355,9 +361,12 @@ def path_clear(grid: ObstacleGrid, path: RoutePath) -> bool:
     """Every segment of `path` passes `grid.segment_clear` on its layer and every via
     `via_clear`."""
     li_of = {name: k for k, name in enumerate(grid.layers)}
-    if any(layer not in li_of for layer, _p, _q in path.segments):
+    if any(layer not in li_of for layer, _p, _q, _w in path.segments):
         return False
-    if not all(grid.segment_clear(li_of[layer], p, q) for layer, p, q in path.segments):
+    if not all(
+        grid.segment_clear(li_of[layer], p, q, shrink=max(0.0, (grid.width - w) / 2))
+        for layer, p, q, w in path.segments
+    ):
         return False
     return all(via_clear(grid, v) for v in path.vias)
 
@@ -753,6 +762,7 @@ def build_grid(
         inset=inset,
         via_shapes=via_obstacles if req.allow_vias else (),
         via_inset=edge_clearance(model) + via_r + margin,
+        width=req.width,
         own_segments=tuple(tuple(x) for x in own_segs),
         own_spots=tuple(tuple(x) for x in own_spots),
     )
@@ -765,7 +775,7 @@ def extra_shapes(
 
 
 def band_cells(
-    grid: ObstacleGrid, segments: Sequence[tuple[str, Point, Point]], lo: float, hi: float
+    grid: ObstacleGrid, segments: Sequence[tuple[str, Point, Point, float]], lo: float, hi: float
 ) -> tuple[bytearray, ...]:
     """Per layer of `grid`: 1 at the nodes whose distance to one of `segments` on that layer
     lies in [lo, hi] (the pair fallback's preferred band), else 0."""
@@ -773,7 +783,7 @@ def band_cells(
     out = []
     for name in grid.layers:
         buf = bytearray(grid.w * grid.h)
-        mine = [(p, q) for layer, p, q in segments if layer == name]
+        mine = [(p, q) for layer, p, q, _w in segments if layer == name]
         for p, q in mine:
             mk.shape(buf, ("s", *p, *q, 0.0), hi, 1)
         for p, q in mine:

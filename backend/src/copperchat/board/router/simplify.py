@@ -207,7 +207,7 @@ def to_path(
             runs[-1][1].append(p)
         else:
             runs.append((li, [p]))
-    segments: list[tuple[str, Point, Point]] = []
+    segments: list[tuple[str, Point, Point, float]] = []
     length = 0.0
     last = len(runs) - 1
     for k, (li, pts) in enumerate(runs):
@@ -217,7 +217,7 @@ def to_path(
             continue
         snapped = snap_ends(pts, a, b, req.width)
         for p, q in itertools.pairwise(snapped):
-            segments.append((grid.layers[li], p, q))
+            segments.append((grid.layers[li], p, q, req.width))
             length += math.dist(p, q)
     return RoutePath(segments=tuple(segments), vias=tuple(vias), length=length)
 
@@ -225,7 +225,7 @@ def to_path(
 def layer_runs(path: RoutePath) -> list[tuple[str, tuple[Point, ...]]]:
     """The path as per-layer polylines (a new run at every layer change)."""
     runs: list[tuple[str, list[Point]]] = []
-    for layer, p, q in path.segments:
+    for layer, p, q, _w in path.segments:
         if runs and runs[-1][0] == layer and runs[-1][1][-1] == p:
             runs[-1][1].append(q)
         else:

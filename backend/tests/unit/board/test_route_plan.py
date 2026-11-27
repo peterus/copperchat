@@ -161,7 +161,7 @@ def test_router_avoids_footprint_keepout() -> None:
     (p,) = _plan(m, ["N1"])
     path = solve(route.with_footprint_keepouts(m, p.req), p.req)
     assert path is not None
-    for _, a, b in path.segments:
+    for _, a, b, _w in path.segments:
         for t in (0.0, 0.25, 0.5, 0.75, 1.0):
             x, y = a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])
             assert not (13.0 - 0.1 < x < 16.0 + 0.1 and 7.0 - 0.1 < y < 13.0 + 0.1), (x, y)
@@ -242,7 +242,7 @@ class Board:
 
 def _straight(req: Any) -> RoutePath:
     a, b = (req.a.x, req.a.y), (req.b.x, req.b.y)
-    return RoutePath(((req.layers[0], a, b),), (), abs(b[0] - a[0]) + abs(b[1] - a[1]))
+    return RoutePath(((req.layers[0], a, b, req.width),), (), abs(b[0] - a[0]) + abs(b[1] - a[1]))
 
 
 @pytest.fixture
@@ -710,7 +710,8 @@ def test_router_rejects_close_via_pair() -> None:
     a, b = (p.a.x, p.a.y), (p.b.x, p.b.y)
 
     def path(v1: tuple[float, float], v2: tuple[float, float]) -> RoutePath:
-        segs = (("F.Cu", a, v1), ("B.Cu", v1, v2), ("F.Cu", v2, b))
+        w = p.req.width
+        segs = (("F.Cu", a, v1, w), ("B.Cu", v1, v2, w), ("F.Cu", v2, b, w))
         return RoutePath(segs, (v1, v2), 10.0)
 
     assert valid_path(path((12.0, 10.0), (16.0, 10.0)), grid, p.req)

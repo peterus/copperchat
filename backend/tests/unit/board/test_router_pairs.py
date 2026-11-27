@@ -64,7 +64,10 @@ def clean(path: RoutePath, width: float) -> None:
 
 def min_dist(a: RoutePath, b: RoutePath) -> float:
     return min(
-        seg_dist(p, q, s, e) for la, p, q in a.segments for lb, s, e in b.segments if la == lb
+        seg_dist(p, q, s, e)
+        for la, p, q, _wa in a.segments
+        for lb, s, e, _wb in b.segments
+        if la == lb
     )
 
 
@@ -124,7 +127,7 @@ def test_fallback_band_marks_coupling_distance() -> None:
 
     m, p, _n = straight_pair()
     grid = build_grid(m, p)
-    seg = (("F.Cu", (5.0, 10.0), (15.0, 10.0)),)
+    seg = (("F.Cu", (5.0, 10.0), (15.0, 10.0), 0.2),)
     band = band_cells(grid, seg, 0.4 - grid.pitch, 0.4 + grid.pitch)[0]
 
     def at(x: float, y: float) -> int:
@@ -161,7 +164,7 @@ def test_pair_coupling_keys() -> None:
     assert c["gap_max"] - c["gap_min"] <= 0.02
     assert abs(c["gap_min"] - (0.2 + 0.2)) <= 0.01
     assert c["length_mismatch"] < 0.1
-    lone = RoutePath((("B.Cu", (0.0, 0.0), (1.0, 0.0)),), (), 1.0)
+    lone = RoutePath((("B.Cu", (0.0, 0.0), (1.0, 0.0), 0.2),), (), 1.0)
     far = pair_coupling(pp, lone)
     assert far["gap_min"] == math.inf and far["gap_max"] == math.inf
 
@@ -288,7 +291,7 @@ def test_fallback_partner_vias_keep_clear() -> None:
     for v in pp.vias:
         for u in pn.vias:
             assert math.dist(v, u) >= 0.6 + 0.2 - 1e-6  # two via radii + pair clearance
-        for layer, s, e in pn.segments:
+        for layer, s, e, _w in pn.segments:
             assert seg_dist(v, v, s, e) >= 0.3 + 0.2 + 0.1 - 1e-6, layer
     assert min_dist(pp, pn) >= 0.4 - 1e-6
 
@@ -367,7 +370,7 @@ def test_coupled_avoids_partner_net_copper() -> None:
     for got in (route_pair(m, p, n, 0.2), solve_pair(m, p, n, 0.2)):
         assert got is not None
         pp, _pn = got
-        for layer, s, e in pp.segments:
+        for layer, s, e, _w in pp.segments:
             if layer == "F.Cu":
                 assert seg_dist(s, e, dn_stub.start, dn_stub.end) >= 0.2 + 0.2 - 1e-6
 

@@ -639,7 +639,7 @@ def route(
 
 def reverse_path(path: RoutePath) -> RoutePath:
     """The same copper walked from the other end."""
-    segs = tuple((layer, q, p) for layer, p, q in reversed(path.segments))
+    segs = tuple((layer, q, p, w) for layer, p, q, w in reversed(path.segments))
     return RoutePath(segments=segs, vias=tuple(reversed(path.vias)), length=path.length)
 
 

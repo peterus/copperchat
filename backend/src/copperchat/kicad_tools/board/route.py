@@ -491,12 +491,12 @@ def _create(
                 "Re-read the board (pcb_status) and retry.",
                 code="not_found",
             )
-        for layer, a, b in path.segments:
+        for layer, a, b, width in path.segments:
             t = KipyTrack()
             t.layer = layer_from_canonical_name(layer)
             t.net = net
             t.start, t.end = _vec(a), _vec(b)
-            t.width = mm_to_nm(req.width)
+            t.width = mm_to_nm(width)
             t.locked = lock
             made.append(t)
         for at in path.vias:
@@ -526,8 +526,8 @@ def _model_items(
     vias: list[Via] = []
     it = iter(kiids)
     for req, path in items:
-        for layer, a, b in path.segments:
-            tracks.append(Track(next(it), req.net, layer, a, b, req.width, lock))
+        for layer, a, b, width in path.segments:
+            tracks.append(Track(next(it), req.net, layer, a, b, width, lock))
         for at in path.vias:
             vias.append(Via(next(it), req.net, at, req.via[0], req.via[1], lock))
     return tracks, vias
@@ -756,7 +756,7 @@ def _blockers(st: _Loop, group: Sequence[ConnPlan]) -> list[_Kept]:
     def dist(k: _Kept) -> float:
         best = math.inf
         for path in k.paths:
-            for _, a, b in path.segments:
+            for _, a, b, _w in path.segments:
                 for q in (a, b, ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)):
                     best = min(best, min(math.dist(q, c) for c in pts))
         return best
@@ -768,7 +768,7 @@ def _blockers(st: _Loop, group: Sequence[ConnPlan]) -> list[_Kept]:
         and any(
             inside(q)
             for path in k.paths
-            for _, a, b in path.segments
+            for _, a, b, _w in path.segments
             for q in (a, b, ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2))
         )
     ]

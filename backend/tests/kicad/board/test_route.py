@@ -289,8 +289,10 @@ def _short_path(model: BoardModel, a: Pad) -> RoutePath:
             key=lambda q: abs(q.x - a.x) + abs(q.y - a.y),
         )
         mid = (other.x, a.y)
-        return RoutePath(((layer, (a.x, a.y), mid), (layer, mid, (other.x, other.y))), (), 0.0)
-    return RoutePath(((layer, (a.x, a.y), (other.x, other.y)),), (), abs(other.x - a.x))
+        return RoutePath(
+            ((layer, (a.x, a.y), mid, 0.25), (layer, mid, (other.x, other.y), 0.25)), (), 0.0
+        )
+    return RoutePath(((layer, (a.x, a.y), (other.x, other.y), 0.25),), (), abs(other.x - a.x))
 
 
 async def test_drc_reject_then_retry(
