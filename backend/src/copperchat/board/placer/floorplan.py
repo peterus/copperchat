@@ -352,7 +352,10 @@ def _split_cost(
     centre lies on the other side of the rectangle's midline."""
     c = sum(ctx.w(x, y) for x in a for y in b)
     for o in outside:
-        side = ctx.where[o][cut]
+        at = ctx.where.get(o)
+        if at is None:  # not assigned anywhere yet (a trial bisection in `_assign`)
+            continue
+        side = at[cut]
         if abs(side - mid) < _EPS:
             continue
         other = b if side < mid else a  # a is the low side
@@ -728,9 +731,21 @@ def _assign(
                 continue
             if len(groups[0]) == 1:
                 break
+            if not _tiles(ctx, r, [*groups[i], n]):  # the shapes must tile the piece too
+                continue
             groups[0].remove(n)
             groups[i].append(n)
     return [sorted(g, key=natural_key) for g in groups]
+
+
+def _tiles(ctx: _Ctx, r: Box, names: Sequence[str]) -> bool:
+    """A trial bisection of `names` in `r` succeeds (on a scratch copy of `ctx`)."""
+    trial = dataclasses.replace(ctx, where=dict(ctx.where), channels=[], leaves={})
+    try:
+        _bisect(trial, r, sorted(names, key=natural_key), [n for n in ctx.boxes if n not in names])
+    except _NoFit:
+        return False
+    return True
 
 
 # ---- placing over the floorplan ------------------------------------------------------------
