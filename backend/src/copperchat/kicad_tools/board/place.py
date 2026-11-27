@@ -787,20 +787,32 @@ async def apply_placement(ctx: ToolContext, cs: ChangeSet) -> ToolResult:
     return result
 
 
-def _does_not_fit(d: DoesNotFit, what: str) -> StructuredToolError:
+def _does_not_fit(d: DoesNotFit, what: str, *, plural: bool = False) -> StructuredToolError:
     details: dict[str, Any] = {
         "needed_mm2": d.needed_mm2,
         "available_mm2": d.available_mm2,
         "refs": list(d.refs),
     }
-    fill = ""
+    why = (
+        f"needs about {d.needed_mm2:g} mm² but only {d.available_mm2:g} mm² are free "
+        f"({', '.join(d.refs[:10])})"
+    )
     if d.courtyard_fill is not None:  # R2: a floorplan's Σ courtyards / usable area
         details["courtyard_fill"] = d.courtyard_fill
-        fill = f"; the courtyards alone fill {d.courtyard_fill:.0%} of the usable area"
+        fill = f"the courtyards alone fill {d.courtyard_fill:.0%} of the usable area"
+        if d.needed_mm2 <= d.available_mm2:
+            # enough area, but the block outlines and the channels between them do not tile
+            details["reason"] = "shape"
+            why = (
+                f"the blocks' outlines and the routing channels between them do not tile "
+                f"the board ({', '.join(d.refs[:10])}); {fill}"
+            )
+        else:
+            details["reason"] = "area"
+            why += f"; {fill}"
     return StructuredToolError(
-        f"{what} does not fit",
-        f"needs about {d.needed_mm2:g} mm² but only {d.available_mm2:g} mm² are free "
-        f"({', '.join(d.refs[:10])}){fill}",
+        f"{what} {'do' if plural else 'does'} not fit",
+        why,
         "Ask the user: a bigger region or board, the bottom side, smaller parts, or move "
         "other blocks first. Nothing was changed.",
         code="does_not_fit",
@@ -1036,7 +1048,7 @@ async def prepare_move(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
             timeout_s=PLACE_TIMEOUT_S,
         )
         if isinstance(result, DoesNotFit):
-            raise _does_not_fit(result, "The moved parts")
+            raise _does_not_fit(result, "The moved parts", plural=True)
         legal = {m.ref: m for m in result}
         moves = [legal.get(m.ref, m) for m in moves]
     return await plan_moves(
@@ -1185,7 +1197,7 @@ async def pcb_floorplan(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         timeout_s=PLACE_TIMEOUT_S,
     )
     if isinstance(fp, DoesNotFit):
-        raise _does_not_fit(fp, "The blocks")
+        raise _does_not_fit(fp, "The blocks", plural=True)
     data: dict[str, Any] = {
         **_floorplan_data(fp),
         "keep_channels": kc,
@@ -1222,7 +1234,7 @@ async def prepare_place_blocks(ctx: ToolContext, args: dict[str, Any]) -> Change
     except SidePolicyError as exc:
         raise _invalid(str(exc)) from exc
     if isinstance(result, DoesNotFit):
-        raise _does_not_fit(result, "The blocks")
+        raise _does_not_fit(result, "The blocks", plural=True)
     placed, fp = result
     report: dict[str, Any] = {
         "blocks": [b.name for b in blocks],

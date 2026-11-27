@@ -14,7 +14,8 @@ no randomness).
    in the cell: mm along the edge from its top / left end) or the edge middle. The rest of
    the usable box, inset by an edge channel (`max(keep_channels, CHANNEL_MIN_MM)`), is
    split into at most `MAX_FREE_RECTS` free rectangles (guillotine, biggest first, a
-   channel between them).
+   channel between them); parts that stay (locked, other blocks) and keepouts come out of
+   them too, small fixtures (mounting holes, fiducials, test points) do not.
 4. Free blocks are distributed over the free rectangles (the biggest takes all but the
    blocks that belong next to a fixed block in a smaller one), then each rectangle is
    bisected recursively: cut across the longer side, the blocks split into two groups with
@@ -96,6 +97,8 @@ MAX_FREE_RECTS = 4
 TIGHT_GAP_MM = 0.3
 TIGHT_STEP_MM = 0.05
 _EPS = 1e-6
+_FIXTURES = frozenset({"mounting_hole", "fiducial", "test_point"})
+PARK_DX_MM = 1000.0  # place_blocks packs with this run's members moved this far right
 _NUM = re.compile(r"-?\d+(?:\.\d+)?")
 _EDGES: tuple[Edge, ...] = ("top", "bottom", "left", "right")
 _NORMAL: Mapping[Edge, Point] = {
@@ -544,7 +547,19 @@ def floorplan(
         and len(p.courtyard) + len(p.pads) > 0
         and on_board(model, p)
     ]
+    # parts that stay and are not small fixtures (mounting holes, fiducials, test points:
+    # the packing steps around those) also come out of the free rectangles below
+    staying = [
+        box_of(p)
+        for p in model.parts
+        if p.ref not in moving
+        and p.side == "top"
+        and len(p.courtyard) + len(p.pads) > 0
+        and on_board(model, p)
+        and cls.part_class.get(p.ref) not in _FIXTURES
+    ]
     obstacles += [_keepout_box(k) for k in keepout_polys(model)]
+    staying += [_keepout_box(k) for k in keepout_polys(model)]
     usable_mm2 = round(max(_area(usable) - _union_area(obstacles, usable), 0.0), 3)
     court = 0.0
     for refs in members.values():
@@ -675,6 +690,9 @@ def floorplan(
             else:
                 ly = f[1] - ch / 2 if s == "top" else f[3] + ch / 2
                 ctx.channels.append(((f[0], ly), (f[2], ly), ch))
+    for ob in sorted(staying):
+        g = (ob[0] - ec, ob[1] - ec, ob[2] + ec, ob[3] + ec)
+        free = [piece for fr in free for piece in _minus(fr, g, ec)]
     free_names = sorted((n for n in boxes if n not in fixed), key=natural_key)
     if free_names:
         smallest = min(min(boxes[n].w, boxes[n].h) for n in free_names)
@@ -796,6 +814,15 @@ def place_blocks(
     def size(n: str) -> float:
         return sum(_area(box_of(model.part(x))) for x in _members(model, by_name[n]))
 
+    # every member of this run parked off the board first: a block is packed around the
+    # blocks placed before it, never around stale positions of members still to come
+    everyone = sorted({r for b in blocks for r in _members(model, b)}, key=natural_key)
+    park = [
+        Move(r, model.part(r).x + o.w + PARK_DX_MM, model.part(r).y, model.part(r).rot,
+             model.part(r).side)
+        for r in everyone
+    ]  # fmt: skip
+    base = apply_moves(model, park)
     fixed_set = frozenset(fp.fixed)
     order = sorted(fp.regions, key=lambda n: (n not in fixed_set, -size(n), natural_key(n)))
     moves: tuple[Move, ...] = ()
@@ -809,7 +836,7 @@ def place_blocks(
         res: tuple[Move, ...] | DoesNotFit = DoesNotFit(0.0, 0.0, ())
         for reg in (region, whole):
             res = pack_block(
-                model,
+                base,
                 cls,
                 refs,
                 reg,
@@ -832,7 +859,7 @@ def place_blocks(
     if fallback:
         fp = dataclasses.replace(fp, fallback=tuple(sorted(set(fallback), key=natural_key)))
     legal = legalize(
-        model,
+        base,
         moves,
         movable=frozenset(members),
         max_shift=None,

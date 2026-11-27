@@ -399,9 +399,25 @@ def test_place_blocks_keeps_other_parts() -> None:
         outline=m.outline,
     )
     del groups["blk8"]
-    res_, _ = _place(m, groups)
+    res_, fp = _place(m, groups)
     assert not {mv.ref for mv in res_.moves} & {"U8", "C8", "R8"}
     assert res_.score.m1_violations == 0
+    # the free regions leave the locked parts out (review round 1)
+    for ref in ("U8", "C8", "R8"):
+        b = box_of(m.part(ref))
+        for name, r in fp.regions.items():
+            hit = b[0] < r.x + r.w and r.x < b[2] and b[1] < r.y + r.h and r.y < b[3]
+            assert not hit, (ref, name, r)
+
+
+def test_place_blocks_rerun_from_placed_state() -> None:
+    """Review round 1: a block is packed around the blocks placed before it, never around
+    the old positions of members still to come - placing again from the placed state
+    gives the same placement."""
+    m, groups = _eight()
+    first, _ = _place(m, groups)
+    again, _ = _place(apply_moves(m, first.moves), groups)
+    assert again.moves == first.moves
 
 
 def test_place_blocks_does_not_fit() -> None:

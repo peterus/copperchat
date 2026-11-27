@@ -270,5 +270,13 @@ def test_does_not_fit_details_courtyard_fill() -> None:
     assert err.code == "does_not_fit"
     assert err.details is not None and err.details["courtyard_fill"] == 0.62
     assert "62%" in err.why
+    assert err.details["reason"] == "area"
+    assert err.what == "The blocks does not fit"
+    shape = place._does_not_fit(
+        place.DoesNotFit(840.0, 1400.0, ("U1",), courtyard_fill=0.6), "The blocks", plural=True
+    )
+    assert shape.what == "The blocks do not fit"
+    assert shape.details is not None and shape.details["reason"] == "shape"
+    assert "do not tile" in shape.why and "840" not in shape.why
     plain = place._does_not_fit(place.DoesNotFit(1.0, 0.5, ("U1",)), "Block 'a'")
     assert plain.details is not None and "courtyard_fill" not in plain.details

@@ -10,6 +10,7 @@ import pytest
 
 from copperchat.board.boardmd import BoardDoc, EdgeRow
 from copperchat.board.classify import classify
+from copperchat.board.geom import rect_poly
 from copperchat.board.model import BoardModel, Part, Rect, Side
 from copperchat.board.placer import (
     DoesNotFit,
@@ -23,7 +24,7 @@ from copperchat.board.placer import (
 from copperchat.board.placer.layout import box_of
 
 from .builders import part
-from .builders_circuit import cap, circuit, conn, ic, res
+from .builders_circuit import cap, circuit, conn, ic, pad, res
 
 TOP: frozenset[Side] = frozenset({"top"})
 BOTH: frozenset[Side] = frozenset({"top", "bottom"})
@@ -230,3 +231,43 @@ def test_bottom_side_refused() -> None:
     assert bottom.m1_violations == 0  # no courtyard overlap, all inside the outline
     assert top.m8_worst_mm is not None and bottom.m8_worst_mm is not None
     assert bottom.m8_worst_mm <= top.m8_worst_mm + 1e-6  # mirrored: the same distances
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "hit"),
+    [
+        ((0.0, 0.5), (2.0, 0.5), True),  # straight through
+        ((-1.0, -1.0), (2.0, 2.0), True),  # diagonal through
+        ((0.0, 1.0), (1.0, 1.0), False),  # along the top edge: not the interior
+        ((2.0, 0.0), (3.0, 1.0), False),  # beside
+        ((0.5, 0.5), (0.6, 0.6), True),  # inside
+        ((-1.0, 0.5), (-0.1, 0.5), False),  # stops short
+        ((1.0, -1.0), (1.0, 2.0), False),  # vertical on the right edge
+    ],
+)
+def test_seg_hits_box(a: tuple[float, float], b: tuple[float, float], hit: bool) -> None:
+    from copperchat.board.placer.pack import _seg_hits_box
+
+    assert _seg_hits_box(a, b, (0.0, 0.0, 1.0, 1.0)) is hit
+
+
+def test_occlusion_counts_rays_through_members() -> None:
+    """R2 OCCLUDE_WEIGHT: a pad whose line to its outside partners crosses another member's
+    courtyard counts; ground nets never count; a clear line does not."""
+    from copperchat.board.placer.pack import _occluded
+
+    u = part(
+        "U1", 0.0, 0.0,
+        pads=(pad("U1", "1", "USB", (-1.0, 0.0)), pad("U1", "2", "GND", (-1.0, 1.0))),
+        courtyard=tuple(rect_poly(-1.5, -1.5, 3.0, 3.0)),
+    )  # fmt: skip
+    hdr = part("J2", -5.0, 0.0, pads=(), courtyard=tuple(rect_poly(-6.0, -1.0, 2.0, 2.0)))
+    parts = [u, hdr]
+    boxes = [box_of(p) for p in parts]
+    kinds = {"USB": "signal", "GND": "ground"}
+    # partners far left: the USB line crosses the header, the GND line is never counted
+    left = {"USB": (-20.0, 0.0), "GND": (-20.0, 1.0)}
+    assert _occluded(parts, boxes, left, (0.0, 0.0), kinds) == 1
+    # partners far right: the line leaves through U1 itself only (its own part)
+    right = {"USB": (20.0, 0.0), "GND": (20.0, 1.0)}
+    assert _occluded(parts, boxes, right, (0.0, 0.0), kinds) == 0
