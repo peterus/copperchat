@@ -82,7 +82,8 @@ def test_exact_pad_centres(routed: list[Result]) -> None:
 
 
 def test_no_entry_loops(routed: list[Result]) -> None:
-    """R3 (owner rule c, M16 b): no routed path turns back inside an end pad's entry zone."""
+    """R3 (owner rule c, M16 b / c): no routed path turns back or makes an S-offset inside
+    an end pad's entry zone (a jog is an error for the owner, 2026-11-27)."""
     from copperchat.board.geom import _in_pad, analyse_entry, entry_zone
 
     n = 0
@@ -95,6 +96,7 @@ def test_no_entry_loops(routed: list[Result]) -> None:
                 pts, r.width, entry_zone(end, r.width), in_pad=lambda q, e=end: _in_pad(q, e)
             )
             assert rep.loops == (), f"seed {seed} {r.net}: loop at {rep.loops}"
+            assert rep.jogs == (), f"seed {seed} {r.net}: jog at {rep.jogs}"
             n += 1
     assert n >= 400
 

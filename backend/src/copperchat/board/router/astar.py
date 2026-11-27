@@ -18,8 +18,9 @@ straight own track perpendicularly - never a Y (45° / 135°). With `req.tree` t
 `b` or a node next to the interior of an own track connected to `b`, entered by a move
 perpendicular to that track (the path's end then lands exactly on the track). A bend
 inside an end pad's entry zone (`geom.entry_zone`, outside the pad) that closely follows
-another bend costs ENTRY_TURN_COST more, and a path whose pad entry loops (M16 b,
-`geom.analyse_entry`) is never accepted.
+another bend costs ENTRY_TURN_COST more, and a path whose pad entry loops or jogs (M16 b /
+c, `geom.analyse_entry`; both errors for the owner) is accepted only as `solve`'s last
+resort.
 """
 
 from __future__ import annotations
@@ -374,12 +375,13 @@ def junction_masks(grid: ObstacleGrid, deadline: float | None = None) -> list[di
     return out
 
 
-def _entry_loops(pts: Sequence[Point], pad: Pad, width: float) -> bool:
-    """The run starting in `pad` turns back inside the pad's entry zone (M16 pad loop)."""
+def _entry_bad(pts: Sequence[Point], pad: Pad, width: float) -> bool:
+    """The run starting in `pad` turns back (M16 pad loop) or makes an S-offset (M16 pad
+    jog) inside the pad's entry zone - both errors for the owner (2026-11-27)."""
     if not pts or not _in_pad(pts[0], pad):
         return False
     rep = analyse_entry(pts, width, entry_zone(pad, width), in_pad=lambda q: _in_pad(q, pad))
-    return bool(rep.loops)
+    return bool(rep.loops or rep.jogs)
 
 
 def entry_nodes(grid: ObstacleGrid, pads: Sequence[Pad], width: float) -> set[int]:
@@ -400,14 +402,14 @@ def entry_nodes(grid: ObstacleGrid, pads: Sequence[Pad], width: float) -> set[in
 
 
 def valid_path(
-    path: RoutePath, grid: ObstacleGrid, req: RouteRequest, *, loops_ok: bool = False
+    path: RoutePath, grid: ObstacleGrid, req: RouteRequest, *, entry_ok: bool = False
 ) -> bool:
     """The path starts on a layer of pad `a` and ends on one of pad `b`; `analyse_bends` has
     no failure on any layer run (the end-bend exemption only for a bend inside its pad —
     stricter than the board metric, which exempts every pad-end bend); every segment and
     via keeps its exact clearance, also between the path's own vias. A tree request's path
     may instead end ON an own track connected to pad `b` (`tree_end`, R3). A pad entry that
-    loops (M16 b) fails unless `loops_ok` (`solve`'s fallback when no other path exists)."""
+    loops or jogs (M16 b / c) fails unless `entry_ok` (`solve`'s last resort)."""
     runs = layer_runs(path)
     if not runs:
         return False
@@ -428,9 +430,9 @@ def valid_path(
             k == 0 and len(pts) >= 3 and _in_pad(pts[1], req.a),
             k == last and not t_end and len(pts) >= 3 and _in_pad(pts[-2], req.b),
         )
-        if not loops_ok and k == 0 and _entry_loops(pts, req.a, req.width):
+        if not entry_ok and k == 0 and _entry_bad(pts, req.a, req.width):
             return False
-        if not loops_ok and k == last and not t_end and _entry_loops(pts[::-1], req.b, req.width):
+        if not entry_ok and k == last and not t_end and _entry_bad(pts[::-1], req.b, req.width):
             return False
         r = analyse_bends(pts, req.width, pad_ends=ends)
         if (
@@ -694,7 +696,7 @@ def route(
     *,
     max_expansions: int = 2_000_000,
     deadline: float | None = None,
-    loops_ok: bool = False,
+    entry_ok: bool = False,
 ) -> RoutePath | None:
     """The cheapest octilinear path from `req.a` to `req.b` on `grid` that passes the final
     checks, or None (no path in the window, `max_expansions` exhausted, or too many goal
@@ -735,7 +737,7 @@ def route(
                     direct = to_path([(li, si, sj)], grid, req)
                 except SnapError:
                     continue
-                if direct.segments and valid_path(direct, grid, req, loops_ok=loops_ok):
+                if direct.segments and valid_path(direct, grid, req, entry_ok=entry_ok):
                     return direct
         if goal_layers & set(a_layers):
             return None
@@ -767,7 +769,7 @@ def route(
         max_expansions,
         deadline,
         extra_goals=extra,
-        loops_ok=loops_ok,
+        entry_ok=entry_ok,
         goal_pieces=_goal_pieces(grid, tg),
         end_of=end_of if extra else None,
     )
@@ -785,7 +787,7 @@ def route(
             (gi, gj),
             max_expansions,
             deadline,
-            loops_ok=loops_ok,
+            entry_ok=entry_ok,
         )
     return found
 
@@ -910,7 +912,7 @@ def _search(
     deadline: float | None = None,
     *,
     extra_goals: Sequence[int] = (),
-    loops_ok: bool = False,
+    entry_ok: bool = False,
     goal_pieces: Sequence[tuple[Point, Point]] = (),
     end_of: Callable[[int, int, int], Point | None] | None = None,
 ) -> RoutePath | None:
@@ -1038,7 +1040,7 @@ def _search(
             if deadline is not None and time.monotonic() > deadline:
                 return None
             path = _build(here, parent, decode, grid, req, end_of(n, li, d) if end_of else None)
-            ok = path is not None and valid_path(path, grid, req, loops_ok=loops_ok)
+            ok = path is not None and valid_path(path, grid, req, entry_ok=entry_ok)
             if ok and path is not None and pad_exits_ok(path, req):
                 return path
             rejects += 1
@@ -1199,32 +1201,32 @@ def solve(
     *,
     margin: float = 0.0,
     max_expansions: int = 2_000_000,
-    loops_ok: bool = False,
+    entry_ok: bool = False,
 ) -> RoutePath | None:
     """`run_cpu` entry point (B-C12): route on the default window, then exactly once on the
     doubled window. The retry runs from pad `b` (its lattice aligned to `b`, the result
     reversed): a tight squeeze that one lattice misses, the other often fits. The first
     search gets at most FIRST_TRY_EXPANSIONS; both together stop after SOLVE_TIME_LIMIT_S
-    (→ None). `RouteTooLarge` from either window propagates. R3: a pad-entry loop (M16 b)
-    is refused in both; only when neither finds a loop-free path, the two windows are
-    searched once more with a loop allowed (`valid_path(loops_ok=True)`, no tree goals) -
-    the loop is the lesser evil than no route, and M16 reports it. The loop-free retry on
-    the doubled window gets at most RETRY_STRICT_EXPANSIONS, so a connection that only
-    loops stays cheap. `loops_ok`: a loop is allowed from the start (two windows, no
-    loop-free pass; the caller's choice for connections that are U-shaped by nature)."""
+    (→ None). `RouteTooLarge` from either window propagates. R3: a pad-entry loop or jog
+    (M16 b / c) is refused in both; only when neither finds a clean path, the two windows
+    are searched once more with them allowed (`valid_path(entry_ok=True)`, no tree goals) -
+    the lesser evil than no route, and M16 reports it. The clean retry on the doubled
+    window gets at most RETRY_STRICT_EXPANSIONS, so a connection that only loops stays
+    cheap. `entry_ok`: allowed from the start (two windows, no clean pass; the caller's
+    choice for connections that are U-shaped by nature)."""
     deadline = time.monotonic() + SOLVE_TIME_LIMIT_S
     first = min(max_expansions, FIRST_TRY_EXPANSIONS)
     try:
         grid = build_grid(model, req, margin=margin, deadline=deadline)
-        path = route(grid, req, max_expansions=first, deadline=deadline, loops_ok=loops_ok)
+        path = route(grid, req, max_expansions=first, deadline=deadline, entry_ok=entry_ok)
         if path is not None:
             return path
         check_deadline(deadline)
         rev = replace(req, a=req.b, b=req.a)
         grid2 = build_grid(model, rev, margin=margin, window_mm=2 * WINDOW_MM, deadline=deadline)
-        if loops_ok:
+        if entry_ok:
             back = route(
-                grid2, rev, max_expansions=max_expansions, deadline=deadline, loops_ok=True
+                grid2, rev, max_expansions=max_expansions, deadline=deadline, entry_ok=True
             )
             return reverse_path(back) if back is not None else None
         retry = min(max_expansions, RETRY_STRICT_EXPANSIONS)
@@ -1233,7 +1235,7 @@ def solve(
             return reverse_path(back)
         check_deadline(deadline)
         plain = replace(req, tree=False)
-        path = route(grid, plain, max_expansions=first, deadline=deadline, loops_ok=True)
+        path = route(grid, plain, max_expansions=first, deadline=deadline, entry_ok=True)
         if path is not None:
             return path
         check_deadline(deadline)
@@ -1242,7 +1244,7 @@ def solve(
             replace(rev, tree=False),
             max_expansions=max_expansions,
             deadline=deadline,
-            loops_ok=True,
+            entry_ok=True,
         )
     except DeadlineExpired:
         return None

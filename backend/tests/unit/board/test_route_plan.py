@@ -1090,3 +1090,15 @@ async def test_straight_pair_records_coupling(
     out = await route.route_connections(FakeSctx(m), plans, lock=True)  # type: ignore[arg-type]
     assert len(out.routed) == 2
     assert all(r.coupling is not None for r in out.results)
+
+
+def test_m8_connections_first() -> None:
+    """The connections M8 measures (a decoupling cap's supply pad to its IC pin) are
+    planned before every other one, so earlier nets cannot wall them off."""
+    from copperchat.board.classify import Decoupling
+
+    m = _two_res(res("C1", "N9", "GND", (40.0, 10.0)), res("R9", "N9", "Z", (43.0, 10.0)))
+    cls = dataclasses.replace(classify(m), decoupling=(Decoupling("C1", "R9", "1", "N9", "GND"),))
+    plans = route.plan_connections(m, cls, ["N1", "N9"], layers=None, allow_vias=True)
+    assert (plans[0].a.ref, plans[0].b.ref) in (("C1", "R9"), ("R9", "C1"))
+    assert [p.net for p in plans] == ["N9", "N1"]

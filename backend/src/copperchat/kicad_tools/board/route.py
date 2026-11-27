@@ -438,7 +438,29 @@ def plan_connections(
             out += [
                 ConnPlan(n_net, a, b, req(n_net, a, b, n_par, False), None) for a, b in n_rest[k]
             ]
-    return out
+    return _m8_first(out, cls)
+
+
+def _m8_first(plans: list[ConnPlan], cls: Classification) -> list[ConnPlan]:
+    """`plans` with the connections M8 measures - a decoupling capacitor's supply pad to its
+    IC pin, a crystal to its IC - first (shortest first), the rest in order (R3: on the
+    sp4_synth golden the crystal nets, routed earlier, walled C1.1 - U1.5 off to 9.4 mm, an
+    M8 hard failure). Pair groups stay adjacent (an M8 plan is never part of one)."""
+    decap = {(d.cap, d.ic, d.pin) for d in cls.decoupling}
+    xtal = {(x.ref, x.ic) for x in cls.crystals}
+
+    def m8(p: ConnPlan) -> bool:
+        if p.pair is not None:
+            return False
+        for small, big in ((p.a, p.b), (p.b, p.a)):
+            if (small.ref, big.ref, big.number) in decap or (small.ref, big.ref) in xtal:
+                return True
+        return False
+
+    first = sorted(
+        (p for p in plans if m8(p)), key=lambda p: octi_dist((p.a.x, p.a.y), (p.b.x, p.b.y))
+    )
+    return first + [p for p in plans if not m8(p)]
 
 
 def _late_split(
@@ -770,7 +792,7 @@ async def _solve(
         prune_model(m, req),
         req,
         margin=margin,
-        loops_ok=same_part,
+        entry_ok=same_part,
         timeout_s=timeout,
         wait_s=remaining,
     )
