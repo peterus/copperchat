@@ -9,12 +9,13 @@ unrotated - verified on the pinned server) and are transformed here.
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import math
 import os
 import re
 import stat
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Concatenate
 
@@ -714,6 +715,7 @@ def load_board_model(h: KicadHandle, project: Project) -> BoardModel:
         if _layer(layer).endswith(".Cu")
     )
     net_classes, net_class_of = _net_classes(h, board, list(board.get_nets()))
+    vias = _default_drills(vias, net_classes, net_class_of)
     dru_text, dru_marker, warnings = read_dru(project.pro_file.with_suffix(".kicad_dru"))
     return BoardModel(
         parts=tuple(_part(fp, group_of.get(str(fp.id.value))) for fp in footprints),
@@ -735,6 +737,35 @@ def load_board_model(h: KicadHandle, project: Project) -> BoardModel:
         warnings=warnings,
         texts=_board_texts(board),
     )
+
+
+def _default_drills(
+    vias: tuple[Via, ...],
+    net_classes: Sequence[NetClassInfo],
+    net_class_of: Sequence[tuple[str, str]],
+) -> tuple[Via, ...]:
+    """Vias whose drill KiCad reports as undefined (<= 0: "use the net class default" -
+    the vias of a Freerouting SES import, R4 on ODH) get their net class's via drill, as
+    KiCad's fab outputs and DRC use it (the first known constituent of a composite class,
+    else Default); unchanged when no class defines one."""
+    if all(v.drill > 0 for v in vias):
+        return vias
+    by_name = {nc.name: nc for nc in net_classes}
+    of = dict(net_class_of)
+
+    def drill(net: str) -> float | None:
+        names = [n.strip() for n in of.get(net, "Default").split(",")]
+        for n in [*names, "Default"]:
+            nc = by_name.get(n)
+            if nc is not None and nc.via_drill:
+                return nc.via_drill
+        return None
+
+    out = []
+    for v in vias:
+        d = drill(v.net) if v.drill <= 0 else None
+        out.append(dataclasses.replace(v, drill=d) if d else v)
+    return tuple(out)
 
 
 def require_board(ctx: ToolContext) -> None:

@@ -105,3 +105,23 @@ def test_layer_types_from_header() -> None:
         ("B.Cu", "mixed"),
     )
     assert _layer_types("(kicad_pcb)", ("F.Cu",)) == ()
+
+
+def test_default_via_drill_from_net_class() -> None:
+    """R4 (ODH): a via KiCad reports with an undefined drill (-1 nm, "net class default" -
+    Freerouting's SES vias) reads with its net class's via drill (composite class: its
+    first known constituent; else Default); a defined drill stays."""
+    from copperchat.board.model import NetClassInfo, Via
+    from copperchat.kicad_tools.board.read import _default_drills
+
+    def nc(name: str, drill: float) -> NetClassInfo:
+        return NetClassInfo(name, 0.2, 0.2, 0.6, drill, None, None, ())
+
+    vias = (
+        Via("a", "P", (0.0, 0.0), 0.6, -1e-6, False),
+        Via("b", "S", (1.0, 0.0), 0.6, -1e-6, False),
+        Via("c", "S", (2.0, 0.0), 0.6, 0.25, False),
+    )
+    got = _default_drills(vias, (nc("Default", 0.3), nc("Power", 0.35)), (("P", "Power,Default"),))
+    assert [v.drill for v in got] == [0.35, 0.3, 0.25]
+    assert _default_drills(vias[2:], (), ()) == vias[2:]

@@ -688,11 +688,13 @@ def _corridor_free(
 
 
 def _path_free(model: BoardModel, plan: ConnPlan, path: RoutePath) -> bool:
-    """`straight_path`'s segment has no other-net copper or keepout in the way."""
-    layer = path.segments[0][0]
-    s, e = path.segments[0][1], path.segments[-1][2]
-    w = max(pw for *_x, pw in path.segments)
-    return _corridor_free(model, plan.net, layer, s, e, w, plan.req.clearance)
+    """`straight_path`'s segment has no other-net copper or keepout in the way - each piece
+    at its own width (R4: a neck piece next to fine-pitch pins is checked at the neck
+    width, not at the class width of the piece in the other pad's zone)."""
+    return all(
+        _corridor_free(model, plan.net, la, s, e, w, plan.req.clearance)
+        for la, s, e, w in path.segments
+    )
 
 
 def corridor_reservations(
@@ -701,7 +703,7 @@ def corridor_reservations(
     """Every still-free straight corridor (`straight_path`) of an unrouted connection of a
     non-ground net on the board (R3, `route_connections(reserve=...)`). Cheap first: only
     MST connections with a corridor between their two pads are checked for copper
-    (`routed_length`) and a free path; reserved at the widest piece's width."""
+    (`routed_length`) and a free path; reserved per piece at its own width (R4)."""
     floor = default_min_track(model) if min_track is None else min_track
     nets = sorted({q.net for p in model.parts for q in p.pads if q.net})
     out: list[Reserved] = []
@@ -733,11 +735,9 @@ def corridor_reservations(
                 path = straight_path(model, plan)
                 if path is None:
                     continue
-                layer = path.segments[0][0]
-                s, e = path.segments[0][1], path.segments[-1][2]
-                placed = max(pw for *_x, pw in path.segments)
-                if _corridor_free(model, net, layer, s, e, placed, par.clearance):
-                    out.append(Reserved(_key(plan), net, layer, s, e, placed))
+                if _path_free(model, plan, path):
+                    # one reservation per piece at its own width (R4, as `_path_free`)
+                    out += [Reserved(_key(plan), net, la, s, e, w) for la, s, e, w in path.segments]
                     break  # else the next option (a narrower width may still be free)
     return tuple(out)
 

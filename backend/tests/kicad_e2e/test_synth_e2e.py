@@ -89,6 +89,18 @@ async def test_full_flow_hard_gates(synth_flow: SynthFlow) -> None:
     assert res.seconds <= FLOW_BUDGET_S, [(s.tool, s.seconds) for s in res.steps]
 
 
+async def test_golden_m15_m16_hard(synth_flow: SynthFlow) -> None:
+    """R4 (owner rules a-c, 2026-11-27): M15 and every routed M16 sub-rule are hard gates,
+    and the golden flow's final full check has none - no Y-junction, dogleg, pad-entry
+    loop or pad-entry jog - with verdict `pass`."""
+    assert board_metrics.M15_HARD and board_metrics.M16_HARD
+    m = _metrics(synth_flow)
+    for mid in ("M15", "M16"):
+        assert m[mid]["hard"], m[mid]
+        assert m[mid]["value"] == 0 and m[mid]["verdict"] == "pass", m[mid]
+        assert not m[mid]["offenders"], m[mid]["offenders"]
+
+
 def _track_length(model: BoardModel) -> float:
     return sum(math.dist(t.start, t.end) for t in model.tracks)
 
