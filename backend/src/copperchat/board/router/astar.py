@@ -1188,6 +1188,7 @@ def _build(
 
 
 FIRST_TRY_EXPANSIONS = 500_000  # budget of solve's first (default-window) search
+RETRY_STRICT_EXPANSIONS = 1_000_000  # budget of solve's loop-free doubled-window retry (R3)
 # wall-clock cap of one solve / solve_pair (both searches together), below run_cpu's 30 s
 SOLVE_TIME_LIMIT_S = 25.0
 
@@ -1199,33 +1200,39 @@ def solve(
     doubled window. The retry runs from pad `b` (its lattice aligned to `b`, the result
     reversed): a tight squeeze that one lattice misses, the other often fits. The first
     search gets at most FIRST_TRY_EXPANSIONS; both together stop after SOLVE_TIME_LIMIT_S
-    (→ None). `RouteTooLarge` from either window propagates. R3: between the two, the
-    default window once more with a pad-entry loop allowed (`valid_path(loops_ok=True)`),
-    when no loop-free path was found there."""
+    (→ None). `RouteTooLarge` from either window propagates. R3: a pad-entry loop (M16 b)
+    is refused in both; only when neither finds a loop-free path, the two windows are
+    searched once more with a loop allowed (`valid_path(loops_ok=True)`, no tree goals) -
+    the loop is the lesser evil than no route, and M16 reports it. The loop-free retry on
+    the doubled window gets at most RETRY_STRICT_EXPANSIONS, so a connection that only
+    loops stays cheap."""
     deadline = time.monotonic() + SOLVE_TIME_LIMIT_S
+    first = min(max_expansions, FIRST_TRY_EXPANSIONS)
     try:
         grid = build_grid(model, req, margin=margin, deadline=deadline)
-        path = route(
-            grid, req, max_expansions=min(max_expansions, FIRST_TRY_EXPANSIONS), deadline=deadline
-        )
-        if path is not None:
-            return path
-        check_deadline(deadline)
-        # R3: no path without a pad-entry loop here - the plain connection with one (M16
-        # reports it) before the long retry; the loop is the lesser evil than no route
-        path = route(
-            grid,
-            replace(req, tree=False),
-            max_expansions=min(max_expansions, FIRST_TRY_EXPANSIONS),
-            deadline=deadline,
-            loops_ok=True,
-        )
+        path = route(grid, req, max_expansions=first, deadline=deadline)
         if path is not None:
             return path
         check_deadline(deadline)
         rev = replace(req, a=req.b, b=req.a)
-        grid = build_grid(model, rev, margin=margin, window_mm=2 * WINDOW_MM, deadline=deadline)
-        back = route(grid, rev, max_expansions=max_expansions, deadline=deadline)
+        grid2 = build_grid(model, rev, margin=margin, window_mm=2 * WINDOW_MM, deadline=deadline)
+        retry = min(max_expansions, RETRY_STRICT_EXPANSIONS)
+        back = route(grid2, rev, max_expansions=retry, deadline=deadline)
+        if back is not None:
+            return reverse_path(back)
+        check_deadline(deadline)
+        plain = replace(req, tree=False)
+        path = route(grid, plain, max_expansions=first, deadline=deadline, loops_ok=True)
+        if path is not None:
+            return path
+        check_deadline(deadline)
+        back = route(
+            grid2,
+            replace(rev, tree=False),
+            max_expansions=max_expansions,
+            deadline=deadline,
+            loops_ok=True,
+        )
     except DeadlineExpired:
         return None
     return reverse_path(back) if back is not None else None

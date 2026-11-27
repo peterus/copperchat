@@ -251,16 +251,6 @@ def _joined(a: Pad, b: Pad) -> bool:
     return shared and (_in_pad((a.x, a.y), b) or _in_pad((b.x, b.y), a))
 
 
-def _has_copper(model: BoardModel, pad: Pad) -> bool:
-    """An own-net track starts or ends inside `pad` on one of its layers."""
-    return any(
-        t.net == pad.net
-        and _pad_on_layer(pad, t.layer)
-        and (_in_pad(t.start, pad) or _in_pad(t.end, pad))
-        for t in model.tracks
-    )
-
-
 def _unrouted(model: BoardModel, net: str) -> list[tuple[Pad, Pad]]:
     conns = [
         (a, b)
@@ -375,8 +365,10 @@ def plan_connections(
     `pair` set (P first, then N), at the partner's first position in the request.
     Round 2 (R3): a connection ending at a pad narrower than its width gets `req.neck`
     (`neck_zones`, `min_track` default `default_min_track`); pairs keep their widths. With
-    `tree`, every non-pair connection whose net already has copper at pad b gets
-    `req.tree` (it may end on that copper as a T-junction)."""
+    `tree`, every non-pair connection gets `req.tree`: it may end as a T-junction on the
+    copper connected to pad b at the time it is solved (`build_grid` finds that copper).
+    Connections between two pads of one part come last in their net and are never
+    pair-matched (`_late_split`)."""
     allowed = layers if layers is not None else default_layers(model)
     floor = default_min_track(model) if min_track is None else min_track
     wanted = set(nets)
@@ -396,7 +388,7 @@ def plan_connections(
             allow_vias,
             par.via,
             neck=() if pair else neck_zones(model, (a, b), width, floor),
-            tree=tree and not pair and _has_copper(model, b),
+            tree=tree and not pair,
         )
 
     for net in nets:
@@ -404,16 +396,19 @@ def plan_connections(
             continue
         done.add(net)
         partner = _pair_partner(cls, net)
-        own = _unrouted(model, net)
+        own, own_late = _late_split(_unrouted(model, net))
         par = class_params(model, net)
         if partner is None or partner not in wanted or partner in done:
-            out += [ConnPlan(net, a, b, req(net, a, b, par, False), None) for a, b in own]
+            out += [
+                ConnPlan(net, a, b, req(net, a, b, par, False), None) for a, b in own + own_late
+            ]
             continue
         done.add(partner)
         pair = next(p for p in cls.pairs if net in (p.p, p.n))
         p_net, n_net = pair.p, pair.n
-        p_conns = own if net == p_net else _unrouted(model, p_net)
-        n_conns = own if net == n_net else _unrouted(model, n_net)
+        other, other_late = _late_split(_unrouted(model, partner))
+        p_conns, p_late = (own, own_late) if net == p_net else (other, other_late)
+        n_conns, n_late = (own, own_late) if net == n_net else (other, other_late)
         p_par, n_par = class_params(model, p_net), class_params(model, n_net)
         matched = _match(p_conns, n_conns)
         mp = {i for i, _, _ in matched}
@@ -435,7 +430,22 @@ def plan_connections(
             for k, (a, b) in enumerate(n_conns)
             if k not in mn
         ]
+        out += [ConnPlan(p_net, a, b, req(p_net, a, b, p_par, False), None) for a, b in p_late]
+        out += [ConnPlan(n_net, a, b, req(n_net, a, b, n_par, False), None) for a, b in n_late]
     return out
+
+
+def _late_split(
+    conns: list[tuple[Pad, Pad]],
+) -> tuple[list[tuple[Pad, Pad]], list[tuple[Pad, Pad]]]:
+    """(other connections, connections between two pads of ONE part). The latter route
+    after the rest of their net (R3): e.g. USB-C A6 - B6 straddle A7 and can only be joined
+    on one layer by a U-turn at the pads (an M16 pad loop) - once the net's other copper
+    exists, a tree request lands on it as a T instead. They are never pair-coupled (the
+    connector's A6 - B6 and A7 - B7 cross)."""
+    early = [(a, b) for a, b in conns if a.ref != b.ref]
+    late = [(a, b) for a, b in conns if a.ref == b.ref]
+    return early, late
 
 
 def pair_gap(model: BoardModel, p_net: str, n_net: str) -> float:
