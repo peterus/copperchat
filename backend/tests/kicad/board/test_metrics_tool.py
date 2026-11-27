@@ -34,7 +34,7 @@ async def test_metrics_on_synth(synth_board: KicadSession) -> None:
     data = await _metrics(synth_board)
     assert data["stage"] == "placement"
     m = _by_id(data)
-    assert list(m) == [f"M{i}" for i in range(1, 15)]
+    assert list(m) == [f"M{i}" for i in range(1, 17)]
     assert m["M1"]["verdict"] == "n/a"  # no outline yet
     drc = await synth_board.call(
         lambda h: api.run_drc_task(h, timeout_s=60.0), timeout=api.drc_call_timeout(60.0)

@@ -517,7 +517,7 @@ def test_timing_200_parts_2000_segments() -> None:
     rep = compute_metrics(m, cls, BoardDoc(), drc=None, parity=None, preset=PRESETS["jlcpcb-4l"])
     elapsed = time.perf_counter() - t0
     assert rep.stage == "routed"
-    assert len(rep.metrics) == 14
+    assert len(rep.metrics) == 16
     assert get(rep, "M11").verdict != "n/a"
     print(f"compute_metrics 200 parts: {elapsed:.3f} s")
     assert elapsed < 2.0, elapsed

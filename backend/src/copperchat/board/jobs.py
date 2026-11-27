@@ -166,7 +166,7 @@ def metrics_job(
     only: frozenset[str] | None,
     parity: tuple[DrcMarker, ...] | None = None,
 ) -> MetricsReport:
-    """Metrics M1-M14 (B-C7) of `model`: classifies it here, in the worker, and passes
+    """Metrics M1-M16 (B-C7) of `model`: classifies it here, in the worker, and passes
     `parity` (full check only, P3b) through. Every metrics computation runs as
     `run_cpu(metrics_job, ...)`; callers strip fills (`strip_fills`) when M11 is not
     requested."""

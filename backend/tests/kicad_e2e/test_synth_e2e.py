@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from copperchat.board import metrics as board_metrics
 from copperchat.board.model import BoardModel, placement_hash
 from copperchat.history.restore import restore_snapshot
 from copperchat.kicad_tools.board.read import board_model
@@ -30,6 +31,16 @@ GOLDEN = Path(__file__).parent / "goldens" / "sp4_synth_metrics.json"
 FLOW_BUDGET_S = 180.0  # spec §18.2: the whole flow in at most 3 minutes
 DECAP_MAX_MM = 5.0  # M8 hard threshold (owner D2)
 REL_TOL, ABS_TOL = 0.10, 0.5  # review values: ±10 % or ±0.5, whichever is larger
+
+
+def _recorded_only() -> frozenset[str]:
+    """Round 2 (R1): M15/M16 behind a switch that is still off - their values (Y-junction,
+    dogleg and pad-loop counts) move with the fill's run-to-run variance and are recorded
+    only (verdict exact); R4 switches them on and pins them."""
+    off = {"M15": board_metrics.M15_HARD, "M16": board_metrics.M16_HARD}
+    return frozenset(mid for mid, on in off.items() if not on)
+
+
 FAB_FILES = (
     "bom-jlcpcb.csv",
     "cpl-jlcpcb.csv",
@@ -103,7 +114,8 @@ def _close(got: Any, want: Any) -> bool:
 
 async def test_metrics_golden(synth_flow: SynthFlow) -> None:
     """`goldens/sp4_synth_metrics.json`: hard metrics and every verdict exact, review values
-    and counts within ±10 % (or ±0.5); `fill_seconds` recorded only. `UPDATE_GOLDENS=1`
+    and counts within ±10 % (or ±0.5); `fill_seconds` (and M15/M16 while switched off,
+    `_recorded_only`) recorded only. `UPDATE_GOLDENS=1`
     rewrites it (explain every change in the PR)."""
     now = _golden_now(synth_flow, await _model(synth_flow, "run-golden"))
     if os.environ.get("UPDATE_GOLDENS") == "1":
@@ -116,7 +128,8 @@ async def test_metrics_golden(synth_flow: SynthFlow) -> None:
         exact = g is not None and g["verdict"] == w["verdict"]
         if mid in hard:
             exact = exact and g is not None and g["value"] == w["value"]
-        if not exact or g is None or not _close(g["value"], w["value"]):
+        recorded = mid in _recorded_only()
+        if not exact or g is None or (not recorded and not _close(g["value"], w["value"])):
             diffs.append((mid, g, w))
     for key in ("tracks", "vias", "track_length_mm"):
         if not _close(now[key], want[key]):

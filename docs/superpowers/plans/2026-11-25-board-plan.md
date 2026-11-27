@@ -893,6 +893,91 @@ Residuals: R7 re-measures on the final round-2 flow; the idle worker (≈ 300 MB
 shut down after an idle period (not planned); `MAX_CONCURRENT_RUNS` could go to 1 when
 someone touches `freerouting.py` again.
 
+### As built (R1)
+
+**Junction / entry / neck / corridor geometry** (`cc/board/geom.py`, B-C5 round 2) and the
+§22.5 metric changes (`cc/board/metrics.py`, B-C7 round 2). Pure Python; no KiCad change.
+
+- **`junction_kind` / `BendReport.y_junctions`** as contracted. `y_junctions` is a new field
+  with default `()` (appended last, so every existing `BendReport(...)` keeps working).
+  `t_junctions` keeps its P3a semantics; its consumers (`chamfer._REASON`, `route._bends`,
+  `fill._bends_of`) are untouched (R3/R4 switch them). Junctions are built from straight
+  tracks only (arcs are not in `analyse_tracks`' graph, as before; arcs stay M4
+  non-octilinear). A Y at a via or inside a pad is exempt, like the old T. Note: a
+  **degree-2** 90° vertex at a via is still reported by M4 `ninety` (today's behaviour; the
+  phase file's Review Focus 2 wording "exempt as today" refers to junctions only).
+- **Contract extensions (keyword-only, defaults keep the contracted call):**
+  `straight_corridor(a, b, width, *, copper_layers=("F.Cu", "B.Cu"))` — the pads carry no
+  board layer list (`*.Cu`, plated THT), so the caller passes `model.copper_layers` (M16 does);
+  `analyse_entry(points, width, zone, *, in_pad=None)` — the pad test for "bends inside the pad
+  itself are ignored" (M16 passes `_in_pad` of the end's pad). `escape_zone` falls back to the
+  pads' bbox when a part has no courtyard (`()` without pads either).
+- **Corridor rule:** the two pads' axis-aligned extents (rotated pad rectangles) must be
+  apart by `0 < gap ≤ ADJ_GAP_MM` along one axis and overlap by `≥ width` across it;
+  overlapping pads → `None`. Start lies on `a`'s edge, end on `b`'s.
+- **Entry analysis:** vertices are walked from `points[0]` until the first vertex outside the
+  zone; loop = |signed cumulative turn| ≥ `LOOP_TURN_DEG − ANGLE_TOL_DEG` (reported once, at
+  that vertex; an acute vertex alone is a loop); jog = two consecutive 45° bends of opposite
+  sense (reported at the second; a 90°/off-angle vertex in between resets the pair).
+- **`routed_path`**: `_NetGraph._search` (one Dijkstra with predecessors) backs both
+  `length` (unchanged values) and `path`; `_NetGraph` now records each edge's track width
+  and arc mid; an arc on the path appears as its two chords.
+- **M3:** a `text_thickness` marker whose KIIDs **all** map to footprint items of role `shape`
+  → offender `silk_line_warning: …` (verdict at most `review`, not counted). A marker that also
+  names a text item, or the footprint's own KIID, stays hard.
+- **M4:** the `t_junction` offender is gone (threshold text without "T").
+- **M11:** pieces of a signal track inside the antipad disc (same reach as the antipad test:
+  via radius / pad half-diagonal + `ANTIPAD_MARGIN_MM`) of its **own** net's via or plated
+  pad are cut out before the void test.
+- **M12:** a narrow piece passes when all its points (track start/end; arc start/mid/end) lie
+  in the escape zone of a part with a copper pad of the same net whose `neck_width` (class
+  width, preset `min_track`; without a preset `jlcpcb-4l`) is below the class width, and the
+  piece is ≥ that neck width (− `M12_WIDTH_TOL`).
+- **M15** offenders `y_junction` per node. **M16** (every non-ground net, its MST
+  connections): corridor width = the narrower of the two pads' neck widths; corridor free =
+  no other-net copper pad on that layer and no other-net via within `w/2 + clearance` (net
+  class clearance, else the board's `min_clearance`), no track/copper keepout zone on that
+  layer and no footprint rule area (every layer, like the router) touching it; dogleg = a free
+  corridor layer exists and the routed path, after dropping pieces wholly inside either pad
+  and merging collinear same-layer touching pieces, is not one segment on a free corridor
+  layer. Entry loops/jogs on the first and last same-layer run of each routed path when it
+  starts inside the end's pad. Placement stage: `alignable` when at least one of the two parts
+  has exactly two pads (covers "2-pad part next to the IC pin it serves", §22.3), they share a
+  copper layer, are adjacent along an axis and the missing overlap is `0 < need ≤ 1.0 mm`
+  (offender value = the shift). M16 `value` = hard offenders (doglegs + loops).
+- **Switches off → no hard text:** while `M15_HARD` / `M16_HARD` are `False`, `Metric.hard` is
+  `None` and the hard text moves into `review` ("… (hard from round 2 R4)"), so the agent is not
+  told a hard threshold that does not fail yet. R4 flipping the switches restores the hard text
+  (no other change needed). Unit-tested (`test_switches_default_review`).
+- **Golden (`sp4_synth_metrics.json`, regenerated on `b28ad7f` + R1):** M11 verdict
+  `review → pass` (value 0.9588 unchanged: the "void crossing" offenders were the P7/P9a
+  own-via artefact); **M15 = 2** and **M16 = 15** (`review`). The owner-marked defects appear (offender list of a
+  local run with M15 = 3 / M16 = 16): doglegs D1.2–R4.2, R4.1–U1.10, R5–R6/U3 FB, C8/C9–L1, U1.16–C2, C10–U3 VBST, U3.2–L1 SW,
+  C4–Y1, J2–U1 SWCLK, J1–U2 USB_DN; pad loops at J1 A6/B6/A7 (USB-C connector pads of one
+  net); pad jogs at C5.1, U1.16, U1.2, U2.5 (review only); Y-junctions on +3V3, /Power/FB,
+  /USB_DP. **R3/R4 must bring M15 and M16's hard count to 0.** Tracks/vias/fill unchanged.
+- **Golden test change (minimal, P9a/R7 file `tests/kicad_e2e/test_synth_e2e.py`):** the
+  fill's run-to-run variance moves M15 between 2 and 3 and M16 between 15 and 16 on the same
+  code (observed in 3 local runs on this host). While a switch is off, those values are
+  **recorded only** (`_recorded_only()`; verdict still exact). With the switch on, R4's golden
+  compares them exactly again (as every metric with a hard threshold).
+- **Environment note:** under heavy host load (parallel children) the unmodified `main` flow
+  took the "nothing to fill" path once (172 tracks / 126 vias, `fill_seconds` null): the own
+  router's deadlines depend on CPU time. Golden regenerated on an idle host (fill ran,
+  174 / 124 as on `main`).
+- Docstring-only "M1-M14" → "M1-M16" in `kicad_tools/board/analysis.py`, `board/jobs.py`;
+  `check.py` / `kicad_tools/board/fab.py` (R6 / R5 files) left alone. Tests that pin 14
+  metrics updated (`test_metrics_rules`, `test_analysis_unit`, `test_metrics_routed`,
+  `tests/kicad/board/test_metrics_tool.py`, `test_zones.py`).
+- **Residuals for later phases:** R3 — the router's `junction_masks` should use
+  `junction_kind`; corridor-first should call `straight_corridor(..., copper_layers=…)`. R4 —
+  switch `M15_HARD` / `M16_HARD` (and `_recorded_only()` then pins M15/M16 automatically);
+  `chamfer._REASON` still rips `t_junctions`. R2 — `alignable` counts are the placer's target.
+  Timing: M16 adds one Dijkstra per MST connection of every non-ground net (memoised with
+  M5/M6's); the 2 400-net timing test stays inside its budget. A single supply net with
+  1 000–2 000 pads costs ≈ 1.3–3.2 s (O(P²) MST + per-pair search; review round 2) — fine
+  for real boards (ODH: 76 parts), revisit (one search per source pad) if a board needs it.
+
 ### As built (P9a)
 
 **End-to-end golden on `sp4_synth`** (`backend/tests/kicad_e2e/`, marker `kicad_e2e`, CI job `kicad-e2e`)

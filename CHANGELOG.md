@@ -35,6 +35,10 @@ All notable changes to CopperChat are documented in this file. The format follow
   running Freerouting fill and board computation have finished (waits ≤ 120 s, then
   `board_compute_timeout`); the board CPU worker is restarted after a job that leaves it
   above 512 MB.
+- Board metrics M15 (Y-junctions) and M16 (doglegs between adjacent pads, pad-entry
+  loops and jogs, alignable pairs), review-only for now; M4 accepts perpendicular
+  T-junctions, M12 accepts neck-downs at fine-pitch pads, footprint silk lines below the
+  minimum are a warning only — behind COPPERCHAT_BOARD_TOOLS.
 
 ### Changed
 
