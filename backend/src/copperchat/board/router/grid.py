@@ -289,8 +289,14 @@ class ObstacleGrid:
     # pads / vias where a branch is a pad or via joint (`astar.junctions_ok`, M4 T-junction)
     own_segments: tuple[tuple[tuple[Point, Point], ...], ...] = ()
     own_spots: tuple[tuple[Shape, ...], ...] = ()  # per layer: own pads there + own vias
+    own_pad_spots: tuple[tuple[Shape, ...], ...] = ()  # per layer: own pads only (R3)
     _index: list[_Grid] | None = field(default=None, repr=False)
     _masks: list[dict[int, int]] | None = field(default=None, repr=False)  # astar cache
+
+    def own_pad_at(self, li: int, p: Point) -> bool:
+        """`p` lies in an own-net pad on layer `li` (not a via): there every meeting is a
+        joint, even a 90-degree one (M4 exempts pad nodes, not via nodes)."""
+        return bool(self.own_pad_spots) and self.own_exempt(li, p, self.own_pad_spots[li])
 
     def own_exempt(self, li: int, p: Point, spots: Sequence[Shape] | None = None) -> bool:
         """`p` lies in an own-net pad on layer `li` or in an own via (a branch there is
@@ -656,6 +662,7 @@ def build_grid(
     own: list[list[Shape]] = [[] for _ in layers]
     own_segs: list[list[tuple[Point, Point]]] = [[] for _ in layers]
     own_spots: list[list[Shape]] = [[] for _ in layers]  # own pads per layer + vias (need 0)
+    own_pad_spots: list[list[Shape]] = [[] for _ in layers]
     via_shapes: list[Shape] = []  # cores a via must keep `via_need` from (any layer)
     via_own: list[Shape] = []  # own SMD pads: no via in a pad (reflow), keep via_r
     via_keepouts: list[Shape] = []
@@ -673,6 +680,7 @@ def build_grid(
                 for k in on:
                     own[k].append(s)
                     own_spots[k].append(spot)
+                    own_pad_spots[k].append(spot)
             if pad.smd and anywhere:
                 via_own.append(_pad_shape(pad, via_r))
             continue
@@ -800,6 +808,7 @@ def build_grid(
         width=req.width,
         own_segments=tuple(tuple(x) for x in own_segs),
         own_spots=tuple(tuple(x) for x in own_spots),
+        own_pad_spots=tuple(tuple(x) for x in own_pad_spots),
         neck_cells=neck_n,
         tree_segments=_tree_segments(model, req, layers, deadline) if req.tree else (),
     )

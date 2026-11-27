@@ -1046,6 +1046,16 @@ existing KiCad write path.
   `ENTRY_TURN_COST` hardly ever decides a path (the second-bend condition rarely holds where
   a cheaper alternative exists) - the guarantee is `valid_path`'s rejection; the cost stays
   as the plan's steering term.
+- **After the rebase on R2b (`4d81119`)** the golden failed three ways, each fixed: (1) a
+  90-degree meeting of two paths at a via (M4 counts a degree-2 90-degree vertex at a via):
+  `junctions_ok` now exempts only pad nodes from that check (`grid.own_pad_at`); (2) M8
+  links are flagged `early` and routed before pass 0, crystals first, in plan order, never
+  as a T (`tree=False`): the shorter /OSC_OUT link and other nets' straight segments had
+  pushed Y1.1–U1.2 to 5.47 mm; an M8 link over the limit also tries a solve that allows a
+  pad-entry jog/loop and takes it only when that meets M8 (both owner-hard; the jog is
+  then reported); (3) rip-and-retry ripped a connection another path ended on as a T,
+  leaving it dangling (DRC `dangling_track`, M3): `_dependants` are now taken out with
+  their anchor, re-routed after it, and restored with it.
 - **M8 connections first:** `plan_connections` puts the connections M8 measures (decap
   supply pad ↔ its IC pin, crystal ↔ IC) first, shortest first (`_m8_first`): with jogs
   refused, the crystal nets (routed earlier) walled C1.1–U1.5 off to 9.4 mm (M8 hard).
@@ -1073,13 +1083,11 @@ existing KiCad write path.
   C8/C9–L1, C4–Y1, U3.2–L1, J2–U1 SWCLK, J1.B7–U2.3, C10–U3 VBST; 4 pad loops J1 A6/B6/A7/B7)
   → **3** (0 doglegs; the forced loops J1.A7 / J1.B7 and U3.2 /Power/SW C10.2–U3.2); pad jogs
   5 → 2; M4 = M7 = 0; 37 / 37 routed; `pcb_route` 55 s → 89 s.
-- **Golden (`sp4_synth_metrics.json`, regenerated on R2's main `a419a3e` + R3, idle host,
-  verified by a second run):** vs R2's golden M15 3 → **0** (pass), M16 18 → **3** (review:
-  pad loops J1.A6 / J1.B6 of the USB-C link and U3.2 SW, plus the review jog J1.B5 /CC2), M8
-  4.97 → 4.33 mm (review), M5 1.05 → 1.0, M11 0.9582 → 0.9573; tracks 184 → 138, vias 124
-  → 128, 271.0 mm; flow `pcb_route` ≈ 60 s, fill completion 1.0. (Before the rebase one of
-  five verify runs failed `test_full_flow_hard_gates`, not reproduced in four more - the
-  fill's run-to-run variance R1 noted - watch.)
+- **Golden (`sp4_synth_metrics.json`, regenerated on R2b's main `4d81119` + R3, idle host,
+  verified by a second run):** vs R2b's golden M15 2 → **0** (pass), M16 19 → **7**
+  (review: 1 dogleg /Power/FB R5.2–R6.1, pad loops J1.A6/B6/A7/B7 of the USB-C links, U3.2
+  SW and Y1.3), M8 4.97 → **4.20 mm**, M12 review → pass, M5 1.09 → 1.0, M7 pass → review
+  (value 0: bend density only); tracks 177 → 137, vias 123 → 120, 210.8 mm.
 - **ODH probe** (copy of the PROD checkout, 80 × 100 mm, P9a's answers with Power class
   0.5 mm, R2's `pcb_place_blocks` flow, critical routing only; renders
   `/tmp/sp4-renders/r3-odh-*`): 25 critical nets, `pcb_route` **50 s** (P9a: 105 s), M4 = M7

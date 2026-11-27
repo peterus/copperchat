@@ -1262,3 +1262,28 @@ def test_reservation_falls_back_when_pair_corridor_blocked() -> None:
     got = {r.key: r.width for r in route.corridor_reservations(m, _pair_cls(m))}
     dp = [w for k, w in got.items() if k.startswith("DP:")]
     assert dp == [pytest.approx(0.127)], got  # the class width, floored at min_track_width
+
+
+def test_t_dependants_ripped_with_their_anchor() -> None:
+    """A kept path that ends as a T on a kept connection depends on it: `_dependants`
+    finds it (also transitively), so rip-and-retry takes it out and re-routes it with its
+    anchor (ripping the anchor alone left that T dangling on R2b's sp4_synth placement)."""
+    m = _three()
+    p1, _p2, _p3 = _plans3()
+    tree_plan = dataclasses.replace(p1, req=dataclasses.replace(p1.req, tree=True))
+    trunk = route._Kept(
+        [p1], [RoutePath((("F.Cu", (10.5, 10.0), (19.5, 10.0), 0.2),), (), 9.0)], ["k1"]
+    )
+    branch = route._Kept(
+        [tree_plan], [RoutePath((("F.Cu", (15.0, 14.0), (15.0, 10.0), 0.2),), (), 4.0)], ["k2"]
+    )
+    twig = route._Kept(
+        [tree_plan], [RoutePath((("F.Cu", (13.0, 12.0), (15.0, 12.0), 0.2),), (), 2.0)], ["k3"]
+    )
+    other = route._Kept(
+        [tree_plan], [RoutePath((("F.Cu", (15.0, 20.0), (15.0, 18.0), 0.2),), (), 2.0)], ["k4"]
+    )
+    st = route._Loop(m, True, None)
+    st.kept += [trunk, branch, twig, other]
+    assert route._dependants(st, trunk) == [branch, twig]
+    assert route._dependants(st, other) == []

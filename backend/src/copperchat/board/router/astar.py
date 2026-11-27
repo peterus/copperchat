@@ -215,6 +215,7 @@ def junctions_ok(
     runs: Sequence[tuple[str, Sequence[Point]]],
     own: Mapping[str, Sequence[tuple[Point, Point]]],
     exempt: Callable[[str, Point], bool],
+    pad_at: Callable[[str, Point], bool] | None = None,
 ) -> bool:
     """Where the path touches EXISTING own-net tracks of its layer outside `exempt(layer,
     point)` (own pads of the layer, vias) - a path vertex on them, an own track end on the
@@ -238,9 +239,17 @@ def junctions_ok(
                         nodes.append(end)
         for node in nodes:
             old = _heads(node, segs)
-            if not old or exempt(layer, node):
+            if not old:
                 continue
             hs = _distinct([*old, *_heads(node, mine)])
+            if exempt(layer, node):
+                # a joint at a pad or via (no T / Y check there); but at a via two tracks
+                # meeting at 90 degrees are still a 90-degree corner (M4 counts it)
+                if len(hs) == 2 and pad_at is not None and not pad_at(layer, node):
+                    diff = _angle_diff(hs[0], hs[1])
+                    if abs(diff - 90.0) <= _RIGHT_TOL_DEG:
+                        return False
+                continue
             if len(hs) >= 3:
                 if junction_kind(hs) != "t":
                     return False
@@ -460,7 +469,11 @@ def valid_path(
                 return True
             return grid.own_exempt(index[layer], p)
 
-        if not junctions_ok([(lay, merge_collinear(raw)) for lay, raw in runs], own, exempt):
+        def pad_at(layer: str, p: Point) -> bool:
+            return grid.own_pad_at(index[layer], p)
+
+        runs_m = [(lay, merge_collinear(raw)) for lay, raw in runs]
+        if not junctions_ok(runs_m, own, exempt, pad_at):
             return False
     return path_clear(grid, path)
 
