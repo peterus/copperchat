@@ -753,6 +753,117 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
 
 (Each phase adds its section here in its own PR.)
 
+### As built (R7)
+
+Phase file `board/round2-r7-odh-acceptance.md`; coordinator brief: run ODH at **80 x 65 mm**
+(the smallest fit per R2b) **and 80 x 100 mm**, fix the R4 placement-forced opens with generic
+rules, centre the 80 x 100 placement, U1.15-style fine-pitch GND fragility, PM #60. Owner rules
+unchanged (45-degree only, T not Y, M15 + every M16 sub-rule hard, thresholds as they were).
+
+**Script (Task 1):** `odh-dry-run.py --sizes 80x65,80x100 [--all-sizes]` - one run per size on
+its own copy (`out/<W>x<H>/report.md`, `metrics.json`, renders), `out/summary.md` per size
+(result, courtyard fill, spread, placement score, `pcb_route` / fill calls with failures, final
+full check, concurrent memory peak, seconds per tool); after the flow (either way) the inner
+layers and a 3D view are rendered (`EXTRA_RENDERS`).
+
+**Placer (`placer/layout.py`, `floorplan.py`, `routability.py`; `pcb_place_blocks` only -
+`pcb_place_block`'s P4 layout unchanged):**
+- **Escape strips** (`layout.escape_strips`, `wide_nets`): in front of every pad of a net wider
+  than the Default class or a switch node (pad axis side, `_pad_side`), across the pad +- (half
+  the track + clearance), outwards by the track's entry zone - no satellite that does not
+  connect to that net may cover it (`_fit` blocks it; it slides along the row or steps out),
+  and `align_pairs` never shifts a part into one (`_covers_strip`; its tighten pass had pulled
+  R302 back in front of USB-C A9). Fixes R4's VBUS J302.A4-A9 (R302), VSYS U201.10/.5
+  (R203 / R208) and L201.1-U202.4 (C203 sat in front of the SW pin).
+- **Pattern classes** (`routability.net_classes` / `net_track`): a pattern-assigned net
+  ("Effective for net: <net>") resolved like `pcb_route` - R2b's `net_pitch` counted ODH's power
+  nets as Default.
+- **Crossed connections** (`SELF_CROSS_MM` = 3): a satellite whose pads serve two host pins
+  pays per own other-net pad on a pad's line to its pin (the buck-boost inductor's L1 pad
+  behind its L2 pad).
+- **Exposed-pad via room** (`_epad_room`): next to a host with an exposed ground pad
+  (>= `EPAD_MIN_MM2` under its middle) every satellite on the host's first pinless side keeps
+  via pitch + clearance (spec call 30: no via-in-pad; ODH's TPS63000 ground was boxed in).
+- **Pad-axis side** (PM #60): `_relaxed` and the strips sort a host pad to a side by its long
+  axis (a SOIC end pin near a short edge belongs to its long side).
+- **Edge snap** (`floorplan.snap_edges`): a part with a Placement edges row moves (with its
+  block) to the edge margin when legal - the 0.5 mm packing grid left J201 0.75 mm from its
+  edge (M13 hard, pre-existing since R2).
+- **Centring** (`centre_offset`, `CENTRE_WEIGHT` = 25 mm airwire per mm, `CENTRE_PULL_WEIGHTS`
+  = (0.5,), tried after the others): the choice pays for the area-weighted centroid's offset
+  from the outline centre. A bounding-box version threw one block to the empty end (rejected).
+
+**Router / fill / fanout / metrics (owning files, minimal):**
+- `pcb_route_fill`: the post-processor judges the fill at its widened width
+  (`_widened_model`): Freerouting's 0.15 mm neck-downs hid seven 0.35 mm jogs that became M7
+  micro-jogs at 0.2 mm once `_widen` ran.
+- `router/grid.py`: an own via exempts a junction only `VIA_EXEMPT_INSET_MM` inside its rim
+  (a Y landed exactly on a via rim at USB-C A7; M15 counted it).
+- `metrics._straight_link`: collinear same-layer pieces the net graph joins through an own via
+  are one straight line (the VBUS C202-J302 "dogleg" was a straight track with a via on it).
+- `planes.fanout_candidates` / `fanout.py`: after every via candidate a **tie stub** (no via)
+  from a ground pad straight into a larger same-net pad of its own part (gap <=
+  `TIE_MAX_GAP_MM`), clear of other-net copper - the TPS63000's 0.5 mm-pitch GND pins sat in
+  pour islands reaching neither a via nor the exposed pad 0.3 mm away (M2 after zones).
+- `route._alternate_ends`: after a `no_path` the `ALT_ENDS_MAX` = 3 nearest other end pairs of
+  the two copper islands are tried (CHG_N: U201.9 walled in by its own link to R208.2).
+- Flow ladder (`tests/kicad_e2e/flow.py`): after the last refused fill the own router routes
+  the rest (non-critical, non-ground); a connection the fill left open whose own route fails
+  gets its surrounding unlocked fill copper cleared (8 x 8 mm, `pcb_unroute {region}`) and
+  is routed first, the cleared nets after it.
+- `pcb_fanout`'s report gains `tied`.
+
+**Golden `sp4_synth`** (regenerated on `b4bc0fc` + R7, idle host, confirmed by a second run;
+5 / 5 kicad_e2e, flow 0 hard): M8 4.20 -> **4.98 mm** (review, the crystal / decap window P9a
+described: the escape strips move satellites off the Power-class pins), M10 1.774 review ->
+1.895 pass, M11 0.9576 -> 0.9567, tracks 130 -> 132, vias 126 -> 123, length 215.4 -> 259.8 mm
+(the centring term spreads the 60 x 45 board's blocks). M15 = M16 = 0, nothing to fill.
+
+**ODH acceptance** (copy of `OpenDriveHub@2e17ac5` + the PROD working tree, read-only; 4 layers
+`jlcpcb-4l`, Power class 0.5 mm on `*VBUS*`, `*VSYS*`, `*VBAT*`, `*+3V3`, J201 left, J302 bottom,
+keep_channels 1.5, blocks = `pcb_analyze`'s 11; answers outside the repo; kicad-base
+`52b43fb8…-rdc93f47200b08f97` + Freerouting 2.5.0). Seven runs per size while fixing; the last
+(run 7, all fixes) per size:
+
+| | 80 x 65 | 80 x 100 |
+|---|---|---|
+| Placement | fits, courtyard fill 0.395, spread 0.96, airwire 1593 mm, M1 0, 23 s | fits, fill 0.254, spread 0.82 (R2b 0.68), airwire 1203 mm, 16 s |
+| Critical `pcb_route` (45 nets) | 98 s, 0 failed | 64 s, 0 failed |
+| Fill | 1st refused (20 % rule), rung (c) 222 s, 2nd: completion 1.0, 0 ripped | refused twice, 3rd: completion 1.0, 0 ripped |
+| Copper | zones 3, fanout 59 (5 via pour), stitch 78 | fanout 57 (7 via pour), stitch 195 |
+| Full check, hard | **M2 1** (a GND F/B pour island), **M3** (J302 footprint), **M5** (USB-C A6-B6 detour 10.95) | **only M3** (J302 footprint) |
+| M4 / M7 / M12 / M13 / M14 / M15 / M16 | 0 / 0 / 0 / 0 / 0 / 0 / 0 (all pass) | all pass (M12 review: USB pair mismatch) |
+| Reviews | M6 2, M8 3.93, M9 5 | M5 1.0, M8 3.93, M9 5, M10 2.27 |
+| Flow time | 600 s | 391 s |
+| Memory, concurrent peak | 5.68 GB (api-server 3.1 + parity DRC 2.6) | 5.71 GB |
+
+**M3 on both sizes is not a tool defect:** the project's own USB-C footprint (J302,
+GT-USB-7010ASV in `footprints/OpenDriveHub.pretty`) has plated holes 0.194 mm from pad copper,
+the JLC preset's hole clearance is 0.25 mm (4 DRC errors at (135.95, 157.245) / (142.05,
+157.245) on the 80 x 65 board) - footprint fix or a per-board exception: **owner**.
+
+**Run-to-run variance** (identical code): the fill was refused 0-3 times per run; the own
+router then routes the rest. Earlier runs ended with one `no_path` (CHG_N at U201 - fixed by
+the alternate ends; TFT_DC J401.7-U301.17 at 80 x 100 run 4) or a GND pour island (U202 pins -
+fixed by the tie stubs; U201 at 80 x 100 run 5 - fixed by the QFN via room). Two fill stubs that
+ended 0.3 mm short of their pad (SPI_MOSI J402.3, TFT_RST U301.23, 80 x 65 run 5, M2) were seen
+once and not reproduced (post-processor input not captured).
+
+**Residuals (P9b / later / owner)**
+- Owner: J302 footprint hole clearance (above); board size (80 x 65 reaches every hard gate
+  but M3 except in some runs - M2 island / M5 USB-C detour; 80 x 100 passes all but M3).
+- The QFN ground-side via room (`_epad_room` with pins on every side) changed ODH 80 x 65's
+  block packing (airwire 1368 -> 1593 mm; the greedy order is sensitive, R2b); the 80 x 100
+  airwire stayed 1203 mm.
+- GND pour islands: `pcb_fanout` reports `via_pour` for a pad whose pour island reaches no
+  via (KiCad names the zones, not the pad, in that marker) - a later phase could stitch every
+  island that holds a via_pour pad.
+- USB-C A6-B6 / A7-B7 links (same-part, through vias) are long on the dense board (M5 review /
+  fail); fill stub gap above.
+- `pcb_unroute` has no pad / part selector, so the flow's clear-and-reroute rung needs the
+  fill's `open` spot; an own-router `no_path` among locked copper has no rung (rung (d), user).
+- Renders: `/tmp/sp4-renders/r7-odh-<80x65|80x100>-{placed,top,bottom,in1,in2,3d}.png`.
+
 ### As built (R4)
 
 Phase file `board/round2-r4-fill.md`; owner decisions 2026-11-27 (brief): M15 and **every
