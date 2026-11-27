@@ -1,7 +1,8 @@
 """Specs of the placement tools (P4), appended to `board/specs.py`'s `TOOL_SPECS`:
 `pcb_define_blocks`, `pcb_place_block`, `pcb_move`, `pcb_legalize` (all two-phase board
-writes); R2 adds `pcb_floorplan` (read) and `pcb_place_blocks` (write). Every schema is bounded (plan call 6): `additionalProperties: false` at every
-level, every list `maxItems`, every number finite bounds."""
+writes); R2 adds `pcb_floorplan` (read) and `pcb_place_blocks` (write). Every schema is
+bounded (plan call 6): `additionalProperties: false` at every level, every list `maxItems`,
+every number finite bounds."""
 
 from __future__ import annotations
 

@@ -79,8 +79,8 @@ FP_PREFIX = "fp_"
 PCB_READ = frozenset(
     {"pcb_status", "pcb_analyze", "pcb_render", "pcb_metrics", "pcb_check", "pcb_floorplan"}
 )
-# The 17 board write tools (board spec §7.2) + R2's pcb_place_blocks: board and Free only. COPPERCHAT_BOARD_TOOLS=off
-# drops exactly these names from every profile, Free included.
+# The 17 board write tools (board spec §7.2) + R2's pcb_place_blocks: board and Free only.
+# COPPERCHAT_BOARD_TOOLS=off drops exactly these names from every profile, Free included.
 PCB_WRITES = frozenset(
     {
         "pcb_sync_from_schematic",
