@@ -47,6 +47,7 @@ from copperchat.board.placer import (
     keepout_polys,
 )
 from copperchat.board.placer.floorplan import SPREAD_SPAN_MIN, Floorplan
+from copperchat.board.placer.routability import gap_summary
 from copperchat.board.render import Hull
 from copperchat.board.staging import natural_key, part_box
 from copperchat.board.worker import run_cpu
@@ -1179,6 +1180,28 @@ def _floorplan_data(fp: Floorplan) -> dict[str, Any]:
     }
 
 
+def _relaxed_data(fp: Floorplan, score: PlacementScore) -> dict[str, Any]:
+    """R2b's report: how the blocks were packed (order, relaxed layout, slack) and the
+    routing-room checks - congestion (RUDY demand / capacity per 2.5 mm cell), the largest
+    empty rectangle inside the placement, and per connected block pair the gap vs the
+    channel its shared nets need (`gap_excess_mm`: worst over pairs sharing a signal net,
+    weighted mean over all; `gaps`: at most `MAX_LISTED_HULLS` rows, largest excess first)."""
+    rows = sorted(fp.gaps, key=lambda r: (-r.excess, r.a, r.b))[:MAX_LISTED_HULLS]
+    return {
+        "order": list(fp.order),
+        "relaxed": fp.relaxed,
+        "slack_mm": fp.slack_mm,
+        "congestion_worst": score.congestion_worst,
+        "congestion_over": score.congestion_over,
+        "largest_hole_mm2": score.largest_hole_mm2,
+        "gap_excess_mm": dict(gap_summary(fp.gaps)),
+        "gaps": [
+            {"a": r.a, "b": r.b, "shared": r.shared, "gap": r.gap, "required": r.required}
+            for r in rows
+        ],
+    }
+
+
 def region_hulls(fp: Floorplan) -> tuple[Hull, ...]:
     """The regions as named rectangles for the placement render."""
     return tuple(
@@ -1250,6 +1273,7 @@ async def prepare_place_blocks(ctx: ToolContext, args: dict[str, Any]) -> Change
         "keep_channels": kc,
         "spread": placed.score.spread,
         "well_spread": placed.score.spread >= SPREAD_SPAN_MIN,
+        **_relaxed_data(fp, placed.score),
     }
     return await plan_moves(
         tool="pcb_place_blocks",

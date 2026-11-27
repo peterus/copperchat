@@ -269,9 +269,12 @@ def block_gaps(
 
 
 def gap_summary(rows: Sequence[GapRow]) -> Mapping[str, float]:
-    """`worst` (largest gap - required) and the shared-weight `mean` of the excess."""
+    """`worst`: the largest gap - required of the pairs sharing a signal net (weight ≥ 1;
+    pairs tied only by supply nets may sit anywhere); `mean`: the shared-weight mean of
+    the excess over every pair. 0.0 without rows."""
     if not rows:
         return {"worst": 0.0, "mean": 0.0}
     total = sum(r.shared for r in rows)
     mean = sum(r.excess * r.shared for r in rows) / total if total > 0 else 0.0
-    return {"worst": max(r.excess for r in rows), "mean": round(mean, 3)}
+    signal = [r.excess for r in rows if r.shared >= 1.0 - _EPS]
+    return {"worst": max(signal, default=0.0), "mean": round(mean, 3)}

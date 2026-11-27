@@ -140,3 +140,12 @@ def test_block_gaps_rows() -> None:
     s = gap_summary(rows)
     assert s["worst"] == pytest.approx(r.excess) and s["mean"] == pytest.approx(r.excess)
     assert gap_summary(()) == {"worst": 0.0, "mean": 0.0}
+
+
+def test_gap_summary_worst_only_signal_pairs() -> None:
+    from copperchat.board.placer.routability import GapRow
+
+    rows = (GapRow("a", "b", 2.0, 3.0, 1.5), GapRow("a", "c", 0.25, 40.0, 1.0))
+    s = gap_summary(rows)
+    assert s["worst"] == pytest.approx(1.5)  # a-c share only a supply net
+    assert s["mean"] == pytest.approx((1.5 * 2.0 + 39.0 * 0.25) / 2.25, abs=1e-3)
