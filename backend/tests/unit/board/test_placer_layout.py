@@ -230,12 +230,19 @@ def test_escape_room_per_shared_signal_net() -> None:
 
     gap = 0.05
     m = circuit(qfn("U1", _PINS), _sot("Q1", ("A", "B", "GND"), (70.0, 60.0)))
-    placed = _placed(m, _layout(m, ["U1", "Q1"], gap=gap))
+    cls = classify(m)
+    (c,) = build_clusters(m, cls, ["U1", "Q1"])
+    placed = _placed(m, layout_cluster(m, cls, c, gap=gap, escape_room=True))
     want = gap + SATELLITE_EXTRA_MM + 2 * ESCAPE_PER_NET_MM
     assert _gap(box_of(placed["Q1"]), box_of(placed["U1"])) >= want - 1e-6
+    # off by default (pcb_place_block keeps P4's layout): the plain satellite gap
+    plain = _placed(m, _layout(m, ["U1", "Q1"], gap=gap))
+    assert _gap(box_of(plain["Q1"]), box_of(plain["U1"])) < want - 1e-6
     # only supply / ground shared: the plain satellite gap
     m = circuit(qfn("U1", _PINS), _sot("Q2", ("+3V3", "GND", "X9"), (70.0, 60.0)))
-    placed = _placed(m, _layout(m, ["U1", "Q2"], gap=gap))
+    cls = classify(m)
+    (c,) = build_clusters(m, cls, ["U1", "Q2"])
+    placed = _placed(m, layout_cluster(m, cls, c, gap=gap, escape_room=True))
     got = _gap(box_of(placed["Q2"]), box_of(placed["U1"]))
     assert gap + SATELLITE_EXTRA_MM - 1e-6 <= got < gap + SATELLITE_EXTRA_MM + ESCAPE_PER_NET_MM
     # capped: many shared signal nets never add more than ESCAPE_MAX_MM

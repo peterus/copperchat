@@ -67,7 +67,8 @@ EDGE_SNAP_MM = 0.5  # an assigned connector this close to its edge (beyond the m
 EDGE_MISS = 1000.0
 FACING_MM = 5.0  # a connector whose mouth does not face its edge costs like this far away
 MOUTH_MIN_MM = 0.5  # pad centroid this far off the courtyard centre gives the connector a mouth
-# R2: a routed (not ground) pad of the block with partners outside it whose line to them
+# R2 (`pcb_place_blocks` only, `pack_block(occlude_weight=)`): a routed (not ground) pad
+# of the block with partners outside it whose line to them
 # crosses another member's courtyard (a header between an MCU's USB pins and the USB
 # connector) costs this much per pad, for the rotation that does it
 OCCLUDE_WEIGHT = 10.0
@@ -227,14 +228,20 @@ def _union_box(boxes: Sequence[Box]) -> Box:
 
 
 def block_layout(
-    model: BoardModel, cls: Classification, refs: Sequence[str], *, keep_channels: float
+    model: BoardModel,
+    cls: Classification,
+    refs: Sequence[str],
+    *,
+    keep_channels: float,
+    escape_room: bool = False,
 ) -> tuple[Move, ...]:
     """The block's members relative to its first anchor at (0, 0), rotation 0, top: every
-    cluster laid out, clusters shelf-packed (largest box first) `keep_channels` apart."""
+    cluster laid out, clusters shelf-packed (largest box first) `keep_channels` apart
+    (`escape_room`: see `layout_cluster`)."""
     gap = courtyard_clearance(model) + 0.05
     layouts: list[tuple[tuple[Move, ...], Box, str]] = []
     for c in build_clusters(model, cls, refs):
-        mv = layout_cluster(model, cls, c, gap=gap)
+        mv = layout_cluster(model, cls, c, gap=gap, escape_room=escape_room)
         b = _union_box([box_of(moved_part(model.part(m.ref), m)) for m in mv])
         layouts.append((mv, b, mv[0].ref))
     if not layouts:
@@ -430,6 +437,8 @@ def pack_block(
     target: Point | None,
     doc: BoardDoc,
     pull_weight: float = PULL_WEIGHT,
+    occlude_weight: float = 0.0,
+    escape_room: bool = False,
 ) -> tuple[Move, ...] | DoesNotFit:
     """`place_block` without the score: the `fixed` moves, then the members' legal moves
     (R2's `place_blocks` scores once at the end and pulls harder toward its region centre:
@@ -481,7 +490,7 @@ def pack_block(
     # nothing can fit when the members alone need more than the free area
     if sum(_area(box_of(known[r])) for r in members) > available + _EPS:
         return does_not_fit()
-    local = block_layout(base, cls, members, keep_channels=kc)
+    local = block_layout(base, cls, members, keep_channels=kc, escape_room=escape_room)
     # connectors pulled to an edge: assigned ones and those anchoring a cluster (a header
     # that serves an MCU follows the MCU instead of dragging its block to an edge)
     heads = {c.members[0] for c in build_clusters(base, cls, members)}
@@ -544,7 +553,7 @@ def pack_block(
         for net, (px, py) in v.pads:
             c += nearest[net].dist((px + x, py + y))
         bc = ((v.box[0] + v.box[2]) / 2 + x, (v.box[1] + v.box[3]) / 2 + y)
-        c += pull_weight * n * octi_dist(bc, centre) + OCCLUDE_WEIGHT * v.occluded
+        c += pull_weight * n * octi_dist(bc, centre) + occlude_weight * v.occluded
         for b, mouth, e in v.conns:
             c += EDGE_WEIGHT * _edge_cost(
                 (b[0] + x, b[1] + y, b[2] + x, b[3] + y), mouth, e, obox, margin

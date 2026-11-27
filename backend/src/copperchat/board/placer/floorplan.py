@@ -64,6 +64,7 @@ from copperchat.board.placer.legalize import (
     on_board,
 )
 from copperchat.board.placer.pack import (
+    OCCLUDE_WEIGHT,
     PLACE_GRID_MM,
     PlaceResult,
     _mouth,
@@ -302,7 +303,7 @@ def _members(model: BoardModel, b: BlockProposal) -> list[str]:
 def _block_box(
     model: BoardModel, cls: Classification, refs: Sequence[str], keep: float
 ) -> tuple[float, float, list[Move]]:
-    local = list(block_layout(model, cls, refs, keep_channels=keep))
+    local = list(block_layout(model, cls, refs, keep_channels=keep, escape_room=True))
     boxes = [box_of(moved_part(model.part(m.ref), m)) for m in local]
     x0 = min(b[0] for b in boxes)
     y0 = min(b[1] for b in boxes)
@@ -876,6 +877,8 @@ def place_blocks(
                 target=target,
                 doc=doc,
                 pull_weight=REGION_PULL_WEIGHT,
+                occlude_weight=OCCLUDE_WEIGHT,
+                escape_room=True,
             )
             if not isinstance(res, DoesNotFit):
                 break

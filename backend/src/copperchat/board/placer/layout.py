@@ -51,7 +51,7 @@ Box = tuple[float, float, float, float]  # x0, y0, x1, y1
 
 GRID_MM = 0.05
 SATELLITE_EXTRA_MM = 0.3  # extra courtyard gap for satellites that are not decoupling caps
-# R2 (per-pin escape room): a satellite with more than two pads (a header, an ESD array)
+# R2 (per-pin escape room, `pcb_place_blocks` only): a satellite with more than two pads (a header, an ESD array)
 # keeps this much more gap per signal net it shares with the cluster's anchor - its tracks
 # fan out from its pins to the anchor's pin rows through that gap - at most ESCAPE_MAX_MM
 ESCAPE_PER_NET_MM = 0.4
@@ -252,10 +252,18 @@ def _mean(pts: Sequence[Point]) -> Point:
 
 
 class _Layout:
-    def __init__(self, model: BoardModel, cls: Classification, c: Cluster, gap: float) -> None:
+    def __init__(
+        self,
+        model: BoardModel,
+        cls: Classification,
+        c: Cluster,
+        gap: float,
+        escape_room: bool = False,
+    ) -> None:
         self.model = model
         self.cls = cls
         self.gap = gap
+        self.escape_room = escape_room
         self.anchor = c.anchor if c.anchor in c.members else c.members[0]
         self.members = c.members
         self.ns = NetSets(model, cls, c.members)
@@ -419,7 +427,7 @@ class _Layout:
             return self.gap + CRYSTAL_STANDOFF_MM
         if ref in self.decap_pin:
             return self.gap
-        return self.gap + SATELLITE_EXTRA_MM + self._escape(ref)
+        return self.gap + SATELLITE_EXTRA_MM + (self._escape(ref) if self.escape_room else 0.0)
 
     def _escape(self, ref: str) -> float:
         part = self.model.part(ref)
@@ -577,9 +585,10 @@ def _area(p: Part) -> float:
 
 
 def layout_cluster(
-    model: BoardModel, cls: Classification, c: Cluster, *, gap: float
+    model: BoardModel, cls: Classification, c: Cluster, *, gap: float, escape_room: bool = False
 ) -> tuple[Move, ...]:
     """Moves of `c`'s members relative to its anchor at `(0, 0)`, rotation 0, top side (the
     anchor's move first, then the satellites in placement order). No two courtyards are
-    closer than `gap`."""
-    return _Layout(model, cls, c, gap).run()
+    closer than `gap`. `escape_room` (R2, `pcb_place_blocks` only): multi-pin satellites
+    keep `ESCAPE_PER_NET_MM` per shared signal net more."""
+    return _Layout(model, cls, c, gap, escape_room).run()
