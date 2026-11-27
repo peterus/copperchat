@@ -25,8 +25,9 @@ no randomness).
 5. A group that does not fit its side in any rotation: the cut moves once toward its need
    (then the other cut direction); else `DoesNotFit`.
 
-`place_blocks` packs every block into its region (`pack_block`, fixed blocks and then the
-largest first, earlier ones as `fixed`; a block that does not fit its region gets the whole
+`place_blocks` packs every block into its region (`pack_block`, pulled toward the region
+centre with `REGION_PULL_WEIGHT`, fixed blocks and then the largest first, earlier ones as
+`fixed`; a block that does not fit its region gets the whole
 board once), legalises globally and runs `align_pairs` (rule b): a 2-pad part next to a
 connected pad is shifted perpendicular (≤ `REVIEW["M16_align_mm"]`) so a straight corridor
 exists, when its legal slack allows."""
@@ -79,6 +80,10 @@ SPREAD_SPAN_MIN = 0.75  # "well spread" (plan call 7): reported, not a metric
 BALANCE_LO, BALANCE_HI = 0.35, 0.65
 EXHAUSTIVE_MAX = 12  # blocks per bisection up to which every partition is tried
 GREEDY_PASSES = 50
+# pull of a block toward its region centre (per member and mm; P4's packing uses 0.1): the
+# block sits in the middle of its region, so the board's slack spreads between the blocks
+# instead of every block hugging its neighbours
+REGION_PULL_WEIGHT = 2.0
 MAX_FREE_RECTS = 4
 _EPS = 1e-6
 _NUM = re.compile(r"-?\d+(?:\.\d+)?")
@@ -768,6 +773,7 @@ def place_blocks(
                 edge=None,
                 target=target,
                 doc=doc,
+                pull_weight=REGION_PULL_WEIGHT,
             )
             if not isinstance(res, DoesNotFit):
                 break

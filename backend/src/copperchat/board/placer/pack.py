@@ -378,9 +378,11 @@ def pack_block(
     edge: Edge | None,
     target: Point | None,
     doc: BoardDoc,
+    pull_weight: float = PULL_WEIGHT,
 ) -> tuple[Move, ...] | DoesNotFit:
     """`place_block` without the score: the `fixed` moves, then the members' legal moves
-    (R2's `place_blocks` scores once at the end)."""
+    (R2's `place_blocks` scores once at the end and pulls harder toward its region centre:
+    `pull_weight` per member and mm)."""
     known = {p.ref: p for p in model.parts}
     fixed_refs = {m.ref for m in fixed}
     members = sorted(
@@ -481,7 +483,7 @@ def pack_block(
         for net, (px, py) in v.pads:
             c += nearest[net].dist((px + x, py + y))
         bc = ((v.box[0] + v.box[2]) / 2 + x, (v.box[1] + v.box[3]) / 2 + y)
-        c += PULL_WEIGHT * n * octi_dist(bc, centre)
+        c += pull_weight * n * octi_dist(bc, centre)
         for b, mouth, e in v.conns:
             c += EDGE_WEIGHT * _edge_cost(
                 (b[0] + x, b[1] + y, b[2] + x, b[3] + y), mouth, e, obox, margin

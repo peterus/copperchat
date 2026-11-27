@@ -68,12 +68,15 @@ class Answers:
 
     - `outline`: `pcb_set_outline` arguments; `rules`: `pcb_set_rules` arguments (give
       `layers` explicitly - a preset alone keeps the layer count).
-    - `blocks`: `None` = `pcb_analyze`'s proposal placed as is (a block whose anchor has
-      a `board.md` edge goes to that edge, every other block anywhere on the board);
-      otherwise per block, keyed by its anchor ref (or block name): `region` (a
-      `pcb_place_block` region; `frac: {x, y, w, h}` is relative to the outline),
-      `order` (lower first), `keep_channels`, `absorb` (anchors whose proposed blocks
-      join this one, e.g. a protection part next to its connector).
+    - `blocks`: `None` = `pcb_analyze`'s proposal placed as is by `pcb_place_blocks`
+      (R2: the floorplan spreads every block over the whole board); otherwise per block,
+      keyed by its anchor ref (or block name): `edge` (the user's edge for the anchor:
+      the agent writes it as a `board.md` Placement edges row, `pcb_place_blocks` puts the
+      block in a strip along it; a number in `edge_position` = mm along the edge),
+      `absorb` (anchors whose proposed blocks join this one, e.g. a protection part next
+      to its connector). Scripted overrides only: `region` (a `pcb_place_block` region,
+      `frac: {x, y, w, h}` relative to the outline; such blocks are placed one by one after
+      the others, `order` lower first, then legalised), `keep_channels` (per override).
     - `zones`: `pcb_zones` arguments (`None` = `{action: add}`, the default stack).
     - `stitch`: `pcb_stitch` arguments (`{}` = none: no stitching call).
     - `accept_warnings`: DRC warning type -> the user's reason for accepting it (the
@@ -120,11 +123,7 @@ SYNTH_ANSWERS = Answers(
             }
         ],
     },
-    blocks={
-        "J1": {"region": {"edge": "left"}, "order": 0, "absorb": ["U2"]},
-        "U1": {"region": {"frac": {"x": 0.5, "y": 0, "w": 0.5, "h": 1}}, "order": 1},
-        "U3": {"region": {"frac": {"x": 0, "y": 0, "w": 0.5, "h": 1}}, "order": 2},
-    },
+    blocks={"J1": {"edge": "left", "absorb": ["U2"]}},
     zones=None,
     stitch={"net": "GND"},
     # the fill takes ≈ 12 s here: worst case first fill + retry stays inside the e2e
@@ -322,6 +321,8 @@ async def user_says(rig: Rig, run_id: str, text: str) -> None:
 
 _SUMMARY_KEYS = (
     "moved",
+    "courtyard_fill",
+    "spread",
     "unplaced",
     "routed",
     "failed",
@@ -473,8 +474,27 @@ class _Flow:
         self._log("user", 0.0, 0, {"text": text})
 
 
+async def _edges_rows(f: _Flow, rows: list[str]) -> None:
+    """The user's edges as `board.md` → Placement edges rows (the agent writes them with
+    the doc tools; `pcb_place_blocks` reads them)."""
+    table = "\n".join(["| Ref | Edge/position | Reason |", "|---|---|---|", *rows])
+    doc = await f.tool("doc_read", path=BOARD_MD)
+    await f.tool(
+        "doc_patch_section",
+        path=BOARD_MD,
+        heading="Placement",
+        body=table + "\n",
+        base_version=doc.get("version"),
+        summary="placement edges (user)",
+        mode="replace",
+        create=True,
+    )
+
+
 async def _place(f: _Flow, answers: Answers) -> None:
-    """Turn 2: blocks from `pcb_analyze`, one `pcb_place_block` per block, legalise."""
+    """Turn 2: blocks from `pcb_analyze`, the user's edges into `board.md`, then
+    `pcb_place_blocks` (floorplan + packing + legalise + pair alignment in one call);
+    blocks with a scripted `region` override afterwards by `pcb_place_block` + legalise."""
     outline = (await f.tool("pcb_status"))["outline"]
     analysis = await f.tool("pcb_analyze", scope="all")
     classes: dict[str, str] = analysis["parts"]
@@ -501,19 +521,32 @@ async def _place(f: _Flow, answers: Answers) -> None:
                 blocks.remove(src)
                 del by_key[other]
     await f.tool("pcb_define_blocks", cost=1, blocks=blocks, replace=True)
-    order = sorted(blocks, key=lambda b: (plan.get(key(b), {}).get("order", 99), b["name"]))
-    whole = {"x": outline["x"], "y": outline["y"], "w": outline["w"], "h": outline["h"]}
+    edges = []
+    for k, spec in sorted(plan.items()):
+        if spec.get("edge") and k in by_key:
+            where = " ".join(str(v) for v in (spec["edge"], spec.get("edge_position")) if v)
+            edges.append(f"| {k} | {where} | the user's edge |")
+    if edges:
+        await _edges_rows(f, edges)
+    overrides = [b for b in blocks if "region" in plan.get(key(b), {})]
+    rest = [b["name"] for b in blocks if b not in overrides]
+    if rest:
+        args: dict[str, Any] = {"keep_channels": answers.keep_channels}
+        if overrides:
+            args["blocks"] = rest
+        await f.tool("pcb_place_blocks", cost=1, **args)
+    order = sorted(overrides, key=lambda b: (plan[key(b)].get("order", 99), b["name"]))
     for b in order:
-        spec = plan.get(key(b), {})
-        region = _frac_region(spec["region"], outline) if "region" in spec else whole
+        spec = plan[key(b)]
         await f.tool(
             "pcb_place_block",
             cost=1,
             block=b["name"],
-            region=region,
+            region=_frac_region(spec["region"], outline),
             keep_channels=spec.get("keep_channels", answers.keep_channels),
         )
-    await f.tool("pcb_legalize", cost=1, scope="all")
+    if overrides:
+        await f.tool("pcb_legalize", cost=1, scope="all")
 
 
 def _fill_error_nets(error: Mapping[str, Any]) -> list[str]:
