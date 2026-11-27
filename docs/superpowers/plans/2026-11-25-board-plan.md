@@ -1071,13 +1071,20 @@ existing KiCad write path.
   five verify runs failed `test_full_flow_hard_gates`, not reproduced in four more - the
   fill's run-to-run variance R1 noted - watch.)
 - **ODH probe** (copy of the PROD checkout, 80 × 100 mm, P9a's answers with Power class
-  0.5 mm, blocks as proposed, critical routing only; renders `/tmp/sp4-renders/r3-odh-*`):
-  26 critical nets, `pcb_route` **61 s** (P9a: 105 s), **1 `no_path`** (P9a: 13, all from pad
-  width): `Net-(U202-L1)` L201.1–U202.4, the buck-boost switch node at Default 0.2 mm - not a
-  pad-width failure (placement); M4 = M7 = M15 = 0, M12 0 (review: USB pair mismatch 3.07 mm,
-  every neck accepted), M16 hard 3: doglegs +3V3 C208.1–U202.1 and /Power/VSYS U202.5–C206.1,
-  pad loop C302.1 (+3V3 J401.2–C302.1).
-- **Residuals for R4 / R7:** (1) M16's dogleg corridor is measured at the narrower NECK width
+  0.5 mm, R2's `pcb_place_blocks` flow, critical routing only; renders
+  `/tmp/sp4-renders/r3-odh-*`): 25 critical nets, `pcb_route` **50 s** (P9a: 105 s), M4 = M7
+  = **M12 = M15 = 0** (every neck-down accepted), M16 hard 3 (doglegs +3V3 C208.1–U202.1,
+  /Power/VSYS U202.5–C206.1; pad loop U203.8 /VBUS). **4 `no_path`** (P9a: 13, all from the
+  0.25 mm QFN pads): /Power/VSYS C203.1–U201.10 and U201.5–U201.10 (the neck gets into the
+  QFN pads; the 0.5 mm piece outside the escape zone does not fit between the placed
+  parts), /VBUS J302.A4–A9 (USB-C pins; the VBUS pads are wide enough, so M12 allows no neck,
+  but 0.5 mm does not pass the pin row), Net-(U202-L1) L201.1–U202.4 (Default 0.2 mm,
+  placement). The first three route at 0.2 mm: class width vs placement / connector pitch,
+  not the end pad's width. (Before the rebase, on P9a's per-block placement: 26 nets, 61 s,
+  1 `no_path`.)
+- **Residuals for R4 / R7:** (0) ODH's 0.5 mm Power class does not pass between R2's
+  placed parts next to U201 / through the USB-C pin row (above) - R7 / owner: a narrower
+  class, more room, or a neck rule for a part's pin row (M12 would have to accept it). (1) M16's dogleg corridor is measured at the narrower NECK width
   along its whole length, but a straight link may only be that narrow inside the escape zone
   (M12) - the ODH doglegs C208.1–U202.1 / U202.5–C206.1 have no legal straight segment at
   class width; R4 (or an R1-file fix) should test the corridor at class width outside the
