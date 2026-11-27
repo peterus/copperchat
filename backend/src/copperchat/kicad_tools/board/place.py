@@ -86,6 +86,9 @@ MAX_LISTED = 50  # moved refs / unplaced blocks in a report
 MAX_UNASSIGNED = 200
 MOVES_PER_COST = 10  # pcb_move costs ceil(n / 10)
 PLACE_TIMEOUT_S = 60.0  # run_cpu budget of one placer / legaliser / score job
+# R2: pcb_floorplan / pcb_place_blocks run the whole board in one job (≤ MAX_BLOCKS blocks;
+# measured 17 s for 32 blocks / 288 parts)
+PLACE_BLOCKS_TIMEOUT_S = 180.0
 POS_TOL_MM = 0.001  # read-back tolerance of positions
 ROT_TOL_DEG = 0.01  # read-back tolerance of rotations
 NO_BLOCK_CLASSES = frozenset({"mounting_hole", "fiducial"})
@@ -1152,6 +1155,11 @@ def _proposals(model: BoardModel, names: list[str] | None) -> tuple[BlockProposa
     if not defined:
         raise _invalid("the board has no blocks", "Define them with pcb_define_blocks first.")
     chosen = sorted(defined, key=natural_key) if names is None else names
+    if len(chosen) > MAX_BLOCKS:
+        raise _invalid(
+            f"the board has {len(chosen)} blocks, more than {MAX_BLOCKS} in one call",
+            "Pass blocks: [...] (at most 32 per call), edge blocks first.",
+        )
     return tuple(BlockProposal(n, None, _block_refs(model, n), "") for n in chosen)
 
 
@@ -1194,7 +1202,7 @@ async def pcb_floorplan(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         blocks,
         keep_channels=kc,
         allowed_sides=doc.allowed_sides,
-        timeout_s=PLACE_TIMEOUT_S,
+        timeout_s=PLACE_BLOCKS_TIMEOUT_S,
     )
     if isinstance(fp, DoesNotFit):
         raise _does_not_fit(fp, "The blocks", plural=True)
@@ -1229,7 +1237,7 @@ async def prepare_place_blocks(ctx: ToolContext, args: dict[str, Any]) -> Change
             blocks,
             keep_channels=kc,
             allowed_sides=doc.allowed_sides,
-            timeout_s=PLACE_TIMEOUT_S,
+            timeout_s=PLACE_BLOCKS_TIMEOUT_S,
         )
     except SidePolicyError as exc:
         raise _invalid(str(exc)) from exc

@@ -245,9 +245,17 @@ def parse_region(text: str, usable: Box) -> Rect | None:
     return _rect((x0, y0, x1, y1))
 
 
+_EDGE_POS = re.compile(
+    r"^\s*(?:top|bottom|left|right)\b[\s,:;@-]*(\d+(?:\.\d+)?)(?![\d.])(?!\s*(?:mm\b)?\s*from\b)"
+)
+
+
 def _edge_offset(position: str) -> float | None:
-    m = _NUM.search(position)
-    return float(m.group(0)) if m else None
+    """`<edge>, <n> mm` (the number right after the edge word; mm along the edge from the
+    outline's top / left end, as `pcb_place_block`'s offset); any other text → None (the
+    edge middle; a number elsewhere, e.g. "USB 2.0", is not a position)."""
+    m = _EDGE_POS.match(position.casefold())
+    return float(m.group(1)) if m else None
 
 
 # ---- the floorplan -----------------------------------------------------------------------------
@@ -318,13 +326,18 @@ def _facing_dims(
     return [first] + ([turned if first == plain else plain] if plain != turned else [])
 
 
-def _strip(usable: Box, edge: Edge, along: float, depth: float, offset: float | None) -> Box | None:
+def _strip(
+    usable: Box, edge: Edge, along: float, depth: float, offset: float | None, origin: Point
+) -> Box | None:
+    """The strip along `edge`, centred `offset` mm from the outline's top / left end
+    (`origin` = the outline's corner), else on the edge middle; clamped into `usable`."""
     x0, y0, x1, y1 = usable
     length = (x1 - x0) if edge in ("top", "bottom") else (y1 - y0)
     if along > length + _EPS or depth > ((y1 - y0) if edge in ("top", "bottom") else (x1 - x0)):
         return None
     start = x0 if edge in ("top", "bottom") else y0
-    c = start + (length / 2 if offset is None else offset)
+    base = origin[0] if edge in ("top", "bottom") else origin[1]
+    c = start + length / 2 if offset is None else base + offset
     lo = min(max(c - along / 2, start), start + length - along)
     hi = lo + along
     if edge == "top":
@@ -570,10 +583,12 @@ def floorplan(
     fill = round(court / usable_mm2, 4) if usable_mm2 > 0 else math.inf
     all_refs = tuple(sorted(moving, key=natural_key))
 
-    def no_fit(refs: Sequence[str] = all_refs, needed: float | None = None) -> DoesNotFit:
+    def no_fit(
+        refs: Sequence[str] = all_refs, needed: float | None = None, available: float | None = None
+    ) -> DoesNotFit:
         return DoesNotFit(
             needed_mm2=round(needed if needed is not None else court, 3),
-            available_mm2=usable_mm2,
+            available_mm2=round(available if available is not None else usable_mm2, 3),
             refs=tuple(refs),
             courtyard_fill=fill,
         )
@@ -608,7 +623,8 @@ def floorplan(
         return Floorplan({}, (), fill if usable_mm2 > 0 else 0.0, usable_mm2, court)
     needed = sum(bb.w * bb.h for bb in boxes.values())
     if needed > PACK_MAX * usable_mm2 + _EPS:
-        return no_fit(needed=needed)
+        # what the blocks may use (PACK_MAX of the usable area): reported as an area refusal
+        return no_fit(needed=needed, available=PACK_MAX * usable_mm2)
 
     nets: dict[str, frozenset[str]] = {}
     for name, bb in boxes.items():
@@ -648,7 +664,7 @@ def floorplan(
         strip: Box | None = None
         assert bb.edge_ref is not None
         for along, depth in _facing_dims(model, locals_[name], bb.edge_ref, bb.edge, bb.w, bb.h):
-            strip = _strip(usable, bb.edge, along, depth, bb.offset)
+            strip = _strip(usable, bb.edge, along, depth, bb.offset, (o.x, o.y))
             if strip is not None:
                 break
         if strip is None:
@@ -892,7 +908,8 @@ def align_pairs(
        when that shift is small enough, else by the missing overlap (one shift per part);
     2. tighten: a pair with a corridor whose pads are more than `TIGHT_GAP_MM` apart - one
        part moves along the corridor toward the other, as far as the courtyards allow (the
-       straight link gets short and no other track squeezes between the two pads).
+       straight link gets short and no other track squeezes between the two pads); never a
+       pair with a crystal (its `CRYSTAL_STANDOFF_MM` escape room stays).
 
     Every move keeps the courtyard inside the outline margin and off every other courtyard
     and keepout, keeps the pair's corridor and every corridor the part already has.
@@ -963,11 +980,18 @@ def align_pairs(
     for k in keyed:
         if need(k) != 0.0:
             continue
+        if _crystal_pair(k, cls):  # the crystal keeps its standoff (P9a: flush = boxed in)
+            continue
         for p, mover, other in movers(k, tightened):
             if apply(p, k, _closer(mover, other)):
                 tightened.add(p.ref)
                 break
     return tuple(out[r] for r in sorted(out, key=natural_key))
+
+
+def _crystal_pair(k: _PairKey, cls: Classification) -> bool:
+    xs = {x.ref for x in cls.crystals}
+    return k[0] in xs or k[2] in xs
 
 
 def _need_in(parts: Mapping[str, Part], k: _PairKey, layers: Sequence[str]) -> float | None:

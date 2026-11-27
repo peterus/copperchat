@@ -280,3 +280,13 @@ def test_does_not_fit_details_courtyard_fill() -> None:
     assert "do not tile" in shape.why and "840" not in shape.why
     plain = place._does_not_fit(place.DoesNotFit(1.0, 0.5, ("U1",)), "Block 'a'")
     assert plain.details is not None and "courtyard_fill" not in plain.details
+
+
+def test_proposals_refuse_more_than_max_blocks() -> None:
+    groups = tuple((f"blk:b{i}", (f"C{i}",)) for i in range(place.MAX_BLOCKS + 1))
+    parts = [cap(f"C{i}", "A", "B", (10.0 + i, 40.0)) for i in range(place.MAX_BLOCKS + 1)]
+    m = circuit(*parts, groups=groups)
+    with pytest.raises(StructuredToolError) as err:
+        place._proposals(m, None)
+    assert err.value.code == "invalid_argument"
+    assert len(place._proposals(m, ["b1", "b2"])) == 2

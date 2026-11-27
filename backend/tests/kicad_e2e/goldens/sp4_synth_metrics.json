@@ -1,5 +1,5 @@
 {
-  "fill_seconds": 11.81,
+  "fill_seconds": 14.09,
   "metrics": {
     "M1": {
       "value": 0,
@@ -30,7 +30,7 @@
       "verdict": "review"
     },
     "M16": {
-      "value": 19,
+      "value": 18,
       "verdict": "review"
     },
     "M2": {
@@ -46,7 +46,7 @@
       "verdict": "pass"
     },
     "M5": {
-      "value": 1.0931,
+      "value": 1.0523,
       "verdict": "review"
     },
     "M6": {
@@ -66,7 +66,7 @@
       "verdict": "review"
     }
   },
-  "track_length_mm": 281.4,
-  "tracks": 185,
+  "track_length_mm": 282.4,
+  "tracks": 184,
   "vias": 124
 }

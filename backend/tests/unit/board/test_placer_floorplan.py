@@ -29,7 +29,7 @@ from copperchat.board.placer.layout import box_of
 from copperchat.board.placer.legalize import edge_margin
 
 from .builders import outline, part
-from .builders_circuit import cap, circuit, conn, ic, pad, res
+from .builders_circuit import cap, circuit, conn, ic, pad, res, xtal
 
 TOP: frozenset[Side] = frozenset({"top"})
 
@@ -129,7 +129,8 @@ def test_floorplan_edge_block_strip() -> None:
     # a position in the row: mm along the edge from its top end
     doc2 = BoardDoc(edges=(EdgeRow("J1", "left", "left, 15 mm", "USB"),))
     r2 = _ok(_plan(m, {"conn": ["J1"], "mcu": ["U1"]}, doc2)).regions["conn"]
-    assert r2.y + r2.h / 2 == pytest.approx(usable[1] + 15.0, abs=0.5)
+    # measured from the outline's top end, like pcb_place_block's offset
+    assert r2.y + r2.h / 2 == pytest.approx(m.outline.y + 15.0, abs=0.5)
 
 
 def test_floorplan_region_row_wins() -> None:
@@ -209,7 +210,8 @@ def test_floorplan_does_not_fit_reports_fill() -> None:
     assert isinstance(fp, DoesNotFit)
     assert fp.courtyard_fill == pytest.approx(480.0 / ((28 - 0.6) * (22 - 0.6)), abs=1e-3)
     assert set(fp.refs) == {f"U{i}" for i in range(1, 7)}
-    assert fp.needed_mm2 > 0.85 * fp.available_mm2
+    # available = what the blocks may use (PACK_MAX of the usable area): an area refusal
+    assert fp.needed_mm2 > fp.available_mm2
     # enough area, but the boxes do not tile the shape: the blocks of the failing cut
     m, groups = _six(30.0, 25.0)
     fp = _plan(m, groups)
@@ -566,3 +568,70 @@ def test_assign_side_piece_only_what_tiles() -> None:
     assert sorted(groups[0] + groups[1]) == ["a", "b", "big", "c"]
     assert groups[1] and fpm._tiles(ctx, free[1], groups[1])
     assert "big" in groups[0]
+
+
+def test_edge_offset_parse() -> None:
+    from copperchat.board.placer.floorplan import _edge_offset
+
+    assert _edge_offset("left, 15 mm") == 15.0
+    assert _edge_offset("right: 7.5mm") == 7.5
+    assert _edge_offset("left") is None
+    assert _edge_offset("bottom, 10 mm from right") is None  # not from the top/left end
+    assert _edge_offset("USB 2.0 connector") is None
+
+
+def test_floorplan_area_refusal_in_pack_band() -> None:
+    """Σ boxes between PACK_MAX and 100 % of the usable area is an area refusal: needed >
+    available (= PACK_MAX x usable), so the tool says "area", not "do not tile"."""
+    m, groups = _six(30.0, 23.0)
+    fp = _plan(m, groups)
+    assert isinstance(fp, DoesNotFit)
+    u = _usable(m)
+    usable = (u[2] - u[0]) * (u[3] - u[1])
+    assert fp.needed_mm2 <= usable  # inside the 85-100 % band
+    assert fp.needed_mm2 > fp.available_mm2 == pytest.approx(0.85 * usable, abs=1e-2)
+
+
+def test_region_row_too_small_or_overlapping() -> None:
+    m, groups = _six()
+    small = BoardDoc(blocks=(BlockRow("b1", ("U1",), "10, 10, 5, 5", ""),))
+    bad = _plan(m, groups, small)
+    assert isinstance(bad, DoesNotFit) and bad.refs == ("U1",)
+    both = BoardDoc(
+        blocks=(
+            BlockRow("b1", ("U1",), "10, 10, 20, 20", ""),
+            BlockRow("b2", ("U2",), "20, 20, 20, 20", ""),
+        )
+    )
+    bad = _plan(m, groups, both)
+    assert isinstance(bad, DoesNotFit) and bad.refs == ("U2",)
+
+
+def test_place_blocks_falls_back_to_whole_board() -> None:
+    """A Region row whose rectangle holds the block's box but whose middle is taken by a
+    mounting hole (fixtures stay in the regions): the block is packed on the whole board
+    instead, recorded in `fallback`, and the result is legal."""
+    m, groups = _six()
+    hole = part(
+        "H1", 15.0, 15.0, lib_id="MountingHole:MountingHole_2.2mm_M2", half=2.5,
+        pads=(pad("H1", "1", "", (15.0, 15.0)),),
+    )  # fmt: skip
+    m = circuit(*m.parts, hole, outline=m.outline)
+    doc = BoardDoc(blocks=(BlockRow("b1", ("U1",), "5, 5, 20, 20", ""),))
+    res_, fp = _place(m, groups, doc)
+    assert fp.fallback == ("b1",)
+    assert res_.score.m1_violations == 0
+
+
+def test_align_pairs_never_tightens_a_crystal() -> None:
+    from copperchat.board.placer.floorplan import align_pairs as ap
+
+    y1 = xtal("Y1", "XI", "XO", (20.0, 20.0))
+    r1 = res("R1", "XO", "SIG", (24.0, 20.0))
+    m = circuit(y1, r1, outline=outline(0, 0, 60, 40))
+    cls = classify(m)
+    assert [x.ref for x in cls.crystals] == ["Y1"]
+    out = ap(m, cls, _moves(m), movable=frozenset({"Y1", "R1"}))
+    after = apply_moves(m, out)
+    assert after.part("R1").x == pytest.approx(24.0)
+    assert after.part("Y1").x == pytest.approx(20.0)
