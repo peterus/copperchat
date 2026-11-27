@@ -104,6 +104,7 @@ from copperchat.board.geom import (
     analyse_bends,
     analyse_tracks,
     convex_hull,
+    entry_zone,
     octi_dist,
     pad_entry_ends,
     polygons_overlap,
@@ -1164,21 +1165,27 @@ def _reland_one(
 
 
 def _may_branch(tracks: Sequence[Track], touched: set[int]) -> bool:
-    """Some touched track has an end on another track of `tracks` (end or interior) - the
-    precondition of a junction involving touched copper (and of every Y step 2b can fix)."""
+    """A branch point involving touched copper exists: an end of a touched track on the
+    INTERIOR of another track, or a touched end where >= 3 track ends meet - the
+    precondition of a junction (a Y step 2b can fix). Two consecutive pieces of one route
+    (2 ends) are no branch (review round 3)."""
     grid = _Grid()
     for i, t in enumerate(tracks):
         grid.add(i, _grow((t.start, t.end), _JOIN_TOL))
-    for i, t in enumerate(tracks):
+    for t in tracks:
         if id(t) not in touched:
             continue
         for e in (t.start, t.end):
+            ends = 0
             for k in grid.query((e[0], e[1], e[0], e[1])):
-                if k == i:
-                    continue
                 o = tracks[k]
-                if _pt_seg(e, o.start, o.end) <= _JOIN_TOL:
-                    return True
+                hits = (math.dist(e, o.start) <= _JOIN_TOL) + (math.dist(e, o.end) <= _JOIN_TOL)
+                if hits:
+                    ends += hits
+                elif _pt_seg(e, o.start, o.end) <= _JOIN_TOL:
+                    return True  # lands on another track's interior
+            if ends >= 3:
+                return True
     return False
 
 
@@ -1401,33 +1408,37 @@ def postprocess(model: BoardModel, kiids: frozenset[str]) -> PostResult:
         for i in mine:
             mine_by_net[wt[i].net].append(wt[i])
 
-        def on_mine(d: M16Defect) -> bool:
-            return any(_pt_seg(d.at, t.start, t.end) <= _ON_TRACK_TOL for t in mine_by_net[d.net])
+        def in_entry_zone(d: M16Defect) -> bool:
+            """Touched copper of the net reaches into the entry zone of the defect's pad:
+            the entry piece is (partly) ours - wherever along it the loop / jog vertex is
+            reported (review round 3)."""
+            pad = d.end if d.end is not None else d.a
+            for t in mine_by_net[d.net]:
+                zone = list(entry_zone(pad, t.width))
+                if polygons_overlap(_capsule((t.start, t.end), t.width / 2), zone):
+                    return True
+            return False
 
         def mark(d: M16Defect) -> tuple[object, ...]:
             ends = frozenset({(d.a.ref, d.a.number), (d.b.ref, d.b.number)})
             return (d.kind, d.net, ends, round(d.at[0], 3), round(d.at[1], 3))
 
-        base16: set[tuple[object, ...]] | None = None
-        for d in m16_defects(work, cls, nets=signal):
-            if d.kind == "alignable":
-                continue
+        found = [d for d in m16_defects(work, cls, nets=signal) if d.kind != "alignable"]
+        dog_nets = sorted({d.net for d in found if d.kind == "dogleg"})
+        base16: set[tuple[object, ...]] = set()
+        if dog_nets:  # only when a dogleg shows up, only its nets (timing)
+            alone = replace(work, tracks=tuple(untouched))
+            base16 = {mark(x) for x in m16_defects(alone, cls, nets=dog_nets) if x.kind == "dogleg"}
+        for d in found:
             if d.kind in ("pad_loop", "pad_jog"):
-                # attributed by copper (review round 2): a loop / jog vertex on touched copper
-                # is ours; one in untouched copper alone is not (a connection that only
-                # passes through that pad's entry piece would be ripped for nothing)
-                if not on_mine(d):
+                # attributed by copper (review rounds 2 / 3): ours when touched copper lies in
+                # that pad's entry zone; a loop / jog wholly in untouched copper is not (a
+                # connection that only passes through it would be ripped for nothing)
+                if not in_entry_zone(d):
                     continue
-            else:
-                # a dogleg the untouched copper alone already has is not ours (as step 3);
-                # computed only when a dogleg shows up (timing)
-                if base16 is None:
-                    alone = replace(work, tracks=tuple(untouched))
-                    base16 = {
-                        mark(x) for x in m16_defects(alone, cls, nets=signal) if x.kind == "dogleg"
-                    }
-                if mark(d) in base16:
-                    continue
+            elif mark(d) in base16:
+                # a dogleg the untouched copper alone already has is not ours (as step 3)
+                continue
             ends = {(d.a.ref, d.a.number), (d.b.ref, d.b.number)}
             for c in conns.get(d.net, []):
                 if {(c.a.ref, c.a.number), (c.b.ref, c.b.number)} == ends and c.used & mine:

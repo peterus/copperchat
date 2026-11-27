@@ -1206,3 +1206,41 @@ def test_untouched_pad_loop_not_ripped_on_fresh_connection() -> None:
     )
     r = postprocess(m, kiids(m, "b"))
     assert not any(why in ("pad_loop", "pad_jog") for _k, why in r.reasons), r
+
+
+@pytest.mark.parametrize(
+    "steps",
+    [
+        [(0, 0.6), (45, 0.4), (-45, 6.0)],  # jog
+        [(0, 0.8), (45, 0.4), (45, 0.4), (45, 0.4), (0, 6.0)],  # loop
+    ],
+)
+def test_fresh_entry_defect_ripped_when_vertex_on_untouched(
+    steps: list[tuple[float, float]],
+) -> None:
+    """Review round 3: only the first piece at J1 is touched; the jog / loop vertex is
+    reported on the untouched rest - still ours (touched copper in J1's entry zone)."""
+    pts = [nm_pt(p) for p in walk((50.0, 50.0), 0.0, steps)]
+    tracks = tuple(
+        track("N1", "F.Cu", a, b, 0.2, kiid=("t" if i == 0 else "u") + str(i))
+        for i, (a, b) in enumerate(itertools.pairwise(pts))
+    )
+    m = board(
+        parts=(pad_part("J1", *pts[0]), pad_part("J2", *pts[-1])),
+        tracks=tracks,
+        net_class_of=(("N1", "Default"),),
+    )
+    r = postprocess(m, kiids(m, "t"))
+    assert any(why in ("pad_jog", "pad_loop") for _k, why in r.reasons), r
+
+
+def test_may_branch_only_real_branch_points() -> None:
+    """Two consecutive pieces of one route are no branch; a touched end on another track's
+    interior or a 3-way node is."""
+    a = track("N1", "F.Cu", (0.0, 0.0), (5.0, 0.0), 0.2, kiid="a")
+    b = track("N1", "F.Cu", (5.0, 0.0), (5.0, 5.0), 0.2, kiid="b")
+    assert not chamfer._may_branch([a, b], {id(a), id(b)})
+    c = track("N1", "F.Cu", (2.0, 3.0), (2.0, 0.0), 0.2, kiid="c")  # ends on a's interior
+    assert chamfer._may_branch([a, b, c], {id(c)})
+    d = track("N1", "F.Cu", (5.0, 0.0), (9.0, 0.0), 0.2, kiid="d")  # 3 ends at (5, 0)
+    assert chamfer._may_branch([a, b, d], {id(d)})

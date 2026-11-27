@@ -605,7 +605,7 @@ def _lattice(lo: float, hi: float, anchor: float, pitch: float) -> tuple[float, 
 ESCAPE_REACH_MM = 1.0  # how far in front of a pad's end its escape stays free (= M16 zone)
 ESCAPE_SIDE_MM = 0.3  # the escape strip's extra width on each side of the pad
 ESCAPE_AXIS_RATIO = 1.5  # = astar.PAD_AXIS_RATIO: below it a pad has no long axis
-ESCAPE_MARGIN_MM = 10.0  # copper ends this far outside the window still count (pending pads)
+ESCAPE_MARGIN_MM = 0.01  # slack around the pending pads' extent for the copper-end filter
 
 
 def _escape_rect(pad: Pad, width: float) -> tuple[Point, ...]:
@@ -642,11 +642,17 @@ def _escape_map(
     each pad of `pending` (other-net pads, with their layer indices) that no track end or
     via of its net touches yet - on its layers, an SMD pad's on every layer (its via); ()
     when there is none."""
+    if not pending:
+        return ()
     nets = {p.net for p, _ in pending}
-    # only copper near the window can touch a pending pad (review round 2: no full scan of
-    # every net's ends per pad); the pads lie within ESCAPE_MARGIN_MM of the window
-    gx0, gy0 = x0 - ESCAPE_MARGIN_MM, y0 - ESCAPE_MARGIN_MM
-    gx1, gy1 = x0 + nx * pitch + ESCAPE_MARGIN_MM, y0 + ny * pitch + ESCAPE_MARGIN_MM
+    # only copper within the pending pads' extent can touch one of them (review rounds 2 /
+    # 3: no full scan of every net's ends per pad, and never a filter that drops the far end
+    # inside a large pad)
+    rects = [_pad_rect(p) for p, _ in pending]
+    gx0 = min(q[0] for r in rects for q in r) - ESCAPE_MARGIN_MM
+    gy0 = min(q[1] for r in rects for q in r) - ESCAPE_MARGIN_MM
+    gx1 = max(q[0] for r in rects for q in r) + ESCAPE_MARGIN_MM
+    gy1 = max(q[1] for r in rects for q in r) + ESCAPE_MARGIN_MM
 
     def near(p: Point) -> bool:
         return gx0 <= p[0] <= gx1 and gy0 <= p[1] <= gy1
