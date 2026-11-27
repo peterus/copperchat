@@ -758,7 +758,8 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
 **Floorplan** (`cc/board/placer/floorplan.py`, B-C11 round 2, pure, deterministic):
 - `BlockBox` = the block's `block_layout` box + `keep_channels` + one 0.5 mm grid step
   (P4's edge-strip slack). Additive fields: `BlockBox.offset` (mm along the edge from the
-  board.md row: the first number in the Edge/position cell, e.g. `left, 15 mm`) and
+  outline's top / left end, like `pcb_place_block`'s offset: only `<edge>, <n> mm` in the
+  Edge/position cell, e.g. `left, 15 mm`; "10 mm from right" or "USB 2.0" → the middle) and
   `edge_ref` (the member with the row); `Floorplan.fixed` (blocks with a Region row or an
   edge strip) and `Floorplan.fallback` (blocks `place_blocks` had to pack on the whole board).
 - Edge strips: the orientation that turns the connector's mouth toward the edge first
@@ -797,7 +798,8 @@ order, only a movable non-anchor 2-pad part moves: (1) align - centre-aligned wh
 else the least overlap shift, once per part; (2) **tighten (addition)** - a pair with a
 corridor whose pads are > `TIGHT_GAP_MM` = 0.3 mm apart is pulled together along the
 corridor in 0.05 mm steps as far as the courtyards allow (on `sp4_synth` the +3V3 track took
-the 1.75 mm gap between R6.1 and R5.2 and boxed in /Power/FB). Every move keeps the pair's
+the 1.75 mm gap between R6.1 and R5.2 and boxed in /Power/FB); never a pair with a crystal
+(review round 2: it would undo `CRYSTAL_STANDOFF_MM`). Every move keeps the pair's
 corridor and every corridor the part already had, stays inside the outline margin and off
 courtyards and keepouts. Crystals / decaps are not excluded (M8 unchanged at 4.97 mm).
 
@@ -816,7 +818,14 @@ usable_mm2, keep_channels, board_hash, next, png_url, svg_url` + one PNG (region
 hulls: `render_board(hulls=)`, drawn instead of the block hulls); `pcb_place_blocks {blocks?,
 keep_channels?, unroute?}` → `plan_moves` report + the floorplan fields + `spread`,
 `well_spread`. `does_not_fit.details.courtyard_fill` (+ the why text names the percentage).
-Without an outline or blocks: `invalid_argument`. **Deviation:** `pcb_floorplan` is a plain
+Without an outline or blocks, or more than `MAX_BLOCKS` (32) blocks by default:
+`invalid_argument`. Both run as one CPU job with `PLACE_BLOCKS_TIMEOUT_S` = 180 s (P4's
+single-block 60 s; 32 blocks / 288 parts measured ≈ 17 s). `does_not_fit` from a floorplan
+carries `details.reason` "area" (Σ block boxes > `PACK_MAX` x usable; `available_mm2` is then
+that 85 % share) or "shape" (the outlines + channels do not tile); review rounds 1-2.
+`place_blocks` packs on a model with all of this run's members parked off the board (review
+round 1: re-running from a placed state gave a different placement); parts that stay
+(locked, other blocks; not fixtures) and keepouts come out of the free rectangles. **Deviation:** `pcb_floorplan` is a plain
 `PCB_READ` tool, visible with `COPPERCHAT_BOARD_TOOLS` off (P1c's invariant "PCB_READ in
 every profile, flag or not"); Task 3's "flag off → both tools absent" holds for
 `pcb_place_blocks` only. `PCB_WRITES` has 18 names; `BOARD_KINDS` += `board_place_blocks`.
@@ -831,10 +840,10 @@ scripted `region` are placed afterwards by `pcb_place_block` + `pcb_legalize`.
 spread 0.78, `pcb_place_blocks` < 1 s, critical `pcb_route` ≈ 28 s (was ≈ 90 s), fill 12 s
 completion 1.0, full flow ≈ 90 s; placement-stage alignable pairs 2 (C1.1-U1.5: U1 / Y1 in
 the way; J1.B5-R3.1: the ESD array U2 in the way - `align_pairs` never moves ICs). Golden
-diff (regenerated after rebase, confirmed by a second run): M5 1.112 → 1.093, M9 3 → 1, M10
-1.858 → 1.722, M7 pass → review (bend density /CC2, OSC), M12 pass → review (USB pair
-mismatch 2.27 mm: the pair now crosses the board), M15 2 → 3, M16 15 → 19 (review-only;
-doglegs incl. D1.2-R4.2 are router output), tracks 174 → 185, length 239 → 281 mm.
+diff (regenerated, confirmed by a second run): M5 1.112 → 1.052, M9 3 → 1, M10 1.858 →
+1.722, M7 pass → review (bend density /CC2, OSC), M12 pass → review (USB pair mismatch
+2.27 mm: the pair now crosses the board), M15 2 → 3, M16 15 → 18 (review-only; doglegs
+incl. D1.2-R4.2 are router output), tracks 174 → 184, length 239 → 282 mm.
 
 **ODH placement probe** (copy of the PROD checkout `OpenDriveHub@2e17ac5` + its working
 tree, read-only mount; 4 layers `jlcpcb-4l`, Power class 0.3 mm, blocks = `pcb_analyze`'s 11,
