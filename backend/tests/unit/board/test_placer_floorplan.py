@@ -788,8 +788,11 @@ def test_place_blocks_tries_every_pull_and_slack(monkeypatch: pytest.MonkeyPatch
     m, groups = _trio()
     _, fp = _place(m, groups)
     assert sorted(seen) == sorted(
-        itertools.product(fpm.SLACK_STEPS_MM, fpm.TARGET_PULL_WEIGHTS)
-    )  # one layout (relaxed) was enough
+        [
+            *itertools.product(fpm.SLACK_STEPS_MM, fpm.TARGET_PULL_WEIGHTS),
+            *itertools.product(fpm.SLACK_STEPS_MM, fpm.CENTRE_PULL_WEIGHTS),
+        ]
+    )  # one layout (relaxed) was enough; R7's centring pulls after the others
     assert fp.slack_mm in fpm.SLACK_STEPS_MM and fp.relaxed
 
 
@@ -900,3 +903,69 @@ def test_place_blocks_reports_fixed_blocks_in_compact_layout(
     doc = BoardDoc(edges=(EdgeRow("U1", "left", "left", ""),))
     _, fp = _place(m, groups, doc)
     assert fp.relaxed and fp.compact_fixed == ("a",) and fp.fallback == ()
+
+
+def test_centre_offset_weights_by_area() -> None:
+    """R7: |dx| + |dy| of the moved parts' area-weighted centroid from the outline centre -
+    one small part far off moves it little (a bounding box would jump)."""
+    from copperchat.board.placer.floorplan import centre_offset
+
+    big = blob("U1", 10.0, 10.0, ["A"], (40.0, 30.0))
+    small = blob("R1", 1.0, 1.0, ["A"], (75.0, 55.0))
+    m = circuit(big, small, outline=outline(0, 0, 80, 60))
+    at = [Move("U1", 40.0, 30.0, 0.0, "top"), Move("R1", 75.0, 55.0, 0.0, "top")]
+    off = centre_offset(m, at)
+    # centroid x = (100 * 40 + 1 * 75) / 101, y = (100 * 30 + 55) / 101
+    assert off == pytest.approx((4075 / 101 - 40) + (3055 / 101 - 30), abs=1e-6)
+    assert centre_offset(m, [Move("U1", 20.0, 30.0, 0.0, "top")]) == pytest.approx(20.0)
+    assert centre_offset(m, []) == 0.0
+
+
+def test_place_blocks_centres_on_a_roomy_board(monkeypatch: pytest.MonkeyPatch) -> None:
+    """R7 (R2b residual: ODH 80 x 100 packed at one end, next to its bottom-edge connector):
+    on a board with room to spare the choice pays for the centroid's offset from the
+    outline centre - the placement ends nearer the centre than the least-airwire one."""
+    from copperchat.board.placer import floorplan as fpm
+
+    parts: list[Part] = [conn("J1", {str(k): f"N{k}" for k in range(1, 7)}, (40.0, 95.0))]
+    groups: dict[str, list[str]] = {"conn": ["J1"]}
+    for i in range(1, 4):
+        pins = {str(k): f"B{i}S{k}" for k in range(1, 9)}
+        pins.update({"1": f"N{2 * i - 1}", "2": f"N{2 * i}"})
+        parts.append(ic(f"U{i}", pins, (200.0 + 20 * i, 10.0)))
+        parts.append(res(f"R{i}", f"B{i}S4", f"B{i}S5", (200.0 + 20 * i, 20.0)))
+        groups[f"blk{i}"] = [f"U{i}", f"R{i}"]
+    m = circuit(*parts, outline=outline(0, 0, 80, 100))
+    doc = BoardDoc(edges=(EdgeRow("J1", "bottom", "", "user"),))
+    centred, _ = _place(m, groups, doc)
+    monkeypatch.setattr(fpm, "CENTRE_WEIGHT", 0.0)
+    monkeypatch.setattr(fpm, "CENTRE_PULL_WEIGHTS", ())
+    plain, _ = _place(m, groups, doc)
+    assert fpm.centre_offset(m, centred.moves) < fpm.centre_offset(m, plain.moves) - 1.0
+    assert centred.score.m1_violations == 0
+
+
+def test_snap_edges_moves_the_block_to_its_edge() -> None:
+    """R7 (ODH J201 0.75 mm from its edge, M13 allows 0.5): a part with a Placement edges
+    row ends at the edge margin - its whole block moves - unless something is in the way."""
+    from copperchat.board.placer.floorplan import snap_edges
+
+    j = conn("J1", {"1": "A", "2": "B"}, (3.0, 30.0))
+    r = res("R1", "A", "X", (7.0, 30.0))
+    m = circuit(j, r, outline=outline(0, 0, 80, 60))
+    doc = BoardDoc(edges=(EdgeRow("J1", "left", "", "user"),))
+    blocks = _blocks({"blk": ["J1", "R1"]})
+    moves = (Move("J1", 3.0, 30.0, 0.0, "top"), Move("R1", 7.0, 30.0, 0.0, "top"))
+    gap0 = box_of(m.part("J1"))[0]
+    assert gap0 > edge_margin(m) + 0.5
+    out = {mv.ref: mv for mv in snap_edges(m, doc, blocks, moves)}
+    placed = apply_moves(m, tuple(out.values()))
+    assert box_of(placed.part("J1"))[0] == pytest.approx(edge_margin(m), abs=0.05 + 1e-6)
+    shift = out["J1"].x - 3.0
+    assert shift < 0 and out["R1"].x - 7.0 == pytest.approx(shift)  # the block moved as one
+    # a part of another block between the connector and the edge: no move
+    w = blob("W1", 0.5, 4.0, ["Z"], (edge_margin(m) + 0.3, 30.0))
+    m2 = circuit(j, r, w, outline=outline(0, 0, 80, 60))
+    blocked = {mv.ref: mv for mv in snap_edges(m2, doc, blocks, moves)}
+    assert box_of(apply_moves(m2, tuple(blocked.values())).part("J1"))[0] >= box_of(w)[2]
+    assert snap_edges(m, BoardDoc(), blocks, moves) == moves

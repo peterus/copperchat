@@ -2182,8 +2182,10 @@ def _straight_link(
     segs: Sequence[tuple[str, Point, Point, float]], a: Pad, b: Pad, layers: Sequence[str]
 ) -> bool:
     """The routed path is one straight segment on one of `layers` outside the two pads:
-    pieces wholly inside pad a or b dropped, collinear same-layer touching pieces merged
-    (an own-net T branch splits a straight track in the net graph)."""
+    pieces wholly inside pad a or b dropped, collinear same-layer consecutive pieces merged
+    (an own-net T branch splits a straight track in the net graph; R7: the path may also
+    step between two collinear pieces through an own via both touch - ODH VBUS C202-J302,
+    a straight track with a via on it - which is still one straight line)."""
     rest = [
         (la, p, q)
         for la, p, q, _ in segs
@@ -2193,15 +2195,30 @@ def _straight_link(
     for la, p, q in rest:
         if merged:
             ml, mp, mq = merged[-1]
-            if (
-                ml == la
-                and math.dist(mq, p) <= _JOIN_TOL
-                and abs(_cross3(mp, mq, q)) <= 1e-6 * (1.0 + math.dist(mp, mq) * math.dist(mq, q))
-            ):
+            span = math.dist(mp, mq)
+            ahead = (
+                span > _JOIN_TOL
+                and all(
+                    abs(_cross3(mp, mq, x)) <= 1e-6 * (1.0 + span * math.dist(mq, x))
+                    for x in (p, q)
+                )
+                and _along(mp, mq, p) >= span - _JOIN_TOL
+                and _along(mp, mq, q) > _along(mp, mq, p)
+            )
+            touching = math.dist(mq, p) <= _JOIN_TOL and (
+                abs(_cross3(mp, mq, q)) <= 1e-6 * (1.0 + span * math.dist(mq, q))
+            )
+            if ml == la and (touching or ahead):
                 merged[-1] = (la, mp, q)
                 continue
         merged.append((la, p, q))
     return len(merged) == 1 and merged[0][0] in layers
+
+
+def _along(a: Point, b: Point, x: Point) -> float:
+    """The projection of `x` on the direction a -> b, measured from a (mm)."""
+    n = math.dist(a, b)
+    return ((x[0] - a[0]) * (b[0] - a[0]) + (x[1] - a[1]) * (b[1] - a[1])) / n
 
 
 def _runs(

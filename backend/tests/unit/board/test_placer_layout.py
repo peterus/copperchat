@@ -14,7 +14,7 @@ from copperchat.board.placer import Cluster, Move, build_clusters, layout_cluste
 from copperchat.board.placer.layout import box_of
 
 from .builders import part
-from .builders_circuit import cap, circuit, pad, res, xtal
+from .builders_circuit import cap, circuit, ind, pad, res, xtal
 
 
 def qfn(ref: str, pins: dict[str, str], at: tuple[float, float] = (50.0, 40.0)) -> Part:
@@ -380,3 +380,112 @@ def test_block_layout_relaxed_channels() -> None:
         assert got >= least - 1e-6, (relax, got)
         if not relax:
             assert got < want - 1e-6
+
+
+def _power_column(power: str = "VSYS") -> BoardModel:
+    """`_column_ic` with pins S1, S2, VSYS (wide, Power 0.5 mm), S4 (the satellite's), S5
+    at 0.5 mm pitch, plus a resistor on S4."""
+    from .builders import net_class
+
+    nets = ["S1", "S2", power, "S4", "S5"]
+    return circuit(
+        _column_ic("U1", nets, 0.5),
+        res("R1", "S4", "X1", (70.0, 60.0)),
+        net_classes=(net_class(), net_class("Power", 0.5, 0.2, patterns=("VSYS",))),
+        net_class_of=((power, f"Effective for net: {power}"),),
+    )
+
+
+def test_escape_strip_kept_free_in_front_of_wide_pins() -> None:
+    """R7 (ODH: resistors tight in front of a charger's VSYS pins, a CC resistor in front of
+    a USB-C VBUS pin): with `escape_room` / `relax`, a satellite never covers the strip in
+    front of a host pad of a wide net it does not connect to; P4's layout is unchanged."""
+    from copperchat.board.placer.layout import escape_strips, wide_nets
+
+    m = _power_column()
+    cls = classify(m)
+    assert wide_nets(m, cls, ["S1", "VSYS", "GND"]) == {"VSYS": (0.5, 0.2)}
+    host = m.part("U1")
+    ((net, strip),) = escape_strips(host, {"VSYS": (0.5, 0.2)})
+    # pin 3 at y = 41.0 (0.6 x 0.6 pad, right edge x 52.8): across 41.0 ± (0.3 + 0.2),
+    # outwards 1.5 mm (entry zone of a 0.5 mm track)
+    assert net == "VSYS"
+    assert strip == pytest.approx((52.8, 40.5, 54.3, 41.5))
+    (c,) = build_clusters(m, cls, ["U1", "R1"])
+
+    def covers(flag: dict[str, bool]) -> bool:
+        placed = _placed(m, layout_cluster(m, cls, c, gap=0.05, **flag))  # anchor at (0, 0)
+        ((_, s),) = escape_strips(placed["U1"], {"VSYS": (0.5, 0.2)})
+        b = box_of(placed["R1"])
+        return b[0] < s[2] and s[0] < b[2] and b[1] < s[3] and s[1] < b[3]
+
+    assert not covers({"relax": True})
+    assert not covers({"escape_room": True})
+    assert covers({})  # P4's layout (pcb_place_block) unchanged: flush at the S4 pin
+    # a satellite on the wide net itself may sit there (a decap / its own pin)
+    own = circuit(
+        _column_ic("U1", ["S1", "S2", "VSYS", "S4", "S5"], 0.5),
+        res("R1", "VSYS", "X1", (70.0, 60.0)),
+        net_classes=m.net_classes,
+        net_class_of=m.net_class_of,
+    )
+    (c2,) = build_clusters(own, classify(own), ["U1", "R1"])
+    placed = _placed(own, layout_cluster(own, classify(own), c2, gap=0.05, relax=True))
+    ((_, s),) = escape_strips(placed["U1"], {"VSYS": (0.5, 0.2)})
+    r1 = box_of(placed["R1"])
+    assert r1[1] < s[3] and s[1] < r1[3]  # aligned with its own VSYS pin
+
+
+def test_two_pin_satellite_avoids_crossed_connections(monkeypatch: pytest.MonkeyPatch) -> None:
+    """R7 (ODH L201 / TPS63000: the inductor's L1 pad sat behind its L2 pad, so the L1 track
+    had to pass the L2 pad): a satellite whose pads serve two host pins pays
+    `SELF_CROSS_MM` per own pad of the other net on a pad's line to its pin - an inductor
+    turned radial (one pad behind the other) pays, a tangential one does not; the chosen
+    layout has no crossed line."""
+    from copperchat.board.placer import layout as lay
+
+    pins = ["S1", "SW1", "GND", "SW2", "S5"]
+    m = circuit(_column_ic("U1", pins, 0.5), ind("L1", "SW1", "SW2", (70.0, 60.0)))
+    cls = classify(m)
+    (c,) = build_clusters(m, cls, ["U1", "L1"])
+    work = lay._Layout(m, cls, c, 0.05, relax=True)
+    work._commit(Move("U1", 0.0, 0.0, 0.0, "top"))
+    want = work._want("L1")
+    assert want is not None
+    host = work.placed["U1"]
+
+    def costs() -> dict[float, float]:
+        return {r: work._fit(m.part("L1"), r, host, "right", want)[0] for r in (0.0, 90.0)}
+
+    penalty = lay.SELF_CROSS_MM
+    with_penalty = costs()
+    monkeypatch.setattr(lay, "SELF_CROSS_MM", 0.0)
+    without = costs()
+    radial, tangential = 0.0, 90.0  # the pads lie along x at rotation 0: radial on "right"
+    assert with_penalty[radial] - without[radial] == pytest.approx(penalty)
+    assert with_penalty[tangential] == pytest.approx(without[tangential])
+    monkeypatch.undo()
+    placed = _placed(m, layout_cluster(m, cls, c, gap=0.05, relax=True))
+    for q in placed["L1"].pads:
+        pin = next(p for p in placed["U1"].pads if p.net == q.net)
+        other = next(o for o in placed["L1"].pads if o is not q)
+        assert not lay._seg_hits_pad((q.x, q.y), (pin.x, pin.y), other, 0.0, 0.0), q.number
+    # the helper itself
+    a = pad("X", "1", "N", (0.0, 0.0), w=1.0, h=1.0)
+    assert lay._seg_hits_pad((-2.0, 0.0), (2.0, 0.0), a, 0.0, 0.0)
+    assert not lay._seg_hits_pad((-2.0, 2.0), (2.0, 2.0), a, 0.0, 0.0)
+    assert lay._seg_hits_pad((-2.0, 2.0), (2.0, 2.0), a, 0.0, 2.0)  # shifted onto the line
+
+
+def test_pad_side_follows_the_pad_axis() -> None:
+    """R7 (PM #60, R2b review round 3): a SOIC row's end pin near a short edge belongs to
+    its long side (the pad points out of it), an about square pad to the nearest side."""
+    from copperchat.board.placer.layout import _pad_side
+
+    box = (0.0, 0.0, 6.0, 4.0)  # a SOIC body, pins on the left / right long sides
+    end_pin = pad("U1", "1", "A", (0.6, 0.4), w=1.2, h=0.4)  # long in x, 0.4 from the top
+    assert _pad_side(box, end_pin) == "left"  # nearest edge would be "top"
+    square = pad("U1", "2", "B", (0.6, 0.4), w=0.5, h=0.5)
+    assert _pad_side(box, square) == "top"
+    tall = pad("U1", "3", "C", (3.0, 3.6), w=0.4, h=1.2)
+    assert _pad_side(box, tall) == "bottom"

@@ -289,3 +289,26 @@ def test_outer_pours_are_never_plane_layers() -> None:
     # only outer pours: no ground plane yet -> the D1 default
     m4o = board(copper_layers=FOUR, outline=outline(0, 0, 100, 80), zones=outer)
     assert default_plane_layers(m4o, frozenset({"GND"})) == ("In1.Cu",)
+
+
+def test_postprocess_judges_widened_copper() -> None:
+    """R7 (ODH: seven M7 micro-jogs survived the fill): Freerouting necks a 0.2 mm class
+    down to 0.15 mm; a jog piece of 0.35 mm passes at 0.15 (2 x w = 0.30) but is a micro-jog
+    at the 0.2 mm the fill widens it to (0.40) - the post-processor judges the widened copper
+    (`_widened_model`, KIIDs kept, non-fill tracks untouched)."""
+    from copperchat.board.router.chamfer import postprocess
+    from copperchat.kicad_tools.board.fill import _widened_model
+
+    d = 0.35 / 2**0.5
+    pts = [(10.0, 10.0), (13.0, 10.0), (13.0 + d, 10.0 + d), (20.0, 10.0 + d)]
+    tracks = tuple(
+        track("N1", start=a, end=b, width=0.15, kiid=f"f{i}")
+        for i, (a, b) in enumerate(zip(pts, pts[1:], strict=False))
+    )
+    other = track("N1", start=(10.0, 12.0), end=(10.0, 14.0), width=0.15, kiid="old")
+    m = _board_ab((*tracks, other))
+    fill = frozenset(t.kiid for t in tracks)
+    wide = _widened_model(m, fill)
+    assert {t.kiid: t.width for t in wide.tracks} == {**{k: 0.2 for k in fill}, "old": 0.15}
+    assert not any(r == "micro_jog" for _, r in postprocess(m, fill).reasons)
+    assert any(r == "micro_jog" for _, r in postprocess(wide, fill).reasons)
