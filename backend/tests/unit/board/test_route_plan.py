@@ -1240,3 +1240,25 @@ def test_reservation_width_per_connection() -> None:
     m = circuit(fine, near, wide, wide2, net_classes=(net_class(track_width=0.5),))
     got = sorted(r.width for r in route.corridor_reservations(m, classify(m)))
     assert got[-1] == pytest.approx(0.5), got
+
+
+def test_reservation_pair_width_below_track_width() -> None:
+    """A pair width below the track width is reserved as placed (pair_width, no max)."""
+    m = _usbc()
+    nc = dataclasses.replace(net_class(track_width=0.3), diff_pair_width=0.15, diff_pair_gap=0.15)
+    m = dataclasses.replace(m, net_classes=(nc,))
+    got = {r.net: r.width for r in route.corridor_reservations(m, _pair_cls(m))}
+    assert got and all(w == pytest.approx(0.15) for w in got.values()), got
+
+
+def test_reservation_falls_back_when_pair_corridor_blocked() -> None:
+    """The pair-width corridor exists but is blocked by another net's track that leaves
+    room for the narrower class width: the class-width option is reserved."""
+    m = _usbc()
+    nc = dataclasses.replace(net_class(track_width=0.1), diff_pair_width=0.5, diff_pair_gap=0.15)
+    # DP U2.1 (19, 9) - U2.6 (19, 11): a vertical corridor at x = 19
+    blocker = track("X", "F.Cu", (19.4, 9.5), (19.4, 10.5), 0.1)
+    m = dataclasses.replace(m, net_classes=(nc,), tracks=(blocker,))
+    got = {r.key: r.width for r in route.corridor_reservations(m, _pair_cls(m))}
+    dp = [w for k, w in got.items() if k.startswith("DP:")]
+    assert dp == [pytest.approx(0.127)], got  # the class width, floored at min_track_width

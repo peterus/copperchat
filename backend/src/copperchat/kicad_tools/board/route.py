@@ -679,7 +679,7 @@ def corridor_reservations(
         # pair net's connection may be either, so the pair width is tried first
         options = [(par.width, True)]
         if _pair_partner(cls, net) is not None:
-            options.insert(0, (max(par.width, par.pair_width or 0.0), False))
+            options.insert(0, (par.pair_width or par.width, False))  # as plan_connections
         for a, b in connections(model, net):
             if _joined(a, b):
                 continue
@@ -703,7 +703,7 @@ def corridor_reservations(
                 placed = max(pw for *_x, pw in path.segments)
                 if _corridor_free(model, net, layer, s, e, placed, par.clearance):
                     out.append(Reserved(_key(plan), net, layer, s, e, placed))
-                break
+                    break  # else the next option (a narrower width may still be free)
     return tuple(out)
 
 
