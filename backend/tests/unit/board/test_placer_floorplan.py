@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import itertools
 import random
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 
 import pytest
@@ -44,13 +44,13 @@ def blob(ref: str, w: float, h: float, nets: Sequence[str], at: tuple[float, flo
     return part(ref, x, y, pads=pads, courtyard=tuple(rect_poly(x - w / 2, y - h / 2, w, h)))
 
 
-def _blocks(groups: dict[str, Sequence[str]]) -> list[BlockProposal]:
+def _blocks(groups: Mapping[str, Sequence[str]]) -> list[BlockProposal]:
     return [BlockProposal(n, refs[0], tuple(refs), "/") for n, refs in groups.items()]
 
 
 def _plan(
     m: BoardModel,
-    groups: dict[str, Sequence[str]],
+    groups: Mapping[str, Sequence[str]],
     doc: BoardDoc | None = None,
     keep: float = 0.5,
 ) -> Floorplan | DoesNotFit:
@@ -351,7 +351,7 @@ def _eight() -> tuple[BoardModel, dict[str, list[str]]]:
 
 
 def _place(
-    m: BoardModel, groups: dict[str, Sequence[str]], doc: BoardDoc | None = None
+    m: BoardModel, groups: Mapping[str, Sequence[str]], doc: BoardDoc | None = None
 ) -> tuple[PlaceResult, Floorplan]:
     d = doc or BoardDoc()
     r = place_blocks(m, classify(m, d), d, _blocks(groups), keep_channels=0.5, allowed_sides=TOP)
