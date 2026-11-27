@@ -49,7 +49,7 @@ import math
 import re
 import statistics
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from fnmatch import fnmatchcase
 from types import MappingProxyType
@@ -80,6 +80,7 @@ from copperchat.board.geom import (
     polygons_overlap,
     rect_poly,
     straight_corridor,
+    straight_link_corridor,
 )
 from copperchat.board.model import (
     ArcTrack,
@@ -105,6 +106,7 @@ __all__ = [
     "M16_HARD",
     "MAX_OFFENDERS",
     "REVIEW",
+    "M16Defect",
     "Metric",
     "MetricId",
     "MetricsReport",
@@ -112,6 +114,8 @@ __all__ = [
     "Verdict",
     "compute_metrics",
     "connections",
+    "m16_defects",
+    "neck_checker",
     "outline_polygon",
     "placed_with_overhang",
     "routed_length",
@@ -149,10 +153,10 @@ REVIEW: Mapping[str, float] = MappingProxyType(
     }
 )
 M1_EDGE_OVERHANG = True  # owner decision 2026-11-25 (index "Provisional" 2)
-# round 2 (§22.5): Y-junctions (M15) and M16 doglegs / pad loops are hard once R4's router
-# and post-processor produce them clean; until then their offenders are `review`
-M15_HARD = False
-M16_HARD = False
+# round 2 (§22.5): Y-junctions (M15) and M16 doglegs / pad loops / pad jogs (owner
+# 2026-11-27: jogs too) are hard once R4's router and post-processor produce them clean
+M15_HARD = True
+M16_HARD = True
 
 MAX_OFFENDERS = 20
 ANTIPAD_MARGIN_MM = 1.0  # M11: antipad clearance / thermal gap allowance around one item
@@ -231,8 +235,8 @@ THRESHOLD_TEXT: Mapping[MetricId, tuple[str | None, str | None]] = MappingProxyT
         "M14": ("> 0 without a custom-rule exception", "custom-rule exceptions listed"),
         "M15": ("Y-junctions > 0 (branch off one 90° lattice)", "Y-junctions listed"),
         "M16": (
-            "doglegs between adjacent pads + pad-entry loops > 0",
-            f"pad-entry jogs; pairs alignable by <= {_g(REVIEW['M16_align_mm'])} mm",
+            "doglegs between adjacent pads + pad-entry loops + pad-entry jogs > 0",
+            f"pairs alignable by <= {_g(REVIEW['M16_align_mm'])} mm",
         ),
     }
 )
@@ -1626,6 +1630,20 @@ def _necked(
     return False
 
 
+def neck_checker(
+    model: BoardModel, cls: Classification, preset: FabPreset | None = None
+) -> Callable[[Track, float], bool]:
+    """`check(track, class_width)`: the track is a legal neck-down by M12's rule (`_necked`;
+    preset `jlcpcb-4l` when none) - the fill keeps such a track narrow (R4, `_widen`)."""
+    c = _Ctx(model, cls, BoardDoc(), preset)
+    min_track = (preset or PRESETS["jlcpcb-4l"]).min_track
+
+    def check(t: Track, class_w: float) -> bool:
+        return _necked(c, t.net, t.layer, t.width, class_w, (t.start, t.end), min_track)
+
+    return check
+
+
 def _class_clearance(
     classes: dict[str, NetClassInfo],
     name: str,
@@ -2206,18 +2224,39 @@ def _pair_text(net: str, a: Pad, b: Pad) -> str:
     return f"{net} {_pin(a)}-{_pin(b)}"
 
 
-def _m16(c: _Ctx) -> Metric:
+M16Kind = Literal["dogleg", "pad_loop", "pad_jog", "alignable"]
+
+
+@dataclass(frozen=True)
+class M16Defect:
+    """One M16 finding: `kind`, the connection (net, pads a / b in MST order), the pad of a
+    pad-entry defect (`end`), where, and the shift of an `alignable` pair."""
+
+    kind: M16Kind
+    net: str
+    a: Pad
+    b: Pad
+    at: Point
+    end: Pad | None = None
+    shift: float | None = None
+
+
+def _m16_defects(c: _Ctx, nets: Iterable[str] | None = None) -> Iterator[M16Defect]:
+    """M16's findings over every non-ground net (or those of `nets`): placement stage the
+    alignable pairs, routed stage doglegs and pad-entry loops / jogs (a pad shared by
+    several MST connections with one entry piece reported once)."""
     classes = {nc.name: nc for nc in c.m.net_classes}
     class_of = dict(c.m.net_class_of)
     patterned = [nc for nc in c.m.net_classes if nc.patterns]
     min_track = (c.preset or PRESETS["jlcpcb-4l"]).min_track
     default_clear = dict(c.m.rules).get("min_clearance", 0.2)
     blockers: _Blockers | None = None
-    off: list[Offender] = []
-    hard = 0
     seen: set[tuple[object, ...]] = set()
     routed = c.stage == "routed"
+    wanted = None if nets is None else set(nets)
     for net in sorted(n for n in c.pads_by_net if n and c.kind(n) != "ground"):
+        if wanted is not None and net not in wanted:
+            continue
         pads = c.pads_by_net[net]
         if len(pads) < 2:
             continue
@@ -2229,8 +2268,7 @@ def _m16(c: _Ctx) -> Metric:
             if not routed:
                 gap = _alignable(c, a, b, w)
                 if gap is not None:
-                    what = f"alignable {_pair_text(net, a, b)}: {gap:.2f} mm off"
-                    off.append(Offender(what, _refs(a, b), (net,), (a.x, a.y), _r(gap)))
+                    yield M16Defect("alignable", net, a, b, (a.x, a.y), shift=gap)
                 continue
             g = c.graph(net)
             nodes = g.path(a, b)
@@ -2239,17 +2277,22 @@ def _m16(c: _Ctx) -> Metric:
             segs = g.segments(nodes)
             if not segs:
                 continue
-            corridor = straight_corridor(a, b, w, copper_layers=c.m.copper_layers)
-            if corridor is not None:
+            link = straight_link_corridor(
+                a, b, class_w, w, _escape_boxes(c, a, b), copper_layers=c.m.copper_layers
+            )
+            if link is not None:
                 if blockers is None:
                     blockers = _Blockers(c)
-                layers, s, e = corridor
-                free = [la for la in layers if blockers.free(net, la, s, e, w / 2 + clear)]
+                layers, s, e, outside = link
+                free = [
+                    la
+                    for la in layers
+                    if blockers.free(net, la, s, e, w / 2 + clear)
+                    and all(blockers.free(net, la, p, q, class_w / 2 + clear) for p, q in outside)
+                ]
                 # a dogleg needs a free corridor; a straight link on ANY shared layer is fine
                 if free and not _straight_link(segs, a, b, layers):
-                    hard += 1
-                    what = f"dogleg {_pair_text(net, a, b)}"
-                    off.append(Offender(what, _refs(a, b), (net,), _mid_pt(s, e), None))
+                    yield M16Defect("dogleg", net, a, b, _mid_pt(s, e))
             runs = _runs(segs)
             first, last = runs[0], runs[-1]
             for end, pts, width in ((a, first[0], first[1]), (b, last[0][::-1], last[2])):
@@ -2258,17 +2301,61 @@ def _m16(c: _Ctx) -> Metric:
                 rep = analyse_entry(
                     pts, width, entry_zone(end, width), in_pad=functools.partial(_pad_has, end)
                 )
-                # a pad on several MST connections sharing its entry piece: report once
                 for kind, pts_at in (("pad_loop", rep.loops), ("pad_jog", rep.jogs)):
                     for pt in pts_at:
                         mark = (kind, _NetGraph.pad_node(end), round(pt[0], 4), round(pt[1], 4))
                         if mark in seen:
                             continue
                         seen.add(mark)
-                        hard += kind == "pad_loop"
-                        what = f"{kind} {_pin(end)} ({_pair_text(net, a, b)})"
-                        off.append(Offender(what, (end.ref,), (net,), pt, None))
+                        yield M16Defect(cast(M16Kind, kind), net, a, b, pt, end=end)
+
+
+def m16_defects(
+    model: BoardModel,
+    cls: Classification,
+    *,
+    nets: Iterable[str] | None = None,
+    preset: FabPreset | None = None,
+) -> list[M16Defect]:
+    """M16's findings of `model` (B-C7 round 2) restricted to `nets`: the post-processor
+    rips the connections with a hard one (R4)."""
+    return list(_m16_defects(_Ctx(model, cls, BoardDoc(), preset), nets))
+
+
+def _m16(c: _Ctx) -> Metric:
+    off: list[Offender] = []
+    hard = 0
+    for d in _m16_defects(c):
+        pair = _pair_text(d.net, d.a, d.b)
+        if d.kind == "alignable":
+            shift = d.shift or 0.0
+            off.append(
+                Offender(
+                    f"alignable {pair}: {shift:.2f} mm off",
+                    _refs(d.a, d.b),
+                    (d.net,),
+                    d.at,
+                    _r(shift),
+                )
+            )
+        elif d.kind == "dogleg":
+            hard += 1
+            off.append(Offender(f"dogleg {pair}", _refs(d.a, d.b), (d.net,), d.at, None))
+        else:  # owner 2026-11-27: a pad-entry jog / S-offset is an error like a loop
+            hard += 1
+            end = d.end if d.end is not None else d.a
+            off.append(Offender(f"{d.kind} {_pin(end)} ({pair})", (end.ref,), (d.net,), d.at, None))
     return _metric("M16", hard, _verdict(M16_HARD and hard > 0, bool(off)), off)
+
+
+def _escape_boxes(c: _Ctx, a: Pad, b: Pad) -> tuple[tuple[Point, ...], ...]:
+    """The escape zones (`geom.escape_zone`) of the parts of pads `a` and `b`."""
+    out = []
+    for ref in dict.fromkeys((a.ref, b.ref)):
+        part = c.parts.get(ref)
+        if part is not None and (z := escape_zone(part)):
+            out.append(z)
+    return tuple(out)
 
 
 def _pad_has(pad: Pad, p: Point) -> bool:

@@ -257,7 +257,8 @@ def test_m4_degree2_ninety_still_fails() -> None:
     assert [o.what for o in m4.offenders] == ["ninety"]
 
 
-def test_m15_y_review_when_switch_off() -> None:
+def test_m15_y_review_when_switch_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(metrics, "M15_HARD", False)
     rep = run(_t_board((18.0, 13.0)))
     m15 = get(rep, "M15")
     assert m15.verdict == "review"
@@ -268,14 +269,17 @@ def test_m15_y_review_when_switch_off() -> None:
     assert get(rep, "M4").verdict == "pass"
 
 
-def test_m15_y_fails_when_switch_on(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(metrics, "M15_HARD", True)
+def test_m15_y_fails_when_switch_on() -> None:
+    assert metrics.M15_HARD is True  # R4 switched it on (owner rule a)
     assert get(run(_t_board((18.0, 13.0))), "M15").verdict == "fail"
     assert get(run(_t_board((15.0, 15.0))), "M15").verdict == "pass"
 
 
-def test_switches_default_review(monkeypatch: pytest.MonkeyPatch) -> None:
-    assert metrics.M15_HARD is False and metrics.M16_HARD is False
+def test_switches_default_hard(monkeypatch: pytest.MonkeyPatch) -> None:
+    """R4 switched M15 / M16 hard; switched off (still possible) they only review."""
+    assert metrics.M15_HARD is True and metrics.M16_HARD is True
+    monkeypatch.setattr(metrics, "M15_HARD", False)
+    monkeypatch.setattr(metrics, "M16_HARD", False)
     y = run(_t_board((18.0, 13.0)))
     t = run(_t_board((15.0, 15.0)))
     assert y.hard_failures == t.hard_failures
@@ -344,15 +348,15 @@ def test_m16_dogleg() -> None:
     m16 = _m16(_pair(0.5, tracks=(*_STAGE, *dog)))
     assert "dogleg" in _whats(m16)
     assert m16.value >= 1
-    assert m16.verdict == "review"  # M16_HARD off
+    assert m16.verdict == "fail"  # M16_HARD on (R4)
     dog_o = next(o for o in m16.offenders if o.what.startswith("dogleg"))
     assert dog_o.refs == ("D1", "R1") and dog_o.nets == ("N1",)
 
 
-def test_m16_dogleg_fails_when_switch_on(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(metrics, "M16_HARD", True)
+def test_m16_dogleg_review_when_switch_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(metrics, "M16_HARD", False)
     dog = route("N1", [(31, 30), (32, 30), (32.5, 30.5), (34, 30.5)])
-    assert _m16(_pair(0.5, tracks=(*_STAGE, *dog))).verdict == "fail"
+    assert _m16(_pair(0.5, tracks=(*_STAGE, *dog))).verdict == "review"
 
 
 def test_m16_straight_ok() -> None:
@@ -490,7 +494,7 @@ def test_m16_loop() -> None:
     )
     m16 = _m16(m)
     assert _whats(m16) == ["pad_loop"]
-    assert m16.value == 1 and m16.verdict == "review"
+    assert m16.value == 1 and m16.verdict == "fail"
     assert m16.offenders[0].refs == ("U1",)
 
 
@@ -538,8 +542,8 @@ def test_m16_loop_at_b_end_uses_b_width() -> None:
     assert next(o for o in m16.offenders if o.what.startswith("pad_loop")).refs == ("U2",)
 
 
-def test_m16_jog_review_only(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(metrics, "M16_HARD", True)
+def test_m16_jog_hard() -> None:
+    """Owner 2026-11-27: a pad-entry jog / S-offset is an error like a dogleg or a loop."""
     pts = _walk((50, 50), 0, [(0, 0.6), (45, 0.4), (-45, 6.0)])
     m = board(
         parts=(_far_pad("U1", "N2", (50, 50)), _far_pad("U2", "N2", pts[-1])),
@@ -547,7 +551,7 @@ def test_m16_jog_review_only(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     m16 = _m16(m)
     assert _whats(m16) == ["pad_jog"]
-    assert m16.value == 0 and m16.verdict == "review"
+    assert m16.value == 1 and m16.verdict == "fail"
 
 
 def test_m16_ground_nets_excluded() -> None:
@@ -607,3 +611,45 @@ def test_routed_path_arc_as_two_chords() -> None:
     m = board(parts=(u1, u2), arcs=(arc,))
     got = metrics.routed_path(m, u1.pads[0], u2.pads[0])
     assert got == (("F.Cu", (10, 10), (15, 15)), ("F.Cu", (15, 15), (20, 10)))
+
+
+def _necked_pair(class_w: float) -> BoardModel:
+    """R1.2 (31, 30) and D1.1 (34, 30.2), pads 1.0 x 1.3 (overlap across y 1.1 mm), small
+    courtyards (escape zones end at x 31.7 / start at 33.3): the straight link between
+    them runs 1.6 mm outside both zones. Net N1 in a class `class_w` wide, doglegged."""
+    r1 = part(
+        "R1",
+        30,
+        30,
+        half=1.2,
+        pads=(
+            pad("R1", "1", "A", (29, 30), w=1.0, h=1.3),
+            pad("R1", "2", "N1", (31, 30), w=1.0, h=1.3),
+        ),
+    )
+    d1 = part(
+        "D1",
+        35,
+        30.2,
+        half=1.2,
+        pads=(
+            pad("D1", "1", "N1", (34, 30.2), w=1.0, h=1.3),
+            pad("D1", "2", "B", (36, 30.2), w=1.0, h=1.3),
+        ),
+    )
+    dog = route("N1", [(31, 30), (32, 30), (32.2, 30.2), (34, 30.2)])
+    return board(
+        parts=(r1, d1),
+        tracks=(*_STAGE, *dog),
+        net_classes=(net_class(), net_class("Wide", class_w)),
+        net_class_of=(("N1", "Wide"),),
+    )
+
+
+def test_m16_dogleg_corridor_class_width_outside_zones() -> None:
+    """R3 residual (R4): a straight link may be neck-wide only inside the escape zones -
+    outside them it needs the class width. Class 1.2 mm: the pads overlap 1.1 mm, so only
+    a 1.0 mm (neck) straight fits, but its middle lies outside both zones -> no legal
+    straight link, no dogleg. Class 1.0 mm: the straight fits -> dogleg."""
+    assert "dogleg" not in _whats(_m16(_necked_pair(1.2)))
+    assert "dogleg" in _whats(_m16(_necked_pair(1.0)))
