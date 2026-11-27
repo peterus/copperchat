@@ -864,6 +864,13 @@ edge rows J201 left, J302 bottom; answers outside the repo):
 - Renders: `/tmp/sp4-renders/r2-odh-80x100-placed.png`, `r2-odh-80x100-floorplan.png`,
   `r2-sp4_synth-placed.png`, `r2-sp4_synth-routed-top.png` / `-bottom.png`.
 
+**Outside R2's files (minimal):** `cc/views/board_render.py` (R5's) besides `render_board(hulls=)`:
+`BOARD_CLI_LOCK` is now a `LoopLocalSemaphore` (a `Semaphore(1)` per running event loop, same
+interface) - adding R2's KiCad tests shifted the round-robin CI shards and
+`test_render.py::test_board_cli_serialised` then failed with "bound to a different event loop"
+(a module-level semaphore stays bound to the first loop that waited on it). The app runs one
+loop, so production behaviour is unchanged. `tests/unit/test_board_cli_lock.py` covers it.
+
 **Residuals for later phases**
 - R3 / R4: M16 doglegs / pad loops on the golden are router output (D1.2-R4.2 still a
   dogleg although the pads are aligned); corridor nets first (R4) would also have avoided
