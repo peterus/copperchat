@@ -770,3 +770,24 @@ def test_place_blocks_retries_a_boxed_in_block(monkeypatch: pytest.MonkeyPatch) 
     m, groups = _trio()
     _, fp = _place(m, groups)
     assert fp.order[0] == "c"  # moved to the front (no fixed blocks), placed first
+
+
+def test_place_blocks_tries_every_pull_and_slack(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The greedy order is sensitive to the pull weight: every (slack, pull) pair of the
+    relaxed layout is tried and the least airwire x (1 - SLACK_CREDIT x slack) wins."""
+    from copperchat.board.placer import floorplan as fpm
+
+    seen: list[tuple[float, float]] = []
+    real = fpm._pack_retry
+
+    def spy(*a: object, **kw: object) -> object:
+        seen.append((float(kw["slack"]), float(kw["pull"])))  # type: ignore[arg-type]
+        return real(*a, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(fpm, "_pack_retry", spy)
+    m, groups = _trio()
+    _, fp = _place(m, groups)
+    assert sorted(seen) == sorted(
+        itertools.product(fpm.SLACK_STEPS_MM, fpm.TARGET_PULL_WEIGHTS)
+    )  # one layout (relaxed) was enough
+    assert fp.slack_mm in fpm.SLACK_STEPS_MM and fp.relaxed

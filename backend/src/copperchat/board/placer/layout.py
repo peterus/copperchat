@@ -63,8 +63,9 @@ ESCAPE_MAX_MM = 2.0
 # keeps one track pitch more per two such pins (they escape between the two parts, half to
 # each side), at most ESCAPE_TRACKS_MAX pitches, plus one via pitch when that host side is
 # fine-pitch (fanout vias right at the pins); every satellite keeps at least one track
-# pitch to its neighbours. Decaps and crystals keep their P4 / P9a gaps (M8: close to the
-# pin; measured on ODH, one more pitch for decaps made M8 3.6 → 4.0 mm)
+# pitch to its neighbours. Decaps, crystals and a switcher's inductor / input / output caps
+# keep their P4 / P9a gaps (M8 / M9: close to the pin, a small hot loop; measured on ODH,
+# one more pitch for decaps made M8 3.6 → 4.0 mm, relaxed switcher caps 3 → 6 M9 reviews)
 ESCAPE_TRACKS_MAX = 4
 FINE_PITCH_MM = 0.65
 # a crystal keeps this much more than the minimum courtyard gap: the IC pins next to the
@@ -297,6 +298,13 @@ class _Layout:
         self.shared_sig: dict[str, int] = defaultdict(int)
         self.shared_all: dict[str, int] = defaultdict(int)
         self.decap_pin = self._assign_decaps()
+        # a switcher's hot-loop parts (inductor, input / output caps): never relaxed (M9)
+        self.loop_parts = frozenset(
+            r
+            for sw in cls.switchers
+            for r in (sw.inductor, *sw.in_caps, *sw.out_caps)
+            if r in c.members
+        )
         self.priority = self._priorities()
 
     # -- decoupling assignment --
@@ -447,12 +455,14 @@ class _Layout:
         """Decoupling caps (spec §9.3 distance rules) keep the minimum gap, a crystal
         `CRYSTAL_STANDOFF_MM` more (its escape channel), a satellite with more than two
         pads `ESCAPE_PER_NET_MM` more per signal net shared with the anchor (R2). `relaxed`
-        (R2b, `_relaxed`) is added to every satellite but a crystal or decap."""
+        (R2b, `_relaxed`) is added to every satellite but a crystal or decap; a switcher's
+        hot-loop parts keep the P4 gap."""
         if any(x.ref == ref for x in self.cls.crystals):
             return self.gap + CRYSTAL_STANDOFF_MM
         if ref in self.decap_pin:
             return self.gap
-        extra = max(SATELLITE_EXTRA_MM, self.pitch) if self.relax else SATELLITE_EXTRA_MM
+        tight = not self.relax or ref in self.loop_parts
+        extra = SATELLITE_EXTRA_MM if tight else max(SATELLITE_EXTRA_MM, self.pitch)
         return self.gap + extra + relaxed + (self._escape(ref) if self.escape_room else 0.0)
 
     def _relaxed(self, local: Part, host: Part, side: str, t_star: float) -> float:
@@ -460,8 +470,9 @@ class _Layout:
         leaves in front of `host`: one pitch per two host pads on that side inside its span
         (± one pitch) whose nets it does not have (ground excluded), at most
         `ESCAPE_TRACKS_MAX`, plus one via pitch when the pins of that side are closer than
-        `FINE_PITCH_MM` to each other. 0 for decaps and crystals (`_gap_for`)."""
-        if not self.relax or local.ref in self.decap_pin:
+        `FINE_PITCH_MM` to each other. 0 for decaps, crystals (`_gap_for`) and a switcher's
+        hot-loop parts."""
+        if not self.relax or local.ref in self.decap_pin or local.ref in self.loop_parts:
             return 0.0
         axis, _ = _SIDES[side]
         hb = box_of(host)

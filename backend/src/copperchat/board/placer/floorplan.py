@@ -100,12 +100,16 @@ BISECT_BUDGET = 400
 # instead of every block hugging its neighbours
 REGION_PULL_WEIGHT = 2.0
 # R2b: a free block is packed on the whole board against the parts already placed, pulled
-# toward its floorplan region centre only this weakly (per member and mm) - the airwire to
-# its placed partners dominates, so connected blocks end next to each other
-TARGET_PULL_WEIGHT = 0.2
-# the slack every block gap gets on top of its channel: the first step that places every
-# block wins (the board's remaining room goes to its periphery, not into one hole)
+# toward its floorplan region centre only weakly (per member and mm) - the airwire to its
+# placed partners dominates, so connected blocks end next to each other. The greedy order is
+# sensitive to it (ODH 80 x 65: airwire 1127 vs 1511 mm), so every weight is tried and the
+# placement with the least airwire wins (see SLACK_CREDIT)
+TARGET_PULL_WEIGHTS = (0.02, 0.1, 0.2)
+# the slack every block gap gets on top of its channel; every step is tried with every pull
+# weight and the least airwire x (1 - SLACK_CREDIT x slack) wins (a little more airwire is
+# worth more room between the blocks; ties: the first)
 SLACK_STEPS_MM = (1.0, 0.5, 0.0)
+SLACK_CREDIT = 0.05
 # a free block that found no spot moves to the front and the packing restarts, at most this
 # many times per layout and slack step (bounds the work on a board that cannot fit)
 RETRY_MAX = 8
@@ -878,32 +882,39 @@ def place_blocks(
         topo = plan(fixed_only, False) if fixed_only else Floorplan({}, (), 0.0, 0.0, 0.0)
     if not isinstance(topo, DoesNotFit):
         for relax in (True, False):
-            for slack in SLACK_STEPS_MM:
+            best: tuple[float, tuple[PlaceResult, Floorplan]] | None = None
+            for slack, pull in itertools.product(SLACK_STEPS_MM, TARGET_PULL_WEIGHTS):
                 got = _pack_retry(
-                    model, cls, doc, blocks, topo, keep=keep_channels, sides=allowed_sides,
-                    relax=relax, slack=slack,
+                    model, cls, doc, blocks, topo, keep=keep_channels,
+                    sides=allowed_sides, relax=relax, slack=slack, pull=pull,
                 )  # fmt: skip
-                if got is not None:
-                    order, moves, fallback = got
+                if got is None:
+                    continue
+                order, moves, fallback = got
+                fp = dataclasses.replace(
+                    topo, slack_mm=slack, order=order, relaxed=relax, fallback=fallback,
+                )  # fmt: skip
+                if isinstance(compact, DoesNotFit):  # the fill of every block
                     fp = dataclasses.replace(
-                        topo, slack_mm=slack, order=order, relaxed=relax, fallback=fallback,
-                    )  # fmt: skip
-                    if isinstance(compact, DoesNotFit):  # the fill of every block
-                        fp = dataclasses.replace(
-                            fp,
-                            courtyard_fill=compact.courtyard_fill or 0.0,
-                            courtyard_mm2=_courtyards(model, blocks),
-                        )
-                    else:
-                        fp = dataclasses.replace(
-                            fp,
-                            courtyard_fill=compact.courtyard_fill,
-                            courtyard_mm2=compact.courtyard_mm2,
-                            usable_mm2=compact.usable_mm2,
-                        )
-                    result = _finish(model, cls, doc, blocks, fp, moves, keep_channels)
-                    if not isinstance(result, DoesNotFit):
-                        return result
+                        fp,
+                        courtyard_fill=compact.courtyard_fill or 0.0,
+                        courtyard_mm2=_courtyards(model, blocks),
+                    )
+                else:
+                    fp = dataclasses.replace(
+                        fp,
+                        courtyard_fill=compact.courtyard_fill,
+                        courtyard_mm2=compact.courtyard_mm2,
+                        usable_mm2=compact.usable_mm2,
+                    )
+                result = _finish(model, cls, doc, blocks, fp, moves, keep_channels)
+                if isinstance(result, DoesNotFit):
+                    continue
+                cost = result[0].score.airwire_mm * (1.0 - SLACK_CREDIT * slack)
+                if best is None or cost < best[0] - _EPS:
+                    best = (cost, result)
+            if best is not None:
+                return best[1]
     if isinstance(compact, DoesNotFit):
         return compact
     got_r = _pack_regions(model, cls, doc, blocks, compact, keep_channels, allowed_sides)
@@ -964,12 +975,13 @@ def _pack_ordered(
     sides: frozenset[Side],
     relax: bool,
     slack: float,
+    pull: float,
     first: Sequence[str] = (),
 ) -> tuple[tuple[str, ...], tuple[Move, ...], tuple[str, ...]] | str:
     """The blocks packed one by one (R2b): the fixed ones first (largest first, each in its
     region), then always the block with the most weighted shared nets to the placed ones
     (ties: larger courtyard area, name), on the whole usable box against the parts already
-    placed, pulled `TARGET_PULL_WEIGHT` toward its floorplan region centre; every placed
+    placed, pulled `pull` (per member and mm) toward its floorplan region centre; every placed
     part keeps `channel_mm(shared nets of the two blocks) + slack` (its own block's parts
     are not obstacles yet). The blocks in `first` go right after the fixed ones, in that
     order. Returns (order, moves, fixed blocks packed on the whole board); a block that
@@ -1012,11 +1024,14 @@ def _pack_ordered(
             p: channel_mm(shared_weight(nets[n], nets[p], cls), pitch, keep) + slack for p in placed
         }
         gaps = {r: need[owner[r]] for r in owner}
-        # a fixed block in its region first, else on the whole board (its connector's edge
-        # cost keeps it on the edge); a free block on the whole board
-        where = [region, whole] if n in fixed_set and region is not None else [whole]
+        # a fixed block in its region (relaxed, else in P4's compact layout when the strip
+        # was sized for that), else on the whole board (its connector's edge cost keeps it
+        # on the edge); a free block on the whole board
+        where: list[tuple[Rect, bool]] = [(whole, relax)]
+        if n in fixed_set and region is not None:
+            where = [(region, relax), *([(region, False)] if relax else []), (whole, relax)]
         res: tuple[Move, ...] | DoesNotFit = DoesNotFit(0.0, 0.0, ())
-        for reg in where:
+        for reg, lay in where:
             res = pack_block(
                 base,
                 cls,
@@ -1030,10 +1045,10 @@ def _pack_ordered(
                 edge=None,
                 target=target,
                 doc=doc,
-                pull_weight=REGION_PULL_WEIGHT if n in fixed_set else TARGET_PULL_WEIGHT,
+                pull_weight=REGION_PULL_WEIGHT if n in fixed_set else pull,
                 occlude_weight=OCCLUDE_WEIGHT,
                 escape_room=True,
-                relax=relax,
+                relax=lay,
                 gaps=gaps,
             )
             if not isinstance(res, DoesNotFit):
@@ -1059,6 +1074,7 @@ def _pack_retry(
     sides: frozenset[Side],
     relax: bool,
     slack: float,
+    pull: float,
 ) -> tuple[tuple[str, ...], tuple[Move, ...], tuple[str, ...]] | None:
     """`_pack_ordered`; a free block that finds no spot is moved to the front (after the
     fixed blocks and the blocks moved before it) and the packing starts again - at most
@@ -1068,7 +1084,7 @@ def _pack_retry(
     for _ in range(min(len(blocks), RETRY_MAX) + 1):
         got = _pack_ordered(
             model, cls, doc, blocks, fp, keep=keep, sides=sides, relax=relax, slack=slack,
-            first=first,
+            pull=pull, first=first,
         )  # fmt: skip
         if not isinstance(got, str):
             return got
