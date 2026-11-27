@@ -175,6 +175,26 @@ def test_widen_to_class_width() -> None:
     assert all(old != "ok" for old, _ in out)
 
 
+def test_widen_keeps_neck() -> None:
+    """R4: a Freerouting track narrowed inside its pad's escape zone to the pad's neck width
+    (a 0.25 mm QFN pad, Power class 0.5 mm) is a legal neck-down (M12) - kept narrow; the
+    same width outside the zone is widened."""
+    a = pad("U1", "1", "P", (10.0, 10.0), w=0.25, h=0.8)
+    b = pad("R2", "1", "P", (20.0, 10.0), w=1.0, h=1.0)
+    neck = track("P", start=(10.0, 10.0), end=(11.5, 10.0), width=0.25, kiid="neck")
+    out_zone = track("P", start=(15.0, 10.0), end=(20.0, 10.0), width=0.25, kiid="far")
+    wide = track("P", start=(11.5, 10.0), end=(15.0, 10.0), width=0.5, kiid="w")
+    m = board(
+        parts=(part("U1", 10, 10, pads=(a,)), part("R2", 20, 10, pads=(b,))),
+        tracks=(neck, wide, out_zone),
+        net_classes=(net_class(track_width=0.2), net_class("Power", 0.5)),
+        net_class_of=(("P", "Power"),),
+    )
+    out, n = _widen(m, [], frozenset({"neck", "w", "far"}))
+    assert n == 1
+    assert [old for old, _ in out] == ["far"] and out[0][1][0].width == 0.5
+
+
 def test_rip_copper_only_new_unlocked() -> None:
     new = track("N1", start=(10.0, 10.0), end=(15.0, 10.0), kiid="new")
     old = track("N1", start=(15.0, 10.0), end=(20.0, 10.0), kiid="old")

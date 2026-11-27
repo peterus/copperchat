@@ -85,7 +85,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
 
-from copperchat.board.classify import _ground_nets
+from copperchat.board.classify import _ground_nets, classify
 from copperchat.board.geom import (
     _JOIN_TOL,
     ANGLE_TOL_DEG,
@@ -117,6 +117,7 @@ from copperchat.board.metrics import (
     _mst,
     _pad_key,
     _pad_poly,
+    m16_defects,
     outline_polygon,
 )
 from copperchat.board.model import BoardModel, Pad, Part, Point, Track, Via
@@ -135,10 +136,9 @@ _DIRS = ((1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1))
 _REASON = {
     "non_octilinear": "non_octilinear",
     "ninety": "ninety_unfixable",
-    # round 2 (R3, owner rule a): a T-junction is legal (the own router branches as T, M4 no
-    # longer fails it) - only a Y with a 90-degree pair is still ripped (as before); R4
-    # handles every Y-junction here
-    "t_junctions": "ninety_unfixable",
+    # round 2 (owner rule a): a T-junction is legal and kept; a Y-junction (M15) that step
+    # 2b could not re-land as a T rips its connections
+    "y_junctions": "y_junction",
     "acute": "acute",
     "off_angle": "off_angle",
     "micro_jogs": "micro_jog",
@@ -148,12 +148,8 @@ _OTHER_FAILS = ("acute", "off_angle", "non_octilinear", "micro_jogs", "short_cha
 
 
 def _fails(rep: BendReport, field: str) -> Sequence[Point]:
-    """`rep`'s points of `field`; for "t_junctions" only the Y-shaped ones (R3: a T is
-    legal; a Y with a 90-degree pair was ripped before round 2 and still is)."""
-    if field != "t_junctions":
-        return tuple(getattr(rep, field))
-    ys = rep.y_junctions
-    return tuple(p for p in rep.t_junctions if any(math.dist(p, y) <= _JOIN_TOL for y in ys))
+    """`rep`'s points of `field` (a `_REASON` key)."""
+    return tuple(getattr(rep, field))
 
 
 @dataclass(frozen=True)
@@ -163,6 +159,7 @@ class PostResult:
     reasons: tuple[tuple[str, str], ...] = ()  # (key, reason)
     merged: int = 0
     chamfered: int = 0
+    relanded: int = 0  # Y-junctions re-landed as a T (step 2b, R4)
 
 
 # ---- small geometry ------------------------------------------------------------------------
@@ -1061,6 +1058,148 @@ def _bend_fails(
     return out
 
 
+# ---- step 2b: Y-junctions to T (round 2, owner rule a) --------------------------------------
+
+
+def _dir(p: Point, q: Point) -> Point:
+    d = math.dist(p, q)
+    return ((q[0] - p[0]) / d, (q[1] - p[1]) / d)
+
+
+def _octilinear(u: Point) -> bool:
+    ang = math.degrees(math.atan2(u[1], u[0]))
+    return abs(ang / 45.0 - round(ang / 45.0)) * 45.0 <= ANGLE_TOL_DEG
+
+
+def _turn_deg(u: Point, v: Point) -> float:
+    return math.degrees(math.acos(max(-1.0, min(1.0, u[0] * v[0] + u[1] * v[1]))))
+
+
+def _reland_one(
+    model: BoardModel,
+    net: str,
+    layer: str,
+    tracks: Sequence[Track],
+    j: Point,
+    touched: set[int],
+    obstacles: _Obstacles,
+) -> tuple[Track, Track] | None:
+    """(branch, its replacement) re-landing the Y-junction at `j` as a T, or None. The
+    through-track is a track with `j` in its interior or two collinear tracks ending at `j`
+    in opposite directions; the branch is the one other (touched) track ending at `j`. Its
+    replacement runs from the branch's far vertex V perpendicular onto the through-track's
+    line (foot F inside the through-track, at least the branch width from its ends) when V
+    is a via or a plain polyline vertex whose turn stays 0° / 45° (B-C12 round 2), and the
+    new piece keeps every other net's clearance."""
+    tol = _JOIN_TOL
+    at_j = [t for t in tracks if math.dist(t.start, j) <= tol or math.dist(t.end, j) <= tol]
+    inner = [t for t in tracks if t not in at_j and _pt_seg(j, t.start, t.end) <= tol]
+    if len(inner) > 1:
+        return None
+    if inner:
+        line = [(inner[0].start, inner[0].end)]
+        branches = at_j
+    else:
+        far = {id(t): (t.end if math.dist(t.start, j) <= tol else t.start) for t in at_j}
+        pair = next(
+            (
+                (t, u)
+                for t, u in itertools.combinations(at_j, 2)
+                if _turn_deg(_dir(j, far[id(t)]), _dir(j, far[id(u)])) >= 180.0 - ANGLE_TOL_DEG
+            ),
+            None,
+        )
+        if pair is None:
+            return None
+        line = [(far[id(pair[0])], far[id(pair[1])])]
+        branches = [t for t in at_j if t is not pair[0] and t is not pair[1]]
+    if len(branches) != 1 or id(branches[0]) not in touched:
+        return None
+    br = branches[0]
+    p0, p1 = line[0]
+    if math.dist(p0, p1) <= 2 * br.width:
+        return None
+    u = _dir(p0, p1)
+    if not _octilinear(u):
+        return None
+    v = br.end if math.dist(br.start, j) <= tol else br.start
+    t_f = (v[0] - p0[0]) * u[0] + (v[1] - p0[1]) * u[1]
+    if not br.width <= t_f <= math.dist(p0, p1) - br.width:
+        return None  # the foot lies outside the through-track (or at its end)
+    foot = (round((p0[0] + u[0] * t_f) * _NM) / _NM, round((p0[1] + u[1] * t_f) * _NM) / _NM)
+    if math.dist(v, foot) < ZERO_LEN:
+        return None
+    # V: a via, or a degree-2 vertex of the branch's polyline (never a pad: its exit rules)
+    pads = [q for p in model.parts for q in p.pads if q.net == net and _pad_on_layer(q, layer)]
+    if any(_in_pad(v, q) for q in pads):
+        return None
+    on_via = any(x.net == net and math.dist(x.at, v) <= x.diameter / 2 for x in model.vias)
+    if not on_via:
+        prev = [
+            t
+            for t in tracks
+            if t is not br and (math.dist(t.start, v) <= tol or math.dist(t.end, v) <= tol)
+        ]
+        if len(prev) != 1 or any(
+            t is not br and _pt_seg(v, t.start, t.end) <= tol and t not in prev for t in tracks
+        ):
+            return None
+        q = prev[0].start if math.dist(prev[0].end, v) <= tol else prev[0].end
+        turn = _turn_deg(_dir(q, v), _dir(v, foot))
+        if not (turn <= ANGLE_TOL_DEG or abs(turn - 45.0) <= ANGLE_TOL_DEG):
+            return None
+    if obstacles.blocked(net, (v, foot), br.width / 2):
+        return None
+    if math.dist(br.start, j) <= tol:
+        start, end = foot, v
+    else:
+        start, end = v, foot
+    return br, replace(br, kiid="", start=start, end=end, locked=False)
+
+
+def _reland_ys(model: BoardModel, untouched: Sequence[Track], slots: dict[str, list[Track]]) -> int:
+    """Step 2b: every Y-junction of touched copper (not one of the untouched copper alone)
+    re-landed as a T where `_reland_one` allows it; the branch track is replaced in its
+    slot. Returns the number re-landed (the rest step 3 rips with reason `y_junction`)."""
+    work = sorted([*untouched, *(t for k in sorted(slots) for t in slots[k])], key=_tkey)
+    touched = {id(t) for v in slots.values() for t in v}
+    loc = {id(t): (k, i) for k, v in slots.items() for i, t in enumerate(v)}
+    by_nl: dict[tuple[str, str], list[Track]] = defaultdict(list)
+    for t in work:
+        by_nl[(t.net, t.layer)].append(t)
+    index = TrackIndex(model)
+    obstacles: dict[str, _Obstacles] = {}
+    count = 0
+    for net, layer in sorted({(t.net, t.layer) for t in work if id(t) in touched}):
+        tracks = by_nl[(net, layer)]
+        ys = analyse_tracks(replace(model, tracks=tuple(tracks), arcs=()), index=index).y_junctions
+        if not ys:
+            continue
+        rest = tuple(t for t in tracks if id(t) not in touched)
+        base = (
+            analyse_tracks(replace(model, tracks=rest, arcs=()), index=index).y_junctions
+            if rest
+            else ()
+        )
+        for j in ys:
+            if any(math.dist(j, b) <= _ON_TRACK_TOL for b in base):
+                continue
+            if layer not in obstacles:
+                obstacles[layer] = _Obstacles(model, work, layer)
+            got = _reland_one(model, net, layer, tracks, j, touched, obstacles[layer])
+            if got is None:
+                continue
+            old, new = got
+            k, i = loc[id(old)]
+            slots[k][i] = new
+            tracks[next(n for n, t in enumerate(tracks) if t is old)] = new
+            loc[id(new)] = (k, i)
+            touched.add(id(new))
+            obstacles[layer].add(net, _capsule((new.start, new.end), new.width / 2))
+            count += 1
+    return count
+
+
 # ---- entry point ---------------------------------------------------------------------------
 
 
@@ -1079,6 +1218,7 @@ def postprocess(model: BoardModel, kiids: frozenset[str]) -> PostResult:
     ch = _Chamferer(model, work_tracks(), slots)
     for net, layer in sorted({(s[0].net, s[0].layer) for s in slots.values() if s}):
         ch.run(net, layer)
+    relanded = _reland_ys(model, untouched, slots)
 
     # step 3 + 4 on the result
     wt = work_tracks()
@@ -1218,6 +1358,19 @@ def postprocess(model: BoardModel, kiids: frozenset[str]) -> PostResult:
                 }
                 rip(net, layer, tids, _REASON[field])
 
+    # step 3b (R4, owner 2026-11-27): an M16 dogleg / pad-entry loop / pad-entry jog on a
+    # connection whose path uses touched copper rips it (re-routed straight-first by the
+    # own router)
+    signal = [n for n in nets if n not in _ground_nets(nets)]
+    if signal:
+        for d in m16_defects(work, classify(work), nets=signal):
+            if d.kind == "alignable":
+                continue
+            ends = {(d.a.ref, d.a.number), (d.b.ref, d.b.number)}
+            for c in conns.get(d.net, []):
+                if {(c.a.ref, c.a.number), (c.b.ref, c.b.number)} == ends and c.used & mine:
+                    reasons.add((c.key, d.kind))
+
     outline = outline_polygon(model)
     diag = None
     if outline is not None:
@@ -1247,4 +1400,5 @@ def postprocess(model: BoardModel, kiids: frozenset[str]) -> PostResult:
         reasons=tuple(sorted(reasons)),
         merged=merged,
         chamfered=ch.count,
+        relanded=relanded,
     )

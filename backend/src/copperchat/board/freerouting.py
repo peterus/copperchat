@@ -84,11 +84,22 @@ NO_NETWORK_OPTIONS: tuple[str, ...] = (
     "--api_server.enabled=false",
     "--mcp_server.enabled=false",
 )
-# Option names `extra_args` may not set: the switches above and the GUI switch.
+# Option names `extra_args` may not set: the switches above, the GUI switch, the pass count
+# (`passes`, clamped to PASSES_MIN..PASSES_MAX) and every thread / processor count (the JVM
+# is capped by -XX:ActiveProcessorCount and RLIMIT_CPU) - R4, B-C12 round 2.
 LOCKED_OPTION_KEYS: tuple[str, ...] = (
     *(opt.split("=", 1)[0] for opt in NO_NETWORK_OPTIONS),
     "--gui.enabled",
+    "--router.autorouter.max_passes",
+    "--router.max_threads",
+    "--router.autorouter.max_threads",
+    "--router.optimizer.max_threads",
+    "-mp",
+    "-mt",
 )
+# R4 (B-C13): settings the fill passes to every run - only options the pinned 2.5.0 accepts
+# AND that measurably helped on a dense board (index "As built (R4)"); empty when none does.
+FREEROUTING_SETTINGS: tuple[str, ...] = ()
 # The same switches in the settings file Freerouting reads first and re-saves on start
 # ($HOME/.config/freerouting/freerouting.json; HOME is the work dir). Freerouting keeps a
 # file that carries `version` and a valid profile id.

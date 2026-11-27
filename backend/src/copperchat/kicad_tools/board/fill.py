@@ -59,6 +59,7 @@ from kipy.util.board_layer import layer_from_canonical_name
 from copperchat.board.boardmd import BoardDoc, read_board_doc
 from copperchat.board.classify import Classification, classify
 from copperchat.board.freerouting import (
+    FREEROUTING_SETTINGS,
     FreeroutingRun,
     FreeroutingRuntime,
     find_runtime,
@@ -66,10 +67,9 @@ from copperchat.board.freerouting import (
 )
 from copperchat.board.geom import TrackIndex, analyse_tracks
 from copperchat.board.jobs import metrics_job, strip_fills
-from copperchat.board.metrics import MetricsReport, connections, outline_polygon
+from copperchat.board.metrics import MetricsReport, connections, neck_checker, outline_polygon
 from copperchat.board.model import ArcTrack, BoardModel, Pad, Part, Track, Via, placement_hash
 from copperchat.board.router.chamfer import PostResult, _Paths, postprocess
-from copperchat.board.router.chamfer import _fails as chamfer_fails
 from copperchat.board.worker import run_cpu
 from copperchat.errors import StructuredToolError
 from copperchat.kicad_session import KicadHandle
@@ -776,9 +776,8 @@ async def _check_ratio(
 
 
 def _bends_of(model: BoardModel, net: str, index: TrackIndex | None = None) -> int:
-    """M4 + M7 failures over `net`'s tracks (B-C5 `analyse_tracks`, the whole board's pads
-    and vias). A T-junction is no M4 failure (round 2, owner rule a); a Y-shaped one counts,
-    as the post-processor still rips it."""
+    """M4 + M7 + M15 failures over `net`'s tracks (B-C5 `analyse_tracks`, the whole board's
+    pads and vias). A T-junction is no failure (round 2, owner rule a); a Y-junction is."""
     sub = dataclasses.replace(model, tracks=tuple(t for t in model.tracks if t.net == net), arcs=())
     rep = analyse_tracks(sub, index=index if index is not None else TrackIndex(model))
     return (
@@ -786,7 +785,7 @@ def _bends_of(model: BoardModel, net: str, index: TrackIndex | None = None) -> i
         + len(rep.ninety)
         + len(rep.acute)
         + len(rep.off_angle)
-        + len(chamfer_fails(rep, "t_junctions"))  # a Y with a 90-degree pair (as the chamfer)
+        + len(rep.y_junctions)  # M15 (round 2): the post-processor rips what it cannot re-land
         + len(rep.micro_jogs)
         + len(rep.short_chamfers)
     )
@@ -800,9 +799,12 @@ def _widen(
     """The post-processor's replacements plus width fixes: every new track (and every
     replacement track) narrower than its net's class width (`route.class_params`, never
     below the board minimum) gets that width - Freerouting necks traces down at pins
-    (0.15 mm on a 0.2 mm class on `sp4_synth`). Returns (replacements, widened count); the
+    (0.15 mm on a 0.2 mm class on `sp4_synth`) - unless it is a legal neck-down by M12's
+    rule (R4, `metrics.neck_checker`: inside its pad's part's escape zone, at least the neck
+    width; widened it would not fit there). Returns (replacements, widened count); the
     widened copper is DRC-checked with the rest (rejected → originals back, ripped)."""
     widths: dict[str, float] = {}
+    necked = neck_checker(model, classify(model))
 
     def width(net: str) -> float:
         if net not in widths:
@@ -814,7 +816,7 @@ def _widen(
     def wide(t: Track) -> Track:
         nonlocal count
         w = width(t.net)
-        if t.width < w - 1e-9:
+        if t.width < w - 1e-9 and not necked(t, w):
             count += 1
             return dataclasses.replace(t, width=w)
         return t
@@ -822,7 +824,12 @@ def _widen(
     out = [(old, tuple(wide(t) for t in tracks)) for old, tracks in replace]
     done = {old for old, _ in replace}
     for t in sorted(model.tracks, key=lambda t: t.kiid):
-        if t.kiid in new_tracks and t.kiid not in done and t.width < width(t.net) - 1e-9:
+        if (
+            t.kiid in new_tracks
+            and t.kiid not in done
+            and t.width < width(t.net) - 1e-9
+            and not necked(t, width(t.net))
+        ):
             count += 1
             out.append((t.kiid, (dataclasses.replace(t, kiid="", width=width(t.net)),)))
     return out, count
@@ -901,6 +908,7 @@ def fill_stages(st: _FillState) -> list[BoardStage]:
             timeout_s=st.args.timeout_s,
             passes=st.args.passes,
             workdir=st.workdir,
+            extra_args=FREEROUTING_SETTINGS,
         )
         st.run = run
         sctx.report["freerouting"] = {
@@ -978,6 +986,7 @@ def fill_stages(st: _FillState) -> list[BoardStage]:
         rips = {k: r for k, r in rips.items() if key_net(k) not in st.plan.ground_nets}
         sctx.report["chamfered"] = res.chamfered
         sctx.report["merged"] = res.merged
+        sctx.report["relanded"] = res.relanded
         await _check_ratio(st, m, rips, nets)
         st.rip = dict(rips)
         replace, widened = await asyncio.to_thread(_widen, m, res.replace, new_tracks)
@@ -1023,8 +1032,9 @@ def fill_stages(st: _FillState) -> list[BoardStage]:
         m = await sctx.model()
         nets = sorted({key_net(k) for k in keys})
         layers = tuple(n for n in m.copper_layers if n not in st.plan.plane_layers)
+        # R4: like pcb_route - a re-routed connection may land on its net's copper as a T
         plans = await asyncio.to_thread(
-            plan_connections, m, st.cls, nets, layers=layers, allow_vias=True
+            plan_connections, m, st.cls, nets, layers=layers, allow_vias=True, tree=True
         )
         out = await route_connections(sctx, plans, lock=False, deadline=st.post_deadline)
         by_key: dict[str, ConnResult] = {}
