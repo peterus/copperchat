@@ -69,6 +69,7 @@ Angle = Literal["top", "bottom", "iso"]
 BOARD_VIEWS: tuple[BoardView, ...] = ("top", "bottom", "layer", "placement", "3d")
 ANGLES: tuple[Angle, ...] = ("top", "bottom", "iso")
 
+
 class LoopLocalSemaphore(asyncio.Semaphore):
     """A `Semaphore(1)` per running event loop (like `freerouting._SLOTS`): the app runs one
     loop, but tests run several in one process, and a plain module-level semaphore that
