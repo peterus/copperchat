@@ -334,13 +334,14 @@ def default_min_track(model: BoardModel) -> float:
 
 def neck_zones(
     model: BoardModel, pads: Sequence[Pad], width: float, min_track: float
-) -> tuple[tuple[tuple[Point, ...], float], ...]:
+) -> tuple[tuple[tuple[Point, ...], float, tuple[str, ...]], ...]:
     """`RouteRequest.neck` for a connection of `width` (R3, spec §22.4): per end pad whose
     `geom.neck_width` is below `width`, its part's escape zone (inset by
-    NECK_ZONE_INSET_MM, so a split point rounded to 1 nm stays inside the zone M12 checks)
-    and that neck width."""
+    NECK_ZONE_INSET_MM, so a split point rounded to 1 nm stays inside the zone M12 checks),
+    that neck width and the pad's copper layers (the only layers the neck applies on).
+    Two pads of one part with the same neck share one entry (their layers merged)."""
     parts = {p.ref: p for p in model.parts}
-    out: list[tuple[tuple[Point, ...], float]] = []
+    out: list[tuple[tuple[Point, ...], float, tuple[str, ...]]] = []
     for pad in pads:
         nw = neck_width(pad, width, min_track)
         part = parts.get(pad.ref)
@@ -352,9 +353,17 @@ def neck_zones(
         xs, ys = [p[0] for p in zone], [p[1] for p in zone]
         g = NECK_ZONE_INSET_MM
         x0, y0, x1, y1 = min(xs) + g, min(ys) + g, max(xs) - g, max(ys) - g
-        entry = (((x0, y0), (x1, y0), (x1, y1), (x0, y1)), nw)
-        if x1 > x0 and y1 > y0 and entry not in out:
-            out.append(entry)
+        if not (x1 > x0 and y1 > y0):
+            continue
+        poly = ((x0, y0), (x1, y0), (x1, y1), (x0, y1))
+        names = model.copper_layers or tuple(n for n in pad.layers if n.endswith(".Cu"))
+        on = tuple(n for n in names if _pad_on_layer(pad, n))
+        same = next((k for k, (z, w, _l) in enumerate(out) if z == poly and w == nw), None)
+        if same is None:
+            out.append((poly, nw, on))
+        else:
+            z, w, old = out[same]
+            out[same] = (z, w, tuple(n for n in model.copper_layers if n in old or n in on))
     return tuple(out)
 
 
@@ -576,7 +585,7 @@ def straight_path(model: BoardModel, plan: ConnPlan) -> RoutePath | None:
     line from pad a's centre coordinate to pad b's (so both ends lie inside the pads),
     split at the neck zones (`req.neck`) like a routed path."""
     req = plan.req
-    w = min([req.width, *(nw for _z, nw in req.neck)])
+    w = min([req.width, *(nw for _z, nw, _zl in req.neck)])
     cor = straight_corridor(plan.a, plan.b, w, copper_layers=model.copper_layers)
     if cor is None:
         return None

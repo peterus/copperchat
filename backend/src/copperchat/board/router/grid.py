@@ -56,7 +56,9 @@ class RouteRequest:
     via: tuple[float, float]  # (diameter, drill)
     # round 2 (R3, B-C12): (escape-zone polygon, neck width) - inside the polygon the track
     # narrows to the neck width (fine-pitch pads, spec §22.4)
-    neck: tuple[tuple[tuple[Point, ...], float], ...] = ()
+    # R3: (zone, neck width, copper layers of the pad the zone belongs to) - the neck
+    # applies only on those layers (M12 accepts it only on a layer of that pad)
+    neck: tuple[tuple[tuple[Point, ...], float, tuple[str, ...]], ...] = ()
     # the goal is pad b OR any own-net track already connected to b, entered perpendicularly
     # (a T-junction, owner rule a)
     tree: bool = False
@@ -631,7 +633,7 @@ def build_grid(
     y0, ny = _lattice(wy0, wy1, req.a.y, pitch)
     cells_n = nx * ny
     necks = _neck_boxes(req, x0, y0, nx, ny, pitch)
-    neck_n = sum(bw * bh for _poly, _nw, _i0, _j0, bw, bh in necks)
+    neck_n = sum(bw * bh for _poly, _nw, _zl, _i0, _j0, bw, bh in necks)
     if cells_n + neck_n > MAX_CELLS_PER_LAYER:
         raise RouteTooLarge(cells_n + neck_n)
 
@@ -751,8 +753,8 @@ def build_grid(
                 check_deadline(deadline)
             need = _shape_need(s)
             mk.shape(cells[k], s, need + chord_slack(need, pitch), BLOCKED)
-    for poly_n, nw, i0, j0, bw, bh in necks:
-        neck_on = neck_layers(req, poly_n, layers)
+    for poly_n, nw, zone_layers, i0, j0, bw, bh in necks:
+        neck_on = neck_layers(zone_layers, layers)
         shrink = (req.width - nw) / 2
         _apply_neck(cells, own, shapes, mk, poly_n, shrink, i0, j0, bw, bh, neck_on)
     poly = tuple(model.outline.polygon) if model.outline.kind != "none" else ()
@@ -897,30 +899,22 @@ def _tree_segments(
     return tuple(tuple(x) for x in out)
 
 
-def neck_layers(req: RouteRequest, poly: Sequence[Point], layers: Sequence[str]) -> frozenset[int]:
-    """Indices into `layers` where a neck zone applies: the layers of the request's NARROW
-    end pad(s) (minor side below the request width - the pads `neck_zones` makes zones
-    for) whose centre lies in the zone. M12 accepts a neck only on a layer of such a pad:
-    a via inside the zone, or a wide pad of the other end there (a B.Cu decap under an
-    F.Cu QFN), must not take the neck to another layer (R3)."""
-    pads = [
-        q
-        for q in (req.a, req.b)
-        if min(q.w, q.h) < req.width - 1e-9 and point_in_polygon((q.x, q.y), list(poly))
-    ]
-    return frozenset(
-        k for k, name in enumerate(layers) if any(_pad_on_layer(q, name) for q in pads)
-    )
+def neck_layers(zone_layers: Sequence[str], layers: Sequence[str]) -> frozenset[int]:
+    """Indices into `layers` where a neck entry applies: the copper layers of the pad the
+    zone was made for (`RouteRequest.neck[k][2]`). A via inside the zone, or another
+    part's pad there (a B.Cu decap under an F.Cu QFN), never takes the neck to another
+    layer: M12 accepts a neck only on a layer of the zone's own pad (R3)."""
+    return frozenset(k for k, name in enumerate(layers) if name in zone_layers)
 
 
 def _neck_boxes(
     req: RouteRequest, x0: float, y0: float, nx: int, ny: int, pitch: float
-) -> list[tuple[tuple[Point, ...], float, int, int, int, int]]:
+) -> list[tuple[tuple[Point, ...], float, tuple[str, ...], int, int, int, int]]:
     """The request's neck zones narrower than its width, clipped to the window as node
-    boxes (polygon, neck width, i0, j0, box width, box height), widest first (so where two
-    zones overlap the narrower one is applied last)."""
+    boxes (polygon, neck width, zone layers, i0, j0, box width, box height), widest first
+    (so where two zones overlap the narrower one is applied last)."""
     out = []
-    for poly, nw in req.neck:
+    for poly, nw, zone_layers in req.neck:
         if not (len(poly) >= 3 and math.isfinite(nw) and 0 < nw < req.width - _EPS):
             continue
         xs, ys = [p[0] for p in poly], [p[1] for p in poly]
@@ -929,7 +923,7 @@ def _neck_boxes(
         i1 = min(nx - 1, math.ceil((max(xs) - x0) / pitch))
         j1 = min(ny - 1, math.ceil((max(ys) - y0) / pitch))
         if i1 >= i0 and j1 >= j0:
-            out.append((tuple(poly), nw, i0, j0, i1 - i0 + 1, j1 - j0 + 1))
+            out.append((tuple(poly), nw, tuple(zone_layers), i0, j0, i1 - i0 + 1, j1 - j0 + 1))
     return sorted(out, key=lambda z: -z[1])
 
 

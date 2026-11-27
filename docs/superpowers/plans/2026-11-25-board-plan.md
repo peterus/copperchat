@@ -3043,7 +3043,9 @@ off-pad node are blocked, perpendicular moves are allowed (T). `route_connection
 `straight_corridor` first for every plan whose pads have one. `RoutePath.segments` may carry
 per-segment widths: `segments: tuple[tuple[str, Point, Point, float], ...]` (layer, start, end,
 width) — every consumer (P5b `_create`, P6b re-route, pairs) is updated in R3.
-*As built (R3):* `tree` = "a T is allowed" (the grid finds the copper connected to b when the
+*As built (R3):* `RouteRequest.neck` entries are `(zone, neck width, layers)` - the
+copper layers of the pad the zone belongs to; the neck applies only there (review: a via
+or another part's pad inside the zone took it to B.Cu, M12). `tree` = "a T is allowed" (the grid finds the copper connected to b when the
 request is solved; a tree search that finds nothing is followed by a plain pad-b search);
 the pad-entry cost applies to a second bend in an entry zone only; `valid_path` refuses an
 M16 pad loop or jog and `solve` allows one only after both windows found no clean path;

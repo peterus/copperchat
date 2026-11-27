@@ -219,7 +219,7 @@ def to_path(
     if end is not None and runs:
         runs[-1][1].append(end)
     necks = [  # per layer: the neck zones that apply there (`grid.neck_layers`)
-        tuple(z for z in req.neck if li in neck_layers(req, z[0], grid.layers))
+        tuple(z for z in req.neck if li in neck_layers(z[2], grid.layers))
         for li in range(len(grid.layers))
     ]
     for k, (li, pts) in enumerate(runs):
@@ -238,17 +238,18 @@ def to_path(
 NECK_MIN_PIECE_MM = 1e-3  # a split closer than this to a piece end is not made
 
 
-def _zone_width(p: Point, neck: Sequence[tuple[Sequence[Point], float]], width: float) -> float:
+Neck = Sequence[tuple[Sequence[Point], float, Sequence[str]]]
+
+
+def _zone_width(p: Point, neck: Neck, width: float) -> float:
     w = width
-    for poly, nw in neck:
+    for poly, nw, _zl in neck:
         if nw < w and point_in_polygon(p, list(poly)):
             w = nw
     return w
 
 
-def neck_pieces(
-    p: Point, q: Point, neck: Sequence[tuple[Sequence[Point], float]], width: float
-) -> list[tuple[Point, Point, float]]:
+def neck_pieces(p: Point, q: Point, neck: Neck, width: float) -> list[tuple[Point, Point, float]]:
     """Segment pq split where it crosses a neck zone's boundary (R3, spec §22.4): pieces
     inside a zone get its neck width (the narrowest of overlapping zones), the rest `width`.
     Neighbouring pieces of one width are merged; a split within NECK_MIN_PIECE_MM of a piece
@@ -260,7 +261,7 @@ def neck_pieces(
     if length < _TINY:
         return [(p, q, _zone_width(p, neck, width))]
     ts = [0.0, 1.0]
-    for poly, _nw in neck:
+    for poly, _nw, _zl in neck:
         n = len(poly)
         for k in range(n):
             c, d = poly[k], poly[(k + 1) % n]

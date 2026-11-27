@@ -89,8 +89,8 @@ def test_neck_only_in_zone() -> None:
 
 def test_neck_pieces_switch_at_every_crossing() -> None:
     """A segment through a zone, out and in again: one width change per crossing."""
-    z1 = (((1.0, -1.0), (2.0, -1.0), (2.0, 1.0), (1.0, 1.0)), 0.2)
-    z2 = (((3.0, -1.0), (4.0, -1.0), (4.0, 1.0), (3.0, 1.0)), 0.2)
+    z1 = (((1.0, -1.0), (2.0, -1.0), (2.0, 1.0), (1.0, 1.0)), 0.2, ("F.Cu",))
+    z2 = (((3.0, -1.0), (4.0, -1.0), (4.0, 1.0), (3.0, 1.0)), 0.2, ("F.Cu",))
     got = neck_pieces((0.0, 0.0), (5.0, 0.0), (z1, z2), 0.5)
     assert [(p[0], q[0], w) for p, q, w in got] == [
         (0.0, 1.0, 0.5),
@@ -105,7 +105,7 @@ def test_neck_pieces_switch_at_every_crossing() -> None:
 def test_neck_never_below_min_track() -> None:
     m = _board()
     req = _req(m, min_track=0.3)
-    assert {nw for _z, nw in req.neck} == {0.3}
+    assert {nw for _z, nw, _l in req.neck} == {0.3}
     path = solve(m, req)
     assert path is None or min(w for *_x, w in path.segments) >= 0.3
 
@@ -118,7 +118,8 @@ def test_no_neck_when_pad_wide_enough() -> None:
 def test_plan_sets_neck_for_fine_pitch_only() -> None:
     m = _board()
     req = _req(m)
-    ((zone, nw),) = req.neck
+    ((zone, nw, zone_layers),) = req.neck
+    assert zone_layers == ("F.Cu",)
     assert nw == 0.25
     # the escape zone, inset by the 2 µm rounding margin
     ez = _zone(m)
@@ -157,7 +158,7 @@ def test_neck_map_bounded() -> None:
     m = _board()
     req = _req(m)
     grid = build_grid(m, req)
-    ((zone, _nw),) = req.neck
+    ((zone, _nw, _l),) = req.neck
     xs, ys = [p[0] for p in zone], [p[1] for p in zone]
     box = (round((max(xs) - min(xs)) / grid.pitch) + 2) * (
         round((max(ys) - min(ys)) / grid.pitch) + 2
@@ -183,8 +184,8 @@ def test_neck_only_on_the_pads_layers() -> None:
 
     m = replace(_board(), copper_layers=("F.Cu", "B.Cu"))
     req = replace(_req(m), layers=("F.Cu", "B.Cu"), allow_vias=True)
-    ((zone, _nw),) = req.neck
-    assert neck_layers(req, zone, req.layers) == frozenset({0})
+    ((_zone, _nw, zone_layers),) = req.neck
+    assert neck_layers(zone_layers, req.layers) == frozenset({0})
     plain = build_grid(m, replace(req, neck=()))
     necked = build_grid(m, req)
     assert necked.cells[1] == plain.cells[1]  # B.Cu untouched
@@ -201,5 +202,39 @@ def test_neck_not_on_the_wide_pads_layer() -> None:
     wide = req.a if req.a.ref == "C1" else req.b
     decap = replace(wide, x=10.0, y=10.0, layers=frozenset({"B.Cu"}))  # wide, under U1
     req = replace(req, a=decap) if req.a.ref == "C1" else replace(req, b=decap)
-    ((zone, _nw),) = req.neck
-    assert neck_layers(req, zone, req.layers) == frozenset({0})
+    ((_zone, _nw, zone_layers),) = req.neck
+    assert neck_layers(zone_layers, req.layers) == frozenset({0})
+
+
+def test_neck_entry_carries_its_own_pads_layers() -> None:
+    """Verify-2 finding: a NARROW 0.3 mm pad of another part on B.Cu under the F.Cu QFN
+    (centre inside the QFN's escape zone) must not take the QFN zone's neck to B.Cu: each
+    neck entry applies only on the layers of the pad it was made for."""
+    m = replace(_board(), copper_layers=("F.Cu", "B.Cu"))
+    req = replace(_req(m), layers=("F.Cu", "B.Cu"), allow_vias=True)
+    ((qfn_zone, nw, qfn_layers),) = req.neck
+    assert qfn_layers == ("F.Cu",)
+    wide = req.a if req.a.ref == "C1" else req.b
+    narrow = replace(wide, x=10.0, y=10.0, w=0.3, h=0.3, layers=frozenset({"B.Cu"}))
+    own = (((9.5, 9.5), (10.5, 9.5), (10.5, 10.5), (9.5, 10.5)), 0.3, ("B.Cu",))
+    req = replace(req, a=narrow, neck=((qfn_zone, nw, qfn_layers), own))
+    plain = build_grid(m, replace(req, neck=((qfn_zone, nw, qfn_layers),)))
+    necked = build_grid(m, req)
+    # B.Cu re-marked only inside the narrow pad's own (small) zone, never the QFN's
+    li = 1
+    for j in range(necked.h):
+        for i in range(necked.w):
+            x, y = necked.xy(i, j)
+            if not (9.5 <= x <= 10.5 and 9.5 <= y <= 10.5):
+                n = j * necked.w + i
+                assert necked.cells[li][n] == plain.cells[li][n]
+
+
+def test_neck_zones_merge_layers_of_one_part() -> None:
+    """Two narrow pads of one part (same zone, same neck) share one entry with both pads'
+    layers."""
+    m = replace(_board(), copper_layers=("F.Cu", "B.Cu"))
+    u1 = next(p for p in m.parts if p.ref == "U1")
+    a, b = u1.pads[0], replace(u1.pads[1], layers=frozenset({"B.Cu"}))
+    ((_z, _nw, on),) = route.neck_zones(m, [a, b], CLASS_W, 0.127)
+    assert on == ("F.Cu", "B.Cu")

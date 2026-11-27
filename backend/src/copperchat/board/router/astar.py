@@ -818,7 +818,8 @@ TREE_GOALS_MAX = 2_000  # tree goal nodes kept (nearest to pad a)
 
 def tree_goals(grid: ObstacleGrid, req: RouteRequest) -> list[dict[int, tuple[int, Point]]]:
     """Per layer: node -> (bitmask of the arrival directions, landing point) of the T
-    goals of a tree request (R3, owner rule a): nodes within half a pitch of the INTERIOR of
+    goals of a tree request (R3, owner rule a): nodes within one pitch (on their arrival
+    side, so an off-lattice track gets one on each side) of the INTERIOR of
     a straight own track connected to pad b (`grid.tree_segments`) - at least `req.width`
     from its ends and from every point where other own copper touches or crosses it (so
     never at a bend vertex, a junction, a free end), never in an own pad or via - entered
