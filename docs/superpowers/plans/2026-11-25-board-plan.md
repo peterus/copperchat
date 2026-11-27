@@ -1028,10 +1028,17 @@ existing KiCad write path.
   broke the golden: decoupling C1.1–U1.5 detoured via B.Cu to 7.35 mm (M8 hard), one open
   connection, USB-C A6–B6 unroutable. No hard "away-move ban" (spec §22.4 asks for costs and
   an M16 pass; a ban makes a QFN pad whose goal lies behind the IC unroutable); instead
-  `valid_path` refuses an M16 pad loop. **`solve` order:** default window loop-free →
-  doubled window loop-free (≤ `RETRY_STRICT_EXPANSIONS` = 1 M) → default window with a loop
-  allowed → doubled window with a loop allowed: a placement-forced loop is reported by M16
-  instead of costing 20 s per try and a rip-up cascade (sp4_synth USB-C A6–B6: 6 × 20 s).
+  `valid_path` refuses an M16 pad loop **and pad jog** (owner, 2026-11-27: a jog / S-offset
+  in the entry zone is an error like doglegs and loops). **`solve` order:** default window
+  clean → doubled window clean (≤ `RETRY_STRICT_EXPANSIONS` = 1 M) → default window with a
+  loop / jog allowed → doubled window likewise (`entry_ok`): a placement-forced one is
+  reported by M16 instead of costing 20 s per try and a rip-up cascade (sp4_synth USB-C
+  A6–B6: 6 × 20 s). Same-part links (USB-C A6–B6 around A7) are solved `entry_ok` from the
+  start: the clean search sent them on via detours that walled in the ESD's VBUS pin on R2's
+  placement (`VBUS:U2.5-U3.5` no_path).
+- **M8 connections first:** `plan_connections` puts the connections M8 measures (decap
+  supply pad ↔ its IC pin, crystal ↔ IC) first, shortest first (`_m8_first`): with jogs
+  refused, the crystal nets (routed earlier) walled C1.1–U1.5 off to 9.4 mm (M8 hard).
 - **`PAD_AXIS_RATIO = 1.5`:** a pad whose long / short side is below 1.5 has no long axis (all
   8 exit directions). An 0603 pad (0.8 × 0.95) could not be left straight towards its
   neighbour - the D1–R4 dogleg the owner marked.
@@ -1051,19 +1058,18 @@ existing KiCad write path.
 - **Neck layers:** a neck zone applies only on the layers of the end pad inside it
   (`grid.neck_layers`): on ODH a via inside the escape zone took the neck to B.Cu, which M12
   fails (the QFN pad is on F.Cu).
-- **sp4_synth critical routing (`test_route_critical_set`, before → after):** M15 2 → **0**;
-  M16 hard 14 (10 doglegs D1.2–R4.2, R4.1–U1.10, U1.16–C2.1, C8/C9–L1, C4–Y1, U3.2–L1, J2–U1
-  SWCLK, J1.B7–U2.3, C10–U3 VBST; 4 pad loops J1 A6/B6/A7/B7) → **3** (0 doglegs; pad loops
-  J1.A7 / J1.B7 of USB_DN A7–B7 and U3.2 of /Power/SW C10.2–U3.2 - no loop-free path in
-  either window, `solve`'s last resort); pad jogs (review) 5 → 2; M4 = M7 = 0; 37 / 37
-  routed; `pcb_route` 55 s → 89 s (solve fallbacks; deadline 300 s).
-- **Golden (`sp4_synth_metrics.json`, regenerated on `972766a` + R3, idle host):** M15 2 → 0
-  (pass), M16 15 → 3 (review, the 3 forced loops), M9 3 → 1, M5 1.11 → 1.0 (review), M11
-  0.9588 → 0.9576, **M12 pass → review** (USB pair length mismatch 2.6–3.3 mm: the USB-C
-  links A6–B6 / A7–B7 differ - one lands as a T, one loops), M8 4.97 (review, unchanged);
-  tracks 174 → 134, vias 124 → 128, 243.2 mm. One of five verify runs failed
-  `test_full_flow_hard_gates` (not reproduced in four more; the fill's run-to-run variance
-  R1 noted) - watch.
+- **sp4_synth critical routing (`test_route_critical_set`, main `972766a` → R3 before
+  rebase):** M15 2 → **0**; M16 hard 14 (10 doglegs D1.2–R4.2, R4.1–U1.10, U1.16–C2.1,
+  C8/C9–L1, C4–Y1, U3.2–L1, J2–U1 SWCLK, J1.B7–U2.3, C10–U3 VBST; 4 pad loops J1 A6/B6/A7/B7)
+  → **3** (0 doglegs; the forced loops J1.A7 / J1.B7 and U3.2 /Power/SW C10.2–U3.2); pad jogs
+  5 → 2; M4 = M7 = 0; 37 / 37 routed; `pcb_route` 55 s → 89 s.
+- **Golden (`sp4_synth_metrics.json`, regenerated on R2's main `a419a3e` + R3, idle host,
+  verified by a second run):** vs R2's golden M15 3 → **0** (pass), M16 18 → **3** (review:
+  pad loops J1.A6 / J1.B6 of the USB-C link and U3.2 SW, plus the review jog J1.B5 /CC2), M8
+  4.97 → 4.33 mm (review), M5 1.05 → 1.0, M11 0.9582 → 0.9573; tracks 184 → 138, vias 124
+  → 128, 271.0 mm; flow `pcb_route` ≈ 60 s, fill completion 1.0. (Before the rebase one of
+  five verify runs failed `test_full_flow_hard_gates`, not reproduced in four more - the
+  fill's run-to-run variance R1 noted - watch.)
 - **ODH probe** (copy of the PROD checkout, 80 × 100 mm, P9a's answers with Power class
   0.5 mm, blocks as proposed, critical routing only; renders `/tmp/sp4-renders/r3-odh-*`):
   26 critical nets, `pcb_route` **61 s** (P9a: 105 s), **1 `no_path`** (P9a: 13, all from pad
@@ -1076,7 +1082,8 @@ existing KiCad write path.
   (M12) - the ODH doglegs C208.1–U202.1 / U202.5–C206.1 have no legal straight segment at
   class width; R4 (or an R1-file fix) should test the corridor at class width outside the
   zones. (2) Placement-forced pad loops (USB-C A7–B7 around A6/B6, U3.2 SW) become hard with
-  `M16_HARD` - R2's alignment / R4's rip-and-re-route or an owner call. (3) The fill
+  `M16_HARD` - R2's alignment / R4's rip-and-re-route or an owner call; with jogs hard too
+  (owner 2026-11-27) the golden's J1.B5 /CC2 jog (USB-C pin row) joins them. (3) The fill
   (Freerouting) leaves sp4_synth's `VBUS:C7.1-U2.5` open next to the ESD's straight
   pass-throughs (the flow's ladder routes it); fill fixtures moved `VBUS` to `OWN_ROUTED`
   and `/CC2` out of `FILL_NETS` (P6b files). (4) Pure Y-junctions from Freerouting are still
@@ -3022,7 +3029,7 @@ width) — every consumer (P5b `_create`, P6b re-route, pairs) is updated in R3.
 *As built (R3):* `tree` = "a T is allowed" (the grid finds the copper connected to b when the
 request is solved; a tree search that finds nothing is followed by a plain pad-b search);
 the pad-entry cost applies to a second bend in an entry zone only; `valid_path` refuses an
-M16 pad loop and `solve` allows one only after both windows found no loop-free path;
+M16 pad loop or jog and `solve` allows one only after both windows found no clean path;
 `route_connections(..., reserve=)` takes `corridor_reservations(model, cls)`.
 
 **B-C12 post-processor (R4, `chamfer.py`)**: `t_junctions` are no longer ripped; each

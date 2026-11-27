@@ -61,9 +61,9 @@ All notable changes to CopperChat are documented in this file. The format follow
 - Board router (`pcb_route`): wide tracks narrow to the pad width inside a fine-pitch part's
   escape zone (neck-down); a connection to copper that already exists may end on it as a
   T-junction, never a 45° Y; aligned adjacent pads get one straight segment first (their free
-  corridors are kept clear for later calls); bends next to a pad cost more and a pad entry
-  never loops; pads that are almost square may be left in any direction — behind
-  COPPERCHAT_BOARD_TOOLS.
+  corridors are kept clear for later calls); a pad entry neither loops nor jogs unless no
+  other path exists; decoupling and crystal links route first; pads that are almost square
+  may be left in any direction — behind COPPERCHAT_BOARD_TOOLS.
 
 ## [0.12.0] - 2026-11-22
 
