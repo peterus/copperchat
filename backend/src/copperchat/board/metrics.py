@@ -2245,7 +2245,8 @@ def _m16(c: _Ctx) -> Metric:
                     blockers = _Blockers(c)
                 layers, s, e = corridor
                 free = [la for la in layers if blockers.free(net, la, s, e, w / 2 + clear)]
-                if free and not _straight_link(segs, a, b, free):
+                # a dogleg needs a free corridor; a straight link on ANY shared layer is fine
+                if free and not _straight_link(segs, a, b, layers):
                     hard += 1
                     what = f"dogleg {_pair_text(net, a, b)}"
                     off.append(Offender(what, _refs(a, b), (net,), _mid_pt(s, e), None))

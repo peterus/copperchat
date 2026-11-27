@@ -418,6 +418,23 @@ def test_m16_tht_pair_straight_on_bottom_ok() -> None:
     assert "dogleg" in _whats(_m16(m))
 
 
+def test_m16_straight_on_blocked_shared_layer_ok() -> None:
+    # THT pair: F.Cu corridor blocked by a foreign F.Cu pad, B.Cu free; a straight F.Cu
+    # link (beside the blocker) is still one straight segment on a shared layer
+    tht = frozenset({"*.Cu", "*.Mask"})
+
+    def tp(ref: str, at: Point) -> Pad:
+        return Pad(ref, "1", "N1", at[0], at[1], 1.7, 1.7, 0.0, "circle", tht, False, 1.0)
+
+    j1 = part("J1", 30, 50, pads=(tp("J1", (30, 50)),))
+    j2 = part("J2", 33, 50, pads=(tp("J2", (33, 50)),))
+    x1 = part("X1", 31.5, 49.75, pads=(pad("X1", "1", "X", (31.5, 49.75), w=0.3, h=0.3),))
+    m = board(parts=(j1, j2, x1), tracks=route("N1", [(30, 50.6), (33, 50.6)]))
+    assert "dogleg" not in _whats(_m16(m))
+    dog = route("N1", [(30, 50.6), (31, 50.6), (31.3, 50.3), (33, 50.3)])
+    assert "dogleg" in _whats(_m16(replace(m, tracks=dog)))  # B.Cu corridor free
+
+
 def test_m16_corridor_blocked_by_foreign_pad_not_dogleg() -> None:
     x1 = part("X1", 32.5, 30.25, pads=(pad("X1", "1", "X", (32.5, 30.25), w=0.4, h=0.4),))
     dog = route("N1", [(31, 30), (32, 30), (32.5, 30.5), (34, 30.5)])
