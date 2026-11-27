@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import itertools
 import math
 import time
 import types
@@ -1102,3 +1103,46 @@ def test_m8_connections_first() -> None:
     plans = route.plan_connections(m, cls, ["N1", "N9"], layers=None, allow_vias=True)
     assert (plans[0].a.ref, plans[0].b.ref) in (("C1", "R9"), ("R9", "C1"))
     assert [p.net for p in plans] == ["N9", "N1"]
+
+
+async def test_pass0_pair_only_as_a_whole(board: Board, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A matched pair joins pass 0 only with both halves: when one half's straight segment
+    is DRC-rejected, the other half's goes too and the pair is routed as a pair."""
+    cpu = FakeCpu(lambda fn, args, kw, t: None)
+    monkeypatch.setattr(route, "run_cpu", cpu)
+    m = _usbc()
+    plans = [
+        p
+        for p in route.plan_connections(m, _pair_cls(m), ["DP", "DN"], layers=None, allow_vias=True)
+        if p.a.ref == p.b.ref == "U2"
+    ]
+    first = {"done": False}
+
+    def drc(t: float) -> DrcResult:
+        if first["done"]:
+            return DrcResult((), 0, 0.01)
+        first["done"] = True
+        k = next(iter(board.items))  # the first half's segment
+        return DrcResult((DrcMarker("clearance", "error", "x", (k, "zone"), None),), 0, 0.01)
+
+    out = await route.route_connections(FakeSctx(m, drc), plans, lock=True)  # type: ignore[arg-type]
+    assert out.routed == ()  # neither half kept straight; the pair search found nothing
+    assert any(c["fn"] is route.solve_pair for c in cpu.calls)
+    assert board.items == {}
+
+
+def test_entry_defect_reported() -> None:
+    """A routed path with a pad-entry loop is flagged (`pad_entry_defects`)."""
+    from copperchat.board.router import RoutePath
+
+    m = _two_res()
+    (p,) = _plan(m, ["N1"])
+    a = (p.a.x, p.a.y)
+    pts = [a, (a[0] + 0.3, a[1]), (a[0] + 0.6, a[1] - 0.3), (a[0] + 0.6, a[1] - 0.6)]
+    pts += [(a[0] + 0.3, a[1] - 0.9), (a[0] - 0.6, a[1] - 0.9)]
+    loop = RoutePath(tuple(("F.Cu", u, v, 0.2) for u, v in itertools.pairwise(pts)), (), 0.0)
+    assert route.entry_defect(loop, p.req)
+    straight = RoutePath((("F.Cu", a, (p.b.x, p.b.y), 0.2),), (), 0.0)
+    assert not route.entry_defect(straight, p.req)
+    r = route.ConnResult("k", "N1", "R1.1", "R2.1", "routed", None, 1.0, 0, (), pad_entry=True)
+    assert route._net_entry("N1", [r], True)["pad_entry_defects"] == ["R1.1-R2.1"]

@@ -15,7 +15,7 @@ import pytest
 
 from copperchat.board.geom import TrackIndex, analyse_tracks
 from copperchat.board.model import BoardModel
-from copperchat.board.router.chamfer import PostResult
+from copperchat.board.router.chamfer import PostResult, _fails
 from copperchat.errors import StructuredToolError
 from copperchat.kicad_tools.board import api, engine, fill, route
 from copperchat.kicad_tools.board.api import DrcTimeout, RefillTimeout
@@ -45,7 +45,11 @@ def _bends(m: BoardModel, nets: set[str] | None = None) -> dict[str, int]:
     )
     rep = analyse_tracks(sub, index=TrackIndex(m))
     return {
-        "M4": len(rep.non_octilinear) + len(rep.ninety) + len(rep.acute) + len(rep.off_angle),
+        "M4": len(rep.non_octilinear)
+        + len(rep.ninety)
+        + len(rep.acute)
+        + len(rep.off_angle)
+        + len(_fails(rep, "t_junctions")),  # a Y-shaped T: the chamfer still rips it
         "M7": len(rep.micro_jogs) + len(rep.short_chamfers),
     }
 

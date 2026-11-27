@@ -1036,6 +1036,15 @@ existing KiCad write path.
   A6–B6: 6 × 20 s). Same-part links (USB-C A6–B6 around A7) are solved `entry_ok` from the
   start: the clean search sent them on via detours that walled in the ESD's VBUS pin on R2's
   placement (`VBUS:U2.5-U3.5` no_path).
+- **Review round 1:** a matched pair joins pass 0 only as a whole (one half's rejection
+  drops the other); pass-0 retries are capped (`STRAIGHT_RETRY_MAX = 4`); the stored DRC
+  drops markers of copper removed again; reservations use the widest piece's width and are
+  pre-filtered cheaply (MST pairs with a corridor before `routed_length`); a routed path with
+  a pad-entry loop / jog is reported (`ConnResult.pad_entry`, net entry
+  `pad_entry_defects`); `fill._bends_of` counts the Y-shaped T the chamfer rips. Measured:
+  `ENTRY_TURN_COST` hardly ever decides a path (the second-bend condition rarely holds where
+  a cheaper alternative exists) - the guarantee is `valid_path`'s rejection; the cost stays
+  as the plan's steering term.
 - **M8 connections first:** `plan_connections` puts the connections M8 measures (decap
   supply pad ↔ its IC pin, crystal ↔ IC) first, shortest first (`_m8_first`): with jogs
   refused, the crystal nets (routed earlier) walled C1.1–U1.5 off to 9.4 mm (M8 hard).

@@ -89,19 +89,6 @@ def test_entry_no_loop() -> None:
     assert _loops(path, req) == []
 
 
-def test_entry_bend_costs_more(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """With the entry cost switched off the search may bend next to the pad; the cost only
-    moves bends, it never loses the route."""
-    a = pad("U1", "1", "P", (10.0, 10.0), w=1.6, h=0.4)
-    b = pad("U2", "1", "P", (13.0, 7.0), w=0.5, h=0.5)
-    m = circuit(part("U1", 10.0, 10.0, pads=(a,)), part("U2", 13.0, 7.0, pads=(b,)))
-    req = _req(a, b)
-    with_cost = route(build_grid(m, req), req)
-    monkeypatch.setattr(astar_mod, "ENTRY_TURN_COST", 0.0)
-    without = route(build_grid(m, req), req)
-    assert with_cost is not None and without is not None
-
-
 def test_solve_allows_a_forced_loop() -> None:
     """USB-C A6 / B6: two tall pads of one net with another net's pad between them and
     other-net copper just beyond their ends - only a U-turn inside the entry zone connects
@@ -129,3 +116,42 @@ def test_solve_allows_a_forced_loop() -> None:
     path = solve(m, req)
     assert path is not None
     assert _loops(path, req)  # the forced loop, reported by M16 later
+
+
+def test_solve_order(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """`solve`: default window clean → doubled window clean (≤ RETRY_STRICT_EXPANSIONS) →
+    default window with entry loops / jogs allowed → doubled window likewise; a clean
+    doubled-window path wins over any loop; `entry_ok` skips the clean passes."""
+    calls: list[tuple[int, bool, int]] = []
+    real = astar_mod.route
+
+    def spy(grid, req, *, max_expansions=2_000_000, deadline=None, entry_ok=False):  # type: ignore[no-untyped-def]
+        calls.append((grid.w, entry_ok, max_expansions))
+        return None
+
+    monkeypatch.setattr(astar_mod, "route", spy)
+    a = pad("U1", "1", "P", (10.0, 10.0))
+    b = pad("U2", "1", "P", (12.0, 10.0))
+    m = circuit(part("U1", 10.0, 10.0, pads=(a,)), part("U2", 12.0, 10.0, pads=(b,)))
+    req = _req(a, b)
+    assert astar_mod.solve(m, req) is None
+    (w1, e1, x1), (w2, e2, x2), (w3, e3, _x3), (w4, e4, _x4) = calls
+    assert (e1, e2, e3, e4) == (False, False, True, True)
+    assert w2 > w1 and w3 == w1 and w4 == w2
+    assert x1 == astar_mod.FIRST_TRY_EXPANSIONS and x2 == astar_mod.RETRY_STRICT_EXPANSIONS
+    calls.clear()
+    astar_mod.solve(m, req, entry_ok=True)
+    assert [e for _w, e, _x in calls] == [True, True]
+    calls.clear()
+
+    def clean_second(grid, req, *, max_expansions=2_000_000, deadline=None, entry_ok=False):  # type: ignore[no-untyped-def]
+        calls.append((grid.w, entry_ok, max_expansions))
+        return (
+            real(grid, req, max_expansions=max_expansions, deadline=deadline)
+            if len(calls) == 2
+            else None
+        )
+
+    monkeypatch.setattr(astar_mod, "route", clean_second)
+    assert astar_mod.solve(m, req) is not None
+    assert len(calls) == 2  # the loop-allowing passes never ran

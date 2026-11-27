@@ -799,7 +799,7 @@ def build_grid(
         own_segments=tuple(tuple(x) for x in own_segs),
         own_spots=tuple(tuple(x) for x in own_spots),
         neck_cells=neck_n,
-        tree_segments=_tree_segments(model, req, layers) if req.tree else (),
+        tree_segments=_tree_segments(model, req, layers, deadline) if req.tree else (),
     )
 
 
@@ -807,7 +807,10 @@ _JOIN = 0.002  # mm: geom._JOIN_TOL
 
 
 def _tree_segments(
-    model: BoardModel, req: RouteRequest, layers: Sequence[str]
+    model: BoardModel,
+    req: RouteRequest,
+    layers: Sequence[str],
+    deadline: float | None = None,
 ) -> tuple[tuple[tuple[Point, Point], ...], ...]:
     """Per layer of `layers`: the own-net straight tracks of `model` connected to pad
     `req.b` - joined end to end, an end on another track (T), through a shared own via or
@@ -833,11 +836,32 @@ def _tree_segments(
         if rx != ry:
             parent[rx] = ry
 
+    # tracks bucketed by layer and 1 mm cells of their bbox: only near pairs are compared
+    buckets: dict[tuple[str, int, int], list[int]] = {}
+    boxes = []
     for i, t in enumerate(tracks):
-        for k in range(i + 1, n):
+        box = (
+            math.floor(min(t.start[0], t.end[0]) - _JOIN),
+            math.floor(min(t.start[1], t.end[1]) - _JOIN),
+            math.floor(max(t.start[0], t.end[0]) + _JOIN),
+            math.floor(max(t.start[1], t.end[1]) + _JOIN),
+        )
+        boxes.append(box)
+        for bx in range(box[0], box[2] + 1):
+            for by in range(box[1], box[3] + 1):
+                buckets.setdefault((t.layer, bx, by), []).append(i)
+    for i, t in enumerate(tracks):
+        if not i % 256:
+            check_deadline(deadline)
+        near = {
+            k
+            for bx in range(boxes[i][0], boxes[i][2] + 1)
+            for by in range(boxes[i][1], boxes[i][3] + 1)
+            for k in buckets.get((t.layer, bx, by), ())
+            if k > i
+        }
+        for k in sorted(near):
             u = tracks[k]
-            if u.layer != t.layer:
-                continue
             if any(_pt_seg(e, u.start, u.end) <= _JOIN for e in (t.start, t.end)) or any(
                 _pt_seg(e, t.start, t.end) <= _JOIN for e in (u.start, u.end)
             ):
@@ -907,6 +931,7 @@ def _apply_neck(
     inside `poly`, on the layer indices `on` only."""
     p = mk.p
     sub = _Marker(mk.x0 + i0 * p, mk.y0 + j0 * p, bw, bh, p, mk.deadline)
+    bx1, by1 = sub.x0 + (bw - 1) * p, sub.y0 + (bh - 1) * p
     rows = []  # per box row: the inside node intervals (box columns)
     for j in range(bh):
         y = sub.y(j)
@@ -927,6 +952,15 @@ def _apply_neck(
             if not count % 256:
                 check_deadline(mk.deadline)
             need = max(_shape_need(s) - shrink, 0.0)
+            sx0, sy0, sx1, sy1 = _shape_bbox(s)
+            reach = need + p
+            if (
+                sx0 - reach > bx1
+                or sx1 + reach < sub.x0
+                or sy0 - reach > by1
+                or sy1 + reach < sub.y0
+            ):
+                continue  # cannot reach the zone's box
             sub.shape(buf, s, need + chord_slack(need, p), BLOCKED)
         for j, ivs in enumerate(rows):
             base = (j0 + j) * mk.w + i0

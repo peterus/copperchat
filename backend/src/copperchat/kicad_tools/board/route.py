@@ -58,9 +58,10 @@ from copperchat.board.router import (
     solve,
     solve_pair,
 )
+from copperchat.board.router.astar import _entry_bad, tree_end
 from copperchat.board.router.grid import _pad_shape, seg_seg, seg_shape
 from copperchat.board.router.pairs import pair_coupling
-from copperchat.board.router.simplify import neck_pieces
+from copperchat.board.router.simplify import layer_runs, merge_collinear, neck_pieces
 from copperchat.board.staging import natural_key
 from copperchat.board.worker import run_cpu
 from copperchat.errors import StructuredToolError
@@ -143,6 +144,7 @@ class ConnResult:
     kiids: tuple[str, ...]
     coupling: dict[str, float] | None = None
     seconds: float = 0.0  # solve time spent on it
+    pad_entry: bool = False  # R3: a pad-entry loop / jog (M16 b / c) the router had to accept
 
 
 @dataclass(frozen=True)
@@ -614,7 +616,18 @@ def _corridor_free(
     """No other-net pad on `layer`, via or track on `layer` within `width / 2 + clear`
     of segment se, no track keepout on `layer` and no footprint rule area touching it."""
     reach = width / 2 + clear
+    x0, x1 = min(s[0], e[0]) - reach - 1.0, max(s[0], e[0]) + reach + 1.0
+    y0, y1 = min(s[1], e[1]) - reach - 1.0, max(s[1], e[1]) + reach + 1.0
+
+    def far(pts: Sequence[Point], grow: float) -> bool:
+        xs, ys = [q[0] for q in pts], [q[1] for q in pts]
+        return (
+            min(xs) - grow > x1 or max(xs) + grow < x0 or min(ys) - grow > y1 or max(ys) + grow < y0
+        )
+
     for part in model.parts:
+        if part.courtyard and far(part.courtyard, 5.0) and not part.rule_areas:
+            continue
         for q in part.pads:
             near = q.net != net and _pad_on_layer(q, layer)
             if near and seg_shape(s, e, _pad_shape(q, 0.0)) < reach - 1e-9:
@@ -626,6 +639,8 @@ def _corridor_free(
         if v.net != net and seg_shape(s, e, ("d", *v.at, v.diameter / 2, 0.0)) < reach - 1e-9:
             return False
     for t in model.tracks:
+        if far((t.start, t.end), t.width):
+            continue
         near = t.net != net and t.layer == layer
         if near and seg_seg(s, e, t.start, t.end) < reach + t.width / 2 - 1e-9:
             return False
@@ -649,20 +664,36 @@ def corridor_reservations(
     model: BoardModel, cls: Classification, *, min_track: float | None = None
 ) -> tuple[Reserved, ...]:
     """Every still-free straight corridor (`straight_path`) of an unrouted connection of a
-    non-ground net on the board (R3, `route_connections(reserve=...)`)."""
+    non-ground net on the board (R3, `route_connections(reserve=...)`). Cheap first: only
+    MST connections with a corridor between their two pads are checked for copper
+    (`routed_length`) and a free path; reserved at the widest piece's width."""
+    floor = default_min_track(model) if min_track is None else min_track
     nets = sorted({q.net for p in model.parts for q in p.pads if q.net})
-    nets = [n for n in nets if cls.net_kind.get(n, "signal") != "ground"]
-    plans = plan_connections(model, cls, nets, layers=None, allow_vias=False, min_track=min_track)
     out: list[Reserved] = []
-    for p in plans:
-        path = straight_path(model, p)
-        if path is None:
+    for net in nets:
+        if cls.net_kind.get(net, "signal") == "ground":
             continue
-        layer = path.segments[0][0]
-        s, e = path.segments[0][1], path.segments[-1][2]
-        w = min(pw for *_x, pw in path.segments)
-        if _corridor_free(model, p.net, layer, s, e, w, p.req.clearance):
-            out.append(Reserved(_key(p), p.net, layer, s, e, w))
+        par = class_params(model, net)
+        for a, b in connections(model, net):
+            w = min(par.width, neck_width(a, par.width, floor), neck_width(b, par.width, floor))
+            if straight_corridor(a, b, w, copper_layers=model.copper_layers) is None:
+                continue
+            if _joined(a, b) or routed_length(model, a, b) is not None:
+                continue
+            layers = default_layers(model)
+            req = RouteRequest(
+                net, a, b, par.width, par.clearance, layers, False, par.via,
+                neck=neck_zones(model, (a, b), par.width, floor),
+            )  # fmt: skip
+            plan = ConnPlan(net, a, b, req, None)
+            path = straight_path(model, plan)
+            if path is None:
+                continue
+            layer = path.segments[0][0]
+            s, e = path.segments[0][1], path.segments[-1][2]
+            width = max(pw for *_x, pw in path.segments)
+            if _corridor_free(model, net, layer, s, e, width, par.clearance):
+                out.append(Reserved(_key(plan), net, layer, s, e, width))
     return tuple(out)
 
 
@@ -861,6 +892,19 @@ def _fail(st: _Loop, group: Sequence[ConnPlan], reason: str) -> None:
         )  # fmt: skip
 
 
+def entry_defect(path: RoutePath, req: RouteRequest) -> bool:
+    """`path` loops or jogs in an end pad's entry zone (M16 b / c): only `solve`'s last
+    resort or a same-part link produces one - reported, never silent."""
+    runs = layer_runs(path)
+    if not runs:
+        return False
+    first = merge_collinear(runs[0][1])
+    last = merge_collinear(runs[-1][1])[::-1]
+    return _entry_bad(first, req.a, req.width) or (
+        not tree_end(path, req) and _entry_bad(last, req.b, req.width)
+    )
+
+
 def _record(st: _Loop, kept: _Kept) -> None:
     coupling = pair_coupling(kept.paths[0], kept.paths[1]) if len(kept.paths) == 2 else None
     it = iter(kept.kiids)
@@ -869,6 +913,7 @@ def _record(st: _Loop, kept: _Kept) -> None:
         st.results[p] = ConnResult(
             _key(p), p.net, _pad_name(p.a), _pad_name(p.b), "routed", None, path.length,
             len(path.vias), own, coupling, round(st.started.get(p, 0.0), 2),
+            pad_entry=entry_defect(path, p.req),
         )  # fmt: skip
 
 
@@ -1073,15 +1118,22 @@ def _couple_straight(st: _Loop, plans: Sequence[ConnPlan], done: set[ConnPlan]) 
             st.results[q] = dataclasses.replace(st.results[q], coupling=c)
 
 
+STRAIGHT_RETRY_MAX = 4  # pass-0 segments retried alone (each its own push + DRC)
+
+
 async def _straight_pass(
     sctx: BoardStageContext, st: _Loop, plans: Sequence[ConnPlan]
 ) -> set[ConnPlan]:
-    """Pass 0 of `route_connections`: the plans routed by their straight segment."""
-    cands = [
-        (p, path)
+    """Pass 0 of `route_connections`: the plans routed by their straight segment. A matched
+    pair takes part only as a whole (both halves straight, else neither: a lone straight
+    half would leave its partner uncoupled)."""
+    found = {
+        p: path
         for p in plans
         if (path := straight_path(st.model, p)) is not None and _path_free(st.model, p, path)
-    ]
+    }
+    mates = {q: g[1 - k] for g in _groups(plans) if len(g) == 2 for k, q in enumerate(g)}
+    cands = [(p, path) for p, path in found.items() if p not in mates or mates[p] in found]
     if not cands or _timed_out(st):
         return set()
     items = [(p.req, path) for p, path in cands]
@@ -1098,9 +1150,8 @@ async def _straight_pass(
     it = iter(made)
     own = [[next(it) for _ in path.segments] for _p, path in cands]
     mine = set(made)
-    keep: list[int] = []
+    rejected: set[int] = set()
     retry: list[int] = []
-    gone: list[str] = []
     for k, ids in enumerate(own):
         hits = [
             m
@@ -1108,17 +1159,23 @@ async def _straight_pass(
             if m.type not in IGNORED_DRC and m.severity != "exclusion" and set(ids) & set(m.kiids)
         ]
         if not hits:
-            keep.append(k)
             continue
-        gone += ids
+        rejected.add(k)
         others = [set(m.kiids) - set(ids) for m in hits]
-        if all(o and o <= mine for o in others):
+        if all(o and o <= mine for o in others) and cands[k][0] not in mates:
             retry.append(k)  # only another straight segment of this pass is in the way
+    index = {p: k for k, (p, _path) in enumerate(cands)}
+    for k in list(rejected):  # a rejected half takes its pair's other half with it
+        mate = mates.get(cands[k][0])
+        if mate is not None and mate in index:
+            rejected.add(index[mate])
+    gone = [i for k in sorted(rejected) for i in own[k]]
     if gone:
         await _drop(sctx, gone)
     done: set[ConnPlan] = set()
-    for k in keep:
-        p, path = cands[k]
+    for k, (p, path) in enumerate(cands):
+        if k in rejected:
+            continue
         tracks, vias = _model_items([(p.req, path)], own[k], st.lock)
         st.model = dataclasses.replace(
             st.model, tracks=st.model.tracks + tuple(tracks), vias=st.model.vias + tuple(vias)
@@ -1127,15 +1184,19 @@ async def _straight_pass(
         st.kept.append(kept)
         _record(st, kept)
         done.add(p)
-    st.drc = drc if keep else st.drc
-    _couple_straight(st, plans, done)
-    for k in retry:  # alone, after the others: each with its own DRC
+    if done:  # the last verified DRC, without the markers of copper dropped again
+        dropped = set(gone)
+        st.drc = dataclasses.replace(
+            drc, markers=tuple(m for m in drc.markers if not dropped & set(m.kiids))
+        )
+    for k in retry[:STRAIGHT_RETRY_MAX]:  # alone, after the others: each with its own DRC
         p, path = cands[k]
         if _timed_out(st):
             break
         if await _place(sctx, st, [p], [path]) is None:
             st.kept[-1].straight = True
             done.add(p)
+    _couple_straight(st, plans, done)
     return done
 
 
@@ -1325,6 +1386,9 @@ def _net_entry(net: str, results: Sequence[ConnResult], lock: bool) -> dict[str,
         "locked": lock,
         "seconds": round(sum(r.seconds for r in results), 2),
     }
+    defects = [f"{r.a}-{r.b}" for r in routed if r.pad_entry]
+    if defects:  # forced (no clean path) or a same-part link: M16 reports them
+        entry["pad_entry_defects"] = defects
     coupling = [r.coupling for r in routed if r.coupling is not None]
     if coupling:
         entry["coupling"] = {

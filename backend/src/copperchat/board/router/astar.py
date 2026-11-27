@@ -834,10 +834,18 @@ def tree_goals(grid: ObstacleGrid, req: RouteRequest) -> list[dict[int, tuple[in
     for li, segs in enumerate(grid.tree_segments):
         own = grid.own_segments[li] if li < len(grid.own_segments) else ()
         cells = grid.cells[li]
+        wx1, wy1 = grid.x0 + grid.w * pitch, grid.y0 + grid.h * pitch
         for a, b in segs:
             length = math.dist(a, b)
             if length < 2 * keep + JUNCTION_TOL:
                 continue
+            if (
+                max(a[0], b[0]) < grid.x0
+                or min(a[0], b[0]) > wx1
+                or max(a[1], b[1]) < grid.y0
+                or min(a[1], b[1]) > wy1
+            ):
+                continue  # outside the window: no node near it
             ang = math.degrees(math.atan2(b[1] - a[1], b[0] - a[0]))
             if abs(ang / 45.0 - round(ang / 45.0)) * 45.0 > _RIGHT_TOL_DEG:
                 continue
