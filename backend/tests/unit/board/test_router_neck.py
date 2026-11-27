@@ -209,25 +209,43 @@ def test_neck_not_on_the_wide_pads_layer() -> None:
 def test_neck_entry_carries_its_own_pads_layers() -> None:
     """Verify-2 finding: a NARROW 0.3 mm pad of another part on B.Cu under the F.Cu QFN
     (centre inside the QFN's escape zone) must not take the QFN zone's neck to B.Cu: each
-    neck entry applies only on the layers of the pad it was made for."""
-    m = replace(_board(), copper_layers=("F.Cu", "B.Cu"))
-    req = replace(_req(m), layers=("F.Cu", "B.Cu"), allow_vias=True)
-    ((qfn_zone, nw, qfn_layers),) = req.neck
-    assert qfn_layers == ("F.Cu",)
-    wide = req.a if req.a.ref == "C1" else req.b
-    narrow = replace(wide, x=10.0, y=10.0, w=0.3, h=0.3, layers=frozenset({"B.Cu"}))
-    own = (((9.5, 9.5), (10.5, 9.5), (10.5, 10.5), (9.5, 10.5)), 0.3, ("B.Cu",))
-    req = replace(req, a=narrow, neck=((qfn_zone, nw, qfn_layers), own))
-    plain = build_grid(m, replace(req, neck=((qfn_zone, nw, qfn_layers),)))
+    neck entry (built by `neck_zones`) applies only on the layers of its own pad. A foreign
+    B.Cu track inside the QFN zone shows it: its B.Cu blockage stays at class width."""
+    from .builders import track
+
+    pads, u1 = _qfn()
+    qfn_pad = pads[2]  # U1.3, net P, F.Cu
+    narrow = pad("C9", "1", "P", (10.0, 10.0), w=0.3, h=0.3)
+    narrow = replace(narrow, layers=frozenset({"B.Cu"}))
+    c9 = part("C9", 10.0, 10.0, half=0.3, pads=(narrow,))
+    foreign = track("Q", "B.Cu", (8.0, 11.6), (9.2, 11.6), 0.2)  # in U1's zone, not C9's
+    m = circuit(
+        u1,
+        c9,
+        outline=outline(0, 0, 20, 20),
+        tracks=(foreign,),
+        copper_layers=("F.Cu", "B.Cu"),
+        net_classes=(net_class("Default", track_width=CLASS_W, clearance=0.2),),
+    )
+    neck = route.neck_zones(m, (qfn_pad, narrow), CLASS_W, 0.127)
+    assert sorted(z[2] for z in neck) == [("B.Cu",), ("F.Cu",)]
+    req = RouteRequest(
+        "P", qfn_pad, narrow, CLASS_W, 0.2, ("F.Cu", "B.Cu"), True, (0.6, 0.3), neck=neck
+    )
+    plain = build_grid(m, replace(req, neck=()))
     necked = build_grid(m, req)
-    # B.Cu re-marked only inside the narrow pad's own (small) zone, never the QFN's
-    li = 1
+    (c9_zone,) = [z[0] for z in neck if z[2] == ("B.Cu",)]
+    xs, ys = [q[0] for q in c9_zone], [q[1] for q in c9_zone]
+    changed = 0
     for j in range(necked.h):
         for i in range(necked.w):
             x, y = necked.xy(i, j)
-            if not (9.5 <= x <= 10.5 and 9.5 <= y <= 10.5):
-                n = j * necked.w + i
-                assert necked.cells[li][n] == plain.cells[li][n]
+            n = j * necked.w + i
+            if necked.cells[1][n] != plain.cells[1][n]:
+                changed += 1
+                assert min(xs) <= x <= max(xs) and min(ys) <= y <= max(ys), (x, y)
+    # the QFN's F.Cu cells did neck down (the entry is not dead)
+    assert necked.cells[0] != plain.cells[0]
 
 
 def test_neck_zones_merge_layers_of_one_part() -> None:
