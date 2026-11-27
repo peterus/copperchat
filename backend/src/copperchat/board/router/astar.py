@@ -1194,7 +1194,12 @@ SOLVE_TIME_LIMIT_S = 25.0
 
 
 def solve(
-    model: BoardModel, req: RouteRequest, *, margin: float = 0.0, max_expansions: int = 2_000_000
+    model: BoardModel,
+    req: RouteRequest,
+    *,
+    margin: float = 0.0,
+    max_expansions: int = 2_000_000,
+    loops_ok: bool = False,
 ) -> RoutePath | None:
     """`run_cpu` entry point (B-C12): route on the default window, then exactly once on the
     doubled window. The retry runs from pad `b` (its lattice aligned to `b`, the result
@@ -1205,17 +1210,23 @@ def solve(
     searched once more with a loop allowed (`valid_path(loops_ok=True)`, no tree goals) -
     the loop is the lesser evil than no route, and M16 reports it. The loop-free retry on
     the doubled window gets at most RETRY_STRICT_EXPANSIONS, so a connection that only
-    loops stays cheap."""
+    loops stays cheap. `loops_ok`: a loop is allowed from the start (two windows, no
+    loop-free pass; the caller's choice for connections that are U-shaped by nature)."""
     deadline = time.monotonic() + SOLVE_TIME_LIMIT_S
     first = min(max_expansions, FIRST_TRY_EXPANSIONS)
     try:
         grid = build_grid(model, req, margin=margin, deadline=deadline)
-        path = route(grid, req, max_expansions=first, deadline=deadline)
+        path = route(grid, req, max_expansions=first, deadline=deadline, loops_ok=loops_ok)
         if path is not None:
             return path
         check_deadline(deadline)
         rev = replace(req, a=req.b, b=req.a)
         grid2 = build_grid(model, rev, margin=margin, window_mm=2 * WINDOW_MM, deadline=deadline)
+        if loops_ok:
+            back = route(
+                grid2, rev, max_expansions=max_expansions, deadline=deadline, loops_ok=True
+            )
+            return reverse_path(back) if back is not None else None
         retry = min(max_expansions, RETRY_STRICT_EXPANSIONS)
         back = route(grid2, rev, max_expansions=retry, deadline=deadline)
         if back is not None:

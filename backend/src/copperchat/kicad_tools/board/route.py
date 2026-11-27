@@ -762,8 +762,17 @@ async def _solve(
         return None if got is None else [got[0], got[1]]
     req = group[0].req
     m = router_model(model, req)
+    # R3: a link between two pads of one part (USB-C A6 - B6 around A7) is U-shaped by
+    # nature - its compact loop beats a via detour that walls in the pads next to it
+    same_part = group[0].a.ref == group[0].b.ref
     path = await run_cpu(
-        solve, prune_model(m, req), req, margin=margin, timeout_s=timeout, wait_s=remaining
+        solve,
+        prune_model(m, req),
+        req,
+        margin=margin,
+        loops_ok=same_part,
+        timeout_s=timeout,
+        wait_s=remaining,
     )
     return None if path is None else [path]
 
