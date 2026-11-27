@@ -1016,3 +1016,21 @@ def test_straight_segments_never_ripped() -> None:
     assert route._blockers(st, [near]) == []
     st.kept[0].straight = False
     assert route._blockers(st, [near]) == [st.kept[0]]
+
+
+def test_same_part_connections_plan_last() -> None:
+    """R3: a connection between two pads of one part (USB-C A6 - B6) comes after the net's
+    other connections, so it can land on their copper as a T; every non-pair plan may."""
+    from .builders import part as mk_part
+
+    j1 = mk_part(
+        "J1",
+        10.0,
+        10.0,
+        pads=(pad("J1", "A6", "N1", (10.0, 10.0)), pad("J1", "B6", "N1", (11.0, 10.0))),
+    )
+    m = circuit(j1, res("R1", "N1", "X", (16.0, 10.0)))
+    plans = _plan(m, ["N1"], tree=True)
+    assert [(p.a.ref, p.b.ref) for p in plans][-1] == ("J1", "J1")
+    assert all(p.req.tree for p in plans)
+    assert not any(p.req.tree for p in _plan(m, ["N1"]))
