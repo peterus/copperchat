@@ -20,7 +20,8 @@ no randomness).
    bisected recursively: cut across the longer side, the blocks split into two groups with
    the fewest shared nets across the cut (+ pull toward blocks already elsewhere: terminal
    propagation) and an area balance of 35-65 % (exhaustive up to `EXHAUSTIVE_MAX` blocks,
-   greedy moves above); the cut position follows the group areas, so the slack spreads.
+   greedy moves above; when a deeper cut fails, the next-best partitions are tried within
+   a work budget); the cut position follows the group areas, so the slack spreads.
    Every cut reserves a channel `clamp(CHANNEL_PER_NET_MM x crossing nets, CHANNEL_MIN_MM,
    CHANNEL_MAX_MM)` (never below `keep_channels`), half per side.
 5. A group that does not fit its side in any rotation: the cut moves once toward its need
@@ -81,6 +82,10 @@ SPREAD_SPAN_MIN = 0.75  # "well spread" (plan call 7): reported, not a metric
 BALANCE_LO, BALANCE_HI = 0.35, 0.65
 EXHAUSTIVE_MAX = 12  # blocks per bisection up to which every partition is tried
 GREEDY_PASSES = 50
+# backtracking: when a deeper cut fails, the next of the best BACKTRACK_TRIES partitions of
+# a level is tried, within BISECT_BUDGET tried partitions per run (deterministic bound)
+BACKTRACK_TRIES = 6
+BISECT_BUDGET = 400
 # pull of a block toward its region centre (per member and mm; P4's packing uses 0.1): the
 # block sits in the middle of its region, so the board's slack spreads between the blocks
 # instead of every block hugging its neighbours
@@ -254,6 +259,7 @@ class _Ctx:
     keep: float
     channels: list[tuple[Point, Point, float]] = field(default_factory=list)
     leaves: dict[str, Rect] = field(default_factory=dict)
+    budget: int = 0  # backtracking steps left (BISECT_BUDGET per bisection run)
 
     def w(self, a: str, b: str) -> int:
         return self.weight.get((a, b) if a < b else (b, a), 0)
@@ -482,19 +488,30 @@ def _bisect(ctx: _Ctx, r: Box, names: Sequence[str], outside: Sequence[str]) -> 
 
         ordered = sorted(names, key=natural_key)
         if len(ordered) <= EXHAUSTIVE_MAX:
-            a, b = min(_partitions(ordered), key=lambda ab: key(*ab))
+            ranked = sorted(((key(*ab), ab) for ab in _partitions(ordered)), key=lambda t: t[0])
+            cands = [ab for k, ab in ranked if not k[0]][:BACKTRACK_TRIES]
         else:
-            a, b = _greedy(ordered, key)
-        pos, ch, ra, rb, ok, _moved = layout(a, b)
-        if not ok:
-            continue
-        line = ((pos, r[1]), (pos, r[3])) if cut == 0 else ((r[0], pos), (r[2], pos))
-        ctx.channels.append((line[0], line[1], ch))
-        ctx.where.update({n: _centre(ra) for n in a})
-        ctx.where.update({n: _centre(rb) for n in b})
-        _bisect(ctx, ra, a, [*outside, *b])
-        _bisect(ctx, rb, b, [*outside, *a])
-        return
+            cands = [_greedy(ordered, key)]
+        for a, b in cands:
+            pos, ch, ra, rb, ok, _moved = layout(a, b)
+            if not ok:
+                continue
+            if ctx.budget <= 0 and (a, b) != cands[0]:
+                break  # out of work budget: only the best partition is tried
+            ctx.budget -= 1
+            saved = (dict(ctx.leaves), dict(ctx.where), len(ctx.channels))
+            line = ((pos, r[1]), (pos, r[3])) if cut == 0 else ((r[0], pos), (r[2], pos))
+            ctx.channels.append((line[0], line[1], ch))
+            ctx.where.update({n: _centre(ra) for n in a})
+            ctx.where.update({n: _centre(rb) for n in b})
+            try:
+                _bisect(ctx, ra, a, [*outside, *b])
+                _bisect(ctx, rb, b, [*outside, *a])
+            except _NoFit:  # a deeper cut failed: the next partition (backtracking)
+                ctx.leaves, ctx.where = saved[0], saved[1]
+                del ctx.channels[saved[2] :]
+                continue
+            return
     raise _NoFit([ref for n in sorted(names, key=natural_key) for ref in ctx.boxes[n].refs])
 
 
@@ -673,6 +690,7 @@ def floorplan(
         try:
             for fr, names in zip(free, groups, strict=True):
                 outside = [n for n in boxes if n not in names]
+                ctx.budget = BISECT_BUDGET
                 _bisect(ctx, fr, names, outside)
         except _NoFit as exc:
             return no_fit(exc.refs)
@@ -740,7 +758,9 @@ def _assign(
 
 def _tiles(ctx: _Ctx, r: Box, names: Sequence[str]) -> bool:
     """A trial bisection of `names` in `r` succeeds (on a scratch copy of `ctx`)."""
-    trial = dataclasses.replace(ctx, where=dict(ctx.where), channels=[], leaves={})
+    trial = dataclasses.replace(
+        ctx, where=dict(ctx.where), channels=[], leaves={}, budget=BISECT_BUDGET
+    )
     try:
         _bisect(trial, r, sorted(names, key=natural_key), [n for n in ctx.boxes if n not in names])
     except _NoFit:

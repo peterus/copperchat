@@ -70,9 +70,10 @@ class Answers:
       `layers` explicitly - a preset alone keeps the layer count).
     - `blocks`: `None` = `pcb_analyze`'s proposal placed as is by `pcb_place_blocks`
       (R2: the floorplan spreads every block over the whole board); otherwise per block,
-      keyed by its anchor ref (or block name): `edge` (the user's edge for the anchor:
-      the agent writes it as a `board.md` Placement edges row, `pcb_place_blocks` puts the
-      block in a strip along it; a number in `edge_position` = mm along the edge),
+      keyed by its anchor ref (or block name): `edge` (the user's edge for that part - any
+      part ref, not only an anchor: the agent writes it as a `board.md` Placement edges
+      row, `pcb_place_blocks` puts the part's block in a strip along it; a number in
+      `edge_position` = mm along the edge),
       `absorb` (anchors whose proposed blocks join this one, e.g. a protection part next
       to its connector). Scripted overrides only: `region` (a `pcb_place_block` region,
       `frac: {x, y, w, h}` relative to the outline; such blocks are placed one by one after
@@ -523,7 +524,7 @@ async def _place(f: _Flow, answers: Answers) -> None:
     await f.tool("pcb_define_blocks", cost=1, blocks=blocks, replace=True)
     edges = []
     for k, spec in sorted(plan.items()):
-        if spec.get("edge") and k in by_key:
+        if spec.get("edge") and k in classes:  # a part ref (the row names a part)
             where = " ".join(str(v) for v in (spec["edge"], spec.get("edge_position")) if v)
             edges.append(f"| {k} | {where} | the user's edge |")
     if edges:
