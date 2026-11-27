@@ -803,7 +803,10 @@ the 1.75 mm gap between R6.1 and R5.2 and boxed in /Power/FB); never a pair with
 corridor and every corridor the part already had, stays inside the outline margin and off
 courtyards and keepouts. Crystals / decaps are not excluded (M8 unchanged at 4.97 mm).
 
-**Placer escape room (P4 files, also `pcb_place_block`; plan Task 4 "per-pin escape room")**:
+**Placer escape room (P4 files, plan Task 4 "per-pin escape room"; switched on by
+`place_blocks` only - `layout_cluster(escape_room=)`, `pack_block(occlude_weight=,
+escape_room=)`; `pcb_place_block` keeps P4's layout, else the P5b/P6b fixtures built with it
+(`place_synth`) moved and their fill/route tests failed in CI)**:
 - `layout.ESCAPE_PER_NET_MM` = 0.4 per signal net a > 2-pad satellite (header, ESD array)
   shares with its anchor, at most `ESCAPE_MAX_MM` = 2.0, on top of `SATELLITE_EXTRA_MM`.
 - `pack.OCCLUDE_WEIGHT` = 10 per pad (not ground) whose straight line to the centroid of its
