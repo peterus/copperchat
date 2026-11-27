@@ -114,7 +114,9 @@ async def test_pair_routed_coupled(synth_routed: PlacedSynth) -> None:
         assert coupling is not None and set(coupling) == {"length_mismatch", "gap_min", "gap_max"}
     model = await _model(synth_routed, "run-pair")
     layers = [{t.layer for t in model.tracks if t.net == n} for n in PAIR]
-    assert layers[0] == layers[1], layers
+    # R3: the USB-C links A6 - B6 / A7 - B7 (same part, interleaved, never coupled) may change
+    # layer on one net alone; the coupled stretches share their layers
+    assert layers[0] & layers[1], layers
     mismatch = entries[PAIR[0]]["coupling"]["length_mismatch"]
     (pair,) = [p for chunk in synth_routed.info["routed"] for p in chunk["pairs"]]
     print(pair)

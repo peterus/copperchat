@@ -31,11 +31,14 @@ from tests.support.edit import call_tool
 
 # Short critical signal nets of the placed `sp4_synth` that a test unroutes first, so the
 # fill has real connections to route (the routed rig leaves only 2 open). Measured one by
-# one, Freerouting fills these without a defect; /NRST (C6.1-U1.4 detour), /CC1 (J1.A5-R2.1
-# 90° corner at the USB connector) and /OSC_IN are left out: on a fill this small one rip
-# is already over the 20 % rule.
-FILL_NETS = ("/SWDIO", "/SWCLK", "/BOOT0", "/CC2", "Net-(D1-A)", "Net-(U1-PA4)")
-OWN_ROUTED = ("/Power/FB",)  # left open by the routed rig; routed by `pcb_route` (rung c)
+# one, Freerouting fills these without a defect; /NRST (C6.1-U1.4 detour), /CC1 and /CC2
+# (J1.A5-R2.1 / J1.B5-R3.1 90° corner at the USB connector; /CC2 since R3's critical
+# routing) and /OSC_IN are left out: on a fill this small one rip is already over the 20 %
+# rule.
+FILL_NETS = ("/SWDIO", "/SWCLK", "/BOOT0", "Net-(D1-A)", "Net-(U1-PA4)")
+# left open by the routed rig; routed by `pcb_route` (rung c). VBUS (C7.1-U2.5 next to the
+# ESD's straight pass-throughs, R3): Freerouting leaves it open, R4 tunes the fill
+OWN_ROUTED = ("/Power/FB", "VBUS")
 FILL_TIMEOUT_S = 120
 MM = 1_000_000
 
