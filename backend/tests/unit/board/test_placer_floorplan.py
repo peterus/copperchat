@@ -969,3 +969,39 @@ def test_snap_edges_moves_the_block_to_its_edge() -> None:
     blocked = {mv.ref: mv for mv in snap_edges(m2, doc, blocks, moves)}
     assert box_of(apply_moves(m2, tuple(blocked.values())).part("J1"))[0] >= box_of(w)[2]
     assert snap_edges(m, BoardDoc(), blocks, moves) == moves
+
+
+def test_align_pairs_never_tightens_into_an_escape_strip() -> None:
+    """R7 (ODH: the tighten pass pulled a CC resistor back in front of a USB-C VBUS pin):
+    a shift never covers the escape strip in front of another part's wide-net pad; with
+    the net at the Default width the same pair tightens up to the courtyard."""
+    from .builders import net_class
+
+    def model(wide: bool) -> BoardModel:
+        u1 = part(
+            "U1",
+            50.0,
+            42.0,
+            pads=(
+                pad("U1", "1", "VSYS", (52.5, 41.4), w=0.6, h=0.3),
+                pad("U1", "2", "S4", (52.5, 42.0), w=0.6, h=0.3),
+            ),
+            courtyard=tuple(rect_poly(47.0, 40.0, 6.0, 4.0)),
+        )
+        classes = (net_class(), net_class("Power", 0.5, 0.2, patterns=("VSYS",)))
+        return circuit(
+            u1,
+            res("R1", "S4", "X1", (56.0, 42.0)),
+            outline=outline(0, 0, 80, 60),
+            net_classes=classes if wide else (net_class(),),
+            net_class_of=(("VSYS", "Effective for net: VSYS"),),
+        )
+
+    for wide, limit in ((True, 54.3), (False, 53.0)):
+        m = model(wide)
+        out = align_pairs(m, classify(m), _moves(m), movable=frozenset({"R1"}))
+        left = box_of(apply_moves(m, out).part("R1"))[0]
+        assert left < 55.0 - 1e-6  # it did tighten
+        assert left >= limit - 1e-6, (wide, left)
+        if not wide:
+            assert left < 54.3  # without the wide class it goes past the strip

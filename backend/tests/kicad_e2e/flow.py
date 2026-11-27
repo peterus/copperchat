@@ -668,7 +668,10 @@ async def _route(f: _Flow, critical: list[str]) -> dict[str, Any]:
                 "pcb_route_fill",
                 {"why": "more open connections than the fill lists", "fill": _summary(fill)},
             )
-        failed = await _route_nets(f, sorted({o["net"] for o in fill.get("open", [])}))
+        opened = fill.get("open", [])
+        failed = await _route_nets(f, sorted({o["net"] for o in opened}))
+        if failed:
+            failed = await _clear_and_reroute(f, failed, opened)
         if failed:
             # rung (d): only the user can change the placement / layers / size
             raise FlowError(
@@ -677,6 +680,33 @@ async def _route(f: _Flow, critical: list[str]) -> dict[str, Any]:
                 {"why": "connections still open after the ladder", "nets": failed[:10]},
             )
     return fill
+
+
+CLEAR_MM = 8.0  # R7 ladder: the box around an open connection whose fill copper is cleared
+
+
+async def _clear_and_reroute(
+    f: _Flow, failed: list[dict[str, Any]], opened: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """R7 ladder rung (c) after the fill: the own router found no path for a connection the
+    fill left open (the fill's unlocked copper walls it in - ODH CHG_N at a QFN). Once: the
+    unlocked copper touching a `CLEAR_MM` box around each such connection's spot is removed
+    (`pcb_unroute {region}`; the own router's locked copper stays), then `pcb_route` routes
+    the open nets first and the removed ones after them. Returns what is still failed."""
+    nets = {str(x["net"]) for x in failed}
+    removed: set[str] = set()
+    for o in opened:
+        if o.get("net") not in nets or o.get("x") is None:
+            continue
+        half = CLEAR_MM / 2
+        region = {"x": o["x"] - half, "y": o["y"] - half, "w": CLEAR_MM, "h": CLEAR_MM}
+        data = await f.tool("pcb_unroute", cost=1, region=region)
+        removed.update(str(n) for n in data.get("nets", []))
+    if not removed - nets:
+        return failed
+    signal = set(f.signal_nets)
+    again = sorted(nets) + sorted(n for n in removed - nets if n in signal)
+    return await _route_nets(f, again)
 
 
 async def run_flow(

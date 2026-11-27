@@ -158,3 +158,65 @@ def test_pick_skips_candidates_too_close_to_taken_vias() -> None:
     assert near.at == (2.0, 0.0) and near.next == 1  # 0.41 mm from the kept via: skipped
     assert alone.status == "exhausted"  # 0.65 mm from the kept via (0.94 from near's)
     assert picked == [near]
+
+
+def test_pick_tie_candidates_need_no_via_spacing() -> None:
+    """R7: a tie stub (no via) is picked even next to a kept via, never counts as a via
+    for the others, and a fanned tie pad does not block later candidates."""
+    from copperchat.kicad_tools.board.fanout import _pick
+
+    kept = _PadState(
+        A, ("U1", "1"), "F.Cu", (ViaCandidate((0.0, 0.0), ((0, 0), (0, 0)), ("U1", "1"), 0),)
+    )
+    kept.status, kept.at = "fanned", (0.0, 0.0)
+    tie = ViaCandidate((0.2, 0.0), ((0.5, 0.0), (0.2, 0.0)), ("U1", "2"), 0, tie=True)
+    tied = _PadState(B, ("U1", "2"), "F.Cu", (tie,))
+    later = _PadState(
+        B, ("U1", "3"), "F.Cu", (ViaCandidate((1.0, 0.0), ((1, 0), (1, 0)), ("U1", "3"), 0),)
+    )
+    st = _Fanout("GND", (0.6, 0.3), 0.2, 0.2, 0.25, [kept, tied, later], 0)
+    assert _pick(st) == [tied, later]  # 0.8 mm from the kept via, the tie end does not count
+    tied.status = "fanned"
+    later.status, later.at, later.next = "open", None, 0
+    assert _pick(st) == [later]
+
+
+def test_create_copper_tie_stub_has_no_via() -> None:
+    """R7: `NewCopper(via=None)` creates the stub only (one KIID for that item)."""
+    from copperchat.kicad_tools.board.fanout import NewCopper, create_copper
+
+    class Board:
+        def __init__(self) -> None:
+            self.made: list[Any] = []
+
+        def get_nets(self) -> list[Any]:
+            from kipy.board_types import Net
+
+            n = Net()
+            n.name = "GND"
+            return [n]
+
+        def create_items(self, items: list[Any]) -> list[Any]:
+            self.made = items
+
+            class C:
+                def __init__(self, i: int) -> None:
+                    self.id = type("I", (), {"value": f"k{i}"})()
+
+            return [C(i) for i in range(len(items))]
+
+    b = Board()
+
+    class H:
+        def board(self) -> Board:
+            return b
+
+    out = create_copper(
+        H(),  # type: ignore[arg-type]
+        [
+            NewCopper("GND", (1.0, 1.0), None, ("F.Cu", (0.0, 1.0), (1.0, 1.0), 0.2)),
+            NewCopper("GND", (3.0, 1.0), (0.6, 0.3), ("F.Cu", (2.0, 1.0), (3.0, 1.0), 0.2)),
+        ],
+    )
+    assert out == [["k0"], ["k1", "k2"]]
+    assert len(b.made) == 3

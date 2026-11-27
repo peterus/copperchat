@@ -3,6 +3,8 @@ plane-layer defaults and the one-line DSN switch for the plane layers."""
 
 from __future__ import annotations
 
+import itertools
+
 import pytest
 
 from copperchat.board.boardmd import BoardDoc
@@ -303,7 +305,7 @@ def test_postprocess_judges_widened_copper() -> None:
     pts = [(10.0, 10.0), (13.0, 10.0), (13.0 + d, 10.0 + d), (20.0, 10.0 + d)]
     tracks = tuple(
         track("N1", start=a, end=b, width=0.15, kiid=f"f{i}")
-        for i, (a, b) in enumerate(zip(pts, pts[1:], strict=False))
+        for i, (a, b) in enumerate(itertools.pairwise(pts))
     )
     other = track("N1", start=(10.0, 12.0), end=(10.0, 14.0), width=0.15, kiid="old")
     m = _board_ab((*tracks, other))

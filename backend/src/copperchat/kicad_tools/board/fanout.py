@@ -129,7 +129,7 @@ class NewCopper:
 
     net: str
     at: Point
-    via: tuple[float, float]
+    via: tuple[float, float] | None  # None: a tie stub only (R7, `ViaCandidate.tie`)
     stub: tuple[str, Point, Point, float] | None = None  # (layer, start, end, width)
 
 
@@ -160,6 +160,9 @@ def create_copper(h: KicadHandle, items: Sequence[NewCopper]) -> list[list[str]]
             t.locked = True
             made.append(t)
             n += 1
+        if it.via is None:
+            sizes.append(n)
+            continue
         v = KipyVia()
         v.position = _vec(it.at)
         v.net = net
@@ -303,20 +306,25 @@ def _pick(st: _Fanout) -> list[_PadState]:
         )
 
     for p in st.pads:
-        if p.status == "fanned" and p.at is not None:
+        if p.status == "fanned" and p.at is not None and not p.cands[p.next].tie:
             take(p.at)
     picked: list[_PadState] = []
     for ps in st.pads:
         if ps.status != "open":
             continue
-        while ps.next < len(ps.cands) and not clear(ps.cands[ps.next].at):
+        while (
+            ps.next < len(ps.cands)
+            and not ps.cands[ps.next].tie
+            and not clear(ps.cands[ps.next].at)
+        ):
             ps.next += 1
         if ps.next >= len(ps.cands):
             ps.status = "exhausted"
             continue
         c = ps.cands[ps.next]
         ps.at = c.at
-        take(c.at)
+        if not c.tie:
+            take(c.at)
         picked.append(ps)
     return picked
 
@@ -347,7 +355,7 @@ def _round_stages(st: _Fanout, i: int) -> list[BoardStage]:
             NewCopper(
                 st.net,
                 p.cands[p.next].at,
-                st.via,
+                None if p.cands[p.next].tie else st.via,
                 (p.layer, (p.pad.x, p.pad.y), p.cands[p.next].at, st.width),
             )
             for p in picked
@@ -488,6 +496,7 @@ def _report(st: _Fanout, model: BoardModel) -> dict[str, Any]:
         "smd_pads": len(st.pads) + st.already,
         "already_connected": st.already,
         "fanned_out": len(fanned),
+        "tied": sum(1 for p in fanned if p.cands[p.next].tie),
         "via_pour": len(pour),
         "via_pour_pads": pour[:MAX_LISTED],
         "unconnected": unconnected[:MAX_LISTED],

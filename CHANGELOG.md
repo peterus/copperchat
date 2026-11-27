@@ -75,6 +75,15 @@ All notable changes to CopperChat are documented in this file. The format follow
   doglegs / pad loops / pad jogs for the own router, keeps legal neck-downs narrow and
   re-routes with T-junctions; Freerouting vias read with their net class's drill — behind
   COPPERCHAT_BOARD_TOOLS.
+- `pcb_place_blocks` keeps the pin escapes of power-class and switch-node pins free (no part
+  in front of them), keeps room for a fanout via beside an IC's exposed ground pad, turns a
+  part that serves two pins so its connections do not cross, puts an edge connector right
+  at its edge and centres the placement on a board with room to spare — behind
+  COPPERCHAT_BOARD_TOOLS.
+- `pcb_route_fill` judges Freerouting's copper at the width it will have (a jog that passes
+  at the neck-down width is ripped when the track is widened); the router no longer treats
+  a junction on an own via's rim as inside the via; M16 counts a straight track with an own
+  via on it as straight — behind COPPERCHAT_BOARD_TOOLS.
 
 ## [0.12.0] - 2026-11-22
 
