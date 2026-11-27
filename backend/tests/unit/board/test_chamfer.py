@@ -1244,3 +1244,32 @@ def test_may_branch_only_real_branch_points() -> None:
     assert chamfer._may_branch([a, b, c], {id(c)})
     d = track("N1", "F.Cu", (5.0, 0.0), (9.0, 0.0), 0.2, kiid="d")  # 3 ends at (5, 0)
     assert chamfer._may_branch([a, b, d], {id(d)})
+
+
+@pytest.mark.parametrize("variant", ["fresh_same_layer_other_branch", "fresh_other_layer"])
+def test_untouched_pad_loop_not_ripped_for_unrelated_fresh_copper(variant: str) -> None:
+    """Review round 4: fresh copper of the net in J1's entry zone that is not the loop's
+    connection (another branch from J1, or a track on another layer under the pad) does
+    not make the untouched loop ours."""
+    steps = [(0, 0.8), (45, 0.4), (45, 0.4), (45, 0.4), (0, 2.0), (0, 4.0)]
+    pts = [nm_pt(p) for p in walk((50.0, 50.0), 0.0, steps)]
+    t = pts[-2]
+    j3 = nm_pt((t[0] + 1.5 * math.cos(math.radians(45)), t[1] + 1.5 * math.sin(math.radians(45))))
+    extra_parts: tuple[object, ...] = ()
+    if variant == "fresh_same_layer_other_branch":
+        extra_parts = (pad_part("J4", 47.0, 50.0),)
+        extra = track("N1", "F.Cu", (50.0, 50.0), (47.0, 50.0), 0.2, kiid="c0")
+    else:
+        extra = track("N1", "B.Cu", (49.0, 51.2), (53.0, 51.2), 0.2, kiid="c0")
+    m = board(
+        parts=(
+            pad_part("J1", *pts[0]),
+            pad_part("J2", *pts[-1]),
+            pad_part("J3", *j3),
+            *extra_parts,
+        ),
+        tracks=(*path_tracks(pts, prefix="u"), *path_tracks([t, j3], prefix="b"), extra),
+        net_class_of=(("N1", "Default"),),
+    )
+    r = postprocess(m, kiids(m, "b") | kiids(m, "c"))
+    assert not any(why in ("pad_loop", "pad_jog") for _k, why in r.reasons), r

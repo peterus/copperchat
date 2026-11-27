@@ -1404,16 +1404,17 @@ def postprocess(model: BoardModel, kiids: frozenset[str]) -> PostResult:
     signal = [n for n in nets if n not in ground]
     if signal:
         cls = classify(work)
-        mine_by_net: dict[str, list[Track]] = defaultdict(list)
-        for i in mine:
-            mine_by_net[wt[i].net].append(wt[i])
 
-        def in_entry_zone(d: M16Defect) -> bool:
-            """Touched copper of the net reaches into the entry zone of the defect's pad:
-            the entry piece is (partly) ours - wherever along it the loop / jog vertex is
-            reported (review round 3)."""
+        def in_entry_zone(d: M16Defect, used: set[int]) -> bool:
+            """The connection's OWN touched copper (`used`) on a layer of the defect's pad
+            reaches into that pad's entry zone: its entry piece is (partly) ours, wherever
+            along it the loop / jog vertex is reported (review rounds 3 / 4: not any fresh
+            copper of the net, and not copper on another layer)."""
             pad = d.end if d.end is not None else d.a
-            for t in mine_by_net[d.net]:
+            for i in used:
+                t = wt[i]
+                if not _pad_on_layer(pad, t.layer):
+                    continue
                 zone = list(entry_zone(pad, t.width))
                 if polygons_overlap(_capsule((t.start, t.end), t.width / 2), zone):
                     return True
@@ -1430,19 +1431,22 @@ def postprocess(model: BoardModel, kiids: frozenset[str]) -> PostResult:
             alone = replace(work, tracks=tuple(untouched))
             base16 = {mark(x) for x in m16_defects(alone, cls, nets=dog_nets) if x.kind == "dogleg"}
         for d in found:
-            if d.kind in ("pad_loop", "pad_jog"):
-                # attributed by copper (review rounds 2 / 3): ours when touched copper lies in
-                # that pad's entry zone; a loop / jog wholly in untouched copper is not (a
-                # connection that only passes through it would be ripped for nothing)
-                if not in_entry_zone(d):
-                    continue
-            elif mark(d) in base16:
+            if d.kind == "dogleg" and mark(d) in base16:
                 # a dogleg the untouched copper alone already has is not ours (as step 3)
                 continue
             ends = {(d.a.ref, d.a.number), (d.b.ref, d.b.number)}
             for c in conns.get(d.net, []):
-                if {(c.a.ref, c.a.number), (c.b.ref, c.b.number)} == ends and c.used & mine:
-                    reasons.add((c.key, d.kind))
+                if {(c.a.ref, c.a.number), (c.b.ref, c.b.number)} != ends:
+                    continue
+                used = set(c.used & mine)
+                if not used:
+                    continue
+                # a pad loop / jog is attributed by copper (review rounds 2-4): ours only when
+                # this connection's touched copper lies in that pad's entry zone on its layer;
+                # one wholly in untouched copper would be ripped for nothing
+                if d.kind in ("pad_loop", "pad_jog") and not in_entry_zone(d, used):
+                    continue
+                reasons.add((c.key, d.kind))
 
     outline = outline_polygon(model)
     diag = None
