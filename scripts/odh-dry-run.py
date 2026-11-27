@@ -147,7 +147,7 @@ def parse_sizes(text: str) -> tuple[tuple[float, float], ...]:
             size = None
         if not sep or size is None or not all(0 < v <= 1000 for v in size):
             raise argparse.ArgumentTypeError(f"bad size {item.strip()!r}: expected WxH in mm")
-        if size not in sizes:  # a repeated size would overwrite its own output dir
+        if size_label(size) not in {size_label(x) for x in sizes}:  # one output dir each
             sizes.append(size)
     return tuple(sizes)
 
@@ -635,7 +635,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--keep-copies",
         action="store_true",
-        help="keep each size's copy of the checkout (default: removed after its run)",
+        help="keep each size's copy of the checkout (default: removed after a completed run, "
+        "kept after a failed one)",
     )
     p.add_argument(
         "--all-sizes",
@@ -775,10 +776,16 @@ async def _run_size(
     from copperchat.projects import discover_projects
     from tests.kicad_e2e.flow import FlowError, as_jsonable, open_rig, run_flow
 
+    # validated on the original first: a bad --project leaves no copy behind
+    src_pro = (args.odh / args.project).resolve()
+    if (
+        not src_pro.is_relative_to(args.odh.resolve())
+        or src_pro.suffix != ".kicad_pro"
+        or not src_pro.is_file()
+    ):
+        raise UsageError(f"--project {args.project}: no .kicad_pro at that path in the checkout")
     copy = copy_checkout(args.odh)
     pro = (copy / args.project).resolve()
-    if not pro.is_relative_to(copy.resolve()) or pro.suffix != ".kicad_pro" or not pro.is_file():
-        raise UsageError(f"--project {args.project}: no .kicad_pro at that path in the checkout")
     root = copy.parent
     settings = Settings(  # type: ignore[call-arg]
         _env_file=None,
@@ -858,9 +865,12 @@ async def _run_size(
             (out / "metrics.json").write_text(json.dumps(data, indent=1, default=str))
     finally:
         sampler.stop()
-        if not args.keep_copies:  # a full checkout copy per size would pile up in $TMPDIR
+        # a full checkout copy per size would pile up in $TMPDIR; a failed run keeps its
+        # copy (the routed board, board.md) for inspection (review round 2)
+        keep = args.keep_copies or error is not None
+        if not keep:
             shutil.rmtree(copy.parent, ignore_errors=True)
-    kept = f" (copy of the checkout: {copy})" if args.keep_copies else ""
+    kept = f" (copy of the checkout: {copy})" if keep else ""
     print(f"report: {out / 'report.md'}{kept}")
     return SizeRun(size, out, result, error, memory, seconds)
 

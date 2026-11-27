@@ -1009,3 +1009,36 @@ def test_align_pairs_never_tightens_into_an_escape_strip() -> None:
         assert left >= limit - 1e-6, (wide, left)
         if not wide:
             assert left < 54.3  # without the wide class it goes past the strip
+
+
+def test_snap_edges_block_mate_next_to_its_own_strip() -> None:
+    """Review round 2: a block's own escape strips move with it - a resistor of the block
+    right next to the connector's VBUS strip does not stop the snap (it moves exactly as
+    with VBUS at the Default width); another part's strip still does."""
+    from copperchat.board.placer.floorplan import snap_edges
+
+    from .builders import net_class
+
+    def run(wide: bool, *extra: Part) -> float:
+        classes = (net_class(), net_class("Power", 0.5, 0.2, patterns=("VBUS",)))
+        m = circuit(
+            conn("J1", {"1": "A", "2": "VBUS"}, (1.75, 30.0)),  # VBUS strip x 3.05-4.55
+            res("R1", "A", "X", (5.55, 30.0)),  # its box starts at the strip's far end
+            *extra,
+            outline=outline(0, 0, 80, 60),
+            net_classes=classes if wide else (net_class(),),
+            net_class_of=(("VBUS", "Effective for net: VBUS"),),
+        )
+        doc = BoardDoc(edges=(EdgeRow("J1", "left", "", "user"),))
+        moves = (Move("J1", 1.75, 30.0, 0.0, "top"), Move("R1", 5.55, 30.0, 0.0, "top"))
+        out = {mv.ref: mv for mv in snap_edges(m, doc, _blocks({"blk": ["J1", "R1"]}), moves)}
+        assert out["R1"].x - 5.55 == pytest.approx(out["J1"].x - 1.75)
+        return out["J1"].x - 1.75
+
+    plain = run(False)
+    assert plain < 0
+    assert run(True) == pytest.approx(plain)
+    # another part's VBUS strip where the block would move: no shift into it
+    other = conn("J9", {"1": "VBUS"}, (1.0, 26.0))  # its strip reaches down past y 29
+    got = run(True, other)
+    assert got >= plain - 1e-9

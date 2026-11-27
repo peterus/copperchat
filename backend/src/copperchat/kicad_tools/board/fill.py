@@ -1003,7 +1003,7 @@ def fill_stages(st: _FillState) -> list[BoardStage]:
         # Freerouting's neck-downs, and a jog that passes at 0.15 mm is an M7 micro-jog at
         # the 0.2 mm class width (ODH: seven of them survived the post-processor)
         rule = await asyncio.to_thread(_width_rule, m)  # classify + neck rule, built once
-        judged = _widened_model(m, new_tracks, rule)
+        judged = await asyncio.to_thread(_widened_model, m, new_tracks, rule)
         rem = max(_remaining(st.post_deadline), 0.0)  # the widening's time counts too
         res = await _run_postprocess(
             judged, new_tracks, timeout_s=min(POST_JOB_MAX_S, rem), wait_s=rem

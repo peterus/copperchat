@@ -102,3 +102,18 @@ def test_clear_reroutes_even_when_only_the_open_net_was_cleared() -> None:
     f.tool = unroute_only_f2  # type: ignore[method-assign]
     asyncio.run(flow._route(f, ["C1"]))  # type: ignore[arg-type]
     assert _routes(f)[-2:] == [["F2"], ["F2"]]  # failed once, cleared, routed again
+
+
+def test_signal_nets_from_pcb_analyze() -> None:
+    """Review round 2: the non-ground nets of `pcb_analyze`'s capped `nets` map; a capped
+    list (`nets_omitted`, the key `jobs._capped` writes) fails the flow."""
+    from copperchat.board.jobs import MAX_ENTRIES, _capped
+
+    data: dict[str, Any] = {}
+    _capped(data, "nets", {"GND": "ground", "B": "signal", "A": "supply"})
+    assert flow.signal_nets(data, "turn 4") == ["A", "B"]
+    assert flow.signal_nets({"nets": [["X", "signal"], ["GND", "ground"]]}, "t") == ["X"]
+    big: dict[str, Any] = {}
+    _capped(big, "nets", {f"N{i}": "signal" for i in range(MAX_ENTRIES + 3)})
+    with pytest.raises(FlowError, match="3 nets omitted"):
+        flow.signal_nets(big, "turn 4")

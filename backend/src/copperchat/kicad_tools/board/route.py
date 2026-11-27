@@ -1201,6 +1201,7 @@ async def _alternate_ends(sctx: BoardStageContext, st: _Loop, p: ConnPlan) -> bo
     margin finds no path where 0 found none - review round 1: up to nine 30 s solves
     before the rip-up); the first routed one stands for the connection (its result names
     its own pads, `st.alias` records it under `p`). Not for a matched-pair half."""
+    assert p.pair is None, "a matched-pair half keeps its coupled plan"
     pads = [q for part in st.model.parts for q in part.pads if q.net == p.net]
     graph = _net_graph(st.model, p.net)  # one copper graph for every island test
 
@@ -1216,7 +1217,7 @@ async def _alternate_ends(sctx: BoardStageContext, st: _Loop, p: ConnPlan) -> bo
     )[:ALT_ENDS_MAX]
     floor = default_min_track(st.model)
     for x, y in alts:
-        neck = neck_zones(st.model, (x, y), p.req.width, floor) if p.pair is None else ()
+        neck = neck_zones(st.model, (x, y), p.req.width, floor)
         alt = dataclasses.replace(p, a=x, b=y, req=dataclasses.replace(p.req, a=x, b=y, neck=neck))
         st.alias[alt] = p
         if await _attempt(sctx, st, [alt], margins=MARGINS[:1]) is None:

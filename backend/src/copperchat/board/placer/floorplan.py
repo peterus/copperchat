@@ -1338,14 +1338,19 @@ def snap_edges(
                 for r in refs
             }
             others = {r: q for r, q in parts.items() if r not in moved}
+            # the block's own strips move with it (review round 2): only the others' count
+            fixed_strips = [st for st in strips if st[0] not in moved]
             if all(
                 _legal_shift(q, others, sep, outline, keepouts)
-                and not _covers_strip(q, parts[r], strips)
+                and not _covers_strip(q, parts[r], fixed_strips)
                 for r, q in moved.items()
             ):
                 for r, q in moved.items():
                     parts[r] = q
                     by_ref[r] = dataclasses.replace(by_ref[r], x=q.x, y=q.y)
+                strips = fixed_strips + [
+                    (r, net, b) for r, q in moved.items() for net, b in escape_strips(q, wide)
+                ]
                 break
     return tuple(by_ref[mv.ref] for mv in moves)
 
@@ -1426,6 +1431,9 @@ def align_pairs(
                 continue
             parts[p.ref] = cand
             out[p.ref] = Move(p.ref, round(cand.x, 6), round(cand.y, 6), p.rot, p.side)
+            strips[:] = [st for st in strips if st[0] != p.ref] + [
+                (p.ref, net, b) for net, b in escape_strips(cand, wide)
+            ]  # its own strips moved with it
             return True
         return False
 

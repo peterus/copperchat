@@ -684,6 +684,21 @@ async def _route(f: _Flow, critical: list[str]) -> dict[str, Any]:
     return fill
 
 
+def signal_nets(analysis: Mapping[str, Any], step: str) -> list[str]:
+    """Every non-ground net of `pcb_analyze {scope: nets}` (its `nets` map: name -> kind),
+    sorted. The ladder's own-router rung needs every net, so a list `pcb_analyze` capped
+    (`nets_omitted`, `jobs._capped`) is a `FlowError`."""
+    if analysis.get("nets_omitted"):
+        raise FlowError(
+            step,
+            "pcb_analyze",
+            {"why": f"{analysis['nets_omitted']} nets omitted from pcb_analyze's list"},
+        )
+    kinds = analysis.get("nets", {})
+    pairs = kinds.items() if isinstance(kinds, Mapping) else kinds
+    return sorted(str(n) for n, kind in pairs if kind != "ground")
+
+
 CLEAR_MM = 8.0  # R7 ladder: the box around an open connection whose fill copper is cleared
 
 
@@ -755,16 +770,7 @@ async def _turns(f: _Flow, answers: Answers) -> None:
     # 4: S4 - routing
     await f.new_turn("routing")
     nets = await f.tool("pcb_analyze", scope="nets")
-    if nets.get("nets_omitted"):
-        # the ladder's own-router rung needs every net (pcb_analyze caps its list)
-        raise FlowError(
-            f"turn {f.turn_no} ({f.label})",
-            "pcb_analyze",
-            {"why": f"{nets['nets_omitted']} nets omitted from pcb_analyze's list"},
-        )
-    kinds = nets.get("nets", {})
-    pairs = kinds.items() if isinstance(kinds, dict) else kinds
-    f.signal_nets = sorted(str(n) for n, kind in pairs if kind != "ground")
+    f.signal_nets = signal_nets(nets, f"turn {f.turn_no} ({f.label})")
     reasons = nets.get("critical_reasons", {})
     # R4: the straight-corridor nets (owner rule b) go into the first pcb_route chunk
     f.critical = sorted(nets["critical_nets"], key=lambda n: reasons.get(n) != "corridor")
