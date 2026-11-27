@@ -1000,3 +1000,19 @@ async def test_corridor_reserved_across_calls(
     await route.route_connections(FakeSctx(m), _plan(m, ["N1"]), lock=True, reserve=reserve)  # type: ignore[arg-type]
     (call,) = cpu.calls
     assert not [t for t in call["args"][0].tracks if t.kiid.startswith("reserved:")]
+
+
+def test_straight_segments_never_ripped() -> None:
+    """A pass-0 straight segment is no rip-up candidate for a blocked connection (owner rule
+    b: re-routing it through the search would make a dogleg)."""
+    m = _adjacent()
+    (p,) = _plan(m, ["N1"])
+    (q,) = _plan(m, ["N2"])
+    path = route.straight_path(m, p)
+    assert path is not None
+    st = route._Loop(m, True, None)
+    st.kept.append(route._Kept([p], [path], ["k1"], straight=True))
+    near = dataclasses.replace(q, a=dataclasses.replace(q.a, x=11.0, y=10.5))
+    assert route._blockers(st, [near]) == []
+    st.kept[0].straight = False
+    assert route._blockers(st, [near]) == [st.kept[0]]
