@@ -753,6 +753,130 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
 
 (Each phase adds its section here in its own PR.)
 
+### As built (R4)
+
+Phase file `board/round2-r4-fill.md`; owner decisions 2026-11-27 (brief): M15 and **every
+routed M16 sub-rule hard - dogleg, pad loop AND pad jog / S-offset** (only the placement
+stage "alignable" stays review); no exemption for placement-forced loops - the golden reaches
+0 with real geometry.
+
+**Metrics (R1's `metrics.py` / `geom.py`, owner rule):** `M15_HARD = M16_HARD = True`; a pad
+jog counts in M16's value and is hard (threshold text "doglegs + pad-entry loops + pad-entry
+jogs > 0"). **Corridor fix (R3 residual 1):** `geom.straight_link_corridor(a, b, class_w,
+neck, zones)` - a straight link may be neck-wide only inside the escape zones of its two
+parts (M12); with a piece outside them the corridor must exist at the class width, else
+there is no legal straight link and no dogleg. M16, the router's `straight_path` and the
+reservations share it. `metrics.m16_defects` (M16's findings as data, `_m16` builds the
+offenders from it) and `metrics.neck_checker` (M12's neck rule per track) are public for
+the post-processor and the fill.
+
+**Critical set (Task 1, as planned):** `cc/board/critical.py` (`defined_blocks`,
+`BLOCK_PREFIX` moved from `place.py`; `extra_critical`, `critical_with_reasons`);
+`pcb_analyze`'s nets scope gains `critical_reasons` {class | corridor | intra_block};
+order class, corridor, intra-block; the golden flow puts the corridor nets in the first
+chunk. On `sp4_synth` every non-ground net is now critical -> `pcb_route_fill` says
+"nothing to fill" (the golden's `fill_seconds` is null; the fill keeps its own kicad
+tests). ODH: 45 critical nets, 15-21 fill connections left (P9a: 138).
+
+**Router (R3's files; needed for owner rule c without exemptions):**
+- **Exact pad-entry rule in the search** (`astar._search`): a state component `z` (0, one /
+  two bends of sense +/- in an end pad's entry zone since the path last was outside one,
+  `_ZONE_NEXT`): an opposite bend there (jog) or a third one (135 deg, loop) is never
+  expanded. R3's `ENTRY_TURN_COST` stays as a steering term.
+- **No loop / jog fallback:** `solve` = default window, then doubled window, both strict
+  (R3's two `entry_ok` passes removed); `_solve` no longer allows them for same-part links
+  (USB-C A6-B6) or as the M8 alternative. `entry_ok` stays as an explicit argument (tests).
+- **T landings outside entry zones:** `tree_goals` skips a landing point inside any own
+  pad's entry zone (the joined path would turn there; one more bend = loop / jog measured
+  from that pad).
+- **Pin escapes kept free:** `ObstacleGrid.escape` / `RouteRequest.escape` - a step inside
+  the escape of another net's still unconnected pad costs x `ESCAPE_COST_FACTOR` = 1.5 (a
+  pad with a long axis: the strip 1 mm in front of both ends, 0.3 mm to the sides; other
+  pads: the entry zone; SMD pads on every layer, a via needs that column). Off for the M8
+  links (crystal / decap, routed first, must stay shortest). Measured: factor 3 starved the
+  random-map search (442 / 493 maps routed at 100 k expansions, test 90 %), 2.0 -> 460, 1.5 ->
+  468 (all layers 464); without the term the golden walled in SWDIO J2.2-U1.19 (+3V3 along
+  U1's pin ends) and the ESD's GND pad U2.2 (USB_DN / DP around it).
+- **Straight links checked per piece** (`_path_free`, reservations): a link class-wide in the
+  wide pad's zone and neck-wide next to the fine-pitch IC was checked at the class width
+  over its whole length and refused - the ODH doglegs C208.1-U202.1 / U202.5-C206.1 (R3's
+  residual) came from that, not from M16. Reservations are stored per piece.
+
+**Post-processor (`chamfer.py`, Task 3):** step 2b `_reland_ys` - a Y whose through-track
+is one track with the node in its interior or two collinear tracks, and whose single
+touched branch has a far vertex V that is a via or a plain polyline vertex: the branch's
+last segment becomes the perpendicular V -> foot on the through-track when the foot lies
+inside it (>= the branch width from its ends), V's turn stays 0 / 45 deg and the new piece
+keeps every other net's clearance (`_Obstacles`); step 3 judges the result (`_REASON`
+`y_junctions -> y_junction`, `t_junctions` no longer ripped). Step 3b rips every connection
+whose path uses touched copper and has an M16 `dogleg` / `pad_loop` / `pad_jog`
+(reasons as named, counted in the 20 % rule). `PostResult.relanded`; fill report
+`relanded`. **Fill (`fill.py`):** `_widen` keeps a track that is a legal neck-down
+(`neck_checker`); the re-route plans with `tree=True`; `_bends_of` counts Y-junctions;
+`FREEROUTING_SETTINGS` passed as `extra_args`.
+
+**Freerouting settings (Task 2):** `LOCKED_OPTION_KEYS` now also refuses
+`--router.autorouter.max_passes`, `--router.max_threads`, `--router.autorouter.max_threads`,
+`--router.optimizer.max_threads`, `-mp`, `-mt`. Probe (`test_probe_freerouting_settings`, the
+JAR's settings classes): accepted `router.optimizer.{enabled, max_passes,
+improvement_threshold, item_selection_strategy, timeout, trace_ripup_cost_factor,
+max_consecutive_failures}`, `router.scoring.{start_ripup_costs, plane_via_costs,
+default_bend_cost, bend_penalty}`, `router.automatic_neckdown`, `router.trace_pull_tight_accuracy`,
+`router.fanout.enabled`; unknown: `router.via_costs`, `router.autorouter.via_costs`;
+`router.optimizer.board_update_strategy=greedy` fails to set (enum). Measured on ODH:
+`--router.optimizer.enabled=false` 170.7 s Freerouting vs 157.5 s default, its fill accepted
+at once - but three default runs of identical code ranged from 53 % to 29 % refused, so the
+difference is within run-to-run variance: **no setting kept, `FREEROUTING_SETTINGS = ()`**.
+**Optimizer finding:** with the critical set extended, Freerouting gets 15-21 connections on
+ODH and still spends 150-230 s per fill at 30 passes, because the 3-4 placement-forced
+connections below stay unroutable for it too; the "locked links read as unrouted" cause
+(P6b) was not isolated further (no DSN edit).
+
+**Reader (`read.py`, P1a's file, minimal):** a via KiCad reports with an undefined drill
+(-1 nm, "net class default" - every Freerouting SES via) reads with its net class's via
+drill (`_default_drills`); before, M14 listed them as `via_drill -0 < 0.3` (85 on ODH).
+
+**ODH dry run** (copy of `OpenDriveHub@2e17ac5`, 80 x 100 mm, 4 layers `jlcpcb-4l`, Power class
+0.5 mm (`*VBUS*`, `*VSYS*`, `*VBAT*`, `*+3V3`), J201 left, J302 bottom, keep_channels 1.5;
+answers outside the repo; renders `/tmp/sp4-renders/r4-odh-*`):
+
+| Run | Critical `pcb_route` | Fill 1 | Ladder | Fill 2 | Open after the ladder |
+|---|---|---|---|---|---|
+| 1 (before the per-piece fix) | 126 s | 4 / 16 (25 %) refused | rung (c) | completion 0.971 | VSYS x2, VBUS |
+| 3 | 166 s | 9 / 17 (53 %) | 2 / 6 (33 %), then accepted | 0.971 | VSYS x2, VBUS, L201-U202.4 |
+| **4** | **164 s, 45 nets** | **5 / 17 (29 %: ninety_unfixable 3, pad_jog 2)** | rung (c) 10 s | **1 / 15 ripped (6.7 %) - passes**, 157 s, 0 relanded | VSYS x2, VBUS, L201-U202.4 |
+| 5 (optimizer off) | 174 s | accepted (5 rips of 21 fill keys within 20 %) | - | 0.971, 171 s | same four |
+
+**The 20 % rule passes on ODH (after rung (c)); 4 connections stay open - all placement-forced,
+each with a render** (`r4-odh-open-*.png`): (1) `/Power/VSYS` J202.1-U201.10 and U201.10-U201.5:
+the VBUS critical route runs on In2 0.4 mm in front of U201's east pins (no via fits there),
+R203 / R208 sit tight to the pins; (2) `/VBUS` J302.A4-A9: R302 (CC2) is placed directly in
+front of A9, a 0.5 mm track cannot leave the pin; (3) `Net-(U202-L1)` L201.1-U202.4: L201.2 and
+C203.1 lie between them (the placement "alignable 1.00 mm" hint; L201 rotated 180 deg would
+put pin 1 next to U202.4). Owner decision 2026-11-27 asked for neck-downs at connector / IC pin
+rows if needed: not the cause here (VSYS already necks to 0.25 mm at U201; at J302 the pad
+itself is wide enough and the pin is blocked by R302's pad) - **R7 / owner: placement**
+(R302 / R203 / R208 / L201 orientation, or VBUS not in front of U201). Final full check of
+run 4 (partial board): M15 0, M16 0, M7 0, M4 0, M12 review (pair mismatch), M2 74 (the open
+connections + GND before zones), M3 119 `hole_clearance` (footprint holes 0.19 mm apart,
+pre-existing) and M13 J201 0.75 mm (pre-existing).
+
+**Golden (`sp4_synth_metrics.json`, regenerated on `48bd7c2` + R4, idle host; 5 / 5
+kicad_e2e passed, 90 s):** M16 7 review -> **0 pass** (hard now), M15 0 pass (hard now), M7
+review -> pass, M11 0.9588 -> 0.9576, `fill_seconds` 19.5 -> null (nothing to fill: every
+non-ground net is critical), tracks 137 -> 130, vias 120 -> 126, length 210.8 -> 215.4 mm. Flow: 0 hard, **M15 = 0 and M16 = 0** (USB-C A7-B7 joined through two In2 vias behind the
+pins, A6-B6 through In2 east of them; C10.2 / U3.2 SW and Y1.3 / C5.1 without a loop), M8
+4.20 mm, nothing to fill. New kicad_e2e test `test_golden_m15_m16_hard`.
+
+**Residuals**
+- R7 / owner: the four placement-forced ODH connections above; Freerouting time per fill
+  (150-230 s at 30 passes) is spent on them.
+- The router's random-map property test routes 464 / 493 (94 %) - the escape term costs
+  search effort; `pcb_route` on ODH 126 -> 164 s.
+- Run-to-run variance of the fill on ODH is large (identical code: refused 53 % / 29 % /
+  accepted); measuring a Freerouting setting needs several runs per variant.
+- `entry_ok` (loops / jogs allowed) remains only as an explicit `solve` / `route` argument.
+
 ### As built (R2b)
 
 Owner follow-up to R2 (2026-11-27: parts inside a block too close, blocks too far apart,
@@ -3068,7 +3192,7 @@ re-routed by the own router (straight-first). `run_freerouting` refuses `extra_a
 the pass count or a thread/processor count.
 
 **B-C13 (R4)**: `run_freerouting(..., extra_args=…)` receives `FREEROUTING_SETTINGS` (a tuple of
-CLI options proven accepted by 2.5.0 in R4's probe; empty when none helps); DSN
+CLI options proven accepted by 2.5.0 in R4's probe; empty when none helps - *as built: empty*); DSN
 `autoroute_settings` additions only under owner D4 (last resort) and recorded.
 
 **B-C1/B-C8/B-C9 (R5, R6)**: presets `min_drill = 0.2` (2/4/6 layers); `cc/board/fab.py`
