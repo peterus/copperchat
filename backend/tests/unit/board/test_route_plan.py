@@ -1216,3 +1216,27 @@ def test_reservation_of_pair_net_uses_pair_width() -> None:
     m = dataclasses.replace(m, net_classes=(nc,))
     got = {r.net: r.width for r in route.corridor_reservations(m, cls)}
     assert got and all(w == pytest.approx(0.35) for w in got.values()), got
+
+
+def test_reservation_of_pair_net_falls_back_to_class_width() -> None:
+    """A pair net's connection whose pads are too narrow for the pair width (an unmatched
+    one, placed at the class width) is still reserved, at the class width."""
+    m = _usbc()
+    nc = dataclasses.replace(net_class(track_width=0.2), diff_pair_width=0.7, diff_pair_gap=0.15)
+    m = dataclasses.replace(m, net_classes=(nc,))
+    got = {r.net: r.width for r in route.corridor_reservations(m, _pair_cls(m))}
+    assert got and all(w == pytest.approx(0.2) for w in got.values()), got
+
+
+def test_reservation_width_per_connection() -> None:
+    """Round 3 regression: a fully necked first connection does not shrink the width of
+    the net's later ones (each is reserved at its own placed width)."""
+    from .builders import part as mk_part
+
+    fine = mk_part("U1", 10.0, 10.0, pads=(pad("U1", "1", "P", (10.0, 10.0), w=0.25, h=0.25),))
+    near = mk_part("U2", 10.6, 10.0, pads=(pad("U2", "1", "P", (10.6, 10.0), w=0.25, h=0.25),))
+    wide = mk_part("C1", 20.0, 10.0, pads=(pad("C1", "1", "P", (20.0, 10.0), w=1.0, h=1.0),))
+    wide2 = mk_part("C2", 21.5, 10.0, pads=(pad("C2", "1", "P", (21.5, 10.0), w=1.0, h=1.0),))
+    m = circuit(fine, near, wide, wide2, net_classes=(net_class(track_width=0.5),))
+    got = sorted(r.width for r in route.corridor_reservations(m, classify(m)))
+    assert got[-1] == pytest.approx(0.5), got

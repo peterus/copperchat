@@ -674,29 +674,36 @@ def corridor_reservations(
         if cls.net_kind.get(net, "signal") == "ground":
             continue
         par = class_params(model, net)
-        paired = _pair_partner(cls, net) is not None
-        # a pair half is placed at the pair width without neck-down (plan_connections)
-        width = max(par.width, par.pair_width or 0.0) if paired else par.width
+        # (width, neck) as plan_connections places it: a matched pair half at the pair
+        # width without neck-down, any other connection at the class width with necks; a
+        # pair net's connection may be either, so the pair width is tried first
+        options = [(par.width, True)]
+        if _pair_partner(cls, net) is not None:
+            options.insert(0, (max(par.width, par.pair_width or 0.0), False))
         for a, b in connections(model, net):
-            w = min(width, neck_width(a, width, floor), neck_width(b, width, floor))
-            if straight_corridor(a, b, w, copper_layers=model.copper_layers) is None:
+            if _joined(a, b):
                 continue
-            if _joined(a, b) or routed_length(model, a, b) is not None:
-                continue
-            layers = default_layers(model)
-            req = RouteRequest(
-                net, a, b, width, par.clearance, layers, False, par.via,
-                neck=() if paired else neck_zones(model, (a, b), width, floor),
-            )  # fmt: skip
-            plan = ConnPlan(net, a, b, req, None)
-            path = straight_path(model, plan)
-            if path is None:
-                continue
-            layer = path.segments[0][0]
-            s, e = path.segments[0][1], path.segments[-1][2]
-            placed = max(pw for *_x, pw in path.segments)
-            if _corridor_free(model, net, layer, s, e, placed, par.clearance):
-                out.append(Reserved(_key(plan), net, layer, s, e, placed))
+            for width, necked in options:
+                w = min(width, neck_width(a, width, floor), neck_width(b, width, floor))
+                w = w if necked else width
+                if straight_corridor(a, b, w, copper_layers=model.copper_layers) is None:
+                    continue
+                if routed_length(model, a, b) is not None:
+                    break
+                req = RouteRequest(
+                    net, a, b, width, par.clearance, default_layers(model), False, par.via,
+                    neck=neck_zones(model, (a, b), width, floor) if necked else (),
+                )  # fmt: skip
+                plan = ConnPlan(net, a, b, req, None)
+                path = straight_path(model, plan)
+                if path is None:
+                    continue
+                layer = path.segments[0][0]
+                s, e = path.segments[0][1], path.segments[-1][2]
+                placed = max(pw for *_x, pw in path.segments)
+                if _corridor_free(model, net, layer, s, e, placed, par.clearance):
+                    out.append(Reserved(_key(plan), net, layer, s, e, placed))
+                break
     return tuple(out)
 
 
