@@ -41,6 +41,7 @@ BOARD_KINDS = frozenset(
         "board_place_block",
         "board_move",
         "board_legalize",
+        "board_place_blocks",
         "board_route",
         "board_route_fill",
         "board_unroute",

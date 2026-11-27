@@ -39,8 +39,8 @@ describe('board rows', () => {
     expect([...BOARD_KINDS].sort()).toEqual(
       [
         'board_sync_from_schematic', 'board_set_outline', 'board_set_rules', 'board_define_blocks',
-        'board_place_block', 'board_move', 'board_legalize', 'board_route', 'board_route_fill',
-        'board_unroute', 'board_zones', 'board_fanout', 'board_stitch', 'board_tidy_silk', 'board_approve',
+        'board_place_block', 'board_move', 'board_legalize', 'board_place_blocks', 'board_route',
+        'board_route_fill', 'board_unroute', 'board_zones', 'board_fanout', 'board_stitch', 'board_tidy_silk', 'board_approve',
       ].sort(),
     );
   });

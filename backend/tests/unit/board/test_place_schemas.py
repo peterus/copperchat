@@ -182,3 +182,93 @@ def test_unplaced_blocks_without_courtyard_uses_pads() -> None:
     groups = (("blk:in", ("C1",)), ("blk:out", ("C2",)))
     m = circuit(inside, outside, groups=groups)
     assert place._unplaced_blocks(m) == ["out"]
+
+
+# -- R2: pcb_floorplan (read) and pcb_place_blocks (write) ---------------------------------
+
+
+def _any_spec(name: str) -> Any:
+    return next(s for s in TOOL_SPECS if s.name == name)
+
+
+def test_round2_tools_registered() -> None:
+    names = [s.name for s in TOOL_SPECS]
+    assert names.count("pcb_floorplan") == 1 and names.count("pcb_place_blocks") == 1
+    fp = _any_spec("pcb_floorplan")
+    assert not fp.mutating and fp.prepare is None
+    pb = _any_spec("pcb_place_blocks")
+    assert pb.mutating and pb.changes_documents and pb.prepare is not None
+
+
+@pytest.mark.parametrize("name", ["pcb_floorplan", "pcb_place_blocks"])
+def test_round2_schemas_bounded(name: str) -> None:
+    schema = _any_spec(name).input_schema
+    assert unbounded(schema) == []
+    for path, o in _objects(schema):
+        assert o.get("additionalProperties") is False, path
+    props = schema["properties"]
+    assert (props["blocks"]["minItems"], props["blocks"]["maxItems"]) == (1, 32)
+    assert (props["keep_channels"]["minimum"], props["keep_channels"]["maximum"]) == (0, 5)
+    assert schema["required"] == []
+    assert ("unroute" in props) is (name == "pcb_place_blocks")
+
+
+@pytest.mark.parametrize(
+    ("args", "write"),
+    [
+        ({"blocks": []}, True),
+        ({"blocks": ["a", "a"]}, True),
+        ({"blocks": ["bad\nname"]}, False),
+        ({"keep_channels": 6}, False),
+        ({"keep_channels": -1}, True),
+        ({"unroute": True}, False),  # read tool: no unroute
+        ({"unroute": "yes"}, True),
+        ({"extra": 1}, True),
+    ],
+)
+def test_floorplan_args_refused(args: dict[str, Any], write: bool) -> None:
+    with pytest.raises(StructuredToolError) as err:
+        place._parse_floorplan_args(args, write=write)
+    assert err.value.code == "invalid_argument"
+
+
+def test_floorplan_args_ok() -> None:
+    assert place._parse_floorplan_args({}, write=False) == (
+        None,
+        place.DEFAULT_KEEP_CHANNELS_MM,
+        False,
+    )
+    got = place._parse_floorplan_args(
+        {"blocks": ["mcu", "pwr"], "keep_channels": 1.5, "unroute": True}, write=True
+    )
+    assert got == (["mcu", "pwr"], 1.5, True)
+
+
+def test_proposals_need_outline_blocks_and_known_names() -> None:
+    from dataclasses import replace
+
+    groups = (("blk:in", ("C1",)), ("blk:b2", ("C2",)))
+    m = circuit(cap("C1", "A", "B"), cap("C2", "A", "B", (60.0, 40.0)), groups=groups)
+    got = place._proposals(m, None)
+    assert [(b.name, b.refs) for b in got] == [("b2", ("C2",)), ("in", ("C1",))]
+    with pytest.raises(StructuredToolError) as err:
+        place._proposals(m, ["inn"])
+    assert err.value.code == "unknown_block"
+    assert err.value.details == {"closest": ["in"]}
+    with pytest.raises(StructuredToolError) as err:
+        place._proposals(replace(m, groups=()), None)
+    assert err.value.code == "invalid_argument"
+    with pytest.raises(StructuredToolError) as err:
+        place._proposals(replace(m, outline=replace(m.outline, kind="none")), None)
+    assert err.value.code == "invalid_argument"
+
+
+def test_does_not_fit_details_courtyard_fill() -> None:
+    err = place._does_not_fit(
+        place.DoesNotFit(900.0, 800.0, ("U1",), courtyard_fill=0.62), "The blocks"
+    )
+    assert err.code == "does_not_fit"
+    assert err.details is not None and err.details["courtyard_fill"] == 0.62
+    assert "62%" in err.why
+    plain = place._does_not_fit(place.DoesNotFit(1.0, 0.5, ("U1",)), "Block 'a'")
+    assert plain.details is not None and "courtyard_fill" not in plain.details

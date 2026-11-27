@@ -39,6 +39,7 @@ from typing import Literal
 from copperchat.board.model import BoardModel, Rect, board_hash, placement_hash
 from copperchat.board.render import (
     SVG_NS,
+    Hull,
     Marker,
     block_hulls,
     default_extent,
@@ -312,6 +313,8 @@ class _Overlay:
     highlight_layers: tuple[str, ...]
     markers: tuple[Marker, ...]
     title: str
+    # R2: drawn instead of the block hulls when given (pcb_floorplan's regions)
+    extra_hulls: tuple[Hull, ...] = ()
 
 
 def _prepare(path: Path, ov: _Overlay) -> tuple[bytes, tuple[float, float]]:
@@ -328,7 +331,7 @@ def _prepare(path: Path, ov: _Overlay) -> tuple[bytes, tuple[float, float]]:
         ET.tostring(root, encoding="unicode"),
         extent=ov.region,
         mirror=ov.mirror,
-        hulls=block_hulls(m) if ov.hulls else (),
+        hulls=ov.extra_hulls or (block_hulls(m) if ov.hulls else ()),
         markers=ov.markers,
         highlight=(
             highlight_shapes(m, ov.highlight_nets, ov.highlight_layers) if ov.highlight_nets else ()
@@ -426,10 +429,12 @@ async def render_board(
     markers: Sequence[Marker] = (),
     angle: Angle = "top",
     model: BoardModel | None = None,
+    hulls: Sequence[Hull] = (),
 ) -> BoardRender:
     """PNG (+ wrapper SVG for 2D views) of the live board under `.kicad-agent/renders/
     <uuid32>`; the hashes are those of the rendered state (`model`, read here when not
-    given). `layer`, nets and region are validated by the caller (`pcb_render`)."""
+    given). `layer`, nets and region are validated by the caller (`pcb_render`). `hulls`
+    (2D views; R2's `pcb_floorplan` regions) are drawn instead of the block hulls."""
     require_board(ctx)
     m = model if model is not None else await board_model(ctx)
     renders = agent_dir(ctx.project) / "renders"
@@ -456,6 +461,7 @@ async def render_board(
                     highlight_layers=highlight_layers(view, layer),
                     markers=tuple(markers),
                     title=f"{ctx.project.name} board, {view}" + (f" {layer}" if layer else ""),
+                    extra_hulls=tuple(hulls),
                 )
                 svg, png = await _render_2d(ctx, view, layer, board, ov)
     except OSError as exc:  # e.g. the rasteriser's temp directory (mkdtemp)

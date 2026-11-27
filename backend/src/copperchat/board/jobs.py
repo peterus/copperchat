@@ -15,7 +15,7 @@ from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal
 
 from copperchat.board.boardmd import BoardDoc, Edge
-from copperchat.board.classify import Classification, classify
+from copperchat.board.classify import BlockProposal, Classification, classify
 from copperchat.board.metrics import MetricsReport, compute_metrics
 from copperchat.board.model import BoardModel, Point, Rect, Side
 from copperchat.board.placer import (
@@ -29,6 +29,7 @@ from copperchat.board.placer import (
     place_block,
     score_placement,
 )
+from copperchat.board.placer.floorplan import Floorplan, floorplan, place_blocks
 from copperchat.board.placer.pack import PLACE_GRID_MM
 from copperchat.board.planes import ViaCandidate, fanout_candidates, stitch_candidates
 from copperchat.board.presets import FabPreset
@@ -319,3 +320,44 @@ def silk_plan_job(
 ) -> tuple[tuple[RefPlacement, ...], tuple[str, ...]]:
     """`silk.plan_refs` for `pcb_tidy_silk` (callers pass a fill-stripped model)."""
     return plan_refs(model, height=height, line=line, skip=skip, exclude=exclude)
+
+
+# ---- floorplan (R2, B-C11 round 2) ----------------------------------------------------------
+
+
+def floorplan_job(
+    model: BoardModel,
+    doc: BoardDoc,
+    blocks: tuple[BlockProposal, ...],
+    *,
+    keep_channels: float,
+    allowed_sides: frozenset[Side],
+) -> Floorplan | DoesNotFit:
+    """`floorplan` of `pcb_floorplan`, classified here in the worker."""
+    return floorplan(
+        model,
+        classify(model, doc),
+        doc,
+        blocks,
+        keep_channels=keep_channels,
+        allowed_sides=allowed_sides,
+    )
+
+
+def place_blocks_job(
+    model: BoardModel,
+    doc: BoardDoc,
+    blocks: tuple[BlockProposal, ...],
+    *,
+    keep_channels: float,
+    allowed_sides: frozenset[Side],
+) -> tuple[PlaceResult, Floorplan] | DoesNotFit:
+    """`place_blocks` of `pcb_place_blocks`, classified here in the worker."""
+    return place_blocks(
+        model,
+        classify(model, doc),
+        doc,
+        blocks,
+        keep_channels=keep_channels,
+        allowed_sides=allowed_sides,
+    )

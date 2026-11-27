@@ -9,7 +9,7 @@ from copperchat.changes.repo import BOARD_KINDS
 from copperchat.tools import ToolResult, ToolSpec, registry
 
 KINDS = ("requirements", "schematic", "board", "free")
-# The 17 write tools of spec §7.2.
+# The 17 write tools of spec §7.2, plus R2's pcb_place_blocks (spec §22.3).
 SPEC_72 = {
     "pcb_sync_from_schematic",
     "pcb_set_outline",
@@ -18,6 +18,7 @@ SPEC_72 = {
     "pcb_place_block",
     "pcb_move",
     "pcb_legalize",
+    "pcb_place_blocks",
     "pcb_route",
     "pcb_route_fill",
     "pcb_unroute",
@@ -81,8 +82,13 @@ def test_flag_on_schematic_has_no_pcb_writes() -> None:
     assert "sch_connect" in _names("schematic", board_tools=True)
 
 
+def test_pcb_floorplan_is_a_read() -> None:
+    assert "pcb_floorplan" in PCB_READ
+    assert "pcb_floorplan" in _names("requirements", board_tools=False)
+
+
 def test_pcb_writes_is_the_spec_list() -> None:
-    assert len(PCB_WRITES) == 17
+    assert len(PCB_WRITES) == 18
     assert set(PCB_WRITES) == SPEC_72
     assert all(n.startswith("pcb_") for n in PCB_WRITES)
     assert not PCB_WRITES & PCB_READ
