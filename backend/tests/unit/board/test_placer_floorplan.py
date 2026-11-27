@@ -530,3 +530,23 @@ def test_align_pairs_tightens_corridor() -> None:
     blocked = replace(m, parts=(*m.parts, part("X1", 22.0, 20.0, half=0.3)))
     out = align_pairs(blocked, classify(blocked), _moves(blocked), movable=frozenset({"R1"}))
     assert apply_moves(blocked, out).part("R1").x == pytest.approx(23.3)  # touches X1 (22.3)
+
+
+def test_assign_side_piece_only_what_tiles() -> None:
+    """ODH 80 x 100 (R2 probe): three small blocks next to the USB strip fit the 30 x 17 mm
+    side piece by area but not by shape; only what tiles it goes there, the rest stays in
+    the big rectangle (else the floorplan failed with 54 % box fill)."""
+    from copperchat.board.placer import floorplan as fpm
+
+    sizes = {"a": (16.86, 11.28), "b": (9.55, 6.73), "c": (9.05, 9.61), "big": (30.0, 20.0)}
+    boxes = {n: fpm.BlockBox(n, (n.upper(),), w, h, None, None) for n, (w, h) in sizes.items()}
+    boxes["usb"] = fpm.BlockBox("usb", ("J1",), 12.6, 18.2, "bottom", None)
+    weight = {("a", "usb"): 2, ("b", "usb"): 3, ("c", "usb"): 1}
+    nets = {n: frozenset({f"N{n}"}) for n in boxes}
+    ctx = fpm._Ctx(boxes=boxes, weight=weight, nets=nets, where={}, keep=1.5)
+    free = [(101.8, 101.8, 178.2, 180.0), (101.8, 181.5, 132.2, 198.2)]
+    fixed = {"usb": (133.7, 181.5, 146.3, 199.7)}
+    groups = fpm._assign(ctx, free, ["a", "b", "big", "c"], fixed)
+    assert sorted(groups[0] + groups[1]) == ["a", "b", "big", "c"]
+    assert groups[1] and fpm._tiles(ctx, free[1], groups[1])
+    assert "big" in groups[0]
