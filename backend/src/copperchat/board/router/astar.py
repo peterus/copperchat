@@ -16,7 +16,9 @@ exact clearance check (`ObstacleGrid.segment_clear`); otherwise the search goes 
 Round 2 (R3, owner rule a): a branch off existing own-net copper is a T - it meets a
 straight own track perpendicularly - never a Y (45° / 135°). With `req.tree` the goal is pad
 `b` or a node next to the interior of an own track connected to `b`, entered by a move
-perpendicular to that track (the path's end then lands exactly on the track).
+perpendicular to that track (the path's end then lands exactly on the track). A bend
+inside an end pad's entry zone (`geom.entry_zone`, outside the pad) costs ENTRY_TURN_COST
+more, and a path whose pad entry loops (M16 b, `geom.analyse_entry`) is never accepted.
 """
 
 from __future__ import annotations
@@ -36,7 +38,10 @@ from copperchat.board.geom import (
     _in_pad,
     _pad_on_layer,
     analyse_bends,
+    analyse_entry,
+    entry_zone,
     junction_kind,
+    point_in_polygon,
 )
 from copperchat.board.model import BoardModel, Pad, Point
 from copperchat.board.router.grid import (
@@ -55,6 +60,8 @@ from copperchat.board.router.grid import (
 from copperchat.board.router.simplify import SnapError, layer_runs, merge_collinear, to_path
 
 TURN_COST = 1.0  # mm-equivalent per 45° bend (0.3 planned; 1.0 measured: fewer bends, same speed)
+# R3 (owner rule c): extra cost of a bend inside an end pad's entry zone (outside the pad)
+ENTRY_TURN_COST = 4.0
 VIA_COST = 2.0  # mm-equivalent per via
 LAYER_FACTOR = 1.2  # step cost on every layer but the request's first
 PAIR_BAND_FACTOR = 0.8  # step cost inside a grid's `cheap` band (pair fallback)
@@ -81,11 +88,16 @@ _ND = 10
 _EPS = 1e-9
 
 
+PAD_AXIS_RATIO = 1.5  # pads less elongated than this have no long axis (R3)
+
+
 def pad_dirs(pad: Pad) -> frozenset[int]:
     """Directions a track may leave (or enter) `pad` in: the long axis both ways and ±45°
-    to it — 6 of 8; square and round pads: all 8. The axis is the pad's rotation rounded to
-    the nearest 45°."""
-    if pad.shape == "circle" or abs(pad.w - pad.h) <= 1e-9:
+    to it — 6 of 8; round pads and pads with long / short side < PAD_AXIS_RATIO (R3: an
+    0603 pad of 0.8 x 0.95 mm is left straight towards its neighbour, owner rule b): all 8.
+    The axis is the pad's rotation rounded to the nearest 45°."""
+    lo, hi = sorted((pad.w, pad.h))
+    if pad.shape == "circle" or hi < PAD_AXIS_RATIO * lo:
         return frozenset(range(8))
     k = round((pad.rot % 360.0) / 45.0) % 8
     if pad.h > pad.w:
@@ -359,6 +371,31 @@ def junction_masks(grid: ObstacleGrid, deadline: float | None = None) -> list[di
     return out
 
 
+def _entry_loops(pts: Sequence[Point], pad: Pad, width: float) -> bool:
+    """The run starting in `pad` turns back inside the pad's entry zone (M16 pad loop)."""
+    if not pts or not _in_pad(pts[0], pad):
+        return False
+    rep = analyse_entry(pts, width, entry_zone(pad, width), in_pad=lambda q: _in_pad(q, pad))
+    return bool(rep.loops)
+
+
+def entry_nodes(grid: ObstacleGrid, pads: Sequence[Pad], width: float) -> set[int]:
+    """The lattice nodes inside the entry zone of one of `pads` but outside that pad."""
+    out: set[int] = set()
+    w = grid.w
+    for pad in pads:
+        zone = list(entry_zone(pad, width))
+        xs, ys = [q[0] for q in zone], [q[1] for q in zone]
+        i0, j0 = grid.cell(min(xs), min(ys))
+        i1, j1 = grid.cell(max(xs), max(ys))
+        for j in range(max(0, j0), min(grid.h - 1, j1) + 1):
+            for i in range(max(0, i0), min(w - 1, i1) + 1):
+                q = grid.xy(i, j)
+                if point_in_polygon(q, zone) and not _in_pad(q, pad):
+                    out.add(j * w + i)
+    return out
+
+
 def valid_path(path: RoutePath, grid: ObstacleGrid, req: RouteRequest) -> bool:
     """The path starts on a layer of pad `a` and ends on one of pad `b`; `analyse_bends` has
     no failure on any layer run (the end-bend exemption only for a bend inside its pad —
@@ -385,6 +422,10 @@ def valid_path(path: RoutePath, grid: ObstacleGrid, req: RouteRequest) -> bool:
             k == 0 and len(pts) >= 3 and _in_pad(pts[1], req.a),
             k == last and not t_end and len(pts) >= 3 and _in_pad(pts[-2], req.b),
         )
+        if k == 0 and _entry_loops(pts, req.a, req.width):
+            return False
+        if k == last and not t_end and _entry_loops(pts[::-1], req.b, req.width):
+            return False
         r = analyse_bends(pts, req.width, pad_ends=ends)
         if (
             r.non_octilinear
@@ -953,6 +994,7 @@ def _search(
 
     sd = 3 * kk
     exit_cap = max(1, math.ceil(math.hypot(start_pad.w, start_pad.h) / pitch) + 2)
+    ez = entry_nodes(grid, (req.a, req.b), req.width)  # bends there cost ENTRY_TURN_COST more
     try:  # per layer: node -> directions that make a T with own copper
         tj = junction_masks(grid, deadline)
     except DeadlineExpired:
@@ -1073,7 +1115,7 @@ def _search(
                 if not may[d][s][k][ns]:
                     continue
                 o, st = off[nd], step[nd]
-                c = TURN_COST
+                c = TURN_COST + (ENTRY_TURN_COST if n in ez else 0.0)
                 m = n
                 for t in range(1, kmin[nd] + 1):
                     if tjl and (tjl.get(m, 0) >> nd) & 1:  # this step meets own copper at 90°
@@ -1099,7 +1141,8 @@ def _search(
                             push(heap, (ng + hm, -ng, counter, ng, m, li, nd, s2, k2))
                             counter += 1
             if allow_vias and not via_blocked[n]:
-                ng = g + VIA_COST
+                # a via resets the direction: in an entry zone it costs like a bend there
+                ng = g + VIA_COST + (ENTRY_TURN_COST if n in ez else 0.0)
                 for l2 in range(nl):
                     if l2 == li or cells[l2][n] == blocked:
                         continue

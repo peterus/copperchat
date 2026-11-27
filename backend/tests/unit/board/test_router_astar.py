@@ -244,6 +244,9 @@ def test_pad_dirs() -> None:
     assert pad_dirs(pad("S", 0, 0, 1.0, 0.4)) == frozenset({0, 1, 7, 4, 3, 5})
     assert pad_dirs(pad("S", 0, 0, 0.4, 1.0)) == frozenset({2, 1, 3, 6, 5, 7})
     assert pad_dirs(pad("S", 0, 0, 1.0, 0.4, rot=50.0)) == frozenset({1, 0, 2, 5, 4, 6})
+    # R3: an 0603-like pad (aspect < PAD_AXIS_RATIO) has no long axis
+    assert pad_dirs(pad("S", 0, 0, 0.8, 0.95)) == frozenset(range(8))
+    assert pad_dirs(pad("S", 0, 0, 0.6, 0.9)) == frozenset({2, 1, 3, 6, 5, 7})
     assert DIRS[1] == (1, -1)  # counter-clockwise on screen (y down)
 
 

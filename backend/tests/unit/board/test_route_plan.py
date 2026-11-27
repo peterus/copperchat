@@ -881,3 +881,122 @@ async def test_duplicate_pad_numbers_kept_apart(
     assert out.routed == ("N1:R1.1-U5.2", "N1:R1.1-U5.2#2")
     assert len(out.results) == 2 and len({k for r in out.results for k in r.kiids}) == 2
     assert set(board.items) == {k for r in out.results for k in r.kiids}
+
+
+# -- R3: straight first (owner rule b) -----------------------------------------------------
+
+
+def _adjacent() -> BoardModel:
+    """R1.2 (10.5, 10) and R2.1 (11.5, 10) on N1, aligned 0.4 mm apart (a corridor);
+    R3/R4 on N2 far apart (no corridor)."""
+    return circuit(
+        res("R1", "A", "N1", (10.0, 10.0)),
+        res("R2", "N1", "B", (12.0, 10.0)),
+        res("R3", "N2", "C", (10.0, 20.0)),
+        res("R4", "D", "N2", (20.0, 20.0)),
+    )
+
+
+def test_straight_path_of_aligned_pair() -> None:
+    m = _adjacent()
+    (p,) = _plan(m, ["N1"])
+    path = route.straight_path(m, p)
+    assert path is not None and path.vias == ()
+    assert path.segments == (("F.Cu", (10.5, 10.0), (11.5, 10.0), 0.2),)
+    (q,) = _plan(m, ["N2"])
+    assert route.straight_path(m, q) is None
+
+
+async def test_straight_first_aligned_pair(board: Board, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pass 0: the aligned pair gets its one segment (no search); the other net is searched."""
+    cpu = FakeCpu()
+    monkeypatch.setattr(route, "run_cpu", cpu)
+    m = _adjacent()
+    sctx = FakeSctx(m)
+    out = await route.route_connections(sctx, _plan(m, ["N1", "N2"]), lock=True)  # type: ignore[arg-type]
+    assert set(out.routed) == {"N1:R1.2-R2.1", "N2:R3.1-R4.2"}
+    assert [c["args"][1].net for c in cpu.calls] == ["N2"]
+    n1 = next(r for r in out.results if r.net == "N1")
+    assert len(n1.kiids) == 1 and n1.length_mm == pytest.approx(1.0)
+
+
+async def test_straight_first_falls_back(board: Board, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The straight segment is free in geometry but DRC-rejected (clearance to a zone): it is
+    removed and the search routes the connection, no error."""
+    cpu = FakeCpu()
+    monkeypatch.setattr(route, "run_cpu", cpu)
+    m = _adjacent()
+    first = {"done": False}
+
+    def drc(t: float) -> DrcResult:
+        if first["done"]:
+            return DrcResult((), 0, 0.01)
+        first["done"] = True
+        (k,) = list(board.items)
+        return DrcResult((DrcMarker("clearance", "error", "zone", (k, "zone-1"), None),), 0, 0.01)
+
+    sctx = FakeSctx(m, drc)
+    out = await route.route_connections(sctx, _plan(m, ["N1"]), lock=True)  # type: ignore[arg-type]
+    assert out.routed == ("N1:R1.2-R2.1",) and out.failed == ()
+    assert len(cpu.calls) == 1  # the search
+    assert set(board.items) == sctx.created and len(board.items) == 1
+
+
+async def test_straight_first_retries_after_sibling(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two pass-0 segments that clash only with each other are both removed; each is tried
+    again alone at the end of the pass (the second then clashes with the first one kept)."""
+    cpu = FakeCpu(lambda fn, args, kw, t: None)
+    monkeypatch.setattr(route, "run_cpu", cpu)
+    m = circuit(
+        res("R1", "A", "N1", (10.0, 10.0)),
+        res("R2", "N1", "B", (12.0, 10.0)),
+        res("R5", "E", "N3", (10.0, 14.0)),
+        res("R6", "N3", "F", (12.0, 14.0)),
+    )
+    calls = {"n": 0}
+
+    def drc(t: float) -> DrcResult:
+        calls["n"] += 1
+        ks = list(board.items)
+        if calls["n"] == 1:  # both pushed together: they "clash"
+            return DrcResult((DrcMarker("clearance", "error", "x", tuple(ks), None),), 0, 0.01)
+        if calls["n"] == 3:  # the second retry clashes with the first (kept) one
+            return DrcResult((DrcMarker("clearance", "error", "x", tuple(ks), None),), 0, 0.01)
+        return DrcResult((), 0, 0.01)
+
+    sctx = FakeSctx(m, drc)
+    out = await route.route_connections(sctx, _plan(m, ["N1", "N3"]), lock=True)  # type: ignore[arg-type]
+    assert out.routed == ("N1:R1.2-R2.1",)
+    assert [k for k, _ in out.failed] == ["N3:R5.2-R6.1"]  # its search found nothing
+    assert {c["args"][1].net for c in cpu.calls} == {"N3"}
+
+
+def test_corridor_reservations_free_only() -> None:
+    m = _adjacent()
+    res_all = route.corridor_reservations(m, classify(m))
+    assert [r.key for r in res_all] == ["N1:R1.2-R2.1"]
+    blocked = dataclasses.replace(m, tracks=(track("X", "F.Cu", (11.0, 9.0), (11.0, 11.0)),))
+    assert route.corridor_reservations(blocked, classify(blocked)) == ()
+
+
+async def test_corridor_reserved_across_calls(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Routing N2 alone (a chunk) while N1's corridor is still free: N2's search sees that
+    corridor as N1 copper; N1's own plans never see their reservation."""
+    cpu = FakeCpu()
+    monkeypatch.setattr(route, "run_cpu", cpu)
+    m = _adjacent()
+    reserve = route.corridor_reservations(m, classify(m))
+    sctx = FakeSctx(m)
+    await route.route_connections(sctx, _plan(m, ["N2"]), lock=True, reserve=reserve)  # type: ignore[arg-type]
+    (call,) = cpu.calls
+    fake = [t for t in call["args"][0].tracks if t.kiid.startswith("reserved:")]
+    assert [(t.net, t.start, t.end) for t in fake] == [("N1", (10.5, 10.0), (11.5, 10.0))]
+    cpu.calls.clear()
+    monkeypatch.setattr(route, "straight_path", lambda model, plan: None)
+    await route.route_connections(FakeSctx(m), _plan(m, ["N1"]), lock=True, reserve=reserve)  # type: ignore[arg-type]
+    (call,) = cpu.calls
+    assert not [t for t in call["args"][0].tracks if t.kiid.startswith("reserved:")]

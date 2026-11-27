@@ -81,6 +81,24 @@ def test_exact_pad_centres(routed: list[Result]) -> None:
             assert q == p2, f"seed {seed}: path not continuous"
 
 
+def test_no_entry_loops(routed: list[Result]) -> None:
+    """R3 (owner rule c, M16 b): no routed path turns back inside an end pad's entry zone."""
+    from copperchat.board.geom import _in_pad, analyse_entry, entry_zone
+
+    n = 0
+    for seed, _m, r, path in routed:
+        if path is None:
+            continue
+        runs = layer_runs(path)
+        for pts, end in ((runs[0][1], r.a), (runs[-1][1][::-1], r.b)):
+            rep = analyse_entry(
+                pts, r.width, entry_zone(end, r.width), in_pad=lambda q, e=end: _in_pad(q, e)
+            )
+            assert rep.loops == (), f"seed {seed} {r.net}: loop at {rep.loops}"
+            n += 1
+    assert n >= 400
+
+
 def test_open_maps_always_route() -> None:
     for seed in range(0, 250, 5):
         m, reqs = open_map(random.Random(seed))

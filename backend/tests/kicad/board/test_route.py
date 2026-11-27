@@ -88,6 +88,12 @@ async def test_route_critical_set(synth_routed: PlacedSynth, record_property: An
     metrics = await setup_call(placed.turn("run-crit-m"), "pcb_metrics", only=["M4", "M7"])
     for m in metrics["metrics"]:
         assert m["value"] == 0 and m["verdict"] == "pass", m
+    # R3: the own router's copper has no Y-junction (M15) and no dogleg / pad loop (M16
+    # hard part) - both still `review` metrics until R4 switches them hard
+    r3 = await setup_call(placed.turn("run-crit-m16"), "pcb_metrics", only=["M15", "M16"])
+    for m in r3["metrics"]:
+        print(m["id"], m["value"], [o["what"] for o in m["offenders"]])
+        assert m["value"] == 0, m
     model = await _model(placed, "run-crit-model")
     mine = [t for t in model.tracks if t.net in nets] + [v for v in model.vias if v.net in nets]
     assert mine and all(it.locked for it in mine)
@@ -243,6 +249,7 @@ async def test_route_cancel_compensates(
 ) -> None:
     await _unroute(synth_routed, "run-cancel-0", list(SIGNALS))  # each test alone on a shard
     ctx = synth_routed.turn("run-cancel")
+    monkeypatch.setattr(route, "straight_path", lambda model, plan: None)  # search only
     before = await board_model(ctx)
     cs = await route.prepare_route(ctx, {"nets": list(SIGNALS)})
     second = SIGNALS[1]  # the first net's copper is pushed before this one solves
@@ -304,6 +311,7 @@ async def test_drc_reject_then_retry(
     retry (margin 0.05, the real router) is accepted, nothing of the rejected try is left."""
     await _unroute(synth_routed, "run-rej-0", list(SIGNALS))  # each test alone on a shard
     net = SIGNALS[0]
+    monkeypatch.setattr(route, "straight_path", lambda model, plan: None)  # search only
     ctx = synth_routed.turn("run-rej")
     model = await board_model(ctx)
     real = route.run_cpu
