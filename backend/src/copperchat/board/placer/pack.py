@@ -67,6 +67,11 @@ EDGE_SNAP_MM = 0.5  # an assigned connector this close to its edge (beyond the m
 EDGE_MISS = 1000.0
 FACING_MM = 5.0  # a connector whose mouth does not face its edge costs like this far away
 MOUTH_MIN_MM = 0.5  # pad centroid this far off the courtyard centre gives the connector a mouth
+# R2: a routed (not ground) pad of the block with partners outside it whose line to them
+# crosses another member's courtyard (a header between an MCU's USB pins and the USB
+# connector) costs this much per pad, for the rotation that does it
+OCCLUDE_WEIGHT = 10.0
+_RAY_KINDS = frozenset({"signal", "diff_pair", "supply", "high_current"})  # not ground (a plane)
 COARSE_MAX_SPOTS = 4_000  # the coarse grid widens (in 2 mm steps) beyond this many spots
 SLANT_SCAN_MAX_SPOTS = 40_000  # the slanted-outline fallback scan widens beyond this
 COARSE_MIN_SPOTS = 400  # ... and never below this many (the pad budget's floor)
@@ -286,6 +291,52 @@ class _Variant:
     box: Box
     pads: list[tuple[str, Point]]  # (net, local position) of non-ground pads with outside partners
     conns: Sequence[tuple[Box, Point | None, str | None]]  # connectors: local box, mouth, edge
+    occluded: int = 0  # signal pads whose line to their outside partners crosses a member
+
+
+def _seg_hits_box(a: Point, b: Point, box: Box) -> bool:
+    """The segment ab enters the interior of `box` (Liang-Barsky clipping)."""
+    t0, t1 = 0.0, 1.0
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    for p, q in (
+        (-dx, a[0] - box[0]),
+        (dx, box[2] - a[0]),
+        (-dy, a[1] - box[1]),
+        (dy, box[3] - a[1]),
+    ):
+        if abs(p) < _EPS:
+            if q <= _EPS:
+                return False
+            continue
+        t = q / p
+        if p < 0:
+            t0 = max(t0, t)
+        else:
+            t1 = min(t1, t)
+        if t0 >= t1 - _EPS:
+            return False
+    return True
+
+
+def _occluded(
+    parts: Sequence[Part],
+    boxes: Sequence[Box],
+    partner: Mapping[str, Point],
+    shift: Point,
+    kinds: Mapping[str, str],
+) -> int:
+    """How many signal pads of `parts` (moved by `shift`) see another member's courtyard on
+    the straight line to their net's outside partners (`partner`: their centroid)."""
+    n = 0
+    moved = [(b[0] + shift[0], b[1] + shift[1], b[2] + shift[0], b[3] + shift[1]) for b in boxes]
+    for i, p in enumerate(parts):
+        for q in p.pads:
+            if q.net not in partner or kinds.get(q.net) not in _RAY_KINDS:
+                continue
+            a = (q.x + shift[0], q.y + shift[1])
+            if any(j != i and _seg_hits_box(a, partner[q.net], mb) for j, mb in enumerate(moved)):
+                n += 1
+    return n
 
 
 def _mouth(p: Part) -> Point | None:
@@ -449,6 +500,7 @@ def pack_block(
     obox: Box = (o.x, o.y, o.x + o.w, o.y + o.h) if o.kind != "none" else reg
 
     variants: list[_Variant] = []
+    rays: list[list[Part]] = []
     for theta in (rotation,) if rotation is not None else (0, 90, 180, 270):
         mv = _orient(local, theta % 360, side)
         parts = [moved_part(known[m.ref], m) for m in mv]
@@ -461,9 +513,18 @@ def pack_block(
             and (p.ref in edges or edge is not None or p.ref in heads)
         ]
         variants.append(_Variant(theta % 360, mv, boxes, _union_box(boxes), pads, conns))
+        rays.append(parts)
 
     centre = target if target is not None else ((reg[0] + reg[2]) / 2, (reg[1] + reg[3]) / 2)
     n = len(members)
+    # the rotation test of OCCLUDE_WEIGHT, with the block centred on `centre`
+    partner = {
+        net: (sum(x for x, _ in pts) / len(pts), sum(y for _, y in pts) / len(pts))
+        for net, pts in outside.items()
+    }
+    for v, parts in zip(variants, rays, strict=True):
+        shift = (centre[0] - (v.box[0] + v.box[2]) / 2, centre[1] - (v.box[1] + v.box[3]) / 2)
+        v.occluded = _occluded(parts, v.boxes, partner, shift, cls.net_kind)
 
     def legal(v: _Variant, x: float, y: float) -> bool:
         """Cheapest test first: obstacles, keepouts, then the outline."""
@@ -483,7 +544,7 @@ def pack_block(
         for net, (px, py) in v.pads:
             c += nearest[net].dist((px + x, py + y))
         bc = ((v.box[0] + v.box[2]) / 2 + x, (v.box[1] + v.box[3]) / 2 + y)
-        c += pull_weight * n * octi_dist(bc, centre)
+        c += pull_weight * n * octi_dist(bc, centre) + OCCLUDE_WEIGHT * v.occluded
         for b, mouth, e in v.conns:
             c += EDGE_WEIGHT * _edge_cost(
                 (b[0] + x, b[1] + y, b[2] + x, b[3] + y), mouth, e, obox, margin

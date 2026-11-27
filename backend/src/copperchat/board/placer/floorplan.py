@@ -12,8 +12,9 @@ no randomness).
    region; a block with a member in Placement edges → a strip along that edge, as deep as
    the box (its connector's mouth facing the edge), centred on the row's position (a number
    in the cell: mm along the edge from its top / left end) or the edge middle. The rest of
-   the usable box is split into at most `MAX_FREE_RECTS` free rectangles (guillotine,
-   biggest first).
+   the usable box, inset by an edge channel (`max(keep_channels, CHANNEL_MIN_MM)`), is
+   split into at most `MAX_FREE_RECTS` free rectangles (guillotine, biggest first, a
+   channel between them).
 4. Free blocks are distributed over the free rectangles (the biggest takes all but the
    blocks that belong next to a fixed block in a smaller one), then each rectangle is
    bisected recursively: cut across the longer side, the blocks split into two groups with
@@ -44,7 +45,7 @@ from dataclasses import dataclass, field
 
 from copperchat.board.boardmd import BoardDoc, Edge
 from copperchat.board.classify import BlockProposal, Classification, classify
-from copperchat.board.geom import _bbox_of, _pad_rect, polygon_area, straight_corridor
+from copperchat.board.geom import _bbox_of, _pad_rect, polygon_area
 from copperchat.board.metrics import REVIEW, alignment_need, alignment_pairs
 from copperchat.board.model import BoardModel, Pad, Part, Point, Rect, Side
 from copperchat.board.placer.cluster import is_anchor
@@ -85,6 +86,10 @@ GREEDY_PASSES = 50
 # instead of every block hugging its neighbours
 REGION_PULL_WEIGHT = 2.0
 MAX_FREE_RECTS = 4
+# align_pairs' tighten step: two connected pads with a straight corridor end this far apart
+# at the least (when the courtyards allow), moved in steps of TIGHT_STEP_MM
+TIGHT_GAP_MM = 0.3
+TIGHT_STEP_MM = 0.05
 _EPS = 1e-6
 _NUM = re.compile(r"-?\d+(?:\.\d+)?")
 _EDGES: tuple[Edge, ...] = ("top", "bottom", "left", "right")
@@ -158,26 +163,31 @@ def _fits(w: float, h: float, b: Box) -> bool:
     return (w <= bw + _EPS and h <= bh + _EPS) or (h <= bw + _EPS and w <= bh + _EPS)
 
 
-def _minus(r: Box, f: Box) -> list[Box]:
+def _minus(r: Box, f: Box, gap: float = 0.0) -> list[Box]:
     """`r` without `f` as at most four rectangles (guillotine; of the two split orders the
-    one whose biggest piece is bigger)."""
+    one whose biggest piece is bigger). The two smaller pieces keep `gap` (a routing
+    channel) from the two full bands they touch."""
     if not _overlap(r, f):
         return [r]
     x0, y0, x1, y1 = max(r[0], f[0]), max(r[1], f[1]), min(r[2], f[2]), min(r[3], f[3])
+    top, bottom = y0 - r[1] > _EPS, r[3] - y1 > _EPS
+    left, right = x0 - r[0] > _EPS, r[2] - x1 > _EPS
+    my0, my1 = y0 + (gap if top else 0.0), y1 - (gap if bottom else 0.0)
+    mx0, mx1 = x0 + (gap if left else 0.0), x1 - (gap if right else 0.0)
     rows = [  # full-width bands first
         (r[0], r[1], r[2], y0),
         (r[0], y1, r[2], r[3]),
-        (r[0], y0, x0, y1),
-        (x1, y0, r[2], y1),
+        (r[0], my0, x0, my1),
+        (x1, my0, r[2], my1),
     ]
     cols = [  # full-height bands first
         (r[0], r[1], x0, r[3]),
         (x1, r[1], r[2], r[3]),
-        (x0, r[1], x1, y0),
-        (x0, y1, x1, r[3]),
+        (mx0, r[1], mx1, y0),
+        (mx0, y1, mx1, r[3]),
     ]
     best = max((rows, cols), key=lambda ps: (max(_area(p) for p in ps), ps is rows))
-    return [p for p in best if _area(p) > _EPS]
+    return [p for p in best if p[2] - p[0] > _EPS and p[3] - p[1] > _EPS]
 
 
 # ---- board.md ----------------------------------------------------------------------------------
@@ -620,13 +630,16 @@ def floorplan(
         ctx.leaves[name] = _rect(f)
         ctx.where[name] = _centre(f)
 
-    # the free rectangles: the usable box minus every fixed region grown by its channel
-    free: list[Box] = [usable]
+    # the free rectangles: the usable box, inset by an edge channel (routing room between
+    # a free block and the board edge; edge blocks sit on their edge), minus every fixed
+    # region grown by its channel
+    ec = max(kc, CHANNEL_MIN_MM)
+    free: list[Box] = [(usable[0] + ec, usable[1] + ec, usable[2] - ec, usable[3] - ec)]
     for name, f in sorted(fixed.items(), key=lambda kv: natural_key(kv[0])):
         rest = [n for n in boxes if n != name]
         ch = ctx.channel([name], rest) if rest else ctx.keep
         g = (f[0] - ch, f[1] - ch, f[2] + ch, f[3] + ch)
-        free = [piece for fr in free for piece in _minus(fr, g)]
+        free = [piece for fr in free for piece in _minus(fr, g, ch)]
         sides = {
             "left": f[0] > usable[0] + _EPS,
             "right": f[2] < usable[2] - _EPS,
@@ -809,13 +822,19 @@ def place_blocks(
 def align_pairs(
     model: BoardModel, cls: Classification, moves: Sequence[Move], *, movable: frozenset[str]
 ) -> tuple[Move, ...]:
-    """Rule (b) after the legalise: for every M16 alignment pair (`metrics.alignment_pairs`)
-    without a straight corridor whose missing overlap is ≤ `REVIEW["M16_align_mm"]`, shift
-    one movable 2-pad part (never an anchor or a locked part; one shift per part) across the
-    corridor axis - centre-aligned when that shift is small enough, else by the missing
-    overlap - when its courtyard stays inside the outline margin and off every other
-    courtyard and keepout and no corridor it already has is lost. `model` already holds
-    `moves`; returns `moves` with the shifts applied (natural ref order)."""
+    """Rule (b) after the legalise, over the M16 alignment pairs (`metrics.alignment_pairs`),
+    natural ref order; only a movable 2-pad part moves (never an anchor or a locked part):
+
+    1. align: a pair without a straight corridor whose missing overlap is ≤
+       `REVIEW["M16_align_mm"]` - one part shifts across the corridor axis, centre-aligned
+       when that shift is small enough, else by the missing overlap (one shift per part);
+    2. tighten: a pair with a corridor whose pads are more than `TIGHT_GAP_MM` apart - one
+       part moves along the corridor toward the other, as far as the courtyards allow (the
+       straight link gets short and no other track squeezes between the two pads).
+
+    Every move keeps the courtyard inside the outline margin and off every other courtyard
+    and keepout, keeps the pair's corridor and every corridor the part already has.
+    `model` already holds `moves`; returns `moves` with the shifts applied."""
     parts: dict[str, Part] = {p.ref: p for p in model.parts}
     out = {mv.ref: mv for mv in moves}
     for r in movable:
@@ -823,83 +842,74 @@ def align_pairs(
         if p is not None and r not in out:
             out[r] = Move(r, p.x, p.y, p.rot, p.side)
     pairs = alignment_pairs(model, cls)
-    if not pairs:
-        return tuple(out[r] for r in sorted(out, key=natural_key))
     layers = model.copper_layers
     sep = courtyard_clearance(model)
     outline = Outline(model, edge_margin(model))
     keepouts = keepout_polys(model)
-    limit = REVIEW["M16_align_mm"]
     pairs_of: dict[str, list[_PairKey]] = defaultdict(list)
-    keyed = []
-    for net, a, b, w in pairs:
+    keyed: list[_PairKey] = []
+    for _net, a, b, w in pairs:
         k = (a.ref, a.number, b.ref, b.number, w)
         pairs_of[a.ref].append(k)
         pairs_of[b.ref].append(k)
-        keyed.append((net, k))
-    keyed.sort(key=lambda t: (natural_key(t[1][0]), natural_key(t[1][2]), t[1][1], t[1][3], t[0]))
-    shifted: set[str] = set()
+        keyed.append(k)
+    keyed.sort(key=lambda t: (natural_key(t[0]), natural_key(t[2]), t[1], t[3], t[4]))
 
     def need(k: _PairKey) -> float | None:
         return alignment_need(_pad_of(parts, k[0], k[1]), _pad_of(parts, k[2], k[3]), k[4], layers)
 
-    for _net, k in keyed:
-        n = need(k)
-        if not n:
-            continue
+    def movers(k: _PairKey, done: set[str]) -> list[tuple[Part, Pad, Pad]]:
         a, b = _pad_of(parts, k[0], k[1]), _pad_of(parts, k[2], k[3])
-        for mover, other in (
-            ((b, a), (a, b))
-            if natural_key(b.ref) > natural_key(a.ref)
-            else (
-                (a, b),
-                (b, a),
-            )
-        ):
+        order = ((b, a), (a, b)) if natural_key(b.ref) > natural_key(a.ref) else ((a, b), (b, a))
+        out_: list[tuple[Part, Pad, Pad]] = []
+        for mover, other in order:
             p = parts[mover.ref]
             if (
-                mover.ref not in movable
-                or mover.ref in shifted
-                or p.locked
-                or len(p.pads) != 2
-                or is_anchor(p, cls)
+                mover.ref in movable
+                and mover.ref not in done
+                and not p.locked
+                and len(p.pads) == 2
+                and not is_anchor(p, cls)
             ):
+                out_.append((p, mover, other))
+        return out_
+
+    def apply(p: Part, k: _PairKey, shifts: Sequence[Point]) -> bool:
+        """The first shift that is legal and keeps the corridors (the pair's own included)."""
+        had = [q for q in pairs_of[p.ref] if q != k and need(q) == 0.0]
+        for dx, dy in shifts:
+            cand = moved_part(p, Move(p.ref, p.x + dx, p.y + dy, p.rot, p.side))
+            if not _legal_shift(cand, parts, sep, outline, keepouts):
                 continue
-            done = False
-            for dx, dy in _shifts(mover, other, k[4], limit):
-                cand = moved_part(p, Move(p.ref, p.x + dx, p.y + dy, p.rot, p.side))
-                if not _legal_shift(cand, parts, sep, outline, keepouts):
-                    continue
-                trial = dict(parts)
-                trial[p.ref] = cand
-                kept = all(
-                    alignment_need(
-                        _pad_of(trial, q[0], q[1]), _pad_of(trial, q[2], q[3]), q[4], layers
-                    )
-                    == 0.0
-                    for q in pairs_of[p.ref]
-                    if q != k and need(q) == 0.0
-                )
-                if not kept:
-                    continue
-                if (
-                    straight_corridor(
-                        _pad_of(trial, k[0], k[1]),
-                        _pad_of(trial, k[2], k[3]),
-                        k[4],
-                        copper_layers=layers,
-                    )
-                    is None
-                ):
-                    continue
-                parts[p.ref] = cand
-                out[p.ref] = Move(p.ref, round(cand.x, 6), round(cand.y, 6), p.rot, p.side)
+            trial = {**parts, p.ref: cand}
+            if any(_need_in(trial, q, layers) != 0.0 for q in (k, *had)):
+                continue
+            parts[p.ref] = cand
+            out[p.ref] = Move(p.ref, round(cand.x, 6), round(cand.y, 6), p.rot, p.side)
+            return True
+        return False
+
+    shifted: set[str] = set()
+    for k in keyed:
+        if not need(k):
+            continue
+        for p, mover, other in movers(k, shifted):
+            if apply(p, k, _shifts(mover, other, k[4], REVIEW["M16_align_mm"])):
                 shifted.add(p.ref)
-                done = True
                 break
-            if done:
+    tightened: set[str] = set()
+    for k in keyed:
+        if need(k) != 0.0:
+            continue
+        for p, mover, other in movers(k, tightened):
+            if apply(p, k, _closer(mover, other)):
+                tightened.add(p.ref)
                 break
     return tuple(out[r] for r in sorted(out, key=natural_key))
+
+
+def _need_in(parts: Mapping[str, Part], k: _PairKey, layers: Sequence[str]) -> float | None:
+    return alignment_need(_pad_of(parts, k[0], k[1]), _pad_of(parts, k[2], k[3]), k[4], layers)
 
 
 _PairKey = tuple[str, str, str, str, float]  # ref a, pad a, ref b, pad b, corridor width
@@ -928,6 +938,24 @@ def _shifts(mover: Pad, other: Pad, width: float, limit: float) -> list[Point]:
                 if v not in out:
                     out.append(v)
     return out
+
+
+def _closer(mover: Pad, other: Pad) -> list[Point]:
+    """Moves of `mover` along the corridor axis toward `other` that leave a pad gap of
+    `TIGHT_GAP_MM` or more, largest first in `TIGHT_STEP_MM` steps (nothing when the pads
+    are no more than `TIGHT_GAP_MM` apart)."""
+    bm, bo = _bbox_of(_pad_rect(mover)), _bbox_of(_pad_rect(other))
+    for ax in (0, 1):
+        if bo[ax] - bm[ax + 2] > _EPS:
+            gap, sign = bo[ax] - bm[ax + 2], 1.0
+        elif bm[ax] - bo[ax + 2] > _EPS:
+            gap, sign = bm[ax] - bo[ax + 2], -1.0
+        else:
+            continue
+        n = math.floor((gap - TIGHT_GAP_MM) / TIGHT_STEP_MM + 1e-9)
+        steps = [sign * TIGHT_STEP_MM * i for i in range(n, 0, -1)]
+        return [(d, 0.0) if ax == 0 else (0.0, d) for d in steps]
+    return []
 
 
 def _legal_shift(

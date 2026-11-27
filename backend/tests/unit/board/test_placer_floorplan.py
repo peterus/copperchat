@@ -69,9 +69,10 @@ def _usable(m: BoardModel) -> tuple[float, float, float, float]:
 
 
 def _disjoint(regions: Sequence[Rect]) -> bool:
+    """Pairwise disjoint (regions are rounded to 1e-6 mm)."""
     for a, b in itertools.combinations(regions, 2):
-        x_hit = a.x < b.x + b.w - 1e-6 and b.x < a.x + a.w - 1e-6
-        if x_hit and a.y < b.y + b.h - 1e-6 and b.y < a.y + a.h - 1e-6:
+        x_hit = a.x < b.x + b.w - 1e-5 and b.x < a.x + a.w - 1e-5
+        if x_hit and a.y < b.y + b.h - 1e-5 and b.y < a.y + a.h - 1e-5:
             return False
     return True
 
@@ -242,12 +243,16 @@ def test_floorplan_edge_conflict() -> None:
 
 
 def test_floorplan_single_block() -> None:
+    # one free block: one region = the whole usable area minus the edge channel
     m = circuit(blob("U1", 10, 8, ["S1"], (150, 20)), outline=outline(0, 0, 80, 60))
     fp = _ok(_plan(m, {"a": ["U1"]}))
     u = _usable(m)
+    e = CHANNEL_MIN_MM
     r = fp.regions["a"]
     assert list(fp.regions) == ["a"]
-    assert (r.x, r.y, r.w, r.h) == pytest.approx((u[0], u[1], u[2] - u[0], u[3] - u[1]))
+    assert (r.x, r.y, r.w, r.h) == pytest.approx(
+        (u[0] + e, u[1] + e, u[2] - u[0] - 2 * e, u[3] - u[1] - 2 * e)
+    )
     assert fp.channels == ()
 
 
@@ -310,6 +315,9 @@ def test_floorplan_property_legal() -> None:
         regs = list(fp.regions.values())
         assert sorted(fp.regions) == sorted(groups), case
         assert _disjoint(regs), case
+        for a, b in itertools.combinations(regs, 2):  # a routing channel between any two
+            gap = max(b.x - (a.x + a.w), a.x - (b.x + b.w), b.y - (a.y + a.h), a.y - (b.y + b.h))
+            assert gap >= CHANNEL_MIN_MM - 1e-5, (case, a, b)
         u = _usable(m)
         assert all(_inside(r, u) for r in regs), case
         for name, r in fp.regions.items():
@@ -499,3 +507,26 @@ def test_align_pairs_skips_anchor_and_far_pairs() -> None:
     assert after.part("U1").x == pytest.approx(10.0)
     assert after.part("R1").x == pytest.approx(10.0)
     assert after.part("R2").x == pytest.approx(20.0)
+
+
+def test_align_pairs_tightens_corridor() -> None:
+    # aligned, 2.0 mm between the facing pads: R1 moves toward D1 until the courtyards
+    # meet (2 x 1 mm boxes: the pads end 0.4 mm apart); a part between them stops it there
+    m = _led_pair(0.0)
+    m = replace(
+        m,
+        parts=tuple(p if p.ref != "R1" else res("R1", "LA", "SIG", (24.0, 20.0)) for p in m.parts),
+    )
+    out = align_pairs(m, classify(m), _moves(m), movable=frozenset({"R1"}))
+    after = apply_moves(m, out)
+    a, b = after.part("D1").pads[1], after.part("R1").pads[0]
+    assert (b.x - b.w / 2) - (a.x + a.w / 2) == pytest.approx(0.4)  # 1.0 mm courtyards touch
+    assert straight_corridor(a, b, 0.2, copper_layers=after.copper_layers) is not None
+    for x, y in itertools.combinations(after.parts, 2):
+        bx, by = box_of(x), box_of(y)
+        assert not (
+            bx[0] < by[2] - 1e-9 and by[0] < bx[2] - 1e-9 and bx[1] < by[3] and by[1] < bx[3]
+        )
+    blocked = replace(m, parts=(*m.parts, part("X1", 22.0, 20.0, half=0.3)))
+    out = align_pairs(blocked, classify(blocked), _moves(blocked), movable=frozenset({"R1"}))
+    assert apply_moves(blocked, out).part("R1").x == pytest.approx(23.3)  # touches X1 (22.3)
