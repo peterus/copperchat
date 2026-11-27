@@ -1105,10 +1105,12 @@ def test_m8_connections_first() -> None:
     assert [p.net for p in plans] == ["N9", "N1"]
 
 
-async def test_pass0_pair_only_as_a_whole(board: Board, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A matched pair joins pass 0 only with both halves: when one half's straight segment
-    is DRC-rejected, the other half's goes too and the pair is routed as a pair."""
-    cpu = FakeCpu(lambda fn, args, kw, t: None)
+async def test_pass0_pair_half_straight_alone(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A half of a matched pair keeps its straight segment even when the other half's is
+    DRC-rejected (owner rule b outranks coupling); the other half is routed alone."""
+    cpu = FakeCpu()
     monkeypatch.setattr(route, "run_cpu", cpu)
     m = _usbc()
     plans = [
@@ -1126,9 +1128,8 @@ async def test_pass0_pair_only_as_a_whole(board: Board, monkeypatch: pytest.Monk
         return DrcResult((DrcMarker("clearance", "error", "x", (k, "zone"), None),), 0, 0.01)
 
     out = await route.route_connections(FakeSctx(m, drc), plans, lock=True)  # type: ignore[arg-type]
-    assert out.routed == ()  # neither half kept straight; the pair search found nothing
-    assert any(c["fn"] is route.solve_pair for c in cpu.calls)
-    assert board.items == {}
+    assert len(out.routed) == 2
+    assert [c["fn"] for c in cpu.calls] == [route.solve]  # the rejected half, alone
 
 
 def test_entry_defect_reported() -> None:
@@ -1146,3 +1147,43 @@ def test_entry_defect_reported() -> None:
     assert not route.entry_defect(straight, p.req)
     r = route.ConnResult("k", "N1", "R1.1", "R2.1", "routed", None, 1.0, 0, (), pad_entry=True)
     assert route._net_entry("N1", [r], True)["pad_entry_defects"] == ["R1.1-R2.1"]
+
+
+async def test_pass0_retries_capped_and_drc_filtered(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Six straight candidates that all clash only with each other: at most
+    STRAIGHT_RETRY_MAX retries (each its own DRC) follow the batch DRC, and the stored
+    DRC never names a segment that was dropped again."""
+    monkeypatch.setattr(route, "run_cpu", FakeCpu(lambda fn, args, kw, t: None))
+    parts = []
+    nets = []
+    for k in range(6):
+        y = 10.0 + 4.0 * k
+        parts += [res(f"R{2 * k + 1}", f"A{k}", f"N{k}", (10.0, y))]
+        parts += [res(f"R{2 * k + 2}", f"N{k}", f"B{k}", (12.0, y))]
+        nets.append(f"N{k}")
+    m = circuit(*parts)
+    calls = {"n": 0}
+
+    def drc(t: float) -> DrcResult:
+        calls["n"] += 1
+        ks = tuple(board.items)
+        if calls["n"] == 1:  # the batch: everything clashes with everything
+            return DrcResult((DrcMarker("clearance", "error", "x", ks, None),), 0, 0.01)
+        return DrcResult((DrcMarker("clearance", "error", "x", (ks[-1], "other"), None),), 0, 0.01)
+
+    sctx = FakeSctx(m, drc)
+    out = await route.route_connections(sctx, _plan(m, nets), lock=True)  # type: ignore[arg-type]
+    assert calls["n"] == 1 + route.STRAIGHT_RETRY_MAX
+    assert out.routed == ()
+    assert out.drc is None or not any(set(mk.kiids) - {"other"} for mk in out.drc.markers)
+
+
+def test_reservation_of_pair_net_uses_pair_width() -> None:
+    m = _usbc()
+    cls = _pair_cls(m)
+    nc = dataclasses.replace(net_class(track_width=0.2), diff_pair_width=0.35, diff_pair_gap=0.15)
+    m = dataclasses.replace(m, net_classes=(nc,))
+    got = {r.net: r.width for r in route.corridor_reservations(m, cls)}
+    assert got and all(w == pytest.approx(0.35) for w in got.values()), got

@@ -1036,8 +1036,9 @@ existing KiCad write path.
   A6–B6: 6 × 20 s). Same-part links (USB-C A6–B6 around A7) are solved `entry_ok` from the
   start: the clean search sent them on via detours that walled in the ESD's VBUS pin on R2's
   placement (`VBUS:U2.5-U3.5` no_path).
-- **Review round 1:** a matched pair joins pass 0 only as a whole (one half's rejection
-  drops the other); pass-0 retries are capped (`STRAIGHT_RETRY_MAX = 4`); the stored DRC
+- **Review round 1:** a half of a matched pair keeps its straight pass-0 segment even when
+  its partner has none (tried "pairs only as a whole": J1.B7–U2.3 then doglegged and USB-C
+  A7–B7 became an M5 detour failure - owner rule b outranks coupling, a review); pass-0 retries are capped (`STRAIGHT_RETRY_MAX = 4`); the stored DRC
   drops markers of copper removed again; reservations use the widest piece's width and are
   pre-filtered cheaply (MST pairs with a corridor before `routed_length`); a routed path with
   a pad-entry loop / jog is reported (`ConnResult.pad_entry`, net entry

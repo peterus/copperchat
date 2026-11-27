@@ -674,16 +674,19 @@ def corridor_reservations(
         if cls.net_kind.get(net, "signal") == "ground":
             continue
         par = class_params(model, net)
+        paired = _pair_partner(cls, net) is not None
+        # a pair half is placed at the pair width without neck-down (plan_connections)
+        width = max(par.width, par.pair_width or 0.0) if paired else par.width
         for a, b in connections(model, net):
-            w = min(par.width, neck_width(a, par.width, floor), neck_width(b, par.width, floor))
+            w = min(width, neck_width(a, width, floor), neck_width(b, width, floor))
             if straight_corridor(a, b, w, copper_layers=model.copper_layers) is None:
                 continue
             if _joined(a, b) or routed_length(model, a, b) is not None:
                 continue
             layers = default_layers(model)
             req = RouteRequest(
-                net, a, b, par.width, par.clearance, layers, False, par.via,
-                neck=neck_zones(model, (a, b), par.width, floor),
+                net, a, b, width, par.clearance, layers, False, par.via,
+                neck=() if paired else neck_zones(model, (a, b), width, floor),
             )  # fmt: skip
             plan = ConnPlan(net, a, b, req, None)
             path = straight_path(model, plan)
@@ -1124,16 +1127,15 @@ STRAIGHT_RETRY_MAX = 4  # pass-0 segments retried alone (each its own push + DRC
 async def _straight_pass(
     sctx: BoardStageContext, st: _Loop, plans: Sequence[ConnPlan]
 ) -> set[ConnPlan]:
-    """Pass 0 of `route_connections`: the plans routed by their straight segment. A matched
-    pair takes part only as a whole (both halves straight, else neither: a lone straight
-    half would leave its partner uncoupled)."""
-    found = {
-        p: path
+    """Pass 0 of `route_connections`: the plans routed by their straight segment. A half
+    of a matched pair goes straight even when its partner cannot (owner rule b: a dogleg
+    is an error, pair coupling only a review - on sp4_synth J1.B7-U2.3 otherwise doglegged
+    and pushed USB-C A7-B7 into an M5 detour failure); its partner then routes alone."""
+    cands = [
+        (p, path)
         for p in plans
         if (path := straight_path(st.model, p)) is not None and _path_free(st.model, p, path)
-    }
-    mates = {q: g[1 - k] for g in _groups(plans) if len(g) == 2 for k, q in enumerate(g)}
-    cands = [(p, path) for p, path in found.items() if p not in mates or mates[p] in found]
+    ]
     if not cands or _timed_out(st):
         return set()
     items = [(p.req, path) for p, path in cands]
@@ -1162,13 +1164,8 @@ async def _straight_pass(
             continue
         rejected.add(k)
         others = [set(m.kiids) - set(ids) for m in hits]
-        if all(o and o <= mine for o in others) and cands[k][0] not in mates:
+        if all(o and o <= mine for o in others):
             retry.append(k)  # only another straight segment of this pass is in the way
-    index = {p: k for k, (p, _path) in enumerate(cands)}
-    for k in list(rejected):  # a rejected half takes its pair's other half with it
-        mate = mates.get(cands[k][0])
-        if mate is not None and mate in index:
-            rejected.add(index[mate])
     gone = [i for k in sorted(rejected) for i in own[k]]
     if gone:
         await _drop(sctx, gone)
