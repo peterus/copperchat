@@ -26,6 +26,7 @@ export const BOARD_KINDS: ReadonlySet<string> = new Set([
   'board_place_block',
   'board_move',
   'board_legalize',
+  'board_place_blocks',
   'board_route',
   'board_route_fill',
   'board_unroute',

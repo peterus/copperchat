@@ -205,3 +205,58 @@ def test_crystal_keeps_an_escape_channel() -> None:
     got = _gap(box_of(placed["Y1"]), box_of(placed["U1"]))
     assert got >= gap + CRYSTAL_STANDOFF_MM - 1e-6, got
     assert got <= gap + CRYSTAL_STANDOFF_MM + 0.1, got
+
+
+def _sot(ref: str, nets: tuple[str, str, str], at: tuple[float, float]) -> Part:
+    """A 3-pad part (SOT-23-like, 2 x 3 mm courtyard)."""
+    pads = tuple(
+        pad(ref, str(i + 1), n, (at[0] - 0.95 + 0.95 * i, at[1])) for i, n in enumerate(nets)
+    )
+    return part(
+        ref, at[0], at[1], pads=pads, lib_id="Package_TO_SOT_SMD:SOT-23",
+        courtyard=tuple(rect_poly(at[0] - 1.5, at[1] - 1.0, 3.0, 2.0)),
+    )  # fmt: skip
+
+
+def test_escape_room_per_shared_signal_net() -> None:
+    """R2: a > 2-pad satellite keeps ESCAPE_PER_NET_MM more gap per signal net it shares
+    with the anchor (capped at ESCAPE_MAX_MM); supply / ground nets and 2-pad parts add
+    nothing."""
+    from copperchat.board.placer.layout import (
+        ESCAPE_MAX_MM,
+        ESCAPE_PER_NET_MM,
+        SATELLITE_EXTRA_MM,
+    )
+
+    gap = 0.05
+    m = circuit(qfn("U1", _PINS), _sot("Q1", ("A", "B", "GND"), (70.0, 60.0)))
+    cls = classify(m)
+    (c,) = build_clusters(m, cls, ["U1", "Q1"])
+    placed = _placed(m, layout_cluster(m, cls, c, gap=gap, escape_room=True))
+    want = gap + SATELLITE_EXTRA_MM + 2 * ESCAPE_PER_NET_MM
+    assert _gap(box_of(placed["Q1"]), box_of(placed["U1"])) >= want - 1e-6
+    # off by default (pcb_place_block keeps P4's layout): the plain satellite gap
+    plain = _placed(m, _layout(m, ["U1", "Q1"], gap=gap))
+    assert _gap(box_of(plain["Q1"]), box_of(plain["U1"])) < want - 1e-6
+    # only supply / ground shared: the plain satellite gap
+    m = circuit(qfn("U1", _PINS), _sot("Q2", ("+3V3", "GND", "X9"), (70.0, 60.0)))
+    cls = classify(m)
+    (c,) = build_clusters(m, cls, ["U1", "Q2"])
+    placed = _placed(m, layout_cluster(m, cls, c, gap=gap, escape_room=True))
+    got = _gap(box_of(placed["Q2"]), box_of(placed["U1"]))
+    assert gap + SATELLITE_EXTRA_MM - 1e-6 <= got < gap + SATELLITE_EXTRA_MM + ESCAPE_PER_NET_MM
+    # capped: many shared signal nets never add more than ESCAPE_MAX_MM
+    pins = {str(i): f"S{i}" for i in range(1, 17)}
+    big = part(
+        "J9", 80.0, 60.0, lib_id="Lib:Header",
+        pads=tuple(pad("J9", str(i), f"S{i}", (76.0 + 0.5 * i, 60.0)) for i in range(1, 9)),
+        courtyard=tuple(rect_poly(76.0, 59.0, 5.0, 2.0)),
+    )  # fmt: skip
+    m = circuit(qfn("U1", pins), big)
+    from copperchat.board.placer.layout import _Layout
+
+    # an 8-pad header anchors its own cluster in build_clusters; as a satellite (e.g. a
+    # header absorbed by its MCU) its escape room is capped
+    lay = _Layout(m, classify(m), Cluster("U1", ("U1", "J9")), gap)
+    assert lay._escape("J9") == ESCAPE_MAX_MM
+    assert lay._escape("U1") == 0.0

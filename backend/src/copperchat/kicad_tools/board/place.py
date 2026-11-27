@@ -28,9 +28,16 @@ from kipy.proto.board.board_types_pb2 import BoardLayer
 from kipy.proto.common.types import KIID
 
 from copperchat.board.boardmd import BoardDoc, read_board_doc
-from copperchat.board.classify import classify
-from copperchat.board.jobs import legalize_job, place_block_job, score_job, strip_fills
-from copperchat.board.model import BoardModel, Part, Rect, Side, placement_hash
+from copperchat.board.classify import BlockProposal, classify
+from copperchat.board.jobs import (
+    floorplan_job,
+    legalize_job,
+    place_block_job,
+    place_blocks_job,
+    score_job,
+    strip_fills,
+)
+from copperchat.board.model import BoardModel, Part, Rect, Side, board_hash, placement_hash
 from copperchat.board.placer import (
     DoesNotFit,
     Move,
@@ -39,6 +46,8 @@ from copperchat.board.placer import (
     edge_margin,
     keepout_polys,
 )
+from copperchat.board.placer.floorplan import SPREAD_SPAN_MIN, Floorplan
+from copperchat.board.render import Hull
 from copperchat.board.staging import natural_key, part_box
 from copperchat.board.worker import run_cpu
 from copperchat.errors import StructuredToolError
@@ -55,7 +64,8 @@ from copperchat.kicad_tools.board.setup import RULE_NAME, require_board_tools
 from copperchat.kicad_tools.board.unroute_ops import attached, select_copper, unroute_stage
 from copperchat.kicad_tools.edit.changeset import ChangeSet, Logical
 from copperchat.kicad_tools.units import mm_to_nm
-from copperchat.tools.spec import ToolContext, ToolResult
+from copperchat.tools.spec import ImageBlock, ToolContext, ToolResult
+from copperchat.views.board_render import render_board
 
 BLOCK_PREFIX = "blk:"
 MAX_BLOCKS = 32
@@ -76,6 +86,9 @@ MAX_LISTED = 50  # moved refs / unplaced blocks in a report
 MAX_UNASSIGNED = 200
 MOVES_PER_COST = 10  # pcb_move costs ceil(n / 10)
 PLACE_TIMEOUT_S = 60.0  # run_cpu budget of one placer / legaliser / score job
+# R2: pcb_floorplan / pcb_place_blocks run the whole board in one job (≤ MAX_BLOCKS blocks;
+# measured 17 s for 32 blocks / 288 parts)
+PLACE_BLOCKS_TIMEOUT_S = 180.0
 POS_TOL_MM = 0.001  # read-back tolerance of positions
 ROT_TOL_DEG = 0.01  # read-back tolerance of rotations
 NO_BLOCK_CLASSES = frozenset({"mounting_hole", "fiducial"})
@@ -777,19 +790,36 @@ async def apply_placement(ctx: ToolContext, cs: ChangeSet) -> ToolResult:
     return result
 
 
-def _does_not_fit(d: DoesNotFit, what: str) -> StructuredToolError:
-    return StructuredToolError(
-        f"{what} does not fit",
+def _does_not_fit(d: DoesNotFit, what: str, *, plural: bool = False) -> StructuredToolError:
+    details: dict[str, Any] = {
+        "needed_mm2": d.needed_mm2,
+        "available_mm2": d.available_mm2,
+        "refs": list(d.refs),
+    }
+    why = (
         f"needs about {d.needed_mm2:g} mm² but only {d.available_mm2:g} mm² are free "
-        f"({', '.join(d.refs[:10])})",
+        f"({', '.join(d.refs[:10])})"
+    )
+    if d.courtyard_fill is not None:  # R2: a floorplan's Σ courtyards / usable area
+        details["courtyard_fill"] = d.courtyard_fill
+        fill = f"the courtyards alone fill {d.courtyard_fill:.0%} of the usable area"
+        if d.needed_mm2 <= d.available_mm2:
+            # enough area, but the block outlines and the channels between them do not tile
+            details["reason"] = "shape"
+            why = (
+                f"the blocks' outlines and the routing channels between them do not tile "
+                f"the board ({', '.join(d.refs[:10])}); {fill}"
+            )
+        else:
+            details["reason"] = "area"
+            why += f"; {fill}"
+    return StructuredToolError(
+        f"{what} {'do' if plural else 'does'} not fit",
+        why,
         "Ask the user: a bigger region or board, the bottom side, smaller parts, or move "
         "other blocks first. Nothing was changed.",
         code="does_not_fit",
-        details={
-            "needed_mm2": d.needed_mm2,
-            "available_mm2": d.available_mm2,
-            "refs": list(d.refs),
-        },
+        details=details,
     )
 
 
@@ -1021,7 +1051,7 @@ async def prepare_move(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
             timeout_s=PLACE_TIMEOUT_S,
         )
         if isinstance(result, DoesNotFit):
-            raise _does_not_fit(result, "The moved parts")
+            raise _does_not_fit(result, "The moved parts", plural=True)
         legal = {m.ref: m for m in result}
         moves = [legal.get(m.ref, m) for m in moves]
     return await plan_moves(
@@ -1088,4 +1118,146 @@ async def prepare_legalize(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
         moves=result,
         unroute=unroute,
         report={"scope": scope, "block": block, "max_shift": max_shift},
+    )
+
+
+# -- pcb_floorplan / pcb_place_blocks (R2, spec §22.3) -------------------------------------
+
+MAX_LISTED_HULLS = MAX_BLOCKS
+
+
+def _parse_floorplan_args(args: Any, *, write: bool) -> tuple[list[str] | None, float, bool]:
+    keys = {"blocks", "keep_channels"} | ({"unroute"} if write else set())
+    a = _keys(args, "arguments", keys)
+    names: list[str] | None = None
+    if "blocks" in a:
+        names = [
+            _block_name(v, f"blocks[{i}]")
+            for i, v in enumerate(_list(a["blocks"], "blocks", 1, MAX_BLOCKS))
+        ]
+        if len(set(names)) != len(names):
+            raise _invalid("a block is listed twice in blocks")
+    kc = _num(
+        a.get("keep_channels", DEFAULT_KEEP_CHANNELS_MM),
+        "keep_channels",
+        0.0,
+        MAX_KEEP_CHANNELS_MM,
+    )
+    return names, kc, _bool(a, "unroute")
+
+
+def _proposals(model: BoardModel, names: list[str] | None) -> tuple[BlockProposal, ...]:
+    """The named blocks (default every defined block, by name) as proposals; `unknown_block`
+    for a name without a `blk:` group, `invalid_argument` without any block or outline."""
+    if model.outline.kind == "none":
+        raise _invalid("the floorplan needs a board outline", "Run pcb_set_outline first.")
+    defined = _blocks(model)
+    if not defined:
+        raise _invalid("the board has no blocks", "Define them with pcb_define_blocks first.")
+    chosen = sorted(defined, key=natural_key) if names is None else names
+    if len(chosen) > MAX_BLOCKS:
+        raise _invalid(
+            f"the board has {len(chosen)} blocks, more than {MAX_BLOCKS} in one call",
+            "Pass blocks: [...] (at most 32 per call), edge blocks first.",
+        )
+    return tuple(BlockProposal(n, None, _block_refs(model, n), "") for n in chosen)
+
+
+def _floorplan_data(fp: Floorplan) -> dict[str, Any]:
+    return {
+        "regions": [
+            {"block": n, "x": r.x, "y": r.y, "w": r.w, "h": r.h} for n, r in fp.regions.items()
+        ],
+        "channels": [
+            {"x1": a[0], "y1": a[1], "x2": b[0], "y2": b[1], "width": w} for a, b, w in fp.channels
+        ],
+        "fixed": list(fp.fixed),
+        "fallback": list(fp.fallback),
+        "courtyard_fill": fp.courtyard_fill,
+        "courtyard_mm2": fp.courtyard_mm2,
+        "usable_mm2": fp.usable_mm2,
+    }
+
+
+def region_hulls(fp: Floorplan) -> tuple[Hull, ...]:
+    """The regions as named rectangles for the placement render."""
+    return tuple(
+        Hull(n, ((r.x, r.y), (r.x + r.w, r.y), (r.x + r.w, r.y + r.h), (r.x, r.y + r.h)))
+        for n, r in list(fp.regions.items())[:MAX_LISTED_HULLS]
+    )
+
+
+async def pcb_floorplan(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
+    """Read-only preview of `pcb_place_blocks`' regions (B-C11 round 2): the floorplan in
+    the CPU worker, one placement render with the regions drawn as named rectangles. A
+    read (PCB_READ): available with COPPERCHAT_BOARD_TOOLS off, like pcb_analyze."""
+    require_board(ctx)
+    names, kc, _ = _parse_floorplan_args(args, write=False)
+    model, doc = await _read(ctx)
+    blocks = _proposals(model, names)
+    fp = await run_cpu(
+        floorplan_job,
+        strip_fills(model),
+        doc,
+        blocks,
+        keep_channels=kc,
+        allowed_sides=doc.allowed_sides,
+        timeout_s=PLACE_BLOCKS_TIMEOUT_S,
+    )
+    if isinstance(fp, DoesNotFit):
+        raise _does_not_fit(fp, "The blocks", plural=True)
+    data: dict[str, Any] = {
+        **_floorplan_data(fp),
+        "keep_channels": kc,
+        "board_hash": board_hash(model),
+        "next": "pcb_place_blocks (same blocks and keep_channels) once the user agrees",
+    }
+    out = await render_board(ctx, "placement", model=model, hulls=region_hulls(fp))
+    png = await asyncio.to_thread(out.png.read_bytes)
+    base = f"/api/projects/{ctx.project.id}/renders"
+    data["png_url"] = f"{base}/{out.png.name}"
+    data["svg_url"] = f"{base}/{out.svg.name}" if out.svg is not None else None
+    return ToolResult(data=data, images=[ImageBlock(mime="image/png", data=png, path=out.png)])
+
+
+async def prepare_place_blocks(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
+    """Plan `pcb_place_blocks`: floorplan + every block packed into its region + one global
+    legalise + pair alignment in the CPU worker (`place_blocks_job`); `does_not_fit` writes
+    nothing. One change set (cost 1)."""
+    require_board_tools(ctx)
+    require_board(ctx)
+    names, kc, unroute = _parse_floorplan_args(args, write=True)
+    model, doc = await _read(ctx)
+    blocks = _proposals(model, names)
+    try:
+        result = await run_cpu(
+            place_blocks_job,
+            strip_fills(model),
+            doc,
+            blocks,
+            keep_channels=kc,
+            allowed_sides=doc.allowed_sides,
+            timeout_s=PLACE_BLOCKS_TIMEOUT_S,
+        )
+    except SidePolicyError as exc:
+        raise _invalid(str(exc)) from exc
+    if isinstance(result, DoesNotFit):
+        raise _does_not_fit(result, "The blocks", plural=True)
+    placed, fp = result
+    report: dict[str, Any] = {
+        "blocks": [b.name for b in blocks],
+        **_floorplan_data(fp),
+        "keep_channels": kc,
+        "spread": placed.score.spread,
+        "well_spread": placed.score.spread >= SPREAD_SPAN_MIN,
+    }
+    return await plan_moves(
+        tool="pcb_place_blocks",
+        kind="board_place_blocks",
+        cost=1,
+        model=model,
+        doc=doc,
+        moves=placed.moves,
+        unroute=unroute,
+        report=report,
     )

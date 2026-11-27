@@ -78,3 +78,23 @@ def test_score_uses_p3a_metrics() -> None:
     assert b.m8_worst_mm is not None and b.m8_worst_mm > 3.0
     assert b.m10_worst_ratio is None or b.m10_worst_ratio >= 0
     assert b.m9_reviews >= 0
+
+
+def test_spread_score() -> None:
+    # usable = 100 x 80 outline minus the 0.3 mm edge margin; courtyards span x 9..61 and
+    # y 9..31 -> min(52 / 99.4, 22 / 79.4); a mounting hole in the far corner and a part in
+    # the staging area right of the outline do not count
+    m = circuit(
+        part("U1", 10, 10, half=1.0),
+        part("U2", 60, 30, half=1.0),
+        part("H1", 97, 77, half=1.0, lib_id="MountingHole:MountingHole_3.2mm_M3"),
+        part("U3", 150, 70, half=1.0),
+        outline=outline(0, 0, 100, 80),
+    )
+    s = _score(m)
+    assert s.spread == pytest.approx(min(52 / 99.4, 22 / 79.4), abs=1e-4)
+    assert _score(circuit(part("U1", 150, 10), outline=outline(0, 0, 100, 80))).spread == 0.0
+    none = circuit(part("U1", 10, 10), outline=outline(0, 0, 100, 80))
+    from dataclasses import replace
+
+    assert _score(replace(none, outline=replace(none.outline, kind="none"))).spread == 0.0

@@ -76,9 +76,11 @@ FP_WRITES: frozenset[str] = frozenset({"fp_create", "fp_approve", "fp_delete"})
 # (FP_READ and FP_WRITES), Free included.
 FP_PREFIX = "fp_"
 # Board read tools (board spec §7.1): requirements, schematic, board and Free, flag or not.
-PCB_READ = frozenset({"pcb_status", "pcb_analyze", "pcb_render", "pcb_metrics", "pcb_check"})
-# The 17 board write tools (board spec §7.2): board and Free only. COPPERCHAT_BOARD_TOOLS=off
-# drops exactly these names from every profile, Free included.
+PCB_READ = frozenset(
+    {"pcb_status", "pcb_analyze", "pcb_render", "pcb_metrics", "pcb_check", "pcb_floorplan"}
+)
+# The 17 board write tools (board spec §7.2) + R2's pcb_place_blocks: board and Free only.
+# COPPERCHAT_BOARD_TOOLS=off drops exactly these names from every profile, Free included.
 PCB_WRITES = frozenset(
     {
         "pcb_sync_from_schematic",
@@ -88,6 +90,7 @@ PCB_WRITES = frozenset(
         "pcb_place_block",
         "pcb_move",
         "pcb_legalize",
+        "pcb_place_blocks",
         "pcb_route",
         "pcb_route_fill",
         "pcb_unroute",

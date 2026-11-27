@@ -30,6 +30,7 @@ import re
 import stat
 import threading
 import uuid
+import weakref
 import xml.etree.ElementTree as ET
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
@@ -39,6 +40,7 @@ from typing import Literal
 from copperchat.board.model import BoardModel, Rect, board_hash, placement_hash
 from copperchat.board.render import (
     SVG_NS,
+    Hull,
     Marker,
     block_hulls,
     default_extent,
@@ -67,9 +69,40 @@ Angle = Literal["top", "bottom", "iso"]
 BOARD_VIEWS: tuple[BoardView, ...] = ("top", "bottom", "layer", "placement", "3d")
 ANGLES: tuple[Angle, ...] = ("top", "bottom", "iso")
 
-# Process-wide: one board kicad-cli call at a time (like footprint_render._render_lock),
-# each with its own explicit timeout.
-BOARD_CLI_LOCK = asyncio.Semaphore(1)
+
+class LoopLocalSemaphore(asyncio.Semaphore):
+    """A `Semaphore(1)` per running event loop (like `freerouting._SLOTS`): the app runs one
+    loop, but tests run several in one process, and a plain module-level semaphore that
+    once had a waiter is bound to that loop for good ("bound to a different event loop")."""
+
+    def __init__(self) -> None:
+        super().__init__(1)
+        self._per_loop: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]
+        self._per_loop = weakref.WeakKeyDictionary()
+
+    def _sem(self) -> asyncio.Semaphore:
+        loop = asyncio.get_running_loop()
+        sem = self._per_loop.get(loop)
+        if sem is None:
+            sem = self._per_loop[loop] = asyncio.Semaphore(1)
+        return sem
+
+    async def acquire(self) -> Literal[True]:
+        return await self._sem().acquire()
+
+    def release(self) -> None:
+        self._sem().release()
+
+    def locked(self) -> bool:
+        try:
+            return self._sem().locked()
+        except RuntimeError:  # no running loop: nothing can hold it
+            return False
+
+
+# Process-wide (per event loop): one board kicad-cli call at a time (like
+# footprint_render._render_lock), each with its own explicit timeout.
+BOARD_CLI_LOCK: asyncio.Semaphore = LoopLocalSemaphore()
 BOARD_SVG_TIMEOUT_S = 60.0
 BOARD_3D_TIMEOUT_S = 120.0
 MiB = 1024 * 1024
@@ -312,6 +345,8 @@ class _Overlay:
     highlight_layers: tuple[str, ...]
     markers: tuple[Marker, ...]
     title: str
+    # R2: drawn instead of the block hulls when given (pcb_floorplan's regions)
+    extra_hulls: tuple[Hull, ...] = ()
 
 
 def _prepare(path: Path, ov: _Overlay) -> tuple[bytes, tuple[float, float]]:
@@ -328,7 +363,7 @@ def _prepare(path: Path, ov: _Overlay) -> tuple[bytes, tuple[float, float]]:
         ET.tostring(root, encoding="unicode"),
         extent=ov.region,
         mirror=ov.mirror,
-        hulls=block_hulls(m) if ov.hulls else (),
+        hulls=ov.extra_hulls or (block_hulls(m) if ov.hulls else ()),
         markers=ov.markers,
         highlight=(
             highlight_shapes(m, ov.highlight_nets, ov.highlight_layers) if ov.highlight_nets else ()
@@ -426,10 +461,12 @@ async def render_board(
     markers: Sequence[Marker] = (),
     angle: Angle = "top",
     model: BoardModel | None = None,
+    hulls: Sequence[Hull] = (),
 ) -> BoardRender:
     """PNG (+ wrapper SVG for 2D views) of the live board under `.kicad-agent/renders/
     <uuid32>`; the hashes are those of the rendered state (`model`, read here when not
-    given). `layer`, nets and region are validated by the caller (`pcb_render`)."""
+    given). `layer`, nets and region are validated by the caller (`pcb_render`). `hulls`
+    (2D views; R2's `pcb_floorplan` regions) are drawn instead of the block hulls."""
     require_board(ctx)
     m = model if model is not None else await board_model(ctx)
     renders = agent_dir(ctx.project) / "renders"
@@ -456,6 +493,7 @@ async def render_board(
                     highlight_layers=highlight_layers(view, layer),
                     markers=tuple(markers),
                     title=f"{ctx.project.name} board, {view}" + (f" {layer}" if layer else ""),
+                    extra_hulls=tuple(hulls),
                 )
                 svg, png = await _render_2d(ctx, view, layer, board, ov)
     except OSError as exc:  # e.g. the rasteriser's temp directory (mkdtemp)

@@ -1,12 +1,20 @@
 """Specs of the placement tools (P4), appended to `board/specs.py`'s `TOOL_SPECS`:
 `pcb_define_blocks`, `pcb_place_block`, `pcb_move`, `pcb_legalize` (all two-phase board
-writes). Every schema is bounded (plan call 6): `additionalProperties: false` at every
-level, every list `maxItems`, every number finite bounds."""
+writes); R2 adds `pcb_floorplan` (read) and `pcb_place_blocks` (write). Every schema is
+bounded (plan call 6): `additionalProperties: false` at every level, every list `maxItems`,
+every number finite bounds."""
 
 from __future__ import annotations
 
 from typing import Any
 
+from copperchat.board.placer.floorplan import (
+    CHANNEL_MAX_MM,
+    CHANNEL_MIN_MM,
+    CHANNEL_PER_NET_MM,
+    PACK_MAX,
+    SPREAD_SPAN_MIN,
+)
 from copperchat.kicad_tools.board.place import (
     DEFAULT_KEEP_CHANNELS_MM,
     EDGES,
@@ -24,10 +32,12 @@ from copperchat.kicad_tools.board.place import (
     SIDES,
     apply_define_blocks,
     apply_placement,
+    pcb_floorplan,
     prepare_define_blocks,
     prepare_legalize,
     prepare_move,
     prepare_place_block,
+    prepare_place_blocks,
 )
 from copperchat.kicad_tools.board.specs_setup import NAME_PATTERN
 from copperchat.tools.spec import ToolSpec, edit_spec
@@ -266,6 +276,66 @@ PCB_LEGALIZE_DESCRIPTION = (
     "and next. Cost 1."
 )
 
+# -- pcb_floorplan / pcb_place_blocks (R2) ---------------------------------------------------
+
+_FLOORPLAN_PROPS: dict[str, Any] = {
+    "blocks": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": MAX_BLOCKS,
+        "items": _BLOCK,
+        "description": "Block names (pcb_define_blocks); default every defined block. Parts "
+        "of other blocks and locked parts stay where they are.",
+    },
+    "keep_channels": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": MAX_KEEP_CHANNELS_MM,
+        "description": f"Routing gap (mm) between a block's clusters and the least channel "
+        f"between blocks (default {DEFAULT_KEEP_CHANNELS_MM}).",
+    },
+}
+
+PCB_FLOORPLAN_SCHEMA = _obj(dict(_FLOORPLAN_PROPS), [])
+
+_FLOORPLAN_TEXT = (
+    "Blocks with a board.md Placement edges row go into a strip along that edge "
+    "(connector facing it; 'left, 15 mm' = centred 15 mm from the top end, 'top, 20 mm' = "
+    "20 mm from the left end, else the middle), a Blocks row with a "
+    "Region (x, y, w, h in mm, or left/right/top/bottom half, top-left quarter ...) into "
+    "that region; the others split the rest of the board by connectivity (fewest shared "
+    "nets across each cut, area balanced), so the whole board is used. Every cut keeps a "
+    f"routing channel of {CHANNEL_PER_NET_MM} mm per crossing net "
+    f"({CHANNEL_MIN_MM}-{CHANNEL_MAX_MM} mm, at least keep_channels). courtyard_fill = "
+    "the parts' courtyards / usable area; does_not_fit (details courtyard_fill, "
+    f"needed_mm2, available_mm2, refs) when the blocks need more than {PACK_MAX:.0%} of "
+    "the board or their shapes do not tile it: ask the user for a bigger board or the "
+    "bottom side."
+)
+
+PCB_FLOORPLAN_DESCRIPTION = (
+    "Preview where pcb_place_blocks would put every block, without writing anything. "
+    + _FLOORPLAN_TEXT
+    + " Returns regions [{block, x, y, w, h}], channels [{x1, y1, x2, y2, width}], fixed "
+    "blocks, courtyard_fill, usable_mm2 and one placement render with the regions drawn. "
+    "Show it to the user before placing. Cost 0."
+)
+
+PCB_PLACE_BLOCKS_SCHEMA = _obj({**_FLOORPLAN_PROPS, "unroute": _UNROUTE}, [])
+
+PCB_PLACE_BLOCKS_DESCRIPTION = (
+    "Place all blocks (or the given ones) over the whole board in one step: the floorplan "
+    "of pcb_floorplan, then each block clustered and packed into its region (as "
+    "pcb_place_block), one legalise over everything, and adjacent connected 2-pad parts "
+    "aligned (shift <= 1 mm when legal) so a straight connection between their pads is "
+    "possible. "
+    + _FLOORPLAN_TEXT
+    + " Deterministic. Refused without writing: unknown_block, does_not_fit, part_routed. "
+    "Returns moved refs, regions, channels, courtyard_fill, spread (how much of the usable "
+    f"width/height the parts span; well_spread = spread >= {SPREAD_SPAN_MIN}), "
+    "placement_hash before/after, the placement score before/after and next. Cost 1."
+)
+
 PLACE_SPECS: list[ToolSpec] = [
     edit_spec(
         "pcb_define_blocks",
@@ -287,6 +357,14 @@ PLACE_SPECS: list[ToolSpec] = [
         PCB_LEGALIZE_DESCRIPTION,
         PCB_LEGALIZE_SCHEMA,
         prepare_legalize,
+        apply_placement,
+    ),
+    ToolSpec("pcb_floorplan", PCB_FLOORPLAN_DESCRIPTION, PCB_FLOORPLAN_SCHEMA, pcb_floorplan),
+    edit_spec(
+        "pcb_place_blocks",
+        PCB_PLACE_BLOCKS_DESCRIPTION,
+        PCB_PLACE_BLOCKS_SCHEMA,
+        prepare_place_blocks,
         apply_placement,
     ),
 ]

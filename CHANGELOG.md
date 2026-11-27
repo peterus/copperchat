@@ -39,6 +39,11 @@ All notable changes to CopperChat are documented in this file. The format follow
   loops and jogs, alignable pairs), review-only for now; M4 accepts perpendicular
   T-junctions, M12 accepts neck-downs at fine-pitch pads, footprint silk lines below the
   minimum are a warning only — behind COPPERCHAT_BOARD_TOOLS.
+- Whole-board block placement: `pcb_floorplan` previews a region per block (edge blocks in
+  a strip along their `board.md` edge, the rest spread over the board by connectivity, with
+  routing channels between them and the courtyard fill), `pcb_place_blocks` places all
+  blocks over it in one step and aligns adjacent connected two-pad parts so a straight
+  connection is possible — behind COPPERCHAT_BOARD_TOOLS (`pcb_floorplan` is a read).
 
 ### Changed
 
