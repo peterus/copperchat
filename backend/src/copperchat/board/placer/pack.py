@@ -37,6 +37,7 @@ from copperchat.board.placer.layout import (
     apply_moves,
     box_of,
     boxes_hit,
+    grow,
     layout_cluster,
     moved_part,
     rotate,
@@ -53,6 +54,7 @@ from copperchat.board.placer.legalize import (
     legalize,
     on_board,
 )
+from copperchat.board.placer.routability import channel_mm, shared_weight, signal_pitch
 from copperchat.board.placer.score import PlacementScore, score_placement
 from copperchat.board.staging import natural_key
 
@@ -234,20 +236,24 @@ def block_layout(
     *,
     keep_channels: float,
     escape_room: bool = False,
+    relax: bool = False,
 ) -> tuple[Move, ...]:
     """The block's members relative to its first anchor at (0, 0), rotation 0, top: every
     cluster laid out, clusters shelf-packed (largest box first) `keep_channels` apart
-    (`escape_room`: see `layout_cluster`)."""
+    (`escape_room`, `relax`: see `layout_cluster`; `relax` also widens the shelf gap to the
+    channel the clusters' shared nets need, `routability.channel_mm`)."""
     gap = courtyard_clearance(model) + 0.05
     layouts: list[tuple[tuple[Move, ...], Box, str]] = []
     for c in build_clusters(model, cls, refs):
-        mv = layout_cluster(model, cls, c, gap=gap, escape_room=escape_room)
+        mv = layout_cluster(model, cls, c, gap=gap, escape_room=escape_room, relax=relax)
         b = _union_box([box_of(moved_part(model.part(m.ref), m)) for m in mv])
         layouts.append((mv, b, mv[0].ref))
     if not layouts:
         return ()
     layouts.sort(key=lambda t: (-_area(t[1]), natural_key(t[2])))
     kc = keep_channels
+    if relax and len(layouts) > 1:
+        kc = _cluster_channel(model, cls, [[m.ref for m in mv] for mv, _, _ in layouts], kc)
     total = sum((b[2] - b[0] + kc) * (b[3] - b[1] + kc) for _, b, _ in layouts)
     width = max(max(b[2] - b[0] for _, b, _ in layouts), math.sqrt(total))
     out: list[Move] = []
@@ -264,6 +270,20 @@ def block_layout(
         x += w + kc
         row_h = max(row_h, h)
     return tuple(out)
+
+
+def _cluster_channel(
+    model: BoardModel, cls: Classification, clusters: Sequence[Sequence[str]], keep: float
+) -> float:
+    """R2b: the shelf gap of a relaxed block - the widest `channel_mm` any cluster needs
+    to the rest of its block (weighted shared nets), never below `keep`."""
+    nets = [frozenset(q.net for r in c for q in model.part(r).pads if q.net) for c in clusters]
+    pitch = signal_pitch(model)
+    widest = keep
+    for i, mine in enumerate(nets):
+        rest = frozenset().union(*(n for j, n in enumerate(nets) if j != i))
+        widest = max(widest, channel_mm(shared_weight(mine, rest, cls), pitch, keep))
+    return widest
 
 
 def block_extent(
@@ -439,10 +459,14 @@ def pack_block(
     pull_weight: float = PULL_WEIGHT,
     occlude_weight: float = 0.0,
     escape_room: bool = False,
+    relax: bool = False,
+    gaps: Mapping[str, float] | None = None,
 ) -> tuple[Move, ...] | DoesNotFit:
     """`place_block` without the score: the `fixed` moves, then the members' legal moves
     (R2's `place_blocks` scores once at the end and pulls harder toward its region centre:
-    `pull_weight` per member and mm)."""
+    `pull_weight` per member and mm). R2b: `relax` = the relaxed block layout; `gaps` = the
+    least gap to an obstacle part by its ref (wider than `keep_channels` only: the channel
+    its block's shared nets need)."""
     known = {p.ref: p for p in model.parts}
     fixed_refs = {m.ref for m in fixed}
     members = sorted(
@@ -460,8 +484,9 @@ def pack_block(
     outline = Outline(base, margin)
     keepouts = keepout_polys(base)
     mset = set(members)
+    extra = {r: g - kc for r, g in (gaps or {}).items() if g > kc + _EPS}
     obstacles = [
-        box_of(p)
+        grow(box_of(p), extra[p.ref]) if p.ref in extra else box_of(p)
         for p in base.parts
         if p.ref not in mset
         and p.side == side
@@ -490,7 +515,9 @@ def pack_block(
     # nothing can fit when the members alone need more than the free area
     if sum(_area(box_of(known[r])) for r in members) > available + _EPS:
         return does_not_fit()
-    local = block_layout(base, cls, members, keep_channels=kc, escape_room=escape_room)
+    local = block_layout(
+        base, cls, members, keep_channels=kc, escape_room=escape_room, relax=relax
+    )
     # connectors pulled to an edge: assigned ones and those anchoring a cluster (a header
     # that serves an MCU follows the MCU instead of dragging its block to an edge)
     heads = {c.members[0] for c in build_clusters(base, cls, members)}

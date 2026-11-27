@@ -94,6 +94,7 @@ class Congestion:
     p90: float  # 90th percentile over the cells with any demand
     over: int  # cells with a ratio > 1.0
     cells: int  # cells with any demand
+    at: tuple[float, float] | None = None  # centre of the worst cell (board mm)
 
 
 def _placed(model: BoardModel, cls: Classification) -> list[Box]:
@@ -154,9 +155,13 @@ def congestion(model: BoardModel, cls: Classification, *, cell: float = CONG_CEL
     if not demand:
         return Congestion(0.0, 0.0, 0, 0)
     ratios: list[float] = []
+    worst: tuple[float, tuple[int, int]] | None = None
     for k in sorted(demand):
         room = max(cell * cell - pads_area.get(k, 0.0), 0.1 * cell * cell) * ROUTING_LAYERS
         ratios.append(demand[k] / room)
+        if worst is None or ratios[-1] > worst[0] + _EPS:
+            worst = (ratios[-1], k)
+    assert worst is not None
     srt = sorted(ratios)
     p90 = srt[min(len(srt) - 1, math.ceil(0.9 * len(srt)) - 1)]
     return Congestion(
@@ -164,6 +169,7 @@ def congestion(model: BoardModel, cls: Classification, *, cell: float = CONG_CEL
         p90=round(p90, 3),
         over=sum(1 for r in ratios if r > 1.0 + _EPS),
         cells=len(ratios),
+        at=(round(x0 + (worst[1][0] + 0.5) * cell, 3), round(y0 + (worst[1][1] + 0.5) * cell, 3)),
     )
 
 

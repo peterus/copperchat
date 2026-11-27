@@ -73,6 +73,13 @@ from copperchat.board.placer.pack import (
     block_layout,
     pack_block,
 )
+from copperchat.board.placer.routability import (
+    GapRow,
+    block_gaps,
+    channel_mm,
+    shared_weight,
+    signal_pitch,
+)
 from copperchat.board.placer.score import score_placement
 from copperchat.board.staging import natural_key
 
@@ -92,6 +99,16 @@ BISECT_BUDGET = 400
 # block sits in the middle of its region, so the board's slack spreads between the blocks
 # instead of every block hugging its neighbours
 REGION_PULL_WEIGHT = 2.0
+# R2b: a free block is packed on the whole board against the parts already placed, pulled
+# toward its floorplan region centre only this weakly (per member and mm) - the airwire to
+# its placed partners dominates, so connected blocks end next to each other
+TARGET_PULL_WEIGHT = 0.2
+# the slack every block gap gets on top of its channel: the first step that places every
+# block wins (the board's remaining room goes to its periphery, not into one hole)
+SLACK_STEPS_MM = (1.0, 0.5, 0.0)
+# a free block that found no spot moves to the front and the packing restarts, at most this
+# many times per layout and slack step (bounds the work on a board that cannot fit)
+RETRY_MAX = 8
 MAX_FREE_RECTS = 4
 # align_pairs' tighten step: two connected pads with a straight corridor end this far apart
 # at the least (when the courtyards allow), moved in steps of TIGHT_STEP_MM
@@ -135,6 +152,13 @@ class Floorplan:
     # was too tight for the packing)
     fallback: tuple[str, ...] = ()
     fixed: tuple[str, ...] = ()  # blocks with a Region row or an edge strip
+    # R2b (additive, `place_blocks` only): the gap rows of the placed blocks, the slack every
+    # block gap got on top of its channel, the order the blocks were packed in, and whether
+    # the relaxed layout was used (False: only the compact P4 layout fitted)
+    gaps: tuple[GapRow, ...] = ()
+    slack_mm: float = 0.0
+    order: tuple[str, ...] = ()
+    relaxed: bool = False
 
 
 class _NoFit(Exception):
@@ -301,9 +325,11 @@ def _members(model: BoardModel, b: BlockProposal) -> list[str]:
 
 
 def _block_box(
-    model: BoardModel, cls: Classification, refs: Sequence[str], keep: float
+    model: BoardModel, cls: Classification, refs: Sequence[str], keep: float, relax: bool = False
 ) -> tuple[float, float, list[Move]]:
-    local = list(block_layout(model, cls, refs, keep_channels=keep, escape_room=True))
+    local = list(
+        block_layout(model, cls, refs, keep_channels=keep, escape_room=True, relax=relax)
+    )
     boxes = [box_of(moved_part(model.part(m.ref), m)) for m in local]
     x0 = min(b[0] for b in boxes)
     y0 = min(b[1] for b in boxes)
@@ -551,9 +577,11 @@ def floorplan(
     *,
     keep_channels: float,
     allowed_sides: frozenset[Side],
+    relax: bool = False,
 ) -> Floorplan | DoesNotFit:
     """Regions for `blocks` on the whole board (module docstring). `DoesNotFit` carries
-    `courtyard_fill`. Raises `ValueError` without an outline."""
+    `courtyard_fill`. Raises `ValueError` without an outline. `relax` (R2b): the block
+    boxes of the relaxed layout."""
     del allowed_sides  # the blocks go on the top side; the packer checks the side policy
     o = model.outline
     if o.kind == "none":
@@ -613,7 +641,7 @@ def floorplan(
         refs = members[b.name]
         if not refs:
             continue
-        w, h, local = _block_box(model, cls, refs, kc)
+        w, h, local = _block_box(model, cls, refs, kc, relax)
         locals_[b.name] = local
         edge_ref = next(
             (r for r in ([b.anchor] if b.anchor else []) + refs if r in edge_rows and r in refs),
@@ -826,14 +854,245 @@ def place_blocks(
     keep_channels: float,
     allowed_sides: frozenset[Side],
 ) -> tuple[PlaceResult, Floorplan] | DoesNotFit:
-    """`floorplan`, then every block packed into its region (fixed blocks first, then the
-    largest; earlier moves as `fixed`), one global legalise, `align_pairs`; the score of the
-    result (incl. `spread`)."""
-    fp = floorplan(
-        model, cls, doc, blocks, keep_channels=keep_channels, allowed_sides=allowed_sides
-    )
-    if isinstance(fp, DoesNotFit):
-        return fp
+    """R2b: compact, relaxed, connectivity-ordered (owner 2026-11-27). The topology: the
+    relaxed `floorplan`, else the compact one, else (the shapes do not tile, the area
+    does) one of the fixed blocks alone - its regions place the fixed blocks, its region
+    centres pull the free blocks (none: the usable centre). Then per layout (relaxed first,
+    then P4's compact one) and slack step (`SLACK_STEPS_MM`) `_pack_ordered`; the first that
+    places every block wins. One global legalise, `align_pairs`, the score (incl. `spread`)
+    and the gap rows. Nothing fits: R2's region packing (`_pack_regions`), else the compact
+    floorplan's `DoesNotFit` (with `courtyard_fill`)."""
+
+    def plan(bs: Sequence[BlockProposal], relax: bool) -> Floorplan | DoesNotFit:
+        return floorplan(
+            model, cls, doc, bs, keep_channels=keep_channels, allowed_sides=allowed_sides,
+            relax=relax,
+        )  # fmt: skip
+
+    compact = plan(blocks, False)
+    topo: Floorplan | DoesNotFit = plan(blocks, True)
+    if isinstance(topo, DoesNotFit):
+        topo = compact
+    if isinstance(topo, DoesNotFit):
+        # no box tiling (a shape or an area refusal of the boxes): the constructive packing
+        # interlocks the blocks' parts and may still fit; the fixed blocks' regions alone
+        fixed_only = [b for b in blocks if _fixed_block(model, doc, b)]
+        topo = plan(fixed_only, False) if fixed_only else Floorplan({}, (), 0.0, 0.0, 0.0)
+    if not isinstance(topo, DoesNotFit):
+        for relax in (True, False):
+            for slack in SLACK_STEPS_MM:
+                got = _pack_retry(
+                    model, cls, doc, blocks, topo, keep=keep_channels, sides=allowed_sides,
+                    relax=relax, slack=slack,
+                )  # fmt: skip
+                if got is not None:
+                    order, moves, fallback = got
+                    fp = dataclasses.replace(
+                        topo, slack_mm=slack, order=order, relaxed=relax, fallback=fallback,
+                    )  # fmt: skip
+                    if isinstance(compact, DoesNotFit):  # the fill of every block
+                        fp = dataclasses.replace(
+                            fp,
+                            courtyard_fill=compact.courtyard_fill or 0.0,
+                            courtyard_mm2=_courtyards(model, blocks),
+                        )
+                    else:
+                        fp = dataclasses.replace(
+                            fp,
+                            courtyard_fill=compact.courtyard_fill,
+                            courtyard_mm2=compact.courtyard_mm2,
+                            usable_mm2=compact.usable_mm2,
+                        )
+                    result = _finish(model, cls, doc, blocks, fp, moves, keep_channels)
+                    if not isinstance(result, DoesNotFit):
+                        return result
+    if isinstance(compact, DoesNotFit):
+        return compact
+    got_r = _pack_regions(model, cls, doc, blocks, compact, keep_channels, allowed_sides)
+    if isinstance(got_r, DoesNotFit):
+        return got_r
+    fp, moves = got_r
+    return _finish(model, cls, doc, blocks, fp, moves, keep_channels)
+
+
+def _courtyards(model: BoardModel, blocks: Sequence[BlockProposal]) -> float:
+    """Σ courtyard areas of the blocks' members (the bbox for a part without one)."""
+    total = 0.0
+    for b in blocks:
+        for r in _members(model, b):
+            p = model.part(r)
+            total += polygon_area(p.courtyard) if len(p.courtyard) >= 3 else _area(box_of(p))
+    return round(total, 3)
+
+
+def _fixed_block(model: BoardModel, doc: BoardDoc, b: BlockProposal) -> bool:
+    """A block with a `board.md` Blocks row naming a region, or a member with a Placement
+    edges row (the blocks `floorplan` places first)."""
+    o = model.outline
+    usable: Box = (o.x, o.y, o.x + o.w, o.y + o.h)
+    row = next((r for r in doc.blocks if r.name == b.name), None)
+    if row is not None and parse_region(row.region, usable) is not None:
+        return True
+    edged = {r.ref for r in doc.edges if r.edge is not None}
+    return any(r in edged for r in _members(model, b))
+
+
+def _parked(model: BoardModel, blocks: Sequence[BlockProposal]) -> BoardModel:
+    """`model` with every member of this run parked `PARK_DX_MM` right of the board: a
+    block is packed around the blocks placed before it, never around stale positions of
+    members still to come (R2, review round 1)."""
+    o = model.outline
+    everyone = sorted({r for b in blocks for r in _members(model, b)}, key=natural_key)
+    park = [
+        Move(r, model.part(r).x + o.w + PARK_DX_MM, model.part(r).y, model.part(r).rot,
+             model.part(r).side)
+        for r in everyone
+    ]  # fmt: skip
+    return apply_moves(model, park)
+
+
+def _block_nets(model: BoardModel, refs: Sequence[str]) -> frozenset[str]:
+    return frozenset(q.net for r in refs for q in model.part(r).pads if q.net)
+
+
+def _pack_ordered(
+    model: BoardModel,
+    cls: Classification,
+    doc: BoardDoc,
+    blocks: Sequence[BlockProposal],
+    fp: Floorplan,
+    *,
+    keep: float,
+    sides: frozenset[Side],
+    relax: bool,
+    slack: float,
+    first: Sequence[str] = (),
+) -> tuple[tuple[str, ...], tuple[Move, ...], tuple[str, ...]] | str:
+    """The blocks packed one by one (R2b): the fixed ones first (largest first, each in its
+    region), then always the block with the most weighted shared nets to the placed ones
+    (ties: larger courtyard area, name), on the whole usable box against the parts already
+    placed, pulled `TARGET_PULL_WEIGHT` toward its floorplan region centre; every placed
+    part keeps `channel_mm(shared nets of the two blocks) + slack` (its own block's parts
+    are not obstacles yet). The blocks in `first` go right after the fixed ones, in that
+    order. Returns (order, moves, fixed blocks packed on the whole board); a block that
+    finds no spot: its name."""
+    o = model.outline
+    m = edge_margin(model)
+    whole = Rect(o.x + m, o.y + m, o.w - 2 * m, o.h - 2 * m)
+    refs = {b.name: _members(model, b) for b in blocks if _members(model, b)}
+    nets = {n: _block_nets(model, r) for n, r in refs.items()}
+    area = {n: sum(_area(box_of(model.part(x))) for x in r) for n, r in refs.items()}
+    pitch = signal_pitch(model)
+    fixed_set = frozenset(fp.fixed)
+    base = _parked(model, blocks)
+    placed: list[str] = []
+    fallback: list[str] = []
+    owner: dict[str, str] = {}
+    moves: tuple[Move, ...] = ()
+    todo = sorted(refs, key=natural_key)
+    centre = (whole.x + whole.w / 2, whole.y + whole.h / 2)
+    while todo:
+        fixed_left = [n for n in todo if n in fixed_set]
+        promoted = [n for n in first if n in todo]
+        if fixed_left:
+            n = min(fixed_left, key=lambda x: (-area[x], natural_key(x)))
+        elif promoted:
+            n = promoted[0]
+        else:
+            n = min(
+                todo,
+                key=lambda x: (
+                    -sum(shared_weight(nets[x], nets[p], cls) for p in placed),
+                    -area[x],
+                    natural_key(x),
+                ),
+            )
+        todo.remove(n)
+        region = fp.regions.get(n)
+        target = centre if region is None else (region.x + region.w / 2, region.y + region.h / 2)
+        need = {
+            p: channel_mm(shared_weight(nets[n], nets[p], cls), pitch, keep) + slack
+            for p in placed
+        }
+        gaps = {r: need[owner[r]] for r in owner}
+        # a fixed block in its region first, else on the whole board (its connector's edge
+        # cost keeps it on the edge); a free block on the whole board
+        where = [region, whole] if n in fixed_set and region is not None else [whole]
+        res: tuple[Move, ...] | DoesNotFit = DoesNotFit(0.0, 0.0, ())
+        for reg in where:
+            res = pack_block(
+                base,
+                cls,
+                refs[n],
+                reg,
+                side="top",
+                rotation=None,
+                keep_channels=keep,
+                fixed=moves,
+                allowed_sides=sides,
+                edge=None,
+                target=target,
+                doc=doc,
+                pull_weight=REGION_PULL_WEIGHT if n in fixed_set else TARGET_PULL_WEIGHT,
+                occlude_weight=OCCLUDE_WEIGHT,
+                escape_room=True,
+                relax=relax,
+                gaps=gaps,
+            )
+            if not isinstance(res, DoesNotFit):
+                break
+        if isinstance(res, DoesNotFit):
+            return n
+        if reg is whole and n in fixed_set:
+            fallback.append(n)
+        moves = res
+        placed.append(n)
+        owner.update({r: n for r in refs[n]})
+    return tuple(placed), moves, tuple(sorted(fallback, key=natural_key))
+
+
+def _pack_retry(
+    model: BoardModel,
+    cls: Classification,
+    doc: BoardDoc,
+    blocks: Sequence[BlockProposal],
+    fp: Floorplan,
+    *,
+    keep: float,
+    sides: frozenset[Side],
+    relax: bool,
+    slack: float,
+) -> tuple[tuple[str, ...], tuple[Move, ...], tuple[str, ...]] | None:
+    """`_pack_ordered`; a free block that finds no spot is moved to the front (after the
+    fixed blocks and the blocks moved before it) and the packing starts again - at most
+    once per block and `RETRY_MAX` times (the earlier blocks had boxed it out). None: no
+    order fits."""
+    first: list[str] = []
+    for _ in range(min(len(blocks), RETRY_MAX) + 1):
+        got = _pack_ordered(
+            model, cls, doc, blocks, fp, keep=keep, sides=sides, relax=relax, slack=slack,
+            first=first,
+        )  # fmt: skip
+        if not isinstance(got, str):
+            return got
+        if got in first or got in fp.fixed:
+            return None
+        first.append(got)
+    return None
+
+
+def _pack_regions(
+    model: BoardModel,
+    cls: Classification,
+    doc: BoardDoc,
+    blocks: Sequence[BlockProposal],
+    fp: Floorplan,
+    keep_channels: float,
+    allowed_sides: frozenset[Side],
+) -> tuple[Floorplan, tuple[Move, ...]] | DoesNotFit:
+    """R2's packing: every block into its region (fixed blocks first, then the largest;
+    earlier ones as `fixed`), pulled `REGION_PULL_WEIGHT` toward the region centre; a block
+    that does not fit its region gets the whole board once (`Floorplan.fallback`)."""
     o = model.outline
     m = edge_margin(model)
     whole = Rect(o.x + m, o.y + m, o.w - 2 * m, o.h - 2 * m)
@@ -842,23 +1101,13 @@ def place_blocks(
     def size(n: str) -> float:
         return sum(_area(box_of(model.part(x))) for x in _members(model, by_name[n]))
 
-    # every member of this run parked off the board first: a block is packed around the
-    # blocks placed before it, never around stale positions of members still to come
-    everyone = sorted({r for b in blocks for r in _members(model, b)}, key=natural_key)
-    park = [
-        Move(r, model.part(r).x + o.w + PARK_DX_MM, model.part(r).y, model.part(r).rot,
-             model.part(r).side)
-        for r in everyone
-    ]  # fmt: skip
-    base = apply_moves(model, park)
+    base = _parked(model, blocks)
     fixed_set = frozenset(fp.fixed)
     order = sorted(fp.regions, key=lambda n: (n not in fixed_set, -size(n), natural_key(n)))
     moves: tuple[Move, ...] = ()
     fallback: list[str] = []
-    members: set[str] = set()
     for n in order:
         refs = _members(model, by_name[n])
-        members.update(refs)
         region = fp.regions[n]
         target = (region.x + region.w / 2, region.y + region.h / 2)
         res: tuple[Move, ...] | DoesNotFit = DoesNotFit(0.0, 0.0, ())
@@ -886,15 +1135,31 @@ def place_blocks(
         if isinstance(res, DoesNotFit):
             return dataclasses.replace(res, courtyard_fill=fp.courtyard_fill)
         moves = res
+    fp = dataclasses.replace(fp, order=tuple(order))
     if fallback:
         fp = dataclasses.replace(fp, fallback=tuple(sorted(set(fallback), key=natural_key)))
+    return fp, moves
+
+
+def _finish(
+    model: BoardModel,
+    cls: Classification,
+    doc: BoardDoc,
+    blocks: Sequence[BlockProposal],
+    fp: Floorplan,
+    moves: tuple[Move, ...],
+    keep: float,
+) -> tuple[PlaceResult, Floorplan] | DoesNotFit:
+    """One global legalise of this run's members, `align_pairs`, the score and gap rows."""
+    members = frozenset(r for b in blocks for r in _members(model, b))
+    base = _parked(model, blocks)
     legal = legalize(
         base,
         moves,
-        movable=frozenset(members),
+        movable=members,
         max_shift=None,
         keepouts=keepout_polys(model),
-        edge_margin=m,
+        edge_margin=edge_margin(model),
     )
     if isinstance(legal, DoesNotFit):
         return dataclasses.replace(legal, courtyard_fill=fp.courtyard_fill)
@@ -902,9 +1167,11 @@ def place_blocks(
     merged.update({mv.ref: mv for mv in legal})
     placed = tuple(merged[r] for r in sorted(merged, key=natural_key))
     after = apply_moves(model, placed)
-    aligned = align_pairs(after, classify(after, doc), placed, movable=frozenset(members))
+    aligned = align_pairs(after, classify(after, doc), placed, movable=members)
     final = apply_moves(model, aligned)
-    score = score_placement(final, classify(final, doc), doc)
+    fcls = classify(final, doc)
+    score = score_placement(final, fcls, doc)
+    fp = dataclasses.replace(fp, gaps=block_gaps(final, fcls, blocks, keep=keep))
     return PlaceResult(aligned, score), fp
 
 
