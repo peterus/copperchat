@@ -640,8 +640,7 @@ def _escape_map(
 ) -> tuple[bytearray, ...]:
     """Per layer: 1 on the lattice nodes inside the bbox of the escape (`_escape_rect`) of
     each pad of `pending` (other-net pads, with their layer indices) that no track end or
-    via of its net touches yet - on its layers, an SMD pad's on every layer (its via); ()
-    when there is none."""
+    via of its net touches yet - on the pad's own layers; () when there is none."""
     if not pending:
         return ()
     nets = {p.net for p, _ in pending}
@@ -678,9 +677,9 @@ def _escape_map(
         if out is None:
             out = [bytearray(nx * ny) for _ in range(n_layers)]
         row = b"\x01" * (i1 - i0 + 1)
-        # an SMD pad escapes through a via just beyond its end: that column is needed on
-        # every layer (ODH: VBUS on In2 0.4 mm in front of U201's pins walled VSYS in)
-        for k in range(n_layers) if pad.smd else on:
+        # the pad's own layers only (review round 5: marking every layer for SMD pads
+        # doubled the router's search effort on dense boards and did not free ODH's U201)
+        for k in on:
             arr = out[k]
             for j in range(j0, j1 + 1):
                 arr[j * nx + i0 : j * nx + i1 + 1] = row

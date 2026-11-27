@@ -1273,3 +1273,53 @@ def test_untouched_pad_loop_not_ripped_for_unrelated_fresh_copper(variant: str) 
     )
     r = postprocess(m, kiids(m, "b") | kiids(m, "c"))
     assert not any(why in ("pad_loop", "pad_jog") for _k, why in r.reasons), r
+
+
+def _tht(ref: str, x: float, y: float) -> object:
+    from copperchat.board.model import Pad as _Pad
+
+    q = _Pad(
+        ref=ref, number="1", net="N1", x=x, y=y, w=0.5, h=0.5, rot=0.0, shape="circle",
+        layers=frozenset({"*.Cu"}), smd=False, drill=0.3,
+    )  # fmt: skip
+    return part(ref, x, y, half=0.5, pads=(q,))
+
+
+def test_untouched_loop_on_tht_pad_not_blamed_on_other_layer() -> None:
+    """Review round 5: J1 is plated through (on every layer). Its untouched F.Cu entry
+    loops; the connection continues through a via on touched B.Cu that passes J1's entry
+    zone. M16 judges the loop on its run's layer (F.Cu) - the B.Cu copper is not ours to
+    rip for it."""
+    steps = [(0, 0.8), (45, 0.4), (45, 0.4), (45, 0.4), (0, 2.0)]
+    pts = [nm_pt(p) for p in walk((50.0, 50.0), 0.0, steps)]
+    end = pts[-1]
+    back = [(end, (end[0], 51.0)), ((end[0], 51.0), (44.0, 51.0))]
+    m = board(
+        parts=(_tht("J1", *pts[0]), _tht("J2", 44.0, 51.0)),
+        tracks=(
+            *path_tracks(pts, prefix="u"),
+            *(track("N1", "B.Cu", a, b, 0.2, kiid=f"b{i}") for i, (a, b) in enumerate(back)),
+        ),
+        vias=(via("N1", end, kiid="v1"),),
+        net_class_of=(("N1", "Default"),),
+    )
+    r = postprocess(m, kiids(m, "b"))
+    assert not any(why in ("pad_loop", "pad_jog") for _k, why in r.reasons), r
+
+
+def test_fresh_entry_defect_at_b_end_ripped() -> None:
+    """The jog sits at the connection's far pad (J2) and only the piece into J2 is touched:
+    attributed at that pad (not at pad a)."""
+    pts = [nm_pt(p) for p in walk((50.0, 50.0), 0.0, [(0, 6.0), (45, 0.4), (-45, 0.6)])]
+    n = len(pts) - 1
+    tracks = tuple(
+        track("N1", "F.Cu", a, b, 0.2, kiid=("t" if i == n - 1 else "u") + str(i))
+        for i, (a, b) in enumerate(itertools.pairwise(pts))
+    )
+    m = board(
+        parts=(pad_part("J1", *pts[0]), pad_part("J2", *pts[-1])),
+        tracks=tracks,
+        net_class_of=(("N1", "Default"),),
+    )
+    r = postprocess(m, kiids(m, "t"))
+    assert any(why == "pad_jog" for _k, why in r.reasons), r

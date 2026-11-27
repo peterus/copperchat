@@ -2240,6 +2240,7 @@ class M16Defect:
     at: Point
     end: Pad | None = None
     shift: float | None = None
+    layer: str | None = None  # a pad-entry defect's run layer (the post-processor's attribution)
 
 
 def _m16_defects(c: _Ctx, nets: Iterable[str] | None = None) -> Iterator[M16Defect]:
@@ -2301,6 +2302,7 @@ def _m16_defects(c: _Ctx, nets: Iterable[str] | None = None) -> Iterator[M16Defe
                     yield M16Defect("dogleg", net, a, b, _mid_pt(s, e))
             runs = _runs(segs)
             first, last = runs[0], runs[-1]
+            run_layer = {id(a): segs[0][0], id(b): segs[-1][0]}
             for end, pts, width in ((a, first[0], first[1]), (b, last[0][::-1], last[2])):
                 if not _in_pad(pts[0], end):
                     continue
@@ -2313,7 +2315,9 @@ def _m16_defects(c: _Ctx, nets: Iterable[str] | None = None) -> Iterator[M16Defe
                         if mark in seen:
                             continue
                         seen.add(mark)
-                        yield M16Defect(cast(M16Kind, kind), net, a, b, pt, end=end)
+                        yield M16Defect(
+                            cast(M16Kind, kind), net, a, b, pt, end=end, layer=run_layer[id(end)]
+                        )
 
 
 def m16_defects(

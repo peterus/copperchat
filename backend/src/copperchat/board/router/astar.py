@@ -70,7 +70,7 @@ VIA_COST = 2.0  # mm-equivalent per via
 LAYER_FACTOR = 1.2  # step cost on every layer but the request's first
 PAIR_BAND_FACTOR = 0.8  # step cost inside a grid's `cheap` band (pair fallback)
 # R4: step cost factor inside another net's unrouted pad's entry zone (`grid.escape`)
-ESCAPE_COST_FACTOR = 1.5
+ESCAPE_COST_FACTOR = 1.25
 MAX_GOAL_REJECTS = 64  # goal states whose snapped path failed the final check
 # f = g + HEURISTIC_WEIGHT * h (weighted A*): a detour around an obstacle otherwise expands
 # the whole ellipse of nodes with g + h below the detour's cost (> 1M states for a 4 mm
@@ -1303,7 +1303,9 @@ def solve(
         if path is not None:
             return path
         check_deadline(deadline)
-        rev = replace(req, a=req.b, b=req.a)
+        # the doubled-window retry runs without the pin-escape cost (review round 5: it doubled
+        # the search effort on dense boards; the first window keeps other nets' escapes free)
+        rev = replace(req, a=req.b, b=req.a, escape=False)
         grid2 = build_grid(model, rev, margin=margin, window_mm=2 * WINDOW_MM, deadline=deadline)
         retry = min(max_expansions, RETRY_STRICT_EXPANSIONS)
         back = route(grid2, rev, max_expansions=retry, deadline=deadline, entry_ok=entry_ok)

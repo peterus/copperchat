@@ -1413,7 +1413,9 @@ def postprocess(model: BoardModel, kiids: frozenset[str]) -> PostResult:
             pad = d.end if d.end is not None else d.a
             for i in used:
                 t = wt[i]
-                if not _pad_on_layer(pad, t.layer):
+                # the entry run's own layer (a THT pad is on every layer; review round 5)
+                same = t.layer == d.layer if d.layer is not None else _pad_on_layer(pad, t.layer)
+                if not same:
                     continue
                 zone = list(entry_zone(pad, t.width))
                 if polygons_overlap(_capsule((t.start, t.end), t.width / 2), zone):

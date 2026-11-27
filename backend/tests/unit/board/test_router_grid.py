@@ -324,7 +324,7 @@ def test_escape_map_marks_unrouted_other_net_pads() -> None:
         return bool(grid.escape[k][j * grid.w + i])
 
     end = 13.0 + 0.6 + ESCAPE_REACH_MM / 2  # in front of U3's right end
-    assert marked((end, 12.0)) and marked((end, 12.0), k=1)  # SMD: every layer
+    assert marked((end, 12.0)) and not marked((end, 12.0), k=1)  # the pad's layer only
     assert not marked((13.0 + 0.6 + ESCAPE_REACH_MM / 2, 8.0))  # U4 has copper
     assert not marked((10.8, 10.0))  # own net
     zone = _escape_rect(other, 0.2)

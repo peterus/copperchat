@@ -790,13 +790,16 @@ tests). ODH: 45 critical nets, 15-21 fill connections left (P9a: 138).
   pad's entry zone (the joined path would turn there; one more bend = loop / jog measured
   from that pad).
 - **Pin escapes kept free:** `ObstacleGrid.escape` / `RouteRequest.escape` - a step inside
-  the escape of another net's still unconnected pad costs x `ESCAPE_COST_FACTOR` = 1.5 (a
+  the escape of another net's still unconnected pad costs x `ESCAPE_COST_FACTOR` = 1.25 (a
   pad with a long axis: the strip 1 mm in front of both ends, 0.3 mm to the sides; other
-  pads: the entry zone; SMD pads on every layer, a via needs that column). Off for the M8
-  links (crystal / decap, routed first, must stay shortest). Measured: factor 3 starved the
-  random-map search (442 / 493 maps routed at 100 k expansions, test 90 %), 2.0 -> 460, 1.5 ->
-  468 (all layers 464); without the term the golden walled in SWDIO J2.2-U1.19 (+3V3 along
-  U1's pin ends) and the ESD's GND pad U2.2 (USB_DN / DP around it).
+  pads: the entry zone), on the pad's own layers, in `solve`'s first (default-window) search
+  only - the doubled-window retry runs without it. Off for the M8 links (crystal / decap,
+  routed first, must stay shortest). Measured: factor 3 starved the random-map search (442 /
+  493 maps at 100 k expansions, test 90 %); review round 5: 1.5 + every layer for SMD pads
+  took the 80-part perf board from 28 s to 54 s (max solve 13 s) - own layers + retry
+  without + 1.25: 27.9 s (max 2.75 s, 40 / 40 routed), random maps 469 / 493. Without the
+  term the golden walled in SWDIO J2.2-U1.19 (+3V3 along U1's pin ends) and the ESD's GND
+  pad U2.2; at 1.25 the golden is unchanged.
 - **Straight links checked per piece** (`_path_free`, reservations): a link class-wide in the
   wide pad's zone and neck-wide next to the fine-pitch IC was checked at the class width
   over its whole length and refused - the ODH doglegs C208.1-U202.1 / U202.5-C206.1 (R3's
@@ -871,8 +874,11 @@ pins, A6-B6 through In2 east of them; C10.2 / U3.2 SW and Y1.3 / C5.1 without a 
 **Residuals**
 - R7 / owner: the four placement-forced ODH connections above; Freerouting time per fill
   (150-230 s at 30 passes) is spent on them.
-- The router's random-map property test routes 464 / 493 (94 %) - the escape term costs
-  search effort; `pcb_route` on ODH 126 -> 164 s.
+- The router's random-map property test routes 469 / 493 (95 %) - the escape term costs
+  some search effort; `pcb_route` on ODH 126 -> 164 s (measured before round 5's 1.25).
+- Review rounds 1-5 (fixed): per-pad entry-zone state, neck only in a necked pad's zone
+  (`geom.neck_link_zones`), step-3b attribution of pad loops / jogs by the connection's own
+  touched copper on the entry run's layer (`M16Defect.layer`), lazy dogleg baseline.
 - Run-to-run variance of the fill on ODH is large (identical code: refused 53 % / 29 % /
   accepted); measuring a Freerouting setting needs several runs per variant.
 - `entry_ok` (loops / jogs allowed) remains only as an explicit `solve` / `route` argument.
