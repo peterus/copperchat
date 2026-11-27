@@ -1048,7 +1048,41 @@ existing KiCad write path.
   `tests/kicad/board/test_fill_postprocess.py` (M4 helper without T),
   `tests/unit/board/test_chamfer.py` (T allowed, Y-shaped T not).
 
-<!-- R3-NUMBERS -->
+- **Neck layers:** a neck zone applies only on the layers of the end pad inside it
+  (`grid.neck_layers`): on ODH a via inside the escape zone took the neck to B.Cu, which M12
+  fails (the QFN pad is on F.Cu).
+- **sp4_synth critical routing (`test_route_critical_set`, before → after):** M15 2 → **0**;
+  M16 hard 14 (10 doglegs D1.2–R4.2, R4.1–U1.10, U1.16–C2.1, C8/C9–L1, C4–Y1, U3.2–L1, J2–U1
+  SWCLK, J1.B7–U2.3, C10–U3 VBST; 4 pad loops J1 A6/B6/A7/B7) → **3** (0 doglegs; pad loops
+  J1.A7 / J1.B7 of USB_DN A7–B7 and U3.2 of /Power/SW C10.2–U3.2 - no loop-free path in
+  either window, `solve`'s last resort); pad jogs (review) 5 → 2; M4 = M7 = 0; 37 / 37
+  routed; `pcb_route` 55 s → 89 s (solve fallbacks; deadline 300 s).
+- **Golden (`sp4_synth_metrics.json`, regenerated on `972766a` + R3, idle host):** M15 2 → 0
+  (pass), M16 15 → 3 (review, the 3 forced loops), M9 3 → 1, M5 1.11 → 1.0 (review), M11
+  0.9588 → 0.9576, **M12 pass → review** (USB pair length mismatch 2.6–3.3 mm: the USB-C
+  links A6–B6 / A7–B7 differ - one lands as a T, one loops), M8 4.97 (review, unchanged);
+  tracks 174 → 134, vias 124 → 128, 243.2 mm. One of five verify runs failed
+  `test_full_flow_hard_gates` (not reproduced in four more; the fill's run-to-run variance
+  R1 noted) - watch.
+- **ODH probe** (copy of the PROD checkout, 80 × 100 mm, P9a's answers with Power class
+  0.5 mm, blocks as proposed, critical routing only; renders `/tmp/sp4-renders/r3-odh-*`):
+  26 critical nets, `pcb_route` **61 s** (P9a: 105 s), **1 `no_path`** (P9a: 13, all from pad
+  width): `Net-(U202-L1)` L201.1–U202.4, the buck-boost switch node at Default 0.2 mm - not a
+  pad-width failure (placement); M4 = M7 = M15 = 0, M12 0 (review: USB pair mismatch 3.07 mm,
+  every neck accepted), M16 hard 3: doglegs +3V3 C208.1–U202.1 and /Power/VSYS U202.5–C206.1,
+  pad loop C302.1 (+3V3 J401.2–C302.1).
+- **Residuals for R4 / R7:** (1) M16's dogleg corridor is measured at the narrower NECK width
+  along its whole length, but a straight link may only be that narrow inside the escape zone
+  (M12) - the ODH doglegs C208.1–U202.1 / U202.5–C206.1 have no legal straight segment at
+  class width; R4 (or an R1-file fix) should test the corridor at class width outside the
+  zones. (2) Placement-forced pad loops (USB-C A7–B7 around A6/B6, U3.2 SW) become hard with
+  `M16_HARD` - R2's alignment / R4's rip-and-re-route or an owner call. (3) The fill
+  (Freerouting) leaves sp4_synth's `VBUS:C7.1-U2.5` open next to the ESD's straight
+  pass-throughs (the flow's ladder routes it); fill fixtures moved `VBUS` to `OWN_ROUTED`
+  and `/CC2` out of `FILL_NETS` (P6b files). (4) Pure Y-junctions from Freerouting are still
+  not ripped (R4); `fill`'s re-route keeps `tree=False` (R4 turns it on). (5) `pcb_route`
+  is ~35 s slower on sp4_synth (strict + fallback searches); `test_router_perf` budgets
+  unchanged and green.
 
 ### As built (R5)
 

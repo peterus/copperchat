@@ -752,8 +752,9 @@ def build_grid(
             need = _shape_need(s)
             mk.shape(cells[k], s, need + chord_slack(need, pitch), BLOCKED)
     for poly_n, nw, i0, j0, bw, bh in necks:
-        on = neck_layers(req, poly_n, layers)
-        _apply_neck(cells, own, shapes, mk, poly_n, (req.width - nw) / 2, i0, j0, bw, bh, on)
+        neck_on = neck_layers(req, poly_n, layers)
+        shrink = (req.width - nw) / 2
+        _apply_neck(cells, own, shapes, mk, poly_n, shrink, i0, j0, bw, bh, neck_on)
     poly = tuple(model.outline.polygon) if model.outline.kind != "none" else ()
     inset = edge_clearance(model) + req.width / 2 + margin
     if len(poly) >= 3:  # rasterised once, copied into every layer

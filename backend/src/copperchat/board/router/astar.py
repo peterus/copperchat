@@ -244,8 +244,8 @@ def junctions_ok(
                 if junction_kind(hs) != "t":
                     return False
             elif len(hs) == 2:
-                d = _angle_diff(hs[0], hs[1])
-                if not (abs(d - 180.0) <= _RIGHT_TOL_DEG or abs(d - 135.0) <= _RIGHT_TOL_DEG):
+                diff = _angle_diff(hs[0], hs[1])
+                if not (abs(diff - 180.0) <= _RIGHT_TOL_DEG or abs(diff - 135.0) <= _RIGHT_TOL_DEG):
                     return False
     return True
 

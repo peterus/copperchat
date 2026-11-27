@@ -1147,14 +1147,14 @@ def postprocess(model: BoardModel, kiids: frozenset[str]) -> PostResult:
             old_grid = _Grid()  # the baseline's failing points of this kind, bucketed
             for k, o in enumerate(old):
                 old_grid.add(k, (o[0], o[1], o[0], o[1]))
-            for p in _fails(rep, field):
-                box = (p[0] - tol, p[1] - tol, p[0] + tol, p[1] + tol)
-                if any(math.dist(p, old[k]) <= tol for k in old_grid.query(box)):
+            for at in _fails(rep, field):
+                box = (at[0] - tol, at[1] - tol, at[0] + tol, at[1] + tol)
+                if any(math.dist(at, old[k]) <= tol for k in old_grid.query(box)):
                     continue
                 tids = {
                     i
                     for i in near_grid.query(box)
-                    if _pt_seg(p, wt[i].start, wt[i].end) <= _ON_TRACK_TOL
+                    if _pt_seg(at, wt[i].start, wt[i].end) <= _ON_TRACK_TOL
                 }
                 rip(net, layer, tids, why)
         # safety net (M4 / M7 as KiCad stores it): every polyline of the nm-rounded result
