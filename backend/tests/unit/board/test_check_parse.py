@@ -313,3 +313,119 @@ def test_rows_map_footprint_item_kiids_to_their_part() -> None:
         (["C1"], True),
         (["C1", "R2"], False),
     ]
+
+
+# -- R6: the heavy-process gate around the parity DRC ---------------------------------------
+
+
+class _GateSpySession(_CopySession):
+    """Records who holds the heavy gate while the copies are written."""
+
+    def __init__(self) -> None:
+        super().__init__(False)
+        self.holders: list[str | None] = []
+
+    async def save_copy(self, doc: str, dest: Any, *, save_modified: bool = True) -> Any:
+        from copperchat.board import heavy
+
+        self.holders.append(heavy.holder())
+        return await super().save_copy(doc, dest, save_modified=save_modified)
+
+
+def _parity_cli(seen: list[str | None], release: Any = None) -> Any:
+    from copperchat.board import heavy
+    from copperchat.kicad_tools.cli import CliResult
+
+    async def cli(settings: Any, args: list[str], *, timeout: float, cwd: Any) -> CliResult:
+        seen.append(heavy.holder())
+        if release is not None:
+            await release.wait()
+        Path(args[args.index("-o") + 1]).write_text(
+            json.dumps({"violations": [], "schematic_parity": []})
+        )
+        return CliResult(0, "", "")
+
+    return cli
+
+
+async def test_parity_gate_not_held_during_copy(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The copy (save_copy takes the apply lock without a timeout) runs before the gate;
+    kicad-cli runs inside it; the gate is free afterwards."""
+    from types import SimpleNamespace
+
+    from copperchat.board import heavy
+    from copperchat.kicad_tools.board import check as check_mod
+
+    seen: list[str | None] = []
+    monkeypatch.setattr(check_mod, "run_kicad_cli", _parity_cli(seen))
+    session = _GateSpySession()
+    ctx: Any = SimpleNamespace(project=_project(tmp_path, True), session=session, settings=None)
+    assert await check_mod.cli_parity(ctx) == ((), ())
+    assert session.copies == ["sch", "pcb"] and session.holders == [None, None]
+    assert seen == ["parity"]
+    assert heavy.holder() is None
+
+
+@pytest.mark.parametrize("busy", ["gate", "cli_lock"])
+async def test_cli_parity_bounded_waits(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch, busy: str
+) -> None:
+    """A held gate (a fill's Freerouting run) or a held BOARD_CLI_LOCK (a render) →
+    board_compute_timeout after the remaining HEAVY_WAIT_S, kicad-cli never started."""
+    import contextlib
+    from types import SimpleNamespace
+
+    from copperchat.board.heavy import heavy_slot
+    from copperchat.kicad_tools.board import check as check_mod
+    from copperchat.views.board_render import BOARD_CLI_LOCK
+
+    seen: list[str | None] = []
+    monkeypatch.setattr(check_mod, "run_kicad_cli", _parity_cli(seen))
+    monkeypatch.setattr(check_mod, "HEAVY_WAIT_S", 0.05)
+    ctx: Any = SimpleNamespace(
+        project=_project(tmp_path, True), session=_CopySession(False), settings=None
+    )
+    async with contextlib.AsyncExitStack() as stack:
+        if busy == "gate":
+            await stack.enter_async_context(heavy_slot("freerouting", wait_s=1))
+        else:
+            await stack.enter_async_context(BOARD_CLI_LOCK)
+        with pytest.raises(StructuredToolError) as err:
+            await check_mod.cli_parity(ctx)
+    assert err.value.code == "board_compute_timeout"
+    want = "freerouting" if busy == "gate" else "kicad_cli"
+    assert err.value.details == {"waiting_for": want}
+    assert seen == []
+
+
+async def test_quick_check_runs_during_parity(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A CPU job (a quick check's metrics, a route solve) started while the parity DRC runs
+    is not blocked by it: parity never holds the worker lock."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from copperchat.board import _selftest
+    from copperchat.board.worker import run_cpu, shutdown_worker
+    from copperchat.kicad_tools.board import check as check_mod
+
+    seen: list[str | None] = []
+    release = asyncio.Event()
+    monkeypatch.setattr(check_mod, "run_kicad_cli", _parity_cli(seen, release))
+    ctx: Any = SimpleNamespace(
+        project=_project(tmp_path, True), session=_CopySession(False), settings=None
+    )
+    parity = asyncio.create_task(check_mod.cli_parity(ctx))
+    try:
+        while not seen:
+            await asyncio.sleep(0.01)
+        assert await run_cpu(_selftest.square, 6, timeout_s=30, wait_s=5) == 36
+        assert not parity.done()
+        release.set()
+        assert await parity == ((), ())
+    finally:
+        release.set()
+        shutdown_worker()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from collections.abc import Callable
 from typing import Literal
@@ -23,6 +24,8 @@ from copperchat.views.kicad_render import (
     to_png,
 )
 from copperchat.views.region import Box, Region, resolve_region
+
+log = logging.getLogger(__name__)
 
 Mode = Literal["agent", "kicad"]
 Theme = Literal["agent", "light", "dark"]
@@ -89,7 +92,15 @@ async def _agent_board(
         board_layers(layers)  # validates the names
     snap = await snapshot_with_connectivity(session)
     box = resolve_region(region, snap)
-    markers = await cached_violations(session, "pcb")
+    try:
+        markers = await cached_violations(session, "pcb")
+    except StructuredToolError as exc:
+        if exc.code != "board_compute_timeout":
+            raise
+        # R6: the parity DRC waits for the heavy-process gate; a busy gate costs the
+        # markers, never the render
+        log.info("board render without DRC markers: %s", exc.message)
+        markers = []
     return await asyncio.to_thread(
         render_board, snap, region_box=box, layers=layers, theme=theme, markers=markers
     )

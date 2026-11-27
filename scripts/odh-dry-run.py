@@ -23,6 +23,11 @@ Memory (owner decision D5, "≈ 4.5-5 GB per active board project"), five parts:
 4. raster worker (`_raster_worker.py`): max `VmRSS` sampled by PID;
 5. kicad-cli (one at a time under `BOARD_CLI_LOCK`): max `VmRSS` per kind (svg export,
    3d render, parity drc, gerbers, drill, pos, bom, step, glb, dsn), the largest counts.
+
+Two totals (R6, spec §22.6): the **concurrent peak** - the largest Σ `VmRSS` of those five
+parts within one 0.5 s sample, with the step it happened in and each part's share (a lower
+bound: a spike between two samples is missed) - and the **sum of the per-process peaks**
+(an upper bound: the peaks need not coincide).
 """
 
 from __future__ import annotations
@@ -37,7 +42,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -225,10 +230,15 @@ class PeakSampler:
     peak_rss: dict[int, int] = field(default_factory=dict)
     hwm: dict[int, int] = field(default_factory=dict)
     kinds: dict[int, str | None] = field(default_factory=dict)
+    # per sample: (monotonic time, kind -> Σ VmRSS of that kind's live processes)
+    samples: list[tuple[float, dict[str, int]]] = field(default_factory=list)
+    # step ends: (monotonic time, label), appended by `mark` (the flow's on_step)
+    marks: list[tuple[float, str]] = field(default_factory=list)
     _stop: threading.Event = field(default_factory=threading.Event)
     _thread: threading.Thread | None = None
 
     def sample(self) -> None:
+        parts: dict[str, int] = {}
         for pid in list(self.pids()):
             st = proc_status(pid)
             if not st:
@@ -239,6 +249,19 @@ class PeakSampler:
             self.peak_rss[pid] = max(self.peak_rss.get(pid, 0), rss)
             if "VmHWM" in st:
                 self.hwm[pid] = st["VmHWM"]
+            kind = self.kinds.get(pid)
+            if kind is not None:
+                parts[kind] = parts.get(kind, 0) + rss
+        self.samples.append((time.monotonic(), parts))
+
+    def mark(self, label: str) -> None:
+        """The step `label` ended now: the samples since the previous mark belong to it."""
+        self.marks.append((time.monotonic(), label))
+
+    def labelled(self) -> list[tuple[str, dict[str, int]]]:
+        """`samples` with the step each was taken in (the first mark at or after it;
+        "after the flow" past the last one)."""
+        return [(step_at(t, self.marks), parts) for t, parts in self.samples]
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -268,6 +291,26 @@ class PeakSampler:
         )
 
 
+def step_at(t: float, marks: Sequence[tuple[float, str]]) -> str:
+    """The label of the first mark at or after `t` (marks are step ends, in order)."""
+    return next((label for end, label in marks if end >= t), "after the flow")
+
+
+def concurrent_peak(
+    samples: Sequence[tuple[str, Mapping[str, int]]],
+) -> tuple[float, str, dict[str, float]]:
+    """(total MB, step, kind -> MB) of the sample with the largest Σ VmRSS over all parts;
+    (0.0, "", {}) without samples. A lower bound: 0.5 s samples can miss short spikes."""
+    best: tuple[str, Mapping[str, int]] | None = None
+    for step, parts in samples:
+        if best is None or sum(parts.values()) > sum(best[1].values()):
+            best = (step, parts)
+    if best is None:
+        return 0.0, "", {}
+    step, parts = best
+    return sum(parts.values()) / MB, step, {k: v / MB for k, v in sorted(parts.items())}
+
+
 @dataclass
 class Memory:
     """The D5 breakdown (bytes)."""
@@ -280,6 +323,9 @@ class Memory:
     cpu_workers: list[int] = field(default_factory=list)  # every worker's VmHWM
     raster: int = 0
     cli: dict[str, int] = field(default_factory=dict)  # kind -> peak VmRSS
+    concurrent_mb: float = 0.0  # largest Σ VmRSS in one sample (lower bound)
+    concurrent_step: str = ""
+    concurrent_parts: dict[str, float] = field(default_factory=dict)  # kind -> MB then
 
     @property
     def cli_peak(self) -> int:
@@ -301,7 +347,11 @@ def memory_from(sampler: PeakSampler, api: Mapping[str, int]) -> Memory:
         sampler.hwm.get(p, sampler.peak_rss.get(p, 0)) for p in sampler.by_kind("cpu worker")
     ]
     api_seen = max((sampler.hwm.get(p, 0) for p in sampler.by_kind("api-server")), default=0)
+    peak_mb, peak_step, peak_parts = concurrent_peak(sampler.labelled())
     return Memory(
+        concurrent_mb=peak_mb,
+        concurrent_step=peak_step,
+        concurrent_parts=peak_parts,
         api_server=max(api.get("end", 0), api.get("after_fp", 0), api_seen),
         api_before_fp=api.get("before_fp", 0),
         api_after_fp=api.get("after_fp", 0),
@@ -436,10 +486,25 @@ def build_report(
     for kind, v in sorted(memory.cli.items()):
         lines.append(f"  - {kind}: {_mb(v)}")
     total_gb = memory.total / (1024 * MB)
-    lines += ["", f"**Sum per active board project: {_mb(memory.total)} ({total_gb:.2f} GB)**"]
+    conc_gb = memory.concurrent_mb / 1024
+    shares = ", ".join(f"{k} {v:,.0f} MB" for k, v in memory.concurrent_parts.items()) or "none"
+    lines += [
+        "",
+        f"**Concurrent peak (lower bound, {SAMPLE_S} s samples): {memory.concurrent_mb:,.0f} MB "
+        f"({conc_gb:.2f} GB)** in step {memory.concurrent_step or 'n/a'}; shares: {shares}",
+        "",
+        f"**Sum of peaks (upper bound): {_mb(memory.total)} ({total_gb:.2f} GB)** "
+        "(per-process peaks, need not coincide)",
+    ]
     lo, hi = D5_GB
-    within = "within" if total_gb <= hi else "ABOVE"
-    lines.append(f"D5 figure: {lo}-{hi} GB per active board project → measured sum {within} it.")
+
+    def side(gb: float) -> str:
+        return "within" if gb <= hi else "ABOVE"
+
+    lines.append(
+        f"D5 figure: {lo}-{hi} GB per active board project → concurrent peak "
+        f"{side(conc_gb)} it, sum of peaks {side(total_gb)} it."
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -455,7 +520,9 @@ AFTER_FAILURE = (  # read-only / approval-free calls: the kicad-cli kinds the fl
 )
 
 
-async def after_failure(rig: Any, result: Any) -> list[dict[str, Any]]:
+async def after_failure(
+    rig: Any, result: Any, mark: Callable[[str], None] = lambda label: None
+) -> list[dict[str, Any]]:
     """Best effort after a failed flow: the AFTER_FAILURE calls on the board as the flow
     left it - the full check (parity DRC) for the report, a top and a 3D render, the
     STEP / GLB export - so the memory report covers those kicad-cli kinds too. Returns
@@ -470,6 +537,7 @@ async def after_failure(rig: Any, result: Any) -> list[dict[str, Any]]:
             data, err = await call(rig, "run-dry-run-after-failure", name, **args)
         except Exception as exc:  # a measurement problem must not hide the flow's failure
             data, err = {"exception": repr(exc)}, True
+        mark(f"after failure {name} {json.dumps(args)}")
         row: dict[str, Any] = {
             "tool": name,
             "args": args,
@@ -533,6 +601,7 @@ async def _run(args: argparse.Namespace, out: Path) -> int:
     start = time.monotonic()
 
     def step(s: Any) -> None:
+        sampler.mark(f"turn {s.turn} {s.tool}")
         print(
             f"[{time.monotonic() - start:7.1f}s] turn {s.turn} {s.tool} {s.seconds:.1f}s "
             f"{json.dumps(s.summary, default=str)[:200]}",
@@ -545,7 +614,7 @@ async def _run(args: argparse.Namespace, out: Path) -> int:
                 result = await run_flow(rig, answers, on_step=step)
             except FlowError as exc:
                 result, error = exc.result, str(exc)
-                extra = await after_failure(rig, result)
+                extra = await after_failure(rig, result, sampler.mark)
             seconds = time.monotonic() - start
             proc = rig.session.process
             if proc is not None:

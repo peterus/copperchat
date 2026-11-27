@@ -123,6 +123,9 @@ def test_report_has_memory_section() -> None:
         cpu_workers=[400 * odh.MB],
         raster=80 * odh.MB,
         cli={"svg export": 300 * odh.MB, "3d render": 700 * odh.MB, "parity drc": 500 * odh.MB},
+        concurrent_mb=5300.0,
+        concurrent_step="turn 9 pcb_check",
+        concurrent_parts={"api-server": 2900.0, "kicad-cli parity drc": 2400.0},
     )
     text = odh.build_report(_fake_result(), mem, project="hw/main.kicad_pro", seconds=123.0)
     for heading in ("## Metrics", "## Memory", "## Runtime"):
@@ -147,8 +150,13 @@ def test_report_has_memory_section() -> None:
     assert "kicad-cli peak: 700 MB" in memory
     total = 2 * gb + 600 * odh.MB + 400 * odh.MB + 80 * odh.MB + 700 * odh.MB
     assert mem.total == total
-    assert f"Sum per active board project: {total / odh.MB:,.0f} MB" in memory
+    assert f"Sum of peaks (upper bound): {total / odh.MB:,.0f} MB" in memory
+    assert (
+        "Concurrent peak (lower bound, 0.5 s samples): 5,300 MB (5.18 GB)** in step "
+        "turn 9 pcb_check; shares: api-server 2,900 MB, kicad-cli parity drc 2,400 MB"
+    ) in memory
     assert "D5 figure: 4.5-5.0 GB" in memory
+    assert "concurrent peak ABOVE it, sum of peaks within it" in memory  # 5.18 vs 3.75 GB
     assert "| M9 | 1 | review | sw |" in text
 
 
@@ -260,3 +268,32 @@ def test_answer_fields_match_flow_answers() -> None:
     assert set(odh.ANSWER_FIELDS) == {f.name for f in dataclasses.fields(Answers)}
     a = odh.load_answers({"outline": {}, "rules": {}, "fill_retry": {"timeout_s": 600}})
     assert a.fill_retry == {"timeout_s": 600}
+
+
+def test_concurrent_peak() -> None:
+    """The sample with the largest Σ VmRSS, its step and each part's share (MB)."""
+    samples = [
+        ("turn 1 pcb_route", {"api-server": 3000 * odh.MB, "cpu worker": 900 * odh.MB}),
+        ("turn 2 pcb_check", {"api-server": 3100 * odh.MB, "kicad-cli parity drc": 2600 * odh.MB}),
+        ("turn 3 pcb_fill", {"api-server": 3100 * odh.MB, "jvm": 1500 * odh.MB}),
+    ]
+    total, step, shares = odh.concurrent_peak(samples)
+    assert total == 5700.0
+    assert step == "turn 2 pcb_check"
+    assert shares == {"api-server": 3100.0, "kicad-cli parity drc": 2600.0}
+    assert odh.concurrent_peak([]) == (0.0, "", {})
+
+
+def test_sampler_records_concurrent_samples_by_step() -> None:
+    """Each sample sums the classified processes by kind; samples belong to the step that
+    ended next (the flow's on_step marks), later ones to "after the flow"."""
+    import os
+
+    s = odh.PeakSampler(lambda: [os.getpid(), os.getpid() + 10**7], lambda pid: "api-server")
+    s.sample()
+    s.mark("turn 1 pcb_route")
+    s.sample()
+    labelled = s.labelled()
+    assert [step for step, _ in labelled] == ["turn 1 pcb_route", "after the flow"]
+    assert set(labelled[0][1]) == {"api-server"} and labelled[0][1]["api-server"] > 0
+    assert odh.step_at(0.0, []) == "after the flow"

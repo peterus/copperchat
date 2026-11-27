@@ -31,6 +31,10 @@ All notable changes to CopperChat are documented in this file. The format follow
   COPPERCHAT_BOARD_TOOLS.
 - `pcb_fab_export` (JLCPCB gerbers, drill, zip, BOM, CPL, fab report) and `pcb_export_3d`
   — behind COPPERCHAT_BOARD_TOOLS.
+- Board memory: the `kicad-cli` parity DRC (`pcb_check` full, `run_drc`) starts only after a
+  running Freerouting fill and board computation have finished (waits ≤ 120 s, then
+  `board_compute_timeout`); the board CPU worker is restarted after a job that leaves it
+  above 512 MB.
 
 ### Changed
 

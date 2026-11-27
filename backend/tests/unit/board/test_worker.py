@@ -115,6 +115,7 @@ async def test_wait_s_bounds_queue_wait() -> None:
     with pytest.raises(StructuredToolError) as ei:
         await run_cpu(_selftest.square, 5, timeout_s=10, wait_s=0.3)
     assert ei.value.code == "board_compute_timeout"
+    assert ei.value.details == {"waiting_for": "cpu_job"}  # the heavy gate's shape (R6)
     assert time.monotonic() - t0 < 1
     await running
     assert await run_cpu(_selftest.square, 5, timeout_s=10, wait_s=None) == 25
@@ -133,3 +134,82 @@ async def test_peak_rss_measured() -> None:
     rss = await run_cpu(_selftest.peak_rss, timeout_s=30)
     print(f"worker peak RSS (selftest): {rss / 2**20:.1f} MiB")
     assert 0 < rss < WORKER_MEMORY_LIMIT_BYTES
+
+
+# -- R6: recycling after large jobs -----------------------------------------------------------
+
+
+async def test_recycle_above_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
+    from copperchat.board import worker
+
+    pid = await run_cpu(_selftest.getpid, timeout_s=30)
+    monkeypatch.setattr(worker, "_worker_rss_mb", lambda: worker.WORKER_RECYCLE_MB + 1.0)
+    assert await run_cpu(_selftest.getpid, timeout_s=30) == pid  # the job ran, then recycled
+    assert _gone(pid)
+    monkeypatch.setattr(worker, "_worker_rss_mb", lambda: 10.0)
+    assert await run_cpu(_selftest.getpid, timeout_s=30) != pid
+
+
+async def test_no_recycle_below(monkeypatch: pytest.MonkeyPatch) -> None:
+    from copperchat.board import worker
+
+    monkeypatch.setattr(worker, "_worker_rss_mb", lambda: worker.WORKER_RECYCLE_MB - 1.0)
+    pid = await run_cpu(_selftest.getpid, timeout_s=30)
+    assert await run_cpu(_selftest.getpid, timeout_s=30) == pid
+
+
+async def test_recycle_after_job_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    from copperchat.board import worker
+
+    pid = await run_cpu(_selftest.getpid, timeout_s=30)
+    monkeypatch.setattr(worker, "_worker_rss_mb", lambda: worker.WORKER_RECYCLE_MB + 1.0)
+    with pytest.raises(ValueError, match="big"):
+        await run_cpu(_selftest.fail, "big", timeout_s=30)
+    assert _gone(pid)
+
+
+async def test_recycle_before_next_queued_job(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two jobs queued; the first leaves the worker big and recycles it while still holding
+    the lock; the second starts only afterwards, in the new worker, and completes."""
+    from copperchat.board import worker
+
+    first_pid = await run_cpu(_selftest.getpid, timeout_s=30)
+    calls = iter([worker.WORKER_RECYCLE_MB + 1.0])
+    monkeypatch.setattr(worker, "_worker_rss_mb", lambda: next(calls, 10.0))
+    a = asyncio.create_task(run_cpu(_selftest.getpid, timeout_s=30))
+    b = asyncio.create_task(run_cpu(_selftest.getpid, timeout_s=30))
+    pid_a, pid_b = await asyncio.gather(a, b)
+    assert pid_a == first_pid
+    assert pid_b != first_pid
+    assert _gone(first_pid)
+
+
+def test_worker_rss_reads_proc() -> None:
+    """The real reader: None without a worker; the live worker's VmRSS (> 0 MB) with one."""
+    from copperchat.board import worker
+
+    shutdown_worker()
+    assert worker._worker_rss_mb() is None
+
+    async def go() -> float | None:
+        await run_cpu(_selftest.getpid, timeout_s=30)
+        return worker._worker_rss_mb()
+
+    try:
+        rss = asyncio.run(go())
+    finally:
+        shutdown_worker()
+    assert rss is not None and 1.0 < rss < worker.WORKER_RECYCLE_MB
+
+
+async def test_wait_idle() -> None:
+    from copperchat.board import worker
+
+    assert await worker.wait_idle(0.1) is True
+    job = asyncio.create_task(run_cpu(_selftest.spin, 1.0, timeout_s=30))
+    await asyncio.sleep(0.2)
+    assert await worker.wait_idle(0.05) is False
+    assert await worker.wait_idle(30) is True
+    assert job.done()
+    # never kept: the next job starts at once
+    assert await run_cpu(_selftest.square, 5, timeout_s=30, wait_s=0.5) == 25

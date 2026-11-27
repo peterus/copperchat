@@ -364,15 +364,31 @@ def parse_fill_args(args: Any) -> FillArgs:
 # -- errors ------------------------------------------------------------------------------------
 
 
-def _not_acceptable(why: str, reason: str, **details: Any) -> StructuredToolError:
-    suggestion = {
-        "rip_ratio": "Improve the channels between blocks (pcb_move / pcb_legalize) or the "
-        "critical routing (pcb_route), look at the worst areas with pcb_render {region, "
-        "markers: true}, then retry.",
-        "timeout": "Retry with a larger timeout_s or fewer passes.",
-        "freerouting_error": "Read log_tail; retry once, else route the rest with pcb_route.",
-        "io_timeout": "KiCad was too slow; retry, or route the rest with pcb_route.",
-    }[reason]
+def timeout_why(run: FreeroutingRun, timeout_s: float) -> str:
+    """The `timeout` refusal's why: a run that never started (R6: the heavy-process gate or a
+    slot stayed busy) is not a reason to raise `timeout_s`."""
+    if not run.started:
+        return (
+            "Freerouting did not start: another heavy board process (a fill, or a parity DRC "
+            "of pcb_check full, run_drc or the board view's markers) was still running"
+        )
+    return f"Freerouting did not finish within {timeout_s} s"
+
+
+def _not_acceptable(
+    why: str, reason: str, *, suggestion: str | None = None, **details: Any
+) -> StructuredToolError:
+    suggestion = (
+        suggestion
+        or {
+            "rip_ratio": "Improve the channels between blocks (pcb_move / pcb_legalize) or the "
+            "critical routing (pcb_route), look at the worst areas with pcb_render {region, "
+            "markers: true}, then retry.",
+            "timeout": "Retry with a larger timeout_s or fewer passes.",
+            "freerouting_error": "Read log_tail; retry once, else route the rest with pcb_route.",
+            "io_timeout": "KiCad was too slow; retry, or route the rest with pcb_route.",
+        }[reason]
+    )
     return StructuredToolError(
         "Fill routing not acceptable",
         why,
@@ -893,7 +909,11 @@ def fill_stages(st: _FillState) -> list[BoardStage]:
         tail = run.log_tail[-2000:]
         if run.timed_out:
             raise _not_acceptable(
-                f"Freerouting did not finish within {st.args.timeout_s} s", "timeout", log_tail=tail
+                timeout_why(run, st.args.timeout_s),
+                "timeout",
+                suggestion=None if run.started else "Retry the same call once it has finished.",
+                started=run.started,
+                log_tail=tail,
             )
         if run.returncode != 0 or not ses.is_file():
             raise _not_acceptable(

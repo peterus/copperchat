@@ -1,6 +1,7 @@
 import io
 import shutil
 from pathlib import Path
+from typing import Any
 
 import pytest
 from PIL import Image
@@ -128,9 +129,9 @@ async def test_render_markers_reuse_one_check_per_state(
     calls: list[str] = []
     real = checks.run_kicad_check
 
-    async def counting(session: KicadSession, doc: str, settings: object) -> str:
+    async def counting(session: KicadSession, doc: str, settings: object, **kw: Any) -> str:
         calls.append(doc)
-        return await real(session, doc, settings)  # type: ignore[arg-type]
+        return await real(session, doc, settings, **kw)  # type: ignore[arg-type]
 
     monkeypatch.setattr(checks, "run_kicad_check", counting)
     await render_view(ecc83_session, "pcb", "agent")
