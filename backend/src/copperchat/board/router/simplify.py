@@ -15,7 +15,7 @@ from collections.abc import Sequence
 
 from copperchat.board.geom import CHAMFER_MIN, JOG_MIN, point_in_polygon
 from copperchat.board.model import Point
-from copperchat.board.router.grid import ObstacleGrid, RoutePath, RouteRequest
+from copperchat.board.router.grid import ObstacleGrid, RoutePath, RouteRequest, neck_layers
 
 _TINY = 1e-9
 _ROUND = 6  # output rounded to 1 nm
@@ -218,6 +218,10 @@ def to_path(
     last = len(runs) - 1
     if end is not None and runs:
         runs[-1][1].append(end)
+    necks = [  # per layer: the neck zones that apply there (`grid.neck_layers`)
+        tuple(z for z in req.neck if li in neck_layers(req, z[0], grid.layers))
+        for li in range(len(grid.layers))
+    ]
     for k, (li, pts) in enumerate(runs):
         a = (req.a.x, req.a.y) if k == 0 else None
         b = (req.b.x, req.b.y) if k == last and end is None else None
@@ -225,7 +229,7 @@ def to_path(
             continue
         snapped = snap_ends(pts, a, b, req.width)
         for p, q in itertools.pairwise(snapped):
-            for s, e, w in neck_pieces(p, q, req.neck, req.width):
+            for s, e, w in neck_pieces(p, q, necks[li], req.width):
                 segments.append((grid.layers[li], s, e, w))
             length += math.dist(p, q)
     return RoutePath(segments=tuple(segments), vias=tuple(vias), length=length)

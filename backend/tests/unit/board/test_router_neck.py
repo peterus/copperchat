@@ -174,3 +174,18 @@ def test_neck_map_counts_against_the_cap(monkeypatch: pytest.MonkeyPatch) -> Non
     build_grid(m, replace(req, neck=()))
     with pytest.raises(RouteTooLarge):
         build_grid(m, req)
+
+
+def test_neck_only_on_the_pads_layers() -> None:
+    """ODH probe: a via inside the escape zone took the neck to B.Cu, which M12 fails (the
+    pad is on F.Cu only). The neck applies on the end pad's layers only."""
+    from copperchat.board.router.grid import neck_layers
+
+    m = replace(_board(), copper_layers=("F.Cu", "B.Cu"))
+    req = replace(_req(m), layers=("F.Cu", "B.Cu"), allow_vias=True)
+    ((zone, _nw),) = req.neck
+    assert neck_layers(req, zone, req.layers) == frozenset({0})
+    plain = build_grid(m, replace(req, neck=()))
+    necked = build_grid(m, req)
+    assert necked.cells[1] == plain.cells[1]  # B.Cu untouched
+    assert necked.cells[0] != plain.cells[0]

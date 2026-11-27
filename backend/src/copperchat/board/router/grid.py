@@ -752,7 +752,8 @@ def build_grid(
             need = _shape_need(s)
             mk.shape(cells[k], s, need + chord_slack(need, pitch), BLOCKED)
     for poly_n, nw, i0, j0, bw, bh in necks:
-        _apply_neck(cells, own, shapes, mk, poly_n, (req.width - nw) / 2, i0, j0, bw, bh)
+        on = neck_layers(req, poly_n, layers)
+        _apply_neck(cells, own, shapes, mk, poly_n, (req.width - nw) / 2, i0, j0, bw, bh, on)
     poly = tuple(model.outline.polygon) if model.outline.kind != "none" else ()
     inset = edge_clearance(model) + req.width / 2 + margin
     if len(poly) >= 3:  # rasterised once, copied into every layer
@@ -857,6 +858,16 @@ def _tree_segments(
     return tuple(tuple(x) for x in out)
 
 
+def neck_layers(req: RouteRequest, poly: Sequence[Point], layers: Sequence[str]) -> frozenset[int]:
+    """Indices into `layers` where a neck zone applies: the layers of the request's end
+    pad(s) whose centre lies in the zone (M12 accepts a neck only on a layer of the pad,
+    R3 - a via inside the zone does not take the neck to another layer)."""
+    pads = [q for q in (req.a, req.b) if point_in_polygon((q.x, q.y), list(poly))]
+    return frozenset(
+        k for k, name in enumerate(layers) if any(_pad_on_layer(q, name) for q in pads)
+    )
+
+
 def _neck_boxes(
     req: RouteRequest, x0: float, y0: float, nx: int, ny: int, pitch: float
 ) -> list[tuple[tuple[Point, ...], float, int, int, int, int]]:
@@ -888,10 +899,11 @@ def _apply_neck(
     j0: int,
     bw: int,
     bh: int,
+    on: frozenset[int],
 ) -> None:
     """Re-mark the nodes inside one neck zone for a track `shrink` narrower per side: a
     map over the zone's node box only (spec §22.4), copied into `cells` for the nodes
-    inside `poly`."""
+    inside `poly`, on the layer indices `on` only."""
     p = mk.p
     sub = _Marker(mk.x0 + i0 * p, mk.y0 + j0 * p, bw, bh, p, mk.deadline)
     rows = []  # per box row: the inside node intervals (box columns)
@@ -905,6 +917,8 @@ def _apply_neck(
                 ivs.append((a, b))
         rows.append(ivs)
     for k, buf_main in enumerate(cells):
+        if k not in on:
+            continue
         buf = bytearray(bw * bh)
         for s in own[k]:
             sub.shape(buf, s, _shape_need(s), OWN)
