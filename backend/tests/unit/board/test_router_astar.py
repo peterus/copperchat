@@ -780,3 +780,25 @@ def test_junction_masks_fast_with_long_diagonal_own_tracks() -> None:
     junction_masks(grid)
     # a coarse ceiling (≈ 1 s on a dev box; the unbucketed lookup took 23.6 s)
     assert _time.perf_counter() - t0 < 3.0
+
+
+@pytest.mark.parametrize("offset", [0.0, 0.0125, 0.03, -0.03])
+@pytest.mark.parametrize("from_above", [True, False])
+def test_tree_goal_off_lattice_both_sides(offset: float, from_above: bool) -> None:
+    """Verify-pass finding: a track off the request's lattice gets T goals from either side
+    (a node within one pitch on the arrival side), so the T is found from both sides."""
+    from copperchat.board.router.astar import tree_goals
+
+    y = 10.0 + offset
+    m, req = _tree_rig([((4.0, 10.0), (4.0, y)), ((4.0, y), (16.0, y))])
+    if not from_above:  # pad a below the track instead of above it
+        from dataclasses import replace
+
+        a = replace(req.a, y=16.0)
+        m = replace(m, parts=tuple(replace(p, pads=(a,)) if p.ref == "U1" else p for p in m.parts))
+        req = replace(req, a=a)
+    goals = tree_goals(build_grid(m, req), req)
+    lands = [land for layer in goals for _b, land in layer.values()]
+    assert lands and all(abs(p[1] - y) < 1e-6 for p in lands)
+    path = route(build_grid(m, req), req)
+    assert path is not None and abs(path.segments[-1][2][1] - y) < 1e-6, path

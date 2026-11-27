@@ -189,3 +189,17 @@ def test_neck_only_on_the_pads_layers() -> None:
     necked = build_grid(m, req)
     assert necked.cells[1] == plain.cells[1]  # B.Cu untouched
     assert necked.cells[0] != plain.cells[0]
+
+
+def test_neck_not_on_the_wide_pads_layer() -> None:
+    """Verify-pass finding: a wide decap pad on B.Cu under the F.Cu QFN (centre inside the
+    QFN's escape zone) must not take the neck to B.Cu - M12 would fail it there."""
+    from copperchat.board.router.grid import neck_layers
+
+    m = replace(_board(), copper_layers=("F.Cu", "B.Cu"))
+    req = replace(_req(m), layers=("F.Cu", "B.Cu"), allow_vias=True)
+    wide = req.a if req.a.ref == "C1" else req.b
+    decap = replace(wide, x=10.0, y=10.0, layers=frozenset({"B.Cu"}))  # wide, under U1
+    req = replace(req, a=decap) if req.a.ref == "C1" else replace(req, b=decap)
+    ((zone, _nw),) = req.neck
+    assert neck_layers(req, zone, req.layers) == frozenset({0})

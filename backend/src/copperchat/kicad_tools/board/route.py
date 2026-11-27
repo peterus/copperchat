@@ -1138,11 +1138,16 @@ async def _straight_pass(
     of a matched pair goes straight even when its partner cannot (owner rule b: a dogleg
     is an error, pair coupling only a review - on sp4_synth J1.B7-U2.3 otherwise doglegged
     and pushed USB-C A7-B7 into an M5 detour failure); its partner then routes alone."""
-    cands = [
-        (p, path)
-        for p in plans
-        if (path := straight_path(st.model, p)) is not None and _path_free(st.model, p, path)
-    ]
+    model = st.model
+
+    def scan() -> list[tuple[ConnPlan, RoutePath]]:
+        return [
+            (p, path)
+            for p in plans
+            if (path := straight_path(model, p)) is not None and _path_free(model, p, path)
+        ]
+
+    cands = await asyncio.to_thread(scan)  # off the event loop (whole-board scans)
     if not cands or _timed_out(st):
         return set()
     items = [(p.req, path) for p, path in cands]

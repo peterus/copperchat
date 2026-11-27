@@ -836,6 +836,16 @@ def _tree_segments(
         if rx != ry:
             parent[rx] = ry
 
+    # vias (0..nv-1) and pads (nv..) filed in the 1 mm cells their extent covers
+    spot_cells: dict[tuple[int, int], list[int]] = {}
+    spots = [(v.at, v.diameter / 2) for v in vias] + [
+        ((q.x, q.y), math.hypot(q.w, q.h) / 2) for q in pads
+    ]
+    for k, (at, rad) in enumerate(spots):
+        r = rad + _JOIN
+        for bx in range(math.floor(at[0] - r), math.floor(at[0] + r) + 1):
+            for by in range(math.floor(at[1] - r), math.floor(at[1] + r) + 1):
+                spot_cells.setdefault((bx, by), []).append(k)
     # tracks bucketed by layer and 1 mm cells of their bbox: only near pairs are compared
     buckets: dict[tuple[str, int, int], list[int]] = {}
     boxes = []
@@ -866,12 +876,16 @@ def _tree_segments(
                 _pt_seg(e, t.start, t.end) <= _JOIN for e in (u.start, u.end)
             ):
                 union(i, k)
-        for k, v in enumerate(vias):
-            if any(math.dist(e, v.at) <= v.diameter / 2 + _JOIN for e in (t.start, t.end)):
-                union(i, n + k)
-        for k, q in enumerate(pads):
-            if _pad_on_layer(q, t.layer) and any(_in_pad(e, q) for e in (t.start, t.end)):
-                union(i, n + nv + k)
+        for e in (t.start, t.end):  # vias / pads by the cell of the track's end
+            for k in spot_cells.get((math.floor(e[0]), math.floor(e[1])), ()):
+                if k < nv:
+                    v = vias[k]
+                    if math.dist(e, v.at) <= v.diameter / 2 + _JOIN:
+                        union(i, n + k)
+                else:
+                    q = pads[k - nv]
+                    if _pad_on_layer(q, t.layer) and _in_pad(e, q):
+                        union(i, n + k)
     b = next((k for k, q in enumerate(pads) if q == req.b), None)
     if b is None:
         return tuple(() for _ in layers)
@@ -884,10 +898,16 @@ def _tree_segments(
 
 
 def neck_layers(req: RouteRequest, poly: Sequence[Point], layers: Sequence[str]) -> frozenset[int]:
-    """Indices into `layers` where a neck zone applies: the layers of the request's end
-    pad(s) whose centre lies in the zone (M12 accepts a neck only on a layer of the pad,
-    R3 - a via inside the zone does not take the neck to another layer)."""
-    pads = [q for q in (req.a, req.b) if point_in_polygon((q.x, q.y), list(poly))]
+    """Indices into `layers` where a neck zone applies: the layers of the request's NARROW
+    end pad(s) (minor side below the request width - the pads `neck_zones` makes zones
+    for) whose centre lies in the zone. M12 accepts a neck only on a layer of such a pad:
+    a via inside the zone, or a wide pad of the other end there (a B.Cu decap under an
+    F.Cu QFN), must not take the neck to another layer (R3)."""
+    pads = [
+        q
+        for q in (req.a, req.b)
+        if min(q.w, q.h) < req.width - 1e-9 and point_in_polygon((q.x, q.y), list(poly))
+    ]
     return frozenset(
         k for k, name in enumerate(layers) if any(_pad_on_layer(q, name) for q in pads)
     )

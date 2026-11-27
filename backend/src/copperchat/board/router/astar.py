@@ -828,7 +828,9 @@ def tree_goals(grid: ObstacleGrid, req: RouteRequest) -> list[dict[int, tuple[in
     if not grid.tree_segments:
         return out
     w, pitch = grid.w, grid.pitch
-    reach = pitch / 2 + 1e-9
+    # one node on EACH side of a track that is off the request's lattice (a node at up
+    # to one pitch on the arrival side; the extension onto the track stays < 1 pitch)
+    reach = pitch - 1e-9
     keep = req.width
     cands: list[tuple[float, int, int, int, Point]] = []
     for li, segs in enumerate(grid.tree_segments):
