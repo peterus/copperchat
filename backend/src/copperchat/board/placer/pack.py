@@ -343,6 +343,44 @@ def place_block(
         if doc is not None
         else dataclasses.replace(parse_board_md(""), allowed_sides=allowed_sides)
     )
+    moves = pack_block(
+        model,
+        cls,
+        block_refs,
+        region,
+        side=side,
+        rotation=rotation,
+        keep_channels=keep_channels,
+        fixed=fixed,
+        allowed_sides=allowed_sides,
+        edge=edge,
+        target=target,
+        doc=doc,
+    )
+    if isinstance(moves, DoesNotFit):
+        return moves
+    final = apply_moves(model, moves)
+    # the served pins of decoupling caps follow the new positions: classify again
+    return PlaceResult(moves, score_placement(final, classify(final, doc), doc))
+
+
+def pack_block(
+    model: BoardModel,
+    cls: Classification,
+    block_refs: Sequence[str],
+    region: Rect,
+    *,
+    side: Side,
+    rotation: int | None,
+    keep_channels: float,
+    fixed: Sequence[Move],
+    allowed_sides: frozenset[Side],
+    edge: Edge | None,
+    target: Point | None,
+    doc: BoardDoc,
+) -> tuple[Move, ...] | DoesNotFit:
+    """`place_block` without the score: the `fixed` moves, then the members' legal moves
+    (R2's `place_blocks` scores once at the end)."""
     known = {p.ref: p for p in model.parts}
     fixed_refs = {m.ref for m in fixed}
     members = sorted(
@@ -386,7 +424,7 @@ def place_block(
         return DoesNotFit(needed_mm2=round(needed, 3), available_mm2=available, refs=tuple(members))
 
     if not members:
-        return PlaceResult(tuple(fixed), score_placement(base, cls, doc))
+        return tuple(fixed)
     # nothing can fit when the members alone need more than the free area
     if sum(_area(box_of(known[r])) for r in members) > available + _EPS:
         return does_not_fit()
@@ -583,8 +621,4 @@ def place_block(
     )
     if isinstance(legal_moves, DoesNotFit):
         return legal_moves
-    final = apply_moves(base, legal_moves)
-    # the served pins of decoupling caps follow the new positions: classify again
-    return PlaceResult(
-        tuple(fixed) + tuple(legal_moves), score_placement(final, classify(final, doc), doc)
-    )
+    return tuple(fixed) + tuple(legal_moves)

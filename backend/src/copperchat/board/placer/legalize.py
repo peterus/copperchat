@@ -52,6 +52,8 @@ class DoesNotFit:
     needed_mm2: float
     available_mm2: float
     refs: tuple[str, ...]
+    # R2: Σ member courtyard areas / usable area of a floorplan (`place_blocks`)
+    courtyard_fill: float | None = None
 
 
 def rule(model: BoardModel, name: str) -> float | None:

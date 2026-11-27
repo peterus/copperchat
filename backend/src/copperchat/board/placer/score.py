@@ -11,6 +11,8 @@ from copperchat.board.classify import Classification
 from copperchat.board.geom import octi_dist
 from copperchat.board.metrics import compute_metrics, connections
 from copperchat.board.model import BoardModel
+from copperchat.board.placer.layout import box_of
+from copperchat.board.placer.legalize import edge_margin, on_board
 
 CELL_MM = 5.0
 # Routability: at most this many pads in any 5 x 5 mm cell (spec call 21; tuned in P4
@@ -28,6 +30,8 @@ class PlacementScore:
     airwire_mm: float
     max_cell_pins: int
     routability_ok: bool
+    # R2: how much of the usable area the placement spans (`spread`); reported, not a metric
+    spread: float = 0.0
 
 
 def airwire_mm(model: BoardModel, cls: Classification) -> float:
@@ -55,6 +59,35 @@ def max_cell_pins(model: BoardModel) -> int:
     return max(cells.values(), default=0)
 
 
+_SPREAD_SKIP = frozenset({"mounting_hole", "fiducial"})
+
+
+def spread(model: BoardModel, cls: Classification) -> float:
+    """min(union-bbox width / usable width, height / usable height) of the courtyards of
+    the parts on the board (mounting holes and fiducials not counted: they sit in the
+    corners anyway); usable = the outline's box inset by the edge margin. 0.0 without an
+    outline or parts."""
+    o = model.outline
+    if o.kind == "none":
+        return 0.0
+    m = edge_margin(model)
+    uw, uh = o.w - 2 * m, o.h - 2 * m
+    boxes = [
+        box_of(p)
+        for p in model.parts
+        if cls.part_class.get(p.ref) not in _SPREAD_SKIP
+        and len(p.courtyard) + len(p.pads) > 0
+        and on_board(model, p)
+    ]
+    if not boxes or uw <= 0 or uh <= 0:
+        return 0.0
+    x0 = max(min(b[0] for b in boxes), o.x + m)
+    y0 = max(min(b[1] for b in boxes), o.y + m)
+    x1 = min(max(b[2] for b in boxes), o.x + o.w - m)
+    y1 = min(max(b[3] for b in boxes), o.y + o.h - m)
+    return round(min(max(x1 - x0, 0.0) / uw, max(y1 - y0, 0.0) / uh, 1.0), 4)
+
+
 def score_placement(model: BoardModel, cls: Classification, doc: BoardDoc) -> PlacementScore:
     report = compute_metrics(model, cls, doc, drc=None, parity=None, preset=None, only=_ONLY)
     by_id = {m.id: m for m in report.metrics}
@@ -68,4 +101,5 @@ def score_placement(model: BoardModel, cls: Classification, doc: BoardDoc) -> Pl
         airwire_mm=airwire_mm(model, cls),
         max_cell_pins=cell,
         routability_ok=cell <= MAX_CELL_PINS,
+        spread=spread(model, cls),
     )

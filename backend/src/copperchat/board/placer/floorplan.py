@@ -1,0 +1,942 @@
+"""Global block floorplan (B-C11 round 2, spec §22.3): every block gets a region of the
+whole board before the per-block packing fills it. Pure, deterministic (stable sort keys,
+no randomness).
+
+1. Every block is reduced to its minimal box: its `block_layout` (incl. `keep_channels`) +
+   `keep_channels` + one placement grid step, in the rotation that suits its region.
+2. Usable area = the outline's box inset by the edge margin; parts that stay where they are
+   (locked, or not in the given blocks but on the board) and footprint keepouts are
+   obstacles. `courtyard_fill` = Σ member courtyard areas / usable area (minus obstacles);
+   Σ block boxes > `PACK_MAX` x usable → `DoesNotFit`.
+3. Fixed blocks first: a `board.md` Blocks row whose Region parses (`parse_region`) → that
+   region; a block with a member in Placement edges → a strip along that edge, as deep as
+   the box (its connector's mouth facing the edge), centred on the row's position (a number
+   in the cell: mm along the edge from its top / left end) or the edge middle. The rest of
+   the usable box is split into at most `MAX_FREE_RECTS` free rectangles (guillotine,
+   biggest first).
+4. Free blocks are distributed over the free rectangles (the biggest takes all but the
+   blocks that belong next to a fixed block in a smaller one), then each rectangle is
+   bisected recursively: cut across the longer side, the blocks split into two groups with
+   the fewest shared nets across the cut (+ pull toward blocks already elsewhere: terminal
+   propagation) and an area balance of 35-65 % (exhaustive up to `EXHAUSTIVE_MAX` blocks,
+   greedy moves above); the cut position follows the group areas, so the slack spreads.
+   Every cut reserves a channel `clamp(CHANNEL_PER_NET_MM x crossing nets, CHANNEL_MIN_MM,
+   CHANNEL_MAX_MM)` (never below `keep_channels`), half per side.
+5. A group that does not fit its side in any rotation: the cut moves once toward its need
+   (then the other cut direction); else `DoesNotFit`.
+
+`place_blocks` packs every block into its region (`pack_block`, fixed blocks and then the
+largest first, earlier ones as `fixed`; a block that does not fit its region gets the whole
+board once), legalises globally and runs `align_pairs` (rule b): a 2-pad part next to a
+connected pad is shifted perpendicular (≤ `REVIEW["M16_align_mm"]`) so a straight corridor
+exists, when its legal slack allows."""
+
+from __future__ import annotations
+
+import dataclasses
+import itertools
+import math
+import re
+from collections import defaultdict
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
+
+from copperchat.board.boardmd import BoardDoc, Edge
+from copperchat.board.classify import BlockProposal, Classification, classify
+from copperchat.board.geom import _bbox_of, _pad_rect, polygon_area, straight_corridor
+from copperchat.board.metrics import REVIEW, alignment_need, alignment_pairs
+from copperchat.board.model import BoardModel, Pad, Part, Point, Rect, Side
+from copperchat.board.placer.cluster import is_anchor
+from copperchat.board.placer.layout import Box, Move, apply_moves, box_of, boxes_hit, moved_part
+from copperchat.board.placer.legalize import (
+    DoesNotFit,
+    Outline,
+    _hits_keepout,
+    _keepout_box,
+    courtyard_clearance,
+    edge_margin,
+    keepout_polys,
+    legalize,
+    on_board,
+)
+from copperchat.board.placer.pack import (
+    PLACE_GRID_MM,
+    PlaceResult,
+    _mouth,
+    _orient,
+    _union_area,
+    block_layout,
+    pack_block,
+)
+from copperchat.board.placer.score import score_placement
+from copperchat.board.staging import natural_key
+
+CHANNEL_MIN_MM = 1.0
+CHANNEL_MAX_MM = 4.0
+CHANNEL_PER_NET_MM = 0.3
+PACK_MAX = 0.85  # Σ block boxes may use at most this share of the usable area
+SPREAD_SPAN_MIN = 0.75  # "well spread" (plan call 7): reported, not a metric
+BALANCE_LO, BALANCE_HI = 0.35, 0.65
+EXHAUSTIVE_MAX = 12  # blocks per bisection up to which every partition is tried
+GREEDY_PASSES = 50
+MAX_FREE_RECTS = 4
+_EPS = 1e-6
+_NUM = re.compile(r"-?\d+(?:\.\d+)?")
+_EDGES: tuple[Edge, ...] = ("top", "bottom", "left", "right")
+_NORMAL: Mapping[Edge, Point] = {
+    "left": (-1.0, 0.0),
+    "right": (1.0, 0.0),
+    "top": (0.0, -1.0),
+    "bottom": (0.0, 1.0),
+}
+
+
+@dataclass(frozen=True)
+class BlockBox:
+    name: str
+    refs: tuple[str, ...]
+    w: float
+    h: float
+    edge: Edge | None
+    region: Rect | None
+    # R2 (additive): mm along the edge from its top / left end (board.md position), None =
+    # the edge middle; the strip depth when the box must turn to face its edge
+    offset: float | None = None
+    edge_ref: str | None = None  # the member with the Placement edges row
+
+
+@dataclass(frozen=True)
+class Floorplan:
+    regions: Mapping[str, Rect]
+    channels: tuple[tuple[Point, Point, float], ...]  # cut line + width
+    courtyard_fill: float
+    usable_mm2: float
+    courtyard_mm2: float
+    # R2 (additive): blocks `place_blocks` had to place on the whole board (their region
+    # was too tight for the packing)
+    fallback: tuple[str, ...] = ()
+    fixed: tuple[str, ...] = ()  # blocks with a Region row or an edge strip
+
+
+class _NoFit(Exception):
+    def __init__(self, refs: Sequence[str]) -> None:
+        super().__init__("does not fit")
+        self.refs = tuple(refs)
+
+
+# ---- small geometry --------------------------------------------------------------------------
+
+
+def _area(b: Box) -> float:
+    return max(b[2] - b[0], 0.0) * max(b[3] - b[1], 0.0)
+
+
+def _rect(b: Box) -> Rect:
+    return Rect(round(b[0], 6), round(b[1], 6), round(b[2] - b[0], 6), round(b[3] - b[1], 6))
+
+
+def _box(r: Rect) -> Box:
+    return (r.x, r.y, r.x + r.w, r.y + r.h)
+
+
+def _centre(b: Box) -> Point:
+    return ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
+
+
+def _overlap(a: Box, b: Box) -> bool:
+    return a[0] < b[2] - _EPS and b[0] < a[2] - _EPS and a[1] < b[3] - _EPS and b[1] < a[3] - _EPS
+
+
+def _fits(w: float, h: float, b: Box) -> bool:
+    """A w x h box fits `b` in one of its two orientations."""
+    bw, bh = b[2] - b[0], b[3] - b[1]
+    return (w <= bw + _EPS and h <= bh + _EPS) or (h <= bw + _EPS and w <= bh + _EPS)
+
+
+def _minus(r: Box, f: Box) -> list[Box]:
+    """`r` without `f` as at most four rectangles (guillotine; of the two split orders the
+    one whose biggest piece is bigger)."""
+    if not _overlap(r, f):
+        return [r]
+    x0, y0, x1, y1 = max(r[0], f[0]), max(r[1], f[1]), min(r[2], f[2]), min(r[3], f[3])
+    rows = [  # full-width bands first
+        (r[0], r[1], r[2], y0),
+        (r[0], y1, r[2], r[3]),
+        (r[0], y0, x0, y1),
+        (x1, y0, r[2], y1),
+    ]
+    cols = [  # full-height bands first
+        (r[0], r[1], x0, r[3]),
+        (x1, r[1], r[2], r[3]),
+        (x0, r[1], x1, y0),
+        (x0, y1, x1, r[3]),
+    ]
+    best = max((rows, cols), key=lambda ps: (max(_area(p) for p in ps), ps is rows))
+    return [p for p in best if _area(p) > _EPS]
+
+
+# ---- board.md ----------------------------------------------------------------------------------
+
+
+def parse_region(text: str, usable: Box) -> Rect | None:
+    """A `board.md` Blocks Region cell as a rectangle: four numbers = x, y, w, h (mm, board
+    coordinates); `left` / `right` / `top` / `bottom` (optionally "half", "side") = that
+    half of the usable area; two words like `top-left` = that quarter. Anything else (free
+    text such as "near J1") → None: the block is placed freely."""
+    t = text.casefold()
+    nums = _NUM.findall(t)
+    if len(nums) == 4:
+        x, y, w, h = (float(n) for n in nums)
+        return Rect(x, y, w, h) if w > 0 and h > 0 else None
+    if nums:
+        return None
+    words = set(re.findall(r"[a-z]+", t))
+    vert = [e for e in ("top", "bottom") if e in words]
+    horiz = [e for e in ("left", "right") if e in words]
+    if len(vert) > 1 or len(horiz) > 1 or not (vert or horiz):
+        return None
+    if words - {
+        "top",
+        "bottom",
+        "left",
+        "right",
+        "half",
+        "side",
+        "quarter",
+        "corner",
+        "of",
+        "the",
+        "board",
+    }:
+        return None
+    x0, y0, x1, y1 = usable
+    mx, my = (x0 + x1) / 2, (y0 + y1) / 2
+    if horiz == ["left"]:
+        x1 = mx
+    elif horiz == ["right"]:
+        x0 = mx
+    if vert == ["top"]:
+        y1 = my
+    elif vert == ["bottom"]:
+        y0 = my
+    return _rect((x0, y0, x1, y1))
+
+
+def _edge_offset(position: str) -> float | None:
+    m = _NUM.search(position)
+    return float(m.group(0)) if m else None
+
+
+# ---- the floorplan -----------------------------------------------------------------------------
+
+
+@dataclass
+class _Ctx:
+    boxes: dict[str, BlockBox]
+    weight: dict[tuple[str, str], int]  # unordered block pair (sorted) -> shared nets
+    nets: dict[str, frozenset[str]]  # block -> its non-ground nets
+    where: dict[str, Point]  # current centre of every block's region
+    keep: float
+    channels: list[tuple[Point, Point, float]] = field(default_factory=list)
+    leaves: dict[str, Rect] = field(default_factory=dict)
+
+    def w(self, a: str, b: str) -> int:
+        return self.weight.get((a, b) if a < b else (b, a), 0)
+
+    def channel(self, a: Sequence[str], b: Sequence[str]) -> float:
+        na = frozenset().union(*(self.nets[x] for x in a))
+        nb = frozenset().union(*(self.nets[x] for x in b))
+        n = len(na & nb)
+        c = min(max(CHANNEL_PER_NET_MM * n, CHANNEL_MIN_MM), CHANNEL_MAX_MM)
+        return round(max(c, self.keep), 6)
+
+
+def _members(model: BoardModel, b: BlockProposal) -> list[str]:
+    known = {p.ref: p for p in model.parts}
+    return sorted({r for r in b.refs if r in known and not known[r].locked}, key=natural_key)
+
+
+def _block_box(
+    model: BoardModel, cls: Classification, refs: Sequence[str], keep: float
+) -> tuple[float, float, list[Move]]:
+    local = list(block_layout(model, cls, refs, keep_channels=keep))
+    boxes = [box_of(moved_part(model.part(m.ref), m)) for m in local]
+    x0 = min(b[0] for b in boxes)
+    y0 = min(b[1] for b in boxes)
+    x1 = max(b[2] for b in boxes)
+    y1 = max(b[3] for b in boxes)
+    pad = keep + PLACE_GRID_MM
+    return round(x1 - x0 + pad, 6), round(y1 - y0 + pad, 6), local
+
+
+def _facing_dims(
+    model: BoardModel, local: Sequence[Move], ref: str, edge: Edge, w: float, h: float
+) -> list[tuple[float, float]]:
+    """(along, depth) of the block box for a strip on `edge`, best first: the rotation that
+    turns the connector's mouth toward the edge first (P4's packing makes it face), the
+    other orientation as the fallback."""
+    n = _NORMAL[edge]
+    along_x = edge in ("top", "bottom")
+    plain = (w, h) if along_x else (h, w)  # rotation 0 / 180
+    turned = (h, w) if along_x else (w, h)  # rotation 90 / 270
+    best: tuple[float, int] | None = None
+    for theta in (0, 90, 180, 270):
+        mv = _orient(local, theta, "top")
+        p = next((moved_part(model.part(m.ref), m) for m in mv if m.ref == ref), None)
+        mouth = _mouth(p) if p is not None else None
+        if mouth is None:
+            return sorted({plain, turned}, key=lambda d: (d[1], d[0]))
+        dot = mouth[0] * n[0] + mouth[1] * n[1]
+        if best is None or dot > best[0] + 1e-9:
+            best = (dot, theta)
+    assert best is not None
+    first = plain if best[1] in (0, 180) else turned
+    return [first] + ([turned if first == plain else plain] if plain != turned else [])
+
+
+def _strip(usable: Box, edge: Edge, along: float, depth: float, offset: float | None) -> Box | None:
+    x0, y0, x1, y1 = usable
+    length = (x1 - x0) if edge in ("top", "bottom") else (y1 - y0)
+    if along > length + _EPS or depth > ((y1 - y0) if edge in ("top", "bottom") else (x1 - x0)):
+        return None
+    start = x0 if edge in ("top", "bottom") else y0
+    c = start + (length / 2 if offset is None else offset)
+    lo = min(max(c - along / 2, start), start + length - along)
+    hi = lo + along
+    if edge == "top":
+        return (lo, y0, hi, y0 + depth)
+    if edge == "bottom":
+        return (lo, y1 - depth, hi, y1)
+    if edge == "left":
+        return (x0, lo, x0 + depth, hi)
+    return (x1 - depth, lo, x1, hi)
+
+
+def _slide(usable: Box, edge: Edge, b: Box, taken: Sequence[Box]) -> Box | None:
+    """`b` moved along its edge to the nearest spot (0.5 mm steps) overlapping none of
+    `taken`; None when there is none."""
+    horizontal = edge in ("top", "bottom")
+    lo, hi = (usable[0], usable[2]) if horizontal else (usable[1], usable[3])
+    size = (b[2] - b[0]) if horizontal else (b[3] - b[1])
+    here = b[0] if horizontal else b[1]
+    steps = int((hi - lo) / PLACE_GRID_MM) + 1
+    for k in sorted(range(-steps, steps + 1), key=lambda k: (abs(k), k)):
+        s = here + k * PLACE_GRID_MM
+        if s < lo - _EPS or s + size > hi + _EPS:
+            continue
+        cand = (s, b[1], s + size, b[3]) if horizontal else (b[0], s, b[2], s + size)
+        if not any(_overlap(cand, t) for t in taken):
+            return cand
+    return None
+
+
+def _split_cost(
+    ctx: _Ctx, a: Sequence[str], b: Sequence[str], outside: Sequence[str], cut: int, mid: float
+) -> int:
+    """Shared nets across the cut + pull: a block's weight to an outside block whose region
+    centre lies on the other side of the rectangle's midline."""
+    c = sum(ctx.w(x, y) for x in a for y in b)
+    for o in outside:
+        side = ctx.where[o][cut]
+        if abs(side - mid) < _EPS:
+            continue
+        other = b if side < mid else a  # a is the low side
+        c += sum(ctx.w(x, o) for x in other)
+    return c
+
+
+def _need(ctx: _Ctx, names: Sequence[str], cross: float) -> float:
+    """The least extent along the cut axis that holds the largest block of `names` (its
+    other side fitting the rectangle's cross extent `cross`)."""
+    need = 0.0
+    for n in names:
+        bb = ctx.boxes[n]
+        opts = [d for d, o in ((bb.w, bb.h), (bb.h, bb.w)) if o <= cross + _EPS]
+        if not opts:
+            return math.inf
+        need = max(need, min(opts))
+    return need
+
+
+def _halves(r: Box, cut: int, pos: float, ch: float) -> tuple[Box, Box]:
+    if cut == 0:
+        return (r[0], r[1], pos - ch / 2, r[3]), (pos + ch / 2, r[1], r[2], r[3])
+    return (r[0], r[1], r[2], pos - ch / 2), (r[0], pos + ch / 2, r[2], r[3])
+
+
+def _holds(ctx: _Ctx, names: Sequence[str], r: Box) -> bool:
+    return _area(r) + _EPS >= sum(ctx.boxes[n].w * ctx.boxes[n].h for n in names) and all(
+        _fits(ctx.boxes[n].w, ctx.boxes[n].h, r) for n in names
+    )
+
+
+def _partitions(names: Sequence[str]) -> Iterable[tuple[tuple[str, ...], tuple[str, ...]]]:
+    n = len(names)
+    for mask in range(1, (1 << n) - 1):
+        a = tuple(names[i] for i in range(n) if mask >> i & 1)
+        b = tuple(names[i] for i in range(n) if not mask >> i & 1)
+        yield a, b
+
+
+_Key = Callable[[tuple[str, ...], tuple[str, ...]], tuple[object, ...]]
+
+
+def _greedy(names: Sequence[str], key: _Key) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Kernighan-Lin-style: an area-alternating start, then single moves and pair swaps
+    while the key improves (bounded passes)."""
+    a = list(names[0::2])
+    b = list(names[1::2])
+    best = key(tuple(a), tuple(b))
+    for _ in range(GREEDY_PASSES):
+        improved = False
+        cands: list[tuple[list[str], list[str]]] = []
+        for x in a:
+            if len(a) > 1:
+                cands.append(([y for y in a if y != x], [*b, x]))
+        for x in b:
+            if len(b) > 1:
+                cands.append(([*a, x], [y for y in b if y != x]))
+        for x in a:
+            for y in b:
+                cands.append(([*(z for z in a if z != x), y], [*(z for z in b if z != y), x]))
+        for ca, cb in cands:
+            ta = tuple(sorted(ca, key=natural_key))
+            tb = tuple(sorted(cb, key=natural_key))
+            k = key(ta, tb)
+            if k < best:
+                best, a, b, improved = k, list(ta), list(tb), True
+                break
+        if not improved:
+            break
+    return tuple(sorted(a, key=natural_key)), tuple(sorted(b, key=natural_key))
+
+
+def _bisect(ctx: _Ctx, r: Box, names: Sequence[str], outside: Sequence[str]) -> None:
+    if not names:
+        return
+    if len(names) == 1:
+        n = names[0]
+        if not _fits(ctx.boxes[n].w, ctx.boxes[n].h, r):
+            raise _NoFit(ctx.boxes[n].refs)
+        ctx.leaves[n] = _rect(r)
+        ctx.where[n] = _centre(r)
+        return
+    total = sum(ctx.boxes[n].w * ctx.boxes[n].h for n in names)
+    rw, rh = r[2] - r[0], r[3] - r[1]
+    first = 0 if rw >= rh else 1  # 0: a vertical cut line (x = pos), across the longer side
+    for cut in (first, 1 - first):
+        lo, hi = (r[0], r[2]) if cut == 0 else (r[1], r[3])
+        cross = rh if cut == 0 else rw
+        mid = (lo + hi) / 2
+
+        def layout(
+            a: Sequence[str],
+            b: Sequence[str],
+            *,
+            cut: int = cut,
+            lo: float = lo,
+            hi: float = hi,
+            cross: float = cross,
+        ) -> tuple[float, float, Box, Box, bool, bool]:
+            area_a = sum(ctx.boxes[n].w * ctx.boxes[n].h for n in a)
+            ch = ctx.channel(a, b)
+            pos = lo + (hi - lo) * area_a / total
+            ra, rb = _halves(r, cut, pos, ch)
+            ok = _holds(ctx, a, ra) and _holds(ctx, b, rb)
+            moved = False
+            if not ok:  # rebalance once: move the cut toward the side that needs room
+                na, nb = _need(ctx, a, cross), _need(ctx, b, cross)
+                if na + nb + ch <= hi - lo + _EPS:
+                    pos = min(max(pos, lo + na + ch / 2), hi - nb - ch / 2)
+                    ra, rb = _halves(r, cut, pos, ch)
+                    ok = _holds(ctx, a, ra) and _holds(ctx, b, rb)
+                    moved = True
+            return pos, ch, ra, rb, ok, moved
+
+        def key(
+            a: tuple[str, ...], b: tuple[str, ...], *, mid: float = mid, cut: int = cut
+        ) -> tuple[object, ...]:
+            frac = sum(ctx.boxes[n].w * ctx.boxes[n].h for n in a) / total
+            balanced = BALANCE_LO - _EPS <= frac <= BALANCE_HI + _EPS
+            _, _, _, _, ok, _ = layout(a, b)
+            cost = _split_cost(ctx, a, b, outside, cut, mid)
+            return (not ok, not balanced, cost, round(abs(frac - 0.5), 9), a)
+
+        ordered = sorted(names, key=natural_key)
+        if len(ordered) <= EXHAUSTIVE_MAX:
+            a, b = min(_partitions(ordered), key=lambda ab: key(*ab))
+        else:
+            a, b = _greedy(ordered, key)
+        pos, ch, ra, rb, ok, _moved = layout(a, b)
+        if not ok:
+            continue
+        line = ((pos, r[1]), (pos, r[3])) if cut == 0 else ((r[0], pos), (r[2], pos))
+        ctx.channels.append((line[0], line[1], ch))
+        ctx.where.update({n: _centre(ra) for n in a})
+        ctx.where.update({n: _centre(rb) for n in b})
+        _bisect(ctx, ra, a, [*outside, *b])
+        _bisect(ctx, rb, b, [*outside, *a])
+        return
+    raise _NoFit([ref for n in sorted(names, key=natural_key) for ref in ctx.boxes[n].refs])
+
+
+def floorplan(
+    model: BoardModel,
+    cls: Classification,
+    doc: BoardDoc,
+    blocks: Sequence[BlockProposal],
+    *,
+    keep_channels: float,
+    allowed_sides: frozenset[Side],
+) -> Floorplan | DoesNotFit:
+    """Regions for `blocks` on the whole board (module docstring). `DoesNotFit` carries
+    `courtyard_fill`. Raises `ValueError` without an outline."""
+    del allowed_sides  # the blocks go on the top side; the packer checks the side policy
+    o = model.outline
+    if o.kind == "none":
+        raise ValueError("the floorplan needs a board outline")
+    kc = keep_channels
+    m = edge_margin(model)
+    usable: Box = (o.x + m, o.y + m, o.x + o.w - m, o.y + o.h - m)
+    blocks = sorted(blocks, key=lambda b: natural_key(b.name))
+    members = {b.name: _members(model, b) for b in blocks}
+    moving = {r for refs in members.values() for r in refs}
+    obstacles = [
+        box_of(p)
+        for p in model.parts
+        if p.ref not in moving
+        and p.side == "top"
+        and len(p.courtyard) + len(p.pads) > 0
+        and on_board(model, p)
+    ]
+    obstacles += [_keepout_box(k) for k in keepout_polys(model)]
+    usable_mm2 = round(max(_area(usable) - _union_area(obstacles, usable), 0.0), 3)
+    court = 0.0
+    for refs in members.values():
+        for r in refs:
+            p = model.part(r)
+            court += polygon_area(p.courtyard) if len(p.courtyard) >= 3 else _area(box_of(p))
+    court = round(court, 3)
+    fill = round(court / usable_mm2, 4) if usable_mm2 > 0 else math.inf
+    all_refs = tuple(sorted(moving, key=natural_key))
+
+    def no_fit(refs: Sequence[str] = all_refs, needed: float | None = None) -> DoesNotFit:
+        return DoesNotFit(
+            needed_mm2=round(needed if needed is not None else court, 3),
+            available_mm2=usable_mm2,
+            refs=tuple(refs),
+            courtyard_fill=fill,
+        )
+
+    edge_rows = {row.ref: row for row in doc.edges if row.edge is not None}
+    region_rows = {row.name: row for row in doc.blocks}
+    boxes: dict[str, BlockBox] = {}
+    locals_: dict[str, list[Move]] = {}
+    for b in blocks:
+        refs = members[b.name]
+        if not refs:
+            continue
+        w, h, local = _block_box(model, cls, refs, kc)
+        locals_[b.name] = local
+        edge_ref = next(
+            (r for r in ([b.anchor] if b.anchor else []) + refs if r in edge_rows and r in refs),
+            None,
+        )
+        row = region_rows.get(b.name)
+        region = parse_region(row.region, usable) if row is not None else None
+        boxes[b.name] = BlockBox(
+            name=b.name,
+            refs=tuple(refs),
+            w=w,
+            h=h,
+            edge=edge_rows[edge_ref].edge if edge_ref is not None and region is None else None,
+            region=region,
+            offset=_edge_offset(edge_rows[edge_ref].position) if edge_ref is not None else None,
+            edge_ref=edge_ref,
+        )
+    if not boxes:
+        return Floorplan({}, (), fill if usable_mm2 > 0 else 0.0, usable_mm2, court)
+    needed = sum(bb.w * bb.h for bb in boxes.values())
+    if needed > PACK_MAX * usable_mm2 + _EPS:
+        return no_fit(needed=needed)
+
+    nets: dict[str, frozenset[str]] = {}
+    for name, bb in boxes.items():
+        nets[name] = frozenset(
+            q.net
+            for r in bb.refs
+            for q in model.part(r).pads
+            if q.net and cls.net_kind.get(q.net) != "ground"
+        )
+    weight: dict[tuple[str, str], int] = {}
+    for x, y in itertools.combinations(sorted(boxes), 2):
+        k = len(nets[x] & nets[y])
+        if k:
+            weight[(x, y)] = k
+    ctx = _Ctx(boxes=boxes, weight=weight, nets=nets, where={}, keep=kc)
+
+    # fixed blocks: Region rows, then edge strips (explicit positions before slid ones)
+    fixed: dict[str, Box] = {}
+    for name, bb in sorted(boxes.items(), key=lambda kv: natural_key(kv[0])):
+        if bb.region is None:
+            continue
+        rb = _box(bb.region)
+        rb = (
+            max(rb[0], usable[0]),
+            max(rb[1], usable[1]),
+            min(rb[2], usable[2]),
+            min(rb[3], usable[3]),
+        )
+        if not _fits(bb.w, bb.h, rb) or any(_overlap(rb, f) for f in fixed.values()):
+            return no_fit(bb.refs)
+        fixed[name] = rb
+    edged = [n for n, bb in boxes.items() if bb.edge is not None]
+    edged.sort(key=lambda n: (boxes[n].offset is None, natural_key(n)))
+    for name in edged:
+        bb = boxes[name]
+        assert bb.edge is not None
+        strip: Box | None = None
+        assert bb.edge_ref is not None
+        for along, depth in _facing_dims(model, locals_[name], bb.edge_ref, bb.edge, bb.w, bb.h):
+            strip = _strip(usable, bb.edge, along, depth, bb.offset)
+            if strip is not None:
+                break
+        if strip is None:
+            return no_fit(bb.refs)
+        taken = list(fixed.values())
+        if any(_overlap(strip, t) for t in taken):
+            slid = _slide(usable, bb.edge, strip, taken) if bb.offset is None else None
+            if slid is None:
+                clash = [n for n, f in fixed.items() if _overlap(strip, f)]
+                return no_fit([*bb.refs, *(ref for n in clash for ref in boxes[n].refs)])
+            strip = slid
+        fixed[name] = strip
+    for name, f in fixed.items():
+        ctx.leaves[name] = _rect(f)
+        ctx.where[name] = _centre(f)
+
+    # the free rectangles: the usable box minus every fixed region grown by its channel
+    free: list[Box] = [usable]
+    for name, f in sorted(fixed.items(), key=lambda kv: natural_key(kv[0])):
+        rest = [n for n in boxes if n != name]
+        ch = ctx.channel([name], rest) if rest else ctx.keep
+        g = (f[0] - ch, f[1] - ch, f[2] + ch, f[3] + ch)
+        free = [piece for fr in free for piece in _minus(fr, g)]
+        sides = {
+            "left": f[0] > usable[0] + _EPS,
+            "right": f[2] < usable[2] - _EPS,
+            "top": f[1] > usable[1] + _EPS,
+            "bottom": f[3] < usable[3] - _EPS,
+        }
+        for s, open_ in sides.items():
+            if not open_:
+                continue
+            if s in ("left", "right"):
+                lx = f[0] - ch / 2 if s == "left" else f[2] + ch / 2
+                ctx.channels.append(((lx, f[1]), (lx, f[3]), ch))
+            else:
+                ly = f[1] - ch / 2 if s == "top" else f[3] + ch / 2
+                ctx.channels.append(((f[0], ly), (f[2], ly), ch))
+    free_names = sorted((n for n in boxes if n not in fixed), key=natural_key)
+    if free_names:
+        smallest = min(min(boxes[n].w, boxes[n].h) for n in free_names)
+        free = [fr for fr in free if min(fr[2] - fr[0], fr[3] - fr[1]) + _EPS >= smallest]
+        free.sort(key=lambda fr: (-_area(fr), fr[1], fr[0]))
+        free = free[:MAX_FREE_RECTS]
+        if not free:
+            return no_fit()
+        groups = _assign(ctx, free, free_names, fixed)
+        for fr, names in zip(free, groups, strict=True):
+            for n in names:
+                ctx.where[n] = _centre(fr)
+        try:
+            for fr, names in zip(free, groups, strict=True):
+                outside = [n for n in boxes if n not in names]
+                _bisect(ctx, fr, names, outside)
+        except _NoFit as exc:
+            return no_fit(exc.refs)
+    regions = {n: ctx.leaves[n] for n in sorted(ctx.leaves, key=natural_key)}
+    return Floorplan(
+        regions=regions,
+        channels=tuple(
+            (
+                (round(a[0], 4), round(a[1], 4)),
+                (round(b[0], 4), round(b[1], 4)),
+                w,
+            )
+            for a, b, w in ctx.channels
+        ),
+        courtyard_fill=fill,
+        usable_mm2=usable_mm2,
+        courtyard_mm2=court,
+        fixed=tuple(sorted(fixed, key=natural_key)),
+    )
+
+
+def _assign(
+    ctx: _Ctx, free: Sequence[Box], names: Sequence[str], fixed: Mapping[str, Box]
+) -> list[list[str]]:
+    """Free blocks per free rectangle: all to the biggest, except blocks sharing nets with a
+    fixed block that a smaller rectangle touches (they go there while it holds them), and
+    blocks the biggest cannot hold (they go where they fit)."""
+    groups: list[list[str]] = [list(names)] + [[] for _ in free[1:]]
+    if len(free) == 1:
+        return groups
+
+    def used(i: int) -> float:
+        return sum(ctx.boxes[n].w * ctx.boxes[n].h for n in groups[i])
+
+    def touches(r: Box, f: Box) -> bool:
+        g = CHANNEL_MAX_MM + _EPS
+        return r[0] <= f[2] + g and f[0] <= r[2] + g and r[1] <= f[3] + g and f[1] <= r[3] + g
+
+    for i, r in enumerate(free[1:], start=1):
+        near = [fn for fn, f in fixed.items() if touches(r, f)]
+        cands = sorted(
+            groups[0],
+            key=lambda n: (
+                -sum(ctx.w(n, fn) for fn in near),
+                -(ctx.boxes[n].w * ctx.boxes[n].h),
+                natural_key(n),
+            ),
+        )
+        for n in cands:
+            pull = sum(ctx.w(n, fn) for fn in near)
+            over = used(0) > PACK_MAX * _area(free[0])
+            if pull <= 0 and not over:
+                continue
+            bb = ctx.boxes[n]
+            if not _fits(bb.w, bb.h, r) or used(i) + bb.w * bb.h > PACK_MAX * _area(r) + _EPS:
+                continue
+            if len(groups[0]) == 1:
+                break
+            groups[0].remove(n)
+            groups[i].append(n)
+    return [sorted(g, key=natural_key) for g in groups]
+
+
+# ---- placing over the floorplan ------------------------------------------------------------
+
+
+def place_blocks(
+    model: BoardModel,
+    cls: Classification,
+    doc: BoardDoc,
+    blocks: Sequence[BlockProposal],
+    *,
+    keep_channels: float,
+    allowed_sides: frozenset[Side],
+) -> tuple[PlaceResult, Floorplan] | DoesNotFit:
+    """`floorplan`, then every block packed into its region (fixed blocks first, then the
+    largest; earlier moves as `fixed`), one global legalise, `align_pairs`; the score of the
+    result (incl. `spread`)."""
+    fp = floorplan(
+        model, cls, doc, blocks, keep_channels=keep_channels, allowed_sides=allowed_sides
+    )
+    if isinstance(fp, DoesNotFit):
+        return fp
+    o = model.outline
+    m = edge_margin(model)
+    whole = Rect(o.x + m, o.y + m, o.w - 2 * m, o.h - 2 * m)
+    by_name = {b.name: b for b in blocks}
+
+    def size(n: str) -> float:
+        return sum(_area(box_of(model.part(x))) for x in _members(model, by_name[n]))
+
+    fixed_set = frozenset(fp.fixed)
+    order = sorted(fp.regions, key=lambda n: (n not in fixed_set, -size(n), natural_key(n)))
+    moves: tuple[Move, ...] = ()
+    fallback: list[str] = []
+    members: set[str] = set()
+    for n in order:
+        refs = _members(model, by_name[n])
+        members.update(refs)
+        region = fp.regions[n]
+        target = (region.x + region.w / 2, region.y + region.h / 2)
+        res: tuple[Move, ...] | DoesNotFit = DoesNotFit(0.0, 0.0, ())
+        for reg in (region, whole):
+            res = pack_block(
+                model,
+                cls,
+                refs,
+                reg,
+                side="top",
+                rotation=None,
+                keep_channels=keep_channels,
+                fixed=moves,
+                allowed_sides=allowed_sides,
+                edge=None,
+                target=target,
+                doc=doc,
+            )
+            if not isinstance(res, DoesNotFit):
+                break
+            fallback.append(n)
+        if isinstance(res, DoesNotFit):
+            return dataclasses.replace(res, courtyard_fill=fp.courtyard_fill)
+        moves = res
+    if fallback:
+        fp = dataclasses.replace(fp, fallback=tuple(sorted(set(fallback), key=natural_key)))
+    legal = legalize(
+        model,
+        moves,
+        movable=frozenset(members),
+        max_shift=None,
+        keepouts=keepout_polys(model),
+        edge_margin=m,
+    )
+    if isinstance(legal, DoesNotFit):
+        return dataclasses.replace(legal, courtyard_fill=fp.courtyard_fill)
+    merged = {mv.ref: mv for mv in moves}
+    merged.update({mv.ref: mv for mv in legal})
+    placed = tuple(merged[r] for r in sorted(merged, key=natural_key))
+    after = apply_moves(model, placed)
+    aligned = align_pairs(after, classify(after, doc), placed, movable=frozenset(members))
+    final = apply_moves(model, aligned)
+    score = score_placement(final, classify(final, doc), doc)
+    return PlaceResult(aligned, score), fp
+
+
+# ---- rule (b): pair alignment ----------------------------------------------------------------
+
+
+def align_pairs(
+    model: BoardModel, cls: Classification, moves: Sequence[Move], *, movable: frozenset[str]
+) -> tuple[Move, ...]:
+    """Rule (b) after the legalise: for every M16 alignment pair (`metrics.alignment_pairs`)
+    without a straight corridor whose missing overlap is ≤ `REVIEW["M16_align_mm"]`, shift
+    one movable 2-pad part (never an anchor or a locked part; one shift per part) across the
+    corridor axis - centre-aligned when that shift is small enough, else by the missing
+    overlap - when its courtyard stays inside the outline margin and off every other
+    courtyard and keepout and no corridor it already has is lost. `model` already holds
+    `moves`; returns `moves` with the shifts applied (natural ref order)."""
+    parts: dict[str, Part] = {p.ref: p for p in model.parts}
+    out = {mv.ref: mv for mv in moves}
+    for r in movable:
+        p = parts.get(r)
+        if p is not None and r not in out:
+            out[r] = Move(r, p.x, p.y, p.rot, p.side)
+    pairs = alignment_pairs(model, cls)
+    if not pairs:
+        return tuple(out[r] for r in sorted(out, key=natural_key))
+    layers = model.copper_layers
+    sep = courtyard_clearance(model)
+    outline = Outline(model, edge_margin(model))
+    keepouts = keepout_polys(model)
+    limit = REVIEW["M16_align_mm"]
+    pairs_of: dict[str, list[_PairKey]] = defaultdict(list)
+    keyed = []
+    for net, a, b, w in pairs:
+        k = (a.ref, a.number, b.ref, b.number, w)
+        pairs_of[a.ref].append(k)
+        pairs_of[b.ref].append(k)
+        keyed.append((net, k))
+    keyed.sort(key=lambda t: (natural_key(t[1][0]), natural_key(t[1][2]), t[1][1], t[1][3], t[0]))
+    shifted: set[str] = set()
+
+    def need(k: _PairKey) -> float | None:
+        return alignment_need(_pad_of(parts, k[0], k[1]), _pad_of(parts, k[2], k[3]), k[4], layers)
+
+    for _net, k in keyed:
+        n = need(k)
+        if not n:
+            continue
+        a, b = _pad_of(parts, k[0], k[1]), _pad_of(parts, k[2], k[3])
+        for mover, other in (
+            ((b, a), (a, b))
+            if natural_key(b.ref) > natural_key(a.ref)
+            else (
+                (a, b),
+                (b, a),
+            )
+        ):
+            p = parts[mover.ref]
+            if (
+                mover.ref not in movable
+                or mover.ref in shifted
+                or p.locked
+                or len(p.pads) != 2
+                or is_anchor(p, cls)
+            ):
+                continue
+            done = False
+            for dx, dy in _shifts(mover, other, k[4], limit):
+                cand = moved_part(p, Move(p.ref, p.x + dx, p.y + dy, p.rot, p.side))
+                if not _legal_shift(cand, parts, sep, outline, keepouts):
+                    continue
+                trial = dict(parts)
+                trial[p.ref] = cand
+                kept = all(
+                    alignment_need(
+                        _pad_of(trial, q[0], q[1]), _pad_of(trial, q[2], q[3]), q[4], layers
+                    )
+                    == 0.0
+                    for q in pairs_of[p.ref]
+                    if q != k and need(q) == 0.0
+                )
+                if not kept:
+                    continue
+                if (
+                    straight_corridor(
+                        _pad_of(trial, k[0], k[1]),
+                        _pad_of(trial, k[2], k[3]),
+                        k[4],
+                        copper_layers=layers,
+                    )
+                    is None
+                ):
+                    continue
+                parts[p.ref] = cand
+                out[p.ref] = Move(p.ref, round(cand.x, 6), round(cand.y, 6), p.rot, p.side)
+                shifted.add(p.ref)
+                done = True
+                break
+            if done:
+                break
+    return tuple(out[r] for r in sorted(out, key=natural_key))
+
+
+_PairKey = tuple[str, str, str, str, float]  # ref a, pad a, ref b, pad b, corridor width
+
+
+def _pad_of(parts: Mapping[str, Part], ref: str, number: str) -> Pad:
+    return next(q for q in parts[ref].pads if q.number == number)
+
+
+def _shifts(mover: Pad, other: Pad, width: float, limit: float) -> list[Point]:
+    """Candidate shifts of `mover` across the corridor axis: centre alignment first, then
+    the least shift giving an overlap of `width` (both ≤ `limit`)."""
+    bm, bo = _bbox_of(_pad_rect(mover)), _bbox_of(_pad_rect(other))
+    out: list[Point] = []
+    for ax in (0, 1):  # the corridor runs along ax; shift across o
+        o = 1 - ax
+        gap = max(bo[ax] - bm[ax + 2], bm[ax] - bo[ax + 2])
+        if gap <= 0.0:
+            continue
+        centre = (bo[o] + bo[o + 2]) / 2 - (bm[o] + bm[o + 2]) / 2
+        overlap = min(bm[o + 2], bo[o + 2]) - max(bm[o], bo[o])
+        least = math.copysign(max(width - overlap, 0.0) + 1e-4, centre)
+        for d in (centre, least):
+            if abs(d) <= limit + 1e-9 and abs(d) > 1e-9:
+                v = (d, 0.0) if o == 0 else (0.0, d)
+                if v not in out:
+                    out.append(v)
+    return out
+
+
+def _legal_shift(
+    cand: Part,
+    parts: Mapping[str, Part],
+    sep: float,
+    outline: Outline,
+    keepouts: Sequence[tuple[Point, ...]],
+) -> bool:
+    b = box_of(cand)
+    if not outline.contains(b) or _hits_keepout(b, keepouts) is not None:
+        return False
+    for r, q in parts.items():
+        if r == cand.ref or q.side != cand.side or len(q.courtyard) + len(q.pads) == 0:
+            continue
+        if boxes_hit(b, box_of(q), sep):
+            return False
+    return True

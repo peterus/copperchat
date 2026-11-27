@@ -2292,10 +2292,19 @@ def _alignable(c: _Ctx, a: Pad, b: Pad, width: float) -> float | None:
         return None
     if len(pa.pads) != 2 and len(pb.pads) != 2:
         return None
-    if not any(_pad_on_layer(a, la) and _pad_on_layer(b, la) for la in c.m.copper_layers):
+    need = alignment_need(a, b, width, c.m.copper_layers)
+    return need if need else None
+
+
+def alignment_need(a: Pad, b: Pad, width: float, copper_layers: Sequence[str]) -> float | None:
+    """M16's placement-stage geometry for two pads (R2's `align_pairs` uses it too): 0.0 when
+    a straight corridor for `width` exists, the missing overlap (0 < need <=
+    REVIEW["M16_align_mm"]) when they share a copper layer and are adjacent along an axis,
+    else None."""
+    if not any(_pad_on_layer(a, la) and _pad_on_layer(b, la) for la in copper_layers):
         return None
-    if straight_corridor(a, b, width, copper_layers=c.m.copper_layers) is not None:
-        return None
+    if straight_corridor(a, b, width, copper_layers=copper_layers) is not None:
+        return 0.0
     ba, bb = _bbox(_pad_poly(a)), _bbox(_pad_poly(b))
     best: float | None = None
     for ax in (0, 1):
@@ -2307,6 +2316,35 @@ def _alignable(c: _Ctx, a: Pad, b: Pad, width: float) -> float | None:
         if 0.0 < need <= REVIEW["M16_align_mm"] + _EPS and (best is None or need < best):
             best = need
     return best
+
+
+def alignment_pairs(
+    model: BoardModel, cls: Classification
+) -> tuple[tuple[str, Pad, Pad, float], ...]:
+    """(net, pad a, pad b, corridor width) of every connection M16 checks for alignment at
+    the placement stage: the MST connections of each non-ground net between two parts of
+    which at least one has exactly two pads (width = the narrower neck width, preset
+    `jlcpcb-4l`'s minimum track as at the placement stage). For R2's `align_pairs`."""
+    c = _Ctx(model, cls, BoardDoc(), None)
+    classes = {nc.name: nc for nc in model.net_classes}
+    class_of = dict(model.net_class_of)
+    patterned = [nc for nc in model.net_classes if nc.patterns]
+    min_track = PRESETS["jlcpcb-4l"].min_track
+    out: list[tuple[str, Pad, Pad, float]] = []
+    for net in sorted(n for n in c.pads_by_net if n and c.kind(n) != "ground"):
+        pads = c.pads_by_net[net]
+        if len(pads) < 2:
+            continue
+        class_w = _class_width(classes, class_of.get(net, "Default"), net, patterned) or min_track
+        for a, b in _mst(pads):
+            pa, pb = c.parts.get(a.ref), c.parts.get(b.ref)
+            if pa is None or pb is None or a.ref == b.ref:
+                continue
+            if len(pa.pads) != 2 and len(pb.pads) != 2:
+                continue
+            w = min(neck_width(a, class_w, min_track), neck_width(b, class_w, min_track))
+            out.append((net, a, b, w))
+    return tuple(out)
 
 
 # ---- public --------------------------------------------------------------------------------
