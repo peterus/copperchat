@@ -791,8 +791,9 @@ nothing relaxed fits; R2's region packing remains the last resort. The `grow` (b
 growth) term from the first draft was dropped: it only raised airwire. `Floorplan` gains
 `gaps`, `slack_mm`, `order`, `relaxed` (the free blocks' layout), `compact_fixed` (fixed blocks
 whose strip only held the compact layout - on ODH both edge blocks) (additive). Review round 1:
-the constructive packing spends at most `PACK_BUDGET` = 600 `pack_block` calls (deterministic;
-ODH 80 x 100 uses 117, 80 x 65 357, 80 x 60 fails after 600 in 29 s); the fixed-blocks-only
+the constructive packing spends at most `PACK_BUDGET` = 600 `pack_block` calls per layout pass
+(deterministic; review round 2: per pass, so a failing relaxed pass never starves the compact
+one; ODH 80 x 100 uses 117, 80 x 65 357, 80 x 60 fails after 753 in 36 s); the fixed-blocks-only
 floorplan runs on the parked model (a free block's stale position is no obstacle) and gives
 `usable_mm2`.
 
@@ -813,7 +814,7 @@ bottom, keep_channels 1.5; R2 in brackets):
 | 80 x 80 | yes, relaxed, slack 1.0 | 1205 | 6.1 / 30.4 | 462 | 1.00 | 3.6 / 3 | 9 s |
 | 80 x 70 | yes, relaxed, slack 0 | 1171 | 4.5 / 25.9 | 325 | 1.09 | 3.6 / 3 | 10 s |
 | **80 x 65** | **yes, relaxed, slack 0** | 1253 | 6.1 / 26.7 | 206 | 0.81 | 3.6 / 3 | 20 s |
-| 80 x 60 | `does_not_fit` (courtyard fill 0.429) | - | - | - | - | - | 29 s |
+| 80 x 60 | `does_not_fit` (courtyard fill 0.429) | - | - | - | - | - | 36 s |
 
 M1 0 everywhere; M13 J201 0.75 mm from its edge = R2's value (pre-existing, R7). At 80 x 100
 the placement uses the lower ~65 mm and leaves the top free (= the board could be 80 x 65).
@@ -837,6 +838,8 @@ got its corridor.
 - Placement at 80 x 100 is compact at one end of the board, not centred; a centring /
   even-slack pass would need the edge blocks to move with it (they stay on their edges).
 - Congestion is a reported estimate (2 outer layers); not calibrated against routed boards.
+- The relaxed routing room is computed for the spot a satellite wants (`t_star`); a satellite
+  that slides along its row keeps that gap (review round 2, documented, not recomputed).
 
 ### As built (R2)
 

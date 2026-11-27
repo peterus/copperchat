@@ -113,9 +113,9 @@ SLACK_CREDIT = 0.05
 # a free block that found no spot moves to the front and the packing restarts, at most this
 # many times per layout and slack step (bounds the work on a board that cannot fit)
 RETRY_MAX = 8
-# `pack_block` calls one `place_blocks` run may spend on the constructive packing (every
-# layout, slack, pull and retry; deterministic): a board that cannot fit fails fast with
-# `does_not_fit` instead of running into the job timeout
+# `pack_block` calls one layout pass (relaxed, then P4's compact one) of `place_blocks` may
+# spend on the constructive packing (every slack, pull and retry; deterministic): a board
+# that cannot fit fails fast with `does_not_fit` instead of running into the job timeout
 PACK_BUDGET = 600
 MAX_FREE_RECTS = 4
 # align_pairs' tighten step: two connected pads with a straight corridor end this far apart
@@ -890,9 +890,9 @@ def place_blocks(
             _parked(model, blocks), cls, doc, fixed_only, keep_channels=keep_channels,
             allowed_sides=allowed_sides,
         )  # fmt: skip
-    work = _Work(PACK_BUDGET)
     if not isinstance(topo, DoesNotFit):
         for relax in (True, False):
+            work = _Work(PACK_BUDGET)  # per pass: a failing relaxed one never starves P4's
             best: tuple[float, tuple[PlaceResult, Floorplan]] | None = None
             for slack, pull in itertools.product(SLACK_STEPS_MM, TARGET_PULL_WEIGHTS):
                 got = _pack_retry(

@@ -813,8 +813,30 @@ def test_place_blocks_work_budget_bounds_a_board_that_cannot_fit(
     d = BoardDoc()
     r = place_blocks(m, classify(m, d), d, _blocks(groups), keep_channels=0.5, allowed_sides=TOP)
     assert isinstance(r, DoesNotFit) and r.courtyard_fill is not None
-    # 7 constructive calls + R2's region packing of the first block (region, whole board)
-    assert calls[0] == 7 + 2, calls
+    # 7 constructive calls per layout pass (relaxed, compact) + R2's region packing of the
+    # first block (region, whole board)
+    assert calls[0] == 7 + 7 + 2, calls
+
+
+def test_place_blocks_relaxed_failures_never_starve_the_compact_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review round 2: each layout pass has its own PACK_BUDGET - a relaxed pass that
+    spends all of it on failures still leaves P4's compact layout its full budget."""
+    from copperchat.board.placer import floorplan as fpm
+
+    real = fpm.pack_block
+
+    def relaxed_never(*a: object, **kw: object) -> object:
+        if kw.get("relax"):
+            return DoesNotFit(1.0, 0.0, ())
+        return real(*a, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(fpm, "PACK_BUDGET", 12)
+    monkeypatch.setattr(fpm, "pack_block", relaxed_never)
+    m, groups = _trio()
+    res_, fp = _place(m, groups)
+    assert not fp.relaxed and res_.score.m1_violations == 0
 
 
 def test_place_blocks_fixed_only_plan_ignores_stale_free_parts(

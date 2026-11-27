@@ -473,7 +473,10 @@ class _Layout:
         pitch per two of them whose nets it does not have (ground excluded: the plane takes
         it), at most `ESCAPE_TRACKS_MAX`, plus one via pitch when the pins of that side are
         closer than `FINE_PITCH_MM` to each other and one of those pads (ground included)
-        needs to leave - its fanout via goes right at the pin. A decap gets only that via
+        needs to leave - its fanout via goes right at the pin (an estimate for the spot the
+        satellite wants, `t_star`; a satellite that slides along the row keeps that gap -
+        it slides when a neighbour took `t_star`, which keeps at least one pitch to it
+        anyway). A decap gets only that via
         room, and only for pads other than the pin it serves; crystals (`_gap_for`) and a
         switcher's hot-loop parts get none."""
         if not self.relax or local.ref in self.loop_parts:
