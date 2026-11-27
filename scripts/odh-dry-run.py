@@ -690,7 +690,12 @@ def size_section(run: SizeRun) -> list[str]:
         lines.append("- Placement: not reached")
     routes = [s for s in steps if s.tool == "pcb_route"]
     if routes:
-        failed = [f for s in routes for f in (s.summary.get("failed") or [])]
+        failed = [
+            f"{n.get('net')}: {_cell(n.get('failed'))}"
+            for s in routes
+            for n in (s.summary.get("nets") or [])
+            if isinstance(n, Mapping) and n.get("status") not in ("routed", "already_routed")
+        ]
         lines.append(
             f"- pcb_route: {len(routes)} call(s), "
             + ", ".join(f"{s.seconds:.0f} s" for s in routes)

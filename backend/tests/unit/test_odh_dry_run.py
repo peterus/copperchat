@@ -337,7 +337,19 @@ def test_size_section_reports_placement_routing_fill_metrics(tmp_path: Path) -> 
     result = _fake_result()
     result.steps += [
         StepLog(2, "run-flow-2", "pcb_place_blocks", 12.0, 1, {"courtyard_fill": 0.4}),
-        StepLog(4, "run-flow-4", "pcb_route", 160.0, 9, {"failed": ["VBUS:J1.1-U1.2"]}),
+        StepLog(
+            4,
+            "run-flow-4",
+            "pcb_route",
+            160.0,
+            9,
+            {
+                "nets": [
+                    {"net": "A", "status": "routed"},
+                    {"net": "VBUS", "status": "failed", "failed": [{"a": "J1.1", "b": "U1.2"}]},
+                ]
+            },
+        ),
         StepLog(4, "run-flow-4", "pcb_route_fill", 170.0, 5, {"completion": 1.0, "ripped": 1}),
     ]
     result.results = {
@@ -354,7 +366,8 @@ def test_size_section_reports_placement_routing_fill_metrics(tmp_path: Path) -> 
     assert "Result: **completed (fab package)**" in text
     assert "courtyard fill 0.43, spread 0.8 (well spread true)" in text
     assert '"m8_worst_mm": 3.6' in text
-    assert "pcb_route: 1 call(s), 160 s; failed" in text and "VBUS:J1.1-U1.2" in text
+    assert "pcb_route: 1 call(s), 160 s; failed" in text and "VBUS: " in text and "J1.1" in text
+    assert "A: " not in text
     assert "pcb_route_fill: 170 s completion 1.0, ripped 1" in text
     assert "hard failures 0, reviews 1, verdict review" in text
     assert "concurrent peak 5,000 MB in step turn 5 pcb_check" in text

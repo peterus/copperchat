@@ -1175,9 +1175,46 @@ async def _route_group(sctx: BoardStageContext, st: _Loop, group: Sequence[ConnP
         for p in group:
             await _route_group(sctx, st, [p])
         return
+    if reason == "no_path" and await _alternate_ends(sctx, st, group[0]):
+        return
     if await _rip_and_retry(sctx, st, group):
         return
     _fail(st, group, reason if not _timed_out(st) else "timeout")
+
+
+ALT_ENDS_MAX = 3  # R7: other end pairs tried after a no_path
+
+
+async def _alternate_ends(sctx: BoardStageContext, st: _Loop, p: ConnPlan) -> bool:
+    """R7 (ODH: the charger's CHG_N pin was walled in by its own short link to a pull-up,
+    the far MCU pin unreachable from it - from the pull-up's other side it was free): the
+    connection joins two copper islands of its net, so any pad of a's island may link to
+    any pad of b's. After a `no_path`, the `ALT_ENDS_MAX` nearest other end pairs are
+    tried (same width / layers; neck zones for the new ends); the first routed one stands
+    for the connection (its result names its own pads)."""
+    pads = [q for part in st.model.parts for q in part.pads if q.net == p.net]
+
+    def island(x: Pad) -> list[Pad]:
+        return [
+            q for q in pads if q is x or _joined(x, q) or routed_length(st.model, x, q) is not None
+        ]
+
+    ia, ib = island(p.a), island(p.b)
+    if any(q in ib for q in ia):
+        return False  # joined meanwhile (another connection did it)
+    alts = sorted(
+        ((x, y) for x in ia for y in ib if (x, y) != (p.a, p.b)),
+        key=lambda xy: octi_dist((xy[0].x, xy[0].y), (xy[1].x, xy[1].y)),
+    )[:ALT_ENDS_MAX]
+    floor = default_min_track(st.model)
+    for x, y in alts:
+        neck = neck_zones(st.model, (x, y), p.req.width, floor) if p.pair is None else ()
+        alt = dataclasses.replace(p, a=x, b=y, req=dataclasses.replace(p.req, a=x, b=y, neck=neck))
+        if await _attempt(sctx, st, [alt]) is None:
+            return True
+        if _timed_out(st):
+            return False
+    return False
 
 
 def _groups(plans: Sequence[ConnPlan]) -> list[list[ConnPlan]]:

@@ -1368,3 +1368,34 @@ def test_straight_link_free_per_piece() -> None:
     widths = sorted({round(w, 3) for *_x, w in path.segments})
     assert widths[0] < 0.5 and widths[-1] == pytest.approx(0.5), widths
     assert route._path_free(m, plan, path)
+
+
+def test_alternate_ends_after_no_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """R7 (ODH CHG_N): after a no_path the nearest other end pairs of the two copper
+    islands are tried - here R2.1, joined to U1.1 by a track, links to U3.1 - and the
+    first routed one stands for the connection; an end pair inside one island never."""
+    u1 = pad("U1", "1", "S", (10.0, 10.0))
+    r2 = pad("R2", "1", "S", (12.0, 10.0))
+    u3 = pad("U3", "1", "S", (40.0, 10.0))
+    m = circuit(
+        res("R2", "S", "X", (12.5, 10.0)),
+        ic("U1", {"1": "S", "2": "Y"}, (10.5, 10.0)),
+        ic("U3", {"1": "S", "2": "Z"}, (40.5, 10.0)),
+        tracks=(track("S", start=(10.0, 10.0), end=(12.0, 10.0)),),
+    )
+    pads = {(q.ref, q.number): q for p in m.parts for q in p.pads}
+    u1, r2, u3 = pads[("U1", "1")], pads[("R2", "1")], pads[("U3", "1")]
+    plans = route.plan_connections(m, classify(m), ["S"], layers=None, allow_vias=True)
+    q = plans[0]  # the MST link R2.1-U3.1; the router was given U1.1-U3.1 instead
+    p = dataclasses.replace(q, a=u1, b=u3, req=dataclasses.replace(q.req, a=u1, b=u3))
+    tried: list[tuple[str, str]] = []
+
+    async def attempt(sctx: Any, st: Any, group: Sequence[Any]) -> str | None:
+        tried.append((group[0].a.ref, group[0].b.ref))
+        return None if {group[0].a.ref, group[0].b.ref} == {"R2", "U3"} else "no_path"
+
+    monkeypatch.setattr(route, "_attempt", attempt)
+    st = route._Loop(m, True, None)
+    assert asyncio.run(route._alternate_ends(None, st, p))  # type: ignore[arg-type]
+    assert {frozenset(t) for t in tried} == {frozenset({"R2", "U3"})}
+    assert r2 in (q.a, q.b)
