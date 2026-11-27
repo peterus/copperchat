@@ -48,7 +48,7 @@ from copperchat.board.geom import (
     straight_corridor,
     straight_link_corridor,
 )
-from copperchat.board.metrics import connections, routed_length
+from copperchat.board.metrics import _net_graph, connections, routed_length
 from copperchat.board.model import BoardModel, NetClassInfo, Pad, Point, Rect, Track, Via, Zone
 from copperchat.board.presets import PRESETS
 from copperchat.board.router import (
@@ -997,11 +997,16 @@ async def _place(
     return None
 
 
-async def _attempt(sctx: BoardStageContext, st: _Loop, group: Sequence[ConnPlan]) -> str | None:
-    """Margins in order, each solve → push → DRC (the deadline checked before every
+async def _attempt(
+    sctx: BoardStageContext,
+    st: _Loop,
+    group: Sequence[ConnPlan],
+    margins: Sequence[float] = MARGINS,
+) -> str | None:
+    """`margins` in order, each solve → push → DRC (the deadline checked before every
     margin). None = routed; else the failure reason (not recorded)."""
     reason = "no_path"
-    for margin in MARGINS:
+    for margin in margins:
         remaining = _remaining(st.deadline)
         if remaining is not None and remaining <= 0:
             return "timeout"
@@ -1177,7 +1182,7 @@ async def _route_group(sctx: BoardStageContext, st: _Loop, group: Sequence[ConnP
         for p in group:
             await _route_group(sctx, st, [p])
         return
-    if reason == "no_path" and await _alternate_ends(sctx, st, group[0]):
+    if reason == "no_path" and group[0].pair is None and await _alternate_ends(sctx, st, group[0]):
         return
     if await _rip_and_retry(sctx, st, group):
         return
@@ -1192,14 +1197,15 @@ async def _alternate_ends(sctx: BoardStageContext, st: _Loop, p: ConnPlan) -> bo
     the far MCU pin unreachable from it - from the pull-up's other side it was free): the
     connection joins two copper islands of its net, so any pad of a's island may link to
     any pad of b's. After a `no_path`, the `ALT_ENDS_MAX` nearest other end pairs are
-    tried (same width / layers; neck zones for the new ends); the first routed one stands
-    for the connection (its result names its own pads)."""
+    tried (same width / layers; neck zones for the new ends) at margin 0 only (a larger
+    margin finds no path where 0 found none - review round 1: up to nine 30 s solves
+    before the rip-up); the first routed one stands for the connection (its result names
+    its own pads, `st.alias` records it under `p`). Not for a matched-pair half."""
     pads = [q for part in st.model.parts for q in part.pads if q.net == p.net]
+    graph = _net_graph(st.model, p.net)  # one copper graph for every island test
 
     def island(x: Pad) -> list[Pad]:
-        return [
-            q for q in pads if q is x or _joined(x, q) or routed_length(st.model, x, q) is not None
-        ]
+        return [q for q in pads if q is x or _joined(x, q) or graph.length(x, q) is not None]
 
     ia, ib = island(p.a), island(p.b)
     if any(q in ib for q in ia):
@@ -1213,7 +1219,7 @@ async def _alternate_ends(sctx: BoardStageContext, st: _Loop, p: ConnPlan) -> bo
         neck = neck_zones(st.model, (x, y), p.req.width, floor) if p.pair is None else ()
         alt = dataclasses.replace(p, a=x, b=y, req=dataclasses.replace(p.req, a=x, b=y, neck=neck))
         st.alias[alt] = p
-        if await _attempt(sctx, st, [alt]) is None:
+        if await _attempt(sctx, st, [alt], margins=MARGINS[:1]) is None:
             return True
         del st.alias[alt]
         if _timed_out(st):

@@ -14,7 +14,7 @@ from copperchat.board.placer import Cluster, Move, build_clusters, layout_cluste
 from copperchat.board.placer.layout import box_of
 
 from .builders import part
-from .builders_circuit import cap, circuit, ind, pad, res, xtal
+from .builders_circuit import cap, circuit, ic, ind, pad, res, xtal
 
 
 def qfn(ref: str, pins: dict[str, str], at: tuple[float, float] = (50.0, 40.0)) -> Part:
@@ -489,3 +489,68 @@ def test_pad_side_follows_the_pad_axis() -> None:
     assert _pad_side(box, square) == "top"
     tall = pad("U1", "3", "C", (3.0, 3.6), w=0.4, h=1.2)
     assert _pad_side(box, tall) == "bottom"
+
+
+def _epad_ic(sides: tuple[str, ...]) -> Part:
+    """A 4 x 4 mm IC at (50, 40) with a 2 x 2 mm exposed GND pad and two pins (S* nets, the
+    second GND) on each of `sides`."""
+    pads = [pad("U1", "EP", "GND", (50.0, 40.0), w=2.0, h=2.0)]
+    at = {"left": ((48.2, 39.5), (48.2, 40.5)), "right": ((51.8, 39.5), (51.8, 40.5)),
+          "top": ((49.5, 38.2), (50.5, 38.2)), "bottom": ((49.5, 41.8), (50.5, 41.8))}  # fmt: skip
+    for side in sides:
+        long_x = side in ("left", "right")
+        for k, xy in enumerate(at[side]):
+            net = "GND" if (k == 1 and side == "bottom") else f"S{side}{k}"
+            pads.append(
+                pad(
+                    "U1",
+                    f"{side}{k}",
+                    net,
+                    xy,
+                    w=0.6 if long_x else 0.25,
+                    h=0.25 if long_x else 0.6,
+                )
+            )
+    return part("U1", 50.0, 40.0, lib_id="Package_DFN_QFN:QFN", pads=tuple(pads),
+                courtyard=tuple(rect_poly(47.5, 37.5, 5.0, 5.0)))  # fmt: skip
+
+
+def test_epad_room_on_the_first_pinless_side_or_the_ground_side() -> None:
+    """R7 (ODH TPS63000 / BQ24074, spec call 30): next to a host with an exposed ground pad a
+    satellite keeps via pitch + clearance on the host's first pinless side (`_SIDES`
+    order); with pins on every side, on the side with the most ground pins; none without
+    `relax` / `escape_room` and none for a host without an exposed pad."""
+    from copperchat.board.placer import layout as lay
+    from copperchat.board.placer.routability import via_pitch
+
+    def room(sides: tuple[str, ...], **flags: bool) -> dict[str, float]:
+        m = circuit(_epad_ic(sides), res("R1", "Stop0", "X", (70.0, 60.0)))
+        cls = classify(m)
+        c = next(c for c in build_clusters(m, cls, ["U1", "R1"]) if "U1" in c.members)
+        work = lay._Layout(m, cls, c, 0.05, **flags)
+        host = m.part("U1")
+        return {s: work._epad_room(host, s) for s in lay._SIDES}
+
+    want = via_pitch(circuit(_epad_ic(("left",)))) + 0.2  # Default clearance
+    soic = room(("top", "bottom"), relax=True)  # pins top / bottom: left is the first free side
+    assert soic == {"left": pytest.approx(want), "right": 0.0, "top": 0.0, "bottom": 0.0}
+    qfn = room(("left", "right", "top", "bottom"), escape_room=True)
+    assert qfn == {"left": 0.0, "right": 0.0, "top": 0.0, "bottom": pytest.approx(want)}
+    assert set(room(("top", "bottom")).values()) == {0.0}  # P4's layout: off
+    m = circuit(ic("U2", {"1": "A", "2": "GND"}, (50.0, 40.0)), res("R1", "A", "X", (70.0, 60.0)))
+    cls = classify(m)
+    c = next(c for c in build_clusters(m, cls, ["U2", "R1"]) if "U2" in c.members)
+    work = lay._Layout(m, cls, c, 0.05, relax=True)
+    assert {work._epad_room(m.part("U2"), s) for s in lay._SIDES} == {0.0}  # no exposed pad
+
+
+def test_wide_nets_include_switch_nodes() -> None:
+    """R7: a switch node (the inductor's track leaves the IC's SW pin) needs its escape
+    free even at the Default width; ground never."""
+    from copperchat.board.placer.layout import wide_nets
+
+    pins = ["S1", "SW", "GND", "S4", "S5"]
+    m = circuit(_column_ic("U1", pins, 0.5), ind("L1", "SW", "VOUT", (70.0, 60.0)))
+    cls = classify(m)
+    assert cls.net_kind.get("SW") == "switch_node"
+    assert wide_nets(m, cls, ["S1", "SW", "GND"]) == {"SW": (0.2, 0.2)}

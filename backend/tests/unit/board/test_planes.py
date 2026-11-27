@@ -368,7 +368,18 @@ def test_fanout_ties_a_boxed_in_pin_to_its_exposed_pad() -> None:
     assert tie.stub == ((50.0, 41.4), tie.at)
     # straight up into the exposed pad (its edge at y 40.825), the stub's half-width inside
     assert tie.at == pytest.approx((50.0, 40.825 - 0.1))
-    assert TIE_MAX_GAP_MM >= 0.3
+    # the exposed pad farther than TIE_MAX_GAP_MM: no tie
+    far = _pad("U1", "11", "GND", (50.0, 41.4 - 0.3 - TIE_MAX_GAP_MM - 0.825 - 0.05), w=2.4, h=1.65)
+    m3 = _board(part("U1", 50.0, 40.5, half=3.0, pads=(gnd, far, left, right)), block)
+    assert not any(
+        c.tie for c in fanout_candidates(m3, "GND", via=VIA, width=0.2, clearance=0.2)[("U1", "3")]
+    )
+    # the pin beside the exposed pad's span: the straight stub would miss it - no tie
+    side = _pad("U1", "3", "GND", (51.4, 41.4), w=0.24, h=0.6)
+    m4 = _board(part("U1", 50.0, 40.5, half=1.5, pads=(side, epad)), block)
+    assert not any(
+        c.tie for c in fanout_candidates(m4, "GND", via=VIA, width=0.2, clearance=0.2)[("U1", "3")]
+    )
     # other-net copper across the gap: no tie
     wire = _part("R8", (50.0, 41.0), (_pad("R8", "1", "Y", (50.0, 41.0), w=0.6, h=0.1),))
     m2 = _board(part("U1", 50.0, 40.5, half=1.5, pads=(gnd, epad, left, right)), block, wire)

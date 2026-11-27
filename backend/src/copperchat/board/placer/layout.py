@@ -366,6 +366,8 @@ class _Layout:
         self.escape_room = escape_room
         self.relax = relax
         self.wide: dict[str, tuple[float, float]] = {}
+        self._strip_cache: dict[tuple[str, str], list[tuple[str, Box]]] = {}
+        self._epad_cache: dict[tuple[str, str], float] = {}
         if relax or escape_room:  # a local import: routability imports the legaliser
             from copperchat.board.placer.routability import signal_pitch, via_pitch
 
@@ -558,8 +560,14 @@ class _Layout:
         (`via_pitch` + the Default clearance) on the host's first pinless side in
         `_SIDES` order - with pins on every side (a QFN: ODH's charger) the side with the
         most ground pins; 0.0 elsewhere and without `relax` / `escape_room`."""
-        if not self.wide and not self.relax:
+        if not (self.relax or self.escape_room):
             return 0.0
+        key = (host.ref, side)
+        if key not in self._epad_cache:
+            self._epad_cache[key] = self._epad_room_of(host, side)
+        return self._epad_cache[key]
+
+    def _epad_room_of(self, host: Part, side: str) -> float:
         hb = box_of(host)
         cx, cy = (hb[0] + hb[2]) / 2, (hb[1] + hb[3]) / 2
         kinds = self.cls.net_kind
@@ -643,8 +651,11 @@ class _Layout:
         excluded); none without `relax` / `escape_room` (`pcb_place_blocks` only)."""
         if not self.wide:
             return []
+        key = (host.ref, side)
+        if key not in self._strip_cache:  # the host is fixed while its cluster is laid out
+            self._strip_cache[key] = escape_strips(host, self.wide, side)
         mine = {q.net for q in local.pads if q.net}
-        return [b for net, b in escape_strips(host, self.wide, side) if net not in mine]
+        return [b for net, b in self._strip_cache[key] if net not in mine]
 
     def _escape(self, ref: str) -> float:
         part = self.model.part(ref)
@@ -706,7 +717,7 @@ class _Layout:
 
         # R7: a satellite whose pads serve several host pins (a buck-boost inductor) pays
         # when one pad's line to its pin runs over its other pad (crossed connections)
-        crossing = bool(self.wide or self.relax) and len({q.net for q in own}) > 1
+        crossing = (self.relax or self.escape_room) and len({q.net for q in own}) > 1
 
         def cost_of(u: float, t: float) -> float:
             if want is None:

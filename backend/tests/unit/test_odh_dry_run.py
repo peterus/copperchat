@@ -303,11 +303,12 @@ def test_sampler_records_concurrent_samples_by_step() -> None:
 def test_parse_sizes() -> None:
     assert odh.parse_sizes("80x60,80x100") == ((80.0, 60.0), (80.0, 100.0))
     assert odh.parse_sizes(" 80X65 ") == ((80.0, 65.0),)
+    assert odh.parse_sizes("80x65,80x100,80x65") == ((80.0, 65.0), (80.0, 100.0))
     for bad in ("80", "80x", "x60", "80x60,", "axb", "0x60", "-80x60", "80x60x2"):
         with pytest.raises(argparse.ArgumentTypeError):
             odh.parse_sizes(bad)
     args = odh.parse_args(["--odh", "o", "--project", "p", "--answers", "a", "--sizes", "80x65"])
-    assert args.sizes == ((80.0, 65.0),) and not args.all_sizes
+    assert args.sizes == ((80.0, 65.0),) and not args.all_sizes and not args.keep_copies
     with pytest.raises(SystemExit):  # argparse turns the type error into a usage error
         odh.parse_args(["--odh", "o", "--project", "p", "--answers", "a", "--sizes", "80"])
     assert odh.size_label((80.0, 65.0)) == "80x65"

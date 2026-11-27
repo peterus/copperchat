@@ -36,6 +36,7 @@ from kipy.proto.board.board_types_pb2 import BoardLayer
 from kipy.proto.common.types import KIID
 from kipy.util.board_layer import layer_from_canonical_name
 
+from copperchat.board.geom import _bbox_of, _pad_rect
 from copperchat.board.jobs import fanout_candidates_job, strip_fills
 from copperchat.board.model import BoardModel, Pad, Point
 from copperchat.board.planes import (
@@ -461,6 +462,24 @@ def _pour_on(model: BoardModel, net: str, layer: str) -> bool:
     return any(not z.rule_area and z.net == net and layer in z.layers for z in model.zones)
 
 
+def _tie_without_via(st: _Fanout, p: _PadState) -> bool:
+    """`p` was fanned by a tie stub (R7) into a pad of this call that never got a via of
+    its own (a pad not fanned here was already connected before the call)."""
+    if p.status != "fanned" or p.next >= len(p.cands) or not p.cands[p.next].tie:
+        return False
+    end = p.cands[p.next].at
+    for q in st.pads:
+        if q is p or q.pad.ref != p.pad.ref or not _in_pad_rect(end, q.pad):
+            continue
+        return not (q.status == "fanned" and q.next < len(q.cands) and not q.cands[q.next].tie)
+    return False
+
+
+def _in_pad_rect(pt: Point, q: Pad) -> bool:
+    x0, y0, x1, y1 = _bbox_of(_pad_rect(q))
+    return x0 - 1e-6 <= pt[0] <= x1 + 1e-6 and y0 - 1e-6 <= pt[1] <= y1 + 1e-6
+
+
 def _report(st: _Fanout, model: BoardModel) -> dict[str, Any]:
     unconnected_kiids: set[str] = set()
     if st.last_drc is not None:
@@ -468,10 +487,17 @@ def _report(st: _Fanout, model: BoardModel) -> dict[str, Any]:
             if m.type in IGNORED_DRC:
                 unconnected_kiids.update(m.kiids)
     pad_ids = _pad_kiids(model)
-    fanned = [p for p in st.pads if p.status == "fanned"]
+    dangling = {id(p) for p in st.pads if _tie_without_via(st, p)}
+    fanned = [p for p in st.pads if p.status == "fanned" and id(p) not in dangling]
     pour: list[dict[str, str]] = []
     unconnected: list[dict[str, str]] = []
     for p in st.pads:
+        if id(p) in dangling:
+            # review round 1: a tie only connects when the pad it ties to got its own via
+            unconnected.append(
+                {"ref": p.key[0], "pad": p.key[1], "reason": "tie_target_unconnected"}
+            )
+            continue
         if p.status == "fanned":
             continue
         reason = (
@@ -496,7 +522,7 @@ def _report(st: _Fanout, model: BoardModel) -> dict[str, Any]:
         "smd_pads": len(st.pads) + st.already,
         "already_connected": st.already,
         "fanned_out": len(fanned),
-        "tied": sum(1 for p in fanned if p.cands[p.next].tie),
+        "tied": sum(1 for p in fanned if p.next < len(p.cands) and p.cands[p.next].tie),
         "via_pour": len(pour),
         "via_pour_pads": pour[:MAX_LISTED],
         "unconnected": unconnected[:MAX_LISTED],

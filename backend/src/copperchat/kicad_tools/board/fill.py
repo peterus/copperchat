@@ -791,16 +791,21 @@ def _bends_of(model: BoardModel, net: str, index: TrackIndex | None = None) -> i
     )
 
 
-def _widened_model(model: BoardModel, new_tracks: frozenset[str]) -> BoardModel:
+_WidthRule = tuple[Callable[[str], float], Callable[[Track], Track]]
+
+
+def _widened_model(
+    model: BoardModel, new_tracks: frozenset[str], rule: _WidthRule | None = None
+) -> BoardModel:
     """`model` with every track of `new_tracks` at the width `_widen` gives it (the class
     width unless a legal neck-down), so the post-processor judges M7 / M4 at the final
     widths; the KIIDs stay (the post-processor's replacements refer to them)."""
-    _, wide = _width_rule(model)
+    _, wide = rule or _width_rule(model)
     tracks = tuple(wide(t) if t.kiid in new_tracks else t for t in model.tracks)
     return dataclasses.replace(model, tracks=tracks)
 
 
-def _width_rule(model: BoardModel) -> tuple[Callable[[str], float], Callable[[Track], Track]]:
+def _width_rule(model: BoardModel) -> _WidthRule:
     """(class width of a net, `t` at its class width unless narrower is a legal
     neck-down) - `_widen`'s rule."""
     widths: dict[str, float] = {}
@@ -824,6 +829,7 @@ def _widen(
     model: BoardModel,
     replace: Sequence[tuple[str, tuple[Track, ...]]],
     new_tracks: frozenset[str],
+    rule: _WidthRule | None = None,
 ) -> tuple[list[tuple[str, tuple[Track, ...]]], int]:
     """The post-processor's replacements plus width fixes: every new track (and every
     replacement track) narrower than its net's class width (`route.class_params`, never
@@ -832,19 +838,19 @@ def _widen(
     rule (R4, `metrics.neck_checker`: inside its pad's part's escape zone, at least the neck
     width; widened it would not fit there). Returns (replacements, widened count); the
     widened copper is DRC-checked with the rest (rejected → originals back, ripped)."""
-    _, rule = _width_rule(model)
+    _, rule_of = rule or _width_rule(model)
     count = 0
 
     def wide(t: Track) -> Track:
         nonlocal count
-        got = rule(t)
+        got = rule_of(t)
         count += got is not t
         return got
 
     out = [(old, tuple(wide(t) for t in tracks)) for old, tracks in replace]
     done = {old for old, _ in replace}
     for t in sorted(model.tracks, key=lambda t: t.kiid):
-        if t.kiid in new_tracks and t.kiid not in done and (got := rule(t)) is not t:
+        if t.kiid in new_tracks and t.kiid not in done and (got := rule_of(t)) is not t:
             count += 1
             out.append((t.kiid, (dataclasses.replace(got, kiid=""),)))
     return out, count
@@ -993,11 +999,12 @@ def fill_stages(st: _FillState) -> list[BoardStage]:
         before_open = {k for k, *_ in st.plan.open}
         nets = {net for _, net, _, _ in st.plan.open}
         st.fill_keys = frozenset(before_open & await asyncio.to_thread(_routed_keys, m, nets))
-        rem = max(_remaining(st.post_deadline), 0.0)
         # R7: judge the copper at the width it will have - `_widen` below widens
         # Freerouting's neck-downs, and a jog that passes at 0.15 mm is an M7 micro-jog at
         # the 0.2 mm class width (ODH: seven of them survived the post-processor)
-        judged = await asyncio.to_thread(_widened_model, m, new_tracks)
+        rule = await asyncio.to_thread(_width_rule, m)  # classify + neck rule, built once
+        judged = _widened_model(m, new_tracks, rule)
+        rem = max(_remaining(st.post_deadline), 0.0)  # the widening's time counts too
         res = await _run_postprocess(
             judged, new_tracks, timeout_s=min(POST_JOB_MAX_S, rem), wait_s=rem
         )
@@ -1010,7 +1017,7 @@ def fill_stages(st: _FillState) -> list[BoardStage]:
         sctx.report["relanded"] = res.relanded
         await _check_ratio(st, m, rips, nets)
         st.rip = dict(rips)
-        replace, widened = await asyncio.to_thread(_widen, m, res.replace, new_tracks)
+        replace, widened = await asyncio.to_thread(_widen, m, res.replace, new_tracks, rule)
         sctx.report["widened"] = widened
         drc_skipped = False
         if replace:

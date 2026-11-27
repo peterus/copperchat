@@ -1282,9 +1282,10 @@ def snap_edges(
     """R7 (ODH: J201 ended 0.75 mm from its edge, M13 allows `M13_EDGE_MM`): the packing
     places on a 0.5 mm grid inside the edge margin, so a part with a `board.md` Placement
     edges row can stop up to a grid step short of its edge. Its whole block moves toward
-    that edge, as far as the edge margin allows (0.05 mm steps, largest first), when every
-    moved courtyard stays inside the outline margin and off the other parts' courtyards
-    and the keepouts; else the block stays. `moves` = the placement (all of this run's
+    that edge, as far as the edge margin allows but at most one packing grid step (0.05 mm
+    steps, largest first), when every moved courtyard stays inside the outline margin, off
+    the other parts' courtyards, keepouts and escape strips (`_covers_strip`); else the
+    block stays. `moves` = the placement (all of this run's
     members); returns it with the shifts applied."""
     o = model.outline
     if o.kind == "none" or not doc.edges:
@@ -1298,6 +1299,11 @@ def snap_edges(
     sep = courtyard_clearance(model)
     obox = (o.x, o.y, o.x + o.w, o.y + o.h)
     normal = {"left": (-1, 0), "right": (1, 0), "top": (0, -1), "bottom": (0, 1)}
+    # a shifted block never covers another part's escape strip (as `align_pairs`)
+    wide = wide_nets(
+        placed, classify(placed, doc), (q.net for p in placed.parts for q in p.pads if q.net)
+    )
+    strips = [(r, net, b) for r, p in parts.items() for net, b in escape_strips(p, wide)]
     for row in doc.edges:
         p = parts.get(row.ref)
         if row.edge is None or p is None or row.ref not in by_ref or row.edge not in normal:
@@ -1311,7 +1317,12 @@ def snap_edges(
             "top": b[1] - obox[1],
             "bottom": obox[3] - b[3],
         }[row.edge]
-        n = math.floor((gap - margin) / TIGHT_STEP_MM + 1e-6)
+        # at most one packing grid step: the gap the 0.5 mm grid leaves, never a jump over
+        # other parts to a far edge (review round 1)
+        n = min(
+            math.floor((gap - margin) / TIGHT_STEP_MM + 1e-6),
+            round(PLACE_GRID_MM / TIGHT_STEP_MM),
+        )
         nx, ny = normal[row.edge]
         for k in range(n, 0, -1):
             d = k * TIGHT_STEP_MM
@@ -1327,7 +1338,11 @@ def snap_edges(
                 for r in refs
             }
             others = {r: q for r, q in parts.items() if r not in moved}
-            if all(_legal_shift(q, others, sep, outline, keepouts) for q in moved.values()):
+            if all(
+                _legal_shift(q, others, sep, outline, keepouts)
+                and not _covers_strip(q, parts[r], strips)
+                for r, q in moved.items()
+            ):
                 for r, q in moved.items():
                     parts[r] = q
                     by_ref[r] = dataclasses.replace(by_ref[r], x=q.x, y=q.y)

@@ -397,6 +397,7 @@ def test_m16_straight_through_own_via_ok() -> None:
         *route("N1", [(32.65, 30.1), (34, 30.1)]),
     )
     assert "dogleg" in _whats(_m16(_pair(0.0, tracks=off_line, vias=vias)))
+    # a dip to another layer through the via stays a dogleg: test_m16_via_detour_is_dogleg
 
 
 def test_m16_unrouted_pair_not_dogleg() -> None:

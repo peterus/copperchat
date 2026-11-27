@@ -220,3 +220,23 @@ def test_create_copper_tie_stub_has_no_via() -> None:
     )
     assert out == [["k0"], ["k1", "k2"]]
     assert len(b.made) == 3
+
+
+def test_report_tie_into_a_pad_without_via_is_unconnected() -> None:
+    """Review round 1: a tie stub (no via) only connects when the pad it ties to got a via
+    of its own; tied into a pad that stayed exhausted it is reported unconnected
+    (`tie_target_unconnected`), not fanned and not tied."""
+    big = Pad("U1", "2", "GND", 40, 30, 2.0, 2.0, 0.0, "rect", frozenset({"F.Cu"}), True, None)
+    tie = ViaCandidate((39.2, 30.0), ((30, 30), (39.2, 30.0)), ("U1", "1"), 0, tie=True)
+    pin = _PadState(A, ("U1", "1"), "F.Cu", (tie,))
+    epad = _PadState(big, ("U1", "2"), "F.Cu", ())
+    pin.status, epad.status = "fanned", "exhausted"
+    st = _Fanout("GND", (0.6, 0.3), 0.2, 0.2, 0.25, [pin, epad], 0)
+    rep = _report(st, MODEL)
+    assert rep["fanned_out"] == 0 and rep["tied"] == 0
+    assert {"ref": "U1", "pad": "1", "reason": "tie_target_unconnected"} in rep["unconnected"]
+    # the exposed pad got its via: the tie counts
+    epad.status = "fanned"
+    epad.cands = (ViaCandidate((40.0, 32.0), ((40, 30), (40.0, 32.0)), ("U1", "2"), 0),)
+    rep = _report(st, MODEL)
+    assert rep["fanned_out"] == 2 and rep["tied"] == 1

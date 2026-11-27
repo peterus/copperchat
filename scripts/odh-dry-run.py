@@ -136,7 +136,8 @@ def load_answers(data: Mapping[str, Any]) -> Any:
 
 def parse_sizes(text: str) -> tuple[tuple[float, float], ...]:
     """`--sizes`: `"80x65,80x100"` -> `((80.0, 65.0), (80.0, 100.0))` (mm, width x height,
-    in the order given); anything else is an `argparse.ArgumentTypeError`."""
+    in the order given, a repeated size once); anything else is an
+    `argparse.ArgumentTypeError`."""
     sizes: list[tuple[float, float]] = []
     for item in text.split(","):
         w, sep, h = item.strip().lower().partition("x")
@@ -146,7 +147,8 @@ def parse_sizes(text: str) -> tuple[tuple[float, float], ...]:
             size = None
         if not sep or size is None or not all(0 < v <= 1000 for v in size):
             raise argparse.ArgumentTypeError(f"bad size {item.strip()!r}: expected WxH in mm")
-        sizes.append(size)
+        if size not in sizes:  # a repeated size would overwrite its own output dir
+            sizes.append(size)
     return tuple(sizes)
 
 
@@ -631,6 +633,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "answers' outline); one run per size until one reaches the fab package",
     )
     p.add_argument(
+        "--keep-copies",
+        action="store_true",
+        help="keep each size's copy of the checkout (default: removed after its run)",
+    )
+    p.add_argument(
         "--all-sizes",
         action="store_true",
         help="run every size of --sizes, also after one reached the fab package",
@@ -851,7 +858,10 @@ async def _run_size(
             (out / "metrics.json").write_text(json.dumps(data, indent=1, default=str))
     finally:
         sampler.stop()
-    print(f"report: {out / 'report.md'} (copy of the checkout: {copy})")
+        if not args.keep_copies:  # a full checkout copy per size would pile up in $TMPDIR
+            shutil.rmtree(copy.parent, ignore_errors=True)
+    kept = f" (copy of the checkout: {copy})" if args.keep_copies else ""
+    print(f"report: {out / 'report.md'}{kept}")
     return SizeRun(size, out, result, error, memory, seconds)
 
 

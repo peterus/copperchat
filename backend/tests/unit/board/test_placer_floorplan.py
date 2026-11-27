@@ -950,21 +950,25 @@ def test_snap_edges_moves_the_block_to_its_edge() -> None:
     row ends at the edge margin - its whole block moves - unless something is in the way."""
     from copperchat.board.placer.floorplan import snap_edges
 
-    j = conn("J1", {"1": "A", "2": "B"}, (3.0, 30.0))
-    r = res("R1", "A", "X", (7.0, 30.0))
+    j = conn("J1", {"1": "A", "2": "B"}, (1.75, 30.0))  # its box 0.75 mm off the left edge
+    r = res("R1", "A", "X", (5.75, 30.0))
     m = circuit(j, r, outline=outline(0, 0, 80, 60))
     doc = BoardDoc(edges=(EdgeRow("J1", "left", "", "user"),))
     blocks = _blocks({"blk": ["J1", "R1"]})
-    moves = (Move("J1", 3.0, 30.0, 0.0, "top"), Move("R1", 7.0, 30.0, 0.0, "top"))
+    moves = (Move("J1", 1.75, 30.0, 0.0, "top"), Move("R1", 5.75, 30.0, 0.0, "top"))
     gap0 = box_of(m.part("J1"))[0]
-    assert gap0 > edge_margin(m) + 0.5
+    assert edge_margin(m) + 0.2 < gap0 <= edge_margin(m) + PLACE_GRID_MM
     out = {mv.ref: mv for mv in snap_edges(m, doc, blocks, moves)}
     placed = apply_moves(m, tuple(out.values()))
     assert box_of(placed.part("J1"))[0] == pytest.approx(edge_margin(m), abs=0.05 + 1e-6)
-    shift = out["J1"].x - 3.0
-    assert shift < 0 and out["R1"].x - 7.0 == pytest.approx(shift)  # the block moved as one
+    shift = out["J1"].x - 1.75
+    assert shift < 0 and out["R1"].x - 5.75 == pytest.approx(shift)  # the block moved as one
+    # far from its edge: at most one packing grid step (never a jump across the board)
+    far = (Move("J1", 20.0, 30.0, 0.0, "top"), Move("R1", 24.0, 30.0, 0.0, "top"))
+    moved = {mv.ref: mv for mv in snap_edges(m, doc, blocks, far)}
+    assert 20.0 - moved["J1"].x == pytest.approx(PLACE_GRID_MM)
     # a part of another block between the connector and the edge: no move
-    w = blob("W1", 0.5, 4.0, ["Z"], (edge_margin(m) + 0.3, 30.0))
+    w = blob("W1", 0.4, 4.0, ["Z"], (edge_margin(m) + 0.2, 30.0))
     m2 = circuit(j, r, w, outline=outline(0, 0, 80, 60))
     blocked = {mv.ref: mv for mv in snap_edges(m2, doc, blocks, moves)}
     assert box_of(apply_moves(m2, tuple(blocked.values())).part("J1"))[0] >= box_of(w)[2]

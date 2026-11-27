@@ -629,7 +629,7 @@ async def _route(f: _Flow, critical: list[str]) -> dict[str, Any]:
     `FILL_ATTEMPTS` → rung (c) for the rest - the own router routes every remaining
     (non-critical, non-ground) net instead of a fourth fill; only what it cannot route is
     left to the user (rung (d)). Every rung is a logged tool call."""
-    await _route_nets(f, critical)
+    crit_failed = await _route_nets(f, critical)
     fill: dict[str, Any] = {}
     fill_args: dict[str, Any] = dict(f.answers.fill)
     retried = False
@@ -651,7 +651,9 @@ async def _route(f: _Flow, critical: list[str]) -> dict[str, Any]:
     else:
         if _fill_reason(data) != "rip_ratio":
             raise FlowError(f"turn {f.turn_no} ({f.label})", "pcb_route_fill", data)
-        rest = [n for n in f.signal_nets if n not in set(critical)]
+        # every fill net, and the critical ones the first call left open (review round 1)
+        again = {str(x["net"]) for x in crit_failed}
+        rest = [n for n in f.signal_nets if n not in set(critical) or n in again]
         failed = await _route_nets(f, rest)
         if failed:
             raise FlowError(
@@ -692,7 +694,8 @@ async def _clear_and_reroute(
     fill left open (the fill's unlocked copper walls it in - ODH CHG_N at a QFN). Once: the
     unlocked copper touching a `CLEAR_MM` box around each such connection's spot is removed
     (`pcb_unroute {region}`; the own router's locked copper stays), then `pcb_route` routes
-    the open nets first and the removed ones after them. Returns what is still failed."""
+    the open nets first and the removed ones after them - also when only the open nets' own
+    fill stubs were removed. Returns what is still failed."""
     nets = {str(x["net"]) for x in failed}
     removed: set[str] = set()
     for o in opened:
@@ -702,7 +705,7 @@ async def _clear_and_reroute(
         region = {"x": o["x"] - half, "y": o["y"] - half, "w": CLEAR_MM, "h": CLEAR_MM}
         data = await f.tool("pcb_unroute", cost=1, region=region)
         removed.update(str(n) for n in data.get("nets", []))
-    if not removed - nets:
+    if not removed:
         return failed
     signal = set(f.signal_nets)
     again = sorted(nets) + sorted(n for n in removed - nets if n in signal)
@@ -752,6 +755,13 @@ async def _turns(f: _Flow, answers: Answers) -> None:
     # 4: S4 - routing
     await f.new_turn("routing")
     nets = await f.tool("pcb_analyze", scope="nets")
+    if nets.get("nets_omitted"):
+        # the ladder's own-router rung needs every net (pcb_analyze caps its list)
+        raise FlowError(
+            f"turn {f.turn_no} ({f.label})",
+            "pcb_analyze",
+            {"why": f"{nets['nets_omitted']} nets omitted from pcb_analyze's list"},
+        )
     kinds = nets.get("nets", {})
     pairs = kinds.items() if isinstance(kinds, dict) else kinds
     f.signal_nets = sorted(str(n) for n, kind in pairs if kind != "ground")
