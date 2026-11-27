@@ -556,7 +556,8 @@ class _Layout:
         30: no via-in-pad): next to a host with an exposed ground pad, every satellite
         (decaps and hot-loop parts included) keeps room for one fanout via plus clearance
         (`via_pitch` + the Default clearance) on the host's first pinless side in
-        `_SIDES` order; 0.0 elsewhere and without `relax` / `escape_room`."""
+        `_SIDES` order - with pins on every side (a QFN: ODH's charger) the side with the
+        most ground pins; 0.0 elsewhere and without `relax` / `escape_room`."""
         if not self.wide and not self.relax:
             return 0.0
         hb = box_of(host)
@@ -585,9 +586,16 @@ class _Layout:
                 for b in boxes
             )
 
-        used = {_pad_side(hb, q) for q in host.pads if q not in epad and q.net and not under(q)}
+        rows = [q for q in host.pads if q not in epad and q.net and not under(q)]
+        used = {_pad_side(hb, q) for q in rows}
         free = [s for s in _SIDES if s not in used]
-        if not free or free[0] != side:
+        if not free:  # pins on every side (a QFN): the side with the most ground pins
+            ground = {s: 0 for s in _SIDES}
+            for q in rows:
+                if kinds.get(q.net) == "ground":
+                    ground[_pad_side(hb, q)] += 1
+            free = [max(_SIDES, key=lambda s: (ground[s], -list(_SIDES).index(s)))]
+        if free[0] != side:
             return 0.0
         from copperchat.board.placer.routability import net_track, via_pitch
 

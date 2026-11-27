@@ -1399,3 +1399,8 @@ def test_alternate_ends_after_no_path(monkeypatch: pytest.MonkeyPatch) -> None:
     assert asyncio.run(route._alternate_ends(None, st, p))  # type: ignore[arg-type]
     assert {frozenset(t) for t in tried} == {frozenset({"R2", "U3"})}
     assert r2 in (q.a, q.b)
+    # the routed alternative records (and fails, and is ripped) under the original plan
+    (alt,) = st.alias
+    assert st.alias[alt] is p and {alt.a.ref, alt.b.ref} == {"R2", "U3"}
+    route._fail(st, [alt], "no_path")
+    assert set(st.results) == {p} and st.results[p].a in ("R2.1", "U3.1")

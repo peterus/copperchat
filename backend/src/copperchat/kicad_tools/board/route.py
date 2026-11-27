@@ -916,6 +916,8 @@ class _Loop:
     drc: DrcResult | None = None
     started: dict[ConnPlan, float] = field(default_factory=dict)  # seconds spent solving
     reserved: list[Reserved] = field(default_factory=list)  # other connections' corridors
+    # R7 `_alternate_ends`: an alternative plan records its result under the original one
+    alias: dict[ConnPlan, ConnPlan] = field(default_factory=dict)
 
 
 def _key(p: ConnPlan) -> str:
@@ -924,7 +926,7 @@ def _key(p: ConnPlan) -> str:
 
 def _fail(st: _Loop, group: Sequence[ConnPlan], reason: str) -> None:
     for p in group:
-        st.results[p] = ConnResult(
+        st.results[st.alias.get(p, p)] = ConnResult(
             _key(p), p.net, _pad_name(p.a), _pad_name(p.b), "failed", reason, 0.0, 0, (),
             seconds=round(st.started.get(p, 0.0), 2),
         )  # fmt: skip
@@ -948,7 +950,7 @@ def _record(st: _Loop, kept: _Kept) -> None:
     it = iter(kept.kiids)
     for p, path in zip(kept.group, kept.paths, strict=True):
         own = tuple(next(it) for _ in range(len(path.segments) + len(path.vias)))
-        st.results[p] = ConnResult(
+        st.results[st.alias.get(p, p)] = ConnResult(
             _key(p), p.net, _pad_name(p.a), _pad_name(p.b), "routed", None, path.length,
             len(path.vias), own, coupling, round(st.started.get(p, 0.0), 2),
             pad_entry=entry_defect(path, p.req),
@@ -1054,7 +1056,7 @@ async def _unkeep(sctx: BoardStageContext, st: _Loop, kept: _Kept) -> None:
     )
     st.kept.remove(kept)
     for p in kept.group:
-        st.results.pop(p, None)
+        st.results.pop(st.alias.get(p, p), None)
 
 
 def _blockers(st: _Loop, group: Sequence[ConnPlan]) -> list[_Kept]:
@@ -1210,8 +1212,10 @@ async def _alternate_ends(sctx: BoardStageContext, st: _Loop, p: ConnPlan) -> bo
     for x, y in alts:
         neck = neck_zones(st.model, (x, y), p.req.width, floor) if p.pair is None else ()
         alt = dataclasses.replace(p, a=x, b=y, req=dataclasses.replace(p.req, a=x, b=y, neck=neck))
+        st.alias[alt] = p
         if await _attempt(sctx, st, [alt]) is None:
             return True
+        del st.alias[alt]
         if _timed_out(st):
             return False
     return False
