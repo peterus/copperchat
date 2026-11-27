@@ -1087,6 +1087,7 @@ def _reland_one(
     j: Point,
     touched: set[int],
     obstacles: _Obstacles,
+    pads: Sequence[Pad] = (),
 ) -> tuple[Track, Track] | None:
     """(branch, its replacement) re-landing the Y-junction at `j` as a T, or None. The
     through-track is a track with `j` in its interior or two collinear tracks ending at `j`
@@ -1136,7 +1137,6 @@ def _reland_one(
     if math.dist(v, foot) < ZERO_LEN:
         return None
     # V: a via, or a degree-2 vertex of the branch's polyline (never a pad: its exit rules)
-    pads = [q for p in model.parts for q in p.pads if q.net == net and _pad_on_layer(q, layer)]
     if any(_in_pad(v, q) for q in pads):
         return None
     on_via = any(x.net == net and math.dist(x.at, v) <= x.diameter / 2 for x in model.vias)
@@ -1163,6 +1163,25 @@ def _reland_one(
     return br, replace(br, kiid="", start=start, end=end, locked=False)
 
 
+def _may_branch(tracks: Sequence[Track], touched: set[int]) -> bool:
+    """Some touched track has an end on another track of `tracks` (end or interior) - the
+    precondition of a junction involving touched copper (and of every Y step 2b can fix)."""
+    grid = _Grid()
+    for i, t in enumerate(tracks):
+        grid.add(i, _grow((t.start, t.end), _JOIN_TOL))
+    for i, t in enumerate(tracks):
+        if id(t) not in touched:
+            continue
+        for e in (t.start, t.end):
+            for k in grid.query((e[0], e[1], e[0], e[1])):
+                if k == i:
+                    continue
+                o = tracks[k]
+                if _pt_seg(e, o.start, o.end) <= _JOIN_TOL:
+                    return True
+    return False
+
+
 def _reland_ys(model: BoardModel, untouched: Sequence[Track], slots: dict[str, list[Track]]) -> int:
     """Step 2b: every Y-junction of touched copper (not one of the untouched copper alone)
     re-landed as a T where `_reland_one` allows it; the branch track is replaced in its
@@ -1175,9 +1194,15 @@ def _reland_ys(model: BoardModel, untouched: Sequence[Track], slots: dict[str, l
         by_nl[(t.net, t.layer)].append(t)
     index = TrackIndex(model)
     obstacles: dict[str, _Obstacles] = {}
+    pads_of: dict[str, list[Pad]] = defaultdict(list)
+    for part in model.parts:
+        for q in part.pads:
+            pads_of[q.net].append(q)
     count = 0
     for net, layer in sorted({(t.net, t.layer) for t in work if id(t) in touched}):
         tracks = by_nl[(net, layer)]
+        if not _may_branch(tracks, touched):
+            continue  # no touched end on other copper: no junction of ours (timing)
         ys = analyse_tracks(replace(model, tracks=tuple(tracks), arcs=()), index=index).y_junctions
         if not ys:
             continue
@@ -1192,7 +1217,8 @@ def _reland_ys(model: BoardModel, untouched: Sequence[Track], slots: dict[str, l
                 continue
             if layer not in obstacles:
                 obstacles[layer] = _Obstacles(model, work, layer)
-            got = _reland_one(model, net, layer, tracks, j, touched, obstacles[layer])
+            pads = [q for q in pads_of.get(net, ()) if _pad_on_layer(q, layer)]
+            got = _reland_one(model, net, layer, tracks, j, touched, obstacles[layer], pads)
             if got is None:
                 continue
             old, new = got
@@ -1371,18 +1397,37 @@ def postprocess(model: BoardModel, kiids: frozenset[str]) -> PostResult:
     signal = [n for n in nets if n not in ground]
     if signal:
         cls = classify(work)
+        mine_by_net: dict[str, list[Track]] = defaultdict(list)
+        for i in mine:
+            mine_by_net[wt[i].net].append(wt[i])
+
+        def on_mine(d: M16Defect) -> bool:
+            return any(_pt_seg(d.at, t.start, t.end) <= _ON_TRACK_TOL for t in mine_by_net[d.net])
 
         def mark(d: M16Defect) -> tuple[object, ...]:
             ends = frozenset({(d.a.ref, d.a.number), (d.b.ref, d.b.number)})
             return (d.kind, d.net, ends, round(d.at[0], 3), round(d.at[1], 3))
 
-        # a defect the untouched copper alone already has is not ours (as in step 3)
-        base16 = {
-            mark(d) for d in m16_defects(replace(work, tracks=tuple(untouched)), cls, nets=signal)
-        }
+        base16: set[tuple[object, ...]] | None = None
         for d in m16_defects(work, cls, nets=signal):
-            if d.kind == "alignable" or mark(d) in base16:
+            if d.kind == "alignable":
                 continue
+            if d.kind in ("pad_loop", "pad_jog"):
+                # attributed by copper (review round 2): a loop / jog vertex on touched copper
+                # is ours; one in untouched copper alone is not (a connection that only
+                # passes through that pad's entry piece would be ripped for nothing)
+                if not on_mine(d):
+                    continue
+            else:
+                # a dogleg the untouched copper alone already has is not ours (as step 3);
+                # computed only when a dogleg shows up (timing)
+                if base16 is None:
+                    alone = replace(work, tracks=tuple(untouched))
+                    base16 = {
+                        mark(x) for x in m16_defects(alone, cls, nets=signal) if x.kind == "dogleg"
+                    }
+                if mark(d) in base16:
+                    continue
             ends = {(d.a.ref, d.a.number), (d.b.ref, d.b.number)}
             for c in conns.get(d.net, []):
                 if {(c.a.ref, c.a.number), (c.b.ref, c.b.number)} == ends and c.used & mine:

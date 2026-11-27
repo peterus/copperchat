@@ -1184,4 +1184,25 @@ def test_y_reland_ignores_zero_length_untouched_track() -> None:
     stub2 = track("N1", "F.Cu", (17.0, 10.0), (17.0, 10.0), 0.2, kiid="z1")
     m = replace(m, tracks=(*m.tracks, stub, stub2))
     r = postprocess(m, kiids(m) | kiids(m, "b"))
-    assert isinstance(r, PostResult)
+    assert r.relanded == 1 and r.reasons == (), r
+
+
+def test_untouched_pad_loop_not_ripped_on_fresh_connection() -> None:
+    """Review round 2: a pad loop that lies wholly in UNTOUCHED copper (J1's entry) is not
+    the fill's - a touched branch elsewhere (T to J3) is not ripped for it, although the
+    MST connection J1-J3 runs through that entry piece."""
+    pts = [
+        nm_pt(p)
+        for p in walk(
+            (50.0, 50.0), 0.0, [(0, 0.8), (45, 0.4), (45, 0.4), (45, 0.4), (0, 2.0), (0, 4.0)]
+        )
+    ]
+    t = pts[-2]
+    j3 = nm_pt((t[0] + 1.5 * math.cos(math.radians(45)), t[1] + 1.5 * math.sin(math.radians(45))))
+    m = board(
+        parts=(pad_part("J1", *pts[0]), pad_part("J2", *pts[-1]), pad_part("J3", *j3)),
+        tracks=(*path_tracks(pts, prefix="u"), *path_tracks([t, j3], prefix="b")),
+        net_class_of=(("N1", "Default"),),
+    )
+    r = postprocess(m, kiids(m, "b"))
+    assert not any(why in ("pad_loop", "pad_jog") for _k, why in r.reasons), r

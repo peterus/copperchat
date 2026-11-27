@@ -605,6 +605,7 @@ def _lattice(lo: float, hi: float, anchor: float, pitch: float) -> tuple[float, 
 ESCAPE_REACH_MM = 1.0  # how far in front of a pad's end its escape stays free (= M16 zone)
 ESCAPE_SIDE_MM = 0.3  # the escape strip's extra width on each side of the pad
 ESCAPE_AXIS_RATIO = 1.5  # = astar.PAD_AXIS_RATIO: below it a pad has no long axis
+ESCAPE_MARGIN_MM = 10.0  # copper ends this far outside the window still count (pending pads)
 
 
 def _escape_rect(pad: Pad, width: float) -> tuple[Point, ...]:
@@ -642,12 +643,20 @@ def _escape_map(
     via of its net touches yet - on its layers, an SMD pad's on every layer (its via); ()
     when there is none."""
     nets = {p.net for p, _ in pending}
+    # only copper near the window can touch a pending pad (review round 2: no full scan of
+    # every net's ends per pad); the pads lie within ESCAPE_MARGIN_MM of the window
+    gx0, gy0 = x0 - ESCAPE_MARGIN_MM, y0 - ESCAPE_MARGIN_MM
+    gx1, gy1 = x0 + nx * pitch + ESCAPE_MARGIN_MM, y0 + ny * pitch + ESCAPE_MARGIN_MM
+
+    def near(p: Point) -> bool:
+        return gx0 <= p[0] <= gx1 and gy0 <= p[1] <= gy1
+
     ends: dict[str, list[Point]] = defaultdict(list)
     for t in model.tracks:
         if t.net in nets:
-            ends[t.net] += (t.start, t.end)
+            ends[t.net] += [q for q in (t.start, t.end) if near(q)]
     for v in model.vias:
-        if v.net in nets:
+        if v.net in nets and near(v.at):
             ends[v.net].append(v.at)
     out: list[bytearray] | None = None
     for pad, on in pending:
