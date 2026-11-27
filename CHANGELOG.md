@@ -65,6 +65,16 @@ All notable changes to CopperChat are documented in this file. The format follow
   corridors are kept clear for later calls); a pad entry neither loops nor jogs unless no
   other path exists; decoupling and crystal links route first; pads that are almost square
   may be left in any direction — behind COPPERCHAT_BOARD_TOOLS.
+- Board quality gates M15 (Y-junctions) and M16 (doglegs between adjacent pads, pad-entry
+  loops and pad-entry jogs) are hard now; a straight link may be pad-narrow only inside the
+  pads' escape zones. The router never forms a pad-entry loop or jog (it goes through a via,
+  enters from the other side or ends on the net's copper as a T instead) and keeps other
+  nets' pin escapes free; `pcb_analyze` adds straight-corridor and in-block nets to
+  `critical_nets` (`critical_reasons`), so the own router routes them before the fill;
+  `pcb_route_fill` turns Freerouting's Y-junctions into T-junctions (else rips them), rips
+  doglegs / pad loops / pad jogs for the own router, keeps legal neck-downs narrow and
+  re-routes with T-junctions; Freerouting vias read with their net class's drill — behind
+  COPPERCHAT_BOARD_TOOLS.
 
 ## [0.12.0] - 2026-11-22
 
