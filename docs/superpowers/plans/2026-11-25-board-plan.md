@@ -759,7 +759,7 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
 - `BlockBox` = the block's `block_layout` box + `keep_channels` + one 0.5 mm grid step
   (P4's edge-strip slack). Additive fields: `BlockBox.offset` (mm along the edge from the
   outline's top / left end, like `pcb_place_block`'s offset: only `<edge>, <n> mm` in the
-  Edge/position cell, e.g. `left, 15 mm`; "10 mm from right" or "USB 2.0" → the middle) and
+  Edge/position cell, e.g. `left, 15 mm`, optionally `from top` / `from left` and a trailing comment; another reference, a negative number or "USB 2.0" → the middle) and
   `edge_ref` (the member with the row); `Floorplan.fixed` (blocks with a Region row or an
   edge strip) and `Floorplan.fallback` (blocks `place_blocks` had to pack on the whole board).
 - Edge strips: the orientation that turns the connector's mouth toward the edge first

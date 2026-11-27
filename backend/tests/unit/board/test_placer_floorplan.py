@@ -578,6 +578,14 @@ def test_edge_offset_parse() -> None:
     assert _edge_offset("left") is None
     assert _edge_offset("bottom, 10 mm from right") is None  # not from the top/left end
     assert _edge_offset("USB 2.0 connector") is None
+    # review round 3: the supported reference spelled out, comments, bad numbers
+    assert _edge_offset("left, 15 mm from top") == 15.0
+    assert _edge_offset("bottom, 10 mm from left") == 10.0
+    assert _edge_offset("top, 12 mm from the left end") == 12.0
+    assert _edge_offset("left, 15 mm (USB)") == 15.0
+    assert _edge_offset("left 15 from left") is None  # wrong end for a left edge
+    assert _edge_offset("left, -5 mm") is None
+    assert _edge_offset("top, 2 x USB") is None
 
 
 def test_floorplan_area_refusal_in_pack_band() -> None:

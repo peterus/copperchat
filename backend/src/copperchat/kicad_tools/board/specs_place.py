@@ -300,7 +300,8 @@ PCB_FLOORPLAN_SCHEMA = _obj(dict(_FLOORPLAN_PROPS), [])
 
 _FLOORPLAN_TEXT = (
     "Blocks with a board.md Placement edges row go into a strip along that edge "
-    "(connector facing it; a number in the row = mm along the edge), a Blocks row with a "
+    "(connector facing it; 'left, 15 mm' = centred 15 mm from the top end, 'top, 20 mm' = "
+    "20 mm from the left end, else the middle), a Blocks row with a "
     "Region (x, y, w, h in mm, or left/right/top/bottom half, top-left quarter ...) into "
     "that region; the others split the rest of the board by connectivity (fewest shared "
     "nets across each cut, area balanced), so the whole board is used. Every cut keeps a "

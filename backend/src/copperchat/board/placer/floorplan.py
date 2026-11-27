@@ -245,17 +245,28 @@ def parse_region(text: str, usable: Box) -> Rect | None:
     return _rect((x0, y0, x1, y1))
 
 
+# `<edge>[,:;@ ]<n>[ mm][ from <top|left>][, <comment>]` - nothing else is a position
 _EDGE_POS = re.compile(
-    r"^\s*(?:top|bottom|left|right)\b[\s,:;@-]*(\d+(?:\.\d+)?)(?![\d.])(?!\s*(?:mm\b)?\s*from\b)"
+    r"^\s*(top|bottom|left|right)\b[\s,:;@]*(\d+(?:\.\d+)?)\s*(?:mm\b)?"
+    r"(?:\s*from\s+(?:the\s+)?(\w+)(?:\s+(?:end|edge|corner))?)?\s*(?:[,;(].*)?$"
 )
+# the end of the edge an offset is measured from (the outline's top / left end)
+_FROM = {"top": "left", "bottom": "left", "left": "top", "right": "top"}
 
 
 def _edge_offset(position: str) -> float | None:
-    """`<edge>, <n> mm` (the number right after the edge word; mm along the edge from the
-    outline's top / left end, as `pcb_place_block`'s offset); any other text → None (the
-    edge middle; a number elsewhere, e.g. "USB 2.0", is not a position)."""
+    """mm along the edge from the outline's top / left end (as `pcb_place_block`'s offset)
+    in `<edge>, <n> mm`, optionally `from top` (left/right edges) or `from left` (top/bottom
+    edges) and a trailing `, comment`; anything else → None (the edge middle): a reference
+    from the other end, a negative number, or a number that is no position ("USB 2.0",
+    "top, 2 x USB")."""
     m = _EDGE_POS.match(position.casefold())
-    return float(m.group(1)) if m else None
+    if m is None:
+        return None
+    edge, value, ref = m.group(1), m.group(2), m.group(3)
+    if ref is not None and ref != _FROM[edge]:
+        return None
+    return float(value)
 
 
 # ---- the floorplan -----------------------------------------------------------------------------
