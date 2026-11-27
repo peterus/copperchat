@@ -113,6 +113,7 @@ from copperchat.board.metrics import (
     HARD,
     M5_MIN_MM,
     REVIEW,
+    M16Defect,
     _arc_points,
     _mst,
     _pad_key,
@@ -1062,7 +1063,10 @@ def _bend_fails(
 
 
 def _dir(p: Point, q: Point) -> Point:
+    """Unit vector p -> q; (0, 0) for coincident points (never divides by zero)."""
     d = math.dist(p, q)
+    if d < 1e-12:
+        return (0.0, 0.0)
     return ((q[0] - p[0]) / d, (q[1] - p[1]) / d)
 
 
@@ -1092,6 +1096,8 @@ def _reland_one(
     is a via or a plain polyline vertex whose turn stays 0° / 45° (B-C12 round 2), and the
     new piece keeps every other net's clearance."""
     tol = _JOIN_TOL
+    # an untouched zero-length piece has no direction (review round 1: _dir divided by 0)
+    tracks = [t for t in tracks if _len(t) >= ZERO_LEN]
     at_j = [t for t in tracks if math.dist(t.start, j) <= tol or math.dist(t.end, j) <= tol]
     inner = [t for t in tracks if t not in at_j and _pt_seg(j, t.start, t.end) <= tol]
     if len(inner) > 1:
@@ -1361,10 +1367,21 @@ def postprocess(model: BoardModel, kiids: frozenset[str]) -> PostResult:
     # step 3b (R4, owner 2026-11-27): an M16 dogleg / pad-entry loop / pad-entry jog on a
     # connection whose path uses touched copper rips it (re-routed straight-first by the
     # own router)
-    signal = [n for n in nets if n not in _ground_nets(nets)]
+    ground = _ground_nets(nets)
+    signal = [n for n in nets if n not in ground]
     if signal:
-        for d in m16_defects(work, classify(work), nets=signal):
-            if d.kind == "alignable":
+        cls = classify(work)
+
+        def mark(d: M16Defect) -> tuple[object, ...]:
+            ends = frozenset({(d.a.ref, d.a.number), (d.b.ref, d.b.number)})
+            return (d.kind, d.net, ends, round(d.at[0], 3), round(d.at[1], 3))
+
+        # a defect the untouched copper alone already has is not ours (as in step 3)
+        base16 = {
+            mark(d) for d in m16_defects(replace(work, tracks=tuple(untouched)), cls, nets=signal)
+        }
+        for d in m16_defects(work, cls, nets=signal):
+            if d.kind == "alignable" or mark(d) in base16:
                 continue
             ends = {(d.a.ref, d.a.number), (d.b.ref, d.b.number)}
             for c in conns.get(d.net, []):
@@ -1376,7 +1393,7 @@ def postprocess(model: BoardModel, kiids: frozenset[str]) -> PostResult:
     if outline is not None:
         x0, y0, x1, y1 = _bbox(outline)
         diag = math.hypot(x1 - x0, y1 - y0)
-    for net in sorted(set(nets) - _ground_nets(nets)):
+    for net in sorted(set(nets) - ground):
         for c in conns[net]:
             if c.length is None:
                 continue

@@ -290,3 +290,44 @@ def test_build_grid_deadline_with_many_via_obstacles() -> None:
     with pytest.raises(DeadlineExpired):
         build_grid(m, r, deadline=time.monotonic() + 0.2)
     assert time.monotonic() - t < 3.0
+
+
+def test_escape_map_marks_unrouted_other_net_pads() -> None:
+    """R4: the escape cost map covers the strip in front of another net's still unconnected
+    pad (both ends of its long axis, every layer for an SMD pad), not the own net's pads,
+    not a pad that already has copper, and nothing with `escape=False`."""
+    from dataclasses import replace as _replace
+
+    from copperchat.board.router.grid import ESCAPE_REACH_MM, _escape_rect
+
+    from .builders import track
+    from .builders_circuit import circuit, pad
+
+    a = pad("U1", "1", "P", (10.0, 10.0))
+    b = pad("U2", "1", "P", (16.0, 10.0))
+    other = pad("U3", "1", "Q", (13.0, 12.0), w=1.2, h=0.3)  # long axis x
+    done = pad("U4", "1", "R", (13.0, 8.0), w=1.2, h=0.3)
+    m = circuit(
+        part("U1", 10.0, 10.0, pads=(a,)),
+        part("U2", 16.0, 10.0, pads=(b,)),
+        part("U3", 13.0, 12.0, pads=(other,)),
+        part("U4", 13.0, 8.0, pads=(done,)),
+        tracks=(track("R", "F.Cu", (13.0, 8.0), (13.0, 6.0), 0.2),),
+        copper_layers=("F.Cu", "B.Cu"),
+    )
+    req = RouteRequest("P", a, b, 0.2, 0.2, ("F.Cu", "B.Cu"), True, (0.6, 0.3))
+    grid = build_grid(m, req)
+    assert grid.escape and len(grid.escape) == 2
+
+    def marked(p: tuple[float, float], k: int = 0) -> bool:
+        i, j = grid.cell(*p)
+        return bool(grid.escape[k][j * grid.w + i])
+
+    end = 13.0 + 0.6 + ESCAPE_REACH_MM / 2  # in front of U3's right end
+    assert marked((end, 12.0)) and marked((end, 12.0), k=1)  # SMD: every layer
+    assert not marked((13.0 + 0.6 + ESCAPE_REACH_MM / 2, 8.0))  # U4 has copper
+    assert not marked((10.8, 10.0))  # own net
+    zone = _escape_rect(other, 0.2)
+    xs = [q[0] for q in zone]
+    assert max(xs) == pytest.approx(13.0 + 0.6 + ESCAPE_REACH_MM)
+    assert build_grid(m, _replace(req, escape=False)).escape == ()

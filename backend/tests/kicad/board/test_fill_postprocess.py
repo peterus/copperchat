@@ -148,9 +148,14 @@ async def test_rip_reroute_path(fill_rig: PlacedSynth, monkeypatch: pytest.Monke
 
 
 @TIMEOUT
-async def test_ladder_unlock_fill_relock(fill_rig: PlacedSynth) -> None:
+async def test_ladder_unlock_fill_relock(
+    fill_rig: PlacedSynth, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Rung (b): a net routed by `pcb_route` (locked), `pcb_unroute {unlock_only}` keeps
-    its KIIDs unlocked, `pcb_route_fill {relock_nets}` locks it again (M4/M7 = 0)."""
+    its KIIDs unlocked, `pcb_route_fill {relock_nets}` locks it again (M4/M7 = 0). R4: the
+    fill rips Freerouting's M16 doglegs (1 of these 4 connections, re-routed by the own
+    router); the 20 % rule has its own test, so it is off here."""
+    allow_rips(monkeypatch)
     net = FILL_NETS[0]
     await setup_call(fill_rig.turn("ld-0"), "pcb_unroute", nets=[net], include_locked=True)
     await setup_call(fill_rig.turn("ld-1"), "pcb_route", nets=[net], lock=True)

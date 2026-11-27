@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import itertools
 import math
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -865,6 +865,23 @@ def _outside_pieces(
         return (s[0] + (e[0] - s[0]) * u, s[1] + (e[1] - s[1]) * u)
 
     return [(at(lo), at(hi)) for lo, hi in spans]
+
+
+def neck_link_zones(
+    parts: Mapping[str, Part], a: Pad, b: Pad, class_width: float, min_track: float
+) -> tuple[tuple[Point, ...], ...]:
+    """The escape zones a straight link between pads `a` and `b` may be neck-wide in: the
+    zone of each end pad's part whose `neck_width` is below `class_width` (as the router's
+    neck zones and M12) - a wide pad's part gives none (review round 1)."""
+    out: list[tuple[Point, ...]] = []
+    for pad in (a, b):
+        part = parts.get(pad.ref)
+        if part is None or neck_width(pad, class_width, min_track) >= class_width - _EPS:
+            continue
+        zone = escape_zone(part)
+        if zone and zone not in out:
+            out.append(zone)
+    return tuple(out)
 
 
 def straight_link_corridor(

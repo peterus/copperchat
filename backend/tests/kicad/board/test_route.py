@@ -217,12 +217,15 @@ async def test_already_routed_reported(synth_routed: PlacedSynth) -> None:
 
 
 async def test_budget_cost(synth_routed: PlacedSynth) -> None:
-    """6 nets → ceil(6 / 5) = 2 (the plan only; nothing applied)."""
+    """6 nets → ceil(6 / 5) = 2 (the plan only; nothing applied). R4: every sp4_synth net
+    is critical and routed, so one is unrouted first (a call with nothing to route costs 0)."""
+    await _unroute(synth_routed, "run-cost-u", [SIGNALS[0]])
     model = await _model(synth_routed, "run-cost-0")
     pads = sorted({q.net for p in model.parts for q in p.pads if q.net})
     routed = {t.net for t in model.tracks}
     unrouted = [n for n in pads if n not in routed and "GND" not in n and "unconnected" not in n]
-    nets = (unrouted + synth_routed.info["critical_nets"])[:6]  # routed ones cost the same
+    # routed ones cost the same (R4: every sp4_synth net is critical, so all may be routed)
+    nets = list(dict.fromkeys(unrouted + synth_routed.info["critical_nets"]))[:6]
     assert len(nets) == 6 and unrouted, nets
     cs = await route.prepare_route(synth_routed.turn("run-cost"), {"nets": nets})
     assert cs.logical.changes == 2

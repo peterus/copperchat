@@ -48,7 +48,6 @@ from copperchat.board.geom import (
     straight_corridor,
     straight_link_corridor,
 )
-from copperchat.board.metrics import HARD as METRIC_HARD
 from copperchat.board.metrics import connections, routed_length
 from copperchat.board.model import BoardModel, NetClassInfo, Pad, Point, Rect, Track, Via, Zone
 from copperchat.board.presets import PRESETS
@@ -606,10 +605,9 @@ def straight_path(model: BoardModel, plan: ConnPlan) -> RoutePath | None:
     split at the neck zones (`req.neck`) like a routed path."""
     req = plan.req
     w = min([req.width, *(nw for _z, nw, _zl in req.neck)])
-    # R4: narrower than the class only inside the parts' escape zones (M12, as M16 measures)
-    zones = tuple(
-        z for p in model.parts if p.ref in (plan.a.ref, plan.b.ref) if (z := escape_zone(p))
-    )
+    # R4: narrower than the class only inside a necked end pad's escape zone (the request's
+    # neck zones; M12, as M16's `neck_link_zones`)
+    zones = tuple(z for z, _nw, _zl in req.neck)
     link = straight_link_corridor(
         plan.a, plan.b, req.width, w, zones, copper_layers=model.copper_layers
     )
@@ -832,9 +830,6 @@ def _model_items(
 
 def _remaining(deadline: float | None) -> float | None:
     return None if deadline is None else deadline - time.monotonic()
-
-
-M8_LIMIT_MM = METRIC_HARD["M8_mm"]  # an M8-measured link longer than this fails M8
 
 
 async def _solve(

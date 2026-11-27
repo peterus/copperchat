@@ -91,12 +91,15 @@ DIRS: tuple[tuple[int, int], ...] = (
 _VIA_D = 8  # direction "none" after a via
 _START_D = 9  # direction "none" at the start pad
 _ND = 10
-# R4 (owner 2026-11-27, M16 b / c hard): the bends a path made in an end pad's entry zone
-# since it last was outside one - 0 none, 1 / 2 one bend of sense +45° / -45°, 3 / 4 two of
-# that sense (90°). _ZONE_NEXT[z][sense] = the state after one more bend there, -1 = refused:
-# the opposite sense is a jog, a third bend a loop (cumulative 135°).
-_NZ = 5
+# R4 (owner 2026-11-27, M16 b / c hard): the bends a path made in ONE end pad's entry zone
+# since it last was outside that zone - per zone 0 none, 1 / 2 one bend of sense +45° / -45°,
+# 3 / 4 two of that sense (90°). _ZONE_NEXT[z][sense] = the state after one more bend there,
+# -1 = refused: the opposite sense is a jog, a third bend a loop (cumulative 135°). The
+# search state is 0 or 1 + 4 x zone (0 = pad a's, 1 = pad b's) + (that state - 1): the two
+# zones are judged separately, like M16 (review round 1: a union refused a legal S-path
+# between two close offset pads).
 _ZONE_NEXT = ((0, 1, 2), (0, 3, -1), (0, -1, 4), (0, -1, -1), (0, -1, -1))
+_NZ = 9
 _EPS = 1e-9
 
 
@@ -426,7 +429,8 @@ def valid_path(
     stricter than the board metric, which exempts every pad-end bend); every segment and
     via keeps its exact clearance, also between the path's own vias. A tree request's path
     may instead end ON an own track connected to pad `b` (`tree_end`, R3). A pad entry that
-    loops or jogs (M16 b / c) fails unless `entry_ok` (`solve`'s last resort)."""
+    loops or jogs (M16 b / c) fails unless `entry_ok` (an explicit caller's choice; `solve`
+    has no such fallback since R4)."""
     runs = layer_runs(path)
     if not runs:
         return False
@@ -1057,7 +1061,16 @@ def _search(
     sd = 3 * kk
     exit_cap = max(1, math.ceil(math.hypot(start_pad.w, start_pad.h) / pitch) + 2)
     ez = entry_nodes(grid, (req.a, req.b), req.width)  # bends there cost ENTRY_TURN_COST more
-    zt = _ZONE_NEXT if not entry_ok else None  # R4: loops / jogs never formed in a zone
+    zones = (entry_nodes(grid, (req.a,), req.width), entry_nodes(grid, (req.b,), req.width))
+    strict = not entry_ok  # R4: loops / jogs never formed in an entry zone
+
+    def zone_at(n: int, z: int) -> int:
+        """The entry zone a bend at node `n` counts in: the current one when `n` lies in it,
+        else pad a's, else pad b's; -1 = none."""
+        if z and n in zones[(z - 1) // 4]:
+            return (z - 1) // 4
+        return 0 if n in zones[0] else 1 if n in zones[1] else -1
+
     try:  # per layer: node -> directions that make a T with own copper
         tj = junction_masks(grid, deadline)
     except DeadlineExpired:
@@ -1161,7 +1174,7 @@ def _search(
                 if s2 == 0 or k2 >= cap[d] or k2 * step[d] + _EPS >= need_max:
                     s2, k2 = 0, 0
                 ng = g + c
-                z2 = z if z and m in ez else 0
+                z2 = z if z and m in zones[(z - 1) // 4] else 0
                 base = (((m) * nl + li) * _ND + d) * _NZ
                 nk = (base + z2) * sd + (s2) * kk + k2
                 if (
@@ -1185,10 +1198,13 @@ def _search(
                 if not may[d][s][k][ns]:
                     continue
                 zb = 0
-                if zt is not None and in_zone:
-                    zb = zt[z][ns]
-                    if zb < 0:  # a jog (opposite sense) or a third bend (135°: a loop)
+                if strict and in_zone:
+                    zk = zone_at(n, z)
+                    prev = (z - 1) % 4 + 1 if z and (z - 1) // 4 == zk else 0
+                    nxt = _ZONE_NEXT[prev][ns]
+                    if nxt < 0:  # a jog (opposite sense) or a third bend (135°: a loop)
                         continue
+                    zb = 1 + 4 * zk + nxt - 1
                 o, st = off[nd], step[nd]
                 # a second bend soon after another one in an entry zone: a jog or a loop
                 c = TURN_COST + (ENTRY_TURN_COST if s and n in ez else 0.0)
@@ -1211,7 +1227,7 @@ def _search(
                     if k2 >= cap[nd] or k2 * st + _EPS >= need_max:
                         s2, k2 = 0, 0
                     ng = g + c
-                    z2 = zb if zb and m in ez else 0
+                    z2 = zb if zb and m in zones[(zb - 1) // 4] else 0
                     nk = ((((m) * nl + li) * _ND + nd) * _NZ + z2) * sd + (s2) * kk + k2
                     if ng < best.get(nk, inf) and nk not in closed:
                         hm = hc.get(m)

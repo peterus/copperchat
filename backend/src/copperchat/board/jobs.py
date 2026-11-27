@@ -124,7 +124,10 @@ def analyse_job(model: BoardModel, doc: BoardDoc, scope: Scope = "all") -> dict[
     cut to MAX_ERROR_CHARS characters."""
     c = classify(model, doc)
     # R4 (round-2 plan call 8): intra-block and straight-corridor nets join the critical set
-    critical, reasons = critical_with_reasons(model, c)
+    critical: tuple[str, ...] = ()
+    reasons: dict[str, str] = {}
+    if "critical_nets" in SCOPE_KEYS[scope]:  # the geometry only where it is reported
+        critical, reasons = critical_with_reasons(model, c)
     full: dict[str, Mapping[str, str] | Sequence[Any]] = {
         "parts": c.part_class,
         "nets": c.net_kind,

@@ -156,3 +156,30 @@ def test_solve_order(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setattr(astar_mod, "route", clean_second)
     assert astar_mod.solve(m, req) is not None
     assert len(calls) == 2  # the loop-allowing passes never ran
+
+
+def test_entry_zones_judged_per_pad() -> None:
+    """Review round 1: two close, offset pads whose entry zones touch - the shortest legal
+    path is an S (+45° in a's zone, -45° in b's zone), which is no jog (M16 judges each
+    pad's zone alone). The search must find it (the union of both zones refused it and
+    returned a 4.1 mm path with 6 bends)."""
+    a = pad("U1", "1", "P", (10.0, 10.0), w=1.0, h=0.4)
+    b = pad("U2", "1", "P", (12.6, 10.6), w=1.0, h=0.4)
+    m = circuit(part("U1", 10.0, 10.0, pads=(a,)), part("U2", 12.6, 10.6, pads=(b,)))
+    req = _req(a, b)
+    grid = build_grid(m, req)
+    path = route(grid, req)
+    assert path is not None and valid_path(path, grid, req)
+    assert path.length < 3.2, path.length
+    assert _loops(path, req) == []
+
+
+def test_zone_state_layout() -> None:
+    """`_ZONE_NEXT`: from no bend, one of either sense; a second of the same sense (90°);
+    the opposite sense (jog) and a third bend (135°, loop) are refused."""
+    nxt = astar_mod._ZONE_NEXT
+    assert nxt[0][1] == 1 and nxt[0][2] == 2
+    assert nxt[1][1] == 3 and nxt[2][2] == 4
+    assert nxt[1][2] == -1 and nxt[2][1] == -1
+    assert all(v == -1 for z in (3, 4) for v in nxt[z][1:])
+    assert astar_mod._NZ == 1 + 2 * 4

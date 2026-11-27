@@ -1132,9 +1132,7 @@ def test_y_to_t_rejects_ninety_on_branch() -> None:
     m = _y_board([(11.0, 13.0), (14.0, 13.0), (17.0, 10.0)])
     r = postprocess(m, kiids(m) | kiids(m, "b"))
     assert r.relanded == 0
-    assert ("N1:J1.1-J3.1", "y_junction") in r.reasons or any(
-        why == "y_junction" for _k, why in r.reasons
-    ), r
+    assert ("N1:J1.1-J3.1", "y_junction") in r.reasons, r
 
 
 def test_y_to_t_projection_outside() -> None:
@@ -1176,3 +1174,14 @@ def test_pad_jog_ripped() -> None:
     m = routed(pts)
     r = postprocess(m, kiids(m))
     assert (KEY, "pad_jog") in r.reasons, r
+
+
+def test_y_reland_ignores_zero_length_untouched_track() -> None:
+    """Review round 1: an untouched zero-length piece at the junction or at V must not
+    crash the re-landing (it has no direction)."""
+    m = _y_board([(14.0, 16.0), (14.0, 13.0), (17.0, 10.0)])
+    stub = track("N1", "F.Cu", (14.0, 13.0), (14.0, 13.0), 0.2, kiid="z0")
+    stub2 = track("N1", "F.Cu", (17.0, 10.0), (17.0, 10.0), 0.2, kiid="z1")
+    m = replace(m, tracks=(*m.tracks, stub, stub2))
+    r = postprocess(m, kiids(m) | kiids(m, "b"))
+    assert isinstance(r, PostResult)

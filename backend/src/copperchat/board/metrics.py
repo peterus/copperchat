@@ -73,6 +73,7 @@ from copperchat.board.geom import (
     convex_hull,
     entry_zone,
     escape_zone,
+    neck_link_zones,
     neck_width,
     octi_dist,
     polygon_area,
@@ -2278,7 +2279,12 @@ def _m16_defects(c: _Ctx, nets: Iterable[str] | None = None) -> Iterator[M16Defe
             if not segs:
                 continue
             link = straight_link_corridor(
-                a, b, class_w, w, _escape_boxes(c, a, b), copper_layers=c.m.copper_layers
+                a,
+                b,
+                class_w,
+                w,
+                neck_link_zones(c.parts, a, b, class_w, min_track),
+                copper_layers=c.m.copper_layers,
             )
             if link is not None:
                 if blockers is None:
@@ -2346,16 +2352,6 @@ def _m16(c: _Ctx) -> Metric:
             end = d.end if d.end is not None else d.a
             off.append(Offender(f"{d.kind} {_pin(end)} ({pair})", (end.ref,), (d.net,), d.at, None))
     return _metric("M16", hard, _verdict(M16_HARD and hard > 0, bool(off)), off)
-
-
-def _escape_boxes(c: _Ctx, a: Pad, b: Pad) -> tuple[tuple[Point, ...], ...]:
-    """The escape zones (`geom.escape_zone`) of the parts of pads `a` and `b`."""
-    out = []
-    for ref in dict.fromkeys((a.ref, b.ref)):
-        part = c.parts.get(ref)
-        if part is not None and (z := escape_zone(part)):
-            out.append(z)
-    return tuple(out)
 
 
 def _pad_has(pad: Pad, p: Point) -> bool:
