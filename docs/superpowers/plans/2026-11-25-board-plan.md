@@ -789,7 +789,12 @@ airwire), so every slack (`SLACK_STEPS_MM` = 1.0 / 0.5 / 0.0) x pull (`TARGET_PU
 (1 - `SLACK_CREDIT` 0.05 x slack) wins; relaxed layout first, P4's compact layout only when
 nothing relaxed fits; R2's region packing remains the last resort. The `grow` (bounding-box
 growth) term from the first draft was dropped: it only raised airwire. `Floorplan` gains
-`gaps`, `slack_mm`, `order`, `relaxed` (additive).
+`gaps`, `slack_mm`, `order`, `relaxed` (the free blocks' layout), `compact_fixed` (fixed blocks
+whose strip only held the compact layout - on ODH both edge blocks) (additive). Review round 1:
+the constructive packing spends at most `PACK_BUDGET` = 600 `pack_block` calls (deterministic;
+ODH 80 x 100 uses 117, 80 x 65 357, 80 x 60 fails after 600 in 29 s); the fixed-blocks-only
+floorplan runs on the parked model (a free block's stale position is no obstacle) and gives
+`usable_mm2`.
 
 **Checks** (`routability.py`, reported, not metrics): `PlacementScore.congestion_worst` /
 `congestion_over` (RUDY per 2.5 mm cell: connection length x pitch spread over its bbox vs
@@ -808,7 +813,7 @@ bottom, keep_channels 1.5; R2 in brackets):
 | 80 x 80 | yes, relaxed, slack 1.0 | 1205 | 6.1 / 30.4 | 462 | 1.00 | 3.6 / 3 | 9 s |
 | 80 x 70 | yes, relaxed, slack 0 | 1171 | 4.5 / 25.9 | 325 | 1.09 | 3.6 / 3 | 10 s |
 | **80 x 65** | **yes, relaxed, slack 0** | 1253 | 6.1 / 26.7 | 206 | 0.81 | 3.6 / 3 | 20 s |
-| 80 x 60 | `does_not_fit` (courtyard fill 0.429) | - | - | - | - | - | 36 s |
+| 80 x 60 | `does_not_fit` (courtyard fill 0.429) | - | - | - | - | - | 29 s |
 
 M1 0 everywhere; M13 J201 0.75 mm from its edge = R2's value (pre-existing, R7). At 80 x 100
 the placement uses the lower ~65 mm and leaves the top free (= the board could be 80 x 65).

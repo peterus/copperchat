@@ -113,6 +113,10 @@ SLACK_CREDIT = 0.05
 # a free block that found no spot moves to the front and the packing restarts, at most this
 # many times per layout and slack step (bounds the work on a board that cannot fit)
 RETRY_MAX = 8
+# `pack_block` calls one `place_blocks` run may spend on the constructive packing (every
+# layout, slack, pull and retry; deterministic): a board that cannot fit fails fast with
+# `does_not_fit` instead of running into the job timeout
+PACK_BUDGET = 600
 MAX_FREE_RECTS = 4
 # align_pairs' tighten step: two connected pads with a straight corridor end this far apart
 # at the least (when the courtyards allow), moved in steps of TIGHT_STEP_MM
@@ -162,7 +166,8 @@ class Floorplan:
     gaps: tuple[GapRow, ...] = ()
     slack_mm: float = 0.0
     order: tuple[str, ...] = ()
-    relaxed: bool = False
+    relaxed: bool = False  # the free blocks' layout; fixed ones may be in `compact_fixed`
+    compact_fixed: tuple[str, ...] = ()  # fixed blocks in P4's compact layout (their strip)
 
 
 class _NoFit(Exception):
@@ -878,27 +883,35 @@ def place_blocks(
     if isinstance(topo, DoesNotFit):
         # no box tiling (a shape or an area refusal of the boxes): the constructive packing
         # interlocks the blocks' parts and may still fit; the fixed blocks' regions alone
+        # (on the model with every member parked: the free blocks' stale positions are no
+        # obstacles; without fixed blocks this is just the usable area)
         fixed_only = [b for b in blocks if _fixed_block(model, doc, b)]
-        topo = plan(fixed_only, False) if fixed_only else Floorplan({}, (), 0.0, 0.0, 0.0)
+        topo = floorplan(
+            _parked(model, blocks), cls, doc, fixed_only, keep_channels=keep_channels,
+            allowed_sides=allowed_sides,
+        )  # fmt: skip
+    work = _Work(PACK_BUDGET)
     if not isinstance(topo, DoesNotFit):
         for relax in (True, False):
             best: tuple[float, tuple[PlaceResult, Floorplan]] | None = None
             for slack, pull in itertools.product(SLACK_STEPS_MM, TARGET_PULL_WEIGHTS):
                 got = _pack_retry(
                     model, cls, doc, blocks, topo, keep=keep_channels,
-                    sides=allowed_sides, relax=relax, slack=slack, pull=pull,
+                    sides=allowed_sides, relax=relax, slack=slack, pull=pull, work=work,
                 )  # fmt: skip
                 if got is None:
                     continue
-                order, moves, fallback = got
+                moves = got.moves
                 fp = dataclasses.replace(
-                    topo, slack_mm=slack, order=order, relaxed=relax, fallback=fallback,
+                    topo, slack_mm=slack, order=got.order, relaxed=relax,
+                    fallback=got.fallback, compact_fixed=got.compact,
                 )  # fmt: skip
                 if isinstance(compact, DoesNotFit):  # the fill of every block
+                    court = _courtyards(model, blocks)
                     fp = dataclasses.replace(
                         fp,
                         courtyard_fill=compact.courtyard_fill or 0.0,
-                        courtyard_mm2=_courtyards(model, blocks),
+                        courtyard_mm2=court,
                     )
                 else:
                     fp = dataclasses.replace(
@@ -964,6 +977,21 @@ def _block_nets(model: BoardModel, refs: Sequence[str]) -> frozenset[str]:
     return frozenset(q.net for r in refs for q in model.part(r).pads if q.net)
 
 
+@dataclass(frozen=True)
+class _Packed:
+    order: tuple[str, ...]
+    moves: tuple[Move, ...]
+    fallback: tuple[str, ...]  # fixed blocks packed on the whole board
+    compact: tuple[str, ...]  # fixed blocks packed in P4's compact layout in their strip
+
+
+@dataclass
+class _Work:
+    """`pack_block` calls left for this `place_blocks` run (`PACK_BUDGET`)."""
+
+    left: int
+
+
 def _pack_ordered(
     model: BoardModel,
     cls: Classification,
@@ -977,15 +1005,17 @@ def _pack_ordered(
     slack: float,
     pull: float,
     first: Sequence[str] = (),
-) -> tuple[tuple[str, ...], tuple[Move, ...], tuple[str, ...]] | str:
+    work: _Work | None = None,
+) -> _Packed | str:
     """The blocks packed one by one (R2b): the fixed ones first (largest first, each in its
     region), then always the block with the most weighted shared nets to the placed ones
     (ties: larger courtyard area, name), on the whole usable box against the parts already
     placed, pulled `pull` (per member and mm) toward its floorplan region centre; every placed
     part keeps `channel_mm(shared nets of the two blocks) + slack` (its own block's parts
     are not obstacles yet). The blocks in `first` go right after the fixed ones, in that
-    order. Returns (order, moves, fixed blocks packed on the whole board); a block that
-    finds no spot: its name."""
+    order. Returns the order, the moves, the fixed blocks packed on the whole board and the
+    fixed blocks packed in P4's compact layout (their strip was sized for it); a block that
+    finds no spot (or `work` is used up): its name."""
     o = model.outline
     m = edge_margin(model)
     whole = Rect(o.x + m, o.y + m, o.w - 2 * m, o.h - 2 * m)
@@ -997,6 +1027,7 @@ def _pack_ordered(
     base = _parked(model, blocks)
     placed: list[str] = []
     fallback: list[str] = []
+    compact_fixed: list[str] = []
     owner: dict[str, str] = {}
     moves: tuple[Move, ...] = ()
     todo = sorted(refs, key=natural_key)
@@ -1032,6 +1063,10 @@ def _pack_ordered(
             where = [(region, relax), *([(region, False)] if relax else []), (whole, relax)]
         res: tuple[Move, ...] | DoesNotFit = DoesNotFit(0.0, 0.0, ())
         for reg, lay in where:
+            if work is not None:
+                if work.left <= 0:
+                    return n
+                work.left -= 1
             res = pack_block(
                 base,
                 cls,
@@ -1057,10 +1092,17 @@ def _pack_ordered(
             return n
         if reg is whole and n in fixed_set:
             fallback.append(n)
+        if relax and not lay:
+            compact_fixed.append(n)
         moves = res
         placed.append(n)
         owner.update({r: n for r in refs[n]})
-    return tuple(placed), moves, tuple(sorted(fallback, key=natural_key))
+    return _Packed(
+        tuple(placed),
+        moves,
+        tuple(sorted(fallback, key=natural_key)),
+        tuple(sorted(compact_fixed, key=natural_key)),
+    )
 
 
 def _pack_retry(
@@ -1075,7 +1117,8 @@ def _pack_retry(
     relax: bool,
     slack: float,
     pull: float,
-) -> tuple[tuple[str, ...], tuple[Move, ...], tuple[str, ...]] | None:
+    work: _Work | None = None,
+) -> _Packed | None:
     """`_pack_ordered`; a free block that finds no spot is moved to the front (after the
     fixed blocks and the blocks moved before it) and the packing starts again - at most
     once per block and `RETRY_MAX` times (the earlier blocks had boxed it out). None: no
@@ -1084,11 +1127,11 @@ def _pack_retry(
     for _ in range(min(len(blocks), RETRY_MAX) + 1):
         got = _pack_ordered(
             model, cls, doc, blocks, fp, keep=keep, sides=sides, relax=relax, slack=slack,
-            pull=pull, first=first,
+            pull=pull, first=first, work=work,
         )  # fmt: skip
         if not isinstance(got, str):
             return got
-        if got in first or got in fp.fixed:
+        if got in first or got in fp.fixed or (work is not None and work.left <= 0):
             return None
         first.append(got)
     return None

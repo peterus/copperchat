@@ -1190,6 +1190,7 @@ def _relaxed_data(fp: Floorplan, score: PlacementScore) -> dict[str, Any]:
     return {
         "order": list(fp.order),
         "relaxed": fp.relaxed,
+        "compact_fixed": list(fp.compact_fixed),
         "slack_mm": fp.slack_mm,
         "congestion_worst": score.congestion_worst,
         "congestion_over": score.congestion_over,

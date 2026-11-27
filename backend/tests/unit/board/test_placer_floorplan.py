@@ -791,3 +791,90 @@ def test_place_blocks_tries_every_pull_and_slack(monkeypatch: pytest.MonkeyPatch
         itertools.product(fpm.SLACK_STEPS_MM, fpm.TARGET_PULL_WEIGHTS)
     )  # one layout (relaxed) was enough
     assert fp.slack_mm in fpm.SLACK_STEPS_MM and fp.relaxed
+
+
+def test_place_blocks_work_budget_bounds_a_board_that_cannot_fit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review round 1: the constructive packing spends at most PACK_BUDGET pack_block
+    calls; a board that cannot fit fails with `does_not_fit` (courtyard_fill) instead of
+    running into the job timeout."""
+    from copperchat.board.placer import floorplan as fpm
+
+    calls = [0]
+
+    def never(*a: object, **kw: object) -> object:
+        calls[0] += 1
+        return DoesNotFit(1.0, 0.0, ())
+
+    monkeypatch.setattr(fpm, "PACK_BUDGET", 7)
+    monkeypatch.setattr(fpm, "pack_block", never)
+    m, groups = _eight()
+    d = BoardDoc()
+    r = place_blocks(m, classify(m, d), d, _blocks(groups), keep_channels=0.5, allowed_sides=TOP)
+    assert isinstance(r, DoesNotFit) and r.courtyard_fill is not None
+    # 7 constructive calls + R2's region packing of the first block (region, whole board)
+    assert calls[0] == 7 + 2, calls
+
+
+def test_place_blocks_fixed_only_plan_ignores_stale_free_parts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review round 1: when no box floorplan tiles, the fixed blocks' strips are planned on
+    the model with every member parked - a free block's stale position inside the strip is
+    no obstacle; `usable_mm2` is the board's usable area, not 0."""
+    from copperchat.board.placer import floorplan as fpm
+
+    real = fpm.floorplan
+    seen: list[tuple[list[str], set[str]]] = []
+
+    def boxes_never_tile(model: BoardModel, *a: object, **kw: object) -> object:
+        blocks = a[2]  # type: ignore[index]
+        names = [b.name for b in blocks]  # type: ignore[attr-defined]
+        if len(names) == 3:  # the full box floorplans: refused by shape
+            return DoesNotFit(1.0, 1e9, ("U1",), courtyard_fill=0.1)
+        on = {p.ref for p in model.parts if 0 <= p.x <= 80 and 0 <= p.y <= 60}
+        seen.append((names, on))
+        return real(model, *a, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(fpm, "floorplan", boxes_never_tile)
+    m, groups = _trio()
+    # c's part starts on the left edge strip of a (U1's edge row)
+    m = circuit(
+        *(replace_part_at(p, 4.0, 30.0) if p.ref == "U3" else p for p in m.parts),
+        outline=m.outline,
+    )
+    doc = BoardDoc(edges=(EdgeRow("U1", "left", "left", ""),))
+    res_, fp = _place(m, groups, doc)
+    assert seen and seen[0][0] == ["a"] and "U3" not in seen[0][1]
+    assert fp.fixed == ("a",) and fp.usable_mm2 > 0
+    assert res_.score.m1_violations == 0
+
+
+def replace_part_at(p: Part, x: float, y: float) -> Part:
+    return apply_moves(
+        circuit(p, outline=outline(0, 0, 80, 60)), [Move(p.ref, x, y, 0.0, "top")]
+    ).parts[0]
+
+
+def test_place_blocks_reports_fixed_blocks_in_compact_layout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review round 1: a fixed block whose strip only holds P4's compact layout is listed
+    in `compact_fixed` (the run is still `relaxed` for the free blocks)."""
+    from copperchat.board.placer import floorplan as fpm
+
+    real = fpm.pack_block
+
+    def strip_too_small(*a: object, **kw: object) -> object:
+        refs = tuple(a[2])  # type: ignore[arg-type]
+        region = a[3]
+        if refs == ("U1",) and kw.get("relax") and getattr(region, "w", 99) < 70:
+            return DoesNotFit(1.0, 0.0, refs)
+        return real(*a, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(fpm, "pack_block", strip_too_small)
+    m, groups = _trio()
+    doc = BoardDoc(edges=(EdgeRow("U1", "left", "left", ""),))
+    _, fp = _place(m, groups, doc)
+    assert fp.relaxed and fp.compact_fixed == ("a",) and fp.fallback == ()
