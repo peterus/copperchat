@@ -17,8 +17,9 @@ Round 2 (R3, owner rule a): a branch off existing own-net copper is a T - it mee
 straight own track perpendicularly - never a Y (45° / 135°). With `req.tree` the goal is pad
 `b` or a node next to the interior of an own track connected to `b`, entered by a move
 perpendicular to that track (the path's end then lands exactly on the track). A bend
-inside an end pad's entry zone (`geom.entry_zone`, outside the pad) costs ENTRY_TURN_COST
-more, and a path whose pad entry loops (M16 b, `geom.analyse_entry`) is never accepted.
+inside an end pad's entry zone (`geom.entry_zone`, outside the pad) that closely follows
+another bend costs ENTRY_TURN_COST more, and a path whose pad entry loops (M16 b,
+`geom.analyse_entry`) is never accepted.
 """
 
 from __future__ import annotations
@@ -61,6 +62,8 @@ from copperchat.board.router.simplify import SnapError, layer_runs, merge_collin
 
 TURN_COST = 1.0  # mm-equivalent per 45° bend (0.3 planned; 1.0 measured: fewer bends, same speed)
 # R3 (owner rule c): extra cost of a bend inside an end pad's entry zone (outside the pad)
+# that follows another bend within the straight-piece minimums (a jog or a loop forming); a
+# single 45° bend next to a pad is free (charging it, sp4_synth's decoupling paths detoured)
 ENTRY_TURN_COST = 4.0
 VIA_COST = 2.0  # mm-equivalent per via
 LAYER_FACTOR = 1.2  # step cost on every layer but the request's first
@@ -1115,7 +1118,8 @@ def _search(
                 if not may[d][s][k][ns]:
                     continue
                 o, st = off[nd], step[nd]
-                c = TURN_COST + (ENTRY_TURN_COST if n in ez else 0.0)
+                # a second bend soon after another one in an entry zone: a jog or a loop
+                c = TURN_COST + (ENTRY_TURN_COST if s and n in ez else 0.0)
                 m = n
                 for t in range(1, kmin[nd] + 1):
                     if tjl and (tjl.get(m, 0) >> nd) & 1:  # this step meets own copper at 90°
@@ -1141,8 +1145,7 @@ def _search(
                             push(heap, (ng + hm, -ng, counter, ng, m, li, nd, s2, k2))
                             counter += 1
             if allow_vias and not via_blocked[n]:
-                # a via resets the direction: in an entry zone it costs like a bend there
-                ng = g + VIA_COST + (ENTRY_TURN_COST if n in ez else 0.0)
+                ng = g + VIA_COST
                 for l2 in range(nl):
                     if l2 == li or cells[l2][n] == blocked:
                         continue
