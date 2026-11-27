@@ -840,6 +840,11 @@ got its corridor.
 - Congestion is a reported estimate (2 outer layers); not calibrated against routed boards.
 - The relaxed routing room is computed for the spot a satellite wants (`t_star`); a satellite
   that slides along its row keeps that gap (review round 2, documented, not recomputed).
+- Review round 3 (valid, deferred, PM inbox #60): `_relaxed` sorts host pads to a side by the
+  nearest courtyard edge, so a SOIC/TSSOP row's end pins near a short edge are missed. The
+  pad-axis fix (as `_side_of`) shifts `sp4_synth`'s block arrangement and the router / pour then
+  isolates U1.15 (fine-pitch GND pad, P7's `via_pour` fallback) → golden M2 hard fail. Fix both
+  together (robust fine-pitch GND fanout first) in R7.
 
 ### As built (R2)
 
