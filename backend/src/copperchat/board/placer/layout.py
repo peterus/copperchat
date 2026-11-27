@@ -51,8 +51,9 @@ Box = tuple[float, float, float, float]  # x0, y0, x1, y1
 
 GRID_MM = 0.05
 SATELLITE_EXTRA_MM = 0.3  # extra courtyard gap for satellites that are not decoupling caps
-# R2 (per-pin escape room, `pcb_place_blocks` only): a satellite with more than two pads (a header, an ESD array)
-# keeps this much more gap per signal net it shares with the cluster's anchor - its tracks
+# R2 (per-pin escape room, `pcb_place_blocks` only): a satellite with more than two pads
+# (a header, an ESD array) keeps this much more gap per signal net it shares with the
+# cluster's anchor - its tracks
 # fan out from its pins to the anchor's pin rows through that gap - at most ESCAPE_MAX_MM
 ESCAPE_PER_NET_MM = 0.4
 ESCAPE_MAX_MM = 2.0
