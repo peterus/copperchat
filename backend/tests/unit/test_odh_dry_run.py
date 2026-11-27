@@ -3,6 +3,7 @@ checkout copy, the answers schema, the report's memory section and the PID sampl
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import subprocess
 import sys
@@ -297,3 +298,86 @@ def test_sampler_records_concurrent_samples_by_step() -> None:
     assert [step for step, _ in labelled] == ["turn 1 pcb_route", "after the flow"]
     assert set(labelled[0][1]) == {"api-server"} and labelled[0][1]["api-server"] > 0
     assert odh.step_at(0.0, []) == "after the flow"
+
+
+def test_parse_sizes() -> None:
+    assert odh.parse_sizes("80x60,80x100") == ((80.0, 60.0), (80.0, 100.0))
+    assert odh.parse_sizes(" 80X65 ") == ((80.0, 65.0),)
+    for bad in ("80", "80x", "x60", "80x60,", "axb", "0x60", "-80x60", "80x60x2"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            odh.parse_sizes(bad)
+    args = odh.parse_args(["--odh", "o", "--project", "p", "--answers", "a", "--sizes", "80x65"])
+    assert args.sizes == ((80.0, 65.0),) and not args.all_sizes
+    with pytest.raises(SystemExit):  # argparse turns the type error into a usage error
+        odh.parse_args(["--odh", "o", "--project", "p", "--answers", "a", "--sizes", "80"])
+    assert odh.size_label((80.0, 65.0)) == "80x65"
+    answers = odh.load_answers({"outline": {"shape": "rect", "width": 1, "height": 2}, "rules": {}})
+    sized = odh.with_size(answers, (80.0, 65.0))
+    assert sized.outline == {"shape": "rect", "width": 80.0, "height": 65.0}
+    assert answers.outline["width"] == 1  # the original stays
+
+
+def _mem(concurrent: float = 5000.0) -> object:
+    return odh.Memory(
+        api_server=0,
+        api_before_fp=0,
+        api_after_fp=0,
+        jvm=0,
+        cpu_worker=0,
+        cpu_workers=[],
+        raster=0,
+        cli={},
+        concurrent_mb=concurrent,
+        concurrent_step="turn 5 pcb_check",
+        concurrent_parts={},
+    )
+
+
+def test_size_section_reports_placement_routing_fill_metrics(tmp_path: Path) -> None:
+    result = _fake_result()
+    result.steps += [
+        StepLog(2, "run-flow-2", "pcb_place_blocks", 12.0, 1, {"courtyard_fill": 0.4}),
+        StepLog(4, "run-flow-4", "pcb_route", 160.0, 9, {"failed": ["VBUS:J1.1-U1.2"]}),
+        StepLog(4, "run-flow-4", "pcb_route_fill", 170.0, 5, {"completion": 1.0, "ripped": 1}),
+    ]
+    result.results = {
+        "pcb_place_blocks": {
+            "courtyard_fill": 0.43,
+            "spread": 0.8,
+            "well_spread": True,
+            "score": {"after": {"m8_worst_mm": 3.6}},
+        }
+    }
+    run = odh.SizeRun((80.0, 65.0), tmp_path / "80x65", result, None, _mem(), 900.0)
+    text = "\n".join(odh.size_section(run))
+    assert text.startswith("## 80x65 mm")
+    assert "Result: **completed (fab package)**" in text
+    assert "courtyard fill 0.43, spread 0.8 (well spread true)" in text
+    assert '"m8_worst_mm": 3.6' in text
+    assert "pcb_route: 1 call(s), 160 s; failed" in text and "VBUS:J1.1-U1.2" in text
+    assert "pcb_route_fill: 170 s completion 1.0, ripped 1" in text
+    assert "hard failures 0, reviews 1, verdict review" in text
+    assert "concurrent peak 5,000 MB in step turn 5 pcb_check" in text
+    assert "pcb_route_fill 170" in text  # seconds per tool, largest first
+
+
+def test_size_section_reports_a_refused_placement(tmp_path: Path) -> None:
+    refused = {"error": {"code": "does_not_fit", "details": {"courtyard_fill": 0.429}}}
+    result = FlowResult(
+        steps=[StepLog(2, "run-flow-2", "pcb_place_blocks", 36.0, None, {"error": refused})],
+        metrics={},
+        seconds=40.0,
+        renders=[],
+        fab_files=[],
+        hashes={},
+    )
+    run = odh.SizeRun(
+        (80.0, 60.0), tmp_path, result, "turn 2: pcb_place_blocks\nmore", _mem(), 40.0
+    )
+    text = "\n".join(odh.size_section(run))
+    assert "Result: **FAILED**: turn 2: pcb_place_blocks" in text and "more" not in text
+    assert "Placement refused: does_not_fit, courtyard fill 0.429" in text
+    assert "Final full check" not in text
+    summary = odh.summary_report([run, run], "hw/main.kicad_pro")
+    assert summary.startswith("# Board flow dry run: hw/main.kicad_pro, 2 size(s)")
+    assert summary.count("## 80x60 mm") == 2
