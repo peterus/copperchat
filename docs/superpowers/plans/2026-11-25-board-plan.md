@@ -753,6 +753,116 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
 
 (Each phase adds its section here in its own PR.)
 
+### As built (R2)
+
+**Floorplan** (`cc/board/placer/floorplan.py`, B-C11 round 2, pure, deterministic):
+- `BlockBox` = the block's `block_layout` box + `keep_channels` + one 0.5 mm grid step
+  (P4's edge-strip slack). Additive fields: `BlockBox.offset` (mm along the edge from the
+  board.md row: the first number in the Edge/position cell, e.g. `left, 15 mm`) and
+  `edge_ref` (the member with the row); `Floorplan.fixed` (blocks with a Region row or an
+  edge strip) and `Floorplan.fallback` (blocks `place_blocks` had to pack on the whole board).
+- Edge strips: the orientation that turns the connector's mouth toward the edge first
+  (`_facing_dims`, P4's `_mouth`), the other as the fallback; a strip without a position that
+  clashes slides along its edge; an explicit position that clashes → `does_not_fit`.
+  Region rows: `parse_region` = four numbers (x, y, w, h in mm, board coordinates) or
+  `left/right/top/bottom` (half) / `top-left` ... (quarter); free text ("near J1") is ignored.
+- **Deviation (not in the plan): an edge channel.** The free area is the usable box inset
+  by `max(keep_channels, CHANNEL_MIN_MM)` (routing room between a block and the board edge;
+  on `sp4_synth` the power block hugged the top edge and boxed in R6), and the guillotine
+  pieces keep a channel between each other (`_minus(gap=)`). Every channel is at least
+  `keep_channels` (else two neighbours could end closer than `pack_block` allows).
+- Free blocks over the free rectangles (`_assign`): the biggest takes all except blocks with
+  nets to a fixed block that a smaller rectangle touches - only while a trial bisection of
+  that rectangle succeeds (`_tiles`; ODH 80 x 100: three blocks fitted a 30 x 17 mm side
+  piece by area but not by shape).
+- Bisection: both cut directions (longer side first); partitions ranked (infeasible,
+  unbalanced, shared nets across the cut + terminal-propagation pull, |area share - 0.5|,
+  names); the rebalance-once rule as planned. **Addition: bounded backtracking** - when a
+  deeper cut fails, the next of the best `BACKTRACK_TRIES` = 6 partitions of that level is
+  tried, within `BISECT_BUDGET` = 400 tried partitions per run (ODH 80 x 100 with two edge
+  rows failed without it at 54 % box fill). Floorplan of ODH's 11 blocks: ≈ 0.3 s.
+- `place_blocks` packs each block with **`REGION_PULL_WEIGHT` = 2.0** per member and mm
+  toward its region centre (`pack_block(pull_weight=)`; P4's 0.1 kept every block hugging
+  its neighbours: `sp4_synth` spread 0.58 → 0.78), fixed blocks first, then by courtyard
+  area; a block that does not fit its region gets the whole board once (`fallback`).
+  `pack.pack_block` (new) = `place_block` without the score (scored once at the end).
+- `PlacementScore.spread` (appended, default 0.0): parts on the board, mounting holes and
+  fiducials not counted; usable = outline box minus the edge margin; 0.0 without an outline.
+
+**Pair alignment (rule b, `align_pairs`)** over R1's M16 placement pairs - **R1's
+`metrics.py` touched additively**: `alignment_need(a, b, width, layers)` (`_alignable`'s
+geometry, 0.0 = corridor exists) and `alignment_pairs(model, cls)` (M16's MST pairs with
+the neck width), so the placer targets exactly what M16 counts. Two passes in natural ref
+order, only a movable non-anchor 2-pad part moves: (1) align - centre-aligned when ≤ 1 mm,
+else the least overlap shift, once per part; (2) **tighten (addition)** - a pair with a
+corridor whose pads are > `TIGHT_GAP_MM` = 0.3 mm apart is pulled together along the
+corridor in 0.05 mm steps as far as the courtyards allow (on `sp4_synth` the +3V3 track took
+the 1.75 mm gap between R6.1 and R5.2 and boxed in /Power/FB). Every move keeps the pair's
+corridor and every corridor the part already had, stays inside the outline margin and off
+courtyards and keepouts. Crystals / decaps are not excluded (M8 unchanged at 4.97 mm).
+
+**Placer escape room (P4 files, also `pcb_place_block`; plan Task 4 "per-pin escape room")**:
+- `layout.ESCAPE_PER_NET_MM` = 0.4 per signal net a > 2-pad satellite (header, ESD array)
+  shares with its anchor, at most `ESCAPE_MAX_MM` = 2.0, on top of `SATELLITE_EXTRA_MM`.
+- `pack.OCCLUDE_WEIGHT` = 10 per pad (not ground) whose straight line to the centroid of its
+  net's outside pads crosses another member's courtyard, per block rotation (evaluated with
+  the block centred on the target). On `sp4_synth` the MCU block's 90° rotation put the SWD
+  header J2 between U1's USB pins and the USB connector: the pair routed through J2's pin
+  field and boxed in J2.2 (/SWDIO `no_path`); with the term the header faces away.
+
+**Tools** (`place.py`, `specs_place.py`, `jobs.py` append): `pcb_floorplan {blocks?,
+keep_channels?}` → `regions, channels, fixed, fallback, courtyard_fill, courtyard_mm2,
+usable_mm2, keep_channels, board_hash, next, png_url, svg_url` + one PNG (regions as named
+hulls: `render_board(hulls=)`, drawn instead of the block hulls); `pcb_place_blocks {blocks?,
+keep_channels?, unroute?}` → `plan_moves` report + the floorplan fields + `spread`,
+`well_spread`. `does_not_fit.details.courtyard_fill` (+ the why text names the percentage).
+Without an outline or blocks: `invalid_argument`. **Deviation:** `pcb_floorplan` is a plain
+`PCB_READ` tool, visible with `COPPERCHAT_BOARD_TOOLS` off (P1c's invariant "PCB_READ in
+every profile, flag or not"); Task 3's "flag off → both tools absent" holds for
+`pcb_place_blocks` only. `PCB_WRITES` has 18 names; `BOARD_KINDS` += `board_place_blocks`.
+
+**Golden flow** (`flow.py`): turn 2 = `pcb_analyze` → `pcb_define_blocks` → the user's edges
+as a board.md `Placement` table (`doc_read` + `doc_patch_section`; `Answers.blocks[ref].edge`
+/ `edge_position`, any part ref) → `pcb_place_blocks` (no `pcb_legalize`); blocks with a
+scripted `region` are placed afterwards by `pcb_place_block` + `pcb_legalize`.
+`SYNTH_ANSWERS.blocks = {"J1": {"edge": "left", "absorb": ["U2"]}}`.
+
+**Measured** (`sp4_synth`, kicad-base `52b43fb8…-rdc93f47200b08f97`): courtyard fill 0.133,
+spread 0.78, `pcb_place_blocks` < 1 s, critical `pcb_route` ≈ 28 s (was ≈ 90 s), fill 12 s
+completion 1.0, full flow ≈ 90 s; placement-stage alignable pairs 2 (C1.1-U1.5: U1 / Y1 in
+the way; J1.B5-R3.1: the ESD array U2 in the way - `align_pairs` never moves ICs). Golden
+diff (regenerated after rebase, confirmed by a second run): M5 1.112 → 1.093, M9 3 → 1, M10
+1.858 → 1.722, M7 pass → review (bend density /CC2, OSC), M12 pass → review (USB pair
+mismatch 2.27 mm: the pair now crosses the board), M15 2 → 3, M16 15 → 19 (review-only;
+doglegs incl. D1.2-R4.2 are router output), tracks 174 → 185, length 239 → 281 mm.
+
+**ODH placement probe** (copy of the PROD checkout `OpenDriveHub@2e17ac5` + its working
+tree, read-only mount; 4 layers `jlcpcb-4l`, Power class 0.3 mm, blocks = `pcb_analyze`'s 11,
+edge rows J201 left, J302 bottom; answers outside the repo):
+- **80 x 60: does not fit.** Courtyard fill **0.429**. keep_channels 1.5: refused before any
+  cut, block boxes 4,248 mm² = 92 % of the usable 4,620 mm² (> `PACK_MAX` 85 %).
+  keep_channels 0.5: boxes 83 % (passes `PACK_MAX`) but **the shapes do not tile**: the MCU
+  block's box alone is 45.8 x 31.1 mm and the USB block's strip (connector facing the edge)
+  is 17 mm deep. Reason = the rigid block boxes (cluster layouts use ≈ 2x their courtyard
+  area), not the courtyard area. 80 x 70 and 80 x 80 do not tile either.
+- **80 x 100: fits.** Courtyard fill 0.254, `pcb_place_blocks` 1.5 s (flow step 3.8 s), M1
+  pass, **spread 0.94**, M8 3.6 mm (review), M9 3 reviews, M10 1.58, max 16 pads per 5 x 5 mm
+  cell, airwire 1,821 mm; 4 alignable pairs left (L201.1-U202.4 1.00, C207.1-U202.8 0.70,
+  R206.1-U201.14 0.62, U401.2-Y401.1 0.03 mm - each blocked by an IC or a neighbour).
+- Renders: `/tmp/sp4-renders/r2-odh-80x100-placed.png`, `r2-odh-80x100-floorplan.png`,
+  `r2-sp4_synth-placed.png`, `r2-sp4_synth-routed-top.png` / `-bottom.png`.
+
+**Residuals for later phases**
+- R3 / R4: M16 doglegs / pad loops on the golden are router output (D1.2-R4.2 still a
+  dogleg although the pads are aligned); corridor nets first (R4) would also have avoided
+  the /Power/FB box-in that the tighten pass fixes on the placement side.
+- R7 / owner: ODH 80 x 60 needs denser block layouts (cluster layout compaction or a
+  non-guillotine packing of block outlines, not boxes) or the bottom side; reported as
+  `does_not_fit` with the fill, as the spec asks.
+- The floorplan render draws adjacent region names on top of each other (cosmetic).
+- P9b skill: show `pcb_floorplan` before `pcb_place_blocks`; write the user's edges as
+  Placement rows (any part ref, number = mm along the edge); prefer keep_channels 0.5-1.5.
+
 ### As built (R5)
 
 **Presets (owner decision 2, spec §22.2):** `min_drill` = 0.2 mm in `jlcpcb-2l/4l/6l`
@@ -2666,6 +2776,9 @@ def floorplan(model, cls, doc, blocks: Sequence[BlockProposal], *, keep_channels
               allowed_sides: frozenset[Side]) -> Floorplan | DoesNotFit     # DoesNotFit gains courtyard_fill: float | None = None
 def place_blocks(model, cls, doc, blocks, *, keep_channels: float, allowed_sides) -> tuple[PlaceResult, Floorplan] | DoesNotFit
 CHANNEL_MIN_MM = 1.0; CHANNEL_MAX_MM = 4.0; CHANNEL_PER_NET_MM = 0.3; PACK_MAX = 0.85; SPREAD_SPAN_MIN = 0.75
+# As built (R2), additive: BlockBox.offset / edge_ref, Floorplan.fixed / fallback; REGION_PULL_WEIGHT = 2.0,
+# BACKTRACK_TRIES = 6, BISECT_BUDGET = 400, TIGHT_GAP_MM = 0.3; pack.pack_block(..., pull_weight=) (place_block
+# without the score); align_pairs uses metrics.alignment_pairs / alignment_need (R1's file, additive)
 ```
 Tools: `pcb_floorplan {blocks?, keep_channels?}` (`PCB_READ`, cost 0, render with region
 rectangles) and `pcb_place_blocks {blocks?, keep_channels?, unroute?}` (`PCB_WRITES`, cost 1,
