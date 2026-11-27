@@ -643,3 +643,31 @@ def test_align_pairs_never_tightens_a_crystal() -> None:
     after = apply_moves(m, out)
     assert after.part("R1").x == pytest.approx(24.0)
     assert after.part("Y1").x == pytest.approx(20.0)
+
+
+def test_place_blocks_switches_r2_packing_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review verify pass: place_blocks (and the floorplan's block boxes) use the R2
+    escape room and occlusion term; pcb_place_block's defaults stay off (P4 layout)."""
+    from copperchat.board.placer import floorplan as fpm
+    from copperchat.board.placer.pack import OCCLUDE_WEIGHT
+
+    packs: list[dict[str, object]] = []
+    layouts: list[bool] = []
+    real_pack, real_layout = fpm.pack_block, fpm.block_layout
+
+    def pack_spy(*a: object, **kw: object) -> object:
+        packs.append(kw)
+        return real_pack(*a, **kw)  # type: ignore[arg-type]
+
+    def layout_spy(*a: object, **kw: object) -> object:
+        layouts.append(bool(kw.get("escape_room")))
+        return real_layout(*a, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(fpm, "pack_block", pack_spy)
+    monkeypatch.setattr(fpm, "block_layout", layout_spy)
+    m, groups = _eight()
+    _place(m, groups)
+    assert packs and all(
+        kw["escape_room"] is True and kw["occlude_weight"] == OCCLUDE_WEIGHT for kw in packs
+    )
+    assert layouts and all(layouts)
