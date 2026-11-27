@@ -100,3 +100,32 @@ def test_entry_bend_costs_more(monkeypatch) -> None:  # type: ignore[no-untyped-
     monkeypatch.setattr(astar_mod, "ENTRY_TURN_COST", 0.0)
     without = route(build_grid(m, req), req)
     assert with_cost is not None and without is not None
+
+
+def test_solve_allows_a_forced_loop() -> None:
+    """USB-C A6 / B6: two tall pads of one net with another net's pad between them and
+    other-net copper just beyond their ends - only a U-turn inside the entry zone connects
+    them on this layer. The strict search finds nothing; `solve` falls back to the path
+    with the loop (M16 reports it) instead of no route."""
+    from copperchat.board.router import solve
+
+    from .builders import track
+
+    a = pad("J1", "A6", "DP", (10.0, 10.0), w=0.3, h=1.45)
+    mid = pad("J1", "A7", "DN", (10.5, 10.0), w=0.3, h=1.45)
+    b = pad("J1", "B6", "DP", (11.0, 10.0), w=0.3, h=1.45)
+    m = circuit(
+        part("J1", 10.5, 10.0, pads=(a, mid, b)),
+        outline=outline(0, 0, 20, 20),
+        tracks=(
+            track("X", "F.Cu", (8.0, 9.85 - 0.725 - 0.9), (13.0, 9.85 - 0.725 - 0.9), 0.2),
+            track("Y", "F.Cu", (8.0, 10.725 + 0.5), (13.0, 10.725 + 0.5), 0.2),
+            track("Z", "F.Cu", (9.2, 7.0), (9.2, 13.0), 0.2),
+            track("W", "F.Cu", (11.8, 7.0), (11.8, 13.0), 0.2),
+        ),
+    )
+    req = RouteRequest("DP", a, b, 0.2, 0.15, ("F.Cu",), False, (0.6, 0.3))
+    assert route(build_grid(m, req), req) is None
+    path = solve(m, req)
+    assert path is not None
+    assert _loops(path, req)  # the forced loop, reported by M16 later
