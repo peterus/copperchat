@@ -63,9 +63,11 @@ ESCAPE_MAX_MM = 2.0
 # keeps one track pitch more per two such pins (they escape between the two parts, half to
 # each side), at most ESCAPE_TRACKS_MAX pitches, plus one via pitch when that host side is
 # fine-pitch (fanout vias right at the pins); every satellite keeps at least one track
-# pitch to its neighbours. Decaps, crystals and a switcher's inductor / input / output caps
-# keep their P4 / P9a gaps (M8 / M9: close to the pin, a small hot loop; measured on ODH,
-# one more pitch for decaps made M8 3.6 → 4.0 mm, relaxed switcher caps 3 → 6 M9 reviews)
+# pitch to its neighbours. Crystals and a switcher's inductor / input / output caps keep
+# their P4 / P9a gaps (a small hot loop; relaxed switcher caps took ODH from 3 to 6 M9
+# reviews); a decap only gets the via room in front of fine-pitch pins other than the one it
+# serves (sp4_synth: a flush decap boxed in the TSSOP's GND pin next to its supply pin; a
+# full track pitch for decaps made ODH's M8 3.6 → 4.0 mm)
 ESCAPE_TRACKS_MAX = 4
 FINE_PITCH_MM = 0.65
 # a crystal keeps this much more than the minimum courtyard gap: the IC pins next to the
@@ -455,24 +457,26 @@ class _Layout:
         """Decoupling caps (spec §9.3 distance rules) keep the minimum gap, a crystal
         `CRYSTAL_STANDOFF_MM` more (its escape channel), a satellite with more than two
         pads `ESCAPE_PER_NET_MM` more per signal net shared with the anchor (R2). `relaxed`
-        (R2b, `_relaxed`) is added to every satellite but a crystal or decap; a switcher's
-        hot-loop parts keep the P4 gap."""
+        (R2b, `_relaxed`) is added to every satellite but a crystal (a decap: via room
+        only); a switcher's hot-loop parts keep the P4 gap."""
         if any(x.ref == ref for x in self.cls.crystals):
             return self.gap + CRYSTAL_STANDOFF_MM
         if ref in self.decap_pin:
-            return self.gap
+            return self.gap + relaxed
         tight = not self.relax or ref in self.loop_parts
         extra = SATELLITE_EXTRA_MM if tight else max(SATELLITE_EXTRA_MM, self.pitch)
         return self.gap + extra + relaxed + (self._escape(ref) if self.escape_room else 0.0)
 
     def _relaxed(self, local: Part, host: Part, side: str, t_star: float) -> float:
         """R2b: the routing room `local` (at rotation, centred on `t_star` along `side`)
-        leaves in front of `host`: one pitch per two host pads on that side inside its span
-        (± one pitch) whose nets it does not have (ground excluded), at most
-        `ESCAPE_TRACKS_MAX`, plus one via pitch when the pins of that side are closer than
-        `FINE_PITCH_MM` to each other. 0 for decaps, crystals (`_gap_for`) and a switcher's
-        hot-loop parts."""
-        if not self.relax or local.ref in self.decap_pin or local.ref in self.loop_parts:
+        leaves in front of `host`'s pads on that side inside its span (± one pitch): one
+        pitch per two of them whose nets it does not have (ground excluded: the plane takes
+        it), at most `ESCAPE_TRACKS_MAX`, plus one via pitch when the pins of that side are
+        closer than `FINE_PITCH_MM` to each other and one of those pads (ground included)
+        needs to leave - its fanout via goes right at the pin. A decap gets only that via
+        room, and only for pads other than the pin it serves; crystals (`_gap_for`) and a
+        switcher's hot-loop parts get none."""
+        if not self.relax or local.ref in self.loop_parts:
             return 0.0
         axis, _ = _SIDES[side]
         hb = box_of(host)
@@ -481,20 +485,19 @@ class _Layout:
         lo = t_star + sb[1 - axis] - self.pitch
         hi = t_star + sb[3 - axis] + self.pitch
         on_side = [q for q in host.pads if _nearest_side(hb, (q.x, q.y)) == side]
-        facing = [
-            q
-            for q in on_side
-            if q.net
-            and self.cls.net_kind.get(q.net) != "ground"
-            and q.net not in mine
-            and lo - _EPS <= (q.x, q.y)[1 - axis] <= hi + _EPS
-        ]
-        if not facing:
-            return 0.0
-        room = self.pitch * min(math.ceil(len(facing) / 2), ESCAPE_TRACKS_MAX)
+        span = [q for q in on_side if q.net and lo - _EPS <= (q.x, q.y)[1 - axis] <= hi + _EPS]
         along = sorted({round((q.x, q.y)[1 - axis], 4) for q in on_side})
         steps = [b - a for a, b in itertools.pairwise(along)]
-        if steps and min(steps) < FINE_PITCH_MM - _EPS:
+        fine = bool(steps) and min(steps) < FINE_PITCH_MM - _EPS
+        if local.ref in self.decap_pin:
+            served = self.decap_pin[local.ref][1]
+            others = [q for q in span if q.number != served]
+            return self.via if fine and others else 0.0
+        kinds = self.cls.net_kind
+        escaping = [q for q in span if kinds.get(q.net) != "ground" and q.net not in mine]
+        grounded = [q for q in span if kinds.get(q.net) == "ground"]
+        room = self.pitch * min(math.ceil(len(escaping) / 2), ESCAPE_TRACKS_MAX)
+        if fine and (escaping or grounded):
             room += self.via
         return room
 

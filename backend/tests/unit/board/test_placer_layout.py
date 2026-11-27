@@ -308,12 +308,31 @@ def test_relax_gap_counts_escaping_pins() -> None:
     assert relaxed - plain == pytest.approx(0.4 - SATELLITE_EXTRA_MM, abs=0.05 + 1e-6)
 
 
-def test_relax_ignores_ground_pins() -> None:
-    nets = ["GND"] * 5 + ["S6"] + ["GND"] * 5
-    plain, relaxed = _relaxed_gap(nets, 0.5, "S6")
+def test_relax_ground_pins_need_only_a_via() -> None:
+    """Ground pins take no track (the plane does) but on a fine-pitch side their fanout via
+    goes right at the pin: via room only; at a coarse pitch nothing."""
     from copperchat.board.placer.layout import SATELLITE_EXTRA_MM
 
+    nets = ["GND"] * 5 + ["S6"] + ["GND"] * 5
+    plain, relaxed = _relaxed_gap(nets, 0.5, "S6")
+    assert relaxed - plain == pytest.approx(0.4 - SATELLITE_EXTRA_MM + 0.8, abs=0.05 + 1e-6)
+    plain, relaxed = _relaxed_gap(nets, 1.27, "S6")
     assert relaxed - plain == pytest.approx(0.4 - SATELLITE_EXTRA_MM, abs=0.05 + 1e-6)
+
+
+def test_relax_decap_gets_via_room_only() -> None:
+    """A decap in front of a fine-pitch side: one via pitch when another pin (its GND
+    neighbour) faces it, never track room (M8: close to the pin it serves)."""
+    nets = ["S1", "S2", "S3", "S4", "GND", "+3V3", "S7", "S8", "S9", "S10", "S11"]
+    m = circuit(_column_ic("U1", nets, 0.5), cap("C1", "+3V3", "GND", (70.0, 60.0), value="100nF"))
+    cls = classify(m)
+    assert [d.cap for d in cls.decoupling] == ["C1"]
+    (c,) = build_clusters(m, cls, ["U1", "C1"])
+    gaps = []
+    for relax in (False, True):
+        placed = _placed(m, layout_cluster(m, cls, c, gap=0.05, relax=relax))
+        gaps.append(_gap(box_of(placed["C1"]), box_of(placed["U1"])))
+    assert gaps[1] - gaps[0] == pytest.approx(0.8, abs=0.05 + 1e-6), gaps
 
 
 def test_relax_keeps_decap_and_crystal_gaps() -> None:
