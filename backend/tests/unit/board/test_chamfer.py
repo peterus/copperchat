@@ -25,7 +25,7 @@ from copperchat.board.geom import (
 from copperchat.board.metrics import routed_length
 from copperchat.board.model import ArcTrack, BoardModel, Pad, Track
 from copperchat.board.router import chamfer
-from copperchat.board.router.chamfer import PostResult, postprocess
+from copperchat.board.router.chamfer import PostResult, _fails, postprocess
 from tests.unit.board.builders import board, net_class, part, track, via
 
 S2 = math.sqrt(2.0)
@@ -467,7 +467,8 @@ def _clean_after_nm(m: BoardModel, r: PostResult) -> BoardModel:
         ends = pad_entry_ends(line, lambda p: _in_end_pad(p, ZIG))
         assert fails(analyse_bends(line, w, pad_ends=ends)) == {}, line
     whole = analyse_tracks(out)
-    assert fails(whole) == {} and whole.t_junctions == ()
+    # R3: a T is legal; a Y-shaped one is still ripped (chamfer._fails)
+    assert fails(whole) == {} and _fails(whole, "t_junctions") == ()
     return out
 
 
@@ -868,7 +869,8 @@ def _check_case(seed: int) -> bool:
         rb = analyse_bends(line, w, pad_ends=ends)
         assert fails(rb) == {}, f"{msg} line={line}"
     whole = analyse_tracks(out)
-    assert fails(whole) == {} and whole.t_junctions == (), msg
+    # R3: a T is legal; a Y-shaped one is still ripped (chamfer._fails)
+    assert fails(whole) == {} and _fails(whole, "t_junctions") == (), msg
     assert routed_length(out, *_pads(out)) is not None, msg
     n2 = [q for p in m.parts for q in p.pads if q.net == "N2"]
     for d in chamfers(r):

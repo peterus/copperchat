@@ -45,11 +45,7 @@ def _bends(m: BoardModel, nets: set[str] | None = None) -> dict[str, int]:
     )
     rep = analyse_tracks(sub, index=TrackIndex(m))
     return {
-        "M4": len(rep.non_octilinear)
-        + len(rep.ninety)
-        + len(rep.acute)
-        + len(rep.off_angle)
-        + len(rep.t_junctions),
+        "M4": len(rep.non_octilinear) + len(rep.ninety) + len(rep.acute) + len(rep.off_angle),
         "M7": len(rep.micro_jogs) + len(rep.short_chamfers),
     }
 

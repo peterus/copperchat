@@ -1034,3 +1034,59 @@ def test_same_part_connections_plan_last() -> None:
     assert [(p.a.ref, p.b.ref) for p in plans][-1] == ("J1", "J1")
     assert all(p.req.tree for p in plans)
     assert not any(p.req.tree for p in _plan(m, ["N1"]))
+
+
+def _usbc() -> BoardModel:
+    """USB-C-like row: B7 (DN) A6 (DP) A7 (DN) B6 (DP), 0.5 mm apart; and an ESD-like part
+    whose pass-throughs DP 1-6 and DN 3-4 run parallel."""
+    from .builders import part as mk_part
+
+    row = [("B7", "DN"), ("A6", "DP"), ("A7", "DN"), ("B6", "DP")]
+    j1 = mk_part(
+        "J1",
+        10.0,
+        10.0,
+        pads=tuple(
+            pad("J1", num, net, (9.25 + 0.5 * k, 10.0), w=0.3, h=1.0)
+            for k, (num, net) in enumerate(row)
+        ),
+    )
+    u2 = mk_part(
+        "U2",
+        20.0,
+        10.0,
+        pads=(
+            pad("U2", "1", "DP", (19.0, 9.0)),
+            pad("U2", "6", "DP", (19.0, 11.0)),
+            pad("U2", "3", "DN", (21.0, 9.0)),
+            pad("U2", "4", "DN", (21.0, 11.0)),
+        ),
+    )
+    return circuit(j1, u2)
+
+
+def test_pair_match_skips_crossing_same_part() -> None:
+    m = _usbc()
+    plans = route.plan_connections(
+        m, _pair_cls(m), ["DP", "DN"], layers=None, allow_vias=True, tree=True
+    )
+    pairs = {(p.a.ref, p.b.ref, p.a.number, p.b.number) for p in plans if p.pair is not None}
+    assert ("J1", "J1", "A6", "B6") not in pairs and ("J1", "J1", "B6", "A6") not in pairs
+    esd = {(p.net, p.pair) for p in plans if p.a.ref == p.b.ref == "U2"}
+    assert esd == {("DP", "DN"), ("DN", "DP")}  # parallel pass-throughs still couple
+
+
+async def test_straight_pair_records_coupling(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both connections of a matched pair routed by their straight segment: coupled."""
+    monkeypatch.setattr(route, "run_cpu", FakeCpu())
+    m = _usbc()
+    plans = [
+        p
+        for p in route.plan_connections(m, _pair_cls(m), ["DP", "DN"], layers=None, allow_vias=True)
+        if p.a.ref == p.b.ref == "U2"
+    ]
+    out = await route.route_connections(FakeSctx(m), plans, lock=True)  # type: ignore[arg-type]
+    assert len(out.routed) == 2
+    assert all(r.coupling is not None for r in out.results)

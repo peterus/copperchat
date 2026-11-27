@@ -41,7 +41,8 @@ obstacle only. Steps:
    (within 0.003 mm, same kind) without the touched copper is ours - even when the point
    itself lies on untouched copper (e.g. a micro-jog whose short piece is an untouched
    stub between two touched diagonals) - and rips connections with the reason
-   `non_octilinear`, `ninety_unfixable` (90-degree corners and T-junctions), `acute`,
+   `non_octilinear`, `ninety_unfixable` (90-degree corners; T-junctions are legal since
+   round 2), `acute`,
    `off_angle`, `micro_jog`, `short_chamfer`. Failures of the untouched copper alone are
    not ours and are ignored. Safety net (M4 / M7 as KiCad stores the copper): on the
    nm-rounded result, every `geom.polylines` polyline containing touched copper is
@@ -134,6 +135,9 @@ _DIRS = ((1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1))
 _REASON = {
     "non_octilinear": "non_octilinear",
     "ninety": "ninety_unfixable",
+    # round 2 (R3, owner rule a): a T-junction is legal (the own router branches as T, M4 no
+    # longer fails it) - only a Y with a 90-degree pair is still ripped (as before); R4
+    # handles every Y-junction here
     "t_junctions": "ninety_unfixable",
     "acute": "acute",
     "off_angle": "off_angle",
@@ -141,6 +145,15 @@ _REASON = {
     "short_chamfers": "short_chamfer",
 }
 _OTHER_FAILS = ("acute", "off_angle", "non_octilinear", "micro_jogs", "short_chamfers")
+
+
+def _fails(rep: BendReport, field: str) -> Sequence[Point]:
+    """`rep`'s points of `field`; for "t_junctions" only the Y-shaped ones (R3: a T is
+    legal; a Y with a 90-degree pair was ripped before round 2 and still is)."""
+    if field != "t_junctions":
+        return tuple(getattr(rep, field))
+    ys = rep.y_junctions
+    return tuple(p for p in rep.t_junctions if any(math.dist(p, y) <= _JOIN_TOL for y in ys))
 
 
 @dataclass(frozen=True)
@@ -1130,11 +1143,11 @@ def postprocess(model: BoardModel, kiids: frozenset[str]) -> PostResult:
         rest = tuple(wt[i] for i in ids if i not in mine)
         base = analyse_tracks(replace(work, tracks=rest, arcs=()), index=index) if rest else None
         for field, why in _REASON.items():
-            old: Sequence[Point] = getattr(base, field) if base is not None else ()
+            old: Sequence[Point] = _fails(base, field) if base is not None else ()
             old_grid = _Grid()  # the baseline's failing points of this kind, bucketed
             for k, o in enumerate(old):
                 old_grid.add(k, (o[0], o[1], o[0], o[1]))
-            for p in getattr(rep, field):
+            for p in _fails(rep, field):
                 box = (p[0] - tol, p[1] - tol, p[0] + tol, p[1] + tol)
                 if any(math.dist(p, old[k]) <= tol for k in old_grid.query(box)):
                     continue

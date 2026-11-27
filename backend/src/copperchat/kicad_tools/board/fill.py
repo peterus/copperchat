@@ -776,7 +776,7 @@ async def _check_ratio(
 
 def _bends_of(model: BoardModel, net: str, index: TrackIndex | None = None) -> int:
     """M4 + M7 failures over `net`'s tracks (B-C5 `analyse_tracks`, the whole board's pads
-    and vias)."""
+    and vias). A T-junction is no M4 failure (round 2, owner rule a)."""
     sub = dataclasses.replace(model, tracks=tuple(t for t in model.tracks if t.net == net), arcs=())
     rep = analyse_tracks(sub, index=index if index is not None else TrackIndex(model))
     return (
@@ -784,7 +784,6 @@ def _bends_of(model: BoardModel, net: str, index: TrackIndex | None = None) -> i
         + len(rep.ninety)
         + len(rep.acute)
         + len(rep.off_angle)
-        + len(rep.t_junctions)
         + len(rep.micro_jogs)
         + len(rep.short_chamfers)
     )

@@ -264,7 +264,8 @@ def _match(
     p_conns: list[tuple[Pad, Pad]], n_conns: list[tuple[Pad, Pad]]
 ) -> list[tuple[int, int, bool]]:
     """Greedy pairing of the P and N connections whose ends lie close together (each end
-    within PAIR_MATCH_MM); (i, j, swapped) — swapped: N's b end is next to P's a end."""
+    within PAIR_MATCH_MM), except two same-part connections that cross; (i, j, swapped) —
+    swapped: N's b end is next to P's a end."""
 
     def cost(pc: tuple[Pad, Pad], nc: tuple[Pad, Pad]) -> tuple[float, bool]:
         (pa, pb), (na, nb) = pc, nc
@@ -274,11 +275,19 @@ def _match(
             return max(s), True
         return max(d), False
 
+    def crossing(pc: tuple[Pad, Pad], nc: tuple[Pad, Pad]) -> bool:
+        # R3: two connections inside one part each whose pad-to-pad lines cross or overlap
+        # cannot run coupled (USB-C A6 - B6 / A7 - B7 interleave)
+        (pa, pb), (na, nb) = pc, nc
+        if pa.ref != pb.ref or na.ref != nb.ref:
+            return False
+        return seg_seg((pa.x, pa.y), (pb.x, pb.y), (na.x, na.y), (nb.x, nb.y)) <= 1e-9
+
     cand = sorted(
         (c[0], i, j, c[1])
         for i, pc in enumerate(p_conns)
         for j, nc in enumerate(n_conns)
-        if (c := cost(pc, nc))[0] <= PAIR_MATCH_MM
+        if (c := cost(pc, nc))[0] <= PAIR_MATCH_MM and not crossing(pc, nc)
     )
     used_p: set[int] = set()
     used_n: set[int] = set()
@@ -367,8 +376,8 @@ def plan_connections(
     (`neck_zones`, `min_track` default `default_min_track`); pairs keep their widths. With
     `tree`, every non-pair connection gets `req.tree`: it may end as a T-junction on the
     copper connected to pad b at the time it is solved (`build_grid` finds that copper).
-    Connections between two pads of one part come last in their net and are never
-    pair-matched (`_late_split`)."""
+    Unmatched connections between two pads of one part come last in their net
+    (`_late_split`); crossing connections are never pair-matched (`_match`)."""
     allowed = layers if layers is not None else default_layers(model)
     floor = default_min_track(model) if min_track is None else min_track
     wanted = set(nets)
@@ -406,9 +415,9 @@ def plan_connections(
         done.add(partner)
         pair = next(p for p in cls.pairs if net in (p.p, p.n))
         p_net, n_net = pair.p, pair.n
-        other, other_late = _late_split(_unrouted(model, partner))
-        p_conns, p_late = (own, own_late) if net == p_net else (other, other_late)
-        n_conns, n_late = (own, own_late) if net == n_net else (other, other_late)
+        mine, theirs = own + own_late, _unrouted(model, partner)
+        p_conns = mine if net == p_net else theirs
+        n_conns = mine if net == n_net else theirs
         p_par, n_par = class_params(model, p_net), class_params(model, n_net)
         matched = _match(p_conns, n_conns)
         mp = {i for i, _, _ in matched}
@@ -420,18 +429,15 @@ def plan_connections(
                 na, nb = nb, na
             out.append(ConnPlan(p_net, pa, pb, req(p_net, pa, pb, p_par, True), n_net))
             out.append(ConnPlan(n_net, na, nb, req(n_net, na, nb, n_par, True), p_net))
-        out += [
-            ConnPlan(p_net, a, b, req(p_net, a, b, p_par, False), None)
-            for k, (a, b) in enumerate(p_conns)
-            if k not in mp
-        ]
-        out += [
-            ConnPlan(n_net, a, b, req(n_net, a, b, n_par, False), None)
-            for k, (a, b) in enumerate(n_conns)
-            if k not in mn
-        ]
-        out += [ConnPlan(p_net, a, b, req(p_net, a, b, p_par, False), None) for a, b in p_late]
-        out += [ConnPlan(n_net, a, b, req(n_net, a, b, n_par, False), None) for a, b in n_late]
+        p_rest = _late_split([c for k, c in enumerate(p_conns) if k not in mp])
+        n_rest = _late_split([c for k, c in enumerate(n_conns) if k not in mn])
+        for k in (0, 1):  # every early one first, then the same-part ones
+            out += [
+                ConnPlan(p_net, a, b, req(p_net, a, b, p_par, False), None) for a, b in p_rest[k]
+            ]
+            out += [
+                ConnPlan(n_net, a, b, req(n_net, a, b, n_par, False), None) for a, b in n_rest[k]
+            ]
     return out
 
 
@@ -441,8 +447,7 @@ def _late_split(
     """(other connections, connections between two pads of ONE part). The latter route
     after the rest of their net (R3): e.g. USB-C A6 - B6 straddle A7 and can only be joined
     on one layer by a U-turn at the pads (an M16 pad loop) - once the net's other copper
-    exists, a tree request lands on it as a T instead. They are never pair-coupled (the
-    connector's A6 - B6 and A7 - B7 cross)."""
+    exists, a tree request lands on it as a T instead."""
     early = [(a, b) for a, b in conns if a.ref != b.ref]
     late = [(a, b) for a, b in conns if a.ref == b.ref]
     return early, late
@@ -1025,6 +1030,18 @@ def _groups(plans: Sequence[ConnPlan]) -> list[list[ConnPlan]]:
     return out
 
 
+def _couple_straight(st: _Loop, plans: Sequence[ConnPlan], done: set[ConnPlan]) -> None:
+    """A matched pair (two adjacent plans) whose two connections both got their straight
+    segment is coupled: its results carry `pair_coupling` like a coupled route."""
+    by_plan = {k.group[0]: k for k in st.kept if k.straight and len(k.group) == 1}
+    for group in _groups(plans):
+        if len(group) != 2 or not all(q in done and q in by_plan for q in group):
+            continue
+        c = pair_coupling(by_plan[group[0]].paths[0], by_plan[group[1]].paths[0])
+        for q in group:
+            st.results[q] = dataclasses.replace(st.results[q], coupling=c)
+
+
 async def _straight_pass(
     sctx: BoardStageContext, st: _Loop, plans: Sequence[ConnPlan]
 ) -> set[ConnPlan]:
@@ -1080,6 +1097,7 @@ async def _straight_pass(
         _record(st, kept)
         done.add(p)
     st.drc = drc if keep else st.drc
+    _couple_straight(st, plans, done)
     for k in retry:  # alone, after the others: each with its own DRC
         p, path = cands[k]
         if _timed_out(st):
@@ -1110,8 +1128,9 @@ async def route_connections(
     Round 2 (R3, owner rule b): pass 0 first gives every plan with a straight corridor
     (`straight_path`) its one segment (one push, one DRC; a segment rejected only because of
     another pass-0 segment is retried once, alone, at the end of the pass); the search
-    routes the rest. `reserve` (`corridor_reservations`): the free corridors of unrouted
-    connections not planned here, obstacles for every other net's search."""
+    routes the rest. `reserve` (`corridor_reservations`): the free
+    corridors of unrouted connections not planned here, obstacles for every other net's
+    search."""
     st = _Loop(await sctx.model(), lock, deadline)
     keys = {_key(p) for p in plans}
     st.reserved = [r for r in reserve if r.key not in keys]

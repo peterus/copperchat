@@ -283,12 +283,12 @@ def _coupled(
         allow_vias=False,
         via=p.via,
     )
-    path = _route(
-        build_grid(merged, centre, margin=margin, deadline=deadline),
-        centre,
-        max_expansions=PAIR_CENTRE_EXPANSIONS,
-        deadline=deadline,
-    )
+    # the centreline is no copper: existing own copper of either net constrains only the
+    # real P / N paths (`_check`), not where the centre may cross it (R3: the T / no-X masks
+    # kept the USB pair from crossing an ESD pass-through track)
+    grid = build_grid(merged, centre, margin=margin, deadline=deadline)
+    grid = replace(grid, own_segments=(), own_spots=())
+    path = _route(grid, centre, max_expansions=PAIR_CENTRE_EXPANSIONS, deadline=deadline)
     if path is None or len(layer_runs(path)) != 1:
         return None
     pts = merge_collinear([ma, *layer_runs(path)[0][1], mb])
