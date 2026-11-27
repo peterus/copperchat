@@ -18,7 +18,6 @@ from copperchat.board.placer import DoesNotFit, Move, PlaceResult, apply_moves
 from copperchat.board.placer.floorplan import (
     CHANNEL_MAX_MM,
     CHANNEL_MIN_MM,
-    SPREAD_SPAN_MIN,
     Floorplan,
     align_pairs,
     floorplan,
@@ -26,9 +25,9 @@ from copperchat.board.placer.floorplan import (
     place_blocks,
 )
 from copperchat.board.placer.layout import box_of
+from copperchat.board.placer.legalize import edge_margin
 from copperchat.board.placer.pack import PLACE_GRID_MM
 from copperchat.board.placer.routability import channel_mm
-from copperchat.board.placer.legalize import edge_margin
 
 from .builders import outline, part
 from .builders_circuit import cap, circuit, conn, ic, pad, res, xtal

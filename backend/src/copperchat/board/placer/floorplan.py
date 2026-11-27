@@ -327,9 +327,7 @@ def _members(model: BoardModel, b: BlockProposal) -> list[str]:
 def _block_box(
     model: BoardModel, cls: Classification, refs: Sequence[str], keep: float, relax: bool = False
 ) -> tuple[float, float, list[Move]]:
-    local = list(
-        block_layout(model, cls, refs, keep_channels=keep, escape_room=True, relax=relax)
-    )
+    local = list(block_layout(model, cls, refs, keep_channels=keep, escape_room=True, relax=relax))
     boxes = [box_of(moved_part(model.part(m.ref), m)) for m in local]
     x0 = min(b[0] for b in boxes)
     y0 = min(b[1] for b in boxes)
@@ -1011,8 +1009,7 @@ def _pack_ordered(
         region = fp.regions.get(n)
         target = centre if region is None else (region.x + region.w / 2, region.y + region.h / 2)
         need = {
-            p: channel_mm(shared_weight(nets[n], nets[p], cls), pitch, keep) + slack
-            for p in placed
+            p: channel_mm(shared_weight(nets[n], nets[p], cls), pitch, keep) + slack for p in placed
         }
         gaps = {r: need[owner[r]] for r in owner}
         # a fixed block in its region first, else on the whole board (its connector's edge

@@ -24,6 +24,7 @@ Every position is snapped to the 0.05 mm grid (outwards, so gaps never shrink).
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import math
 import re
 from collections import defaultdict
@@ -481,7 +482,7 @@ class _Layout:
             return 0.0
         room = self.pitch * min(math.ceil(len(facing) / 2), ESCAPE_TRACKS_MAX)
         along = sorted({round((q.x, q.y)[1 - axis], 4) for q in on_side})
-        steps = [b - a for a, b in zip(along, along[1:], strict=False)]
+        steps = [b - a for a, b in itertools.pairwise(along)]
         if steps and min(steps) < FINE_PITCH_MM - _EPS:
             room += self.via
         return room

@@ -515,9 +515,7 @@ def pack_block(
     # nothing can fit when the members alone need more than the free area
     if sum(_area(box_of(known[r])) for r in members) > available + _EPS:
         return does_not_fit()
-    local = block_layout(
-        base, cls, members, keep_channels=kc, escape_room=escape_room, relax=relax
-    )
+    local = block_layout(base, cls, members, keep_channels=kc, escape_room=escape_room, relax=relax)
     # connectors pulled to an edge: assigned ones and those anchoring a cluster (a header
     # that serves an MCU follows the MCU instead of dragging its block to an edge)
     heads = {c.members[0] for c in build_clusters(base, cls, members)}

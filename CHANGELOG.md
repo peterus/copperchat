@@ -52,6 +52,13 @@ All notable changes to CopperChat are documented in this file. The format follow
   footprints excluded from BOM / position files are left out of the JLC BOM and CPL (listed
   in the report); `pcb_render`'s default view is the outline and the parts' courtyards, not
   KiCad's whole drawing area — behind COPPERCHAT_BOARD_TOOLS.
+- `pcb_place_blocks` places more relaxed and more compact: parts inside a block keep room
+  for the tracks between them (sized by the pins that must escape, via room at fine-pitch
+  pins; decoupling caps and crystals stay close), the blocks are packed one by one in
+  connectivity order against the parts already placed (connected blocks next to each
+  other, gaps sized by the nets they share), and the result reports congestion, the
+  largest empty area and each block pair's gap vs the channel it needs — behind
+  COPPERCHAT_BOARD_TOOLS.
 
 ## [0.12.0] - 2026-11-22
 
