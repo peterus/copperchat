@@ -41,11 +41,14 @@ from copperchat.board.geom import (
     _in_pad,
     _pad_on_layer,
     analyse_tracks,
+    escape_zone,
+    neck_width,
     octi_dist,
     point_in_polygon,
 )
 from copperchat.board.metrics import connections, routed_length
 from copperchat.board.model import BoardModel, NetClassInfo, Pad, Point, Rect, Track, Via, Zone
+from copperchat.board.presets import PRESETS
 from copperchat.board.router import (
     RoutePath,
     RouteRequest,
@@ -244,6 +247,16 @@ def _joined(a: Pad, b: Pad) -> bool:
     return shared and (_in_pad((a.x, a.y), b) or _in_pad((b.x, b.y), a))
 
 
+def _has_copper(model: BoardModel, pad: Pad) -> bool:
+    """An own-net track starts or ends inside `pad` on one of its layers."""
+    return any(
+        t.net == pad.net
+        and _pad_on_layer(pad, t.layer)
+        and (_in_pad(t.start, pad) or _in_pad(t.end, pad))
+        for t in model.tracks
+    )
+
+
 def _unrouted(model: BoardModel, net: str) -> list[tuple[Pad, Pad]]:
     conns = [
         (a, b)
@@ -304,6 +317,42 @@ def routing_order(model: BoardModel, cls: Classification, nets: Sequence[str]) -
     return [net for _, net in sorted(enumerate(dict.fromkeys(nets)), key=key)]
 
 
+NECK_ZONE_INSET_MM = 0.002  # the router's neck zone lies this far inside the escape zone
+
+
+def default_min_track(model: BoardModel) -> float:
+    """The preset minimum track a neck-down may not go below when the caller names none:
+    the JLCPCB preset of the copper layer count, else `jlcpcb-4l` (as M12 / M16 do)."""
+    preset = PRESETS.get(f"jlcpcb-{len(model.copper_layers)}l") or PRESETS["jlcpcb-4l"]
+    return preset.min_track
+
+
+def neck_zones(
+    model: BoardModel, pads: Sequence[Pad], width: float, min_track: float
+) -> tuple[tuple[tuple[Point, ...], float], ...]:
+    """`RouteRequest.neck` for a connection of `width` (R3, spec §22.4): per end pad whose
+    `geom.neck_width` is below `width`, its part's escape zone (inset by
+    NECK_ZONE_INSET_MM, so a split point rounded to 1 nm stays inside the zone M12 checks)
+    and that neck width."""
+    parts = {p.ref: p for p in model.parts}
+    out: list[tuple[tuple[Point, ...], float]] = []
+    for pad in pads:
+        nw = neck_width(pad, width, min_track)
+        part = parts.get(pad.ref)
+        if nw >= width - 1e-9 or part is None:
+            continue
+        zone = escape_zone(part)
+        if len(zone) < 3:
+            continue
+        xs, ys = [p[0] for p in zone], [p[1] for p in zone]
+        g = NECK_ZONE_INSET_MM
+        x0, y0, x1, y1 = min(xs) + g, min(ys) + g, max(xs) - g, max(ys) - g
+        entry = (((x0, y0), (x1, y0), (x1, y1), (x0, y1)), nw)
+        if x1 > x0 and y1 > y0 and entry not in out:
+            out.append(entry)
+    return tuple(out)
+
+
 def plan_connections(
     model: BoardModel,
     cls: Classification,
@@ -311,14 +360,21 @@ def plan_connections(
     *,
     layers: tuple[str, ...] | None,
     allow_vias: bool,
+    tree: bool = False,
+    min_track: float | None = None,
 ) -> list[ConnPlan]:
     """Per net (request order) its unrouted connections (`metrics.connections` without a
     copper path), shortest first; widths, clearance and via from the net class, layers in
     `layer_order` restricted to `layers` (default: `default_layers`). A net of a
     `cls.pairs` pair whose partner is requested too: its connections that match one of
     the partner's (ends close together) are planned once, as two adjacent plans with
-    `pair` set (P first, then N), at the partner's first position in the request."""
+    `pair` set (P first, then N), at the partner's first position in the request.
+    Round 2 (R3): a connection ending at a pad narrower than its width gets `req.neck`
+    (`neck_zones`, `min_track` default `default_min_track`); pairs keep their widths. With
+    `tree`, every non-pair connection whose net already has copper at pad b gets
+    `req.tree` (it may end on that copper as a T-junction)."""
     allowed = layers if layers is not None else default_layers(model)
+    floor = default_min_track(model) if min_track is None else min_track
     wanted = set(nets)
     out: list[ConnPlan] = []
     done: set[str] = set()
@@ -327,7 +383,16 @@ def plan_connections(
         kind = cls.net_kind.get(net, "signal")
         width = par.pair_width if pair and par.pair_width else par.width
         return RouteRequest(
-            net, a, b, width, par.clearance, _order(model, kind, allowed), allow_vias, par.via
+            net,
+            a,
+            b,
+            width,
+            par.clearance,
+            _order(model, kind, allowed),
+            allow_vias,
+            par.via,
+            neck=() if pair else neck_zones(model, (a, b), width, floor),
+            tree=tree and not pair and _has_copper(model, b),
         )
 
     for net in nets:

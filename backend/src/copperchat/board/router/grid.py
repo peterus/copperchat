@@ -47,6 +47,12 @@ class RouteRequest:
     layers: tuple[str, ...]
     allow_vias: bool
     via: tuple[float, float]  # (diameter, drill)
+    # round 2 (R3, B-C12): (escape-zone polygon, neck width) - inside the polygon the track
+    # narrows to the neck width (fine-pitch pads, spec §22.4)
+    neck: tuple[tuple[tuple[Point, ...], float], ...] = ()
+    # the goal is pad b OR any own-net track already connected to b, entered perpendicularly
+    # (a T-junction, owner rule a)
+    tree: bool = False
 
 
 @dataclass(frozen=True)
@@ -267,6 +273,7 @@ class ObstacleGrid:
     via_shapes: tuple[Shape, ...] = ()
     via_inset: float = 0.0
     width: float = 0.0  # the track width the obstacle needs were built for (req.width)
+    neck_cells: int = 0  # cells of the neck-down maps (Σ zone bboxes, R3)
     # P9a: existing own-net tracks per layer (index-aligned with `layers`) and the own-net
     # pads / vias where a branch is a pad or via joint (`astar.junctions_ok`, M4 T-junction)
     own_segments: tuple[tuple[tuple[Point, Point], ...], ...] = ()
@@ -604,8 +611,10 @@ def build_grid(
     x0, nx = _lattice(wx0, wx1, req.a.x, pitch)
     y0, ny = _lattice(wy0, wy1, req.a.y, pitch)
     cells_n = nx * ny
-    if cells_n > MAX_CELLS_PER_LAYER:
-        raise RouteTooLarge(cells_n)
+    necks = _neck_boxes(req, x0, y0, nx, ny, pitch)
+    neck_n = sum(bw * bh for _poly, _nw, _i0, _j0, bw, bh in necks)
+    if cells_n + neck_n > MAX_CELLS_PER_LAYER:
+        raise RouteTooLarge(cells_n + neck_n)
 
     layers = tuple(req.layers)
     mk = _Marker(x0, y0, nx, ny, pitch, deadline)
@@ -722,6 +731,8 @@ def build_grid(
                 check_deadline(deadline)
             need = _shape_need(s)
             mk.shape(cells[k], s, need + chord_slack(need, pitch), BLOCKED)
+    for poly_n, nw, i0, j0, bw, bh in necks:
+        _apply_neck(cells, own, shapes, mk, poly_n, (req.width - nw) / 2, i0, j0, bw, bh)
     poly = tuple(model.outline.polygon) if model.outline.kind != "none" else ()
     inset = edge_clearance(model) + req.width / 2 + margin
     if len(poly) >= 3:  # rasterised once, copied into every layer
@@ -765,7 +776,70 @@ def build_grid(
         width=req.width,
         own_segments=tuple(tuple(x) for x in own_segs),
         own_spots=tuple(tuple(x) for x in own_spots),
+        neck_cells=neck_n,
     )
+
+
+def _neck_boxes(
+    req: RouteRequest, x0: float, y0: float, nx: int, ny: int, pitch: float
+) -> list[tuple[tuple[Point, ...], float, int, int, int, int]]:
+    """The request's neck zones narrower than its width, clipped to the window as node
+    boxes (polygon, neck width, i0, j0, box width, box height), widest first (so where two
+    zones overlap the narrower one is applied last)."""
+    out = []
+    for poly, nw in req.neck:
+        if not (len(poly) >= 3 and math.isfinite(nw) and 0 < nw < req.width - _EPS):
+            continue
+        xs, ys = [p[0] for p in poly], [p[1] for p in poly]
+        i0 = max(0, math.floor((min(xs) - x0) / pitch))
+        j0 = max(0, math.floor((min(ys) - y0) / pitch))
+        i1 = min(nx - 1, math.ceil((max(xs) - x0) / pitch))
+        j1 = min(ny - 1, math.ceil((max(ys) - y0) / pitch))
+        if i1 >= i0 and j1 >= j0:
+            out.append((tuple(poly), nw, i0, j0, i1 - i0 + 1, j1 - j0 + 1))
+    return sorted(out, key=lambda z: -z[1])
+
+
+def _apply_neck(
+    cells: tuple[bytearray, ...],
+    own: Sequence[Sequence[Shape]],
+    shapes: Sequence[Sequence[Shape]],
+    mk: _Marker,
+    poly: tuple[Point, ...],
+    shrink: float,
+    i0: int,
+    j0: int,
+    bw: int,
+    bh: int,
+) -> None:
+    """Re-mark the nodes inside one neck zone for a track `shrink` narrower per side: a
+    map over the zone's node box only (spec §22.4), copied into `cells` for the nodes
+    inside `poly`."""
+    p = mk.p
+    sub = _Marker(mk.x0 + i0 * p, mk.y0 + j0 * p, bw, bh, p, mk.deadline)
+    rows = []  # per box row: the inside node intervals (box columns)
+    for j in range(bh):
+        y = sub.y(j)
+        ivs = []
+        for lo, hi in _poly_row(poly, y):
+            a = max(0, math.ceil((lo - sub.x0) / p - 1e-9))
+            b = min(bw - 1, math.floor((hi - sub.x0) / p + 1e-9))
+            if b >= a:
+                ivs.append((a, b))
+        rows.append(ivs)
+    for k, buf_main in enumerate(cells):
+        buf = bytearray(bw * bh)
+        for s in own[k]:
+            sub.shape(buf, s, _shape_need(s), OWN)
+        for count, s in enumerate(shapes[k]):
+            if not count % 256:
+                check_deadline(mk.deadline)
+            need = max(_shape_need(s) - shrink, 0.0)
+            sub.shape(buf, s, need + chord_slack(need, p), BLOCKED)
+        for j, ivs in enumerate(rows):
+            base = (j0 + j) * mk.w + i0
+            for a, b in ivs:
+                buf_main[base + a : base + b + 1] = buf[j * bw + a : j * bw + b + 1]
 
 
 def extra_shapes(

@@ -13,7 +13,7 @@ import itertools
 import math
 from collections.abc import Sequence
 
-from copperchat.board.geom import CHAMFER_MIN, JOG_MIN
+from copperchat.board.geom import CHAMFER_MIN, JOG_MIN, point_in_polygon
 from copperchat.board.model import Point
 from copperchat.board.router.grid import ObstacleGrid, RoutePath, RouteRequest
 
@@ -217,9 +217,72 @@ def to_path(
             continue
         snapped = snap_ends(pts, a, b, req.width)
         for p, q in itertools.pairwise(snapped):
-            segments.append((grid.layers[li], p, q, req.width))
+            for s, e, w in neck_pieces(p, q, req.neck, req.width):
+                segments.append((grid.layers[li], s, e, w))
             length += math.dist(p, q)
     return RoutePath(segments=tuple(segments), vias=tuple(vias), length=length)
+
+
+NECK_MIN_PIECE_MM = 1e-3  # a split closer than this to a piece end is not made
+
+
+def _zone_width(p: Point, neck: Sequence[tuple[Sequence[Point], float]], width: float) -> float:
+    w = width
+    for poly, nw in neck:
+        if nw < w and point_in_polygon(p, list(poly)):
+            w = nw
+    return w
+
+
+def neck_pieces(
+    p: Point, q: Point, neck: Sequence[tuple[Sequence[Point], float]], width: float
+) -> list[tuple[Point, Point, float]]:
+    """Segment pq split where it crosses a neck zone's boundary (R3, spec §22.4): pieces
+    inside a zone get its neck width (the narrowest of overlapping zones), the rest `width`.
+    Neighbouring pieces of one width are merged; a split within NECK_MIN_PIECE_MM of a piece
+    end is not made (that sliver takes its neighbour's width - the callers' zones are inset
+    by more than that)."""
+    if not neck:
+        return [(p, q, width)]
+    length = math.dist(p, q)
+    if length < _TINY:
+        return [(p, q, _zone_width(p, neck, width))]
+    ts = [0.0, 1.0]
+    for poly, _nw in neck:
+        n = len(poly)
+        for k in range(n):
+            c, d = poly[k], poly[(k + 1) % n]
+            r, s = _sub(q, p), _sub(d, c)
+            den = _cross(r, s)
+            if abs(den) < 1e-15:
+                continue
+            t = _cross(_sub(c, p), s) / den
+            u = _cross(_sub(c, p), r) / den
+            if 0.0 < t < 1.0 and -1e-12 <= u <= 1.0 + 1e-12:
+                ts.append(t)
+    ts.sort()
+    cuts = [0.0]
+    for t in ts[1:-1]:
+        far = (1.0 - t) * length >= NECK_MIN_PIECE_MM
+        if (t - cuts[-1]) * length >= NECK_MIN_PIECE_MM and far:
+            cuts.append(t)
+    cuts.append(1.0)
+
+    def at(t: float) -> Point:
+        if t <= 0.0:
+            return p
+        if t >= 1.0:
+            return q
+        return (round(p[0] + t * (q[0] - p[0]), _ROUND), round(p[1] + t * (q[1] - p[1]), _ROUND))
+
+    out: list[tuple[Point, Point, float]] = []
+    for t0, t1 in itertools.pairwise(cuts):
+        w = _zone_width(at((t0 + t1) / 2), neck, width)
+        if out and out[-1][2] == w:
+            out[-1] = (out[-1][0], at(t1), w)
+        else:
+            out.append((at(t0), at(t1), w))
+    return out
 
 
 def layer_runs(path: RoutePath) -> list[tuple[str, tuple[Point, ...]]]:
