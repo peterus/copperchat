@@ -24,6 +24,7 @@ from .router_maps import (
     random_map,
     seg_dist,
     strict_bends_ok,
+    tree_map,
 )
 
 SEEDS = range(250)
@@ -166,3 +167,33 @@ def test_review_seeds_have_no_tail_artefacts(seed: int) -> None:
         for _layer, pts in layer_runs(path):
             b = analyse_bends(pts[-4:], r.width, pad_ends=(True, False))
             assert not (b.short_chamfers or b.micro_jogs), (seed, r.net, pts)
+
+
+def test_tree_branches_are_t_never_y() -> None:
+    """R3 (owner rule a): >= 200 seeded maps with pre-existing own copper (the first
+    request routed) and a tree request from a new pad: the result has no Y-junction, no
+    90° / acute / off-angle vertex and no micro-jog or short chamfer (M4 / M7 / M15)."""
+    from copperchat.board.geom import analyse_tracks
+
+    from .router_maps import add_path
+
+    tried = routed_n = t_ends = 0
+    for seed in range(230):
+        got = tree_map(random.Random(seed))
+        if got is None:
+            continue
+        m, r = got
+        tried += 1
+        path = _route(m, r)
+        if path is None:
+            continue
+        routed_n += 1
+        t_ends += not (abs(path.segments[-1][2][0] - r.b.x) < 1e-6)
+        both = add_path(m, r, path, "tree")
+        own = replace(both, tracks=tuple(t for t in both.tracks if t.net == r.net))
+        rep = analyse_tracks(own)
+        bad = (rep.y_junctions, rep.ninety, rep.acute, rep.off_angle, rep.non_octilinear)
+        assert all(x == () for x in bad), f"seed {seed}: {rep}"
+        assert rep.micro_jogs == () and rep.short_chamfers == (), f"seed {seed}: {rep}"
+    assert tried >= 200 and routed_n >= 0.9 * tried, (tried, routed_n)
+    assert t_ends > 0  # some of them do land on the copper as a T

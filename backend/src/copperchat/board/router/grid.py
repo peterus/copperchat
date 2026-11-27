@@ -24,7 +24,14 @@ from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from copperchat.board.geom import _Grid, _pad_on_layer, convex_hull, point_in_polygon
+from copperchat.board.geom import (
+    _Grid,
+    _in_pad,
+    _pad_on_layer,
+    _pad_rect,
+    convex_hull,
+    point_in_polygon,
+)
 from copperchat.board.model import ArcTrack, BoardModel, GraphicItem, Pad, Point
 
 WINDOW_MM = 6.0
@@ -274,6 +281,8 @@ class ObstacleGrid:
     via_inset: float = 0.0
     width: float = 0.0  # the track width the obstacle needs were built for (req.width)
     neck_cells: int = 0  # cells of the neck-down maps (Σ zone bboxes, R3)
+    # R3 tree routing: per layer the own-net straight tracks connected to pad b (req.tree)
+    tree_segments: tuple[tuple[tuple[Point, Point], ...], ...] = ()
     # P9a: existing own-net tracks per layer (index-aligned with `layers`) and the own-net
     # pads / vias where a branch is a pad or via joint (`astar.junctions_ok`, M4 T-junction)
     own_segments: tuple[tuple[tuple[Point, Point], ...], ...] = ()
@@ -414,6 +423,16 @@ def _pad_shape(p: Pad, need: float) -> Shape:
         w, h = (p.h, p.w) if round(p.rot / 90.0) % 2 else (p.w, p.h)
         return ("r", p.x - w / 2, p.y - h / 2, p.x + w / 2, p.y + h / 2, need)
     return ("d", p.x, p.y, math.hypot(p.w, p.h) / 2, need)
+
+
+def _exact_pad(p: Pad) -> Shape:
+    """The pad's own outline (a joint spot, need 0): `_pad_shape`, except that a pad
+    rotated off the 90° lattice is its rotated rectangle, not the circumscribed disc (a
+    junction there is exempt exactly where M15 exempts it, R3)."""
+    rot = p.rot % 90.0
+    if p.shape == "circle" or min(rot, 90.0 - rot) <= 1e-6:
+        return _pad_shape(p, 0.0)
+    return ("p", tuple(_pad_rect(p)), 0.0)
 
 
 def _arc_points(a: ArcTrack) -> tuple[list[Point], float]:
@@ -648,9 +667,10 @@ def build_grid(
         if mine:
             s = _pad_shape(pad, 0.0)
             if on and near(_shape_bbox(s), 0.0):
+                spot = _exact_pad(pad)
                 for k in on:
                     own[k].append(s)
-                    own_spots[k].append(s)
+                    own_spots[k].append(spot)
             if pad.smd and anywhere:
                 via_own.append(_pad_shape(pad, via_r))
             continue
@@ -777,7 +797,64 @@ def build_grid(
         own_segments=tuple(tuple(x) for x in own_segs),
         own_spots=tuple(tuple(x) for x in own_spots),
         neck_cells=neck_n,
+        tree_segments=_tree_segments(model, req, layers) if req.tree else (),
     )
+
+
+_JOIN = 0.002  # mm: geom._JOIN_TOL
+
+
+def _tree_segments(
+    model: BoardModel, req: RouteRequest, layers: Sequence[str]
+) -> tuple[tuple[tuple[Point, Point], ...], ...]:
+    """Per layer of `layers`: the own-net straight tracks of `model` connected to pad
+    `req.b` - joined end to end, an end on another track (T), through a shared own via or
+    own pad of the layer (arcs are not followed; conservative)."""
+    net = req.net
+    tracks = [t for t in model.tracks if t.net == net and net != ""]
+    if not tracks:
+        return tuple(() for _ in layers)
+    vias = [v for v in model.vias if v.net == net]
+    pads = [q for p in model.parts for q in p.pads if q.net == net]
+    # union-find over tracks (0..n-1), vias (n..) and pads (n + len(vias)..)
+    n, nv = len(tracks), len(vias)
+    parent = list(range(n + nv + len(pads)))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(x: int, y: int) -> None:
+        rx, ry = find(x), find(y)
+        if rx != ry:
+            parent[rx] = ry
+
+    for i, t in enumerate(tracks):
+        for k in range(i + 1, n):
+            u = tracks[k]
+            if u.layer != t.layer:
+                continue
+            if any(_pt_seg(e, u.start, u.end) <= _JOIN for e in (t.start, t.end)) or any(
+                _pt_seg(e, t.start, t.end) <= _JOIN for e in (u.start, u.end)
+            ):
+                union(i, k)
+        for k, v in enumerate(vias):
+            if any(math.dist(e, v.at) <= v.diameter / 2 + _JOIN for e in (t.start, t.end)):
+                union(i, n + k)
+        for k, q in enumerate(pads):
+            if _pad_on_layer(q, t.layer) and any(_in_pad(e, q) for e in (t.start, t.end)):
+                union(i, n + nv + k)
+    b = next((k for k, q in enumerate(pads) if q == req.b), None)
+    if b is None:
+        return tuple(() for _ in layers)
+    root = find(n + nv + b)
+    out: list[list[tuple[Point, Point]]] = [[] for _ in layers]
+    for i, t in enumerate(tracks):
+        if t.layer in layers and find(i) == root:
+            out[list(layers).index(t.layer)].append((t.start, t.end))
+    return tuple(tuple(x) for x in out)
 
 
 def _neck_boxes(

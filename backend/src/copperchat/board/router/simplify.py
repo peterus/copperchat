@@ -191,11 +191,17 @@ def snap_ends(
 
 
 def to_path(
-    states: Sequence[tuple[int, int, int]], grid: ObstacleGrid, req: RouteRequest
+    states: Sequence[tuple[int, int, int]],
+    grid: ObstacleGrid,
+    req: RouteRequest,
+    *,
+    end: Point | None = None,
 ) -> RoutePath:
     """`states` = the searched nodes (layer index, i, j) from pad `a` to pad `b`: per-layer
     runs (split at layer changes = vias), collinear runs merged, the ends snapped to the
-    exact pad centres. Raises `SnapError` like `snap_ends`."""
+    exact pad centres. `end` (a tree goal's landing point on own copper, R3): the last
+    node is extended straight onto it instead of snapping to pad `b`. Raises `SnapError`
+    like `snap_ends`."""
     runs: list[tuple[int, list[Point]]] = []
     vias: list[Point] = []
     for li, i, j in states:
@@ -210,9 +216,11 @@ def to_path(
     segments: list[tuple[str, Point, Point, float]] = []
     length = 0.0
     last = len(runs) - 1
+    if end is not None and runs:
+        runs[-1][1].append(end)
     for k, (li, pts) in enumerate(runs):
         a = (req.a.x, req.a.y) if k == 0 else None
-        b = (req.b.x, req.b.y) if k == last else None
+        b = (req.b.x, req.b.y) if k == last and end is None else None
         if len(pts) == 1 and a is None and b is None:
             continue
         snapped = snap_ends(pts, a, b, req.width)

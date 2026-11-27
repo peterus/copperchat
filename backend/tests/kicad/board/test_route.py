@@ -67,6 +67,7 @@ async def test_route_critical_set(synth_routed: PlacedSynth, record_property: An
     for chunk in info["routed"]:
         print("totals", chunk["totals"], chunk["bends"], chunk["drc_errors"], chunk["seconds"])
         assert chunk["bends"]["M4"] == 0 and chunk["bends"]["M7"] == 0
+        assert chunk["bends"]["M15"] == 0
         record_property("route_seconds", chunk["seconds"])
     for e in entries:
         print(e["net"], e["status"], e["routed"], "/", e["connections"], e["seconds"], e["failed"])

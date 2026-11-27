@@ -62,6 +62,7 @@ from copperchat.board.staging import natural_key
 from copperchat.board.worker import run_cpu
 from copperchat.errors import StructuredToolError
 from copperchat.kicad_session import KicadHandle
+from copperchat.kicad_tools.board.analysis import preset_for
 from copperchat.kicad_tools.board.api import DrcResult, DrcTimeout
 from copperchat.kicad_tools.board.checkpoints import require_placement_approved
 from copperchat.kicad_tools.board.engine import (
@@ -1116,20 +1117,20 @@ def _pairs_report(
 
 
 def _bends(model: BoardModel, kiids: frozenset[str]) -> dict[str, int]:
-    """M4 / M7 counts over the call's new copper (B-C5 `analyse_tracks`, pads and vias
-    of the whole board)."""
+    """M4 / M7 / M15 counts over the call's new copper (B-C5 `analyse_tracks`, pads and
+    vias of the whole board). Round 2 (R3): a T-junction is no M4 failure (owner rule a,
+    the router's tree branches); a Y-junction counts as M15."""
     sub = dataclasses.replace(
         model, tracks=tuple(t for t in model.tracks if t.kiid in kiids), arcs=()
     )
     rep = analyse_tracks(sub, index=TrackIndex(model))
-    m4 = (
-        len(rep.non_octilinear)
-        + len(rep.ninety)
-        + len(rep.acute)
-        + len(rep.off_angle)
-        + len(rep.t_junctions)
-    )
-    return {"M4": m4, "M7": len(rep.micro_jogs) + len(rep.short_chamfers), "bends": rep.bends}
+    m4 = len(rep.non_octilinear) + len(rep.ninety) + len(rep.acute) + len(rep.off_angle)
+    return {
+        "M4": m4,
+        "M7": len(rep.micro_jogs) + len(rep.short_chamfers),
+        "M15": len(rep.y_junctions),
+        "bends": rep.bends,
+    }
 
 
 async def prepare_route(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
@@ -1164,7 +1165,15 @@ async def prepare_route(ctx: ToolContext, args: dict[str, Any]) -> ChangeSet:
 
     def plan() -> list[ConnPlan]:
         order = routing_order(model, cls, nets)
-        return plan_connections(model, cls, order, layers=route_layers, allow_vias=allow_vias)
+        return plan_connections(
+            model,
+            cls,
+            order,
+            layers=route_layers,
+            allow_vias=allow_vias,
+            tree=True,
+            min_track=(preset_for(model, doc) or PRESETS["jlcpcb-4l"]).min_track,
+        )
 
     plans = await asyncio.to_thread(plan)
     cost = math.ceil(len(nets) / NETS_PER_COST)
