@@ -20,6 +20,7 @@ import itertools
 import math
 import re
 import time
+from collections import defaultdict
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -30,6 +31,7 @@ from copperchat.board.geom import (
     _pad_on_layer,
     _pad_rect,
     convex_hull,
+    entry_zone,
     point_in_polygon,
 )
 from copperchat.board.model import ArcTrack, BoardModel, GraphicItem, Pad, Point
@@ -62,6 +64,9 @@ class RouteRequest:
     # the goal is pad b OR any own-net track already connected to b, entered perpendicularly
     # (a T-junction, owner rule a)
     tree: bool = False
+    # R4: keep other nets' unrouted pad escapes free (`ObstacleGrid.escape` cost); off for
+    # the M8-measured links (crystal, decap - routed first, they must stay shortest)
+    escape: bool = True
 
 
 @dataclass(frozen=True)
@@ -290,6 +295,13 @@ class ObstacleGrid:
     own_segments: tuple[tuple[tuple[Point, Point], ...], ...] = ()
     own_spots: tuple[tuple[Shape, ...], ...] = ()  # per layer: own pads there + own vias
     own_pad_spots: tuple[tuple[Shape, ...], ...] = ()  # per layer: own pads only (R3)
+    # R4: the own-net pads near the window (any layer): a T landing never lies in their
+    # M16 entry zone (the joined path would turn there, measured from that pad)
+    own_pads: tuple[Pad, ...] = ()
+    # R4: per layer 1 = inside the M16 entry zone of another net's pad that has no copper
+    # yet (its escape); the search charges astar.ESCAPE_COST_FACTOR per step there, so an
+    # earlier route does not fence a later pad in (sp4_synth: +3V3 along U1's pin ends)
+    escape: tuple[bytearray, ...] = ()
     _index: list[_Grid] | None = field(default=None, repr=False)
     _masks: list[dict[int, int]] | None = field(default=None, repr=False)  # astar cache
 
@@ -590,6 +602,73 @@ def _lattice(lo: float, hi: float, anchor: float, pitch: float) -> tuple[float, 
     return origin, max(n, 1)
 
 
+ESCAPE_REACH_MM = 1.0  # how far in front of a pad's end its escape stays free (= M16 zone)
+ESCAPE_SIDE_MM = 0.3  # the escape strip's extra width on each side of the pad
+ESCAPE_AXIS_RATIO = 1.5  # = astar.PAD_AXIS_RATIO: below it a pad has no long axis
+
+
+def _escape_rect(pad: Pad, width: float) -> tuple[Point, ...]:
+    """Where `pad` escapes: a pad with a long axis (long / short >= ESCAPE_AXIS_RATIO) the
+    strip in front of both its ends (ESCAPE_REACH_MM along the axis, ESCAPE_SIDE_MM to each
+    side) - the room its track or fanout via needs; any other pad its M16 entry zone."""
+    lo, hi = sorted((pad.w, pad.h))
+    if pad.shape == "circle" or hi < ESCAPE_AXIS_RATIO * lo:
+        return entry_zone(pad, width)
+    gw, gh = (
+        (ESCAPE_REACH_MM, ESCAPE_SIDE_MM) if pad.w >= pad.h else (ESCAPE_SIDE_MM, ESCAPE_REACH_MM)
+    )
+    t = math.radians(pad.rot)
+    c, sn = math.cos(t), math.sin(t)
+    hw, hh = pad.w / 2 + gw, pad.h / 2 + gh
+    return tuple(
+        (pad.x + lx * c + ly * sn, pad.y - lx * sn + ly * c)
+        for lx, ly in ((-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh))
+    )
+
+
+def _escape_map(
+    model: BoardModel,
+    pending: Sequence[tuple[Pad, list[int]]],
+    n_layers: int,
+    x0: float,
+    y0: float,
+    nx: int,
+    ny: int,
+    pitch: float,
+    width: float,
+) -> tuple[bytearray, ...]:
+    """Per layer: 1 on the lattice nodes inside the bbox of the escape (`_escape_rect`) of
+    each pad of `pending` (other-net pads, with their layer indices) that no track end or
+    via of its net touches yet; () when there is none."""
+    nets = {p.net for p, _ in pending}
+    ends: dict[str, list[Point]] = defaultdict(list)
+    for t in model.tracks:
+        if t.net in nets:
+            ends[t.net] += (t.start, t.end)
+    for v in model.vias:
+        if v.net in nets:
+            ends[v.net].append(v.at)
+    out: list[bytearray] | None = None
+    for pad, on in pending:
+        if any(_in_pad(q, pad) for q in ends.get(pad.net, ())):
+            continue
+        zone = _escape_rect(pad, width)
+        i0 = max(0, math.floor((min(q[0] for q in zone) - x0) / pitch))
+        i1 = min(nx - 1, math.ceil((max(q[0] for q in zone) - x0) / pitch))
+        j0 = max(0, math.floor((min(q[1] for q in zone) - y0) / pitch))
+        j1 = min(ny - 1, math.ceil((max(q[1] for q in zone) - y0) / pitch))
+        if i0 > i1 or j0 > j1:
+            continue
+        if out is None:
+            out = [bytearray(nx * ny) for _ in range(n_layers)]
+        row = b"\x01" * (i1 - i0 + 1)
+        for k in on:
+            arr = out[k]
+            for j in range(j0, j1 + 1):
+                arr[j * nx + i0 : j * nx + i1 + 1] = row
+    return tuple(out) if out is not None else ()
+
+
 def build_grid(
     model: BoardModel,
     req: RouteRequest,
@@ -663,6 +742,8 @@ def build_grid(
     own_segs: list[list[tuple[Point, Point]]] = [[] for _ in layers]
     own_spots: list[list[Shape]] = [[] for _ in layers]  # own pads per layer + vias (need 0)
     own_pad_spots: list[list[Shape]] = [[] for _ in layers]
+    own_pads: list[Pad] = []
+    pending: list[tuple[Pad, list[int]]] = []  # other-net pads near the window (escape map)
     via_shapes: list[Shape] = []  # cores a via must keep `via_need` from (any layer)
     via_own: list[Shape] = []  # own SMD pads: no via in a pad (reflow), keep via_r
     via_keepouts: list[Shape] = []
@@ -676,6 +757,7 @@ def build_grid(
         if mine:
             s = _pad_shape(pad, 0.0)
             if on and near(_shape_bbox(s), 0.0):
+                own_pads.append(pad)
                 spot = _exact_pad(pad)
                 for k in on:
                     own[k].append(s)
@@ -687,6 +769,8 @@ def build_grid(
         s = _pad_shape(pad, r)
         if not near(_shape_bbox(s), r + via_need):
             continue
+        if on and pad.net:
+            pending.append((pad, on))
         for k in on:
             shapes[k].append(s)
         if anywhere:  # a through via touches every copper layer
@@ -777,6 +861,12 @@ def build_grid(
     for k in range(len(layers)):
         mk.frame(cells[k], BLOCKED)
 
+    escape = (
+        _escape_map(model, pending, len(layers), x0, y0, nx, ny, pitch, req.width)
+        if req.escape
+        else ()
+    )
+
     check_deadline(deadline)
     via_blocked = bytearray(cells_n)
     via_obstacles = tuple(via_shapes + via_own + via_keepouts + list(extra_vias))
@@ -809,6 +899,8 @@ def build_grid(
         own_segments=tuple(tuple(x) for x in own_segs),
         own_spots=tuple(tuple(x) for x in own_spots),
         own_pad_spots=tuple(tuple(x) for x in own_pad_spots),
+        own_pads=tuple(own_pads),
+        escape=escape,
         neck_cells=neck_n,
         tree_segments=_tree_segments(model, req, layers, deadline) if req.tree else (),
     )

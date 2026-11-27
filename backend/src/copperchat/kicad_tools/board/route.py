@@ -46,6 +46,7 @@ from copperchat.board.geom import (
     octi_dist,
     point_in_polygon,
     straight_corridor,
+    straight_link_corridor,
 )
 from copperchat.board.metrics import HARD as METRIC_HARD
 from copperchat.board.metrics import connections, routed_length
@@ -482,7 +483,9 @@ def _m8_first(plans: list[ConnPlan], cls: Classification) -> list[ConnPlan]:
     # onto other copper would lengthen the path M8 measures
     first = sorted(
         (
-            dataclasses.replace(p, early=True, req=dataclasses.replace(p.req, tree=False))
+            dataclasses.replace(
+                p, early=True, req=dataclasses.replace(p.req, tree=False, escape=False)
+            )
             for p in plans
             if m8(p)
         ),
@@ -603,10 +606,16 @@ def straight_path(model: BoardModel, plan: ConnPlan) -> RoutePath | None:
     split at the neck zones (`req.neck`) like a routed path."""
     req = plan.req
     w = min([req.width, *(nw for _z, nw, _zl in req.neck)])
-    cor = straight_corridor(plan.a, plan.b, w, copper_layers=model.copper_layers)
-    if cor is None:
+    # R4: narrower than the class only inside the parts' escape zones (M12, as M16 measures)
+    zones = tuple(
+        z for p in model.parts if p.ref in (plan.a.ref, plan.b.ref) if (z := escape_zone(p))
+    )
+    link = straight_link_corridor(
+        plan.a, plan.b, req.width, w, zones, copper_layers=model.copper_layers
+    )
+    if link is None:
         return None
-    layers, s, e = cor
+    layers, s, e, _outside = link
     layer = next((la for la in req.layers if la in layers), None)
     if layer is None:
         return None
@@ -855,34 +864,12 @@ async def _solve(
         return None if got is None else [got[0], got[1]]
     req = group[0].req
     m = router_model(model, req)
-    # R3: a link between two pads of one part (USB-C A6 - B6 around A7) is U-shaped by
-    # nature - its compact loop beats a via detour that walls in the pads next to it
-    same_part = group[0].a.ref == group[0].b.ref
-    pruned = prune_model(m, req)
+    # R4 (owner 2026-11-27): a pad-entry loop or jog is never accepted - also not for a
+    # link between two pads of one part (USB-C A6 - B6) or an M8-measured link; those go
+    # through a via, enter from the other side or land on the net's copper as a T instead
     path = await run_cpu(
-        solve, pruned, req, margin=margin, entry_ok=same_part, timeout_s=timeout, wait_s=remaining
+        solve, prune_model(m, req), req, margin=margin, timeout_s=timeout, wait_s=remaining
     )
-    if group[0].early and not same_part and (path is None or path.length > M8_LIMIT_MM):
-        # an M8-measured link (decap / crystal) that only fits the M8 limit with a pad-entry
-        # jog or loop: both are owner-hard; the one within M8 wins, and the route report
-        # names its entry defect (`pad_entry_defects`); M16 reports it too
-        left = _remaining(deadline)
-        if left is None or left > 0:
-            alt = await run_cpu(
-                solve,
-                pruned,
-                req,
-                margin=margin,
-                entry_ok=True,
-                timeout_s=timeout if left is None else min(SOLVE_TIMEOUT_S, left),
-                wait_s=left,
-            )
-            if (
-                alt is not None
-                and alt.length <= M8_LIMIT_MM
-                and (path is None or alt.length < path.length)
-            ):
-                path = alt
     return None if path is None else [path]
 
 
