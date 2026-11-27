@@ -96,6 +96,15 @@ async def test_floorplan_then_place_blocks(synth_setup: SynthSetup, setup_db: An
     metrics = await setup_call(rig.turn(db, "run-fp-4"), "pcb_metrics", only=["M1", "M16"])
     m1 = next(m for m in metrics["metrics"] if m["id"] == "M1")
     assert m1["verdict"] == "pass", m1
+    # rule (b) (R1: the placer's target is M16's placement-stage "alignable" count): the two
+    # pairs left are blocked by an IC align_pairs never moves - C1 next to U1 (U1 / Y1 in
+    # the way), R3 next to J1 (the ESD array U2 in the way)
+    m16 = next(m for m in metrics["metrics"] if m["id"] == "M16")
+    alignable = sorted(o["what"] for o in m16["offenders"] if o["what"].startswith("alignable"))
+    assert [a.split(":")[0] for a in alignable] == [
+        "alignable +3V3 C1.1-U1.5",
+        "alignable /CC2 J1.B5-R3.1",
+    ], alignable
     placed = await board_model(ctx)
     j1 = placed.part("J1")
     assert min(x for x, _ in j1.courtyard) < o.x + 2.0  # J1 on its board.md edge
