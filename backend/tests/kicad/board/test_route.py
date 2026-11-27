@@ -88,12 +88,13 @@ async def test_route_critical_set(synth_routed: PlacedSynth, record_property: An
     metrics = await setup_call(placed.turn("run-crit-m"), "pcb_metrics", only=["M4", "M7"])
     for m in metrics["metrics"]:
         assert m["value"] == 0 and m["verdict"] == "pass", m
-    # R3: the own router's copper has no Y-junction (M15) and no dogleg / pad loop (M16
-    # hard part) - both still `review` metrics until R4 switches them hard
+    # R3: the own router's copper has no Y-junction (M15) and no dogleg (M16 a); a pad loop
+    # the placement forces (USB-C A7 - B7 around A6, no loop-free path) stays M16's report
     r3 = await setup_call(placed.turn("run-crit-m16"), "pcb_metrics", only=["M15", "M16"])
-    for m in r3["metrics"]:
-        print(m["id"], m["value"], [o["what"] for o in m["offenders"]])
-        assert m["value"] == 0, m
+    by_id = {m["id"]: m for m in r3["metrics"]}
+    print({k: (m["value"], [o["what"] for o in m["offenders"]]) for k, m in by_id.items()})
+    assert by_id["M15"]["value"] == 0, by_id["M15"]
+    assert not [o for o in by_id["M16"]["offenders"] if o["what"].startswith("dogleg")]
     model = await _model(placed, "run-crit-model")
     mine = [t for t in model.tracks if t.net in nets] + [v for v in model.vias if v.net in nets]
     assert mine and all(it.locked for it in mine)
