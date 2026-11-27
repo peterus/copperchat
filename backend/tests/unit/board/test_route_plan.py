@@ -1177,7 +1177,36 @@ async def test_pass0_retries_capped_and_drc_filtered(
     out = await route.route_connections(sctx, _plan(m, nets), lock=True)  # type: ignore[arg-type]
     assert calls["n"] == 1 + route.STRAIGHT_RETRY_MAX
     assert out.routed == ()
-    assert out.drc is None or not any(set(mk.kiids) - {"other"} for mk in out.drc.markers)
+    assert out.drc is None  # nothing kept: no verified DRC to report
+
+
+async def test_pass0_stored_drc_without_dropped_copper(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One pass-0 segment kept, two clashing ones dropped (and failing their retry): the
+    stored DRC keeps a marker of other copper but none naming a dropped segment."""
+    monkeypatch.setattr(route, "run_cpu", FakeCpu(lambda fn, args, kw, t: None))
+    parts, nets = [], []
+    for k in range(3):
+        y = 10.0 + 4.0 * k
+        parts += [res(f"R{2 * k + 1}", f"A{k}", f"N{k}", (10.0, y))]
+        parts += [res(f"R{2 * k + 2}", f"N{k}", f"B{k}", (12.0, y))]
+        nets.append(f"N{k}")
+    m = circuit(*parts)
+    other = DrcMarker("silk_overlap", "warning", "elsewhere", ("zone-9",), None)
+    calls = {"n": 0}
+
+    def drc(t: float) -> DrcResult:
+        calls["n"] += 1
+        ks = tuple(board.items)
+        if calls["n"] == 1:  # segments 2 and 3 clash with each other
+            clash = DrcMarker("clearance", "error", "x", (ks[1], ks[2]), None)
+            return DrcResult((clash, other), 0, 0.01)
+        return DrcResult((DrcMarker("clearance", "error", "x", (ks[-1], "z"), None),), 0, 0.01)
+
+    out = await route.route_connections(FakeSctx(m, drc), _plan(m, nets), lock=True)  # type: ignore[arg-type]
+    assert len(out.routed) == 1
+    assert out.drc is not None and out.drc.markers == (other,)
 
 
 def test_reservation_of_pair_net_uses_pair_width() -> None:

@@ -694,9 +694,9 @@ def corridor_reservations(
                 continue
             layer = path.segments[0][0]
             s, e = path.segments[0][1], path.segments[-1][2]
-            width = max(pw for *_x, pw in path.segments)
-            if _corridor_free(model, net, layer, s, e, width, par.clearance):
-                out.append(Reserved(_key(plan), net, layer, s, e, width))
+            placed = max(pw for *_x, pw in path.segments)
+            if _corridor_free(model, net, layer, s, e, placed, par.clearance):
+                out.append(Reserved(_key(plan), net, layer, s, e, placed))
     return tuple(out)
 
 
