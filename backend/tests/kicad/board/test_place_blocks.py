@@ -85,7 +85,14 @@ async def test_floorplan_then_place_blocks(synth_setup: SynthSetup, setup_db: An
     assert out["logical_changes"] == 1
     assert out["placement_hash"]["changed"] is True
     assert out["unplaced_blocks"] == []
-    assert out["spread"] >= SPREAD_SPAN_MIN and out["well_spread"] is True
+    assert 0 < out["spread"] <= 1 and out["well_spread"] is (out["spread"] >= SPREAD_SPAN_MIN)
+    # R2b: compact, relaxed, connectivity-ordered; the routing-room checks reported
+    assert out["relaxed"] is True and out["order"][0] == usb
+    assert sorted(out["order"]) == sorted(b["name"] for b in blocks)
+    assert out["congestion_worst"] == out["score"]["after"]["congestion_worst"] > 0
+    assert out["largest_hole_mm2"] == out["score"]["after"]["largest_hole_mm2"]
+    assert set(out["gap_excess_mm"]) == {"worst", "mean"}
+    assert out["gaps"] and all(g["gap"] >= g["required"] - 1.0 for g in out["gaps"]), out["gaps"]
     assert out["score"]["after"]["m1_violations"] == 0
     assert out["score"]["after"]["spread"] == out["spread"]
     assert [r["block"] for r in out["regions"]] == [r["block"] for r in fp["regions"]]
@@ -96,15 +103,12 @@ async def test_floorplan_then_place_blocks(synth_setup: SynthSetup, setup_db: An
     metrics = await setup_call(rig.turn(db, "run-fp-4"), "pcb_metrics", only=["M1", "M16"])
     m1 = next(m for m in metrics["metrics"] if m["id"] == "M1")
     assert m1["verdict"] == "pass", m1
-    # rule (b) (R1: the placer's target is M16's placement-stage "alignable" count): the two
-    # pairs left are blocked by an IC align_pairs never moves - C1 next to U1 (U1 / Y1 in
-    # the way), R3 next to J1 (the ESD array U2 in the way)
+    # rule (b) (R1: the placer's target is M16's placement-stage "alignable" count): the
+    # pair left is blocked by an IC align_pairs never moves - C1 next to U1 (U1 / Y1 in the
+    # way); R2b's relaxed USB block gave R3 / J1.B5 a corridor (R2: the ESD array U2 in it)
     m16 = next(m for m in metrics["metrics"] if m["id"] == "M16")
     alignable = sorted(o["what"] for o in m16["offenders"] if o["what"].startswith("alignable"))
-    assert [a.split(":")[0] for a in alignable] == [
-        "alignable +3V3 C1.1-U1.5",
-        "alignable /CC2 J1.B5-R3.1",
-    ], alignable
+    assert [a.split(":")[0] for a in alignable] == ["alignable +3V3 C1.1-U1.5"], alignable
     placed = await board_model(ctx)
     j1 = placed.part("J1")
     assert min(x for x, _ in j1.courtyard) < o.x + 2.0  # J1 on its board.md edge

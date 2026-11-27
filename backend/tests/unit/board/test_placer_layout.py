@@ -5,6 +5,8 @@ from __future__ import annotations
 import itertools
 import math
 
+import pytest
+
 from copperchat.board.classify import classify
 from copperchat.board.geom import rect_poly
 from copperchat.board.model import BoardModel, Pad, Part
@@ -260,3 +262,121 @@ def test_escape_room_per_shared_signal_net() -> None:
     lay = _Layout(m, classify(m), Cluster("U1", ("U1", "J9")), gap)
     assert lay._escape("J9") == ESCAPE_MAX_MM
     assert lay._escape("U1") == 0.0
+
+
+# ---- R2b: relaxed layout ----------------------------------------------------------------------
+
+
+def _column_ic(ref: str, nets: list[str], pitch: float) -> Part:
+    """An IC whose pins form one column on the right edge of its courtyard (x = 52.5, from
+    y = 40 down in `pitch` steps); courtyard x 47..53."""
+    pads = tuple(pad(ref, str(i + 1), n, (52.5, 40.0 + i * pitch)) for i, n in enumerate(nets))
+    h = (len(nets) - 1) * pitch
+    return part(
+        ref, 50.0, 40.0 + h / 2, lib_id="Package_SO:SOIC", pads=pads,
+        courtyard=tuple(rect_poly(47.0, 39.0, 6.0, h + 2.0)),
+    )  # fmt: skip
+
+
+def _relaxed_gap(nets: list[str], pitch: float, sat_net: str) -> tuple[float, float]:
+    """(plain, relaxed) courtyard gap of a resistor on `sat_net` next to `_column_ic`."""
+    m = circuit(_column_ic("U1", nets, pitch), res("R1", sat_net, "X1", (70.0, 60.0)))
+    cls = classify(m)
+    (c,) = build_clusters(m, cls, ["U1", "R1"])
+    out = []
+    for relax in (False, True):
+        placed = _placed(m, layout_cluster(m, cls, c, gap=0.05, relax=relax))
+        out.append(_gap(box_of(placed["R1"]), box_of(placed["U1"])))
+    return out[0], out[1]
+
+
+def test_relax_gap_counts_escaping_pins() -> None:
+    """R2b: a satellite in front of host pins it does not connect to keeps one track pitch
+    per two of them (+ one via pitch on a fine-pitch side) more than the plain gap, plus at
+    least one pitch to its neighbours (Default class: 0.2 + 0.2 mm)."""
+    from copperchat.board.placer.layout import SATELLITE_EXTRA_MM
+
+    nets = [f"S{i}" for i in range(1, 12)]  # pin 6 (y = 42.5 at 0.5 mm) is the satellite's
+    plain, relaxed = _relaxed_gap(nets, 0.5, "S6")
+    # span of the 2 x 1 mm resistor turned radial (1 mm along y) ± 0.4: y 41.6..43.4 →
+    # pins 5 and 7 (y 42.0, 43.0) escape: ceil(2 / 2) = 1 pitch, + a via (0.6 + 0.2) at 0.5 mm
+    want = (0.4 - SATELLITE_EXTRA_MM) + 0.4 + 0.8
+    assert relaxed - plain >= want - 0.05 - 1e-6, (plain, relaxed)
+    assert relaxed - plain <= want + 0.1, (plain, relaxed)
+    # a coarse pitch: no via room; pins 1 mm apart: only the satellite's own pin in the span
+    plain, relaxed = _relaxed_gap(nets, 1.27, "S6")
+    assert relaxed - plain == pytest.approx(0.4 - SATELLITE_EXTRA_MM, abs=0.05 + 1e-6)
+
+
+def test_relax_ground_pins_need_only_a_via() -> None:
+    """Ground pins take no track (the plane does) but on a fine-pitch side their fanout via
+    goes right at the pin: via room only; at a coarse pitch nothing."""
+    from copperchat.board.placer.layout import SATELLITE_EXTRA_MM
+
+    nets = ["GND"] * 5 + ["S6"] + ["GND"] * 5
+    plain, relaxed = _relaxed_gap(nets, 0.5, "S6")
+    assert relaxed - plain == pytest.approx(0.4 - SATELLITE_EXTRA_MM + 0.8, abs=0.05 + 1e-6)
+    plain, relaxed = _relaxed_gap(nets, 1.27, "S6")
+    assert relaxed - plain == pytest.approx(0.4 - SATELLITE_EXTRA_MM, abs=0.05 + 1e-6)
+
+
+def test_relax_decap_gets_via_room_only() -> None:
+    """A decap in front of a fine-pitch side: one via pitch when another pin (its GND
+    neighbour) faces it, never track room (M8: close to the pin it serves)."""
+    nets = ["S1", "S2", "S3", "S4", "GND", "+3V3", "S7", "S8", "S9", "S10", "S11"]
+    m = circuit(_column_ic("U1", nets, 0.5), cap("C1", "+3V3", "GND", (70.0, 60.0), value="100nF"))
+    cls = classify(m)
+    assert [d.cap for d in cls.decoupling] == ["C1"]
+    (c,) = build_clusters(m, cls, ["U1", "C1"])
+    gaps = []
+    for relax in (False, True):
+        placed = _placed(m, layout_cluster(m, cls, c, gap=0.05, relax=relax))
+        gaps.append(_gap(box_of(placed["C1"]), box_of(placed["U1"])))
+    assert gaps[1] - gaps[0] == pytest.approx(0.8, abs=0.05 + 1e-6), gaps
+
+
+def test_relax_keeps_decap_and_crystal_gaps() -> None:
+    """Decaps (M8) and crystals (the P9a standoff window) keep their P4 gaps."""
+    pins = {"1": "S1", "2": "OSC_IN", "3": "OSC_OUT", "4": "S4", "5": "GND", "6": "+3V3"}
+    pins |= {"7": "S7", "8": "S8"}
+    m = circuit(
+        qfn("U1", pins),
+        xtal("Y1", "OSC_IN", "OSC_OUT", (70.0, 60.0)),
+        cap("C1", "+3V3", "GND", (80.0, 60.0), value="100nF"),
+    )
+    cls = classify(m)
+    (c,) = build_clusters(m, cls, ["U1", "Y1", "C1"])
+    plain = layout_cluster(m, cls, c, gap=0.05)
+    relaxed = layout_cluster(m, cls, c, gap=0.05, relax=True)
+    assert plain == relaxed
+
+
+def test_relax_off_is_p4_layout() -> None:
+    from copperchat.board.placer.pack import block_layout
+
+    m = circuit(qfn("U1", _PINS), _sot("Q1", ("A", "B", "GND"), (70.0, 60.0)))
+    cls = classify(m)
+    assert block_layout(m, cls, ["U1", "Q1"], keep_channels=0.5) == block_layout(
+        m, cls, ["U1", "Q1"], keep_channels=0.5, relax=False
+    )
+
+
+def test_block_layout_relaxed_channels() -> None:
+    """R2b: two clusters of one block (two anchors) sharing six signal nets are shelf-packed
+    `channel_mm` apart (1.0 + ceil(6.25 / 2) x 0.4 mm), not `keep_channels`."""
+    from copperchat.board.placer.pack import block_layout
+    from copperchat.board.placer.routability import channel_mm
+
+    shared = {str(i): f"L{i}" for i in range(1, 7)} | {"7": "GND", "8": "+3V3"}
+    m = circuit(qfn("U1", shared, (50.0, 40.0)), qfn("U2", shared, (80.0, 40.0)))
+    cls = classify(m)
+    assert len(build_clusters(m, cls, ["U1", "U2"])) == 2
+    want = channel_mm(6.25, 0.4, 0.5)
+    assert want == pytest.approx(2.6)
+    for relax, least in ((False, 0.5), (True, want)):
+        mv = block_layout(m, cls, ["U1", "U2"], keep_channels=0.5, relax=relax)
+        placed = _placed(m, mv)
+        got = _gap(box_of(placed["U1"]), box_of(placed["U2"]))
+        assert got >= least - 1e-6, (relax, got)
+        if not relax:
+            assert got < want - 1e-6

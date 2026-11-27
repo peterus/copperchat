@@ -24,6 +24,7 @@ Every position is snapped to the 0.05 mm grid (outwards, so gaps never shrink).
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import math
 import re
 from collections import defaultdict
@@ -57,6 +58,18 @@ SATELLITE_EXTRA_MM = 0.3  # extra courtyard gap for satellites that are not deco
 # fan out from its pins to the anchor's pin rows through that gap - at most ESCAPE_MAX_MM
 ESCAPE_PER_NET_MM = 0.4
 ESCAPE_MAX_MM = 2.0
+# R2b (relaxed layout, `pcb_place_blocks` only; owner 2026-11-27: "no room for the tracks
+# between the parts of a block"): a satellite in front of host pins it does not connect to
+# keeps one track pitch more per two such pins (they escape between the two parts, half to
+# each side), at most ESCAPE_TRACKS_MAX pitches, plus one via pitch when that host side is
+# fine-pitch (fanout vias right at the pins); every satellite keeps at least one track
+# pitch to its neighbours. Crystals and a switcher's inductor / input / output caps keep
+# their P4 / P9a gaps (a small hot loop; relaxed switcher caps took ODH from 3 to 6 M9
+# reviews); a decap only gets the via room in front of fine-pitch pins other than the one it
+# serves (sp4_synth: a flush decap boxed in the TSSOP's GND pin next to its supply pin; a
+# full track pitch for decaps made ODH's M8 3.6 → 4.0 mm)
+ESCAPE_TRACKS_MAX = 4
+FINE_PITCH_MM = 0.65
 # a crystal keeps this much more than the minimum courtyard gap: the IC pins next to the
 # oscillator pins (reset, supply) need one track (0.2 mm + 2 x 0.2 mm clearance) out
 # between the IC and the crystal; KiCad's courtyard margins already give ~0.5 mm of copper
@@ -248,6 +261,12 @@ def _side_of(b: Box, pads: Sequence[Pad]) -> str:
     return min(sides, key=lambda s: (d[s], list(_SIDES).index(s)))
 
 
+def _nearest_side(b: Box, pt: Point) -> str:
+    """The edge of box `b` nearest to `pt` (ties in `_SIDES` order)."""
+    d = {"left": pt[0] - b[0], "right": b[2] - pt[0], "top": pt[1] - b[1], "bottom": b[3] - pt[1]}
+    return min(_SIDES, key=lambda s: (d[s], list(_SIDES).index(s)))
+
+
 def _mean(pts: Sequence[Point]) -> Point:
     return (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
 
@@ -260,11 +279,18 @@ class _Layout:
         c: Cluster,
         gap: float,
         escape_room: bool = False,
+        relax: bool = False,
     ) -> None:
         self.model = model
         self.cls = cls
         self.gap = gap
         self.escape_room = escape_room
+        self.relax = relax
+        if relax:  # a local import: routability imports the legaliser, which imports us
+            from copperchat.board.placer.routability import signal_pitch, via_pitch
+
+            self.pitch = signal_pitch(model)
+            self.via = via_pitch(model)
         self.anchor = c.anchor if c.anchor in c.members else c.members[0]
         self.members = c.members
         self.ns = NetSets(model, cls, c.members)
@@ -274,6 +300,13 @@ class _Layout:
         self.shared_sig: dict[str, int] = defaultdict(int)
         self.shared_all: dict[str, int] = defaultdict(int)
         self.decap_pin = self._assign_decaps()
+        # a switcher's hot-loop parts (inductor, input / output caps): never relaxed (M9)
+        self.loop_parts = frozenset(
+            r
+            for sw in cls.switchers
+            for r in (sw.inductor, *sw.in_caps, *sw.out_caps)
+            if r in c.members
+        )
         self.priority = self._priorities()
 
     # -- decoupling assignment --
@@ -420,15 +453,56 @@ class _Layout:
                 out.append(r)
         return out or rots
 
-    def _gap_for(self, ref: str) -> float:
+    def _gap_for(self, ref: str, relaxed: float = 0.0) -> float:
         """Decoupling caps (spec §9.3 distance rules) keep the minimum gap, a crystal
         `CRYSTAL_STANDOFF_MM` more (its escape channel), a satellite with more than two
-        pads `ESCAPE_PER_NET_MM` more per signal net shared with the anchor (R2)."""
+        pads `ESCAPE_PER_NET_MM` more per signal net shared with the anchor (R2). `relaxed`
+        (R2b, `_relaxed`) is added to every satellite but a crystal (a decap: via room
+        only); a switcher's hot-loop parts keep the P4 gap."""
         if any(x.ref == ref for x in self.cls.crystals):
             return self.gap + CRYSTAL_STANDOFF_MM
         if ref in self.decap_pin:
-            return self.gap
-        return self.gap + SATELLITE_EXTRA_MM + (self._escape(ref) if self.escape_room else 0.0)
+            return self.gap + relaxed
+        tight = not self.relax or ref in self.loop_parts
+        extra = SATELLITE_EXTRA_MM if tight else max(SATELLITE_EXTRA_MM, self.pitch)
+        return self.gap + extra + relaxed + (self._escape(ref) if self.escape_room else 0.0)
+
+    def _relaxed(self, local: Part, host: Part, side: str, t_star: float) -> float:
+        """R2b: the routing room `local` (at rotation, centred on `t_star` along `side`)
+        leaves in front of `host`'s pads on that side inside its span (± one pitch): one
+        pitch per two of them whose nets it does not have (ground excluded: the plane takes
+        it), at most `ESCAPE_TRACKS_MAX`, plus one via pitch when the pins of that side are
+        closer than `FINE_PITCH_MM` to each other and one of those pads (ground included)
+        needs to leave - its fanout via goes right at the pin (an estimate for the spot the
+        satellite wants, `t_star`; a satellite that slides along the row keeps that gap -
+        it slides when a neighbour took `t_star`, which keeps at least one pitch to it
+        anyway). A decap gets only that via
+        room, and only for pads other than the pin it serves; crystals (`_gap_for`) and a
+        switcher's hot-loop parts get none."""
+        if not self.relax or local.ref in self.loop_parts:
+            return 0.0
+        axis, _ = _SIDES[side]
+        hb = box_of(host)
+        mine = {q.net for q in local.pads if q.net}
+        sb = box_of(local)
+        lo = t_star + sb[1 - axis] - self.pitch
+        hi = t_star + sb[3 - axis] + self.pitch
+        on_side = [q for q in host.pads if _nearest_side(hb, (q.x, q.y)) == side]
+        span = [q for q in on_side if q.net and lo - _EPS <= (q.x, q.y)[1 - axis] <= hi + _EPS]
+        along = sorted({round((q.x, q.y)[1 - axis], 4) for q in on_side})
+        steps = [b - a for a, b in itertools.pairwise(along)]
+        fine = bool(steps) and min(steps) < FINE_PITCH_MM - _EPS
+        if local.ref in self.decap_pin:
+            served = self.decap_pin[local.ref][1]
+            others = [q for q in span if q.number != served]
+            return self.via if fine and others else 0.0
+        kinds = self.cls.net_kind
+        escaping = [q for q in span if kinds.get(q.net) != "ground" and q.net not in mine]
+        grounded = [q for q in span if kinds.get(q.net) == "ground"]
+        room = self.pitch * min(math.ceil(len(escaping) / 2), ESCAPE_TRACKS_MAX)
+        if fine and (escaping or grounded):
+            room += self.via
+        return room
 
     def _escape(self, ref: str) -> float:
         part = self.model.part(ref)
@@ -450,7 +524,6 @@ class _Layout:
         Connected satellites cost the octilinear distance of their connected pads to the
         target pads plus `ALIGN_WEIGHT` x the slide along the row away from the aligned
         spot; unconnected ones the slide plus `RADIAL_WEIGHT` x the step outwards."""
-        g = self._gap_for(part.ref)
         axis, sign = _SIDES[side]
         local = moved_part(part, Move(part.ref, 0.0, 0.0, rot, "top"))
         sb = box_of(local)
@@ -463,7 +536,6 @@ class _Layout:
 
         s_r0, s_r1, s_t0, s_t1 = frame(sb)
         _, h_r1, h_t0, h_t1 = frame(box_of(host))
-        u0 = snap_up(h_r1 + g - s_r0)
         own: list[Pad] = []
         if want is not None:
             own = [q for q in local.pads if q.net in want.own_nets] or list(local.pads)
@@ -472,6 +544,8 @@ class _Layout:
             t_star = snap(tgt[1 - axis] - mine[1 - axis])
         else:
             t_star = snap((h_t0 + h_t1) / 2 - (s_t0 + s_t1) / 2)
+        g = self._gap_for(part.ref, self._relaxed(local, host, side, t_star))
+        u0 = snap_up(h_r1 + g - s_r0)
 
         def at(u: float, t: float) -> tuple[float, float]:
             pos = [0.0, 0.0]
@@ -586,10 +660,17 @@ def _area(p: Part) -> float:
 
 
 def layout_cluster(
-    model: BoardModel, cls: Classification, c: Cluster, *, gap: float, escape_room: bool = False
+    model: BoardModel,
+    cls: Classification,
+    c: Cluster,
+    *,
+    gap: float,
+    escape_room: bool = False,
+    relax: bool = False,
 ) -> tuple[Move, ...]:
     """Moves of `c`'s members relative to its anchor at `(0, 0)`, rotation 0, top side (the
     anchor's move first, then the satellites in placement order). No two courtyards are
     closer than `gap`. `escape_room` (R2, `pcb_place_blocks` only): multi-pin satellites
-    keep `ESCAPE_PER_NET_MM` per shared signal net more."""
-    return _Layout(model, cls, c, gap, escape_room).run()
+    keep `ESCAPE_PER_NET_MM` per shared signal net more. `relax` (R2b, `pcb_place_blocks`
+    only): routing room per satellite (`_Layout._relaxed`), one track pitch at least."""
+    return _Layout(model, cls, c, gap, escape_room, relax).run()

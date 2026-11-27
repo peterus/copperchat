@@ -13,6 +13,7 @@ from copperchat.board.metrics import compute_metrics, connections
 from copperchat.board.model import BoardModel
 from copperchat.board.placer.layout import box_of
 from copperchat.board.placer.legalize import edge_margin, on_board
+from copperchat.board.placer.routability import congestion, largest_hole
 
 CELL_MM = 5.0
 # Routability: at most this many pads in any 5 x 5 mm cell (spec call 21; tuned in P4
@@ -32,6 +33,11 @@ class PlacementScore:
     routability_ok: bool
     # R2: how much of the usable area the placement spans (`spread`); reported, not a metric
     spread: float = 0.0
+    # R2b (reported, not metrics): RUDY routing demand / capacity - the worst 2.5 mm cell
+    # and the cells above 1.0 - and the largest empty rectangle inside the placement
+    congestion_worst: float = 0.0
+    congestion_over: int = 0
+    largest_hole_mm2: float = 0.0
 
 
 def airwire_mm(model: BoardModel, cls: Classification) -> float:
@@ -93,6 +99,7 @@ def score_placement(model: BoardModel, cls: Classification, doc: BoardDoc) -> Pl
     by_id = {m.id: m for m in report.metrics}
     m1, m8, m9, m10 = by_id["M1"], by_id["M8"], by_id["M9"], by_id["M10"]
     cell = max_cell_pins(model)
+    cong = congestion(model, cls)
     return PlacementScore(
         m1_violations=int(m1.value or 0),
         m8_worst_mm=None if m8.value is None else float(m8.value),
@@ -102,4 +109,7 @@ def score_placement(model: BoardModel, cls: Classification, doc: BoardDoc) -> Pl
         max_cell_pins=cell,
         routability_ok=cell <= MAX_CELL_PINS,
         spread=spread(model, cls),
+        congestion_worst=cong.worst,
+        congestion_over=cong.over,
+        largest_hole_mm2=largest_hole(model, cls),
     )

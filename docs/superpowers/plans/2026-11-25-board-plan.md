@@ -753,6 +753,99 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
 
 (Each phase adds its section here in its own PR.)
 
+### As built (R2b)
+
+Owner follow-up to R2 (2026-11-27: parts inside a block too close, blocks too far apart,
+arrange more relaxed and logically). Phase file `board/round2-r2b-relaxed-placement.md`.
+Only `pcb_place_blocks` changes; `pcb_place_block` and `pcb_floorplan` keep their layouts
+(`relax` defaults off).
+
+**Routing room inside a block** (`layout.py`, `layout_cluster(relax=)`, `block_layout(relax=)`):
+a satellite in front of host pins keeps one track pitch (Default class width + clearance,
+`routability.signal_pitch`) per two pins it does not connect to (ground excluded),
+at most `ESCAPE_TRACKS_MAX` = 4, plus one via pitch (via diameter + clearance) when that
+host side's pin pitch is < `FINE_PITCH_MM` = 0.65 mm and a pin there (ground included)
+must leave; every satellite keeps at least one pitch to its neighbours. **Deviations from the
+phase file (measured):** decaps get the via room only (in front of a fine-pitch pin other
+than the one they serve; a full track pitch made ODH's M8 3.6 → 4.0 mm, and without any
+room the flush decap C2 boxed in `sp4_synth`'s U1.15 GND pin → one `unconnected` in the
+full check after the pour); a switcher's inductor / input / output caps are never relaxed
+(relaxed they took ODH from 3 to 6 M9 reviews); crystals unchanged. Clusters of one block
+are shelf-packed `channel_mm` apart (widest need of any cluster to the rest).
+
+**Block placement** (`floorplan.place_blocks`): the floorplan (relaxed boxes, else compact,
+else the fixed blocks alone - a box-shape or box-area refusal no longer stops the run) only
+places the fixed blocks (edge strips / Region rows; relaxed, else compact layout in the
+strip, else the whole board = `fallback`) and gives every free block a weak target; the free
+blocks are then packed one by one, the most weighted-connected to the placed ones first
+(net weight: signal 1, supply `SUPPLY_WEIGHT` = 0.25, ground 0), on the whole usable box
+against the **parts** already placed (blocks interlock), each placed part keeping
+`channel_mm` = clamp(1.0 + pitch x ceil(shared / 2), keep_channels, 4.0) + slack.
+`pack_block(gaps=)` grows an obstacle part's box by its extra gap; a block that finds no spot
+moves to the front and the run restarts (≤ `RETRY_MAX` = 8). **Deviation (not in the phase
+file):** the greedy order is sensitive to the target pull (ODH 80 x 65: 1127 vs 1511 mm
+airwire), so every slack (`SLACK_STEPS_MM` = 1.0 / 0.5 / 0.0) x pull (`TARGET_PULL_WEIGHTS`
+= 0.02 / 0.1 / 0.2 per member and mm) is tried per layout and the least airwire x
+(1 - `SLACK_CREDIT` 0.05 x slack) wins; relaxed layout first, P4's compact layout only when
+nothing relaxed fits; R2's region packing remains the last resort. The `grow` (bounding-box
+growth) term from the first draft was dropped: it only raised airwire. `Floorplan` gains
+`gaps`, `slack_mm`, `order`, `relaxed` (the free blocks' layout), `compact_fixed` (fixed blocks
+whose strip only held the compact layout - on ODH both edge blocks) (additive). Review round 1:
+the constructive packing spends at most `PACK_BUDGET` = 600 `pack_block` calls per layout pass
+(deterministic; review round 2: per pass, so a failing relaxed pass never starves the compact
+one; ODH 80 x 100 uses 117, 80 x 65 357, 80 x 60 fails after 753 in 36 s); the fixed-blocks-only
+floorplan runs on the parked model (a free block's stale position is no obstacle) and gives
+`usable_mm2`.
+
+**Checks** (`routability.py`, reported, not metrics): `PlacementScore.congestion_worst` /
+`congestion_over` (RUDY per 2.5 mm cell: connection length x pitch spread over its bbox vs
+cell area minus pads x 2 outer layers), `largest_hole_mm2` (largest empty rectangle inside
+the courtyards' bbox, 0.5 mm raster); `pcb_place_blocks` adds `order`, `relaxed`,
+`slack_mm`, `congestion_*`, `largest_hole_mm2`, `gap_excess_mm` {worst over pairs sharing a
+signal net, shared-weighted mean} and `gaps` (≤ 32 rows, largest excess first). `spread`
+stays reported but is no longer a target (compactness is) - `well_spread` is often false now.
+
+**Measured, ODH copy** (`2e17ac5`, 4 layers `jlcpcb-4l`, Power 0.3 mm, J201 left, J302
+bottom, keep_channels 1.5; R2 in brackets):
+
+| Board | Fits | Airwire mm | Gap excess mean / worst (signal) mm | Largest hole mm² | Congestion worst | M8 / M9 rev | Time |
+|---|---|---|---|---|---|---|---|
+| 80 x 100 | yes, relaxed, slack 0.5 | 1161 (1822) | 5.0 / 20.3 (16.0 / 52.9) | 627 (548) | 0.91 | 3.6 / 3 | 12 s |
+| 80 x 80 | yes, relaxed, slack 1.0 | 1205 | 6.1 / 30.4 | 462 | 1.00 | 3.6 / 3 | 9 s |
+| 80 x 70 | yes, relaxed, slack 0 | 1171 | 4.5 / 25.9 | 325 | 1.09 | 3.6 / 3 | 10 s |
+| **80 x 65** | **yes, relaxed, slack 0** | 1253 | 6.1 / 26.7 | 206 | 0.81 | 3.6 / 3 | 20 s |
+| 80 x 60 | `does_not_fit` (courtyard fill 0.429) | - | - | - | - | - | 36 s |
+
+M1 0 everywhere; M13 J201 0.75 mm from its edge = R2's value (pre-existing, R7). At 80 x 100
+the placement uses the lower ~65 mm and leaves the top free (= the board could be 80 x 65).
+80 x 60: compact block boxes need 92 % of the usable area; the constructive packing does fit
+it without the fine-pitch via room (one draft) but not with it. Renders:
+`/tmp/sp4-renders/r2b-odh-80x100-placed.png`, `r2b-odh-80x65-placed.png`,
+`r2b-sp4_synth-placed.png`, `-routed-top.png`, `-routed-bottom.png`.
+
+**Golden `sp4_synth`** (regenerated, confirmed by a second run; 0 hard): M5 1.052 → 1.092,
+M7 review → pass, M10 1.722 pass → 1.774 review (the interlocking blocks' hulls intrude
+each other - review only), M11 0.9582 → 0.9581, M15 3 → 2, M16 18 → 19 (review-only, router
+output), tracks 184 → 177, vias 124 → 123, length 282 → 224 mm, fill 14.1 → 12.0 s.
+`tests/kicad/board/test_place_blocks.py`: one alignable pair left (C1.1-U1.5), R3.1-J1.B5
+got its corridor.
+
+**Residuals**
+- R4 / R7: M16 doglegs (19 on the golden) are router output; M16 pad jogs / S-offsets are
+  hard per the owner (brief 2026-11-27) - R4 switches them on.
+- R7 / owner: J201's 0.75 mm edge distance (M13) as in R2; J402's microSD body overhangs
+  the right edge in the 80 x 100 run (no courtyard overlap, M1 0).
+- Placement at 80 x 100 is compact at one end of the board, not centred; a centring /
+  even-slack pass would need the edge blocks to move with it (they stay on their edges).
+- Congestion is a reported estimate (2 outer layers); not calibrated against routed boards.
+- The relaxed routing room is computed for the spot a satellite wants (`t_star`); a satellite
+  that slides along its row keeps that gap (review round 2, documented, not recomputed).
+- Review round 3 (valid, deferred, PM inbox #60): `_relaxed` sorts host pads to a side by the
+  nearest courtyard edge, so a SOIC/TSSOP row's end pins near a short edge are missed. The
+  pad-axis fix (as `_side_of`) shifts `sp4_synth`'s block arrangement and the router / pour then
+  isolates U1.15 (fine-pitch GND pad, P7's `via_pour` fallback) → golden M2 hard fail. Fix both
+  together (robust fine-pitch GND fanout first) in R7.
+
 ### As built (R2)
 
 **Floorplan** (`cc/board/placer/floorplan.py`, B-C11 round 2, pure, deterministic):
@@ -2798,6 +2891,11 @@ CHANNEL_MIN_MM = 1.0; CHANNEL_MAX_MM = 4.0; CHANNEL_PER_NET_MM = 0.3; PACK_MAX =
 # As built (R2), additive: BlockBox.offset / edge_ref, Floorplan.fixed / fallback; REGION_PULL_WEIGHT = 2.0,
 # BACKTRACK_TRIES = 6, BISECT_BUDGET = 400, TIGHT_GAP_MM = 0.3; pack.pack_block(..., pull_weight=) (place_block
 # without the score); align_pairs uses metrics.alignment_pairs / alignment_need (R1's file, additive)
+# R2b (additive): floorplan(..., relax=False); Floorplan.gaps / slack_mm / order / relaxed; place_blocks
+# = constructive connectivity-ordered packing (TARGET_PULL_WEIGHTS, SLACK_STEPS_MM, SLACK_CREDIT, RETRY_MAX);
+# pack_block(..., relax=, gaps=); block_layout / layout_cluster(..., relax=); new routability.py
+# (net_pitch, channel_mm, congestion, largest_hole, block_gaps, gap_summary); PlacementScore +=
+# congestion_worst, congestion_over, largest_hole_mm2
 ```
 Tools: `pcb_floorplan {blocks?, keep_channels?}` (`PCB_READ`, cost 0, render with region
 rectangles) and `pcb_place_blocks {blocks?, keep_channels?, unroute?}` (`PCB_WRITES`, cost 1,

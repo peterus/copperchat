@@ -98,3 +98,18 @@ def test_spread_score() -> None:
     from dataclasses import replace
 
     assert _score(replace(none, outline=replace(none.outline, kind="none"))).spread == 0.0
+
+
+def test_score_reports_congestion_and_hole() -> None:
+    """R2b: the routability fields are filled (RUDY worst cell, cells over 1.0, the largest
+    empty rectangle inside the placement)."""
+    m = circuit(
+        ic("U1", {"1": "A", "2": "B", "3": "C"}, (10.0, 10.0)),
+        ic("U2", {"1": "A", "2": "B", "3": "C"}, (40.0, 10.0)),
+        outline=outline(0, 0, 60, 30),
+    )
+    s = _score(m)
+    assert s.congestion_worst > 0.0 and s.congestion_over >= 0
+    assert s.largest_hole_mm2 > 0.0
+    empty = _score(circuit(outline=outline(0, 0, 60, 30)))
+    assert (empty.congestion_worst, empty.congestion_over, empty.largest_hole_mm2) == (0.0, 0, 0.0)
