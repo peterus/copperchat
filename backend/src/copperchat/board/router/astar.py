@@ -69,6 +69,8 @@ ENTRY_TURN_COST = 4.0
 VIA_COST = 2.0  # mm-equivalent per via
 LAYER_FACTOR = 1.2  # step cost on every layer but the request's first
 PAIR_BAND_FACTOR = 0.8  # step cost inside a grid's `cheap` band (pair fallback)
+# R4: step cost factor inside another net's unrouted pad's entry zone (`grid.escape`)
+ESCAPE_COST_FACTOR = 1.25
 MAX_GOAL_REJECTS = 64  # goal states whose snapped path failed the final check
 # f = g + HEURISTIC_WEIGHT * h (weighted A*): a detour around an obstacle otherwise expands
 # the whole ellipse of nodes with g + h below the detour's cost (> 1M states for a 4 mm
@@ -89,6 +91,15 @@ DIRS: tuple[tuple[int, int], ...] = (
 _VIA_D = 8  # direction "none" after a via
 _START_D = 9  # direction "none" at the start pad
 _ND = 10
+# R4 (owner 2026-11-27, M16 b / c hard): the bends a path made in ONE end pad's entry zone
+# since it last was outside that zone - per zone 0 none, 1 / 2 one bend of sense +45° / -45°,
+# 3 / 4 two of that sense (90°). _ZONE_NEXT[z][sense] = the state after one more bend there,
+# -1 = refused: the opposite sense is a jog, a third bend a loop (cumulative 135°). The
+# search state is 0 or 1 + 4 x zone (0 = pad a's, 1 = pad b's) + (that state - 1): the two
+# zones are judged separately, like M16 (review round 1: a union refused a legal S-path
+# between two close offset pads).
+_ZONE_NEXT = ((0, 1, 2), (0, 3, -1), (0, -1, 4), (0, -1, -1), (0, -1, -1))
+_NZ = 9
 _EPS = 1e-9
 
 
@@ -418,7 +429,8 @@ def valid_path(
     stricter than the board metric, which exempts every pad-end bend); every segment and
     via keeps its exact clearance, also between the path's own vias. A tree request's path
     may instead end ON an own track connected to pad `b` (`tree_end`, R3). A pad entry that
-    loops or jogs (M16 b / c) fails unless `entry_ok` (`solve`'s last resort)."""
+    loops or jogs (M16 b / c) fails unless `entry_ok` (an explicit caller's choice; `solve`
+    has no such fallback since R4)."""
     runs = layer_runs(path)
     if not runs:
         return False
@@ -846,6 +858,23 @@ def tree_goals(grid: ObstacleGrid, req: RouteRequest) -> list[dict[int, tuple[in
     # to one pitch on the arrival side; the extension onto the track stays < 1 pitch)
     reach = pitch - 1e-9
     keep = req.width
+    # R4: never land in an own pad's entry zone - the joined path would turn there (a T is
+    # 90°), and one more bend of the new branch inside the zone makes an M16 loop or jog
+    # measured from that pad
+    zones = [entry_zone(q, req.width) for q in grid.own_pads]
+    zone_boxes = [
+        (min(x for x, _ in z), min(y for _, y in z), max(x for x, _ in z), max(y for _, y in z))
+        for z in zones
+    ]
+
+    def in_zone(p: Point) -> bool:
+        return any(
+            b[0] - 1e-9 <= p[0] <= b[2] + 1e-9
+            and b[1] - 1e-9 <= p[1] <= b[3] + 1e-9
+            and point_in_polygon(p, z)
+            for z, b in zip(zones, zone_boxes, strict=True)
+        )
+
     cands: list[tuple[float, int, int, int, Point]] = []
     for li, segs in enumerate(grid.tree_segments):
         own = grid.own_segments[li] if li < len(grid.own_segments) else ()
@@ -902,7 +931,7 @@ def tree_goals(grid: ObstacleGrid, req: RouteRequest) -> list[dict[int, tuple[in
                         if cells[n] == BLOCKED:
                             continue
                         land = (round(a[0] + ux * along, 6), round(a[1] + uy * along, 6))
-                        if grid.own_exempt(li, land) or _in_pad(land, req.b):
+                        if grid.own_exempt(li, land) or _in_pad(land, req.b) or in_zone(land):
                             continue
                         if abs(off) <= 1e-9:
                             bits = (1 << toward[1.0]) | (1 << toward[-1.0])
@@ -955,6 +984,7 @@ def _search(
     cells = grid.cells
     via_blocked = grid.via_blocked
     cheap = grid.cheap
+    escape = grid.escape
     allow_vias = req.allow_vias and nl > 1
 
     off = [di + dj * w for di, dj in DIRS]
@@ -1021,16 +1051,26 @@ def _search(
             return inf
         return hf * max(octile, c - slack)
 
-    def key(n: int, li: int, d: int, s: int, k: int) -> int:
-        return (((n * nl + li) * _ND + d) * 3 + s) * kk + k
+    def key(n: int, li: int, d: int, s: int, k: int, z: int = 0) -> int:
+        return ((((n * nl + li) * _ND + d) * _NZ + z) * 3 + s) * kk + k
 
     def decode(x: int) -> tuple[int, int]:
-        x //= kk * 3 * _ND
+        x //= kk * 3 * _NZ * _ND
         return x // nl, x % nl  # node, layer
 
     sd = 3 * kk
     exit_cap = max(1, math.ceil(math.hypot(start_pad.w, start_pad.h) / pitch) + 2)
     ez = entry_nodes(grid, (req.a, req.b), req.width)  # bends there cost ENTRY_TURN_COST more
+    zones = (entry_nodes(grid, (req.a,), req.width), entry_nodes(grid, (req.b,), req.width))
+    strict = not entry_ok  # R4: loops / jogs never formed in an entry zone
+
+    def zone_at(n: int, z: int) -> int:
+        """The entry zone a bend at node `n` counts in: the current one when `n` lies in it,
+        else pad a's, else pad b's; -1 = none."""
+        if z and n in zones[(z - 1) // 4]:
+            return (z - 1) // 4
+        return 0 if n in zones[0] else 1 if n in zones[1] else -1
+
     try:  # per layer: node -> directions that make a T with own copper
         tj = junction_masks(grid, deadline)
     except DeadlineExpired:
@@ -1039,13 +1079,13 @@ def _search(
     best: dict[int, float] = {}
     parent: dict[int, int] = {}
     closed: set[int] = set()
-    heap: list[tuple[float, float, int, float, int, int, int, int, int]] = []
+    heap: list[tuple[float, float, int, float, int, int, int, int, int, int]] = []
     counter = 0
     for li in start_layers:
         k0 = key(start_n, li, _START_D, 0, 0)
         best[k0] = 0.0
         parent[k0] = -1
-        heap.append((h(start_n), 0.0, counter, 0.0, start_n, li, _START_D, 0, 0))
+        heap.append((h(start_n), 0.0, counter, 0.0, start_n, li, _START_D, 0, 0, 0))
         counter += 1
     heapq.heapify(heap)
     expansions = 0
@@ -1055,8 +1095,8 @@ def _search(
     blocked = BLOCKED
 
     while heap:
-        _f, _ng, _c, g, n, li, d, s, k = pop(heap)
-        here = (((n) * nl + li) * _ND + d) * sd + (s) * kk + k
+        _f, _ng, _c, g, n, li, d, s, k, z = pop(heap)
+        here = ((((n) * nl + li) * _ND + d) * _NZ + z) * sd + (s) * kk + k
         if here in closed or g > best.get(here, math.inf):
             continue
         closed.add(here)  # weighted A* without re-opening: bounded by HEURISTIC_WEIGHT
@@ -1077,6 +1117,7 @@ def _search(
             return None
         lay = cells[li]
         band = cheap[li] if cheap else None
+        esc = escape[li] if escape else None
         factor = lf[li]
         tjl = tj[li]
         if d >= 8:
@@ -1098,6 +1139,7 @@ def _search(
                         step[nd]
                         * factor
                         * (PAIR_BAND_FACTOR if band is not None and band[m] else 1.0)
+                        * (ESCAPE_COST_FACTOR if esc is not None and esc[m] else 1.0)
                     )
                     if (
                         d != _START_D
@@ -1108,7 +1150,7 @@ def _search(
                 if m < 0:
                     continue
                 ng = g + c
-                nk = (((m) * nl + li) * _ND + nd) * sd + (0) * kk + 0
+                nk = ((((m) * nl + li) * _ND + nd) * _NZ + 0) * sd + (0) * kk + 0
                 if ng < best.get(nk, inf) and nk not in closed:
                     hm = hc.get(m)
                     if hm is None:
@@ -1117,7 +1159,7 @@ def _search(
                         continue
                     best[nk] = ng
                     parent[nk] = here
-                    push(heap, (ng + hm, -ng, counter, ng, m, li, nd, 0, 0))
+                    push(heap, (ng + hm, -ng, counter, ng, m, li, nd, 0, 0, 0))
                     counter += 1
         else:
             # straight on
@@ -1126,17 +1168,20 @@ def _search(
                 c = step[d] * factor
                 if band is not None and band[m]:
                     c *= PAIR_BAND_FACTOR
+                if esc is not None and esc[m]:
+                    c *= ESCAPE_COST_FACTOR
                 s2, k2 = s, k + 1
                 if s2 == 0 or k2 >= cap[d] or k2 * step[d] + _EPS >= need_max:
                     s2, k2 = 0, 0
                 ng = g + c
-                nk = (((m) * nl + li) * _ND + d) * sd + (s2) * kk + k2
+                z2 = z if z and m in zones[(z - 1) // 4] else 0
+                base = (((m) * nl + li) * _ND + d) * _NZ
+                nk = (base + z2) * sd + (s2) * kk + k2
                 if (
                     ng < best.get(nk, inf)
                     and nk not in closed
-                    and not (
-                        s2 and best.get((((m) * nl + li) * _ND + d) * sd + (0) * kk + 0, inf) <= ng
-                    )
+                    and not (s2 and best.get((base + z2) * sd, inf) <= ng)
+                    and not (z2 and best.get(base * sd + (s2) * kk + k2, inf) <= ng)
                 ):
                     hm = hc.get(m)
                     if hm is None:
@@ -1144,13 +1189,22 @@ def _search(
                     if hm != inf:
                         best[nk] = ng
                         parent[nk] = here
-                        push(heap, (ng + hm, -ng, counter, ng, m, li, d, s2, k2))
+                        push(heap, (ng + hm, -ng, counter, ng, m, li, d, s2, k2, z2))
                         counter += 1
             # a 45° bend here, then straight on for the shortest legal piece in one move
             # (no bend can follow sooner; the goal may be reached on the way)
+            in_zone = n in ez
             for nd, ns in (((d + 1) & 7, 1), ((d - 1) & 7, 2)):
                 if not may[d][s][k][ns]:
                     continue
+                zb = 0
+                if strict and in_zone:
+                    zk = zone_at(n, z)
+                    prev = (z - 1) % 4 + 1 if z and (z - 1) // 4 == zk else 0
+                    nxt = _ZONE_NEXT[prev][ns]
+                    if nxt < 0:  # a jog (opposite sense) or a third bend (135°: a loop)
+                        continue
+                    zb = 1 + 4 * zk + nxt - 1
                 o, st = off[nd], step[nd]
                 # a second bend soon after another one in an entry zone: a jog or a loop
                 c = TURN_COST + (ENTRY_TURN_COST if s and n in ez else 0.0)
@@ -1161,14 +1215,20 @@ def _search(
                     m += o
                     if lay[m] == blocked and m != goal_n:
                         break
-                    c += st * factor * (PAIR_BAND_FACTOR if band is not None and band[m] else 1.0)
+                    c += (
+                        st
+                        * factor
+                        * (PAIR_BAND_FACTOR if band is not None and band[m] else 1.0)
+                        * (ESCAPE_COST_FACTOR if esc is not None and esc[m] else 1.0)
+                    )
                     if t < kmin[nd] and m != goal_n:
                         continue
                     s2, k2 = ns, t
                     if k2 >= cap[nd] or k2 * st + _EPS >= need_max:
                         s2, k2 = 0, 0
                     ng = g + c
-                    nk = (((m) * nl + li) * _ND + nd) * sd + (s2) * kk + k2
+                    z2 = zb if zb and m in zones[(zb - 1) // 4] else 0
+                    nk = ((((m) * nl + li) * _ND + nd) * _NZ + z2) * sd + (s2) * kk + k2
                     if ng < best.get(nk, inf) and nk not in closed:
                         hm = hc.get(m)
                         if hm is None:
@@ -1176,18 +1236,18 @@ def _search(
                         if hm != inf:
                             best[nk] = ng
                             parent[nk] = here
-                            push(heap, (ng + hm, -ng, counter, ng, m, li, nd, s2, k2))
+                            push(heap, (ng + hm, -ng, counter, ng, m, li, nd, s2, k2, z2))
                             counter += 1
             if allow_vias and not via_blocked[n]:
                 ng = g + VIA_COST
                 for l2 in range(nl):
                     if l2 == li or cells[l2][n] == blocked:
                         continue
-                    nk = (((n) * nl + l2) * _ND + _VIA_D) * sd + (0) * kk + 0
+                    nk = ((((n) * nl + l2) * _ND + _VIA_D) * _NZ + 0) * sd + (0) * kk + 0
                     if ng < best.get(nk, math.inf):
                         best[nk] = ng
                         parent[nk] = here
-                        push(heap, (ng + h(n), -ng, counter, ng, n, l2, _VIA_D, 0, 0))
+                        push(heap, (ng + h(n), -ng, counter, ng, n, l2, _VIA_D, 0, 0, 0))
                         counter += 1
     return None
 
@@ -1214,7 +1274,7 @@ def _build(
 
 
 FIRST_TRY_EXPANSIONS = 500_000  # budget of solve's first (default-window) search
-RETRY_STRICT_EXPANSIONS = 1_000_000  # budget of solve's loop-free doubled-window retry (R3)
+RETRY_STRICT_EXPANSIONS = 1_000_000  # budget of solve's doubled-window retry (R3)
 # wall-clock cap of one solve / solve_pair (both searches together), below run_cpu's 30 s
 SOLVE_TIME_LIMIT_S = 25.0
 
@@ -1230,14 +1290,11 @@ def solve(
     """`run_cpu` entry point (B-C12): route on the default window, then exactly once on the
     doubled window. The retry runs from pad `b` (its lattice aligned to `b`, the result
     reversed): a tight squeeze that one lattice misses, the other often fits. The first
-    search gets at most FIRST_TRY_EXPANSIONS; both together stop after SOLVE_TIME_LIMIT_S
-    (→ None). `RouteTooLarge` from either window propagates. R3: a pad-entry loop or jog
-    (M16 b / c) is refused in both; only when neither finds a clean path, the two windows
-    are searched once more with them allowed (`valid_path(entry_ok=True)`, no tree goals) -
-    the lesser evil than no route, and M16 reports it. The clean retry on the doubled
-    window gets at most RETRY_STRICT_EXPANSIONS, so a connection that only loops stays
-    cheap. `entry_ok`: allowed from the start (two windows, no clean pass; the caller's
-    choice for connections that are U-shaped by nature)."""
+    search gets at most FIRST_TRY_EXPANSIONS, the retry at most RETRY_STRICT_EXPANSIONS;
+    both together stop after SOLVE_TIME_LIMIT_S (→ None). `RouteTooLarge` from either window
+    propagates. A pad-entry loop or jog (M16 b / c) is never formed (R4, owner 2026-11-27:
+    both hard, no fallback that allows them); `entry_ok` (tests, explicit callers only)
+    lifts that rule in both windows."""
     deadline = time.monotonic() + SOLVE_TIME_LIMIT_S
     first = min(max_expansions, FIRST_TRY_EXPANSIONS)
     try:
@@ -1246,30 +1303,12 @@ def solve(
         if path is not None:
             return path
         check_deadline(deadline)
-        rev = replace(req, a=req.b, b=req.a)
+        # the doubled-window retry runs without the pin-escape cost (review round 5: it doubled
+        # the search effort on dense boards; the first window keeps other nets' escapes free)
+        rev = replace(req, a=req.b, b=req.a, escape=False)
         grid2 = build_grid(model, rev, margin=margin, window_mm=2 * WINDOW_MM, deadline=deadline)
-        if entry_ok:
-            back = route(
-                grid2, rev, max_expansions=max_expansions, deadline=deadline, entry_ok=True
-            )
-            return reverse_path(back) if back is not None else None
         retry = min(max_expansions, RETRY_STRICT_EXPANSIONS)
-        back = route(grid2, rev, max_expansions=retry, deadline=deadline)
-        if back is not None:
-            return reverse_path(back)
-        check_deadline(deadline)
-        plain = replace(req, tree=False)
-        path = route(grid, plain, max_expansions=first, deadline=deadline, entry_ok=True)
-        if path is not None:
-            return path
-        check_deadline(deadline)
-        back = route(
-            grid2,
-            replace(rev, tree=False),
-            max_expansions=max_expansions,
-            deadline=deadline,
-            entry_ok=True,
-        )
+        back = route(grid2, rev, max_expansions=retry, deadline=deadline, entry_ok=entry_ok)
     except DeadlineExpired:
         return None
     return reverse_path(back) if back is not None else None

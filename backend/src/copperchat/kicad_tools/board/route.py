@@ -46,8 +46,8 @@ from copperchat.board.geom import (
     octi_dist,
     point_in_polygon,
     straight_corridor,
+    straight_link_corridor,
 )
-from copperchat.board.metrics import HARD as METRIC_HARD
 from copperchat.board.metrics import connections, routed_length
 from copperchat.board.model import BoardModel, NetClassInfo, Pad, Point, Rect, Track, Via, Zone
 from copperchat.board.presets import PRESETS
@@ -482,7 +482,9 @@ def _m8_first(plans: list[ConnPlan], cls: Classification) -> list[ConnPlan]:
     # onto other copper would lengthen the path M8 measures
     first = sorted(
         (
-            dataclasses.replace(p, early=True, req=dataclasses.replace(p.req, tree=False))
+            dataclasses.replace(
+                p, early=True, req=dataclasses.replace(p.req, tree=False, escape=False)
+            )
             for p in plans
             if m8(p)
         ),
@@ -603,10 +605,15 @@ def straight_path(model: BoardModel, plan: ConnPlan) -> RoutePath | None:
     split at the neck zones (`req.neck`) like a routed path."""
     req = plan.req
     w = min([req.width, *(nw for _z, nw, _zl in req.neck)])
-    cor = straight_corridor(plan.a, plan.b, w, copper_layers=model.copper_layers)
-    if cor is None:
+    # R4: narrower than the class only inside a necked end pad's escape zone (the request's
+    # neck zones; M12, as M16's `neck_link_zones`)
+    zones = tuple(z for z, _nw, _zl in req.neck)
+    link = straight_link_corridor(
+        plan.a, plan.b, req.width, w, zones, copper_layers=model.copper_layers
+    )
+    if link is None:
         return None
-    layers, s, e = cor
+    layers, s, e, _outside = link
     layer = next((la for la in req.layers if la in layers), None)
     if layer is None:
         return None
@@ -679,11 +686,13 @@ def _corridor_free(
 
 
 def _path_free(model: BoardModel, plan: ConnPlan, path: RoutePath) -> bool:
-    """`straight_path`'s segment has no other-net copper or keepout in the way."""
-    layer = path.segments[0][0]
-    s, e = path.segments[0][1], path.segments[-1][2]
-    w = max(pw for *_x, pw in path.segments)
-    return _corridor_free(model, plan.net, layer, s, e, w, plan.req.clearance)
+    """`straight_path`'s segment has no other-net copper or keepout in the way - each piece
+    at its own width (R4: a neck piece next to fine-pitch pins is checked at the neck
+    width, not at the class width of the piece in the other pad's zone)."""
+    return all(
+        _corridor_free(model, plan.net, la, s, e, w, plan.req.clearance)
+        for la, s, e, w in path.segments
+    )
 
 
 def corridor_reservations(
@@ -692,7 +701,7 @@ def corridor_reservations(
     """Every still-free straight corridor (`straight_path`) of an unrouted connection of a
     non-ground net on the board (R3, `route_connections(reserve=...)`). Cheap first: only
     MST connections with a corridor between their two pads are checked for copper
-    (`routed_length`) and a free path; reserved at the widest piece's width."""
+    (`routed_length`) and a free path; reserved per piece at its own width (R4)."""
     floor = default_min_track(model) if min_track is None else min_track
     nets = sorted({q.net for p in model.parts for q in p.pads if q.net})
     out: list[Reserved] = []
@@ -724,11 +733,9 @@ def corridor_reservations(
                 path = straight_path(model, plan)
                 if path is None:
                     continue
-                layer = path.segments[0][0]
-                s, e = path.segments[0][1], path.segments[-1][2]
-                placed = max(pw for *_x, pw in path.segments)
-                if _corridor_free(model, net, layer, s, e, placed, par.clearance):
-                    out.append(Reserved(_key(plan), net, layer, s, e, placed))
+                if _path_free(model, plan, path):
+                    # one reservation per piece at its own width (R4, as `_path_free`)
+                    out += [Reserved(_key(plan), net, la, s, e, w) for la, s, e, w in path.segments]
                     break  # else the next option (a narrower width may still be free)
     return tuple(out)
 
@@ -825,9 +832,6 @@ def _remaining(deadline: float | None) -> float | None:
     return None if deadline is None else deadline - time.monotonic()
 
 
-M8_LIMIT_MM = METRIC_HARD["M8_mm"]  # an M8-measured link longer than this fails M8
-
-
 async def _solve(
     model: BoardModel,
     group: Sequence[ConnPlan],
@@ -855,34 +859,12 @@ async def _solve(
         return None if got is None else [got[0], got[1]]
     req = group[0].req
     m = router_model(model, req)
-    # R3: a link between two pads of one part (USB-C A6 - B6 around A7) is U-shaped by
-    # nature - its compact loop beats a via detour that walls in the pads next to it
-    same_part = group[0].a.ref == group[0].b.ref
-    pruned = prune_model(m, req)
+    # R4 (owner 2026-11-27): a pad-entry loop or jog is never accepted - also not for a
+    # link between two pads of one part (USB-C A6 - B6) or an M8-measured link; those go
+    # through a via, enter from the other side or land on the net's copper as a T instead
     path = await run_cpu(
-        solve, pruned, req, margin=margin, entry_ok=same_part, timeout_s=timeout, wait_s=remaining
+        solve, prune_model(m, req), req, margin=margin, timeout_s=timeout, wait_s=remaining
     )
-    if group[0].early and not same_part and (path is None or path.length > M8_LIMIT_MM):
-        # an M8-measured link (decap / crystal) that only fits the M8 limit with a pad-entry
-        # jog or loop: both are owner-hard; the one within M8 wins, and the route report
-        # names its entry defect (`pad_entry_defects`); M16 reports it too
-        left = _remaining(deadline)
-        if left is None or left > 0:
-            alt = await run_cpu(
-                solve,
-                pruned,
-                req,
-                margin=margin,
-                entry_ok=True,
-                timeout_s=timeout if left is None else min(SOLVE_TIMEOUT_S, left),
-                wait_s=left,
-            )
-            if (
-                alt is not None
-                and alt.length <= M8_LIMIT_MM
-                and (path is None or alt.length < path.length)
-            ):
-                path = alt
     return None if path is None else [path]
 
 

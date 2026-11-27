@@ -89,11 +89,11 @@ def test_entry_no_loop() -> None:
     assert _loops(path, req) == []
 
 
-def test_solve_allows_a_forced_loop() -> None:
+def test_solve_never_loops() -> None:
     """USB-C A6 / B6: two tall pads of one net with another net's pad between them and
     other-net copper just beyond their ends - only a U-turn inside the entry zone connects
-    them on this layer. The strict search finds nothing; `solve` falls back to the path
-    with the loop (M16 reports it) instead of no route."""
+    them on this layer. R4 (owner 2026-11-27, M16 b / c hard): `solve` finds no route rather
+    than one with the loop; `entry_ok` (explicit) still allows it."""
     from copperchat.board.router import solve
 
     from .builders import track
@@ -113,15 +113,16 @@ def test_solve_allows_a_forced_loop() -> None:
     )
     req = RouteRequest("DP", a, b, 0.2, 0.15, ("F.Cu",), False, (0.6, 0.3))
     assert route(build_grid(m, req), req) is None
-    path = solve(m, req)
+    assert solve(m, req) is None
+    path = solve(m, req, entry_ok=True)
     assert path is not None
-    assert _loops(path, req)  # the forced loop, reported by M16 later
+    assert _loops(path, req)
 
 
 def test_solve_order(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """`solve`: default window clean → doubled window clean (≤ RETRY_STRICT_EXPANSIONS) →
-    default window with entry loops / jogs allowed → doubled window likewise; a clean
-    doubled-window path wins over any loop; `entry_ok` skips the clean passes."""
+    """`solve`: default window (≤ FIRST_TRY_EXPANSIONS) → doubled window (≤
+    RETRY_STRICT_EXPANSIONS), both refusing entry loops / jogs - no loop-allowing pass
+    (R4); `entry_ok` lifts the rule in both."""
     calls: list[tuple[int, bool, int]] = []
     real = astar_mod.route
 
@@ -135,9 +136,9 @@ def test_solve_order(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     m = circuit(part("U1", 10.0, 10.0, pads=(a,)), part("U2", 12.0, 10.0, pads=(b,)))
     req = _req(a, b)
     assert astar_mod.solve(m, req) is None
-    (w1, e1, x1), (w2, e2, x2), (w3, e3, _x3), (w4, e4, _x4) = calls
-    assert (e1, e2, e3, e4) == (False, False, True, True)
-    assert w2 > w1 and w3 == w1 and w4 == w2
+    (w1, e1, x1), (w2, e2, x2) = calls
+    assert (e1, e2) == (False, False)
+    assert w2 > w1
     assert x1 == astar_mod.FIRST_TRY_EXPANSIONS and x2 == astar_mod.RETRY_STRICT_EXPANSIONS
     calls.clear()
     astar_mod.solve(m, req, entry_ok=True)
@@ -155,3 +156,30 @@ def test_solve_order(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setattr(astar_mod, "route", clean_second)
     assert astar_mod.solve(m, req) is not None
     assert len(calls) == 2  # the loop-allowing passes never ran
+
+
+def test_entry_zones_judged_per_pad() -> None:
+    """Review round 1: two close, offset pads whose entry zones touch - the shortest legal
+    path is an S (+45° in a's zone, -45° in b's zone), which is no jog (M16 judges each
+    pad's zone alone). The search must find it (the union of both zones refused it and
+    returned a 4.1 mm path with 6 bends)."""
+    a = pad("U1", "1", "P", (10.0, 10.0), w=1.0, h=0.4)
+    b = pad("U2", "1", "P", (12.6, 10.6), w=1.0, h=0.4)
+    m = circuit(part("U1", 10.0, 10.0, pads=(a,)), part("U2", 12.6, 10.6, pads=(b,)))
+    req = _req(a, b)
+    grid = build_grid(m, req)
+    path = route(grid, req)
+    assert path is not None and valid_path(path, grid, req)
+    assert path.length < 3.2, path.length
+    assert _loops(path, req) == []
+
+
+def test_zone_state_layout() -> None:
+    """`_ZONE_NEXT`: from no bend, one of either sense; a second of the same sense (90°);
+    the opposite sense (jog) and a third bend (135°, loop) are refused."""
+    nxt = astar_mod._ZONE_NEXT
+    assert nxt[0][1] == 1 and nxt[0][2] == 2
+    assert nxt[1][1] == 3 and nxt[2][2] == 4
+    assert nxt[1][2] == -1 and nxt[2][1] == -1
+    assert all(v == -1 for z in (3, 4) for v in nxt[z][1:])
+    assert astar_mod._NZ == 1 + 2 * 4

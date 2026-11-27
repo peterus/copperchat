@@ -1337,3 +1337,34 @@ async def test_rip_and_retry_undo_restores_anchor_and_dependants(
     kept = sorted((k.group[0].req.tree, k.paths[0]) for k in st.kept)
     assert kept == sorted([(False, trunk_path), (True, twig_path)])
     assert {net for net, _ in board.items.values()} == {"N1"}
+
+
+def test_straight_link_free_per_piece() -> None:
+    """R4 (ODH U202 decaps): a straight link that is class-wide (0.5 mm) in the wide pad's
+    zone and neck-wide (0.24 mm) in the fine-pitch IC's escape zone is free when every
+    piece keeps clearance at ITS width - a pin next to the neck piece is no obstacle for
+    the neck, though it would be for 0.5 mm. Pass 0 used to check the whole line at 0.5 mm
+    and the router doglegged instead (M16 hard)."""
+    from .builders import part as mk_part
+
+    ic_pads = (
+        pad("U1", "1", "P", (10.0, 13.5), w=0.6, h=0.24),
+        pad("U1", "2", "X", (10.0, 14.0), w=0.6, h=0.24),  # 0.26 mm below pin 1's edge
+    )
+    ic = mk_part("U1", 11.0, 14.0, half=1.5, pads=ic_pads)
+    cap = mk_part(
+        "C1", 10.0, 11.0, half=1.0, pads=(pad("C1", "1", "P", (10.0, 11.0), w=1.0, h=1.0),)
+    )
+    m = circuit(ic, cap, net_classes=(net_class(track_width=0.5),))
+    a, b = ic_pads[0], cap.pads[0]
+    par = route.class_params(m, "P")
+    req = route.RouteRequest(
+        "P", a, b, par.width, par.clearance, route.default_layers(m), True, par.via,
+        neck=route.neck_zones(m, (a, b), par.width, route.default_min_track(m)),
+    )  # fmt: skip
+    plan = route.ConnPlan("P", a, b, req, None)
+    path = route.straight_path(m, plan)
+    assert path is not None
+    widths = sorted({round(w, 3) for *_x, w in path.segments})
+    assert widths[0] < 0.5 and widths[-1] == pytest.approx(0.5), widths
+    assert route._path_free(m, plan, path)

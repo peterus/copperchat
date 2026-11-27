@@ -221,6 +221,55 @@ def test_extra_args_cannot_override_no_network(arg: str) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "arg",
+    [
+        "--router.autorouter.max_passes=500",
+        "--router.max_threads=16",
+        "--router.autorouter.max_threads=8",
+        "--router.optimizer.max_threads=8",
+        "-mp",
+        "-mt",
+    ],
+)
+def test_settings_cannot_override_locked(arg: str) -> None:
+    """R4: the pass count (`passes`, clamped) and every thread count stay ours."""
+    rt = FreeroutingRuntime(Path("/j"), Path("/x.jar"), "2.5.0", Path("/p"))
+    with pytest.raises(ValueError, match="extra_args"):
+        build_command(
+            rt,
+            Path("/d"),
+            Path("/s"),
+            passes=1,
+            workdir=Path("/w"),
+            extra_args=(arg,),
+            unshare=None,
+            timeout_s=10,
+        )
+
+
+def test_settings_in_command() -> None:
+    """`FREEROUTING_SETTINGS` (and any extra argument) reach the command line after the
+    pass count and before the locked switches."""
+    rt = FreeroutingRuntime(Path("/j"), Path("/x.jar"), "2.5.0", Path("/p"))
+    extra = (*fr.FREEROUTING_SETTINGS, "--router.optimizer.enabled=true")
+    cmd = build_command(
+        rt,
+        Path("/d"),
+        Path("/s"),
+        passes=7,
+        workdir=Path("/w"),
+        extra_args=extra,
+        unshare=None,
+        timeout_s=10,
+    )
+    i = cmd.index("--router.autorouter.max_passes=7")
+    assert cmd[i + 1 : i + 1 + len(extra)] == list(extra)
+    assert cmd.index("--gui.enabled=false") > i + len(extra)
+    for arg in fr.FREEROUTING_SETTINGS:
+        assert not arg.startswith(fr.LOCKED_OPTION_KEYS)
+
+
 async def test_run_rejects_override_before_start(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

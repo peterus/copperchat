@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from copperchat.board.boardmd import BoardDoc, Edge
 from copperchat.board.classify import BlockProposal, Classification, classify
+from copperchat.board.critical import critical_with_reasons
 from copperchat.board.metrics import MetricsReport, compute_metrics
 from copperchat.board.model import BoardModel, Point, Rect, Side
 from copperchat.board.placer import (
@@ -72,6 +73,7 @@ _ALL_KEYS = (
     "pairs",
     "blocks",
     "critical_nets",
+    "critical_reasons",
     "overrides_applied",
     "board_md_errors",
 )
@@ -85,7 +87,7 @@ SCOPE_KEYS: Mapping[str, tuple[str, ...]] = {
         "overrides_applied",
         "board_md_errors",
     ),
-    "nets": ("nets", "pairs", "critical_nets", "board_md_errors"),
+    "nets": ("nets", "pairs", "critical_nets", "critical_reasons", "board_md_errors"),
     "blocks": ("blocks", "board_md_errors"),
     "all": _ALL_KEYS,
 }
@@ -121,6 +123,11 @@ def analyse_job(model: BoardModel, doc: BoardDoc, scope: Scope = "all") -> dict[
     Each block keeps at most MAX_BLOCK_REFS refs plus `refs_omitted`; each board.md error is
     cut to MAX_ERROR_CHARS characters."""
     c = classify(model, doc)
+    # R4 (round-2 plan call 8): intra-block and straight-corridor nets join the critical set
+    critical: tuple[str, ...] = ()
+    reasons: dict[str, str] = {}
+    if "critical_nets" in SCOPE_KEYS[scope]:  # the geometry only where it is reported
+        critical, reasons = critical_with_reasons(model, c)
     full: dict[str, Mapping[str, str] | Sequence[Any]] = {
         "parts": c.part_class,
         "nets": c.net_kind,
@@ -129,7 +136,8 @@ def analyse_job(model: BoardModel, doc: BoardDoc, scope: Scope = "all") -> dict[
         "crystals": c.crystals,
         "pairs": c.pairs,
         "blocks": c.blocks,
-        "critical_nets": c.critical_nets,
+        "critical_nets": critical,
+        "critical_reasons": reasons,
         "overrides_applied": c.overrides_applied,
         "board_md_errors": doc.errors,
     }

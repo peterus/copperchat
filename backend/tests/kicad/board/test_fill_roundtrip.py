@@ -185,6 +185,58 @@ async def test_probe_ses_import_side_effects(
     assert _ids(await model_of(fill_rig, "pr-4")) == _ids(before) - {unlocked}
 
 
+# R4 Task 2: candidate settings (pass / optimizer / cost options of the 2.5.0 JAR's
+# settings classes; thread counts and the pass count are locked, never probed here)
+PROBE_SETTINGS = (
+    "--router.optimizer.enabled=true",
+    "--router.optimizer.max_passes=5",
+    "--router.optimizer.improvement_threshold=0.01",
+    "--router.optimizer.item_selection_strategy=prioritized",
+    "--router.optimizer.max_consecutive_failures=3",
+    "--router.scoring.start_ripup_costs=100",
+    "--router.scoring.plane_via_costs=5",
+    "--router.scoring.default_bend_cost=1",
+    "--router.automatic_neckdown=false",
+    "--router.trace_pull_tight_accuracy=500",
+    "--router.via_costs=50",  # not a 2.5.0 name (control)
+    "--router.autorouter.via_costs=50",  # not a 2.5.0 name (control)
+)
+
+
+@TIMEOUT
+async def test_probe_freerouting_settings(
+    fill_rig: PlacedSynth,
+    freerouting_rt: FreeroutingRuntime,
+    tmp_path: Path,
+    record_property: Any,
+) -> None:
+    """Which candidate settings the pinned Freerouting accepts: one run with all of them;
+    every name it does not know is logged as "Unknown settings property: <name>". Records
+    the accepted / unknown names and the optimizer's log lines (R4: whether the optimizer
+    runs at all - P6b saw it skipped because locked links read as unrouted)."""
+    dsn = await export_live_dsn(fill_rig, tmp_path / "x")
+    run = await run_freerouting(
+        freerouting_rt,
+        dsn,
+        tmp_path / "b.ses",
+        timeout_s=120,
+        passes=3,
+        workdir=tmp_path / "w",
+        extra_args=PROBE_SETTINGS,
+    )
+    assert run.returncode == 0, run.log_tail
+    log = (tmp_path / "w" / "freerouting.log").read_text(errors="replace")
+    unknown = set(re.findall(r"Unknown settings property: (\S+)", log))
+    names = {a.split("=", 1)[0].removeprefix("--") for a in PROBE_SETTINGS}
+    record_property("fr_settings_unknown", sorted(unknown))
+    record_property("fr_settings_accepted", sorted(names - unknown))
+    record_property(
+        "fr_optimizer_log", [ln[-160:] for ln in log.splitlines() if "ptimiz" in ln][:10]
+    )
+    assert {"router.via_costs", "router.autorouter.via_costs"} <= unknown
+    assert "router.optimizer.enabled" not in unknown
+
+
 async def test_probe_zone_fill_clearable(fill_rig: PlacedSynth, record_property: Any) -> None:
     from copperchat.kicad_tools.board.fill import _clear_fills
 

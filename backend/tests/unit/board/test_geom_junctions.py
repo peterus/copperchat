@@ -166,3 +166,41 @@ def test_x_junction_ok() -> None:
     r = analyse_tracks(m)
     assert r.y_junctions == ()
     assert r.t_junctions == (NODE,)  # old semantics: any 90° pair
+
+
+def test_straight_link_corridor_class_width_outside_zones() -> None:
+    """R4: a link that leaves the escape zones needs the class-width corridor; inside them
+    the neck width is enough; no zones -> the whole link at class width."""
+    from copperchat.board.geom import _outside_pieces, rect_poly, straight_link_corridor
+
+    from .builders_circuit import pad
+
+    a = pad("U1", "1", "P", (10.0, 10.0), w=1.0, h=0.3)
+    b = pad("U2", "1", "P", (12.5, 10.0), w=1.0, h=0.3)
+    zone_a = tuple(rect_poly(9.0, 9.0, 2.0, 2.0))  # x 9..11
+    zone_b = tuple(rect_poly(11.6, 9.0, 2.0, 2.0))  # x 11.6..13.6
+    # neck 0.3 inside the zones, but 10.5..12.0 has a 0.6 mm gap outside both -> class 0.5
+    # needs an overlap of 0.5 mm; the pads overlap 0.3 only -> None
+    assert straight_link_corridor(a, b, 0.5, 0.3, (zone_a, zone_b)) is None
+    wide = tuple(rect_poly(9.0, 9.0, 5.0, 2.0))  # covers the whole link
+    got = straight_link_corridor(a, b, 0.5, 0.3, (wide,))
+    assert got is not None and got[3] == []
+    assert _outside_pieces((10.5, 10.0), (12.0, 10.0), (zone_a, zone_b)) == [
+        ((11.0, 10.0), (11.6, 10.0))
+    ]
+
+
+def test_neck_link_zones_only_necked_pads() -> None:
+    """Only the part of an end pad narrower than the class gives a neck zone."""
+    from copperchat.board.geom import escape_zone, neck_link_zones
+
+    from .builders import part
+    from .builders_circuit import pad
+
+    fine = pad("U1", "1", "P", (10.0, 10.0), w=0.8, h=0.25)
+    wide = pad("C1", "1", "P", (12.0, 10.0), w=1.0, h=1.0)
+    u1 = part("U1", 10.0, 10.0, pads=(fine,))
+    c1 = part("C1", 12.0, 10.0, pads=(wide,))
+    zones = neck_link_zones({"U1": u1, "C1": c1}, fine, wide, 0.5, 0.127)
+    assert zones == (escape_zone(u1),)
+    assert neck_link_zones({"U1": u1, "C1": c1}, fine, wide, 0.2, 0.127) == ()

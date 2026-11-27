@@ -15,7 +15,7 @@ import pytest
 
 from copperchat.board.geom import TrackIndex, analyse_tracks
 from copperchat.board.model import BoardModel
-from copperchat.board.router.chamfer import PostResult, _fails
+from copperchat.board.router.chamfer import PostResult
 from copperchat.errors import StructuredToolError
 from copperchat.kicad_tools.board import api, engine, fill, route
 from copperchat.kicad_tools.board.api import DrcTimeout, RefillTimeout
@@ -49,7 +49,7 @@ def _bends(m: BoardModel, nets: set[str] | None = None) -> dict[str, int]:
         + len(rep.ninety)
         + len(rep.acute)
         + len(rep.off_angle)
-        + len(_fails(rep, "t_junctions")),  # a Y-shaped T: the chamfer still rips it
+        + len(rep.y_junctions),  # M15: re-landed as a T or ripped
         "M7": len(rep.micro_jogs) + len(rep.short_chamfers),
     }
 
@@ -148,9 +148,14 @@ async def test_rip_reroute_path(fill_rig: PlacedSynth, monkeypatch: pytest.Monke
 
 
 @TIMEOUT
-async def test_ladder_unlock_fill_relock(fill_rig: PlacedSynth) -> None:
+async def test_ladder_unlock_fill_relock(
+    fill_rig: PlacedSynth, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Rung (b): a net routed by `pcb_route` (locked), `pcb_unroute {unlock_only}` keeps
-    its KIIDs unlocked, `pcb_route_fill {relock_nets}` locks it again (M4/M7 = 0)."""
+    its KIIDs unlocked, `pcb_route_fill {relock_nets}` locks it again (M4/M7 = 0). R4: the
+    fill rips Freerouting's M16 doglegs (1 of these 4 connections, re-routed by the own
+    router); the 20 % rule has its own test, so it is off here."""
+    allow_rips(monkeypatch)
     net = FILL_NETS[0]
     await setup_call(fill_rig.turn("ld-0"), "pcb_unroute", nets=[net], include_locked=True)
     await setup_call(fill_rig.turn("ld-1"), "pcb_route", nets=[net], lock=True)

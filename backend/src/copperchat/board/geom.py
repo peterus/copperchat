@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import itertools
 import math
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -826,6 +826,91 @@ def straight_corridor(
         end: Point = (e, mid) if ax == 0 else (mid, e)
         return layers, start, end
     return None
+
+
+def _outside_pieces(
+    s: Point, e: Point, zones: Sequence[Sequence[Point]]
+) -> list[tuple[Point, Point]]:
+    """The pieces of the axis-parallel segment se outside every axis-aligned box of `zones`
+    (convex, so each box covers one interval of the segment)."""
+    length = math.dist(s, e)
+    if length <= _EPS:
+        return []
+    covered: list[tuple[float, float]] = []
+    for z in zones:
+        if not z:
+            continue
+        x0, y0, x1, y1 = _bbox_of(z)
+        lo, hi = 0.0, 1.0
+        for k, (a0, a1) in enumerate(((x0, x1), (y0, y1))):
+            p, d = s[k], e[k] - s[k]
+            if abs(d) <= _EPS:
+                if not a0 - _EPS <= p <= a1 + _EPS:
+                    lo, hi = 1.0, 0.0
+                continue
+            t0, t1 = sorted(((a0 - p) / d, (a1 - p) / d))
+            lo, hi = max(lo, t0), min(hi, t1)
+        if hi > lo:
+            covered.append((lo, hi))
+    spans: list[tuple[float, float]] = []
+    t = 0.0
+    for lo, hi in sorted(covered):
+        if lo > t + _EPS / length:
+            spans.append((t, lo))
+        t = max(t, hi)
+    if t < 1.0 - _EPS / length:
+        spans.append((t, 1.0))
+
+    def at(u: float) -> Point:
+        return (s[0] + (e[0] - s[0]) * u, s[1] + (e[1] - s[1]) * u)
+
+    return [(at(lo), at(hi)) for lo, hi in spans]
+
+
+def neck_link_zones(
+    parts: Mapping[str, Part], a: Pad, b: Pad, class_width: float, min_track: float
+) -> tuple[tuple[Point, ...], ...]:
+    """The escape zones a straight link between pads `a` and `b` may be neck-wide in: the
+    zone of each end pad's part whose `neck_width` is below `class_width` (as the router's
+    neck zones and M12) - a wide pad's part gives none (review round 1)."""
+    out: list[tuple[Point, ...]] = []
+    for pad in (a, b):
+        part = parts.get(pad.ref)
+        if part is None or neck_width(pad, class_width, min_track) >= class_width - _EPS:
+            continue
+        zone = escape_zone(part)
+        if zone and zone not in out:
+            out.append(zone)
+    return tuple(out)
+
+
+def straight_link_corridor(
+    a: Pad,
+    b: Pad,
+    class_width: float,
+    neck: float,
+    zones: Sequence[Sequence[Point]],
+    *,
+    copper_layers: Sequence[str] = ("F.Cu", "B.Cu"),
+) -> tuple[tuple[str, ...], Point, Point, list[tuple[Point, Point]]] | None:
+    """The straight link two adjacent pads can have (M16 a, the router's pass 0): (shared
+    layers, start, end, pieces outside `zones`) or None. A track may only be `neck` wide
+    (below `class_width`) inside the escape zones of its pads' parts (`zones`, M12); a link
+    with a piece outside them needs the corridor at `class_width` (R4, R3 residual: on ODH
+    a dogleg was flagged where only a neck-wide straight existed). The returned line is the
+    class-width corridor's when one is needed, else the neck-width corridor's."""
+    cor = straight_corridor(a, b, neck, copper_layers=copper_layers)
+    if cor is None:
+        return None
+    layers, s, e = cor
+    outside = _outside_pieces(s, e, zones)
+    if not outside or class_width <= neck + _EPS:
+        return layers, s, e, outside
+    wide = straight_corridor(a, b, class_width, copper_layers=copper_layers)
+    if wide is None:
+        return None
+    layers, s, e = wide
+    return layers, s, e, _outside_pieces(s, e, zones)
 
 
 @dataclass(frozen=True)

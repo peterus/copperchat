@@ -25,7 +25,7 @@ from copperchat.board.geom import (
 from copperchat.board.metrics import routed_length
 from copperchat.board.model import ArcTrack, BoardModel, Pad, Track
 from copperchat.board.router import chamfer
-from copperchat.board.router.chamfer import PostResult, _fails, postprocess
+from copperchat.board.router.chamfer import PostResult, postprocess
 from tests.unit.board.builders import board, net_class, part, track, via
 
 S2 = math.sqrt(2.0)
@@ -467,8 +467,8 @@ def _clean_after_nm(m: BoardModel, r: PostResult) -> BoardModel:
         ends = pad_entry_ends(line, lambda p: _in_end_pad(p, ZIG))
         assert fails(analyse_bends(line, w, pad_ends=ends)) == {}, line
     whole = analyse_tracks(out)
-    # R3: a T is legal; a Y-shaped one is still ripped (chamfer._fails)
-    assert fails(whole) == {} and _fails(whole, "t_junctions") == ()
+    # round 2: a T is legal; a Y-junction is re-landed or ripped (M15)
+    assert fails(whole) == {} and whole.y_junctions == ()
     return out
 
 
@@ -869,8 +869,8 @@ def _check_case(seed: int) -> bool:
         rb = analyse_bends(line, w, pad_ends=ends)
         assert fails(rb) == {}, f"{msg} line={line}"
     whole = analyse_tracks(out)
-    # R3: a T is legal; a Y-shaped one is still ripped (chamfer._fails)
-    assert fails(whole) == {} and _fails(whole, "t_junctions") == (), msg
+    # round 2: a T is legal; a Y-junction is re-landed or ripped (M15)
+    assert fails(whole) == {} and whole.y_junctions == (), msg
     assert routed_length(out, *_pads(out)) is not None, msg
     n2 = [q for p in m.parts for q in p.pads if q.net == "N2"]
     for d in chamfers(r):
@@ -898,9 +898,11 @@ def test_polyline_safety_net_rips(seed: int, monkeypatch: pytest.MonkeyPatch) ->
 
 
 @pytest.mark.parametrize("seed", (2595, 4816))
-def test_harmless_sub_tolerance_gap_not_ripped(seed: int) -> None:
+def test_harmless_sub_tolerance_gap_not_ripped(seed: int, monkeypatch: pytest.MonkeyPatch) -> None:
     # an untouched < 0.001 mm piece next to touched ends: a collinear gap / one node that
-    # turns no track noticeably in any track order - not a defect
+    # turns no track noticeably in any track order - not a defect. (Seed 2595's random path
+    # also U-turns at J1, an M16 pad loop the R4 step rips - not what this test is about.)
+    monkeypatch.setattr(chamfer, "m16_defects", lambda *_a, **_k: [])
     assert _check_case(seed) is False
 
 
@@ -1085,4 +1087,239 @@ def test_t_junction_kept_y_with_ninety_pair_ripped() -> None:
     y = track("N1", "F.Cu", (15.0, 10.0), (17.0, 12.0), 0.2, kiid="t9")
     m2 = replace(m, parts=(*m.parts, pad_part("J4", 17.0, 12.0)), tracks=(*m.tracks, y))
     r2 = postprocess(m2, kiids(m2))
-    assert r2.rip and all(why == "ninety_unfixable" for _k, why in r2.reasons), r2
+    # R4: its branch starts in a pad (no vertex to re-land from) -> ripped as a Y (M15)
+    assert r2.rip and all(why == "y_junction" for _k, why in r2.reasons), r2
+
+
+# ---- R4: Y-junctions to T, M16 rips ------------------------------------------------------
+
+
+def _y_board(branch: Sequence[Point], through: tuple[Point, Point] = ((10.0, 10.0), (20.0, 10.0))):
+    """N1 through-track J1-J2 along `through`, a branch polyline from pad J3 (its first
+    point) ending on the through-track at its last point - all touched."""
+    m = routed(
+        list(through),
+        extra_parts=(pad_part("J3", *branch[0]),),
+        extra_tracks=path_tracks(branch, prefix="b"),
+    )
+    return m
+
+
+def test_t_junction_kept() -> None:
+    m = _y_board([(14.0, 16.0), (14.0, 10.0)])
+    r = postprocess(m, kiids(m) | kiids(m, "b"))
+    assert r.reasons == () and r.relanded == 0
+
+
+def test_y_to_t_relands() -> None:
+    """J3 → (14, 13) straight down, then 45° onto the through-track at (17, 10): a Y. The
+    branch's last piece becomes the perpendicular (14, 13) → (14, 10) - a T, the vertex at
+    (14, 13) now collinear."""
+    m = _y_board([(14.0, 16.0), (14.0, 13.0), (17.0, 10.0)])
+    assert analyse_tracks(m).y_junctions
+    r = postprocess(m, kiids(m) | kiids(m, "b"))
+    assert r.relanded == 1 and r.reasons == (), r
+    out = apply(m, r)
+    rep = analyse_tracks(out)
+    assert rep.y_junctions == () and fails(rep) == {}
+    new = dict(r.replace)["b1"][0]
+    assert {nm_pt(new.start), nm_pt(new.end)} == {(14.0, 13.0), (14.0, 10.0)}
+
+
+def test_y_to_t_rejects_ninety_on_branch() -> None:
+    """The branch comes in horizontally at (14, 13): the perpendicular would turn it by 90°
+    there - not re-landed, ripped `y_junction`."""
+    m = _y_board([(11.0, 13.0), (14.0, 13.0), (17.0, 10.0)])
+    r = postprocess(m, kiids(m) | kiids(m, "b"))
+    assert r.relanded == 0
+    assert ("N1:J1.1-J3.1", "y_junction") in r.reasons, r
+
+
+def test_y_to_t_projection_outside() -> None:
+    """The through-track starts at x = 15: the foot at x = 14 lies outside it - ripped."""
+    m = _y_board([(14.0, 16.0), (14.0, 13.0), (17.0, 10.0)], through=((15.0, 10.0), (20.0, 10.0)))
+    r = postprocess(m, kiids(m) | kiids(m, "b"))
+    assert r.relanded == 0 and any(why == "y_junction" for _k, why in r.reasons), r
+
+
+def test_y_unfixable_ripped_with_reason() -> None:
+    """A branch straight from a pad at 45° (no vertex to re-land from): ripped as a Y."""
+    m = _y_board([(14.0, 13.0), (17.0, 10.0)])
+    r = postprocess(m, kiids(m) | kiids(m, "b"))
+    assert r.relanded == 0 and any(why == "y_junction" for _k, why in r.reasons), r
+
+
+def test_dogleg_ripped() -> None:
+    """J1 (10, 10) and J2 (12.5, 10) are adjacent with a free straight corridor; the
+    touched route jogs off it (M16 a)."""
+    pts = [(10.0, 10.0), (10.5, 10.0), (10.9, 10.4), (11.6, 10.4), (12.0, 10.0), (12.5, 10.0)]
+    m = routed(pts)
+    r = postprocess(m, kiids(m))
+    assert (KEY, "dogleg") in r.reasons, r
+
+
+def test_pad_loop_ripped() -> None:
+    """The route leaves J1 east and turns back by 135° inside its entry zone (M16 b)."""
+    pts = walk((50.0, 50.0), 0.0, [(0, 0.8), (45, 0.4), (45, 0.4), (45, 0.4), (0, 6.0)])
+    pts = [nm_pt(p) for p in pts]
+    m = routed(pts)
+    r = postprocess(m, kiids(m))
+    assert (KEY, "pad_loop") in r.reasons, r
+
+
+def test_pad_jog_ripped() -> None:
+    """An S-offset (two opposite 45° bends) right at J1: an error like a loop (owner)."""
+    pts = walk((50.0, 50.0), 0.0, [(0, 0.6), (45, 0.4), (-45, 6.0)])
+    pts = [nm_pt(p) for p in pts]
+    m = routed(pts)
+    r = postprocess(m, kiids(m))
+    assert (KEY, "pad_jog") in r.reasons, r
+
+
+def test_y_reland_ignores_zero_length_untouched_track() -> None:
+    """Review round 1: an untouched zero-length piece at the junction or at V must not
+    crash the re-landing (it has no direction)."""
+    m = _y_board([(14.0, 16.0), (14.0, 13.0), (17.0, 10.0)])
+    stub = track("N1", "F.Cu", (14.0, 13.0), (14.0, 13.0), 0.2, kiid="z0")
+    stub2 = track("N1", "F.Cu", (17.0, 10.0), (17.0, 10.0), 0.2, kiid="z1")
+    m = replace(m, tracks=(*m.tracks, stub, stub2))
+    r = postprocess(m, kiids(m) | kiids(m, "b"))
+    assert r.relanded == 1 and r.reasons == (), r
+
+
+def test_untouched_pad_loop_not_ripped_on_fresh_connection() -> None:
+    """Review round 2: a pad loop that lies wholly in UNTOUCHED copper (J1's entry) is not
+    the fill's - a touched branch elsewhere (T to J3) is not ripped for it, although the
+    MST connection J1-J3 runs through that entry piece."""
+    pts = [
+        nm_pt(p)
+        for p in walk(
+            (50.0, 50.0), 0.0, [(0, 0.8), (45, 0.4), (45, 0.4), (45, 0.4), (0, 2.0), (0, 4.0)]
+        )
+    ]
+    t = pts[-2]
+    j3 = nm_pt((t[0] + 1.5 * math.cos(math.radians(45)), t[1] + 1.5 * math.sin(math.radians(45))))
+    m = board(
+        parts=(pad_part("J1", *pts[0]), pad_part("J2", *pts[-1]), pad_part("J3", *j3)),
+        tracks=(*path_tracks(pts, prefix="u"), *path_tracks([t, j3], prefix="b")),
+        net_class_of=(("N1", "Default"),),
+    )
+    r = postprocess(m, kiids(m, "b"))
+    assert not any(why in ("pad_loop", "pad_jog") for _k, why in r.reasons), r
+
+
+@pytest.mark.parametrize(
+    "steps",
+    [
+        [(0, 0.6), (45, 0.4), (-45, 6.0)],  # jog
+        [(0, 0.8), (45, 0.4), (45, 0.4), (45, 0.4), (0, 6.0)],  # loop
+    ],
+)
+def test_fresh_entry_defect_ripped_when_vertex_on_untouched(
+    steps: list[tuple[float, float]],
+) -> None:
+    """Review round 3: only the first piece at J1 is touched; the jog / loop vertex is
+    reported on the untouched rest - still ours (touched copper in J1's entry zone)."""
+    pts = [nm_pt(p) for p in walk((50.0, 50.0), 0.0, steps)]
+    tracks = tuple(
+        track("N1", "F.Cu", a, b, 0.2, kiid=("t" if i == 0 else "u") + str(i))
+        for i, (a, b) in enumerate(itertools.pairwise(pts))
+    )
+    m = board(
+        parts=(pad_part("J1", *pts[0]), pad_part("J2", *pts[-1])),
+        tracks=tracks,
+        net_class_of=(("N1", "Default"),),
+    )
+    r = postprocess(m, kiids(m, "t"))
+    assert any(why in ("pad_jog", "pad_loop") for _k, why in r.reasons), r
+
+
+def test_may_branch_only_real_branch_points() -> None:
+    """Two consecutive pieces of one route are no branch; a touched end on another track's
+    interior or a 3-way node is."""
+    a = track("N1", "F.Cu", (0.0, 0.0), (5.0, 0.0), 0.2, kiid="a")
+    b = track("N1", "F.Cu", (5.0, 0.0), (5.0, 5.0), 0.2, kiid="b")
+    assert not chamfer._may_branch([a, b], {id(a), id(b)})
+    c = track("N1", "F.Cu", (2.0, 3.0), (2.0, 0.0), 0.2, kiid="c")  # ends on a's interior
+    assert chamfer._may_branch([a, b, c], {id(c)})
+    d = track("N1", "F.Cu", (5.0, 0.0), (9.0, 0.0), 0.2, kiid="d")  # 3 ends at (5, 0)
+    assert chamfer._may_branch([a, b, d], {id(d)})
+
+
+@pytest.mark.parametrize("variant", ["fresh_same_layer_other_branch", "fresh_other_layer"])
+def test_untouched_pad_loop_not_ripped_for_unrelated_fresh_copper(variant: str) -> None:
+    """Review round 4: fresh copper of the net in J1's entry zone that is not the loop's
+    connection (another branch from J1, or a track on another layer under the pad) does
+    not make the untouched loop ours."""
+    steps = [(0, 0.8), (45, 0.4), (45, 0.4), (45, 0.4), (0, 2.0), (0, 4.0)]
+    pts = [nm_pt(p) for p in walk((50.0, 50.0), 0.0, steps)]
+    t = pts[-2]
+    j3 = nm_pt((t[0] + 1.5 * math.cos(math.radians(45)), t[1] + 1.5 * math.sin(math.radians(45))))
+    extra_parts: tuple[object, ...] = ()
+    if variant == "fresh_same_layer_other_branch":
+        extra_parts = (pad_part("J4", 47.0, 50.0),)
+        extra = track("N1", "F.Cu", (50.0, 50.0), (47.0, 50.0), 0.2, kiid="c0")
+    else:
+        extra = track("N1", "B.Cu", (49.0, 51.2), (53.0, 51.2), 0.2, kiid="c0")
+    m = board(
+        parts=(
+            pad_part("J1", *pts[0]),
+            pad_part("J2", *pts[-1]),
+            pad_part("J3", *j3),
+            *extra_parts,
+        ),
+        tracks=(*path_tracks(pts, prefix="u"), *path_tracks([t, j3], prefix="b"), extra),
+        net_class_of=(("N1", "Default"),),
+    )
+    r = postprocess(m, kiids(m, "b") | kiids(m, "c"))
+    assert not any(why in ("pad_loop", "pad_jog") for _k, why in r.reasons), r
+
+
+def _tht(ref: str, x: float, y: float) -> object:
+    from copperchat.board.model import Pad as _Pad
+
+    q = _Pad(
+        ref=ref, number="1", net="N1", x=x, y=y, w=0.5, h=0.5, rot=0.0, shape="circle",
+        layers=frozenset({"*.Cu"}), smd=False, drill=0.3,
+    )  # fmt: skip
+    return part(ref, x, y, half=0.5, pads=(q,))
+
+
+def test_untouched_loop_on_tht_pad_not_blamed_on_other_layer() -> None:
+    """Review round 5: J1 is plated through (on every layer). Its untouched F.Cu entry
+    loops; the connection continues through a via on touched B.Cu that passes J1's entry
+    zone. M16 judges the loop on its run's layer (F.Cu) - the B.Cu copper is not ours to
+    rip for it."""
+    steps = [(0, 0.8), (45, 0.4), (45, 0.4), (45, 0.4), (0, 2.0)]
+    pts = [nm_pt(p) for p in walk((50.0, 50.0), 0.0, steps)]
+    end = pts[-1]
+    back = [(end, (end[0], 51.0)), ((end[0], 51.0), (44.0, 51.0))]
+    m = board(
+        parts=(_tht("J1", *pts[0]), _tht("J2", 44.0, 51.0)),
+        tracks=(
+            *path_tracks(pts, prefix="u"),
+            *(track("N1", "B.Cu", a, b, 0.2, kiid=f"b{i}") for i, (a, b) in enumerate(back)),
+        ),
+        vias=(via("N1", end, kiid="v1"),),
+        net_class_of=(("N1", "Default"),),
+    )
+    r = postprocess(m, kiids(m, "b"))
+    assert not any(why in ("pad_loop", "pad_jog") for _k, why in r.reasons), r
+
+
+def test_fresh_entry_defect_at_b_end_ripped() -> None:
+    """The jog sits at the connection's far pad (J2) and only the piece into J2 is touched:
+    attributed at that pad (not at pad a)."""
+    pts = [nm_pt(p) for p in walk((50.0, 50.0), 0.0, [(0, 6.0), (45, 0.4), (-45, 0.6)])]
+    n = len(pts) - 1
+    tracks = tuple(
+        track("N1", "F.Cu", a, b, 0.2, kiid=("t" if i == n - 1 else "u") + str(i))
+        for i, (a, b) in enumerate(itertools.pairwise(pts))
+    )
+    m = board(
+        parts=(pad_part("J1", *pts[0]), pad_part("J2", *pts[-1])),
+        tracks=tracks,
+        net_class_of=(("N1", "Default"),),
+    )
+    r = postprocess(m, kiids(m, "t"))
+    assert any(why == "pad_jog" for _k, why in r.reasons), r
