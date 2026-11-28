@@ -198,7 +198,7 @@ describe('SkillsPanel', () => {
     expect(within(group).getByText(/all sessions/i)).toBeInTheDocument();
     const schematic = within(group).getByRole('button', { name: 'Schematic' });
     expect(schematic).toHaveAttribute('aria-pressed', 'false');
-    expect(within(group).queryByRole('button', { name: 'Board' })).toBeNull();
+    expect(within(group).getByRole('button', { name: 'Board' })).toHaveAttribute('aria-pressed', 'false');
     await userEvent.click(schematic);
     await userEvent.click(within(group).getByRole('button', { name: 'Requirements' }));
     expect(schematic).toHaveAttribute('aria-pressed', 'true');

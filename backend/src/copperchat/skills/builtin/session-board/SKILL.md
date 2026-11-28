@@ -95,9 +95,13 @@ session.
    use allows) and propose a **provisional** size with its reason (part count, connector
    edges). The parts' courtyard area is known only once the board exists: at S3
    `pcb_floorplan` reports `courtyard_mm2` and `courtyard_fill`; target a courtyard fill of
-   at most **45 %** (`area = courtyard_mm2 / 0.45`, rounded up to whole mm, aspect ratio
-   from the connector edges) and, if the provisional outline misses it, propose the
-   corrected size and change it with `pcb_set_outline` before placement. Above ≈ 35–40 %
+   at most **45 %** of the *usable* area (`usable_mm2` = outline minus edge margin, holes,
+   keepouts and locked parts): new outline area ≈ current area × `courtyard_fill` / 0.45,
+   rounded up to whole mm, aspect ratio from the connector edges. If the provisional
+   outline misses it, propose the corrected size and repeat the S2 `pcb_set_outline` call
+   with the new `width` / `height` **and** the same `holes` (corner inset, or recomputed
+   positions) and the `keepouts` moved to the new geometry — without `holes` the old holes
+   stay where they were — all before placement. Above ≈ 35–40 %
    fill, placement still fits but routing gets tight; offer more area when the case allows
    it. Rectangle with optional corner radius.
 2. **Layer count**, with a reason: e.g. 2 layers for a simple low-speed board, 4 layers when
@@ -148,8 +152,8 @@ finish the Schematic session.
 3. `pcb_set_rules` **always with the agreed `layers` and the matching `preset`** (and the
    `stackup` preset when available): a preset alone never changes the layer count.
    `net_classes` from the table; `overrides` only to tighten. `stackup_unavailable`: the
-   KiCad build has no stackup support — keep the layer count and preset, note it in
-   `board.md`.
+   KiCad build has no stackup support and nothing of the call was applied — repeat it with
+   the same `layers`, `preset` and `net_classes` without `stackup`, and note it in `board.md`.
 
 **Show:** `pcb_render {view: "top"}` (outline, holes, keepouts), the rules table and the net
 classes, and write them to `board.md` → Stack-up and rules. Ask "Outline and rules ok?".
@@ -322,7 +326,8 @@ Then stop the turn and wait.
 - `invalid_argument`: a wrong argument (the `why` says which); fix it once.
 - `not_found`: unknown ref, net, layer, zone or block; use `details.closest`.
 - `unknown_block`: the block is not defined → `pcb_define_blocks` (closest names given).
-- `stackup_unavailable`: no stackup support in this KiCad; keep layers and preset.
+- `stackup_unavailable`: no stackup support in this KiCad; nothing of that call was applied —
+  repeat it with the same layers, preset and net classes but without `stackup`.
 - `does_not_fit`: no legal placement (`courtyard_fill`, `needed_mm2`, `available_mm2`); ask
   for more area, the bottom side or smaller channels — never overlap parts.
 - `part_routed`: the part has tracks; move it with `unroute: true` (its connections are

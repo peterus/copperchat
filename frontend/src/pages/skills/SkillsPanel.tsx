@@ -26,8 +26,8 @@ const BUTTON = 'rounded border border-border px-2 py-1 text-xs hover:bg-surface-
 const PRIMARY = 'rounded bg-accent px-2 py-1 text-xs font-medium text-accent-fg disabled:opacity-50';
 
 const CHIP = 'rounded-full border border-border px-1.5 text-xs';
-/** Session types a user can create (board is hidden until board editing lands). */
-const EDITABLE_TYPES: readonly ConversationType[] = ['requirements', 'schematic', 'free'];
+/** Session types a skill can be restricted to (Board: SP4, on by default since P9b). */
+const EDITABLE_TYPES: readonly ConversationType[] = ['requirements', 'schematic', 'board', 'free'];
 const typeLabel = (t: string) => TYPE_LABEL[t as ConversationType] ?? t;
 
 /** The session types a skill applies to, as static chips ("All sessions" when unrestricted). */
