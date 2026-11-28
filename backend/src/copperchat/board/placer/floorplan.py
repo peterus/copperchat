@@ -1354,7 +1354,7 @@ def snap_edges(
             fixed_strips = [st for st in strips if st[0] not in moved]
             if all(
                 _legal_shift(q, others, sep, outline, keepouts)
-                and not _covers_strip(q, parts[r], fixed_strips)
+                and not _covers_strip(q, parts[r], fixed_strips, parts)
                 and not _strip_lands_on(q, parts[r], others, wide)
                 for r, q in moved.items()
             ):
@@ -1437,7 +1437,7 @@ def align_pairs(
             cand = moved_part(p, Move(p.ref, p.x + dx, p.y + dy, p.rot, p.side))
             if not _legal_shift(cand, parts, sep, outline, keepouts):
                 continue
-            if _covers_strip(cand, p, strips) or _strip_lands_on(cand, p, parts, wide):
+            if _covers_strip(cand, p, strips, parts) or _strip_lands_on(cand, p, parts, wide):
                 continue
             trial = {**parts, p.ref: cand}
             if any(_need_in(trial, q, layers) != 0.0 for q in (k, *had)):
@@ -1526,13 +1526,23 @@ def _closer(mover: Pad, other: Pad) -> list[Point]:
     return []
 
 
-def _covers_strip(cand: Part, old: Part, strips: Sequence[tuple[str, str, Box]]) -> bool:
+def _covers_strip(
+    cand: Part,
+    old: Part,
+    strips: Sequence[tuple[str, str, Box]],
+    parts: Mapping[str, Part] | None = None,
+) -> bool:
     """R7: `cand` (a shifted `old`) covers an escape strip of another part's wide-net pad
-    (not one of its own nets) that `old` did not cover already."""
+    (not one of its own nets) that `old` did not cover already; with `parts`, only strips
+    of parts on `cand`'s side count (review round 5, as `_legal_shift`)."""
     mine = {q.net for q in cand.pads if q.net}
     b, before = box_of(cand), box_of(old)
     return any(
-        r != cand.ref and net not in mine and boxes_hit(b, s) and not boxes_hit(before, s)
+        r != cand.ref
+        and net not in mine
+        and (parts is None or r not in parts or parts[r].side == cand.side)
+        and boxes_hit(b, s)
+        and not boxes_hit(before, s)
         for r, net, s in strips
     )
 

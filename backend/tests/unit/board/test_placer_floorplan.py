@@ -1064,3 +1064,15 @@ def test_strip_lands_on_another_part() -> None:
     assert not _strip_lands_on(j_new, j_old, {"R7": bottom}, wide)
     empty = replace(near, pads=(), courtyard=())
     assert not _strip_lands_on(j_new, j_old, {"R7": empty}, wide)
+
+
+def test_covers_strip_counts_only_same_side_strips() -> None:
+    """Review round 5: a strip of a part on the other board side does not block a shift."""
+    from copperchat.board.placer.floorplan import _covers_strip
+
+    j = conn("J1", {"1": "A", "2": "VBUS"}, (1.75, 30.0))  # VBUS strip x 3.05-4.55
+    strips = [("J1", "VBUS", (3.05, 29.5, 4.55, 30.5))]
+    old = res("R7", "X", "Y", (7.0, 30.0))
+    new = res("R7", "X", "Y", (5.0, 30.0))  # box x 4.0-6.0: on the strip
+    assert _covers_strip(new, old, strips, {"J1": j})
+    assert not _covers_strip(new, old, strips, {"J1": replace(j, side="bottom")})
