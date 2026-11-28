@@ -104,10 +104,11 @@ In Schematic and Free sessions the schematic is edited with the `sch_*` tools; l
 `fp_get` (geometry, fields, review state), `fp_list_local` (the repo's own footprint
 library), `fp_check` (rules, symbol pins, datasheet land pattern) and `fp_render` (an
 image on a mm grid) read any footprint library in every session type. Writing tools
-(fp_create, fp_approve, fp_delete) exist only in Schematic, Board and Free sessions;
-load the `kicad-footprints` skill before using any of them (in a Board session, hand new or
-fixed footprints to a Schematic session, which can also assign them). The first footprint tool of a
-project without a board takes a few seconds (note `footprint_libraries_loaded`). When no
+(fp_create, fp_approve, fp_delete) exist only in Schematic, Board and Free sessions.
+In Schematic and Free sessions load the `kicad-footprints` skill before using any of them.
+In a Board session that skill is not offered: do not create, approve or delete footprints
+there — hand new or fixed footprints to a Schematic session, which can also assign them.
+The first footprint tool of a project without a board takes a few seconds (note `footprint_libraries_loaded`). When no
 `fp_*` tool is in your tool list, the footprint tools are switched off: use stock footprints.
 
 ## Board
