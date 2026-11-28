@@ -86,9 +86,9 @@ def test_board_tools_env(monkeypatch: pytest.MonkeyPatch, value: str, expected: 
     assert Settings(_env_file=None).board_tools is expected  # type: ignore[call-arg]
 
 
-def test_board_tools_default_off(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_board_tools_default_on(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("COPPERCHAT_BOARD_TOOLS", raising=False)
-    assert Settings(_env_file=None).board_tools is False  # type: ignore[call-arg]
+    assert Settings(_env_file=None).board_tools is True  # type: ignore[call-arg]
 
 
 def test_freerouting_defaults(monkeypatch: pytest.MonkeyPatch) -> None:

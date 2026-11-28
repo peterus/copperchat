@@ -45,15 +45,20 @@ def test_flag_off_unchanged(kind: str) -> None:
 def test_flag_on_mentions_skill() -> None:
     board = system_prompt("demo", "board", board_tools=True)
     assert "session-board" in board
-    assert "The schematic is read-only here; you edit the board with the pcb_* tools." in board
+    assert (
+        "The schematic is read-only here; you lay out the board step by step with the pcb_* "
+        "tools." in board
+    )
     assert "stop after each step and wait for the user's ok" in board
     assert "doc_patch_section" in board
     for kind in ("schematic", "free"):
         prompt = system_prompt("demo", kind, board_tools=True)
         assert "read-only: if asked to change it" not in prompt, kind
         assert (
-            "The board (PCB) is edited with the pcb_* tools in a Board session; load the "
-            "session-board skill before the first board write." in prompt
+            "The board (PCB) is laid out step by step with the pcb_* tools in a Board session "
+            "(session-board skill)" in prompt
         ), kind
         assert "kicad-footprints" in prompt, kind
+    assert "board-layout" in system_prompt("demo", "free", board_tools=True)
+    assert "board-layout" not in system_prompt("demo", "schematic", board_tools=True)
     assert "session-board" not in system_prompt("demo", "requirements", board_tools=True)

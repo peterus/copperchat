@@ -28,6 +28,8 @@ MAPPING: dict[str, frozenset[str] | None] = {
     "kicad-footprints": frozenset({"schematic", "free"}),
     "session-requirements": frozenset({"requirements"}),
     "session-schematic": frozenset({"schematic"}),
+    "session-board": frozenset({"board"}),
+    "board-layout": frozenset({"board", "free"}),
 }
 
 
@@ -156,3 +158,17 @@ async def test_footprint_skill_is_dropped_when_the_tools_are_off(
     assert "kicad-footprints" not in off.names
     assert not (off.plugin_dir / "skills" / "kicad-footprints").exists()
     assert "session-schematic" in off.names
+
+
+async def test_board_skills_are_dropped_when_the_tools_are_off(
+    settings: Settings, project: Project, db: Any
+) -> None:
+    on = await assemble_skills(settings, project, db, "board")
+    assert {"session-board", "board-layout"} <= set(on.names)
+    assert "board-layout" in (await assemble_skills(settings, project, db, "free")).names
+    off_settings = settings.model_copy(update={"board_tools": False})
+    for kind in ("board", "free"):
+        off = await assemble_skills(off_settings, project, db, kind)
+        assert not {"session-board", "board-layout"} & set(off.names), kind
+        assert not (off.plugin_dir / "skills" / "board-layout").exists(), kind
+        assert "copperchat-tools" in off.names, kind

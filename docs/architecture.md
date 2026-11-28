@@ -30,10 +30,11 @@ are in `docs/superpowers/plans/`.
 | Module | Role |
 |---|---|
 | `config` | `Settings` from env/.env; startup fails without model credentials (`claude setup-token` hint) unless `DEV_FAKE_AGENT` |
-| `db` | SQLite (WAL) + numbered migrations `0001`–`0012` (`schema_migrations`) |
+| `db` | SQLite (WAL) + numbered migrations `0001`–`0013` (`schema_migrations`) |
 | `projects` | discovery of `*.kicad_pro`, ids, KiCad lock detection |
 | `kicad_session` | one `kicad-cli api-server` per open project, restart on hang/crash |
-| `tools`, `kicad_tools`, `views` | agent tools (structured JSON, full UUIDs, mm), ERC/DRC, agent views and KiCanvas snapshots; `kicad_tools/edit` holds the schematic editing tools (see "Schematic editing") |
+| `tools`, `kicad_tools`, `views` | agent tools (structured JSON, full UUIDs, mm), ERC/DRC, agent views and KiCanvas snapshots; `kicad_tools/edit` holds the schematic editing tools (see "Schematic editing"), `kicad_tools/board` the board tools (see "Board") |
+| `board` | pure board core: board model and hashes, classification, placer, router, Freerouting runner and post-processor, metrics, fab planning (see "Board") |
 | `library` | symbol/footprint library index and `lib_*` tools, the repository's local footprint library (`local`, `service`), part preferences, `parts_get_notes` |
 | `editing`, `plans`, `changes` | per-turn editing state and change budget, the plan service and gate, change log, ERC baseline/delta, step checkpoints, `kicad-cli sch diff` |
 | `agent` | run engine per project: gated streaming input, queue, interrupt, resume, rate-limit parking, message persistence, WebSocket protocol, tool guard |
@@ -152,6 +153,59 @@ Design: `docs/superpowers/specs/2026-10-21-repo-context-design.md`; user view:
   cross-project matrix `test_undo_matrix.py`); the `kicad-footprints` skill carries the
   agent's procedure.
 
+## Board
+
+Board layout (spec `docs/superpowers/specs/2026-11-24-board-design.md`, plan
+`docs/superpowers/plans/2026-11-25-board-plan.md`). The agent lays out a board in a Board
+session (`session-board` skill, steps S0–S9) with the `pcb_*` tools; the schematic is
+read-only there. `COPPERCHAT_BOARD_TOOLS=off` removes the write tools and the Board session
+type.
+
+- **Pure core `board/`** (never imports kipy): `model.py` (frozen `BoardModel` snapshot,
+  `placement_hash` / `board_hash`), `geom.py` (bends, junctions, entry zones, neck-downs,
+  straight corridors — one definition shared by metrics, router and post-processor),
+  `classify.py` (generic part classes and net kinds) + `boardmd.py` (the `board.md` tables),
+  `critical.py` (critical set), `placer/` (clusters, block layout, floorplan, whole-board
+  packing, legalise, score, routability), `router/` (octilinear A* with 45° turns only,
+  vias, neck-down, T-junctions, straight-first, coupled pairs; `chamfer.py` = Freerouting
+  post-processor), `freerouting.py` (sandboxed JVM runner: `prlimit`, no host-name resolution
+  or proxy, `unshare -n` where user namespaces exist, killed on stop),
+  `metrics.py` (M1–M16, owner hard thresholds), `planes.py` / `silk.py` (fanout,
+  stitch and silk candidates), `presets.py` (JLCPCB rules and stackups), `fab.py` /
+  `paths.py` (fab package plan, safe output paths), `render.py` (board SVG wrapper).
+- **CPU worker** (`worker.py`, `jobs.py`): one serialised worker process with `RLIMIT_AS`
+  for placement, routing and metrics jobs, recycled after a job that leaves it above
+  512 MB. `heavy.py` gates the heavy processes (a Freerouting run, the `kicad-cli` parity
+  DRC) so they never run at the same time.
+- **KiCad layer `kicad_tools/board/`**: `read.py` (model from the API), `api.py` (raw
+  protobuf for the DRC task and Specctra / document jobs), `engine.py` + `compensate.py`
+  (`BoardChangeSet`: one commit per stage, read-back, KIID-diff compensation; a full-copper
+  snapshot for `pcb_route_fill`), and one module per tool group (`sync`, `setup`, `place`,
+  `route`, `fill`, `unroute_ops`, `zones`, `fanout`, `stitch`, `silk`, `check`, `approve`,
+  `fab`, `views`, `status`; specs in `specs_*.py`). Every write goes through KiCad's API;
+  `kicad-cli` only exports (netlist, DSN, SVG, DRC report, gerbers, 3D); the Freerouting
+  session enters the board only via `ImportSpecctraSession`.
+- **Checkpoints** (`checkpoints.py`, `approve.py`, migration `0013`): `board_checkpoints`
+  (the latest approval per project, board file and stage, bound to its hash) and
+  `board_reviews` (render / check evidence per hash). `pcb_route`, `pcb_route_fill`,
+  `pcb_zones`, `pcb_fanout`, `pcb_stitch` need the current placement approval,
+  `pcb_fab_export` the current board approval after a full check without hard failures;
+  `pcb_approve` has the footprint approval's guards (evidence for this hash, a later human
+  message, quoted, no running plan).
+- **Fab** (`fab.py`): `fab/jlcpcb/` (gerbers, drill, upload zip, BOM, CPL, `fab-report.md`)
+  and `fab/3d/`, written to a temp dir and swapped in, refused for symlinked or outside
+  paths.
+- **Views:** `pcb_render` (board SVG through the footprint sanitiser with board limits,
+  CairoSVG raster worker with CPU / memory limits); the live board view publishes once per
+  board tool call from the adapter, and at turn end.
+- **Memory:** an active board project measured ≈ 6 GB at its concurrent peak (api-server
+  with footprint libraries ≈ 3.1 GB + the parity DRC of `pcb_check full` ≈ 2.6 GB); see the
+  README.
+- **Tests:** `backend/tests/unit/board/` (pure), `backend/tests/kicad/board/` (real KiCad,
+  `sp4_synth` fixture), `backend/tests/kicad_e2e/` (the whole flow on `sp4_synth` with a
+  metrics golden, marker `kicad_e2e`), `backend/tests/live/test_board_eval.py` (opt-in
+  live agent eval).
+
 ## Frontend (`frontend/src`)
 
 React 19 + Vite + zustand + zod + Tailwind 4. `protocol/frames.ts` mirrors the backend
@@ -206,6 +260,8 @@ turn-end only.
   `pytest -m kicad --shard i/8`, every 8th selected test (`tests/support/sharding.py`);
   `tests/unit/test_sharding.py` checks the shards together are the full `-m kicad` run.
   Locally, `pytest -m kicad` still runs everything.
+- `kicad-e2e` — the whole board flow on `sp4_synth` (sync → fab package with scripted
+  approvals) and its metrics golden (`pytest -m kicad_e2e`), on the pinned base image.
 - `e2e` — builds the app image, checks the token-missing refusal, starts it with
   `DEV_FAKE_AGENT=true` and the `ecc83` fixture, and runs the Playwright happy path
   (`frontend/e2e/smoke-docker.spec.ts`: login → project → message → reply → viewer, service

@@ -185,7 +185,7 @@ Constraints). Values are copied from the spec.
   `pcb_move` `ceil(n/10)`, `pcb_legalize` 1, `pcb_route` `ceil(n/5)`, `pcb_route_fill` 5,
   `pcb_unroute` 1, `pcb_zones` 1 per zone, `pcb_fanout` 2, `pcb_stitch` 2, `pcb_tidy_silk` 1,
   `pcb_approve` 1, `pcb_fab_export` 0, `pcb_export_3d` 0; read tools 0.
-- Flags: `COPPERCHAT_BOARD_TOOLS` (`Settings.board_tools`, **default off until P9b**) removes the
+- Flags: `COPPERCHAT_BOARD_TOOLS` (`Settings.board_tools`, default off until P9b, **on since P9b**) removes the
   explicit `PCB_WRITES` name set from every profile incl. Free and hides the Board session type
   (`POST type=board` → 400 `session_type_unavailable`); `PCB_READ` and the old read tools stay.
   `COPPERCHAT_FREEROUTING` (`Settings.freerouting`, default on) removes only `pcb_route_fill`
@@ -307,7 +307,7 @@ updates this section in its own PR and adds an "As built" bullet.
 
 ```python
 # cc/config.py — Settings
-board_tools: bool = Field(default=False, validation_alias="COPPERCHAT_BOARD_TOOLS")      # P1a; P9b → True
+board_tools: bool = Field(default=True, validation_alias="COPPERCHAT_BOARD_TOOLS")       # P1a off; P9b: default on
 freerouting: bool = Field(default=True, validation_alias="COPPERCHAT_FREEROUTING")        # P6a
 freerouting_home: Path = Field(default=Path("/opt/freerouting"),
                                validation_alias="COPPERCHAT_FREEROUTING_HOME")            # P6a: <home>/jre/bin/java, <home>/freerouting-2.5.0.jar
@@ -752,6 +752,95 @@ connection/stage instead of failing the call — P5b, P6b), `verification_failed
 ## As built
 
 (Each phase adds its section here in its own PR.)
+
+### As built (P9b)
+
+Phase file `board/phase-p9b-skills-release.md`, written before round 2: the skills teach the
+**round-2 flow** instead (index "Round 2", spec §22, every "As built" hint below).
+
+- **`session-board`** (`cc/skills/builtin/session-board/SKILL.md`): rules (`pcb_status` first
+  every turn, propose-then-ask, step report with at most 3 images + "stop the turn and wait",
+  both checkpoint questions verbatim, approvals only in the user's next turn with their
+  words, re-approval after any move, schematic read-only → Open points, `board.md` tables the
+  tools read, v1 → v2 migration); S0 with the eight §8.2 questions (a provisional size from
+  the docs / the user's limits, checked at S3 against ≤ 45 % courtyard fill with
+  `pcb_floorplan`'s `courtyard_mm2` and corrected by `pcb_set_outline` before placement - review
+  round 1: no tool reports courtyard areas before the board exists; layers with D1 default, assembly → `Assembly: …; sides: …`, edges, holes, keepouts,
+  currents at S2, special nets at S3); S1–S9 each with **Do** / **Show** / stop. Round-2
+  content: S3 `pcb_analyze` → class overrides → `pcb_define_blocks` (protection parts in the
+  connector's block) → Placement rows → `pcb_floorplan` preview with `keep_channels` guidance
+  (1.0–1.5 mm default, 2–3 mm with room, 0.5 mm crowded); S4 `pcb_place_blocks` (single
+  `pcb_place_block` + `pcb_legalize` only for edits), placement metrics incl. M16
+  `alignable`, `does_not_fit` with `courtyard_fill` → ask; S5 `critical_reasons` (class /
+  corridor / intra_block), ≤ 50 nets per call, corridor nets first; S6 ladder (a)–(d) incl.
+  R7's clear-and-reroute (`pcb_unroute {region}` ≈ 8 × 8 mm), every `fill_not_acceptable`
+  reason incl. `details.started: false`; S7 fanout report (`tied`, `via_pour`, islands need a
+  via); S8 accepted warnings only after the user's ok, silk lines warning-only, **footprint
+  defects** (R7's hole-to-pad case, library keepouts) → `fp_check` + footprint fix in a
+  Schematic session or a footprint-scoped custom rule with the user's ok; S9 BOM/CPL check for
+  holes / fiducials / test points (P8/R5), small-hole surcharge, no JLC rotation offsets.
+  "Errors" explains every B-C14 code plus every `code="…"` literal under `kicad_tools/board/`,
+  `board/` and `plans/gate.py` (the plan gate every board write passes: `plan_open` / `plan_step_exceeded`;
+  `test_every_board_error_code_explained` derives them).
+- **`board-layout`** (`sessions: board, free`): §9.3 table per `PartClass` (+ anchor,
+  fiducial, test point), placement practice (blocks, order, channels, straight links,
+  pin-escape / inductor orientation from R7), routing rules (critical set incl. round-2
+  reasons, ground by planes, 45° only, **T not Y**, no doglegs / pad loops / pad jogs,
+  neck-down only in the escape zone, the §12 chamfer / jog definitions), planes / fanout /
+  stitching (D1 stack, no via-in-pad, 5 mm pitch, refill), the owner's hard thresholds (D2 +
+  §22: M4 without the T clause, M5, M7, M8 verbatim from Global Constraints, M15, M16 with
+  jogs, M1/M2/M3/M12/M13/M14) and the review thresholds from `metrics.REVIEW`.
+- **`copperchat-tools`**: `## Board` section (read tools backticked; write tools unbackticked
+  like the footprint writes, because the skill is offered in every session type and
+  `test_skill_tool_names_exist_in_every_profile_they_apply_to` checks backticked names per
+  profile); footprint sentence "… Schematic, Board and Free sessions" with the hint to hand
+  footprint work to a Schematic session (`kicad-footprints` stays `schematic, free`: it
+  names `sch_set_fields`, which the Board profile lacks).
+- **Prompt** (`cc/agent/sdk_backend.py`): `_BOARD_PARAGRAPH` (flag on) = step by step,
+  `session-board` first, `board-layout` before placing / routing, ask with proposals, stop
+  after each step, the two server-enforced approvals, `pcb_approve` only in the turn started
+  by the approving message, `board.md` / `decisions.md`. `_BOARD_EDITING` (Schematic, Free):
+  the board is laid out in a Board session with both approvals; Free adds `_BOARD_FREE`
+  (pcb_* tools only on request, `board-layout` before placing / routing). Flag-off texts
+  byte-identical to P1c (`test_prompt_board.py::test_flag_off_unchanged`,
+  `test_board_prompt_final.py::test_flag_off_text_unchanged`).
+- **Flag:** `Settings.board_tools` default `True` (B-C1 updated in place). **Deviation:** the
+  keyword defaults of `system_prompt(..., board_tools=False)` and `profile_specs(...,
+  board_tools=False)` stay `False` - every production caller passes the setting; the
+  defaults keep P1c's flag-off tests readable. Memory gate (D5): the owner relaxed D5 on
+  2026-11-27 (no hard limit; document the measured ≈ 6 GB as information) → flipped without
+  an owner-acceptance round; README / `.env.example` / architecture / CHANGELOG state
+  R6/R7's concurrent peak (≈ 5.7–5.9 GB: api-server ≈ 3.1 GB + parity DRC ≈ 2.6 GB) and the
+  sum of per-process peaks (≈ 6.9 GB).
+- **Skill gating (outside the file list, minimal):** `cc/skills/assembly.py` drops
+  `session-board` and `board-layout` with `COPPERCHAT_BOARD_TOOLS=off` (like
+  `kicad-footprints` with the footprint flag) - closes P1c's "Free gets the skill?" residual:
+  `board-layout` is offered in Board and Free, `session-board` in Board only.
+- **Tests:** `tests/unit/board/test_board_skills.py` (steps, eight questions, rules, tools in
+  the Board profile, every error code, no design-specific names, part classes, hard-threshold
+  lines read from this index, definitions, copperchat-tools lists, README / `.env.example`),
+  `tests/unit/board/test_board_prompt_final.py`; updated: `test_config.py` (default on),
+  `test_prompt_board.py`, `phase8/test_builtin_skills.py` (Board in `ACTIVE_TYPES`,
+  `board-layout` expected), `phase8/test_skill_sessions_key.py` (mapping + flag-off gating),
+  `phase8/test_skills_assembly.py`, `web/test_conversations_board.py` (off explicit, default
+  201), `web/test_features.py` (default on).
+- **Live eval** `tests/live/test_board_eval.py` (opt-in `COPPERCHAT_LIVE_EVAL=1`,
+  `LIVE_EVAL_MAX_USD` default 5, real `SdkStreamingBackend` on the P9a e2e `Rig` with a Board
+  conversation on a copy of `sp4_synth`, ≤ 8 turns, stops at "Approve this placement?",
+  results `tests/live/results/<date>-board.json`). **Not run in this PR: no model
+  credentials in the implementing session** (as the repo-context eval) - collected and
+  skipped; run it once before the release.
+- Docs pass: `cc/agent/engine.py` comments ("live schematic view"; the board view is
+  published by the adapter) - P1c residual.
+
+**Residuals (P10 / later / owner)**
+- Owner: J302-style footprint defects (plated hole 0.19 mm from pad copper vs JLC 0.25 mm)
+  stay a per-board decision (footprint fix or scoped custom rule) - the skill makes the agent
+  ask.
+- Live eval to be run once with credentials (cost unknown, `LIVE_EVAL_MAX_USD` 5).
+- Approve button in the chat UI, light board theme, polygon outlines, part 3D models (P10),
+  JLC CPL rotation offsets, `pcb_unroute` pad / part selector, an own parity check instead of
+  the `kicad-cli` parity DRC (≈ 2.6 GB) - see "Residuals" and the R-phase sections.
 
 ### As built (R7)
 
@@ -3030,6 +3119,23 @@ Open after P9b (collected from every phase's "As built"; nothing here blocks the
   owner business); patch 0005 upstream MR (owner).
 - "Approve" button in the chat UI (with the footprint button).
 - Fab outputs are not snapshotted (regenerated on demand).
+
+**Round 2 / P9b (collected 2026-11-28)**
+- Owner: footprint defects that fail M3 (e.g. plated holes too close to pads in a project
+  footprint) - footprint fix or a scoped custom rule per board; board size of the acceptance
+  board (R7: 80 × 65 vs 80 × 100).
+- Fill run-to-run variance (refused 0–3 times on identical code, R4/R7); Freerouting time per
+  fill spent on placement-forced connections.
+- GND pour islands holding only `via_pour` pads (stitch every such island), USB-C same-part
+  links long on dense boards (M5), `pcb_unroute` without a pad / part selector, no rung for an
+  own-router `no_path` among locked copper (R7).
+- Library footprints with rule areas far from their origin (R5: keepouts ≈ 130 mm off) are
+  misclassified / add stray obstacles - the skill tells the agent to override the class.
+- Own parity check instead of the `kicad-cli` parity DRC (≈ 2.6 GB → ≈ 4 GB concurrent,
+  R6) - owner decision, not planned.
+- Placement congestion estimate uncalibrated; the floorplan render overlaps adjacent region
+  names (R2b / R2).
+- Live board eval (P9b) not yet run with credentials.
 
 **Process / CI**
 - Freerouting behaviour pinned to 2.5.0; a version bump needs the P6 tests re-run and the

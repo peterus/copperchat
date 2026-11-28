@@ -111,8 +111,12 @@ approve or delete one."""
 # The board sentence of _EDITING: read-only while COPPERCHAT_BOARD_TOOLS=off.
 _BOARD_READ_ONLY = """ The board (PCB) is read-only: if asked to change it, explain \
 what you would change and that board editing is not available yet."""
-_BOARD_EDITING = """ The board (PCB) is edited with the pcb_* tools in a Board session; \
-load the session-board skill before the first board write."""
+_BOARD_EDITING = """ The board (PCB) is laid out step by step with the pcb_* tools in a Board \
+session (session-board skill), with the user's approval of the placement before routing and of \
+the final board before the fab export."""
+# Free sessions also carry the board write tools (COPPERCHAT_BOARD_TOOLS=on).
+_BOARD_FREE = """ Here the pcb_* tools are available too: use them only when the user asks, and \
+load the board-layout skill before placing or routing."""
 
 _EDITING = """- You can edit the schematic with the sch_* tools; load the kicad-schematic-editing \
 skill before your first edit.{board}{footprints}
@@ -141,10 +145,15 @@ read and changed with the doc_* tools; load the design-docs skill before changin
 }
 
 # The board paragraph with COPPERCHAT_BOARD_TOOLS=on (board spec §8).
-_BOARD_PARAGRAPH = """- This is a board session. The schematic is read-only here; you edit \
-the board with the pcb_* tools. Load the session-board skill first and follow its steps: stop \
-after each step and wait for the user's ok. Record answers and decisions in board.md with \
-doc_patch_section and in decisions.md with doc_append."""
+_BOARD_PARAGRAPH = """- This is a board session. The schematic is read-only here; you lay out \
+the board step by step with the pcb_* tools. Load the session-board skill first and follow its \
+steps S0-S9, and load the board-layout skill before placing or routing. Ask the user the design \
+questions with your proposals; stop after each step and wait for the user's ok.
+- Two approvals are enforced by the server: the placement before any routing and the final \
+board before the fab export. Call pcb_approve only in the turn started by the user's approving \
+message, quoting their words.
+- Record answers and decisions in board.md with doc_patch_section and in decisions.md with \
+doc_append."""
 
 
 def system_prompt(
@@ -158,9 +167,12 @@ def system_prompt(
         paragraph = _BOARD_PARAGRAPH
     else:
         paragraph = SESSION_PARAGRAPHS[conversation_type]
-    paragraph = paragraph.replace(
-        "{board}", _BOARD_EDITING if board_tools else _BOARD_READ_ONLY
-    ).replace("{footprints}", _FOOTPRINTS if footprint_tools else "")
+    board = _BOARD_READ_ONLY
+    if board_tools:
+        board = _BOARD_EDITING + (_BOARD_FREE if conversation_type == "free" else "")
+    paragraph = paragraph.replace("{board}", board).replace(
+        "{footprints}", _FOOTPRINTS if footprint_tools else ""
+    )
     return SYSTEM_PROMPT.format(project_name=project_name, session_paragraph=paragraph)
 
 

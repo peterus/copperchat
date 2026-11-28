@@ -79,7 +79,38 @@ affiliated with or endorsed by Anthropic.
     of a footprint call that crashed stay flagged (`needs review`) until the tools are on
     again (the next writing call cleans them up) or the turn is undone.
 
-Boards (PCB) stay read-only.
+- **Board layout** (unreleased): in a **Board** session the agent lays out the board from
+  the schematic, step by step with you — it asks the design questions (size, layer count,
+  assembly, connector edges, mounting holes, keepouts, currents, special nets) with its
+  own proposals, and after every step shows images and a short check report and waits for
+  your ok or corrections. The schematic stays read-only there; every board change goes
+  through KiCad's API, is undone from the History panel like any other turn and highlighted
+  in the Changes panel.
+  - Steps: board from the schematic → outline, mounting holes, keepouts, layer count and
+    JLCPCB rules / stackup / net classes → functional blocks and a floorplan preview → whole-board
+    placement → critical nets with CopperChat's own router → the rest with Freerouting →
+    ground planes, fanout and stitching vias → tidy silk and the full check → fab package.
+  - Quality gates (hard): only 45° direction changes (no 90°, no acute), T-junctions instead
+    of Y-junctions, straight links between adjacent pads (no doglegs, no loops or jogs at pad
+    entries), decoupling and crystal paths ≤ 5 mm, no long detours, JLCPCB rules, KiCad DRC
+    and schematic parity; reviews for the rest.
+  - Two approvals in the chat, enforced by the server: **"Approve this placement?"** before
+    any routing and **"Approve this board for manufacturing?"** before the fab export; any
+    later change makes the approval stale.
+  - Fab package in `fab/jlcpcb/` (gerbers incl. paste for the stencil, Excellon drill, the
+    upload zip, BOM, CPL, `fab-report.md`) and a bare-board STEP / GLB in `fab/3d/` (no part
+    3D models yet).
+  - Freerouting 2.5.0 (GPL-3.0) ships in the app image and runs locally as a separate,
+    resource-limited process that cannot resolve host names or use a proxy (no network
+    at all where user namespaces are available, i.e. not under Docker's default seccomp);
+    `COPPERCHAT_FREEROUTING=off` removes only the fill tool.
+  - Memory (measured, for sizing — not a requirement): an active board project peaked at
+    about **6 GB** at the same moment (a 76-part, 4-layer board): the
+    project's api-server with the footprint libraries ≈ 3.1 GB plus the `kicad-cli`
+    schematic-parity DRC of the full check ≈ 2.6 GB; the parity DRC waits until a running
+    Freerouting fill (JVM ≈ 0.6 GB) and board computation (CPU worker ≈ 0.3–0.6 GB, restarted
+    above 512 MB) have finished. The sum of the per-process peaks was ≈ 6.9 GB.
+  - `COPPERCHAT_BOARD_TOOLS=off` removes the board write tools and the Board session type.
 
 ## Quick start
 
@@ -181,6 +212,9 @@ notifications in Settings › Notifications.
 | `MOUSER_API_KEY` | optional Mouser Search API key: price, stock and lifecycle lookups (`mouser_search` / `mouser_part`) |
 | `COPPERCHAT_GIT_NAME`, `COPPERCHAT_GIT_EMAIL` | optional fallback author/committer identity for `git_commit`; used only when the repository (or git config) has no `user.name` / `user.email` |
 | `COPPERCHAT_FOOTPRINT_TOOLS` | `on` (default) or `off`: footprint tools (`fp_*`); `off` saves the ~3 GB per api-server they need |
+| `COPPERCHAT_BOARD_TOOLS` | `on` (default) or `off`: board layout tools (`pcb_*` writes) and the Board session type; `off` restores the read-only board |
+| `COPPERCHAT_FREEROUTING` | `on` (default) or `off`: `off` removes only the Freerouting fill (`pcb_route_fill`) |
+| `COPPERCHAT_FREEROUTING_HOME` | Freerouting runtime folder (default `/opt/freerouting`; the image ships it) |
 | `CLOUDFLARE_TUNNEL_TOKEN` | optional `cloudflared` service (`--profile tunnel`) |
 | `FORWARDED_ALLOW_IPS` | trusted reverse-proxy addresses (default: the compose `cloudflared`) |
 | `COOKIE_SECURE=false` | only for plain-http LAN use |
