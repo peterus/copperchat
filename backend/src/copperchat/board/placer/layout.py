@@ -91,6 +91,7 @@ ALIGN_WEIGHT = 0.5  # connected satellites: cost per mm slid away from the align
 SIDE_PENALTY_MM = 1.5  # a host side next to the one the connected pin points to
 EPAD_MIN_MM2 = 1.0  # R7: a ground pad this large under the IC's middle is an exposed pad
 SELF_CROSS_MM = 3.0  # R7: per own pad of another net on a satellite pad's line to its pin
+CROSS_MAX_PADS = 4  # ... for satellites with at most this many pads
 NEAR_TARGET_MM = 3.0  # host pads of the satellite's nets this close to the first form a target
 _EPS = 1e-9
 
@@ -717,7 +718,13 @@ class _Layout:
 
         # R7: a satellite whose pads serve several host pins (a buck-boost inductor) pays
         # when one pad's line to its pin runs over its other pad (crossed connections)
-        crossing = (self.relax or self.escape_room) and len({q.net for q in own}) > 1
+        # two-pin parts and small arrays only (review round 3: the clip test per own pad
+        # and candidate is O(own x pads))
+        crossing = (
+            (self.relax or self.escape_room)
+            and len(local.pads) <= CROSS_MAX_PADS
+            and len({q.net for q in own}) > 1
+        )
 
         def cost_of(u: float, t: float) -> float:
             if want is None:

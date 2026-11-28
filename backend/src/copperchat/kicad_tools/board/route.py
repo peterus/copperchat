@@ -1208,7 +1208,8 @@ async def _alternate_ends(sctx: BoardStageContext, st: _Loop, p: ConnPlan) -> bo
     def island(x: Pad) -> list[Pad]:
         return [q for q in pads if q is x or _joined(x, q) or graph.length(x, q) is not None]
 
-    ia, ib = island(p.a), island(p.b)
+    # off the event loop (review round 3: one path search per pad of the net)
+    ia, ib = await asyncio.to_thread(lambda: (island(p.a), island(p.b)))
     if any(q in ib for q in ia):
         return False  # joined meanwhile (another connection did it)
     alts = sorted(

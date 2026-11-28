@@ -785,89 +785,99 @@ async def _run_size(
     ):
         raise UsageError(f"--project {args.project}: no .kicad_pro at that path in the checkout")
     copy = copy_checkout(args.odh)
-    pro = (copy / args.project).resolve()
-    root = copy.parent
-    settings = Settings(  # type: ignore[call-arg]
-        _env_file=None,
-        projects_root=root,
-        data_dir=root / ".data",
-        admin_password="dry-run",
-        claude_code_oauth_token="dry-run",
-        cookie_secure=False,
-        frontend_dist=root / ".no-frontend",
-        kicad_cli=os.environ.get("KICAD_CLI") or "kicad-cli",
-        kicad_api_timeout_s=30.0,
-        kicad_start_timeout_s=120.0,
-        board_tools=True,
-    )
-    project = next((p for p in discover_projects(root) if p.pro_file.resolve() == pro), None)
-    if project is None:
-        raise UsageError(f"--project {args.project}: not discovered as a KiCad project")
-    me = os.getpid()
-    sampler = PeakSampler(
-        lambda: descendants(me), lambda pid: kind_of(proc_cmdline(pid), settings.kicad_cli)
-    ).start()
-    api: dict[str, int] = {}
+    flow_ran = finished = False  # the flow started / the report was written
     error: str | None = None
-    extra: list[dict[str, Any]] = []
-    start = time.monotonic()
-
-    def step(s: Any) -> None:
-        sampler.mark(f"turn {s.turn} {s.tool}")
-        print(
-            f"[{time.monotonic() - start:7.1f}s] turn {s.turn} {s.tool} {s.seconds:.1f}s "
-            f"{json.dumps(s.summary, default=str)[:200]}",
-            flush=True,
-        )
-
     try:
-        async with open_rig(settings, project, root / ".data" / "dry-run.db") as rig:
-            try:
-                result = await run_flow(rig, answers, on_step=step)
-            except FlowError as exc:
-                result, error = exc.result, str(exc)
-                extra = await after_failure(rig, result, sampler.mark)
-            extra += await extra_renders(rig, result)
-            sampler.mark("extra renders")
-            seconds = time.monotonic() - start
-            proc = rig.session.process
-            if proc is not None:
-                api["before_fp"] = proc_status(proc.pid).get("VmHWM", 0)
-                await rig.session.activate_footprints()
+        pro = (copy / args.project).resolve()
+        root = copy.parent
+        settings = Settings(  # type: ignore[call-arg]
+            _env_file=None,
+            projects_root=root,
+            data_dir=root / ".data",
+            admin_password="dry-run",
+            claude_code_oauth_token="dry-run",
+            cookie_secure=False,
+            frontend_dist=root / ".no-frontend",
+            kicad_cli=os.environ.get("KICAD_CLI") or "kicad-cli",
+            kicad_api_timeout_s=30.0,
+            kicad_start_timeout_s=120.0,
+            board_tools=True,
+        )
+        project = next((p for p in discover_projects(root) if p.pro_file.resolve() == pro), None)
+        if project is None:
+            raise UsageError(f"--project {args.project}: not discovered as a KiCad project")
+        me = os.getpid()
+        sampler = PeakSampler(
+            lambda: descendants(me), lambda pid: kind_of(proc_cmdline(pid), settings.kicad_cli)
+        ).start()
+        api: dict[str, int] = {}
+        extra: list[dict[str, Any]] = []
+        start = time.monotonic()
+
+        def step(s: Any) -> None:
+            sampler.mark(f"turn {s.turn} {s.tool}")
+            print(
+                f"[{time.monotonic() - start:7.1f}s] turn {s.turn} {s.tool} {s.seconds:.1f}s "
+                f"{json.dumps(s.summary, default=str)[:200]}",
+                flush=True,
+            )
+
+        try:
+            async with open_rig(settings, project, root / ".data" / "dry-run.db") as rig:
+                try:
+                    flow_ran = True
+                    result = await run_flow(rig, answers, on_step=step)
+                except FlowError as exc:
+                    result, error = exc.result, str(exc)
+                    extra = await after_failure(rig, result, sampler.mark)
+                extra += await extra_renders(rig, result)
+                sampler.mark("extra renders")
+                seconds = time.monotonic() - start
                 proc = rig.session.process
                 if proc is not None:
-                    api["after_fp"] = proc_status(proc.pid).get("VmHWM", 0)
-                    api["end"] = api["after_fp"]
+                    api["before_fp"] = proc_status(proc.pid).get("VmHWM", 0)
+                    await rig.session.activate_footprints()
+                    proc = rig.session.process
+                    if proc is not None:
+                        api["after_fp"] = proc_status(proc.pid).get("VmHWM", 0)
+                        api["end"] = api["after_fp"]
+                sampler.stop()
+                memory = memory_from(sampler, api)
+                out.mkdir(parents=True, exist_ok=True)
+                renders: list[str] = []
+                stats: dict[str, dict[str, int]] = {}
+                for png in getattr(result, "renders", []) or []:
+                    if png.is_file():
+                        dst = out / f"{len(renders) + 1:02d}-{png.name}"
+                        shutil.copy2(png, dst)
+                        renders.append(dst.name)
+                        stats[dst.name] = svg_stats(png.with_suffix(".svg"))
+                report = build_report(
+                    result,
+                    memory,
+                    project=f"{args.project} at {size_label(size)} mm",
+                    error=error,
+                    seconds=seconds,
+                    renders=stats,
+                    after_failure=extra,
+                )
+                (out / "report.md").write_text(report)
+                data = as_jsonable(result) if result is not None else {}
+                data |= {
+                    "error": error,
+                    "memory": dataclasses.asdict(memory),
+                    "renders_out": renders,
+                }
+                data["after_failure"] = extra
+                (out / "metrics.json").write_text(json.dumps(data, indent=1, default=str))
+                finished = True
+        finally:
             sampler.stop()
-            memory = memory_from(sampler, api)
-            out.mkdir(parents=True, exist_ok=True)
-            renders: list[str] = []
-            stats: dict[str, dict[str, int]] = {}
-            for png in getattr(result, "renders", []) or []:
-                if png.is_file():
-                    dst = out / f"{len(renders) + 1:02d}-{png.name}"
-                    shutil.copy2(png, dst)
-                    renders.append(dst.name)
-                    stats[dst.name] = svg_stats(png.with_suffix(".svg"))
-            report = build_report(
-                result,
-                memory,
-                project=f"{args.project} at {size_label(size)} mm",
-                error=error,
-                seconds=seconds,
-                renders=stats,
-                after_failure=extra,
-            )
-            (out / "report.md").write_text(report)
-            data = as_jsonable(result) if result is not None else {}
-            data |= {"error": error, "memory": dataclasses.asdict(memory), "renders_out": renders}
-            data["after_failure"] = extra
-            (out / "metrics.json").write_text(json.dumps(data, indent=1, default=str))
     finally:
-        sampler.stop()
-        # a full checkout copy per size would pile up in $TMPDIR; a failed run keeps its
-        # copy (the routed board, board.md) for inspection (review round 2)
-        keep = args.keep_copies or error is not None
+        # a full checkout copy per size would pile up in $TMPDIR; a run whose flow failed or
+        # crashed keeps its copy (the routed board, board.md) for inspection, a setup
+        # failure before the flow does not (review rounds 2-3)
+        keep = args.keep_copies or (flow_ran and (error is not None or not finished))
         if not keep:
             shutil.rmtree(copy.parent, ignore_errors=True)
     kept = f" (copy of the checkout: {copy})" if keep else ""

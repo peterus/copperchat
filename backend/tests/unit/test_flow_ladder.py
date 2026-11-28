@@ -117,3 +117,19 @@ def test_signal_nets_from_pcb_analyze() -> None:
     _capped(big, "nets", {f"N{i}": "signal" for i in range(MAX_ENTRIES + 3)})
     with pytest.raises(FlowError, match="3 nets omitted"):
         flow.signal_nets(big, "turn 4")
+
+
+def test_clear_boxes_around_both_pins_of_a_long_connection() -> None:
+    """Review round 3: the fill's open spot is the midpoint; a long connection is cleared
+    around each of its two pins (`ends`), not around the midpoint."""
+    fill = {
+        "completion": 0.9,
+        "open": [{"net": "F2", "x": 30.0, "y": 10.0, "ends": [[10.0, 10.0], [50.0, 10.0]]}],
+    }
+    f = FakeFlow([(fill, False)], {"F2": 1})
+    asyncio.run(flow._route(f, ["C1"]))  # type: ignore[arg-type]
+    boxes = [a["region"] for n, a in f.calls if n == "pcb_unroute"]
+    assert boxes == [
+        {"x": 6.0, "y": 6.0, "w": 8.0, "h": 8.0},
+        {"x": 46.0, "y": 6.0, "w": 8.0, "h": 8.0},
+    ]

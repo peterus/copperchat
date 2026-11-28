@@ -961,15 +961,22 @@ def place_blocks(
 
 
 def centre_offset(model: BoardModel, moves: Sequence[Move]) -> float:
-    """|dx| + |dy| (mm) of the moved parts' centroid (each part's box centre weighted by
-    its box area: one small block thrown to an empty end barely moves it, unlike a
-    bounding box) from the outline's centre; 0.0 without moves or outline."""
+    """|dx| + |dy| (mm) of the parts' centroid - the moved ones and every other part on
+    the board - (each part's box centre weighted by its box area: one small block thrown
+    to an empty end barely moves it, unlike a bounding box) from the outline's centre; 0.0
+    without moves or outline."""
     o = model.outline
     if not moves or o.w <= 0 or o.h <= 0:
         return 0.0
     placed = apply_moves(model, moves)
     refs = {mv.ref for mv in moves}
-    boxes = [box_of(p) for p in placed.parts if p.ref in refs]
+    # the moved parts and every part that stays on the board (locked parts, fixtures):
+    # review round 3 - parts already filling one half count toward the balance
+    boxes = [
+        box_of(p)
+        for p in placed.parts
+        if p.ref in refs or (on_board(placed, p) and len(p.courtyard) + len(p.pads) > 0)
+    ]
     total = sum(_area(b) for b in boxes)
     if total <= 0:
         return 0.0
@@ -1263,7 +1270,7 @@ def _finish(
     merged = {mv.ref: mv for mv in moves}
     merged.update({mv.ref: mv for mv in legal})
     placed = tuple(merged[r] for r in sorted(merged, key=natural_key))
-    placed = snap_edges(model, doc, blocks, placed)
+    placed = snap_edges(model, doc, blocks, placed, cls=cls)
     after = apply_moves(model, placed)
     aligned = align_pairs(after, classify(after, doc), placed, movable=members)
     final = apply_moves(model, aligned)
@@ -1278,6 +1285,8 @@ def snap_edges(
     doc: BoardDoc,
     blocks: Sequence[BlockProposal],
     moves: tuple[Move, ...],
+    *,
+    cls: Classification | None = None,
 ) -> tuple[Move, ...]:
     """R7 (ODH: J201 ended 0.75 mm from its edge, M13 allows `M13_EDGE_MM`): the packing
     places on a 0.5 mm grid inside the edge margin, so a part with a `board.md` Placement
@@ -1300,8 +1309,11 @@ def snap_edges(
     obox = (o.x, o.y, o.x + o.w, o.y + o.h)
     normal = {"left": (-1, 0), "right": (1, 0), "top": (0, -1), "bottom": (0, 1)}
     # a shifted block never covers another part's escape strip (as `align_pairs`)
+    # net kinds do not depend on positions: the caller's classification serves (review r3)
     wide = wide_nets(
-        placed, classify(placed, doc), (q.net for p in placed.parts for q in p.pads if q.net)
+        placed,
+        cls if cls is not None else classify(placed, doc),
+        (q.net for p in placed.parts for q in p.pads if q.net),
     )
     strips = [(r, net, b) for r, p in parts.items() for net, b in escape_strips(p, wide)]
     for row in doc.edges:
@@ -1343,6 +1355,7 @@ def snap_edges(
             if all(
                 _legal_shift(q, others, sep, outline, keepouts)
                 and not _covers_strip(q, parts[r], fixed_strips)
+                and not _strip_lands_on(q, parts[r], others, wide)
                 for r, q in moved.items()
             ):
                 for r, q in moved.items():
@@ -1424,7 +1437,7 @@ def align_pairs(
             cand = moved_part(p, Move(p.ref, p.x + dx, p.y + dy, p.rot, p.side))
             if not _legal_shift(cand, parts, sep, outline, keepouts):
                 continue
-            if _covers_strip(cand, p, strips):
+            if _covers_strip(cand, p, strips) or _strip_lands_on(cand, p, parts, wide):
                 continue
             trial = {**parts, p.ref: cand}
             if any(_need_in(trial, q, layers) != 0.0 for q in (k, *had)):
@@ -1522,6 +1535,22 @@ def _covers_strip(cand: Part, old: Part, strips: Sequence[tuple[str, str, Box]])
         r != cand.ref and net not in mine and boxes_hit(b, s) and not boxes_hit(before, s)
         for r, net, s in strips
     )
+
+
+def _strip_lands_on(
+    cand: Part, old: Part, others: Mapping[str, Part], wide: Mapping[str, tuple[float, float]]
+) -> bool:
+    """R7 review round 3: a shifted part's own escape strips land on another part (one
+    without that net) they did not cover before the shift."""
+    before = [b for _, b in escape_strips(old, wide)]
+    for net, s in escape_strips(cand, wide):
+        for r, q in others.items():
+            if r == cand.ref or any(x.net == net for x in q.pads):
+                continue
+            qb = box_of(q)
+            if boxes_hit(s, qb) and not any(boxes_hit(b, qb) for b in before):
+                return True
+    return False
 
 
 def _legal_shift(

@@ -917,7 +917,9 @@ def test_centre_offset_weights_by_area() -> None:
     off = centre_offset(m, at)
     # centroid x = (100 * 40 + 1 * 75) / 101, y = (100 * 30 + 55) / 101
     assert off == pytest.approx((4075 / 101 - 40) + (3055 / 101 - 30), abs=1e-6)
-    assert centre_offset(m, [Move("U1", 20.0, 30.0, 0.0, "top")]) == pytest.approx(20.0)
+    # review round 3: a part that stays on the board (R1, not moved) counts too
+    stay = (40.0 - (100 * 20.0 + 75.0) / 101) + ((100 * 30.0 + 55.0) / 101 - 30.0)
+    assert centre_offset(m, [Move("U1", 20.0, 30.0, 0.0, "top")]) == pytest.approx(stay)
     assert centre_offset(m, []) == 0.0
 
 
@@ -1042,3 +1044,18 @@ def test_snap_edges_block_mate_next_to_its_own_strip() -> None:
     other = conn("J9", {"1": "VBUS"}, (1.0, 26.0))  # its strip reaches down past y 29
     got = run(True, other)
     assert got >= plain - 1e-9
+
+
+def test_strip_lands_on_another_part() -> None:
+    """Review round 3: a shifted part's own escape strip may not land on another part
+    without that net (a part it already covered, or one on the net, does not count)."""
+    from copperchat.board.placer.floorplan import _strip_lands_on
+
+    wide = {"VBUS": (0.5, 0.2)}
+    j_old = conn("J1", {"1": "A", "2": "VBUS"}, (1.75, 30.0))  # VBUS strip x 3.05-4.55
+    j_new = conn("J1", {"1": "A", "2": "VBUS"}, (2.75, 30.0))  # strip now x 4.05-5.55
+    near = res("R7", "X", "Y", (6.0, 30.0))  # box x 5.0-7.0: under the shifted strip only
+    on_net = res("R8", "VBUS", "Y", (6.0, 30.0))
+    assert _strip_lands_on(j_new, j_old, {"R7": near}, wide)
+    assert not _strip_lands_on(j_new, j_old, {"R8": on_net}, wide)
+    assert not _strip_lands_on(j_old, j_old, {"R7": near}, wide)

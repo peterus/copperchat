@@ -314,3 +314,15 @@ def test_postprocess_judges_widened_copper() -> None:
     assert {t.kiid: t.width for t in wide.tracks} == {**{k: 0.2 for k in fill}, "old": 0.15}
     assert not any(r == "micro_jog" for _, r in postprocess(m, fill).reasons)
     assert any(r == "micro_jog" for _, r in postprocess(wide, fill).reasons)
+
+
+def test_completion_open_entries_name_both_pin_spots() -> None:
+    """R7 review round 3: an open connection carries its two pins' spots (`ends`) next to
+    the midpoint - the flow clears fill copper around the pins."""
+    from copperchat.kicad_tools.board.fill import _completion
+
+    m = _board_ab(())
+    ratio, open_, done, total = _completion(m, frozenset())
+    assert (ratio, done, total) == (0.0, 0, 1)
+    (o,) = open_
+    assert o["ends"] == [[10.0, 10.0], [20.0, 10.0]] and (o["x"], o["y"]) == (15.0, 10.0)

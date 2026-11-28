@@ -240,3 +240,18 @@ def test_report_tie_into_a_pad_without_via_is_unconnected() -> None:
     epad.cands = (ViaCandidate((40.0, 32.0), ((40, 30), (40.0, 32.0)), ("U1", "2"), 0),)
     rep = _report(st, MODEL)
     assert rep["fanned_out"] == 2 and rep["tied"] == 1
+
+
+def test_report_tie_into_a_pour_connected_pad_counts() -> None:
+    """Review round 3: a tie into a pad that got no via but reaches the plane through the
+    pour (no unconnected marker names it, fresh DRC, a pour on its layer) is connected."""
+    big = Pad("U1", "2", "GND", 40, 30, 2.0, 2.0, 0.0, "rect", frozenset({"F.Cu"}), True, None)
+    tie = ViaCandidate((39.2, 30.0), ((30, 30), (39.2, 30.0)), ("U1", "1"), 0, tie=True)
+    pin = _PadState(A, ("U1", "1"), "F.Cu", (tie,))
+    epad = _PadState(big, ("U1", "2"), "F.Cu", ())
+    pin.status, epad.status = "fanned", "exhausted"
+    st = _Fanout("GND", (0.6, 0.3), 0.2, 0.2, 0.25, [pin, epad], 0)
+    st.last_drc, st.drc_fresh = _drc(), True
+    rep = _report(st, MODEL)
+    assert rep["tied"] == 1 and rep["fanned_out"] == 1
+    assert rep["via_pour"] == 1 and rep["unconnected"] == []

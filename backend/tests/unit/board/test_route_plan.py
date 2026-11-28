@@ -1452,3 +1452,25 @@ def test_alternate_ends_nearest_first_capped_and_joined(monkeypatch: pytest.Monk
     )
     assert not asyncio.run(route._alternate_ends(None, route._Loop(joined, True, None), p))  # type: ignore[arg-type]
     assert tried == []
+
+
+def test_alias_unkeep_removes_the_original_plans_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review round 3: copper routed for an alternative plan and later taken out by the
+    rip-up (`_unkeep`) removes the result recorded under the ORIGINAL plan - st.results
+    never holds the alternative itself."""
+    m = circuit(res("R1", "S", "X", (10.0, 10.0)), res("R2", "S", "Y", (20.0, 10.0)))
+    (p,) = route.plan_connections(m, classify(m), ["S"], layers=None, allow_vias=True)
+    alt = dataclasses.replace(p, a=p.b, b=p.a, req=dataclasses.replace(p.req, a=p.b, b=p.a))
+    st = route._Loop(m, True, None)
+    st.alias[alt] = p
+    route._fail(st, [alt], "no_path")
+    assert set(st.results) == {p}
+
+    async def drop(sctx: Any, ids: Any) -> None:
+        return None
+
+    monkeypatch.setattr(route, "_drop", drop)
+    kept = route._Kept([alt], [], [])
+    st.kept.append(kept)
+    asyncio.run(route._unkeep(None, st, kept))  # type: ignore[arg-type]
+    assert st.results == {} and st.kept == []

@@ -1290,6 +1290,8 @@ def _completion(
                     "b": f"{b.ref}.{b.number}",
                     "x": round((a.x + b.x) / 2, 3),
                     "y": round((a.y + b.y) / 2, 3),
+                    # R7: the two pins (a walled-in pin is where copper must be cleared)
+                    "ends": [[round(a.x, 3), round(a.y, 3)], [round(b.x, 3), round(b.y, 3)]],
                 }
             )
     done = total - len(open_)

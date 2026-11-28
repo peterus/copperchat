@@ -707,19 +707,23 @@ async def _clear_and_reroute(
 ) -> list[dict[str, Any]]:
     """R7 ladder rung (c) after the fill: the own router found no path for a connection the
     fill left open (the fill's unlocked copper walls it in - ODH CHG_N at a QFN). Once: the
-    unlocked copper touching a `CLEAR_MM` box around each such connection's spot is removed
+    unlocked copper touching a `CLEAR_MM` box around each pin of such a connection is removed
     (`pcb_unroute {region}`; the own router's locked copper stays), then `pcb_route` routes
     the open nets first and the removed ones after them - also when only the open nets' own
     fill stubs were removed. Returns what is still failed."""
     nets = {str(x["net"]) for x in failed}
     removed: set[str] = set()
+    half = CLEAR_MM / 2
     for o in opened:
-        if o.get("net") not in nets or o.get("x") is None:
+        if o.get("net") not in nets:
             continue
-        half = CLEAR_MM / 2
-        region = {"x": o["x"] - half, "y": o["y"] - half, "w": CLEAR_MM, "h": CLEAR_MM}
-        data = await f.tool("pcb_unroute", cost=1, region=region)
-        removed.update(str(n) for n in data.get("nets", []))
+        # one box per pin (review round 3: the midpoint of a long connection is near
+        # neither pin); the midpoint only when the fill did not report the ends
+        spots = o.get("ends") or ([[o["x"], o["y"]]] if o.get("x") is not None else [])
+        for x, y in spots:
+            region = {"x": x - half, "y": y - half, "w": CLEAR_MM, "h": CLEAR_MM}
+            data = await f.tool("pcb_unroute", cost=1, region=region)
+            removed.update(str(n) for n in data.get("nets", []))
     if not removed:
         return failed
     signal = set(f.signal_nets)

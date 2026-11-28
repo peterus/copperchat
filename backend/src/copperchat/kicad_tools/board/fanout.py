@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import math
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from time import monotonic
 from typing import Any
@@ -462,16 +462,20 @@ def _pour_on(model: BoardModel, net: str, layer: str) -> bool:
     return any(not z.rule_area and z.net == net and layer in z.layers for z in model.zones)
 
 
-def _tie_without_via(st: _Fanout, p: _PadState) -> bool:
+def _tie_without_via(
+    st: _Fanout, p: _PadState, poured: Callable[[_PadState], bool] = lambda q: False
+) -> bool:
     """`p` was fanned by a tie stub (R7) into a pad of this call that never got a via of
-    its own (a pad not fanned here was already connected before the call)."""
+    its own and does not reach the plane through the pour either (`poured`; review round
+    3); a pad not fanned here was already connected before the call."""
     if p.status != "fanned" or p.next >= len(p.cands) or not p.cands[p.next].tie:
         return False
     end = p.cands[p.next].at
     for q in st.pads:
         if q is p or q.pad.ref != p.pad.ref or not _in_pad_rect(end, q.pad):
             continue
-        return not (q.status == "fanned" and q.next < len(q.cands) and not q.cands[q.next].tie)
+        via = q.status == "fanned" and q.next < len(q.cands) and not q.cands[q.next].tie
+        return not via and not poured(q)
     return False
 
 
@@ -487,7 +491,19 @@ def _report(st: _Fanout, model: BoardModel) -> dict[str, Any]:
             if m.type in IGNORED_DRC:
                 unconnected_kiids.update(m.kiids)
     pad_ids = _pad_kiids(model)
-    dangling = {id(p) for p in st.pads if _tie_without_via(st, p)}
+
+    def poured(q: _PadState) -> bool:
+        """`q` (no via of its own) reaches its plane through the pour."""
+        return (
+            q.status != "timeout"
+            and st.last_drc is not None
+            and st.drc_fresh
+            and _pour_on(model, st.net, q.layer)
+            and (kid := pad_ids.get((q.pad.ref, q.pad.number, q.pad.x, q.pad.y))) is not None
+            and kid not in unconnected_kiids
+        )
+
+    dangling = {id(p) for p in st.pads if _tie_without_via(st, p, poured)}
     fanned = [p for p in st.pads if p.status == "fanned" and id(p) not in dangling]
     pour: list[dict[str, str]] = []
     unconnected: list[dict[str, str]] = []
@@ -506,14 +522,7 @@ def _report(st: _Fanout, model: BoardModel) -> dict[str, Any]:
             # a pad whose candidates all clashed with nearer vias never reached the DRC
             else ("all_rejected" if p.tried else "no_candidate")
         )
-        if (
-            reason != "timeout"
-            and st.last_drc is not None
-            and st.drc_fresh
-            and _pour_on(model, st.net, p.layer)
-            and (kid := pad_ids.get((p.pad.ref, p.pad.number, p.pad.x, p.pad.y))) is not None
-            and kid not in unconnected_kiids
-        ):
+        if reason != "timeout" and poured(p):
             pour.append({"ref": p.key[0], "pad": p.key[1]})
         else:
             unconnected.append({"ref": p.key[0], "pad": p.key[1], "reason": reason})
