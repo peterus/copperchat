@@ -102,8 +102,8 @@ affiliated with or endorsed by Anthropic.
     3D models yet).
   - Freerouting 2.5.0 (GPL-3.0) ships in the app image and runs locally as a separate,
     resource-limited process that cannot resolve host names or use a proxy (no network
-    at all where user namespaces are available, i.e. not under Docker's default seccomp); `COPPERCHAT_FREEROUTING=off` removes only the
-    fill tool.
+    at all where user namespaces are available, i.e. not under Docker's default seccomp);
+    `COPPERCHAT_FREEROUTING=off` removes only the fill tool.
   - Memory (measured, for sizing — not a requirement): an active board project peaked at
     about **6 GB** at the same moment (a 76-part, 4-layer board): the
     project's api-server with the footprint libraries ≈ 3.1 GB plus the `kicad-cli`

@@ -180,6 +180,7 @@ async def _chat(rig: Rig) -> BoardRun:
             run_id = f"eval-{len(turns) + 1}"
             turns.append(Turn(nxt))
             await user_says(rig, run_id, nxt)
+            await rig.start_turn(run_id)
             queue.put_nowait(QueuedItem(len(turns), run_id, TEST_CID, nxt))
     return BoardRun(turns, stop, tokens, cost)
 
