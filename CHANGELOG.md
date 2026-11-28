@@ -7,83 +7,38 @@ All notable changes to CopperChat are documented in this file. The format follow
 
 ## [Unreleased]
 
-### Added
+### Added — Board layout
 
-- Board sessions with `pcb_status` / `pcb_render` and a live board view — behind
-  COPPERCHAT_BOARD_TOOLS.
-- Board analysis and quality metrics (`pcb_analyze`, `pcb_metrics`) — behind
-  COPPERCHAT_BOARD_TOOLS.
-- App image ships Freerouting 2.5.0 + Temurin 25 JRE (≈ +123 MB compressed, 265 MB on
-  disk) for the upcoming board fill routing (checksum-pinned, sandboxed, no network).
-- Board sync, outline and rules tools (`pcb_sync_from_schematic`, `pcb_set_outline`,
-  `pcb_set_rules` with JLCPCB presets) — behind COPPERCHAT_BOARD_TOOLS.
-- Board checks and approvals (`pcb_check`, `pcb_approve`) — behind COPPERCHAT_BOARD_TOOLS.
-- JLC stackup presets for board rules (`pcb_set_rules {stackup}`: jlc-2l-1.6,
-  jlc-4l-1.6-7628, jlc-6l-1.6), through KiCad patch 0005 (`UpdateBoardStackup`) — behind
-  COPPERCHAT_BOARD_TOOLS. **Release note:** PROD needs the new kicad-base tag;
-  `kicad-base.yml` on `main` must have published this recipe before a release is cut.
-- Board placement tools (`pcb_define_blocks`, `pcb_place_block`, `pcb_move`,
-  `pcb_legalize`) — behind COPPERCHAT_BOARD_TOOLS.
-- Own octilinear router (`pcb_route`, `pcb_unroute`) — behind COPPERCHAT_BOARD_TOOLS.
-- `pcb_route_fill` (Freerouting fill + post-processing) — behind COPPERCHAT_BOARD_TOOLS;
-  `COPPERCHAT_FREEROUTING=off` removes it.
-- Board copper tools `pcb_zones`, `pcb_fanout`, `pcb_stitch`, `pcb_tidy_silk` — behind
-  COPPERCHAT_BOARD_TOOLS.
-- `pcb_fab_export` (JLCPCB gerbers, drill, zip, BOM, CPL, fab report) and `pcb_export_3d`
-  — behind COPPERCHAT_BOARD_TOOLS.
-- Board memory: the `kicad-cli` parity DRC (`pcb_check` full, `run_drc`) starts only after a
-  running Freerouting fill and board computation have finished (waits ≤ 120 s, then
-  `board_compute_timeout`); the board CPU worker is restarted after a job that leaves it
-  above 512 MB.
-- Board metrics M15 (Y-junctions) and M16 (doglegs between adjacent pads, pad-entry
-  loops and jogs, alignable pairs), review-only for now; M4 accepts perpendicular
-  T-junctions, M12 accepts neck-downs at fine-pitch pads, footprint silk lines below the
-  minimum are a warning only — behind COPPERCHAT_BOARD_TOOLS.
-- Whole-board block placement: `pcb_floorplan` previews a region per block (edge blocks in
-  a strip along their `board.md` edge, the rest spread over the board by connectivity, with
-  routing channels between them and the courtyard fill), `pcb_place_blocks` places all
-  blocks over it in one step and aligns adjacent connected two-pad parts so a straight
-  connection is possible — behind COPPERCHAT_BOARD_TOOLS (`pcb_floorplan` is a read).
+- **Board sessions**: the agent lays out the board from the schematic step by step (S0–S9:
+  intake questions, board from schematic, outline / holes / rules, blocks and floorplan,
+  placement, critical routing, fill routing, planes, final check, fab package), asks the
+  design questions with its proposals and stops after every step with images and a check
+  report (`session-board` and `board-layout` skills). The schematic is read-only there.
+- Board tools: `pcb_status`, `pcb_analyze`, `pcb_render`, `pcb_metrics`, `pcb_check`,
+  `pcb_floorplan` (read); `pcb_sync_from_schematic`, `pcb_set_outline`, `pcb_set_rules`
+  (layers, JLCPCB presets, JLC stackups through KiCad patch 0005, net classes, custom rules),
+  `pcb_define_blocks`, `pcb_place_blocks` (whole-board placement), `pcb_place_block`,
+  `pcb_move`, `pcb_legalize`, `pcb_route` (own octilinear router: 45° only, neck-down,
+  T-junctions, straight links first), `pcb_route_fill` (Freerouting fill +
+  post-processing, 20 % rejection rule), `pcb_unroute`, `pcb_zones`, `pcb_fanout`,
+  `pcb_stitch`, `pcb_tidy_silk`, `pcb_approve`, `pcb_fab_export` (JLCPCB gerbers, drill,
+  upload zip, BOM, CPL, fab report), `pcb_export_3d` (bare-board STEP / GLB); a live board
+  view.
+- Quality metrics M1–M16 with the owner's hard gates (45° only, no Y-junctions, no doglegs /
+  pad-entry loops / jogs, decoupling and crystal ≤ 5 mm, detours, JLCPCB rules, DRC and
+  schematic parity) and two server-enforced approvals: the placement before routing, the
+  board before the fab export.
+- Flags: `COPPERCHAT_BOARD_TOOLS` (on by default; `off` removes the board write tools and the
+  Board session type), `COPPERCHAT_FREEROUTING` (on by default; `off` removes only
+  `pcb_route_fill`), `COPPERCHAT_FREEROUTING_HOME`.
+- Memory note: an active board project measured ≈ 6 GB at its concurrent peak (api-server ≈
+  3.1 GB + the parity DRC of the full check ≈ 2.6 GB); the parity DRC waits for a running
+  Freerouting fill and board computation, the board CPU worker restarts above 512 MB.
+  **Release note:** PROD needs the kicad-base tag with patch 0005.
 
-### Changed
+### Changed — app image ships Freerouting 2.5.0 + Temurin 25 JRE
 
-- Board tools: the JLCPCB presets allow plated holes down to 0.2 mm (vias stay 0.3 mm) and
-  the fab report lists holes below 0.3 mm (possible JLC surcharge); mounting holes and
-  footprints excluded from BOM / position files are left out of the JLC BOM and CPL (listed
-  in the report); `pcb_render`'s default view is the outline and the parts' courtyards, not
-  KiCad's whole drawing area — behind COPPERCHAT_BOARD_TOOLS.
-- `pcb_place_blocks` places more relaxed and more compact: parts inside a block keep room
-  for the tracks between them (sized by the pins that must escape, via room at fine-pitch
-  pins; decoupling caps and crystals stay close), the blocks are packed one by one in
-  connectivity order against the parts already placed (connected blocks next to each
-  other, gaps sized by the nets they share), and the result reports congestion, the
-  largest empty area and each block pair's gap vs the channel it needs — behind
-  COPPERCHAT_BOARD_TOOLS.
-- Board router (`pcb_route`): wide tracks narrow to the pad width inside a fine-pitch part's
-  escape zone (neck-down); a connection to copper that already exists may end on it as a
-  T-junction, never a 45° Y; aligned adjacent pads get one straight segment first (their free
-  corridors are kept clear for later calls); a pad entry neither loops nor jogs unless no
-  other path exists; decoupling and crystal links route first; pads that are almost square
-  may be left in any direction — behind COPPERCHAT_BOARD_TOOLS.
-- Board quality gates M15 (Y-junctions) and M16 (doglegs between adjacent pads, pad-entry
-  loops and pad-entry jogs) are hard now; a straight link may be pad-narrow only inside the
-  pads' escape zones. The router never forms a pad-entry loop or jog (it goes through a via,
-  enters from the other side or ends on the net's copper as a T instead) and keeps other
-  nets' pin escapes free; `pcb_analyze` adds straight-corridor and in-block nets to
-  `critical_nets` (`critical_reasons`), so the own router routes them before the fill;
-  `pcb_route_fill` turns Freerouting's Y-junctions into T-junctions (else rips them), rips
-  doglegs / pad loops / pad jogs for the own router, keeps legal neck-downs narrow and
-  re-routes with T-junctions; Freerouting vias read with their net class's drill — behind
-  COPPERCHAT_BOARD_TOOLS.
-- `pcb_place_blocks` keeps the pin escapes of power-class and switch-node pins free (no part
-  in front of them), keeps room for a fanout via beside an IC's exposed ground pad, turns a
-  part that serves two pins so its connections do not cross, puts an edge connector right
-  at its edge and centres the placement on a board with room to spare — behind
-  COPPERCHAT_BOARD_TOOLS.
-- `pcb_route_fill` judges Freerouting's copper at the width it will have (a jog that passes
-  at the neck-down width is ripped when the track is widened); the router no longer treats
-  a junction on an own via's rim as inside the via; M16 counts a straight track with an own
-  via on it as straight — behind COPPERCHAT_BOARD_TOOLS.
+- ≈ +123 MB compressed (265 MB on disk), checksum-pinned, run sandboxed without network.
 
 ## [0.12.0] - 2026-11-22
 

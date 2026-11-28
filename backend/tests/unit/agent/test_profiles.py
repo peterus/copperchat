@@ -89,9 +89,9 @@ SPEC_82 = {
 
 
 def _registered(expected: set[str]) -> set[str]:
-    """``expected`` as a burst with COPPERCHAT_BOARD_TOOLS off sees it: only registered
-    tools (the board tools arrive phase by phase), no board writes."""
-    return expected & {s.name for s in registry.all_specs()} - set(PCB_WRITES)
+    """``expected`` as a default burst sees it (COPPERCHAT_BOARD_TOOLS on since SP4 P9b):
+    only registered tools."""
+    return expected & {s.name for s in registry.all_specs()}
 
 
 @pytest.fixture

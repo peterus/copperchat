@@ -70,7 +70,6 @@ def test_create_list_rename_archive(build_chat_app: Any) -> None:
 @pytest.mark.parametrize(
     ("body", "status"),
     [
-        ({"type": "board"}, 400),
         ({"type": "chat"}, 422),
         ({"type": "free", "title": "a\nb"}, 422),
         ({"type": "free", "title": ""}, 422),

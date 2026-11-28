@@ -38,6 +38,8 @@ _ALLOWED_KEYS = ("name", "description")
 
 
 FOOTPRINT_SKILL = "kicad-footprints"
+# Built-in skills that teach the board write tools: dropped with COPPERCHAT_BOARD_TOOLS=off.
+BOARD_SKILLS = frozenset({"session-board", "board-layout"})
 
 
 def sdk_skill_name(name: str) -> str:
@@ -111,6 +113,8 @@ async def assemble_skills(
             continue
         if skill.name == FOOTPRINT_SKILL and not settings.footprint_tools:
             continue  # COPPERCHAT_FOOTPRINT_TOOLS=off: the profiles carry no fp_* tool
+        if skill.name in BOARD_SKILLS and not settings.board_tools:
+            continue  # COPPERCHAT_BOARD_TOOLS=off: the profiles carry no board write tool
         # A trusted (built-in/user) restriction holds even when a project-layer copy of
         # the skill drops the key.
         trusted_sessions = trusted[skill.name].sessions if skill.name in trusted else None

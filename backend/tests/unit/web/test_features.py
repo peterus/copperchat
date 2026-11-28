@@ -37,3 +37,10 @@ def test_mounted_by_create_app(make_settings: Callable[..., Settings], flag: boo
         r = client.get("/api/features")
         assert r.status_code == 200, r.text
         assert r.json() == {"boardTools": flag}
+
+
+def test_default_is_on(make_settings: Callable[..., Settings]) -> None:
+    """SP4 P9b: board tools are on unless COPPERCHAT_BOARD_TOOLS=off."""
+    with TestClient(create_app(make_settings())) as client:
+        client.post("/api/auth/login", json={"username": "admin", "password": "test-password"})
+        assert client.get("/api/features").json() == {"boardTools": True}

@@ -90,7 +90,10 @@ EXPECTED = {
         "doc_patch_section",
         "pcb_approve",
         "never edit the schematic",
+        "board-layout",
+        "pcb_status",
     ],
+    "board-layout": ["part class", "45°", "T-junction", "hard thresholds", "pcb_route_fill"],
 }
 
 
@@ -115,9 +118,8 @@ def test_main_agent_skills_never_mention_the_agent_tool() -> None:
 TOOL_NAME = re.compile(
     r"`((?:sch|lib|plan|parts|pcb|run|render|research|project|git|doc|fp)_[a-z0-9_]+)"
 )
-# Session types a user can create; Board (SP4) is hidden and its profile is defined there,
-# so skills are not checked against it yet.
-ACTIVE_TYPES = ("free", "requirements", "schematic")
+# Session types a user can create (Board since SP4 P9b: COPPERCHAT_BOARD_TOOLS on by default).
+ACTIVE_TYPES = ("free", "requirements", "schematic", "board")
 
 # backticked identifiers in the skills that look like tool names but are not
 NOT_TOOLS = {
@@ -428,4 +430,4 @@ def test_session_board_skeleton() -> None:
     assert "Approve this placement?" in body
     assert "Approve this board for manufacturing?" in body
     assert "stop the turn and wait for the user's ok" in body.lower()
-    assert body.count("Full content: P9b.") == len(BOARD_STEPS)
+    assert "Full content: P9b." not in body  # P9b filled every step

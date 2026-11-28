@@ -104,10 +104,34 @@ In Schematic and Free sessions the schematic is edited with the `sch_*` tools; l
 `fp_get` (geometry, fields, review state), `fp_list_local` (the repo's own footprint
 library), `fp_check` (rules, symbol pins, datasheet land pattern) and `fp_render` (an
 image on a mm grid) read any footprint library in every session type. Writing tools
-(fp_create, fp_approve, fp_delete) exist only in Schematic and Free sessions; load the
-`kicad-footprints` skill before using any of them. The first footprint tool of a
+(fp_create, fp_approve, fp_delete) exist only in Schematic, Board and Free sessions;
+load the `kicad-footprints` skill before using any of them (in a Board session, hand new or
+fixed footprints to a Schematic session, which can also assign them). The first footprint tool of a
 project without a board takes a few seconds (note `footprint_libraries_loaded`). When no
 `fp_*` tool is in your tool list, the footprint tools are switched off: use stock footprints.
+
+## Board
+
+Board tools (`pcb_*`, all in mm, board coordinates x right / y down). Load `session-board`
+in a Board session and `board-layout` before placing or routing.
+
+- Read (every session): `pcb_status` (board state, hashes, checkpoints — call it first),
+  `pcb_analyze` (part classes, net kinds, blocks, critical nets), `pcb_render` (top, bottom,
+  layer, placement, 3d; `region`, `highlight_nets`, `markers`), `pcb_metrics` (M1–M16),
+  `pcb_check` (quick / full; the evidence for an approval), `pcb_floorplan` (block regions
+  preview, no write).
+- Setup (Board and Free sessions only, like every write below): pcb_sync_from_schematic
+  (create / update the board from the saved schematic), pcb_set_outline (outline, holes,
+  keepouts), pcb_set_rules (layers, JLCPCB preset, stackup, net classes, custom rules).
+- Placement: pcb_define_blocks (functional blocks), pcb_place_blocks (all blocks over the
+  whole board), pcb_place_block (one block), pcb_move (exact moves, lock), pcb_legalize
+  (remove overlaps).
+- Routing: pcb_route (own 45° router, critical nets, locked), pcb_route_fill (Freerouting
+  fill + post-processing), pcb_unroute (remove or unlock copper).
+- Copper: pcb_zones (planes and pours), pcb_fanout (ground stubs + vias), pcb_stitch
+  (stitching vias), pcb_tidy_silk (reference designators).
+- Checkpoints and output: pcb_approve (the user's placement / board approval),
+  pcb_fab_export (JLCPCB package in `fab/jlcpcb/`), pcb_export_3d (STEP / GLB).
 
 ## Sourcing (Mouser)
 

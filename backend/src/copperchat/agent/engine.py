@@ -152,7 +152,8 @@ class RunHooks:
 
     def on_documents_changed(self, turn: TurnInfo, docs: set[DocKind]) -> None:
         """A tool call of `turn` changed `docs` (sync, inside the tool call: schedule
-        work, never await it; the live schematic view hangs off this)."""
+        work, never await it; the live schematic view hangs off this — the live board view
+        is published by the tool adapter after each board tool call)."""
         return None
 
     async def on_library_changed(self, files: list[Path]) -> None:
@@ -1443,7 +1444,8 @@ class RunEngine:
     def _on_documents_changed(self, docs: set[DocKind]) -> None:
         # X2: the engine never publishes view-updated itself. The history hooks publish
         # the turn's final state from TurnOutcome and a debounced live schematic view
-        # from this callback (they only schedule it: the tool call never waits).
+        # from this callback (they only schedule it: the tool call never waits); the board
+        # view is published once per board tool call by the adapter.
         turn = self._turn
         if turn is None:
             return
