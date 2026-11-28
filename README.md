@@ -101,7 +101,8 @@ affiliated with or endorsed by Anthropic.
     upload zip, BOM, CPL, `fab-report.md`) and a bare-board STEP / GLB in `fab/3d/` (no part
     3D models yet).
   - Freerouting 2.5.0 (GPL-3.0) ships in the app image and runs locally as a separate,
-    sandboxed process without network access; `COPPERCHAT_FREEROUTING=off` removes only the
+    resource-limited process that cannot resolve host names or use a proxy (no network
+    at all where user namespaces are available, i.e. not under Docker's default seccomp); `COPPERCHAT_FREEROUTING=off` removes only the
     fill tool.
   - Memory (measured, for sizing — not a requirement): an active board project peaked at
     about **6 GB** at the same moment (a 76-part, 4-layer board): the

@@ -38,7 +38,8 @@ All notable changes to CopperChat are documented in this file. The format follow
 
 ### Changed — app image ships Freerouting 2.5.0 + Temurin 25 JRE
 
-- ≈ +123 MB compressed (265 MB on disk), checksum-pinned, run sandboxed without network.
+- ≈ +123 MB compressed (265 MB on disk), checksum-pinned, run resource-limited without name resolution or proxy (no network at all where user
+  namespaces are available).
 
 ## [0.12.0] - 2026-11-22
 

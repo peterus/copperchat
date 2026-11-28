@@ -31,7 +31,8 @@ rules and the owner's hard thresholds.
   placement?"**, at S8 exactly **"Approve this board for manufacturing?"**. Call
   `pcb_approve` only in a **later** turn — the one started by the user's approving
   message — with that stage's hash (the one you showed) and `user_quote` = the user's own
-  words from that message (at least 2 words, copied verbatim). Never in the turn that
+  words from that message (at least 2 words and 8 characters, copied verbatim; when the
+  answer is shorter, ask for a fuller confirmation). Never in the turn that
   showed the evidence, never while a plan runs, never with words the user did not write.
 - **Changes after an approval need a new one.** Any part move, rotation, side change or
   lock change, and any outline or keepout change, makes the placement approval stale;
@@ -90,12 +91,15 @@ session.
 8 at S3. Skip a question whose answer is already in the docs — say where you found it.
 
 1. **Board size and shape.** From a case or mechanical document when there is one (quote
-   the file and the numbers). Otherwise propose a size from the parts: sum the courtyard
-   areas (`pcb_sync_from_schematic {dry_run: true}` and `pcb_analyze` give the parts) and
-   target a courtyard fill of at most **45 %**: `area = Σ courtyard / 0.45`, rounded up to
-   whole mm, with the aspect ratio set by the connector edges. Above ≈ 35–40 % fill,
-   placement still fits but routing gets tight; offer more area when the case allows it.
-   Rectangle with optional corner radius.
+   the file and the numbers). Otherwise ask for the limits (largest size the case or the
+   use allows) and propose a **provisional** size with its reason (part count, connector
+   edges). The parts' courtyard area is known only once the board exists: at S3
+   `pcb_floorplan` reports `courtyard_mm2` and `courtyard_fill`; target a courtyard fill of
+   at most **45 %** (`area = courtyard_mm2 / 0.45`, rounded up to whole mm, aspect ratio
+   from the connector edges) and, if the provisional outline misses it, propose the
+   corrected size and change it with `pcb_set_outline` before placement. Above ≈ 35–40 %
+   fill, placement still fits but routing gets tight; offer more area when the case allows
+   it. Rectangle with optional corner radius.
 2. **Layer count**, with a reason: e.g. 2 layers for a simple low-speed board, 4 layers when
    a module, a switching regulator and USB share a small board (solid ground reference,
    short return paths). Default proposal for 4 layers: Signal / GND / Signal + power /
@@ -133,7 +137,7 @@ finish the Schematic session.
 ## S2 Outline, holes, rules
 
 **Do:**
-1. `pcb_set_outline` with the agreed `width`, `height`, `corner_radius`, `holes`
+1. `pcb_set_outline {shape: "rect", …}` with the agreed `width`, `height`, `corner_radius`, `holes`
    (positions or the corner default with `inset`) and `keepouts` (rule areas from
    question 6). Mounting holes are placed and locked; holes of the schematic are reused.
 2. Ask question 7 (currents) if still open and propose net classes: one class per current
@@ -160,8 +164,9 @@ filter parts join their connector's block; keep a regulator with its inductor an
 the MCU with its crystal and decoupling. Ask question 8 (special nets) with what
 `pcb_analyze` detected (diff pairs, switch nodes, crystals). Then `pcb_define_blocks`,
 the edge rows and optional block Regions in `board.md` → Placement, and
-`pcb_floorplan {keep_channels}` as the preview: it reports the courtyard fill, the
-regions and the channels between blocks, without writing.
+`pcb_floorplan {keep_channels}` as the preview: it reports the courtyard fill
+(`courtyard_mm2`, `courtyard_fill`), the regions and the channels between blocks, without
+writing. Check the provisional board size against the 45 % target here (question 1).
 
 `keep_channels` (routing gap around blocks and between clusters): 1.0–1.5 mm as the
 default; 2–3 mm when the floorplan shows room to spare (courtyard fill well below 30 %);
@@ -251,7 +256,7 @@ Ask "Routing ok?". Then stop the turn and wait.
 **Do:**
 1. `pcb_zones {action: "add"}` without zones pours the default ground stack for the layer
    count (4 layers: solid GND plane on In1.Cu + GND pours on F.Cu and B.Cu; 2 layers: GND
-   on B.Cu). Supply planes or extra pours only on request or with a reason. Zones refill
+   pours on B.Cu and F.Cu). Supply planes or extra pours only on request or with a reason. Zones refill
    after every change.
 2. `pcb_fanout {net: "GND"}`: a short stub + via next to every ground SMD pad (never a via
    in a pad). Its report: `tied` (joined to a larger own-net pad), `via_pour` (connected by
@@ -279,7 +284,7 @@ one. Ask "Planes ok?". Then stop the turn and wait.
    lines below the silk minimum are a warning only (no row needed).
 4. **Footprint defects** (e.g. a footprint's own hole too close to its pads, a hole below
    the fab minimum, misplaced keepouts in a library footprint): not a layout problem.
-   Show the markers (`pcb_render {markers: true, region}`), check the footprint with
+   Show the markers (`pcb_render {view: "top", markers: true, region}`), check the footprint with
    `fp_check`, and propose: fix the footprint (in a Schematic session, then
    `pcb_sync_from_schematic`) or — when the fab can make it — a custom rule scoped to that
    footprint with a reason (`pcb_set_rules {custom_rules}`), only with the user's ok.

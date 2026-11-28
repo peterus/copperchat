@@ -168,8 +168,8 @@ type.
   `critical.py` (critical set), `placer/` (clusters, block layout, floorplan, whole-board
   packing, legalise, score, routability), `router/` (octilinear A* with 45° turns only,
   vias, neck-down, T-junctions, straight-first, coupled pairs; `chamfer.py` = Freerouting
-  post-processor), `freerouting.py` (sandboxed JVM runner: `prlimit`, no network, killed on
-  stop), `metrics.py` (M1–M16, owner hard thresholds), `planes.py` / `silk.py` (fanout,
+  post-processor), `freerouting.py` (sandboxed JVM runner: `prlimit`, no host-name resolution
+  or proxy, `unshare -n` where user namespaces exist, killed on stop), `metrics.py` (M1–M16, owner hard thresholds), `planes.py` / `silk.py` (fanout,
   stitch and silk candidates), `presets.py` (JLCPCB rules and stackups), `fab.py` /
   `paths.py` (fab package plan, safe output paths), `render.py` (board SVG wrapper).
 - **CPU worker** (`worker.py`, `jobs.py`): one serialised worker process with `RLIMIT_AS`

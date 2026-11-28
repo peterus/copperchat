@@ -65,6 +65,10 @@ TOOL_NAME = re.compile(r"\b((?:pcb|fp|doc)_[a-z0-9_]+)")
 # identifiers in the board skills that look like tool names but are error codes
 NOT_TOOLS = {"doc_write"}
 DESIGN_REF = re.compile(r"\b[A-Z]{1,3}\d{3,}\b")
+# an inline call example in a skill: `pcb_xxx {key: value, bare_key, ...}`
+SNIPPET = re.compile(r"`(pcb_[a-z0-9_]+) \{([^`]*)\}`")
+CODE_LITERAL = re.compile(r'code="([a-z_]+)"')
+SRC = Path(__file__).resolve().parents[3] / "src" / "copperchat"
 
 
 def _body(path: Path) -> str:
@@ -135,8 +139,58 @@ def test_session_board_tools_exist() -> None:
 
 def test_every_board_error_code_explained() -> None:
     errors = _body(SESSION_BOARD).split("## Errors", 1)[1]
-    for code in BOARD_ERROR_CODES:
+    raised = {
+        code
+        for folder in (SRC / "kicad_tools" / "board", SRC / "board")
+        for path in folder.rglob("*.py")
+        for code in CODE_LITERAL.findall(path.read_text())
+    }
+    assert raised, "no code= literal found"
+    for code in sorted(set(BOARD_ERROR_CODES) | raised):
         assert f"`{code}`" in errors, code
+
+
+def _top_level_keys(args: str) -> tuple[set[str], bool]:
+    """The argument names of a call example (`key: value` or a bare `key`) and whether it
+    is elided (`…`: required arguments may be left out)."""
+    parts, depth, cur = [], 0, ""
+    for ch in args:
+        if ch in "[{<":
+            depth += 1
+        elif ch in "]}>":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    parts.append(cur)
+    keys: set[str] = set()
+    elided = False
+    for part in (p.strip() for p in parts):
+        if part == "…":
+            elided = True
+        elif m := re.match(r"([a-z_]+)\s*(:|$)", part):
+            keys.add(m.group(1))
+    return keys, elided
+
+
+def test_call_examples_match_the_schemas() -> None:
+    """Every inline `pcb_* {…}` example names only real arguments and, unless elided with
+    `…`, every required one."""
+    specs = {s.name: s.input_schema for s in registry.all_specs()}
+    checked = 0
+    for path in (SESSION_BOARD, BOARD_LAYOUT, TOOLS):
+        for name, args in SNIPPET.findall(_body(path)):
+            schema = specs[name]
+            keys, elided = _top_level_keys(args)
+            props = set(schema.get("properties", {}))
+            assert keys <= props, (path.parent.name, name, sorted(keys - props))
+            if not elided:
+                missing = set(schema.get("required", ())) - keys
+                assert not missing, (path.parent.name, name, sorted(missing))
+            checked += 1
+    assert checked >= 20
 
 
 def test_no_design_specific_names() -> None:
@@ -195,7 +249,8 @@ def test_board_layout_definitions() -> None:
 
 def test_copperchat_tools_lists_board_tools() -> None:
     body = _body(TOOLS)
-    board = body[body.index("## Board") :]
+    start = body.index("## Board")
+    board = body[start : body.index("\n## ", start + 1)]
     registered = {s.name for s in registry.all_specs()} & (PCB_READ | PCB_WRITES)
     assert registered == PCB_READ | PCB_WRITES
     for name in sorted(registered):
