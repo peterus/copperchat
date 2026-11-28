@@ -31,8 +31,8 @@ rules and the owner's hard thresholds.
   placement?"**, at S8 exactly **"Approve this board for manufacturing?"**. Call
   `pcb_approve` only in a **later** turn — the one started by the user's approving
   message — with that stage's hash (the one you showed) and `user_quote` = the user's own
-  words from that message (at least 2 words and 8 characters, copied verbatim; when the
-  answer is shorter, ask for a fuller confirmation). Never in the turn that
+  words from that message, copied verbatim — at least 2 words and 8 characters, or their
+  whole message (a short "Approved." counts as the whole message). Never in the turn that
   showed the evidence, never while a plan runs, never with words the user did not write.
 - **Changes after an approval need a new one.** Any part move, rotation, side change or
   lock change, and any outline or keepout change, makes the placement approval stale;
