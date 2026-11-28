@@ -878,10 +878,11 @@ async def _run_size(
         # crashed keeps its copy (the routed board, board.md) for inspection, a setup
         # failure before the flow does not (review rounds 2-3)
         keep = args.keep_copies or (flow_ran and (error is not None or not finished))
-        if not keep:
+        if keep:  # printed here: a crash propagates past the report line (review round 4)
+            print(f"copy of the checkout kept: {copy}", flush=True)
+        else:
             shutil.rmtree(copy.parent, ignore_errors=True)
-    kept = f" (copy of the checkout: {copy})" if keep else ""
-    print(f"report: {out / 'report.md'}{kept}")
+    print(f"report: {out / 'report.md'}")
     return SizeRun(size, out, result, error, memory, seconds)
 
 

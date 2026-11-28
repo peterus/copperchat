@@ -1203,13 +1203,17 @@ async def _alternate_ends(sctx: BoardStageContext, st: _Loop, p: ConnPlan) -> bo
     its own pads, `st.alias` records it under `p`). Not for a matched-pair half."""
     assert p.pair is None, "a matched-pair half keeps its coupled plan"
     pads = [q for part in st.model.parts for q in part.pads if q.net == p.net]
-    graph = _net_graph(st.model, p.net)  # one copper graph for every island test
 
-    def island(x: Pad) -> list[Pad]:
-        return [q for q in pads if q is x or _joined(x, q) or graph.length(x, q) is not None]
+    def islands() -> tuple[list[Pad], list[Pad]]:
+        graph = _net_graph(st.model, p.net)  # one copper graph for every island test
 
-    # off the event loop (review round 3: one path search per pad of the net)
-    ia, ib = await asyncio.to_thread(lambda: (island(p.a), island(p.b)))
+        def island(x: Pad) -> list[Pad]:
+            return [q for q in pads if q is x or _joined(x, q) or graph.length(x, q) is not None]
+
+        return island(p.a), island(p.b)
+
+    # the graph and the searches off the event loop (review rounds 3-4)
+    ia, ib = await asyncio.to_thread(islands)
     if any(q in ib for q in ia):
         return False  # joined meanwhile (another connection did it)
     alts = sorted(

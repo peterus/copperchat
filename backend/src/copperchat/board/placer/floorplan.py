@@ -1547,6 +1547,8 @@ def _strip_lands_on(
         for r, q in others.items():
             if r == cand.ref or any(x.net == net for x in q.pads):
                 continue
+            if q.side != cand.side or len(q.courtyard) + len(q.pads) == 0:
+                continue  # as `_legal_shift` (review round 4)
             qb = box_of(q)
             if boxes_hit(s, qb) and not any(boxes_hit(b, qb) for b in before):
                 return True

@@ -396,3 +396,76 @@ def test_size_section_reports_a_refused_placement(tmp_path: Path) -> None:
     summary = odh.summary_report([run, run], "hw/main.kicad_pro")
     assert summary.startswith("# Board flow dry run: hw/main.kicad_pro, 2 size(s)")
     assert summary.count("## 80x60 mm") == 2
+
+
+def _size_args(tmp_path: Path) -> object:
+    src = tmp_path / "checkout"
+    (src / "hw").mkdir(parents=True)
+    (src / "hw" / "main.kicad_pro").write_text("{}")
+    args = odh.parse_args(["--odh", str(src), "--project", "hw/main.kicad_pro", "--answers", "a"])
+    return args
+
+
+def test_run_size_removes_the_copy_after_a_setup_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review rounds 3-4: a failure before the flow (project not discovered) leaves no
+    copy behind."""
+    import asyncio
+
+    import copperchat.projects as projects
+
+    made: list[Path] = []
+    real = odh.copy_checkout
+
+    def copy(src: Path) -> Path:
+        made.append(real(src))
+        return made[-1]
+
+    monkeypatch.setattr(odh, "copy_checkout", copy)
+    monkeypatch.setattr(projects, "discover_projects", lambda root: [])
+    args = _size_args(tmp_path)
+    with pytest.raises(odh.UsageError, match="not discovered"):
+        asyncio.run(odh._run_size(args, None, (80.0, 65.0), tmp_path / "out"))
+    assert made and not made[0].parent.exists()
+
+
+def test_run_size_keeps_and_names_the_copy_after_a_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Review round 4: a flow that crashes (not a FlowError) keeps its copy for inspection
+    and prints its path although the exception skips the report line."""
+    import asyncio
+    import contextlib
+    import types
+
+    import copperchat.projects as projects
+    from tests.kicad_e2e import flow
+
+    made: list[Path] = []
+    real = odh.copy_checkout
+
+    def copy(src: Path) -> Path:
+        made.append(real(src))
+        return made[-1]
+
+    def discover(root: Path) -> list[object]:
+        pro = next(root.rglob("main.kicad_pro"))
+        return [types.SimpleNamespace(pro_file=pro)]
+
+    @contextlib.asynccontextmanager
+    async def rig(*a: object, **k: object):  # type: ignore[no-untyped-def]
+        yield types.SimpleNamespace(session=types.SimpleNamespace(process=None))
+
+    async def crash(*a: object, **k: object) -> None:
+        raise RuntimeError("api-server died")
+
+    monkeypatch.setattr(odh, "copy_checkout", copy)
+    monkeypatch.setattr(projects, "discover_projects", discover)
+    monkeypatch.setattr(flow, "open_rig", rig)
+    monkeypatch.setattr(flow, "run_flow", crash)
+    args = _size_args(tmp_path)
+    with pytest.raises(RuntimeError, match="api-server died"):
+        asyncio.run(odh._run_size(args, None, (80.0, 65.0), tmp_path / "out"))
+    assert made and made[0].exists()
+    assert f"copy of the checkout kept: {made[0]}" in capsys.readouterr().out

@@ -463,7 +463,10 @@ def _pour_on(model: BoardModel, net: str, layer: str) -> bool:
 
 
 def _tie_without_via(
-    st: _Fanout, p: _PadState, poured: Callable[[_PadState], bool] = lambda q: False
+    st: _Fanout,
+    p: _PadState,
+    poured: Callable[[_PadState], bool] = lambda q: False,
+    flagged: Callable[[_PadState], bool] = lambda q: False,
 ) -> bool:
     """`p` was fanned by a tie stub (R7) into a pad of this call that never got a via of
     its own and does not reach the plane through the pour either (`poured`; review round
@@ -475,7 +478,7 @@ def _tie_without_via(
         if q is p or q.pad.ref != p.pad.ref or not _in_pad_rect(end, q.pad):
             continue
         via = q.status == "fanned" and q.next < len(q.cands) and not q.cands[q.next].tie
-        return not via and not poured(q)
+        return not via and not (poured(q) and not flagged(p))
     return False
 
 
@@ -503,7 +506,13 @@ def _report(st: _Fanout, model: BoardModel) -> dict[str, Any]:
             and kid not in unconnected_kiids
         )
 
-    dangling = {id(p) for p in st.pads if _tie_without_via(st, p, poured)}
+    def flagged(p: _PadState) -> bool:
+        """An unconnected marker names `p`'s pad or its tie stub (the island the tie made
+        holds them too; review round 4)."""
+        kid = pad_ids.get((p.pad.ref, p.pad.number, p.pad.x, p.pad.y))
+        return kid in unconnected_kiids or any(k in unconnected_kiids for k in p.kiids)
+
+    dangling = {id(p) for p in st.pads if _tie_without_via(st, p, poured, flagged)}
     fanned = [p for p in st.pads if p.status == "fanned" and id(p) not in dangling]
     pour: list[dict[str, str]] = []
     unconnected: list[dict[str, str]] = []

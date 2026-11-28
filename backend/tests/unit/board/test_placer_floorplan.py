@@ -1059,3 +1059,8 @@ def test_strip_lands_on_another_part() -> None:
     assert _strip_lands_on(j_new, j_old, {"R7": near}, wide)
     assert not _strip_lands_on(j_new, j_old, {"R8": on_net}, wide)
     assert not _strip_lands_on(j_old, j_old, {"R7": near}, wide)
+    # review round 4: a part on the other side or an empty fixture does not count
+    bottom = replace(near, side="bottom")
+    assert not _strip_lands_on(j_new, j_old, {"R7": bottom}, wide)
+    empty = replace(near, pads=(), courtyard=())
+    assert not _strip_lands_on(j_new, j_old, {"R7": empty}, wide)

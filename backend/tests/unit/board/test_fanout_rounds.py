@@ -255,3 +255,20 @@ def test_report_tie_into_a_pour_connected_pad_counts() -> None:
     rep = _report(st, MODEL)
     assert rep["tied"] == 1 and rep["fanned_out"] == 1
     assert rep["via_pour"] == 1 and rep["unconnected"] == []
+
+
+def test_report_tie_island_flagged_through_the_tied_pad() -> None:
+    """Review round 4: the tie's island holds the tied pad and its stub too - a marker
+    naming the tied pad (not the target) still means the island never reached the plane."""
+    big = Pad("U1", "2", "GND", 40, 30, 2.0, 2.0, 0.0, "rect", frozenset({"F.Cu"}), True, None)
+    tie = ViaCandidate((39.2, 30.0), ((30, 30), (39.2, 30.0)), ("U1", "1"), 0, tie=True)
+    pin = _PadState(A, ("U1", "1"), "F.Cu", (tie,))
+    epad = _PadState(big, ("U1", "2"), "F.Cu", ())
+    pin.status, epad.status, pin.kiids = "fanned", "exhausted", ["stub1"]
+    st = _Fanout("GND", (0.6, 0.3), 0.2, 0.2, 0.25, [pin, epad], 0)
+    for kiids in (("ka", "x"), ("stub1", "x")):  # the tied pad (pad 1 = "ka") / its stub
+        st.last_drc = _drc(DrcMarker("unconnected_items", "error", "", kiids, (30.0, 30.0)))
+        st.drc_fresh = True
+        rep = _report(st, MODEL)
+        assert rep["tied"] == 0, kiids
+        assert {"ref": "U1", "pad": "1", "reason": "tie_target_unconnected"} in rep["unconnected"]
