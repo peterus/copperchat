@@ -114,8 +114,10 @@ project without a board takes a few seconds (note `footprint_libraries_loaded`).
 
 Board tools (`pcb_*`, all in mm, board coordinates x right / y down). Load `session-board`
 in a Board session and `board-layout` before placing or routing.
-When no board write tool (e.g. pcb_place_blocks) is in your tool list, board editing is
-switched off on this server: the board is read-only and the board skills are not offered.
+In Requirements and Schematic sessions the board write tools are never in your tool list:
+the board is laid out in a Board session. In a Board or Free session without them (e.g. no
+pcb_place_blocks), board editing is switched off on this server: the board is read-only
+and the board skills are not offered.
 
 - Read (every session): `pcb_status` (board state, hashes, checkpoints — call it first),
   `pcb_analyze` (part classes, net kinds, blocks, critical nets), `pcb_render` (top, bottom,

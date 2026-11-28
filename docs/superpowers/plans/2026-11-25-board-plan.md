@@ -762,8 +762,10 @@ Phase file `board/phase-p9b-skills-release.md`, written before round 2: the skil
   every turn, propose-then-ask, step report with at most 3 images + "stop the turn and wait",
   both checkpoint questions verbatim, approvals only in the user's next turn with their
   words, re-approval after any move, schematic read-only → Open points, `board.md` tables the
-  tools read, v1 → v2 migration); S0 with the eight §8.2 questions (size from Σ courtyard /
-  0.45, layers with D1 default, assembly → `Assembly: …; sides: …`, edges, holes, keepouts,
+  tools read, v1 → v2 migration); S0 with the eight §8.2 questions (a provisional size from
+  the docs / the user's limits, checked at S3 against ≤ 45 % courtyard fill with
+  `pcb_floorplan`'s `courtyard_mm2` and corrected by `pcb_set_outline` before placement - review
+  round 1: no tool reports courtyard areas before the board exists; layers with D1 default, assembly → `Assembly: …; sides: …`, edges, holes, keepouts,
   currents at S2, special nets at S3); S1–S9 each with **Do** / **Show** / stop. Round-2
   content: S3 `pcb_analyze` → class overrides → `pcb_define_blocks` (protection parts in the
   connector's block) → Placement rows → `pcb_floorplan` preview with `keep_channels` guidance
@@ -777,7 +779,9 @@ Phase file `board/phase-p9b-skills-release.md`, written before round 2: the skil
   defects** (R7's hole-to-pad case, library keepouts) → `fp_check` + footprint fix in a
   Schematic session or a footprint-scoped custom rule with the user's ok; S9 BOM/CPL check for
   holes / fiducials / test points (P8/R5), small-hole surcharge, no JLC rotation offsets.
-  "Errors" explains every B-C14 code a `pcb_*` tool returns.
+  "Errors" explains every B-C14 code plus every `code="…"` literal under `kicad_tools/board/`,
+  `board/` and `plans/gate.py` (the plan gate every board write passes: `plan_open` / `plan_step_exceeded`;
+  `test_every_board_error_code_explained` derives them).
 - **`board-layout`** (`sessions: board, free`): §9.3 table per `PartClass` (+ anchor,
   fiducial, test point), placement practice (blocks, order, channels, straight links,
   pin-escape / inductor orientation from R7), routing rules (critical set incl. round-2

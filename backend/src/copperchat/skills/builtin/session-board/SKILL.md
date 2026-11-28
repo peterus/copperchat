@@ -351,5 +351,8 @@ Then stop the turn and wait.
   the export/render failed; report it.
 - `read_only`: the project is open in the KiCad GUI; ask the user to close it there.
 - `save_failed`: the board could not be saved; report it.
-- `plan_required` / `plan_step_required`: the edit needs a plan or a running plan step;
-  follow the suggestion.
+- `plan_required` / `plan_open` / `plan_step_required`: the edit needs a plan, or a plan is
+  open and the edit is outside a begun step; follow the suggestion (board work normally
+  runs without a plan).
+- `plan_step_exceeded`: the edit is over the turn's change budget or the running step's
+  limit; stop, report what is left and continue in the next turn.

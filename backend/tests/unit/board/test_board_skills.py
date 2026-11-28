@@ -139,12 +139,13 @@ def test_session_board_tools_exist() -> None:
 
 def test_every_board_error_code_explained() -> None:
     errors = _body(SESSION_BOARD).split("## Errors", 1)[1]
-    raised = {
-        code
-        for folder in (SRC / "kicad_tools" / "board", SRC / "board")
-        for path in folder.rglob("*.py")
-        for code in CODE_LITERAL.findall(path.read_text())
-    }
+    # the board tools' own codes and the plan gate every board write passes (spec §7.3)
+    paths = [
+        *(SRC / "kicad_tools" / "board").rglob("*.py"),
+        *(SRC / "board").rglob("*.py"),
+        SRC / "plans" / "gate.py",
+    ]
+    raised = {code for path in paths for code in CODE_LITERAL.findall(path.read_text())}
     assert raised, "no code= literal found"
     for code in sorted(set(BOARD_ERROR_CODES) | raised):
         assert f"`{code}`" in errors, code
