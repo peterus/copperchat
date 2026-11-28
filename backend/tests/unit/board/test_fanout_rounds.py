@@ -158,3 +158,117 @@ def test_pick_skips_candidates_too_close_to_taken_vias() -> None:
     assert near.at == (2.0, 0.0) and near.next == 1  # 0.41 mm from the kept via: skipped
     assert alone.status == "exhausted"  # 0.65 mm from the kept via (0.94 from near's)
     assert picked == [near]
+
+
+def test_pick_tie_candidates_need_no_via_spacing() -> None:
+    """R7: a tie stub (no via) is picked even next to a kept via, never counts as a via
+    for the others, and a fanned tie pad does not block later candidates."""
+    from copperchat.kicad_tools.board.fanout import _pick
+
+    kept = _PadState(
+        A, ("U1", "1"), "F.Cu", (ViaCandidate((0.0, 0.0), ((0, 0), (0, 0)), ("U1", "1"), 0),)
+    )
+    kept.status, kept.at = "fanned", (0.0, 0.0)
+    tie = ViaCandidate((0.2, 0.0), ((0.5, 0.0), (0.2, 0.0)), ("U1", "2"), 0, tie=True)
+    tied = _PadState(B, ("U1", "2"), "F.Cu", (tie,))
+    later = _PadState(
+        B, ("U1", "3"), "F.Cu", (ViaCandidate((1.0, 0.0), ((1, 0), (1, 0)), ("U1", "3"), 0),)
+    )
+    st = _Fanout("GND", (0.6, 0.3), 0.2, 0.2, 0.25, [kept, tied, later], 0)
+    assert _pick(st) == [tied, later]  # 0.8 mm from the kept via, the tie end does not count
+    tied.status = "fanned"
+    later.status, later.at, later.next = "open", None, 0
+    assert _pick(st) == [later]
+
+
+def test_create_copper_tie_stub_has_no_via() -> None:
+    """R7: `NewCopper(via=None)` creates the stub only (one KIID for that item)."""
+    from copperchat.kicad_tools.board.fanout import NewCopper, create_copper
+
+    class Board:
+        def __init__(self) -> None:
+            self.made: list[Any] = []
+
+        def get_nets(self) -> list[Any]:
+            from kipy.board_types import Net
+
+            n = Net()
+            n.name = "GND"
+            return [n]
+
+        def create_items(self, items: list[Any]) -> list[Any]:
+            self.made = items
+
+            class C:
+                def __init__(self, i: int) -> None:
+                    self.id = type("I", (), {"value": f"k{i}"})()
+
+            return [C(i) for i in range(len(items))]
+
+    b = Board()
+
+    class H:
+        def board(self) -> Board:
+            return b
+
+    out = create_copper(
+        H(),  # type: ignore[arg-type]
+        [
+            NewCopper("GND", (1.0, 1.0), None, ("F.Cu", (0.0, 1.0), (1.0, 1.0), 0.2)),
+            NewCopper("GND", (3.0, 1.0), (0.6, 0.3), ("F.Cu", (2.0, 1.0), (3.0, 1.0), 0.2)),
+        ],
+    )
+    assert out == [["k0"], ["k1", "k2"]]
+    assert len(b.made) == 3
+
+
+def test_report_tie_into_a_pad_without_via_is_unconnected() -> None:
+    """Review round 1: a tie stub (no via) only connects when the pad it ties to got a via
+    of its own; tied into a pad that stayed exhausted it is reported unconnected
+    (`tie_target_unconnected`), not fanned and not tied."""
+    big = Pad("U1", "2", "GND", 40, 30, 2.0, 2.0, 0.0, "rect", frozenset({"F.Cu"}), True, None)
+    tie = ViaCandidate((39.2, 30.0), ((30, 30), (39.2, 30.0)), ("U1", "1"), 0, tie=True)
+    pin = _PadState(A, ("U1", "1"), "F.Cu", (tie,))
+    epad = _PadState(big, ("U1", "2"), "F.Cu", ())
+    pin.status, epad.status = "fanned", "exhausted"
+    st = _Fanout("GND", (0.6, 0.3), 0.2, 0.2, 0.25, [pin, epad], 0)
+    rep = _report(st, MODEL)
+    assert rep["fanned_out"] == 0 and rep["tied"] == 0
+    assert {"ref": "U1", "pad": "1", "reason": "tie_target_unconnected"} in rep["unconnected"]
+    # the exposed pad got its via: the tie counts
+    epad.status = "fanned"
+    epad.cands = (ViaCandidate((40.0, 32.0), ((40, 30), (40.0, 32.0)), ("U1", "2"), 0),)
+    rep = _report(st, MODEL)
+    assert rep["fanned_out"] == 2 and rep["tied"] == 1
+
+
+def test_report_tie_into_a_pour_connected_pad_counts() -> None:
+    """Review round 3: a tie into a pad that got no via but reaches the plane through the
+    pour (no unconnected marker names it, fresh DRC, a pour on its layer) is connected."""
+    big = Pad("U1", "2", "GND", 40, 30, 2.0, 2.0, 0.0, "rect", frozenset({"F.Cu"}), True, None)
+    tie = ViaCandidate((39.2, 30.0), ((30, 30), (39.2, 30.0)), ("U1", "1"), 0, tie=True)
+    pin = _PadState(A, ("U1", "1"), "F.Cu", (tie,))
+    epad = _PadState(big, ("U1", "2"), "F.Cu", ())
+    pin.status, epad.status = "fanned", "exhausted"
+    st = _Fanout("GND", (0.6, 0.3), 0.2, 0.2, 0.25, [pin, epad], 0)
+    st.last_drc, st.drc_fresh = _drc(), True
+    rep = _report(st, MODEL)
+    assert rep["tied"] == 1 and rep["fanned_out"] == 1
+    assert rep["via_pour"] == 1 and rep["unconnected"] == []
+
+
+def test_report_tie_island_flagged_through_the_tied_pad() -> None:
+    """Review round 4: the tie's island holds the tied pad and its stub too - a marker
+    naming the tied pad (not the target) still means the island never reached the plane."""
+    big = Pad("U1", "2", "GND", 40, 30, 2.0, 2.0, 0.0, "rect", frozenset({"F.Cu"}), True, None)
+    tie = ViaCandidate((39.2, 30.0), ((30, 30), (39.2, 30.0)), ("U1", "1"), 0, tie=True)
+    pin = _PadState(A, ("U1", "1"), "F.Cu", (tie,))
+    epad = _PadState(big, ("U1", "2"), "F.Cu", ())
+    pin.status, epad.status, pin.kiids = "fanned", "exhausted", ["stub1"]
+    st = _Fanout("GND", (0.6, 0.3), 0.2, 0.2, 0.25, [pin, epad], 0)
+    for kiids in (("ka", "x"), ("stub1", "x")):  # the tied pad (pad 1 = "ka") / its stub
+        st.last_drc = _drc(DrcMarker("unconnected_items", "error", "", kiids, (30.0, 30.0)))
+        st.drc_fresh = True
+        rep = _report(st, MODEL)
+        assert rep["tied"] == 0, kiids
+        assert {"ref": "U1", "pad": "1", "reason": "tie_target_unconnected"} in rep["unconnected"]

@@ -3,6 +3,7 @@ checkout copy, the answers schema, the report's memory section and the PID sampl
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import subprocess
 import sys
@@ -297,3 +298,174 @@ def test_sampler_records_concurrent_samples_by_step() -> None:
     assert [step for step, _ in labelled] == ["turn 1 pcb_route", "after the flow"]
     assert set(labelled[0][1]) == {"api-server"} and labelled[0][1]["api-server"] > 0
     assert odh.step_at(0.0, []) == "after the flow"
+
+
+def test_parse_sizes() -> None:
+    assert odh.parse_sizes("80x60,80x100") == ((80.0, 60.0), (80.0, 100.0))
+    assert odh.parse_sizes(" 80X65 ") == ((80.0, 65.0),)
+    assert odh.parse_sizes("80x65,80x100,80x65") == ((80.0, 65.0), (80.0, 100.0))
+    assert odh.parse_sizes("80x65,80.0x65.0") == ((80.0, 65.0),)  # one label, one run
+    for bad in ("80", "80x", "x60", "80x60,", "axb", "0x60", "-80x60", "80x60x2"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            odh.parse_sizes(bad)
+    args = odh.parse_args(["--odh", "o", "--project", "p", "--answers", "a", "--sizes", "80x65"])
+    assert args.sizes == ((80.0, 65.0),) and not args.all_sizes and not args.keep_copies
+    with pytest.raises(SystemExit):  # argparse turns the type error into a usage error
+        odh.parse_args(["--odh", "o", "--project", "p", "--answers", "a", "--sizes", "80"])
+    assert odh.size_label((80.0, 65.0)) == "80x65"
+    answers = odh.load_answers({"outline": {"shape": "rect", "width": 1, "height": 2}, "rules": {}})
+    sized = odh.with_size(answers, (80.0, 65.0))
+    assert sized.outline == {"shape": "rect", "width": 80.0, "height": 65.0}
+    assert answers.outline["width"] == 1  # the original stays
+
+
+def _mem(concurrent: float = 5000.0) -> object:
+    return odh.Memory(
+        api_server=0,
+        api_before_fp=0,
+        api_after_fp=0,
+        jvm=0,
+        cpu_worker=0,
+        cpu_workers=[],
+        raster=0,
+        cli={},
+        concurrent_mb=concurrent,
+        concurrent_step="turn 5 pcb_check",
+        concurrent_parts={},
+    )
+
+
+def test_size_section_reports_placement_routing_fill_metrics(tmp_path: Path) -> None:
+    result = _fake_result()
+    result.steps += [
+        StepLog(2, "run-flow-2", "pcb_place_blocks", 12.0, 1, {"courtyard_fill": 0.4}),
+        StepLog(
+            4,
+            "run-flow-4",
+            "pcb_route",
+            160.0,
+            9,
+            {
+                "nets": [
+                    {"net": "A", "status": "routed"},
+                    {"net": "VBUS", "status": "failed", "failed": [{"a": "J1.1", "b": "U1.2"}]},
+                ]
+            },
+        ),
+        StepLog(4, "run-flow-4", "pcb_route_fill", 170.0, 5, {"completion": 1.0, "ripped": 1}),
+    ]
+    result.results = {
+        "pcb_place_blocks": {
+            "courtyard_fill": 0.43,
+            "spread": 0.8,
+            "well_spread": True,
+            "score": {"after": {"m8_worst_mm": 3.6}},
+        }
+    }
+    run = odh.SizeRun((80.0, 65.0), tmp_path / "80x65", result, None, _mem(), 900.0)
+    text = "\n".join(odh.size_section(run))
+    assert text.startswith("## 80x65 mm")
+    assert "Result: **completed (fab package)**" in text
+    assert "courtyard fill 0.43, spread 0.8 (well spread true)" in text
+    assert '"m8_worst_mm": 3.6' in text
+    assert "pcb_route: 1 call(s), 160 s; failed" in text and "VBUS: " in text and "J1.1" in text
+    assert "A: " not in text
+    assert "pcb_route_fill: 170 s completion 1.0, ripped 1" in text
+    assert "hard failures 0, reviews 1, verdict review" in text
+    assert "concurrent peak 5,000 MB in step turn 5 pcb_check" in text
+    assert "pcb_route_fill 170" in text  # seconds per tool, largest first
+
+
+def test_size_section_reports_a_refused_placement(tmp_path: Path) -> None:
+    refused = {"error": {"code": "does_not_fit", "details": {"courtyard_fill": 0.429}}}
+    result = FlowResult(
+        steps=[StepLog(2, "run-flow-2", "pcb_place_blocks", 36.0, None, {"error": refused})],
+        metrics={},
+        seconds=40.0,
+        renders=[],
+        fab_files=[],
+        hashes={},
+    )
+    run = odh.SizeRun(
+        (80.0, 60.0), tmp_path, result, "turn 2: pcb_place_blocks\nmore", _mem(), 40.0
+    )
+    text = "\n".join(odh.size_section(run))
+    assert "Result: **FAILED**: turn 2: pcb_place_blocks" in text and "more" not in text
+    assert "Placement refused: does_not_fit, courtyard fill 0.429" in text
+    assert "Final full check" not in text
+    summary = odh.summary_report([run, run], "hw/main.kicad_pro")
+    assert summary.startswith("# Board flow dry run: hw/main.kicad_pro, 2 size(s)")
+    assert summary.count("## 80x60 mm") == 2
+
+
+def _size_args(tmp_path: Path) -> object:
+    src = tmp_path / "checkout"
+    (src / "hw").mkdir(parents=True)
+    (src / "hw" / "main.kicad_pro").write_text("{}")
+    args = odh.parse_args(["--odh", str(src), "--project", "hw/main.kicad_pro", "--answers", "a"])
+    return args
+
+
+def test_run_size_removes_the_copy_after_a_setup_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review rounds 3-4: a failure before the flow (project not discovered) leaves no
+    copy behind."""
+    import asyncio
+
+    import copperchat.projects as projects
+
+    made: list[Path] = []
+    real = odh.copy_checkout
+
+    def copy(src: Path) -> Path:
+        made.append(real(src))
+        return made[-1]
+
+    monkeypatch.setattr(odh, "copy_checkout", copy)
+    monkeypatch.setattr(projects, "discover_projects", lambda root: [])
+    args = _size_args(tmp_path)
+    with pytest.raises(odh.UsageError, match="not discovered"):
+        asyncio.run(odh._run_size(args, None, (80.0, 65.0), tmp_path / "out"))
+    assert made and not made[0].parent.exists()
+
+
+def test_run_size_keeps_and_names_the_copy_after_a_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Review round 4: a flow that crashes (not a FlowError) keeps its copy for inspection
+    and prints its path although the exception skips the report line."""
+    import asyncio
+    import contextlib
+    import types
+
+    import copperchat.projects as projects
+    from tests.kicad_e2e import flow
+
+    made: list[Path] = []
+    real = odh.copy_checkout
+
+    def copy(src: Path) -> Path:
+        made.append(real(src))
+        return made[-1]
+
+    def discover(root: Path) -> list[object]:
+        pro = next(root.rglob("main.kicad_pro"))
+        return [types.SimpleNamespace(pro_file=pro)]
+
+    @contextlib.asynccontextmanager
+    async def rig(*a: object, **k: object):  # type: ignore[no-untyped-def]
+        yield types.SimpleNamespace(session=types.SimpleNamespace(process=None))
+
+    async def crash(*a: object, **k: object) -> None:
+        raise RuntimeError("api-server died")
+
+    monkeypatch.setattr(odh, "copy_checkout", copy)
+    monkeypatch.setattr(projects, "discover_projects", discover)
+    monkeypatch.setattr(flow, "open_rig", rig)
+    monkeypatch.setattr(flow, "run_flow", crash)
+    args = _size_args(tmp_path)
+    with pytest.raises(RuntimeError, match="api-server died"):
+        asyncio.run(odh._run_size(args, None, (80.0, 65.0), tmp_path / "out"))
+    assert made and made[0].exists()
+    assert f"copy of the checkout kept: {made[0]}" in capsys.readouterr().out

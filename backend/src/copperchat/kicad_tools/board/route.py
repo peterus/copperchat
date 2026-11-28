@@ -48,7 +48,7 @@ from copperchat.board.geom import (
     straight_corridor,
     straight_link_corridor,
 )
-from copperchat.board.metrics import connections, routed_length
+from copperchat.board.metrics import _net_graph, connections, routed_length
 from copperchat.board.model import BoardModel, NetClassInfo, Pad, Point, Rect, Track, Via, Zone
 from copperchat.board.presets import PRESETS
 from copperchat.board.router import (
@@ -916,6 +916,8 @@ class _Loop:
     drc: DrcResult | None = None
     started: dict[ConnPlan, float] = field(default_factory=dict)  # seconds spent solving
     reserved: list[Reserved] = field(default_factory=list)  # other connections' corridors
+    # R7 `_alternate_ends`: an alternative plan records its result under the original one
+    alias: dict[ConnPlan, ConnPlan] = field(default_factory=dict)
 
 
 def _key(p: ConnPlan) -> str:
@@ -924,7 +926,7 @@ def _key(p: ConnPlan) -> str:
 
 def _fail(st: _Loop, group: Sequence[ConnPlan], reason: str) -> None:
     for p in group:
-        st.results[p] = ConnResult(
+        st.results[st.alias.get(p, p)] = ConnResult(
             _key(p), p.net, _pad_name(p.a), _pad_name(p.b), "failed", reason, 0.0, 0, (),
             seconds=round(st.started.get(p, 0.0), 2),
         )  # fmt: skip
@@ -948,7 +950,7 @@ def _record(st: _Loop, kept: _Kept) -> None:
     it = iter(kept.kiids)
     for p, path in zip(kept.group, kept.paths, strict=True):
         own = tuple(next(it) for _ in range(len(path.segments) + len(path.vias)))
-        st.results[p] = ConnResult(
+        st.results[st.alias.get(p, p)] = ConnResult(
             _key(p), p.net, _pad_name(p.a), _pad_name(p.b), "routed", None, path.length,
             len(path.vias), own, coupling, round(st.started.get(p, 0.0), 2),
             pad_entry=entry_defect(path, p.req),
@@ -995,11 +997,16 @@ async def _place(
     return None
 
 
-async def _attempt(sctx: BoardStageContext, st: _Loop, group: Sequence[ConnPlan]) -> str | None:
-    """Margins in order, each solve → push → DRC (the deadline checked before every
+async def _attempt(
+    sctx: BoardStageContext,
+    st: _Loop,
+    group: Sequence[ConnPlan],
+    margins: Sequence[float] = MARGINS,
+) -> str | None:
+    """`margins` in order, each solve → push → DRC (the deadline checked before every
     margin). None = routed; else the failure reason (not recorded)."""
     reason = "no_path"
-    for margin in MARGINS:
+    for margin in margins:
         remaining = _remaining(st.deadline)
         if remaining is not None and remaining <= 0:
             return "timeout"
@@ -1054,7 +1061,7 @@ async def _unkeep(sctx: BoardStageContext, st: _Loop, kept: _Kept) -> None:
     )
     st.kept.remove(kept)
     for p in kept.group:
-        st.results.pop(p, None)
+        st.results.pop(st.alias.get(p, p), None)
 
 
 def _blockers(st: _Loop, group: Sequence[ConnPlan]) -> list[_Kept]:
@@ -1175,9 +1182,55 @@ async def _route_group(sctx: BoardStageContext, st: _Loop, group: Sequence[ConnP
         for p in group:
             await _route_group(sctx, st, [p])
         return
+    if reason == "no_path" and group[0].pair is None and await _alternate_ends(sctx, st, group[0]):
+        return
     if await _rip_and_retry(sctx, st, group):
         return
     _fail(st, group, reason if not _timed_out(st) else "timeout")
+
+
+ALT_ENDS_MAX = 3  # R7: other end pairs tried after a no_path
+
+
+async def _alternate_ends(sctx: BoardStageContext, st: _Loop, p: ConnPlan) -> bool:
+    """R7 (ODH: the charger's CHG_N pin was walled in by its own short link to a pull-up,
+    the far MCU pin unreachable from it - from the pull-up's other side it was free): the
+    connection joins two copper islands of its net, so any pad of a's island may link to
+    any pad of b's. After a `no_path`, the `ALT_ENDS_MAX` nearest other end pairs are
+    tried (same width / layers; neck zones for the new ends) at margin 0 only (a larger
+    margin finds no path where 0 found none - review round 1: up to nine 30 s solves
+    before the rip-up); the first routed one stands for the connection (its result names
+    its own pads, `st.alias` records it under `p`). Not for a matched-pair half."""
+    assert p.pair is None, "a matched-pair half keeps its coupled plan"
+    pads = [q for part in st.model.parts for q in part.pads if q.net == p.net]
+
+    def islands() -> tuple[list[Pad], list[Pad]]:
+        graph = _net_graph(st.model, p.net)  # one copper graph for every island test
+
+        def island(x: Pad) -> list[Pad]:
+            return [q for q in pads if q is x or _joined(x, q) or graph.length(x, q) is not None]
+
+        return island(p.a), island(p.b)
+
+    # the graph and the searches off the event loop (review rounds 3-4)
+    ia, ib = await asyncio.to_thread(islands)
+    if any(q in ib for q in ia):
+        return False  # joined meanwhile (another connection did it)
+    alts = sorted(
+        ((x, y) for x in ia for y in ib if (x, y) != (p.a, p.b)),
+        key=lambda xy: octi_dist((xy[0].x, xy[0].y), (xy[1].x, xy[1].y)),
+    )[:ALT_ENDS_MAX]
+    floor = default_min_track(st.model)
+    for x, y in alts:
+        neck = neck_zones(st.model, (x, y), p.req.width, floor)
+        alt = dataclasses.replace(p, a=x, b=y, req=dataclasses.replace(p.req, a=x, b=y, neck=neck))
+        st.alias[alt] = p
+        if await _attempt(sctx, st, [alt], margins=MARGINS[:1]) is None:
+            return True
+        del st.alias[alt]
+        if _timed_out(st):
+            return False
+    return False
 
 
 def _groups(plans: Sequence[ConnPlan]) -> list[list[ConnPlan]]:

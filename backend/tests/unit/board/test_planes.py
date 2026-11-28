@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 from dataclasses import replace
 
+import pytest
+
 from copperchat.board.classify import classify
 from copperchat.board.geom import rect_poly
 from copperchat.board.model import BoardModel, Pad, Part, Point
@@ -345,3 +347,42 @@ def test_fanout_repeated_pad_numbers_keyed_apart() -> None:
     got = fanout_candidates(m, "GND", via=VIA, width=0.25, clearance=0.2)
     assert list(got) == [("J1", "SH"), ("J1", "SH#2")]
     assert all(c.pad == ("J1", "SH#2") for c in got[("J1", "SH#2")])
+
+
+def test_fanout_ties_a_boxed_in_pin_to_its_exposed_pad() -> None:
+    """R7 (ODH TPS63000): a fine-pitch ground pin with no via spot (other-net pins 0.5 mm
+    to both sides, other-net copper in front) gets, after every via candidate, a tie stub
+    straight into the larger same-net pad of its own part (the exposed pad); never through
+    other-net copper, never across a gap > TIE_MAX_GAP_MM."""
+    from copperchat.board.planes import TIE_MAX_GAP_MM
+
+    gnd = _pad("U1", "3", "GND", (50.0, 41.4), w=0.24, h=0.6)
+    epad = _pad("U1", "11", "GND", (50.0, 40.0), w=2.4, h=1.65)
+    left = _pad("U1", "2", "SW1", (49.5, 41.4), w=0.24, h=0.6)
+    right = _pad("U1", "4", "SW2", (50.5, 41.4), w=0.24, h=0.6)
+    block = _part("R9", (50.0, 42.6), (_pad("R9", "1", "X", (50.0, 42.6), w=2.0, h=0.6),))
+    m = _board(part("U1", 50.0, 40.5, half=1.5, pads=(gnd, epad, left, right)), block)
+    cands = fanout_candidates(m, "GND", via=VIA, width=0.2, clearance=0.2)[("U1", "3")]
+    assert cands and all(not c.tie for c in cands[:-1]) and cands[-1].tie
+    tie = cands[-1]
+    assert tie.stub == ((50.0, 41.4), tie.at)
+    # straight up into the exposed pad (its edge at y 40.825), the stub's half-width inside
+    assert tie.at == pytest.approx((50.0, 40.825 - 0.1))
+    # the exposed pad farther than TIE_MAX_GAP_MM: no tie
+    far = _pad("U1", "11", "GND", (50.0, 41.4 - 0.3 - TIE_MAX_GAP_MM - 0.825 - 0.05), w=2.4, h=1.65)
+    m3 = _board(part("U1", 50.0, 40.5, half=3.0, pads=(gnd, far, left, right)), block)
+    assert not any(
+        c.tie for c in fanout_candidates(m3, "GND", via=VIA, width=0.2, clearance=0.2)[("U1", "3")]
+    )
+    # the pin beside the exposed pad's span: the straight stub would miss it - no tie
+    side = _pad("U1", "3", "GND", (51.4, 41.4), w=0.24, h=0.6)
+    m4 = _board(part("U1", 50.0, 40.5, half=1.5, pads=(side, epad)), block)
+    assert not any(
+        c.tie for c in fanout_candidates(m4, "GND", via=VIA, width=0.2, clearance=0.2)[("U1", "3")]
+    )
+    # other-net copper across the gap: no tie
+    wire = _part("R8", (50.0, 41.0), (_pad("R8", "1", "Y", (50.0, 41.0), w=0.6, h=0.1),))
+    m2 = _board(part("U1", 50.0, 40.5, half=1.5, pads=(gnd, epad, left, right)), block, wire)
+    assert not any(
+        c.tie for c in fanout_candidates(m2, "GND", via=VIA, width=0.2, clearance=0.2)[("U1", "3")]
+    )

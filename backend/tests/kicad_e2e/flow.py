@@ -398,6 +398,7 @@ class _Flow:
         self.label = ""
         self.hashes: dict[str, str] = {}
         self.critical: list[str] = []
+        self.signal_nets: list[str] = []  # every non-ground net (pcb_analyze), R7 ladder
         self.fill: dict[str, Any] = {}
 
     def result(self, seconds: float) -> FlowResult:
@@ -562,10 +563,17 @@ def _nothing_to_fill(error: Mapping[str, Any]) -> bool:
     return "nothing to fill" in f"{err.get('what', '')} {err.get('why', '')}"
 
 
-async def _route_nets(f: _Flow, nets: list[str]) -> None:
+async def _route_nets(f: _Flow, nets: list[str]) -> list[dict[str, Any]]:
+    """`pcb_route` (locked) on `nets` in chunks; returns the nets it did not route (every
+    chunk's, not only the last one's)."""
+    failed: list[dict[str, Any]] = []
     for i in range(0, len(nets), ROUTE_CHUNK):
         chunk = nets[i : i + ROUTE_CHUNK]
-        await f.tool("pcb_route", cost=math.ceil(len(chunk) / 5), nets=chunk, lock=True)
+        data = await f.tool("pcb_route", cost=math.ceil(len(chunk) / 5), nets=chunk, lock=True)
+        failed += [
+            x for x in data.get("nets", []) if x.get("status") not in ("routed", "already_routed")
+        ]
+    return failed
 
 
 BOARD_MD = "board.md"
@@ -617,8 +625,11 @@ async def _route(f: _Flow, critical: list[str]) -> dict[str, Any]:
     """Turn 4: the critical nets with the own router (locked), then the Freerouting fill
     with the scripted ladder (spec §10.3): a fill refused by the 20 % rule → rung (c)
     `pcb_route` on the nets it would have ripped, then the fill again; open connections
-    after the fill → rung (c) on their nets. Every rung is a logged tool call."""
-    await _route_nets(f, critical)
+    after the fill → rung (c) on their nets. R7: a fill still refused after
+    `FILL_ATTEMPTS` → rung (c) for the rest - the own router routes every remaining
+    (non-critical, non-ground) net instead of a fourth fill; only what it cannot route is
+    left to the user (rung (d)). Every rung is a logged tool call."""
+    crit_failed = await _route_nets(f, critical)
     fill: dict[str, Any] = {}
     fill_args: dict[str, Any] = dict(f.answers.fill)
     retried = False
@@ -638,7 +649,19 @@ async def _route(f: _Flow, critical: list[str]) -> dict[str, Any]:
             raise FlowError(f"turn {f.turn_no} ({f.label})", "pcb_route_fill", data)
         await _route_nets(f, nets)
     else:
-        raise FlowError(f"turn {f.turn_no} ({f.label})", "pcb_route_fill", data)
+        if _fill_reason(data) != "rip_ratio":
+            raise FlowError(f"turn {f.turn_no} ({f.label})", "pcb_route_fill", data)
+        # every fill net, and the critical ones the first call left open (review round 1)
+        again = {str(x["net"]) for x in crit_failed}
+        rest = [n for n in f.signal_nets if n not in set(critical) or n in again]
+        failed = await _route_nets(f, rest)
+        if failed:
+            raise FlowError(
+                f"turn {f.turn_no} ({f.label})",
+                "pcb_route",
+                {"why": "connections still open after the ladder", "nets": failed[:10]},
+            )
+        return {"completion": 1.0, "own_router_rest": len(rest)}
     if fill.get("completion", 1.0) < 1.0:
         if fill.get("open_omitted"):
             # the fill lists ≤ 50 open connections: the rest cannot be named for rung (c)
@@ -647,13 +670,11 @@ async def _route(f: _Flow, critical: list[str]) -> dict[str, Any]:
                 "pcb_route_fill",
                 {"why": "more open connections than the fill lists", "fill": _summary(fill)},
             )
-        await _route_nets(f, sorted({o["net"] for o in fill.get("open", [])}))
-        failed = [
-            x
-            for x in f.results["pcb_route"].get("nets", [])
-            if x.get("status") not in ("routed", "already_routed")
-        ]
-        if f.results["pcb_route"].get("totals", {}).get("failed"):
+        opened = fill.get("open", [])
+        failed = await _route_nets(f, sorted({o["net"] for o in opened}))
+        if failed:
+            failed = await _clear_and_reroute(f, failed, opened)
+        if failed:
             # rung (d): only the user can change the placement / layers / size
             raise FlowError(
                 f"turn {f.turn_no} ({f.label})",
@@ -661,6 +682,53 @@ async def _route(f: _Flow, critical: list[str]) -> dict[str, Any]:
                 {"why": "connections still open after the ladder", "nets": failed[:10]},
             )
     return fill
+
+
+def signal_nets(analysis: Mapping[str, Any], step: str) -> list[str]:
+    """Every non-ground net of `pcb_analyze {scope: nets}` (its `nets` map: name -> kind),
+    sorted. The ladder's own-router rung needs every net, so a list `pcb_analyze` capped
+    (`nets_omitted`, `jobs._capped`) is a `FlowError`."""
+    if analysis.get("nets_omitted"):
+        raise FlowError(
+            step,
+            "pcb_analyze",
+            {"why": f"{analysis['nets_omitted']} nets omitted from pcb_analyze's list"},
+        )
+    kinds = analysis.get("nets", {})
+    pairs = kinds.items() if isinstance(kinds, Mapping) else kinds
+    return sorted(str(n) for n, kind in pairs if kind != "ground")
+
+
+CLEAR_MM = 8.0  # R7 ladder: the box around an open connection whose fill copper is cleared
+
+
+async def _clear_and_reroute(
+    f: _Flow, failed: list[dict[str, Any]], opened: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """R7 ladder rung (c) after the fill: the own router found no path for a connection the
+    fill left open (the fill's unlocked copper walls it in - ODH CHG_N at a QFN). Once: the
+    unlocked copper touching a `CLEAR_MM` box around each pin of such a connection is removed
+    (`pcb_unroute {region}`; the own router's locked copper stays), then `pcb_route` routes
+    the open nets first and the removed ones after them - also when only the open nets' own
+    fill stubs were removed. Returns what is still failed."""
+    nets = {str(x["net"]) for x in failed}
+    removed: set[str] = set()
+    half = CLEAR_MM / 2
+    for o in opened:
+        if o.get("net") not in nets:
+            continue
+        # one box per pin (review round 3: the midpoint of a long connection is near
+        # neither pin); the midpoint only when the fill did not report the ends
+        spots = o.get("ends") or ([[o["x"], o["y"]]] if o.get("x") is not None else [])
+        for x, y in spots:
+            region = {"x": x - half, "y": y - half, "w": CLEAR_MM, "h": CLEAR_MM}
+            data = await f.tool("pcb_unroute", cost=1, region=region)
+            removed.update(str(n) for n in data.get("nets", []))
+    if not removed:
+        return failed
+    signal = set(f.signal_nets)
+    again = sorted(nets) + sorted(n for n in removed - nets if n in signal)
+    return await _route_nets(f, again)
 
 
 async def run_flow(
@@ -706,6 +774,7 @@ async def _turns(f: _Flow, answers: Answers) -> None:
     # 4: S4 - routing
     await f.new_turn("routing")
     nets = await f.tool("pcb_analyze", scope="nets")
+    f.signal_nets = signal_nets(nets, f"turn {f.turn_no} ({f.label})")
     reasons = nets.get("critical_reasons", {})
     # R4: the straight-corridor nets (owner rule b) go into the first pcb_route chunk
     f.critical = sorted(nets["critical_nets"], key=lambda n: reasons.get(n) != "corridor")

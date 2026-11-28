@@ -383,6 +383,23 @@ def test_m16_via_detour_is_dogleg() -> None:
     assert "dogleg" not in _whats(_m16(replace(m, vias=foreign)))
 
 
+def test_m16_straight_through_own_via_ok() -> None:
+    """R7 (ODH VBUS C202.1-J302.A4): two collinear pieces on one layer that the net graph
+    joins through an own via both touch are one straight line - not a dogleg; pieces of
+    the same line that turn back, or leave the line, still are."""
+    vias = (via("N1", (32.5, 30), kiid="v1"),)
+    tracks = (*_STAGE, *route("N1", [(31, 30), (32.35, 30)]), *route("N1", [(32.65, 30), (34, 30)]))
+    m16 = _m16(_pair(0.0, tracks=tracks, vias=vias))
+    assert "dogleg" not in _whats(m16), m16.offenders
+    off_line = (
+        *_STAGE,
+        *route("N1", [(31, 30), (32.35, 30)]),
+        *route("N1", [(32.65, 30.1), (34, 30.1)]),
+    )
+    assert "dogleg" in _whats(_m16(_pair(0.0, tracks=off_line, vias=vias)))
+    # a dip to another layer through the via stays a dogleg: test_m16_via_detour_is_dogleg
+
+
 def test_m16_unrouted_pair_not_dogleg() -> None:
     m16 = _m16(_pair(0.5, tracks=_STAGE))
     assert m16.offenders == ()

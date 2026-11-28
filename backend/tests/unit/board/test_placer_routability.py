@@ -149,3 +149,25 @@ def test_gap_summary_worst_only_signal_pairs() -> None:
     s = gap_summary(rows)
     assert s["worst"] == pytest.approx(1.5)  # a-c share only a supply net
     assert s["mean"] == pytest.approx((1.5 * 2.0 + 39.0 * 0.25) / 2.25, abs=1e-3)
+
+
+def test_net_track_resolves_pattern_classes() -> None:
+    """R7: KiCad names a pattern-assigned net's class "Effective for net: <net>" - the
+    pattern's class (and Default, the widest wins) applies, as `pcb_route` sizes it."""
+    from copperchat.board.placer.routability import net_classes, net_track
+
+    m = circuit(
+        res("R1", "A", "/VBUS", (10, 10)),
+        net_classes=(net_class(), net_class("Power", 0.5, 0.2, patterns=("*VBUS*",))),
+        net_class_of=(("/VBUS", "Effective for net: /VBUS"), ("A", "Effective for net: A")),
+    )
+    assert [c.name for c in net_classes(m, "/VBUS")] == ["Power", "Default"]
+    assert net_track(m, "/VBUS") == (0.5, 0.2)
+    assert net_pitch(m, "/VBUS") == pytest.approx(0.7)
+    assert net_track(m, "A") == (0.2, 0.2)  # no pattern: Default
+    composite = circuit(
+        res("R1", "A", "B", (10, 10)),
+        net_classes=(net_class(), net_class("Power", 0.5, 0.25)),
+        net_class_of=(("B", "Default,Power"),),
+    )
+    assert net_track(composite, "B") == (0.5, 0.25)

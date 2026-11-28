@@ -134,6 +134,34 @@ def load_answers(data: Mapping[str, Any]) -> Any:
     return Answers(**kw)
 
 
+def parse_sizes(text: str) -> tuple[tuple[float, float], ...]:
+    """`--sizes`: `"80x65,80x100"` -> `((80.0, 65.0), (80.0, 100.0))` (mm, width x height,
+    in the order given, a repeated size once); anything else is an
+    `argparse.ArgumentTypeError`."""
+    sizes: list[tuple[float, float]] = []
+    for item in text.split(","):
+        w, sep, h = item.strip().lower().partition("x")
+        try:
+            size = (float(w), float(h))
+        except ValueError:
+            size = None
+        if not sep or size is None or not all(0 < v <= 1000 for v in size):
+            raise argparse.ArgumentTypeError(f"bad size {item.strip()!r}: expected WxH in mm")
+        if size_label(size) not in {size_label(x) for x in sizes}:  # one output dir each
+            sizes.append(size)
+    return tuple(sizes)
+
+
+def size_label(size: tuple[float, float]) -> str:
+    return "x".join(f"{v:g}" for v in size)
+
+
+def with_size(answers: Any, size: tuple[float, float]) -> Any:
+    """`answers` with the outline's width / height replaced by `size`."""
+    outline = {**answers.outline, "width": size[0], "height": size[1]}
+    return dataclasses.replace(answers, outline=outline)
+
+
 # ---- memory sampling by PID ---------------------------------------------------------------
 
 
@@ -429,7 +457,8 @@ def build_report(
     else:
         lines.append("No full check reached.")
     if after_failure:
-        lines += ["", "## After the failure (measurement only)", ""]
+        title = "After the failure (measurement only)" if error else "Extra calls (renders)"
+        lines += ["", f"## {title}", ""]
         for row in after_failure:
             state = "ok" if row["ok"] else f"error {_cell(row.get('error'))}"
             lines.append(f"- {row['tool']} {_cell(row['args'])}: {row['seconds']} s, {state}")
@@ -511,6 +540,41 @@ def build_report(
 # ---- main ---------------------------------------------------------------------------------
 
 
+EXTRA_RENDERS = (  # after the flow (either way): the inner layers and a 3D view for the owner
+    {"view": "layer", "layer": "In1.Cu"},
+    {"view": "layer", "layer": "In2.Cu"},
+    {"view": "3d", "angle": "iso"},
+)
+
+
+async def extra_renders(rig: Any, result: Any) -> list[dict[str, Any]]:
+    """`EXTRA_RENDERS` on the board as the flow left it (their PNGs join `result.renders`);
+    one row per call, never raises."""
+    from copperchat.projects import agent_dir
+    from tests.kicad_e2e.flow import call
+
+    rows: list[dict[str, Any]] = []
+    for args in EXTRA_RENDERS:
+        t0 = time.monotonic()
+        try:
+            data, err = await call(rig, "run-dry-run-renders", "pcb_render", **args)
+        except Exception as exc:  # a render problem must not hide the flow's result
+            data, err = {"exception": repr(exc)}, True
+        row: dict[str, Any] = {
+            "tool": "pcb_render",
+            "args": args,
+            "seconds": round(time.monotonic() - t0, 1),
+            "ok": not err,
+        }
+        if err:
+            row["error"] = data
+        elif data.get("png_url") and result is not None:
+            png = agent_dir(rig.project) / "renders" / str(data["png_url"]).rsplit("/", 1)[1]
+            result.renders.append(png)
+        rows.append(row)
+    return rows
+
+
 AFTER_FAILURE = (  # read-only / approval-free calls: the kicad-cli kinds the flow missed
     ("pcb_check", {"level": "full"}),
     ("pcb_render", {"view": "top"}),
@@ -561,98 +625,265 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--project", required=True, help="relative path of the board's .kicad_pro")
     p.add_argument("--answers", required=True, type=Path, help="answers JSON (flow.Answers)")
     p.add_argument("--out", type=Path, default=None, help="output dir (outside the repo)")
+    p.add_argument(
+        "--sizes",
+        type=parse_sizes,
+        default=None,
+        help="board sizes WxH in mm, tried in order, e.g. 80x60,80x100 (default: the "
+        "answers' outline); one run per size until one reaches the fab package",
+    )
+    p.add_argument(
+        "--keep-copies",
+        action="store_true",
+        help="keep each size's copy of the checkout (default: removed after a completed run, "
+        "kept after a failed one)",
+    )
+    p.add_argument(
+        "--all-sizes",
+        action="store_true",
+        help="run every size of --sizes, also after one reached the fab package",
+    )
     return p.parse_args(argv)
 
 
+@dataclass
+class SizeRun:
+    """One board size's dry run (`report.md` / `metrics.json` in `out`)."""
+
+    size: tuple[float, float]
+    out: Path
+    result: Any
+    error: str | None
+    memory: Memory
+    seconds: float
+
+
+def _first_line(text: str | None) -> str:
+    return (text or "").strip().splitlines()[0][:300] if (text or "").strip() else ""
+
+
+def size_section(run: SizeRun) -> list[str]:
+    """The summary's section of one size: result, placement (courtyard fill, spread,
+    placement score), per-step seconds, critical routing, the fill, the final metrics and
+    the concurrent memory peak."""
+    results = getattr(run.result, "results", {}) or {}
+    lines = [f"## {size_label(run.size)} mm", ""]
+    state = "FAILED" if run.error else "completed (fab package)"
+    lines.append(f"- Result: **{state}**" + (f": {_first_line(run.error)}" if run.error else ""))
+    placed = results.get("pcb_place_blocks") or {}
+    steps = getattr(run.result, "steps", []) or []
+    refused = next(
+        (
+            s.summary.get("error")
+            for s in steps
+            if s.tool == "pcb_place_blocks" and "error" in s.summary
+        ),
+        None,
+    )
+    if placed:
+        score = (placed.get("score") or {}).get("after") or {}
+        lines.append(
+            f"- Placement: courtyard fill {_cell(placed.get('courtyard_fill'))}, spread "
+            f"{_cell(placed.get('spread'))} (well spread {_cell(placed.get('well_spread'))}), "
+            f"score {_cell(score)}"
+        )
+    elif refused is not None:
+        err = refused.get("error", refused) if isinstance(refused, Mapping) else refused
+        details = err.get("details", {}) if isinstance(err, Mapping) else {}
+        lines.append(
+            f"- Placement refused: {_cell(err.get('code') if isinstance(err, Mapping) else err)}"
+            f", courtyard fill {_cell(details.get('courtyard_fill'))}"
+        )
+    else:
+        lines.append("- Placement: not reached")
+    routes = [s for s in steps if s.tool == "pcb_route"]
+    if routes:
+        failed = [
+            f"{n.get('net')}: {_cell(n.get('failed'))}"
+            for s in routes
+            for n in (s.summary.get("nets") or [])
+            if isinstance(n, Mapping) and n.get("status") not in ("routed", "already_routed")
+        ]
+        lines.append(
+            f"- pcb_route: {len(routes)} call(s), "
+            + ", ".join(f"{s.seconds:.0f} s" for s in routes)
+            + f"; failed {_cell(failed) if failed else 'none'}"
+        )
+    fills = [s for s in steps if s.tool == "pcb_route_fill"]
+    if fills:
+        lines.append(
+            "- pcb_route_fill: "
+            + "; ".join(
+                f"{s.seconds:.0f} s "
+                + (
+                    _cell((s.summary["error"].get("error", s.summary["error"])).get("code"))
+                    if isinstance(s.summary.get("error"), Mapping)
+                    else f"completion {s.summary.get('completion')}, ripped "
+                    f"{_cell(s.summary.get('ripped'))}"
+                )
+                for s in fills
+            )
+        )
+    full = getattr(run.result, "metrics", {}) or {}
+    if full.get("metrics"):
+        bad = [m["id"] for m in full["metrics"] if m.get("verdict") == "fail"]
+        lines.append(
+            f"- Final full check: hard failures {full.get('hard_failures')}, reviews "
+            f"{full.get('reviews')}, verdict {full.get('verdict')}"
+            + (f" (failing: {', '.join(bad)})" if bad else "")
+        )
+    lines.append(
+        f"- Memory: concurrent peak {run.memory.concurrent_mb:,.0f} MB in step "
+        f"{run.memory.concurrent_step or 'n/a'}; sum of peaks {_mb(run.memory.total)}"
+    )
+    lines.append(f"- Runtime: {run.seconds:.0f} s; report `{run.out / 'report.md'}`")
+    by_tool: dict[str, float] = {}
+    for s in steps:
+        by_tool[s.tool] = by_tool.get(s.tool, 0.0) + s.seconds
+    top = sorted(by_tool.items(), key=lambda kv: -kv[1])[:8]
+    lines.append("- Seconds per tool: " + ", ".join(f"{t} {v:.0f}" for t, v in top))
+    return [*lines, ""]
+
+
+def summary_report(runs: Sequence[SizeRun], project: str) -> str:
+    lines = [f"# Board flow dry run: {project}, {len(runs)} size(s)", ""]
+    for run in runs:
+        lines += size_section(run)
+    return "\n".join(lines)
+
+
 async def _run(args: argparse.Namespace, out: Path) -> int:
+    """Every size of `--sizes` (default: the answers' outline) in order, each on its own
+    copy in `out/<W>x<H>/`, until one reaches the fab package (`--all-sizes`: all of
+    them); `out/summary.md` lists them."""
+    answers = load_answers(json.loads(args.answers.read_text()))
+    sizes = args.sizes or ((float(answers.outline["width"]), float(answers.outline["height"])),)
+    runs: list[SizeRun] = []
+    for size in sizes:
+        run = await _run_size(args, with_size(answers, size), size, out / size_label(size))
+        runs.append(run)
+        (out / "summary.md").write_text(summary_report(runs, args.project))
+        if run.error is None and not args.all_sizes:
+            break
+    print(f"summary: {out / 'summary.md'}")
+    return 0 if any(r.error is None for r in runs) else 1
+
+
+async def _run_size(
+    args: argparse.Namespace, answers: Any, size: tuple[float, float], out: Path
+) -> SizeRun:
     from copperchat.config import Settings
     from copperchat.projects import discover_projects
     from tests.kicad_e2e.flow import FlowError, as_jsonable, open_rig, run_flow
 
-    answers = load_answers(json.loads(args.answers.read_text()))
-    copy = copy_checkout(args.odh)
-    pro = (copy / args.project).resolve()
-    if not pro.is_relative_to(copy.resolve()) or pro.suffix != ".kicad_pro" or not pro.is_file():
+    # validated on the original first: a bad --project leaves no copy behind
+    src_pro = (args.odh / args.project).resolve()
+    if (
+        not src_pro.is_relative_to(args.odh.resolve())
+        or src_pro.suffix != ".kicad_pro"
+        or not src_pro.is_file()
+    ):
         raise UsageError(f"--project {args.project}: no .kicad_pro at that path in the checkout")
-    root = copy.parent
-    settings = Settings(  # type: ignore[call-arg]
-        _env_file=None,
-        projects_root=root,
-        data_dir=root / ".data",
-        admin_password="dry-run",
-        claude_code_oauth_token="dry-run",
-        cookie_secure=False,
-        frontend_dist=root / ".no-frontend",
-        kicad_cli=os.environ.get("KICAD_CLI") or "kicad-cli",
-        kicad_api_timeout_s=30.0,
-        kicad_start_timeout_s=120.0,
-        board_tools=True,
-    )
-    project = next((p for p in discover_projects(root) if p.pro_file.resolve() == pro), None)
-    if project is None:
-        raise UsageError(f"--project {args.project}: not discovered as a KiCad project")
-    me = os.getpid()
-    sampler = PeakSampler(
-        lambda: descendants(me), lambda pid: kind_of(proc_cmdline(pid), settings.kicad_cli)
-    ).start()
-    api: dict[str, int] = {}
+    copy = copy_checkout(args.odh)
+    flow_ran = finished = False  # the flow started / the report was written
     error: str | None = None
-    extra: list[dict[str, Any]] = []
-    start = time.monotonic()
-
-    def step(s: Any) -> None:
-        sampler.mark(f"turn {s.turn} {s.tool}")
-        print(
-            f"[{time.monotonic() - start:7.1f}s] turn {s.turn} {s.tool} {s.seconds:.1f}s "
-            f"{json.dumps(s.summary, default=str)[:200]}",
-            flush=True,
-        )
-
     try:
-        async with open_rig(settings, project, root / ".data" / "dry-run.db") as rig:
-            try:
-                result = await run_flow(rig, answers, on_step=step)
-            except FlowError as exc:
-                result, error = exc.result, str(exc)
-                extra = await after_failure(rig, result, sampler.mark)
-            seconds = time.monotonic() - start
-            proc = rig.session.process
-            if proc is not None:
-                api["before_fp"] = proc_status(proc.pid).get("VmHWM", 0)
-                await rig.session.activate_footprints()
+        pro = (copy / args.project).resolve()
+        root = copy.parent
+        settings = Settings(  # type: ignore[call-arg]
+            _env_file=None,
+            projects_root=root,
+            data_dir=root / ".data",
+            admin_password="dry-run",
+            claude_code_oauth_token="dry-run",
+            cookie_secure=False,
+            frontend_dist=root / ".no-frontend",
+            kicad_cli=os.environ.get("KICAD_CLI") or "kicad-cli",
+            kicad_api_timeout_s=30.0,
+            kicad_start_timeout_s=120.0,
+            board_tools=True,
+        )
+        project = next((p for p in discover_projects(root) if p.pro_file.resolve() == pro), None)
+        if project is None:
+            raise UsageError(f"--project {args.project}: not discovered as a KiCad project")
+        me = os.getpid()
+        sampler = PeakSampler(
+            lambda: descendants(me), lambda pid: kind_of(proc_cmdline(pid), settings.kicad_cli)
+        ).start()
+        api: dict[str, int] = {}
+        extra: list[dict[str, Any]] = []
+        start = time.monotonic()
+
+        def step(s: Any) -> None:
+            sampler.mark(f"turn {s.turn} {s.tool}")
+            print(
+                f"[{time.monotonic() - start:7.1f}s] turn {s.turn} {s.tool} {s.seconds:.1f}s "
+                f"{json.dumps(s.summary, default=str)[:200]}",
+                flush=True,
+            )
+
+        try:
+            async with open_rig(settings, project, root / ".data" / "dry-run.db") as rig:
+                try:
+                    flow_ran = True
+                    result = await run_flow(rig, answers, on_step=step)
+                except FlowError as exc:
+                    result, error = exc.result, str(exc)
+                    extra = await after_failure(rig, result, sampler.mark)
+                extra += await extra_renders(rig, result)
+                sampler.mark("extra renders")
+                seconds = time.monotonic() - start
                 proc = rig.session.process
                 if proc is not None:
-                    api["after_fp"] = proc_status(proc.pid).get("VmHWM", 0)
-                    api["end"] = api["after_fp"]
+                    api["before_fp"] = proc_status(proc.pid).get("VmHWM", 0)
+                    await rig.session.activate_footprints()
+                    proc = rig.session.process
+                    if proc is not None:
+                        api["after_fp"] = proc_status(proc.pid).get("VmHWM", 0)
+                        api["end"] = api["after_fp"]
+                sampler.stop()
+                memory = memory_from(sampler, api)
+                out.mkdir(parents=True, exist_ok=True)
+                renders: list[str] = []
+                stats: dict[str, dict[str, int]] = {}
+                for png in getattr(result, "renders", []) or []:
+                    if png.is_file():
+                        dst = out / f"{len(renders) + 1:02d}-{png.name}"
+                        shutil.copy2(png, dst)
+                        renders.append(dst.name)
+                        stats[dst.name] = svg_stats(png.with_suffix(".svg"))
+                report = build_report(
+                    result,
+                    memory,
+                    project=f"{args.project} at {size_label(size)} mm",
+                    error=error,
+                    seconds=seconds,
+                    renders=stats,
+                    after_failure=extra,
+                )
+                (out / "report.md").write_text(report)
+                data = as_jsonable(result) if result is not None else {}
+                data |= {
+                    "error": error,
+                    "memory": dataclasses.asdict(memory),
+                    "renders_out": renders,
+                }
+                data["after_failure"] = extra
+                (out / "metrics.json").write_text(json.dumps(data, indent=1, default=str))
+                finished = True
+        finally:
             sampler.stop()
-            memory = memory_from(sampler, api)
-            out.mkdir(parents=True, exist_ok=True)
-            renders: list[str] = []
-            stats: dict[str, dict[str, int]] = {}
-            for png in getattr(result, "renders", []) or []:
-                if png.is_file():
-                    dst = out / f"{len(renders) + 1:02d}-{png.name}"
-                    shutil.copy2(png, dst)
-                    renders.append(dst.name)
-                    stats[dst.name] = svg_stats(png.with_suffix(".svg"))
-            report = build_report(
-                result,
-                memory,
-                project=args.project,
-                error=error,
-                seconds=seconds,
-                renders=stats,
-                after_failure=extra,
-            )
-            (out / "report.md").write_text(report)
-            data = as_jsonable(result) if result is not None else {}
-            data |= {"error": error, "memory": dataclasses.asdict(memory), "renders_out": renders}
-            data["after_failure"] = extra
-            (out / "metrics.json").write_text(json.dumps(data, indent=1, default=str))
     finally:
-        sampler.stop()
-    print(f"report: {out / 'report.md'} (copy of the checkout: {copy})")
-    return 1 if error else 0
+        # a full checkout copy per size would pile up in $TMPDIR; a run whose flow failed or
+        # crashed keeps its copy (the routed board, board.md) for inspection, a setup
+        # failure before the flow does not (review rounds 2-3)
+        keep = args.keep_copies or (flow_ran and (error is not None or not finished))
+        if keep:  # printed here: a crash propagates past the report line (review round 4)
+            print(f"copy of the checkout kept: {copy}", flush=True)
+        else:
+            shutil.rmtree(copy.parent, ignore_errors=True)
+    print(f"report: {out / 'report.md'}")
+    return SizeRun(size, out, result, error, memory, seconds)
 
 
 def main(argv: list[str] | None = None) -> int:

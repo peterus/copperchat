@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import math
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from time import monotonic
 from typing import Any
@@ -36,6 +36,7 @@ from kipy.proto.board.board_types_pb2 import BoardLayer
 from kipy.proto.common.types import KIID
 from kipy.util.board_layer import layer_from_canonical_name
 
+from copperchat.board.geom import _bbox_of, _pad_rect
 from copperchat.board.jobs import fanout_candidates_job, strip_fills
 from copperchat.board.model import BoardModel, Pad, Point
 from copperchat.board.planes import (
@@ -129,7 +130,7 @@ class NewCopper:
 
     net: str
     at: Point
-    via: tuple[float, float]
+    via: tuple[float, float] | None  # None: a tie stub only (R7, `ViaCandidate.tie`)
     stub: tuple[str, Point, Point, float] | None = None  # (layer, start, end, width)
 
 
@@ -160,6 +161,9 @@ def create_copper(h: KicadHandle, items: Sequence[NewCopper]) -> list[list[str]]
             t.locked = True
             made.append(t)
             n += 1
+        if it.via is None:
+            sizes.append(n)
+            continue
         v = KipyVia()
         v.position = _vec(it.at)
         v.net = net
@@ -303,20 +307,25 @@ def _pick(st: _Fanout) -> list[_PadState]:
         )
 
     for p in st.pads:
-        if p.status == "fanned" and p.at is not None:
+        if p.status == "fanned" and p.at is not None and not p.cands[p.next].tie:
             take(p.at)
     picked: list[_PadState] = []
     for ps in st.pads:
         if ps.status != "open":
             continue
-        while ps.next < len(ps.cands) and not clear(ps.cands[ps.next].at):
+        while (
+            ps.next < len(ps.cands)
+            and not ps.cands[ps.next].tie
+            and not clear(ps.cands[ps.next].at)
+        ):
             ps.next += 1
         if ps.next >= len(ps.cands):
             ps.status = "exhausted"
             continue
         c = ps.cands[ps.next]
         ps.at = c.at
-        take(c.at)
+        if not c.tie:
+            take(c.at)
         picked.append(ps)
     return picked
 
@@ -347,7 +356,7 @@ def _round_stages(st: _Fanout, i: int) -> list[BoardStage]:
             NewCopper(
                 st.net,
                 p.cands[p.next].at,
-                st.via,
+                None if p.cands[p.next].tie else st.via,
                 (p.layer, (p.pad.x, p.pad.y), p.cands[p.next].at, st.width),
             )
             for p in picked
@@ -453,6 +462,31 @@ def _pour_on(model: BoardModel, net: str, layer: str) -> bool:
     return any(not z.rule_area and z.net == net and layer in z.layers for z in model.zones)
 
 
+def _tie_without_via(
+    st: _Fanout,
+    p: _PadState,
+    poured: Callable[[_PadState], bool] = lambda q: False,
+    flagged: Callable[[_PadState], bool] = lambda q: False,
+) -> bool:
+    """`p` was fanned by a tie stub (R7) into a pad of this call that never got a via of
+    its own and does not reach the plane through the pour either (`poured`; review round
+    3); a pad not fanned here was already connected before the call."""
+    if p.status != "fanned" or p.next >= len(p.cands) or not p.cands[p.next].tie:
+        return False
+    end = p.cands[p.next].at
+    for q in st.pads:
+        if q is p or q.pad.ref != p.pad.ref or not _in_pad_rect(end, q.pad):
+            continue
+        via = q.status == "fanned" and q.next < len(q.cands) and not q.cands[q.next].tie
+        return not via and not (poured(q) and not flagged(p))
+    return False
+
+
+def _in_pad_rect(pt: Point, q: Pad) -> bool:
+    x0, y0, x1, y1 = _bbox_of(_pad_rect(q))
+    return x0 - 1e-6 <= pt[0] <= x1 + 1e-6 and y0 - 1e-6 <= pt[1] <= y1 + 1e-6
+
+
 def _report(st: _Fanout, model: BoardModel) -> dict[str, Any]:
     unconnected_kiids: set[str] = set()
     if st.last_drc is not None:
@@ -460,10 +494,35 @@ def _report(st: _Fanout, model: BoardModel) -> dict[str, Any]:
             if m.type in IGNORED_DRC:
                 unconnected_kiids.update(m.kiids)
     pad_ids = _pad_kiids(model)
-    fanned = [p for p in st.pads if p.status == "fanned"]
+
+    def poured(q: _PadState) -> bool:
+        """`q` (no via of its own) reaches its plane through the pour."""
+        return (
+            q.status != "timeout"
+            and st.last_drc is not None
+            and st.drc_fresh
+            and _pour_on(model, st.net, q.layer)
+            and (kid := pad_ids.get((q.pad.ref, q.pad.number, q.pad.x, q.pad.y))) is not None
+            and kid not in unconnected_kiids
+        )
+
+    def flagged(p: _PadState) -> bool:
+        """An unconnected marker names `p`'s pad or its tie stub (the island the tie made
+        holds them too; review round 4)."""
+        kid = pad_ids.get((p.pad.ref, p.pad.number, p.pad.x, p.pad.y))
+        return kid in unconnected_kiids or any(k in unconnected_kiids for k in p.kiids)
+
+    dangling = {id(p) for p in st.pads if _tie_without_via(st, p, poured, flagged)}
+    fanned = [p for p in st.pads if p.status == "fanned" and id(p) not in dangling]
     pour: list[dict[str, str]] = []
     unconnected: list[dict[str, str]] = []
     for p in st.pads:
+        if id(p) in dangling:
+            # review round 1: a tie only connects when the pad it ties to got its own via
+            unconnected.append(
+                {"ref": p.key[0], "pad": p.key[1], "reason": "tie_target_unconnected"}
+            )
+            continue
         if p.status == "fanned":
             continue
         reason = (
@@ -472,14 +531,7 @@ def _report(st: _Fanout, model: BoardModel) -> dict[str, Any]:
             # a pad whose candidates all clashed with nearer vias never reached the DRC
             else ("all_rejected" if p.tried else "no_candidate")
         )
-        if (
-            reason != "timeout"
-            and st.last_drc is not None
-            and st.drc_fresh
-            and _pour_on(model, st.net, p.layer)
-            and (kid := pad_ids.get((p.pad.ref, p.pad.number, p.pad.x, p.pad.y))) is not None
-            and kid not in unconnected_kiids
-        ):
+        if reason != "timeout" and poured(p):
             pour.append({"ref": p.key[0], "pad": p.key[1]})
         else:
             unconnected.append({"ref": p.key[0], "pad": p.key[1], "reason": reason})
@@ -488,6 +540,7 @@ def _report(st: _Fanout, model: BoardModel) -> dict[str, Any]:
         "smd_pads": len(st.pads) + st.already,
         "already_connected": st.already,
         "fanned_out": len(fanned),
+        "tied": sum(1 for p in fanned if p.next < len(p.cands) and p.cands[p.next].tie),
         "via_pour": len(pour),
         "via_pour_pads": pour[:MAX_LISTED],
         "unconnected": unconnected[:MAX_LISTED],

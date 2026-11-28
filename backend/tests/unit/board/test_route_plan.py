@@ -1368,3 +1368,109 @@ def test_straight_link_free_per_piece() -> None:
     widths = sorted({round(w, 3) for *_x, w in path.segments})
     assert widths[0] < 0.5 and widths[-1] == pytest.approx(0.5), widths
     assert route._path_free(m, plan, path)
+
+
+def test_alternate_ends_after_no_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """R7 (ODH CHG_N): after a no_path the nearest other end pairs of the two copper
+    islands are tried - here R2.1, joined to U1.1 by a track, links to U3.1 - and the
+    first routed one stands for the connection; an end pair inside one island never."""
+    u1 = pad("U1", "1", "S", (10.0, 10.0))
+    r2 = pad("R2", "1", "S", (12.0, 10.0))
+    u3 = pad("U3", "1", "S", (40.0, 10.0))
+    m = circuit(
+        res("R2", "S", "X", (12.5, 10.0)),
+        ic("U1", {"1": "S", "2": "Y"}, (10.5, 10.0)),
+        ic("U3", {"1": "S", "2": "Z"}, (40.5, 10.0)),
+        tracks=(track("S", start=(10.0, 10.0), end=(12.0, 10.0)),),
+    )
+    pads = {(q.ref, q.number): q for p in m.parts for q in p.pads}
+    u1, r2, u3 = pads[("U1", "1")], pads[("R2", "1")], pads[("U3", "1")]
+    plans = route.plan_connections(m, classify(m), ["S"], layers=None, allow_vias=True)
+    q = plans[0]  # the MST link R2.1-U3.1; the router was given U1.1-U3.1 instead
+    p = dataclasses.replace(q, a=u1, b=u3, req=dataclasses.replace(q.req, a=u1, b=u3))
+    tried: list[tuple[str, str]] = []
+
+    async def attempt(sctx: Any, st: Any, group: Sequence[Any], margins: Any = None) -> str | None:
+        tried.append((group[0].a.ref, group[0].b.ref))
+        return None if {group[0].a.ref, group[0].b.ref} == {"R2", "U3"} else "no_path"
+
+    monkeypatch.setattr(route, "_attempt", attempt)
+    st = route._Loop(m, True, None)
+    assert asyncio.run(route._alternate_ends(None, st, p))  # type: ignore[arg-type]
+    assert {frozenset(t) for t in tried} == {frozenset({"R2", "U3"})}
+    assert r2 in (q.a, q.b)
+    # the routed alternative records (and fails, and is ripped) under the original plan
+    (alt,) = st.alias
+    assert st.alias[alt] is p and {alt.a.ref, alt.b.ref} == {"R2", "U3"}
+    route._fail(st, [alt], "no_path")
+    assert set(st.results) == {p} and st.results[p].a in ("R2.1", "U3.1")
+
+
+def test_alternate_ends_nearest_first_capped_and_joined(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review round 1: islands {U1, R2, R4} and {U3, R5} give five other cross pairs; the
+    `ALT_ENDS_MAX` nearest are tried in that order at margin 0 only, never a pair inside
+    one island; a connection whose ends got joined meanwhile is not retried; a matched-pair
+    half never reaches `_alternate_ends` (`_route_group`)."""
+    m = circuit(
+        ic("U1", {"1": "S", "2": "Y"}, (10.0, 12.0)),
+        res("R2", "S", "X2", (12.5, 10.0)),
+        res("R4", "S", "X4", (14.5, 10.0)),
+        ic("U3", {"1": "S", "2": "Z"}, (40.0, 12.0)),
+        res("R5", "S", "X5", (30.5, 10.0)),
+        tracks=(
+            track("S", start=(10.0, 12.0), end=(10.0, 10.0)),
+            track("S", start=(10.0, 10.0), end=(14.0, 10.0)),
+            track("S", start=(30.0, 10.0), end=(40.0, 10.0)),
+            track("S", start=(40.0, 10.0), end=(40.0, 12.0)),
+        ),
+    )
+    pads = {(q.ref, q.number): q for p in m.parts for q in p.pads}
+    u1, u3 = pads[("U1", "1")], pads[("U3", "1")]
+    q = route.plan_connections(m, classify(m), ["S"], layers=None, allow_vias=True)[0]
+    p = dataclasses.replace(q, a=u1, b=u3, req=dataclasses.replace(q.req, a=u1, b=u3))
+    tried: list[tuple[frozenset[str], tuple[float, ...]]] = []
+
+    async def attempt(sctx: Any, st: Any, group: Sequence[Any], margins: Any = None) -> str:
+        tried.append((frozenset({group[0].a.ref, group[0].b.ref}), tuple(margins or ())))
+        return "no_path"
+
+    monkeypatch.setattr(route, "_attempt", attempt)
+    st = route._Loop(m, True, None)
+    assert not asyncio.run(route._alternate_ends(None, st, p))  # type: ignore[arg-type]
+    assert len(tried) == route.ALT_ENDS_MAX
+    assert [t[0] for t in tried] == [  # 16, 18 and ~20.8 mm apart (octilinear)
+        frozenset({"R4", "R5"}),
+        frozenset({"R2", "R5"}),
+        frozenset({"U1", "R5"}),
+    ]
+    assert all(t[1] == route.MARGINS[:1] for t in tried)
+    assert st.alias == {}  # nothing routed: no alias left behind
+    # joined meanwhile: the islands are one - no alternative is tried
+    tried.clear()
+    joined = dataclasses.replace(
+        m, tracks=(*m.tracks, track("S", start=(14.0, 10.0), end=(30.0, 10.0)))
+    )
+    assert not asyncio.run(route._alternate_ends(None, route._Loop(joined, True, None), p))  # type: ignore[arg-type]
+    assert tried == []
+
+
+def test_alias_unkeep_removes_the_original_plans_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review round 3: copper routed for an alternative plan and later taken out by the
+    rip-up (`_unkeep`) removes the result recorded under the ORIGINAL plan - st.results
+    never holds the alternative itself."""
+    m = circuit(res("R1", "S", "X", (10.0, 10.0)), res("R2", "S", "Y", (20.0, 10.0)))
+    (p,) = route.plan_connections(m, classify(m), ["S"], layers=None, allow_vias=True)
+    alt = dataclasses.replace(p, a=p.b, b=p.a, req=dataclasses.replace(p.req, a=p.b, b=p.a))
+    st = route._Loop(m, True, None)
+    st.alias[alt] = p
+    route._fail(st, [alt], "no_path")
+    assert set(st.results) == {p}
+
+    async def drop(sctx: Any, ids: Any) -> None:
+        return None
+
+    monkeypatch.setattr(route, "_drop", drop)
+    kept = route._Kept([alt], [], [])
+    st.kept.append(kept)
+    asyncio.run(route._unkeep(None, st, kept))  # type: ignore[arg-type]
+    assert st.results == {} and st.kept == []

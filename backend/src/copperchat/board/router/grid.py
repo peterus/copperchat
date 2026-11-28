@@ -39,6 +39,9 @@ from copperchat.board.model import ArcTrack, BoardModel, GraphicItem, Pad, Point
 WINDOW_MM = 6.0
 MAX_CELLS_PER_LAYER = 4_000_000
 EDGE_MIN_MM = 0.3  # board edge clearance floor (spec §10.2)
+# R7: an own via exempts a junction (no T / Y check) only this far inside its rim - M15
+# (`geom.TrackIndex.at_via`) counts a branch on the rim
+VIA_EXEMPT_INSET_MM = 0.005
 MAX_SIZE_MM = 100.0  # sizes are bounded like every tool input (plan call 6)
 
 FREE, OWN, BLOCKED = 0, 1, 2
@@ -824,7 +827,8 @@ def build_grid(
         if v.net == req.net and v.net != "":
             for k in range(len(layers)):
                 own[k].append(("d", *v.at, v.diameter / 2, 0.0))
-                own_spots[k].append(("d", *v.at, v.diameter / 2, 0.0))
+                # R7: exempt strictly inside the via only (M15 counts a branch on its rim)
+                own_spots[k].append(("d", *v.at, v.diameter / 2 - VIA_EXEMPT_INSET_MM, 0.0))
             continue
         for k in range(len(layers)):
             shapes[k].append(("d", *v.at, v.diameter / 2, r))

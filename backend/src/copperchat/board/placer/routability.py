@@ -18,11 +18,12 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
 
 from copperchat.board.classify import BlockProposal, Classification
 from copperchat.board.geom import octi_dist
 from copperchat.board.metrics import connections
-from copperchat.board.model import BoardModel
+from copperchat.board.model import BoardModel, NetClassInfo
 from copperchat.board.placer.layout import Box, box_of
 from copperchat.board.placer.legalize import edge_margin, on_board
 from copperchat.board.staging import natural_key
@@ -41,15 +42,35 @@ _EPS = 1e-9
 # ---- shared definitions ---------------------------------------------------------------------
 
 
-def net_pitch(model: BoardModel, net: str) -> float:
-    """Track width + clearance of `net`'s class (the Default class for a net without one;
-    `DEFAULT_PITCH_MM` without classes)."""
-    classes = {c.name: c for c in model.net_classes}
+def net_classes(model: BoardModel, net: str) -> list[NetClassInfo]:
+    """`net`'s class(es), resolved as `pcb_route` sizes it (`route._classes_of`): the known
+    constituents of a composite name ("Default,Power"); else - KiCad names a
+    pattern-assigned net's class "Effective for net: <net>" - the classes whose patterns
+    match the net plus Default; none -> Default (empty without classes)."""
+    by_name = {c.name: c for c in model.net_classes}
     name = dict(model.net_class_of).get(net, "Default")
-    c = classes.get(name) or classes.get("Default")
-    if c is None:
-        return DEFAULT_PITCH_MM
-    return round(c.track_width + c.clearance, 6)
+    found = [by_name[n.strip()] for n in name.split(",") if n.strip() in by_name]
+    if found:
+        return found
+    found = [c for c in model.net_classes if any(fnmatchcase(net, p) for p in c.patterns)]
+    if "Default" in by_name:
+        found.append(by_name["Default"])
+    return found
+
+
+def net_track(model: BoardModel, net: str) -> tuple[float, float]:
+    """(track width, clearance) of `net`'s class(es) (the widest of each,
+    `net_classes`); `DEFAULT_PITCH_MM` split in half without classes."""
+    classes = net_classes(model, net)
+    if not classes:
+        return DEFAULT_PITCH_MM / 2, DEFAULT_PITCH_MM / 2
+    return max(c.track_width for c in classes), max(c.clearance for c in classes)
+
+
+def net_pitch(model: BoardModel, net: str) -> float:
+    """Track width + clearance of `net`'s class (`net_track`; R7: a pattern-assigned net
+    - "Effective for net: <net>" - counted as Default before)."""
+    return round(sum(net_track(model, net)), 6)
 
 
 def signal_pitch(model: BoardModel) -> float:

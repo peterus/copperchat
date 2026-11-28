@@ -51,7 +51,16 @@ from copperchat.board.geom import _bbox_of, _pad_rect, polygon_area
 from copperchat.board.metrics import REVIEW, alignment_need, alignment_pairs
 from copperchat.board.model import BoardModel, Pad, Part, Point, Rect, Side
 from copperchat.board.placer.cluster import is_anchor
-from copperchat.board.placer.layout import Box, Move, apply_moves, box_of, boxes_hit, moved_part
+from copperchat.board.placer.layout import (
+    Box,
+    Move,
+    apply_moves,
+    box_of,
+    boxes_hit,
+    escape_strips,
+    moved_part,
+    wide_nets,
+)
 from copperchat.board.placer.legalize import (
     DoesNotFit,
     Outline,
@@ -110,6 +119,15 @@ TARGET_PULL_WEIGHTS = (0.02, 0.1, 0.2)
 # worth more room between the blocks; ties: the first)
 SLACK_STEPS_MM = (1.0, 0.5, 0.0)
 SLACK_CREDIT = 0.05
+# R7 (R2b residual: on a board with room to spare - ODH 80 x 100 - the least-airwire packing
+# sat at one end and left a third of the board empty): the choice also pays CENTRE_WEIGHT mm
+# airwire per mm the placed parts' area-weighted centroid lies off the outline centre (|dx|
+# + |dy|), and a stronger pull toward the floorplan regions is tried after the others (only
+# with packing budget left: a tight board needs it for the smaller slacks). Measured on ODH
+# 80 x 100: pull 0.5 = airwire 1161 -> 1297 mm, centre offset 15 -> 8 mm, spread 0.68 -> 0.88;
+# pull 1.0 doubled the detours (1544 mm) and is not tried. On a full board the offset is ~0.
+CENTRE_PULL_WEIGHTS = (0.5,)
+CENTRE_WEIGHT = 25.0
 # a free block that found no spot moves to the front and the packing restarts, at most this
 # many times per layout and slack step (bounds the work on a board that cannot fit)
 RETRY_MAX = 8
@@ -894,7 +912,11 @@ def place_blocks(
         for relax in (True, False):
             work = _Work(PACK_BUDGET)  # per pass: a failing relaxed one never starves P4's
             best: tuple[float, tuple[PlaceResult, Floorplan]] | None = None
-            for slack, pull in itertools.product(SLACK_STEPS_MM, TARGET_PULL_WEIGHTS):
+            combos = [
+                *itertools.product(SLACK_STEPS_MM, TARGET_PULL_WEIGHTS),
+                *itertools.product(SLACK_STEPS_MM, CENTRE_PULL_WEIGHTS),
+            ]
+            for slack, pull in combos:
                 got = _pack_retry(
                     model, cls, doc, blocks, topo, keep=keep_channels,
                     sides=allowed_sides, relax=relax, slack=slack, pull=pull, work=work,
@@ -924,6 +946,7 @@ def place_blocks(
                 if isinstance(result, DoesNotFit):
                     continue
                 cost = result[0].score.airwire_mm * (1.0 - SLACK_CREDIT * slack)
+                cost += CENTRE_WEIGHT * centre_offset(model, result[0].moves)
                 if best is None or cost < best[0] - _EPS:
                     best = (cost, result)
             if best is not None:
@@ -935,6 +958,31 @@ def place_blocks(
         return got_r
     fp, moves = got_r
     return _finish(model, cls, doc, blocks, fp, moves, keep_channels)
+
+
+def centre_offset(model: BoardModel, moves: Sequence[Move]) -> float:
+    """|dx| + |dy| (mm) of the parts' centroid - the moved ones and every other part on
+    the board - (each part's box centre weighted by its box area: one small block thrown
+    to an empty end barely moves it, unlike a bounding box) from the outline's centre; 0.0
+    without moves or outline."""
+    o = model.outline
+    if not moves or o.w <= 0 or o.h <= 0:
+        return 0.0
+    placed = apply_moves(model, moves)
+    refs = {mv.ref for mv in moves}
+    # the moved parts and every part that stays on the board (locked parts, fixtures):
+    # review round 3 - parts already filling one half count toward the balance
+    boxes = [
+        box_of(p)
+        for p in placed.parts
+        if p.ref in refs or (on_board(placed, p) and len(p.courtyard) + len(p.pads) > 0)
+    ]
+    total = sum(_area(b) for b in boxes)
+    if total <= 0:
+        return 0.0
+    mx = sum(_area(b) * (b[0] + b[2]) / 2 for b in boxes) / total
+    my = sum(_area(b) * (b[1] + b[3]) / 2 for b in boxes) / total
+    return round(abs(mx - (o.x + o.w / 2)) + abs(my - (o.y + o.h / 2)), 6)
 
 
 def _courtyards(model: BoardModel, blocks: Sequence[BlockProposal]) -> float:
@@ -1222,6 +1270,7 @@ def _finish(
     merged = {mv.ref: mv for mv in moves}
     merged.update({mv.ref: mv for mv in legal})
     placed = tuple(merged[r] for r in sorted(merged, key=natural_key))
+    placed = snap_edges(model, doc, blocks, placed, cls=cls)
     after = apply_moves(model, placed)
     aligned = align_pairs(after, classify(after, doc), placed, movable=members)
     final = apply_moves(model, aligned)
@@ -1229,6 +1278,94 @@ def _finish(
     score = score_placement(final, fcls, doc)
     fp = dataclasses.replace(fp, gaps=block_gaps(final, fcls, blocks, keep=keep))
     return PlaceResult(aligned, score), fp
+
+
+def snap_edges(
+    model: BoardModel,
+    doc: BoardDoc,
+    blocks: Sequence[BlockProposal],
+    moves: tuple[Move, ...],
+    *,
+    cls: Classification | None = None,
+) -> tuple[Move, ...]:
+    """R7 (ODH: J201 ended 0.75 mm from its edge, M13 allows `M13_EDGE_MM`): the packing
+    places on a 0.5 mm grid inside the edge margin, so a part with a `board.md` Placement
+    edges row can stop up to a grid step short of its edge. Its whole block moves toward
+    that edge, as far as the edge margin allows but at most one packing grid step (0.05 mm
+    steps, largest first), when every moved courtyard stays inside the outline margin, off
+    the other parts' courtyards, keepouts and escape strips (`_covers_strip`); else the
+    block stays. `moves` = the placement (all of this run's
+    members); returns it with the shifts applied."""
+    o = model.outline
+    if o.kind == "none" or not doc.edges:
+        return moves
+    by_ref = {mv.ref: mv for mv in moves}
+    placed = apply_moves(model, moves)
+    parts = {p.ref: p for p in placed.parts}
+    margin = edge_margin(model)
+    outline = Outline(model, margin)
+    keepouts = keepout_polys(model)
+    sep = courtyard_clearance(model)
+    obox = (o.x, o.y, o.x + o.w, o.y + o.h)
+    normal = {"left": (-1, 0), "right": (1, 0), "top": (0, -1), "bottom": (0, 1)}
+    # a shifted block never covers another part's escape strip (as `align_pairs`)
+    # net kinds do not depend on positions: the caller's classification serves (review r3)
+    wide = wide_nets(
+        placed,
+        cls if cls is not None else classify(placed, doc),
+        (q.net for p in placed.parts for q in p.pads if q.net),
+    )
+    strips = [(r, net, b) for r, p in parts.items() for net, b in escape_strips(p, wide)]
+    for row in doc.edges:
+        p = parts.get(row.ref)
+        if row.edge is None or p is None or row.ref not in by_ref or row.edge not in normal:
+            continue
+        block = next((b for b in blocks if row.ref in _members(model, b)), None)
+        refs = [r for r in (_members(model, block) if block else [row.ref]) if r in by_ref]
+        b = box_of(p)
+        gap = {
+            "left": b[0] - obox[0],
+            "right": obox[2] - b[2],
+            "top": b[1] - obox[1],
+            "bottom": obox[3] - b[3],
+        }[row.edge]
+        # at most one packing grid step: the gap the 0.5 mm grid leaves, never a jump over
+        # other parts to a far edge (review round 1)
+        n = min(
+            math.floor((gap - margin) / TIGHT_STEP_MM + 1e-6),
+            round(PLACE_GRID_MM / TIGHT_STEP_MM),
+        )
+        nx, ny = normal[row.edge]
+        for k in range(n, 0, -1):
+            d = k * TIGHT_STEP_MM
+            moved = {
+                r: moved_part(
+                    parts[r],
+                    dataclasses.replace(
+                        by_ref[r],
+                        x=round(by_ref[r].x + nx * d, 6),
+                        y=round(by_ref[r].y + ny * d, 6),
+                    ),
+                )
+                for r in refs
+            }
+            others = {r: q for r, q in parts.items() if r not in moved}
+            # the block's own strips move with it (review round 2): only the others' count
+            fixed_strips = [st for st in strips if st[0] not in moved]
+            if all(
+                _legal_shift(q, others, sep, outline, keepouts)
+                and not _covers_strip(q, parts[r], fixed_strips, parts)
+                and not _strip_lands_on(q, parts[r], others, wide)
+                for r, q in moved.items()
+            ):
+                for r, q in moved.items():
+                    parts[r] = q
+                    by_ref[r] = dataclasses.replace(by_ref[r], x=q.x, y=q.y)
+                strips = fixed_strips + [
+                    (r, net, b) for r, q in moved.items() for net, b in escape_strips(q, wide)
+                ]
+                break
+    return tuple(by_ref[mv.ref] for mv in moves)
 
 
 # ---- rule (b): pair alignment ----------------------------------------------------------------
@@ -1258,6 +1395,9 @@ def align_pairs(
         if p is not None and r not in out:
             out[r] = Move(r, p.x, p.y, p.rot, p.side)
     pairs = alignment_pairs(model, cls)
+    # R7: a shift never covers another part's escape strip in front of a wide-net pad
+    wide = wide_nets(model, cls, (q.net for p in model.parts for q in p.pads if q.net))
+    strips = [(r, net, b) for r, p in parts.items() for net, b in escape_strips(p, wide)]
     layers = model.copper_layers
     sep = courtyard_clearance(model)
     outline = Outline(model, edge_margin(model))
@@ -1297,11 +1437,16 @@ def align_pairs(
             cand = moved_part(p, Move(p.ref, p.x + dx, p.y + dy, p.rot, p.side))
             if not _legal_shift(cand, parts, sep, outline, keepouts):
                 continue
+            if _covers_strip(cand, p, strips, parts) or _strip_lands_on(cand, p, parts, wide):
+                continue
             trial = {**parts, p.ref: cand}
             if any(_need_in(trial, q, layers) != 0.0 for q in (k, *had)):
                 continue
             parts[p.ref] = cand
             out[p.ref] = Move(p.ref, round(cand.x, 6), round(cand.y, 6), p.rot, p.side)
+            strips[:] = [st for st in strips if st[0] != p.ref] + [
+                (p.ref, net, b) for net, b in escape_strips(cand, wide)
+            ]  # its own strips moved with it
             return True
         return False
 
@@ -1379,6 +1524,45 @@ def _closer(mover: Pad, other: Pad) -> list[Point]:
         steps = [sign * TIGHT_STEP_MM * i for i in range(n, 0, -1)]
         return [(d, 0.0) if ax == 0 else (0.0, d) for d in steps]
     return []
+
+
+def _covers_strip(
+    cand: Part,
+    old: Part,
+    strips: Sequence[tuple[str, str, Box]],
+    parts: Mapping[str, Part] | None = None,
+) -> bool:
+    """R7: `cand` (a shifted `old`) covers an escape strip of another part's wide-net pad
+    (not one of its own nets) that `old` did not cover already; with `parts`, only strips
+    of parts on `cand`'s side count (review round 5, as `_legal_shift`)."""
+    mine = {q.net for q in cand.pads if q.net}
+    b, before = box_of(cand), box_of(old)
+    return any(
+        r != cand.ref
+        and net not in mine
+        and (parts is None or r not in parts or parts[r].side == cand.side)
+        and boxes_hit(b, s)
+        and not boxes_hit(before, s)
+        for r, net, s in strips
+    )
+
+
+def _strip_lands_on(
+    cand: Part, old: Part, others: Mapping[str, Part], wide: Mapping[str, tuple[float, float]]
+) -> bool:
+    """R7 review round 3: a shifted part's own escape strips land on another part (one
+    without that net) they did not cover before the shift."""
+    before = [b for _, b in escape_strips(old, wide)]
+    for net, s in escape_strips(cand, wide):
+        for r, q in others.items():
+            if r == cand.ref or any(x.net == net for x in q.pads):
+                continue
+            if q.side != cand.side or len(q.courtyard) + len(q.pads) == 0:
+                continue  # as `_legal_shift` (review round 4)
+            qb = box_of(q)
+            if boxes_hit(s, qb) and not any(boxes_hit(b, qb) for b in before):
+                return True
+    return False
 
 
 def _legal_shift(

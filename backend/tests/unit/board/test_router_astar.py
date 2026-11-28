@@ -691,6 +691,25 @@ def test_own_exempt_is_per_layer() -> None:
     assert not grid.own_exempt(bi, (10.0, 10.0))
 
 
+def test_own_via_exempts_only_its_inside() -> None:
+    """R7 (ODH USB-C A7: a 45-degree branch landed on a straight own track exactly on an
+    own via's rim, 0.3 mm from its centre - M15 counts that Y): an own via exempts a node
+    strictly inside it, not on its rim."""
+    from dataclasses import replace
+
+    from copperchat.board.model import Via
+
+    m, pin, up, _down = _pin_rig()
+    req = RouteRequest("P", pin, up, 0.2, 0.2, ("F.Cu", "B.Cu"), True, (0.6, 0.3))
+    m2 = replace(m, vias=(Via("v", "P", (12.0, 12.0), 0.6, 0.3, True),))
+    m2 = replace(m2, copper_layers=("F.Cu", "B.Cu"))
+    grid = build_grid(m2, req)
+    fi = grid.layers.index("F.Cu")
+    assert grid.own_exempt(fi, (12.0, 12.0))
+    assert grid.own_exempt(fi, (12.0, 12.29))
+    assert not grid.own_exempt(fi, (12.0, 12.3))  # the rim
+
+
 def test_junction_masks_cost_bounded_and_deadline() -> None:
     """Many own segments and pads: the masks stay cheap (each segment only checks the
     spots near it), and a passed deadline stops them."""

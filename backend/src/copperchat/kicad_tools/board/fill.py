@@ -47,7 +47,7 @@ import stat
 import time
 import uuid
 from collections import Counter, defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -791,18 +791,23 @@ def _bends_of(model: BoardModel, net: str, index: TrackIndex | None = None) -> i
     )
 
 
-def _widen(
-    model: BoardModel,
-    replace: Sequence[tuple[str, tuple[Track, ...]]],
-    new_tracks: frozenset[str],
-) -> tuple[list[tuple[str, tuple[Track, ...]]], int]:
-    """The post-processor's replacements plus width fixes: every new track (and every
-    replacement track) narrower than its net's class width (`route.class_params`, never
-    below the board minimum) gets that width - Freerouting necks traces down at pins
-    (0.15 mm on a 0.2 mm class on `sp4_synth`) - unless it is a legal neck-down by M12's
-    rule (R4, `metrics.neck_checker`: inside its pad's part's escape zone, at least the neck
-    width; widened it would not fit there). Returns (replacements, widened count); the
-    widened copper is DRC-checked with the rest (rejected → originals back, ripped)."""
+_WidthRule = tuple[Callable[[str], float], Callable[[Track], Track]]
+
+
+def _widened_model(
+    model: BoardModel, new_tracks: frozenset[str], rule: _WidthRule | None = None
+) -> BoardModel:
+    """`model` with every track of `new_tracks` at the width `_widen` gives it (the class
+    width unless a legal neck-down), so the post-processor judges M7 / M4 at the final
+    widths; the KIIDs stay (the post-processor's replacements refer to them)."""
+    _, wide = rule or _width_rule(model)
+    tracks = tuple(wide(t) if t.kiid in new_tracks else t for t in model.tracks)
+    return dataclasses.replace(model, tracks=tracks)
+
+
+def _width_rule(model: BoardModel) -> _WidthRule:
+    """(class width of a net, `t` at its class width unless narrower is a legal
+    neck-down) - `_widen`'s rule."""
     widths: dict[str, float] = {}
     necked = neck_checker(model, classify(model))
 
@@ -811,27 +816,43 @@ def _widen(
             widths[net] = class_params(model, net).width
         return widths[net]
 
+    def wide(t: Track) -> Track:
+        w = width(t.net)
+        if t.width < w - 1e-9 and not necked(t, w):
+            return dataclasses.replace(t, width=w)
+        return t
+
+    return width, wide
+
+
+def _widen(
+    model: BoardModel,
+    replace: Sequence[tuple[str, tuple[Track, ...]]],
+    new_tracks: frozenset[str],
+    rule: _WidthRule | None = None,
+) -> tuple[list[tuple[str, tuple[Track, ...]]], int]:
+    """The post-processor's replacements plus width fixes: every new track (and every
+    replacement track) narrower than its net's class width (`route.class_params`, never
+    below the board minimum) gets that width - Freerouting necks traces down at pins
+    (0.15 mm on a 0.2 mm class on `sp4_synth`) - unless it is a legal neck-down by M12's
+    rule (R4, `metrics.neck_checker`: inside its pad's part's escape zone, at least the neck
+    width; widened it would not fit there). Returns (replacements, widened count); the
+    widened copper is DRC-checked with the rest (rejected → originals back, ripped)."""
+    _, rule_of = rule or _width_rule(model)
     count = 0
 
     def wide(t: Track) -> Track:
         nonlocal count
-        w = width(t.net)
-        if t.width < w - 1e-9 and not necked(t, w):
-            count += 1
-            return dataclasses.replace(t, width=w)
-        return t
+        got = rule_of(t)
+        count += got is not t
+        return got
 
     out = [(old, tuple(wide(t) for t in tracks)) for old, tracks in replace]
     done = {old for old, _ in replace}
     for t in sorted(model.tracks, key=lambda t: t.kiid):
-        if (
-            t.kiid in new_tracks
-            and t.kiid not in done
-            and t.width < width(t.net) - 1e-9
-            and not necked(t, width(t.net))
-        ):
+        if t.kiid in new_tracks and t.kiid not in done and (got := rule_of(t)) is not t:
             count += 1
-            out.append((t.kiid, (dataclasses.replace(t, kiid="", width=width(t.net)),)))
+            out.append((t.kiid, (dataclasses.replace(got, kiid=""),)))
     return out, count
 
 
@@ -978,8 +999,15 @@ def fill_stages(st: _FillState) -> list[BoardStage]:
         before_open = {k for k, *_ in st.plan.open}
         nets = {net for _, net, _, _ in st.plan.open}
         st.fill_keys = frozenset(before_open & await asyncio.to_thread(_routed_keys, m, nets))
-        rem = max(_remaining(st.post_deadline), 0.0)
-        res = await _run_postprocess(m, new_tracks, timeout_s=min(POST_JOB_MAX_S, rem), wait_s=rem)
+        # R7: judge the copper at the width it will have - `_widen` below widens
+        # Freerouting's neck-downs, and a jog that passes at 0.15 mm is an M7 micro-jog at
+        # the 0.2 mm class width (ODH: seven of them survived the post-processor)
+        rule = await asyncio.to_thread(_width_rule, m)  # classify + neck rule, built once
+        judged = await asyncio.to_thread(_widened_model, m, new_tracks, rule)
+        rem = max(_remaining(st.post_deadline), 0.0)  # the widening's time counts too
+        res = await _run_postprocess(
+            judged, new_tracks, timeout_s=min(POST_JOB_MAX_S, rem), wait_s=rem
+        )
         rips = {k: r for k, r in res.reasons}
         for k in res.rip:
             rips.setdefault(k, "rip")
@@ -989,7 +1017,7 @@ def fill_stages(st: _FillState) -> list[BoardStage]:
         sctx.report["relanded"] = res.relanded
         await _check_ratio(st, m, rips, nets)
         st.rip = dict(rips)
-        replace, widened = await asyncio.to_thread(_widen, m, res.replace, new_tracks)
+        replace, widened = await asyncio.to_thread(_widen, m, res.replace, new_tracks, rule)
         sctx.report["widened"] = widened
         drc_skipped = False
         if replace:
@@ -1262,6 +1290,8 @@ def _completion(
                     "b": f"{b.ref}.{b.number}",
                     "x": round((a.x + b.x) / 2, 3),
                     "y": round((a.y + b.y) / 2, 3),
+                    # R7: the two pins (a walled-in pin is where copper must be cleared)
+                    "ends": [[round(a.x, 3), round(a.y, 3)], [round(b.x, 3), round(b.y, 3)]],
                 }
             )
     done = total - len(open_)

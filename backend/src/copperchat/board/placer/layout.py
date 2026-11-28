@@ -28,7 +28,7 @@ import itertools
 import math
 import re
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
 from copperchat.board.classify import Classification
@@ -43,9 +43,11 @@ __all__ = [
     "Move",
     "apply_moves",
     "box_of",
+    "escape_strips",
     "layout_cluster",
     "moved_part",
     "snap",
+    "wide_nets",
 ]
 
 Box = tuple[float, float, float, float]  # x0, y0, x1, y1
@@ -70,6 +72,13 @@ ESCAPE_MAX_MM = 2.0
 # full track pitch for decaps made ODH's M8 3.6 → 4.0 mm)
 ESCAPE_TRACKS_MAX = 4
 FINE_PITCH_MM = 0.65
+# R7 (ODH: a CC resistor right in front of a USB-C VBUS pin, two resistors tight to a
+# charger's VSYS pins - the 0.5 mm power tracks could not leave the pins): with `relax` or
+# `escape_room` (`pcb_place_blocks`), a
+# satellite keeps the escape strip in front of every host pad of a net wider than the
+# Default class that it does not connect to free - across the pad +- (half the track +
+# clearance), outwards from the pad's outer edge by the track's entry zone
+# (`geom.entry_zone_width`); it slides along the row or steps out instead
 # a crystal keeps this much more than the minimum courtyard gap: the IC pins next to the
 # oscillator pins (reset, supply) need one track (0.2 mm + 2 x 0.2 mm clearance) out
 # between the IC and the crystal; KiCad's courtyard margins already give ~0.5 mm of copper
@@ -80,6 +89,9 @@ CRYSTAL_STANDOFF_MM = 0.3
 RADIAL_WEIGHT = 1.5  # unconnected satellites: one mm outwards costs 1.5 mm along a row
 ALIGN_WEIGHT = 0.5  # connected satellites: cost per mm slid away from the aligned spot
 SIDE_PENALTY_MM = 1.5  # a host side next to the one the connected pin points to
+EPAD_MIN_MM2 = 1.0  # R7: a ground pad this large under the IC's middle is an exposed pad
+SELF_CROSS_MM = 3.0  # R7: per own pad of another net on a satellite pad's line to its pin
+CROSS_MAX_PADS = 4  # ... for satellites with at most this many pads
 NEAR_TARGET_MM = 3.0  # host pads of the satellite's nets this close to the first form a target
 _EPS = 1e-9
 
@@ -267,8 +279,76 @@ def _nearest_side(b: Box, pt: Point) -> str:
     return min(_SIDES, key=lambda s: (d[s], list(_SIDES).index(s)))
 
 
+def _pad_side(b: Box, q: Pad) -> str:
+    """The side of box `b` whose row pad `q` belongs to: a pad with a long axis
+    (`_pad_axis`) points out of one of the two sides along that axis (the nearer one; a
+    SOIC's end pin near a short edge still belongs to its long side - R2b review, PM #60),
+    an about square pad to the nearest side."""
+    axis = _pad_axis(q)
+    pt = (q.x, q.y)
+    d = {"left": pt[0] - b[0], "right": b[2] - pt[0], "top": pt[1] - b[1], "bottom": b[3] - pt[1]}
+    sides = [s for s in _SIDES if axis is None or _SIDES[s][0] == axis]
+    return min(sides, key=lambda s: (d[s], list(_SIDES).index(s)))
+
+
 def _mean(pts: Sequence[Point]) -> Point:
     return (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
+
+
+def wide_nets(
+    model: BoardModel, cls: Classification, nets: Iterable[str]
+) -> dict[str, tuple[float, float]]:
+    """R7: the nets of `nets` whose pins need a free escape: a class wider than the Default
+    class (track + clearance) or a switch node (the inductor's track leaves the IC's SW
+    pin; ODH: a decap of the neighbouring supply pin sat in front of it), ground
+    excluded: net -> (track width, clearance)."""
+    from copperchat.board.placer.routability import net_track, signal_pitch
+
+    pitch = signal_pitch(model)
+    out: dict[str, tuple[float, float]] = {}
+    for n in sorted(set(nets)):
+        w, clr = net_track(model, n)
+        kind = cls.net_kind.get(n)
+        if kind != "ground" and (w + clr > pitch + _EPS or kind == "switch_node"):
+            out[n] = (w, clr)
+    return out
+
+
+def escape_strips(
+    part: Part, wide: Mapping[str, tuple[float, float]], side: str | None = None
+) -> list[tuple[str, Box]]:
+    """R7: (net, box) of the escape strip in front of every pad of `part` whose net is in
+    `wide` (on `side` of the part's box only, else every side): across the pad +- (half
+    the track + clearance), outwards from the pad's outer edge by the track's entry zone
+    (`geom.entry_zone_width`). Another part must not cover it, or the wide track cannot
+    leave the pin."""
+    from copperchat.board.geom import _pad_rect, entry_zone_width
+
+    pb = box_of(part)
+    out: list[tuple[str, Box]] = []
+    for q in part.pads:
+        if q.net not in wide:
+            continue
+        here = _pad_side(pb, q)
+        if side is not None and here != side:
+            continue
+        axis, sign = _SIDES[here]
+        w, clr = wide[q.net]
+        pts = _pad_rect(q)
+        lo = [min(p[i] for p in pts) for i in (0, 1)]
+        hi = [max(p[i] for p in pts) for i in (0, 1)]
+        across = 1 - axis
+        c = (lo[across] + hi[across]) / 2
+        b = [0.0, 0.0, 0.0, 0.0]
+        b[across] = min(lo[across], c - w / 2) - clr
+        b[across + 2] = max(hi[across], c + w / 2) + clr
+        depth = entry_zone_width(w)
+        if sign > 0:
+            b[axis], b[axis + 2] = hi[axis], hi[axis] + depth
+        else:
+            b[axis], b[axis + 2] = lo[axis] - depth, lo[axis]
+        out.append((q.net, (b[0], b[1], b[2], b[3])))
+    return out
 
 
 class _Layout:
@@ -286,11 +366,17 @@ class _Layout:
         self.gap = gap
         self.escape_room = escape_room
         self.relax = relax
-        if relax:  # a local import: routability imports the legaliser, which imports us
+        self.wide: dict[str, tuple[float, float]] = {}
+        self._strip_cache: dict[tuple[str, str], list[tuple[str, Box]]] = {}
+        self._epad_cache: dict[tuple[str, str], float] = {}
+        if relax or escape_room:  # a local import: routability imports the legaliser
             from copperchat.board.placer.routability import signal_pitch, via_pitch
 
             self.pitch = signal_pitch(model)
             self.via = via_pitch(model)
+            self.wide = wide_nets(
+                model, cls, (q.net for r in c.members for q in model.part(r).pads if q.net)
+            )
         self.anchor = c.anchor if c.anchor in c.members else c.members[0]
         self.members = c.members
         self.ns = NetSets(model, cls, c.members)
@@ -467,6 +553,63 @@ class _Layout:
         extra = SATELLITE_EXTRA_MM if tight else max(SATELLITE_EXTRA_MM, self.pitch)
         return self.gap + extra + relaxed + (self._escape(ref) if self.escape_room else 0.0)
 
+    def _epad_room(self, host: Part, side: str) -> float:
+        """R7 (ODH TPS63000: its exposed GND pad and GND pins were boxed in by flush caps
+        and the pins' tracks, the F.Cu pour island around them reached no via - spec call
+        30: no via-in-pad): next to a host with an exposed ground pad, every satellite
+        (decaps and hot-loop parts included) keeps room for one fanout via plus clearance
+        (`via_pitch` + the Default clearance) on the host's first pinless side in
+        `_SIDES` order - with pins on every side (a QFN: ODH's charger) the side with the
+        most ground pins; 0.0 elsewhere and without `relax` / `escape_room`."""
+        if not (self.relax or self.escape_room):
+            return 0.0
+        key = (host.ref, side)
+        if key not in self._epad_cache:
+            self._epad_cache[key] = self._epad_room_of(host, side)
+        return self._epad_cache[key]
+
+    def _epad_room_of(self, host: Part, side: str) -> float:
+        hb = box_of(host)
+        cx, cy = (hb[0] + hb[2]) / 2, (hb[1] + hb[3]) / 2
+        kinds = self.cls.net_kind
+        epad = [
+            q
+            for q in host.pads
+            if kinds.get(q.net) == "ground"
+            and q.w * q.h >= EPAD_MIN_MM2
+            and abs(q.x - cx) <= q.w / 2 + q.h / 2
+            and abs(q.y - cy) <= q.w / 2 + q.h / 2
+        ]
+        if not epad:
+            return 0.0
+        from copperchat.board.geom import _pad_rect
+
+        boxes = [
+            (min(x for x, _ in r), min(y for _, y in r), max(x for x, _ in r), max(y for _, y in r))
+            for r in (_pad_rect(e) for e in epad)
+        ]
+
+        def under(q: Pad) -> bool:  # a paste / via-array piece of the exposed pad
+            return any(
+                b[0] - _EPS <= q.x <= b[2] + _EPS and b[1] - _EPS <= q.y <= b[3] + _EPS
+                for b in boxes
+            )
+
+        rows = [q for q in host.pads if q not in epad and q.net and not under(q)]
+        used = {_pad_side(hb, q) for q in rows}
+        free = [s for s in _SIDES if s not in used]
+        if not free:  # pins on every side (a QFN): the side with the most ground pins
+            ground = {s: 0 for s in _SIDES}
+            for q in rows:
+                if kinds.get(q.net) == "ground":
+                    ground[_pad_side(hb, q)] += 1
+            free = [max(_SIDES, key=lambda s: (ground[s], -list(_SIDES).index(s)))]
+        if free[0] != side:
+            return 0.0
+        from copperchat.board.placer.routability import net_track, via_pitch
+
+        return round(via_pitch(self.model) + net_track(self.model, "")[1], 6)
+
     def _relaxed(self, local: Part, host: Part, side: str, t_star: float) -> float:
         """R2b: the routing room `local` (at rotation, centred on `t_star` along `side`)
         leaves in front of `host`'s pads on that side inside its span (± one pitch): one
@@ -487,7 +630,7 @@ class _Layout:
         sb = box_of(local)
         lo = t_star + sb[1 - axis] - self.pitch
         hi = t_star + sb[3 - axis] + self.pitch
-        on_side = [q for q in host.pads if _nearest_side(hb, (q.x, q.y)) == side]
+        on_side = [q for q in host.pads if _pad_side(hb, q) == side]
         span = [q for q in on_side if q.net and lo - _EPS <= (q.x, q.y)[1 - axis] <= hi + _EPS]
         along = sorted({round((q.x, q.y)[1 - axis], 4) for q in on_side})
         steps = [b - a for a, b in itertools.pairwise(along)]
@@ -503,6 +646,17 @@ class _Layout:
         if fine and (escaping or grounded):
             room += self.via
         return room
+
+    def _escape_strips(self, local: Part, host: Part, side: str) -> list[Box]:
+        """R7: `escape_strips` of `host` on `side` that `local` must keep free (its own nets
+        excluded); none without `relax` / `escape_room` (`pcb_place_blocks` only)."""
+        if not self.wide:
+            return []
+        key = (host.ref, side)
+        if key not in self._strip_cache:  # the host is fixed while its cluster is laid out
+            self._strip_cache[key] = escape_strips(host, self.wide, side)
+        mine = {q.net for q in local.pads if q.net}
+        return [b for net, b in self._strip_cache[key] if net not in mine]
 
     def _escape(self, ref: str) -> float:
         part = self.model.part(ref)
@@ -545,6 +699,7 @@ class _Layout:
         else:
             t_star = snap((h_t0 + h_t1) / 2 - (s_t0 + s_t1) / 2)
         g = self._gap_for(part.ref, self._relaxed(local, host, side, t_star))
+        g += self._epad_room(host, side)
         u0 = snap_up(h_r1 + g - s_r0)
 
         def at(u: float, t: float) -> tuple[float, float]:
@@ -561,17 +716,43 @@ class _Layout:
             else {}
         )
 
+        # R7: a satellite whose pads serve several host pins (a buck-boost inductor) pays
+        # when one pad's line to its pin runs over its other pad (crossed connections)
+        # two-pin parts and small arrays only (review round 3: the clip test per own pad
+        # and candidate is O(own x pads))
+        crossing = (
+            (self.relax or self.escape_room)
+            and len(local.pads) <= CROSS_MAX_PADS
+            and len({q.net for q in own}) > 1
+        )
+
         def cost_of(u: float, t: float) -> float:
             if want is None:
                 return abs(t - t_star) + RADIAL_WEIGHT * (u - u0)
             x, y = at(u, t)
-            dist = sum(
-                min(octi_dist((q.x + x, q.y + y), (p.x, p.y)) for p in goals[id(q)]) for q in own
-            ) / len(own)
-            return dist + ALIGN_WEIGHT * abs(t - t_star)
+            dist = 0.0
+            cross = 0
+            for q in own:
+                a = (q.x + x, q.y + y)
+                goal = min(goals[id(q)], key=lambda p: octi_dist(a, (p.x, p.y)))
+                dist += octi_dist(a, (goal.x, goal.y))
+                if crossing:
+                    cross += sum(
+                        1
+                        for o in local.pads
+                        if o.net != q.net and _seg_hits_pad(a, (goal.x, goal.y), o, x, y)
+                    )
+            return dist / len(own) + ALIGN_WEIGHT * abs(t - t_star) + SELF_CROSS_MM * cross
 
         obstacles = [frame(box_of(p)) for p in self.placed.values()]
-        us = sorted({u0, *(snap_up(o[1] + g - s_r0) for o in obstacles if o[1] + g - s_r0 > u0)})
+        strips = [frame(b) for b in self._escape_strips(local, host, side)]
+        us = sorted(
+            {
+                u0,
+                *(snap_up(o[1] + g - s_r0) for o in obstacles if o[1] + g - s_r0 > u0),
+                *(snap_up(o[1] - s_r0) for o in strips if o[1] - s_r0 > u0),
+            }
+        )
         best: tuple[float, float, float] | None = None  # cost, u, t
         floor = cost_of(u0, t_star)
         for u in us:
@@ -582,6 +763,10 @@ class _Layout:
                 (o[2] - g - s_t1, o[3] + g - s_t0)
                 for o in obstacles
                 if o[0] - g < u + s_r1 - _EPS and u + s_r0 < o[1] + g - _EPS
+            ] + [
+                (o[2] - s_t1, o[3] - s_t0)
+                for o in strips
+                if o[0] < u + s_r1 - _EPS and u + s_r0 < o[1] - _EPS
             ]
             cands = {t_star}
             for lo, hi in blocked:
@@ -652,6 +837,31 @@ class _Layout:
             Move(r, self.placed[r].x, self.placed[r].y, self.placed[r].rot, "top")
             for r in self.order
         )
+
+
+def _seg_hits_pad(a: Point, b: Point, q: Pad, dx: float, dy: float) -> bool:
+    """The segment a-b runs through pad `q` shifted by (dx, dy) (its rotated rectangle's
+    bounding box, shrunk by 1 µm so a touching line does not count)."""
+    c, s = _cs(q.rot)
+    hw = (abs(q.w * c) + abs(q.h * s)) / 2 - 1e-3
+    hh = (abs(q.w * s) + abs(q.h * c)) / 2 - 1e-3
+    x0, x1, y0, y1 = q.x + dx - hw, q.x + dx + hw, q.y + dy - hh, q.y + dy + hh
+    # Liang-Barsky clip of the segment against the box
+    t0, t1 = 0.0, 1.0
+    ddx, ddy = b[0] - a[0], b[1] - a[1]
+    for p_, q_ in ((-ddx, a[0] - x0), (ddx, x1 - a[0]), (-ddy, a[1] - y0), (ddy, y1 - a[1])):
+        if abs(p_) < _EPS:
+            if q_ < 0:
+                return False
+            continue
+        r = q_ / p_
+        if p_ < 0:
+            t0 = max(t0, r)
+        else:
+            t1 = min(t1, r)
+        if t0 > t1:
+            return False
+    return True
 
 
 def _area(p: Part) -> float:

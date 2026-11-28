@@ -6,11 +6,11 @@
       "verdict": "pass"
     },
     "M10": {
-      "value": 1.7738,
-      "verdict": "review"
+      "value": 1.8946,
+      "verdict": "pass"
     },
     "M11": {
-      "value": 0.9576,
+      "value": 0.9567,
       "verdict": "pass"
     },
     "M12": {
@@ -58,7 +58,7 @@
       "verdict": "pass"
     },
     "M8": {
-      "value": 4.1985,
+      "value": 4.9763,
       "verdict": "review"
     },
     "M9": {
@@ -66,7 +66,7 @@
       "verdict": "review"
     }
   },
-  "track_length_mm": 215.4,
-  "tracks": 130,
-  "vias": 126
+  "track_length_mm": 259.8,
+  "tracks": 132,
+  "vias": 123
 }

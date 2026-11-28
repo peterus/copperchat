@@ -21,7 +21,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 
 from copperchat.board.classify import Classification, primary_ground
-from copperchat.board.geom import _pad_on_layer, point_in_polygon, rect_poly
+from copperchat.board.geom import _bbox_of, _pad_on_layer, _pad_rect, point_in_polygon, rect_poly
 from copperchat.board.model import BoardModel, Pad, Point
 from copperchat.board.staging import natural_key
 
@@ -68,6 +68,9 @@ class ViaCandidate:
     stub: tuple[Point, Point] | None  # fanout: pad centre -> via centre; stitching: None
     pad: tuple[str, str] | None  # (ref, number) of the fanned-out pad
     rank: int  # 0 = preferred
+    # R7: no via - the stub ties the pad to a larger same-net pad of its own part (a QFN's
+    # ground pin to its exposed pad, which has its own via); `at` = the stub's end there
+    tie: bool = False
 
 
 @dataclass(frozen=True)
@@ -504,10 +507,55 @@ def fanout_candidates(
                 found.append(((step, round(score, 9), di), at, stub))
         found.sort(key=lambda f: f[0])
         key = pad_key(q, out)
-        out[key] = tuple(
+        cands = [
             ViaCandidate(at=at, stub=stub, pad=key, rank=i) for i, (_, at, stub) in enumerate(found)
-        )
+        ]
+        for end in _tie_ends(model, q, layer, obs, width=width, clearance=clearance):
+            cands.append(
+                ViaCandidate(at=end, stub=((q.x, q.y), end), pad=key, rank=len(cands), tie=True)
+            )
+        out[key] = tuple(cands)
     return out
+
+
+TIE_MAX_GAP_MM = 1.0  # R7: a tie stub bridges at most this much between the two pads
+
+
+def _tie_ends(
+    model: BoardModel, q: Pad, layer: str, obs: _Obstacles, *, width: float, clearance: float
+) -> list[Point]:
+    """R7 (ODH TPS63000: its 0.5 mm-pitch ground pins sat in pour islands that reached
+    neither a via nor the exposed pad 0.3 mm away): stub ends that tie `q` to a larger pad
+    of the same net and part on `layer` - an axis-parallel stub from `q`'s centre through
+    the gap (at most `TIE_MAX_GAP_MM`) to `width` inside the other pad, clear of other-net
+    copper. Offered after every via candidate (only a pad without a via spot uses it)."""
+    part = next((p for p in model.parts if p.ref == q.ref), None)
+    if part is None:
+        return []
+    qb = _bbox_of(_pad_rect(q))
+    out: list[Point] = []
+    for o in part.pads:
+        if o is q or o.net != q.net or o.w * o.h <= q.w * q.h or not _pad_on_layer(o, layer):
+            continue
+        ob = _bbox_of(_pad_rect(o))
+        for axis in (0, 1):
+            other = 1 - axis
+            if not ob[other] + width / 2 <= (q.x, q.y)[other] <= ob[other + 2] - width / 2:
+                continue  # the straight stub would not land inside the other pad
+            if qb[axis + 2] <= ob[axis]:
+                gap, end_c = ob[axis] - qb[axis + 2], ob[axis] + width / 2
+            elif ob[axis + 2] <= qb[axis]:
+                gap, end_c = qb[axis] - ob[axis + 2], ob[axis + 2] - width / 2
+            else:
+                continue
+            if gap > TIE_MAX_GAP_MM + 1e-9:
+                continue
+            end = [q.x, q.y]
+            end[axis] = end_c
+            at = (_snap(end[0]), _snap(end[1]))
+            if obs.stub_ok((q.x, q.y), at, layer, half=width / 2, clearance=clearance, own=q):
+                out.append(at)
+    return sorted(set(out))
 
 
 def pad_key(q: Pad, seen: Mapping[tuple[str, str], object]) -> tuple[str, str]:
